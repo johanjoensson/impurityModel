@@ -1,4 +1,4 @@
-"""Unit tests for ManyBodyBlockState (Phase 2.1 of the block-state matvec plan,
+"""Unit tests for ManyBodyState (Phase 2.1 of the block-state matvec plan,
 doc/plans/blocklanczos_partial_perf_memory.md): shared-support block container —
 conversion round-trips, union-support semantics, row pruning (any-column-survives),
 zero-copy buffer protocol with its export guard."""
@@ -9,11 +9,15 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyBlockState,
-    ManyBodyOperator,
     ManyBodyState,
+    ManyBodyOperator,
     SlaterDeterminant,
     applyOp,
+    inner_multi,
+    block_inner_cy,
+    block_add_scaled_cy,
+    SparseKrylovDense,
+    inner,
 )
 
 
@@ -47,7 +51,7 @@ def _dense_combine(states, Y, slater_weight_min=0.0):
     M = np.zeros((len(keys), len(states)), dtype=complex)
     for j, st in enumerate(states):
         for k, v in st.to_dict().items():
-            M[idx[k], j] = v
+            M[idx[k], j] = v[0]
     out = M @ np.asarray(Y, dtype=complex)
     result = [ManyBodyState({keys[i]: out[i, c] for i in range(len(keys))}) for c in range(out.shape[1])]
     if slater_weight_min > 0:
@@ -59,7 +63,6 @@ def _dense_combine(states, Y, slater_weight_min=0.0):
 def _dense_orthogonalize(wp_states, q_states):
     """Dense-matrix reference for ``block_orthogonalize``'s Gram-Schmidt step, replacing
     the retired ``block_orthogonalize_sparse``: overlaps = <Q, wp>, then wp -= Q @ overlaps."""
-    from impurityModel.ed.ManyBodyUtils import inner_multi
 
     overlaps = inner_multi(q_states, wp_states)
     corrected = _dense_combine(q_states, -overlaps)
@@ -74,7 +77,7 @@ def _dense_orthogonalize(wp_states, q_states):
 def test_roundtrip_bit_exact():
     rng = np.random.default_rng(21)
     states = _random_states(rng, 5, 60)
-    blk = ManyBodyBlockState.from_states(states)
+    blk = ManyBodyState.from_states(states)
     assert blk.width == 5
     back = blk.to_states()
     assert back == states  # flat_map equality: identical keys and coefficients
@@ -84,7 +87,7 @@ def test_union_support():
     """Disjoint-support columns share the union; missing entries are exact zeros."""
     a = ManyBodyState({_det(1): 1.0 + 0j, _det(2): 2.0 + 0j})
     b = ManyBodyState({_det(3): 3.0 + 0j})
-    blk = ManyBodyBlockState.from_states([a, b])
+    blk = ManyBodyState.from_states([a, b])
     assert len(blk) == 3 and blk.width == 2
     arr = np.asarray(blk)
     # keys are sorted; column 0 = a, column 1 = b
@@ -95,12 +98,12 @@ def test_union_support():
 
 
 def test_empty_block():
-    blk = ManyBodyBlockState.from_states([])
+    blk = ManyBodyState.from_states([])
     assert len(blk) == 0 and blk.width == 0
     assert blk.to_states() == []
-    empty_state = ManyBodyBlockState.from_states([ManyBodyState()])
+    empty_state = ManyBodyState.from_states([ManyBodyState(width=1)])
     assert len(empty_state) == 0 and empty_state.width == 1
-    assert empty_state.to_states() == [ManyBodyState()]
+    assert empty_state.to_states() == [ManyBodyState(width=1)]
 
 
 def test_prune_rows_any_column_survives():
@@ -108,11 +111,11 @@ def test_prune_rows_any_column_survives():
     deliberate semantic difference vs pruning independent states per column."""
     a = ManyBodyState({_det(1): 1e-9 + 0j, _det(2): 1.0 + 0j})
     b = ManyBodyState({_det(1): 1.0 + 0j, _det(2): 1e-9 + 0j})
-    blk = ManyBodyBlockState.from_states([a, b])
+    blk = ManyBodyState.from_states([a, b])
     blk.prune_rows(1e-6)
     assert len(blk) == 2  # each row rescued by the other column
     c = ManyBodyState({_det(1): 1e-9 + 0j, _det(3): 1.0 + 0j})
-    blk2 = ManyBodyBlockState.from_states([a, c])
+    blk2 = ManyBodyState.from_states([a, c])
     blk2.prune_rows(1e-6)
     # row det(1): both tiny -> dropped; det(2) and det(3) rescued by one column each
     assert len(blk2) == 2
@@ -120,7 +123,7 @@ def test_prune_rows_any_column_survives():
     assert _det(1) not in kept[0] and _det(1) not in kept[1]
     # boundary: |amp|^2 <= cutoff^2 drops (matches ManyBodyState.prune exactly)
     d = ManyBodyState({_det(1): 0.5 + 0j})
-    blk3 = ManyBodyBlockState.from_states([d])
+    blk3 = ManyBodyState.from_states([d])
     blk3.prune_rows(0.5)
     assert len(blk3) == 0
 
@@ -128,7 +131,7 @@ def test_prune_rows_any_column_survives():
 def test_buffer_view_zero_copy_write_through():
     rng = np.random.default_rng(4)
     states = _random_states(rng, 3, 20, sparsity=1.0)
-    blk = ManyBodyBlockState.from_states(states)
+    blk = ManyBodyState.from_states(states)
     arr = np.asarray(blk)
     assert arr.shape == (len(blk), 3) and arr.dtype == np.complex128
     arr[:, 1] *= 2.0
@@ -137,7 +140,7 @@ def test_buffer_view_zero_copy_write_through():
 
 
 def test_buffer_export_guard():
-    blk = ManyBodyBlockState.from_states(_random_states(np.random.default_rng(5), 2, 10))
+    blk = ManyBodyState.from_states(_random_states(np.random.default_rng(5), 2, 10))
     arr = np.asarray(blk)
     with pytest.raises(RuntimeError):
         blk.prune_rows(1e-3)
@@ -148,10 +151,10 @@ def test_buffer_export_guard():
 def test_col_norm2_and_equality():
     rng = np.random.default_rng(6)
     states = _random_states(rng, 4, 30)
-    blk = ManyBodyBlockState.from_states(states)
+    blk = ManyBodyState.from_states(states)
     ref = [st.norm2() for st in states]
     np.testing.assert_allclose(blk.col_norm2(), ref, rtol=1e-15)
-    blk2 = ManyBodyBlockState.from_states(states)
+    blk2 = ManyBodyState.from_states(states)
     assert blk == blk2
     np.asarray(blk2)[0, 0] += 1.0
     assert blk != blk2
@@ -176,7 +179,6 @@ def _hopping_operator(n_orb, rng):
 
 def _dets_orbital_msb(n_orb, rng, n_dets, n_el):
     """Random n_el-electron determinants (orbital i = bit 7-i within its byte)."""
-    from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
 
     n_bytes = (n_orb + 7) // 8
     seen = set()
@@ -200,14 +202,13 @@ def test_apply_block_matches_independent_applies(p):
     code, so compilers may contract their multiply-accumulates into FMA differently
     (Intel icx does; the threaded merge additionally reorders duplicate accumulation).
     """
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     rng = np.random.default_rng(31 + p)
     op = ManyBodyOperator(_hopping_operator(10, rng))
     dets = _dets_orbital_msb(10, rng, 25, 5)
     states = [ManyBodyState({d: complex(rng.standard_normal(), rng.standard_normal()) for d in dets}) for _ in range(p)]
     ref = op.apply_multi(states, 0.0)
-    blk_out = op.apply_block(ManyBodyBlockState.from_states(states), 0.0)
+    blk_out = op.apply_block(ManyBodyState.from_states(states), 0.0)
     assert blk_out.width == p
     got = blk_out.to_states()
     for c in range(p):
@@ -220,7 +221,6 @@ def test_apply_block_matches_independent_applies(p):
 def test_apply_block_cutoff_keeps_rows():
     """The block cutoff acts on whole rows: sub-cutoff residuals in one column are
     retained when another column keeps the row (shared-support semantics)."""
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     rng = np.random.default_rng(41)
     op = ManyBodyOperator(_hopping_operator(8, rng))
@@ -229,7 +229,7 @@ def test_apply_block_cutoff_keeps_rows():
     tiny = ManyBodyState(dict.fromkeys(dets, 1e-10 + 0j))
     cutoff = 1e-6
 
-    blk_out = op.apply_block(ManyBodyBlockState.from_states([big, tiny]), cutoff)
+    blk_out = op.apply_block(ManyBodyState.from_states([big, tiny]), cutoff)
     ref_big = op.apply_multi([big], cutoff)[0]
     # every row that survives via the big column is present, and the big column matches
     got = blk_out.to_states()
@@ -244,13 +244,32 @@ def test_apply_block_cutoff_keeps_rows():
 # --------------------------------------------------------------------------- #
 # Phase 2.3: block redistribute
 # --------------------------------------------------------------------------- #
+def _reference_redistribute(states, comm):
+    """Python-level reference for hash-owner redistribution: gather every rank's
+    entries, sum contributions to the same determinant, keep only this rank's own
+    (``routing_hash() % comm.size``) determinants -- replaces the retired
+    ``graph_alltoall_psis``, which computed exactly this."""
+    size = comm.size
+    rank = comm.rank
+    local_dicts = [st.to_dict() for st in states]
+    all_dicts = comm.allgather(local_dicts)
+    result = [{} for _ in states]
+    for rank_dicts in all_dicts:
+        for i, d in enumerate(rank_dicts):
+            for det, amp in d.items():
+                if det.routing_hash() % size != rank:
+                    continue
+                result[i][det] = result[i].get(det, 0j) + amp
+    return [ManyBodyState(d, width=1) for d in result]
+
+
 def test_graph_alltoall_block_serial_copy():
-    """Serial (comm=None): an independent copy comes back, like graph_alltoall_psis."""
+    """Serial (comm=None): an independent copy comes back."""
     from impurityModel.ed.mpi_comm import graph_alltoall_block
 
     rng = np.random.default_rng(51)
     states = _random_states(rng, 3, 20)
-    blk = ManyBodyBlockState.from_states(states)
+    blk = ManyBodyState.from_states(states)
     out = graph_alltoall_block(blk, 2, None)
     assert out == blk
     np.asarray(out)[0, 0] += 1.0
@@ -263,7 +282,7 @@ def test_graph_alltoall_block_matches_scalar_path():
     columns bit-for-bit, including cross-rank duplicate summation."""
     from mpi4py import MPI
 
-    from impurityModel.ed.mpi_comm import graph_alltoall_block, graph_alltoall_psis
+    from impurityModel.ed.mpi_comm import graph_alltoall_block
 
     comm = MPI.COMM_WORLD
     p = 3
@@ -273,8 +292,8 @@ def test_graph_alltoall_block_matches_scalar_path():
     # owners receive contributions from several ranks and must sum them.
     states = _random_states(rng, p, 30, sparsity=0.8)
 
-    ref = graph_alltoall_psis(states, n_bytes, comm)
-    out = graph_alltoall_block(ManyBodyBlockState.from_states(states), n_bytes, comm)
+    ref = _reference_redistribute(states, comm)
+    out = graph_alltoall_block(ManyBodyState.from_states(states), n_bytes, comm)
 
     assert out.width == p
     got = out.to_states()
@@ -288,19 +307,19 @@ def test_graph_alltoall_block_empty_contributor():
     corrupt the result — collectives are unconditional, dtypes fixed."""
     from mpi4py import MPI
 
-    from impurityModel.ed.mpi_comm import graph_alltoall_block, graph_alltoall_psis
+    from impurityModel.ed.mpi_comm import graph_alltoall_block
 
     comm = MPI.COMM_WORLD
     p = 2
     n_bytes = 2
     if comm.rank == comm.size - 1:
-        states = [ManyBodyState() for _ in range(p)]
+        states = [ManyBodyState(width=1) for _ in range(p)]
     else:
         rng = np.random.default_rng(500 + comm.rank)
         states = _random_states(rng, p, 15, sparsity=0.9)
 
-    ref = graph_alltoall_psis(states, n_bytes, comm)
-    out = graph_alltoall_block(ManyBodyBlockState.from_states(states), n_bytes, comm)
+    ref = _reference_redistribute(states, comm)
+    out = graph_alltoall_block(ManyBodyState.from_states(states), n_bytes, comm)
     got = out.to_states()
     for c in range(p):
         assert got[c] == ref[c]
@@ -310,7 +329,6 @@ def test_graph_alltoall_block_empty_contributor():
 # Phase 2.4a: block linear-algebra primitives — bit-for-bit vs the list ops
 # --------------------------------------------------------------------------- #
 def test_block_inner_matches_inner_multi():
-    from impurityModel.ed.ManyBodyUtils import block_inner_cy, inner_multi
 
     rng = np.random.default_rng(61)
     A_states = _random_states(rng, 3, 25)
@@ -319,16 +337,15 @@ def test_block_inner_matches_inner_multi():
         ManyBodyState({_det(i + 10): rng.standard_normal() + 1j for i in range(20) if rng.random() < 0.7})
         for _ in range(2)
     ]
-    A = ManyBodyBlockState.from_states(A_states)
-    B = ManyBodyBlockState.from_states(B_states)
+    A = ManyBodyState.from_states(A_states)
+    B = ManyBodyState.from_states(B_states)
     # Same accumulation order, but FMA contraction of conj(a)*b sums differs across
     # compilers (Intel icx) between the block and list code paths — last-ulp tolerance.
     np.testing.assert_allclose(block_inner_cy(A, B), inner_multi(A_states, B_states), rtol=1e-13, atol=1e-14)
     np.testing.assert_allclose(block_inner_cy(A, A), inner_multi(A_states, A_states), rtol=1e-13, atol=1e-14)
 
 
-def test_block_add_scaled_matches_add_scaled_multi():
-    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, block_add_scaled_cy
+def test_block_add_scaled_matches_dense_reference():
 
     rng = np.random.default_rng(62)
     A_states = _random_states(rng, 3, 25)
@@ -339,40 +356,38 @@ def test_block_add_scaled_matches_add_scaled_multi():
         for _ in range(2)
     ]
     C = rng.standard_normal((2, 3)) + 1j * rng.standard_normal((2, 3))
-    ref = [s.copy() for s in A_states]
-    add_scaled_multi(ref, B_states, np.ascontiguousarray(C))
-    out = block_add_scaled_cy(ManyBodyBlockState.from_states(A_states), ManyBodyBlockState.from_states(B_states), C)
+    contrib = _dense_combine(B_states, C)
+    ref = [a.copy() for a in A_states]
+    for j, c in enumerate(contrib):
+        ref[j] += c
+    out = block_add_scaled_cy(ManyBodyState.from_states(A_states), ManyBodyState.from_states(B_states), C)
     for j, col in enumerate(out.to_states()):
         # same accumulation order; last-ulp tolerance for compiler FMA differences
         diff = col - ref[j]
         assert np.sqrt(diff.norm2()) < 1e-13 * max(np.sqrt(ref[j].norm2()), 1.0)
     with pytest.raises(ValueError):
-        block_add_scaled_cy(
-            ManyBodyBlockState.from_states(A_states), ManyBodyBlockState.from_states(B_states), np.ones((3, 2))
-        )
+        block_add_scaled_cy(ManyBodyState.from_states(A_states), ManyBodyState.from_states(B_states), np.ones((3, 2)))
 
 
 def test_block_inner_dispatcher_accepts_blocks():
-    """``BlockLanczosArray.block_inner`` must dispatch a ``ManyBodyBlockState`` to
+    """``BlockLanczosArray.block_inner`` must dispatch a ``ManyBodyState`` to
     ``block_inner_cy`` rather than falling through to the list-only ``inner_multi``
     (which would silently iterate determinant keys instead of rows)."""
     from impurityModel.ed.BlockLanczosArray import block_inner
-    from impurityModel.ed.ManyBodyUtils import block_inner_cy
 
     rng = np.random.default_rng(65)
     A_states = _random_states(rng, 3, 25)
     B_states = _random_states(rng, 2, 25)
-    A = ManyBodyBlockState.from_states(A_states)
-    B = ManyBodyBlockState.from_states(B_states)
+    A = ManyBodyState.from_states(A_states)
+    B = ManyBodyState.from_states(B_states)
     np.testing.assert_array_equal(block_inner(A, B), block_inner_cy(A, B))
 
 
 def test_block_add_scaled_dispatcher_accepts_blocks():
     """``BlockLanczosArray.block_add_scaled`` must rebind (not mutate in place) when fed
-    a ``ManyBodyBlockState`` -- the union support can outgrow the target's own storage,
+    a ``ManyBodyState`` -- the union support can outgrow the target's own storage,
     so the caller must use the returned block, exactly as every current caller does."""
     from impurityModel.ed.BlockLanczosArray import block_add_scaled
-    from impurityModel.ed.ManyBodyUtils import block_add_scaled_cy
 
     rng = np.random.default_rng(66)
     A_states = _random_states(rng, 3, 25)
@@ -382,8 +397,8 @@ def test_block_add_scaled_dispatcher_accepts_blocks():
         )
         for _ in range(3)
     ]
-    A = ManyBodyBlockState.from_states(A_states)
-    B = ManyBodyBlockState.from_states(B_states)
+    A = ManyBodyState.from_states(A_states)
+    B = ManyBodyState.from_states(B_states)
     C = rng.standard_normal((3, 3)) + 1j * rng.standard_normal((3, 3))
 
     ref = block_add_scaled_cy(A, B, C)
@@ -400,7 +415,7 @@ def test_block_add_scaled_dispatcher_accepts_blocks():
 def test_combine_columns_matches_dense_reference():
     rng = np.random.default_rng(63)
     states = _random_states(rng, 4, 30)
-    blk = ManyBodyBlockState.from_states(states)
+    blk = ManyBodyState.from_states(states)
     Y = rng.standard_normal((4, 2)) + 1j * rng.standard_normal((4, 2))
     ref = _dense_combine(states, Y)
     for j, col in enumerate(blk.combine_columns(Y).to_states()):
@@ -437,7 +452,7 @@ def _select_oracle(blk, cols):
 def test_select_matches_selection_matrix_oracle(cols):
     rng = np.random.default_rng(70)
     states = _random_states(rng, 5, 40)
-    blk = ManyBodyBlockState.from_states(states)
+    blk = ManyBodyState.from_states(states)
     ref = _select_oracle(blk, cols)
     out = blk.select(cols)
     assert out.width == len(cols)
@@ -449,19 +464,20 @@ def test_select_preserves_support_including_zero_rows():
     parent block), not just the rows with nonzero selected amplitudes."""
     a = ManyBodyState({_det(1): 1.0 + 0j, _det(2): 2.0 + 0j})
     b = ManyBodyState({_det(1): 0.0 + 0j, _det(3): 3.0 + 0j})
-    blk = ManyBodyBlockState.from_states([a, b])
+    blk = ManyBodyState.from_states([a, b])
     # column 1 (b) is exactly zero at det(1); selecting only column 1 must still
     # carry det(1)'s row (as an exact zero), matching the parent's shared support.
     out = blk.select([1])
     assert out.keys() == blk.keys()
-    (col,) = out.to_states()
-    assert col[_det(1)] == 0j
+    # Checked directly on the block, not through to_states() (which drops exact-zero
+    # rows by design -- the round-trip guarantee documented on to_states()).
+    assert out[_det(1)][0] == 0j
 
 
 def test_select_out_of_range_raises():
     rng = np.random.default_rng(71)
     states = _random_states(rng, 3, 10)
-    blk = ManyBodyBlockState.from_states(states)
+    blk = ManyBodyState.from_states(states)
     with pytest.raises(IndexError):
         blk.select([3])
     with pytest.raises(IndexError):
@@ -471,13 +487,12 @@ def test_select_out_of_range_raises():
 def test_column_matches_select_singleton():
     rng = np.random.default_rng(72)
     states = _random_states(rng, 4, 25)
-    blk = ManyBodyBlockState.from_states(states)
+    blk = ManyBodyState.from_states(states)
     for i in range(4):
         assert blk.column(i).to_states() == blk.select([i]).to_states()
 
 
 def test_store_append_block_matches_append():
-    from impurityModel.ed.ManyBodyUtils import SparseKrylovDense
 
     rng = np.random.default_rng(64)
     states = _random_states(rng, 3, 40)
@@ -485,8 +500,8 @@ def test_store_append_block_matches_append():
     s1, s2 = SparseKrylovDense(), SparseKrylovDense()
     s1.append(states)
     s1.append(more)
-    s2.append_block(ManyBodyBlockState.from_states(states))
-    s2.append_block(ManyBodyBlockState.from_states(more))
+    s2.append_block(ManyBodyState.from_states(states))
+    s2.append_block(ManyBodyState.from_states(more))
     assert len(s1) == len(s2) == 5
     assert list(s1) == list(s2)
 
@@ -496,11 +511,11 @@ def test_keep_rows_intersection():
     set-intersection complement of prune_rows), preserving row order."""
     a = ManyBodyState({_det(1): 1.0 + 0j, _det(2): 2.0 + 0j, _det(4): 4.0 + 0j})
     b = ManyBodyState({_det(2): -1.0 + 0j, _det(3): 3.0 + 0j})
-    blk = ManyBodyBlockState.from_states([a, b])
+    blk = ManyBodyState.from_states([a, b])
     assert len(blk) == 4
     # Mask keys need not be a subset of the block's support (det(9) is absent).
     mask_state = ManyBodyState(dict.fromkeys([_det(2), _det(4), _det(9)], 1.0 + 0j))
-    blk.keep_rows(ManyBodyBlockState.from_states([mask_state]))
+    blk.keep_rows(ManyBodyState.from_states([mask_state]))
     assert len(blk) == 2
     kept = blk.to_states()
     assert kept[0] == ManyBodyState({_det(2): 2.0 + 0j, _det(4): 4.0 + 0j})
@@ -510,17 +525,17 @@ def test_keep_rows_intersection():
 def test_keep_rows_superset_and_empty_mask():
     rng = np.random.default_rng(31)
     states = _random_states(rng, 3, 25)
-    blk = ManyBodyBlockState.from_states(states)
+    blk = ManyBodyState.from_states(states)
     full = blk.copy()
     all_keys = ManyBodyState(dict.fromkeys(blk.support_keys(0.0), 1.0 + 0j))
-    blk.keep_rows(ManyBodyBlockState.from_states([all_keys]))
+    blk.keep_rows(ManyBodyState.from_states([all_keys]))
     assert blk == full  # superset mask is the identity
-    blk.keep_rows(ManyBodyBlockState.from_states([]))
+    blk.keep_rows(ManyBodyState.from_states([]))
     assert len(blk) == 0  # empty mask drops everything
 
 
 def test_keep_rows_export_guard():
-    blk = ManyBodyBlockState.from_states(_random_states(np.random.default_rng(32), 2, 10))
+    blk = ManyBodyState.from_states(_random_states(np.random.default_rng(32), 2, 10))
     mask = blk.copy()
     arr = np.asarray(blk)
     with pytest.raises(RuntimeError):
@@ -534,7 +549,7 @@ def test_row_max_norms2_values_and_alignment():
     rows (which support_keys(0.0) drops)."""
     a = ManyBodyState({_det(1): 0.0 + 0j, _det(2): 3.0 + 4.0j})
     b = ManyBodyState({_det(2): 1.0 + 0j, _det(3): -2.0 + 0j})
-    blk = ManyBodyBlockState.from_states([a, b])
+    blk = ManyBodyState.from_states([a, b])
     keys, norms2 = blk.row_max_norms2()
     assert keys == [_det(1), _det(2), _det(3)]
     np.testing.assert_allclose(norms2, [0.0, 25.0, 4.0])
@@ -544,7 +559,7 @@ def test_row_max_norms2_values_and_alignment():
 
 
 def test_row_max_norms2_empty():
-    blk = ManyBodyBlockState.from_states([])
+    blk = ManyBodyState.from_states([])
     keys, norms2 = blk.row_max_norms2()
     assert keys == [] and norms2.shape == (0,)
 
@@ -552,13 +567,13 @@ def test_row_max_norms2_empty():
 def test_count_rows_in_and_new_row_max_norms2():
     a = ManyBodyState({_det(1): 1.0 + 0j, _det(2): 2.0 + 0j, _det(4): 0.5 + 0j})
     b = ManyBodyState({_det(2): -3.0 + 0j, _det(3): 1.0 + 1.0j})
-    blk = ManyBodyBlockState.from_states([a, b])  # rows 1,2,3,4
-    mask = ManyBodyBlockState.from_states([ManyBodyState(dict.fromkeys([_det(2), _det(4)], 1.0 + 0j))])
+    blk = ManyBodyState.from_states([a, b])  # rows 1,2,3,4
+    mask = ManyBodyState.from_states([ManyBodyState(dict.fromkeys([_det(2), _det(4)], 1.0 + 0j))])
     assert blk.count_rows_in(mask) == 2
     # new rows are det(1) and det(3), in row order
     np.testing.assert_allclose(blk.new_row_max_norms2(mask), [1.0, 2.0])
     assert len(blk.new_row_max_norms2(mask)) == len(blk) - blk.count_rows_in(mask)
-    empty_mask = ManyBodyBlockState.from_states([])
+    empty_mask = ManyBodyState.from_states([])
     assert blk.count_rows_in(empty_mask) == 0
     np.testing.assert_allclose(blk.new_row_max_norms2(empty_mask), [1.0, 9.0, 2.0, 0.25])
 
@@ -566,8 +581,8 @@ def test_count_rows_in_and_new_row_max_norms2():
 def test_keys_new_above_and_key_union():
     a = ManyBodyState({_det(1): 1.0 + 0j, _det(2): 2.0 + 0j, _det(4): 0.5 + 0j})
     b = ManyBodyState({_det(2): -3.0 + 0j, _det(3): 1.0 + 1.0j})
-    blk = ManyBodyBlockState.from_states([a, b])
-    mask = ManyBodyBlockState.from_states([ManyBodyState({_det(2): 1.0 + 0j})])
+    blk = ManyBodyState.from_states([a, b])
+    mask = ManyBodyState.from_states([ManyBodyState({_det(2): 1.0 + 0j})])
     # candidates 1 (norm2 1.0), 3 (norm2 2.0), 4 (norm2 0.25); cutoff2=0.5 admits 1 and 3
     admitted = blk.keys_new_above(mask, 0.5)
     assert admitted.width == 0
@@ -582,21 +597,21 @@ def test_keys_new_above_and_key_union():
     assert keys == [_det(1), _det(2), _det(3)]
     # cutoff above every candidate admits nothing; union with empty is identity
     assert len(blk.keys_new_above(mask, 100.0)) == 0
-    assert len(mask.key_union(ManyBodyBlockState.from_states([]))) == 1
+    assert len(mask.key_union(ManyBodyState.from_states([]))) == 1
 
 
 def test_merge_keys_inplace_matches_key_union():
     a = ManyBodyState({_det(1): 1.0 + 0j, _det(4): 4.0 + 0j})
     b = ManyBodyState({_det(2): -1.0 + 0j, _det(4): 3.0 + 0j, _det(7): 1.0 + 0j})
-    mask = ManyBodyBlockState.from_states([a]).key_union(ManyBodyBlockState())
+    mask = ManyBodyState.from_states([a]).key_union(ManyBodyState())
     assert mask.width == 0 and len(mask) == 2
-    other = ManyBodyBlockState.from_states([b])
+    other = ManyBodyState.from_states([b])
     expected = mask.key_union(other)
     mask.merge_keys(other)
     keys, _ = mask.row_max_norms2()
     exp_keys, _ = expected.row_max_norms2()
     assert keys == exp_keys == [_det(1), _det(2), _det(4), _det(7)]
-    mask.merge_keys(ManyBodyBlockState())  # empty merge is a no-op
+    mask.merge_keys(ManyBodyState())  # empty merge is a no-op
     assert len(mask) == 4
     # width-0 requirement is enforced
     with pytest.raises(ValueError):
@@ -612,15 +627,15 @@ def test_keys_matches_support_keys_and_works_at_width_zero():
     """
     a = ManyBodyState({_det(1): 1.0 + 0j, _det(4): 4.0 + 0j})
     b = ManyBodyState({_det(2): -1.0 + 0j, _det(4): 3.0 + 0j})
-    blk = ManyBodyBlockState.from_states([a, b])
+    blk = ManyBodyState.from_states([a, b])
     assert blk.keys() == blk.support_keys(0.0) == [_det(1), _det(2), _det(4)]
 
-    mask = ManyBodyBlockState()
+    mask = ManyBodyState()
     mask.merge_keys(blk)
     assert mask.width == 0
     assert mask.support_keys(0.0) == []  # no amplitudes to filter on
     assert mask.keys() == [_det(1), _det(2), _det(4)]
-    assert ManyBodyBlockState().keys() == []
+    assert ManyBodyState().keys() == []
 
 
 def test_seen_and_offered_masks_track_sub_cutoff_determinants_separately():
@@ -632,10 +647,10 @@ def test_seen_and_offered_masks_track_sub_cutoff_determinants_separately():
     offered. A single mask would record it on the first sighting and never offer it.
     """
     cutoff2 = 1e-12**2
-    seen, offered = ManyBodyBlockState(), ManyBodyBlockState()
+    seen, offered = ManyBodyState(), ManyBodyState()
 
     # Iteration 1: det(2) is present but far below the cutoff.
-    step1 = ManyBodyBlockState.from_states([ManyBodyState({_det(1): 1.0 + 0j, _det(2): 1e-20 + 0j})])
+    step1 = ManyBodyState.from_states([ManyBodyState({_det(1): 1.0 + 0j, _det(2): 1e-20 + 0j})])
     seen.merge_keys(step1.keys_new_above(seen, 0.0))
     new_offered = step1.keys_new_above(offered, cutoff2)
     offered.merge_keys(new_offered)
@@ -644,7 +659,7 @@ def test_seen_and_offered_masks_track_sub_cutoff_determinants_separately():
 
     # Iteration 2: det(2) has grown above the cutoff. It is already seen, but not offered,
     # so exactly one new determinant reaches the basis.
-    step2 = ManyBodyBlockState.from_states([ManyBodyState({_det(1): 1.0 + 0j, _det(2): 0.5 + 0j})])
+    step2 = ManyBodyState.from_states([ManyBodyState({_det(1): 1.0 + 0j, _det(2): 0.5 + 0j})])
     seen.merge_keys(step2.keys_new_above(seen, 0.0))
     new_offered = step2.keys_new_above(offered, cutoff2)
     offered.merge_keys(new_offered)
@@ -657,7 +672,7 @@ def test_seen_and_offered_masks_track_sub_cutoff_determinants_separately():
 
 
 def test_block_combine_dispatcher_accepts_blocks():
-    """``BlockLanczosArray.block_combine`` must dispatch a ``ManyBodyBlockState`` Q to
+    """``BlockLanczosArray.block_combine`` must dispatch a ``ManyBodyState`` Q to
     ``combine_columns`` rather than falling through to the list-only
     ``block_combine_sparse`` (prerequisite for Phase 5's TRLM/IRLM Q_basis conversion:
     once Q_basis stays a block across a restart, every ``block_combine(Q_basis, ...)``
@@ -666,12 +681,12 @@ def test_block_combine_dispatcher_accepts_blocks():
 
     rng = np.random.default_rng(70)
     states = _random_states(rng, 4, 30)
-    blk = ManyBodyBlockState.from_states(states)
+    blk = ManyBodyState.from_states(states)
     Y = rng.standard_normal((4, 2)) + 1j * rng.standard_normal((4, 2))
 
     ref = _dense_combine(states, Y)
     out = block_combine(blk, Y)
-    assert isinstance(out, ManyBodyBlockState)
+    assert isinstance(out, ManyBodyState)
     for j, col in enumerate(out.to_states()):
         diff = col - ref[j]
         assert np.sqrt(diff.norm2()) < 1e-13 * max(np.sqrt(ref[j].norm2()), 1.0)
@@ -691,7 +706,7 @@ def test_block_combine_dispatcher_pruning_matches_sparse_on_mixed_row():
     det1 = _det(2)
     col0 = ManyBodyState({det0: 1.0})
     col1 = ManyBodyState({det1: 1.0})
-    blk = ManyBodyBlockState.from_states([col0, col1])
+    blk = ManyBodyState.from_states([col0, col1])
 
     cutoff = 0.1
     # Q = identity (det0, det1), so C = Y itself: row det0 = Y[0] = [0.5, 0.05] (above
@@ -704,7 +719,7 @@ def test_block_combine_dispatcher_pruning_matches_sparse_on_mixed_row():
 
 
 def test_block_orthogonalize_dispatcher_accepts_blocks():
-    """``BlockLanczosArray.block_orthogonalize`` must dispatch a ``ManyBodyBlockState``
+    """``BlockLanczosArray.block_orthogonalize`` must dispatch a ``ManyBodyState``
     wp/Q pair to the block-native ``block_inner``/``block_add_scaled`` composition
     rather than the list-only ``block_orthogonalize_sparse``."""
     from impurityModel.ed.BlockLanczosArray import block_orthogonalize
@@ -715,7 +730,7 @@ def test_block_orthogonalize_dispatcher_accepts_blocks():
 
     ref_wp, ref_overlaps = _dense_orthogonalize([s.copy() for s in wp_states], Q_states)
     out_wp, out_overlaps = block_orthogonalize(
-        ManyBodyBlockState.from_states(wp_states), ManyBodyBlockState.from_states(Q_states)
+        ManyBodyState.from_states(wp_states), ManyBodyState.from_states(Q_states)
     )
     np.testing.assert_allclose(out_overlaps, ref_overlaps, rtol=1e-13, atol=1e-14)
     for j, col in enumerate(out_wp.to_states()):
@@ -724,7 +739,7 @@ def test_block_orthogonalize_dispatcher_accepts_blocks():
 
 
 def test_block_normalize_accepts_blocks():
-    """``block_normalize``'s non-array branch must accept a ``ManyBodyBlockState``
+    """``block_normalize``'s non-array branch must accept a ``ManyBodyState``
     (``block_normalize_sparse`` was relaxed from a ``list``-typed parameter to a plain
     passthrough, since ``block_tsqr`` beneath it already dispatches on both)."""
     from impurityModel.ed.BlockLanczosArray import block_normalize
@@ -733,8 +748,8 @@ def test_block_normalize_accepts_blocks():
     states = _random_states(rng, 3, 25)
 
     ref_q, ref_beta = block_normalize([s.copy() for s in states], mpi=False, comm=None)
-    out_q, out_beta = block_normalize(ManyBodyBlockState.from_states(states), mpi=False, comm=None)
-    assert isinstance(out_q, ManyBodyBlockState)
+    out_q, out_beta = block_normalize(ManyBodyState.from_states(states), mpi=False, comm=None)
+    assert isinstance(out_q, ManyBodyState)
     np.testing.assert_allclose(out_beta, ref_beta, rtol=1e-12, atol=1e-13)
     ref_states = ref_q if isinstance(ref_q, list) else ref_q.to_states()
     for j, col in enumerate(out_q.to_states()):
@@ -747,23 +762,23 @@ def test_block_normalize_accepts_blocks():
 
 def test_size_matches_len():
     rng = np.random.default_rng(80)
-    blk = ManyBodyBlockState.from_states(_random_states(rng, 3, 20))
+    blk = ManyBodyState.from_states(_random_states(rng, 3, 20))
     assert blk.size() == len(blk)
-    assert ManyBodyBlockState().size() == 0
+    assert ManyBodyState().size() == 0
 
 
 def test_max_size_is_a_large_positive_bound():
     """Container-capacity figure, not a real usable limit -- same spirit as the
     flat_map class's forwarded ``std::map::max_size()``; just check it's sane."""
     rng = np.random.default_rng(81)
-    blk = ManyBodyBlockState.from_states(_random_states(rng, 2, 10))
+    blk = ManyBodyState.from_states(_random_states(rng, 2, 10))
     assert blk.max_size() >= len(blk)
 
 
 def test_prune_alias_matches_prune_rows():
     rng = np.random.default_rng(82)
     states = _random_states(rng, 3, 30)
-    a = ManyBodyBlockState.from_states(states)
+    a = ManyBodyState.from_states(states)
     b = a.copy()
     a.prune(1e-1)
     b.prune_rows(1e-1)
@@ -778,16 +793,16 @@ def test_prune_at_width_one_matches_flat_state_prune():
     flat_ref = state.copy()
     flat_ref.prune(0.5)
 
-    blk = ManyBodyBlockState.from_states([state.copy()])
+    blk = ManyBodyState.from_states([state.copy()])
     blk.prune(0.5)
     (blk_col,) = blk.to_states()
     assert blk_col == flat_ref
 
 
 def test_repr_contains_keys_and_width():
-    a = ManyBodyBlockState({_det(1): 1.0 + 0j, _det(2): 2.0 + 0j})
+    a = ManyBodyState({_det(1): 1.0 + 0j, _det(2): 2.0 + 0j})
     r = repr(a)
-    assert "ManyBodyBlockState(" in r
+    assert "ManyBodyState(" in r
     assert "width=1" in r
     assert repr(_det(1)) in r
 
@@ -795,7 +810,7 @@ def test_repr_contains_keys_and_width():
 def test_reduce_roundtrip_normal_block():
     rng = np.random.default_rng(84)
     states = _random_states(rng, 4, 25)
-    a = ManyBodyBlockState.from_states(states)
+    a = ManyBodyState.from_states(states)
     b = pickle.loads(pickle.dumps(a))
     assert a == b
     assert a.width == b.width
@@ -805,8 +820,8 @@ def test_reduce_roundtrip_width_zero_mask_with_rows():
     """A width-0 (key-only) mask block WITH rows: to_dict() gives each row an empty
     array, which the constructor's non-scalar branch must still record as a key (the
     edge case a naive dict-only reduce could silently drop)."""
-    a = ManyBodyBlockState.from_states(_random_states(np.random.default_rng(85), 2, 15))
-    b = ManyBodyBlockState.from_states(_random_states(np.random.default_rng(86), 2, 15))
+    a = ManyBodyState.from_states(_random_states(np.random.default_rng(85), 2, 15))
+    b = ManyBodyState.from_states(_random_states(np.random.default_rng(86), 2, 15))
     mask = a.key_union(b)
     assert mask.width == 0
     assert len(mask) > 0
@@ -820,7 +835,7 @@ def test_reduce_roundtrip_empty_explicit_width():
     """A rows-less block of an explicit nonzero width: to_dict() alone gives ``{}``,
     which without carrying ``width`` through __reduce__ would silently collapse to the
     width-0 polymorphic zero on unpickling."""
-    z = ManyBodyBlockState(width=5)
+    z = ManyBodyState(width=5)
     assert z.width == 5
     assert len(z) == 0
 
@@ -847,11 +862,11 @@ def test_call_dispatches_width_one_block_to_apply_block():
     rng = np.random.default_rng(90)
     op = _random_op(rng)
     (state,) = _random_states(rng, 1, 15)
-    blk = ManyBodyBlockState.from_states([state])
+    blk = ManyBodyState.from_states([state])
 
     ref = op(state, 0)
     out = op(blk, 0)
-    assert isinstance(out, ManyBodyBlockState)
+    assert isinstance(out, ManyBodyState)
     (out_state,) = out.to_states()
     assert out_state == ref
 
@@ -860,7 +875,7 @@ def test_apply_dispatches_width_one_block_to_apply_block():
     rng = np.random.default_rng(91)
     op = _random_op(rng)
     (state,) = _random_states(rng, 1, 15)
-    blk = ManyBodyBlockState.from_states([state])
+    blk = ManyBodyState.from_states([state])
 
     ref = op.apply(state, 0)
     out = op.apply(blk, 0)
@@ -872,13 +887,13 @@ def test_apply_multi_dispatches_block_list_elementwise():
     rng = np.random.default_rng(92)
     op = _random_op(rng)
     states = _random_states(rng, 3, 15)
-    blocks = [ManyBodyBlockState.from_states([s]) for s in states]
+    blocks = [ManyBodyState.from_states([s]) for s in states]
 
     ref = op.apply_multi(states, 0)
     out = op.apply_multi(blocks, 0)
     assert len(out) == len(ref)
     for o, r in zip(out, ref):
-        assert isinstance(o, ManyBodyBlockState)
+        assert isinstance(o, ManyBodyState)
         (o_state,) = o.to_states()
         assert o_state == r
 
@@ -893,7 +908,7 @@ def test_applyop_dispatches_width_one_block():
     rng = np.random.default_rng(94)
     op = _random_op(rng)
     (state,) = _random_states(rng, 1, 15)
-    blk = ManyBodyBlockState.from_states([state])
+    blk = ManyBodyState.from_states([state])
 
     ref = applyOp(op, state, 0)
     out = applyOp(op, blk, 0)
@@ -911,34 +926,31 @@ def test_call_still_raises_typeerror_on_neither_type():
 
 
 def test_inner_dispatches_width_one_blocks():
-    from impurityModel.ed.ManyBodyUtils import inner
 
     rng = np.random.default_rng(95)
     a, b = _random_states(rng, 2, 20)
     ref = inner(a, b)
-    out = inner(ManyBodyBlockState.from_states([a]), ManyBodyBlockState.from_states([b]))
+    out = inner(ManyBodyState.from_states([a]), ManyBodyState.from_states([b]))
     assert out == pytest.approx(ref)
 
 
-def test_inner_rejects_mixed_operand_types():
-    from impurityModel.ed.ManyBodyUtils import inner
-
+def test_inner_rejects_non_width_one_operands():
     rng = np.random.default_rng(96)
     a, b = _random_states(rng, 2, 10)
-    with pytest.raises(TypeError):
-        inner(a, ManyBodyBlockState.from_states([b]))
+    wide = ManyBodyState.from_states([a, b])
+    with pytest.raises(ValueError):
+        inner(a, wide)
 
 
 def test_inner_multi_matches_pairwise_for_width_one_block_lists():
-    from impurityModel.ed.ManyBodyUtils import inner, inner_multi
 
     rng = np.random.default_rng(97)
     left = _random_states(rng, 4, 20)
     right = _random_states(rng, 3, 20)
 
     ref = inner_multi(left, right)
-    left_blocks = [ManyBodyBlockState.from_states([s]) for s in left]
-    right_blocks = [ManyBodyBlockState.from_states([s]) for s in right]
+    left_blocks = [ManyBodyState.from_states([s]) for s in left]
+    right_blocks = [ManyBodyState.from_states([s]) for s in right]
     out = inner_multi(left_blocks, right_blocks)
     np.testing.assert_allclose(out, ref, atol=1e-12)
 
@@ -953,10 +965,9 @@ def test_inner_multi_matches_pairwise_for_width_one_block_lists():
 
 
 def test_inner_multi_rejects_non_width_one_blocks():
-    from impurityModel.ed.ManyBodyUtils import inner_multi
 
     rng = np.random.default_rng(98)
     states = _random_states(rng, 2, 10)
-    wide = ManyBodyBlockState.from_states(states)
+    wide = ManyBodyState.from_states(states)
     with pytest.raises(ValueError):
         inner_multi([wide], states)

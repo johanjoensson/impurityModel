@@ -7,7 +7,7 @@ predicted per-rank peak memory (and back), so drivers can pick a threshold that 
 in RAM instead of guessing.
 
 The byte formulas mirror the authoritative ``memory_bytes()`` estimators in
-``src/cython/ManyBodyUtils.pyx`` (``ManyBodyState``, ``ManyBodyBlockState`` and
+``src/cython/ManyBodyUtils.pyx`` (``ManyBodyState``, ``ManyBodyState`` and
 ``SparseKrylovDense``); the pure-Python overhead constants are rough and are
 calibrated against measured RSS in ``doc/plans/truncation_reliability.md``.
 
@@ -45,7 +45,7 @@ from impurityModel.ed import config
 # sizeof(pair<SlaterDeterminant, complex<double>>) in the flat_map entry array:
 # a std::vector<uint64_t> header (24 B) + complex<double> (16 B).
 _FLAT_MAP_ENTRY_BYTES = 40
-# sizeof(std::vector<uint64_t>): the in-line key header stored per ManyBodyBlockState row.
+# sizeof(std::vector<uint64_t>): the in-line key header stored per ManyBodyState row.
 _SD_STRUCT_BYTES = 24
 # SparseKrylovDense support-map node overhead per registered row (ManyBodyUtils.pyx).
 _KRYLOV_NODE_BYTES = 72
@@ -148,7 +148,7 @@ def estimate_gf_peak_bytes(
     Peak ``~ C * (s_live + itemsize * p * n_blocks)`` per rank, where ``C`` is the local
     determinant count. **Both** reort modes pay ``s_live`` — the excited ``Basis`` bookkeeping
     (measured ~330 B/det VmHWM, see :data:`_PY_BASIS_OVERHEAD_BYTES`) plus the ~3 live
-    ``ManyBodyBlockState`` blocks of the recurrence (``q_prev``, ``q_curr``, ``wp``, ~216 B/det
+    ``ManyBodyState`` blocks of the recurrence (``q_prev``, ``q_curr``, ``wp``, ~216 B/det
     at block width 1). So ``s_live ~ 450-550 B/det`` and ``reort="none"`` is not free, but it
     is *bounded* — not the multi-kB/det figure an earlier miscalibration claimed. At
     ``reort != "none"`` the ``SparseKrylovDense`` store adds ``itemsize * p * n_blocks`` bytes

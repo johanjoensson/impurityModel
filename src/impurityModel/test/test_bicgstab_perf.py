@@ -1,4 +1,4 @@
-"""Benchmark + memory baseline for ``cg.block_bicgstab`` on the sparse (``ManyBodyBlockState``) path.
+"""Benchmark + memory baseline for ``cg.block_bicgstab`` on the sparse (``ManyBodyState``) path.
 
 Phase 0 of the per-frequency Green's-function plan. The target workload is *not* the RIXS
 resolvent (where the solve is amortized over other work) but the Green's-function solve the
@@ -64,7 +64,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.greens_function import _build_excited_restrictions
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, applyOp, inner
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp, inner
 
 RUN = os.environ.get("RUN_BICGSTAB_BENCH") == "1"
 pytestmark = [
@@ -252,8 +252,8 @@ def _solve(workload, width, z, sample_rss=True):
     a_op = CountingOperator(shift - h)
 
     y = excited_basis.redistribute_psis(list(seeds))
-    y_blk = ManyBodyBlockState.from_states(y)
-    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in y])
+    y_blk = ManyBodyState.from_states(y)
+    x0 = ManyBodyState(width=len(y))
 
     sampler = RssSampler() if sample_rss else None
     if sampler is not None:

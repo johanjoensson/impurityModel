@@ -72,7 +72,7 @@ def _build_system(n_orb=10, n_part=5, seed=42):
     for j, hpsi in enumerate(h_op.apply_multi(basis_states)):
         for sd, amp in hpsi.items():
             if sd in index:
-                H[index[sd], j] = amp
+                H[index[sd], j] = amp[0]
     assert np.max(np.abs(H - H.conj().T)) < 1e-12, "test Hamiltonian must be Hermitian"
     eigvals = np.linalg.eigvalsh(H)
     return h_op, H, basis_states, eigvals
@@ -264,7 +264,7 @@ def test_manybody_path_reseed_after_locking_whole_invariant_subspace():
     than a further restart needs -- reseeds from the original ``psi0``, projected
     orthogonal to the now fully-populated locked set ``Xl``.
 
-    ``Xl`` is a ``ManyBodyBlockState`` once anything has locked (Phase 5 step 5). This was
+    ``Xl`` is a ``ManyBodyState`` once anything has locked (Phase 5 step 5). This was
     originally a regression guard for a mixed-representation crash caught by code review:
     at the time, ``psi0``/the reseed vector stayed ``list[ManyBodyState]`` (block_lanczos_cy's
     fresh-start ingestion only accepted a real list), so ``_orth_against_locked`` handed a
@@ -272,7 +272,7 @@ def test_manybody_path_reseed_after_locking_whole_invariant_subspace():
     first argument only and fell through to the list-only ``block_orthogonalize_sparse``,
     raising ``TypeError`` on a block second argument. Phase 5 step 6 closed the gap at the
     source instead (``block_lanczos_cy``'s fresh-start ingestion now accepts a
-    ``ManyBodyBlockState`` seed directly, so ``psi0``/``v0`` stay block-native throughout),
+    ``ManyBodyState`` seed directly, so ``psi0``/``v0`` stay block-native throughout),
     but this test is kept as a standing regression guard for the reseed-after-full-locking
     path itself.
     """

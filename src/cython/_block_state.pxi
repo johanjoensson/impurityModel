@@ -1,7 +1,7 @@
 # ===========================================================================
 # Many-body block state
 # ===========================================================================
-# ManyBodyBlockState: a block (column set) of many-body states with width-0 key-only masks
+# ManyBodyState: a block (column set) of many-body states with width-0 key-only masks
 # and nogil merge primitives, plus block inner/add and the MPI block pack/unpack.
 
 cdef inline double complex _amp_to_py(ManyBodyBlockState_cpp.Value v) noexcept nogil:
@@ -30,7 +30,7 @@ cdef class Row:
     ``Row`` sitting unused in a reference cycle can never wedge the state: it records the
     owner's generation counter at creation and compares on every access, raising
     ``RuntimeError`` if the state was structurally modified since (the row count or order
-    changed -- see the invalidation list on ``ManyBodyBlockState::row``) rather than
+    changed -- see the invalidation list on ``ManyBodyState::row``) rather than
     silently reading stale or freed memory. In-place scaling (``*=``, ``/=``) does not
     change the generation, since it does not move anything.
 
@@ -38,7 +38,7 @@ cdef class Row:
     object; for that (and only that) duration the owning state's export guard applies, the
     same as ``np.asarray(state)``.
     """
-    cdef ManyBodyBlockState _owner
+    cdef ManyBodyState _owner
     cdef Py_ssize_t _row_idx
     cdef unsigned long long _generation
     cdef Py_ssize_t _size
@@ -125,7 +125,7 @@ cdef class Row:
         self._owner._n_exports -= 1
 
 
-cdef Row _make_row(ManyBodyBlockState owner, Py_ssize_t row_idx, Py_ssize_t size):
+cdef Row _make_row(ManyBodyState owner, Py_ssize_t row_idx, Py_ssize_t size):
     """A view of row ``row_idx``, stamped with the owner's current generation."""
     cdef Row res = Row.__new__(Row)
     res._owner = owner
@@ -135,16 +135,17 @@ cdef Row _make_row(ManyBodyBlockState owner, Py_ssize_t row_idx, Py_ssize_t size
     return res
 
 
-cdef class ManyBodyBlockState:
+cdef class ManyBodyState:
     r"""A block of ``p`` many-body vectors over ONE shared Slater-determinant support.
 
-    The hot-loop counterpart of ``ManyBodyState`` (which stays the single-vector
-    boundary type): the union support is stored once as a sorted key vector, the
-    coefficients as a row-major ``(rows x width)`` dense array. This is the container
-    the block-Lanczos loop operates on so ``ManyBodyOperator::apply`` amortizes the
-    term/sign/accumulator work over the block width and the block linear algebra runs
-    as dense row-block BLAS (see the Phase-2 plan in
-    ``doc/plans/blocklanczos_partial_perf_memory.md``).
+    ``p == 1`` is an ordinary block, not a special case -- a single state IS a
+    width-1 block (Phase 7 of the state-unification refactor merged the former
+    single-vector flat_map class into this one). The union support is stored once
+    as a sorted key vector, the coefficients as a row-major ``(rows x width)`` dense
+    array. This is the container the block-Lanczos loop operates on so
+    ``ManyBodyOperator::apply`` amortizes the term/sign/accumulator work over the
+    block width and the block linear algebra runs as dense row-block BLAS (see the
+    Phase-2 plan in ``doc/plans/blocklanczos_partial_perf_memory.md``).
 
     Supports the buffer protocol: ``np.asarray(block)`` is a zero-copy writable
     ``(rows, width)`` complex view (the array keeps this object alive). Mutating the
@@ -156,6 +157,13 @@ cdef class ManyBodyBlockState:
     instead of pinning the state against mutation for as long as the ``Row`` object
     happens to be reachable -- see ``Row`` for why.
     """
+    # Opt out of numpy's ufunc dispatch. Without this a numpy scalar on the left of a
+    # mixed expression (`c * state`, where `c` is the np.complex128 a C++ inner product
+    # returns) sees the buffer protocol below and broadcasts the state as an array
+    # instead of deferring; setting it to None is numpy's documented way to make it
+    # return NotImplemented so __rmul__ runs instead.
+    __array_ufunc__ = None
+
     cdef ManyBodyBlockState_cpp b
     cdef Py_ssize_t _shape[2]
     cdef Py_ssize_t _strides[2]
@@ -168,10 +176,10 @@ cdef class ManyBodyBlockState:
     def __cinit__(self, mapping=None, width=None):
         """Build a state from a determinant mapping, or an empty one of a given width.
 
-        ``ManyBodyBlockState()`` is the polymorphic zero: width 0 and no rows, which
-        adopts a width on the first ``+=`` (or ``__setitem__``). ``ManyBodyBlockState({})``
+        ``ManyBodyState()`` is the polymorphic zero: width 0 and no rows, which
+        adopts a width on the first ``+=`` (or ``__setitem__``). ``ManyBodyState({})``
         is the same polymorphic zero -- an empty mapping carries no width information.
-        ``ManyBodyBlockState(width=p)`` is the zero block of an explicit width ``p``
+        ``ManyBodyState(width=p)`` is the zero block of an explicit width ``p``
         (widths are then checked, not adopted). ``mapping`` maps determinants to a scalar
         amplitude (width 1) or to a sequence of ``width`` amplitudes.
         """
@@ -206,47 +214,50 @@ cdef class ManyBodyBlockState:
 
     @staticmethod
     def from_states(list states):
-        """Build the block from a list of ``ManyBodyState`` over their union support.
+        """Build the block from a list of width-1 ``ManyBodyState``s over their
+        union support.
 
+        Every element must already be width 1 (a single column) -- raises otherwise.
         Missing determinants of a column hold exact zeros; every stored coefficient
         round-trips bit-identically through ``to_states``.
         """
         cdef Py_ssize_t p = len(states)
-        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        cdef ManyBodyState out = ManyBodyState()
         if p == 0:
             return out
-        cdef vector[ManyBodyState_cpp*] ptrs
+        cdef list elems = []
         cdef ManyBodyState ms
         for obj in states:
             ms = <ManyBodyState?>obj
-            ptrs.push_back(&ms.v)
+            if ms.b.width() != 1:
+                raise ValueError(f"from_states: expected width-1 blocks, got width {ms.b.width()}")
+            elems.append(ms)
 
         cdef vector[SlaterDeterminant_cpp[uint64_t]] support
-        cdef ManyBodyState_cpp.iterator it
-        cdef Py_ssize_t ci
+        cdef Py_ssize_t ci, row, nr
         for ci in range(p):
-            it = ptrs[ci].begin()
-            while it != ptrs[ci].end():
-                support.push_back(dereference(it).first)
-                preincrement(it)
+            ms = elems[ci]
+            nr = <Py_ssize_t>ms.b.rows()
+            for row in range(nr):
+                support.push_back(ms.b.key(row))
         sort(support.begin(), support.end())
         support.erase(unique(support.begin(), support.end()), support.end())
         cdef Py_ssize_t ns = <Py_ssize_t>support.size()
 
         cdef vector[ManyBodyBlockState_cpp.Value] amps
         amps.resize(ns * p)  # value-initialized: exact zeros
-        cdef Py_ssize_t row
+        cdef Py_ssize_t r
         for ci in range(p):
-            it = ptrs[ci].begin()
-            while it != ptrs[ci].end():
-                row = lower_bound(support.begin(), support.end(), dereference(it).first) - support.begin()
-                amps[row * p + ci] = dereference(it).second
-                preincrement(it)
+            ms = elems[ci]
+            nr = <Py_ssize_t>ms.b.rows()
+            for row in range(nr):
+                r = lower_bound(support.begin(), support.end(), ms.b.key(row)) - support.begin()
+                amps[r * p + ci] = ms.b.data()[row]
         out.b = ManyBodyBlockState_cpp(move(support), move(amps), <size_t>p)
         return out
 
     @staticmethod
-    def from_keys_and_amps(ManyBodyBlockState src, amps):
+    def from_keys_and_amps(ManyBodyState src, amps):
         """Build a block over ``src``'s determinant support with new amplitudes.
 
         The write-back counterpart of the buffer protocol (``np.asarray(block)`` exports the
@@ -269,18 +280,20 @@ cdef class ManyBodyBlockState:
         if ns > 0 and w > 0:
             memcpy(vals.data(), &av[0, 0], ns * w * sizeof(ManyBodyBlockState_cpp.Value))
         cdef vector[SlaterDeterminant_cpp[uint64_t]] keys = src.b.keys()
-        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        cdef ManyBodyState out = ManyBodyState()
         out.b = ManyBodyBlockState_cpp(move(keys), move(vals), <size_t>w)
         return out
 
     def to_states(self):
-        """Materialize the columns back to a list of ``ManyBodyState`` (exact-zero
-        entries are skipped, so a ``from_states`` round-trip is bit-identical)."""
+        """Materialize the columns back to a list of width-1 ``ManyBodyState``s
+        (exact-zero entries are skipped, so a ``from_states`` round-trip is
+        bit-identical -- every output is width 1 regardless, never the width-0
+        polymorphic zero, even for an all-zero column)."""
         cdef Py_ssize_t p = <Py_ssize_t>self.b.width()
         cdef Py_ssize_t ns = <Py_ssize_t>self.b.rows()
         cdef list out = []
-        cdef vector[ManyBodyState_cpp.key_type] keys
-        cdef vector[ManyBodyState_cpp.mapped_type] vals
+        cdef vector[SlaterDeterminant_cpp[uint64_t]] keys
+        cdef vector[ManyBodyBlockState_cpp.Value] vals
         cdef ManyBodyState new_ms
         cdef Py_ssize_t ci, row
         cdef ManyBodyBlockState_cpp.Value z
@@ -293,7 +306,7 @@ cdef class ManyBodyBlockState:
                     keys.push_back(self.b.key(row))
                     vals.push_back(z)
             new_ms = ManyBodyState()
-            new_ms.v = ManyBodyState_cpp(keys, vals)
+            new_ms.b = ManyBodyBlockState_cpp(keys, vals, <size_t>1)
             out.append(new_ms)
         return out
 
@@ -521,7 +534,7 @@ cdef class ManyBodyBlockState:
             self.b.truncate(max_rows)
         self._bump_generation()
 
-    def add_scaled(self, ManyBodyBlockState other, ManyBodyBlockState_cpp.Value scalar):
+    def add_scaled(self, ManyBodyState other, ManyBodyBlockState_cpp.Value scalar):
         """In place: ``self += scalar * other``, over the union support.
 
         Widths must match, except that a width-0 row-less state (a default
@@ -534,35 +547,35 @@ cdef class ManyBodyBlockState:
         self._bump_generation()
         return self
 
-    def __add__(self, ManyBodyBlockState other):
-        cdef ManyBodyBlockState res = ManyBodyBlockState()
+    def __add__(self, ManyBodyState other):
+        cdef ManyBodyState res = ManyBodyState()
         with nogil:
             res.b = self.b + other.b
         return res
 
-    def __iadd__(self, ManyBodyBlockState other):
+    def __iadd__(self, ManyBodyState other):
         """``self += other``: true in-place, via ``add_scaled`` (bumps the generation,
         since the union support can outgrow this state's storage -- unlike ``*=``/``/=``,
         a live ``Row`` does not survive it)."""
         return self.add_scaled(other, 1.0 + 0j)
 
-    def __sub__(self, ManyBodyBlockState other):
-        cdef ManyBodyBlockState res = ManyBodyBlockState()
+    def __sub__(self, ManyBodyState other):
+        cdef ManyBodyState res = ManyBodyState()
         with nogil:
             res.b = self.b - other.b
         return res
 
-    def __isub__(self, ManyBodyBlockState other):
+    def __isub__(self, ManyBodyState other):
         return self.add_scaled(other, -1.0 + 0j)
 
     def __neg__(self):
-        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        cdef ManyBodyState res = ManyBodyState()
         with nogil:
             res.b = -self.b
         return res
 
     def __mul__(self, ManyBodyBlockState_cpp.Value s):
-        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        cdef ManyBodyState res = ManyBodyState()
         with nogil:
             res.b = self.b * s
         return res
@@ -578,7 +591,7 @@ cdef class ManyBodyBlockState:
         return self
 
     def __truediv__(self, ManyBodyBlockState_cpp.Value s):
-        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        cdef ManyBodyState res = ManyBodyState()
         with nogil:
             res.b = self.b / s
         return res
@@ -608,7 +621,7 @@ cdef class ManyBodyBlockState:
         width-1 block."""
         self.prune_rows(cutoff)
 
-    def keep_rows(self, ManyBodyBlockState mask):
+    def keep_rows(self, ManyBodyState mask):
         """Keep only rows whose determinant appears in ``mask``'s support (the
         set-intersection complement of ``prune_rows``): a linear merge over the two
         sorted key vectors, no Python-object traffic. ``mask`` is any block over the
@@ -643,7 +656,7 @@ cdef class ManyBodyBlockState:
             keys.append(sd)
         return keys, res
 
-    def count_rows_in(self, ManyBodyBlockState mask):
+    def count_rows_in(self, ManyBodyState mask):
         """Number of rows whose determinant appears in ``mask``'s support (linear
         merge over the two sorted key vectors; no Python-object traffic)."""
         cdef size_t n
@@ -651,7 +664,7 @@ cdef class ManyBodyBlockState:
             n = self.b.count_rows_in(mask.b.keys())
         return n
 
-    def new_row_max_norms2(self, ManyBodyBlockState mask):
+    def new_row_max_norms2(self, ManyBodyState mask):
         """Max column ``|amp|^2`` of every row NOT in ``mask``, as a float array in
         row order — the candidate-importance array for the capped recurrence's
         overflow-step amplitude bisection."""
@@ -665,25 +678,25 @@ cdef class ManyBodyBlockState:
             rv[i] = out[i]
         return res
 
-    def keys_new_above(self, ManyBodyBlockState mask, double cutoff2):
+    def keys_new_above(self, ManyBodyState mask, double cutoff2):
         """Width-0 key-only block of the rows NOT in ``mask`` whose max column
         ``|amp|^2`` exceeds ``cutoff2`` (the admitted boundary determinants once the
         overflow bisection has fixed the cutoff)."""
-        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        cdef ManyBodyState res = ManyBodyState()
         with nogil:
             res.b = self.b.keys_new_above(mask.b.keys(), cutoff2)
         return res
 
-    def key_union(self, ManyBodyBlockState other):
+    def key_union(self, ManyBodyState other):
         """Width-0 key-only block holding the sorted union of both supports
         (amplitudes ignored) — the retained-set mask accumulator of the capped
         recurrence."""
-        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        cdef ManyBodyState res = ManyBodyState()
         with nogil:
             res.b = self.b.key_union(other.b)
         return res
 
-    def merge_keys(self, ManyBodyBlockState other):
+    def merge_keys(self, ManyBodyState other):
         """In-place ``key_union`` for width-0 mask blocks: only the genuinely new
         keys are copied, the existing ones are moved — the per-step retained-mask
         accumulate of the capped recurrence. Requires ``width == 0`` and no exported
@@ -761,7 +774,7 @@ cdef class ManyBodyBlockState:
         if Ya.shape[0] != self.b.width():
             raise ValueError(f"Y rows {Ya.shape[0]} != block width {self.b.width()}")
         cdef double complex[:, ::1] yv = Ya
-        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        cdef ManyBodyState out = ManyBodyState()
         cdef ManyBodyBlockState_cpp.Value* yptr = NULL
         if Ya.size > 0:
             yptr = <ManyBodyBlockState_cpp.Value*>&yv[0, 0]
@@ -791,7 +804,7 @@ cdef class ManyBodyBlockState:
             if c < 0 or c >= w:
                 raise IndexError(f"column {cols[k]} out of range for width {w}")
             cvec.push_back(<size_t>c)
-        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        cdef ManyBodyState out = ManyBodyState()
         with nogil:
             out.b = self.b.select_cols(cvec)
         return out
@@ -802,18 +815,18 @@ cdef class ManyBodyBlockState:
 
     def copy(self):
         """Deep copy (independent key and amplitude storage)."""
-        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        cdef ManyBodyState res = ManyBodyState()
         res.b = self.b
         return res
 
     def __eq__(self, other):
-        if not isinstance(other, ManyBodyBlockState):
+        if not isinstance(other, ManyBodyState):
             return NotImplemented
-        return self.b == (<ManyBodyBlockState>other).b
+        return self.b == (<ManyBodyState>other).b
 
     def __repr__(self):
         body = ", ".join(f"{key!r}: {list(row)}" for key, row in self.items())
-        return f"ManyBodyBlockState({{ {body} }}, width={self.width})"
+        return f"ManyBodyState({{ {body} }}, width={self.width})"
 
     def __reduce__(self):
         """``(to_dict(), width)`` round-trips exactly through ``__cinit__``, including
@@ -847,7 +860,7 @@ cdef class ManyBodyBlockState:
         self._n_exports -= 1
 
 
-def pack_block_fused_cy(ManyBodyBlockState block, int comm_size, size_t chunks_per_state):
+def pack_block_fused_cy(ManyBodyState block, int comm_size, size_t chunks_per_state):
     """Pack a block state into a single rank-ordered byte buffer for a one-shot
     ``Neighbor_alltoallv(MPI.BYTE)`` redistribute. One entry per shared-support row:
     ``[det | width x complex amp]`` — no per-entry psi index (the column position
@@ -882,7 +895,7 @@ def pack_block_fused_cy(ManyBodyBlockState block, int comm_size, size_t chunks_p
 
 
 def unpack_block_fused_cy(int comm_size, size_t width, int64_t[:] recv_counts, uint8_t[:] recv_buf, size_t chunks_per_state):
-    """Rebuild a ``ManyBodyBlockState`` from the received fused byte buffer. Rows for
+    """Rebuild a ``ManyBodyState`` from the received fused byte buffer. Rows for
     the same determinant arriving from different ranks are summed in arrival order,
     matching ``unpack_psis_fused_cy``'s accumulate semantics bit-for-bit per column."""
     cdef vector[int64_t] c_recv_counts
@@ -895,13 +908,13 @@ def unpack_block_fused_cy(int comm_size, size_t width, int64_t[:] recv_counts, u
     if recv_buf.shape[0] > 0:
         buf_ptr = <const char*> &recv_buf[0]
 
-    cdef ManyBodyBlockState res = ManyBodyBlockState()
+    cdef ManyBodyState res = ManyBodyState()
     with nogil:
         res.b = c_unpack_block_fused(comm_size, width, c_recv_counts, buf_ptr, chunks_per_state)
     return res
 
 
-def block_inner_cy(ManyBodyBlockState A, ManyBodyBlockState B):
+def block_inner_cy(ManyBodyState A, ManyBodyState B):
     """Block Gram matrix ``C[i, j] = <A_i | B_j>`` over the merged supports.
 
     Merge-join over the two sorted key vectors; the determinant summation order
@@ -915,7 +928,7 @@ def block_inner_cy(ManyBodyBlockState A, ManyBodyBlockState B):
     return res
 
 
-def block_inner_scalar(ManyBodyBlockState a, ManyBodyBlockState b):
+def block_inner_scalar(ManyBodyState a, ManyBodyState b):
     """Scalar inner product ``<a|b>`` for width-1 states -- the block counterpart of
     ``ManyBodyState``'s free ``inner()``, for callers with nothing but width-1 blocks.
     ``block_inner_cy`` is the general (any width) Gram matrix this reduces to.
@@ -932,7 +945,7 @@ def block_inner_scalar(ManyBodyBlockState a, ManyBodyBlockState b):
     return block_inner_cy(a, b)[0, 0]
 
 
-def block_add_scaled_cy(ManyBodyBlockState A, ManyBodyBlockState B, C):
+def block_add_scaled_cy(ManyBodyState A, ManyBodyState B, C):
     """New block ``OUT = A + B @ C`` over the union support: ``out[det, j] =
     A[det, j] + sum_i B[det, i] * C[i, j]`` — the block analogue of
     ``add_scaled_multi(target=A, source=B, coeffs=C)``, with the same i-ascending
@@ -942,7 +955,7 @@ def block_add_scaled_cy(ManyBodyBlockState A, ManyBodyBlockState B, C):
     if Ca.ndim != 2 or Ca.shape[0] != B.b.width() or Ca.shape[1] != A.b.width():
         raise ValueError(f"coeffs shape {Ca.shape} != (B.width={B.b.width()}, A.width={A.b.width()})")
     cdef double complex[:, ::1] cv = Ca
-    cdef ManyBodyBlockState out = ManyBodyBlockState()
+    cdef ManyBodyState out = ManyBodyState()
     cdef ManyBodyBlockState_cpp.Value* cptr = NULL
     if Ca.size > 0:
         cptr = <ManyBodyBlockState_cpp.Value*>&cv[0, 0]

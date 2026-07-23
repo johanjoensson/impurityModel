@@ -20,7 +20,7 @@ from impurityModel.ed.gs_statistics import (
     compute_gs_statistics,
     save_gs_statistics,
 )
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
 
 N_ORBS = 8
 IMPURITY = [0, 1]
@@ -283,14 +283,14 @@ def test_entanglement_entropy_distributed_matches_serial():
         bell = ManyBodyState({_det([1, 2]): math.sqrt(0.5), _det([0, 3]): -math.sqrt(0.5)})
         mixed_valence = ManyBodyState({_det([0, 1]): math.sqrt(0.5), _det([0, 2]): math.sqrt(0.5)})
     else:
-        bell = ManyBodyState({})
-        mixed_valence = ManyBodyState({})
+        bell = ManyBodyState(width=1)
+        mixed_valence = ManyBodyState(width=1)
     # Each seed goes through its own explicit width-1 block rather than a bare
     # ManyBodyState() placeholder on the non-owning rank: once the flat and block
     # classes merge (Phase 7 step 3), a bare placeholder is the width-0 polymorphic
     # zero, an asymmetric mismatch against the owning rank's populated (eventually
     # width-1) seeds that would deadlock redistribute_psis' collective.
-    blocks = [ManyBodyBlockState.from_states([psi]) for psi in (bell, mixed_valence)]
+    blocks = [ManyBodyState.from_states([psi]) for psi in (bell, mixed_valence)]
     psis = [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
 
     ent = compute_entanglement_entropy(basis, psis, np.array([0.0, 1.0]), tau=0.5)

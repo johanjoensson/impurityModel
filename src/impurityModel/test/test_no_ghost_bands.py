@@ -11,7 +11,7 @@ except ImportError:
 
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState, inner_multi
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, inner_multi, ManyBodyOperator
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.test_block_lanczos_array_empty_rank import _contiguous_counts_with_empty_last
 
@@ -56,7 +56,6 @@ def create_diagonal_system(eigvals, path, comm=None):
     else:
         # ManyBodyState path
         from impurityModel.ed.manybody_basis import Basis
-        from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
         states_bytes = [(1 << i).to_bytes(8, "little") for i in range(n_states)]
         hop = {((i, "c"), (i, "a")): float(val) for i, val in enumerate(eigvals)}
@@ -80,7 +79,7 @@ def create_diagonal_system(eigvals, path, comm=None):
                         st[basis.type.from_bytes(s)] = np.random.rand() + 1j * np.random.rand()
                     psi0_full.append(st)
             else:
-                psi0_full = [ManyBodyState() for _ in range(n_blocks)]
+                psi0_full = [ManyBodyState(width=1) for _ in range(n_blocks)]
 
             # Each seed goes through its own explicit width-1 block rather than a bare
             # ManyBodyState() placeholder on the non-owning rank: once the flat and
@@ -88,7 +87,7 @@ def create_diagonal_system(eigvals, path, comm=None):
             # polymorphic zero, an asymmetric mismatch against the owning rank's
             # populated (eventually width-1) seeds that would deadlock
             # redistribute_psis' collective.
-            psi0_blocks = [ManyBodyBlockState.from_states([psi]) for psi in psi0_full]
+            psi0_blocks = [ManyBodyState.from_states([psi]) for psi in psi0_full]
             psi0 = [blk.to_states()[0] for blk in basis.redistribute_psis(psi0_blocks)]
             psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
         else:

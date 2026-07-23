@@ -13,7 +13,7 @@ from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 
@@ -190,7 +190,7 @@ class CIPSISolver:
         """
         if target is None:
             target = self.basis.truncation_threshold
-        blk = ManyBodyBlockState.from_states(list(psis))
+        blk = ManyBodyState.from_states(list(psis))
         keys, norms2 = blk.row_max_norms2()
         cutoff2 = collective_amplitude_cutoff(norms2, int(target), self.basis.comm)
         keep_mask = norms2 > cutoff2
@@ -226,7 +226,12 @@ class CIPSISolver:
         # space `determine_new_Dj` builds), so it isn't subject to that function's
         # MIXED fill-gate verdict (Phase 6b of the state-unification refactor; see
         # doc/plans/manybodystate_block_unification.md).
-        mask = ManyBodyBlockState.from_states([ManyBodyState(dict.fromkeys(retained, 1.0 + 0j))])
+        # A rank may legitimately retain zero determinants (small target, most weight
+        # elsewhere): dict.fromkeys(retained, ...) is then {}, which must stay an
+        # explicit width-1 empty block, not the width-0 polymorphic zero -- the latter
+        # makes from_states raise on this rank only, an asymmetric exception against
+        # the other ranks' populated masks that deadlocks redistribute_block below.
+        mask = ManyBodyState.from_states([ManyBodyState(dict.fromkeys(retained, 1.0 + 0j), width=1)])
         blk.keep_rows(mask)
         blk = self.basis.redistribute_block(blk)
         return blk.to_states()
@@ -268,12 +273,12 @@ class CIPSISolver:
         # that happens to own no candidates at all, whose probe is simply empty. Returning
         # early on `not local_Djs` before it deadlocks the ranks that do have candidates.
         phases = np.exp(2j * np.pi * np.array([(hash(Dj) & 0xFFFF) / 65536.0 for Dj in local_Djs]))
-        # from_states (not a bare ManyBodyBlockState({...}) dict) forces an explicit width-1
-        # block even when local_Djs is empty on this rank: a bare empty dict would construct
-        # the width-0 polymorphic zero, which redistribute_psis's width guard rejects on this
-        # rank only while a rank with real candidates sails into the matching collective --
-        # the exact asymmetric-exception deadlock fixed in Phase 7 step 2b.
-        psi_all_Dj = ManyBodyBlockState.from_states([ManyBodyState({Dj: phases[j] for j, Dj in enumerate(local_Djs)})])
+        # width=1 even when local_Djs is empty on this rank: a bare empty dict would
+        # construct the width-0 polymorphic zero, which redistribute_psis's width guard
+        # rejects on this rank only while a rank with real candidates sails into the
+        # matching collective -- the exact asymmetric-exception deadlock fixed in Phase
+        # 7 step 2b.
+        psi_all_Dj = ManyBodyState({Dj: phases[j] for j, Dj in enumerate(local_Djs)}, width=1)
         H_psi_all = applyOp_test(H, psi_all_Dj, cutoff=slaterWeightMin)
         if self.basis.is_distributed:
             H_psi_all = self.basis.redistribute_psis([H_psi_all])[0]
@@ -287,7 +292,7 @@ class CIPSISolver:
             for state, amp in Hpsi_i.items():
                 j = Dj_index.get(state)
                 if j is not None:
-                    overlaps[i, j] = amp
+                    overlaps[i, j] = amp[0]
         e_Dj = np.array(
             [np.real(np.conj(phases[j]) * _scalar_amp(H_psi_all.get(Dj))) for j, Dj in enumerate(local_Djs)],
             dtype=float,
@@ -485,13 +490,13 @@ class CIPSISolver:
                 # the same reproducibility failure `_amplitude_from_hash` was introduced to
                 # close off elsewhere in this class.
                 # No MPI collective anywhere in this closure (each rank explores its own
-                # local_Djs independently), so ManyBodyBlockState's width-0 polymorphic
+                # local_Djs independently), so ManyBodyState's width-0 polymorphic
                 # zero on an empty next_amps below is just a local falsy value, not the
                 # cross-rank deadlock hazard it is at a collective boundary.
-                chunk_state = ManyBodyBlockState({state: _amplitude_from_hash(state.get_hash()) for state in chunk})
+                chunk_state = ManyBodyState({state: _amplitude_from_hash(state.get_hash()) for state in chunk})
 
                 while chunk_state:
-                    # Collect into a plain dict and build the next ManyBodyBlockState in
+                    # Collect into a plain dict and build the next ManyBodyState in
                     # one bulk range-insert (its dict constructor's flat_map insert(begin,
                     # end)) instead of `p` repeated single-key inserts: `operator[]` on a
                     # missing key is a sorted-vector insert, so accumulating one
@@ -511,7 +516,7 @@ class CIPSISolver:
                                 new_Dj.add(state)
                                 next_amps[state] = row[0]
 
-                    chunk_state = ManyBodyBlockState(next_amps)
+                    chunk_state = ManyBodyState(next_amps)
 
         if return_Hpsi_ref:
             return new_Dj, Hpsi_ref
@@ -649,17 +654,13 @@ class CIPSISolver:
                     # with no scatter needed.
                     local_states = list(self.basis.local_basis)
                     psi0_dict = {state: _amplitude_from_hash(state.get_hash()) for state in local_states}
-                    # An empty-local-basis rank must not reach redistribute_psis with a bare
-                    # ManyBodyState() -- that is the polymorphic zero once the flat/block
-                    # classes merge (Phase 7 step 3), width-0 rather than width-1 like every
-                    # other rank's seed, and an asymmetric width guard on just this rank would
-                    # deadlock the others' matching collective. from_states forces an explicit
-                    # width-1 block on every rank instead (same representation everywhere);
-                    # to_states() immediately unpacks back to the flat list the rest of this
-                    # function still expects.
-                    psi0_blk = ManyBodyBlockState.from_states(
-                        [ManyBodyState(psi0_dict)] if psi0_dict else [ManyBodyState()]
-                    )
+                    # An empty-local-basis rank must not reach from_states with a bare
+                    # ManyBodyState({}) element -- that is the width-0 polymorphic zero,
+                    # which from_states rejects (every element must already be width 1).
+                    # Passing width=1 explicitly works whether psi0_dict is empty or not,
+                    # giving every rank the same representation into redistribute_psis'
+                    # collective instead of an asymmetric width-0-vs-width-1 split.
+                    psi0_blk = ManyBodyState.from_states([ManyBodyState(psi0_dict, width=1)])
                     psi0 = self.basis.redistribute_psis([psi0_blk])[0].to_states()
 
                     N2s = np.array([psi.norm2() for psi in psi0], dtype=float)
@@ -852,7 +853,14 @@ class CIPSISolver:
             if hasattr(self, "psi_refs") and self.psi_refs is not None:
                 psi0 = self.psi_refs
             else:
-                psi0 = [ManyBodyState({state: _amplitude_from_hash(state.get_hash()) for state in local_states})]
+                # width=1 even when local_states is empty on this rank: a bare {}
+                # construction would be the width-0 polymorphic zero, which
+                # block_normalize's from_states round trip below rejects (raising inside
+                # the try/except, silently skipping this rank out of the collective
+                # block_tsqr call other ranks still enter -- an MPI deadlock).
+                psi0 = [
+                    ManyBodyState({state: _amplitude_from_hash(state.get_hash()) for state in local_states}, width=1)
+                ]
 
             num_wanted = min(num_wanted + 10, len(self.basis))
 

@@ -963,7 +963,7 @@ def measure_conserved_charges(psi, charges, n_orb, comm=None, round_to_int=True)
     totals = np.zeros(len(charges))
     norm2 = 0.0
     for det, amp in psi.items():
-        weight = abs(amp) ** 2
+        weight = abs(amp[0]) ** 2
         norm2 += weight
         occupied = {k for k, bit in enumerate(psr.bytes2bitarray(bytes(det.to_bytearray()), n_orb)) if bit}
         for i, subset in enumerate(charges):

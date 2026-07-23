@@ -12,7 +12,7 @@ from impurityModel.ed.basis_transcription import (
     build_vector,
 )
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 
 def build_operator_dict(basis, op):
@@ -533,7 +533,7 @@ def test_operator_dict_simple():
     for key in states:
         assert all(fk in correct[key] for fk in op_dict[key].keys())
         for row in correct[key].keys():
-            assert correct[key][row] == op_dict[key][row]
+            assert correct[key][row] == op_dict[key][row][0]
 
 
 @pytest.mark.mpi
@@ -574,7 +574,7 @@ def test_operator_dict_simple_mpi():
             if key not in full_dict:
                 full_dict[key] = {}
             for state in d[key]:
-                full_dict[key][state] = d[key][state] + full_dict[key].get(state, 0)
+                full_dict[key][state] = d[key][state][0] + full_dict[key].get(state, 0)
     assert all(fk in correct for fk in full_dict.keys())
     for key in states:
         assert all(fk in correct[key] for fk in full_dict[key].keys())
@@ -620,7 +620,7 @@ def test_operator_dict_simple_with_extra_states():
     for key in states:
         assert all(fk in correct[key] for fk in op_dict[key].keys())
         for row in correct[key].keys():
-            assert correct[key][row] == op_dict[key][row]
+            assert correct[key][row] == op_dict[key][row][0]
 
 
 @pytest.mark.mpi
@@ -664,7 +664,7 @@ def test_operator_dict_simple_with_extra_states_mpi():
             if key not in full_dict:
                 full_dict[key] = {}
             for state in d[key]:
-                full_dict[key][state] = d[key][state] + full_dict[key].get(state, 0)
+                full_dict[key][state] = d[key][state][0] + full_dict[key].get(state, 0)
     assert all(fk in correct for fk in full_dict.keys())
     for key in states:
         assert all(fk in correct[key] for fk in full_dict[key].keys())
@@ -720,7 +720,7 @@ def test_operator_dict_eg_t2g():
     for key in states:
         assert all(fk in correct[key] for fk in op_dict[key].keys())
         for row in correct[key].keys():
-            assert correct[key][row] == op_dict[key][row], f"{key=} {row=}"
+            assert correct[key][row] == op_dict[key][row][0], f"{key=} {row=}"
 
 
 @pytest.mark.mpi
@@ -781,7 +781,7 @@ def test_operator_dict_eg_t2g_mpi():
             if key not in full_dict:
                 full_dict[key] = {}
             for state in d[key]:
-                full_dict[key][state] = d[key][state] + full_dict[key].get(state, 0)
+                full_dict[key][state] = d[key][state][0] + full_dict[key].get(state, 0)
 
     assert all(fk in correct for fk in full_dict.keys())
     for key in states:
@@ -850,7 +850,7 @@ def test_operator_dict_eg_t2g_with_extra_states():
             fk in correct[key] for fk in op_dict[key].keys()
         ), f"{list(op_dict[key].keys())=} {list(correct.keys())=} "
         for row in correct[key].keys():
-            assert correct[key][row] == op_dict[key][row], f"{key=} {row=}"
+            assert correct[key][row] == op_dict[key][row][0], f"{key=} {row=}"
 
 
 @pytest.mark.mpi
@@ -913,7 +913,7 @@ def test_operator_dict_eg_t2g_with_extra_states_mpi():
             if key not in full_dict:
                 full_dict[key] = {}
             for state in d[key]:
-                full_dict[key][state] = d[key][state] + full_dict[key].get(state, 0)
+                full_dict[key][state] = d[key][state][0] + full_dict[key].get(state, 0)
 
     assert all(fk in correct for fk in full_dict.keys())
     for key in states:
@@ -1445,7 +1445,7 @@ def test_distributed_simple_vector():
     if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
 
-    v = build_distributed_vector(basis, [state])[0]
+    v = build_distributed_vector(basis, [ManyBodyState(state, width=1)])[0]
     v_exact = np.zeros((len(basis.local_basis),), dtype=complex)
     if states[0] in basis.local_basis:
         v_exact[0] = 0.25 + 0.2j
@@ -1475,7 +1475,7 @@ def test_distributed_vector_mpi():
     state[states[0]] = 0.25 + 0.2j
     if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
-    v = build_distributed_vector(basis, [state])[0]
+    v = build_distributed_vector(basis, [ManyBodyState(state, width=1)])[0]
     np.array([0.25 * comm.size + 0.2j * comm.size, 0.33 + 0.15j, 0, 0], dtype=complex)
 
     len(basis.local_basis)

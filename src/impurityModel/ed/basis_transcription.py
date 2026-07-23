@@ -16,7 +16,7 @@ import numpy as np
 import scipy as sp
 from mpi4py import MPI
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, applyOp, inner_multi
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, Row, applyOp, inner_multi
 
 
 def build_vector(
@@ -47,9 +47,12 @@ def build_vector(
     for row, psi in enumerate(psis):
         for state, val in psi.items():
             idx = _index_dict.get(state)
-            if idx is None or abs(val) < slaterWeightMin:
+            # psi may be a ManyBodyState (val is a width-1 Row) or a plain dict of
+            # scalars (a documented duck-typed input): only a Row needs unwrapping.
+            amp = val[0] if isinstance(val, Row) else val
+            if idx is None or abs(amp) < slaterWeightMin:
                 continue
-            v[row, idx] = val
+            v[row, idx] = amp
 
     if basis.is_distributed and root is None:
         basis.comm.Allreduce(MPI.IN_PLACE, v, op=MPI.SUM)
@@ -76,7 +79,8 @@ def build_distributed_vector(basis, psis: list[ManyBodyState], dtype: Any = comp
     psis = basis.redistribute_psis(psis)
     v = np.empty((len(psis), len(basis.local_basis)), dtype=dtype, order="C")
     for (row, psi), (col, state) in itertools.product(enumerate(psis), enumerate(basis.local_basis)):
-        v[row, col] = psi.get(state, 0)
+        row_amp = psi.get(state)
+        v[row, col] = 0 if row_amp is None else row_amp[0]
     return v
 
 
@@ -97,7 +101,7 @@ def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin:
 
     Notes
     -----
-    Still a flat-state producer, not yet flipped to width-1 ``ManyBodyBlockState``
+    Still a flat-state producer, not yet flipped to width-1 ``ManyBodyState``
     (Phase 7 step 2a): its output flows unchanged (``.items()``/arithmetic on scalars)
     into many not-yet-flipped consumers (GF stack, groundstate, spectra, rixs,
     susceptibility, sectorization -- steps 2c-2f), so flipping this producer alone
@@ -110,7 +114,10 @@ def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin:
         vs = vs.reshape((1, vs.shape[0]))
     if isinstance(vs, list):
         vs = np.array(vs)
-    res = [ManyBodyState({}) for _ in range(vs.shape[0])]
+    # width=1: a row that never receives a setitem below (every entry <= slaterWeightMin,
+    # a real occurrence for a rank-deficient/deflated column) must not stay the width-0
+    # polymorphic zero -- every element of this list is expected to be width 1.
+    res = [ManyBodyState(width=1) for _ in range(vs.shape[0])]
     if vs.shape[1] == basis.size:
         for j, i in np.argwhere(np.abs(vs[:, basis.local_indices]) > slaterWeightMin):
             res[j][basis.local_basis[i]] = vs[j, i + basis.offset]
@@ -173,7 +180,7 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
                 if row is not None:
                     rows.append(row)
                     cols.append(col)
-                    vals.append(val)
+                    vals.append(val[0])
     else:
         columns = []
         bras = []
@@ -183,7 +190,7 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
             for bra, val in ket_state.items():
                 columns.append(col)
                 bras.append(bra)
-                values.append(val)
+                values.append(val[0])
 
         global_rows = list(basis._index_sequence(bras))
         _size = basis.size
@@ -215,10 +222,10 @@ def build_density_matrices(basis, psis, orbital_indices_left=None, orbital_indic
     ``rho[i, j] = <chi_j | phi_i>`` (where ``|chi_k> = c_{orb_k}|psi>`` and
     ``|phi_k> = c_{orb_k}|psi>``), reducing operator applications to O(n).
 
-    ``psis`` may also be a ``ManyBodyBlockState`` (Phase 6a of the state-unification
+    ``psis`` may also be a ``ManyBodyState`` (Phase 6a of the state-unification
     refactor); it is unpacked to a list once on entry and the body below is otherwise
     unchanged. Rewriting the per-state loop as one block-apply per orbital was
-    considered and rejected, re-evaluated after ``ManyBodyBlockState.select``/``column``
+    considered and rejected, re-evaluated after ``ManyBodyState.select``/``column``
     got a direct O(rows) gather (no longer routed through a selection-matrix matvec) and
     still rejected: reading each orbital's per-state value back out no longer needs a
     full ``width x width`` Gram matrix (cheap columns make a per-state diagonal
@@ -230,7 +237,7 @@ def build_density_matrices(basis, psis, orbital_indices_left=None, orbital_indic
     per-determinant work left to amortize across states in the first place. See
     doc/plans/manybodystate_block_unification.md, Phase 6a, item 3b.
     """
-    if isinstance(psis, ManyBodyBlockState):
+    if isinstance(psis, ManyBodyState):
         psis = psis.to_states()
     if orbital_indices_left is None:
         orbital_indices_left = list(range(basis.num_spin_orbitals))

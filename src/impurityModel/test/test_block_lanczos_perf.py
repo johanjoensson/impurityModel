@@ -409,15 +409,14 @@ def test_partial_sparse_kernel_bench(nio_workload):
 def test_apply_block_width_scaling(nio_workload):
     """Phase 2.0 of the block-state matvec plan: apply_multi cost vs block width p on
     the real NiO Hamiltonian's term mix (restrictions set, basis-confined states).
-    Today's independent per-state applies scale ~linearly in p; the ManyBodyBlockState
+    Today's independent per-state applies scale ~linearly in p; the ManyBodyState
     target is near-flat. Baseline for the block-container A/B."""
     h, basis, comm = nio_workload["h"], nio_workload["basis"], nio_workload["comm"]
-    from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState
 
     rows = []
     for p in (1, 2, 4, 8):
         psis = _random_block(basis, comm, p)
-        blk = ManyBodyBlockState.from_states(psis)
+        blk = ManyBodyState.from_states(psis)
         times, btimes = [], []
         for _ in range(5):
             t0 = time.perf_counter()

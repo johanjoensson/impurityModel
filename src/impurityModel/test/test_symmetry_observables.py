@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, inner, ManyBodyOperator
 from impurityModel.ed.observables import (
     casimir_operator,
     casimir_to_quantum_number,
@@ -156,7 +156,7 @@ def test_degenerate_manifold_observable():
     s_plus, s_minus, s_z = make_spin_operators(SPIN_PAIRS)
     s2_op = casimir_operator(s_plus, s_minus, s_z)
 
-    manifold = ManyBodyBlockState.from_states(
+    manifold = ManyBodyState.from_states(
         [
             _state([([1, 3], 1.0)]),  # triplet S_z=+1
             _state([([0, 2], 1.0)]),  # triplet S_z=-1
@@ -221,7 +221,6 @@ def test_kondo_correlation():
 
 def test_spin_z_correlation():
     """<Sz_A Sz_B> (longitudinal part) matches analytic two-spin values."""
-    from impurityModel.ed.ManyBodyUtils import inner
     from impurityModel.ed.observables import apply_spin_z_correlation, get_Sz_from_rho_pairs
 
     ops_imp = make_spin_operators([(0, 1)])
@@ -288,7 +287,11 @@ def test_spin_correlation_operator_matches_sequential_application_everywhere():
                 produced = product(psi, 0)
                 nonzero += len(expected)
                 for key in set(expected.keys()) | set(produced.keys()):
-                    worst = max(worst, abs(expected.get(key, 0) - produced.get(key, 0)))
+                    e = expected.get(key)
+                    p = produced.get(key)
+                    e = 0j if e is None else e[0]
+                    p = 0j if p is None else p[0]
+                    worst = max(worst, abs(e - p))
     assert nonzero > 0, "the sweep never produced a non-trivial action"
     assert worst == 0.0
 
@@ -529,7 +532,6 @@ def test_print_thermal_LJ_lines(capsys):
 
 def test_bath_spin_pairs_and_consistency():
     """bath_spin_pairs + spin_pairs_consistent_with_h validate/skip the spin assignment."""
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
     from impurityModel.ed.observables import expect_spin_correlation, make_spin_operators
     from impurityModel.ed.spin_pairs import (
         bath_spin_pairs,
@@ -568,7 +570,6 @@ def test_kondo_correlation_reported(capsys):
     """calc_gs on a SIAM with baths reports <S_imp.S_bath> (thermal line + per-state column)."""
     from impurityModel.ed.block_structure import BlockStructure
     from impurityModel.ed.groundstate import calc_gs
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     ed, U, ev, ec, V = -2.0, 6.0, -4.0, 4.0, 1.0
     terms = {((o, "c"), (o, "a")): ed for o in (0, 1)}
@@ -653,7 +654,6 @@ def test_kondo_correlation_reported_polarized_bath(capsys):
     """
     from impurityModel.ed.block_structure import BlockStructure
     from impurityModel.ed.groundstate import calc_gs
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     ed, U = -2.0, 6.0
     ev = {0: -4.0, 1: -3.6}  # valence bath energy per spin (0 = dn, 1 = up)
@@ -705,7 +705,6 @@ def test_kondo_correlation_reported_polarized_bath(capsys):
 
 def _hop(diag, hops):
     """Hermitian one-body ManyBodyOperator from on-site energies and hopping triples."""
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     terms = {((o, "c"), (o, "a")): e for o, e in diag}
     for a, b, t in hops:
@@ -831,9 +830,7 @@ def test_correlation_diagnostics_analytic():
     # State 1: both orbitals doubly occupied (a "d10-like" closed shell).
     full = _state([([0, 1, 2, 3], 1.0)])
     rho_full = np.diag([1.0, 1.0, 1.0, 1.0]).astype(complex)
-    corr = compute_correlation_diagnostics(
-        ManyBodyBlockState.from_states([full]), np.array([0.0]), tau, rho_full, imp_pairs
-    )
+    corr = compute_correlation_diagnostics(ManyBodyState.from_states([full]), np.array([0.0]), tau, rho_full, imp_pairs)
     assert np.allclose(corr["docc"], [1.0, 1.0], atol=1e-12)
     assert np.isclose(corr["docc_total"], 2.0, atol=1e-12)
     assert np.allclose(corr["local_moment_z2"], 0.0, atol=1e-12)
@@ -843,9 +840,7 @@ def test_correlation_diagnostics_analytic():
     # State 2: stretched triplet, one up electron per orbital.
     triplet = _state([([1, 3], 1.0)])
     rho_t = np.diag([0.0, 1.0, 0.0, 1.0]).astype(complex)
-    corr = compute_correlation_diagnostics(
-        ManyBodyBlockState.from_states([triplet]), np.array([0.0]), tau, rho_t, imp_pairs
-    )
+    corr = compute_correlation_diagnostics(ManyBodyState.from_states([triplet]), np.array([0.0]), tau, rho_t, imp_pairs)
     assert np.allclose(corr["docc"], 0.0, atol=1e-12)
     assert np.allclose(corr["local_moment_z2"], 0.25, atol=1e-12)  # a full 1/2 moment per orbital
     assert np.isclose(corr["sz2_thermal"], 1.0, atol=1e-12)  # (Sz = 1)^2
@@ -856,9 +851,7 @@ def test_correlation_diagnostics_analytic():
     # State 3: inter-orbital singlet -> <S_1.S_2> = -3/4, <Sz^2> = 0.
     singlet = _state([([1, 2], 1.0), ([0, 3], -1.0)])
     rho_s = np.diag([0.5, 0.5, 0.5, 0.5]).astype(complex)
-    corr = compute_correlation_diagnostics(
-        ManyBodyBlockState.from_states([singlet]), np.array([0.0]), tau, rho_s, imp_pairs
-    )
+    corr = compute_correlation_diagnostics(ManyBodyState.from_states([singlet]), np.array([0.0]), tau, rho_s, imp_pairs)
     assert np.isclose(corr["hund"][0, 1], -0.75, atol=1e-12)
     assert np.isclose(corr["sz2_thermal"], 0.0, atol=1e-12)
     assert np.allclose(corr["docc"], 0.0, atol=1e-12)
@@ -911,7 +904,7 @@ def test_screening_diagnostics_analytic():
 
     singlet = _state([([1, 2], 1.0), ([0, 3], -1.0)])
     scr = compute_screening_diagnostics(
-        ManyBodyBlockState.from_states([singlet]), np.array([0.0]), 0.01, rho, imp_pairs, bath_pairs, h1
+        ManyBodyState.from_states([singlet]), np.array([0.0]), 0.01, rho, imp_pairs, bath_pairs, h1
     )
     assert len(scr["levels"]) == 1
     row = scr["levels"][0]
@@ -921,14 +914,14 @@ def test_screening_diagnostics_analytic():
 
     # z_only mode: singlet <Sz_imp Sz_b> = -1/4.
     scr_z = compute_screening_diagnostics(
-        ManyBodyBlockState.from_states([singlet]), np.array([0.0]), 0.01, rho, imp_pairs, bath_pairs, h1, z_only=True
+        ManyBodyState.from_states([singlet]), np.array([0.0]), 0.01, rho, imp_pairs, bath_pairs, h1, z_only=True
     )
     assert scr_z["z_only"]
     assert np.isclose(scr_z["levels"][0]["sisb"], -0.25, atol=1e-12)
 
     # Channel resolution: one group -> its value equals the total.
     scr_g = compute_screening_diagnostics(
-        ManyBodyBlockState.from_states([singlet]),
+        ManyBodyState.from_states([singlet]),
         np.array([0.0]),
         0.01,
         rho,
@@ -1053,7 +1046,6 @@ def test_whole_shell_casimir_aggregation_dshell():
     on the known high-spin d8 determinant (t2g^6 eg-up^2, S=1 Ms=1), give <S^2> = 2 exactly.
     """
     from impurityModel.ed.atomic_physics import get_spherical_2_cubic_matrix
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, inner
     from impurityModel.ed.observables import apply_casimir, make_impurity_casimir_operators
 
     Rot = get_spherical_2_cubic_matrix(spinpol=True, l=2)
@@ -1092,7 +1084,6 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
 
     from impurityModel.ed import atomic_physics
     from impurityModel.ed.groundstate import calc_gs
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
     from impurityModel.ed.symmetries import (
         classify_bath_occupation,
         group_orbitals_by_blocks,
@@ -1163,7 +1154,6 @@ def test_kondo_correlation_fallback_matches_fast_path(capsys):
         terms[((a, "c"), (b, "a"))] = t
         terms[((b, "c"), (a, "a"))] = t
     terms[((0, "c"), (1, "c"), (1, "a"), (0, "a"))] = U
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     Hop = ManyBodyOperator(terms)
     bs = BlockStructure(
@@ -1207,9 +1197,7 @@ def test_static_susceptibility_free_spin_half():
     psis = [_state([((0,), 1.0)], n_orbs=2), _state([((1,), 1.0)], n_orbs=2)]
     es = np.array([0.0, 0.0])
     s_z = make_spin_operators([(0, 1)])[2]
-    chi = compute_static_susceptibilities(
-        ManyBodyBlockState.from_states(psis), es, tau, impurity_indices=[0, 1], s_z_op=s_z
-    )
+    chi = compute_static_susceptibilities(ManyBodyState.from_states(psis), es, tau, impurity_indices=[0, 1], s_z_op=s_z)
     assert chi["chi_spin_zz"] == pytest.approx(0.25 / tau, rel=1e-12)
     assert chi["chi_charge"] == pytest.approx(0.0, abs=1e-12)
     assert chi["chi_orb_zz"] is None
@@ -1232,7 +1220,7 @@ def test_static_susceptibility_orbital_and_cross():
     ]
     es = np.array([0.0, 0.0])
     chi = compute_static_susceptibilities(
-        ManyBodyBlockState.from_states(psis), es, tau, impurity_indices=list(range(n)), s_z_op=s_ops[2], l_z_op=l_ops[2]
+        ManyBodyState.from_states(psis), es, tau, impurity_indices=list(range(n)), s_z_op=s_ops[2], l_z_op=l_ops[2]
     )
     assert chi["chi_orb_zz"] == pytest.approx(1.0 / tau, rel=1e-12)
     assert chi["chi_spin_zz"] == pytest.approx(0.25 / tau, rel=1e-12)
@@ -1248,7 +1236,7 @@ def test_static_susceptibility_mixed_valence_charge():
     a2, b2 = 0.7, 0.3
     psi = _state([((0,), np.sqrt(a2)), ((0, 1), np.sqrt(b2))], n_orbs=2)
     chi = compute_static_susceptibilities(
-        ManyBodyBlockState.from_states([psi]), np.array([0.0]), tau, impurity_indices=[0, 1]
+        ManyBodyState.from_states([psi]), np.array([0.0]), tau, impurity_indices=[0, 1]
     )
     mean = a2 * 1 + b2 * 2
     second = a2 * 1 + b2 * 4

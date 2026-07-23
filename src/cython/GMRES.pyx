@@ -7,7 +7,7 @@ GMRES.pyx
 Restarted block-GMRES (block Arnoldi) linear solver for the many-body layer.
 
 The optimal-residual companion to :mod:`BiCGSTAB`: the same entry contract (dense
-``numpy`` and hash-distributed ``ManyBodyBlockState`` blocks, rank-deficient right-hand
+``numpy`` and hash-distributed ``ManyBodyState`` blocks, rank-deficient right-hand
 sides deflated and reconstructed by linearity, ``atol`` relative to ``||Y||``), but the
 residual is *minimized* over the Krylov space at every step -- monotone, no shadow
 residual, no breakdown modes. That makes it the fallback for the per-frequency resolvent
@@ -56,7 +56,7 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
     Solve ``A X = Y`` with restarted block GMRES (block Arnoldi + least squares).
 
     Contract-compatible with :func:`BiCGSTAB.block_bicgstab`: dense (``numpy``) and
-    sparse (``ManyBodyBlockState``) blocks, arbitrary -- possibly rank-deficient --
+    sparse (``ManyBodyState``) blocks, arbitrary -- possibly rank-deficient --
     right-hand sides (the residual block is deflated to its independent directions and
     dependent columns are reconstructed by linearity), warm starts pay off in iterations
     (``atol`` is relative to ``||Y||``, never to the warm-start residual), and an
@@ -74,9 +74,9 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
     ----------
     A : ManyBodyOperator or ndarray
         The linear operator.
-    x0 : ManyBodyBlockState or ndarray
+    x0 : ManyBodyState or ndarray
         Initial guess block (warm start).
-    y : ManyBodyBlockState or ndarray
+    y : ManyBodyState or ndarray
         Right-hand side block.
     basis : Basis
         The many-body state basis object (``None`` for the dense path). A
@@ -99,7 +99,7 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
 
     Returns
     -------
-    ManyBodyBlockState or ndarray
+    ManyBodyState or ndarray
         The solution block ``X``.
     """
     cdef bint is_arr = is_array(x0)

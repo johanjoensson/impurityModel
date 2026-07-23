@@ -777,7 +777,7 @@ def test_rixs_tensor_distributed_krylov_recycler_matches_dense(monkeypatch):
     op = _model()
     psis, es, dets, states, vecs = _thermal_states(op, 2)
     if comm.rank != 0:
-        psis = [ManyBodyState() for _ in psis]
+        psis = [ManyBodyState(width=1) for _ in psis]
     tin, tout = _tin_tout()
     monkeypatch.setenv("GF_SECTOR_DENSE_MAX", "0")
     world_basis = Basis(

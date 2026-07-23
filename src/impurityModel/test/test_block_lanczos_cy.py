@@ -140,7 +140,6 @@ def create_tight_binding_h_and_basis():
     import itertools
 
     from impurityModel.ed.manybody_basis import Basis
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     n_sites = 8
     n_particles = 4
@@ -172,7 +171,6 @@ def test_trlm_cy_tight_binding():
 
     from impurityModel.ed.BlockLanczos import thick_restart_block_lanczos_cy
     from impurityModel.ed.BlockLanczosArray import block_normalize
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
     h_op, basis = create_tight_binding_h_and_basis()
 
@@ -214,7 +212,8 @@ def get_exact_tight_binding_eigenvalues(h_op, basis):
         psi_j[bj] = 1.0
         h_psi_j = h_op.apply(psi_j)
         for i, bi in enumerate(basis_list):
-            H_mat[i, j] = h_psi_j[bi]
+            amp = h_psi_j.get(bi)
+            H_mat[i, j] = 0.0 if amp is None else amp[0]
     return np.sort(np.linalg.eigvalsh(H_mat).real)
 
 
@@ -250,7 +249,7 @@ def test_block_lanczos_cy_orthogonality_partial():
 
 def test_block_lanczos_cy_resume_partial_reort_without_w_init():
     """Warm-start resume with ``reort='partial'`` and ``W_init=None`` (the documented
-    Exact-Overlap-Restart path): q_curr/q_prev are ``ManyBodyBlockState``s by the time
+    Exact-Overlap-Restart path): q_curr/q_prev are ``ManyBodyState``s by the time
     the EOR seed runs, and `inner_multi(Q_j, q_curr)` used to pass a bare block where a
     list was expected -- `list(q_curr)` iterates its determinant KEYS, not its columns,
     raising ``TypeError`` (fixed by materializing q_curr/q_prev via ``to_states()``

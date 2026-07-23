@@ -14,7 +14,7 @@ except ImportError:
 
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState, inner_multi
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, inner_multi
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.test_block_lanczos_array_empty_rank import _contiguous_counts_with_empty_last
 from impurityModel.test.test_restarted_lanczos import MockBasis, get_test_system
@@ -30,7 +30,7 @@ def _redistribute_as_width1(basis, psi0_full):
     rank's populated (eventually width-1) seeds that would deadlock redistribute_psis'
     collective. from_states forces an explicit width-1 block -- empty or not -- on
     every rank instead."""
-    blocks = [ManyBodyBlockState.from_states([s]) for s in psi0_full]
+    blocks = [ManyBodyState.from_states([s]) for s in psi0_full]
     return [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
 
 
@@ -41,7 +41,8 @@ def build_dense_matrix_from_manybody(h_op, basis_states):
     H_basis_states = h_op.apply_multi(basis_states)
     for j in range(N):
         for i, sd_i in enumerate(states):
-            H_dense[i, j] = H_basis_states[j].get(sd_i, 0.0)
+            amp = H_basis_states[j].get(sd_i)
+            H_dense[i, j] = 0.0 if amp is None else amp[0]
     return H_dense
 
 
@@ -195,7 +196,7 @@ def test_reort_matrix_mpi(mode, path, solver):
                     state += b * (np.random.rand() + 1j * np.random.rand())
                 psi0_full.append(state)
         else:
-            psi0_full = [ManyBodyState() for _ in range(n_blocks)]
+            psi0_full = [ManyBodyState(width=1) for _ in range(n_blocks)]
 
         psi0 = _redistribute_as_width1(basis, psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
@@ -283,7 +284,7 @@ def test_W_identical_across_ranks(mode, path):
                     state += b * (np.random.rand() + 1j * np.random.rand())
                 psi0_full.append(state)
         else:
-            psi0_full = [ManyBodyState() for _ in range(n_blocks)]
+            psi0_full = [ManyBodyState(width=1) for _ in range(n_blocks)]
 
         psi0 = _redistribute_as_width1(basis, psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
@@ -422,7 +423,7 @@ def test_deflation_shrinking_block_mpi(p, path):
             if p > 1:
                 psi0_full[-1] = psi0_full[0].copy()
         else:
-            psi0_full = [ManyBodyState() for _ in range(p)]
+            psi0_full = [ManyBodyState(width=1) for _ in range(p)]
 
         psi0 = _redistribute_as_width1(basis, psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)

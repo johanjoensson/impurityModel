@@ -6,7 +6,7 @@ import pytest
 from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vector
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant, inner
 
 
 def test_block_bicgstab_array_single():
@@ -150,7 +150,7 @@ def test_block_bicgstab_info_converged_warm_start():
 
 
 # --------------------------------------------------------------------------- #
-# Sparse (ManyBodyBlockState) path: real end-to-end solves against a dense
+# Sparse (ManyBodyState) path: real end-to-end solves against a dense
 # reference. These replace the old mock-based dict tests, which patched the
 # pre-block internals (cg.inner etc.) and never exercised the real solver.
 # --------------------------------------------------------------------------- #
@@ -196,8 +196,8 @@ def test_block_bicgstab_sparse_matches_dense():
     H, basis = _sparse_system()
     rng = np.random.default_rng(17)
     ys = _rand_states(basis, rng, 3)
-    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(3)])
-    xs = block_bicgstab(H, x0, ManyBodyBlockState.from_states(ys), basis=basis, slaterWeightMin=0.0)
+    x0 = ManyBodyState(width=3)
+    xs = block_bicgstab(H, x0, ManyBodyState.from_states(ys), basis=basis, slaterWeightMin=0.0)
     _, X_ref = _dense_ref(basis, H, ys)
     X = build_vector(basis, xs.to_states()).T
     np.testing.assert_allclose(X, X_ref, atol=1e-6)
@@ -209,8 +209,8 @@ def test_block_bicgstab_sparse_rank_deficient_rhs():
     rng = np.random.default_rng(19)
     y = _rand_states(basis, rng, 1)[0]
     ys = [y, y * (2.0 + 0j)]
-    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
-    xs = block_bicgstab(H, x0, ManyBodyBlockState.from_states(ys), basis=basis, slaterWeightMin=0.0).to_states()
+    x0 = ManyBodyState(width=2)
+    xs = block_bicgstab(H, x0, ManyBodyState.from_states(ys), basis=basis, slaterWeightMin=0.0).to_states()
     _, X_ref = _dense_ref(basis, H, ys)
     X = build_vector(basis, xs).T
     np.testing.assert_allclose(X, X_ref, atol=1e-6)
@@ -222,8 +222,8 @@ def test_block_bicgstab_sparse_warm_start_exact():
     """An exact initial guess returns immediately (zero residual -> rank 0)."""
     H, basis = _sparse_system()
     rng = np.random.default_rng(23)
-    ys = ManyBodyBlockState.from_states(_rand_states(basis, rng, 2))
-    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
+    ys = ManyBodyState.from_states(_rand_states(basis, rng, 2))
+    x0 = ManyBodyState(width=2)
     xs = block_bicgstab(H, x0, ys, basis=basis, slaterWeightMin=0.0)
     xs2 = block_bicgstab(H, xs, ys, basis=basis, slaterWeightMin=0.0)
     for a, b in zip(xs.to_states(), xs2.to_states()):
@@ -239,10 +239,10 @@ def test_block_bicgstab_sparse_info_and_rhs_untouched():
     H, basis = _sparse_system()
     rng = np.random.default_rng(31)
     ys = _rand_states(basis, rng, 2)
-    y_blk = ManyBodyBlockState.from_states(ys)
+    y_blk = ManyBodyState.from_states(ys)
     y_before = np.asarray(y_blk).copy()
     info = {}
-    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
+    x0 = ManyBodyState(width=2)
     xs = block_bicgstab(H, x0, y_blk, basis=basis, slaterWeightMin=0.0, info=info)
     assert info["converged"]
     assert info["iterations"] > 0
@@ -256,8 +256,8 @@ def test_block_bicgstab_sparse_max_iter():
     H, basis = _sparse_system()
     rng = np.random.default_rng(29)
     ys = _rand_states(basis, rng, 2)
-    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
-    xs = block_bicgstab(H, x0, ManyBodyBlockState.from_states(ys), basis=basis, slaterWeightMin=0.0, max_iter=0)
+    x0 = ManyBodyState(width=2)
+    xs = block_bicgstab(H, x0, ManyBodyState.from_states(ys), basis=basis, slaterWeightMin=0.0, max_iter=0)
     _, X_ref = _dense_ref(basis, H, ys)
     X = build_vector(basis, xs.to_states()).T
     assert not np.allclose(X, X_ref, atol=1e-6)
@@ -328,7 +328,6 @@ def test_block_bicgstab_sparse_rank_deficient():
     from mpi4py import MPI
 
     from impurityModel.ed.manybody_basis import Basis
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner
 
     det0 = SlaterDeterminant.from_bytes(b"\x80")  # orbital 0 occupied
     z = 3.0 + 0.5j
@@ -350,8 +349,8 @@ def test_block_bicgstab_sparse_rank_deficient():
 
     x_block = block_bicgstab(
         A,
-        ManyBodyBlockState.from_states([ManyBodyState(), ManyBodyState()]),
-        ManyBodyBlockState.from_states(y_block),
+        ManyBodyState.from_states([ManyBodyState(width=1), ManyBodyState(width=1)]),
+        ManyBodyState.from_states(y_block),
         basis=_basis(),
         slaterWeightMin=0.0,
         atol=1e-10,
@@ -361,8 +360,8 @@ def test_block_bicgstab_sparse_rank_deficient():
     ref = [
         block_bicgstab(
             A,
-            ManyBodyBlockState.from_states([ManyBodyState()]),
-            ManyBodyBlockState.from_states([col]),
+            ManyBodyState(width=1),
+            ManyBodyState.from_states([col]),
             basis=_basis(),
             slaterWeightMin=0.0,
             atol=1e-10,

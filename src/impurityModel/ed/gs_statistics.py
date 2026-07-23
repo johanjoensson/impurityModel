@@ -20,7 +20,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import product_state_representation as psr
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState
+from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.mpi_comm import graph_alltoall
 
 
@@ -115,15 +115,15 @@ def _local_partials(basis, psis, weights):
     one rank, so the local determinant weights are globally complete for the
     determinants this rank owns.
 
-    ``psis`` is a ``ManyBodyBlockState`` (one shared-support block, one column per
+    ``psis`` is a ``ManyBodyState`` (one shared-support block, one column per
     state; a plain ``list[ManyBodyState]`` is accepted too and converted once). Pure
     support iteration with no inner products, so this is one pass over the block's
     rows instead of ``width`` separate per-state dict traversals -- a genuine
     algorithmic win, not just a container change (Phase 6a of the state-unification
     refactor; see doc/plans/manybodystate_block_unification.md).
     """
-    if not isinstance(psis, ManyBodyBlockState):
-        psis = ManyBodyBlockState.from_states(list(psis))
+    if not isinstance(psis, ManyBodyState):
+        psis = ManyBodyState.from_states(list(psis))
     n_orb = basis.num_spin_orbitals
     imp_idx = basis.impurity_spin_orbital_indices
     val_idx = basis.valence_spin_orbital_indices
@@ -177,7 +177,7 @@ def compute_gs_statistics(
     basis : Basis
         The ground-state basis (provides the flat orbital-index lists,
         ``num_spin_orbitals``, ``comm`` and ``is_distributed``).
-    psis : ManyBodyBlockState or list of ManyBodyState
+    psis : ManyBodyState or list of ManyBodyState
         The rank-local low-energy eigenstates (as redistributed onto ``basis``), one
         column/element per state.
     es : array_like
@@ -408,7 +408,7 @@ def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
         Provides ``num_spin_orbitals``, ``impurity_spin_orbital_indices``, ``comm``,
         ``is_distributed``. The ``psis`` must be redistributed onto this basis (each
         determinant owned by exactly one rank).
-    psis : ManyBodyBlockState or list of ManyBodyState
+    psis : ManyBodyState or list of ManyBodyState
         Rank-local eigenstates, one column/element per state.
     max_bytes : int, optional
         Memory guard: if the dense blocks for all states would exceed this, return
@@ -420,8 +420,8 @@ def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
         ``state_blocks[n][N]`` is the :math:`N_\mathrm{imp}=N` block of state ``n``'s
         impurity RDM (identical on every rank), or ``None`` if the memory guard tripped.
     """
-    if not isinstance(psis, ManyBodyBlockState):
-        psis = ManyBodyBlockState.from_states(list(psis))
+    if not isinstance(psis, ManyBodyState):
+        psis = ManyBodyState.from_states(list(psis))
     width = psis.width
     n_orb = basis.num_spin_orbitals
     imp_idx = sorted(basis.impurity_spin_orbital_indices)
@@ -435,7 +435,7 @@ def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
     # configuration / bath key depend only on its own bit pattern, not on which
     # column supplied it (Phase 6a of the state-unification refactor). A column's
     # missing determinants are exact zeros in the block's shared support (documented
-    # ManyBodyBlockState.from_states contract); skipping them here reproduces the old
+    # ManyBodyState.from_states contract); skipping them here reproduces the old
     # per-state sparse traversal exactly (a zero-amplitude outer product contributes
     # nothing to the RDM either way) while avoiding shipping p-fold more entries
     # through the alltoall below than the sparse states actually held.

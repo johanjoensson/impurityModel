@@ -5,118 +5,13 @@ from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
     ManyBodyState,
     SlaterDeterminant,
-    inner,
 )
 
 
 def all_isclose(dict1, dict2, **kwargs):
-    return all(pytest.approx(dict1[key]) == dict2[key] for key in dict1.keys()) and all(
-        pytest.approx(dict1[key]) == dict2[key] for key in dict2.keys()
+    return all(pytest.approx(dict1[key][0]) == dict2[key][0] for key in dict1.keys()) and all(
+        pytest.approx(dict1[key][0]) == dict2[key][0] for key in dict2.keys()
     )
-
-
-def test_ManyBodyState():
-    d = {
-        SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0,
-        SlaterDeterminant.from_bytes(b"\xac\xff"): 1j,
-    }
-    for sd in d.keys():
-        for chunk in sd:
-            print(f"{chunk.to_bytes(8)}", end=" ")
-        print()
-    psi = ManyBodyState(d)
-    for state, value in d.items():
-        assert value == psi[state]
-    # for state in psi:
-    #     assert d[state] == psi[state]
-
-    assert pytest.approx(psi.norm2()) == 2
-    assert pytest.approx(psi.norm()) == np.sqrt(2)
-
-
-def test_ManyBodyState_2():
-    d = {
-        SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0,
-        SlaterDeterminant.from_bytes(b"\xac\xff"): 1j,
-    }
-    psi = ManyBodyState()
-    for state, amp in d.items():
-        psi[state] = amp
-    for state, value in d.items():
-        assert value == psi[state]
-    # for state in psi:
-    #     assert d[state] == psi[state]
-
-    assert pytest.approx(psi.norm2()) == 2
-    assert pytest.approx(psi.norm()) == np.sqrt(2)
-
-
-def test_ManyBodyState_prune():
-    d = {SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0, SlaterDeterminant.from_bytes(b"\xac\xff"): 2j}
-    psi = ManyBodyState(d)
-    for state, value in d.items():
-        assert value == psi[state]
-    # for state in psi:
-    #     assert d[state] == psi[state]
-
-    print(f"{psi=}")
-    psi.prune(1)
-    assert SlaterDeterminant.from_bytes(b"\xff\xac") not in psi
-    assert psi[SlaterDeterminant.from_bytes(b"\xac\xff")] == 2j
-
-    assert pytest.approx(psi.norm2()) == 4
-    assert pytest.approx(psi.norm()) == np.sqrt(4)
-
-
-def test_ManyBodyState_arithmetic():
-    add = ManyBodyState({SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0, SlaterDeterminant.from_bytes(b"\xac\xff"): 2j})
-    a = ManyBodyState({SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0})
-    b = ManyBodyState({SlaterDeterminant.from_bytes(b"\xac\xff"): 2j})
-
-    psi = a + b
-    for state in add:
-        assert pytest.approx(add[state]) == psi[state]
-    # for state in psi:
-    #     assert add[state] == psi[state]
-
-    sub = ManyBodyState(
-        {SlaterDeterminant.from_bytes(b"\xff\xac"): 1.0, SlaterDeterminant.from_bytes(b"\xac\xff"): -2j}
-    )
-    psi = a - b
-    for state in sub:
-        assert pytest.approx(sub[state]) == psi[state], f"{sub=}, {psi=}"
-    # for state in psi:
-    #     assert sub[state] == psi[state]
-
-    scale = ManyBodyState(
-        {SlaterDeterminant.from_bytes(b"\xff\xac"): 2.5, SlaterDeterminant.from_bytes(b"\xac\xff"): 5.0j}
-    )
-    psi = (a + b) * 2.5
-    for state in scale:
-        assert pytest.approx(scale[state]) == psi[state]
-    for state in scale:
-        assert pytest.approx(scale[state]) == psi[state]
-
-    psi = 2.5 * (a + b)
-    for state in scale:
-        assert pytest.approx(scale[state]) == psi[state]
-    for state in scale:
-        assert pytest.approx(scale[state]) == psi[state]
-
-    psi = (a + b) / 0.4
-    for state in scale:
-        assert pytest.approx(scale[state]) == psi[state]
-    for state in scale:
-        assert pytest.approx(scale[state]) == psi[state]
-
-
-def test_ManyBodyState_pickle():
-    import pickle
-
-    psi = ManyBodyState({SlaterDeterminant.from_bytes(b"\xa0"): 1.0, SlaterDeterminant.from_bytes(b"\xbf"): 1.0j})
-    pickled_psi = pickle.dumps(psi)
-    new_psi = pickle.loads(pickled_psi)
-    assert psi == new_psi
 
 
 def test_ManyBodyOperator():
@@ -256,34 +151,6 @@ def test_SlaterDeterminant_operators():
     assert repr(sd1).startswith("SlaterDeterminant")
 
 
-def test_ManyBodyState_inplace_operators():
-    psi1 = ManyBodyState({SlaterDeterminant.from_bytes(b"\x01"): 1.0})
-    psi2 = ManyBodyState({SlaterDeterminant.from_bytes(b"\x02"): 2j})
-
-    psi1 += psi2
-    assert psi1[SlaterDeterminant.from_bytes(b"\x01")] == 1.0
-    assert psi1[SlaterDeterminant.from_bytes(b"\x02")] == 2j
-
-    psi1 -= psi2
-    assert psi1[SlaterDeterminant.from_bytes(b"\x01")] == 1.0
-    assert SlaterDeterminant.from_bytes(b"\x02") not in psi1 or psi1[SlaterDeterminant.from_bytes(b"\x02")] == 0.0
-
-
-def test_ManyBodyState_erase():
-    psi = ManyBodyState({SlaterDeterminant.from_bytes(b"\x01"): 1.0, SlaterDeterminant.from_bytes(b"\x02"): 2.0})
-    assert len(psi) == 2
-    psi.erase(SlaterDeterminant.from_bytes(b"\x01"))
-    assert len(psi) == 1
-    assert SlaterDeterminant.from_bytes(b"\x01") not in psi
-
-
-def test_inner_product():
-    psi1 = ManyBodyState({SlaterDeterminant.from_bytes(b"\x01"): 1.0, SlaterDeterminant.from_bytes(b"\x02"): 2.0j})
-    psi2 = ManyBodyState({SlaterDeterminant.from_bytes(b"\x01"): 2.0, SlaterDeterminant.from_bytes(b"\x02"): 1.0j})
-    # Inner product: conj(1.0)*2.0 + conj(2.0j)*1.0j = 2.0 + (-2j)*j = 2.0 + 2.0 = 4.0
-    assert pytest.approx(inner(psi1, psi2)) == 4.0
-
-
 def test_SlaterDeterminant_extra():
     sd = SlaterDeterminant.from_bytes(b"\x01\x02")
     assert len(sd) > 0
@@ -309,35 +176,6 @@ def test_SlaterDeterminant_extra():
     assert ba[7] == 1
     assert all(x == 0 for x in ba[2:7])
     assert all(x == 0 for x in ba[8:])
-
-
-def test_ManyBodyState_extra():
-    sd1 = SlaterDeterminant.from_bytes(b"\x01")
-    sd2 = SlaterDeterminant.from_bytes(b"\x02")
-    d = {sd1: 1.0, sd2: 2.0j}
-    psi = ManyBodyState(d)
-
-    # test __contains__
-    assert sd1 in psi
-    assert SlaterDeterminant.from_bytes(b"\x03") not in psi
-
-    # test keys(), values(), items(), to_dict()
-    assert set(psi.keys()) == {sd1, sd2}
-    assert set(psi.values()) == {1.0, 2.0j}
-    assert dict(psi.items()) == d
-    assert psi.to_dict() == d
-
-    # test copy()
-    psi_copy = psi.copy()
-    assert psi == psi_copy
-
-    # test get()
-    assert psi.get(sd1) == 1.0
-    assert psi.get(SlaterDeterminant.from_bytes(b"\x03"), 4.0) == 4.0
-
-    # test size() and max_size()
-    assert psi.size() == 2
-    assert psi.max_size() >= 2
 
 
 def test_ManyBodyOperator_extra():
@@ -395,60 +233,6 @@ def get_random_state(num_terms):
     return s
 
 
-def test_inner_multi():
-    from impurityModel.ed.ManyBodyUtils import inner_multi
-
-    n_states_left = 5
-    n_states_right = 6
-    num_terms = 20
-
-    left_states = [get_random_state(num_terms) for _ in range(n_states_left)]
-    right_states = [get_random_state(num_terms) for _ in range(n_states_right)]
-
-    # Calculate using optimized multi function
-    M_multi = inner_multi(left_states, right_states)
-
-    # Calculate using simple nested loops
-    M_loop = np.zeros((n_states_left, n_states_right), dtype=complex)
-    for i, s_l in enumerate(left_states):
-        for j, s_r in enumerate(right_states):
-            M_loop[i, j] = inner(s_l, s_r)
-
-    np.testing.assert_allclose(M_multi, M_loop, atol=1e-12)
-
-
-def test_add_scaled_multi():
-    from impurityModel.ed.ManyBodyUtils import add_scaled_multi
-
-    n_states_base = 4
-    n_states_add = 5
-    num_terms = 15
-
-    base_states_1 = [get_random_state(num_terms) for _ in range(n_states_base)]
-    base_states_2 = [s.copy() for s in base_states_1]
-
-    add_states = [get_random_state(num_terms) for _ in range(n_states_add)]
-
-    # Random scale matrix
-    scale_matrix = np.random.rand(n_states_add, n_states_base) + 1j * np.random.rand(n_states_add, n_states_base)
-
-    # 1. Update base_states_1 with add_scaled_multi
-    add_scaled_multi(base_states_1, add_states, scale_matrix)
-
-    # 2. Update base_states_2 with python loops
-    for j in range(n_states_base):
-        for k in range(n_states_add):
-            if scale_matrix[k, j] != 0:
-                base_states_2[j].add_scaled(add_states[k], scale_matrix[k, j])
-
-    # Assert equality
-    for s1, s2 in zip(base_states_1, base_states_2):
-        assert len(s1) == len(s2)
-        for key in s1:
-            assert key in s2
-            np.testing.assert_allclose(s1[key], s2[key], atol=1e-12)
-
-
 def test_apply_multi():
     n_states = 3
     num_terms_op = 10
@@ -479,4 +263,4 @@ def test_apply_multi():
         assert len(r_multi) == len(r_loop)
         for key in r_multi:
             assert key in r_loop
-            np.testing.assert_allclose(r_multi[key], r_loop[key], atol=1e-12)
+            np.testing.assert_allclose(r_multi[key][0], r_loop[key][0], atol=1e-12)

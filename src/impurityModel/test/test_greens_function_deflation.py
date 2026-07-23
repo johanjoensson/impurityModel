@@ -51,7 +51,12 @@ def _basis_states():
 def _assert_h_is_diagonal(h_op, states):
     """Sanity check: H restricted to these determinants is exactly diag(EPS)."""
     cols = h_op.apply_multi([ManyBodyState({sd: 1.0}) for sd in states])
-    H = np.array([[cols[j].get(states[i], 0.0) for j in range(N_ORB)] for i in range(N_ORB)])
+
+    def _amp(j, i):
+        val = cols[j].get(states[i])
+        return 0.0 if val is None else val[0]
+
+    H = np.array([[_amp(j, i) for j in range(N_ORB)] for i in range(N_ORB)])
     np.testing.assert_allclose(H, np.diag(EPS), atol=1e-12)
 
 

@@ -19,7 +19,6 @@ from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
     ManyBodyState,
     SlaterDeterminant,
-    add_scaled_multi,
     inner_multi,
 )
 from impurityModel.test.test_restarted_lanczos import MockBasis, get_test_system
@@ -35,9 +34,7 @@ def _ortho_start_block(basis_states, n_blocks=2, seed=1):
         psi0.append(st)
     gram = inner_multi(psi0, psi0)
     binv = sp.inv(np.conj(sp.cholesky(gram, lower=True).T))
-    out = [ManyBodyState() for _ in range(n_blocks)]
-    add_scaled_multi(out, psi0, binv)
-    return out
+    return ManyBodyState.from_states(psi0).combine_columns(binv).to_states()
 
 
 def _small_hermitian_op(n, seed):

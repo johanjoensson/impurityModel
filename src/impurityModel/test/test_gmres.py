@@ -16,7 +16,7 @@ from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vect
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
 from impurityModel.test.test_gf_bicgstab_driver import _capped_solve_with, _dense_G_on
 
 
@@ -191,7 +191,7 @@ def test_gmres_rescues_a_failed_bicgstab_solve():
 
 
 # --------------------------------------------------------------------------- #
-# Sparse (ManyBodyBlockState) path
+# Sparse (ManyBodyState) path
 # --------------------------------------------------------------------------- #
 
 
@@ -232,8 +232,8 @@ def test_block_gmres_sparse_matches_dense():
     rng = np.random.default_rng(17)
     ys = _rand_states(basis, rng, 3)
     info = {}
-    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(3)])
-    xs = block_gmres(H, x0, ManyBodyBlockState.from_states(ys), basis=basis, slaterWeightMin=0.0, info=info)
+    x0 = ManyBodyState(width=3)
+    xs = block_gmres(H, x0, ManyBodyState.from_states(ys), basis=basis, slaterWeightMin=0.0, info=info)
     H_mat = build_sparse_matrix(basis, H).toarray()
     X_ref = np.linalg.solve(H_mat, build_vector(basis, ys).T)
     np.testing.assert_allclose(build_vector(basis, xs.to_states()).T, X_ref, atol=1e-6)
@@ -245,8 +245,8 @@ def test_block_gmres_sparse_rank_deficient_rhs():
     rng = np.random.default_rng(19)
     y = _rand_states(basis, rng, 1)[0]
     ys = [y, y * (2.0 + 0j)]
-    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
-    xs = block_gmres(H, x0, ManyBodyBlockState.from_states(ys), basis=basis, slaterWeightMin=0.0).to_states()
+    x0 = ManyBodyState(width=2)
+    xs = block_gmres(H, x0, ManyBodyState.from_states(ys), basis=basis, slaterWeightMin=0.0).to_states()
     diff = xs[1] - xs[0] * (2.0 + 0j)
     assert np.sqrt(diff.norm2()) < 1e-8  # exact linearity of the dependent column
 
@@ -266,8 +266,8 @@ def test_block_gmres_sparse_happy_breakdown_exact():
     det0 = SlaterDeterminant.from_bytes(b"\x80")
     ys = [ManyBodyState({det0: 1.0})]
     info = {}
-    x0 = ManyBodyBlockState.from_states([ManyBodyState()])
-    block_gmres(A, x0, ManyBodyBlockState.from_states(ys), basis=basis, slaterWeightMin=0.0, atol=1e-12, info=info)
+    x0 = ManyBodyState(width=1)
+    block_gmres(A, x0, ManyBodyState.from_states(ys), basis=basis, slaterWeightMin=0.0, atol=1e-12, info=info)
     assert info["converged"] and info["iterations"] <= 2
     assert info["rel_residual"] < 1e-12
 
@@ -275,8 +275,8 @@ def test_block_gmres_sparse_happy_breakdown_exact():
 def test_block_gmres_sparse_warm_start_exact():
     H, basis = _sparse_system()
     rng = np.random.default_rng(23)
-    ys = ManyBodyBlockState.from_states(_rand_states(basis, rng, 2))
-    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
+    ys = ManyBodyState.from_states(_rand_states(basis, rng, 2))
+    x0 = ManyBodyState(width=2)
     xs = block_gmres(H, x0, ys, basis=basis, slaterWeightMin=0.0)
     info = {}
     xs2 = block_gmres(H, xs, ys, basis=basis, slaterWeightMin=0.0, info=info)
@@ -337,14 +337,12 @@ def test_block_gmres_mpi_matches_dense():
     # width-1) seeds that would deadlock redistribute_psis' collective.
     owns_ys = comm.rank == 0
     y_blocks = (
-        [ManyBodyBlockState.from_states([y]) for y in ys_full]
-        if owns_ys
-        else [ManyBodyBlockState.from_states([ManyBodyState()]) for _ in ys_full]
+        [ManyBodyState.from_states([y]) for y in ys_full] if owns_ys else [ManyBodyState(width=1) for _ in ys_full]
     )
     ys = [blk.to_states()[0] for blk in dist_basis.redistribute_psis(y_blocks)]
     info = {}
-    x0 = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(2)])
-    xs = block_gmres(op, x0, ManyBodyBlockState.from_states(ys), basis=dist_basis, slaterWeightMin=0.0, info=info)
+    x0 = ManyBodyState(width=2)
+    xs = block_gmres(op, x0, ManyBodyState.from_states(ys), basis=dist_basis, slaterWeightMin=0.0, info=info)
     assert info["converged"]
     X_dist = build_vector(dist_basis, xs.to_states(), root=0).T
 

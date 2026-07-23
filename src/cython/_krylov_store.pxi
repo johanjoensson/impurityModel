@@ -33,7 +33,7 @@ cdef class SparseKrylovDense:
 
     Holds the Krylov vectors as COLUMN-CHUNKED dense complex buffers over a growing
     determinant->row support map, so block reorthogonalization can gather columns
-    (``Q[:, cols]``) instead of re-materializing them from the ``flat_map`` states on
+    (``Q[:, cols]``) instead of re-materializing them from individual width-1 states on
     every step. ``append``/``append_block`` add one block of columns at a time; ``reort``
     runs ``n_passes`` of classical Gram-Schmidt of ``wp`` against the selected columns via
     BLAS ``zgemm``. The buffer is rank-local (over the rank's owned determinants); the
@@ -146,9 +146,9 @@ cdef class SparseKrylovDense:
         """
         if len(cols) == 0:
             return
-        self.append_block(ManyBodyBlockState.from_states(cols))
+        self.append_block(ManyBodyState.from_states(cols))
 
-    def append_block(self, ManyBodyBlockState block):
+    def append_block(self, ManyBodyState block):
         """Append the columns of a shared-support block as new Krylov vectors —
         the block analogue of ``append`` (reads rows directly, no per-state
         materialization)."""
@@ -212,11 +212,11 @@ cdef class SparseKrylovDense:
             off += used
         return plan
 
-    def reort(self, ManyBodyBlockState wp, object cols, int n_passes, object comm):
+    def reort(self, ManyBodyState wp, object cols, int n_passes, object comm):
         """``n_passes`` of CGS2: ``O = Q[:,cols]^H wp`` (Allreduced); ``wp -= Q[:,cols] O``.
 
         ``cols`` is a list of column indices (the flagged bad blocks) or ``None`` for all
-        columns. Returns ``(out, O_last)``: the cleaned ``wp`` as a ``ManyBodyBlockState``
+        columns. Returns ``(out, O_last)``: the cleaned ``wp`` as a ``ManyBodyState``
         and the FINAL pass's measured (Allreduced) overlap matrix ``(len(cols) x p)`` — an
         upper bound on the residual overlap left after the projection, which the caller
         uses as the honest post-reorthogonalization W-estimate (``None`` when nothing was
@@ -300,7 +300,7 @@ cdef class SparseKrylovDense:
             out_keys.push_back(self.row_det[row])
             for ci in range(p):
                 out_amps.push_back(_amp_to_cpp(Wout[row, ci]))
-        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        cdef ManyBodyState out = ManyBodyState()
         out.b = ManyBodyBlockState_cpp.from_unsorted(out_keys, out_amps, <size_t>p)
         return out, O
 
@@ -329,6 +329,8 @@ cdef class SparseKrylovDense:
         return self._materialize(ci)
 
     cdef ManyBodyState _materialize(self, Py_ssize_t col):
+        """One column as a width-1 ``ManyBodyState`` block (exact scatter: every stored
+        nonzero coefficient round-trips bit-identically)."""
         cdef Py_ssize_t k = 0
         cdef Py_ssize_t off = 0
         while col - off >= <Py_ssize_t>self._used[k]:
@@ -339,17 +341,21 @@ cdef class SparseKrylovDense:
         cdef Py_ssize_t rows_c = min(<Py_ssize_t>chunk.shape[0], <Py_ssize_t>self.n_rows)
         # One column, widened to complex128 (a no-op copy for a complex128 store).
         cdef double complex[::1] Qv = np.ascontiguousarray(chunk[:rows_c, local], dtype=complex)
-        cdef vector[ManyBodyState_cpp.key_type] keys
-        cdef vector[ManyBodyState_cpp.mapped_type] vals
+        cdef vector[SlaterDeterminant_cpp[uint64_t]] keys
+        cdef vector[ManyBodyBlockState_cpp.Value] vals
         cdef Py_ssize_t row
         cdef double complex z
         for row in range(rows_c):
             z = Qv[row]
             if z.real != 0 or z.imag != 0:
                 keys.push_back(self.row_det[row])
-                vals.push_back(ManyBodyState_cpp.mapped_type(z.real, z.imag))
+                vals.push_back(ManyBodyBlockState_cpp.Value(z.real, z.imag))
         cdef ManyBodyState ms = ManyBodyState()
-        ms.v = ManyBodyState_cpp(keys, vals)
+        # row_det is in discovery (registration) order, not sorted -- from_unsorted
+        # sorts it into the row order the block class requires (the plain (keys, vals,
+        # width) constructor assumes its input is already sorted, unchecked in release
+        # builds, and would silently build a block with a broken invariant otherwise).
+        ms.b = ManyBodyBlockState_cpp.from_unsorted(keys, vals, <size_t>1)
         return ms
 
     def _combine_dense(self, object Y, Py_ssize_t a=0, object b=None):
@@ -382,15 +388,16 @@ cdef class SparseKrylovDense:
         return C
 
     def combine(self, object Y, Py_ssize_t a=0, object b=None, double slaterWeightMin=0.0):
-        """Linear combinations ``out_k = sum_j Q[:, a:b][:, j] * Y[j, k]`` as ManyBodyStates.
+        """Linear combinations ``out_k = sum_j Q[:, a:b][:, j] * Y[j, k]`` as width-1
+        ``ManyBodyState`` blocks.
 
         ``slaterWeightMin > 0`` prunes the outputs via each output state's own ``prune``.
         """
         C = self._combine_dense(Y, a, b)
         cdef Py_ssize_t n_out = C.shape[1]
         cdef complex[:, :] Cv = C
-        cdef vector[ManyBodyState_cpp.key_type] keys
-        cdef vector[ManyBodyState_cpp.mapped_type] vals
+        cdef vector[SlaterDeterminant_cpp[uint64_t]] keys
+        cdef vector[ManyBodyBlockState_cpp.Value] vals
         cdef list out = []
         cdef ManyBodyState ms
         cdef Py_ssize_t row, kk
@@ -402,9 +409,10 @@ cdef class SparseKrylovDense:
                 z = Cv[row, kk]
                 if z.real != 0 or z.imag != 0:
                     keys.push_back(self.row_det[row])
-                    vals.push_back(ManyBodyState_cpp.mapped_type(z.real, z.imag))
+                    vals.push_back(ManyBodyBlockState_cpp.Value(z.real, z.imag))
             ms = ManyBodyState()
-            ms.v = ManyBodyState_cpp(keys, vals)
+            # row_det is discovery order, not sorted -- see _materialize's comment.
+            ms.b = ManyBodyBlockState_cpp.from_unsorted(keys, vals, <size_t>1)
             if slaterWeightMin > 0:
                 ms.prune(slaterWeightMin)
             out.append(ms)
@@ -412,14 +420,14 @@ cdef class SparseKrylovDense:
 
     def combine_block(self, object Y, Py_ssize_t a=0, object b=None, double slaterWeightMin=0.0):
         """Same linear combinations as :meth:`combine`, but returned as ONE
-        ``ManyBodyBlockState`` over the union of rows nonzero in any output column,
+        ``ManyBodyState`` over the union of rows nonzero in any output column,
         instead of ``Y.shape[1]`` independently-pruned ``ManyBodyState`` columns.
 
         Built directly off the dense result via ``from_unsorted`` -- the same
         union-support construction :meth:`reort` uses -- rather than scattering into
         many sparse states first.
 
-        ``slaterWeightMin > 0`` prunes by ROW (:meth:`ManyBodyBlockState.prune_rows`):
+        ``slaterWeightMin > 0`` prunes by ROW (:meth:`ManyBodyState.prune_rows`):
         a row survives if ANY column exceeds the cutoff, so a row can keep a
         sub-cutoff amplitude in one column when another column is above cutoff. This
         is NOT the same as :meth:`combine`'s per-state ``prune``, which drops each
@@ -447,18 +455,18 @@ cdef class SparseKrylovDense:
             out_keys.push_back(self.row_det[row])
             for kk in range(n_out):
                 out_amps.push_back(_amp_to_cpp(Cv[row, kk]))
-        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        cdef ManyBodyState out = ManyBodyState()
         out.b = ManyBodyBlockState_cpp.from_unsorted(out_keys, out_amps, <size_t>n_out)
         if slaterWeightMin > 0:
             out.prune_rows(slaterWeightMin)
         return out
 
     def slice_block(self, Py_ssize_t a, object b=None):
-        """``ManyBodyBlockState`` of columns ``[a:b)``, built directly off the store's
+        """``ManyBodyState`` of columns ``[a:b)``, built directly off the store's
         chunks -- the union-of-nonzero-rows construction :meth:`combine_block`/:meth:`reort`
         already use, but a plain column COPY per chunk instead of a ``Y``-matrix gemm
         (there is no linear combination to perform: the requested columns are lifted out
-        verbatim). Replaces ``ManyBodyBlockState.from_states(self[a:b])`` at the two sites
+        verbatim). Replaces ``ManyBodyState.from_states(self[a:b])`` at the two sites
         that used to materialize the slice as a list of independently-pruned
         ``ManyBodyState`` (:meth:`__getitem__`) and then re-merge it into one block
         (``from_states``'s union-support scatter) -- same result, one fewer round trip.
@@ -504,7 +512,7 @@ cdef class SparseKrylovDense:
             out_keys.push_back(self.row_det[row])
             for kk in range(ncol):
                 out_amps.push_back(_amp_to_cpp(Cv[row, kk]))
-        cdef ManyBodyBlockState out = ManyBodyBlockState()
+        cdef ManyBodyState out = ManyBodyState()
         out.b = ManyBodyBlockState_cpp.from_unsorted(out_keys, out_amps, <size_t>ncol)
         return out
 

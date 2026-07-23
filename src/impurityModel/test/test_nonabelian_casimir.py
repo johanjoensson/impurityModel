@@ -5,9 +5,8 @@ from itertools import combinations
 import numpy as np
 
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyBlockState,
-    ManyBodyOperator,
     ManyBodyState,
+    ManyBodyOperator,
     SlaterDeterminant,
     applyOp,
     inner,
@@ -125,7 +124,7 @@ def test_multiplet_labeling():
     from impurityModel.ed.observables import casimir_to_quantum_number, manifold_observable_values
 
     # Two spatial orbitals (up:0/dn:2, up:1/dn:3), one electron each -> singlet + triplet.
-    manifold = ManyBodyBlockState.from_states(
+    manifold = ManyBodyState.from_states(
         [
             _state([([0, 1], 1.0)]),  # both up (triplet S_z=+1)
             _state([([2, 3], 1.0)]),  # both down (triplet S_z=-1)

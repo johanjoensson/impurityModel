@@ -17,7 +17,7 @@ from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vect
 from impurityModel.ed.chebyshev_filter import chebyshev_apply, partition_of_unity, spectral_bounds
 from impurityModel.ed.greens_function import _CappedBasisProxy
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
 
 
 def _det(occupied):
@@ -78,9 +78,9 @@ def _redistribute_as_width1(basis, states, n):
     same representation everywhere; to_states() immediately unpacks the result back to
     the flat list chebyshev_apply still expects (not yet Row-safe, Phase 7 step 3.4)."""
     blocks = (
-        [ManyBodyBlockState.from_states([s]) for s in states]
+        [ManyBodyState.from_states([s]) for s in states]
         if states is not None
-        else [ManyBodyBlockState.from_states([ManyBodyState()]) for _ in range(n)]
+        else [ManyBodyState(width=1) for _ in range(n)]
     )
     return [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
 
@@ -289,7 +289,7 @@ def test_chebyshev_apply_mpi_redistributes_misplaced_seeds():
     coeff_sets, _, _ = partition_of_unity(ev_bounds, np.linspace(ev_bounds[0] + 1, ev_bounds[1] - 1, 3), degree=80)
 
     # Deliberately misplaced: rank 0 holds every amplitude, no rank owns what it holds.
-    misplaced = _seeds() if comm.rank == 0 else [ManyBodyState() for _ in _seeds()]
+    misplaced = _seeds() if comm.rank == 0 else [ManyBodyState(width=1) for _ in _seeds()]
     filtered = chebyshev_apply(H, dist, list(misplaced), coeff_sets, 0.0, ev_bounds)
 
     # sum_s p_s v == v, compared against the *properly* distributed seeds: the entry

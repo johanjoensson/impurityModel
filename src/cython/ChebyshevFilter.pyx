@@ -29,7 +29,6 @@ from mpi4py import MPI
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, resolve_reort
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyBlockState,
     ManyBodyState,
     block_add_scaled_cy,
 )
@@ -66,7 +65,11 @@ def spectral_bounds(hOp, basis, n_iter=40, pad_rel=0.05, seed=1):
         ``(lower, upper)`` padded spectral bounds.
     """
     rng = np.random.default_rng(seed)
-    v = ManyBodyState({d: complex(*rng.standard_normal(2)) for d in basis.local_basis})
+    # width=1 even when basis.local_basis is empty on this rank (a real occurrence with
+    # more ranks than the sector has determinants): a bare {} construction would be the
+    # width-0 polymorphic zero, an asymmetric mismatch against other ranks' populated
+    # width-1 seed reaching block_lanczos_cy's redistribute_psis collective below.
+    v = ManyBodyState({d: complex(*rng.standard_normal(2)) for d in basis.local_basis}, width=1)
     norm2 = v.norm2()
     if basis.comm is not None and getattr(basis, "is_distributed", False):
         norm2 = basis.comm.allreduce(norm2, op=MPI.SUM)
@@ -224,9 +227,9 @@ def chebyshev_apply(hOp, basis, seeds, coefficient_sets, double slaterWeightMin,
 
     eye_p = np.eye(p, dtype=complex)
     t_prev = None
-    t_cur = ManyBodyBlockState.from_states(list(seeds))
+    t_cur = ManyBodyState.from_states(list(seeds))
     accs = [
-        block_add_scaled_cy(ManyBodyBlockState.from_states([ManyBodyState() for _ in range(p)]), t_cur, c[0] * eye_p)
+        block_add_scaled_cy(ManyBodyState(width=p), t_cur, c[0] * eye_p)
         for c in coefficient_sets
     ]
     for it in range(1, degree + 1):

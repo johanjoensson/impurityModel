@@ -13,7 +13,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
 
 def _pack_units(
@@ -116,7 +116,7 @@ def split_basis_and_redistribute_psi(
     ----------
     priorities : list of float
         The split priority weights for each block.
-    psis : list of ManyBodyState, or list of width-1 ManyBodyBlockState, optional
+    psis : list of ManyBodyState, or list of width-1 ManyBodyState, optional
         The wavefunctions to redistribute, or None. Same type in, same type out --
         matching the boundary convention ``Basis.redistribute_psis`` follows.
     max_colors : int, optional
@@ -221,10 +221,10 @@ def split_basis_and_redistribute_psi(
 
     if psis is not None:
         # Same dual-path convention as Basis.redistribute_psis: a list of width-1
-        # ManyBodyBlockState is accepted alongside plain ManyBodyState, same type out.
+        # ManyBodyState is accepted alongside plain ManyBodyState, same type out.
         # The wire format serializes to plain scalars either way (``v[0]`` unwraps the
         # Row), so the intercomm payload shape does not depend on which producer sent it.
-        is_block = len(psis) > 0 and isinstance(psis[0], ManyBodyBlockState)
+        is_block = len(psis) > 0 and isinstance(psis[0], ManyBodyState)
         if is_block:
             for p in psis:
                 if p.width != 1:
@@ -254,7 +254,7 @@ def split_basis_and_redistribute_psi(
                         assert source_comm is not None
                         received_psis = source_comm.recv(source=sender)
                         for i, received_psi in enumerate(received_psis):
-                            state_cls = ManyBodyBlockState if is_block else ManyBodyState
+                            state_cls = ManyBodyState if is_block else ManyBodyState
                             new_psis[i] += state_cls({basis.type.from_bytes(k): v for k, v in received_psi.items()})
         psis = split_basis.redistribute_psis(new_psis)
 

@@ -6,7 +6,7 @@
 def _trlm_extract(T_full, Q, dim, num_wanted, comm, slater):
     """Diagonalize the leading ``dim`` x ``dim`` block of the (possibly arrowhead)
     ``T_full`` and form the ``num_wanted`` lowest Ritz vectors as combinations of
-    ``Q[:dim]``. Path-agnostic (array ndarray, ManyBodyState list, or ManyBodyBlockState)
+    ``Q[:dim]``. Path-agnostic (array ndarray, ManyBodyState list, or ManyBodyState)
     via ``block_combine``. Shared by the TRLM early-exit / breakdown / final-extraction
     paths so they all honor the true (possibly deflated) subspace dimension ``dim``
     instead of a padded ``m_actual * p``.
@@ -402,8 +402,8 @@ def thick_restart_block_lanczos_cy(
     # coercing to a list: a bare list only ever reaches block_normalize's list-only
     # fallback from here on out because of this conversion, not because anything downstream
     # still needs one.
-    if not isinstance(psi0, ManyBodyBlockState):
-        psi0 = ManyBodyBlockState.from_states(list(psi0))
+    if not isinstance(psi0, ManyBodyState):
+        psi0 = ManyBodyState.from_states(list(psi0))
     psi0, _ = block_normalize(psi0, mpi, comm, slaterWeightMin)
 
     def sweep(v0, max_iter):

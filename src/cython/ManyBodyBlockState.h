@@ -696,16 +696,21 @@ ManyBodyBlockState::from_unsorted(const std::vector<Key> &keys,
 
 inline ManyBodyBlockState &
 ManyBodyBlockState::add_scaled(const ManyBodyBlockState &other, Value scale) {
-  if (other.rows() == 0 || scale == Value{0.0, 0.0}) {
-    return *this;
-  }
   // A width-0, row-less state is the polymorphic zero (what a default
   // construction gives) and adopts the other operand's width, so summing onto
-  // it works at any block width. A state with an explicit width stays strict --
-  // silently widening that would hide a genuine width mismatch.
+  // it works at any block width -- even when `other` itself has zero rows
+  // (e.g. an operator applied to a column and pruned to nothing: still a real
+  // width-1 result, not a "no width information" zero). A state with an
+  // explicit width stays strict -- silently widening that would hide a
+  // genuine width mismatch. This check must precede the empty-`other`
+  // short-circuit below, or the polymorphic zero never adopts a width when
+  // `other` happens to be empty.
   if (rows() == 0 && m_width == 0) {
     *this = other;
     return *this *= scale;
+  }
+  if (other.rows() == 0 || scale == Value{0.0, 0.0}) {
+    return *this;
   }
   if (m_width != other.m_width) {
     throw std::invalid_argument(

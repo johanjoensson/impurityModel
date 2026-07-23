@@ -27,13 +27,7 @@ from impurityModel.ed.greens_function import (
     get_Greens_function,
 )
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyBlockState,
-    ManyBodyOperator,
-    ManyBodyState,
-    SlaterDeterminant,
-    block_inner_cy,
-)
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant, block_inner_cy
 
 DELTA = 0.15
 OMEGA = np.linspace(-8.0, 8.0, 21)
@@ -102,7 +96,7 @@ def _dense_G_on(dets, z_values, comm=None):
     V = np.zeros((len(index), len(_seeds())), dtype=complex)
     for j, seed in enumerate(_seeds()):
         for det, amp in seed.items():
-            V[index[det], j] = amp
+            V[index[det], j] = amp[0]
     G = np.empty((len(z_values), V.shape[1], V.shape[1]), dtype=complex)
     for k, z in enumerate(z_values):
         G[k] = V.conj().T @ np.linalg.solve(z * np.eye(len(index)) - H, V)
@@ -137,7 +131,7 @@ def test_kernel_matches_dense_resolvent(side_i):
 
 def test_kernel_zero_seed_column():
     """A zero seed column (an annihilated orbital) yields zero G entries, no crash."""
-    seeds = [_seeds()[0], ManyBodyState()]
+    seeds = [_seeds()[0], ManyBodyState(width=1)]
     z_axes = _gf_signed_axes(MATSUBARA, None, 0, DELTA)
     G_axes, stats = block_Green_bicgstab(_siam_6(), seeds, _seed_basis(), [0.0], 2, z_axes, atol=1e-10)
     assert stats["n_unconverged"] == 0
@@ -205,16 +199,16 @@ def _capped_solve_with(solver, cap, z, comm=None):
     seeds_full = _seeds()
     owns_seeds = comm is None or comm.rank == 0
     seed_blocks = (
-        [ManyBodyBlockState.from_states([s]) for s in seeds_full]
+        [ManyBodyState.from_states([s]) for s in seeds_full]
         if owns_seeds
-        else [ManyBodyBlockState.from_states([ManyBodyState()]) for _ in seeds_full]
+        else [ManyBodyState(width=1) for _ in seeds_full]
     )
-    seeds = ManyBodyBlockState.from_states([blk.to_states()[0] for blk in basis.redistribute_psis(seed_blocks)])
+    seeds = ManyBodyState.from_states([blk.to_states()[0] for blk in basis.redistribute_psis(seed_blocks)])
     A = z - _siam_6()
     # Restart while unconverged, as the driver does: a near-pole z stagnates a single
     # BiCGSTAB pass (fresh shadow residual each call). GMRES restarts internally, so its
     # first call already converges and the loop is a no-op for it.
-    X = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(seeds.width)])
+    X = ManyBodyState(width=seeds.width)
     info = {}
     for _ in range(10):
         X = solver(A, X, seeds, proxy, 0.0, atol=1e-12, info=info)
@@ -288,9 +282,7 @@ def _run_driver(gf_method, reort, comm=None, monkeypatch_env=None):
         # comment for why a bare placeholder is a rename-time asymmetric-width hazard).
         owns_psis = comm.rank == 0
         psi_blocks = (
-            [ManyBodyBlockState.from_states([p]) for p in psis]
-            if owns_psis
-            else [ManyBodyBlockState.from_states([ManyBodyState()]) for _ in psis]
+            [ManyBodyState.from_states([p]) for p in psis] if owns_psis else [ManyBodyState(width=1) for _ in psis]
         )
         psis = [blk.to_states()[0] for blk in basis.redistribute_psis(psi_blocks)]
     old_env = {}
@@ -420,9 +412,9 @@ def test_kernel_bra_seeds_cross_element():
     B = np.zeros((len(index), 2), dtype=complex)
     for j, (k_state, b_state) in enumerate(zip(kets, bras)):
         for det, amp in k_state.items():
-            K[index[det], j] = amp
+            K[index[det], j] = amp[0]
         for det, amp in b_state.items():
-            B[index[det], j] = amp
+            B[index[det], j] = amp[0]
     for k, z in enumerate(z_axes[0] + e_shift):
         ref = B.conj().T @ np.linalg.solve(z * np.eye(len(index)) - H_mat, K)
         np.testing.assert_allclose(G_axes[0][0, k], ref, atol=1e-7 * max(np.max(np.abs(ref)), 1.0))

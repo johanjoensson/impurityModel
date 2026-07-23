@@ -18,7 +18,7 @@ from mpi4py import MPI
 from impurityModel.ed import config
 from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import estimate_gf_peak_bytes, format_bytes, max_colors_within_budget
 from impurityModel.ed.mpi_comm import gather_distributed_results
 
@@ -317,7 +317,7 @@ def _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_res
     # The thermal states share their support, so each transition operator is applied to
     # the whole block at once (term/sign/accumulator work once per determinant, near-flat
     # in the number of eigenstates — Phase 2 block-state matvec).
-    psi_blk = ManyBodyBlockState.from_states(list(psis))
+    psi_blk = ManyBodyState.from_states(list(psis))
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
     for i_tOp, tOp in enumerate(tOps):
         tOp.set_restrictions(excited_restrictions)

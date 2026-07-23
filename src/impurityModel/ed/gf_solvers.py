@@ -35,7 +35,7 @@ from impurityModel.ed.gf_primitives import (
 )
 from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, block_inner_cy
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, block_inner_cy
 
 comm = MPI.COMM_WORLD
 rank = comm.rank
@@ -82,7 +82,7 @@ def block_Green(
         # overshoot the cap by at most one H-application batch (checking only after all
         # five rounds used to blow past it by the full five-fold fanout). basis.size is
         # replicated by add_states, so the break is collective-consistent.
-        probe = ManyBodyBlockState.from_states(list(last_q))
+        probe = ManyBodyState.from_states(list(last_q))
         capped = False
         for _i in range(5):
             probe = hOp.apply_block(probe, slaterWeightMin)
@@ -446,7 +446,11 @@ def _warm_start_extrapolation(zs, sols, z_new, n_cols):
     that is locally polynomial in ``z`` is reproduced exactly.
     """
     if not sols:
-        return [ManyBodyState() for _ in range(n_cols)]
+        # width=1 per column: the cold-start return is a real list element (it flows
+        # into redistribute_psis/from_states alongside genuinely-populated seeds), not
+        # a bare additive-identity accumulator like the sum() below -- it must not be
+        # the width-0 polymorphic zero.
+        return [ManyBodyState(width=1) for _ in range(n_cols)]
     coeffs = []
     for k, zk in enumerate(zs):
         c = 1.0 + 0j
@@ -491,7 +495,7 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
     A_op, x0, rhs, basis, slaterWeightMin, atol
         Forwarded to ``block_bicgstab``/``block_gmres`` (``x0`` is the warm start; ``rhs`` is
         the right-hand side block, ``y`` in their signature). ``x0``/``rhs`` are
-        ``ManyBodyBlockState`` on the sparse path; the restart loop below carries the same
+        ``ManyBodyState`` on the sparse path; the restart loop below carries the same
         block ``X`` through every attempt (and into the GMRES escalation) with no
         list round trip in between.
     rtol : float, optional
@@ -506,7 +510,7 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
 
     Returns
     -------
-    ManyBodyBlockState
+    ManyBodyState
         The solution block.
     """
     if info is None:
@@ -724,8 +728,8 @@ def block_Green_bicgstab(
                 info = {}
                 X = solve_shifted_block(
                     A_op,
-                    ManyBodyBlockState.from_states(list(x0)),
-                    ManyBodyBlockState.from_states(list(seeds)),
+                    ManyBodyState.from_states(list(x0)),
+                    ManyBodyState.from_states(list(seeds)),
                     solve_basis,
                     slaterWeightMin,
                     atol,
@@ -752,7 +756,7 @@ def block_Green_bicgstab(
                 # separate bra block); both blocks live on tmp_basis's layout, so the
                 # local Gram + Allreduce is the whole inner product (no state-vector gather).
                 gram = block_inner_cy(
-                    ManyBodyBlockState.from_states(bras if bras is not None else seeds),
+                    ManyBodyState.from_states(bras if bras is not None else seeds),
                     X,
                 )
                 if sub_comm is not None:
@@ -798,14 +802,17 @@ def _fit_warm_start_to_budget(tmp_basis, seeds, x0, budget):
     if n_seed >= budget:
         return x0, True
 
-    keys, norms2 = ManyBodyBlockState.from_states(list(x0)).row_max_norms2()
+    keys, norms2 = ManyBodyState.from_states(list(x0)).row_max_norms2()
     extra_mask = np.array([key not in seed_keys for key in keys], dtype=bool)
     comm = tmp_basis.comm if tmp_basis.is_distributed else None
     cutoff2 = collective_amplitude_cutoff(norms2[extra_mask], int(budget) - n_seed, comm)
     kept = seed_keys | set(itertools.compress(keys, extra_mask & (norms2 > cutoff2)))
     tmp_basis.clear()
     tmp_basis.add_states(sorted(kept))
-    x0 = [ManyBodyState({state: amp for state, amp in x.items() if state in kept}) for x in x0]
+    # width=1: a column whose entire kept-support was filtered away (a real occurrence
+    # when a warm-start column's support falls entirely outside the retained set) must
+    # not become the width-0 polymorphic zero -- x0's elements are all expected width 1.
+    x0 = [ManyBodyState({state: amp for state, amp in x.items() if state in kept}, width=1) for x in x0]
     return x0, False
 
 
@@ -932,7 +939,7 @@ def block_Green_cipsi(
                 # seeds are fixed for every round of this point; the selector between
                 # rounds (selector.select_at) needs X as a list, so only the solve call
                 # itself is wrapped into a block, at each round's boundary.
-                seeds_blk = ManyBodyBlockState.from_states(seeds)
+                seeds_blk = ManyBodyState.from_states(seeds)
                 X = x0
                 sel = None
                 for _round in range(max_rounds):
@@ -946,8 +953,14 @@ def block_Green_cipsi(
                     A_op.set_weighted_restrictions(excited_weighted_restrictions)
                     info = {}
                     X = solve_shifted_block(
-                        A_op, ManyBodyBlockState.from_states(X), seeds_blk, frozen, slaterWeightMin, atol,
-                        max_iter=max_iter, info=info,
+                        A_op,
+                        ManyBodyState.from_states(X),
+                        seeds_blk,
+                        frozen,
+                        slaterWeightMin,
+                        atol,
+                        max_iter=max_iter,
+                        info=info,
                     ).to_states()
                     stats["iterations"] += info["iterations"]
                     stats["max_rel_residual"] = max(stats["max_rel_residual"], info["rel_residual"])
@@ -991,7 +1004,7 @@ def block_Green_cipsi(
                     if stats["retained_size"] is None or retained < stats["retained_size"]:
                         stats["retained_size"] = retained
 
-                gram = block_inner_cy(seeds_blk, ManyBodyBlockState.from_states(X))
+                gram = block_inner_cy(seeds_blk, ManyBodyState.from_states(X))
                 if sub_comm is not None:
                     sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
 

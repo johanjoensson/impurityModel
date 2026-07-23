@@ -314,77 +314,37 @@ cdef class ManyBodyOperator:
             self.o.build_weighted_restriction_mask(rest)
 
     def  __call__(self, psi, double cutoff = 0):
-        """Apply to a ``ManyBodyState`` or a ``ManyBodyBlockState`` (any width) --
-        the operator boundary is representation-transparent, so a producer that hands
-        back a width-1 block instead of a flat state needs no call-site change here."""
-        if isinstance(psi, ManyBodyBlockState):
-            return self.apply_block(<ManyBodyBlockState>psi, cutoff)
-        cdef ManyBodyState st = <ManyBodyState?>psi
-        cdef ManyBodyState res = ManyBodyState()
-        with nogil:
-            res.v = self.o(st.v, cutoff)
-        return res
+        """Apply to a ``ManyBodyState`` (any width -- ``p == 1`` an ordinary block)."""
+        return self.apply_block(psi, cutoff)
 
     def apply(self, psi, double cutoff=0):
-        """Same representation-transparent dispatch as :meth:`__call__` (this is the
-        ``self.o.apply(...)`` spelling rather than ``self.o(...)``; both reach the same
-        C++ ``apply`` -- ``operator()`` is defined to forward to it)."""
-        if isinstance(psi, ManyBodyBlockState):
-            return self.apply_block(<ManyBodyBlockState>psi, cutoff)
-        cdef ManyBodyState st = <ManyBodyState?>psi
-        cdef ManyBodyState res = ManyBodyState()
-        with nogil:
-            res.v = self.o.apply(st.v, cutoff)
-        return res
+        """Same as :meth:`__call__` (this is the ``self.o.apply(...)`` spelling rather
+        than ``self.o(...)``; both reach the same C++ ``apply`` -- ``operator()`` is
+        defined to forward to it)."""
+        return self.apply_block(psi, cutoff)
 
     def apply_multi(self, list psis, double cutoff = 0) -> list:
         """
-        Apply operator to a list of ManyBodyStates without python looping.
+        Apply operator to a list of ManyBodyStates.
 
-        A list of ``ManyBodyBlockState`` operands (assumed homogeneous, like every other
-        list this module dispatches on) can't share one C++ batch call the way flat
-        ``ManyBodyState``s can -- each block may have its own support and width -- so
-        it's applied one block at a time via :meth:`apply_block` instead. This is the
-        list-boundary counterpart of :meth:`__call__`'s dispatch: a producer returning
-        ``list[width-1 block]`` needs no call-site change here either.
+        Each block may have its own support and width, so this can't share one C++
+        batch call across the whole list -- applied one block at a time via
+        :meth:`apply_block` instead.
         """
-        if len(psis) > 0 and isinstance(psis[0], ManyBodyBlockState):
-            return [self.apply_block(<ManyBodyBlockState>p, cutoff) for p in psis]
-        cdef int n = len(psis)
-        cdef vector[const ManyBodyState_cpp*] p_ptrs
-        p_ptrs.reserve(n)
+        return [self.apply_block(p, cutoff) for p in psis]
 
-        cdef ManyBodyState state
-        for obj in psis:
-            state = <ManyBodyState?>obj
-            p_ptrs.push_back(&state.v)
-
-        cdef vector[ManyBodyState_cpp] res_vec
-
-        with nogil:
-            res_vec = self.o.apply(p_ptrs, cutoff)
-
-        cdef list res_list = []
-        cdef ManyBodyState res_state
-        for i in range(n):
-            res_state = ManyBodyState()
-            res_state.v = move(res_vec[i])
-            res_list.append(res_state)
-
-        return res_list
-
-    def apply_block(self, ManyBodyBlockState block, double cutoff = 0):
+    def apply_block(self, ManyBodyState block, double cutoff = 0):
         """Apply the operator to a shared-support block of p vectors (Phase 2.2).
 
         The term loop, fermion sign, restriction checks and the accumulator hash
         operation run once per (determinant, term); the p amplitudes are emitted with
-        p multiply-adds — near-flat cost in p vs the linear scaling of
-        ``apply_multi`` (see the p-scaling baseline in the campaign doc). Per-column
-        arithmetic is identical to p independent ``apply`` calls (bit-for-bit at
-        ``cutoff=0``). The cutoff keeps whole rows (any column above threshold), so
-        the output block retains its shared support.
+        p multiply-adds — near-flat cost in p vs the linear scaling of applying to p
+        independent width-1 blocks (see the p-scaling baseline in the campaign doc).
+        Per-column arithmetic is identical to p independent width-1 ``apply`` calls
+        (bit-for-bit at ``cutoff=0``). The cutoff keeps whole rows (any column above
+        threshold), so the output block retains its shared support.
         """
-        cdef ManyBodyBlockState res = ManyBodyBlockState()
+        cdef ManyBodyState res = ManyBodyState()
         with nogil:
             res.b = self.o.apply(block.b, cutoff)
         return res
@@ -569,8 +529,7 @@ cdef class ManyBodyOperator:
 
 def applyOp(ManyBodyOperator op, psi, double cutoff=0):
     """
-    Apply a ManyBodyOperator to a ManyBodyState or a ManyBodyBlockState (see
-    ManyBodyOperator.__call__).
+    Apply a ManyBodyOperator to a ManyBodyState (see ManyBodyOperator.__call__).
     """
     return op(psi, cutoff)
 

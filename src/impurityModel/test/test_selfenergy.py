@@ -5,7 +5,7 @@ import pytest
 
 from impurityModel.ed import gf_diagnostics as gd
 from impurityModel.ed import selfenergy
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner
 from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
 from impurityModel.ed.selfenergy import UnphysicalGreensFunctionError
 
@@ -182,7 +182,6 @@ def test_get_Sigma_static_consistent_with_operator():
     from itertools import combinations
 
     from impurityModel.ed.atomic_physics import getUop_from_rspt_u4
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner
 
     n = 4
     rng = np.random.default_rng(1)
@@ -476,7 +475,6 @@ def test_greens_function_moments_noninteracting():
     single-particle resolvent [(z - h)^-1]_00 independent of filling.
     """
     from impurityModel.ed.greens_function import get_greens_function_moments
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
     eps_d, eps_b, vhop = -0.4, 1.1, 0.7
     hOp = ManyBodyOperator(
@@ -511,7 +509,6 @@ def test_greens_function_moments_hubbard_atom():
     Sigma_inf = U/2, Sigma_1 = U^2/4, Sigma_2 = (U^2/4)(eps + U/2)."""
     from impurityModel.ed.atomic_physics import getUop_from_rspt_u4
     from impurityModel.ed.greens_function import get_greens_function_moments
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
     eps, U = -0.7, 3.0
     U4 = np.zeros((2, 2, 2, 2))

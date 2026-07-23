@@ -9,7 +9,6 @@ from mpi4py import MPI
 
 from impurityModel.ed.basis_generation import generate_initial_basis, spin_flipped_determinants
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyBlockState,
     ManyBodyOperator,
     ManyBodyState,
     SlaterDeterminant,
@@ -17,7 +16,7 @@ from impurityModel.ed.ManyBodyUtils import (
 from impurityModel.ed.ManyBodyUtils import (
     applyOp as applyOp_test,
 )
-from impurityModel.ed.mpi_comm import distribute_determinants, graph_alltoall, graph_alltoall_block, graph_alltoall_psis
+from impurityModel.ed.mpi_comm import distribute_determinants, graph_alltoall, graph_alltoall_block
 
 
 def collective_amplitude_cutoff(scores, k, comm):
@@ -326,35 +325,26 @@ class Basis:
 
         Parameters
         ----------
-        psis : list of ManyBodyState, or list of width-1 ManyBodyBlockState
-            The wavefunctions to redistribute. A list of width-1 blocks (a producer's
-            independently-supported blocks, not a shared-support block itself) is
-            accepted too -- same type in, same type out, matching the boundary
-            dispatch convention ``ManyBodyOperator.apply_multi``/``inner_multi`` already
-            follow. Composed from existing primitives rather than a new collective:
-            merge into one block (``ManyBodyBlockState.from_states``), redistribute it
-            (:meth:`redistribute_block`, the already-tested block collective), split
-            back into width-1 blocks (``column``, Phase 8's cheap gather) -- same
-            per-determinant summing semantics as the plain-state path below (both
-            ``graph_alltoall_psis`` and ``graph_alltoall_block`` sum rows/entries
-            arriving from several ranks for the same determinant, bit-identically). A
-            bare (non-list) width-1 block or a bare ``ManyBodyState`` is also accepted,
-            with a warning, and wrapped into a one-element list; a bare block of any
-            other width raises -- use :meth:`redistribute_block` for that case.
+        psis : list of width-1 ManyBodyState
+            The wavefunctions to redistribute (a producer's independently-supported
+            blocks, not a shared-support block itself). Composed from existing
+            primitives rather than a new collective: merge into one block
+            (``ManyBodyState.from_states``), redistribute it (:meth:`redistribute_block`,
+            the already-tested block collective), split back into width-1 blocks
+            (``column``, Phase 8's cheap gather). A bare (non-list) width-1 block is
+            also accepted, with a warning, and wrapped into a one-element list; a bare
+            block of any other width raises -- use :meth:`redistribute_block` for that
+            case.
 
         Returns
         -------
-        list of ManyBodyState, or list of ManyBodyBlockState (matching the input)
+        list of ManyBodyState
             The redistributed wavefunctions.
         """
-        if isinstance(psis, ManyBodyBlockState):
-            # Width>1 bare blocks must go through redistribute_block explicitly. A bare
-            # width-1 block is treated like a bare ManyBodyState below (rename-stable:
-            # once the flat class and the width-1 block are the same type, this ``if``
-            # and the ``elif`` below collapse onto the same branch by width alone).
+        if isinstance(psis, ManyBodyState):
             if psis.width != 1:
                 raise TypeError(
-                    f"redistribute_psis expected a list, got a bare ManyBodyBlockState of width "
+                    f"redistribute_psis expected a list, got a bare ManyBodyState of width "
                     f"{psis.width} -- use redistribute_block instead"
                 )
             print("WARNING in redistribute_psi:")
@@ -363,42 +353,19 @@ class Basis:
                 " Remaking into list of one ManyBodyState"
             )
             psis = [psis]
-        elif isinstance(psis, ManyBodyState):
-            print("WARNING in redistribute_psi:")
-            print(
-                "Expected a list of ManyBodyStates, received a single ManyBodyState."
-                " Remaking into list of one ManyBodyState"
-            )
-            psis = [psis]
-        if isinstance(psis, list) and len(psis) > 0 and isinstance(psis[0], ManyBodyBlockState):
-            for p in psis:
-                if p.width != 1:
-                    raise ValueError(f"redistribute_psis: expected width-1 blocks, got width {p.width}")
-            if not self.is_distributed:
-                return psis
-            merged = ManyBodyBlockState.from_states([p.to_states()[0] for p in psis])
-            redistributed = self.redistribute_block(merged)
-            return [redistributed.column(i) for i in range(redistributed.width)]
-        psis = [
-            (
-                psi
-                if isinstance(psi, ManyBodyState)
-                else ManyBodyState(
-                    {(SlaterDeterminant.from_bytes(k) if isinstance(k, bytes) else k): v for k, v in psi.items()}
-                )
-            )
-            for psi in psis
-        ]
+        if len(psis) == 0:
+            return []
+        for p in psis:
+            if p.width != 1:
+                raise ValueError(f"redistribute_psis: expected width-1 blocks, got width {p.width}")
         if not self.is_distributed:
-            return psis
-
-        comm = self.comm
-
-        res = graph_alltoall_psis(psis, self.n_bytes, comm)
-        return res
+            return list(psis)
+        merged = ManyBodyState.from_states([p.to_states()[0] for p in psis])
+        redistributed = self.redistribute_block(merged)
+        return [redistributed.column(i) for i in range(redistributed.width)]
 
     def redistribute_block(self, block):
-        """Redistribute a ``ManyBodyBlockState`` across MPI ranks by state ownership.
+        """Redistribute a ``ManyBodyState`` across MPI ranks by state ownership.
 
         The block analogue of :meth:`redistribute_psis` (Phase 2.3 of the block-state
         matvec plan): one wire entry per shared-support row instead of one per
@@ -443,7 +410,7 @@ class Basis:
                 for state in apply_h_to_these:
                     res = applyOp_test(
                         op,
-                        ManyBodyBlockState({state: 1}),
+                        ManyBodyState({state: 1}),
                         cutoff=slaterWeightMin,
                     )
                     new_local_states |= set(res.keys()) - local_states

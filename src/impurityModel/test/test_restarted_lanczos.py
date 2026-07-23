@@ -3,7 +3,7 @@ import warnings
 
 import numpy as np
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner_multi
 
 warnings.filterwarnings("ignore")
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy  # noqa: E402
@@ -53,7 +53,8 @@ def get_test_system():
 
     for j in range(N):
         for i, sd_i in enumerate(states):
-            H_dense[i, j] = H_basis_states[j].get(sd_i, 0.0)
+            amp = H_basis_states[j].get(sd_i)
+            H_dense[i, j] = 0.0 if amp is None else amp[0]
 
     eigvals_exact, _ = np.linalg.eigh(H_dense)
 
@@ -76,14 +77,10 @@ def test_irlm_thick_restart():
 
     import scipy.linalg as sp
 
-    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, inner_multi
-
     M = inner_multi(psi0, psi0)
     L = sp.cholesky(M, lower=True)
     beta_inv = sp.inv(np.conj(L.T))
-    psi0_orth = [ManyBodyState() for _ in range(n_blocks)]
-    add_scaled_multi(psi0_orth, psi0, beta_inv)
-    psi0 = psi0_orth
+    psi0 = ManyBodyState.from_states(psi0).combine_columns(beta_inv).to_states()
 
     from impurityModel.ed.trlm import thick_restart_block_lanczos
 
@@ -110,14 +107,10 @@ def test_irlm_qr_restart():
 
     import scipy.linalg as sp
 
-    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, inner_multi
-
     M = inner_multi(psi0, psi0)
     L = sp.cholesky(M, lower=True)
     beta_inv = sp.inv(np.conj(L.T))
-    psi0_orth = [ManyBodyState() for _ in range(n_blocks)]
-    add_scaled_multi(psi0_orth, psi0, beta_inv)
-    psi0 = psi0_orth
+    psi0 = ManyBodyState.from_states(psi0).combine_columns(beta_inv).to_states()
 
     from impurityModel.ed.BlockLanczosArray import Reort
 
@@ -185,7 +178,7 @@ def test_irlm_invariant_subspace_breakdown():
     N = psi0.norm()
     if N > 1e-12:
         for s in psi0:
-            psi0[s] /= N
+            psi0[s] = psi0[s][0] / N
 
     # Ask for 2 eigenvalues, but max_subspace_blocks = 5.
     # Since total dimension is 4, it will exhaust the Hilbert space and trigger breakdown.
@@ -224,14 +217,11 @@ def test_trlm_reort_partial():
     import scipy.linalg as sp
 
     from impurityModel.ed.BlockLanczosArray import Reort
-    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, inner_multi
 
     M = inner_multi(psi0, psi0)
     L = sp.cholesky(M, lower=True)
     beta_inv = sp.inv(np.conj(L.T))
-    psi0_orth = [ManyBodyState() for _ in range(n_blocks)]
-    add_scaled_multi(psi0_orth, psi0, beta_inv)
-    psi0 = psi0_orth
+    psi0 = ManyBodyState.from_states(psi0).combine_columns(beta_inv).to_states()
 
     from impurityModel.ed.trlm import thick_restart_block_lanczos
 
@@ -271,14 +261,11 @@ def test_irlm_reort_partial():
     import scipy.linalg as sp
 
     from impurityModel.ed.BlockLanczosArray import Reort
-    from impurityModel.ed.ManyBodyUtils import add_scaled_multi, inner_multi
 
     M = inner_multi(psi0, psi0)
     L = sp.cholesky(M, lower=True)
     beta_inv = sp.inv(np.conj(L.T))
-    psi0_orth = [ManyBodyState() for _ in range(n_blocks)]
-    add_scaled_multi(psi0_orth, psi0, beta_inv)
-    psi0 = psi0_orth
+    psi0 = ManyBodyState.from_states(psi0).combine_columns(beta_inv).to_states()
 
     from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 

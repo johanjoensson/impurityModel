@@ -150,7 +150,8 @@ def _serialize(state):
     """Sorted list of ``[chunk_tuple, re, im]`` — order-independent canonical form."""
     items = []
     for sd, amp in state.items():
-        items.append((tuple(int(c) for c in sd), float(amp.real), float(amp.imag)))
+        a = amp[0]
+        items.append((tuple(int(c) for c in sd), float(a.real), float(a.imag)))
     items.sort(key=lambda t: t[0])
     return [[list(chunks), re, im] for chunks, re, im in items]
 
@@ -264,11 +265,11 @@ def test_diagonal_independent(oracle_fixtures):
     expected = {}
     for sd, amp in psi.items():
         occ = _occupied_orbitals(sd)
-        val = sum(coeff for orbs, coeff in terms if orbs <= occ) * amp
+        val = sum(coeff for orbs, coeff in terms if orbs <= occ) * amp[0]
         if val != 0:
             expected[tuple(int(c) for c in sd)] = val
 
-    produced = {tuple(int(c) for c in k): v for k, v in _apply(op, psi).items()}
+    produced = {tuple(int(c) for c in k): v[0] for k, v in _apply(op, psi).items()}
     assert expected.keys() == produced.keys(), "diagonal support differs from occupancy oracle"
     for key, ev in expected.items():
         assert abs(ev - produced[key]) < TOL, f"diagonal amplitude mismatch at {key}"
@@ -309,8 +310,12 @@ def test_normal_ordering_contraction():
     s_emp = _sd_from_orbitals([7, 70])
     out_occ = _apply(op, ManyBodyState({s_occ: 3.0 + 0j}))
     out_emp = _apply(op, ManyBodyState({s_emp: 3.0 + 0j}))
-    assert abs(out_occ.get(s_occ, 0) - 0.0) < TOL  # 1 - n_i = 0 when occupied
-    assert abs(out_emp.get(s_emp, 0) - 3.0) < TOL  # 1 - n_i = 1 when empty
+    occ_amp = out_occ.get(s_occ)
+    emp_amp = out_emp.get(s_emp)
+    occ_val = 0.0 if occ_amp is None else occ_amp[0]
+    emp_val = 0.0 if emp_amp is None else emp_amp[0]
+    assert abs(occ_val - 0.0) < TOL  # 1 - n_i = 0 when occupied
+    assert abs(emp_val - 3.0) < TOL  # 1 - n_i = 1 when empty
 
 
 def test_normal_ordering_ab_invariance(oracle_fixtures):
@@ -378,10 +383,9 @@ def test_apply_block_width_scaling(timing_fixtures, capsys):
     """Phase 2.0 of the block-state matvec plan (blocklanczos_partial_perf_memory.md):
     apply_multi cost vs block width p on shared-support states — the Lanczos block
     shape. Today the p matvecs run independently, so wall time scales ~linearly in p;
-    the ManyBodyBlockState target is near-flat in p (term/sign/accumulator work done
+    the ManyBodyState target is near-flat in p (term/sign/accumulator work done
     once per determinant, p FMAs per emission). This baseline is what the block
     container is measured against."""
-    from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState
 
     op, psi = timing_fixtures["hamiltonian"]
     support = list(psi.to_dict().keys())
@@ -389,7 +393,7 @@ def test_apply_block_width_scaling(timing_fixtures, capsys):
     for p in (1, 2, 4, 8):
         rng = random.Random(97 + p)
         psis = [ManyBodyState({sd: complex(rng.random(), rng.random()) for sd in support}) for _ in range(p)]
-        blk = ManyBodyBlockState.from_states(psis)
+        blk = ManyBodyState.from_states(psis)
         times, btimes = [], []
         for _ in range(5):
             t0 = time.perf_counter()

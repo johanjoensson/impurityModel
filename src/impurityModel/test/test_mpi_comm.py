@@ -17,13 +17,8 @@ from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_density_matrices, build_sparse_matrix
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyBlockState,
-    ManyBodyOperator,
-    ManyBodyState,
-    SlaterDeterminant,
-)
-from impurityModel.ed.mpi_comm import empty_clone, get_job_tasks, graph_alltoall, graph_alltoall_psis, is_empty
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.mpi_comm import empty_clone, get_job_tasks, graph_alltoall, is_empty
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -237,9 +232,9 @@ def test_redistribute_psis_roundtrip():
     if comm.rank == 0:
         psi = ManyBodyState({SlaterDeterminant.from_bytes(s): 1.0 / len(states_bytes) for s in states_bytes})
     else:
-        psi = ManyBodyState({})
+        psi = ManyBodyState(width=1)
 
-    (redist,) = basis.redistribute_psis([ManyBodyBlockState.from_states([psi])])[0].to_states()
+    (redist,) = basis.redistribute_psis([ManyBodyState.from_states([psi])])[0].to_states()
 
     # Gather back and check completeness
     gathered = comm.gather(redist, root=0)
@@ -250,7 +245,7 @@ def test_redistribute_psis_roundtrip():
         for s in states_bytes:
             sd = SlaterDeterminant.from_bytes(s)
             assert (
-                abs(combined[sd] - 1.0 / len(states_bytes)) < 1e-12
+                abs(combined[sd][0] - 1.0 / len(states_bytes)) < 1e-12
             ), f"Missing or wrong amplitude for state {s.hex()}"
 
 
@@ -267,19 +262,19 @@ def test_redistribute_psis_normalisation():
     if comm.rank == 0:
         psi = ManyBodyState({SlaterDeterminant.from_bytes(s): np.sqrt(norm_sq) for s in states_bytes})
     else:
-        psi = ManyBodyState({})
+        psi = ManyBodyState(width=1)
 
-    (redist,) = basis.redistribute_psis([ManyBodyBlockState.from_states([psi])])[0].to_states()
+    (redist,) = basis.redistribute_psis([ManyBodyState.from_states([psi])])[0].to_states()
 
     # Local norm squared contribution from this rank
-    local_norm_sq = sum(abs(v) ** 2 for v in redist.values())
+    local_norm_sq = sum(abs(v[0]) ** 2 for v in redist.values())
     total_norm_sq = comm.allreduce(local_norm_sq, op=MPI.SUM)
     assert abs(total_norm_sq - 1.0) < 1e-12, f"Norm not preserved: {total_norm_sq}"
 
 
 @pytest.mark.mpi
 def test_redistribute_psis_accepts_width_one_blocks():
-    """A list of width-1 ``ManyBodyBlockState``s must redistribute to the same result
+    """A list of width-1 ``ManyBodyState``s must redistribute to the same result
     as the equivalent list of ``ManyBodyState``s, and come back as blocks (same type in,
     same type out -- Phase 7 step 1.3's composed redistribute_block round trip)."""
     comm = MPI.COMM_WORLD
@@ -290,23 +285,23 @@ def test_redistribute_psis_accepts_width_one_blocks():
         psi_a = ManyBodyState({SlaterDeterminant.from_bytes(s): 1.0 / len(states_bytes) for s in states_bytes})
         psi_b = ManyBodyState({SlaterDeterminant.from_bytes(states_bytes[0]): 2.0 + 1j})
     else:
-        psi_a = ManyBodyState({})
-        psi_b = ManyBodyState({})
+        psi_a = ManyBodyState(width=1)
+        psi_b = ManyBodyState(width=1)
 
     # The reference computation goes through the same width-1-block round trip as the
     # block path below: a bare psi_a/psi_b placeholder on the non-owning rank is a
     # width-0 polymorphic zero once the flat and block classes merge (Phase 7 step 3),
     # an asymmetric mismatch against the owning rank's populated (eventually width-1)
     # states that would deadlock redistribute_psis' collective.
-    ref_blocks = [ManyBodyBlockState.from_states([psi_a.copy()]), ManyBodyBlockState.from_states([psi_b.copy()])]
+    ref_blocks = [ManyBodyState.from_states([psi_a.copy()]), ManyBodyState.from_states([psi_b.copy()])]
     (ref_a,), (ref_b,) = (blk.to_states() for blk in basis.redistribute_psis(ref_blocks))
 
-    blk_a = ManyBodyBlockState.from_states([psi_a])
-    blk_b = ManyBodyBlockState.from_states([psi_b])
+    blk_a = ManyBodyState.from_states([psi_a])
+    blk_b = ManyBodyState.from_states([psi_b])
     out = basis.redistribute_psis([blk_a, blk_b])
 
     assert len(out) == 2
-    assert all(isinstance(o, ManyBodyBlockState) and o.width == 1 for o in out)
+    assert all(isinstance(o, ManyBodyState) and o.width == 1 for o in out)
     (out_a,) = out[0].to_states()
     (out_b,) = out[1].to_states()
     diff_a = out_a - ref_a
@@ -324,21 +319,19 @@ def test_redistribute_psis_width_one_blocks_empty_state():
     states_bytes = [b"\x80", b"\x40", b"\x20", b"\x10"]
     basis = _make_basis(states_bytes, comm=comm)
 
-    empty = ManyBodyState()
+    empty = ManyBodyState(width=1)
     if comm.rank == 0:
         singleton = ManyBodyState({SlaterDeterminant.from_bytes(states_bytes[0]): 1.0 + 2j})
     else:
-        singleton = ManyBodyState({})
+        singleton = ManyBodyState(width=1)
 
     # Same width-1-block round trip as test_redistribute_psis_accepts_width_one_blocks:
     # a bare empty/singleton placeholder would be a width-0 polymorphic zero once the
     # flat and block classes merge (Phase 7 step 3).
-    ref_blocks = [ManyBodyBlockState.from_states([empty.copy()]), ManyBodyBlockState.from_states([singleton.copy()])]
+    ref_blocks = [ManyBodyState.from_states([empty.copy()]), ManyBodyState.from_states([singleton.copy()])]
     (ref_empty,), (ref_singleton,) = (blk.to_states() for blk in basis.redistribute_psis(ref_blocks))
 
-    out = basis.redistribute_psis(
-        [ManyBodyBlockState.from_states([empty]), ManyBodyBlockState.from_states([singleton])]
-    )
+    out = basis.redistribute_psis([ManyBodyState.from_states([empty]), ManyBodyState.from_states([singleton])])
     (out_empty,) = out[0].to_states()
     (out_singleton,) = out[1].to_states()
     assert out_empty == ref_empty
@@ -352,7 +345,7 @@ def test_redistribute_psis_accepts_bare_width_one_block():
     width != 1 must go through redistribute_block explicitly (see the next test)."""
     basis = _make_basis([b"\x80", b"\x40"])
     state = ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0})
-    blk = ManyBodyBlockState.from_states([state])
+    blk = ManyBodyState.from_states([state])
     (out,) = basis.redistribute_psis(blk)
     (ref,) = basis.redistribute_psis([state.copy()])
     diff = out.to_states()[0] - ref
@@ -365,7 +358,7 @@ def test_redistribute_psis_rejects_bare_wide_block():
         ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0}),
         ManyBodyState({SlaterDeterminant.from_bytes(b"\x40"): 2.0}),
     ]
-    blk = ManyBodyBlockState.from_states(states)
+    blk = ManyBodyState.from_states(states)
     with pytest.raises(TypeError):
         basis.redistribute_psis(blk)
 
@@ -376,7 +369,7 @@ def test_redistribute_psis_rejects_non_width_one_blocks():
         ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0}),
         ManyBodyState({SlaterDeterminant.from_bytes(b"\x40"): 2.0}),
     ]
-    wide = ManyBodyBlockState.from_states(states)
+    wide = ManyBodyState.from_states(states)
     with pytest.raises(ValueError):
         basis.redistribute_psis([wide])
 
@@ -515,8 +508,8 @@ def test_density_matrix_mpi_vs_serial():
     if comm.rank == 0:
         psi_m = ManyBodyState({SlaterDeterminant.from_bytes(s): c for s, c in zip(states_bytes, coeffs)})
     else:
-        psi_m = ManyBodyState({})
-    (psi_m,) = basis_m.redistribute_psis([ManyBodyBlockState.from_states([psi_m])])[0].to_states()
+        psi_m = ManyBodyState(width=1)
+    (psi_m,) = basis_m.redistribute_psis([ManyBodyState.from_states([psi_m])])[0].to_states()
 
     rho_mpi = build_density_matrices(
         basis_m,
@@ -531,88 +524,10 @@ def test_density_matrix_mpi_vs_serial():
 
 
 # ---------------------------------------------------------------------------
-# graph_alltoall_psis unit tests
+# graph_alltoall_block unit tests (the sole redistribution primitive: every
+# state is a block, p == 1 an ordinary case -- see test_block_state.py for the
+# serial-copy / ring-exchange / empty-contributor coverage)
 # ---------------------------------------------------------------------------
-
-
-def test_graph_alltoall_psis_serial_passthrough():
-    """With comm=None the list must come back unchanged."""
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
-
-    n_bytes = 8
-    psi = ManyBodyState({SlaterDeterminant.from_bytes(b"\x80" + b"\x00" * 7): 1.0 + 0j})
-    psis = [psi]
-    result = graph_alltoall_psis(psis, n_bytes, None)
-    assert result == psis
-
-
-def test_graph_alltoall_psis_single_rank():
-    """With COMM_SELF (size 1) the list must come back unchanged."""
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
-
-    n_bytes = 8
-    psi = ManyBodyState(
-        {
-            SlaterDeterminant.from_bytes(b"\x80" + b"\x00" * 7): 1.0 + 0j,
-            SlaterDeterminant.from_bytes(b"\x40" + b"\x00" * 7): 0.5 + 0j,
-        }
-    )
-    psis = [psi]
-    result = graph_alltoall_psis(psis, n_bytes, MPI.COMM_SELF)
-    assert result == psis
-
-
-@pytest.mark.mpi
-def test_graph_alltoall_psis_ring_exchange():
-    """
-    Ring exchange: each rank sends one state+amplitude to its right neighbour.
-    Verify the received state and amplitude are correct.
-    """
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
-
-    comm = MPI.COMM_WORLD
-    n_bytes = 8
-    (comm.rank + 1) % comm.size
-    (comm.rank - 1) % comm.size
-
-    # We need to construct a state whose hash % size == dest
-    # Finding a valid state is tedious, so let's just use a random state.
-    # Actually, in the new implementation, graph_alltoall_psis internally hashes the state and routes it.
-    # We can't easily force a state to go to `dest`. We just let it route.
-    state = SlaterDeterminant.from_bytes((comm.rank + 1).to_bytes(8, "little"))
-    state.routing_hash() % comm.size
-
-    amp = complex(comm.rank + 1, 0)
-    psis = [ManyBodyState({state: amp})]
-
-    result = graph_alltoall_psis(psis, n_bytes, comm)
-
-    # The expected state should be received by `target_rank`
-    # Let's gather all results and check.
-    all_results = comm.gather(result[0].to_dict(), root=0)
-    if comm.rank == 0:
-        # Check that the state sent by each rank arrived at the correct destination
-        for r in range(comm.size):
-            s = SlaterDeterminant.from_bytes((r + 1).to_bytes(8, "little"))
-            expected_target = s.routing_hash() % comm.size
-            expected_amp = complex(r + 1, 0)
-            assert s in all_results[expected_target], f"State from {r} didn't reach {expected_target}"
-            assert abs(all_results[expected_target][s] - expected_amp) < 1e-12
-
-
-@pytest.mark.mpi
-def test_graph_alltoall_psis_empty():
-    """All-empty send list must produce all-empty result."""
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState
-
-    comm = MPI.COMM_WORLD
-    n_bytes = 8
-    n_psis = 2
-    psis = [ManyBodyState() for _ in range(n_psis)]
-    result = graph_alltoall_psis(psis, n_bytes, comm)
-    assert len(result) == n_psis
-    for pi in range(n_psis):
-        assert len(result[pi]) == 0
 
 
 def test_get_job_tasks():

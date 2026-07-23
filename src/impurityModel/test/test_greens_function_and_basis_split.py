@@ -10,7 +10,7 @@ from impurityModel.ed.greens_function import (
     get_Greens_function,
 )
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
 
 
 def _redistribute_as_width1(basis, psis):
@@ -23,7 +23,7 @@ def _redistribute_as_width1(basis, psis):
     rank's populated (eventually width-1) seeds that would deadlock redistribute_psis'
     collective. from_states forces an explicit width-1 block -- empty or not -- on
     every rank instead."""
-    blocks = [ManyBodyBlockState.from_states([psi]) for psi in psis]
+    blocks = [ManyBodyState.from_states([psi]) for psi in psis]
     return [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
 
 
@@ -57,7 +57,7 @@ def test_basis_split_and_redistribute_serial():
 
 
 def test_basis_split_and_redistribute_block_serial():
-    """Width-1 ManyBodyBlockState lists take the same pass-through path as flat
+    """Width-1 ManyBodyState lists take the same pass-through path as flat
     ManyBodyState lists (Phase 7 step 2b dual-path dispatch); serial has no MPI
     exchange to exercise, so this only covers the early-return branch."""
     states = [b"\x80", b"\x40", b"\x20", b"\x10"]
@@ -68,7 +68,7 @@ def test_basis_split_and_redistribute_block_serial():
         comm=None,
     )
 
-    psi0 = [ManyBodyBlockState({SlaterDeterminant.from_bytes(states[0]): 1.0})]
+    psi0 = [ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})]
     priorities = [1, 2]
     indices, split_roots, color, items_per_color, split_basis, psis_out, _intercomms = split_basis_and_redistribute_psi(
         basis, priorities, psi0
@@ -103,9 +103,9 @@ def test_basis_split_and_redistribute_mpi():
     # than a bare ManyBodyState({}) placeholder on the non-owning rank (see
     # _redistribute_as_width1's docstring for why a bare placeholder is a hazard).
     if comm.rank == 0:
-        psi0 = [ManyBodyBlockState.from_states([ManyBodyState({SlaterDeterminant.from_bytes(s): 1.0 for s in states})])]
+        psi0 = [ManyBodyState.from_states([ManyBodyState({SlaterDeterminant.from_bytes(s): 1.0 for s in states})])]
     else:
-        psi0 = [ManyBodyBlockState.from_states([ManyBodyState({})])]
+        psi0 = [ManyBodyState(width=1)]
 
     # Redistribute the psis
     redist_psi = [blk.to_states()[0] for blk in basis.redistribute_psis(psi0)]
@@ -142,7 +142,7 @@ def test_basis_split_and_redistribute_mpi():
 
 @pytest.mark.mpi
 def test_basis_split_and_redistribute_block_mpi():
-    """Width-1 ManyBodyBlockState lists take the same split_basis_and_redistribute_psi
+    """Width-1 ManyBodyState lists take the same split_basis_and_redistribute_psi
     send/receive path as flat ManyBodyState lists (Phase 7 step 2b): the intercomm wire
     format unwraps each Row to a plain scalar (``v[0]``) and reconstructs a width-1 block
     on receipt, so the total seeded weight must round-trip exactly like the flat path."""
@@ -159,15 +159,15 @@ def test_basis_split_and_redistribute_block_mpi():
     )
 
     if comm.rank == 0:
-        psi0 = [ManyBodyBlockState({SlaterDeterminant.from_bytes(s): 1.0 for s in states})]
+        psi0 = [ManyBodyState({SlaterDeterminant.from_bytes(s): 1.0 for s in states})]
     else:
-        # A genuine width-0 ManyBodyBlockState({}) is the polymorphic zero, not a
+        # A genuine width-0 ManyBodyState({}) is the polymorphic zero, not a
         # width-1 placeholder -- it would trip split_basis_and_redistribute_psi's
         # width guard on this rank only, an asymmetric exception that deadlocks the
         # other rank's matching recv. from_states forces an explicit width-1 zero
         # block instead, the same convention test_mpi_comm.py's block redistribute
         # tests use for an empty-rank placeholder.
-        psi0 = [ManyBodyBlockState.from_states([ManyBodyState({})])]
+        psi0 = [ManyBodyState(width=1)]
 
     priorities = [1.0, 1.0]
     result = split_basis_and_redistribute_psi(basis, priorities, psi0)
@@ -183,7 +183,7 @@ def test_basis_split_and_redistribute_block_mpi():
     assert split_basis.comm.size == expected_size
 
     assert len(psis_out) == 1
-    assert isinstance(psis_out[0], ManyBodyBlockState)
+    assert isinstance(psis_out[0], ManyBodyState)
     total = sum(psis_out[0].get(sd)[0].real for sd in split_basis.local_basis)
     assert np.isclose(total, len(split_basis.local_basis))
 
@@ -218,8 +218,8 @@ def test_memory_budget_caps_unit_split_mpi(monkeypatch):
     # owning rank takes the block path, an asymmetric mismatch reaching the same
     # collective (and, once the flat and block classes merge in Phase 7 step 3, a bare
     # placeholder is the width-0 polymorphic zero regardless, tripping the width guard).
-    psi = ManyBodyBlockState.from_states(
-        [ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0} if comm.rank == 0 else {})]
+    psi = ManyBodyState.from_states(
+        [ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0} if comm.rank == 0 else {}, width=1)]
     )
     unit_seeds = [[psi], [psi]]
     unit_weights = np.array([1.0, 1.0])
@@ -307,7 +307,7 @@ def test_calc_Greens_function_with_offdiag_mpi():
     )
 
     # Ground state
-    psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0}) if comm.rank == 0 else ManyBodyState({})
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0}) if comm.rank == 0 else ManyBodyState(width=1)
     (psi,) = _redistribute_as_width1(basis, [psi])
 
     # tOp
@@ -356,7 +356,7 @@ def test_calc_Greens_function_with_offdiag_mpi_sparse():
     )
 
     # Ground state
-    psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0}) if comm.rank == 0 else ManyBodyState({})
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0}) if comm.rank == 0 else ManyBodyState(width=1)
     (psi,) = _redistribute_as_width1(basis, [psi])
 
     # tOp
@@ -414,8 +414,8 @@ def test_calc_map_mpi():
         psi1 = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
         psi2 = ManyBodyState({SlaterDeterminant.from_bytes(states[1]): 1.0})
     else:
-        psi1 = ManyBodyState({})
-        psi2 = ManyBodyState({})
+        psi1 = ManyBodyState(width=1)
+        psi2 = ManyBodyState(width=1)
     psis = _redistribute_as_width1(basis, [psi1, psi2])
 
     # wIns, wLoss, delta
@@ -536,7 +536,7 @@ def test_mpi_load_balancing_gf_split_vs_unified():
             )
             psi = psi / psi.norm()
         else:
-            psi = ManyBodyState({})
+            psi = ManyBodyState(width=1)
         (psi,) = _redistribute_as_width1(basis, [psi])
         return calc_Greens_function_with_offdiag(
             hOp=hOp,
@@ -591,7 +591,7 @@ def test_get_Greens_function_split_threshold_invariant_mpi():
         if comm.rank == 0:
             psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in (b"\x80", b"\x40")]
         else:
-            psis = [ManyBodyState({}), ManyBodyState({})]
+            psis = [ManyBodyState(width=1), ManyBodyState(width=1)]
         psis = _redistribute_as_width1(basis, psis)
         _, gs_real, _ = get_Greens_function(
             matsubara_mesh=None,
@@ -655,7 +655,7 @@ def test_get_Greens_function_operator_split_matches_block_mpi():
         if comm.rank == 0:
             psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in state_bytes]
         else:
-            psis = [ManyBodyState({}), ManyBodyState({})]
+            psis = [ManyBodyState(width=1), ManyBodyState(width=1)]
         psis = _redistribute_as_width1(basis, psis)
         old = os.environ.get("GF_OPERATOR_SPLIT")
         os.environ["GF_OPERATOR_SPLIT"] = "1" if op_split else "0"
@@ -798,7 +798,7 @@ def test_calc_spectra_split_threshold_invariant_mpi():
         if comm.rank == 0:
             psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in (b"\x80", b"\x40")]
         else:
-            psis = [ManyBodyState({}), ManyBodyState({})]
+            psis = [ManyBodyState(width=1), ManyBodyState(width=1)]
         psis = _redistribute_as_width1(basis, psis)
         old = os.environ.get("GF_EIGENSTATE_GROUP")
         os.environ["GF_EIGENSTATE_GROUP"] = str(group)
@@ -860,7 +860,7 @@ def test_calc_map_win_chunk_invariant_mpi():
         if comm.rank == 0:
             psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in states[:2]]
         else:
-            psis = [ManyBodyState({}), ManyBodyState({})]
+            psis = [ManyBodyState(width=1), ManyBodyState(width=1)]
         psis = _redistribute_as_width1(basis, psis)
         old = os.environ.get("GF_RIXS_WIN_CHUNK")
         os.environ["GF_RIXS_WIN_CHUNK"] = str(chunk)

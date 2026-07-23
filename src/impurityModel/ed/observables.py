@@ -811,7 +811,7 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
 
     Parameters
     ----------
-    psis : ManyBodyBlockState
+    psis : ManyBodyState
         Eigenstates as one shared-support block (rank-local when distributed), one
         column per state.
     es, tau
@@ -907,7 +907,7 @@ def compute_static_susceptibilities(
 
     Parameters
     ----------
-    psis : ManyBodyBlockState
+    psis : ManyBodyState
         Eigenstates as one shared-support block (rank-local when distributed), one
         column per state.
     es, tau
@@ -1320,14 +1320,14 @@ def manifold_observable_values(eigenstates, energies, apply_op, degeneracy_tol=1
 
     Parameters
     ----------
-    eigenstates : ManyBodyBlockState
+    eigenstates : ManyBodyState
         Orthonormal manifold basis (e.g. a Lanczos block) as one shared-support block,
         one column per state; rank-local when ``comm`` is given, otherwise full.
     energies : array_like of shape (N,)
         Energy of each eigenstate (used only to group degenerate subspaces).
     apply_op : callable
         ``apply_op(eigenstates)`` returns :math:`\hat O` applied to every column at once,
-        as a ``ManyBodyBlockState`` of the same width (e.g. ``lambda blk: op.apply_block(blk,
+        as a ``ManyBodyState`` of the same width (e.g. ``lambda blk: op.apply_block(blk,
         0)``) -- one term/sign pass per determinant shared across all N states, not N
         independent applies.
     degeneracy_tol : float, default 1e-6

@@ -11,15 +11,12 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyBlockState,
     ManyBodyState,
     SlaterDeterminant,
     pack_block_fused_cy,
     pack_determinants_cy,
-    pack_psis_fused_cy,
     unpack_block_fused_cy,
     unpack_determinants_cy,
-    unpack_psis_fused_cy,
 )
 
 # MPI variables
@@ -27,7 +24,7 @@ comm = MPI.COMM_WORLD
 rank = comm.rank
 ranks = comm.size
 
-# Cache of distributed-graph communicators for graph_alltoall_psis, keyed by id(parent
+# Cache of distributed-graph communicators for graph_alltoall_block, keyed by id(parent
 # comm). Building a dist_graph is a collective with real setup cost; at 100s-1000s of
 # ranks rebuilding it every matvec dominates. We reuse it whenever the per-rank
 # (sources, destinations) neighbourhood is unchanged. The parent comm is pinned in the
@@ -360,77 +357,19 @@ def distribute_determinants(
         return [[] for _ in range(size)]
 
 
-def graph_alltoall_psis(
-    psis: "list[ManyBodyState]",
-    n_bytes: int,
-    comm: "MPI.Comm",
-) -> "list[ManyBodyState]":
-    """
-    Efficiently redistribute many-body state amplitudes across MPI ranks.
-    """
-    if comm is None or comm.size <= 1:
-        return [psi.copy() for psi in psis]
-
-    size = comm.size
-    chunks_per_state = (n_bytes + 7) // 8
-    # One interleaved entry = state chunks + complex amp + int32 psi index.
-    bytes_per_entry = chunks_per_state * 8 + 2 * 8 + 4
-
-    # 1. Cython packing into a single rank-ordered byte buffer (counts are entries/rank).
-    send_counts, send_buf = pack_psis_fused_cy(psis, size, chunks_per_state)
-
-    # 2. Exchange counts
-    recv_counts = np.empty(size, dtype=np.int64)
-    comm.Alltoall(send_counts, recv_counts)
-
-    # 3. Reuse (or build) the graph communicator over the send/recv neighbourhood.
-    destinations = [r for r in range(size) if send_counts[r] > 0]
-    sources = [r for r in range(size) if recv_counts[r] > 0]
-    graph_comm = _cached_dist_graph(comm, sources, destinations)
-
-    s_counts_nb = np.array([send_counts[r] for r in destinations], dtype=np.int64)
-    s_displs_nb = (
-        np.concatenate(([0], np.cumsum(s_counts_nb[:-1]))) if len(s_counts_nb) else np.array([], dtype=np.int64)
-    )
-
-    # 4. Allocate the single receive byte buffer
-    total_recv = int(np.sum(recv_counts))
-    recv_buf = np.empty(total_recv * bytes_per_entry, dtype=np.uint8)
-
-    r_counts_nb = np.array([recv_counts[r] for r in sources], dtype=np.int64)
-    r_displs_nb = (
-        np.concatenate(([0], np.cumsum(r_counts_nb[:-1]))) if len(r_counts_nb) else np.array([], dtype=np.int64)
-    )
-
-    # 5. One fused exchange (BYTE) instead of three -- 3x fewer latency-bound rounds, the
-    #    dominant cost of the dense small-message all-to-all at 100s-1000s of ranks.
-    graph_comm.Neighbor_alltoallv(
-        [send_buf, s_counts_nb * bytes_per_entry, s_displs_nb * bytes_per_entry, MPI.BYTE],
-        [recv_buf, r_counts_nb * bytes_per_entry, r_displs_nb * bytes_per_entry, MPI.BYTE],
-    )
-
-    # 6. graph_comm is cached for reuse (not freed here); see _cached_dist_graph.
-
-    # 7. Unpack into result
-    res = [ManyBodyState() for _ in psis]
-    if total_recv > 0:
-        unpack_psis_fused_cy(res, size, recv_counts, recv_buf, chunks_per_state)
-
-    return res
-
-
 def graph_alltoall_block(
-    block: "ManyBodyBlockState",
+    block: "ManyBodyState",
     n_bytes: int,
     comm: "MPI.Comm",
-) -> "ManyBodyBlockState":
+) -> "ManyBodyState":
     """Redistribute a shared-support block state across MPI ranks (Phase 2.3).
 
-    The block analogue of :func:`graph_alltoall_psis`: one wire entry per
-    shared-support ROW (``[det | width x complex amp]``, no per-entry psi index),
-    same ``routing_hash`` ownership, same cached dist-graph + single fused
-    ``Neighbor_alltoallv(MPI.BYTE)``. Rows for the same determinant arriving from
-    several ranks are summed per column, bit-identically to the scalar path.
+    One wire entry per shared-support ROW (``[det | width x complex amp]``, no
+    per-entry psi index), ``routing_hash`` ownership, a cached dist-graph + single
+    fused ``Neighbor_alltoallv(MPI.BYTE)``. Rows for the same determinant arriving
+    from several ranks are summed per column. The one redistribution primitive
+    ``Basis.redistribute_psis``/``redistribute_block`` route through -- every state
+    is a block (``p == 1`` an ordinary case), so there is no separate flat-list path.
     """
     if comm is None or comm.size <= 1:
         return block.copy()

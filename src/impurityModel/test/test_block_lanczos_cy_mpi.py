@@ -136,7 +136,6 @@ def create_tight_binding_h_and_basis_mpi(comm):
     import itertools
 
     from impurityModel.ed.manybody_basis import Basis
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     n_sites = 8
     n_particles = 4
@@ -171,7 +170,6 @@ def test_trlm_cy_tight_binding_mpi():
 
     from impurityModel.ed.BlockLanczos import thick_restart_block_lanczos_cy
     from impurityModel.ed.BlockLanczosArray import block_normalize
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
     comm = MPI.COMM_WORLD
     h_op, basis = create_tight_binding_h_and_basis_mpi(comm)
@@ -284,7 +282,7 @@ def test_irlm_cy_selective_reort_orthogonality_mpi():
     )
     h_op = ManyBodyOperator(hop)
 
-    psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis})]
+    psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis}, width=1)]
     psi0 = basis.redistribute_psis(psi0)
     psi0, _ = block_normalize(psi0, True, comm)
 
@@ -331,7 +329,7 @@ def test_trlm_cy_selective_reort_orthogonality_mpi():
     )
     h_op = ManyBodyOperator(hop)
 
-    psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis})]
+    psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis}, width=1)]
     psi0 = basis.redistribute_psis(psi0)
     psi0, _ = block_normalize(psi0, True, comm)
 

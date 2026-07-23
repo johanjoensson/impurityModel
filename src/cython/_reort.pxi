@@ -9,10 +9,9 @@
 import scipy.sparse as sps
 from impurityModel.ed.ManyBodyUtils import (
     inner_multi,
-    add_scaled_multi,
     reorth_cgs2_dense,
     SparseKrylovDense,
-    ManyBodyBlockState,
+    ManyBodyState,
     block_inner_cy,
     block_add_scaled_cy,
 )
@@ -34,7 +33,7 @@ cpdef object block_inner(object V, object W, bint mpi=False, object comm=None):
         if mpi and comm is not None:
             comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
         return res
-    elif isinstance(V, ManyBodyBlockState):
+    elif isinstance(V, ManyBodyState):
         # A shared-support block: dispatch to the block-native Gram matrix directly.
         # ``inner_multi`` below assumes list[ManyBodyState] -- ``list(a_block)`` iterates
         # its determinant KEYS, not rows, so it would silently return garbage rather than
@@ -68,8 +67,8 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
             offsets = np.array([np.sum(counts[:r]) for r in range(comm.size)], dtype=int)
             return res_global[offsets[rank] : offsets[rank] + local_N, :]
         return res
-    elif isinstance(V, ManyBodyBlockState):
-        # apply_multi is list-typed (a plain ManyBodyBlockState would raise TypeError
+    elif isinstance(V, ManyBodyState):
+        # apply_multi is list-typed (a plain ManyBodyState would raise TypeError
         # there); apply_block is the block-native counterpart (Phase 2.2), near-flat
         # cost in width vs. apply_multi's linear scaling.
         wp = H.apply_block(V, cutoff=slaterWeightMin)
@@ -85,7 +84,7 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
 cpdef object block_add_scaled(object V, object W, object alpha, double slaterWeightMin=0.0):
     if is_array(V):
         V += W @ alpha
-    elif isinstance(V, ManyBodyBlockState):
+    elif isinstance(V, ManyBodyState):
         # A shared-support block is never mutated in place (its union support can outgrow
         # V's own storage, same as every other block_add_scaled_cy caller) -- rebind V to
         # the new block instead. Every current caller of this dispatcher already captures
@@ -96,10 +95,11 @@ cpdef object block_add_scaled(object V, object W, object alpha, double slaterWei
         if slaterWeightMin > 0:
             V.prune_rows(slaterWeightMin)
     else:
-        add_scaled_multi(V, W, alpha)
-        if slaterWeightMin > 0:
-            for st in V:
-                st.prune(slaterWeightMin)
+        # A bare list[ManyBodyState] V reached here until Phase 5 step 6: every current
+        # caller (BiCGSTAB.pyx/GMRES.pyx, already block-native end to end) passes a
+        # genuine ManyBodyState here, and the array-only in-place calls are
+        # guarded by the is_array check above.
+        raise TypeError(f"block_add_scaled: unsupported V type {type(V)!r}")
     return V
 
 cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
@@ -111,10 +111,10 @@ cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
         # Columnar Krylov store: one zgemm over the dense buffer + scatter directly into
         # ONE block over the union of nonzero rows (combine_block) — every current caller
         # of this branch (selective_orthogonalize) immediately feeds the result into
-        # block_inner/block_add_scaled, which need a ManyBodyBlockState, not a
+        # block_inner/block_add_scaled, which need a ManyBodyState, not a
         # list[ManyBodyState] (see combine() vs combine_block() on SparseKrylovDense).
         return Q.combine_block(Y, slaterWeightMin=slaterWeightMin)
-    elif isinstance(Q, ManyBodyBlockState):
+    elif isinstance(Q, ManyBodyState):
         # Already a shared-support block: combine_columns is the block-native "self @ Y"
         # (bit-for-bit the same j-ascending accumulation as add_scaled_multi, see
         # test_combine_columns_matches_dense_reference).
@@ -129,13 +129,13 @@ cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
             pruned = out.to_states()
             for st in pruned:
                 st.prune(slaterWeightMin)
-            out = ManyBodyBlockState.from_states(pruned)
+            out = ManyBodyState.from_states(pruned)
         return out
     else:
         # A bare list[ManyBodyState] Q reached here until Phase 5 step 6: TRLM/IRLM's own
         # seed (psi0) was the last production path that fed one in, and it is now converted
-        # to a ManyBodyBlockState at the entry point before ever reaching this dispatcher.
-        # list[ManyBodyBlockState] (the store_krylov=False Q_basis shape) never reaches
+        # to a ManyBodyState at the entry point before ever reaching this dispatcher.
+        # list[ManyBodyState] (the store_krylov=False Q_basis shape) never reaches
         # block_combine either -- its one caller (ChebyshevFilter.pyx) discards Q_basis
         # outright.
         raise TypeError(f"block_combine: unsupported Q type {type(Q)!r}")
@@ -145,12 +145,12 @@ cpdef tuple block_orthogonalize(object wp, object Q, object overlaps=None, bint 
         if isinstance(Q, list):
             Q = np.column_stack(Q)
         return block_orthogonalize_array(wp, Q, overlaps, comm if mpi else None)
-    elif isinstance(wp, ManyBodyBlockState):
+    elif isinstance(wp, ManyBodyState):
         # Both operands must be blocks (the caller's responsibility, same as every other
         # block-native pairing in this module, e.g. selective_orthogonalize's ritz_blk/
         # q_next): block_inner/block_add_scaled dispatch on their first argument only, so
         # a stray list Q here would silently reach inner_multi/add_scaled_multi with a
-        # ManyBodyBlockState instead of raising.
+        # ManyBodyState instead of raising.
         if overlaps is None:
             overlaps = block_inner(Q, wp, mpi, comm)
         wp = block_add_scaled(wp, Q, -overlaps)
@@ -175,7 +175,7 @@ cpdef tuple block_tsqr(object wp, bint mpi=False, object comm=None, double scale
 
     The single orthonormalization entry point of the Krylov layer: dispatches on ``is_array``
     exactly like :func:`block_normalize` / :func:`block_combine`, so the dense-array kernel,
-    the ``ManyBodyBlockState`` kernel and the ``ManyBodyState``-list callers all share one
+    the ``ManyBodyState`` kernel and the ``ManyBodyState``-list callers all share one
     factorization. ``Q`` comes back in the same representation ``wp`` arrived in.
 
     The block representations reach the numerics through their buffer protocol, i.e. without a
@@ -198,10 +198,10 @@ cpdef tuple block_tsqr(object wp, bint mpi=False, object comm=None, double scale
     """
     cdef object src = None       # the block backing the array view, for the write-back
     cdef bint as_list = False
-    if isinstance(wp, ManyBodyBlockState):
+    if isinstance(wp, ManyBodyState):
         src = wp
     elif isinstance(wp, list) and len(wp) > 0 and not isinstance(wp[0], np.ndarray):
-        src = ManyBodyBlockState.from_states(list(wp))
+        src = ManyBodyState.from_states(list(wp))
         as_list = True
 
     if src is not None:
@@ -215,7 +215,7 @@ cpdef tuple block_tsqr(object wp, bint mpi=False, object comm=None, double scale
     if k <= 0 or src is None:
         return Q, beta, k, sv
 
-    Q_block = ManyBodyBlockState.from_keys_and_amps(src, Q)
+    Q_block = ManyBodyState.from_keys_and_amps(src, Q)
     if as_list:
         Q_states = Q_block.to_states()
         if slaterWeightMin > 0:
@@ -249,7 +249,7 @@ def selective_orthogonalize(q_next, Q_basis, alphas, betas, W, block_widths,
 
     Parameters
     ----------
-    q_next : ndarray or ManyBodyBlockState
+    q_next : ndarray or ManyBodyState
         The freshly QR'd block to be cleaned; returned (possibly modified).
     Q_basis : ndarray or SparseKrylovDense
         The accumulated Krylov basis (all ``it+1`` blocks), indexed by ``s_k``.
@@ -275,7 +275,7 @@ def selective_orthogonalize(q_next, Q_basis, alphas, betas, W, block_widths,
 
     Returns
     -------
-    q_next : ndarray or ManyBodyBlockState
+    q_next : ndarray or ManyBodyState
         ``q_next`` with the flagged converged Ritz directions removed.
     """
     if not (it > 0 and it % period == 0):
@@ -346,7 +346,7 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
     # machinery via a boundary conversion: on every call for FULL/PERIODIC, but for
     # PARTIAL/SELECTIVE only when a bad block actually triggers — the common no-op
     # case never materializes the block.
-    cdef bint was_block = isinstance(wp, ManyBodyBlockState)
+    cdef bint was_block = isinstance(wp, ManyBodyState)
 
     if is_array(wp):
         active_k = wp.shape[1]
@@ -371,16 +371,16 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                 # `from_unsorted`'s stable sort means the states would come back key-sorted
                 # rather than in wp's original row order -- harmless (ManyBodyState is
                 # itself a sorted map), but worth knowing if this path is ever revived.
-                wp_blk = ManyBodyBlockState.from_states(wp)
+                wp_blk = ManyBodyState.from_states(wp)
                 wp_blk, _ = krylov.reort(wp_blk, None, 2, comm if mpi else None)
                 wp = wp_blk.to_states()
         else:
             if was_block:
                 wp = wp.to_states()
-            # Sparse path fallback: 2-pass CGS2 in dense BLAS (materialize Q from flat_maps).
+            # Sparse path fallback: 2-pass CGS2 in dense BLAS (materialize Q from width-1 blocks).
             wp, _ = reorth_cgs2_dense(wp, Q_list, 2, comm if mpi else None)
             if was_block:
-                wp = ManyBodyBlockState.from_states(wp)
+                wp = ManyBodyState.from_states(wp)
         acted = True
 
     elif reort in (Reort.PARTIAL, Reort.SELECTIVE):
@@ -426,7 +426,7 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                     else:
                         # Defensive only: see the matching branch in the FULL/PERIODIC case
                         # above -- not exercised by any current caller.
-                        wp_blk = ManyBodyBlockState.from_states(wp)
+                        wp_blk = ManyBodyState.from_states(wp)
                         wp_blk, O_last = krylov.reort(wp_blk, bad_cols, 2, comm if mpi else None)
                         wp = wp_blk.to_states()
                 else:
@@ -436,7 +436,7 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                     # Sparse path fallback: 2-pass CGS2 in dense BLAS over the flagged bad blocks.
                     wp, O_last = reorth_cgs2_dense(wp, Q_bad, 2, comm if mpi else None)
                     if was_block:
-                        wp = ManyBodyBlockState.from_states(wp)
+                        wp = ManyBodyState.from_states(wp)
 
                 # HONEST reset (the old ``W = EPS`` was a lie that lost production runs):
                 # against a Krylov set whose own mutual orthogonality has degraded to

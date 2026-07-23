@@ -103,7 +103,7 @@ def siam():
     Vm = np.zeros((len(index), len(psi)), dtype=complex)
     for j, s in enumerate(psi):
         for d, a in s.items():
-            Vm[index[d], j] = a
+            Vm[index[d], j] = a[0]
     g_ref = np.array([Vm.conj().T @ np.linalg.solve((w + 1j * DELTA) * np.eye(len(index)) - H, Vm) for w in OMEGA])
     return hOp, imp, baths, psi, support, full.size, g_ref
 

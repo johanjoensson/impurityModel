@@ -13,7 +13,6 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyBlockState,
     ManyBodyState,
     SlaterDeterminant,
     SparseKrylovDense,
@@ -53,7 +52,7 @@ def _dense_combine(states, Y, slater_weight_min=0.0):
     M = np.zeros((len(keys), len(states)), dtype=complex)
     for j, st in enumerate(states):
         for k, v in st.to_dict().items():
-            M[idx[k], j] = v
+            M[idx[k], j] = v[0]
     out = M @ np.asarray(Y, dtype=complex)
     result = [ManyBodyState({keys[i]: out[i, c] for i in range(len(keys))}) for c in range(out.shape[1])]
     if slater_weight_min > 0:
@@ -145,7 +144,7 @@ def test_store_combine_single_vector_and_shape_check():
 
 def test_store_combine_block_matches_combine():
     """``combine_block`` must equal ``combine`` -- same dense product, scattered into ONE
-    ``ManyBodyBlockState`` over the union of nonzero rows instead of per-column states."""
+    ``ManyBodyState`` over the union of nonzero rows instead of per-column states."""
     rng = np.random.default_rng(23)
     states = _random_states(rng, 8, 60)
     store = SparseKrylovDense()
@@ -154,7 +153,7 @@ def test_store_combine_block_matches_combine():
     Y = rng.standard_normal((8, 3)) + 1j * rng.standard_normal((8, 3))
     ref = store.combine(Y)
     out = store.combine_block(Y)
-    assert isinstance(out, ManyBodyBlockState)
+    assert isinstance(out, ManyBodyState)
     assert out.width == 3
     assert out.to_states() == ref
 
@@ -201,7 +200,7 @@ def test_store_combine_block_prunes_by_row_not_by_column():
 
 
 def test_store_slice_block_matches_from_states_getitem():
-    """``slice_block`` replaces ``ManyBodyBlockState.from_states(store[a:b])`` at its two
+    """``slice_block`` replaces ``ManyBodyState.from_states(store[a:b])`` at its two
     production call sites -- verify it produces the same block (same support, same
     coefficients) as that reference path, not just the same combine() product."""
     rng = np.random.default_rng(31)
@@ -209,14 +208,14 @@ def test_store_slice_block_matches_from_states_getitem():
     store = SparseKrylovDense()
     store.append(states)
 
-    ref = ManyBodyBlockState.from_states(store[2:6])
+    ref = ManyBodyState.from_states(store[2:6])
     out = store.slice_block(2, 6)
-    assert isinstance(out, ManyBodyBlockState)
+    assert isinstance(out, ManyBodyState)
     assert out.width == 4
     assert out.to_states() == ref.to_states()
 
     # whole range, default b
-    assert store.slice_block(0).to_states() == ManyBodyBlockState.from_states(store[0:8]).to_states()
+    assert store.slice_block(0).to_states() == ManyBodyState.from_states(store[0:8]).to_states()
 
     # empty range
     empty = store.slice_block(3, 3)
@@ -234,7 +233,7 @@ def test_store_slice_block_clamps_b_past_n_cols():
     store = SparseKrylovDense()
     store.append(states)
 
-    ref = ManyBodyBlockState.from_states(store[0:5])
+    ref = ManyBodyState.from_states(store[0:5])
     out = store.slice_block(0, 5)
     assert out.width == ref.width == 3
     assert out.to_states() == ref.to_states()
@@ -260,7 +259,7 @@ def test_store_slice_block_across_chunk_boundary():
     for i in range(0, 40, 7):
         store.append(states[i : i + 7])
 
-    ref = ManyBodyBlockState.from_states(store[28:36])
+    ref = ManyBodyState.from_states(store[28:36])
     out = store.slice_block(28, 36)
     assert out.to_states() == ref.to_states()
 
@@ -275,9 +274,9 @@ def test_store_slice_block_used_by_q_slice():
     store = SparseKrylovDense()
     store.append(states)
 
-    ref = ManyBodyBlockState.from_states(store[1:4])
+    ref = ManyBodyState.from_states(store[1:4])
     out = _q_slice(store, 1, 4)
-    assert isinstance(out, ManyBodyBlockState)
+    assert isinstance(out, ManyBodyState)
     assert out.to_states() == ref.to_states()
 
 
@@ -335,7 +334,7 @@ def test_store_reort_matches_reorth_cgs2_dense(cols):
     wp = _random_states(rng, p, n_dets, sparsity=0.9)
     selected = qcols if cols is None else [qcols[c] for c in cols]
 
-    wp_blk = ManyBodyBlockState.from_states([ManyBodyState(dict(s.items())) for s in wp])
+    wp_blk = ManyBodyState.from_states([ManyBodyState(dict(s.items())) for s in wp])
     out_new_blk, o_new = store.reort(wp_blk, cols, 2, None)
     out_new = out_new_blk.to_states()
     out_ref, o_ref = reorth_cgs2_dense([ManyBodyState(dict(s.items())) for s in wp], selected, 2, None)
@@ -364,7 +363,7 @@ def test_store_reort_transient_is_not_store_sized(cols):
         store.append(qcols[i : i + p])
 
     buffer_bytes = store.stats()["buffer_bytes"]
-    wp = ManyBodyBlockState.from_states(_random_states(rng, p, n_dets, sparsity=1.0))
+    wp = ManyBodyState.from_states(_random_states(rng, p, n_dets, sparsity=1.0))
 
     tracemalloc.start()
     try:

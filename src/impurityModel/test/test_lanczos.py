@@ -7,7 +7,7 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, eigsh
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, applyOp
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp, SlaterDeterminant
 
 
 def test_lancos():
@@ -44,7 +44,7 @@ def test_lancos():
             psi = applyOp(op_mbo, gs_i[0])
             N = psi.norm()
             if N > 1e-12:
-                psi = ManyBodyState({state: amp / N for state, amp in psi.items()})
+                psi = ManyBodyState({state: amp[0] / N for state, amp in psi.items()}, width=1)
                 excited_basis = Basis(
                     impurity_orbitals={2: [[0, 1, 2, 3, 4]]},
                     bath_states=({2: [[]]}, {2: [[]]}),
@@ -113,7 +113,7 @@ def test_lancos_mpi():
             print(f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} passed allreduce for N2", flush=True)
             N = np.sqrt(N2)
             if N > 1e-12:
-                psi = ManyBodyState({state: amp / N for state, amp in psi.items()})
+                psi = ManyBodyState({state: amp[0] / N for state, amp in psi.items()}, width=1)
                 excited_basis = Basis(
                     impurity_orbitals={2: [[0, 1, 2, 3, 4]]},
                     bath_states=({2: [[]]}, {2: [[]]}),
@@ -178,7 +178,7 @@ def test_eigsh_mpi():
         print(f"{alphas.shape=}")
         return alphas.shape[0] > 5
 
-    psi0 = [ManyBodyState({state: 1 / np.sqrt(len(states)) for state in basis.local_basis})]
+    psi0 = [ManyBodyState({state: 1 / np.sqrt(len(states)) for state in basis.local_basis}, width=1)]
     alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=Reort.PARTIAL)
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
@@ -231,7 +231,6 @@ def test_block_eigsh_mpi(reort_mode):
 
     if basis.comm.rank == 0:
         # Construct globally valid states on rank 0
-        from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
 
         global_states = [SlaterDeterminant.from_bytes(s) for s in states]
         psi0 = [
@@ -239,13 +238,13 @@ def test_block_eigsh_mpi(reort_mode):
             ManyBodyState({s: 1 / np.sqrt(3) for s in global_states[3:]}),
         ]
     else:
-        psi0 = [ManyBodyState(), ManyBodyState()]
+        psi0 = [ManyBodyState(width=1), ManyBodyState(width=1)]
     # Each seed goes through its own explicit width-1 block rather than a bare
     # ManyBodyState() placeholder on the non-owning rank: once the flat and block
     # classes merge (Phase 7 step 3), a bare placeholder is the width-0 polymorphic
     # zero, an asymmetric mismatch against the owning rank's populated (eventually
     # width-1) seeds that would deadlock redistribute_psis' collective.
-    psi0_blocks = [ManyBodyBlockState.from_states([psi]) for psi in psi0]
+    psi0_blocks = [ManyBodyState.from_states([psi]) for psi in psi0]
     psi0 = [blk.to_states()[0] for blk in basis.redistribute_psis(psi0_blocks)]
     print(f"RANK {basis.comm.rank} psi0: {psi0}", flush=True)
     alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
@@ -292,7 +291,7 @@ def test_block_lanczos_cy_mpi(reort_mode):
     def converged(alphas, betas, *args, **kwargs):
         return alphas.shape[0] > 5
 
-    psi0 = [ManyBodyState({state: 1 / np.sqrt(len(states)) for state in basis.local_basis})]
+    psi0 = [ManyBodyState({state: 1 / np.sqrt(len(states)) for state in basis.local_basis}, width=1)]
     alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])

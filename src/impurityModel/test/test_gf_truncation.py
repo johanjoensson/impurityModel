@@ -13,7 +13,7 @@ from impurityModel.ed.basis_transcription import build_dense_matrix
 from impurityModel.ed.gf_solvers import block_Green_sparse
 from impurityModel.ed.greens_function import _CappedBasisProxy, calc_G
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
 
 DELTA = 0.1
 OMEGA = np.linspace(-8.0, 8.0, 41)
@@ -76,9 +76,9 @@ def _redistribute_as_width1(basis, states, n):
     would deadlock redistribute_psis' collective. from_states forces an explicit width-1
     block -- empty or not -- on every rank instead."""
     blocks = (
-        [ManyBodyBlockState.from_states([s]) for s in states]
+        [ManyBodyState.from_states([s]) for s in states]
         if states is not None
-        else [ManyBodyBlockState.from_states([ManyBodyState()]) for _ in range(n)]
+        else [ManyBodyState(width=1) for _ in range(n)]
     )
     return [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
 
@@ -110,7 +110,7 @@ def _dense_reference_on(retained_keys, comm=None):
     V = np.zeros((len(index), len(_seeds())), dtype=complex)
     for j, seed in enumerate(_seeds()):
         for det, amp in seed.items():
-            V[index[det], j] = amp
+            V[index[det], j] = amp[0]
     G = np.empty((len(OMEGA), V.shape[1], V.shape[1]), dtype=complex)
     for k, w in enumerate(OMEGA):
         G[k] = V.conj().T @ np.linalg.solve((w + 1j * DELTA) * np.eye(len(index)) - H, V)
@@ -181,7 +181,7 @@ def test_admission_prefers_large_amplitude_rows():
 
     seed_dets = [_det([0, 1, 2])]
     proxy = _CappedBasisProxy(_FakeBasis(seed_dets), cap=3)
-    incoming = ManyBodyBlockState.from_states(
+    incoming = ManyBodyState.from_states(
         [
             ManyBodyState(
                 {
@@ -200,7 +200,7 @@ def test_admission_prefers_large_amplitude_rows():
     assert kept == {_det([0, 1, 2]), _det([0, 1, 3]), _det([0, 1, 4])}
     assert len(out) == 3  # the block was projected onto the retained set
     # post-freeze: new rows are dropped, retained rows pass
-    later = ManyBodyBlockState.from_states([ManyBodyState({_det([0, 1, 3]): 1.0 + 0j, _det([1, 2, 3]): 2.0 + 0j})])
+    later = ManyBodyState.from_states([ManyBodyState({_det([0, 1, 3]): 1.0 + 0j, _det([1, 2, 3]): 2.0 + 0j})])
     out2 = proxy.redistribute_block(later)
     assert len(out2) == 1
     assert proxy.retained_size == 3
@@ -248,7 +248,7 @@ def test_array_path_probe_respects_cap():
     hOp = _siam_6()
     # One full H fanout from the initial basis: the largest support any single
     # probe batch can add before the in-loop cap check fires.
-    probe = ManyBodyBlockState.from_states([ManyBodyState(dict.fromkeys(basis.local_basis, 1.0 + 0j))])
+    probe = ManyBodyState.from_states([ManyBodyState(dict.fromkeys(basis.local_basis, 1.0 + 0j))])
     one_fanout = set(basis.local_basis) | set(hOp.apply_block(probe, 0).support_keys(0.0))
     assert cap < len(one_fanout) < 18  # the cap must bind inside the first probe round
 

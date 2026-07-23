@@ -28,7 +28,7 @@ import impurityModel.ed.greens_function as gf
 import impurityModel.ed.selfenergy as se
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, resolve_reort
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, block_add_scaled_cy
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, block_add_scaled_cy
 from impurityModel.test.real_workload import load_workload, run_selfenergy
 
 RUN = os.environ.get("RUN_SLICING_PROBE", "0") not in ("0", "", "false", "False")
@@ -122,7 +122,7 @@ def window_coefficients(degree, theta_pairs):
 
 def eps_support(state, cutoff):
     """Rows of a ``ManyBodyState`` with ``|amplitude| >= cutoff``."""
-    return sum(1 for _k, a in state.items() if abs(a) >= cutoff)
+    return sum(1 for _k, a in state.items() if abs(a[0]) >= cutoff)
 
 
 @pytest.mark.mpi_skip
@@ -176,10 +176,8 @@ def test_slicing_support_probe():
     proxy = gf._CappedBasisProxy(_clone(), cap)
     one = np.eye(1, dtype=complex)
     t_prev = None
-    t_cur = ManyBodyBlockState.from_states([seed])
-    accs = [
-        block_add_scaled_cy(ManyBodyBlockState.from_states([ManyBodyState()]), t_cur, c[0] * one) for c in coeff_sets
-    ]
+    t_cur = ManyBodyState.from_states([seed])
+    accs = [block_add_scaled_cy(ManyBodyState(width=1), t_cur, c[0] * one) for c in coeff_sets]
     for it in range(1, degree + 1):
         w = hOp.apply_block(t_cur, slaterWeightMin)
         w = proxy.redistribute_block(w)

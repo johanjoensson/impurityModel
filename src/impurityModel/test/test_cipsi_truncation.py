@@ -10,7 +10,7 @@ from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
 
 IMPURITY_ORBITALS = {0: [[0, 1]]}
 BATH_STATES = ({0: [[2, 3]]}, {0: [[4, 5]]})
@@ -41,7 +41,7 @@ def _redistribute_single_as_width1(basis, psi):
     populated (eventually width-1) seed on the owning rank that would deadlock
     redistribute_psis' collective. from_states forces an explicit width-1 block on
     every rank instead."""
-    (out,) = basis.redistribute_psis([ManyBodyBlockState.from_states([psi])])[0].to_states()
+    (out,) = basis.redistribute_psis([ManyBodyState.from_states([psi])])[0].to_states()
     return out
 
 
@@ -196,14 +196,14 @@ def test_truncate_top_k_mpi():
     solver = CIPSISolver(basis)
 
     # Amplitudes seeded on rank 0 only; redistribute puts each det on its owner rank.
-    psi = ManyBodyState({det: float(i + 1) for i, det in enumerate(dets)} if comm.rank == 0 else {})
+    psi = ManyBodyState({det: float(i + 1) for i, det in enumerate(dets)} if comm.rank == 0 else {}, width=1)
     psis = [_redistribute_single_as_width1(basis, psi)]
     psis = solver.truncate(psis, target=4)
 
     assert basis.size == 4
     assert _all_retained(basis) == sorted(dets[-4:])
     # Each retained det lives on exactly one rank with its original amplitude.
-    kept_local = {det: amp for p in psis for det, amp in p.items()}
+    kept_local = {det: amp[0] for p in psis for det, amp in p.items()}
     gathered = comm.allgather(kept_local)
     kept = {}
     for part in gathered:
@@ -224,7 +224,7 @@ def test_truncate_rank_may_retain_zero_rows_mpi():
     basis.add_states(dets if comm.rank == 0 else [])
     solver = CIPSISolver(basis)
 
-    psi = ManyBodyState({det: float(i + 1) for i, det in enumerate(dets)} if comm.rank == 0 else {})
+    psi = ManyBodyState({det: float(i + 1) for i, det in enumerate(dets)} if comm.rank == 0 else {}, width=1)
     psis = [_redistribute_single_as_width1(basis, psi)]
     solver.truncate(psis, target=1)
 

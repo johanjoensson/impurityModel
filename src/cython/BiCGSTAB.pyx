@@ -8,7 +8,7 @@ Block BiCGSTAB linear solver for the many-body layer.
 
 Solves ``A X = Y`` for a block right-hand side, on the same two representations the
 block-Lanczos kernels support: dense ``numpy`` arrays and hash-distributed
-``ManyBodyBlockState`` blocks. It is the memory-flat alternative to block Lanczos for
+``ManyBodyState`` blocks. It is the memory-flat alternative to block Lanczos for
 resolvent evaluation -- it carries a fixed handful of vectors instead of a retained
 Krylov basis, and has no orthogonality to lose -- which is what the per-frequency
 Green's-function driver is built on. Today its production caller is the RIXS
@@ -32,7 +32,6 @@ from impurityModel.ed.BlockLanczosArray import (
 )
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyBlockState,
     ManyBodyState,
     block_add_scaled_cy,
     block_inner_cy,
@@ -99,8 +98,8 @@ class _SupportTracker:
         self.cutoff2 = slaterWeightMin * slaterWeightMin
         self.mpi = mpi
         self.comm = comm
-        self.seen_mask = ManyBodyBlockState()
-        self.offered_mask = ManyBodyBlockState()
+        self.seen_mask = ManyBodyState()
+        self.offered_mask = ManyBodyState()
         self.global_seen_size = np.array([0], dtype=int)
 
     def seed(self, block):
@@ -153,11 +152,11 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     the internal reduced system is normalized, so a tolerance applied directly there would scale
     with ``||Y - A x0||`` and silently demand more accuracy the better the warm start was.
 
-    The sparse branch runs on ``ManyBodyBlockState`` (Phase 2 of the block-state matvec plan):
+    The sparse branch runs on ``ManyBodyState`` (Phase 2 of the block-state matvec plan):
     one shared determinant support per block, ``ManyBodyOperator.apply_block`` matvecs
     (term/sign/accumulator work once per determinant, near-flat in the block width), the
     fused block redistribute, and per-column norms straight off the dense amplitude rows.
-    Callers pass and receive ``ManyBodyBlockState`` directly -- no conversion at this
+    Callers pass and receive ``ManyBodyState`` directly -- no conversion at this
     boundary, so a warm-start chain (:func:`~impurityModel.ed.gf_solvers.solve_shifted_block`'s
     restart loop, the BiCGSTAB->GMRES escalation) carries the same block through every
     attempt instead of round-tripping through a list each call.
@@ -166,9 +165,9 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     ----------
     A : ManyBodyOperator or ndarray
         The linear operator.
-    x0 : ManyBodyBlockState or ndarray
+    x0 : ManyBodyState or ndarray
         Initial guess block (warm start).
-    y : ManyBodyBlockState or ndarray
+    y : ManyBodyState or ndarray
         Right-hand side block.
     basis : Basis
         The many-body state basis object (``None`` for the dense path).
@@ -197,7 +196,7 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
 
     Returns
     -------
-    ManyBodyBlockState or ndarray
+    ManyBodyState or ndarray
         The solution block ``X``.
     """
     cdef bint is_arr = is_array(x0)
@@ -342,7 +341,7 @@ def _block_bicgstab_core(
     converge at different rates), and the loop exits only on genuine convergence, ``max_iter``,
     or basis exhaustion -- never discarding accumulated progress on a conditioning number.
 
-    Sparse blocks are ``ManyBodyBlockState``: the axpy updates rebind to fresh union-support
+    Sparse blocks are ``ManyBodyState``: the axpy updates rebind to fresh union-support
     blocks (``block_add_scaled_cy``) instead of mutating in place, per-column norms come from
     ``col_norm2`` on the shared rows, and the two matvecs per iteration are single
     ``apply_block`` calls.
@@ -396,7 +395,7 @@ def _block_bicgstab_core(
         r0_t = ri.copy()
         pi = ri.copy()
     else:
-        xi = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(n)])
+        xi = ManyBodyState(width=n)
         ri = rhs  # blocks are never mutated: rebinding replaces copying
         r0_t = rhs
         pi = rhs

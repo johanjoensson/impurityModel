@@ -14,7 +14,7 @@ from mpi4py import MPI
 from impurityModel.ed.basis_transcription import build_vector
 from impurityModel.ed.BlockLanczosArray import BETA_BLOWUP_FACTOR
 from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
 
 def build_qr(psi):
@@ -274,8 +274,11 @@ class _CappedBasisProxy:
         self.comm = basis.comm
         # Width-0 key-only mask of the retained determinants on this rank; grown by
         # in-place C++ sorted merges only (no per-row Python objects in the hot path).
-        seed = ManyBodyState(dict.fromkeys(basis.local_basis, 1.0 + 0j))
-        self._mask = ManyBodyBlockState.from_states([seed]).key_union(ManyBodyBlockState())
+        # An explicit width=1 keeps this a real width-1 block (not the width-0
+        # polymorphic zero) on a rank that legitimately owns zero determinants --
+        # from_states below would otherwise raise on that rank only.
+        seed = ManyBodyState(dict.fromkeys(basis.local_basis, 1.0 + 0j), width=1)
+        self._mask = ManyBodyState.from_states([seed]).key_union(ManyBodyState())
         self._global_count = int(basis.size)
         self._frozen = self._global_count >= self.cap
         self.cap_hit = self._frozen

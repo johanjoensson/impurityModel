@@ -75,9 +75,9 @@ def block_lanczos_step_cy(
     Args:
         h_op: ``ManyBodyOperator`` Hamiltonian; must implement
             ``apply_multi(psis, cutoff)``.
-        q_prev: ``ManyBodyBlockState`` of width ``p`` from iteration ``i-1``
+        q_prev: ``ManyBodyState`` of width ``p`` from iteration ``i-1``
             (a zero-row block of width ``p`` at ``it=0``).
-        q_curr: ``ManyBodyBlockState`` of width ``p`` from iteration ``i``.
+        q_curr: ``ManyBodyState`` of width ``p`` from iteration ``i``.
         Q_basis: Accumulated Krylov basis as a flat list of ``ManyBodyState``
             (length ``p * (it + 1)`` on entry, grows by ``p`` each step).
         alphas: Pre-allocated numpy array of shape ``(max_iter, p, p)`` that
@@ -108,7 +108,7 @@ def block_lanczos_step_cy(
         projection actually fired this step (the driver then forces a re-check on the
         next step — the two-consecutive-steps rule):
 
-        * ``q_next`` – ``ManyBodyBlockState`` (width ``active_k``) forming the next
+        * ``q_next`` – ``ManyBodyState`` (width ``active_k``) forming the next
           Krylov block :math:`Q_{i+1}`, or ``None`` if breakdown occurred.
         * ``alpha_i`` – numpy complex array of shape ``(p, p)`` for the current
           diagonal block.
@@ -120,7 +120,7 @@ def block_lanczos_step_cy(
           operator scale (an invariant subspace, ``active_k == 0``) or its factor came out
           non-finite (a corrupted recurrence, ``active_k == -1``).
     """
-    # q_prev / q_curr are shared-support ManyBodyBlockStates (Phase 2.4): the matvec,
+    # q_prev / q_curr are shared-support ManyBodyStates (Phase 2.4): the matvec,
     # Gram products and axpy updates below run once per determinant ROW instead of once
     # per (determinant, vector) pair. All block primitives are bit-for-bit identical to
     # the old list-of-ManyBodyState ops (same accumulation order); only the pruning
@@ -141,7 +141,7 @@ def block_lanczos_step_cy(
         else:
             # Duck-typed basis without the block method (e.g. a test mock): fall back
             # to the scalar redistribute through a boundary conversion.
-            wp = ManyBodyBlockState.from_states(basis.redistribute_psis(wp.to_states()))
+            wp = ManyBodyState.from_states(basis.redistribute_psis(wp.to_states()))
     _prof_acc("matvec_redistribute", _t1)
     _prof_acc("matvec", _t0)
 
@@ -171,7 +171,7 @@ def block_lanczos_step_cy(
     # EA16 §2.6.2 reorth is applied to q_next in block_lanczos_cy instead.
     if locked and locked_reort != "partial":
         locked_blk = (
-            locked if isinstance(locked, ManyBodyBlockState) else ManyBodyBlockState.from_states(list(locked))
+            locked if isinstance(locked, ManyBodyState) else ManyBodyState.from_states(list(locked))
         )
         for _ in range(2):
             _ovl = block_inner_cy(locked_blk, wp)
@@ -222,7 +222,7 @@ def block_lanczos_step_cy(
         _q_states = q_next.to_states()
         for st in _q_states:
             apply_global_truncation(st, truncation_threshold, comm if mpi else None)
-        q_next = ManyBodyBlockState.from_states(_q_states)
+        q_next = ManyBodyState.from_states(_q_states)
         did_truncate = True
 
     # Dropping amplitudes breaks the orthonormality the factorization just established, so
@@ -407,7 +407,7 @@ def block_lanczos_cy(
 
     Args:
         psi0: Initial block of ``p`` ``ManyBodyState`` objects (or an equivalent
-            ``ManyBodyBlockState``), or ``None`` when resuming from ``Q_init``
+            ``ManyBodyState``), or ``None`` when resuming from ``Q_init``
             (warm-start mode).
         h_op: ``ManyBodyOperator`` that implements ``apply_multi(psis, cutoff)``.
         basis: ``Basis`` object providing ``redistribute_psis`` and ``basis.comm``.
@@ -556,12 +556,12 @@ def block_lanczos_cy(
             # narrower than p).
             Q_basis = []
             if start_it == 0:
-                q_prev = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(p)])
-                q_curr = ManyBodyBlockState.from_states(list(Q_init))
+                q_prev = ManyBodyState(width=p)
+                q_curr = ManyBodyState.from_states(list(Q_init))
             else:
                 q_prev_len = block_widths[start_it - 1]
-                q_prev = ManyBodyBlockState.from_states(list(Q_init[:q_prev_len]))
-                q_curr = ManyBodyBlockState.from_states(list(Q_init[q_prev_len:]))
+                q_prev = ManyBodyState.from_states(list(Q_init[:q_prev_len]))
+                q_curr = ManyBodyState.from_states(list(Q_init[q_prev_len:]))
         else:
             # Columnar retention: the store is the ONLY copy of the Krylov basis (shared
             # determinant->row support + one dense coefficient buffer, ~16 B/coeff vs
@@ -576,11 +576,11 @@ def block_lanczos_cy(
                 _local_basis = getattr(basis, "local_basis", None)
                 if _local_basis is not None:
                     Q_basis.reserve_rows(len(_local_basis))
-                if isinstance(Q_init, ManyBodyBlockState):
+                if isinstance(Q_init, ManyBodyState):
                     # A caller (IRLM's restart continuation) resuming from its own
                     # block-native Q_basis_new. list(Q_init) below is for the OTHER
                     # branch only (a legacy flat list of ManyBodyState): iterating a
-                    # ManyBodyBlockState yields its determinant KEYS, not states, so
+                    # ManyBodyState yields its determinant KEYS, not states, so
                     # append(list(Q_init)) would silently corrupt the store instead of
                     # raising. append_block is the direct, no-round-trip ingestion.
                     if Q_init.width > 0:
@@ -588,7 +588,7 @@ def block_lanczos_cy(
                 elif len(Q_init) > 0:
                     Q_basis.append(list(Q_init))
             if start_it == 0 or len(Q_basis) < p:
-                q_prev = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(p)])
+                q_prev = ManyBodyState(width=p)
                 q_curr = Q_basis.slice_block(0, p)
             else:
                 q_prev_start = sum(block_widths[:start_it - 1])
@@ -600,19 +600,19 @@ def block_lanczos_cy(
         start_it = 0
         W = None
 
-        # psi0 may already be a ManyBodyBlockState (a caller with its own block-native
+        # psi0 may already be a ManyBodyState (a caller with its own block-native
         # seed, e.g. the TRLM/IRLM entry points) or a legacy flat list of ManyBodyState --
         # len()/list() on a block would read its ROW count / iterate its determinant KEYS,
         # not its width/states, so the two must be told apart explicitly rather than
         # funneled through one call. Either way, adopt the shared-support block
         # representation for the live recurrence blocks (Phase 2.4).
-        if isinstance(psi0, ManyBodyBlockState):
+        if isinstance(psi0, ManyBodyState):
             p = psi0.width
             q_curr = basis.redistribute_block(psi0)
         else:
             p = len(psi0)
-            q_curr = ManyBodyBlockState.from_states(basis.redistribute_psis(list(psi0)))
-        q_prev = ManyBodyBlockState.from_states([ManyBodyState() for _ in range(p)])
+            q_curr = ManyBodyState.from_states(basis.redistribute_psis(list(psi0)))
+        q_prev = ManyBodyState(width=p)
         if store_krylov:
             Q_basis = SparseKrylovDense(krylov_dtype)
             _local_basis = getattr(basis, "local_basis", None)
@@ -649,7 +649,7 @@ def block_lanczos_cy(
                 w_j = block_widths[j]
                 Q_j = Q_basis[sum(block_widths[:j]) : sum(block_widths[:j+1])]
 
-                # q_curr/q_prev are ManyBodyBlockStates (Phase 2.4); inner_multi only
+                # q_curr/q_prev are ManyBodyStates (Phase 2.4); inner_multi only
                 # coerces a bare non-list argument via list(...), which over a block
                 # iterates its determinant KEYS, not its columns -- materialize the
                 # columns explicitly instead of relying on that coercion to do it.
@@ -689,17 +689,17 @@ def block_lanczos_cy(
     # Estimate-driven locking reorthogonalization (EA16 §2.6.2) state. Only active when a
     # locked set is supplied and locked_reort == "partial"; otherwise the step does the
     # unconditional "full" projection. See ea16.locked_overlap_step for the recurrence.
-    # bool(locked)/`if locked` below fall back to len(locked) for a ManyBodyBlockState (no
+    # bool(locked)/`if locked` below fall back to len(locked) for a ManyBodyState (no
     # __bool__ defined), i.e. its ROW count, not its width -- relies on callers never handing
     # in a width>0-but-rows==0 (or the reverse) block. True today: _irlm_core passes
     # locked=None outright whenever its locked set is empty rather than an empty block, and
     # every locked column is a normalized nonzero state, so width>0 implies rows>0 in
     # practice. Fragile if that ever changes; an explicit width check would be needed then.
     partial_locked = bool(locked) and locked_reort == "partial"
-    # locked is either list[ManyBodyState] or a ManyBodyBlockState (see the deflation
+    # locked is either list[ManyBodyState] or a ManyBodyState (see the deflation
     # branch above): len() means "number of columns" for the former but "number of
     # shared-support rows" for the latter, so it cannot be used uniformly here.
-    nlock = (locked.width if isinstance(locked, ManyBodyBlockState) else len(locked)) if locked else 0
+    nlock = (locked.width if isinstance(locked, ManyBodyState) else len(locked)) if locked else 0
     if partial_locked:
         from impurityModel.ed import ea16 as _ea16
         locked_evals_arr = np.ascontiguousarray(np.real(np.asarray(locked_evals)), dtype=float)
@@ -815,10 +815,10 @@ def block_lanczos_cy(
             )
             if xi_trigger:
                 idx_l = np.nonzero(xi_mask)[0]
-                if isinstance(locked, ManyBodyBlockState):
+                if isinstance(locked, ManyBodyState):
                     Lm_blk = locked.select([int(t) for t in idx_l])
                 else:
-                    Lm_blk = ManyBodyBlockState.from_states([locked[int(t)] for t in idx_l])
+                    Lm_blk = ManyBodyState.from_states([locked[int(t)] for t in idx_l])
                 for _ in range(2):
                     _lovl = block_inner_cy(Lm_blk, q_next)
                     if mpi and comm is not None:

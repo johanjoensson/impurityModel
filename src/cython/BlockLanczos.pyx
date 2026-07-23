@@ -50,7 +50,6 @@ import numpy as np
 import scipy.linalg as sp
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
-    ManyBodyBlockState,
     block_add_scaled_cy,
     block_inner_cy,
     inner_multi,
@@ -116,9 +115,9 @@ cdef inline void _prof_acc(str key, double t0):
 
 cpdef tuple block_normalize_sparse(object wp, bint mpi=False, object comm=None, double slaterWeightMin=0.0):
     """``block_normalize_array``'s counterpart for a list of ``ManyBodyState`` or a
-    ``ManyBodyBlockState`` (see it for the breakdown convention). Untyped (not ``list``):
-    ``block_tsqr`` itself dispatches on ``ManyBodyBlockState`` vs. list, so this is a pure
-    passthrough for either representation, not list-only."""
+    single width-p ``ManyBodyState`` block (see it for the breakdown convention).
+    Untyped (not ``list``): ``block_tsqr`` itself dispatches on ``ManyBodyState`` vs.
+    list, so this is a pure passthrough for either representation, not list-only."""
     q_next, beta_j, active_k, _ = block_tsqr(wp, mpi, comm, 1.0, slaterWeightMin)
     if active_k <= 0:
         raise ValueError("Block collapsed to zero rank")

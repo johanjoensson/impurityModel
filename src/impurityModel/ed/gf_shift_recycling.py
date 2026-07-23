@@ -24,7 +24,7 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.BlockLanczosArray import resolve_reort
 from impurityModel.ed.gf_primitives import _CappedBasisProxy, _distributed_seed_qr, _trim_blocks
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import available_bytes_per_rank, format_bytes
 
 
@@ -172,7 +172,7 @@ class SectorResolventCache:
         ``truncation_threshold`` for nothing.
         """
         basis.add_states(sorted({state for psi in seeds for state in psi.keys()}))
-        probe = ManyBodyBlockState.from_states(list(seeds))
+        probe = ManyBodyState.from_states(list(seeds))
         while True:
             old_size = basis.size
             probe = hOp.apply_block(probe, slaterWeightMin)
@@ -202,7 +202,7 @@ class SectorResolventCache:
         s_dense = np.zeros((len(self._index), len(seeds)), dtype=complex)
         for k, psi in enumerate(seeds):
             for state, amp in psi.items():
-                s_dense[self._index[state], k] = amp
+                s_dense[self._index[state], k] = amp[0]
         return s_dense
 
     def try_solve(self, basis, hOp, rhs, z, slaterWeightMin=0, verbose=False):
@@ -223,7 +223,10 @@ class SectorResolventCache:
         out = []
         for k in range(x.shape[1]):
             keep = np.abs(x[:, k]) ** 2 > slaterWeightMin
-            out.append(ManyBodyState({states[i]: x[i, k] for i in np.nonzero(keep)[0]}))
+            # width=1: a column whose projected solution is (numerically) exactly zero
+            # everywhere kept must not become the width-0 polymorphic zero -- every
+            # element of the returned list is expected width 1.
+            out.append(ManyBodyState({states[i]: x[i, k] for i in np.nonzero(keep)[0]}, width=1))
         return out
 
 
@@ -385,7 +388,7 @@ class KrylovShiftedResolvent:
         if max_bytes == 0:
             return None
         if n_rhs == 0 or len(zs) == 0:
-            return [[ManyBodyState() for _ in range(n_rhs)] for _ in zs]
+            return [[ManyBodyState(width=1) for _ in range(n_rhs)] for _ in zs]
 
         basis.clear()
         basis.add_states(sorted({state for psi in rhs for state in psi.keys()}))
@@ -397,7 +400,7 @@ class KrylovShiftedResolvent:
         b0 = r
         scale = float(np.linalg.norm(b0))
         if len(psi_arr) == 0 or scale == 0.0:
-            return [[ManyBodyState() for _ in range(n_rhs)] for _ in zs]
+            return [[ManyBodyState(width=1) for _ in range(n_rhs)] for _ in zs]
 
         # Enforce the determinant cap on the recurrence (post-freeze: exact P H P).
         cap = getattr(basis, "truncation_threshold", np.inf)

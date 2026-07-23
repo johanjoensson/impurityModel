@@ -15,7 +15,7 @@ from impurityModel.ed.gs_statistics import (
 )
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator
 from impurityModel.ed.memory_estimate import log_memory_budget, suggest_truncation_threshold
 from impurityModel.ed.observables import (
     casimir_operator,
@@ -582,7 +582,7 @@ def calc_gs(
     # contract is `list[ManyBodyState]`, and it is still needed as a list for
     # `add_states`/`redistribute_psis` above, so keeping both avoids a redundant
     # to_states() round trip at the return.
-    psis_blk = ManyBodyBlockState.from_states(psis)
+    psis_blk = ManyBodyState.from_states(psis)
 
     # The effective restrictions are printed in the ground-state-report overview below.
     effective_restrictions = get_effective_restrictions(ground_state_basis)

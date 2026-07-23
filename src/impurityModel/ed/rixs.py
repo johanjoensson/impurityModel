@@ -24,7 +24,7 @@ from impurityModel.ed import config
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.gf_solvers import solve_shifted_block
-from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
 from impurityModel.ed.symmetries import (
@@ -350,8 +350,8 @@ class _R1SolverChain:
         solve_info = {}
         psi2_all[:] = solve_shifted_block(
             A_op,
-            ManyBodyBlockState.from_states(psi2_all),
-            ManyBodyBlockState.from_states(psi1_all),
+            ManyBodyState.from_states(psi2_all),
+            ManyBodyState.from_states(psi1_all),
             tmp_basis,
             slaterWeightMin,
             _RIXS_R1_ATOL,
@@ -510,7 +510,10 @@ def _rixs_map_flat(
             comm=sub_comm.Clone() if sub_comm is not None else None,
         )
         psi1_all = list(seeds)
-        psi2_all = [ManyBodyState() for _ in in_ops]
+        # width=1: this cold-start placeholder can reach redistribute_psis/from_states
+        # alongside genuinely-populated psi1_all (see _R1SolverChain.solve's fallback
+        # tier), so it must not be the width-0 polymorphic zero.
+        psi2_all = [ManyBodyState(width=1) for _ in in_ops]
         r1_cache = r1_caches.setdefault(e, gf.SectorResolventCache()) if r1_caches is not None else None
         chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats)
         out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
