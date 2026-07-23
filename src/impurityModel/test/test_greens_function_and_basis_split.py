@@ -10,7 +10,7 @@ from impurityModel.ed.greens_function import (
     get_Greens_function,
 )
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 
 def test_basis_split_and_redistribute_serial():
@@ -29,6 +29,32 @@ def test_basis_split_and_redistribute_serial():
     assert redist_psi == psi0
 
     # Test split_basis_and_redistribute_psi
+    priorities = [1, 2]
+    indices, split_roots, color, items_per_color, split_basis, psis_out, _intercomms = split_basis_and_redistribute_psi(
+        basis, priorities, psi0
+    )
+
+    assert list(indices) == [0, 1]
+    assert split_roots == [0]
+    assert color == 0
+    assert list(items_per_color) == [2]
+    assert split_basis == basis
+    assert psis_out == psi0
+
+
+def test_basis_split_and_redistribute_block_serial():
+    """Width-1 ManyBodyBlockState lists take the same pass-through path as flat
+    ManyBodyState lists (Phase 7 step 2b dual-path dispatch); serial has no MPI
+    exchange to exercise, so this only covers the early-return branch."""
+    states = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=None,
+    )
+
+    psi0 = [ManyBodyBlockState({SlaterDeterminant.from_bytes(states[0]): 1.0})]
     priorities = [1, 2]
     indices, split_roots, color, items_per_color, split_basis, psis_out, _intercomms = split_basis_and_redistribute_psi(
         basis, priorities, psi0
@@ -91,6 +117,58 @@ def test_basis_split_and_redistribute_mpi():
         split_roots[color + 1] - split_roots[color] if color + 1 < len(split_roots) else comm.size - split_roots[color]
     )
     assert split_basis.comm.size == expected_size
+    if split_basis is not None and split_basis.comm != comm:
+        split_basis.free_comm()
+    split_basis = None
+
+
+@pytest.mark.mpi
+def test_basis_split_and_redistribute_block_mpi():
+    """Width-1 ManyBodyBlockState lists take the same split_basis_and_redistribute_psi
+    send/receive path as flat ManyBodyState lists (Phase 7 step 2b): the intercomm wire
+    format unwraps each Row to a plain scalar (``v[0]``) and reconstructs a width-1 block
+    on receipt, so the total seeded weight must round-trip exactly like the flat path."""
+    comm = MPI.COMM_WORLD
+    if comm.size < 2:
+        pytest.skip("This test requires at least 2 MPI ranks")
+
+    states = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=comm,
+    )
+
+    if comm.rank == 0:
+        psi0 = [ManyBodyBlockState({SlaterDeterminant.from_bytes(s): 1.0 for s in states})]
+    else:
+        # A genuine width-0 ManyBodyBlockState({}) is the polymorphic zero, not a
+        # width-1 placeholder -- it would trip split_basis_and_redistribute_psi's
+        # width guard on this rank only, an asymmetric exception that deadlocks the
+        # other rank's matching recv. from_states forces an explicit width-1 zero
+        # block instead, the same convention test_mpi_comm.py's block redistribute
+        # tests use for an empty-rank placeholder.
+        psi0 = [ManyBodyBlockState.from_states([ManyBodyState({})])]
+
+    priorities = [1.0, 1.0]
+    result = split_basis_and_redistribute_psi(basis, priorities, psi0)
+    indices, split_roots, color, items_per_color, split_basis, psis_out, _intercomms = result
+
+    assert len(indices) == 1
+    assert indices[0] in [0, 1]
+    assert len(split_roots) == 2
+    assert items_per_color == [1, 1]
+    expected_size = (
+        split_roots[color + 1] - split_roots[color] if color + 1 < len(split_roots) else comm.size - split_roots[color]
+    )
+    assert split_basis.comm.size == expected_size
+
+    assert len(psis_out) == 1
+    assert isinstance(psis_out[0], ManyBodyBlockState)
+    total = sum(psis_out[0].get(sd)[0].real for sd in split_basis.local_basis)
+    assert np.isclose(total, len(split_basis.local_basis))
+
     if split_basis is not None and split_basis.comm != comm:
         split_basis.free_comm()
     split_basis = None

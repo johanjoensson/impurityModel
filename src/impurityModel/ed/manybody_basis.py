@@ -160,8 +160,7 @@ class Basis:
             + sum(len(orbs) for orbs in bath_states[1][i])
             for i in bath_states[0]
         )
-        test = ManyBodyState({SlaterDeterminant.from_bytes(b"\x00"): 1.0})
-        slater_det = next(iter(test.keys()))
+        slater_det = SlaterDeterminant.from_bytes(b"\x00")
         self.type = type(slater_det)
         self.n_bytes = int(ceil(ceil(self.num_spin_orbitals / 8) / len(slater_det)) * len(slater_det))
 
@@ -429,7 +428,7 @@ class Basis:
                 for state in apply_h_to_these:
                     res = applyOp_test(
                         op,
-                        ManyBodyState({state: 1}),
+                        ManyBodyBlockState({state: 1}),
                         cutoff=slaterWeightMin,
                     )
                     new_local_states |= set(res.keys()) - local_states
