@@ -8,7 +8,7 @@ import itertools
 from typing import Iterable, Optional
 
 from impurityModel.ed import product_state_representation as psr
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
+from impurityModel.ed.ManyBodyUtils import ManyBodyBlockState, ManyBodyOperator, SlaterDeterminant, applyOp
 
 
 def generate_initial_basis(
@@ -217,8 +217,8 @@ def spin_flipped_determinants(
     n_up_mbo = ManyBodyOperator(n_up_op)
     spin_flip = set()
     for det in determinants:
-        n_dn = int(applyOp(n_dn_mbo, ManyBodyState({det: 1.0}), cutoff=0).get(det, 0).real)
-        n_up = int(applyOp(n_up_mbo, ManyBodyState({det: 1.0}), cutoff=0).get(det, 0).real)
+        n_dn = _real_occupation(applyOp(n_dn_mbo, ManyBodyBlockState({det: 1.0}), cutoff=0), det)
+        n_up = _real_occupation(applyOp(n_up_mbo, ManyBodyBlockState({det: 1.0}), cutoff=0), det)
         spin_flip.add(det)
         to_flip = {det}
         for _l, orb_groups in impurity_orbitals.items():
@@ -230,18 +230,24 @@ def spin_flipped_determinants(
                 }
                 spin_flip_mbo = ManyBodyOperator(spin_flip_op)
                 for state in list(to_flip):
-                    flipped = applyOp(spin_flip_mbo, ManyBodyState({state: 1.0}), cutoff=0)
+                    flipped = applyOp(spin_flip_mbo, ManyBodyBlockState({state: 1.0}), cutoff=0)
                     to_flip.update(flipped.keys())
                     if len(flipped) == 0:
                         continue
                     flipped_state = next(iter(flipped.keys()))
-                    new_n_dn = int(
-                        applyOp(n_dn_mbo, ManyBodyState({flipped_state: 1.0}), cutoff=0).get(flipped_state, 0).real
+                    new_n_dn = _real_occupation(
+                        applyOp(n_dn_mbo, ManyBodyBlockState({flipped_state: 1.0}), cutoff=0), flipped_state
                     )
-                    new_n_up = int(
-                        applyOp(n_up_mbo, ManyBodyState({flipped_state: 1.0}), cutoff=0).get(flipped_state, 0).real
+                    new_n_up = _real_occupation(
+                        applyOp(n_up_mbo, ManyBodyBlockState({flipped_state: 1.0}), cutoff=0), flipped_state
                     )
                     if (new_n_dn == n_dn and new_n_up == n_up) or (new_n_dn == n_up and new_n_up == n_dn):
                         spin_flip.update(flipped.keys())
 
     return spin_flip
+
+
+def _real_occupation(psi: ManyBodyBlockState, det: SlaterDeterminant) -> int:
+    """Read back a width-1 block's real amplitude for ``det`` (0 if absent)."""
+    row = psi.get(det)
+    return int(0 if row is None else row[0].real)

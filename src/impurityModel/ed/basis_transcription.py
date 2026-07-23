@@ -94,6 +94,15 @@ def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin:
     -------
     list of ManyBodyState
         The corresponding list of many-body states.
+
+    Notes
+    -----
+    Still a flat-state producer, not yet flipped to width-1 ``ManyBodyBlockState``
+    (Phase 7 step 2a): its output flows unchanged (``.items()``/arithmetic on scalars)
+    into many not-yet-flipped consumers (GF stack, groundstate, spectra, rixs,
+    susceptibility, sectorization -- steps 2c-2f), so flipping this producer alone
+    breaks ~75 tests across those modules. Flip once its consumers are block-tolerant,
+    or as part of the mechanical rename in step 3.
     """
     if isinstance(vs, np.matrix):
         vs = vs.A
