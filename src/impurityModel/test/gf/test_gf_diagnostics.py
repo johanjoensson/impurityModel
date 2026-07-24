@@ -2,8 +2,9 @@ r"""Unit tests for the Green's-function convergence/consistency diagnostics.
 
 These pin the behaviour of each check in :mod:`impurityModel.ed.gf_diagnostics` on small,
 exactly-controlled inputs: the anticommutator sum rule, zeroth-moment (mesh-coverage) weight
-conservation, the truncated-thermal-ensemble detector, the Lanczos-convergence surface, and
-the causality check, plus the report aggregation and the deferred peak-check placeholder.
+conservation, the truncated-thermal-ensemble detector, the Lanczos-convergence surface, the
+causality check, the per-frequency BiCGSTAB/GMRES-fallback and CIPSI boundary-residual
+surfaces, plus the report aggregation and the deferred peak-check placeholder.
 """
 
 import numpy as np
@@ -200,3 +201,49 @@ def test_basis_truncation_check():
     report.add("block", warn)
     assert report.worst_severity == gd.Severity.WARN
     assert not report.needs_more_states
+
+
+def test_bicgstab_convergence_check():
+    """check_bicgstab_convergence itself has no direct test elsewhere -- only the driver's
+    own stats dict (test_gf_bicgstab_driver.py) is checked, never that the dict's
+    gmres_points/n_unconverged/seed_overflow fields actually drive this function's verdict
+    the way get_Greens_function's caller wires them (greens_function.py:728-735:
+    n_gmres_fallbacks=agg["gmres_points"])."""
+    ok = gd.check_bicgstab_convergence(n_points=20, n_unconverged=0, max_rel_residual=1e-9, atol=1e-8)
+    assert ok.severity == gd.Severity.OK
+    assert not ok.needs_more_iterations
+    assert "20" in ok.message and "GMRES" not in ok.message
+
+    rescued = gd.check_bicgstab_convergence(
+        n_points=20, n_unconverged=0, max_rel_residual=1e-9, atol=1e-8, n_gmres_fallbacks=3
+    )
+    assert rescued.severity == gd.Severity.OK  # rescued points still converged in the end
+    assert "3" in rescued.message and "GMRES" in rescued.message
+
+    warn = gd.check_bicgstab_convergence(n_points=20, n_unconverged=2, max_rel_residual=5e-6, atol=1e-8)
+    assert warn.severity == gd.Severity.WARN
+    assert warn.needs_more_iterations
+    assert "2 of 20" in warn.message
+    assert warn.value == 5e-6 and warn.threshold == 1e-8
+
+    overflow = gd.check_bicgstab_convergence(
+        n_points=5, n_unconverged=0, max_rel_residual=1e-9, atol=1e-8, seed_overflow=True
+    )
+    assert overflow.severity == gd.Severity.WARN  # converged, but the seed itself overflowed the cap
+    assert "truncation_threshold" in overflow.message
+
+
+def test_cipsi_boundary_check():
+    """check_cipsi_boundary has no direct test elsewhere -- only exercised indirectly
+    through the CIPSI driver's own boundary-residual bookkeeping tests."""
+    ok = gd.check_cipsi_boundary(max_boundary_rel=1e-9, boundary_tol=1e-8)
+    assert ok.severity == gd.Severity.OK
+    assert ok.value == 1e-9 and ok.threshold == 1e-8
+
+    at_tol = gd.check_cipsi_boundary(max_boundary_rel=1e-8, boundary_tol=1e-8)
+    assert at_tol.severity == gd.Severity.OK  # <=, not strictly less than
+
+    warn = gd.check_cipsi_boundary(max_boundary_rel=5e-6, boundary_tol=1e-8)
+    assert warn.severity == gd.Severity.WARN
+    assert "GF_CIPSI_BUDGET" in warn.suggestion
+    assert "5.0e-06" in warn.message
