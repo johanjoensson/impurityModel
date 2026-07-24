@@ -19,6 +19,7 @@ from impurityModel.ed.basis_transcription import build_density_matrices, build_s
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
 from impurityModel.ed.mpi_comm import empty_clone, get_job_tasks, graph_alltoall, is_empty
+from impurityModel.test.support.testtol import inner_atol
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -579,8 +580,11 @@ def test_density_matrix_mpi_vs_serial():
         orbital_indices_right=orbital_indices,
     )[0]
 
+    # MPI-vs-serial: the same sum in a different reduction order (Allreduce across
+    # ranks vs a single-rank accumulation), so bound by the term count rather than an
+    # MPI-agnostic literal.
     assert np.allclose(
-        rho_mpi, rho_serial, atol=1e-12
+        rho_mpi, rho_serial, atol=inner_atol(len(states_bytes), 1.0)
     ), f"rank {comm.rank}: density matrix mismatch.\nMPI:\n{rho_mpi}\nSerial:\n{rho_serial}"
 
 

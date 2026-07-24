@@ -20,6 +20,10 @@ Measured on this workload, serial vs 2 and 3 ranks:
 
 so `_GF_RTOL = 1e-10` leaves ~30x margin over roundoff while still catching the class of bug this
 file exists for: before `de08d77` the same comparison read 5.3e-9 at 2 ranks and 1.6e-7 at 3.
+`_E_RTOL = 1e-10` gives the same margin discipline for the ground-state energy sum: measured
+agreement here is ~1e-15, but a bigger production workload sums over many more Slater
+determinants in a different order, so the *measured* margin on this small fixture shouldn't be
+mistaken for the guarantee -- match `_GF_RTOL`'s scale rather than pin to what this run delivers.
 """
 
 import numpy as np
@@ -41,7 +45,7 @@ from impurityModel.test._nio_workload import (
 
 _MASK = (1 << 64) - 1
 _GF_RTOL = 1e-10
-_E_RTOL = 1e-12
+_E_RTOL = 1e-10
 
 _NBATHS = 10
 _DE2_MIN = 1e-6

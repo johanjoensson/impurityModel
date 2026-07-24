@@ -313,7 +313,10 @@ def test_capped_expand_mpi_matches_serial():
     # Same physics as the serial capped run (near-ties may differ, energies must not).
     e0_serial = -4.7813537278
     assert abs(e0_capped - e0_serial) < 1e-6
-    assert all(abs(v - e0_capped) < 1e-12 for v in comm.allgather(e0_capped))
+    # Every rank eigensolves the same Allreduced data, but potentially through a
+    # different LAPACK build -- cross-rank agreement, not last-ulp identity.
+    cross_rank_tol = 1e-10 * max(1.0, abs(e0_capped))
+    assert all(abs(v - e0_capped) < cross_rank_tol for v in comm.allgather(e0_capped))
 
 
 # ---------------------------------------------------------------------------
