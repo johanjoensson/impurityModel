@@ -192,8 +192,13 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
     n_states = len(psis)
     # Per-state moments, indexed [state, order, a, b]. M[., 0] is the identity because
     # {c_a, c_b^dag} = delta_ab, so the greater/lesser contributions sum to I on every state.
+    # Set it on exactly one rank (root): every other slot below is a genuine per-rank partial
+    # sum that the Allreduce below combines into the whole, but this one is already the whole
+    # answer on its own -- setting it unconditionally on every rank would make a distributed
+    # Allreduce sum it comm.size times over, silently returning comm.size * I instead of I.
     M_per_state = np.zeros((n_states, max_order + 1, n_corr, n_corr), dtype=complex)
-    M_per_state[:, 0] = np.eye(n_corr)[np.newaxis, :, :]
+    if not basis.is_distributed or basis.comm.rank == 0:
+        M_per_state[:, 0] = np.eye(n_corr)[np.newaxis, :, :]
 
     annihilation = [ManyBodyOperator({((orb, "a"),): 1.0}) for orb in impurity_indices]
     creation = [op.adjoint() for op in annihilation]
