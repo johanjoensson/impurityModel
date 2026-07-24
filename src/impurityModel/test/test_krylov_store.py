@@ -19,6 +19,7 @@ from impurityModel.ed.ManyBodyUtils import (
     inner_multi,
     reorth_cgs2_dense,
 )
+from impurityModel.test.support.testtol import inner_atol
 
 
 def _det(i):
@@ -288,7 +289,7 @@ def test_store_gram_matches_states():
     store.append(states)
     g_ref = inner_multi(states, states)
     g_store = inner_multi(list(store), list(store))
-    np.testing.assert_allclose(g_store, g_ref, atol=1e-14)
+    np.testing.assert_allclose(g_store, g_ref, atol=inner_atol(30, np.max(np.abs(g_ref))))
 
 
 def test_store_memory_bytes():
@@ -339,11 +340,11 @@ def test_store_reort_matches_reorth_cgs2_dense(cols):
     out_new = out_new_blk.to_states()
     out_ref, o_ref = reorth_cgs2_dense([ManyBodyState(dict(s.items())) for s in wp], selected, 2, None)
 
-    np.testing.assert_allclose(o_new, o_ref, atol=1e-12)
+    np.testing.assert_allclose(o_new, o_ref, atol=inner_atol(n_dets, np.max(np.abs(o_ref))))
     for a, b in zip(out_new, out_ref):
-        assert np.sqrt((a - b).norm2()) < 1e-12
+        assert np.sqrt((a - b).norm2()) < inner_atol(n_dets, max(b.norm(), 1.0))
     # and the projection actually removed the selected directions
-    assert np.max(np.abs(inner_multi(selected, out_new))) < 1e-13
+    assert np.max(np.abs(inner_multi(selected, out_new))) < inner_atol(n_dets, 1.0)
 
 
 @pytest.mark.parametrize("cols", [None, list(range(110))], ids=["full", "partial"])

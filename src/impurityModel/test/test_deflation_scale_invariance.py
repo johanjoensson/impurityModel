@@ -30,6 +30,7 @@ from impurityModel.ed.BlockLanczosArray import (
     eigsh,
 )
 from impurityModel.ed.TSQR import tsqr
+from impurityModel.test.support.testtol import eig_atol
 
 
 def _block(n, p, seed, scale=1.0):
@@ -150,7 +151,8 @@ def test_a_cold_start_never_breaks_down_early(spread):
     alphas, betas, _, _, status = _sweep(h, psi0, 20)
     assert status == "max_iter" and len(alphas) == 20
     got = np.sort(np.asarray(eigsh(np.asarray(alphas), np.asarray(betas), eigvals_only=True)[0]).real)
-    np.testing.assert_allclose(got[:2] / spread, np.sort(d)[:2] / spread, atol=1e-12)
+    # Normalized by spread, so the reference operator norm is ~1 regardless of scale.
+    np.testing.assert_allclose(got[:2] / spread, np.sort(d)[:2] / spread, atol=eig_atol(1.0, n=h.shape[0]))
 
 
 def _nearly_invariant_start(n, p, noise, seed=0, spread=50.0):

@@ -18,6 +18,7 @@ from impurityModel.ed.chebyshev_filter import chebyshev_apply, partition_of_unit
 from impurityModel.ed.greens_function import _CappedBasisProxy
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
+from impurityModel.test.support.testtol import inner_atol
 
 
 def _det(occupied):
@@ -103,8 +104,12 @@ def test_partition_of_unity_is_exact():
     edges = np.linspace(-5.0, 5.0, 7)
     coeff_sets, window_edges, edge_width = partition_of_unity(bounds, edges, degree=200)
     total = np.sum(coeff_sets, axis=0)
-    assert abs(total[0] - 1.0) < 1e-13
-    assert np.max(np.abs(total[1:])) < 1e-13
+    # The telescoping cancellation sums coeff_sets.shape[0] windows' worth of
+    # possibly-larger intermediate coefficients down to [1, 0, ..., 0]; scale the
+    # tolerance from that pre-cancellation magnitude, not the (near-zero) result.
+    tol = inner_atol(len(coeff_sets), max(np.max(np.abs(c)) for c in coeff_sets))
+    assert abs(total[0] - 1.0) < tol
+    assert np.max(np.abs(total[1:])) < tol
     # windows tile [lo, hi] exactly
     assert window_edges[0][0] == bounds[0] and window_edges[-1][1] == bounds[1]
     assert edge_width > 0

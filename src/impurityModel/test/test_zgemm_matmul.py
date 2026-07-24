@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.BlockLanczosArray import _matmul_nogil_test
+from impurityModel.test.support.testtol import inner_atol
 
 N = ord("N")
 C = ord("C")
@@ -35,7 +36,7 @@ def test_zgemm_matmul(transA, transB, alpha, beta):
     C0 = _rc(rng, m, n)
     expected = beta * C0 + alpha * (opA @ opB)
     got = _matmul_nogil_test(A, transA, B, transB, alpha, beta, C0.copy(), m, n, k)
-    np.testing.assert_allclose(got, expected, atol=1e-12, rtol=0)
+    np.testing.assert_allclose(got, expected, atol=inner_atol(k, np.max(np.abs(expected))), rtol=0)
 
 
 @pytest.mark.parametrize("transA,transB", [(N, N), (C, N), (N, C), (C, C)])
@@ -47,7 +48,7 @@ def test_zgemm_matmul_k_zero_is_beta_scale(transA, transB):
     B = np.zeros((0, n), dtype=complex) if transB == N else np.zeros((n, 0), dtype=complex)
     C0 = _rc(rng, m, n)
     got = _matmul_nogil_test(A, transA, B, transB, 1.0, 0.5, C0.copy(), m, n, 0)
-    np.testing.assert_allclose(got, 0.5 * C0, atol=1e-13, rtol=0)
+    np.testing.assert_allclose(got, 0.5 * C0, atol=inner_atol(1, np.max(np.abs(0.5 * C0))), rtol=0)
 
 
 def test_zgemm_matmul_empty_rows():

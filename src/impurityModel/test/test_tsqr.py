@@ -22,6 +22,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.BlockLanczosArray import _cholesky_or_deflate, block_tsqr
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+from impurityModel.test.support.testtol import inner_atol
 from impurityModel.ed.TSQR import (
     BREAKDOWN_TOL,
     DEFLATE_TOL,
@@ -162,7 +163,7 @@ def test_tsqr_is_exact_and_orthonormal(n, p):
     assert beta.shape == (p, p)
     assert _upper(beta)
     np.testing.assert_allclose(A, Q @ beta, atol=1e-13 * np.linalg.norm(A))
-    np.testing.assert_allclose(Q.conj().T @ Q, np.eye(k), atol=1e-13)
+    np.testing.assert_allclose(Q.conj().T @ Q, np.eye(k), atol=inner_atol(Q.shape[0], 1.0))
     np.testing.assert_allclose(sv, np.linalg.svd(A, compute_uv=False), rtol=1e-12)
 
 
@@ -178,7 +179,7 @@ def test_tsqr_solve_paths_agree_across_the_blas_crossover(p):
         Q, beta, k, _ = tsqr(A)
         assert k == p
         np.testing.assert_allclose(A, Q @ beta, atol=1e-13 * np.linalg.norm(A))
-        assert np.linalg.norm(Q.conj().T @ Q - np.eye(k)) < 1e-12
+        assert np.linalg.norm(Q.conj().T @ Q - np.eye(k)) < inner_atol(Q.shape[0], 1.0)
 
 
 def test_tsqr_does_not_modify_its_input():
@@ -202,7 +203,7 @@ def test_tsqr_beats_cholesky_qr_on_ill_conditioned_blocks(kappa):
     assert k == 4, "the deflation floor should retain this block"
     np.testing.assert_allclose(A, Q @ beta, atol=1e-13 * np.linalg.norm(A))
     orth_tsqr = np.linalg.norm(Q.conj().T @ Q - np.eye(k))
-    assert orth_tsqr < 1e-13
+    assert orth_tsqr < inner_atol(Q.shape[0], 1.0)
 
     beta_c, beta_inv, k_c = _cholesky_or_deflate(A.conj().T @ A, 4)
     assert k_c == k
@@ -223,7 +224,7 @@ def test_tsqr_of_singular_block_deflates():
     assert k == 3
     assert beta.shape == (3, 4)
     np.testing.assert_allclose(A, Q @ beta, atol=1e-12 * np.linalg.norm(A))
-    np.testing.assert_allclose(Q.conj().T @ Q, np.eye(k), atol=1e-13)
+    np.testing.assert_allclose(Q.conj().T @ Q, np.eye(k), atol=inner_atol(Q.shape[0], 1.0))
     assert sv[3] < DEFLATE_TOL * sv[0]
 
 
