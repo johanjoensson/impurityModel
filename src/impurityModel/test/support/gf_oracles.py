@@ -77,13 +77,20 @@ def _n3_sector_dets():
     return [_det(c) for c in itertools.combinations(range(6), 3)]
 
 
-def _dense_G_on(dets, z_values, comm=None):
-    """G[k, i, j] = <seed_i| (z_k - H)^{-1} |seed_j> on the space spanned by ``dets``."""
+def _dense_G_on(dets, z_values, comm=None, seeds=None):
+    """G[k, i, j] = <seed_i| (z_k - H)^{-1} |seed_j> on the space spanned by ``dets``.
+
+    ``seeds`` defaults to :func:`_seeds`; pass an explicit list of ``ManyBodyState``
+    (e.g. linear combinations of the default seeds) to probe G against a different,
+    rotated set of columns without touching the underlying Hamiltonian.
+    """
+    if seeds is None:
+        seeds = _seeds()
     basis = Basis(_IMP, _BATHS, initial_basis=sorted(dets), comm=comm, verbose=False)
     H = np.asarray(build_dense_matrix(basis, _siam_6()))
     index = {det: i for i, det in enumerate(sorted(dets))}
-    V = np.zeros((len(index), len(_seeds())), dtype=complex)
-    for j, seed in enumerate(_seeds()):
+    V = np.zeros((len(index), len(seeds)), dtype=complex)
+    for j, seed in enumerate(seeds):
         for det, amp in seed.items():
             V[index[det], j] = amp[0]
     G = np.empty((len(z_values), V.shape[1], V.shape[1]), dtype=complex)
