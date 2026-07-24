@@ -236,6 +236,36 @@ class CIPSISolver:
         blk = self.basis.redistribute_block(blk)
         return blk.to_states()
 
+    def _apply_block_and_redistribute(self, H, psi_ref, cutoff):
+        """Apply ``H`` to the reference states as one shared-support block, then redistribute.
+
+        Amortizes the term walk / sign / restriction-mask / hash work over
+        ``len(psi_ref)`` columns in a single :meth:`ManyBodyOperator.apply_block` call,
+        instead of ``len(psi_ref)`` separate per-state applies. ``apply_block`` keeps a
+        row if ANY column exceeds ``cutoff`` -- a safe superset per column, but not the
+        same as pruning each column to its own threshold -- so each split-out column is
+        re-pruned to ``cutoff`` before the cross-rank sum. This reproduces the old
+        per-state ``applyOp(H, psi_i, cutoff)`` bit-for-bit, including pruning locally
+        *before* redistributing (the same order every other probe in this module uses,
+        e.g. ``psi_all_Dj`` above), rather than pruning the already-summed total.
+
+        One observable difference from the old ``redistribute_psis``-based path: the
+        final ``to_states()`` drops a determinant from column ``i`` only when its
+        *own* post-sum amplitude is exact zero, never when some *other* reference
+        column merely happens to carry the nonzero coupling (the old union-support
+        ``column(i)`` padded every output to the full merged support, so an exact
+        cross-rank cancellation on column ``i`` alone still left the entry visible via
+        iteration). A determinant is therefore only ever dropped from consideration in
+        ``_candidate_overlaps_and_energies`` when it has zero net coupling to *every*
+        reference column -- a genuine selection-rule cancellation, which is correctly a
+        non-candidate rather than a zero-scored one.
+        """
+        cols = H.apply_block(ManyBodyState.from_states(psi_ref), cutoff).to_states()
+        for s in cols:
+            s.prune_rows(cutoff)
+        merged = self.basis.redistribute_block(ManyBodyState.from_states(cols))
+        return merged.to_states()
+
     def _candidate_overlaps_and_energies(self, H, Hpsi_ref, slaterWeightMin: float = 0):
         """Enumerate the out-of-basis candidates of ``Hpsi_ref`` with couplings and energies.
 
@@ -411,8 +441,7 @@ class CIPSISolver:
         """
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
-        Hpsi_ref = [applyOp_test(H, psi_i, cutoff=slater_cutoff) for psi_i in psi_ref]
-        Hpsi_ref = self.basis.redistribute_psis(Hpsi_ref)
+        Hpsi_ref = self._apply_block_and_redistribute(H, psi_ref, slater_cutoff)
         local_Djs, overlaps, e_Dj = self._candidate_overlaps_and_energies(H, Hpsi_ref, slater_cutoff)
 
         coupling2 = np.square(np.abs(overlaps))
@@ -451,8 +480,7 @@ class CIPSISolver:
         ``{"n_candidates", "n_admitted", "discarded_de2_mass"}``. Collective on
         ``basis.comm``.
         """
-        Hpsi_ref = [applyOp_test(H, psi_i, cutoff=slater_cutoff) for psi_i in psi_ref]
-        Hpsi_ref = self.basis.redistribute_psis(Hpsi_ref)
+        Hpsi_ref = self._apply_block_and_redistribute(H, psi_ref, slater_cutoff)
         local_Djs, de2 = self._calc_de2(H, Hpsi_ref, e_ref)
         # Importance = max over reference *manifolds* of the manifold-summed de2, not max over
         # individual reference states. Within a degenerate manifold the eigensolver returns an
