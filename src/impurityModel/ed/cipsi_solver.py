@@ -249,22 +249,20 @@ class CIPSISolver:
         *before* redistributing (the same order every other probe in this module uses,
         e.g. ``psi_all_Dj`` above), rather than pruning the already-summed total.
 
-        One observable difference from the old ``redistribute_psis``-based path: the
-        final ``to_states()`` drops a determinant from column ``i`` only when its
-        *own* post-sum amplitude is exact zero, never when some *other* reference
-        column merely happens to carry the nonzero coupling (the old union-support
-        ``column(i)`` padded every output to the full merged support, so an exact
-        cross-rank cancellation on column ``i`` alone still left the entry visible via
-        iteration). A determinant is therefore only ever dropped from consideration in
-        ``_candidate_overlaps_and_energies`` when it has zero net coupling to *every*
-        reference column -- a genuine selection-rule cancellation, which is correctly a
-        non-candidate rather than a zero-scored one.
+        Returns the merged **block** (not a list): ``_candidate_overlaps_and_energies``
+        reads it via the buffer protocol (``np.asarray``) instead of iterating
+        ``.items()``. ``prune_rows(0.0)`` after the redistribute reproduces the old
+        ``to_states()``-based union exactly: a determinant survives iff at least one
+        column is genuinely nonzero, so an exact cross-rank cancellation on every
+        column of a given row is the only way to drop it -- a real selection-rule
+        cancellation, not a truncation artifact.
         """
         cols = H.apply_block(ManyBodyState.from_states(psi_ref), cutoff).to_states()
         for s in cols:
             s.prune_rows(cutoff)
         merged = self.basis.redistribute_block(ManyBodyState.from_states(cols))
-        return merged.to_states()
+        merged.prune_rows(0.0)
+        return merged
 
     def _candidate_overlaps_and_energies(self, H, Hpsi_ref, slaterWeightMin: float = 0):
         """Enumerate the out-of-basis candidates of ``Hpsi_ref`` with couplings and energies.
@@ -276,6 +274,15 @@ class CIPSISolver:
         redistributed), the coupling matrix ``overlaps[i, j] = <Dj | H | psi_i>`` read off
         ``Hpsi_ref``, and the diagonal-probe energies ``e_Dj[j] ~ <Dj|H|Dj>``.
 
+        ``Hpsi_ref`` is normally the block :meth:`_apply_block_and_redistribute` returns
+        (already redistributed and pruned to its own support); a bare list of width-1
+        states is also accepted (wrapped via ``from_states``) for direct callers. Reading
+        the block via the buffer protocol (``np.asarray``) instead of ``.items()`` avoids
+        allocating a ``SlaterDeterminant`` and a ``Row`` object per row per column -- the
+        dominant Python-level cost of a selection round (measured: 33-43% of the round
+        across two problem sizes, `doc/plans/manybodystate_block_unification.md`'s
+        Phase 9 write-up).
+
         Collective on ``basis.comm`` (the probe redistribution), so it must run on every
         rank -- including one that owns no candidates, whose arrays come back empty.
         """
@@ -283,7 +290,21 @@ class CIPSISolver:
             H = ManyBodyOperator(H)
 
         _index_dict = self.basis._index_dict
-        local_Djs = sorted({state for hp in Hpsi_ref for state in hp if state not in _index_dict})
+        blk = Hpsi_ref if isinstance(Hpsi_ref, ManyBodyState) else ManyBodyState.from_states(Hpsi_ref)
+
+        # `keys()` returns the shared support in row (sorted) order -- the same order the
+        # old `sorted({state for hp in Hpsi_ref for state in hp ...})` produced over the
+        # per-state dicts, so no re-sort is needed here (verified by an explicit
+        # `keys() == sorted(...)` assertion in the block/list equivalence test rather than
+        # taken on faith -- SlaterDeterminant's `__lt__` and the C++ key-vector ordering
+        # are the same comparator, but that equivalence is exactly the kind of thing this
+        # campaign has been bitten by before).
+        keys = blk.keys()
+        amps = np.asarray(blk)  # (rows, p) zero-copy buffer-protocol view
+        new_mask = np.fromiter((k not in _index_dict for k in keys), dtype=bool, count=len(keys))
+        local_Djs = list(itertools.compress(keys, new_mask))
+        overlaps = np.ascontiguousarray(amps[new_mask].T)  # (p, n_Dj); boolean indexing copies
+        del amps  # release the buffer export before any later mutation of Hpsi_ref
 
         # Diagonal probe <Dj|H|Dj> from a single H application to one superposition of
         # all candidates. Unit-modulus pseudo-random phases (derived from the
@@ -315,15 +336,8 @@ class CIPSISolver:
             H_psi_all = self.basis.redistribute_psis(H_psi_all)[0]
 
         if not local_Djs:
-            return local_Djs, np.zeros((len(Hpsi_ref), 0), dtype=complex), np.zeros(0, dtype=float)
+            return local_Djs, overlaps, np.zeros(0, dtype=float)
 
-        Dj_index = {Dj: j for j, Dj in enumerate(local_Djs)}
-        overlaps = np.zeros((len(Hpsi_ref), len(local_Djs)), dtype=complex)
-        for i, Hpsi_i in enumerate(Hpsi_ref):
-            for state, amp in Hpsi_i.items():
-                j = Dj_index.get(state)
-                if j is not None:
-                    overlaps[i, j] = amp[0]
         e_Dj = np.array(
             [np.real(np.conj(phases[j]) * _scalar_amp(H_psi_all.get(Dj))) for j, Dj in enumerate(local_Djs)],
             dtype=float,

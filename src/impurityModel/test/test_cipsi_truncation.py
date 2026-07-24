@@ -11,6 +11,7 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 
 IMPURITY_ORBITALS = {0: [[0, 1]]}
 BATH_STATES = ({0: [[2, 3]]}, {0: [[4, 5]]})
@@ -353,6 +354,126 @@ def test_de2_denominator_uses_energy_gap_for_candidates_above_ref():
     assert score[d1] == pytest.approx(2.0 * score[d2], rel=1e-9)
     # The broken clamp would have made both ~1e12 * v^2 and equal.
     assert score[d1] < 1.0
+
+
+def _oracle_candidate_overlaps_and_energies(solver, H, hpsi_states, slaterWeightMin=0.0):
+    """Independent reimplementation of the pre-Phase-9-Step-2 per-state algorithm.
+
+    ``hpsi_states`` is a plain ``list[ManyBodyState]`` (width-1 states, the historical
+    representation): builds ``local_Djs`` via the sorted-set-comprehension union and the
+    ``overlaps`` matrix via a nested ``.items()`` loop, exactly as
+    ``_candidate_overlaps_and_energies`` did before it was rewritten to read the merged
+    block through the buffer protocol. Used as a ground truth the new implementation must
+    match bit-for-bit -- the block-native rewrite touches ordering and zero-row handling,
+    exactly the kind of change a green test suite alone would not catch (see Phase 7/9).
+    """
+    _index_dict = solver.basis._index_dict
+    local_Djs = sorted({state for hp in hpsi_states for state in hp if state not in _index_dict})
+    if not local_Djs:
+        return local_Djs, np.zeros((len(hpsi_states), 0), dtype=complex)
+    Dj_index = {Dj: j for j, Dj in enumerate(local_Djs)}
+    overlaps = np.zeros((len(hpsi_states), len(local_Djs)), dtype=complex)
+    for i, Hpsi_i in enumerate(hpsi_states):
+        for state, amp in Hpsi_i.items():
+            j = Dj_index.get(state)
+            if j is not None:
+                overlaps[i, j] = amp[0]
+    return local_Djs, overlaps
+
+
+def test_candidate_overlaps_block_matches_oracle_serial():
+    """The block-native ``_candidate_overlaps_and_energies`` reproduces the old
+    per-state algorithm bit-for-bit on a serial (non-distributed) round."""
+    d0, d1 = _det([0]), _det([1])
+    H = ManyBodyOperator(
+        {
+            ((0, "c"), (0, "a")): 0.0,
+            ((1, "c"), (1, "a")): 1.0,
+            ((2, "c"), (2, "a")): 2.0,
+            ((3, "c"), (3, "a")): 3.0,
+            ((0, "c"), (1, "a")): 0.3,
+            ((1, "c"), (0, "a")): 0.3,
+            ((0, "c"), (2, "a")): 0.2,
+            ((2, "c"), (0, "a")): 0.2,
+            ((1, "c"), (3, "a")): 0.1,
+            ((3, "c"), (1, "a")): 0.1,
+        }
+    )
+    basis = _make_basis(comm=None)
+    basis.clear()
+    basis.add_states([d0, d1])
+    solver = CIPSISolver(basis)
+
+    psi_ref = [ManyBodyState({d0: 1.0}), ManyBodyState({d1: 1.0})]
+    Hpsi_blk = solver._apply_block_and_redistribute(H, psi_ref, 0.0)
+    assert isinstance(Hpsi_blk, ManyBodyState)
+
+    local_Djs, overlaps, e_Dj = solver._candidate_overlaps_and_energies(H, Hpsi_blk, 0.0)
+
+    # `_apply_block_and_redistribute` applies H first, so the oracle input is H|psi_i>
+    # per reference column, not the raw psi_ref.
+    hpsi_states_oracle = [applyOp_test(H, p, cutoff=0.0) for p in psi_ref]
+    oracle_Djs, oracle_overlaps = _oracle_candidate_overlaps_and_energies(solver, H, hpsi_states_oracle, 0.0)
+
+    assert local_Djs == oracle_Djs
+    assert local_Djs == sorted(local_Djs)
+    np.testing.assert_array_equal(overlaps, oracle_overlaps)
+    assert e_Dj.shape == (len(local_Djs),)
+
+
+@pytest.mark.mpi
+def test_candidate_overlaps_block_matches_oracle_mpi():
+    """The distributed counterpart: block-native path vs. the per-state oracle on a
+    real multi-rank round, after a real ``redistribute_block`` (not the non-distributed
+    identity branch) -- exercises the row ordering / zero-row-drop equivalence that only
+    shows up once determinants actually move across ranks."""
+    comm = MPI.COMM_WORLD
+    if comm.size < 2:
+        pytest.skip("needs >= 2 ranks")
+
+    d0, d1 = _det([0]), _det([1])
+    H = ManyBodyOperator(
+        {
+            ((0, "c"), (0, "a")): 0.0,
+            ((1, "c"), (1, "a")): 1.0,
+            ((2, "c"), (2, "a")): 2.0,
+            ((3, "c"), (3, "a")): 3.0,
+            ((4, "c"), (4, "a")): 4.0,
+            ((0, "c"), (1, "a")): 0.3,
+            ((1, "c"), (0, "a")): 0.3,
+            ((0, "c"), (2, "a")): 0.2,
+            ((2, "c"), (0, "a")): 0.2,
+            ((1, "c"), (3, "a")): 0.1,
+            ((3, "c"), (1, "a")): 0.1,
+            ((1, "c"), (4, "a")): 0.15,
+            ((4, "c"), (1, "a")): 0.15,
+        }
+    )
+    basis = _make_basis(comm=comm)
+    basis.clear()
+    basis.add_states([d0, d1] if comm.rank == 0 else [])
+    solver = CIPSISolver(basis)
+
+    psi0 = ManyBodyState({d0: 1.0} if comm.rank == 0 else {}, width=1)
+    psi1 = ManyBodyState({d1: 1.0} if comm.rank == 0 else {}, width=1)
+    psi_ref = list(basis.redistribute_psis(psi0, psi1))
+
+    Hpsi_blk = solver._apply_block_and_redistribute(H, psi_ref, 0.0)
+    assert isinstance(Hpsi_blk, ManyBodyState)
+    local_Djs, overlaps, e_Dj = solver._candidate_overlaps_and_energies(H, Hpsi_blk, 0.0)
+
+    # Oracle: apply H to each reference column locally, redistribute exactly as
+    # _apply_block_and_redistribute does, then run the old per-state algorithm.
+    hpsi_states_oracle = [applyOp_test(H, p, cutoff=0.0) for p in psi_ref]
+    for s in hpsi_states_oracle:
+        s.prune(0.0)
+    hpsi_states_oracle = basis.redistribute_psis(*hpsi_states_oracle)
+    oracle_Djs, oracle_overlaps = _oracle_candidate_overlaps_and_energies(solver, H, hpsi_states_oracle, 0.0)
+
+    assert local_Djs == oracle_Djs
+    assert local_Djs == sorted(local_Djs)
+    np.testing.assert_array_equal(overlaps, oracle_overlaps)
+    assert e_Dj.shape == (len(local_Djs),)
 
 
 def test_de2_min_selects_by_pt2_contribution():

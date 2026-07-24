@@ -1544,6 +1544,92 @@ blocks. Both resolved without the FCC Ni measurement (never finished — killed 
   `setup.py`/`pyproject.toml` source. `boost::unordered_flat_map` (a different
   container, still backing `ManyBodyOperator`'s apply-term hash table) is unaffected.
 
+### Step 2 (measurement-gated follow-on) — block-native candidate/overlap build
+
+`_apply_block_and_redistribute` above left its consumer,
+`_candidate_overlaps_and_energies`, on a `list[ManyBodyState]` contract: two
+`O(p · rows)` Python passes over the merged result (`for state in hp`, then
+`.items()`), each allocating a `SlaterDeterminant` and a `Row` object per row per
+column, when the block already holds the same data as a C-contiguous `(rows, width)`
+array. Left explicitly gated in the original Step-1 plan ("the apply is the dominant
+cost; do not do this speculatively") pending a measurement.
+
+**Measurement.** No CIPSI benchmark existed; built one on a scaled-up SIAM (more bath
+sites than `test_cipsi_truncation.py`'s 6-orbital fixture) and instrumented one
+`determine_new_Dj` round into buckets (a) the union+overlaps Python loops, (b) the
+diagonal-probe `applyOp_test`, (c) the redistribute collectives, (d) `apply_block`.
+At two problem sizes (final basis 1341 and 6175, candidate union up to 15166 rows),
+bucket (a) was 33–43% of the round — well clear of the 20% go/no-go gate.
+
+**Change.** `_apply_block_and_redistribute` now returns the merged block directly
+(`prune_rows(0.0)` applied before returning, reproducing the old union's
+all-columns-zero row exclusion exactly) instead of `.to_states()`.
+`_candidate_overlaps_and_energies` reads it via the buffer protocol:
+
+```python
+keys = blk.keys()                 # rows Python objects, once
+amps = np.asarray(blk)            # (rows, p) zero-copy view
+sel  = np.fromiter((k not in _index_dict for k in keys), dtype=bool, count=len(keys))
+local_Djs = list(itertools.compress(keys, sel))
+overlaps  = np.ascontiguousarray(amps[sel].T)
+del amps                          # release the buffer export before any mutation
+```
+
+`_candidate_overlaps_and_energies` accepts either a block or a list at its boundary
+(`blk = x if isinstance(x, ManyBodyState) else ManyBodyState.from_states(x)`) — a live
+branch, since both a production block and the test suite's direct `solver._calc_de2(H,
+[hpsi], ...)` list calls reach it. `_apply_block_and_redistribute` does not need the
+same dispatch: both its callers (`select_at`, `determine_new_Dj`) always pass a list, so
+it stays a plain `ManyBodyState.from_states(psi_ref)` — no speculative bare-block branch.
+`sorted()` was dropped in favor of `keys()`'s already-sorted row order
+(verified, not assumed — see the equivalence test below); the original Phase-2 sketch's
+proposed primitive ("a `block_inner`-based Gram build") was wrong and dropped: the
+coupling matrix is a row gather off the applied block, not an inner product between two
+blocks.
+
+**Verification.** A dedicated equivalence test
+(`test_candidate_overlaps_block_matches_oracle_serial` /
+`..._mpi`) reimplements the deleted per-state algorithm as an independent oracle and
+checks the new block-native path reproduces `(local_Djs, overlaps)` bit-for-bit,
+including `local_Djs == sorted(local_Djs)`, on both a serial and a real 2-rank
+distributed round (the latter is the one that actually exercises row reordering across
+`redistribute_block`). Full gates green: serial 1232 passed (was 1231, +1 new test),
+`-n 2` 1435 passed on both ranks individually (was 1433, +2 for the MPI-marked test).
+
+**Realized win — smaller than hoped on the measured benchmark, as predicted.** An
+isolated microbenchmark of just the union+overlaps computation (decoupled from the
+diagonal-probe apply, which Step 2 does not touch) confirms the algorithm itself is
+4–20x faster, scaling with `p` (reference block width) as expected:
+
+| p | rows | old | new | speedup |
+|---|------|-----|-----|---------|
+| 1 | 5000 | 6.49 ms | 1.17 ms | 5.6x |
+| 2 | 5000 | 11.29 ms | 1.38 ms | 8.2x |
+| 4 | 5000 | 20.40 ms | 1.56 ms | 13.1x |
+| 8 | 5000 | 36.78 ms | 2.08 ms | 17.7x |
+| 8 | 20000 | 503.6 ms | 24.9 ms | 20.3x |
+
+But the SIAM ground-state benchmark used for the Step-1 gate always has `p = 1` (a
+single, non-degenerate ground state) and `_candidate_overlaps_and_energies` also
+contains the (unchanged) diagonal-probe H apply, which dominates at `p = 1`: a clean
+before/after `cProfile` comparison (same code, same scale, via `git stash` to isolate
+the diff) showed only `0.088s → 0.084s` cumulative time in
+`_candidate_overlaps_and_energies` per round at basis size 6175 — a modest ~5%
+reduction on *this* benchmark. The larger, `p`-scaling win applies where `select_at` is
+called with multiple simultaneous reference columns — `gf_solvers.py`'s per-frequency
+CIPSI/bicgstab drivers (`p` = number of transition operators, several to a dozen) and
+any ground-state case with genuine degenerate manifolds — neither of which the gating
+benchmark exercises. Landed anyway: the change is a pure, verified-equivalent
+refactor with no downside, and the `p`-scaling is real even where this particular
+benchmark can't show it.
+
+**Explicitly left alone**: `gf_solvers.py`'s per-frequency selection loop
+(`select_at(z, list(X), ...)` at `:978`) still round-trips its iterate through
+`.to_states()`/`from_states` before/after the call — eliminating that requires
+threading a bare block through the warm-start history (`hist_x`, the `ManyBodyState.
+from_states(X)` warm-start reuse, `block_inner_cy`) across multiple call sites in a
+different hot loop with its own invariants, unmeasured and out of scope for this pass.
+
 ## Campaign status: COMPLETE
 
 Every phase of the `ManyBodyState`/`ManyBodyBlockState` unification is landed. The
