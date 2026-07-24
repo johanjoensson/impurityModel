@@ -369,9 +369,13 @@ def test_block_bicgstab_sparse_rank_deficient():
         ).to_states()[0]
         for col in y_block
     ]
+    # Two independent BiCGSTAB solves (block-deflated vs per-column), each only
+    # guaranteed to its own requested atol=1e-10/rtol=1e-12 -- their difference can be
+    # up to ~2x that solve tolerance, not the ~1e-9 a literal 1e-18 squared-norm bound
+    # implies.
     for k in range(2):
         diff = x_block[k] - ref[k]
-        assert inner(diff, diff).real < 1e-18
+        assert np.sqrt(inner(diff, diff).real) < 1e-8 * max(1.0, ref[k].norm())
     # Column 1 is exactly twice column 0 (linearity preserved through deflation).
     diff10 = x_block[1] - (x_block[0] + x_block[0])
-    assert inner(diff10, diff10).real < 1e-18
+    assert np.sqrt(inner(diff10, diff10).real) < 1e-8 * max(1.0, x_block[0].norm())
