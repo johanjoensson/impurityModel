@@ -90,6 +90,24 @@ def test_no_mesh_falls_back_to_the_spectral_edge_monitor():
     assert _gf_eval_meshes(None, None, side_i=0, delta=_DELTA, es=[0.0]) is None
 
 
+def test_empty_mesh_array_is_not_the_same_as_no_mesh():
+    """An empty array (as opposed to None) still counts as "a mesh was requested" --
+    _gf_signed_axes must not conflate a zero-length axis with the caller passing no mesh at
+    all, else the monitor would silently fall back to the (much more expensive) spectral-edge
+    path on a degenerate but legitimate empty-mesh call."""
+    (mesh,) = _gf_eval_meshes(None, np.array([]), side_i=0, delta=_DELTA, es=[0.0, 1.0])
+    assert mesh.shape == (0,)
+
+
+def test_single_point_mesh_is_not_subsampled_away():
+    """A one-point mesh is smaller than the subsample budget on every axis, so it must survive
+    unchanged (per axis) and still get shifted in by every stacked eigenstate."""
+    es = [0.5, -0.5]
+    (mesh,) = _gf_eval_meshes(None, np.array([2.0]), side_i=0, delta=_DELTA, es=es)
+    assert mesh.size == len(es)
+    np.testing.assert_allclose(sorted(mesh.tolist(), key=lambda z: z.real), [1.5 + 1j * _DELTA, 2.5 + 1j * _DELTA])
+
+
 # --------------------------------------------------------------------------------------
 # The two properties a naive implementation loses
 # --------------------------------------------------------------------------------------
