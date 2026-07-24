@@ -196,7 +196,7 @@ callers) invoke with an `ImpurityModel` + option groups.
 
 ## Test Suite (`src/impurityModel/test/`)
 
-- **Framework:** `pytest` + `pytest-mpi`. Serial run: `pytest`. MPI run: `mpiexec -n 2 python -m pytest --with-mpi` (CI runs serial, 1 rank, and 2 ranks).
+- **Framework:** `pytest` + `pytest-mpi`. Serial run: `pytest`. MPI run: `mpiexec -n 2 python -m pytest --with-mpi` (CI runs serial, 1 rank, 2 ranks, and 3 ranks — a rank can only own zero local determinants at 3+ ranks for small hash-distributed test fixtures, so `-n 2` alone cannot catch an empty-rank MPI deadlock).
 - **MPI tests** are marked `@pytest.mark.mpi`; `conftest.py` redirects non-root-rank output to `.pytest_mpi_rank*.out`, adds a per-test watchdog, and synchronizes teardown.
 - **Benchmarks** are marked `benchmark` and skipped by default; run with `pytest -m benchmark`.
 

@@ -26,10 +26,14 @@ python -m pytest
 mpiexec -n 2 python -m pytest --with-mpi
 ```
 
-CI runs serial, `-n 1`, and `-n 2`. Benchmarks are opt-in: `pytest -m benchmark`.
+CI runs serial, `-n 1`, `-n 2`, and `-n 3`. Benchmarks are opt-in: `pytest -m benchmark`.
 MPI tests are marked `@pytest.mark.mpi`; non-root rank output goes to `.pytest_mpi_rank*.out`.
-When touching `basis_split.py` / `run_units_distributed`, also run once at `-n 3`
-(splitting only activates multi-rank).
+An empty rank (owns zero local determinants under `routing_hash() % comm.size`) only
+appears at `-n 3`+ for small hash-distributed test fixtures — `-n 2` never exercises it.
+Run `-n 3` locally when touching `basis_split.py` / `run_units_distributed` (splitting
+only activates multi-rank) or the Cython Lanczos kernels / anything gating an MPI
+collective (a rank-local truthiness/early-return check that should be rank-invariant
+deadlocked the locked-reort Allreduce in `_lanczos_step.pxi` exactly this way).
 
 Docs build: `make -s -C doc/sphinx html` (needs `.[doc]`).
 

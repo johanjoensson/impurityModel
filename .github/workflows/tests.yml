@@ -138,6 +138,14 @@ jobs:
           # under Open MPI; default 0 keeps this a no-op when coverage is off.
           mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi '"$PYTEST_COV_ARGS"
 
+      - name: Run MPI tests (3 ranks)
+        run: |
+          # A rank can own zero local determinants only once ranks > basis-hash-buckets
+          # in play for small fixtures -- i.e. only visible at 3+ ranks, never at 2. This
+          # leg is what caught the locked-reort deadlock in _lanczos_step.pxi (empty-rank
+          # collectives silently skipped on some ranks but not others).
+          mpiexec -n 3 bash -c 'COVERAGE_FILE=.coverage.mpi3_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi '"$PYTEST_COV_ARGS"
+
       - name: Combine coverage and write XML
         if: matrix.coverage == true
         run: |
