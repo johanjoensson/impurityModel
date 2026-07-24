@@ -197,8 +197,23 @@ callers) invoke with an `ImpurityModel` + option groups.
 ## Test Suite (`src/impurityModel/test/`)
 
 - **Framework:** `pytest` + `pytest-mpi`. Serial run: `pytest`. MPI run: `mpiexec -n 2 python -m pytest --with-mpi` (CI runs serial, 1 rank, 2 ranks, and 3 ranks — a rank can only own zero local determinants at 3+ ranks for small hash-distributed test fixtures, so `-n 2` alone cannot catch an empty-rank MPI deadlock).
-- **MPI tests** are marked `@pytest.mark.mpi`; `conftest.py` redirects non-root-rank output to `.pytest_mpi_rank*.out`, adds a per-test watchdog, and synchronizes teardown.
+- **MPI tests** are marked `@pytest.mark.mpi`; `conftest.py` redirects non-root-rank output to `.pytest_mpi_rank*.out`, adds a per-test watchdog, and synchronizes teardown. Never name a test subdirectory `mpi` (or any other registered marker name) — pytest folds every path component into `item.keywords`, and pytest-mpi's skip check (`MPIMarkerEnum.mpi in item.keywords`) then matches unmarked tests too; the MPI-comm-plumbing group lives in `mpi_infra/` for this reason.
 - **Benchmarks** are marked `benchmark` and skipped by default; run with `pytest -m benchmark`.
+- **Layout:** grouped by topic under subpackages, each with `__init__.py`: `lanczos/`
+  (block-Lanczos recurrence, TRLM/IRLM restart+locking, TSQR, reorthogonalization,
+  Krylov storage, deflation), `linear_solvers/` (CG/BiCGSTAB/GMRES), `gf/` (Green's
+  functions, self-energy, susceptibility), `spectra/` (XAS/RIXS/polarization),
+  `basis/` (ManyBodyState/basis representation), `operators/` (operator algebra,
+  apply kernels), `symmetry/` (symmetry observables, ground-state statistics),
+  `restrictions/` (CIPSI, truncation, occupation restrictions), `block_structure/`,
+  `mpi_infra/` (MPI communication plumbing, rank independence), `misc/` (model/
+  config/CLI/Hartree-Fock/utils). Perf/benchmark files stay with their topic group
+  (the `benchmark` marker is the cross-cutting view, via `pytest -m benchmark`).
+  Shared fixtures/oracles live in `support/` (not itself a test module): `testtol.py`
+  (derived numerical tolerances), `lanczos_fixtures.py`, `gf_oracles.py`,
+  `real_workload.py`/`_nio_workload.py` (realistic HDF5/pickle workload loaders),
+  `restriction_diagnostics.py`/`restriction_sweep.py` (opt-in sweep scripts).
+  `conftest.py` stays at the `test/` root; it applies suite-wide.
 
 ## Execution Flow
 1. **Define model:** the non-interacting Hamiltonian is read/built (`hamiltonian_io`), Coulomb/SOC/field terms added (`atomic_physics`, `operator_algebra`).
