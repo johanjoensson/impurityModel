@@ -245,7 +245,7 @@ def test_block_eigsh_mpi(reort_mode):
     # zero, an asymmetric mismatch against the owning rank's populated (eventually
     # width-1) seeds that would deadlock redistribute_psis' collective.
     psi0_blocks = [ManyBodyState.from_states([psi]) for psi in psi0]
-    psi0 = [blk.to_states()[0] for blk in basis.redistribute_psis(psi0_blocks)]
+    psi0 = [blk.to_states()[0] for blk in basis.redistribute_psis(*psi0_blocks)]
     print(f"RANK {basis.comm.rank} psi0: {psi0}", flush=True)
     alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)

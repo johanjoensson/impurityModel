@@ -320,49 +320,54 @@ class Basis:
         if __debug__:
             assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
 
-    def redistribute_psis(self, psis):
-        """Redistribute wavefunctions across MPI ranks based on state ownership.
+    def redistribute_psis(self, *blocks):
+        """Redistribute one or more ``ManyBodyState`` blocks across MPI ranks by
+        determinant ownership, in a single fused collective.
 
         Parameters
         ----------
-        psis : list of width-1 ManyBodyState
-            The wavefunctions to redistribute (a producer's independently-supported
-            blocks, not a shared-support block itself). Composed from existing
-            primitives rather than a new collective: merge into one block
-            (``ManyBodyState.from_states``), redistribute it (:meth:`redistribute_block`,
-            the already-tested block collective), split back into width-1 blocks
-            (``column``, Phase 8's cheap gather). A bare (non-list) width-1 block is
-            also accepted, with a warning, and wrapped into a one-element list; a bare
-            block of any other width raises -- use :meth:`redistribute_block` for that
-            case.
+        *blocks : ManyBodyState
+            Any number of blocks, of any (possibly differing) width ``w_i`` -- each a
+            producer's own independently-supported block, not necessarily sharing
+            support with the others. A single block (``redistribute_psis(blk)``) is
+            first-class; :meth:`redistribute_block` is the direct one-block primitive
+            this composes from.
 
         Returns
         -------
         list of ManyBodyState
-            The redistributed wavefunctions.
+            One redistributed block per input, same width ``w_i`` as the corresponding
+            input, each pruned back to its own (sparse) support -- no union-support
+            zero padding survives, unlike the old ``column``-based split this replaces.
+            Deliberately a ``list``, not a tuple: ``block_tsqr``/``block_normalize``
+            (``_reort.pxi``) dispatch on ``isinstance(wp, list)`` to decide whether
+            they are looking at a list of width-1 states or an already-combined block,
+            and a tuple would silently fall through to the "already an array" branch.
+
+        All ``W = sum(w_i)`` columns are flattened into one block over the union
+        support (``ManyBodyState.from_states``), redistributed in one fused
+        ``Neighbor_alltoallv`` (:meth:`redistribute_block`, hashing/routing each
+        determinant once regardless of ``W``), then sliced back by cumulative column
+        offset (``select``) and re-pruned to each slice's own support
+        (``prune_rows(0.0)``). Collective on ``self.comm`` when distributed; a
+        non-distributed basis returns the inputs unchanged, mirroring
+        :meth:`redistribute_block`.
         """
-        if isinstance(psis, ManyBodyState):
-            if psis.width != 1:
-                raise TypeError(
-                    f"redistribute_psis expected a list, got a bare ManyBodyState of width "
-                    f"{psis.width} -- use redistribute_block instead"
-                )
-            print("WARNING in redistribute_psi:")
-            print(
-                "Expected a list of ManyBodyStates, received a single ManyBodyState."
-                " Remaking into list of one ManyBodyState"
-            )
-            psis = [psis]
-        if len(psis) == 0:
+        if not blocks:
             return []
-        for p in psis:
-            if p.width != 1:
-                raise ValueError(f"redistribute_psis: expected width-1 blocks, got width {p.width}")
         if not self.is_distributed:
-            return list(psis)
-        merged = ManyBodyState.from_states([p.to_states()[0] for p in psis])
-        redistributed = self.redistribute_block(merged)
-        return [redistributed.column(i) for i in range(redistributed.width)]
+            return list(blocks)
+        widths = [b.width for b in blocks]
+        combined = ManyBodyState.from_states([c for b in blocks for c in b.to_states()])
+        combined = self.redistribute_block(combined)
+        out = []
+        offset = 0
+        for w in widths:
+            sub = combined.select(list(range(offset, offset + w)))
+            sub.prune_rows(0.0)
+            out.append(sub)
+            offset += w
+        return out
 
     def redistribute_block(self, block):
         """Redistribute a ``ManyBodyState`` across MPI ranks by state ownership.

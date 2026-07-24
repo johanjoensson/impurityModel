@@ -42,7 +42,7 @@ def test_block_lanczos_cy_mpi_orthogonality_full():
             st[basis.type.from_bytes(states[j])] = np.random.randn()
         psi0.append(st)
 
-    psi0 = basis.redistribute_psis(psi0)
+    psi0 = basis.redistribute_psis(*psi0)
     psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
     alphas, _betas, Q_basis, _W = block_lanczos_cy(
@@ -84,7 +84,7 @@ def test_block_lanczos_cy_mpi_choleskyqr2_near_degenerate():
         for j in range(6):
             st[basis.type.from_bytes(states[j])] = np.random.randn() + 1j * np.random.randn()
         psi0.append(st)
-    psi0 = basis.redistribute_psis(psi0)
+    psi0 = basis.redistribute_psis(*psi0)
     psi0, _ = block_normalize(psi0, mpi=True, comm=comm)  # orthonormal start (as the GF path provides)
 
     _alphas, betas, Q_basis, _ = block_lanczos_cy(
@@ -113,7 +113,7 @@ def test_trlm_cy_diagonal_mpi():
     st = ManyBodyState()
     for i in range(6):
         st[basis.type.from_bytes(states[i])] = 1.0 / np.sqrt(6)
-    psi0 = basis.redistribute_psis([st])
+    psi0 = basis.redistribute_psis(st)
     psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
     eigs, _evecs = thick_restart_block_lanczos_cy(
@@ -182,7 +182,7 @@ def test_trlm_cy_tight_binding_mpi():
             st[b] = np.random.randn()
         psi0.append(st)
 
-    psi0 = basis.redistribute_psis(psi0)
+    psi0 = basis.redistribute_psis(*psi0)
     psi0, _ = block_normalize(psi0, True, comm)
 
     eigs, _evecs = thick_restart_block_lanczos_cy(
@@ -208,7 +208,7 @@ def test_irlm_cy_diagonal_mpi():
     st = ManyBodyState()
     for i in range(6):
         st[basis.type.from_bytes(states[i])] = 1.0 / np.sqrt(6)
-    psi0 = basis.redistribute_psis([st])
+    psi0 = basis.redistribute_psis(st)
     psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
     eigs, _evecs = implicitly_restarted_block_lanczos_cy(
@@ -242,7 +242,7 @@ def test_irlm_cy_tight_binding_mpi():
             st[b] = np.random.randn()
         psi0.append(st)
 
-    psi0 = basis.redistribute_psis(psi0)
+    psi0 = basis.redistribute_psis(*psi0)
     psi0, _ = block_normalize(psi0, True, comm)
 
     eigs, _evecs = implicitly_restarted_block_lanczos_cy(
@@ -283,7 +283,7 @@ def test_irlm_cy_selective_reort_orthogonality_mpi():
     h_op = ManyBodyOperator(hop)
 
     psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis}, width=1)]
-    psi0 = basis.redistribute_psis(psi0)
+    psi0 = basis.redistribute_psis(*psi0)
     psi0, _ = block_normalize(psi0, True, comm)
 
     _eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
@@ -330,7 +330,7 @@ def test_trlm_cy_selective_reort_orthogonality_mpi():
     h_op = ManyBodyOperator(hop)
 
     psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis}, width=1)]
-    psi0 = basis.redistribute_psis(psi0)
+    psi0 = basis.redistribute_psis(*psi0)
     psi0, _ = block_normalize(psi0, True, comm)
 
     _eigvals, eigvecs = thick_restart_block_lanczos_cy(

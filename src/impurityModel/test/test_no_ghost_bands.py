@@ -88,7 +88,7 @@ def create_diagonal_system(eigvals, path, comm=None):
             # populated (eventually width-1) seeds that would deadlock
             # redistribute_psis' collective.
             psi0_blocks = [ManyBodyState.from_states([psi]) for psi in psi0_full]
-            psi0 = [blk.to_states()[0] for blk in basis.redistribute_psis(psi0_blocks)]
+            psi0 = [blk.to_states()[0] for blk in basis.redistribute_psis(*psi0_blocks)]
             psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
         else:
             basis = Basis(

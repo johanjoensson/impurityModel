@@ -31,7 +31,7 @@ def _redistribute_as_width1(basis, psi0_full):
     collective. from_states forces an explicit width-1 block -- empty or not -- on
     every rank instead."""
     blocks = [ManyBodyState.from_states([s]) for s in psi0_full]
-    return [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
+    return [blk.to_states()[0] for blk in basis.redistribute_psis(*blocks)]
 
 
 def build_dense_matrix_from_manybody(h_op, basis_states):

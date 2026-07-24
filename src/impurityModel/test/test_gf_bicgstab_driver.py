@@ -203,7 +203,7 @@ def _capped_solve_with(solver, cap, z, comm=None):
         if owns_seeds
         else [ManyBodyState(width=1) for _ in seeds_full]
     )
-    seeds = ManyBodyState.from_states([blk.to_states()[0] for blk in basis.redistribute_psis(seed_blocks)])
+    seeds = ManyBodyState.from_states([blk.to_states()[0] for blk in basis.redistribute_psis(*seed_blocks)])
     A = z - _siam_6()
     # Restart while unconverged, as the driver does: a near-pole z stagnates a single
     # BiCGSTAB pass (fresh shadow residual each call). GMRES restarts internally, so its
@@ -284,7 +284,7 @@ def _run_driver(gf_method, reort, comm=None, monkeypatch_env=None):
         psi_blocks = (
             [ManyBodyState.from_states([p]) for p in psis] if owns_psis else [ManyBodyState(width=1) for _ in psis]
         )
-        psis = [blk.to_states()[0] for blk in basis.redistribute_psis(psi_blocks)]
+        psis = [blk.to_states()[0] for blk in basis.redistribute_psis(*psi_blocks)]
     old_env = {}
     for key, value in (monkeypatch_env or {}).items():
         old_env[key] = os.environ.get(key)

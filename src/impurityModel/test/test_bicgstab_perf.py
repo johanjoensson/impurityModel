@@ -251,7 +251,7 @@ def _solve(workload, width, z, sample_rss=True):
     shift = z + workload["e0"]
     a_op = CountingOperator(shift - h)
 
-    y = excited_basis.redistribute_psis(list(seeds))
+    y = excited_basis.redistribute_psis(*seeds)
     y_blk = ManyBodyState.from_states(y)
     x0 = ManyBodyState(width=len(y))
 
@@ -276,7 +276,7 @@ def _residual_norm(workload, excited_basis, z, x, y):
     """
     shift = z + workload["e0"]
     a_op = shift - workload["h"]
-    ax = excited_basis.redistribute_psis([applyOp(a_op, xi, SLATER_WEIGHT_MIN) for xi in x])
+    ax = excited_basis.redistribute_psis(*[applyOp(a_op, xi, SLATER_WEIGHT_MIN) for xi in x])
     total = sum((axi - yi).norm2() for axi, yi in zip(ax, y))
     if excited_basis.comm is not None:
         total = excited_basis.comm.allreduce(total, op=MPI.SUM)

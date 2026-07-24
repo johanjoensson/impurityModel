@@ -41,7 +41,7 @@ def _redistribute_single_as_width1(basis, psi):
     populated (eventually width-1) seed on the owning rank that would deadlock
     redistribute_psis' collective. from_states forces an explicit width-1 block on
     every rank instead."""
-    (out,) = basis.redistribute_psis([ManyBodyState.from_states([psi])])[0].to_states()
+    (out,) = basis.redistribute_psis(ManyBodyState.from_states([psi]))[0].to_states()
     return out
 
 

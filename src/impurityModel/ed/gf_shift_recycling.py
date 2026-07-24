@@ -392,7 +392,7 @@ class KrylovShiftedResolvent:
 
         basis.clear()
         basis.add_states(sorted({state for psi in rhs for state in psi.keys()}))
-        rhs = basis.redistribute_psis(list(rhs))
+        rhs = basis.redistribute_psis(*rhs)
 
         # Orthonormal seed block + projection B0 (the same preamble as block_green_impl).
         psi_dense_local, r = _distributed_seed_qr(basis, rhs, slaterWeightMin)

@@ -339,7 +339,7 @@ def test_block_gmres_mpi_matches_dense():
     y_blocks = (
         [ManyBodyState.from_states([y]) for y in ys_full] if owns_ys else [ManyBodyState(width=1) for _ in ys_full]
     )
-    ys = [blk.to_states()[0] for blk in dist_basis.redistribute_psis(y_blocks)]
+    ys = [blk.to_states()[0] for blk in dist_basis.redistribute_psis(*y_blocks)]
     info = {}
     x0 = ManyBodyState(width=2)
     xs = block_gmres(op, x0, ManyBodyState.from_states(ys), basis=dist_basis, slaterWeightMin=0.0, info=info)

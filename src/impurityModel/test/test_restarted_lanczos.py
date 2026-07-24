@@ -15,8 +15,8 @@ class MockBasis:
         self.comm = None
         self._index_dict = {}
 
-    def redistribute_psis(self, psis):
-        return psis
+    def redistribute_psis(self, *blocks):
+        return list(blocks)
 
     def redistribute_block(self, block):
         return block

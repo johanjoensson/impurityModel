@@ -234,7 +234,7 @@ def test_redistribute_psis_roundtrip():
     else:
         psi = ManyBodyState(width=1)
 
-    (redist,) = basis.redistribute_psis([ManyBodyState.from_states([psi])])[0].to_states()
+    (redist,) = basis.redistribute_psis(ManyBodyState.from_states([psi]))[0].to_states()
 
     # Gather back and check completeness
     gathered = comm.gather(redist, root=0)
@@ -264,7 +264,7 @@ def test_redistribute_psis_normalisation():
     else:
         psi = ManyBodyState(width=1)
 
-    (redist,) = basis.redistribute_psis([ManyBodyState.from_states([psi])])[0].to_states()
+    (redist,) = basis.redistribute_psis(ManyBodyState.from_states([psi]))[0].to_states()
 
     # Local norm squared contribution from this rank
     local_norm_sq = sum(abs(v[0]) ** 2 for v in redist.values())
@@ -294,11 +294,11 @@ def test_redistribute_psis_accepts_width_one_blocks():
     # an asymmetric mismatch against the owning rank's populated (eventually width-1)
     # states that would deadlock redistribute_psis' collective.
     ref_blocks = [ManyBodyState.from_states([psi_a.copy()]), ManyBodyState.from_states([psi_b.copy()])]
-    (ref_a,), (ref_b,) = (blk.to_states() for blk in basis.redistribute_psis(ref_blocks))
+    (ref_a,), (ref_b,) = (blk.to_states() for blk in basis.redistribute_psis(*ref_blocks))
 
     blk_a = ManyBodyState.from_states([psi_a])
     blk_b = ManyBodyState.from_states([psi_b])
-    out = basis.redistribute_psis([blk_a, blk_b])
+    out = basis.redistribute_psis(blk_a, blk_b)
 
     assert len(out) == 2
     assert all(isinstance(o, ManyBodyState) and o.width == 1 for o in out)
@@ -329,9 +329,9 @@ def test_redistribute_psis_width_one_blocks_empty_state():
     # a bare empty/singleton placeholder would be a width-0 polymorphic zero once the
     # flat and block classes merge (Phase 7 step 3).
     ref_blocks = [ManyBodyState.from_states([empty.copy()]), ManyBodyState.from_states([singleton.copy()])]
-    (ref_empty,), (ref_singleton,) = (blk.to_states() for blk in basis.redistribute_psis(ref_blocks))
+    (ref_empty,), (ref_singleton,) = (blk.to_states() for blk in basis.redistribute_psis(*ref_blocks))
 
-    out = basis.redistribute_psis([ManyBodyState.from_states([empty]), ManyBodyState.from_states([singleton])])
+    out = basis.redistribute_psis(ManyBodyState.from_states([empty]), ManyBodyState.from_states([singleton]))
     (out_empty,) = out[0].to_states()
     (out_singleton,) = out[1].to_states()
     assert out_empty == ref_empty
@@ -340,38 +340,99 @@ def test_redistribute_psis_width_one_blocks_empty_state():
 
 
 def test_redistribute_psis_accepts_bare_width_one_block():
-    """A bare (non-list) width-1 block is treated like a bare ManyBodyState: wrapped
-    into a one-element list with a warning, not rejected -- only a bare block of
-    width != 1 must go through redistribute_block explicitly (see the next test)."""
+    """A bare (non-list) width-1 block is first-class: passing it directly gives back
+    the same result as passing the equivalent width-1 state in a list."""
     basis = _make_basis([b"\x80", b"\x40"])
     state = ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0})
     blk = ManyBodyState.from_states([state])
     (out,) = basis.redistribute_psis(blk)
-    (ref,) = basis.redistribute_psis([state.copy()])
+    (ref,) = basis.redistribute_psis(state.copy())
     diff = out.to_states()[0] - ref
     assert np.sqrt(diff.norm2()) < 1e-12
 
 
-def test_redistribute_psis_rejects_bare_wide_block():
-    basis = _make_basis([b"\x80", b"\x40"])
-    states = [
-        ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0}),
-        ManyBodyState({SlaterDeterminant.from_bytes(b"\x40"): 2.0}),
-    ]
-    blk = ManyBodyState.from_states(states)
-    with pytest.raises(TypeError):
-        basis.redistribute_psis(blk)
-
-
-def test_redistribute_psis_rejects_non_width_one_blocks():
+def test_redistribute_psis_accepts_bare_wide_block():
+    """A bare block of width > 1 is no longer rejected: redistribute_psis is variadic
+    over blocks of any width, so a single wide block passed directly comes back with
+    the same width, matching redistribute_block applied to it directly."""
     basis = _make_basis([b"\x80", b"\x40"])
     states = [
         ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0}),
         ManyBodyState({SlaterDeterminant.from_bytes(b"\x40"): 2.0}),
     ]
     wide = ManyBodyState.from_states(states)
-    with pytest.raises(ValueError):
-        basis.redistribute_psis([wide])
+    (out,) = basis.redistribute_psis(wide.copy())
+    ref = basis.redistribute_block(wide.copy())
+    assert out.width == ref.width == 2
+    diff = np.asarray(out) - np.asarray(ref)
+    assert np.sqrt(np.sum(np.abs(diff) ** 2)) < 1e-12
+
+
+def test_redistribute_psis_heterogeneous_widths():
+    """The defining new property: blocks of DIFFERENT widths passed together come back
+    each at their own width, matching what redistribute_block would give each
+    individually -- one fused collective, not one width shared by every argument.
+
+    No ``comm`` is passed here, so ``is_distributed`` is False and this only exercises
+    the identity early-return -- it does not run the combine/select/prune_rows path at
+    all. See :func:`test_redistribute_psis_heterogeneous_widths_mpi` for that."""
+    basis = _make_basis([b"\x80", b"\x40"])
+    single = ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0})
+    wide = ManyBodyState.from_states(
+        [
+            ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 2.0}),
+            ManyBodyState({SlaterDeterminant.from_bytes(b"\x40"): 3.0}),
+        ]
+    )
+    out_single, out_wide = basis.redistribute_psis(single.copy(), wide.copy())
+    assert out_single.width == 1
+    assert out_wide.width == 2
+    ref_single = basis.redistribute_block(single.copy())
+    ref_wide = basis.redistribute_block(wide.copy())
+    diff_single = out_single.to_states()[0] - ref_single.to_states()[0]
+    assert np.sqrt(diff_single.norm2()) < 1e-12
+    diff_wide = np.asarray(out_wide) - np.asarray(ref_wide)
+    assert np.sqrt(np.sum(np.abs(diff_wide) ** 2)) < 1e-12
+
+
+@pytest.mark.mpi
+def test_redistribute_psis_heterogeneous_widths_mpi():
+    """The distributed counterpart of test_redistribute_psis_heterogeneous_widths:
+    with an actual comm, a width-1 and a width-2 block redistributed together
+    exercise the real combine -> redistribute_block -> cumulative-offset select ->
+    prune_rows(0.0) path, not the non-distributed identity branch. Each must come
+    back at its own width, matching redistribute_block applied to it alone."""
+    comm = MPI.COMM_WORLD
+    states_bytes = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    basis = _make_basis(states_bytes, comm=comm)
+
+    # All amplitude lives on rank 0; every other rank uses an explicit-width empty
+    # placeholder (never a bare ManyBodyState()) so every rank agrees on the total
+    # flattened width of the combined block -- the same discipline as every other
+    # redistribute_psis test in this file.
+    if comm.rank == 0:
+        single = ManyBodyState({SlaterDeterminant.from_bytes(s): 1.0 / len(states_bytes) for s in states_bytes})
+        wide = ManyBodyState.from_states(
+            [
+                ManyBodyState({SlaterDeterminant.from_bytes(s): 2.0 for s in states_bytes}),
+                ManyBodyState({SlaterDeterminant.from_bytes(s): 3.0 for s in states_bytes}),
+            ]
+        )
+    else:
+        single = ManyBodyState(width=1)
+        wide = ManyBodyState(width=2)
+
+    out_single, out_wide = basis.redistribute_psis(single.copy(), wide.copy())
+    assert out_single.width == 1
+    assert out_wide.width == 2
+
+    ref_single = basis.redistribute_block(single.copy())
+    ref_wide = basis.redistribute_block(wide.copy())
+
+    diff_single = out_single.to_states()[0] - ref_single.to_states()[0]
+    assert np.sqrt(diff_single.norm2()) < 1e-12
+    diff_wide = np.asarray(out_wide) - np.asarray(ref_wide)
+    assert np.sqrt(np.sum(np.abs(diff_wide) ** 2)) < 1e-12
 
 
 @pytest.mark.mpi
@@ -509,7 +570,7 @@ def test_density_matrix_mpi_vs_serial():
         psi_m = ManyBodyState({SlaterDeterminant.from_bytes(s): c for s, c in zip(states_bytes, coeffs)})
     else:
         psi_m = ManyBodyState(width=1)
-    (psi_m,) = basis_m.redistribute_psis([ManyBodyState.from_states([psi_m])])[0].to_states()
+    (psi_m,) = basis_m.redistribute_psis(ManyBodyState.from_states([psi_m]))[0].to_states()
 
     rho_mpi = build_density_matrices(
         basis_m,

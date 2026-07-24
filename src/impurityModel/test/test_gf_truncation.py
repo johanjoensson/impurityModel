@@ -80,7 +80,7 @@ def _redistribute_as_width1(basis, states, n):
         if states is not None
         else [ManyBodyState(width=1) for _ in range(n)]
     )
-    return [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
+    return [blk.to_states()[0] for blk in basis.redistribute_psis(*blocks)]
 
 
 def _run_capped(cap, reort=None, comm=None):
@@ -176,8 +176,8 @@ def test_admission_prefers_large_amplitude_rows():
         def redistribute_block(self, block):
             return block
 
-        def redistribute_psis(self, psis):
-            return psis
+        def redistribute_psis(self, *blocks):
+            return list(blocks)
 
     seed_dets = [_det([0, 1, 2])]
     proxy = _CappedBasisProxy(_FakeBasis(seed_dets), cap=3)

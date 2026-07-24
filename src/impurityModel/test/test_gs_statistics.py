@@ -291,7 +291,7 @@ def test_entanglement_entropy_distributed_matches_serial():
     # zero, an asymmetric mismatch against the owning rank's populated (eventually
     # width-1) seeds that would deadlock redistribute_psis' collective.
     blocks = [ManyBodyState.from_states([psi]) for psi in (bell, mixed_valence)]
-    psis = [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
+    psis = [blk.to_states()[0] for blk in basis.redistribute_psis(*blocks)]
 
     ent = compute_entanglement_entropy(basis, psis, np.array([0.0, 1.0]), tau=0.5)
     assert ent["per_state_entropy"] == pytest.approx([math.log(2), math.log(2)])

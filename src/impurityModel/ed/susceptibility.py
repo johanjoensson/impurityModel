@@ -212,7 +212,7 @@ def calc_susceptibility(
     boltzmann = np.exp(-(es - e0) / tau)
     boltzmann /= np.sum(boltzmann)
     manifolds = _group_manifolds(es, degeneracy_tol)
-    redistribute = basis.redistribute_psis if basis.is_distributed else (lambda states: states)
+    redistribute = basis.redistribute_psis if basis.is_distributed else (lambda state: (state,))
 
     # (branch, i_op, ei) -> projection coefficients onto the manifold members of ei.
     # Filled by the seed transforms identically on every rank (the projection runs
@@ -223,7 +223,7 @@ def calc_susceptibility(
         def transform(ei, i_op, seed):
             # Align the apply-local seed with the bra partition, then project out the
             # degenerate manifold of state ei: seed -= sum_m |m><m|seed>.
-            seed = redistribute([seed])[0]
+            seed = redistribute(seed)[0]
             coeffs = np.zeros(len(manifolds[ei]), dtype=complex)
             for k, m in enumerate(manifolds[ei]):
                 c = inner(psis[m], seed)

@@ -82,7 +82,7 @@ def _redistribute_as_width1(basis, states, n):
         if states is not None
         else [ManyBodyState(width=1) for _ in range(n)]
     )
-    return [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
+    return [blk.to_states()[0] for blk in basis.redistribute_psis(*blocks)]
 
 
 def test_spectral_bounds_bracket_the_spectrum():
@@ -206,7 +206,7 @@ def test_capped_recurrence_is_php_filter():
     Vp = build_vector(php_basis, seeds).T
     for s, c in enumerate(coeff_sets):
         ref = _dense_filter(Hp, c, bounds) @ Vp
-        got = build_vector(php_basis, php_basis.redistribute_psis(filtered[s])).T
+        got = build_vector(php_basis, php_basis.redistribute_psis(*filtered[s])).T
         np.testing.assert_allclose(got, ref, atol=1e-10)
 
 

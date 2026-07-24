@@ -76,7 +76,7 @@ def build_distributed_vector(basis, psis: list[ManyBodyState], dtype: Any = comp
     np.ndarray
         The 2D array containing the local amplitudes.
     """
-    psis = basis.redistribute_psis(psis)
+    psis = basis.redistribute_psis(*psis)
     v = np.empty((len(psis), len(basis.local_basis)), dtype=dtype, order="C")
     for (row, psi), (col, state) in itertools.product(enumerate(psis), enumerate(basis.local_basis)):
         row_amp = psi.get(state)
@@ -259,8 +259,8 @@ def build_density_matrices(basis, psis, orbital_indices_left=None, orbital_indic
         chi = phi if square else [op(psi_n, 0) for op in right_ops]
 
         if basis.is_distributed:
-            phi = basis.redistribute_psis(phi)
-            chi = phi if square else basis.redistribute_psis(chi)
+            phi = basis.redistribute_psis(*phi)
+            chi = phi if square else basis.redistribute_psis(*chi)
 
         rhos[n] = inner_multi(chi, phi).T
 

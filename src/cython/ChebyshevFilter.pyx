@@ -223,7 +223,7 @@ def chebyshev_apply(hOp, basis, seeds, coefficient_sets, double slaterWeightMin,
     hOp.set_weighted_restrictions(basis.weighted_restrictions)
 
     if mpi:
-        seeds = basis.redistribute_psis(list(seeds))
+        seeds = basis.redistribute_psis(*seeds)
 
     eye_p = np.eye(p, dtype=complex)
     t_prev = None

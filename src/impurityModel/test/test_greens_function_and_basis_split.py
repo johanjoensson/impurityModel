@@ -24,7 +24,7 @@ def _redistribute_as_width1(basis, psis):
     collective. from_states forces an explicit width-1 block -- empty or not -- on
     every rank instead."""
     blocks = [ManyBodyState.from_states([psi]) for psi in psis]
-    return [blk.to_states()[0] for blk in basis.redistribute_psis(blocks)]
+    return [blk.to_states()[0] for blk in basis.redistribute_psis(*blocks)]
 
 
 def test_basis_split_and_redistribute_serial():
@@ -39,7 +39,7 @@ def test_basis_split_and_redistribute_serial():
 
     # Test redistribute_psis (serial should return same psis)
     psi0 = [ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})]
-    redist_psi = basis.redistribute_psis(psi0)
+    redist_psi = basis.redistribute_psis(*psi0)
     assert redist_psi == psi0
 
     # Test split_basis_and_redistribute_psi
@@ -108,7 +108,7 @@ def test_basis_split_and_redistribute_mpi():
         psi0 = [ManyBodyState(width=1)]
 
     # Redistribute the psis
-    redist_psi = [blk.to_states()[0] for blk in basis.redistribute_psis(psi0)]
+    redist_psi = [blk.to_states()[0] for blk in basis.redistribute_psis(*psi0)]
 
     # Gather redistributed to check consistency
     gathered = comm.gather(redist_psi[0], root=0)

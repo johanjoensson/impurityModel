@@ -78,7 +78,7 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
     else:
         wp = H.apply_multi(V, cutoff=slaterWeightMin)
         if mpi and basis is not None and basis.comm is not None:
-            wp = basis.redistribute_psis(wp)
+            wp = basis.redistribute_psis(*wp)
         return wp
 
 cpdef object block_add_scaled(object V, object W, object alpha, double slaterWeightMin=0.0):

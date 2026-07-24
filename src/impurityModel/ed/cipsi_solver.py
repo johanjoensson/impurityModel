@@ -304,14 +304,15 @@ class CIPSISolver:
         # early on `not local_Djs` before it deadlocks the ranks that do have candidates.
         phases = np.exp(2j * np.pi * np.array([(hash(Dj) & 0xFFFF) / 65536.0 for Dj in local_Djs]))
         # width=1 even when local_Djs is empty on this rank: a bare empty dict would
-        # construct the width-0 polymorphic zero, which redistribute_psis's width guard
-        # rejects on this rank only while a rank with real candidates sails into the
-        # matching collective -- the exact asymmetric-exception deadlock fixed in Phase
-        # 7 step 2b.
+        # construct the width-0 polymorphic zero, which would make this rank's total
+        # flattened width in redistribute_psis' combined block disagree with every
+        # other rank's -- an asymmetric wire shape in the shared collective, the same
+        # deadlock class fixed in Phase 7 step 2b (there caught as a clean per-rank
+        # raise; here it would surface as a silently mismatched pack instead).
         psi_all_Dj = ManyBodyState({Dj: phases[j] for j, Dj in enumerate(local_Djs)}, width=1)
         H_psi_all = applyOp_test(H, psi_all_Dj, cutoff=slaterWeightMin)
         if self.basis.is_distributed:
-            H_psi_all = self.basis.redistribute_psis([H_psi_all])[0]
+            H_psi_all = self.basis.redistribute_psis(H_psi_all)[0]
 
         if not local_Djs:
             return local_Djs, np.zeros((len(Hpsi_ref), 0), dtype=complex), np.zeros(0, dtype=float)
@@ -689,7 +690,7 @@ class CIPSISolver:
                     # giving every rank the same representation into redistribute_psis'
                     # collective instead of an asymmetric width-0-vs-width-1 split.
                     psi0_blk = ManyBodyState.from_states([ManyBodyState(psi0_dict, width=1)])
-                    psi0 = self.basis.redistribute_psis([psi0_blk])[0].to_states()
+                    psi0 = self.basis.redistribute_psis(psi0_blk)[0].to_states()
 
                     N2s = np.array([psi.norm2() for psi in psi0], dtype=float)
                     if self.basis.is_distributed:
@@ -814,7 +815,7 @@ class CIPSISolver:
                         f"{self.last_truncation['retained']:,} determinants, admitting {n_new:,} candidates)"
                     )
             self.basis.add_states(new_Dj)
-            psi_refs = self.basis.redistribute_psis(psi_refs)
+            psi_refs = self.basis.redistribute_psis(*psi_refs)
             if cap_cycles == 0 and self.basis.size == old_size:
                 break
             e0 = np.inf  # the basis was mutated; e0 no longer describes it
@@ -823,7 +824,7 @@ class CIPSISolver:
             # ping-pong): restore the best capped basis seen during the cycles.
             self.basis.clear()
             self.basis.add_states(best_basis)
-            psi_refs = self.basis.redistribute_psis(best_psis)
+            psi_refs = self.basis.redistribute_psis(*best_psis)
         self.psi_refs = psi_refs
         if capped and self.basis.size > threshold and self.psi_refs is not None:
             # The symmetry closure can push an admission slightly past the cap; enforce

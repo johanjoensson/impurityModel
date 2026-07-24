@@ -244,7 +244,7 @@ def split_basis_and_redistribute_psi(
                         received_psis = source_comm.recv(source=sender)
                         for i, received_psi in enumerate(received_psis):
                             new_psis[i] += ManyBodyState({basis.type.from_bytes(k): v for k, v in received_psi.items()})
-        psis = split_basis.redistribute_psis(new_psis)
+        psis = split_basis.redistribute_psis(*new_psis)
 
     # Free the intercommunicators collectively while all ranks are still
     # synchronised here.  MPI_Comm_free is collective — leaving the objects

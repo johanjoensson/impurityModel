@@ -574,7 +574,7 @@ def calc_gs(
     )
     ground_state_basis.clear()
     ground_state_basis.add_states({state for p in psis for state in p})
-    psis = ground_state_basis.redistribute_psis(psis)
+    psis = ground_state_basis.redistribute_psis(*psis)
     # Shared-support block view of the same redistributed states, built once and used
     # by every observable diagnostic below (Phase 6a of the state-unification refactor,
     # doc/plans/manybodystate_block_unification.md) instead of `width` independent

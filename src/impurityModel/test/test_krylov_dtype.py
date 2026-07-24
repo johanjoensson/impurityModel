@@ -224,7 +224,7 @@ def test_block_green_sparse_defaults_to_complex128():
     for reort in (Reort.FULL, Reort.PARTIAL):
         basis = Basis(imp, baths, initial_basis=support, verbose=False)
         alphas, _betas, _r = block_Green_sparse(
-            hOp, basis.redistribute_psis([s.copy() for s in psi]), basis, DELTA, reort=reort, verbose=False
+            hOp, basis.redistribute_psis(*[s.copy() for s in psi]), basis, DELTA, reort=reort, verbose=False
         )
         assert len(alphas) > 1  # complex128 for both: no mode is auto-narrowed
 
@@ -233,7 +233,7 @@ def test_block_green_sparse_defaults_to_complex128():
     with pytest.raises(ValueError, match="incompatible with reort"):
         block_Green_sparse(
             hOp,
-            basis.redistribute_psis([s.copy() for s in psi]),
+            basis.redistribute_psis(*[s.copy() for s in psi]),
             basis,
             DELTA,
             reort=Reort.PARTIAL,
@@ -245,7 +245,7 @@ def test_block_green_sparse_defaults_to_complex128():
     basis = Basis(imp, baths, initial_basis=support, verbose=False)
     alphas, _betas, _r = block_Green_sparse(
         hOp,
-        basis.redistribute_psis([s.copy() for s in psi]),
+        basis.redistribute_psis(*[s.copy() for s in psi]),
         basis,
         DELTA,
         reort=Reort.FULL,

@@ -71,7 +71,7 @@ def block_Green(
     # diff below has matching shapes; they are trimmed to true block widths before
     # any continued-fraction evaluation and at the final return.
     alphas, betas, r, last_q, widths = block_green_impl(
-        basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose, eval_meshes, info
+        basis, hOp, basis.redistribute_psis(*psi_arr), delta, reort, slaterWeightMin, verbose, eval_meshes, info
     )
     done = False
     while not done:
@@ -100,7 +100,7 @@ def block_Green(
         betas_prev = betas
         widths_prev = widths
         alphas, betas, r, last_q, widths = block_green_impl(
-            basis, hOp, basis.redistribute_psis(psi_arr), delta, reort, slaterWeightMin, verbose, eval_meshes, info
+            basis, hOp, basis.redistribute_psis(*psi_arr), delta, reort, slaterWeightMin, verbose, eval_meshes, info
         )
 
         n_test = min(alphas.shape[0], alphas_prev.shape[0])
@@ -696,7 +696,7 @@ def block_Green_bicgstab(
                 carried = seeds + x0 + (bras if bras is not None else [])
                 tmp_basis.clear()
                 tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
-                redistributed = tmp_basis.redistribute_psis(carried)
+                redistributed = tmp_basis.redistribute_psis(*carried)
                 seeds = list(redistributed[:n_ops])
                 x0 = list(redistributed[n_ops : 2 * n_ops])
                 if bras is not None:
@@ -921,7 +921,7 @@ def block_Green_cipsi(
                 # aligns the amplitudes to the fresh ownership layout.
                 tmp_basis.clear()
                 tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
-                redistributed = tmp_basis.redistribute_psis(seeds + x0)
+                redistributed = tmp_basis.redistribute_psis(*seeds, *x0)
                 seeds = list(redistributed[:n_ops])
                 x0 = list(redistributed[n_ops:])
                 stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], int(tmp_basis.size))

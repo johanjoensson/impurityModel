@@ -767,7 +767,7 @@ def _component_seed_moments(hOp, comp_ops, psis, es, e0, tau, basis, slaterWeigh
         work.clear()
         for s in seeds + hseeds:
             work.add_states(s.keys())
-        red = work.redistribute_psis(seeds + hseeds)
+        red = work.redistribute_psis(*seeds, *hseeds)
         for a in range(m):
             m0[a] += wgt * np.real(inner(red[a], red[a]))
             m1[a] += wgt * np.real(inner(red[a], red[m + a]))

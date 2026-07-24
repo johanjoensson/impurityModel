@@ -263,7 +263,7 @@ def test_susceptibility_distributed_matches_dense_lehmann():
     # zero, an asymmetric mismatch against the owning rank's populated (eventually
     # width-1) seeds that would deadlock redistribute_psis' collective.
     psi_blocks = [ManyBodyState.from_states([psi]) for psi in psis]
-    psis = [blk.to_states()[0] for blk in basis.redistribute_psis(psi_blocks)]
+    psis = [blk.to_states()[0] for blk in basis.redistribute_psis(*psi_blocks)]
 
     w = np.linspace(-6.0, 6.0, 31)
     delta = 0.1

@@ -333,7 +333,7 @@ class _R1SolverChain:
         # its states are distributed per `basis`, and the layout of the freshly rebuilt
         # tmp_basis need not match where the amplitudes currently live.
         n1 = len(psi1_all)
-        redistributed = tmp_basis.redistribute_psis(psi1_all + psi2_all)
+        redistributed = tmp_basis.redistribute_psis(*psi1_all, *psi2_all)
         psi1_all[:] = redistributed[:n1]
         psi2_all[:] = redistributed[n1:]
         A_op = z - hOp
@@ -658,7 +658,7 @@ def calc_map(
             psi3_all = [applyOp_test(tout, psi2_all[i]) for tout in tOpsOut]
             for psi3 in psi3_all:
                 green_basis.add_states(psi3.keys())
-            psi3_all = green_basis.redistribute_psis(psi3_all)
+            psi3_all = green_basis.redistribute_psis(*psi3_all)
             r2_info = {}
             # verbose=False regardless of the caller's own verbose flag: this runs once per
             # (eigenstate, wIn, in-component) -- hundreds of times on a real map -- and its
@@ -799,7 +799,7 @@ def calc_tensor_map(
         if g_flat is None:  # distributed or over the dense-size bound: per-seed block-Lanczos
             for s in seeds:
                 green_basis.add_states(s.keys())
-            seeds = green_basis.redistribute_psis(seeds)
+            seeds = green_basis.redistribute_psis(*seeds)
             r2_info = {}
             # verbose=False regardless of the caller's own verbose flag -- see the matching
             # comment in calc_map's eval_out: solver_stats aggregates this instead.

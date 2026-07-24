@@ -141,7 +141,7 @@ def block_lanczos_step_cy(
         else:
             # Duck-typed basis without the block method (e.g. a test mock): fall back
             # to the scalar redistribute through a boundary conversion.
-            wp = ManyBodyState.from_states(basis.redistribute_psis(wp.to_states()))
+            wp = ManyBodyState.from_states(basis.redistribute_psis(*wp.to_states()))
     _prof_acc("matvec_redistribute", _t1)
     _prof_acc("matvec", _t0)
 
@@ -611,7 +611,7 @@ def block_lanczos_cy(
             q_curr = basis.redistribute_block(psi0)
         else:
             p = len(psi0)
-            q_curr = ManyBodyState.from_states(basis.redistribute_psis(list(psi0)))
+            q_curr = ManyBodyState.from_states(basis.redistribute_psis(*psi0))
         q_prev = ManyBodyState(width=p)
         if store_krylov:
             Q_basis = SparseKrylovDense(krylov_dtype)

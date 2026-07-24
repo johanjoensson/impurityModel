@@ -204,9 +204,9 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
         s1 = [hOp(s, 0) - complex(e) * s for s in s0]
         s2 = [hOp(s, 0) - complex(e) * s for s in s1] if max_order >= 3 else None
         if basis.is_distributed:
-            s0 = basis.redistribute_psis(s0)
-            s1 = basis.redistribute_psis(s1)
-            s2 = basis.redistribute_psis(s2) if s2 is not None else None
+            s0 = basis.redistribute_psis(*s0)
+            s1 = basis.redistribute_psis(*s1)
+            s2 = basis.redistribute_psis(*s2) if s2 is not None else None
         k = {}
         if max_order >= 1:
             k[1] = inner_multi(s0, s1)  # <s0_a | (H-e) s0_b>
@@ -819,7 +819,7 @@ def _get_greens_function_sliced(
         # misplaced row leaves H*t on the owner and t on the generator: the recurrence
         # decouples across ranks and diverges. Every other solver reaches its basis through
         # the same redistribute -- the filter stage is just the one that runs before it.
-        seeds_u = unit_clone.redistribute_psis(list(unit_seeds[u]))
+        seeds_u = unit_clone.redistribute_psis(*unit_seeds[u])
         unit_basis = _capped(unit_clone)
         bounds = spectral_bounds(hOp, unit_basis)
         ends = [e + sign * w for e in chunk_es for w in (w_lo, w_hi)]
@@ -1013,7 +1013,7 @@ def _block_green_group(
         alphas, betas, r = block_Green_sparse(
             reort=reort,
             hOp=hOp,
-            psi_arr=excited_basis.redistribute_psis(group_seed_states),
+            psi_arr=excited_basis.redistribute_psis(*group_seed_states),
             basis=excited_basis,
             delta=delta,
             slaterWeightMin=slaterWeightMin,
@@ -1030,7 +1030,7 @@ def _block_green_group(
         alphas, betas, r = block_Green(
             reort=reort,
             hOp=hOp,
-            psi_arr=excited_basis.redistribute_psis(group_seed_states),
+            psi_arr=excited_basis.redistribute_psis(*group_seed_states),
             basis=excited_basis,
             delta=delta,
             slaterWeightMin=slaterWeightMin,

@@ -309,8 +309,8 @@ class _CappedBasisProxy:
     def weighted_restrictions(self):
         return self._basis.weighted_restrictions
 
-    def redistribute_psis(self, psis):
-        return self._basis.redistribute_psis(psis)
+    def redistribute_psis(self, *blocks):
+        return self._basis.redistribute_psis(*blocks)
 
     def add_states(self, new_states, unique_sorted=False):
         # Growth bookkeeping only: every determinant block_bicgstab offers here came off a
