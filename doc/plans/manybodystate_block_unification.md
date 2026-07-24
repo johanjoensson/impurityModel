@@ -1476,6 +1476,74 @@ plan flagged as optional was deliberately **not** done: no correctness or clarit
 forced it, and the C++ class keeps its historical name. Noted here explicitly so it is
 not mistaken for an oversight by whoever reads this doc next.
 
+## Phase 9 — `Hpsi_ref` conversion, `redistribute_psis` redesign, orphaned wrapper deletion
+
+A small, targeted follow-on triggered by two user questions (not a re-opening of the
+campaign): whether the FCC Ni fill gate on `Hpsi_ref` still applies once compute is
+considered, and whether `redistribute_psis`'s scatter/gather design generalizes to
+blocks. Both resolved without the FCC Ni measurement (never finished — killed twice at
+30+ min):
+
+- **`Hpsi_ref` converted, off the compute axis, not the memory one.** The block/list
+  apply-cost ratio `(r + p)/(p·fill·(r + 1))` (`r` = per-determinant term/sign/
+  restriction/hash overhead relative to one scatter) makes blocking compute-favorable
+  down to `fill > ~1/p`, looser than the memory break-even `f* = 0.309` the fill gate
+  was protecting — and `Hpsi_ref` is a transient buffer (built, consumed, discarded),
+  not the persistent basis the memory figure was measured against. `cipsi_solver.py`'s
+  `select_at`/`determine_new_Dj` now share `_apply_block_and_redistribute`: one
+  `apply_block` over `ManyBodyState.from_states(psi_ref)` instead of `len(psi_ref)`
+  separate `applyOp` calls. Getting this bit-for-bit took a real fix: `apply_block`'s
+  cutoff keeps a row if *any* column exceeds it (a safe superset per column, not a
+  per-column test), so a naive split leaks sub-cutoff entries a per-state apply would
+  have dropped — confirmed empirically (a synthetic operator with mixed-magnitude
+  hopping terms diverged on most columns). Fixed by re-`prune_rows(cutoff)`-ing each
+  split-out column *before* the cross-rank sum, matching the existing local-prune-then-
+  redistribute order every other probe in the module uses. One residual, deliberate
+  difference from the old `redistribute_psis`-padded path: a determinant is dropped from
+  `local_Djs` only when its net coupling to *every* reference column is exactly zero (a
+  genuine selection-rule cancellation), where the old union-support padding kept it
+  visible via unfiltered iteration even when it was a real, if numerically small,
+  candidate for a *different* reference column and a zero one only for this column —
+  correctly excluded now, not lost.
+- **GF/RIXS per-frequency seed unions confirmed already block-native at the apply**
+  (`gf_shift_recycling._expand_to_closure`, `rixs.py`'s R1 fallback,
+  `gf_solvers.block_Green_bicgstab`) — no per-state apply loop remained in any of them,
+  so no compute win to capture; left untouched.
+- **`Basis.redistribute_psis` redesigned to variadic, heterogeneous-width blocks in,
+  same-width blocks out, one fused collective**:
+  `rd_1, ..., rd_n = basis.redistribute_psis(block_1, ..., block_n)`, `w_i` free per
+  argument (the user's specified calling contract). Subsumes `redistribute_block`
+  (`n == 1`) and the old width-1-list shim (all `w_i == 1`) as special cases. Composed
+  from existing primitives — flatten every input's columns via `to_states()`, one
+  `from_states`, one `redistribute_block`, split back by cumulative column offset
+  (`select`) and `prune_rows(0.0)` per slice — no new collective. This also fixes the
+  old method's union-support zero-padding (`column(i)` kept every output block at the
+  full merged support with explicit zero rows; `select` + `prune_rows(0.0)` returns each
+  output on its own sparse support instead), which is what the several
+  `[blk.to_states()[0] for blk in ...]` defensive re-prune idioms across the test suite
+  were working around. **Returns a `list`, not a tuple** — deliberately: `_reort.pxi`'s
+  `block_normalize`/`block_tsqr` dispatch on `isinstance(wp, list)` to tell a list of
+  width-1 states from an already-combined block, and a tuple would silently fall through
+  to the "already an array" branch. Migrated ~30 call sites (production: `cipsi_solver`,
+  `groundstate`, `basis_split`, `basis_transcription`, `gf_solvers`, `gf_shift_recycling`,
+  `greens_function`, `rixs`, `spectra`, `susceptibility`, `gf_primitives`'s
+  `_CappedBasisProxy`, `_reort.pxi`, `_lanczos_step.pxi`, `ChebyshevFilter.pyx`; plus the
+  test suite) from `redistribute_psis(list_of_blocks)` to `redistribute_psis(*blocks)`,
+  and `redistribute_psis([single])` to the now-first-class `redistribute_psis(single)`
+  (the old bare-block width-1-only warning/wrap and wide-block rejection are gone — any
+  width is first-class). `test_mpi_comm.py`'s old contract tests for that removed
+  behavior (`test_redistribute_psis_rejects_bare_wide_block`,
+  `_rejects_non_width_one_blocks`) were replaced with positive tests for the new
+  contract, including an MPI test that actually exercises the combine/redistribute/
+  offset-split path at `w > 1` together with `w == 1` in the same call (the identity
+  early-return in a non-distributed `Basis` cannot exercise it — a first attempt at
+  this coverage silently didn't, since it used a serial basis).
+- **Orphaned `compat::flat_map` wrapper deleted** (`src/cython/flat_map.pxd`,
+  `flat_map_wrapper.hpp`) — confirmed nothing `cimport`s or `#include`s them anywhere
+  in `src/cython/` after the flat class's Phase 7 deletion, and neither was an explicit
+  `setup.py`/`pyproject.toml` source. `boost::unordered_flat_map` (a different
+  container, still backing `ManyBodyOperator`'s apply-term hash table) is unaffected.
+
 ## Campaign status: COMPLETE
 
 Every phase of the `ManyBodyState`/`ManyBodyBlockState` unification is landed. The
@@ -1489,9 +1557,11 @@ narrative for Phase 7 specifically.
 
 ## Still open (genuinely unrelated to this campaign, not deferred pieces of it)
 
-- The FCC Ni fill measurement (above) — blocks `determine_new_Dj`'s/`select_at`'s `Hpsi_ref`
-  conversion, every per-frequency seed union found in Phase 6c, and `ChebyshevFilter.pyx`'s
-  caller in `greens_function.py`. A compute-win question, not a type one.
+- The FCC Ni fill measurement (above) no longer blocks anything: Phase 9 converted
+  `Hpsi_ref` on the compute axis instead (transient buffer, bit-for-bit modulo one
+  documented, more-correct zero-coupling exclusion), and the Phase 6c seed unions turned
+  out to already be block-native at the apply, needing no conversion at all. The
+  measurement itself remains unfinished (killed twice at 30+ min) but is now moot.
 - `test_irlm_cy_diagonal_mpi` hangs under `mpiexec -n 3` (see Phase 7 step 2b above) —
   pre-existing, unrelated to this campaign; needs its own investigation of the IRLM Cython
   kernel's restart/deflation path at non-power-of-2 rank counts.
