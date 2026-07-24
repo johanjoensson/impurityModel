@@ -169,7 +169,15 @@ def block_lanczos_step_cy(
     # Ritz values below the true spectral minimum on restarted sweeps. Twice for
     # numerical robustness. Skipped in the "partial" mode, where the estimate-driven
     # EA16 §2.6.2 reorth is applied to q_next in block_lanczos_cy instead.
-    if locked and locked_reort != "partial":
+    #
+    # Gate on _q_cols(locked), NOT `if locked`/`bool(locked)`: a ManyBodyState defines
+    # no __bool__, so truthiness falls back to len(), which is its LOCAL ROW count --
+    # rank-dependent under MPI. An empty rank (owns zero determinants) can have
+    # width > 0 but rows == 0, so `if locked` reads False there while every other rank
+    # reads True, and the two Allreduces below execute on some ranks but not others ->
+    # deadlock (confirmed at mpiexec -n 3 via test_block_lanczos_mbs_empty_rank.py).
+    # _q_cols is the rank-invariant column count, replicated identically everywhere.
+    if locked is not None and _q_cols(locked) > 0 and locked_reort != "partial":
         locked_blk = (
             locked if isinstance(locked, ManyBodyState) else ManyBodyState.from_states(list(locked))
         )
@@ -510,7 +518,13 @@ def block_lanczos_cy(
     # ever projects against the accumulated Krylov basis, and the warm-start protocol
     # reads only the last two blocks -- so retaining the full O(N_det * p * k) basis is
     # pure dead memory (the dominant avoidable allocation in a Green's-function run).
-    if not store_krylov and (reort_mode != Reort.NONE or locked):
+    #
+    # `locked` gates this the same way as the width test below (nlock, hoisted here so
+    # both this check and the partial_locked/xi setup share one rank-invariant value):
+    # `if locked` on a ManyBodyState reads its LOCAL ROW count, which can disagree
+    # across ranks and turn this `raise` into a rank-divergent collective itself.
+    nlock = 0 if locked is None else _q_cols(locked)
+    if not store_krylov and (reort_mode != Reort.NONE or nlock > 0):
         raise ValueError("store_krylov=False requires reort='none' and no locked vectors")
 
     # A complex64 store represents each Krylov vector to ~u32 = 6e-8, so a projection against
@@ -688,18 +702,14 @@ def block_lanczos_cy(
 
     # Estimate-driven locking reorthogonalization (EA16 §2.6.2) state. Only active when a
     # locked set is supplied and locked_reort == "partial"; otherwise the step does the
-    # unconditional "full" projection. See ea16.locked_overlap_step for the recurrence.
-    # bool(locked)/`if locked` below fall back to len(locked) for a ManyBodyState (no
-    # __bool__ defined), i.e. its ROW count, not its width -- relies on callers never handing
-    # in a width>0-but-rows==0 (or the reverse) block. True today: _irlm_core passes
-    # locked=None outright whenever its locked set is empty rather than an empty block, and
-    # every locked column is a normalized nonzero state, so width>0 implies rows>0 in
-    # practice. Fragile if that ever changes; an explicit width check would be needed then.
-    partial_locked = bool(locked) and locked_reort == "partial"
-    # locked is either list[ManyBodyState] or a ManyBodyState (see the deflation
-    # branch above): len() means "number of columns" for the former but "number of
-    # shared-support rows" for the latter, so it cannot be used uniformly here.
-    nlock = (locked.width if isinstance(locked, ManyBodyState) else len(locked)) if locked else 0
+    # unconditional "full" projection (block_lanczos_step_cy). See ea16.locked_overlap_step
+    # for the recurrence. `nlock` (the rank-invariant column count) was hoisted above the
+    # store_krylov guard; gate on it rather than `bool(locked)` -- a ManyBodyState defines
+    # no __bool__, so `bool()`/`if locked` fall back to len(), its LOCAL ROW count, which
+    # can be 0 on an empty rank (owns no determinants) while width > 0 elsewhere. That
+    # mismatch let an empty rank skip the `_lovl` Allreduce below while other ranks
+    # executed it -> deadlock at mpiexec -n 3 (test_block_lanczos_mbs_empty_rank.py).
+    partial_locked = nlock > 0 and locked_reort == "partial"
     if partial_locked:
         from impurityModel.ed import ea16 as _ea16
         locked_evals_arr = np.ascontiguousarray(np.real(np.asarray(locked_evals)), dtype=float)
