@@ -71,7 +71,7 @@ pytestmark = [
 ]
 
 # Repo root: this file is src/impurityModel/test/<this>; the h0 pickles live in <root>/h0.
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 
 
 def _env_int(name, default):

@@ -14,9 +14,9 @@ The heavy solve (~2.5 min for the 10-bath NiO d-shell) only runs when opted in v
 
 Run / regenerate::
 
-    RUN_SYMMETRY_GOLDEN=1 pytest -s src/impurityModel/test/test_symmetry_golden.py
+    RUN_SYMMETRY_GOLDEN=1 pytest -s src/impurityModel/test/symmetry/test_symmetry_golden.py
     REGEN_SYMMETRY_GOLDEN=1 RUN_SYMMETRY_GOLDEN=1 \
-        pytest -s src/impurityModel/test/test_symmetry_golden.py
+        pytest -s src/impurityModel/test/symmetry/test_symmetry_golden.py
 """
 
 import json

@@ -17,7 +17,7 @@ from impurityModel.ed.model import (
 )
 from impurityModel.ed.operator_algebra import c2i, matrixToIOp
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 
 
 def _inline_u4(l, slater):
