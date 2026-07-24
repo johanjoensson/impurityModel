@@ -19,6 +19,7 @@ from impurityModel.ed.ManyBodyUtils import (
     SparseKrylovDense,
     inner,
 )
+from impurityModel.test.support.testtol import inner_atol, sum_rtol
 
 
 def _det(i):
@@ -153,7 +154,7 @@ def test_col_norm2_and_equality():
     states = _random_states(rng, 4, 30)
     blk = ManyBodyState.from_states(states)
     ref = [st.norm2() for st in states]
-    np.testing.assert_allclose(blk.col_norm2(), ref, rtol=1e-15)
+    np.testing.assert_allclose(blk.col_norm2(), ref, rtol=sum_rtol(30))
     blk2 = ManyBodyState.from_states(states)
     assert blk == blk2
     np.asarray(blk2)[0, 0] += 1.0
@@ -340,9 +341,13 @@ def test_block_inner_matches_inner_multi():
     A = ManyBodyState.from_states(A_states)
     B = ManyBodyState.from_states(B_states)
     # Same accumulation order, but FMA contraction of conj(a)*b sums differs across
-    # compilers (Intel icx) between the block and list code paths — last-ulp tolerance.
-    np.testing.assert_allclose(block_inner_cy(A, B), inner_multi(A_states, B_states), rtol=1e-13, atol=1e-14)
-    np.testing.assert_allclose(block_inner_cy(A, A), inner_multi(A_states, A_states), rtol=1e-13, atol=1e-14)
+    # compilers (Intel icx) between the block and list code paths -- tolerance derived
+    # from the union support size (<= 45 rows) and the reference magnitude rather than a
+    # last-ulp literal, so it isn't pinned to what this compiler/BLAS happens to deliver.
+    ref_ab = inner_multi(A_states, B_states)
+    ref_aa = inner_multi(A_states, A_states)
+    np.testing.assert_allclose(block_inner_cy(A, B), ref_ab, atol=inner_atol(45, np.max(np.abs(ref_ab))))
+    np.testing.assert_allclose(block_inner_cy(A, A), ref_aa, atol=inner_atol(45, np.max(np.abs(ref_aa))))
 
 
 def test_block_add_scaled_matches_dense_reference():
@@ -732,7 +737,7 @@ def test_block_orthogonalize_dispatcher_accepts_blocks():
     out_wp, out_overlaps = block_orthogonalize(
         ManyBodyState.from_states(wp_states), ManyBodyState.from_states(Q_states)
     )
-    np.testing.assert_allclose(out_overlaps, ref_overlaps, rtol=1e-13, atol=1e-14)
+    np.testing.assert_allclose(out_overlaps, ref_overlaps, atol=inner_atol(25, np.max(np.abs(ref_overlaps))))
     for j, col in enumerate(out_wp.to_states()):
         diff = col - ref_wp[j]
         assert np.sqrt(diff.norm2()) < 1e-13 * max(np.sqrt(ref_wp[j].norm2()), 1.0)
@@ -750,7 +755,7 @@ def test_block_normalize_accepts_blocks():
     ref_q, ref_beta = block_normalize([s.copy() for s in states], mpi=False, comm=None)
     out_q, out_beta = block_normalize(ManyBodyState.from_states(states), mpi=False, comm=None)
     assert isinstance(out_q, ManyBodyState)
-    np.testing.assert_allclose(out_beta, ref_beta, rtol=1e-12, atol=1e-13)
+    np.testing.assert_allclose(out_beta, ref_beta, atol=inner_atol(25, np.max(np.abs(ref_beta))))
     ref_states = ref_q if isinstance(ref_q, list) else ref_q.to_states()
     for j, col in enumerate(out_q.to_states()):
         diff = col - ref_states[j]
