@@ -106,7 +106,7 @@ def _run_spherical_baseline():
     from mpi4py import MPI
 
     from impurityModel.ed import selfenergy
-    from impurityModel.test._nio_workload import as_calc_selfenergy_args, build_selfenergy_inputs
+    from impurityModel.test.support._nio_workload import as_calc_selfenergy_args, build_selfenergy_inputs
 
     comm = MPI.COMM_WORLD
     n_omega = int(os.environ.get("SYMMETRY_GOLDEN_NW", "41"))

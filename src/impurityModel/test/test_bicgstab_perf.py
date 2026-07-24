@@ -178,7 +178,7 @@ class CountingOperator:
 @pytest.fixture(scope="module")
 def gf_workload():
     """NiO ground state + the excited basis and seeds of one symmetry block's addition GF."""
-    from impurityModel.test._nio_workload import build_ground_state_workload
+    from impurityModel.test.support._nio_workload import build_ground_state_workload
 
     comm = _comm()
     work = build_ground_state_workload(

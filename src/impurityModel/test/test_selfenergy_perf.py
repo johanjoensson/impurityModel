@@ -140,7 +140,7 @@ def _build_inputs(ls, nBaths, nValBaths, n0imp, n_omega, dense_cutoff, truncatio
     Thin wrapper over the shared :func:`_nio_workload.build_selfenergy_inputs`, applying
     the benchmark-specific env-var knobs (reort / occ / weight / dN).
     """
-    from impurityModel.test._nio_workload import build_selfenergy_inputs
+    from impurityModel.test.support._nio_workload import build_selfenergy_inputs
 
     return build_selfenergy_inputs(
         ls=ls,
@@ -190,7 +190,7 @@ def test_calc_selfenergy_benchmark():
 
     verbose = rank == 0
 
-    from impurityModel.test._nio_workload import as_calc_selfenergy_args
+    from impurityModel.test.support._nio_workload import as_calc_selfenergy_args
 
     inputs = _build_inputs(
         ls, nBaths, nValBaths, n0imp, n_omega, dense_cutoff, truncation_threshold, rank=rank, verbose=verbose

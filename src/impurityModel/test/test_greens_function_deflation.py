@@ -25,7 +25,7 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array
 from impurityModel.ed.greens_function import _trim_blocks, build_qr, calc_G
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.test.test_restarted_lanczos import MockBasis
+from impurityModel.test.support.lanczos_fixtures import MockBasis
 
 # Diagonal one-body energies on 5 orbitals; single particle -> 5 determinants,
 # 5-dimensional Hilbert space, all distinct energies (no accidental degeneracy).

@@ -55,7 +55,7 @@ from impurityModel.ed.greens_function import (
     calc_G,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.test.test_restarted_lanczos import MockBasis
+from impurityModel.test.support.lanczos_fixtures import MockBasis
 
 SQRT_EPS = np.sqrt(np.finfo(float).eps)
 

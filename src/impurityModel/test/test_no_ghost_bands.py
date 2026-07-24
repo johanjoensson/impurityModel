@@ -13,7 +13,7 @@ from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, inner_multi, ManyBodyOperator
 from impurityModel.ed.trlm import thick_restart_block_lanczos
-from impurityModel.test.test_block_lanczos_array_empty_rank import _contiguous_counts_with_empty_last
+from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
 
 
 def create_diagonal_system(eigvals, path, comm=None):

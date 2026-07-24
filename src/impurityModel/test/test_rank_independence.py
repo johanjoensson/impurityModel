@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover - mpi4py is a hard dependency in practic
     _has_mpi = False
 
 from impurityModel.ed.selfenergy import calc_selfenergy
-from impurityModel.test._nio_workload import (
+from impurityModel.test.support._nio_workload import (
     as_calc_selfenergy_args,
     build_ground_state_workload,
     build_selfenergy_inputs,

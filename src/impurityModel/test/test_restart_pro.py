@@ -21,7 +21,7 @@ from impurityModel.ed.ManyBodyUtils import (
     SlaterDeterminant,
     inner_multi,
 )
-from impurityModel.test.test_restarted_lanczos import MockBasis, get_test_system
+from impurityModel.test.support.lanczos_fixtures import MockBasis, get_test_system
 
 
 def _ortho_start_block(basis_states, n_blocks=2, seed=1):

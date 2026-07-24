@@ -20,7 +20,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.gf_solvers import block_Green_cipsi
 from impurityModel.ed.greens_function import _gf_signed_axes
-from impurityModel.test.test_gf_bicgstab_driver import (
+from impurityModel.test.support.gf_oracles import (
     DELTA,
     MATSUBARA,
     OMEGA,

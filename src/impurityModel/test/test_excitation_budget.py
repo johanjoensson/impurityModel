@@ -225,7 +225,7 @@ def _nio_selfenergy(excitation_budget):
     import dataclasses
 
     from impurityModel.ed.selfenergy import calc_selfenergy
-    from impurityModel.test._nio_workload import as_calc_selfenergy_args, build_selfenergy_inputs
+    from impurityModel.test.support._nio_workload import as_calc_selfenergy_args, build_selfenergy_inputs
 
     inputs = build_selfenergy_inputs(nBaths=10, n_omega=3, dense_cutoff=100000, truncation_threshold=100000)
     args = as_calc_selfenergy_args(inputs)

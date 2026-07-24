@@ -15,8 +15,7 @@ from impurityModel.ed.BlockLanczos import implicitly_restarted_block_lanczos_cy 
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
-from impurityModel.test.test_block_lanczos_reort_matrix import build_dense_matrix_from_manybody
-from impurityModel.test.test_restarted_lanczos import MockBasis, get_test_system
+from impurityModel.test.support.lanczos_fixtures import MockBasis, build_dense_matrix_from_manybody, get_test_system
 
 _MODES = [Reort.NONE, Reort.FULL, Reort.PARTIAL, Reort.SELECTIVE, Reort.PERIODIC]
 

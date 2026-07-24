@@ -26,7 +26,7 @@ Opt-in, one workload/config ladder per process for honest ``VmHWM``::
 
 or directly::
 
-    python -m impurityModel.test.restriction_sweep fcc_ni_5
+    python -m impurityModel.test.support.restriction_sweep fcc_ni_5
 """
 
 import os
@@ -35,7 +35,7 @@ from contextlib import contextmanager
 import numpy as np
 
 from impurityModel.ed import basis_restrictions
-from impurityModel.test.restriction_diagnostics import WORKLOADS, build_ground_state
+from impurityModel.test.support.restriction_diagnostics import WORKLOADS, build_ground_state
 
 # Sentinel for the absolute-cap overrides, whose ``None`` is a meaningful value ("disable the
 # cap"), distinct from "leave the module default untouched".
@@ -148,7 +148,7 @@ def _run_config(workload_key, cfg, comm=None, n_iw=0, n_w=60, verbosity=0):
     from impurityModel.ed.memory_estimate import peak_rss_bytes
     from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
     from impurityModel.ed.selfenergy import calc_selfenergy
-    from impurityModel.test.real_workload import _subsample, load_workload
+    from impurityModel.test.support.real_workload import _subsample, load_workload
 
     wl = load_workload(WORKLOADS[workload_key])
     with _restriction_overrides(
@@ -298,7 +298,7 @@ def _selfenergy_once(workload_key, gs_cutoff, gf_cutoff, comm=None, n_iw=0, n_w=
     """Run calc_selfenergy with a (possibly split) GS/GF amplitude cutoff; return sigma/gf/E0."""
     from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
     from impurityModel.ed.selfenergy import calc_selfenergy
-    from impurityModel.test.real_workload import _subsample, load_workload
+    from impurityModel.test.support.real_workload import _subsample, load_workload
 
     wl = load_workload(WORKLOADS[workload_key])
     model = ImpurityModel(

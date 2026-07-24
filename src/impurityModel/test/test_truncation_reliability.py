@@ -73,7 +73,7 @@ def test_truncation_reliability_config():
     from mpi4py import MPI
 
     from impurityModel.ed.selfenergy import calc_selfenergy
-    from impurityModel.test._nio_workload import (
+    from impurityModel.test.support._nio_workload import (
         as_calc_selfenergy_args,
         build_selfenergy_inputs,
     )

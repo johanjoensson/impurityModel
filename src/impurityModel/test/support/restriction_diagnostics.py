@@ -28,7 +28,7 @@ Run as an opt-in pytest module (one workload per process for honest ``VmHWM``)::
 
 or directly::
 
-    python -m impurityModel.test.restriction_diagnostics fcc_ni_5
+    python -m impurityModel.test.support.restriction_diagnostics fcc_ni_5
 """
 
 import os
@@ -76,7 +76,7 @@ def build_ground_state(
     from impurityModel.ed.basis_restrictions import excitation_budget_restriction
     from impurityModel.ed.groundstate import calc_gs
     from impurityModel.ed.selfenergy import _prepare_solver_basis
-    from impurityModel.test.real_workload import load_workload
+    from impurityModel.test.support.real_workload import load_workload
 
     wl = load_workload(WORKLOADS[workload_key])
     sb = _prepare_solver_basis(

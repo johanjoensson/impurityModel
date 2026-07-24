@@ -99,7 +99,7 @@ def test_from_h0_file_nio_pickle():
 
 def test_from_h0_file_matches_nio_workload_inputs():
     """from_h0_file's h0/u4 agree with the hand-built _nio_workload inputs (the golden path)."""
-    from impurityModel.test._nio_workload import build_selfenergy_inputs
+    from impurityModel.test.support._nio_workload import build_selfenergy_inputs
 
     h0_file = os.path.join(REPO_ROOT, "h0", "h0_NiO_10bath.pickle")
     if not os.path.exists(h0_file):

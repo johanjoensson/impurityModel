@@ -155,7 +155,7 @@ def nio_workload():
     then *frozen*: the benchmarks re-run the Lanczos loops on it under controlled
     settings.
     """
-    from impurityModel.test._nio_workload import build_selfenergy_inputs
+    from impurityModel.test.support._nio_workload import build_selfenergy_inputs
 
     comm = _comm()
     inputs = build_selfenergy_inputs(nBaths=NBATHS, truncation_threshold=TRUNC, verbose=False)

@@ -51,7 +51,7 @@ from impurityModel.ed.BlockLanczos import (
 from impurityModel.ed.BlockLanczosArray import BREAKDOWN_TOL, Reort, block_normalize
 from impurityModel.ed.TSQR import EPS
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.test.test_restarted_lanczos import MockBasis
+from impurityModel.test.support.lanczos_fixtures import MockBasis
 
 _N = 400
 _N_ORB = 120  # the ManyBodyState path carries one determinant per orbital

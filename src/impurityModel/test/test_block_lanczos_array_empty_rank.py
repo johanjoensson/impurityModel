@@ -21,23 +21,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.BlockLanczosArray import Reort, _build_full_T, block_lanczos_array
-
-
-def _contiguous_counts_with_empty_last(global_N, size):
-    """Partition ``global_N`` contiguous indices over ``size`` ranks, last empty.
-
-    The last rank always gets 0; ``global_N`` is spread over the first
-    ``size - 1`` ranks.  If ``size - 1 > global_N`` some leading ranks are empty
-    too (an even stronger test).  For ``size == 1`` the single rank owns
-    everything (no empty rank, but the test still exercises the kernel).
-    """
-    if size == 1:
-        return [global_N]
-    base, rem = divmod(global_N, size - 1)
-    counts = [base + (1 if r < rem else 0) for r in range(size - 1)] + [0]
-    assert sum(counts) == global_N
-    assert counts[-1] == 0
-    return counts
+from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
 
 
 def _run_distributed_array_lanczos(H_global, comm):

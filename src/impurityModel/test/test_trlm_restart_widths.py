@@ -45,7 +45,7 @@ from impurityModel.ed.BlockLanczos import (
 from impurityModel.ed.BlockLanczosArray import RESTART_ORTH_TOL, Reort, block_normalize
 from impurityModel.ed.greens_function import _trim_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.test.test_restarted_lanczos import MockBasis
+from impurityModel.test.support.lanczos_fixtures import MockBasis
 
 # A spectrum with three eigenvalues inside 2e-9 of each other. Under reort=NONE the
 # recurrence cannot keep them apart: the Krylov basis loses orthogonality entirely

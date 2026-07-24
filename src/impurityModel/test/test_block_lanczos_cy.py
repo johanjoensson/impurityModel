@@ -263,7 +263,7 @@ def test_block_lanczos_cy_resume_partial_reort_without_w_init():
     after the resume specifically so that semi-orthogonality loss accumulates and PARTIAL
     has to act on the EOR-seeded W for real, not just avoid the TypeError.
     """
-    from impurityModel.test.test_restarted_lanczos import MockBasis, get_test_system
+    from impurityModel.test.support.lanczos_fixtures import MockBasis, get_test_system
 
     h_op, n, _eigvals_exact, basis_states = get_test_system()
     basis = MockBasis(n)

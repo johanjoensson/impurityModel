@@ -37,7 +37,7 @@ from impurityModel.ed.BlockLanczos import implicitly_restarted_block_lanczos_cy 
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.test.test_restarted_lanczos import MockBasis
+from impurityModel.test.support.lanczos_fixtures import MockBasis
 
 
 def _build_system(n_orb=10, n_part=5, seed=42):

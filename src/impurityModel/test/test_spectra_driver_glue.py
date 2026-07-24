@@ -39,7 +39,7 @@ def test_rotate_op_swaps_under_permutation():
 
 def test_pes_ips_groups_collapse_nio_d_shell_to_four_classes():
     """On the rotated NiO 3d shell the 10 PES/IPS operators fall into 4 symmetry classes."""
-    from impurityModel.test._nio_workload import build_selfenergy_inputs
+    from impurityModel.test.support._nio_workload import build_selfenergy_inputs
 
     kw = build_selfenergy_inputs(nBaths=10, verbose=False)
     op = ManyBodyOperator(dict(kw["h0"]))

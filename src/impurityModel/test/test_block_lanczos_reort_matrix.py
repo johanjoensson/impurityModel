@@ -16,8 +16,12 @@ from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, inner_multi
 from impurityModel.ed.trlm import thick_restart_block_lanczos
-from impurityModel.test.test_block_lanczos_array_empty_rank import _contiguous_counts_with_empty_last
-from impurityModel.test.test_restarted_lanczos import MockBasis, get_test_system
+from impurityModel.test.support.lanczos_fixtures import (
+    MockBasis,
+    _contiguous_counts_with_empty_last,
+    build_dense_matrix_from_manybody,
+    get_test_system,
+)
 
 
 def _redistribute_as_width1(basis, psi0_full):
@@ -32,18 +36,6 @@ def _redistribute_as_width1(basis, psi0_full):
     every rank instead."""
     blocks = [ManyBodyState.from_states([s]) for s in psi0_full]
     return [blk.to_states()[0] for blk in basis.redistribute_psis(*blocks)]
-
-
-def build_dense_matrix_from_manybody(h_op, basis_states):
-    N = len(basis_states)
-    H_dense = np.zeros((N, N), dtype=complex)
-    states = [next(iter(b.keys())) for b in basis_states]
-    H_basis_states = h_op.apply_multi(basis_states)
-    for j in range(N):
-        for i, sd_i in enumerate(states):
-            amp = H_basis_states[j].get(sd_i)
-            H_dense[i, j] = 0.0 if amp is None else amp[0]
-    return H_dense
 
 
 def get_mpi_basis(comm):

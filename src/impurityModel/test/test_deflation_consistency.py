@@ -30,7 +30,7 @@ from impurityModel.ed.BlockLanczosArray import (
 )
 from impurityModel.ed.greens_function import _trim_blocks, build_qr, calc_G
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.test.test_restarted_lanczos import MockBasis
+from impurityModel.test.support.lanczos_fixtures import MockBasis
 
 EPS = np.array([0.3, 0.9, 1.5, 2.2, 3.1])  # 5 distinct energies; block size 2 -> interior deflation
 N_ORB = len(EPS)

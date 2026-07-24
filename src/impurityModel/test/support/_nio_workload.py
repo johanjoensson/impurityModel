@@ -12,8 +12,8 @@ from collections import OrderedDict
 
 import numpy as np
 
-# Repo root: this file is src/impurityModel/test/<this>; the h0 pickles live in <root>/h0.
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+# Repo root: this file is src/impurityModel/test/support/<this>; the h0 pickles live in <root>/h0.
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 
 
 def build_selfenergy_inputs(

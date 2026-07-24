@@ -45,7 +45,7 @@ def _env_int(name):
 
 @pytest.mark.mpi
 def test_real_workload_selfenergy():
-    from impurityModel.test.real_workload import load_workload, run_selfenergy
+    from impurityModel.test.support.real_workload import load_workload, run_selfenergy
 
     comm = MPI.COMM_WORLD
     h5_path = os.environ.get("WORKLOAD_H5")

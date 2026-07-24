@@ -81,9 +81,7 @@ def _diagonal_h_and_basis_with_empty_rank(comm):
     )
 
     local_counts = comm.allgather(len(basis.local_basis))
-    assert local_counts[empty_rank] == 0, (
-        f"test setup failed to produce an empty rank: local counts {local_counts}"
-    )
+    assert local_counts[empty_rank] == 0, f"test setup failed to produce an empty rank: local counts {local_counts}"
 
     return h_op, basis, states, eigvals
 

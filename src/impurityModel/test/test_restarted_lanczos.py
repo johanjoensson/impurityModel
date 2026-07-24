@@ -1,64 +1,12 @@
-import itertools
 import warnings
 
 import numpy as np
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner_multi
+from impurityModel.test.support.lanczos_fixtures import MockBasis, get_test_system
 
 warnings.filterwarnings("ignore")
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy  # noqa: E402
-
-
-class MockBasis:
-    def __init__(self, size):
-        self.size = size
-        self.comm = None
-        self._index_dict = {}
-
-    def redistribute_psis(self, *blocks):
-        return list(blocks)
-
-    def redistribute_block(self, block):
-        return block
-
-    def add_states(self, states):
-        pass
-
-
-def get_test_system():
-    n_sites = 8
-    n_particles = 4
-
-    # Generate all basis states
-    combinations = list(itertools.combinations(range(n_sites), n_particles))
-    states = []
-    for c in combinations:
-        val = sum(1 << i for i in c)
-        states.append(SlaterDeterminant.from_bytes(val.to_bytes(8, byteorder="little")))
-
-    # 1D Tight-binding hopping
-    op_dict = {}
-    for i in range(n_sites - 1):
-        op_dict[((i, "c"), (i + 1, "a"))] = -1.0
-        op_dict[((i + 1, "c"), (i, "a"))] = -1.0
-
-    h_op = ManyBodyOperator(op_dict)
-
-    # Build dense matrix for exact diagonalization
-    N = len(states)
-    H_dense = np.zeros((N, N), dtype=complex)
-
-    basis_states = [ManyBodyState({sd: 1.0}) for sd in states]
-    H_basis_states = h_op.apply_multi(basis_states)
-
-    for j in range(N):
-        for i, sd_i in enumerate(states):
-            amp = H_basis_states[j].get(sd_i)
-            H_dense[i, j] = 0.0 if amp is None else amp[0]
-
-    eigvals_exact, _ = np.linalg.eigh(H_dense)
-
-    return h_op, N, eigvals_exact, basis_states
 
 
 def test_irlm_thick_restart():
