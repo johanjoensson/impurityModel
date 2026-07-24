@@ -8,6 +8,7 @@ from impurityModel.ed.BlockLanczosArray import Reort, eigsh
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp, SlaterDeterminant
+from impurityModel.test.support.testtol import eig_atol
 
 
 def test_lancos():
@@ -60,7 +61,9 @@ def test_lancos():
                 ev, _ = eigsh(alpha, beta, eigvals_only=True, de=10)
                 h_excited = build_dense_matrix(excited_basis, Hop)
                 es_direct, _ = eigensystem(h_excited, 0)
-                np.testing.assert_allclose(ev, es_direct, atol=1e-12)
+                np.testing.assert_allclose(
+                    ev, es_direct, atol=eig_atol(np.linalg.norm(h_excited, 2), n=h_excited.shape[0])
+                )
     print(f"{alphas=}\n{betas=}")
 
 
@@ -132,7 +135,9 @@ def test_lancos_mpi():
                 if MPI.COMM_WORLD.rank == 0:
                     try:
                         ev, _ = eigsh(alpha, beta, eigvals_only=True, de=10)
-                        np.testing.assert_allclose(ev, es_direct, atol=1e-12)
+                        np.testing.assert_allclose(
+                            ev, es_direct, atol=eig_atol(np.linalg.norm(h_excited, 2), n=h_excited.shape[0])
+                        )
                     except Exception as e:
                         print(f"Rank 0 Exception: {e}", flush=True)
                         MPI.COMM_WORLD.Abort(1)
