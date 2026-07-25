@@ -18,7 +18,7 @@ but unequal) occupations, produces different values for the two levels.
 import numpy as np
 import pytest
 
-from impurityModel.ed.double_counting import _iterate_dc_fixed_point, amf_dc, fll_dc, sigma_inf_dc
+from impurityModel.ed.double_counting import amf_dc, fll_dc, sigma_inf_dc
 from impurityModel.ed.model import ImpurityModel
 
 EPS = -1.0
@@ -26,7 +26,7 @@ U = 3.0
 EPS_B = -4.0
 
 
-def build_dimer_model(v):
+def build_dimer_model(v, dc=None):
     h0 = np.zeros((4, 4), dtype=complex)
     for s in range(2):
         imp, bath = s, 2 + s
@@ -40,7 +40,7 @@ def build_dimer_model(v):
     return ImpurityModel.from_solver_matrix(
         h0,
         2,
-        dc=None,
+        dc=dc,
         u4=u4,
         rot_to_spherical=np.eye(2, dtype=complex),
         bath_valence_conduction=([2, 3], []),
@@ -127,34 +127,24 @@ def test_sigma_inf_dc_explicit_rho_matches_amf_explicit_n():
     assert np.allclose(held, amf)
 
 
-def test_amf_dc_explicit_n_skips_fixed_point():
+def test_amf_dc_explicit_n_matches_uniform_trial():
     model = build_dimer_model(v=0.01)
     dc = amf_dc(model, n=2.0)
     assert np.allclose(dc, 3.0 * np.eye(2))
 
 
-def test_iterate_dc_fixed_point_raises_on_a_genuine_two_cycle():
-    """Direct unit test of the fixed-point loop (mirrors test_dc_root_finder.py's approach of
-    testing the search primitive with a synthetic map rather than a full physical scheme).
-
-    A single impurity spin-orbital sits exactly at the Fermi level (h0 = 0) with no
-    hybridization, so its non-interacting occupation is a sharp T=0 step in dc. A synthetic
-    update rule sends N=0 to dc=+10 and N=1 to dc=-10: at dc=+10 the level sits at -10 (occupied,
-    N=1), and at dc=-10 it sits at +10 (empty, N=0) -- a provable, undamped (mix=1) 2-cycle.
-    """
-    h0 = np.zeros((2, 2), dtype=complex)
-    h0[0, 0] = 0.0
-    h0[1, 1] = -100.0
-    model = ImpurityModel.from_solver_matrix(
-        h0, 1, dc=None, u4=None, rot_to_spherical=np.eye(1, dtype=complex), bath_valence_conduction=([1], [])
-    )
-
-    def rho_to_dc(rho):
-        n = float(np.real(np.trace(rho)))
-        return np.array([[10.0]]) if n < 0.5 else np.array([[-10.0]])
-
-    with pytest.raises(RuntimeError, match="did not converge"):
-        _iterate_dc_fixed_point(model, rho_to_dc, tau=0.0, mix=1.0, fixpoint_tol=1e-8, max_iter=20, verbosity=0)
+def test_static_schemes_ignore_model_dc():
+    # The DFT reference is the Fermi filling of the RAW h0 -- model.dc must not feed back into
+    # it (the NiO n0 == 10 bug family). With dc = -3 the OLD h0 - dc reference pushed the
+    # impurity level to +2 (empty, N ~ 0) and FLL settled at U(0 - 1/2) = -1.5; the raw-h0
+    # occupation is N = 2 regardless of model.dc, so all three schemes must match the dc=None
+    # fixture exactly.
+    model = build_dimer_model(v=0.01)
+    model_shifted = build_dimer_model(v=0.01, dc=-3.0 * np.eye(2, dtype=complex))
+    assert np.allclose(fll_dc(model_shifted, tau=1e-3), fll_dc(model, tau=1e-3))
+    assert np.allclose(amf_dc(model_shifted, tau=1e-3), amf_dc(model, tau=1e-3))
+    assert np.allclose(sigma_inf_dc(model_shifted, tau=1e-3), sigma_inf_dc(model, tau=1e-3))
+    assert np.allclose(fll_dc(model_shifted, tau=1e-3), 4.5 * np.eye(2), atol=1e-4)
 
 
 def test_fll_dc_raises_without_u4_when_uj_not_overridden():

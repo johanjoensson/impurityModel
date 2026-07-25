@@ -32,11 +32,10 @@ Three static schemes complement the two searches above: :func:`fll_dc` (Fully Lo
 :func:`amf_dc` (Around Mean Field) and :func:`sigma_inf_dc` (K. Held's :math:`\Sigma(\infty)`,
 the full static Hartree-Fock self-energy matrix, :func:`impurityModel.ed.sigma.get_Sigma_static`).
 Unlike the two searches, these are deterministic one-body NumPy computations with no ED solve and
-no MPI collective, identical on every rank. Each needs the non-interacting impurity occupation or
-density matrix *at self-consistency with its own output* (the double counting shifts the impurity
-level, which shifts the non-interacting occupation the scheme reads back in), so each iterates a
-damped fixed point (:func:`_iterate_dc_fixed_point`) from ``model.dc`` unless the caller supplies
-the occupation/density matrix explicitly, which skips the iteration entirely.
+no MPI collective, identical on every rank. Each evaluates its formula at the DFT impurity
+occupation or density matrix -- the Fermi filling of the raw ``h0``
+(:func:`_noninteracting_impurity_rho`), the same reference :func:`fixed_occupation_dc` targets --
+unless the caller supplies the occupation/density matrix explicitly.
 """
 
 import numpy as np
@@ -160,8 +159,8 @@ def _lowest_energy_and_thermal_rho(basis, solver, h_op, impurity_indices, energy
     return lowest_energy, rho
 
 
-def _noninteracting_impurity_rho(h0_op, h_dc, impurity_indices, n_spin_orbitals, tau):
-    r"""Thermal impurity density matrix of the non-interacting ``h_loc`` at the Fermi level.
+def _noninteracting_impurity_rho(h0_op, impurity_indices, n_spin_orbitals, tau):
+    r"""Thermal impurity density matrix of the non-interacting ``h0`` at the Fermi level.
 
     Diagonalise the full one-body Hamiltonian ``h0`` (impurity *and* bath), occupy the
     single-particle levels with Fermi-Dirac statistics at chemical potential ``mu = 0`` -- the
@@ -176,18 +175,17 @@ def _noninteracting_impurity_rho(h0_op, h_dc, impurity_indices, n_spin_orbitals,
     impurity occupation of a wide-window p-d model, which is the target :func:`fixed_occupation_dc`
     pins when the caller supplies none. ``model.h0`` is the KS/DFT Hamiltonian of the
     ``h0 - dc + U`` model contract (it already contains the DFT mean-field interaction -- that is
-    what the double counting corrects for), so the DFT occupation is the filling of the *raw*
-    ``h0``: pass ``h_dc=None``. Subtracting a realistic double counting first sinks the impurity
-    levels far below the Fermi level and saturates the occupation at the full shell (NiO: n0
-    pinned at 10 instead of ~8.6 for a ~4 Ry dc). It is a deterministic NumPy computation on the
-    replicated ``h0`` (no MPI collective), so every rank obtains an identical value.
+    what the double counting corrects for), so the DFT reference is the filling of the *raw*
+    ``h0`` and this function deliberately takes no double counting: subtracting a realistic dc
+    first sinks the impurity levels far below the Fermi level and saturates the occupation at the
+    full shell (NiO: n0 pinned at 10 instead of ~8.6 for a ~4 Ry dc). It is a deterministic NumPy
+    computation on the replicated ``h0`` (no MPI collective), so every rank obtains an identical
+    value.
 
     Parameters
     ----------
     h0_op : dict or ManyBodyOperator
         Non-interacting Hamiltonian in single-index operator form (``model.h0``).
-    h_dc : dict or ManyBodyOperator
-        Double counting correction to be subtracted from h0 (``model.dc``).
     impurity_indices : sequence of int
         Impurity spin-orbital indices (the block traced over).
     n_spin_orbitals : int
@@ -201,7 +199,7 @@ def _noninteracting_impurity_rho(h0_op, h_dc, impurity_indices, n_spin_orbitals,
     numpy.ndarray
         The impurity block of the density matrix, ``(n_imp, n_imp)`` complex.
     """
-    h = extract_tensors(ManyBodyOperator(h0_op) - ManyBodyOperator(h_dc), n_orb=n_spin_orbitals, two_body=False)[0]
+    h = extract_tensors(ManyBodyOperator(h0_op), n_orb=n_spin_orbitals, two_body=False)[0]
     energies, vecs = np.linalg.eigh(h)
     if tau > 0:
         # 1/(1 + exp(e/tau)) without overflow warnings: exp saturates to inf/0, giving f -> 0/1.
@@ -214,9 +212,9 @@ def _noninteracting_impurity_rho(h0_op, h_dc, impurity_indices, n_spin_orbitals,
     return rho[impurity_ix]
 
 
-def _noninteracting_impurity_occupation(h0_op, h_dc, impurity_indices, n_spin_orbitals, tau):
+def _noninteracting_impurity_occupation(h0_op, impurity_indices, n_spin_orbitals, tau):
     """Thermal impurity occupation ``Tr rho_imp``; see :func:`_noninteracting_impurity_rho`."""
-    rho = _noninteracting_impurity_rho(h0_op, h_dc, impurity_indices, n_spin_orbitals, tau)
+    rho = _noninteracting_impurity_rho(h0_op, impurity_indices, n_spin_orbitals, tau)
     return float(np.real(np.trace(rho)))
 
 
@@ -779,7 +777,7 @@ def fixed_occupation_dc(
     # h0 - dc + U contract; no double counting subtracted before filling), independent of
     # dc_guess and of the trial shift. Logged at every trial; with occupation=None it is
     # also the search target.
-    n0 = _noninteracting_impurity_occupation(h0_op, None, impurity_indices, model.n_spin_orbitals, tau)
+    n0 = _noninteracting_impurity_occupation(h0_op, impurity_indices, model.n_spin_orbitals, tau)
     self_consistent = occupation is None
     if self_consistent:
         occupation = n0
@@ -862,91 +860,25 @@ def fixed_occupation_dc(
     return dc
 
 
-def _iterate_dc_fixed_point(model, rho_to_dc, *, tau, mix, fixpoint_tol, max_iter, verbosity):
-    r"""Damped fixed point for a static double-counting scheme, starting from ``model.dc``.
-
-    The static schemes (:func:`fll_dc`, :func:`amf_dc`, :func:`sigma_inf_dc`) each need the
-    non-interacting impurity density matrix *at self-consistency with their own output*: the
-    double counting shifts the impurity level (entering ``h0 - dc``), which shifts the
-    Fermi-filled occupation the scheme reads back in to produce the next ``dc``. Iterates
-
-    .. math:: \rho_k = \rho_0(h_0 - dc_k),\qquad dc_{k+1} = (1 - \mathrm{mix})\, dc_k +
-        \mathrm{mix} \cdot \mathrm{scheme}(\rho_k)
-
-    (:func:`_noninteracting_impurity_rho` for :math:`\rho_0`) from ``dc_0 = `` ``model.dc`` (or
-    zero), converging when the *unmixed* update ``scheme(rho_k) - dc_k`` is small -- this is the
-    fixed-point residual regardless of ``mix``, so convergence is checked before damping is
-    applied. A deterministic NumPy computation, identical on every rank; no MPI collective.
-
-    Parameters
-    ----------
-    model : ImpurityModel
-    rho_to_dc : callable
-        Maps the current trial density matrix (``(n_imp, n_imp)`` complex) to the scheme's next
-        double-counting matrix.
-    tau : float
-        Fundamental temperature passed to :func:`_noninteracting_impurity_rho`.
-    mix : float
-        Linear mixing fraction of the new update, in ``(0, 1]``.
-    fixpoint_tol : float
-        Convergence tolerance on ``max(abs(scheme(rho_k) - dc_k))``.
-    max_iter : int
-        Maximum number of iterations before giving up.
-    verbosity : int
-        Prints the per-iteration residual when ``> 0``.
-
-    Returns
-    -------
-    numpy.ndarray, shape (n_imp, n_imp)
-        The converged double-counting matrix.
-
-    Raises
-    ------
-    RuntimeError
-        If ``max_iter`` iterations do not bring the residual below ``fixpoint_tol``.
-    """
-    h0_op = model.h0
-    impurity_indices = model.impurity_indices
-    n_spin_orbitals = model.n_spin_orbitals
-    n_imp = len(impurity_indices)
-    dc = extract_tensors(model.dc or {}, n_orb=n_imp, two_body=False)[0]
-    delta = np.inf
-    for iteration in range(max_iter):
-        rho = _noninteracting_impurity_rho(h0_op, _dc_operator(dc).to_dict(), impurity_indices, n_spin_orbitals, tau)
-        dc_new = rho_to_dc(rho)
-        delta = float(np.max(np.abs(dc_new - dc)))
-        if verbosity > 0:
-            print(f"Double-counting fixed point, iteration {iteration}: max|Δdc| = {delta:.3e}")
-        if delta < fixpoint_tol:
-            return dc_new
-        dc = (1.0 - mix) * dc + mix * dc_new
-    raise RuntimeError(
-        f"Double-counting fixed point did not converge in {max_iter} iterations "
-        f"(max|Δdc| = {delta:.3e} > {fixpoint_tol}); try a larger tau, a smaller mix, or pass "
-        "the occupation/density matrix explicitly (n=/rho=) to skip the iteration."
-    )
-
-
-def fll_dc(model, *, tau=0.002, n=None, u=None, j=None, mix=0.5, fixpoint_tol=1e-8, max_iter=200, verbosity=0):
+def fll_dc(model, *, tau=0.002, n=None, u=None, j=None):
     r"""Fully Localized Limit double counting, ``dc = [U(N - 1/2) - (J/2)(N - 1)] I``.
 
     ``U``, ``J`` default to :func:`_model_uj`'s spherical average (needs ``model.u4``); either
     may be overridden explicitly (e.g. from tabulated values), independently of the other. ``N``
-    defaults to the self-consistent non-interacting impurity occupation, found by
-    :func:`_iterate_dc_fixed_point`; an explicit ``N`` skips the iteration (and, if both ``u``
-    and ``j`` are also given, needs no ``model.u4`` at all).
+    defaults to the DFT impurity occupation, the Fermi filling of the raw ``h0``
+    (:func:`_noninteracting_impurity_rho`); an explicit ``N`` (together with both ``u`` and
+    ``j``) needs no ``model.u4`` at all.
 
     Parameters
     ----------
     model : ImpurityModel
     tau : float, optional
-        Fundamental temperature for the fixed-point occupation (ignored if ``n`` is given).
+        Fundamental temperature for the DFT occupation (ignored if ``n`` is given).
     n : float, optional
-        Impurity occupation ``N``. ``None`` solves for it self-consistently.
+        Impurity occupation ``N``. ``None`` uses the DFT impurity occupation.
     u, j : float, optional
         Average Coulomb repulsion and exchange. ``None`` derives them from ``model.u4`` via
         :func:`_model_uj`.
-    mix, fixpoint_tol, max_iter, verbosity : see :func:`_iterate_dc_fixed_point`.
 
     Returns
     -------
@@ -958,24 +890,12 @@ def fll_dc(model, *, tau=0.002, n=None, u=None, j=None, mix=0.5, fixpoint_tol=1e
         u = u_auto if u is None else u
         j = j_auto if j is None else j
     identity = np.identity(n_imp, dtype=complex)
-
-    def dc_from_occupation(occupation):
-        return (u * (occupation - 0.5) - 0.5 * j * (occupation - 1.0)) * identity
-
-    if n is not None:
-        return dc_from_occupation(n)
-    return _iterate_dc_fixed_point(
-        model,
-        lambda rho: dc_from_occupation(float(np.real(np.trace(rho)))),
-        tau=tau,
-        mix=mix,
-        fixpoint_tol=fixpoint_tol,
-        max_iter=max_iter,
-        verbosity=verbosity,
-    )
+    if n is None:
+        n = _noninteracting_impurity_occupation(model.h0, model.impurity_indices, model.n_spin_orbitals, tau)
+    return (u * (n - 0.5) - 0.5 * j * (n - 1.0)) * identity
 
 
-def amf_dc(model, *, tau=0.002, n=None, mix=0.5, fixpoint_tol=1e-8, max_iter=200, verbosity=0):
+def amf_dc(model, *, tau=0.002, n=None):
     r"""Around Mean Field double counting, ``dc = Σ_static(u4, (N / n_imp) I)``.
 
     The static Hartree-Fock self-energy (:func:`impurityModel.ed.sigma.get_Sigma_static`)
@@ -983,18 +903,16 @@ def amf_dc(model, *, tau=0.002, n=None, mix=0.5, fixpoint_tol=1e-8, max_iter=200
     spin-orbital -- the defining assumption of AMF, that the impurity has no orbital *or spin*
     polarization -- as opposed to :func:`sigma_inf_dc`, which uses the actual (possibly
     anisotropic) density matrix. For a spin-polarized ground state this is the paramagnetic
-    (spin-blind) AMF potential, not a per-spin-channel one. ``N`` defaults to the self-consistent
-    non-interacting impurity occupation (:func:`_iterate_dc_fixed_point`); an explicit ``N``
-    skips the iteration.
+    (spin-blind) AMF potential, not a per-spin-channel one. ``N`` defaults to the DFT impurity
+    occupation, the Fermi filling of the raw ``h0`` (:func:`_noninteracting_impurity_rho`).
 
     Parameters
     ----------
     model : ImpurityModel
     tau : float, optional
-        Fundamental temperature for the fixed-point occupation (ignored if ``n`` is given).
+        Fundamental temperature for the DFT occupation (ignored if ``n`` is given).
     n : float, optional
-        Impurity occupation ``N``. ``None`` solves for it self-consistently.
-    mix, fixpoint_tol, max_iter, verbosity : see :func:`_iterate_dc_fixed_point`.
+        Impurity occupation ``N``. ``None`` uses the DFT impurity occupation.
 
     Returns
     -------
@@ -1003,59 +921,34 @@ def amf_dc(model, *, tau=0.002, n=None, mix=0.5, fixpoint_tol=1e-8, max_iter=200
     n_imp = len(model.impurity_indices)
     u4_dense = _model_u4_dense(model)
     identity = np.identity(n_imp, dtype=complex)
-
-    def dc_from_occupation(occupation):
-        return get_Sigma_static(u4_dense, (occupation / n_imp) * identity)
-
-    if n is not None:
-        return dc_from_occupation(n)
-    return _iterate_dc_fixed_point(
-        model,
-        lambda rho: dc_from_occupation(float(np.real(np.trace(rho)))),
-        tau=tau,
-        mix=mix,
-        fixpoint_tol=fixpoint_tol,
-        max_iter=max_iter,
-        verbosity=verbosity,
-    )
+    if n is None:
+        n = _noninteracting_impurity_occupation(model.h0, model.impurity_indices, model.n_spin_orbitals, tau)
+    return get_Sigma_static(u4_dense, (n / n_imp) * identity)
 
 
-def sigma_inf_dc(model, *, tau=0.002, rho=None, mix=0.5, fixpoint_tol=1e-8, max_iter=200, verbosity=0):
+def sigma_inf_dc(model, *, tau=0.002, rho=None):
     r"""K. Held's :math:`\Sigma(\infty)` double counting: the full static Hartree-Fock
     self-energy matrix, ``dc = Σ_static(u4, rho_imp)``.
 
     Unlike :func:`amf_dc`, uses the actual (possibly anisotropic) non-interacting impurity
     density matrix rather than a uniform trial -- the two agree exactly when that density matrix
     happens to be uniform (e.g. a single, orbitally-degenerate shell), and differ whenever the
-    impurity levels split. ``rho`` defaults to the self-consistent non-interacting impurity
-    density matrix (:func:`_iterate_dc_fixed_point`); an explicit ``rho`` skips the iteration.
+    impurity levels split. ``rho`` defaults to the DFT impurity density matrix, the Fermi
+    filling of the raw ``h0`` (:func:`_noninteracting_impurity_rho`).
 
     Parameters
     ----------
     model : ImpurityModel
     tau : float, optional
-        Fundamental temperature for the fixed-point density matrix (ignored if ``rho`` is given).
+        Fundamental temperature for the DFT density matrix (ignored if ``rho`` is given).
     rho : numpy.ndarray, shape (n_imp, n_imp), optional
-        Impurity density matrix. ``None`` solves for it self-consistently.
-    mix, fixpoint_tol, max_iter, verbosity : see :func:`_iterate_dc_fixed_point`.
+        Impurity density matrix. ``None`` uses the DFT impurity density matrix.
 
     Returns
     -------
     numpy.ndarray, shape (n_imp, n_imp)
     """
     u4_dense = _model_u4_dense(model)
-
-    def dc_from_rho(trial_rho):
-        return get_Sigma_static(u4_dense, trial_rho)
-
-    if rho is not None:
-        return dc_from_rho(np.asarray(rho, dtype=complex))
-    return _iterate_dc_fixed_point(
-        model,
-        dc_from_rho,
-        tau=tau,
-        mix=mix,
-        fixpoint_tol=fixpoint_tol,
-        max_iter=max_iter,
-        verbosity=verbosity,
-    )
+    if rho is None:
+        rho = _noninteracting_impurity_rho(model.h0, model.impurity_indices, model.n_spin_orbitals, tau)
+    return get_Sigma_static(u4_dense, np.asarray(rho, dtype=complex))

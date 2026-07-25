@@ -159,7 +159,7 @@ def test_noninteracting_impurity_occupation_matches_fermi_fill():
         ((0, "c"), (1, "a")): v,
         ((1, "c"), (0, "a")): v,
     }
-    n = _noninteracting_impurity_occupation(h0, None, impurity_indices=[0], n_spin_orbitals=2, tau=tau)
+    n = _noninteracting_impurity_occupation(h0, impurity_indices=[0], n_spin_orbitals=2, tau=tau)
 
     h = np.array([[e_imp, v], [v, e_bath]], dtype=complex)
     energies, vecs = np.linalg.eigh(h)
@@ -182,7 +182,7 @@ def test_fixed_occupation_dc_self_consistent_targets_dft_occupation():
     kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2)
     model, basis = kwargs["model"], kwargs["basis"]
 
-    n0_ref = _noninteracting_impurity_occupation(model.h0, None, [0, 1], 4, basis.tau)
+    n0_ref = _noninteracting_impurity_occupation(model.h0, [0, 1], 4, basis.tau)
     assert np.isclose(n0_ref, 2.0, atol=1e-2), n0_ref
 
     dc_auto = fixed_occupation_dc(**kwargs)
