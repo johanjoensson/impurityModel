@@ -169,28 +169,59 @@ def test_noninteracting_impurity_occupation_matches_fermi_fill():
     assert np.isclose(n, expected, atol=1e-12), (n, expected)
 
 
-def test_fixed_occupation_dc_derives_target_from_hloc():
-    # Omitting `occupation` must pin the h_loc-derived target (at the guess dc). For this
-    # cluster both non-interacting levels sit below the Fermi level, so the derived
-    # occupation is 2; the resulting DC must match an explicit occupation=2 call
-    # (and, as in test_fixed_occupation_dc_increases_occupation, push dc > 6).
-    from impurityModel.ed.double_counting import _noninteracting_impurity_occupation
+def test_fixed_occupation_dc_self_consistent_pins_fermi_level():
+    # Omitting `occupation` now solves the self-consistent N(mu) = N0(mu) criterion (not a
+    # target derived once from the guess). For this dimer, both the interacting N_imp=1->0
+    # charge-transfer threshold (E[1]<E[0] iff dc>eps, i.e. dc=eps=-1) and the non-interacting
+    # h_loc's resonance (the bare impurity level eps-dc crosses the Fermi level at dc=eps too)
+    # sit at the same leading-order point -- so the nearest self-consistent root to the mu=0
+    # guess is expected close to dc=eps=-1, not at the trivial guess (dc=0.5) or the far
+    # dc>6 charge-transfer family (which the geometric scan, growing outward from mu=0, never
+    # even reaches once the near root is found and refined).
+    from impurityModel.ed.double_counting import (
+        _dc_operator,
+        _lowest_energy_and_thermal_rho,
+        _noninteracting_impurity_occupation,
+        _normalize_dc_orbitals,
+        _prepare_dc_solver,
+    )
+    from impurityModel.ed.lie_algebra import tensors_to_operator
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
     kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2)
-    derived = _noninteracting_impurity_occupation(
-        kwargs["model"].h0,
-        kwargs["model"].dc,
-        impurity_indices=[0, 1],
-        n_spin_orbitals=4,
-        tau=kwargs["basis"].tau,
-    )
-    assert np.isclose(derived, 2.0, atol=1e-6)
-
+    model, basis, solver = kwargs["model"], kwargs["basis"], kwargs["solver"]
     dc_auto = fixed_occupation_dc(**kwargs)
-    dc_explicit = fixed_occupation_dc(occupation=2.0, **kwargs)
     assert_uniform_shift(dc_auto, dc_guess)
-    assert dc_auto[0, 0].real > 6.0, dc_auto
-    assert np.allclose(dc_auto, dc_explicit), (dc_auto, dc_explicit)
+    assert -2.0 < dc_auto[0, 0].real < 0.0, dc_auto
+
+    # Independently verify self-consistency AT the returned dc -- not by re-invoking the search
+    # (n(mu) is nearly flat here, so an explicit-occupation cross-check can't discriminate mu
+    # precisely) -- by directly recomputing N(dc_auto) [interacting] and N0(dc_auto)
+    # [non-interacting] with the same low-level primitives fixed_occupation_dc itself uses, and
+    # checking they agree within occ_tol (the search's default convergence tolerance).
+    n0 = _noninteracting_impurity_occupation(model.h0, tensors_to_operator(dc_auto).to_dict(), [0, 1], 4, basis.tau)
+
+    impurity_orbitals, bath_states = _normalize_dc_orbitals(model.impurity_orbitals, model.bath_states)
+    h_op_i = ManyBodyOperator(model.h0) + ManyBodyOperator(model.u4)
+    mb_basis, mb_solver = _prepare_dc_solver(
+        h_op_i,
+        impurity_orbitals,
+        bath_states,
+        basis.nominal_occ,
+        basis.mixed_valence,
+        basis.truncation_threshold,
+        basis.spin_flip_dj,
+        basis.tau,
+        False,
+    )
+    h_op = h_op_i - _dc_operator(dc_auto)
+    mb_solver.expand(h_op, dense_cutoff=solver.dense_cutoff, de2_min=1e-5, slaterWeightMin=basis.slater_weight_min)
+    energy_cut = -basis.tau * np.log(1e-4)
+    _, rho = _lowest_energy_and_thermal_rho(
+        mb_basis, mb_solver, h_op, [0, 1], energy_cut, solver.dense_cutoff, basis.slater_weight_min
+    )
+    n = float(np.real(np.trace(rho)))
+    assert np.isclose(n, n0, atol=1e-2), (n, n0)  # default occ_tol
 
 
 @pytest.mark.mpi
@@ -215,6 +246,19 @@ def test_fixed_occupation_dc_ranks_agree():
     comm = MPI.COMM_WORLD
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     dc = fixed_occupation_dc(occupation=2.0, **kwargs)
+    gathered = comm.gather(dc, root=0)
+    if comm.rank == 0:
+        for other in gathered[1:]:
+            assert np.array_equal(dc, other), (dc, other)
+
+
+@pytest.mark.mpi
+def test_fixed_occupation_dc_self_consistent_ranks_agree():
+    # The self-consistent search evaluates two observables (interacting N, non-interacting N0)
+    # per trial mu; both must stay rank-invariant for the same reason as the explicit path.
+    comm = MPI.COMM_WORLD
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    dc = fixed_occupation_dc(**kwargs)
     gathered = comm.gather(dc, root=0)
     if comm.rank == 0:
         for other in gathered[1:]:
