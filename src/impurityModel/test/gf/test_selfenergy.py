@@ -3,8 +3,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from impurityModel.ed import atomic_physics, selfenergy
 from impurityModel.ed import gf_diagnostics as gd
-from impurityModel.ed import selfenergy
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner
 from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
 from impurityModel.ed.selfenergy import UnphysicalGreensFunctionError
@@ -43,7 +43,10 @@ def _selfenergy_args(**overrides):
     )
     v.update(overrides)
     model = ImpurityModel(
-        h0=v["h0"], u4=v["u4"], impurity_orbitals=v["impurity_orbitals"], rot_to_spherical=v["rot_to_spherical"]
+        h0=v["h0"],
+        u4=atomic_physics.getUop_from_rspt_u4(v["u4"]),
+        impurity_orbitals=v["impurity_orbitals"],
+        rot_to_spherical=v["rot_to_spherical"],
     )
     meshes = Meshes(iw=v["iw"], w=v["w"], delta=v["delta"])
     basis = BasisOptions(

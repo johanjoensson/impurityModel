@@ -22,6 +22,7 @@ import numpy as np
 
 from impurityModel.ed import atomic_physics
 from impurityModel.ed.hamiltonian_io import get_noninteracting_hamiltonian_operator
+from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.operator_algebra import c2i, matrixToIOp
 
 __all__ = [
@@ -109,10 +110,12 @@ class ImpurityModel:
     h0 : dict
         Non-interacting Hamiltonian, ``{process: amplitude}`` with integer spin-orbital
         indices. The impurity orbitals come first, then the bath orbitals.
-    u4 : numpy.ndarray or None
-        Dense ``(n_imp, n_imp, n_imp, n_imp)`` Coulomb tensor over the impurity
-        spin-orbitals, in the RSPt convention (see :func:`atomic_u4`). ``None`` for a
-        non-interacting model.
+    dc : dict or None
+        Double counting correction, in the RSPt convention, ``{process: amplitude}``.
+        ``None`` for no DC correction.
+    u4 : dict or None
+        Coulomb tensor over the impurity spin-orbitals, in the RSPt convention (see
+        :func:`atomic_u4`), ``{process: amplitude}``. ``None`` for a non-interacting model.
     impurity_orbitals : dict[int, list[int]]
         Flat impurity spin-orbital index lists, keyed by an arbitrary group label. The bath
         orbitals (everything else in ``h0``) and their valence/conduction split are derived
@@ -132,7 +135,8 @@ class ImpurityModel:
     h0: dict
     impurity_orbitals: dict
     rot_to_spherical: Union[np.ndarray, dict]
-    u4: Optional[np.ndarray] = None
+    dc: Optional[dict] = None
+    u4: Optional[dict] = None
     bath_states: Optional[tuple] = None
     n_spin_orbitals: int = field(default=0)
 
@@ -214,7 +218,7 @@ class ImpurityModel:
         n_imp_spin_orbitals = 2 * (2 * l + 1)
         return cls(
             h0=h0_single_index,
-            u4=atomic_u4(l, slater),
+            u4=atomic_physics.getUop_from_rspt_u4(atomic_u4(l, slater)),
             impurity_orbitals={l: list(range(n_imp_spin_orbitals))},
             rot_to_spherical=np.eye(n_imp_spin_orbitals, dtype=complex),
         )
@@ -225,9 +229,10 @@ class ImpurityModel:
 
         The RSPt interface (:mod:`impurityModel_interface`) writes one group per
         ``(cluster, DMFT iteration)`` holding the full one-particle solver Hamiltonian
-        (``H solver``), the Coulomb tensor (``U``), ``Rot to spherical`` and the impurity
-        orbital indices, which is exactly the physics of an :class:`ImpurityModel`. This makes
-        an archived DFT-embedded run re-runnable offline. Use :func:`load_selfenergy_archive`
+        (``H solver``), the double counting correction (``DC``), the Coulomb tensor (``U``),
+        ``Rot to spherical`` and the impurity orbital indices, which is exactly the physics of
+        an :class:`ImpurityModel`. This makes an archived DFT-embedded run re-runnable offline.
+        Use :func:`load_selfenergy_archive`
         to also recover the frequency meshes and the recorded solver/basis options.
 
         Parameters
@@ -247,6 +252,7 @@ class ImpurityModel:
         return cls(
             h0=raw["h0"],
             u4=raw["u4"],
+            dc=raw["dc"],
             impurity_orbitals=raw["impurity_orbitals"],
             rot_to_spherical=raw["rot_to_spherical"],
             n_spin_orbitals=raw["n_spin_orbitals"],
@@ -258,6 +264,7 @@ class ImpurityModel:
         H,
         n_impurity_orbitals: int,
         *,
+        dc: Optional[np.ndarray] = None,
         u4: Optional[np.ndarray] = None,
         rot_to_spherical,
         bath_valence_conduction=None,
@@ -298,7 +305,8 @@ class ImpurityModel:
             bath_states = ({0: [int(i) for i in valence]}, {0: [int(i) for i in conduction]})
         return cls(
             h0=_operator_from_matrix(H),
-            u4=u4,
+            dc=tensors_to_operator(np.asarray(dc, dtype=complex)).to_dict() if dc is not None else None,
+            u4=atomic_physics.getUop_from_rspt_u4(u4) if u4 is not None else None,
             impurity_orbitals={0: list(range(n_imp))},
             rot_to_spherical=rot_to_spherical,
             bath_states=bath_states,
@@ -312,6 +320,7 @@ class ImpurityModel:
         V,
         H_bath,
         *,
+        dc: Optional[np.ndarray] = None,
         u4: Optional[np.ndarray] = None,
         rot_to_spherical,
         bath_valence_conduction=None,
@@ -333,7 +342,7 @@ class ImpurityModel:
             ``assemble_h0`` returns ``v_solver``).
         H_bath : numpy.ndarray
             Bath block, ``(n_bath, n_bath)``.
-        u4, rot_to_spherical, bath_valence_conduction
+        dc, u4, rot_to_spherical, bath_valence_conduction
             As in :meth:`from_solver_matrix`.
 
         Returns
@@ -353,6 +362,7 @@ class ImpurityModel:
         return cls.from_solver_matrix(
             H,
             n_imp,
+            dc=dc,
             u4=u4,
             rot_to_spherical=rot_to_spherical,
             bath_valence_conduction=bath_valence_conduction,
@@ -402,7 +412,8 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
         attrs = dict(g.attrs)
 
         h_solver = np.asarray(g["H solver"])
-        u4 = np.asarray(g["U"])
+        _u4 = np.asarray(g["U"])
+        _dc = np.asarray(g["DC"]) if "DC" in g else None
         iw_mesh = np.asarray(g["Matsubara frequency mesh"])
         w_mesh = np.asarray(g["Real frequency mesh"])
         rot_to_spherical = np.asarray(g["Rot to spherical"])
@@ -410,6 +421,8 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
 
     # The interface hands calc_selfenergy the Hamiltonian as a second-quantized operator.
     h0 = _operator_from_matrix(h_solver)
+    u4 = atomic_physics.getUop_from_rspt_u4(_u4)
+    dc = tensors_to_operator(_dc).to_dict() if _dc is not None else None
 
     truncation_threshold = _archive_attr(attrs, "truncation_threshold")
     if truncation_threshold is not None:
@@ -427,6 +440,7 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
         "label": name,
         "h0": h0,
         "u4": u4,
+        "dc": dc,
         "n_spin_orbitals": int(h_solver.shape[0]),
         "impurity_orbitals": {0: impurity_indices},
         "rot_to_spherical": rot_to_spherical,
@@ -474,6 +488,7 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
     raw = _read_archive_group(path, cluster, iteration)
     model = ImpurityModel(
         h0=raw["h0"],
+        dc=raw["dc"],
         u4=raw["u4"],
         impurity_orbitals=raw["impurity_orbitals"],
         rot_to_spherical=raw["rot_to_spherical"],

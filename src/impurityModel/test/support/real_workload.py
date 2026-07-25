@@ -72,6 +72,11 @@ def load_workload(h5_path, cluster=None, iteration=None):
         attrs = dict(g.attrs)
 
         h_solver = np.asarray(g["H solver"])
+        # "DC" is a newer archive dataset (mirrors model.py's _read_archive_group for the same
+        # impurityModel_data.h5 schema); older archives lack it and dc stays None (no behavior
+        # change). Assumes "H solver" does NOT already have the DC subtracted -- unverified
+        # against a real interface-written archive, since none is available in this repo.
+        dc = np.asarray(g["DC"]) if "DC" in g else None
         u4 = np.asarray(g["U"])
         iw_mesh = np.asarray(g["Matsubara frequency mesh"])
         w_mesh = np.asarray(g["Real frequency mesh"])
@@ -93,6 +98,7 @@ def load_workload(h5_path, cluster=None, iteration=None):
     return {
         "label": name,
         "h0": h0,
+        "dc": dc,
         "u4": u4,
         "iw_mesh": iw_mesh,
         "w_mesh": w_mesh,
@@ -157,13 +163,17 @@ def run_selfenergy(
     dict
         The ``calc_selfenergy`` result dict (rank 0; empty-ish on other ranks).
     """
+    from impurityModel.ed import atomic_physics
+    from impurityModel.ed.lie_algebra import tensors_to_operator
     from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
 
     iw = _subsample(workload["iw_mesh"], n_iw)
     w = _subsample(workload["w_mesh"], n_w)
+    dc = workload["dc"]
     model = ImpurityModel(
         h0=workload["h0"],
-        u4=workload["u4"],
+        dc=tensors_to_operator(np.asarray(dc, dtype=complex)).to_dict() if dc is not None else None,
+        u4=atomic_physics.getUop_from_rspt_u4(workload["u4"]),
         impurity_orbitals=workload["impurity_orbitals"],
         rot_to_spherical=workload["rot_to_spherical"],
     )

@@ -426,6 +426,7 @@ def calc_susceptibility_workflow(
 
     # Unpack the grouped parameters into the local names used throughout the body.
     h0 = model.h0
+    dc = model.dc
     u4 = model.u4
     impurity_orbitals = model.impurity_orbitals
     rot_to_spherical = model.rot_to_spherical
@@ -440,7 +441,7 @@ def calc_susceptibility_workflow(
     dense_cutoff = solver.dense_cutoff
 
     rank = comm.rank if comm is not None else 0
-    sb = _prepare_solver_basis(h0, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity)
+    sb = _prepare_solver_basis(h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity)
     gf_block_width = max(4, *(len(block) for block in sb.block_structure.blocks))
     if truncation_threshold is None:
         truncation_threshold = suggest_truncation_threshold(

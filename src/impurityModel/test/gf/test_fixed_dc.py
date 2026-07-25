@@ -31,30 +31,38 @@ U = 3.0
 EPS_B = -4.0
 
 
-def build_model(v):
-    h0 = {}
+def build_model(v, dc_scale):
+    h0 = np.zeros((4, 4), dtype=complex)
     for s in range(2):
         imp, bath = s, 2 + s
-        h0[((imp, "c"), (imp, "a"))] = EPS
-        h0[((bath, "c"), (bath, "a"))] = EPS_B
-        h0[((imp, "c"), (bath, "a"))] = v
-        h0[((bath, "c"), (imp, "a"))] = v
+        h0[imp, imp] = EPS
+        h0[bath, bath] = EPS_B
+        h0[imp, bath] = v
+        h0[bath, imp] = v
+    dc = np.identity(2, dtype=complex) * dc_scale
     u4 = np.zeros((4, 4, 4, 4), dtype=complex)
     # RSPt convention <ij|V|kl> with pairs (i,k),(j,l): the density-density
     # element U n_0 n_1 sits at u4[0,1,0,1] (and its exchange-symmetric partner).
     u4[0, 1, 0, 1] = U
     u4[1, 0, 1, 0] = U
-    return h0, u4
+    return h0, dc, u4
 
 
-def common_kwargs(v, tau):
-    h0, u4 = build_model(v)
-    model = ImpurityModel(
-        h0=h0,
+def common_kwargs(v, tau, dc_scale=0.5):
+    """``fixed_peak_dc``/``fixed_occupation_dc`` kwargs plus the dense dc guess used to build them.
+
+    Returns ``(kwargs, dc_guess)``: ``kwargs`` is exactly the ``model``/``basis``/``solver``/``comm``
+    the search functions accept (no extra keys), ``dc_guess`` is the dense ``model.dc`` matrix for
+    the tests' own assertions (:func:`assert_uniform_shift`).
+    """
+    h0, dc, u4 = build_model(v, dc_scale)
+    model = ImpurityModel.from_solver_matrix(
+        h0,
+        dc.shape[0],
+        dc=dc,
         u4=u4,
-        impurity_orbitals={0: [0, 1]},
         rot_to_spherical=np.eye(2, dtype=complex),
-        bath_states=({0: [2, 3]}, {0: []}),
+        bath_valence_conduction=([2, 3], []),
     )
     basis = BasisOptions(
         nominal_occ={0: 1},
@@ -65,7 +73,7 @@ def common_kwargs(v, tau):
         truncation_threshold=int(1e8),
     )
     solver = SolverOptions(dense_cutoff=1000)
-    return dict(model=model, basis=basis, solver=solver, comm=MPI.COMM_WORLD)
+    return dict(model=model, basis=basis, solver=solver, comm=MPI.COMM_WORLD), dc
 
 
 def assert_uniform_shift(dc, dc_guess):
@@ -77,8 +85,8 @@ def assert_uniform_shift(dc, dc_guess):
 
 def test_fixed_peak_dc_addition_peak():
     target = 1.2
-    dc_guess = 0.5 * np.identity(2, dtype=complex)
-    dc = fixed_peak_dc(peak_position=target, dc_guess=dc_guess, **common_kwargs(v=0.01, tau=1e-3))
+    kwargs, dc_guess = common_kwargs(v=0.01, tau=1e-3)
+    dc = fixed_peak_dc(peak_position=target, **kwargs)
     assert_uniform_shift(dc, dc_guess)
     # E[2] - E[1] = eps + U - dc = target
     expected = EPS + U - target
@@ -88,8 +96,8 @@ def test_fixed_peak_dc_addition_peak():
 def test_fixed_peak_dc_removal_peak():
     # A negative peak position must exercise the removal branch, E[1] - E[0]
     target = -1.5
-    dc_guess = 0.2 * np.identity(2, dtype=complex)
-    dc = fixed_peak_dc(peak_position=target, dc_guess=dc_guess, **common_kwargs(v=0.01, tau=1e-3))
+    kwargs, dc_guess = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.2)
+    dc = fixed_peak_dc(peak_position=target, **kwargs)
     assert_uniform_shift(dc, dc_guess)
     # E[1] - E[0] = eps - dc = target
     expected = EPS - target
@@ -97,25 +105,25 @@ def test_fixed_peak_dc_removal_peak():
 
 
 def test_fixed_peak_dc_multiple_groups_raises():
-    kwargs = common_kwargs(v=0.01, tau=1e-3)
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=1.0)
     kwargs["basis"] = replace(kwargs["basis"], nominal_occ={0: 1, 1: 1})
     with pytest.raises(ValueError, match="single impurity group"):
-        fixed_peak_dc(peak_position=1.0, dc_guess=np.identity(2, dtype=complex), **kwargs)
+        fixed_peak_dc(peak_position=1.0, **kwargs)
 
 
 def test_fixed_occupation_dc_already_converged():
-    # At the guess the impurity holds one electron; requesting occupation 1
-    # must return the guess unchanged.
-    dc_guess = 0.5 * np.identity(2, dtype=complex)
-    dc = fixed_occupation_dc(occupation=1.0, dc_guess=dc_guess, **common_kwargs(v=0.3, tau=1e-2))
-    assert np.allclose(dc, dc_guess)
+    # At the guess (dc=0.5, well below the dc=6 charge-transfer point) the impurity already
+    # holds one electron; requesting occupation 1 must return the guess unchanged (mu=0).
+    kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2)
+    dc = fixed_occupation_dc(occupation=1.0, **kwargs)
+    np.testing.assert_allclose(dc, dc_guess, atol=1e-8)
 
 
 def test_fixed_occupation_dc_increases_occupation():
     # Requesting two electrons on the impurity requires pushing the doubly
     # occupied impurity below the bath: dc > eps + U - eps_b = 6.
-    dc_guess = 0.5 * np.identity(2, dtype=complex)
-    dc = fixed_occupation_dc(occupation=2.0, dc_guess=dc_guess, **common_kwargs(v=0.3, tau=1e-2))
+    kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
+    dc = fixed_occupation_dc(occupation=2.0, **kwargs)
     assert_uniform_shift(dc, dc_guess)
     assert dc[0, 0].real > 6.0, dc
 
@@ -123,8 +131,8 @@ def test_fixed_occupation_dc_increases_occupation():
 def test_fixed_occupation_dc_decreases_occupation():
     # A guess of 7 puts two electrons on the impurity; requesting one electron
     # must bring the double counting back below the charge-transfer point.
-    dc_guess = 7.0 * np.identity(2, dtype=complex)
-    dc = fixed_occupation_dc(occupation=1.0, dc_guess=dc_guess, **common_kwargs(v=0.3, tau=1e-2))
+    kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2, dc_scale=7.0)
+    dc = fixed_occupation_dc(occupation=1.0, **kwargs)
     assert_uniform_shift(dc, dc_guess)
     assert dc[0, 0].real < 6.0, dc
 
@@ -132,9 +140,9 @@ def test_fixed_occupation_dc_decreases_occupation():
 def test_fixed_occupation_dc_unreachable_raises():
     # Only two bath spin-orbitals and three electrons in total: the impurity
     # occupation cannot drop below one.
-    dc_guess = 0.5 * np.identity(2, dtype=complex)
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
     with pytest.raises(RuntimeError, match="Could not bracket"):
-        fixed_occupation_dc(occupation=0.2, dc_guess=dc_guess, **common_kwargs(v=0.3, tau=1e-2))
+        fixed_occupation_dc(occupation=0.2, **kwargs)
 
 
 def test_noninteracting_impurity_occupation_matches_fermi_fill():
@@ -151,7 +159,7 @@ def test_noninteracting_impurity_occupation_matches_fermi_fill():
         ((0, "c"), (1, "a")): v,
         ((1, "c"), (0, "a")): v,
     }
-    n = _noninteracting_impurity_occupation(h0, impurity_indices=[0], n_spin_orbitals=2, tau=tau)
+    n = _noninteracting_impurity_occupation(h0, None, impurity_indices=[0], n_spin_orbitals=2, tau=tau)
 
     h = np.array([[e_imp, v], [v, e_bath]], dtype=complex)
     energies, vecs = np.linalg.eigh(h)
@@ -162,21 +170,24 @@ def test_noninteracting_impurity_occupation_matches_fermi_fill():
 
 
 def test_fixed_occupation_dc_derives_target_from_hloc():
-    # Omitting `occupation` must pin the h_loc-derived target. For this cluster
-    # both non-interacting levels sit below the Fermi level, so the derived
+    # Omitting `occupation` must pin the h_loc-derived target (at the guess dc). For this
+    # cluster both non-interacting levels sit below the Fermi level, so the derived
     # occupation is 2; the resulting DC must match an explicit occupation=2 call
     # (and, as in test_fixed_occupation_dc_increases_occupation, push dc > 6).
     from impurityModel.ed.double_counting import _noninteracting_impurity_occupation
 
-    kwargs = common_kwargs(v=0.3, tau=1e-2)
+    kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2)
     derived = _noninteracting_impurity_occupation(
-        kwargs["model"].h0, impurity_indices=[0, 1], n_spin_orbitals=4, tau=kwargs["basis"].tau
+        kwargs["model"].h0,
+        kwargs["model"].dc,
+        impurity_indices=[0, 1],
+        n_spin_orbitals=4,
+        tau=kwargs["basis"].tau,
     )
     assert np.isclose(derived, 2.0, atol=1e-6)
 
-    dc_guess = 0.5 * np.identity(2, dtype=complex)
-    dc_auto = fixed_occupation_dc(dc_guess=dc_guess, **kwargs)
-    dc_explicit = fixed_occupation_dc(occupation=2.0, dc_guess=dc_guess, **common_kwargs(v=0.3, tau=1e-2))
+    dc_auto = fixed_occupation_dc(**kwargs)
+    dc_explicit = fixed_occupation_dc(occupation=2.0, **kwargs)
     assert_uniform_shift(dc_auto, dc_guess)
     assert dc_auto[0, 0].real > 6.0, dc_auto
     assert np.allclose(dc_auto, dc_explicit), (dc_auto, dc_explicit)
@@ -189,8 +200,8 @@ def test_fixed_peak_dc_ranks_agree():
     # the same iterations and return an identical dc; a per-rank divergence
     # would deadlock on the next collective solve instead of returning here.
     comm = MPI.COMM_WORLD
-    dc_guess = 0.5 * np.identity(2, dtype=complex)
-    dc = fixed_peak_dc(peak_position=1.2, dc_guess=dc_guess, **common_kwargs(v=0.01, tau=1e-3))
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+    dc = fixed_peak_dc(peak_position=1.2, **kwargs)
     gathered = comm.gather(dc, root=0)
     if comm.rank == 0:
         for other in gathered[1:]:
@@ -202,8 +213,8 @@ def test_fixed_occupation_dc_ranks_agree():
     # Occupation control keys off the Allreduced density matrix, so agreement is
     # by construction; guard it against regressions all the same.
     comm = MPI.COMM_WORLD
-    dc_guess = 0.5 * np.identity(2, dtype=complex)
-    dc = fixed_occupation_dc(occupation=2.0, dc_guess=dc_guess, **common_kwargs(v=0.3, tau=1e-2))
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    dc = fixed_occupation_dc(occupation=2.0, **kwargs)
     gathered = comm.gather(dc, root=0)
     if comm.rank == 0:
         for other in gathered[1:]:

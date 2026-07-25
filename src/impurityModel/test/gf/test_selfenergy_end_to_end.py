@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed import atomic_physics
 from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
 from impurityModel.ed.selfenergy import calc_selfenergy
 
@@ -39,7 +40,9 @@ def _siam_model():
     }
     u4 = np.zeros((2, 2, 2, 2))
     u4[0, 1, 0, 1] = u4[1, 0, 1, 0] = U
-    return ImpurityModel(h0=h0, u4=u4, impurity_orbitals={0: [0, 1]}, rot_to_spherical=np.eye(2))
+    return ImpurityModel(
+        h0=h0, u4=atomic_physics.getUop_from_rspt_u4(u4), impurity_orbitals={0: [0, 1]}, rot_to_spherical=np.eye(2)
+    )
 
 
 def _meshes():

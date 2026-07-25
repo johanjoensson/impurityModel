@@ -2,7 +2,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from impurityModel.ed import atomic_physics
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 
 # The double-counting search and the self-energy extraction were split into their own modules;
@@ -144,10 +143,10 @@ class _SolverBasis:
     sum_bath_states: dict
 
 
-def _prepare_solver_basis(h0, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity):
+def _prepare_solver_basis(h0, dc, u, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity):
     """Build the solver-basis Hamiltonian and derive its orbital/block layout.
 
-    Assembles the interacting Hamiltonian ``H = h0 + U(u4)`` in the caller's input basis, then
+    Assembles the interacting Hamiltonian ``H = h0 - DC + U(u4)`` in the caller's input basis, then
     adaptively rotates into the impurity-diagonalising basis when that does not densify the
     Coulomb tensor (fill ratio ``<= _MAX_ROTATION_FILL``; the input basis is kept otherwise).
     Derives the bath valence/conduction split, the Green's-function block structure, and the
@@ -155,8 +154,7 @@ def _prepare_solver_basis(h0, u4, impurity_orbitals, nominal_occ, mixed_valence,
     solved in. Returns a :class:`_SolverBasis`.
     """
     # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
-    u = atomic_physics.getUop_from_rspt_u4(u4)
-    h_input = ManyBodyOperator(h0) + ManyBodyOperator(u)
+    h_input = ManyBodyOperator(h0) - ManyBodyOperator(dc) + ManyBodyOperator(u)
 
     # Flatten the impurity orbital dict (dict[int, list[int]]) into a plain spin-orbital index
     # list; the total orbital count is inferred from the Hamiltonian (impurity + bath). The bath
@@ -343,6 +341,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     """
     # Unpack the grouped parameters into the local names used throughout the body.
     h0 = model.h0
+    dc = model.dc
     u4 = model.u4
     impurity_orbitals = model.impurity_orbitals
     rot_to_spherical = model.rot_to_spherical
@@ -377,7 +376,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             print(f"  {title}")
             print("=" * 80, flush=verbosity >= 2)
 
-    sb = _prepare_solver_basis(h0, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity)
+    sb = _prepare_solver_basis(h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity)
     h = sb.h
     h0_solve = sb.h0_solve
     n_spin_orbitals = sb.n_spin_orbitals
@@ -518,19 +517,16 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         label="Matsubara",
     )
 
-    log("Calculating static self-energy ...")
     # Sort the flattened indices: the groups enumerate the impurity orbitals in
-    # block order (e.g. eg [0,1,5,6] before t2g [2,3,4,7,8,9]), but thermal_rho
-    # and u4 below are in the input-basis orbital order. Indexing rho with the
-    # unsorted list permutes it against u4 and yields a wrong static self-energy
-    # (Sigma_static would no longer equal the iw -> inf limit of Sigma).
+    # block order (e.g. eg [0,1,5,6] before t2g [2,3,4,7,8,9]), but h/thermal_rho below
+    # are in the input-basis orbital order. get_greens_function_moments below indexes h
+    # with this list, so an unsorted list would permute the extracted moments against it.
     impurity_indices = sorted(
         orb
         for impurity_blocks in ground_state_basis.impurity_orbitals.values()
         for block in impurity_blocks
         for orb in block
     )
-    impurity_ix = np.ix_(impurity_indices, impurity_indices)
 
     # Rotate every result from the solver basis S back to the caller's input basis B
     # (O_B = W O_S W^dag; impurity block u_imp). When the adaptive test kept the input basis,
@@ -552,9 +548,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     gs_matsubara_full = _to_input_basis(gs_matsubara)
     gs_realaxis_full = _to_input_basis(gs_realaxis)
 
-    # Static (Hartree-Fock) self-energy from the input-basis density matrix and u4 (input basis).
-    sigma_static = get_Sigma_static(u4, thermal_rho[impurity_ix])
-
     # High-frequency self-energy moments Sigma_1, Sigma_2 (coefficients of 1/(iw), 1/(iw)^2).
     # Built from the exact interacting Green's-function spectral moments M1..M3 -- collective
     # (applies h + Allreduce), so run unconditionally on every rank. The M tensor is replicated
@@ -569,16 +562,9 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         """Symmetry-match a full solver-basis moment matrix against the GF blocks, then rotate to B."""
         return _to_input_basis([full_s[np.ix_(block, block)] for block in inequivalent_blocks])
 
+    sigma_static = _moment_to_input_basis(sigma_inf_s)
     sigma_moment_1 = _moment_to_input_basis(sigma_1_s)
     sigma_moment_2 = _moment_to_input_basis(sigma_2_s)
-
-    # Consistency handle: Sigma_infinity = M1 - hcorr must equal the static (Hartree-Fock)
-    # self-energy. This holds exactly (not just to solver tolerance) because both use the same
-    # one-body density matrix, so a mismatch flags a basis/ordering bug rather than truncation.
-    static_from_moment = u_imp @ sigma_inf_s @ u_imp.conj().T
-    static_mismatch = float(np.max(np.abs(static_from_moment - sigma_static))) if sigma_static.size else 0.0
-    if static_mismatch > 1e-6 and rank == 0:
-        print(f"WARNING: static self-energy vs (M1 - hcorr) mismatch = {static_mismatch:.2e} (expected ~0).")
 
     # Predicted-vs-measured peak feedback for re-calibrating the byte model on
     # production-size runs (doc/plans/truncation_reliability.md). Collective on comm,

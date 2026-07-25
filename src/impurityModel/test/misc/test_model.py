@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed import atomic_physics
+from impurityModel.ed.lie_algebra import extract_tensors
 from impurityModel.ed.model import (
     BasisOptions,
     ImpurityModel,
@@ -87,7 +88,8 @@ def test_from_h0_file_nio_pickle():
     # 10 impurity spin-orbitals (d-shell) + 10 bath = 20.
     assert model.impurity_orbitals == {2: list(range(10))}
     assert model.n_spin_orbitals == 20
-    assert model.u4.shape == (10, 10, 10, 10)
+    # u4 is stored as an operator dict (RSPt convention), not the dense tensor.
+    assert model.u4 == atomic_physics.getUop_from_rspt_u4(atomic_u4(2, [7.5, 0, 9.9, 0, 6.6]))
     np.testing.assert_array_equal(model.rot_to_spherical, np.eye(10, dtype=complex))
     # h0 is single-index (all keys are integer spin-orbital indices) and non-empty.
     assert model.h0
@@ -108,7 +110,9 @@ def test_from_h0_file_matches_nio_workload_inputs():
     inputs = build_selfenergy_inputs(nBaths=10, xi=0.0, chargeTransferCorrection=None)
     model = ImpurityModel.from_h0_file(h0_file, l=2, n_baths=10, slater=[7.5, 0, 9.9, 0, 6.6], xi=0.0)
 
-    np.testing.assert_array_equal(model.u4, inputs["u4"])
+    # model.u4 is the operator-dict form; inputs["u4"] (the pre-refactor hand-built path) is
+    # still the dense RSPt tensor -- compare through the same conversion.
+    assert model.u4 == atomic_physics.getUop_from_rspt_u4(inputs["u4"])
     assert model.h0 == inputs["h0"]
     assert model.impurity_orbitals == inputs["impurity_orbitals"]
 
@@ -156,7 +160,11 @@ def test_from_hdf5_reads_archive_group(tmp_path):
     model = ImpurityModel.from_hdf5(str(archive))  # defaults to last iteration / first cluster
     assert model.n_spin_orbitals == 3  # H solver is 3x3
     assert model.impurity_orbitals == {0: [0, 1]}
-    assert model.u4.shape == (2, 2, 2, 2)
+    u4 = np.zeros((2, 2, 2, 2), dtype=complex)
+    u4[0, 1, 1, 0] = 2.0
+    assert model.u4 == atomic_physics.getUop_from_rspt_u4(u4)
+    # No "DC" dataset in this archive fixture -> dc is None (the default, no correction).
+    assert model.dc is None
     np.testing.assert_array_equal(model.rot_to_spherical, np.eye(2, dtype=complex))
     # h0 holds the non-zero H solver entries, including the hybridization.
     assert model.h0[((0, "c"), (2, "a"))] == 0.3
@@ -247,3 +255,47 @@ def test_from_blocks_without_split_leaves_bath_states_none():
     H_imp, V, H_bath = _blocks()
     model = ImpurityModel.from_blocks(H_imp, V, H_bath, rot_to_spherical=np.eye(2, dtype=complex))
     assert model.bath_states is None
+
+
+def test_from_solver_matrix_dc_and_u4_default_to_none():
+    """Omitting dc/u4 (both Optional=None) must not crash -- the model has no DC/interaction."""
+    H_imp, V, H_bath = _blocks()
+    H = _stacked(H_imp, V, H_bath)
+    model = ImpurityModel.from_solver_matrix(H, 2, rot_to_spherical=np.eye(2, dtype=complex))
+    assert model.dc is None
+    assert model.u4 is None
+
+
+def test_from_solver_matrix_dc_round_trips_through_operator_dict():
+    """dc is stored as an operator dict; extract_tensors recovers the original dense matrix."""
+    H_imp, V, H_bath = _blocks()
+    H = _stacked(H_imp, V, H_bath)
+    dc = np.array([[0.5, 0.1j], [-0.1j, 0.5]], dtype=complex)
+    model = ImpurityModel.from_solver_matrix(H, 2, dc=dc, rot_to_spherical=np.eye(2, dtype=complex))
+    assert isinstance(model.dc, dict)
+    recovered = extract_tensors(model.dc, n_orb=2, two_body=False)[0]
+    np.testing.assert_allclose(recovered, dc)
+
+
+def test_from_hdf5_without_dc_dataset_leaves_dc_none(tmp_path):
+    """Archives written before the DC field existed (no 'DC' dataset) load with dc=None."""
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive))  # the fixture has no "DC" dataset
+    model = ImpurityModel.from_hdf5(str(archive))
+    assert model.dc is None
+
+
+def test_from_hdf5_with_dc_dataset_recovers_dc(tmp_path):
+    """A 'DC' dataset in the archive round-trips to model.dc as an operator dict."""
+    import h5py
+
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive))
+    dc = np.array([[0.25, 0.0], [0.0, 0.25]], dtype=complex)
+    with h5py.File(str(archive), "a") as f:
+        f["X 2"].create_dataset("DC", data=dc)
+
+    model = ImpurityModel.from_hdf5(str(archive))
+    assert isinstance(model.dc, dict)
+    recovered = extract_tensors(model.dc, n_orb=2, two_body=False)[0]
+    np.testing.assert_allclose(recovered, dc)

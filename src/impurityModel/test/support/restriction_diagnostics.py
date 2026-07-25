@@ -73,15 +73,19 @@ def build_ground_state(
     :func:`basis_restrictions.excitation_budget_restriction` bounding the total bath
     excitation -- the gating experiment for whether a budget shrinks the GS basis at fixed E0.
     """
+    from impurityModel.ed import atomic_physics
     from impurityModel.ed.basis_restrictions import excitation_budget_restriction
     from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.lie_algebra import tensors_to_operator
     from impurityModel.ed.selfenergy import _prepare_solver_basis
     from impurityModel.test.support.real_workload import load_workload
 
     wl = load_workload(WORKLOADS[workload_key])
+    dc = wl["dc"]
     sb = _prepare_solver_basis(
         wl["h0"],
-        wl["u4"],
+        tensors_to_operator(np.asarray(dc, dtype=complex)).to_dict() if dc is not None else None,
+        atomic_physics.getUop_from_rspt_u4(wl["u4"]),
         wl["impurity_orbitals"],
         wl["nominal_occ"],
         wl["mixed_valence"],

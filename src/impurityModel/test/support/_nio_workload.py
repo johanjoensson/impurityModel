@@ -182,11 +182,12 @@ def as_calc_selfenergy_args(inputs):
     this adapter builds the grouped objects. Use as
     ``calc_selfenergy(**as_calc_selfenergy_args(inputs), comm=comm)``.
     """
+    from impurityModel.ed import atomic_physics
     from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
 
     model = ImpurityModel(
         h0=inputs["h0"],
-        u4=inputs["u4"],
+        u4=atomic_physics.getUop_from_rspt_u4(inputs["u4"]),
         impurity_orbitals=inputs["impurity_orbitals"],
         rot_to_spherical=inputs["rot_to_spherical"],
     )

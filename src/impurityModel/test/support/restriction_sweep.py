@@ -145,6 +145,7 @@ def _max_rel_dev(a, ref):
 
 def _run_config(workload_key, cfg, comm=None, n_iw=0, n_w=60, verbosity=0):
     """One config: returns metrics dict (self-energy/GF arrays + E0 + gs_size + peak RSS)."""
+    from impurityModel.ed import atomic_physics
     from impurityModel.ed.memory_estimate import peak_rss_bytes
     from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
     from impurityModel.ed.selfenergy import calc_selfenergy
@@ -174,7 +175,7 @@ def _run_config(workload_key, cfg, comm=None, n_iw=0, n_w=60, verbosity=0):
 
         model = ImpurityModel(
             h0=wl["h0"],
-            u4=wl["u4"],
+            u4=atomic_physics.getUop_from_rspt_u4(wl["u4"]),
             impurity_orbitals=wl["impurity_orbitals"],
             rot_to_spherical=wl["rot_to_spherical"],
         )
@@ -296,13 +297,17 @@ def _force_gs_slater_weight_min(gs_cutoff):
 
 def _selfenergy_once(workload_key, gs_cutoff, gf_cutoff, comm=None, n_iw=0, n_w=8, verbosity=0):
     """Run calc_selfenergy with a (possibly split) GS/GF amplitude cutoff; return sigma/gf/E0."""
+    from impurityModel.ed import atomic_physics
     from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
     from impurityModel.ed.selfenergy import calc_selfenergy
     from impurityModel.test.support.real_workload import _subsample, load_workload
 
     wl = load_workload(WORKLOADS[workload_key])
     model = ImpurityModel(
-        h0=wl["h0"], u4=wl["u4"], impurity_orbitals=wl["impurity_orbitals"], rot_to_spherical=wl["rot_to_spherical"]
+        h0=wl["h0"],
+        u4=atomic_physics.getUop_from_rspt_u4(wl["u4"]),
+        impurity_orbitals=wl["impurity_orbitals"],
+        rot_to_spherical=wl["rot_to_spherical"],
     )
     w = _subsample(wl["w_mesh"], n_w)
     iw = _subsample(wl["iw_mesh"], n_iw)

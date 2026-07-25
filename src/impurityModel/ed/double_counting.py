@@ -1,5 +1,8 @@
 """Double-counting determination for the self-energy workflow.
 
+The double counting is a first-class part of the model (``model.dc``), always subtracted from
+the non-interacting Hamiltonian: the local Hamiltonian is ``h0 - dc + U(u4)`` throughout this
+module and in :func:`selfenergy._prepare_solver_basis` / :func:`susceptibility` (never added).
 The impurity double-counting potential is fixed by one of two searches over a uniform shift
 ``dc(mu) = dc_guess + mu * identity``: :func:`fixed_peak_dc` pins a chosen spectral peak,
 :func:`fixed_occupation_dc` pins the impurity occupation. Both are special cases of one
@@ -18,7 +21,6 @@ orchestration and CLI in :mod:`selfenergy`, which re-exports
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import atomic_physics
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.cipsi_solver import CIPSISolver
@@ -69,8 +71,8 @@ def _require_bath_states(model, func_name):
 
 
 def _dc_operator(dc):
-    """Build the double-counting one-body operator, ``-dc[i, j] c^dagger_i c_j``."""
-    return tensors_to_operator(-np.asarray(dc, dtype=complex))
+    """Build the double-counting one-body operator, ``dc[i, j] c^dagger_i c_j``."""
+    return tensors_to_operator(np.asarray(dc, dtype=complex))
 
 
 def _prepare_dc_solver(
@@ -121,7 +123,7 @@ def _lowest_energy_and_thermal_rho(basis, solver, h_op, impurity_indices, energy
     return lowest_energy, rho
 
 
-def _noninteracting_impurity_occupation(h0_op, impurity_indices, n_spin_orbitals, tau):
+def _noninteracting_impurity_occupation(h0_op, h_dc, impurity_indices, n_spin_orbitals, tau):
     r"""Thermal impurity occupation of the non-interacting ``h_loc`` at the Fermi level.
 
     Diagonalise the full one-body Hamiltonian ``h0`` (impurity *and* bath), occupy the
@@ -143,6 +145,8 @@ def _noninteracting_impurity_occupation(h0_op, impurity_indices, n_spin_orbitals
     ----------
     h0_op : dict or ManyBodyOperator
         Non-interacting Hamiltonian in single-index operator form (``model.h0``).
+    h_dc : dict or ManyBodyOperator
+        Double counting correction to be subtracted from h0 (``model.dc``).
     impurity_indices : sequence of int
         Impurity spin-orbital indices (the block traced over).
     n_spin_orbitals : int
@@ -156,7 +160,7 @@ def _noninteracting_impurity_occupation(h0_op, impurity_indices, n_spin_orbitals
     float
         The non-interacting impurity occupation ``Tr rho_imp``.
     """
-    h = extract_tensors(ManyBodyOperator(h0_op), n_orb=n_spin_orbitals, two_body=False)[0]
+    h = extract_tensors(ManyBodyOperator(h0_op) - ManyBodyOperator(h_dc), n_orb=n_spin_orbitals, two_body=False)[0]
     energies, vecs = np.linalg.eigh(h)
     if tau > 0:
         # 1/(1 + exp(e/tau)) without overflow warnings: exp saturates to inf/0, giving f -> 0/1.
@@ -267,10 +271,7 @@ def _solve_dc_shift(
     if mu_low > mu_high:
         mu_low, g_low, mu_high, g_high = mu_high, g_high, mu_low, g_low
     while mu_high - mu_low > width_tol:
-        if g_high != g_low:
-            mu_mid = mu_high - g_high * (mu_high - mu_low) / (g_high - g_low)
-        else:
-            mu_mid = np.inf
+        mu_mid = mu_high - g_high * (mu_high - mu_low) / (g_high - g_low) if g_high != g_low else np.inf
         # Safeguard: reject a secant estimate that leaves the bracket or hugs an endpoint,
         # keeping a guaranteed geometric decrease via bisection.
         margin = 0.01 * (mu_high - mu_low)
@@ -301,7 +302,7 @@ def _solve_dc_shift(
     return mu
 
 
-def fixed_peak_dc(model, basis, solver, *, peak_position, dc_guess, comm=None, verbosity=0):
+def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0):
     r"""
     Calculate the double counting correction using a fixed peak position criterion.
 
@@ -332,6 +333,7 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, dc_guess, comm=None, v
     ----------
     model : impurityModel.ed.model.ImpurityModel
         The impurity problem: ``h0`` (non-interacting Hamiltonian), ``u4`` (Coulomb tensor),
+        ``dc`` (double counting correction, used as the search's starting guess),
         ``impurity_orbitals`` and ``bath_states`` -- the ``(valence, conduction)`` bath split is
         required here (build the model with it, e.g. ``from_blocks(..., bath_valence_conduction=...)``).
     basis : impurityModel.ed.model.BasisOptions
@@ -343,8 +345,6 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, dc_guess, comm=None, v
     peak_position : float
         Requested peak position; the sign selects addition/removal, see above.
         The magnitude is kept above ``4 * tau`` (thermal broadening).
-    dc_guess : ndarray
-        Initial guess for the double counting matrix.
     comm : MPI.Comm or None
         MPI communicator (used for rank-0 logging; the basis build uses ``MPI.COMM_WORLD``).
     verbosity : int
@@ -365,7 +365,9 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, dc_guess, comm=None, v
     """
     # Unpack the grouped parameters into the local names used throughout the body.
     h0_op = model.h0
-    u4 = model.u4
+    u = model.u4
+    n_imp = len(model.impurity_indices)
+    dc_guess = extract_tensors(model.dc or {}, n_orb=n_imp, two_body=False)[0]
     impurity_orbitals = model.impurity_orbitals
     bath_states = _require_bath_states(model, "fixed_peak_dc")
     N0 = basis.nominal_occ
@@ -383,7 +385,6 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, dc_guess, comm=None, v
             f"fixed_peak_dc supports a single impurity group, got N0 = {N0}. "
             "With multiple groups it is ambiguous which group gains/loses the electron."
         )
-    u = atomic_physics.getUop_from_rspt_u4(u4)
     h_op_i = ManyBodyOperator(h0_op) + ManyBodyOperator(u)
     impurity_orbitals, bath_states = _normalize_dc_orbitals(impurity_orbitals, bath_states)
 
@@ -425,20 +426,22 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, dc_guess, comm=None, v
     identity = np.identity(dc_guess.shape[0])
 
     # Expand the many-body bases once, with the guess double counting.
-    h_guess = h_op_i + _dc_operator(dc_guess)
+    h_guess = h_op_i - ManyBodyOperator(model.dc)
     solver_upper.expand(h_guess, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=slaterWeightMin)
     solver_lower.expand(h_guess, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)
 
     def peak_observable(mu):
-        h_op = h_op_i + _dc_operator(dc_guess + mu * identity)
+        h_op = h_op_i - _dc_operator(dc_guess + mu * identity)
         e_upper, _ = _lowest_energy_and_thermal_rho(
             basis_upper, solver_upper, h_op, impurity_indices, energy_cut, dense_cutoff, slaterWeightMin
         )
         e_lower, _ = _lowest_energy_and_thermal_rho(
             basis_lower, solver_lower, h_op, impurity_indices, energy_cut, dense_cutoff, slaterWeightMin
         )
+        if verbose and rank == 0:
+            print(f"mu={mu:.6f} E_upper - E_lower={e_upper - e_lower:.6f}")
         return e_upper - e_lower
 
     # Scale the bracketing to the non-interacting bandwidth (the spread of the one-body h0
@@ -483,7 +486,6 @@ def fixed_occupation_dc(
     solver,
     *,
     occupation=None,
-    dc_guess,
     comm=None,
     verbosity=0,
     occ_tol=1e-2,
@@ -520,9 +522,9 @@ def fixed_occupation_dc(
     guess double counting.
 
     Parameters other than the following match :func:`fixed_peak_dc` (``model``, ``basis``,
-    ``solver``, ``dc_guess``, ``comm``, ``verbosity``). ``basis.nominal_occ`` is the nominal
-    impurity occupation used to build the many-body basis; use the integer occupation closest
-    to the requested one.
+    ``solver``, ``comm``, ``verbosity``). ``basis.nominal_occ`` is the nominal impurity
+    occupation used to build the many-body basis; use the integer occupation closest to the
+    requested one.
 
     Parameters
     ----------
@@ -552,7 +554,9 @@ def fixed_occupation_dc(
     """
     # Unpack the grouped parameters into the local names used throughout the body.
     h0_op = model.h0
-    u4 = model.u4
+    u = model.u4
+    n_imp = len(model.impurity_indices)
+    dc_guess = extract_tensors(model.dc or {}, n_orb=n_imp, two_body=False)[0]
     impurity_orbitals = model.impurity_orbitals
     bath_states = _require_bath_states(model, "fixed_occupation_dc")
     N0 = basis.nominal_occ
@@ -565,7 +569,6 @@ def fixed_occupation_dc(
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
     verbose = verbosity > 0
 
-    u = atomic_physics.getUop_from_rspt_u4(u4)
     h_op_i = ManyBodyOperator(h0_op) + ManyBodyOperator(u)
     impurity_orbitals, bath_states = _normalize_dc_orbitals(impurity_orbitals, bath_states)
 
@@ -573,12 +576,17 @@ def fixed_occupation_dc(
     total_impurity_orbitals = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
 
     # No target supplied: pin the DFT occupation, i.e. the Fermi-filled occupation of the
-    # non-interacting h_loc at mu=0. This is the target for wide-window p-d CSC DFT+DMFT.
+    # non-interacting h_loc (at the guess dc) at mu=0. This is the target for wide-window p-d
+    # CSC DFT+DMFT.
     if occupation is None:
-        occupation = _noninteracting_impurity_occupation(h0_op, impurity_indices, model.n_spin_orbitals, tau)
+        occupation = _noninteracting_impurity_occupation(
+            model.h0, model.dc, impurity_indices, model.n_spin_orbitals, tau
+        )
         if verbose and rank == 0:
             print(f"Fixed-occupation double counting: target derived from h_loc = {occupation:.4f}")
-    if not 0 <= occupation <= total_impurity_orbitals:
+    # Tolerance absorbs the roundoff of the auto-derived target (a sum of Fermi occupations,
+    # each in [0, 1], that can land a ULP outside the exact bound).
+    if not -1e-9 <= occupation <= total_impurity_orbitals + 1e-9:
         raise ValueError(f"Requested impurity occupation {occupation} outside [0, {total_impurity_orbitals}].")
 
     # Local many-body basis / CIPSI solver (distinct from the BasisOptions/SolverOptions params).
@@ -588,7 +596,7 @@ def fixed_occupation_dc(
     identity = np.identity(dc_guess.shape[0])
 
     # Expand the many-body basis once, with the guess double counting.
-    h_guess = h_op_i + _dc_operator(dc_guess)
+    h_guess = h_op_i - ManyBodyOperator(model.dc)
     mb_solver.expand(h_guess, dense_cutoff=dense_cutoff, de2_min=1e-5, slaterWeightMin=slaterWeightMin)
 
     energy_cut = -tau * np.log(1e-4)
@@ -597,12 +605,14 @@ def fixed_occupation_dc(
     occupation_at = {}
 
     def impurity_occupation(mu):
-        h_op = h_op_i + _dc_operator(dc_guess + mu * identity)
+        h_op = h_op_i - _dc_operator(dc_guess + mu * identity)
         _, rho = _lowest_energy_and_thermal_rho(
             mb_basis, mb_solver, h_op, impurity_indices, energy_cut, dense_cutoff, slaterWeightMin
         )
         n = float(np.real(np.trace(rho)))
         occupation_at[mu] = n
+        if verbose and rank == 0:
+            print(f"mu={mu:.6f} n={n:.6f}")
         return n
 
     unreachable = (
