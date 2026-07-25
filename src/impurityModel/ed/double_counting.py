@@ -18,6 +18,15 @@ sides at every trial shift. The self-energy extraction proper lives in :mod:`sig
 orchestration and CLI in :mod:`selfenergy`, which re-exports
 ``fixed_peak_dc``/``fixed_occupation_dc`` so existing callers are unchanged.
 
+Like :func:`selfenergy.calc_selfenergy` and :func:`groundstate.find_ground_state_basis`, both
+searches derive their many-body basis's determinant budget from available per-rank memory
+(:func:`impurityModel.ed.memory_estimate.suggest_truncation_threshold`) when
+``BasisOptions.truncation_threshold`` is left at its default ``None``, and honor
+``BasisOptions.excitation_budget``/``chain_restrict`` via the same
+:func:`impurityModel.ed.basis_restrictions.build_weighted_restrictions` the other ED drivers use --
+the double counting is otherwise found on a different variational space than the solve that will
+use it.
+
 Three static schemes complement the two searches above: :func:`fll_dc` (Fully Localized Limit),
 :func:`amf_dc` (Around Mean Field) and :func:`sigma_inf_dc` (K. Held's :math:`\Sigma(\infty)`,
 the full static Hartree-Fock self-energy matrix, :func:`impurityModel.ed.sigma.get_Sigma_static`).
@@ -34,11 +43,13 @@ from mpi4py import MPI
 
 from impurityModel.ed.atomic_physics import uj_from_u4
 from impurityModel.ed.average import thermal_average_scale_indep
+from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.lie_algebra import extract_tensors, rotate_two_body, tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.memory_estimate import DEFAULT_MEMORY_SAFETY, log_memory_budget, suggest_truncation_threshold
 from impurityModel.ed.sigma import get_Sigma_static
 from impurityModel.ed.utils import matrix_print
 
@@ -467,7 +478,11 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     basis : impurityModel.ed.model.BasisOptions
         Nominal occupation (``{group: N}``; a single group only -- with more groups it is
         ambiguous which gains/loses the electron), mixed valence, spin-flip determinants,
-        temperature and the determinant budget.
+        temperature and the determinant budget. ``truncation_threshold=None`` (the default)
+        derives the cap from available per-rank memory (collective on ``MPI.COMM_WORLD``,
+        :func:`impurityModel.ed.memory_estimate.suggest_truncation_threshold`), halved to
+        account for the upper and lower sector bases held simultaneously; ``numpy.inf``
+        disables capping.
     solver : impurityModel.ed.model.SolverOptions
         Provides the dense-eigensolver cutoff.
     peak_position : float
@@ -507,6 +522,17 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     dense_cutoff = solver.dense_cutoff
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
     verbose = verbosity > 0
+
+    if truncation_threshold is None:
+        # The upper and lower sector bases are held in memory simultaneously (each is free
+        # to fill the cap independently), so halve the safety fraction relative to a
+        # single-basis driver to keep the same overall per-rank headroom.
+        truncation_threshold = suggest_truncation_threshold(
+            model.n_spin_orbitals, comm=MPI.COMM_WORLD, safety=DEFAULT_MEMORY_SAFETY / 2
+        )
+        log_memory_budget(
+            truncation_threshold, model.n_spin_orbitals, comm=MPI.COMM_WORLD, verbose=verbose, label="fixed-peak dc"
+        )
 
     if len(N0) != 1:
         raise ValueError(
@@ -651,9 +677,10 @@ def fixed_occupation_dc(
     guess double counting.
 
     Parameters other than the following match :func:`fixed_peak_dc` (``model``, ``basis``,
-    ``solver``, ``comm``, ``verbosity``). ``basis.nominal_occ`` is the nominal impurity
-    occupation used to build the many-body basis; use the integer occupation closest to the
-    requested one.
+    ``solver``, ``comm``, ``verbosity``), except that ``basis.truncation_threshold=None`` here
+    derives the cap for a single basis (no halving -- only one many-body basis is built).
+    ``basis.nominal_occ`` is the nominal impurity occupation used to build the many-body basis;
+    use the integer occupation closest to the requested one.
 
     Parameters
     ----------
@@ -697,6 +724,16 @@ def fixed_occupation_dc(
     dense_cutoff = solver.dense_cutoff
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
     verbose = verbosity > 0
+
+    if truncation_threshold is None:
+        truncation_threshold = suggest_truncation_threshold(model.n_spin_orbitals, comm=MPI.COMM_WORLD)
+        log_memory_budget(
+            truncation_threshold,
+            model.n_spin_orbitals,
+            comm=MPI.COMM_WORLD,
+            verbose=verbose,
+            label="fixed-occupation dc",
+        )
 
     h_op_i = ManyBodyOperator(h0_op) + ManyBodyOperator(u)
     impurity_orbitals, bath_states = _normalize_dc_orbitals(impurity_orbitals, bath_states)

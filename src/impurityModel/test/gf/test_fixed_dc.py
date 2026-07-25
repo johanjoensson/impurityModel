@@ -252,6 +252,109 @@ def test_fixed_occupation_dc_ranks_agree():
             assert np.array_equal(dc, other), (dc, other)
 
 
+def _capture_prepared_bases(monkeypatch):
+    """Monkeypatch ``_prepare_dc_solver`` to record every ``Basis`` it builds.
+
+    Returns the list the ``Basis`` objects are appended to, in call order.
+    """
+    import impurityModel.ed.double_counting as dc_module
+
+    captured = []
+    original = dc_module._prepare_dc_solver
+
+    def wrapper(*args, **kwargs):
+        basis, solver = original(*args, **kwargs)
+        captured.append(basis)
+        return basis, solver
+
+    monkeypatch.setattr(dc_module, "_prepare_dc_solver", wrapper)
+    return captured
+
+
+def test_fixed_occupation_dc_derives_cap_when_threshold_is_none(monkeypatch):
+    import impurityModel.ed.double_counting as dc_module
+
+    calls = []
+
+    def fake_suggest(n_spin_orbitals, **kwargs):
+        calls.append(kwargs)
+        return 50
+
+    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", fake_suggest)
+    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+    captured = _capture_prepared_bases(monkeypatch)
+
+    kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
+    dc = fixed_occupation_dc(occupation=1.0, **kwargs)
+
+    assert len(calls) == 1
+    assert captured and captured[0].truncation_threshold == 50
+    np.testing.assert_allclose(dc, dc_guess, atol=1e-8)
+
+
+def test_fixed_peak_dc_derives_cap_when_threshold_is_none(monkeypatch):
+    import impurityModel.ed.double_counting as dc_module
+
+    calls = []
+
+    def fake_suggest(n_spin_orbitals, **kwargs):
+        calls.append(kwargs)
+        return 50
+
+    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", fake_suggest)
+    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+    captured = _capture_prepared_bases(monkeypatch)
+
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
+    fixed_peak_dc(peak_position=1.2, **kwargs)
+
+    # One probe (not one per sector basis), and both sector bases carry its cap.
+    assert len(calls) == 1
+    assert calls[0]["safety"] == pytest.approx(dc_module.DEFAULT_MEMORY_SAFETY / 2)
+    assert len(captured) == 2
+    assert all(b.truncation_threshold == 50 for b in captured)
+
+
+def test_explicit_threshold_skips_memory_probe(monkeypatch):
+    import impurityModel.ed.double_counting as dc_module
+
+    calls = []
+
+    def fake_suggest(*args, **kwargs):
+        calls.append(1)
+        return 50
+
+    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", fake_suggest)
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    fixed_occupation_dc(occupation=1.0, **kwargs)
+    assert not calls
+
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+    fixed_peak_dc(peak_position=1.2, **kwargs)
+    assert not calls
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=np.inf)
+    fixed_occupation_dc(occupation=1.0, **kwargs)
+    assert not calls
+
+
+@pytest.mark.mpi
+def test_fixed_occupation_dc_none_threshold_ranks_agree():
+    # Exercises the real (un-monkeypatched) collective memory probe under multiple ranks.
+    comm = MPI.COMM_WORLD
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
+    dc = fixed_occupation_dc(occupation=2.0, **kwargs)
+    gathered = comm.gather(dc, root=0)
+    if comm.rank == 0:
+        for other in gathered[1:]:
+            assert np.array_equal(dc, other), (dc, other)
+
+
 @pytest.mark.mpi
 def test_fixed_occupation_dc_self_consistent_ranks_agree():
     # The self-consistent search evaluates two observables (interacting N, non-interacting N0)
