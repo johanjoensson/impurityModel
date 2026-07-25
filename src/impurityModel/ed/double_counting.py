@@ -17,6 +17,16 @@ N_0(\mu)` -- the natural target for CSC DFT+DMFT of wide-window p-d models -- re
 sides at every trial shift. The self-energy extraction proper lives in :mod:`sigma`; the
 orchestration and CLI in :mod:`selfenergy`, which re-exports
 ``fixed_peak_dc``/``fixed_occupation_dc`` so existing callers are unchanged.
+
+Three static schemes complement the two searches above: :func:`fll_dc` (Fully Localized Limit),
+:func:`amf_dc` (Around Mean Field) and :func:`sigma_inf_dc` (K. Held's :math:`\Sigma(\infty)`,
+the full static Hartree-Fock self-energy matrix, :func:`impurityModel.ed.sigma.get_Sigma_static`).
+Unlike the two searches, these are deterministic one-body NumPy computations with no ED solve and
+no MPI collective, identical on every rank. Each needs the non-interacting impurity occupation or
+density matrix *at self-consistency with its own output* (the double counting shifts the impurity
+level, which shifts the non-interacting occupation the scheme reads back in), so each iterates a
+damped fixed point (:func:`_iterate_dc_fixed_point`) from ``model.dc`` unless the caller supplies
+the occupation/density matrix explicitly, which skips the iteration entirely.
 """
 
 import numpy as np
@@ -29,6 +39,7 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.lie_algebra import extract_tensors, rotate_two_body, tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.sigma import get_Sigma_static
 from impurityModel.ed.utils import matrix_print
 
 
@@ -768,3 +779,202 @@ def fixed_occupation_dc(
         matrix_print(dc_guess, label="DC guess:")
         matrix_print(dc, label="DC found:")
     return dc
+
+
+def _iterate_dc_fixed_point(model, rho_to_dc, *, tau, mix, fixpoint_tol, max_iter, verbosity):
+    r"""Damped fixed point for a static double-counting scheme, starting from ``model.dc``.
+
+    The static schemes (:func:`fll_dc`, :func:`amf_dc`, :func:`sigma_inf_dc`) each need the
+    non-interacting impurity density matrix *at self-consistency with their own output*: the
+    double counting shifts the impurity level (entering ``h0 - dc``), which shifts the
+    Fermi-filled occupation the scheme reads back in to produce the next ``dc``. Iterates
+
+    .. math:: \rho_k = \rho_0(h_0 - dc_k),\qquad dc_{k+1} = (1 - \mathrm{mix})\, dc_k +
+        \mathrm{mix} \cdot \mathrm{scheme}(\rho_k)
+
+    (:func:`_noninteracting_impurity_rho` for :math:`\rho_0`) from ``dc_0 = `` ``model.dc`` (or
+    zero), converging when the *unmixed* update ``scheme(rho_k) - dc_k`` is small -- this is the
+    fixed-point residual regardless of ``mix``, so convergence is checked before damping is
+    applied. A deterministic NumPy computation, identical on every rank; no MPI collective.
+
+    Parameters
+    ----------
+    model : ImpurityModel
+    rho_to_dc : callable
+        Maps the current trial density matrix (``(n_imp, n_imp)`` complex) to the scheme's next
+        double-counting matrix.
+    tau : float
+        Fundamental temperature passed to :func:`_noninteracting_impurity_rho`.
+    mix : float
+        Linear mixing fraction of the new update, in ``(0, 1]``.
+    fixpoint_tol : float
+        Convergence tolerance on ``max(abs(scheme(rho_k) - dc_k))``.
+    max_iter : int
+        Maximum number of iterations before giving up.
+    verbosity : int
+        Prints the per-iteration residual when ``> 0``.
+
+    Returns
+    -------
+    numpy.ndarray, shape (n_imp, n_imp)
+        The converged double-counting matrix.
+
+    Raises
+    ------
+    RuntimeError
+        If ``max_iter`` iterations do not bring the residual below ``fixpoint_tol``.
+    """
+    h0_op = model.h0
+    impurity_indices = model.impurity_indices
+    n_spin_orbitals = model.n_spin_orbitals
+    n_imp = len(impurity_indices)
+    dc = extract_tensors(model.dc or {}, n_orb=n_imp, two_body=False)[0]
+    delta = np.inf
+    for iteration in range(max_iter):
+        rho = _noninteracting_impurity_rho(h0_op, _dc_operator(dc).to_dict(), impurity_indices, n_spin_orbitals, tau)
+        dc_new = rho_to_dc(rho)
+        delta = float(np.max(np.abs(dc_new - dc)))
+        if verbosity > 0:
+            print(f"Double-counting fixed point, iteration {iteration}: max|Δdc| = {delta:.3e}")
+        if delta < fixpoint_tol:
+            return dc_new
+        dc = (1.0 - mix) * dc + mix * dc_new
+    raise RuntimeError(
+        f"Double-counting fixed point did not converge in {max_iter} iterations "
+        f"(max|Δdc| = {delta:.3e} > {fixpoint_tol}); try a larger tau, a smaller mix, or pass "
+        "the occupation/density matrix explicitly (n=/rho=) to skip the iteration."
+    )
+
+
+def fll_dc(model, *, tau=0.002, n=None, u=None, j=None, mix=0.5, fixpoint_tol=1e-8, max_iter=200, verbosity=0):
+    r"""Fully Localized Limit double counting, ``dc = [U(N - 1/2) - (J/2)(N - 1)] I``.
+
+    ``U``, ``J`` default to :func:`_model_uj`'s spherical average (needs ``model.u4``); either
+    may be overridden explicitly (e.g. from tabulated values), independently of the other. ``N``
+    defaults to the self-consistent non-interacting impurity occupation, found by
+    :func:`_iterate_dc_fixed_point`; an explicit ``N`` skips the iteration (and, if both ``u``
+    and ``j`` are also given, needs no ``model.u4`` at all).
+
+    Parameters
+    ----------
+    model : ImpurityModel
+    tau : float, optional
+        Fundamental temperature for the fixed-point occupation (ignored if ``n`` is given).
+    n : float, optional
+        Impurity occupation ``N``. ``None`` solves for it self-consistently.
+    u, j : float, optional
+        Average Coulomb repulsion and exchange. ``None`` derives them from ``model.u4`` via
+        :func:`_model_uj`.
+    mix, fixpoint_tol, max_iter, verbosity : see :func:`_iterate_dc_fixed_point`.
+
+    Returns
+    -------
+    numpy.ndarray, shape (n_imp, n_imp)
+    """
+    n_imp = len(model.impurity_indices)
+    if u is None or j is None:
+        u_auto, j_auto = _model_uj(model)
+        u = u_auto if u is None else u
+        j = j_auto if j is None else j
+    identity = np.identity(n_imp, dtype=complex)
+
+    def dc_from_occupation(occupation):
+        return (u * (occupation - 0.5) - 0.5 * j * (occupation - 1.0)) * identity
+
+    if n is not None:
+        return dc_from_occupation(n)
+    return _iterate_dc_fixed_point(
+        model,
+        lambda rho: dc_from_occupation(float(np.real(np.trace(rho)))),
+        tau=tau,
+        mix=mix,
+        fixpoint_tol=fixpoint_tol,
+        max_iter=max_iter,
+        verbosity=verbosity,
+    )
+
+
+def amf_dc(model, *, tau=0.002, n=None, mix=0.5, fixpoint_tol=1e-8, max_iter=200, verbosity=0):
+    r"""Around Mean Field double counting, ``dc = Σ_static(u4, (N / n_imp) I)``.
+
+    The static Hartree-Fock self-energy (:func:`impurityModel.ed.sigma.get_Sigma_static`)
+    evaluated at a *uniform* trial density matrix, ``N`` spread evenly over every impurity
+    spin-orbital -- the defining assumption of AMF, that the impurity has no orbital *or spin*
+    polarization -- as opposed to :func:`sigma_inf_dc`, which uses the actual (possibly
+    anisotropic) density matrix. For a spin-polarized ground state this is the paramagnetic
+    (spin-blind) AMF potential, not a per-spin-channel one. ``N`` defaults to the self-consistent
+    non-interacting impurity occupation (:func:`_iterate_dc_fixed_point`); an explicit ``N``
+    skips the iteration.
+
+    Parameters
+    ----------
+    model : ImpurityModel
+    tau : float, optional
+        Fundamental temperature for the fixed-point occupation (ignored if ``n`` is given).
+    n : float, optional
+        Impurity occupation ``N``. ``None`` solves for it self-consistently.
+    mix, fixpoint_tol, max_iter, verbosity : see :func:`_iterate_dc_fixed_point`.
+
+    Returns
+    -------
+    numpy.ndarray, shape (n_imp, n_imp)
+    """
+    n_imp = len(model.impurity_indices)
+    u4_dense = _model_u4_dense(model)
+    identity = np.identity(n_imp, dtype=complex)
+
+    def dc_from_occupation(occupation):
+        return get_Sigma_static(u4_dense, (occupation / n_imp) * identity)
+
+    if n is not None:
+        return dc_from_occupation(n)
+    return _iterate_dc_fixed_point(
+        model,
+        lambda rho: dc_from_occupation(float(np.real(np.trace(rho)))),
+        tau=tau,
+        mix=mix,
+        fixpoint_tol=fixpoint_tol,
+        max_iter=max_iter,
+        verbosity=verbosity,
+    )
+
+
+def sigma_inf_dc(model, *, tau=0.002, rho=None, mix=0.5, fixpoint_tol=1e-8, max_iter=200, verbosity=0):
+    r"""K. Held's :math:`\Sigma(\infty)` double counting: the full static Hartree-Fock
+    self-energy matrix, ``dc = Σ_static(u4, rho_imp)``.
+
+    Unlike :func:`amf_dc`, uses the actual (possibly anisotropic) non-interacting impurity
+    density matrix rather than a uniform trial -- the two agree exactly when that density matrix
+    happens to be uniform (e.g. a single, orbitally-degenerate shell), and differ whenever the
+    impurity levels split. ``rho`` defaults to the self-consistent non-interacting impurity
+    density matrix (:func:`_iterate_dc_fixed_point`); an explicit ``rho`` skips the iteration.
+
+    Parameters
+    ----------
+    model : ImpurityModel
+    tau : float, optional
+        Fundamental temperature for the fixed-point density matrix (ignored if ``rho`` is given).
+    rho : numpy.ndarray, shape (n_imp, n_imp), optional
+        Impurity density matrix. ``None`` solves for it self-consistently.
+    mix, fixpoint_tol, max_iter, verbosity : see :func:`_iterate_dc_fixed_point`.
+
+    Returns
+    -------
+    numpy.ndarray, shape (n_imp, n_imp)
+    """
+    u4_dense = _model_u4_dense(model)
+
+    def dc_from_rho(trial_rho):
+        return get_Sigma_static(u4_dense, trial_rho)
+
+    if rho is not None:
+        return dc_from_rho(np.asarray(rho, dtype=complex))
+    return _iterate_dc_fixed_point(
+        model,
+        dc_from_rho,
+        tau=tau,
+        mix=mix,
+        fixpoint_tol=fixpoint_tol,
+        max_iter=max_iter,
+        verbosity=verbosity,
+    )

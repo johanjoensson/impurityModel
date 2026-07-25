@@ -9,8 +9,9 @@ The supported surface is deliberately small: build the impurity problem
 :class:`BasisOptions`, :class:`SolverOptions`), convert a one-particle
 Hamiltonian matrix to the operator format (:func:`matrixToIOp`), solve for
 the self-energy (:func:`calc_selfenergy`), determine the double counting
-(:func:`fixed_peak_dc`, :func:`fixed_occupation_dc`) and write Green's
-functions in RSPt's .dat format (:func:`save_Greens_function`).
+(:func:`fixed_peak_dc`, :func:`fixed_occupation_dc`, :func:`fll_dc`,
+:func:`amf_dc`, :func:`sigma_inf_dc`) and write Green's functions in RSPt's
+.dat format (:func:`save_Greens_function`).
 """
 
 from impurityModel.ed.greens_function import save_Greens_function
@@ -24,7 +25,14 @@ from impurityModel.ed.model import (
     load_selfenergy_archive,
 )
 from impurityModel.ed.operator_algebra import matrixToIOp
-from impurityModel.ed.selfenergy import calc_selfenergy, fixed_occupation_dc, fixed_peak_dc
+from impurityModel.ed.selfenergy import (
+    amf_dc,
+    calc_selfenergy,
+    fixed_occupation_dc,
+    fixed_peak_dc,
+    fll_dc,
+    sigma_inf_dc,
+)
 from impurityModel.ed.susceptibility import calc_susceptibility_workflow
 
 try:
@@ -44,12 +52,15 @@ __all__ = [
     "SolverOptions",
     "SpectraOptions",
     "__version__",
+    "amf_dc",
     "atomic_u4",
     "calc_selfenergy",
     "calc_susceptibility_workflow",
     "fixed_occupation_dc",
     "fixed_peak_dc",
+    "fll_dc",
     "load_selfenergy_archive",
     "matrixToIOp",
     "save_Greens_function",
+    "sigma_inf_dc",
 ]

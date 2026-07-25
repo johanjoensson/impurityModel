@@ -7,7 +7,13 @@ from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 # The double-counting search and the self-energy extraction were split into their own modules;
 # re-export their public entry points so calc_selfenergy's calls and existing
 # selfenergy.<name> callers (and their test patches) resolve here unchanged.
-from impurityModel.ed.double_counting import fixed_occupation_dc, fixed_peak_dc  # noqa: F401
+from impurityModel.ed.double_counting import (  # noqa: F401
+    amf_dc,
+    fixed_occupation_dc,
+    fixed_peak_dc,
+    fll_dc,
+    sigma_inf_dc,
+)
 from impurityModel.ed.greens_function import (
     build_full_greens_function,
     get_Greens_function,
