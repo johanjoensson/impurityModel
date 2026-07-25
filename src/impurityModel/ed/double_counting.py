@@ -10,11 +10,12 @@ generic, non-monotonicity-safe search, :func:`_solve_dc_shift`: at a trial shift
 variational ground state and its thermal density matrix (:func:`_lowest_energy_and_thermal_rho`),
 reads off a scalar residual (the peak position offset, or the occupation offset), and drives it
 to zero with a bidirectional bracketing search safeguarded by secant/bisection refinement.
-:func:`fixed_occupation_dc` also accepts no explicit target at all: it then solves the
-self-consistent condition that the interacting and non-interacting (Fermi-filled ``h0 - dc(mu)``,
-:func:`_noninteracting_impurity_occupation`) impurity occupations agree, :math:`N(\mu) =
-N_0(\mu)` -- the natural target for CSC DFT+DMFT of wide-window p-d models -- re-evaluating both
-sides at every trial shift. The self-energy extraction proper lives in :mod:`sigma`; the
+:func:`fixed_occupation_dc` also accepts no explicit target at all: it then pins the interacting
+occupation to the DFT reference occupation :math:`N_0` -- the Fermi filling of the *raw* ``h0``
+(:func:`_noninteracting_impurity_occupation`), computed once before the search -- the natural
+target for CSC DFT+DMFT of wide-window p-d models. ``model.h0`` is the KS/DFT Hamiltonian of the
+``h0 - dc + U`` contract; its raw filling *is* the DFT occupation, and no double counting is
+subtracted before filling. The self-energy extraction proper lives in :mod:`sigma`; the
 orchestration and CLI in :mod:`selfenergy`, which re-exports
 ``fixed_peak_dc``/``fixed_occupation_dc`` so existing callers are unchanged.
 
@@ -173,8 +174,13 @@ def _noninteracting_impurity_rho(h0_op, h_dc, impurity_indices, n_spin_orbitals,
 
     Because it hybridises the impurity with the bath before tracing, ``Tr rho_imp`` is the DFT
     impurity occupation of a wide-window p-d model, which is the target :func:`fixed_occupation_dc`
-    pins when the caller supplies none. It is a deterministic NumPy computation on the replicated
-    ``h0`` (no MPI collective), so every rank obtains an identical value.
+    pins when the caller supplies none. ``model.h0`` is the KS/DFT Hamiltonian of the
+    ``h0 - dc + U`` model contract (it already contains the DFT mean-field interaction -- that is
+    what the double counting corrects for), so the DFT occupation is the filling of the *raw*
+    ``h0``: pass ``h_dc=None``. Subtracting a realistic double counting first sinks the impurity
+    levels far below the Fermi level and saturates the occupation at the full shell (NiO: n0
+    pinned at 10 instead of ~8.6 for a ~4 Ry dc). It is a deterministic NumPy computation on the
+    replicated ``h0`` (no MPI collective), so every rank obtains an identical value.
 
     Parameters
     ----------
@@ -678,21 +684,18 @@ def fixed_occupation_dc(
     With an explicit ``occupation``, choose the double counting so that the interacting thermal
     impurity occupation equals the requested value, :math:`\mathrm{Tr}\,\rho_{imp} = N_{target}`.
 
-    With ``occupation=None``, choose it so that the interacting and non-interacting impurity
-    occupations agree self-consistently, :math:`N(\mu) = N_0(\mu)`, where :math:`N_0(\mu)` is
-    the Fermi-filled occupation of the non-interacting ``h0 - dc(\mu)`` at :math:`\mu_{chem} = 0`
-    (:func:`_noninteracting_impurity_occupation`) -- the DFT impurity occupation the CSC DFT+DMFT
-    self-consistency loop targets, re-evaluated at every trial shift (unlike a single value
-    derived once from the guess). Both :math:`N(\mu)` and :math:`N_0(\mu)` are computed and
-    logged at every trial regardless of which criterion drives the search.
+    With ``occupation=None``, pin it to the DFT reference occupation instead: :math:`N(\mu) =
+    N_0`, where :math:`N_0` is the Fermi filling of the *raw* non-interacting ``h0`` at
+    :math:`\mu_{chem} = 0` (:func:`_noninteracting_impurity_occupation`), computed once before
+    the search -- the DFT impurity occupation the CSC DFT+DMFT self-consistency loop targets.
+    ``h0`` is the KS/DFT Hamiltonian of the ``h0 - dc + U`` contract, so no double counting is
+    subtracted before filling: :math:`N_0` is independent of both ``dc_guess`` and the trial
+    shift.
 
     The double counting is parametrized as a uniform shift of the guess, ``dc(mu) = dc_guess +
-    mu * identity``, coupling to the impurity occupation as :math:`-\mu \hat N_{imp}`,
-    :math:`\partial N/\partial\mu \geq 0` and :math:`\partial N_0/\partial\mu \geq 0`. The
-    explicit-target residual :math:`N(\mu) - N_{target}` is therefore monotone; the
-    self-consistent residual :math:`N(\mu) - N_0(\mu)` is a difference of two independently
-    monotone quantities and need not be monotone itself, so both are driven to zero by the
-    non-monotonicity-safe search :func:`_solve_dc_shift`. At low temperature and weak
+    mu * identity``, coupling to the impurity occupation as :math:`-\mu \hat N_{imp}`, so the
+    residual :math:`N(\mu) - N_{target}` is monotone in ``mu`` for either target and is driven
+    to zero by the search :func:`_solve_dc_shift`. At low temperature and weak
     hybridization the occupation approaches a staircase in ``mu``; if the requested (fractional)
     occupation falls on a plateau, the search converges to the closest step and a warning is
     printed.
@@ -713,10 +716,10 @@ def fixed_occupation_dc(
     Parameters
     ----------
     occupation : float or None
-        Requested impurity occupation (may be fractional). ``None`` solves the self-consistent
-        :math:`N(\mu) = N_0(\mu)` criterion instead (see above).
+        Requested impurity occupation (may be fractional). ``None`` targets the DFT reference
+        occupation :math:`N_0` instead (see above).
     occ_tol : float
-        Convergence tolerance on the occupation (or on :math:`N - N_0` when self-consistent).
+        Convergence tolerance on the occupation.
     initial_step : float
         First bracketing step for ``mu``, in the energy units of the
         Hamiltonian (energies here carry no fixed unit, they follow the
@@ -772,10 +775,17 @@ def fixed_occupation_dc(
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
     total_impurity_orbitals = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
 
+    # DFT reference occupation: Fermi filling of the raw h0 (the KS Hamiltonian of the
+    # h0 - dc + U contract; no double counting subtracted before filling), independent of
+    # dc_guess and of the trial shift. Logged at every trial; with occupation=None it is
+    # also the search target.
+    n0 = _noninteracting_impurity_occupation(h0_op, None, impurity_indices, model.n_spin_orbitals, tau)
     self_consistent = occupation is None
+    if self_consistent:
+        occupation = n0
     # Tolerance absorbs the roundoff of a target derived elsewhere the same way
     # _noninteracting_impurity_occupation is (a sum of Fermi occupations, each in [0, 1]).
-    if not self_consistent and not -1e-9 <= occupation <= total_impurity_orbitals + 1e-9:
+    if not -1e-9 <= occupation <= total_impurity_orbitals + 1e-9:
         raise ValueError(f"Requested impurity occupation {occupation} outside [0, {total_impurity_orbitals}].")
 
     # Local many-body basis / CIPSI solver (distinct from the BasisOptions/SolverOptions params).
@@ -800,9 +810,8 @@ def fixed_occupation_dc(
 
     energy_cut = -tau * np.log(1e-4)
 
-    # Cache each evaluated (n, n0) pair so the final log reuses it instead of re-solving.
+    # Cache each evaluated occupation so the final log reuses it instead of re-solving.
     occupation_at = {}
-    noninteracting_at = {}
 
     def occupation_observable(mu):
         dc_op = _dc_operator(dc_guess + mu * identity)
@@ -811,24 +820,19 @@ def fixed_occupation_dc(
             mb_basis, mb_solver, h_op, impurity_indices, energy_cut, dense_cutoff, slaterWeightMin
         )
         n = float(np.real(np.trace(rho)))
-        n0 = _noninteracting_impurity_occupation(h0_op, dc_op.to_dict(), impurity_indices, model.n_spin_orbitals, tau)
         occupation_at[mu] = n
-        noninteracting_at[mu] = n0
         if verbose and rank == 0:
             print(f"mu={mu:.6f} n={n:.6f} n0={n0:.6f}")
-        # Self-consistent: the observable already IS the residual (target=0 below), since
-        # N(mu) - N0(mu) is not of the form N(mu) - const. Explicit: raw N(mu), target=occupation.
-        return n - n0 if self_consistent else n
+        return n
 
+    target = occupation
     if self_consistent:
-        target = 0.0
         unreachable = (
-            "Could not find a self-consistent double counting (N = N0) with |mu| <= "
-            f"{max_shift}: the closest residual N - N0 reached was {{value:.4f}} at mu = "
-            "{mu:.3f}. The target may be unreachable with the available bath states."
+            f"Could not reach the DFT reference occupation N0 = {n0:.4f} with |mu| <= "
+            f"{max_shift}: " + "the occupation reached {value:.4f} at mu = {mu:.3f}. "
+            "The target may be unreachable with the available bath states."
         )
     else:
-        target = occupation
         unreachable = (
             "Could not bracket the requested impurity occupation {target} with "
             f"|mu| <= {max_shift}: " + "the occupation reached {value:.4f} at mu = {mu:.3f}. "
@@ -847,9 +851,8 @@ def fixed_occupation_dc(
     )
 
     # mu is always a point _solve_dc_shift actually evaluated (the mu=0 fast path, a direct scan
-    # hit, or a refined bracket point), so occupation_observable(mu) ran and cached both here.
+    # hit, or a refined bracket point), so occupation_observable(mu) ran and cached it here.
     n = occupation_at[mu]
-    n0 = noninteracting_at[mu]
     dc = dc_guess + mu * identity
     if verbose and rank == 0:
         label = "N == N0" if self_consistent else f"target = {occupation}"

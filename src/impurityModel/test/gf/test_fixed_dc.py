@@ -169,59 +169,38 @@ def test_noninteracting_impurity_occupation_matches_fermi_fill():
     assert np.isclose(n, expected, atol=1e-12), (n, expected)
 
 
-def test_fixed_occupation_dc_self_consistent_pins_fermi_level():
-    # Omitting `occupation` now solves the self-consistent N(mu) = N0(mu) criterion (not a
-    # target derived once from the guess). For this dimer, both the interacting N_imp=1->0
-    # charge-transfer threshold (E[1]<E[0] iff dc>eps, i.e. dc=eps=-1) and the non-interacting
-    # h_loc's resonance (the bare impurity level eps-dc crosses the Fermi level at dc=eps too)
-    # sit at the same leading-order point -- so the nearest self-consistent root to the mu=0
-    # guess is expected close to dc=eps=-1, not at the trivial guess (dc=0.5) or the far
-    # dc>6 charge-transfer family (which the geometric scan, growing outward from mu=0, never
-    # even reaches once the near root is found and refined).
-    from impurityModel.ed.double_counting import (
-        _dc_operator,
-        _lowest_energy_and_thermal_rho,
-        _noninteracting_impurity_occupation,
-        _normalize_dc_orbitals,
-        _prepare_dc_solver,
-    )
-    from impurityModel.ed.lie_algebra import tensors_to_operator
-    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+def test_fixed_occupation_dc_self_consistent_targets_dft_occupation():
+    # Omitting `occupation` pins the interacting occupation to the DFT reference N0: the Fermi
+    # filling of the RAW h0 (the KS Hamiltonian of the h0 - dc + U contract), computed once --
+    # NOT of h0 - dc, which for a realistic dc sinks the impurity levels below E_F and saturates
+    # the reference at the full shell (the NiO n0 == 10 bug). For this dimer the raw impurity
+    # level eps = -1 already sits below E_F, so N0 = 2 (full shell) and the search must cross
+    # the charge-transfer point dc > eps + U - eps_b = 6, exactly like an explicit
+    # occupation=2.0 request.
+    from impurityModel.ed.double_counting import _noninteracting_impurity_occupation
 
     kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2)
-    model, basis, solver = kwargs["model"], kwargs["basis"], kwargs["solver"]
+    model, basis = kwargs["model"], kwargs["basis"]
+
+    n0_ref = _noninteracting_impurity_occupation(model.h0, None, [0, 1], 4, basis.tau)
+    assert np.isclose(n0_ref, 2.0, atol=1e-2), n0_ref
+
     dc_auto = fixed_occupation_dc(**kwargs)
     assert_uniform_shift(dc_auto, dc_guess)
-    assert -2.0 < dc_auto[0, 0].real < 0.0, dc_auto
+    assert dc_auto[0, 0].real > 6.0, dc_auto
 
-    # Independently verify self-consistency AT the returned dc -- not by re-invoking the search
-    # (n(mu) is nearly flat here, so an explicit-occupation cross-check can't discriminate mu
-    # precisely) -- by directly recomputing N(dc_auto) [interacting] and N0(dc_auto)
-    # [non-interacting] with the same low-level primitives fixed_occupation_dc itself uses, and
-    # checking they agree within occ_tol (the search's default convergence tolerance).
-    n0 = _noninteracting_impurity_occupation(model.h0, tensors_to_operator(dc_auto).to_dict(), [0, 1], 4, basis.tau)
 
-    impurity_orbitals, bath_states = _normalize_dc_orbitals(model.impurity_orbitals, model.bath_states)
-    h_op_i = ManyBodyOperator(model.h0) + ManyBodyOperator(model.u4)
-    mb_basis, mb_solver = _prepare_dc_solver(
-        h_op_i,
-        impurity_orbitals,
-        bath_states,
-        basis.nominal_occ,
-        basis.mixed_valence,
-        basis.truncation_threshold,
-        basis.spin_flip_dj,
-        basis.tau,
-        False,
-    )
-    h_op = h_op_i - _dc_operator(dc_auto)
-    mb_solver.expand(h_op, dense_cutoff=solver.dense_cutoff, de2_min=1e-5, slaterWeightMin=basis.slater_weight_min)
-    energy_cut = -basis.tau * np.log(1e-4)
-    _, rho = _lowest_energy_and_thermal_rho(
-        mb_basis, mb_solver, h_op, [0, 1], energy_cut, solver.dense_cutoff, basis.slater_weight_min
-    )
-    n = float(np.real(np.trace(rho)))
-    assert np.isclose(n, n0, atol=1e-2), (n, n0)  # default occ_tol
+def test_fixed_occupation_dc_reference_ignores_dc_guess():
+    # NiO in miniature: a large dc_guess must not corrupt the DFT reference. With dc_guess = -3
+    # the shifted one-body impurity level eps - dc = +2 pokes above E_F, so the OLD reference
+    # fill(h0 - dc) was ~0 -- unreachable (N_imp >= 1 here), the search failed or wandered. The
+    # reference is the raw-h0 filling (N0 = 2, independent of the guess), so the search must
+    # converge to the same physics as from any other guess: past the charge-transfer point,
+    # dc > 6.
+    kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2, dc_scale=-3.0)
+    dc = fixed_occupation_dc(**kwargs)
+    assert_uniform_shift(dc, dc_guess)
+    assert dc[0, 0].real > 6.0, dc
 
 
 @pytest.mark.mpi
@@ -409,8 +388,9 @@ def test_dc_search_chain_restrict_forwarded(monkeypatch):
 
 @pytest.mark.mpi
 def test_fixed_occupation_dc_self_consistent_ranks_agree():
-    # The self-consistent search evaluates two observables (interacting N, non-interacting N0)
-    # per trial mu; both must stay rank-invariant for the same reason as the explicit path.
+    # The self-consistent search targets the DFT reference occupation, computed once from the
+    # replicated raw h0 (deterministic NumPy, identical on every rank); the interacting
+    # occupation per trial mu must stay rank-invariant for the same reason as the explicit path.
     comm = MPI.COMM_WORLD
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     dc = fixed_occupation_dc(**kwargs)
