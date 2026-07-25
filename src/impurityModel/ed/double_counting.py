@@ -173,11 +173,45 @@ def _noninteracting_impurity_occupation(h0_op, h_dc, impurity_indices, n_spin_or
     return float(np.real(np.trace(rho[impurity_ix])))
 
 
+def _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol):
+    r"""Safeguarded secant/bisection refinement of a bracket straddling a root.
+
+    ``[mu_low, mu_high]`` must have residuals of opposite sign (``g_low`` and ``g_high``).
+    A secant estimate that leaves the bracket, or hugs an endpoint, is replaced by the
+    midpoint, guaranteeing a geometric decrease of the bracket width every step. This makes
+    no assumption of monotonicity beyond the bracket invariant (opposite-sign endpoints),
+    so it also handles a non-monotone residual with a single sign change in the bracket.
+
+    Returns
+    -------
+    (mu, g) : tuple of float
+        The best point found: the root itself, with ``|g| <= tol``, once met; otherwise the
+        closer of the two endpoints of the fully narrowed bracket (a plateau/step in the
+        residual, collapsed below ``width_tol`` without ever meeting ``tol``).
+    """
+    while mu_high - mu_low > width_tol:
+        mu_mid = mu_high - g_high * (mu_high - mu_low) / (g_high - g_low) if g_high != g_low else np.inf
+        # Safeguard: reject a secant estimate that leaves the bracket or hugs an endpoint,
+        # keeping a guaranteed geometric decrease via bisection.
+        margin = 0.01 * (mu_high - mu_low)
+        if not (mu_low + margin <= mu_mid <= mu_high - margin):
+            mu_mid = 0.5 * (mu_low + mu_high)
+        g_mid = residual(mu_mid)
+        if abs(g_mid) <= tol:
+            return mu_mid, g_mid
+        # Keep the sub-bracket that still straddles a root (opposite-sign endpoints);
+        # correct regardless of whether the residual is monotone.
+        if g_mid * g_low < 0:
+            mu_high, g_high = mu_mid, g_mid
+        else:
+            mu_low, g_low = mu_mid, g_mid
+    return (mu_low, g_low) if abs(g_low) <= abs(g_high) else (mu_high, g_high)
+
+
 def _solve_dc_shift(
     observable,
     target,
     *,
-    monotonic_sign,
     tol,
     width_tol,
     initial_step,
@@ -191,15 +225,22 @@ def _solve_dc_shift(
     Generic root-finder shared by :func:`fixed_peak_dc` and :func:`fixed_occupation_dc`. The
     double counting is parametrized as ``dc(mu) = dc_guess + mu * identity``; the caller passes an
     ``observable(mu)`` closure that builds ``dc(mu)``, solves the model and returns the scalar to
-    control (the peak position or the impurity occupation). The observable is assumed monotone in
-    ``mu`` with the sign ``monotonic_sign`` (``+1`` non-decreasing, as for the occupation; ``-1``
-    non-increasing, as for the peak position, which drops as the shift pushes the impurity down).
+    control (the peak position or the impurity occupation). No monotonicity in ``mu`` is assumed:
+    the residual ``observable(mu) - target`` can be a difference of two independently-monotone
+    quantities (e.g. an interacting and a non-interacting occupation), which is not itself
+    monotone.
 
-    The target is first bracketed by exponential steps (the shift is grown geometrically in the
-    direction that moves the observable toward the target), then refined by a secant step
-    safeguarded with bisection: a secant estimate that leaves the current bracket, or fails to
-    shrink it, is replaced by the bracket midpoint. The search stops when the observable is within
-    ``tol`` of the target or the bracket has collapsed below ``width_tol`` in ``mu``.
+    The search scans both directions from ``mu = 0`` in geometrically growing steps
+    (``initial_step, 2*initial_step, ...``, evaluated in a fixed +/- order each level so every
+    rank makes the same sequence of collective calls). At each level it checks both new points
+    for a direct hit (``|residual| <= tol``, returned immediately) and for a bracket (a
+    sign change against that direction's previous point); any brackets found at that level are
+    refined right away, nearest-``mu=0``-first, by :func:`_refine_bracket` (a safeguarded secant
+    step with bisection fallback). Only if every bracket found so far collapses without meeting
+    ``tol`` (a plateau) does the scan grow to the next level -- so a well-behaved, near-``mu=0``
+    root is found as cheaply as the old single-direction search, while a residual with a false
+    near bracket (e.g. a non-monotone ``n(mu) - n0(mu)``) still finds a genuine root farther out.
+    The scan stops once both directions have exceeded ``max_shift``.
 
     Parameters
     ----------
@@ -208,21 +249,20 @@ def _solve_dc_shift(
         same number of times on every rank.
     target : float
         Requested observable value.
-    monotonic_sign : {+1, -1}
-        Sign of ``d(observable)/d(mu)``.
     tol : float
         Convergence tolerance on ``|observable - target|``.
     width_tol : float
-        Stop refining once the bracket in ``mu`` is narrower than this (plateau detection).
+        Stop refining once a bracket in ``mu`` is narrower than this (plateau detection).
     initial_step : float
         First bracketing step for ``|mu|``.
     max_shift : float
-        Bracketing gives up once ``|mu|`` exceeds this; the target is then unreachable.
+        Scanning a direction gives up once ``|mu|`` exceeds this.
     plateau_ok : bool
-        On a collapsed bracket that never met ``tol`` (the observable steps across the target):
-        if ``True`` return the closest side and warn on rank 0, else raise ``RuntimeError``.
+        If every bracket collapses without meeting ``tol`` (the observable steps across the
+        target -- a plateau) and no bracket is found at all: ``True`` returns the closest side
+        seen and warns on rank 0, ``False`` raises ``RuntimeError``.
     unreachable_message : str
-        ``RuntimeError`` message when the target cannot be bracketed within ``max_shift``.
+        ``RuntimeError`` message when the target cannot be reached.
     rank : int
         MPI rank, for rank-0-only logging.
 
@@ -234,72 +274,76 @@ def _solve_dc_shift(
     Raises
     ------
     RuntimeError
-        If the target cannot be bracketed within ``max_shift`` (or a plateau is hit with
-        ``plateau_ok=False``).
+        If the target cannot be bracketed within ``max_shift`` in either direction (or every
+        bracket collapses without meeting ``tol`` and ``plateau_ok=False``).
     """
+    evaluated = {}
 
     def residual(mu):
-        return observable(mu) - target
+        if mu not in evaluated:
+            evaluated[mu] = observable(mu) - target
+        return evaluated[mu]
 
-    g_inner = residual(0.0)
-    mu_inner = 0.0
-    if abs(g_inner) <= tol:
+    g0 = residual(0.0)
+    if abs(g0) <= tol:
         return 0.0
 
-    # Grow |mu| in the direction that moves the observable toward the target until the residual
-    # changes sign (bracketed) or the shift runs past max_shift (unreachable). residual = observable
-    # - target, so residual < 0 means "observable too small"; increasing it needs mu * monotonic_sign
-    # to grow, i.e. mu in the direction -sign(g_inner) * monotonic_sign.
-    step_direction = -np.sign(g_inner) * monotonic_sign
-    step = max(width_tol, initial_step)
-    mu_outer = step_direction * step
-    g_outer = residual(mu_outer)
-    while g_inner * g_outer > 0:
-        if abs(g_outer) <= tol:
-            return mu_outer
-        mu_inner, g_inner = mu_outer, g_outer
-        mu_outer *= 2
-        if abs(mu_outer) > max_shift:
-            raise RuntimeError(unreachable_message.format(mu=mu_inner, value=g_outer + target, target=target))
-        g_outer = residual(mu_outer)
-    if abs(g_outer) <= tol:
-        return mu_outer
+    # Bidirectional geometric scan, fixed +1/-1 order per level (rank-invariant collective call
+    # sequence). Brackets found at a level are refined immediately, before growing further.
+    prev = {1: (0.0, g0), -1: (0.0, g0)}
+    active = {1, -1}
+    closest_unmet = None
+    level = max(width_tol, initial_step)
+    while active:
+        level_brackets = []
+        for direction in (1, -1):
+            if direction not in active:
+                continue
+            mu = direction * level
+            if abs(mu) > max_shift:
+                active.discard(direction)
+                continue
+            g = residual(mu)
+            if abs(g) <= tol:
+                return mu
+            mu_prev, g_prev = prev[direction]
+            if g * g_prev < 0:
+                bracket = (mu_prev, g_prev, mu, g) if mu_prev < mu else (mu, g, mu_prev, g_prev)
+                level_brackets.append(bracket)
+            prev[direction] = (mu, g)
 
-    # Bracket [mu_low, mu_high] with residuals of opposite sign. Refine with a secant step,
-    # falling back to the midpoint when the step leaves the bracket or fails to shrink it.
-    mu_low, g_low, mu_high, g_high = mu_inner, g_inner, mu_outer, g_outer
-    if mu_low > mu_high:
-        mu_low, g_low, mu_high, g_high = mu_high, g_high, mu_low, g_low
-    while mu_high - mu_low > width_tol:
-        mu_mid = mu_high - g_high * (mu_high - mu_low) / (g_high - g_low) if g_high != g_low else np.inf
-        # Safeguard: reject a secant estimate that leaves the bracket or hugs an endpoint,
-        # keeping a guaranteed geometric decrease via bisection.
-        margin = 0.01 * (mu_high - mu_low)
-        if not (mu_low + margin <= mu_mid <= mu_high - margin):
-            mu_mid = 0.5 * (mu_low + mu_high)
-        g_mid = residual(mu_mid)
-        if abs(g_mid) <= tol:
-            return mu_mid
-        # residual is increasing in mu when monotonic_sign > 0 and decreasing otherwise; keep the
-        # sub-bracket that still straddles the root.
-        if g_mid * g_low < 0:
-            mu_high, g_high = mu_mid, g_mid
-        else:
-            mu_low, g_low = mu_mid, g_mid
+        # Refine this level's brackets nearest-mu=0-first -- the smallest correction to the guess
+        # wins when the residual has more than one root (the non-monotone case can bracket both
+        # directions at the same level). Sorted by nearest bracket *endpoint*, not nearest root:
+        # two brackets tied on that endpoint distance break ties by scan order (+1 before -1),
+        # which is only guaranteed optimal when each bracket holds at most one root -- true for
+        # every criterion in this module (peak position, occupation).
+        level_brackets.sort(key=lambda b: min(abs(b[0]), abs(b[2])))
+        for mu_low, g_low, mu_high, g_high in level_brackets:
+            mu_c, g_c = _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol)
+            if abs(g_c) <= tol:
+                return mu_c
+            # Bracket collapsed without meeting tol (a plateau/step): remember the closest point
+            # reached in case every bracket ever found does this.
+            if closest_unmet is None or abs(g_c) < abs(closest_unmet[1]):
+                closest_unmet = (mu_c, g_c)
+        level *= 2
 
-    # Collapsed bracket without meeting tol: the observable steps across the target (a plateau).
-    if abs(g_low) <= abs(g_high):
-        mu, g = mu_low, g_low
-    else:
-        mu, g = mu_high, g_high
-    if not plateau_ok:
-        raise RuntimeError(unreachable_message.format(mu=mu, value=g + target, target=target))
-    if rank == 0:
-        print(
-            f"WARNING: the requested double-counting target {target} falls on a plateau; the "
-            f"closest achievable observable is {g + target:.4f} (mu = {mu:.6f})."
-        )
-    return mu
+    if closest_unmet is not None:
+        mu, g = closest_unmet
+        if not plateau_ok:
+            raise RuntimeError(unreachable_message.format(mu=mu, value=g + target, target=target))
+        if rank == 0:
+            print(
+                f"WARNING: the requested double-counting target {target} falls on a plateau; the "
+                f"closest achievable observable is {g + target:.4f} (mu = {mu:.6f})."
+            )
+        return mu
+
+    # Neither direction ever bracketed the target within max_shift; report the closer of the two
+    # farthest points actually probed.
+    best_mu, best_g = min(prev.values(), key=lambda mu_g: abs(mu_g[1]))
+    raise RuntimeError(unreachable_message.format(mu=best_mu, value=best_g + target, target=target))
 
 
 def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0):
@@ -461,7 +505,6 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     mu = _solve_dc_shift(
         peak_observable,
         peak_position,
-        monotonic_sign=-1,
         tol=tol,
         width_tol=tol,
         initial_step=max(10 * tau, abs(peak_position)),
@@ -623,7 +666,6 @@ def fixed_occupation_dc(
     mu = _solve_dc_shift(
         impurity_occupation,
         occupation,
-        monotonic_sign=+1,
         tol=occ_tol,
         width_tol=max(tau, 1e-4),
         initial_step=max(10 * tau, initial_step),
