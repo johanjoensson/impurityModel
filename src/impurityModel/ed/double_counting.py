@@ -100,7 +100,17 @@ def _dc_operator(dc):
 
 
 def _prepare_dc_solver(
-    h_op, impurity_orbitals, bath_states, nominal_occ, mixed_valence, truncation_threshold, spin_flip_dj, tau, verbose
+    h_op,
+    impurity_orbitals,
+    bath_states,
+    nominal_occ,
+    mixed_valence,
+    truncation_threshold,
+    spin_flip_dj,
+    tau,
+    verbose,
+    weighted_restrictions=None,
+    chain_restrict=False,
 ):
     """Build a many-body basis around ``nominal_occ`` and a CIPSI solver on it."""
     basis = Basis(
@@ -109,6 +119,8 @@ def _prepare_dc_solver(
         nominal_impurity_occ=nominal_occ,
         mixed_valence=mixed_valence,
         truncation_threshold=truncation_threshold,
+        weighted_restrictions=weighted_restrictions,
+        chain_restrict=chain_restrict,
         verbose=verbose,
         comm=MPI.COMM_WORLD,
         spin_flip_dj=spin_flip_dj,
@@ -466,7 +478,11 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     Note: the many-body bases are expanded once, with the guess double
     counting; the search reuses them. Energies carry no fixed unit, they follow
     the inputs (e.g. Ry when called from RSPt); the convergence tolerance is
-    ``max(tau, 1e-4)`` in those units.
+    ``max(tau, 1e-4)`` in those units. Both sector bases honor
+    ``BasisOptions.excitation_budget``/``chain_restrict`` identically -- the bath-only
+    excitation-budget restriction never references the occupation, so the same restriction list
+    applies to the N0 and N0 +- 1 sectors, matching :func:`groundstate.find_ground_state_basis`'s
+    own occupation-scan trials.
 
     Parameters
     ----------
@@ -518,6 +534,8 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     spin_flip_dj = basis.spin_flip_dj
     tau = basis.tau
     truncation_threshold = basis.truncation_threshold
+    excitation_budget = basis.excitation_budget
+    chain_restrict = basis.chain_restrict
     slaterWeightMin = basis.slater_weight_min
     dense_cutoff = solver.dense_cutoff
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
@@ -541,6 +559,10 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
         )
     h_op_i = ManyBodyOperator(h0_op) + ManyBodyOperator(u)
     impurity_orbitals, bath_states = _normalize_dc_orbitals(impurity_orbitals, bath_states)
+    # Bath-only restriction (the reference "valence filled, conduction empty" occupation never
+    # references N0), so the identical restriction list is valid for both sectors -- the same
+    # restrictions find_ground_state_basis applies to its own N0 +- 1 occupation-scan trials.
+    weighted_restrictions = build_weighted_restrictions(bath_states, excitation_budget)
 
     # Keep the requested peak outside the thermal broadening, preserving the
     # sign: a negative peak position places a removal peak at E[N] - E[N-1].
@@ -563,6 +585,8 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
         spin_flip_dj,
         tau,
         verbose,
+        weighted_restrictions=weighted_restrictions,
+        chain_restrict=chain_restrict,
     )
     basis_lower, solver_lower = _prepare_dc_solver(
         h_op_i,
@@ -574,6 +598,8 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
         spin_flip_dj,
         tau,
         verbose,
+        weighted_restrictions=weighted_restrictions,
+        chain_restrict=chain_restrict,
     )
 
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
@@ -674,7 +700,9 @@ def fixed_occupation_dc(
     Note: the total electron number is conserved, so the impurity occupation
     changes through impurity-bath charge transfer; the reachable occupations
     are limited by the bath. The many-body basis is expanded once, with the
-    guess double counting.
+    guess double counting, honoring ``BasisOptions.excitation_budget``/``chain_restrict`` (a
+    tight budget can itself make a requested occupation unreachable, since it bounds how far
+    the bath can be depopulated/populated).
 
     Parameters other than the following match :func:`fixed_peak_dc` (``model``, ``basis``,
     ``solver``, ``comm``, ``verbosity``), except that ``basis.truncation_threshold=None`` here
@@ -720,6 +748,8 @@ def fixed_occupation_dc(
     spin_flip_dj = basis.spin_flip_dj
     tau = basis.tau
     truncation_threshold = basis.truncation_threshold
+    excitation_budget = basis.excitation_budget
+    chain_restrict = basis.chain_restrict
     slaterWeightMin = basis.slater_weight_min
     dense_cutoff = solver.dense_cutoff
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
@@ -737,6 +767,7 @@ def fixed_occupation_dc(
 
     h_op_i = ManyBodyOperator(h0_op) + ManyBodyOperator(u)
     impurity_orbitals, bath_states = _normalize_dc_orbitals(impurity_orbitals, bath_states)
+    weighted_restrictions = build_weighted_restrictions(bath_states, excitation_budget)
 
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
     total_impurity_orbitals = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
@@ -749,7 +780,17 @@ def fixed_occupation_dc(
 
     # Local many-body basis / CIPSI solver (distinct from the BasisOptions/SolverOptions params).
     mb_basis, mb_solver = _prepare_dc_solver(
-        h_op_i, impurity_orbitals, bath_states, N0, mixed_valence, truncation_threshold, spin_flip_dj, tau, verbose
+        h_op_i,
+        impurity_orbitals,
+        bath_states,
+        N0,
+        mixed_valence,
+        truncation_threshold,
+        spin_flip_dj,
+        tau,
+        verbose,
+        weighted_restrictions=weighted_restrictions,
+        chain_restrict=chain_restrict,
     )
     identity = np.identity(dc_guess.shape[0])
 

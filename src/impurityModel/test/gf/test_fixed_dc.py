@@ -355,6 +355,58 @@ def test_fixed_occupation_dc_none_threshold_ranks_agree():
             assert np.array_equal(dc, other), (dc, other)
 
 
+def test_dc_search_applies_weighted_restrictions(monkeypatch):
+    from impurityModel.ed.basis_restrictions import build_weighted_restrictions
+    from impurityModel.ed.double_counting import _normalize_dc_orbitals
+
+    captured = _capture_prepared_bases(monkeypatch)
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], excitation_budget=2)
+    fixed_occupation_dc(occupation=1.0, **kwargs)
+
+    _, bath_states = _normalize_dc_orbitals(kwargs["model"].impurity_orbitals, kwargs["model"].bath_states)
+    expected = build_weighted_restrictions(bath_states, 2)
+    assert captured and captured[0].weighted_restrictions == expected
+
+    captured.clear()
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+    kwargs["basis"] = replace(kwargs["basis"], excitation_budget=2)
+    fixed_peak_dc(peak_position=1.2, **kwargs)
+    assert len(captured) == 2
+    assert all(b.weighted_restrictions == expected for b in captured)
+
+
+def test_dc_search_excitation_budget_binds():
+    # excitation_budget=0 forbids any bath excitation away from the reference (both valence
+    # baths filled): with 3 total electrons and 2 bath spin-orbitals, the impurity is then
+    # pinned to exactly N_imp=1 for every basis determinant -- occupation=1 must still converge
+    # (trivially, at the guess), but occupation=2 becomes unreachable, unlike with the default
+    # (non-binding) budget where test_fixed_occupation_dc_increases_occupation reaches it.
+    kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], excitation_budget=0)
+    dc = fixed_occupation_dc(occupation=1.0, **kwargs)
+    np.testing.assert_allclose(dc, dc_guess, atol=1e-8)
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
+    kwargs["basis"] = replace(kwargs["basis"], excitation_budget=0)
+    with pytest.raises(RuntimeError, match="Could not bracket"):
+        fixed_occupation_dc(occupation=2.0, **kwargs)
+
+
+def test_dc_search_chain_restrict_forwarded(monkeypatch):
+    captured = _capture_prepared_bases(monkeypatch)
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], chain_restrict=False)
+    fixed_occupation_dc(occupation=1.0, **kwargs)
+    assert captured and captured[0].chain_restrict is False
+
+    captured.clear()
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], chain_restrict=True)
+    fixed_occupation_dc(occupation=1.0, **kwargs)
+    assert captured and captured[0].chain_restrict is True
+
+
 @pytest.mark.mpi
 def test_fixed_occupation_dc_self_consistent_ranks_agree():
     # The self-consistent search evaluates two observables (interacting N, non-interacting N0)
