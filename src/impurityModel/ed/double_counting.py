@@ -22,10 +22,11 @@ orchestration and CLI in :mod:`selfenergy`, which re-exports
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed.atomic_physics import uj_from_u4
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.cipsi_solver import CIPSISolver
-from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
+from impurityModel.ed.lie_algebra import extract_tensors, rotate_two_body, tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.utils import matrix_print
@@ -177,6 +178,72 @@ def _noninteracting_impurity_occupation(h0_op, h_dc, impurity_indices, n_spin_or
     """Thermal impurity occupation ``Tr rho_imp``; see :func:`_noninteracting_impurity_rho`."""
     rho = _noninteracting_impurity_rho(h0_op, h_dc, impurity_indices, n_spin_orbitals, tau)
     return float(np.real(np.trace(rho)))
+
+
+def _model_u4_dense(model):
+    r"""Recover the dense, impurity-local RSPt Coulomb tensor from ``model.u4``.
+
+    ``model.u4`` is the *raw* (never canonicalized) operator dict built by
+    :func:`impurityModel.ed.atomic_physics.getUop_from_rspt_u4`: one term per index quadruple,
+    amplitude ``u4[i,j,k,l] / 2``, with no folding of equivalent terms. Wrapping it in a
+    :class:`ManyBodyOperator` first (which canonicalizes/folds terms together) would lose the
+    direct/exchange split this relies on -- do not do that before calling this function.
+    :func:`extract_tensors` on the raw dict gives ``V[i,j,k,l] = u4[i,j,k,l] / 2`` entry-for-entry
+    (no two raw keys ever map to the same ``V`` cell), so ``2 * V`` already recovers ``u4``
+    exactly. ``V + V.transpose(1, 0, 3, 2)`` is used instead of a bare ``2 * V`` because it is
+    numerically identical for a raw dict (via ``u4``'s own exchange symmetry, ``u4[i,j,k,l] =
+    u4[j,i,l,k]``, which any RSPt-convention tensor satisfies by construction) while also being
+    the natural, symmetric way to state "recover the tensor from the operator".
+
+    Parameters
+    ----------
+    model : ImpurityModel
+
+    Returns
+    -------
+    numpy.ndarray, shape (n_imp, n_imp, n_imp, n_imp)
+        The Coulomb tensor over the impurity spin-orbitals, in the model's input basis.
+
+    Raises
+    ------
+    ValueError
+        If ``model.u4`` is ``None``.
+    """
+    if model.u4 is None:
+        raise ValueError("model.u4 is None; pass an explicit u=/j= (or n=/rho=) instead of deriving them from u4.")
+    n_imp = len(model.impurity_indices)
+    _, V, _ = extract_tensors(model.u4, n_orb=n_imp)
+    return V + V.transpose(1, 0, 3, 2)
+
+
+def _model_uj(model):
+    r"""Average Coulomb repulsion and exchange (:func:`uj_from_u4`) derived from ``model.u4``.
+
+    Rotates the dense impurity Coulomb tensor (:func:`_model_u4_dense`) into the spherical
+    basis with :func:`impurityModel.ed.lie_algebra.rotate_two_body` (the same transformation as
+    :func:`impurityModel.ed.greens_function.rotate_4index_U`, avoiding an import of the
+    heavyweight solver module) using ``model.rot_to_spherical``, then reads off ``(U, J)``.
+
+    Parameters
+    ----------
+    model : ImpurityModel
+
+    Returns
+    -------
+    (U, J) : tuple of float
+
+    Raises
+    ------
+    ValueError
+        If ``model.u4`` is ``None``, or ``model.rot_to_spherical`` is a multi-group dict (per-
+        group rotations are not supported here, matching :func:`fixed_peak_dc`'s restriction).
+    """
+    if isinstance(model.rot_to_spherical, dict):
+        raise ValueError("_model_uj does not support a multi-group model.rot_to_spherical; pass explicit u=/j=.")
+    u4_dense = _model_u4_dense(model)
+    rotation = np.asarray(model.rot_to_spherical, dtype=complex)
+    u4_spherical = rotate_two_body(u4_dense, rotation)
+    return uj_from_u4(u4_spherical)
 
 
 def _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol):

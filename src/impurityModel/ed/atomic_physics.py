@@ -56,6 +56,81 @@ def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):
         raise ValueError("double counting input wrong.")
 
 
+def uj_from_u4(u4, tol=1e-8):
+    r"""Average Coulomb repulsion :math:`\bar U` and average exchange :math:`\bar J` from a
+    spherical, spin-collinear Coulomb tensor.
+
+    ``u4`` must be in the RSPt convention (``u4[i,j,k,l] = <ij|V|kl>``, see
+    :func:`getUop_from_rspt_u4`), in the spherical-harmonics basis, with the spin-major
+    ordering :func:`impurityModel.ed.operator_algebra.c2i` produces: the first half of the
+    spin-orbital indices is one spin (all orbitals), the second half the other.
+
+    This is the Anisimov / LDA+U spherical average that pairs with :math:`\bar U = F^0` in the
+    FLL and AMF double-counting functionals -- not the bare average exchange integral. It is
+    the direct average, corrected by the *off-diagonal* part of the direct average and replaced
+    by the off-diagonal exchange average:
+
+    .. math::
+        \bar U &= \frac{1}{n_{orb}^2} \sum_{m,m'} \langle m\uparrow, m'\downarrow|V|
+            m\uparrow, m'\downarrow\rangle, \\
+        \bar J &= \bar U - \frac{1}{n_{orb}(n_{orb}-1)} \sum_{m \neq m'} \langle m\uparrow,
+            m'\downarrow|V|m\uparrow, m'\downarrow\rangle + \frac{1}{n_{orb}(n_{orb}-1)}
+            \sum_{m \neq m'} \langle m\uparrow, m'\uparrow|V|m'\uparrow, m\uparrow\rangle.
+
+    For a single-``l``-shell atomic Slater-Condon tensor (:func:`impurityModel.ed.model.atomic_u4`)
+    this reproduces :math:`\bar U = F^0` exactly (a basis-independent trace, verified against
+    :func:`getUop_from_rspt_u4`'s convention) and the standard :math:`\bar J = \frac{F^2+F^4}{14}`
+    for a d-shell, :math:`\bar J = \frac{F^2}{5}` for a p-shell -- contrast :func:`dc_MLFT`'s
+    ``Udd``, a different combination purpose-built for the MLFT charge-transfer model, not this
+    plain average.
+
+    Parameters
+    ----------
+    u4 : numpy.ndarray, shape (n, n, n, n)
+        Coulomb tensor, spherical spin-collinear basis (see above). ``n`` must be even.
+    tol : float, optional
+        The cross-spin exchange elements (``<m up, m' down|V|m' down, m up>``) must vanish for
+        a spin-collinear basis; if any exceeds this magnitude, the basis is not collinear
+        (e.g. a spin-orbit-coupled :math:`(j, m_j)` basis) and a :class:`ValueError` is raised.
+
+    Returns
+    -------
+    (U, J) : tuple of float
+        The average Coulomb repulsion and average exchange.
+
+    Raises
+    ------
+    ValueError
+        If ``u4``'s spin-orbital dimension is odd, or the cross-spin exchange is non-negligible.
+    """
+    n = u4.shape[0]
+    if n % 2 != 0:
+        raise ValueError(f"uj_from_u4 requires an even spin-orbital dimension, got {n}.")
+    n_orb = n // 2
+    down = np.arange(n_orb)
+    up = np.arange(n_orb, n)
+
+    cross_exchange = u4[down[:, None], up[None, :], up[None, :], down[:, None]]
+    max_cross = float(np.max(np.abs(cross_exchange)))
+    if max_cross > tol:
+        raise ValueError(
+            f"u4 has non-negligible cross-spin exchange (max |element| = {max_cross:.3e} > "
+            f"tol={tol}); the basis is not spin-collinear (e.g. spin-orbit-coupled). Pass "
+            "explicit u=/j= instead of deriving them from u4."
+        )
+
+    direct = u4[down[:, None], up[None, :], down[:, None], up[None, :]]
+    U = float(np.real(np.mean(direct)))
+
+    if n_orb == 1:
+        J = 0.0
+    else:
+        off_diag = ~np.eye(n_orb, dtype=bool)
+        exchange = u4[down[:, None], down[None, :], down[None, :], down[:, None]]
+        J = float(np.real(U - np.mean(direct[off_diag]) + np.mean(exchange[off_diag])))
+    return U, J
+
+
 def get_spherical_2_cubic_matrix(spinpol=False, l=2):
     r"""
     Return unitary ndarray for transforming from spherical to cubic harmonics.

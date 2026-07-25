@@ -1,7 +1,9 @@
 import numpy as np
+import pytest
 
-from impurityModel.ed.atomic_physics import dc_MLFT, get_spherical_2_cubic_matrix, getUop_from_rspt_u4
+from impurityModel.ed.atomic_physics import dc_MLFT, get_spherical_2_cubic_matrix, getUop_from_rspt_u4, uj_from_u4
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner
+from impurityModel.ed.model import atomic_u4
 
 
 def test_dc_MLFT():
@@ -79,3 +81,41 @@ def test_getUop_from_rspt_u4_matches_old_convention():
     for bra in dets:
         for ket in dets:
             assert np.isclose(inner(bra, new_op(ket, 0)), inner(bra, old_op(ket, 0)), atol=1e-12)
+
+
+def test_uj_from_u4_d_shell_matches_slater_condon_average():
+    F0, F2, F4 = 7.5, 9.9, 6.6
+    u4 = atomic_u4(2, [F0, 0, F2, 0, F4])
+    U, J = uj_from_u4(u4)
+    assert np.isclose(U, F0, atol=1e-10)
+    assert np.isclose(J, (F2 + F4) / 14, atol=1e-10)
+
+
+def test_uj_from_u4_p_shell_matches_slater_condon_average():
+    F0, F2 = 8.0, 5.0
+    u4 = atomic_u4(1, [F0, 0, F2])
+    U, J = uj_from_u4(u4)
+    assert np.isclose(U, F0, atol=1e-10)
+    assert np.isclose(J, F2 / 5, atol=1e-10)
+
+
+def test_uj_from_u4_s_shell_has_no_exchange():
+    F0 = 6.3
+    u4 = atomic_u4(0, [F0])
+    U, J = uj_from_u4(u4)
+    assert np.isclose(U, F0, atol=1e-10)
+    assert J == 0.0
+
+
+def test_uj_from_u4_rejects_noncollinear_basis():
+    """A basis with nonzero cross-spin exchange (e.g. spin-orbit-coupled) must be rejected."""
+    n = 4
+    u4 = _random_rspt_u4(n)
+    with pytest.raises(ValueError, match="cross-spin exchange"):
+        uj_from_u4(u4)
+
+
+def test_uj_from_u4_requires_even_spin_orbital_dimension():
+    u4 = np.zeros((3, 3, 3, 3), dtype=complex)
+    with pytest.raises(ValueError, match="even"):
+        uj_from_u4(u4)
