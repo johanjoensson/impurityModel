@@ -893,17 +893,27 @@ class CIPSISolver:
             # eigenvector whose support seeds the next CIPSI selection -- differed between
             # serial and MPI runs of the same Hamiltonian.
             local_states = list(self.basis.local_basis)
-            if hasattr(self, "psi_refs") and self.psi_refs is not None:
-                psi0 = self.psi_refs
-            else:
+
+            def cold_start_block():
                 # width=1 even when local_states is empty on this rank: a bare {}
                 # construction would be the width-0 polymorphic zero, which
                 # block_normalize's from_states round trip below rejects (raising inside
                 # the try/except, silently skipping this rank out of the collective
                 # block_tsqr call other ranks still enter -- an MPI deadlock).
-                psi0 = [
+                return [
                     ManyBodyState({state: _amplitude_from_hash(state.get_hash()) for state in local_states}, width=1)
                 ]
+
+            warm_started = hasattr(self, "psi_refs") and self.psi_refs is not None
+            # A warm block spans the previously converged (near-)invariant subspace. When the
+            # ground state has moved to another near-decoupled charge sector since (e.g. the
+            # fixed-occupation DC search jumping across a charge-transfer crossing between
+            # trials), Lanczos restarted from it converges that subspace's states only and
+            # silently returns an excited state as "lowest" -- nothing is short, the boundary
+            # lies beyond the thermal cut, and the miss is undetectable downstream. Appending
+            # the cold full-support start vector keeps every sector reachable while the warm
+            # columns retain their fast convergence.
+            psi0 = list(self.psi_refs) + cold_start_block() if warm_started else cold_start_block()
 
             num_wanted = min(num_wanted + 10, len(self.basis))
 
@@ -938,6 +948,7 @@ class CIPSISolver:
             # eigensolver returned -- which depends on the MPI rank count. Cheap in practice: the
             # first solve almost always overshoots the cut already.
             cap = len(self.basis)
+            cold_retry_available = warm_started
             for _ in range(_MAX_EIGENSTATE_DOUBLINGS):
                 e_ref, psi_refs_arr = restarted_lanczos(
                     psi0=psi0_arr,
@@ -958,16 +969,29 @@ class CIPSISolver:
                 # `psi0` -- it hit an invariant subspace, which a block warm-started from converged
                 # eigenvectors does immediately. Doubling `num_wanted` then re-solves the *same*
                 # subspace and returns the same states, at the cost of a full re-solve each time.
-                # Stop and let the warning below report the uncertified manifold.
                 exhausted = len(e_ref) < num_wanted
                 # `restarted_lanczos` is collective. `e_ref` is replicated but only to roundoff,
                 # so a state sitting on the cut could make ranks disagree about re-solving and
                 # deadlock. Decide on rank 0 and broadcast, per the MPI rule in CLAUDE.md.
                 if self.basis.is_distributed:
                     need_more, exhausted = self.basis.comm.bcast((need_more, exhausted), root=0)
-                if not need_more or exhausted or num_wanted >= cap:
+                if not need_more or (exhausted and not cold_retry_available) or (not exhausted and num_wanted >= cap):
                     break
-                num_wanted = min(2 * num_wanted, cap)
+                if exhausted:
+                    # The warm block spans a (near-)invariant subspace, so the missing thermal
+                    # states -- typically the other charge sector of a near-degenerate crossing,
+                    # e.g. the fixed-occupation DC search walking over a charge-transfer point --
+                    # are unreachable from it at any num_wanted. Retry once from the cold
+                    # rank-independent start vector, whose support covers the whole basis.
+                    cold_retry_available = False
+                    psi0 = cold_start_block()
+                    try:
+                        psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
+                    except Exception:
+                        pass
+                    psi0_arr = build_distributed_vector(self.basis, psi0).T
+                else:
+                    num_wanted = min(2 * num_wanted, cap)
                 max_subspace = min(max(2 * num_wanted, num_wanted + 10), cap)
                 max_subspace_blocks = min(
                     2 * int(np.ceil(max_subspace / max(1, len(psi0)))) + 20,
