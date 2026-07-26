@@ -190,6 +190,22 @@ def test_fixed_occupation_dc_self_consistent_targets_dft_occupation():
     assert dc_auto[0, 0].real > 6.0, dc_auto
 
 
+def test_saturated_reference_warns(capsys):
+    # The dimer's raw-h0 filling is N0 = 2.0 = the full impurity shell, i.e. exactly the
+    # coarse-bath saturation the warning targets (NiO with 1 or 5 valence-only bath states:
+    # n0 == 10). Self-consistent mode must warn and still run; an explicit target must not.
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    fixed_occupation_dc(verbosity=1, **kwargs)
+    out = capsys.readouterr().out
+    if MPI.COMM_WORLD.rank == 0:  # the warning prints on rank 0 only
+        assert "saturated at the full impurity shell" in out
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    fixed_occupation_dc(occupation=1.0, verbosity=1, **kwargs)
+    out = capsys.readouterr().out
+    assert "saturated" not in out
+
+
 def test_fixed_occupation_dc_reference_ignores_dc_guess():
     # NiO in miniature: a large dc_guess must not corrupt the DFT reference. With dc_guess = -3
     # the shifted one-body impurity level eps - dc = +2 pokes above E_F, so the OLD reference

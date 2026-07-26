@@ -688,7 +688,11 @@ def fixed_occupation_dc(
     the search -- the DFT impurity occupation the CSC DFT+DMFT self-consistency loop targets.
     ``h0`` is the KS/DFT Hamiltonian of the ``h0 - dc + U`` contract, so no double counting is
     subtracted before filling: :math:`N_0` is independent of both ``dc_guess`` and the trial
-    shift.
+    shift. Note that :math:`N_0` is a property of the *discretized* bath: a coarse valence-only
+    fit may place no impurity spectral weight across the Fermi level at all, saturating
+    :math:`N_0` at the full (or empty) shell -- a threshold effect of the discretization, not a
+    smooth error. A warning is printed in that case; supply an explicit ``occupation`` target
+    instead.
 
     The double counting is parametrized as a uniform shift of the guess, ``dc(mu) = dc_guess +
     mu * identity``, coupling to the impurity occupation as :math:`-\mu \hat N_{imp}`, so the
@@ -781,6 +785,23 @@ def fixed_occupation_dc(
     self_consistent = occupation is None
     if self_consistent:
         occupation = n0
+        if (n0 >= total_impurity_orbitals - occ_tol or n0 <= occ_tol) and rank == 0:
+            # Saturation is a threshold phenomenon of coarse discretizations, not a smooth
+            # error: impurity weight crosses the Fermi level only when level repulsion pushes
+            # a mixed state through it (NiO: n0 = 8.63 at 15 bath states per block, exactly
+            # 10.0 at 1 and 5).
+            print(
+                f"WARNING: the DFT reference occupation N0 = {n0:.4f} is saturated at the "
+                f"{'full' if n0 > occ_tol else 'empty'} impurity shell "
+                f"(of {total_impurity_orbitals} spin-orbitals): the discretized bath places no "
+                "impurity spectral weight across the Fermi level (typical for coarse "
+                "valence-only bath fits), so the self-consistent occupation criterion is "
+                "meaningless and the search will very likely fail as unreachable. Supply an "
+                "explicit occupation target instead (RSPt interface: 'occ <N>' on the "
+                "double-counting line), or improve the bath discretization around the Fermi "
+                "level.",
+                flush=True,
+            )
     # Tolerance absorbs the roundoff of a target derived elsewhere the same way
     # _noninteracting_impurity_occupation is (a sum of Fermi occupations, each in [0, 1]).
     if not -1e-9 <= occupation <= total_impurity_orbitals + 1e-9:
