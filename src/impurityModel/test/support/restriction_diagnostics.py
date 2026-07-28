@@ -45,10 +45,8 @@ WORKLOADS = {
     "fcc_ni_15": f"{_IMPMOD_ROOT}/FCC_Ni/impmod/"
     "15_BathStates_HaverGeometry_partialReorthonormalization/impurityModel_data.h5",
     "nio_20": f"{_IMPMOD_ROOT}/NiO/impmod/verify_fixes/impurityModel_data.h5",
-    "nio_15chain": f"{_IMPMOD_ROOT}/NiO/impmod/"
-    "15_BathStates_linked_chainGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
-    "nio_25chain": f"{_IMPMOD_ROOT}/NiO/impmod/"
-    "25_BathStates_linked_chainGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
+    "nio_15star": f"{_IMPMOD_ROOT}/NiO/impmod/"
+    "15_BathStates_starGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
     "smo": f"{_IMPMOD_ROOT}/SMO/cubic/impmod/impurityModel_data.h5",
 }
 
