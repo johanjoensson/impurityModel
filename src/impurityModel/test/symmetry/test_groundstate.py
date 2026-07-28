@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+import impurityModel.ed.groundstate as groundstate
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.groundstate import calc_energy, calc_gs, find_ground_state_basis
@@ -237,7 +238,13 @@ def test_calc_energy_mpi():
 
 
 def test_find_ground_state_basis_serial():
-    eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
+    # Two bound (negative) levels below a gap, three unbound (positive) levels above it, so
+    # N=2 (filling the two negative levels) is a genuine local -- and here global -- minimum in
+    # total particle number, not merely the value nearest the input N0. (An all-positive-spectrum
+    # model would make the unconstrained many-body ground state the vacuum N=0 regardless of
+    # N0, which find_ground_state_basis's neighbourhood walk -- HF-seeded or the legacy dN scan
+    # alike -- correctly finds; that is not what this test means to exercise.)
+    eigvals = np.array([-1.0, -0.5, 0.5, 1.0, 1.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
 
@@ -261,14 +268,62 @@ def test_find_ground_state_basis_serial():
     assert basis is not None
     assert len(basis) == 1
     state = next(iter(basis))
-    # N0={0:2}: the two-electron ground state fills the two lowest orbitals (0.5 + 1.0 = 1.5).
+    # N0={0:2}: the two-electron ground state fills the two lowest (negative-energy) orbitals
+    # (-1.0 + -0.5 = -1.5).
     np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0, 1))
+
+
+def test_find_ground_state_basis_walk_rescues_seed_off_by_two(monkeypatch):
+    # Same model as test_find_ground_state_basis_serial: N=2 (filling the two negative-energy
+    # levels) is the true minimum. Force the HF seed to miss by 2 (N0=0, the vacuum) -- the
+    # scenario the NiO bug report hit (HF pushed 3 electrons into the wrong sector) -- and assert
+    # the post-seed walk still corrects it back to the true minimum, matching what the legacy
+    # use_hf_seed=False dN scan (the oracle) finds unassisted.
+    eigvals = np.array([-1.0, -0.5, 0.5, 1.0, 1.5])
+    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
+    Hop = ManyBodyOperator(hop)
+
+    def bad_seed(h_op, impurity_orbitals, bath_states, N0, frozen_occupations=None, comm=None, verbose=False):
+        return {0: 0}, True
+
+    monkeypatch.setattr(groundstate, "hartree_fock_seed_occupation", bad_seed)
+
+    common_kwargs = dict(
+        h_op=Hop,
+        impurity_orbitals={0: [[0, 1, 2, 3, 4]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        N0={0: 0},
+        mixed_valence=None,
+        tau=0.01,
+        chain_restrict=False,
+        dense_cutoff=10,
+        spin_flip_dj=False,
+        comm=None,
+        verbose=True,
+        truncation_threshold=1000,
+        slaterWeightMin=1e-12,
+    )
+
+    basis_walked = find_ground_state_basis(use_hf_seed=True, **common_kwargs)
+    basis_scanned = find_ground_state_basis(use_hf_seed=False, **common_kwargs)
+
+    import impurityModel.ed.product_state_representation as psr
+
+    for basis in (basis_walked, basis_scanned):
+        assert basis is not None
+        assert len(basis) == 1
+        state = next(iter(basis))
+        np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0, 1))
 
 
 @pytest.mark.mpi
 def test_find_ground_state_basis_mpi():
     comm = MPI.COMM_WORLD
-    eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
+    # Same reasoning as test_find_ground_state_basis_serial: two bound (negative) levels below a
+    # gap, so N=2 (filling them) is a genuine minimum -- an all-positive spectrum would make the
+    # unconstrained ground state the vacuum N=0 regardless of N0, which is not what this test
+    # means to exercise.
+    eigvals = np.array([-1.0, -0.5, 0.5, 1.0, 1.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
 
@@ -292,7 +347,8 @@ def test_find_ground_state_basis_mpi():
     assert basis is not None
     assert len(basis) == 1
     state = next(iter(basis))
-    # N0={0:2}: the two-electron ground state fills the two lowest orbitals (0.5 + 1.0 = 1.5).
+    # N0={0:2}: the two-electron ground state fills the two lowest (negative-energy) orbitals
+    # (-1.0 + -0.5 = -1.5).
     np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0, 1))
 
 

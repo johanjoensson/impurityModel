@@ -15,7 +15,7 @@ from impurityModel.ed.gs_statistics import (
 )
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import log_memory_budget, suggest_truncation_threshold
 from impurityModel.ed.observables import (
     casimir_operator,
@@ -39,9 +39,98 @@ from impurityModel.ed.observables import (
     static_susceptibility_rows,
     thermal_observable_value,
 )
+from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.ed.spin_pairs import resolve_spin_pairs
 from impurityModel.ed.symmetries import extract_tensors
 from impurityModel.ed.utils import matrix_print, print_density_matrix_summary, report_banner, report_rule
+
+
+class SectorCache:
+    def __init__(self, max_size=3):
+        self.cache = {}
+        self.max_size = max_size
+        self.keys_ordered = []
+
+    def get(self, key):
+        if key in self.cache:
+            self.keys_ordered.remove(key)
+            self.keys_ordered.append(key)
+            return self.cache[key]
+        return None
+
+    def put(self, key, value):
+        if key in self.cache:
+            self.keys_ordered.remove(key)
+        elif len(self.cache) >= self.max_size:
+            oldest = self.keys_ordered.pop(0)
+            del self.cache[oldest]
+        self.cache[key] = value
+        self.keys_ordered.append(key)
+
+    def clear(self, keep=None):
+        """Null the MPI communicator on every cached basis except ``keep``, then drop them all.
+
+        A closure holding this cache (e.g. ``find_ground_state_basis.get_energy``) forms a
+        reference cycle with every ``Basis`` it caches; a split MPI communicator caught in that
+        cycle would only be freed by the cyclic GC, whose collection can run after
+        ``MPI_Finalize`` at interpreter shutdown and crash. Breaking the cycle here, at a point we
+        know we are done with the losing sectors, avoids relying on GC timing. ``keep`` (normally
+        the winning basis the caller is about to return) is left untouched.
+        """
+        for basis, _solver in self.cache.values():
+            if basis is not None and basis is not keep:
+                basis.comm = None
+        self.cache.clear()
+        self.keys_ordered.clear()
+
+
+def build_basis_and_solver(
+    h_op,
+    impurity_indices,
+    bath_states,
+    N0,
+    mixed_valence,
+    tau,
+    chain_restrict,
+    spin_flip_dj,
+    truncation_threshold,
+    comm,
+    verbose,
+    frozen_occupations,
+    weighted_restrictions,
+    slaterWeightMin,
+    sector_cache=None,
+):
+    key = frozenset(N0.items())
+    if sector_cache is not None:
+        cached = sector_cache.get(key)
+        if cached is not None:
+            return cached
+
+    basis = Basis(
+        impurity_indices,
+        bath_states,
+        delta_impurity_occ=dict.fromkeys(N0, 0),
+        delta_valence_occ=dict.fromkeys(N0, 0),
+        delta_conduction_occ=dict.fromkeys(N0, 0),
+        frozen_occupations=frozen_occupations,
+        nominal_impurity_occ=N0,
+        mixed_valence=mixed_valence,
+        tau=tau,
+        chain_restrict=chain_restrict,
+        truncation_threshold=truncation_threshold,
+        verbose=verbose,
+        spin_flip_dj=spin_flip_dj,
+        comm=comm,
+        weighted_restrictions=weighted_restrictions,
+    )
+    solver = CIPSISolver(basis)
+    solver.truncate_initial(h_op)
+
+    basis.restrictions = build_excited_restrictions(basis, h_op, psis=None, es=None, slater_weight_min=slaterWeightMin)
+    if sector_cache is not None:
+        sector_cache.put(key, (basis, solver))
+    return basis, solver
 
 
 def calc_energy(
@@ -54,15 +143,16 @@ def calc_energy(
     chain_restrict,
     spin_flip_dj,
     dense_cutoff,
-    comm,
-    verbose,
-    truncation_threshold,
-    slaterWeightMin,
+    comm=None,
+    verbose=True,
+    truncation_threshold=None,
+    slaterWeightMin=1e-12,
     cipsi_solver_method="trlm",
     reort="full",
-    return_state=False,
     weighted_restrictions=None,
     frozen_occupations=None,
+    symmetry_generators=None,
+    sector_cache=None,
 ):
     """
     Calculate the ground-state energy of the system for a given charge sector.
@@ -116,41 +206,41 @@ def calc_energy(
         The optimized many-body basis.
     """
 
-    basis = Basis(
+    basis, solver = build_basis_and_solver(
+        h_op,
         impurity_indices,
         bath_states,
-        delta_impurity_occ=dict.fromkeys(N0, 0),
-        delta_valence_occ=dict.fromkeys(N0, 0),
-        delta_conduction_occ=dict.fromkeys(N0, 0),
-        frozen_occupations=frozen_occupations,
-        nominal_impurity_occ=N0,
-        mixed_valence=mixed_valence,
-        tau=tau,
-        chain_restrict=chain_restrict,
-        truncation_threshold=truncation_threshold,
-        verbose=verbose,
-        spin_flip_dj=spin_flip_dj,
-        comm=comm,
-        weighted_restrictions=weighted_restrictions,
+        N0,
+        mixed_valence,
+        tau,
+        chain_restrict,
+        spin_flip_dj,
+        truncation_threshold,
+        comm,
+        verbose,
+        frozen_occupations,
+        weighted_restrictions,
+        slaterWeightMin,
+        sector_cache,
     )
-    solver = CIPSISolver(basis)
-    solver.truncate_initial(h_op)
 
-    basis.restrictions = build_excited_restrictions(basis, h_op, psis=None, es=None, slater_weight_min=slaterWeightMin)
     if len(basis) == 0:
-        return (np.inf, basis, None) if return_state else (np.inf, basis)
+        return np.inf, basis
     solver.expand(
         h_op,
         dense_cutoff=dense_cutoff,
         # de2_min is a per-determinant Epstein-Nesbet PT2 energy threshold (|<Dj|H|psi>|^2
-        # / |E_ref - E_Dj|). It was recalibrated ~2 orders down from the historical 1e-4
-        # when the de2 denominator was corrected (previously a frozen ~1e-12 clamp made
-        # de2_min a meaningless coupling filter); this occupation-search value is one order
-        # looser than the final-GS solve in calc_gs.
+        # / |E_ref - E_Dj|). This occupation-search value is one order looser than the
+        # final-GS solve in calc_gs (de2_min=1e-8), which is enough since only the relative
+        # ordering of charge sectors is needed here, not a fully converged energy -- but it
+        # must still be tight enough that PT2 truncation error does not itself depend on the
+        # sector (a more strongly-fluctuating sector loses more correlation energy at a given
+        # de2_min, which can flip the sector comparison this search exists to get right).
         de2_min=1e-6,
         slaterWeightMin=slaterWeightMin,
         solver=cipsi_solver_method,
         reort=reort,
+        symmetry_generators=symmetry_generators,
     )
 
     energy_cut = -tau * np.log(1e-4)
@@ -164,15 +254,12 @@ def calc_energy(
         solver=cipsi_solver_method,
         reort=reort,
     )
-    gs_state = eigen_psis[int(np.argmin(es))] if return_state and len(eigen_psis) > 0 else None
     # Remember whether the truncation_threshold bound this occupation's expansion, so the
     # caller can report a capped ground-state determination even though the final basis
     # (reduced to the eigenstate support below) may fit under the cap.
     basis.occupation_search_truncation = solver.truncation_report
     basis.clear()
     basis.add_states({state for psi in eigen_psis for state in psi})
-    if return_state:
-        return np.min(es), basis, gs_state
     return np.min(es), basis
 
 
@@ -225,6 +312,10 @@ def hartree_fock_seed_occupation(
     if verbose and (comm is None or comm.rank == 0):
         status = "converged" if converged else "NOT converged"
         print(f"HF seed occupation: {winning_N0}  (E_HF ~ {energy:6.3f}, {status})")
+    if comm is not None:
+        winning_N0 = comm.bcast(winning_N0, root=0)
+        converged = comm.bcast(converged, root=0)
+
     return winning_N0, converged
 
 
@@ -247,6 +338,7 @@ def find_ground_state_basis(
     cipsi_solver_method="trlm",
     use_hf_seed=True,
     weighted_restrictions=None,
+    symmetry_generators=None,
 ):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
@@ -285,8 +377,7 @@ def find_ground_state_basis(
     if frozen_occupations is None:
         frozen_occupations = set()
     basis_gs = None
-    gs_impurity_occ = N0.copy()
-    dN_gs = dict.fromkeys(N0.keys(), 0)
+    winning_impurity_occ = N0.copy()
 
     energy_cache = {}
     # Cache key of the single entry allowed to hold a Basis (the running best). Every other
@@ -299,9 +390,11 @@ def find_ground_state_basis(
     # ground-state determination is auditable even when the final basis fits under the cap.
     occ_search_reports = {}
 
+    sector_cache = SectorCache(max_size=3)
+
     def get_energy(trial_N0):
         """
-        Helper function to calculate, cache, and return the energy and basis for a trial N0.
+        Helper function to calculate, cache, and return the energy for a trial N0.
 
         Parameters
         ----------
@@ -312,23 +405,21 @@ def find_ground_state_basis(
         -------
         energy : float
             The ground state energy.
-        basis : Basis
-            The optimized many-body basis.
         """
 
         nonlocal best_cached_key
 
         key = tuple(sorted(trial_N0.items()))
         if key in energy_cache:
-            e_trial, basis = energy_cache[key]
-            return e_trial, (basis.copy() if basis is not None else None)
+            e_trial = energy_cache[key]
+            return e_trial
 
         # Check bounds: 0 <= occupation <= max possible orbitals
         for orbital_idx, occ in trial_N0.items():
             max_occ = sum(len(block) for block in impurity_orbitals[orbital_idx])
             if occ < 0 or occ > max_occ:
-                energy_cache[key] = (np.inf, None)
-                return np.inf, None
+                energy_cache[key] = np.inf
+                return np.inf
 
         e_trial, basis = calc_energy(
             h_op,
@@ -347,20 +438,16 @@ def find_ground_state_basis(
             cipsi_solver_method=cipsi_solver_method,
             weighted_restrictions=weighted_restrictions,
             frozen_occupations=frozen_occupations,
+            symmetry_generators=symmetry_generators,
+            sector_cache=sector_cache,
         )
-        if basis is not None:
-            occ_search_reports[key] = getattr(basis, "occupation_search_truncation", None)
-        if basis is not None and (best_cached_key is None or e_trial < energy_cache[best_cached_key][0]):
-            if best_cached_key is not None:
-                prev_e, prev_basis = energy_cache[best_cached_key]
-                if prev_basis is not None:
-                    prev_basis.comm = None
-                energy_cache[best_cached_key] = (prev_e, None)
-            energy_cache[key] = (e_trial, basis.copy())
+        if basis.is_distributed:
+            e_trial = basis.comm.bcast(e_trial)
+        occ_search_reports[key] = getattr(basis, "occupation_search_truncation", None)
+        energy_cache[key] = e_trial
+        if best_cached_key is None or e_trial < energy_cache[best_cached_key]:
             best_cached_key = key
-        else:
-            energy_cache[key] = (e_trial, None)
-        return e_trial, basis
+        return e_trial
 
     keys = list(N0.keys())
 
@@ -417,66 +504,142 @@ def find_ground_state_basis(
         # (the mean-field lowest-energy determinant), replacing the O(3^k) dN scan; then a
         # single accurate solve at that occupation refines it. HF is quick and memory-bounded
         # (no broad-window CIPSI expansion), which matters for long bath chains.
-        winning_N0 = hf_seed
-        e_gs, basis = get_energy(winning_N0)
-        gs_impurity_occ = winning_N0
-        basis_gs = basis.copy() if basis is not None else None
+        winning_impurity_occ = hf_seed
+        e_gs = get_energy(winning_impurity_occ)
         if verbose and (comm is None or comm.rank == 0):
-            print("HF-seeded ground state occupation:", gs_impurity_occ, f"~ {e_gs:6.3f}", flush=True)
+            print("HF-seeded ground state occupation:", winning_impurity_occ, f"~ {e_gs:6.3f}", flush=True)
+
+        # The HF seed is a single mean-field determinant and can miss the true sector along more
+        # than one group at once -- e.g. an inter-group charge transfer (dN = (-1, +1)) whose two
+        # axis neighbours are BOTH higher in energy than the seed (each pays a charging energy
+        # U_A or U_B in isolation, while only the combined move gains the transfer energy), so a
+        # pure coordinate-descent walk finds no improving neighbour and stops short. Probe every
+        # combination move once from the seed, exactly like the legacy scan's first pass, so a
+        # diagonal correction is reachable; bounded to a handful of groups (3^k) so this stays
+        # cheap, since impurities with more groups fall back to axis-only moves from the seed.
+        if 1 < len(keys) <= 4:
+            best_combo = winning_impurity_occ
+            best_combo_e = e_gs
+            for dN in product([0, -1, 1], repeat=len(keys)):
+                if all(d == 0 for d in dN):
+                    continue
+                trial = {
+                    keys[i]: winning_impurity_occ[keys[i]] + (0 if keys[i] in frozen_occupations else dN[i])
+                    for i in range(len(keys))
+                }
+                e_trial = get_energy(trial)
+                if verbose and (comm is None or comm.rank == 0):
+                    print("{" + " ".join(f" {k} : {trial[k]}" for k in keys) + f"}} ~ {e_trial:6.3f}")
+                if e_trial < best_combo_e:
+                    best_combo_e = e_trial
+                    best_combo = trial
+            winning_impurity_occ = best_combo
+            e_gs = best_combo_e
+
+        while True:
+            best_neighbor = None
+            best_e = e_gs
+
+            for i in keys:
+                if i in frozen_occupations:
+                    continue
+                for delta in (-1, 1):
+                    trial = winning_impurity_occ.copy()
+                    trial[i] += delta
+                    max_occ = sum(len(block) for block in impurity_orbitals[i])
+                    if 0 <= trial[i] <= max_occ:
+                        e_trial = get_energy(trial)
+                        if verbose and (comm is None or comm.rank == 0):
+                            print("{" + " ".join(f" {k} : {trial[k]}" for k in keys) + f"}} ~ {e_trial:6.3f}")
+                        if e_trial < best_e:
+                            best_e = e_trial
+                            best_neighbor = trial
+
+            if best_neighbor is None or best_e >= e_gs:
+                break
+
+            winning_impurity_occ = best_neighbor
+            e_gs = best_e
     else:
         dN_trials = [
             {keys[i]: dN[i] if keys[i] not in frozen_occupations else 0 for i in range(len(keys))}
             for dN in product([0, -1, 1], repeat=len(keys))
         ]
         e_gs = np.inf
+        dN_gs = dict.fromkeys(N0.keys(), 0)
         for dN in dN_trials:
             trial_N0 = {i: N0[i] + dN[i] for i in N0}
-            e_trial, basis = get_energy(trial_N0)
+            e_trial = get_energy(trial_N0)
             if verbose:
                 print("{" + " ".join(f" {i} : {trial_N0[i]}" for i in dN) + f"}} ~ {e_trial:6.3f}")
             if e_trial < e_gs:
                 e_gs = e_trial
-                basis_gs = basis.copy()
                 dN_gs = dN
-                gs_impurity_occ = trial_N0
+                winning_impurity_occ = trial_N0
         for i in N0:
             while (
                 dN_gs[i] != 0
-                and all(imp_occ + dN_gs[j] > 0 for j, imp_occ in gs_impurity_occ.items())
+                and all(imp_occ + dN_gs[j] > 0 for j, imp_occ in winning_impurity_occ.items())
                 and all(
                     imp_occ + dN_gs[j] <= sum(len(block) for block in impurity_orbitals[j])
-                    for j, imp_occ in gs_impurity_occ.items()
+                    for j, imp_occ in winning_impurity_occ.items()
                 )
             ):
-                trial_N0 = {j: n + dN_gs[i] if i == j else n for j, n in gs_impurity_occ.items()}
-                e_trial, basis = get_energy(trial_N0)
+                trial_N0 = {j: n + dN_gs[i] if i == j else n for j, n in winning_impurity_occ.items()}
+                e_trial = get_energy(trial_N0)
                 if verbose:
                     print(
                         "{" + " ".join(f" {j} : {trial_N0[j]}" for j in dN_gs) + f"}} ~ {e_trial:6.3f}",
                     )
                 if e_trial >= e_gs:
                     break
-                gs_impurity_occ[i] += dN_gs[i]
+                winning_impurity_occ[i] += dN_gs[i]
                 e_gs = e_trial
-                basis_gs = basis.copy()
+
+    if tuple(sorted(winning_impurity_occ.items())) != best_cached_key and verbose and (comm is None or comm.rank == 0):
+        print(
+            "WARNING: the winning occupation does not match the cache's best entry "
+            f"({winning_impurity_occ} vs key {best_cached_key}); this can happen if every trial "
+            "occupation was out of bounds.",
+            flush=True,
+        )
     if verbose:
         print("Ground state occupation")
-        print("\n".join((f"{i:^3d}: {gs_impurity_occ[i]: ^5d}" for i in gs_impurity_occ)))
+        print("\n".join((f"{i:^3d}: {winning_impurity_occ[i]: ^5d}" for i in winning_impurity_occ)))
         print(rf"E$_{{GS}}$ = {e_gs:^7.4f}")
         print("=" * 80)
-    # Explicitly clear the energy_cache to break the closure reference cycle.
-    # get_energy captures energy_cache (closure), which holds Basis objects whose
-    # .comm may be a split MPI communicator.  Without this, the cycle cannot be
-    # freed by CPython's reference-counting and survives until Python shutdown,
-    # where MPI has already been finalised -> segfault.
-    for _cached_e, _cached_basis in energy_cache.values():
-        if _cached_basis is not None:
-            _cached_basis.comm = None
     energy_cache.clear()
+    e_gs, basis_gs = calc_energy(
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        winning_impurity_occ,
+        mixed_valence,
+        tau,
+        chain_restrict,
+        spin_flip_dj,
+        dense_cutoff,
+        comm=comm,
+        verbose=verbose,
+        truncation_threshold=truncation_threshold,
+        slaterWeightMin=slaterWeightMin,
+        cipsi_solver_method=cipsi_solver_method,
+        weighted_restrictions=weighted_restrictions,
+        frozen_occupations=frozen_occupations,
+        symmetry_generators=symmetry_generators,
+        sector_cache=sector_cache,
+    )
+    if basis_gs.is_distributed:
+        e_gs = basis_gs.comm.bcast(e_gs)
+
+    # Break the closure -> sector_cache -> Basis reference cycle now (see SectorCache.clear),
+    # keeping only the winning basis's communicator alive.
+    sector_cache.clear(keep=basis_gs)
+
     if basis_gs is not None:
         # Whether the winning occupation's expansion was memory-capped (None if not), for
         # downstream truncation auditing (calc_gs merges this with its own final expand).
-        basis_gs.occupation_search_truncation = occ_search_reports.get(tuple(sorted(gs_impurity_occ.items())))
+        basis_gs.occupation_search_truncation = occ_search_reports.get(tuple(sorted(winning_impurity_occ.items())))
     return basis_gs
 
 
@@ -539,6 +702,8 @@ def calc_gs(
     tau = basis_setup["tau"]
     basis_setup["tau"] /= 100
     dense_cutoff = basis_setup.get("dense_cutoff", 1000)
+    symmetry_generators = get_symmetry_generators(Hop, basis_setup["impurity_orbitals"], basis_setup["bath_states"])
+    basis_setup["symmetry_generators"] = symmetry_generators
     ground_state_basis = find_ground_state_basis(
         Hop,
         verbose=verbose,
@@ -556,7 +721,12 @@ def calc_gs(
     # (recalibrated from 1e-6 when the de2 denominator was corrected in cipsi_solver; see
     # calc_energy). Tighter than the occupation search so the returned GS is well-converged.
     solver.expand(
-        Hop, dense_cutoff=dense_cutoff, de2_min=1e-8, slaterWeightMin=slaterWeightMin, solver=cipsi_solver_method
+        Hop,
+        dense_cutoff=dense_cutoff,
+        de2_min=1e-8,
+        slaterWeightMin=slaterWeightMin,
+        solver=cipsi_solver_method,
+        symmetry_generators=symmetry_generators,
     )
     # Record whether the truncation_threshold bound the ground-state determination (and how
     # the fixed-budget refinement resolved it), so a capped GS is auditable downstream
@@ -564,6 +734,7 @@ def calc_gs(
     # The cap can bind either the final expansion here or the earlier occupation search
     # (whose final basis may then fit under the cap); report either.
     gs_truncation_report = solver.truncation_report or getattr(ground_state_basis, "occupation_search_truncation", None)
+    solver.psi_refs = None
     es, psis = solver.get_eigenvectors(
         Hop,
         num_wanted=num_wanted,
