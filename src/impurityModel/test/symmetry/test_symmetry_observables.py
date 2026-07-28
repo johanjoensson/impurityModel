@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, inner, ManyBodyOperator
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner
 from impurityModel.ed.observables import (
     casimir_operator,
     casimir_to_quantum_number,
@@ -1129,7 +1129,11 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
         N0=N0,
         mixed_valence=dict.fromkeys(impurity_orbitals, 1),
         tau=0.01,
-        dense_cutoff=4000,
+        # dense_cutoff=4000 forced the O(N^3) dense eigh branch on every trial solve in the
+        # eg/t2g diagonal-move probe + axis walk (~330s measured). This is a "must not raise" +
+        # sane-S(S+1) plumbing check with no golden numeric target, so the dense/iterative
+        # choice is free: 200 keeps every trial iterative and measured 23s, unchanged assertions.
+        dense_cutoff=200,
         spin_flip_dj=True,
         comm=None,
         truncation_threshold=200000,

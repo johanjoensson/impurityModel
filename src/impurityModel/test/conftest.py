@@ -51,13 +51,45 @@ def pytest_configure(config):
     reporter._tw.hasmarkup = False
 
 
+def _watchdog_file(config):
+    # faulthandler needs a file object that is NOT one of the process's fd 0/1/2:
+    # pytest's default "fd" capture dup2()s a temp file over the real stderr fd for
+    # the duration of each test, so writes to sys.stderr (or even sys.__stderr__,
+    # which still names the same, now-redirected, fd number) land in the captured
+    # buffer and are invisible unless the test fails. A plain open() file uses an
+    # independent fd, so it bypasses the redirect entirely. Cached on config so a
+    # long test session reuses one handle instead of reopening per item.
+    cached = getattr(config, "_hang_watchdog_file", None)
+    if cached is not None:
+        return cached
+    rank = MPI.COMM_WORLD.Get_rank() if (_has_mpi and MPI.Is_initialized()) else 0
+    size = MPI.COMM_WORLD.Get_size() if (_has_mpi and MPI.Is_initialized()) else 1
+    suffix = f"_rank{rank}" if size > 1 else ""
+    f = open(f".pytest_watchdog{suffix}.out", "w")  # noqa: SIM115  (closed via add_cleanup)
+    config._hang_watchdog_file = f
+    config.add_cleanup(f.close)
+    return f
+
+
 def pytest_runtest_setup(item):
-    # Dump traceback to stderr if any test hangs for more than 15 seconds
-    faulthandler.dump_traceback_later(15, file=sys.stderr)
+    # Dump traceback if any test runs longer than 15 seconds. This is a diagnostic
+    # snapshot, not a failure: a legitimately slow test just gets one recorded
+    # stack showing it mid-computation (e.g. inside eigh), distinguishing "slow"
+    # from "actually stuck on an MPI collective" without a manual py-spy bisect.
+    faulthandler.dump_traceback_later(15, file=_watchdog_file(item.config))
 
 
 def pytest_runtest_teardown(item, nextitem):
     faulthandler.cancel_dump_traceback_later()
-    if _has_mpi and MPI.Is_initialized() and not MPI.Is_finalized():
+    # MPI_Comm_free is collective: without a barrier, one rank could be inside gc.collect()
+    # (freeing a split communicator -- see basis_split.py) while another rank has already
+    # moved on to the next test, a protocol violation that segfaults. gc.collect() is what
+    # actually calls MPI_Comm_free (via the communicator wrapper's finalizer), so both must
+    # run together, and only when a split communicator could exist in the first place --
+    # basis_split only activates at world.size > 1 (see CLAUDE.md), so a plain serial run or
+    # `mpiexec -n 1` has nothing to synchronize. gc.collect() alone measured ~33 ms/item here
+    # (~50 s across the full suite); gating it to real multi-rank runs recovers that for the
+    # serial gate without touching the invariant it exists for.
+    if _has_mpi and MPI.Is_initialized() and not MPI.Is_finalized() and MPI.COMM_WORLD.Get_size() > 1:
         MPI.COMM_WORLD.Barrier()
-    gc.collect()
+        gc.collect()

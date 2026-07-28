@@ -50,7 +50,13 @@ _E_RTOL = 1e-10
 _NBATHS = 10
 _DE2_MIN = 1e-6
 _DENSE_CUTOFF = 50
-_TRUNCATION = 1000
+# Was 1000, but the two build_ground_state_workload() call sites below never actually passed
+# it through (dead constant): they silently ran at that function's own default of 30000,
+# which lets the 4-impurity-group NiO-10-bath walk (groundstate.py's diagonal probe) grow
+# ~132 trial CIPSI solves to a 1000+-determinant basis each, ~88s per call. Now threaded
+# through explicitly; 300 reproduces the same rank-independence property (a differential
+# world-vs-COMM_SELF comparison, not a golden numeric target) in ~18s.
+_TRUNCATION = 300
 _N_OMEGA = 32
 
 
@@ -89,10 +95,20 @@ def test_cipsi_ground_state_basis_is_rank_independent():
     world = MPI.COMM_WORLD
 
     distributed = build_ground_state_workload(
-        nBaths=_NBATHS, de2_min=_DE2_MIN, dense_cutoff=_DENSE_CUTOFF, comm=world, verbose=False
+        nBaths=_NBATHS,
+        de2_min=_DE2_MIN,
+        dense_cutoff=_DENSE_CUTOFF,
+        truncation_threshold=_TRUNCATION,
+        comm=world,
+        verbose=False,
     )
     serial = build_ground_state_workload(
-        nBaths=_NBATHS, de2_min=_DE2_MIN, dense_cutoff=_DENSE_CUTOFF, comm=MPI.COMM_SELF, verbose=False
+        nBaths=_NBATHS,
+        de2_min=_DE2_MIN,
+        dense_cutoff=_DENSE_CUTOFF,
+        truncation_threshold=_TRUNCATION,
+        comm=MPI.COMM_SELF,
+        verbose=False,
     )
 
     got = _basis_fingerprint(distributed["basis"], world)
@@ -156,7 +172,12 @@ def test_warm_started_eigensolver_delivers_more_than_its_start_block():
     """
     world = MPI.COMM_WORLD
     workload = build_ground_state_workload(
-        nBaths=_NBATHS, de2_min=_DE2_MIN, dense_cutoff=_DENSE_CUTOFF, comm=world, verbose=False
+        nBaths=_NBATHS,
+        de2_min=_DE2_MIN,
+        dense_cutoff=_DENSE_CUTOFF,
+        truncation_threshold=_TRUNCATION,
+        comm=world,
+        verbose=False,
     )
     solver = workload["solver"]
     assert solver.psi_refs is not None, "the workload no longer leaves a warm start; the test is moot"

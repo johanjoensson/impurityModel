@@ -18,6 +18,8 @@ build/
 .pytest_cache/
 # Per-rank pytest output from non-root MPI ranks (see test/conftest.py)
 .pytest_mpi_rank*.out
+# Hang-watchdog dumps (see test/conftest.py)
+.pytest_watchdog*.out
 
 # VIM files
 .*~

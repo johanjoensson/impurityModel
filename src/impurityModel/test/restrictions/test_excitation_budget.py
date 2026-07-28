@@ -221,13 +221,22 @@ def test_calc_gs_large_budget_reproduces_unrestricted_energy():
 
 
 def _nio_selfenergy(excitation_budget):
-    """Run calc_selfenergy on the small NiO d-shell workload with the given budget."""
+    """Run calc_selfenergy on the small NiO d-shell workload with the given budget.
+
+    ``dense_cutoff=500`` (down from a golden-baseline-style 100000): this test only checks
+    that an unset budget and a budget >= the reachable space agree (driver threading + GF
+    inheritance), not exactness against a stored reference, so the dense/iterative choice is
+    free to move. Measured: 500 reproduces the dense_cutoff=100000 answer to ~1e-13 (gs_energies,
+    sigma_real) while cutting this test from ~278s to ~20s per call -- 100000 forced the O(N^3)
+    dense `eigh` branch on the full (~13k-determinant) excited-state basis; TRLM/IRLM converge
+    to the same eigenpairs iteratively for a fraction of the cost.
+    """
     import dataclasses
 
     from impurityModel.ed.selfenergy import calc_selfenergy
     from impurityModel.test.support._nio_workload import as_calc_selfenergy_args, build_selfenergy_inputs
 
-    inputs = build_selfenergy_inputs(nBaths=10, n_omega=3, dense_cutoff=100000, truncation_threshold=100000)
+    inputs = build_selfenergy_inputs(nBaths=10, n_omega=3, dense_cutoff=500, truncation_threshold=100000)
     args = as_calc_selfenergy_args(inputs)
     args["basis"] = dataclasses.replace(args["basis"], excitation_budget=excitation_budget)
     return calc_selfenergy(**args, comm=None)
