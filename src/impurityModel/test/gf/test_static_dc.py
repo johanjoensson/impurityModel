@@ -167,3 +167,53 @@ def test_amf_dc_raises_without_u4():
     )
     with pytest.raises(ValueError, match="u4"):
         amf_dc(model, n=1.0)
+
+
+def _half_filled_model(v=0.1):
+    """Impurity levels at the Fermi level, so the reference filling is genuinely fractional."""
+    h0 = np.zeros((4, 4), dtype=complex)
+    for s in range(2):
+        imp, bath = s, 2 + s
+        h0[imp, imp] = 0.0
+        h0[bath, bath] = EPS_B
+        h0[imp, bath] = v
+        h0[bath, imp] = v
+    u4 = np.zeros((4, 4, 4, 4), dtype=complex)
+    u4[0, 1, 0, 1] = U
+    u4[1, 0, 1, 0] = U
+    return ImpurityModel.from_solver_matrix(
+        h0, 2, dc=None, u4=u4, rot_to_spherical=np.eye(2, dtype=complex), bath_valence_conduction=([2, 3], [])
+    )
+
+
+@pytest.mark.parametrize("scheme", [fll_dc, amf_dc, sigma_inf_dc])
+def test_static_dc_warns_when_the_reference_filling_saturates(scheme, capsys):
+    """All three schemes default to the DFT reference; only the search used to warn about it.
+
+    The reference is the Fermi filling of the *discretized* h0, which pins at the full shell for
+    a coarse bath fit (NiO: 8.63 at 15 bath states per block, exactly 10.0 at 1 and 5). FLL
+    evaluated one electron off is wrong by U*dN - J*dN/2 -- several eV, enough to move NiO from
+    Mott-insulating to nearly metallic -- and it was wrong silently: the warning lived inside
+    fixed_occupation_dc and the static formulas never saw it.
+    """
+    scheme(build_dimer_model(v=0.1), tau=1e-3)
+    out = capsys.readouterr().out
+    assert "saturated" in out and "N0 = 2.0000" in out, out
+    # The advice must match the scheme family: these take the value directly, not a target line.
+    assert "n=" in out or "rho=" in out, out
+
+
+@pytest.mark.parametrize("scheme", [fll_dc, amf_dc, sigma_inf_dc])
+def test_static_dc_is_quiet_on_an_unsaturated_reference(scheme, capsys):
+    scheme(_half_filled_model(), tau=1e-3)
+    assert "saturated" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "scheme, kwargs",
+    [(fll_dc, {"n": 1.0}), (amf_dc, {"n": 1.0}), (sigma_inf_dc, {"rho": np.eye(2, dtype=complex) * 0.5})],
+)
+def test_static_dc_does_not_warn_when_the_caller_supplies_the_filling(scheme, kwargs, capsys):
+    """A caller that passed its own occupation has already made the choice the warning is about."""
+    scheme(build_dimer_model(v=0.1), tau=1e-3, **kwargs)
+    assert "saturated" not in capsys.readouterr().out

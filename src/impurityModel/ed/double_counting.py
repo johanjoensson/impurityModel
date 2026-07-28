@@ -40,6 +40,13 @@ no MPI collective, identical on every rank. Each evaluates its formula at the DF
 occupation or density matrix -- the Fermi filling of the raw ``h0``
 (:func:`_noninteracting_impurity_rho`), the same reference :func:`fixed_occupation_dc` targets --
 unless the caller supplies the occupation/density matrix explicitly.
+
+That shared reference is a property of the *discretized* bath and pins at the full (or empty)
+shell when the fit places no impurity weight across the Fermi level, so every scheme that
+defaults to it routes through :func:`_warn_if_reference_saturated` first. A saturated reference
+is wrong by O(1) electron, which for FLL is several eV -- enough to move NiO from Mott-insulating
+to nearly metallic -- and it is wrong silently, so the check belongs to the reference rather than
+to any one scheme.
 """
 
 import numpy as np
@@ -120,6 +127,60 @@ def _noninteracting_impurity_occupation(h0_op, impurity_indices, n_spin_orbitals
     """Thermal impurity occupation ``Tr rho_imp``; see :func:`_noninteracting_impurity_rho`."""
     rho = _noninteracting_impurity_rho(h0_op, impurity_indices, n_spin_orbitals, tau)
     return float(np.real(np.trace(rho)))
+
+
+# What to do about a saturated reference, per scheme family. The searches take a target on the
+# double-counting line; the static formulas take the occupation (or density matrix) directly.
+_SATURATION_ADVICE = {
+    "search": (
+        "so the self-consistent occupation criterion is meaningless and the search will very "
+        "likely fail as unreachable. Supply an explicit occupation target instead (RSPt "
+        "interface: 'occ <N>' on the double-counting line), or improve the bath discretization "
+        "around the Fermi level."
+    ),
+    "static": (
+        "so the double counting is evaluated at a filling the material does not have. Supply the "
+        "occupation (n=) or density matrix (rho=) explicitly instead, or improve the bath "
+        "discretization around the Fermi level."
+    ),
+}
+
+
+def _warn_if_reference_saturated(n0, total_impurity_orbitals, advice, occ_tol=1e-2, rank=None):
+    """Warn when the DFT reference filling has pinned at the full or empty shell.
+
+    Saturation is a threshold phenomenon of coarse bath discretizations, not a smooth error:
+    impurity weight crosses the Fermi level only when level repulsion pushes a mixed state
+    through it (NiO: ``n0 = 8.63`` at 15 bath states per block, exactly ``10.0`` at 1 and 5). A
+    saturated reference is silently wrong rather than noisily wrong, and it is wrong by O(1)
+    electron -- for FLL that is ``U * dN - J * dN / 2``, several eV, enough to move NiO from
+    Mott-insulating to nearly metallic. Every scheme that *defaults* to the reference routes
+    through here; a caller supplying its own occupation is not warned, having chosen it.
+
+    Printing only (no collective), so gating on rank 0 is safe.
+    """
+    if rank is None:
+        rank = MPI.COMM_WORLD.rank
+    if rank != 0:
+        return
+    if not (n0 >= total_impurity_orbitals - occ_tol or n0 <= occ_tol):
+        return
+    print(
+        f"WARNING: the DFT reference occupation N0 = {n0:.4f} is saturated at the "
+        f"{'full' if n0 > occ_tol else 'empty'} impurity shell "
+        f"(of {total_impurity_orbitals} spin-orbitals): the discretized bath places no "
+        "impurity spectral weight across the Fermi level (typical for coarse "
+        f"valence-only bath fits), {advice}",
+        flush=True,
+    )
+
+
+def _reference_impurity_occupation(model, tau, *, warn=True):
+    """The DFT impurity occupation the static schemes default to, saturation-checked."""
+    n = _noninteracting_impurity_occupation(model.h0, model.impurity_indices, model.n_spin_orbitals, tau)
+    if warn:
+        _warn_if_reference_saturated(n, len(model.impurity_indices), _SATURATION_ADVICE["static"])
+    return n
 
 
 def _model_u4_dense(model):
@@ -780,23 +841,11 @@ def fixed_occupation_dc(
     self_consistent = occupation is None
     if self_consistent:
         occupation = n0
-        if (n0 >= total_impurity_orbitals - occ_tol or n0 <= occ_tol) and rank == 0:
-            # Saturation is a threshold phenomenon of coarse discretizations, not a smooth
-            # error: impurity weight crosses the Fermi level only when level repulsion pushes
-            # a mixed state through it (NiO: n0 = 8.63 at 15 bath states per block, exactly
-            # 10.0 at 1 and 5).
-            print(
-                f"WARNING: the DFT reference occupation N0 = {n0:.4f} is saturated at the "
-                f"{'full' if n0 > occ_tol else 'empty'} impurity shell "
-                f"(of {total_impurity_orbitals} spin-orbitals): the discretized bath places no "
-                "impurity spectral weight across the Fermi level (typical for coarse "
-                "valence-only bath fits), so the self-consistent occupation criterion is "
-                "meaningless and the search will very likely fail as unreachable. Supply an "
-                "explicit occupation target instead (RSPt interface: 'occ <N>' on the "
-                "double-counting line), or improve the bath discretization around the Fermi "
-                "level.",
-                flush=True,
-            )
+        # Only when N0 is the *target*: with an explicit target a saturated reference is merely
+        # logged, not acted on.
+        _warn_if_reference_saturated(
+            n0, total_impurity_orbitals, _SATURATION_ADVICE["search"], occ_tol=occ_tol, rank=rank
+        )
     # Tolerance absorbs the roundoff of a target derived elsewhere the same way
     # _noninteracting_impurity_occupation is (a sum of Fermi occupations, each in [0, 1]).
     if not -1e-9 <= occupation <= total_impurity_orbitals + 1e-9:
@@ -968,7 +1017,7 @@ def fll_dc(model, *, tau=0.002, n=None, u=None, j=None):
         j = j_auto if j is None else j
     identity = np.identity(n_imp, dtype=complex)
     if n is None:
-        n = _noninteracting_impurity_occupation(model.h0, model.impurity_indices, model.n_spin_orbitals, tau)
+        n = _reference_impurity_occupation(model, tau)
     return (u * (n - 0.5) - 0.5 * j * (n - 1.0)) * identity
 
 
@@ -999,7 +1048,7 @@ def amf_dc(model, *, tau=0.002, n=None):
     u4_dense = _model_u4_dense(model)
     identity = np.identity(n_imp, dtype=complex)
     if n is None:
-        n = _noninteracting_impurity_occupation(model.h0, model.impurity_indices, model.n_spin_orbitals, tau)
+        n = _reference_impurity_occupation(model, tau)
     return get_Sigma_static(u4_dense, (n / n_imp) * identity)
 
 
@@ -1028,4 +1077,7 @@ def sigma_inf_dc(model, *, tau=0.002, rho=None):
     u4_dense = _model_u4_dense(model)
     if rho is None:
         rho = _noninteracting_impurity_rho(model.h0, model.impurity_indices, model.n_spin_orbitals, tau)
+        _warn_if_reference_saturated(
+            float(np.real(np.trace(rho))), len(model.impurity_indices), _SATURATION_ADVICE["static"]
+        )
     return get_Sigma_static(u4_dense, np.asarray(rho, dtype=complex))
