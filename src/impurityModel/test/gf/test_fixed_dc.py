@@ -129,11 +129,72 @@ def test_fixed_peak_dc_removal_peak():
     assert np.allclose(np.diag(dc).real, expected, atol=5e-3), dc
 
 
-def test_fixed_peak_dc_multiple_groups_raises():
+def _split_block_kwargs(dc_scale=0.0):
+    """A model whose impurity block structure *splits*, in miniature.
+
+    Four impurity spin-orbitals at two distinct on-site energies, so
+    :func:`prepare_solver_basis` derives two orbital-symmetry groups from a single-group input --
+    the same thing a cubic crystal field does to a d-shell (``{0: [0..9]}`` -> ``eg``/``t2g``).
+    Every NiO-like workload has this shape; the ``build_model`` fixture above does not, because
+    ``diag(EPS, EPS)`` is one block.
+    """
+    h_imp = np.diag([0.4, 0.4, -0.4, -0.4]).astype(complex)
+    v = np.eye(4, dtype=complex) * 0.2
+    h_bath = np.diag([-2.0, -2.0, -2.1, -2.1]).astype(complex)
+    u4 = np.zeros((4,) * 4, dtype=complex)
+    for i in range(4):
+        for j in range(4):
+            if i != j:
+                u4[i, j, i, j] = 2.0
+    dc = np.identity(4, dtype=complex) * dc_scale
+    model = ImpurityModel.from_blocks(
+        h_imp,
+        v,
+        h_bath,
+        u4=u4,
+        dc=dc,
+        rot_to_spherical=np.eye(4, dtype=complex),
+        bath_valence_conduction=(list(range(4, 8)), []),
+    )
+    basis = BasisOptions(
+        nominal_occ={0: 2},
+        mixed_valence=None,
+        spin_flip_dj=False,
+        tau=1e-3,
+        slater_weight_min=np.sqrt(np.finfo(float).eps),
+        truncation_threshold=int(1e6),
+    )
+    return dict(model=model, basis=basis, solver=SolverOptions(dense_cutoff=1000), comm=MPI.COMM_WORLD), dc
+
+
+def test_fixed_peak_dc_runs_on_split_block_impurity():
+    """Regression: the peak search used to key its sectors on the *input* group.
+
+    ``prepare_solver_basis`` re-derives the impurity grouping, so a single-group input becomes
+    several derived groups on any cubic crystal field. The old code took ``group_key`` from the
+    input ``N0`` and then indexed the *derived* layout with it, building one-key occupation dicts
+    that ``generate_initial_basis`` iterates over every derived group -- ``KeyError``. RSPt's
+    generic handler turns that into ``comm.Abort``, so fixed-peak dc killed the run on exactly
+    the material class it exists for.
+    """
+    kwargs, dc_guess = _split_block_kwargs()
+    dc = fixed_peak_dc(peak_position=0.5, **kwargs)
+    assert dc.shape == (4, 4)
+    shift = dc - dc_guess
+    np.testing.assert_allclose(shift, shift[0, 0] * np.identity(4), atol=1e-12)
+
+
+def test_fixed_peak_dc_accepts_multiple_groups():
+    """The criterion moves one electron on/off the impurity as a whole, so no group is special.
+
+    It used to raise ``ValueError`` here. The many-body basis is filtered on the *total* impurity
+    charge alone (``generate_initial_basis``), so a per-group occupation is not a handle the
+    criterion could act on even in principle.
+    """
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=1.0)
     kwargs["basis"] = replace(kwargs["basis"], nominal_occ={0: 1, 1: 1})
-    with pytest.raises(ValueError, match="single impurity group"):
-        fixed_peak_dc(peak_position=1.0, **kwargs)
+    dc = fixed_peak_dc(peak_position=1.0, **kwargs)
+    assert dc.shape == (2, 2)
 
 
 def test_fixed_occupation_dc_already_converged():

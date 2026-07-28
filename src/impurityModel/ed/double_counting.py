@@ -54,7 +54,7 @@ from impurityModel.ed.lie_algebra import extract_tensors, rotate_two_body, tenso
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.memory_estimate import DEFAULT_MEMORY_SAFETY, log_memory_budget, suggest_truncation_threshold
 from impurityModel.ed.sigma import get_Sigma_static
-from impurityModel.ed.solver_basis import prepare_solver_basis
+from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
 
 
@@ -390,7 +390,11 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     not approximate the requested peak position, it would misplace it -- the same reasoning that
     drives :func:`fixed_occupation_dc`'s sector determination. The ``N +- 1`` sectors are then
     each a single, fixed-occupation solve (:func:`groundstate.calc_energy`) relative to that
-    found center, not a further search. Energies carry no fixed unit, they follow the inputs
+    found center, not a further search. ``N`` here is the *whole-impurity* occupation, never one
+    orbital-symmetry group's: :func:`solver_basis.prepare_solver_basis` re-derives the grouping
+    from the block structure (a cubic d-shell input arrives as one group and comes back as
+    ``eg``/``t2g``), and the many-body basis is filtered on the total impurity charge alone, so
+    the total is the only well-defined handle. Energies carry no fixed unit, they follow the inputs
     (e.g. Ry when called from RSPt); the convergence tolerance is ``max(tau, 1e-4)`` in those
     units. All three sectors honor ``BasisOptions.excitation_budget``/``chain_restrict``
     identically -- the bath-only excitation-budget restriction never references the occupation,
@@ -404,8 +408,9 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
         ``impurity_orbitals`` and ``bath_states`` -- the ``(valence, conduction)`` bath split is
         required here (build the model with it, e.g. ``from_blocks(..., bath_valence_conduction=...)``).
     basis : impurityModel.ed.model.BasisOptions
-        Nominal occupation (``{group: N}``; a single group only -- with more groups it is
-        ambiguous which gains/loses the electron), mixed valence, spin-flip determinants,
+        Nominal occupation (``{group: N}``; any number of groups -- the criterion moves one
+        electron on/off the impurity *as a whole*, so no group is singled out), mixed valence,
+        spin-flip determinants,
         temperature and the determinant budget. ``truncation_threshold=None`` (the default)
         derives the cap from available per-rank memory (collective on ``MPI.COMM_WORLD``,
         :func:`impurityModel.ed.memory_estimate.suggest_truncation_threshold`), halved to
@@ -454,13 +459,6 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
     verbose = verbosity > 0
 
-    if len(N0) != 1:
-        raise ValueError(
-            f"fixed_peak_dc supports a single impurity group, got N0 = {N0}. "
-            "With multiple groups it is ambiguous which group gains/loses the electron."
-        )
-    (group_key,) = N0.keys()
-
     # Derive the same solver-basis layout calc_selfenergy uses (root cause 3 of the original
     # DC<->GS mismatch: the fit valence/conduction split model.bath_states carries is not
     # necessarily the split calc_selfenergy re-derives from the sign of the bath on-site energy).
@@ -472,8 +470,21 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     N0 = sb.nominal_occ
     mixed_valence = sb.mixed_valence
     h_op_i = sb.h
-    max_occ_group = sum(len(block) for block in impurity_orbitals[group_key])
+    # The peak criterion moves one electron on/off the impurity *as a whole*, never a named
+    # group: the many-body basis is generated from the whole-impurity charge window (only the
+    # total is filtered, see basis_generation.generate_initial_basis) and n_center below is
+    # likewise read off as a whole-impurity count, so the total is the only well-defined handle.
+    # Anything keyed on a single group is a bug here: prepare_solver_basis re-derives the
+    # grouping from the block structure, so a single-group input becomes several derived groups
+    # on any cubic crystal field ({0: [0..9]} -> eg/t2g), and a group key taken from the *input*
+    # N0 then indexes the *derived* layout. _per_group_occupation is the same total -> groups
+    # mapping prepare_solver_basis itself uses (energetic filling); since the basis depends only
+    # on the total, which split it returns cannot change the answer.
+    max_occ_total = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
+    # One-body matrix in the *solver* basis (h0_solve, i.e. after any symmetry rotation), so the
+    # energetic filling below sees the same on-site energies that defined the derived groups.
+    h_solver_matrix = extract_tensors(sb.h0_solve, n_orb=sb.n_spin_orbitals, two_body=False)[0]
     identity = np.identity(dc_guess.shape[0])
 
     if truncation_threshold is None:
@@ -533,18 +544,21 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
             slaterWeightMin=slaterWeightMin,
             weighted_restrictions=weighted_restrictions,
         )
-        # A single group, so every determinant in the winning sector shares the same impurity
-        # occupation; read it off one representative determinant.
+        # Every determinant in the winning sector shares the same *total* impurity occupation
+        # (generate_initial_basis filters on the total), so read it off one representative
+        # determinant. This count is over the flattened impurity_indices, i.e. the whole
+        # impurity, whatever the derived grouping.
         state = next(iter(basis_center))
         occ = psr.bytes2tuple(bytes(state.to_bytearray()), model.n_spin_orbitals)
         n_center = sum(1 for o in occ if o in impurity_indices)
 
-        occ_upper = {group_key: n_center + 1 if addition else n_center}
-        occ_lower = {group_key: n_center if addition else n_center - 1}
+        n_upper = n_center + 1 if addition else n_center
+        n_lower = n_center if addition else n_center - 1
 
-        def sector_energy(occ_trial):
-            if not 0 <= occ_trial[group_key] <= max_occ_group:
+        def sector_energy(n_trial):
+            if not 0 <= n_trial <= max_occ_total:
                 return unreachable_penalty
+            occ_trial = _per_group_occupation(n_trial, impurity_orbitals, h_solver_matrix)
             e_trial, _ = calc_energy(
                 h_op,
                 impurity_orbitals,
@@ -566,8 +580,8 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
             # same reason as the bounds check above.
             return e_trial if np.isfinite(e_trial) else unreachable_penalty
 
-        e_upper = sector_energy(occ_upper)
-        e_lower = sector_energy(occ_lower)
+        e_upper = sector_energy(n_upper)
+        e_lower = sector_energy(n_lower)
         if verbose and rank == 0:
             print(f"mu={mu:.6f} n_center={n_center} E_upper - E_lower={e_upper - e_lower:.6f}")
         return e_upper - e_lower
