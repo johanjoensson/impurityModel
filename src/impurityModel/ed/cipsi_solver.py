@@ -7,7 +7,6 @@ from impurityModel.ed.basis_transcription import (
     build_distributed_vector,
     build_sparse_matrix,
     build_state,
-    build_vector,
 )
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
 from impurityModel.ed.eigensolvers import eigensystem
@@ -15,6 +14,7 @@ from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
+from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 
 SOLVERS = {
@@ -114,7 +114,8 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
 
     n_keep = max(int(np.count_nonzero(e_sorted - e_sorted[0] <= max_energy)), 1)
     # Never split a manifold: absorb any state degenerate with the last kept one.
-    while n_keep < len(e_sorted) and abs(e_sorted[n_keep] - e_sorted[n_keep - 1]) <= tol:
+    original_n_keep = n_keep
+    while n_keep < len(e_sorted) and abs(e_sorted[n_keep] - e_sorted[original_n_keep - 1]) <= tol:
         n_keep += 1
     return [int(i) for i in order[:n_keep]], n_keep == len(e_sorted)
 
@@ -177,9 +178,9 @@ class CIPSISolver:
             )
             # eigensystem returns eigenvectors as columns (N, k); build_state wants one
             # row per state vector, so transpose (matches CIPSISolver.expand's usage).
-            self.truncate(build_state(self.basis, psi_ref.T))
+            self.truncate(build_state(self.basis, psi_ref.T), _e_ref)
 
-    def truncate(self, psis: list[ManyBodyState], target=None) -> list[ManyBodyState]:
+    def truncate(self, psis: list[ManyBodyState], e_ref=None, target=None) -> list[ManyBodyState]:
         """Keep the globally top-``target`` determinants by eigenvector amplitude.
 
         Importance is the max ``|amplitude|^2`` over ``psis`` (each determinant counted
@@ -191,7 +192,27 @@ class CIPSISolver:
         if target is None:
             target = self.basis.truncation_threshold
         blk = ManyBodyState.from_states(list(psis))
-        keys, norms2 = blk.row_max_norms2()
+        if e_ref is not None and len(e_ref) == len(psis):
+            # e_ref is only replicated to roundoff (it comes from a Lanczos solve run
+            # independently on every rank); a splitting sitting near DEGENERACY_TOL could group
+            # differently per rank and desync which determinants survive. Broadcast rank 0's copy
+            # so every rank groups identically, matching the rule this file already applies to
+            # `restarted_lanczos`'s own near-cut decisions above.
+            if self.basis.is_distributed:
+                e_ref = self.basis.comm.bcast(e_ref, root=0)
+            keys = list(blk.keys())
+            # A copy, not a view: np.asarray(blk) would hold a live buffer export on ``blk``
+            # (ManyBodyState.__getbuffer__ increments its export count), and the keep_rows call
+            # below refuses to run while any buffer view of the block is still alive.
+            amps = np.array(blk)
+            norms2 = np.zeros(len(keys), dtype=float)
+            if amps.size > 0:
+                for group in _degenerate_groups(e_ref):
+                    group_amps = amps[:, group]
+                    group_norms2 = np.real(group_amps * np.conj(group_amps)).sum(axis=1)
+                    norms2 = np.maximum(norms2, group_norms2)
+        else:
+            keys, norms2 = blk.row_max_norms2()
         cutoff2 = collective_amplitude_cutoff(norms2, int(target), self.basis.comm)
         keep_mask = norms2 > cutoff2
         if self._allreduce_sum(int(np.count_nonzero(keep_mask))) == 0:
@@ -517,7 +538,7 @@ class CIPSISolver:
         new_Dj = set(itertools.compress(local_Djs, de2_mask))
 
         if gen_ops:
-            unexplored_list = list(new_Dj)
+            unexplored_list = sorted(new_Dj)
             chunk_size = 1000
 
             while unexplored_list:
@@ -554,10 +575,10 @@ class CIPSISolver:
                         # Apply generator (cutoff=1e-12 to prune float noise)
                         psi_op = applyOp_test(op, chunk_state, cutoff=1e-12)
 
-                        for state, row in psi_op.items():
+                        for state, _row in psi_op.items():
                             if state not in new_Dj:
                                 new_Dj.add(state)
-                                next_amps[state] = row[0]
+                                next_amps[state] = _amplitude_from_hash(state.get_hash())
 
                     chunk_state = ManyBodyState(next_amps)
 
@@ -592,79 +613,18 @@ class CIPSISolver:
         if self.basis.weighted_restrictions is not None:
             H.set_weighted_restrictions(self.basis.weighted_restrictions)
         de0_max = -self.basis.tau * np.log(1e-4)
-        psi_refs = None
+        psi_refs = getattr(self, "psi_refs", None)
 
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
 
-        from impurityModel.ed.symmetries import (
-            discover_one_body_symmetries,
-            extract_tensors,
-            tensors_to_operator,
-        )
-
         if symmetry_generators is None:
-            imp_orbs = []
-            if getattr(self.basis, "impurity_orbitals", None):
-                for orbs in self.basis.impurity_orbitals.values():
-                    for o in orbs:
-                        imp_orbs.extend(o)
+            symmetry_generators = get_symmetry_generators(H, self.basis.impurity_orbitals, self.basis.bath_states)
 
-            h, _, _ = extract_tensors(H, two_body=False)
-
-            if imp_orbs:
-                imp = sorted(set(imp_orbs))
-                h_imp = h[np.ix_(imp, imp)]
-                imp_generators = discover_one_body_symmetries(h_imp)
-
-                imp_map = {}
-                for group, imp_blocks in self.basis.impurity_orbitals.items():
-                    imp_blk = imp_blocks[0]
-                    for idx_in_grp, o in enumerate(imp_blk):
-                        imp_map[o] = (group, idx_in_grp)
-
-                generators = []
-                for g_imp in imp_generators:
-                    g_full = np.zeros_like(h)
-                    for i, oi in enumerate(imp):
-                        for j, oj in enumerate(imp):
-                            g_full[oi, oj] = g_imp[i, j]
-
-                    for bath_dict in self.basis.bath_states:
-                        if not bath_dict:
-                            continue
-                        n_bath = max([len(blks) for blks in bath_dict.values()], default=0)
-
-                        for k in range(n_bath):
-                            site_k_map = {}
-                            for i, o_imp in enumerate(imp):
-                                group, idx_in_grp = imp_map[o_imp]
-                                if (
-                                    group in bath_dict
-                                    and k < len(bath_dict[group])
-                                    and idx_in_grp < len(bath_dict[group][k])
-                                ):
-                                    site_k_map[i] = bath_dict[group][k][idx_in_grp]
-
-                            for i in range(len(imp)):
-                                if i not in site_k_map:
-                                    continue
-                                oi = site_k_map[i]
-                                for j in range(len(imp)):
-                                    if j not in site_k_map:
-                                        continue
-                                    oj = site_k_map[j]
-                                    g_full[oi, oj] = g_imp[i, j]
-
-                    if np.linalg.norm(h @ g_full - g_full @ h) < 1e-9:
-                        generators.append(g_full)
-            else:
-                generators = discover_one_body_symmetries(h)
-        else:
-            generators = symmetry_generators
+        from impurityModel.ed.symmetries import tensors_to_operator
 
         gen_ops = []
-        for g in generators:
+        for g in symmetry_generators:
             op = tensors_to_operator(g, tol=1e-12)
             if self.basis.restrictions is not None:
                 op.set_restrictions(self.basis.restrictions)
@@ -680,114 +640,19 @@ class CIPSISolver:
         best_e0 = None
         best_basis = None
         best_psis = None
+        best_e_ref = None
         self.truncation_report = None
         while True:
-            if solver in SOLVERS and self.basis.size >= dense_cutoff:
-                restarted_lanczos = SOLVERS[solver]
-
-                if psi_refs is None:
-                    # Seed each determinant's amplitude from its *own* hash rather than from a
-                    # per-rank RNG stream. A `random.seed(42 + rank)` start vector depends on
-                    # how the determinants happen to be partitioned, so the adaptively-selected
-                    # CIPSI basis -- and every excited basis and Green's function derived from
-                    # it -- differed with the rank count (measured: 532/566/526 determinants at
-                    # 1/2/3 ranks, and G shifting by 1e-7). The energy was reproducible, which
-                    # is why the tests never caught it. Deriving the amplitude from the
-                    # determinant makes the global start vector identical at any rank count,
-                    # with no scatter needed.
-                    local_states = list(self.basis.local_basis)
-                    psi0_dict = {state: _amplitude_from_hash(state.get_hash()) for state in local_states}
-                    # An empty-local-basis rank must not reach from_states with a bare
-                    # ManyBodyState({}) element -- that is the width-0 polymorphic zero,
-                    # which from_states rejects (every element must already be width 1).
-                    # Passing width=1 explicitly works whether psi0_dict is empty or not,
-                    # giving every rank the same representation into redistribute_psis'
-                    # collective instead of an asymmetric width-0-vs-width-1 split.
-                    psi0_blk = ManyBodyState.from_states([ManyBodyState(psi0_dict, width=1)])
-                    psi0 = self.basis.redistribute_psis(psi0_blk)[0].to_states()
-
-                    N2s = np.array([psi.norm2() for psi in psi0], dtype=float)
-                    if self.basis.is_distributed:
-                        self.basis.comm.Allreduce(MPI.IN_PLACE, N2s, op=MPI.SUM)
-                    psi0 = [psi / np.sqrt(N2s[i]) if N2s[i] > 0 else psi for i, psi in enumerate(psi0)]
-                else:
-                    psi0 = psi_refs
-
-                num_wanted = min(2 * len(psi_refs) if psi_refs is not None else 10, len(self.basis))
-
-                max_subspace = min(max(2 * num_wanted, num_wanted + 10), len(self.basis))
-                if len(psi0) > 0:
-                    try:
-                        psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
-                    except Exception:
-                        pass
-
-                max_subspace_blocks = 2 * int(np.ceil(max_subspace / max(1, len(psi0)))) + 20
-                if len(psi0) > 0:
-                    max_blocks = max(2, len(self.basis) // len(psi0) - 1)
-                    max_subspace_blocks = min(max_subspace_blocks, max_blocks)
-
-                num_wanted = min(num_wanted, (max_subspace_blocks - 1) * len(psi0))
-
-                # Iterative CIPSI uses the *array* IRLM (sparse H_mat, column-distributed
-                # via local_indices). Memory note: the array MPI matvec forms the full
-                # (global_N, n) dense partial product on every rank before the Allreduce
-                # (see the guardrail in BlockLanczosArray.pyx), so per-rank memory scales
-                # with the *global* sector dimension, not the local partition. This path is
-                # for sectors small enough to also hold the sparse H_mat; very large sectors
-                # should use the hash-distributed ManyBodyState kernel instead.
-                H_mat = build_sparse_matrix(self.basis, H)
-                if self.basis.is_distributed:
-                    H_mat = H_mat[:, self.basis.local_indices]
-                psi0_arr = (
-                    build_distributed_vector(self.basis, psi0).T
-                    if len(psi0) > 0
-                    else np.zeros((len(self.basis.local_basis), 1), dtype=complex)
-                )
-
-                e_ref, psi_refs_arr = restarted_lanczos(
-                    psi0=psi0_arr,
-                    h_op=H_mat,
-                    basis=self.basis,
-                    num_wanted=num_wanted,
-                    max_subspace_blocks=max_subspace_blocks,
-                    tol=de2_min / 10,
-                    max_restarts=10,
-                    verbose=False,
-                    slaterWeightMin=slaterWeightMin,
-                    reort=reort,
-                )
-
-                if len(e_ref) > 0:
-                    psi_refs = build_state(self.basis, psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
-                    e_min = np.min(e_ref)
-                    valid_idx = [i for i, e in enumerate(e_ref) if e - e_min <= de0_max]
-                else:
-                    valid_idx = []
-                if not valid_idx:
-                    if self.basis.verbose:
-                        print("No eigenvalues below energy threshold found.")
-                    break
-                e_ref = e_ref[valid_idx]
-                psi_refs = [psi_refs[i] for i in valid_idx]
-            else:
-                H_mat = build_sparse_matrix(self.basis, H)
-                v0 = (
-                    build_vector(self.basis, psi_refs).T
-                    if psi_refs is not None and self.basis.size >= dense_cutoff
-                    else None
-                )
-                e_ref, psi_ref_dense = eigensystem(
-                    H_mat,
-                    e_max=de0_max,
-                    k=2 * len(psi_refs) if psi_refs is not None else 10,
-                    e0=None,
-                    v0=v0,
-                    eigenValueTol=0,
-                    comm=self.basis.comm,
-                    dense=self.basis.size < dense_cutoff,
-                )
-                psi_refs = build_state(self.basis, psi_ref_dense.T)
+            self.psi_refs = psi_refs
+            e_ref, psi_refs = self.get_eigenvectors(
+                H,
+                num_wanted=min(2 * len(psi_refs) if psi_refs is not None else 10, len(self.basis)),
+                max_energy=de0_max,
+                dense_cutoff=dense_cutoff,
+                slaterWeightMin=slaterWeightMin,
+                solver=solver,
+                reort=reort,
+            )
 
             if len(e_ref) == 0:
                 break
@@ -800,6 +665,7 @@ class CIPSISolver:
                     best_e0 = e0
                     best_basis = list(self.basis.local_basis)
                     best_psis = psi_refs
+                    best_e_ref = e_ref
                 no_improve = 0 if improved else no_improve + 1
                 if no_improve >= 2 or cap_cycles >= max_cap_cycles:
                     break
@@ -822,7 +688,7 @@ class CIPSISolver:
                 # repeats until the energy stabilizes.
                 cap_cycles += 1
                 keep = max(int(threshold) - n_new, int(threshold) // 2, 1)
-                psi_refs = self.truncate(psi_refs, target=keep)
+                psi_refs = self.truncate(psi_refs, e_ref, target=keep)
                 if self.basis.verbose:
                     print(
                         f"------> Basis truncated! (cycle {cap_cycles}: kept "
@@ -839,11 +705,14 @@ class CIPSISolver:
             self.basis.clear()
             self.basis.add_states(best_basis)
             psi_refs = self.basis.redistribute_psis(*best_psis)
+            e_ref = best_e_ref
         self.psi_refs = psi_refs
         if capped and self.basis.size > threshold and self.psi_refs is not None:
             # The symmetry closure can push an admission slightly past the cap; enforce
-            # the hard threshold on exit (downstream get_eigenvectors re-solves).
-            self.psi_refs = self.truncate(self.psi_refs)
+            # the hard threshold on exit (downstream get_eigenvectors re-solves). e_ref
+            # must describe the *current* psi_refs -- after a best_basis restore above,
+            # that is best_e_ref, not the last cycle's (possibly length-mismatched) e_ref.
+            self.psi_refs = self.truncate(self.psi_refs, e_ref)
         if cap_cycles > 0:
             sel = self.last_selection or {}
             self.truncation_report = {
@@ -919,10 +788,7 @@ class CIPSISolver:
 
             max_subspace = min(max(2 * num_wanted, num_wanted + 10), len(self.basis))
             if len(psi0) > 0:
-                try:
-                    psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
-                except Exception:
-                    pass
+                psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
 
             max_subspace_blocks = 2 * int(np.ceil(max_subspace / max(1, len(psi0)))) + 20
             if len(psi0) > 0:
@@ -985,10 +851,7 @@ class CIPSISolver:
                     # rank-independent start vector, whose support covers the whole basis.
                     cold_retry_available = False
                     psi0 = cold_start_block()
-                    try:
-                        psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
-                    except Exception:
-                        pass
+                    psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
                     psi0_arr = build_distributed_vector(self.basis, psi0).T
                 else:
                     num_wanted = min(2 * num_wanted, cap)
