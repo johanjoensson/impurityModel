@@ -345,6 +345,50 @@ def test_fixed_occupation_dc_ranks_agree():
             assert np.array_equal(dc, other), (dc, other)
 
 
+@pytest.mark.mpi
+@pytest.mark.parametrize(
+    "criterion, call",
+    [
+        ("peak", lambda kw: fixed_peak_dc(peak_position=1.2, **kw)),
+        ("occupation", lambda kw: fixed_occupation_dc(occupation=2.0, **kw)),
+    ],
+)
+def test_dc_search_visits_the_same_mu_sequence_on_every_rank(monkeypatch, criterion, call):
+    """The *path*, not just the answer.
+
+    The three ``ranks_agree`` tests above compare only the returned ``dc``, which passes even
+    when the ranks took different routes and coincidentally met ``tol`` at the same place. The
+    deadlock this guards against is upstream of that: ``_solve_dc_shift``'s residual is the value
+    of a *collective* observable replicated only to roundoff, and it gates every branch that
+    decides whether the next collective call happens. One ulp of disagreement on a ``tol`` test
+    or on the ``g * g_prev < 0`` sign test sends ranks down different sequences of collectives --
+    they hang rather than return, so a test comparing return values can never see it. Recording
+    the trial ``mu`` sequence and comparing it across ranks is what actually pins the property.
+    """
+    import impurityModel.ed.double_counting as dc_module
+
+    comm = MPI.COMM_WORLD
+    kwargs, _ = common_kwargs(v=0.01 if criterion == "peak" else 0.3, tau=1e-3 if criterion == "peak" else 1e-2)
+
+    visited = []
+    real_solve = dc_module._solve_dc_shift
+
+    def recording_solve(observable, target, **kw):
+        def recording_observable(mu):
+            visited.append(mu)
+            return observable(mu)
+
+        return real_solve(recording_observable, target, **kw)
+
+    monkeypatch.setattr(dc_module, "_solve_dc_shift", recording_solve)
+    call(kwargs)
+
+    gathered = comm.gather(visited, root=0)
+    if comm.rank == 0:
+        for other in gathered[1:]:
+            assert visited == other, f"{criterion} dc search took different mu paths: {visited} vs {other}"
+
+
 def _capture_prepared_bases(monkeypatch):
     """Monkeypatch the basis-building entry point to record every ``Basis`` built.
 

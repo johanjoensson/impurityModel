@@ -234,6 +234,7 @@ def _solve_dc_shift(
     plateau_ok,
     unreachable_message,
     rank=0,
+    comm=None,
 ):
     r"""Find the uniform shift ``mu`` that drives a scalar observable onto ``target``.
 
@@ -280,6 +281,12 @@ def _solve_dc_shift(
         ``RuntimeError`` message when the target cannot be reached.
     rank : int
         MPI rank, for rank-0-only logging.
+    comm : MPI.Comm or None
+        The communicator ``observable`` is collective on -- every residual is broadcast from its
+        root so that the branch decisions driving the next collective call are rank-identical.
+        Pass the *same* communicator the observable's own collectives use (both criteria here
+        build their bases on ``MPI.COMM_WORLD`` regardless of the caller's ``comm``). ``None``
+        skips the broadcast, for a genuinely serial observable (the unit tests).
 
     Returns
     -------
@@ -296,7 +303,20 @@ def _solve_dc_shift(
 
     def residual(mu):
         if mu not in evaluated:
-            evaluated[mu] = observable(mu) - target
+            g = observable(mu) - target
+            # ``observable`` is collective, and its value is only replicated to roundoff: both
+            # criteria end in Lanczos energies (``peak_observable`` returns an unbroadcast
+            # ``np.min(es)``, ``occupation_observable`` weights Allreduced density matrices by
+            # rank-local energies). Every decision below reads this float -- the two ``tol``
+            # tests, the ``g * g_prev < 0`` bracket detection, _refine_bracket's secant and
+            # sub-bracket choice, and both RuntimeErrors -- and each one decides whether the
+            # next collective ``observable`` call happens. Ranks disagreeing by one ulp on any
+            # of them therefore issue different sequences of collectives and deadlock. Broadcast
+            # once, here, so all of them see the identical value (CLAUDE.md's MPI rule: never
+            # gate a collective on rank-local state).
+            if comm is not None:
+                g = comm.bcast(g, root=0)
+            evaluated[mu] = g
         return evaluated[mu]
 
     g0 = residual(0.0)
@@ -609,6 +629,10 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
         plateau_ok=False,
         unreachable_message=unreachable,
         rank=rank,
+        # The observable's own collectives run on COMM_WORLD (the basis builds below
+        # hardcode it), not on the caller's `comm`, so the residual must be broadcast
+        # there too or the branch decisions can diverge between ranks.
+        comm=MPI.COMM_WORLD,
     )
 
     dc = dc_guess + mu * identity
@@ -889,6 +913,10 @@ def fixed_occupation_dc(
         plateau_ok=True,
         unreachable_message=unreachable,
         rank=rank,
+        # The observable's own collectives run on COMM_WORLD (the basis builds below
+        # hardcode it), not on the caller's `comm`, so the residual must be broadcast
+        # there too or the branch decisions can diverge between ranks.
+        comm=MPI.COMM_WORLD,
     )
 
     # mu is always a point _solve_dc_shift actually evaluated (the mu=0 fast path, a direct scan
