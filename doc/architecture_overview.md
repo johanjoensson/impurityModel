@@ -116,7 +116,7 @@ Layer 2: atomic_physics, eigensolvers, lie_algebra, symmetries, block_structure,
          transition_operators
 Layer 3: observables, spin_pairs
 Layer 4: manybody_basis (+ basis_generation, basis_restrictions,
-         basis_transcription, basis_split)
+         basis_transcription, basis_split), solver_basis
 Layer 5: gf_primitives, gf_convergence, gf_shift_recycling, gf_units, gf_solvers,
          greens_function, spectra, rixs,
          cg, cipsi_solver, groundstate, hartree_fock, hamiltonian_io, gf_diagnostics,
@@ -158,6 +158,7 @@ and is what both the CLIs and embedded callers (the RSPt interface) build to pas
 - **`basis_restrictions.py`** — occupation-restriction construction: effective (observed) restrictions of the current basis, connectivity-derived ground-state restrictions, and widened restrictions for excited/spectral sectors. Contains collectives; call from all ranks.
 - **`basis_transcription.py`** — transcription between the distributed basis and dense/sparse linear algebra: wavefunction vectors (`build_vector`, `build_state`, …), operator matrices (`build_sparse_matrix`, `build_dense_matrix`), density matrices (`build_density_matrices`).
 - **`basis_split.py`** — adaptive splitting of a `Basis` over MPI colors (`split_basis_and_redistribute_psi`) with the pure packing math in `_pack_units`; the distribution backbone of `gf_units.run_units_distributed`.
+- **`solver_basis.py`** — `prepare_solver_basis`: assembles the interacting Hamiltonian `h0 - dc + U(u4)`, adaptively rotates into the impurity-diagonalising basis when that does not densify the Coulomb tensor, and derives the bath valence/conduction split, GF block structure, and per-group impurity orbital grouping/occupation from it (`SolverBasis`). Also `get_symmetry_generators`, the one-body symmetry discovery `cipsi_solver.expand` falls back to when not given generators explicitly. Imports only `symmetries` + `ManyBodyUtils`, so it sits below every one of its callers (`groundstate`, `cipsi_solver`, `double_counting` in Layer 5; `selfenergy`, `susceptibility` in Layer 6) rather than being reached through any of them. Split out of `selfenergy.py` (which keeps a re-export shim for its old private names).
 
 ### Solvers and spectra (Layer 5)
 - **`groundstate.py`** — the ground-state driver `calc_gs`: builds the variational basis (CIPSI + Hartree-Fock occupation seeding), solves for the low-energy states, and reports observables.

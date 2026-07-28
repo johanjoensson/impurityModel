@@ -16,7 +16,7 @@ occupation restrictions can be tightened or a new *graded* restriction can be ad
    basis; a mismatch between (b) and (c) motivates a perturbation-aware metric (Phase 3b).
 
 The heavy lifting (ground state) runs through the production path
-(:func:`selfenergy._prepare_solver_basis` + :func:`groundstate.calc_gs`), so the measured
+(:func:`solver_basis.prepare_solver_basis` + :func:`groundstate.calc_gs`), so the measured
 basis is exactly what a real ``calc_selfenergy`` run would build. The per-determinant
 reductions are MPI collectives (fixed bin edges on every rank, unconditional
 ``Allreduce``), matching the CLAUDE.md rules.
@@ -77,12 +77,12 @@ def build_ground_state(
     from impurityModel.ed.basis_restrictions import excitation_budget_restriction
     from impurityModel.ed.groundstate import calc_gs
     from impurityModel.ed.lie_algebra import tensors_to_operator
-    from impurityModel.ed.selfenergy import _prepare_solver_basis
+    from impurityModel.ed.solver_basis import prepare_solver_basis
     from impurityModel.test.support.real_workload import load_workload
 
     wl = load_workload(WORKLOADS[workload_key])
     dc = wl["dc"]
-    sb = _prepare_solver_basis(
+    sb = prepare_solver_basis(
         wl["h0"],
         tensors_to_operator(np.asarray(dc, dtype=complex)).to_dict() if dc is not None else None,
         atomic_physics.getUop_from_rspt_u4(wl["u4"]),

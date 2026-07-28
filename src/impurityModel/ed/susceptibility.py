@@ -422,7 +422,7 @@ def calc_susceptibility_workflow(
     # the whole self-energy stack when only the calc_susceptibility driver is used.
     from impurityModel.ed.groundstate import calc_gs
     from impurityModel.ed.memory_estimate import suggest_truncation_threshold
-    from impurityModel.ed.selfenergy import _prepare_solver_basis
+    from impurityModel.ed.solver_basis import prepare_solver_basis
 
     # Unpack the grouped parameters into the local names used throughout the body.
     h0 = model.h0
@@ -441,7 +441,7 @@ def calc_susceptibility_workflow(
     dense_cutoff = solver.dense_cutoff
 
     rank = comm.rank if comm is not None else 0
-    sb = _prepare_solver_basis(h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity)
+    sb = prepare_solver_basis(h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity)
     gf_block_width = max(4, *(len(block) for block in sb.block_structure.blocks))
     if truncation_threshold is None:
         truncation_threshold = suggest_truncation_threshold(
