@@ -641,6 +641,13 @@ def find_ground_state_basis(
         # Whether the winning occupation's expansion was memory-capped (None if not), for
         # downstream truncation auditing (calc_gs merges this with its own final expand).
         basis_gs.occupation_search_truncation = occ_search_reports.get(tuple(sorted(winning_impurity_occ.items())))
+        # The sector this search settled on. It cannot be recovered from the returned basis:
+        # calc_energy reduces that to the eigenvector support, and the CIPSI expansion widened
+        # the impurity occupation window (build_excited_restrictions is called with
+        # imp_change=None, i.e. unconstrained), so the support spans several impurity
+        # occupations -- measured {1, 2, 3} on a split-block toy whose winning sector is 2.
+        # Callers that need the sector must read it here rather than inspect a determinant.
+        basis_gs.ground_state_occupation = dict(winning_impurity_occ)
     return basis_gs
 
 

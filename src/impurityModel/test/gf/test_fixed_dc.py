@@ -184,6 +184,54 @@ def test_fixed_peak_dc_runs_on_split_block_impurity():
     np.testing.assert_allclose(shift, shift[0, 0] * np.identity(4), atol=1e-12)
 
 
+def test_ground_state_basis_reports_its_sector_because_the_basis_cannot():
+    """``find_ground_state_basis`` returns the eigenvector support, not a pure sector.
+
+    The CIPSI expansion widens the impurity occupation window (``build_excited_restrictions`` is
+    called with ``imp_change=None``, which its own docstring defines as unconstrained), and
+    ``calc_energy`` then reduces the basis to the eigenvector support. So the returned basis spans
+    several impurity occupations and *no* determinant identifies the sector -- reading one, as
+    ``fixed_peak_dc`` used to, centred the peak on whichever came first. The winning occupation
+    has to be carried out of the search explicitly, which is what ``ground_state_occupation`` is.
+    """
+    from impurityModel.ed import product_state_representation as psr
+    from impurityModel.ed.groundstate import find_ground_state_basis
+
+    kwargs, _ = _split_block_kwargs()
+    model, basis_opts = kwargs["model"], kwargs["basis"]
+    sb = prepare_solver_basis(
+        model.h0,
+        model.dc,
+        model.u4,
+        model.impurity_orbitals,
+        basis_opts.nominal_occ,
+        basis_opts.mixed_valence,
+        model.rot_to_spherical,
+        0,
+    )
+    imp_idx = [o for blocks in sb.impurity_orbitals.values() for block in blocks for o in block]
+    gs = find_ground_state_basis(
+        sb.h,
+        sb.impurity_orbitals,
+        sb.bath_states,
+        sb.nominal_occ,
+        mixed_valence=sb.mixed_valence,
+        tau=basis_opts.tau,
+        dense_cutoff=1000,
+        spin_flip_dj=False,
+        comm=None,
+        verbose=False,
+        truncation_threshold=int(1e6),
+        slaterWeightMin=1e-12,
+    )
+    per_det = {
+        sum(1 for o in psr.bytes2tuple(bytes(state.to_bytearray()), model.n_spin_orbitals) if o in imp_idx)
+        for state in gs
+    }
+    assert len(per_det) > 1, f"fixture no longer mixes occupations ({per_det}); the test is moot"
+    assert sum(gs.ground_state_occupation.values()) in per_det
+
+
 def test_fixed_peak_dc_accepts_multiple_groups():
     """The criterion moves one electron on/off the impurity as a whole, so no group is special.
 

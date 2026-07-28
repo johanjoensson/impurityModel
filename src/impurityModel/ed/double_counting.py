@@ -520,7 +520,6 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
         sectors have the same impurity occupation, so a uniform shift cannot
         move the peak).
     """
-    from impurityModel.ed import product_state_representation as psr
     from impurityModel.ed.groundstate import calc_energy, find_ground_state_basis
 
     # Unpack the grouped parameters into the local names used throughout the body.
@@ -625,13 +624,15 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
             slaterWeightMin=slaterWeightMin,
             weighted_restrictions=weighted_restrictions,
         )
-        # Every determinant in the winning sector shares the same *total* impurity occupation
-        # (generate_initial_basis filters on the total), so read it off one representative
-        # determinant. This count is over the flattened impurity_indices, i.e. the whole
-        # impurity, whatever the derived grouping.
-        state = next(iter(basis_center))
-        occ = psr.bytes2tuple(bytes(state.to_bytearray()), model.n_spin_orbitals)
-        n_center = sum(1 for o in occ if o in impurity_indices)
+        # The centre sector, read from the search that chose it. NOT from a determinant: the
+        # returned basis is the eigenvector support of an expansion whose impurity occupation
+        # window was widened (build_excited_restrictions with imp_change=None is unconstrained),
+        # so it spans several impurity occupations -- {1, 2, 3} on a split-block toy whose
+        # winning sector is 2, where the first determinant reports 1. Centring the peak on
+        # whichever determinant happened to come first measured E[2] - E[1] where E[3] - E[2]
+        # was meant. fixed_occupation_dc never had this problem: it reads Tr rho_imp over the
+        # whole basis, which averages the mixed occupations correctly.
+        n_center = sum(basis_center.ground_state_occupation.values())
 
         n_upper = n_center + 1 if addition else n_center
         n_lower = n_center if addition else n_center - 1
