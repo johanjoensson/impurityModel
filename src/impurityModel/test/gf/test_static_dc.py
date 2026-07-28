@@ -17,6 +17,7 @@ but unequal) occupations, produces different values for the two levels.
 
 import numpy as np
 import pytest
+from mpi4py import MPI
 
 from impurityModel.ed.double_counting import amf_dc, fll_dc, sigma_inf_dc
 from impurityModel.ed.model import ImpurityModel
@@ -198,6 +199,12 @@ def test_static_dc_warns_when_the_reference_filling_saturates(scheme, capsys):
     """
     scheme(build_dimer_model(v=0.1), tau=1e-3)
     out = capsys.readouterr().out
+    if MPI.COMM_WORLD.rank != 0:
+        # The warning is deliberately rank-0-only, so a redundant non-root run of this unmarked
+        # test sees nothing. Assert that rather than the message: a warning printed once per
+        # rank would bury the log on a large run.
+        assert "saturated" not in out, out
+        return
     assert "saturated" in out and "N0 = 2.0000" in out, out
     # The advice must match the scheme family: these take the value directly, not a target line.
     assert "n=" in out or "rho=" in out, out
