@@ -5,8 +5,8 @@ from itertools import combinations
 import numpy as np
 
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyState,
     ManyBodyOperator,
+    ManyBodyState,
     SlaterDeterminant,
     applyOp,
     inner,

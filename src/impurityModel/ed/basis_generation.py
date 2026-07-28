@@ -8,7 +8,7 @@ import itertools
 from typing import Iterable, Optional
 
 from impurityModel.ed import product_state_representation as psr
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant, applyOp
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
 
 
 def generate_initial_basis(

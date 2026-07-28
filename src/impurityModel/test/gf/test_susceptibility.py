@@ -15,8 +15,8 @@ from mpi4py import MPI
 from impurityModel.ed import susceptibility
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyState,
     ManyBodyOperator,
+    ManyBodyState,
     SlaterDeterminant,
     applyOp,
     inner,

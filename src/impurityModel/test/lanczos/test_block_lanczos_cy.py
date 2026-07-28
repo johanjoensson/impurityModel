@@ -277,7 +277,7 @@ def test_block_lanczos_cy_resume_partial_reort_without_w_init():
         psi0.append(st)
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-    alphas1, betas1, Q1, W1, widths1 = block_lanczos_cy(
+    alphas1, betas1, Q1, _W1, widths1 = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -328,7 +328,7 @@ def test_block_lanczos_cy_resume_partial_reort_without_w_init():
     # values enough to fail a loose comparison against the exact spectrum.
     from impurityModel.ed.BlockLanczosArray import _build_full_T
 
-    alphas_full, betas_full, _Q_full, _W_full, widths_full = block_lanczos_cy(
+    alphas_full, betas_full, _Q_full, _W_full, _widths_full = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,

@@ -9,15 +9,15 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyState,
     ManyBodyOperator,
+    ManyBodyState,
     SlaterDeterminant,
-    applyOp,
-    inner_multi,
-    block_inner_cy,
-    block_add_scaled_cy,
     SparseKrylovDense,
+    applyOp,
+    block_add_scaled_cy,
+    block_inner_cy,
     inner,
+    inner_multi,
 )
 from impurityModel.test.support.testtol import inner_atol, sum_rtol
 

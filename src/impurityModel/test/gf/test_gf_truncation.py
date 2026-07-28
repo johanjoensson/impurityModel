@@ -13,7 +13,7 @@ from impurityModel.ed.basis_transcription import build_dense_matrix
 from impurityModel.ed.gf_solvers import block_Green_sparse
 from impurityModel.ed.greens_function import _CappedBasisProxy, calc_G
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 DELTA = 0.1
 OMEGA = np.linspace(-8.0, 8.0, 41)

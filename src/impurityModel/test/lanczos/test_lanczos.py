@@ -7,7 +7,7 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, eigsh
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
 from impurityModel.test.support.testtol import eig_atol
 
 

@@ -16,7 +16,7 @@ from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vect
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.support.gf_oracles import _capped_solve_with, _dense_G_on
 
 

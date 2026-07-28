@@ -17,7 +17,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_density_matrices, build_sparse_matrix
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.mpi_comm import empty_clone, get_job_tasks, graph_alltoall, is_empty
 from impurityModel.test.support.testtol import inner_atol
 

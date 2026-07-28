@@ -10,7 +10,7 @@ from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 
 IMPURITY_ORBITALS = {0: [[0, 1]]}

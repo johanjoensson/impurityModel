@@ -64,7 +64,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.greens_function import _build_excited_restrictions
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, applyOp, inner
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp, inner
 
 RUN = os.environ.get("RUN_BICGSTAB_BENCH") == "1"
 pytestmark = [

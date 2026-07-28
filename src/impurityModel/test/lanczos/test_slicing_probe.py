@@ -28,7 +28,7 @@ import impurityModel.ed.greens_function as gf
 import impurityModel.ed.selfenergy as se
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, resolve_reort
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, block_add_scaled_cy
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, block_add_scaled_cy
 from impurityModel.test.support.real_workload import load_workload, run_selfenergy
 
 RUN = os.environ.get("RUN_SLICING_PROBE", "0") not in ("0", "", "false", "False")

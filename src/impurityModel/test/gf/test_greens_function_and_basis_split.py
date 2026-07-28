@@ -10,7 +10,7 @@ from impurityModel.ed.greens_function import (
     get_Greens_function,
 )
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 
 def _redistribute_as_width1(basis, psis):

@@ -22,7 +22,6 @@ from mpi4py import MPI
 
 from impurityModel.ed.BlockLanczosArray import _cholesky_or_deflate, block_tsqr
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
-from impurityModel.test.support.testtol import inner_atol
 from impurityModel.ed.TSQR import (
     BREAKDOWN_TOL,
     DEFLATE_TOL,
@@ -37,6 +36,7 @@ from impurityModel.ed.TSQR import (
     tsqr_r,
     unpack_upper,
 )
+from impurityModel.test.support.testtol import inner_atol
 
 
 def _rng(seed=0):
@@ -205,7 +205,7 @@ def test_tsqr_beats_cholesky_qr_on_ill_conditioned_blocks(kappa):
     orth_tsqr = np.linalg.norm(Q.conj().T @ Q - np.eye(k))
     assert orth_tsqr < inner_atol(Q.shape[0], 1.0)
 
-    beta_c, beta_inv, k_c = _cholesky_or_deflate(A.conj().T @ A, 4)
+    _beta_c, beta_inv, k_c = _cholesky_or_deflate(A.conj().T @ A, 4)
     assert k_c == k
     Qc = A @ beta_inv
     orth_chol = np.linalg.norm(Qc.conj().T @ Qc - np.eye(k_c))
@@ -313,13 +313,13 @@ def test_tsqr_signals_corruption_not_breakdown(bad):
     """A non-finite factor is a corrupted recurrence (``-1``), not a closed space (``0``)."""
     A = _block(50, 3, seed=51)
     A[7, 1] = bad
-    Q, beta, k, sv = tsqr(A)
+    Q, beta, k, _sv = tsqr(A)
     assert k == -1
     assert Q is None and beta is None
 
 
 def test_tsqr_width_zero_block():
-    Q, beta, k, sv = tsqr(np.zeros((10, 0), dtype=complex))
+    Q, _beta, k, _sv = tsqr(np.zeros((10, 0), dtype=complex))
     assert k == 0 and Q.shape == (10, 0)
 
 
@@ -405,7 +405,7 @@ def test_block_tsqr_deflates_the_block_width():
 
 def test_block_tsqr_breakdown_returns_no_block():
     blk = ManyBodyState.from_states(_states(np.zeros((10, 3), dtype=complex), _dets(10)))
-    Q, beta, k, _ = block_tsqr(blk)
+    Q, _beta, k, _ = block_tsqr(blk)
     assert k == 0 and Q is None
 
 
@@ -468,7 +468,7 @@ def test_tsqr_mpi_is_bitwise_identical_across_ranks(empty_last):
     R_root = comm.bcast(R.tobytes(), root=0)
     assert R.tobytes() == R_root
 
-    _, beta, k, sv = tsqr(A_local, comm)
+    _, beta, k, _sv = tsqr(A_local, comm)
     assert comm.bcast(k, root=0) == k
     assert comm.bcast(beta.tobytes(), root=0) == beta.tobytes()
 
@@ -497,7 +497,7 @@ def test_tsqr_mpi_deflation_agrees_on_every_rank():
     comm = MPI.COMM_WORLD
     A = _block(120, 3, seed=77)
     A = np.hstack([A, A[:, :1] - 3.0 * A[:, 2:3]])
-    Q, beta, k, _ = tsqr(_row_slice(A, comm), comm)
+    Q, _beta, k, _ = tsqr(_row_slice(A, comm), comm)
     assert k == 3
     assert comm.allreduce(k, op=MPI.MIN) == comm.allreduce(k, op=MPI.MAX) == 3
     gram = np.ascontiguousarray(Q.conj().T @ Q)
@@ -530,7 +530,7 @@ def test_block_tsqr_mpi_on_a_distributed_block_state(empty_last):
     off = comm.scan(A_local.shape[0]) - A_local.shape[0]
     local = ManyBodyState.from_states(_states(A_local, dets[off : off + A_local.shape[0]]))
 
-    Q, beta, k, sv = block_tsqr(local, True, comm)
+    Q, beta, k, _sv = block_tsqr(local, True, comm)
     assert k == 3
     assert comm.bcast(beta.tobytes(), root=0) == beta.tobytes()
 

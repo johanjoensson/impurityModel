@@ -21,11 +21,11 @@ from mpi4py import MPI
 from impurityModel.ed import config
 from impurityModel.ed.basis_transcription import build_sparse_matrix, build_state
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
-from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.BlockLanczosArray import resolve_reort
 from impurityModel.ed.gf_primitives import _CappedBasisProxy, _distributed_seed_qr, _trim_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import available_bytes_per_rank, format_bytes
+from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 
 
 def _sector_dense_max():

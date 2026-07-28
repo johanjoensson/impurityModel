@@ -6,7 +6,7 @@ import pytest
 from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vector
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant, inner
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner
 
 
 def test_block_bicgstab_array_single():

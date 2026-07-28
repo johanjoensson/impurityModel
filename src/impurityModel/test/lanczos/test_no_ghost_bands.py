@@ -11,7 +11,7 @@ except ImportError:
 
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, inner_multi, ManyBodyOperator
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
 

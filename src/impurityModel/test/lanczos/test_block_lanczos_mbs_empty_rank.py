@@ -27,8 +27,8 @@ from impurityModel.ed.BlockLanczos import (
     implicitly_restarted_block_lanczos_cy,
     thick_restart_block_lanczos_cy,
 )
-from impurityModel.ed.BlockLanczosArray import block_normalize
 from impurityModel.ed.BlockLanczosArray import Reort as ArrayReort
+from impurityModel.ed.BlockLanczosArray import block_normalize
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 

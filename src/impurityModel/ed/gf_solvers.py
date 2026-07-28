@@ -21,7 +21,6 @@ from impurityModel.ed import config
 from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix, build_state, build_vector
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
-from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.gf_convergence import _make_gf_convergence_monitor
@@ -35,7 +34,8 @@ from impurityModel.ed.gf_primitives import (
 )
 from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, block_inner_cy
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
+from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 
 comm = MPI.COMM_WORLD
 rank = comm.rank

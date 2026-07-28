@@ -44,8 +44,6 @@ from impurityModel.ed.BlockLanczosArray import (
     _cholesky_qr2,
     block_lanczos_array,
 )
-from impurityModel.ed.TSQR import EPS as EPS_LOCAL
-from impurityModel.ed.TSQR import tsqr
 from impurityModel.ed.greens_function import (
     _gf_sample_mesh,
     _greens_function_change,
@@ -55,6 +53,8 @@ from impurityModel.ed.greens_function import (
     calc_G,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.TSQR import EPS as EPS_LOCAL
+from impurityModel.ed.TSQR import tsqr
 from impurityModel.test.support.lanczos_fixtures import MockBasis
 
 SQRT_EPS = np.sqrt(np.finfo(float).eps)

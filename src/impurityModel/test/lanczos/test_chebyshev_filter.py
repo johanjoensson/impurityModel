@@ -17,7 +17,7 @@ from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vect
 from impurityModel.ed.chebyshev_filter import chebyshev_apply, partition_of_unity, spectral_bounds
 from impurityModel.ed.greens_function import _CappedBasisProxy
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.support.testtol import inner_atol
 
 

@@ -24,7 +24,7 @@ from impurityModel.ed import config
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.gf_solvers import solve_shifted_block
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
 from impurityModel.ed.symmetries import (

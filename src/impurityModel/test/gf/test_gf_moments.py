@@ -30,7 +30,6 @@ from impurityModel.ed.basis_transcription import build_dense_matrix
 from impurityModel.ed.greens_function import get_greens_function_moments
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-
 from impurityModel.test.support.gf_oracles import _BATHS, _IMP, _det, _siam_6
 
 

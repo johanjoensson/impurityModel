@@ -49,8 +49,8 @@ from impurityModel.ed.BlockLanczos import (
     thick_restart_block_lanczos_cy,
 )
 from impurityModel.ed.BlockLanczosArray import BREAKDOWN_TOL, Reort, block_normalize
-from impurityModel.ed.TSQR import EPS
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.TSQR import EPS
 from impurityModel.test.support.lanczos_fixtures import MockBasis
 
 _N = 400
