@@ -454,21 +454,39 @@ def _irlm_core(
             alphas, betas, Q_basis, _W, widths = sweep(v0, m, **_locked_kwargs())
             continue
 
-        # --- Purge + restart in the Ritz basis (EA16 \u00a72.2.1, eq. 6) ----
-        kept_idx, _ = ea16.select_restart_indices(evals, n_keep, locked_local, which="smallest")
-        C, beta_new, alphas_new, betas_new = ea16.purge_restart(evals, Z, beta_last, p, kept_idx)
-        Q_used = _q_slice(Q_basis, 0, total)
-        Q_new = block_combine(Q_used, C, slater)
-        if _nlock() > 0:
-            Q_new = _orth_against_locked(Q_new)
-
         # The trailing residual block can itself be rank-deficient when the sweep reached
         # a (near-)invariant subspace without shrinking any *diagonal* block, so the
         # alpha-width guard above (total < m_act * p) did not fire. Its stored width is
         # then < p and the Sorensen residual rotation qres @ beta_new is undefined. Lock
         # the lowest wanted Ritz pairs and stop.
+        #
+        # This has to be tested BEFORE the purge below, not just before the qres slice it
+        # names: the extreme form of this state is an *exact* breakdown, where the sweep
+        # spanned the whole reachable invariant subspace and stored no residual block at
+        # all (res_width == 0, beta_last exactly zero). Every Ritz residual is then zero,
+        # so eq. (15) accepts every active pair into locked_local, and if the caller asked
+        # for more pairs than the space holds (num_wanted > dim, which cipsi_solver does
+        # routinely -- it caps num_wanted against len(basis), not against the Krylov space
+        # reachable from psi0) n_need stays positive with no unlocked candidate left.
+        # select_restart_indices then legitimately returns an empty kept_idx, and
+        # purge_restart -- which needs at least one full block of retained pairs, and whose
+        # S = beta_last @ Z[...] premise is vacuous here anyway -- used to die on an empty
+        # np.concatenate.
+        #
+        # Rank-invariant by construction, not because the branch body happens to be
+        # collective: `total` and every stored width descend from `tsqr`'s globally-reduced
+        # `active_k` (TSQR.pyx, via an Allgather across ranks), and `_q_cols` /
+        # `SparseKrylovDense.n_cols` (_krylov_store.pxi) count columns of the dense factor,
+        # which an empty-local-partition rank still reports in full. The `comm.bcast` below
+        # is defense-in-depth, mirroring `_trlm.pxi`'s `done = comm.bcast(done, root=0)`: if
+        # this invariant were ever violated, the two branches' next collectives mismatch (a
+        # 1x1 Allreduce here vs. an Allgather in the purge/restart path below), which
+        # deadlocks instead of failing loud.
         res_width = _q_cols(Q_basis) - total
-        if res_width < p:
+        take_break = res_width < p
+        if mpi:
+            take_break = comm.bcast(take_break, root=0)
+        if take_break:
             X_rem = block_combine(_q_slice(Q_basis, 0, total), Z[:, order], slater)
             _lock_block(X_rem, [evals[i].real for i in order])
             if verbose and rank0:
@@ -476,6 +494,14 @@ def _irlm_core(
                     f"[{tag}] Restart {restart:3d} | trailing residual block deflated (width {res_width}<{p}). Locking remaining & stopping."
                 )
             break
+
+        # --- Purge + restart in the Ritz basis (EA16 \u00a72.2.1, eq. 6) ----
+        kept_idx, _ = ea16.select_restart_indices(evals, n_keep, locked_local, which="smallest")
+        C, beta_new, alphas_new, betas_new = ea16.purge_restart(evals, Z, beta_last, p, kept_idx)
+        Q_used = _q_slice(Q_basis, 0, total)
+        Q_new = block_combine(Q_used, C, slater)
+        if _nlock() > 0:
+            Q_new = _orth_against_locked(Q_new)
 
         # The trailing normalized residual block is always present after a sweep (the
         # recurrence stores m_act+1 blocks), so the Sorensen residual reduces to rotating

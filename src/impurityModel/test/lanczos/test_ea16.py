@@ -153,6 +153,25 @@ def test_purge_restart_preserves_kept_eigenvalues_and_orthonormal_C():
     assert beta_new.shape == (p, p)
 
 
+@pytest.mark.parametrize("n_kept", [0, 3])
+def test_purge_restart_rejects_partial_block_selection(n_kept):
+    """``kept_idx`` must hold a positive whole number of blocks, and say so if it doesn't.
+
+    The re-banding is a block algorithm: ``n_kept == 0`` left it building an empty
+    ``np.concatenate`` ("need at least one array to concatenate"), and a partial trailing
+    block would silently produce band blocks of the wrong shape. The IRLM driver stops
+    before handing over such a selection, so this is a diagnostic guard -- its job is to
+    name the caller's contract instead of failing opaquely inside the re-banding.
+    """
+    m, p = 3, 2
+    T = _hermitian_block_tridiagonal(m, p, seed=5)
+    evals, Z = np.linalg.eigh(T)
+    beta_last = np.random.default_rng(9).standard_normal((p, p)) + 0j
+
+    with pytest.raises(ValueError, match="not a positive multiple of the block size"):
+        purge_restart(evals, Z, beta_last, p, np.arange(n_kept))
+
+
 # --------------------------------------------------------------------------- #
 # locked_overlap_step
 # --------------------------------------------------------------------------- #

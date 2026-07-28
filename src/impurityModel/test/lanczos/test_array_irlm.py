@@ -169,6 +169,65 @@ def test_irlm_small_subspace_locking(mode, num_wanted):
     np.testing.assert_allclose(np.sort(ev_m)[:num_wanted], exact[:num_wanted], atol=1e-7)
 
 
+@pytest.mark.parametrize(
+    "p, num_wanted, max_subspace_blocks",
+    [
+        # The exact shape of the production failure (calc_gs -> CIPSI -> array IRLM):
+        # block size 1, a 15-dimensional reachable space, 20 pairs asked for.
+        (1, 20, 24),
+        # Same corner with a block width > 1. p must divide the dimension, otherwise the
+        # trailing block deflates, `total < m_act * p` fires first and the restart -- and
+        # so this corner -- is never reached: p=2 on a 15-dim space does NOT exercise it.
+        (3, 16, 10),
+    ],
+)
+def test_irlm_stops_when_sweep_locks_its_whole_subspace(p, num_wanted, max_subspace_blocks):
+    """Asking for more eigenpairs than the reachable subspace holds must terminate cleanly.
+
+    Regression for a crash in the restart driver. When the sweep spans the entire
+    reachable invariant subspace it exits by breakdown: ``beta_last`` is exactly zero and
+    no trailing residual block is stored. Every Ritz residual is then zero, so the eq. (15)
+    test accepts *every* active pair into the locked set -- and if ``num_wanted`` exceeds
+    the dimension, the driver still wants more, leaving ``select_restart_indices`` with no
+    unlocked candidate to retain. The empty selection reached ``ea16.purge_restart``, which
+    died on an empty ``np.concatenate``. The "trailing residual block deflated" guard is
+    the correct handler and now runs before the purge.
+
+    ``num_wanted > dim`` is not a contrived input: ``cipsi_solver`` caps ``num_wanted``
+    against ``len(basis)``, which is larger than the Krylov space reachable from ``psi0``.
+    """
+    dim = 15
+    H = np.diag(np.arange(dim, dtype=float)).astype(complex)
+    rng = np.random.default_rng(0)
+    psi0 = rng.standard_normal((dim, p)).astype(complex)
+
+    ev, evecs = implicitly_restarted_block_lanczos_cy(
+        psi0=psi0,
+        h_op=H,
+        basis=None,
+        num_wanted=num_wanted,
+        max_subspace_blocks=max_subspace_blocks,
+        tol=1e-10,
+        max_restarts=50,
+        verbose=False,
+        comm=None,
+    )
+
+    # Fewer than num_wanted: the documented contract when the reachable invariant subspace
+    # is smaller than the request (callers must use len(eigvals)).
+    assert len(ev) < num_wanted
+    assert len(ev) == dim
+    np.testing.assert_allclose(np.sort(ev), np.arange(dim), atol=1e-8)
+    # Assert on the vectors too: locking pairs that had not actually converged would still
+    # produce the right count, and here even the right values, but not true eigenvectors.
+    assert evecs.shape == (dim, dim)
+    order = np.argsort(ev)
+    for k in order:
+        v = evecs[:, k]
+        np.testing.assert_allclose(np.linalg.norm(v), 1.0, atol=1e-8)
+        assert np.linalg.norm(H @ v - ev[k] * v) < 1e-8
+
+
 def _partition(n, size):
     return [n // size + (1 if r < n % size else 0) for r in range(size)]
 

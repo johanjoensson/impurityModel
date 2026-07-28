@@ -255,11 +255,27 @@ def purge_restart(evals, Z, beta_last, p, kept_idx):
         is the basis-combination matrix (``V_new = V_m C``), ``beta_new`` (``p x p``)
         the new residual coupling, and ``alphas_new``/``betas_new`` the band blocks of
         the restarted ``T^+``.
+
+    Raises:
+        ValueError: if ``kept_idx`` does not hold a positive whole number of blocks. The
+            re-banding below is a block algorithm: it needs at least one full block to
+            re-band, and a partial trailing block would silently produce band blocks of
+            the wrong shape. This is a diagnostic guard, not a live bug -- the IRLM driver
+            stops (locking the remaining Ritz pairs) before it can hand over an empty
+            selection. It is here because the natural failure was an opaque
+            ``need at least one array to concatenate`` several lines further down.
     """
     kept_idx = np.asarray(kept_idx, dtype=int)
     n_keep = kept_idx.size
     nb = n_keep // p
     m = Z.shape[0] // p
+
+    if nb < 1 or n_keep % p != 0:
+        raise ValueError(
+            f"purge_restart: kept_idx holds {n_keep} Ritz pairs, which is not a positive "
+            f"multiple of the block size p={p}. The caller must fall back to a restart "
+            "(or stop) when fewer than one full block of Ritz pairs survives selection."
+        )
 
     W = Z[:, kept_idx]
     lam = evals[kept_idx].real.astype(complex)  # diagonal of Lambda (1-D, no dense diag)
