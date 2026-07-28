@@ -193,7 +193,12 @@ def gf_workload():
     h, basis, solver = work["h"], work["basis"], work["solver"]
 
     es, psis = solver.get_eigenvectors(
-        h, num_wanted=1, dense_cutoff=DENSE_CUTOFF, slaterWeightMin=SLATER_WEIGHT_MIN, solver="trlm"
+        h,
+        num_wanted=1,
+        dense_cutoff=DENSE_CUTOFF,
+        slaterWeightMin=SLATER_WEIGHT_MIN,
+        solver="trlm",
+        psi_refs=solver.psi_refs,
     )
     e0 = float(np.min(es))
     psi0 = psis[int(np.argmin(es))]

@@ -90,11 +90,12 @@ def _fake_lanczos(exhaust_first_calls, calls):
 
 def test_warm_start_exhaustion_triggers_one_cold_retry(monkeypatch, capsys):
     basis, solver = _make_solver()
-    solver.psi_refs = _warm_refs(basis)
     calls = []
     monkeypatch.setitem(cipsi_module.SOLVERS, "irlm", _fake_lanczos(1, calls))
 
-    e_ref, psi_refs = solver.get_eigenvectors(_h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, solver="irlm")
+    e_ref, psi_refs = solver.get_eigenvectors(
+        _h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, solver="irlm", psi_refs=_warm_refs(basis)
+    )
 
     # First call: the warm block augmented with the cold full-support column (2 columns).
     # Exactly one retry, from the cold block alone (1 column, dense on every rank).
@@ -111,11 +112,12 @@ def test_warm_start_exhaustion_triggers_one_cold_retry(monkeypatch, capsys):
 
 def test_certified_first_solve_does_not_retry(monkeypatch):
     basis, solver = _make_solver()
-    solver.psi_refs = _warm_refs(basis)
     calls = []
     monkeypatch.setitem(cipsi_module.SOLVERS, "irlm", _fake_lanczos(0, calls))
 
-    solver.get_eigenvectors(_h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, solver="irlm")
+    solver.get_eigenvectors(
+        _h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, solver="irlm", psi_refs=_warm_refs(basis)
+    )
 
     assert len(calls) == 1  # no extra solves on the common (certified) path
     assert calls[0].shape[1] == 2  # but the warm block still carries the cold guard column
@@ -123,7 +125,7 @@ def test_certified_first_solve_does_not_retry(monkeypatch):
 
 def test_cold_start_exhaustion_does_not_loop(monkeypatch, capsys):
     basis, solver = _make_solver()
-    solver.psi_refs = None  # cold from the start: there is nothing fresh to retry with
+    # psi_refs=None (the default): cold from the start, nothing fresh to retry with
     calls = []
     monkeypatch.setitem(cipsi_module.SOLVERS, "irlm", _fake_lanczos(10**9, calls))
 

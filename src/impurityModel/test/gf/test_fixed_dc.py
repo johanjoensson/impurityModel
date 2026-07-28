@@ -516,7 +516,12 @@ def _selfenergy_gs_occupation(model, basis_opts, dc):
     solver.expand(sb.h, dense_cutoff=1000, de2_min=1e-8, slaterWeightMin=basis_opts.slater_weight_min)
     energy_cut = -basis_opts.tau * np.log(1e-4)
     es, psis = solver.get_eigenvectors(
-        sb.h, num_wanted=10, max_energy=energy_cut, dense_cutoff=1000, slaterWeightMin=basis_opts.slater_weight_min
+        sb.h,
+        num_wanted=10,
+        max_energy=energy_cut,
+        dense_cutoff=1000,
+        slaterWeightMin=basis_opts.slater_weight_min,
+        psi_refs=solver.psi_refs,
     )
     rhos = build_density_matrices(gs_basis, psis, impurity_indices, impurity_indices)
     rho = thermal_average_scale_indep(es, rhos, basis_opts.tau)

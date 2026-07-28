@@ -831,6 +831,7 @@ def fixed_occupation_dc(
                     dense_cutoff=dense_cutoff,
                     slaterWeightMin=slaterWeightMin,
                     solver="irlm",
+                    psi_refs=mb_solver.psi_refs,
                 )
                 done = len(es) < num_wanted or (len(es) >= 1 and es[-1] - es[0] >= energy_cut) or num_wanted >= 100
                 if mb_basis.is_distributed:

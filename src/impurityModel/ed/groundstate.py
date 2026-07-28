@@ -253,6 +253,7 @@ def calc_energy(
         slaterWeightMin=slaterWeightMin,
         solver=cipsi_solver_method,
         reort=reort,
+        psi_refs=solver.psi_refs,
     )
     # Remember whether the truncation_threshold bound this occupation's expansion, so the
     # caller can report a capped ground-state determination even though the final basis
@@ -734,7 +735,6 @@ def calc_gs(
     # The cap can bind either the final expansion here or the earlier occupation search
     # (whose final basis may then fit under the cap); report either.
     gs_truncation_report = solver.truncation_report or getattr(ground_state_basis, "occupation_search_truncation", None)
-    solver.psi_refs = None
     es, psis = solver.get_eigenvectors(
         Hop,
         num_wanted=num_wanted,
@@ -742,6 +742,7 @@ def calc_gs(
         dense_cutoff=dense_cutoff,
         slaterWeightMin=slaterWeightMin,
         solver=cipsi_solver_method,
+        psi_refs=None,
     )
     ground_state_basis.clear()
     ground_state_basis.add_states({state for p in psis for state in p})

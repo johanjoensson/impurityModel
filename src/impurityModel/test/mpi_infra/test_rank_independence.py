@@ -184,7 +184,12 @@ def test_warm_started_eigensolver_delivers_more_than_its_start_block():
     width = len(solver.psi_refs)
 
     e_ref, _ = solver.get_eigenvectors(
-        workload["h"], num_wanted=10, max_energy=None, dense_cutoff=_DENSE_CUTOFF, slaterWeightMin=1e-12
+        workload["h"],
+        num_wanted=10,
+        max_energy=None,
+        dense_cutoff=_DENSE_CUTOFF,
+        slaterWeightMin=1e-12,
+        psi_refs=solver.psi_refs,
     )
 
     assert len(e_ref) > width, (

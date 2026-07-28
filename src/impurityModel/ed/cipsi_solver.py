@@ -643,7 +643,6 @@ class CIPSISolver:
         best_e_ref = None
         self.truncation_report = None
         while True:
-            self.psi_refs = psi_refs
             e_ref, psi_refs = self.get_eigenvectors(
                 H,
                 num_wanted=min(2 * len(psi_refs) if psi_refs is not None else 10, len(self.basis)),
@@ -652,6 +651,7 @@ class CIPSISolver:
                 slaterWeightMin=slaterWeightMin,
                 solver=solver,
                 reort=reort,
+                psi_refs=psi_refs,
             )
 
             if len(e_ref) == 0:
@@ -747,7 +747,16 @@ class CIPSISolver:
         slaterWeightMin=0,
         solver="trlm",
         reort=Reort.PARTIAL,
+        psi_refs=None,
     ):
+        """Solve for the ``num_wanted`` lowest eigenstates below ``max_energy``.
+
+        ``psi_refs``, if given, warm-starts the Krylov solve from a previously converged
+        eigenvector block (e.g. the caller's own ``solver.psi_refs`` from a prior ``expand``/
+        ``get_eigenvectors`` call); ``None`` is a cold start from the rank-independent hash
+        vector. Callers own this choice explicitly -- this method never reads or writes
+        ``self.psi_refs``.
+        """
         if self.basis.restrictions is not None:
             H.set_restrictions(self.basis.restrictions)
         if self.basis.weighted_restrictions is not None:
@@ -773,7 +782,7 @@ class CIPSISolver:
                     ManyBodyState({state: _amplitude_from_hash(state.get_hash()) for state in local_states}, width=1)
                 ]
 
-            warm_started = hasattr(self, "psi_refs") and self.psi_refs is not None
+            warm_started = psi_refs is not None
             # A warm block spans the previously converged (near-)invariant subspace. When the
             # ground state has moved to another near-decoupled charge sector since (e.g. the
             # fixed-occupation DC search jumping across a charge-transfer crossing between
@@ -782,7 +791,7 @@ class CIPSISolver:
             # lies beyond the thermal cut, and the miss is undetectable downstream. Appending
             # the cold full-support start vector keeps every sector reachable while the warm
             # columns retain their fast convergence.
-            psi0 = list(self.psi_refs) + cold_start_block() if warm_started else cold_start_block()
+            psi0 = list(psi_refs) + cold_start_block() if warm_started else cold_start_block()
 
             num_wanted = min(num_wanted + 10, len(self.basis))
 
