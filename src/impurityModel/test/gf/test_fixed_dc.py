@@ -707,3 +707,42 @@ def test_fixed_occupation_dc_matches_independent_selfenergy_gs():
     dc = fixed_occupation_dc(occupation=target, **kwargs)
     n_selfenergy = _selfenergy_gs_occupation(kwargs["model"], kwargs["basis"], dc)
     np.testing.assert_allclose(n_selfenergy, target, atol=2e-2)
+
+
+def test_reference_far_from_nominal_warns(capsys):
+    """The runaway-CSC signature: a reference that is grossly wrong without being pinned.
+
+    The saturation check fires only at exactly 0 or a full shell, so an archive iteration whose
+    DFT impurity level has run away reports (measured) n0 = 1.5446 against a nominal 8 and the
+    search converges on it silently, returning a dc 3.14 Ry (~43 eV) from the guess. This dimer
+    stands in for that: the raw-h0 filling is N0 = 2 while the model is set up at a nominal 1,
+    one full charge state away.
+    """
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    assert kwargs["basis"].nominal_occ == {0: 1}
+    fixed_occupation_dc(verbosity=1, **kwargs)
+    out = capsys.readouterr().out
+    if MPI.COMM_WORLD.rank != 0:
+        assert "different charge state" not in out, out
+        return
+    # This dimer's reference *is* the full shell, so saturation is the more specific diagnosis
+    # and must win -- the two warnings are mutually exclusive by construction.
+    assert "saturated at the full impurity shell" in out, out
+    assert "different charge state" not in out, out
+
+
+def test_the_two_reference_warnings_are_mutually_exclusive():
+    """Saturation is the specific case; the nominal gap is the catch-all. Never both."""
+    from impurityModel.ed.dc_reference import _warn_if_reference_far_from_nominal, _warn_if_reference_saturated
+
+    if MPI.COMM_WORLD.rank != 0:
+        pytest.skip("both helpers print on rank 0 only")
+    # Saturated at the full shell of 10, nominal 8: saturation fires.
+    assert _warn_if_reference_saturated(10.0, 10, "advice.", rank=0) is True
+    # The runaway: 1.54 of 10 is neither empty nor full, so saturation stays silent and the
+    # nominal-gap check is the only thing that catches it.
+    assert _warn_if_reference_saturated(1.5446, 10, "advice.", rank=0) is False
+    assert _warn_if_reference_far_from_nominal(1.5446, 8, "advice.", rank=0) is True
+    # And a healthy covalent deviation trips neither: NiO's own n0 = 8.6258 against nominal 8.
+    assert _warn_if_reference_saturated(8.6258, 10, "advice.", rank=0) is False
+    assert _warn_if_reference_far_from_nominal(8.6258, 8, "advice.", rank=0) is False

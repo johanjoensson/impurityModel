@@ -35,6 +35,7 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.dc_reference import (
     _SATURATION_ADVICE,
     _noninteracting_impurity_occupation,
+    _warn_if_reference_far_from_nominal,
     _warn_if_reference_saturated,
 )
 from impurityModel.ed.dc_search import _dc_search_trace, _solve_dc_shift
@@ -459,9 +460,14 @@ def fixed_occupation_dc(
         occupation = n0
         # Only when N0 is the *target*: with an explicit target a saturated reference is merely
         # logged, not acted on.
-        _warn_if_reference_saturated(
+        # Saturation is the more specific diagnosis, so it wins when both would fire; the
+        # nominal-gap check catches the reference that is grossly wrong *without* being pinned at
+        # a shell edge, which the saturation test alone lets through (a runaway CSC iterate
+        # reporting n0 = 1.54 against a nominal 8 converged silently to a 43 eV shift).
+        if not _warn_if_reference_saturated(
             n0, total_impurity_orbitals, _SATURATION_ADVICE["search"], occ_tol=occ_tol, rank=rank
-        )
+        ):
+            _warn_if_reference_far_from_nominal(n0, sum(N0.values()), _SATURATION_ADVICE["search"], rank=rank)
     # Tolerance absorbs the roundoff of a target derived elsewhere the same way
     # _noninteracting_impurity_occupation is (a sum of Fermi occupations, each in [0, 1]).
     if not -1e-9 <= occupation <= total_impurity_orbitals + 1e-9:

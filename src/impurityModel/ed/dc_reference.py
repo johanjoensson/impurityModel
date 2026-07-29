@@ -115,10 +115,9 @@ def _warn_if_reference_saturated(n0, total_impurity_orbitals, advice, occ_tol=1e
     """
     if rank is None:
         rank = MPI.COMM_WORLD.rank
-    if rank != 0:
-        return
-    if not (n0 >= total_impurity_orbitals - occ_tol or n0 <= occ_tol):
-        return
+    saturated = n0 >= total_impurity_orbitals - occ_tol or n0 <= occ_tol
+    if rank != 0 or not saturated:
+        return saturated
     print(
         f"WARNING: the DFT reference occupation N0 = {n0:.4f} is saturated at the "
         f"{'full' if n0 > occ_tol else 'empty'} impurity shell "
@@ -127,6 +126,43 @@ def _warn_if_reference_saturated(n0, total_impurity_orbitals, advice, occ_tol=1e
         f"valence-only bath fits), {advice}",
         flush=True,
     )
+    return True
+
+
+#: How far the DFT reference may sit from the nominal occupation before it is reported as
+#: suspect: **one electron**. Not a tolerance to be tuned -- it is the spacing of the quantity
+#: itself. The nominal occupation names a charge state (d7 / d8 / d9), so a reference more than
+#: one electron away points at a *different* charge state than the model was set up for, whatever
+#: the covalency. Genuine covalent deviation sits well inside it: NiO at 15 bath states gives
+#: n0 = 8.6258 against a nominal 8, i.e. 0.63.
+_NOMINAL_GAP_ELECTRONS = 1.0
+
+
+def _warn_if_reference_far_from_nominal(n0, nominal_total, advice, rank=None):
+    """Warn when the DFT reference names a different charge state than the nominal occupation.
+
+    The complement of :func:`_warn_if_reference_saturated`, which fires only at exactly 0 or a
+    full shell and so passes a reference that is grossly wrong without being pinned. That gap is
+    not hypothetical: the *second* CSC iteration of a NiO archive reports ``n0 = 1.5446`` against
+    a nominal 8 -- a runaway iterate whose DFT impurity level had moved 0.25 Ry (~3.4 eV) above
+    the first's -- and the search converged on it silently, returning a double counting 3.14 Ry
+    (~43 eV) from the guess. Neither the saturation check nor the convergence test had anything
+    to say about it.
+
+    Printing only (no collective), so gating on rank 0 is safe.
+    """
+    if rank is None:
+        rank = MPI.COMM_WORLD.rank
+    if rank != 0 or abs(n0 - nominal_total) <= _NOMINAL_GAP_ELECTRONS:
+        return False
+    print(
+        f"WARNING: the DFT reference occupation N0 = {n0:.4f} lies {abs(n0 - nominal_total):.4f} "
+        f"electrons from the nominal occupation {nominal_total}, i.e. it names a different charge "
+        "state than the model was set up for. That is the signature of a diverging charge "
+        f"self-consistency loop, or of an archive iteration that has run away, {advice}",
+        flush=True,
+    )
+    return True
 
 
 def _reference_impurity_occupation(model, tau, *, warn=True):
