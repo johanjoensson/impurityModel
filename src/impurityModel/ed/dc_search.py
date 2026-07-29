@@ -73,11 +73,10 @@ def _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol):
 #: about the true observable, and iterating on a wrong Jacobian is not the fix.
 MAX_TRUE_STEPS = 3
 
-#: Below this, ``chi`` carries no usable information about the shift and a Newton step
-#: ``-g / chi`` is unbounded. Expressed relative to the residual tolerance: a slope this small
-#: means attaining ``tol`` would need a shift of order ``tol / CHI_FLOOR``, i.e. a hundred times
-#: the tolerance, which is past the point where the local linear model means anything.
-CHI_FLOOR = 1e-2
+#: An absolute floor on ``|chi|`` is not the right test and this is kept only as a guard against
+#: division by zero. What decides whether the frozen model may be trusted is derived at the call
+#: site: see :func:`solve_dc_shift_seeded`'s ``tol / |chi| <= initial_step`` condition.
+CHI_FLOOR = 0.0
 
 
 def solve_dc_shift_seeded(
@@ -181,8 +180,21 @@ def solve_dc_shift_seeded(
     chi = sweep.chi(mu_seed)
     if comm is not None:
         chi = comm.bcast(chi, root=0)
-    if abs(chi) < CHI_FLOOR:
-        return _fall_back(f"the frozen space gives chi = {chi:.3e}, too flat for a Newton step to mean anything")
+    # Is the criterion sharp enough for a seeded answer to be *the* answer? The occupation
+    # tolerance pins the shift only to `delta_mu = tol / |chi|`. When that is wider than the
+    # search's own step scale, many shifts attain the target and which one you land on is decided
+    # by where you started -- and the plain scan's answer, the root nearest mu = 0, is the
+    # principled one (the smallest correction to the guess). Measured on a saturated NiO
+    # reference: chi = 0.0151 gives delta_mu = 0.66 against an initial step of 0.025, and the
+    # seeded path returned mu = 2.0 where the plain scan returned 1.0 -- both attaining the
+    # target, on the same plateau, but the seeded one further from the guess for no reason.
+    shift_uncertainty = tol / abs(chi) if abs(chi) > CHI_FLOOR else np.inf
+    if not shift_uncertainty <= initial_step:
+        return _fall_back(
+            f"the frozen space gives chi = {chi:.3e}, so the occupation tolerance pins the shift "
+            f"only to delta_mu = {shift_uncertainty:.3e}, wider than the search step "
+            f"{initial_step:.3e}; the target does not determine a unique shift here"
+        )
 
     # Phase 2: the expensive half, at most a handful of calls.
     mu, best = mu_seed, None

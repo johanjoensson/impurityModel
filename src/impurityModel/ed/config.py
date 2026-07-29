@@ -423,6 +423,34 @@ DC_DIAGNOSTICS = Knob(
 )
 
 
+DC_SEEDED_SEARCH = Knob(
+    name="DC_SEEDED_SEARCH",
+    kind="bool",
+    default=False,
+    group="double-counting",
+    doc="""Seed the fixed-occupation search from a cheap frozen-space sweep instead of bracketing
+    on the full re-expanding observable. The bracketing half then costs ~0.08 % of a true
+    evaluation and the expensive observable is called only for one or two quasi-Newton corrections
+    using ``chi = dn/dmu`` read off the frozen space; convergence is still decided by the true
+    residual.
+
+    Measured on the NiO 15-bath workload (archive iteration Ni 1, cap 2000): **305.3 s -> 36.9 s,
+    8.3x**, true observable evaluations 7 -> 1, sector solves 36 -> 5, with ``mu`` agreeing to
+    0.0013 (0.410376 vs 0.409036) and the achieved occupation to 0.0042 (8.62530 vs 8.62111) --
+    both well inside ``occ_tol = 1e-2``. On an ill-conditioned target (NiO-20, whose saturated
+    reference makes the criterion a plateau, ``chi = 0.0151``) the guard declines and falls back,
+    returning the plain search's answer exactly at ~3 % overhead.
+
+    Still off by default. What has been validated is that the seeded search reproduces the *same
+    shift within tolerance* on one production workload; what has not is the DC-vs-independent-GS
+    parity property on that workload, which is the bar this default was set against and which
+    needs a full ``calc_selfenergy`` comparison (campaign task #13). The guards cannot silently
+    return an unsupported answer -- they fall back to the plain search -- but the seeded path does
+    converge to a slightly different shift inside the tolerance, which a CSC loop caching ``dc``
+    across iterations could accumulate.""",
+)
+
+
 KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_ATOL,
     GF_BICGSTAB_MAX_ITER,
@@ -451,6 +479,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_RIXS_ADAPTIVE_TOL,
     GF_RIXS_ADAPTIVE_BATCH,
     DC_DIAGNOSTICS,
+    DC_SEEDED_SEARCH,
 )
 
 GROUP_TITLES = {

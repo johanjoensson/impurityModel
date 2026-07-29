@@ -397,7 +397,7 @@ def test_seeding_falls_back_on_a_flat_chi(capsys):
         sector_span = property(lambda self: self._inner.sector_span)
         spans_sector = property(lambda self: self._inner.spans_sector)
 
-        def chi(self, mu, step=dc_search.CHI_FLOOR):
+        def chi(self, mu, step=None):
             return 0.0
 
     mu, true_steps = dc_search.solve_dc_shift_seeded(
@@ -412,4 +412,4 @@ def test_seeding_falls_back_on_a_flat_chi(capsys):
     )
     assert true_steps == -1
     if MPI.COMM_WORLD.rank == 0:
-        assert "too flat for a Newton step" in capsys.readouterr().out
+        assert "does not determine a unique shift" in capsys.readouterr().out

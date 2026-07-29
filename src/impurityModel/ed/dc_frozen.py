@@ -38,7 +38,7 @@ import numpy as np
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_transcription import build_density_matrices, build_sparse_matrix
 from impurityModel.ed.cipsi_solver import CIPSISolver
-from impurityModel.ed.dc_criteria import _dc_operator
+from impurityModel.ed.lie_algebra import tensors_to_operator
 
 #: Finite-difference step for ``chi``, as a fraction of the shift scale. Central differences on a
 #: quantity that is itself an eigensolve are second-order accurate, so the step only has to sit
@@ -118,13 +118,13 @@ def build_union_space(
         slater_weight_min,
         None,
     )
-    identity = np.identity(len(impurity_indices))
+    identity = np.identity(len(impurity_indices), dtype=complex)
     for mu in mu_samples:
         # Expand at this end of the bracket. `expand` reads solver.psi_refs, so successive calls
         # are warm-started from the previous end's converged manifold -- which is the
         # state-averaging: the space ends up adequate across the sweep rather than at one point.
         solver.expand(
-            h_op - _dc_operator(mu * identity),
+            h_op - tensors_to_operator(mu * identity),
             dense_cutoff=dense_cutoff,
             de2_min=de2_min,
             slaterWeightMin=slater_weight_min,
@@ -195,7 +195,7 @@ class FrozenSpaceSweep:
         # impurity number operator, which _dc_operator(identity) is exactly -- diagonal in the
         # determinant basis, which is what makes H(mu) a diagonal shift rather than a rebuild.
         self._h0_matrix = build_sparse_matrix(basis, h_op)
-        self._n_matrix = build_sparse_matrix(basis, _dc_operator(np.identity(len(self.impurity_indices))))
+        self._n_matrix = build_sparse_matrix(basis, tensors_to_operator(np.identity(len(self.impurity_indices), dtype=complex)))
         self._solved = {}
 
     def hamiltonian(self, mu):
