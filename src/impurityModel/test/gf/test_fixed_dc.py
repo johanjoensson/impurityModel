@@ -291,7 +291,7 @@ def test_noninteracting_impurity_occupation_matches_fermi_fill():
     # non-interacting h0. Build a 1-impurity / 1-bath cluster with an impurity
     # level poking above the Fermi level so the answer is genuinely fractional,
     # and compare against an independent per-eigenvector Fermi sum.
-    from impurityModel.ed.double_counting import _noninteracting_impurity_occupation
+    from impurityModel.ed.dc_reference import _noninteracting_impurity_occupation
 
     e_imp, e_bath, v, tau = 0.5, -2.0, 0.5, 0.1
     h0 = {
@@ -319,7 +319,7 @@ def test_fixed_occupation_dc_self_consistent_targets_dft_occupation():
     # occupation=2.0 request -- and it hits the same "free bath electron" alternate sector well
     # short of the analytic dc = 6 (module docstring), converging to the same dc as
     # test_fixed_occupation_dc_increases_occupation.
-    from impurityModel.ed.double_counting import _noninteracting_impurity_occupation
+    from impurityModel.ed.dc_reference import _noninteracting_impurity_occupation
 
     kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2)
     model, basis = kwargs["model"], kwargs["basis"]
@@ -413,7 +413,7 @@ def test_dc_search_visits_the_same_mu_sequence_on_every_rank(monkeypatch, criter
     they hang rather than return, so a test comparing return values can never see it. Recording
     the trial ``mu`` sequence and comparing it across ranks is what actually pins the property.
     """
-    import impurityModel.ed.double_counting as dc_module
+    import impurityModel.ed.dc_criteria as dc_module
 
     comm = MPI.COMM_WORLD
     kwargs, _ = common_kwargs(v=0.01 if criterion == "peak" else 0.3, tau=1e-3 if criterion == "peak" else 1e-2)
@@ -428,8 +428,13 @@ def test_dc_search_visits_the_same_mu_sequence_on_every_rank(monkeypatch, criter
 
         return real_solve(recording_observable, target, **kw)
 
+    # dc_criteria, not the double_counting shim: the shim's `from dc_search import
+    # _solve_dc_shift` is a *new binding*, so patching it there leaves the real call site reading
+    # its own and the stub never runs -- with `visited` empty on every rank, the comparison below
+    # succeeds vacuously. The non-empty assertion is what makes a dead patch fail loudly.
     monkeypatch.setattr(dc_module, "_solve_dc_shift", recording_solve)
     call(kwargs)
+    assert visited, "the _solve_dc_shift stub never ran: the monkeypatch missed the call site"
 
     gathered = comm.gather(visited, root=0)
     if comm.rank == 0:
@@ -464,7 +469,7 @@ def _capture_prepared_bases(monkeypatch):
 
 
 def test_fixed_occupation_dc_derives_cap_when_threshold_is_none(monkeypatch):
-    import impurityModel.ed.double_counting as dc_module
+    import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
 
@@ -486,7 +491,7 @@ def test_fixed_occupation_dc_derives_cap_when_threshold_is_none(monkeypatch):
 
 
 def test_fixed_peak_dc_derives_cap_when_threshold_is_none(monkeypatch):
-    import impurityModel.ed.double_counting as dc_module
+    import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
 
@@ -512,7 +517,7 @@ def test_fixed_peak_dc_derives_cap_when_threshold_is_none(monkeypatch):
 
 
 def test_explicit_threshold_skips_memory_probe(monkeypatch):
-    import impurityModel.ed.double_counting as dc_module
+    import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
 
@@ -521,6 +526,16 @@ def test_explicit_threshold_skips_memory_probe(monkeypatch):
         return 50
 
     monkeypatch.setattr(dc_module, "suggest_truncation_threshold", fake_suggest)
+    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+
+    # Positive control first. Every assertion below is `not calls`, which a monkeypatch that
+    # missed its call site satisfies vacuously -- exactly the failure mode a re-export shim
+    # invites. Show the stub is reachable before concluding anything from its silence.
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
+    fixed_occupation_dc(occupation=1.0, **kwargs)
+    assert calls, "the suggest_truncation_threshold stub never ran; the rest of this test is vacuous"
+    calls.clear()
 
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     fixed_occupation_dc(occupation=1.0, **kwargs)

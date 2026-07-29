@@ -85,7 +85,7 @@ def run_dc_search(workload_key, cap, criterion="occupation", peak_position=None,
         ``cap``, ``seconds``, ``mu``, ``value`` (achieved ``n`` or gap), ``chi``, and the
         per-kind counts and seconds the trace recorded.
     """
-    from impurityModel.ed.double_counting import _dc_chi
+    from impurityModel.ed.dc_search import _dc_chi
 
     model, _meshes, basis, solver, label = load_selfenergy_archive(WORKLOADS[workload_key])
     basis = replace(basis, truncation_threshold=cap)

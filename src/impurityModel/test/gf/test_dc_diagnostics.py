@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import double_counting as dc_module
+from impurityModel.ed import dc_search
 from impurityModel.ed import solver_trace
 from impurityModel.ed.selfenergy import fixed_occupation_dc, fixed_peak_dc
 
@@ -74,9 +74,9 @@ def test_chi_is_the_slope_of_the_closest_evaluated_pair():
     # A geometric scan leaves widely spaced early points and a tight final bracket; the slope
     # that matters for delta_mu = delta_n / chi is the local one, so the closest pair wins.
     samples = {-4.0: 0.0, 0.0: 1.0, 1.0: 3.0, 1.5: 4.0}
-    assert dc_module._dc_chi(samples) == pytest.approx(2.0)
-    assert dc_module._dc_chi({0.0: 1.0}) is None
-    assert dc_module._dc_chi({}) is None
+    assert dc_search._dc_chi(samples) == pytest.approx(2.0)
+    assert dc_search._dc_chi({0.0: 1.0}) is None
+    assert dc_search._dc_chi({}) is None
 
 
 @pytest.mark.parametrize(

@@ -1,4 +1,4 @@
-"""Unit tests for :func:`impurityModel.ed.double_counting._solve_dc_shift`.
+"""Unit tests for :func:`impurityModel.ed.dc_search._solve_dc_shift`.
 
 Pure-Python synthetic observables (no eigensolver, no MPI) exercising the bidirectional,
 non-monotonicity-safe bracketing search: a plain monotone root, a staircase (plateau), a
@@ -9,7 +9,7 @@ fall through to a genuine root farther out.
 import numpy as np
 import pytest
 
-from impurityModel.ed.double_counting import _solve_dc_shift
+from impurityModel.ed.dc_search import _solve_dc_shift
 
 UNREACHABLE = "unreachable: target={target} closest={value:.4f} at mu={mu:.4f}"
 

@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.atomic_physics import get_spherical_2_cubic_matrix
-from impurityModel.ed.double_counting import _model_u4_dense, _model_uj
+from impurityModel.ed.dc_static import _model_u4_dense, _model_uj
 from impurityModel.ed.lie_algebra import rotate_two_body
 from impurityModel.ed.model import ImpurityModel, atomic_u4
 
