@@ -405,6 +405,24 @@ GF_RIXS_ADAPTIVE_BATCH = Knob(
 )
 
 
+# --- Double counting: search diagnostics -----------------------------------------------------
+
+DC_DIAGNOSTICS = Knob(
+    name="DC_DIAGNOSTICS",
+    kind="bool",
+    default=False,
+    group="double-counting",
+    doc="""Report where a fixed-occupation/fixed-peak double-counting search spends its time.
+    The search evaluates its observable dozens of times and each evaluation runs a whole
+    ground-state occupation walk underneath, so the only number visible today -- the final
+    ``dc`` -- says nothing about which of build / CIPSI expansion / diagonalization dominates,
+    nor how many sector solves were redundant. With this set, the search is wrapped in a
+    ``solver_trace.tracing()`` block and prints a per-trial-``mu`` table plus per-kind
+    aggregates and the measured ``chi = dn/dmu`` on rank 0. Off by default: the accounting is
+    free (one ``is None`` test per hook) but the report is several lines per ``mu``.""",
+)
+
+
 KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_ATOL,
     GF_BICGSTAB_MAX_ITER,
@@ -432,6 +450,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_RIXS_WIN_CHUNK,
     GF_RIXS_ADAPTIVE_TOL,
     GF_RIXS_ADAPTIVE_BATCH,
+    DC_DIAGNOSTICS,
 )
 
 GROUP_TITLES = {
@@ -442,6 +461,7 @@ GROUP_TITLES = {
     "convergence": "Block-Lanczos convergence monitor",
     "rixs-solvers": "RIXS shift-recycling solver tiers",
     "rixs-sampling": "RIXS incoming-energy sampling",
+    "double-counting": "Double-counting search diagnostics",
 }
 
 

@@ -49,9 +49,12 @@ to nearly metallic -- and it is wrong silently, so the check belongs to the refe
 to any one scheme.
 """
 
+from contextlib import contextmanager
+
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed import config, solver_trace
 from impurityModel.ed.atomic_physics import uj_from_u4
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
@@ -442,6 +445,109 @@ def _solve_dc_shift(
     raise RuntimeError(unreachable_message.format(mu=best_mu, value=best_g + target, target=target))
 
 
+def _dc_chi(samples):
+    r"""Finite-difference slope :math:`\chi = dn/d\mu` from the two closest trial shifts.
+
+    The reviews' point 5: the answer this module returns is ``dc``, not ``n``, and the error in
+    ``dc`` is ``delta_mu = delta_n / chi``. On a plateau ``chi -> 0`` and an occupation converged
+    to ``occ_tol`` still leaves an unbounded ``dc``, so an occupation residual reported without
+    ``chi`` beside it does not say how well the double counting is determined.
+
+    ``samples`` is a ``{mu: value}`` mapping of the points the search actually evaluated -- the
+    slope is free, every one of them having cost a full solve. Returns ``None`` when fewer than
+    two distinct shifts were evaluated (the ``mu = 0`` fast path).
+    """
+    shifts = sorted(samples)
+    if len(shifts) < 2:
+        return None
+    pairs = zip(shifts, shifts[1:])
+    mu_low, mu_high = min(pairs, key=lambda pair: pair[1] - pair[0])
+    return (samples[mu_high] - samples[mu_low]) / (mu_high - mu_low)
+
+
+def _report_dc_trace(trace, label, comm, rank):
+    """Print the cost accounting of one double-counting search on rank 0.
+
+    Two aggregates and a per-``mu`` table. The kinds nest -- a ``sector_solve`` contains its
+    ``build``, ``expand`` and ``eigensolve`` -- so the inner three are reported as a share of the
+    search's total rather than added to it.
+    """
+    solves = trace.count("sector_solve")
+    # Unconditional collective (the caller already broadcast the decision to trace at all). The
+    # sector-solve count is the cheapest available witness that every rank walked the same path
+    # through the collectives: the residual is broadcast, so the mu sequence agrees by
+    # construction, but a rank-dependent cache hit or occupation-bound test inside the walk would
+    # show up here as a count mismatch instead of as a hang three phases later.
+    if comm is not None:
+        solves_min = comm.allreduce(solves, op=MPI.MIN)
+        solves_max = comm.allreduce(solves, op=MPI.MAX)
+    else:
+        solves_min = solves_max = solves
+    if rank != 0:
+        return
+    if solves_min != solves_max:
+        print(
+            f"WARNING: the {label} search ran a different number of sector solves on different "
+            f"ranks ({solves_min} to {solves_max}). The ranks took different paths through the "
+            "collective calls; the next such divergence is likely to deadlock rather than warn.",
+            flush=True,
+        )
+    total = trace.seconds("dc_evaluation")
+    print(f"--- {label} double-counting search: cost accounting ---")
+    print(
+        f"  {trace.count('dc_evaluation')} observable evaluations, {solves} sector solves "
+        f"({trace.count('sector_cache_hit')} cache hits), {total:.1f} s total"
+    )
+    for kind in ("build", "expand", "eigensolve"):
+        seconds = trace.seconds(kind)
+        share = f"{100 * seconds / total:.0f}%" if total > 0 else "n/a"
+        print(f"  {kind:<11} {trace.count(kind):>5} calls  {seconds:>9.1f} s  {share:>5} of total")
+    print(f"  {'mu':>12} {'value':>12} {'solves':>7} {'hits':>6} {'dets':>8} {'seconds':>9}")
+    for mu, events in sorted(trace.group_by("mu").items(), key=lambda item: (item[0] is None, item[0])):
+        if mu is None:
+            continue
+        at_mu = [event for event in events if event["kind"] == "dc_evaluation"]
+        sector_solves = [event for event in events if event["kind"] == "sector_solve"]
+        value = at_mu[0].get("n", at_mu[0].get("gap")) if at_mu else float("nan")
+        dets = max((event.get("n_dets", 0) for event in sector_solves), default=0)
+        seconds = sum(event["seconds"] for event in at_mu)
+        hits = sum(1 for event in events if event["kind"] == "sector_cache_hit")
+        print(f"  {mu:>12.6f} {value:>12.6f} {len(sector_solves):>7} {hits:>6} {dets:>8} {seconds:>9.1f}")
+    # The occupation criterion controls n, the peak criterion controls the sector-energy gap;
+    # either way the slope of the controlled quantity in mu is what converts a residual into an
+    # error on the answer, and it costs nothing once the points have been solved.
+    evaluations = trace.of_kind("dc_evaluation")
+    field, symbol = ("n", "dn/dmu") if any("n" in event for event in evaluations) else ("gap", "dgap/dmu")
+    samples = {event["mu"]: event[field] for event in evaluations if field in event and "mu" in event}
+    chi = _dc_chi(samples)
+    if chi is not None:
+        print(f"  chi = {symbol} = {chi:.4f} (closest evaluated pair); delta_mu = delta_residual / chi")
+    print("--- end cost accounting ---", flush=True)
+
+
+@contextmanager
+def _dc_search_trace(label, comm, rank):
+    """Account for a double-counting search when ``DC_DIAGNOSTICS`` is set; otherwise a no-op.
+
+    The activation decision gates the collective inside :func:`_report_dc_trace`, so it is
+    broadcast rather than read per rank: environment variables are uniform under ``mpiexec`` in
+    every normal invocation, and "in every normal invocation" is how this repo's deadlocks got in.
+    Reporting happens in a ``finally`` -- a search that fails to reach its target is exactly the
+    one whose cost breakdown is worth having.
+    """
+    enabled = config.DC_DIAGNOSTICS.get()
+    if comm is not None:
+        enabled = comm.bcast(enabled, root=0)
+    if not enabled:
+        yield None
+        return
+    with solver_trace.tracing() as trace:
+        try:
+            yield trace
+        finally:
+            _report_dc_trace(trace, label, comm, rank)
+
+
 def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0):
     r"""
     Calculate the double counting correction using a fixed peak position criterion.
@@ -600,6 +706,12 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     unreachable_penalty = 1e4 * max(float(np.ptp(np.linalg.eigvalsh(h1_for_scale))), 1.0)
 
     def peak_observable(mu):
+        with solver_trace.labelled(mu=mu), solver_trace.timed("dc_evaluation") as evaluation_fields:
+            gap = _peak_gap_at_mu(mu)
+            evaluation_fields["gap"] = gap
+            return gap
+
+    def _peak_gap_at_mu(mu):
         # h_op_i (sb.h, from prepare_solver_basis) already has dc_guess subtracted (H = h0 - DC +
         # U with DC = model.dc = dc_guess); only the incremental mu shift is subtracted here, or
         # dc_guess would be double-counted. Matches fixed_occupation_dc's identical pattern.
@@ -681,21 +793,22 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
         "occupation (a uniform shift cannot move the peak), or the target lies beyond the "
         "reachable range."
     )
-    mu = _solve_dc_shift(
-        peak_observable,
-        peak_position,
-        tol=tol,
-        width_tol=tol,
-        initial_step=max(10 * tau, abs(peak_position)),
-        max_shift=max(bandwidth, 10 * abs(peak_position), 1.0),
-        plateau_ok=False,
-        unreachable_message=unreachable,
-        rank=rank,
-        # The observable's own collectives run on COMM_WORLD (the basis builds below
-        # hardcode it), not on the caller's `comm`, so the residual must be broadcast
-        # there too or the branch decisions can diverge between ranks.
-        comm=MPI.COMM_WORLD,
-    )
+    with _dc_search_trace("fixed-peak", MPI.COMM_WORLD, rank):
+        mu = _solve_dc_shift(
+            peak_observable,
+            peak_position,
+            tol=tol,
+            width_tol=tol,
+            initial_step=max(10 * tau, abs(peak_position)),
+            max_shift=max(bandwidth, 10 * abs(peak_position), 1.0),
+            plateau_ok=False,
+            unreachable_message=unreachable,
+            rank=rank,
+            # The observable's own collectives run on COMM_WORLD (the basis builds below
+            # hardcode it), not on the caller's `comm`, so the residual must be broadcast
+            # there too or the branch decisions can diverge between ranks.
+            comm=MPI.COMM_WORLD,
+        )
 
     dc = dc_guess + mu * identity
     if verbose and rank == 0:
@@ -870,6 +983,12 @@ def fixed_occupation_dc(
     occupation_at = {}
 
     def occupation_observable(mu):
+        with solver_trace.labelled(mu=mu), solver_trace.timed("dc_evaluation") as evaluation_fields:
+            n_out = _occupation_at_mu(mu)
+            evaluation_fields["n"] = n_out
+            return n_out
+
+    def _occupation_at_mu(mu):
         h_op = h_op_i - _dc_operator(mu * identity)
 
         # Determine the ground-state sector the SAME way calc_selfenergy will: the identical
@@ -900,8 +1019,11 @@ def fixed_occupation_dc(
         mb_solver = CIPSISolver(mb_basis)
         # Refine at the same de2_min calc_gs uses for its own final solve (find_ground_state_basis
         # itself only expands to 1e-6, tight enough to compare sectors but not to match the
-        # occupation calc_selfenergy will report at this same dc).
-        mb_solver.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-8, slaterWeightMin=slaterWeightMin)
+        # occupation calc_selfenergy will report at this same dc). This refinement is *not* part
+        # of any sector solve -- it runs once per mu, on top of the whole walk -- so it is timed
+        # under the same "expand" kind to land in the aggregate, tagged to say where it came from.
+        with solver_trace.timed("expand", stage="dc_refine"):
+            mb_solver.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-8, slaterWeightMin=slaterWeightMin)
 
         def solve_thermal_occupation():
             # The NiO ground state that motivated this rework is 3-fold quasi-degenerate, so a
@@ -912,15 +1034,16 @@ def fixed_occupation_dc(
             # re-enter the next collective get_eigenvectors call.
             num_wanted = 10
             while True:
-                es, psis = mb_solver.get_eigenvectors(
-                    h_op,
-                    num_wanted=num_wanted,
-                    max_energy=energy_cut,
-                    dense_cutoff=dense_cutoff,
-                    slaterWeightMin=slaterWeightMin,
-                    solver="irlm",
-                    psi_refs=mb_solver.psi_refs,
-                )
+                with solver_trace.timed("eigensolve", stage="dc_thermal", num_wanted=num_wanted):
+                    es, psis = mb_solver.get_eigenvectors(
+                        h_op,
+                        num_wanted=num_wanted,
+                        max_energy=energy_cut,
+                        dense_cutoff=dense_cutoff,
+                        slaterWeightMin=slaterWeightMin,
+                        solver="irlm",
+                        psi_refs=mb_solver.psi_refs,
+                    )
                 done = len(es) < num_wanted or (len(es) >= 1 and es[-1] - es[0] >= energy_cut) or num_wanted >= 100
                 if mb_basis.is_distributed:
                     done = mb_basis.comm.bcast(done, root=0)
@@ -953,21 +1076,22 @@ def fixed_occupation_dc(
             f"|mu| <= {max_shift}: " + "the occupation reached {value:.4f} at mu = {mu:.3f}. "
             "The target may be unreachable with the available bath states."
         )
-    mu = _solve_dc_shift(
-        occupation_observable,
-        target,
-        tol=occ_tol,
-        width_tol=max(tau, 1e-4),
-        initial_step=max(10 * tau, initial_step),
-        max_shift=max_shift,
-        plateau_ok=True,
-        unreachable_message=unreachable,
-        rank=rank,
-        # The observable's own collectives run on COMM_WORLD (the basis builds below
-        # hardcode it), not on the caller's `comm`, so the residual must be broadcast
-        # there too or the branch decisions can diverge between ranks.
-        comm=MPI.COMM_WORLD,
-    )
+    with _dc_search_trace("fixed-occupation", MPI.COMM_WORLD, rank):
+        mu = _solve_dc_shift(
+            occupation_observable,
+            target,
+            tol=occ_tol,
+            width_tol=max(tau, 1e-4),
+            initial_step=max(10 * tau, initial_step),
+            max_shift=max_shift,
+            plateau_ok=True,
+            unreachable_message=unreachable,
+            rank=rank,
+            # The observable's own collectives run on COMM_WORLD (the basis builds below
+            # hardcode it), not on the caller's `comm`, so the residual must be broadcast
+            # there too or the branch decisions can diverge between ranks.
+            comm=MPI.COMM_WORLD,
+        )
 
     # mu is always a point _solve_dc_shift actually evaluated (the mu=0 fast path, a direct scan
     # hit, or a refined bracket point), so occupation_observable(mu) ran and cached it here.

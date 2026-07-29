@@ -78,3 +78,9 @@ available per-rank memory or the communicator size) unless the variable override
 | `GF_RIXS_ADAPTIVE_TOL` | float | *derived* | Stop tolerance of the greedy adaptive wIn sampler (set-valued AAA): solve only the incoming energies the rational interpolant cannot yet predict to within this tolerance. Unset/empty disables it (dense sweep). Measured on NiO L3: 28 of 121 solves at 1e-4 relative error. |
 | `GF_RIXS_ADAPTIVE_BATCH` | int | `1` | New wIn solves per adaptive round. Above 1 trades interpolation sharpness (each round's greedy pick is made with less information) for parallel width. |
 
+## Double-counting search diagnostics
+
+| Variable | Type | Default | Description |
+| --- | --- | --- | --- |
+| `DC_DIAGNOSTICS` | bool | `False` | Report where a fixed-occupation/fixed-peak double-counting search spends its time. The search evaluates its observable dozens of times and each evaluation runs a whole ground-state occupation walk underneath, so the only number visible today -- the final ``dc`` -- says nothing about which of build / CIPSI expansion / diagonalization dominates, nor how many sector solves were redundant. With this set, the search is wrapped in a ``solver_trace.tracing()`` block and prints a per-trial-``mu`` table plus per-kind aggregates and the measured ``chi = dn/dmu`` on rank 0. Off by default: the accounting is free (one ``is None`` test per hook) but the report is several lines per ``mu``. |
+
