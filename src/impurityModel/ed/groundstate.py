@@ -85,6 +85,32 @@ class SectorCache:
         self.keys_ordered.clear()
 
 
+def sector_key(trial_N0, frozen_occupations=None):
+    """The sector a trial impurity occupation actually selects.
+
+    :func:`basis_generation.generate_initial_basis` pins each *frozen* group at its own value
+    and, when two or more groups are left unfrozen, lets every one of them range over its whole
+    ``[0, group_size]``, filtering only the **total** impurity charge to
+    ``[total_nominal +/- total_slack]``. So two trial occupations that differ only in how the
+    same total is split across unfrozen groups generate a **bit-identical determinant set** and
+    are one sector solve, not several -- and since ``nominal_impurity_occ`` reaches the ``Basis``
+    only through that generator (it is not stored on the basis, and the ``delta_*`` arguments use
+    ``dict.fromkeys``, i.e. the keys alone), the whole solve is a function of this key.
+
+    With one or zero unfrozen groups the generator instead uses the per-group window
+    ``nominal +/- mixed_valence``, but then the frozen values plus the total determine the
+    remaining group uniquely, so the key stays injective and merges nothing.
+
+    Every component is an ``int``. That is not incidental: a float anywhere in the key would make
+    a cache hit depend on roundoff, and one rank taking the cached value while another runs the
+    collective sector solve is an immediate deadlock.
+    """
+    frozen_occupations = frozen_occupations or set()
+    total = sum(int(occ) for occ in trial_N0.values())
+    pinned = tuple(sorted((i, int(trial_N0[i])) for i in trial_N0 if i in frozen_occupations))
+    return total, pinned
+
+
 def build_basis_and_solver(
     h_op,
     impurity_indices,
@@ -102,6 +128,15 @@ def build_basis_and_solver(
     slaterWeightMin,
     sector_cache=None,
 ):
+    # Deliberately keyed on the exact per-group occupation, NOT on sector_key's (total, frozen):
+    # calc_energy mutates the basis it is handed (`basis.clear(); basis.add_states(support)` at
+    # its tail), and this cache stores that same object, so a hit resumes from the previous
+    # solve's collapsed eigenvector support rather than from a freshly generated seed -- measured
+    # on a toy: seed 2 determinants, 16 returned by the next hit. Widening the key to the total
+    # would make far more trials resume from an unrelated split's converged support, changing the
+    # sector comparison the walk exists to get right. There is also nothing to win: basis
+    # construction is 3.4 s of a 2814.6 s NiO search (0.12 %). The dedupe that pays lives in
+    # find_ground_state_basis's energy_cache, which skips the whole solve.
     key = frozenset(N0.items())
     if sector_cache is not None:
         cached = sector_cache.get(key)
@@ -423,21 +458,25 @@ def find_ground_state_basis(
 
         nonlocal best_cached_key
 
-        key = tuple(sorted(trial_N0.items()))
+        # Keyed on the sector, not on the split: distinct per-group splits at the same total
+        # generate a bit-identical basis and are one solve (see sector_key). This is where the
+        # walk's redundancy is -- the diagonal 3^k probe alone visits many splits of the same
+        # total -- and a hit here skips the whole solve, not just the basis build.
+        key = sector_key(trial_N0, frozen_occupations)
         if key in energy_cache:
             e_trial = energy_cache[key]
-            # The walk revisits occupations, and Phase 4 will make far more of these hits by
-            # re-keying on the *total* (the basis depends only on the total, so distinct
-            # per-group splits at the same total are the same solve). Counting them is how that
-            # change gets measured rather than asserted.
             solver_trace.note("sector_cache_hit", n0=key)
             return e_trial
 
-        # Check bounds: 0 <= occupation <= max possible orbitals
+        # Check bounds: 0 <= occupation <= max possible orbitals.
+        # Deliberately NOT cached under `key`. The bound is per *group*, but the key is the
+        # total, and the diagonal probe generates unguarded trials: on group sizes (4, 6),
+        # {0: 1, 1: 7} is out of bounds while {0: 4, 1: 4} is the same, valid, total-8 sector.
+        # Caching inf here would hand that inf to whichever of the two the walk asked for
+        # second. Recomputing costs one loop over the groups.
         for orbital_idx, occ in trial_N0.items():
             max_occ = sum(len(block) for block in impurity_orbitals[orbital_idx])
             if occ < 0 or occ > max_occ:
-                energy_cache[key] = np.inf
                 return np.inf
 
         e_trial, basis = calc_energy(
@@ -615,7 +654,11 @@ def find_ground_state_basis(
                 winning_impurity_occ[i] += dN_gs[i]
                 e_gs = e_trial
 
-    if tuple(sorted(winning_impurity_occ.items())) != best_cached_key and verbose and (comm is None or comm.rank == 0):
+    if (
+        sector_key(winning_impurity_occ, frozen_occupations) != best_cached_key
+        and verbose
+        and (comm is None or comm.rank == 0)
+    ):
         print(
             "WARNING: the winning occupation does not match the cache's best entry "
             f"({winning_impurity_occ} vs key {best_cached_key}); this can happen if every trial "
@@ -623,8 +666,19 @@ def find_ground_state_basis(
             flush=True,
         )
     if verbose:
-        print("Ground state occupation")
-        print("\n".join((f"{i:^3d}: {winning_impurity_occ[i]: ^5d}" for i in winning_impurity_occ)))
+        # The *total* is what this search determined. The per-group split is a basis-generation
+        # parameter, not a measurement: with two or more unfrozen groups the generator lets each
+        # range over its whole [0, group_size] and filters only the total (see sector_key), so
+        # every split of the winning total generates the identical determinant set and the one
+        # printed here is simply whichever the walk reached first. Printing it as a per-group
+        # table invited reading it as orbital polarization, which it is not -- the actual per-group
+        # filling is the impurity density matrix calc_gs reports downstream.
+        total = sum(winning_impurity_occ.values())
+        pinned = sorted(i for i in winning_impurity_occ if i in frozen_occupations)
+        print(f"Ground state impurity occupation: {total}")
+        if pinned:
+            print("  frozen groups: " + ", ".join(f"{i}: {winning_impurity_occ[i]}" for i in pinned))
+        print("  (per-group filling: see the impurity density matrix below)")
         print(rf"E$_{{GS}}$ = {e_gs:^7.4f}")
         print("=" * 80)
     energy_cache.clear()
@@ -658,7 +712,9 @@ def find_ground_state_basis(
     if basis_gs is not None:
         # Whether the winning occupation's expansion was memory-capped (None if not), for
         # downstream truncation auditing (calc_gs merges this with its own final expand).
-        basis_gs.occupation_search_truncation = occ_search_reports.get(tuple(sorted(winning_impurity_occ.items())))
+        basis_gs.occupation_search_truncation = occ_search_reports.get(
+            sector_key(winning_impurity_occ, frozen_occupations)
+        )
         # The sector this search settled on. It cannot be recovered from the returned basis:
         # calc_energy reduces that to the eigenvector support, and the CIPSI expansion widened
         # the impurity occupation window (build_excited_restrictions is called with
