@@ -192,8 +192,15 @@ def test_log_peak_vs_predicted_mpi_rank_local_verbose():
     """Collectives must run unconditionally under per-rank verbose flags."""
     comm = MPI.COMM_WORLD
     budget = me.log_memory_budget(10_000, 100, comm=comm, verbose=False)
+    # Sample the reference *before* the call. VmHWM is a high-water mark, so it only ever grows:
+    # comparing the MAX-allreduce taken inside log_peak_vs_predicted against a reading taken
+    # after it raced the rank-0 print's own allocations and failed by two pages (143147008 vs
+    # 143155200) roughly one run in three at -n 3. The property under test is that the collective
+    # ran on this rank and returned at least this rank's own peak, which a before-reading pins
+    # without racing the process against itself.
+    before = me.peak_rss_bytes()
     measured = me.log_peak_vs_predicted(budget, comm=comm, verbose=comm.rank == 0)
-    assert measured >= me.peak_rss_bytes()
+    assert measured >= before
 
 
 def test_log_memory_budget_warns_when_too_big(capsys):
