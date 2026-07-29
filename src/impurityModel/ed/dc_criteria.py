@@ -27,7 +27,7 @@ will use it.
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import config, solver_trace
+from impurityModel.ed import solver_trace
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.basis_transcription import build_density_matrices
@@ -39,8 +39,7 @@ from impurityModel.ed.dc_reference import (
     _warn_if_reference_far_from_nominal,
     _warn_if_reference_saturated,
 )
-from impurityModel.ed.dc_frozen import build_union_space
-from impurityModel.ed.dc_search import _dc_search_trace, _solve_dc_shift, solve_dc_shift_seeded
+from impurityModel.ed.dc_search import _dc_search_trace, _solve_dc_shift
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.memory_estimate import DEFAULT_MEMORY_SAFETY, log_memory_budget, suggest_truncation_threshold
@@ -589,50 +588,22 @@ def fixed_occupation_dc(
             f"|mu| <= {max_shift}: " + "the occupation reached {value:.4f} at mu = {mu:.3f}. "
             "The target may be unreachable with the available bath states."
         )
-    search = dict(
-        tol=occ_tol,
-        width_tol=max(tau, 1e-4),
-        initial_step=max(10 * tau, initial_step),
-        max_shift=max_shift,
-        unreachable_message=unreachable,
-        rank=rank,
-        # The observable's own collectives run on COMM_WORLD (the basis builds below
-        # hardcode it), not on the caller's `comm`, so the residual must be broadcast
-        # there too or the branch decisions can diverge between ranks.
-        comm=MPI.COMM_WORLD,
-    )
-    # Rank-uniform by construction (an env knob), but broadcast anyway: it selects between two
-    # different sequences of collective calls, which is precisely what must never be decided
-    # rank-locally.
-    seeded = MPI.COMM_WORLD.bcast(config.DC_SEEDED_SEARCH.get(), root=0)
     with _dc_search_trace("fixed-occupation", MPI.COMM_WORLD, rank):
-        if seeded:
-            # Bracket on a frozen union space -- ~0.08 % of a true evaluation per shift -- and
-            # spend the re-expanding observable only on quasi-Newton corrections. The space is
-            # built with sector_radius=1 so it can represent the neighbouring charge states: a
-            # space that cannot is not merely imprecise there, it reports its nearest reachable
-            # sector as though converged, which is why solve_dc_shift_seeded checks the span
-            # before trusting it and falls back to this same search when it cannot.
-            sweep, _union_basis = build_union_space(
-                h_op_i,
-                impurity_orbitals,
-                bath_states,
-                N0,
-                mu_samples=(0.0, -search["initial_step"], search["initial_step"]),
-                sector_radius=1,
-                tau=tau,
-                chain_restrict=chain_restrict,
-                spin_flip_dj=spin_flip_dj,
-                truncation_threshold=truncation_threshold,
-                comm=MPI.COMM_WORLD,
-                verbose=verbose,
-                weighted_restrictions=weighted_restrictions,
-                slater_weight_min=slaterWeightMin,
-                dense_cutoff=dense_cutoff,
-            )
-            mu, _true_steps = solve_dc_shift_seeded(sweep, occupation_observable, target, **search)
-        else:
-            mu = _solve_dc_shift(occupation_observable, target, plateau_ok=True, **search)
+        mu = _solve_dc_shift(
+            occupation_observable,
+            target,
+            tol=occ_tol,
+            width_tol=max(tau, 1e-4),
+            initial_step=max(10 * tau, initial_step),
+            max_shift=max_shift,
+            plateau_ok=True,
+            unreachable_message=unreachable,
+            rank=rank,
+            # The observable's own collectives run on COMM_WORLD (the basis builds below
+            # hardcode it), not on the caller's `comm`, so the residual must be broadcast
+            # there too or the branch decisions can diverge between ranks.
+            comm=MPI.COMM_WORLD,
+        )
 
     # mu is always a point _solve_dc_shift actually evaluated (the mu=0 fast path, a direct scan
     # hit, or a refined bracket point), so occupation_observable(mu) ran and cached it here.
