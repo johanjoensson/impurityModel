@@ -53,6 +53,14 @@ WORKLOADS = {
     "smo": f"{_IMPMOD_ROOT}/SMO/cubic/impmod/impurityModel_data.h5",
 }
 
+#: Which CSC iteration of an archive a benchmark loads. **Not** the loader's default, which is the
+#: *last* iteration -- the right choice for reproducing a production run, and the wrong one for a
+#: benchmark: the iterations of a single run can differ by several eV, and following the newest
+#: silently follows a diverging one. `nio_15`'s last iteration is a runaway whose DFT impurity
+#: level sits 0.25 Ry (~3.4 eV) above iteration 1's, giving a DFT reference occupation of 1.54
+#: against a nominal 8 where iteration 1 gives 8.6258. Benchmarks pin, and print what they pinned.
+DEFAULT_ITERATION = 1
+
 
 def _boltzmann_weights(es, tau):
     """Normalised Boltzmann weights ``p_k`` for state energies ``es`` at scale ``tau``."""
@@ -62,7 +70,13 @@ def _boltzmann_weights(es, tau):
 
 
 def build_ground_state(
-    workload_key, comm=None, verbosity=0, truncation_threshold=np.inf, excitation_budget=None, slater_weight_min=None
+    workload_key,
+    comm=None,
+    verbosity=0,
+    truncation_threshold=np.inf,
+    excitation_budget=None,
+    slater_weight_min=None,
+    iteration=DEFAULT_ITERATION,
 ):
     """Run the production GS path for a workload; return the diagnostics inputs.
 
@@ -81,7 +95,9 @@ def build_ground_state(
     from impurityModel.ed.solver_basis import prepare_solver_basis
     from impurityModel.test.support.real_workload import load_workload
 
-    wl = load_workload(WORKLOADS[workload_key])
+    wl = load_workload(WORKLOADS[workload_key], iteration=iteration)
+    if comm is None or comm.rank == 0:
+        print(f"[workload] {workload_key} -> {wl['label']}", flush=True)
     dc = wl["dc"]
     sb = prepare_solver_basis(
         wl["h0"],

@@ -39,7 +39,7 @@ from impurityModel.ed import solver_trace
 from impurityModel.ed.memory_estimate import suggest_truncation_threshold
 from impurityModel.ed.model import load_selfenergy_archive
 from impurityModel.ed.selfenergy import fixed_occupation_dc, fixed_peak_dc
-from impurityModel.test.support.restriction_diagnostics import WORKLOADS
+from impurityModel.test.support.restriction_diagnostics import DEFAULT_ITERATION, WORKLOADS
 
 DEFAULT_CAPS = (2000, 4000, 8000)
 
@@ -64,7 +64,15 @@ def _uniform_shift(dc_found, dc_guess):
     return float(np.real(shift[0, 0]))
 
 
-def run_dc_search(workload_key, cap, criterion="occupation", peak_position=None, comm=None, verbosity=0):
+def run_dc_search(
+    workload_key,
+    cap,
+    criterion="occupation",
+    peak_position=None,
+    comm=None,
+    verbosity=0,
+    iteration=DEFAULT_ITERATION,
+):
     """One double-counting search at one determinant cap; return its cost accounting.
 
     Parameters
@@ -73,6 +81,12 @@ def run_dc_search(workload_key, cap, criterion="occupation", peak_position=None,
         A key of :data:`restriction_diagnostics.WORKLOADS`.
     cap : int or float
         ``BasisOptions.truncation_threshold`` for this run. The scaling parameter.
+    iteration : int
+        Which CSC iteration of the archive to load. Pinned rather than left at the loader's
+        ``last`` default: the iterations of one run can differ by several eV, and ``nio_15``'s
+        last iteration is a runaway whose DFT reference occupation is 1.54 against a nominal 8
+        (iteration 1: 8.6258). Benchmarking the newest iterate silently benchmarks a diverging
+        one. The loaded label is reported in the table.
     criterion : {"occupation", "peak"}
         Which search to baseline. ``"occupation"`` runs self-consistently (target = the DFT
         reference filling), which is the production CSC path.
@@ -87,7 +101,7 @@ def run_dc_search(workload_key, cap, criterion="occupation", peak_position=None,
     """
     from impurityModel.ed.dc_search import _dc_chi
 
-    model, _meshes, basis, solver, label = load_selfenergy_archive(WORKLOADS[workload_key])
+    model, _meshes, basis, solver, label = load_selfenergy_archive(WORKLOADS[workload_key], iteration=iteration)
     basis = replace(basis, truncation_threshold=cap)
     dc_guess = model.dc
 
@@ -157,13 +171,27 @@ def _scaling_exponent(rows):
     return float(np.polyfit(log_cap, log_seconds, 1)[0])
 
 
-def cap_ladder(workload_key, caps=DEFAULT_CAPS, criterion="occupation", peak_position=None, comm=None, verbosity=0):
+def cap_ladder(
+    workload_key,
+    caps=DEFAULT_CAPS,
+    criterion="occupation",
+    peak_position=None,
+    comm=None,
+    verbosity=0,
+    iteration=DEFAULT_ITERATION,
+):
     """Baseline one workload across a ladder of determinant caps and print the table."""
     rank = comm.rank if comm is not None else 0
     rows = []
     for cap in caps:
         row = run_dc_search(
-            workload_key, cap, criterion=criterion, peak_position=peak_position, comm=comm, verbosity=verbosity
+            workload_key,
+            cap,
+            criterion=criterion,
+            peak_position=peak_position,
+            comm=comm,
+            verbosity=verbosity,
+            iteration=iteration,
         )
         rows.append(row)
         if rank == 0:
@@ -201,7 +229,9 @@ def print_ladder(rows):
     if not rows:
         return
     head = rows[0]
-    print(f"\n=== double-counting baseline: {head['workload']} ({head['label']}), {head['criterion']} ===")
+    # The label names the (cluster, iteration) actually loaded -- the one thing that made an
+    # earlier baseline meaningless, since the loader's default follows the newest iterate.
+    print(f"\n=== double-counting baseline: {head['workload']} [{head['label']}], {head['criterion']} ===")
     print(" ".join(f"{name:>{width}}" for name, width, _ in _COLUMNS))
     for row in rows:
         print(_format_row(row))
@@ -255,6 +285,7 @@ def test_dc_baseline():
         criterion=os.environ.get("DC_DIAG_CRITERION", "occupation"),
         comm=MPI.COMM_WORLD,
         verbosity=int(os.environ.get("DC_DIAG_VERBOSITY", "0")),
+        iteration=int(os.environ.get("DC_DIAG_ITERATION", DEFAULT_ITERATION)),
     )
 
 
@@ -272,4 +303,10 @@ if __name__ == "__main__":
         _comm = None
     _key = sys.argv[1] if len(sys.argv) > 1 else "nio_20"
     _caps = [int(c) for c in sys.argv[2:]] or list(DEFAULT_CAPS)
-    cap_ladder(_key, _caps, comm=_comm, verbosity=int(os.environ.get("DC_DIAG_VERBOSITY", "0")))
+    cap_ladder(
+        _key,
+        _caps,
+        comm=_comm,
+        verbosity=int(os.environ.get("DC_DIAG_VERBOSITY", "0")),
+        iteration=int(os.environ.get("DC_DIAG_ITERATION", DEFAULT_ITERATION)),
+    )
