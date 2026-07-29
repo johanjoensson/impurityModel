@@ -2,6 +2,7 @@ from itertools import product
 
 import numpy as np
 
+from impurityModel.ed import solver_trace
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, get_effective_restrictions
 from impurityModel.ed.basis_transcription import build_density_matrices
@@ -206,62 +207,74 @@ def calc_energy(
         The optimized many-body basis.
     """
 
-    basis, solver = build_basis_and_solver(
-        h_op,
-        impurity_indices,
-        bath_states,
-        N0,
-        mixed_valence,
-        tau,
-        chain_restrict,
-        spin_flip_dj,
-        truncation_threshold,
-        comm,
-        verbose,
-        frozen_occupations,
-        weighted_restrictions,
-        slaterWeightMin,
-        sector_cache,
-    )
+    # One `calc_energy` call is one *sector solve* -- the unit the occupation walk and the
+    # double-counting search are both counted in. The three nested timers say which of build /
+    # expand / diagonalize the cost actually sits in; all four are no-ops outside a
+    # solver_trace.tracing() block.
+    with solver_trace.timed("sector_solve", n0=tuple(sorted(N0.items()))) as sector_fields:
+        with solver_trace.timed("build"):
+            basis, solver = build_basis_and_solver(
+                h_op,
+                impurity_indices,
+                bath_states,
+                N0,
+                mixed_valence,
+                tau,
+                chain_restrict,
+                spin_flip_dj,
+                truncation_threshold,
+                comm,
+                verbose,
+                frozen_occupations,
+                weighted_restrictions,
+                slaterWeightMin,
+                sector_cache,
+            )
 
-    if len(basis) == 0:
-        return np.inf, basis
-    solver.expand(
-        h_op,
-        dense_cutoff=dense_cutoff,
-        # de2_min is a per-determinant Epstein-Nesbet PT2 energy threshold (|<Dj|H|psi>|^2
-        # / |E_ref - E_Dj|). This occupation-search value is one order looser than the
-        # final-GS solve in calc_gs (de2_min=1e-8), which is enough since only the relative
-        # ordering of charge sectors is needed here, not a fully converged energy -- but it
-        # must still be tight enough that PT2 truncation error does not itself depend on the
-        # sector (a more strongly-fluctuating sector loses more correlation energy at a given
-        # de2_min, which can flip the sector comparison this search exists to get right).
-        de2_min=1e-6,
-        slaterWeightMin=slaterWeightMin,
-        solver=cipsi_solver_method,
-        reort=reort,
-        symmetry_generators=symmetry_generators,
-    )
+        if len(basis) == 0:
+            sector_fields["n_dets"] = 0
+            return np.inf, basis
+        with solver_trace.timed("expand"):
+            solver.expand(
+                h_op,
+                dense_cutoff=dense_cutoff,
+                # de2_min is a per-determinant Epstein-Nesbet PT2 energy threshold
+                # (|<Dj|H|psi>|^2 / |E_ref - E_Dj|). This occupation-search value is one order
+                # looser than the final-GS solve in calc_gs (de2_min=1e-8), which is enough
+                # since only the relative ordering of charge sectors is needed here, not a
+                # fully converged energy -- but it must still be tight enough that PT2
+                # truncation error does not itself depend on the sector (a more
+                # strongly-fluctuating sector loses more correlation energy at a given
+                # de2_min, which can flip the sector comparison this search exists to get
+                # right).
+                de2_min=1e-6,
+                slaterWeightMin=slaterWeightMin,
+                solver=cipsi_solver_method,
+                reort=reort,
+                symmetry_generators=symmetry_generators,
+            )
 
-    energy_cut = -tau * np.log(1e-4)
+        energy_cut = -tau * np.log(1e-4)
 
-    es, eigen_psis = solver.get_eigenvectors(
-        h_op,
-        num_wanted=10,
-        max_energy=energy_cut,
-        dense_cutoff=dense_cutoff,
-        slaterWeightMin=slaterWeightMin,
-        solver=cipsi_solver_method,
-        reort=reort,
-        psi_refs=solver.psi_refs,
-    )
-    # Remember whether the truncation_threshold bound this occupation's expansion, so the
-    # caller can report a capped ground-state determination even though the final basis
-    # (reduced to the eigenstate support below) may fit under the cap.
-    basis.occupation_search_truncation = solver.truncation_report
-    basis.clear()
-    basis.add_states({state for psi in eigen_psis for state in psi})
-    return np.min(es), basis
+        with solver_trace.timed("eigensolve"):
+            es, eigen_psis = solver.get_eigenvectors(
+                h_op,
+                num_wanted=10,
+                max_energy=energy_cut,
+                dense_cutoff=dense_cutoff,
+                slaterWeightMin=slaterWeightMin,
+                solver=cipsi_solver_method,
+                reort=reort,
+                psi_refs=solver.psi_refs,
+            )
+        sector_fields["n_dets"] = len(basis)
+        # Remember whether the truncation_threshold bound this occupation's expansion, so the
+        # caller can report a capped ground-state determination even though the final basis
+        # (reduced to the eigenstate support below) may fit under the cap.
+        basis.occupation_search_truncation = solver.truncation_report
+        basis.clear()
+        basis.add_states({state for psi in eigen_psis for state in psi})
+        return np.min(es), basis
 
 
 def hartree_fock_seed_occupation(
@@ -413,6 +426,11 @@ def find_ground_state_basis(
         key = tuple(sorted(trial_N0.items()))
         if key in energy_cache:
             e_trial = energy_cache[key]
+            # The walk revisits occupations, and Phase 4 will make far more of these hits by
+            # re-keying on the *total* (the basis depends only on the total, so distinct
+            # per-group splits at the same total are the same solve). Counting them is how that
+            # change gets measured rather than asserted.
+            solver_trace.note("sector_cache_hit", n0=key)
             return e_trial
 
         # Check bounds: 0 <= occupation <= max possible orbitals
