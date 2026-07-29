@@ -156,3 +156,34 @@ def test_occupation_interiority_is_reported():
     assert isinstance(sweep.occupation_is_interior(0.0), bool)
     # Driven hard enough, the occupation must saturate against the window and stop being interior.
     assert not sweep.occupation_is_interior(1e3)
+
+
+def test_the_frozen_space_reports_which_sectors_it_can_represent():
+    """A sweep is only meaningful where its space can represent the answer.
+
+    Which sectors a seeded space spans is incidental -- it is however far the CIPSI expansion
+    happened to reach with an unconstrained impurity window -- so it has to be reported rather
+    than assumed. Measured on a real NiO workload the seeded space spans n_imp = 8, 9, 10 against
+    a nominal 8: three sectors, but only upward.
+    """
+    _basis, sweep = _frozen(mixed_valence=1)
+    span = sweep.sector_span()
+    assert span == tuple(sorted(span)) and len(span) >= 2, span
+    assert all(isinstance(n, int) for n in span), span
+    assert sweep.spans_sector(span[0]) and sweep.spans_sector(span[-1])
+    assert not sweep.spans_sector(span[-1] + 1)
+    assert not sweep.spans_sector(span[0] - 1)
+
+
+def test_a_single_sector_space_reports_that_it_cannot_cross():
+    """The failure mode, made visible instead of silent.
+
+    A space confined to one sector answers every mu with that sector's occupation -- on a toy it
+    missed the true observable by a full electron across a charge-sector boundary, while looking
+    perfectly converged. spans_sector is what a driver checks before trusting a Newton step.
+    """
+    _basis, sweep = _frozen(mixed_valence=0, expand=False)
+    span = sweep.sector_span()
+    assert len(span) == 1, span
+    assert not sweep.spans_sector(span[0] + 1)
+    assert not sweep.spans_sector(span[0] - 1)

@@ -162,6 +162,36 @@ class FrozenSpaceSweep:
             return None
         return residual / slope
 
+    def sector_span(self):
+        """The impurity occupations the frozen space can actually represent, as a sorted tuple.
+
+        A frozen space is seeded from one solve, so which charge sectors it spans is *incidental*
+        -- a consequence of how far the CIPSI expansion happened to reach with an unconstrained
+        impurity window -- rather than chosen. Measured: on a real NiO workload the seeded space
+        spans ``n_imp = 8, 9, 10`` against a nominal 8, i.e. three sectors but **only upward**;
+        on a small toy it collapsed to a single sector and then reported that sector's occupation
+        for *every* ``mu``, missing the true observable by a full electron across a charge-sector
+        boundary.
+
+        That asymmetry is the argument for building the union space deliberately instead of
+        accepting whatever the seed reached: a sweep is only meaningful where the space can
+        represent the answer, and this is the check that says where that is.
+        """
+        if self._n_matrix.shape[0] == 0:
+            return ()
+        occupations = np.real(np.diag(self._n_matrix.toarray()))
+        return tuple(int(n) for n in np.unique(np.round(occupations)))
+
+    def spans_sector(self, n_imp):
+        """Whether the frozen space can represent impurity occupation ``n_imp`` at all.
+
+        A driver taking a Newton step must not trust a shift whose answer lies outside this: the
+        sweep does not report "I cannot say", it reports the nearest sector it *can* represent,
+        which reads as a converged value.
+        """
+        span = self.sector_span()
+        return bool(span) and span[0] <= n_imp <= span[-1]
+
     def occupation_is_interior(self, mu, margin=0.5):
         """Is the achieved occupation strictly inside what this frozen space can represent?
 
@@ -170,5 +200,5 @@ class FrozenSpaceSweep:
         the search has not determined ``mu`` -- the basis has -- and saying so is the difference
         between a result and an artefact.
         """
-        occupations = np.real(np.diag(self._n_matrix.toarray())) if self._n_matrix.shape[0] else np.array([0.0])
-        return bool(occupations.min() + margin <= self.occupation(mu) <= occupations.max() - margin)
+        span = self.sector_span() or (0,)
+        return bool(span[0] + margin <= self.occupation(mu) <= span[-1] - margin)
