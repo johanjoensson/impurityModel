@@ -66,6 +66,152 @@ def _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol):
     return best[0], best[1], step
 
 
+#: How many quasi-Newton steps on the *true* observable a seeded search may spend before giving
+#: up and reporting the best point reached. Each one is a full re-expanding evaluation -- the
+#: expensive thing this design exists to avoid -- and with a Jacobian good to a few percent, two
+#: steps take a 10 % residual below ``occ_tol``. More than that means the frozen model is wrong
+#: about the true observable, and iterating on a wrong Jacobian is not the fix.
+MAX_TRUE_STEPS = 3
+
+#: Below this, ``chi`` carries no usable information about the shift and a Newton step
+#: ``-g / chi`` is unbounded. Expressed relative to the residual tolerance: a slope this small
+#: means attaining ``tol`` would need a shift of order ``tol / CHI_FLOOR``, i.e. a hundred times
+#: the tolerance, which is past the point where the local linear model means anything.
+CHI_FLOOR = 1e-2
+
+
+def solve_dc_shift_seeded(
+    sweep,
+    observable,
+    target,
+    *,
+    tol,
+    width_tol,
+    initial_step,
+    max_shift,
+    unreachable_message,
+    max_true_steps=MAX_TRUE_STEPS,
+    rank=0,
+    comm=None,
+):
+    r"""Locate the shift on a cheap frozen space, then correct it on the true observable.
+
+    The frozen sweep costs ~0.08 % of a true re-expanding evaluation, so the *bracketing* -- the
+    part that spends dozens of evaluations -- is free, and the expensive observable is called only
+    to correct the answer. With :math:`\chi = dn/d\mu` read off the frozen space, each correction
+    is a quasi-Newton step :math:`\mu \leftarrow \mu - g/\chi`, and convergence is still governed
+    by the **true** residual: the frozen space seeds and supplies the Jacobian, it never decides.
+    That is deliberate. The frozen space scores every :math:`\mu` on a variational space selected
+    for a different Hamiltonian, and the DC ⇄ GS parity property this branch exists to establish
+    is guarded by an evaluation that really re-expands.
+
+    Phase 1 reuses :func:`_solve_dc_shift` itself on ``sweep.occupation`` -- same bidirectional
+    scan, same safeguarded refinement, same plateau reporting -- because that function knows
+    nothing about what its observable is. Nothing new is written for the cheap half.
+
+    Two guards, both of which fall back to searching the true observable directly rather than
+    returning something unsupported:
+
+    - **The union space must be able to represent the answer.** A frozen space does not report
+      "I cannot say" outside its charge-sector span; it reports the nearest sector it *can*
+      represent, which reads as converged. Measured: a space blind to a sector missed the true
+      observable by a full electron there while looking perfectly converged.
+    - **``chi`` must be usable.** On a plateau it vanishes and ``-g/chi`` is unbounded.
+
+    Returns
+    -------
+    (mu, evaluations) : tuple of (float, int)
+        The shift, and how many *true* (re-expanding) observable calls it cost -- the number this
+        design is trying to make small, and the one a regression test should watch.
+    """
+
+    def _fall_back(reason):
+        """Search the true observable directly -- the behaviour before any of this existed."""
+        if rank == 0:
+            print(
+                f"NOTE: seeding the double-counting search from the frozen space was skipped -- "
+                f"{reason}. Falling back to searching the true observable directly.",
+                flush=True,
+            )
+        return (
+            _solve_dc_shift(
+                observable,
+                target,
+                tol=tol,
+                width_tol=width_tol,
+                initial_step=initial_step,
+                max_shift=max_shift,
+                plateau_ok=True,
+                unreachable_message=unreachable_message,
+                rank=rank,
+                comm=comm,
+            ),
+            -1,
+        )
+
+    # Guard *before* spending anything on the frozen space: outside its charge-sector span the
+    # sweep does not report "I cannot say", it reports the nearest sector it can represent. A
+    # scan over that is not merely wasted, it is misleading.
+    if not sweep.spans_sector(int(round(target))):
+        return _fall_back(
+            f"the frozen space spans impurity occupations {sweep.sector_span()}, which cannot "
+            f"represent the target {target}"
+        )
+
+    # Phase 1: the cheap half. Rank-identical by the same broadcast the true search uses -- the
+    # frozen occupation is Allreduce-derived and replicated only to roundoff, so it gates
+    # collectives exactly as the expensive observable does. A frozen space that cannot bracket
+    # the target is advisory, not authoritative: hand over rather than propagate its verdict.
+    try:
+        mu_seed = _solve_dc_shift(
+            sweep.occupation,
+            target,
+            tol=tol,
+            width_tol=width_tol,
+            initial_step=initial_step,
+            max_shift=max_shift,
+            plateau_ok=True,
+            unreachable_message=unreachable_message,
+            rank=rank,
+            comm=comm,
+        )
+    except RuntimeError as exc:
+        return _fall_back(f"the frozen space could not bracket the target ({exc})")
+
+    chi = sweep.chi(mu_seed)
+    if comm is not None:
+        chi = comm.bcast(chi, root=0)
+    if abs(chi) < CHI_FLOOR:
+        return _fall_back(f"the frozen space gives chi = {chi:.3e}, too flat for a Newton step to mean anything")
+
+    # Phase 2: the expensive half, at most a handful of calls.
+    mu, best = mu_seed, None
+    for evaluations in range(1, max_true_steps + 1):
+        g = observable(mu) - target
+        if comm is not None:
+            g = comm.bcast(g, root=0)
+        if best is None or abs(g) < abs(best[1]):
+            best = (mu, g)
+        if abs(g) <= tol:
+            if rank == 0:
+                print(
+                    f"Double-counting search converged in {evaluations} true evaluation(s) from a "
+                    f"frozen-space seed (mu = {mu:.6f}, chi = {chi:.4f}).",
+                    flush=True,
+                )
+            return mu, evaluations
+        mu = min(max(mu - g / chi, -max_shift), max_shift)
+
+    if rank == 0:
+        print(
+            f"WARNING: the frozen-space seed did not converge the true observable in "
+            f"{max_true_steps} steps; best |residual| = {abs(best[1]):.4e} at mu = {best[0]:.6f} "
+            f"(chi = {chi:.4f}). The frozen space is a poor model of the true observable here.",
+            flush=True,
+        )
+    return best[0], max_true_steps
+
+
 def _report_unattainable_target(mu, g, step, target, width_tol):
     r"""Report a target the observable *steps across* rather than crosses.
 
