@@ -45,8 +45,11 @@ WORKLOADS = {
     "fcc_ni_15": f"{_IMPMOD_ROOT}/FCC_Ni/impmod/"
     "15_BathStates_HaverGeometry_partialReorthonormalization/impurityModel_data.h5",
     "nio_20": f"{_IMPMOD_ROOT}/NiO/impmod/verify_fixes/impurityModel_data.h5",
-    "nio_15star": f"{_IMPMOD_ROOT}/NiO/impmod/"
-    "15_BathStates_starGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
+    # The 15-bath NiO run was re-fit with a peeled (not star) bath geometry; the star-geometry
+    # directory this key used to point at no longer exists on disk, which made every benchmark
+    # keyed on it die with FileNotFoundError instead of skipping.
+    "nio_15": f"{_IMPMOD_ROOT}/NiO/impmod/"
+    "15_BathStates_peeledGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
     "smo": f"{_IMPMOD_ROOT}/SMO/cubic/impmod/impurityModel_data.h5",
 }
 
