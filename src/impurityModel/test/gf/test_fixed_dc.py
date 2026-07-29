@@ -282,8 +282,18 @@ def test_fixed_occupation_dc_low_target_lands_on_plateau(capsys):
     dc = fixed_occupation_dc(occupation=0.2, **kwargs)
     assert np.isfinite(dc).all()
     out = capsys.readouterr().out
-    if MPI.COMM_WORLD.rank == 0:
-        assert "falls on a plateau" in out
+    if MPI.COMM_WORLD.rank != 0:
+        assert "no double-counting shift attains" not in out, out
+        return
+    # The report must say the criterion has *no solution* here, not merely that the answer is a
+    # little uncertain. Measured on this fixture, n(mu) steps 0.0112 -> 1.0018 across a
+    # charge-sector boundary and the target 0.2 lies in the gap.
+    assert "no double-counting shift attains the requested target 0.2" in out, out
+    assert "0.0112" in out and "1.0018" in out, out
+    assert "a jump of" in out and "knife-edge" in out, out
+    # And it must name the distance to the boundary -- the hazard is that mu lands on it, which a
+    # dc cached across CSC iterations turns into a d8/d9 limit cycle.
+    assert "from the boundary" in out, out
 
 
 def test_noninteracting_impurity_occupation_matches_fermi_fill():

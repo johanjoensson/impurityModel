@@ -36,10 +36,14 @@ def _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol):
 
     Returns
     -------
-    (mu, g) : tuple of float
-        The best point found: the root itself, with ``|g| <= tol``, once met; otherwise the
-        closer of the two endpoints of the fully narrowed bracket (a plateau/step in the
-        residual, collapsed below ``width_tol`` without ever meeting ``tol``).
+    (mu, g, step) : tuple
+        ``mu``/``g`` is the best point found: the root itself, with ``|g| <= tol``, once met;
+        otherwise the closer of the two endpoints of the fully narrowed bracket. ``step`` is
+        ``None`` when the root was met, and otherwise ``(mu_low, g_low, mu_high, g_high)`` of the
+        collapsed bracket -- a **discontinuity** in the observable, not a root: it changes sign
+        across an interval narrower than ``width_tol``, so the caller can report how large the
+        jump is and how close the returned ``mu`` sits to it. That distance is the real hazard;
+        see :func:`_solve_dc_shift`'s plateau branch.
     """
     while mu_high - mu_low > width_tol:
         mu_mid = mu_high - g_high * (mu_high - mu_low) / (g_high - g_low) if g_high != g_low else np.inf
@@ -50,14 +54,59 @@ def _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol):
             mu_mid = 0.5 * (mu_low + mu_high)
         g_mid = residual(mu_mid)
         if abs(g_mid) <= tol:
-            return mu_mid, g_mid
+            return mu_mid, g_mid, None
         # Keep the sub-bracket that still straddles a root (opposite-sign endpoints);
         # correct regardless of whether the residual is monotone.
         if g_mid * g_low < 0:
             mu_high, g_high = mu_mid, g_mid
         else:
             mu_low, g_low = mu_mid, g_mid
-    return (mu_low, g_low) if abs(g_low) <= abs(g_high) else (mu_high, g_high)
+    step = (mu_low, g_low, mu_high, g_high)
+    best = (mu_low, g_low) if abs(g_low) <= abs(g_high) else (mu_high, g_high)
+    return best[0], best[1], step
+
+
+def _report_unattainable_target(mu, g, step, target, width_tol):
+    r"""Report a target the observable *steps across* rather than crosses.
+
+    A collapsed bracket is not a root. The observable jumps from one branch to the other over an
+    interval narrower than ``width_tol`` -- a charge-sector boundary -- and the target lies in the
+    gap, so **no shift attains it**. The old warning said only "falls on a plateau", which reads
+    as "the answer is a bit uncertain" when the truth is "the criterion has no solution here".
+
+    Three numbers make that actionable, and none of them was reported before: how large the jump
+    is (the honest measure of the miss), where the discontinuity sits, and how far the returned
+    ``mu`` is from it. That last one is the hazard the review flagged -- ``mu`` lands within
+    ``width_tol`` of a sector boundary, so the downstream solve can fall into either charge state,
+    and a ``dc`` cached across CSC iterations from there is a d8/d9 limit-cycle generator.
+
+    **Why the returned ``mu`` is the branch edge and not the branch midpoint.** The plan called
+    for the midpoint of the plateau. Measured on the toy that exercises this path, the branches
+    are not flat -- the lower one drifts from ``n = 0.000525`` at ``mu = -16`` to ``n = 0.011165``
+    at ``mu = -1.470``, a factor of 20 -- so the midpoint (``mu ~ -8.7``, ``n = 0.0016``) misses a
+    target of 0.2 by 0.198 where the edge misses it by 0.189. Moving inward off the edge makes the
+    criterion *worse* on the only quantity it controls. The edge is kept; the distance to the
+    discontinuity is reported instead, so the instability is visible rather than traded for a
+    worse answer.
+    """
+    mu_low, g_low, mu_high, g_high = step
+    jump = abs((g_high + target) - (g_low + target))
+    distance = min(abs(mu - mu_low), abs(mu - mu_high))
+    print(
+        f"WARNING: no double-counting shift attains the requested target {target}. The observable "
+        f"steps from {g_low + target:.4f} to {g_high + target:.4f} (a jump of {jump:.4f}) across a "
+        f"discontinuity at mu = {0.5 * (mu_low + mu_high):.6f} -- a charge-sector boundary -- and "
+        f"the target lies inside that gap. Returning the closer side: observable "
+        f"{g + target:.4f} at mu = {mu:.6f}, missing by {abs(g):.4f}.",
+        flush=True,
+    )
+    print(
+        f"         That mu sits {distance:.2e} from the boundary (bracket resolved to "
+        f"{width_tol:.1e}), so the charge state there is knife-edge: the downstream solve may "
+        "fall either side, and a dc carried across self-consistency iterations from this point "
+        "can limit-cycle between charge states. Prefer an explicitly reachable target.",
+        flush=True,
+    )
 
 
 def _solve_dc_shift(
@@ -111,9 +160,12 @@ def _solve_dc_shift(
     max_shift : float
         Scanning a direction gives up once ``|mu|`` exceeds this.
     plateau_ok : bool
-        If every bracket collapses without meeting ``tol`` (the observable steps across the
-        target -- a plateau) and no bracket is found at all: ``True`` returns the closest side
-        seen and warns on rank 0, ``False`` raises ``RuntimeError``.
+        What to do when every bracket collapses without meeting ``tol`` -- i.e. the observable
+        *steps across* the target at a charge-sector boundary instead of crossing it, so no shift
+        attains it. ``True`` returns the closer branch and reports the jump, the boundary and the
+        distance to it on rank 0 (:func:`_report_unattainable_target`); ``False`` raises
+        ``RuntimeError``, which is what ``fixed_peak_dc`` wants -- a peak position that cannot be
+        reached is a modelling error, not a tolerable miss.
     unreachable_message : str
         ``RuntimeError`` message when the target cannot be reached.
     rank : int
@@ -192,24 +244,22 @@ def _solve_dc_shift(
         # every criterion in this module (peak position, occupation).
         level_brackets.sort(key=lambda b: min(abs(b[0]), abs(b[2])))
         for mu_low, g_low, mu_high, g_high in level_brackets:
-            mu_c, g_c = _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol)
+            mu_c, g_c, step = _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol)
             if abs(g_c) <= tol:
                 return mu_c
-            # Bracket collapsed without meeting tol (a plateau/step): remember the closest point
-            # reached in case every bracket ever found does this.
+            # Bracket collapsed without meeting tol: the observable *steps across* the target
+            # rather than crossing it, so no shift attains the target. Remember the closest point
+            # reached, and the step it sits on, in case every bracket ever found does this.
             if closest_unmet is None or abs(g_c) < abs(closest_unmet[1]):
-                closest_unmet = (mu_c, g_c)
+                closest_unmet = (mu_c, g_c, step)
         level *= 2
 
     if closest_unmet is not None:
-        mu, g = closest_unmet
+        mu, g, step = closest_unmet
         if not plateau_ok:
             raise RuntimeError(unreachable_message.format(mu=mu, value=g + target, target=target))
         if rank == 0:
-            print(
-                f"WARNING: the requested double-counting target {target} falls on a plateau; the "
-                f"closest achievable observable is {g + target:.4f} (mu = {mu:.6f})."
-            )
+            _report_unattainable_target(mu, g, step, target, width_tol)
         return mu
 
     # Neither direction ever bracketed the target within max_shift; report the closer of the two
