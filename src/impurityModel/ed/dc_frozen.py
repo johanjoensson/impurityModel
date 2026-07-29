@@ -47,6 +47,99 @@ from impurityModel.ed.dc_criteria import _dc_operator
 CHI_STEP = 1e-3
 
 
+def build_union_space(
+    h_op,
+    impurity_orbitals,
+    bath_states,
+    nominal_occ,
+    *,
+    mu_samples=(0.0,),
+    sector_radius=1,
+    tau=0.002,
+    chain_restrict=False,
+    spin_flip_dj=False,
+    truncation_threshold=np.inf,
+    comm=None,
+    verbose=False,
+    frozen_occupations=None,
+    weighted_restrictions=None,
+    slater_weight_min=0,
+    de2_min=1e-8,
+    dense_cutoff=1000,
+):
+    """A frozen space spanning the *candidate* charge sectors, grown across a ``mu`` bracket.
+
+    A space seeded from one solve spans whatever sectors its expansion happened to reach --
+    measured on NiO, ``n_imp = 8, 9, 10`` against a nominal 8: three sectors, but only upward, so
+    a search that has to cross downward is scored on a space that cannot represent the answer and
+    reports the nearest sector it can as though converged. This builds the span deliberately
+    instead.
+
+    No new generation code is needed for that. ``generate_initial_basis`` already filters the
+    cross-group combinations on the *total* impurity charge window
+    ``[total_nominal ± total_slack]``, and ``total_slack`` is exactly
+    ``max(|mixed_valence| + |delta_impurity_occ|)`` over the unfrozen groups -- so widening
+    ``mixed_valence`` to ``sector_radius`` widens the window symmetrically. Verified on a toy:
+    radius 0 gives span ``(2,)``, radius 1 gives ``(1, 2, 3)``, radius 2 gives ``(0..4)``.
+
+    **Growth-only, and state-averaged over the bracket.** The space is expanded once at each
+    ``mu`` in ``mu_samples`` -- the ends of the search bracket, not just its centre -- and
+    ``expand`` only *adds* determinants, so the result accumulates: ``S_{k+1} = S_k ∪ new``. That
+    is what makes the construction terminate rather than limit-cycle, which re-freezing on drift
+    does not (selection under a cap is discontinuous in ``mu``). The one exception is a binding
+    ``truncation_threshold``: fixed-budget CIPSI prunes to stay under the cap, so growth-only
+    holds up to the cap and no further. Pass ``truncation_threshold=np.inf`` when the guarantee
+    matters more than the memory.
+
+    Returns
+    -------
+    (FrozenSpaceSweep, Basis)
+    """
+    from impurityModel.ed.groundstate import build_basis_and_solver
+
+    impurity_indices = [orb for blocks in impurity_orbitals.values() for block in blocks for orb in block]
+    # The sector radius enters as mixed_valence: total_slack is the max over unfrozen groups, so
+    # one entry per group at `sector_radius` opens the total window to nominal +/- sector_radius.
+    mixed_valence = dict.fromkeys(nominal_occ, sector_radius)
+    basis, solver = build_basis_and_solver(
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        nominal_occ,
+        mixed_valence,
+        tau,
+        chain_restrict,
+        spin_flip_dj,
+        truncation_threshold,
+        comm,
+        verbose,
+        frozen_occupations,
+        weighted_restrictions,
+        slater_weight_min,
+        None,
+    )
+    identity = np.identity(len(impurity_indices))
+    for mu in mu_samples:
+        # Expand at this end of the bracket. `expand` reads solver.psi_refs, so successive calls
+        # are warm-started from the previous end's converged manifold -- which is the
+        # state-averaging: the space ends up adequate across the sweep rather than at one point.
+        solver.expand(
+            h_op - _dc_operator(mu * identity),
+            dense_cutoff=dense_cutoff,
+            de2_min=de2_min,
+            slaterWeightMin=slater_weight_min,
+        )
+    sweep = FrozenSpaceSweep(
+        basis,
+        h_op,
+        impurity_indices,
+        tau,
+        dense_cutoff=dense_cutoff,
+        slater_weight_min=slater_weight_min,
+    )
+    return sweep, basis
+
+
 class FrozenSpaceSweep:
     """``energy(mu)`` / ``occupation(mu)`` / ``chi(mu)`` on one fixed determinant space.
 

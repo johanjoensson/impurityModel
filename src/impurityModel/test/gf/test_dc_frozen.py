@@ -16,7 +16,7 @@ immediately, where the softer inequalities would still pass.
 import numpy as np
 import pytest
 
-from impurityModel.ed.dc_frozen import FrozenSpaceSweep
+from impurityModel.ed.dc_frozen import FrozenSpaceSweep, build_union_space
 from impurityModel.ed.groundstate import build_basis_and_solver
 from impurityModel.ed.lie_algebra import tensors_to_operator
 
@@ -187,3 +187,92 @@ def test_a_single_sector_space_reports_that_it_cannot_cross():
     assert len(span) == 1, span
     assert not sweep.spans_sector(span[0] + 1)
     assert not sweep.spans_sector(span[0] - 1)
+
+
+CONDUCTION_BATHS = ({0: [[4, 5]], 1: [[6]]}, {0: [[7]], 1: []})
+
+
+def test_the_sector_radius_widens_the_span_symmetrically():
+    """The union space needs no new generation code.
+
+    generate_initial_basis already filters cross-group combinations on the *total* impurity
+    charge, and total_slack is the max |mixed_valence| over unfrozen groups -- so the sector
+    radius is just mixed_valence, and it opens the window on both sides.
+    """
+    spans = {}
+    for radius in (0, 1, 2):
+        sweep, _basis = build_union_space(
+            _h_op(),
+            IMPURITY,
+            BATHS,
+            {0: 1, 1: 1},
+            sector_radius=radius,
+            tau=1e-3,
+            truncation_threshold=np.inf,
+            slater_weight_min=1e-12,
+            dense_cutoff=1000,
+        )
+        spans[radius] = sweep.sector_span()
+    # Each radius contains the previous one, and the low edge moves down with the radius --
+    # which is the half the seeded space cannot reach on its own (see the test below).
+    assert set(spans[0]) < set(spans[1]) < set(spans[2]), spans
+    assert spans[1][0] < spans[0][0] and spans[2][0] < spans[1][0], spans
+
+
+def test_a_valence_only_bath_makes_the_seeded_span_upward_only():
+    """The mechanism behind the asymmetry measured on NiO, isolated.
+
+    With no conduction orbitals an impurity electron has nowhere to go, so CIPSI excitations can
+    only *add* impurity charge: the expansion widens the span upward and never downward. That is
+    why a seeded frozen space on a valence-only fit -- the typical coarse fit, and what the NiO
+    archive has -- is structurally blind to lower charge states, and why only the generation
+    window can open them.
+    """
+    common = dict(
+        sector_radius=0,
+        mu_samples=(0.0,),
+        tau=1e-3,
+        truncation_threshold=np.inf,
+        slater_weight_min=1e-12,
+        de2_min=1e-10,
+        dense_cutoff=1000,
+    )
+    valence_only, _b1 = build_union_space(_h_op(), IMPURITY, BATHS, {0: 1, 1: 1}, **common)
+    with_conduction, _b2 = build_union_space(_h_op(), IMPURITY, CONDUCTION_BATHS, {0: 1, 1: 1}, **common)
+    nominal_total = 2
+    assert min(valence_only.sector_span()) == nominal_total, valence_only.sector_span()
+    assert min(with_conduction.sector_span()) < nominal_total, with_conduction.sector_span()
+
+
+def test_the_union_answers_where_the_seeded_space_is_blind():
+    """The point of building the span deliberately, in the quantity the search controls."""
+    common = dict(tau=1e-3, truncation_threshold=np.inf, slater_weight_min=1e-12, de2_min=1e-10, dense_cutoff=1000)
+    seed, _b1 = build_union_space(_h_op(), IMPURITY, BATHS, {0: 1, 1: 1}, sector_radius=0, mu_samples=(0.0,), **common)
+    union, _b2 = build_union_space(
+        _h_op(), IMPURITY, BATHS, {0: 1, 1: 1}, sector_radius=1, mu_samples=(-2.0, 0.0, 2.0), **common
+    )
+    assert min(union.sector_span()) < min(seed.sector_span())
+    # Deep on the side the seed cannot represent, the two disagree by about a full electron --
+    # the seed reports its lowest reachable sector as though it were converged.
+    assert abs(union.occupation(-2.0) - seed.occupation(-2.0)) > 0.5
+
+
+def test_expanding_at_more_shifts_only_grows_the_space():
+    """Growth-only: S_{k+1} = S_k union new, which is what makes the construction terminate.
+
+    Re-freezing on drift is an uncontracted fixed-point iteration and can limit-cycle, because
+    selection under a cap is discontinuous in mu. Accumulating cannot: the space is finite and
+    only ever grows (up to a binding truncation_threshold, which prunes -- hence np.inf here).
+    """
+    common = dict(
+        sector_radius=1,
+        tau=1e-3,
+        truncation_threshold=np.inf,
+        slater_weight_min=1e-12,
+        de2_min=1e-10,
+        dense_cutoff=1000,
+    )
+    one, _b1 = build_union_space(_h_op(), IMPURITY, BATHS, {0: 1, 1: 1}, mu_samples=(0.0,), **common)
+    three, _b3 = build_union_space(_h_op(), IMPURITY, BATHS, {0: 1, 1: 1}, mu_samples=(0.0, -2.0, 2.0), **common)
+    assert len(three.basis) >= len(one.basis)
+    assert set(three.sector_span()) >= set(one.sector_span())
