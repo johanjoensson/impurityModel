@@ -126,7 +126,15 @@ def run_dc_search(
             if peak_position is None:
                 raise ValueError('criterion="peak" needs a peak_position.')
             dc = fixed_peak_dc(
-                model=model, basis=basis, solver=solver, peak_position=peak_position, comm=comm, verbosity=verbosity
+                model=model,
+                basis=basis,
+                solver=solver,
+                peak_position=peak_position,
+                comm=comm,
+                verbosity=verbosity,
+                # This harness measures search cost, not charge-state fidelity; a real workload's
+                # peak criterion landing on a non-nominal sector is not a benchmark failure.
+                allow_charge_state_change=True,
             )
         else:
             raise ValueError(f"unknown criterion {criterion!r}")

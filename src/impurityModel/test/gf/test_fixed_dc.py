@@ -178,7 +178,10 @@ def test_fixed_peak_dc_runs_on_split_block_impurity():
     the material class it exists for.
     """
     kwargs, dc_guess = _split_block_kwargs()
-    dc = fixed_peak_dc(peak_position=0.5, **kwargs)
+    # This regression is about the stale group_key crash, not about which charge state the peak
+    # search lands on -- opt out of R2's charge-state guard, which is orthogonal to what is
+    # being tested here.
+    dc = fixed_peak_dc(peak_position=0.5, allow_charge_state_change=True, **kwargs)
     assert dc.shape == (4, 4)
     shift = dc - dc_guess
     np.testing.assert_allclose(shift, shift[0, 0] * np.identity(4), atol=1e-12)
@@ -241,7 +244,9 @@ def test_fixed_peak_dc_accepts_multiple_groups():
     """
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=1.0)
     kwargs["basis"] = replace(kwargs["basis"], nominal_occ={0: 1, 1: 1})
-    dc = fixed_peak_dc(peak_position=1.0, **kwargs)
+    # This test is about accepting a multi-group N0, not about the landed charge state -- opt
+    # out of R2's charge-state guard, which is orthogonal to what is being tested here.
+    dc = fixed_peak_dc(peak_position=1.0, allow_charge_state_change=True, **kwargs)
     assert dc.shape == (2, 2)
 
 
@@ -862,7 +867,9 @@ def _bath_total(group, valence_baths, conduction_baths):
     "criterion, call",
     [
         ("fixed-occupation", lambda kw: fixed_occupation_dc(occupation=4.0, **kw)),
-        ("fixed-peak", lambda kw: fixed_peak_dc(peak_position=0.5, **kw)),
+        # This test is about the three inputs reaching find_ground_state_basis, not about the
+        # landed charge state -- opt out of R2's charge-state guard.
+        ("fixed-peak", lambda kw: fixed_peak_dc(peak_position=0.5, allow_charge_state_change=True, **kw)),
     ],
 )
 def test_dc_criteria_pass_frozen_occupations_tau_and_symmetry_generators(monkeypatch, criterion, call):
@@ -903,3 +910,29 @@ def test_dc_criteria_pass_frozen_occupations_tau_and_symmetry_generators(monkeyp
         # everywhere else (see the module warning in dc_criteria.py).
         assert call_kwargs["tau"] == pytest.approx(tau / 100), (criterion, call_kwargs["tau"])
         assert call_kwargs["symmetry_generators"] is not None, criterion
+
+
+def test_fixed_peak_dc_rejects_a_non_nominal_charge_state_by_default():
+    """R2: the peak criterion is multivalued, and a surprise charge state must not pass silently.
+
+    ``_frozen_core_kwargs`` at ``peak_position=0.5`` is known (from the parametrized capture test
+    above) to converge with ``n_center=2`` against a nominal total of 4 -- exactly the surprise
+    this guard exists to catch. The default must reject it with a message actionable enough to
+    name both numbers and the opt-out; passing ``allow_charge_state_change=True`` must accept the
+    identical result.
+    """
+    kwargs, _ = _frozen_core_kwargs()
+
+    with pytest.raises(RuntimeError, match="charge state"):
+        fixed_peak_dc(peak_position=0.5, **kwargs)
+
+    dc = fixed_peak_dc(peak_position=0.5, allow_charge_state_change=True, **kwargs)
+    assert dc.shape == (6, 6)
+
+
+def test_fixed_peak_dc_accepts_the_nominal_charge_state_by_default():
+    """The guard must not reject the ordinary case: a peak reached without leaving the nominal
+    sector passes with no opt-out needed."""
+    kwargs, dc_guess = common_kwargs(v=0.01, tau=1e-3)
+    dc = fixed_peak_dc(peak_position=1.2, **kwargs)
+    assert_uniform_shift(dc, dc_guess)

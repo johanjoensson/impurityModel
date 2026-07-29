@@ -69,7 +69,7 @@ def _dc_operator(dc):
     return tensors_to_operator(np.asarray(dc, dtype=complex))
 
 
-def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0):
+def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0, allow_charge_state_change=False):
     r"""
     Calculate the double counting correction using a fixed peak position criterion.
 
@@ -133,6 +133,17 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
         MPI communicator (used for rank-0 logging; the basis build uses ``MPI.COMM_WORLD``).
     verbosity : int
         Verbosity level.
+    allow_charge_state_change : bool
+        This criterion is **multivalued**: ``n_center`` is re-found at every trial ``mu``
+        (never fixed at the input nominal occupation), so the same requested peak position can
+        be attained at several different centre charge states, each several eV apart in ``dc``
+        (measured on NiO: ~6 distinct roots, ~4 eV apart), with the bidirectional search
+        returning whichever sits closest to ``mu = 0``. By default (``False``) a converged ``mu``
+        whose centre charge state differs from the nominal total
+        (``sum(basis.nominal_occ.values())``) is rejected with ``RuntimeError`` rather than
+        silently returned -- placing a peak in the wrong charge state is not a tolerable
+        approximation of the request, any more than a mis-sectored occupation search is (see the
+        module docstring). Set ``True`` to accept whichever charge state the search lands on.
 
     Returns
     -------
@@ -142,10 +153,10 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     Raises
     ------
     RuntimeError
-        If the requested peak cannot be bracketed within the reachable range,
-        e.g. because the criterion is ill conditioned (the upper and lower
-        sectors have the same impurity occupation, so a uniform shift cannot
-        move the peak).
+        If the requested peak cannot be bracketed within the reachable range, e.g. because the
+        criterion is ill conditioned (the upper and lower sectors have the same impurity
+        occupation, so a uniform shift cannot move the peak); or if the converged ``mu`` centres
+        the peak on a non-nominal charge state and ``allow_charge_state_change`` is ``False``.
     """
     from impurityModel.ed.groundstate import calc_energy, find_ground_state_basis
 
@@ -234,6 +245,11 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     h1_for_scale = extract_tensors(ManyBodyOperator(h0_op), n_orb=model.n_spin_orbitals, two_body=False)[0]
     unreachable_penalty = 1e4 * max(float(np.ptp(np.linalg.eigvalsh(h1_for_scale))), 1.0)
 
+    # Keyed by mu (never re-evaluated for the same mu -- _solve_dc_shift's own residual cache),
+    # so the centre charge state at the mu the search finally returns can be recovered afterward
+    # without a further solve.
+    n_center_at = {}
+
     def peak_observable(mu):
         with solver_trace.labelled(mu=mu), solver_trace.timed("dc_evaluation") as evaluation_fields:
             gap = _peak_gap_at_mu(mu)
@@ -278,6 +294,7 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
         # was meant. fixed_occupation_dc never had this problem: it reads Tr rho_imp over the
         # whole basis, which averages the mixed occupations correctly.
         n_center = sum(basis_center.ground_state_occupation.values())
+        n_center_at[mu] = n_center
 
         n_upper = n_center + 1 if addition else n_center
         n_lower = n_center if addition else n_center - 1
@@ -345,11 +362,28 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
             comm=MPI.COMM_WORLD,
         )
 
+    # mu is always a point _solve_dc_shift actually evaluated (the mu=0 fast path, a direct scan
+    # hit, or a refined bracket point), so peak_observable(mu) ran and n_center_at holds it.
+    n_center = n_center_at[mu]
+    nominal_total = sum(N0.values())
     dc = dc_guess + mu * identity
     if verbose and rank == 0:
-        print(f"Fixed-peak double counting (peak position = {peak_position}, mu = {mu:.6f}):")
+        print(
+            f"Fixed-peak double counting (peak position = {peak_position}, mu = {mu:.6f}, "
+            f"n_center = {n_center}, nominal = {nominal_total}):"
+        )
         matrix_print(dc_guess, label="DC guess:")
         matrix_print(dc, label="DC found:")
+    if n_center != nominal_total and not allow_charge_state_change:
+        raise RuntimeError(
+            f"fixed_peak_dc found mu = {mu:.6f} (dc = dc_guess + mu), but the centre charge state "
+            f"there is n_center = {n_center}, not the nominal total {nominal_total}. This "
+            "criterion is multivalued: the same requested peak position can be attained at "
+            "several different charge states, several eV apart in dc, and the bidirectional "
+            "search returns whichever sits closest to mu = 0 -- not necessarily the one at the "
+            "nominal charge state. Pass allow_charge_state_change=True to accept this result "
+            "anyway, or adjust dc_guess/peak_position to land nearer the nominal sector."
+        )
 
     return dc
 
