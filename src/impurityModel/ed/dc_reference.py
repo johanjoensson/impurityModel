@@ -15,6 +15,40 @@ rather than to any one scheme that consumes it.
 
 Every computation in this module is deterministic NumPy on the replicated ``h0``: no MPI
 collective, identical on every rank.
+
+.. admonition:: Decision (R0): grand-canonical fill at mu=0, not a fill matched to the ED's
+   nominal total
+
+   This module fills ``h0`` **grand-canonically** at ``mu = 0``, with no constraint on the
+   resulting total electron count. That total need not (and on the real NiO archive, does not)
+   match the many-body basis's own nominal total -- the bath-valence-orbital count plus the
+   nominal impurity occupation the basis is seeded from (``generate_initial_basis``). This was
+   investigated because it looked like a bug: on the ``nio_15`` archive (iteration 1, 152
+   spin-orbitals, 10 impurity), the basis's nominal total is 150 (142 valence-classified bath
+   orbitals + 8 nominal impurity), while the grand-canonical fill at ``mu = 0`` gives a total of
+   only ``147.9925`` -- a ~2-electron gap.
+
+   The resolution: the raw one-body spectrum of ``h0`` has a **genuine gap**, ``(-0.0154,
+   +0.0209)`` Ry (~0.036 Ry wide), that ``mu = 0`` sits well inside -- 148 single-particle levels
+   lie below it (occupied to round-off at ``tau = 0.0025``), and exactly one 4-fold-degenerate
+   manifold sits just above it (occupation ``~0.0002`` each at ``mu = 0``, negligible). That
+   148-electron fill is what a real DFT calculation would give for this system: robust,
+   gap-protected, and insensitive to exactly where ``mu`` sits inside the gap. Forcing the fill to
+   match the basis's nominal total of 150 instead requires pushing ``mu`` up to ``+0.0209`` Ry,
+   landing it **exactly on** that near-degenerate manifold and half-filling it -- a number that is
+   66% bath character and 34% impurity character, and is fragile in the sense that it depends on
+   precisely how the bath discretization placed that one manifold, not on a gap. The 150-total
+   mismatch is therefore not evidence the grand-canonical fill is wrong; it reflects that the
+   per-orbital valence/conduction classification (:func:`symmetries.classify_bath_occupation`,
+   which looks only at the sign of each bath orbital's own diagonal energy) is a coarse
+   bookkeeping device for seeding the many-body basis, not a claim about the true hybridized
+   single-particle spectrum. The resulting ``n0 = 8.6252`` (a fractional, hybridization-driven
+   impurity occupation) is consistent with published covalent d-occupations for NiO.
+
+   :func:`test.gf.test_fixed_dc.test_reference_is_gap_protected_not_nominal_total_matched` pins
+   this on a toy model with the same structure (a genuine gap, and a nominal total that
+   deliberately disagrees with the gap-fill total), so a future change cannot silently make the
+   reference track the basis's nominal total instead of the true one-body gap.
 """
 
 import numpy as np

@@ -756,3 +756,63 @@ def test_the_two_reference_warnings_are_mutually_exclusive():
     # And a healthy covalent deviation trips neither: NiO's own n0 = 8.6258 against nominal 8.
     assert _warn_if_reference_saturated(8.6258, 10, "advice.", rank=0) is False
     assert _warn_if_reference_far_from_nominal(8.6258, 8, "advice.", rank=0) is False
+
+
+def test_reference_is_gap_protected_not_nominal_total_matched():
+    """R0 decision, pinned: the reference is a genuine grand-canonical fill, not a fill
+    constrained to match the many-body basis's *nominal* total (bath-valence-count + N0).
+
+    Investigated on the real NiO archive (nio_15, iteration 1): the raw h0 has an actual
+    one-body gap, (-0.0154, +0.0209) Ry, that mu=0 sits well inside, giving a robust,
+    gap-protected fill of 148 electrons (n_imp = 8.6252). The ED's own nominal total (142
+    valence-classified bath orbitals + 8 nominal impurity = 150) does *not* match that
+    gap-fill count. Forcing a match (filling exactly 150 single-particle levels) pushes mu
+    onto a fragile 4-fold near-degenerate manifold (66% bath character) sitting right at the
+    gap's upper edge -- an artifact of the coarse per-orbital valence/conduction
+    classification (each bath orbital classified solely by the sign of its own diagonal
+    energy, ignoring hybridization-induced level repulsion), not a more correct number.
+    Decision: keep the gap-protected grand-canonical fill (see the module docstring of
+    dc_reference.py); do not "correct" the reference to track the nominal total.
+
+    This toy reproduces the same structure at far smaller scale: one impurity orbital and
+    two bath orbitals, so that the true one-body gap-fill total (1 electron, almost entirely
+    of bath character) differs from the total a naive "bath valence count + nominal N0"
+    bookkeeping would assume (2: the one valence-classified bath orbital plus a nominal
+    impurity occupation of 1). The reference must follow the gap, not the nominal count.
+    """
+    from impurityModel.ed.dc_reference import _noninteracting_impurity_occupation
+
+    # Impurity orbital 0 sits ABOVE the Fermi level; bath orbital 1 sits deep below it
+    # (always occupied, "valence" by the sign convention); bath orbital 2 sits far above it
+    # and decoupled ("conduction"). Naive nominal total: 1 (valence bath) + 1 (nominal
+    # impurity, as if this were a d1-like config) = 2. True one-body spectrum: hybridizing
+    # orbitals 0 and 1 gives one bonding level (mostly bath character) below the gap and one
+    # antibonding level (mostly impurity character) above it; orbital 2 stays above the gap,
+    # untouched. Only the bonding level is occupied at mu=0 -- a genuine gap-fill total of 1.
+    e_imp, e_bath_valence, e_bath_conduction, v, tau = 0.6, -3.0, 3.0, 0.5, 1e-2
+    h0 = {
+        ((0, "c"), (0, "a")): e_imp,
+        ((1, "c"), (1, "a")): e_bath_valence,
+        ((2, "c"), (2, "a")): e_bath_conduction,
+        ((0, "c"), (1, "a")): v,
+        ((1, "c"), (0, "a")): v,
+    }
+    h = np.array(
+        [[e_imp, v, 0.0], [v, e_bath_valence, 0.0], [0.0, 0.0, e_bath_conduction]],
+        dtype=complex,
+    )
+    energies = np.linalg.eigvalsh(h)
+    # A genuine gap straddled by mu=0: exactly one level below zero, both others well above.
+    assert sorted(energies)[0] < 0.0 < sorted(energies)[1], energies
+    gap = sorted(energies)[1] - sorted(energies)[0]
+    assert gap > 100 * tau, "the toy must be deep in the gap at this tau, or the fill is not robust"
+
+    n0 = _noninteracting_impurity_occupation(h0, impurity_indices=[0], n_spin_orbitals=3, tau=tau)
+    total_at_mu0 = float(np.sum(1.0 / (1.0 + np.exp(energies / tau))))
+
+    # The gap-fill total is 1 (the bonding level only), not the naive nominal total of 2.
+    assert np.isclose(total_at_mu0, 1.0, atol=1e-6), total_at_mu0
+    # Most of that one electron is bath character (e_bath_valence << e_imp), so the impurity's
+    # share is small -- nowhere near a "nominal" occupation of 1.
+    assert 0.0 < n0 < 0.3, n0
+
