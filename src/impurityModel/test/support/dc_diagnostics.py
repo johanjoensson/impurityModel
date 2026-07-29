@@ -35,7 +35,7 @@ from time import perf_counter
 
 import numpy as np
 
-from impurityModel.ed import solver_trace
+from impurityModel.ed import config, solver_trace
 from impurityModel.ed.memory_estimate import suggest_truncation_threshold
 from impurityModel.ed.model import load_selfenergy_archive
 from impurityModel.ed.selfenergy import fixed_occupation_dc, fixed_peak_dc
@@ -100,6 +100,19 @@ def run_dc_search(
         per-kind counts and seconds the trace recorded.
     """
     from impurityModel.ed.dc_search import _dc_chi
+
+    # This harness derives its whole result from a trace it opens itself, and DC_DIAGNOSTICS makes
+    # the search open one too. They are mutually exclusive by construction -- solver_trace refuses
+    # to nest -- so say so here rather than letting the search raise mid-run. Historically this
+    # combination silently emptied the outer trace: every row came back `value = nan` and the
+    # STABLE/DRIFTS verdict, the module's primary product, was dropped without a word.
+    if config.DC_DIAGNOSTICS.get():
+        raise RuntimeError(
+            "DC_DIAGNOSTICS is set, which makes the search open its own solver_trace block; this "
+            "benchmark opens one around the search and reads its counts from it. Unset "
+            "DC_DIAGNOSTICS to run the benchmark (its table already reports the same per-kind "
+            "seconds), or run the search directly to get the per-mu report."
+        )
 
     model, _meshes, basis, solver, label = load_selfenergy_archive(WORKLOADS[workload_key], iteration=iteration)
     basis = replace(basis, truncation_threshold=cap)

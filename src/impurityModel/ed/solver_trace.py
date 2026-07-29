@@ -84,11 +84,22 @@ class Trace:
 def tracing(trace=None):
     """Collect events into ``trace`` (a fresh :class:`Trace` by default) for the duration.
 
-    Re-entrant only in the sense that an inner block replaces the outer one and restores it on
-    exit; events are never written to two traces at once. The label stack is reset on entry so a
-    trace opened inside a labelled block does not inherit stale labels.
+    **Not nestable, and it raises rather than nesting.** An earlier version let an inner block
+    replace the outer one, which silently *diverted* every event away from the caller's trace. A
+    benchmark harness did exactly that: it opened a trace around a search that opened its own, then
+    read zero events, reported ``value = nan`` for every row, and -- because the rows were filtered
+    on ``np.isfinite`` -- dropped its ``STABLE``/``DRIFTS`` verdict entirely while still printing a
+    confident scaling exponent and extrapolation. The correctness gate vanished with no symptom.
+    Refusing is the smallest fix that cannot do that: a caller that would have been silently
+    emptied now gets an exception naming the problem.
     """
     global _ACTIVE, _LABELS
+    if _ACTIVE is not None:
+        raise RuntimeError(
+            "solver_trace.tracing() is already active. Nesting would divert every event away from "
+            "the enclosing trace, which reads downstream as zero measurements rather than as an "
+            "error. Reuse the open trace (pass it in), or close the outer block first."
+        )
     previous, previous_labels = _ACTIVE, _LABELS
     _ACTIVE = Trace() if trace is None else trace
     _LABELS = []

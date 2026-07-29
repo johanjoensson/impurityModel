@@ -40,10 +40,22 @@ from impurityModel.ed.basis_transcription import build_density_matrices, build_s
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.dc_criteria import _dc_operator
 
-#: Finite-difference step for ``chi``, as a fraction of the shift scale. Central differences on a
-#: quantity that is itself an eigensolve are second-order accurate, so the step only has to sit
-#: well above the eigenvalue tolerance and well below the scale on which ``n(mu)`` bends -- the
-#: sector spacing, which is O(1) in the units of ``h0``.
+#: Finite-difference step for ``chi``.
+#:
+#: .. warning::
+#:    **This step does not generally measure a derivative, and no fixed step can.** An earlier
+#:    version of this comment claimed 1e-3 sits "well below the scale on which ``n(mu)`` bends --
+#:    the sector spacing, which is O(1)". That is false: ``n(mu)`` bends on the *thermal crossover*
+#:    scale ``~tau/dn``, i.e. 1e-3 to 1e-2 -- the same size as the step. Measured on the fixture in
+#:    ``test_dc_frozen.py``, ``chi(h)`` reads 126.30 / 252.26 / 468.23 / 617.31 as ``h`` halves
+#:    from 8e-3: the ``1/h`` signature of ``dn / 2h``, a *straddle* of a sector step rather than a
+#:    slope. A true derivative is independent of ``h``. In a weakly coupled case the same step
+#:    reports ``chi = 0.00`` across a shift that moves a full electron.
+#:
+#:    So treat ``chi`` here as a diagnostic to be sanity-checked, never as a Jacobian to divide by.
+#:    A search that did exactly that returned an answer wrong by fifty times ``occ_tol`` while its
+#:    guard certified it, and was reverted. Measuring the slope honestly needs step-doubling with a
+#:    straddle test (reject when ``chi`` scales as ``1/h``); that is not implemented here.
 CHI_STEP = 1e-3
 
 
@@ -162,9 +174,11 @@ class FrozenSpaceSweep:
     Notes
     -----
     Every solve goes through :meth:`CIPSISolver.get_eigenvectors` with a prebuilt matrix rather
-    than around it, so the warm-start cold-retry guard still applies: a warm block spans a
-    near-invariant subspace and silently returns an excited state as "lowest" once the ground
-    state has moved charge sector, which is exactly what a double-counting sweep makes it do.
+    than around it. Note the warm-start cold-retry guard inside that method -- originally given as
+    the reason for putting the seam there -- is **inert here**: :meth:`_solve` passes no
+    ``psi_refs``, so every solve is a cold start and the guard never engages. Cold starts are the
+    safe choice for a sweep that crosses charge sectors; the seam's justification is that it keeps
+    one code path, not that the guard is doing work.
     """
 
     def __init__(
@@ -191,11 +205,35 @@ class FrozenSpaceSweep:
 
         self._solver = CIPSISolver(basis)
         self._h_op = h_op
+        # Apply the basis's restrictions to the operator BEFORE the matrices are built. They
+        # cannot be retro-fitted: `get_eigenvectors` calls `set_restrictions` on the *operator*,
+        # which does nothing for a matrix that already exists, so a matrix built first is the
+        # unrestricted PHP. The docstring above states this as a precondition; doing it here is
+        # what makes the precondition true rather than merely asserted.
+        if basis.restrictions is not None:
+            h_op.set_restrictions(basis.restrictions)
+        if basis.weighted_restrictions is not None:
+            h_op.set_weighted_restrictions(basis.weighted_restrictions)
         # The two builds that make the sweep cheap. `h0` carries dc_guess already; `n` is the
         # impurity number operator, which _dc_operator(identity) is exactly -- diagonal in the
         # determinant basis, which is what makes H(mu) a diagonal shift rather than a rebuild.
         self._h0_matrix = build_sparse_matrix(basis, h_op)
         self._n_matrix = build_sparse_matrix(basis, _dc_operator(np.identity(len(self.impurity_indices))))
+        # Impurity occupation per determinant, reduced across ranks once. `build_sparse_matrix`
+        # returns a *globally shaped* matrix in which only this rank's columns are populated, so
+        # reading the diagonal locally sees the owned determinants plus a spurious 0 everywhere
+        # else -- measured at -n 3: spans (0,2), (0,3), (0,1,4) on the three ranks of one
+        # 18-determinant space. Any decision taken on that is rank-local, and `sector_span` gates
+        # a choice between different sequences of collectives. Reduced here, once, unconditionally
+        # (CLAUDE.md: never gate a collective on rank-local state). `.diagonal()` rather than
+        # `.toarray()`: densifying n x n to read n numbers is 64 MB at the benchmarked cap and
+        # terabytes at production caps.
+        local = np.real(self._n_matrix.diagonal())
+        owned = local[np.asarray(basis.local_indices)] if basis.is_distributed else local
+        occupations = sorted({int(round(n)) for n in owned})
+        if basis.is_distributed:
+            occupations = sorted({n for part in basis.comm.allgather(occupations) for n in part})
+        self._sector_span = tuple(occupations)
         self._solved = {}
 
     def hamiltonian(self, mu):
@@ -270,10 +308,7 @@ class FrozenSpaceSweep:
         accepting whatever the seed reached: a sweep is only meaningful where the space can
         represent the answer, and this is the check that says where that is.
         """
-        if self._n_matrix.shape[0] == 0:
-            return ()
-        occupations = np.real(np.diag(self._n_matrix.toarray()))
-        return tuple(int(n) for n in np.unique(np.round(occupations)))
+        return self._sector_span
 
     def spans_sector(self, n_imp):
         """Whether the frozen space can represent impurity occupation ``n_imp`` at all.

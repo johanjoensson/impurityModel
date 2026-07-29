@@ -15,6 +15,7 @@ immediately, where the softer inequalities would still pass.
 
 import numpy as np
 import pytest
+from mpi4py import MPI
 
 from impurityModel.ed.dc_frozen import FrozenSpaceSweep, build_union_space
 from impurityModel.ed.groundstate import build_basis_and_solver
@@ -276,3 +277,55 @@ def test_expanding_at_more_shifts_only_grows_the_space():
     three, _b3 = build_union_space(_h_op(), IMPURITY, BATHS, {0: 1, 1: 1}, mu_samples=(0.0, -2.0, 2.0), **common)
     assert len(three.basis) >= len(one.basis)
     assert set(three.sector_span()) >= set(one.sector_span())
+
+
+@pytest.mark.mpi
+def test_sector_span_is_identical_on_every_rank():
+    """The gap that let a reproduced deadlock through, closed.
+
+    `build_sparse_matrix` returns a *globally shaped* matrix in which only this rank's columns are
+    populated, so reading the diagonal locally sees the owned determinants plus a spurious 0
+    everywhere else. Measured before the fix, at -n 3 on one 18-determinant space: spans (0, 2),
+    (0, 3) and (0, 1, 4) on the three ranks, and `spans_sector(4)` returning False/False/True --
+    a rank-local boolean that a caller then used to choose between two different sequences of
+    collectives. The whole `-n 2`/`-n 3` gate passed throughout, because no test built this class
+    with a live communicator: every fixture here passes `comm=None`, so under `mpiexec` each rank
+    merely repeated the serial computation.
+    """
+    comm = MPI.COMM_WORLD
+    if comm.size < 2:
+        pytest.skip("needs at least 2 ranks")
+    h_op = _h_op()
+    nominal = {0: 1, 1: 1}
+    basis, solver = build_basis_and_solver(
+        h_op,
+        IMPURITY,
+        BATHS,
+        nominal,
+        dict.fromkeys(nominal, 1),
+        1e-3,
+        False,
+        False,
+        np.inf,
+        comm,
+        False,
+        None,
+        None,
+        1e-12,
+        None,
+    )
+    solver.expand(h_op, dense_cutoff=1000, de2_min=1e-10, slaterWeightMin=1e-12)
+    sweep = FrozenSpaceSweep(basis, h_op, list(range(N_IMP)), tau=1e-3, dense_cutoff=1000, slater_weight_min=1e-12)
+
+    assert basis.is_distributed, "fixture must be distributed or this proves nothing"
+    spans = comm.allgather(sweep.sector_span())
+    assert len(set(spans)) == 1, spans
+    # The spurious 0 is what made the downward guard dead; it must not be in the span unless a
+    # determinant really is empty on the impurity.
+    assert 0 not in sweep.sector_span() or min(spans[0]) == 0
+    # And every derived decision must agree, since callers branch on it.
+    for n in range(N_IMP + 1):
+        verdicts = comm.allgather(sweep.spans_sector(n))
+        assert len(set(verdicts)) == 1, (n, verdicts)
+    occupations = comm.allgather(sweep.occupation(0.0))
+    assert max(occupations) - min(occupations) < 1e-9, occupations

@@ -7,12 +7,28 @@ the sector-energy difference ``E[N+1] - E[N]`` (or ``E[N] - E[N-1]`` for a remov
 the DFT reference occupation from :mod:`dc_reference`, which is the natural criterion for CSC
 DFT+DMFT of wide-window p-d models.
 
-At every trial shift both determine the ground-state sector **the identical way**
-:func:`groundstate.calc_gs` does -- :func:`groundstate.find_ground_state_basis`'s
-HF-seed-then-walk search, not a search pinned at the input occupation. A ``dc`` measured on a
-different sector than the one ``calc_selfenergy`` later finds does not approximate the requested
-physics, it misdirects it: the downstream calculation is locked onto the wrong charge state,
-which is worse than not fixing anything at all.
+At every trial shift both determine the ground-state sector through the same *function*
+:func:`groundstate.calc_gs` uses -- :func:`groundstate.find_ground_state_basis`'s
+HF-seed-then-walk search, not a search pinned at the input occupation. That matters because a
+``dc`` measured on a different sector than the one ``calc_selfenergy`` later finds does not
+approximate the requested physics, it misdirects it: the downstream calculation is locked onto the
+wrong charge state, which is worse than not fixing anything at all.
+
+.. warning::
+   It is the same function but **not the same call**, and an earlier version of this docstring
+   claimed otherwise. Three differences, all found by review:
+
+   * ``calc_gs`` divides ``tau`` by 100 before the walk (``groundstate.py``, ``calc_gs``); these
+     criteria pass the full ``tau``, so the sector is selected at ~34 meV here against ~0.34 meV
+     there.
+   * ``calc_gs`` computes and passes ``symmetry_generators``; neither criterion does.
+   * ``find_ground_state_basis`` accepts ``frozen_occupations`` and the CLI populates it for
+     bath-less core shells; **neither criterion has a parameter to receive it**, so a core shell
+     can drain into the valence shell in the double-counting search only.
+
+   The toy parity test still passes, so the answers may agree on small systems -- but the
+   equivalence is not established, and it is the property this module exists to provide. Closing
+   the gap means threading those three inputs through; until then this is a caveat, not a claim.
 
 Like :func:`selfenergy.calc_selfenergy` and :func:`groundstate.find_ground_state_basis`, both
 derive their determinant budget from available per-rank memory

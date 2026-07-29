@@ -58,16 +58,37 @@ def test_a_raising_block_is_still_recorded():
     assert trace.count("sector_solve") == 1
 
 
-def test_tracing_restores_the_previous_trace_and_labels():
+def test_tracing_refuses_to_nest():
+    """Nesting used to *divert* events, which reads downstream as zero measurements.
+
+    The previous version of this test asserted the nesting semantics were correct. They were not:
+    an inner block replaced the outer one, so `dc_diagnostics` -- which wraps a search in its own
+    trace -- read zero events with `DC_DIAGNOSTICS=1`, reported `value = nan` for every row, and
+    because rows are filtered on `np.isfinite` dropped its STABLE/DRIFTS verdict entirely while
+    still printing a confident scaling exponent. Refusing is the smallest fix that cannot fail
+    silently.
+    """
     with solver_trace.tracing() as outer:
+        with pytest.raises(RuntimeError, match="already active"):
+            with solver_trace.tracing():
+                pass
+        # The refusal must not damage the enclosing trace.
+        solver_trace.note("sector_cache_hit")
+    assert solver_trace.is_active() is False
+    assert outer.count("sector_cache_hit") == 1
+
+
+def test_labels_do_not_outlive_their_block_and_the_trace_is_restored():
+    """The two genuine invariants the old nesting test also happened to encode."""
+    with solver_trace.tracing() as trace:
         with solver_trace.labelled(mu=1.0):
-            with solver_trace.tracing() as inner:
-                # A trace opened inside a labelled block must not inherit that label, or an
-                # inner report would attribute its events to an unrelated outer mu.
-                solver_trace.note("sector_cache_hit")
             solver_trace.note("sector_cache_hit")
-    assert "mu" not in inner.events[0]
-    assert outer.events[0]["mu"] == 1.0
+        solver_trace.note("sector_cache_hit")
+    labelled, unlabelled = trace.events
+    assert labelled["mu"] == 1.0
+    assert "mu" not in unlabelled
+    # And the module is left with no active trace, so a later block starts clean.
+    assert not solver_trace.is_active()
 
 
 def test_chi_is_the_slope_of_the_closest_evaluated_pair():
@@ -134,8 +155,8 @@ def test_every_rank_runs_the_same_number_of_sector_solves():
         pytest.skip("needs at least 2 ranks")
     # No DC_DIAGNOSTICS here on purpose: the hooks record into whatever trace is open, so a
     # caller can account for a search without the search printing anything. Setting the knob
-    # would make the criterion open its *own* trace, which replaces this one for the duration
-    # and would leave it empty.
+    # would make the criterion try to open its *own* trace, which now raises rather than
+    # silently diverting this one (see test_tracing_refuses_to_nest).
     with solver_trace.tracing() as trace:
         kwargs, _ = common_kwargs(v=0.4, tau=1e-3)
         fixed_occupation_dc(**kwargs, occupation=1.05)
