@@ -15,20 +15,21 @@ approximate the requested physics, it misdirects it: the downstream calculation 
 wrong charge state, which is worse than not fixing anything at all.
 
 .. warning::
-   It is the same function but **not the same call**, and an earlier version of this docstring
-   claimed otherwise. Three differences, all found by review:
+   Until this fix, it was the same function but **not the same call** -- an earlier version of
+   this docstring claimed otherwise. Three differences, all found by review, are now closed:
 
-   * ``calc_gs`` divides ``tau`` by 100 before the walk (``groundstate.py``, ``calc_gs``); these
-     criteria pass the full ``tau``, so the sector is selected at ~34 meV here against ~0.34 meV
-     there.
-   * ``calc_gs`` computes and passes ``symmetry_generators``; neither criterion does.
-   * ``find_ground_state_basis`` accepts ``frozen_occupations`` and the CLI populates it for
-     bath-less core shells; **neither criterion has a parameter to receive it**, so a core shell
-     can drain into the valence shell in the double-counting search only.
-
-   The toy parity test still passes, so the answers may agree on small systems -- but the
-   equivalence is not established, and it is the property this module exists to provide. Closing
-   the gap means threading those three inputs through; until then this is a caveat, not a claim.
+   * ``calc_gs`` divides ``tau`` by 100 before the walk (``groundstate.py``, ``calc_gs``); both
+     criteria now do the same for their own ``find_ground_state_basis`` call, restoring the full
+     ``tau`` for everything computed afterward at the found sector (the thermal average, the
+     peak's sector-energy solves).
+   * ``calc_gs`` computes ``symmetry_generators`` via :func:`solver_basis.get_symmetry_generators`
+     and passes it down; both criteria now compute it once (a uniform ``mu`` shift on the impurity
+     diagonal commutes with any one-body symmetry, so it is valid for every trial ``mu``) and pass
+     it into every ``find_ground_state_basis``/``calc_energy``/``expand`` call.
+   * ``find_ground_state_basis`` accepts ``frozen_occupations``, and the CLI populates it for
+     bath-less core shells (``get_spectra.py``: ``{i for i in nBaths if nBaths[i] == 0}``); both
+     criteria now derive the same set from :attr:`solver_basis.SolverBasis.sum_bath_states` and
+     pass it down, so a core shell can no longer drain in the double-counting search only.
 
 Like :func:`selfenergy.calc_selfenergy` and :func:`groundstate.find_ground_state_basis`, both
 derive their determinant budget from available per-rank memory
@@ -59,7 +60,7 @@ from impurityModel.ed.dc_search import _dc_search_trace, _solve_dc_shift
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.memory_estimate import DEFAULT_MEMORY_SAFETY, log_memory_budget, suggest_truncation_threshold
-from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_basis
+from impurityModel.ed.solver_basis import _per_group_occupation, get_symmetry_generators, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
 
 
@@ -193,6 +194,14 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     h_solver_matrix = extract_tensors(sb.h0_solve, n_orb=sb.n_spin_orbitals, two_body=False)[0]
     identity = np.identity(dc_guess.shape[0])
 
+    # The three inputs that make this the same call calc_gs makes (see the module warning):
+    # a bath-less group pinned exactly as get_spectra.py pins it, the same one-body symmetry
+    # generators (valid at every trial mu -- a uniform impurity shift commutes with them), and
+    # the walk's tau divided by 100 below, restored to the full tau for everything solved at the
+    # sector the walk finds.
+    frozen_occupations = {i for i in impurity_orbitals if sb.sum_bath_states[i] == 0}
+    symmetry_generators = get_symmetry_generators(h_op_i, impurity_orbitals, bath_states)
+
     if truncation_threshold is None:
         # Two fixed-sector solves (N +- 1) are built alongside the center search's own basis,
         # so halve the safety fraction relative to a single-basis driver to keep the same
@@ -245,8 +254,11 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
             impurity_orbitals,
             bath_states,
             N0,
+            frozen_occupations=frozen_occupations,
             mixed_valence=mixed_valence,
-            tau=tau,
+            # calc_gs's own convention (groundstate.py): the sector-selection walk runs at
+            # tau/100, restored to the full tau for the sector energies solved below.
+            tau=tau / 100,
             chain_restrict=chain_restrict,
             dense_cutoff=dense_cutoff,
             spin_flip_dj=spin_flip_dj,
@@ -255,6 +267,7 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
             truncation_threshold=truncation_threshold,
             slaterWeightMin=slaterWeightMin,
             weighted_restrictions=weighted_restrictions,
+            symmetry_generators=symmetry_generators,
         )
         # The centre sector, read from the search that chose it. NOT from a determinant: the
         # returned basis is the eigenvector support of an expansion whose impurity occupation
@@ -288,6 +301,8 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
                 truncation_threshold=truncation_threshold,
                 slaterWeightMin=slaterWeightMin,
                 weighted_restrictions=weighted_restrictions,
+                frozen_occupations=frozen_occupations,
+                symmetry_generators=symmetry_generators,
             )
             # calc_energy itself returns inf for an empty basis (e.g. a sector the current
             # restrictions admit no determinants for); clamp to the same finite penalty for the
@@ -466,6 +481,14 @@ def fixed_occupation_dc(
     total_impurity_orbitals = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
 
+    # The three inputs that make this the same call calc_gs makes (see the module warning):
+    # a bath-less group pinned exactly as get_spectra.py pins it, the same one-body symmetry
+    # generators (valid at every trial mu -- a uniform impurity shift commutes with them), and
+    # the walk's tau divided by 100 below, restored to the full tau for everything solved at the
+    # sector the walk finds.
+    frozen_occupations = {i for i in impurity_orbitals if sb.sum_bath_states[i] == 0}
+    symmetry_generators = get_symmetry_generators(h_op_i, impurity_orbitals, bath_states)
+
     # DFT reference occupation: Fermi filling of the raw h0 (the KS Hamiltonian of the
     # h0 - dc + U contract; no double counting subtracted before filling), independent of
     # dc_guess and of the trial shift, and of the solver-basis rotation (h0's raw filling is
@@ -533,8 +556,11 @@ def fixed_occupation_dc(
             impurity_orbitals,
             bath_states,
             N0,
+            frozen_occupations=frozen_occupations,
             mixed_valence=mixed_valence,
-            tau=tau,
+            # calc_gs's own convention (groundstate.py): the sector-selection walk runs at
+            # tau/100, restored to the full tau for the refinement and thermal average below.
+            tau=tau / 100,
             chain_restrict=chain_restrict,
             dense_cutoff=dense_cutoff,
             spin_flip_dj=spin_flip_dj,
@@ -543,6 +569,7 @@ def fixed_occupation_dc(
             truncation_threshold=truncation_threshold,
             slaterWeightMin=slaterWeightMin,
             weighted_restrictions=weighted_restrictions,
+            symmetry_generators=symmetry_generators,
         )
         mb_solver = CIPSISolver(mb_basis)
         # Refine at the same de2_min calc_gs uses for its own final solve (find_ground_state_basis
@@ -551,7 +578,13 @@ def fixed_occupation_dc(
         # of any sector solve -- it runs once per mu, on top of the whole walk -- so it is timed
         # under the same "expand" kind to land in the aggregate, tagged to say where it came from.
         with solver_trace.timed("expand", stage="dc_refine"):
-            mb_solver.expand(h_op, dense_cutoff=dense_cutoff, de2_min=1e-8, slaterWeightMin=slaterWeightMin)
+            mb_solver.expand(
+                h_op,
+                dense_cutoff=dense_cutoff,
+                de2_min=1e-8,
+                slaterWeightMin=slaterWeightMin,
+                symmetry_generators=symmetry_generators,
+            )
 
         def solve_thermal_occupation():
             # The NiO ground state that motivated this rework is 3-fold quasi-degenerate, so a

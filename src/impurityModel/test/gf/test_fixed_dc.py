@@ -816,3 +816,90 @@ def test_reference_is_gap_protected_not_nominal_total_matched():
     # share is small -- nowhere near a "nominal" occupation of 1.
     assert 0.0 < n0 < 0.3, n0
 
+
+def _frozen_core_kwargs():
+    """A three-group impurity: a bath-less core pair plus two bath-coupled valence pairs.
+
+    Six impurity spin-orbitals at three on-site energies -- a deep, uncoupled core doublet
+    (``-5.0``) and the ``_split_block_kwargs`` valence doublets (``0.4``/``-0.4``) -- so
+    ``prepare_solver_basis`` derives three orbital-symmetry groups, exactly one of which
+    (the core) has zero attached bath orbitals. Only the valence orbitals couple to the four
+    bath states; the core rows/columns of ``V`` are zero.
+    """
+    h_imp = np.diag([-5.0, -5.0, 0.4, 0.4, -0.4, -0.4]).astype(complex)
+    v = np.zeros((4, 6), dtype=complex)
+    v[0, 2] = v[1, 3] = v[2, 4] = v[3, 5] = 0.2
+    h_bath = np.diag([-2.0, -2.0, -2.1, -2.1]).astype(complex)
+    u4 = np.zeros((6,) * 4, dtype=complex)
+    dc = np.zeros((6, 6), dtype=complex)
+    model = ImpurityModel.from_blocks(
+        h_imp,
+        v,
+        h_bath,
+        u4=u4,
+        dc=dc,
+        rot_to_spherical=np.eye(6, dtype=complex),
+        bath_valence_conduction=(list(range(6, 10)), []),
+    )
+    # Energetic filling (lowest on-site energy first) puts the total on core (full, -5.0 x2)
+    # and the -0.4 valence doublet (full), leaving the 0.4 doublet empty -- a nominal 4.
+    basis = BasisOptions(
+        nominal_occ={0: 4},
+        mixed_valence=None,
+        spin_flip_dj=False,
+        tau=1e-3,
+        slater_weight_min=np.sqrt(np.finfo(float).eps),
+        truncation_threshold=int(1e6),
+    )
+    return dict(model=model, basis=basis, solver=SolverOptions(dense_cutoff=1000), comm=MPI.COMM_WORLD), dc
+
+
+def _bath_total(group, valence_baths, conduction_baths):
+    return sum(len(b) for b in valence_baths.get(group, [])) + sum(len(b) for b in conduction_baths.get(group, []))
+
+
+@pytest.mark.parametrize(
+    "criterion, call",
+    [
+        ("fixed-occupation", lambda kw: fixed_occupation_dc(occupation=4.0, **kw)),
+        ("fixed-peak", lambda kw: fixed_peak_dc(peak_position=0.5, **kw)),
+    ],
+)
+def test_dc_criteria_pass_frozen_occupations_tau_and_symmetry_generators(monkeypatch, criterion, call):
+    """R1: the call-counter proof, not an outcome proof (the shim lesson).
+
+    Asserting on the returned ``dc`` cannot distinguish "the three inputs reached
+    ``find_ground_state_basis``" from "they didn't, and it happened not to matter" -- both
+    criteria' docstrings claimed parity with ``calc_gs`` before this was true (see the module
+    warning), and the toy parity test passed the whole time. Spy on
+    ``groundstate.find_ground_state_basis`` itself (re-imported fresh inside each criterion at
+    call time, so patching the ``groundstate`` module's attribute is what the ``from ... import``
+    picks up) and inspect every call's kwargs directly.
+    """
+    import impurityModel.ed.groundstate as groundstate_module
+
+    real_find_ground_state_basis = groundstate_module.find_ground_state_basis
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_find_ground_state_basis(*args, **kwargs)
+
+    monkeypatch.setattr(groundstate_module, "find_ground_state_basis", spy)
+
+    kwargs, _ = _frozen_core_kwargs()
+    tau = kwargs["basis"].tau
+    call(kwargs)
+
+    assert calls, f"{criterion}: find_ground_state_basis was never called"
+    for args, call_kwargs in calls:
+        impurity_orbitals_arg = args[1]
+        valence_baths, conduction_baths = args[2]
+        expected_frozen = {i for i in impurity_orbitals_arg if _bath_total(i, valence_baths, conduction_baths) == 0}
+        # The fixture's core group must actually be bath-less, or this test proves nothing.
+        assert expected_frozen, f"{criterion}: fixture has no bath-less group to freeze"
+        assert call_kwargs["frozen_occupations"] == expected_frozen, (criterion, call_kwargs["frozen_occupations"])
+        # calc_gs's own convention: the walk runs at tau/100, restored to the full tau
+        # everywhere else (see the module warning in dc_criteria.py).
+        assert call_kwargs["tau"] == pytest.approx(tau / 100), (criterion, call_kwargs["tau"])
+        assert call_kwargs["symmetry_generators"] is not None, criterion
