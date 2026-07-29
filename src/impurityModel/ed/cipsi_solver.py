@@ -748,6 +748,7 @@ class CIPSISolver:
         solver="trlm",
         reort=Reort.PARTIAL,
         psi_refs=None,
+        h_matrix=None,
     ):
         """Solve for the ``num_wanted`` lowest eigenstates below ``max_energy``.
 
@@ -756,11 +757,32 @@ class CIPSISolver:
         ``get_eigenvectors`` call); ``None`` is a cold start from the rank-independent hash
         vector. Callers own this choice explicitly -- this method never reads or writes
         ``self.psi_refs``.
+
+        ``h_matrix``, if given, is used in place of ``build_sparse_matrix(self.basis, H)``. It
+        exists for a caller sweeping a *family* of Hamiltonians over one frozen determinant
+        space -- the double-counting search's ``H(mu) = H(0) - mu * N_imp``, where ``N_imp`` is
+        diagonal, so the whole family is one build plus a diagonal shift. Keeping the seam here
+        rather than solving outside this method is deliberate: the warm-start cold-retry guard
+        below (a warm block spans a near-invariant subspace and silently returns an excited state
+        as "lowest" when the ground state has moved charge sector, which is exactly what a DC
+        search does) has no equivalent outside, and its own comment records that the miss is
+        undetectable downstream.
+
+        The caller owns the matrix's consistency. ``H.set_restrictions`` below still runs on the
+        *operator* and cannot retro-fit a matrix, so ``h_matrix`` must have been built after the
+        basis's restrictions were set, from this basis, at this size -- the shape assertion
+        catches a stale one, nothing catches stale restrictions.
         """
         if self.basis.restrictions is not None:
             H.set_restrictions(self.basis.restrictions)
         if self.basis.weighted_restrictions is not None:
             H.set_weighted_restrictions(self.basis.weighted_restrictions)
+        if h_matrix is not None and h_matrix.shape[0] != len(self.basis):
+            raise ValueError(
+                f"h_matrix was built for a basis of {h_matrix.shape[0]} determinants but this one "
+                f"holds {len(self.basis)}. A matrix that outlived its basis produces eigenvalues "
+                "of the wrong operator rather than an error, so this is checked."
+            )
 
         if solver in SOLVERS and self.basis.size >= dense_cutoff:
             restarted_lanczos = SOLVERS[solver]
@@ -806,7 +828,7 @@ class CIPSISolver:
 
             num_wanted = min(num_wanted, (max_subspace_blocks - 1) * len(psi0))
 
-            H_mat = build_sparse_matrix(self.basis, H)
+            H_mat = build_sparse_matrix(self.basis, H) if h_matrix is None else h_matrix
             if self.basis.is_distributed:
                 H_mat = H_mat[:, self.basis.local_indices]
 
@@ -887,7 +909,7 @@ class CIPSISolver:
                 psi_refs = [psi_refs[i] for i in valid_idx]
 
         else:
-            H_mat = build_sparse_matrix(self.basis, H)
+            H_mat = build_sparse_matrix(self.basis, H) if h_matrix is None else h_matrix
             e_ref, psi_ref_dense = eigensystem(
                 H_mat,
                 e_max=max_energy,
