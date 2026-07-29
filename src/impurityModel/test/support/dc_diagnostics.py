@@ -99,7 +99,7 @@ def run_dc_search(
         ``cap``, ``seconds``, ``mu``, ``value`` (achieved ``n`` or gap), ``chi``, and the
         per-kind counts and seconds the trace recorded.
     """
-    from impurityModel.ed.dc_search import _dc_chi
+    from impurityModel.ed.dc_search import _dc_chi, bracket_width_tol
 
     # This harness derives its whole result from a trace it opens itself, and DC_DIAGNOSTICS makes
     # the search open one too. They are mutually exclusive by construction -- solver_trace refuses
@@ -167,7 +167,10 @@ def run_dc_search(
         "seconds": seconds,
         "mu": mu,
         "value": achieved,
-        "chi": _dc_chi(samples),
+        # Same width_tol both criteria pass to _solve_dc_shift internally (dc_search.bracket_width_tol),
+        # so a collapsed bracket at a sector boundary is excluded here exactly as it is in the
+        # search's own closing report, rather than read as a slope.
+        "chi": _dc_chi(samples, width_tol=bracket_width_tol(basis.tau)),
         "evaluations": trace.count("dc_evaluation"),
         "sector_solves": trace.count("sector_solve"),
         "cache_hits": trace.count("sector_cache_hit"),

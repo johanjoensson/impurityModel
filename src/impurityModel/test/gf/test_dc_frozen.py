@@ -126,6 +126,29 @@ def test_chi_matches_the_slope_it_is_supposed_to_measure():
         assert sweep.shift_error(0.01, mu, step) == pytest.approx(0.01 / sweep.chi(mu, step))
 
 
+def test_chi_rejects_a_straddle_near_a_sector_boundary():
+    """R3: the CHI_STEP warning's own measured numbers, reproduced as a test.
+
+    ``mu = -0.5225`` on this exact fixture (``mixed_valence=1``) sits right at the sector
+    boundary where occupation jumps from 1.0 to ~3.0. The plain central difference there reads
+    126.30 / 252.26 / 468.23 / 617.31 / 636.47 as the step halves from 8e-3 -- the ``1/h``
+    signature of a straddle, not a slope -- while the same sweep at ``mu = 0.3`` is step-size
+    independent to four significant figures. ``chi`` must reject the former and accept the
+    latter.
+    """
+    _basis, sweep = _frozen(mixed_valence=1)
+
+    straddle_mu, smooth_mu = -0.5225, 0.3
+    # Reproduce the module docstring's own numbers first, so a fixture change surfaces as a
+    # readable mismatch here rather than a mystery `None` below.
+    raw = [sweep._central_difference(straddle_mu, h) for h in (8e-3, 4e-3, 2e-3, 1e-3)]
+    np.testing.assert_allclose(raw, [126.30, 252.26, 468.23, 617.31], rtol=2e-3)
+
+    assert sweep.chi(straddle_mu, step=8e-3) is None
+    assert sweep.shift_error(0.01, straddle_mu, step=8e-3) is None
+    assert sweep.chi(smooth_mu, step=8e-3) == pytest.approx(sweep.chi(smooth_mu, step=1e-3), rel=1e-3)
+
+
 def test_a_matrix_that_outlived_its_basis_is_rejected():
     """A stale prebuilt matrix yields eigenvalues of the wrong operator rather than an error,
     so get_eigenvectors checks the shape it was handed."""

@@ -43,19 +43,21 @@ from impurityModel.ed.dc_criteria import _dc_operator
 #: Finite-difference step for ``chi``.
 #:
 #: .. warning::
-#:    **This step does not generally measure a derivative, and no fixed step can.** An earlier
-#:    version of this comment claimed 1e-3 sits "well below the scale on which ``n(mu)`` bends --
-#:    the sector spacing, which is O(1)". That is false: ``n(mu)`` bends on the *thermal crossover*
-#:    scale ``~tau/dn``, i.e. 1e-3 to 1e-2 -- the same size as the step. Measured on the fixture in
-#:    ``test_dc_frozen.py``, ``chi(h)`` reads 126.30 / 252.26 / 468.23 / 617.31 as ``h`` halves
-#:    from 8e-3: the ``1/h`` signature of ``dn / 2h``, a *straddle* of a sector step rather than a
-#:    slope. A true derivative is independent of ``h``. In a weakly coupled case the same step
-#:    reports ``chi = 0.00`` across a shift that moves a full electron.
+#:    **A single fixed step cannot tell a slope from a straddle, so `chi` no longer trusts one on
+#:    its own.** An earlier version of this comment claimed 1e-3 sits "well below the scale on
+#:    which ``n(mu)`` bends -- the sector spacing, which is O(1)". That is false: ``n(mu)`` bends
+#:    on the *thermal crossover* scale ``~tau/dn``, i.e. 1e-3 to 1e-2 -- the same size as the step.
+#:    Measured on the fixture in ``test_dc_frozen.py`` at ``mu = -0.5225`` (``mixed_valence=1``,
+#:    right at a sector boundary), ``chi(h)`` reads 126.30 / 252.26 / 468.23 / 617.31 / 636.47 as
+#:    ``h`` halves from 8e-3: the ``1/h`` signature of ``dn / 2h``, a *straddle* of a sector step
+#:    rather than a slope. A true derivative is independent of ``h`` -- measured at ``mu = 0.3`` on
+#:    the same fixture, the same sweep from 8e-3 to 5e-4 changes the 4th significant figure only.
 #:
-#:    So treat ``chi`` here as a diagnostic to be sanity-checked, never as a Jacobian to divide by.
-#:    A search that did exactly that returned an answer wrong by fifty times ``occ_tol`` while its
-#:    guard certified it, and was reverted. Measuring the slope honestly needs step-doubling with a
-#:    straddle test (reject when ``chi`` scales as ``1/h``); that is not implemented here.
+#:    :meth:`FrozenSpaceSweep.chi` now runs exactly that comparison -- the estimate at ``step``
+#:    against the estimate at ``2 * step`` -- and returns ``None`` rather than a number when they
+#:    disagree by more than its ``rel_tol``. A search that trusted an unchecked ``chi`` returned an
+#:    answer wrong by fifty times ``occ_tol`` while its guard certified it, and was reverted; this
+#:    is what "certified" now actually requires.
 CHI_STEP = 1e-3
 
 
@@ -272,24 +274,46 @@ class FrozenSpaceSweep:
         rho = thermal_average_scale_indep(energies, rhos, self.tau)
         return float(np.real(np.trace(rho)))
 
-    def chi(self, mu, step=CHI_STEP):
-        r"""``dn/dmu`` by central difference -- the slope that turns ``delta_n`` into ``delta_mu``.
-
-        Two extra eigensolves on the frozen space, so of order 1 % of a single true evaluation.
-        A one-sided difference would be first-order accurate and, on a staircase-like ``n(mu)``,
-        systematically biased toward whichever side of the step it sampled.
-        """
+    def _central_difference(self, mu, step):
+        """Central difference of :meth:`occupation` at ``mu``, one fixed ``step``."""
         return (self.occupation(mu + step) - self.occupation(mu - step)) / (2 * step)
+
+    def chi(self, mu, step=CHI_STEP, rel_tol=0.1):
+        r"""``dn/dmu`` by central difference, straddle-checked by step-doubling.
+
+        Four eigensolves on the frozen space (the estimate at ``step`` and again at ``2 * step``),
+        so still of order 1 % of a single true evaluation. A *slope* is nearly independent of the
+        step size; a *straddle* -- the central difference spanning a sector-boundary jump rather
+        than sampling a smooth ``n(mu)`` -- scales as ``1/step`` instead, so doubling the step
+        roughly halves it. Comparing the two catches exactly that (see ``CHI_STEP``'s warning for
+        the measured numbers) without needing to know where any boundary is in advance.
+
+        Returns
+        -------
+        float or None
+            The central difference at ``step``, or ``None`` when it and the estimate at
+            ``2 * step`` disagree by more than ``rel_tol`` (relative to the larger of the two,
+            floored to avoid a spurious rejection when both are exactly zero) -- i.e. when the
+            estimate cannot be trusted as a slope. Also ``None`` on an exact plateau is not
+            possible: both estimates are then identically zero, which trivially agrees.
+        """
+        estimate = self._central_difference(mu, step)
+        coarse = self._central_difference(mu, 2 * step)
+        denom = max(abs(estimate), abs(coarse), 1e-9)
+        if abs(estimate - coarse) / denom > rel_tol:
+            return None
+        return estimate
 
     def shift_error(self, residual, mu, step=CHI_STEP):
         r"""``delta_mu = delta_n / chi``: what an occupation residual is worth in ``dc``.
 
-        ``None`` when ``chi`` vanishes -- on a plateau the occupation carries no information
-        about the shift at all, and reporting a finite error bar there would be a fiction. The
-        caller should report the plateau's width instead.
+        ``None`` when ``chi`` is zero (a plateau, where the occupation carries no information
+        about the shift at all) or unresolvable (a straddle, :meth:`chi`) -- either way, reporting
+        a finite error bar would be a fiction. The caller should report the plateau's width, or
+        refine the step, instead.
         """
         slope = self.chi(mu, step)
-        if slope == 0:
+        if not slope:
             return None
         return residual / slope
 

@@ -25,6 +25,19 @@ from mpi4py import MPI
 from impurityModel.ed import config, solver_trace
 
 
+def bracket_width_tol(tau):
+    """The ``width_tol`` both DC criteria pass to :func:`_solve_dc_shift`.
+
+    Single source of truth for a literal that used to be written out (``max(tau, 1e-4)``) at
+    every call site that needs it: both criteria's own ``_solve_dc_shift`` call, and anything
+    filtering :func:`_dc_chi` against the same bracket-collapse resolution afterward (the search's
+    own closing report, and the ``dc_diagnostics`` benchmark that reads its trace from outside).
+    ``1e-4`` floors it away from zero at ``tau -> 0``, where a bracket could otherwise be asked to
+    resolve to machine precision.
+    """
+    return max(tau, 1e-4)
+
+
 def _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol):
     r"""Safeguarded secant/bisection refinement of a bracket straddling a root.
 
@@ -268,8 +281,8 @@ def _solve_dc_shift(
     raise RuntimeError(unreachable_message.format(mu=best_mu, value=best_g + target, target=target))
 
 
-def _dc_chi(samples):
-    r"""Finite-difference slope :math:`\chi = dn/d\mu` from the two closest trial shifts.
+def _dc_chi(samples, width_tol=0.0):
+    r"""Finite-difference slope :math:`\chi = dn/d\mu` from the closest *resolvable* trial shifts.
 
     The reviews' point 5: the answer this module returns is ``dc``, not ``n``, and the error in
     ``dc`` is ``delta_mu = delta_n / chi``. On a plateau ``chi -> 0`` and an occupation converged
@@ -277,23 +290,32 @@ def _dc_chi(samples):
     ``chi`` beside it does not say how well the double counting is determined.
 
     ``samples`` is a ``{mu: value}`` mapping of the points the search actually evaluated -- the
-    slope is free, every one of them having cost a full solve. Returns ``None`` when fewer than
-    two distinct shifts were evaluated (the ``mu = 0`` fast path).
+    slope is free, every one of them having cost a full solve. **The closest pair is not
+    necessarily the right one to use.** ``_refine_bracket`` narrows a bracket straddling a sector
+    discontinuity down to exactly ``width_tol`` before giving up on it (see its docstring), so once
+    a search has walked that far the *closest* evaluated pair is the collapsed bracket itself --
+    the one place a finite difference is guaranteed to measure a discontinuity's jump divided by
+    its width, not a slope. ``width_tol`` excludes any pair narrower than it (the search's own
+    resolution), so this only ever reports a slope over an interval the search treated as
+    resolvable. Returns ``None`` when no pair survives that filter (including fewer than two
+    distinct shifts evaluated at all, e.g. the ``mu = 0`` fast path).
     """
     shifts = sorted(samples)
-    if len(shifts) < 2:
+    pairs = [(mu_low, mu_high) for mu_low, mu_high in zip(shifts, shifts[1:]) if mu_high - mu_low > width_tol]
+    if not pairs:
         return None
-    pairs = zip(shifts, shifts[1:])
     mu_low, mu_high = min(pairs, key=lambda pair: pair[1] - pair[0])
     return (samples[mu_high] - samples[mu_low]) / (mu_high - mu_low)
 
 
-def _report_dc_trace(trace, label, comm, rank):
+def _report_dc_trace(trace, label, comm, rank, width_tol=0.0):
     """Print the cost accounting of one double-counting search on rank 0.
 
     Two aggregates and a per-``mu`` table. The kinds nest -- a ``sector_solve`` contains its
     ``build``, ``expand`` and ``eigensolve`` -- so the inner three are reported as a share of the
-    search's total rather than added to it.
+    search's total rather than added to it. ``width_tol`` is the same bracket-collapse threshold
+    the search itself used (see :func:`_dc_chi`); passing it here is what keeps this report from
+    reading a discontinuity's jump as a slope on a search that ended on a collapsed bracket.
     """
     solves = trace.count("sector_solve")
     # Unconditional collective (the caller already broadcast the decision to trace at all). The
@@ -342,21 +364,28 @@ def _report_dc_trace(trace, label, comm, rank):
     evaluations = trace.of_kind("dc_evaluation")
     field, symbol = ("n", "dn/dmu") if any("n" in event for event in evaluations) else ("gap", "dgap/dmu")
     samples = {event["mu"]: event[field] for event in evaluations if field in event and "mu" in event}
-    chi = _dc_chi(samples)
+    chi = _dc_chi(samples, width_tol=width_tol)
     if chi is not None:
-        print(f"  chi = {symbol} = {chi:.4f} (closest evaluated pair); delta_mu = delta_residual / chi")
+        print(
+            f"  chi = {symbol} = {chi:.4f} (closest resolvable pair, width > {width_tol:.1e}); "
+            "delta_mu = delta_residual / chi"
+        )
+    else:
+        print(f"  chi = {symbol}: not resolvable (no evaluated pair wider than {width_tol:.1e})")
     print("--- end cost accounting ---", flush=True)
 
 
 @contextmanager
-def _dc_search_trace(label, comm, rank):
+def _dc_search_trace(label, comm, rank, width_tol=0.0):
     """Account for a double-counting search when ``DC_DIAGNOSTICS`` is set; otherwise a no-op.
 
     The activation decision gates the collective inside :func:`_report_dc_trace`, so it is
     broadcast rather than read per rank: environment variables are uniform under ``mpiexec`` in
     every normal invocation, and "in every normal invocation" is how this repo's deadlocks got in.
     Reporting happens in a ``finally`` -- a search that fails to reach its target is exactly the
-    one whose cost breakdown is worth having.
+    one whose cost breakdown is worth having. ``width_tol`` must be the same value the caller
+    passes to ``_solve_dc_shift`` for this search, or :func:`_dc_chi` filters against the wrong
+    resolution.
     """
     enabled = config.DC_DIAGNOSTICS.get()
     if comm is not None:
@@ -368,4 +397,4 @@ def _dc_search_trace(label, comm, rank):
         try:
             yield trace
         finally:
-            _report_dc_trace(trace, label, comm, rank)
+            _report_dc_trace(trace, label, comm, rank, width_tol=width_tol)

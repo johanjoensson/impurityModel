@@ -363,6 +363,31 @@ def test_saturated_reference_warns(capsys):
     assert "saturated" not in out
 
 
+def test_fixed_occupation_dc_reports_chi_in_its_closing_line(capsys):
+    """R3: chi actually reaches the closing report, at the production call site -- not just
+    inside `_dc_chi` itself. A unit test of `_dc_chi` cannot catch `width_tol` failing to reach
+    `_dc_search_trace` (a second copy of `max(tau, 1e-4)` silently diverging from the first is
+    exactly the class of no-op this branch has already shipped once, see `bracket_width_tol`).
+    """
+    # occupation=1.0 is already the guess's own occupation (see test_fixed_occupation_dc_already_
+    # converged): the mu=0 fast path is taken and no second point is ever evaluated, so chi has
+    # no pair to measure -- the "not resolvable" branch, printed rather than silently skipped.
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    fixed_occupation_dc(occupation=1.0, verbosity=1, **kwargs)
+    out = capsys.readouterr().out
+    if MPI.COMM_WORLD.rank == 0:
+        assert "chi = dn/dmu: not resolvable" in out, out
+
+    # occupation=2.0 walks mu away from the guess (test_fixed_occupation_dc_increases_occupation),
+    # evaluating more than one point, so a real chi must be printed with a number beside it.
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
+    fixed_occupation_dc(occupation=2.0, verbosity=1, **kwargs)
+    out = capsys.readouterr().out
+    if MPI.COMM_WORLD.rank == 0:
+        assert "chi = dn/dmu = " in out, out
+        assert "not resolvable" not in out, out
+
+
 def test_fixed_occupation_dc_reference_ignores_dc_guess():
     # NiO in miniature: a large dc_guess must not corrupt the DFT reference. With dc_guess = -3
     # the shifted one-body impurity level eps - dc = +2 pokes above E_F, so the OLD reference

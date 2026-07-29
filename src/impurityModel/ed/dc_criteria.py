@@ -56,7 +56,7 @@ from impurityModel.ed.dc_reference import (
     _warn_if_reference_far_from_nominal,
     _warn_if_reference_saturated,
 )
-from impurityModel.ed.dc_search import _dc_search_trace, _solve_dc_shift
+from impurityModel.ed.dc_search import _dc_chi, _dc_search_trace, _solve_dc_shift, bracket_width_tol
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.memory_estimate import DEFAULT_MEMORY_SAFETY, log_memory_budget, suggest_truncation_threshold
@@ -338,14 +338,14 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     # sectors hold the same impurity occupation -- the old delta_n ~ 0 ill-conditioning) never
     # brackets and surfaces here as the unreachable RuntimeError.
     bandwidth = unreachable_penalty / 1e4
-    tol = max(tau, 1e-4)
+    tol = bracket_width_tol(tau)
     unreachable = (
         "The fixed-peak double counting could not place the peak at {target}: E_upper - E_lower "
         "reached {value:.4f} at mu = {mu:.3f}. The upper and lower sectors may hold equal impurity "
         "occupation (a uniform shift cannot move the peak), or the target lies beyond the "
         "reachable range."
     )
-    with _dc_search_trace("fixed-peak", MPI.COMM_WORLD, rank):
+    with _dc_search_trace("fixed-peak", MPI.COMM_WORLD, rank, width_tol=tol):
         mu = _solve_dc_shift(
             peak_observable,
             peak_position,
@@ -658,6 +658,10 @@ def fixed_occupation_dc(
             print(f"mu={mu:.6f} n={n_out:.6f} n0={n0:.6f}")
         return n_out
 
+    # The same bracket-collapse resolution _solve_dc_shift uses below (width_tol); computed once
+    # so the trace's chi report filters against the identical value, not a second copy of it.
+    occ_width_tol = bracket_width_tol(tau)
+
     target = occupation
     if self_consistent:
         unreachable = (
@@ -671,12 +675,12 @@ def fixed_occupation_dc(
             f"|mu| <= {max_shift}: " + "the occupation reached {value:.4f} at mu = {mu:.3f}. "
             "The target may be unreachable with the available bath states."
         )
-    with _dc_search_trace("fixed-occupation", MPI.COMM_WORLD, rank):
+    with _dc_search_trace("fixed-occupation", MPI.COMM_WORLD, rank, width_tol=occ_width_tol):
         mu = _solve_dc_shift(
             occupation_observable,
             target,
             tol=occ_tol,
-            width_tol=max(tau, 1e-4),
+            width_tol=occ_width_tol,
             initial_step=max(10 * tau, initial_step),
             max_shift=max_shift,
             plateau_ok=True,
@@ -695,6 +699,19 @@ def fixed_occupation_dc(
     if verbose and rank == 0:
         label = "N == N0" if self_consistent else f"target = {occupation}"
         print(f"Fixed-occupation double counting ({label}, achieved N = {n:.4f}, N0 = {n0:.4f}, mu = {mu:.6f}):")
+        # chi is reported unconditionally, not only on a miss: a *converged* occupation with a
+        # small chi still leaves dc essentially undetermined (delta_mu = delta_residual / chi),
+        # which is exactly the case a miss-only report would hide (review correction 5).
+        # occupation_at holds every mu the TRUE, re-expanding observable actually visited, so this
+        # is free -- no frozen space, no extra solve -- and it is strictly better evidence than a
+        # frozen-space surrogate would be. width_tol matches _solve_dc_shift's own bracket
+        # resolution, so a collapsed bracket at a sector boundary is excluded rather than read as
+        # a slope (see _dc_chi).
+        chi = _dc_chi(occupation_at, width_tol=occ_width_tol)
+        if chi is not None:
+            print(f"  chi = dn/dmu = {chi:.4f}; delta_mu = delta_residual / chi")
+        else:
+            print("  chi = dn/dmu: not resolvable (no evaluated pair wider than the search's own resolution)")
         if abs(n - target) > occ_tol:
             print(
                 f"WARNING: the achieved occupation {n:.4f} misses the target {target:.4f} by "
