@@ -165,6 +165,43 @@ def _warn_if_reference_far_from_nominal(n0, nominal_total, advice, rank=None):
     return True
 
 
+def _warn_if_not_fermi_referenced(h0_op, n_spin_orbitals, rank=None):
+    """Verify the E_F = 0 convention that every sector comparison silently depends on.
+
+    ``h0`` is *asserted* to be Fermi-referenced throughout this package -- the reference filling
+    occupies levels below zero, and the occupation walk compares charge sectors at chemical
+    potential zero -- and until now nothing checked it. An ``h0`` carrying an absolute energy
+    offset (a Hartree- rather than Fermi-referenced KS Hamiltonian, or the wrong units) still
+    diagonalises fine and still produces a number; it is simply the wrong number, and every
+    downstream sector comparison inherits the error.
+
+    The necessary condition is cheap: the one-body spectrum must **straddle** zero. If every level
+    lies on one side, the Fermi level is not at zero (or the model is trivially full or empty) and
+    no filling computed from it means anything. This catches the gross violation, which is the one
+    that occurs; a spectrum that straddles zero at the wrong place is not detectable from ``h0``
+    alone.
+
+    Printing only (no collective), so gating on rank 0 is safe.
+    """
+    if rank is None:
+        rank = MPI.COMM_WORLD.rank
+    h = extract_tensors(ManyBodyOperator(h0_op), n_orb=n_spin_orbitals, two_body=False)[0]
+    energies = np.linalg.eigvalsh(h)
+    if rank != 0 or (energies.min() < 0.0 < energies.max()):
+        return False
+    side = "below" if energies.max() <= 0.0 else "above"
+    print(
+        f"WARNING: every one-body level of h0 lies {side} the Fermi level "
+        f"(spectrum {energies.min():.4f} .. {energies.max():.4f}), so the E_F = 0 convention this "
+        "package asserts does not hold for this Hamiltonian. The DFT reference filling and every "
+        "charge-sector comparison in the ground-state search are computed at chemical potential "
+        "zero and are meaningless if the Fermi level is elsewhere. Check that h0 is the "
+        "Fermi-referenced KS Hamiltonian and that its units match tau.",
+        flush=True,
+    )
+    return True
+
+
 def _reference_impurity_occupation(model, tau, *, warn=True):
     """The DFT impurity occupation the static schemes default to, saturation-checked."""
     n = _noninteracting_impurity_occupation(model.h0, model.impurity_indices, model.n_spin_orbitals, tau)

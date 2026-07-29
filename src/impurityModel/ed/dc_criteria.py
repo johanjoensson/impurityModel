@@ -35,6 +35,7 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.dc_reference import (
     _SATURATION_ADVICE,
     _noninteracting_impurity_occupation,
+    _warn_if_not_fermi_referenced,
     _warn_if_reference_far_from_nominal,
     _warn_if_reference_saturated,
 )
@@ -460,6 +461,9 @@ def fixed_occupation_dc(
         occupation = n0
         # Only when N0 is the *target*: with an explicit target a saturated reference is merely
         # logged, not acted on.
+        # The E_F = 0 convention underpins both the reference filling below and every sector
+        # comparison the occupation walk makes; it is asserted throughout and was never checked.
+        _warn_if_not_fermi_referenced(h0_op, model.n_spin_orbitals, rank=rank)
         # Saturation is the more specific diagnosis, so it wins when both would fire; the
         # nominal-gap check catches the reference that is grossly wrong *without* being pinned at
         # a shell edge, which the saturation test alone lets through (a runaway CSC iterate
