@@ -978,8 +978,9 @@ def test_occupation_and_energy_at_mu_matches_the_search_at_mu_zero():
     kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2)
     model, basis, solver = kwargs["model"], kwargs["basis"], kwargs["solver"]
 
-    n_at_zero, e0 = occupation_and_energy_at_mu(model, basis, solver, 0.0, comm=kwargs["comm"])
+    n_at_zero, e0, sector = occupation_and_energy_at_mu(model, basis, solver, 0.0, comm=kwargs["comm"])
     assert np.isfinite(e0)
+    assert sector == int(sector)
 
     dc = fixed_occupation_dc(occupation=n_at_zero, **kwargs)
     assert_uniform_shift(dc, dc_guess)
@@ -989,10 +990,51 @@ def test_occupation_and_energy_at_mu_matches_the_search_at_mu_zero():
 def test_occupation_and_energy_at_mu_ranks_agree():
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     model, basis, solver = kwargs["model"], kwargs["basis"], kwargs["solver"]
-    n, e0 = occupation_and_energy_at_mu(model, basis, solver, 0.3, comm=MPI.COMM_WORLD)
+    n, e0, sector = occupation_and_energy_at_mu(model, basis, solver, 0.3, comm=MPI.COMM_WORLD)
 
-    other = MPI.COMM_WORLD.allgather((n, e0))
-    assert all(pair == other[0] for pair in other), other
+    other = MPI.COMM_WORLD.allgather((n, e0, sector))
+    assert all(triple == other[0] for triple in other), other
+
+
+def test_fixed_occupation_dc_warns_when_sector_differs_from_nominal(capsys):
+    """M1: the sector the walk actually settles on at the returned mu is the number this whole
+    branch exists to establish (DC <-> GS parity), and it must be surfaced when it disagrees with
+    the nominal occupation, not silently discarded the way it was before ``sector_at`` existed.
+
+    ``_frozen_core_kwargs`` (nominal total 4: a frozen core of 4 plus two empty valence doublets)
+    crosses to a sector total of 6 at mu=0.5 -- verified directly against
+    ``occupation_and_energy_at_mu`` -- so requesting that achieved occupation drives
+    ``fixed_occupation_dc`` onto the same non-nominal sector.
+    """
+    kwargs, _dc_guess = _frozen_core_kwargs()
+    model, basis, solver = kwargs["model"], kwargs["basis"], kwargs["solver"]
+
+    n_at_mu, _e0, sector_at_mu = occupation_and_energy_at_mu(model, basis, solver, 0.5, comm=kwargs["comm"])
+    nominal_total = sum(basis.nominal_occ.values())
+    assert sector_at_mu != nominal_total, "fixture no longer crosses to a non-nominal sector at mu=0.5"
+
+    fixed_occupation_dc(occupation=n_at_mu, verbosity=1, **kwargs)
+    out = capsys.readouterr().out
+    if MPI.COMM_WORLD.rank != 0:  # the warning prints on rank 0 only
+        return
+    assert "WARNING" in out
+    assert "walk's winning sector" in out
+    assert f"totals {sector_at_mu}" in out
+    assert f"not the nominal occupation {nominal_total}" in out
+
+
+def test_fixed_occupation_dc_does_not_warn_at_the_nominal_sector(capsys):
+    """The ordinary case (the walk never leaves the nominal sector) must not print the warning."""
+    kwargs, _dc_guess = common_kwargs(v=0.3, tau=1e-2)
+    basis = kwargs["basis"]
+    n0, _e0, sector = occupation_and_energy_at_mu(
+        kwargs["model"], basis, kwargs["solver"], 0.0, comm=kwargs["comm"]
+    )
+    assert sector == sum(basis.nominal_occ.values()), "fixture unexpectedly left the nominal sector at mu=0"
+
+    fixed_occupation_dc(occupation=n0, verbosity=1, **kwargs)
+    out = capsys.readouterr().out
+    assert "walk's winning sector" not in out
 
 
 # --- B1: continuum vs discretized DFT reference -----------------------------------------------

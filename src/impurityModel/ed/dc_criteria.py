@@ -604,7 +604,10 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     """Evaluate the true, re-expanding occupation observable at one ``mu``: the identical
     HF-seed-then-walk :func:`groundstate.find_ground_state_basis` search, refinement, and thermal
     average :func:`fixed_occupation_dc` performs per trial shift -- not a cheaper approximation.
-    Returns ``(n, E0)``, the achieved thermal impurity occupation and the lowest eigenvalue found.
+    Returns ``(n, E0, sector)``: the achieved thermal impurity occupation, the lowest eigenvalue
+    found, and the *walk's* winning sector total (``sum(mb_basis.ground_state_occupation.values())``
+    -- the integer charge state the search settled on, which need not equal ``round(n)`` when the
+    thermal average mixes competing sectors near a crossing).
 
     .. note::
        The observable's own collectives run on ``MPI.COMM_WORLD``, matching
@@ -687,7 +690,8 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     rho = thermal_average_scale_indep(es, rhos, ctx.tau)
     n_out = float(np.real(np.trace(rho)))
     e0 = float(es[0])
-    return n_out, e0
+    sector = sum(mb_basis.ground_state_occupation.values())
+    return n_out, e0, sector
 
 
 def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosity=0):
@@ -709,8 +713,9 @@ def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosit
 
     Returns
     -------
-    (n, E0) : tuple of float
-        Achieved thermal impurity occupation and the lowest eigenvalue at this ``mu``.
+    (n, E0, sector) : tuple
+        Achieved thermal impurity occupation, the lowest eigenvalue, and the walk's winning
+        sector total at this ``mu`` (see :func:`_evaluate_occupation_and_energy_at_mu`).
     """
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
     verbose = verbosity > 0
@@ -841,11 +846,17 @@ def fixed_occupation_dc(
         raise ValueError(f"Requested impurity occupation {occupation} outside [0, {ctx.total_impurity_orbitals}].")
 
     occupation_at = {}
+    # The walk's winning sector at each evaluated mu (M1): the sector at the RETURNED mu is the
+    # number this whole branch exists to establish -- DC <-> GS parity is a statement about which
+    # charge state the downstream calc_selfenergy will find. find_ground_state_basis already
+    # returns it (.ground_state_occupation), previously discarded here.
+    sector_at = {}
 
     def occupation_observable(mu):
         with solver_trace.labelled(mu=mu), solver_trace.timed("dc_evaluation") as evaluation_fields:
-            n_out, _e0 = _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank)
+            n_out, _e0, sector = _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank)
             occupation_at[mu] = n_out
+            sector_at[mu] = sector
             if verbose and rank == 0:
                 # The sector itself is reported by find_ground_state_basis's own verbose output
                 # above ("Ground state occupation"), evaluated fresh at this mu.
@@ -890,12 +901,29 @@ def fixed_occupation_dc(
     # mu is always a point _solve_dc_shift actually evaluated (the mu=0 fast path, a direct scan
     # hit, or a refined bracket point), so occupation_observable(mu) ran and cached it here.
     n = occupation_at[mu]
+    sector = sector_at[mu]
     dc = dc_guess + mu * ctx.identity
+
+    # M1: the sector at the RETURNED mu is the number this whole branch exists to establish -- DC
+    # <-> GS parity is a statement about which charge state calc_selfenergy will find at this same
+    # dc. Warn, not raise: unlike fixed_peak_dc, following the walk across sectors here is
+    # deliberate (the module docstring), and the thermally averaged N need not equal the walk's
+    # winning sector total near a crossing -- that disagreement is itself worth surfacing, not an
+    # error. Unconditional on rank 0, matching the other reference-quality warnings in this module.
+    nominal_total = sum(ctx.N0.values())
+    if rank == 0 and sector != nominal_total:
+        print(
+            f"WARNING: fixed_occupation_dc found mu = {mu:.6f} (dc = dc_guess + mu), but the "
+            f"walk's winning sector there totals {sector}, not the nominal occupation "
+            f"{nominal_total}. calc_selfenergy will find this same sector at the returned dc.",
+            flush=True,
+        )
+
     if verbose and rank == 0:
         label = "N == N0" if self_consistent else f"target = {occupation}"
         print(
             f"Fixed-occupation double counting ({label}, achieved N = {n:.4f}, N0 = {ctx.n0:.4f}, "
-            f"mu = {mu:.6f}):"
+            f"mu = {mu:.6f}, sector = {sector}):"
         )
         # chi is reported unconditionally, not only on a miss: a *converged* occupation with a
         # small chi still leaves dc essentially undetermined (delta_mu = delta_residual / chi),

@@ -335,7 +335,10 @@ def run_occupation_at_fixed_mu(
 ):
     """One (cap, excitation_budget, chain_restrict) point of the B2 convergence grid at fixed mu.
 
-    Returns a dict: ``cap``, ``excitation_budget``, ``chain_restrict``, ``n``, ``E0``, ``seconds``.
+    Returns a dict: ``cap``, ``excitation_budget``, ``chain_restrict``, ``n``, ``E0``, ``sector``,
+    ``seconds``. ``sector`` is the walk's winning charge state (M1) -- worth watching alongside
+    ``n``, since a converged thermal occupation can still hide the walk landing on a different
+    sector at a different cap.
     """
     model, _meshes, basis, solver, label = load_selfenergy_archive(WORKLOADS[workload_key], iteration=iteration)
     trial_basis = replace(
@@ -345,7 +348,7 @@ def run_occupation_at_fixed_mu(
         chain_restrict=chain_restrict,
     )
     start = perf_counter()
-    n, e0 = occupation_and_energy_at_mu(model, trial_basis, solver, mu, comm=comm, verbosity=verbosity)
+    n, e0, sector = occupation_and_energy_at_mu(model, trial_basis, solver, mu, comm=comm, verbosity=verbosity)
     seconds = perf_counter() - start
     return {
         "workload": workload_key,
@@ -356,6 +359,7 @@ def run_occupation_at_fixed_mu(
         "chain_restrict": chain_restrict,
         "n": n,
         "E0": e0,
+        "sector": sector,
         "seconds": seconds,
     }
 
@@ -367,6 +371,7 @@ _CONVERGENCE_COLUMNS = (
     ("seconds", 10, "{seconds:>10.1f}"),
     ("n", 12, "{n:>12.6f}"),
     ("E0", 14, "{E0:>14.6f}"),
+    ("sector", 7, "{sector:>7}"),
 )
 
 
@@ -441,9 +446,14 @@ def print_occupation_convergence(rows, occ_tol=1e-2):
         n_spread = abs(top_two[-1]["n"] - top_two[0]["n"])
         e0_spread = abs(top_two[-1]["E0"] - top_two[0]["E0"])
         verdict = "CONVERGED" if n_spread <= occ_tol else "DRIFTS -- dc would absorb this"
+        sector_note = (
+            ""
+            if top_two[-1]["sector"] == top_two[0]["sector"]
+            else f" -- SECTOR CHANGED ({top_two[0]['sector']} -> {top_two[-1]['sector']})"
+        )
         print(
             f"excitation_budget={excitation_budget}, chain_restrict={chain_restrict}: "
-            f"top-two-cap spread n={n_spread:.4f}, E0={e0_spread:.4f} ({verdict})"
+            f"top-two-cap spread n={n_spread:.4f}, E0={e0_spread:.4f} ({verdict}){sector_note}"
         )
     print("", flush=True)
 
