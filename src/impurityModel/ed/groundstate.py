@@ -3,6 +3,7 @@ from itertools import product
 import numpy as np
 
 from impurityModel.ed import solver_trace
+from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, get_effective_restrictions
 from impurityModel.ed.basis_transcription import build_density_matrices
@@ -289,7 +290,7 @@ def calc_energy(
                 symmetry_generators=symmetry_generators,
             )
 
-        energy_cut = -tau * np.log(1e-4)
+        energy_cut = boltzmann_energy_cut(tau)
 
         with solver_trace.timed("eigensolve"):
             es, eigen_psis = solver.get_eigenvectors(
@@ -429,10 +430,10 @@ def find_ground_state_basis(
     winning_impurity_occ = N0.copy()
 
     energy_cache = {}
-    # Cache key of the single entry allowed to hold a Basis (the running best). Every other
-    # entry stores (energy, None): a revisited occupation only needs its basis when it is
-    # strictly better than the current best, which cannot happen for a superseded entry, so
-    # keeping one Basis instead of one per trial bounds the memory of the occupation scan.
+    # `energy_cache` holds bare floats, keyed by `sector_key` -- no Basis is retained here. This
+    # only tracks which key has the lowest energy seen so far, for the sanity check below: the
+    # winning occupation the walk settles on must match it, or every trial was out of bounds.
+    # The actual ground-state Basis is rebuilt once, at the winning occupation, after the walk.
     best_cached_key = None
     # Per-trial truncation report of the (memory-capped) occupation-search expansion, keyed
     # by trial occupation. The winning occupation's report is attached to basis_gs so a capped
@@ -797,7 +798,7 @@ def calc_gs(
     # if ground_state_basis.restrictions is not None:
     # Hop.set_restrictions(ground_state_basis.restrictions)
     ground_state_basis.tau = tau
-    energy_cut = -tau * np.log(1e-4)
+    energy_cut = boltzmann_energy_cut(tau)
     solver = CIPSISolver(ground_state_basis)
     # de2_min: per-determinant PT2 energy tolerance for the final ground-state expansion
     # (recalibrated from 1e-6 when the de2 denominator was corrected in cipsi_solver; see

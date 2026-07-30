@@ -7,6 +7,30 @@ import scipy as sp
 
 k_B = sp.constants.physical_constants["Boltzmann constant in eV/K"][0]
 
+#: Boltzmann-weight threshold defining "negligible" occupation of a thermal state relative to
+#: the ground state, used to bound how far above ``E0`` the retained eigenstate manifold reaches.
+BOLTZMANN_DESIGN_WEIGHT = 1e-4
+
+
+def energy_cut(tau, design_weight=BOLTZMANN_DESIGN_WEIGHT):
+    """The energy above ``E0`` at which a thermal state's Boltzmann weight falls to ``design_weight``.
+
+    Single source of truth for ``-tau * log(design_weight)``, which every eigensolver call that
+    retains "the low-energy manifold at scale ``tau``" derives independently otherwise.
+
+    Parameters
+    ----------
+    tau : float
+        The characteristic energy scale (e.g., ``k_B * T``).
+    design_weight : float, optional
+        The Boltzmann weight, relative to the ground state, considered negligible.
+
+    Returns
+    -------
+    float
+    """
+    return -tau * np.log(design_weight)
+
 
 def thermal_average(energies, observable, T=300):
     """

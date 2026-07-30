@@ -6,10 +6,10 @@ that no longer go unnoticed thanks to this module:
 
 * **Truncated thermal ground-state ensemble.** The eigensolver is asked for a fixed number
   of low-lying states (``num_wanted``) and keeps those within
-  :math:`\Delta E_{\mathrm{cut}} = -\tau\ln(\epsilon_{\mathrm{B}})`.  A dense / near-degenerate
-  low-energy spectrum can hold *more* thermal states than were computed, so the highest
-  retained state still carries a non-negligible Boltzmann weight and the thermal average is
-  biased.
+  :math:`\Delta E_{\mathrm{cut}} = -\tau\ln(\epsilon_{\mathrm{B}})` (:func:`average.energy_cut`,
+  :data:`average.BOLTZMANN_DESIGN_WEIGHT`).  A dense / near-degenerate low-energy spectrum can
+  hold *more* thermal states than were computed, so the highest retained state still carries a
+  non-negligible Boltzmann weight and the thermal average is biased.
 * **Under-resolved block Lanczos.** The continued fraction can stop before the spectral
   function is converged, or the real-frequency mesh can fail to cover the spectral support.
 
@@ -37,10 +37,6 @@ import dataclasses
 from enum import IntEnum
 
 import numpy as np
-
-# Boltzmann-weight threshold used to define the energy cut for the thermal states
-# (``energy_cut = -tau * ln(BOLTZMANN_DESIGN_WEIGHT)`` in groundstate.py / selfenergy.py).
-BOLTZMANN_DESIGN_WEIGHT = 1e-4
 
 
 class Severity(IntEnum):

@@ -3,6 +3,7 @@ import itertools
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed.average import energy_cut
 from impurityModel.ed.basis_transcription import (
     build_distributed_vector,
     build_sparse_matrix,
@@ -170,7 +171,7 @@ class CIPSISolver:
             # bias the retained determinants toward one member of the multiplet.
             _e_ref, psi_ref = eigensystem(
                 H_sparse,
-                e_max=-self.basis.tau * np.log(1e-4),
+                e_max=energy_cut(self.basis.tau),
                 k=min(10, self.basis.size),
                 eigenValueTol=0,
                 comm=self.basis.comm,
@@ -612,7 +613,7 @@ class CIPSISolver:
             H.set_restrictions(self.basis.restrictions)
         if self.basis.weighted_restrictions is not None:
             H.set_weighted_restrictions(self.basis.weighted_restrictions)
-        de0_max = -self.basis.tau * np.log(1e-4)
+        de0_max = energy_cut(self.basis.tau)
         psi_refs = getattr(self, "psi_refs", None)
 
         if isinstance(H, dict):
