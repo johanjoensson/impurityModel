@@ -5,7 +5,11 @@ from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 # The double-counting criteria live in their own modules; re-export their public entry points so
 # calc_selfenergy's calls and existing selfenergy.<name> callers (and their test patches) resolve
 # here unchanged.
-from impurityModel.ed.dc_criteria import fixed_occupation_dc, fixed_peak_dc  # noqa: F401
+from impurityModel.ed.dc_criteria import (  # noqa: F401
+    fixed_occupation_dc,
+    fixed_peak_dc,
+    occupation_and_energy_at_mu,
+)
 from impurityModel.ed.dc_reference import (  # noqa: F401
     discretized_impurity_occupation,
     report_continuum_reference,

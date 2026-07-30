@@ -41,6 +41,8 @@ derive their determinant budget from available per-rank memory
 will use it.
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 from mpi4py import MPI
 
@@ -477,6 +479,245 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     return dc
 
 
+@dataclass
+class _OccupationContext:
+    """The mu-independent setup a fixed-occupation evaluation needs, shared between
+    :func:`fixed_occupation_dc`'s search and the single-mu diagnostic
+    :func:`occupation_and_energy_at_mu` (B2's convergence sweep,
+    ``test/support/dc_diagnostics.py``): the solver-basis layout, frozen shells, symmetry
+    generators, the derived determinant cap, and the weighted restrictions. Building this once
+    and evaluating many ``mu`` against it (the search) or one ``mu`` (the diagnostic) keeps both
+    on the identical code path -- the diagnostic is not a reimplementation of the search's setup.
+    """
+
+    h0_op: object
+    h_op_i: object
+    impurity_orbitals: dict
+    bath_states: dict
+    N0: dict
+    frozen_occupations: set
+    mixed_valence: dict
+    tau: float
+    chain_restrict: bool
+    dense_cutoff: int
+    spin_flip_dj: bool
+    slaterWeightMin: float
+    truncation_threshold: int
+    weighted_restrictions: object
+    symmetry_generators: object
+    impurity_indices: list
+    energy_cut: float
+    identity: np.ndarray
+    total_impurity_orbitals: int
+    n0: float
+
+
+def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
+    """Build the :class:`_OccupationContext` for a fixed-occupation evaluation.
+
+    Verbatim extraction of the setup :func:`fixed_occupation_dc` used to build inline: the same
+    solver-basis derivation, frozen-shell/symmetry-generator computation, and determinant-cap
+    derivation :func:`groundstate.calc_gs` uses, so a fixed-mu diagnostic built on this context
+    measures on exactly the variational space the production search would have used at that
+    ``mu`` -- not an approximation of it.
+    """
+    h0_op = model.h0
+    u = model.u4
+    n_imp = len(model.impurity_indices)
+    N0 = basis.nominal_occ
+    mixed_valence = basis.mixed_valence
+    spin_flip_dj = basis.spin_flip_dj
+    tau = basis.tau
+    excitation_budget = basis.excitation_budget
+    chain_restrict = basis.chain_restrict
+    slaterWeightMin = basis.slater_weight_min
+    dense_cutoff = solver.dense_cutoff
+    verbose = verbosity > 0
+
+    # Derive the same solver-basis layout calc_selfenergy uses (the DC search must measure its
+    # observable on the same sector/basis the downstream selfenergy solve will use, or "fixed"
+    # does not mean what it says). The mu shift is a uniform impurity shift (-mu * identity),
+    # which commutes with the impurity block and hence with any rotation prepare_solver_basis
+    # applies, so the layout derived once here at the guess dc is valid for every trial mu.
+    sb = prepare_solver_basis(
+        h0_op, model.dc, u, model.impurity_orbitals, N0, mixed_valence, model.rot_to_spherical, verbosity
+    )
+    impurity_orbitals = sb.impurity_orbitals
+    bath_states = sb.bath_states
+    N0 = sb.nominal_occ
+    mixed_valence = sb.mixed_valence
+    h_op_i = sb.h
+
+    total_impurity_orbitals = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
+    impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
+
+    # The three inputs that make this the same call calc_gs makes (see the module warning):
+    # a bath-less group pinned exactly as get_spectra.py pins it, the same one-body symmetry
+    # generators (valid at every trial mu -- a uniform impurity shift commutes with them), and
+    # the walk's tau divided by 100, restored to the full tau for everything solved at the sector
+    # the walk finds.
+    frozen_occupations = {i for i in impurity_orbitals if sb.sum_bath_states[i] == 0}
+    symmetry_generators = get_symmetry_generators(h_op_i, impurity_orbitals, bath_states)
+
+    truncation_threshold = basis.truncation_threshold
+    if truncation_threshold is None:
+        truncation_threshold = suggest_truncation_threshold(model.n_spin_orbitals, comm=MPI.COMM_WORLD)
+        log_memory_budget(
+            truncation_threshold,
+            model.n_spin_orbitals,
+            comm=MPI.COMM_WORLD,
+            verbose=verbose,
+            label="fixed-occupation dc",
+        )
+
+    # DFT reference occupation: Fermi filling of the raw h0 (the KS Hamiltonian of the
+    # h0 - dc + U contract; no double counting subtracted before filling), independent of
+    # dc_guess and of the trial shift, and of the solver-basis rotation (h0's raw filling is
+    # evaluated in the model's input basis).
+    n0 = _noninteracting_impurity_occupation(h0_op, impurity_indices, model.n_spin_orbitals, tau)
+
+    return _OccupationContext(
+        h0_op=h0_op,
+        h_op_i=h_op_i,
+        impurity_orbitals=impurity_orbitals,
+        bath_states=bath_states,
+        N0=N0,
+        frozen_occupations=frozen_occupations,
+        mixed_valence=mixed_valence,
+        tau=tau,
+        chain_restrict=chain_restrict,
+        dense_cutoff=dense_cutoff,
+        spin_flip_dj=spin_flip_dj,
+        slaterWeightMin=slaterWeightMin,
+        truncation_threshold=truncation_threshold,
+        weighted_restrictions=build_weighted_restrictions(bath_states, excitation_budget),
+        symmetry_generators=symmetry_generators,
+        impurity_indices=impurity_indices,
+        energy_cut=boltzmann_energy_cut(tau),
+        identity=np.identity(n_imp),
+        total_impurity_orbitals=total_impurity_orbitals,
+        n0=n0,
+    )
+
+
+def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
+    """Evaluate the true, re-expanding occupation observable at one ``mu``: the identical
+    HF-seed-then-walk :func:`groundstate.find_ground_state_basis` search, refinement, and thermal
+    average :func:`fixed_occupation_dc` performs per trial shift -- not a cheaper approximation.
+    Returns ``(n, E0)``, the achieved thermal impurity occupation and the lowest eigenvalue found.
+
+    .. note::
+       The observable's own collectives run on ``MPI.COMM_WORLD``, matching
+       :func:`fixed_occupation_dc`'s pre-existing behaviour (not the caller's ``comm`` -- a latent,
+       out-of-scope concern recorded in the campaign plan, not introduced here).
+    """
+    from impurityModel.ed.groundstate import find_ground_state_basis
+
+    h_op = ctx.h_op_i - tensors_to_operator(np.asarray(mu * ctx.identity, dtype=complex))
+
+    # Determine the ground-state sector the SAME way calc_selfenergy will: the identical
+    # HF-seed-then-walk find_ground_state_basis performs (not a cheaper approximation of it,
+    # e.g. a bare HF seed with no correction). A dc value measured on a different sector than
+    # the one calc_selfenergy later finds does not just add noise -- it locks the downstream
+    # calculation onto the wrong charge state, which is worse than not fixing anything at
+    # all. N0 stays the *original* nominal occupation on every call (not a carried-forward
+    # sector from the previous mu): feeding the walk its own last answer would make the
+    # result path-dependent on the bracket's evaluation order, which breaks parity by a
+    # different route.
+    mb_basis = find_ground_state_basis(
+        h_op,
+        ctx.impurity_orbitals,
+        ctx.bath_states,
+        ctx.N0,
+        frozen_occupations=ctx.frozen_occupations,
+        mixed_valence=ctx.mixed_valence,
+        # calc_gs's own convention (groundstate.py): the sector-selection walk runs at
+        # tau/100, restored to the full tau for the refinement and thermal average below.
+        tau=ctx.tau / 100,
+        chain_restrict=ctx.chain_restrict,
+        dense_cutoff=ctx.dense_cutoff,
+        spin_flip_dj=ctx.spin_flip_dj,
+        comm=MPI.COMM_WORLD,
+        verbose=verbose,
+        truncation_threshold=ctx.truncation_threshold,
+        slaterWeightMin=ctx.slaterWeightMin,
+        weighted_restrictions=ctx.weighted_restrictions,
+        symmetry_generators=ctx.symmetry_generators,
+    )
+    mb_solver = CIPSISolver(mb_basis)
+    # Refine at the same de2_min calc_gs uses for its own final solve (find_ground_state_basis
+    # itself only expands to 1e-6, tight enough to compare sectors but not to match the
+    # occupation calc_selfenergy will report at this same dc). This refinement is *not* part
+    # of any sector solve -- it runs once per mu, on top of the whole walk -- so it is timed
+    # under the same "expand" kind to land in the aggregate, tagged to say where it came from.
+    with solver_trace.timed("expand", stage="dc_refine"):
+        mb_solver.expand(
+            h_op,
+            dense_cutoff=ctx.dense_cutoff,
+            de2_min=1e-8,
+            slaterWeightMin=ctx.slaterWeightMin,
+            symmetry_generators=ctx.symmetry_generators,
+        )
+
+    # The NiO ground state that motivated this rework is 3-fold quasi-degenerate, so a
+    # single lowest state (as the frozen-basis search used) misrepresents the thermal
+    # occupation; widen num_wanted until the manifold within energy_cut is captured.
+    # The termination test on Lanczos energies is only replicated to roundoff, so
+    # broadcast rank 0's decision -- ranks disagreeing here would diverge on whether to
+    # re-enter the next collective get_eigenvectors call.
+    num_wanted = 10
+    while True:
+        with solver_trace.timed("eigensolve", stage="dc_thermal", num_wanted=num_wanted):
+            es, psis = mb_solver.get_eigenvectors(
+                h_op,
+                num_wanted=num_wanted,
+                max_energy=ctx.energy_cut,
+                dense_cutoff=ctx.dense_cutoff,
+                slaterWeightMin=ctx.slaterWeightMin,
+                solver="irlm",
+                psi_refs=mb_solver.psi_refs,
+            )
+        done = len(es) < num_wanted or (len(es) >= 1 and es[-1] - es[0] >= ctx.energy_cut) or num_wanted >= 100
+        if mb_basis.is_distributed:
+            done = mb_basis.comm.bcast(done, root=0)
+        if done:
+            break
+        num_wanted += 10
+    rhos = build_density_matrices(mb_basis, psis, ctx.impurity_indices, ctx.impurity_indices)
+    rho = thermal_average_scale_indep(es, rhos, ctx.tau)
+    n_out = float(np.real(np.trace(rho)))
+    e0 = float(es[0])
+    return n_out, e0
+
+
+def occupation_and_energy_at_mu(model, basis, solver, mu, *, comm=None, verbosity=0):
+    """Evaluate the true occupation observable at **one fixed** ``mu`` -- no search.
+
+    This is the per-``mu`` core of :func:`fixed_occupation_dc`, exposed standalone for B2's
+    convergence diagnostic (``test/support/dc_diagnostics.py``'s ``occupation_convergence``
+    mode): does the achieved occupation and ground-state energy drift with
+    ``BasisOptions.truncation_threshold``/``excitation_budget``/``chain_restrict`` at a fixed
+    ``mu``? If ``n`` is not converged with respect to the ED's own variational truncation, the
+    search absorbs that drift into ``dc`` rather than into physics -- a fixed-``mu`` sweep across
+    the cap ladder is the cheap way to check, since it needs no search at all (Haule 2015's
+    truncation-as-fitting-parameter pathology).
+
+    Parameters
+    ----------
+    mu : float
+        The fixed trial shift; ``H(mu) = H(0) - mu * N_imp``.
+
+    Returns
+    -------
+    (n, E0) : tuple of float
+        Achieved thermal impurity occupation and the lowest eigenvalue at this ``mu``.
+    """
+    rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
+    verbose = verbosity > 0
+    ctx = _prepare_occupation_context(model, basis, solver, comm=comm, verbosity=verbosity)
+    return _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank)
+
+
 def fixed_occupation_dc(
     model,
     basis,
@@ -569,192 +810,57 @@ def fixed_occupation_dc(
     RuntimeError
         If the target cannot be bracketed within ``max_shift``.
     """
-    from impurityModel.ed.groundstate import find_ground_state_basis
-
-    # Unpack the grouped parameters into the local names used throughout the body.
-    h0_op = model.h0
-    u = model.u4
     n_imp = len(model.impurity_indices)
     dc_guess = extract_tensors(model.dc or {}, n_orb=n_imp, two_body=False)[0]
-    N0 = basis.nominal_occ
-    mixed_valence = basis.mixed_valence
-    spin_flip_dj = basis.spin_flip_dj
-    tau = basis.tau
-    excitation_budget = basis.excitation_budget
-    chain_restrict = basis.chain_restrict
-    slaterWeightMin = basis.slater_weight_min
-    dense_cutoff = solver.dense_cutoff
     rank = comm.rank if comm is not None else MPI.COMM_WORLD.rank
     verbose = verbosity > 0
 
-    # Derive the same solver-basis layout calc_selfenergy uses (the DC search must measure its
-    # observable on the same sector/basis the downstream selfenergy solve will use, or "fixed"
-    # does not mean what it says). The mu shift is a uniform impurity shift (-mu * identity),
-    # which commutes with the impurity block and hence with any rotation prepare_solver_basis
-    # applies, so the layout derived once here at the guess dc is valid for every trial mu.
-    sb = prepare_solver_basis(
-        h0_op, model.dc, u, model.impurity_orbitals, N0, mixed_valence, model.rot_to_spherical, verbosity
-    )
-    impurity_orbitals = sb.impurity_orbitals
-    bath_states = sb.bath_states
-    N0 = sb.nominal_occ
-    mixed_valence = sb.mixed_valence
-    h_op_i = sb.h
+    ctx = _prepare_occupation_context(model, basis, solver, comm=comm, verbosity=verbosity)
 
-    total_impurity_orbitals = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
-    impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
-
-    # The three inputs that make this the same call calc_gs makes (see the module warning):
-    # a bath-less group pinned exactly as get_spectra.py pins it, the same one-body symmetry
-    # generators (valid at every trial mu -- a uniform impurity shift commutes with them), and
-    # the walk's tau divided by 100 below, restored to the full tau for everything solved at the
-    # sector the walk finds.
-    frozen_occupations = {i for i in impurity_orbitals if sb.sum_bath_states[i] == 0}
-    symmetry_generators = get_symmetry_generators(h_op_i, impurity_orbitals, bath_states)
-
-    # DFT reference occupation: Fermi filling of the raw h0 (the KS Hamiltonian of the
-    # h0 - dc + U contract; no double counting subtracted before filling), independent of
-    # dc_guess and of the trial shift, and of the solver-basis rotation (h0's raw filling is
-    # evaluated in the model's input basis). Logged at every trial; with occupation=None it is
-    # also the search target.
-    n0 = _noninteracting_impurity_occupation(h0_op, impurity_indices, model.n_spin_orbitals, tau)
     self_consistent = occupation is None
     if self_consistent:
-        occupation = n0
+        occupation = ctx.n0
         # Only when N0 is the *target*: with an explicit target a saturated reference is merely
         # logged, not acted on.
         # The E_F = 0 convention underpins both the reference filling below and every sector
         # comparison the occupation walk makes; it is asserted throughout and was never checked.
-        _warn_if_not_fermi_referenced(h0_op, model.n_spin_orbitals, rank=rank)
+        _warn_if_not_fermi_referenced(ctx.h0_op, model.n_spin_orbitals, rank=rank)
         # Saturation is the more specific diagnosis, so it wins when both would fire; the
         # nominal-gap check catches the reference that is grossly wrong *without* being pinned at
         # a shell edge, which the saturation test alone lets through (a runaway CSC iterate
         # reporting n0 = 1.54 against a nominal 8 converged silently to a 43 eV shift).
         if not _warn_if_reference_saturated(
-            n0, total_impurity_orbitals, _SATURATION_ADVICE["search"], occ_tol=occ_tol, rank=rank
+            ctx.n0, ctx.total_impurity_orbitals, _SATURATION_ADVICE["search"], occ_tol=occ_tol, rank=rank
         ):
-            _warn_if_reference_far_from_nominal(n0, sum(N0.values()), _SATURATION_ADVICE["search"], rank=rank)
+            _warn_if_reference_far_from_nominal(
+                ctx.n0, sum(ctx.N0.values()), _SATURATION_ADVICE["search"], rank=rank
+            )
     # Tolerance absorbs the roundoff of a target derived elsewhere the same way
     # _noninteracting_impurity_occupation is (a sum of Fermi occupations, each in [0, 1]).
-    if not -1e-9 <= occupation <= total_impurity_orbitals + 1e-9:
-        raise ValueError(f"Requested impurity occupation {occupation} outside [0, {total_impurity_orbitals}].")
-
-    truncation_threshold = basis.truncation_threshold
-    if truncation_threshold is None:
-        truncation_threshold = suggest_truncation_threshold(model.n_spin_orbitals, comm=MPI.COMM_WORLD)
-        log_memory_budget(
-            truncation_threshold,
-            model.n_spin_orbitals,
-            comm=MPI.COMM_WORLD,
-            verbose=verbose,
-            label="fixed-occupation dc",
-        )
-
-    identity = np.identity(dc_guess.shape[0])
-    energy_cut = boltzmann_energy_cut(tau)
-    weighted_restrictions = build_weighted_restrictions(bath_states, excitation_budget)
+    if not -1e-9 <= occupation <= ctx.total_impurity_orbitals + 1e-9:
+        raise ValueError(f"Requested impurity occupation {occupation} outside [0, {ctx.total_impurity_orbitals}].")
 
     occupation_at = {}
 
     def occupation_observable(mu):
         with solver_trace.labelled(mu=mu), solver_trace.timed("dc_evaluation") as evaluation_fields:
-            n_out = _occupation_at_mu(mu)
+            n_out, _e0 = _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank)
+            occupation_at[mu] = n_out
+            if verbose and rank == 0:
+                # The sector itself is reported by find_ground_state_basis's own verbose output
+                # above ("Ground state occupation"), evaluated fresh at this mu.
+                print(f"mu={mu:.6f} n={n_out:.6f} n0={ctx.n0:.6f}")
             evaluation_fields["n"] = n_out
             return n_out
 
-    def _occupation_at_mu(mu):
-        h_op = h_op_i - tensors_to_operator(np.asarray(mu * identity, dtype=complex))
-
-        # Determine the ground-state sector the SAME way calc_selfenergy will: the identical
-        # HF-seed-then-walk find_ground_state_basis performs (not a cheaper approximation of it,
-        # e.g. a bare HF seed with no correction). A dc value measured on a different sector than
-        # the one calc_selfenergy later finds does not just add noise -- it locks the downstream
-        # calculation onto the wrong charge state, which is worse than not fixing anything at
-        # all. N0 stays the *original* nominal occupation on every call (not a carried-forward
-        # sector from the previous mu): feeding the walk its own last answer would make the
-        # result path-dependent on the bracket's evaluation order, which breaks parity by a
-        # different route.
-        mb_basis = find_ground_state_basis(
-            h_op,
-            impurity_orbitals,
-            bath_states,
-            N0,
-            frozen_occupations=frozen_occupations,
-            mixed_valence=mixed_valence,
-            # calc_gs's own convention (groundstate.py): the sector-selection walk runs at
-            # tau/100, restored to the full tau for the refinement and thermal average below.
-            tau=tau / 100,
-            chain_restrict=chain_restrict,
-            dense_cutoff=dense_cutoff,
-            spin_flip_dj=spin_flip_dj,
-            comm=MPI.COMM_WORLD,
-            verbose=verbose,
-            truncation_threshold=truncation_threshold,
-            slaterWeightMin=slaterWeightMin,
-            weighted_restrictions=weighted_restrictions,
-            symmetry_generators=symmetry_generators,
-        )
-        mb_solver = CIPSISolver(mb_basis)
-        # Refine at the same de2_min calc_gs uses for its own final solve (find_ground_state_basis
-        # itself only expands to 1e-6, tight enough to compare sectors but not to match the
-        # occupation calc_selfenergy will report at this same dc). This refinement is *not* part
-        # of any sector solve -- it runs once per mu, on top of the whole walk -- so it is timed
-        # under the same "expand" kind to land in the aggregate, tagged to say where it came from.
-        with solver_trace.timed("expand", stage="dc_refine"):
-            mb_solver.expand(
-                h_op,
-                dense_cutoff=dense_cutoff,
-                de2_min=1e-8,
-                slaterWeightMin=slaterWeightMin,
-                symmetry_generators=symmetry_generators,
-            )
-
-        def solve_thermal_occupation():
-            # The NiO ground state that motivated this rework is 3-fold quasi-degenerate, so a
-            # single lowest state (as the frozen-basis search used) misrepresents the thermal
-            # occupation; widen num_wanted until the manifold within energy_cut is captured.
-            # The termination test on Lanczos energies is only replicated to roundoff, so
-            # broadcast rank 0's decision -- ranks disagreeing here would diverge on whether to
-            # re-enter the next collective get_eigenvectors call.
-            num_wanted = 10
-            while True:
-                with solver_trace.timed("eigensolve", stage="dc_thermal", num_wanted=num_wanted):
-                    es, psis = mb_solver.get_eigenvectors(
-                        h_op,
-                        num_wanted=num_wanted,
-                        max_energy=energy_cut,
-                        dense_cutoff=dense_cutoff,
-                        slaterWeightMin=slaterWeightMin,
-                        solver="irlm",
-                        psi_refs=mb_solver.psi_refs,
-                    )
-                done = len(es) < num_wanted or (len(es) >= 1 and es[-1] - es[0] >= energy_cut) or num_wanted >= 100
-                if mb_basis.is_distributed:
-                    done = mb_basis.comm.bcast(done, root=0)
-                if done:
-                    break
-                num_wanted += 10
-            rhos = build_density_matrices(mb_basis, psis, impurity_indices, impurity_indices)
-            rho = thermal_average_scale_indep(es, rhos, tau)
-            return float(np.real(np.trace(rho)))
-
-        n_out = solve_thermal_occupation()
-
-        occupation_at[mu] = n_out
-        if verbose and rank == 0:
-            # The sector itself is reported by find_ground_state_basis's own verbose output above
-            # ("Ground state occupation"), evaluated fresh at this mu.
-            print(f"mu={mu:.6f} n={n_out:.6f} n0={n0:.6f}")
-        return n_out
-
     # The same bracket-collapse resolution _solve_dc_shift uses below (width_tol); computed once
     # so the trace's chi report filters against the identical value, not a second copy of it.
-    occ_width_tol = bracket_width_tol(tau)
+    occ_width_tol = bracket_width_tol(ctx.tau)
 
     target = occupation
     if self_consistent:
         unreachable = (
-            f"Could not reach the DFT reference occupation N0 = {n0:.4f} with |mu| <= "
+            f"Could not reach the DFT reference occupation N0 = {ctx.n0:.4f} with |mu| <= "
             f"{max_shift}: " + "the occupation reached {value:.4f} at mu = {mu:.3f}. "
             "The target may be unreachable with the available bath states."
         )
@@ -770,7 +876,7 @@ def fixed_occupation_dc(
             target,
             tol=occ_tol,
             width_tol=occ_width_tol,
-            initial_step=max(10 * tau, initial_step),
+            initial_step=max(10 * ctx.tau, initial_step),
             max_shift=max_shift,
             plateau_ok=True,
             unreachable_message=unreachable,
@@ -784,10 +890,13 @@ def fixed_occupation_dc(
     # mu is always a point _solve_dc_shift actually evaluated (the mu=0 fast path, a direct scan
     # hit, or a refined bracket point), so occupation_observable(mu) ran and cached it here.
     n = occupation_at[mu]
-    dc = dc_guess + mu * identity
+    dc = dc_guess + mu * ctx.identity
     if verbose and rank == 0:
         label = "N == N0" if self_consistent else f"target = {occupation}"
-        print(f"Fixed-occupation double counting ({label}, achieved N = {n:.4f}, N0 = {n0:.4f}, mu = {mu:.6f}):")
+        print(
+            f"Fixed-occupation double counting ({label}, achieved N = {n:.4f}, N0 = {ctx.n0:.4f}, "
+            f"mu = {mu:.6f}):"
+        )
         # chi is reported unconditionally, not only on a miss: a *converged* occupation with a
         # small chi still leaves dc essentially undetermined (delta_mu = delta_residual / chi),
         # which is exactly the case a miss-only report would hide (review correction 5).

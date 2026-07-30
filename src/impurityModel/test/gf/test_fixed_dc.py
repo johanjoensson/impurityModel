@@ -49,7 +49,7 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import find_ground_state_basis
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.model import BasisOptions, ImpurityModel, SolverOptions
-from impurityModel.ed.selfenergy import fixed_occupation_dc, fixed_peak_dc
+from impurityModel.ed.selfenergy import fixed_occupation_dc, fixed_peak_dc, occupation_and_energy_at_mu
 from impurityModel.ed.solver_basis import prepare_solver_basis
 
 EPS = -1.0
@@ -962,6 +962,37 @@ def test_fixed_peak_dc_accepts_the_nominal_charge_state_by_default():
     kwargs, dc_guess = common_kwargs(v=0.01, tau=1e-3)
     dc = fixed_peak_dc(peak_position=1.2, **kwargs)
     assert_uniform_shift(dc, dc_guess)
+
+
+def test_occupation_and_energy_at_mu_matches_the_search_at_mu_zero():
+    """B2's context/per-mu extraction (``_prepare_occupation_context`` +
+    ``_evaluate_occupation_and_energy_at_mu``) must be byte-identical to the observable
+    ``fixed_occupation_dc``'s own search evaluates, not a reimplementation of it.
+
+    ``_solve_dc_shift`` evaluates ``mu = 0`` first and returns immediately once
+    ``|residual| <= tol`` (the search's own fast path): requesting exactly the occupation this
+    diagnostic measures at ``mu = 0`` must therefore make the search return ``dc_guess``
+    unchanged. If the extracted context ever silently diverged from the original inline closure
+    (a different tau, a different truncation, a stale symmetry generator), this would fail.
+    """
+    kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2)
+    model, basis, solver = kwargs["model"], kwargs["basis"], kwargs["solver"]
+
+    n_at_zero, e0 = occupation_and_energy_at_mu(model, basis, solver, 0.0, comm=kwargs["comm"])
+    assert np.isfinite(e0)
+
+    dc = fixed_occupation_dc(occupation=n_at_zero, **kwargs)
+    assert_uniform_shift(dc, dc_guess)
+    np.testing.assert_allclose(dc, dc_guess, atol=1e-9)
+
+
+def test_occupation_and_energy_at_mu_ranks_agree():
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    model, basis, solver = kwargs["model"], kwargs["basis"], kwargs["solver"]
+    n, e0 = occupation_and_energy_at_mu(model, basis, solver, 0.3, comm=MPI.COMM_WORLD)
+
+    other = MPI.COMM_WORLD.allgather((n, e0))
+    assert all(pair == other[0] for pair in other), other
 
 
 # --- B1: continuum vs discretized DFT reference -----------------------------------------------
