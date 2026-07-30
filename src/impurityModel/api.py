@@ -10,7 +10,9 @@ The supported surface is deliberately small: build the impurity problem
 Hamiltonian matrix to the operator format (:func:`matrixToIOp`), solve for
 the self-energy (:func:`calc_selfenergy`), determine the double counting
 (:func:`fixed_peak_dc`, :func:`fixed_occupation_dc`, :func:`fll_dc`,
-:func:`amf_dc`, :func:`sigma_inf_dc`) and write Green's functions in RSPt's
+:func:`amf_dc`, :func:`sigma_inf_dc`), diagnose the fixed-occupation
+criterion's DFT reference against the continuum hybridization
+(:func:`report_continuum_reference`) and write Green's functions in RSPt's
 .dat format (:func:`save_Greens_function`).
 """
 
@@ -28,9 +30,11 @@ from impurityModel.ed.operator_algebra import matrixToIOp
 from impurityModel.ed.selfenergy import (
     amf_dc,
     calc_selfenergy,
+    discretized_impurity_occupation,
     fixed_occupation_dc,
     fixed_peak_dc,
     fll_dc,
+    report_continuum_reference,
     sigma_inf_dc,
 )
 from impurityModel.ed.susceptibility import calc_susceptibility_workflow
@@ -56,11 +60,13 @@ __all__ = [
     "atomic_u4",
     "calc_selfenergy",
     "calc_susceptibility_workflow",
+    "discretized_impurity_occupation",
     "fixed_occupation_dc",
     "fixed_peak_dc",
     "fll_dc",
     "load_selfenergy_archive",
     "matrixToIOp",
+    "report_continuum_reference",
     "save_Greens_function",
     "sigma_inf_dc",
 ]

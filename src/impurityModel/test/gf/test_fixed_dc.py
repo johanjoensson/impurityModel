@@ -962,3 +962,125 @@ def test_fixed_peak_dc_accepts_the_nominal_charge_state_by_default():
     kwargs, dc_guess = common_kwargs(v=0.01, tau=1e-3)
     dc = fixed_peak_dc(peak_position=1.2, **kwargs)
     assert_uniform_shift(dc, dc_guess)
+
+
+# --- B1: continuum vs discretized DFT reference -----------------------------------------------
+#
+# For a single impurity orbital coupled to a single bath level, the continuum propagator
+# G0(w) = [(w+i*eim) - e_imp - Delta(w)]^-1 with Delta(w) = v**2/(w+i*eim - e_bath) is the
+# EXACT Feshbach/Woodbury projection of the 2x2 one-body matrix [[e_imp, v], [v, e_bath]] onto
+# the impurity index -- not an approximation. So in the eim -> 0 limit, the Richardson-debiased
+# continuum fill and the discretized (exact-diagonalization) fill of the same matrix are the
+# SAME quantity computed two different ways: a known analytic case to verify against, per the
+# repo's own oracle-verification lesson (dense-Lehmann oracle campaign) -- verify against a KNOWN
+# case before trusting the diagnostic on a real, unverifiable workload.
+
+
+def _two_level_reference(e_imp=0.5, e_bath=-2.0, v=0.5, tau=0.1):
+    h = np.array([[e_imp, v], [v, e_bath]], dtype=complex)
+    energies, vecs = np.linalg.eigh(h)
+    f = 1.0 / (1.0 + np.exp(energies / tau))
+    n0_disc = float(np.sum(f * np.abs(vecs[0, :]) ** 2))
+    return e_imp, e_bath, v, tau, n0_disc
+
+
+def _two_level_continuum(e_imp, e_bath, v, eim, n_w=60001, w_max=15.0):
+    w = np.linspace(-w_max, w_max, n_w)
+    delta_w = (v**2 / (w + 1j * eim - e_bath))[:, None, None]  # (n_w, 1, 1), frequency-first
+    h_dft = np.array([[e_imp]], dtype=complex)
+    return h_dft, delta_w, w
+
+
+def test_continuum_impurity_occupation_matches_exact_projection_as_eim_shrinks():
+    from impurityModel.ed.dc_reference import continuum_impurity_occupation
+
+    e_imp, e_bath, v, tau, n0_disc = _two_level_reference()
+    errors = []
+    for eim in (0.02, 0.01, 0.005):
+        h_dft, delta_w, w = _two_level_continuum(e_imp, e_bath, v, eim)
+        out = continuum_impurity_occupation(h_dft, delta_w, w, eim, tau)
+        errors.append(abs(out["n0"] - n0_disc))
+    # Richardson-debiased error shrinks as eim -> 0 (the diagnostic converges to the exact
+    # projection identity, not merely "some number in the right ballpark").
+    assert errors[-1] < errors[0], errors
+    assert errors[-1] < 1e-3, errors
+
+
+def test_continuum_impurity_occupation_richardson_beats_naive():
+    from impurityModel.ed.dc_reference import continuum_impurity_occupation
+
+    e_imp, e_bath, v, tau, n0_disc = _two_level_reference()
+    eim = 0.05  # coarse enough that the naive broadening bias is visible
+    h_dft, delta_w, w = _two_level_continuum(e_imp, e_bath, v, eim)
+    out = continuum_impurity_occupation(h_dft, delta_w, w, eim, tau)
+    naive_error = abs(out["n0_naive"] - n0_disc)
+    debiased_error = abs(out["n0"] - n0_disc)
+    assert debiased_error < naive_error / 2, (debiased_error, naive_error)
+
+
+def test_continuum_impurity_occupation_sum_rule_and_causality():
+    from impurityModel.ed.dc_reference import continuum_impurity_occupation
+
+    e_imp, e_bath, v, tau, _ = _two_level_reference()
+    h_dft, delta_w, w = _two_level_continuum(e_imp, e_bath, v, eim=0.01)
+    out = continuum_impurity_occupation(h_dft, delta_w, w, 0.01, tau)
+    # A window wide enough to hold the single impurity spectral pole integrates to ~1.
+    assert np.isclose(out["sum_rule"], 1.0, atol=5e-3), out["sum_rule"]
+    # A physical (causal) Delta(w) has Im Delta <= 0 everywhere.
+    assert out["causality_violation"] == 0.0
+
+
+def test_continuum_impurity_occupation_flags_acausal_delta():
+    from impurityModel.ed.dc_reference import continuum_impurity_occupation
+
+    e_imp, e_bath, v, tau, _ = _two_level_reference()
+    h_dft, delta_w, w = _two_level_continuum(e_imp, e_bath, v, eim=0.01)
+    acausal_delta_w = np.conj(delta_w)  # flips the sign of Im Delta -> acausal
+    out = continuum_impurity_occupation(h_dft, acausal_delta_w, w, 0.01, tau)
+    assert out["causality_violation"] > 0.0
+
+
+def test_continuum_impurity_occupation_sum_rule_flags_too_narrow_a_window():
+    from impurityModel.ed.dc_reference import continuum_impurity_occupation
+
+    e_imp, e_bath, v, tau, _ = _two_level_reference()
+    # A window that excludes the bonding/antibonding resonances misses real spectral weight.
+    h_dft, delta_w, w = _two_level_continuum(e_imp, e_bath, v, eim=0.01, n_w=2001, w_max=0.5)
+    out = continuum_impurity_occupation(h_dft, delta_w, w, 0.01, tau)
+    assert out["sum_rule"] < 0.9, out["sum_rule"]
+
+
+def test_report_continuum_reference_prints_and_returns_the_diagnostic(capsys):
+    from impurityModel.ed.dc_reference import report_continuum_reference
+
+    e_imp, e_bath, v, tau, n0_disc = _two_level_reference()
+    eim = 0.01
+    h_dft, hyb, w = _two_level_continuum(e_imp, e_bath, v, eim)
+    # A slightly mistuned "fitted" hybridization (a small extra shift) stands in for a bath fit
+    # that does not exactly reproduce the true continuum -- the discretization error B1 exists to
+    # name.
+    _, hyb_fit, _ = _two_level_continuum(e_imp, e_bath - 0.3, v, eim)
+
+    report = report_continuum_reference(h_dft, hyb, hyb_fit, w, eim, tau, n0_disc, rank=0)
+
+    out = capsys.readouterr().out
+    assert "DC reference check" in out
+    assert "discretization error" in out
+    assert "sum rule" in out
+    assert "causality" in out
+    assert "dn0/dtau" in out
+
+    assert report["n0_disc"] == n0_disc
+    assert report["discretization_error"] != 0.0
+    # The mistuned fit differs from the true continuum, so this must not vanish either.
+    assert abs(report["n0_cont_true"] - report["n0_cont_fitted"]) > 1e-3
+
+
+def test_report_continuum_reference_silent_off_root(capsys):
+    from impurityModel.ed.dc_reference import report_continuum_reference
+
+    e_imp, e_bath, v, tau, n0_disc = _two_level_reference()
+    h_dft, hyb, w = _two_level_continuum(e_imp, e_bath, v, 0.01)
+    report = report_continuum_reference(h_dft, hyb, hyb, w, 0.01, tau, n0_disc, rank=1)
+    assert report is None
+    assert capsys.readouterr().out == ""

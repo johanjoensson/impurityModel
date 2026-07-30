@@ -242,3 +242,175 @@ def _reference_impurity_occupation(model, tau, *, warn=True):
     if warn:
         _warn_if_reference_saturated(n, len(model.impurity_indices), _SATURATION_ADVICE["static"])
     return n
+
+
+def discretized_impurity_occupation(model, tau):
+    """The DFT reference occupation ``n0`` that :func:`dc_criteria.fixed_occupation_dc` pins to
+    when given no explicit target -- exposed for external callers (e.g. the RSPt interface's B1
+    diagnostic, :func:`report_continuum_reference`) that need the same "n0 the criterion uses
+    today" without duplicating the Fermi fill and its saturation check. Unwarned: the caller is
+    expected to have its own reporting (or to be calling this purely to feed a comparison), not to
+    silently re-trigger the saturation warning a second time per call.
+    """
+    return _reference_impurity_occupation(model, tau, warn=False)
+
+
+def _continuum_fermi_filling(h_dft, delta_w, w, eim, tau):
+    r"""Grand-canonical ``mu = 0`` filling of the continuum impurity propagator.
+
+    .. math::
+        G_0(\omega) = \left[(\omega + i\,\text{eim})\mathbb{1} - h_\text{dft} - \Delta(\omega)\right]^{-1}
+
+    with :math:`\Delta(\omega)` a hybridization function (either RSPt's continuum one, or the
+    fitted bath's own reconstruction of it -- both are valid inputs, which is what makes the
+    differential comparison in :func:`continuum_impurity_occupation` possible).
+
+    Parameters
+    ----------
+    h_dft : (n_orb, n_orb) complex ndarray
+        Impurity block of the DFT Hamiltonian, same basis as ``delta_w``.
+    delta_w : (n_w, n_orb, n_orb) complex ndarray
+        Hybridization function on the real mesh ``w``, evaluated ``i*eim`` above the axis.
+        Frequency-first, matching this package's Green's-function convention (and
+        ``impmod_interface``'s own ``hyb``/``hyb_fit`` layout after its ``moveaxis``).
+    w : (n_w,) real ndarray
+        Real-frequency mesh, ascending.
+    eim : float
+        Broadening for the ``(w + i*eim)`` term. Need not equal the broadening ``delta_w`` was
+        itself evaluated at -- doubling it here (with ``delta_w`` held fixed) is exactly the
+        finite-difference handle :func:`continuum_impurity_occupation` uses to debias.
+    tau : float
+        Fermi-Dirac temperature for the fill.
+
+    Returns
+    -------
+    n : float
+        ``Tr rho_imp`` from Fermi-filling the continuum spectral function.
+    sum_rule : float
+        ``\int Tr A(w) dw``, which should be close to ``n_orb`` if the mesh/window captures the
+        impurity spectral weight; a wide-window fit whose window misses real weight fails this.
+    causality_violation : float
+        ``max(0, max Im Delta(w))``; zero iff :math:`\Delta` is causal (``Im Delta <= 0``)
+        everywhere on the mesh.
+    """
+    n_orb = h_dft.shape[0]
+    identity = np.eye(n_orb, dtype=complex)
+    z = (w + 1j * eim)[:, None, None] * identity[None, :, :]
+    g0 = np.linalg.inv(z - delta_w - h_dft[None, :, :])
+    dos = -np.trace(g0, axis1=1, axis2=2).imag / np.pi
+    if tau > 0:
+        with np.errstate(over="ignore"):
+            f = 1.0 / (1.0 + np.exp(w / tau))
+    else:
+        f = (w < 0).astype(float)
+    n = float(np.trapezoid(dos * f, w))
+    sum_rule = float(np.trapezoid(dos, w))
+    causality_violation = float(max(0.0, np.max(delta_w.imag)))
+    return n, sum_rule, causality_violation
+
+
+def continuum_impurity_occupation(h_dft, delta_w, w, eim, tau, *, richardson=True):
+    """Continuum DFT impurity occupation from a real-axis hybridization function.
+
+    A naive real-axis integral at finite ``eim`` is biased toward half filling (measured:
+    ``eim=0.02`` -> bias -0.24 e, 24x a typical ``occ_tol``): the Lorentzian broadening smears
+    weight across the Fermi level regardless of where the true spectral weight sits. Richardson
+    extrapolation using a second fill at matrix broadening ``2*eim`` (``delta_w`` held fixed --
+    only the ``(w + i*eim)`` term changes) cancels the leading-order bias, since the naive fill is
+    ``n(eim) = n_true + C*eim + O(eim**2)``: ``n_true ~= 2*n(eim) - n(2*eim)``.
+
+    Returns a dict with ``n0`` (Richardson-debiased if requested, else the naive fill),
+    ``n0_naive``, ``n0_2eim``, ``sum_rule``, ``n_orb`` and ``causality_violation`` -- see
+    :func:`_continuum_fermi_filling` for the latter three.
+    """
+    n0_naive, sum_rule, causality_violation = _continuum_fermi_filling(h_dft, delta_w, w, eim, tau)
+    if richardson:
+        n0_2eim, _, _ = _continuum_fermi_filling(h_dft, delta_w, w, 2 * eim, tau)
+        n0 = 2 * n0_naive - n0_2eim
+    else:
+        n0_2eim = None
+        n0 = n0_naive
+    return {
+        "n0": n0,
+        "n0_naive": n0_naive,
+        "n0_2eim": n0_2eim,
+        "sum_rule": sum_rule,
+        "n_orb": h_dft.shape[0],
+        "causality_violation": causality_violation,
+    }
+
+
+def continuum_dn0_dtau(h_dft, delta_w, w, eim, tau, *, richardson=True):
+    """Finite-difference ``dn0/dtau`` of the (optionally Richardson-debiased) continuum fill.
+
+    Gap-protected materials (a genuine gap straddling ``mu=0``) are insensitive to ``tau``; a
+    metal is not, and nothing has checked that sensitivity before -- see the module docstring's
+    R0 admonition for why the gap protection matters for the *discretized* reference, which this
+    is the continuum-side analogue of.
+    """
+    n_tau = continuum_impurity_occupation(h_dft, delta_w, w, eim, tau, richardson=richardson)["n0"]
+    n_2tau = continuum_impurity_occupation(h_dft, delta_w, w, eim, 2 * tau, richardson=richardson)["n0"]
+    return (n_2tau - n_tau) / tau
+
+
+def report_continuum_reference(h_dft, hyb, hyb_fit, w, eim, tau, n0_disc, *, rank=None):
+    """Print and return the B1 two-way DFT-reference diagnostic: continuum vs discretized ``n0``.
+
+    Computes the continuum occupation twice, from the same ``h_dft``/mesh/``eim``/quadrature but
+    two different hybridization functions:
+
+    - ``hyb`` -- RSPt's true continuum :math:`\\Delta(\\omega)`.
+    - ``hyb_fit`` -- the fitted bath's own reconstruction of it (already computed by the caller
+      for the existing ``fit_dev`` report).
+
+    Differencing these two **cancels the broadening bias**, since both are integrated through the
+    identical quadrature at the identical ``eim`` -- what remains is the discretization error of
+    the bath fit alone, which is the number this diagnostic exists to name.
+
+    As a self-consistency check on the diagnostic itself (not the physics): in the ``eim -> 0``
+    limit, ``continuum_impurity_occupation(h_dft, hyb_fit, ...)`` and ``n0_disc`` (the exact
+    diagonalization of the same finite one-body problem) are the *same quantity* computed two
+    different ways -- a Feshbach/Woodbury projection identity, not an approximation -- so a large
+    disagreement between them indicates a bug in this diagnostic, not a physics finding.
+
+    This is a **diagnostic only**: it does not change what :func:`dc_criteria.fixed_occupation_dc`
+    pins to. Printing only (no collective), so gating on rank 0 is safe.
+    """
+    if rank is None:
+        rank = MPI.COMM_WORLD.rank
+    if rank != 0:
+        return None
+    cont_true = continuum_impurity_occupation(h_dft, hyb, w, eim, tau)
+    cont_fit = continuum_impurity_occupation(h_dft, hyb_fit, w, eim, tau)
+    dn0_dtau_true = continuum_dn0_dtau(h_dft, hyb, w, eim, tau)
+    discretization_error = cont_true["n0"] - cont_fit["n0"]
+    fit_consistency_check = cont_fit["n0"] - n0_disc
+    n_orb = cont_true["n_orb"]
+    print(
+        "DC reference check (B1): discretized n0 (used by the criterion) = "
+        f"{n0_disc:.4f}; continuum n0 from the true Delta(w) = {cont_true['n0']:.4f}; from the "
+        f"fitted Delta(w) = {cont_fit['n0']:.4f}\n"
+        f"  discretization error (true continuum - fitted continuum) = {discretization_error:+.4f} "
+        "(the bath-fit artefact the criterion cannot see)\n"
+        "  diagnostic self-consistency (fitted continuum - discretized; should be small "
+        f"as eim -> 0) = {fit_consistency_check:+.4f}\n"
+        f"  sum rule (expect ~{n_orb}): true {cont_true['sum_rule']:.3f}, "
+        f"fitted {cont_fit['sum_rule']:.3f}\n"
+        f"  causality (max Im Delta(w), expect <= 0): true {cont_true['causality_violation']:.2e}, "
+        f"fitted {cont_fit['causality_violation']:.2e}\n"
+        f"  dn0/dtau (true continuum) = {dn0_dtau_true:+.4f} per unit tau "
+        "(large values flag a metal-like Fermi-smearing sensitivity)",
+        flush=True,
+    )
+    return {
+        "n0_disc": n0_disc,
+        "n0_cont_true": cont_true["n0"],
+        "n0_cont_fitted": cont_fit["n0"],
+        "discretization_error": discretization_error,
+        "fit_consistency_check": fit_consistency_check,
+        "sum_rule_true": cont_true["sum_rule"],
+        "sum_rule_fitted": cont_fit["sum_rule"],
+        "causality_true": cont_true["causality_violation"],
+        "causality_fitted": cont_fit["causality_violation"],
+        "dn0_dtau_true": dn0_dtau_true,
+    }
