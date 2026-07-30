@@ -3,9 +3,9 @@
 The static (Hartree-Fock) and dynamic self-energies, the hybridization function, the
 correlated/bath splitting of the one-body Hamiltonian, and the physicality check on a
 computed Green's function -- everything downstream of having ``G`` in hand. The
-double-counting search lives next door in :mod:`double_counting`; the orchestration and CLI
-in :mod:`selfenergy`, which re-exports these so existing ``selfenergy.get_sigma`` etc.
-callers are unchanged.
+double-counting criteria live next door in :mod:`dc_criteria`/:mod:`dc_static`; the
+orchestration and CLI in :mod:`selfenergy`, which re-exports these so existing
+``selfenergy.get_sigma`` etc. callers are unchanged.
 """
 
 import itertools

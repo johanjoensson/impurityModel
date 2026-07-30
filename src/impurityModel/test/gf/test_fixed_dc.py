@@ -19,7 +19,7 @@ Both searches now determine their sector(s) through
 ``groundstate.find_ground_state_basis`` -- the identical search
 ``calc_selfenergy`` uses -- rather than by construction at a fixed N0, so
 that a dc found here means the same thing calc_selfenergy will find at that
-dc (see double_counting.py's module docstring). ``find_ground_state_basis``
+dc (see dc_criteria.py's module docstring). ``find_ground_state_basis``
 does not hold total N fixed: with mixed_valence=0 (the default in this
 file), a bath orbital's occupation cannot deviate from nominal at all, so
 "N_imp = 2" as a *trial sector* pairs with the bath still fully occupied
@@ -42,6 +42,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.cipsi_solver import CIPSISolver
@@ -722,7 +723,7 @@ def _selfenergy_gs_occupation(model, basis_opts, dc):
     )
     solver = CIPSISolver(gs_basis)
     solver.expand(sb.h, dense_cutoff=1000, de2_min=1e-8, slaterWeightMin=basis_opts.slater_weight_min)
-    energy_cut = -basis_opts.tau * np.log(1e-4)
+    energy_cut = boltzmann_energy_cut(basis_opts.tau)
     es, psis = solver.get_eigenvectors(
         sb.h,
         num_wanted=10,

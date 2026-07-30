@@ -17,7 +17,8 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.dc_frozen import FrozenSpaceSweep, build_union_space
+from impurityModel.ed.dc_criteria import build_union_space
+from impurityModel.ed.dc_frozen import FrozenSpaceSweep
 from impurityModel.ed.groundstate import build_basis_and_solver
 from impurityModel.ed.lie_algebra import tensors_to_operator
 

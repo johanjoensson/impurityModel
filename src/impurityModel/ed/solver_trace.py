@@ -7,7 +7,7 @@ which of those three costs dominates and how many of them are redundant -- neith
 visible from the outside, because the search only ever reports its final ``dc``.
 
 This module is the recorder. It is a leaf: it imports nothing from the package, so any layer may
-write into it (:func:`groundstate.calc_energy` and the criteria in ``double_counting`` both do).
+write into it (:func:`groundstate.calc_energy` and the criteria in :mod:`dc_criteria` both do).
 
 Nothing is recorded unless a :func:`tracing` block is open, and the hooks are one ``is None``
 test when it is not, so instrumented code pays nothing on the production path::

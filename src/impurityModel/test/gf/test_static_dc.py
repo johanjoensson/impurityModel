@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.double_counting import amf_dc, fll_dc, sigma_inf_dc
+from impurityModel.ed.dc_static import amf_dc, fll_dc, sigma_inf_dc
 from impurityModel.ed.model import ImpurityModel
 
 EPS = -1.0

@@ -35,10 +35,11 @@ affine to machine precision.
 
 import numpy as np
 
+from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_transcription import build_density_matrices, build_sparse_matrix
 from impurityModel.ed.cipsi_solver import CIPSISolver
-from impurityModel.ed.dc_criteria import _dc_operator
+from impurityModel.ed.lie_algebra import tensors_to_operator
 
 #: Finite-difference step for ``chi``.
 #:
@@ -61,99 +62,6 @@ from impurityModel.ed.dc_criteria import _dc_operator
 CHI_STEP = 1e-3
 
 
-def build_union_space(
-    h_op,
-    impurity_orbitals,
-    bath_states,
-    nominal_occ,
-    *,
-    mu_samples=(0.0,),
-    sector_radius=1,
-    tau=0.002,
-    chain_restrict=False,
-    spin_flip_dj=False,
-    truncation_threshold=np.inf,
-    comm=None,
-    verbose=False,
-    frozen_occupations=None,
-    weighted_restrictions=None,
-    slater_weight_min=0,
-    de2_min=1e-8,
-    dense_cutoff=1000,
-):
-    """A frozen space spanning the *candidate* charge sectors, grown across a ``mu`` bracket.
-
-    A space seeded from one solve spans whatever sectors its expansion happened to reach --
-    measured on NiO, ``n_imp = 8, 9, 10`` against a nominal 8: three sectors, but only upward, so
-    a search that has to cross downward is scored on a space that cannot represent the answer and
-    reports the nearest sector it can as though converged. This builds the span deliberately
-    instead.
-
-    No new generation code is needed for that. ``generate_initial_basis`` already filters the
-    cross-group combinations on the *total* impurity charge window
-    ``[total_nominal ± total_slack]``, and ``total_slack`` is exactly
-    ``max(|mixed_valence| + |delta_impurity_occ|)`` over the unfrozen groups -- so widening
-    ``mixed_valence`` to ``sector_radius`` widens the window symmetrically. Verified on a toy:
-    radius 0 gives span ``(2,)``, radius 1 gives ``(1, 2, 3)``, radius 2 gives ``(0..4)``.
-
-    **Growth-only, and state-averaged over the bracket.** The space is expanded once at each
-    ``mu`` in ``mu_samples`` -- the ends of the search bracket, not just its centre -- and
-    ``expand`` only *adds* determinants, so the result accumulates: ``S_{k+1} = S_k ∪ new``. That
-    is what makes the construction terminate rather than limit-cycle, which re-freezing on drift
-    does not (selection under a cap is discontinuous in ``mu``). The one exception is a binding
-    ``truncation_threshold``: fixed-budget CIPSI prunes to stay under the cap, so growth-only
-    holds up to the cap and no further. Pass ``truncation_threshold=np.inf`` when the guarantee
-    matters more than the memory.
-
-    Returns
-    -------
-    (FrozenSpaceSweep, Basis)
-    """
-    from impurityModel.ed.groundstate import build_basis_and_solver
-
-    impurity_indices = [orb for blocks in impurity_orbitals.values() for block in blocks for orb in block]
-    # The sector radius enters as mixed_valence: total_slack is the max over unfrozen groups, so
-    # one entry per group at `sector_radius` opens the total window to nominal +/- sector_radius.
-    mixed_valence = dict.fromkeys(nominal_occ, sector_radius)
-    basis, solver = build_basis_and_solver(
-        h_op,
-        impurity_orbitals,
-        bath_states,
-        nominal_occ,
-        mixed_valence,
-        tau,
-        chain_restrict,
-        spin_flip_dj,
-        truncation_threshold,
-        comm,
-        verbose,
-        frozen_occupations,
-        weighted_restrictions,
-        slater_weight_min,
-        None,
-    )
-    identity = np.identity(len(impurity_indices))
-    for mu in mu_samples:
-        # Expand at this end of the bracket. `expand` reads solver.psi_refs, so successive calls
-        # are warm-started from the previous end's converged manifold -- which is the
-        # state-averaging: the space ends up adequate across the sweep rather than at one point.
-        solver.expand(
-            h_op - _dc_operator(mu * identity),
-            dense_cutoff=dense_cutoff,
-            de2_min=de2_min,
-            slaterWeightMin=slater_weight_min,
-        )
-    sweep = FrozenSpaceSweep(
-        basis,
-        h_op,
-        impurity_indices,
-        tau,
-        dense_cutoff=dense_cutoff,
-        slater_weight_min=slater_weight_min,
-    )
-    return sweep, basis
-
-
 class FrozenSpaceSweep:
     """``energy(mu)`` / ``occupation(mu)`` / ``chi(mu)`` on one fixed determinant space.
 
@@ -170,8 +78,8 @@ class FrozenSpaceSweep:
     tau : float
         Temperature for the thermal average.
     energy_cut : float, optional
-        Thermal cut for the eigenstate manifold; defaults to the ``-tau*log(1e-4)`` the rest of
-        the stack uses.
+        Thermal cut for the eigenstate manifold; defaults to ``average.energy_cut(tau)``, the
+        same Boltzmann-weight cut the rest of the stack uses.
 
     Notes
     -----
@@ -199,7 +107,7 @@ class FrozenSpaceSweep:
         self.basis = basis
         self.impurity_indices = list(impurity_indices)
         self.tau = tau
-        self.energy_cut = -tau * np.log(1e-4) if energy_cut is None else energy_cut
+        self.energy_cut = boltzmann_energy_cut(tau) if energy_cut is None else energy_cut
         self.dense_cutoff = dense_cutoff
         self.slater_weight_min = slater_weight_min
         self.num_wanted = num_wanted
@@ -217,10 +125,11 @@ class FrozenSpaceSweep:
         if basis.weighted_restrictions is not None:
             h_op.set_weighted_restrictions(basis.weighted_restrictions)
         # The two builds that make the sweep cheap. `h0` carries dc_guess already; `n` is the
-        # impurity number operator, which _dc_operator(identity) is exactly -- diagonal in the
-        # determinant basis, which is what makes H(mu) a diagonal shift rather than a rebuild.
+        # impurity number operator, which is diagonal in the determinant basis -- what makes
+        # H(mu) a diagonal shift rather than a rebuild.
         self._h0_matrix = build_sparse_matrix(basis, h_op)
-        self._n_matrix = build_sparse_matrix(basis, _dc_operator(np.identity(len(self.impurity_indices))))
+        n_op = tensors_to_operator(np.identity(len(self.impurity_indices), dtype=complex))
+        self._n_matrix = build_sparse_matrix(basis, n_op)
         # Impurity occupation per determinant, reduced across ranks once. `build_sparse_matrix`
         # returns a *globally shaped* matrix in which only this rank's columns are populated, so
         # reading the diagonal locally sees the owned determinants plus a spurious 0 everywhere

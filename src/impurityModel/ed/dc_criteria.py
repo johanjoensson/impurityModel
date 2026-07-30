@@ -45,10 +45,12 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import solver_trace
+from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.dc_frozen import FrozenSpaceSweep
 from impurityModel.ed.dc_reference import (
     _SATURATION_ADVICE,
     _noninteracting_impurity_occupation,
@@ -64,9 +66,97 @@ from impurityModel.ed.solver_basis import _per_group_occupation, get_symmetry_ge
 from impurityModel.ed.utils import matrix_print
 
 
-def _dc_operator(dc):
-    """Build the double-counting one-body operator, ``dc[i, j] c^dagger_i c_j``."""
-    return tensors_to_operator(np.asarray(dc, dtype=complex))
+def build_union_space(
+    h_op,
+    impurity_orbitals,
+    bath_states,
+    nominal_occ,
+    *,
+    mu_samples=(0.0,),
+    sector_radius=1,
+    tau=0.002,
+    chain_restrict=False,
+    spin_flip_dj=False,
+    truncation_threshold=np.inf,
+    comm=None,
+    verbose=False,
+    frozen_occupations=None,
+    weighted_restrictions=None,
+    slater_weight_min=0,
+    de2_min=1e-8,
+    dense_cutoff=1000,
+):
+    """A frozen space spanning the *candidate* charge sectors, grown across a ``mu`` bracket.
+
+    A space seeded from one solve spans whatever sectors its expansion happened to reach --
+    measured on NiO, ``n_imp = 8, 9, 10`` against a nominal 8: three sectors, but only upward, so
+    a search that has to cross downward is scored on a space that cannot represent the answer and
+    reports the nearest sector it can as though converged. This builds the span deliberately
+    instead.
+
+    No new generation code is needed for that. ``generate_initial_basis`` already filters the
+    cross-group combinations on the *total* impurity charge window
+    ``[total_nominal ± total_slack]``, and ``total_slack`` is exactly
+    ``max(|mixed_valence| + |delta_impurity_occ|)`` over the unfrozen groups -- so widening
+    ``mixed_valence`` to ``sector_radius`` widens the window symmetrically. Verified on a toy:
+    radius 0 gives span ``(2,)``, radius 1 gives ``(1, 2, 3)``, radius 2 gives ``(0..4)``.
+
+    **Growth-only, and state-averaged over the bracket.** The space is expanded once at each
+    ``mu`` in ``mu_samples`` -- the ends of the search bracket, not just its centre -- and
+    ``expand`` only *adds* determinants, so the result accumulates: ``S_{k+1} = S_k ∪ new``. That
+    is what makes the construction terminate rather than limit-cycle, which re-freezing on drift
+    does not (selection under a cap is discontinuous in ``mu``). The one exception is a binding
+    ``truncation_threshold``: fixed-budget CIPSI prunes to stay under the cap, so growth-only
+    holds up to the cap and no further. Pass ``truncation_threshold=np.inf`` when the guarantee
+    matters more than the memory.
+
+    Returns
+    -------
+    (FrozenSpaceSweep, Basis)
+    """
+    from impurityModel.ed.groundstate import build_basis_and_solver
+
+    impurity_indices = [orb for blocks in impurity_orbitals.values() for block in blocks for orb in block]
+    # The sector radius enters as mixed_valence: total_slack is the max over unfrozen groups, so
+    # one entry per group at `sector_radius` opens the total window to nominal +/- sector_radius.
+    mixed_valence = dict.fromkeys(nominal_occ, sector_radius)
+    basis, solver = build_basis_and_solver(
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        nominal_occ,
+        mixed_valence,
+        tau,
+        chain_restrict,
+        spin_flip_dj,
+        truncation_threshold,
+        comm,
+        verbose,
+        frozen_occupations,
+        weighted_restrictions,
+        slater_weight_min,
+        None,
+    )
+    identity = np.identity(len(impurity_indices))
+    for mu in mu_samples:
+        # Expand at this end of the bracket. `expand` reads solver.psi_refs, so successive calls
+        # are warm-started from the previous end's converged manifold -- which is the
+        # state-averaging: the space ends up adequate across the sweep rather than at one point.
+        solver.expand(
+            h_op - tensors_to_operator(np.asarray(mu * identity, dtype=complex)),
+            dense_cutoff=dense_cutoff,
+            de2_min=de2_min,
+            slaterWeightMin=slater_weight_min,
+        )
+    sweep = FrozenSpaceSweep(
+        basis,
+        h_op,
+        impurity_indices,
+        tau,
+        dense_cutoff=dense_cutoff,
+        slater_weight_min=slater_weight_min,
+    )
+    return sweep, basis
 
 
 def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0, allow_charge_state_change=False):
@@ -199,7 +289,6 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
     # mapping prepare_solver_basis itself uses (energetic filling); since the basis depends only
     # on the total, which split it returns cannot change the answer.
     max_occ_total = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
-    impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
     # One-body matrix in the *solver* basis (h0_solve, i.e. after any symmetry rotation), so the
     # energetic filling below sees the same on-site energies that defined the derived groups.
     h_solver_matrix = extract_tensors(sb.h0_solve, n_orb=sb.n_spin_orbitals, two_body=False)[0]
@@ -260,7 +349,7 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
         # h_op_i (sb.h, from prepare_solver_basis) already has dc_guess subtracted (H = h0 - DC +
         # U with DC = model.dc = dc_guess); only the incremental mu shift is subtracted here, or
         # dc_guess would be double-counted. Matches fixed_occupation_dc's identical pattern.
-        h_op = h_op_i - _dc_operator(mu * identity)
+        h_op = h_op_i - tensors_to_operator(np.asarray(mu * identity, dtype=complex))
 
         # The center sector, determined the same way calc_selfenergy will (see the docstring):
         # find_ground_state_basis's own HF-seed-then-walk search, not a search pinned at the
@@ -562,7 +651,7 @@ def fixed_occupation_dc(
         )
 
     identity = np.identity(dc_guess.shape[0])
-    energy_cut = -tau * np.log(1e-4)
+    energy_cut = boltzmann_energy_cut(tau)
     weighted_restrictions = build_weighted_restrictions(bath_states, excitation_budget)
 
     occupation_at = {}
@@ -574,7 +663,7 @@ def fixed_occupation_dc(
             return n_out
 
     def _occupation_at_mu(mu):
-        h_op = h_op_i - _dc_operator(mu * identity)
+        h_op = h_op_i - tensors_to_operator(np.asarray(mu * identity, dtype=complex))
 
         # Determine the ground-state sector the SAME way calc_selfenergy will: the identical
         # HF-seed-then-walk find_ground_state_basis performs (not a cheaper approximation of it,
