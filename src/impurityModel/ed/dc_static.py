@@ -155,6 +155,36 @@ def amf_dc(model, *, tau=0.002, n=None):
     return get_Sigma_static(u4_dense, (n / n_imp) * identity)
 
 
+def nominal_dc(model, nominal_occupation, *, u=None, j=None):
+    r"""FLL evaluated at the **nominal** (integer) impurity occupation, not the DFT reference.
+
+    :func:`fll_dc`, :func:`amf_dc` and :func:`sigma_inf_dc` all default to the DFT reference
+    filling (:mod:`dc_reference`'s Fermi fill of the raw ``h0``), which is a property of the
+    *discretized* bath and can saturate at the full or empty shell for a coarse valence-only fit
+    (measured: NiO's reference swings by 1.37 electrons between 1 and 15 bath states). This scheme
+    needs no reference filling at all -- ``N`` is the charge state the model was set up for
+    (``sum(BasisOptions.nominal_occ.values())``), an integer by construction -- so it cannot
+    saturate and cannot inherit that fit sensitivity. Haule, *PRL* **115**, 196403 (2015) finds
+    FLL at the nominal occupation close to the exact double counting for transition-metal oxides,
+    which makes this the natural ``dc_guess`` for the first iteration of a CSC loop, and a
+    reference to compare a converged :func:`dc_criteria.fixed_occupation_dc` answer against.
+
+    Parameters
+    ----------
+    model : ImpurityModel
+    nominal_occupation : float
+        The nominal impurity occupation (``sum(BasisOptions.nominal_occ.values())``).
+    u, j : float, optional
+        Average Coulomb repulsion and exchange. ``None`` derives them from ``model.u4`` via
+        :func:`_model_uj` (see :func:`fll_dc`).
+
+    Returns
+    -------
+    numpy.ndarray, shape (n_imp, n_imp)
+    """
+    return fll_dc(model, n=float(nominal_occupation), u=u, j=j)
+
+
 def sigma_inf_dc(model, *, tau=0.002, rho=None):
     r"""K. Held's :math:`\Sigma(\infty)` double counting: the full static Hartree-Fock
     self-energy matrix, ``dc = Σ_static(u4, rho_imp)``.

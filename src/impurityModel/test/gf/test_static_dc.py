@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.dc_static import amf_dc, fll_dc, sigma_inf_dc
+from impurityModel.ed.dc_static import amf_dc, fll_dc, nominal_dc, sigma_inf_dc
 from impurityModel.ed.model import ImpurityModel
 
 EPS = -1.0
@@ -224,3 +224,48 @@ def test_static_dc_does_not_warn_when_the_caller_supplies_the_filling(scheme, kw
     """A caller that passed its own occupation has already made the choice the warning is about."""
     scheme(build_dimer_model(v=0.1), tau=1e-3, **kwargs)
     assert "saturated" not in capsys.readouterr().out
+
+
+# --- M4: nominal_dc ------------------------------------------------------------------
+
+
+def test_nominal_dc_matches_fll_at_the_nominal_occupation():
+    """nominal_dc is exactly fll_dc evaluated at the given nominal occupation, not the DFT
+    reference -- verified against the dimer's known analytic FLL formula, U(N - 1/2)."""
+    model = build_dimer_model(v=0.01)
+    dc = nominal_dc(model, 2.0)
+    assert np.allclose(dc, fll_dc(model, n=2.0), atol=1e-12)
+    assert np.allclose(dc, 4.5 * np.eye(2), atol=1e-4)
+
+
+def test_nominal_dc_ignores_the_saturated_reference():
+    """The whole point: nominal_dc needs no reference filling at all, so a saturated (or
+    otherwise unreliable) DFT reference cannot perturb it -- unlike fll_dc's own default."""
+    model = build_dimer_model(v=0.1)  # the fixture whose raw-h0 reference saturates at N=2
+    dc_at_one = nominal_dc(model, 1.0)
+    dc_at_two = nominal_dc(model, 2.0)
+    assert not np.allclose(dc_at_one, dc_at_two)
+    assert np.allclose(dc_at_one, fll_dc(model, n=1.0), atol=1e-12)
+
+
+def test_nominal_dc_never_warns_about_saturation(capsys):
+    scheme_model = build_dimer_model(v=0.1)
+    nominal_dc(scheme_model, 2.0)
+    assert "saturated" not in capsys.readouterr().out
+
+
+def test_nominal_dc_accepts_explicit_u_j_without_u4():
+    h0 = np.zeros((4, 4), dtype=complex)
+    h0[0, 0] = EPS
+    h0[1, 1] = EPS
+    h0[2, 2] = EPS_B
+    h0[3, 3] = EPS_B
+    h0[0, 2] = 0.01
+    h0[2, 0] = 0.01
+    h0[1, 3] = 0.01
+    h0[3, 1] = 0.01
+    model_no_u4 = ImpurityModel.from_solver_matrix(
+        h0, 2, dc=None, u4=None, rot_to_spherical=np.eye(2, dtype=complex), bath_valence_conduction=([2, 3], [])
+    )
+    dc = nominal_dc(model_no_u4, 2.0, u=U, j=0.0)
+    assert np.allclose(dc, 4.5 * np.eye(2))

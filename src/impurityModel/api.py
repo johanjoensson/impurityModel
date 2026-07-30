@@ -10,11 +10,12 @@ The supported surface is deliberately small: build the impurity problem
 Hamiltonian matrix to the operator format (:func:`matrixToIOp`), solve for
 the self-energy (:func:`calc_selfenergy`), determine the double counting
 (:func:`fixed_peak_dc`, :func:`fixed_occupation_dc`, :func:`fll_dc`,
-:func:`amf_dc`, :func:`sigma_inf_dc` -- either of the first two raising
-:class:`DoubleCountingUnreachable` when the requested target has no solution),
-diagnose the fixed-occupation criterion's DFT reference against the continuum
-hybridization (:func:`report_continuum_reference`) and write Green's functions
-in RSPt's .dat format (:func:`save_Greens_function`).
+:func:`amf_dc`, :func:`sigma_inf_dc`, :func:`nominal_dc` -- either of the
+first two raising :class:`DoubleCountingUnreachable` when the requested
+target has no solution), diagnose the fixed-occupation criterion's DFT
+reference against the continuum hybridization
+(:func:`report_continuum_reference`) and write Green's functions in RSPt's
+.dat format (:func:`save_Greens_function`).
 """
 
 from impurityModel.ed.greens_function import save_Greens_function
@@ -36,6 +37,7 @@ from impurityModel.ed.selfenergy import (
     fixed_occupation_dc,
     fixed_peak_dc,
     fll_dc,
+    nominal_dc,
     report_continuum_reference,
     sigma_inf_dc,
 )
@@ -69,6 +71,7 @@ __all__ = [
     "fll_dc",
     "load_selfenergy_archive",
     "matrixToIOp",
+    "nominal_dc",
     "report_continuum_reference",
     "save_Greens_function",
     "sigma_inf_dc",
