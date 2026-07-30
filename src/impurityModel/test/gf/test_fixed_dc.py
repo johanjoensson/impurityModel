@@ -49,7 +49,12 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import find_ground_state_basis
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.model import BasisOptions, ImpurityModel, SolverOptions
-from impurityModel.ed.selfenergy import fixed_occupation_dc, fixed_peak_dc, occupation_and_energy_at_mu
+from impurityModel.ed.selfenergy import (
+    DoubleCountingUnreachable,
+    fixed_occupation_dc,
+    fixed_peak_dc,
+    occupation_and_energy_at_mu,
+)
 from impurityModel.ed.solver_basis import prepare_solver_basis
 
 EPS = -1.0
@@ -279,14 +284,17 @@ def test_fixed_occupation_dc_decreases_occupation():
 
 
 def test_fixed_occupation_dc_low_target_lands_on_plateau(capsys):
-    # Under the old fixed-N0=1 picture this occupation (below N_imp=1, with both bath orbitals
-    # already full) was unreachable and raised. find_ground_state_basis's actual sector search
-    # is not fixed-N: it can land on a smaller-total-N sector (module docstring) where a low
-    # impurity occupation is a genuine plateau, not an out-of-range target -- the search
-    # converges to the closest point on that plateau (with a warning) instead of raising.
+    # find_ground_state_basis's sector search is not fixed-N: it can land on a smaller-total-N
+    # sector (module docstring) where a low impurity occupation is a genuine plateau -- the
+    # observable steps across the target at a charge-sector boundary rather than crossing it.
+    # B3: this is "no solution here", not a tolerable miss, so it raises DoubleCountingUnreachable
+    # (the diagnostic still prints on rank 0 before the raise; only the old silent-return is gone).
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
-    dc = fixed_occupation_dc(occupation=0.2, **kwargs)
-    assert np.isfinite(dc).all()
+    # The exception's own message is unreachable_message (the generic "could not bracket" text);
+    # the richer "no double-counting shift attains" narration is printed separately by
+    # _report_unattainable_target on rank 0, checked below via capsys.
+    with pytest.raises(DoubleCountingUnreachable, match="Could not bracket the requested impurity occupation"):
+        fixed_occupation_dc(occupation=0.2, **kwargs)
     out = capsys.readouterr().out
     if MPI.COMM_WORLD.rank != 0:
         assert "no double-counting shift attains" not in out, out
@@ -922,7 +930,14 @@ def test_dc_criteria_pass_frozen_occupations_tau_and_symmetry_generators(monkeyp
 
     kwargs, _ = _frozen_core_kwargs()
     tau = kwargs["basis"].tau
-    call(kwargs)
+    # This fixture's fixed-occupation target (4.0, the nominal) happens to sit on a charge-sector
+    # plateau (B3: DoubleCountingUnreachable) -- irrelevant here, since find_ground_state_basis is
+    # called and spied on before the search ever raises. The call-counter proof this test exists
+    # for does not need the search to succeed.
+    try:
+        call(kwargs)
+    except DoubleCountingUnreachable:
+        pass
 
     assert calls, f"{criterion}: find_ground_state_basis was never called"
     for args, call_kwargs in calls:

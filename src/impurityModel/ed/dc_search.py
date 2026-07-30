@@ -25,6 +25,22 @@ from mpi4py import MPI
 from impurityModel.ed import config, solver_trace
 
 
+class DoubleCountingUnreachable(RuntimeError):
+    """The double-counting target could not be reached -- a modelling verdict, not a solver
+    failure.
+
+    Distinguishing this from a bare :class:`RuntimeError` is the point (B3): the observable
+    itself can also raise a bare ``RuntimeError`` on a genuine failure
+    (:func:`average.thermal_average_scale_indep`, :func:`basis_transcription.build_density_matrices`),
+    and a caller that catches ``RuntimeError`` indiscriminately cannot tell "the target is
+    unattainable with this bath/truncation" from "the solver itself broke" -- the first should
+    keep the old double counting and say so loudly; the second is a bug and should abort. Because
+    this subclasses ``RuntimeError``, existing ``except RuntimeError`` handlers still catch it
+    (nothing that worked before silently stops catching it) -- callers that need the distinction
+    catch this type *first*.
+    """
+
+
 def bracket_width_tol(tau):
     """The ``width_tol`` both DC criteria pass to :func:`_solve_dc_shift`.
 
@@ -173,14 +189,17 @@ def _solve_dc_shift(
     max_shift : float
         Scanning a direction gives up once ``|mu|`` exceeds this.
     plateau_ok : bool
-        What to do when every bracket collapses without meeting ``tol`` -- i.e. the observable
-        *steps across* the target at a charge-sector boundary instead of crossing it, so no shift
-        attains it. ``True`` returns the closer branch and reports the jump, the boundary and the
-        distance to it on rank 0 (:func:`_report_unattainable_target`); ``False`` raises
-        ``RuntimeError``, which is what ``fixed_peak_dc`` wants -- a peak position that cannot be
-        reached is a modelling error, not a tolerable miss.
+        No longer changes whether the search raises -- both branches now do (B3: a target the
+        search cannot reach must always be reported as unreachable to the caller, not just
+        printed). It still selects *which* diagnostic accompanies the raise: ``True`` reports the
+        jump, the boundary and the distance to it on rank 0
+        (:func:`_report_unattainable_target`) before raising -- what ``fixed_occupation_dc``
+        wants, since walking across sectors is deliberate there and the miss is still worth
+        narrating in detail; ``False`` raises with only ``unreachable_message``, which is what
+        ``fixed_peak_dc`` wants -- a peak position that cannot be reached is a modelling error
+        with nothing further to add.
     unreachable_message : str
-        ``RuntimeError`` message when the target cannot be reached.
+        :class:`DoubleCountingUnreachable` message when the target cannot be reached.
     rank : int
         MPI rank, for rank-0-only logging.
     comm : MPI.Comm or None
@@ -197,9 +216,11 @@ def _solve_dc_shift(
 
     Raises
     ------
-    RuntimeError
-        If the target cannot be bracketed within ``max_shift`` in either direction (or every
-        bracket collapses without meeting ``tol`` and ``plateau_ok=False``).
+    DoubleCountingUnreachable
+        If the target cannot be bracketed within ``max_shift`` in either direction, or every
+        bracket collapses without meeting ``tol`` (a charge-sector boundary the target sits
+        inside, not a root). Raised on **every** rank identically -- the residual that drives this
+        decision is broadcast, so this is not a rank-local raise.
     """
     evaluated = {}
 
@@ -270,15 +291,20 @@ def _solve_dc_shift(
     if closest_unmet is not None:
         mu, g, step = closest_unmet
         if not plateau_ok:
-            raise RuntimeError(unreachable_message.format(mu=mu, value=g + target, target=target))
+            raise DoubleCountingUnreachable(unreachable_message.format(mu=mu, value=g + target, target=target))
+        # B3: a collapsed bracket is a genuine "no solution here", not a tolerable miss -- report
+        # the diagnostic on rank 0 first (the jump, the boundary, the distance to it), then raise
+        # on EVERY rank identically (closest_unmet was built from the broadcast residual, so this
+        # decision is already rank-invariant; raising only on rank 0 would leave the others
+        # walking into _dc_search_trace's collectives alone).
         if rank == 0:
             _report_unattainable_target(mu, g, step, target, width_tol)
-        return mu
+        raise DoubleCountingUnreachable(unreachable_message.format(mu=mu, value=g + target, target=target))
 
     # Neither direction ever bracketed the target within max_shift; report the closer of the two
     # farthest points actually probed.
     best_mu, best_g = min(prev.values(), key=lambda mu_g: abs(mu_g[1]))
-    raise RuntimeError(unreachable_message.format(mu=best_mu, value=best_g + target, target=target))
+    raise DoubleCountingUnreachable(unreachable_message.format(mu=best_mu, value=best_g + target, target=target))
 
 
 def _dc_chi(samples, width_tol=0.0):

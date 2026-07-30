@@ -14,6 +14,7 @@ from impurityModel.ed.dc_reference import (  # noqa: F401
     discretized_impurity_occupation,
     report_continuum_reference,
 )
+from impurityModel.ed.dc_search import DoubleCountingUnreachable  # noqa: F401
 from impurityModel.ed.dc_static import amf_dc, fll_dc, sigma_inf_dc  # noqa: F401
 from impurityModel.ed.greens_function import (
     build_full_greens_function,

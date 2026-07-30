@@ -244,11 +244,14 @@ def fixed_peak_dc(model, basis, solver, *, peak_position, comm=None, verbosity=0
 
     Raises
     ------
-    RuntimeError
+    dc_search.DoubleCountingUnreachable
         If the requested peak cannot be bracketed within the reachable range, e.g. because the
         criterion is ill conditioned (the upper and lower sectors have the same impurity
-        occupation, so a uniform shift cannot move the peak); or if the converged ``mu`` centres
-        the peak on a non-nominal charge state and ``allow_charge_state_change`` is ``False``.
+        occupation, so a uniform shift cannot move the peak).
+    RuntimeError
+        If the converged ``mu`` centres the peak on a non-nominal charge state and
+        ``allow_charge_state_change`` is ``False`` -- a different failure mode (the target *was*
+        reached, on the wrong sector), raised directly here rather than by the shared search.
     """
     from impurityModel.ed.groundstate import calc_energy, find_ground_state_basis
 
@@ -759,8 +762,11 @@ def fixed_occupation_dc(
     residual :math:`N(\mu) - N_{target}` is monotone in ``mu`` for either target and is driven
     to zero by the search :func:`_solve_dc_shift`. At low temperature and weak
     hybridization the occupation approaches a staircase in ``mu``; if the requested (fractional)
-    occupation falls on a plateau, the search converges to the closest step and a warning is
-    printed.
+    occupation falls on a plateau -- the observable steps across the target at a charge-sector
+    boundary rather than crossing it -- the search reports the jump, the boundary and the
+    distance to it on rank 0, then raises :class:`dc_search.DoubleCountingUnreachable` (B3: a
+    target with no solution must be signalled as such to the caller, not merely narrated and
+    silently approximated).
 
     Unlike :func:`fixed_peak_dc`, the sector this search measures the occupation on is **not**
     fixed at the input ``model.impurity_orbitals``/``model.bath_states``: at every trial ``mu``
@@ -812,8 +818,10 @@ def fixed_occupation_dc(
 
     Raises
     ------
-    RuntimeError
-        If the target cannot be bracketed within ``max_shift``.
+    dc_search.DoubleCountingUnreachable
+        If the target cannot be bracketed within ``max_shift``, or the requested occupation falls
+        on a charge-sector plateau the observable steps across rather than crosses (B3: this is a
+        modelling verdict -- "no solution here" -- not a tolerable miss to approximate silently).
     """
     n_imp = len(model.impurity_indices)
     dc_guess = extract_tensors(model.dc or {}, n_orb=n_imp, two_body=False)[0]
@@ -938,12 +946,10 @@ def fixed_occupation_dc(
             print(f"  chi = dn/dmu = {chi:.4f}; delta_mu = delta_residual / chi")
         else:
             print("  chi = dn/dmu: not resolvable (no evaluated pair wider than the search's own resolution)")
-        if abs(n - target) > occ_tol:
-            print(
-                f"WARNING: the achieved occupation {n:.4f} misses the target {target:.4f} by "
-                f"more than occ_tol={occ_tol:.4f}.",
-                flush=True,
-            )
+        # No "achieved occupation misses the target" branch here (B3): _solve_dc_shift now only
+        # returns via a path where |n - target| <= occ_tol -- a miss beyond that raises
+        # DoubleCountingUnreachable instead, so this function never reaches this print with a
+        # genuine miss in hand.
         matrix_print(dc_guess, label="DC guess:")
         matrix_print(dc, label="DC found:")
     return dc

@@ -9,7 +9,7 @@ fall through to a genuine root farther out.
 import numpy as np
 import pytest
 
-from impurityModel.ed.dc_search import _solve_dc_shift
+from impurityModel.ed.dc_search import DoubleCountingUnreachable, _solve_dc_shift
 
 UNREACHABLE = "unreachable: target={target} closest={value:.4f} at mu={mu:.4f}"
 
@@ -29,32 +29,32 @@ def test_solve_dc_shift_monotone_root():
     assert np.isclose(mu, 2.5, atol=1e-6)
 
 
-def test_solve_dc_shift_staircase_plateau_ok_returns_closest():
+def test_solve_dc_shift_staircase_plateau_ok_raises_unreachable():
     # A single step at mu=3.7 (0 below, 5 above): target=2 sits strictly between the two
-    # achievable values, so no mu meets tol -- the closest step-side must be returned.
+    # achievable values, so no mu meets tol. B3: a collapsed bracket is "no solution here", so
+    # plateau_ok=True still raises -- it only changes which diagnostic precedes the raise
+    # (_report_unattainable_target's jump/boundary/distance narration, on rank 0).
     def observable(mu):
         return 0.0 if mu < 3.7 else 5.0
 
-    mu = _solve_dc_shift(
-        observable,
-        2.0,
-        tol=0.1,
-        width_tol=1e-6,
-        initial_step=1.0,
-        max_shift=20.0,
-        plateau_ok=True,
-        unreachable_message=UNREACHABLE,
-    )
-    # |0-2| < |5-2|, so the "below the step" side (mu just under 3.7) is closer.
-    assert 0.0 < mu < 3.7
-    assert np.isclose(mu, 3.7, atol=1e-4)
+    with pytest.raises(DoubleCountingUnreachable, match="unreachable"):
+        _solve_dc_shift(
+            observable,
+            2.0,
+            tol=0.1,
+            width_tol=1e-6,
+            initial_step=1.0,
+            max_shift=20.0,
+            plateau_ok=True,
+            unreachable_message=UNREACHABLE,
+        )
 
 
 def test_solve_dc_shift_staircase_plateau_not_ok_raises():
     def observable(mu):
         return 0.0 if mu < 3.7 else 5.0
 
-    with pytest.raises(RuntimeError, match="unreachable"):
+    with pytest.raises(DoubleCountingUnreachable, match="unreachable"):
         _solve_dc_shift(
             observable,
             2.0,
@@ -89,7 +89,7 @@ def test_solve_dc_shift_non_monotone_nearest_root_chosen():
 
 def test_solve_dc_shift_unreachable_raises():
     # observable(mu) = mu can never reach target=100 within max_shift=5.
-    with pytest.raises(RuntimeError, match="unreachable"):
+    with pytest.raises(DoubleCountingUnreachable, match="unreachable"):
         _solve_dc_shift(
             lambda mu: mu,
             100.0,

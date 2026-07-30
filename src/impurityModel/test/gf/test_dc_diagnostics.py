@@ -111,7 +111,14 @@ def test_the_search_reports_its_cost_when_the_knob_is_set(monkeypatch, capsys, c
     """End to end: the report names the search, counts sector solves and measures the slope."""
     monkeypatch.setenv("DC_DIAGNOSTICS", "1")
     kwargs, _ = common_kwargs(v=0.4, tau=1e-3)
-    call(kwargs)
+    # The fixed-occupation target here (1.05) sits on a charge-sector plateau (B3:
+    # DoubleCountingUnreachable) -- irrelevant to this test, which only checks that the cost
+    # report appears. _dc_search_trace reports from a `finally`, so the accounting is already
+    # printed by the time the search raises.
+    try:
+        call(kwargs)
+    except dc_search.DoubleCountingUnreachable:
+        pass
     out = capsys.readouterr().out
 
     if MPI.COMM_WORLD.rank != 0:
@@ -157,9 +164,16 @@ def test_every_rank_runs_the_same_number_of_sector_solves():
     # caller can account for a search without the search printing anything. Setting the knob
     # would make the criterion try to open its *own* trace, which now raises rather than
     # silently diverting this one (see test_tracing_refuses_to_nest).
+    # occupation=1.05 sits on a charge-sector plateau (B3: DoubleCountingUnreachable) -- the
+    # residual is broadcast, so every rank raises identically and skips the allgathers below
+    # together (no partial-collective hang); this test only needs that every rank walked the
+    # same trace before the raise, not that the search succeeded.
     with solver_trace.tracing() as trace:
         kwargs, _ = common_kwargs(v=0.4, tau=1e-3)
-        fixed_occupation_dc(**kwargs, occupation=1.05)
+        try:
+            fixed_occupation_dc(**kwargs, occupation=1.05)
+        except dc_search.DoubleCountingUnreachable:
+            pass
     counts = comm.allgather(trace.count("sector_solve"))
     assert len(set(counts)) == 1, counts
     assert counts[0] > 0
