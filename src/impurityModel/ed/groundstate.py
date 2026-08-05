@@ -46,6 +46,12 @@ from impurityModel.ed.spin_pairs import resolve_spin_pairs
 from impurityModel.ed.symmetries import extract_tensors
 from impurityModel.ed.utils import matrix_print, print_density_matrix_summary, report_banner, report_rule
 
+#: Restarted-Lanczos kernel used for every ground-state solve. One name, one place: the DC search
+#: and ``calc_gs`` have to run the *same* solver or they converge to the same eigenpairs with
+#: different truncation errors, and a charge-sector comparison decided at 1e-8 does not survive
+#: that. ``dc_criteria`` imports this rather than repeating the string.
+GS_CIPSI_SOLVER_METHOD = "trlm"
+
 
 class SectorCache:
     def __init__(self, max_size=3):
@@ -128,6 +134,7 @@ def build_basis_and_solver(
     weighted_restrictions,
     slaterWeightMin,
     sector_cache=None,
+    total_charge_slack=0,
 ):
     # Deliberately keyed on the exact per-group occupation, NOT on sector_key's (total, frozen):
     # calc_energy mutates the basis it is handed (`basis.clear(); basis.add_states(support)` at
@@ -153,6 +160,7 @@ def build_basis_and_solver(
         frozen_occupations=frozen_occupations,
         nominal_impurity_occ=N0,
         mixed_valence=mixed_valence,
+        total_charge_slack=total_charge_slack,
         tau=tau,
         chain_restrict=chain_restrict,
         truncation_threshold=truncation_threshold,
@@ -184,7 +192,7 @@ def calc_energy(
     verbose=True,
     truncation_threshold=None,
     slaterWeightMin=1e-12,
-    cipsi_solver_method="trlm",
+    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     reort="full",
     weighted_restrictions=None,
     frozen_occupations=None,
@@ -287,7 +295,11 @@ def calc_energy(
                 slaterWeightMin=slaterWeightMin,
                 solver=cipsi_solver_method,
                 reort=reort,
-                symmetry_generators=symmetry_generators,
+                # `symmetry_generators` deliberately not forwarded: CIPSISolver.expand re-derives
+                # them from the H it is actually expanding when the argument is None, which is
+                # always the right operator. Passing a set derived elsewhere risks handing it
+                # generators of a different Hamiltonian. The parameter is kept on the signature
+                # only until the plumbing is removed.
             )
 
         energy_cut = boltzmann_energy_cut(tau)
@@ -305,12 +317,31 @@ def calc_energy(
             )
         sector_fields["n_dets"] = len(basis)
         # Remember whether the truncation_threshold bound this occupation's expansion, so the
-        # caller can report a capped ground-state determination even though the final basis
-        # (reduced to the eigenstate support below) may fit under the cap.
+        # caller can report a capped ground-state determination even though the final basis may
+        # fit under the cap.
         basis.occupation_search_truncation = solver.truncation_report
-        basis.clear()
-        basis.add_states({state for psi in eigen_psis for state in psi})
-        return np.min(es), basis
+        # The basis is returned whole, NOT collapsed onto the eigenvector support. Collapsing it
+        # discarded every determinant below `slaterWeightMin` in every thermal eigenvector --
+        # and `calc_gs` runs the occupation walk at `sqrt(slaterWeightMin)` (~1e-6 for the usual
+        # 1e-12), so the cut was four orders of magnitude harder than the one the final
+        # expansion then works to. Whatever the next expansion would have to rediscover by PT2
+        # selection was thrown away first. Callers wanting the support can take it from their own
+        # eigenvectors; `find_ground_state_basis` reports the winning sector through
+        # `ground_state_occupation`, which the support could never encode anyway (the expansion
+        # widens the impurity occupation window, so it spans several occupations).
+        #
+        # Broadcast, not merely returned. A Lanczos eigenvalue is replicated across ranks only to
+        # roundoff, and every caller compares it against something: the occupation walk against
+        # the running best, `solve_ground_state` against its convergence window, and
+        # `dc_criteria._SectorContext.sector_energy` against a tolerance *derived from it*. The
+        # first two broadcast for themselves; the third did not, which made `fixed_gap_dc`'s
+        # `energy_tol` -- one percent of a gap width built from three of these -- rank-local, and
+        # `tol` gates every branch deciding whether the next collective solve happens. Enforcing
+        # it here rather than at each call site is what stops the next caller inheriting the same
+        # trap; the two existing call-site broadcasts become redundant but harmless. One float
+        # against a whole CIPSI expansion.
+        e0 = np.min(es)
+        return (e0 if comm is None else comm.bcast(e0, root=0)), basis
 
 
 def hartree_fock_seed_occupation(
@@ -385,7 +416,7 @@ def find_ground_state_basis(
     truncation_threshold=None,
     verbose=True,
     slaterWeightMin=1e-12,
-    cipsi_solver_method="trlm",
+    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     use_hf_seed=True,
     weighted_restrictions=None,
     symmetry_generators=None,
@@ -441,6 +472,9 @@ def find_ground_state_basis(
     occ_search_reports = {}
 
     sector_cache = SectorCache(max_size=3)
+    # Whole-impurity capacity: the groups redistribute charge freely at fixed total, so this --
+    # not any per-group size -- is the bound a trial total has to satisfy to be attainable.
+    max_total_impurity_occupation = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
 
     def get_energy(trial_N0):
         """
@@ -459,6 +493,28 @@ def find_ground_state_basis(
 
         nonlocal best_cached_key
 
+        # Bound on the TOTAL impurity occupation, checked BEFORE the cache lookup because the
+        # cache key *is* the total (see sector_key). An unattainable total must never be
+        # answerable from the cache: generate_initial_basis builds the window
+        # [total_nominal - total_slack, total_nominal + total_slack] and clamps each group to
+        # [0, group_size], so with mixed_valence > 0 a request for 7 electrons in 6 orbitals
+        # silently yields a basis at an attainable total and a perfectly finite energy filed
+        # under the impossible one.
+        total_occ = sum(trial_N0.values())
+        if total_occ < 0 or total_occ > max_total_impurity_occupation:
+            return np.inf
+        # Per-GROUP bounds, deliberately NOT cached (recomputing costs one loop over the groups).
+        # The key is the total, and generate_initial_basis filters only the total (the groups
+        # redistribute freely at fixed whole-impurity charge), so on group sizes (4, 6) the
+        # trials {0: 1, 1: 7} and {0: 4, 1: 4} are the same, reachable, total-8 sector and must
+        # return the same energy. Only a *frozen* group is genuinely pinned to its own
+        # occupation, so only those bounds can reject a trial.
+        for orbital_idx, occ in trial_N0.items():
+            if orbital_idx not in frozen_occupations:
+                continue
+            max_occ = sum(len(block) for block in impurity_orbitals[orbital_idx])
+            if occ < 0 or occ > max_occ:
+                return np.inf
         # Keyed on the sector, not on the split: distinct per-group splits at the same total
         # generate a bit-identical basis and are one solve (see sector_key). This is where the
         # walk's redundancy is -- the diagonal 3^k probe alone visits many splits of the same
@@ -468,17 +524,6 @@ def find_ground_state_basis(
             e_trial = energy_cache[key]
             solver_trace.note("sector_cache_hit", n0=key)
             return e_trial
-
-        # Check bounds: 0 <= occupation <= max possible orbitals.
-        # Deliberately NOT cached under `key`. The bound is per *group*, but the key is the
-        # total, and the diagonal probe generates unguarded trials: on group sizes (4, 6),
-        # {0: 1, 1: 7} is out of bounds while {0: 4, 1: 4} is the same, valid, total-8 sector.
-        # Caching inf here would hand that inf to whichever of the two the walk asked for
-        # second. Recomputing costs one loop over the groups.
-        for orbital_idx, occ in trial_N0.items():
-            max_occ = sum(len(block) for block in impurity_orbitals[orbital_idx])
-            if occ < 0 or occ > max_occ:
-                return np.inf
 
         e_trial, basis = calc_energy(
             h_op,
@@ -683,6 +728,17 @@ def find_ground_state_basis(
         print(rf"E$_{{GS}}$ = {e_gs:^7.4f}")
         print("=" * 80)
     energy_cache.clear()
+    # G4: clear the *basis* cache too, not just the energies. The call below is a deliberate
+    # rebuild at the winning occupation, but with the cache still populated it was a cache hit
+    # instead -- returning the walk's basis, already collapsed to the eigenvector support by
+    # calc_energy's tail, together with the stale `solver.psi_refs` built on the pre-collapse
+    # space (whose out-of-basis amplitudes `build_distributed_vector` then drops silently,
+    # leaving a truncated and possibly rank-deficient warm block). Whether the hit happened at
+    # all depended on how many distinct trial occupations the walk visited in between, since the
+    # cache is an LRU of size 3: same sector, two different starting spaces, decided by walk
+    # order. Collective on every rank -- `clear` nulls communicators, and both the walk above and
+    # `clear(keep=...)` below already run unconditionally here.
+    sector_cache.clear()
     e_gs, basis_gs = calc_energy(
         h_op,
         impurity_orbitals,
@@ -726,6 +782,175 @@ def find_ground_state_basis(
     return basis_gs
 
 
+def walk_to_ground_state_sector(
+    h_op,
+    impurity_orbitals,
+    bath_states,
+    N0,
+    *,
+    tau,
+    slaterWeightMin,
+    frozen_occupations=None,
+    mixed_valence=None,
+    chain_restrict=False,
+    rank=0,
+    dense_cutoff=1000,
+    spin_flip_dj=True,
+    comm=None,
+    verbose=False,
+    truncation_threshold=None,
+    weighted_restrictions=None,
+    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
+    use_hf_seed=True,
+):
+    """Step 1 of :func:`solve_ground_state`: the charge-sector walk, at its conventions.
+
+    Separated out because :func:`dc_criteria.fixed_peak_dc` needs the *sector* and nothing else --
+    the refinement and thermal manifold do not change ``ground_state_occupation``, so paying for
+    them once per trial shift would be waste. It still has to be the **same walk**, which is the
+    point of this function existing rather than a second copy of the argument mapping.
+
+    Two conventions live here and nowhere else: the walk runs at ``tau / 100`` (it only has to
+    order sectors) and at ``sqrt(slaterWeightMin)`` (the full cutoff is for the refinement). Both
+    used to be open-coded in three places, and the double-counting search had drifted on the
+    second by four orders of magnitude -- a different search, so potentially a different sector.
+    """
+    return find_ground_state_basis(
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        N0,
+        frozen_occupations=frozen_occupations,
+        mixed_valence=mixed_valence,
+        tau=tau / 100,
+        chain_restrict=chain_restrict,
+        rank=rank,
+        dense_cutoff=dense_cutoff,
+        spin_flip_dj=spin_flip_dj,
+        comm=comm,
+        verbose=verbose,
+        truncation_threshold=truncation_threshold,
+        slaterWeightMin=np.sqrt(slaterWeightMin),
+        cipsi_solver_method=cipsi_solver_method,
+        use_hf_seed=use_hf_seed,
+        weighted_restrictions=weighted_restrictions,
+    )
+
+
+def solve_ground_state(
+    h_op,
+    impurity_orbitals,
+    bath_states,
+    N0,
+    *,
+    tau,
+    slaterWeightMin,
+    frozen_occupations=None,
+    mixed_valence=None,
+    chain_restrict=False,
+    dense_cutoff=1000,
+    spin_flip_dj=True,
+    comm=None,
+    rank=0,
+    verbose=False,
+    truncation_threshold=None,
+    weighted_restrictions=None,
+    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
+    use_hf_seed=True,
+    num_wanted=10,
+    de2_min=1e-8,
+    max_num_wanted=100,
+):
+    """Find the thermal ground state: sector walk, refinement, low-energy manifold.
+
+    **The single definition of "the ground state of this model".** ``calc_gs`` and the
+    double-counting criteria in :mod:`dc_criteria` both go through here, because a ``dc``
+    measured on a different state than the one ``calc_selfenergy`` later finds does not
+    approximate the requested physics -- it locks the downstream calculation onto the wrong
+    charge state. Previously the two paths open-coded the same four steps and drifted on
+    ``slaterWeightMin`` (one passed ``sqrt``, the other the raw value -- four orders of
+    magnitude), on whether ``basis.tau`` was restored before the refinement (a hundredfold
+    difference in ``expand``'s ``de0_max``), on the eigensolver, and on how wide the thermal
+    manifold was allowed to grow. Anything that decides *which* state is found belongs in this
+    signature so the two callers cannot disagree about it again.
+
+    The four steps:
+
+    1. **Sector walk** -- :func:`find_ground_state_basis` at ``tau / 100`` and
+       ``sqrt(slaterWeightMin)``. Loose on purpose: it only has to order charge sectors, and
+       the walk is the expensive part.
+    2. **Restore ``tau``** on the basis, so the refinement's admission window
+       (``energy_cut(basis.tau)``) is the physical one rather than the walk's.
+    3. **Refine** -- one ``expand`` at the full ``slaterWeightMin`` and a tight ``de2_min``.
+    4. **Thermal manifold** -- widen ``num_wanted`` until the states within ``energy_cut`` are
+       all captured. The NiO ground state that motivated this is 3-fold quasi-degenerate, so a
+       fixed request truncates the ensemble and misreports every thermal average taken from it.
+
+    Returns
+    -------
+    (Basis, CIPSISolver, numpy.ndarray, list of ManyBodyState)
+        The basis (carrying ``ground_state_occupation``, the winning sector), the solver (carrying
+        ``truncation_report`` and ``psi_refs``), the energies and the eigenstates.
+    """
+    basis = walk_to_ground_state_sector(
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        N0,
+        tau=tau,
+        slaterWeightMin=slaterWeightMin,
+        frozen_occupations=frozen_occupations,
+        mixed_valence=mixed_valence,
+        chain_restrict=chain_restrict,
+        rank=rank,
+        dense_cutoff=dense_cutoff,
+        spin_flip_dj=spin_flip_dj,
+        comm=comm,
+        verbose=verbose,
+        truncation_threshold=truncation_threshold,
+        weighted_restrictions=weighted_restrictions,
+        cipsi_solver_method=cipsi_solver_method,
+        use_hf_seed=use_hf_seed,
+    )
+    basis.tau = tau
+    energy_cut = boltzmann_energy_cut(tau)
+    solver = CIPSISolver(basis)
+    with solver_trace.timed("expand", stage="gs_refine"):
+        solver.expand(
+            h_op,
+            dense_cutoff=dense_cutoff,
+            de2_min=de2_min,
+            slaterWeightMin=slaterWeightMin,
+            solver=cipsi_solver_method,
+            # `symmetry_generators` deliberately not passed: expand re-derives them from the H it
+            # is expanding (and the closure is opt-in, cipsi_solver.SYMMETRY_CLOSURE_DEFAULT).
+        )
+
+    wanted = num_wanted
+    while True:
+        with solver_trace.timed("eigensolve", stage="gs_thermal", num_wanted=wanted):
+            es, psis = solver.get_eigenvectors(
+                h_op,
+                num_wanted=wanted,
+                max_energy=energy_cut,
+                dense_cutoff=dense_cutoff,
+                slaterWeightMin=slaterWeightMin,
+                solver=cipsi_solver_method,
+                psi_refs=solver.psi_refs,
+            )
+        # The manifold is complete once the solver ran out of states, or the highest one found
+        # sits outside the Boltzmann window. Lanczos energies are only replicated to roundoff, so
+        # broadcast rank 0's verdict -- ranks disagreeing here issue different sequences of
+        # collective get_eigenvectors calls and deadlock (CLAUDE.md's MPI rule).
+        done = len(es) < wanted or (len(es) >= 1 and es[-1] - es[0] >= energy_cut) or wanted >= max_num_wanted
+        if basis.is_distributed:
+            done = basis.comm.bcast(done, root=0)
+        if done:
+            break
+        wanted += num_wanted
+    return basis, solver, es, psis
+
+
 def calc_gs(
     Hop: ManyBodyOperator,
     basis_setup: dict,
@@ -733,7 +958,7 @@ def calc_gs(
     rot_to_spherical: np.ndarray,
     verbose: bool,
     slaterWeightMin=0,
-    cipsi_solver_method="irlm",
+    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     num_wanted: int = 10,
     stats_path: str = "ground_state_statistics.json",
     **kwargs,
@@ -783,33 +1008,20 @@ def calc_gs(
         basis_setup["N0"] = basis_setup.pop("nominal_impurity_occ")
 
     tau = basis_setup["tau"]
-    basis_setup["tau"] /= 100
     dense_cutoff = basis_setup.get("dense_cutoff", 1000)
-    symmetry_generators = get_symmetry_generators(Hop, basis_setup["impurity_orbitals"], basis_setup["bath_states"])
-    basis_setup["symmetry_generators"] = symmetry_generators
-    ground_state_basis = find_ground_state_basis(
+    energy_cut = boltzmann_energy_cut(tau)
+    # One definition of "the ground state of this model", shared with the double-counting
+    # criteria (see solve_ground_state): it owns the tau/100 walk, the sqrt(slaterWeightMin)
+    # cutoff, the tau restore before the refinement, the eigensolver choice and the width of the
+    # thermal manifold. `basis_setup` is the caller's dict, so pass it through rather than
+    # re-listing its keys; `tau` is *not* pre-divided here any more -- solve_ground_state does it.
+    ground_state_basis, solver, es, psis = solve_ground_state(
         Hop,
         verbose=verbose,
-        slaterWeightMin=np.sqrt(slaterWeightMin),
-        cipsi_solver_method=cipsi_solver_method,
-        **basis_setup,
-    )
-
-    # if ground_state_basis.restrictions is not None:
-    # Hop.set_restrictions(ground_state_basis.restrictions)
-    ground_state_basis.tau = tau
-    energy_cut = boltzmann_energy_cut(tau)
-    solver = CIPSISolver(ground_state_basis)
-    # de2_min: per-determinant PT2 energy tolerance for the final ground-state expansion
-    # (recalibrated from 1e-6 when the de2 denominator was corrected in cipsi_solver; see
-    # calc_energy). Tighter than the occupation search so the returned GS is well-converged.
-    solver.expand(
-        Hop,
-        dense_cutoff=dense_cutoff,
-        de2_min=1e-8,
         slaterWeightMin=slaterWeightMin,
-        solver=cipsi_solver_method,
-        symmetry_generators=symmetry_generators,
+        cipsi_solver_method=cipsi_solver_method,
+        num_wanted=num_wanted,
+        **basis_setup,
     )
     # Record whether the truncation_threshold bound the ground-state determination (and how
     # the fixed-budget refinement resolved it), so a capped GS is auditable downstream
@@ -817,17 +1029,10 @@ def calc_gs(
     # The cap can bind either the final expansion here or the earlier occupation search
     # (whose final basis may then fit under the cap); report either.
     gs_truncation_report = solver.truncation_report or getattr(ground_state_basis, "occupation_search_truncation", None)
-    es, psis = solver.get_eigenvectors(
-        Hop,
-        num_wanted=num_wanted,
-        max_energy=energy_cut,
-        dense_cutoff=dense_cutoff,
-        slaterWeightMin=slaterWeightMin,
-        solver=cipsi_solver_method,
-        psi_refs=None,
-    )
-    ground_state_basis.clear()
-    ground_state_basis.add_states({state for p in psis for state in p})
+    # Redistribute onto the basis as it stands; do not first collapse it onto the support of
+    # `psis`. The basis is also the seed space for the excited/Green's-function expansion
+    # downstream, and shrinking it to the thermal eigenvectors' support throws away exactly the
+    # determinants a transition operator is most likely to reach.
     psis = ground_state_basis.redistribute_psis(*psis)
     # Shared-support block view of the same redistributed states, built once and used
     # by every observable diagnostic below (Phase 6a of the state-unification refactor,

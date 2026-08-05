@@ -412,14 +412,19 @@ DC_DIAGNOSTICS = Knob(
     kind="bool",
     default=False,
     group="double-counting",
-    doc="""Report where a fixed-occupation/fixed-peak double-counting search spends its time.
-    The search evaluates its observable dozens of times and each evaluation runs a whole
-    ground-state occupation walk underneath, so the only number visible today -- the final
-    ``dc`` -- says nothing about which of build / CIPSI expansion / diagonalization dominates,
-    nor how many sector solves were redundant. With this set, the search is wrapped in a
-    ``solver_trace.tracing()`` block and prints a per-trial-``mu`` table plus per-kind
-    aggregates and the measured ``chi = dn/dmu`` on rank 0. Off by default: the accounting is
-    free (one ``is None`` test per hook) but the report is several lines per ``mu``.""",
+    doc="""Everything about a double-counting calculation beyond its one-block result record.
+    Every criterion emits that record unconditionally (:mod:`impurityModel.ed.dc_record`); this
+    knob adds the two things too bulky to print every time. **Where the time went:** a search
+    evaluates its observable dozens of times and each evaluation runs a whole ground-state
+    occupation walk underneath, so the record's ``walltime`` says nothing about which of build /
+    CIPSI expansion / diagonalization dominates, nor how many sector solves were redundant --
+    with this set the search runs inside a ``solver_trace.tracing()`` block and prints a
+    per-trial-``mu`` table plus per-kind aggregates on rank 0. **What the dc matrix looks like:**
+    the full ``dc_guess`` and ``dc`` matrices, which the record can only summarise by their
+    per-orbital level, and which matter for a scheme whose ``dc`` is not a uniform shift
+    (``sigma_inf``, or a ``dc_guess`` arriving from RSPt). Off by default: the accounting is free
+    (one ``is None`` test per hook) but the report is several lines per ``mu`` and two complex
+    matrices per call.""",
 )
 
 

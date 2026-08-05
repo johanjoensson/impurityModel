@@ -9,10 +9,12 @@ The supported surface is deliberately small: build the impurity problem
 :class:`BasisOptions`, :class:`SolverOptions`), convert a one-particle
 Hamiltonian matrix to the operator format (:func:`matrixToIOp`), solve for
 the self-energy (:func:`calc_selfenergy`), determine the double counting
-(:func:`fixed_peak_dc`, :func:`fixed_occupation_dc`, :func:`fll_dc`,
-:func:`amf_dc`, :func:`sigma_inf_dc`, :func:`nominal_dc` -- either of the
-first two raising :class:`DoubleCountingUnreachable` when the requested
-target has no solution), diagnose the fixed-occupation criterion's DFT
+(:func:`fixed_peak_dc`, :func:`fixed_gap_dc`, :func:`fixed_occupation_dc`,
+:func:`fll_dc`, :func:`amf_dc`, :func:`sigma_inf_dc`, :func:`nominal_dc` --
+the first three raising :class:`DoubleCountingUnreachable` when the
+requested target has no solution; :func:`fixed_gap_dc` is the one to reach
+for on a charge-transfer insulator, where the occupation criterion has no
+unique solution), diagnose the fixed-occupation criterion's DFT
 reference against the continuum hybridization
 (:func:`report_continuum_reference`) and write Green's functions in RSPt's
 .dat format (:func:`save_Greens_function`).
@@ -28,12 +30,15 @@ from impurityModel.ed.model import (
     atomic_u4,
     load_selfenergy_archive,
 )
+from impurityModel.ed.dc_record import dc_levels, dc_spread
+from impurityModel.ed.dc_record import emit as emit_dc_record
 from impurityModel.ed.operator_algebra import matrixToIOp
 from impurityModel.ed.selfenergy import (
     DoubleCountingUnreachable,
     amf_dc,
     calc_selfenergy,
     discretized_impurity_occupation,
+    fixed_gap_dc,
     fixed_occupation_dc,
     fixed_peak_dc,
     fll_dc,
@@ -65,7 +70,11 @@ __all__ = [
     "atomic_u4",
     "calc_selfenergy",
     "calc_susceptibility_workflow",
+    "dc_levels",
+    "dc_spread",
     "discretized_impurity_occupation",
+    "emit_dc_record",
+    "fixed_gap_dc",
     "fixed_occupation_dc",
     "fixed_peak_dc",
     "fll_dc",

@@ -535,8 +535,24 @@ driver. Two error-propagation facts to keep in mind:
   defense and *raising* is collective (`_raise_together`) so no MPI rank deadlocks.
 
 When RSPt requests it, the solver also *determines* the double counting: shift the impurity
-levels until either a chosen spectral peak sits at a target energy (`fixed_peak_dc`) or the
-thermal impurity occupation matches a target (`fixed_occupation_dc`).
+levels until a chosen spectral peak sits at a target energy (`fixed_peak_dc`), the *midpoint* of
+the removal and addition excitations does (`fixed_gap_dc`), or the thermal impurity occupation
+matches a target (`fixed_occupation_dc`). Which of the three is appropriate depends on the
+regime: the occupation condition is Karolak et al.'s Eq. (2) and is the right one for a metal,
+but they show it "essentially breaks down" for a charge-transfer insulator -- inside a gap the
+occupation is flat in the shift, so a whole interval satisfies it -- and prescribe the gap centre
+there instead (arXiv:1004.4569; for NiO, 25.3 eV against 20.4 eV from (SC)AMF).
+
+Whichever criterion runs -- including the closed forms (`fll`, `amf`, `sigma_inf`, `nominal`),
+which need no solve at all -- the call ends by printing one delimited `key = value` record on
+rank 0 (`dc_record.py`): the criterion, its status, the shift `mu`, the resulting double counting
+(as a trace and as a per-orbital level), the charge sector it was measured on beside the nominal
+one, the gap centre and width where they exist, and `chi = d(observable)/d\mu` with the
+uncertainty it implies for the answer, `\delta\mu = \mathrm{tol}/\chi`. That last conversion is
+the one number the older output lacked: a criterion can converge its observable perfectly and
+still leave the double counting undetermined by several eV, which is precisely what happens on
+the occupation plateau above. `DC_DIAGNOSTICS=1` adds the per-`mu` cost table and the full `dc`
+matrices underneath it.
 
 ### 6.2 Practical recipe
 

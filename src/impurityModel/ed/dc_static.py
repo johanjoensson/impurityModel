@@ -12,6 +12,7 @@ is the static Hartree-Fock self-energy :func:`sigma_inf_dc` *is*.
 
 import numpy as np
 
+from impurityModel.ed import dc_record
 from impurityModel.ed.atomic_physics import uj_from_u4
 from impurityModel.ed.dc_reference import (
     _SATURATION_ADVICE,
@@ -98,6 +99,19 @@ def fll_dc(model, *, tau=0.002, n=None, u=None, j=None):
     (:func:`_noninteracting_impurity_rho`); an explicit ``N`` (together with both ``u`` and
     ``j``) needs no ``model.u4`` at all.
 
+    .. note:: **Paramagnetic (spin-blind), like** :func:`amf_dc`. The literature FLL potential is
+       spin-resolved, ``V_sigma = U(N - 1/2) - J(N_sigma - 1/2)``; setting ``N_sigma = N/2``
+       gives the scalar form implemented here, so the spin splitting
+       ``V_up - V_down = -J(N_up - N_down)`` is discarded. For a spin-polarized ground state that
+       is not small -- Ni(2+) in NiO has ``N_up - N_down ~ 1.4`` and ``J ~ 0.9 eV``, so ~1.3 eV.
+       Nothing downstream forces this: RSPt's ``sig_dc`` is a full spin-orbital matrix.
+
+    .. note:: ``N`` is the *non-interacting* occupation. In DFT+U/DFT+DMFT the FLL ``N`` is
+       conventionally the correlated impurity occupation, updated self-consistently, which makes
+       this a non-self-consistent scheme. Combined with the bath-discretization sensitivity of
+       the reference filling (see the module docstring) that is the dominant uncertainty here;
+       :func:`nominal_dc` avoids both by using the nominal integer occupation.
+
     Parameters
     ----------
     model : ImpurityModel
@@ -113,6 +127,17 @@ def fll_dc(model, *, tau=0.002, n=None, u=None, j=None):
     -------
     numpy.ndarray, shape (n_imp, n_imp)
     """
+    with dc_record.recording("fll") as record:
+        return _fll(model, record, tau=tau, n=n, u=u, j=j)
+
+
+def _fll(model, record, *, n, u, j, tau=None):
+    """:func:`fll_dc`'s formula, with the record it fills handed in.
+
+    Split out so :func:`nominal_dc` -- which *is* FLL, evaluated at the nominal occupation -- can
+    reuse the formula without emitting a second record naming the wrong criterion. Every scheme
+    emits exactly one record per public call.
+    """
     n_imp = len(model.impurity_indices)
     if u is None or j is None:
         u_auto, j_auto = _model_uj(model)
@@ -121,7 +146,11 @@ def fll_dc(model, *, tau=0.002, n=None, u=None, j=None):
     identity = np.identity(n_imp, dtype=complex)
     if n is None:
         n = _reference_impurity_occupation(model, tau)
-    return (u * (n - 0.5) - 0.5 * j * (n - 1.0)) * identity
+    dc = (u * (n - 0.5) - 0.5 * j * (n - 1.0)) * identity
+    record.update(status="closed_form", n_ref=n, u=u, j=j)
+    record["dc_trace"], record["dc_level"] = dc_record.dc_levels(dc)
+    record["dc_spread"] = dc_record.dc_spread(dc)
+    return dc
 
 
 def amf_dc(model, *, tau=0.002, n=None):
@@ -147,12 +176,17 @@ def amf_dc(model, *, tau=0.002, n=None):
     -------
     numpy.ndarray, shape (n_imp, n_imp)
     """
-    n_imp = len(model.impurity_indices)
-    u4_dense = _model_u4_dense(model)
-    identity = np.identity(n_imp, dtype=complex)
-    if n is None:
-        n = _reference_impurity_occupation(model, tau)
-    return get_Sigma_static(u4_dense, (n / n_imp) * identity)
+    with dc_record.recording("amf") as record:
+        n_imp = len(model.impurity_indices)
+        u4_dense = _model_u4_dense(model)
+        identity = np.identity(n_imp, dtype=complex)
+        if n is None:
+            n = _reference_impurity_occupation(model, tau)
+        dc = get_Sigma_static(u4_dense, (n / n_imp) * identity)
+        record.update(status="closed_form", n_ref=n)
+        record["dc_trace"], record["dc_level"] = dc_record.dc_levels(dc)
+        record["dc_spread"] = dc_record.dc_spread(dc)
+        return dc
 
 
 def nominal_dc(model, nominal_occupation, *, u=None, j=None):
@@ -182,18 +216,35 @@ def nominal_dc(model, nominal_occupation, *, u=None, j=None):
     -------
     numpy.ndarray, shape (n_imp, n_imp)
     """
-    return fll_dc(model, n=float(nominal_occupation), u=u, j=j)
+    with dc_record.recording("nominal") as record:
+        # Same key, different provenance: `n_ref` here is the integer charge state the model was
+        # set up for, not a filling read off the bath fit. The two are not comparable across
+        # records -- that is the whole reason this scheme exists -- so the record says which it is.
+        record["n_ref_kind"] = "nominal integer occupation"
+        return _fll(model, record, n=float(nominal_occupation), u=u, j=j)
 
 
 def sigma_inf_dc(model, *, tau=0.002, rho=None):
-    r"""K. Held's :math:`\Sigma(\infty)` double counting: the full static Hartree-Fock
-    self-energy matrix, ``dc = Σ_static(u4, rho_imp)``.
+    r"""Static Hartree-Fock double counting at the DFT density matrix,
+    ``dc = Σ_static(u4, rho_imp)`` -- K. Held's :math:`\Sigma(\infty)` *evaluated on the
+    uncorrelated* :math:`\rho`.
 
     Unlike :func:`amf_dc`, uses the actual (possibly anisotropic) non-interacting impurity
     density matrix rather than a uniform trial -- the two agree exactly when that density matrix
     happens to be uniform (e.g. a single, orbitally-degenerate shell), and differ whenever the
     impurity levels split. ``rho`` defaults to the DFT impurity density matrix, the Fermi
     filling of the raw ``h0`` (:func:`_noninteracting_impurity_rho`).
+
+    .. warning:: **This is not** :math:`\lim_{\omega \to \infty} \Sigma(\omega)` **of the
+       interacting impurity problem.** That limit is the Hartree-Fock contraction with the
+       *correlated* density matrix; what is computed here is Hartree-Fock at the DFT density.
+       For a uniform ``rho`` the two functions coincide with :func:`amf_dc` algebraically
+       (asserted by ``test_static_dc.py``), so on a degenerate shell this scheme *is* AMF and
+       carries none of the correlation Held's criterion is meant to capture. The genuine object
+       is available downstream and is not used here: :func:`impurityModel.ed.sigma.
+       get_Sigma_moments` returns :math:`\Sigma_\infty = M_1 - h_{corr}` from the interacting
+       Green's-function moments, and ``calc_selfenergy`` returns ``thermal_rho``. Passing that
+       ``thermal_rho`` as ``rho`` turns this into the self-consistent scheme.
 
     Parameters
     ----------
@@ -207,10 +258,18 @@ def sigma_inf_dc(model, *, tau=0.002, rho=None):
     -------
     numpy.ndarray, shape (n_imp, n_imp)
     """
-    u4_dense = _model_u4_dense(model)
-    if rho is None:
-        rho = _noninteracting_impurity_rho(model.h0, model.impurity_indices, model.n_spin_orbitals, tau)
-        _warn_if_reference_saturated(
-            float(np.real(np.trace(rho))), len(model.impurity_indices), _SATURATION_ADVICE["static"]
-        )
-    return get_Sigma_static(u4_dense, np.asarray(rho, dtype=complex))
+    with dc_record.recording("sigma_inf") as record:
+        u4_dense = _model_u4_dense(model)
+        if rho is None:
+            rho = _noninteracting_impurity_rho(model.h0, model.impurity_indices, model.n_spin_orbitals, tau)
+            _warn_if_reference_saturated(
+                float(np.real(np.trace(rho))), len(model.impurity_indices), _SATURATION_ADVICE["static"]
+            )
+        rho = np.asarray(rho, dtype=complex)
+        dc = get_Sigma_static(u4_dense, rho)
+        # The only scheme here whose dc need not be uniform: `dc_level` is then an average over an
+        # orbital-dependent potential, and DC_DIAGNOSTICS is what shows the matrix itself.
+        record.update(status="closed_form", n_ref=float(np.real(np.trace(rho))))
+        record["dc_trace"], record["dc_level"] = dc_record.dc_levels(dc)
+        record["dc_spread"] = dc_record.dc_spread(dc)
+        return dc

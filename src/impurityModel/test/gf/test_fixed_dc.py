@@ -1,5 +1,5 @@
 """
-Tests for the fixed-peak and fixed-occupation double counting criteria.
+Tests for the fixed-peak, fixed-gap and fixed-occupation double counting criteria.
 
 Analytically solvable model: two impurity spin-orbitals at energy eps with a
 Hubbard interaction U, weakly coupled (hopping v) to two valence bath
@@ -49,13 +49,18 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import find_ground_state_basis
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.model import BasisOptions, ImpurityModel, SolverOptions
+from impurityModel.ed.dc_criteria import GAP_ENERGY_TOLERANCE_FRACTION
+from impurityModel.ed.dc_search import bracket_width_tol
 from impurityModel.ed.selfenergy import (
     DoubleCountingUnreachable,
+    fixed_gap_dc,
     fixed_occupation_dc,
     fixed_peak_dc,
     occupation_and_energy_at_mu,
 )
 from impurityModel.ed.solver_basis import prepare_solver_basis
+
+from ..support.dc_records import parse_record
 
 EPS = -1.0
 U = 3.0
@@ -107,6 +112,53 @@ def common_kwargs(v, tau, dc_scale=0.5):
     return dict(model=model, basis=basis, solver=solver, comm=MPI.COMM_WORLD), dc
 
 
+def charge_transfer_kwargs(v=0.3, tau=1e-3, dc_scale=0.5, eps_cond=0.4):
+    """A model whose *empty* level nearest E_F is a **bath** level, not the impurity.
+
+    Every other fixture in this file gives the impurity two valence bath orbitals well below it and
+    no conduction bath at all (``bath_valence_conduction=([2, 3], [])``), so an electron added to
+    the cluster has nowhere to go but the impurity: ``delta_+ = 1`` by construction and the cluster
+    charge gap *is* the impurity gap. That is exactly the limit in which ``fixed_gap_dc``'s
+    conditioning claim is trivially true, and it is why the whole suite could not see that the
+    criterion measures the cluster and not the impurity.
+
+    Here a conduction bath orbital sits just above E_F at ``eps_cond``, below where the impurity
+    addition level ``eps + U - dc`` lands, with a hybridization comparable to that separation. The
+    lowest addition state is then bath-like, which is the generic situation for a real
+    bath-discretized charge-transfer insulator -- and is what a hybridization fit *puts* there.
+    """
+    n_orb = 6  # 2 impurity, 2 valence bath, 2 conduction bath
+    h0 = np.zeros((n_orb, n_orb), dtype=complex)
+    for s in range(2):
+        imp, val, cond = s, 2 + s, 4 + s
+        h0[imp, imp] = EPS
+        h0[val, val] = EPS_B
+        h0[cond, cond] = eps_cond
+        h0[imp, val] = h0[val, imp] = v
+        h0[imp, cond] = h0[cond, imp] = v
+    dc = np.identity(2, dtype=complex) * dc_scale
+    u4 = np.zeros((n_orb, n_orb, n_orb, n_orb), dtype=complex)
+    u4[0, 1, 0, 1] = U
+    u4[1, 0, 1, 0] = U
+    model = ImpurityModel.from_solver_matrix(
+        h0,
+        2,
+        dc=dc,
+        u4=u4,
+        rot_to_spherical=np.eye(2, dtype=complex),
+        bath_valence_conduction=([2, 3], [4, 5]),
+    )
+    basis = BasisOptions(
+        nominal_occ={0: 1},
+        mixed_valence=None,
+        spin_flip_dj=False,
+        tau=tau,
+        slater_weight_min=np.sqrt(np.finfo(float).eps),
+        truncation_threshold=int(1e8),
+    )
+    return dict(model=model, basis=basis, solver=SolverOptions(dense_cutoff=1000), comm=MPI.COMM_WORLD), dc
+
+
 def assert_uniform_shift(dc, dc_guess):
     """The result must be dc_guess plus a real uniform shift."""
     shift = dc - dc_guess
@@ -133,6 +185,107 @@ def test_fixed_peak_dc_removal_peak():
     # E[1] - E[0] = eps - dc = target
     expected = EPS - target
     assert np.allclose(np.diag(dc).real, expected, atol=5e-3), dc
+
+
+def test_fixed_gap_dc_centres_the_gap_on_the_fermi_level():
+    """Karolak et al.'s insulator prescription, on the model whose gap is known exactly.
+
+    At weak hopping the centre sector stays at ``N_imp = 1``, so the two excitations are the
+    addition peak ``E[2] - E[1] = eps + U - dc`` and the removal peak ``E[1] - E[0] = eps - dc``.
+    Their midpoint is ``eps + U/2 - dc``, so centring it on the Fermi level fixes
+    ``dc = eps + U/2`` -- exactly halfway between the two peak criteria's own answers, which is
+    the whole content of "put mu_dc in the middle of the gap".
+    """
+    kwargs, dc_guess = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.0)
+    dc = fixed_gap_dc(offset=0.0, **kwargs)
+    assert_uniform_shift(dc, dc_guess)
+    np.testing.assert_allclose(np.diag(dc).real, EPS + U / 2, atol=5e-3)
+
+
+def test_fixed_gap_dc_honours_an_offset():
+    """``offset`` is read exactly as ``peak_position`` is: an energy relative to E_F = 0."""
+    offset = -0.3
+    kwargs, dc_guess = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
+    dc = fixed_gap_dc(offset=offset, **kwargs)
+    assert_uniform_shift(dc, dc_guess)
+    np.testing.assert_allclose(np.diag(dc).real, EPS + U / 2 - offset, atol=5e-3)
+
+
+def test_the_gap_centre_responds_to_the_shift_with_the_slope_it_claims():
+    """The conditioning claim, measured rather than asserted.
+
+    ``d(centre)/dmu = -(delta_+ + delta_-)/2`` is documented as lying in ``[-1, -0.5]``, which is
+    what makes this criterion well conditioned where the single-pole peak criterion is not (its
+    slope ``-delta_+-`` goes *small* in the charge-transfer regime). Inverting, ``d(dc)/d(offset)
+    = 1/slope`` must lie in ``[-2, -1]``. Measured through the public API, on two offsets.
+    """
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
+    dc_a = fixed_gap_dc(offset=-0.4, **kwargs)[0, 0].real
+    dc_b = fixed_gap_dc(offset=+0.4, **kwargs)[0, 0].real
+    d_dc_d_offset = (dc_b - dc_a) / 0.8
+    assert -2.0 <= d_dc_d_offset <= -1.0 + 1e-6, d_dc_d_offset
+
+
+def test_fixed_gap_dc_reports_the_width_it_refuses_to_root_find():
+    """The width is a *second* difference of three independently truncated CIPSI energies, so it
+    is reported and never solved for. Here it is the bare Hubbard U: ``omega_+ - omega_- =
+    (eps + U - dc) - (eps - dc) = U``, independent of dc -- which is also why no shift could
+    control it even if the criterion tried."""
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.0)
+    report = {}
+    fixed_gap_dc(offset=0.0, report=report, **kwargs)
+
+    np.testing.assert_allclose(report["gap_width"], U, atol=5e-3)
+    # The residual is the midpoint of the two excitations it reports, by construction.
+    np.testing.assert_allclose(report["gap_center"], 0.5 * (report["omega_plus"] + report["omega_minus"]), atol=1e-9)
+    assert report["omega_plus"] > 0.0 > report["omega_minus"], report
+    # Separate tolerances: the energy tolerance is scaled to the measured gap, the mu resolution
+    # is not. fixed_peak_dc passes one number for both, which is what this criterion fixes.
+    np.testing.assert_allclose(report["tol"], GAP_ENERGY_TOLERANCE_FRACTION * U, rtol=0.05)
+    assert report["tol"] > bracket_width_tol(1e-3)
+
+
+def test_the_gap_centre_is_the_midpoint_of_the_two_peaks_it_is_built_from():
+    """Cross-criterion consistency, with no analytic input at all.
+
+    At the shift ``fixed_gap_dc`` returns, the addition peak sits at ``+width/2`` and the removal
+    peak at ``-width/2`` by definition of "centred". So asking ``fixed_peak_dc`` -- a different
+    residual, a different search path -- to place either of those peaks must reproduce the same
+    ``dc``. Both numbers come out of the gap criterion's own report, so this checks the two
+    criteria against each other rather than against a hand-derived formula, and it exercises the
+    real sector walk and sector solves rather than an analytic stand-in.
+    """
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.0)
+    report = {}
+    dc_gap = fixed_gap_dc(offset=0.0, report=report, **kwargs)[0, 0].real
+    half_gap = 0.5 * report["gap_width"]
+
+    dc_addition = fixed_peak_dc(peak_position=+half_gap, **kwargs)[0, 0].real
+    dc_removal = fixed_peak_dc(peak_position=-half_gap, **kwargs)[0, 0].real
+
+    np.testing.assert_allclose(dc_addition, dc_gap, atol=1e-2)
+    np.testing.assert_allclose(dc_removal, dc_gap, atol=1e-2)
+
+
+def test_fixed_gap_dc_costs_a_handful_of_solves():
+    """Every evaluation is three ground-state solves, so the count is the cost.
+
+    The gap criterion knows its slope analytically, so the first step is a Newton step rather than
+    the first rung of a geometric walk -- and on this fixture the residual is exactly linear with
+    exactly the declared slope, so that one step lands on the root and the polish settles at its
+    ``width_tol`` early return without evaluating anything.
+
+    What the count is really guarding is the other half: the criterion must not mistake its own
+    (deliberately loose) energy tolerance for a Karolak plateau and start bisecting the band's
+    edges. That mistake measured 17 evaluations against 2, and the 15 saved are bisections
+    removed, not a refinement added. The refinement itself is exercised analytically in
+    ``test_dc_search_efficiency.py``, where the residual is not linear in the declared slope.
+    """
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.0)
+    report = {}
+    fixed_gap_dc(offset=0.0, report=report, **kwargs)
+    assert report["evaluations"] <= 6, report
+    assert report["status"] != "plateau", report
 
 
 def _split_block_kwargs(dc_scale=0.0):
@@ -271,7 +424,13 @@ def test_fixed_occupation_dc_increases_occupation():
     kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
     dc = fixed_occupation_dc(occupation=2.0, **kwargs)
     assert_uniform_shift(dc, dc_guess)
-    np.testing.assert_allclose(dc[0, 0].real, 2.5, atol=0.05)
+    # 2.275, not the 2.5 the bidirectional scan used to return: the impurity saturates at 2
+    # electrons, so the criterion is met on a *plateau* rather than at a point, and the old
+    # answer was simply whichever geometric grid point first landed in it. The search now
+    # returns the plateau's near edge stood off by one `initial_step` -- closest to the
+    # double-counting guess, per the tie-break, but not within the search's own resolution
+    # of the charge-sector boundary that bounds it.
+    np.testing.assert_allclose(dc[0, 0].real, 2.275, atol=0.05)
 
 
 def test_fixed_occupation_dc_decreases_occupation():
@@ -353,7 +512,13 @@ def test_fixed_occupation_dc_self_consistent_targets_dft_occupation():
 
     dc_auto = fixed_occupation_dc(**kwargs)
     assert_uniform_shift(dc_auto, dc_guess)
-    np.testing.assert_allclose(dc_auto[0, 0].real, 2.5, atol=0.05)
+    # 2.275, not the 2.5 the bidirectional scan used to return: the impurity saturates at 2
+    # electrons, so the criterion is met on a *plateau* rather than at a point, and the old
+    # answer was simply whichever geometric grid point first landed in it. The search now
+    # returns the plateau's near edge stood off by one `initial_step` -- closest to the
+    # double-counting guess, per the tie-break, but not within the search's own resolution
+    # of the charge-sector boundary that bounds it.
+    np.testing.assert_allclose(dc_auto[0, 0].real, 2.275, atol=0.05)
 
 
 def test_saturated_reference_warns(capsys):
@@ -372,29 +537,32 @@ def test_saturated_reference_warns(capsys):
     assert "saturated" not in out
 
 
-def test_fixed_occupation_dc_reports_chi_in_its_closing_line(capsys):
-    """R3: chi actually reaches the closing report, at the production call site -- not just
-    inside `_dc_chi` itself. A unit test of `_dc_chi` cannot catch `width_tol` failing to reach
-    `_dc_search_trace` (a second copy of `max(tau, 1e-4)` silently diverging from the first is
-    exactly the class of no-op this branch has already shipped once, see `bracket_width_tol`).
+def test_fixed_occupation_dc_reports_chi_in_its_record(capsys):
+    """R3: chi actually reaches the emitted record, at the production call site -- not just inside
+    `_dc_chi` itself. A unit test of `_dc_chi` cannot catch `width_tol` failing to reach it (a
+    second copy of `max(tau, 1e-4)` silently diverging from the first is exactly the class of no-op
+    this branch has already shipped once, see `bracket_width_tol`), nor `at` being passed the wrong
+    mu, which would report a slope measured somewhere the answer is not.
     """
     # occupation=1.0 is already the guess's own occupation (see test_fixed_occupation_dc_already_
     # converged): the mu=0 fast path is taken and no second point is ever evaluated, so chi has
-    # no pair to measure -- the "not resolvable" branch, printed rather than silently skipped.
+    # no pair to measure -- the "not resolvable" branch, reported rather than silently skipped.
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
-    fixed_occupation_dc(occupation=1.0, verbosity=1, **kwargs)
+    fixed_occupation_dc(occupation=1.0, **kwargs)
     out = capsys.readouterr().out
     if MPI.COMM_WORLD.rank == 0:
-        assert "chi = dn/dmu: not resolvable" in out, out
+        assert parse_record(out)["chi"] == "not resolvable", out
 
     # occupation=2.0 walks mu away from the guess (test_fixed_occupation_dc_increases_occupation),
-    # evaluating more than one point, so a real chi must be printed with a number beside it.
+    # evaluating more than one point, so a real chi must be recorded with a number beside it.
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
-    fixed_occupation_dc(occupation=2.0, verbosity=1, **kwargs)
+    fixed_occupation_dc(occupation=2.0, **kwargs)
     out = capsys.readouterr().out
     if MPI.COMM_WORLD.rank == 0:
-        assert "chi = dn/dmu = " in out, out
-        assert "not resolvable" not in out, out
+        chi = parse_record(out)["chi"]
+        assert "not resolvable" not in chi, out
+        # And the uncertainty it implies for the answer, which is the reason it is reported at all.
+        assert "dc determined to" in chi or "dc undetermined" in chi, chi
 
 
 def test_fixed_occupation_dc_reference_ignores_dc_guess():
@@ -403,15 +571,17 @@ def test_fixed_occupation_dc_reference_ignores_dc_guess():
     # fill(h0 - dc) was ~0 -- unreachable (N_imp >= 1 here), the search failed or wandered. The
     # reference is the raw-h0 filling (N0 = 2, independent of the guess), so the search must
     # still converge somewhere on the "free bath electron" alternate-sector plateau (module
-    # docstring), the same crossing test_fixed_occupation_dc_increases_occupation hits. It need
-    # not be the *same* absolute dc from this guess: the bidirectional bracket search
-    # (_solve_dc_shift) finds whichever crossing sits nearest its own starting point, and the
-    # sector landscape here is not a single monotone staircase, so different guesses can settle
-    # on different (still N_imp = 2) crossings.
+    # docstring), the same crossing test_fixed_occupation_dc_increases_occupation hits -- and now
+    # at the *same absolute dc*, which is what this test's name has always claimed and could not
+    # previously assert. The old bidirectional scan returned whichever crossing sat nearest its
+    # own starting point, so this guess gave 5.0 where a guess of +0.5 gave 2.5. The sector-first
+    # search brackets the charge sector the criterion is solved in and then takes the plateau's
+    # near edge with a fixed standoff, which does not depend on where the scan started: guesses of
+    # -3.0, +0.5 and +3.0 all converge to within 0.13 of each other, where the old scan spread them over 2.5.
     kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2, dc_scale=-3.0)
     dc = fixed_occupation_dc(**kwargs)
     assert_uniform_shift(dc, dc_guess)
-    np.testing.assert_allclose(dc[0, 0].real, 5.0, atol=0.05)
+    np.testing.assert_allclose(dc[0, 0].real, 2.375, atol=0.05)
 
 
 @pytest.mark.mpi
@@ -423,6 +593,20 @@ def test_fixed_peak_dc_ranks_agree():
     comm = MPI.COMM_WORLD
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
     dc = fixed_peak_dc(peak_position=1.2, **kwargs)
+    gathered = comm.gather(dc, root=0)
+    if comm.rank == 0:
+        for other in gathered[1:]:
+            assert np.array_equal(dc, other), (dc, other)
+
+
+@pytest.mark.mpi
+def test_fixed_gap_dc_ranks_agree():
+    # Same hazard as the peak criterion: the gap centre is a difference of Lanczos energies,
+    # replicated only to roundoff, and it gates every branch that decides whether the next
+    # collective solve runs.
+    comm = MPI.COMM_WORLD
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+    dc = fixed_gap_dc(offset=0.0, **kwargs)
     gathered = comm.gather(dc, root=0)
     if comm.rank == 0:
         for other in gathered[1:]:
@@ -442,11 +626,245 @@ def test_fixed_occupation_dc_ranks_agree():
             assert np.array_equal(dc, other), (dc, other)
 
 
+def test_the_gap_tolerance_says_which_of_its_four_cases_produced_it(capsys):
+    """``_size_gap_tolerance`` replaced an ``abs()`` that hid two distinct failures.
+
+    Tested directly rather than through a search: reaching the negative-width and runaway-width
+    cases from a model means engineering a truncation pathology, and the point of extracting the
+    function is that the four cases are decidable from three numbers.
+    """
+    from impurityModel.ed.dc_criteria import GAP_ENERGY_TOLERANCE_FRACTION as frac
+    from impurityModel.ed.dc_criteria import _size_gap_tolerance
+
+    mu_tol, bandwidth = 1e-3, 3.0
+
+    # The ordinary case: a percent of the measured width.
+    tol, basis = _size_gap_tolerance(3.0, mu_tol, bandwidth)
+    assert basis == "measured_gap" and tol == pytest.approx(frac * 3.0)
+
+    # No width to scale against -- fall back to the mu resolution, do not invent one.
+    assert _size_gap_tolerance(None, mu_tol, bandwidth) == (mu_tol, "width_undefined")
+
+    # Negative: E[N] is not the lowest of the three sectors, so the centre walk and the sector
+    # solves disagree. `abs()` silently turned this into a slightly different tolerance; it is a
+    # diagnostic and must be said out loud.
+    tol, basis = _size_gap_tolerance(-2.0, mu_tol, bandwidth)
+    assert (tol, basis) == (mu_tol, "width_negative")
+    assert "negative" in capsys.readouterr().out
+
+    # Runaway: an inflated width would set a tolerance big enough that `abs(g0) <= tol` holds at
+    # mu = 0, and the search would return the guess unchanged after one evaluation, reporting
+    # `converged`. A no-op claiming success is the worst answer available, so it is capped.
+    tol, basis = _size_gap_tolerance(1e4, mu_tol, bandwidth)
+    assert basis == "width_capped" and tol == pytest.approx(0.1 * bandwidth)
+    assert "cannot localize mu" in capsys.readouterr().out
+
+    # The cap never bites below the mu resolution, however small the bandwidth.
+    assert _size_gap_tolerance(1e4, mu_tol, 0.0)[0] == mu_tol
+
+
+def test_the_gap_criterion_measures_its_own_impurity_character(capsys):
+    """``delta_sum`` separates the two regimes the rest of the suite could not tell apart.
+
+    Characterization, not a pass/fail claim about the physics: the point is that the criterion now
+    *reports* whether the gap it centred belongs to the impurity or to the bath, so a user is not
+    left inferring it from a slope buried in a diagnostics table.
+
+    In the near-atomic fixture the added electron can only go on the impurity, so both edges are
+    impurity-like and ``delta_sum`` sits near its maximum of 2. With a conduction bath level just
+    above E_F the addition edge is bath-like, ``delta_sum`` drops, and below
+    ``GAP_IMPURITY_CHARACTER_FLOOR`` the criterion says so out loud.
+
+    Measured on these two fixtures: **1.99 atomic against 0.797 charge-transfer** -- roughly 40%
+    impurity character per edge instead of 100%, from one conduction orbital at +0.4. NiO at a
+    small determinant cap gave 0.22. The toy does not have to be pathological to move the number,
+    which is the point: nothing about the old fixture was wrong, it simply could not vary the one
+    quantity the criterion's conditioning depends on.
+
+    Both searches run on **every** rank; only the parsing and the assertions are rank-gated. An
+    earlier version of this test put the ``rank != 0: return`` between the two searches, so rank 0
+    entered the second ``fixed_gap_dc`` -- and every collective under it -- while the other ranks
+    walked out to teardown. It hung the ``-n 2`` gate for seven minutes at 24% before ``py-spy``
+    showed rank 0 inside ``distribute_determinants`` and rank 1 already in
+    ``pytest_runtest_teardown``. Exactly the rule in CLAUDE.md, broken in a test written to check
+    something else: **never gate a collective on rank-local state.**
+    """
+    from impurityModel.ed.dc_criteria import GAP_IMPURITY_CHARACTER_FLOOR
+
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
+    fixed_gap_dc(offset=-0.4, **kwargs)
+    atomic_out = capsys.readouterr().out
+
+    kwargs, _ = charge_transfer_kwargs()
+    try:
+        fixed_gap_dc(offset=0.0, allow_charge_state_change=True, **kwargs)
+    except DoubleCountingUnreachable:
+        # A bath-like edge that does not respond to mu can also make the target unattainable;
+        # either way the record is emitted from the `finally` and carries the verdict. Raised
+        # identically on every rank (the residual is broadcast), so catching it here does not
+        # split the ranks either.
+        pass
+    transfer_out = capsys.readouterr().out
+
+    if MPI.COMM_WORLD.rank != 0:
+        return
+    atomic = float(parse_record(atomic_out)["delta_sum"].split()[0])
+    # Impurity-only addition: both edges move fully with the shift.
+    assert atomic > 1.5, atomic_out
+    assert "impurity-like" not in atomic_out, atomic_out
+
+    record = parse_record(transfer_out)
+    if "delta_sum" in record:
+        ct = float(record["delta_sum"].split()[0])
+        assert ct < atomic, f"charge-transfer delta_sum {ct} not below the atomic {atomic}"
+        if ct < GAP_IMPURITY_CHARACTER_FLOOR:
+            assert "impurity-like" in transfer_out, transfer_out
+
+
+def test_the_impurity_character_warning_fires_where_it_is_calibrated_to(capsys):
+    """The warning is tested directly, because no fixture in this file reaches it.
+
+    Both toys sit above the floor -- 1.99 near-atomic, 0.797 charge-transfer -- and the real
+    workload that motivated the whole diagnostic (NiO 15-bath, ``delta_sum = 0.218``) is far too
+    expensive to run in the suite. Testing the predicate against the numbers actually measured is
+    the honest alternative to leaving it unexercised, and it pins the calibration: the threshold
+    was first set to 0.2 and would have stayed silent on NiO by 9%.
+    """
+    from impurityModel.ed.dc_criteria import GAP_IMPURITY_CHARACTER_FLOOR as floor
+    from impurityModel.ed.dc_criteria import _warn_if_gap_edges_are_not_impurity_like as warn
+
+    # The measured NiO value must trip it. This is the regression that matters.
+    warn(0.218, rank=0)
+    out = capsys.readouterr().out
+    assert "0.218 impurity-like" in out and "bath level" in out, out
+    assert 0.218 < floor, f"floor {floor} would stay silent on NiO's measured 0.218"
+
+    # The two toys must not, or the warning becomes noise on every well-behaved model.
+    for quiet in (0.797, 1.99):
+        warn(quiet, rank=0)
+        assert capsys.readouterr().out == "", quiet
+
+    # Never on a non-root rank, and never on an unmeasured slope.
+    warn(0.01, rank=1)
+    warn(None, rank=0)
+    assert capsys.readouterr().out == ""
+
+
+def test_the_gap_criterion_records_where_its_tolerance_came_from(capsys):
+    """The four-way basis reaches the emitted record, not just the function that computed it.
+
+    Asserted on the record rather than the ``report=`` dict on purpose: the record is the channel
+    a user actually reads, and a value that never reaches it is a value nobody sees.
+    """
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+    fixed_gap_dc(offset=0.0, **kwargs)
+    out = capsys.readouterr().out
+    if MPI.COMM_WORLD.rank == 0:
+        assert parse_record(out)["tol_basis"] == "measured_gap", out
+
+
+@pytest.mark.mpi
+def test_a_rank_dependent_sector_energy_cannot_reach_the_gap_tolerance(monkeypatch):
+    """The gap criterion's *tolerance* must be rank-identical, not merely its residual.
+
+    ``fixed_gap_dc`` is the only criterion that sizes its convergence tolerance from a solver
+    output: ``energy_tol = 1% of the measured gap width``, and that width is three
+    ``calc_energy`` results. Lanczos energies are replicated only to roundoff, so an un-broadcast
+    width makes ``tol`` rank-local -- and ``tol`` gates every branch deciding whether the next
+    collective solve happens (``abs(g0) <= tol`` at ``dc_search``'s fast path is the sharpest:
+    one rank returns immediately, the other runs the whole search).
+
+    **Why this asserts the invariant rather than the symptom.** The symptom is a *hang*, which no
+    assertion can catch -- the test would never fail, it would stop. So the property under test is
+    the one that makes the hang impossible: inject a rank-dependent perturbation *below* the
+    broadcast boundary and require the derived tolerance to come out bit-for-bit identical anyway.
+    ``1e-12`` is chosen deliberately: large enough that an un-broadcast ``tol`` differs in the
+    bits (the assertion is ``==``, not ``approx``), far too small to flip any ``abs(g) <= tol``
+    test on this fixture and so incapable of turning a red test into a hung one.
+
+    The perturbation is **multiplicative**, and that is not incidental. The gap width is the
+    second difference ``E[N+1] + E[N-1] - 2 E[N]``, in which any rank-dependent *constant* cancels
+    exactly -- an additive probe leaves the width bit-identical and the test passes without
+    testing anything. Scaling each energy instead survives the second difference.
+    """
+    from impurityModel.ed import groundstate as gs_module
+
+    comm = MPI.COMM_WORLD
+    if comm.size < 2:
+        pytest.skip("needs at least 2 ranks")
+
+    real_calc_energy = gs_module.calc_energy
+
+    def perturbed(*args, **kwargs):
+        energy, basis = real_calc_energy(*args, **kwargs)
+        return energy * (1.0 + comm.rank * 1e-12), basis
+
+    # `calc_energy` is imported function-locally by `_SectorContext.sector_energy`, so patching
+    # the module attribute is picked up -- and it patches *below* the boundary that has to
+    # broadcast, which is what makes the perturbation observable at all.
+    monkeypatch.setattr(gs_module, "calc_energy", perturbed)
+
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+    report = {}
+    fixed_gap_dc(offset=0.0, report=report, **kwargs)
+
+    # `tol`, not `energy_tol`: the criterion's out-parameter *is* its record now, one vocabulary
+    # across both channels. This test read the old private name and kept passing until V5's rename
+    # landed -- which is itself the argument for not having had two sets of names.
+    for key in ("tol", "gap_width", "sector"):
+        gathered = comm.allgather(report[key])
+        assert len(set(gathered)) == 1, f"{key} is not rank-identical: {gathered}"
+
+
+@pytest.mark.mpi
+def test_calc_energy_returns_a_bitwise_identical_energy_on_every_rank():
+    """The invariant one layer down, stated where it belongs.
+
+    Three call sites consume ``calc_energy``'s energy and two of them broadcast it themselves
+    (``groundstate.py``'s walk and ``solve_ground_state``). The third -- ``_SectorContext`` -- did
+    not, which is how the gap tolerance became rank-local. Enforcing it at the source is what
+    stops the next caller inheriting the same trap.
+    """
+    from impurityModel.ed.groundstate import calc_energy
+
+    comm = MPI.COMM_WORLD
+    if comm.size < 2:
+        pytest.skip("needs at least 2 ranks")
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    sb = prepare_solver_basis(
+        kwargs["model"].h0,
+        kwargs["model"].dc,
+        kwargs["model"].u4,
+        kwargs["model"].impurity_orbitals,
+        kwargs["basis"].nominal_occ,
+        kwargs["basis"].mixed_valence,
+        kwargs["model"].rot_to_spherical,
+        0,
+    )
+    energy, _ = calc_energy(
+        sb.h,
+        sb.impurity_orbitals,
+        sb.bath_states,
+        sb.nominal_occ,
+        sb.mixed_valence,
+        kwargs["basis"].tau,
+        kwargs["basis"].chain_restrict,
+        kwargs["basis"].spin_flip_dj,
+        kwargs["solver"].dense_cutoff,
+        comm=comm,
+        verbose=False,
+    )
+    gathered = comm.allgather(energy)
+    assert len(set(gathered)) == 1, f"calc_energy is not rank-replicated: {gathered}"
+
+
 @pytest.mark.mpi
 @pytest.mark.parametrize(
     "criterion, call",
     [
         ("peak", lambda kw: fixed_peak_dc(peak_position=1.2, **kw)),
+        ("gap", lambda kw: fixed_gap_dc(offset=0.0, **kw)),
         ("occupation", lambda kw: fixed_occupation_dc(occupation=2.0, **kw)),
     ],
 )
@@ -540,6 +958,15 @@ def test_fixed_occupation_dc_derives_cap_when_threshold_is_none(monkeypatch):
 
 
 def test_fixed_peak_dc_derives_cap_when_threshold_is_none(monkeypatch):
+    """And derives it at the **full** safety fraction, like every other driver.
+
+    This used to halve it, on the grounds that the two N+-1 solves were live alongside the centre
+    search's basis. They are not -- `centre_sector` and `sector_energy` each discard their basis
+    before the next solve starts, so exactly one is live at a time and the peak is the centre
+    walk's own SectorCache, which is the peak `calc_gs` has too. The halving measured the double
+    counting on half the determinant budget the self-energy run would use at that same dc: a
+    DC<->GS parity break, in the module whose whole purpose is closing those.
+    """
     import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
@@ -560,7 +987,7 @@ def test_fixed_peak_dc_derives_cap_when_threshold_is_none(monkeypatch):
     # explicitly into every find_ground_state_basis/calc_energy call the walk makes), and every
     # trial basis carries its cap.
     assert len(calls) == 1
-    assert calls[0]["safety"] == pytest.approx(dc_module.DEFAULT_MEMORY_SAFETY / 2)
+    assert calls[0]["safety"] == pytest.approx(dc_module.DEFAULT_MEMORY_SAFETY)
     assert captured
     assert all(b.truncation_threshold == 50 for b in captured)
 
@@ -663,7 +1090,13 @@ def test_dc_search_excitation_budget_binds():
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
     kwargs["basis"] = replace(kwargs["basis"], excitation_budget=0)
     dc = fixed_occupation_dc(occupation=2.0, **kwargs)
-    np.testing.assert_allclose(dc[0, 0].real, 2.5, atol=0.05)
+    # 2.275, not the 2.5 the bidirectional scan used to return: the impurity saturates at 2
+    # electrons, so the criterion is met on a *plateau* rather than at a point, and the old
+    # answer was simply whichever geometric grid point first landed in it. The search now
+    # returns the plateau's near edge stood off by one `initial_step` -- closest to the
+    # double-counting guess, per the tie-break, but not within the search's own resolution
+    # of the charge-sector boundary that bounds it.
+    np.testing.assert_allclose(dc[0, 0].real, 2.275, atol=0.05)
 
 
 def test_dc_search_chain_restrict_forwarded(monkeypatch):
@@ -904,6 +1337,7 @@ def _bath_total(group, valence_baths, conduction_baths):
         # This test is about the three inputs reaching find_ground_state_basis, not about the
         # landed charge state -- opt out of R2's charge-state guard.
         ("fixed-peak", lambda kw: fixed_peak_dc(peak_position=0.5, allow_charge_state_change=True, **kw)),
+        ("fixed-gap", lambda kw: fixed_gap_dc(offset=0.0, allow_charge_state_change=True, **kw)),
     ],
 )
 def test_dc_criteria_pass_frozen_occupations_tau_and_symmetry_generators(monkeypatch, criterion, call):
@@ -950,25 +1384,40 @@ def test_dc_criteria_pass_frozen_occupations_tau_and_symmetry_generators(monkeyp
         # calc_gs's own convention: the walk runs at tau/100, restored to the full tau
         # everywhere else (see the module warning in dc_criteria.py).
         assert call_kwargs["tau"] == pytest.approx(tau / 100), (criterion, call_kwargs["tau"])
-        assert call_kwargs["symmetry_generators"] is not None, criterion
+        # calc_gs runs the walk at sqrt(slaterWeightMin) and only tightens to the full cutoff
+        # for the refinement; a walk run four orders of magnitude tighter is a different search
+        # and can settle on a different sector.
+        assert call_kwargs["slaterWeightMin"] == pytest.approx(np.sqrt(kwargs["basis"].slater_weight_min)), (
+            criterion,
+            call_kwargs["slaterWeightMin"],
+        )
+        # Stale symmetry generators must NOT be threaded down. CIPSISolver.expand re-derives them
+        # from the H it is actually expanding whenever the argument is None (cipsi_solver.py),
+        # which is the only operator they can correctly come from; calc_gs does not forward them
+        # either. Passing a set computed elsewhere is how the two paths drifted apart.
+        assert "symmetry_generators" not in call_kwargs, criterion
 
 
-def test_fixed_peak_dc_rejects_a_non_nominal_charge_state_by_default():
-    """R2: the peak criterion is multivalued, and a surprise charge state must not pass silently.
+def test_fixed_peak_dc_targets_the_nominal_charge_state_by_default():
+    """The peak criterion is multivalued, and the default must resolve that in the user's favour.
 
-    ``_frozen_core_kwargs`` at ``peak_position=0.5`` is known (from the parametrized capture test
-    above) to converge with ``n_center=2`` against a nominal total of 4 -- exactly the surprise
-    this guard exists to catch. The default must reject it with a message actionable enough to
-    name both numbers and the opt-out; passing ``allow_charge_state_change=True`` must accept the
-    identical result.
+    The same requested peak position is attained at several charge states, several eV apart in
+    ``dc``. The old bidirectional scan returned whichever sat nearest ``mu = 0`` -- on this fixture
+    ``n_center = 2`` against a nominal total of 4 -- and the guard could only notice afterwards and
+    refuse.
+
+    Sector-first makes it a choice rather than an accident: the search locates a ``mu`` where the
+    walk lands in the nominal sector and solves the criterion inside it, stepping by a secant on a
+    residual whose slope it knows (``d(E_upper - E_lower)/dmu ~ -1``). It now returns the nominal
+    charge state, in three evaluations. The guard still stands behind it for the case where the
+    criterion genuinely has no solution there and the search has to widen.
     """
     kwargs, _ = _frozen_core_kwargs()
+    nominal_total = sum(kwargs["basis"].nominal_occ.values())
 
-    with pytest.raises(RuntimeError, match="charge state"):
-        fixed_peak_dc(peak_position=0.5, **kwargs)
-
-    dc = fixed_peak_dc(peak_position=0.5, allow_charge_state_change=True, **kwargs)
+    dc, sector = fixed_peak_dc(peak_position=0.5, return_sector=True, **kwargs)
     assert dc.shape == (6, 6)
+    assert sector == nominal_total, f"default landed on charge state {sector}, not the nominal {nominal_total}"
 
 
 def test_fixed_peak_dc_accepts_the_nominal_charge_state_by_default():
@@ -1042,9 +1491,7 @@ def test_fixed_occupation_dc_does_not_warn_at_the_nominal_sector(capsys):
     """The ordinary case (the walk never leaves the nominal sector) must not print the warning."""
     kwargs, _dc_guess = common_kwargs(v=0.3, tau=1e-2)
     basis = kwargs["basis"]
-    n0, _e0, sector = occupation_and_energy_at_mu(
-        kwargs["model"], basis, kwargs["solver"], 0.0, comm=kwargs["comm"]
-    )
+    n0, _e0, sector = occupation_and_energy_at_mu(kwargs["model"], basis, kwargs["solver"], 0.0, comm=kwargs["comm"])
     assert sector == sum(basis.nominal_occ.values()), "fixture unexpectedly left the nominal sector at mu=0"
 
     fixed_occupation_dc(occupation=n0, verbosity=1, **kwargs)
@@ -1172,3 +1619,56 @@ def test_report_continuum_reference_silent_off_root(capsys):
     report = report_continuum_reference(h_dft, hyb, hyb, w, 0.01, tau, n0_disc, rank=1)
     assert report is None
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    "criterion, call",
+    [
+        ("fixed-occupation", lambda kw: fixed_occupation_dc(occupation=2.0, return_sector=True, **kw)),
+        (
+            "fixed-peak",
+            lambda kw: fixed_peak_dc(peak_position=0.5, allow_charge_state_change=True, return_sector=True, **kw),
+        ),
+        (
+            "fixed-gap",
+            lambda kw: fixed_gap_dc(offset=0.0, allow_charge_state_change=True, return_sector=True, **kw),
+        ),
+    ],
+)
+def test_the_criteria_report_the_sector_they_settled_on(criterion, call):
+    """The sector is half the answer, and the caller needs it.
+
+    A double counting is only meaningful if the following ``calc_selfenergy`` lands on the state
+    it was measured against, and the charge sector is the one part of that which is a *discrete*
+    choice -- a small change in the incoming hybridization can flip it. The interface persists
+    this and seeds the next solve with it (``impmod_interface``'s ``_double_counting_sector``),
+    so it has to come back out rather than being printed and discarded.
+    """
+    kwargs, _ = _frozen_core_kwargs()
+    try:
+        result = call(kwargs)
+    except (DoubleCountingUnreachable, RuntimeError):
+        pytest.skip(f"{criterion}: this fixture does not converge; the return shape is tested elsewhere")
+
+    assert isinstance(result, tuple) and len(result) == 2, f"{criterion}: expected (dc, sector), got {type(result)}"
+    dc, sector = result
+    assert dc.shape[0] == dc.shape[1], criterion
+    assert isinstance(sector, (int, np.integer)), f"{criterion}: sector {sector!r} is not an integer charge state"
+    assert sector >= 0, criterion
+
+
+@pytest.mark.parametrize(
+    "criterion, call",
+    [
+        ("fixed-occupation", lambda kw: fixed_occupation_dc(occupation=2.0, **kw)),
+        ("fixed-peak", lambda kw: fixed_peak_dc(peak_position=0.5, allow_charge_state_change=True, **kw)),
+        ("fixed-gap", lambda kw: fixed_gap_dc(offset=0.0, allow_charge_state_change=True, **kw)),
+    ],
+)
+def test_the_sector_is_opt_in_so_existing_callers_keep_a_bare_matrix(criterion, call):
+    kwargs, _ = _frozen_core_kwargs()
+    try:
+        result = call(kwargs)
+    except (DoubleCountingUnreachable, RuntimeError):
+        pytest.skip(f"{criterion}: this fixture does not converge")
+    assert not isinstance(result, tuple), f"{criterion}: default return changed shape"

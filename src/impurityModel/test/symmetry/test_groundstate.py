@@ -3,10 +3,38 @@ import pytest
 from mpi4py import MPI
 
 import impurityModel.ed.groundstate as groundstate
+import impurityModel.ed.product_state_representation as psr
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.block_structure import BlockStructure
+from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import calc_energy, calc_gs, find_ground_state_basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+
+
+def ground_state_support(basis, h_op, dense_cutoff=10):
+    """Occupied-orbital tuples carrying amplitude in the ground state on ``basis``.
+
+    ``find_ground_state_basis`` returns the basis whole; it no longer collapses it onto the
+    eigenvector support (that cut determinants at ``sqrt(slaterWeightMin)`` before the final
+    expansion could use them, and made a cached basis path-dependent). So a test that means
+    "the search found *this* ground state" has to solve for the eigenvector and look at its
+    support, rather than read the basis size.
+    """
+    solver = CIPSISolver(basis)
+    _es, psis = solver.get_eigenvectors(h_op, num_wanted=1, dense_cutoff=dense_cutoff)
+    # The state is defined on the whole basis, so iterating it yields every determinant
+    # including the ones with zero amplitude; the support is the ones actually carrying weight.
+    local = {
+        psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64)
+        for state, amplitude in psis[0].items()
+        if np.linalg.norm(amplitude) > 1e-8
+    }
+    if not basis.is_distributed:
+        return local
+    # Determinants are hash-distributed, one owner each, so each rank sees only its own slice of
+    # the support -- a rank owning none of it would read an empty set as "wrong ground state".
+    # Allgather (collective, and every rank reaches it) and take the union.
+    return set().union(*basis.comm.allgather(local))
 
 
 @pytest.mark.mpi
@@ -263,14 +291,12 @@ def test_find_ground_state_basis_serial():
         truncation_threshold=1000,
         slaterWeightMin=1e-12,
     )
-    import impurityModel.ed.product_state_representation as psr
-
     assert basis is not None
-    assert len(basis) == 1
-    state = next(iter(basis))
     # N0={0:2}: the two-electron ground state fills the two lowest (negative-energy) orbitals
-    # (-1.0 + -0.5 = -1.5).
-    np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0, 1))
+    # (-1.0 + -0.5 = -1.5). The Hamiltonian is diagonal, so that single determinant carries the
+    # whole ground state.
+    assert ground_state_support(basis, Hop) == {(0, 1)}
+    assert basis.ground_state_occupation == {0: 2}
 
 
 def test_find_ground_state_basis_walk_rescues_seed_off_by_two(monkeypatch):
@@ -307,13 +333,10 @@ def test_find_ground_state_basis_walk_rescues_seed_off_by_two(monkeypatch):
     basis_walked = find_ground_state_basis(use_hf_seed=True, **common_kwargs)
     basis_scanned = find_ground_state_basis(use_hf_seed=False, **common_kwargs)
 
-    import impurityModel.ed.product_state_representation as psr
-
     for basis in (basis_walked, basis_scanned):
         assert basis is not None
-        assert len(basis) == 1
-        state = next(iter(basis))
-        np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0, 1))
+        assert ground_state_support(basis, Hop) == {(0, 1)}
+        assert basis.ground_state_occupation == {0: 2}
 
 
 @pytest.mark.mpi
@@ -342,14 +365,11 @@ def test_find_ground_state_basis_mpi():
         truncation_threshold=1000,
         slaterWeightMin=1e-12,
     )
-    import impurityModel.ed.product_state_representation as psr
-
     assert basis is not None
-    assert len(basis) == 1
-    state = next(iter(basis))
     # N0={0:2}: the two-electron ground state fills the two lowest (negative-energy) orbitals
     # (-1.0 + -0.5 = -1.5).
-    np.testing.assert_equal(psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64), (0, 1))
+    assert ground_state_support(basis, Hop) == {(0, 1)}
+    assert basis.ground_state_occupation == {0: 2}
 
 
 def test_calc_gs_options_serial():

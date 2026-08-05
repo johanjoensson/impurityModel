@@ -83,6 +83,7 @@ class Basis:
         bath_states,
         nominal_impurity_occ=None,
         mixed_valence=None,
+        total_charge_slack=0,
         initial_basis=None,
         restrictions=None,
         weighted_restrictions=None,
@@ -111,7 +112,11 @@ class Basis:
         nominal_impurity_occ : dict, optional
             Nominal impurity occupations.
         mixed_valence : dict, optional
-            Mixed valence bounds.
+            Impurity charge fluctuation against the bath, at fixed total electron number.
+        total_charge_slack : int, optional
+            Half-width of the *total charge* window; ``0`` (the default) keeps the basis a
+            single charge sector. See
+            :func:`impurityModel.ed.basis_generation.generate_initial_basis`.
         initial_basis : list of SlaterDeterminant or bytes, optional
             Predefined initial states.
         restrictions : dict, optional
@@ -188,6 +193,7 @@ class Basis:
                 n_bytes=self.n_bytes,
                 verbose=verbose,
                 frozen_occupations=frozen_occupations,
+                total_charge_slack=total_charge_slack,
             )
         self.impurity_orbitals = impurity_orbitals
         self.bath_states = bath_states

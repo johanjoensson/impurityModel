@@ -12,6 +12,7 @@ from impurityModel.ed.basis_transcription import (
     build_vector,
 )
 from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 
@@ -1374,7 +1375,9 @@ def test_eg_t2g_CIPSI_basis_expand():
     solver = CIPSISolver(basis)
     solver.truncate_initial(Hop)
 
-    solver.expand(Hop)
+    # The symmetry closure is opt-in (cipsi_solver.SYMMETRY_CLOSURE_DEFAULT): under a budget it
+    # costs variational energy, so callers ask for it. This test is about the closure, so it asks.
+    solver.expand(Hop, symmetry_generators=get_symmetry_generators(Hop, basis.impurity_orbitals, basis.bath_states))
 
     expected = build_states([b"\x80\x00", b"\x08\x00"])
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
@@ -1417,7 +1420,9 @@ def test_eg_t2g_CIPSI_basis_expand_mpi():
     solver = CIPSISolver(basis)
     solver.truncate_initial(Hop)
 
-    solver.expand(Hop)
+    # The symmetry closure is opt-in (cipsi_solver.SYMMETRY_CLOSURE_DEFAULT): under a budget it
+    # costs variational energy, so callers ask for it. This test is about the closure, so it asks.
+    solver.expand(Hop, symmetry_generators=get_symmetry_generators(Hop, basis.impurity_orbitals, basis.bath_states))
     # expect 10000  00001  00000  00000
     #        00000  00000  10000  00001
 

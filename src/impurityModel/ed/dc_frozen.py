@@ -28,9 +28,11 @@ root and read :math:`\chi` cheaply, then confirm with the true, re-expanding obs
 :math:`E_0(\mu) = \min_{\|\psi\|=1} \langle\psi|H(0)|\psi\rangle - \mu\langle\psi|\hat N|\psi\rangle`
 is a minimum of affine functions of :math:`\mu`, hence **concave**, with
 :math:`-dE_0/d\mu = n(\mu)`, hence :math:`n(\mu)` **non-decreasing**. Neither holds for the
-re-expanding observable, which is why the production search assumes no monotonicity. Both are
-pinned as tests, along with the sharper statement that on a *pure* sector the shift is exactly
-affine to machine precision.
+re-expanding observable, which re-selects both the CIPSI space and the charge sector at every
+:math:`\mu`. The production search (:mod:`dc_search`) does not assume they do: it leans on the
+one thing that *is* monotone there, the integer charge sector, and only claims smoothness of the
+residual *inside* one. Both properties are pinned as tests here, along with the sharper statement
+that on a *pure* sector the shift is exactly affine to machine precision.
 """
 
 import numpy as np

@@ -6,6 +6,7 @@ from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 # calc_selfenergy's calls and existing selfenergy.<name> callers (and their test patches) resolve
 # here unchanged.
 from impurityModel.ed.dc_criteria import (  # noqa: F401
+    fixed_gap_dc,
     fixed_occupation_dc,
     fixed_peak_dc,
     occupation_and_energy_at_mu,
@@ -121,7 +122,10 @@ def _self_energy_on_mesh(
                 check_greens_function(sig)
         except UnphysicalGreensFunctionError as err:
             for i, sig in enumerate(sigma):
-                save_Greens_function(sig, mesh, f"sig+dc-{i}", cluster_label)
+                # "sig", not "sig+dc": the returned self-energy is the pure interaction term.
+                # The double counting is already removed from the operator it is extracted
+                # against (SolverBasis.h0_solve) and is applied to the lattice by RSPt.
+                save_Greens_function(sig, mesh, f"sig-{i}", cluster_label)
             message = f"{label} self-energy:\n" + str(err)
     _raise_together(comm, message)
     return sigma

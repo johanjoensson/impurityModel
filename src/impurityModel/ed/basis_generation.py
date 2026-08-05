@@ -22,6 +22,7 @@ def generate_initial_basis(
     n_bytes: int,
     verbose: bool,
     frozen_occupations: Optional[set] = None,
+    total_charge_slack: int = 0,
 ) -> tuple[list[SlaterDeterminant], int]:
     """Construct the initial basis of Slater determinants.
 
@@ -40,7 +41,10 @@ def generate_initial_basis(
     nominal_impurity_occ : dict
         Nominal impurity occupations.
     mixed_valence : dict
-        Allowed mixed valence variations.
+        Per group, how far the *impurity* occupation may fluctuate around its nominal value.
+        Realised as charge transfer with the bath, so the total electron number is unchanged;
+        a value of ``k`` buys ``k`` bath charge-transfer excitations. Use ``total_charge_slack``
+        for the different question of spanning several total-charge sectors.
     verbose : bool
         Whether to print configuration details.
     frozen_occupations : set, optional
@@ -50,6 +54,15 @@ def generate_initial_basis(
         total filter alone lets a core shell drain into a lower-lying valence shell
         (2p4 3d10 on the NiO L-edge), and since no Hamiltonian term moves charge
         between shells, the drained sector is H-disconnected from the physical one.
+    total_charge_slack : int, optional
+        Half-width, in electrons, of the *total charge* window. ``0`` (the default) makes the
+        basis a single charge sector, which is what every energy comparison needs: ``H``
+        conserves ``N``, so a basis spanning several sectors makes ``calc_energy(N0)`` report
+        the minimum over the window rather than the energy of ``N0``. Only a caller that
+        deliberately wants a multi-sector space -- :func:`dc_criteria.build_union_space`, which
+        sweeps ``H(mu) = H(0) - mu*N`` on one fixed space -- should set it non-zero. It is a
+        different concept from ``mixed_valence``, which fluctuates the *impurity* charge against
+        the bath at fixed total.
 
     Returns
     -------
@@ -73,6 +86,27 @@ def generate_initial_basis(
     if frozen_occupations is None:
         frozen_occupations = set()
 
+    # Mixed valence is charge transfer *with the bath*, not charge from nowhere. An impurity
+    # occupation of ``nominal + d`` has to be paid for by d electrons taken off the valence bath
+    # (or put onto the conduction bath) -- which is precisely what the ``delta_*`` mechanism
+    # below does, and what keeps the total electron number fixed. Widening the ``nominal_occ``
+    # loop instead created determinants at several total electron numbers; since H conserves N,
+    # ``calc_energy`` then returned the minimum over the whole window rather than the energy of
+    # the requested sector, and ``fixed_peak_dc``'s observable ``E[N+1] - E[N]`` collapsed to
+    # exactly 0.0. Fold the requested window into the bath-transfer windows and keep the nominal
+    # impurity charge pinned.
+    # The excitation budget stays honest: a mixed valence of k buys k bath charge-transfer
+    # excitations, so it reaches impurity occupations nominal +/- k but does not smuggle in the
+    # charge-neutral (valence -> conduction) double excitation that widening all three windows
+    # independently would allow. The caller's own dN windows are untouched -- their pairwise sum
+    # is already their bound -- so dN behaviour is bit-identical.
+    excitation_budget = {
+        i: max(delta_valence_occ[i] + delta_conduction_occ[i], abs(mixed_valence[i])) for i in impurity_orbitals
+    }
+    delta_valence_occ = {i: max(delta_valence_occ[i], abs(mixed_valence[i])) for i in impurity_orbitals}
+    delta_conduction_occ = {i: max(delta_conduction_occ[i], abs(mixed_valence[i])) for i in impurity_orbitals}
+    delta_impurity_occ = {i: max(delta_impurity_occ[i], abs(mixed_valence[i])) for i in impurity_orbitals}
+
     total_impurity_orbitals = {i: sum(len(orbs) for orbs in impurity_orbitals[i]) for i in impurity_orbitals}
     # Per group, materialise the allowed configurations tagged with their impurity
     # occupation, as (impurity_occupation, occupied_orbital_tuple). Materialising (rather
@@ -82,19 +116,23 @@ def generate_initial_basis(
     # When the impurity is split into several orbital-symmetry manifolds (this grouping), they
     # are one correlated shell that must freely redistribute charge among manifolds at fixed
     # *total* occupation. A single group already enumerates every whole-impurity arrangement
-    # through ``combinations`` below, so its per-group occupation stays pinned to
-    # ``nominal +/- mixed_valence`` (preserving the seed count for the un-grouped case); but with
-    # >= 2 groups each group's occupation ranges over the whole [0, group_size] and the
-    # cross-group *total* filter keeps only the arrangements in the occupation window. Gating the
-    # per-group range by ``mixed_valence[i]`` in the grouped case instead pins each manifold and
-    # collapses the seed to a single frozen configuration -- the NiO covalency / magnetic-moment
-    # regression. ``mixed_valence`` still widens the *total* window via ``total_slack``.
-    # Frozen shells never redistribute (their window is pinned below) and contribute no
-    # slack to the total window.
+    # through ``combinations`` below, so its per-group nominal stays pinned; but with >= 2 groups
+    # each group's occupation ranges over the whole [0, group_size] and the cross-group *total*
+    # filter keeps only the arrangements in the occupation window. Gating the per-group range in
+    # the grouped case instead pins each manifold and collapses the seed to a single frozen
+    # configuration -- the NiO covalency / magnetic-moment regression. Redistribution moves charge
+    # between manifolds and so leaves the electron count alone; the total-electron filter at the
+    # DFS leaf is what stops the sliding nominal from changing it. Frozen shells never
+    # redistribute (their window is pinned below) and contribute no slack to the total window.
     redistribute = len([i for i in impurity_orbitals if i not in frozen_occupations]) > 1
     total_nominal = sum(int(nominal_impurity_occ[i]) for i in valence_baths)
-    total_slack = max(
-        (abs(mixed_valence[i]) + abs(delta_impurity_occ[i]) for i in valence_baths if i not in frozen_occupations),
+    # ``mixed_valence`` was folded into ``delta_impurity_occ`` above, so it is not added again
+    # here. The two contributions are independent questions -- how far the impurity charge may
+    # fluctuate against the bath, and how many total-charge sectors the space spans -- so the
+    # impurity-charge window has to admit both. Only the latter loosens the electron-count filter
+    # at the DFS leaf, which stays the binding constraint.
+    total_slack = total_charge_slack + max(
+        (abs(delta_impurity_occ[i]) for i in valence_baths if i not in frozen_occupations),
         default=0,
     )
     group_configurations = {}
@@ -106,11 +144,15 @@ def generate_initial_basis(
         if i in frozen_occupations:
             occ_lo = occ_hi = nominal_impurity_occ[i]
         else:
-            occ_lo = 0 if redistribute else max(0, nominal_impurity_occ[i] - abs(mixed_valence[i]))
+            # Pinned unless the groups redistribute among themselves: the impurity charge window
+            # is generated by the delta_* (bath charge-transfer) loops below, at fixed total
+            # electron number, not by sliding this nominal. Sliding it is what changes the total,
+            # so it is allowed only by exactly as much as `total_charge_slack` permits.
+            occ_lo = 0 if redistribute else max(0, nominal_impurity_occ[i] - total_charge_slack)
             occ_hi = (
                 total_impurity_orbitals[i]
                 if redistribute
-                else min(total_impurity_orbitals[i], nominal_impurity_occ[i] + abs(mixed_valence[i]))
+                else min(total_impurity_orbitals[i], nominal_impurity_occ[i] + total_charge_slack)
             )
         for nominal_occ in range(occ_lo, occ_hi + 1):
             for delta_valence in range(delta_valence_occ[i] + 1):
@@ -118,6 +160,7 @@ def generate_initial_basis(
                     delta_impurity = delta_valence - delta_conduction
                     if (
                         abs(delta_impurity) <= abs(delta_impurity_occ[i])
+                        and delta_valence + delta_conduction <= excitation_budget[i]
                         and nominal_occ + delta_impurity <= total_impurity_orbitals[i]
                         and nominal_occ + delta_impurity >= 0
                         and delta_valence <= len(valence_electron_indices)
@@ -166,14 +209,25 @@ def generate_initial_basis(
         suffix_min[t] = suffix_min[t + 1] + (min(occs) if occs else 0)
         suffix_max[t] = suffix_max[t + 1] + (max(occs) if occs else 0)
 
+    # The one quantity H actually conserves. Every determinant kept below holds exactly this
+    # many electrons, so the basis is a single charge sector and `calc_energy(N0)` is the energy
+    # *of that sector* rather than the minimum over a window of them. The per-group count is
+    # `nominal_impurity_occ + len(valence)`: the delta_* loops move charge between the impurity
+    # and the bath, which leaves it invariant, and the redistribute branch moves charge between
+    # impurity groups, which leaves it invariant too. Only sliding a group's nominal changes it.
+    n_electrons = sum(nominal_impurity_occ[i] + sum(len(orbs) for orbs in valence_baths[i]) for i in valence_baths)
+
     basis = []
     # Iterative DFS; a frame is (group_index, partial_impurity_occ, partial_occupied_orbitals).
     stack: list[tuple[int, int, tuple[int, ...]]] = [(0, 0, ())]
     while stack:
         t, partial_occ, occupied = stack.pop()
         if t == n_groups:
-            # The last group's prune already guarantees lo_tot <= partial_occ <= hi_tot.
-            basis.append(psr.tuple2bytes(occupied, 8 * n_bytes))
+            # The last group's prune already guarantees lo_tot <= partial_occ <= hi_tot. The
+            # electron count is the length of the accumulated orbital tuple; the redistribute
+            # branch lets a group's nominal slide, so it is checked here rather than assumed.
+            if abs(len(occupied) - n_electrons) <= total_charge_slack:
+                basis.append(psr.tuple2bytes(occupied, 8 * n_bytes))
             continue
         for imp_occ, orbs in group_lists[t]:
             next_occ = partial_occ + imp_occ

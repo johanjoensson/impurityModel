@@ -91,13 +91,33 @@ def test_labels_do_not_outlive_their_block_and_the_trace_is_restored():
     assert not solver_trace.is_active()
 
 
-def test_chi_is_the_slope_of_the_closest_evaluated_pair():
-    # A geometric scan leaves widely spaced early points and a tight final bracket; the slope
-    # that matters for delta_mu = delta_n / chi is the local one, so the closest pair wins.
+def test_chi_is_the_slope_of_the_closest_pair_straddling_the_answer():
+    """chi describes ``dc``, so it has to be measured *where the answer is*.
+
+    A geometric scan leaves widely spaced early points and a tight final cluster, and the closest
+    evaluated pair is not necessarily near the returned ``mu``: measured on a search that hit its
+    target exactly at ``mu = 2.0``, the closest pair sat 2.4 units away and reported ``chi =
+    0.0009``, i.e. "``dc`` undetermined to +-11" -- a statement about a place the answer is not.
+    Containment is what makes the number local; because the returned ``mu`` is always itself an
+    evaluated point, it degrades to "the two evaluated neighbours of the answer".
+    """
     samples = {-4.0: 0.0, 0.0: 1.0, 1.0: 3.0, 1.5: 4.0}
-    assert dc_search._dc_chi(samples) == pytest.approx(2.0)
-    assert dc_search._dc_chi({0.0: 1.0}) is None
-    assert dc_search._dc_chi({}) is None
+    assert dc_search._dc_chi(samples, 1.25) == (pytest.approx(2.0), pytest.approx(0.5))
+    # The answer at an endpoint of the tight pair still gets the tight pair, not the wide one.
+    assert dc_search._dc_chi(samples, 1.0)[0] == pytest.approx(2.0)
+    # ... and an answer out at -4.0 gets the pair that straddles *it*, wide as it is, rather than
+    # the unrelated tight one.
+    assert dc_search._dc_chi(samples, -4.0) == (pytest.approx(0.25), pytest.approx(4.0))
+    # Nothing straddles a point outside the evaluated range: not resolvable, not the nearest pair.
+    assert dc_search._dc_chi(samples, 9.0) == (None, None)
+    # A pair narrower than the search's own bracket resolution measures a discontinuity's jump
+    # over its width, never a slope.
+    assert dc_search._dc_chi({1.0: 3.0, 1.0001: 9.0}, 1.0, width_tol=1e-3) == (None, None)
+    # Nor is a difference taken across a charge-sector boundary a derivative of either branch.
+    assert dc_search._dc_chi(samples, 1.25, in_sector=lambda mu: mu < 1.2) == (None, None)
+    assert dc_search._dc_chi({0.0: 1.0}, 0.0) == (None, None)
+    assert dc_search._dc_chi({}, 0.0) == (None, None)
+    assert dc_search._dc_chi(samples, None) == (None, None)
 
 
 @pytest.mark.parametrize(

@@ -3,9 +3,11 @@
 ``H(mu) = H(0) - mu*N_imp`` with ``N_imp`` diagonal, so on a *fixed* determinant space
 ``E_0(mu)`` is a minimum of affine functions of ``mu`` -- concave, with ``-dE_0/dmu = n(mu)``,
 hence ``n(mu)`` non-decreasing. Neither holds for the production observable, which re-selects
-both the CIPSI space and the charge sector at every ``mu``; that is exactly why
-``_solve_dc_shift`` assumes no monotonicity. Freezing buys those two properties back, and buys
-``chi = dn/dmu`` for two cheap eigensolves instead of two full evaluations.
+both the CIPSI space and the charge sector at every ``mu`` -- which is why ``_solve_dc_shift``
+brackets on the integer *sector* (monotone even there, because the winning sector is the argmin of
+a family of affine functions) and only assumes a smooth residual inside one. Freezing buys the
+two properties back outright, and buys ``chi = dn/dmu`` for two cheap eigensolves instead of two
+full evaluations.
 
 The sharpest of the three is the pure-sector check: when every determinant carries the same
 impurity occupation ``N``, the shift is *exactly* ``-mu*N`` and must reproduce to machine
@@ -41,8 +43,14 @@ def _h_op(eps_imp=-0.5, eps_bath=-2.0, v=0.3):
     return tensors_to_operator(h)
 
 
-def _frozen(mixed_valence, *, v=0.3, expand=True, tau=1e-3):
-    """A frozen space and its sweep. `mixed_valence=0` keeps the seed a single pure sector."""
+def _frozen(sector_radius, *, v=0.3, expand=True, tau=1e-3):
+    """A frozen space and its sweep. `sector_radius=0` keeps the seed a single pure sector.
+
+    The sweep exists to vary the charge -- ``E(mu)`` concave, ``n(mu) = -dE/dmu``
+    non-decreasing -- so it needs a basis spanning several *total* charge sectors. That is
+    ``total_charge_slack``, not ``mixed_valence``: the latter fluctuates the impurity charge
+    against the bath at fixed total, which leaves ``n`` pinned and the sweep vacuous.
+    """
     h_op = _h_op(v=v)
     nominal = {0: 1, 1: 1}
     basis, solver = build_basis_and_solver(
@@ -50,7 +58,7 @@ def _frozen(mixed_valence, *, v=0.3, expand=True, tau=1e-3):
         IMPURITY,
         BATHS,
         nominal,
-        dict.fromkeys(nominal, mixed_valence),
+        dict.fromkeys(nominal, 0),
         tau,
         False,
         False,
@@ -61,6 +69,7 @@ def _frozen(mixed_valence, *, v=0.3, expand=True, tau=1e-3):
         None,
         1e-12,
         None,
+        total_charge_slack=sector_radius,
     )
     if expand:
         solver.expand(h_op, dense_cutoff=1000, de2_min=1e-10, slaterWeightMin=1e-12)
@@ -70,7 +79,7 @@ def _frozen(mixed_valence, *, v=0.3, expand=True, tau=1e-3):
 
 def test_the_number_operator_is_diagonal_and_counts_impurity_electrons():
     """The construction everything else rests on: N_imp must be diagonal in this basis."""
-    _basis, sweep = _frozen(mixed_valence=1)
+    _basis, sweep = _frozen(sector_radius=1)
     n_dense = sweep._n_matrix.toarray()
     assert np.abs(n_dense - np.diag(np.diag(n_dense))).max() == 0.0
     counts = np.real(np.diag(n_dense))
@@ -81,7 +90,7 @@ def test_the_number_operator_is_diagonal_and_counts_impurity_electrons():
 def test_a_pure_sector_shifts_exactly_affinely():
     """The machine-precision oracle. Every determinant carries the same impurity occupation, so
     ``H(mu)`` differs from ``H(0)`` by a constant ``-mu*N`` and the spectrum moves rigidly."""
-    _basis, sweep = _frozen(mixed_valence=0, expand=False)
+    _basis, sweep = _frozen(sector_radius=0, expand=False)
     occupations = np.unique(np.round(np.real(np.diag(sweep._n_matrix.toarray()))))
     assert len(occupations) == 1, f"fixture is not a pure sector: {occupations}"
     n = occupations[0]
@@ -99,7 +108,7 @@ def test_a_pure_sector_shifts_exactly_affinely():
 def test_energy_is_concave_and_occupation_is_non_decreasing():
     """F3 on a genuinely mixed space -- a min of affine functions is concave, and its slope
     ``-dE/dmu = n`` therefore only ever increases."""
-    _basis, sweep = _frozen(mixed_valence=1)
+    _basis, sweep = _frozen(sector_radius=1)
     mus = np.linspace(-1.0, 1.0, 9)
     energies = np.array([sweep.energy(mu) for mu in mus])
     occupations = np.array([sweep.occupation(mu) for mu in mus])
@@ -113,13 +122,13 @@ def test_energy_is_concave_and_occupation_is_non_decreasing():
 
 def test_hamiltonian_is_a_diagonal_shift_not_a_rebuild():
     """The cheapness claim, structurally: H(mu) - H(0) is -mu*N and nothing else."""
-    _basis, sweep = _frozen(mixed_valence=1)
+    _basis, sweep = _frozen(sector_radius=1)
     difference = (sweep.hamiltonian(0.75) - sweep.hamiltonian(0.0)).toarray()
     assert np.abs(difference + 0.75 * sweep._n_matrix.toarray()).max() < 1e-14
 
 
 def test_chi_matches_the_slope_it_is_supposed_to_measure():
-    _basis, sweep = _frozen(mixed_valence=1)
+    _basis, sweep = _frozen(sector_radius=1)
     mu, step = 0.3, 1e-3
     expected = (sweep.occupation(mu + step) - sweep.occupation(mu - step)) / (2 * step)
     assert sweep.chi(mu, step) == pytest.approx(expected)
@@ -130,14 +139,14 @@ def test_chi_matches_the_slope_it_is_supposed_to_measure():
 def test_chi_rejects_a_straddle_near_a_sector_boundary():
     """R3: the CHI_STEP warning's own measured numbers, reproduced as a test.
 
-    ``mu = -0.5225`` on this exact fixture (``mixed_valence=1``) sits right at the sector
+    ``mu = -0.5225`` on this exact fixture (``sector_radius=1``) sits right at the sector
     boundary where occupation jumps from 1.0 to ~3.0. The plain central difference there reads
     126.30 / 252.26 / 468.23 / 617.31 / 636.47 as the step halves from 8e-3 -- the ``1/h``
     signature of a straddle, not a slope -- while the same sweep at ``mu = 0.3`` is step-size
     independent to four significant figures. ``chi`` must reject the former and accept the
     latter.
     """
-    _basis, sweep = _frozen(mixed_valence=1)
+    _basis, sweep = _frozen(sector_radius=1)
 
     straddle_mu, smooth_mu = -0.5225, 0.3
     # Reproduce the module docstring's own numbers first, so a fixture change surfaces as a
@@ -155,7 +164,7 @@ def test_a_matrix_that_outlived_its_basis_is_rejected():
     so get_eigenvectors checks the shape it was handed."""
     from impurityModel.ed.cipsi_solver import CIPSISolver
 
-    basis, sweep = _frozen(mixed_valence=1)
+    basis, sweep = _frozen(sector_radius=1)
     solver = CIPSISolver(basis)
     too_small = sweep.hamiltonian(0.0)[:-1, :-1]
     with pytest.raises(ValueError, match="outlived its basis|built for a basis"):
@@ -166,7 +175,7 @@ def test_the_prebuilt_matrix_path_agrees_with_the_operator_path():
     """Passing the matrix must not change the answer -- it is the same operator, built once."""
     from impurityModel.ed.cipsi_solver import CIPSISolver
 
-    basis, sweep = _frozen(mixed_valence=1)
+    basis, sweep = _frozen(sector_radius=1)
     solver = CIPSISolver(basis)
     common = dict(num_wanted=6, max_energy=None, dense_cutoff=1000, slaterWeightMin=1e-12, solver="irlm")
     from_operator, _ = solver.get_eigenvectors(sweep._h_op, **common)
@@ -177,7 +186,7 @@ def test_the_prebuilt_matrix_path_agrees_with_the_operator_path():
 def test_occupation_interiority_is_reported():
     """The frozen space bounds the reachable occupation whatever the double counting does; a
     result sitting on that boundary was pinned by the basis window, not by the search."""
-    _basis, sweep = _frozen(mixed_valence=1)
+    _basis, sweep = _frozen(sector_radius=1)
     assert isinstance(sweep.occupation_is_interior(0.0), bool)
     # Driven hard enough, the occupation must saturate against the window and stop being interior.
     assert not sweep.occupation_is_interior(1e3)
@@ -191,7 +200,7 @@ def test_the_frozen_space_reports_which_sectors_it_can_represent():
     than assumed. Measured on a real NiO workload the seeded space spans n_imp = 8, 9, 10 against
     a nominal 8: three sectors, but only upward.
     """
-    _basis, sweep = _frozen(mixed_valence=1)
+    _basis, sweep = _frozen(sector_radius=1)
     span = sweep.sector_span()
     assert span == tuple(sorted(span)) and len(span) >= 2, span
     assert all(isinstance(n, int) for n in span), span
@@ -207,7 +216,7 @@ def test_a_single_sector_space_reports_that_it_cannot_cross():
     missed the true observable by a full electron across a charge-sector boundary, while looking
     perfectly converged. spans_sector is what a driver checks before trusting a Newton step.
     """
-    _basis, sweep = _frozen(mixed_valence=0, expand=False)
+    _basis, sweep = _frozen(sector_radius=0, expand=False)
     span = sweep.sector_span()
     assert len(span) == 1, span
     assert not sweep.spans_sector(span[0] + 1)

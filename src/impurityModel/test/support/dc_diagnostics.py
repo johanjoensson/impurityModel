@@ -52,7 +52,12 @@ import numpy as np
 from impurityModel.ed import config, solver_trace
 from impurityModel.ed.memory_estimate import suggest_truncation_threshold
 from impurityModel.ed.model import load_selfenergy_archive
-from impurityModel.ed.selfenergy import fixed_occupation_dc, fixed_peak_dc, occupation_and_energy_at_mu
+from impurityModel.ed.selfenergy import (
+    fixed_gap_dc,
+    fixed_occupation_dc,
+    fixed_peak_dc,
+    occupation_and_energy_at_mu,
+)
 from impurityModel.test.support.restriction_diagnostics import DEFAULT_ITERATION, WORKLOADS
 
 DEFAULT_CAPS = (2000, 4000, 8000)
@@ -86,6 +91,8 @@ def run_dc_search(
     cap,
     criterion="occupation",
     peak_position=None,
+    gap_offset=0.0,
+    gap_report=None,
     comm=None,
     verbosity=0,
     iteration=DEFAULT_ITERATION,
@@ -104,11 +111,18 @@ def run_dc_search(
         last iteration is a runaway whose DFT reference occupation is 1.54 against a nominal 8
         (iteration 1: 8.6258). Benchmarking the newest iterate silently benchmarks a diverging
         one. The loaded label is reported in the table.
-    criterion : {"occupation", "peak"}
+    criterion : {"occupation", "peak", "gap"}
         Which search to baseline. ``"occupation"`` runs self-consistently (target = the DFT
-        reference filling), which is the production CSC path.
+        reference filling), which is the production CSC path; ``"gap"`` is Karolak et al.'s
+        prescription for the charge-transfer insulator the occupation criterion breaks down on,
+        and is the one to compare against it on NiO.
     peak_position : float, optional
         Required for ``criterion="peak"``.
+    gap_offset : float
+        Where to put the gap centre, for ``criterion="gap"``. ``0.0`` is the prescription.
+    gap_report : dict, optional
+        Filled with the gap criterion's own result record (gap centre, width, omega_+-), which is
+        what makes the occ-vs-gap comparison quantitative rather than two numbers side by side.
 
     Returns
     -------
@@ -153,6 +167,17 @@ def run_dc_search(
                 # peak criterion landing on a non-nominal sector is not a benchmark failure.
                 allow_charge_state_change=True,
             )
+        elif criterion == "gap":
+            dc = fixed_gap_dc(
+                model=model,
+                basis=basis,
+                solver=solver,
+                offset=gap_offset,
+                comm=comm,
+                verbosity=verbosity,
+                allow_charge_state_change=True,
+                report=gap_report,
+            )
         else:
             raise ValueError(f"unknown criterion {criterion!r}")
         seconds = perf_counter() - start
@@ -163,13 +188,22 @@ def run_dc_search(
     mu = _uniform_shift(dc, guess_dense)
 
     evaluations = trace.of_kind("dc_evaluation")
-    field = "n" if any("n" in event for event in evaluations) else "gap"
+    # Each criterion labels its own evaluation with the quantity it controls: the occupation, the
+    # peak's sector-energy difference, or the gap centre. Named rather than assumed, so adding a
+    # criterion shows up as a KeyError here instead of as a silent table of `nan`.
+    field = next(
+        (name for name in ("n", "gap", "gap_centre") if any(name in event for event in evaluations)),
+        "n",
+    )
     samples = {event["mu"]: event[field] for event in evaluations if field in event and "mu" in event}
     # The achieved value is the one at the shift actually returned; the search always evaluated
     # it (mu is either the mu=0 fast path, a direct scan hit, or a refined bracket point), but
     # match on the closest recorded mu rather than on equality, since mu came back through a
-    # dense matrix diagonal.
-    achieved = samples[min(samples, key=lambda m: abs(m - mu))] if samples else float("nan")
+    # dense matrix diagonal. The snapped shift is also what chi is measured at below: a `mu` a
+    # roundoff *outside* the evaluated range straddles no pair at all, and would report the slope
+    # as unresolvable on a search that measured one perfectly well.
+    mu_evaluated = min(samples, key=lambda m: abs(m - mu)) if samples else None
+    achieved = samples[mu_evaluated] if samples else float("nan")
 
     return {
         "workload": workload_key,
@@ -186,8 +220,10 @@ def run_dc_search(
         "value": achieved,
         # Same width_tol both criteria pass to _solve_dc_shift internally (dc_search.bracket_width_tol),
         # so a collapsed bracket at a sector boundary is excluded here exactly as it is in the
-        # search's own closing report, rather than read as a slope.
-        "chi": _dc_chi(samples, width_tol=bracket_width_tol(basis.tau)),
+        # search's own record, rather than read as a slope. `mu` recovered from the returned dc is
+        # the point the slope must describe; no sector predicate, because the trace's events carry
+        # no sector and inventing one would be a wider claim than the data supports.
+        "chi": _dc_chi(samples, mu_evaluated, width_tol=bracket_width_tol(basis.tau))[0],
         "evaluations": trace.count("dc_evaluation"),
         "sector_solves": trace.count("sector_solve"),
         "cache_hits": trace.count("sector_cache_hit"),
@@ -217,6 +253,8 @@ def cap_ladder(
     caps=DEFAULT_CAPS,
     criterion="occupation",
     peak_position=None,
+    gap_offset=0.0,
+    gap_report=None,
     comm=None,
     verbosity=0,
     iteration=DEFAULT_ITERATION,
@@ -482,9 +520,9 @@ def test_dc_baseline():
         caps = [int(c) for c in os.environ.get("DC_DIAG_CAPS", "").split(",") if c.strip()] or list(
             DEFAULT_CONVERGENCE_CAPS
         )
-        budgets = [
-            int(b) for b in os.environ.get("DC_DIAG_EXCITATION_BUDGETS", "").split(",") if b.strip()
-        ] or list(DEFAULT_EXCITATION_BUDGETS)
+        budgets = [int(b) for b in os.environ.get("DC_DIAG_EXCITATION_BUDGETS", "").split(",") if b.strip()] or list(
+            DEFAULT_EXCITATION_BUDGETS
+        )
         occupation_convergence_sweep(
             key,
             float(mu_env),

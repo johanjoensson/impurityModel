@@ -407,6 +407,7 @@ def block_Green_sparse(
             converged_flag[0] = True
             break
         if status == "diverged":
+            converged_flag[0] = False
             break
         budget *= 2
 
