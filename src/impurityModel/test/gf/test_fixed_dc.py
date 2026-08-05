@@ -716,13 +716,70 @@ def test_the_gap_criterion_measures_its_own_impurity_character(capsys):
     assert "impurity-like" not in atomic_out, atomic_out
 
     record = parse_record(transfer_out)
-    if "delta_plus" in record and "delta_minus" in record:
-        edges = [float(record[key].split()[0]) for key in ("delta_plus", "delta_minus")]
-        # The defect is one-sided: the conduction level spoils the addition edge and leaves the
-        # removal edge alone. Asserting on the minimum is what the sum could not do.
-        assert min(edges) < min(atomic_edges), f"charge-transfer edges {edges} not below atomic {atomic_edges}"
-        assert min(edges) < GAP_EDGE_IMPURITY_FLOOR, edges
-        assert "impurity-like" in transfer_out and "addition (N+1)" in transfer_out, transfer_out
+    # Unconditional, and that is a change. This used to be guarded by `if "delta_plus" in record`,
+    # because the edges were measured *after* the search returned and `DoubleCountingUnreachable`
+    # skipped past that line -- so the record was blank on exactly the runs where a bath-like edge
+    # is a leading *cause* of the failure. The measurement now happens in the search block's
+    # `finally`, at the last shift actually evaluated, so there is no path that reaches a record
+    # without it.
+    assert "delta_plus" in record and "delta_minus" in record, transfer_out
+    edges = [float(record[key].split()[0]) for key in ("delta_plus", "delta_minus")]
+    # The defect is one-sided: the conduction level spoils the addition edge and leaves the
+    # removal edge alone. Asserting on the minimum is what the sum could not do.
+    assert min(edges) < min(atomic_edges), f"charge-transfer edges {edges} not below atomic {atomic_edges}"
+    assert min(edges) < GAP_EDGE_IMPURITY_FLOOR, edges
+    assert "impurity-like" in transfer_out and "addition (N+1)" in transfer_out, transfer_out
+
+
+def test_the_edge_character_costs_no_sector_solves_of_its_own(monkeypatch):
+    """``delta_+-`` come from solves the search already paid for, not from three fresh ones.
+
+    They used to cost three: ``sector_energy`` went through ``calc_energy``, which discards its
+    eigenvectors, so ``sector_occupation`` re-solved the same sectors at the same shift to get
+    them back. On a workload that converges in one evaluation -- the common case in a converged
+    self-consistency loop, and the first production workload this met -- that was a third of the
+    whole search. Measured on this fixture: 10 CIPSI expansions before, 7 after, with
+    ``delta_+-`` identical to 16 digits.
+
+    Asserting the *delta* across ``_measure_edge_character`` rather than a total, because a total
+    is a number that drifts with every unrelated change to the search and would be re-baselined
+    rather than believed. Zero is a property.
+
+    It also matters for correctness, not only cost: a re-solve matches the expansion whose
+    energies ``omega_+-`` came from only if CIPSI selection is deterministic. Reading the pair off
+    one solve makes them co-derived by construction.
+    """
+    from impurityModel.ed import dc_criteria as dc_module
+    from impurityModel.ed import groundstate as gs_module
+
+    solves = {"n": 0}
+    real_solve_sector = gs_module.solve_sector
+
+    def counted(*args, **kwargs):
+        solves["n"] += 1
+        return real_solve_sector(*args, **kwargs)
+
+    monkeypatch.setattr(gs_module, "solve_sector", counted)
+
+    spent = {}
+    real_measure = dc_module._measure_edge_character
+
+    def watched(ctx, mu, n_center):
+        before = solves["n"]
+        result = real_measure(ctx, mu, n_center)
+        spent["solves"] = solves["n"] - before
+        return result
+
+    monkeypatch.setattr(dc_module, "_measure_edge_character", watched)
+
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+    report = {}
+    fixed_gap_dc(offset=0.0, report=report, **kwargs)
+
+    assert spent.get("solves") == 0, f"the edge measurement ran {spent.get('solves')} sector solves of its own"
+    # And it still produced the numbers: a measurement that costs nothing because it measured
+    # nothing would pass the assertion above.
+    assert report["delta_plus"] is not None and report["delta_minus"] is not None, report
 
 
 def test_the_impurity_character_warning_fires_on_the_weaker_edge(capsys):
@@ -838,16 +895,22 @@ def test_a_rank_dependent_sector_energy_cannot_reach_the_gap_tolerance(monkeypat
     if comm.size < 2:
         pytest.skip("needs at least 2 ranks")
 
-    real_calc_energy = gs_module.calc_energy
+    real_solve_sector = gs_module.solve_sector
 
     def perturbed(*args, **kwargs):
-        energy, basis = real_calc_energy(*args, **kwargs)
-        return energy * (1.0 + comm.rank * 1e-12), basis
+        es, psis, basis = real_solve_sector(*args, **kwargs)
+        return es * (1.0 + comm.rank * 1e-12), psis, basis
 
-    # `calc_energy` is imported function-locally by `_SectorContext.sector_energy`, so patching
-    # the module attribute is picked up -- and it patches *below* the boundary that has to
-    # broadcast, which is what makes the perturbation observable at all.
-    monkeypatch.setattr(gs_module, "calc_energy", perturbed)
+    # `solve_sector`, not `calc_energy`: `_SectorContext.sector_solve` produces the energy *and*
+    # the impurity occupation from one expansion, so this is the boundary both quantities cross.
+    # It is imported function-locally, so patching the module attribute is picked up -- and it
+    # patches *below* the boundary that has to broadcast, which is what makes the perturbation
+    # observable at all.
+    #
+    # Perturbing `es` rather than the returned energy also reaches further than the old probe did:
+    # the Boltzmann weights in `thermal_average_scale_indep` are built from these same numbers, so
+    # an un-broadcast occupation comes out rank-dependent too. One injection, both paths.
+    monkeypatch.setattr(gs_module, "solve_sector", perturbed)
 
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
     report = {}

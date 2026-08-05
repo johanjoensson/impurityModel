@@ -66,6 +66,7 @@ _FIELDS = (
     ("delta_plus", "{:.3f}"),
     ("delta_minus", "{:.3f}"),
     ("delta_sum", "{:.3f}"),
+    ("delta_sum_vs_chi", "{:.3f}"),
     ("peak", "{:.6f}"),
     ("chi", "{:.4g}"),
     ("chi_span", "{:.4g}"),
@@ -190,6 +191,14 @@ def _annotate(record, key, text):
             else "from the chi secant, averaged over chi_span"
         )
         return f"{text}   (delta_+ + delta_-, of max 2; {source} -- read the two edges separately)"
+    if key == "delta_sum_vs_chi":
+        # The two routes to the same quantity, differenced. They fail differently: `delta_sum` is
+        # built from occupations, which are first-order in the wavefunction error, while `-2 chi`
+        # is a secant of energies, second-order in it but carrying a finite-difference term and a
+        # basis-reselection term instead. Near zero means the sector solves are converged enough
+        # that neither error shows; large means one of them is not, and `chi_span` says whether to
+        # suspect the secant's interval.
+        return f"{text}   (delta_sum minus -2*chi; two estimators with opposite error structure)"
     if key == "chi":
         # The residual is converged to `tol`; what the *answer* is determined to is tol / |chi|.
         # That conversion is the entire reason chi is reported (review correction 5): a criterion

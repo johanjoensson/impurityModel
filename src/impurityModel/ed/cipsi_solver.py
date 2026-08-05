@@ -964,6 +964,26 @@ class CIPSISolver:
             if len(e_ref) > 0:
                 psi_refs = build_state(self.basis, psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
             if max_energy is not None and len(e_ref) > 0:
+                # Rank-locally, unlike the `need_more`/`exhausted` decision twenty lines up, and
+                # deliberately: this cut sets `len(e_ref)`, which callers feeding `psi_refs` into
+                # `build_density_matrices` turn into an `Allreduce` buffer shape of
+                # `(len(psis), n_orb, n_orb)`. Ranks disagreeing here would not return different
+                # answers, they would enter one reduction with different shapes.
+                #
+                # It is safe because `e_ref` is bit-identical across ranks, not merely close:
+                # `block_tsqr` returns a bitwise-identical R everywhere (see TSQR.pyx), so the
+                # alphas/betas are identical (_lanczos_step.pxi), and the Ritz values are a
+                # rank-local `eigh` on identical bytes. `_energy_cut_indices` is then a pure
+                # function of identical input. Measured, not assumed: the full suite at -n 2 and
+                # -n 3 allgathered `e_ref.tobytes()` from every call -- 7036 and 7040 checked, 375
+                # and 379 of them through this Krylov branch -- with zero divergence in either the
+                # length or the bytes.
+                #
+                # Two things that measurement does not cover, so do not widen the claim: the
+                # suite's Krylov cases are small (no production-cap solve with partial
+                # reorthogonalization), and it ran at OPENBLAS_NUM_THREADS=1 throughout. A
+                # multithreaded LAPACK whose thread count differed between ranks could break the
+                # determinism this relies on.
                 valid_idx, need_more = _energy_cut_indices(e_ref, max_energy)
                 if need_more and (self.basis.comm is None or self.basis.comm.rank == 0):
                     print(

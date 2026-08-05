@@ -222,6 +222,29 @@ def build_union_space(
     return sweep, basis
 
 
+@dataclass(frozen=True)
+class _SectorSolution:
+    """What one charge-sector solve yields, once the eigenvectors have been reduced to numbers.
+
+    Immutable and picklable, because it is broadcast: every field crosses
+    :meth:`_SectorContext.sector_solve`'s boundary as a rank-replicated fact.
+
+    ``occupation`` and ``occupation_ground`` are the same quantity under the two conventions this
+    module has to reconcile. ``energy`` is ``min(es)``, a ``T = 0`` quantity, and Hellmann-Feynman
+    relates ``d(energy)/dmu`` to the impurity occupation *of that one state* --
+    ``occupation_ground``. ``occupation`` is the Boltzmann average over the retained manifold,
+    which is what :func:`fixed_occupation_dc` and :func:`groundstate.calc_gs` report. They differ
+    only when the manifold's states do not share ``N_imp``, which ``occupation_spread`` measures:
+    a degenerate multiplet split only by symmetry has spread zero and the distinction is empty.
+    """
+
+    energy: float
+    occupation: float
+    occupation_ground: float
+    n_states: int
+    occupation_spread: float
+
+
 @dataclass
 class _SectorContext:
     """The mu-independent setup a *sector-energy* criterion needs.
@@ -271,10 +294,16 @@ class _SectorContext:
     rank: int
     verbose: bool
     n_center_at: dict = None
+    #: ``(mu, n_trial) -> _SectorSolution | None``. Filled by :meth:`sector_solve`, which never
+    #: solves the same sector at the same shift twice. Two floats per entry, not eigenvectors --
+    #: see that method for why retaining ``psis`` does not scale.
+    sector_at: dict = None
 
     def __post_init__(self):
         if self.n_center_at is None:
             self.n_center_at = {}
+        if self.sector_at is None:
+            self.sector_at = {}
 
     @property
     def nominal_total(self):
@@ -341,8 +370,8 @@ class _SectorContext:
         self.n_center_at[mu] = n_center
         return n_center
 
-    def sector_energy(self, h_op, n_trial):
-        """``E[n_trial]`` at this shift, or ``None`` where the criterion is undefined.
+    def sector_solve(self, h_op, mu, n_trial):
+        """One charge sector, solved once: :class:`_SectorSolution`, or ``None`` where undefined.
 
         ``None``, never a large finite number. A sector outside ``[0, max_occ_total]`` means the
         criterion is *undefined* at this ``mu``, not that its residual is big: a finite penalty on
@@ -351,79 +380,32 @@ class _SectorContext:
         and 54 of 93 sector solves (58%) spent refining one such fake bracket, after which the
         failure message blamed "a charge-sector boundary" -- the search's own artefact, reported
         as physics.
-        """
-        from impurityModel.ed.groundstate import GS_DE2_MIN, calc_energy
 
-        if not 0 <= n_trial <= self.max_occ_total:
-            return None
-        occ_trial = _per_group_occupation(n_trial, self.impurity_orbitals, self.h_solver_matrix)
-        e_trial, _ = calc_energy(
-            h_op,
-            self.impurity_orbitals,
-            self.bath_states,
-            occ_trial,
-            self.mixed_valence,
-            self.tau,
-            self.chain_restrict,
-            self.spin_flip_dj,
-            self.dense_cutoff,
-            comm=MPI.COMM_WORLD,
-            verbose=self.verbose,
-            truncation_threshold=self.truncation_threshold,
-            slaterWeightMin=self.slater_weight_min,
-            weighted_restrictions=self.weighted_restrictions,
-            frozen_occupations=self.frozen_occupations,
-            # The accuracy the answer is quoted at. `calc_energy` defaults to the walk's looser
-            # `SECTOR_WALK_DE2_MIN`, which is right for deciding which charge sector wins and
-            # wrong here: this energy is about to be *differenced* against another sector's, and
-            # the residual truncation error does not cancel in a difference. It is then amplified
-            # by 1 / |chi| on its way into `dc` -- a factor of 9 on the workload this was measured
-            # on -- so the DC would be determined on a looser variational space than the
-            # self-energy run that consumes it. Last unshared convention on the parity list in
-            # this module's docstring.
-            de2_min=GS_DE2_MIN,
-        )
-        # calc_energy returns inf for an empty basis (a sector the current restrictions admit no
-        # determinants for) -- undefined for the same reason as the bounds check above.
-        #
-        # Broadcast here as well as inside calc_energy, and deliberately so: this is the class's
-        # stated boundary (see the class docstring), and the two guard different things.
-        # calc_energy's protects every caller of calc_energy; this one holds even if a caller
-        # substitutes the energy -- which is exactly what the perturbation test does, and what a
-        # future refactor moving the solve elsewhere would do. Broadcasting the *result of the
-        # None test* rather than the raw float also makes "the criterion is undefined here" a
-        # rank-identical verdict, which is what the search's control flow actually branches on.
-        e = e_trial if np.isfinite(e_trial) else None
-        return MPI.COMM_WORLD.bcast(e, root=0)
+        **The energy and the impurity occupation come out of the same expansion, and that is the
+        point.** They used to be two methods running two solves: ``sector_energy`` through
+        ``calc_energy``, which discards its eigenvectors, and ``sector_occupation`` through
+        ``solve_sector``, which re-solved the same sector at the same shift from scratch. The gap
+        criterion's edge-character measurement therefore cost three extra sector solves at the
+        converged shift -- a third of the whole search on a workload that converges in one
+        evaluation -- and the occupations it reported were from a *re-run*, matching the energies
+        they are the slope of only by assuming the expansion is deterministic. Now there is one
+        solve, the pair is cached per ``(mu, n_trial)``, and ``_measure_edge_character`` is a
+        dictionary lookup.
 
-    def sector_occupation(self, h_op, n_trial):
-        """``Tr rho_imp`` of sector ``n_trial`` at this shift, or ``None`` where it is undefined.
+        Only the two floats are kept, never the eigenvectors. Retaining ``psis`` across a search
+        was the obvious alternative and does not scale: ~20 states over a sector basis is ~2 GB
+        across a search at the 400k-determinant caps this stack runs at, where a float pair is
+        nothing. The added cost is one :func:`build_density_matrices` per solve -- a handful of
+        single-term annihilator applies per state, against a whole CIPSI expansion.
 
-        The impurity character of a charge excitation, measured rather than inferred. The gap
-        criterion's ``delta_sum`` has always come from ``chi``, the secant of the gap centre
-        against ``mu``, via Hellmann-Feynman -- which is exact for the exact eigenstate of
-        ``H(mu)`` and *not* exact for a CIPSI expansion that re-selects its space at every
-        ``mu``, and which needs at least two evaluations inside one sector to exist at all.
-
-        Both of those bit on the first production workload it met. The NiO 5-bath archive already
-        carries a converged double counting, so the search satisfied ``|g0| <= tol`` at ``mu = 0``
-        and returned after **one** evaluation: no secant, ``chi = None``, ``delta_sum = None``.
-        The diagnostic built to say whether the answer is trustworthy was silent on exactly the
-        run that accepted one. This measures the same quantity from the eigenvectors at the
-        single shift that matters, so it always has a value and carries no finite-difference or
-        basis-reselection error.
-
-        Thermally averaged over the manifold rather than read off ``argmin(es)``: the argmin is a
-        rank-local comparison of Lanczos energies (this class's docstring), while
-        ``build_density_matrices`` already ends in an ``Allreduce`` and
-        ``thermal_average_scale_indep`` is what ``fixed_occupation_dc`` and ``calc_gs`` use, so
-        this is the production convention *and* rank-identical by construction. Broadcast anyway,
-        for the reason everything else here is.
+        Everything returned is broadcast; see the class docstring for why that boundary exists.
         """
         from impurityModel.ed.groundstate import GS_DE2_MIN, solve_sector
 
         if not 0 <= n_trial <= self.max_occ_total:
             return None
+        if (mu, n_trial) in self.sector_at:
+            return self.sector_at[(mu, n_trial)]
         occ_trial = _per_group_occupation(n_trial, self.impurity_orbitals, self.h_solver_matrix)
         es, psis, sector_basis = solve_sector(
             h_op,
@@ -441,36 +423,91 @@ class _SectorContext:
             slaterWeightMin=self.slater_weight_min,
             weighted_restrictions=self.weighted_restrictions,
             frozen_occupations=self.frozen_occupations,
-            # Same footing as `sector_energy`: these occupations are differenced too.
+            # The accuracy the answer is quoted at. `solve_sector` defaults to the walk's looser
+            # `SECTOR_WALK_DE2_MIN`, which is right for deciding which charge sector wins and
+            # wrong here: this energy is about to be *differenced* against another sector's, and
+            # the residual truncation error does not cancel in a difference. It is then amplified
+            # by 1 / |chi| on its way into `dc` -- a factor of 9 on the workload this was measured
+            # on -- so the DC would be determined on a looser variational space than the
+            # self-energy run that consumes it. Last unshared convention on the parity list in
+            # this module's docstring.
             de2_min=GS_DE2_MIN,
         )
         # Broadcast the verdict *before* branching on it, not the answer afterwards. `es` and
         # `psis` come back rank-local from `solve_sector` (its docstring says so), and the next
         # line runs `build_density_matrices`, which ends in an `Allreduce`. A rank-local decision
-        # in front of a collective is the deadlock this module has already shipped once: the
-        # eigenvector count is filtered by an energy cut, so two ranks whose Lanczos energies
-        # differ in the last bits can disagree about whether a state sits inside it, and the ranks
-        # that returned early leave the rest inside the reduction forever.
+        # in front of a collective is the deadlock this module has already shipped once.
         #
-        # The *count* is broadcast too, and the manifold truncated to it. `build_density_matrices`
-        # allocates its reduction buffer as `(len(psis), n_orb, n_orb)`, so ranks disagreeing on
-        # the number of retained states do not merely disagree about a number -- they enter the
-        # same `Allreduce` with different buffer shapes.
+        # `solve_sector` returns `([inf], [])` for an empty basis -- a sector the restrictions
+        # admit no determinants for -- undefined for the same reason as the bounds check above.
         usable = MPI.COMM_WORLD.bcast(bool(len(psis)) and bool(np.all(np.isfinite(es))), root=0)
         if not usable:
+            self.sector_at[(mu, n_trial)] = None
             return None
+        # The manifold *size* is broadcast too, and the manifold truncated to it.
+        # `build_density_matrices` allocates its reduction buffer as `(len(psis), n_orb, n_orb)`,
+        # so ranks disagreeing on the number of retained states do not merely disagree about a
+        # number -- they enter the same `Allreduce` with different buffer shapes.
+        #
+        # This is belt-and-braces rather than a live hazard: the cut inside `get_eigenvectors` is
+        # a pure function of `e_ref`, which is bit-identical across ranks (see the note there, and
+        # the measurement behind it). Kept because it costs one bcast of an int and this class's
+        # whole job is to make solver output a rank-replicated fact rather than a hope.
         n_states = MPI.COMM_WORLD.bcast(len(psis), root=0)
-        es, psis = es[:n_states], psis[:n_states]
-        if len(psis) != n_states:
-            raise RuntimeError(
+        if len(psis) < n_states:
+            # Not a `raise`: a rank-local exception here strands the others inside the reduction
+            # below, turning a diagnosable crash into a hang. Abort the job with the reason.
+            print(
                 f"rank {MPI.COMM_WORLD.rank} kept {len(psis)} eigenstates where rank 0 kept "
                 f"{n_states}; the thermal manifold has to be rank-identical before its density "
-                "matrices are reduced."
+                "matrices are reduced.",
+                flush=True,
             )
+            MPI.COMM_WORLD.Abort(1)
+        es, psis = es[:n_states], psis[:n_states]
         impurity_indices = [orb for blocks in self.impurity_orbitals.values() for block in blocks for orb in block]
         rhos = build_density_matrices(sector_basis, psis, impurity_indices, impurity_indices)
-        rho = thermal_average_scale_indep(es, rhos, self.tau)
-        return MPI.COMM_WORLD.bcast(float(np.real(np.trace(rho))), root=0)
+        # Per-state impurity occupations, then both conventions off the same array. `occupation`
+        # is the thermal average `fixed_occupation_dc` and `calc_gs` use; `occupation_ground` is
+        # the single state attaining `energy`, which is the one Hellmann-Feynman actually relates
+        # to `d(energy)/dmu`. `spread` says whether the distinction can matter on this model --
+        # a manifold whose states share `N_imp` by symmetry makes the two identical.
+        occupations = np.real(np.einsum("nii->n", rhos))
+        solution = _SectorSolution(
+            energy=float(np.min(es)),
+            occupation=float(np.real(np.trace(thermal_average_scale_indep(es, rhos, self.tau)))),
+            occupation_ground=float(occupations[int(np.argmin(es))]),
+            n_states=int(n_states),
+            occupation_spread=float(np.max(occupations) - np.min(occupations)),
+        )
+        solution = MPI.COMM_WORLD.bcast(solution, root=0)
+        self.sector_at[(mu, n_trial)] = solution
+        return solution
+
+    def sector_energy(self, h_op, mu, n_trial):
+        """``E[n_trial]`` at this shift, or ``None`` where the criterion is undefined."""
+        solution = self.sector_solve(h_op, mu, n_trial)
+        return None if solution is None else solution.energy
+
+    def sector_occupation(self, h_op, mu, n_trial):
+        """``Tr rho_imp`` of sector ``n_trial`` at this shift, or ``None`` where it is undefined.
+
+        The impurity character of a charge excitation, measured rather than inferred. The gap
+        criterion's ``delta_sum`` has always come from ``chi``, the secant of the gap centre
+        against ``mu``, via Hellmann-Feynman -- which is exact for the exact eigenstate of
+        ``H(mu)`` and *not* exact for a CIPSI expansion that re-selects its space at every
+        ``mu``, and which needs at least two evaluations inside one sector to exist at all.
+
+        Both of those bit on the first production workload it met. The NiO 5-bath archive already
+        carries a converged double counting, so the search satisfied ``|g0| <= tol`` at ``mu = 0``
+        and returned after **one** evaluation: no secant, ``chi = None``, ``delta_sum = None``.
+        The diagnostic built to say whether the answer is trustworthy was silent on exactly the
+        run that accepted one. This measures the same quantity from the eigenvectors of the solve
+        the criterion already ran, so it always has a value and carries no finite-difference or
+        basis-reselection error.
+        """
+        solution = self.sector_solve(h_op, mu, n_trial)
+        return None if solution is None else solution.occupation
 
 
 def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, memory_label):
@@ -713,8 +750,8 @@ def fixed_peak_dc(
 
             # Both unconditionally, and only then tested for None: each is a collective solve, so an
             # early return between them would move calc_energy off some ranks (CLAUDE.md's MPI rule).
-            e_upper = ctx.sector_energy(h_op, n_upper)
-            e_lower = ctx.sector_energy(h_op, n_lower)
+            e_upper = ctx.sector_energy(h_op, mu, n_upper)
+            e_lower = ctx.sector_energy(h_op, mu, n_lower)
             if e_upper is None or e_lower is None:
                 if verbose and rank == 0:
                     missing = "N+1" if e_upper is None else "N-1"
@@ -890,22 +927,31 @@ def _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank):
 
 
 def _measure_edge_character(ctx, mu, n_center):
-    """``(delta_+, delta_-)``: the impurity share of each gap edge at the converged shift.
+    """``(delta_+, delta_-)``: how much of each gap edge is impurity, at shift ``mu``.
 
-    ``delta_+ = <N_imp>_{N+1} - <N_imp>_{N}`` and ``delta_- = <N_imp>_{N} - <N_imp>_{N-1}``, each
-    in ``[0, 1]``. Three sector solves, paid once at the end of the search rather than at every
-    trial -- against the 9 to 52 solves the searches measured on real workloads, that is the
-    price of turning the criterion's central caveat from an inference into a measurement.
+    ``delta_+ = <N_imp>_{N+1} - <N_imp>_{N}`` and ``delta_- = <N_imp>_{N} - <N_imp>_{N-1}``.
+    Near 1 per edge for an impurity-like excitation and near 0 for a bath-like one, but **not
+    bounded by 1**: only the total change across impurity *and* bath is one electron, and the
+    bath's share can be negative. At a charge-transfer level crossing -- ``N`` ground state
+    ``d8``, ``N+1`` ground state ``d10 L`` -- ``delta_+`` is 2, and ``delta_-`` can come out
+    negative. That regime is precisely the one this criterion is aimed at, so the numbers are
+    reported as measured rather than clipped to a range they do not obey.
 
-    All three solves run unconditionally before any is tested, for the usual reason: each is
-    collective, and a rank returning early between them moves a solve off that rank. Every value
-    they return is already broadcast (:meth:`_SectorContext.sector_occupation`), so the ``None``
-    tests below are rank-identical verdicts rather than rank-local ones.
+    **Free.** Every sector this needs was already solved at this ``mu`` by the search itself, and
+    :meth:`_SectorContext.sector_solve` kept the occupation alongside the energy, so this is three
+    dictionary lookups. It used to be three fresh solves at the converged shift, which on a
+    workload converging in one evaluation was a third of the total work. Being free is also what
+    lets it run at *every* evaluated ``mu`` rather than only the converged one -- including the
+    last one before :class:`DoubleCountingUnreachable`, where the edges were previously absent
+    from the record and where a bath-like edge is a leading *cause* of the failure.
+
+    Every value read here is already broadcast, so the ``None`` tests are rank-identical verdicts
+    rather than rank-local ones.
     """
     h_op = ctx.shifted_h(mu)
-    n_add = ctx.sector_occupation(h_op, n_center + 1)
-    n_mid = ctx.sector_occupation(h_op, n_center)
-    n_rem = ctx.sector_occupation(h_op, n_center - 1)
+    n_add = ctx.sector_occupation(h_op, mu, n_center + 1)
+    n_mid = ctx.sector_occupation(h_op, mu, n_center)
+    n_rem = ctx.sector_occupation(h_op, mu, n_center - 1)
     delta_plus = None if n_add is None or n_mid is None else n_add - n_mid
     delta_minus = None if n_mid is None or n_rem is None else n_mid - n_rem
     return delta_plus, delta_minus
@@ -1179,8 +1225,8 @@ def fixed_gap_dc(
                 # an early return between them would move calc_energy off some ranks (CLAUDE.md's MPI
                 # rule). The gap needs *both* off-centre sectors, so unlike the peak it is undefined
                 # at either shell edge.
-                e_add = ctx.sector_energy(h_op, n_center + 1)
-                e_rem = ctx.sector_energy(h_op, n_center - 1)
+                e_add = ctx.sector_energy(h_op, mu, n_center + 1)
+                e_rem = ctx.sector_energy(h_op, mu, n_center - 1)
                 sectors_at[mu] = (n_center, e_add, e_rem)
             return sectors_at[mu]
 
@@ -1219,7 +1265,7 @@ def fixed_gap_dc(
                     # was not before.
                     width_at[mu] = None
                 else:
-                    e_centre = ctx.sector_energy(ctx.shifted_h(mu), n_center)
+                    e_centre = ctx.sector_energy(ctx.shifted_h(mu), mu, n_center)
                     width_at[mu] = None if e_centre is None else (e_add - e_centre) - (e_centre - e_rem)
             return width_at[mu]
 
@@ -1256,37 +1302,66 @@ def fixed_gap_dc(
             energy_tol, dc_rec["tol_basis"] = _size_gap_tolerance(width_at_guess, mu_tol, ctx.bandwidth, rank=rank)
             dc_rec["tol"] = energy_tol
 
-            mu = _solve_dc_shift(
-                gap_observable,
-                offset,
-                # The two tolerances are genuinely different quantities here: how well the gap centre
-                # is placed (an energy, scaled by the gap it sits in) and how finely mu is resolved.
-                tol=energy_tol,
-                width_tol=mu_tol,
-                initial_step=max(10 * tau, abs(offset)),
-                max_shift=max(ctx.bandwidth, 10 * abs(offset), 1.0),
-                # A gap centre that does not move with mu is an anomaly to surface, not a plateau to
-                # take the midpoint of: it means both sectors shift together, i.e. the impurity is
-                # decoupled and no uniform shift can place the gap.
-                plateau_ok=False,
-                unreachable_message=unreachable,
-                rank=rank,
-                # Sector-first, for the same reason as the peak: this criterion is multivalued, so
-                # "which charge state" is decided before "which root".
-                sector_of=n_center_at.get,
-                nominal_sector=ctx.nominal_total if not allow_charge_state_change else None,
-                # d(centre)/dmu = -(delta_+ + delta_-)/2, in [-1, -0.5]. The larger magnitude is the
-                # safe end: it makes the first step short, which the walk doubles out of, where an
-                # overshoot has to be walked back. It matters more here than for the peak because
-                # offset = 0 collapses initial_step to 10*tau, so the seed is doing all the work.
-                slope_sign=-1,
-                slope=-1.0,
-                report=search_report,
-                verbose=verbose,
-                # The observable's collectives run on COMM_WORLD (the basis builds hardcode it), not
-                # on the caller's `comm`, so the residual must be broadcast there too.
-                comm=MPI.COMM_WORLD,
-            )
+            mu = None
+            try:
+                mu = _solve_dc_shift(
+                    gap_observable,
+                    offset,
+                    # The two tolerances are genuinely different quantities here: how well the gap
+                    # centre is placed (an energy, scaled by the gap it sits in) and how finely mu
+                    # is resolved.
+                    tol=energy_tol,
+                    width_tol=mu_tol,
+                    initial_step=max(10 * tau, abs(offset)),
+                    max_shift=max(ctx.bandwidth, 10 * abs(offset), 1.0),
+                    # A gap centre that does not move with mu is an anomaly to surface, not a
+                    # plateau to take the midpoint of: it means both sectors shift together, i.e.
+                    # the impurity is decoupled and no uniform shift can place the gap.
+                    plateau_ok=False,
+                    unreachable_message=unreachable,
+                    rank=rank,
+                    # Sector-first, for the same reason as the peak: this criterion is
+                    # multivalued, so "which charge state" is decided before "which root".
+                    sector_of=n_center_at.get,
+                    nominal_sector=ctx.nominal_total if not allow_charge_state_change else None,
+                    # d(centre)/dmu = -(delta_+ + delta_-)/2, in [-1, -0.5]. The larger magnitude
+                    # is the safe end: it makes the first step short, which the walk doubles out
+                    # of, where an overshoot has to be walked back. It matters more here than for
+                    # the peak because offset = 0 collapses initial_step to 10*tau, so the seed is
+                    # doing all the work.
+                    slope_sign=-1,
+                    slope=-1.0,
+                    report=search_report,
+                    verbose=verbose,
+                    # The observable's collectives run on COMM_WORLD (the basis builds hardcode
+                    # it), not on the caller's `comm`, so the residual must be broadcast there too.
+                    comm=MPI.COMM_WORLD,
+                )
+            finally:
+                # In a `finally`, and inside the trace, for two separate reasons.
+                #
+                # *Inside the trace*: `_report_dc_trace`'s cross-rank witness allreduces the
+                # sector-solve count precisely to catch ranks walking different collective paths,
+                # and it can only count what a trace is open for. The edge measurement is normally
+                # free -- every sector it reads was already solved at this `mu` -- but the centre
+                # sector is solved lazily (see `_gap_width_at`), so it *can* miss the cache and
+                # solve. A collective outside the witness is exactly what moving the
+                # tolerance-sizing evaluation inside it was meant to stop.
+                #
+                # *In a `finally`*: `DoubleCountingUnreachable` skips every line below, and a
+                # bath-like edge that does not respond to `mu` is a leading cause of
+                # unreachability. The diagnostic was absent from the record on precisely the runs
+                # that most needed it. The raise is rank-identical (the residual is broadcast), so
+                # every rank reaches this together and a collective here is safe.
+                #
+                # `sectors_at` is insertion-ordered by evaluation, so its last key is the last
+                # shift actually evaluated -- the best available stand-in for `mu` when the search
+                # never returned one.
+                mu_seen = mu if mu is not None else (next(reversed(sectors_at)) if sectors_at else None)
+                if mu_seen is not None:
+                    delta_plus, delta_minus = _measure_edge_character(ctx, mu_seen, n_center_at[mu_seen])
+                    dc_rec["delta_plus"], dc_rec["delta_minus"] = delta_plus, delta_minus
+                    _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank)
 
         # mu is always a point _solve_dc_shift actually evaluated, so sectors_at holds it.
         n_center, e_add, e_rem = _gap_sectors_at(mu)
@@ -1312,23 +1387,24 @@ def fixed_gap_dc(
             chi=chi,
             chi_span=chi_span,
         )
-        # How much of the transferred electron actually reached the impurity, per edge. Measured
-        # from the eigenvectors at the converged shift (three extra sector solves), not inferred
-        # from `chi`: see `_SectorContext.sector_occupation` for why the Hellmann-Feynman route
-        # through the secant is both approximate here and, on the first production workload it
-        # met, absent. Split into the two edges because their sum hides the case that matters --
-        # NiO measures delta_+ = 0.56 against delta_- = 0.03, an impurity-like addition edge above
-        # a ligand valence band, which is what a charge-transfer insulator *is*; a symmetric pair
-        # summing to the same number would be a different physical situation entirely.
-        delta_plus, delta_minus = _measure_edge_character(ctx, mu, n_center)
-        dc_rec["delta_plus"], dc_rec["delta_minus"] = delta_plus, delta_minus
+        # `delta_plus` / `delta_minus` were measured and recorded inside the search block above,
+        # from the eigenvectors of the solves the search had already paid for. All that is left
+        # here is the sum, which needs `chi` for its fallback and so cannot be done up there.
+        delta_plus, delta_minus = dc_rec.get("delta_plus"), dc_rec.get("delta_minus")
         if delta_plus is not None and delta_minus is not None:
             dc_rec["delta_sum"] = delta_plus + delta_minus
+            # Two estimators of the same quantity, with opposite error structure: `delta_sum` is
+            # built from occupations, first-order in the wavefunction error, while `-2 chi` is a
+            # secant of energies, second-order in it but carrying a finite-difference and a
+            # basis-reselection term instead. Agreement is real evidence that the sector solves
+            # are converged; disagreement localizes which. Recorded rather than silently resolved
+            # in favour of one -- the criterion previously kept both and compared neither.
+            if chi is not None:
+                dc_rec["delta_sum_vs_chi"] = (delta_plus + delta_minus) - (-2.0 * chi)
         elif chi is not None:
             # Fall back to the secant only where the direct measurement is undefined (a sector at
             # a shell edge), so the field is never silently absent when something can be said.
             dc_rec["delta_sum"] = -2.0 * chi
-        _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank)
         dc_rec["dc_trace"], dc_rec["dc_level"] = dc_record.dc_levels(dc)
         dc_rec["dc_spread"] = dc_record.dc_spread(dc)
         _dump_dc_matrices(ctx.dc_guess, dc, rank)
