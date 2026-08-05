@@ -70,6 +70,17 @@ GS_DE2_MIN = 1e-8
 #: a great deal for a comparison that is not close. It is *not* defensible for an energy
 #: **difference** between two sectors -- the residual truncation error does not cancel there, and
 #: the double-counting criteria then amplify it by ``1 / |chi|``. Hence two constants.
+#:
+#: **Keep the size of this term in proportion.** Measured on ``nio_5peeled``: moving the DC sector
+#: energies from ``1e-6`` to ``1e-8`` shifts the gap centre by 0.3 meV at cap 8000, i.e. ~2.7 meV
+#: in ``mu`` after the ``1 / |chi|`` amplification, at 4x the cost. Raising the determinant cap
+#: from 2000 to 8000 shifts it by 6 meV, i.e. ~54 meV in ``mu``. **Truncation drift, not the PT2
+#: threshold, dominates the error on the answer**, and at cap 8000 the tighter threshold saturates
+#: the cap (5693 determinants to 8000), so those energies are cap-bound rather than
+#: PT2-converged. The reason to match :data:`GS_DE2_MIN` is *parity* -- the DC is then determined
+#: on the same variational space as the self-energy run that consumes it -- not accuracy. The
+#: record reports ``tol`` and ``chi``, which propagate the search tolerance alone; a cap ladder
+#: (``dc_diagnostics.cap_ladder``) is the only honest error bar on ``mu``.
 SECTOR_WALK_DE2_MIN = 1e-6
 
 

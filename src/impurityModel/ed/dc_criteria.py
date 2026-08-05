@@ -867,7 +867,10 @@ GAP_ENERGY_TOLERANCE_MAX_FRACTION = 0.1
 #: Below this, *one* gap edge is more bath than impurity and the answer is warned about.
 #:
 #: Applied to ``min(delta_+, delta_-)``, not to their sum, and that is the whole point. Each delta
-#: is the fraction of the transferred electron landing on the impurity at one edge, in ``[0, 1]``.
+#: is how much of the transferred electron lands on the impurity at one edge -- near 1 for an
+#: impurity-like excitation, near 0 for a bath-like one, and **not** confined to ``[0, 1]``: only
+#: the change summed over impurity *and* bath is one electron, so at a charge-transfer level
+#: crossing (``d8`` to ``d10 L``) it is 2, and the removal partner can be negative.
 #: **The sum hides exactly the case this warning exists for**, because the two edges fail
 #: independently: measured directly (see :meth:`_SectorContext.sector_occupation`), the
 #: charge-transfer fixture is ``delta_+ = 0.075`` against ``delta_- = 0.951`` and NiO 5-bath is
@@ -898,6 +901,18 @@ def _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank):
     the quantity one wants. What the user has to know is *which* gap was centred, because it is
     not the gap of the impurity spectral function ``A_imp`` that Karolak et al. write down, and
     the two are several eV apart.
+
+    **What this can and cannot see.** ``delta_+-`` is a Hellmann-Feynman slope: how far an edge
+    moves per unit ``mu``. That is exactly the right quantity for the *conditioning* of the search
+    -- the acceptance band in ``mu`` is ``tol / |chi|`` and ``chi`` is built from these -- and it
+    is a good proxy for orbital character, which is why it is worth warning on. It is **not** the
+    Lehmann weight :math:`w_n = \\sum_d |\\langle n|c_d^\\dagger|0\\rangle|^2`, and the two
+    decouple *exactly*: a state differing from :math:`c_d^\\dagger|0\\rangle` in total spin or
+    irrep has ``w_n = 0`` identically while its ``<N_imp>`` differs from the ``N`` sector's by a
+    full electron. In that case the criterion is centring a pole that does not exist in ``A_imp``,
+    the search is well conditioned, ``delta`` is near 1, and **this warning stays silent**. A high
+    ``delta`` is therefore necessary for spectral weight and not sufficient for it. Nothing in the
+    production path measures the weight itself; ``test/support/dc_weights.py`` does, serially.
     """
     measured = [
         (name, value) for name, value in (("delta_+", delta_plus), ("delta_-", delta_minus)) if value is not None
@@ -909,19 +924,22 @@ def _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank):
         return
     edge = "addition (N+1)" if name == "delta_+" else "removal (N-1)"
     print(
-        f"WARNING: the {edge} edge this double counting was fixed against is only {weakest:.3f} "
-        f"impurity-like ({name}, of a maximum of 1; below {GAP_EDGE_IMPURITY_FLOOR} is flagged). "
+        f"WARNING: the {edge} edge this double counting was fixed against moves only {weakest:.3f} "
+        f"of an electron onto the impurity ({name}; below {GAP_EDGE_IMPURITY_FLOOR} is flagged). "
         "The N +- 1 sector energies carry no impurity projection, so what was centred on the Fermi "
-        "level is the CLUSTER charge gap, and this edge is a state of the bath. Two very different "
-        "situations produce that. (1) A charge-transfer insulator: the valence-band top really is "
-        "ligand, the cluster gap really is the p-to-d gap, and the answer is meaningful -- but it "
-        "is not the gap of the impurity spectral function A_imp, which is what the fixed-gap "
-        "prescription is usually quoted for, and the two can sit several eV apart. (2) A "
-        "discretization artefact: an isolated fitted bath level inside the true gap, which does "
-        "not move with the double-counting shift at all. Distinguish them with "
+        "level is the CLUSTER charge gap, and this edge is largely a state of the bath. Two very "
+        "different situations produce that. (1) A charge-transfer insulator: the valence-band top "
+        "really is ligand, the cluster gap really is the p-to-d gap, and the answer is meaningful "
+        "-- but it is not the gap of the impurity spectral function A_imp, which is what the "
+        "fixed-gap prescription is usually quoted for, and the two can sit several eV apart. "
+        "(2) A discretization artefact: an isolated fitted bath level inside the true gap, which "
+        "does not move with the double-counting shift at all. Distinguish them with "
         "test/support/dc_weights.py -- a band shows many nearly degenerate states carrying weight, "
         "an artefact shows one isolated level carrying none -- and cross-check against "
-        "fixed_occupation_dc before using this dc.",
+        "fixed_occupation_dc, and against fixed_peak_dc if the OTHER edge is the responsive one. "
+        "Note what this number is: a mu-response, not a spectral weight. A state orthogonal to "
+        "c_d^dagger|0> by spin or irrep carries zero weight in A_imp while still moving fully with "
+        "mu, and no value of delta detects that -- only dc_weights.py does.",
         flush=True,
     )
 
@@ -1113,6 +1131,15 @@ def fixed_gap_dc(
         charge gap, whose removal edge is ligand by construction there. If the p-to-d gap is what
         you mean, that is the right answer; if you mean the gap of :math:`A_{imp}`, this is not
         it, and no reweighting of these sector energies makes it so.
+
+        **When one edge is unresponsive, this collapses into the peak criterion.** Since
+        :math:`d(\text{centre})/d\mu = -(\delta_+ + \delta_-)/2`, an edge with
+        :math:`\delta \approx 0` contributes nothing to the derivative, and root-finding the
+        centre reduces to root-finding the *other* edge against a :math:`\mu`-independent
+        reference. On NiO 5-bath (:math:`\delta_- = 0.032`) ``gap`` and :func:`fixed_peak_dc` are
+        therefore solving very nearly the same equation, and the averaging buys only a factor 2 in
+        the residual. That makes ``peak`` the informative cross-check there, alongside ``occ``:
+        two criteria that agree because they are the same equation are not two pieces of evidence.
     ``occ``
         Metals, and wide-window p-d models in charge self-consistency. This is Karolak's Eq. (2)
         and it is exact where the occupation actually responds to the shift.

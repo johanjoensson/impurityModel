@@ -169,18 +169,23 @@ def _annotate(record, key, text):
     if key == "chi_span":
         return f"{text}   (mu-distance between the two points chi was measured from)"
     if key == "delta_plus":
-        return f"{text}   (of max 1; how much of an ADDED electron lands on the impurity)"
+        # "~1 impurity-like", not "of max 1". Only the change summed over impurity AND bath is one
+        # electron; the bath's share can be negative, so this is not bounded above by 1. At a
+        # charge-transfer level crossing -- N ground state d8, N+1 ground state d10 L -- it is 2.
+        # That regime is the one the gap criterion is aimed at, so a range the number does not
+        # obey is worse than no range at all.
+        return f"{text}   (how much of an ADDED electron lands on the impurity; ~1 impurity, ~0 bath)"
     if key == "delta_minus":
         # Split out from delta_sum because the sum hides the case that matters. On NiO the two
         # are 0.561 and 0.032: the addition edge is a genuine impurity state and the removal edge
         # is the ligand valence band, which is what a charge-transfer insulator *is*. A symmetric
         # pair summing to the same 0.59 would mean something entirely different, and the record
-        # could not tell them apart.
-        return f"{text}   (of max 1; how much of a REMOVED electron came off the impurity)"
+        # could not tell them apart. Can come out negative, for the reason above.
+        return f"{text}   (how much of a REMOVED electron came off the impurity; ~1 impurity, ~0 bath)"
     if key == "delta_sum":
         # Kept for continuity with older logs, and demoted: `delta_plus` and `delta_minus` above
         # are what should be read. The sum hides the case the pair exists for -- NiO's (0.561,
-        # 0.028) sums to 0.589, which looks unremarkable next to a healthy 2.0 while one edge is
+        # 0.032) sums to 0.593, which looks unremarkable next to a healthy 2.0 while one edge is
         # pure ligand. Say which of the two ways it was obtained, because they are not equally
         # trustworthy: the edges are measured from eigenvectors at the converged shift, while the
         # fallback is a secant of the gap centre over `chi_span` and is an average across that

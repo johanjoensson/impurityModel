@@ -713,7 +713,7 @@ def test_the_gap_criterion_measures_its_own_impurity_character(capsys):
     atomic_edges = [float(atomic_record[key].split()[0]) for key in ("delta_plus", "delta_minus")]
     # Impurity-only addition: both edges move fully with the shift, so neither is flagged.
     assert min(atomic_edges) > 0.9, atomic_out
-    assert "impurity-like" not in atomic_out, atomic_out
+    assert "WARNING: the addition" not in atomic_out and "WARNING: the removal" not in atomic_out, atomic_out
 
     record = parse_record(transfer_out)
     # Unconditional, and that is a change. This used to be guarded by `if "delta_plus" in record`,
@@ -728,7 +728,7 @@ def test_the_gap_criterion_measures_its_own_impurity_character(capsys):
     # removal edge alone. Asserting on the minimum is what the sum could not do.
     assert min(edges) < min(atomic_edges), f"charge-transfer edges {edges} not below atomic {atomic_edges}"
     assert min(edges) < GAP_EDGE_IMPURITY_FLOOR, edges
-    assert "impurity-like" in transfer_out and "addition (N+1)" in transfer_out, transfer_out
+    assert "WARNING: the addition (N+1) edge" in transfer_out, transfer_out
 
 
 def test_the_edge_character_costs_no_sector_solves_of_its_own(monkeypatch):
@@ -798,14 +798,19 @@ def test_the_impurity_character_warning_fires_on_the_weaker_edge(capsys):
     # The sum is 0.593 -- above any sum-based floor that does not also fire on healthy models.
     warn(0.561, 0.032, rank=0)
     out = capsys.readouterr().out
-    assert "removal (N-1)" in out and "0.032 impurity-like" in out, out
+    assert "removal (N-1)" in out and "moves only 0.032 of an electron" in out, out
+    # The caveat that keeps the warning honest about what it measured. delta is a mu-response, and
+    # a state orthogonal to c_d^dagger|0> by spin or irrep carries zero weight in A_imp while still
+    # moving fully with mu -- so a HIGH delta is not a certificate. Saying "this edge is a state of
+    # the bath" from a slope alone was the stronger claim than the measurement supports.
+    assert "mu-response, not a spectral weight" in out, out
     assert "charge-transfer insulator" in out and "discretization artefact" in out, out
     assert 0.561 + 0.032 > 0.5, "the sum-based floor this replaced would have stayed silent here"
 
     # The charge-transfer fixture fails on the other edge, and must be named as such.
     warn(0.075, 0.951, rank=0)
     out = capsys.readouterr().out
-    assert "addition (N+1)" in out and "0.075 impurity-like" in out, out
+    assert "addition (N+1)" in out and "moves only 0.075 of an electron" in out, out
 
     # Healthy models stay quiet, or the warning becomes noise on every well-behaved run.
     for quiet in ((1.0, 1.0), (0.997, 0.976), (0.56, 0.44)):

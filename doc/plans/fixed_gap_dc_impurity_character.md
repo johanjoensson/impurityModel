@@ -140,6 +140,51 @@ The overhead is worth stating plainly: it is not free, and on a search that term
 evaluation it is a third of the total work. It buys a number that was previously **absent** on this
 workload, not merely less accurate.
 
+## Adversarial review of this work (2026-08-05)
+
+The above was reviewed line by line afterwards. The verdict held; five things did not.
+
+**`delta_±` is a `mu`-response, not a spectral weight, and the warning claimed the stronger one.**
+Hellmann–Feynman gives `d(ω±)/dmu`, which is the right quantity for the *conditioning* of the
+search and a good proxy for orbital character. It is not `w_n`, and the two decouple **exactly**: a
+state differing from `c_d†|0⟩` in spin or irrep has `w_n = 0` identically while `⟨N_imp⟩` differs by
+a full electron — the criterion then centres a pole absent from `A_imp`, the search is well
+conditioned, `delta ≈ 1`, and the warning is silent. Note N3 above said "necessary, not sufficient"
+and the shipped diagnostic covered only the necessary half. The text now says so; the weight itself
+is still measured only by `dc_weights.py`, serially.
+
+**`delta ∈ [0, 1]` is not a bound.** Only the change summed over impurity *and* bath is one
+electron. At a charge-transfer level crossing (`N` → `d⁸`, `N+1` → `d¹⁰L`) `delta_+ = 2`, and
+`delta_-` can be negative — in exactly the regime this criterion targets. "of max 1" is gone.
+
+**The three edge solves were duplicates.** `sector_energy` went through `calc_energy`, which
+discards eigenvectors, so `sector_occupation` re-solved the same sectors at the same shift.
+One `sector_solve` now yields both: **10 → 7 CIPSI expansions**, `delta_±` identical to 16 digits.
+Being free is what let the measurement move inside the search trace (its collectives were outside
+`_report_dc_trace`'s cross-rank witness) and into a `finally`, so it also runs on the
+`DoubleCountingUnreachable` path — where a bath-like edge is a leading *cause* of the failure and
+the record was previously blank.
+
+**With `delta_- ≈ 0` the gap criterion collapses into the peak criterion.** An unresponsive edge
+contributes nothing to `d(centre)/dmu`, so root-finding the centre is root-finding the other edge
+against a fixed reference. On NiO, `gap` and `fixed_peak_dc` solve nearly the same equation — which
+makes `peak` the informative cross-check there, and means agreement between them is one piece of
+evidence, not two.
+
+**The `de2_min` error budget was out of proportion.** `1e-6 → 1e-8` moves the centre 0.3 meV
+(~2.7 meV in `mu`) at 4× cost; cap 2000 → 8000 moves it 6 meV (~54 meV in `mu`). Truncation drift
+dominates by ~20×, and at cap 8000 the tighter threshold saturates the cap, so those energies are
+cap-bound rather than PT2-converged. The change is right for **parity**, not accuracy.
+
+One claimed finding did **not** survive. The final energy cut in `get_eigenvectors` is applied
+rank-locally while the loop-control decision ten lines above is broadcast, which looked like a
+live `len(psis)` divergence hazard in front of `build_density_matrices`' `Allreduce`. It is not:
+the full suite at `-n 2` and `-n 3` allgathered `e_ref.tobytes()` from every call — **7036 and
+7040 checked, 375 and 379 through the Krylov branch, zero divergence** — consistent with TSQR's
+bitwise-identical `R` propagating to a deterministic `eigh(T)`. Recorded in the source rather than
+fixed. Not covered by that measurement: production-cap solves with partial reorthogonalization,
+and any run where the BLAS thread count differs between ranks.
+
 ## Loose ends
 
 - `nio_15`, the workload the earlier `delta_sum = 0.218` came from, was removed from disk on
