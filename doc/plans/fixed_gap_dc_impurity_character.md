@@ -233,8 +233,23 @@ Measured at `Δ = 3.5`, `J = 1`, `U = 8`, `ε = −11`:
 
 `fixed_gap_dc` converges on this fixture reporting `delta_+ = delta_- = 1.000` — the maximum
 possible impurity character — and **no warning fires**. It centres the gap at ≈ 0 where the true
-`A_imp` centre is +0.25. `Δ = 5.0` is the control: identical fixture, crossover switched off, and
-the edge carries weight again. Representability is 1.0000, so the zero is not a truncated seed.
+`A_imp` centre is +0.25. Representability is 1.0000, so the zero is not a truncated seed.
+
+**What makes the window the right control is separation, not just zero weight.** Both ends fail to
+reproduce the defect, for different reasons:
+
+| `Δ` | `N` ground state | addition edge | nearest weighted state | verdict |
+|---|---|---|---|---|
+| 2.0 | high-spin (`S_z = 1`) | `w = 0` at +1.000 | **+1.000, degenerate** | harmless — that `ω` does carry weight |
+| 3.5 | low-spin (`S_z = 0`) | `w = 0` at +3.000 | +3.500, **0.5 away** | **genuine F2** |
+| 5.0 | low-spin (`S_z = 0`) | `w = 0.25` at +5.000 | itself | no defect |
+
+At `Δ = 2.0` Hund's coupling already wins at `N`, so the ground state is high-spin and the
+`S_z = ±3/2` states of the `N+1` multiplet are degenerate; the solver happens to return the
+unreachable one first, but a weighted partner sits at the same energy, so centring there is
+correct. Only inside the window is the weightless state *both* the sector ground state *and*
+energetically separated from the weight — which is why the test asserts the +3.5 partner's
+position, not merely that the edge weight is zero.
 
 Energies confirmed against an exact diagonalization written without the solver, itself first
 checked against the atomic hand formulas (`N_imp = 2 → −14.0000`, `N_imp = 3 → −11.0000`, exact).
@@ -245,8 +260,14 @@ no bath attached — and a frozen group's occupation is pinned at its aufbau val
 the high-spin configuration entirely. The symptom was a 4-determinant `N+1` sector returning
 `−60.5000` where the true sector ground state is `−61.0001`: **the sector solve sat 0.5 above the
 true ground state, silently, and no setting of `mixed_valence` changed it.** Giving every impurity
-orbital a bath partner restores redistribution (dim 4 → 26) and the correct edge. Worth knowing
-for any real workload carrying a bath-less correlated group.
+orbital a bath partner restores redistribution (dim 4 → 26) and the correct edge.
+
+Checked against production rather than left as a worry: `frozen_occupations` is **empty on
+`nio_20`, `fcc_ni_5` and `nio_5peeled`** at iteration 1 — every impurity group there has valence
+baths (NiO 4/6 orbitals against 24/24 baths; FCC Ni 2/3/2/3 against 25/3/2/3). So this is a
+fixture-construction trap, not a live correctness bug on any workload in use. It would become one
+for an impurity carrying a bath-less correlated group, and `ctx.frozen_occupations` is the thing
+to print when a sector energy looks implausibly high.
 
 **So Step 3b's gate is passed and the port is what remains**: `_overlap`, `_norm2` and
 `spectral_moments` are serial and need apply-local → `redistribute_psis` → local inner →

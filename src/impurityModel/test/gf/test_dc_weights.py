@@ -277,9 +277,15 @@ def test_the_gap_edge_can_carry_exactly_zero_weight():
     from ``S_z = 0``.
 
     ``weight`` is asserted **exactly** zero rather than small, because the mechanism is a symmetry
-    and not a near-cancellation. The state just above it, at ``omega = +3.5``, is the true
-    impurity addition edge and carries weight -- so the criterion is not merely imprecise here, it
-    centres on the wrong pole while the diagnostic reports perfect impurity character.
+    and not a near-cancellation.
+
+    **The assertion on the +3.5 partner is the crux, not a decoration.** A zero-weight edge is only
+    a defect if the weight is somewhere *else*: outside the crossover window, at ``delta = 2``, the
+    ``N`` ground state is already high-spin and the unreachable ``S_z = -3/2`` state is
+    **degenerate** with a weighted partner at the same ``omega``, so centring there is correct even
+    though the lowest returned state has zero weight. Inside the window the nearest weight sits 0.5
+    away, so the criterion centres on a pole that is not in ``A_imp`` at all -- while reporting
+    perfect impurity character. Assert the separation or the test passes on a harmless case.
 
     The energies are independently confirmed: an exact diagonalization of this fixture written
     without the solver gives the ``N`` sector at ``S_z = 0`` and the ``N + 1`` sector's true ground
