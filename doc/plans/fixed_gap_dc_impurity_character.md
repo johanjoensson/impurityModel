@@ -185,6 +185,63 @@ bitwise-identical `R` propagating to a deterministic `eigh(T)`. Recorded in the 
 fixed. Not covered by that measurement: production-cap solves with partial reorthogonalization,
 and any run where the BLAS thread count differs between ranks.
 
+## Does the F2 failure mode reach the edge? (measured 2026-08-05)
+
+F2 says `delta` (a Hellmann–Feynman μ-response) and the Lehmann weight can decouple, so the
+criterion could fix against an edge that moves fully with `mu` while carrying no weight in
+`A_imp`. The docs now say so. Before porting `dc_weights`' primitives to MPI to *measure* the
+weight in production, the question was whether that case is reachable at all.
+
+**The decoupling is real and was exhibited.** Adding an impurity Zeeman field to the
+charge-transfer fixture (`H` conserves `S_z`, so a field can push a state into an `S_z` sector
+`c_d†|0⟩` cannot reach) produces removal states with **exactly zero** weight — `weight_fraction`
+below 1e-6 — while moving `0.967` (at `b_imp = 1`) and `0.989` (at `b_imp = 3`) of an electron.
+`delta` and `w` are not the same quantity, demonstrably.
+
+**But it does not reach the edge, and that is what the criterion uses.** Scanning `b_imp` from 0
+to 3 in steps of 0.25, the *lowest* state of each sector — the one `fixed_gap_dc` fixes against —
+has `delta` and `weight_fraction` tracking each other to within a few percent at every point:
+
+| `b_imp` | removal edge `delta` | removal edge `w_frac` |
+|---|---|---|
+| 0.00 | −0.9098 | 0.9440 |
+| 1.00 | −0.7997 | 0.8118 |
+| 1.50 | −0.4843 | 0.4894 |
+| 2.00 | −0.1735 | 0.1748 |
+| 3.00 | −0.0349 | 0.0351 |
+
+The weightless high-`delta` states exist, but they sit *above* the edge, and the criterion never
+looks at them. The reason is structural rather than lucky: these fixtures have a **single impurity
+spatial orbital**, so the impurity subspace at a given occupation is one-dimensional and "the
+impurity gained an electron" and "the state is `c_d†|0⟩`-reachable" are nearly the same statement.
+Exhibiting a *weightless edge* needs a multi-orbital impurity, where the `N±1` ground state can be
+a multiplet no single `c_d†` reaches from the `N` ground state — a low-spin `N` / high-spin `N±1`
+crossover, which needs ≥3 impurity orbitals and a crystal-field/Hund's balance tuned to sit in the
+window where both hold.
+
+**So Step 3b is not blocked on engineering, it is blocked on a fixture.** Porting `_overlap` /
+`spectral_moments` to MPI is a known amount of work (apply-local → `redistribute_psis` → local
+inner → `Allreduce`, with a test that fails on replicated input). Doing it now would ship
+collective code whose only regression test is an analytic oracle that, by construction, has no
+symmetry blocking — i.e. cannot test the case the code exists for. The honest order is: build the
+multi-orbital fixture, confirm the edge itself goes weightless, then port.
+
+`manifold_spread` (F4) came back **machine zero on every fixture** — 2e-16, 0.0, 5e-15 — so
+pairing a `T = 0` energy with a thermal occupation is not costing anything on these models, and
+switching to `argmin(es)` would change no reported number. It is now in the record so a model
+where it *does* matter says so itself.
+
+Two defects turned up while measuring, both now fixed:
+
+- `python -m impurityModel.test.support.dc_weights nio_5peeled 2000 -0.2587` — advertised in this
+  module's docstring since it was written — **had no `__main__` block**. It exited 0 and printed
+  nothing. The warning text now names that command, so it grew a real entry point.
+- The test docstring pinning the charge-transfer calibration claimed `(0.075, 0.951)`. The
+  measured value is `(-0.0210, 0.8179)`, bit-identical across `c46eb82` and the refactor after it
+  — so no version of the code ever produced the quoted pair. `delta_+` is **negative** there,
+  which is F3's "not bounded below by 0" showing up in the suite itself. Now pinned to 1e-3, not
+  merely bounded, because every inequality the test already asserted passes for `0.075` too.
+
 ## Loose ends
 
 - `nio_15`, the workload the earlier `delta_sum = 0.218` came from, was removed from disk on

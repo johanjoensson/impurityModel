@@ -676,11 +676,21 @@ def test_the_gap_criterion_measures_its_own_impurity_character(capsys):
     weaker of the two -- ``min(delta_+, delta_-)``, below ``GAP_EDGE_IMPURITY_FLOOR`` -- that the
     criterion says out loud.
 
-    Measured directly on these two fixtures: near-atomic ``(1.00, 1.00)`` against charge-transfer
-    ``(0.075, 0.951)``. The **sums**, 2.00 and 1.03, are what an earlier version of this test
-    compared, and they nearly hide the defect: one conduction orbital at +0.4 turns a wholly
-    impurity-like addition edge into a 7%-impurity one while the sum only falls by half. The
-    edges fail independently, so the summary statistic has to be the minimum.
+    Measured directly on these two fixtures: near-atomic ``(1.0000, 1.0000)`` against
+    charge-transfer ``(-0.0210, 0.8179)``. The **sums**, 2.000 and 0.797, are what an earlier
+    version of this test compared, and they nearly hide the defect: one conduction orbital at +0.4
+    turns a wholly impurity-like addition edge into a *negatively* impurity one while the sum only
+    falls by 60%. The edges fail independently, so the summary statistic has to be the minimum.
+
+    ``delta_+ = -0.021`` is not a typo and not a convergence artefact -- it is bit-reproducible
+    across ``c46eb82`` and the refactor after it -- and it is the review's F3 in the suite:
+    ``delta`` is **not** bounded below by 0. Adding an electron here puts it on the conduction
+    level and rehybridization takes slightly *more* than that off the impurity, so the impurity
+    occupation goes down when an electron is added. Any future rewrite that clips these to
+    ``[0, 1]``, or reads them as "the fraction of the electron that landed on the impurity",
+    breaks on this fixture -- which is why the values are pinned here to 1e-3 rather than only
+    bounded. An earlier docstring quoted ``(0.075, 0.951)`` for this fixture; no version of this
+    code ever produced it.
 
     Both searches run on **every** rank; only the parsing and the assertions are rank-gated. An
     earlier version of this test put the ``rank != 0: return`` between the two searches, so rank 0
@@ -729,6 +739,11 @@ def test_the_gap_criterion_measures_its_own_impurity_character(capsys):
     assert min(edges) < min(atomic_edges), f"charge-transfer edges {edges} not below atomic {atomic_edges}"
     assert min(edges) < GAP_EDGE_IMPURITY_FLOOR, edges
     assert "WARNING: the addition (N+1) edge" in transfer_out, transfer_out
+    # Pinned, not merely bounded, and negative on purpose -- see the docstring. The inequalities
+    # above all pass for `delta_+ = 0.075` too, which is what let a wrong number sit in this
+    # docstring across two commits without a test noticing.
+    assert edges[0] == pytest.approx(-0.021, abs=1e-3), edges
+    assert edges[1] == pytest.approx(0.818, abs=1e-3), edges
 
 
 def test_the_edge_character_costs_no_sector_solves_of_its_own(monkeypatch):
@@ -780,6 +795,92 @@ def test_the_edge_character_costs_no_sector_solves_of_its_own(monkeypatch):
     # And it still produced the numbers: a measurement that costs nothing because it measured
     # nothing would pass the assertion above.
     assert report["delta_plus"] is not None and report["delta_minus"] is not None, report
+
+
+def test_the_two_estimators_of_delta_sum_agree(capsys):
+    """``delta_+ + delta_-`` against ``-2*chi``: two routes to one number, differenced.
+
+    The criterion has always carried both and, until ``delta_sum_vs_chi``, compared neither.
+    ``delta_sum`` is built from impurity occupations, which are **first**-order in the wavefunction
+    error; ``-2*chi`` is a secant of gap centres against ``mu``, **second**-order in it but
+    carrying a finite-difference term and a CIPSI basis-reselection term the occupations do not
+    have. They fail differently, so agreement is not a tautology -- it is end-to-end evidence that
+    the sector solves are converged and that ``sector_solve`` is returning the occupation of the
+    same expansion the energy came from.
+
+    Hellmann-Feynman is what ties them: ``d(centre)/dmu = -(delta_+ + delta_-)/2`` for an exact
+    eigenstate of ``H(mu)``, so the difference asserted here is a residual of that identity on the
+    actual variational space, not a comparison of two independent measurements.
+
+    Measured: ``-7.3e-06`` on the near-atomic fixture, ``-5.1e-04`` on the charge-transfer one.
+    The two orders of magnitude between them are the point -- the bath is what makes the identity
+    hard, and a threshold tight enough for the atomic case alone would be a false floor. Bounded
+    at 5e-3, roughly ten times the worse of the two, so real divergence is caught and roundoff is
+    not.
+    """
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
+    atomic = {}
+    fixed_gap_dc(offset=-0.4, report=atomic, **kwargs)
+
+    kwargs, _ = charge_transfer_kwargs()
+    transfer = {}
+    try:
+        fixed_gap_dc(offset=0.0, allow_charge_state_change=True, report=transfer, **kwargs)
+    except DoubleCountingUnreachable:
+        # Rank-identical (the residual is broadcast), so catching it does not split the ranks.
+        pass
+
+    if MPI.COMM_WORLD.rank != 0:
+        return
+    for label, report in (("near-atomic", atomic), ("charge-transfer", transfer)):
+        # Both searches take more than one evaluation inside one sector, which is what `chi`
+        # needs to exist. If a future fixture change makes one converge at the guess, `chi` goes
+        # None and this field disappears -- fail loudly rather than skip, because a silently
+        # vanishing cross-check is the failure mode the whole review was about.
+        assert report.get("chi") is not None, f"{label}: no chi, so the cross-check never ran"
+        assert report.get("delta_sum_vs_chi") is not None, f"{label}: {report}"
+        assert report["delta_sum_vs_chi"] == pytest.approx(
+            report["delta_sum"] - (-2.0 * report["chi"])
+        ), f"{label}: the recorded difference is not the difference of the two estimators"
+        assert abs(report["delta_sum_vs_chi"]) < 5e-3, (
+            f"{label}: the occupation estimator {report['delta_sum']:.6f} and the chi secant "
+            f"{-2.0 * report['chi']:.6f} disagree by {report['delta_sum_vs_chi']:.2e}"
+        )
+
+
+def test_the_record_says_whether_the_thermal_manifold_hides_anything(capsys):
+    """``manifold_spread``: the evidence for pairing a ``T = 0`` energy with a thermal occupation.
+
+    ``omega_+-`` are the *lowest* eigenvalue of each sector; ``delta_+-`` are differences of
+    Boltzmann-averaged ``Tr rho_imp`` over each sector's whole retained manifold. Hellmann-Feynman
+    relates them **state by state**, so the pairing is exact only where the retained states share
+    ``N_imp``. Nothing said whether they do, and the argument for the thermal convention was made
+    on rank-safety and consistency with ``fixed_occupation_dc`` -- both true, and neither about
+    this.
+
+    So it is measured instead of argued. On every fixture in this suite the spread is machine zero
+    (2e-16, 0.0, 5e-15), which closes the question *for these models*: the two conventions are the
+    same number and switching to ``argmin(es)`` would change nothing. The field exists so that a
+    model where they differ says so in its own record rather than being caught by whoever next
+    re-derives the concern.
+
+    The manifold **sizes** are asserted alongside deliberately. A spread of zero over a one-state
+    manifold is silence, not agreement, and the off-centre sectors here retain exactly one state
+    -- so the centre sector, with two, is carrying the whole result.
+    """
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
+    report = {}
+    fixed_gap_dc(offset=-0.4, report=report, **kwargs)
+
+    if MPI.COMM_WORLD.rank != 0:
+        return
+    assert report.get("manifold_spread") is not None, report
+    assert report["manifold_spread"] < 1e-9, report["manifold_spread"]
+    sizes = [int(n) for n in report["manifold_states"].split("/")]
+    assert len(sizes) == 3 and all(n >= 1 for n in sizes), report["manifold_states"]
+    # Not a vacuous zero: at least one sector retained more than one state, so at least one
+    # comparison was actually made.
+    assert max(sizes) > 1, f"every manifold held one state, so the spread asserts nothing: {sizes}"
 
 
 def test_the_impurity_character_warning_fires_on_the_weaker_edge(capsys):

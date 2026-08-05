@@ -38,6 +38,8 @@ Run as an opt-in benchmark module, or directly::
     python -m impurityModel.test.support.dc_weights nio_5peeled 2000 -0.2587
 """
 
+from dataclasses import replace
+
 import numpy as np
 from mpi4py import MPI
 
@@ -405,3 +407,54 @@ def format_table(result, e_scale=1.0, unit=""):
         value = result[key]
         lines.append(f"  {key:14s} = {'undefined' if value is None else f'{value * e_scale:+.6f}'}{unit}")
     return "\n".join(lines)
+
+
+def main(argv=None):
+    """``<workload> <cap> <mu>`` -- the invocation this module's docstring has always advertised.
+
+    It did not exist. The module documented ``python -m impurityModel.test.support.dc_weights
+    nio_5peeled 2000 -0.2587`` and had no ``__main__`` block, so that command **exited 0 and
+    printed nothing** -- a silent no-op, which is worse than an error because it reads as "there
+    was nothing to report". ``fixed_gap_dc``'s impurity-character warning now names this command as
+    the way to tell a charge-transfer valence band from a bath-discretization artefact, so it has
+    to run.
+
+    ``mu`` is the trial shift in ``dc = dc_guess + mu``, in the archive's own energy unit (Ry for
+    an RSPt archive), matching the record's ``mu``. The iteration is pinned rather than following
+    the archive's last group: these archives are live, and the iterations of one run differ by
+    several eV.
+    """
+    import argparse
+
+    from impurityModel.ed.model import load_selfenergy_archive
+
+    from .restriction_diagnostics import DEFAULT_ITERATION, WORKLOADS
+
+    parser = argparse.ArgumentParser(description="Impurity spectral weight at the gap edges.")
+    parser.add_argument("workload", choices=sorted(WORKLOADS), help="archive key")
+    parser.add_argument("cap", type=int, help="determinant cap (truncation_threshold)")
+    parser.add_argument("mu", type=float, help="trial DC shift, in the archive's energy unit")
+    parser.add_argument("--iteration", type=int, default=DEFAULT_ITERATION)
+    parser.add_argument("--num-states", type=int, default=DEFAULT_NUM_STATES)
+    parser.add_argument("--weight-fraction", type=float, default=DEFAULT_WEIGHT_FRACTION)
+    parser.add_argument("--verbosity", type=int, default=0)
+    args = parser.parse_args(argv)
+
+    model, _meshes, basis, solver, label = load_selfenergy_archive(WORKLOADS[args.workload], iteration=args.iteration)
+    basis = replace(basis, truncation_threshold=args.cap)
+    print(f"{args.workload} ({label}) iteration {args.iteration}, cap {args.cap}, mu {args.mu:+g}")
+    result = sector_weight_table(
+        model,
+        basis,
+        solver,
+        args.mu,
+        num_states=args.num_states,
+        weight_fraction=args.weight_fraction,
+        verbosity=args.verbosity,
+    )
+    print(format_table(result))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

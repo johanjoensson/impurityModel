@@ -933,13 +933,14 @@ def _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank):
         "-- but it is not the gap of the impurity spectral function A_imp, which is what the "
         "fixed-gap prescription is usually quoted for, and the two can sit several eV apart. "
         "(2) A discretization artefact: an isolated fitted bath level inside the true gap, which "
-        "does not move with the double-counting shift at all. Distinguish them with "
-        "test/support/dc_weights.py -- a band shows many nearly degenerate states carrying weight, "
-        "an artefact shows one isolated level carrying none -- and cross-check against "
-        "fixed_occupation_dc, and against fixed_peak_dc if the OTHER edge is the responsive one. "
-        "Note what this number is: a mu-response, not a spectral weight. A state orthogonal to "
-        "c_d^dagger|0> by spin or irrep carries zero weight in A_imp while still moving fully with "
-        "mu, and no value of delta detects that -- only dc_weights.py does.",
+        "does not move with the double-counting shift at all. Distinguish them with the opt-in "
+        "weight diagnostic, `python -m impurityModel.test.support.dc_weights <archive> <cap> <mu>` "
+        "(serial) -- a band shows many nearly degenerate states carrying weight, an artefact shows "
+        "one isolated level carrying none -- and cross-check against fixed_occupation_dc, and "
+        "against fixed_peak_dc if the OTHER edge is the responsive one. Note what this number is: "
+        "a mu-response, not a spectral weight. A state orthogonal to c_d^dagger|0> by spin or "
+        "irrep carries zero weight in A_imp while still moving fully with mu, and no value of "
+        "delta detects that -- only the weight diagnostic does.",
         flush=True,
     )
 
@@ -973,6 +974,40 @@ def _measure_edge_character(ctx, mu, n_center):
     delta_plus = None if n_add is None or n_mid is None else n_add - n_mid
     delta_minus = None if n_mid is None or n_rem is None else n_mid - n_rem
     return delta_plus, delta_minus
+
+
+def _measure_manifold_spread(ctx, mu, n_center):
+    """``(spread, sizes)``: does the thermal average this criterion reports hide anything?
+
+    ``delta_+-`` are differences of ``Tr rho_imp`` **Boltzmann-averaged over each sector's retained
+    manifold**, while ``omega_+-`` are the *lowest* eigenvalue of the same manifolds. The
+    Hellmann-Feynman identity that makes ``delta`` the slope of ``omega`` holds state by state, so
+    pairing a ``T = 0`` energy with a thermal occupation is only exact when the manifold's states
+    share ``N_imp``. ``spread = max(N_imp) - min(N_imp)`` over the retained states says whether they
+    do: it is an upper bound on how far the reported ``delta`` can sit from the ``T = 0`` one, and
+    where it is zero the distinction is not a distinction and the thermal convention -- which is
+    what ``fixed_occupation_dc`` and ``calc_gs`` use -- costs nothing.
+
+    Reported rather than resolved. Switching to the ``argmin`` state is a one-line change
+    (:class:`_SectorSolution` already carries ``occupation_ground``), but it would silently change
+    every recorded ``delta`` on every workload, and the evidence for whether that matters is this
+    number. The maximum over the three sectors is what is reported, because the identity has to
+    hold for each edge separately.
+
+    Free: every sector was solved at this ``mu`` already and :meth:`_SectorContext.sector_solve`
+    cached the spread beside the occupation. Sizes come back too -- a spread of zero over a
+    one-state manifold says nothing at all, and the two numbers are only readable together.
+    """
+    h_op = ctx.shifted_h(mu)
+    spreads, sizes = [], []
+    for n_trial in (n_center + 1, n_center, n_center - 1):
+        solution = ctx.sector_solve(h_op, mu, n_trial)
+        if solution is not None:
+            spreads.append(solution.occupation_spread)
+            sizes.append(solution.n_states)
+    if not spreads:
+        return None, None
+    return max(spreads), "/".join(str(size) for size in sizes)
 
 
 def _size_gap_tolerance(width, mu_tol, bandwidth, rank=0):
@@ -1388,6 +1423,8 @@ def fixed_gap_dc(
                 if mu_seen is not None:
                     delta_plus, delta_minus = _measure_edge_character(ctx, mu_seen, n_center_at[mu_seen])
                     dc_rec["delta_plus"], dc_rec["delta_minus"] = delta_plus, delta_minus
+                    spread, sizes = _measure_manifold_spread(ctx, mu_seen, n_center_at[mu_seen])
+                    dc_rec["manifold_spread"], dc_rec["manifold_states"] = spread, sizes
                     _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank)
 
         # mu is always a point _solve_dc_shift actually evaluated, so sectors_at holds it.

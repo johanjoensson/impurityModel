@@ -67,6 +67,7 @@ _FIELDS = (
     ("delta_minus", "{:.3f}"),
     ("delta_sum", "{:.3f}"),
     ("delta_sum_vs_chi", "{:.3f}"),
+    ("manifold_spread", "{:.3f}"),
     ("peak", "{:.6f}"),
     ("chi", "{:.4g}"),
     ("chi_span", "{:.4g}"),
@@ -81,7 +82,9 @@ _FIELDS = (
 #: does. ``nominal_sector`` follows ``sector`` on its line, and ``n_ref_kind`` says which of the
 #: two very different fillings ``n_ref`` is -- a DFT reference read off the bath fit, or the
 #: nominal integer ``nominal_dc`` was handed. Same key, same units, incomparable provenance.
-_ANNOTATIONS = frozenset({"nominal_sector", "n_ref_kind"})
+#: ``manifold_states`` follows ``manifold_spread`` because a spread is unreadable without the
+#: number of states it is a spread over: zero across one state is silence, not agreement.
+_ANNOTATIONS = frozenset({"nominal_sector", "n_ref_kind", "manifold_states"})
 
 #: Everything a criterion may write into a record. Enforced by a test, not at runtime: a key this
 #: module does not know is dropped silently at print time, which is exactly the failure mode the
@@ -204,6 +207,14 @@ def _annotate(record, key, text):
         # that neither error shows; large means one of them is not, and `chi_span` says whether to
         # suspect the secant's interval.
         return f"{text}   (delta_sum minus -2*chi; two estimators with opposite error structure)"
+    if key == "manifold_spread":
+        # The one number that says whether `delta_+-` being thermal while `omega_+-` are T=0
+        # matters on this model. Hellmann-Feynman relates them state by state, so the pairing is
+        # exact only when the retained manifold's states share N_imp -- which is what a zero spread
+        # says. Sizes come along because a zero spread over a single retained state is silence.
+        sizes = record.get("manifold_states")
+        over = "" if sizes is None else f" over {sizes} states (N+1/N/N-1)"
+        return f"{text}   (max N_imp spread within a retained manifold{over}; 0 = thermal and T=0 agree)"
     if key == "chi":
         # The residual is converged to `tol`; what the *answer* is determined to is tol / |chi|.
         # That conversion is the entire reason chi is reported (review correction 5): a criterion
