@@ -208,12 +208,6 @@ def test_gethHfieldop():
     assert len(op) > 0
 
 
-def test_read_tuple():
-    s = "((0, c), (1, a))"
-    t = hamiltonian_io.read_tuple(s)
-    assert t == ((0, "c"), (1, "a"))
-
-
 def test_read_h0_dict():
     with patch("impurityModel.ed.op_parser.parse_file") as mock_parse:
         mock_parse.return_value = {0: {((0, "c"), (0, "a")): 1.0}}

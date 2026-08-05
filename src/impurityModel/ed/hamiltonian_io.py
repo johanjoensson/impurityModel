@@ -186,37 +186,6 @@ def read_h0_dict(h0_filename):
     return h0_dict
 
 
-def read_tuple(line):
-    r"""
-    Read arbitratily nested tuples from string.
-    Returns the tuple contained in string.
-    """
-    store = []
-    tmp_tup = []
-    line = line.replace("(", "(,")
-    line = line.replace(")", ",)")
-    tmp = line.split(",")
-    for cs_raw in tmp:
-        cs = cs_raw.strip()
-        if cs == "(":
-            store.append(tmp_tup)
-            tmp_tup = []
-        elif cs == ")":
-            t = tuple(tmp_tup)
-            tmp_tup = []
-            if store:
-                s = store.pop()
-                if s:
-                    tmp_tup = [s[0]]
-            tmp_tup.append(t)
-        elif cs not in ["("]:
-            if cs in ["a", "c"]:
-                tmp_tup.append(cs)
-            else:
-                tmp_tup.append(int(cs))
-    return tuple(tmp_tup[0])
-
-
 def get_CF_hamiltonian(nBaths, nValBaths, h0_CF_filename, bath_state_basis="spherical"):
     """
     Construct non-relativistic and non-interacting Hamiltonian, from CF parameters.
