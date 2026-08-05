@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-import impurityModel.ed.groundstate as groundstate
 import impurityModel.ed.product_state_representation as psr
+from impurityModel.ed import groundstate
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver

@@ -11,8 +11,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import dc_search
-from impurityModel.ed import solver_trace
+from impurityModel.ed import dc_search, solver_trace
 from impurityModel.ed.selfenergy import fixed_occupation_dc, fixed_peak_dc
 
 from .test_fixed_dc import common_kwargs
@@ -51,10 +50,8 @@ def test_labels_attach_to_events_recorded_underneath():
 
 def test_a_raising_block_is_still_recorded():
     """A search that fails to reach its target is exactly the one whose cost matters."""
-    with solver_trace.tracing() as trace:
-        with pytest.raises(RuntimeError):
-            with solver_trace.timed("sector_solve"):
-                raise RuntimeError("boom")
+    with solver_trace.tracing() as trace, pytest.raises(RuntimeError), solver_trace.timed("sector_solve"):
+        raise RuntimeError("boom")
     assert trace.count("sector_solve") == 1
 
 
@@ -69,9 +66,8 @@ def test_tracing_refuses_to_nest():
     silently.
     """
     with solver_trace.tracing() as outer:
-        with pytest.raises(RuntimeError, match="already active"):
-            with solver_trace.tracing():
-                pass
+        with pytest.raises(RuntimeError, match="already active"), solver_trace.tracing():
+            pass
         # The refusal must not damage the enclosing trace.
         solver_trace.note("sector_cache_hit")
     assert solver_trace.is_active() is False

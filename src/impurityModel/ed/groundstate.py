@@ -41,7 +41,6 @@ from impurityModel.ed.observables import (
     static_susceptibility_rows,
     thermal_observable_value,
 )
-from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.ed.spin_pairs import resolve_spin_pairs
 from impurityModel.ed.symmetries import extract_tensors
 from impurityModel.ed.utils import matrix_print, print_density_matrix_summary, report_banner, report_rule
@@ -1126,8 +1125,8 @@ def calc_gs(
         basis_setup["N0"] = basis_setup.pop("nominal_impurity_occ")
 
     tau = basis_setup["tau"]
-    dense_cutoff = basis_setup.get("dense_cutoff", 1000)
-    energy_cut = boltzmann_energy_cut(tau)
+    basis_setup.get("dense_cutoff", 1000)
+    boltzmann_energy_cut(tau)
     # One definition of "the ground state of this model", shared with the double-counting
     # criteria (see solve_ground_state): it owns the tau/100 walk, the sqrt(slaterWeightMin)
     # cutoff, the tau restore before the refinement, the eigensolver choice and the width of the

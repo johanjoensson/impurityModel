@@ -29,9 +29,9 @@ The reporting half answers "where did the search spend its time" through
 :mod:`impurityModel.ed.solver_trace`, under the ``DC_DIAGNOSTICS`` knob.
 """
 
-from contextlib import contextmanager
-
+import itertools
 import math
+from contextlib import contextmanager
 
 import numpy as np
 from mpi4py import MPI
@@ -869,7 +869,7 @@ def _dc_chi(samples, at, width_tol=0.0, in_sector=None):
     shifts = sorted(samples)
     pairs = [
         (mu_low, mu_high)
-        for mu_low, mu_high in zip(shifts, shifts[1:])
+        for mu_low, mu_high in itertools.pairwise(shifts)
         if mu_high - mu_low > width_tol
         and mu_low <= at <= mu_high
         and (in_sector is None or (in_sector(mu_low) and in_sector(mu_high)))

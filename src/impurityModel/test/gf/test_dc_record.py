@@ -172,9 +172,8 @@ def test_a_broken_record_cannot_mask_the_exception_it_is_documenting(capsys, mon
 
     monkeypatch.setattr(dc_record, "emit", exploding_emit)
 
-    with pytest.raises(ValueError, match="the real failure"):
-        with dc_record.recording("gap"):
-            raise ValueError("the real failure")
+    with pytest.raises(ValueError, match="the real failure"), dc_record.recording("gap"):
+        raise ValueError("the real failure")
     assert "could not format the double-counting record" in capsys.readouterr().out
 
     # And on the success path a broken record must not turn a good answer into an exception.

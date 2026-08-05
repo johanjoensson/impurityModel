@@ -46,11 +46,11 @@ from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.dc_criteria import GAP_ENERGY_TOLERANCE_FRACTION
+from impurityModel.ed.dc_search import bracket_width_tol
 from impurityModel.ed.groundstate import find_ground_state_basis
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.model import BasisOptions, ImpurityModel, SolverOptions
-from impurityModel.ed.dc_criteria import GAP_ENERGY_TOLERANCE_FRACTION
-from impurityModel.ed.dc_search import bracket_width_tol
 from impurityModel.ed.selfenergy import (
     DoubleCountingUnreachable,
     fixed_gap_dc,

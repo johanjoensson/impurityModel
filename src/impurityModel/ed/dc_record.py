@@ -323,7 +323,7 @@ def recording(criterion, rank=None, report=None):
                 # raises still hands back how far it got, which a fill at the return could not.
                 report.update(record)
             emit(record, rank=rank)
-        except Exception as exc:  # noqa: BLE001 -- see above; nothing here may mask the caller's
+        except Exception as exc:
             print(f"WARNING: could not format the double-counting record ({exc!r}); the calculation is unaffected.")
 
 

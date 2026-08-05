@@ -32,7 +32,7 @@ def _model():
     impurity_orbitals = {0: [[0, 1]], 1: [[2, 3]]}
     valence = {0: [[4, 5]], 1: [[6, 7]]}
     conduction = {0: [[8, 9]], 1: [[10, 11]]}
-    for group, (eps, imp) in enumerate(((-0.6, (0, 1)), (0.4, (2, 3)))):
+    for _group, (eps, imp) in enumerate(((-0.6, (0, 1)), (0.4, (2, 3)))):
         for orb in imp:
             h[orb, orb] = eps
     for orb in (4, 5, 6, 7):

@@ -1428,7 +1428,7 @@ def fixed_gap_dc(
                     _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank)
 
         # mu is always a point _solve_dc_shift actually evaluated, so sectors_at holds it.
-        n_center, e_add, e_rem = _gap_sectors_at(mu)
+        n_center, _e_add, _e_rem = _gap_sectors_at(mu)
         nominal_total = ctx.nominal_total
         gap_width = _gap_width_at(mu)
         dc = ctx.dc(mu)

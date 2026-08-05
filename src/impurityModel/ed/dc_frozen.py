@@ -143,7 +143,7 @@ class FrozenSpaceSweep:
         # terabytes at production caps.
         local = np.real(self._n_matrix.diagonal())
         owned = local[np.asarray(basis.local_indices)] if basis.is_distributed else local
-        occupations = sorted({int(round(n)) for n in owned})
+        occupations = sorted({round(n) for n in owned})
         if basis.is_distributed:
             occupations = sorted({n for part in basis.comm.allgather(occupations) for n in part})
         self._sector_span = tuple(occupations)

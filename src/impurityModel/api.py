@@ -20,6 +20,8 @@ reference against the continuum hybridization
 .dat format (:func:`save_Greens_function`).
 """
 
+from impurityModel.ed.dc_record import dc_levels, dc_spread
+from impurityModel.ed.dc_record import emit as emit_dc_record
 from impurityModel.ed.greens_function import save_Greens_function
 from impurityModel.ed.model import (
     BasisOptions,
@@ -30,8 +32,6 @@ from impurityModel.ed.model import (
     atomic_u4,
     load_selfenergy_archive,
 )
-from impurityModel.ed.dc_record import dc_levels, dc_spread
-from impurityModel.ed.dc_record import emit as emit_dc_record
 from impurityModel.ed.operator_algebra import matrixToIOp
 from impurityModel.ed.selfenergy import (
     DoubleCountingUnreachable,

@@ -16,6 +16,7 @@ beyond spin is broken by ``U``.
 """
 
 import numpy as np
+
 from impurityModel.ed import atomic_physics
 from impurityModel.ed.cipsi_solver import CIPSISolver, _commutes_with
 from impurityModel.ed.lie_algebra import tensors_to_operator
@@ -103,7 +104,7 @@ def test_the_ground_state_is_a_spin_eigenstate():
     """
     # One bath set, not two: the full 30-orbital layout takes ~60 s here, and the property under
     # test (good Sz / S^2 on the produced state) does not depend on having a conduction bath.
-    h_op, h_full, impurity_orbitals, bath_states = _cubic_d_shell(n_bath_sets=1)
+    _h_op, h_full, impurity_orbitals, bath_states = _cubic_d_shell(n_bath_sets=1)
     pairs = impurity_spin_pairs(impurity_orbitals) + bath_spin_pairs(bath_states)
     s_plus, s_minus, s_z = make_spin_operators(pairs)
 
