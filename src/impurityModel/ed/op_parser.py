@@ -1,3 +1,8 @@
+_WHITESPACE = " \t\n\r"
+_DIGITS = "0123456789-"
+_NUMBER_CHARS = "0123456789+-.eE"
+
+
 def skip_whitespaces(text):
     """
     Remove leading whitespaces, tabs, and newlines from a string.
@@ -16,11 +21,10 @@ def skip_whitespaces(text):
     --------
     >>> skip_whitespaces("   hello  ")
     'hello  '
+    >>> skip_whitespaces("   ")
+    ''
     """
-    for i, c in enumerate(text):  # noqa: B007  (i is the break position, used after the loop)
-        if c not in [" ", "\t", "\n"]:
-            break
-    return text[i:]
+    return text.lstrip(_WHITESPACE)
 
 
 def read_state_tuple(text):
@@ -41,31 +45,44 @@ def read_state_tuple(text):
         A tuple containing the remaining string after the closing parenthesis,
         and the parsed state tuple.
 
+    Raises
+    ------
+    ValueError
+        If no closing ``)`` is present, or a segment is not an integer. The message
+        names what was expected; ``parse_file`` adds the file and line number.
+
     Examples
     --------
     >>> read_state_tuple("1, 2) residue")
     (' residue', (1, 2))
+    >>> read_state_tuple("2,) residue")
+    (' residue', (2,))
     """
+
+    def to_int(segment, allow_empty):
+        # A trailing comma before ')' -- the singleton form "(2,)" -- yields an empty
+        # final segment, which is not an error.
+        if not segment and allow_empty:
+            return None
+        try:
+            return int(segment)
+        except ValueError:
+            raise ValueError(f"expected an integer in a state tuple, got {segment!r} in {text!r}") from None
+
     res = []
     num = ""
-    for i, c in enumerate(text):  # noqa: B007  (i is the closing-paren position, used after the loop)
+    for i, c in enumerate(text):
         if c == ")":
-            try:
-                res.append(int(num))
-            except:
-                print("Error casting string " + num + ", to integer.")
-                raise
-            break
+            value = to_int(num, allow_empty=True)
+            if value is not None:
+                res.append(value)
+            return (text[i + 1 :], tuple(res))
         elif c == ",":
-            try:
-                res.append(int(num))
-            except:
-                print("Error casting string " + num + ", to integer.")
-                raise
+            res.append(to_int(num, allow_empty=False))
             num = ""
-        elif c in "0123456789-":
+        elif c in _DIGITS:
             num += c
-    return (text[i + 1 :], tuple(res))
+    raise ValueError(f"unterminated state tuple: expected a closing ')' in {text!r}")
 
 
 def read_real(text):
@@ -84,25 +101,28 @@ def read_real(text):
     tuple[str, float]
         A tuple of the remaining string and the parsed float value.
 
+    Raises
+    ------
+    ValueError
+        If no floating-point number is present at the start of the string.
+
     Examples
     --------
     >>> read_real("   -1.23e-4 remainder")
     (' remainder', -0.000123)
+    >>> read_real("1.5")
+    ('', 1.5)
     """
     text = skip_whitespaces(text)
-    num = ""
-    val = 0
-    for i, c in enumerate(text):  # noqa: B007  (i is the number-end position, used after the loop)
-        if c in "0123456789+-.eE":
-            num += c
-        else:
-            break
+    end = 0
+    while end < len(text) and text[end] in _NUMBER_CHARS:
+        end += 1
+    num = text[:end]
     try:
         val = float(num)
-    except:
-        print("Error casting string " + num + ", to floating point number.")
-        raise
-    return (text[i:], val)
+    except ValueError:
+        raise ValueError(f"expected a real number, got {text!r}") from None
+    return (text[end:], val)
 
 
 def read_real_imag(text):
@@ -124,19 +144,9 @@ def read_real_imag(text):
     >>> read_real_imag(" 1.5 -2.0")
     (1.5-2j)
     """
-    real = 0
-    imag = 0
-    text = skip_whitespaces(text)
-    text, real = read_real(text)
-    text = skip_whitespaces(text)
-    text, imag = read_real(text)
-
-    try:
-        val = complex(real, imag)
-    except:
-        print("Error casting numbers (" + repr(real) + ", " + repr(imag) + ") to complex number.")
-        raise
-    return val
+    text, real = read_real(skip_whitespaces(text))
+    _, imag = read_real(skip_whitespaces(text))
+    return complex(real, imag)
 
 
 def extract_operator(line):
@@ -155,6 +165,13 @@ def extract_operator(line):
     -------
     tuple[tuple[tuple[tuple[int, ...], str], tuple[tuple[int, ...], str]], complex]
         A tuple containing the parsed operator descriptor key and the complex amplitude value.
+
+    Raises
+    ------
+    ValueError
+        If the line is not in this format -- notably for the bare-integer flat-index form
+        ``"  0   0 -4.12 0.0"`` written by ``rspt2spectra``, which needs
+        :func:`impurityModel.ed.h0_format.read_legacy_flat_h0` instead.
 
     Examples
     --------
@@ -185,7 +202,7 @@ def read_name(line):
     str
         The operator name, or an empty string.
     """
-    if line[0] != "(":
+    if not line.startswith("("):
         return line
     return ""
 
@@ -211,7 +228,7 @@ def parse_file(filename):
     with open(filename, "r") as f:
         name = ""
         op = {}
-        for raw_line in f:
+        for lineno, raw_line in enumerate(f, start=1):
             line = raw_line.strip()
             if line and line[0] != "#":
                 if not name:
@@ -221,7 +238,16 @@ def parse_file(filename):
                     else:
                         name = "Op_" + repr(len(operators) + 1)
 
-                key, val = extract_operator(line)
+                # The leaf parsers know nothing about where the text came from, so the file
+                # and line number are attached here. Without this a format mismatch reports a
+                # bare parse error against a line the caller cannot locate -- which is exactly
+                # how the rspt2spectra flat-index format went undiagnosed.
+                try:
+                    key, val = extract_operator(line)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"{filename}:{lineno}: expected '(i, ...) (j, ...) re im', got {line!r} ({exc})"
+                    ) from None
                 if key in op:
                     op[key] += val
                 else:

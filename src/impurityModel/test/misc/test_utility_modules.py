@@ -2,6 +2,7 @@ import os
 import tempfile
 
 import numpy as np
+import pytest
 
 from impurityModel.ed import op_parser
 from impurityModel.ed.average import thermal_average, thermal_average_scale_indep
@@ -66,6 +67,58 @@ def test_op_parser():
         assert (((1, 2), "c"), ((3, 4), "a")) in op
         assert op[(((1, 2), "c"), ((3, 4), "a"))] == 1.5 + 0.5j
         assert op[(((5, 6), "c"), ((7, 8), "a"))] == -0.5 + 0j
+
+
+def test_op_parser_singleton_state_tuple():
+    """The singleton form "(2,)" -- the parser's own documented example -- must parse.
+
+    The trailing comma used to leave an empty final segment that went to int(), so the
+    docstring example raised ValueError.
+    """
+    assert op_parser.read_state_tuple("2,) residue") == (" residue", (2,))
+    assert op_parser.extract_operator("(2,) (1,) 1.5 0.0") == ((((2,), "c"), ((1,), "a")), 1.5 + 0j)
+
+
+def test_op_parser_consumes_a_trailing_number():
+    """read_real must not leave the number's last character in the remainder."""
+    assert op_parser.read_real("1.5") == ("", 1.5)
+
+
+def test_op_parser_degenerate_input_raises_valueerror():
+    """Empty / all-whitespace / unterminated input raises ValueError, never UnboundLocalError.
+
+    These used to raise UnboundLocalError (an unbound loop variable) or, worse,
+    return silently: read_state_tuple on a paren-free line returned ('', ()), a
+    valid-looking empty state tuple.
+    """
+    assert op_parser.skip_whitespaces("   ") == ""
+    assert op_parser.skip_whitespaces("") == ""
+    assert op_parser.read_name("") == ""
+
+    for bad in ("", "   ", "0 0 -4.12 0.0"):
+        with pytest.raises(ValueError):
+            op_parser.read_state_tuple(bad)
+    with pytest.raises(ValueError):
+        op_parser.read_real("   ")
+
+
+def test_op_parser_rejects_flat_index_format_with_context():
+    """The rspt2spectra flat-index line must raise ValueError naming the file and line.
+
+    This is the regression for the reported bug: op_parser used to die with a bare
+    UnboundLocalError from skip_whitespaces, against a line number nobody could locate.
+    """
+    with pytest.raises(ValueError):
+        op_parser.extract_operator("  0   0 -4.125093021114729  0.000000000000000")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filepath = os.path.join(tmpdir, "flat.dat")
+        with open(filepath, "w") as f:
+            f.write("  0   0 -4.125093021114729  0.000000000000000\n")
+            f.write("  0   1  0.130836789023578  0.092828753963260\n")
+
+        with pytest.raises(ValueError, match=r"flat\.dat:2:"):
+            op_parser.parse_file(filepath)
 
 
 def test_rotate_matrix():
