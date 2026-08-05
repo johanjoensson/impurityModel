@@ -159,6 +159,107 @@ def charge_transfer_kwargs(v=0.3, tau=1e-3, dc_scale=0.5, eps_cond=0.4):
     return dict(model=model, basis=basis, solver=SolverOptions(dense_cutoff=1000), comm=MPI.COMM_WORLD), dc
 
 
+#: Impurity spatial orbitals in :func:`spin_crossover_kwargs`. Three is the minimum that admits a
+#: low-spin/high-spin crossover: with one or two, the maximum total spin at ``N`` and at ``N + 1``
+#: differ by exactly 1/2, which ``c_d^dagger`` always connects.
+CROSSOVER_N_ORB = 3
+
+
+def _crossover_index(orbital, spin):
+    """Spin-major, down-then-up -- the impurity convention the solver reports in."""
+    return spin * CROSSOVER_N_ORB + orbital
+
+
+def _kanamori_u4(n_total, u, j):
+    """Density-density Kanamori on the impurity block, in the solver's ``u4`` convention.
+
+    ``u4[i, j, k, l]`` multiplies ``c^dag_i c^dag_j c_l c_k`` at a factor of one half, so
+    ``u4[a, b, a, b] = u4[b, a, b, a] = U_ab`` is ``U_ab n_a n_b`` -- the same construction the
+    one-orbital fixtures above use, extended to the three Kanamori channels. Density-density only:
+    it reproduces the low/high-spin energetics exactly and conserves ``S_z`` manifestly, which is
+    the mechanism under test.
+    """
+    u4 = np.zeros((n_total,) * 4, dtype=complex)
+
+    def add(a, b, value):
+        u4[a, b, a, b] += value
+        u4[b, a, b, a] += value
+
+    for a in range(CROSSOVER_N_ORB):
+        add(_crossover_index(a, 0), _crossover_index(a, 1), u)  # intra-orbital
+        for b in range(a + 1, CROSSOVER_N_ORB):
+            add(_crossover_index(a, 0), _crossover_index(b, 1), u - 2 * j)  # inter, opposite spin
+            add(_crossover_index(a, 1), _crossover_index(b, 0), u - 2 * j)
+            for spin in (0, 1):
+                add(_crossover_index(a, spin), _crossover_index(b, spin), u - 3 * j)  # inter, same spin
+    return u4
+
+
+def spin_crossover_kwargs(u=8.0, j=1.0, delta=3.5, eps=-11.0, eps_bath=-25.0, v=0.05, tau=1e-3):
+    r"""A model whose gap edge carries **exactly zero** impurity spectral weight.
+
+    Every other fixture in this file has a single impurity spatial orbital, which makes "the
+    impurity gained an electron" and "the state is ``c_d^dagger|0>``-reachable" nearly the same
+    statement -- measured, ``delta`` and the Lehmann weight track to within a few percent at the
+    edge across every parameter scanned. So none of them can exhibit the case the impurity-character
+    warning explicitly disclaims: an edge that moves fully with ``mu`` while carrying no weight in
+    ``A_imp``.
+
+    Three orbitals with a crystal field ``delta`` and Hund's ``j`` do, through ``S_z``. The
+    low/high-spin energy difference is ``(delta - 3j)`` at ``N = 2`` and ``(delta - 4j)`` at
+    ``N = 3`` -- opposite signs inside ``3j < delta < 4j``, and independent of ``u``. So in that
+    window the ``N`` ground state is low-spin (``S_z = 0``, both electrons paired in the lowest
+    orbital) while the ``N + 1`` ground state is high-spin (``S_z = 3/2``, one electron per
+    orbital, aligned). ``H`` conserves ``S_z`` and ``c_d^dagger|0>`` only reaches ``S_z = +-1/2``
+    from ``S_z = 0``, so the overlap is **exactly** zero -- symmetry, not smallness. Yet the
+    electron lands entirely on the impurity, so ``delta_+ = 1`` and the warning stays silent.
+
+    ``delta`` is the control: at ``delta = 3.5`` (inside the window) the addition edge is
+    weightless; at ``delta = 5`` (outside) the same fixture puts weight back on it.
+
+    Levels follow from wanting ``N = 2`` to be the cluster ground state: with ``E(1) = eps``,
+    ``E(2) = 2 eps + u`` and ``E(3) = 3 eps + 2 delta + 3u - 9j``, that needs
+    ``-u > eps > 9j - 2 delta - 2u``, i.e. ``-14 < eps < -8`` at the defaults. ``eps = -11`` sits
+    mid-window and puts the edges at ``omega_+ = +3`` and ``omega_- = -3``.
+
+    **Every impurity orbital gets its own bath partner, and that is load-bearing.**
+    :mod:`basis_generation` freezes any impurity group with no bath attached (the bath-less-core
+    pin), and a frozen group's occupation is pinned at its aufbau value -- which excludes the
+    high-spin configuration entirely. Hybridizing only the lowest orbital gave a 4-determinant
+    ``N + 1`` sector whose lowest state was the low-spin one, 0.5 above the true sector ground
+    state, silently. Confirmed against an independent exact diagonalization.
+    """
+    n_imp = 2 * CROSSOVER_N_ORB
+    n_total = n_imp + 2 * CROSSOVER_N_ORB
+    h0 = np.zeros((n_total, n_total), dtype=complex)
+    for spin in (0, 1):
+        for orbital in range(CROSSOVER_N_ORB):
+            i = _crossover_index(orbital, spin)
+            h0[i, i] = eps + (0.0 if orbital == 0 else delta)
+            bath = n_imp + spin * CROSSOVER_N_ORB + orbital
+            # Weak, so the S_z multiplets stay sharp; deep, so the bath stays full and an added
+            # electron has nowhere to go but the impurity.
+            h0[bath, bath] = eps_bath
+            h0[i, bath] = h0[bath, i] = v
+    model = ImpurityModel.from_solver_matrix(
+        h0,
+        n_imp,
+        dc=np.zeros((n_imp, n_imp), dtype=complex),
+        u4=_kanamori_u4(n_total, u, j),
+        rot_to_spherical=np.eye(n_imp, dtype=complex),
+        bath_valence_conduction=(list(range(n_imp, n_total)), []),
+    )
+    basis = BasisOptions(
+        nominal_occ={0: 2},
+        mixed_valence=None,
+        spin_flip_dj=False,
+        tau=tau,
+        slater_weight_min=np.sqrt(np.finfo(float).eps),
+        truncation_threshold=int(1e8),
+    )
+    return dict(model=model, basis=basis, solver=SolverOptions(dense_cutoff=10000), comm=MPI.COMM_WORLD)
+
+
 def assert_uniform_shift(dc, dc_guess):
     """The result must be dc_guess plus a real uniform shift."""
     shift = dc - dc_guess
@@ -846,6 +947,45 @@ def test_the_two_estimators_of_delta_sum_agree(capsys):
             f"{label}: the occupation estimator {report['delta_sum']:.6f} and the chi secant "
             f"{-2.0 * report['chi']:.6f} disagree by {report['delta_sum_vs_chi']:.2e}"
         )
+
+
+def test_a_weightless_gap_edge_passes_the_impurity_character_check(capsys):
+    """The limitation the warning disclaims, exhibited: ``delta_+ = 1`` on a zero-weight edge.
+
+    ``_warn_if_a_gap_edge_is_not_impurity_like`` measures a ``mu``-response, and its own text says
+    that is not a spectral weight -- "a state orthogonal to c_d^dagger|0> by spin or irrep carries
+    zero weight in A_imp while still moving fully with mu, and no value of delta detects that".
+    Until :func:`spin_crossover_kwargs` existed, no fixture in this suite could show it: with a
+    single impurity spatial orbital the two quantities track to within a few percent at the edge.
+
+    Here they decouple completely. Inside the crossover window the ``N + 1`` ground state is the
+    high-spin ``S_z = 3/2`` multiplet, unreachable from the ``S_z = 0`` ground state by any single
+    ``c_d^dagger``, so its Lehmann weight is **exactly** zero -- while the added electron sits
+    entirely on the impurity, giving the maximum possible ``delta``. The criterion converges, both
+    edges report 1.000, and nothing warns. ``test_dc_weights`` measures the zero weight itself;
+    this test pins the *silence*, which is the part a user sees.
+
+    ``delta = 5`` is the control: identical fixture, crossover switched off, and the edge the
+    criterion picks is the weighted one. Both report ``delta = 1``, which is exactly the point --
+    the diagnostic cannot separate them, and this test would start failing if someone ever taught
+    it to, which is the intended future.
+    """
+    for crystal_field in (3.5, 5.0):
+        report = {}
+        fixed_gap_dc(
+            offset=0.0, report=report, allow_charge_state_change=True, **spin_crossover_kwargs(delta=crystal_field)
+        )
+        out = capsys.readouterr().out
+        if MPI.COMM_WORLD.rank != 0:
+            continue
+        # The designed edges: +-3 inside the window (high-spin addition), +-4 outside it.
+        assert report["omega_plus"] == pytest.approx(3.0 if crystal_field == 3.5 else 4.0, abs=1e-3), report
+        assert report["omega_minus"] == pytest.approx(-3.0 if crystal_field == 3.5 else -4.0, abs=1e-3), report
+        # Maximum impurity character on both edges, in both regimes -- the electron really does
+        # land on the impurity. That is what makes the weightless case invisible here.
+        assert report["delta_plus"] == pytest.approx(1.0, abs=1e-3), report
+        assert report["delta_minus"] == pytest.approx(1.0, abs=1e-3), report
+        assert "WARNING: the addition" not in out and "WARNING: the removal" not in out, out
 
 
 def test_the_record_says_whether_the_thermal_manifold_hides_anything(capsys):

@@ -198,7 +198,7 @@ charge-transfer fixture (`H` conserves `S_z`, so a field can push a state into a
 below 1e-6 — while moving `0.967` (at `b_imp = 1`) and `0.989` (at `b_imp = 3`) of an electron.
 `delta` and `w` are not the same quantity, demonstrably.
 
-**But it does not reach the edge, and that is what the criterion uses.** Scanning `b_imp` from 0
+**On the single-orbital fixtures it does not reach the edge.** Scanning `b_imp` from 0
 to 3 in steps of 0.25, the *lowest* state of each sector — the one `fixed_gap_dc` fixes against —
 has `delta` and `weight_fraction` tracking each other to within a few percent at every point:
 
@@ -214,17 +214,45 @@ The weightless high-`delta` states exist, but they sit *above* the edge, and the
 looks at them. The reason is structural rather than lucky: these fixtures have a **single impurity
 spatial orbital**, so the impurity subspace at a given occupation is one-dimensional and "the
 impurity gained an electron" and "the state is `c_d†|0⟩`-reachable" are nearly the same statement.
-Exhibiting a *weightless edge* needs a multi-orbital impurity, where the `N±1` ground state can be
-a multiplet no single `c_d†` reaches from the `N` ground state — a low-spin `N` / high-spin `N±1`
-crossover, which needs ≥3 impurity orbitals and a crystal-field/Hund's balance tuned to sit in the
-window where both hold.
+## F2 at the edge, exhibited (`spin_crossover_kwargs`)
 
-**So Step 3b is not blocked on engineering, it is blocked on a fixture.** Porting `_overlap` /
-`spectral_moments` to MPI is a known amount of work (apply-local → `redistribute_psis` → local
-inner → `Allreduce`, with a test that fails on replicated input). Doing it now would ship
-collective code whose only regression test is an analytic oracle that, by construction, has no
-symmetry blocking — i.e. cannot test the case the code exists for. The honest order is: build the
-multi-orbital fixture, confirm the edge itself goes weightless, then port.
+Three orbitals with a crystal field `Δ` and Hund's `J` break that tie. The low/high-spin energy
+difference is `(Δ − 3J)` at `N = 2` and `(Δ − 4J)` at `N = 3` — **opposite signs inside
+`3J < Δ < 4J`, and independent of `U`**. So in that window the `N` ground state is low-spin
+(`S_z = 0`, both electrons paired in the lowest orbital) while the `N+1` ground state is high-spin
+(`S_z = 3/2`, one per orbital, aligned). `H` conserves `S_z` and `c_d†|0⟩` reaches only
+`S_z = ±1/2` from `S_z = 0`, so the weight is **exactly** zero — symmetry, not smallness. The
+electron still lands entirely on the impurity, so `delta_+ = 1`.
+
+Measured at `Δ = 3.5`, `J = 1`, `U = 8`, `ε = −11`:
+
+| | `ω` | `delta` | weight |
+|---|---|---|---|
+| addition **edge** (high-spin, `S_z = 3/2`) | +3.000 | +1.0000 | **0.000e+00** |
+| next state (low-spin, `S_z = 1/2`) | +3.500 | +1.0000 | 0.250 |
+
+`fixed_gap_dc` converges on this fixture reporting `delta_+ = delta_- = 1.000` — the maximum
+possible impurity character — and **no warning fires**. It centres the gap at ≈ 0 where the true
+`A_imp` centre is +0.25. `Δ = 5.0` is the control: identical fixture, crossover switched off, and
+the edge carries weight again. Representability is 1.0000, so the zero is not a truncated seed.
+
+Energies confirmed against an exact diagonalization written without the solver, itself first
+checked against the atomic hand formulas (`N_imp = 2 → −14.0000`, `N_imp = 3 → −11.0000`, exact).
+
+**Building it turned up a trap worth its own line.** Hybridizing only the lowest impurity orbital
+put the other group into `frozen_occupations` — `basis_generation` freezes any impurity group with
+no bath attached — and a frozen group's occupation is pinned at its aufbau value, which excluded
+the high-spin configuration entirely. The symptom was a 4-determinant `N+1` sector returning
+`−60.5000` where the true sector ground state is `−61.0001`: **the sector solve sat 0.5 above the
+true ground state, silently, and no setting of `mixed_valence` changed it.** Giving every impurity
+orbital a bath partner restores redistribution (dim 4 → 26) and the correct edge. Worth knowing
+for any real workload carrying a bath-less correlated group.
+
+**So Step 3b's gate is passed and the port is what remains**: `_overlap`, `_norm2` and
+`spectral_moments` are serial and need apply-local → `redistribute_psis` → local inner →
+`Allreduce`, with an oracle test that fails on *replicated* input rather than merely passing on
+distributed input. The fixture above is what makes that port testable against the case it exists
+for — before it, the only oracle was a two-level model with no symmetry blocking by construction.
 
 `manifold_spread` (F4) came back **machine zero on every fixture** — 2e-16, 0.0, 5e-15 — so
 pairing a `T = 0` energy with a thermal occupation is not costing anything on these models, and

@@ -18,7 +18,7 @@ from mpi4py import MPI
 
 from impurityModel.test.support.dc_weights import sector_weight_table
 
-from .test_fixed_dc import EPS, U, charge_transfer_kwargs, common_kwargs
+from .test_fixed_dc import EPS, U, charge_transfer_kwargs, common_kwargs, spin_crossover_kwargs
 
 #: ``dc_scale`` the fixtures below are built at, so the analytic energies can name it.
 DC = 0.5
@@ -262,3 +262,47 @@ def test_solve_sector_and_calc_energy_agree_on_the_ground_state_energy():
     energy, _basis = calc_energy(*args, **common)
     es, _psis, _basis = solve_sector(*args, **common)
     assert float(np.min(es)) == pytest.approx(energy, abs=1e-10)
+
+
+@serial_only
+def test_the_gap_edge_can_carry_exactly_zero_weight():
+    """F2, exhibited: the edge the criterion fixes against is invisible in ``A_imp``.
+
+    This is the case :func:`dc_criteria._warn_if_a_gap_edge_is_not_impurity_like` disclaims in
+    prose and cannot detect. Every other fixture in the suite has one impurity spatial orbital,
+    which ties ``delta`` to the weight -- scanned across an impurity Zeeman field from 0 to 3, the
+    edge's ``delta`` and ``weight_fraction`` never separated by more than a few percent. Three
+    orbitals in the low-spin/high-spin crossover window break the tie through ``S_z``: the
+    ``N + 1`` ground state is the ``S_z = 3/2`` multiplet, and no single ``c_d^dagger`` reaches it
+    from ``S_z = 0``.
+
+    ``weight`` is asserted **exactly** zero rather than small, because the mechanism is a symmetry
+    and not a near-cancellation. The state just above it, at ``omega = +3.5``, is the true
+    impurity addition edge and carries weight -- so the criterion is not merely imprecise here, it
+    centres on the wrong pole while the diagnostic reports perfect impurity character.
+
+    The energies are independently confirmed: an exact diagonalization of this fixture written
+    without the solver gives the ``N`` sector at ``S_z = 0`` and the ``N + 1`` sector's true ground
+    state at ``S_z = +-3/2``, matching the atomic hand formulas ``2 eps + U`` and
+    ``3 eps + 2 delta + 3U - 9J`` to all printed digits.
+    """
+    inside = _table(spin_crossover_kwargs(delta=3.5))
+    add = inside["states"][inside["n_center"] + 1]
+    edge = add[0]
+    assert edge["omega"] == pytest.approx(3.0, abs=1e-3), edge
+    # 1e-4, not tighter: v = 0.05 puts a real ~7e-6 bath admixture in the impurity occupation.
+    # The *weight* below has no such tolerance -- it is zero by symmetry, which v does not break.
+    assert edge["delta"] == pytest.approx(1.0, abs=1e-4), edge
+    assert edge["weight"] == 0.0, edge
+    # Not a dead sector: the weight is elsewhere, on the low-spin state half a unit above.
+    weighted = next(row for row in add if row["weight"] > 1e-9)
+    assert weighted["omega"] == pytest.approx(3.5, abs=1e-3), weighted
+    # And the seed is fully representable, so the zero is symmetry rather than a truncated seed.
+    assert inside["representability"][inside["n_center"] + 1] == pytest.approx(1.0, abs=1e-4)
+
+    # Control: same fixture, crystal field outside the crossover window, so the N+1 ground state
+    # is the low-spin one that c_d^dagger does reach -- and the edge carries weight again.
+    outside = _table(spin_crossover_kwargs(delta=5.0))
+    control = outside["states"][outside["n_center"] + 1][0]
+    assert control["delta"] == pytest.approx(1.0, abs=1e-4), control
+    assert control["weight"] > 0.5, control
