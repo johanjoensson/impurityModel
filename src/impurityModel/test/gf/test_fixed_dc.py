@@ -671,15 +671,16 @@ def test_the_gap_criterion_measures_its_own_impurity_character(capsys):
     left inferring it from a slope buried in a diagnostics table.
 
     In the near-atomic fixture the added electron can only go on the impurity, so both edges are
-    impurity-like and ``delta_sum`` sits near its maximum of 2. With a conduction bath level just
-    above E_F the addition edge is bath-like, ``delta_sum`` drops, and below
-    ``GAP_IMPURITY_CHARACTER_FLOOR`` the criterion says so out loud.
+    impurity-like and both deltas sit near their maximum of 1. With a conduction bath level just
+    above E_F the *addition* edge is bath-like while the removal edge is untouched, and it is the
+    weaker of the two -- ``min(delta_+, delta_-)``, below ``GAP_EDGE_IMPURITY_FLOOR`` -- that the
+    criterion says out loud.
 
-    Measured on these two fixtures: **1.99 atomic against 0.797 charge-transfer** -- roughly 40%
-    impurity character per edge instead of 100%, from one conduction orbital at +0.4. NiO at a
-    small determinant cap gave 0.22. The toy does not have to be pathological to move the number,
-    which is the point: nothing about the old fixture was wrong, it simply could not vary the one
-    quantity the criterion's conditioning depends on.
+    Measured directly on these two fixtures: near-atomic ``(1.00, 1.00)`` against charge-transfer
+    ``(0.075, 0.951)``. The **sums**, 2.00 and 1.03, are what an earlier version of this test
+    compared, and they nearly hide the defect: one conduction orbital at +0.4 turns a wholly
+    impurity-like addition edge into a 7%-impurity one while the sum only falls by half. The
+    edges fail independently, so the summary statistic has to be the minimum.
 
     Both searches run on **every** rank; only the parsing and the assertions are rank-gated. An
     earlier version of this test put the ``rank != 0: return`` between the two searches, so rank 0
@@ -689,7 +690,7 @@ def test_the_gap_criterion_measures_its_own_impurity_character(capsys):
     ``pytest_runtest_teardown``. Exactly the rule in CLAUDE.md, broken in a test written to check
     something else: **never gate a collective on rank-local state.**
     """
-    from impurityModel.ed.dc_criteria import GAP_IMPURITY_CHARACTER_FLOOR
+    from impurityModel.ed.dc_criteria import GAP_EDGE_IMPURITY_FLOOR
 
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
     fixed_gap_dc(offset=-0.4, **kwargs)
@@ -708,46 +709,90 @@ def test_the_gap_criterion_measures_its_own_impurity_character(capsys):
 
     if MPI.COMM_WORLD.rank != 0:
         return
-    atomic = float(parse_record(atomic_out)["delta_sum"].split()[0])
-    # Impurity-only addition: both edges move fully with the shift.
-    assert atomic > 1.5, atomic_out
+    atomic_record = parse_record(atomic_out)
+    atomic_edges = [float(atomic_record[key].split()[0]) for key in ("delta_plus", "delta_minus")]
+    # Impurity-only addition: both edges move fully with the shift, so neither is flagged.
+    assert min(atomic_edges) > 0.9, atomic_out
     assert "impurity-like" not in atomic_out, atomic_out
 
     record = parse_record(transfer_out)
-    if "delta_sum" in record:
-        ct = float(record["delta_sum"].split()[0])
-        assert ct < atomic, f"charge-transfer delta_sum {ct} not below the atomic {atomic}"
-        if ct < GAP_IMPURITY_CHARACTER_FLOOR:
-            assert "impurity-like" in transfer_out, transfer_out
+    if "delta_plus" in record and "delta_minus" in record:
+        edges = [float(record[key].split()[0]) for key in ("delta_plus", "delta_minus")]
+        # The defect is one-sided: the conduction level spoils the addition edge and leaves the
+        # removal edge alone. Asserting on the minimum is what the sum could not do.
+        assert min(edges) < min(atomic_edges), f"charge-transfer edges {edges} not below atomic {atomic_edges}"
+        assert min(edges) < GAP_EDGE_IMPURITY_FLOOR, edges
+        assert "impurity-like" in transfer_out and "addition (N+1)" in transfer_out, transfer_out
 
 
-def test_the_impurity_character_warning_fires_where_it_is_calibrated_to(capsys):
-    """The warning is tested directly, because no fixture in this file reaches it.
+def test_the_impurity_character_warning_fires_on_the_weaker_edge(capsys):
+    """The predicate, against every ``(delta_+, delta_-)`` pair actually measured.
 
-    Both toys sit above the floor -- 1.99 near-atomic, 0.797 charge-transfer -- and the real
-    workload that motivated the whole diagnostic (NiO 15-bath, ``delta_sum = 0.218``) is far too
-    expensive to run in the suite. Testing the predicate against the numbers actually measured is
-    the honest alternative to leaving it unexercised, and it pins the calibration: the threshold
-    was first set to 0.2 and would have stayed silent on NiO by 9%.
+    The real workload is too expensive to run in the suite, so the calibration is pinned here
+    instead -- and it needs pinning, because both previous versions of this threshold were wrong
+    in a way only a measurement exposed. A sum-based 0.2 stayed silent on the NiO 15-bath run that
+    motivated it (sum 0.218); raising it to 0.5 fixed that one and still stayed silent on NiO
+    5-bath, whose removal edge is *pure ligand* (0.032) but whose sum is 0.593.
     """
-    from impurityModel.ed.dc_criteria import GAP_IMPURITY_CHARACTER_FLOOR as floor
-    from impurityModel.ed.dc_criteria import _warn_if_gap_edges_are_not_impurity_like as warn
+    from impurityModel.ed.dc_criteria import GAP_EDGE_IMPURITY_FLOOR as floor
+    from impurityModel.ed.dc_criteria import _warn_if_a_gap_edge_is_not_impurity_like as warn
 
-    # The measured NiO value must trip it. This is the regression that matters.
-    warn(0.218, rank=0)
+    # NiO 5-bath, measured directly: an impurity-like addition edge above a ligand valence band.
+    # The sum is 0.593 -- above any sum-based floor that does not also fire on healthy models.
+    warn(0.561, 0.032, rank=0)
     out = capsys.readouterr().out
-    assert "0.218 impurity-like" in out and "bath level" in out, out
-    assert 0.218 < floor, f"floor {floor} would stay silent on NiO's measured 0.218"
+    assert "removal (N-1)" in out and "0.032 impurity-like" in out, out
+    assert "charge-transfer insulator" in out and "discretization artefact" in out, out
+    assert 0.561 + 0.032 > 0.5, "the sum-based floor this replaced would have stayed silent here"
 
-    # The two toys must not, or the warning becomes noise on every well-behaved model.
-    for quiet in (0.797, 1.99):
-        warn(quiet, rank=0)
+    # The charge-transfer fixture fails on the other edge, and must be named as such.
+    warn(0.075, 0.951, rank=0)
+    out = capsys.readouterr().out
+    assert "addition (N+1)" in out and "0.075 impurity-like" in out, out
+
+    # Healthy models stay quiet, or the warning becomes noise on every well-behaved run.
+    for quiet in ((1.0, 1.0), (0.997, 0.976), (0.56, 0.44)):
+        warn(*quiet, rank=0)
         assert capsys.readouterr().out == "", quiet
+    assert floor < 0.44, "the floor must clear the weakest edge of a model that is still healthy"
 
-    # Never on a non-root rank, and never on an unmeasured slope.
-    warn(0.01, rank=1)
-    warn(None, rank=0)
+    # Never on a non-root rank, and never where nothing was measured. One edge measured and the
+    # other undefined is still a verdict -- a shell edge does not excuse a ligand gap edge.
+    warn(0.01, 0.01, rank=1)
+    warn(None, None, rank=0)
     assert capsys.readouterr().out == ""
+    warn(0.01, None, rank=0)
+    assert "addition (N+1)" in capsys.readouterr().out
+
+
+def test_the_gap_tolerance_names_the_term_that_actually_won(capsys):
+    """``tol_basis`` distinguishes all five outcomes, including the one it used to misreport.
+
+    ``energy_tol = max(0.01 * width, mu_tol)``, capped against the bandwidth. Reporting
+    ``measured_gap`` whenever the width was merely *defined* was wrong on both real workloads
+    measured: NiO 15-bath sized ``0.01 * 0.0654 = 6.5e-4`` against ``mu_tol = 2.5e-3`` and NiO
+    5-bath ``0.01 * 0.119 = 1.2e-3`` against the same, so in both the tolerance came from
+    ``bracket_width_tol`` while the record said it came from the gap. Tested here directly rather
+    than through a search, because reaching all five cases by building a model for each is how
+    the case that misreports came to be untested in the first place.
+    """
+    from impurityModel.ed.dc_criteria import _size_gap_tolerance
+
+    mu_tol, bandwidth = 2.5e-3, 10.0
+
+    # The width sets it: 0.01 * 1.0 = 1e-2, above mu_tol and far below the 0.1 * bandwidth cap.
+    assert _size_gap_tolerance(1.0, mu_tol, bandwidth) == (pytest.approx(1e-2), "measured_gap")
+    # The mu resolution sets it: 0.01 * 0.1 = 1e-3, below mu_tol. Same number as before the fix,
+    # different -- and now correct -- account of where it came from.
+    assert _size_gap_tolerance(0.1, mu_tol, bandwidth) == (pytest.approx(mu_tol), "mu_resolution")
+    # Exactly at the crossover the width is still the term that won, by >=.
+    assert _size_gap_tolerance(0.25, mu_tol, bandwidth)[1] == "measured_gap"
+    # Undefined and negative widths keep their own words.
+    assert _size_gap_tolerance(None, mu_tol, bandwidth) == (mu_tol, "width_undefined")
+    assert _size_gap_tolerance(-1.0, mu_tol, bandwidth) == (mu_tol, "width_negative")
+    # A runaway width is capped, not believed.
+    assert _size_gap_tolerance(1e4, mu_tol, bandwidth) == (pytest.approx(1.0), "width_capped")
+    capsys.readouterr()
 
 
 def test_the_gap_criterion_records_where_its_tolerance_came_from(capsys):
@@ -811,7 +856,13 @@ def test_a_rank_dependent_sector_energy_cannot_reach_the_gap_tolerance(monkeypat
     # `tol`, not `energy_tol`: the criterion's out-parameter *is* its record now, one vocabulary
     # across both channels. This test read the old private name and kept passing until V5's rename
     # landed -- which is itself the argument for not having had two sets of names.
-    for key in ("tol", "gap_width", "sector"):
+    # `delta_plus`/`delta_minus` are here for a second reason. They come from
+    # `_SectorContext.sector_occupation`, which runs `build_density_matrices` -- and that ends in
+    # an `Allreduce`. Everything in front of it (is the manifold usable, how many states does it
+    # hold) is read off rank-local `solve_sector` output, so the branch has to be broadcast or
+    # some ranks skip the reduction the others are sitting in. A deadlock cannot be asserted on,
+    # so what is asserted is the invariant that rules it out: the values are bit-identical.
+    for key in ("tol", "gap_width", "sector", "delta_plus", "delta_minus"):
         gathered = comm.allgather(report[key])
         assert len(set(gathered)) == 1, f"{key} is not rank-identical: {gathered}"
 

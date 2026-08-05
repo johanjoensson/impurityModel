@@ -63,6 +63,8 @@ _FIELDS = (
     ("gap_width", "{:.6f}"),
     ("omega_plus", "{:.6f}"),
     ("omega_minus", "{:.6f}"),
+    ("delta_plus", "{:.3f}"),
+    ("delta_minus", "{:.3f}"),
     ("delta_sum", "{:.3f}"),
     ("peak", "{:.6f}"),
     ("chi", "{:.4g}"),
@@ -165,17 +167,29 @@ def _annotate(record, key, text):
         return f"{text}   ({record.get('n_ref_kind', 'DFT reference filling')})"
     if key == "chi_span":
         return f"{text}   (mu-distance between the two points chi was measured from)"
+    if key == "delta_plus":
+        return f"{text}   (of max 1; how much of an ADDED electron lands on the impurity)"
+    if key == "delta_minus":
+        # Split out from delta_sum because the sum hides the case that matters. On NiO the two
+        # are 0.561 and 0.032: the addition edge is a genuine impurity state and the removal edge
+        # is the ligand valence band, which is what a charge-transfer insulator *is*. A symmetric
+        # pair summing to the same 0.59 would mean something entirely different, and the record
+        # could not tell them apart.
+        return f"{text}   (of max 1; how much of a REMOVED electron came off the impurity)"
     if key == "delta_sum":
-        # The one number that says whether the gap criterion measured the impurity or the bath.
-        # Annotated inline because a bare 0.218 does not look like a problem to anyone who has not
-        # read `fixed_gap_dc`'s warning, and the whole point of the record is that it can be read
-        # without reading the source.
-        # Derived from chi, so it inherits chi's nature: a secant over `chi_span`, i.e. an average
-        # impurity character across that interval rather than the value at the answer. On a linear
-        # toy the two coincide (2.000 over a span of 0.5); on NiO the span was 0.003. Both get
-        # compared against the same floor, so the reader needs `chi_span` beside this to know which
-        # kind of measurement it is -- which is why that field is printed rather than folded away.
-        return f"{text}   (of max 2; impurity character of the two gap edges, averaged over chi_span)"
+        # Kept for continuity with older logs, and demoted: `delta_plus` and `delta_minus` above
+        # are what should be read. The sum hides the case the pair exists for -- NiO's (0.561,
+        # 0.028) sums to 0.589, which looks unremarkable next to a healthy 2.0 while one edge is
+        # pure ligand. Say which of the two ways it was obtained, because they are not equally
+        # trustworthy: the edges are measured from eigenvectors at the converged shift, while the
+        # fallback is a secant of the gap centre over `chi_span` and is an average across that
+        # interval rather than the value at the answer.
+        source = (
+            "measured at the converged shift"
+            if record.get("delta_plus") is not None and record.get("delta_minus") is not None
+            else "from the chi secant, averaged over chi_span"
+        )
+        return f"{text}   (delta_+ + delta_-, of max 2; {source} -- read the two edges separately)"
     if key == "chi":
         # The residual is converged to `tol`; what the *answer* is determined to is tol / |chi|.
         # That conversion is the entire reason chi is reported (review correction 5): a criterion

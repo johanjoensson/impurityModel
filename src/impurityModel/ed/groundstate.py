@@ -52,6 +52,26 @@ from impurityModel.ed.utils import matrix_print, print_density_matrix_summary, r
 #: that. ``dc_criteria`` imports this rather than repeating the string.
 GS_CIPSI_SOLVER_METHOD = "trlm"
 
+#: Epstein-Nesbet PT2 threshold for a *converged* solve: the production ground state, and every
+#: sector energy a double-counting criterion differences.
+#:
+#: This is the accuracy the answer is quoted at, so it is the accuracy anything the answer is
+#: derived from has to be computed at. :func:`solve_ground_state` has always used it; the DC
+#: criteria did not, and the gap between them was the last unshared convention on the DC/GS parity
+#: list in :mod:`dc_criteria` -- the double counting was determined on a looser variational space
+#: than the self-energy run that consumes it.
+GS_DE2_MIN = 1e-8
+
+#: Epstein-Nesbet PT2 threshold for the *sector walk*, one order looser.
+#:
+#: Deliberately looser, and only defensible for what the walk does: compare charge sectors and
+#: keep the winner. Only the **ordering** matters there, the error is common to every sector to
+#: the extent that it does not depend on how strongly a sector fluctuates, and tightening it costs
+#: a great deal for a comparison that is not close. It is *not* defensible for an energy
+#: **difference** between two sectors -- the residual truncation error does not cancel there, and
+#: the double-counting criteria then amplify it by ``1 / |chi|``. Hence two constants.
+SECTOR_WALK_DE2_MIN = 1e-6
+
 
 class SectorCache:
     def __init__(self, max_size=3):
@@ -198,6 +218,7 @@ def calc_energy(
     frozen_occupations=None,
     symmetry_generators=None,
     sector_cache=None,
+    de2_min=SECTOR_WALK_DE2_MIN,
 ):
     """
     Calculate the ground-state energy of the system for a given charge sector.
@@ -242,6 +263,12 @@ def calc_energy(
         (``np.inf`` disables capping).
     slaterWeightMin : float
         Minimum weight (``|amplitude|^2``) below which Slater determinants are pruned.
+    de2_min : float
+        Epstein-Nesbet PT2 selection threshold. Defaults to :data:`SECTOR_WALK_DE2_MIN`, which is
+        right for the occupation walk (only the *ordering* of charge sectors is decided there).
+        Callers that **difference** two sector energies -- the double-counting peak and gap
+        criteria -- must pass :data:`GS_DE2_MIN` instead: the truncation error does not cancel in
+        a difference, and those criteria then amplify it by ``1 / |chi|``.
 
     Returns
     -------
@@ -251,6 +278,99 @@ def calc_energy(
         The optimized many-body basis.
     """
 
+    es, _eigen_psis, basis = solve_sector(
+        h_op,
+        impurity_indices,
+        bath_states,
+        N0,
+        mixed_valence,
+        tau,
+        chain_restrict,
+        spin_flip_dj,
+        dense_cutoff,
+        comm=comm,
+        verbose=verbose,
+        truncation_threshold=truncation_threshold,
+        slaterWeightMin=slaterWeightMin,
+        cipsi_solver_method=cipsi_solver_method,
+        reort=reort,
+        weighted_restrictions=weighted_restrictions,
+        frozen_occupations=frozen_occupations,
+        symmetry_generators=symmetry_generators,
+        sector_cache=sector_cache,
+        de2_min=de2_min,
+    )
+    # Broadcast, not merely returned. A Lanczos eigenvalue is replicated across ranks only to
+    # roundoff, and every caller compares it against something: the occupation walk against the
+    # running best, `solve_ground_state` against its convergence window, and
+    # `dc_criteria._SectorContext.sector_energy` against a tolerance *derived from it*. The first
+    # two broadcast for themselves; the third did not, which made `fixed_gap_dc`'s `energy_tol` --
+    # one percent of a gap width built from three of these -- rank-local, and `tol` gates every
+    # branch deciding whether the next collective solve happens. Enforcing it here rather than at
+    # each call site is what stops the next caller inheriting the same trap; the two existing
+    # call-site broadcasts become redundant but harmless. One float against a whole CIPSI
+    # expansion.
+    e0 = np.min(es)
+    return (e0 if comm is None else comm.bcast(e0, root=0)), basis
+
+
+def solve_sector(
+    h_op,
+    impurity_indices,
+    bath_states,
+    N0,
+    mixed_valence,
+    tau,
+    chain_restrict,
+    spin_flip_dj,
+    dense_cutoff,
+    comm=None,
+    verbose=True,
+    truncation_threshold=None,
+    slaterWeightMin=1e-12,
+    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
+    reort="full",
+    weighted_restrictions=None,
+    frozen_occupations=None,
+    symmetry_generators=None,
+    sector_cache=None,
+    num_wanted=10,
+    max_energy=None,
+    de2_min=SECTOR_WALK_DE2_MIN,
+):
+    """The thermal eigenmanifold of one charge sector: ``(es, psis, basis)``.
+
+    Everything :func:`calc_energy` does except taking the minimum -- it is this function's body,
+    moved here unchanged, so the two cannot drift. Split out because the eigenvectors are needed
+    by callers that the energy alone cannot serve: an impurity occupation ``Tr rho_imp`` per
+    sector, and the Lehmann weight ``|<n|c_d^dagger|0>|^2`` that says whether a sector's lowest
+    state carries any impurity spectral weight at all. ``calc_energy`` deliberately does *not*
+    return them (the arrays are large and every production caller wants one float), so a
+    diagnostic that needs them would otherwise have to re-implement the conventions -- the
+    ``de2_min``, ``num_wanted``, ``energy_cut`` and warm-start choices below -- and would then be
+    measuring a different solve from the one the criterion runs.
+
+    ``es`` is **not** broadcast here; :func:`calc_energy` broadcasts the minimum it takes. A
+    caller reading these arrays directly is reading rank-local Lanczos output and must say so.
+
+    Parameters
+    ----------
+    num_wanted : int
+        Eigenpairs to request. The default 10 is what :func:`calc_energy` has always asked for --
+        enough for a thermal manifold, and *not* enough to enumerate a spectrum. A diagnostic
+        looking for the lowest state that carries impurity spectral weight has to raise it: the
+        lowest few states of an ``N +- 1`` sector can all be bath excitations.
+    max_energy : float, optional
+        Cut on ``e - e0``. ``None`` (the default) means :func:`average.energy_cut` at ``tau``,
+        i.e. the Boltzmann manifold the rest of the stack uses. Pass a larger number to enumerate
+        past it -- ``num_wanted`` alone will not, because the cut is applied after the solve.
+
+    Returns
+    -------
+    (es, psis, basis) : (ndarray, list of ManyBodyState, Basis)
+        ``([inf], [], basis)`` when the sector admits no determinants, matching
+        :func:`calc_energy`'s ``inf``.
+    """
     # One `calc_energy` call is one *sector solve* -- the unit the occupation walk and the
     # double-counting search are both counted in. The three nested timers say which of build /
     # expand / diagonalize the cost actually sits in; all four are no-ops outside a
@@ -277,21 +397,20 @@ def calc_energy(
 
         if len(basis) == 0:
             sector_fields["n_dets"] = 0
-            return np.inf, basis
+            return np.array([np.inf]), [], basis
         with solver_trace.timed("expand"):
             solver.expand(
                 h_op,
                 dense_cutoff=dense_cutoff,
-                # de2_min is a per-determinant Epstein-Nesbet PT2 energy threshold
-                # (|<Dj|H|psi>|^2 / |E_ref - E_Dj|). This occupation-search value is one order
-                # looser than the final-GS solve in calc_gs (de2_min=1e-8), which is enough
-                # since only the relative ordering of charge sectors is needed here, not a
-                # fully converged energy -- but it must still be tight enough that PT2
-                # truncation error does not itself depend on the sector (a more
-                # strongly-fluctuating sector loses more correlation energy at a given
-                # de2_min, which can flip the sector comparison this search exists to get
-                # right).
-                de2_min=1e-6,
+                # A per-determinant Epstein-Nesbet PT2 energy threshold
+                # (|<Dj|H|psi>|^2 / |E_ref - E_Dj|), now a *parameter* rather than a literal.
+                # It defaults to the walk's looser SECTOR_WALK_DE2_MIN, which is right when only
+                # the ordering of charge sectors is being decided, and the double-counting
+                # criteria override it with GS_DE2_MIN because they *difference* these energies
+                # and the truncation error does not cancel. See both constants for the argument;
+                # the single literal that used to sit here made the choice unavailable to callers
+                # and was the last unshared convention on the DC/GS parity list.
+                de2_min=de2_min,
                 slaterWeightMin=slaterWeightMin,
                 solver=cipsi_solver_method,
                 reort=reort,
@@ -302,12 +421,12 @@ def calc_energy(
                 # only until the plumbing is removed.
             )
 
-        energy_cut = boltzmann_energy_cut(tau)
+        energy_cut = boltzmann_energy_cut(tau) if max_energy is None else max_energy
 
         with solver_trace.timed("eigensolve"):
             es, eigen_psis = solver.get_eigenvectors(
                 h_op,
-                num_wanted=10,
+                num_wanted=num_wanted,
                 max_energy=energy_cut,
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
@@ -329,19 +448,7 @@ def calc_energy(
         # eigenvectors; `find_ground_state_basis` reports the winning sector through
         # `ground_state_occupation`, which the support could never encode anyway (the expansion
         # widens the impurity occupation window, so it spans several occupations).
-        #
-        # Broadcast, not merely returned. A Lanczos eigenvalue is replicated across ranks only to
-        # roundoff, and every caller compares it against something: the occupation walk against
-        # the running best, `solve_ground_state` against its convergence window, and
-        # `dc_criteria._SectorContext.sector_energy` against a tolerance *derived from it*. The
-        # first two broadcast for themselves; the third did not, which made `fixed_gap_dc`'s
-        # `energy_tol` -- one percent of a gap width built from three of these -- rank-local, and
-        # `tol` gates every branch deciding whether the next collective solve happens. Enforcing
-        # it here rather than at each call site is what stops the next caller inheriting the same
-        # trap; the two existing call-site broadcasts become redundant but harmless. One float
-        # against a whole CIPSI expansion.
-        e0 = np.min(es)
-        return (e0 if comm is None else comm.bcast(e0, root=0)), basis
+        return es, eigen_psis, basis
 
 
 def hartree_fock_seed_occupation(
@@ -858,7 +965,7 @@ def solve_ground_state(
     cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     use_hf_seed=True,
     num_wanted=10,
-    de2_min=1e-8,
+    de2_min=GS_DE2_MIN,
     max_num_wanted=100,
 ):
     """Find the thermal ground state: sector walk, refinement, low-energy manifold.

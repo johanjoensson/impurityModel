@@ -45,11 +45,18 @@ WORKLOADS = {
     "fcc_ni_15": f"{_IMPMOD_ROOT}/FCC_Ni/impmod/"
     "15_BathStates_HaverGeometry_partialReorthonormalization/impurityModel_data.h5",
     "nio_20": f"{_IMPMOD_ROOT}/NiO/impmod/verify_fixes/impurityModel_data.h5",
-    # The 15-bath NiO run was re-fit with a peeled (not star) bath geometry; the star-geometry
-    # directory this key used to point at no longer exists on disk, which made every benchmark
-    # keyed on it die with FileNotFoundError instead of skipping.
+    # The 15-bath peeled-geometry NiO directory this key used to point at was removed on
+    # 2026-08-05 and replaced by the 5-bath run below; the key is kept (rather than deleted) so
+    # that benchmark output naming an older `nio_15` measurement stays traceable to a path.
     "nio_15": f"{_IMPMOD_ROOT}/NiO/impmod/"
     "15_BathStates_peeledGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
+    # The current NiO production run (58 spin-orbitals: 10 impurity + 48 bath). Unlike every
+    # other entry here this archive is *live* -- an RSPt run appends a group per CSC iteration
+    # while benchmarks read it -- so pin `iteration` and expect the group count to grow between
+    # runs. It is the first archive carrying `DC` / `DC damped` / `DC converged`, i.e. the first
+    # produced by the double-counting code these diagnostics exist to test.
+    "nio_5peeled": f"{_IMPMOD_ROOT}/NiO/impmod/"
+    "5_BathStates_peeledGeometry_noneReorthonormalization_6_processors_/impurityModel_data.h5",
     "smo": f"{_IMPMOD_ROOT}/SMO/cubic/impmod/impurityModel_data.h5",
 }
 

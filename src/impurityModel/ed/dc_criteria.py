@@ -59,15 +59,18 @@ wrong charge state, which is worse than not fixing anything at all.
      sequential -- so the double counting was measured on half the space the self-energy run would
      use at that same ``dc``.
 
-   One convention is still **not** shared, and is recorded here rather than silently: every DC
-   sector energy runs at ``de2_min = 1e-6``, hardcoded in :func:`groundstate.calc_energy`, while
-   the production ground state runs at ``1e-8`` (:func:`groundstate.solve_ground_state`). The DC
-   is therefore measured on a slightly looser variational space than the solve that consumes it.
-   The looser value is deliberate for the *sector walk*, where only the ordering of charge sectors
-   matters and the tighter one costs a great deal for nothing; it is less obviously right for the
-   fixed-sector energies the peak and gap criteria difference, where the residual truncation error
-   does not cancel. Closing it means giving ``calc_energy`` a per-call ``de2_min`` so the walk and
-   the sector solves can differ -- worth doing, measured, not assumed.
+   * The PT2 threshold matches. Every DC sector energy now runs at
+     :data:`groundstate.GS_DE2_MIN` (``1e-8``), the value :func:`groundstate.solve_ground_state`
+     converges the production ground state to, rather than the ``1e-6`` that used to be a literal
+     inside :func:`groundstate.calc_energy`. The looser value is still the default there and is
+     still right for the *sector walk*, where only the ordering of charge sectors is decided and
+     a common error largely cancels; it is wrong for the fixed-sector energies the peak and gap
+     criteria **difference**, where it does not cancel and is then amplified by ``1 / |chi|`` --
+     a factor of 9 on the workload this was measured on. ``calc_energy`` and ``solve_sector`` take
+     ``de2_min`` per call so the walk and the sector solves can differ; see
+     :data:`groundstate.SECTOR_WALK_DE2_MIN`.
+
+   No convention is now knowingly unshared between the two paths.
 
 Like :func:`selfenergy.calc_selfenergy` and :func:`groundstate.find_ground_state_basis`, both
 derive their determinant budget from available per-rank memory
@@ -349,7 +352,7 @@ class _SectorContext:
         failure message blamed "a charge-sector boundary" -- the search's own artefact, reported
         as physics.
         """
-        from impurityModel.ed.groundstate import calc_energy
+        from impurityModel.ed.groundstate import GS_DE2_MIN, calc_energy
 
         if not 0 <= n_trial <= self.max_occ_total:
             return None
@@ -370,6 +373,15 @@ class _SectorContext:
             slaterWeightMin=self.slater_weight_min,
             weighted_restrictions=self.weighted_restrictions,
             frozen_occupations=self.frozen_occupations,
+            # The accuracy the answer is quoted at. `calc_energy` defaults to the walk's looser
+            # `SECTOR_WALK_DE2_MIN`, which is right for deciding which charge sector wins and
+            # wrong here: this energy is about to be *differenced* against another sector's, and
+            # the residual truncation error does not cancel in a difference. It is then amplified
+            # by 1 / |chi| on its way into `dc` -- a factor of 9 on the workload this was measured
+            # on -- so the DC would be determined on a looser variational space than the
+            # self-energy run that consumes it. Last unshared convention on the parity list in
+            # this module's docstring.
+            de2_min=GS_DE2_MIN,
         )
         # calc_energy returns inf for an empty basis (a sector the current restrictions admit no
         # determinants for) -- undefined for the same reason as the bounds check above.
@@ -383,6 +395,82 @@ class _SectorContext:
         # rank-identical verdict, which is what the search's control flow actually branches on.
         e = e_trial if np.isfinite(e_trial) else None
         return MPI.COMM_WORLD.bcast(e, root=0)
+
+    def sector_occupation(self, h_op, n_trial):
+        """``Tr rho_imp`` of sector ``n_trial`` at this shift, or ``None`` where it is undefined.
+
+        The impurity character of a charge excitation, measured rather than inferred. The gap
+        criterion's ``delta_sum`` has always come from ``chi``, the secant of the gap centre
+        against ``mu``, via Hellmann-Feynman -- which is exact for the exact eigenstate of
+        ``H(mu)`` and *not* exact for a CIPSI expansion that re-selects its space at every
+        ``mu``, and which needs at least two evaluations inside one sector to exist at all.
+
+        Both of those bit on the first production workload it met. The NiO 5-bath archive already
+        carries a converged double counting, so the search satisfied ``|g0| <= tol`` at ``mu = 0``
+        and returned after **one** evaluation: no secant, ``chi = None``, ``delta_sum = None``.
+        The diagnostic built to say whether the answer is trustworthy was silent on exactly the
+        run that accepted one. This measures the same quantity from the eigenvectors at the
+        single shift that matters, so it always has a value and carries no finite-difference or
+        basis-reselection error.
+
+        Thermally averaged over the manifold rather than read off ``argmin(es)``: the argmin is a
+        rank-local comparison of Lanczos energies (this class's docstring), while
+        ``build_density_matrices`` already ends in an ``Allreduce`` and
+        ``thermal_average_scale_indep`` is what ``fixed_occupation_dc`` and ``calc_gs`` use, so
+        this is the production convention *and* rank-identical by construction. Broadcast anyway,
+        for the reason everything else here is.
+        """
+        from impurityModel.ed.groundstate import GS_DE2_MIN, solve_sector
+
+        if not 0 <= n_trial <= self.max_occ_total:
+            return None
+        occ_trial = _per_group_occupation(n_trial, self.impurity_orbitals, self.h_solver_matrix)
+        es, psis, sector_basis = solve_sector(
+            h_op,
+            self.impurity_orbitals,
+            self.bath_states,
+            occ_trial,
+            self.mixed_valence,
+            self.tau,
+            self.chain_restrict,
+            self.spin_flip_dj,
+            self.dense_cutoff,
+            comm=MPI.COMM_WORLD,
+            verbose=self.verbose,
+            truncation_threshold=self.truncation_threshold,
+            slaterWeightMin=self.slater_weight_min,
+            weighted_restrictions=self.weighted_restrictions,
+            frozen_occupations=self.frozen_occupations,
+            # Same footing as `sector_energy`: these occupations are differenced too.
+            de2_min=GS_DE2_MIN,
+        )
+        # Broadcast the verdict *before* branching on it, not the answer afterwards. `es` and
+        # `psis` come back rank-local from `solve_sector` (its docstring says so), and the next
+        # line runs `build_density_matrices`, which ends in an `Allreduce`. A rank-local decision
+        # in front of a collective is the deadlock this module has already shipped once: the
+        # eigenvector count is filtered by an energy cut, so two ranks whose Lanczos energies
+        # differ in the last bits can disagree about whether a state sits inside it, and the ranks
+        # that returned early leave the rest inside the reduction forever.
+        #
+        # The *count* is broadcast too, and the manifold truncated to it. `build_density_matrices`
+        # allocates its reduction buffer as `(len(psis), n_orb, n_orb)`, so ranks disagreeing on
+        # the number of retained states do not merely disagree about a number -- they enter the
+        # same `Allreduce` with different buffer shapes.
+        usable = MPI.COMM_WORLD.bcast(bool(len(psis)) and bool(np.all(np.isfinite(es))), root=0)
+        if not usable:
+            return None
+        n_states = MPI.COMM_WORLD.bcast(len(psis), root=0)
+        es, psis = es[:n_states], psis[:n_states]
+        if len(psis) != n_states:
+            raise RuntimeError(
+                f"rank {MPI.COMM_WORLD.rank} kept {len(psis)} eigenstates where rank 0 kept "
+                f"{n_states}; the thermal manifold has to be rank-identical before its density "
+                "matrices are reduced."
+            )
+        impurity_indices = [orb for blocks in self.impurity_orbitals.values() for block in blocks for orb in block]
+        rhos = build_density_matrices(sector_basis, psis, impurity_indices, impurity_indices)
+        rho = thermal_average_scale_indep(es, rhos, self.tau)
+        return MPI.COMM_WORLD.bcast(float(np.real(np.trace(rho))), root=0)
 
 
 def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, memory_label):
@@ -739,47 +827,88 @@ GAP_ENERGY_TOLERANCE_FRACTION = 0.01
 GAP_ENERGY_TOLERANCE_MAX_FRACTION = 0.1
 
 
-#: Below this, the gap criterion's edges are more bath than impurity and the answer is warned about.
+#: Below this, *one* gap edge is more bath than impurity and the answer is warned about.
 #:
-#: ``delta_sum = delta_+ + delta_-`` is the fraction of the transferred electron that lands on the
-#: impurity, summed over the two edges, so it runs from 2 (both edges purely impurity) down to 0
-#: (both purely bath). The threshold is not a physical constant -- it is the point below which the
-#: acceptance band in ``mu``, which is ``tol / |chi| = 2 tol / delta_sum``, has been stretched by
-#: more than a factor of four relative to the impurity-like limit, so the tolerance the user asked
-#: for no longer means what it says.
+#: Applied to ``min(delta_+, delta_-)``, not to their sum, and that is the whole point. Each delta
+#: is the fraction of the transferred electron landing on the impurity at one edge, in ``[0, 1]``.
+#: **The sum hides exactly the case this warning exists for**, because the two edges fail
+#: independently: measured directly (see :meth:`_SectorContext.sector_occupation`), the
+#: charge-transfer fixture is ``delta_+ = 0.075`` against ``delta_- = 0.951`` and NiO 5-bath is
+#: ``delta_+ = 0.561`` against ``delta_- = 0.032``. Their sums, ``1.03`` and ``0.59``, look
+#: unremarkable next to a near-atomic ``2.00`` -- a sum-based floor tuned to catch either of them
+#: has to sit so high it fires on healthy models. The minimum separates them by more than a factor
+#: of four, in both directions, on every case measured.
 #:
-#: **Calibrated against the measurement, not before it.** This was first written as ``0.2``, on the
-#: reasoning above and nothing else. The archived NiO 15-bath workload then measured
-#: ``delta_sum = 0.218`` -- so the warning would have stayed silent on the exact case that motivated
-#: building it, missing by 9%. A threshold that does not fire on its own motivating example is not a
-#: conservative threshold, it is a broken one. ``0.5`` is the value the physics review proposed
-#: independently (as a *refusal* bound; it is used here as a warning, per the scope chosen for this
-#: work), and it catches NiO with room to spare while still passing anything with a genuinely
-#: impurity-like edge -- the near-atomic toy measures 1.99 and the deliberately bath-heavy
-#: charge-transfer fixture measures 0.797.
-GAP_IMPURITY_CHARACTER_FLOOR = 0.5
+#: **Calibrated against the measurement, not before it.** The predecessor of this constant was a
+#: sum-based ``0.2``, chosen from an error-propagation argument alone; the workload that motivated
+#: it then measured ``0.218`` and the warning stayed silent on its own example. Raising it to
+#: ``0.5`` fixed that case and broke the general one -- a sum of ``0.59`` on NiO, whose removal edge
+#: is *pure ligand*, is above the floor. ``0.3`` on the minimum is what the three measured models
+#: actually separate at: ``0.032`` and ``0.075`` fire, ``0.56``, ``0.95`` and ``1.00`` do not.
+GAP_EDGE_IMPURITY_FLOOR = 0.3
 
 
-def _warn_if_gap_edges_are_not_impurity_like(delta_sum, rank):
-    """Say when the gap being centred is the bath's rather than the impurity's.
+def _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank):
+    """Say when one of the two edges being centred belongs to the bath rather than the impurity.
 
     Printing only, no collective, so the rank gate is safe. Unconditional on rank 0 rather than
     verbosity-gated, like the other reference-quality warnings in this module: a double counting
-    fixed against a bath level is wrong in a way the user cannot see from the returned matrix.
+    fixed against a ligand band is not wrong in a way the user can see from the returned matrix.
+
+    The text deliberately does **not** say the answer is invalid. For a charge-transfer insulator
+    a ligand-like removal edge is what the material *is* -- NiO's valence-band top is O-2p, and a
+    criterion centring the cluster charge gap is then centring the p-to-d gap, which is arguably
+    the quantity one wants. What the user has to know is *which* gap was centred, because it is
+    not the gap of the impurity spectral function ``A_imp`` that Karolak et al. write down, and
+    the two are several eV apart.
     """
-    if rank != 0 or delta_sum is None or delta_sum >= GAP_IMPURITY_CHARACTER_FLOOR:
+    measured = [
+        (name, value) for name, value in (("delta_+", delta_plus), ("delta_-", delta_minus)) if value is not None
+    ]
+    if rank != 0 or not measured:
         return
+    name, weakest = min(measured, key=lambda pair: pair[1])
+    if weakest >= GAP_EDGE_IMPURITY_FLOOR:
+        return
+    edge = "addition (N+1)" if name == "delta_+" else "removal (N-1)"
     print(
-        f"WARNING: the gap edges this double counting was fixed against are only {delta_sum:.3f} "
-        f"impurity-like (delta_+ + delta_-, of a maximum of 2; below {GAP_IMPURITY_CHARACTER_FLOOR} "
-        "is flagged). The N +- 1 sector energies carry no impurity projection, so an edge can be a "
-        "bath level -- and in a bath-discretized model the lowest empty level near E_F generically "
-        "is one. Bath levels do not move with the double-counting shift, so what has been centred "
-        "on the Fermi level may be the bath's finite-size level spacing rather than the impurity "
-        "gap. The acceptance band in mu is also stretched by 2/delta_sum. Cross-check against "
-        "fixed_occupation_dc, or against a static scheme, before using this dc.",
+        f"WARNING: the {edge} edge this double counting was fixed against is only {weakest:.3f} "
+        f"impurity-like ({name}, of a maximum of 1; below {GAP_EDGE_IMPURITY_FLOOR} is flagged). "
+        "The N +- 1 sector energies carry no impurity projection, so what was centred on the Fermi "
+        "level is the CLUSTER charge gap, and this edge is a state of the bath. Two very different "
+        "situations produce that. (1) A charge-transfer insulator: the valence-band top really is "
+        "ligand, the cluster gap really is the p-to-d gap, and the answer is meaningful -- but it "
+        "is not the gap of the impurity spectral function A_imp, which is what the fixed-gap "
+        "prescription is usually quoted for, and the two can sit several eV apart. (2) A "
+        "discretization artefact: an isolated fitted bath level inside the true gap, which does "
+        "not move with the double-counting shift at all. Distinguish them with "
+        "test/support/dc_weights.py -- a band shows many nearly degenerate states carrying weight, "
+        "an artefact shows one isolated level carrying none -- and cross-check against "
+        "fixed_occupation_dc before using this dc.",
         flush=True,
     )
+
+
+def _measure_edge_character(ctx, mu, n_center):
+    """``(delta_+, delta_-)``: the impurity share of each gap edge at the converged shift.
+
+    ``delta_+ = <N_imp>_{N+1} - <N_imp>_{N}`` and ``delta_- = <N_imp>_{N} - <N_imp>_{N-1}``, each
+    in ``[0, 1]``. Three sector solves, paid once at the end of the search rather than at every
+    trial -- against the 9 to 52 solves the searches measured on real workloads, that is the
+    price of turning the criterion's central caveat from an inference into a measurement.
+
+    All three solves run unconditionally before any is tested, for the usual reason: each is
+    collective, and a rank returning early between them moves a solve off that rank. Every value
+    they return is already broadcast (:meth:`_SectorContext.sector_occupation`), so the ``None``
+    tests below are rank-identical verdicts rather than rank-local ones.
+    """
+    h_op = ctx.shifted_h(mu)
+    n_add = ctx.sector_occupation(h_op, n_center + 1)
+    n_mid = ctx.sector_occupation(h_op, n_center)
+    n_rem = ctx.sector_occupation(h_op, n_center - 1)
+    delta_plus = None if n_add is None or n_mid is None else n_add - n_mid
+    delta_minus = None if n_mid is None or n_rem is None else n_mid - n_rem
+    return delta_plus, delta_minus
 
 
 def _size_gap_tolerance(width, mu_tol, bandwidth, rank=0):
@@ -816,7 +945,8 @@ def _size_gap_tolerance(width, mu_tol, bandwidth, rank=0):
                 flush=True,
             )
         return mu_tol, "width_negative"
-    tol = max(GAP_ENERGY_TOLERANCE_FRACTION * width, mu_tol)
+    scaled = GAP_ENERGY_TOLERANCE_FRACTION * width
+    tol = max(scaled, mu_tol)
     cap = max(GAP_ENERGY_TOLERANCE_MAX_FRACTION * bandwidth, mu_tol)
     if tol > cap:
         if rank == 0:
@@ -831,7 +961,13 @@ def _size_gap_tolerance(width, mu_tol, bandwidth, rank=0):
                 flush=True,
             )
         return cap, "width_capped"
-    return tol, "measured_gap"
+    # Which of the two terms the `max` actually returned. Reporting `measured_gap` whenever the
+    # width was merely *defined* was wrong on both real workloads measured: NiO 15-bath sized
+    # 0.01 * 0.0654 = 6.5e-4 against a mu resolution of 2.5e-3, and NiO 5-bath 0.01 * 0.119 =
+    # 1.2e-3 against the same 2.5e-3 -- so in both cases the tolerance came from `bracket_width_tol`
+    # and the record said it came from the gap. A field whose whole job is to say where a number
+    # came from has to distinguish the two, or the one case it is read in is the one it misreports.
+    return tol, "measured_gap" if scaled >= mu_tol else "mu_resolution"
 
 
 def fixed_gap_dc(
@@ -890,21 +1026,47 @@ def fixed_gap_dc(
          :math:`|N\rangle` with one impurity operator. :func:`fixed_peak_dc` risks this for one
          pole; averaging two edges risks it for either.
 
-       The criterion measures its own exposure and reports it: ``delta_sum`` in the record is
-       :math:`\delta_+ + \delta_- = -2\,d(\text{centre})/d\mu`, the fraction of the transferred
-       charge that reached the impurity, and a value near zero means the answer is only weakly
-       coupled to the quantity being solved for. **Read it before trusting the result.** On the
-       archived NiO 15-bath workload (cap 1500) it measures 0.22 -- ~11% per edge.
+       The criterion measures its own exposure and reports it, per edge: ``delta_plus`` and
+       ``delta_minus`` in the record are :math:`\delta_\pm`, the fraction of the added/removed
+       electron that lands on the impurity, measured from the eigenvectors at the converged shift
+       (:meth:`_SectorContext.sector_occupation`). **Read them before trusting the result**, and
+       read them *separately*: the two edges fail independently, and their sum hides it.
+
+    .. note:: **Measured, on real models.** The picture above is not hypothetical, and it is not
+       uniformly bad either.
+
+       *NiO 5-bath, iteration 1* (58 spin-orbitals, the archived production run): the criterion
+       converges at ``mu = 0`` with a cluster gap of 1.62 eV symmetric about ``E_F``, and
+       ``delta_+ = 0.561`` against ``delta_- = 0.032``. Enumerating the ``N-1`` spectrum
+       (``test/support/dc_weights.py``) shows the four lowest removal states carrying **zero**
+       impurity weight and lying within 4 meV of each other -- a *band*, not an isolated level.
+       That is the O-2p valence band: NiO's valence-band top is ligand, which is what makes it a
+       charge-transfer insulator. So the criterion is centring the p-to-d gap. That is a
+       defensible quantity -- arguably the one wanted -- but it is **not** the gap of
+       :math:`A_{imp}`, whose removal weight on this model is centred 5.8 eV below ``E_F`` and
+       whose addition weight is centred at +1.75 eV (exact first moments, same module).
+       Cap 2000 to 8000 moves the answer by 6 meV, so none of this is truncation.
+
+       *The charge-transfer toy* (``charge_transfer_kwargs``) fails on the other edge:
+       ``delta_+ = 0.075`` against ``delta_- = 0.951``, with the lowest addition state carrying
+       15% of the addition sum rule and the state carrying 80% sitting 1.45 above it. There the
+       low-lying state *is* an isolated fitted level -- the artefact case.
+
+       Distinguishing the two is what ``dc_weights.py`` is for: a band shows many nearly
+       degenerate states, an artefact shows one isolated level. **A weight-thresholded edge is not
+       a usable replacement criterion**, at least not here -- on NiO no removal state reaches 5%
+       of the sum rule, so a weighted gap centre has no root at all.
 
     **Which criterion for which regime.**
 
     ``gap``
-        Mott insulators, and any case where the gap edges carry impurity character -- check
-        ``delta_sum``. This is the criterion the paper recommends for insulators, and it is well
-        defined precisely where ``occ`` is not; but in the *charge-transfer* regime the paper
-        addresses, the edges are the most bath-like and ``delta_sum`` is the smallest, so the
-        recommendation and the conditioning pull in opposite directions. That tension is a
-        property of measuring the gap from cluster sector energies, not of the prescription.
+        Mott insulators, and any case where **both** ``delta_+`` and ``delta_-`` show impurity
+        character. This is the criterion the paper recommends for insulators, and it is well
+        defined precisely where ``occ`` is not. In the *charge-transfer* regime the paper
+        addresses, be explicit about which gap you want: this implementation centres the cluster
+        charge gap, whose removal edge is ligand by construction there. If the p-to-d gap is what
+        you mean, that is the right answer; if you mean the gap of :math:`A_{imp}`, this is not
+        it, and no reweighting of these sector energies makes it so.
     ``occ``
         Metals, and wide-window p-d models in charge self-consistency. This is Karolak's Eq. (2)
         and it is exact where the occupation actually responds to the shift.
@@ -1149,15 +1311,24 @@ def fixed_gap_dc(
             omega_minus=None if gap_width is None else centre_at[mu] - 0.5 * gap_width,
             chi=chi,
             chi_span=chi_span,
-            # delta_+ + delta_-: how much of the transferred electron actually reached the
-            # impurity. By Hellmann-Feynman d(centre)/dmu = -(<N_imp>_{N+1} - <N_imp>_{N-1})/2
-            # exactly, so this costs nothing beyond the slope the search already measured -- and
-            # it is the number that says whether the gap being centred is the impurity's or the
-            # bath's. See the criterion's own warning: the sector energies carry no impurity
-            # projection, so this is the only evidence available that they describe the impurity.
-            delta_sum=None if chi is None else -2.0 * chi,
         )
-        _warn_if_gap_edges_are_not_impurity_like(dc_rec.get("delta_sum"), rank)
+        # How much of the transferred electron actually reached the impurity, per edge. Measured
+        # from the eigenvectors at the converged shift (three extra sector solves), not inferred
+        # from `chi`: see `_SectorContext.sector_occupation` for why the Hellmann-Feynman route
+        # through the secant is both approximate here and, on the first production workload it
+        # met, absent. Split into the two edges because their sum hides the case that matters --
+        # NiO measures delta_+ = 0.56 against delta_- = 0.03, an impurity-like addition edge above
+        # a ligand valence band, which is what a charge-transfer insulator *is*; a symmetric pair
+        # summing to the same number would be a different physical situation entirely.
+        delta_plus, delta_minus = _measure_edge_character(ctx, mu, n_center)
+        dc_rec["delta_plus"], dc_rec["delta_minus"] = delta_plus, delta_minus
+        if delta_plus is not None and delta_minus is not None:
+            dc_rec["delta_sum"] = delta_plus + delta_minus
+        elif chi is not None:
+            # Fall back to the secant only where the direct measurement is undefined (a sector at
+            # a shell edge), so the field is never silently absent when something can be said.
+            dc_rec["delta_sum"] = -2.0 * chi
+        _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank)
         dc_rec["dc_trace"], dc_rec["dc_level"] = dc_record.dc_levels(dc)
         dc_rec["dc_spread"] = dc_record.dc_spread(dc)
         _dump_dc_matrices(ctx.dc_guess, dc, rank)
