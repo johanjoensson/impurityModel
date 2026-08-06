@@ -29,14 +29,17 @@ from impurityModel.ed.observables import (
     compute_state_summary,
     compute_static_susceptibilities,
     get_Sz_from_rho_pairs,
+    is_j_sharp,
     make_impurity_casimir_operators,
     make_spin_operators,
     manifold_observable_values,
     print_correlation_diagnostics,
     print_expectation_values,
+    print_impurity_orbital_groups,
     print_screening_diagnostics,
     print_state_summary,
     print_thermal_expectation_values,
+    shell_qualified_block_labels,
     spin_correlation_operator,
     static_susceptibility_rows,
     thermal_observable_value,
@@ -1223,8 +1226,19 @@ def calc_gs(
     mov_redistribute = ground_state_basis.redistribute_block if ground_state_basis.is_distributed else None
     s_values = l_values = j_values = None
     s2_thermal = l2_thermal = j2_thermal = None
+    # Whether J is a sharp quantum number across the ground manifold (is_j_sharp); True
+    # (ungated) is the safe default when the Casimirs are unavailable -- there is then no
+    # signal to gate on, and the term/g_J/mu_eff rows already don't print in that case.
+    j_sharp = True
+    # Per-shell S^2/L^2/J^2 (Stage 4 consumes this for the per-shell report table):
+    # partition -> {"l", "s2_thermal", "l2_thermal", "j2_thermal"}. Only populated when
+    # there is more than one shell to distinguish -- a single shell's per-shell values
+    # would just duplicate the totals computed below.
+    shell_casimir = {}
     try:
-        l_ops, s_ops, j_ops = make_impurity_casimir_operators(ground_state_basis.impurity_orbitals, rot_to_spherical)
+        l_ops, s_ops, j_ops, per_shell_ops = make_impurity_casimir_operators(
+            ground_state_basis.impurity_orbitals, rot_to_spherical, per_shell=True
+        )
     except ValueError:
         # The impurity is grouped into orbital-symmetry manifolds (e.g. eg / t2g), none of
         # which is individually a full spin-doubled l-shell, so the per-partition build raised.
@@ -1233,13 +1247,17 @@ def calc_gs(
         # retry. Only meaningful for a single shared rotation; a dict rotation is per-shell
         # (get_spectra's multi-l case) and is already correct per partition.
         l_ops = None
+        per_shell_ops = None
         if not isinstance(rot_to_spherical, dict):
             try:
-                l_ops, s_ops, j_ops = make_impurity_casimir_operators({0: [impurity_indices]}, rot_to_spherical)
+                l_ops, s_ops, j_ops, per_shell_ops = make_impurity_casimir_operators(
+                    {0: [impurity_indices]}, rot_to_spherical, per_shell=True
+                )
             except ValueError:
                 # Genuinely not a spin-doubled l-shell: skip the Casimirs
                 # (the rho-based <L.S>/<Lz>/<Sz> etc. still print).
                 l_ops = None
+                per_shell_ops = None
     if l_ops is not None:
         # Evaluation is deterministic and identical on every rank (manifold_observable_values
         # Allreduces), so a failure raises on all ranks together -> the try/except stays
@@ -1262,11 +1280,32 @@ def calc_gs(
             s_values, s2_thermal = casimir["S"]
             l_values, l2_thermal = casimir["L"]
             j_values, j2_thermal = casimir["J"]
+            # Without SOC, J is generically not a good quantum number: the ground
+            # manifold can be energy-degenerate while its members' J differ (see
+            # is_j_sharp's docstring). Gate the printed/persisted term/g_J/mu_eff on
+            # this rather than reporting a single J that isn't actually well-defined.
+            j_sharp = is_j_sharp(j_values, es)
+            if per_shell_ops is not None and len(per_shell_ops) > 1:
+                for partition, (shell_l, shell_l_ops, shell_s_ops, shell_j_ops) in per_shell_ops.items():
+                    entry = {"l": shell_l}
+                    for name, ops in (("s2", shell_s_ops), ("l2", shell_l_ops), ("j2", shell_j_ops)):
+                        op2 = casimir_operator(*ops)
+                        vals = manifold_observable_values(
+                            psis_blk,
+                            es,
+                            lambda blk, _op=op2: _op.apply_block(blk, 0),
+                            comm=mov_comm,
+                            redistribute=mov_redistribute,
+                        )
+                        entry[f"{name}_thermal"] = thermal_observable_value(vals, es, tau)
+                    shell_casimir[partition] = entry
         except Exception as exc:
             if rank == 0:
                 print(f"S^2/L^2/J^2 not reported: {exc}")
             s_values = l_values = j_values = None
             s2_thermal = l2_thermal = j2_thermal = None
+            j_sharp = True
+            shell_casimir = {}
     # Kondo impurity-bath spin correlation <S_imp . S_bath>. The bath spin pairing
     # follows the down-then-up convention, but is only trusted if the induced global
     # spin operators commute with the one-body Hamiltonian (so the spin assignment
@@ -1295,10 +1334,12 @@ def calc_gs(
         if spin_pairs is None:
             sisb_skip_reason = (
                 "could not determine a trustworthy (down,up) spin labelling. The down-then-up "
-                "index convention only holds in the spherical-harmonics representation, the "
+                "index convention only holds in the spherical-harmonics representation -- a "
+                "symmetry-adapted-basis rotation of the correlated shell (rot_to_spherical set "
+                "to a symmetry-adapted, not spherical, unitary) breaks it -- and the "
                 "symmetry-derived fallback did not yield a consistent pairing, and the collinear "
                 "spin-polarized-bath check also failed (spin-orbit coupling, or a bath "
-                "connectivity/order the derivation cannot resolve)."
+                "connectivity/order the derivation cannot resolve, are other possible causes)."
             )
         else:
             imp_pairs, bath_pairs = spin_pairs
@@ -1376,13 +1417,19 @@ def calc_gs(
             corr_diagnostics = compute_correlation_diagnostics(
                 psis_blk, es, tau, thermal_rho, imp_pairs, comm=mov_comm, redistribute=mov_redistribute
             )
-            # Impurity channels grouped like the N(...) columns (equivalent-block groups).
+            # Impurity channels grouped like the N(...) columns (equivalent-block groups),
+            # using the same shell-qualified labels (e.g. "l=2,a") as the printed report,
+            # not the raw block indices (which are positions in block_structure.blocks,
+            # not orbital indices, and don't identify which shell a group belongs to).
             # Block orbitals are positions into the sorted impurity list (offset like
             # print_expectation_values); map them back to global spin-orbital indices.
             orb_offset = min(orb for block in block_structure.blocks for orb in block)
+            equivalent_blocks = get_equivalent_blocks(block_structure)
+            block_labels, _ = shell_qualified_block_labels(
+                equivalent_blocks, block_structure, ground_state_basis.impurity_orbitals
+            )
             imp_groups = {}
-            for blocks in get_equivalent_blocks(block_structure):
-                label = ",".join(str(b) for b in blocks)
+            for blocks, label in zip(equivalent_blocks, block_labels):
                 group_orbs = {impurity_indices[orb - orb_offset] for b in blocks for orb in block_structure.blocks[b]}
                 in_group = [p for p in imp_pairs if p[0] in group_orbs and p[1] in group_orbs]
                 if in_group:
@@ -1415,17 +1462,34 @@ def calc_gs(
     full_impurity_ix = np.ix_(np.arange(len(rhos)), impurity_indices, impurity_indices)
     try:
         state_summary = compute_state_summary(
-            rhos[full_impurity_ix], es, rot_to_spherical, s_values, l_values, j_values, entanglement
+            rhos[full_impurity_ix],
+            es,
+            rot_to_spherical,
+            s_values,
+            l_values,
+            j_values,
+            entanglement,
+            impurity_orbitals=ground_state_basis.impurity_orbitals,
         )
-    except Exception:
+    except Exception as exc:
         state_summary = None
+        if rank == 0:
+            print(f"per-state summary not reported: {exc}")
     if gs_stats is not None:
         try:
             magnetic_summary = compute_magnetic_summary(
-                thermal_rho[impurity_ix], rot_to_spherical, s2_thermal, l2_thermal, j2_thermal
+                thermal_rho[impurity_ix],
+                rot_to_spherical,
+                s2_thermal,
+                l2_thermal,
+                j2_thermal,
+                impurity_orbitals=ground_state_basis.impurity_orbitals,
+                j_sharp=j_sharp,
             )
-        except Exception:
+        except Exception as exc:
             magnetic_summary = None
+            if rank == 0:
+                print(f"magnetic summary not reported: {exc}")
         gs_stats["observables"] = {
             "magnetic": magnetic_summary,
             "per_state": state_summary,
@@ -1457,6 +1521,9 @@ def calc_gs(
                 print(f"  {sorted(indices)} : {occupations}")
             print("Block structure:")
             print_block_structure(block_structure)
+            print_impurity_orbital_groups(
+                get_equivalent_blocks(block_structure), block_structure, ground_state_basis.impurity_orbitals
+            )
 
             report_rule("Thermal expectation values")
             extra_groups = []
@@ -1490,6 +1557,9 @@ def calc_gs(
                 sisb_z_connected=sisb_z_connected,
                 sisb_pairing_approx=sisb_pairing_approx,
                 extra_groups=extra_groups or None,
+                impurity_orbitals=ground_state_basis.impurity_orbitals,
+                shell_casimir=shell_casimir,
+                j_sharp=j_sharp,
             )
             report_rule("Eigenstates")
             print_expectation_values(
@@ -1502,6 +1572,7 @@ def calc_gs(
                 j_values=j_values,
                 sisb_values=sisb_values,
                 sisb_z_values=sisb_z_values,
+                impurity_orbitals=ground_state_basis.impurity_orbitals,
             )
             if state_summary is not None:
                 print_state_summary(state_summary)
