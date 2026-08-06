@@ -97,8 +97,10 @@ class H0File:
     spin_ordering : str or None
         ``"down_first"``, ``"up_first"``, ``"interleaved"``, ``"unknown"``, or ``None`` if the
         header does not declare it (files written before this was tracked).
-    contains_soc : bool
-        Whether spin-orbit coupling is already present in the amplitudes.
+    contains_soc : bool or None
+        Whether spin-orbit coupling is already present in the amplitudes. ``None`` means the
+        header does not declare it -- treated as *unknown*, not *no*, by callers that guard
+        against double-counting SOC.
     interaction : dict or None
         Optional interaction spec, e.g. ``{"kind": "slater", "l": 2, "F": [...]}``.
     header : dict
@@ -115,7 +117,7 @@ class H0File:
     energy_reference: str = "fermi"
     basis: str = "unknown"
     spin_ordering: Optional[str] = None
-    contains_soc: bool = False
+    contains_soc: Optional[bool] = None
     interaction: Optional[dict] = None
     header: dict = field(default_factory=dict)
 
@@ -389,7 +391,7 @@ def read_h0_file(path):
         energy_reference=header["energy_reference"],
         basis=header.get("basis", "unknown"),
         spin_ordering=header.get("spin_ordering"),
-        contains_soc=bool(header.get("contains_soc", False)),
+        contains_soc=header.get("contains_soc"),
         interaction=header.get("interaction"),
         header=header,
     )

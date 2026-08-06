@@ -276,9 +276,11 @@ class ImpurityModel:
         ------
         ValueError
             If no interaction is available and ``allow_noninteracting`` is False; if the
-            declared shell disagrees with the impurity block size; if the file already contains
-            spin-orbit coupling and a non-zero ``xi`` was requested, which would double-count
-            it; or if a non-zero ``xi``/``h_field`` was requested but the header does not
+            declared shell disagrees with the impurity block size; if a non-zero ``xi`` was
+            requested and the file either already contains spin-orbit coupling or does not
+            declare ``contains_soc`` at all (absent is treated as *unknown*, not *no*, since
+            guessing wrong silently double-counts SOC); or if a non-zero ``xi``/``h_field`` was
+            requested but the header does not
             guarantee ``basis: "spherical"``, ``spin_ordering: "down_first"`` and a single
             correlated shell. ``xi``/``h_field`` are built in ``(l, s, m)`` labels via
             :func:`atomic_physics.getSOCop`/:func:`atomic_physics.gethHfieldop` and mapped
@@ -294,8 +296,17 @@ class ImpurityModel:
             else h0_format.read_legacy_flat_h0(path, _require_n_imp(path, n_impurity_orbitals))
         )
 
-        if parsed.contains_soc and xi:
-            raise ValueError(f"{path}: the file already contains spin-orbit coupling; xi={xi} would double-count it.")
+        if parsed.contains_soc is not False and xi:
+            reason = (
+                "already contains spin-orbit coupling"
+                if parsed.contains_soc
+                else "does not declare 'contains_soc', so whether it already contains "
+                "spin-orbit coupling is unknown"
+            )
+            raise ValueError(
+                f"{path}: the file {reason}; xi={xi} could double-count it. Pass xi=0, or "
+                "regenerate the file with a producer that declares 'contains_soc'."
+            )
 
         interaction = parsed.interaction or {}
         if l is None:
@@ -446,10 +457,11 @@ class ImpurityModel:
         ValueError
             If ``shells`` names an angular momentum other than 1 or 2; if ``shells`` and
             ``val_shells`` do not cover the same angular momenta; if ``h0_filename`` is a flat
-            ``.h0`` whose header already declares ``contains_soc: true`` and a non-zero
-            ``xi_3d`` was requested, which would double-count spin-orbit coupling (mirrors the
-            analogous guard in :meth:`from_h0_text`); or if the header's ``valence_bath`` count
-            disagrees with ``val_shells[l]`` for the shell it describes.
+            ``.h0`` and a non-zero ``xi_3d`` was requested while the header either already
+            declares ``contains_soc: true`` or does not declare ``contains_soc`` at all (absent
+            is treated as *unknown*, not *no*; mirrors the analogous guard in
+            :meth:`from_h0_text`); or if the header's ``valence_bath`` count disagrees with
+            ``val_shells[l]`` for the shell it describes.
         """
         if set(shells) - {1, 2}:
             raise ValueError(
@@ -469,9 +481,16 @@ class ImpurityModel:
 
         xi_2p, xi_3d = socs
         parsed_h0 = h0_format.read_h0_file(h0_filename) if h0_format.is_h0_format(h0_filename) else None
-        if parsed_h0 is not None and xi_3d and parsed_h0.contains_soc:
+        if parsed_h0 is not None and xi_3d and parsed_h0.contains_soc is not False:
+            reason = (
+                "already contains spin-orbit coupling"
+                if parsed_h0.contains_soc
+                else "does not declare 'contains_soc', so whether it already contains "
+                "spin-orbit coupling is unknown"
+            )
             raise ValueError(
-                f"{h0_filename}: the file already contains spin-orbit coupling; xi_3d={xi_3d} " "would double-count it."
+                f"{h0_filename}: the file {reason}; xi_3d={xi_3d} could double-count it. Pass "
+                "xi_3d=0, or regenerate the file with a producer that declares 'contains_soc'."
             )
 
         # c2i order: every impurity shell first (in `shells`' order), then every bath block

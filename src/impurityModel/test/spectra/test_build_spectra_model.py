@@ -57,6 +57,9 @@ def _flat_d_shell(tmp_path, n_bath, *, name="d_shell.h0", **header_extra):
     header_extra.setdefault("spin_ordering", "down_first")
     header_extra.setdefault("energy_reference", "fermi")
     header_extra.setdefault("impurity_l", l)
+    # This is random noise, not physical SOC -- declare that truthfully so the
+    # contains_soc-absent-is-unknown guard (model.py) doesn't refuse these fixtures.
+    header_extra.setdefault("contains_soc", False)
     path = tmp_path / name
     h0_format.write_h0_file(path, h, impurity_orbitals={0: list(range(n_imp))}, **header_extra)
     return path, h
@@ -216,6 +219,27 @@ def test_from_shells_flat_rejects_an_impurity_l_the_shells_dict_does_not_have(tm
 def test_from_shells_rejects_contains_soc_with_a_nonzero_xi_3d(tmp_path):
     path, _ = _flat_d_shell(tmp_path, n_bath=4, contains_soc=True)
     with pytest.raises(ValueError, match="double-count"):
+        load_model(
+            str(path),
+            shells=OrderedDict({1: 0, 2: 4}),
+            val_shells=OrderedDict({1: 0, 2: 4}),
+            n0imps=OrderedDict({1: 6, 2: 8}),
+            slater_condon=(FDD, FPP, FPD, GPD),
+            socs=(XI_2P, XI_3D),
+            charge_transfer_correction=CTC,
+            verbose=False,
+        )
+
+
+def test_from_shells_rejects_an_absent_contains_soc_with_a_nonzero_xi_3d(tmp_path):
+    """Omitting the key is *unknown*, not *no* -- refused exactly like an explicit ``true``.
+
+    This is the regression case: for a while ``build_h0`` never wrote ``contains_soc`` at all,
+    which silently disabled this guard for every file it produced (see
+    doc/h0_file_format.md, Interaction).
+    """
+    path, _ = _flat_d_shell(tmp_path, n_bath=4, contains_soc=None)
+    with pytest.raises(ValueError, match="does not declare 'contains_soc'"):
         load_model(
             str(path),
             shells=OrderedDict({1: 0, 2: 4}),

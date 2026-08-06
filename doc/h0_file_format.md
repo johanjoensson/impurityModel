@@ -61,7 +61,7 @@ legacy file renamed to `.h0` must still be diagnosed correctly rather than mis-p
 | `valence_bath`, `conduction_bath` | Bath classification. Advisory — see [Bath classification](#bath-classification). |
 | `basis` | `"spherical"`, `"cubic"` or `"unknown"` — the impurity orbital basis. `build_h0` always writes `"spherical"` (verified) or raises — see [Basis and spin ordering](#basis-and-spin-ordering). |
 | `rot_to_spherical` | `n_imp × n_imp`, complex as `[re, im]` pairs. Used for L/S/J reporting. |
-| `contains_soc` | Whether spin–orbit coupling is already in the amplitudes. |
+| `contains_soc` | Whether spin–orbit coupling is already in the amplitudes. Absent means *unknown*, not `false` — see [Interaction](#interaction). |
 | `source_provenance` | Where the local Hamiltonian came from (DFT run vs DMFT iteration N). |
 | `interaction` | Optional, e.g. `{"kind": "slater", "l": 2, "F": [...], "xi": 0.0}`. |
 | `drop_tolerance` | The relative threshold below which elements were discarded. |
@@ -241,7 +241,13 @@ over CFFI. Do not compare self-energies across the two paths and attribute the d
 the file format.
 
 `xi` and `contains_soc` interact: if the amplitudes already contain spin–orbit coupling,
-dressing them again with `xi` double-counts, and the reader must refuse a non-zero `xi`.
+dressing them again with `xi` double-counts, and the reader must refuse a non-zero `xi`. A file
+that omits `contains_soc` is **not** the same as one that declares it `false`: the key's
+absence means the producer never checked, so the reader treats it as unknown and refuses a
+non-zero `xi` exactly as it would for `contains_soc: true`. This matters in practice --
+`rspt2spectra`'s `build_h0` did not write the key for some time, which silently disabled this
+guard for every file it produced while a 3d Hamiltonian that already carried spin–orbit
+coupling from RSPt sat underneath it.
 
 ## Scope
 
