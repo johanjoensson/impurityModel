@@ -5,9 +5,9 @@ The non-interacting impurity Hamiltonian as written by upstream tooling (`rspt2s
 two implementations live in separate repositories with no shared dependency, so nothing but
 this spec and the committed fixtures keeps them in agreement.
 
-Read by `impurityModel selfenergy` and `impurityModel susceptibility` (see the format ×
-sub-command table in [`user_guide.md`](user_guide.md)). **Not** read by `impurityModel
-spectra`, which needs the labelled `(l,s,m)` formats — see [Scope](#scope).
+Read by `impurityModel selfenergy`, `impurityModel susceptibility` and `impurityModel spectra`
+(see the format × sub-command table in [`user_guide.md`](user_guide.md)) — see
+[Scope](#scope) for what `spectra` requires of the file.
 
 ## Why the format exists
 
@@ -249,10 +249,20 @@ dressing them again with `xi` double-counts, and the reader must refuse a non-ze
 current producer does not emit one: RSPt writes one hybridization file per orbital group, so
 `build_h0` output is one shell per file even when the `green.inp` cluster lists several.
 
-The `spectra` sub-command does **not** read this format. Its Hamiltonian builder constructs
-spin–orbit coupling, the Slater–Condon interaction and the MLFT double counting in `(l,s,m)`
-labels and interleaves shells under `c2i`, so a flat-index Hamiltonian would need an explicit
-permutation to be correct there.
+`spectra`'s Hamiltonian builder constructs spin–orbit coupling, the Slater–Condon interaction
+and the MLFT double counting in `(l,s,m)` labels and interleaves shells under `c2i` --
+`hamiltonian_io.flat_h0_to_labelled` relabels a flat file's terms into that convention before
+they reach it. This is a lossless permutation *only* because `i2c` on a single-shell `nBaths`
+dict is the exact inverse of the flat impurity-block-first layout for one shell, which in turn
+depends entirely on `basis: "spherical"` and `spin_ordering: "down_first"` holding -- both
+are re-checked at read time (missing or contradicted, either raises) rather than assumed.
+
+The file supplies only the *correlated* shell (in practice the 3d shell) and its bath; the
+core shell (2p) is always empty in real workloads (RSPt writes one file per orbital group and
+the 2p group has no bath) and is entirely synthesized from CLI parameters (SOC `xi_2p`,
+`dc_MLFT`). Because the relabelling is 2p3d-specific machinery (`get2p3dSlaterCondonUop`,
+`dc_MLFT(n2p_i=...)`, the magnetic field hard-coded to `l=2`), a file whose `impurity_l` is
+not 2 is refused rather than assembled with the wrong physics silently applied.
 
 ## Legacy format
 

@@ -28,14 +28,26 @@ def add_arguments(parser):
     )
     parser.add_argument("--ls", type=int, nargs="+", default=[1, 2], help="Angular momenta of correlated orbitals.")
     parser.add_argument(
-        "--nBaths", type=int, nargs="+", default=[0, 10], help="Number of bath states, for each angular momentum."
+        "--nBaths",
+        type=int,
+        nargs="+",
+        default=[0, 10],
+        help=(
+            "Number of bath states, for each angular momentum. When h0_filename is a flat "
+            "`.h0` file, its own bath count is cross-checked against this and a mismatch raises."
+        ),
     )
     parser.add_argument(
         "--nValBaths",
         type=int,
         nargs="+",
         default=[0, 10],
-        help="Number of valence bath states, for each angular momentum.",
+        help=(
+            "Number of valence bath states, for each angular momentum. When h0_filename is a "
+            "flat `.h0` file whose header records a valence/conduction split, that split is "
+            "used and only the count here is cross-checked; otherwise the first nValBaths bath "
+            "orbitals of each shell are taken as valence."
+        ),
     )
     parser.add_argument(
         "--n0imps", type=int, nargs="+", default=[6, 8], help="Initial impurity occupation, for each angular momentum."

@@ -7,11 +7,12 @@ combine h0 with SOC, magnetic field, Coulomb, and double counting.
 import json
 import os
 import pickle
+from collections import OrderedDict
 
 import numpy as np
 
-from impurityModel.ed import atomic_physics, op_parser
-from impurityModel.ed.operator_algebra import addOps, assert_hermitian, c2i
+from impurityModel.ed import atomic_physics, h0_format, op_parser
+from impurityModel.ed.operator_algebra import addOps, assert_hermitian, c2i, i2c
 
 
 def get_noninteracting_hamiltonian_operator(nBaths, nValBaths, SOCs, hField, h0_filename, rank, verbose=True):
@@ -86,16 +87,100 @@ def read_h0_operator(filename, nBaths, nValBaths=None):
     if ext.lower() == ".json":
         return get_CF_hamiltonian(nBaths, nValBaths, filename)
     if ext.lower() in (".h0", ".dict"):
-        # Reachable when a user points `spectra` at a file from the flat-index pipeline.
-        # The readers here all return (l, s, m)/(l, b) labels that c2i then maps; a flat
-        # file has no labels, so there is nothing to fall back to -- say where it does work.
-        raise RuntimeError(
-            f"{filename}: this is the flat single-index h0 format, which the labelled readers "
-            "cannot interpret. It is read by the 'selfenergy' and 'susceptibility' sub-commands "
-            "(via ImpurityModel.from_h0_text); 'spectra' requires a labelled .pickle/.json/.dat. "
-            "See doc/h0_file_format.md."
-        )
+        if not h0_format.is_h0_format(filename):
+            # A legacy headerless flat file: no basis, no spin ordering, nothing to
+            # justify the relabelling below.
+            raise RuntimeError(
+                f"{filename}: this is the legacy headerless flat h0 format, which records no "
+                "basis or spin ordering. The labelled readers cannot interpret it without those "
+                "guarantees; regenerate it with build_h0 to get a self-describing .h0. "
+                "See doc/h0_file_format.md."
+            )
+        return flat_h0_to_labelled(h0_format.read_h0_file(filename), nBaths, path=filename)
     raise RuntimeError(f"Unknown file h0 file extension {ext}")
+
+
+def flat_h0_to_labelled(parsed, nBaths, path=None):
+    """Relabel a single-shell, flat-indexed ``.h0`` file into ``(l, s, m)`` / ``(l, b)`` labels.
+
+    The flat format's impurity-block-first layout is, for a *single* correlated shell, the
+    exact inverse of :func:`operator_algebra.i2c` applied with a one-shell ``nBaths`` dict --
+    provided the header guarantees ``basis: "spherical"`` and ``spin_ordering: "down_first"``,
+    which is what makes ``m`` and spin land where ``i2c`` expects them. That is the only
+    permutation this function performs; the caller's ``nBaths`` (potentially multi-shell) is
+    used only to identify which shell the file belongs to and validate its bath count.
+
+    Parameters
+    ----------
+    parsed : h0_format.H0File
+        Already-parsed flat file.
+    nBaths : dict
+        Number of bath orbitals per shell, keyed by angular momentum -- the multi-shell layout
+        the caller (:func:`get_hamiltonian_operator`) assembles into.
+    path : str, optional
+        File path to name in error messages. Falls back to ``parsed.header.get('producer')``
+        (typically ``None``, since ``build_h0`` does not set that key) when omitted.
+
+    Returns
+    -------
+    dict
+        ``{((l, s, m) | (l, b), 'c'), (..., 'a')): amplitude}``.
+
+    Raises
+    ------
+    RuntimeError
+        If the header does not guarantee spherical basis, down-first spin ordering and a
+        Fermi-referenced energy zero; if the file declares more than one impurity shell; if
+        its shell's ``l`` is not one of ``nBaths``; or if its bath count disagrees with
+        ``nBaths[l]``.
+    """
+    if parsed.basis != "spherical":
+        raise RuntimeError(
+            f"{path or parsed.header.get('producer')}: header basis is {parsed.basis!r}, not "
+            "'spherical'; relabelling into (l, s, m) assumes a spherical-harmonics m-ordering."
+        )
+    if parsed.spin_ordering != "down_first":
+        raise RuntimeError(
+            f"{path or parsed.header.get('producer')}: header spin_ordering is {parsed.spin_ordering!r}, "
+            "not 'down_first'; a file that does not declare this convention cannot be relabelled "
+            "without risking a silently flipped spin."
+        )
+    if parsed.energy_reference != "fermi":
+        raise RuntimeError(
+            f"{path or parsed.header.get('producer')}: header energy_reference is "
+            f"{parsed.energy_reference!r}, not 'fermi'; an absolute-referenced block would shift "
+            "the whole shell relative to what get_hamiltonian_operator assumes."
+        )
+    if len(parsed.impurity_orbitals) != 1 or parsed.header.get("shell_layout") == "multi":
+        raise RuntimeError(
+            f"{path or parsed.header.get('producer')}: file declares more than one impurity shell/group; "
+            "c2i interleaves multiple shells, so a single-shell relabelling is not unambiguous."
+        )
+
+    l = parsed.header.get("impurity_l")
+    if l is None or int(l) not in nBaths:
+        raise RuntimeError(
+            f"{path or parsed.header.get('producer')}: header impurity_l={l!r} is not one of the "
+            f"requested shells {sorted(nBaths)}."
+        )
+    l = int(l)
+    if 2 * (2 * l + 1) != parsed.n_imp:
+        raise RuntimeError(
+            f"{path or parsed.header.get('producer')}: impurity_l={l} implies {2 * (2 * l + 1)} "
+            f"impurity spin-orbitals, but the file's impurity block holds {parsed.n_imp}."
+        )
+    n_bath_in_file = parsed.n_orb - parsed.n_imp
+    if n_bath_in_file != nBaths[l]:
+        raise RuntimeError(
+            f"{path or parsed.header.get('producer')}: file has {n_bath_in_file} bath orbitals for l={l}, "
+            f"but nBaths[{l}] = {nBaths[l]} was requested."
+        )
+
+    shell = OrderedDict({l: n_bath_in_file})
+    operator = {}
+    for ((i, _), (j, _)), value in parsed.h0.items():
+        operator[((i2c(shell, i), "c"), (i2c(shell, j), "a"))] = value
+    return operator
 
 
 def get_hamiltonian_operator(nBaths, nValBaths, slaterCondon, SOCs, DCinfo, hField, h0_filename, rank, verbose=True):

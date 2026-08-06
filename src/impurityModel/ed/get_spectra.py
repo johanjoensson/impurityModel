@@ -15,9 +15,8 @@ from impurityModel.ed import spectra
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.groundstate import calc_gs
-from impurityModel.ed.hamiltonian_io import get_hamiltonian_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.model import ImpurityModel
+from impurityModel.ed.model import load_model
 from impurityModel.ed.symmetries import (
     extract_tensors,
     impurity_block_structure,
@@ -45,6 +44,12 @@ def build_spectra_model(
 ):
     """Assemble the full interacting spectra model from a non-interacting ``h0`` file.
 
+    Thin wrapper over :func:`model.load_model`'s multi-shell path
+    (:meth:`ImpurityModel.from_shells`), kept so :mod:`impurityModel.scripts.spectra` and its
+    tests do not need to build ``OrderedDict``s themselves. ``h0_filename`` accepts either a
+    labelled ``.pickle``/``.json``/``.dat`` file or a self-describing flat ``.h0`` (see
+    :func:`hamiltonian_io.read_h0_operator`).
+
     Unlike the self-energy path (``h0`` + separate ``u4``), the spectra driver works with the
     *full* single-index interacting operator that :func:`hamiltonian_io.get_hamiltonian_operator`
     builds (core + correlated shells, SOC, magnetic field, atomic Coulomb and double counting all
@@ -55,7 +60,7 @@ def build_spectra_model(
     Parameters
     ----------
     h0_filename : str
-        Non-interacting Hamiltonian file (pickle format).
+        Non-interacting Hamiltonian file.
     ls : sequence of int
         Angular momenta of the correlated shells (e.g. ``(1, 2)`` for 2p + 3d).
     nBaths, nValBaths : sequence of int
@@ -81,50 +86,17 @@ def build_spectra_model(
         With ``h0`` = the full interacting operator, ``u4=None``, ``impurity_orbitals`` the
         per-shell block lists, and ``bath_states = (valence_baths, conduction_baths)``.
     """
-    nBaths = OrderedDict(zip(ls, nBaths))
-    nValBaths = OrderedDict(zip(ls, nValBaths))
-    n0imps = OrderedDict(zip(ls, n0imps))
-
-    impurity_orbitals = {}
-    valence_baths = {}
-    conduction_baths = {}
-    offset = 0
-    for l in ls:
-        impurity_orbitals[l] = [[offset + i for i in range(2 * (2 * l + 1))]]
-        offset += 2 * (2 * l + 1)
-        valence_baths[l] = [[offset + i for i in range(nValBaths[l])]]
-        offset += nValBaths[l]
-        conduction_baths[l] = [[offset + i for i in range(nBaths[l] - nValBaths[l])]]
-        offset += nBaths[l] - nValBaths[l]
-
-    if rank == 0 and verbose:
-        print("Orbital layout (spin-orbital indices):")
-        for l in ls:
-            print(
-                f"  l = {l}: impurity {impurity_orbitals[l]}, "
-                f"valence bath {valence_baths[l]}, conduction bath {conduction_baths[l]}"
-            )
-        print("Constructing the Hamiltonian operator ...")
-
-    hOp = get_hamiltonian_operator(
-        nBaths,
-        nValBaths,
-        [Fdd, Fpp, Fpd, Gpd],
-        [xi_2p, xi_3d],
-        [n0imps, chargeTransferCorrection],
-        hField,
+    return load_model(
         h0_filename,
-        rank,
-    )
-    return ImpurityModel(
-        h0=hOp,
-        u4=None,
-        impurity_orbitals=impurity_orbitals,
-        rot_to_spherical={l: np.eye(2 * (2 * l + 1), dtype=complex) for l in ls},
-        bath_states=(valence_baths, conduction_baths),
-        # The layout offset is the exact spin-orbital total (impurity + bath for every shell),
-        # independent of whether every bath orbital appears in an h0 term.
-        n_spin_orbitals=offset,
+        shells=OrderedDict(zip(ls, nBaths)),
+        val_shells=OrderedDict(zip(ls, nValBaths)),
+        n0imps=OrderedDict(zip(ls, n0imps)),
+        slater_condon=(Fdd, Fpp, Fpd, Gpd),
+        socs=(xi_2p, xi_3d),
+        charge_transfer_correction=chargeTransferCorrection,
+        h_field=hField,
+        rank=rank,
+        verbose=verbose,
     )
 
 

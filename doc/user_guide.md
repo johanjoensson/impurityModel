@@ -45,7 +45,7 @@ is not on `PATH`. Every sub-command runs identically under MPI (`mpiexec -n N ..
 
    | Format | Indices | Read by |
    | --- | --- | --- |
-   | `.h0` | flat, impurity block first, self-describing header | `selfenergy`, `susceptibility` |
+   | `.h0` | flat, impurity block first, self-describing header | `spectra`\*, `selfenergy`, `susceptibility` |
    | `.dict` / flat `.dat` | flat, no header (legacy; needs `--n-impurity-orbitals`) | `selfenergy`, `susceptibility` |
    | `.pickle` | labelled `(l,s,m)` / `(l,b)` operator dict | `spectra`, `selfenergy`, `susceptibility` |
    | `.json` | crystal-field parameters | `spectra`, `selfenergy`, `susceptibility` |
@@ -55,9 +55,15 @@ is not on `PATH`. Every sub-command runs identically under MPI (`mpiexec -n N ..
    reference, orbital layout and basis, and is specified in
    [`h0_file_format.md`](h0_file_format.md). The labelled formats are read by
    `hamiltonian_io.py` and mapped to flat indices through `c2i`, which orders the orbitals
-   differently — hence the split above. `spectra` takes only the labelled formats, because it
-   builds spin–orbit coupling, the Coulomb interaction and the double counting in `(l,s,m)`
-   labels. In every format the impurity orbitals come first, then the bath orbitals.
+   differently — `hamiltonian_io.flat_h0_to_labelled` performs that relabelling for a `.h0`.
+   `spectra` builds spin–orbit coupling, the Coulomb interaction and the double counting in
+   `(l,s,m)` labels; the file supplies the correlated (3d) shell and its bath, and the 2p core
+   shell is always synthesized from CLI parameters. In every format the impurity orbitals come
+   first, then the bath orbitals.
+
+   \* Only when the header guarantees `basis: "spherical"` and `spin_ordering: "down_first"`
+   (which `build_h0` now always writes) and the shell is `l = 2`; see
+   [Scope](h0_file_format.md#scope).
 
    Note the labelled `.dat` is an operator-term list (`(l,s,m) (l,s,m) re im`), **not** a
    dense matrix. `load_model` picks the reader by inspecting the file, not just its

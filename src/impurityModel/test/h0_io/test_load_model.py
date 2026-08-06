@@ -97,13 +97,33 @@ def test_labelled_format_without_its_required_arguments_raises(tmp_path):
         load_model(path, l=2)
 
 
-def test_read_h0_operator_points_a_flat_file_at_the_right_subcommand(tmp_path):
-    """`spectra` goes through read_h0_operator, which cannot interpret a flat file."""
+def test_read_h0_operator_refuses_a_flat_file_without_basis_guarantees(tmp_path):
+    """Without basis/spin_ordering declared, the relabelling into (l, s, m) cannot be justified."""
     path = tmp_path / "model.h0"
-    h0_format.write_h0_file(path, _flat_matrix(), impurity_orbitals={2: list(range(10))})
+    h0_format.write_h0_file(path, _flat_matrix(), impurity_orbitals={2: list(range(10))}, impurity_l=2)
 
-    with pytest.raises(RuntimeError, match="selfenergy.*susceptibility"):
+    with pytest.raises(RuntimeError, match="basis"):
         hamiltonian_io.read_h0_operator(str(path), {2: 4})
+
+
+def test_read_h0_operator_reads_a_flat_file_with_the_guarantees(tmp_path):
+    """Unlike before, a `.h0` that declares basis/spin_ordering is now interpretable here --
+    it is what the spectra path (via `get_spectra.build_spectra_model`) now reads.
+    """
+    path = tmp_path / "model.h0"
+    h = _flat_matrix()
+    h0_format.write_h0_file(
+        path,
+        h,
+        impurity_orbitals={2: list(range(10))},
+        basis="spherical",
+        spin_ordering="down_first",
+        impurity_l=2,
+    )
+
+    operator = hamiltonian_io.read_h0_operator(str(path), {2: 4})
+    assert operator
+    assert all(op_c[0][0] == 2 and op_a[0][0] == 2 for (op_c, op_a) in operator)
 
 
 def test_sniffing_does_not_misroute_a_labelled_dat(tmp_path):

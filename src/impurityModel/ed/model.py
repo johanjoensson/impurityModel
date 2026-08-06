@@ -22,7 +22,7 @@ from typing import Any, Optional, Union
 import numpy as np
 
 from impurityModel.ed import atomic_physics, h0_format
-from impurityModel.ed.hamiltonian_io import get_noninteracting_hamiltonian_operator
+from impurityModel.ed.hamiltonian_io import get_hamiltonian_operator, get_noninteracting_hamiltonian_operator
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.operator_algebra import addOps, c2i, matrixToIOp
 
@@ -372,6 +372,194 @@ class ImpurityModel:
         )
 
     @classmethod
+    def from_shells(
+        cls,
+        h0_filename,
+        shells: "OrderedDict[int, int]",
+        val_shells: "OrderedDict[int, int]",
+        n0imps,
+        slater_condon,
+        socs,
+        charge_transfer_correction: float,
+        h_field=(0.0, 0.0, 0.0),
+        rank: int = 0,
+        verbose: bool = True,
+    ) -> "ImpurityModel":
+        """Build a multi-shell (2p core + 3d correlated) interacting model from an ``h0`` file.
+
+        The spectra driver's construction (:func:`get_spectra.build_spectra_model`), moved
+        here so it goes through the same dispatch point (:func:`load_model`) as the
+        self-energy/susceptibility paths. Unlike :meth:`from_h0_text`, this builds the *full*
+        interacting single-index operator via :func:`hamiltonian_io.get_hamiltonian_operator`
+        (SOC, magnetic field, atomic Coulomb and MLFT double counting all folded into ``h0``);
+        the result carries ``u4=None`` and the explicit ``(valence_baths, conduction_baths)``
+        partition in :attr:`bath_states`.
+
+        ``h0_filename`` may be a labelled ``.pickle``/``.json``/``.dat`` file (only the
+        correlated shell, since the core shell is only ever dressed by SOC and double
+        counting) or a flat ``.h0``; :func:`hamiltonian_io.read_h0_operator` relabels the
+        latter via :func:`hamiltonian_io.flat_h0_to_labelled`, which validates the header's
+        ``basis``/``spin_ordering``/``energy_reference`` guarantees and cross-checks the
+        file's ``impurity_l`` and bath count against ``shells`` -- ``shells``/``val_shells``
+        stay the authoritative *counts*; the header is a cross-check, not a second source of
+        truth, for those. The valence/conduction *split* is different: when a flat ``.h0``
+        header records ``valence_bath``/``conduction_bath`` for the shell it describes, that
+        partition is used verbatim (translated into the final layout) instead of assuming the
+        first ``val_shells[l]`` bath orbitals are valence -- a real hybridization fit is not
+        necessarily contiguous. ``val_shells[l]`` still has to agree with the header's valence
+        count.
+
+        Parameters
+        ----------
+        h0_filename : str
+            Non-interacting Hamiltonian of the correlated shell (and, for a labelled file
+            only, its bath). See above for supported formats.
+        shells : dict
+            ``{l: n_bath}``, one entry per shell (angular momentum). Only ``{1, 2}`` (2p
+            core + 3d correlated) is supported -- the Coulomb assembly
+            (:func:`atomic_physics.get2p3dSlaterCondonUop`), the double counting
+            (:func:`atomic_physics.dc_MLFT`) and the magnetic field
+            (:func:`atomic_physics.gethHfieldop`, hard-coded to ``l=2``) all are.
+        val_shells : dict
+            ``{l: n_valence_bath}``, same keys as ``shells``.
+        n0imps : dict
+            ``{l: nominal_occupation}``, used for the double-counting term.
+        slater_condon : sequence of sequence of float
+            ``(Fdd, Fpp, Fpd, Gpd)`` Slater-Condon parameters.
+        socs : sequence of float
+            ``(xi_2p, xi_3d)`` spin-orbit couplings.
+        charge_transfer_correction : float
+            Double-counting parameter (RSPt's ``c``).
+        h_field : sequence of float, optional
+            Magnetic field ``(hx, hy, hz)``, applied to the 3d shell only.
+        rank, verbose
+            Forwarded to the reader for rank-0 logging.
+
+        Returns
+        -------
+        ImpurityModel
+            With ``h0`` = the full interacting operator, ``u4=None``, ``impurity_orbitals``
+            the per-shell block lists, and ``bath_states = (valence_baths, conduction_baths)``.
+
+        Raises
+        ------
+        ValueError
+            If ``shells`` names an angular momentum other than 1 or 2; if ``shells`` and
+            ``val_shells`` do not cover the same angular momenta; if ``h0_filename`` is a flat
+            ``.h0`` whose header already declares ``contains_soc: true`` and a non-zero
+            ``xi_3d`` was requested, which would double-count spin-orbit coupling (mirrors the
+            analogous guard in :meth:`from_h0_text`); or if the header's ``valence_bath`` count
+            disagrees with ``val_shells[l]`` for the shell it describes.
+        """
+        if set(shells) - {1, 2}:
+            raise ValueError(
+                f"from_shells only supports the 2p/3d shells {{1, 2}}, got {sorted(shells)}. "
+                "The interacting assembly (get2p3dSlaterCondonUop, dc_MLFT, the magnetic "
+                "field hard-coded to l=2) is specific to a 2p core + 3d correlated shell; "
+                "a different correlated shell needs that machinery generalised first."
+            )
+        if set(shells) != set(val_shells):
+            raise ValueError(
+                f"shells and val_shells must cover the same angular momenta: "
+                f"{sorted(shells)} vs {sorted(val_shells)}"
+            )
+
+        shells = OrderedDict(shells)
+        val_shells = OrderedDict(val_shells)
+
+        xi_2p, xi_3d = socs
+        parsed_h0 = h0_format.read_h0_file(h0_filename) if h0_format.is_h0_format(h0_filename) else None
+        if parsed_h0 is not None and xi_3d and parsed_h0.contains_soc:
+            raise ValueError(
+                f"{h0_filename}: the file already contains spin-orbit coupling; xi_3d={xi_3d} " "would double-count it."
+            )
+
+        # c2i order: every impurity shell first (in `shells`' order), then every bath block
+        # (also in `shells`' order) -- matching get_hamiltonian_operator's own
+        # c2i(shells, ...) indexing exactly, rather than interleaving impurity and bath per
+        # shell (which agrees with c2i only when every non-correlated shell has zero baths).
+        impurity_orbitals = {}
+        offset = 0
+        for l in shells:
+            impurity_orbitals[l] = [[offset + i for i in range(2 * (2 * l + 1))]]
+            offset += 2 * (2 * l + 1)
+
+        # The header's valence/conduction split (when present) is honored verbatim for the one
+        # shell it describes -- a real hybridization fit is not necessarily a contiguous prefix
+        # of the bath block, unlike the fallback below. Local (file-relative) bath index i
+        # becomes final index bath_offset + (i - n_imp_in_file), since flat_h0_to_labelled
+        # preserves bath order (only the impurity block is relabelled by c2i/i2c).
+        header_l = None
+        header_local_valence = None
+        header_local_conduction = None
+        if (
+            parsed_h0 is not None
+            and parsed_h0.valence_bath is not None
+            and parsed_h0.conduction_bath is not None
+            and parsed_h0.header.get("impurity_l") is not None
+        ):
+            header_l = int(parsed_h0.header["impurity_l"])
+            n_imp_in_file = parsed_h0.n_imp
+            header_local_valence = sorted(i - n_imp_in_file for i in parsed_h0.valence_bath)
+            header_local_conduction = sorted(i - n_imp_in_file for i in parsed_h0.conduction_bath)
+
+        valence_baths = {}
+        conduction_baths = {}
+        for l in shells:
+            n_val = val_shells[l]
+            n_bath = shells[l]
+            bath_offset = offset
+            if l == header_l:
+                assert header_local_valence is not None and header_local_conduction is not None
+                local_valence = header_local_valence
+                local_conduction = header_local_conduction
+                if len(local_valence) != n_val:
+                    raise ValueError(
+                        f"{h0_filename}: header valence_bath has {len(local_valence)} entries "
+                        f"for l={l}, but val_shells[{l}] = {n_val} was requested."
+                    )
+                valence_baths[l] = [[bath_offset + i for i in local_valence]]
+                conduction_baths[l] = [[bath_offset + i for i in local_conduction]]
+                offset += n_bath
+            else:
+                valence_baths[l] = [[bath_offset + i for i in range(n_val)]]
+                offset += n_val
+                conduction_baths[l] = [[bath_offset + i for i in range(n_bath - n_val)]]
+                offset += n_bath - n_val
+
+        if rank == 0 and verbose:
+            print("Orbital layout (spin-orbital indices):")
+            for l in shells:
+                print(
+                    f"  l = {l}: impurity {impurity_orbitals[l]}, "
+                    f"valence bath {valence_baths[l]}, conduction bath {conduction_baths[l]}"
+                )
+            print("Constructing the Hamiltonian operator ...")
+
+        Fdd, Fpp, Fpd, Gpd = slater_condon
+        hOp = get_hamiltonian_operator(
+            shells,
+            val_shells,
+            [Fdd, Fpp, Fpd, Gpd],
+            [xi_2p, xi_3d],
+            [OrderedDict(n0imps), charge_transfer_correction],
+            h_field,
+            h0_filename,
+            rank,
+            verbose,
+        )
+        return cls(
+            h0=hOp,
+            u4=None,
+            impurity_orbitals=impurity_orbitals,
+            rot_to_spherical={l: np.eye(2 * (2 * l + 1), dtype=complex) for l in shells},
+            bath_states=(valence_baths, conduction_baths),
+            # The layout offset is the exact spin-orbital total (impurity + bath for every
+            # shell), independent of whether every bath orbital appears in an h0 term.
+            n_spin_orbitals=offset,
+        )
+
+    @classmethod
     def from_hdf5(cls, path, cluster: Optional[str] = None, iteration: Optional[int] = None) -> "ImpurityModel":
         """Build a model from a group of an ``impurityModel_data.h5`` archive.
 
@@ -534,14 +722,20 @@ def load_model(
     n_val_baths=None,
     n_impurity_orbitals=None,
     allow_noninteracting: bool = False,
+    shells=None,
+    val_shells=None,
+    n0imps=None,
+    slater_condon=None,
+    socs=None,
+    charge_transfer_correction=None,
     rank: int = 0,
     verbose: bool = False,
 ) -> "ImpurityModel":
     """Build an :class:`ImpurityModel` from any supported h0 file.
 
-    The single place that answers "which h0 formats does impurityModel read". Both the
-    self-energy and susceptibility CLIs route through it, so a new format is added once
-    rather than in each of them.
+    The single place that answers "which h0 formats does impurityModel read". The
+    self-energy, susceptibility and spectra CLIs all route through it, so a new format is
+    added once rather than in each of them.
 
     Dispatch is on *content* first and extension second, because the extensions are
     overloaded: a ``.dat`` may hold either the labelled ``(l, s, m)`` operator list that
@@ -572,8 +766,14 @@ def load_model(
         Impurity block size, required only by the legacy flat format.
     allow_noninteracting : bool, optional
         Permit a model with no Coulomb tensor; see :meth:`ImpurityModel.from_h0_text`.
+    shells, val_shells, n0imps, slater_condon, socs, charge_transfer_correction
+        The multi-shell (2p core + 3d correlated) spectra path -- see
+        :meth:`ImpurityModel.from_shells`. When ``shells`` is given, every other keyword
+        above (``l``, ``n_baths``, ``slater``, ``xi``, ``n_val_baths``,
+        ``n_impurity_orbitals``, ``allow_noninteracting``) is ignored; ``h_field`` still
+        applies (to the 3d shell only).
     rank, verbose
-        Forwarded to the labelled reader for rank-0 logging.
+        Forwarded to the reader for rank-0 logging.
 
     Returns
     -------
@@ -584,6 +784,20 @@ def load_model(
     ValueError
         For an unrecognised format, naming the ones that are supported.
     """
+    if shells is not None:
+        return ImpurityModel.from_shells(
+            h0_filename,
+            shells,
+            val_shells,
+            n0imps,
+            slater_condon,
+            socs,
+            charge_transfer_correction,
+            h_field=(0.0, 0.0, 0.0) if h_field is None else tuple(h_field),
+            rank=rank,
+            verbose=verbose,
+        )
+
     path = str(h0_filename)
     ext = os.path.splitext(path)[1].lower()
 
