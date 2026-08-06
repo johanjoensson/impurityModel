@@ -20,7 +20,7 @@ from libcpp.vector cimport vector
 from cython.operator cimport dereference, preincrement
 from libcpp.algorithm cimport sort, unique, lower_bound
 from libcpp.map cimport map as cpp_map
-from libc.stdint cimport uint8_t, uint64_t, int64_t, int32_t
+from libc.stdint cimport uint8_t, uint64_t, int64_t
 from libc.string cimport memcpy
 from libcpp.complex cimport complex as complex_cpp
 
