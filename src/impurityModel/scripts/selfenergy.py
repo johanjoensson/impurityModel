@@ -15,9 +15,9 @@ from mpi4py import MPI
 from impurityModel.ed.model import (
     EXCITATION_BUDGET_DEFAULT,
     BasisOptions,
-    ImpurityModel,
     Meshes,
     SolverOptions,
+    load_model,
     load_selfenergy_archive,
     resolve_excitation_budget,
 )
@@ -45,6 +45,16 @@ def add_arguments(parser):
         "--iteration", type=int, default=None, help="Archive DMFT iteration (with --from-archive; default: last)."
     )
     parser.add_argument("--clustername", type=str, default="cluster", help="Label of the cluster.")
+    parser.add_argument(
+        "--n-impurity-orbitals",
+        dest="n_impurity_orbitals",
+        type=int,
+        default=None,
+        help=(
+            "Impurity block size, for the legacy bare-integer h0 format only (it records no "
+            "orbital layout). Validated against the file's sparsity pattern. See doc/h0_file_format.md."
+        ),
+    )
     parser.add_argument("--ls", type=int, default=2, help="Angular momentum of the correlated orbitals.")
     parser.add_argument("--nBaths", type=int, default=10, help="Total number of bath states.")
     parser.add_argument("--n0imps", type=int, default=8, help="Nominal impurity occupation.")
@@ -52,7 +62,17 @@ def add_arguments(parser):
         "--Fdd", type=float, nargs="+", default=[7.5, 0, 9.9, 0, 6.6], help="Slater-Condon parameters Fdd."
     )
     parser.add_argument("--xi", type=float, default=0, help="SOC value for the correlated orbitals.")
-    parser.add_argument("--hField", type=float, nargs="+", default=[0, 0, 0.0001], help="Magnetic field (x, y, z).")
+    parser.add_argument(
+        "--hField",
+        type=float,
+        nargs="+",
+        default=None,
+        help=(
+            "Magnetic field (x, y, z). Default: a (0, 0, 0.0001) symmetry-breaking nudge for the "
+            "labelled h0 formats, and no field for the flat .h0 format, which does not yet pin "
+            "down the spin ordering a field would need."
+        ),
+    )
     parser.add_argument("--tau", type=float, default=0.002, help="Fundamental temperature (kb*T).")
 
     # Real-frequency mesh.
@@ -178,17 +198,18 @@ def run(args):
         if not args.h0_filename:
             raise SystemExit("Provide an h0 file (positional) or --from-archive PATH.")
         assert 0 <= args.n0imps <= 2 * (2 * args.ls + 1)
-        assert len(args.hField) == 3
+        assert args.hField is None or len(args.hField) == 3
         if not args.realaxis and args.n_matsubara <= 0:
             raise SystemExit("Nothing to compute: enable the real axis or request Matsubara points (--n_matsubara).")
         ls = args.ls
-        model = ImpurityModel.from_h0_file(
+        model = load_model(
             args.h0_filename,
             l=ls,
             n_baths=args.nBaths,
             slater=args.Fdd,
             xi=args.xi,
-            h_field=tuple(args.hField),
+            h_field=None if args.hField is None else tuple(args.hField),
+            n_impurity_orbitals=args.n_impurity_orbitals,
             rank=comm.rank,
             verbose=args.verbose,
         )

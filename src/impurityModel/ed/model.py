@@ -14,6 +14,7 @@ Layering: this is a bottom-layer module. It imports only ``atomic_physics``,
 without pulling in the many-body machinery.
 """
 
+import os
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Optional, Union
@@ -490,6 +491,117 @@ class ImpurityModel:
             rot_to_spherical=rot_to_spherical,
             bath_valence_conduction=bath_valence_conduction,
         )
+
+
+#: Extensions handled by the labelled (l, s, m) readers in :mod:`hamiltonian_io`.
+_LABELLED_EXTENSIONS = {".pickle", ".json"}
+#: Extensions handled by the flat single-index reader in :mod:`h0_format`.
+_FLAT_EXTENSIONS = {".h0", ".dict"}
+
+
+def load_model(
+    h0_filename,
+    *,
+    l=None,
+    n_baths=None,
+    slater=None,
+    xi: float = 0.0,
+    h_field=None,
+    n_val_baths=None,
+    n_impurity_orbitals=None,
+    allow_noninteracting: bool = False,
+    rank: int = 0,
+    verbose: bool = False,
+) -> "ImpurityModel":
+    """Build an :class:`ImpurityModel` from any supported h0 file.
+
+    The single place that answers "which h0 formats does impurityModel read". Both the
+    self-energy and susceptibility CLIs route through it, so a new format is added once
+    rather than in each of them.
+
+    Dispatch is on *content* first and extension second, because the extensions are
+    overloaded: a ``.dat`` may hold either the labelled ``(l, s, m)`` operator list that
+    :mod:`op_parser` reads or the legacy flat-index terms, since renaming a ``.dict`` to
+    ``.dat`` was the standard way around the extension check that used to reject it.
+
+    Parameters
+    ----------
+    h0_filename : str or pathlib.Path
+        The Hamiltonian file.
+    l : int, optional
+        Angular momentum of the correlated shell. Required by the labelled readers; the
+        flat format can take it from its header.
+    n_baths, n_val_baths : int, optional
+        Bath counts, for the labelled readers only (the flat format carries its own layout).
+    slater : sequence of float, optional
+        Slater-Condon parameters for the atomic Coulomb tensor.
+    xi : float, optional
+        Spin-orbit coupling of the correlated shell.
+    h_field : tuple of float, optional
+        Magnetic field. ``None`` (the default) means "whatever this format can support": the
+        labelled readers get their usual ``(0, 0, 0.0001)`` symmetry-breaking nudge, the
+        flat-index reader gets no field, since placing one needs a spin ordering the format
+        does not yet pin down. An *explicit* non-zero field on a flat file raises rather than
+        being silently dropped.
+    n_impurity_orbitals : int, optional
+        Impurity block size, required only by the legacy flat format.
+    allow_noninteracting : bool, optional
+        Permit a model with no Coulomb tensor; see :meth:`ImpurityModel.from_h0_text`.
+    rank, verbose
+        Forwarded to the labelled reader for rank-0 logging.
+
+    Returns
+    -------
+    ImpurityModel
+
+    Raises
+    ------
+    ValueError
+        For an unrecognised format, naming the ones that are supported.
+    """
+    path = str(h0_filename)
+    ext = os.path.splitext(path)[1].lower()
+
+    flat = ext in _FLAT_EXTENSIONS or h0_format.is_h0_format(path)
+    if not flat and ext == ".dat":
+        # A .dat that is really the flat form -- the renamed-.dict case.
+        flat = h0_format.looks_like_flat_terms(path)
+
+    if flat:
+        return ImpurityModel.from_h0_text(
+            path,
+            l=l,
+            slater=slater,
+            n_impurity_orbitals=n_impurity_orbitals,
+            xi=xi,
+            h_field=(0.0, 0.0, 0.0) if h_field is None else tuple(h_field),
+            allow_noninteracting=allow_noninteracting,
+        )
+
+    if ext in _LABELLED_EXTENSIONS or ext == ".dat":
+        if l is None or n_baths is None or slater is None:
+            raise ValueError(
+                f"{path}: the labelled {ext} format carries no orbital layout or interaction; "
+                "l, n_baths and slater are all required."
+            )
+        return ImpurityModel.from_h0_file(
+            path,
+            l=l,
+            n_baths=n_baths,
+            slater=slater,
+            xi=xi,
+            h_field=(0.0, 0.0, 0.0001) if h_field is None else tuple(h_field),
+            n_val_baths=n_val_baths,
+            rank=rank,
+            verbose=verbose,
+        )
+
+    raise ValueError(
+        f"{path}: unrecognised h0 format {ext!r}. Supported: .h0 (self-describing flat index, "
+        "read by the selfenergy and susceptibility sub-commands), .dict/.dat (legacy flat index), "
+        ".pickle/.json/.dat (labelled (l, s, m), the only formats the spectra sub-command takes). "
+        "See doc/h0_file_format.md."
+    )
 
 
 def _require_n_imp(path, n_impurity_orbitals):

@@ -411,6 +411,33 @@ def is_h0_format(path) -> bool:
     return False
 
 
+def looks_like_flat_terms(path) -> bool:
+    """Whether ``path``'s first data line is a bare-integer ``i j re im`` term.
+
+    Sniffing is necessary because the ``.dat`` extension is overloaded: it is the labelled
+    ``(l, s, m)`` operator format that :mod:`op_parser` reads, *and* the legacy flat format,
+    because renaming a ``.dict`` to ``.dat`` was the standard workaround for the extension
+    check that used to reject it.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                fields = stripped.split()
+                if len(fields) != 4:
+                    return False
+                try:
+                    int(fields[0]), int(fields[1]), float(fields[2]), float(fields[3])
+                except ValueError:
+                    return False
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _as_index_tuple(value):
     """``None`` stays ``None``; anything else becomes a tuple of ints."""
     return None if value is None else tuple(int(v) for v in value)

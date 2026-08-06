@@ -40,9 +40,30 @@ is not on `PATH`. Every sub-command runs identically under MPI (`mpiexec -n N ..
 
 ## Inputs
 
-1. **The non-interacting Hamiltonian `h0`** — a single-particle Hamiltonian read by
-   `hamiltonian_io.py`. Supported formats: a pickled operator dict, a `.dat` matrix, or `.json`.
-   The impurity orbitals come first, then the bath orbitals. The `spectra` sub-command combines
+1. **The non-interacting Hamiltonian `h0`** — a single-particle Hamiltonian. Two families of
+   format exist, and they are not interchangeable:
+
+   | Format | Indices | Read by |
+   | --- | --- | --- |
+   | `.h0` | flat, impurity block first, self-describing header | `selfenergy`, `susceptibility` |
+   | `.dict` / flat `.dat` | flat, no header (legacy; needs `--n-impurity-orbitals`) | `selfenergy`, `susceptibility` |
+   | `.pickle` | labelled `(l,s,m)` / `(l,b)` operator dict | `spectra`, `selfenergy`, `susceptibility` |
+   | `.json` | crystal-field parameters | `spectra`, `selfenergy`, `susceptibility` |
+   | labelled `.dat` | labelled operator-term list | `spectra`, `selfenergy`, `susceptibility` |
+
+   `.h0` is what the RSPt interface's `build_h0` writes; it carries its own units, energy
+   reference, orbital layout and basis, and is specified in
+   [`h0_file_format.md`](h0_file_format.md). The labelled formats are read by
+   `hamiltonian_io.py` and mapped to flat indices through `c2i`, which orders the orbitals
+   differently — hence the split above. `spectra` takes only the labelled formats, because it
+   builds spin–orbit coupling, the Coulomb interaction and the double counting in `(l,s,m)`
+   labels. In every format the impurity orbitals come first, then the bath orbitals.
+
+   Note the labelled `.dat` is an operator-term list (`(l,s,m) (l,s,m) re im`), **not** a
+   dense matrix. `load_model` picks the reader by inspecting the file, not just its
+   extension, so a `.dict` renamed to `.dat` still reaches the right one.
+
+   The `spectra` sub-command combines
    it with the interaction (Slater–Condon `Fdd`/`Fpp`/`Fpd`/`Gpd`), spin–orbit coupling (`xi_2p`,
    `xi_3d`), a magnetic field, and the double-counting correction at runtime.
 2. **The radial file** *(optional)* — the radial mesh and the radial part of the correlated

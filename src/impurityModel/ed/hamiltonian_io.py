@@ -85,6 +85,16 @@ def read_h0_operator(filename, nBaths, nValBaths=None):
         return read_h0_dict(filename)
     if ext.lower() == ".json":
         return get_CF_hamiltonian(nBaths, nValBaths, filename)
+    if ext.lower() in (".h0", ".dict"):
+        # Reachable when a user points `spectra` at a file from the flat-index pipeline.
+        # The readers here all return (l, s, m)/(l, b) labels that c2i then maps; a flat
+        # file has no labels, so there is nothing to fall back to -- say where it does work.
+        raise RuntimeError(
+            f"{filename}: this is the flat single-index h0 format, which the labelled readers "
+            "cannot interpret. It is read by the 'selfenergy' and 'susceptibility' sub-commands "
+            "(via ImpurityModel.from_h0_text); 'spectra' requires a labelled .pickle/.json/.dat. "
+            "See doc/h0_file_format.md."
+        )
     raise RuntimeError(f"Unknown file h0 file extension {ext}")
 
 
