@@ -390,6 +390,27 @@ def read_h0_file(path):
     )
 
 
+def is_h0_format(path) -> bool:
+    """Whether ``path`` carries the ``.h0`` magic line.
+
+    The discriminator against the legacy bare-integer format. Deliberately content-based:
+    legacy files renamed to ``.dat`` (to get past an older extension check) are common, and a
+    legacy file renamed to ``.h0`` must still be routed to the legacy reader rather than
+    mis-parsed.
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(4096)
+    except OSError:
+        return False
+    if head.startswith(b"\xef\xbb\xbf"):
+        head = head[3:]
+    for line in head.decode("utf-8", errors="replace").splitlines():
+        if line.strip():
+            return MAGIC_RE.match(line.strip()) is not None
+    return False
+
+
 def _as_index_tuple(value):
     """``None`` stays ``None``; anything else becomes a tuple of ints."""
     return None if value is None else tuple(int(v) for v in value)

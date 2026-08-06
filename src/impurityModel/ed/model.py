@@ -20,7 +20,7 @@ from typing import Any, Optional, Union
 
 import numpy as np
 
-from impurityModel.ed import atomic_physics
+from impurityModel.ed import atomic_physics, h0_format
 from impurityModel.ed.hamiltonian_io import get_noninteracting_hamiltonian_operator
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.operator_algebra import c2i, matrixToIOp
@@ -224,6 +224,129 @@ class ImpurityModel:
         )
 
     @classmethod
+    def from_h0_text(
+        cls,
+        path,
+        *,
+        l: Optional[int] = None,
+        slater=None,
+        n_impurity_orbitals: Optional[int] = None,
+        xi: float = 0.0,
+        h_field=(0.0, 0.0, 0.0),
+        allow_noninteracting: bool = False,
+    ) -> "ImpurityModel":
+        """Build a model from a ``.h0`` file (or the legacy bare-integer form).
+
+        Reads the flat single-index format described in ``doc/h0_file_format.md`` and
+        delegates to :meth:`from_solver_matrix`. Deliberately **not** routed through
+        :meth:`from_h0_file`: that path calls
+        :func:`hamiltonian_io.get_noninteracting_hamiltonian_operator`, which ``addOps`` the
+        ``(l, s, m)``-labelled spin-orbit and magnetic-field operators from
+        :mod:`atomic_physics`. A flat-index ``h0`` cannot be added to those, and forcing it
+        through ``c2i`` would reorder the orbitals silently.
+
+        Parameters
+        ----------
+        path : str or pathlib.Path
+            The ``.h0`` (or legacy ``.dict``/``.dat``) file.
+        l : int, optional
+            Angular momentum of the correlated shell. Taken from the header's ``interaction``
+            block or ``impurity_l`` when not given.
+        slater : sequence of float, optional
+            Slater-Condon parameters for the atomic Coulomb tensor. Taken from the header's
+            ``interaction`` block when not given.
+        n_impurity_orbitals : int, optional
+            Required for the legacy format, which carries no orbital layout. Validated
+            against the sparsity pattern by the reader.
+        xi : float, optional
+            Spin-orbit coupling. Only ``0.0`` is currently accepted -- see Raises.
+        h_field : tuple of float, optional
+            Magnetic field. Only ``(0, 0, 0)`` is currently accepted -- see Raises.
+        allow_noninteracting : bool, optional
+            Permit ``u4=None``. Off by default, because a model with no Coulomb tensor runs a
+            *non-interacting* solve to completion and prints a plausible-looking self-energy.
+
+        Returns
+        -------
+        ImpurityModel
+
+        Raises
+        ------
+        ValueError
+            If no interaction is available and ``allow_noninteracting`` is False; if the
+            declared shell disagrees with the impurity block size; or if the file already
+            contains spin-orbit coupling and a non-zero ``xi`` was requested, which would
+            double-count it.
+        NotImplementedError
+            For a non-zero ``xi`` or ``h_field``. Both are built in ``(l, s, m)`` labels, so
+            adding them to a flat-index Hamiltonian needs the file's spin ordering, and that
+            convention is not yet established for the upstream producer (see
+            ``doc/h0_file_format.md``). Refusing is deliberate: guessing it wrong flips the
+            magnetization with no error anywhere.
+        """
+        parsed = (
+            h0_format.read_h0_file(path)
+            if h0_format.is_h0_format(path)
+            else h0_format.read_legacy_flat_h0(path, _require_n_imp(path, n_impurity_orbitals))
+        )
+
+        if xi:
+            raise NotImplementedError(
+                f"{path}: xi={xi} is not supported on the flat-index path. Spin-orbit coupling is "
+                "built in (l, s, m) labels, so adding it needs the file's spin ordering; see "
+                "doc/h0_file_format.md. RSPt's local Hamiltonian generally already contains SOC."
+            )
+        if any(h_field):
+            raise NotImplementedError(
+                f"{path}: h_field={h_field} is not supported on the flat-index path, for the same "
+                "reason as xi -- see doc/h0_file_format.md."
+            )
+        if parsed.contains_soc and xi:
+            raise ValueError(f"{path}: the file already contains spin-orbit coupling; xi={xi} would double-count it.")
+
+        interaction = parsed.interaction or {}
+        if l is None:
+            l = interaction.get("l", parsed.header.get("impurity_l"))
+        if slater is None:
+            slater = interaction.get("F")
+
+        n_imp = parsed.n_imp
+        if l is not None and 2 * (2 * int(l) + 1) != n_imp:
+            raise ValueError(
+                f"{path}: the file's impurity block holds {n_imp} spin-orbitals, but l={l} implies "
+                f"{2 * (2 * int(l) + 1)}. One of the two is wrong; refusing to guess."
+            )
+
+        if slater is None:
+            if not allow_noninteracting:
+                raise ValueError(
+                    f"{path}: no Coulomb interaction available -- the header carries no 'interaction' "
+                    "block and no slater parameters were passed. A model with u4=None runs a "
+                    "*non-interacting* solve to completion and reports a plausible-looking Sigma, so "
+                    "this is refused rather than defaulted. Pass slater=... (and l=...), or "
+                    "allow_noninteracting=True if that is genuinely what you want."
+                )
+            u4 = None
+        else:
+            u4 = atomic_u4(int(l), slater)
+
+        bath_valence_conduction = None
+        if parsed.valence_bath is not None and parsed.conduction_bath is not None:
+            bath_valence_conduction = (parsed.valence_bath, parsed.conduction_bath)
+
+        rot = parsed.rot_to_spherical
+        if rot is None:
+            rot = np.eye(n_imp, dtype=complex)
+
+        return cls.from_solver_matrix(
+            parsed.to_matrix(),
+            n_imp,
+            u4=u4,
+            rot_to_spherical=rot,
+            bath_valence_conduction=bath_valence_conduction,
+        )
+
+    @classmethod
     def from_hdf5(cls, path, cluster: Optional[str] = None, iteration: Optional[int] = None) -> "ImpurityModel":
         """Build a model from a group of an ``impurityModel_data.h5`` archive.
 
@@ -367,6 +490,17 @@ class ImpurityModel:
             rot_to_spherical=rot_to_spherical,
             bath_valence_conduction=bath_valence_conduction,
         )
+
+
+def _require_n_imp(path, n_impurity_orbitals):
+    """The legacy format carries no orbital layout, so the caller must supply the boundary."""
+    if n_impurity_orbitals is None:
+        raise ValueError(
+            f"{path} is in the legacy bare-integer h0 format, which records no impurity/bath "
+            "boundary. Pass n_impurity_orbitals=..., or regenerate the file with build_h0 to get "
+            "a self-describing .h0 (see doc/h0_file_format.md)."
+        )
+    return int(n_impurity_orbitals)
 
 
 def _operator_from_matrix(h_matrix) -> dict:
