@@ -105,8 +105,22 @@ entire bath*:
 `symmetries.classify_bath_occupation` documents the Fermi-level-zero convention as "the same
 convention used by the tooling that assembled h0". The bath honoured it; the impurity did not.
 
-**Writer invariant:** `min(diag H_bath) <= mean(diag H_imp) <= max(diag H_bath)`. Refuse to
-write otherwise.
+**How to check it.** There is no purely internal invariant that catches a lost energy zero in
+every case, so do not rely on one. In particular *"the impurity level lies inside the bath's
+energy range"* is **not** generally true: with `build_h0`'s default `fit_unocc=False` only the
+occupied part of the hybridization is fitted, so every bath state is below E_F and a partially
+filled level legitimately sits above all of them. On the real NiO run the impurity block is at
+−1.32…−1.21 eV with the bath at −5.31…−4.18 eV — correct, and outside the bath's span.
+
+What is reliable:
+
+- The producer records `energy_reference` and the `fermi_energy` it subtracted, so the
+  consumer can check the claim rather than infer it.
+- The magnitudes must be physical on the E_F = 0 scale: a partially filled 3d level a few eV
+  below zero, an empty 4f level just above. A correlated level sitting ~8 eV above zero *and*
+  above the entire bath is the signature of the unsubtracted case.
+- When the fit does straddle E_F (`--fit-unocc`), the level being inside the bath span is a
+  useful extra check.
 
 ## Numeric contract
 
