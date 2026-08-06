@@ -24,7 +24,7 @@ import numpy as np
 from impurityModel.ed import atomic_physics, h0_format
 from impurityModel.ed.hamiltonian_io import get_noninteracting_hamiltonian_operator
 from impurityModel.ed.lie_algebra import tensors_to_operator
-from impurityModel.ed.operator_algebra import c2i, matrixToIOp
+from impurityModel.ed.operator_algebra import addOps, c2i, matrixToIOp
 
 __all__ = [
     "EXCITATION_BUDGET_DEFAULT",
@@ -260,9 +260,10 @@ class ImpurityModel:
             Required for the legacy format, which carries no orbital layout. Validated
             against the sparsity pattern by the reader.
         xi : float, optional
-            Spin-orbit coupling. Only ``0.0`` is currently accepted -- see Raises.
+            Spin-orbit coupling of the correlated shell. Built directly into the flat matrix
+            (see Raises) when the header guarantees the basis and spin ordering it needs.
         h_field : tuple of float, optional
-            Magnetic field. Only ``(0, 0, 0)`` is currently accepted -- see Raises.
+            Magnetic field ``(hx, hy, hz)`` on the correlated shell. Same gating as ``xi``.
         allow_noninteracting : bool, optional
             Permit ``u4=None``. Off by default, because a model with no Coulomb tensor runs a
             *non-interacting* solve to completion and prints a plausible-looking self-energy.
@@ -275,15 +276,17 @@ class ImpurityModel:
         ------
         ValueError
             If no interaction is available and ``allow_noninteracting`` is False; if the
-            declared shell disagrees with the impurity block size; or if the file already
-            contains spin-orbit coupling and a non-zero ``xi`` was requested, which would
-            double-count it.
-        NotImplementedError
-            For a non-zero ``xi`` or ``h_field``. Both are built in ``(l, s, m)`` labels, so
-            adding them to a flat-index Hamiltonian needs the file's spin ordering, and that
-            convention is not yet established for the upstream producer (see
-            ``doc/h0_file_format.md``). Refusing is deliberate: guessing it wrong flips the
-            magnetization with no error anywhere.
+            declared shell disagrees with the impurity block size; if the file already contains
+            spin-orbit coupling and a non-zero ``xi`` was requested, which would double-count
+            it; or if a non-zero ``xi``/``h_field`` was requested but the header does not
+            guarantee ``basis: "spherical"``, ``spin_ordering: "down_first"`` and a single
+            correlated shell. ``xi``/``h_field`` are built in ``(l, s, m)`` labels via
+            :func:`atomic_physics.getSOCop`/:func:`atomic_physics.gethHfieldop` and mapped
+            through :func:`operator_algebra.c2i`, which only lines up with the flat matrix's
+            own layout under those three guarantees -- refusing otherwise is deliberate, since
+            guessing wrong flips the magnetization with no error anywhere. A missing
+            ``spin_ordering`` (files written before the .h0 format tracked it) also refuses,
+            rather than assume it.
         """
         parsed = (
             h0_format.read_h0_file(path)
@@ -291,17 +294,6 @@ class ImpurityModel:
             else h0_format.read_legacy_flat_h0(path, _require_n_imp(path, n_impurity_orbitals))
         )
 
-        if xi:
-            raise NotImplementedError(
-                f"{path}: xi={xi} is not supported on the flat-index path. Spin-orbit coupling is "
-                "built in (l, s, m) labels, so adding it needs the file's spin ordering; see "
-                "doc/h0_file_format.md. RSPt's local Hamiltonian generally already contains SOC."
-            )
-        if any(h_field):
-            raise NotImplementedError(
-                f"{path}: h_field={h_field} is not supported on the flat-index path, for the same "
-                "reason as xi -- see doc/h0_file_format.md."
-            )
         if parsed.contains_soc and xi:
             raise ValueError(f"{path}: the file already contains spin-orbit coupling; xi={xi} would double-count it.")
 
@@ -317,6 +309,34 @@ class ImpurityModel:
                 f"{path}: the file's impurity block holds {n_imp} spin-orbitals, but l={l} implies "
                 f"{2 * (2 * int(l) + 1)}. One of the two is wrong; refusing to guess."
             )
+
+        dress = bool(xi) or any(h_field)
+        if dress:
+            if l is None:
+                raise ValueError(
+                    f"{path}: xi/h_field requested but the correlated shell's l could not be "
+                    "determined (pass l=..., or the header needs 'impurity_l' or an 'interaction' "
+                    "block); it is needed to build the spin-orbit/field operator."
+                )
+            if parsed.basis != "spherical":
+                raise ValueError(
+                    f"{path}: xi/h_field requested, but the header's basis is {parsed.basis!r}, not "
+                    "'spherical'. Indexing a spherical-basis spin-orbit/field operator into a "
+                    "non-spherical block would be wrong regardless of spin ordering; refusing."
+                )
+            if parsed.spin_ordering != "down_first":
+                raise ValueError(
+                    f"{path}: xi/h_field requested, but the header's spin_ordering is "
+                    f"{parsed.spin_ordering!r}, not 'down_first'. c2i (and getSOCop/gethHfieldop) "
+                    "assume spin down first; a file that does not declare this convention cannot "
+                    "be dressed without risking a silently flipped magnetization."
+                )
+            if len(parsed.impurity_orbitals) != 1 or parsed.header.get("shell_layout") == "multi":
+                raise ValueError(
+                    f"{path}: xi/h_field requested, but the file declares more than one impurity "
+                    "shell/group. c2i interleaves multiple shells, so a single-shell (l, s, m) "
+                    "operator cannot be mapped into the flat matrix unambiguously; refusing."
+                )
 
         if slater is None:
             if not allow_noninteracting:
@@ -339,8 +359,12 @@ class ImpurityModel:
         if rot is None:
             rot = np.eye(n_imp, dtype=complex)
 
+        h = parsed.to_matrix()
+        if dress:
+            _add_soc_and_field(h, int(l), xi, h_field)
+
         return cls.from_solver_matrix(
-            parsed.to_matrix(),
+            h,
             n_imp,
             u4=u4,
             rot_to_spherical=rot,
@@ -538,11 +562,12 @@ def load_model(
     xi : float, optional
         Spin-orbit coupling of the correlated shell.
     h_field : tuple of float, optional
-        Magnetic field. ``None`` (the default) means "whatever this format can support": the
-        labelled readers get their usual ``(0, 0, 0.0001)`` symmetry-breaking nudge, the
-        flat-index reader gets no field, since placing one needs a spin ordering the format
-        does not yet pin down. An *explicit* non-zero field on a flat file raises rather than
-        being silently dropped.
+        Magnetic field. ``None`` (the default) means "whatever this format's usual default is":
+        the labelled readers get their usual ``(0, 0, 0.0001)`` symmetry-breaking nudge, the
+        flat-index reader gets no field. An *explicit* non-zero field on a flat file is applied
+        when the header guarantees ``basis: "spherical"`` and ``spin_ordering: "down_first"``
+        (see :meth:`ImpurityModel.from_h0_text`), and raises otherwise rather than being
+        silently dropped or guessed at.
     n_impurity_orbitals : int, optional
         Impurity block size, required only by the legacy flat format.
     allow_noninteracting : bool, optional
@@ -613,6 +638,34 @@ def _require_n_imp(path, n_impurity_orbitals):
             "a self-describing .h0 (see doc/h0_file_format.md)."
         )
     return int(n_impurity_orbitals)
+
+
+def _add_soc_and_field(h, l, xi, h_field):
+    """Add spin-orbit coupling and a magnetic field for one correlated shell into ``h``, in place.
+
+    Only valid when ``h``'s impurity block is laid out exactly as :func:`operator_algebra.c2i`
+    would place a single ``l``-shell (spin-major, ``s=0`` first, ``m`` ascending within each spin
+    block) -- the caller (:meth:`ImpurityModel.from_h0_text`) is responsible for checking the
+    file's header actually guarantees that before calling this.
+
+    Parameters
+    ----------
+    h : numpy.ndarray
+        Dense one-particle Hamiltonian, modified in place. Only entries within the ``l``-shell's
+        ``2 * (2 * l + 1)`` leading rows/columns are touched.
+    l : int
+        Angular momentum of the correlated shell.
+    xi : float
+        Spin-orbit coupling constant.
+    h_field : tuple of float
+        Magnetic field ``(hx, hy, hz)``.
+    """
+    ops = addOps([atomic_physics.getSOCop(xi, l), atomic_physics.gethHfieldop(*h_field, l=l)])
+    n_baths = OrderedDict({l: 0})
+    for (op_c, op_a), value in ops.items():
+        i = c2i(n_baths, op_c[0])
+        j = c2i(n_baths, op_a[0])
+        h[i, j] += value
 
 
 def _operator_from_matrix(h_matrix) -> dict:

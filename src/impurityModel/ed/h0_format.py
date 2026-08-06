@@ -94,6 +94,9 @@ class H0File:
         ``"fermi"`` or ``"absolute"``. See ``doc/h0_file_format.md``.
     basis : str
         Impurity orbital basis: ``"spherical"``, ``"cubic"`` or ``"unknown"``.
+    spin_ordering : str or None
+        ``"down_first"``, ``"up_first"``, ``"interleaved"``, ``"unknown"``, or ``None`` if the
+        header does not declare it (files written before this was tracked).
     contains_soc : bool
         Whether spin-orbit coupling is already present in the amplitudes.
     interaction : dict or None
@@ -111,6 +114,7 @@ class H0File:
     unit: str = "eV"
     energy_reference: str = "fermi"
     basis: str = "unknown"
+    spin_ordering: Optional[str] = None
     contains_soc: bool = False
     interaction: Optional[dict] = None
     header: dict = field(default_factory=dict)
@@ -384,6 +388,7 @@ def read_h0_file(path):
         unit="eV",
         energy_reference=header["energy_reference"],
         basis=header.get("basis", "unknown"),
+        spin_ordering=header.get("spin_ordering"),
         contains_soc=bool(header.get("contains_soc", False)),
         interaction=header.get("interaction"),
         header=header,
@@ -548,7 +553,16 @@ def read_legacy_flat_h0(path, n_imp, *, verify_layout=True):
     )
 
 
-def write_h0_file(path, h_matrix, *, impurity_orbitals, unit="eV", energy_reference="fermi", **header_extra):
+def write_h0_file(
+    path,
+    h_matrix,
+    *,
+    impurity_orbitals,
+    unit="eV",
+    energy_reference="fermi",
+    spin_ordering=None,
+    **header_extra,
+):
     """Write a dense Hamiltonian as a ``.h0`` file.
 
     Symmetrizes (``(H + H^dagger)/2``, bitwise Hermitian in float64), forces the diagonal
@@ -567,6 +581,9 @@ def write_h0_file(path, h_matrix, *, impurity_orbitals, unit="eV", energy_refere
         Energy unit of ``h_matrix``. Recorded verbatim; no conversion is performed here.
     energy_reference : str, optional
         ``"fermi"`` or ``"absolute"``.
+    spin_ordering : str, optional
+        ``"down_first"`` or ``"up_first"``. Added to ``required_features`` when given, so a
+        reader that does not understand it must refuse rather than silently guess.
     **header_extra
         Any further header keys (``basis``, ``rot_to_spherical``, ``interaction``, ...).
 
@@ -601,6 +618,9 @@ def write_h0_file(path, h_matrix, *, impurity_orbitals, unit="eV", energy_refere
     if rot is not None:
         rot = np.asarray(rot, dtype=complex)
         header["rot_to_spherical"] = [[[float(v.real), float(v.imag)] for v in row] for row in rot]
+    if spin_ordering is not None:
+        header["required_features"].append("spin_ordering")
+        header["spin_ordering"] = spin_ordering
     header.update(header_extra)
 
     lines = [f"# impurityModel-h0 v{SPEC_VERSION}", json.dumps(header, allow_nan=False), "--"]

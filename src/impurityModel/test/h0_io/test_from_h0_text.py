@@ -1,6 +1,8 @@
 """``ImpurityModel.from_h0_text``: the flat-index path from a ``.h0`` file to a model."""
 
 import json
+import pickle
+from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +10,7 @@ import pytest
 
 from impurityModel.ed import h0_format
 from impurityModel.ed.model import ImpurityModel, atomic_u4
+from impurityModel.ed.operator_algebra import c2i
 
 FIXTURES = Path(__file__).parent
 INDEX_FIXTURE = FIXTURES / "golden_h0_v1_index.h0"
@@ -79,11 +82,80 @@ def test_from_h0_text_rejects_a_shell_that_contradicts_the_file(tmp_path):
 
 
 @pytest.mark.parametrize("kwargs", [{"xi": 0.1}, {"h_field": (0.0, 0.0, 1e-4)}])
-def test_from_h0_text_refuses_label_space_dressing(tmp_path, kwargs):
+def test_from_h0_text_refuses_label_space_dressing_without_basis_guarantee(tmp_path, kwargs):
     """SOC and the magnetic field are built in (l,s,m); guessing the spin order is worse."""
-    path, _ = _d_shell_file(tmp_path)
-    with pytest.raises(NotImplementedError, match="doc/h0_file_format.md"):
+    path, _ = _d_shell_file(tmp_path)  # no basis/spin_ordering declared -> basis defaults "unknown"
+    with pytest.raises(ValueError, match="basis"):
         ImpurityModel.from_h0_text(path, l=2, slater=D_SHELL_SLATER, **kwargs)
+
+
+@pytest.mark.parametrize("kwargs", [{"xi": 0.1}, {"h_field": (0.0, 0.0, 1e-4)}])
+def test_from_h0_text_refuses_label_space_dressing_without_spin_ordering(tmp_path, kwargs):
+    path, _ = _d_shell_file(tmp_path, basis="spherical")  # spin_ordering still undeclared
+    with pytest.raises(ValueError, match="spin_ordering"):
+        ImpurityModel.from_h0_text(path, l=2, slater=D_SHELL_SLATER, **kwargs)
+
+
+def test_from_h0_text_dresses_soc_when_the_header_guarantees_hold(tmp_path):
+    path, h = _d_shell_file(tmp_path, basis="spherical", spin_ordering="down_first")
+    model = ImpurityModel.from_h0_text(path, l=2, slater=D_SHELL_SLATER, xi=0.1)
+    # getSOCop(xi, l=2): diagonal value xi * m * (-1/2 for s=0, +1/2 for s=1). Index 0 is
+    # (l=2, s=0, m=-2) under down_first/m-ascending -- the layout _from_h0_text now trusts.
+    assert model.h0[((0, "c"), (0, "a"))] == pytest.approx(h[0, 0] + 0.1 * (-2) * (-0.5))
+    # And the spin-flip off-diagonal term (l,1,m=-2)->(l,0,m=-1), i.e. index 5 -> index 1, that a
+    # bare h0 never has: value = xi/2 * sqrt((l-m)*(l+m+1)) = 0.1/2 * sqrt(4*1) = 0.1.
+    assert model.h0[((5, "c"), (1, "a"))] == pytest.approx(0.1)
+
+
+def test_from_h0_text_dresses_field_when_the_header_guarantees_hold(tmp_path):
+    path, h = _d_shell_file(tmp_path, basis="spherical", spin_ordering="down_first")
+    model = ImpurityModel.from_h0_text(path, l=2, slater=D_SHELL_SLATER, h_field=(0.0, 0.0, 1e-4))
+    # gethHfieldop's hz term is diagonal: -hz/2 on the s=0 (down, index 0) sector, +hz/2 on the
+    # s=1 (up, index 5) sector of the same m=-2 orbital -- a Zeeman splitting.
+    assert model.h0[((0, "c"), (0, "a"))] == pytest.approx(h[0, 0] - 1e-4 / 2)
+    assert model.h0[((5, "c"), (5, "a"))] == pytest.approx(h[5, 5] + 1e-4 / 2)
+
+
+def test_from_h0_text_dressing_matches_from_h0_file(tmp_path):
+    """The physical proof the dressing is correct: build the same model both ways and compare.
+
+    If the spin ordering or the c2i mapping used by from_h0_text's dressing were wrong, this
+    would fail even though both files parse cleanly -- a file that merely parses would not
+    catch it.
+    """
+    l, n_baths = 2, 0
+    mmsize = 2 * l + 1
+    nBaths = OrderedDict({l: n_baths})
+    eps = np.linspace(-1.5, -1.0, 2 * mmsize)
+    h_bare = np.diag(eps).astype(complex)
+
+    labelled_h0 = {
+        (((l, s, m), "c"), ((l, s, m), "a")): complex(eps[c2i(nBaths, (l, s, m))])
+        for s in range(2)
+        for m in range(-l, l + 1)
+    }
+    pickle_path = tmp_path / "labelled.pickle"
+    with open(pickle_path, "wb") as f:
+        pickle.dump(labelled_h0, f)
+
+    flat_path = tmp_path / "flat.h0"
+    h0_format.write_h0_file(
+        flat_path,
+        h_bare,
+        impurity_orbitals={l: list(range(2 * mmsize))},
+        basis="spherical",
+        spin_ordering="down_first",
+    )
+
+    xi, h_field = 0.08, (0.0, 0.0, 5e-4)
+    labelled_model = ImpurityModel.from_h0_file(
+        pickle_path, l=l, n_baths=n_baths, slater=D_SHELL_SLATER, xi=xi, h_field=h_field
+    )
+    flat_model = ImpurityModel.from_h0_text(flat_path, l=l, slater=D_SHELL_SLATER, xi=xi, h_field=h_field)
+
+    assert set(flat_model.h0) == set(labelled_model.h0)
+    for key in flat_model.h0:
+        assert flat_model.h0[key] == pytest.approx(labelled_model.h0[key], abs=1e-10)
 
 
 def test_from_h0_text_carries_the_bath_split_and_rotation(tmp_path):

@@ -72,13 +72,14 @@ def test_labelled_pickle_still_routes_to_the_labelled_reader():
 
 def test_default_h_field_is_per_format(tmp_path):
     """The default nudge must reach the labelled readers and not the flat one, which cannot
-    place a field without a spin ordering. An explicit field on a flat file still raises."""
+    place a field without the header's basis/spin_ordering guarantees. An explicit field on a
+    flat file that does not declare them still raises."""
     h = _flat_matrix()
     path = tmp_path / "model.h0"
     h0_format.write_h0_file(path, h, impurity_orbitals={2: list(range(10))})
 
     assert load_model(path, l=2, slater=D_SHELL_SLATER).n_spin_orbitals == 14
-    with pytest.raises(NotImplementedError, match="h_field"):
+    with pytest.raises(ValueError, match="basis"):
         load_model(path, l=2, slater=D_SHELL_SLATER, h_field=(0.0, 0.0, 1e-4))
 
 

@@ -53,13 +53,13 @@ legacy file renamed to `.h0` must still be diagnosed correctly rather than mis-p
 | `fermi_energy` | The E_F that was subtracted, in `unit`. Provenance for the above. |
 | `n_orb` | Total spin-orbitals. Authoritative; a term index `>= n_orb` is an error. |
 | `index_convention` | `"impurity-block-first"`: impurity occupies `0 .. n_imp-1`, bath after. |
-| `spin_ordering` | `"down_first"` / `"up_first"` / `"interleaved"` / `"unknown"`. |
+| `spin_ordering` | `"down_first"` / `"up_first"` / `"interleaved"` / `"unknown"`. `build_h0` always writes `"down_first"` — see [Basis and spin ordering](#basis-and-spin-ordering). |
 | `shell_layout` | `"single"` or `"multi"`. |
 | `storage` | `"full"`: both triangles present, with matching key sets. |
 | `impurity_orbitals` | `{group: [indices]}`. A map, so multi-shell is representable. |
 | `impurity_l` | Angular momentum of the correlated shell (single-shell files). |
 | `valence_bath`, `conduction_bath` | Bath classification. Advisory — see [Bath classification](#bath-classification). |
-| `basis` | `"spherical"`, `"cubic"` or `"unknown"` — the impurity orbital basis. |
+| `basis` | `"spherical"`, `"cubic"` or `"unknown"` — the impurity orbital basis. `build_h0` always writes `"spherical"` (verified) or raises — see [Basis and spin ordering](#basis-and-spin-ordering). |
 | `rot_to_spherical` | `n_imp × n_imp`, complex as `[re, im]` pairs. Used for L/S/J reporting. |
 | `contains_soc` | Whether spin–orbit coupling is already in the amplitudes. |
 | `source_provenance` | Where the local Hamiltonian came from (DFT run vs DMFT iteration N). |
@@ -85,6 +85,40 @@ Hamiltonian with the magnetization silently flipped. Listing `spin_ordering` in
 For the same reason these are **separate** keys rather than one `index_convention` string:
 block ordering, spin ordering and shell layout are independent facts, and each must be
 checkable on its own.
+
+## Basis and spin ordering
+
+`build_h0` **guarantees** `basis: "spherical"` and `spin_ordering: "down_first"` for every file
+it writes — these are not descriptions of whatever the source happened to be, they are checked
+(basis) or structural (spin ordering) facts about the file, and `build_h0` raises rather than
+write a file that does not meet them. A consumer may rely on both without re-deriving them,
+which is what lets `ImpurityModel.from_h0_text` build spin–orbit coupling and a magnetic field
+directly against a flat `.h0` file (see `model.py`).
+
+**Basis.** After rotating (or confirming no rotation was needed), `build_h0` checks the
+impurity block for the spherical-under-cubic-symmetry fingerprint: the diagonal palindromic in
+`m` and `H[-l,+l] != 0` for a crystal-field-split shell. This is only a *provable* check when
+the cluster's `green.inp` basis tag names a cubic (Oh) irrep decomposition — there it is a hard
+failure; otherwise (a non-cubic or composite cluster) a failed check only warns, since the
+fingerprint is not conclusive either way. `rot_to_spherical` is always written (the identity
+when the data was already spherical), so the file always states how to get to the spherical
+basis, not only when a rotation happened to run.
+
+**Spin ordering.** `down_first` is not measured per file — it follows from how RSPt itself lays
+out the array. `green_trunk_interface.F90`'s `lda_mlmsatomicqn` assigns `qn(2, :offset) = -1`
+(twice the spin quantum number, i.e. spin down) to the first packed block and
+`qn(2, offset+1:) = 1` (spin up) to the second, for both the local Hamiltonian and the rotation
+matrices RSPt prints — the two are never packed inconsistently, or `T @ H @ T^dagger` would not
+be meaningful. `rspt2spectra`'s `generate_rspt_T_matrix` reproduces the same block order, so no
+permutation is ever needed before writing. This happens to already match `c2i`'s own convention
+(`s = 0` first, `s = 0` = down; `atomic_physics.py`), which is why no rspt2spectra workload
+checked has ever needed the spin blocks swapped.
+
+Every stored RSPt workload's printed `Local hamiltonian` and hybridization function turned out
+to be spin-degenerate between the two blocks (even for magnetic materials like FCC Ni), so this
+convention could not additionally be cross-checked against a genuinely spin-split case by
+comparing a sign to a reported moment — that empirical check remains open should such a
+workload become available. The source-level argument above does not depend on one existing.
 
 ## Energy zero
 

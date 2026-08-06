@@ -1,5 +1,5 @@
 # impurityModel-h0 v1
-{"version": 1, "required_features": ["unit", "energy_reference", "index_convention", "storage"], "unit": "eV", "energy_reference": "fermi", "fermi_energy": 0.0, "n_orb": 8, "index_convention": "impurity-block-first", "spin_ordering": "down_first", "shell_layout": "single", "storage": "full", "impurity_orbitals": {"0": [0, 1, 2, 3]}, "valence_bath": [4, 5], "conduction_bath": [6, 7], "basis": "spherical", "contains_soc": false, "producer": {"name": "hand-authored fixture", "spec": "doc/h0_file_format.md"}}
+{"version": 1, "required_features": ["unit", "energy_reference", "index_convention", "storage", "spin_ordering"], "unit": "eV", "energy_reference": "fermi", "fermi_energy": 0.0, "n_orb": 8, "index_convention": "impurity-block-first", "spin_ordering": "down_first", "shell_layout": "single", "storage": "full", "impurity_orbitals": {"0": [0, 1, 2, 3]}, "valence_bath": [4, 5], "conduction_bath": [6, 7], "basis": "spherical", "contains_soc": false, "producer": {"name": "hand-authored fixture", "spec": "doc/h0_file_format.md"}}
 --
 0 1 5.5 -0.5
 0 2 11.0 -1.0
