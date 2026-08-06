@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.symmetries import extract_tensors, tensors_to_operator
+from impurityModel.ed.symmetries import check_kramers_degeneracy, extract_tensors, tensors_to_operator
 
 
 def test_tensor_extraction():
@@ -395,3 +395,26 @@ def test_acceptance_gate_refines_single_impurity_block():
     discovered = discovered_orbital_blocks(op, 16)
     single_block = [list(range(16))]
     assert blocks_refine_or_match(discovered, single_block)
+
+
+def test_check_kramers_degeneracy_silent_on_a_tr_symmetric_matrix():
+    """Every eigenvalue cluster has even size -> no violations reported."""
+    h = np.diag([-2.0, -2.0, -1.0, -1.0, 0.5, 0.5]).astype(complex)
+    assert check_kramers_degeneracy(h) == []
+
+
+def test_check_kramers_degeneracy_flags_an_odd_cluster():
+    """Displace one eigenvalue of a TR-symmetric matrix out of its pair -> one odd cluster."""
+    h = np.diag([-2.0, -2.0, -1.0, -1.0 + 0.5, 0.5, 0.5]).astype(complex)
+    violations = check_kramers_degeneracy(h)
+    assert len(violations) == 2  # the -1.0 singlet and the -1.0+0.5 singlet are now unpaired
+    assert {v["multiplicity"] for v in violations} == {1}
+    energies = sorted(v["energy"] for v in violations)
+    assert energies[0] == pytest.approx(-1.0)
+    assert energies[1] == pytest.approx(-0.5)
+
+
+def test_check_kramers_degeneracy_ignores_noise_below_rtol():
+    """A sub-rtol splitting is numerical noise, not a real Kramers violation."""
+    h = np.diag([-2.0, -2.0 + 1e-14, -1.0, -1.0]).astype(complex)
+    assert check_kramers_degeneracy(h) == []

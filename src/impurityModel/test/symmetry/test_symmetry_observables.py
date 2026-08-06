@@ -1245,3 +1245,669 @@ def test_static_susceptibility_mixed_valence_charge():
     mean = a2 * 1 + b2 * 2
     second = a2 * 1 + b2 * 4
     assert chi["chi_charge"] == pytest.approx((second - mean**2) / tau, rel=1e-12)
+
+
+# --------------------------------------------------------------------------- #
+# impurity_shell_rhos / compute_shell_observables (multi-shell reporting fix)
+# --------------------------------------------------------------------------- #
+def _two_shell_fixture():
+    """Filled l=1 (2p, 6 spin-orbitals) + a single |ml=+2,up> electron in l=2 (3d).
+
+    Global orbital layout: l=1 shell occupies 0-5 (down 0-2, up 3-5); l=2 shell occupies
+    6-15 (down 6-10, up 11-15), so local d-orbital index 9 (|ml=+2,up>, matching
+    ``_index(2, 2, +1)``) is global orbital 15. Both shells use an identity rotation
+    (computational == spherical), so ``rho_imp`` can be built directly as a diagonal
+    occupation-number matrix.
+    """
+    impurity_orbitals = {1: [list(range(6))], 2: [list(range(6, 16))]}
+    rot_to_spherical = {1: np.eye(6, dtype=complex), 2: np.eye(10, dtype=complex)}
+    occupied = [0, 1, 2, 3, 4, 5, 6 + _index(2, 2, +1)]
+    rho_imp = np.diag([1.0 if orb in occupied else 0.0 for orb in range(16)]).astype(complex)
+    return impurity_orbitals, rot_to_spherical, rho_imp, occupied
+
+
+def test_impurity_shell_rhos_splits_by_shell():
+    """Each shell's spherical rho is sliced out with its own global orbitals only."""
+    from impurityModel.ed.observables import impurity_shell_rhos
+
+    impurity_orbitals, rot_to_spherical, rho_imp, _ = _two_shell_fixture()
+    shells = list(impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals))
+    assert [l for l, _, _ in shells] == [1, 2]
+    assert [partition for _, partition, _ in shells] == [1, 2]  # partition key, joinable elsewhere
+    _l1, _partition1, rho1 = shells[0]
+    _l2, _partition2, rho2 = shells[1]
+    assert rho1.shape == (6, 6)
+    assert np.allclose(rho1, np.eye(6))
+    assert rho2.shape == (10, 10)
+    assert np.isclose(np.real(np.trace(rho2)), 1.0)
+    assert np.isclose(np.real(rho2[_index(2, 2, +1), _index(2, 2, +1)]), 1.0)
+
+
+def test_impurity_shell_rhos_non_dict_rotation_is_one_aggregate_shell():
+    """A plain ndarray rotation (selfenergy path, incl. eg/t2g-grouped impurity_orbitals)
+    always yields a single aggregate shell, never split by (ambiguous) orbital count.
+
+    A t2g manifold has 6 spin-orbitals -- the same count as a genuine l=1 shell -- so
+    orbital-count alone cannot tell them apart; only the rotation's type (dict vs ndarray)
+    may decide whether to split. Regression guard for that ambiguity.
+    """
+    from impurityModel.ed.observables import impurity_shell_rhos
+
+    # eg (4 spin-orbitals) + t2g (6 spin-orbitals): a sub-shell grouping of one d-shell,
+    # as `group_orbitals_by_blocks` would produce for a selfenergy run.
+    impurity_orbitals = {0: [list(range(4))], 1: [list(range(4, 10))]}
+    rot_to_spherical = np.eye(10, dtype=complex)  # single matrix -> selfenergy signature
+    rho_imp = np.eye(10, dtype=complex)
+    shells = list(impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals))
+    assert len(shells) == 1
+    l, partition, rho = shells[0]
+    assert l is None
+    assert partition is None
+    assert rho.shape == (10, 10)
+
+
+def test_impurity_shell_rhos_no_impurity_orbitals_is_one_aggregate_shell():
+    """`impurity_orbitals=None` (or omitted) reproduces today's single-shell behaviour."""
+    from impurityModel.ed.observables import impurity_shell_rhos
+
+    rho_imp = np.eye(10, dtype=complex)
+    shells = list(impurity_shell_rhos(rho_imp, np.eye(10, dtype=complex)))
+    assert len(shells) == 1
+    assert shells[0][0] is None
+
+
+def test_impurity_shell_rhos_rejects_non_shell_dict_partition():
+    """A dict rotation promises every partition is a full l-shell; a violation must raise,
+    not silently fall back -- silently reinterpreting would reintroduce exactly the kind
+    of misclassification this function exists to prevent."""
+    from impurityModel.ed.observables import impurity_shell_rhos
+
+    impurity_orbitals = {0: [list(range(4))]}  # 4 spin-orbitals: not 2*(2l+1) for any l
+    rot_to_spherical = {0: np.eye(4, dtype=complex)}
+    rho_imp = np.eye(4, dtype=complex)
+    with pytest.raises(ValueError, match="spin-doubled l-shell"):
+        list(impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals))
+
+
+def test_compute_shell_observables_filled_shell_is_exactly_zero():
+    """A completely filled shell is SOC-inert: every one-body angular-momentum
+    observable vanishes exactly (to roundoff), regardless of any xi parameter, because
+    the physical operators evaluated here don't even depend on xi -- only the *many-body*
+    Hamiltonian would. This is the free, strongest structural check: a nonzero value here
+    means the global-orbital -> sorted-position mapping is off by construction."""
+    from impurityModel.ed.observables import compute_shell_observables
+
+    impurity_orbitals, rot_to_spherical, rho_imp, _ = _two_shell_fixture()
+    result = compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals)
+    l1 = result["shells"][0]
+    assert l1["l"] == 1
+    assert l1["n"] == pytest.approx(6.0, abs=1e-12)
+    for key in ("lz", "sz", "m_z", "j_z", "l_dot_s", "t_z"):
+        assert l1[key] == pytest.approx(0.0, abs=1e-12), key
+
+
+def test_compute_shell_observables_matches_known_single_electron_values():
+    """The l=2 shell holds exactly the single |ml=+2,up> electron from the fixture, with
+    known analytic values (matching test_spin_orbit_observable's convention)."""
+    from impurityModel.ed.observables import compute_shell_observables
+
+    impurity_orbitals, rot_to_spherical, rho_imp, _ = _two_shell_fixture()
+    result = compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals)
+    l2 = result["shells"][1]
+    assert l2["l"] == 2
+    assert l2["n"] == pytest.approx(1.0, abs=1e-12)
+    assert l2["lz"] == pytest.approx(2.0, abs=1e-12)
+    assert l2["sz"] == pytest.approx(0.5, abs=1e-12)
+    assert l2["m_z"] == pytest.approx(3.0, abs=1e-12)  # lz + 2sz
+    assert l2["j_z"] == pytest.approx(2.5, abs=1e-12)  # lz + sz
+    assert l2["l_dot_s"] == pytest.approx(1.0, abs=1e-12)  # ml*ms = 2*0.5
+
+
+def test_compute_shell_observables_total_is_sum_over_shells():
+    """The reported total must be the sum over shells, not a re-evaluation on the
+    concatenated rho (that re-evaluation is precisely the bug being fixed)."""
+    from impurityModel.ed.observables import compute_shell_observables
+
+    impurity_orbitals, rot_to_spherical, rho_imp, _ = _two_shell_fixture()
+    result = compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals)
+    l1, l2 = result["shells"]
+    total = result["total"]
+    for key in ("n", "n_dn", "n_up", "lz", "sz", "m_z", "j_z", "l_dot_s", "t_z"):
+        assert total[key] == pytest.approx(l1[key] + l2[key], abs=1e-12)
+    assert total["n"] == pytest.approx(7.0, abs=1e-12)
+    assert total["sz"] == pytest.approx(0.5, abs=1e-12)
+    assert total["lz"] == pytest.approx(2.0, abs=1e-12)
+
+
+def test_compute_shell_observables_carries_partition_for_ambiguous_l_join():
+    """Two distinct l=1 shells (same inferred l, different partitions) must each carry
+    their own distinguishing `partition` key -- joining Stage 4's per-shell table against
+    make_impurity_casimir_operators's per-shell Casimirs by `l` alone would silently merge
+    them; `partition` is the only safe join key."""
+    from impurityModel.ed.observables import compute_shell_observables
+
+    # Two independent l=1 shells at global orbitals 0-5 and 6-11, distinguished only by
+    # partition key ("A", "B") -- inferred l is 1 for both.
+    impurity_orbitals = {"A": [list(range(6))], "B": [list(range(6, 12))]}
+    rot_to_spherical = {"A": np.eye(6, dtype=complex), "B": np.eye(6, dtype=complex)}
+    rho_imp = np.eye(12, dtype=complex)
+    result = compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals)
+    assert [shell["l"] for shell in result["shells"]] == [1, 1]
+    assert [shell["partition"] for shell in result["shells"]] == ["A", "B"]
+
+
+def test_old_concatenated_inference_was_wrong_on_the_two_shell_fixture():
+    """Regression trap: pin down *why* the pre-fix behaviour was wrong, not just that the
+    new path works. Calling the single-shell primitives directly on the concatenated
+    16-orbital block (today's calc_gs behaviour before this fix) misinfers l=3 (from
+    floor((16//2-1)/2)=3), silently drops orbitals 14-15, and returns wildly wrong values
+    instead of the correct total (sz=0.5, lz=2.0)."""
+    from impurityModel.ed.observables import get_Lz_from_rho_spherical, get_Sz_from_rho_spherical
+
+    _, _, rho_imp, _ = _two_shell_fixture()
+    sz_old = get_Sz_from_rho_spherical(rho_imp)  # l inferred as 3 (wrong)
+    lz_old = get_Lz_from_rho_spherical(rho_imp)
+    assert sz_old == pytest.approx(-3.0, abs=1e-12)
+    assert lz_old == pytest.approx(-3.0, abs=1e-12)
+    assert not np.isclose(sz_old, 0.5)
+    assert not np.isclose(lz_old, 2.0)
+
+
+def test_compute_shell_observables_matches_many_body_casimir_path():
+    """Cross-path oracle: the density-matrix total must agree with the independent
+    many-body-operator path (make_impurity_casimir_operators + compute_static_susceptibilities),
+    which infers l per shell correctly by construction. This is exactly the two paths that
+    disagreed in the real bug report (ground_state_statistics.json: sz_thermal ~ -1e-11 vs
+    the (buggy) rho-path sz ~ -0.58)."""
+    from impurityModel.ed.observables import (
+        compute_shell_observables,
+        compute_static_susceptibilities,
+        make_impurity_casimir_operators,
+    )
+
+    impurity_orbitals, rot_to_spherical, rho_imp, occupied = _two_shell_fixture()
+    result = compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals)
+
+    psi = _sd(occupied, n_orbs=16)
+    psi = ManyBodyState({psi: 1.0})
+    l_ops, s_ops, _ = make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical)
+    impurity_indices = list(range(16))
+    chi = compute_static_susceptibilities(
+        ManyBodyState.from_states([psi]), np.array([0.0]), 0.05, impurity_indices, s_z_op=s_ops[2], l_z_op=l_ops[2]
+    )
+    assert result["total"]["sz"] == pytest.approx(chi["sz_thermal"], abs=1e-9)
+    assert result["total"]["lz"] == pytest.approx(chi["lz_thermal"], abs=1e-9)
+
+
+def test_impurity_shell_rhos_orders_by_orbital_position_not_by_l():
+    """Shells are yielded in ascending global-orbital order (matching how ``rho_imp`` is
+    built by ``groundstate.calc_gs``), not ascending ``l``. Nothing forces the lower-``l``
+    shell to hold the lower orbital indices, so a fixture with the l=2 shell first must
+    yield [2, 1], not [1, 2]."""
+    from impurityModel.ed.observables import impurity_shell_rhos
+
+    # l=2 (10 spin-orbitals) at global 0-9, l=1 (6 spin-orbitals) at global 10-15 --
+    # deliberately reversed relative to _two_shell_fixture.
+    impurity_orbitals = {2: [list(range(10))], 1: [list(range(10, 16))]}
+    rot_to_spherical = {1: np.eye(6, dtype=complex), 2: np.eye(10, dtype=complex)}
+    rho_imp = np.eye(16, dtype=complex)
+    shells = list(impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals))
+    assert [l for l, _, _ in shells] == [2, 1]
+    assert [partition for _, partition, _ in shells] == [2, 1]
+
+
+def _random_unitary(n, seed):
+    """A Haar-ish random unitary via QR of a complex Gaussian matrix (fixed seed)."""
+    rng = np.random.default_rng(seed)
+    a = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
+    q, r = np.linalg.qr(a)
+    phases = np.diagonal(r) / np.abs(np.diagonal(r))
+    return q * phases.conj()
+
+
+def test_compute_shell_observables_matches_many_body_casimir_path_with_rotation():
+    """Same cross-path oracle as test_compute_shell_observables_matches_many_body_casimir_path,
+    but with a genuine non-trivial unitary rotation on the l=2 shell -- matching the real
+    tutorial run, where rot_to_spherical[2] = u_imp.conj().T is not the identity. This is
+    exactly the composition a wrong dict key or a wrong shell ordering would corrupt while
+    leaving <N> (rotation-invariant) looking correct, so it is the case that actually
+    exercises the risk the dict-key-vs-inferred-l fix (Stage 1 review item 1) addresses."""
+    from impurityModel.ed.observables import (
+        compute_shell_observables,
+        compute_static_susceptibilities,
+        make_impurity_casimir_operators,
+    )
+
+    w = _random_unitary(10, seed=1234)
+    impurity_orbitals = {1: [list(range(6))], 2: [list(range(6, 16))]}
+    rot_to_spherical = {1: np.eye(6, dtype=complex), 2: w}
+    # Single occupied computational orbital in the l=2 shell (local index 3 -> global 9),
+    # plus the filled l=1 core (global 0-5).
+    occupied = [0, 1, 2, 3, 4, 5, 9]
+    rho_imp = np.diag([1.0 if orb in occupied else 0.0 for orb in range(16)]).astype(complex)
+
+    result = compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals)
+
+    psi = ManyBodyState({_sd(occupied, n_orbs=16): 1.0})
+    l_ops, s_ops, _ = make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical)
+    chi = compute_static_susceptibilities(
+        ManyBodyState.from_states([psi]),
+        np.array([0.0]),
+        0.05,
+        list(range(16)),
+        s_z_op=s_ops[2],
+        l_z_op=l_ops[2],
+    )
+    assert result["total"]["sz"] == pytest.approx(chi["sz_thermal"], abs=1e-9)
+    assert result["total"]["lz"] == pytest.approx(chi["lz_thermal"], abs=1e-9)
+    # A non-trivial rotation must actually move Lz/Sz away from the un-rotated single-
+    # electron values (2.0 / 0.5 for a bare |ml=2,up>) -- otherwise this test isn't
+    # exercising the rotation at all.
+    assert not np.isclose(result["total"]["lz"], 2.0, atol=1e-6)
+
+
+def test_compute_shell_observables_single_key_dict_matches_no_dict():
+    """A dict with exactly one shell (e.g. a plain d-shell spectra run, no core hole --
+    `get_spectra.py` always passes a dict, even with a single correlated l) must agree
+    with the `impurity_orbitals=None` aggregate path, for both an identity and a
+    non-trivial rotation. Every printer test above exercises `impurity_orbitals=None`
+    (the never-actually-used-in-production case); production's *single*-shell case is
+    the dict-of-one, which this pins directly instead of by argument alone."""
+    from impurityModel.ed.observables import compute_shell_observables
+
+    n = 10
+    rho = np.diag([1.0] * 3 + [0.0] * 4 + [1.0] * 3).astype(complex)
+    for rot in (np.eye(n, dtype=complex), _random_unitary(n, seed=7)):
+        via_dict = compute_shell_observables(rho, {2: rot}, {2: [list(range(n))]})["total"]
+        via_none = compute_shell_observables(rho, rot, None)["total"]
+        for key in via_dict:
+            assert via_dict[key] == pytest.approx(via_none[key], abs=1e-12), key
+
+
+# --------------------------------------------------------------------------- #
+# make_impurity_casimir_operators(per_shell=True) (Stage 3: per-shell Casimirs)
+# --------------------------------------------------------------------------- #
+def test_make_impurity_casimir_operators_default_return_is_unchanged():
+    """per_shell=False (the default) must keep returning exactly the 3-tuple every
+    existing caller (calc_gs, susceptibility.py, other tests) already unpacks."""
+    from impurityModel.ed.observables import make_impurity_casimir_operators
+
+    impurity_orbitals, rot_to_spherical, _, _ = _two_shell_fixture()
+    result = make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical)
+    assert len(result) == 3
+    l_ops, s_ops, j_ops = result
+    assert len(l_ops) == 3 and len(s_ops) == 3 and len(j_ops) == 3
+
+
+def test_make_impurity_casimir_operators_per_shell_sums_to_the_totals():
+    """Each shell's own (L, S, J) summed together must reproduce the whole-impurity
+    totals exactly -- the shells address disjoint orbitals, so this is a plain sum, and
+    it is exactly the property Stage 4's per-shell table total row relies on."""
+    from impurityModel.ed.observables import make_impurity_casimir_operators
+
+    impurity_orbitals, rot_to_spherical, _, _ = _two_shell_fixture()
+    l_ops, s_ops, j_ops, per_shell_ops = make_impurity_casimir_operators(
+        impurity_orbitals, rot_to_spherical, per_shell=True
+    )
+    assert set(per_shell_ops) == {1, 2}
+    assert per_shell_ops[1][0] == 1  # inferred l
+    assert per_shell_ops[2][0] == 2
+
+    # l_ops/s_ops must actually contain terms, so the equality-via-subtraction check
+    # below cannot pass vacuously on an empty operator.
+    assert any(len(op) > 0 for op in l_ops)
+    assert any(len(op) > 0 for op in s_ops)
+
+    summed_l = [ManyBodyOperator(), ManyBodyOperator(), ManyBodyOperator()]
+    summed_s = [ManyBodyOperator(), ManyBodyOperator(), ManyBodyOperator()]
+    for _l, shell_l_ops, shell_s_ops, _j in per_shell_ops.values():
+        for i in range(3):
+            summed_l[i] += shell_l_ops[i]
+            summed_s[i] += shell_s_ops[i]
+    # ManyBodyOperator equality via subtraction-to-empty (matches the algebra's own
+    # normal-ordering convention rather than assuming dict equality on the raw terms).
+    for i in range(3):
+        diff = summed_l[i] - l_ops[i]
+        assert all(abs(v) < 1e-12 for v in diff.values())
+        diff = summed_s[i] - s_ops[i]
+        assert all(abs(v) < 1e-12 for v in diff.values())
+
+
+def test_make_impurity_casimir_operators_per_shell_matches_known_single_electron_values():
+    """The l=2 shell's own S^2/L^2/J^2 (evaluated via casimir_operator + the many-body
+    machinery, not just density-matrix moments) reproduce the analytic single-electron
+    values for the fixture's |ml=+2,up> state: S=1/2 -> S^2=3/4, L=2 -> L^2=6,
+    J=5/2 -> J^2=35/4. The l=1 shell (filled) has S=L=J=0."""
+    from impurityModel.ed.observables import (
+        casimir_operator,
+        make_impurity_casimir_operators,
+        manifold_observable_values,
+    )
+
+    impurity_orbitals, rot_to_spherical, _, occupied = _two_shell_fixture()
+    _, _, _, per_shell_ops = make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical, per_shell=True)
+    psi = ManyBodyState({_sd(occupied, n_orbs=16): 1.0})
+    manifold = ManyBodyState.from_states([psi])
+    es = np.array([0.0])
+
+    shell_l, l_ops, s_ops, j_ops = per_shell_ops[2]
+    assert shell_l == 2
+    for ops, expected in ((s_ops, 0.75), (l_ops, 6.0), (j_ops, 35.0 / 4.0)):
+        op2 = casimir_operator(*ops)
+        vals = manifold_observable_values(manifold, es, lambda blk, _op=op2: _op.apply_block(blk, 0))
+        assert vals[0] == pytest.approx(expected, abs=1e-9)
+
+    shell_l1, l_ops1, s_ops1, j_ops1 = per_shell_ops[1]
+    assert shell_l1 == 1
+    for ops in (s_ops1, l_ops1, j_ops1):
+        op2 = casimir_operator(*ops)
+        vals = manifold_observable_values(manifold, es, lambda blk, _op=op2: _op.apply_block(blk, 0))
+        assert vals[0] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_make_impurity_casimir_operators_per_shell_raises_like_the_totals():
+    """per_shell=True must not silently swallow the sub-shell ValueError the totals path
+    already raises on (e.g. a grouped eg/t2g impurity) -- the caller's existing
+    ValueError-catching fallback in calc_gs depends on that."""
+    from impurityModel.ed.observables import make_impurity_casimir_operators
+
+    impurity_orbitals = {0: [list(range(4))]}  # 4 spin-orbitals: not a shell for any l
+    rot_to_spherical = {0: np.eye(4, dtype=complex)}
+    with pytest.raises(ValueError, match="spin-doubled l-shell"):
+        make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical, per_shell=True)
+
+
+# --------------------------------------------------------------------------- #
+# shell_qualified_block_labels / print_impurity_orbital_groups / per-shell table
+# (Stage 4: N(...) label fix + per-shell report table)
+# --------------------------------------------------------------------------- #
+def _eg_t2g_block_structure():
+    """A cubic d-shell auto-split into 2 equivalence classes (eg: orbitals 0,1,4,5;
+    t2g: orbitals 2,3,6,7,8,9), each with 2 blocks (spin partners)."""
+    from impurityModel.ed.block_structure import BlockStructure
+
+    return BlockStructure(
+        blocks=[[0, 4], [1, 5], [2, 6], [3, 7, 8, 9]],
+        identical_blocks=[[0, 1], [0, 1], [2, 3], [2, 3]],
+        transposed_blocks=[[], [], [], []],
+        particle_hole_blocks=[[], [], [], []],
+        particle_hole_transposed_blocks=[[], [], [], []],
+        inequivalent_blocks=[0, 2],
+    )
+
+
+def test_shell_qualified_block_labels_single_shell_no_impurity_orbitals():
+    """Without impurity_orbitals (no shell info), labels are plain letters -- distinct
+    from "mixed", which asserts something (that orbitals span multiple shells) that
+    cannot be known here."""
+    from impurityModel.ed.observables import get_equivalent_blocks, shell_qualified_block_labels
+
+    bs = _eg_t2g_block_structure()
+    eq = get_equivalent_blocks(bs)
+    labels, legend = shell_qualified_block_labels(eq, bs)
+    assert labels == ["a", "b"]
+    assert [orbs for _, orbs in legend] == [[0, 1, 4, 5], [2, 3, 6, 7, 8, 9]]
+
+
+def test_shell_qualified_block_labels_tags_by_shell():
+    """With impurity_orbitals given, both eg and t2g groups are correctly tagged l=2
+    (a single d-shell auto-split into eg/t2g classes), distinguished by letter."""
+    from impurityModel.ed.observables import get_equivalent_blocks, shell_qualified_block_labels
+
+    bs = _eg_t2g_block_structure()
+    eq = get_equivalent_blocks(bs)
+    impurity_orbitals = {0: [list(range(10))]}  # one l=2 shell, 10 spin-orbitals
+    labels, legend = shell_qualified_block_labels(eq, bs, impurity_orbitals)
+    assert labels == ["l=2,a", "l=2,b"]
+    assert dict(legend)["l=2,a"] == [0, 1, 4, 5]
+    assert dict(legend)["l=2,b"] == [2, 3, 6, 7, 8, 9]
+
+
+def test_shell_qualified_block_labels_multi_shell():
+    """A two-shell impurity (l=1 core + l=2 valence) tags each block with its own shell,
+    and per-shell letter counters are independent (a p-shell block and a d-shell block
+    both starting at 'a')."""
+    from impurityModel.ed.block_structure import BlockStructure
+    from impurityModel.ed.observables import get_equivalent_blocks, shell_qualified_block_labels
+
+    bs = BlockStructure(
+        blocks=[list(range(6)), list(range(6, 16))],
+        identical_blocks=[[0], [1]],
+        transposed_blocks=[[], []],
+        particle_hole_blocks=[[], []],
+        particle_hole_transposed_blocks=[[], []],
+        inequivalent_blocks=[0, 1],
+    )
+    impurity_orbitals = {1: [list(range(6))], 2: [list(range(6, 16))]}
+    eq = get_equivalent_blocks(bs)
+    labels, legend = shell_qualified_block_labels(eq, bs, impurity_orbitals)
+    assert labels == ["l=1,a", "l=2,a"]
+    assert dict(legend)["l=1,a"] == list(range(6))
+    assert dict(legend)["l=2,a"] == list(range(6, 16))
+
+
+def test_shell_qualified_block_labels_mixed_when_block_spans_shells():
+    """A (synthetic, shouldn't happen in practice) block spanning two shells is tagged
+    "mixed" rather than silently attributed to either shell."""
+    from impurityModel.ed.block_structure import BlockStructure
+    from impurityModel.ed.observables import get_equivalent_blocks, shell_qualified_block_labels
+
+    bs = BlockStructure(
+        blocks=[list(range(6)) + list(range(6, 16))],  # one block spanning both shells
+        identical_blocks=[[0]],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
+        inequivalent_blocks=[0],
+    )
+    impurity_orbitals = {1: [list(range(6))], 2: [list(range(6, 16))]}
+    eq = get_equivalent_blocks(bs)
+    labels, _ = shell_qualified_block_labels(eq, bs, impurity_orbitals)
+    assert labels == ["mixed,a"]
+
+
+def test_print_impurity_orbital_groups_legend(capsys):
+    """The legend prints one entry per label, mapping to the correct global orbitals, and
+    is a no-op when there is nothing to disambiguate (a single group)."""
+    from impurityModel.ed.block_structure import BlockStructure
+    from impurityModel.ed.observables import get_equivalent_blocks, print_impurity_orbital_groups
+
+    bs = _eg_t2g_block_structure()
+    impurity_orbitals = {0: [list(range(10))]}
+    print_impurity_orbital_groups(get_equivalent_blocks(bs), bs, impurity_orbitals)
+    out = capsys.readouterr().out
+    assert "l=2,a: [0, 1, 4, 5]" in out
+    assert "l=2,b: [2, 3, 6, 7, 8, 9]" in out
+
+    single_bs = BlockStructure(
+        blocks=[list(range(10))],
+        identical_blocks=[[0]],
+        transposed_blocks=[[]],
+        particle_hole_blocks=[[]],
+        particle_hole_transposed_blocks=[[]],
+        inequivalent_blocks=[0],
+    )
+    print_impurity_orbital_groups(get_equivalent_blocks(single_bs), single_bs, {0: [list(range(10))]})
+    assert capsys.readouterr().out == ""
+
+
+def test_print_thermal_expectation_values_n_labels_are_shell_qualified(capsys):
+    """The N(...) column labels in the thermal report are shell-qualified, not raw block
+    indices -- the bug that produced the tutorial's meaningless N(4,6,9,11) label."""
+    from impurityModel.ed.observables import print_thermal_expectation_values
+
+    bs = _eg_t2g_block_structure()
+    impurity_orbitals = {0: [list(range(10))]}
+    rot_to_spherical = {0: np.eye(10, dtype=complex)}
+    rho = np.eye(10, dtype=complex)
+    print_thermal_expectation_values(rho, 0.0, rot_to_spherical, bs, impurity_orbitals=impurity_orbitals)
+    out = capsys.readouterr().out
+    assert "<N(l=2,a)>" in out
+    assert "<N(l=2,b)>" in out
+    # The old, meaningless block-index join must not reappear.
+    assert "<N(0,1)>" not in out and "<N(2,3)>" not in out
+
+
+def test_print_thermal_expectation_values_per_shell_table(capsys):
+    """The per-shell table appears (only) for a multi-shell impurity, with the correct
+    per-shell N/Lz/Sz values and a total row, and Casimir/term columns populated from
+    shell_casimir when given."""
+    from impurityModel.ed.observables import print_thermal_expectation_values
+
+    from impurityModel.ed.block_structure import BlockStructure
+
+    bs = BlockStructure(
+        blocks=[list(range(6)), list(range(6, 16))],
+        identical_blocks=[[0], [1]],
+        transposed_blocks=[[], []],
+        particle_hole_blocks=[[], []],
+        particle_hole_transposed_blocks=[[], []],
+        inequivalent_blocks=[0, 1],
+    )
+    impurity_orbitals = {1: [list(range(6))], 2: [list(range(6, 16))]}
+    rot_to_spherical = {1: np.eye(6, dtype=complex), 2: np.eye(10, dtype=complex)}
+    rho = np.diag([1.0] * 6 + [0.8] * 10).astype(complex)
+    shell_casimir = {
+        1: {"l": 1, "s2_thermal": 0.0, "l2_thermal": 0.0, "j2_thermal": 0.0},
+        2: {"l": 2, "s2_thermal": 2.0, "l2_thermal": 6.0, "j2_thermal": 12.0},
+    }
+    print_thermal_expectation_values(
+        rho, 0.0, rot_to_spherical, bs, impurity_orbitals=impurity_orbitals, shell_casimir=shell_casimir
+    )
+    out = capsys.readouterr().out
+    assert "Per-shell impurity observables:" in out
+    lines = [ln for ln in out.splitlines() if ln.strip().startswith(("l=1", "l=2", "total"))]
+    assert len(lines) == 3
+    l1_fields = lines[0].split()
+    assert l1_fields[0] == "l=1"
+    assert float(l1_fields[1]) == pytest.approx(6.0, abs=1e-9)  # N
+    assert "1S0" in lines[0]  # filled p-shell -> singlet term
+    l2_fields = lines[1].split()
+    assert l2_fields[0] == "l=2"
+    assert float(l2_fields[1]) == pytest.approx(8.0, abs=1e-9)  # N
+    total_fields = lines[2].split()
+    assert total_fields[0] == "total"
+    assert float(total_fields[1]) == pytest.approx(14.0, abs=1e-9)  # N = 6 + 8
+    # Total row has no Casimir/term columns (only 8 fields: "total" + 7 numbers).
+    assert len(total_fields) == 8
+
+
+def test_print_thermal_expectation_values_single_shell_has_no_per_shell_table(capsys):
+    """A single-shell impurity (or impurity_orbitals=None) prints no per-shell table --
+    unchanged from before this feature existed."""
+    from impurityModel.ed.observables import print_thermal_expectation_values
+
+    bs = _d_shell_block_structure()
+    rho = np.eye(10, dtype=complex)
+    print_thermal_expectation_values(rho, 0.0, np.eye(10, dtype=complex), bs)
+    out = capsys.readouterr().out
+    assert "Per-shell impurity observables" not in out
+
+
+# --------------------------------------------------------------------------- #
+# is_j_sharp / gated_term_symbol / term_symbol(j=None) (Stage 5: J-sharpness gate)
+# --------------------------------------------------------------------------- #
+def test_term_symbol_without_j():
+    """term_symbol(j=None) omits the J subscript but keeps the S/L cleanliness check
+    and the existing 3-positional-argument call sites unaffected."""
+    from impurityModel.ed.observables import term_symbol
+
+    assert term_symbol(1.0, 3.0, 4.0) == "3F4"  # unchanged 3-arg behaviour
+    assert term_symbol(1.0, 3.0) == "3F"  # j omitted
+    assert term_symbol(1.0, 3.0, None) == "3F"  # j explicitly None
+    assert term_symbol(0.8, 3.0, None) == "~3F"  # unclean S -> still marked approximate
+
+
+def test_is_j_sharp_identical_j_in_ground_manifold():
+    """A ground manifold where every state shares the same J is sharp."""
+    from impurityModel.ed.observables import is_j_sharp
+
+    es = np.array([0.0, 0.0, 0.0, 1.0])
+    j_values = np.array([2.5, 2.5, 2.5, 9.0])  # excited state's J is irrelevant
+    assert is_j_sharp(j_values, es)
+
+
+def test_is_j_sharp_spread_in_ground_manifold():
+    """A ground manifold whose members' J genuinely differ (the user's own observation:
+    J ranging ~3.09-3.35 within one degenerate manifold, expected physics without SOC
+    sharpening J) is reported as not sharp."""
+    from impurityModel.ed.observables import is_j_sharp
+
+    es = np.array([0.0, 0.0, 0.0])
+    j_values = np.array([3.09, 3.22, 3.35])
+    assert not is_j_sharp(j_values, es)
+
+
+def test_is_j_sharp_ignores_excited_states():
+    """Only the ground (lowest-energy) manifold is examined -- a spread among excited
+    states must not gate the ground-state term symbol."""
+    from impurityModel.ed.observables import is_j_sharp
+
+    es = np.array([0.0, 0.0, 1.0, 1.0])
+    j_values = np.array([2.5, 2.5, 3.09, 3.35])  # excited manifold: spread, ground: sharp
+    assert is_j_sharp(j_values, es)
+
+
+def test_gated_term_symbol_suppresses_g_j_and_mu_eff_when_not_sharp():
+    """When j_sharp=False, g_J/mu_eff are None and the term omits the J subscript; when
+    j_sharp=True, behaviour is identical to the pre-Stage-5 unconditional computation."""
+    from impurityModel.ed.observables import gated_term_symbol, lande_g_and_moments, term_symbol
+
+    s2, l2, j2 = 2.0, 12.0, 12.0
+    term_sharp, g_j_sharp, mu_eff_sharp = gated_term_symbol(s2, l2, j2, True)
+    expected_g_j, expected_mu_eff, _ = lande_g_and_moments(s2, l2, j2)
+    assert term_sharp == term_symbol(1.0, 3.0, 3.0)
+    assert g_j_sharp == pytest.approx(expected_g_j)
+    assert mu_eff_sharp == pytest.approx(expected_mu_eff)
+
+    term_unsharp, g_j_unsharp, mu_eff_unsharp = gated_term_symbol(s2, l2, j2, False)
+    assert term_unsharp == term_symbol(1.0, 3.0, None)
+    assert "4" not in term_unsharp  # no J subscript
+    assert g_j_unsharp is None
+    assert mu_eff_unsharp is None
+
+
+def test_print_thermal_expectation_values_j_sharp_gate(capsys):
+    """print_thermal_expectation_values(j_sharp=False) omits g_J/mu_eff from the scalar
+    magnetism block and from the per-shell table, and both use the same (ungated-J)
+    term -- the desync the Stage 4 review flagged must not happen."""
+    from impurityModel.ed.observables import print_thermal_expectation_values
+    from impurityModel.ed.block_structure import BlockStructure
+
+    bs = BlockStructure(
+        blocks=[list(range(6)), list(range(6, 16))],
+        identical_blocks=[[0], [1]],
+        transposed_blocks=[[], []],
+        particle_hole_blocks=[[], []],
+        particle_hole_transposed_blocks=[[], []],
+        inequivalent_blocks=[0, 1],
+    )
+    impurity_orbitals = {1: [list(range(6))], 2: [list(range(6, 16))]}
+    rot_to_spherical = {1: np.eye(6, dtype=complex), 2: np.eye(10, dtype=complex)}
+    rho = np.diag([1.0] * 6 + [0.8] * 10).astype(complex)
+    shell_casimir = {
+        1: {"l": 1, "s2_thermal": 0.0, "l2_thermal": 0.0, "j2_thermal": 0.0},
+        2: {"l": 2, "s2_thermal": 2.0, "l2_thermal": 12.0, "j2_thermal": 12.0},
+    }
+    print_thermal_expectation_values(
+        rho,
+        0.0,
+        rot_to_spherical,
+        bs,
+        s_thermal=2.0,
+        l_thermal=12.0,
+        j_thermal=12.0,
+        impurity_orbitals=impurity_orbitals,
+        shell_casimir=shell_casimir,
+        j_sharp=False,
+    )
+    out = capsys.readouterr().out
+    assert "g_J" not in out
+    assert "mu_eff" not in out
+    assert "mu_spin_only" in out  # unaffected by the gate
+    # Scalar term (S=1,L=3 -> "3F") and the per-shell l=2 term must agree -- both ungated.
+    term_lines = [ln for ln in out.splitlines() if ln.lstrip().startswith("term ")]
+    assert len(term_lines) == 1
+    assert "3F" in term_lines[0] and "4" not in term_lines[0].split("=")[1]
+    shell_line = next(ln for ln in out.splitlines() if ln.strip().startswith("l=2"))
+    assert shell_line.strip().split()[-1] == "3F"  # per-shell term, no J subscript

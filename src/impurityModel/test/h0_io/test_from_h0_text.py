@@ -34,6 +34,7 @@ def _d_shell_file(tmp_path, name="d_shell.h0", **header_extra):
         for i in range(n_imp):
             h[b, i] = h[i, b] = 0.4 - 0.01 * i
 
+    header_extra.setdefault("contains_soc", False)
     out = tmp_path / name
     h0_format.write_h0_file(out, h, impurity_orbitals={2: list(range(n_imp))}, **header_extra)
     return out, h
@@ -96,6 +97,16 @@ def test_from_h0_text_refuses_label_space_dressing_without_spin_ordering(tmp_pat
         ImpurityModel.from_h0_text(path, l=2, slater=D_SHELL_SLATER, **kwargs)
 
 
+def test_from_h0_text_rejects_an_absent_contains_soc_with_a_nonzero_xi(tmp_path):
+    """Omitting ``contains_soc`` is *unknown*, not *no* -- refused exactly like an explicit
+    ``true``. Regression for the period ``build_h0`` never wrote the key at all, which
+    silently disabled this guard for every file it produced.
+    """
+    path, _ = _d_shell_file(tmp_path, basis="spherical", spin_ordering="down_first", contains_soc=None)
+    with pytest.raises(ValueError, match="does not declare 'contains_soc'"):
+        ImpurityModel.from_h0_text(path, l=2, slater=D_SHELL_SLATER, xi=0.1)
+
+
 def test_from_h0_text_dresses_soc_when_the_header_guarantees_hold(tmp_path):
     path, h = _d_shell_file(tmp_path, basis="spherical", spin_ordering="down_first")
     model = ImpurityModel.from_h0_text(path, l=2, slater=D_SHELL_SLATER, xi=0.1)
@@ -145,6 +156,7 @@ def test_from_h0_text_dressing_matches_from_h0_file(tmp_path):
         impurity_orbitals={l: list(range(2 * mmsize))},
         basis="spherical",
         spin_ordering="down_first",
+        contains_soc=False,
     )
 
     xi, h_field = 0.08, (0.0, 0.0, 5e-4)

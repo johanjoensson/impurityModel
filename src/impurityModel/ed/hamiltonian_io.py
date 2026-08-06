@@ -11,7 +11,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from impurityModel.ed import atomic_physics, h0_format, op_parser
+from impurityModel.ed import atomic_physics, h0_format, op_parser, symmetries
 from impurityModel.ed.operator_algebra import addOps, assert_hermitian, c2i, i2c
 
 
@@ -53,7 +53,7 @@ def get_noninteracting_hamiltonian_operator(nBaths, nValBaths, SOCs, hField, h0_
     hHfieldOperator = atomic_physics.gethHfieldop(hx, hy, hz, l=2)
 
     # Read the non-relativistic non-interacting Hamiltonian operator from file.
-    h0_operator = read_h0_operator(h0_filename, nBaths, nValBaths)
+    h0_operator = read_h0_operator(h0_filename, nBaths, nValBaths, rank=rank, verbose=verbose)
 
     if rank == 0 and verbose:
         print(f"Non-interacting, non-relativistic Hamiltonian (h0): {len(h0_operator)} terms.")
@@ -61,7 +61,7 @@ def get_noninteracting_hamiltonian_operator(nBaths, nValBaths, SOCs, hField, h0_
     return hOperator
 
 
-def read_h0_operator(filename, nBaths, nValBaths=None):
+def read_h0_operator(filename, nBaths, nValBaths=None, rank=0, verbose=True):
     """
     Read the non-interacting Hamiltonian from a pickled (.pickle) or text (.dat) file.
 
@@ -73,6 +73,8 @@ def read_h0_operator(filename, nBaths, nValBaths=None):
         Number of bath orbitals.
     nValBaths : dict
         Number of valence bath orbitals (needed for .json CF).
+    rank, verbose : int, bool, optional
+        Forwarded to :func:`flat_h0_to_labelled` for the Kramers-degeneracy warning.
 
     Returns
     -------
@@ -96,11 +98,11 @@ def read_h0_operator(filename, nBaths, nValBaths=None):
                 "guarantees; regenerate it with build_h0 to get a self-describing .h0. "
                 "See doc/h0_file_format.md."
             )
-        return flat_h0_to_labelled(h0_format.read_h0_file(filename), nBaths, path=filename)
+        return flat_h0_to_labelled(h0_format.read_h0_file(filename), nBaths, path=filename, rank=rank, verbose=verbose)
     raise RuntimeError(f"Unknown file h0 file extension {ext}")
 
 
-def flat_h0_to_labelled(parsed, nBaths, path=None):
+def flat_h0_to_labelled(parsed, nBaths, path=None, rank=0, verbose=True):
     """Relabel a single-shell, flat-indexed ``.h0`` file into ``(l, s, m)`` / ``(l, b)`` labels.
 
     The flat format's impurity-block-first layout is, for a *single* correlated shell, the
@@ -120,6 +122,10 @@ def flat_h0_to_labelled(parsed, nBaths, path=None):
     path : str, optional
         File path to name in error messages. Falls back to ``parsed.header.get('producer')``
         (typically ``None``, since ``build_h0`` does not set that key) when omitted.
+    rank, verbose : int, bool, optional
+        Forwarded from the caller so the Kramers-degeneracy warning below prints only once,
+        on rank 0 -- reading a file is not an MPI collective, so this gates a print, not
+        control flow (unlike the collective-gating rule in CLAUDE.md).
 
     Returns
     -------
@@ -175,6 +181,29 @@ def flat_h0_to_labelled(parsed, nBaths, path=None):
             f"{path or parsed.header.get('producer')}: file has {n_bath_in_file} bath orbitals for l={l}, "
             f"but nBaths[{l}] = {nBaths[l]} was requested."
         )
+
+    # SOC is time-reversal *even*, so a SOC-free Hamiltonian's exact Kramers degeneracy
+    # surviving a star-bath fit is structural (the up/down blocks are literally identical and
+    # share one fit); with SOC present nothing currently enforces the pairing between the
+    # time-reversal-conjugate blocks the fit treats independently, so losing exact degeneracy
+    # is expected there, not a defect (see build_h0.py's Kramers check for the full reasoning).
+    # Only warn when the header *positively* declares no SOC (`contains_soc is False`): every
+    # file written before this check existed has no `contains_soc` key at all (None), and
+    # warning on that unknown case would cry wolf on nearly every real transition-metal
+    # workload already on disk.
+    if rank == 0 and verbose and parsed.contains_soc is False:
+        violations = symmetries.check_kramers_degeneracy(parsed.to_matrix())
+        if violations:
+            detail = ", ".join(f"E={v['energy']:.4g} (x{v['multiplicity']})" for v in violations)
+            print(
+                f"WARNING: {path or parsed.header.get('producer')}: {len(violations)} "
+                f"odd-multiplicity eigenvalue cluster(s) -- this h0 breaks time-reversal "
+                f"(Kramers) symmetry: {detail}. The header declares no spin-orbit coupling, so "
+                "this is not the expected SOC-driven loss of exact degeneracy -- it usually "
+                "means the cluster is genuinely spin-polarised or field-dressed, or that the "
+                "bath fit that produced the file has a problem (see doc/h0_file_format.md, "
+                "Basis and spin ordering)."
+            )
 
     shell = OrderedDict({l: n_bath_in_file})
     operator = {}

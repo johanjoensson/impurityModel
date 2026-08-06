@@ -91,15 +91,31 @@ The key options (all have defaults; see `--help` for the full list):
 | `--nBaths 0 10` | Bath states per angular momentum. |
 | `--nValBaths 0 10` | Valence (occupied) bath states per angular momentum. |
 | `--n0imps` | Nominal impurity occupation. |
+| `--unit eV\|Ry` | Unit of every energy-valued option below. Default `eV`; pass `Ry` to give RSPt-native Rydberg values directly instead of converting by hand -- see the warning below. |
 | `--Fdd --Fpp --Fpd --Gpd` | Slater–Condon Coulomb parameters. |
 | `--xi_2p --xi_3d` | Spin–orbit coupling strengths. |
 | `--chargeTransferCorrection` | Double-counting parameter. |
-| `--T 300` | Temperature (Kelvin). |
-| `--energy_cut` | How many `k_B·T` above the ground state to keep. |
+| `--T 300` | Temperature (Kelvin) -- **not** affected by `--unit`. |
+| `--energy_cut` | How many `k_B·T` above the ground state to keep -- a dimensionless multiplier, **not** affected by `--unit`. |
 | `--delta --deltaRIXS --deltaNIXS` | Broadenings (HWHM). |
 | `--nPsiMax` | Maximum number of eigenstates. |
 | `--truncation_threshold` | Global cap on determinants per basis (memory control). |
 | `--no-auto-block-structure` | Keep the hand-coded block structure instead of deriving it. |
+
+`selfenergy`/`susceptibility` take the analogous `--unit`, converting `--Fdd --xi --hField --tau
+--w_min --w_max --delta`.
+
+**All of the above default to eV**, matching the `.h0` file's own internal convention (every
+amplitude is eV after `read_h0_file`, regardless of the file's own declared unit -- see
+[the h0 format spec](h0_file_format.md#numeric-contract)). A file that itself declares `"unit":
+"Ry"` is converted correctly on load; it is specifically these *command-line* parameters that
+were, before `--unit` existed, silently assumed to already be eV with no way to say otherwise
+-- passing RSPt-native Rydberg values here without converting them by hand first produces
+Slater/SOC/double-counting energies roughly 13.6x too small, which typically erases fine
+multiplet splittings (e.g. the 2p spin-orbit splitting) rather than raising an error. `--unit
+Ry` removes the need for the by-hand conversion; passing an implausibly small `--xi_2p` under
+the `eV` default (below 1 eV, where no real transition-metal 2p core level lies) still prints a
+warning suggesting `--unit Ry`.
 
 Run it under MPI for anything nontrivial. A worked NiO L-edge invocation (from
 `scripts/run_Ni_NiO_Xbath.sh`):

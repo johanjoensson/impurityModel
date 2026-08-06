@@ -120,6 +120,35 @@ def test_read_h0_operator_rejects_legacy_headerless_files(tmp_path):
         read_h0_operator(str(legacy), OrderedDict({2: 0}))
 
 
+def test_flat_h0_to_labelled_kramers_warning_gated_on_contains_soc(tmp_path, capsys):
+    """Pins the tri-state decision so it cannot regress: ``contains_soc: false`` warns on a
+    Kramers-violating file (a positive assertion of no SOC contradicted by the data); ``true``
+    and an absent key both stay silent -- SOC genuinely present, or unknown, are both cases
+    where losing exact Kramers degeneracy is not itself evidence of anything wrong (see
+    hamiltonian_io.py's comment at the check site).
+    """
+    l, n_bath = 0, 0
+    n_imp = 2 * (2 * l + 1)
+    # Trivially Kramers-violating: two singlet eigenvalue clusters, no accidental degeneracy.
+    h = np.diag([-2.0, -1.0]).astype(complex)
+
+    for contains_soc, expect_warning in [(False, True), (True, False), (None, False)]:
+        header_extra = dict(basis="spherical", spin_ordering="down_first", energy_reference="fermi", impurity_l=l)
+        if contains_soc is not None:
+            header_extra["contains_soc"] = contains_soc
+        path = tmp_path / f"kramers_{contains_soc}.h0"
+        h0_format.write_h0_file(path, h, impurity_orbitals={0: list(range(n_imp))}, **header_extra)
+        parsed = h0_format.read_h0_file(path)
+
+        capsys.readouterr()  # clear any prior iteration's capture
+        flat_h0_to_labelled(parsed, OrderedDict({l: n_bath}), path=str(path), rank=0, verbose=True)
+        out = capsys.readouterr().out
+        if expect_warning:
+            assert "WARNING" in out and "time-reversal" in out, (contains_soc, out)
+        else:
+            assert out == "", (contains_soc, out)
+
+
 def test_i2c_is_the_exact_inverse_used_by_the_relabelling():
     """Anchors the claim the plan and the docstring both rely on."""
     l, n_bath = 2, 3

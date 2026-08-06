@@ -14,6 +14,22 @@ from mpi4py import MPI
 from impurityModel.ed.average import k_B
 from impurityModel.ed.get_spectra import build_spectra_model, run_spectra
 from impurityModel.ed.model import EXCITATION_BUDGET_DEFAULT, BasisOptions, SpectraOptions, resolve_excitation_budget
+from impurityModel.scripts._units import convert_energy_args
+
+#: CLI attributes converted by --unit; kept in one place so add_arguments and run agree on scope.
+_ENERGY_FIELDS = (
+    "Fdd",
+    "Fpp",
+    "Fpd",
+    "Gpd",
+    "xi_2p",
+    "xi_3d",
+    "chargeTransferCorrection",
+    "hField",
+    "delta",
+    "deltaRIXS",
+    "deltaNIXS",
+)
 
 
 def add_arguments(parser):
@@ -72,6 +88,18 @@ def add_arguments(parser):
         nargs="+",
         default=[0, 0],
         help="Accepted for backwards compatibility; does not affect the spectra basis.",
+    )
+    parser.add_argument(
+        "--unit",
+        type=str,
+        choices=["eV", "Ry"],
+        default="eV",
+        help=(
+            "Energy unit for every energy-valued parameter below (Fdd, Fpp, Fpd, Gpd, xi_2p, "
+            "xi_3d, chargeTransferCorrection, hField, delta, deltaRIXS, deltaNIXS). Converted "
+            "to eV immediately after parsing; --T (Kelvin) and --energy_cut (a k_B*T "
+            "multiplier) are unaffected."
+        ),
     )
     parser.add_argument(
         "--Fdd", type=float, nargs="+", default=[7.5, 0, 9.9, 0, 6.6], help="Slater-Condon parameters Fdd (d-orbitals)."
@@ -150,9 +178,27 @@ def _validate(args):
     assert len(args.Gpd) == 4
     assert len(args.hField) == 3
 
+    # xi_2p < 1.0 eV has no physical counterpart: every transition-metal 2p core level has SOC
+    # well above 1 eV. This runs after --unit's conversion (see run()), so args.xi_2p is always
+    # eV-scale here regardless of which unit the caller gave -- a trip means the *converted*
+    # value is still implausible, i.e. --unit Ry was needed but not passed, or a Ry value was
+    # given under the eV default. Gate on xi_2p alone: a deliberately small Fdd/Fpd/Gpd is
+    # physically legitimate (a screened or weakly-correlated case), so triggering on those too
+    # would cry wolf and get ignored.
+    if args.xi_2p < 1.0 and MPI.COMM_WORLD.rank == 0:
+        print(
+            f"WARNING: --xi_2p={args.xi_2p} is implausibly small for an eV interface -- no "
+            "transition-metal 2p core level has spin-orbit coupling below 1 eV. Did you mean "
+            "to pass --unit Ry? For reference, this run also has "
+            f"Fdd={args.Fdd}, Fpd={args.Fpd}, Gpd={args.Gpd}, "
+            f"chargeTransferCorrection={args.chargeTransferCorrection}, which would show the "
+            "same ~13.6x-too-small pattern if they are Rydberg too."
+        )
+
 
 def run(args):
     """Build the model and option groups from ``args`` and run the spectra calculation."""
+    convert_energy_args(args, _ENERGY_FIELDS, args.unit)
     _validate(args)
     comm = MPI.COMM_WORLD
     rank = comm.rank

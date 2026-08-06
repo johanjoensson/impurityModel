@@ -18,6 +18,94 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, block_inner_cy, inn
 from impurityModel.ed.utils import rotate_matrix
 
 
+def _letter(idx):
+    """Spreadsheet-column-style label: 0->'a', ..., 25->'z', 26->'aa', 27->'ab', ..."""
+    letters = []
+    idx += 1
+    while idx > 0:
+        idx, rem = divmod(idx - 1, 26)
+        letters.append(chr(ord("a") + rem))
+    return "".join(reversed(letters))
+
+
+def _block_shell_tag(orbs, impurity_orbitals):
+    """Classify a block's global orbitals by impurity_orbitals partition/shell membership.
+
+    Returns ``None`` when no ``impurity_orbitals`` was given (no shell information at
+    all -- distinct from ``"mixed"``, which means shell information *is* available but
+    ``orbs`` doesn't fall cleanly into one shell), ``"mixed"`` when ``orbs`` spans more
+    than one partition or its partition isn't a full spin-doubled shell, or ``"l=<l>"``.
+    """
+    if not impurity_orbitals:
+        return None
+    orb_to_partition = {
+        orb: partition for partition, blocks in impurity_orbitals.items() for blk in blocks for orb in blk
+    }
+    partitions = {orb_to_partition.get(orb) for orb in orbs}
+    if len(partitions) != 1 or None in partitions:
+        return "mixed"
+    partition = next(iter(partitions))
+    n = sum(len(blk) for blk in impurity_orbitals[partition])
+    l = (n // 2 - 1) // 2
+    if 2 * (2 * l + 1) != n:
+        return "mixed"
+    return f"l={l}"
+
+
+def shell_qualified_block_labels(equivalent_blocks, block_structure, impurity_orbitals=None):
+    r"""Assign compact, shell-qualified labels to :func:`block_structure.get_equivalent_blocks`'
+    groups, instead of joining their raw *block indices* (meaningless to a reader -- those
+    are positions in ``block_structure.blocks``, not orbital indices, and e.g.
+    ``N(4,6,9,11)`` neither identifies orbitals nor spans the impurity).
+
+    Each equivalence-class group gets a label like ``l=2,a`` (its shell, plus a per-shell
+    letter distinguishing multiple equivalence classes within one shell, e.g. eg vs t2g),
+    ``mixed,a`` if the group's orbitals don't fall cleanly into one shell, or plain ``a``
+    when no ``impurity_orbitals`` was given (no shell information available at all).
+
+    Parameters
+    ----------
+    equivalent_blocks : list of list of int
+        From :func:`block_structure.get_equivalent_blocks`.
+    block_structure : BlockStructure
+        Its ``.blocks`` are global spin-orbital indices per block.
+    impurity_orbitals : dict, optional
+        ``Basis.impurity_orbitals``.
+
+    Returns
+    -------
+    (labels, legend) : (list of str, list of (str, list of int))
+        ``labels[i]`` is the label for ``equivalent_blocks[i]``; ``legend`` pairs each
+        label with its sorted global orbital indices, for a legend line.
+    """
+    counters = {}
+    labels = []
+    legend = []
+    for blocks in equivalent_blocks:
+        orbs = sorted(orb for b in blocks for orb in block_structure.blocks[b])
+        tag = _block_shell_tag(orbs, impurity_orbitals)
+        counter_key = tag if tag is not None else ""
+        idx = counters.get(counter_key, 0)
+        counters[counter_key] = idx + 1
+        letter = _letter(idx)
+        label = f"{tag},{letter}" if tag is not None else letter
+        labels.append(label)
+        legend.append((label, orbs))
+    return labels, legend
+
+
+def print_impurity_orbital_groups(equivalent_blocks, block_structure, impurity_orbitals=None, file=None):
+    """Print the legend mapping each ``N(...)`` column label to its global orbital indices.
+
+    A no-op when there is only one group (nothing to disambiguate).
+    """
+    _, legend = shell_qualified_block_labels(equivalent_blocks, block_structure, impurity_orbitals)
+    if len(legend) <= 1:
+        return
+    entries = [f"{label}: {orbs}" for label, orbs in legend]
+    print(f"Impurity orbital groups:  {'  '.join(entries)}", file=file)
+
+
 def print_expectation_values(
     rhos,
     es,
@@ -28,6 +116,7 @@ def print_expectation_values(
     j_values=None,
     sisb_values=None,
     sisb_z_values=None,
+    impurity_orbitals=None,
 ):
     """
     print several expectation values, e.g. E, N, L^2.
@@ -39,11 +128,19 @@ def print_expectation_values(
     ``<Sz_imp Sz_bath>``, reported for a collinear spin-polarized bath) adds a
     ``Szi.Szb`` column. When all are ``None`` the output is identical to before (used
     when the eigenstates are not available, e.g. on non-root ranks).
+
+    ``impurity_orbitals`` (``Basis.impurity_orbitals``, optional) makes the ``N``/``Lz``/
+    ``Sz``/``L.S`` columns shell-aware via :func:`compute_shell_observables`: for a
+    multi-shell impurity (e.g. a 2p+3d core-hole model) each shell's own contribution is
+    evaluated separately and summed, instead of misinferring a single ``l`` from the
+    concatenated block. ``None`` (the default) reproduces today's single-shell behaviour
+    exactly.
     """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
     print(f"E0 = {es[0]:9.6f}")
-    block_N_string = [f"N({','.join(f'{b}' for b in blocks)})" for blocks in equivalent_blocks]
+    block_labels, _ = shell_qualified_block_labels(equivalent_blocks, block_structure, impurity_orbitals)
+    block_N_string = [f"N({label})" for label in block_labels]
     # Each block-occupation column is right-aligned to a width that fits both its header
     # and the 7-8 char ``.5f`` value below it, so header and numbers line up.
     block_N_widths = [max(len(Ns), 8) for Ns in block_N_string]
@@ -75,11 +172,9 @@ def print_expectation_values(
         block_occ_string_formatted = ["" for _ in block_occs]
         for ib, b_occ in enumerate(block_occs):
             block_occ_string_formatted[ib] = f"{np.real(b_occ):>{block_N_widths[ib]}.5f}"
-        rho_spherical = rotate_matrix(rho, rot_to_spherical)
-        N, Ndn, Nup = get_occupations_from_rho_spherical(rho_spherical)
-        Lz = get_Lz_from_rho_spherical(rho_spherical)
-        Sz = get_Sz_from_rho_spherical(rho_spherical)
-        LS = get_LS_from_rho_spherical(rho_spherical)
+        totals = compute_shell_observables(rho, rot_to_spherical, impurity_orbitals)["total"]
+        N, Ndn, Nup = totals["n"], totals["n_dn"], totals["n_up"]
+        Lz, Sz, LS = totals["lz"], totals["sz"], totals["l_dot_s"]
         extra_fields = "".join(f"  {vals[i]: 8.6f}" for _, vals in extra)
         print(
             f"{i:>3d}  {e:11.8f}  {N:8.5f}  {Ndn:8.5f}  {Nup:8.5f}  "
@@ -430,33 +525,215 @@ def get_Tz_from_rho_spherical(rho: np.ndarray, l: Optional[int] = None) -> float
     return float(np.real(np.trace(rho @ _single_particle_tz_matrix(l))))
 
 
-_TERM_LETTERS = "SPDFGHIKLMNOQRTUV"
+def impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals=None):
+    r"""Split the impurity density matrix into one spherical-basis block per l-shell.
 
+    The ``get_*_from_rho_spherical`` helpers above are single-shell primitives: each
+    assumes ``rho`` is exactly one spin-doubled ``l``-shell laid out
+    ``[down(2l+1), up(2l+1)]``. Handing them a multi-shell impurity block (e.g. a 2p+3d
+    core-hole impurity) silently misinfers ``l`` from the concatenated orbital count and
+    produces physically wrong Lz/Sz/L.S/etc — this function is the fix: it slices
+    ``rho_imp`` back into one rho per physical shell before any of those helpers run.
 
-def term_symbol(s, l, j, tol=5e-2):
-    r"""Spectroscopic term symbol :math:`^{2S+1}L_J` from quantum numbers.
+    ``rot_to_spherical``'s type is the signal for whether ``impurity_orbitals`` partitions
+    physical shells at all -- **not** each partition's orbital count, which is ambiguous
+    (a cubic shell's t2g manifold has 6 spin-orbitals, the same count as a genuine l=1
+    shell). By construction of every current caller:
+
+    * a **dict** (:func:`get_spectra`'s multi-shell path, ``dict(model.rot_to_spherical)``)
+      is always keyed by the shell's own ``l``, one full spin-doubled shell per key;
+    * a plain **ndarray** (the single-shell path, and every selfenergy run --
+      ``prepare_solver_basis`` collapses it to one matrix even when it internally regroups
+      the impurity into eg/t2g symmetry manifolds) covers the *whole* impurity block as one
+      aggregate shell, exactly like today's un-split behaviour.
 
     Parameters
     ----------
-    s, l, j : float
-        The spin / orbital / total angular-momentum quantum numbers (e.g. from
+    rho_imp : np.ndarray
+        Impurity block of the density matrix, in the computational basis, indexed by
+        position in ``sorted(impurity_indices)`` (the convention used throughout
+        ``groundstate.calc_gs``, e.g. ``rhos[full_impurity_ix]``).
+    rot_to_spherical : np.ndarray or dict
+        Spherical -> computational rotation. A dict (keyed by shell ``l``) splits
+        ``rho_imp`` into one shell per key; a plain array treats the whole block as one
+        shell (today's behaviour).
+    impurity_orbitals : dict, optional
+        ``Basis.impurity_orbitals`` (partition -> list of orbital-index blocks), needed to
+        map each dict key to its global orbital indices. Required when ``rot_to_spherical``
+        is a dict; ignored otherwise. ``None`` (or a non-dict rotation) always yields a
+        single aggregate shell, exactly today's behaviour.
+
+    Yields
+    ------
+    (l, partition, rho_spherical) : tuple of (int or None, hashable or None, np.ndarray)
+        ``l`` is the shell's angular momentum, or ``None`` for the single aggregate-shell
+        case (matching the ``l=None`` "infer from shape" convention of the
+        ``get_*_from_rho_spherical`` helpers). ``partition`` is the ``impurity_orbitals``
+        dict key this shell came from (``None`` in the aggregate case) -- callers that
+        need to join this shell against another per-partition structure (e.g. the
+        per-shell Casimir dict from :func:`make_impurity_casimir_operators`) must use
+        ``partition``, not ``l``: two distinct shells can share the same inferred ``l``,
+        and ``l`` alone would then merge them. Shells are yielded in ascending order of
+        their lowest global orbital index -- the same ordering ``groundstate.calc_gs``
+        uses to build ``rho_imp`` itself (``sorted(impurity_indices)``) -- *not* ascending
+        ``l``; nothing requires the lower-``l`` shell to hold the lower orbital indices.
+    """
+    if not isinstance(rot_to_spherical, dict) or impurity_orbitals is None:
+        yield None, None, rotate_matrix(rho_imp, rot_to_spherical)
+        return
+
+    impurity_indices = sorted(
+        orb for blocks in impurity_orbitals.values() for block in blocks for orb in block
+    )
+    position = {orb: i for i, orb in enumerate(impurity_indices)}
+
+    shells = []
+    for key, blocks in impurity_orbitals.items():
+        if key not in rot_to_spherical:
+            raise KeyError(
+                f"impurity_orbitals partition {key!r} has no matching entry in the "
+                "rot_to_spherical dict; every dict-keyed partition must be a physical "
+                "l-shell with its own rotation."
+            )
+        orbs = sorted(orb for block in blocks for orb in block)
+        n = len(orbs)
+        l = (n // 2 - 1) // 2
+        if 2 * (2 * l + 1) != n:
+            raise ValueError(
+                f"impurity_orbitals partition {key!r} has {n} spin-orbitals, which is not "
+                "a spin-doubled l-shell (2*(2l+1)). rot_to_spherical is a dict, so every "
+                "partition is expected to be one full physical shell keyed by its own l "
+                "(the get_spectra.py contract); this partition breaks that contract."
+            )
+        # Carry the dict key alongside the inferred l: the two coincide for every current
+        # caller, but the rotation lookup below must use the *key* that indexed
+        # rot_to_spherical above, not the independently re-derived l, so a future caller
+        # whose keys aren't literally l can't desync validation from the actual lookup.
+        shells.append((key, l, orbs))
+    shells.sort(key=lambda item: item[2][0])  # ascending lowest global orbital index
+
+    for key, l, orbs in shells:
+        positions = [position[orb] for orb in orbs]
+        rho_shell_computational = rho_imp[np.ix_(positions, positions)]
+        yield l, key, rotate_matrix(rho_shell_computational, rot_to_spherical[key])
+
+
+def compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals=None):
+    r"""Per-shell (and total) one-body impurity observables, from the density matrix.
+
+    Splits ``rho_imp`` into per-shell spherical-basis blocks with
+    :func:`impurity_shell_rhos` and evaluates ``N``/``N(Dn)``/``N(Up)``/``Lz``/``Sz``/
+    ``Lz+2Sz``/``Jz``/``L.S``/``T_z`` on each shell independently, then sums them into a
+    ``"total"`` entry. Every one of these is an additive one-body observable, so the sum
+    over shells is exact -- this ``"total"`` should always be used in place of evaluating
+    the same helpers on the concatenated multi-shell rho (the bug this function replaces).
+
+    Parameters
+    ----------
+    rho_imp : np.ndarray
+        Impurity block of the density matrix, computational basis (see
+        :func:`impurity_shell_rhos`).
+    rot_to_spherical : np.ndarray or dict
+        Spherical -> computational rotation.
+    impurity_orbitals : dict, optional
+        ``Basis.impurity_orbitals``; see :func:`impurity_shell_rhos`.
+
+    Returns
+    -------
+    dict
+        ``{"shells": [...], "total": {...}}``. Each shell dict has keys ``"l"`` (the
+        shell's angular momentum, or ``None`` for a single aggregate shell),
+        ``"partition"`` (the ``impurity_orbitals`` dict key this shell came from, or
+        ``None`` in the aggregate case -- the key to join against
+        :func:`make_impurity_casimir_operators`'s ``per_shell_ops``; two distinct shells
+        can share the same inferred ``l``, so ``l`` alone is not a safe join key),
+        ``"n"`` (total occupation, ``n_dn + n_up``), ``"n_dn"``, ``"n_up"``, ``"lz"``,
+        ``"sz"``, ``"m_z"`` (:math:`\langle L_z+2S_z\rangle`), ``"j_z"``, ``"l_dot_s"``,
+        ``"t_z"``. ``"total"`` has every key except ``"l"``/``"partition"`` (a sum over
+        shells is not itself a shell), each the plain sum of that key over ``"shells"``.
+    """
+    shells = []
+    for l, partition, rho_sph in impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals):
+        n, n_dn, n_up = get_occupations_from_rho_spherical(rho_sph)
+        lz = get_Lz_from_rho_spherical(rho_sph, l)
+        sz = get_Sz_from_rho_spherical(rho_sph, l)
+        m_z, j_z = get_moments_from_rho_spherical(rho_sph, l)
+        l_dot_s = get_LS_from_rho_spherical(rho_sph, l)
+        t_z = get_Tz_from_rho_spherical(rho_sph, l)
+        shells.append(
+            {
+                "l": l,
+                "partition": partition,
+                "n": n,
+                "n_dn": n_dn,
+                "n_up": n_up,
+                "lz": lz,
+                "sz": sz,
+                "m_z": m_z,
+                "j_z": j_z,
+                "l_dot_s": l_dot_s,
+                "t_z": t_z,
+            }
+        )
+    total = {
+        key: sum(shell[key] for shell in shells)
+        for key in ("n", "n_dn", "n_up", "lz", "sz", "m_z", "j_z", "l_dot_s", "t_z")
+    }
+    return {"shells": shells, "total": total}
+
+
+_TERM_LETTERS = "SPDFGHIKLMNOQRTUV"
+
+#: Tolerance for treating a quantum number (S, J as half-integers; L as an integer) as
+#: "clean" rather than a mixed-valence/strongly-hybridized non-integer. Single source of
+#: truth for both `term_symbol`'s own "~" decision and `is_j_sharp`'s manifold-spread
+#: gate (Stage 5 of the multi-shell observable fix): reusing one named tolerance for both
+#: "is this single value clean" and "do these values agree with each other" avoids a
+#: second, independently-tunable literal for what is conceptually the same judgment.
+TERM_SYMBOL_TOL = 5e-2
+
+#: Energy tolerance for grouping eigenstates into a degenerate manifold -- the same scale
+#: `manifold_observable_values` uses internally (`_group_degenerate`) to decide which
+#: states share a physical eigenspace of a Casimir operator. `is_j_sharp` reuses this
+#: exact scale to identify the ground-state manifold, rather than a fresh literal.
+DEGENERACY_TOL = 1e-6
+
+
+def term_symbol(s, l, j=None, tol=TERM_SYMBOL_TOL):
+    r"""Spectroscopic term symbol :math:`^{2S+1}L_J` (or :math:`^{2S+1}L` without ``j``)
+    from quantum numbers.
+
+    Parameters
+    ----------
+    s, l : float
+        The spin / orbital angular-momentum quantum numbers (e.g. from
         :func:`casimir_to_quantum_number` of the impurity Casimirs).
+    j : float, optional
+        The total angular-momentum quantum number. ``None`` omits the ``J`` subscript
+        entirely (e.g. ``"3F"`` rather than ``"3F4"``) -- for use when ``J`` is not a
+        sharp quantum number across the manifold (see :func:`is_j_sharp`), where
+        reporting *some* ``J`` subscript would misleadingly imply one exists.
     tol : float, optional
         Tolerance for treating ``s``/``j`` as half-integers and ``l`` as an integer.
 
     Returns
     -------
     str
-        E.g. ``"3F4"`` or ``"2F7/2"``. When the values are not clean (half-)integers —
-        a mixed-valence or strongly hybridized state — the nearest term is prefixed
-        with ``~`` (e.g. ``"~3F4"``) to mark it approximate.
+        E.g. ``"3F4"`` or ``"2F7/2"`` (``"3F"`` when ``j`` is ``None``). When the values
+        are not clean (half-)integers — a mixed-valence or strongly hybridized state —
+        the nearest term is prefixed with ``~`` (e.g. ``"~3F4"``) to mark it approximate.
     """
-    s, l, j = float(s), float(l), float(j)
-    clean = abs(2 * s - round(2 * s)) <= 2 * tol and abs(l - round(l)) <= tol and abs(2 * j - round(2 * j)) <= 2 * tol
+    s, l = float(s), float(l)
     l_r = round(l)
     mult = round(2 * s + 1)
-    j2_r = round(2 * j)
     letter = _TERM_LETTERS[l_r] if l_r < len(_TERM_LETTERS) else f"(L={l_r})"
+    if j is None:
+        clean = abs(2 * s - round(2 * s)) <= 2 * tol and abs(l - round(l)) <= tol
+        term = f"{mult}{letter}"
+        return term if clean else "~" + term
+    j = float(j)
+    clean = abs(2 * s - round(2 * s)) <= 2 * tol and abs(l - round(l)) <= tol and abs(2 * j - round(2 * j)) <= 2 * tol
+    j2_r = round(2 * j)
     j_str = str(j2_r // 2) if j2_r % 2 == 0 else f"{j2_r}/2"
     term = f"{mult}{letter}{j_str}"
     return term if clean else "~" + term
@@ -568,7 +845,7 @@ def make_orbital_angular_momentum_operators(channels):
     return ManyBodyOperator(l_plus), ManyBodyOperator(l_minus), ManyBodyOperator(l_z)
 
 
-def make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical):
+def make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical, per_shell=False):
     r"""Build the total impurity ``(L, S, J)`` ladder/Cartan operators in the
     **computational** basis.
 
@@ -590,17 +867,28 @@ def make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical):
     rot_to_spherical : np.ndarray or dict
         The spherical→computational rotation: a single ``2(2l+1)`` matrix, or a dict
         ``{partition: matrix}`` (as in ``get_spectra``).
+    per_shell : bool, default False
+        When ``True``, also return the un-summed per-shell operators (see below). Every
+        partition must be a full spin-doubled shell either way -- this does not change
+        which inputs raise, it only additionally exposes what was already computed per
+        shell before being summed.
 
     Returns
     -------
     (L, S, J) : tuple
         Each is ``(plus, minus, z)`` as ``ManyBodyOperator``s, ready for
         :func:`apply_casimir` / :func:`expect_casimir`. ``J = L + S``.
+    per_shell_ops : dict, only when ``per_shell=True``
+        ``{partition: (l, l_ops, s_ops, j_ops)}``, one entry per impurity partition, in
+        the same ``(plus, minus, z)`` layout as the totals above -- e.g. ``L`` and ``S``
+        for one shell, summed, reproduce that shell's contribution to the totals exactly
+        (the total is a plain sum over shells, since they address disjoint orbitals).
     """
     # One operator per component, accumulated over the shells with the operator algebra
     # (the shells address disjoint orbitals, so this is a plain direct sum).
     l_plus, l_minus, l_z = ManyBodyOperator(), ManyBodyOperator(), ManyBodyOperator()
     s_plus, s_minus, s_z = ManyBodyOperator(), ManyBodyOperator(), ManyBodyOperator()
+    per_shell_ops = {}
     for partition, blocks in impurity_orbitals.items():
         orbs = [orb for block in blocks for orb in block]
         n_so = len(orbs)
@@ -632,9 +920,20 @@ def make_impurity_casimir_operators(impurity_orbitals, rot_to_spherical):
         s_z += shell[3]
         s_plus += shell[4]
         s_minus += shell[5]
+        if per_shell:
+            shell_l_ops = (shell[1], shell[2], shell[0])
+            shell_s_ops = (shell[4], shell[5], shell[3])
+            shell_j_ops = (
+                shell_l_ops[0] + shell_s_ops[0],
+                shell_l_ops[1] + shell_s_ops[1],
+                shell_l_ops[2] + shell_s_ops[2],
+            )
+            per_shell_ops[partition] = (shell_l, shell_l_ops, shell_s_ops, shell_j_ops)
     l_ops = (l_plus, l_minus, l_z)
     s_ops = (s_plus, s_minus, s_z)
     j_ops = (l_ops[0] + s_ops[0], l_ops[1] + s_ops[1], l_ops[2] + s_ops[2])
+    if per_shell:
+        return l_ops, s_ops, j_ops, per_shell_ops
     return l_ops, s_ops, j_ops
 
 
@@ -1136,7 +1435,9 @@ def print_screening_diagnostics(scr, file=None):
         print(line, file=file)
 
 
-def compute_magnetic_summary(rho_imp, rot_to_spherical, s2=None, l2=None, j2=None):
+def compute_magnetic_summary(
+    rho_imp, rot_to_spherical, s2=None, l2=None, j2=None, impurity_orbitals=None, j_sharp=True
+):
     r"""JSON-able summary of the magnetism/multiplet observables (A-bundle).
 
     Same underlying helpers as :func:`print_thermal_expectation_values`; used to persist
@@ -1151,32 +1452,38 @@ def compute_magnetic_summary(rho_imp, rot_to_spherical, s2=None, l2=None, j2=Non
     s2, l2, j2 : float, optional
         Thermal Casimir expectation values; when all are given the term symbol and
         Landé/effective moments are included.
+    impurity_orbitals : dict, optional
+        ``Basis.impurity_orbitals``; makes ``lz``/``sz``/etc shell-aware via
+        :func:`compute_shell_observables` -- see :func:`print_expectation_values`.
+    j_sharp : bool, default True
+        From :func:`is_j_sharp`; gates ``term``/``g_j``/``mu_eff`` via
+        :func:`gated_term_symbol`, matching the printed report -- see
+        :func:`print_thermal_expectation_values`. The persisted JSON must agree with what
+        is printed, so this defaults to ``True`` (ungated) only for callers that have not
+        computed ``j_sharp``, not as a "usually fine" assumption.
 
     Returns
     -------
     dict
     """
-    rho_sph = rotate_matrix(rho_imp, rot_to_spherical)
-    m_z, j_z = get_moments_from_rho_spherical(rho_sph)
+    totals = compute_shell_observables(rho_imp, rot_to_spherical, impurity_orbitals)["total"]
     out = {
-        "lz": float(get_Lz_from_rho_spherical(rho_sph)),
-        "sz": float(get_Sz_from_rho_spherical(rho_sph)),
-        "m_z": m_z,
-        "j_z": j_z,
-        "t_z": get_Tz_from_rho_spherical(rho_sph),
-        "l_dot_s": float(get_LS_from_rho_spherical(rho_sph)),
+        "lz": float(totals["lz"]),
+        "sz": float(totals["sz"]),
+        "m_z": float(totals["m_z"]),
+        "j_z": float(totals["j_z"]),
+        "t_z": float(totals["t_z"]),
+        "l_dot_s": float(totals["l_dot_s"]),
     }
     if s2 is not None and l2 is not None and j2 is not None:
-        s_qn = casimir_to_quantum_number(s2)
-        l_qn = casimir_to_quantum_number(l2)
-        j_qn = casimir_to_quantum_number(j2)
-        g_j, mu_eff, mu_spin = lande_g_and_moments(s2, l2, j2)
+        _, _, mu_spin = lande_g_and_moments(s2, l2, j2)
+        term, g_j, mu_eff = gated_term_symbol(s2, l2, j2, j_sharp)
         out.update(
             {
                 "s2": float(np.real(s2)),
                 "l2": float(np.real(l2)),
                 "j2": float(np.real(j2)),
-                "term": term_symbol(s_qn, l_qn, j_qn),
+                "term": term,
                 "g_j": g_j,
                 "mu_eff": mu_eff,
                 "mu_spin_only": mu_spin,
@@ -1185,7 +1492,9 @@ def compute_magnetic_summary(rho_imp, rot_to_spherical, s2=None, l2=None, j2=Non
     return out
 
 
-def compute_state_summary(rhos, es, rot_to_spherical, s_values=None, l_values=None, j_values=None, entanglement=None):
+def compute_state_summary(
+    rhos, es, rot_to_spherical, s_values=None, l_values=None, j_values=None, entanglement=None, impurity_orbitals=None
+):
     r"""Compact per-eigenstate summary rows (term symbol, moments, entanglement).
 
     One dict per state with ``energy_rel``, ``m_z`` (:math:`\langle L_z+2S_z\rangle`),
@@ -1209,6 +1518,10 @@ def compute_state_summary(rhos, es, rot_to_spherical, s_values=None, l_values=No
         Per-state quantum numbers (from the Casimirs); all three needed for ``term``.
     entanglement : dict or None
         The dict from :func:`gs_statistics.compute_entanglement_entropy`.
+    impurity_orbitals : dict, optional
+        ``Basis.impurity_orbitals``; makes ``m_z``/``j_z`` shell-aware (summed over
+        shells) via :func:`compute_shell_observables` -- see
+        :func:`print_expectation_values`.
 
     Returns
     -------
@@ -1220,8 +1533,8 @@ def compute_state_summary(rhos, es, rot_to_spherical, s_values=None, l_values=No
     ent_values = entanglement["per_state_entropy"] if entanglement is not None else None
     rows = []
     for i, (e, rho) in enumerate(zip(es, rhos)):
-        rho_sph = rotate_matrix(rho, rot_to_spherical)
-        m_z, j_z = get_moments_from_rho_spherical(rho_sph)
+        totals = compute_shell_observables(rho, rot_to_spherical, impurity_orbitals)["total"]
+        m_z, j_z = totals["m_z"], totals["j_z"]
         row = {"state": i, "energy_rel": float(e - e0), "m_z": m_z, "j_z": j_z}
         if have_term:
             row["term"] = term_symbol(s_values[i], l_values[i], j_values[i])
@@ -1300,7 +1613,9 @@ def _group_degenerate(energies, tol):
     return groups
 
 
-def manifold_observable_values(eigenstates, energies, apply_op, degeneracy_tol=1e-6, comm=None, redistribute=None):
+def manifold_observable_values(
+    eigenstates, energies, apply_op, degeneracy_tol=DEGENERACY_TOL, comm=None, redistribute=None
+):
     r"""Per-state physical values of an observable on a low-energy manifold.
 
     Block Lanczos returns a *block* spanning a (near-)degenerate eigenspace; any
@@ -1396,6 +1711,137 @@ def casimir_to_quantum_number(jj_plus_1):
     return 0.5 * (-1.0 + np.sqrt(max(1.0 + 4.0 * np.real(jj_plus_1), 0.0)))
 
 
+def is_j_sharp(j_values, es, degeneracy_tol=DEGENERACY_TOL, term_tol=TERM_SYMBOL_TOL):
+    r"""Whether ``J`` is a sharp (well-defined) quantum number across the ground-state
+    manifold.
+
+    Without spin-orbit coupling, ``J`` is generically **not** a good quantum number: the
+    crystal-field/Coulomb multiplet splits states by ``S`` and ``L`` but leaves ``J``
+    free to vary within one energy-degenerate manifold (this is real physics, not
+    numerical noise -- see e.g. a cubic ``d^8`` ground manifold, where ``J`` ranges over
+    several values at the same energy). Reporting a single ``term``/``g_J``/``mu_eff``
+    for such a manifold would misleadingly imply a definite ``J``.
+
+    Groups ``es`` into near-degenerate manifolds with :func:`_group_degenerate`, using
+    the *same* ``degeneracy_tol`` that :func:`manifold_observable_values` already uses to
+    decide two states are degenerate (not a fresh energy scale), then checks whether the
+    ground manifold's per-state ``J`` quantum numbers (``j_values``) all agree to within
+    ``term_symbol``'s own half-integer cleanliness tolerance (``term_tol`` -- reused
+    rather than inventing a second "how much spread is too much" literal).
+
+    ``_group_degenerate`` compares each candidate state against the *first* energy in the
+    growing block, not transitively against its immediate neighbour, so a manifold spread
+    over many states with consecutive gaps just under ``degeneracy_tol`` can be grouped
+    narrower than a transitive-closure reading of "all mutually within tolerance" would
+    give. That only ever shrinks the ground block this function inspects, which is the
+    conservative direction: a narrower block has less room to show ``J``-spread, so this
+    can only bias the gate towards *not* suppressing, never towards a false suppression.
+
+    Parameters
+    ----------
+    j_values : array_like
+        Per-state ``J`` quantum numbers (e.g. ``casimir_to_quantum_number`` applied to
+        :func:`manifold_observable_values`'s per-state ``J^2`` eigenvalues), one per
+        retained eigenstate, in the same order as ``es``.
+    es : array_like
+        The corresponding eigen-energies (need not be pre-sorted).
+    degeneracy_tol : float, default :data:`DEGENERACY_TOL`
+        Energy tolerance for the ground-state manifold grouping.
+    term_tol : float, default :data:`TERM_SYMBOL_TOL`
+        ``J``-spread tolerance within the ground manifold.
+
+    Returns
+    -------
+    bool
+    """
+    es = np.asarray(es, dtype=float)
+    j_values = np.asarray(j_values, dtype=float)
+    order = np.argsort(es, kind="stable")
+    ground_block = _group_degenerate(es[order], degeneracy_tol)[0]
+    ground_j = j_values[order[ground_block]]
+    return bool(np.max(ground_j) - np.min(ground_j) <= 2 * term_tol)
+
+
+def gated_term_symbol(s2, l2, j2, j_sharp):
+    r"""Term symbol / Landé ``g_J`` / ``mu_eff`` from thermal Casimir values, gated on
+    ``J`` being a sharp quantum number across the manifold (see :func:`is_j_sharp`).
+
+    When ``j_sharp`` is ``False`` the term symbol is built from ``S``/``L`` alone (no
+    ``J`` subscript, e.g. ``"~3F"`` rather than ``"~3F4"``) and ``g_J``/``mu_eff`` --
+    which need a well-defined ``J`` -- are suppressed (``None``). ``mu_spin_only`` is
+    unaffected by this gate (it only needs ``S``) and is not returned here; compute it
+    separately with :func:`lande_g_and_moments` as before.
+
+    Both call sites that print a term symbol (the scalar magnetism block in
+    :func:`print_thermal_expectation_values` and the per-shell table in
+    :func:`_print_shell_observable_table`) must go through this one function, sharing
+    the same ``j_sharp`` decision -- otherwise they could print contradictory terms
+    (e.g. a gated ``~3F`` next to an ungated ``~3F4``) for the same manifold.
+
+    Parameters
+    ----------
+    s2, l2, j2 : float
+        Thermally-averaged impurity ``S(S+1)`` / ``L(L+1)`` / ``J(J+1)``.
+    j_sharp : bool
+        From :func:`is_j_sharp`.
+
+    Returns
+    -------
+    (term, g_j, mu_eff) : (str, float or None, float or None)
+    """
+    s_qn = casimir_to_quantum_number(s2)
+    l_qn = casimir_to_quantum_number(l2)
+    if not j_sharp:
+        return term_symbol(s_qn, l_qn, None), None, None
+    j_qn = casimir_to_quantum_number(j2)
+    term = term_symbol(s_qn, l_qn, j_qn)
+    g_j, mu_eff, _ = lande_g_and_moments(s2, l2, j2)
+    return term, g_j, mu_eff
+
+
+def _print_shell_observable_table(shells, total, shell_casimir, j_sharp=True):
+    r"""Print the *Per-shell impurity observables* table (one row per shell + a total row).
+
+    ``shells`` is ``compute_shell_observables(...)["shells"]`` (one dict per shell, in
+    ascending global-orbital order); ``total`` is that same call's ``["total"]`` -- passed
+    in rather than re-summed here, so the table's total row is guaranteed to equal the
+    scalar charge/magnetism rows printed above it, not an independently computed number
+    that happens to agree. ``shell_casimir`` is ``{partition: {"l", "s2_thermal",
+    "l2_thermal", "j2_thermal"}}`` from ``calc_gs``'s per-shell Casimir evaluation, joined
+    here by ``shell["partition"]`` -- **not** ``shell["l"]``, since two distinct shells can
+    share the same inferred ``l`` (e.g. two independent p-shells). A shell absent from
+    ``shell_casimir`` (Casimirs unavailable/skipped) prints its N/Lz/Sz/L.S/T_z columns
+    with the ``<S^2>``/``<L^2>``/``<J^2>``/``term`` columns left blank.
+
+    The total row deliberately excludes the Casimir columns, since ``S^2``/``L^2``/``J^2``
+    do not simply add across shells (a many-body Casimir of a combined system is not the
+    sum of its parts' Casimirs).
+    """
+    header = (
+        f"  {'shell':>5s}  {'N':>8s}  {'N(Dn)':>8s}  {'N(Up)':>8s}  {'Lz':>9s}  {'Sz':>9s}  "
+        f"{'L.S':>9s}  {'T_z':>9s}  {'<S^2>':>7s}  {'<L^2>':>7s}  {'<J^2>':>7s}  {'term':>6s}"
+    )
+    print("Per-shell impurity observables:")
+    print(header)
+    for shell in shells:
+        shell_label = f"l={shell['l']}" if shell["l"] is not None else "?"
+        casimir = shell_casimir.get(shell["partition"], {}) if shell_casimir else {}
+        line = (
+            f"  {shell_label:>5s}  {shell['n']:8.5f}  {shell['n_dn']:8.5f}  {shell['n_up']:8.5f}  "
+            f"{shell['lz']: 9.5f}  {shell['sz']: 9.5f}  {shell['l_dot_s']: 9.5f}  {shell['t_z']: 9.5f}"
+        )
+        if all(k in casimir for k in ("s2_thermal", "l2_thermal", "j2_thermal")):
+            s2, l2, j2 = (np.real(casimir[k]) for k in ("s2_thermal", "l2_thermal", "j2_thermal"))
+            term, _, _ = gated_term_symbol(s2, l2, j2, j_sharp)
+            line += f"  {s2:7.4f}  {l2:7.4f}  {j2:7.4f}  {term:>6s}"
+        print(line)
+    total_line = (
+        f"  {'total':>5s}  {total['n']:8.5f}  {total['n_dn']:8.5f}  {total['n_up']:8.5f}  "
+        f"{total['lz']: 9.5f}  {total['sz']: 9.5f}  {total['l_dot_s']: 9.5f}  {total['t_z']: 9.5f}"
+    )
+    print(total_line)
+
+
 def print_thermal_expectation_values(
     rho_thermal,
     e_thermal,
@@ -1409,6 +1855,9 @@ def print_thermal_expectation_values(
     sisb_z_connected=None,
     sisb_pairing_approx=False,
     extra_groups=None,
+    impurity_orbitals=None,
+    shell_casimir=None,
+    j_sharp=True,
 ):
     """
     print several thermal expectation values, e.g. E, N, Sz, Lz.
@@ -1429,11 +1878,29 @@ def print_thermal_expectation_values(
     print as ``<Sz_imp.Sz_bath>`` / ``cov(Sz_imp,Sz_bath)`` — and
     ``sisb_pairing_approx=True`` marks the full ``<S_imp.S_bath>`` line as depending on
     the (index-convention) bath down↔up pairing.
+
+    ``impurity_orbitals`` (``Basis.impurity_orbitals``, optional) makes the charge/
+    magnetism rows shell-aware via :func:`compute_shell_observables` -- see
+    :func:`print_expectation_values`. ``None`` reproduces today's single-shell behaviour.
+    When it resolves to more than one shell, a *Per-shell impurity observables* table is
+    additionally printed (see :func:`_print_shell_observable_table`); ``shell_casimir``
+    (from ``calc_gs``'s per-shell Casimir evaluation) supplies that table's ``<S^2>``/
+    ``<L^2>``/``<J^2>``/``term`` columns when given.
+
+    ``j_sharp`` (default ``True``, from :func:`is_j_sharp`) gates the scalar ``term``/
+    ``g_J``/``mu_eff`` rows *and* the per-shell table's ``term`` column through the same
+    :func:`gated_term_symbol` decision -- without spin-orbit coupling ``J`` is generically
+    not a good quantum number, so reporting one value for it is misleading; when
+    ``j_sharp=False`` the term omits the ``J`` subscript and ``g_J``/``mu_eff`` are
+    suppressed (``mu_spin_only`` is unaffected). The default ``True`` reproduces today's
+    (ungated) behaviour for callers that have not computed ``j_sharp``.
     """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
-    rho_thermal_spherical = rotate_matrix(rho_thermal, rot_to_spherical)
-    N, Ndn, Nup = get_occupations_from_rho_spherical(rho_thermal_spherical)
+    block_labels, _ = shell_qualified_block_labels(equivalent_blocks, block_structure, impurity_orbitals)
+    shell_observables = compute_shell_observables(rho_thermal, rot_to_spherical, impurity_orbitals)
+    totals = shell_observables["total"]
+    N, Ndn, Nup = totals["n"], totals["n_dn"], totals["n_up"]
 
     # Collect (label, value, suffix) rows into titled sub-blocks, then print with the '='
     # signs aligned across all blocks and the numbers right-aligned (sign-padded), so the
@@ -1444,33 +1911,28 @@ def print_thermal_expectation_values(
         ("<N(Dn)>", Ndn, ""),
         ("<N(Up)>", Nup, ""),
     ]
-    for blocks in equivalent_blocks:
+    for blocks, label in zip(equivalent_blocks, block_labels):
         occ = np.sum(
             np.diag(rho_thermal)[[orb - orb_offset for block in blocks for orb in block_structure.blocks[block]]]
         ).real
-        charge_rows.append((f"<N({','.join(str(orb) for orb in blocks)})>", occ, ""))
+        charge_rows.append((f"<N({label})>", occ, ""))
     magnetism_rows = [
-        ("<Lz>", get_Lz_from_rho_spherical(rho_thermal_spherical), ""),
-        ("<Sz>", get_Sz_from_rho_spherical(rho_thermal_spherical), ""),
+        ("<Lz>", totals["lz"], ""),
+        ("<Sz>", totals["sz"], ""),
     ]
-    m_z, j_z = get_moments_from_rho_spherical(rho_thermal_spherical)
-    magnetism_rows.append(("<Lz+2Sz>", m_z, "(saturation moment m_z, in mu_B)"))
-    magnetism_rows.append(("<Jz>", j_z, ""))
-    magnetism_rows.append(("<L.S>", get_LS_from_rho_spherical(rho_thermal_spherical), ""))
-    magnetism_rows.append(
-        ("<T_z>", get_Tz_from_rho_spherical(rho_thermal_spherical), "(magnetic dipole, XMCD spin sum rule)")
-    )
+    magnetism_rows.append(("<Lz+2Sz>", totals["m_z"], "(saturation moment m_z, in mu_B)"))
+    magnetism_rows.append(("<Jz>", totals["j_z"], ""))
+    magnetism_rows.append(("<L.S>", totals["l_dot_s"], ""))
+    magnetism_rows.append(("<T_z>", totals["t_z"], "(magnetic dipole, XMCD spin sum rule)"))
     for label, value in (("S", s_thermal), ("L", l_thermal), ("J", j_thermal)):
         if value is not None:
             magnetism_rows.append(
                 (f"<{label}^2>", np.real(value), f"({label} = {casimir_to_quantum_number(value): 6.4f})")
             )
     if s_thermal is not None and l_thermal is not None and j_thermal is not None:
-        s_qn = casimir_to_quantum_number(s_thermal)
-        l_qn = casimir_to_quantum_number(l_thermal)
-        j_qn = casimir_to_quantum_number(j_thermal)
-        g_j, mu_eff, mu_spin = lande_g_and_moments(s_thermal, l_thermal, j_thermal)
-        magnetism_rows.append(("term", None, term_symbol(s_qn, l_qn, j_qn)))
+        _, _, mu_spin = lande_g_and_moments(s_thermal, l_thermal, j_thermal)
+        term, g_j, mu_eff = gated_term_symbol(s_thermal, l_thermal, j_thermal, j_sharp)
+        magnetism_rows.append(("term", None, term))
         if g_j is not None:
             magnetism_rows.append(("g_J", g_j, ""))
             magnetism_rows.append(("mu_eff", mu_eff, "(g_J sqrt(<J^2>), in mu_B)"))
@@ -1508,3 +1970,7 @@ def print_thermal_expectation_values(
             if suffix and value is not None:
                 line += f"  {suffix}"
             print(line)
+
+    if len(shell_observables["shells"]) > 1:
+        print()
+        _print_shell_observable_table(shell_observables["shells"], totals, shell_casimir, j_sharp)

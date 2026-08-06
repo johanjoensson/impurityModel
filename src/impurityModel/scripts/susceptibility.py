@@ -10,6 +10,10 @@ from mpi4py import MPI
 
 from impurityModel.ed.model import BasisOptions, Meshes, SolverOptions, load_model, load_selfenergy_archive
 from impurityModel.ed.susceptibility import calc_susceptibility_workflow
+from impurityModel.scripts._units import convert_energy_args
+
+#: CLI attributes converted by --unit; kept in one place so add_arguments and run agree on scope.
+_ENERGY_FIELDS = ("Fdd", "xi", "hField", "tau", "w_min", "w_max", "delta")
 
 
 def add_arguments(parser):
@@ -47,6 +51,16 @@ def add_arguments(parser):
     parser.add_argument("--nBaths", type=int, default=10, help="Total number of bath states.")
     parser.add_argument("--n0imps", type=int, default=8, help="Nominal impurity occupation.")
     parser.add_argument(
+        "--unit",
+        type=str,
+        choices=["eV", "Ry"],
+        default="eV",
+        help=(
+            "Energy unit for every energy-valued parameter below (Fdd, xi, hField, tau, "
+            "w_min, w_max, delta). Converted to eV immediately after parsing."
+        ),
+    )
+    parser.add_argument(
         "--Fdd", type=float, nargs="+", default=[7.5, 0, 9.9, 0, 6.6], help="Slater-Condon parameters Fdd."
     )
     parser.add_argument("--xi", type=float, default=0, help="SOC value for the correlated orbitals.")
@@ -74,6 +88,10 @@ def add_arguments(parser):
 
 def run(args):
     """Build the model and option groups from ``args`` and run the susceptibility workflow."""
+    # w_min/w_max/delta are always read from the CLI below (even with --from-archive); Fdd/xi/
+    # hField/tau are only read on the non-archive path. Converting all of them unconditionally
+    # here is harmless on the archive path since the unused ones are simply never read.
+    convert_energy_args(args, _ENERGY_FIELDS, args.unit)
     comm = MPI.COMM_WORLD
 
     if args.from_archive:

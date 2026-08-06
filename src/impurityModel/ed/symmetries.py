@@ -77,6 +77,55 @@ def _one_body_matrix(op, n_orb=None, h0_matrix=None, must_span=None):
     return extract_tensors(op, n_orb=n_orb, two_body=False)[0]
 
 
+def check_kramers_degeneracy(h_dense, rtol=None):
+    """Find eigenvalue clusters of ``h_dense`` with odd multiplicity.
+
+    Time-reversal symmetry pairs every eigenstate of a spin-orbital one-body Hamiltonian with
+    its Kramers partner at the same energy, so every eigenvalue cluster of a TR-symmetric ``h``
+    has even size. An odd-sized cluster is a direct, basis-independent witness that ``h`` breaks
+    time-reversal symmetry -- most often, for an ``.h0`` file, a bath fit that landed two
+    TR-partner blocks in different local minima (see ``doc/h0_file_format.md``, Basis and spin
+    ordering). It is not itself proof of a bug: a genuinely spin-polarised or field-dressed
+    Hamiltonian breaks Kramers degeneracy on purpose.
+
+    Parameters
+    ----------
+    h_dense : ndarray
+        Dense, Hermitian one-body matrix (e.g. ``H0File.to_matrix()``).
+    rtol : float, optional
+        Eigenvalues within ``rtol * max(abs(eigenvalues))`` of each other are one cluster.
+        Defaults to :data:`h0_format.DEFAULT_DROP_TOLERANCE`, the format's own noise floor
+        (the same 1e-12 relative scale used to drop matrix elements and by
+        ``rotate_hamiltonian``'s default tolerance) -- reused rather than a new literal.
+
+    Returns
+    -------
+    list of dict
+        One entry per odd-multiplicity cluster, each ``{"energy": float, "multiplicity": int}``,
+        sorted by energy. Empty if ``h_dense`` is Kramers-degenerate to within ``rtol``.
+    """
+    if rtol is None:
+        from impurityModel.ed.h0_format import DEFAULT_DROP_TOLERANCE as rtol  # noqa: PLC0415
+
+    w = np.linalg.eigvalsh(h_dense)
+    if w.size == 0:
+        return []
+    scale = np.abs(w).max()
+    atol = rtol * scale if scale > 0 else rtol
+
+    clusters = [[w[0]]]
+    for x in w[1:]:
+        if x - clusters[-1][-1] <= atol:
+            clusters[-1].append(x)
+        else:
+            clusters.append([x])
+    return [
+        {"energy": float(np.mean(cluster)), "multiplicity": len(cluster)}
+        for cluster in clusters
+        if len(cluster) % 2
+    ]
+
+
 def conserved_subset_charges(op, n_orb=None, tol=1e-9):
     r"""Find the orbital subsets whose total occupation is conserved by the **full** ``op``.
 
