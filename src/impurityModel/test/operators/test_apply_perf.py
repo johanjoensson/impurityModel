@@ -331,8 +331,8 @@ def test_normal_ordering_ab_invariance(oracle_fixtures):
     _assert_matches("non_normal_ordered", on, off)
 
 
-def test_normal_ordering_multiplier(oracle_fixtures, capsys):
-    """Report the term-count multiplier (Phase 3b) and guard against a blow-up.
+def test_normal_ordering_multiplier(oracle_fixtures):
+    """Guard against a normal-order term-count blow-up.
 
     The constructor-built fixtures are canonical, so their flat representation is a copy
     of their stored terms by construction -- an on/off A/B on them measures nothing. The
@@ -340,20 +340,18 @@ def test_normal_ordering_multiplier(oracle_fixtures, capsys):
     anticommutator recursion actually runs: a contraction-heavy input is *allowed* to
     expand (each ``c_a c^d_b`` crossing emits a contraction term), but not without bound.
     """
-    with capsys.disabled():
-        for name in FIXTURE_NAMES:
-            op, _ = oracle_fixtures[name]
-            assert op.is_canonical(), f"{name} fixture should be canonical from its constructor"
-            assert op.num_flat_terms() == len(op), f"{name} flat rep should mirror canonical storage"
+    for name in FIXTURE_NAMES:
+        op, _ = oracle_fixtures[name]
+        assert op.is_canonical(), f"{name} fixture should be canonical from its constructor"
+        assert op.num_flat_terms() == len(op), f"{name} flat rep should mirror canonical storage"
 
-        raw_op = _make_non_normal_ordered(random.Random(11), 60)
-        raw_op.set_normal_ordering(False)
-        raw = raw_op.num_flat_terms()
-        raw_op.set_normal_ordering(True)
-        normal = raw_op.num_flat_terms()
-        mult = normal / raw if raw else 1.0
-        print(f"non-canonical normal-order multiplier: {raw} -> {normal} ({mult:.2f}x)")
-        assert mult <= 4.0, f"normal-order expansion {mult:.2f} exceeds 4.0"
+    raw_op = _make_non_normal_ordered(random.Random(11), 60)
+    raw_op.set_normal_ordering(False)
+    raw = raw_op.num_flat_terms()
+    raw_op.set_normal_ordering(True)
+    normal = raw_op.num_flat_terms()
+    mult = normal / raw if raw else 1.0
+    assert mult <= 4.0, f"normal-order expansion {mult:.2f} exceeds 4.0"
 
 
 @pytest.mark.benchmark
