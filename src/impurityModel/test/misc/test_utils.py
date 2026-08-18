@@ -10,6 +10,11 @@ import pytest
 
 from impurityModel.ed.utils import (
     REPORT_WIDTH,
+    V_DEBUG,
+    V_DETAIL,
+    V_RESULT,
+    V_SUMMARY,
+    Reporter,
     _float_field_width,
     matrix_connectivity_print,
     matrix_print,
@@ -201,3 +206,56 @@ def test_density_matrix_summary_prints_complex_offdiagonal(capsys):
     print_density_matrix_summary(m)
     out = capsys.readouterr().out
     assert "(  0,  2) =  0.01000+0.02000j" in out
+
+
+# --------------------------------------------------------------------------- #
+# Reporter
+# --------------------------------------------------------------------------- #
+def test_reporter_levels_are_ordered():
+    assert V_RESULT < V_SUMMARY < V_DETAIL < V_DEBUG
+
+
+def test_reporter_default_level_prints_only_at_verbosity_0(capsys):
+    r = Reporter(verbosity=V_RESULT, rank=0)
+    r("always shown", level=V_RESULT)
+    r("hidden", level=V_SUMMARY)
+    out = capsys.readouterr().out
+    assert out.strip() == "always shown"
+
+
+def test_reporter_higher_verbosity_unlocks_higher_levels(capsys):
+    r = Reporter(verbosity=V_DETAIL, rank=0)
+    r("result", level=V_RESULT)
+    r("summary", level=V_SUMMARY)
+    r("detail", level=V_DETAIL)
+    r("debug", level=V_DEBUG)
+    out = capsys.readouterr().out
+    assert "result" in out and "summary" in out and "detail" in out
+    assert "debug" not in out
+
+
+def test_reporter_nonzero_rank_never_prints(capsys):
+    r = Reporter(verbosity=V_DEBUG, rank=1)
+    r("should not appear", level=V_RESULT)
+    assert capsys.readouterr().out == ""
+
+
+def test_reporter_enabled_matches_call_gating():
+    r = Reporter(verbosity=V_SUMMARY, rank=0)
+    assert r.enabled(V_RESULT)
+    assert r.enabled(V_SUMMARY)
+    assert not r.enabled(V_DETAIL)
+    r_other_rank = Reporter(verbosity=V_DEBUG, rank=2)
+    assert not r_other_rank.enabled(V_RESULT)
+
+
+def test_reporter_banner_and_rule_are_gated(capsys):
+    r = Reporter(verbosity=V_RESULT, rank=0)
+    r.banner("Title", level=V_SUMMARY)
+    r.rule("Section", level=V_SUMMARY)
+    assert capsys.readouterr().out == ""
+
+    r = Reporter(verbosity=V_SUMMARY, rank=0)
+    r.banner("Title", level=V_SUMMARY)
+    out = capsys.readouterr().out
+    assert "Title" in out and "=" * REPORT_WIDTH in out

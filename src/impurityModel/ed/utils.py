@@ -249,6 +249,58 @@ def report_rule(title: str, file=None) -> None:
     print(f"\n{head}{'-' * max(0, REPORT_WIDTH - len(head))}", file=file)
 
 
+#: Verbosity levels shared by the CLIs and drivers. ``V_RESULT`` (0, the default) is not
+#: gated on directly -- warnings and results print unconditionally (rank 0 only); the
+#: named levels below gate everything else.
+V_RESULT = 0
+V_SUMMARY = 1
+V_DETAIL = 2
+V_DEBUG = 3
+
+
+class Reporter:
+    """Rank- and verbosity-gated print helper for driver-layer code.
+
+    Wraps an integer ``rank`` (never an ``mpi4py`` communicator, so this class cannot
+    perform a collective and stays safe to construct on every rank independently) and an
+    integer ``verbosity``. Intended for use above :func:`run_units_distributed` and
+    similar split-communicator boundaries -- under a split communicator "rank 0" is the
+    color root, not the world root, so a ``Reporter`` must always be built from the local
+    communicator's rank, never a cached world rank. Kernel- and GF-unit-level prints keep
+    their existing local-comm-derived rank gating rather than routing through this class.
+
+    Parameters
+    ----------
+    verbosity : int
+        Current verbosity level (0-3); compare against ``V_RESULT``..``V_DEBUG``.
+    rank : int, default 0
+        Rank of the calling process within the local communicator.
+    """
+
+    def __init__(self, verbosity: int, rank: int = 0):
+        self.verbosity = verbosity
+        self.rank = rank
+
+    def enabled(self, level: int) -> bool:
+        """Whether a message at ``level`` would be printed on this rank."""
+        return self.rank == 0 and self.verbosity >= level
+
+    def __call__(self, msg: str = "", *, level: int = V_SUMMARY, flush: bool = False) -> None:
+        """Print ``msg`` if ``level`` is enabled at the current verbosity, on rank 0 only."""
+        if self.enabled(level):
+            print(msg, flush=flush)
+
+    def banner(self, title: str, *, level: int = V_SUMMARY) -> None:
+        """``report_banner`` gated on ``level``."""
+        if self.enabled(level):
+            report_banner(title)
+
+    def rule(self, title: str, *, level: int = V_SUMMARY) -> None:
+        """``report_rule`` gated on ``level``."""
+        if self.enabled(level):
+            report_rule(title)
+
+
 def partition(l: Iterable[Any], predicate: Callable[[Any], bool] = bool) -> Tuple[List[Any], List[Any]]:
     """Partition elements of an iterable into two lists based on a predicate.
 
