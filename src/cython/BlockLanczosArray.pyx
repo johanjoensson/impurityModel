@@ -127,124 +127,6 @@ def enable_reort_profile(on=True):
     _REORT_PROF_ON = bool(on)
 
 
-def _cholesky_or_deflate(M, p_in, double scale=1.0):
-    r"""QR-factor the residual block via its Gram matrix ``M = Wp^H Wp``.
-
-    **Superseded** by :func:`impurityModel.ed.TSQR.tsqr`, which factors the block itself and
-    is therefore stable at conditioning this cannot survive; no production path calls this
-    any more. It is kept as the reference implementation the CholeskyQR2-era regression tests
-    (``test_block_lanczos_blowup``, ``test_deflation_scale_invariance``,
-    ``test_warm_restart_refines``) are written against — that record is the reason the
-    deflation contract below reads the way it does, and TSQR inherited it unchanged.
-
-    Returns ``(beta_j, beta_inv, k)`` with ``beta_j`` (``k x p_in``) the upper-triangular
-    QR factor (off-diagonal block), ``beta_inv`` (``p_in x k``) such that
-    ``Q = Wp @ beta_inv`` and ``Wp = Q @ beta_j``, and ``k`` the retained rank.
-
-    Two *different* questions, deliberately kept apart.
-
-    **Breakdown** — is the block numerically zero, i.e. is the block-Krylov space closed?
-    That is an absolute statement, and it needs a reference: a block is zero relative to
-    *something*.  ``scale`` supplies it, and ``k = 0`` is returned when
-    :math:`\lVert\beta\rVert_2 = \sqrt{\lambda_{\max}(M)} \le` ``BREAKDOWN_TOL * scale``.
-    Callers that normalize near-unit-norm vectors (:func:`block_normalize`, the CholeskyQR2
-    second pass, ``block_bicgstab``'s pre-normalized Gram) leave ``scale = 1``.  The Lanczos
-    sweeps pass the operator scale ``~||H||``, because a *residual* block is zero when it is
-    negligible against ``H``, not against 1.
-
-    **Rank deficiency** — are some column *directions* linearly dependent?  That is a
-    statement about :math:`\lambda_{\min}/\lambda_{\max}` and must be judged *relative* to the
-    block's own largest singular value: a direction is deflated when
-    :math:`\sigma_k < \texttt{EPS}^{1/3}\sigma_{\max}`, i.e.
-    :math:`\lambda_k < \texttt{EPS}^{2/3}\lambda_{\max}`.  This bounds the retained block's
-    condition number to :math:`\lesssim \texttt{EPS}^{-1/3}` (~1.7e5), comfortably inside the
-    regime where a second pass (CholeskyQR2, see :func:`_cholesky_qr2`) restores orthonormality
-    to machine precision (which needs :math:`\kappa \lesssim \texttt{EPS}^{-1/2}`), and it is
-    what stops the :math:`O(\kappa)` amplification of the per-step ``Allreduce`` rank-order
-    rounding from accumulating into a divergence of the ``reort=NONE`` recurrence.
-
-    The two used to be fused into ``evals > DEFLATE_EVAL_TOL * max(evals[-1], 1.0)``, whose
-    ``1.0`` clamp turned the *rank* test absolute for any block below
-    ``DEFLATE_TOL = EPS**(1/3)`` (~6.06e-6): a small but perfectly well-conditioned block was
-    declared rank 0.  Every warm-started Krylov solve was then handed back its own input and
-    reported success — ``block_bicgstab`` returned ``x0`` unrefined once ``||R0|| < 6e-6``, and
-    TRLM warm-started from ``CIPSISolver.expand``'s eigenvectors returned them unimproved at
-    ``||r|| = 2.2e-9``, capping the ground-state accuracy whatever ``tol`` asked for.
-    ``BREAKDOWN_TOL`` existed but was referenced nowhere; invariant-subspace detection rode
-    entirely on that clamp.
-
-    Both the fast (Cholesky) and the fallback (``eigh``) path apply the *same* two tests —
-    historically the fast path tested the Cholesky diagonal against ``sqrt(EPS)`` (an effective
-    ``EPS`` eigenvalue floor) while the fallback tested eigenvalues against ``sqrt(EPS)`` (an
-    ``EPS**0.25`` floor on singular values); that inconsistency let a near-singular ``M``
-    through the fast path and produced a ``beta_inv`` with norm up to ``1/EPS``, amplifying the
-    Krylov block and diverging the recurrence.
-
-    Args:
-        M: Hermitian positive-semidefinite Gram matrix ``Wp^H Wp`` (``p_in x p_in``).
-        p_in: Column count of ``Wp``.
-        scale: Reference for the breakdown test — the norm ``||beta||_2`` is compared against
-            ``BREAKDOWN_TOL * scale``. Pass ``~||H||`` for a Lanczos residual block; leave at
-            ``1.0`` when the columns are already O(1).
-    """
-    cdef double breakdown_lam = (BREAKDOWN_TOL * scale) ** 2
-    # Try Cholesky first (fast path). diag(L)**2 are the (real, positive) Cholesky
-    # pivots, an O(EPS)-faithful surrogate for the eigenvalues of the Hermitian-PD M.
-    try:
-        L = la.cholesky(M, lower=True)
-        d2 = np.square(np.diag(L).real)
-        d2_max = float(np.max(d2)) if d2.size else 0.0
-        if d2_max <= breakdown_lam:                        # ||beta||_2 <= BREAKDOWN_TOL * scale
-            return None, None, 0
-        if np.any(d2 < DEFLATE_EVAL_TOL * d2_max):
-            raise la.LinAlgError("Numeric singularity in Cholesky diagonal")
-        beta_j = np.conj(L.T)
-        beta_inv = la.inv(beta_j)
-        p_next = p_in
-        return beta_j, beta_inv, p_next
-    except (la.LinAlgError, ValueError):
-        # Fall back to eigh, using the same two tests as the fast path.
-        evals, evecs = la.eigh(M)              # ascending
-        lam_max = float(evals[evals.size - 1]) if evals.size else 0.0
-        if lam_max <= breakdown_lam:                      # the whole block is numerically zero
-            return None, None, 0
-        keep = evals > DEFLATE_EVAL_TOL * lam_max         # boolean mask over p_in
-        p_next = int(keep.sum())
-        if p_next == 0:                                   # unreachable: lam_max always survives
-            return None, None, 0
-        V = evecs[:, keep]                                # (p_in, p_next)
-        s = np.sqrt(evals[keep])                          # (p_next,)
-        beta_j = (s[:, None] * np.conj(V.T))             # (p_next, p_in)   off-diag block
-        beta_inv = V / s[None, :]                         # (p_in,  p_next)
-        return beta_j, beta_inv, p_next
-
-
-def _cholesky_qr2(M2, beta_j, active_k):
-    r"""Second pass of CholeskyQR2 on the *recomputed* Gram of the once-QR'd block.
-
-    **Superseded** together with :func:`_cholesky_or_deflate`, and for the same reason: the
-    repetition below exists only to repair the first pass, and TSQR's first pass needs no
-    repair (it repeats itself at all only above ``kappa ~ EPS**(-1/4)``, and can then never
-    be *rescuing* a failed factorization). Kept for the regression tests.
-
-    Cholesky-QR (``_cholesky_or_deflate``) of an ill-conditioned block leaves
-    ``Q1 = Wp @ beta_inv`` with an orthonormality error of order
-    :math:`\kappa(M)\,\texttt{EPS}`, which can be :math:`O(1)`.  Re-orthonormalizing once
-    more — using the Gram ``M2 = Q1^H Q1`` recomputed from the *actual* (high-dimensional)
-    vectors, not from ``M`` — drives the error back to :math:`O(\texttt{EPS})` as long as the
-    deflated block satisfies :math:`\kappa \lesssim 1/\sqrt{\texttt{EPS}}` (guaranteed by the
-    ``_cholesky_or_deflate`` floor).
-
-    Given ``M2`` and the first-pass factor ``beta_j`` (so ``Wp = Q1 @ beta_j``), returns
-    ``(beta2_inv, beta_j_new, k2)`` such that ``Q2 = Q1 @ beta2_inv`` is orthonormal and
-    ``Wp = Q2 @ beta_j_new``.  Returns ``(None, None, 0)`` on full collapse.
-    """
-    beta2, beta2_inv, k2 = _cholesky_or_deflate(M2, active_k)
-    if k2 == 0:
-        return None, None, 0
-    return beta2_inv, beta2 @ beta_j, k2
-
-
 def resolve_reort(reort):
     """Resolve a ``reort`` argument (``Reort`` member or string) to a ``Reort`` enum.
 
@@ -811,6 +693,72 @@ cdef void apply_dense_nogil(
     double complex[:, ::1] Y
 ) noexcept nogil:
     matmul_nogil(M, p, K, 1.0, H, b'N', X, b'N', 0.0, Y)
+
+
+def _cholesky_or_deflate(M, p_in, double scale=1.0):
+    """Superseded by TSQR.tsqr, which factors the block directly and is stable at
+    conditioning this Gram-based QR cannot survive; no production path calls this any
+    more. Kept as the reference implementation the CholeskyQR2-era regression tests are
+    written against (test_block_lanczos_blowup.py, test_tsqr.py). The
+    deflation-vs-breakdown derivation this docstring used to carry moves to
+    doc/lanczos_invariants.md (R2).
+    """
+    cdef double breakdown_lam = (BREAKDOWN_TOL * scale) ** 2
+    # Try Cholesky first (fast path). diag(L)**2 are the (real, positive) Cholesky
+    # pivots, an O(EPS)-faithful surrogate for the eigenvalues of the Hermitian-PD M.
+    try:
+        L = la.cholesky(M, lower=True)
+        d2 = np.square(np.diag(L).real)
+        d2_max = float(np.max(d2)) if d2.size else 0.0
+        if d2_max <= breakdown_lam:                        # ||beta||_2 <= BREAKDOWN_TOL * scale
+            return None, None, 0
+        if np.any(d2 < DEFLATE_EVAL_TOL * d2_max):
+            raise la.LinAlgError("Numeric singularity in Cholesky diagonal")
+        beta_j = np.conj(L.T)
+        beta_inv = la.inv(beta_j)
+        p_next = p_in
+        return beta_j, beta_inv, p_next
+    except (la.LinAlgError, ValueError):
+        # Fall back to eigh, using the same two tests as the fast path.
+        evals, evecs = la.eigh(M)              # ascending
+        lam_max = float(evals[evals.size - 1]) if evals.size else 0.0
+        if lam_max <= breakdown_lam:                      # the whole block is numerically zero
+            return None, None, 0
+        keep = evals > DEFLATE_EVAL_TOL * lam_max         # boolean mask over p_in
+        p_next = int(keep.sum())
+        if p_next == 0:                                   # unreachable: lam_max always survives
+            return None, None, 0
+        V = evecs[:, keep]                                # (p_in, p_next)
+        s = np.sqrt(evals[keep])                          # (p_next,)
+        beta_j = (s[:, None] * np.conj(V.T))             # (p_next, p_in)   off-diag block
+        beta_inv = V / s[None, :]                         # (p_in,  p_next)
+        return beta_j, beta_inv, p_next
+
+
+def _cholesky_qr2(M2, beta_j, active_k):
+    r"""Second pass of CholeskyQR2 on the *recomputed* Gram of the once-QR'd block.
+
+    **Superseded** together with :func:`_cholesky_or_deflate`, and for the same reason: the
+    repetition below exists only to repair the first pass, and TSQR's first pass needs no
+    repair (it repeats itself at all only above ``kappa ~ EPS**(-1/4)``, and can then never
+    be *rescuing* a failed factorization). Kept for the regression tests.
+
+    Cholesky-QR (``_cholesky_or_deflate``) of an ill-conditioned block leaves
+    ``Q1 = Wp @ beta_inv`` with an orthonormality error of order
+    :math:`\kappa(M)\,\texttt{EPS}`, which can be :math:`O(1)`.  Re-orthonormalizing once
+    more — using the Gram ``M2 = Q1^H Q1`` recomputed from the *actual* (high-dimensional)
+    vectors, not from ``M`` — drives the error back to :math:`O(\texttt{EPS})` as long as the
+    deflated block satisfies :math:`\kappa \lesssim 1/\sqrt{\texttt{EPS}}` (guaranteed by the
+    ``_cholesky_or_deflate`` floor).
+
+    Given ``M2`` and the first-pass factor ``beta_j`` (so ``Wp = Q1 @ beta_j``), returns
+    ``(beta2_inv, beta_j_new, k2)`` such that ``Q2 = Q1 @ beta2_inv`` is orthonormal and
+    ``Wp = Q2 @ beta_j_new``.  Returns ``(None, None, 0)`` on full collapse.
+    """
+    beta2, beta2_inv, k2 = _cholesky_or_deflate(M2, active_k)
+    if k2 == 0:
+        return None, None, 0
+    return beta2_inv, beta2 @ beta_j, k2
 
 
 def block_lanczos_array_cy(
