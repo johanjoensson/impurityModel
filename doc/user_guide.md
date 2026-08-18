@@ -38,6 +38,12 @@ impurityModel plot-rixs       spectra.h5    [options]
 is not on `PATH`. Every sub-command runs identically under MPI (`mpiexec -n N ...`). See
 `impurityModel <subcommand> --help` for the full option set.
 
+By default every sub-command prints a terse run record: the ground-state summary, per-stage
+one-liners and timings, and any warnings -- not the full observable report. Pass `-v` for the
+full ground-state report and per-block Green's-function diagnostics, `-vv` for per-restart/
+per-round solver detail, or `-vvv` for per-iteration Lanczos diagnostics. (`-v` used to jump
+straight to today's `-vv`; if a script parses stdout, re-check it against the new default.)
+
 ## Inputs
 
 1. **The non-interacting Hamiltonian `h0`** — a single-particle Hamiltonian. Two families of

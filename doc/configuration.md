@@ -17,6 +17,11 @@ available per-rank memory or the communicator size) unless the variable override
 > `impurityModel/ed/config.py`, not this file. Regenerate with
 > `python -m impurityModel.ed.config > doc/configuration.md` (then re-add this header).
 
+Output verbosity (`-v`/`-vv`/`-vvv` on `spectra`/`selfenergy`/`susceptibility`) is deliberately
+**not** one of these knobs: it is a per-invocation CLI concern, not a run parameter that should
+persist across a shell session the way a memory budget or a solver tolerance does. See
+`impurityModel.ed.utils.Reporter` and the `--help` text of each sub-command.
+
 ## Per-frequency BiCGSTAB solver (``gf_method="bicgstab"``)
 
 | Variable | Type | Default | Description |
