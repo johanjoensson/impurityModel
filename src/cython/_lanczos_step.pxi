@@ -21,7 +21,7 @@ def block_lanczos_step_cy(
     basis,
     slaterWeightMin: float = 0.0,
     truncation_threshold: float = 0.0,
-    reort_period: int = 5,
+    reort_period: int = REORT_PERIOD,
     start_it: int = 0,
     block_widths=None,
     locked=None,
@@ -100,7 +100,7 @@ def block_lanczos_step_cy(
         reort_period: Number of steps between full reorthogonalization sweeps
             for ``Reort.PERIODIC`` mode.  Full reorthogonalization is applied at
             step ``it`` when ``it > 0`` and ``it % reort_period == 0``.
-            Default ``5``.
+            Default ``REORT_PERIOD``.
 
     Returns:
         tuple: A 7-tuple ``(q_next, alpha_i, beta_i, W_updated, active_k, breakdown,
@@ -312,8 +312,8 @@ def block_lanczos_step_cy(
                 q_next_2, R2, active_k, sv2 = block_tsqr(q_next, mpi, comm, 1.0, deflate_tol=deflate_tol)
                 # Absolutely tiny residual after projection => block contained in the existing span
                 # (invariant subspace); renormalizing it would amplify rounding. Treat as breakdown.
-                # sqrt(EPS) is the largest column norm the old max(diag(<q|q>)) < EPS test admitted.
-                if active_k <= 0 or float(sv2[0]) < np.sqrt(EPS):
+                # REORT_TOL is the largest column norm the old max(diag(<q|q>)) < EPS test admitted.
+                if active_k <= 0 or float(sv2[0]) < REORT_TOL:
                     return None, alpha_i, None, W, 0, True, False
                 beta_i = R2 @ beta_i
                 q_next = q_next_2
@@ -339,7 +339,7 @@ def block_lanczos_cy(
     slaterWeightMin: float = 0.0,
     truncation_threshold: int = 0,
     comm=None,
-    reort_period: int = 5,
+    reort_period: int = REORT_PERIOD,
     alphas_init=None,
     betas_init=None,
     Q_init=None,

@@ -25,7 +25,7 @@ than one retained block.
 
 import numpy as np
 
-EPS = np.finfo(float).eps
+from impurityModel.ed.TSQR import EPS
 
 
 def locked_overlap_step(

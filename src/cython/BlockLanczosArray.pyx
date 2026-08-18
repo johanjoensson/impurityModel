@@ -103,6 +103,13 @@ REORT_PERIOD = 5                   # PERIODIC cadence, and SELECTIVE Ritz-check 
 # derived from Q^H Q = I; above this level that premise is too inaccurate to use them and the
 # restart is rebuilt from actual matvecs instead. See _trlm_core.
 RESTART_ORTH_TOL = REORT_TOL       # ~1.49e-8
+# Default convergence tolerance for TRLM/IRLM's public entry points (the max wanted
+# Ritz residual at which a restart loop stops); single-sourced so every dispatcher's
+# `tol` default moves together.
+DEFAULT_EIGEN_TOL = 1e-8
+# calculate_thermal_gs's own (looser) Ritz-residual stopping tolerance -- distinct value
+# from DEFAULT_EIGEN_TOL, so it gets its own name rather than sharing one.
+THERMAL_GS_RESIDUAL_TOL = 1e-6
 
 # --- Optional reort instrumentation (env-gated; ~zero cost when off) ----------------
 import os as _os_bla
@@ -204,7 +211,7 @@ def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=N
         e = e[sorted_indices]
         s = s[:, sorted_indices]
         mask = e - np.min(e) <= e_max
-        return np.linalg.norm(betas[-1] @ s[-block_size:, mask], ord=2) < 1e-6
+        return np.linalg.norm(betas[-1] @ s[-block_size:, mask], ord=2) < THERMAL_GS_RESIDUAL_TOL
 
     if v0 is None:
         v0 = np.random.rand(h.shape[1], block_size) + 1j * np.random.rand(h.shape[1], block_size)
@@ -261,7 +268,7 @@ cpdef np.ndarray estimate_orthonormality(
     cdef int i = alphas.shape[0] - 1
     cdef int n = alphas.shape[1]
     if eps == 0.0:
-        eps = np.finfo(float).eps
+        eps = EPS
 
     # Rounding-accumulation scale: a matvec/orthogonalization over an N-dimensional
     # state accumulates ~N rounding errors whose sum grows like sqrt(N) (random-walk;
@@ -829,7 +836,7 @@ def block_lanczos_array_cy(
         else:
             Q_list = None
 
-    cdef int period = kwargs.get("reort_period", 5)
+    cdef int period = kwargs.get("reort_period", REORT_PERIOD)
     cdef int max_iter = kwargs.get("max_iter", int(np.ceil(h_op.shape[0] / n if sps.issparse(h_op) or isinstance(h_op, np.ndarray) else N / n)))
     cdef int _buf_size = start_it + max_iter
     cdef np.ndarray[double complex, ndim=3] alphas_buf = np.zeros((_buf_size, n, n), dtype=complex)
@@ -1172,7 +1179,7 @@ def block_lanczos_array_cy(
                     # effective rank is exhausted). Renormalizing that noise would amplify rounding
                     # into the recurrence (beta blow-up), so stop here. sqrt(EPS) is the largest
                     # column norm the old max(diag(q_next^H q_next)) < EPS test admitted.
-                    if active_k <= 0 or float(sv2[0]) < np.sqrt(EPS):
+                    if active_k <= 0 or float(sv2[0]) < REORT_TOL:
                         termination = "invariant_subspace"
                         block_widths.append(n_curr)
                         it += 1

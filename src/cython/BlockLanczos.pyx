@@ -75,10 +75,12 @@ from impurityModel.ed.BlockLanczosArray import (
     Reort,
     EPS,
     REORT_TOL,
+    REORT_PERIOD,
     BAD_BLOCK_TOL,
     RESTART_ORTH_TOL,
     BREAKDOWN_TOL,
     DEFLATE_EVAL_TOL,
+    DEFAULT_EIGEN_TOL,
 )
 
 # --- Optional per-step profiling (env-gated, ~zero cost when off) -------------------
