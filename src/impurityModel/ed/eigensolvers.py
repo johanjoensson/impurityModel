@@ -4,9 +4,8 @@ Eigensolver drivers for the low-energy spectrum: dense (numpy), ARPACK
 :class:`HermitianOperator` wrapper used to feed them.
 """
 
-import time
 import warnings
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import numpy as np
 import scipy.sparse
@@ -46,41 +45,61 @@ class HermitianOperator(scipy.sparse.linalg.LinearOperator):
         return self
 
 
-def mpi_matmat(m: Any, comm: Optional[MPI.Comm]) -> Callable[[np.ndarray], np.ndarray]:
-    """Create a parallel MPI matrix-matrix multiplication wrapper.
+class _RootDrivenApply:
+    """Bcast/Reduce apply loop that confines ARPACK/lobpcg's control flow -- and therefore the
+    number of collectives it decides to post -- to a single driving rank (rank 0).
 
-    Parameters
-    ----------
-    m : Any
-        The local matrix operator (supporting matrix multiplication `@`).
-    comm : MPI.Comm, optional
-        The MPI communicator.
+    ``h_local`` is a column-distributed operator: each rank's copy has nonzero entries only in
+    the columns it owns (see ``build_sparse_matrix``), so ``h_local @ v`` on a full-length ``v``
+    gives this rank's partial contribution to the global product, and summing those partial
+    results across ranks reconstructs it exactly.
 
-    Returns
-    -------
-    f : callable
-        A function that takes a vector/matrix `v` and returns `m @ v` reduced across ranks.
+    Only the driving rank ever decides *whether* another apply happens (that decision lives
+    inside ARPACK/lobpcg's own convergence logic, called only on that rank via ``root_apply``);
+    every other rank just mirrors it by looping in ``worker_loop`` until ``done()`` sends the
+    sentinel. Previously every rank ran its own ARPACK instance and relied on all of them
+    independently reaching the same number of ``Allreduce`` calls -- which threaded-BLAS FP
+    nondeterminism inside ARPACK's internal convergence bookkeeping does not guarantee, and the
+    resulting desync is exactly the deadlock this class fixes (see the memory note
+    n3-arpack-truncate-initial-deadlock).
     """
 
-    def f(v: np.ndarray) -> np.ndarray:
-        """Perform the local matrix product and MPI reduction.
+    _APPLY = 0
+    _DONE = 1
 
-        Parameters
-        ----------
-        v : np.ndarray
-            The input vector or matrix.
+    def __init__(self, h_local: Any, comm: MPI.Comm):
+        self.h_local = h_local
+        self.comm = comm
 
-        Returns
-        -------
-        np.ndarray
-            The result of the multiplication.
-        """
-        res = m @ v
-        if comm is not None:
-            comm.Allreduce(MPI.IN_PLACE, res)
+    def _local_apply(self, buf: np.ndarray) -> np.ndarray:
+        res = self.h_local @ buf
+        res_dtype = np.promote_types(self.h_local.dtype, buf.dtype)
+        return np.ascontiguousarray(res, dtype=res_dtype)
+
+    def root_apply(self, v: np.ndarray) -> np.ndarray:
+        """Broadcast one apply to the workers and return the reduced result. Driving rank only."""
+        v = np.asarray(v)
+        buf = np.ascontiguousarray(v)
+        self.comm.bcast((self._APPLY, buf.shape, buf.dtype), root=0)
+        self.comm.Bcast(buf, root=0)
+        res = self._local_apply(buf)
+        self.comm.Reduce(MPI.IN_PLACE, res, op=MPI.SUM, root=0)
         return res.reshape(v.shape)
 
-    return f
+    def worker_loop(self) -> None:
+        """Mirror the driving rank's applies until it signals done. Non-driving ranks only."""
+        while True:
+            kind, shape, dtype = self.comm.bcast(None, root=0)
+            if kind == self._DONE:
+                return
+            buf = np.empty(shape, dtype=dtype)
+            self.comm.Bcast(buf, root=0)
+            res = self._local_apply(buf)
+            self.comm.Reduce(res, None, op=MPI.SUM, root=0)
+
+    def done(self) -> None:
+        """Signal workers to stop mirroring. Driving rank only; must always be called."""
+        self.comm.bcast((self._DONE, None, None), root=0)
 
 
 def dense_eigensystem(
@@ -132,61 +151,29 @@ def dense_eigensystem(
     return es
 
 
-def scipy_eigensystem(
-    h_local: Any,
+#: Fixed seed for scipy_eigensystem's fallback start/restart vectors. These are generated only
+#: on the rank that drives ARPACK (see _RootDrivenApply) and reach every other rank purely
+#: through the broadcast that is already part of each matvec, so a fixed seed is what makes the
+#: whole solve rank-count independent -- an unseeded RNG previously produced a different vector
+#: on COMM_SELF than on COMM_WORLD for what should be the same solve.
+_SCIPY_EIGENSYSTEM_SEED = 0
+
+
+def _scipy_eigensystem_solve(
+    h: scipy.sparse.linalg.LinearOperator,
     e_max: float,
-    k: int = 10,
-    v0: Optional[np.ndarray] = None,
-    eigenValueTol: float = 0,
-    return_eigvecs: bool = True,
-    comm: Optional[MPI.Comm] = None,
-) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
-    """Solve the eigenvalue problem using SciPy's sparse solver (ARPACK).
+    k: int,
+    v0: Optional[np.ndarray],
+    eigenValueTol: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run the ARPACK/lobpcg control flow against ``h`` and return ``(es, vecs)``.
 
-    Parameters
-    ----------
-    h_local : Any
-        The local sparse matrix.
-    e_max : float
-        The maximum energy above the ground state to resolve.
-    k : int, default 10
-        Number of eigenvalues to request.
-    v0 : np.ndarray, optional
-        Initial guess eigenvectors.
-    eigenValueTol : float, default 0
-        Tolerance for eigenvalue convergence.
-    return_eigvecs : bool, default True
-        Whether to return eigenvectors.
-    comm : MPI.Comm, optional
-        MPI communicator.
-
-    Returns
-    -------
-    es : np.ndarray
-        Array of eigenvalues.
-    vecs : np.ndarray, optional
-        Array of eigenvectors, returned if return_eigvecs is True.
+    Must be called on exactly one rank/process: ``scipy_eigensystem`` calls this directly when
+    unparallelized, and only on the driving rank (via ``h`` wrapping ``_RootDrivenApply.root_apply``)
+    otherwise -- every ``h`` matvec/matmat call this makes is what decides the collectives posted,
+    so if two ranks both ran this independently they could post a different number of them.
     """
-    h = scipy.sparse.linalg.LinearOperator(
-        h_local.shape,
-        matvec=mpi_matmat(h_local, comm),
-        rmatvec=mpi_matmat(h_local, comm),
-        dtype=h_local.dtype,
-    )
-    h_diag = h_local.diagonal() if callable(getattr(h_local, "diagonal", None)) else h_local.diagonal
-    h_diag_inv = h_diag.copy()
-    nonzeros = np.nonzero(h_diag_inv)
-    h_diag_inv[nonzeros] = 1.0 / h_diag_inv[nonzeros]
-    diag_h_inv = scipy.sparse.diags_array(h_diag_inv, shape=h_local.shape)
-    scipy.sparse.linalg.LinearOperator(
-        h_local.shape,
-        matvec=mpi_matmat(diag_h_inv, comm),
-        rmatvec=mpi_matmat(diag_h_inv, comm),
-        dtype=h_local.dtype,
-    )
-
-    es = np.array([0])
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(_SCIPY_EIGENSYSTEM_SEED)
     if v0 is not None:
         norm_mask = np.linalg.norm(v0, axis=0) > np.sqrt(np.finfo(float).eps)
         v0 = v0[:, norm_mask]
@@ -194,31 +181,18 @@ def scipy_eigensystem(
             v0 = None
     if v0 is None:
         v0 = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
-        if comm is not None:
-            comm.Allreduce(MPI.IN_PLACE, v0, op=MPI.SUM)
 
+    es = np.array([0])
     vecs = v0 / np.linalg.norm(v0)
     ncv = None
     conv_fail = False
     k = min(k, h.shape[1] - 2)
 
     def done(energies: np.ndarray) -> bool:
-        """Check if convergence criteria are met.
-
-        Parameters
-        ----------
-        energies : np.ndarray
-            Calculated energies.
-
-        Returns
-        -------
-        bool
-            True if target number of eigenvalues above e_max is resolved.
-        """
+        """True if the target number of eigenvalues above e_max is resolved."""
         return len(energies) > 2 + np.sum(energies - np.min(energies) <= e_max)
 
     while not done(es) and len(es) < h.shape[0] - 2:
-        time.perf_counter()
         try:
             es, vecs = eigsh(
                 h,
@@ -239,8 +213,6 @@ def scipy_eigensystem(
             vecs = e.eigenvectors
             if vecs.size == 0:
                 vecs = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
-                if comm is not None:
-                    comm.Allreduce(MPI.IN_PLACE, vecs, op=MPI.SUM)
                 vecs, _ = np.linalg.qr(vecs, mode="reduced")
             eigenValueTol = max(eigenValueTol, np.finfo(float).eps) if not conv_fail else eigenValueTol * 10
             conv_fail = True
@@ -250,14 +222,9 @@ def scipy_eigensystem(
             ncv = min(h.shape[0], max(2 * k + 3, 20)) if ncv is None else min(ncv * 2, h.shape[0])
             es = np.array([0])
             vecs = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
-            if comm is not None:
-                comm.Allreduce(MPI.IN_PLACE, vecs, op=MPI.SUM)
             vecs, _ = np.linalg.qr(vecs, mode="reduced")
         if es is None or len(es) == 0:
             es = np.array([0])
-
-        if comm is not None:
-            comm.barrier()
 
         indices = np.argsort(es)
         es = es[indices]
@@ -270,25 +237,113 @@ def scipy_eigensystem(
             # lobpcg is robust as long as the preconditioner is very good (is this what robust
             # means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg
             # instead.
-            # if comm.rank == 0:
-            time.perf_counter()
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 es, vecs = scipy.sparse.linalg.lobpcg(
                     h,
                     vecs,
-                    # vecs[:, : min(2 * (2 + sum(es - np.min(es) <= e_max)), vecs.shape[1])],
-                    # M=OPinv,
                     largest=False,
                     tol=max(eigenValueTol, 1e-12),
                     maxiter=500,
                 )
     indices = np.argsort(es)
     es = es[indices]
-    if return_eigvecs:
-        vecs = vecs[:, indices]
-        return es, np.ascontiguousarray(vecs)
-    return es
+    return es, np.ascontiguousarray(vecs[:, indices])
+
+
+def scipy_eigensystem(
+    h_local: Any,
+    e_max: float,
+    k: int = 10,
+    v0: Optional[np.ndarray] = None,
+    eigenValueTol: float = 0,
+    return_eigvecs: bool = True,
+    comm: Optional[MPI.Comm] = None,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """Solve the eigenvalue problem using SciPy's sparse solver (ARPACK).
+
+    Parameters
+    ----------
+    h_local : Any
+        The local sparse matrix (column-distributed: nonzero only in this rank's owned columns,
+        see ``build_sparse_matrix``).
+    e_max : float
+        The maximum energy above the ground state to resolve.
+    k : int, default 10
+        Number of eigenvalues to request.
+    v0 : np.ndarray, optional
+        Initial guess eigenvectors.
+    eigenValueTol : float, default 0
+        Tolerance for eigenvalue convergence.
+    return_eigvecs : bool, default True
+        Whether to return eigenvectors.
+    comm : MPI.Comm, optional
+        MPI communicator.
+
+    Returns
+    -------
+    es : np.ndarray
+        Array of eigenvalues.
+    vecs : np.ndarray, optional
+        Array of eigenvectors, returned if return_eigvecs is True.
+    """
+    if comm is None or comm.size == 1:
+
+        def local_apply(v: np.ndarray) -> np.ndarray:
+            return (h_local @ v).reshape(v.shape)
+
+        h = scipy.sparse.linalg.LinearOperator(
+            h_local.shape,
+            matvec=local_apply,
+            rmatvec=local_apply,
+            dtype=h_local.dtype,
+        )
+        es, vecs = _scipy_eigensystem_solve(h, e_max, k, v0, eigenValueTol)
+        return (es, vecs) if return_eigvecs else es
+
+    apply = _RootDrivenApply(h_local, comm)
+    if comm.rank != 0:
+        apply.worker_loop()
+        ok = comm.bcast(None, root=0)
+        if not ok:
+            message = comm.bcast(None, root=0)
+            raise RuntimeError(f"scipy_eigensystem failed on rank 0: {message}")
+        es_shape, es_dtype, vecs_shape, vecs_dtype = comm.bcast(None, root=0)
+        es = np.empty(es_shape, dtype=es_dtype)
+        vecs = np.empty(vecs_shape, dtype=vecs_dtype)
+        comm.Bcast(es, root=0)
+        comm.Bcast(vecs, root=0)
+        return (es, vecs) if return_eigvecs else es
+
+    # Driving rank (rank 0): run the solver against an operator wrapping root_apply, which
+    # broadcasts every matvec/matmat this makes to the workers -- so the number of collectives
+    # posted is decided here, once, and mirrored exactly by worker_loop above, rather than each
+    # rank's own ARPACK deciding independently (see _RootDrivenApply's docstring).
+    h = scipy.sparse.linalg.LinearOperator(
+        h_local.shape,
+        matvec=apply.root_apply,
+        rmatvec=apply.root_apply,
+        dtype=h_local.dtype,
+    )
+    error: Optional[Exception] = None
+    try:
+        es, vecs = _scipy_eigensystem_solve(h, e_max, k, v0, eigenValueTol)
+    except Exception as exc:  # must reach every rank via bcast, not just crash rank 0
+        error = exc
+    finally:
+        # Always signal the workers out of worker_loop, success or failure -- otherwise a rank-0
+        # exception here hangs every other rank forever inside worker_loop's collective wait.
+        apply.done()
+
+    comm.bcast(error is None, root=0)
+    if error is not None:
+        comm.bcast(str(error), root=0)
+        raise error
+
+    comm.bcast((es.shape, es.dtype, vecs.shape, vecs.dtype), root=0)
+    comm.Bcast(es, root=0)
+    comm.Bcast(vecs, root=0)
+    return (es, vecs) if return_eigvecs else es
 
 
 def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None, dense=False):
@@ -323,18 +378,6 @@ def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_
     e_max = np.inf if e_max is None else max(e_max, eigenValueTol, np.finfo(float).eps * 100)
 
     N = h_local.shape[0]
-    # Set up random initial vectors
-    np.random.seed(42)  # For reproducibility in testing, might want to remove in prod
-    n_blocks = 1  # Simple 1-block for now unless block size is needed
-    if v0 is not None:
-        psi0 = v0
-        if len(psi0.shape) == 1:
-            psi0 = psi0.reshape(-1, 1)
-    else:
-        psi0 = np.random.rand(N, n_blocks) + 1j * np.random.rand(N, n_blocks)
-
-    psi0, _ = np.linalg.qr(psi0)
-
     # We want to find eigenvalues up to e_max above ground state.
     # Since we don't know the ground state yet, we just find k eigenvalues.
     if dense or N <= 20:
