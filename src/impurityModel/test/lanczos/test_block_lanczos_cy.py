@@ -714,3 +714,55 @@ def test_estimate_orthonormality_bounded_buffer_bit_identical():
             beta_norms=hist_holes,
         )
     np.testing.assert_array_equal(W_h, W_ref)
+
+
+def test_block_lanczos_cy_store_krylov_false_matches_tail_of_stored_run():
+    """``store_krylov=False``'s contract (_lanczos_step.pxi's budget-exhaustion branch):
+    the returned ``Q_basis`` is exactly the last two blocks a ``store_krylov=True`` run
+    would have accumulated, not merely "some" two-block tail.
+
+    R0c gap: this path had no default-run assertion (only the env-gated
+    ``RUN_SLICING_PROBE=1`` probe exercises it, e.g. via ``spectral_bounds`` in
+    test_slicing_probe.py), yet R6 restructures exactly this branch.
+    """
+    h_op, basis, states, _ = create_diagonal_h_and_basis(6)
+    n_iter = 3  # p=2 * 3 blocks = 6 = the fixture's dimension; more would hit invariant_subspace
+
+    rng = np.random.default_rng(0)
+    psi0 = []
+    for _ in range(2):
+        st = ManyBodyState()
+        for s in states:
+            st[basis.type.from_bytes(s)] = complex(*rng.standard_normal(2))
+        psi0.append(st)
+    psi0, _ = block_normalize(psi0, mpi=False, comm=None)
+
+    stored_alphas, stored_betas, stored_Q, _W = block_lanczos_cy(
+        [p for p in psi0],
+        h_op,
+        basis,
+        lambda *a, **k: False,
+        verbose=False,
+        reort="none",
+        max_iter=n_iter,
+    )
+    assert len(stored_Q) == 2 * n_iter  # p=2, n_iter blocks, flat width-1 list
+
+    tail_alphas, tail_betas, tail_Q, _W2 = block_lanczos_cy(
+        [p for p in psi0],
+        h_op,
+        basis,
+        lambda *a, **k: False,
+        verbose=False,
+        reort="none",
+        max_iter=n_iter,
+        store_krylov=False,
+    )
+    assert len(tail_Q) == 4  # the last TWO blocks (p=2 each): q_prev + q_curr
+
+    np.testing.assert_array_equal(np.asarray(stored_alphas), np.asarray(tail_alphas))
+    np.testing.assert_array_equal(np.asarray(stored_betas), np.asarray(tail_betas))
+
+    stored_tail = stored_Q[-4:]
+    ov = inner_multi(stored_tail, tail_Q)
+    np.testing.assert_allclose(ov, np.eye(4), atol=1e-10)

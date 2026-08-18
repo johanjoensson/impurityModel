@@ -31,3 +31,6 @@ h0.txt
 deflation_debug.txt
 ground_state_statistics.json
 *-realaxis-bench.dat
+
+# R0a golden-fingerprint harness baselines (Lanczos redesign, plan i-want-a-thorough-agile-fern)
+.lanczos_golden/

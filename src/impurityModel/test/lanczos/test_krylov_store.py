@@ -408,3 +408,79 @@ def test_store_retired_chunk_drops_unwritten_columns():
     assert s["unused_col_bytes"] == open_rows * (open_cols - open_used) * 16
     # The staircase must beat a flat (n_rows x n_cols) buffer.
     assert s["buffer_bytes"] < s["rows"] * s["cols"] * 16
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize(
+    "cols",
+    [None, [0, 1, 2, 9, 10, 11], [17]],
+    ids=["all", "gapped", "single"],
+)
+def test_store_reort_mpi_matches_serial_and_handles_empty_rank(cols):
+    """R0c gap: ``SparseKrylovDense.reort`` is collective (an unconditional per-pass
+    ``Allreduce`` on ``O``, per its own docstring warning) but every existing test of it
+    is serial (``comm=None``) -- and R6/R7 rework its call sites. Run it distributed at
+    whatever ``comm.size`` the gate uses, including the ``-n 3`` empty-rank case the
+    docstring explicitly calls out ("a rank owning zero determinants ... must still join
+    every Allreduce").
+
+    Each rank owns a disjoint slice of the determinant universe (``_contiguous_counts_
+    with_empty_last``, guaranteeing one empty rank at size>=3, matching the convention
+    already used for the empty-rank array/MBS kernel tests). Correctness is checked two
+    ways that need no cross-rank row reconstruction: the Allreduced overlap ``O`` must
+    equal a serial full-support reference exactly, and the post-projection residual's
+    global overlap against the projected-out columns (apply-local -> local inner product
+    -> Allreduce, this repo's standard distributed-observable pattern) must vanish.
+    """
+    from mpi4py import MPI
+
+    from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
+
+    comm = MPI.COMM_WORLD
+    rng = np.random.default_rng(42)
+    n_dets, n_cols, p = 60, 20, 3
+    qcols = _orthonormal_columns(rng, n_cols, n_dets)
+    wp_full = _random_states(rng, p, n_dets, sparsity=0.9)
+
+    # Serial full-support reference (every rank computes this locally; it's tiny and
+    # deterministic, so no broadcast is needed for the comparison below).
+    store_ref = SparseKrylovDense()
+    for i in range(0, n_cols, 5):
+        store_ref.append(qcols[i : i + 5])
+    wp_blk_ref = ManyBodyState.from_states([ManyBodyState(dict(s.items())) for s in wp_full])
+    _out_ref_blk, o_ref = store_ref.reort(wp_blk_ref, cols, 2, None)
+
+    all_dets = [_det(i + 1) for i in range(n_dets)]
+    counts = _contiguous_counts_with_empty_last(n_dets, comm.size)
+    offsets = [sum(counts[:r]) for r in range(comm.size)]
+    owned = set(all_dets[offsets[comm.rank] : offsets[comm.rank] + counts[comm.rank]])
+
+    def _restrict(state):
+        # An explicit width-1 placeholder, never the bare ManyBodyState() polymorphic
+        # zero: on the empty rank every restricted state has no surviving rows, and a
+        # width-0 result there (vs width-1 everywhere else) is exactly the asymmetry
+        # that has deadlocked from_states/redistribute-style collectives before (see
+        # create_diagonal_system's identical comment in test_no_ghost_bands.py).
+        out = ManyBodyState(width=1)
+        for k, v in state.items():
+            if k in owned:
+                out[k] = v
+        return out
+
+    qcols_local = [_restrict(c) for c in qcols]
+    wp_local = [_restrict(w) for w in wp_full]
+
+    store_local = SparseKrylovDense()
+    for i in range(0, n_cols, 5):
+        store_local.append(qcols_local[i : i + 5])
+    wp_blk_local = ManyBodyState.from_states(wp_local)  # already explicit width-1 (see _restrict)
+
+    out_local_blk, o_local = store_local.reort(wp_blk_local, cols, 2, comm)
+    out_local = out_local_blk.to_states()
+
+    np.testing.assert_allclose(o_local, o_ref, atol=inner_atol(n_dets, np.max(np.abs(o_ref))))
+
+    selected_local = qcols_local if cols is None else [qcols_local[c] for c in cols]
+    local_ovl = inner_multi(selected_local, out_local)
+    comm.Allreduce(MPI.IN_PLACE, local_ovl, op=MPI.SUM)
+    assert np.max(np.abs(local_ovl)) < inner_atol(n_dets, 1.0)

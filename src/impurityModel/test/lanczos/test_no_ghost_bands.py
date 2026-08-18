@@ -212,6 +212,86 @@ def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
         assert_orthonormal(eigvecs, path, comm=None)
 
 
+@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
+@pytest.mark.parametrize("path", ["array"])
+@pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
+@pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
+def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
+    """The hard invariant behind this module's name, asserted WITHOUT the xfail that
+    covers the exact-multiplicity-match assertion in ``test_no_ghost_bands``.
+
+    The 60 xfail(strict=False) nodes there assert nothing when they fail (the point of
+    ``strict=False`` is exactly to let a partial T_full through without breaking the
+    suite) -- but "the restart subspace was too tight to resolve every degenerate copy"
+    and "a spurious (e.g. zero) Ritz value appeared below the true ground state" are two
+    different failure modes, and only the second is the actual bug this module is named
+    after (see test_irlm_locking_deflation.py's identical invariant). This node is never
+    xfail-marked, so a regression here always fails the suite even when the multiplicity
+    assertion is (legitimately) letting a partial resolution through.
+
+    ``path`` is restricted to ``"array"`` -- restricted for a measured reason, not by
+    default. On this fixture's ``ManyBodyState`` branch (2026-08-18 measurement) the
+    floor invariant does NOT hold cleanly:
+
+    * with ``create_diagonal_system``'s all-positive ``np.random.rand()`` MBS seed (the
+      two p=2 seed columns have cosine ~0.75, condition ~2.6), IRLM/NONE on
+      ``exact_degenerate`` diverges outright: ``|beta|=4.5e4`` at iteration 4, Ritz value
+      -1775 (far below the true minimum 1.0) -- a bad-seed artifact, not a reort or
+      restart-logic bug: swapping to a signed ``randn`` seed (matching the array path
+      and ``lanczos_golden.py``'s ``_mbs_psi0``) removes the divergence.
+    * even with that signed seed, ``near_degenerate`` under ``Reort.NONE``/``PERIODIC``
+      still lands Ritz values at -72.4 and -0.21 (below the true minimum 1.0); PARTIAL/
+      FULL/SELECTIVE settle to benign near-machine-zero artifacts (~1e-15) instead,
+      consistent with this module's documented "spurious zero Ritz value from a
+      partially-filled T_full" limitation, not a new divergence.
+
+    Net: the array path carries this invariant cleanly (20/20); the MBS path's story is
+    seed-condition-dependent and reort-mode-dependent enough to need its own
+    characterization, not a blanket floor assertion. Tracked for
+    ``doc/lanczos_invariants.md``'s "known open issues" section (R2).
+    """
+    if spectrum_type == "exact_degenerate":
+        eigvals_exact = np.array([1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], dtype=float)
+    else:
+        eigvals_exact = np.array(
+            [1.0, 1.0 + 1e-9, 2.0, 2.0 + 1e-9, 2.0 + 2e-9, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], dtype=float
+        )
+
+    h_op, basis, psi0, _ = create_diagonal_system(eigvals_exact, path, comm=None)
+    num_wanted = 6
+    max_subspace_blocks = 5  # force restarts
+
+    if solver == "TRLM":
+        eigvals, _eigvecs = thick_restart_block_lanczos(
+            psi0=psi0,
+            h_op=h_op,
+            basis=basis,
+            num_wanted=num_wanted,
+            max_subspace_blocks=max_subspace_blocks,
+            tol=1e-8,
+            max_restarts=50,
+            verbose=False,
+            reort=mode,
+        )
+    else:
+        eigvals, _eigvecs = implicitly_restarted_block_lanczos_cy(
+            psi0=psi0,
+            h_op=h_op,
+            basis=basis,
+            num_wanted=num_wanted,
+            max_subspace_blocks=max_subspace_blocks,
+            tol=1e-8,
+            max_restarts=50,
+            verbose=False,
+            reort=mode,
+            comm=None,
+        )
+
+    lambda_min = eigvals_exact.min()
+    ev_min = np.min(np.asarray(eigvals).real)
+    assert ev_min >= lambda_min - 1e-6, f"spurious Ritz value {ev_min} < true spectral minimum {lambda_min}"
+
+
 @pytest.mark.mpi
 @pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])

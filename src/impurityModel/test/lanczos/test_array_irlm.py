@@ -58,7 +58,7 @@ def test_array_irlm_matches_mbs(mode):
         for i, b in enumerate(basis_states):
             psi0_mb[c] += b * psi0[i, c]
 
-    ev_a, _ = implicitly_restarted_block_lanczos_cy(
+    ev_a, evecs_a = implicitly_restarted_block_lanczos_cy(
         psi0=psi0.copy(),
         h_op=H,
         basis=None,
@@ -70,7 +70,7 @@ def test_array_irlm_matches_mbs(mode):
         reort=mode,
         comm=None,
     )
-    ev_m, _ = mbs_irlm(
+    ev_m, evecs_m = mbs_irlm(
         psi0=psi0_mb,
         h_op=h_op_mb,
         basis=MockBasis(N),
@@ -85,6 +85,17 @@ def test_array_irlm_matches_mbs(mode):
     # Both kernels run the same algorithm (including restart-PRO for PARTIAL/SELECTIVE),
     # so they agree bit-for-bit across all modes.
     np.testing.assert_allclose(np.sort(ev_a), np.sort(ev_m), atol=1e-10)
+
+    # R0c gap: eigenvalue agreement alone cannot catch wrong-vector-pairing (a value
+    # landing in the right slot with the wrong eigenvector) -- assert the residual too,
+    # on both kernels' own returned (eigval, eigvec) pairing, not just the sorted values.
+    for k in range(len(ev_a)):
+        v = evecs_a[:, k]
+        assert np.linalg.norm(H @ v - ev_a[k] * v) < 1e-6
+    hq_m = h_op_mb.apply_multi(list(evecs_m))
+    for k in range(len(ev_m)):
+        resid = hq_m[k] - ev_m[k] * evecs_m[k]
+        assert resid.norm() < 1e-6
 
 
 @pytest.mark.parametrize("mode", [Reort.PARTIAL, Reort.SELECTIVE])
