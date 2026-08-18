@@ -188,27 +188,35 @@ class CIPSISolver:
             return self.basis.comm.allreduce(value, op=MPI.MAX)
         return value
 
-    def truncate_initial(self, H: ManyBodyOperator) -> None:
-        """Perform an initial truncation if the basis exceeds the truncation threshold."""
+    def truncate_initial(self, H: ManyBodyOperator, dense_cutoff=1e3) -> None:
+        """Perform an initial truncation if the basis exceeds the truncation threshold.
+
+        Routed through :meth:`get_eigenvectors` (TRLM above ``dense_cutoff``, dense below)
+        rather than calling ``eigensystem``/ARPACK directly: multi-rank ARPACK
+        (``scipy_eigensystem``) lets each rank's own ARPACK convergence bookkeeping decide how
+        many collectives it posts, which under multithreaded BLAS diverges between ranks and
+        deadlocks (measured -n3 hang, see the memory note
+        n3-arpack-truncate-initial-deadlock). TRLM's collective count depends only on
+        `basis`/`H_mat`, which are already rank-uniform, so it cannot desync this way.
+        """
         if self.basis.size > self.basis.truncation_threshold and H is not None:
             if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
                 print("Truncating basis!")
-            H_sparse = build_sparse_matrix(self.basis, H)
-            # Rank over the low-energy manifold (up to 10 states within energy_cut), not a
-            # single eigenvector: the downstream expansion / get_eigenvectors keep the whole
-            # near-degenerate ground manifold, so truncating to one state's support would
-            # bias the retained determinants toward one member of the multiplet.
-            _e_ref, psi_ref = eigensystem(
-                H_sparse,
-                e_max=energy_cut(self.basis.tau),
-                k=min(10, self.basis.size),
-                eigenValueTol=0,
-                comm=self.basis.comm,
-                dense=False,
+            # Rank over the low-energy manifold (up to 10 states within energy_cut, though
+            # get_eigenvectors' TRLM branch pads num_wanted by +10, so this can return up to 20
+            # states), not a single eigenvector: the downstream expansion / get_eigenvectors
+            # keep the whole near-degenerate ground manifold, so truncating to one state's
+            # support would bias the retained determinants toward one member of the multiplet.
+            # Cold start (psi_refs=None): truncate_initial runs before any converged block
+            # exists, so get_eigenvectors falls back to its rank-independent hash start vector.
+            _e_ref, psi_ref = self.get_eigenvectors(
+                H,
+                num_wanted=10,
+                max_energy=energy_cut(self.basis.tau),
+                dense_cutoff=dense_cutoff,
+                psi_refs=None,
             )
-            # eigensystem returns eigenvectors as columns (N, k); build_state wants one
-            # row per state vector, so transpose (matches CIPSISolver.expand's usage).
-            self.truncate(build_state(self.basis, psi_ref.T), _e_ref)
+            self.truncate(psi_ref, _e_ref)
 
     def truncate(self, psis: list[ManyBodyState], e_ref=None, target=None) -> list[ManyBodyState]:
         """Keep the globally top-``target`` determinants by eigenvector amplitude.

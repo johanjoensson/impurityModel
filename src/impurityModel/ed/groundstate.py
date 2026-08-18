@@ -176,6 +176,7 @@ def build_basis_and_solver(
     slaterWeightMin,
     sector_cache=None,
     total_charge_slack=0,
+    dense_cutoff=1e3,
 ):
     # Deliberately keyed on the exact per-group occupation, NOT on sector_key's (total, frozen):
     # calc_energy mutates the basis it is handed (`basis.clear(); basis.add_states(support)` at
@@ -211,7 +212,7 @@ def build_basis_and_solver(
         weighted_restrictions=weighted_restrictions,
     )
     solver = CIPSISolver(basis)
-    solver.truncate_initial(h_op)
+    solver.truncate_initial(h_op, dense_cutoff=dense_cutoff)
 
     basis.restrictions = build_excited_restrictions(basis, h_op, psis=None, es=None, slater_weight_min=slaterWeightMin)
     if sector_cache is not None:
@@ -414,6 +415,7 @@ def solve_sector(
                 weighted_restrictions,
                 slaterWeightMin,
                 sector_cache,
+                dense_cutoff=dense_cutoff,
             )
 
         if len(basis) == 0:
