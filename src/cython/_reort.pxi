@@ -69,8 +69,8 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
         return res
     elif isinstance(V, ManyBodyState):
         # apply_multi is list-typed (a plain ManyBodyState would raise TypeError
-        # there); apply_block is the block-native counterpart (Phase 2.2), near-flat
-        # cost in width vs. apply_multi's linear scaling.
+        # there); apply_block is the block-native counterpart, near-flat cost in
+        # width vs. apply_multi's linear scaling.
         wp = H.apply_block(V, cutoff=slaterWeightMin)
         if mpi and basis is not None and getattr(basis, "comm", None) is not None:
             wp = basis.redistribute_block(wp)
@@ -95,10 +95,9 @@ cpdef object block_add_scaled(object V, object W, object alpha, double slaterWei
         if slaterWeightMin > 0:
             V.prune_rows(slaterWeightMin)
     else:
-        # A bare list[ManyBodyState] V reached here until Phase 5 step 6: every current
-        # caller (BiCGSTAB.pyx/GMRES.pyx, already block-native end to end) passes a
-        # genuine ManyBodyState here, and the array-only in-place calls are
-        # guarded by the is_array check above.
+        # Defensive only: every current caller (BiCGSTAB.pyx/GMRES.pyx) is block-native
+        # end to end and passes a genuine ManyBodyState; the array-only in-place calls
+        # are guarded by the is_array check above.
         raise TypeError(f"block_add_scaled: unsupported V type {type(V)!r}")
     return V
 
@@ -132,12 +131,10 @@ cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
             out = ManyBodyState.from_states(pruned)
         return out
     else:
-        # A bare list[ManyBodyState] Q reached here until Phase 5 step 6: TRLM/IRLM's own
-        # seed (psi0) was the last production path that fed one in, and it is now converted
-        # to a ManyBodyState at the entry point before ever reaching this dispatcher.
-        # list[ManyBodyState] (the store_krylov=False Q_basis shape) never reaches
-        # block_combine either -- its one caller (ChebyshevFilter.pyx) discards Q_basis
-        # outright.
+        # Defensive only: TRLM/IRLM's psi0 seed is converted to a ManyBodyState at the
+        # entry point before ever reaching this dispatcher, and the store_krylov=False
+        # Q_basis shape (list[ManyBodyState]) never reaches block_combine either -- its
+        # one caller (ChebyshevFilter.pyx) discards Q_basis outright.
         raise TypeError(f"block_combine: unsupported Q type {type(Q)!r}")
 
 cpdef tuple block_orthogonalize(object wp, object Q, object overlaps=None, bint mpi=False, object comm=None):
@@ -156,9 +153,8 @@ cpdef tuple block_orthogonalize(object wp, object Q, object overlaps=None, bint 
         wp = block_add_scaled(wp, Q, -overlaps)
         return wp, overlaps
     else:
-        # See the matching branch in block_combine: dead for the same reason (TRLM/IRLM's
-        # psi0 is the last thing that fed a bare list in, and Phase 5 step 6 converts it to
-        # a block at the entry point).
+        # Defensive only: see the matching branch in block_combine -- TRLM/IRLM's psi0
+        # is converted to a block at the entry point before reaching this dispatcher.
         raise TypeError(f"block_orthogonalize: unsupported wp type {type(wp)!r}")
 
 cpdef tuple block_normalize(object wp, bint mpi=False, object comm=None, double slaterWeightMin=0.0):
@@ -342,10 +338,10 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
     cdef object Q_bad
     cdef int active_k
     cdef bint acted = False
-    # A shared-support block (Phase 2.4) goes through the same list-based projection
-    # machinery via a boundary conversion: on every call for FULL/PERIODIC, but for
-    # PARTIAL/SELECTIVE only when a bad block actually triggers — the common no-op
-    # case never materializes the block.
+    # A shared-support block goes through the same list-based projection machinery via
+    # a boundary conversion: on every call for FULL/PERIODIC, but for PARTIAL/SELECTIVE
+    # only when a bad block actually triggers — the common no-op case never
+    # materializes the block.
     cdef bint was_block = isinstance(wp, ManyBodyState)
 
     if is_array(wp):

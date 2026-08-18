@@ -736,20 +736,13 @@ def _cholesky_or_deflate(M, p_in, double scale=1.0):
 
 
 def _cholesky_qr2(M2, beta_j, active_k):
-    r"""Second pass of CholeskyQR2 on the *recomputed* Gram of the once-QR'd block.
+    r"""Second pass of CholeskyQR2 on the recomputed Gram of the once-QR'd block.
 
-    **Superseded** together with :func:`_cholesky_or_deflate`, and for the same reason: the
-    repetition below exists only to repair the first pass, and TSQR's first pass needs no
-    repair (it repeats itself at all only above ``kappa ~ EPS**(-1/4)``, and can then never
-    be *rescuing* a failed factorization). Kept for the regression tests.
-
-    Cholesky-QR (``_cholesky_or_deflate``) of an ill-conditioned block leaves
-    ``Q1 = Wp @ beta_inv`` with an orthonormality error of order
-    :math:`\kappa(M)\,\texttt{EPS}`, which can be :math:`O(1)`.  Re-orthonormalizing once
-    more — using the Gram ``M2 = Q1^H Q1`` recomputed from the *actual* (high-dimensional)
-    vectors, not from ``M`` — drives the error back to :math:`O(\texttt{EPS})` as long as the
-    deflated block satisfies :math:`\kappa \lesssim 1/\sqrt{\texttt{EPS}}` (guaranteed by the
-    ``_cholesky_or_deflate`` floor).
+    Superseded together with :func:`_cholesky_or_deflate`, kept for the same regression
+    tests. Re-orthonormalizes ``Q1 = Wp @ beta_inv`` (whose error can be :math:`O(1)`
+    when ``M`` was ill-conditioned) back to :math:`O(\texttt{EPS})` using the Gram of
+    the actual vectors; see doc/lanczos_invariants.md ("deflation vs breakdown scales")
+    for the derivation.
 
     Given ``M2`` and the first-pass factor ``beta_j`` (so ``Wp = Q1 @ beta_j``), returns
     ``(beta2_inv, beta_j_new, k2)`` such that ``Q2 = Q1 @ beta2_inv`` is orthonormal and
@@ -845,9 +838,9 @@ def block_lanczos_array_cy(
         alphas_buf[:start_it] = alphas_arr
         betas_buf[:start_it] = betas_arr
 
-    # Bounded-W ping-pong buffers + beta-norm history (Phase 1), mirroring
-    # block_lanczos_cy: the estimator writes into the spare persistent buffer and
-    # reuses the completed blocks' ||beta_j||_2 instead of re-factorizing them.
+    # Bounded-W ping-pong buffers + beta-norm history: the estimator writes into the
+    # spare persistent buffer and reuses the completed blocks' ||beta_j||_2 instead of
+    # re-factorizing them.
     _w_bufs = None
     beta_norm_hist = None
     if reort in (Reort.PARTIAL, Reort.SELECTIVE):
@@ -1058,8 +1051,7 @@ def block_lanczos_array_cy(
         # For a Hermitian H every block norm is bounded by ||H||; a jump of several orders
         # of magnitude over the largest healthy block norm means the recurrence has been
         # corrupted past repair. Truncate *before* this block (exclude alpha_i/beta_i at
-        # index it) so the diverged tail never reaches the Green's function. Mirrors the
-        # guard in block_lanczos_cy.
+        # index it) so the diverged tail never reaches the Green's function.
         # ||beta_i||_2 comes out of the factorization: beta_i and the block share their
         # singular values, so sv_i[0] is the 2-norm (reused by the SELECTIVE Ritz-error check
         # below) with no SVD of its own.

@@ -85,9 +85,10 @@ then forms `Q = A R^{-1}` by back substitution, instead of going through the Gra
 - `block_tsqr` (in `_reort.pxi`) is the representation-dispatching entry point, so array,
   single-`ManyBodyState` and `list[ManyBodyState]` callers all run the same factorization.
 
-`_cholesky_or_deflate` / `_cholesky_qr2` remain in `BlockLanczosArray.pyx` as the reference
-implementation the CholeskyQR2-era regression tests are written against; no production path
-calls them.
+`_cholesky_or_deflate` / `_cholesky_qr2` remain in `BlockLanczosArray.pyx` (next to the array
+kernel's other private helpers) as the reference implementation the CholeskyQR2-era regression
+tests are written against; no production path calls them. See `doc/lanczos_invariants.md`
+("deflation vs breakdown scales") for the derivation their docstrings used to carry.
 
 ### File organization (`.pxi` includes)
 
@@ -143,7 +144,7 @@ and is what both the CLIs and embedded callers (the RSPt interface) build to pas
 - **`polarization.py`** — numpy-only polarization vectors and tensor contractions (`contract_spectra_tensor`, `contract_rixs_tensor`, dichroism/isotropic helpers) that turn the tensor quantities `spectra.py` computes into polarization-resolved intensities; used both by `spectra.py`'s projector code paths and by the `plot_spectra`/`plot_RIXS` CLIs as a post-processing step, so no MPI or solver imports.
 - **`operator_algebra.py`** — algebra on second-quantized operator dicts (`addOps`, `daggerOp`, `combineOp`, …) and the `(l, s, m)` label ↔ flat-index conversions (`c2i`, `i2c`). These serve the *pre-conversion* path only: operators keyed by `(l, s, m)` labels cannot be `ManyBodyOperator`s, which need integer orbital indices. Once an operator is integer-indexed, use the `ManyBodyOperator` algebra instead. Note `combineOp` is a single-particle *matrix* product, not `ManyBodyOperator.__mul__`.
 - **`atomic_physics.py`** — single-shell atomic physics: Slater–Condon Coulomb integrals (`getU*`), spin-orbit coupling (`getSOCop`), Zeeman field (`gethHfieldop`), spherical↔cubic transforms, the MLFT double-counting correction (`dc_MLFT`), and the average Coulomb repulsion/exchange extractor (`uj_from_u4`) the `dc_static` FLL/AMF schemes derive `U`/`J` from.
-- **`eigensolvers.py`** — eigensolver drivers for the low-energy spectrum: dense (`numpy.linalg.eigh`), ARPACK (`scipy.sparse.linalg.eigsh`), and the block-Lanczos TRLM path, behind the `eigensystem` driver and the MPI-aware `HermitianOperator` wrapper.
+- **`eigensolvers.py`** — eigensolver drivers for the low-energy spectrum: dense (`numpy.linalg.eigh`) and ARPACK (`scipy.sparse.linalg.eigsh`), behind the `eigensystem` driver and the MPI-aware `HermitianOperator` wrapper. No connection to the Block Lanczos stack.
 - **`lie_algebra.py`** — the *algebraic half* of the symmetry machinery: tensor extraction/rotation (`extract_tensors`, `rotate_hamiltonian`), one-body symmetry discovery (the single-particle commutant null space), the Cartan reduction and joint diagonalization, and the reconstructed-Casimir observables. Depends only on `ManyBodyUtils`; `symmetries.py` builds its conserved charges and rotations on top of it.
 - **`symmetries.py`** — the consumer half built on `lie_algebra`: conserved-charge classification, occupation-window restrictions (`S_z`-weighted and frozen-shell flavors), impurity/bath occupation classification, and the impurity/Green's-function block structures used to deduplicate and sectorize GF/RIXS solves. Re-exports the `lie_algebra` primitives for backward compatibility.
 - **`block_structure.py`** — the `BlockStructure` type: detection of identical/transposed/particle-hole-related orbital blocks and matrix↔block conversions.

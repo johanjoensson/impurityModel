@@ -1,5 +1,5 @@
 # ===========================================================================
-# Implicitly Restarted Block Lanczos (IRLM) \u2014 EA16 (Meerbergen & Scott,
+# Implicitly Restarted Block Lanczos (IRLM) — EA16 (Meerbergen & Scott,
 # RAL-TR-2000-011). The whole business logic lives here (Cython); the Python
 # module impurityModel.ed.irlm is a thin re-export. The core is path-agnostic:
 # both the dense-array and ManyBodyState paths run through _irlm_core via the
@@ -9,7 +9,7 @@
 
 # --- Path-agnostic basis helpers. The array path represents a basis as an
 # ``(N, k)`` ndarray (column blocks); the ManyBodyState path as a length-``k``
-# list of states or (Phase 5 step 5) a single shared-support ``ManyBodyState``.
+# list of states or a single shared-support ``ManyBodyState``.
 # Get the block branch right BEFORE the list branch in every one of these: a
 # ``ManyBodyState``'s own ``len()`` is its ROW count (dict-like, matching
 # ``len(dict)`), not its column count -- silently wrong for "how many Krylov columns",
@@ -285,13 +285,13 @@ def _irlm_core(
     real-symmetric/Hermitian problem in regular mode. Drives both the array and
     ManyBodyState paths through the path-agnostic ``block_*`` helpers and a path-specific
     ``sweep`` callable. Combines the block Lanczos recurrence (``sweep``, with
-    resumption); **locking** of converged Ritz pairs (\u00a72.2.2); **explicit purging**
-    (\u00a72.2.1, eq. 6) as the restart compression (``ea16.purge_restart``); and the EA16
-    eq. (15) acceptance test (\u00a73.2.4),
+    resumption); **locking** of converged Ritz pairs (§2.2.2); **explicit purging**
+    (§2.2.1, eq. 6) as the restart compression (``ea16.purge_restart``); and the EA16
+    eq. (15) acceptance test (§3.2.4),
     ``res <= u*||T_k|| + |CNTL(2)| + |CNTL(3)|*|theta|``.
 
     Returns:
-        tuple: ``(eigvals, eigvecs)`` \u2014 sorted-ascending eigenvalues (length
+        tuple: ``(eigvals, eigvecs)`` — sorted-ascending eigenvalues (length
         ``num_wanted``) and the matching Ritz vectors in the path's basis representation.
     """
     from impurityModel.ed import ea16
@@ -328,7 +328,7 @@ def _irlm_core(
 
     def _lock_block(X, vals):
         """Lock the columns of ``X`` (Ritz vectors) one at a time, reorthogonalizing each
-        against the running locked set (\u00a72.6.2) and skipping any column that collapses \u2014
+        against the running locked set (§2.6.2) and skipping any column that collapses —
         i.e. is already represented in ``Xl``. Stops at ``num_wanted``."""
         nonlocal Xl
         n_locked_now = 0
@@ -358,9 +358,9 @@ def _irlm_core(
         return n_locked_now
 
     def _locked_kwargs():
-        # Locked Ritz pairs to deflate the inner sweep against (EA16 \u00a72.6.2). Empty locked
+        # Locked Ritz pairs to deflate the inner sweep against (EA16 §2.6.2). Empty locked
         # set -> locked=None so the kernel skips it. ``locked_evals``/``locked_res`` feed
-        # the \u00a72.6.2 overlap estimate (used only by the "partial" locked-reort mode).
+        # the §2.6.2 overlap estimate (used only by the "partial" locked-reort mode).
         if _nlock() == 0:
             return {"locked": None}
         return {
@@ -424,7 +424,7 @@ def _irlm_core(
                 f"MaxWantedRes={float(np.max(res[wanted])):.2e} | newly_locked={len(locked_local)}"
             )
 
-        # --- Lock converged wanted pairs (\u00a72.2.2) ----------------------
+        # --- Lock converged wanted pairs (§2.2.2) ----------------------
         if locked_local:
             X_new = block_combine(_q_slice(Q_basis, 0, total), Z[:, locked_local], slater)
             _lock_block(X_new, [evals[i].real for i in locked_local])
@@ -457,28 +457,12 @@ def _irlm_core(
         # then < p and the Sorensen residual rotation qres @ beta_new is undefined. Lock
         # the lowest wanted Ritz pairs and stop.
         #
-        # This has to be tested BEFORE the purge below, not just before the qres slice it
-        # names: the extreme form of this state is an *exact* breakdown, where the sweep
-        # spanned the whole reachable invariant subspace and stored no residual block at
-        # all (res_width == 0, beta_last exactly zero). Every Ritz residual is then zero,
-        # so eq. (15) accepts every active pair into locked_local, and if the caller asked
-        # for more pairs than the space holds (num_wanted > dim, which cipsi_solver does
-        # routinely -- it caps num_wanted against len(basis), not against the Krylov space
-        # reachable from psi0) n_need stays positive with no unlocked candidate left.
-        # select_restart_indices then legitimately returns an empty kept_idx, and
-        # purge_restart -- which needs at least one full block of retained pairs, and whose
-        # S = beta_last @ Z[...] premise is vacuous here anyway -- used to die on an empty
-        # np.concatenate.
-        #
-        # Rank-invariant by construction, not because the branch body happens to be
-        # collective: `total` and every stored width descend from `tsqr`'s globally-reduced
-        # `active_k` (TSQR.pyx, via an Allgather across ranks), and `_q_cols` /
-        # `SparseKrylovDense.n_cols` (_krylov_store.pxi) count columns of the dense factor,
-        # which an empty-local-partition rank still reports in full. The `comm.bcast` below
-        # is defense-in-depth, mirroring `_trlm.pxi`'s `done = comm.bcast(done, root=0)`: if
-        # this invariant were ever violated, the two branches' next collectives mismatch (a
-        # 1x1 Allreduce here vs. an Allgather in the purge/restart path below), which
-        # deadlocks instead of failing loud.
+        # Must run BEFORE purge_restart: an exact breakdown (res_width == 0) zeros every
+        # Ritz residual, so eq. (15) locks everything and purge_restart's kept_idx can come
+        # back empty (used to crash on an empty np.concatenate) -- see
+        # doc/lanczos_invariants.md ("deflation vs breakdown scales"). total/res_width are
+        # rank-invariant by construction (TSQR's globally-reduced active_k); the bcast
+        # below is defense-in-depth.
         res_width = _q_cols(Q_basis) - total
         take_break = res_width < p
         if mpi:
@@ -492,7 +476,7 @@ def _irlm_core(
                 )
             break
 
-        # --- Purge + restart in the Ritz basis (EA16 \u00a72.2.1, eq. 6) ----
+        # --- Purge + restart in the Ritz basis (EA16 §2.2.1, eq. 6) ----
         kept_idx, _ = ea16.select_restart_indices(evals, n_keep, locked_local, which="smallest")
         C, beta_new, alphas_new, betas_new = ea16.purge_restart(evals, Z, beta_last, p, kept_idx)
         Q_used = _q_slice(Q_basis, 0, total)
@@ -502,27 +486,16 @@ def _irlm_core(
 
         # The trailing normalized residual block is always present after a sweep (the
         # recurrence stores m_act+1 blocks), so the Sorensen residual reduces to rotating
-        # it by the re-banding coupling beta_new (EA16 \u00a72.2.1).
+        # it by the re-banding coupling beta_new (EA16 §2.2.1).
         qres = _q_slice(Q_basis, total, total + p)
         f_plus = block_combine(qres, beta_new, slater)
         f_plus = _orth_against_locked(f_plus)
 
-        # ``f_plus`` is a *residual* block (the trailing Krylov block rotated by the re-banding
-        # coupling ``beta_new``), so its norm is O(||H||), not O(1): its breakdown reference must
-        # be the operator norm, like the two Lanczos sweeps and unlike ``block_normalize``.
-        # ``tnorm`` is the proxy already in hand -- the largest-magnitude Ritz value including the
-        # locked ones, as used by the eq. (15) acceptance test above and by ``_trlm_core``'s
-        # ``stop_beta``. The default ``scale=1.0`` arms the guard at 1e-12 *absolute*, which for
-        # an O(||H||) block means never.
-        #
-        # This is a consistency fix, not a live bug. The branch is unreachable today: eq. (15)
-        # locks a Ritz pair as soon as ``res <= u*tnorm + |cntl2|``, so a residual block cannot
-        # survive to here once it has shrunk that far, and an anisotropic one is caught by the
-        # *relative* rank test first. Instrumented over the restart/Lanczos/CIPSI suite plus a
-        # warm-start probe: 734 hits, 0 decisions changed, closest approach 1127x above the
-        # branch. Keep the guard honest anyway -- an isotropic residual block that is numerically
-        # zero against ||H|| would deflate to nothing yet still be normalized, amplifying its
-        # rounding noise by ||H||/eps.
+        # f_plus is a residual block -- O(||H||) -- so its breakdown reference is tnorm
+        # (the largest-magnitude Ritz value, already in hand), not the default O(1) scale
+        # block_tsqr otherwise arms at. See doc/lanczos_invariants.md ("deflation vs
+        # breakdown scales") for why this branch is a consistency fix rather than a live
+        # bug, and the instrumentation behind that claim.
         q_k_next, beta_k, active_k, _sv_k = block_tsqr(f_plus, mpi, comm, tnorm, slater)
         if active_k < 0:
             if verbose and rank0:
@@ -547,7 +520,7 @@ def _irlm_core(
         alphas_pass = np.array(alphas_new)
 
         # Restart-PRO continuation: continue in PARTIAL/SELECTIVE, seeding the Paige-Simon
-        # estimator W at REORT_TOL (EA16 \u00a72.6.3). NONE/PERIODIC/FULL restart with FULL reort.
+        # estimator W at REORT_TOL (EA16 §2.6.3). NONE/PERIODIC/FULL restart with FULL reort.
         if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
             W_init = np.zeros((2, k_blocks + 1, p, p), dtype=complex)
             W_init[1, :k_blocks] = REORT_TOL
@@ -727,7 +700,7 @@ def implicitly_restarted_block_lanczos_cy(
     ``block_lanczos_cy``.
 
     Returns:
-        tuple[numpy.ndarray, list]: ``(eigvals, eigvecs)`` \u2014 ``num_wanted`` smallest
+        tuple[numpy.ndarray, list]: ``(eigvals, eigvecs)`` — ``num_wanted`` smallest
         eigenvalues (ascending) and matching ``ManyBodyState`` Ritz vectors.
     """
     if comm is None:

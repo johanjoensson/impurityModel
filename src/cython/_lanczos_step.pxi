@@ -120,11 +120,10 @@ def block_lanczos_step_cy(
           operator scale (an invariant subspace, ``active_k == 0``) or its factor came out
           non-finite (a corrupted recurrence, ``active_k == -1``).
     """
-    # q_prev / q_curr are shared-support ManyBodyStates (Phase 2.4): the matvec,
-    # Gram products and axpy updates below run once per determinant ROW instead of once
-    # per (determinant, vector) pair. All block primitives are bit-for-bit identical to
-    # the old list-of-ManyBodyState ops (same accumulation order); only the pruning
-    # keeps whole rows (any-column-survives) instead of per-column entries.
+    # q_prev / q_curr are shared-support ManyBodyStates: the matvec, Gram products and
+    # axpy updates below run once per determinant ROW instead of once per (determinant,
+    # vector) pair; pruning keeps whole rows (any-column-survives) instead of
+    # per-column entries.
     p = q_curr.width
 
     # --- 1. Block matvec: wp = H q_curr ---------------------------------
@@ -170,13 +169,9 @@ def block_lanczos_step_cy(
     # numerical robustness. Skipped in the "partial" mode, where the estimate-driven
     # EA16 §2.6.2 reorth is applied to q_next in block_lanczos_cy instead.
     #
-    # Gate on _q_cols(locked), NOT `if locked`/`bool(locked)`: a ManyBodyState defines
-    # no __bool__, so truthiness falls back to len(), which is its LOCAL ROW count --
-    # rank-dependent under MPI. An empty rank (owns zero determinants) can have
-    # width > 0 but rows == 0, so `if locked` reads False there while every other rank
-    # reads True, and the two Allreduces below execute on some ranks but not others ->
-    # deadlock (confirmed at mpiexec -n 3 via test_block_lanczos_mbs_empty_rank.py).
-    # _q_cols is the rank-invariant column count, replicated identically everywhere.
+    # Gate on _q_cols(locked), never truthiness: ManyBodyState.__len__ is the rank-local
+    # row count, so an empty rank diverges and the Allreduce below deadlocks. See
+    # doc/lanczos_invariants.md ("MPI collective gating") for the full incident.
     if locked is not None and _q_cols(locked) > 0 and locked_reort != "partial":
         locked_blk = (
             locked if isinstance(locked, ManyBodyState) else ManyBodyState.from_states(list(locked))
@@ -189,9 +184,8 @@ def block_lanczos_step_cy(
 
     # --- 4. Full / Periodic reorthogonalization -------------------------
     # The PERIODIC cadence gate stays in the caller; the reort action itself goes
-    # through the shared apply_reort (single FULL implementation for both kernels;
-    # bit-for-bit equal to the old 2x inner_multi/add_scaled_multi loop, classical
-    # block Gram-Schmidt with comm=comm-if-mpi).
+    # through the shared apply_reort (classical 2-pass block Gram-Schmidt, one
+    # implementation for both kernels).
     if reort_mode == Reort.FULL or (reort_mode == Reort.PERIODIC and it > 0 and it % reort_period == 0):
         wp, _, _ = apply_reort(wp, Q_basis, None, Reort.FULL, mpi, comm, block_widths or [], krylov)
 
@@ -201,8 +195,7 @@ def block_lanczos_step_cy(
     # conditioning and the rank decision is made on the block's true singular values.
     # Breakdown is measured against the operator scale, not against 1: a residual block is
     # negligible when it is small compared to H. `h_norm_est` is the driver's running estimate
-    # (0 on the first step of a cold start, where alpha_i carries the scale). Mirrors
-    # block_lanczos_array_cy so both kernels deflate on the same criterion.
+    # (0 on the first step of a cold start, where alpha_i carries the scale).
     q_next, beta_i, active_k, sv_i = block_tsqr(
         wp, mpi, comm, max(float(h_norm_est), float(np.linalg.norm(alpha_i, ord=2))),
         deflate_tol=deflate_tol,
@@ -314,7 +307,7 @@ def block_lanczos_step_cy(
                     _PROF["reort_acted#n"] = _PROF.get("reort_acted#n", 0.0) + 1.0
             # Only when a bad block was actually projected does q_next need re-orthonormalizing;
             # otherwise it is unchanged and this would be an exact no-op (R2 == I), so skip the
-            # factorization entirely. Mirrors block_lanczos_array_cy.
+            # factorization entirely.
             if _reort_acted:
                 q_next_2, R2, active_k, sv2 = block_tsqr(q_next, mpi, comm, 1.0, deflate_tol=deflate_tol)
                 # Absolutely tiny residual after projection => block contained in the existing span
@@ -527,22 +520,12 @@ def block_lanczos_cy(
     if not store_krylov and (reort_mode != Reort.NONE or nlock > 0):
         raise ValueError("store_krylov=False requires reort='none' and no locked vectors")
 
-    # A complex64 store represents each Krylov vector to ~u32 = 6e-8, so a projection against
-    # it cannot drive the residual overlap against the TRUE Krylov space below that (measured:
-    # FULL + complex64 settles at ||Q^H Q - I|| = 6.0e-8, vs 1.1e-15 at complex128). But
-    # PARTIAL/SELECTIVE steer to REORT_TOL = sqrt(EPS) ~ 1.5e-8, four times tighter: the target
-    # is unreachable, so their control loop has nothing to converge to. Worse, once the trigger
-    # fires they select blocks with BAD_BLOCK_TOL = EPS**0.75 ~ 1.8e-12 -- five orders below the
-    # fp32 noise floor -- so every block is flagged and PARTIAL degenerates into FULL while
-    # delivering worse orthogonality than FULL at complex128. Paying FULL's cost for a worse
-    # answer is strictly dominated, so reject rather than warn.
-    #
-    # The estimator's own reading of the situation is regime dependent and was NOT measured
-    # end to end (this guard fires first): O_last tracks the true residual within ~1.5x when
-    # there is a real projection to do, but is measured against the *stored* (rounded) basis,
-    # so on a near-no-op step it reads rounding-level while the true loss sits at ~u32. That is
-    # the under-prediction failure mode that has cost production runs before (see the "HONEST
-    # reset" note in BlockLanczosArray.apply_reort). Either way the combination is unusable.
+    # complex64 storage (~6e-8 rounding) can never reach PARTIAL/SELECTIVE's REORT_TOL
+    # target (~1.5e-8, sqrt(EPS)): the trigger is unreachable, and on the rare step it
+    # does fire, BAD_BLOCK_TOL flags every block, degenerating to FULL at
+    # worse-than-complex128 orthogonality. Reject rather than warn; see
+    # doc/lanczos_invariants.md ("complex64 measurements") for the full measurement
+    # table and the estimator under-prediction risk this guard also avoids.
     if krylov_dtype is not None and np.dtype(krylov_dtype) == np.dtype(np.complex64):
         if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
             raise ValueError(
@@ -619,7 +602,7 @@ def block_lanczos_cy(
         # len()/list() on a block would read its ROW count / iterate its determinant KEYS,
         # not its width/states, so the two must be told apart explicitly rather than
         # funneled through one call. Either way, adopt the shared-support block
-        # representation for the live recurrence blocks (Phase 2.4).
+        # representation for the live recurrence blocks.
         if isinstance(psi0, ManyBodyState):
             p = psi0.width
             q_curr = basis.redistribute_block(psi0)
@@ -663,7 +646,7 @@ def block_lanczos_cy(
                 w_j = block_widths[j]
                 Q_j = Q_basis[sum(block_widths[:j]) : sum(block_widths[:j+1])]
 
-                # q_curr/q_prev are ManyBodyStates (Phase 2.4); inner_multi only
+                # q_curr/q_prev are ManyBodyStates; inner_multi only
                 # coerces a bare non-list argument via list(...), which over a block
                 # iterates its determinant KEYS, not its columns -- materialize the
                 # columns explicitly instead of relying on that coercion to do it.
@@ -686,7 +669,7 @@ def block_lanczos_cy(
     elif reort_mode in (Reort.PARTIAL, Reort.SELECTIVE) and W is not None:
         pass  # W expands dynamically in estimate_orthonormality
 
-    # Bounded-W ping-pong buffers + the beta-norm history (Phase 1): the estimator
+    # Bounded-W ping-pong buffers + the beta-norm history: the estimator
     # writes each step's W into the spare persistent buffer instead of allocating,
     # and reuses ||beta_j||_2 of completed blocks instead of re-factorizing them
     # every step. Resume prefixes the history with None placeholders (block index

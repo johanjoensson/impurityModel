@@ -161,9 +161,9 @@ def _trlm_core(
         wanted = np.argsort(eigvals_T)[:num_wanted]
         max_res = float(np.max(res_norms[wanted]))
 
-        # Threshold below which a residual block means "stop here". Two reasons to stop, and
-        # neither is an absolute 1e-5 (which was the old test, and which caps TRLM's residual at
-        # 1e-5 for any operator whose norm is O(1), whatever `tol` asks):
+        # Threshold below which a residual block means "stop here". Two reasons to stop,
+        # and neither is a flat absolute tolerance (which would cap TRLM's residual at a
+        # fixed value for any O(1)-norm operator, whatever `tol` asks):
         #   * ||beta|| < tol       -- every Ritz residual ||beta s_i|| is then already under tol;
         #   * ||beta|| <= BREAKDOWN_TOL * ||T||  -- the block is numerically zero against the
         #     operator scale, i.e. a genuine invariant subspace.
