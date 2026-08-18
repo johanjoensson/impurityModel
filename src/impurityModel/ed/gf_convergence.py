@@ -243,8 +243,12 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
             last_dg[0] = None
             return False
         last_dg[0] = d_g
+        # Rank-local by construction: this closure has no comm (it is a pure function of the
+        # alphas/betas the Lanczos kernel hands it), so it cannot gate on rank 0 itself -- the
+        # caller (block_lanczos_cy et al.) is responsible for only setting verbose=True at
+        # V_DEBUG (-vvv) on the rank(s) it already prints from.
         if verbose:
-            print(rf"$\delta$ = {d_g}", flush=True)
+            print(rf"GF convergence: $\delta$ = {d_g:.3e} (block {step[0]})", flush=True)
         consec[0] = consec[0] + 1 if d_g < delta_min else 0
         is_conv = consec[0] >= _GF_CONSEC_CONVERGED
         converged_flag[0] = converged_flag[0] or is_conv

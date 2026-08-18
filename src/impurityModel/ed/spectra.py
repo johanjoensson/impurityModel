@@ -703,7 +703,7 @@ def calc_spectra(
             unit_restrictions[u],
             weighted_restrictions,
         )
-        if verbose:
+        if verbose and (split_basis.comm is None or split_basis.comm.rank == 0):
             print(f"Expanded excited state basis contains {_cap_stats['retained_size']} elements.")
         return alphas, betas, [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))]
 

@@ -372,11 +372,12 @@ def get_Greens_function(
             delta,
             [es[ei] for ei in unit.chunk],
         )
-        if verbose and unit_restrictions[u] is not None:
+        unit_rank0 = split_basis.comm is None or split_basis.comm.rank == 0
+        if verbose and unit_rank0 and unit_restrictions[u] is not None:
             print("Excited restrictions:")
             for indices, occ_rest in unit_restrictions[u].items():
                 print(f"{sorted(indices)}: {occ_rest}")
-        if verbose and excited_weighted_restrictions is not None:
+        if verbose and unit_rank0 and excited_weighted_restrictions is not None:
             print("weight restrictions:")
             for weights, sum_rest in excited_weighted_restrictions:
                 print(f"{weights}: {sum_rest}")
@@ -393,7 +394,7 @@ def get_Greens_function(
             excited_weighted_restrictions,
             eval_meshes=eval_meshes,
         )
-        if verbose_extra:
+        if verbose_extra and unit_rank0:
             print(f"Expanded excited state basis contains {cap_stats['retained_size']} elements.")
         return (
             alphas,
@@ -402,7 +403,9 @@ def get_Greens_function(
             cap_stats,
         )
 
-    results = run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose, reort=reort)
+    # This unit-level dump belongs at -vv (verbose_extra): the roots/per-color summary is
+    # detail beyond the -v per-block roll-up the caller already prints.
+    results = run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose_extra, reort=reort)
 
     gs_matsubara = gs_realaxis = report = None
     if results is not None:
@@ -1134,7 +1137,7 @@ def calc_Greens_function_with_offdiag(
     # can only tighten the excited basis, never loosen it.
     if extra_restrictions:
         excited_restrictions = _intersect_restrictions(excited_restrictions, extra_restrictions)
-    if verbose and excited_restrictions is not None:
+    if verbose and excited_restrictions is not None and (block_basis.comm is None or block_basis.comm.rank == 0):
         print("Excited state restrictions:")
         for indices, occupations in excited_restrictions.items():
             print(f"---> {sorted(indices)} : {occupations}")
@@ -1165,7 +1168,7 @@ def calc_Greens_function_with_offdiag(
             unit_restrictions[u],
             excited_weighted_restrictions,
         )
-        if verbose:
+        if verbose and (split_basis.comm is None or split_basis.comm.rank == 0):
             print(f"Expanded excited state basis contains {_cap_stats['retained_size']} elements.")
         return alphas, betas, [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))]
 
@@ -1277,6 +1280,11 @@ def rotate_4index_U(U4, T):
 def save_Greens_function(gs, omega_mesh, label, cluster_label, e_scale=1, tol=1e-8):
     """
     Save Greens function to file, using RSPt .dat format. Including offdiagonal elements.
+
+    Caller contract: every in-tree caller invokes this only on rank 0 (selfenergy.py's
+    unphysical-result save and scripts/selfenergy.py's ``_save_results``, both already
+    inside a ``rank == 0`` guard), so the prints/file writes below are unconditional --
+    this function itself takes no ``comm`` to gate on.
     """
     n_orb = gs.shape[1]
     axis_label = "-realaxis"

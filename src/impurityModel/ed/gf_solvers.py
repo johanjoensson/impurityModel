@@ -94,7 +94,7 @@ def block_Green(
                 break
         if basis.size == old_size or capped:
             break
-        if verbose:
+        if verbose and (basis.comm is None or basis.comm.rank == 0):
             print(f"    expanded basis contains {basis.size} states")
         alphas_prev = alphas
         betas_prev = betas
@@ -769,7 +769,7 @@ def block_Green_bicgstab(
                 if len(hist_z) > _GF_BICGSTAB_WARM_HISTORY:
                     hist_z.pop(0)
                     hist_x.pop(0)
-            if verbose:
+            if verbose and (sub_comm is None or sub_comm.rank == 0):
                 print(
                     f"    axis {ax}, eigenstate {p}: {len(z_shifted)} solves, "
                     f"{stats['iterations']} cumulative iterations, "
@@ -1031,7 +1031,7 @@ def block_Green_cipsi(
                 if len(hist_z) > _GF_BICGSTAB_WARM_HISTORY:
                     hist_z.pop(0)
                     hist_x.pop(0)
-            if verbose:
+            if verbose and (sub_comm is None or sub_comm.rank == 0):
                 print(
                     f"    axis {ax}, eigenstate {p}: {len(z_shifted)} points, "
                     f"{stats['rounds']} cumulative selection rounds, "
