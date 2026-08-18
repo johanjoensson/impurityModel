@@ -280,7 +280,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     # the non-convergence warning below.
     if status == "invariant_subspace":
         converged_flag[0] = True
-    if not converged_flag[0] and verbose and rank == 0:
+    if not converged_flag[0] and rank == 0:
         print(
             f"warning: block Green's function did not reach the convergence tolerance "
             f"{delta_min:.1e} in {len(alphas)} block(s). The continued fraction uses the "
@@ -295,7 +295,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     # only drop a corrupted trailing tail (whole blocks + widths) so it never reaches the
     # continued fraction. Norms of padded blocks equal those of the true blocks (zeros add
     # nothing), so the scan is valid on the padded arrays.
-    keep = len(_sanitize_continued_fraction(list(alphas), list(betas), verbose=verbose, rank=rank)[0])
+    keep = len(_sanitize_continued_fraction(list(alphas), list(betas), rank=rank)[0])
     if keep < len(alphas):
         alphas, betas, widths = alphas[:keep], betas[:keep], widths[:keep]
     q_last = Q_list[:, -1:]
@@ -433,7 +433,7 @@ def block_Green_sparse(
         )
 
     alphas, betas = _trim_blocks(alphas, betas, widths)
-    alphas, betas = _sanitize_continued_fraction(alphas, betas, verbose=verbose, rank=rank)
+    alphas, betas = _sanitize_continued_fraction(alphas, betas, rank=rank)
     return alphas, betas, r
 
 

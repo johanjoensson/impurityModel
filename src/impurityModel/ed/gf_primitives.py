@@ -422,7 +422,7 @@ def _trim_blocks(alphas, betas, block_widths):
     return a, b
 
 
-def _sanitize_continued_fraction(alphas, betas, verbose=False, rank=0):
+def _sanitize_continued_fraction(alphas, betas, rank=0):
     r"""Drop a corrupted trailing tail from the block-Lanczos coefficients.
 
     Defense-in-depth before the continued fraction / self-energy: the Lanczos kernels now
@@ -450,7 +450,7 @@ def _sanitize_continued_fraction(alphas, betas, verbose=False, rank=0):
             break
         norm_max = max(norm_max, a_norm, b_norm)
     if keep < len(alphas):
-        if verbose and rank == 0:
+        if rank == 0:
             print(
                 f"warning: discarding {len(alphas) - keep} corrupted block(s) from the "
                 f"Green's-function continued fraction before computing the self-energy.",

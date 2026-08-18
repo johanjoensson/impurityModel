@@ -792,16 +792,24 @@ class CIPSISolver:
                 "n_candidates_last": int(sel.get("n_candidates", 0)),
             }
             rank = self.basis.comm.rank if self.basis.is_distributed else 0
-            if self.basis.verbose and rank == 0:
+            if rank == 0:
                 rep = self.truncation_report
+                # discarded_de2_mass is an error bound on the ground state (PT2 importance
+                # left out of the retained subspace), so this fires regardless of verbose;
+                # the refinement-cycle detail is cosmetic and stays behind -v.
                 print(
-                    f"GS basis cap hit: fixed-budget CIPSI held the basis at "
-                    f"{rep['retained']:,} determinants (truncation_threshold={rep['threshold']:,}) "
-                    f"over {rep['cycles']} refinement cycle(s); the last cycle discarded "
-                    f"candidates carrying {rep['discarded_de2_mass']:.3e} of PT2 importance. "
+                    f"WARNING: GS basis cap hit: fixed-budget CIPSI held the basis at "
+                    f"{rep['retained']:,} determinants (truncation_threshold={rep['threshold']:,}); "
+                    f"discarded candidates carry {rep['discarded_de2_mass']:.3e} of PT2 importance. "
                     f"The ground state is exact on the retained subspace.",
                     flush=True,
                 )
+                if self.basis.verbose:
+                    print(
+                        f"  ({rep['cycles']} refinement cycle(s); {rep['n_candidates_last']:,} "
+                        "candidates considered in the last cycle)",
+                        flush=True,
+                    )
 
         if self.basis.verbose:
             print(f"After expansion, the basis contains {self.basis.size} elements.", flush=True)

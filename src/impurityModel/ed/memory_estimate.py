@@ -582,8 +582,8 @@ def log_memory_budget(
             n, n_spin_orbitals, block_width, reort, ranks_per_unit, krylov_dtype=krylov_dtype, method=method
         )
         fits = max(gs, gf) <= available
+    prefix = f"{label}: " if label else ""
     if verbose and rank == 0:
-        prefix = f"{label}: " if label else ""
         if uncapped:
             print(f"{prefix}truncation_threshold=inf (uncapped); {format_bytes(available)}/rank available.", flush=True)
         else:
@@ -593,23 +593,25 @@ def log_memory_budget(
                 f"{format_bytes(available)}/rank available.",
                 flush=True,
             )
-            if not fits:
-                suggestion = _suggest_for_budget(
-                    DEFAULT_MEMORY_SAFETY * available,
-                    n_spin_orbitals,
-                    block_width,
-                    reort,
-                    n_parallel_units,
-                    nnz_per_state,
-                    ranks,
-                    krylov_dtype,
-                    method,
-                )
-                print(
-                    f"{prefix}WARNING: predicted peak exceeds available memory; consider "
-                    f"truncation_threshold<={suggestion:,} or more ranks.",
-                    flush=True,
-                )
+    # Ungated: an OOM prediction is a warning about a real problem, not detail. The
+    # informational budget lines above stay behind `verbose`.
+    if not uncapped and not fits and rank == 0:
+        suggestion = _suggest_for_budget(
+            DEFAULT_MEMORY_SAFETY * available,
+            n_spin_orbitals,
+            block_width,
+            reort,
+            n_parallel_units,
+            nnz_per_state,
+            ranks,
+            krylov_dtype,
+            method,
+        )
+        print(
+            f"{prefix}WARNING: predicted peak exceeds available memory; consider "
+            f"truncation_threshold<={suggestion:,} or more ranks.",
+            flush=True,
+        )
     return {"available_per_rank": available, "gs_peak": gs, "gf_peak": gf, "fits": fits}
 
 

@@ -191,19 +191,20 @@ def flat_h0_to_labelled(parsed, nBaths, path=None, rank=0, verbose=True):
     # file written before this check existed has no `contains_soc` key at all (None), and
     # warning on that unknown case would cry wolf on nearly every real transition-metal
     # workload already on disk.
-    if rank == 0 and verbose and parsed.contains_soc is False:
+    if rank == 0 and parsed.contains_soc is False:
         violations = symmetries.check_kramers_degeneracy(parsed.to_matrix())
         if violations:
-            detail = ", ".join(f"E={v['energy']:.4g} (x{v['multiplicity']})" for v in violations)
             print(
                 f"WARNING: {path or parsed.header.get('producer')}: {len(violations)} "
                 f"odd-multiplicity eigenvalue cluster(s) -- this h0 breaks time-reversal "
-                f"(Kramers) symmetry: {detail}. The header declares no spin-orbit coupling, so "
-                "this is not the expected SOC-driven loss of exact degeneracy -- it usually "
-                "means the cluster is genuinely spin-polarised or field-dressed, or that the "
-                "bath fit that produced the file has a problem (see doc/h0_file_format.md, "
-                "Basis and spin ordering)."
+                f"(Kramers) symmetry. The header declares no spin-orbit coupling, so this is not "
+                "the expected SOC-driven loss of exact degeneracy -- it usually means the cluster "
+                "is genuinely spin-polarised or field-dressed, or that the bath fit that produced "
+                "the file has a problem (see doc/h0_file_format.md, Basis and spin ordering)."
             )
+            if verbose:
+                detail = ", ".join(f"E={v['energy']:.4g} (x{v['multiplicity']})" for v in violations)
+                print(f"  clusters: {detail}")
 
     shell = OrderedDict({l: n_bath_in_file})
     operator = {}

@@ -236,17 +236,22 @@ def _report_rixs_solver_stats(stats, comm, verbose):
     warning line per unconverged R2 point with a single end-of-run summary.
 
     Collective on ``comm``: every rank's counters (however many units it processed) are
-    summed (max for the worst ``d_g``), so this must run unconditionally on every rank --
-    only the print itself is gated on ``verbose``.
+    summed (max for the worst ``d_g``), so this must run unconditionally on every rank.
+    The full line is gated on ``verbose``; when any R1/R2 solve failed to converge a
+    shorter summary prints regardless -- this is the only outlet for that failure since
+    it replaced the old per-point convergence warning.
     """
     counts = {k: v for k, v in stats.items() if k != "r2_worst_d_g"}
     worst_d_g = stats["r2_worst_d_g"]
     if comm is not None:
         counts = {k: comm.reduce(v, op=MPI.SUM, root=0) for k, v in counts.items()}
         worst_d_g = comm.reduce(worst_d_g, op=MPI.MAX, root=0)
-    if verbose and (comm is None or comm.rank == 0):
-        r1_total = counts["r1_spectral"] + counts["r1_recycled"] + counts["r1_bicgstab"]
-        r2_total = counts["r2_cache"] + counts["r2_lanczos"]
+    if comm is not None and comm.rank != 0:
+        return
+    r1_total = counts["r1_spectral"] + counts["r1_recycled"] + counts["r1_bicgstab"]
+    r2_total = counts["r2_cache"] + counts["r2_lanczos"]
+    n_unconverged = counts["r1_unconverged"] + counts["r2_unconverged"]
+    if verbose:
         print(
             f"RIXS solver summary: R1 {r1_total} solves "
             f"({counts['r1_spectral']} spectral / {counts['r1_recycled']} recycled / "
@@ -254,6 +259,13 @@ def _report_rixs_solver_stats(stats, comm, verbose):
             f"{counts['r1_unconverged']} unconverged); "
             f"R2 {r2_total} evals ({counts['r2_cache']} cache / {counts['r2_lanczos']} lanczos, "
             f"{counts['r2_unconverged']} unconverged, worst d_g {worst_d_g:.2e})",
+            flush=True,
+        )
+    elif n_unconverged > 0:
+        print(
+            f"WARNING: RIXS solver: {n_unconverged} of {r1_total + r2_total} solves did not "
+            f"reach the convergence tolerance (worst d_g {worst_d_g:.2e}); rerun with -v for "
+            "the per-tier breakdown.",
             flush=True,
         )
 
