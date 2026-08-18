@@ -191,7 +191,7 @@ class CIPSISolver:
     def truncate_initial(self, H: ManyBodyOperator) -> None:
         """Perform an initial truncation if the basis exceeds the truncation threshold."""
         if self.basis.size > self.basis.truncation_threshold and H is not None:
-            if self.basis.verbose:
+            if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
                 print("Truncating basis!")
             H_sparse = build_sparse_matrix(self.basis, H)
             # Rank over the low-energy manifold (up to 10 states within energy_cut), not a
@@ -757,7 +757,7 @@ class CIPSISolver:
                 cap_cycles += 1
                 keep = max(int(threshold) - n_new, int(threshold) // 2, 1)
                 psi_refs = self.truncate(psi_refs, e_ref, target=keep)
-                if self.basis.verbose:
+                if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
                     print(
                         f"------> Basis truncated! (cycle {cap_cycles}: kept "
                         f"{self.last_truncation['retained']:,} determinants, admitting {n_new:,} candidates)"
@@ -811,7 +811,7 @@ class CIPSISolver:
                         flush=True,
                     )
 
-        if self.basis.verbose:
+        if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
             print(f"After expansion, the basis contains {self.basis.size} elements.", flush=True)
 
     def get_eigenvectors(
@@ -931,7 +931,10 @@ class CIPSISolver:
                     max_subspace_blocks=max_subspace_blocks,
                     tol=_eigen_tol(slaterWeightMin),
                     max_restarts=100,
-                    verbose=self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0),
+                    # The TRLM/IRLM kernels already rank-gate every print internally
+                    # (rank0 = (not mpi) or comm.rank == 0, see _trlm.pxi/_irlm.pxi); no need
+                    # to pre-AND rank 0 into the bool here too.
+                    verbose=self.basis.verbose,
                     slaterWeightMin=slaterWeightMin,
                     reort=reort,
                 )

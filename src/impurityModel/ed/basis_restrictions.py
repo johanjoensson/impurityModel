@@ -271,7 +271,7 @@ def build_initial_restrictions(
             ground_state_restrictions[empty_orbitals] = (0, 1)
     if sum(len(rest) for rest in ground_state_restrictions.keys()) == 0:
         return None
-    if basis.verbose:
+    if basis.verbose and (basis.comm is None or basis.comm.rank == 0):
         print("Ground state restrictions:")
         for indices, occupations in ground_state_restrictions.items():
             print(f"---> {sorted(indices)} : {occupations}")

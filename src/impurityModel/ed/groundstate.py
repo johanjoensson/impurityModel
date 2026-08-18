@@ -670,7 +670,9 @@ def find_ground_state_basis(
             spin_flip_dj,
             dense_cutoff,
             comm=comm,
-            verbose=verbose,
+            # CIPSI-round / basis-generation chatter is -vv (V_DETAIL) territory, not -v: the
+            # walk's own per-trial summary at V_SUMMARY is already printed above by the caller.
+            verbose=verbose >= V_DETAIL,
             truncation_threshold=truncation_threshold,
             slaterWeightMin=slaterWeightMin,
             cipsi_solver_method=cipsi_solver_method,
@@ -884,7 +886,9 @@ def find_ground_state_basis(
         spin_flip_dj,
         dense_cutoff,
         comm=comm,
-        verbose=verbose,
+        # This basis is returned to the caller (solve_ground_state refines it further via
+        # solver.expand), so its .verbose governs that CIPSI chatter too -- -vv territory.
+        verbose=verbose >= V_DETAIL,
         truncation_threshold=truncation_threshold,
         slaterWeightMin=slaterWeightMin,
         cipsi_solver_method=cipsi_solver_method,

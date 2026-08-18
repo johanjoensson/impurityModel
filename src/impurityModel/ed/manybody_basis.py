@@ -98,7 +98,7 @@ class Basis:
         chain_restrict=False,
         collapse_chains=False,
         comm=None,
-        verbose=True,
+        verbose=False,
         debug=False,
     ):
         """Initialize the Basis class.
@@ -148,7 +148,7 @@ class Basis:
             Whether to collapse chains.
         comm : MPI.Comm, optional
             MPI communicator.
-        verbose : bool, default True
+        verbose : bool, default False
             Whether to print info.
         debug : bool, default False
             Debug flag.
@@ -191,7 +191,9 @@ class Basis:
                 nominal_impurity_occ=nominal_impurity_occ,
                 mixed_valence=mixed_valence if mixed_valence is not None else dict.fromkeys(nominal_impurity_occ, 0),
                 n_bytes=self.n_bytes,
-                verbose=verbose,
+                # generate_initial_basis is deliberately comm-free (pure, rank-deterministic);
+                # gate the rank here so its prints don't fire nranks times.
+                verbose=verbose and (comm is None or comm.rank == 0),
                 frozen_occupations=frozen_occupations,
                 total_charge_slack=total_charge_slack,
             )
@@ -442,7 +444,7 @@ class Basis:
             self.add_states(new_states)
             apply_h_to_these = apply_h_to_these ^ (set(self.local_basis) - local_states)
             it += 1
-        if self.verbose:
+        if self.verbose and (self.comm is None or self.comm.rank == 0):
             print(f"After expansion, the basis contains {self.size} elements.")
 
     def index(self, val: SlaterDeterminant | bytes | Iterable[SlaterDeterminant | bytes]) -> int | Iterator[int]:
