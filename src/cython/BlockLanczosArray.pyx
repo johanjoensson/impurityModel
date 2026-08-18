@@ -517,7 +517,7 @@ cpdef np.ndarray estimate_orthonormality(
     return W_out
 
 
-cpdef np.ndarray _build_full_T(np.ndarray[double complex, ndim=3] alphas, np.ndarray[double complex, ndim=3] betas, object block_widths=None, object comm=None):
+cpdef np.ndarray _build_full_T(np.ndarray[double complex, ndim=3] alphas, np.ndarray[double complex, ndim=3] betas, object block_widths=None):
     cdef int m = alphas.shape[0]
     if m == 0:
         return np.zeros((0, 0), dtype=complex)
@@ -549,17 +549,6 @@ cpdef np.ndarray _build_full_T(np.ndarray[double complex, ndim=3] alphas, np.nda
             T[o_next : o_next + w_next, o_i : o_i + w_i] = betas[i, :w_next, :w_i]
             T[o_i : o_i + w_i, o_next : o_next + w_next] = np.conj(betas[i, :w_next, :w_i].T)
     return T
-
-
-cpdef tuple _extract_blocks(np.ndarray[double complex, ndim=2] T, int m, int n):
-    cdef np.ndarray[double complex, ndim=3] alphas = np.zeros((m, n, n), dtype=complex)
-    cdef np.ndarray[double complex, ndim=3] betas = np.zeros((m - 1, n, n), dtype=complex)
-    cdef int i
-    for i in range(m):
-        alphas[i] = T[i * n : (i + 1) * n, i * n : (i + 1) * n]
-        if i < m - 1:
-            betas[i] = T[(i + 1) * n : (i + 2) * n, i * n : (i + 1) * n]
-    return alphas, betas
 
 
 def _build_banded_lower(alphas, betas, widths):
@@ -733,8 +722,6 @@ cpdef tuple block_normalize_array(np.ndarray wp, object comm=None):
 
 cdef extern from "complex.h":
     double complex conj(double complex z) nogil
-
-# from scipy.linalg.cython_blas cimport zgemm, zgemv
 
 
 @cython.boundscheck(False)
@@ -930,7 +917,7 @@ def block_lanczos_array_cy(
     cdef double h_norm_est = 0.0
     cdef double _h_scale = 0.0
     cdef double beta_norm, alpha_norm
-    cdef double reort_eps = np.sqrt(np.finfo(float).eps)
+    cdef double reort_eps  # always assigned (from REORT_TOL) before its one read, below
 
     cdef bint mpi = comm is not None
     cdef int rank = comm.rank if mpi else 0

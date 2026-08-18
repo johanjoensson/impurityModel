@@ -164,7 +164,6 @@ def _implicitly_restarted_block_lanczos_array(
 
     return _irlm_core(
         psi0,
-        basis,
         num_wanted,
         max_subspace_blocks,
         tol,
@@ -250,7 +249,6 @@ def _implicitly_restarted_block_lanczos_manybody(
 
     return _irlm_core(
         psi0,
-        basis,
         num_wanted,
         max_subspace_blocks,
         tol,
@@ -268,7 +266,6 @@ def _implicitly_restarted_block_lanczos_manybody(
 
 def _irlm_core(
     psi0,
-    basis,
     num_wanted,
     max_subspace_blocks,
     tol,

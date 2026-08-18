@@ -1,7 +1,7 @@
 """
-Eigensolver drivers for the low-energy spectrum: dense (numpy), ARPACK
-(scipy.sparse), and block-Lanczos (TRLM) paths, plus the MPI-aware
-:class:`HermitianOperator` wrapper used to feed them.
+Eigensolver drivers for the low-energy spectrum: dense (numpy) and ARPACK
+(scipy.sparse) paths, plus the MPI-aware :class:`HermitianOperator` wrapper used to
+feed them.
 """
 
 import warnings

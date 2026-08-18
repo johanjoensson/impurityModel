@@ -52,8 +52,8 @@ def test_eigensystem():
     # Add dtype attribute if required by scipy LinearOperator
     op.dtype = np.complex128
 
-    # Test sparse solver (should hit TRLM or CIPSI or scipy_eigensystem)
-    # Using k=4. Since N=30 and N>20, it will use thick_restarted_block_lanczos (if available) or fallback
+    # Test the sparse (ARPACK) path. Using k=4. Since N=30 and N>20, eigensystem's
+    # dense-or-scipy dispatch routes to scipy_eigensystem, not the dense fallback.
     es, vs = eigensystem(op, e_max=100.0, k=4, dense=False)
     assert len(es) >= 1
     assert vs is not None
