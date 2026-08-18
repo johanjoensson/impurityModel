@@ -311,7 +311,7 @@ def divergence_guard(double beta_norm, double alpha_norm, bint first_step,
     return diverged, t_norm_max, h_norm_est
 
 
-def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=None):
+def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=None, verbose=False):
     mpi = comm is not None
     rank = comm.rank if mpi else 0
     size = comm.size if mpi else 1
@@ -351,7 +351,7 @@ def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=N
         psi0=v0,
         h_op=h,
         converged=converged,
-        verbose=True,
+        verbose=verbose,
         reort=reort,
         comm=comm,
     )
@@ -1135,7 +1135,9 @@ def block_lanczos_array_cy(
             beta_norm, alpha_norm, it == start_it, t_norm_max, h_norm_est
         )
         if diverged:
-            if verbose and (not mpi or comm.rank == 0):
+            # Ungated from verbose: a truncated recurrence is a problem the caller must see
+            # regardless of verbosity, not detail. Rank gate kept (mpi/comm.rank == 0).
+            if not mpi or comm.rank == 0:
                 print(
                     f"[BlockLanczos] Divergence detected at iteration {it}: "
                     f"|beta|={beta_norm:.3e}, |alpha|={alpha_norm:.3e} >> spectral scale "
@@ -1284,8 +1286,8 @@ def block_lanczos_array_cy(
         block_widths.append(n_curr)
         it += 1
 
-    if verbose:
-        print(f"Converged at iteration {it}")
+    if verbose and (not mpi or rank == 0):
+        print(f"Block Lanczos terminated ({termination}) at iteration {it}")
 
     # Tail-only mode: q[1] is the last block ever appended in stored mode (the roll
     # q[0]=q[1]; q[1]=q_next runs before the append, and every break happens before the

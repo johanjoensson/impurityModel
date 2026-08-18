@@ -777,9 +777,10 @@ def block_lanczos_cy(
             # active_k == 0 is a genuine rank-deficient residual -> the block-Krylov space is
             # closed under H -> the continued fraction is exact on it.
             termination = "diverged" if active_k < 0 else "invariant_subspace"
-            if verbose:
-                if comm is None or comm.Get_rank() == 0:
-                    print(f"[BlockLanczos] {termination} detected at iteration {it_abs}.")
+            # "diverged" is a problem the caller must see regardless of verbosity;
+            # "invariant_subspace" is a legitimate exact-termination case, stays at -vv.
+            if (termination == "diverged" or verbose) and (comm is None or comm.Get_rank() == 0):
+                print(f"[BlockLanczos] {termination} detected at iteration {it_abs}.")
             block_widths.append(n_curr)
             it += 1
             break
@@ -803,7 +804,8 @@ def block_lanczos_cy(
             beta_norm, alpha_norm, it == 0, t_norm_max, h_norm_est
         )
         if diverged:
-            if verbose and (comm is None or comm.Get_rank() == 0):
+            # Ungated from verbose: a truncated recurrence is a problem, not detail.
+            if comm is None or comm.Get_rank() == 0:
                 print(
                     f"[BlockLanczos] Divergence detected at iteration {it_abs}: "
                     f"|beta|={beta_norm:.3e}, |alpha|={alpha_norm:.3e} >> spectral scale "
@@ -849,7 +851,7 @@ def block_lanczos_cy(
             # the block rows — no per-state materialization, no defensive copies.
             Q_basis.append_block(q_next)
 
-        if verbose:
+        if verbose and (comm is None or comm.Get_rank() == 0):
             print(
                 f"[BlockLanczos] it={it_abs:4d}  " f"|beta|={beta_norm:.3e}  " f"alpha_diag={np.real(np.diag(alpha_i))}"
             )

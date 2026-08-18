@@ -362,7 +362,7 @@ def thick_restart_block_lanczos_cy(
     max_subspace_blocks: int,
     tol: float = 1e-8,
     max_restarts: int = 100,
-    verbose: bool = True,
+    verbose: bool = False,
     slaterWeightMin: float = 0.0,
     truncation_threshold: int = 0,
     reort="partial",
@@ -382,7 +382,7 @@ def thick_restart_block_lanczos_cy(
             (``> ceil(num_wanted / p)``).
         tol: Convergence tolerance on the maximum wanted residual. Default ``1e-8``.
         max_restarts: Maximum number of thick restarts. Default ``100``.
-        verbose: Print restart diagnostics. Default ``True``.
+        verbose: Print restart diagnostics. Default ``False``.
         slaterWeightMin: Amplitude cutoff for ``ManyBodyState.prune``. Default ``0.0``.
         reort: Reorthogonalization mode (``Reort`` enum or string). Default ``'partial'``.
         comm: ``mpi4py`` communicator. Falls back to ``basis.comm`` or serial.
@@ -448,7 +448,7 @@ def thick_restart_block_lanczos(
     max_subspace_blocks: int,
     tol: float = 1e-8,
     max_restarts: int = 100,
-    verbose: bool = True,
+    verbose: bool = False,
     slaterWeightMin: float = 0,
     reort=Reort.PARTIAL,
 ):
