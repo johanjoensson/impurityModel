@@ -36,9 +36,12 @@ operators.
 
 ### Block Lanczos kernels: which one to use
 
-There are two Block Lanczos kernels with identical reorthogonalization semantics
-(they share the deflation, W-recurrence, FULL/PARTIAL/SELECTIVE reort, and threshold
-logic — see `BlockLanczosArray.pyx`):
+There are two Block Lanczos kernels with identical reorthogonalization semantics: they
+share the deflation, W-recurrence, FULL/PARTIAL/SELECTIVE reort, and threshold logic
+because it lives in one place, `BlockLanczosCore.pyx` (`Reort`, every tolerance
+constant, `estimate_orthonormality`, the block-tridiagonal eigensolvers, and the
+representation-dispatching block primitives / `apply_reort`), which both kernels
+import downward from — neither kernel imports from the other:
 
 - **`BlockLanczos.pyx` — sparse / hash-distributed** (`block_lanczos_cy`,
   `thick_restart_block_lanczos_cy`, `implicitly_restarted_block_lanczos_cy`). Operates
@@ -81,9 +84,12 @@ then forms `Q = A R^{-1}` by back substitution, instead of going through the Gra
   invariant subspace), `k == -1` (non-finite factor — a *corrupted* recurrence, not a closed
   one).
 - `TSQR.pyx` owns `EPS`, `DEFLATE_TOL`, `DEFLATE_EVAL_TOL` and `BREAKDOWN_TOL`;
-  `BlockLanczosArray` re-exports the ones its callers read from it.
-- `block_tsqr` (in `_reort.pxi`) is the representation-dispatching entry point, so array,
-  single-`ManyBodyState` and `list[ManyBodyState]` callers all run the same factorization.
+  `BlockLanczosCore` imports them directly (so does `BlockLanczosArray`, independently —
+  both are leaf-importers of `TSQR`, no cycle either way), and `BlockLanczosArray` /
+  `BlockLanczos` re-export the ones their callers read from them.
+- `block_tsqr` (in `BlockLanczosCore.pyx`'s `_block_ops.pxi`) is the
+  representation-dispatching entry point, so array, single-`ManyBodyState` and
+  `list[ManyBodyState]` callers all run the same factorization.
 
 `_cholesky_or_deflate` / `_cholesky_qr2` remain in `BlockLanczosArray.pyx` (next to the array
 kernel's other private helpers) as the reference implementation the CholeskyQR2-era regression
@@ -97,12 +103,20 @@ compiled modules; `setup.py` lists them in each Extension's `depends=` so edits 
 recompile). Each `.pxi` opens with a reading-map header:
 
 - `BlockLanczos.pyx` = `_lanczos_step.pxi` (core recurrence) + `_trlm.pxi` (thick-restart) +
-  `_irlm.pxi` (implicitly-restarted / EA16).
+  `_irlm.pxi` (implicitly-restarted / EA16). Imports the shared layer from
+  `BlockLanczosCore.pyx`; no local block-primitive `.pxi`.
+- `BlockLanczosCore.pyx` = the shared layer (`Reort`, tolerances, `estimate_orthonormality`,
+  the block-tridiagonal eigensolvers) + `_block_ops.pxi` (the representation-dispatching
+  block primitives + `selective_orthogonalize`/`apply_reort`; renamed from `_reort.pxi`
+  when it moved out of `BlockLanczosArray.pyx`). `TSQR` is its only upstream dependency;
+  it never imports from `BlockLanczosArray` or `BlockLanczos`.
 - `ManyBodyUtils.pyx` = `_slater_state.pxi` (`SlaterDeterminant`) + `_operator.pxi`
   (`ManyBodyOperator`) + `_mpi_pack.pxi` + `_krylov_store.pxi` (`SparseKrylovDense`) +
   `_block_state.pxi` (`ManyBodyState`).
-- `BlockLanczosArray.pyx` keeps the array kernel and includes `_reort.pxi` (the
-  `ManyBodyState`-path block primitives + `selective_orthogonalize`/`apply_reort`).
+- `BlockLanczosArray.pyx` keeps the array kernel (`block_lanczos_array_cy` and its private
+  BLAS-3 helpers) plus `_cholesky_or_deflate`/`_cholesky_qr2` (the superseded reference
+  implementation); imports the shared layer from `BlockLanczosCore.pyx`, no local
+  block-primitive `.pxi` of its own any more.
 
 ## Python Codebase (`src/impurityModel/ed/`)
 

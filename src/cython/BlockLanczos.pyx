@@ -59,8 +59,15 @@ from mpi4py import MPI
 
 cimport numpy as np
 
-from impurityModel.ed.BlockLanczosArray import estimate_orthonormality, _build_full_T, eigh_block_tridiagonal
-from impurityModel.ed.BlockLanczosArray import (
+# The shared numerical layer (Reort, tolerances, estimate_orthonormality, the
+# block-tridiagonal eigensolvers, and the representation-dispatching block
+# primitives / apply_reort) lives in BlockLanczosCore.pyx -- imported directly here,
+# not transitively through BlockLanczosArray, so both kernels import downward from
+# the shared layer and neither depends on the other.
+from impurityModel.ed.BlockLanczosCore import (
+    estimate_orthonormality,
+    _build_full_T,
+    eigh_block_tridiagonal,
     apply_reort,
     divergence_guard,
     resolve_reort,
@@ -115,19 +122,10 @@ cdef inline void _prof_acc(str key, double t0):
         _PROF[key + "#n"] = _PROF.get(key + "#n", 0.0) + 1.0
 
 
-cpdef tuple block_normalize_sparse(object wp, bint mpi=False, object comm=None, double slaterWeightMin=0.0):
-    """``block_normalize_array``'s counterpart for a list of ``ManyBodyState`` or a
-    single width-p ``ManyBodyState`` block (see it for the breakdown convention).
-    Untyped (not ``list``): ``block_tsqr`` itself dispatches on ``ManyBodyState`` vs.
-    list, so this is a pure passthrough for either representation, not list-only."""
-    q_next, beta_j, active_k, _ = block_tsqr(wp, mpi, comm, 1.0, slaterWeightMin)
-    if active_k <= 0:
-        raise ValueError("Block collapsed to zero rank")
-    return q_next, beta_j
-
-# Orthonormalization is shared: block_tsqr (imported from BlockLanczosArray, which includes
-# _reort.pxi) dispatches on the block representation, so this kernel and the array kernel run
-# the same factorization and the same EA16 shrinking-block deflation policy.
+# block_normalize_sparse used to live here as a thin block_tsqr wrapper for the
+# ManyBodyState/list representations; it and its array-kernel counterpart
+# (block_normalize_array) were the same 5-line body twice, now absorbed into Core's
+# single block_normalize (imported above), which dispatches on representation itself.
 
 
 include "_lanczos_step.pxi"

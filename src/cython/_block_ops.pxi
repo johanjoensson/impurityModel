@@ -1,8 +1,8 @@
 # ===========================================================================
-# ManyBodyState-path block primitives + reorthogonalization
+# Path-agnostic block primitives + reorthogonalization
 # ===========================================================================
 # The is_array-dispatching block primitives (block_inner/apply/add_scaled/combine/
-# orthogonalize/normalize) that let the array Lanczos kernel run on ManyBodyState bases, and
+# orthogonalize/normalize) shared by the array and ManyBodyState Lanczos kernels, and
 # the reorthogonalization machinery (selective_orthogonalize, apply_reort). Reort-estimator
 # honesty: resets use measured overlaps, never an EPS post-act reset (which blinds it).
 
@@ -158,11 +158,22 @@ cpdef tuple block_orthogonalize(object wp, object Q, object overlaps=None, bint 
         raise TypeError(f"block_orthogonalize: unsupported wp type {type(wp)!r}")
 
 cpdef tuple block_normalize(object wp, bint mpi=False, object comm=None, double slaterWeightMin=0.0):
+    """Orthonormalize a block, in whatever representation it comes.
+
+    The columns here are already O(1) (a starting block, a restart block), so the
+    breakdown reference is 1 rather than an operator norm; a block that collapses
+    raises instead of returning a rank, because its callers have no shrinking-block
+    path to fall back on. Absorbs the former block_normalize_array (dense arrays) and
+    block_normalize_sparse (ManyBodyState / list[ManyBodyState], via block_tsqr's own
+    representation dispatch) into one function -- they were the same 5-line body twice.
+    """
     if is_array(wp):
-        return block_normalize_array(wp, comm if mpi else None)
+        q_next, beta_j, active_k, _ = tsqr(wp, comm if mpi else None, 1.0)
     else:
-        from impurityModel.ed.BlockLanczos import block_normalize_sparse
-        return block_normalize_sparse(wp, mpi, comm, slaterWeightMin)
+        q_next, beta_j, active_k, _ = block_tsqr(wp, mpi, comm, 1.0, slaterWeightMin)
+    if active_k <= 0:
+        raise ValueError("Block collapsed to zero rank")
+    return q_next, beta_j
 
 
 cpdef tuple block_tsqr(object wp, bint mpi=False, object comm=None, double scale=1.0,
@@ -315,10 +326,6 @@ def selective_orthogonalize(q_next, Q_basis, alphas, betas, W, block_widths,
     return q_next
 
 
-def block_lanczos_array(*args, **kwargs):
-    return block_lanczos_array_cy(*args, **kwargs)
-
-
 cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint mpi, object comm, list block_widths, object krylov=None, bint force=False):
     """Reorthogonalize ``wp`` per the reort mode. Returns ``(wp, W, acted)``; ``acted`` is True
     iff a projection was actually applied (always for FULL/PERIODIC; for PARTIAL/SELECTIVE only
@@ -331,7 +338,6 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
     1984 / PROPACK): the projection cleans only ``wp`` = q_{i+1}, so q_i's remaining
     overlap re-contaminates q_{i+2} through the three-term recurrence one step later —
     deterministically re-projecting there closes that channel."""
-    from impurityModel.ed.BlockLanczosArray import Reort, REORT_TOL, BAD_BLOCK_TOL, EPS
     cdef list bad_block_idx = []
     cdef int j, col_start, col_end, w_j
     cdef list bad_cols
