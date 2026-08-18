@@ -465,7 +465,7 @@ def calc_susceptibility_workflow(
         basis_information,
         sb.block_structure,
         sb.rot_to_spherical,
-        verbosity >= 2,
+        verbosity,
         slaterWeightMin=slaterWeightMin,
         num_wanted=num_wanted,
     )

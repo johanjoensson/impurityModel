@@ -46,7 +46,15 @@ from impurityModel.ed.observables import (
 )
 from impurityModel.ed.spin_pairs import resolve_spin_pairs
 from impurityModel.ed.symmetries import extract_tensors
-from impurityModel.ed.utils import matrix_print, print_density_matrix_summary, report_banner, report_rule
+from impurityModel.ed.utils import (
+    V_DETAIL,
+    V_SUMMARY,
+    Reporter,
+    matrix_print,
+    print_density_matrix_summary,
+    report_banner,
+    report_rule,
+)
 
 #: Restarted-Lanczos kernel used for every ground-state solve. One name, one place: the DC search
 #: and ``calc_gs`` have to run the *same* solver or they converge to the same eigenpairs with
@@ -534,7 +542,7 @@ def find_ground_state_basis(
     spin_flip_dj=True,
     comm=None,
     truncation_threshold=None,
-    verbose=True,
+    verbose=0,
     slaterWeightMin=1e-12,
     cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     use_hf_seed=True,
@@ -547,6 +555,12 @@ def find_ground_state_basis(
     use_hf_seed (default True): seed the nominal occupation with a cheap, memory-bounded
     unrestricted Hartree-Fock solve (the mean-field lowest-energy determinant), instead of
     the O(3^k) accurate scan over every dN combination. Set False for the legacy scan.
+
+    verbose : int or bool
+        Verbosity level (see ``impurityModel.ed.utils.V_SUMMARY``/``V_DETAIL``); the
+        occupation-search summary prints at ``V_SUMMARY``, per-trial energies at
+        ``V_DETAIL``. A plain ``bool`` degrades gracefully: ``True`` behaves like
+        ``V_SUMMARY`` (int subclass of bool in Python), ``False`` like the terse default.
 
     truncation_threshold (default None): global cap on the number of Slater determinants in
     the basis; when the basis would grow past it, only the currently most important
@@ -710,7 +724,7 @@ def find_ground_state_basis(
         leaked = sum(refrozen.values()) != sum(seed_N0.values())
         if converged and not leaked:
             return refrozen
-        if verbose and (comm is None or comm.rank == 0):
+        if verbose >= V_SUMMARY and (comm is None or comm.rank == 0):
             why = (
                 "HF did not converge"
                 if not converged
@@ -730,7 +744,7 @@ def find_ground_state_basis(
         # (no broad-window CIPSI expansion), which matters for long bath chains.
         winning_impurity_occ = hf_seed
         e_gs = get_energy(winning_impurity_occ)
-        if verbose and (comm is None or comm.rank == 0):
+        if verbose >= V_SUMMARY and (comm is None or comm.rank == 0):
             print("HF-seeded ground state occupation:", winning_impurity_occ, f"~ {e_gs:6.3f}", flush=True)
 
         # The HF seed is a single mean-field determinant and can miss the true sector along more
@@ -752,7 +766,7 @@ def find_ground_state_basis(
                     for i in range(len(keys))
                 }
                 e_trial = get_energy(trial)
-                if verbose and (comm is None or comm.rank == 0):
+                if verbose >= V_DETAIL and (comm is None or comm.rank == 0):
                     print("{" + " ".join(f" {k} : {trial[k]}" for k in keys) + f"}} ~ {e_trial:6.3f}")
                 if e_trial < best_combo_e:
                     best_combo_e = e_trial
@@ -773,7 +787,7 @@ def find_ground_state_basis(
                     max_occ = sum(len(block) for block in impurity_orbitals[i])
                     if 0 <= trial[i] <= max_occ:
                         e_trial = get_energy(trial)
-                        if verbose and (comm is None or comm.rank == 0):
+                        if verbose >= V_DETAIL and (comm is None or comm.rank == 0):
                             print("{" + " ".join(f" {k} : {trial[k]}" for k in keys) + f"}} ~ {e_trial:6.3f}")
                         if e_trial < best_e:
                             best_e = e_trial
@@ -794,7 +808,7 @@ def find_ground_state_basis(
         for dN in dN_trials:
             trial_N0 = {i: N0[i] + dN[i] for i in N0}
             e_trial = get_energy(trial_N0)
-            if verbose:
+            if verbose >= V_DETAIL and (comm is None or comm.rank == 0):
                 print("{" + " ".join(f" {i} : {trial_N0[i]}" for i in dN) + f"}} ~ {e_trial:6.3f}")
             if e_trial < e_gs:
                 e_gs = e_trial
@@ -811,7 +825,7 @@ def find_ground_state_basis(
             ):
                 trial_N0 = {j: n + dN_gs[i] if i == j else n for j, n in winning_impurity_occ.items()}
                 e_trial = get_energy(trial_N0)
-                if verbose:
+                if verbose >= V_DETAIL and (comm is None or comm.rank == 0):
                     print(
                         "{" + " ".join(f" {j} : {trial_N0[j]}" for j in dN_gs) + f"}} ~ {e_trial:6.3f}",
                     )
@@ -822,7 +836,7 @@ def find_ground_state_basis(
 
     if (
         sector_key(winning_impurity_occ, frozen_occupations) != best_cached_key
-        and verbose
+        and verbose >= V_SUMMARY
         and (comm is None or comm.rank == 0)
     ):
         print(
@@ -831,7 +845,7 @@ def find_ground_state_basis(
             "occupation was out of bounds.",
             flush=True,
         )
-    if verbose:
+    if verbose >= V_SUMMARY and (comm is None or comm.rank == 0):
         # The *total* is what this search determined. The per-group split is a basis-generation
         # parameter, not a measurement: with two or more unfrozen groups the generator lets each
         # range over its whole [0, group_size] and filters only the total (see sector_key), so
@@ -1076,7 +1090,7 @@ def calc_gs(
     basis_setup: dict,
     block_structure: BlockStructure,
     rot_to_spherical: np.ndarray,
-    verbose: bool,
+    verbose,
     slaterWeightMin=0,
     cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     num_wanted: int = 10,
@@ -1102,8 +1116,13 @@ def calc_gs(
         The block structure defining mapping and symmetry relationships.
     rot_to_spherical : ndarray
         Transformation matrix from local to spherical harmonics.
-    verbose : bool
-        If True, prints detailed statistics and expectation values.
+    verbose : int or bool
+        Verbosity level (``impurityModel.ed.utils.V_RESULT``..``V_DEBUG``). ``V_RESULT``
+        (0) prints only a terse summary; ``V_SUMMARY`` (1, ``-v``) adds the full
+        ground-state observable report; ``V_DETAIL`` (2, ``-vv``) adds the full bath
+        density matrices (a summary prints below that) and CIPSI-round chatter. A plain
+        ``bool`` degrades gracefully (``True`` behaves like ``V_SUMMARY``, an int
+        subclass in Python).
     slaterWeightMin : float
         Minimum weight threshold for determinants in the basis.
 
@@ -1168,6 +1187,7 @@ def calc_gs(
 
     comm = ground_state_basis.comm
     rank = comm.rank if comm is not None else 0
+    report = Reporter(verbose, rank)
     # Single-particle density matrices, built distributed (each rank applies c_orb to its
     # local partition, redistributes, computes local inner products, then Allreduce); the
     # full rho is returned replicated on every rank. No full-state-vector gather needed.
@@ -1508,13 +1528,21 @@ def calc_gs(
         save_gs_statistics(gs_stats, stats_path)
 
     if rank == 0:
+        # Terse run record: always shown (V_RESULT), independent of the full report below.
+        gs_occ = getattr(ground_state_basis, "ground_state_occupation", None)
+        occ_str = f"; ground-state impurity occupation: {sum(gs_occ.values())}" if gs_occ else ""
+        print(f"E0 = {np.min(es):.6f}   retained states = {len(es)}   tau = {tau:.4g}")
+        print(f"{len(ground_state_basis):,} Slater determinants{occ_str}")
+        if not report.enabled(V_SUMMARY):
+            note = f"; statistics saved to {stats_path}" if (gs_stats is not None and stats_path is not None) else ""
+            print(f"(full report: -v{note})")
+    if report.enabled(V_SUMMARY):
         # The ground state is fully computed by here; formatting/printing the observable report
         # must never crash the solve. Any failure degrades to a warning and still returns the GS.
-        # Rank-0-only (no collectives inside), so the guard cannot desync an MPI run.
+        # Rank-0-only (report.enabled already checks rank == 0; no collectives inside), so the
+        # guard cannot desync an MPI run.
         try:
             report_banner("Ground-state report")
-            print(f"E0 = {np.min(es):.6f}   retained states = {len(es)}   tau = {tau:.4g}")
-            print(f"{len(ground_state_basis)} Slater determinants in the basis.")
             print(f"impurity spin-orbitals: {impurity_indices}")
             print("Effective GS restrictions:")
             for indices, occupations in effective_restrictions.items():
@@ -1589,7 +1617,7 @@ def calc_gs(
                 print(f"correlation/screening diagnostics not reported: {diagnostics_skip_reason}")
             if gs_stats is not None:
                 report_rule("Configurations & entanglement")
-                print_gs_statistics(gs_stats, verbose=2 if verbose >= 2 else 1)
+                print_gs_statistics(gs_stats, verbose=2 if verbose >= V_DETAIL else 1)
                 report_rule("Density matrices")
                 print("Ground state impurity / bath density matrices:")
                 valence_bath_states, conduction_bath_states = ground_state_basis.bath_states
@@ -1605,11 +1633,11 @@ def calc_gs(
                         impurity_ix = np.ix_(imp_orbs, imp_orbs)
                         bath_ix = np.ix_(val_orbs + con_orbs, val_orbs + con_orbs)
                         matrix_print(thermal_rho[impurity_ix], "Impurity density matrix:", n_prec=5)
-                        if verbose >= 2:
+                        if verbose >= V_DETAIL:
                             matrix_print(thermal_rho[bath_ix], "Bath density matrix:", n_prec=5)
                         else:
                             print_density_matrix_summary(thermal_rho[bath_ix], "Bath density matrix (summary):")
-                    print("", flush=verbose >= 2)
+                    print("", flush=verbose >= V_DETAIL)
                 print()
         except Exception as exc:
             print(f"[warning] ground-state observable report incomplete (GS still returned): {exc}")

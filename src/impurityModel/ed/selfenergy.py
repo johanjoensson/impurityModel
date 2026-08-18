@@ -254,7 +254,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             basis_information,
             block_structure,
             rot_to_spherical,
-            verbosity >= 2,
+            verbosity,
             slaterWeightMin=slaterWeightMin,
             num_wanted=num_wanted,
         )

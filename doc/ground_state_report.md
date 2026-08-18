@@ -1,10 +1,23 @@
 # Interpreting the ground-state report
 
-When `calc_gs` (`impurityModel.ed.groundstate`) finishes, rank 0 prints a report of the
-low-energy eigenstates: expectation values, configuration weights, participation/entropy
-measures, natural-orbital occupations and density matrices. This page walks through that
-report in print order and explains, for each number, what it is, where it comes from in
-the code, and what it can be used for.
+When `calc_gs` (`impurityModel.ed.groundstate`) finishes, rank 0 prints a terse run
+record (below); the full report described on this page -- expectation values,
+configuration weights, participation/entropy measures, natural-orbital occupations and
+density matrices -- only prints at `-v` and above (`verbose`/`verbosity >= V_SUMMARY`;
+see `impurityModel.ed.utils`). This page walks through that report in print order and
+explains, for each number, what it is, where it comes from in the code, and what it can
+be used for.
+
+```text
+E0 = -53.888031   retained states = 3   tau = 0.0025
+368 Slater determinants; ground-state impurity occupation: 8
+(full report: -v; statistics saved to ground_state_statistics.json)
+```
+
+The terse record always prints; the pointer line is omitted once the full report below
+is also printing. `-vv` (`V_DETAIL`) additionally prints the full bath density matrix
+(see [below](#impurity--bath-density-matrices)) instead of its summary, and the
+per-trial occupation-search energies (next section) instead of just the final sector.
 
 The same information is saved machine-readable to `ground_state_statistics.json`
 (`gs_statistics.save_gs_statistics`; path set by the `stats_path` argument of
@@ -42,36 +55,40 @@ energies) and `observables.thermal_observable_value` (Casimirs, spin correlation
 ## Before the report: occupation search and basis
 
 These lines are printed while the ground-state sector and variational basis are being
-determined (`groundstate.find_ground_state_basis`), before any observables.
+determined (`groundstate.find_ground_state_basis`), before any observables. The final
+occupation-search summary (below) prints at `-v`; the per-trial `{...} ~ E` energies it
+is picked from print only at `-vv`.
 
 ```text
 HF-seeded ground state occupation: {0: 2, 1: 6} ~ -53.888
-Ground state occupation
- 0 :   2
- 1 :   6
+Ground state impurity occupation: 8
+  (per-group filling: see the impurity density matrix below)
 E$_{GS}$ = -53.8880
 ```
 
 The impurity occupation sector is chosen either from a cheap unrestricted Hartree–Fock
 seed (`groundstate.hartree_fock_seed_occupation`; the printed dict maps orbital-symmetry
 group → electron count, e.g. group 0 = $e_g$, group 1 = $t_{2g}$) or, when the seed is
-rejected, from an explicit scan over occupations `{...} ~ E` where each candidate sector
-is solved variationally and the lowest energy wins. `E_GS` is the winning variational
-ground-state energy — compare it with `E0` further down (the final, better-converged
-basis) to see how much the final expansion gained.
+rejected, from an explicit scan over occupations `{...} ~ E` (only at `-vv`) where each
+candidate sector is solved variationally and the lowest energy wins. `E_GS` is the
+winning variational ground-state energy — compare it with `E0` further down (the final,
+better-converged basis) to see how much the final expansion gained. Only the *total*
+occupation is printed (the per-group split is a basis-generation window, not a
+measurement of orbital polarization); the actual per-group filling is the impurity
+density matrix further down.
 
-The report itself starts with a full-width `Ground-state report` banner; every further
-part of it is introduced by a `-- <section> ----` rule (*Thermal expectation values*,
-*Eigenstates*, *Correlation strength*, *Screening*, *Configurations & entanglement*,
-*Density matrices*), in that fixed order. The overview under the banner collects the
-scalars needed to orient in everything below:
+The full report (`-v` and above) starts with a full-width `Ground-state report` banner;
+every further part of it is introduced by a `-- <section> ----` rule (*Thermal
+expectation values*, *Eigenstates*, *Correlation strength*, *Screening*, *Configurations
+& entanglement*, *Density matrices*), in that fixed order. The overview under the banner
+collects the scalars needed to orient in everything below (`E0`/`retained states`/`tau`
+and the determinant count already printed in the terse record above are not repeated
+here):
 
 ```text
 ================================================================================
   Ground-state report
 ================================================================================
-E0 = -53.888031   retained states = 3   tau = 0.0025
-368 Slater determinants in the basis.
 impurity spin-orbitals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 Effective GS restrictions:
   [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] : (8, 10)
@@ -603,8 +620,8 @@ The individually heaviest determinants with their thermally weighted probability
 impurity part lists the occupied spin-orbitals explicitly; the (near-filled) valence
 baths are described by their *holes* and the (near-empty) conduction baths by their
 occupied *particles*, which keeps the rows short — a `d^9\underline{L}` determinant
-reads directly as one extra impurity index plus one valence hole. At `verbose >= 2` the
-full per-channel occupation lists are printed instead. The indices are flat
+reads directly as one extra impurity index plus one valence hole. At `-vv` the full
+per-channel occupation lists are printed instead. The indices are flat
 computational-basis indices (the same ones appearing in `impurity spin-orbitals` and
 the restriction lines). Their meaning in terms of spin/orbital character depends on the
 one-body basis of the input Hamiltonian; the down-then-up pairing convention only holds
@@ -659,7 +676,7 @@ $\rho$ is already diagonal in this basis); off-diagonal entries are one-particle
 coherences generated by hybridization. The impurity block is printed in full; the bath
 block — mostly an identity-like diagonal — is summarized as its diagonal plus the few
 significant off-diagonal coherences (indices local to the printed block), sorted by
-magnitude. `verbose >= 2` prints the full bath matrix instead.
+magnitude. `-vv` prints the full bath matrix instead.
 
 What healthy output looks like: valence-bath diagonals near 1 and conduction-bath
 diagonals near 0, with deviations (and off-diagonal structure) concentrated on the few

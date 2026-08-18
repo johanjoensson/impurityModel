@@ -260,7 +260,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
         basis_setup,
         block_structure,
         rot_to_spherical,
-        verbosity > 0,
+        verbosity,
     )
 
     # Save some of the arrays. HDF5-format does not directly support dictionaries.
