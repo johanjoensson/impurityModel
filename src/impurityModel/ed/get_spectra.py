@@ -23,7 +23,7 @@ from impurityModel.ed.symmetries import (
     impurity_symmetry_rotation,
     rotate_hamiltonian,
 )
-from impurityModel.ed.utils import V_RESULT
+from impurityModel.ed.utils import V_RESULT, Reporter
 
 
 def build_spectra_model(
@@ -127,6 +127,10 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
     rank = comm.rank if comm is not None else 0
     if verbosity is None:
         verbosity = V_RESULT
+    # The stage one-liners below are the provenance heartbeat users pipe to logs; they stay
+    # ungated (level V_RESULT) regardless of verbosity, so `report` here is only for the
+    # shared rank gate and formatting, not for hiding anything at the default level.
+    report = Reporter(verbosity, rank)
 
     hOp = ManyBodyOperator(model.h0)
     impurity_orbitals = model.impurity_orbitals
@@ -181,8 +185,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
     else:
         radialMesh = RiNIXS = RjNIXS = None
 
-    if rank == 0:
-        print(f"Number of spin-orbitals: {n_spin_orbitals}")
+    report(f"Number of spin-orbitals: {n_spin_orbitals}", level=V_RESULT)
 
     # Default: derive the block structure from the hybridization-dressed impurity matrix
     # (impurity_block_structure) rather than the hand-coded one. It matches or strictly refines
@@ -201,8 +204,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
         impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
         h_matrix = extract_tensors(hOp, n_orb=n_spin_orbitals, two_body=False)[0]
         block_structure = impurity_block_structure(hOp, impurity_indices, h0_matrix=h_matrix)
-        if rank == 0:
-            print(f"Auto-derived block structure: {len(block_structure.blocks)} blocks")
+        report(f"Auto-derived block structure: {len(block_structure.blocks)} blocks", level=V_RESULT)
 
         if correlated_l in impurity_orbitals:
             d_indices = sorted(orb for block in impurity_orbitals[correlated_l] for orb in block)
@@ -218,25 +220,23 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
                 # rot_to_spherical maps the (rotated) computational basis back to spherical harmonics
                 # for the L/S/J Casimir reporting in calc_gs; identity on the un-rotated core p shell.
                 rot_to_spherical[correlated_l] = u_imp.conj().T
-                if rank == 0:
-                    n_classes = len(correlated_block_structure.inequivalent_blocks)
-                    print(
-                        f"Rotated 3d shell into symmetry-adapted basis (fill {fill_ratio:.2f}x); "
-                        f"{n_classes} inequivalent PES/IPS classes."
-                    )
+                n_classes = len(correlated_block_structure.inequivalent_blocks)
+                report(
+                    f"Rotated 3d shell into symmetry-adapted basis (fill {fill_ratio:.2f}x); "
+                    f"{n_classes} inequivalent PES/IPS classes.",
+                    level=V_RESULT,
+                )
             else:
-                if rank == 0:
-                    print(
-                        f"Kept spherical basis (rotation would densify {fill_ratio:.2f}x"
-                        f" > {spectra._MAX_ROTATION_FILL})."
-                    )
+                report(
+                    f"Kept spherical basis (rotation would densify {fill_ratio:.2f}x"
+                    f" > {spectra._MAX_ROTATION_FILL}).",
+                    level=V_RESULT,
+                )
                 correlated_block_structure = impurity_block_structure(hOp, d_indices, h0_matrix=h_matrix)
     # Measure how many physical processes the Hamiltonian contains.
-    if rank == 0:
-        print(f"Hamiltonian contains {len(hOp)} terms.")
+    report(f"Hamiltonian contains {len(hOp)} terms.", level=V_RESULT)
     # Many body basis for the ground state
-    if rank == 0:
-        print("Creating the many-body basis ...")
+    report("Creating the many-body basis ...", level=V_RESULT, flush=True)
     tau = basis.tau
     basis_setup = {
         "impurity_orbital": impurity_orbitals,
@@ -277,12 +277,9 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
             h5f.create_dataset("RiNIXS", data=RiNIXS)
             h5f.create_dataset("RjNIXS", data=RjNIXS)
 
-    if rank == 0:
-        print("\n" + "=" * 80)
-        print("  Spectra")
-        print("=" * 80)
-        print(f"Considering {len(es)} eigenstate(s) for the spectra.")
-        print("Calculating spectra ...", flush=verbosity >= 2)
+    report.banner("Spectra", level=V_RESULT)
+    report(f"Considering {len(es)} eigenstate(s) for the spectra.", level=V_RESULT)
+    report("Calculating spectra ...", level=V_RESULT, flush=True)
     spectra.simulate_spectra(
         es,
         psis,
@@ -322,5 +319,4 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
         h5f.close()
     if comm is not None:
         comm.Barrier()
-    if rank == 0:
-        print("\nDone.")
+    report("\nDone.", level=V_RESULT)

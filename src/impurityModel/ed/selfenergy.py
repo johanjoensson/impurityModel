@@ -41,6 +41,7 @@ from impurityModel.ed.solver_basis import (  # noqa: F401
     _per_group_scalar,
     prepare_solver_basis,
 )
+from impurityModel.ed.utils import V_DETAIL, V_RESULT, V_SUMMARY, Reporter
 
 
 def _raise_together(comm, message):
@@ -191,16 +192,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
 
     # MPI variables
     rank = comm.rank if comm is not None else 0
-
-    def log(msg="", *, level=1, **kwargs):
-        if verbosity >= level:
-            print(msg, **kwargs)
-
-    def banner(title, *, level=1):
-        if verbosity >= level:
-            print("\n" + "=" * 80)
-            print(f"  {title}")
-            print("=" * 80, flush=verbosity >= 2)
+    report = Reporter(verbosity, rank)
 
     sb = prepare_solver_basis(h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity)
     h = sb.h
@@ -269,13 +261,13 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         restrictions = ground_state_basis.restrictions
 
         if restrictions is not None:
-            log("Restrictions on ground-state occupation:", level=2)
+            report("Restrictions on ground-state occupation:", level=V_DETAIL)
             for indices, limits in restrictions.items():
-                log(f"  {sorted(indices)} : {limits}", level=2)
+                report(f"  {sorted(indices)} : {limits}", level=V_DETAIL)
 
-        banner("Interacting Green's function")
-        log(f"Considering {len(es)} eigenstate(s) for the spectra.")
-        log("Calculating interacting Green's function ...", flush=verbosity >= 2)
+        report.banner("Interacting Green's function")
+        report(f"Considering {len(es)} eigenstate(s) for the spectra.")
+        report("Calculating interacting Green's function ...", flush=True)
 
         gs_matsubara, gs_realaxis, gf_report = get_Greens_function(
             matsubara_mesh=iw,
@@ -302,21 +294,23 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         # is broadcast so every rank re-enters calc_gs collectively (or all break).
         retry = False
         if rank == 0 and gf_report is not None:
-            log(gf_report.render())
+            # Always shown (this is the diagnostics report itself, not detail): only
+            # problem rows at the terse default, the full table from -v.
+            report(gf_report.render(only_problems=not report.enabled(V_SUMMARY)), level=V_RESULT)
             retry = gf_report.needs_more_states and _attempt < max_retries
         if comm is not None:
             retry = comm.bcast(retry, root=0)
         if not retry:
             break
         num_wanted *= 2
-        log(f"\nThermal ensemble appears truncated; retrying with num_wanted = {num_wanted}.\n", flush=True)
+        report(f"\nThermal ensemble appears truncated; retrying with num_wanted = {num_wanted}.\n", flush=True)
     # Physicality checks run on rank 0 (where the gathered results live); _check_gf_physical
     # broadcasts each verdict so every rank raises (or continues) as one.
     _check_gf_physical(comm, gs_matsubara, "Matsubara")
     _check_gf_physical(comm, gs_realaxis, "Real frequency")
 
-    banner("Self-energy")
-    log("Calculating self-energy ...")
+    report.banner("Self-energy")
+    report("Calculating self-energy ...")
     inequivalent_blocks = [block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks]
     sigma_real = _self_energy_on_mesh(
         w,
@@ -379,7 +373,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     # (applies h + Allreduce), so run unconditionally on every rank. The M tensor is replicated
     # after the reduction, so the conversion and block-symmetrisation below are identical on all
     # ranks (pure numpy on replicated data).
-    log("Calculating self-energy moments ...")
+    report("Calculating self-energy moments ...")
     M = get_greens_function_moments(psis, es, tau, ground_state_basis, h, impurity_indices)
     hcorr, v_full, _, h_bath = get_hcorr_v_hbath(h0_solve, total_impurity_orbitals, sum_bath_states)
     sigma_inf_s, sigma_1_s, sigma_2_s = get_Sigma_moments(M, hcorr, v_full, h_bath)
