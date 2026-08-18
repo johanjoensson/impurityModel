@@ -23,6 +23,7 @@ from impurityModel.ed.symmetries import (
     impurity_symmetry_rotation,
     rotate_hamiltonian,
 )
+from impurityModel.ed.utils import V_RESULT
 
 
 def build_spectra_model(
@@ -120,11 +121,12 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
     comm : mpi4py communicator
         MPI communicator (``MPI.COMM_WORLD`` for the CLI).
     verbosity : int, optional
-        Printing level. ``None`` -> ``2`` on rank 0, ``0`` elsewhere.
+        Printing level (rank-uniform; printing itself is gated on rank downstream).
+        ``None`` -> ``V_RESULT`` (0), the terse default.
     """
     rank = comm.rank if comm is not None else 0
     if verbosity is None:
-        verbosity = 2 if rank == 0 else 0
+        verbosity = V_RESULT
 
     hOp = ManyBodyOperator(model.h0)
     impurity_orbitals = model.impurity_orbitals

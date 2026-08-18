@@ -23,6 +23,7 @@ from impurityModel.ed.model import (
 )
 from impurityModel.ed.selfenergy import calc_selfenergy
 from impurityModel.scripts._units import convert_energy_args
+from impurityModel.scripts._verbosity import add_verbosity_argument, resolve_verbosity
 
 #: CLI attributes converted by --unit; kept in one place so add_arguments and run agree on scope.
 _ENERGY_FIELDS = ("Fdd", "xi", "hField", "tau", "w_min", "w_max", "delta")
@@ -138,7 +139,7 @@ def add_arguments(parser):
     parser.add_argument(
         "--output", type=str, default=None, help="Per-cluster HDF5 output (default: selfenergy-<cluster>.h5)."
     )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Set verbose output.")
+    add_verbosity_argument(parser)
     parser.set_defaults(realaxis=True, chain_restrict=True, sparse_green=True)
 
 
@@ -199,7 +200,7 @@ def run(args):
     # attributes are read on that path, so converting them unconditionally is harmless.
     convert_energy_args(args, _ENERGY_FIELDS, args.unit)
     comm = MPI.COMM_WORLD
-    verbosity = 2 if args.verbose else 0
+    verbosity = resolve_verbosity(args)
 
     if args.from_archive:
         # The archive carries the model, both meshes and every recorded basis/solver option;
@@ -228,7 +229,7 @@ def run(args):
             h_field=None if args.hField is None else tuple(args.hField),
             n_impurity_orbitals=args.n_impurity_orbitals,
             rank=comm.rank,
-            verbose=args.verbose,
+            verbose=verbosity > 0,
         )
         w = np.linspace(args.w_min, args.w_max, args.w_n) if args.realaxis else None
         iw = _fermionic_matsubara(args.tau, args.n_matsubara) if args.n_matsubara > 0 else None

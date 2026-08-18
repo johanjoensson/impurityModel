@@ -11,6 +11,7 @@ from mpi4py import MPI
 from impurityModel.ed.model import BasisOptions, Meshes, SolverOptions, load_model, load_selfenergy_archive
 from impurityModel.ed.susceptibility import calc_susceptibility_workflow
 from impurityModel.scripts._units import convert_energy_args
+from impurityModel.scripts._verbosity import add_verbosity_argument, resolve_verbosity
 
 #: CLI attributes converted by --unit; kept in one place so add_arguments and run agree on scope.
 _ENERGY_FIELDS = ("Fdd", "xi", "hField", "tau", "w_min", "w_max", "delta")
@@ -83,7 +84,7 @@ def add_arguments(parser):
     parser.add_argument("--delta", type=float, default=0.01, help="Broadening above the real axis (eV).")
     parser.add_argument("--n_matsubara", type=int, default=64, help="Number of bosonic Matsubara points (0 disables).")
     parser.add_argument("--output", type=str, default="chi.h5", help="Output HDF5 filename.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Set verbose output.")
+    add_verbosity_argument(parser)
 
 
 def run(args):
@@ -93,6 +94,7 @@ def run(args):
     # here is harmless on the archive path since the unused ones are simply never read.
     convert_energy_args(args, _ENERGY_FIELDS, args.unit)
     comm = MPI.COMM_WORLD
+    verbosity = resolve_verbosity(args)
 
     if args.from_archive:
         # The archive supplies the model plus its nominal occupation / mixed valence / tau; the
@@ -115,7 +117,7 @@ def run(args):
             h_field=None if args.hField is None else tuple(args.hField),
             n_impurity_orbitals=args.n_impurity_orbitals,
             rank=comm.rank,
-            verbose=args.verbose,
+            verbose=verbosity > 0,
         )
         basis = BasisOptions(nominal_occ={ls: args.n0imps}, mixed_valence={ls: 0}, tau=args.tau)
         cluster_label = args.clustername
@@ -129,7 +131,7 @@ def run(args):
         basis,
         solver,
         comm=comm,
-        verbosity=2 if args.verbose else 0,
+        verbosity=verbosity,
         cluster_label=cluster_label,
         num_wanted=args.nPsiMax,
         n_matsubara=args.n_matsubara,

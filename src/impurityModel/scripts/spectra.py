@@ -15,6 +15,7 @@ from impurityModel.ed.average import k_B
 from impurityModel.ed.get_spectra import build_spectra_model, run_spectra
 from impurityModel.ed.model import EXCITATION_BUDGET_DEFAULT, BasisOptions, SpectraOptions, resolve_excitation_budget
 from impurityModel.scripts._units import convert_energy_args
+from impurityModel.scripts._verbosity import add_verbosity_argument, resolve_verbosity
 
 #: CLI attributes converted by --unit; kept in one place so add_arguments and run agree on scope.
 _ENERGY_FIELDS = (
@@ -163,6 +164,7 @@ def add_arguments(parser):
         help="Keep the hand-coded 2p/3d block structure instead of deriving it from the hybridization.",
     )
     parser.set_defaults(auto_block_structure=True)
+    add_verbosity_argument(parser)
 
 
 def _validate(args):
@@ -202,7 +204,7 @@ def run(args):
     _validate(args)
     comm = MPI.COMM_WORLD
     rank = comm.rank
-    verbosity = 2 if rank == 0 else 0
+    verbosity = resolve_verbosity(args)
 
     model = build_spectra_model(
         args.h0_filename,
