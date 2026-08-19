@@ -209,6 +209,78 @@ def _implicitly_restarted_block_lanczos_manybody(
     )
 
 
+class LockedSet:
+    """Running set of locked (converged) Ritz pairs (EA16 §2.2.2), coupled to the
+    sweep's basis representation.
+
+    ``Xl`` is block-compatible with ``Q_basis`` from the start -- an empty
+    ``ManyBodyState`` (width 0) on the MBS path, not an empty list -- since every
+    column sliced out of it (``lock_block``'s ``col``, ``_assemble_results``' ``col``)
+    is a block too.
+    """
+
+    def __init__(self, psi0, is_arr, mpi, comm, slater):
+        self.is_arr = is_arr
+        self.mpi = mpi
+        self.comm = comm
+        self.slater = slater
+        self.Xl = np.zeros((psi0.shape[0], 0), dtype=complex) if is_arr else ManyBodyState()
+        self.theta_l = []
+
+    @property
+    def n(self):
+        return self.Xl.shape[1] if self.is_arr else block_cols(self.Xl)
+
+    def orth_against(self, V):
+        if self.n == 0:
+            return V
+        for _ in range(2):
+            V, _ = block_orthogonalize(V, self.Xl, mpi=self.mpi, comm=self.comm)
+        return V
+
+    def lock_block(self, X, vals, num_wanted):
+        """Lock the columns of ``X`` (Ritz vectors) one at a time, reorthogonalizing each
+        against the running locked set (§2.6.2) and skipping any column that collapses —
+        i.e. is already represented in ``Xl``. Stops at ``num_wanted``."""
+        n_locked_now = 0
+        for j in range(block_cols(X)):
+            if len(self.theta_l) >= num_wanted:
+                break
+            col = self.orth_against(slice_cols(X, j, j + 1))
+            g = block_inner(col, col, self.mpi, self.comm)
+            # ``col`` entered with unit norm, so ``g[0,0]`` is the fraction of it that survives
+            # deflation against the locked set. Below the rank floor the factorization itself
+            # uses -- ``DEFLATE_EVAL_TOL = DEFLATE_TOL**2``, on the *squared* norm -- the
+            # column is already represented in ``Xl`` and locking it again would return a
+            # duplicate eigenpair. Scale-free because the input is normalized.
+            if float(np.abs(g[0, 0])) < DEFLATE_EVAL_TOL:
+                continue
+            try:
+                col, _ = block_normalize(col, self.mpi, self.comm, self.slater)
+            except ValueError:
+                # Belt and braces: block_normalize's own breakdown test (1e-12 absolute, since a
+                # unit-norm column wants scale=1) is looser than the guard above, so this is
+                # reached only on an exactly-zero column. It reduces M with a collective
+                # Allreduce, so every rank raises together and skipping is MPI-collective-safe.
+                continue
+            self.Xl = np.concatenate([self.Xl, col], axis=1) if self.is_arr else concat_cols(self.Xl, col)
+            self.theta_l.append(float(vals[j]))
+            n_locked_now += 1
+        return n_locked_now
+
+    def sweep_kwargs(self, cntl2):
+        # Locked Ritz pairs to deflate the inner sweep against (EA16 §2.6.2). Empty locked
+        # set -> locked=None so the kernel skips it. ``locked_evals``/``locked_res`` feed
+        # the §2.6.2 overlap estimate (used only by the "partial" locked-reort mode).
+        if self.n == 0:
+            return {"locked": None}
+        return {
+            "locked": self.Xl,
+            "locked_evals": np.asarray(self.theta_l, dtype=float),
+            "locked_res": float(cntl2),
+        }
+
+
 def _irlm_core(
     psi0,
     num_wanted,
@@ -254,71 +326,13 @@ def _irlm_core(
     if m <= k0:
         raise ValueError("max_subspace_blocks must be strictly greater than ceil(num_wanted / p).")
 
-    # Xl (the running locked/converged Ritz set) is coupled to Q_basis: once the sweep's
-    # Q_basis is a ManyBodyState, every column sliced out of it (_lock_block's ``col``,
-    # _assemble_results' ``col``) is a block too, so Xl must be block-compatible from the
-    # start -- an empty ManyBodyState (width 0), not an empty list.
-    Xl = np.zeros((psi0.shape[0], 0), dtype=complex) if is_arr else ManyBodyState()
-    theta_l = []
-
-    def _nlock():
-        return Xl.shape[1] if is_arr else block_cols(Xl)
-
-    def _orth_against_locked(V):
-        if _nlock() == 0:
-            return V
-        for _ in range(2):
-            V, _ = block_orthogonalize(V, Xl, mpi=mpi, comm=comm)
-        return V
-
-    def _lock_block(X, vals):
-        """Lock the columns of ``X`` (Ritz vectors) one at a time, reorthogonalizing each
-        against the running locked set (§2.6.2) and skipping any column that collapses —
-        i.e. is already represented in ``Xl``. Stops at ``num_wanted``."""
-        nonlocal Xl
-        n_locked_now = 0
-        for j in range(block_cols(X)):
-            if len(theta_l) >= num_wanted:
-                break
-            col = _orth_against_locked(slice_cols(X, j, j + 1))
-            g = block_inner(col, col, mpi, comm)
-            # ``col`` entered with unit norm, so ``g[0,0]`` is the fraction of it that survives
-            # deflation against the locked set. Below the rank floor the factorization itself
-            # uses -- ``DEFLATE_EVAL_TOL = DEFLATE_TOL**2``, on the *squared* norm -- the
-            # column is already represented in ``Xl`` and locking it again would return a
-            # duplicate eigenpair. Scale-free because the input is normalized.
-            if float(np.abs(g[0, 0])) < DEFLATE_EVAL_TOL:
-                continue
-            try:
-                col, _ = block_normalize(col, mpi, comm, slater)
-            except ValueError:
-                # Belt and braces: block_normalize's own breakdown test (1e-12 absolute, since a
-                # unit-norm column wants scale=1) is looser than the guard above, so this is
-                # reached only on an exactly-zero column. It reduces M with a collective
-                # Allreduce, so every rank raises together and skipping is MPI-collective-safe.
-                continue
-            Xl = np.concatenate([Xl, col], axis=1) if is_arr else concat_cols(Xl, col)
-            theta_l.append(float(vals[j]))
-            n_locked_now += 1
-        return n_locked_now
-
-    def _locked_kwargs():
-        # Locked Ritz pairs to deflate the inner sweep against (EA16 §2.6.2). Empty locked
-        # set -> locked=None so the kernel skips it. ``locked_evals``/``locked_res`` feed
-        # the §2.6.2 overlap estimate (used only by the "partial" locked-reort mode).
-        if _nlock() == 0:
-            return {"locked": None}
-        return {
-            "locked": Xl,
-            "locked_evals": np.asarray(theta_l, dtype=float),
-            "locked_res": float(cntl2),
-        }
+    locked = LockedSet(psi0, is_arr, mpi, comm, slater)
 
     # --- Initial Lanczos run --------------------------------------------
-    alphas, betas, Q_basis, _W, widths = sweep(psi0, m, **_locked_kwargs())
+    alphas, betas, Q_basis, _W, widths = sweep(psi0, m, **locked.sweep_kwargs(cntl2))
 
     for restart in range(max_restarts):
-        n_need = num_wanted - len(theta_l)
+        n_need = num_wanted - len(locked.theta_l)
         if n_need <= 0:
             break
         m_act = len(alphas)
@@ -352,7 +366,7 @@ def _irlm_core(
 
         beta_last = betas[m_act - 1]
         res = ea16.ritz_residual_norms(beta_last, Z, p)
-        tnorm = ea16.operator_norm_estimate(evals, theta_l)
+        tnorm = ea16.operator_norm_estimate(evals, locked.theta_l)
 
         wanted = order[:n_need]
         if rank0:
@@ -364,7 +378,7 @@ def _irlm_core(
 
         if verbose and rank0:
             print(
-                f"[{tag}] Restart {restart:3d} | locked={len(theta_l)} | "
+                f"[{tag}] Restart {restart:3d} | locked={len(locked.theta_l)} | "
                 f"MinEig={evals[order[0]].real:.6f} | "
                 f"MaxWantedRes={float(np.max(res[wanted])):.2e} | newly_locked={len(locked_local)}"
             )
@@ -372,8 +386,8 @@ def _irlm_core(
         # --- Lock converged wanted pairs (§2.2.2) ----------------------
         if locked_local:
             X_new = block_combine(slice_cols(Q_basis, 0, total), Z[:, locked_local], slater)
-            _lock_block(X_new, [evals[i].real for i in locked_local])
-            n_need = num_wanted - len(theta_l)
+            locked.lock_block(X_new, [evals[i].real for i in locked_local], num_wanted)
+            n_need = num_wanted - len(locked.theta_l)
             if n_need <= 0:
                 break
 
@@ -384,8 +398,8 @@ def _irlm_core(
             # before the first sweep), matching Xl's representation, and block_lanczos_cy's
             # fresh-start ingestion now accepts a ManyBodyState seed directly -- so
             # v0 can stay a block end to end instead of round-tripping through
-            # list[ManyBodyState] just for the _orth_against_locked projection.
-            v0 = _orth_against_locked(copy_block(psi0))
+            # list[ManyBodyState] just for the locked.orth_against projection.
+            v0 = locked.orth_against(copy_block(psi0))
             try:
                 v0, _ = block_normalize(v0, mpi, comm, slater)
             except ValueError:
@@ -393,7 +407,7 @@ def _irlm_core(
                 # collapsed: psi0's Krylov space lies entirely within the already-locked
                 # subspace, so no further wanted pairs are reachable. Collective-safe break.
                 break
-            alphas, betas, Q_basis, _W, widths = sweep(v0, m, **_locked_kwargs())
+            alphas, betas, Q_basis, _W, widths = sweep(v0, m, **locked.sweep_kwargs(cntl2))
             continue
 
         # The trailing residual block can itself be rank-deficient when the sweep reached
@@ -414,7 +428,7 @@ def _irlm_core(
             take_break = comm.bcast(take_break, root=0)
         if take_break:
             X_rem = block_combine(slice_cols(Q_basis, 0, total), Z[:, order], slater)
-            _lock_block(X_rem, [evals[i].real for i in order])
+            locked.lock_block(X_rem, [evals[i].real for i in order], num_wanted)
             if verbose and rank0:
                 print(
                     f"[{tag}] Restart {restart:3d} | trailing residual block deflated (width {res_width}<{p}). Locking remaining & stopping."
@@ -426,15 +440,15 @@ def _irlm_core(
         C, beta_new, alphas_new, betas_new = ea16.purge_restart(evals, Z, beta_last, p, kept_idx)
         Q_used = slice_cols(Q_basis, 0, total)
         Q_new = block_combine(Q_used, C, slater)
-        if _nlock() > 0:
-            Q_new = _orth_against_locked(Q_new)
+        if locked.n > 0:
+            Q_new = locked.orth_against(Q_new)
 
         # The trailing normalized residual block is always present after a sweep (the
         # recurrence stores m_act+1 blocks), so the Sorensen residual reduces to rotating
         # it by the re-banding coupling beta_new (EA16 §2.2.1).
         qres = slice_cols(Q_basis, total, total + p)
         f_plus = block_combine(qres, beta_new, slater)
-        f_plus = _orth_against_locked(f_plus)
+        f_plus = locked.orth_against(f_plus)
 
         # f_plus is a residual block -- O(||H||) -- so its breakdown reference is tnorm
         # (the largest-magnitude Ritz value, already in hand), not the default O(1) scale
@@ -450,7 +464,7 @@ def _irlm_core(
             # Trailing block deflated => near-invariant subspace. Lock the lowest wanted
             # Ritz pairs (ascending; collapses against Xl are skipped) and stop.
             X_rem = block_combine(slice_cols(Q_basis, 0, total), Z[:, order], slater)
-            _lock_block(X_rem, [evals[i].real for i in order])
+            locked.lock_block(X_rem, [evals[i].real for i in order], num_wanted)
             if verbose and rank0:
                 print(f"[{tag}] Restart-block deflation (active_k={active_k}). Locking remaining & stopping.")
             break
@@ -486,11 +500,11 @@ def _irlm_core(
             Q=Q_basis_new,
             W=W_init,
             reort=reort_continuation,
-            **_locked_kwargs(),
+            **locked.sweep_kwargs(cntl2),
         )
 
     # --- Final extraction -----------------------------------------------
-    return _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths)
+    return _assemble_results(locked.Xl, locked.theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths)
 
 
 def _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths=None):
@@ -530,7 +544,7 @@ def _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, c
                 for _ in range(2):
                     col, _ = block_orthogonalize(col, accepted, mpi=mpi, comm=comm)
             g = block_inner(col, col, mpi, comm)
-            # Same test, same reason, same threshold as _lock_block's: a unit-norm Ritz column
+            # Same test, same reason, same threshold as LockedSet.lock_block's: a unit-norm Ritz column
             # retaining less than the rank floor after deflation against ``accepted`` is a
             # near-copy of one already taken.
             if float(np.abs(g[0, 0])) < DEFLATE_EVAL_TOL:
