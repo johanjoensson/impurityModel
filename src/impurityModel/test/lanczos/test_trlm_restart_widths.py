@@ -38,11 +38,11 @@ except ImportError:  # pragma: no cover - mpi4py is a hard dependency in practic
     _has_mpi = False
 
 from impurityModel.ed.BlockLanczos import (
-    _check_width_sync,
     _thick_restart_block_lanczos_array,
     thick_restart_block_lanczos_cy,
 )
 from impurityModel.ed.BlockLanczosArray import RESTART_ORTH_TOL, Reort, block_normalize
+from impurityModel.ed.block_view import check_width_sync as _check_width_sync
 from impurityModel.ed.greens_function import _trim_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.support.lanczos_fixtures import MockBasis

@@ -169,10 +169,10 @@ def block_lanczos_step_cy(
     # numerical robustness. Skipped in the "partial" mode, where the estimate-driven
     # EA16 §2.6.2 reorth is applied to q_next in block_lanczos_cy instead.
     #
-    # Gate on _q_cols(locked), never truthiness: ManyBodyState.__len__ is the rank-local
+    # Gate on block_cols(locked), never truthiness: ManyBodyState.__len__ is the rank-local
     # row count, so an empty rank diverges and the Allreduce below deadlocks. See
     # doc/lanczos_invariants.md ("MPI collective gating") for the full incident.
-    if locked is not None and _q_cols(locked) > 0 and locked_reort != "partial":
+    if locked is not None and block_cols(locked) > 0 and locked_reort != "partial":
         locked_blk = (
             locked if isinstance(locked, ManyBodyState) else ManyBodyState.from_states(list(locked))
         )
@@ -516,7 +516,7 @@ def block_lanczos_cy(
     # both this check and the partial_locked/xi setup share one rank-invariant value):
     # `if locked` on a ManyBodyState reads its LOCAL ROW count, which can disagree
     # across ranks and turn this `raise` into a rank-divergent collective itself.
-    nlock = 0 if locked is None else _q_cols(locked)
+    nlock = 0 if locked is None else block_cols(locked)
     if not store_krylov and (reort_mode != Reort.NONE or nlock > 0):
         raise ValueError("store_krylov=False requires reort='none' and no locked vectors")
 

@@ -67,8 +67,6 @@ ext_modules = [
         ],
         depends=[
             os.path.join(_cython_src_dir, "_lanczos_step.pxi"),
-            os.path.join(_cython_src_dir, "_trlm.pxi"),
-            os.path.join(_cython_src_dir, "_irlm.pxi"),
         ],
         language="c++",
         include_dirs=include_dirs,

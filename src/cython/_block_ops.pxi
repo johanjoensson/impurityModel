@@ -23,6 +23,20 @@ cpdef bint is_array(object V):
         return True
     return False
 
+cpdef object block_cols(object Q):
+    """Column count of a block, in whatever representation it comes.
+
+    Check array first: a ``ManyBodyState``'s own ``len()`` is its ROW count (dict-like,
+    matching ``len(dict)``), not its column count -- silently wrong for "how many Krylov
+    columns", not a raise. Called from the restart layer's per-restart bookkeeping (not the
+    per-step hot path), so it stays a plain dispatch rather than something perf-sensitive.
+    """
+    if is_array(Q):
+        return Q.shape[1]
+    if isinstance(Q, ManyBodyState):
+        return Q.width
+    return len(Q)
+
 cpdef object block_inner(object V, object W, bint mpi=False, object comm=None):
     if is_array(V):
         if isinstance(V, list):

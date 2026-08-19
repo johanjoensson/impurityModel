@@ -73,6 +73,7 @@ from impurityModel.ed.BlockLanczosCore import (
     resolve_reort,
     selective_orthogonalize,
     is_array,
+    block_cols,
     block_apply,
     block_combine,
     block_inner,
@@ -129,5 +130,28 @@ cdef inline void _prof_acc(str key, double t0):
 
 
 include "_lanczos_step.pxi"
-include "_trlm.pxi"
-include "_irlm.pxi"
+
+# TRLM/IRLM's restart-layer business logic (the path-agnostic `_trlm_core` /
+# `_irlm_core`, locking, purging, and result assembly) is plain Python in
+# ed/trlm.py and ed/irlm.py -- it has no Cython constructs and profiling showed
+# ~97.7% of MBS IRLM runtime inside `block_lanczos_cy` above, ~2.3% in this restart
+# glue. Both modules import `block_lanczos_cy` back from here, function-locally
+# (inside their MBS entry point, not at module level): the two-way name dependency
+# below would otherwise cycle at the first `pip install -e .` depending on which
+# module happens to import first. Re-exported here so the existing
+# `from impurityModel.ed.BlockLanczos import ...` import paths keep working.
+from impurityModel.ed.trlm import (  # noqa: F401
+    _thick_restart_block_lanczos_array,
+    _trlm_core,
+    _trlm_extract,
+    thick_restart_block_lanczos,
+    thick_restart_block_lanczos_cy,
+)
+from impurityModel.ed.irlm import (  # noqa: F401
+    _assemble_results,
+    _implicitly_restarted_block_lanczos_array,
+    _implicitly_restarted_block_lanczos_manybody,
+    _implicitly_restarted_block_lanczos_cy_manybody as implicitly_restarted_block_lanczos_cy,
+    _irlm_core,
+    implicitly_restarted_block_lanczos,
+)
