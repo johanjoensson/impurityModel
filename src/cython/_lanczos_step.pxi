@@ -336,6 +336,35 @@ def block_lanczos_step_cy(
     return q_next, alpha_i, beta_i, W, active_k, False, _reort_acted
 
 
+def _pack_result(
+    alphas_buf, betas_buf, start_it, it, store_krylov, termination,
+    q_prev, q_curr, q_next, Q_basis, W, block_widths, return_widths, return_status,
+):
+    """Build block_lanczos_cy's return tuple: the finished alphas/betas views, the
+    Krylov basis (or, with store_krylov=False, its two-block tail), and the
+    return_widths/return_status opt-in appends. Reads only finished loop state --
+    nothing here feeds back into the recurrence."""
+    alphas_out = alphas_buf[:start_it + it]
+    betas_out = betas_buf[:start_it + it]
+    if not store_krylov:
+        # Return the two-block tail [last accepted block, residual block], mirroring the
+        # last two blocks of the full Q_basis: on a "converged" break the q_prev/q_curr
+        # roll has not run yet (tail = q_curr + q_next); on breakdown/divergence q_next
+        # was never appended, and on budget exhaustion the roll has run (both: tail =
+        # q_prev + q_curr).
+        if termination == "converged":
+            Q_basis = q_curr.to_states() + q_next.to_states()
+        else:
+            Q_basis = q_prev.to_states() + q_curr.to_states()
+    if return_widths and return_status:
+        return alphas_out, betas_out, Q_basis, W, block_widths, termination
+    if return_widths:
+        return alphas_out, betas_out, Q_basis, W, block_widths
+    if return_status:
+        return alphas_out, betas_out, Q_basis, W, termination
+    return alphas_out, betas_out, Q_basis, W
+
+
 def block_lanczos_cy(
     psi0,
     h_op,
@@ -843,22 +872,7 @@ def block_lanczos_cy(
         block_widths.append(n_curr)
         it += 1
 
-    alphas_out = alphas_buf[:start_it + it]
-    betas_out = betas_buf[:start_it + it]
-    if not store_krylov:
-        # Return the two-block tail [last accepted block, residual block], mirroring the
-        # last two blocks of the full Q_basis: on a "converged" break the q_prev/q_curr
-        # roll has not run yet (tail = q_curr + q_next); on breakdown/divergence q_next
-        # was never appended, and on budget exhaustion the roll has run (both: tail =
-        # q_prev + q_curr).
-        if termination == "converged":
-            Q_basis = q_curr.to_states() + q_next.to_states()
-        else:
-            Q_basis = q_prev.to_states() + q_curr.to_states()
-    if return_widths and return_status:
-        return alphas_out, betas_out, Q_basis, W, block_widths, termination
-    if return_widths:
-        return alphas_out, betas_out, Q_basis, W, block_widths
-    if return_status:
-        return alphas_out, betas_out, Q_basis, W, termination
-    return alphas_out, betas_out, Q_basis, W
+    return _pack_result(
+        alphas_buf, betas_buf, start_it, it, store_krylov, termination,
+        q_prev, q_curr, q_next, Q_basis, W, block_widths, return_widths, return_status,
+    )
