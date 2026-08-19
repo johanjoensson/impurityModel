@@ -16,6 +16,7 @@ dispatcher at the bottom of this module. See that binding for the full contract.
 
 import numpy as np
 
+from impurityModel.ed import ea16
 from impurityModel.ed.BlockLanczosCore import (
     DEFAULT_EIGEN_TOL,
     DEFLATE_EVAL_TOL,
@@ -289,6 +290,78 @@ class LockedSet:
         }
 
 
+def lock_remaining_and_stop(locked, Q_basis, total, Z, order, evals, num_wanted, slater, tag, verbose, rank0, reason):
+    """Lock the lowest wanted Ritz pairs from the current factorization and print
+    why -- the shared tail of every "the sweep/residual/restart block deflated,
+    nothing more to gain by continuing" exit in ``_irlm_core``/``_purge_and_reband``.
+    The caller still does its own ``break``: this only performs the locking and the
+    diagnostic, not the loop control.
+    """
+    X_rem = block_combine(slice_cols(Q_basis, 0, total), Z[:, order], slater)
+    locked.lock_block(X_rem, [evals[i].real for i in order], num_wanted)
+    if verbose and rank0:
+        print(f"[{tag}] {reason}")
+
+
+def _purge_and_reband(
+    evals, Z, beta_last, p, n_keep, locked_local, Q_basis, total, slater, locked, mpi, comm, tnorm, k_blocks,
+    verbose, rank0, tag, restart, order, num_wanted,
+):
+    """Purge + restart in the Ritz basis (EA16 §2.2.1, eq. 6): compress the ``m``
+    active blocks down to ``n_keep`` in the Ritz basis, re-band the trailing
+    residual against the compression, and re-factor the new trailing block via
+    TSQR.
+
+    Returns ``(stop, Q_basis_new, alphas_pass, betas_pass)``. ``stop`` is ``True``
+    on breakdown or a deflated re-factored block (already locked by this call, via
+    :func:`lock_remaining_and_stop`) -- the caller should ``break`` without using
+    the other return values.
+    """
+    kept_idx, _ = ea16.select_restart_indices(evals, n_keep, locked_local, which="smallest")
+    C, beta_new, alphas_new, betas_new = ea16.purge_restart(evals, Z, beta_last, p, kept_idx)
+    Q_used = slice_cols(Q_basis, 0, total)
+    Q_new = block_combine(Q_used, C, slater)
+    if locked.n > 0:
+        Q_new = locked.orth_against(Q_new)
+
+    # The trailing normalized residual block is always present after a sweep (the
+    # recurrence stores m_act+1 blocks), so the Sorensen residual reduces to rotating
+    # it by the re-banding coupling beta_new (EA16 §2.2.1).
+    qres = slice_cols(Q_basis, total, total + p)
+    f_plus = block_combine(qres, beta_new, slater)
+    f_plus = locked.orth_against(f_plus)
+
+    # f_plus is a residual block -- O(||H||) -- so its breakdown reference is tnorm
+    # (the largest-magnitude Ritz value, already in hand), not the default O(1) scale
+    # block_tsqr otherwise arms at. See doc/lanczos_invariants.md ("deflation vs
+    # breakdown scales") for why this branch is a consistency fix rather than a live
+    # bug, and the instrumentation behind that claim.
+    q_k_next, beta_k, active_k, _sv_k = block_tsqr(f_plus, mpi, comm, tnorm, slater)
+    if active_k < 0:
+        if verbose and rank0:
+            print(f"[{tag}] Breakdown at restart -- returning current Ritz pairs.")
+        return True, None, None, None
+    if active_k < p:
+        # Trailing block deflated => near-invariant subspace. Lock the lowest wanted
+        # Ritz pairs (ascending; collapses against Xl are skipped) and stop.
+        lock_remaining_and_stop(
+            locked, Q_basis, total, Z, order, evals, num_wanted, slater, tag, verbose, rank0,
+            f"Restart-block deflation (active_k={active_k}). Locking remaining & stopping.",
+        )
+        return True, None, None, None
+    Q_basis_new = concat_cols(Q_new, q_k_next)
+
+    betas_pass_list = list(betas_new) if len(betas_new) > 0 else []
+    if len(betas_pass_list) < k_blocks:
+        betas_pass_list.append(beta_k)
+    else:
+        betas_pass_list[len(betas_pass_list) - 1] = beta_k
+    betas_pass = np.array(betas_pass_list) if betas_pass_list else np.empty((0, p, p), dtype=complex)
+    alphas_pass = np.array(alphas_new)
+
+    return False, Q_basis_new, alphas_pass, betas_pass
+
+
 def _irlm_core(
     psi0,
     num_wanted,
@@ -319,8 +392,6 @@ def _irlm_core(
         tuple: ``(eigvals, eigvecs)`` — sorted-ascending eigenvalues (length
         ``num_wanted``) and the matching Ritz vectors in the path's basis representation.
     """
-    from impurityModel.ed import ea16
-
     mpi = comm is not None and comm.size > 1
     rank0 = (not mpi) or comm.rank == 0
     u = ea16.EPS
@@ -434,56 +505,20 @@ def _irlm_core(
         if mpi:
             take_break = comm.bcast(take_break, root=0)
         if take_break:
-            X_rem = block_combine(slice_cols(Q_basis, 0, total), Z[:, order], slater)
-            locked.lock_block(X_rem, [evals[i].real for i in order], num_wanted)
-            if verbose and rank0:
-                print(
-                    f"[{tag}] Restart {restart:3d} | trailing residual block deflated (width {res_width}<{p}). Locking remaining & stopping."
-                )
+            lock_remaining_and_stop(
+                locked, Q_basis, total, Z, order, evals, num_wanted, slater, tag, verbose, rank0,
+                f"Restart {restart:3d} | trailing residual block deflated (width {res_width}<{p}). Locking remaining & stopping.",
+            )
             break
 
-        # --- Purge + restart in the Ritz basis (EA16 §2.2.1, eq. 6) ----
-        kept_idx, _ = ea16.select_restart_indices(evals, n_keep, locked_local, which="smallest")
-        C, beta_new, alphas_new, betas_new = ea16.purge_restart(evals, Z, beta_last, p, kept_idx)
-        Q_used = slice_cols(Q_basis, 0, total)
-        Q_new = block_combine(Q_used, C, slater)
-        if locked.n > 0:
-            Q_new = locked.orth_against(Q_new)
-
-        # The trailing normalized residual block is always present after a sweep (the
-        # recurrence stores m_act+1 blocks), so the Sorensen residual reduces to rotating
-        # it by the re-banding coupling beta_new (EA16 §2.2.1).
-        qres = slice_cols(Q_basis, total, total + p)
-        f_plus = block_combine(qres, beta_new, slater)
-        f_plus = locked.orth_against(f_plus)
-
-        # f_plus is a residual block -- O(||H||) -- so its breakdown reference is tnorm
-        # (the largest-magnitude Ritz value, already in hand), not the default O(1) scale
-        # block_tsqr otherwise arms at. See doc/lanczos_invariants.md ("deflation vs
-        # breakdown scales") for why this branch is a consistency fix rather than a live
-        # bug, and the instrumentation behind that claim.
-        q_k_next, beta_k, active_k, _sv_k = block_tsqr(f_plus, mpi, comm, tnorm, slater)
-        if active_k < 0:
-            if verbose and rank0:
-                print(f"[{tag}] Breakdown at restart -- returning current Ritz pairs.")
+        # Purge + restart in the Ritz basis (EA16 §2.2.1, eq. 6) -- see
+        # _purge_and_reband's docstring.
+        stop, Q_basis_new, alphas_pass, betas_pass = _purge_and_reband(
+            evals, Z, beta_last, p, n_keep, locked_local, Q_basis, total, slater, locked, mpi, comm, tnorm, k_blocks,
+            verbose, rank0, tag, restart, order, num_wanted,
+        )
+        if stop:
             break
-        if active_k < p:
-            # Trailing block deflated => near-invariant subspace. Lock the lowest wanted
-            # Ritz pairs (ascending; collapses against Xl are skipped) and stop.
-            X_rem = block_combine(slice_cols(Q_basis, 0, total), Z[:, order], slater)
-            locked.lock_block(X_rem, [evals[i].real for i in order], num_wanted)
-            if verbose and rank0:
-                print(f"[{tag}] Restart-block deflation (active_k={active_k}). Locking remaining & stopping.")
-            break
-        Q_basis_new = concat_cols(Q_new, q_k_next)
-
-        betas_pass_list = list(betas_new) if len(betas_new) > 0 else []
-        if len(betas_pass_list) < k_blocks:
-            betas_pass_list.append(beta_k)
-        else:
-            betas_pass_list[len(betas_pass_list) - 1] = beta_k
-        betas_pass = np.array(betas_pass_list) if betas_pass_list else np.empty((0, p, p), dtype=complex)
-        alphas_pass = np.array(alphas_new)
 
         # Restart-PRO continuation: continue in PARTIAL/SELECTIVE, seeding the Paige-Simon
         # estimator W at REORT_TOL (EA16 §2.6.3). NONE/PERIODIC/FULL restart with FULL reort.
