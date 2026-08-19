@@ -155,6 +155,23 @@ writing the final CGS pass's measured (Allreduced) overlap `O_last` instead — 
 measured, conservative bound on the residual that is `~EPS`-scale in the healthy
 regime, so the trigger cadence there is unchanged.
 
+## Warm-start / resume protocol
+
+`block_lanczos_cy` resumes from block `k0 = len(alphas_init)` when `alphas_init`,
+`betas_init` and `Q_init` are all given together (`None` for all three starts fresh —
+partial combinations are a caller error). The warm-start `Q` blocks are sliced out of
+`Q_init` and the existing W-estimator (`W_init`) is reused as-is. If `W_init` is `None`
+but `reort` is `'partial'`/`'selective'`, `W` is *exactly* initialized instead of left to
+grow from an empty estimate: the exact overlaps of the starting blocks against every
+prior block are computed once (Exact Overlap Restart, EOR) rather than trusting the
+Paige-Simon recurrence to reconstruct history it never saw — the same "estimate from
+nothing" gap that under-predicted on a cold start would otherwise repeat on every resume.
+
+`alphas_buf`/`betas_buf` are allocated once, sized `(k0 + max_iter, p, p)`, before the
+loop starts; the returned `alphas`/`betas` are *views* into these buffers
+(`alphas_buf[:it_abs + 1]`), not copies, so no per-iteration `np.array()` rebuild sits
+on the hot path.
+
 ## Krylov store
 
 `SparseKrylovDense` (`_krylov_store.pxi`, out of scope for this redesign — only its
@@ -167,6 +184,14 @@ gathering `Q[:, cols]` into a fresh dense buffer. Its `reort()` method is **coll
 every rank must still call it. Covered under MPI (`-n 2`/`-n 3`, including the
 empty-rank case) by `test_krylov_store.py::test_store_reort_mpi_matches_serial_and_handles_empty_rank`
 (added in R0c).
+
+**`store_krylov=False`** (requires `reort == 'none'` and no `locked` set) skips this
+store entirely: the accumulated basis is not retained, and the returned `Q_basis` holds
+only the last two blocks (the previous block plus the residual) — exactly the tail the
+warm-start protocol above needs to resume. `alphas`/`betas` are bit-identical to a
+`store_krylov=True` run of the same problem; only the `O(N_det * p * k)` dead retention
+is dropped. On resume with `store_krylov=False`, `Q_init` is interpreted as that
+two-block tail, split by `block_widths_init[-1]`.
 
 ## Thick-restart coefficient validity
 

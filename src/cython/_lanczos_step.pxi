@@ -380,20 +380,12 @@ def block_lanczos_cy(
                      & & \\beta_{m-2} & \\alpha_{m-1}
         \\end{pmatrix}.
 
-    **Pre-allocation**: ``alphas_buf`` and ``betas_buf`` of shape
-    ``(max_iter, p, p)`` are allocated *once* before the main loop so that no
-    NumPy allocation occurs inside the Lanczos body.  The convergence check and the
-    returned arrays are *views* into these buffers (``alphas_buf[:it_abs+1]``) — no
-    per-iteration list rebuild or ``np.array()`` copy.
-
-    **Warm-start / resume protocol**: if ``alphas_init``, ``betas_init``, and
-    ``Q_init`` are all provided the iteration resumes from block
-    ``len(alphas_init)``.  The warm-start Q blocks are extracted from
-    ``Q_init`` and the existing W-estimator (``W_init``) is reused.  If
-    ``W_init`` is ``None`` but ``reort`` is ``'partial'`` or ``'selective'``,
-    the Paige-Simon estimator array ``W`` is exactly initialized by computing the
-    exact overlaps of the starting blocks against all prior blocks (Exact
-    Overlap Restart - EOR).  Pass ``None`` for all three to start a fresh run.
+    ``alphas_buf``/``betas_buf`` are pre-allocated once; the returned arrays are
+    *views* into them, not copies. Resumes from block ``len(alphas_init)`` when
+    ``alphas_init``, ``betas_init`` and ``Q_init`` are all given (``None`` for all
+    three starts fresh) — see "Warm-start / resume protocol" in
+    doc/lanczos_invariants.md for the full protocol including the W-estimator's
+    Exact Overlap Restart.
 
     **MPI collective operations** (called every iteration, all ranks must participate):
 
@@ -456,26 +448,13 @@ def block_lanczos_cy(
             when resuming with partial/selective reorthogonalization.  Default
             ``None``.
         store_krylov: When ``False`` (requires ``reort == 'none'`` and no
-            ``locked`` set) the accumulated Krylov basis is *not* retained;
-            the returned ``Q_basis`` holds only the last two blocks (previous
-            block + residual) — exactly what the warm-start protocol reads.
-            The alphas/betas are bit-identical to ``store_krylov=True``; only
-            the O(N_det * p * k) dead retention is dropped.  On resume,
-            ``Q_init`` is interpreted as that two-block tail (split by
-            ``block_widths_init[-1]``).  Default ``True``.
+            ``locked`` set) the accumulated Krylov basis is *not* retained; see
+            "Krylov store" in doc/lanczos_invariants.md.  Default ``True``.
         krylov_dtype: Storage dtype of the retained Krylov basis --
-            ``complex128`` (default) or ``complex64``, which halves the store.
-            A ``complex64`` basis can only be projected against to ~6e-8, i.e.
-            *above* the ``REORT_TOL = sqrt(EPS) ~ 1.5e-8`` semi-orthogonality
-            target that ``PARTIAL``/``SELECTIVE`` steer to, so those modes reject
-            it: the target is unreachable, and their ``BAD_BLOCK_TOL ~ 1.8e-12``
-            block selection sits five orders below the fp32 noise floor, so every
-            block would be flagged.  ``FULL``/``PERIODIC`` accept it: they hold no estimator and
-            simply settle at orthogonality ~6e-8, which perturbs the
-            block-tridiagonal ``T`` by O(6e-8**2 * ||H||) -- far below the
-            Green's-function broadening.  The live recurrence blocks, the
-            overlaps and the residual all stay complex128; only the *stored*
-            basis narrows.  Default ``None`` (complex128).
+            ``complex128`` (default) or ``complex64``.  Rejected outright (not
+            just warned) when combined with ``reort='partial'/'selective'`` --
+            see "complex64 measurements" in doc/lanczos_invariants.md.  Default
+            ``None`` (complex128).
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray, list, numpy.ndarray]: A 4-tuple
