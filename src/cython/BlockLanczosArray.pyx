@@ -527,6 +527,7 @@ def block_lanczos_array_cy(
         q1 = np.ascontiguousarray(q[1])
         n_curr = q1.shape[1]
 
+        # --- 1. Block matvec: wp = H q_curr (+ MPI redistribute) ------------
         # Re-allocate wp buffers to match current active width for contiguous alignment
         if wp_arr.shape[1] != n_curr:
             wp_arr = np.empty((N, n_curr), dtype=complex, order='C')
@@ -555,6 +556,7 @@ def block_lanczos_array_cy(
             else:
                 wp_arr[:] = h_op(q1)
 
+        # --- 2. alpha_i = <q_curr | wp> ---------------------------------
         # Allocate alpha_i as a contiguous array
         alpha_i_arr = np.empty((n_curr, n_curr), dtype=complex, order='C')
         alpha_i = alpha_i_arr
@@ -566,6 +568,7 @@ def block_lanczos_array_cy(
 
         alphas_buf[it, :n_curr, :n_curr] = alpha_i_arr
 
+        # --- 3. Subtract: wp = wp - q_curr * alpha_i - q_prev * beta_{i-1}^† -
         with nogil:
             matmul_nogil(N, n_curr, n_curr, -1.0, q1, b'N', alpha_i, b'N', 1.0, wp)
 
@@ -581,6 +584,7 @@ def block_lanczos_array_cy(
             with nogil:
                 matmul_nogil(N, n_curr, n_prev, -1.0, q0, b'N', beta_prev_dag_mv, b'N', 1.0, wp)
 
+        # --- 3b. EA16 §2.6.2 locking deflation -------------------------
         # "full" locking deflation: unconditionally project against the locked set every
         # step (twice for robustness), for every reort mode. The "partial" mode skips this
         # and instead does the estimate-driven EA16 §2.6.2 reorth on q_next below.
@@ -592,11 +596,13 @@ def block_lanczos_array_cy(
                 wp_arr -= locked_arr @ locked_ovl
             wp = wp_arr
 
+        # --- 4. Full / Periodic reorthogonalization ---------------------
         if reort == Reort.FULL or (reort == Reort.PERIODIC and it > 0 and it % period == 0):
             if not keep_krylov:
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
             wp_arr, _, _ = apply_reort(wp_arr, Q_list, None, Reort.FULL, mpi, comm, block_widths)
 
+        # --- 5. TSQR of the residual block -------------------------------
         # TSQR of the residual block: the triangular factor is built from the block itself
         # (panel Householder + Givens merges + one Allgather), never from wp^H wp, so it is
         # backward stable at any conditioning and the rank decision below is made on the
@@ -623,6 +629,11 @@ def block_lanczos_array_cy(
             break
 
         betas_buf[it, :active_k, :n_curr] = beta_i
+
+        # No "5a. Truncation" phase here: amplitude/forceful truncation prunes individual
+        # determinant weights below slaterWeightMin, a ManyBodyState-only operation. The
+        # array kernel's block is a dense/CSR column block with no per-determinant
+        # structure to prune, so this phase is genuinely absent, not unmirrored.
 
         # --- Divergence safeguard ---------------------------------------
         # For a Hermitian H every block norm is bounded by ||H||; a jump of several orders
@@ -676,6 +687,7 @@ def block_lanczos_array_cy(
             xi_prev_l = xi_l
             xi_l = xi_new_l
 
+        # --- 6. W estimator (Paige-Simon PRO) ----------------------------
         if reort in (Reort.PARTIAL, Reort.SELECTIVE):
             if not keep_krylov:
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
@@ -711,6 +723,7 @@ def block_lanczos_array_cy(
 
             reort_eps = REORT_TOL
 
+            # --- 7. EA16 Selective Orthogonalization -------------------
             if reort == Reort.SELECTIVE:
                 # EA16 §2.6.2 selective orthogonalization (shared with block_lanczos_step_cy).
                 # Q_list[0] holds all it+1 completed blocks (the current block q1 is already its
@@ -721,6 +734,7 @@ def block_lanczos_array_cy(
                     it, n_curr, beta_norm, reort_eps, REORT_PERIOD, mpi, comm,
                 )
 
+            # --- 8. Bad-block reort + renormalize ------------------------
             if reort in (Reort.PARTIAL, Reort.SELECTIVE):
                 # Pass block_widths + [n_curr] so the current block (index it, already
                 # appended to Q_list) is in the width table apply_reort indexes — matching

@@ -245,7 +245,7 @@ def block_lanczos_step_cy(
 
     betas[it, :active_k, :p] = beta_i
 
-    # --- 7. EA16 Selective Orthogonalization / Partial Reortho ---------
+    # --- 6. W estimator (Paige-Simon PRO) -------------------------------
     _reort_acted = False
     if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
         _t0 = _time.perf_counter()
@@ -285,6 +285,7 @@ def block_lanczos_step_cy(
 
         reort_eps = REORT_TOL
 
+        # --- 7. EA16 Selective Orthogonalization ------------------------
         if reort_mode == Reort.SELECTIVE and it > 0 and it % reort_period == 0:
             # EA16 §2.6.2 selective orthogonalization (shared with block_lanczos_array_cy).
             # beta_i's 2-norm is the Ritz residual scale; the driver has not computed it yet at
@@ -298,6 +299,7 @@ def block_lanczos_step_cy(
                 it, p, np.linalg.norm(beta_i, ord=2), reort_eps, reort_period, mpi, comm,
             )
 
+        # --- 8. Bad-block reort + renormalize ----------------------------
         if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
             # Bad-block partial reorthogonalization via the shared apply_reort (single
             # implementation for both kernels). Pass block_widths + [p] so the current
