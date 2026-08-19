@@ -70,6 +70,113 @@ def _trlm_extract(T_full, Q, dim, num_wanted, comm, slater):
     return eigvals_T[wanted], as_state_list(eigvecs)
 
 
+def _extract_invariant_subspace(
+    alphas, betas_off, widths, Q_basis, num_wanted, comm, slater, verbose, rank0, total, m_actual, m, deflated, q_m
+):
+    """Terminal early-exit for ``_trlm_core``'s initial sweep: a genuine invariant
+    subspace (fewer blocks than asked), block deflation (rank-deficient residual),
+    or a sweep that stored no trailing residual block at all. That last case
+    (``q_m is None``) means the sweep broke out before appending ``q_next``, which
+    it only does on breakdown -- the block-Krylov space is closed under H. In all
+    three the spanned space is (near-)invariant, so its Ritz pairs are accurate
+    eigenpairs and we extract directly. T here is a pure block-tridiagonal, so the
+    banded solver suffices (no dense T); this also avoids the restart loop, which
+    needs a residual block to hang the thick-restart spike on.
+
+    Returns the ``(eigvals, eigvecs)`` result, or ``None`` if the restart loop
+    should run instead.
+    """
+    if not (m_actual < m or deflated or q_m is None):
+        return None
+    if verbose and rank0:
+        reason = "Invariant subspace" if m_actual < m or q_m is None else "Block deflation"
+        print(f"[TRLM] {reason} (dim {total}). Extracting directly.")
+    eigvals_T, eigvecs_T = eigh_block_tridiagonal(alphas, betas_off, block_widths=widths)
+    if comm is not None:
+        eigvals_T = comm.bcast(eigvals_T, root=0)
+        eigvecs_T = comm.bcast(eigvecs_T, root=0)
+    wanted = np.argsort(eigvals_T)[:num_wanted]
+    return eigvals_T[wanted], as_state_list(block_combine(Q_basis, eigvecs_T[:, wanted], slater))
+
+
+def _restart_coefficients(
+    D,
+    eigvals_T,
+    keep,
+    Y_last,
+    beta_res,
+    q_m,
+    p_resid,
+    nkeep,
+    k_ret,
+    orth_err,
+    Q_ret,
+    h_op,
+    basis,
+    mpi,
+    comm,
+    slater,
+    stop_beta,
+    num_wanted,
+    restart,
+    verbose,
+    rank0,
+):
+    """Choose the thick-restart coefficients for the arrowhead ``T_full`` spike,
+    via one of two arms decided by whether the retained Ritz block
+    ``Q_ret ~ Q_basis[:D] @ Y_k`` stayed semi-orthogonal.
+
+    Returns ``(early_result, T_lead, cross, q_m, p_resid, beta_res)``.
+    ``early_result`` is ``None`` to continue the restart with the returned
+    coefficients, or the ``(eigvals, eigvecs)`` tuple the caller should return
+    immediately when the Rayleigh-Ritz residual itself collapses to an invariant
+    subspace.
+    """
+    if k_ret == nkeep and orth_err <= RESTART_ORTH_TOL:
+        # Healthy case. The textbook thick-restart coefficients follow from the recurrence
+        # identity H Q = Q T + q_m beta_res E_last^H together with Q^H Q = I, and cost
+        # nothing: the retained block's projected operator is diag(theta_keep), the spike
+        # is beta_res @ Y_last, and the carried-over residual block q_m is already the
+        # whole residual -- (I - P) H Q_ret = q_m beta_res Y_last has rank <= p.
+        T_lead = np.asarray(np.diag(eigvals_T[keep]), dtype=complex)
+        cross = beta_res @ Y_last  # (p_resid, nkeep)
+        return None, T_lead, cross, q_m, p_resid, beta_res
+
+    # The retained block lost semi-orthogonality (and possibly rank). Q^H Q != I, so
+    # *neither* textbook coefficient is valid -- both derive from it -- and rescaling
+    # them by the orthonormalizing factor only amplifies the error by 1/sigma_min.
+    # Rebuild the restart from actual matvecs instead: a plain Rayleigh-Ritz step on
+    # the orthonormalized retained basis, which needs no premise about Q_basis at all.
+    #   T_lead = Q_ret^H H Q_ret
+    #   q_m    = orthonormalized (I - Q_ret Q_ret^H) H Q_ret
+    #   cross  = q_m^H H Q_ret = beta_res  (q_m _|_ Q_ret, so the projection drops out)
+    # Costs k_ret matvecs, on the restarts that need it. Without Q^H Q = I the residual
+    # is no longer rank <= p, so q_m can be up to k_ret wide -- hence T_full is sized
+    # off p_resid below, not off p. Keeping the *whole* residual matters: the inner loop
+    # stores only the sub-diagonal coupling, so a dropped piece of (I - P) H Q_ret would
+    # leave H q_next with an uncaptured component on Q_ret.
+    HQ = block_apply(h_op, Q_ret, basis, mpi, slater)
+    ovl = block_inner(Q_ret, HQ, mpi, comm)
+    T_lead = 0.5 * (ovl + np.conj(ovl.T))
+    # Thick restart always full-reorthogonalizes the residual against the retained
+    # basis (all modes): the arrowhead T_full requires it, and the PRO W-recurrence
+    # is not maintained across a restart. The first pass reuses the overlaps already
+    # formed for T_lead.
+    wp, _ = block_orthogonalize(HQ, Q_ret, overlaps=ovl, mpi=mpi, comm=comm)
+    wp, _ = block_orthogonalize(wp, Q_ret, mpi=mpi, comm=comm)
+    try:
+        q_m, beta_res = block_normalize(wp, mpi, comm, 0.0)
+    except (sp.LinAlgError, ValueError):
+        q_m = None
+    if q_m is None or np.linalg.norm(beta_res, ord=2) <= stop_beta:
+        if verbose and rank0:
+            print(f"[TRLM] Invariant subspace found at restart {restart}. Stopping early.")
+        return _trlm_extract(T_lead, Q_ret, k_ret, num_wanted, comm, slater), T_lead, None, q_m, p_resid, beta_res
+    p_resid = block_cols(q_m)
+    cross = beta_res  # (p_resid, k_ret)
+    return None, T_lead, cross, q_m, p_resid, beta_res
+
+
 def _trlm_core(
     psi0,
     h_op,
@@ -161,24 +268,13 @@ def _trlm_core(
 
     _betas_off = trim_trailing_beta(betas, m_actual)
 
-    # Early termination: a genuine invariant subspace (fewer blocks than asked), block
-    # deflation (rank-deficient residual), or a sweep that stored no trailing residual block
-    # at all. That last case (``q_m is None``) means the sweep broke out before appending
-    # q_next, which it only does on breakdown -- the block-Krylov space is closed under H.
-    # In all three the spanned space is (near-)invariant, so its Ritz pairs are accurate
-    # eigenpairs and we extract directly. T here is a pure block-tridiagonal, so the banded
-    # solver suffices (no dense T); this also avoids the restart loop below, which needs a
-    # residual block to hang the thick-restart spike on.
-    if m_actual < m or deflated or q_m is None:
-        if verbose and rank0:
-            reason = "Invariant subspace" if m_actual < m or q_m is None else "Block deflation"
-            print(f"[TRLM] {reason} (dim {total}). Extracting directly.")
-        eigvals_T, eigvecs_T = eigh_block_tridiagonal(alphas, _betas_off, block_widths=widths)
-        if comm is not None:
-            eigvals_T = comm.bcast(eigvals_T, root=0)
-            eigvecs_T = comm.bcast(eigvecs_T, root=0)
-        wanted = np.argsort(eigvals_T)[:num_wanted]
-        return eigvals_T[wanted], as_state_list(block_combine(Q_basis, eigvecs_T[:, wanted], slater))
+    # A genuine invariant subspace, block deflation, or a sweep that never reached a
+    # trailing residual block -- see _extract_invariant_subspace's docstring.
+    early_result = _extract_invariant_subspace(
+        alphas, _betas_off, widths, Q_basis, num_wanted, comm, slater, verbose, rank0, total, m_actual, m, deflated, q_m
+    )
+    if early_result is not None:
+        return early_result
 
     # The thick restart below builds an *arrowhead* T (a spike couples the retained Ritz
     # block to the residual), which is not banded; this path keeps the dense T_full.
@@ -248,47 +344,14 @@ def _trlm_core(
         if verbose and rank0:
             print(f"[TRLM] Restart {restart}: retained block ||Q^H Q - I|| = {orth_err:.2e}, rank {k_ret}/{nkeep}")
 
-        if k_ret == nkeep and orth_err <= RESTART_ORTH_TOL:
-            # Healthy case. The textbook thick-restart coefficients follow from the recurrence
-            # identity H Q = Q T + q_m beta_res E_last^H together with Q^H Q = I, and cost
-            # nothing: the retained block's projected operator is diag(theta_keep), the spike
-            # is beta_res @ Y_last, and the carried-over residual block q_m is already the
-            # whole residual -- (I - P) H Q_ret = q_m beta_res Y_last has rank <= p.
-            T_lead = np.asarray(np.diag(eigvals_T[keep]), dtype=complex)
-            cross = beta_res @ Y_last  # (p_resid, nkeep)
-        else:
-            # The retained block lost semi-orthogonality (and possibly rank). Q^H Q != I, so
-            # *neither* textbook coefficient is valid -- both derive from it -- and rescaling
-            # them by the orthonormalizing factor only amplifies the error by 1/sigma_min.
-            # Rebuild the restart from actual matvecs instead: a plain Rayleigh-Ritz step on
-            # the orthonormalized retained basis, which needs no premise about Q_basis at all.
-            #   T_lead = Q_ret^H H Q_ret
-            #   q_m    = orthonormalized (I - Q_ret Q_ret^H) H Q_ret
-            #   cross  = q_m^H H Q_ret = beta_res  (q_m _|_ Q_ret, so the projection drops out)
-            # Costs k_ret matvecs, on the restarts that need it. Without Q^H Q = I the residual
-            # is no longer rank <= p, so q_m can be up to k_ret wide -- hence T_full is sized
-            # off p_resid below, not off p. Keeping the *whole* residual matters: the inner loop
-            # stores only the sub-diagonal coupling, so a dropped piece of (I - P) H Q_ret would
-            # leave H q_next with an uncaptured component on Q_ret.
-            HQ = block_apply(h_op, Q_ret, basis, mpi, slater)
-            ovl = block_inner(Q_ret, HQ, mpi, comm)
-            T_lead = 0.5 * (ovl + np.conj(ovl.T))
-            # Thick restart always full-reorthogonalizes the residual against the retained
-            # basis (all modes): the arrowhead T_full requires it, and the PRO W-recurrence
-            # is not maintained across a restart. The first pass reuses the overlaps already
-            # formed for T_lead.
-            wp, _ = block_orthogonalize(HQ, Q_ret, overlaps=ovl, mpi=mpi, comm=comm)
-            wp, _ = block_orthogonalize(wp, Q_ret, mpi=mpi, comm=comm)
-            try:
-                q_m, beta_res = block_normalize(wp, mpi, comm, 0.0)
-            except (sp.LinAlgError, ValueError):
-                q_m = None
-            if q_m is None or np.linalg.norm(beta_res, ord=2) <= stop_beta:
-                if verbose and rank0:
-                    print(f"[TRLM] Invariant subspace found at restart {restart}. Stopping early.")
-                return _trlm_extract(T_lead, Q_ret, k_ret, num_wanted, comm, slater)
-            p_resid = block_cols(q_m)
-            cross = beta_res  # (p_resid, k_ret)
+        # Two arms (textbook coefficients vs. an explicit Rayleigh-Ritz rebuild) --
+        # see _restart_coefficients's docstring for when each applies.
+        early_result, T_lead, cross, q_m, p_resid, beta_res = _restart_coefficients(
+            D, eigvals_T, keep, Y_last, beta_res, q_m, p_resid, nkeep, k_ret, orth_err,
+            Q_ret, h_op, basis, mpi, comm, slater, stop_beta, num_wanted, restart, verbose, rank0,
+        )
+        if early_result is not None:
+            return early_result
 
         # The continuation adds at most (m - k_blocks) blocks, and block widths are
         # non-increasing under deflation, so none is wider than the residual block it starts
