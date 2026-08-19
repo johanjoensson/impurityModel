@@ -280,8 +280,13 @@ def block_lanczos_step_cy(
         reort_eps = REORT_TOL
 
         # --- 7. EA16 Selective Orthogonalization ------------------------
-        if reort_mode == Reort.SELECTIVE and it > 0 and it % reort_period == 0:
+        if reort_mode == Reort.SELECTIVE:
             # EA16 §2.6.2 selective orthogonalization (shared with block_lanczos_array_cy).
+            # Cadence (it > 0 and it % reort_period == 0) lives solely inside
+            # selective_orthogonalize now, not duplicated here (R9: this outer check was
+            # a leftover double-gate -- the array kernel already dropped its matching
+            # copy in R7 with the identical reasoning: byte-equivalent to the inner gate
+            # since both receive the same `it`/`period`, so removing it changes nothing).
             # beta_i's 2-norm is the Ritz residual scale; the driver has not computed it yet at
             # this point, so pass it explicitly. Q_basis is always a SparseKrylovDense here
             # (block_lanczos_cy requires store_krylov=True whenever reort != 'none'), so

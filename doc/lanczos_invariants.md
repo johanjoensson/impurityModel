@@ -384,3 +384,17 @@ Net: the MBS path's story on this fixture is seed-condition-dependent *and*
 reort-mode-dependent, narrower than a blanket bug but not yet root-caused. Not blocking
 R1-R7 (pure code motion); revisit before or during R7, which touches the shared step
 policy this floor test exercises.
+
+**3. [FIXED, R9] MBS kernel still double-gated SELECTIVE cadence after R7.** R7's item 2
+("SELECTIVE cadence", see the R7 section above) unified the two kernels on a single
+cadence gate living inside `selective_orthogonalize` and dropped the array kernel's
+redundant outer `it % period` check, but left the MBS kernel's own copy
+(`_lanczos_step.pxi`) in place — `if reort_mode == Reort.SELECTIVE and it > 0 and it %
+reort_period == 0:` still wrapped the call, on top of `selective_orthogonalize`'s
+identical internal gate. Functionally inert (both checks receive the same `it` and
+`reort_period`, so they always agreed — this was redundancy, not a bug), but exactly the
+asymmetry the adversarial-review pass was looking for. Dropped the outer cadence clause
+(kept the `reort_mode == Reort.SELECTIVE` mode check), matching the array kernel's
+already-verified reasoning from R7. Bit-for-bit confirmed via
+`.lanczos_golden/lanczos_golden.py --check` (27/27 cases, including every SELECTIVE
+case) and the PARTIAL/SELECTIVE probe (`lanczos_partial_probe.py --check`, unaffected).
