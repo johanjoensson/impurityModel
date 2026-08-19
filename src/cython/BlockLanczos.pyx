@@ -1,5 +1,8 @@
 # distutils: language = c++
 # cython: language_level=3, boundscheck=False, initializedcheck=False, wraparound=False, freethreading_compatible=True, cdivision=True, cpow=True
+# Strict on purpose, unlike BlockLanczosArray.pyx -- see "Compiler directives" in
+# doc/lanczos_invariants.md. wraparound=False means _lanczos_step.pxi's cdef-typed
+# lists must use lst[len(lst) - 1], never lst[-1].
 """
 BlockLanczos.pyx
 ================

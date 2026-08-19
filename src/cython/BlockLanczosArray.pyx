@@ -1,5 +1,7 @@
 # distutils: language = c++
 # cython: language_level=3, boundscheck=True, wraparound=True, initializedcheck=False, cdivision=True, freethreading_compatible=True
+# Permissive on purpose, unlike BlockLanczos.pyx -- see "Compiler directives" in
+# doc/lanczos_invariants.md.
 
 """Block Lanczos kernel for numpy arrays / scipy sparse operators (MPI row-block).
 

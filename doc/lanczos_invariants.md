@@ -214,6 +214,29 @@ near-no-op step it reads rounding-level while the true loss sits at `~u32` (fp32
 roundoff). That is the same under-prediction failure mode as the "HONEST reset"
 incident above, so the combination is unusable regardless.
 
+## Compiler directives (boundscheck / wraparound)
+
+`BlockLanczos.pyx` compiles `boundscheck=False, wraparound=False, cpow=True`;
+`BlockLanczosArray.pyx` and the shared `BlockLanczosCore.pyx` both compile the opposite,
+`boundscheck=True, wraparound=True`. This is a deliberate, audited split, not drift:
+
+- `_lanczos_step.pxi` (included into `BlockLanczos.pyx`) already carries the workaround
+  `lst[len(lst) - 1]` instead of `lst[-1]` on its cdef-typed lists — `wraparound=False`
+  segfaults on negative indexing into a typed buffer rather than raising, so that pattern
+  is load-bearing for the file it's compiled in.
+- `BlockLanczosArray.pyx` has exactly one `[-1]` site (`calculate_thermal_gs`, indexing a
+  plain Python/numpy array via `__getitem__`, unaffected by either directive) and no
+  negative indexing into any `cdef`-typed memoryview or C array.
+
+Unifying either direction has a cost with no offsetting benefit: turning `wraparound`/
+`boundscheck` off on the array kernel buys nothing today (no negative-index site exists
+to speed up) while silently removing the safety net around its heavier nogil buffer
+arithmetic; turning them on for `BlockLanczos.pyx` would require rewriting the
+`len(lst) - 1` workaround back to `[-1]` and re-auditing every other typed access in
+`_lanczos_step.pxi` for a directive it was never written against. Left as-is: strict/fast
+for the single-step MBS kernel, permissive/safe for the array kernel and the primitives
+both kernels share.
+
 ## Known open issues
 
 **1. PARTIAL orthogonality degrades with horizon length on a clustered/near-degenerate
