@@ -81,12 +81,19 @@ from impurityModel.ed.BlockLanczosCore import (  # noqa: F401
     RITZ_BATCH,
     BETA_BLOWUP_FACTOR,
     REORT_PERIOD,
+    AUDIT_PERIOD,
+    audit_bad_blocks,
     RESTART_ORTH_TOL,
     DEFAULT_EIGEN_TOL,
     THERMAL_GS_RESIDUAL_TOL,
     get_reort_profile,
     reset_reort_profile,
     enable_reort_profile,
+    get_reort_trace,
+    reset_reort_trace,
+    enable_reort_trace,
+    reort_trace_enabled,
+    record_reort_trace,
     resolve_reort,
     divergence_guard,
     estimate_orthonormality,
@@ -694,12 +701,57 @@ def block_lanczos_array_cy(
 
             block_widths.append(n_curr)
             block_widths.append(active_k)
+            _trace_parts = {} if reort_trace_enabled() else None
             W = estimate_orthonormality(
                 W, alphas_buf[: it + 1], betas_buf[: it + 1], block_widths=block_widths, eps=EPS, N=global_N,
                 out=_w_bufs[it % 2] if _w_bufs is not None else None, beta_norms=beta_norm_hist,
+                parts_out=_trace_parts,
             )
             block_widths.pop()
             block_widths.pop()
+
+            if _trace_parts is not None:
+                # R8a: predicted (from W) vs MEASURED (Q_j^H q_next, the pre-reort
+                # candidate) overlap per historical block j, plus the three-term
+                # decomposition of the predicted value. is_array-only: the probe this
+                # instrumentation was built for (.lanczos_golden/lanczos_partial_probe.py)
+                # exercises only this (array) kernel; the O(total columns) inner product
+                # below is the real new cost the plan calls out, so it stays opt-in and
+                # array-only rather than also threading through the MBS/krylov paths no
+                # current diagnostic run needs.
+                _n_blks = W.shape[1] - 1
+                _widths_trace = block_widths + [n_curr]
+                _predicted_max = [float(np.max(np.abs(W[-1, j]))) for j in range(_n_blks)]
+                _bad_idx_predicted = [j for j in range(_n_blks) if _predicted_max[j] > BAD_BLOCK_TOL]
+                _triggered = bool(_force_reort) or (max(_predicted_max) > REORT_TOL if _predicted_max else False)
+                _Q_mat = Q_list[0]
+                _total_cols = sum(_widths_trace[:_n_blks])
+                _overlap = np.ascontiguousarray(np.conj(_Q_mat[:, :_total_cols].T) @ q_next)
+                _measured_max = []
+                _col0 = 0
+                for j in range(_n_blks):
+                    _w_j = _widths_trace[j]
+                    _measured_max.append(float(np.max(np.abs(_overlap[_col0 : _col0 + _w_j, :]))) if _w_j > 0 else 0.0)
+                    _col0 += _w_j
+                _decomp = {}
+                for _key in ("rounding_injection", "signed_propagation", "noise_floor"):
+                    _arr = _trace_parts[_key]
+                    _decomp[_key] = [float(np.max(np.abs(_arr[j, :n_curr, : _widths_trace[j]]))) for j in range(_n_blks)]
+                record_reort_trace({
+                    "it": it,
+                    "n_blks": _n_blks,
+                    "triggered": _triggered,
+                    "bad_idx_predicted": _bad_idx_predicted,
+                    "predicted_max": _predicted_max,
+                    "measured_max": _measured_max,
+                    "ratio": [
+                        (_predicted_max[j] / _measured_max[j]) if _measured_max[j] > 0.0 else float("inf")
+                        for j in range(_n_blks)
+                    ],
+                    "rounding_injection_max": _decomp["rounding_injection"],
+                    "signed_propagation_max": _decomp["signed_propagation"],
+                    "noise_floor_max": _decomp["noise_floor"],
+                })
 
             reort_eps = REORT_TOL
 
@@ -719,6 +771,17 @@ def block_lanczos_array_cy(
                     q_next, Q_list[0], alphas_buf, betas_buf, W, block_widths,
                     it, n_curr, beta_norm, reort_eps, period, mpi, comm,
                 )
+
+            # --- 7.5 R8c audit fallback (periodic, ground-truth) ----------
+            if it > 0 and it % AUDIT_PERIOD == 0:
+                # Measures the real overlap instead of trusting the PRO estimate for this
+                # one step, correcting W[-1,j] for any block it disagrees with (see
+                # audit_bad_blocks's docstring and doc/lanczos_invariants.md, "PRO
+                # estimator honesty"). Does not project q_next itself -- forcing the
+                # ordinary trigger just below (phase 8) picks up the corrected estimate and
+                # does the actual cleaning through its own already-tested path.
+                W, _audited = audit_bad_blocks(q_next, Q_list, W, mpi, comm, block_widths + [n_curr])
+                _force_reort = _force_reort or _audited
 
             # --- 8. Bad-block reort + renormalize ------------------------
             if reort in (Reort.PARTIAL, Reort.SELECTIVE):

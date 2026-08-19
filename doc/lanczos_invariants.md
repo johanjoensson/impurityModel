@@ -264,30 +264,102 @@ both kernels share.
 
 ## Known open issues
 
-**1. PARTIAL orthogonality degrades with horizon length on a clustered/near-degenerate
-spectrum (found 2026-08-18, R0b).** On an 8-cluster near-degenerate spectrum (N=2000,
-p=2, `reort=PARTIAL`), final orthogonality `‖Q^H Q - I‖` degrades *monotonically* as
-the run horizon grows, while a same-matrix FULL run holds `~1e-14` throughout:
+**1. [FIXED, R8] PARTIAL orthogonality degraded with horizon length on a
+clustered/near-degenerate spectrum — root cause: no term in the estimate can see it,
+not a calibration error.** R8a instrumented `estimate_orthonormality`'s three additive
+terms (rounding injection, signed three-term propagation, noise floor) with a per-step,
+per-block predicted-vs-*measured* overlap trace
+(`_block_ops.pxi`'s `audit_bad_blocks` neighbor, driven from `BlockLanczosArray.pyx`;
+env-gated `BLOCKLANCZOS_REORT_TRACE=1`, `.lanczos_golden/lanczos_partial_probe.py
+--trace`). R8b's finding, on the clustered_near_deg probe (N=2000, 8 clusters, 320
+iterations):
 
-| max_iter | PARTIAL `‖Q^HQ-I‖` | FULL `‖Q^HQ-I‖` |
+- The **diagonal (self, `j == i`) rounding-injection term** — `w_bar[i,...] =
+  eps*n_scale*anorm*|beta_i_dag_inv|` — stays flat at `~1.5e-14` to `~5e-14` for the
+  *entire* 320-iteration run, because `beta_i`'s conditioning never meaningfully
+  degrades on this spectrum (`sigma_min(beta_i)` measured `0.58`–`2.3` throughout). The
+  true measured self-overlap grows geometrically from `~1e-15` to `~6e-3` over the same
+  run — a gap that reaches **12 orders of magnitude** by iteration ~300. This is not a
+  scale-calibration bug: the diagonal term has *no channel* that depends on accumulated
+  history at all, and the classical Paige/Simon theory treats the adjacent overlap as
+  pure local rounding by construction (the same reason `estimate_orthonormality` special-
+  cases `j == i` rather than running it through the signed recurrence) — so the physical
+  mechanism causing growth on this spectrum (slow correlated leakage between
+  near-degenerate Ritz directions) has no representation in the model at all, not a
+  mis-tuned one.
+- The **off-diagonal (propagated) rows** also under-predict, though less severely and one
+  step later (worst measured ratio `predicted/measured` ≈ `1.1e-7` at late iterations,
+  vs. the diagonal's `~1e-12`) — downstream of the same gap, since the diagonal value one
+  step later becomes an ordinary off-diagonal input to the signed recurrence via `term5`.
+- Two *local* corrections were tried and measured to fail cleanly, which is itself
+  informative: (a) a term modeling self-coupling from already-known contamination
+  (`anorm * max_j |W[0,j,...]|`, or a quadratically-suppressed variant) reproduces
+  *existing* off-diagonal information rather than adding new signal, and at any scaling
+  tested drove both spectra to near-100% trigger without closing the gap (clustered still
+  `~1e-7`, not `≤ REORT_TOL`); (b) a bounded multiplicative safety factor on the
+  propagated rows, sized up to the healthy `gf_style` probe's full measured headroom
+  (`26.4x`, the global minimum off-diagonal ratio over its own 320-iteration run), still
+  only reached `~4e-2` on clustered at `320` iterations — nowhere near `REORT_TOL`, at
+  the cost of ~100% trigger on both spectra. **No local (per-block-norm-derived) term
+  bounds this spectrum's true loss**; the gap the estimator has to close is orders of
+  magnitude larger than any budget a healthy spectrum's headroom can license.
+
+**Fix (R8c): `audit_bad_blocks`, a periodic ground-truth escalation, not an estimator
+term.** Every `AUDIT_PERIOD` (= 3) steps, PARTIAL/SELECTIVE measure the *true* overlap of
+the pending candidate against every historical block (one `block_inner` call, the same
+cost `apply_reort`'s own bad-block cleaning already pays when it acts) instead of trusting
+the estimate for that one step. Any block whose measured overlap exceeds `BAD_BLOCK_TOL`
+has its `W[-1,j]` row **overwritten with the measurement** — the audit does not itself
+project the candidate; it corrects the estimate and forces (`force=True`) the immediately
+following `apply_reort`/`finish_reort` call to see it, reusing that already-tested
+projection + renormalize + beta-fold path rather than duplicating it. Array representation
+only (`is_array(Q_list)`) — arbitrary historical-column slicing has no established API on
+the MBS/`SparseKrylovDense` path yet; MBS callers get `audited=False` unconditionally
+(strictly additive, never a regression there — see the cross-kernel note below).
+
+`AUDIT_PERIOD` was chosen from a period sweep, not the cheapest value that happens to
+pass once: period 3 holds `‖Q^HQ-I‖ ≤ 1.1e-9` (>10x below `REORT_TOL`) at *every* horizon
+in `{80,160,240,320}` on clustered_near_deg, while period 4 already fails the 320 horizon
+(`8.9e-8`, above `REORT_TOL`) — the margin between holding and failing is a handful of
+steps, not a wide plateau. Cost is real (`~80%` trigger rate on clustered_near_deg at this
+period, vs. FULL's 100%) but the healthy `gf_style` probe is essentially unaffected
+regardless of period (13–15/320 acted at every period tested 2–20, matching the no-audit
+baseline of 13/320) — the audit measures a true overlap that simply never exceeds
+`BAD_BLOCK_TOL` there, so it never fires.
+
+Post-fix, both probe spectra hold semi-orthogonality flat across the full horizon sweep:
+
+| max_iter | clustered_near_deg `‖Q^HQ-I‖` | gf_style `‖Q^HQ-I‖` |
 |---|---|---|
-| 80 | 1.4e-10 | 4.7e-15 |
-| 160 | 8.3e-7 | 7.5e-15 |
-| 240 | 6.0e-5 | 1.0e-14 |
-| 320 | **0.13** | 1.3e-14 |
+| 80 | 5.5e-11 | 3.0e-13 |
+| 160 | 6.4e-10 | 2.4e-11 |
+| 240 | 8.7e-10 | 3.3e-11 |
+| 320 | 1.1e-9 | 5.1e-11 |
 
-Confirmed via the `max_iter × {PARTIAL, FULL}` sweep (not a fixture-saturation
-artifact — FULL stays flat at every horizon on the identical matrix/seed). PARTIAL also
-acted on 189/320 calls (59%) at the 320-iteration horizon — a high trigger rate that
-still failed to hold semi-orthogonality, meaning the trigger *fires* but the
-reorthogonalization it performs (or the estimate driving block selection) is not
-enough at long horizon. This sharpens (is materially worse than) the previously
-documented "~1e-4, opt-in-benchmark-only" PARTIAL orthogonality failure. On a broad
-quasi-continuum spectrum ("gf_style" fixture) at the same horizon, PARTIAL holds
-`7.3e-11` with only a 4% trigger rate — so the defect is spectrum-dependent, not
-universal. Reproducible via `.lanczos_golden/lanczos_partial_probe.py`. **This is R8's
-baseline to fix** (`R8a` instruments the three additive `estimate_orthonormality` terms
-against this exact regression before any change).
+`test_reort_oracle.py::test_partial_reort_holds_semiorthogonality[clustered_near_deg]`
+(R8d) is the regression test this escaped: its spectrum was rescaled from N=400/80
+iterations (below the failure's onset — a 320-iteration run at N=400 saturates the
+problem dimension around iteration ~200, which is a *different*, dimension-ceiling
+failure mode, not this one) to N=2000/320 iterations matching the probe, and its
+assertion tightened from `1e3*SQRT_EPS` to `SQRT_EPS` (`== REORT_TOL`) — confirmed to
+fail (`0.132` vs `1.49e-8`) with the audit disabled and pass with it enabled.
+
+**Known asymmetry left by this fix: the two kernels' PARTIAL numerics now diverge more
+than before, on any workload where both run PARTIAL.** Only the array kernel
+(`BlockLanczosArray.pyx`) got the audit; the MBS kernel (`BlockLanczos.pyx` /
+`_lanczos_step.pxi`) still carries the *same* underlying under-prediction, unaddressed.
+This was already true before R8 (the two kernels' PARTIAL trigger conditions have never
+been guaranteed to produce bit-identical convergence — different algorithms, TRLM
+restarts vs. a single continuous sweep) but confirmed independent of R8:
+`test_block_lanczos_perf.py::test_partial_sparse_kernel_bench`'s cross-kernel `E0`
+comparison (sparse MBS `block_lanczos_cy` PARTIAL vs. array `thick_restart_block_lanczos`
+PARTIAL/TRLM on the NiO 10-bath workload) fails identically (`0.000313` vs. its `1e-4`
+tolerance, to 15 significant figures in both `E0` values) whether the audit is enabled or
+disabled — a pre-existing gap this work did not introduce and does not fix. Extending
+`audit_bad_blocks` to the MBS/`SparseKrylovDense` representation (feasible in principle:
+`SparseKrylovDense.reort(wp, cols=None, n_passes=1, comm)` returns the true Allreduced
+overlap of the *un-mutated* caller's `wp` against every stored column, the same
+measurement the array path uses) is future work, not done here.
 
 **2. MBS `test_no_ghost_bands` floor invariant is seed/mode-dependent, not
 root-caused (found 2026-08-18, R0c).** `test_no_ghost_bands_ritz_floor`

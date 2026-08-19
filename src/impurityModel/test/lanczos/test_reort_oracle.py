@@ -58,7 +58,14 @@ def _run(H, Q0, mode, max_iter):
 # "two tight clusters" — a rank-~2 problem — is covered separately below: PARTIAL recovers the
 # eigenvalues with bounded beta at realistic iteration counts.)
 _SPECTRA = {
-    "clustered_near_deg": (lambda r: np.concatenate([r.normal(c, 0.02, 50) for c in range(8)]), 80),
+    # R8: was 50-per-cluster (N=400) at 80 iterations, which never surfaced PARTIAL's
+    # clustered/near-degenerate under-prediction (doc/lanczos_invariants.md, "PRO
+    # estimator honesty") -- at N=400 a 320-iteration run saturates the problem dimension
+    # around iteration ~200, and the resulting blow-up is that ceiling, not the estimator
+    # defect. Scaled to N=2000 (250 per cluster), matching the probe spectrum
+    # (.lanczos_golden/lanczos_partial_probe.py's clustered_near_deg) that the defect was
+    # actually characterized on, with real headroom below the dimension at 320 iterations.
+    "clustered_near_deg": (lambda r: np.concatenate([r.normal(c, 0.02, 250) for c in range(8)]), 320),
     "uniform_dense": (lambda r: np.sort(r.uniform(-30, 10, 300)), 90),
     "degenerate_pairs": (lambda r: np.repeat(r.uniform(-5, 5, 150), 2), 80),
     "well_separated": (lambda r: np.linspace(-20.0, 20.0, 200), 70),
@@ -76,10 +83,15 @@ def test_partial_reort_holds_semiorthogonality(name):
     a_p, b_p, _, _, ortho_partial = _run(H, Q0, Reort.PARTIAL, max_iter)
     _, _, _, _, ortho_full = _run(H, Q0, Reort.FULL, max_iter)
 
-    # PARTIAL must hold semi-orthogonality (Paige-Simon guarantee) and never be worse than NONE.
-    assert ortho_partial < 1e3 * SQRT_EPS, f"{name}: PARTIAL ||Q^HQ-I||={ortho_partial:.2e}"
-    assert ortho_partial <= max(ortho_none, 1e3 * SQRT_EPS)
-    assert ortho_full < 1e3 * SQRT_EPS  # sanity on the reference
+    # PARTIAL must hold semi-orthogonality (Paige-Simon guarantee) and never be worse than
+    # NONE. R8: tightened from the original 1e3*SQRT_EPS slack to SQRT_EPS itself (the
+    # Simon semi-orthogonality target == REORT_TOL) -- this is the regression test the
+    # clustered/near-degenerate under-prediction escaped (see R8c's audit_bad_blocks
+    # fallback); all four spectra now measure comfortably under it (worst case
+    # clustered_near_deg ~1.1e-9, >10x margin).
+    assert ortho_partial < SQRT_EPS, f"{name}: PARTIAL ||Q^HQ-I||={ortho_partial:.2e}"
+    assert ortho_partial <= max(ortho_none, SQRT_EPS)
+    assert ortho_full < SQRT_EPS  # sanity on the reference
 
     # Lowest Ritz values from the PARTIAL run match the dense reference.
     evals = np.asarray(eigsh(np.asarray(a_p), np.asarray(b_p), eigvals_only=True)[0]).real

@@ -477,6 +477,57 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
     return wp, W, acted
 
 
+def audit_bad_blocks(object wp, object Q_list, object W, bint mpi, object comm, list block_widths):
+    """R8c fallback: a periodic (``AUDIT_PERIOD``) ground-truth check, run INSTEAD of
+    trusting the PRO estimate for that one step. R8b's measurement (see
+    doc/lanczos_invariants.md, "PRO estimator honesty" / known open issues) found the
+    estimate under-predicts the true overlap on a clustered/near-degenerate spectrum by up
+    to ~1e-7x at late iterations -- both a corrected diagonal (self) term and a bounded
+    multiplicative safety factor on the propagated rows (sized within the healthy probe's
+    ~26x headroom) were measured to plateau well short of ``REORT_TOL`` even at
+    near-full-reort cost, so no *local* correction to the estimate closes this gap.
+
+    Deliberately does NOT project ``wp`` itself: it measures the true overlap and, for any
+    block that exceeds ``BAD_BLOCK_TOL``, overwrites that block's row of the ESTIMATE
+    (``W[-1, j]``) with the measurement. The caller's own subsequent
+    ``apply_reort``/``finish_reort`` call (passed ``force=True`` when this returns
+    ``audited=True``) then does the actual projection + renormalize + beta-fold, against
+    the now-corrected estimate -- reusing that already-tested path instead of duplicating
+    it here.
+
+    Array representation only: the probe spectra this exists for (both in
+    ``.lanczos_golden/lanczos_partial_probe.py``) run the array kernel, and slicing an
+    arbitrary historical column range has no established API on the MBS/krylov paths yet.
+    Callers on those paths get ``audited=False`` unconditionally -- the ordinary
+    estimator-driven trigger still runs every step regardless, so this is strictly
+    additive, never a regression.
+
+    Returns ``(W, audited)``.
+    """
+    if not is_array(wp) or not is_array(Q_list):
+        return W, False
+    cdef int n_blks = W.shape[1] - 1
+    if n_blks <= 0:
+        return W, False
+    Q_mat = Q_list if not isinstance(Q_list, list) else Q_list[0]
+    cdef int total_cols = int(sum(block_widths[:n_blks]))
+    if total_cols == 0:
+        return W, False
+    cdef int active_k = wp.shape[1]
+    measured = block_inner(Q_mat[:, :total_cols], wp, mpi, comm)
+    cdef bint audited = False
+    cdef int j, col0 = 0, w_j
+    cdef object block_measured
+    for j in range(n_blks):
+        w_j = block_widths[j]
+        block_measured = measured[col0 : col0 + w_j, :]
+        if np.max(np.abs(block_measured)) > BAD_BLOCK_TOL:
+            W[-1, j, :w_j, :active_k] = block_measured
+            audited = True
+        col0 += w_j
+    return W, audited
+
+
 # ===========================================================================
 # R7: shared step policy (hoisted from block_lanczos_step_cy / block_lanczos_cy /
 # block_lanczos_array_cy, which had these near-line-for-line in both kernels)

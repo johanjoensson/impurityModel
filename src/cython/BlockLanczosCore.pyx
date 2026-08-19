@@ -65,6 +65,19 @@ RITZ_BATCH = 8
 # spurious Ritz values test_no_ghost_bands is named after).
 BETA_BLOWUP_FACTOR = 1e3           # ||beta_i|| above this * max(||beta||, ||alpha||) ⇒ divergence
 REORT_PERIOD = 5                   # PERIODIC cadence, and SELECTIVE Ritz-check cadence
+# R8c fallback cadence (audit_bad_blocks in _block_ops.pxi): every AUDIT_PERIOD steps,
+# PARTIAL/SELECTIVE measure the TRUE overlap against every historical block instead of
+# trusting the PRO estimate for that one step. Sized from a period sweep on the R8
+# clustered/gf_style probes (doc/lanczos_invariants.md, 320-iteration horizon): period 3
+# holds ||Q^HQ-I|| <= 1.1e-9 on clustered_near_deg (>10x below REORT_TOL) at every horizon
+# in {80,160,240,320}, vs. period 4 already failing the 320 horizon (8.9e-8, above
+# REORT_TOL) -- the margin between "holds" and "fails" is a narrow few steps, not a wide
+# plateau, so this is deliberately not tuned to the cheapest passing value. Cost is
+# real (~80% trigger rate on clustered_near_deg at this period, vs. FULL's 100%) but
+# stays essentially free on the healthy probe regardless of period (13-15/320 acted at
+# every period tested 2-20, matching the 13/320 no-audit baseline) -- the audit measures a
+# true overlap that simply never exceeds BAD_BLOCK_TOL there.
+AUDIT_PERIOD = 3
 # Semi-orthogonality threshold (Simon's classical sqrt(EPS) criterion — the very level the
 # PARTIAL estimator maintains, hence the shared constant). TRLM's thick-restart coefficient
 # shortcuts (diag(theta) for the retained block, beta_res @ Y_last for the spike) are both
@@ -100,6 +113,50 @@ def enable_reort_profile(on=True):
     BLOCKLANCZOS_PROFILE=1 in the environment before import)."""
     global _REORT_PROF_ON
     _REORT_PROF_ON = bool(on)
+
+
+# --- R8a: per-step, per-block reort trace (env-gated; ~zero cost when off) ----------
+# Distinct from _REORT_PROF above: that accumulates run-wide aggregates (calls/acted/
+# bad_blocks), cheap enough to leave on by the probe script by default. This records one
+# entry per step -- predicted vs *measured* overlap per block, which costs a real O(total
+# columns) inner product every traced step -- so it is opt-in via its own env var, never
+# implied by BLOCKLANCZOS_PROFILE.
+_REORT_TRACE_ON = _os_bla.environ.get("BLOCKLANCZOS_REORT_TRACE") == "1"
+_REORT_TRACE = []
+
+
+def get_reort_trace():
+    """The accumulated per-step trace records (see the array kernel's recording site for
+    the field list); a plain list, one dict per traced step."""
+    return list(_REORT_TRACE)
+
+
+def reset_reort_trace():
+    _REORT_TRACE.clear()
+
+
+def enable_reort_trace(on=True):
+    """Toggle the per-step reort trace at runtime (equivalent to setting
+    BLOCKLANCZOS_REORT_TRACE=1 in the environment before import)."""
+    global _REORT_TRACE_ON
+    _REORT_TRACE_ON = bool(on)
+
+
+def record_reort_trace(entry):
+    """Append one per-step trace record (a plain dict; see the array kernel's recording
+    site for the field list). Called from the driver, not from ``apply_reort`` itself --
+    the driver is the only place that has both the pre-reort candidate and the
+    ``estimate_orthonormality`` decomposition in scope at once."""
+    _REORT_TRACE.append(entry)
+
+
+def reort_trace_enabled():
+    """Live read of the trace toggle -- a plain ``from ... import _REORT_TRACE_ON`` in a
+    caller module would snapshot the value at import time and go stale across a runtime
+    ``enable_reort_trace()`` call, the same reason ``_REORT_PROF_ON`` is never imported
+    directly (its checks all live in the same compilation unit via the ``_block_ops.pxi``
+    include)."""
+    return _REORT_TRACE_ON
 
 
 
@@ -176,7 +233,17 @@ cpdef np.ndarray estimate_orthonormality(
     double N=1.0,
     object out=None,
     object beta_norms=None,
+    object parts_out=None,
 ):
+    """... (see module docstring for the algorithm). ``parts_out``, if given a dict, is
+    populated (R8a instrumentation only -- None by default, zero extra cost when unused)
+    with the three additive contributions kept separate instead of summed into ``w_bar``:
+    ``"rounding_injection"`` (nonzero only at row ``i``, the diagonal/self entry),
+    ``"signed_propagation"`` (the three-term recurrence result BEFORE the noise floor is
+    added, rows ``0..i-1``), and ``"noise_floor"`` (the magnitude added on top of it, rows
+    ``0..i-1``) -- each shape ``(i+2, n, n)``, matching ``w_bar``, so
+    ``rounding_injection + signed_propagation + noise_floor == w_bar`` row-wise (row
+    ``i+1``, the seeded identity, is not decomposed -- it carries no estimate)."""
     cdef int i = alphas.shape[0] - 1
     cdef int n = alphas.shape[1]
     if eps == 0.0:
@@ -199,6 +266,14 @@ cpdef np.ndarray estimate_orthonormality(
     cdef int w_i = w_curr
     cdef int w_next = widths[i+1]
     cdef int w_0 = widths[0]
+
+    # R8a instrumentation only: three fresh (i+2, n, n) buffers, allocated only when the
+    # caller asks. Each additive term below writes into its own buffer in addition to (not
+    # instead of) w_bar, so the summed estimate is unchanged bit-for-bit.
+    if parts_out is not None:
+        parts_out["rounding_injection"] = np.zeros((i + 2, n, n), dtype=complex)
+        parts_out["signed_propagation"] = np.zeros((i + 2, n, n), dtype=complex)
+        parts_out["noise_floor"] = np.zeros((i + 2, n, n), dtype=complex)
 
     # Bounded-W: the caller may provide a persistent buffer (`out`, shape
     # (2, >=i+2, n, n)); the estimate is built into its zeroed leading view instead of a
@@ -243,6 +318,8 @@ cpdef np.ndarray estimate_orthonormality(
     # A magnitude, like the noise floor below and unlike the signed three-term propagation:
     # this term models a rounding *injection*, which has no sign structure to cancel.
     w_bar[i, :w_next, :w_curr] = eps * n_scale * anorm * np.abs(beta_i_dag_inv)
+    if parts_out is not None:
+        parts_out["rounding_injection"][i, :w_next, :w_curr] = w_bar[i, :w_next, :w_curr]
 
     if i == 0:
         W_out[0, : i + 1] = W[1]  # w_bar is already W_out[1] (built in place)
@@ -268,6 +345,8 @@ cpdef np.ndarray estimate_orthonormality(
     cdef np.ndarray term5 = betas[i-1, :w_i, :w_i_prev] @ W[0, 0, :w_i_prev, :w_j]
     cdef np.ndarray RHS_0 = term1 + term2 - term3 - term5
     w_bar[0, :w_next, :w_j] = beta_i_dag_inv @ RHS_0
+    if parts_out is not None:
+        parts_out["signed_propagation"][0, :w_next, :w_j] = w_bar[0, :w_next, :w_j]
 
     cdef int j, w_j_prev
     cdef np.ndarray term4
@@ -285,6 +364,8 @@ cpdef np.ndarray estimate_orthonormality(
 
         RHS = term1 + term2 - term3 + term4 - term5
         w_bar[j, :w_next, :w_j] = beta_i_dag_inv @ RHS
+        if parts_out is not None:
+            parts_out["signed_propagation"][j, :w_next, :w_j] = w_bar[j, :w_next, :w_j]
 
     # Local-rounding noise floor (Simon 1984 / Larsen PROPACK). Forming q_{i+1} = w_p beta_i^{-1}
     # injects rounding ~eps*sqrt(N)*(||beta_i||+||beta_j||) that the normalization amplifies by
@@ -311,7 +392,10 @@ cpdef np.ndarray estimate_orthonormality(
             _bnorm_j = float(beta_norms[j])
         else:
             _bnorm_j = float(np.linalg.norm(betas[j, :widths[j+1], :widths[j]], ord=2))
-        w_bar[j, :w_next, :widths[j]] += eps * n_scale * (_bnorm_i + _bnorm_j) * _binv_norm
+        _floor_j = eps * n_scale * (_bnorm_i + _bnorm_j) * _binv_norm
+        w_bar[j, :w_next, :widths[j]] += _floor_j
+        if parts_out is not None:
+            parts_out["noise_floor"][j, :w_next, :widths[j]] = _floor_j
 
     W_out[0, : i + 1] = W[1]  # w_bar is already W_out[1] (built in place)
 
