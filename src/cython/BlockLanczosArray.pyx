@@ -569,8 +569,11 @@ def block_lanczos_array_cy(
         with nogil:
             matmul_nogil(N, n_curr, n_curr, -1.0, q1, b'N', alpha_i, b'N', 1.0, wp)
 
+        # Bound unconditionally: q[0] is always a valid width-n block (a zero placeholder
+        # on the very first step of a fresh start), so this is well-defined at every call.
+        # See the matching note at _lanczos_step.pxi's n_prev binding / doc/lanczos_invariants.md.
+        n_prev = q[0].shape[1]
         if it > 0:
-            n_prev = q[0].shape[1]
             beta_prev_dag_arr = np.conj(betas_buf[it - 1, :n_curr, :n_prev].T).copy()
             beta_prev_dag_arr_c = np.ascontiguousarray(beta_prev_dag_arr)
             beta_prev_dag_mv = beta_prev_dag_arr_c

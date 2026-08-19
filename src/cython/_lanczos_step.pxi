@@ -153,8 +153,14 @@ def block_lanczos_step_cy(
 
     # --- 3. Subtract: wp = wp - q_curr * alpha_i - q_prev * beta_{i-1}^† -
     wp = block_add_scaled_cy(wp, q_curr, -alpha_i)
+    # Bound unconditionally: q_prev is always a valid width-p block (a zero placeholder
+    # on the very first step of a fresh start), so this is well-defined at every call.
+    # Binding it only under "if it > 0" relied on that guard coinciding with the read
+    # site's own "if start_it > 0" below -- true today only because both trace back to
+    # the same resume/fresh-start decision, not because the two conditions are the same
+    # test. See doc/lanczos_invariants.md.
+    n_prev = q_prev.width
     if it > 0:
-        n_prev = q_prev.width
         beta_prev_dag = np.conj(betas[it - 1, :p, :n_prev].T)
         wp = block_add_scaled_cy(wp, q_prev, -beta_prev_dag)
 
