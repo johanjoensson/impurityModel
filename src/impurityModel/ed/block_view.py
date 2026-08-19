@@ -52,10 +52,29 @@ def check_width_sync(Q, widths, where, exact=False):
         )
 
 
+def _representation(V):
+    """Classify a block's storage representation: ``"array"``, ``"manybody"``, or
+    ``"list"`` (plain ``list[ManyBodyState]``, or -- for callers that check further --
+    a ``SparseKrylovDense`` store).
+
+    Check array *before* ``ManyBodyState``, always: a ``ManyBodyState``'s own
+    ``len()`` is its ROW count (dict-like, matching ``len(dict)``), not its column
+    count, so routing on ``len()`` or checking it first silently misclassifies it as
+    a bare list. This is the one place that ordering rule is stated -- every
+    dispatching helper below routes through it instead of re-deriving it.
+    """
+    if is_array(V):
+        return "array"
+    if isinstance(V, ManyBodyState):
+        return "manybody"
+    return "list"
+
+
 def slice_cols(Q, a, b):
-    if is_array(Q):
+    rep = _representation(Q)
+    if rep == "array":
         return Q[:, a:b]
-    if isinstance(Q, ManyBodyState):
+    if rep == "manybody":
         return Q.select(range(a, b))
     if isinstance(Q, SparseKrylovDense):
         # The store is never itself sliced again below this point (the assigned
@@ -75,19 +94,36 @@ def concat_cols(A, B):
     union-support merge every other block boundary in this module already pays for
     (``block_combine``, ``SparseKrylovDense.combine_block``) -- there is no cheaper
     zero-copy hstack across two independently-supported blocks."""
-    if is_array(A):
+    rep = _representation(A)
+    if rep == "array":
         return np.concatenate([A, B], axis=1)
-    if isinstance(A, ManyBodyState):
+    if rep == "manybody":
         return ManyBodyState.from_states(A.to_states() + B.to_states())
     return list(A) + list(B)
 
 
 def copy_block(V):
-    if is_array(V):
-        return V.copy()
-    if isinstance(V, ManyBodyState):
+    rep = _representation(V)
+    if rep in ("array", "manybody"):
         return V.copy()
     return [s.copy() for s in V]
+
+
+def width_synced_total(Q_basis, widths, m_act, p, where, exact=False):
+    """Assert width/basis sync (``check_width_sync``) and return the true, possibly
+    deflation-shrunk subspace dimension ``sum(widths)`` -- falling back to the padded
+    ``m_act * p`` when no width table is tracked. Repeated verbatim at every TRLM/IRLM
+    site that builds ``T`` (or slices ``Q_basis``) off the block widths."""
+    check_width_sync(Q_basis, widths, where, exact=exact)
+    return int(sum(widths)) if widths is not None else m_act * p
+
+
+def trim_trailing_beta(betas, m_act):
+    """Drop the trailing residual-block coupling from ``betas``: a running sweep's
+    ``betas`` has one entry per Lanczos step including the not-yet-accepted residual
+    (``len(betas) == m_act``), while a sweep that already split the residual off
+    returns ``betas`` unchanged."""
+    return betas[: m_act - 1] if len(betas) == m_act else betas
 
 
 def as_state_list(V):

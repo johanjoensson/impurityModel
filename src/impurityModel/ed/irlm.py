@@ -28,8 +28,16 @@ from impurityModel.ed.BlockLanczosCore import (
     block_tsqr,
     eigh_block_tridiagonal,
     is_array,
+    resolve_reort,
 )
-from impurityModel.ed.block_view import block_cols, check_width_sync, concat_cols, copy_block, slice_cols
+from impurityModel.ed.block_view import (
+    block_cols,
+    concat_cols,
+    copy_block,
+    slice_cols,
+    trim_trailing_beta,
+    width_synced_total,
+)
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
 __all__ = [
@@ -342,9 +350,8 @@ def _irlm_core(
         # The sweep may shrink blocks (rank-deficient beta -> deflation), so the true
         # subspace dimension is sum(block_widths), not m_act * p. Build T against the
         # real widths so T (and its eigenvectors Z) line up with the stored Q_basis.
-        check_width_sync(Q_basis, widths, f"{tag} restart {restart} sweep")
-        total = int(sum(widths)) if widths is not None else m_act * p
-        _betas_off = betas[: m_act - 1] if len(betas) == m_act else betas
+        total = width_synced_total(Q_basis, widths, m_act, p, f"{tag} restart {restart} sweep")
+        _betas_off = trim_trailing_beta(betas, m_act)
         # Banded eigensolve straight from the block coefficients (no dense T); the IRLM
         # implicit-QR restart keeps T block-tridiagonal, so the band is valid.
         evals, Z = eigh_block_tridiagonal(alphas, _betas_off, block_widths=widths)
@@ -522,9 +529,8 @@ def _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, c
     n_need = num_wanted - len(eigvals_list)
     if n_need > 0 and len(alphas) > 0:
         m_act = len(alphas)
-        check_width_sync(Q_basis, widths, "IRLM final extraction")
-        total = int(sum(widths)) if widths is not None else m_act * p
-        _betas_off = betas[: m_act - 1] if len(betas) == m_act else betas
+        total = width_synced_total(Q_basis, widths, m_act, p, "IRLM final extraction")
+        _betas_off = trim_trailing_beta(betas, m_act)
         # Banded eigensolve straight from the block coefficients (no dense T).
         evals, Z = eigh_block_tridiagonal(alphas, _betas_off, block_widths=widths)
         if mpi:
@@ -597,12 +603,7 @@ def implicitly_restarted_block_lanczos(
     Returns:
         tuple[numpy.ndarray, list | numpy.ndarray]: ``(eigvals, eigvecs)``.
     """
-    if reort is None:
-        reort_mode = Reort.PARTIAL
-    elif isinstance(reort, Reort):
-        reort_mode = reort
-    else:
-        reort_mode = Reort[str(reort).upper()]
+    reort_mode = Reort.PARTIAL if reort is None else resolve_reort(reort)
 
     if comm is None:
         comm = getattr(basis, "comm", None)
@@ -669,10 +670,7 @@ def _implicitly_restarted_block_lanczos_cy_manybody(
     """
     if comm is None:
         comm = getattr(basis, "comm", None)
-    if isinstance(reort, str):
-        reort_mode = Reort[reort.upper()]
-    else:
-        reort_mode = reort
+    reort_mode = resolve_reort(reort)
 
     return _implicitly_restarted_block_lanczos_manybody(
         psi0=psi0,

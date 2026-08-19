@@ -29,7 +29,16 @@ from impurityModel.ed.BlockLanczosCore import (
     is_array,
     resolve_reort,
 )
-from impurityModel.ed.block_view import as_state_list, block_cols, check_width_sync, concat_cols, copy_block, slice_cols
+from impurityModel.ed.block_view import (
+    as_state_list,
+    block_cols,
+    check_width_sync,
+    concat_cols,
+    copy_block,
+    slice_cols,
+    trim_trailing_beta,
+    width_synced_total,
+)
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
 __all__ = [
@@ -143,15 +152,14 @@ def _trlm_core(
     # The sweep can shrink blocks (rank-deficient beta -> deflation), so the true subspace
     # dimension is sum(widths), not the padded m_actual * p. All slicing / T construction
     # must use the real widths or they desynchronize from Q_basis.
-    check_width_sync(Q_basis, widths, "TRLM initial sweep")
-    total = int(sum(widths)) if widths is not None else m_actual * p
+    total = width_synced_total(Q_basis, widths, m_actual, p, "TRLM initial sweep")
     deflated = total < m_actual * p
 
     # Split the trailing residual block off the basis.
     q_m = copy_block(slice_cols(Q_basis, total, block_cols(Q_basis))) if block_cols(Q_basis) > total else None
     Q_basis = slice_cols(Q_basis, 0, total)
 
-    _betas_off = betas[: m_actual - 1] if len(betas) == m_actual else betas
+    _betas_off = trim_trailing_beta(betas, m_actual)
 
     # Early termination: a genuine invariant subspace (fewer blocks than asked), block
     # deflation (rank-deficient residual), or a sweep that stored no trailing residual block
