@@ -202,7 +202,7 @@ def block_lanczos_step_cy(
     # Breakdown is measured against the operator scale, not against 1: a residual block is
     # negligible when it is small compared to H. `h_norm_est` is the driver's running estimate
     # (0 on the first step of a cold start, where alpha_i carries the scale).
-    q_next, beta_i, active_k, sv_i = block_tsqr(
+    q_next, beta_i, active_k, sv_i = factor_residual(
         wp, mpi, comm, max(float(h_norm_est), float(np.linalg.norm(alpha_i, ord=2))),
         deflate_tol=deflate_tol,
     )
@@ -225,7 +225,6 @@ def block_lanczos_step_cy(
         q_next.prune_rows(slaterWeightMin)
         did_truncate = True
     if truncation_threshold > 0:
-        from impurityModel.ed.ManyBodyUtils import apply_global_truncation
         _q_states = q_next.to_states()
         for st in _q_states:
             apply_global_truncation(st, truncation_threshold, comm if mpi else None)
@@ -250,25 +249,20 @@ def block_lanczos_step_cy(
     if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
         _t0 = _time.perf_counter()
         if W is None:
-            if start_it > 0:
-                # Exact Overlap Restart (rare, resume-only): materialize the live blocks
-                # once so the store slices (lists) meet lists in inner_multi.
-                _wp_states = wp.to_states()
-                _q_prev_states = q_prev.to_states()
-                W = np.zeros((2, start_it + 1, alphas.shape[1], alphas.shape[1]), dtype=complex)
-                for j in range(start_it):
-                    w_j = block_widths[j]
-                    Q_j = Q_basis[sum(block_widths[:j]) : sum(block_widths[:j+1])]
-                    W[1, j, :w_j, :p] = inner_multi(Q_j, _wp_states)
-                    if j < start_it - 1:
-                        W[0, j, :w_j, :n_prev] = inner_multi(Q_j, _q_prev_states)
-                if mpi and comm is not None:
-                    comm.Allreduce(MPI.IN_PLACE, W, op=MPI.SUM)
-                W[1, start_it, :p, :p] = np.eye(p)
-                W[0, start_it - 1, :n_prev, :n_prev] = np.eye(n_prev)
-            else:
-                W = np.zeros((2, 1, p, p), dtype=complex)
-                W[1, 0] = np.eye(p)
+            # Unreachable from block_lanczos_cy: the driver seeds W (Exact Overlap
+            # Restart, seed_w_estimator) before entering the loop whenever reort is
+            # PARTIAL/SELECTIVE, so W is never None here. This branch used to carry a
+            # *third* inline copy of the EOR loop that no production path could reach,
+            # and which seeded from a different block (the pre-TSQR residual) than the
+            # driver's copy (q_curr) -- an asymmetry that never mattered precisely
+            # because it was dead. Raise rather than silently seed under a second,
+            # divergent convention: a direct caller of this step function owes it a
+            # seeded W.
+            raise ValueError(
+                "block_lanczos_step_cy requires a seeded W for reort='partial'/'selective'; "
+                "callers other than block_lanczos_cy must seed it via "
+                "BlockLanczosCore.seed_w_estimator first."
+            )
 
         W = estimate_orthonormality(
             W,
@@ -301,35 +295,25 @@ def block_lanczos_step_cy(
 
         # --- 8. Bad-block reort + renormalize ----------------------------
         if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
-            # Bad-block partial reorthogonalization via the shared apply_reort (single
-            # implementation for both kernels). Pass block_widths + [p] so the current
-            # block (index it) is included in the width table apply_reort indexes.
-            # force_reort (set by the driver on the step after an acted one) bypasses
-            # the trigger gate — the two-consecutive-steps rule, see apply_reort.
-            q_next, W, _reort_acted = apply_reort(
-                q_next, Q_basis, W, reort_mode, mpi, comm, block_widths + [p], krylov, force=force_reort
+            # Bad-block partial reorthogonalization + renormalize via the shared
+            # finish_reort (single implementation for both kernels). Pass
+            # block_widths + [p] so the current block (index it) is included in the
+            # width table apply_reort indexes. force_reort (set by the driver on the
+            # step after an acted one) bypasses the trigger gate — the
+            # two-consecutive-steps rule, see apply_reort.
+            q_next, W, beta_i, active_k, _reort_acted, _ok = finish_reort(
+                q_next, Q_basis, W, beta_i, active_k, reort_mode, mpi, comm, block_widths + [p],
+                krylov, force_reort, deflate_tol,
             )
             if _PROF_ON:
                 _PROF["reort_total#n"] = _PROF.get("reort_total#n", 0.0) + 1.0
                 if _reort_acted:
                     _PROF["reort_acted#n"] = _PROF.get("reort_acted#n", 0.0) + 1.0
-            # Only when a bad block was actually projected does q_next need re-orthonormalizing;
-            # otherwise it is unchanged and this would be an exact no-op (R2 == I), so skip the
-            # factorization entirely.
+            if _reort_acted and not _ok:
+                # Absolutely tiny residual after projection => block contained in the existing
+                # span (invariant subspace); renormalizing it would amplify rounding.
+                return None, alpha_i, None, W, 0, True, False
             if _reort_acted:
-                q_next_2, R2, active_k, sv2 = block_tsqr(q_next, mpi, comm, 1.0, deflate_tol=deflate_tol)
-                # Absolutely tiny residual after projection => block contained in the existing span
-                # (invariant subspace); renormalizing it would amplify rounding. Treat as breakdown.
-                # REORT_TOL is the largest column norm the old max(diag(<q|q>)) < EPS test admitted.
-                if active_k <= 0 or float(sv2[0]) < REORT_TOL:
-                    return None, alpha_i, None, W, 0, True, False
-                beta_i = R2 @ beta_i
-                q_next = q_next_2
-                # The renormalization q_next <- q_next @ R2^{-1} rescales its true overlaps
-                # with every Krylov column by up to ||R2^{-1}||_2 = 1/sigma_min; propagate
-                # the same bound into the just-written honest post-reort W estimates
-                # (a no-op when the projection removed little: R2 ~ I).
-                W[1, : W.shape[1] - 1] *= 1.0 / float(sv2[active_k - 1])
                 betas[it, :active_k, :p] = beta_i
         _prof_acc("reort", _t0)
 
@@ -356,13 +340,7 @@ def _pack_result(
             Q_basis = q_curr.to_states() + q_next.to_states()
         else:
             Q_basis = q_prev.to_states() + q_curr.to_states()
-    if return_widths and return_status:
-        return alphas_out, betas_out, Q_basis, W, block_widths, termination
-    if return_widths:
-        return alphas_out, betas_out, Q_basis, W, block_widths
-    if return_status:
-        return alphas_out, betas_out, Q_basis, W, termination
-    return alphas_out, betas_out, Q_basis, W
+    return pack_lanczos_result(alphas_out, betas_out, Q_basis, W, block_widths, termination, return_widths, return_status)
 
 
 def block_lanczos_cy(
@@ -386,7 +364,7 @@ def block_lanczos_cy(
     block_widths_init=None,
     locked=None,
     locked_evals=None,
-    locked_res=0.0,
+    locked_res=REORT_TOL,
     locked_reort="full",
     store_krylov=True,
     krylov_dtype=None,
@@ -654,34 +632,15 @@ def block_lanczos_cy(
     else:
         alphas_buf = np.zeros((_buf_size, p, p), dtype=complex)
         betas_buf = np.zeros((_buf_size, p, p), dtype=complex)
-    # Seed W-estimator state
+    # Seed W-estimator state (Exact Overlap Restart, see seed_w_estimator). Unifies
+    # this copy's previous per-j Allreduce pattern onto the one-bulk-Allreduce pattern
+    # the array kernel already used -- Allreduce(SUM) reduces each element
+    # independently, so batching cannot change a per-element result. Verified by
+    # case_mbs_partial_eor_resume in the golden harness (added alongside this hoist:
+    # the pre-existing warm-resume cases all pass W_init non-None and so never reach
+    # this branch) plus test_block_lanczos_cy_resume_partial_reort_without_w_init.
     if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE) and W is None:
-        if start_it > 0:
-            W = np.zeros((2, start_it + 1, p, p), dtype=complex)
-            for j in range(start_it):
-                w_j = block_widths[j]
-                Q_j = Q_basis[sum(block_widths[:j]) : sum(block_widths[:j+1])]
-
-                # q_curr/q_prev are ManyBodyStates; inner_multi only
-                # coerces a bare non-list argument via list(...), which over a block
-                # iterates its determinant KEYS, not its columns -- materialize the
-                # columns explicitly instead of relying on that coercion to do it.
-                ov_curr = inner_multi(Q_j, q_curr.to_states())
-                if mpi:
-                    comm.Allreduce(MPI.IN_PLACE, ov_curr, op=MPI.SUM)
-                W[1, j, :w_j, :q_curr.width] = ov_curr
-
-                if j < start_it - 1:
-                    ov_prev = inner_multi(Q_j, q_prev.to_states())
-                    if mpi:
-                        comm.Allreduce(MPI.IN_PLACE, ov_prev, op=MPI.SUM)
-                    W[0, j, :w_j, :q_prev.width] = ov_prev
-
-            W[1, start_it, :q_curr.width, :q_curr.width] = np.eye(q_curr.width)
-            W[0, start_it - 1, :q_prev.width, :q_prev.width] = np.eye(q_prev.width)
-        else:
-            W = np.zeros((2, 1, p, p), dtype=complex)
-            W[1, 0] = np.eye(p)
+        W = seed_w_estimator(Q_basis, q_curr, q_prev, block_widths, start_it, p, mpi, comm)
     elif reort_mode in (Reort.PARTIAL, Reort.SELECTIVE) and W is not None:
         pass  # W expands dynamically in estimate_orthonormality
 
@@ -710,10 +669,9 @@ def block_lanczos_cy(
     # executed it -> deadlock at mpiexec -n 3 (test_block_lanczos_mbs_empty_rank.py).
     partial_locked = nlock > 0 and locked_reort == "partial"
     if partial_locked:
-        from impurityModel.ed import ea16 as _ea16
         locked_evals_arr = np.ascontiguousarray(np.real(np.asarray(locked_evals)), dtype=float)
         _Ntot = getattr(basis, "size", 0) or 1
-        omega_min_l = EPS * p * math.sqrt(_Ntot)
+        omega_min_l = omega_floor(p, _Ntot)
         xi_l = np.full(nlock, omega_min_l)
         xi_prev_l = np.full(nlock, omega_min_l)
         locked_rho = float(locked_res)
@@ -799,17 +757,13 @@ def block_lanczos_cy(
         if beta_norm_hist is not None:
             beta_norm_hist.append(beta_norm)
         alpha_norm = np.linalg.norm(alpha_i, ord=2)
-        diverged, t_norm_max, h_norm_est = divergence_guard(
-            beta_norm, alpha_norm, it == 0, t_norm_max, h_norm_est
+        # first_step = it == 0: this driver's own loop-local counter, always 0 on the
+        # first step executed by THIS call (including a resumed call) -- see
+        # check_divergence's docstring for why this must not be "it_abs == 0".
+        diverged, t_norm_max, h_norm_est = check_divergence(
+            beta_norm, alpha_norm, it == 0, t_norm_max, h_norm_est, it_abs, comm
         )
         if diverged:
-            # Ungated from verbose: a truncated recurrence is a problem, not detail.
-            if comm is None or comm.Get_rank() == 0:
-                print(
-                    f"[BlockLanczos] Divergence detected at iteration {it_abs}: "
-                    f"|beta|={beta_norm:.3e}, |alpha|={alpha_norm:.3e} >> spectral scale "
-                    f"{h_norm_est:.3e}. Truncating to the last trustworthy block."
-                )
             termination = "diverged"
             breakdown = True
             break
@@ -818,27 +772,11 @@ def block_lanczos_cy(
         # estimate (cheap, no O(N) work) and reorthogonalize q_next only against the
         # locked vectors whose estimate now exceeds omega_TOL.
         if partial_locked:
-            bj_inv_norm = 1.0 / max(float(_svb[len(_svb) - 1]), EPS)  # reuse the step's beta_i SVD
             bjm1_norm = float(np.linalg.norm(betas_buf[it_abs - 1], 2)) if it_abs > 0 else 0.0
-            xi_new_l, xi_trigger, xi_mask = _ea16.locked_overlap_step(
-                xi_l, xi_prev_l, locked_evals_arr, alpha_i,
-                bj_inv_norm, bjm1_norm, locked_rho, REORT_TOL, BAD_BLOCK_TOL, EPS,
+            q_next, xi_prev_l, xi_l = locked_reort_step(
+                xi_l, xi_prev_l, locked_evals_arr, alpha_i, float(_svb[len(_svb) - 1]), bjm1_norm,
+                locked_rho, locked, q_next, mpi, comm, omega_min_l,
             )
-            if xi_trigger:
-                idx_l = np.nonzero(xi_mask)[0]
-                if isinstance(locked, ManyBodyState):
-                    Lm_blk = locked.select([int(t) for t in idx_l])
-                else:
-                    Lm_blk = ManyBodyState.from_states([locked[int(t)] for t in idx_l])
-                for _ in range(2):
-                    _lovl = block_inner_cy(Lm_blk, q_next)
-                    if mpi and comm is not None:
-                        comm.Allreduce(MPI.IN_PLACE, _lovl, op=MPI.SUM)
-                    q_next = block_add_scaled_cy(q_next, Lm_blk, -_lovl)
-                xi_new_l[idx_l] = omega_min_l
-                xi_l[idx_l] = omega_min_l
-            xi_prev_l = xi_l
-            xi_l = xi_new_l
 
         # Append q_next to the basis (last block = residual direction). The locking
         # deflation is applied inside block_lanczos_step_cy (before M/beta) in "full"

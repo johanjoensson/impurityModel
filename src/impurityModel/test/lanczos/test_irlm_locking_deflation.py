@@ -651,3 +651,83 @@ def test_trlm_array_mpi_no_spurious_eigenvalue(mode):
     assert np.all(np.isfinite(ev_mpi))
     assert ev_mpi[0] >= eigvals[0] - 1e-6, f"spurious MPI TRLM eigenvalue {ev_mpi[0]} < {eigvals[0]}"
     np.testing.assert_allclose(ev_mpi[:8], eigvals[:8], atol=1e-5)
+
+
+def test_locked_reort_step_guards_tiny_sigma_min():
+    """R7 unified the ``1/sigma_min`` amplification factor in the EA16 2.6.2
+    estimate-driven locking reorth onto the EPS-guarded form ``1/max(sv_min, EPS)``.
+
+    Before that, the MBS driver guarded it and the array kernel did not, so on the
+    array path a retained singular value below EPS produced an unbounded (or infinite,
+    at sv_min == 0) amplification straight into the xi overlap recurrence. TSQR's
+    deflation floor is *relative* to the operator scale, so a small-norm operator can
+    legitimately retain a singular value that small -- it is not an unreachable state.
+
+    No end-to-end fixture reaches it (the golden case
+    ``irlm_array_locked_partial`` observes sv_min in 0.41 .. 2.25), so the guard is
+    pinned here directly instead of being left to an argument.
+    """
+    from impurityModel.ed.BlockLanczosCore import locked_reort_step
+
+    nlock, n, p = 3, 12, 2
+    rng = np.random.RandomState(5)
+    locked, _ = np.linalg.qr(rng.randn(n, nlock) + 1j * rng.randn(n, nlock))
+    q_next, _ = np.linalg.qr(rng.randn(n, p) + 1j * rng.randn(n, p))
+    locked_evals = np.array([0.5, 1.5, 2.5])
+    alpha_i = np.eye(p, dtype=complex)
+    omega_min = 1e-14
+    xi = np.full(nlock, omega_min)
+    xi_prev = np.full(nlock, omega_min)
+
+    for sv_min in (0.0, 1e-300, 1e-20):
+        q_out, xi_prev_out, xi_out = locked_reort_step(
+            xi.copy(),
+            xi_prev.copy(),
+            locked_evals,
+            alpha_i,
+            sv_min,
+            1.0,
+            0.0,
+            locked,
+            q_next.copy(),
+            False,
+            None,
+            omega_min,
+        )
+        assert np.all(np.isfinite(xi_out)), f"xi went non-finite at sv_min={sv_min}"
+        assert np.all(np.isfinite(xi_prev_out)), f"xi_prev went non-finite at sv_min={sv_min}"
+        assert np.all(np.isfinite(np.asarray(q_out))), f"q_next went non-finite at sv_min={sv_min}"
+
+    # And the guard is a cap, not a no-op: sv_min far below EPS must give exactly the
+    # same result as sv_min == EPS, since both clamp to the same 1/EPS factor.
+    from impurityModel.ed.TSQR import EPS
+
+    _, _, xi_tiny = locked_reort_step(
+        xi.copy(),
+        xi_prev.copy(),
+        locked_evals,
+        alpha_i,
+        1e-300,
+        1.0,
+        0.0,
+        locked,
+        q_next.copy(),
+        False,
+        None,
+        omega_min,
+    )
+    _, _, xi_eps = locked_reort_step(
+        xi.copy(),
+        xi_prev.copy(),
+        locked_evals,
+        alpha_i,
+        EPS,
+        1.0,
+        0.0,
+        locked,
+        q_next.copy(),
+        False,
+        None,
+        omega_min,
+    )
+    np.testing.assert_array_equal(xi_tiny, xi_eps)

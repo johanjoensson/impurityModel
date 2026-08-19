@@ -57,8 +57,12 @@ def test_selective_reort():
     # Import the real function BEFORE patching
     from impurityModel.ed.ManyBodyUtils import inner_multi as real_inner_multi
 
-    # We will track inner_multi calls to prove 'selective' does fewer than 'partial'
-    with patch("impurityModel.ed.BlockLanczos.inner_multi") as mock_inner_multi_partial:
+    # We will track inner_multi calls to prove 'selective' does fewer than 'partial'.
+    # Patched in BlockLanczosCore, not BlockLanczos: the R7 step-policy hoist moved the
+    # W-estimator/locked-reort call sites that reach inner_multi into the shared
+    # BlockLanczosCore._block_ops.pxi layer (block_inner's else-branch), which is where
+    # the name is now importable as a module attribute.
+    with patch("impurityModel.ed.BlockLanczosCore.inner_multi") as mock_inner_multi_partial:
 
         def side_effect_partial(*args, **kwargs):
             return real_inner_multi(*args, **kwargs)
@@ -76,7 +80,7 @@ def test_selective_reort():
         )
         partial_inner_multi_calls = mock_inner_multi_partial.call_count
 
-    with patch("impurityModel.ed.BlockLanczos.inner_multi") as mock_inner_multi_selective:
+    with patch("impurityModel.ed.BlockLanczosCore.inner_multi") as mock_inner_multi_selective:
 
         def side_effect_selective(*args, **kwargs):
             return real_inner_multi(*args, **kwargs)

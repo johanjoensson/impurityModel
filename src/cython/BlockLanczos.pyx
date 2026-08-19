@@ -47,15 +47,13 @@ Reorthogonalization modes (``Reort`` enum from ``lanczos.py``):
 * ``PERIODIC``  – full reorthogonalization every ``reort_period`` steps.
 """
 
-import math
-
 import numpy as np
 import scipy.linalg as sp
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
+    apply_global_truncation,
     block_add_scaled_cy,
     block_inner_cy,
-    inner_multi,
     SparseKrylovDense,
 )
 from mpi4py import MPI
@@ -83,6 +81,13 @@ from impurityModel.ed.BlockLanczosCore import (
     block_orthogonalize,
     block_normalize,
     block_tsqr,
+    check_divergence,
+    factor_residual,
+    finish_reort,
+    seed_w_estimator,
+    omega_floor,
+    locked_reort_step,
+    pack_lanczos_result,
     Reort,
     EPS,
     REORT_TOL,

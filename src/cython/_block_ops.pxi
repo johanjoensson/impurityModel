@@ -15,6 +15,7 @@ from impurityModel.ed.ManyBodyUtils import (
     block_inner_cy,
     block_add_scaled_cy,
 )
+from impurityModel.ed import ea16
 
 cpdef bint is_array(object V):
     if isinstance(V, (np.ndarray, sps.spmatrix, sps.sparray)):
@@ -474,3 +475,215 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                     row0 += w_j
 
     return wp, W, acted
+
+
+# ===========================================================================
+# R7: shared step policy (hoisted from block_lanczos_step_cy / block_lanczos_cy /
+# block_lanczos_array_cy, which had these near-line-for-line in both kernels)
+# ===========================================================================
+# Deliberately NOT here: the matvec, alpha formation and three-term subtract (raw
+# matmul_nogil/CSR-nogil on the array side vs block_inner_cy/block_add_scaled_cy on the
+# MBS side), redistribution, amplitude truncation and Krylov storage. Routing the hot
+# loop through generic dispatch is how a refactor like this costs performance -- see
+# doc/lanczos_invariants.md.
+
+def check_divergence(double beta_norm, double alpha_norm, bint first_step,
+                     double t_norm_max, double h_norm_est, int it_abs, object comm):
+    """Divergence guard + the ungated print, shared by both kernels' identical call
+    sites (``divergence_guard`` above does the actual math). ``first_step`` must be
+    computed by the caller in its own loop-variable idiom (MBS: ``it == 0`` on its
+    loop-local counter; array: ``it == start_it`` on its absolute counter) -- both
+    already mean "the first step executed by this call", not literally the same
+    comparison, so do not copy one kernel's comparison into the other."""
+    diverged, t_norm_max, h_norm_est = divergence_guard(beta_norm, alpha_norm, first_step, t_norm_max, h_norm_est)
+    if diverged:
+        if comm is None or comm.Get_rank() == 0:
+            # flush=True (from the array kernel's copy): this diagnostic exists to be
+            # seen when a run goes wrong, so it must not sit in a stdio buffer behind
+            # whatever the rank does next.
+            print(
+                f"[BlockLanczos] Divergence detected at iteration {it_abs}: "
+                f"|beta|={beta_norm:.3e}, |alpha|={alpha_norm:.3e} >> spectral scale "
+                f"{h_norm_est:.3e}. Truncating to the last trustworthy block.",
+                flush=True,
+            )
+    return diverged, t_norm_max, h_norm_est
+
+
+def factor_residual(object wp, bint mpi, object comm, double h_scale, double deflate_tol=-1.0):
+    """TSQR-factor the residual block (phase 5), shared by both kernels -- ``block_tsqr``
+    under a name that matches the algorithmic step. The three-way active_k
+    classification (< 0 non-finite/corrupted, == 0 rank-deficient/exact invariant
+    subspace, > 0 normal) stays with each caller: MBS returns from the step function on
+    breakdown, the array kernel breaks its own driver loop -- two different idioms for
+    the same three outcomes, not unified here."""
+    return block_tsqr(wp, mpi, comm, h_scale, deflate_tol=deflate_tol)
+
+
+def finish_reort(object q_next, object Q_basis, object W, object beta_i, int active_k,
+                 object reort_mode, bint mpi, object comm, list block_widths_plus_current,
+                 object krylov=None, bint force=False, double deflate_tol=-1.0):
+    """Phase 8: bad-block reort + renormalize, shared by both kernels (identical
+    including comment wording in the pre-hoist code). Applies ``apply_reort``'s
+    bad-block projection; if it acted, re-factors the projected block and folds the
+    correction into ``beta_i``, propagating the renormalization bound
+    (``1/sigma_min``) into the just-written W row. An absolutely tiny post-projection
+    residual is a genuine invariant subspace, not noise to renormalize -- signaled via
+    ``ok=False`` for the caller's own early-exit (function return vs loop break).
+
+    ``active_k`` is the rank the residual factorization already established for this
+    block; it is passed IN and returned unchanged when the projection does not act, so
+    the caller's ``active_k`` stays the true block rank on every step. Returning a
+    sentinel here instead would silently corrupt it on the (common) non-acting step --
+    ``block_lanczos_step_cy`` propagates ``active_k`` straight into its public return
+    tuple, whose contract is "``q_next`` has width ``active_k``".
+
+    Returns
+    -------
+    tuple
+        ``(q_next, W, beta_i, active_k, reort_acted, ok)`` -- ``ok=False`` means the
+        caller must treat this the same as breakdown (invariant subspace).
+    """
+    q_next, W, reort_acted = apply_reort(
+        q_next, Q_basis, W, reort_mode, mpi, comm, block_widths_plus_current, krylov, force=force
+    )
+    if not reort_acted:
+        return q_next, W, beta_i, active_k, reort_acted, True
+    q_next_2, R2, active_k, sv2 = block_tsqr(q_next, mpi, comm, 1.0, deflate_tol=deflate_tol)
+    if active_k <= 0 or float(sv2[0]) < REORT_TOL:
+        return q_next, W, beta_i, active_k, reort_acted, False
+    beta_i = R2 @ beta_i
+    q_next = q_next_2
+    W[1, : W.shape[1] - 1] *= 1.0 / float(sv2[active_k - 1])
+    return q_next, W, beta_i, active_k, reort_acted, True
+
+
+def seed_w_estimator(object Q_basis, object curr_block, object prev_block, list block_widths,
+                     int start_it, int width, bint mpi, object comm):
+    """Exact Overlap Restart (EOR): initialize the Paige-Simon W estimator from scratch
+    against every already-completed block, on a resume without a warm-started W. Shared
+    by all three pre-hoist call sites (both kernels' inline step copy and the MBS
+    driver's separate pre-loop copy): the same formula on whatever representation the
+    Krylov basis and blocks come in (``block_inner`` dispatches on ``is_array``).
+
+    ``curr_block``/``prev_block`` must be the same pre-TSQR-residual / previous-block
+    values each existing call site already used -- this only deduplicates the
+    computation, it does not change which variable feeds it (both kernels seed the
+    estimator's "current" row from the pre-TSQR residual, not the post-TSQR q_next).
+
+    ``block_inner`` dispatches on its *first* argument's type; ``Q_j`` here is a
+    ``SparseKrylovDense`` slice (not an array, not a bare ``ManyBodyState``), so it
+    always falls to ``block_inner``'s ``inner_multi`` branch, which coerces a non-list
+    second argument via ``list(...)``. Iterating a bare ``ManyBodyState`` yields its
+    determinant KEYS, not its columns -- the exact historical bug
+    ``test_block_lanczos_cy_resume_partial_reort_without_w_init`` exists to catch -- so
+    a ``ManyBodyState`` target must be materialized via ``to_states()`` first."""
+    if start_it > 0:
+        W = np.zeros((2, start_it + 1, width, width), dtype=complex)
+        curr_w = block_cols(curr_block)
+        prev_w = block_cols(prev_block)
+        curr_target = curr_block.to_states() if isinstance(curr_block, ManyBodyState) else curr_block
+        prev_target = prev_block.to_states() if isinstance(prev_block, ManyBodyState) else prev_block
+        for j in range(start_it):
+            w_j = block_widths[j]
+            Q_j = Q_basis[sum(block_widths[:j]) : sum(block_widths[:j + 1])]
+            W[1, j, :w_j, :curr_w] = block_inner(Q_j, curr_target)
+            if j < start_it - 1:
+                W[0, j, :w_j, :prev_w] = block_inner(Q_j, prev_target)
+        if mpi and comm is not None:
+            comm.Allreduce(MPI.IN_PLACE, W, op=MPI.SUM)
+        W[1, start_it, :curr_w, :curr_w] = np.eye(curr_w)
+        W[0, start_it - 1, :prev_w, :prev_w] = np.eye(prev_w)
+    else:
+        W = np.zeros((2, 1, width, width), dtype=complex)
+        curr_w = block_cols(curr_block)
+        W[1, 0, :curr_w, :curr_w] = np.eye(curr_w)
+    return W
+
+
+cpdef double omega_floor(double width, double n_global):
+    """Locking-reort omega_min floor: ``EPS * width * sqrt(n_global)``. Previously
+    computed twice with the same formula (``EPS * p * sqrt(basis.size)`` in the MBS
+    driver, ``EPS * n * sqrt(global_N)`` in the array kernel) -- verified identical for
+    every real ``Basis`` object: ``basis.size`` and ``global_N`` are both the
+    Allreduce/Allgather-summed global determinant count."""
+    return EPS * width * np.sqrt(n_global)
+
+
+def locked_reort_step(xi_l, xi_prev_l, locked_evals_arr, alpha_i, double sv_min, double bjm1_norm,
+                      double locked_rho, object locked, object q_next, bint mpi, object comm,
+                      double omega_min_l):
+    """EA16 §2.6.2 estimate-driven locking reorthogonalization (``locked_reort='partial'``),
+    shared by both kernels. Propagates the cheap per-pair overlap estimate and
+    reorthogonalizes ``q_next`` only against the locked vectors whose estimate now
+    exceeds omega_TOL, resetting those to ``omega_min``.
+
+    ``sv_min`` is the smallest surviving singular value of the just-factored residual
+    block (``sv_i[active_k - 1]``); ``1/sv_min`` is EPS-guarded here uniformly for both
+    kernels -- found while hoisting this that the MBS driver guarded it
+    (``max(sv, EPS)``) and the array kernel did not.
+
+    This IS a behavior change on the array path, not a no-op: TSQR's ``deflate_tol``
+    floor is *relative* to the operator scale, so on a badly-scaled operator a retained
+    singular value can land below EPS, where the old array code produced an unbounded
+    ``1/sv`` and this produces ``1/EPS``. It changes ``xi`` evolution and hence trigger
+    decisions there. Verified by ``case_irlm_array_locked_partial`` in the golden
+    harness (added alongside this hoist precisely because no bit-for-bit case reached
+    ``locked_reort='partial'`` before) plus the tolerance-based
+    ``test_irlm_locking_deflation.py`` sweep over ``locked_reort=['full','partial']``.
+
+    Returns
+    -------
+    tuple
+        ``(q_next, xi_prev_l_new, xi_l_new)`` -- the caller's xi rotation is
+        unconditional (whether or not the trigger fired), matching both kernels'
+        existing control flow.
+    """
+    bj_inv_norm = 1.0 / max(sv_min, EPS)
+    xi_new_l, xi_trigger, xi_mask = ea16.locked_overlap_step(
+        xi_l, xi_prev_l, locked_evals_arr, alpha_i,
+        bj_inv_norm, bjm1_norm, locked_rho, REORT_TOL, BAD_BLOCK_TOL, EPS,
+    )
+    if xi_trigger:
+        idx_l = np.nonzero(xi_mask)[0]
+        if is_array(locked):
+            Lm_blk = np.ascontiguousarray(locked[:, idx_l])
+        elif isinstance(locked, ManyBodyState):
+            Lm_blk = locked.select([int(t) for t in idx_l])
+        else:
+            Lm_blk = ManyBodyState.from_states([locked[int(t)] for t in idx_l])
+        for _ in range(2):
+            _lovl = block_inner(Lm_blk, q_next, mpi, comm)
+            q_next = block_add_scaled(q_next, Lm_blk, -_lovl)
+        xi_new_l[idx_l] = omega_min_l
+        xi_l[idx_l] = omega_min_l
+    return q_next, xi_l, xi_new_l
+
+
+def pack_lanczos_result(alphas_out, betas_out, Q_basis, W, block_widths, termination,
+                        bint return_widths, bint return_status, bint return_W=True):
+    """The return_widths/return_status(/return_W) opt-in arity ladder, shared by both
+    kernels' return-tuple assembly. Each caller finishes its own basis representation
+    first (MBS substitutes the store_krylov=False two-block tail; the array kernel
+    trims its growth buffer) before calling this.
+
+    ``return_W`` defaults to True, matching the MBS kernel's ladder (``W`` is always
+    in its base return). The array kernel additionally makes ``W``'s presence itself
+    opt-in -- a third independent flag its own pre-hoist ladder already branched on
+    -- so it passes ``return_W`` explicitly."""
+    if return_widths:
+        if return_W:
+            if return_status:
+                return alphas_out, betas_out, Q_basis, W, block_widths, termination
+            return alphas_out, betas_out, Q_basis, W, block_widths
+        if return_status:
+            return alphas_out, betas_out, Q_basis, block_widths, termination
+        return alphas_out, betas_out, Q_basis, block_widths
+    else:
+        if return_W:
+            if return_status:
+                return alphas_out, betas_out, Q_basis, W, termination
+            return alphas_out, betas_out, Q_basis, W
+        if return_status:
+            return alphas_out, betas_out, Q_basis, termination
+        return alphas_out, betas_out, Q_basis
