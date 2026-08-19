@@ -623,12 +623,21 @@ def seed_w_estimator(object Q_basis, object curr_block, object prev_block, list 
     estimator's "current" row from the pre-TSQR residual, not the post-TSQR q_next).
 
     ``block_inner`` dispatches on its *first* argument's type; ``Q_j`` here is a
-    ``SparseKrylovDense`` slice (not an array, not a bare ``ManyBodyState``), so it
-    always falls to ``block_inner``'s ``inner_multi`` branch, which coerces a non-list
-    second argument via ``list(...)``. Iterating a bare ``ManyBodyState`` yields its
-    determinant KEYS, not its columns -- the exact historical bug
+    ``SparseKrylovDense``/``ManyBodyState``-list slice on the MBS path (not an array),
+    so it always falls to ``block_inner``'s ``inner_multi`` branch, which coerces a
+    non-list second argument via ``list(...)``. Iterating a bare ``ManyBodyState``
+    yields its determinant KEYS, not its columns -- the exact historical bug
     ``test_block_lanczos_cy_resume_partial_reort_without_w_init`` exists to catch -- so
-    a ``ManyBodyState`` target must be materialized via ``to_states()`` first."""
+    a ``ManyBodyState`` target must be materialized via ``to_states()`` first.
+
+    On the array path ``Q_basis`` is a plain 2D ``ndarray`` (the caller's dense Krylov
+    buffer): a bare ``Q_basis[a:b]`` there slices ROWS, not the intended column range,
+    so that representation needs its own ``Q_basis[:, a:b]`` slice (cloud-review
+    adversarial finding, R9 -- latent because no in-tree caller reaches this array-path
+    EOR combination today: IRLM always builds ``W_init`` explicitly for
+    PARTIAL/SELECTIVE and forces FULL otherwise, TRLM has no warm-restarted W, and
+    ``gf_solvers.py``'s array calls never pass a warm ``(alphas, betas, Q)`` triple)."""
+    cdef bint q_is_array = is_array(Q_basis)
     if start_it > 0:
         W = np.zeros((2, start_it + 1, width, width), dtype=complex)
         curr_w = block_cols(curr_block)
@@ -637,7 +646,8 @@ def seed_w_estimator(object Q_basis, object curr_block, object prev_block, list 
         prev_target = prev_block.to_states() if isinstance(prev_block, ManyBodyState) else prev_block
         for j in range(start_it):
             w_j = block_widths[j]
-            Q_j = Q_basis[sum(block_widths[:j]) : sum(block_widths[:j + 1])]
+            col_a, col_b = sum(block_widths[:j]), sum(block_widths[: j + 1])
+            Q_j = Q_basis[:, col_a:col_b] if q_is_array else Q_basis[col_a:col_b]
             W[1, j, :w_j, :curr_w] = block_inner(Q_j, curr_target)
             if j < start_it - 1:
                 W[0, j, :w_j, :prev_w] = block_inner(Q_j, prev_target)
