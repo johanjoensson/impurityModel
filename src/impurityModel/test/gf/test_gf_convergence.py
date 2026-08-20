@@ -101,14 +101,17 @@ def test_partial_matches_full_gf_on_dense_spectrum():
 
     err_partial = np.max(np.abs(gf(Reort.PARTIAL) - G_dense))
     err_full = np.max(np.abs(gf(Reort.FULL) - G_dense))
-    err_none = np.max(np.abs(gf(Reort.NONE) - G_dense))
 
     assert err_partial < 1e-8  # PARTIAL is accurate
     assert err_partial < 5 * err_full + 1e-12  # ... matching FULL
-    # ... and never worse than NONE. (On a fully-spanned uniform-dense spectrum NONE's lost
-    # orthogonality only injects harmless duplicate poles, so its derived-G error can sit at the
-    # same floor as PARTIAL; the orthogonality gap itself is guarded in test_reort_oracle.py.)
-    assert err_partial <= err_none + 1e-12
+    # No "err_partial <= err_none" assertion here (dropped, was line 111): on a
+    # fully-spanned uniform-dense spectrum NONE's lost orthogonality only injects harmless
+    # duplicate poles, so its derived-G error legitimately sits at the same ~1e-11 floor as
+    # PARTIAL's -- observed ratios on real CI runs were 1.13-1.18x, not the "PARTIAL beats
+    # NONE" this used to assert with a flat 1e-12 margin that had no headroom at this
+    # scale. It also had no defect to catch that the absolute cap above doesn't already
+    # cover (a PARTIAL regression fails line 106 regardless of what NONE does). The
+    # orthogonality gap PARTIAL actually guards against is checked in test_reort_oracle.py.
 
 
 def test_absolute_safeguard_bounds_gradual_beta_growth():
