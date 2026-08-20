@@ -32,6 +32,21 @@ jobs:
           - { compiler: intel,    cxx_std: "-std=c++17", parallel: false }
           - { compiler: intel,    cxx_std: "-std=c++20", parallel: false }
 
+    env:
+      # ubuntu-22.04 hosted runners are 4 vCPUs. Left unset, OpenBLAS defaults its
+      # thread count to nproc, and mpiexec multiplies that per rank (-n3 x 4
+      # OpenBLAS threads = 12 threads contending for 4 cores) -- oversubscription
+      # that both slows every leg down and adds a source of timing-dependent
+      # flakiness. 1 thread/process keeps total concurrency near the core count
+      # even at -n3. OMP_NUM_THREADS caps the threaded-apply path the same way
+      # (see apply_thread_cap() in ManyBodyOperator.cpp, which already falls back
+      # to 1 when unset -- setting it here just makes that explicit rather than
+      # relying on the fallback). MKL_NUM_THREADS is defensive in case any
+      # dependency's wheel links MKL instead of OpenBLAS.
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
