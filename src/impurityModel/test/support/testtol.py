@@ -37,6 +37,19 @@ def inner_atol(k, scale, dtype=np.complex128, c=8.0):
     return c * k * eps * max(scale, 1.0)
 
 
+def solver_atol(tol, c=10.0):
+    """Absolute tolerance for a result produced by an iterative solver that stopped at ``tol``.
+
+    Asserting agreement tighter than the solver's own convergence criterion is a
+    contradiction in terms: the solver was never asked to do better than ``tol``, so an
+    assertion at ``tol`` itself (or tighter) is a coin flip on which side of the
+    criterion the terminating iteration happened to land. ``c`` is an explicit safety
+    margin above that promise, not a physics-derived bound -- state at the call site why
+    the chosen ``c`` is wide enough for the modes/paths actually exercised.
+    """
+    return c * tol
+
+
 def eig_atol(h_norm, n=1, dtype=np.complex128, c=1e3):
     """Absolute tolerance for eigenvalues obtained via a backward-stable path.
 
