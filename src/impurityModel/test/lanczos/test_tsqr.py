@@ -11,9 +11,9 @@ What these tests pin down, in the order the algorithm runs:
   recurrence deadlocks or diverges if two ranks disagree,
 * the deflation / breakdown / corruption contract (``k > 0`` / ``k == 0`` / ``k == -1``),
 * and the reason the change was made at all: at a condition number the old rank floor
-  deliberately *retains* (``kappa`` just under ``DEFLATE_TOL**-1``), a single Cholesky-QR
-  leaves an orthonormality error above ``sqrt(EPS)`` — the semi-orthogonality level the
-  reort machinery assumes — while TSQR stays at machine precision.
+  deliberately *retains* (``kappa`` up to ``DEFLATE_TOL**-1``), a single Cholesky-QR pass
+  is never better than TSQR and typically leaves a much larger orthonormality error, while
+  TSQR stays at machine precision.
 """
 
 import numpy as np
@@ -26,7 +26,6 @@ from impurityModel.ed.TSQR import (
     BREAKDOWN_TOL,
     DEFLATE_TOL,
     DEFLATE_TOL_SEEDS,
-    EPS,
     local_r,
     merge_packed_r,
     pack_upper,
@@ -193,10 +192,11 @@ def test_tsqr_does_not_modify_its_input():
 def test_tsqr_beats_cholesky_qr_on_ill_conditioned_blocks(kappa):
     """The reason for the change.
 
-    ``DEFLATE_TOL`` retains every direction down to ``kappa = DEFLATE_TOL**-1`` (~1.7e5), so
-    these blocks are all *kept*, not deflated. A single Cholesky-QR of such a block leaves an
-    orthonormality error of order ``kappa**2 * EPS`` — which is why the second CholeskyQR2
-    pass had to exist. TSQR's back substitution is at machine precision without it.
+    ``DEFLATE_TOL`` retains every direction down to ``kappa = DEFLATE_TOL**-1`` (~2.7e10 --
+    see the comment next to ``DEFLATE_TOL`` in ``TSQR.pyx``), so these blocks are all *kept*,
+    not deflated. A single Cholesky-QR of such a block leaves an orthonormality error of
+    order ``kappa**2 * EPS`` — which is why the second CholeskyQR2 pass had to exist. TSQR's
+    back substitution is at machine precision without it.
     """
     A = _conditioned_block(400, 4, kappa, seed=int(np.log10(kappa)))
     Q, beta, k, _ = tsqr(A)
@@ -209,11 +209,17 @@ def test_tsqr_beats_cholesky_qr_on_ill_conditioned_blocks(kappa):
     assert k_c == k
     Qc = A @ beta_inv
     orth_chol = np.linalg.norm(Qc.conj().T @ Qc - np.eye(k_c))
+    # This is the regression this test exists to catch: TSQR must not be *worse* than a
+    # single Cholesky-QR pass on an ill-conditioned block. There used to also be an
+    # "orth_chol > sqrt(EPS)" claim at kappa>=1e5 (Cholesky is already unsafe here) -- but
+    # that asserted a *lower* bound on a rounding error, and kappa**2*EPS (this docstring's
+    # own justification) is only an *upper* bound: an anomalously small realized error is
+    # not a defect, it's what an upper bound permits. On real CI that assertion failed with
+    # an identical orth_chol value (4.7602162465941165e-09) across three different
+    # compilers (clang, gcc, intel) on two separate days -- a value fixed by the runner's
+    # BLAS build, not noise a bigger kappa would dodge. Dropped rather than "fixed" by
+    # raising kappa, since no kappa makes a lower bound on rounding error theoretically sound.
     assert orth_tsqr <= orth_chol
-    if kappa >= 1e5:
-        # At the top of the retained range the single Cholesky pass is already worse than
-        # the sqrt(EPS) semi-orthogonality level the reort estimator assumes.
-        assert orth_chol > np.sqrt(EPS)
 
 
 def test_tsqr_of_singular_block_deflates():
