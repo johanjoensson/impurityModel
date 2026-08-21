@@ -205,7 +205,13 @@ jobs:
       # detect_leaks=0: Python/mpi4py hold plenty of memory alive by design until interpreter
       # shutdown (reference cycles, cached small objects); leak reports on that would bury the
       # actual signal (heap-buffer-overflow / use-after-free) this leg exists to catch.
-      ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1"
+      # verify_asan_link_order=0: actions/setup-python's prebuilt CPython interpreter isn't
+      # itself linked against ASan, so LD_PRELOAD-ing libasan.so into it trips ASan's own
+      # startup check for "runtime does not come first in the initial library list" -- a
+      # known false alarm for exactly this LD_PRELOAD-onto-an-unlinked-interpreter setup
+      # (first attempt of this job failed silently in <2s at that check, before pytest
+      # printed anything).
+      ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1:verify_asan_link_order=0"
       # CPython's own small-object allocator (pymalloc) pools memory in arenas, which hides
       # individual allocations from ASan's redzone tracking. Disabling it routes every Python
       # allocation through the system malloc ASan already intercepts.
@@ -251,6 +257,14 @@ jobs:
           # every later step in this job inherits it (mpiexec propagates the local
           # environment to the processes it launches).
           echo "LD_PRELOAD=$(g++-12 -print-file-name=libasan.so)" >> "$GITHUB_ENV"
+
+      - name: ASan smoke test
+        run: |
+          # A bare interpreter start under LD_PRELOAD=libasan.so, so a startup-level ASan
+          # problem (link order, missing symbol, etc.) fails here with real output instead
+          # of pytest's own startup silently eating a <2s crash (see the ASAN_OPTIONS
+          # comment above -- that's what this step would have caught immediately).
+          python -c "print('asan smoke test ok')"
 
       - name: Run serial tests (ASan)
         run: |
