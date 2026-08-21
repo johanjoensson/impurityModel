@@ -272,41 +272,51 @@ jobs:
           # problem (link order, missing symbol, etc.) fails here with real output instead
           # of pytest's own startup silently eating a <2s crash (see the ASAN_OPTIONS
           # comment above -- that's what this step would have caught immediately).
-          python -c "print('asan smoke test ok')"
+          #
+          # setarch -R (every python/pytest/mpiexec invocation below): the third attempt at
+          # this job died with "Shadow memory range interleaves with an existing memory
+          # mapping. ASan cannot proceed correctly. ABORTING." on the mpi4py import step --
+          # a known ASan/ASLR incompatibility (google/sanitizers#856): ASan reserves a huge
+          # fixed shadow-memory range, and on kernels >=4.12 the default high-entropy mmap
+          # placement can land a normal mapping inside it. Disabling ASLR for just this
+          # job's processes is the standard workaround; it's about address-space layout,
+          # not the memory-safety bug this job exists to catch, so it doesn't weaken the
+          # diagnostic.
+          setarch "$(uname -m)" -R python -c "print('asan smoke test ok')"
 
       - name: ASan smoke test (import one Cython extension)
         run: |
           # Isolates "loading an ASan-instrumented .so at all" from anything pytest- or
           # mpi4py-specific. TSQR is one of the smaller extensions with few dependents.
-          python -c "import impurityModel.ed.TSQR; print('TSQR import ok')"
+          setarch "$(uname -m)" -R python -c "import impurityModel.ed.TSQR; print('TSQR import ok')"
 
       - name: ASan smoke test (import mpi4py and the main extension)
         run: |
-          python -c "from mpi4py import MPI; print('mpi4py import ok')"
-          python -c "import impurityModel.ed.ManyBodyUtils; print('ManyBodyUtils import ok')"
+          setarch "$(uname -m)" -R python -c "from mpi4py import MPI; print('mpi4py import ok')"
+          setarch "$(uname -m)" -R python -c "import impurityModel.ed.ManyBodyUtils; print('ManyBodyUtils import ok')"
 
       - name: ASan smoke test (pytest collection only)
         run: |
           # Collection imports every test module (and transitively every extension) but
           # runs nothing -- narrows a silent crash to "importing something" vs "running
           # something" before paying for the full, much slower, ASan test run.
-          pytest --collect-only -q
+          setarch "$(uname -m)" -R pytest --collect-only -q
 
       - name: Run serial tests (ASan)
         run: |
-          pytest --cache-clear
+          setarch "$(uname -m)" -R pytest --cache-clear
 
       - name: Run MPI tests (1 rank, ASan)
         run: |
-          mpiexec -n 1 python -m pytest --cache-clear --with-mpi
+          mpiexec -n 1 setarch "$(uname -m)" -R python -m pytest --cache-clear --with-mpi
 
       - name: Run MPI tests (2 ranks, ASan)
         run: |
-          mpiexec -n 2 python -m pytest --cache-clear --with-mpi
+          mpiexec -n 2 setarch "$(uname -m)" -R python -m pytest --cache-clear --with-mpi
 
       - name: Run MPI tests (3 ranks, ASan)
         run: |
-          mpiexec -n 3 python -m pytest --cache-clear --with-mpi
+          mpiexec -n 3 setarch "$(uname -m)" -R python -m pytest --cache-clear --with-mpi
 
   docs:
     # Build the Sphinx documentation. autodoc imports the package (only
