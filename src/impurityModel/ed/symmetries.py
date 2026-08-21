@@ -120,9 +120,7 @@ def check_kramers_degeneracy(h_dense, rtol=None):
         else:
             clusters.append([x])
     return [
-        {"energy": float(np.mean(cluster)), "multiplicity": len(cluster)}
-        for cluster in clusters
-        if len(cluster) % 2
+        {"energy": float(np.mean(cluster)), "multiplicity": len(cluster)} for cluster in clusters if len(cluster) % 2
     ]
 
 

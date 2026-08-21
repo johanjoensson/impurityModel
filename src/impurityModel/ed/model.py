@@ -300,8 +300,7 @@ class ImpurityModel:
             reason = (
                 "already contains spin-orbit coupling"
                 if parsed.contains_soc
-                else "does not declare 'contains_soc', so whether it already contains "
-                "spin-orbit coupling is unknown"
+                else "does not declare 'contains_soc', so whether it already contains " "spin-orbit coupling is unknown"
             )
             raise ValueError(
                 f"{path}: the file {reason}; xi={xi} could double-count it. Pass xi=0, or "
@@ -485,8 +484,7 @@ class ImpurityModel:
             reason = (
                 "already contains spin-orbit coupling"
                 if parsed_h0.contains_soc
-                else "does not declare 'contains_soc', so whether it already contains "
-                "spin-orbit coupling is unknown"
+                else "does not declare 'contains_soc', so whether it already contains " "spin-orbit coupling is unknown"
             )
             raise ValueError(
                 f"{h0_filename}: the file {reason}; xi_3d={xi_3d} could double-count it. Pass "

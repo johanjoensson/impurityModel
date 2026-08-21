@@ -14,6 +14,7 @@ from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
+from impurityModel.test.support.testtol import solver_atol
 
 
 def create_diagonal_system(eigvals, path, comm=None):
@@ -149,6 +150,22 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     # this is tracked as future work. strict=False so that if a solver later resolves a
     # cell it surfaces as XPASS rather than failing the suite.
     if path == "array" and spectrum_type == "near_degenerate":
+        # Reort.NONE and Reort.PERIODIC do no (or only intermittent) reorthogonalization,
+        # so nothing guarantees they resolve a 1e-9-relative splitting once BLAS-kernel
+        # rounding is comparable to that splitting: a different runner's OpenBLAS build
+        # (measured locally via OPENBLAS_CORETYPE=Nehalem, and observed on real CI across
+        # clang/gcc/intel -- see the numerics-campaign writeup) pushes the second copy of a
+        # near-degenerate pair a few ulp past the assertion below, producing a duplicate
+        # ("ghost") Ritz value instead of the true split pair. PARTIAL/FULL/SELECTIVE keep
+        # the Krylov basis orthogonal and are not excluded here -- they have not been
+        # observed to fail this cell on any measured kernel/compiler.
+        if mode in (Reort.NONE, Reort.PERIODIC):
+            return pytest.mark.xfail(
+                strict=False,
+                reason="Reort.NONE/PERIODIC give no reorthogonalization guarantee at a "
+                "1e-9-relative splitting; a different BLAS reduction order can merge the "
+                "near-degenerate pair into a ghost Ritz value (see comment above)",
+            )
         return None
     return pytest.mark.xfail(
         strict=False,
@@ -204,9 +221,12 @@ def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
             comm=None,
         )
 
-    # Check eigenvalues match exact ones with multiplicity (sorted)
-    # NONE is allowed to fail/have ghost bands, but we parameterized it so let's let it xfail if it fails.
-    np.testing.assert_allclose(np.sort(eigvals), eigvals_exact[:num_wanted], atol=1e-6)
+    # Check eigenvalues match exact ones with multiplicity (sorted). Solver was asked for
+    # tol=1e-8; c=100 gives real headroom above that (not the literal 1e-6 this used to be
+    # tightened to before it was tied back to the solver's own criterion) -- see
+    # get_xfail_marker for why NONE/PERIODIC on the near-degenerate array path are excused
+    # from this instead of margin-widened further.
+    np.testing.assert_allclose(np.sort(eigvals), eigvals_exact[:num_wanted], atol=solver_atol(1e-8, c=100))
 
     if mode != Reort.NONE:
         assert_orthonormal(eigvecs, path, comm=None)
@@ -341,8 +361,9 @@ def test_no_ghost_bands_mpi(mode, path, solver, spectrum_type, request):
             comm=comm,
         )
 
-    # Check eigenvalues match exact ones with multiplicity (sorted)
-    np.testing.assert_allclose(np.sort(eigvals), eigvals_exact[:num_wanted], atol=1e-6)
+    # Check eigenvalues match exact ones with multiplicity (sorted); see the serial
+    # variant above for why this margin is solver_atol(1e-8, c=100).
+    np.testing.assert_allclose(np.sort(eigvals), eigvals_exact[:num_wanted], atol=solver_atol(1e-8, c=100))
 
     if mode != Reort.NONE:
         assert_orthonormal(eigvecs, path, comm=comm)

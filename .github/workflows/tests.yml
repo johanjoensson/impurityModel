@@ -32,6 +32,21 @@ jobs:
           - { compiler: intel,    cxx_std: "-std=c++17", parallel: false }
           - { compiler: intel,    cxx_std: "-std=c++20", parallel: false }
 
+    env:
+      # ubuntu-22.04 hosted runners are 4 vCPUs. Left unset, OpenBLAS defaults its
+      # thread count to nproc, and mpiexec multiplies that per rank (-n3 x 4
+      # OpenBLAS threads = 12 threads contending for 4 cores) -- oversubscription
+      # that both slows every leg down and adds a source of timing-dependent
+      # flakiness. 1 thread/process keeps total concurrency near the core count
+      # even at -n3. OMP_NUM_THREADS caps the threaded-apply path the same way
+      # (see apply_thread_cap() in ManyBodyOperator.cpp, which already falls back
+      # to 1 when unset -- setting it here just makes that explicit rather than
+      # relying on the fallback). MKL_NUM_THREADS is defensive in case any
+      # dependency's wheel links MKL instead of OpenBLAS.
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -162,6 +177,146 @@ jobs:
         with:
           file: coverage.xml
           format: cobertura
+
+  # test-asan:
+  #   # Diagnostic leg for the intermittent SIGSEGV in test_mpi_infra/test_rank_independence.py
+  #   # (MPICH "BAD TERMINATION", exit 139) first seen once the numeric test-suite fixes let CI
+  #   # reach the MPI steps for the first time. It has hit three different legs (intel/c++17,
+  #   # gcc-12/c++20/coverage, gcc-12/c++17 plain) at three different points within that one file
+  #   # (0, 2, and 2 dots in), which rules out a bug tied to one compiler or one specific test
+  #   # transition and points at heap corruption elsewhere that only crashes later, wherever the
+  #   # corrupted memory next gets touched -- not something a debugger attached after the fact, or
+  #   # more code reading, can localize. AddressSanitizer instruments every allocation with redzones
+  #   # and aborts with a precise stack trace *at the actual bad read/write*, which is the right tool
+  #   # for exactly this failure mode. Not part of the `fail-fast: false` matrix above (deliberately
+  #   # single-compiler, no coverage/parallel) -- this is a standing diagnostic job while the crash
+  #   # is open, not a release-quality gate; remove or demote it once the root cause is found and
+  #   # fixed (or confirmed not to be in this codebase's own extension code).
+  #   runs-on: ubuntu-22.04
+  #   env:
+  #     OPENBLAS_NUM_THREADS: "1"
+  #     OMP_NUM_THREADS: "1"
+  #     MKL_NUM_THREADS: "1"
+  #     # -O1 (not -O0/-O2+): ASan's own docs recommend -O1 as the sweet spot -- enough
+  #     # optimization that the build finishes and runs in reasonable time, not so much that
+  #     # inlining/reordering degrades stack traces the way -O2/-O3 can.
+  #     CXXFLAGS: "-std=c++20 -fsanitize=address -fno-omit-frame-pointer -g -O1"
+  #     LDFLAGS: "-fsanitize=address"
+  #     # detect_leaks=0: Python/mpi4py hold plenty of memory alive by design until interpreter
+  #     # shutdown (reference cycles, cached small objects); leak reports on that would bury the
+  #     # actual signal (heap-buffer-overflow / use-after-free) this leg exists to catch.
+  #     # verify_asan_link_order=0: actions/setup-python's prebuilt CPython interpreter isn't
+  #     # itself linked against ASan, so LD_PRELOAD-ing libasan.so into it trips ASan's own
+  #     # startup check for "runtime does not come first in the initial library list" -- a
+  #     # known false alarm for exactly this LD_PRELOAD-onto-an-unlinked-interpreter setup
+  #     # (first attempt of this job failed silently in <2s at that check, before pytest
+  #     # printed anything).
+  #     ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1:verify_asan_link_order=0"
+  #     # CPython's own small-object allocator (pymalloc) pools memory in arenas, which hides
+  #     # individual allocations from ASan's redzone tracking. Disabling it routes every Python
+  #     # allocation through the system malloc ASan already intercepts.
+  #     PYTHONMALLOC: "malloc"
+  #     # Stdout is fully block-buffered (not line-buffered) once GitHub Actions' log
+  #     # capture has it on a pipe, not a TTY. A process that dies from a raw signal skips
+  #     # the normal flush-on-exit, so output right before a crash can vanish from the log
+  #     # even though it executed -- exactly what happened to the bare interpreter's own
+  #     # startup print on the first ASan attempt. ASan's own reports use unbuffered
+  #     # writes and are unaffected; this is insurance for everything else (pytest's
+  #     # banner, any print in the code under test).
+  #     PYTHONUNBUFFERED: "1"
+
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0
+
+  #     - name: Set up Python
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: '3.11'
+
+  #     - name: Install system dependencies
+  #       run: |
+  #         sudo apt-get update
+  #         sudo apt-get install -y mpich libmpich-dev g++-12
+
+  #     - name: Install Boost (headers)
+  #       uses: MarkusJx/install-boost@v2.4.5
+  #       id: install-boost
+  #       with:
+  #         boost_version: 1.83.0
+
+  #     - name: Install Python dependencies
+  #       run: |
+  #         python -m pip install --upgrade pip
+  #         pip install numpy scipy "setuptools>=77.0.3" setuptools-scm cython build
+  #         # Built from source under the same CXXFLAGS/LDFLAGS above, so mpi4py's own
+  #         # extension is ASan-instrumented too, not just impurityModel's.
+  #         pip install --no-binary mpi4py mpi4py pytest pytest-mpi
+
+  #     - name: Build and install impurityModel (ASan)
+  #       run: |
+  #         export CXX="g++-12"
+  #         export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
+  #         pip install --no-build-isolation -e .
+  #         # LD_PRELOAD must name the exact libasan matching the compiler that built the
+  #         # extension, and needs to be in the process environment before python starts so
+  #         # every later step in this job inherits it (mpiexec propagates the local
+  #         # environment to the processes it launches).
+  #         echo "LD_PRELOAD=$(g++-12 -print-file-name=libasan.so)" >> "$GITHUB_ENV"
+
+  #     - name: ASan smoke test
+  #       run: |
+  #         # A bare interpreter start under LD_PRELOAD=libasan.so, so a startup-level ASan
+  #         # problem (link order, missing symbol, etc.) fails here with real output instead
+  #         # of pytest's own startup silently eating a <2s crash (see the ASAN_OPTIONS
+  #         # comment above -- that's what this step would have caught immediately).
+  #         #
+  #         # setarch -R (every python/pytest/mpiexec invocation below): the third attempt at
+  #         # this job died with "Shadow memory range interleaves with an existing memory
+  #         # mapping. ASan cannot proceed correctly. ABORTING." on the mpi4py import step --
+  #         # a known ASan/ASLR incompatibility (google/sanitizers#856): ASan reserves a huge
+  #         # fixed shadow-memory range, and on kernels >=4.12 the default high-entropy mmap
+  #         # placement can land a normal mapping inside it. Disabling ASLR for just this
+  #         # job's processes is the standard workaround; it's about address-space layout,
+  #         # not the memory-safety bug this job exists to catch, so it doesn't weaken the
+  #         # diagnostic.
+  #         setarch "$(uname -m)" -R python -c "print('asan smoke test ok')"
+
+  #     - name: ASan smoke test (import one Cython extension)
+  #       run: |
+  #         # Isolates "loading an ASan-instrumented .so at all" from anything pytest- or
+  #         # mpi4py-specific. TSQR is one of the smaller extensions with few dependents.
+  #         setarch "$(uname -m)" -R python -c "import impurityModel.ed.TSQR; print('TSQR import ok')"
+
+  #     - name: ASan smoke test (import mpi4py and the main extension)
+  #       run: |
+  #         setarch "$(uname -m)" -R python -c "from mpi4py import MPI; print('mpi4py import ok')"
+  #         setarch "$(uname -m)" -R python -c "import impurityModel.ed.ManyBodyUtils; print('ManyBodyUtils import ok')"
+
+  #     - name: ASan smoke test (pytest collection only)
+  #       run: |
+  #         # Collection imports every test module (and transitively every extension) but
+  #         # runs nothing -- narrows a silent crash to "importing something" vs "running
+  #         # something" before paying for the full, much slower, ASan test run.
+  #         setarch "$(uname -m)" -R pytest --collect-only -q
+
+  #     - name: Run serial tests (ASan)
+  #       run: |
+  #         setarch "$(uname -m)" -R pytest --cache-clear
+
+  #     - name: Run MPI tests (1 rank, ASan)
+  #       run: |
+  #         mpiexec -n 1 setarch "$(uname -m)" -R python -m pytest --cache-clear --with-mpi
+
+  #     - name: Run MPI tests (2 ranks, ASan)
+  #       run: |
+  #         mpiexec -n 2 setarch "$(uname -m)" -R python -m pytest --cache-clear --with-mpi
+
+  #     - name: Run MPI tests (3 ranks, ASan)
+  #       run: |
+  #         mpiexec -n 3 setarch "$(uname -m)" -R python -m pytest --cache-clear --with-mpi
 
   docs:
     # Build the Sphinx documentation. autodoc imports the package (only

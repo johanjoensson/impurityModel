@@ -12,9 +12,18 @@ repos:
         # line-length 120 and target-version py311 come from [tool.black] in
         # pyproject.toml.
 
-  - repo: https://github.com/MarcoGorelli/cython-lint
-    rev: v0.16.0
-    hooks:
-      # Black cannot format Cython, so lint .pyx/.pxd instead (check-only).
-      # max-line-length 120 comes from [tool.cython-lint] in pyproject.toml.
-      - id: cython-lint
+  # cython-lint (MarcoGorelli/cython-lint) was dropped: its "imported but
+  # unused" check doesn't resolve Cython's `include` directive (so it flags
+  # names that are genuinely used in a textually-included .pxi, e.g. via
+  # BlockLanczos.pyx's `include "_lanczos_step.pxi"`) and doesn't respect
+  # either `# noqa` or the `import x as x` explicit re-export idiom (tested
+  # directly against both). BlockLanczosCore.pyx/BlockLanczosArray.pyx/
+  # BlockLanczos.pyx deliberately re-export a large shared-layer surface
+  # (search those files for "re-exported here" / "pure re-export") so every
+  # existing `from impurityModel.ed.BlockLanczos(Core|Array) import ...` site
+  # keeps resolving -- against that pattern the tool produces ~40 permanent,
+  # unfixable false positives with no working suppression mechanism, which is
+  # worse than no check at all (a red Lint job nobody can act on trains
+  # everyone to ignore it). Genuine dead imports/pycodestyle issues it found
+  # were fixed once (see git history); watch for new dead code in .pyx files
+  # via code review instead.

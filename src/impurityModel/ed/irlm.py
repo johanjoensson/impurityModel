@@ -304,8 +304,26 @@ def lock_remaining_and_stop(locked, Q_basis, total, Z, order, evals, num_wanted,
 
 
 def _purge_and_reband(
-    evals, Z, beta_last, p, n_keep, locked_local, Q_basis, total, slater, locked, mpi, comm, tnorm, k_blocks,
-    verbose, rank0, tag, restart, order, num_wanted,
+    evals,
+    Z,
+    beta_last,
+    p,
+    n_keep,
+    locked_local,
+    Q_basis,
+    total,
+    slater,
+    locked,
+    mpi,
+    comm,
+    tnorm,
+    k_blocks,
+    verbose,
+    rank0,
+    tag,
+    restart,
+    order,
+    num_wanted,
 ):
     """Purge + restart in the Ritz basis (EA16 §2.2.1, eq. 6): compress the ``m``
     active blocks down to ``n_keep`` in the Ritz basis, re-band the trailing
@@ -345,7 +363,17 @@ def _purge_and_reband(
         # Trailing block deflated => near-invariant subspace. Lock the lowest wanted
         # Ritz pairs (ascending; collapses against Xl are skipped) and stop.
         lock_remaining_and_stop(
-            locked, Q_basis, total, Z, order, evals, num_wanted, slater, tag, verbose, rank0,
+            locked,
+            Q_basis,
+            total,
+            Z,
+            order,
+            evals,
+            num_wanted,
+            slater,
+            tag,
+            verbose,
+            rank0,
             f"Restart-block deflation (active_k={active_k}). Locking remaining & stopping.",
         )
         return True, None, None, None
@@ -506,7 +534,17 @@ def _irlm_core(
             take_break = comm.bcast(take_break, root=0)
         if take_break:
             lock_remaining_and_stop(
-                locked, Q_basis, total, Z, order, evals, num_wanted, slater, tag, verbose, rank0,
+                locked,
+                Q_basis,
+                total,
+                Z,
+                order,
+                evals,
+                num_wanted,
+                slater,
+                tag,
+                verbose,
+                rank0,
                 f"Restart {restart:3d} | trailing residual block deflated (width {res_width}<{p}). Locking remaining & stopping.",
             )
             break
@@ -514,8 +552,26 @@ def _irlm_core(
         # Purge + restart in the Ritz basis (EA16 §2.2.1, eq. 6) -- see
         # _purge_and_reband's docstring.
         stop, Q_basis_new, alphas_pass, betas_pass = _purge_and_reband(
-            evals, Z, beta_last, p, n_keep, locked_local, Q_basis, total, slater, locked, mpi, comm, tnorm, k_blocks,
-            verbose, rank0, tag, restart, order, num_wanted,
+            evals,
+            Z,
+            beta_last,
+            p,
+            n_keep,
+            locked_local,
+            Q_basis,
+            total,
+            slater,
+            locked,
+            mpi,
+            comm,
+            tnorm,
+            k_blocks,
+            verbose,
+            rank0,
+            tag,
+            restart,
+            order,
+            num_wanted,
         )
         if stop:
             break
@@ -546,7 +602,9 @@ def _irlm_core(
         )
 
     # --- Final extraction -----------------------------------------------
-    return _assemble_results(locked.Xl, locked.theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths)
+    return _assemble_results(
+        locked.Xl, locked.theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths
+    )
 
 
 def _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths=None):
