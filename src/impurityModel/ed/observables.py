@@ -582,9 +582,7 @@ def impurity_shell_rhos(rho_imp, rot_to_spherical, impurity_orbitals=None):
         yield None, None, rotate_matrix(rho_imp, rot_to_spherical)
         return
 
-    impurity_indices = sorted(
-        orb for blocks in impurity_orbitals.values() for block in blocks for orb in block
-    )
+    impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
     position = {orb: i for i, orb in enumerate(impurity_indices)}
 
     shells = []
