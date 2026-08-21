@@ -281,8 +281,6 @@ cdef void apply_dense_nogil(
     matmul_nogil(M, p, K, 1.0, H, b'N', X, b'N', 0.0, Y)
 
 
-
-
 def _cholesky_or_deflate(M, p_in, double scale=1.0):
     """Superseded by TSQR.tsqr, which factors the block directly and is stable at
     conditioning this Gram-based QR cannot survive; no production path calls this any
@@ -520,7 +518,7 @@ def block_lanczos_array_cy(
     cdef np.ndarray locked_evals_arr = locked_evals
     cdef double locked_rho = float(locked_res)
     cdef double omega_min_l = omega_floor(n, global_N)
-    cdef np.ndarray xi_l, xi_prev_l, xi_mask
+    cdef np.ndarray xi_l, xi_prev_l
     cdef double bjm1_norm
     cdef int nlock = locked_arr.shape[1] if have_locked else 0
     if partial_locked:
@@ -856,5 +854,3 @@ def block_lanczos_array_cy(
 
 def block_lanczos_array(*args, **kwargs):
     return block_lanczos_array_cy(*args, **kwargs)
-
-
