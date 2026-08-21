@@ -216,6 +216,14 @@ jobs:
       # individual allocations from ASan's redzone tracking. Disabling it routes every Python
       # allocation through the system malloc ASan already intercepts.
       PYTHONMALLOC: "malloc"
+      # Stdout is fully block-buffered (not line-buffered) once GitHub Actions' log
+      # capture has it on a pipe, not a TTY. A process that dies from a raw signal skips
+      # the normal flush-on-exit, so output right before a crash can vanish from the log
+      # even though it executed -- exactly what happened to the bare interpreter's own
+      # startup print on the first ASan attempt. ASan's own reports use unbuffered
+      # writes and are unaffected; this is insurance for everything else (pytest's
+      # banner, any print in the code under test).
+      PYTHONUNBUFFERED: "1"
 
     steps:
       - name: Checkout code
@@ -265,6 +273,24 @@ jobs:
           # of pytest's own startup silently eating a <2s crash (see the ASAN_OPTIONS
           # comment above -- that's what this step would have caught immediately).
           python -c "print('asan smoke test ok')"
+
+      - name: ASan smoke test (import one Cython extension)
+        run: |
+          # Isolates "loading an ASan-instrumented .so at all" from anything pytest- or
+          # mpi4py-specific. TSQR is one of the smaller extensions with few dependents.
+          python -c "import impurityModel.ed.TSQR; print('TSQR import ok')"
+
+      - name: ASan smoke test (import mpi4py and the main extension)
+        run: |
+          python -c "from mpi4py import MPI; print('mpi4py import ok')"
+          python -c "import impurityModel.ed.ManyBodyUtils; print('ManyBodyUtils import ok')"
+
+      - name: ASan smoke test (pytest collection only)
+        run: |
+          # Collection imports every test module (and transitively every extension) but
+          # runs nothing -- narrows a silent crash to "importing something" vs "running
+          # something" before paying for the full, much slower, ASan test run.
+          pytest --collect-only -q
 
       - name: Run serial tests (ASan)
         run: |
