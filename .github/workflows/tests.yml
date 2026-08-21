@@ -178,6 +178,96 @@ jobs:
           file: coverage.xml
           format: cobertura
 
+  test-asan:
+    # Diagnostic leg for the intermittent SIGSEGV in test_mpi_infra/test_rank_independence.py
+    # (MPICH "BAD TERMINATION", exit 139) first seen once the numeric test-suite fixes let CI
+    # reach the MPI steps for the first time. It has hit three different legs (intel/c++17,
+    # gcc-12/c++20/coverage, gcc-12/c++17 plain) at three different points within that one file
+    # (0, 2, and 2 dots in), which rules out a bug tied to one compiler or one specific test
+    # transition and points at heap corruption elsewhere that only crashes later, wherever the
+    # corrupted memory next gets touched -- not something a debugger attached after the fact, or
+    # more code reading, can localize. AddressSanitizer instruments every allocation with redzones
+    # and aborts with a precise stack trace *at the actual bad read/write*, which is the right tool
+    # for exactly this failure mode. Not part of the `fail-fast: false` matrix above (deliberately
+    # single-compiler, no coverage/parallel) -- this is a standing diagnostic job while the crash
+    # is open, not a release-quality gate; remove or demote it once the root cause is found and
+    # fixed (or confirmed not to be in this codebase's own extension code).
+    runs-on: ubuntu-22.04
+    env:
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      # -O1 (not -O0/-O2+): ASan's own docs recommend -O1 as the sweet spot -- enough
+      # optimization that the build finishes and runs in reasonable time, not so much that
+      # inlining/reordering degrades stack traces the way -O2/-O3 can.
+      CXXFLAGS: "-std=c++20 -fsanitize=address -fno-omit-frame-pointer -g -O1"
+      LDFLAGS: "-fsanitize=address"
+      # detect_leaks=0: Python/mpi4py hold plenty of memory alive by design until interpreter
+      # shutdown (reference cycles, cached small objects); leak reports on that would bury the
+      # actual signal (heap-buffer-overflow / use-after-free) this leg exists to catch.
+      ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1"
+      # CPython's own small-object allocator (pymalloc) pools memory in arenas, which hides
+      # individual allocations from ASan's redzone tracking. Disabling it routes every Python
+      # allocation through the system malloc ASan already intercepts.
+      PYTHONMALLOC: "malloc"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mpich libmpich-dev g++-12
+
+      - name: Install Boost (headers)
+        uses: MarkusJx/install-boost@v2.4.5
+        id: install-boost
+        with:
+          boost_version: 1.83.0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy "setuptools>=77.0.3" setuptools-scm cython build
+          # Built from source under the same CXXFLAGS/LDFLAGS above, so mpi4py's own
+          # extension is ASan-instrumented too, not just impurityModel's.
+          pip install --no-binary mpi4py mpi4py pytest pytest-mpi
+
+      - name: Build and install impurityModel (ASan)
+        run: |
+          export CXX="g++-12"
+          export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
+          pip install --no-build-isolation -e .
+          # LD_PRELOAD must name the exact libasan matching the compiler that built the
+          # extension, and needs to be in the process environment before python starts so
+          # every later step in this job inherits it (mpiexec propagates the local
+          # environment to the processes it launches).
+          echo "LD_PRELOAD=$(g++-12 -print-file-name=libasan.so)" >> "$GITHUB_ENV"
+
+      - name: Run serial tests (ASan)
+        run: |
+          pytest --cache-clear
+
+      - name: Run MPI tests (1 rank, ASan)
+        run: |
+          mpiexec -n 1 python -m pytest --cache-clear --with-mpi
+
+      - name: Run MPI tests (2 ranks, ASan)
+        run: |
+          mpiexec -n 2 python -m pytest --cache-clear --with-mpi
+
+      - name: Run MPI tests (3 ranks, ASan)
+        run: |
+          mpiexec -n 3 python -m pytest --cache-clear --with-mpi
+
   docs:
     # Build the Sphinx documentation. autodoc imports the package (only
     # rspt2spectra/pyRSPthon are mocked in conf.py), so this needs the same
