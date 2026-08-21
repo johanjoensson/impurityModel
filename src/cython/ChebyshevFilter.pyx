@@ -1,5 +1,5 @@
 # distutils: language = c++
-# cython: language_level=3, boundscheck=True, wraparound=True, initializedcheck=False, cdivision=True, freethreading_compatible=True
+# cython: language_level=3, boundscheck=False, wraparound=False, initializedcheck=False, cdivision=True, freethreading_compatible=True
 
 """
 ChebyshevFilter.pyx

@@ -1,5 +1,5 @@
 # distutils: language = c++
-# cython: language_level=3, boundscheck=True, wraparound=True, initializedcheck=False, cdivision=True, freethreading_compatible=True
+# cython: language_level=3, boundscheck=False, wraparound=False, initializedcheck=False, cdivision=True, freethreading_compatible=True
 # Permissive on purpose, unlike BlockLanczos.pyx -- see "Compiler directives" in
 # doc/lanczos_invariants.md.
 
@@ -856,5 +856,3 @@ def block_lanczos_array_cy(
 
 def block_lanczos_array(*args, **kwargs):
     return block_lanczos_array_cy(*args, **kwargs)
-
-
