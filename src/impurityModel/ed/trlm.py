@@ -347,8 +347,27 @@ def _trlm_core(
         # Two arms (textbook coefficients vs. an explicit Rayleigh-Ritz rebuild) --
         # see _restart_coefficients's docstring for when each applies.
         early_result, T_lead, cross, q_m, p_resid, beta_res = _restart_coefficients(
-            D, eigvals_T, keep, Y_last, beta_res, q_m, p_resid, nkeep, k_ret, orth_err,
-            Q_ret, h_op, basis, mpi, comm, slater, stop_beta, num_wanted, restart, verbose, rank0,
+            D,
+            eigvals_T,
+            keep,
+            Y_last,
+            beta_res,
+            q_m,
+            p_resid,
+            nkeep,
+            k_ret,
+            orth_err,
+            Q_ret,
+            h_op,
+            basis,
+            mpi,
+            comm,
+            slater,
+            stop_beta,
+            num_wanted,
+            restart,
+            verbose,
+            rank0,
         )
         if early_result is not None:
             return early_result

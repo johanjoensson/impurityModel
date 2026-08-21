@@ -20,7 +20,6 @@ true any more: both kernels import downward from here, and the two dispatch func
 reference these module-level names directly.
 """
 
-cimport cython
 import numpy as np
 cimport numpy as np
 import scipy.linalg as la
@@ -28,6 +27,7 @@ import scipy.sparse as sps
 
 from mpi4py import MPI
 from enum import Enum
+
 
 class Reort(Enum):
     NONE = 0
@@ -159,7 +159,6 @@ def reort_trace_enabled():
     return _REORT_TRACE_ON
 
 
-
 def resolve_reort(reort):
     """Resolve a ``reort`` argument (``Reort`` member or string) to a ``Reort`` enum.
 
@@ -179,6 +178,7 @@ def resolve_reort(reort):
     if resolved is None:
         raise ValueError(f"Unknown reort string '{reort}'. Must be one of {list(_map.keys())}.")
     return resolved
+
 
 def divergence_guard(double beta_norm, double alpha_norm, bint first_step,
                      double t_norm_max, double h_norm_est):
@@ -223,6 +223,7 @@ def divergence_guard(double beta_norm, double alpha_norm, bint first_step,
     if not diverged:
         t_norm_max = max(t_norm_max, beta_norm, alpha_norm)
     return diverged, t_norm_max, h_norm_est
+
 
 cpdef np.ndarray estimate_orthonormality(
     np.ndarray[double complex, ndim=4] W,

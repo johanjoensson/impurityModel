@@ -48,7 +48,6 @@ Reorthogonalization modes (``Reort`` enum from ``lanczos.py``):
 """
 
 import numpy as np
-import scipy.linalg as sp
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     apply_global_truncation,
@@ -67,19 +66,11 @@ cimport numpy as np
 # the shared layer and neither depends on the other.
 from impurityModel.ed.BlockLanczosCore import (
     estimate_orthonormality,
-    _build_full_T,
-    eigh_block_tridiagonal,
     apply_reort,
-    divergence_guard,
     resolve_reort,
     selective_orthogonalize,
-    is_array,
     block_cols,
-    block_apply,
     block_combine,
-    block_inner,
-    block_orthogonalize,
-    block_normalize,
     block_tsqr,
     check_divergence,
     factor_residual,
@@ -93,10 +84,6 @@ from impurityModel.ed.BlockLanczosCore import (
     REORT_TOL,
     REORT_PERIOD,
     BAD_BLOCK_TOL,
-    RESTART_ORTH_TOL,
-    BREAKDOWN_TOL,
-    DEFLATE_EVAL_TOL,
-    DEFAULT_EIGEN_TOL,
 )
 
 # --- Optional per-step profiling (env-gated, ~zero cost when off) -------------------
