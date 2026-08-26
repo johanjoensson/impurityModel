@@ -1,3 +1,26 @@
+# =========================================================================================
+# KNOWN BROKEN -- this workload does not currently solve. Kept because it is a faithful
+# translation of scripts/run_Ni_NiO_50p10bath.sh, so whoever fixes the underlying bug has
+# the input to reproduce it with.
+#
+# What happens: the ground-state search returns the ENTIRE d8 manifold, 45 = C(10,8)
+# determinants, exactly degenerate at E0 = 0.000000, instead of a handful of low-lying
+# states. The recorded state shows why -- the bath occupation comes back as
+# [impurity, valence, conduction] = [14, 10, 10]: ten valence bath orbitals occupied rather
+# than fifty, and the conduction bath full rather than empty. The spectra stage then tries
+# all 45 eigenstates at once and is killed by the OOM killer (measured: 3.7 GB per rank,
+# four ranks, 15 GB machine).
+#
+# NOT caused by the input format. The identical result comes from the old command line,
+#     impurityModel spectra h0/h0_NiO_50p10bath.pickle --nBaths 0 60 --nValBaths 0 10
+# with no input file involved, and it is unchanged by supplying an explicit
+# zeeman_splitting. The model itself builds correctly: the 3d block sits at -106.5 eV split
+# by 0.37 eV, hybridization reaches 1.87 eV, and the bath splits 50 valence / 10 conduction
+# as it should. The failure is downstream of the model, in the many-body basis.
+#
+# examples/NiO_10bath_spectra.toml is the working fitted-bath example.
+# =========================================================================================
+
 # Ni in NiO -- L2,3 spectra from a fitted bath: 50 valence + 10 conduction bath states.
 # Replaces scripts/run_Ni_NiO_50p10bath.sh.
 #

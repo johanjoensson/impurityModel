@@ -108,3 +108,26 @@ def test_the_double_counting_suits_the_calculation(path):
         assert resolved.dc_scheme in ("mlft", "none")
     else:
         assert resolved.dc_scheme != "mlft"
+
+
+#: Examples that are correct input but do not currently solve. Kept deliberately -- they are
+#: the reproducer for the underlying bug -- and listed here so nobody can quietly delete the
+#: warning without also removing the file from this list.
+KNOWN_BROKEN = {"NiO_50p10bath_spectra.toml"}
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_a_known_broken_example_says_so_prominently(path):
+    """A shipped example that does not work has to announce it, in the file itself.
+
+    NiO_50p10bath returns the entire 45-fold-degenerate d8 manifold at E0 = 0 and is then
+    OOM-killed in the spectra stage. It validates and builds a correct model, so no other
+    test here can catch it; only the warning stands between a user and an hour of confusion.
+    """
+    text = path.read_text()
+    if path.name in KNOWN_BROKEN:
+        assert "KNOWN BROKEN" in text
+        assert "NiO_10bath_spectra.toml" in text, "point the reader at one that works"
+        assert "old command line" in text, "record that the input format is not the cause"
+    else:
+        assert "KNOWN BROKEN" not in text
