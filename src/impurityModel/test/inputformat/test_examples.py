@@ -76,3 +76,35 @@ def test_every_launcher_script_points_at_an_example_that_exists(script):
         assert (REPO / name).is_file(), f"{script.name} points at a missing {name}"
     assert "mpirun" in text or "mpiexec" in text
     assert "ranks=" in text, "the rank count is the thing the script exists to carry"
+
+
+@pytest.mark.parametrize("path", [p for p in EXAMPLES if "spectra" not in p.name], ids=lambda p: p.name)
+def test_a_green_function_example_declares_a_double_counting(path):
+    """Without one, these models relax to the wrong charge state -- silently.
+
+    The spectroscopy path folds RSPt's charge-transfer correction into h0 when it builds the
+    model, so it is never left bare. The self-energy and susceptibility paths read model.dc
+    instead, and with no double counting the bare 3d level sits far above the bath and the
+    impurity empties: the NiO example relaxes to a mean impurity occupation of 0.57 electrons
+    rather than 8, and every number downstream of that is meaningless. Nothing raises -- the
+    solve succeeds and reports a converged ground state -- so an example shipped without one
+    would look fine and teach the wrong thing.
+    """
+    resolved = load_input(path)
+    assert resolved.dc_scheme != "none", (
+        f"{path.name} declares no double counting; a Green's-function example without one "
+        "converges happily onto the wrong charge state"
+    )
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_the_double_counting_suits_the_calculation(path):
+    """mlft is folded into h0 and is spectroscopy-only; the matrix schemes are read only by
+    the other two drivers. The reader enforces this, so an example that got it wrong would
+    fail to load rather than run wrongly -- this pins that the examples demonstrate the
+    correct pairing rather than relying on the check."""
+    resolved = load_input(path)
+    if resolved.calculation == "spectroscopy":
+        assert resolved.dc_scheme in ("mlft", "none")
+    else:
+        assert resolved.dc_scheme != "mlft"

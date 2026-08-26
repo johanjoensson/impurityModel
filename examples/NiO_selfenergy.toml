@@ -22,6 +22,22 @@ nominal_occupation = 8
 [interaction.slater]
 F_vv = [7.5, 0.0, 9.9, 0.0, 6.6]
 
+[double_counting.nominal]
+# NOT optional in practice. Without a double counting the bare 3d level sits far above the
+# bath and the impurity empties: this model relaxes to a mean occupation of 0.57 electrons
+# instead of 8, and every downstream number is then meaningless. The `nominal` scheme is FLL
+# evaluated at the nominal integer occupation -- closed form, no ground-state solve, and it
+# needs no reference filling so it cannot saturate on a coarse bath fit. It gives dc = 52.125
+# eV here (U = 7.5, J = 1.179, N = 8) and a d8 ground state with ~10% d9 admixture.
+#
+# For a production NiO calculation prefer [double_counting.fixed_gap], which centres the
+# double counting in the charge gap -- Karolak's prescription for a charge-transfer
+# insulator, where the fixed-occupation condition breaks down because the occupation is flat
+# in mu inside the gap. It runs a search: expect 1-15 full ground-state solves.
+#   [double_counting.fixed_gap]
+#   offset = 0.0
+#   on_unreachable = "abort"
+
 [selfenergy]
 cluster = "NiO"
 
@@ -35,11 +51,3 @@ broadening = 0.2
 # mesh in both statistics and convention, which is why they are separate tables.
 enabled = false
 n_points = 0
-
-# [double_counting.fixed_gap]
-# Centre the double counting in the charge gap -- the right criterion for a charge-transfer
-# insulator like NiO, where the fixed-occupation condition breaks down (the occupation is
-# flat in mu inside the gap, so a whole interval satisfies it). This runs a search: expect
-# 1-15 full ground-state solves.
-# offset = 0.0
-# on_unreachable = "abort"
