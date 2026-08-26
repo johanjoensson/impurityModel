@@ -69,8 +69,8 @@ def test_hartree_is_accepted_and_is_two_rydberg(write_input):
 @pytest.mark.parametrize(
     "table,key,value",
     [
-        ("susceptibility", "energy_cut", 10.0),
         ("double_counting.fixed_occupation", "occupation", 8.0),
+        ("double_counting.fixed_occupation", "damping", 0.5),
     ],
 )
 def test_dimensionless_keys_survive_a_rydberg_file_unscaled(write_input, table, key, value):
@@ -258,13 +258,18 @@ def test_nixs_requires_its_radial_file_when_enabled(write_input):
         load_input(write_input(text))
 
 
-def test_a_momentum_transfer_along_z_is_warned_about(write_input):
-    """It currently yields an all-NaN spectrum with no exception."""
+def test_a_momentum_transfer_along_z_needs_no_caveat(write_input):
+    """It used to give an all-NaN spectrum with no exception, so the reader warned about it.
+
+    The transition operator now handles the pole -- the azimuth is arbitrary there and only
+    m = 0 survives -- so this is ordinary input and must pass without comment.
+    """
     text = (
         MINIMAL_SPECTROSCOPY + '\n[spectroscopy.nixs]\nenabled = true\nradial_file = "r.dat"\nq = [[0.0, 0.0, 4.0]]\n'
     )
     resolved = load_input(write_input(text))
-    assert any("NaN" in w for w in resolved.warnings)
+    assert resolved.tables["spectroscopy.nixs"]["q"] == [[0.0, 0.0, 4.0]]
+    assert not any("NaN" in w or "tilt" in w.lower() for w in resolved.warnings)
 
 
 def test_the_shared_meshes_and_broadening_live_on_the_parent(write_input):

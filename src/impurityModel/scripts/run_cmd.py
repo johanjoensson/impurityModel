@@ -187,7 +187,6 @@ def _dispatch(resolved, built, comm, verbosity, outdir):
         comm=comm,
         verbosity=verbosity,
         cluster_label=cluster,
-        num_wanted=built.extra.get("num_wanted", 5),
         n_matsubara=built.extra.get("n_matsubara", 0),
         output_filename=target,
     )

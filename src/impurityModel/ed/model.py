@@ -1188,8 +1188,6 @@ class SpectraOptions:
         ``(radial_mesh, Ri, Rj)`` for the NIXS radial integral. ``None`` skips NIXS.
     energy_cut : float
         How many ``k_B * T`` above the ground state to keep (thermal window).
-    nPsiMax : int
-        Maximum number of eigenstates to consider.
     auto_block_structure : bool
         Derive the block structure (and the symmetry-adapted solver basis) from the
         hybridization-dressed impurity matrix instead of the hand-coded one.
@@ -1218,7 +1216,6 @@ class SpectraOptions:
     ljNIXS: int = 2
     radial: Any = None
     energy_cut: float = 10.0
-    nPsiMax: int = 5
     auto_block_structure: bool = True
     XAS_projectors: Any = None
     RIXS_projectors: Any = None

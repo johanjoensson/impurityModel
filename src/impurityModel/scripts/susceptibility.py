@@ -76,7 +76,6 @@ def add_arguments(parser):
             "down the spin ordering a field would need."
         ),
     )
-    parser.add_argument("--nPsiMax", type=int, default=5, help="Maximum number of eigenstates to consider.")
     parser.add_argument("--tau", type=float, default=0.002, help="Fundamental temperature (kb*T).")
     parser.add_argument("--w_min", type=float, default=-5.0, help="Lower edge of the real frequency mesh (eV).")
     parser.add_argument("--w_max", type=float, default=5.0, help="Upper edge of the real frequency mesh (eV).")
@@ -151,7 +150,6 @@ def run(args):
         comm=comm,
         verbosity=verbosity,
         cluster_label=cluster_label,
-        num_wanted=args.nPsiMax,
         n_matsubara=args.n_matsubara,
         output_filename=args.output,
     )

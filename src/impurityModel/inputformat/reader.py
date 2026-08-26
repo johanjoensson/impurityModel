@@ -700,15 +700,6 @@ def _cross_check(resolved, raw):
                 "part of the correlated orbitals; it used to be switched on merely by supplying "
                 "one, which is why this is now stated explicitly rather than inferred."
             )
-        if nixs["enabled"] and nixs["q"]:
-            for vector in nixs["q"]:
-                if vector[0] == 0.0 and vector[1] == 0.0 and vector[2] != 0.0:
-                    warnings.append(
-                        "[spectroscopy.nixs].q: a momentum transfer exactly along z currently "
-                        "yields NaN in the transition operator (the azimuthal angle is 0/0 at "
-                        "the pole), producing an all-NaN spectrum with no exception. Tilt it "
-                        "slightly until that is fixed."
-                    )
 
     valence = next(shell for shell in resolved.shells if shell["role"] == "valence")
     core = next((shell for shell in resolved.shells if shell["role"] == "core"), None)

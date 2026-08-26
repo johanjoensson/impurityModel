@@ -382,7 +382,7 @@ def calc_susceptibility_workflow(
     comm,
     verbosity=0,
     cluster_label="cluster",
-    num_wanted=5,
+    num_wanted=10,
     n_matsubara=64,
     output_filename="chi.h5",
 ):
@@ -412,7 +412,11 @@ def calc_susceptibility_workflow(
     cluster_label : str, optional
         Label for the cluster (used in the output message).
     num_wanted : int, optional
-        Number of ground-state eigenstates to solve for.
+        Eigenpairs to request per solver pass -- a batch size, not the size of the retained
+        manifold. :func:`groundstate.calc_gs` keeps widening it until the states it has found
+        span the Boltzmann window set by ``tau``, so the manifold this run actually uses is
+        fixed by the temperature and is the same one the self-energy path arrives at. Matches
+        ``calc_gs``' own default so the two paths start from the same place.
     n_matsubara : int, optional
         Number of bosonic Matsubara points (0 disables the Matsubara output).
     output_filename : str or None, optional

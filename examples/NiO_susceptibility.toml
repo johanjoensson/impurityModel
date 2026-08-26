@@ -40,7 +40,6 @@ F_vv = [7.5, 0.0, 9.9, 0.0, 6.6]
 
 [susceptibility]
 cluster = "NiO"
-n_psi_max = 5
 
 [susceptibility.real_axis]
 enabled = true

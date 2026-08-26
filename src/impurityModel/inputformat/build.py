@@ -685,7 +685,6 @@ def build(resolved, comm=None, verbosity=0):
         if resolved.calculation == "susceptibility":
             matsubara = resolved.tables["susceptibility.matsubara"]
             extra["n_matsubara"] = matsubara["n_points"] if matsubara["enabled"] else 0
-            extra["num_wanted"] = resolved.tables["susceptibility"]["n_psi_max"]
 
     model = apply_double_counting(resolved, model, basis, solver, notes, comm, verbosity)
 

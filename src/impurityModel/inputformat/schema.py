@@ -8,7 +8,7 @@ so documentation cannot fall behind the code.
 
 The **kind** is what makes unit conversion safe. ``[units].energy`` converts every key of
 kind :attr:`Kind.ENERGY` (and its list/vector forms) and nothing else, so a dimensionless
-multiplier such as ``energy_cut`` or an inverse length such as the NIXS ``q`` cannot be
+count such as a target ``occupation`` or an inverse length such as the NIXS ``q`` cannot be
 silently scaled by 13.6. The hand-maintained ``_ENERGY_FIELDS`` tuples in
 :mod:`impurityModel.scripts.spectra` are exactly the rot this replaces.
 
@@ -80,8 +80,8 @@ class Kind(Enum):
     TEMPERATURE = "temperature"
     #: A non-negative integer count. Never converted.
     COUNT = "count"
-    #: A pure number: a ratio, a tolerance, a multiplier. Never converted. ``energy_cut``
-    #: lives here despite its name -- it is a multiple of ``k_B * T``.
+    #: A pure number: a ratio, a tolerance, a count of electrons. Never converted -- a target
+    #: ``occupation`` is electrons, not energy, however much it sits among energies.
     DIMENSIONLESS = "dimensionless"
     #: An inverse length, reciprocal to the radial mesh it is used with (NIXS ``q``).
     INVERSE_LENGTH = "inverse length"
@@ -816,9 +816,8 @@ _TABLE_LIST += [
                 Kind.VECTOR_LIST,
                 None,
                 "Momentum transfers, reciprocal to the radial mesh's length unit -- an inverse "
-                "length, so [units].energy does not touch it. NOTE: a q exactly along z "
-                "currently yields NaN in the transition operator; use a tilted q until that is "
-                "fixed.",
+                "length, so [units].energy does not touch it. Any direction is fine, the pole "
+                "included; |q| = 0 is refused, having no scattering direction.",
             ),
             Key("l_final", Kind.COUNT, 2, "Angular momentum of the final orbitals (was liNIXS).", minimum=0),
             Key("l_initial", Kind.COUNT, 2, "Angular momentum of the initial orbitals (was ljNIXS).", minimum=0),
@@ -859,22 +858,6 @@ _TABLE_LIST += [
         (
             Key("cluster", Kind.STRING, "cluster", "Cluster label used in the output."),
             Key("output", Kind.OUTPUT_PATH, "chi.h5", "Output archive, relative to [run].outdir."),
-            Key(
-                "n_psi_max",
-                Kind.COUNT,
-                5,
-                "Eigenstates to solve for. Configurable on THIS path only: the spectroscopy "
-                "driver ignores it and the self-energy driver hardcodes its own count.",
-                minimum=1,
-            ),
-            Key(
-                "energy_cut",
-                Kind.DIMENSIONLESS,
-                10.0,
-                "Thermal window in multiples of k_B*T -- a MULTIPLIER, not an energy, despite "
-                "the name; [units].energy must not touch it.",
-                minimum=0.0,
-            ),
         ),
         overrides={"temperature": {"tau": 0.002}, "many_body_basis": {"mixed_valence": 0}},
     ),
@@ -941,8 +924,8 @@ def dump() -> str:
         "",
         "**Units.** `[units].energy` is required and has no default. It converts every key of",
         "kind `energy` in the file, and nothing else -- a `count`, a `dimensionless` ratio and an",
-        "`inverse length` are left alone, which is why `energy_cut` (a multiple of k_B*T, despite",
-        "the name) and the NIXS `q` cannot be scaled by mistake. It never describes the",
+        "`inverse length` are left alone, which is why a target `occupation` (electrons) and the",
+        "NIXS `q` (reciprocal to the radial mesh) cannot be scaled by mistake. It never describes the",
         "Hamiltonian file, which carries its own unit in its header.",
         "",
         "**Choosing a calculation.** Write one of `[spectroscopy]`, `[selfenergy]`,",

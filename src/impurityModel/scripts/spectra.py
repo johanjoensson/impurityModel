@@ -124,7 +124,6 @@ def add_arguments(parser):
     parser.add_argument(
         "--hField", type=float, nargs="+", default=[0, 0, 0.0001], help="Magnetic field. (h_x, h_y, h_z)"
     )
-    parser.add_argument("--nPsiMax", type=int, default=5, help="Maximum number of eigenstates to consider.")
     parser.add_argument("--T", type=float, default=300, help="Temperature (Kelvin).")
     parser.add_argument(
         "--energy_cut", type=float, default=10, help="How many k_B*T above lowest eigenenergy to consider."
@@ -255,7 +254,6 @@ def run(args):
         deltaNIXS=args.deltaNIXS,
         radial=radial,
         energy_cut=args.energy_cut,
-        nPsiMax=args.nPsiMax,
         auto_block_structure=args.auto_block_structure,
     )
     basis = BasisOptions(

@@ -179,12 +179,12 @@ def test_matsubara_tables_are_separate_per_statistics():
 
 def test_dimensionless_keys_are_not_energies():
     """R8: the keys a blanket energy conversion would corrupt."""
-    energy_cut = next(k for k in schema.TABLES["susceptibility"].keys if k.name == "energy_cut")
-    assert energy_cut.kind is Kind.DIMENSIONLESS
     occupation = next(k for k in schema.TABLES["double_counting.fixed_occupation"].keys if k.name == "occupation")
     assert occupation.kind is Kind.DIMENSIONLESS
     q = next(k for k in schema.TABLES["spectroscopy.nixs"].keys if k.name == "q")
     assert q.kind is Kind.VECTOR_LIST
+    damping = next(k for k in schema.TABLES["double_counting.fixed_occupation"].keys if k.name == "damping")
+    assert damping.kind is Kind.DIMENSIONLESS
 
 
 def test_environment_is_free_form_and_the_knob_registry_is_reachable():
