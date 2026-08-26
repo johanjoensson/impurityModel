@@ -120,6 +120,11 @@ def simulate_spectra(
     rotation=None,
     correlated_l=2,
     correlated_block_structure=None,
+    pes=True,
+    xps=True,
+    xas=True,
+    rixs=True,
+    nixs=True,
 ):
     """
     Simulate various spectra.
@@ -220,95 +225,97 @@ def simulate_spectra(
     if rank == 0:
         t0 = time.perf_counter()
 
-    if rank == 0:
-        print("Create 3d inverse photoemission and photoemission spectra...")
-    # Transition operators
-    tOpsIPS = inverse_photoemission_operators(nBaths, l=2)
-    tOpsPS = photoemission_operators(nBaths, l=2)
-    if rank == 0:
-        print("Inverse photoemission Green's function..")
-    assert isinstance(hOp, ManyBodyOperator)
-    gsIPS = calc_spectra(
-        hOp,
-        [ManyBodyOperator(t) for t in tOpsIPS],
-        psis,
-        es,
-        tau,
-        w,
-        basis,
-        delta,
-        slaterWeightMin,
-        verbose,
-        occ_cutoff,
-        dN_imp={1: (0, 0), 2: (0, 1)},
-        dN_val={1: (0, 0), 2: (1, 0)},
-        dN_con={1: (0, 0), 2: (0, 1)},
-        equivalence_groups=correlated_groups,
-    )
-    if rank == 0:
-        print("Photoemission Green's function..")
-    gsPS = calc_spectra(
-        hOp,
-        [ManyBodyOperator(t) for t in tOpsPS],
-        psis,
-        es,
-        tau,
-        -w,
-        basis,
-        -delta,
-        slaterWeightMin,
-        verbose,
-        occ_cutoff,
-        dN_imp={1: (0, 0), 2: (1, 0)},
-        dN_val={1: (0, 0), 2: (1, 0)},
-        dN_con={1: (0, 0), 2: (0, 1)},
-        equivalence_groups=correlated_groups,
-    )
-    gsPS *= -1
-    gs = gsPS + gsIPS
-    if rank == 0:
-        print("#spin orbitals = {:d}".format(np.shape(gs)[1]))
-        print("#mesh points = {:d}".format(np.shape(gs)[0]))
-    if rank == 0 and h5f:
-        h5f.create_dataset("PS/spectra", data=gs)
-    if rank == 0:
-        print("time(PS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
-        t0 = time.perf_counter()
+    if pes:
+        if rank == 0:
+            print("Create 3d inverse photoemission and photoemission spectra...")
+        # Transition operators
+        tOpsIPS = inverse_photoemission_operators(nBaths, l=2)
+        tOpsPS = photoemission_operators(nBaths, l=2)
+        if rank == 0:
+            print("Inverse photoemission Green's function..")
+        assert isinstance(hOp, ManyBodyOperator)
+        gsIPS = calc_spectra(
+            hOp,
+            [ManyBodyOperator(t) for t in tOpsIPS],
+            psis,
+            es,
+            tau,
+            w,
+            basis,
+            delta,
+            slaterWeightMin,
+            verbose,
+            occ_cutoff,
+            dN_imp={1: (0, 0), 2: (0, 1)},
+            dN_val={1: (0, 0), 2: (1, 0)},
+            dN_con={1: (0, 0), 2: (0, 1)},
+            equivalence_groups=correlated_groups,
+        )
+        if rank == 0:
+            print("Photoemission Green's function..")
+        gsPS = calc_spectra(
+            hOp,
+            [ManyBodyOperator(t) for t in tOpsPS],
+            psis,
+            es,
+            tau,
+            -w,
+            basis,
+            -delta,
+            slaterWeightMin,
+            verbose,
+            occ_cutoff,
+            dN_imp={1: (0, 0), 2: (1, 0)},
+            dN_val={1: (0, 0), 2: (1, 0)},
+            dN_con={1: (0, 0), 2: (0, 1)},
+            equivalence_groups=correlated_groups,
+        )
+        gsPS *= -1
+        gs = gsPS + gsIPS
+        if rank == 0:
+            print("#spin orbitals = {:d}".format(np.shape(gs)[1]))
+            print("#mesh points = {:d}".format(np.shape(gs)[0]))
+        if rank == 0 and h5f:
+            h5f.create_dataset("PS/spectra", data=gs)
+        if rank == 0:
+            print("time(PS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
+            t0 = time.perf_counter()
 
-    if rank == 0:
-        print("Create core 2p x-ray photoemission spectra (XPS) ...")
-    # Transition operators
-    tOpsPS = photoemission_operators(nBaths, l=1)
-    # Photoemission Green's function
-    gs = calc_spectra(
-        hOp,
-        [ManyBodyOperator(t) for t in tOpsPS],
-        psis,
-        es,
-        tau,
-        -w,
-        basis,
-        -delta,
-        slaterWeightMin,
-        verbose,
-        occ_cutoff,
-        dN_imp={1: (1, 0), 2: (1, 1)},
-        dN_val={1: (0, 0), 2: (1, 0)},
-        dN_con={1: (0, 0), 2: (0, 1)},
-    )
-    gs *= -1
-    if rank == 0:
-        print("#spin orbitals = {:d}".format(np.shape(gs)[1]))
-        print("#mesh points = {:d}".format(np.shape(gs)[0]))
-    if rank == 0 and h5f:
-        h5f.create_dataset("XPS/spectra", data=gs)
-    if rank == 0:
-        print("time(XPS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
-        t0 = time.perf_counter()
+    if xps:
+        if rank == 0:
+            print("Create core 2p x-ray photoemission spectra (XPS) ...")
+        # Transition operators
+        tOpsPS = photoemission_operators(nBaths, l=1)
+        # Photoemission Green's function
+        gs = calc_spectra(
+            hOp,
+            [ManyBodyOperator(t) for t in tOpsPS],
+            psis,
+            es,
+            tau,
+            -w,
+            basis,
+            -delta,
+            slaterWeightMin,
+            verbose,
+            occ_cutoff,
+            dN_imp={1: (1, 0), 2: (1, 1)},
+            dN_val={1: (0, 0), 2: (1, 0)},
+            dN_con={1: (0, 0), 2: (0, 1)},
+        )
+        gs *= -1
+        if rank == 0:
+            print("#spin orbitals = {:d}".format(np.shape(gs)[1]))
+            print("#mesh points = {:d}".format(np.shape(gs)[0]))
+        if rank == 0 and h5f:
+            h5f.create_dataset("XPS/spectra", data=gs)
+        if rank == 0:
+            print("time(XPS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
+            t0 = time.perf_counter()
 
-    # NIXS needs the radial part of the correlated orbitals; skip it when no radial data was
-    # supplied (RiNIXS is None). Every other spectrum is independent of it.
-    if RiNIXS is not None:
+    # NIXS needs the radial part of the correlated orbitals. Supplying it used to be what
+    # switched NIXS on; the switch is now `nixs` and the data is merely required when it is set.
+    if nixs and RiNIXS is not None:
         if rank == 0:
             print("Create NIXS spectra...")
         # Transition operator: exp(iq*r)
@@ -340,75 +347,76 @@ def simulate_spectra(
             print("time(NIXS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
             t0 = time.perf_counter()
 
-    if rank == 0:
-        print("Create XAS spectra...")
-    dN_XAS = dict(
-        dN_imp={1: (1, 0), 2: (0, 1)},
-        dN_val={1: (0, 0), 2: (1, 0)},
-        dN_con={1: (0, 0), 2: (0, 1)},
-    )
-    if XAS_projectors:
-        # Projected operators are not a plain Cartesian linear combination -> keep the
-        # per-operator path.
-        tOps = dipole_operators(nBaths, epsilons)
-        iBasisProjectors = arrayOp2Dict(nBaths, XAS_projectors.values())
-        projectedTOps = []
-        for proj in iBasisProjectors:
-            for op in tOps:
-                projectedTOps.append(combineOp(nBaths, proj, op))
-        gs = calc_spectra(
-            hOp,
-            _prep_one_body(projectedTOps),
-            psis,
-            es,
-            tau,
-            w,
-            basis,
-            delta,
-            slaterWeightMin,
-            verbose,
-            occ_cutoff,
-            **dN_XAS,
-        )
+    if xas:
         if rank == 0:
-            print("#projected operators = {:d}".format(np.shape(gs)[1]))
-            print("#mesh points = {:d}".format(np.shape(gs)[0]))
-        if rank == 0 and h5f:
-            h5f.create_dataset("XAS/projected", data=gs)
-    else:
-        # Dipole is linear in the polarization: compute and store the spectral tensor over the
-        # 3 Cartesian components once (symmetry-reduced). Polarization contraction (arbitrary /
-        # circular, dichroism, ...) is left to post-processing (impurityModel.ed.polarization),
-        # so it never requires re-running the solve.
-        cartesian_ops = _prep_one_body(dipole_operators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
-        n_orb = basis.num_spin_orbitals
-        h_onebody = extract_tensors(hOp, n_orb=n_orb, two_body=False)[0]
-        reduction = component_symmetry_reduction(cartesian_ops, h_onebody, n_orb=n_orb)
-        chi = calc_spectra_tensor(
-            hOp,
-            cartesian_ops,
-            psis,
-            es,
-            tau,
-            w,
-            basis,
-            delta,
-            slaterWeightMin,
-            verbose,
-            occ_cutoff,
-            reduction=reduction,
-            **dN_XAS,
+            print("Create XAS spectra...")
+        dN_XAS = dict(
+            dN_imp={1: (1, 0), 2: (0, 1)},
+            dN_val={1: (0, 0), 2: (1, 0)},
+            dN_con={1: (0, 0), 2: (0, 1)},
         )
+        if XAS_projectors:
+            # Projected operators are not a plain Cartesian linear combination -> keep the
+            # per-operator path.
+            tOps = dipole_operators(nBaths, epsilons)
+            iBasisProjectors = arrayOp2Dict(nBaths, XAS_projectors.values())
+            projectedTOps = []
+            for proj in iBasisProjectors:
+                for op in tOps:
+                    projectedTOps.append(combineOp(nBaths, proj, op))
+            gs = calc_spectra(
+                hOp,
+                _prep_one_body(projectedTOps),
+                psis,
+                es,
+                tau,
+                w,
+                basis,
+                delta,
+                slaterWeightMin,
+                verbose,
+                occ_cutoff,
+                **dN_XAS,
+            )
+            if rank == 0:
+                print("#projected operators = {:d}".format(np.shape(gs)[1]))
+                print("#mesh points = {:d}".format(np.shape(gs)[0]))
+            if rank == 0 and h5f:
+                h5f.create_dataset("XAS/projected", data=gs)
+        else:
+            # Dipole is linear in the polarization: compute and store the spectral tensor over the
+            # 3 Cartesian components once (symmetry-reduced). Polarization contraction (arbitrary /
+            # circular, dichroism, ...) is left to post-processing (impurityModel.ed.polarization),
+            # so it never requires re-running the solve.
+            cartesian_ops = _prep_one_body(dipole_operators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+            n_orb = basis.num_spin_orbitals
+            h_onebody = extract_tensors(hOp, n_orb=n_orb, two_body=False)[0]
+            reduction = component_symmetry_reduction(cartesian_ops, h_onebody, n_orb=n_orb)
+            chi = calc_spectra_tensor(
+                hOp,
+                cartesian_ops,
+                psis,
+                es,
+                tau,
+                w,
+                basis,
+                delta,
+                slaterWeightMin,
+                verbose,
+                occ_cutoff,
+                reduction=reduction,
+                **dN_XAS,
+            )
+            if rank == 0:
+                print("#Cartesian components = {:d}".format(chi.shape[1]))
+                print("#mesh points = {:d}".format(chi.shape[0]))
+            if rank == 0 and h5f:
+                h5f.create_dataset("XAS/tensor", data=chi)
         if rank == 0:
-            print("#Cartesian components = {:d}".format(chi.shape[1]))
-            print("#mesh points = {:d}".format(chi.shape[0]))
-        if rank == 0 and h5f:
-            h5f.create_dataset("XAS/tensor", data=chi)
-    if rank == 0:
-        print("time(XAS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
-        t0 = time.perf_counter()
+            print("time(XAS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
+            t0 = time.perf_counter()
 
-    if len(wIn) > 0:
+    if rixs and len(wIn) > 0:
         if rank == 0:
             print("Create RIXS spectra...")
 

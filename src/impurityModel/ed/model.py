@@ -1191,6 +1191,13 @@ class SpectraOptions:
         hybridization-dressed impurity matrix instead of the hand-coded one.
     XAS_projectors, RIXS_projectors : object or None
         Optional transition projectors; ``None`` computes the full polarization tensor.
+    pes, xps, xas, rixs, nixs : bool or None
+        Which spectra to compute, one switch per technique. ``None`` (the default) reproduces
+        the historical behaviour exactly: PES, XPS and XAS unconditionally, RIXS when
+        ``deltaRIXS > 0`` and ``wIn`` is non-empty, NIXS when ``radial`` was supplied. Setting
+        one is what lets a caller ask for, say, XAS alone -- which was previously impossible,
+        since PES and XPS had no switch and the others were disabled only as a side effect of
+        a non-positive broadening, an empty mesh or withheld data.
     """
 
     w: Optional[np.ndarray] = None
@@ -1211,3 +1218,8 @@ class SpectraOptions:
     auto_block_structure: bool = True
     XAS_projectors: Any = None
     RIXS_projectors: Any = None
+    pes: Optional[bool] = None
+    xps: Optional[bool] = None
+    xas: Optional[bool] = None
+    rixs: Optional[bool] = None
+    nixs: Optional[bool] = None

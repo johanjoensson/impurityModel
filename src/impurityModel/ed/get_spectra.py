@@ -101,6 +101,76 @@ def build_spectra_model(
     )
 
 
+def resolve_spectra_switches(options):
+    """Decide which spectra to compute, and the RIXS incoming mesh that goes with the answer.
+
+    Each technique has its own switch. A ``None`` switch reproduces the historical inference
+    exactly -- PES, XPS and XAS always; RIXS when its broadening is positive and its mesh
+    non-empty; NIXS when radial data was supplied -- so an API caller that sets none of them
+    sees no change. An explicit switch is authoritative, and what used to *disable* a
+    technique as a side effect becomes a requirement of an enabled one: a non-positive
+    broadening or an empty mesh is now an error rather than a silent skip, because a
+    broadening doubling as a feature flag is unguessable and gave RIXS two independent
+    switches with no stated precedence.
+
+    Parameters
+    ----------
+    options : impurityModel.ed.model.SpectraOptions
+
+    Returns
+    -------
+    switches : dict
+        ``{"pes": bool, "xps": bool, "xas": bool, "rixs": bool, "nixs": bool}``.
+    wIn : numpy.ndarray or list
+        The RIXS incoming-energy mesh, defaulted when unset and empty when RIXS is off.
+
+    Raises
+    ------
+    ValueError
+        If a technique is enabled but the data it needs is absent or non-physical.
+    """
+    rixs = options.rixs
+    if rixs is None:
+        rixs = options.deltaRIXS > 0 and (options.wIn is None or len(options.wIn) > 0)
+    elif rixs and options.deltaRIXS <= 0:
+        raise ValueError(
+            f"RIXS is enabled but deltaRIXS is {options.deltaRIXS}. A non-positive broadening "
+            "used to be how RIXS was switched off; now the switch is the switch, and a "
+            "broadening has to be a broadening."
+        )
+
+    nixs = options.nixs
+    if nixs is None:
+        nixs = options.radial is not None
+    elif nixs and options.radial is None:
+        raise ValueError(
+            "NIXS is enabled but no radial data was supplied. Supplying it used to be what "
+            "switched NIXS on; now it is a requirement of having switched NIXS on."
+        )
+    if nixs and options.deltaNIXS <= 0:
+        raise ValueError(f"NIXS is enabled but deltaNIXS is {options.deltaNIXS}.")
+
+    if options.wIn is not None:
+        wIn = options.wIn
+    elif rixs:
+        wIn = np.linspace(-10, 20, 50)
+    else:
+        wIn = []
+    if rixs and len(wIn) == 0:
+        raise ValueError("RIXS is enabled but its incoming-energy mesh is empty.")
+
+    switches = {
+        "pes": True if options.pes is None else options.pes,
+        "xps": True if options.xps is None else options.xps,
+        "xas": True if options.xas is None else options.xas,
+        "rixs": rixs,
+        "nixs": nixs,
+    }
+    if not any(switches.values()):
+        raise ValueError("Every spectrum is disabled, so there is nothing to compute.")
+    return switches, wIn
+
+
 def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
     """Find the lowest eigenstates of ``model`` and calculate the requested spectra.
 
@@ -162,12 +232,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
     epsilonsRIXSout = spectra_options.epsilonsRIXSout if spectra_options.epsilonsRIXSout is not None else cartesian
     deltaRIXS = spectra_options.deltaRIXS
     deltaNIXS = spectra_options.deltaNIXS
-    if spectra_options.wIn is not None:
-        wIn = spectra_options.wIn
-    elif deltaRIXS > 0:
-        wIn = np.linspace(-10, 20, 50)
-    else:
-        wIn = []
+    switches, wIn = resolve_spectra_switches(spectra_options)
     wLoss = spectra_options.wLoss if spectra_options.wLoss is not None else np.linspace(-2.0, 12.0, 4000)
     qsNIXS = (
         spectra_options.qsNIXS
@@ -313,6 +378,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
         rotation=rotation,
         correlated_l=correlated_l,
         correlated_block_structure=correlated_block_structure,
+        **switches,
     )
 
     if h5f is not None:
