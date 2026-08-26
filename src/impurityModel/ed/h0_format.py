@@ -16,6 +16,7 @@ pure function of the file bytes and therefore rank-invariant by construction.
 """
 
 import json
+import os
 import re
 import warnings
 from dataclasses import dataclass, field
@@ -435,11 +436,17 @@ def read_h0_file(path):
 def is_h0_format(path) -> bool:
     """Whether ``path`` carries the ``.h0`` magic line.
 
+    A non-path argument answers ``False`` rather than raising: callers accept an in-memory
+    parameter mapping as well as a filename (crystal-field parameters supplied directly), and
+    such a thing is definitively not a ``.h0`` file.
+
     The discriminator against the legacy bare-integer format. Deliberately content-based:
     legacy files renamed to ``.dat`` (to get past an older extension check) are common, and a
     legacy file renamed to ``.h0`` must still be routed to the legacy reader rather than
     mis-parsed.
     """
+    if not isinstance(path, (str, os.PathLike)):
+        return False
     try:
         with open(path, "rb") as handle:
             head = handle.read(4096)

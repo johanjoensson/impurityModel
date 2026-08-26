@@ -6,6 +6,7 @@ combine h0 with SOC, magnetic field, Coulomb, and double counting.
 
 import json
 import os
+from collections.abc import Mapping
 import pickle
 from collections import OrderedDict
 
@@ -67,8 +68,8 @@ def read_h0_operator(filename, nBaths, nValBaths=None, rank=0, verbose=True):
 
     Parameters
     ----------
-    filename : str
-        The path to the file.
+    filename : str or Mapping
+        The path to the file, or a mapping of crystal-field parameters.
     nBaths : dict
         Number of bath orbitals.
     nValBaths : dict
@@ -81,6 +82,13 @@ def read_h0_operator(filename, nBaths, nValBaths=None, rank=0, verbose=True):
     dict
         The non-interacting Hamiltonian operator dictionary.
     """
+    # Crystal-field parameters supplied directly rather than through a .json file. The TOML
+    # input format takes this path so it can require all ten parameters explicitly: the file
+    # reader below fills each absent one from a hard-coded Ni-in-NiO value, which silently
+    # gives another material Ni's conduction bath.
+    if isinstance(filename, Mapping):
+        return get_CF_hamiltonian(nBaths, nValBaths, filename)
+
     _, ext = os.path.splitext(filename)
     if ext.lower() == ".pickle":
         return read_pickled_file(filename)
@@ -450,8 +458,9 @@ def read_h0_CF_file(h0_CF_filename):
 
     Parameters
     ----------
-    h0_CF_filename : str
-        Filename of the non-relativistic non-interacting CF Hamiltonian operator, in json-format.
+    h0_CF_filename : str or Mapping
+        Filename of the non-relativistic non-interacting CF Hamiltonian operator in
+        json-format, or a mapping holding the same parameters directly.
 
     Returns
     -------
@@ -481,8 +490,11 @@ def read_h0_CF_file(h0_CF_filename):
     If a parameter is not specified in the json-file, a default value will used.
 
     """
-    with open(h0_CF_filename, "r") as file_handle:
-        parameters = json.loads(file_handle.read())
+    if isinstance(h0_CF_filename, Mapping):
+        parameters = dict(h0_CF_filename)
+    else:
+        with open(h0_CF_filename, "r") as file_handle:
+            parameters = json.loads(file_handle.read())
     # Default values are for Ni in NiO.
     e_imp = parameters.get("e_imp", -1.31796)
     e_deltaO_imp = parameters.get("e_deltaO_imp", 0.60422)

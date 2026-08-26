@@ -359,17 +359,31 @@ def _build_model(resolved, header, notes, rank, verbose):
         return model, {}
 
     if resolved.calculation == "spectroscopy":
-        if source != "file":
+        if source not in ("file", "crystal_field"):
             raise InputError(
                 f"[hamiltonian.{source}] cannot drive a spectroscopy run: the multi-shell "
-                "interacting assembly reads its Hamiltonian from a file."
+                "interacting assembly reads a file or a crystal-field parametrisation."
             )
+        if source == "crystal_field":
+            # Handed over as a mapping rather than written to a .json, so all ten parameters
+            # come from the input file. The .json reader fills each absent one from a
+            # hard-coded Ni-in-NiO value, which is how the shipped CoO/FeO/MnO files -- which
+            # set six of ten -- silently run with Ni's conduction bath.
+            table = dict(resolved.tables["hamiltonian.crystal_field"])
+            basis_choice = table.pop("bath_state_basis")
+            h0_source = table
+            notes.append(
+                f"Crystal-field Hamiltonian built from all ten parameters in this file "
+                f"(bath states in the {basis_choice} basis)."
+            )
+        else:
+            h0_source = resolved.tables["hamiltonian.file"]["path"]
         # Core first, then valence -- the order get_hamiltonian_operator's own c2i indexing
         # assumes, and the order the equivalent command line spells as `--ls 1 2`.
         ordered = [shell for shell in (core, valence) if shell is not None]
         return (
             build_spectra_model(
-                resolved.tables["hamiltonian.file"]["path"],
+                h0_source,
                 tuple(shell["l"] for shell in ordered),
                 tuple(shell["n_bath"] for shell in ordered),
                 tuple(shell["n_valence_bath"] for shell in ordered),
