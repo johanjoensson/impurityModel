@@ -469,10 +469,12 @@ _TABLE_LIST += [
                 Kind.ENERGY_VECTOR,
                 None,
                 "Zeeman ENERGY (hx, hy, hz) -- a spin-only splitting with no Bohr magneton, no "
-                "g-factor and no orbital term, so it is not 'a magnetic field'. OMIT for the "
-                "format-dependent default: no field for a flat .h0, a (0, 0, 1e-4) "
-                "symmetry-breaking nudge for the labelled formats. Writing [0, 0, 0] is a "
-                "third thing again -- it skips the dressing step entirely.",
+                "g-factor and no orbital term, so it is not 'a magnetic field'. Omitting it "
+                "means NO FIELD, on every Hamiltonian format. The underlying readers each have "
+                "their own default (the labelled formats apply a (0, 0, 1e-4) symmetry-breaking "
+                "nudge, the flat one applies nothing), which would make an omitted key mean "
+                "different physics depending on the input file; this format does not inherit "
+                "that. Ask for a field if you want one.",
             ),
         ),
         repeatable=True,

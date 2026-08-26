@@ -24,7 +24,14 @@ import numpy as np
 from impurityModel.ed import h0_format
 from impurityModel.inputformat.reader import InputError
 
-__all__ = ["Built", "build", "deduce_bath_counts", "read_h0_header"]
+__all__ = ["Built", "NO_ZEEMAN", "build", "deduce_bath_counts", "read_h0_header"]
+
+#: What an omitted ``zeeman_splitting`` means: no field. Deliberately not the ``(0, 0, 1e-4)``
+#: symmetry-breaking nudge the spectra command line has always applied, and not ``None``
+#: either -- ``None`` selects each format's own default, which differs between the flat and
+#: labelled readers, so an omitted key would apply a field on some inputs and not others. A
+#: field is applied here only when the file asks for one.
+NO_ZEEMAN = (0.0, 0.0, 0.0)
 
 
 @dataclass
@@ -312,29 +319,6 @@ def _slater_arrays(resolved, core_l, valence_l):
     return table
 
 
-#: The symmetry-breaking nudge the spectroscopy command line has always applied to the
-#: correlated shell. It is not ``from_shells``' own default -- that is a zero field -- so it
-#: has to be supplied here for a TOML run to reproduce the equivalent command line.
-SPECTROSCOPY_DEFAULT_ZEEMAN = (0.0, 0.0, 0.0001)
-
-
-def _spectroscopy_zeeman(valence, notes):
-    """Zeeman splitting for a spectroscopy run, defaulting to the historical nudge.
-
-    Omitting the key means "whatever this path has always done", which here is a tiny field
-    that lifts the spin degeneracy so the solver picks a definite state rather than an
-    arbitrary mixture. An explicit ``[0, 0, 0]`` is a different request and is honoured as
-    written.
-    """
-    if valence["zeeman_splitting"] is None:
-        notes.append(
-            f"No zeeman_splitting given; using the spectroscopy default "
-            f"{SPECTROSCOPY_DEFAULT_ZEEMAN} (a symmetry-breaking nudge, in eV)."
-        )
-        return SPECTROSCOPY_DEFAULT_ZEEMAN
-    return tuple(valence["zeeman_splitting"])
-
-
 def _build_model(resolved, header, notes, rank, verbose):
     """Construct the ImpurityModel through the existing dispatch points, never around them."""
     from impurityModel.ed.get_spectra import build_spectra_model
@@ -397,7 +381,7 @@ def _build_model(resolved, header, notes, rank, verbose):
                 core["soc"] if core is not None else 0.0,
                 valence["soc"],
                 resolved.tables.get("double_counting.mlft", {}).get("c", 0.0),
-                _spectroscopy_zeeman(valence, notes),
+                tuple(valence["zeeman_splitting"] or NO_ZEEMAN),
                 rank=rank,
                 verbose=verbose,
             ),
@@ -417,10 +401,11 @@ def _build_model(resolved, header, notes, rank, verbose):
             n_baths=valence["n_bath"],
             slater=None if slater is None else slater["F_vv"],
             xi=valence["soc"],
-            # None, not (0, 0, 0): the sentinel selects each format's own default -- no field
-            # for a flat .h0, a symmetry-breaking nudge for the labelled ones -- and an
-            # explicit zero is a third thing again, since it skips the dressing step.
-            h_field=None if zeeman is None else tuple(zeeman),
+            # An explicit zero, never None. None would select each format's own hidden
+            # default, which for the labelled formats is a symmetry-breaking nudge -- so
+            # omitting the key would silently apply a field on some formats and not others.
+            # In this format, omitting it means no field, on every path.
+            h_field=tuple(zeeman or NO_ZEEMAN),
             n_val_baths=valence["n_valence_bath"],
             n_impurity_orbitals=resolved.tables["hamiltonian.file"]["n_impurity_orbitals"],
             allow_noninteracting=resolved.interaction_kind == "none",

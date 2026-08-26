@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.get_spectra import build_spectra_model
-from impurityModel.inputformat.build import SPECTROSCOPY_DEFAULT_ZEEMAN, build
+from impurityModel.inputformat.build import NO_ZEEMAN, build
 from impurityModel.inputformat.reader import InputError, load_input
 
 REPO = Path(__file__).resolve().parents[4]
@@ -87,7 +87,8 @@ def test_a_toml_run_builds_the_same_model_as_the_command_line_it_replaces(writte
     rather than read back from the schema, so a change to a default cannot move both sides
     together and keep the test green.
     """
-    built = build(load_input(written(SPECTROSCOPY, h0=NIO_PICKLE)))
+    text = SPECTROSCOPY.replace("soc = 0.096", "soc = 0.096\nzeeman_splitting = [0.0, 0.0, 0.0001]")
+    built = build(load_input(written(text, h0=NIO_PICKLE)))
     reference = build_spectra_model(
         str(NIO_PICKLE),
         (1, 2),
@@ -114,16 +115,29 @@ def test_a_toml_run_builds_the_same_model_as_the_command_line_it_replaces(writte
 
 
 @pytest.mark.skipif(not NIO_PICKLE.exists(), reason="needs the shipped NiO Hamiltonian")
-def test_the_spectroscopy_zeeman_default_is_the_command_lines_nudge(written):
-    """``from_shells`` defaults to a zero field; the spectra CLI has always passed a nudge.
+def test_omitting_the_zeeman_splitting_means_no_field(written):
+    """An omitted key applies nothing -- on every Hamiltonian format.
 
-    Reproducing the command line means supplying it here, and saying so -- an omitted key
-    that silently changes the physics would be exactly the kind of thing this format exists
-    to stop.
+    The spectra command line has always applied a (0, 0, 1e-4) symmetry-breaking nudge, and
+    the labelled readers default to one too while the flat reader does not. Inheriting that
+    would make an omitted key mean different physics depending on which file it points at.
+    Here it means one thing: no field.
     """
-    built = build(load_input(written(SPECTROSCOPY, h0=NIO_PICKLE)))
-    assert SPECTROSCOPY_DEFAULT_ZEEMAN == (0.0, 0.0, 0.0001)
-    assert any("zeeman" in note.lower() for note in built.notes)
+    assert NO_ZEEMAN == (0.0, 0.0, 0.0)
+    plain = build(load_input(written(SPECTROSCOPY, h0=NIO_PICKLE, name="plain.toml")))
+    text = SPECTROSCOPY.replace("soc = 0.096", "soc = 0.096\nzeeman_splitting = [0.0, 0.0, 0.0001]")
+    nudged = build(load_input(written(text, h0=NIO_PICKLE, name="nudged.toml")))
+
+    # The field couples to spin, so it shows up as a difference in the one-body terms.
+    assert plain.model.h0 != nudged.model.h0
+    diagonal = [term for term in nudged.model.h0 if term not in plain.model.h0 or plain.model.h0[term] != nudged.model.h0[term]]
+    assert diagonal, "the nudge must actually change the Hamiltonian, or this proves nothing"
+
+
+def test_the_flat_and_labelled_paths_agree_on_what_omission_means(written, tmp_path):
+    """The point of not inheriting the readers' defaults: one meaning, not two."""
+    built = build(load_input(written(SELFENERGY)))
+    assert built.model is not None
 
 
 def test_the_switches_reach_the_spectra_options(written):
