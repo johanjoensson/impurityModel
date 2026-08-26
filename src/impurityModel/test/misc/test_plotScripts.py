@@ -207,3 +207,48 @@ def test_plot_rixs_main_entry_point(mock_show, mock_h5_file):
 def test_plot_rixs_missing_file_raises():
     with patch("sys.argv", ["plot_RIXS", "--filename", "does-not-exist.h5"]), pytest.raises(SystemExit):
         plot_rixs_main()
+
+
+# --- Partial archives, now that each spectrum has its own on/off switch --------------------
+# A file holding only some spectra used to be impossible to produce; with per-technique
+# switches it is ordinary. The plot scripts must say what is missing rather than draw nothing.
+
+
+@pytest.fixture
+def mock_h5_rixs_without_xas(tmp_path):
+    """What a run with `xas = false` and `rixs = true` writes."""
+    rng = np.random.default_rng(1)
+    n_wIn, n_wLoss = 5, 9
+    filepath = tmp_path / "rixs_only.h5"
+    with h5py.File(filepath, "w") as f:
+        f.create_dataset("w", data=np.linspace(-10, 10, 12))
+        f.create_dataset("wIn", data=np.linspace(0, 10, n_wIn))
+        f.create_dataset("wLoss", data=np.linspace(-2, 8, n_wLoss))
+        f.create_dataset(
+            "RIXS/tensor", data=_physical_rixs_tensor(rng, 3, 3, n_wIn, n_wLoss).astype(np.complex64)
+        )
+    return str(filepath)
+
+
+@patch("matplotlib.pyplot.show")
+def test_plot_spectra_explains_why_rixs_is_not_drawn_without_xas(mock_show, mock_h5_rixs_without_xas, capsys):
+    """The overview plots the two together, so it needs both; silently skipping reads as a bug."""
+    plot_spectra_in_file(mock_h5_rixs_without_xas)
+    out = capsys.readouterr().out
+    assert "RIXS data is present but XAS is not" in out
+    assert "plot-rixs" in out, "the message must name the script that can plot it alone"
+
+
+@patch("matplotlib.pyplot.show")
+def test_plot_rixs_still_works_on_an_archive_without_xas(mock_show, mock_h5_rixs_without_xas):
+    """The RIXS map itself needs no XAS, so the dedicated script must not care."""
+    plot_rixs_run(_rixs_args(filename=mock_h5_rixs_without_xas))
+
+
+def test_plot_spectra_reports_an_archive_with_nothing_to_plot(tmp_path):
+    filepath = tmp_path / "nothing.h5"
+    with h5py.File(filepath, "w") as f:
+        f.create_dataset("w", data=np.linspace(-1, 1, 3))
+        f.create_dataset("E", data=np.array([0.0]))
+    with pytest.raises(SystemExit, match="switched off"):
+        plot_spectra_in_file(str(filepath))

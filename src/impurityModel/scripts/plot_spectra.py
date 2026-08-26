@@ -177,6 +177,23 @@ def plot_spectra_in_file(filename, args=None):
     print("Read data from file: ", filename)
     data = load_spectra_h5(filename)
     print("data-sets:", sorted(data.keys()))
+    if not any(
+        key in data
+        for key in (
+            "PS/spectra",
+            "XPS/spectra",
+            "NIXS/spectra",
+            "XAS/tensor",
+            "XAS/projected",
+            "RIXS/tensor",
+            "RIXS/projected",
+        )
+    ):
+        raise SystemExit(
+            f"{filename} holds no spectrum this script can plot. It has "
+            f"{sorted(data.keys()) or 'no recognised datasets'}; every technique may have been "
+            "switched off for the run that produced it."
+        )
 
     if "PS/spectra" in data:
         print("Photo-emission spectroscopy (PS) spectrum")
@@ -201,7 +218,20 @@ def plot_spectra_in_file(filename, args=None):
         print("XAS spectrum (projected)")
         _plot_xas_projected(data["w"], data["XAS/projected"], args.export)
 
+    # Every group above is optional, and since each spectrum now has its own on/off switch a
+    # file legitimately holding only some of them is ordinary rather than broken. Say what is
+    # missing instead of drawing nothing: a silently empty plot reads as a bug in the run.
+    plotted = [
+        key for key in ("PS/spectra", "XPS/spectra", "NIXS/spectra", "XAS/tensor", "XAS/projected") if key in data
+    ]
+
     rixs_key = "RIXS/tensor" if "RIXS/tensor" in data else "RIXS/projected" if "RIXS/projected" in data else None
+    if rixs_key is not None and not ("XAS/tensor" in data or "XAS/projected" in data):
+        print(
+            "RIXS data is present but XAS is not, and this overview plots the two together "
+            "(fluorescence yield against the XAS lineshape). Use `impurityModel plot-rixs "
+            f"{filename}` for the RIXS map on its own, or re-run with XAS enabled."
+        )
     if rixs_key is not None and ("XAS/tensor" in data or "XAS/projected" in data):
         import matplotlib.pyplot as plt
 
