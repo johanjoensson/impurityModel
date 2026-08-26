@@ -1,8 +1,11 @@
 """Umbrella command-line interface: ``impurityModel <subcommand> ...``.
 
-Dispatches to the calculation sub-commands (``spectra``, ``selfenergy``, ``susceptibility``)
-and delegates the plot sub-commands (``plot-spectra``, ``plot-rixs``) to the existing plot
-mains. Also reachable as ``python -m impurityModel``.
+``run`` drives any calculation from a TOML input file and is the intended entry point;
+``init`` and ``schema`` make that format discoverable without reading the source. The
+per-calculation sub-commands (``spectra``, ``selfenergy``, ``susceptibility``) remain as the
+argparse interface they always were, and the plot sub-commands (``plot-spectra``,
+``plot-rixs``) are delegated to the existing plot mains. Also reachable as
+``python -m impurityModel``.
 
 MPI note: argument parsing runs identically on every rank (no rank-gated collectives here);
 the sub-command ``run`` functions own all MPI work, keeping collectives unconditional.
@@ -11,12 +14,16 @@ the sub-command ``run`` functions own all MPI work, keeping collectives uncondit
 import argparse
 import sys
 
+from impurityModel.scripts import run_cmd
 from impurityModel.scripts import selfenergy as selfenergy_cmd
 from impurityModel.scripts import spectra as spectra_cmd
 from impurityModel.scripts import susceptibility as susceptibility_cmd
 
 # name -> (add_arguments, run, one-line help)
 _SUBCOMMANDS = {
+    "run": (run_cmd.add_arguments, run_cmd.run, "Run any calculation from a TOML input file."),
+    "init": (run_cmd.add_init_arguments, run_cmd.init, "Print a commented starter input file."),
+    "schema": (run_cmd.add_schema_arguments, run_cmd.show_schema, "Print the input-file key reference."),
     "spectra": (spectra_cmd.add_arguments, spectra_cmd.run, "Calculate PS/XPS/NIXS/XAS/RIXS spectra."),
     "selfenergy": (selfenergy_cmd.add_arguments, selfenergy_cmd.run, "Calculate the impurity self-energy."),
     "susceptibility": (
