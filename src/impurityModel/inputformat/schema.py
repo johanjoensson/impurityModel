@@ -85,8 +85,13 @@ class Kind(Enum):
     DIMENSIONLESS = "dimensionless"
     #: An inverse length, reciprocal to the radial mesh it is used with (NIXS ``q``).
     INVERSE_LENGTH = "inverse length"
-    #: A filesystem path, resolved relative to the directory holding the input file.
+    #: An input path, resolved relative to the directory holding the input file. Inputs are
+    #: part of what the file describes, so a file and its data directory travel together.
     PATH = "path"
+    #: An output path, left relative to the *working* directory. Where results go is a
+    #: property of the invocation, not of the model being described, so running one input
+    #: file from two directories writes two sets of results rather than overwriting one.
+    OUTPUT_PATH = "output path"
     #: One of a fixed set of strings (``choices``).
     ENUM = "enum"
     #: A boolean.
@@ -264,7 +269,15 @@ _TABLE_LIST = [
         "run",
         "Where output goes and how much of it there is.",
         (
-            Key("outdir", Kind.PATH, ".", "Directory for the output archive."),
+            Key(
+                "outdir",
+                Kind.OUTPUT_PATH,
+                ".",
+                "Directory for the output archive, relative to where you run from -- NOT to "
+                "this file, unlike every input path. Where results go is a property of the "
+                "invocation; running one input file from two directories should write two "
+                "sets of results, not fight over one.",
+            ),
             Key("verbosity", Kind.COUNT, 0, "0-3; the CLI's -v/-vv/-vvv overrides this.", minimum=0),
         ),
     ),
@@ -736,7 +749,7 @@ _TABLE_LIST += [
                 minimum=0.0,
             ),
             Key("cluster", Kind.STRING, "cluster", "Label used in the output."),
-            Key("output", Kind.PATH, "spectra.h5", "Output archive, relative to [run].outdir."),
+            Key("output", Kind.OUTPUT_PATH, "spectra.h5", "Output archive, relative to [run].outdir."),
         ),
         overrides={"many_body_basis": {"occ_cutoff": 1e-6, "dN": 2}, "temperature": {"kelvin": 300.0}},
     ),
@@ -819,7 +832,7 @@ _TABLE_LIST += [
         "Impurity self-energy Sigma(w) / Sigma(i nu) and the impurity Green's function.",
         (
             Key("cluster", Kind.STRING, "cluster", "Cluster label used in the output filenames."),
-            Key("output", Kind.PATH, None, "Output archive; default selfenergy-<cluster>.h5."),
+            Key("output", Kind.OUTPUT_PATH, None, "Output archive; default selfenergy-<cluster>.h5."),
         ),
         overrides={"temperature": {"tau": 0.002}, "many_body_basis": {"mixed_valence": 0}},
     ),
@@ -845,7 +858,7 @@ _TABLE_LIST += [
         "Dynamical impurity susceptibilities chi(w) / chi(i nu).",
         (
             Key("cluster", Kind.STRING, "cluster", "Cluster label used in the output."),
-            Key("output", Kind.PATH, "chi.h5", "Output archive, relative to [run].outdir."),
+            Key("output", Kind.OUTPUT_PATH, "chi.h5", "Output archive, relative to [run].outdir."),
             Key(
                 "n_psi_max",
                 Kind.COUNT,

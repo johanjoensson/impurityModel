@@ -259,7 +259,7 @@ Where output goes and how much of it there is.
 
 | Key | Kind | Default | Description |
 | --- | --- | --- | --- |
-| `outdir` | path | `'.'` | Directory for the output archive. |
+| `outdir` | output path | `'.'` | Directory for the output archive, relative to where you run from -- NOT to this file, unlike every input path. Where results go is a property of the invocation; running one input file from two directories should write two sets of results, not fight over one. |
 | `verbosity` | count | `0` | 0-3; the CLI's -v/-vv/-vvv overrides this. |
 
 ## `[selfenergy]`
@@ -269,7 +269,7 @@ Impurity self-energy Sigma(w) / Sigma(i nu) and the impurity Green's function.
 | Key | Kind | Default | Description |
 | --- | --- | --- | --- |
 | `cluster` | string | `'cluster'` | Cluster label used in the output filenames. |
-| `output` | path | `None` | Output archive; default selfenergy-<cluster>.h5. |
+| `output` | output path | `None` | Output archive; default selfenergy-<cluster>.h5. |
 
 ## `[selfenergy.matsubara]`
 
@@ -326,7 +326,7 @@ PES / XPS / XAS / RIXS / NIXS. The meshes and the core-hole broadening live HERE
 | `w_loss` | mesh | `{'min': -2.0, 'max': 12.0, 'n': 4000}` | Energy-loss mesh, shared by RIXS and NIXS. |
 | `core_hole_broadening` | energy | `0.2` | HWHM above the real axis. Sets the PES/XPS/XAS lineshape AND the RIXS INTERMEDIATE-state resolvent broadening -- one number, two roles, which is why it is not named per technique. |
 | `cluster` | string | `'cluster'` | Label used in the output. |
-| `output` | path | `'spectra.h5'` | Output archive, relative to [run].outdir. |
+| `output` | output path | `'spectra.h5'` | Output archive, relative to [run].outdir. |
 
 ## `[spectroscopy.nixs]`
 
@@ -382,7 +382,7 @@ Dynamical impurity susceptibilities chi(w) / chi(i nu).
 | Key | Kind | Default | Description |
 | --- | --- | --- | --- |
 | `cluster` | string | `'cluster'` | Cluster label used in the output. |
-| `output` | path | `'chi.h5'` | Output archive, relative to [run].outdir. |
+| `output` | output path | `'chi.h5'` | Output archive, relative to [run].outdir. |
 | `n_psi_max` | count | `5` | Eigenstates to solve for. Configurable on THIS path only: the spectroscopy driver ignores it and the self-energy driver hardcodes its own count. |
 | `energy_cut` | dimensionless | `10.0` | Thermal window in multiples of k_B*T -- a MULTIPLIER, not an energy, despite the name; [units].energy must not touch it. |
 

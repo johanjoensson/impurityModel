@@ -51,6 +51,8 @@ def _source_of(resolved, table, key):
     declared = {k.name: k for k in spec.keys}
     if key not in declared:
         return "file"
+    if key in resolved.provided.get(table, ()):
+        return "from the file"
     overrides = schema.TABLES[resolved.calculation].overrides.get(table, {})
     if key in overrides:
         return f"default for [{resolved.calculation}]"

@@ -310,3 +310,25 @@ def test_paths_resolve_against_the_input_file_not_the_working_directory(write_in
     resolved = load_input(write_input(MINIMAL_SPECTROSCOPY))
     assert resolved.tables["hamiltonian.file"]["path"].endswith("h0.pickle")
     assert str(write_input(MINIMAL_SPECTROSCOPY, "x.toml").parent) in resolved.tables["hamiltonian.file"]["path"]
+
+
+def test_an_output_path_is_relative_to_the_working_directory_not_the_file(write_input, tmp_path, monkeypatch):
+    """The one place a path is NOT rebased onto the input file's directory.
+
+    Inputs are part of what the file describes, so they travel with it. Where results go is a
+    property of the invocation instead: running one input file from two directories should
+    write two sets of results rather than fighting over one in the file's own directory.
+
+    The split also has to hold between a written value and the identical default -- rebasing
+    only one of them would make ``outdir = "."`` mean something different from omitting it,
+    which nobody would guess.
+    """
+    monkeypatch.chdir(tmp_path)
+    written = load_input(write_input(MINIMAL_SPECTROSCOPY + '\n[run]\noutdir = "results"\n', "a.toml"))
+    assert written.tables["run"]["outdir"] == "results"
+
+    defaulted = load_input(write_input(MINIMAL_SPECTROSCOPY, "b.toml"))
+    assert defaulted.tables["run"]["outdir"] == "."
+
+    # ... while an input path is rebased, so the file keeps working from any directory.
+    assert str(tmp_path) in defaulted.tables["hamiltonian.file"]["path"]

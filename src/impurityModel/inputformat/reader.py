@@ -243,7 +243,15 @@ def _coerce(where, key, value, units, base_dir):
             raise InputError(f"[{where}]: expected true or false, got {value!r}")
         return value
     if kind is Kind.PATH:
+        # Rebased onto the input file's directory: an input is part of what the file
+        # describes, so the file and its data travel together (and the launcher scripts'
+        # "${DIR}/.." pattern keeps working).
         return str(Path(base_dir, str(value)))
+    if kind is Kind.OUTPUT_PATH:
+        # Deliberately NOT rebased. Where results go belongs to the invocation, not to the
+        # model. Rebasing would also make an explicit `outdir = "."` mean something different
+        # from the identical default, which is the kind of split nobody would ever guess.
+        return str(value)
     if kind is Kind.STRING:
         return str(value)
     if kind is Kind.STRING_LIST:
@@ -313,6 +321,10 @@ class ResolvedInput:
     ----------
     tables : dict
         ``{table_path: {key: value}}`` for every declared table, present or defaulted.
+    provided : dict
+        ``{table_path: set_of_key_names}`` the *file* supplied, as opposed to keys that took a
+        default. Without this, "where did this value come from?" cannot be answered, and
+        answering it is the whole point of ``--show-resolved``.
     shells : list of dict
         The ``[[shell]]`` entries, in file order.
     environment : dict
@@ -332,6 +344,7 @@ class ResolvedInput:
     """
 
     tables: dict
+    provided: dict
     shells: list
     environment: dict
     calculation: str
@@ -393,11 +406,17 @@ def _unknown_key(where, name, declared, version, warnings):
     raise InputError(f"[{where}]: unknown key {name!r}.{_suggest(name, declared)}")
 
 
-def _resolve_table(path, raw_table, units, base_dir, version, warnings, overrides=None):
-    """Coerce one declared table's keys and fill in defaults."""
+def _resolve_table(path, raw_table, units, base_dir, version, warnings, overrides=None, provided=None):
+    """Coerce one declared table's keys and fill in defaults.
+
+    ``provided`` collects the key names the file actually wrote, so a later report can tell a
+    written value from a defaulted one.
+    """
     table = schema.TABLES[path]
     declared = {key.name: key for key in table.keys}
     resolved = {}
+    if provided is not None:
+        provided[path] = {name for name in raw_table if name in declared}
     for name, value in raw_table.items():
         if name in declared:
             resolved[name] = _coerce(f"{path}.{name}", declared[name], value, units, base_dir)
@@ -496,7 +515,10 @@ def _resolve(raw, input_path, raw_text):
             f"the same code disagree by {ENERGY_UNITS['Ry']:.4f}x in silence. "
             f"Choose one of {', '.join(repr(u) for u in ENERGY_UNITS)}."
         )
-    units = _resolve_table("units", raw["units"], {"energy": "eV", "temperature": "K"}, base_dir, version, warnings)
+    provided = {}
+    units = _resolve_table(
+        "units", raw["units"], {"energy": "eV", "temperature": "K"}, base_dir, version, warnings, provided=provided
+    )
 
     present = [name for name in schema.CALCULATIONS if name in raw]
     if len(present) != 1:
@@ -530,7 +552,9 @@ def _resolve(raw, input_path, raw_text):
         raw_table = raw
         for part in path.split("."):
             raw_table = raw_table.get(part, {}) if isinstance(raw_table, dict) else {}
-        tables[path] = _resolve_table(path, raw_table, units, base_dir, version, warnings, overrides.get(path))
+        tables[path] = _resolve_table(
+            path, raw_table, units, base_dir, version, warnings, overrides.get(path), provided=provided
+        )
 
     shells = []
     for index, raw_shell in enumerate(raw.get("shell", [])):
@@ -554,6 +578,7 @@ def _resolve(raw, input_path, raw_text):
 
     return ResolvedInput(
         tables=tables,
+        provided=provided,
         shells=shells,
         environment=environment,
         calculation=calculation,

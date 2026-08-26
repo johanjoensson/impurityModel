@@ -166,6 +166,22 @@ def test_show_resolved_names_where_each_value_came_from(tmp_path, capsys):
     assert "energies below are in eV" in out
     assert "default for [spectroscopy]" in out, "the per-calculation defaults must be attributed"
     assert "[environment]" in out and "GF_BICGSTAB_ATOL" in out
+    # The distinction that makes this verb worth having: a value the file set must not be
+    # reported as a default. Every key here has a default, so without tracking what the file
+    # actually wrote, everything would be labelled "default" -- including what the user typed.
+    assert "from the file" in out
+
+
+def test_a_written_value_is_not_reported_as_a_default(tmp_path, capsys):
+    from .test_run_cmd import _args  # noqa: F401  (keeps the helper referenced)
+
+    source = tmp_path / "in.toml"
+    source.write_text(run_cmd.render_template("selfenergy").replace('energy = "eV"', 'energy = "Ry"'))
+    resolved = load_input(source)
+    assert "energy" in resolved.provided["units"]
+    run_cmd._print_resolved(resolved)
+    lines = [line for line in capsys.readouterr().out.splitlines() if "energy =" in line]
+    assert lines and all("from the file" in line for line in lines)
 
 
 # ------------------------------------------------------------------- emit-toml
