@@ -539,10 +539,14 @@ class ImpurityModel:
                 conduction_baths[l] = [[bath_offset + i for i in local_conduction]]
                 offset += n_bath
             else:
+                # The bath block is laid out valence-first, so the conduction states start
+                # *after* the valence ones. Indexing them from bath_offset instead made the
+                # two sets overlap and left the last n_val bath orbitals in neither, which
+                # stayed invisible for years because every shipped workload but one has zero
+                # conduction bath states (n_bath == n_val, so the conduction list is empty).
                 valence_baths[l] = [[bath_offset + i for i in range(n_val)]]
-                offset += n_val
-                conduction_baths[l] = [[bath_offset + i for i in range(n_bath - n_val)]]
-                offset += n_bath - n_val
+                conduction_baths[l] = [[bath_offset + n_val + i for i in range(n_bath - n_val)]]
+                offset += n_bath
 
         if rank == 0 and verbose:
             print("Orbital layout (spin-orbital indices):")
