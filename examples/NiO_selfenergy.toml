@@ -1,0 +1,45 @@
+# Ni in NiO -- impurity self-energy Sigma(w) and the impurity Green's function.
+# There was no shell script for this: the self-energy has never had a worked example.
+#
+# Run with:   mpirun -n <ranks> impurityModel run examples/NiO_selfenergy.toml
+
+[format]
+version = [1, 0]
+
+[units]
+energy = "eV"
+
+[hamiltonian.file]
+path = "../h0/h0_NiO_10bath.pickle"
+
+[[shell]]
+l = 2
+role = "valence"
+n_bath = 10
+n_valence_bath = 10
+nominal_occupation = 8
+
+[interaction.slater]
+F_vv = [7.5, 0.0, 9.9, 0.0, 6.6]
+
+[selfenergy]
+cluster = "NiO"
+
+[selfenergy.real_axis]
+enabled = true
+mesh = { min = -20.0, max = 20.0, n = 801 }
+broadening = 0.2
+
+[selfenergy.matsubara]
+# Fermionic: i*nu_n with nu_n = (2n+1)*pi*tau. Distinct from the susceptibility's bosonic
+# mesh in both statistics and convention, which is why they are separate tables.
+enabled = false
+n_points = 0
+
+# [double_counting.fixed_gap]
+# Centre the double counting in the charge gap -- the right criterion for a charge-transfer
+# insulator like NiO, where the fixed-occupation condition breaks down (the occupation is
+# flat in mu inside the gap, so a whole interval satisfies it). This runs a search: expect
+# 1-15 full ground-state solves.
+# offset = 0.0
+# on_unreachable = "abort"

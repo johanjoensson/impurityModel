@@ -1,26 +1,12 @@
 #!/bin/bash -e
+# Co in CoO, crystal-field parametrisation.
+#
+# The calculation is now described by an input file; this script only launches it. Everything
+# that used to be a command-line flag lives in examples/CoO_CF_spectra.toml, where it is named, documented
+# and validated -- run `impurityModel run examples/CoO_CF_spectra.toml --show-resolved` to see every
+# value the solver will actually use.
 
-# Number of MPI ranks to use.
-# Check if the first input parameter is empty.
-if [[ -z "$1" ]]; then
-    ranks=1
-else
-    ranks=$1
-fi
-
-# Script folder
+ranks=${1:-1}
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
-# Co in CoO
-# Non-interacting Hamiltonian constructed from CF-parameters.
-
-# Filename of the non-relativistic non-interacting Hamiltonian
-h0_filename="${DIR}/../h0/h0_CoO_CF.json"
-# Filename of the radial part of the correlated orbitals.
-radial_filename=${DIR}"/../radialOrbitals/Co3d.dat"
-
-echo "H0 filename: $h0_filename"
-echo "Radial wavefunction filename: $radial_filename"
-
-mpirun -n $ranks python -m impurityModel spectra $h0_filename $radial_filename \
-    --n0imps 6 7 --Fdd 7 0 9.6 0 6.4 --Fpd 8 0 6.4 --Gpd 0 4.6 0 2.6 --xi_2p 9.859 --xi_3d 0.079 --nPsiMax 13
+mpirun -n "$ranks" impurityModel run "${DIR}/../examples/CoO_CF_spectra.toml"

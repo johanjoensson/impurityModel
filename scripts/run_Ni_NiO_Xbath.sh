@@ -1,33 +1,17 @@
 #!/bin/bash -e
+# Ni in NiO, fitted bath.
+#
+# The calculation is now described by an input file; this script only launches it. Everything
+# that used to be a command-line flag lives in examples/NiO_10bath_spectra.toml, where it is named, documented
+# and validated -- run `impurityModel run examples/NiO_10bath_spectra.toml --show-resolved` to see every
+# value the solver will actually use.
 
-# Number of valence bath states coupled to 3d-orbitals.
-# Currently accepted values are 10, 20, 50, 100 or 300.
-# Check if the first input parameter is empty.
-if [[ -z "$1" ]]; then
-    nBath3d=10
-else
-    nBath3d=$1
-fi
-# Number of MPI ranks to use.
-# Check if the second input parameter is empty.
-if [[ -z "$2" ]]; then
-    ranks=1
-else
-    ranks=$2
-fi
-
-# Script folder
+ranks=${1:-1}
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
-# Ni in NiO
-# Filename of the non-relativistic non-interacting Hamiltonian
-h0_filename="${DIR}/../h0/h0_NiO_${nBath3d}bath.pickle"
-# Filename of the radial part of the correlated orbitals.
-radial_filename=${DIR}"/../radialOrbitals/Ni3d.dat"
+mpirun -n "$ranks" impurityModel run "${DIR}/../examples/NiO_10bath_spectra.toml"
 
-echo "Number of MPI ranks to use: $ranks"
-echo "Number of bath states: $nBath3d"
-echo "H0 filename: $h0_filename"
-echo "Radial wavefunction filename: $radial_filename"
-
-mpiexec -n $ranks --verbose python -m impurityModel spectra $h0_filename $radial_filename --nBaths 0 $nBath3d --nValBaths 0 $nBath3d
+# This script used to take the bath count as its first argument. The count is now two
+# numbers in the input file (n_bath / n_valence_bath) alongside the h0 file they must
+# match, so changing it is an edit to one file rather than an argument that has to agree
+# with a filename. Format 1.0 has no sweep mechanism; that is deliberate.

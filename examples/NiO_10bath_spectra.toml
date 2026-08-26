@@ -1,0 +1,62 @@
+# Ni in NiO -- L2,3 spectra from a fitted bath: 10 valence bath states.
+# Replaces scripts/run_Ni_NiO_Xbath.sh (default bath count).
+#
+# Run with:   mpirun -n <ranks> impurityModel run examples/NiO_10bath_spectra.toml
+
+[format]
+version = [1, 0]
+
+[units]
+energy = "eV"
+
+[hamiltonian.file]
+# A legacy labelled .pickle: it records no bath layout, so the counts below cannot be
+# deduced and have to be written out. A self-describing .h0 would supply them.
+path = "../h0/h0_NiO_10bath.pickle"
+
+[[shell]]
+l = 1
+role = "core"
+nominal_occupation = 6
+soc = 11.629
+# n_bath is omitted: no Hamiltonian is read for the core shell, so it has no fitted bath.
+# Set it if you do want core bath states -- the default is a default, not a restriction.
+
+[[shell]]
+l = 2
+role = "valence"
+n_bath = 10
+n_valence_bath = 10
+nominal_occupation = 8
+soc = 0.096
+
+[interaction.slater]
+F_vv = [7.5, 0.0, 9.9, 0.0, 6.6]
+F_cc = [0.0, 0.0, 0.0]
+F_cv = [8.9, 0.0, 6.8]
+G_cv = [0.0, 5.0, 0.0, 2.8]
+
+[double_counting.mlft]
+c = 1.5
+
+[spectroscopy]
+
+[spectroscopy.pes]
+enabled = true
+
+[spectroscopy.xps]
+enabled = true
+
+[spectroscopy.xas]
+enabled = true
+
+[spectroscopy.rixs]
+enabled = true
+
+[spectroscopy.nixs]
+enabled = true
+radial_file = "../radialOrbitals/Ni3d.dat"
+
+# The shell script this replaces took the bath count as an argument (10, 20, 50, 100, 300).
+# To use another, point `path` at the matching h0 file and set `n_bath`/`n_valence_bath` to
+# match -- two numbers in one place. A sweep mechanism is deliberately not part of format 1.0.

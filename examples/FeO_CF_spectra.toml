@@ -1,0 +1,72 @@
+# Fe in FeO -- L2,3 XAS/RIXS from a crystal-field parametrisation.
+# Replaces scripts/run_Fe_FeO_CF.sh.
+#
+# Run with:   mpirun -n <ranks> impurityModel run examples/FeO_CF_spectra.toml
+
+[format]
+version = [1, 0]
+
+[units]
+# Required, with no default: the command line defaults to eV and RSPt writes Rydberg.
+energy = "eV"
+
+# WARNING: the four conduction-bath parameters below were NOT set in
+# h0/h0_FeO_CF.json. That file sets six of the ten parameters, and the reader
+# fills each absent one from a hard-coded Ni-in-NiO value -- so every FeO run
+# ever done with it silently used Ni's conduction bath. They are written out here
+# so the inheritance is visible. They are UNVERIFIED for FeO.
+[hamiltonian.crystal_field]
+e_imp = -0.62
+e_deltaO_imp = 0.646
+e_val_eg = -4.8
+e_val_t2g = -6.7
+e_con_eg = 3.0   # inherited from Ni, unverified
+e_con_t2g = 2.0   # inherited from Ni, unverified
+v_val_eg = 2.014
+v_val_t2g = 1.462
+v_con_eg = 0.6   # inherited from Ni, unverified
+v_con_t2g = 0.4   # inherited from Ni, unverified
+
+[[shell]]
+l = 1
+role = "core"
+nominal_occupation = 6
+soc = 8.301
+
+[[shell]]
+l = 2
+role = "valence"
+n_bath = 10
+n_valence_bath = 10
+nominal_occupation = 6
+soc = 0.064
+
+[interaction.slater]
+F_vv = [6.5, 0, 9.3, 0, 6.2]
+F_cc = [0.0, 0.0, 0.0]
+F_cv = [7.5, 0, 6]
+G_cv = [0, 4.3, 0, 2.4]
+
+[double_counting.mlft]
+c = 1.5
+
+[spectroscopy]
+# NOTE: run_Fe_FeO_CF.sh passed --nPsiMax, which run_spectra does not read -- the number of
+# eigenstates is derived from the temperature. It is therefore not expressible here, rather
+# than expressed and ignored.
+
+[spectroscopy.pes]
+enabled = true
+
+[spectroscopy.xps]
+enabled = true
+
+[spectroscopy.xas]
+enabled = true
+
+[spectroscopy.rixs]
+enabled = true
+
+[spectroscopy.nixs]
+enabled = false
+# radial_file = "../radialOrbitals/Fe3d.dat"   # required when enabled
