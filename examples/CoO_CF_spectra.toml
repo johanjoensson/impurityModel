@@ -50,6 +50,15 @@ G_cv = [0, 4.6, 0, 2.6]
 [double_counting.mlft]
 c = 1.5
 
+# --- Cost -------------------------------------------------------------------------------
+# d7, 622 determinants. About 11 minutes on 4 ranks
+# (PES 265 s, XPS 307 s, XAS 22 s, RIXS 66 s).
+#
+# PES and XPS dominate, not RIXS: they were 572 s of CoO's 676 s while RIXS was 66 s. If you
+# only want the x-ray spectra, switch them off below -- that took NiO's 10-bath model from
+# minutes to 7 seconds. Runtime scales with the determinant count, which is set by the
+# multiplet space of the d-shell filling, so d5/d6 cost far more than d8.
+
 [spectroscopy]
 # NOTE: run_Co_CoO_CF.sh passed --nPsiMax, which run_spectra does not read -- the number of
 # eigenstates is derived from the temperature. It is therefore not expressible here, rather
