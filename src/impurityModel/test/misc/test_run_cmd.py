@@ -166,3 +166,95 @@ def test_show_resolved_names_where_each_value_came_from(tmp_path, capsys):
     assert "energies below are in eV" in out
     assert "default for [spectroscopy]" in out, "the per-calculation defaults must be attributed"
     assert "[environment]" in out and "GF_BICGSTAB_ATOL" in out
+
+
+# ------------------------------------------------------------------- emit-toml
+
+
+def _spectra_namespace(**overrides):
+    from impurityModel.scripts import spectra as spectra_cmd
+
+    parser = argparse.ArgumentParser()
+    spectra_cmd.add_arguments(parser)
+    args = parser.parse_args(["h0.pickle"])
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
+def test_emit_toml_produces_a_file_that_validates(tmp_path):
+    """The bridge is only useful if its output is a working input file."""
+    text = run_cmd.emit_toml("spectra", _spectra_namespace())
+    path = tmp_path / "emitted.toml"
+    path.write_text(text)
+    resolved = load_input(path)
+    assert resolved.calculation == "spectroscopy"
+    assert [shell["role"] for shell in resolved.shells] == ["core", "valence"]
+
+
+def test_emit_toml_keeps_the_unit_that_was_typed(tmp_path):
+    """It runs before the eV conversion, so it translates the command line rather than
+    normalising it. Emitting converted numbers under a "Ry" header, or Rydberg numbers under
+    an "eV" one, would each be a 13.6x trap in a file the user is told to trust."""
+    text = run_cmd.emit_toml("spectra", _spectra_namespace(unit="Ry", xi_2p=0.85))
+    assert 'energy = "Ry"' in text
+    assert "soc = 0.85" in text
+
+    path = tmp_path / "ry.toml"
+    path.write_text(text)
+    from impurityModel.ed.h0_format import RY_TO_EV
+
+    core = next(shell for shell in load_input(path).shells if shell["role"] == "core")
+    assert core["soc"] == pytest.approx(0.85 * RY_TO_EV), "the reader converts what emit wrote"
+
+
+def test_emit_toml_translates_the_old_implicit_switches(tmp_path):
+    """RIXS was on when its broadening was positive; NIXS when a radial file was supplied.
+
+    Both were side effects rather than choices, so the emitted file states them as choices
+    and records what they used to be inferred from.
+    """
+    off = run_cmd.emit_toml("spectra", _spectra_namespace(deltaRIXS=0.0, radial_filename=None))
+    assert "enabled = false    # was: deltaRIXS > 0" in off
+    assert "enabled = false    # was: a radial file was supplied" in off
+
+    on = run_cmd.emit_toml("spectra", _spectra_namespace(radial_filename="Ni3d.dat"))
+    assert "enabled = true    # was: deltaRIXS > 0" in on
+    assert 'radial_file = "Ni3d.dat"' in on
+
+
+def test_emit_toml_says_what_it_cannot_translate():
+    """A bridge that quietly drops half the format would be worse than none."""
+    text = run_cmd.emit_toml("spectra", _spectra_namespace())
+    assert "Not expressible as a command-line flag" in text
+    assert "[environment]" in text
+
+
+@pytest.mark.parametrize("command", ["selfenergy", "susceptibility"])
+def test_emit_toml_covers_the_other_sub_commands(command, tmp_path):
+    from impurityModel.scripts import selfenergy as selfenergy_cmd
+    from impurityModel.scripts import susceptibility as susceptibility_cmd
+
+    module = {"selfenergy": selfenergy_cmd, "susceptibility": susceptibility_cmd}[command]
+    parser = argparse.ArgumentParser()
+    module.add_arguments(parser)
+    args = parser.parse_args(["h0.h0"])
+
+    path = tmp_path / f"{command}.toml"
+    path.write_text(run_cmd.emit_toml(command, args))
+    resolved = load_input(path)
+    assert resolved.calculation == command
+    # The two Matsubara meshes differ in statistics and convention, so each sub-command must
+    # emit its own table rather than a shared key.
+    assert f"{command}.matsubara" in resolved.tables
+
+
+@pytest.mark.parametrize("module_name", ["spectra", "selfenergy", "susceptibility"])
+def test_every_sub_command_offers_the_flag(module_name):
+    import importlib
+
+    module = importlib.import_module(f"impurityModel.scripts.{module_name}")
+    parser = argparse.ArgumentParser()
+    module.add_arguments(parser)
+    assert parser.parse_args(["h0.h0", "--emit-toml"]).emit_toml is True
+    assert parser.parse_args(["h0.h0"]).emit_toml is False

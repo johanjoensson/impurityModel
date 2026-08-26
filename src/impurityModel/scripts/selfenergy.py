@@ -139,6 +139,16 @@ def add_arguments(parser):
     parser.add_argument(
         "--output", type=str, default=None, help="Per-cluster HDF5 output (default: selfenergy-<cluster>.h5)."
     )
+    parser.add_argument(
+        "--emit-toml",
+        dest="emit_toml",
+        action="store_true",
+        help=(
+            "Print the TOML input file equivalent to this command line and exit. A migration "
+            "bridge: the input file can express things no flag can, so the output is a "
+            "starting point rather than a complete translation."
+        ),
+    )
     add_verbosity_argument(parser)
     parser.set_defaults(realaxis=True, chain_restrict=True, sparse_green=True)
 
@@ -198,6 +208,14 @@ def run(args):
     """Build the model and option groups from ``args``, solve, and save the results on rank 0."""
     # A no-op on --from-archive: the archive supplies its own model/meshes, none of these CLI
     # attributes are read on that path, so converting them unconditionally is harmless.
+    if getattr(args, "emit_toml", False):
+        # Before convert_energy_args: the emitted file declares the unit that was typed and
+        # keeps the numbers as typed, rather than silently rewriting them all into eV.
+        from impurityModel.scripts.run_cmd import emit_toml
+
+        print(emit_toml("selfenergy", args))
+        return 0
+
     convert_energy_args(args, _ENERGY_FIELDS, args.unit)
     comm = MPI.COMM_WORLD
     verbosity = resolve_verbosity(args)

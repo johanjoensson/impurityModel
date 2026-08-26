@@ -164,6 +164,16 @@ def add_arguments(parser):
         help="Keep the hand-coded 2p/3d block structure instead of deriving it from the hybridization.",
     )
     parser.set_defaults(auto_block_structure=True)
+    parser.add_argument(
+        "--emit-toml",
+        dest="emit_toml",
+        action="store_true",
+        help=(
+            "Print the TOML input file equivalent to this command line and exit. A migration "
+            "bridge: the input file can express things no flag can, so the output is a "
+            "starting point rather than a complete translation."
+        ),
+    )
     add_verbosity_argument(parser)
 
 
@@ -200,6 +210,14 @@ def _validate(args):
 
 def run(args):
     """Build the model and option groups from ``args`` and run the spectra calculation."""
+    if getattr(args, "emit_toml", False):
+        # Before convert_energy_args: the emitted file declares the unit that was typed and
+        # keeps the numbers as typed, rather than silently rewriting them all into eV.
+        from impurityModel.scripts.run_cmd import emit_toml
+
+        print(emit_toml("spectra", args))
+        return 0
+
     convert_energy_args(args, _ENERGY_FIELDS, args.unit)
     _validate(args)
     comm = MPI.COMM_WORLD

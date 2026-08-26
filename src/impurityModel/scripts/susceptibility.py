@@ -84,6 +84,16 @@ def add_arguments(parser):
     parser.add_argument("--delta", type=float, default=0.01, help="Broadening above the real axis (eV).")
     parser.add_argument("--n_matsubara", type=int, default=64, help="Number of bosonic Matsubara points (0 disables).")
     parser.add_argument("--output", type=str, default="chi.h5", help="Output HDF5 filename.")
+    parser.add_argument(
+        "--emit-toml",
+        dest="emit_toml",
+        action="store_true",
+        help=(
+            "Print the TOML input file equivalent to this command line and exit. A migration "
+            "bridge: the input file can express things no flag can, so the output is a "
+            "starting point rather than a complete translation."
+        ),
+    )
     add_verbosity_argument(parser)
 
 
@@ -92,6 +102,14 @@ def run(args):
     # w_min/w_max/delta are always read from the CLI below (even with --from-archive); Fdd/xi/
     # hField/tau are only read on the non-archive path. Converting all of them unconditionally
     # here is harmless on the archive path since the unused ones are simply never read.
+    if getattr(args, "emit_toml", False):
+        # Before convert_energy_args: the emitted file declares the unit that was typed and
+        # keeps the numbers as typed, rather than silently rewriting them all into eV.
+        from impurityModel.scripts.run_cmd import emit_toml
+
+        print(emit_toml("susceptibility", args))
+        return 0
+
     convert_energy_args(args, _ENERGY_FIELDS, args.unit)
     comm = MPI.COMM_WORLD
     verbosity = resolve_verbosity(args)
