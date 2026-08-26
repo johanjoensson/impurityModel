@@ -325,3 +325,34 @@ def test_a_h0_declaring_hartree_is_still_refused(tmp_path):
     out = _rewrite(tmp_path, "hartree.h0", header_update={"unit": "Ha"})
     with pytest.raises(H0FormatError, match="unit"):
         h0_format.read_h0_file(out)
+
+
+def test_the_rich_header_rspt2spectra_writes_is_promoted(tmp_path):
+    """``build_h0`` records far more than the reader used to expose.
+
+    ``impurity_l`` names *which* shell the stored bath belongs to, ``bath_geometry`` says
+    whether the valence/conduction labels were recorded at all, and ``fermi_energy`` is what
+    makes ``energy_reference: "fermi"`` auditable instead of merely asserted. All three were
+    reaching consumers only as raw-dict lookups.
+    """
+    out = _rewrite(
+        tmp_path,
+        "rich.h0",
+        header_update={
+            "impurity_l": 2,
+            "fermi_energy": 0.5,
+            "bath_geometry": "star",
+            "producer": {"name": "rspt2spectra", "cluster": "Ni"},
+        },
+    )
+    parsed = h0_format.read_h0_file(out)
+    assert parsed.impurity_l == 2
+    assert parsed.fermi_energy == pytest.approx(0.5)
+    assert parsed.bath_geometry == "star"
+    assert parsed.producer["cluster"] == "Ni"
+
+
+def test_the_fermi_energy_is_converted_like_every_other_energy(tmp_path):
+    """It is an energy in the file's own unit, so it must not survive the read unscaled."""
+    out = _rewrite(tmp_path, "ry.h0", header_update={"unit": "Ry", "fermi_energy": 1.0})
+    assert h0_format.read_h0_file(out).fermi_energy == pytest.approx(h0_format.RY_TO_EV)

@@ -115,6 +115,20 @@ class H0File:
         against double-counting SOC.
     interaction : dict or None
         Optional interaction spec, e.g. ``{"kind": "slater", "l": 2, "F": [...]}``.
+    impurity_l : int or None
+        Angular momentum of the correlated shell this file describes, when it records one.
+        It names *which* shell the stored bath belongs to: every other shell in a multi-shell
+        model has no bath of its own here.
+    fermi_energy : float or None
+        The Fermi level that was subtracted, in eV. What makes ``energy_reference: "fermi"``
+        auditable rather than merely asserted.
+    bath_geometry : str or None
+        ``"star"``, ``"chain"``, ``"linked_chain"`` or ``"peeled_linked_chain"``. Load-bearing
+        for the bath classification: producers record ``valence_bath``/``conduction_bath``
+        only for a star, because in a chain each site is a Lanczos combination of star modes
+        and the labels would mislead rather than approximate.
+    producer : dict or None
+        Which package and cluster wrote the file, for provenance.
     header : dict
         The raw header, for keys this dataclass does not promote.
     """
@@ -131,6 +145,10 @@ class H0File:
     spin_ordering: Optional[str] = None
     contains_soc: Optional[bool] = None
     interaction: Optional[dict] = None
+    impurity_l: Optional[int] = None
+    fermi_energy: Optional[float] = None
+    bath_geometry: Optional[str] = None
+    producer: Optional[dict] = None
     header: dict = field(default_factory=dict)
 
     @property
@@ -405,6 +423,11 @@ def read_h0_file(path):
         spin_ordering=header.get("spin_ordering"),
         contains_soc=header.get("contains_soc"),
         interaction=header.get("interaction"),
+        impurity_l=header.get("impurity_l"),
+        # Recorded in the file's own unit, like every other energy in it.
+        fermi_energy=None if header.get("fermi_energy") is None else float(header["fermi_energy"]) * scale,
+        bath_geometry=header.get("bath_geometry"),
+        producer=header.get("producer"),
         header=header,
     )
 
