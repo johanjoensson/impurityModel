@@ -27,12 +27,41 @@ one MPI rank per core, which oversubscribes).
 Everything is driven by one umbrella command with sub-commands:
 
 ```bash
+impurityModel run             input.toml    [--check]   # any calculation, from one input file
+impurityModel init            [--calculation ...]       # print a commented starter input file
+impurityModel schema          [table]                   # the input-file key reference
 impurityModel spectra         <h0> [radial] [options]   # PS/XPS/NIXS/XAS/RIXS -> spectra.h5
 impurityModel selfenergy      <h0>          [options]   # Sigma(w)/Sigma(i nu), G_imp
 impurityModel susceptibility  <h0>          [options]   # chi(w)/chi(i nu) -> chi.h5
 impurityModel plot-spectra    spectra.h5    [options]   # plot from spectra.h5 (no re-solve)
 impurityModel plot-rixs       spectra.h5    [options]
 ```
+
+### Input files
+
+`run` is the intended entry point. A calculation is described by a TOML file rather than a
+line of flags, which buys three things the flags could not: parameters are named and grouped
+rather than positional (`--ls 1 2 --nBaths 0 60 --nValBaths 0 10` was four order-coupled
+lists), the file is validated before any solving happens, and it is archived into the output
+so a result can be traced back to what produced it.
+
+```bash
+impurityModel init > input.toml                  # a starter file, every key documented
+impurityModel run input.toml --check             # validate; no solver, no MPI
+impurityModel run input.toml --show-resolved     # every value as the solver will see it
+mpirun -n 8 impurityModel run input.toml
+```
+
+Worked examples for all three calculations live in the `examples/` directory of the repository;
+the scripts in
+`scripts/` are thin launchers over them. The full key reference is
+[`input_format.md`](input_format.md), and `impurityModel schema <table>` prints any part of it
+without leaving the terminal.
+
+The per-calculation sub-commands below remain exactly as they were. They are the older
+interface, and they cannot reach everything an input file can -- the double-counting schemes,
+the NIXS momentum transfer, the per-spectrum switches and the `ed/config.py` tuning knobs are
+all input-file-only.
 
 `python -m impurityModel <subcommand> ...` is an equivalent entry point when the console script
 is not on `PATH`. Every sub-command runs identically under MPI (`mpiexec -n N ...`). See

@@ -15,6 +15,7 @@ self-energies for DMFT-style workflows.
 
    intro
    user_guide
+   input_format
 
 .. toctree::
    :maxdepth: 2
