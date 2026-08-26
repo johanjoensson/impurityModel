@@ -294,3 +294,34 @@ def test_duplicate_index_pair_raises(tmp_path):
 def test_unknown_header_key_is_ignored(tmp_path):
     out = _rewrite(tmp_path, "extra.h0", header_update={"something_new": 42})
     assert h0_format.read_h0_file(out).n_orb == 8
+
+
+def test_hartree_is_exactly_two_rydberg():
+    """``HA_TO_EV`` is derived from ``RY_TO_EV`` rather than being a second CODATA literal.
+
+    Hartree is two Rydberg *by definition*, so deriving it keeps the two constants from
+    drifting apart by independent rounding -- the same no-duplicated-constants rule the rest
+    of the package follows for tolerances.
+    """
+    assert h0_format.HA_TO_EV == 2.0 * h0_format.RY_TO_EV
+    assert h0_format.HA_TO_EV == pytest.approx(27.211386245988, rel=1e-12)
+
+
+def test_energy_units_covers_ha_but_the_h0_header_does_not():
+    """The scope split: callers may convert *from* Hartree, a ``.h0`` header may not declare it.
+
+    Widening what the on-disk format accepts is a format change needing its own
+    ``required_features`` story, and no producer writes Hartree, so ``_KNOWN_UNITS`` stays as
+    it was while ``ENERGY_UNITS`` (which the TOML input format uses) gains the entry.
+    """
+    assert set(h0_format.ENERGY_UNITS) == {"eV", "Ry", "Ha"}
+    assert set(h0_format._KNOWN_UNITS) == {"eV", "Ry"}
+    for unit, factor in h0_format._KNOWN_UNITS.items():
+        assert h0_format.ENERGY_UNITS[unit] == factor
+
+
+def test_a_h0_declaring_hartree_is_still_refused(tmp_path):
+    """Guards the split above: adding ``Ha`` to ``ENERGY_UNITS`` must not leak into the reader."""
+    out = _rewrite(tmp_path, "hartree.h0", header_update={"unit": "Ha"})
+    with pytest.raises(H0FormatError, match="unit"):
+        h0_format.read_h0_file(out)

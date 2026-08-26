@@ -44,7 +44,19 @@ MAX_BATH_BANDWIDTH = 1
 
 RY_TO_EV = 13.605693122994232
 
+#: One Hartree is two Rydberg by definition, so this is exact given RY_TO_EV rather than a
+#: second independently-rounded CODATA literal.
+HA_TO_EV = 2.0 * RY_TO_EV
+
+#: Units a ``.h0`` *header* may declare. Deliberately NOT including "Ha": no producer writes
+#: it, and widening the on-disk format is a format change needing its own required_features
+#: story. Callers converting their own inputs (e.g. the TOML input format's ``[units].energy``)
+#: use ENERGY_UNITS below, which does include it.
 _KNOWN_UNITS = {"eV": 1.0, "Ry": RY_TO_EV}
+
+#: Every energy unit this package can convert *from*, to eV. The single source of truth for
+#: unit conversion outside the ``.h0`` header; see ``impurityModel.inputformat``.
+ENERGY_UNITS = {"eV": 1.0, "Ry": RY_TO_EV, "Ha": HA_TO_EV}
 
 #: Header keys whose meaning a reader must understand to interpret the term list. Anything
 #: listed in a file's "required_features" that is not here makes the reader raise.
