@@ -6,9 +6,12 @@ double-counting correction.
 
 import itertools
 from math import pi, sqrt
+from typing import Optional
 
 import numpy as np
-from sympy.physics.wigner import gaunt
+from sympy.physics.wigner import gaunt, wigner_3j
+from sympy import Rational
+
 
 from impurityModel.ed.operator_algebra import addOps
 
@@ -321,6 +324,55 @@ def getUop(l1, l2, l3, l4, R):
                                 if not (s == sp and ((l1, m1) == (l2, m2) or (l3, m3) == (l4, m4))):
                                     uDict[proccess] = u / 2.0
     return uDict
+
+
+def intra_orbital_coefficients(l: int):
+    """
+    Calculates the same shell spherical average coefficients for
+    the F^k terms, k > 0. Returns only the even numbered coefficients.
+    """
+    coefficients = []
+    for k in range(2, 2 * l + 1, 2):
+        wj = wigner_3j(l, k, l, 0, 0, 0)
+        coefficients.append(Rational((2 * l + 1), (4 * l + 1)) * (wj**2))
+    return tuple(coefficients)
+
+
+def inter_orbital_coefficients(lv: int, lc: int):
+    """
+    Calculates the inter shell spherical average coefficients for
+    the G^k terms, k > 0. Returns only the even numbered coefficients.
+    """
+    start_k = abs(lv - lc)
+    stop_k = lc + lv
+    coefficients = []
+    for k in range(start_k, stop_k + 1):
+        if (lc + lv + k) % 2 == 0:
+            wj = wigner_3j(lc, k, lv, 0, 0, 0)
+            coefficients.append(Rational(1, 2) * wj**2)
+    return tuple(coefficients)
+
+
+def slater_condon_Uop(Fvv: tuple, Fcc: Optional[tuple], Fcv: Optional[tuple], Gcv: Optional[tuple]):
+    assert len(Fvv) % 2 == 1, "Fvv must have 2lv+1 components"
+    if Fcc is not None:
+        assert len(Fcc) % 2 == 1, "Fpp must have 2lc+1 components"
+    if Fcv is not None:
+        assert len(Fcv) == len(Fcc), "Fpp and Fpd must have the same number of components"
+    if Gcv is not None:
+        assert len(Gcv) == len(Fcc) + 1, "Gpd must have 2lc+2 components"
+    lv = (len(Fvv) - 1) // 2
+    lc = (len(Fcc) - 1) // 2
+    U = getUop(l1=lv, l2=lv, l3=lv, l4=lv, R=Fvv)
+    if Fcc is not None:
+        U = addOps([U, getUop(l1=lc, l2=lc, l3=lc, l4=lc, R=Fcc)])
+    if Fcv is not None:
+        U = addOps([U, getUop(l1=lc, l2=lv, l3=lv, l4=lc, R=Fcv)])
+        U = addOps([U, getUop(l1=lv, l2=lc, l3=lc, l4=lv, R=Fcv)])
+    if Gcv is not None:
+        U = addOps([U, getUop(l1=lc, l2=lv, l3=lc, l4=lv, R=Gcv)])
+        U = addOps([U, getUop(l1=lv, l2=lc, l3=lv, l4=lc, R=Gcv)])
+    return U
 
 
 def get2p3dSlaterCondonUop(Fdd=(9, 0, 8, 0, 6), Fpp=(20, 0, 8), Fpd=(10, 0, 8), Gpd=(0, 3, 0, 2)):
