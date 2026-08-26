@@ -77,9 +77,9 @@ def test_no_default_duplicates_a_constant_defined_in_ed():
     for path, key in _all_keys():
         if isinstance(key.default, float):
             for value, source in forbidden.items():
-                assert key.default != pytest.approx(value, rel=1e-6), (
-                    f"[{path}].{key.name} duplicates {source}; reach it by omission instead"
-                )
+                assert key.default != pytest.approx(
+                    value, rel=1e-6
+                ), f"[{path}].{key.name} duplicates {source}; reach it by omission instead"
     budget = next(k for k in schema.TABLES["many_body_basis"].keys if k.name == "excitation_budget")
     assert budget.default == "auto", "excitation_budget must default to 'auto', not a frozen number"
 

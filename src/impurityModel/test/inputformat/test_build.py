@@ -130,7 +130,9 @@ def test_omitting_the_zeeman_splitting_means_no_field(written):
 
     # The field couples to spin, so it shows up as a difference in the one-body terms.
     assert plain.model.h0 != nudged.model.h0
-    diagonal = [term for term in nudged.model.h0 if term not in plain.model.h0 or plain.model.h0[term] != nudged.model.h0[term]]
+    diagonal = [
+        term for term in nudged.model.h0 if term not in plain.model.h0 or plain.model.h0[term] != nudged.model.h0[term]
+    ]
     assert diagonal, "the nudge must actually change the Hamiltonian, or this proves nothing"
 
 

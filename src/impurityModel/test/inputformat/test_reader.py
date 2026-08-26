@@ -51,7 +51,8 @@ def test_rydberg_and_its_hand_converted_ev_twin_agree(write_input):
     ry_text = ry_text.replace("soc = 0.096", f"soc = {0.096 / RY_TO_EV!r}")
     ry_text = ry_text.replace("c = 1.5", f"c = {1.5 / RY_TO_EV!r}")
     ry_text = ry_text.replace(
-        "F_vv = [7.5, 0, 9.9, 0, 6.6]", "F_vv = [{}]".format(", ".join(repr(v / RY_TO_EV) for v in [7.5, 0, 9.9, 0, 6.6]))
+        "F_vv = [7.5, 0, 9.9, 0, 6.6]",
+        "F_vv = [{}]".format(", ".join(repr(v / RY_TO_EV) for v in [7.5, 0, 9.9, 0, 6.6])),
     )
     ry = load_input(write_input(ry_text, "ry.toml"))
     assert ry.shells[0]["soc"] == pytest.approx(ev.shells[0]["soc"])
@@ -259,7 +260,9 @@ def test_nixs_requires_its_radial_file_when_enabled(write_input):
 
 def test_a_momentum_transfer_along_z_is_warned_about(write_input):
     """It currently yields an all-NaN spectrum with no exception."""
-    text = MINIMAL_SPECTROSCOPY + '\n[spectroscopy.nixs]\nenabled = true\nradial_file = "r.dat"\nq = [[0.0, 0.0, 4.0]]\n'
+    text = (
+        MINIMAL_SPECTROSCOPY + '\n[spectroscopy.nixs]\nenabled = true\nradial_file = "r.dat"\nq = [[0.0, 0.0, 4.0]]\n'
+    )
     resolved = load_input(write_input(text))
     assert any("NaN" in w for w in resolved.warnings)
 

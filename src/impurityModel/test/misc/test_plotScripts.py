@@ -224,9 +224,7 @@ def mock_h5_rixs_without_xas(tmp_path):
         f.create_dataset("w", data=np.linspace(-10, 10, 12))
         f.create_dataset("wIn", data=np.linspace(0, 10, n_wIn))
         f.create_dataset("wLoss", data=np.linspace(-2, 8, n_wLoss))
-        f.create_dataset(
-            "RIXS/tensor", data=_physical_rixs_tensor(rng, 3, 3, n_wIn, n_wLoss).astype(np.complex64)
-        )
+        f.create_dataset("RIXS/tensor", data=_physical_rixs_tensor(rng, 3, 3, n_wIn, n_wLoss).astype(np.complex64))
     return str(filepath)
 
 
