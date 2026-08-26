@@ -226,10 +226,17 @@ def nixs_operator(nBaths, q, li, lj, Ri, Rj, r, kmin=1):
     # Convert scattering list to numpy array
     q = np.array(q)
     qNorm = np.linalg.norm(q)
-    # Polar (colatitudinal) coordinate
-    theta = np.arccos(q[2] / qNorm)
-    # Azimuthal (longitudinal) coordinate
-    phi = np.arccos(q[0] / (qNorm * np.sin(theta)))
+    if qNorm == 0:
+        raise ValueError("NIXS needs a non-zero momentum transfer; |q| = 0 has no scattering direction.")
+    # Polar (colatitudinal) coordinate.
+    theta = np.arccos(np.clip(q[2] / qNorm, -1.0, 1.0))
+    # Azimuthal (longitudinal) coordinate. arctan2, not arccos(q_x / (|q| sin(theta))): that
+    # form divides by zero for a q along z -- the pole, where the azimuth is undefined and
+    # arbitrary -- and produced an all-NaN spectrum with no exception. It is also wrong away
+    # from the pole for q_y < 0, since arccos returns [0, pi] and so cannot represent the
+    # lower half-plane. arctan2 covers all four quadrants and returns 0 at the pole, which is
+    # harmless: only m = 0 survives there, and e^{i m phi} = 1 for it.
+    phi = np.arctan2(q[1], q[0])
     tOp = {}
     for k in range(kmin, abs(li + lj) + 1):
         if (li + lj + k) % 2 == 0:
