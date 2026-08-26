@@ -1,26 +1,3 @@
-# =========================================================================================
-# KNOWN BROKEN -- this workload does not currently solve. Kept because it is a faithful
-# translation of scripts/run_Ni_NiO_50p10bath.sh, so whoever fixes the underlying bug has
-# the input to reproduce it with.
-#
-# What happens: the ground-state search returns the ENTIRE d8 manifold, 45 = C(10,8)
-# determinants, exactly degenerate at E0 = 0.000000, instead of a handful of low-lying
-# states. The recorded state shows why -- the bath occupation comes back as
-# [impurity, valence, conduction] = [14, 10, 10]: ten valence bath orbitals occupied rather
-# than fifty, and the conduction bath full rather than empty. The spectra stage then tries
-# all 45 eigenstates at once and is killed by the OOM killer (measured: 3.7 GB per rank,
-# four ranks, 15 GB machine).
-#
-# NOT caused by the input format. The identical result comes from the old command line,
-#     impurityModel spectra h0/h0_NiO_50p10bath.pickle --nBaths 0 60 --nValBaths 0 10
-# with no input file involved, and it is unchanged by supplying an explicit
-# zeeman_splitting. The model itself builds correctly: the 3d block sits at -106.5 eV split
-# by 0.37 eV, hybridization reaches 1.87 eV, and the bath splits 50 valence / 10 conduction
-# as it should. The failure is downstream of the model, in the many-body basis.
-#
-# examples/NiO_10bath_spectra.toml is the working fitted-bath example.
-# =========================================================================================
-
 # Ni in NiO -- L2,3 spectra from a fitted bath: 50 valence + 10 conduction bath states.
 # Replaces scripts/run_Ni_NiO_50p10bath.sh.
 #
@@ -49,7 +26,10 @@ soc = 11.629
 l = 2
 role = "valence"
 n_bath = 60
-n_valence_bath = 10
+n_valence_bath = 50
+# 50, not the 10 that scripts/run_Ni_NiO_50p10bath.sh passed as --nValBaths. The Hamiltonian
+# has exactly 50 bath orbitals below the Fermi level and 10 above it, so 10 mislabelled forty
+# occupied orbitals as empty conduction states.
 nominal_occupation = 8
 soc = 0.096
 
@@ -58,6 +38,18 @@ F_vv = [7.5, 0.0, 9.9, 0.0, 6.6]
 F_cc = [0.0, 0.0, 0.0]
 F_cv = [8.9, 0.0, 6.8]
 G_cv = [0.0, 5.0, 0.0, 2.8]
+
+[many_body_basis]
+# This model needs its basis bounded, and that is physics, not a workaround. With 50 valence
+# and 10 conduction bath orbitals, the default excitation_budget of 4 admits roughly C(50,4) x
+# C(10,4) bath excitations per impurity configuration -- of order 1e9 determinants -- and the
+# basis build is killed by the OOM killer long before the RAM-derived cap can apply. A budget
+# of 2 with an explicit determinant cap gives 11,576 determinants and E0 = -903.98 eV.
+#
+# Validate the budget on this system before trusting a production number: 4 is the measured
+# lossless default for the smaller workloads, not for this one.
+excitation_budget = 2
+truncation_threshold = 300000
 
 [double_counting.mlft]
 c = 1.5

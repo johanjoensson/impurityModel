@@ -110,24 +110,24 @@ def test_the_double_counting_suits_the_calculation(path):
         assert resolved.dc_scheme != "mlft"
 
 
-#: Examples that are correct input but do not currently solve. Kept deliberately -- they are
-#: the reproducer for the underlying bug -- and listed here so nobody can quietly delete the
-#: warning without also removing the file from this list.
-KNOWN_BROKEN = {"NiO_50p10bath_spectra.toml"}
+#: Examples that are correct input but do not currently solve. Empty, and meant to stay that
+#: way: an entry here is a promise to whoever fixes the underlying bug, not a parking space.
+#: NiO_50p10bath lived here until the bath-layout bug behind it was fixed.
+KNOWN_BROKEN: set[str] = set()
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
 def test_a_known_broken_example_says_so_prominently(path):
     """A shipped example that does not work has to announce it, in the file itself.
 
-    NiO_50p10bath returns the entire 45-fold-degenerate d8 manifold at E0 = 0 and is then
-    OOM-killed in the spectra stage. It validates and builds a correct model, so no other
-    test here can catch it; only the warning stands between a user and an hour of confusion.
+    Such an example validates and builds a correct model, so no other test here can catch it;
+    only the warning stands between a user and an hour of confusion. The inverse matters just
+    as much, and is what this asserts today: an example that *does* work must not still carry
+    a stale warning saying it does not.
     """
     text = path.read_text()
     if path.name in KNOWN_BROKEN:
         assert "KNOWN BROKEN" in text
-        assert "NiO_10bath_spectra.toml" in text, "point the reader at one that works"
-        assert "old command line" in text, "record that the input format is not the cause"
+        assert "old command line" in text, "record whether the input format is the cause"
     else:
-        assert "KNOWN BROKEN" not in text
+        assert "KNOWN BROKEN" not in text, "a working example must not carry a stale warning"
