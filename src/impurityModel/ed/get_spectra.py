@@ -171,12 +171,12 @@ def resolve_spectra_switches(options):
     return switches, wIn
 
 
-def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
+def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_filename="spectra.h5"):
     """Find the lowest eigenstates of ``model`` and calculate the requested spectra.
 
     Extracted verbatim from the historical ``get_spectra.main``: builds the many-body ground
     state, derives (or keeps) the block structure, optionally rotates the correlated shell into
-    a symmetry-adapted basis, writes ``spectra.h5`` and calls
+    a symmetry-adapted basis, writes ``output_filename`` and calls
     :func:`impurityModel.ed.spectra.simulate_spectra`.
 
     Parameters
@@ -190,6 +190,12 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
         Nominal occupation, determinant budget and ``tau = k_B * T``.
     comm : mpi4py communicator
         MPI communicator (``MPI.COMM_WORLD`` for the CLI).
+    output_filename : str, optional
+        Where to write the results. The path was hard-coded relative to the working directory,
+        which left a caller wanting them elsewhere with only ``os.chdir`` -- process-global,
+        and unsafe under MPI where every rank shares the interpreter's working directory.
+        Mirrors the keyword :func:`impurityModel.ed.susceptibility.calc_susceptibility_workflow`
+        already had.
     verbosity : int, optional
         Printing level (rank-uniform; printing itself is gated on rank downstream).
         ``None`` -> ``V_RESULT`` (0), the terse default.
@@ -331,7 +337,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None):
     # Save some of the arrays. HDF5-format does not directly support dictionaries.
     h5f = None
     if rank == 0:
-        h5f = h5py.File("spectra.h5", "w")
+        h5f = h5py.File(output_filename, "w")
         h5f.create_dataset("E", data=es)
         h5f.create_dataset("w", data=w)
         h5f.create_dataset("wIn", data=wIn)
