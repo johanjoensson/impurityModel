@@ -33,6 +33,7 @@ self-energies for DMFT-style workflows.
    :caption: Reference
 
    configuration
+   known_issues
    sphinx/_doc_build/impurityModel
 
 
