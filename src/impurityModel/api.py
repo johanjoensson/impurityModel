@@ -18,6 +18,11 @@ unique solution), diagnose the fixed-occupation criterion's DFT
 reference against the continuum hybridization
 (:func:`report_continuum_reference`) and write Green's functions in RSPt's
 .dat format (:func:`save_Greens_function`).
+
+Tuning knobs can also be taken from an input file rather than the environment
+(:func:`find_environment_file`, :func:`load_environment`, :func:`apply_environment`), so a
+run driven from outside this package -- RSPt through ``impurityModel_interface``, say -- can
+still be described by one file instead of a shell's worth of exported variables.
 """
 
 from impurityModel.ed.dc_record import dc_levels, dc_spread
@@ -47,6 +52,11 @@ from impurityModel.ed.selfenergy import (
     sigma_inf_dc,
 )
 from impurityModel.ed.susceptibility import calc_susceptibility_workflow
+from impurityModel.inputformat.reader import (
+    apply_environment,
+    find_environment_file,
+    load_environment,
+)
 
 try:
     from importlib.metadata import PackageNotFoundError, version
@@ -59,6 +69,9 @@ except ImportError:  # pragma: no cover
     __version__ = "unknown"
 
 __all__ = [
+    "apply_environment",
+    "find_environment_file",
+    "load_environment",
     "BasisOptions",
     "DoubleCountingUnreachable",
     "ImpurityModel",
