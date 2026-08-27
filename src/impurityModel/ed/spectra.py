@@ -227,12 +227,12 @@ def simulate_spectra(
 
     if pes:
         if rank == 0:
-            print("Create 3d inverse photoemission and photoemission spectra...")
+            print("Create 3d inverse photoemission and photoemission spectra...", flush=True)
         # Transition operators
         tOpsIPS = inverse_photoemission_operators(nBaths, l=2)
         tOpsPS = photoemission_operators(nBaths, l=2)
         if rank == 0:
-            print("Inverse photoemission Green's function..")
+            print("Inverse photoemission Green's function..", flush=True)
         assert isinstance(hOp, ManyBodyOperator)
         gsIPS = calc_spectra(
             hOp,
@@ -252,7 +252,7 @@ def simulate_spectra(
             equivalence_groups=correlated_groups,
         )
         if rank == 0:
-            print("Photoemission Green's function..")
+            print("Photoemission Green's function..", flush=True)
         gsPS = calc_spectra(
             hOp,
             [ManyBodyOperator(t) for t in tOpsPS],
@@ -278,7 +278,7 @@ def simulate_spectra(
         if rank == 0 and h5f:
             h5f.create_dataset("PS/spectra", data=gs)
         if rank == 0:
-            print("time(PS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
+            print("time(PS) = {:.2f} seconds \n".format(time.perf_counter() - t0), flush=True)
             t0 = time.perf_counter()
 
     if xps:
@@ -310,14 +310,14 @@ def simulate_spectra(
         if rank == 0 and h5f:
             h5f.create_dataset("XPS/spectra", data=gs)
         if rank == 0:
-            print("time(XPS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
+            print("time(XPS) = {:.2f} seconds \n".format(time.perf_counter() - t0), flush=True)
             t0 = time.perf_counter()
 
     # NIXS needs the radial part of the correlated orbitals. Supplying it used to be what
     # switched NIXS on; the switch is now `nixs` and the data is merely required when it is set.
     if nixs and RiNIXS is not None:
         if rank == 0:
-            print("Create NIXS spectra...")
+            print("Create NIXS spectra...", flush=True)
         # Transition operator: exp(iq*r)
         tOps = nixs_operators(nBaths, qsNIXS, liNIXS, ljNIXS, RiNIXS, RjNIXS, radialMesh)
         # Green's function
@@ -344,12 +344,12 @@ def simulate_spectra(
             h5f.create_dataset("NIXS/spectra", data=gs)
 
         if rank == 0:
-            print("time(NIXS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
+            print("time(NIXS) = {:.2f} seconds \n".format(time.perf_counter() - t0), flush=True)
             t0 = time.perf_counter()
 
     if xas:
         if rank == 0:
-            print("Create XAS spectra...")
+            print("Create XAS spectra...", flush=True)
         dN_XAS = dict(
             dN_imp={1: (1, 0), 2: (0, 1)},
             dN_val={1: (0, 0), 2: (1, 0)},
@@ -413,12 +413,12 @@ def simulate_spectra(
             if rank == 0 and h5f:
                 h5f.create_dataset("XAS/tensor", data=chi)
         if rank == 0:
-            print("time(XAS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
+            print("time(XAS) = {:.2f} seconds \n".format(time.perf_counter() - t0), flush=True)
             t0 = time.perf_counter()
 
     if rixs and len(wIn) > 0:
         if rank == 0:
-            print("Create RIXS spectra...")
+            print("Create RIXS spectra...", flush=True)
 
         if RIXS_projectors:
             # Projected operators are not a plain Cartesian linear combination -> keep the
@@ -490,7 +490,7 @@ def simulate_spectra(
                 h5f.create_dataset("RIXS/tensor", data=C.astype(np.complex64))
 
         if rank == 0:
-            print("time(RIXS) = {:.2f} seconds \n".format(time.perf_counter() - t0))
+            print("time(RIXS) = {:.2f} seconds \n".format(time.perf_counter() - t0), flush=True)
             t0 = time.perf_counter()
 
     if rank == 0 and h5f:
