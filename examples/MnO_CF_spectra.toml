@@ -50,14 +50,24 @@ G_cv = [0, 4, 0, 2.3]
 [double_counting.mlft]
 c = 1.5
 
-# --- Cost -------------------------------------------------------------------------------
-# d5, the largest multiplet space of this set. Not measured to completion;
-# expect it to exceed FeO. Treat this as a production run.
+# --- Cost (measured, 4 MPI ranks, OPENBLAS_NUM_THREADS=1) --------------------------------
+# d5, 4812 determinants, 6 retained states. DOES NOT FIT in 15 GB:
+# OOM-killed inside RIXS after 3 h 13 m on 4 ranks (3.0 GB per rank; kernel OOM, not a
+# timeout). It had got through PES, XPS and XAS -- a stack sample taken while it ran showed
+# it inside the RIXS solve, which runs last -- but the archive was being written when the
+# kill landed and is corrupt. RIXS is what does not fit: disable it below, or use a larger
+# machine.
 #
-# PES and XPS dominate, not RIXS: they were 572 s of CoO's 676 s while RIXS was 66 s. If you
-# only want the x-ray spectra, switch them off below -- that took NiO's 10-bath model from
-# minutes to 7 seconds. Runtime scales with the determinant count, which is set by the
-# multiplet space of the d-shell filling, so d5/d6 cost far more than d8.
+# Which spectrum dominates DEPENDS ON SIZE, so there is no single lever. PES and XPS dominate
+# the small cases -- 572 s of CoO's 676 s, against 66 s for RIXS -- but RIXS overtakes them as
+# the basis grows: at FeO it is 8870 s against 4349 s for PES and XPS together, and at MnO it
+# is what exhausts memory. Cost also tracks the retained-state count, not just the determinant
+# count, since RIXS work is per eigenstate.
+#
+# Each spectrum has its own switch below, so the expensive one can be dropped:
+# `[spectroscopy.rixs] enabled = false` is the lever for the large fillings, and
+# `[spectroscopy.pes] / [spectroscopy.xps]` for the small ones. Turning PES and XPS off took
+# NiO's 10-bath model from minutes to 7 seconds.
 
 [spectroscopy]
 # NOTE: run_Mn_MnO_CF.sh passed --nPsiMax, which run_spectra does not read -- the number of
