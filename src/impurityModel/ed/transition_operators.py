@@ -51,12 +51,9 @@ def sph_harm(m, n, theta, phi):
     return sph_harm_y(n, m, phi, theta)
 
 
-def dipole_operators(nBaths, ns):
+def dipole_operators(nBaths, ns, l_core, l_valence):
     r"""
     Return dipole transition operators.
-
-    Transitions between states of different angular momentum,
-    defined by the keys in the nBaths dictionary.
 
     Parameters
     ----------
@@ -64,15 +61,16 @@ def dipole_operators(nBaths, ns):
         angular momentum: number of bath states.
     ns : list
         Each element contains a polarization vector n = [nx,ny,nz]
+    l_core : int
+        Angular momentum of the shell the electron is excited *from*.
+    l_valence : int
+        Angular momentum of the shell the electron is excited *into*.
 
     """
-    tOps = []
-    for n in ns:
-        tOps.append(dipole_operator(nBaths, n))
-    return tOps
+    return [dipole_operator(nBaths, n, l_core, l_valence) for n in ns]
 
 
-def daggered_dipole_operators(nBaths, ns):
+def daggered_dipole_operators(nBaths, ns, l_core, l_valence):
     """
     Return daggered dipole transition operators.
 
@@ -82,20 +80,21 @@ def daggered_dipole_operators(nBaths, ns):
         angular momentum: number of bath states.
     ns : list
         Each element contains a polarization vector n = [nx,ny,nz]
+    l_core, l_valence : int
+        See :func:`dipole_operator`.
 
     """
-    tDaggerOps = []
-    for n in ns:
-        tDaggerOps.append(daggerOp(dipole_operator(nBaths, n)))
-    return tDaggerOps
+    return [daggerOp(dipole_operator(nBaths, n, l_core, l_valence)) for n in ns]
 
 
-def dipole_operator(nBaths, n):
+def dipole_operator(nBaths, n, l_core, l_valence):
     r"""
     Return dipole transition operator :math:`\hat{T}`.
 
-    Transition between states of different angular momentum,
-    defined by the keys in the nBaths dictionary.
+    The two shells are named, not read off ``nBaths.keys()``. Unpacking the dict was correct
+    only while every model had exactly two shells stored core-first, and a dict's key order
+    deciding which way the transition runs is precisely the kind of implicit switch this
+    package has been bitten by before.
 
     Parameters
     ----------
@@ -104,12 +103,20 @@ def dipole_operator(nBaths, n):
         where the keys are angular momenta and values are number of bath states.
     n : list
         polarization vector n = [nx,ny,nz]
+    l_core : int
+        Angular momentum of the shell the electron is excited *from*.
+    l_valence : int
+        Angular momentum of the shell the electron is excited *into*.
 
     """
+    if abs(l_core - l_valence) != 1:
+        raise ValueError(
+            f"A dipole transition between l={l_core} and l={l_valence} is zero by the Gaunt "
+            "selection rule, which requires |l_core - l_valence| = 1."
+        )
     tOp = {}
     nDict = {-1: (n[0] + 1j * n[1]) / sqrt(2), 0: n[2], 1: (-n[0] + 1j * n[1]) / sqrt(2)}
-    # Angular momentum
-    l1, l2 = nBaths.keys()
+    l1, l2 = l_core, l_valence
     for m in range(-l2, l2 + 1):
         for mp in range(-l1, l1 + 1):
             for s in range(2):
@@ -263,7 +270,7 @@ def nixs_operator(nBaths, q, li, lj, Ri, Rj, r, kmin=1):
     return tOp
 
 
-def inverse_photoemission_operators(nBaths, l=2):
+def inverse_photoemission_operators(nBaths, l):
     r"""
     Return inverse photo emission operators :math:`\{ c_i^\dagger \}`.
 
@@ -283,7 +290,7 @@ def inverse_photoemission_operators(nBaths, l=2):
     return tOpsIPS
 
 
-def photoemission_operators(nBaths, l=2):
+def photoemission_operators(nBaths, l):
     r"""
     Return photo emission operators :math:`\{ c_i \}`.
 

@@ -131,6 +131,12 @@ class ImpurityModel:
         derives the bath orbitals and their valence/conduction split from ``h0``.
     n_spin_orbitals : int, optional
         Total number of spin-orbitals (impurity + bath). Derived from ``h0`` when not given.
+    valence_l, core_l : int or None, optional
+        Which shell plays which role, for the multi-shell spectra models that have both. The
+        spectra driver needs this to build its transition operators and occupation windows,
+        and re-deriving it from the bath counts ("the core shell is the bath-less one") is
+        only true of the models RSPt happens to produce. ``None`` on the self-energy path,
+        which has a single correlated shell and no core shell.
     """
 
     h0: dict
@@ -140,6 +146,8 @@ class ImpurityModel:
     u4: Optional[dict] = None
     bath_states: Optional[tuple] = None
     n_spin_orbitals: int = field(default=0)
+    valence_l: Optional[int] = None
+    core_l: Optional[int] = None
 
     def __post_init__(self):
         # Derive the spin-orbital count from h0 when the caller did not supply it. h0 is a
@@ -201,16 +209,19 @@ class ImpurityModel:
         """
         sum_baths = OrderedDict({l: n_baths})
         val_baths = OrderedDict({l: n_baths if n_val_baths is None else n_val_baths})
-        # get_noninteracting_hamiltonian_operator dresses the 2p (l=1) and 3d (l=2) shells
-        # with SOC and the d-shell with the magnetic field; the correlated shell's SOC is
-        # supplied as the 3d entry, matching the self-energy CLI's [0, xi] call.
+        # A single-shell model: core_l=None, so no core SOC operator is built at all. (It used
+        # to be requested as a zero-amplitude l=1 term and filtered out again afterwards, which
+        # only worked because c2i cannot map l=1 labels against a one-shell nBaths dict.)
         h0_op = get_noninteracting_hamiltonian_operator(
-            sum_baths, val_baths, [0.0, xi], tuple(h_field), h0_filename, rank, verbose
+            sum_baths,
+            val_baths,
+            h0_filename,
+            rank,
+            verbose,
+            valence_l=l,
+            xi_valence=xi,
+            hField=tuple(h_field),
         )
-        # Drop identically-zero terms before mapping to integer indices:
-        # get_noninteracting_hamiltonian_operator unconditionally adds a 2p (l=1) SOC
-        # operator whose terms are all 0.0 when xi_2p=0. Those carry l=1 labels that c2i
-        # cannot map against a single l-shell nBaths dict, and they contribute nothing to H.
         h0_single_index = {
             tuple((c2i(sum_baths, spin_orb), action) for spin_orb, action in process): value
             for process, value in h0_op.items()
@@ -394,6 +405,9 @@ class ImpurityModel:
         h_field=(0.0, 0.0, 0.0),
         rank: int = 0,
         verbose: bool = True,
+        *,
+        valence_l: int,
+        core_l: Optional[int] = None,
     ) -> "ImpurityModel":
         """Build a multi-shell (2p core + 3d correlated) interacting model from an ``h0`` file.
 
@@ -425,23 +439,24 @@ class ImpurityModel:
             Non-interacting Hamiltonian of the correlated shell (and, for a labelled file
             only, its bath). See above for supported formats.
         shells : dict
-            ``{l: n_bath}``, one entry per shell (angular momentum). Only ``{1, 2}`` (2p
-            core + 3d correlated) is supported -- the Coulomb assembly
-            (:func:`atomic_physics.get2p3dSlaterCondonUop`), the double counting
-            (:func:`atomic_physics.dc_MLFT`) and the magnetic field
-            (:func:`atomic_physics.gethHfieldop`, hard-coded to ``l=2``) all are.
+            ``{l: n_bath}``, one entry per shell (angular momentum). Its keys must be exactly
+            ``{core_l, valence_l}`` (or ``{valence_l}`` when there is no core shell); which
+            shell plays which role comes from those two arguments, never from this dict's
+            key order.
         val_shells : dict
             ``{l: n_valence_bath}``, same keys as ``shells``.
         n0imps : dict
             ``{l: nominal_occupation}``, used for the double-counting term.
         slater_condon : sequence of sequence of float
-            ``(Fdd, Fpp, Fpd, Gpd)`` Slater-Condon parameters.
+            ``(F_vv, F_cc, F_cv, G_cv)`` Slater-Condon parameters. The three core-valence
+            arrays are ignored when ``core_l`` is ``None``.
         socs : sequence of float
-            ``(xi_2p, xi_3d)`` spin-orbit couplings.
+            ``(xi_core, xi_valence)`` spin-orbit couplings. The first entry is ignored when
+            ``core_l`` is ``None``.
         charge_transfer_correction : float
             Double-counting parameter (RSPt's ``c``).
         h_field : sequence of float, optional
-            Magnetic field ``(hx, hy, hz)``, applied to the 3d shell only.
+            Magnetic field ``(hx, hy, hz)``, applied to the valence shell only.
         rank, verbose
             Forwarded to the reader for rank-0 logging.
 
@@ -454,21 +469,29 @@ class ImpurityModel:
         Raises
         ------
         ValueError
-            If ``shells`` names an angular momentum other than 1 or 2; if ``shells`` and
+            If ``shells``' keys are not exactly ``{core_l, valence_l}``; if ``core_l`` and
+            ``valence_l`` violate the dipole selection rule; if ``shells`` and
             ``val_shells`` do not cover the same angular momenta; if ``h0_filename`` is a flat
-            ``.h0`` and a non-zero ``xi_3d`` was requested while the header either already
+            ``.h0`` and a non-zero valence ``xi`` was requested while the header either already
             declares ``contains_soc: true`` or does not declare ``contains_soc`` at all (absent
             is treated as *unknown*, not *no*; mirrors the analogous guard in
             :meth:`from_h0_text`); or if the header's ``valence_bath`` count disagrees with
             ``val_shells[l]`` for the shell it describes.
         """
-        if set(shells) - {1, 2}:
+        expected_shells = {valence_l} if core_l is None else {core_l, valence_l}
+        if set(shells) != expected_shells:
             raise ValueError(
-                f"from_shells only supports the 2p/3d shells {{1, 2}}, got {sorted(shells)}. "
-                "The interacting assembly (get2p3dSlaterCondonUop, dc_MLFT, the magnetic "
-                "field hard-coded to l=2) is specific to a 2p core + 3d correlated shell; "
-                "a different correlated shell needs that machinery generalised first."
+                f"shells must be exactly the declared angular momenta {sorted(expected_shells)} "
+                f"(valence_l={valence_l}, core_l={core_l}), got {sorted(shells)}."
             )
+        # No dipole selection rule here. `core_l` and `valence_l` say which shell plays which
+        # role in the *Hamiltonian* -- which one carries the field and the valence SOC, which
+        # one the core SOC and the core-valence Coulomb -- and that is meaningful for any pair
+        # of shells. |l_core - l_valence| = 1 constrains a transition *operator*, so it is
+        # checked where one is built (`transition_operators.dipole_operator`) and where a run
+        # asking for core-level spectroscopy is validated (`capabilities.check`, gated on the
+        # enabled techniques). A model that only ever computes PES, a self-energy or a
+        # susceptibility builds no dipole operator and has no reason to obey it.
         if set(shells) != set(val_shells):
             raise ValueError(
                 f"shells and val_shells must cover the same angular momenta: "
@@ -478,17 +501,18 @@ class ImpurityModel:
         shells = OrderedDict(shells)
         val_shells = OrderedDict(val_shells)
 
-        xi_2p, xi_3d = socs
+        xi_core, xi_valence = socs
         parsed_h0 = h0_format.read_h0_file(h0_filename) if h0_format.is_h0_format(h0_filename) else None
-        if parsed_h0 is not None and xi_3d and parsed_h0.contains_soc is not False:
+        if parsed_h0 is not None and xi_valence and parsed_h0.contains_soc is not False:
             reason = (
                 "already contains spin-orbit coupling"
                 if parsed_h0.contains_soc
                 else "does not declare 'contains_soc', so whether it already contains " "spin-orbit coupling is unknown"
             )
             raise ValueError(
-                f"{h0_filename}: the file {reason}; xi_3d={xi_3d} could double-count it. Pass "
-                "xi_3d=0, or regenerate the file with a producer that declares 'contains_soc'."
+                f"{h0_filename}: the file {reason}; the l={valence_l} spin-orbit coupling "
+                f"{xi_valence} could double-count it. Pass 0, or regenerate the file with a "
+                "producer that declares 'contains_soc'."
             )
 
         # c2i order: every impurity shell first (in `shells`' order), then every bath block
@@ -557,17 +581,19 @@ class ImpurityModel:
                 )
             print("Constructing the Hamiltonian operator ...")
 
-        Fdd, Fpp, Fpd, Gpd = slater_condon
         hOp = get_hamiltonian_operator(
             shells,
             val_shells,
-            [Fdd, Fpp, Fpd, Gpd],
-            [xi_2p, xi_3d],
+            list(slater_condon),
             [OrderedDict(n0imps), charge_transfer_correction],
-            h_field,
             h0_filename,
             rank,
             verbose,
+            valence_l=valence_l,
+            xi_valence=xi_valence,
+            hField=h_field,
+            core_l=core_l,
+            xi_core=xi_core,
         )
         return cls(
             h0=hOp,
@@ -578,6 +604,8 @@ class ImpurityModel:
             # The layout offset is the exact spin-orbital total (impurity + bath for every
             # shell), independent of whether every bath orbital appears in an h0 term.
             n_spin_orbitals=offset,
+            valence_l=valence_l,
+            core_l=core_l,
         )
 
     @classmethod
@@ -749,6 +777,8 @@ def load_model(
     slater_condon=None,
     socs=None,
     charge_transfer_correction=None,
+    valence_l=None,
+    core_l=None,
     rank: int = 0,
     verbose: bool = False,
 ) -> "ImpurityModel":
@@ -787,12 +817,13 @@ def load_model(
         Impurity block size, required only by the legacy flat format.
     allow_noninteracting : bool, optional
         Permit a model with no Coulomb tensor; see :meth:`ImpurityModel.from_h0_text`.
-    shells, val_shells, n0imps, slater_condon, socs, charge_transfer_correction
-        The multi-shell (2p core + 3d correlated) spectra path -- see
-        :meth:`ImpurityModel.from_shells`. When ``shells`` is given, every other keyword
-        above (``l``, ``n_baths``, ``slater``, ``xi``, ``n_val_baths``,
+    shells, val_shells, n0imps, slater_condon, socs, charge_transfer_correction, valence_l, core_l
+        The multi-shell (core + correlated) spectra path -- see
+        :meth:`ImpurityModel.from_shells`. ``valence_l`` is required alongside ``shells``;
+        ``core_l`` is ``None`` for a model with no core shell. When ``shells`` is given, every
+        other keyword above (``l``, ``n_baths``, ``slater``, ``xi``, ``n_val_baths``,
         ``n_impurity_orbitals``, ``allow_noninteracting``) is ignored; ``h_field`` still
-        applies (to the 3d shell only).
+        applies (to the valence shell only).
     rank, verbose
         Forwarded to the reader for rank-0 logging.
 
@@ -817,6 +848,8 @@ def load_model(
             h_field=(0.0, 0.0, 0.0) if h_field is None else tuple(h_field),
             rank=rank,
             verbose=verbose,
+            valence_l=valence_l,
+            core_l=core_l,
         )
 
     path = str(h0_filename)

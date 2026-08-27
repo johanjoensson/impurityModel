@@ -51,8 +51,11 @@ Two orthogonal flavors layer on top, from `symmetries.py`:
 - **Weighted restrictions** (`weighted_restriction`, `widen_weighted_restrictions`,
   `sz_weighted_restriction`) — bound a weighted sum of occupations, used to pin `Sz` or an
   eg/t2g ratio without pinning the total.
-- **Frozen-shell generation pins** — a bath-less core shell (e.g. the 2p in an L-edge model)
-  is pinned at generation time so it cannot drain into the valence.
+- **Frozen-shell generation pins** — the core shell (e.g. the 2p in an L-edge model) is
+  pinned at generation time so it cannot drain into the valence. Which shell that is comes
+  from the model's `core_l`, not from "the shell with no bath states": those coincide for
+  every RSPt-produced workload, but a core shell that does carry bath states would otherwise
+  be left unpinned.
 
 ### The rule that keeps covalency
 

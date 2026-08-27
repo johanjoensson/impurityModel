@@ -29,7 +29,7 @@ from impurityModel.ed.symmetries import (
 
 nBaths = OrderedDict({1: 0, 2: 0})  # core p (l=1) + d (l=2), no baths
 N_ORB = 2 * (3 + 5)
-COMPONENTS = dipole_operators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+COMPONENTS = dipole_operators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]], 1, 2)
 CTENSORS = [extract_tensors(op, n_orb=N_ORB)[0] for op in COMPONENTS]
 
 

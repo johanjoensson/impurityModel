@@ -359,20 +359,63 @@ _TABLE_LIST += [
     ),
     Table(
         "hamiltonian.crystal_field",
-        "Build the Hamiltonian from crystal-field parameters. ALL TEN are required: the "
-        "underlying reader fills each absent key from a hard-coded Ni-in-NiO value, so the "
-        "shipped CoO/FeO/MnO files (which set six) silently run with Ni's conduction bath.",
+        "Build the Hamiltonian from an octahedral crystal-field parametrisation. Which keys "
+        "are required depends on the valence shell's l, because its O_h level structure does: "
+        "a d shell has two levels (e_g, t_2g) split by one 10Dq, an f shell has three "
+        "(t_1u, t_2u, a_2u) and needs TWO independent splittings -- one number cannot place "
+        "three levels. The required set is checked when the shell is known, and EVERY key in "
+        "it must be given: the underlying reader fills an absent d-shell key from a hard-coded "
+        "Ni-in-NiO value, so the shipped CoO/FeO/MnO files (which set six) silently ran with "
+        "Ni's conduction bath.",
         (
-            Key("e_imp", Kind.ENERGY, UNSET, "Average valence-shell on-site energy."),
-            Key("e_deltaO_imp", Kind.ENERGY, UNSET, "Cubic (10Dq) splitting of the valence shell."),
-            Key("e_val_eg", Kind.ENERGY, UNSET, "Valence bath level coupled to the eg orbitals."),
-            Key("e_val_t2g", Kind.ENERGY, UNSET, "Valence bath level coupled to the t2g orbitals."),
-            Key("e_con_eg", Kind.ENERGY, UNSET, "Conduction bath level coupled to the eg orbitals."),
-            Key("e_con_t2g", Kind.ENERGY, UNSET, "Conduction bath level coupled to the t2g orbitals."),
-            Key("v_val_eg", Kind.ENERGY, UNSET, "Valence hybridization with the eg orbitals."),
-            Key("v_val_t2g", Kind.ENERGY, UNSET, "Valence hybridization with the t2g orbitals."),
-            Key("v_con_eg", Kind.ENERGY, UNSET, "Conduction hybridization with the eg orbitals."),
-            Key("v_con_t2g", Kind.ENERGY, UNSET, "Conduction hybridization with the t2g orbitals."),
+            Key("e_imp", Kind.ENERGY, None, "Average valence-shell on-site energy."),
+            Key(
+                "e_deltaO_imp",
+                Kind.ENERGY,
+                None,
+                "Rank-4 octahedral splitting of the valence shell -- 10Dq for a d shell. Each "
+                "splitting key is the full spread (highest level minus lowest) that invariant "
+                "alone produces. Required for l >= 2; an l = 0 or 1 shell is a single O_h "
+                "level and has no splitting at all.",
+            ),
+            Key(
+                "e_delta6_imp",
+                Kind.ENERGY,
+                None,
+                "Rank-6 octahedral splitting, for l = 3 only. Independent of e_deltaO_imp: the "
+                "two invariants place the f shell's three levels between them "
+                "(t_1u : t_2u : a_2u = 3 : -1 : -6 for rank 4, 5 : -9 : 12 for rank 6). "
+                "SIGN: both parameters carry the sign a point-charge octahedron produces, so a "
+                "real octahedral field has both POSITIVE. The Stevens form "
+                "B4(O_4^0 + 5 O_4^4) + B6(O_6^0 - 21 O_6^4) does not -- an octahedron gives "
+                "B4 > 0 but B6 < 0 -- so e_deltaO_imp follows B4's sign and e_delta6_imp is the "
+                "OPPOSITE of B6's. Importing B6 from a paper means flipping it. To set both from "
+                "two level splittings instead, with d1 = E(t_1u) - E(a_2u) and "
+                "d2 = E(t_2u) - E(a_2u): e_deltaO_imp = 9*(3*d1 - d2)/22, "
+                "e_delta6_imp = 3*(e_deltaO_imp - d1).",
+            ),
+        )
+        + tuple(
+            Key(
+                f"{prefix}_{irrep}",
+                Kind.ENERGY,
+                None,
+                f"{what} the {irrep} orbitals. Give this for a valence shell whose octahedral "
+                f"levels include {irrep} (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u).",
+            )
+            # Bath rows, one key per octahedral irrep. The irreps are listed rather than
+            # derived so this module stays a leaf, but they are the same set
+            # `atomic_physics.OCTAHEDRAL_LEVELS` tabulates, and `cf_parameter_names` is what
+            # decides which subset a given shell must supply.
+            for prefix, what in (
+                ("e_val", "Valence bath level coupled to"),
+                ("e_con", "Conduction bath level coupled to"),
+                ("v_val", "Valence hybridization with"),
+                ("v_con", "Conduction hybridization with"),
+            )
+            for irrep in ("a1g", "t1u", "eg", "t2g", "t2u", "a2u")
+        )
+        + (
             Key(
                 "bath_state_basis",
                 Kind.ENUM,
@@ -428,10 +471,10 @@ _TABLE_LIST += [
                 "l",
                 Kind.COUNT,
                 UNSET,
-                "Angular momentum. UNRESTRICTED by this schema: the format must be able to "
-                "express any (core l, valence l) pair before the solver can execute it, or it "
-                "needs replacing the day the 2p/3d restriction lifts. What the solver can "
-                "actually do is checked separately -- see inputformat.capabilities.",
+                "Angular momentum. UNRESTRICTED by this schema, and the solver now follows: "
+                "any dipole-allowed (core l, valence l) pair is assembled on the shells "
+                "declared here. What the solver can actually do is still checked separately "
+                "-- see inputformat.capabilities.",
                 minimum=0,
             ),
             Key(
@@ -500,8 +543,22 @@ _TABLE_LIST += [
         (
             Key("F_vv", Kind.ENERGY_LIST, UNSET, "Valence-valence F^k (was Fdd). Length 2*l_v + 1."),
             Key("F_cc", Kind.ENERGY_LIST, None, "Core-core F^k (was Fpp). Length 2*l_c + 1."),
-            Key("F_cv", Kind.ENERGY_LIST, None, "Core-valence direct F^k (was Fpd). Length 2*l_c + 1."),
-            Key("G_cv", Kind.ENERGY_LIST, None, "Core-valence exchange G^k (was Gpd). Length 2*l_c + 2."),
+            Key(
+                "F_cv",
+                Kind.ENERGY_LIST,
+                None,
+                "Core-valence direct F^k (was Fpd), indexed by k. Length 2*min(l_v, l_c) + 1, "
+                "which is the familiar 2*l_c + 1 whenever the core shell is the lower one.",
+            ),
+            Key(
+                "G_cv",
+                Kind.ENERGY_LIST,
+                None,
+                "Core-valence exchange G^k (was Gpd), indexed by k. Length l_v + l_c + 1 -- "
+                "the same as the familiar 2*l_c + 2 at every dipole-allowed edge, and longer "
+                "only for a shell pair more than one apart, which the roles allow but no "
+                "transition operator does.",
+            ),
         ),
         variant_of="interaction",
     ),
@@ -709,9 +766,10 @@ _TABLE_LIST += [
                 Kind.BOOL,
                 True,
                 "Derive the block structure and symmetry-adapted solver basis from the "
-                "hybridization-dressed impurity matrix instead of the hand-coded 2p/3d one. A "
-                "solver-basis decision (it replaces the Hamiltonian operator the solve runs "
-                "on), which is why it lives here and not under a spectroscopy table.",
+                "hybridization-dressed impurity matrix instead of the fall-back one block per "
+                "shell. A solver-basis decision (it replaces the Hamiltonian operator the "
+                "solve runs on), which is why it lives here and not under a spectroscopy "
+                "table.",
             ),
         ),
     ),
@@ -819,8 +877,22 @@ _TABLE_LIST += [
                 "length, so [units].energy does not touch it. Any direction is fine, the pole "
                 "included; |q| = 0 is refused, having no scattering direction.",
             ),
-            Key("l_final", Kind.COUNT, 2, "Angular momentum of the final orbitals (was liNIXS).", minimum=0),
-            Key("l_initial", Kind.COUNT, 2, "Angular momentum of the initial orbitals (was ljNIXS).", minimum=0),
+            Key(
+                "l_final",
+                Kind.COUNT,
+                None,
+                "Angular momentum of the final orbitals (was liNIXS). Omitted means the "
+                "valence shell's l -- NIXS is a valence probe, so a fixed default of 2 would "
+                "silently give a non-d model the d shell's angular momentum.",
+                minimum=0,
+            ),
+            Key(
+                "l_initial",
+                Kind.COUNT,
+                None,
+                "Angular momentum of the initial orbitals (was ljNIXS). Omitted means the " "valence shell's l.",
+                minimum=0,
+            ),
         ),
     ),
 ]
@@ -942,11 +1014,33 @@ def dump() -> str:
         "bare matrix). A shell whose Hamiltonian is never read has no bath at all, which is the",
         "normal case for a core shell. Every deduction is reported by `--show-resolved`.",
         "",
-        "**Angular momenta.** `l` is unrestricted here: the format can describe any core/valence",
-        "pair. What the current solver can *run* is checked separately, and an unsupported",
-        "combination exits saying so and naming what would have to change -- as opposed to a",
-        "combination that is wrong at any generality (a dipole transition with",
-        "|l_core - l_valence| != 1 is zero by selection rule), which is reported as invalid input.",
+        "**Angular momenta.** `l` is unrestricted here, and the solver follows: any",
+        "dipole-allowed core/valence pair is assembled on the shells declared, whether that is",
+        "an L2,3 edge (2p -> 3d), a K edge (1s -> 2p) or an M4,5 edge (3d -> 4f). What the",
+        "current solver can *run* is still checked separately, and an unsupported combination",
+        "exits saying so and naming what would have to change -- as opposed to a combination",
+        "that is wrong at any generality (a dipole transition with |l_core - l_valence| != 1 is",
+        "zero by selection rule), which is reported as invalid input.",
+        "",
+        "`[hamiltonian.crystal_field]` follows the valence shell's octahedral level structure",
+        "rather than assuming a d shell: e_g / t_2g under one 10Dq for l=2, and t_1u / t_2u /",
+        "a_2u under TWO independent splittings for l=3, because the O_h invariants of an f",
+        "shell span a two-dimensional space and one number cannot place three levels. From",
+        "l=4 up there is no such parametrisation -- an irrep repeats and the point group alone",
+        "no longer fixes the basis -- so those shells need a `.h0` file.",
+        "",
+        "Which keys are required follows the *model*, not just the shell. `n_bath = 0` is the",
+        "Hubbard-I approximation -- a correlated shell diagonalised with no hybridization --",
+        "and it needs only `e_imp` and its splittings; a bath block that is absent drops its",
+        "`e_val_*`/`v_val_*` or `e_con_*`/`v_con_*` rows rather than demanding values nothing",
+        "reads. Every required key must still be given. A bath block is all-or-nothing: one",
+        "partner per impurity spin-orbital, so a partial count is refused rather than halved.",
+        "",
+        "**Shell roles.** `role` says which shell carries the core spin-orbit term and which",
+        "the field, the valence spin-orbit term and the double counting -- meaningful for any",
+        "pair of shells. Only XPS/XAS/RIXS build a transition operator between them, and only",
+        "those are bound by |l_core - l_valence| = 1. A PES-only, self-energy or",
+        "susceptibility run puts no constraint on the two angular momenta at all.",
         "",
         "**Compatibility.** `[format].version` is `[major, minor]`. A newer major is refused. An",
         "unknown key is a typo (error) when the file's minor is at or below this reader's, and a",

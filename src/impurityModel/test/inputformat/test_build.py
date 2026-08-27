@@ -105,6 +105,8 @@ def test_a_toml_run_builds_the_same_model_as_the_command_line_it_replaces(writte
         (0, 0, 0.0001),
         rank=0,
         verbose=False,
+        valence_l=2,
+        core_l=1,
     )
     assert built.model.n_spin_orbitals == reference.n_spin_orbitals
     assert built.model.impurity_orbitals == reference.impurity_orbitals

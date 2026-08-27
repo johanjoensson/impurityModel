@@ -28,6 +28,8 @@ def _layout(shells, val_shells, h0_filename):
         h_field=(0.0, 0.0, 0.0),
         rank=0,
         verbose=False,
+        valence_l=2,
+        core_l=1,
     )
     valence, conduction = model.bath_states
     flat = lambda d, l: sorted(i for block in d[l] for i in block)  # noqa: E731

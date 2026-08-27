@@ -115,7 +115,7 @@ def test_irrep_projected_transition_operators_sum_to_the_total():
     transition operator exactly. This is the end-to-end check that the label conversion,
     the normal ordering and the matrix product all agree.
     """
-    t_op = dipole_operator(_NBATHS, [0, 0, 1])
+    t_op = dipole_operator(_NBATHS, [0, 0, 1], 1, 2)
     projected = [combineOp(_NBATHS, op2Dict(_NBATHS, _irrep_projector(name)), t_op) for name in _CUBIC_COLUMNS]
     reconstructed = sum(iOpToMatrix(_NBATHS, p) for p in projected)
     np.testing.assert_allclose(reconstructed, iOpToMatrix(_NBATHS, t_op), atol=1e-14)

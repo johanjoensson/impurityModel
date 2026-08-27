@@ -205,15 +205,21 @@ def test_bath_counts_may_be_omitted(write_input):
     assert "n_bath" not in resolved.shells[1]
 
 
-def test_a_shell_l_the_solver_cannot_handle_still_parses_then_fails_on_capability(write_input):
-    """The future-proofing contract: valid input, unsupported solver, and they read differently."""
+def test_an_m45_edge_resolves(write_input):
+    """The file the capability gate used to refuse: an M4,5 (3d -> 4f) spectroscopy run.
+
+    The Slater array lengths follow the declared angular momenta, so widening the shells means
+    widening every array with them -- which is the whole reason the schema derives the lengths
+    instead of restating l_core / l_valence as keys.
+    """
     text = MINIMAL_SPECTROSCOPY.replace('l = 1\nrole = "core"', 'l = 2\nrole = "core"')
     text = text.replace('l = 2\nrole = "valence"', 'l = 3\nrole = "valence"')
     text = text.replace("F_vv = [7.5, 0, 9.9, 0, 6.6]", "F_vv = [7.5, 0, 9.9, 0, 6.6, 0, 5.0]")
-    with pytest.raises(UnsupportedCalculation) as excinfo:
-        load_input(write_input(text))
-    assert "The input file is valid" in str(excinfo.value)
-    assert "M4,5" in str(excinfo.value)
+    text = text.replace("F_cc = [0.0, 0.0, 0.0]", "F_cc = [0.0, 0.0, 0.0, 0.0, 0.0]")
+    text = text.replace("F_cv = [8.9, 0, 6.8]", "F_cv = [8.9, 0, 6.8, 0, 4.1]")
+    text = text.replace("G_cv = [0, 5.0, 0, 2.8]", "G_cv = [0, 5.0, 0, 2.8, 0, 1.4]")
+    resolved = load_input(write_input(text))
+    assert [shell["l"] for shell in resolved.shells] == [2, 3]
 
 
 def test_a_forbidden_transition_is_invalid_input_not_an_unsupported_one(write_input):

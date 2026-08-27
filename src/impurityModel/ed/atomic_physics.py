@@ -16,24 +16,40 @@ from sympy import Rational
 from impurityModel.ed.operator_algebra import addOps
 
 
-def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):
+def dc_MLFT(lv, n_val_i, c, Fvv, lc=None, n_core_i=None, Fcv=None, Gcv=None):
     r"""
     Return double counting (DC) in multiplet ligand field theory.
 
+    Shell-agnostic: the spherical-average combinations that define the average valence-valence
+    and core-valence repulsions are taken from :func:`intra_orbital_coefficients` and
+    :func:`inter_orbital_coefficients` rather than written out for the 3d/2p case. For
+    ``lv=2, lc=1`` those coefficients are exactly ``14/441 == 2/63`` and ``(1/15, 3/70)``, so
+    this reproduces the historical ``Udd``/``Upd`` expressions identically.
+
     Parameters
     ----------
-    n3d_i : int
-        Nominal (integer) 3d occupation.
+    lv : int
+        Angular momentum of the valence shell.
+    n_val_i : int
+        Nominal (integer) valence occupation.
     c : float
         Many-body correction to the charge transfer energy.
-    n2p_i : int
-        Nominal (integer) 2p occupation.
-    Fdd : list
-        Slater integrals {F_{dd}^k}, k \in [0,1,2,3,4]
-    Fpd : list
-        Slater integrals {F_{pd}^k}, k \in [0,1,2]
-    Gpd : list
-        Slater integrals {G_{pd}^k}, k \in [0,1,2,3]
+    Fvv : sequence of float
+        Slater integrals :math:`F^k_{vv}`, ``2*lv + 1`` components.
+    lc : int, optional
+        Angular momentum of the core shell. ``None`` for a valence-only double counting.
+    n_core_i : int, optional
+        Nominal (integer) core occupation. Must be the *filled* shell,
+        ``2*(2*lc + 1)`` -- the MLFT core-hole prescription is written for a full core.
+    Fcv : sequence of float, optional
+        Slater integrals :math:`F^k_{cv}`, ``2*lc + 1`` components.
+    Gcv : sequence of float, optional
+        Slater integrals :math:`G^k_{cv}`, ``2*lc + 2`` components.
+
+    Returns
+    -------
+    dict
+        ``{lv: dc_valence}``, or ``{lv: dc_valence, lc: dc_core}`` when a core shell is given.
 
     Notes
     -----
@@ -43,20 +59,51 @@ def dc_MLFT(n3d_i, c, Fdd, n2p_i=None, Fpd=None, Gpd=None):
     .. math:: \Delta_{CT} = (e_d-e_b) + c.
 
     """
-    if not int(n3d_i) == n3d_i:
-        raise ValueError("3d occupation should be an integer")
-    if n2p_i is not None and int(n2p_i) != n2p_i:
-        raise ValueError("2p occupation should be an integer")
+    if int(n_val_i) != n_val_i:
+        raise ValueError(f"valence (l={lv}) occupation should be an integer, got {n_val_i}")
+    if n_core_i is not None and int(n_core_i) != n_core_i:
+        raise ValueError(f"core (l={lc}) occupation should be an integer, got {n_core_i}")
+    if len(Fvv) != 2 * lv + 1:
+        raise ValueError(f"Fvv has {len(Fvv)} components, but l_valence={lv} requires {2 * lv + 1}.")
 
-    # Average repulsion energy defines Udd and Upd
-    Udd = Fdd[0] - 14.0 / 441 * (Fdd[2] + Fdd[4])
-    if n2p_i is None and Fpd is None and Gpd is None:
-        return {2: Udd * n3d_i - c}
-    if n2p_i == 6 and Fpd is not None and Gpd is not None:
-        Upd = Fpd[0] - (1 / 15.0) * Gpd[1] - (3 / 70.0) * Gpd[3]
-        return {2: Udd * n3d_i + Upd * n2p_i - c, 1: Upd * (n3d_i + 1) - c}
-    else:
-        raise ValueError("double counting input wrong.")
+    # Average valence-valence repulsion: F^0 minus the spherical average of the higher F^k.
+    Uvv = Fvv[0] - sum(
+        float(coeff) * Fvv[k] for k, coeff in zip(intra_orbital_k_values(lv), intra_orbital_coefficients(lv))
+    )
+
+    core_given = (lc, n_core_i, Fcv, Gcv)
+    if all(x is None for x in core_given):
+        return {lv: Uvv * n_val_i - c}
+    if any(x is None for x in core_given):
+        raise ValueError(
+            "double counting input wrong: a core shell needs all of lc, n_core_i, Fcv and Gcv, "
+            f"got lc={lc}, n_core_i={n_core_i}, "
+            f"Fcv={'given' if Fcv is not None else None}, Gcv={'given' if Gcv is not None else None}."
+        )
+    if n_core_i != 2 * (2 * lc + 1):
+        raise ValueError(
+            f"double counting input wrong: the MLFT core-hole prescription assumes a filled "
+            f"core shell, i.e. n_core_i = {2 * (2 * lc + 1)} for l={lc}, got {n_core_i}."
+        )
+    if len(Fcv) != direct_array_length(lv, lc):
+        raise ValueError(
+            f"Fcv has {len(Fcv)} components, but l_valence={lv} / l_core={lc} "
+            f"requires {direct_array_length(lv, lc)}."
+        )
+    if len(Gcv) != exchange_array_length(lv, lc):
+        raise ValueError(
+            f"Gcv has {len(Gcv)} components, but l_valence={lv} / l_core={lc} "
+            f"requires {exchange_array_length(lv, lc)}."
+        )
+
+    # Average core-valence repulsion: F^0_cv minus the spherical average of the exchange G^k.
+    Ucv = Fcv[0] - sum(
+        float(coeff) * Gcv[k] for k, coeff in zip(inter_orbital_k_values(lv, lc), inter_orbital_coefficients(lv, lc))
+    )
+    return {
+        lv: Uvv * n_val_i + Ucv * n_core_i - c,
+        lc: Ucv * (n_val_i + 1) - c,
+    }
 
 
 def uj_from_u4(u4, tol=1e-8):
@@ -134,21 +181,97 @@ def uj_from_u4(u4, tol=1e-8):
     return U, J
 
 
+#: Octahedral (O_h) level structure of a single ``l`` shell.
+#:
+#: Each entry is ``(irrep, degeneracy, weights)`` in the **column order** of
+#: :func:`get_spherical_2_cubic_matrix`, so a caller can fill a diagonal matrix from it
+#: without re-hardcoding that order. ``weights`` holds one traceless weight per independent
+#: octahedral invariant (rank 4, then rank 6), normalised so that the highest and lowest
+#: level of that invariant differ by exactly one -- which makes the rank-4 weight of a d
+#: shell ``(3/5, -2/5)``, i.e. the historical ``e_deltaO_imp`` = 10Dq.
+#:
+#: The table is derived, not asserted: ``test_atomic_physics`` rebuilds every entry by
+#: diagonalising the octahedral point-charge crystal field built from ``gauntC``.
+#:
+#: s and p have a single level (a1g, t1u), so no splitting parameter exists for them. l=3
+#: has two independent invariants, which is why a single ``e_deltaO_imp`` cannot describe an
+#: f shell. From l=5 up, irreps repeat (t1u twice) and the point group alone no longer fixes
+#: the basis, so no such table can exist.
+OCTAHEDRAL_LEVELS = {
+    0: (("a1g", 1, ()),),
+    1: (("t1u", 3, ()),),
+    2: (("eg", 2, (3 / 5,)), ("t2g", 3, (-2 / 5,))),
+    3: (("t1u", 3, (1 / 3, 5 / 21)), ("t2u", 3, (-1 / 9, -3 / 7)), ("a2u", 1, (-2 / 3, 4 / 7))),
+}
+
+#: Angular momenta :func:`get_spherical_2_cubic_matrix` and :data:`OCTAHEDRAL_LEVELS` cover.
+CUBIC_HARMONIC_SHELLS = tuple(sorted(OCTAHEDRAL_LEVELS))
+
+
+def octahedral_level_structure(l):
+    """Return the O_h level structure of an ``l`` shell, or raise saying why there is none.
+
+    Parameters
+    ----------
+    l : int
+        Angular momentum of the shell.
+
+    Returns
+    -------
+    tuple
+        ``(irrep, degeneracy, weights)`` per level, in the column order of
+        :func:`get_spherical_2_cubic_matrix`. See :data:`OCTAHEDRAL_LEVELS`.
+
+    Raises
+    ------
+    ValueError
+        If ``l`` has no tabulated octahedral level structure.
+    """
+    try:
+        return OCTAHEDRAL_LEVELS[l]
+    except KeyError:
+        raise ValueError(
+            f"No octahedral level structure for l={l}. Implemented: "
+            f"{', '.join(f'l={k}' for k in CUBIC_HARMONIC_SHELLS)} (s, p, d, f). From l=5 up "
+            "an irrep appears more than once in the O_h decomposition, so the point group "
+            "alone does not fix the symmetry-adapted basis and no cubic parametrisation is "
+            "well defined; supply a .h0 file instead."
+        ) from None
+
+
+def n_octahedral_splittings(l):
+    """Number of independent octahedral splitting parameters an ``l`` shell has.
+
+    One fewer than its number of distinct levels: 0 for s and p, 1 for d (10Dq), 2 for f.
+    """
+    return len(octahedral_level_structure(l)[0][2])
+
+
 def get_spherical_2_cubic_matrix(spinpol=False, l=2):
     r"""
     Return unitary ndarray for transforming from spherical to cubic harmonics.
+
+    The columns are the octahedral symmetry-adapted (cubic harmonic) orbitals, **grouped and
+    ordered by O_h level** to match :func:`octahedral_level_structure`: for a d shell
+    ``(e_g, e_g, t_2g, t_2g, t_2g)``, for an f shell ``(t_1u x3, t_2u x3, a_2u)``.
 
     Parameters
     ----------
     spinpol : boolean
         If transformation involves spin.
     l : integer
-        Angular momentum number. p: l=1, d: l=2.
+        Angular momentum number. s: l=0, p: l=1, d: l=2, f: l=3.
 
     Returns
     -------
     u : (M,M) ndarray
         The unitary matrix from spherical to cubic harmonics.
+
+    Raises
+    ------
+    ValueError
+        If ``l`` is outside :data:`CUBIC_HARMONIC_SHELLS`. It used to fall off the end of the
+        ``if``/``elif`` chain and raise ``UnboundLocalError`` on an undefined ``u``.
 
     Notes
     -----
@@ -158,8 +281,15 @@ def get_spherical_2_cubic_matrix(spinpol=False, l=2):
     .. math:: \lvert l_j \rangle  = \sum_{i=0}^4 u_{d,(i,j)}
         \lvert Y_{d,i} \rangle.
 
+    The f-shell columns are the O_h-adapted set, which is *not* the plain real-harmonic set:
+    :math:`f_{x^3}` mixes :math:`f_{xz^2}` and :math:`f_{x(x^2-3y^2)}` with weights
+    :math:`\sqrt{3/8}` and :math:`-\sqrt{5/8}`. Using the unmixed real harmonics would leave
+    the rank-4 crystal field non-diagonal, silently coupling t_1u to t_2u.
+
     """
-    if l == 1:
+    if l == 0:
+        u = np.ones((1, 1), dtype=complex)
+    elif l == 1:
         # u = np.zeros((3,3),dtype=complex)
         u = np.zeros((3, 3), dtype=complex)
         u[0, 0] = 1j / np.sqrt(2)
@@ -178,6 +308,40 @@ def get_spherical_2_cubic_matrix(spinpol=False, l=2):
         u[-2, 3] = -1 / np.sqrt(2)
         u[0, 4] = 1j / np.sqrt(2)
         u[-1, 4] = -1j / np.sqrt(2)
+    elif l == 3:
+        # Built from the real harmonics rather than written out as 28 literals: the two
+        # mixing angles are the whole content of the f case, and they are visible here.
+        def cos_m(m):
+            v = np.zeros(7, dtype=complex)
+            v[3 - m] = 1 / np.sqrt(2)
+            v[3 + m] = (-1) ** m / np.sqrt(2)
+            return v
+
+        def sin_m(m):
+            v = np.zeros(7, dtype=complex)
+            v[3 - m] = 1j / np.sqrt(2)
+            v[3 + m] = -1j * (-1) ** m / np.sqrt(2)
+            return v
+
+        f_z3 = np.zeros(7, dtype=complex)
+        f_z3[3] = 1
+        a, b = np.sqrt(3 / 8), np.sqrt(5 / 8)
+        u = np.array(
+            [
+                f_z3,  # t1u  f_z^3
+                a * cos_m(1) - b * cos_m(3),  # t1u  f_x^3
+                a * sin_m(1) + b * sin_m(3),  # t1u  f_y^3
+                cos_m(2),  # t2u  f_z(x^2-y^2)
+                b * cos_m(1) + a * cos_m(3),  # t2u  f_x(y^2-z^2)
+                b * sin_m(1) - a * sin_m(3),  # t2u  f_y(z^2-x^2)
+                sin_m(2),  # a2u  f_xyz
+            ]
+        ).T
+    else:
+        raise ValueError(
+            f"get_spherical_2_cubic_matrix has no cubic harmonics for l={l}. Implemented: "
+            f"{', '.join(f'l={k}' for k in CUBIC_HARMONIC_SHELLS)} (s, p, d, f)."
+        )
     if spinpol:
         n, m = np.shape(u)
         # U = np.zeros((2*n,2*m),dtype=complex)
@@ -326,43 +490,117 @@ def getUop(l1, l2, l3, l4, R):
     return uDict
 
 
+def intra_orbital_k_values(l: int):
+    """Return the ``k`` for which a same-shell :math:`F^k` contributes, excluding ``k = 0``."""
+    return tuple(range(2, 2 * l + 1, 2))
+
+
+def inter_orbital_k_values(lv: int, lc: int):
+    """Return the ``k`` for which an inter-shell :math:`G^k` contributes."""
+    return tuple(k for k in range(abs(lv - lc), lc + lv + 1) if (lc + lv + k) % 2 == 0)
+
+
 def intra_orbital_coefficients(l: int):
     """
     Calculates the same shell spherical average coefficients for
-    the F^k terms, k > 0. Returns only the even numbered coefficients.
+    the F^k terms, k > 0. Returns one coefficient per entry of
+    :func:`intra_orbital_k_values`, in the same order.
     """
-    coefficients = []
-    for k in range(2, 2 * l + 1, 2):
-        wj = wigner_3j(l, k, l, 0, 0, 0)
-        coefficients.append(Rational((2 * l + 1), (4 * l + 1)) * (wj**2))
-    return tuple(coefficients)
+    return tuple(
+        Rational((2 * l + 1), (4 * l + 1)) * (wigner_3j(l, k, l, 0, 0, 0) ** 2) for k in intra_orbital_k_values(l)
+    )
 
 
 def inter_orbital_coefficients(lv: int, lc: int):
     """
     Calculates the inter shell spherical average coefficients for
-    the G^k terms, k > 0. Returns only the even numbered coefficients.
+    the G^k terms, k > 0. Returns one coefficient per entry of
+    :func:`inter_orbital_k_values`, in the same order.
     """
-    start_k = abs(lv - lc)
-    stop_k = lc + lv
-    coefficients = []
-    for k in range(start_k, stop_k + 1):
-        if (lc + lv + k) % 2 == 0:
-            wj = wigner_3j(lc, k, lv, 0, 0, 0)
-            coefficients.append(Rational(1, 2) * wj**2)
-    return tuple(coefficients)
+    return tuple(Rational(1, 2) * wigner_3j(lc, k, lv, 0, 0, 0) ** 2 for k in inter_orbital_k_values(lv, lc))
 
 
-def slater_condon_Uop(Fvv: tuple, Fcc: Optional[tuple], Fcv: Optional[tuple], Gcv: Optional[tuple]):
-    assert len(Fvv) % 2 == 1, "Fvv must have 2lv+1 components"
-    if Fcc is not None:
-        assert len(Fcc) % 2 == 1, "Fpp must have 2lc+1 components"
-    if Fcv is not None:
-        assert len(Fcv) == len(Fcc), "Fpp and Fpd must have the same number of components"
-    if Gcv is not None:
-        assert len(Gcv) == len(Fcc) + 1, "Gpd must have 2lc+2 components"
-    lv = (len(Fvv) - 1) // 2
-    lc = (len(Fcc) - 1) // 2
+def exchange_array_length(lv, lc):
+    """Number of ``G^k_cv`` components a core/valence pair needs.
+
+    The exchange integrals run over ``|lv - lc| <= k <= lv + lc``, and the arrays are indexed
+    by ``k`` itself, so the array must reach ``k = lv + lc``.
+
+    The historical spelling was ``2*lc + 2``, which is the same number **only** when
+    ``lv = lc + 1`` -- true of every dipole-allowed edge, and so of every input this package
+    had ever seen. It is wrong the moment the two shells are not one apart: a 1s core under a
+    3d valence shell needs ``G^2``, which ``2*lc + 2 = 2`` does not reach, and the general
+    assembler raised ``IndexError`` on it. Shell roles are meaningful for any pair (they say
+    which shell carries the core SOC and which way the core-valence Coulomb runs); only a
+    transition *operator* is bound by |lv - lc| = 1.
+    """
+    return lv + lc + 1
+
+
+def direct_array_length(lv, lc):
+    """Number of ``F^k_cv`` components a core/valence pair needs.
+
+    The direct integrals run over even ``k`` up to ``2*min(lv, lc)``, so for a core shell
+    below the valence shell this is the historical ``2*lc + 1`` at every pair, not just the
+    dipole-allowed ones.
+    """
+    return 2 * min(lv, lc) + 1
+
+
+def _check_slater_length(name, values, expected, lv, lc):
+    """Cross-check one Slater-Condon array against the length its shells imply."""
+    if values is not None and len(values) != expected:
+        raise ValueError(
+            f"{name} has {len(values)} components, but l_valence={lv} / l_core={lc} " f"requires {expected}."
+        )
+
+
+def slater_condon_Uop(lv, lc, Fvv, Fcc=None, Fcv=None, Gcv=None):
+    r"""Return the Coulomb operator for a valence shell plus an optional core shell.
+
+    Shell-agnostic replacement for :func:`get2p3dSlaterCondonUop`: the angular momenta are
+    passed in explicitly rather than inferred from the array lengths. Inference would be
+    ambiguous exactly where it matters -- an omitted (``None``) array carries no length, and
+    a zero-filled placeholder carries the *wrong* one -- so ``lv``/``lc`` are the single
+    source of truth and the lengths are only cross-checked against them.
+
+    Parameters
+    ----------
+    lv : int
+        Angular momentum of the valence shell.
+    lc : int or None
+        Angular momentum of the core shell, or ``None`` when there is no core shell (in
+        which case ``Fcc``, ``Fcv`` and ``Gcv`` must all be ``None``).
+    Fvv : sequence of float
+        Valence-valence direct integrals :math:`F^k_{vv}`, ``2*lv + 1`` components.
+    Fcc : sequence of float, optional
+        Core-core direct integrals :math:`F^k_{cc}`, ``2*lc + 1`` components.
+    Fcv : sequence of float, optional
+        Core-valence direct integrals :math:`F^k_{cv}`, ``2*lc + 1`` components.
+    Gcv : sequence of float, optional
+        Core-valence exchange integrals :math:`G^k_{cv}`, ``2*lc + 2`` components.
+
+    Returns
+    -------
+    dict
+        The Coulomb operator, in ``(l, s, m)`` label form.
+
+    Raises
+    ------
+    ValueError
+        If an array's length disagrees with the angular momenta, or if a core-shell array
+        is given without an ``lc``.
+    """
+    _check_slater_length("Fvv", Fvv, 2 * lv + 1, lv, lc)
+    if lc is None:
+        for name, values in (("Fcc", Fcc), ("Fcv", Fcv), ("Gcv", Gcv)):
+            if values is not None:
+                raise ValueError(f"{name} was given, but lc is None: there is no core shell to put it on.")
+    else:
+        _check_slater_length("Fcc", Fcc, 2 * lc + 1, lv, lc)
+        _check_slater_length("Fcv", Fcv, direct_array_length(lv, lc), lv, lc)
+        _check_slater_length("Gcv", Gcv, exchange_array_length(lv, lc), lv, lc)
+
     U = getUop(l1=lv, l2=lv, l3=lv, l4=lv, R=Fvv)
     if Fcc is not None:
         U = addOps([U, getUop(l1=lc, l2=lc, l3=lc, l4=lc, R=Fcc)])

@@ -75,20 +75,31 @@ def test_only_rank_zero_touches_the_filesystem(tmp_path, monkeypatch):
 
 
 @pytest.mark.mpi
-def test_an_unsupported_calculation_keeps_its_type_across_the_broadcast(tmp_path):
-    """A caller must still be able to tell "not yet" from "your file is wrong" on every rank."""
-    from impurityModel.inputformat.capabilities import UnsupportedCalculation
+def test_a_refusal_keeps_its_type_across_the_broadcast(tmp_path):
+    """A caller must still be able to tell "not yet" from "your file is wrong" on every rank.
+
+    The two refusals are broadcast as themselves, not collapsed into a generic error. The
+    example here is a selection-rule violation rather than an unsupported edge, because the
+    solver now runs every edge -- but the distinction the broadcast has to preserve is the
+    same one, and ``UnsupportedCalculation`` is still reachable (a core shell on a
+    single-shell calculation).
+    """
+    from impurityModel.inputformat.capabilities import InvalidShellCombination
 
     comm = MPI.COMM_WORLD
+    # l_core = 2, l_valence = 4: |l_c - l_v| = 2, zero by the Gaunt selection rule.
     text = MINIMAL_SPECTROSCOPY.replace('l = 1\nrole = "core"', 'l = 2\nrole = "core"')
-    text = text.replace('l = 2\nrole = "valence"', 'l = 3\nrole = "valence"')
-    text = text.replace("F_vv = [7.5, 0, 9.9, 0, 6.6]", "F_vv = [7.5, 0, 9.9, 0, 6.6, 0, 5.0]")
+    text = text.replace('l = 2\nrole = "valence"', 'l = 4\nrole = "valence"')
+    text = text.replace("F_vv = [7.5, 0, 9.9, 0, 6.6]", "F_vv = [7.5, 0, 9.9, 0, 6.6, 0, 5.0, 0, 3.0, 0]")
+    text = text.replace("F_cc = [0, 0, 0]", "F_cc = [0, 0, 0, 0, 0]")
+    text = text.replace("F_cv = [8.9, 0, 6.8]", "F_cv = [8.9, 0, 6.8, 0, 4.1]")
+    text = text.replace("G_cv = [0, 5.0, 0, 2.8]", "G_cv = [0, 5.0, 0, 2.8, 0, 1.4]")
     path = _shared_input(tmp_path, text)
     kind = None
     try:
         load_input(path, comm=comm)
-    except UnsupportedCalculation:
-        kind = "unsupported"
+    except InvalidShellCombination:
+        kind = "invalid_shells"
     except InputError:
         kind = "invalid"
-    assert all(k == "unsupported" for k in comm.allgather(kind))
+    assert all(k == "invalid_shells" for k in comm.allgather(kind))

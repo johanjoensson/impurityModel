@@ -2,6 +2,9 @@
 
 :func:`spectra.calc_map` implements the Kramers-Heisenberg map
 
+    A_{ij}(w_in, w_loss,
+    A_{ij}(w_in, w_loss    l_core=1,
+        l_valence=2,
     A_{ij}(w_in, w_loss) = sum_g (weight_g / Z)
         <g| Tin_i^dagger R1(w_in) Tout_j^dagger R2(w_loss) Tout_j R1(w_in) Tin_i |g>,
 
@@ -139,6 +142,8 @@ def _run_rixs(op, psis, es, tin, tout, dets):
         basis=_basis(dets),
         verbose=False,
         slaterWeightMin=0.0,
+        l_core=1,
+        l_valence=2,
     )
 
 
@@ -223,6 +228,8 @@ def _run_rixs_tensor(op, psis, es, tin, tout, dets, epsIn, epsOut):
         basis=_basis(dets),
         verbose=False,
         slaterWeightMin=0.0,
+        l_core=1,
+        l_valence=2,
     )
     return polarization.contract_rixs_tensor(C, epsIn, epsOut)
 
@@ -323,6 +330,8 @@ def test_rixs_tensor_adaptive_matches_dense(monkeypatch):
             verbose=False,
             slaterWeightMin=0.0,
             adaptive_wIn_tol=adaptive_tol,
+            l_core=1,
+            l_valence=2,
         )
         return polarization.contract_rixs_tensor(C, EPS_IN, EPS_OUT)
 
@@ -372,6 +381,8 @@ def test_rixs_tensor_adaptive_short_grid_stays_dense(monkeypatch):
         verbose=False,
         slaterWeightMin=0.0,
         adaptive_wIn_tol=1e-6,
+        l_core=1,
+        l_valence=2,
     )
     assert solved_counts == [len(WIN)]
 
@@ -404,6 +415,8 @@ def test_rixs_tensor_adaptive_env_knob(monkeypatch):
         basis=_basis(dets),
         verbose=False,
         slaterWeightMin=0.0,
+        l_core=1,
+        l_valence=2,
     )
     assert sum(solved_counts) < len(WIN_ADAPTIVE)
 
@@ -440,6 +453,8 @@ def test_rixs_tensor_adaptive_distributed_matches_dense():
             verbose=False,
             slaterWeightMin=0.0,
             adaptive_wIn_tol=adaptive_tol,
+            l_core=1,
+            l_valence=2,
         )
         return C if C is None else polarization.contract_rixs_tensor(C, EPS_IN, EPS_OUT)
 
@@ -801,6 +816,8 @@ def test_rixs_tensor_distributed_krylov_recycler_matches_dense(monkeypatch):
         basis=world_basis,
         verbose=False,
         slaterWeightMin=0.0,
+        l_core=1,
+        l_valence=2,
     )
     if comm.rank == 0:
         got = polarization.contract_rixs_tensor(C, EPS_IN, EPS_OUT)

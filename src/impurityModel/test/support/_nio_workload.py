@@ -107,11 +107,12 @@ def build_selfenergy_inputs(
     hOp = get_noninteracting_hamiltonian_operator(
         nBaths=sum_baths,
         nValBaths=nValBaths_d,
-        SOCs=[0, xi],
-        hField=hField,
         h0_filename=h0_filename,
         rank=rank,
         verbose=verbose,
+        valence_l=ls,
+        xi_valence=xi,
+        hField=hField,
     )
 
     # Multiplet ligand-field-theory double counting (opt-in via ``chargeTransferCorrection``;
@@ -131,14 +132,12 @@ def build_selfenergy_inputs(
     # spin-orbit xi_2p are therefore retained only to document the physical NiO model / a future
     # 2p3d benchmark; the d-only self-energy uses just Fdd, c and the valence xi_3d SOC (``xi``).
     if chargeTransferCorrection is not None:
-        dc = atomic_physics.dc_MLFT(n3d_i=n0imp, c=chargeTransferCorrection, Fdd=Fdd)
+        dc = atomic_physics.dc_MLFT(ls, n0imp, chargeTransferCorrection, Fdd)
         eDCOperator = {(((ls, s, m), "c"), ((ls, s, m), "a")): -dc[ls] for s in range(2) for m in range(-ls, ls + 1)}
         hOp = operator_algebra.addOps([hOp, eDCOperator])
 
-    # Map (l,s,m) / (l,b) labels to single integer indices. Drop identically-zero terms
-    # first: get_noninteracting_hamiltonian_operator unconditionally adds a 2p (l=1) SOC
-    # operator whose terms are all 0.0 when xi_2p=0; those carry unmappable l=1 labels and
-    # contribute nothing to H.
+    # Map (l,s,m) / (l,b) labels to single integer indices, dropping identically-zero terms
+    # (the SOC and Zeeman builders emit a full diagonal, zero amplitudes included).
     hOp_int = {}
     for process, value in hOp.items():
         if abs(value) == 0:

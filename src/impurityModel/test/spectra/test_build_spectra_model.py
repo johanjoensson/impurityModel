@@ -1,5 +1,6 @@
-"""``get_spectra.build_spectra_model`` / ``ImpurityModel.from_shells``: the multi-shell (2p
-core + 3d correlated) spectra model, built from either a labelled or a flat ``.h0`` file.
+"""``get_spectra.build_spectra_model`` / ``ImpurityModel.from_shells``: the multi-shell
+(core + correlated valence) spectra model, built from either a labelled or a flat ``.h0``
+file. The shells are named by role rather than fixed at 2p/3d.
 """
 
 import pickle
@@ -79,6 +80,8 @@ def test_from_shells_layout_matches_c2i_order(tmp_path):
             (XI_2P, XI_3D),
             CTC,
             verbose=False,
+            valence_l=2,
+            core_l=1,
         )
 
     assert model.impurity_orbitals == {1: [[0, 1, 2, 3, 4, 5]], 2: [[6, 7, 8, 9, 10, 11, 12, 13, 14, 15]]}
@@ -88,8 +91,9 @@ def test_from_shells_layout_matches_c2i_order(tmp_path):
     assert model.n_spin_orbitals == 32
 
 
-def test_from_shells_rejects_a_non_2p3d_shell():
-    with pytest.raises(ValueError, match="2p/3d"):
+def test_from_shells_rejects_shells_that_are_not_the_declared_ones():
+    """`shells` must name exactly the declared roles -- key order never decides them."""
+    with pytest.raises(ValueError, match="exactly the declared angular momenta"):
         ImpurityModel.from_shells(
             "dummy.pickle",
             OrderedDict({3: 6}),
@@ -98,7 +102,69 @@ def test_from_shells_rejects_a_non_2p3d_shell():
             (FDD, FPP, FPD, GPD),
             (XI_2P, XI_3D),
             CTC,
+            valence_l=2,
+            core_l=1,
         )
+
+
+def test_from_shells_accepts_a_dipole_forbidden_pair():
+    """The roles describe the *Hamiltonian*, so no selection rule applies here.
+
+    ``core_l``/``valence_l`` say which shell carries the core SOC and which the field and
+    valence SOC, and which way the core-valence Coulomb runs. That is meaningful for any pair
+    of shells. |l_core - l_valence| = 1 constrains a transition *operator*, so it is enforced
+    where one is built -- and a model that only ever computes PES, a self-energy or a
+    susceptibility never builds one.
+    """
+    with patch("impurityModel.ed.hamiltonian_io.read_h0_operator", return_value={}):
+        model = ImpurityModel.from_shells(
+            "dummy.pickle",
+            OrderedDict({0: 0, 2: 10}),
+            OrderedDict({0: 0, 2: 10}),
+            OrderedDict({0: 2, 2: 8}),
+            # l_core=0 / l_valence=2: F_cc has 1 component, F_cv 1, and G_cv **3** -- the
+            # exchange runs to k = l_v + l_c = 2, which the dipole-shaped 2*l_c + 2 = 2
+            # cannot reach. That mismatch used to surface as an IndexError inside dc_MLFT.
+            (FDD, [0.0], [8.9], [0.0, 0.0, 5.0]),
+            (XI_2P, XI_3D),
+            CTC,
+            verbose=False,
+            valence_l=2,
+            core_l=0,
+        )
+    assert model.core_l == 0 and model.valence_l == 2
+    assert model.h0
+
+
+def test_the_dipole_operator_is_what_refuses_a_forbidden_pair():
+    """The rule lives with the operator whose amplitudes would all be zero."""
+    from impurityModel.ed.transition_operators import dipole_operator
+
+    with pytest.raises(ValueError, match="Gaunt selection rule"):
+        dipole_operator(OrderedDict({0: 0, 2: 10}), [0, 0, 1], l_core=0, l_valence=2)
+
+
+def test_from_shells_accepts_an_edge_other_than_l23():
+    """A K edge (1s core, 2p valence): the case a length-derived l_core gets silently wrong."""
+    with patch("impurityModel.ed.model.get_hamiltonian_operator", return_value={}):
+        model = ImpurityModel.from_shells(
+            "dummy.pickle",
+            OrderedDict({0: 0, 1: 4}),
+            OrderedDict({0: 0, 1: 4}),
+            OrderedDict({0: 2, 1: 3}),
+            ([3.0, 0.0, 1.0], [2.0], [1.5], [0.0, 0.5]),
+            (0.0, 0.05),
+            CTC,
+            verbose=False,
+            valence_l=1,
+            core_l=0,
+        )
+
+    # 1s impurity block (2 spin-orbitals) first, then 2p (6), then the 2p bath.
+    assert model.impurity_orbitals == {0: [[0, 1]], 1: [[2, 3, 4, 5, 6, 7]]}
+    valence, _ = model.bath_states
+    assert valence == {0: [[]], 1: [[8, 9, 10, 11]]}
+    assert model.n_spin_orbitals == 12
 
 
 def test_from_shells_rejects_mismatched_shells_and_val_shells():
@@ -111,6 +177,8 @@ def test_from_shells_rejects_mismatched_shells_and_val_shells():
             (FDD, FPP, FPD, GPD),
             (XI_2P, XI_3D),
             CTC,
+            valence_l=2,
+            core_l=1,
         )
 
 
@@ -119,7 +187,22 @@ def test_build_spectra_model_equals_from_shells(tmp_path):
     path, _ = _labelled_d_shell(tmp_path, n_bath=4)
 
     wrapped = build_spectra_model(
-        str(path), (1, 2), (0, 4), (0, 4), (6, 8), FDD, FPP, FPD, GPD, XI_2P, XI_3D, CTC, H_FIELD, verbose=False
+        str(path),
+        (1, 2),
+        (0, 4),
+        (0, 4),
+        (6, 8),
+        FDD,
+        FPP,
+        FPD,
+        GPD,
+        XI_2P,
+        XI_3D,
+        CTC,
+        H_FIELD,
+        verbose=False,
+        valence_l=2,
+        core_l=1,
     )
     direct = ImpurityModel.from_shells(
         str(path),
@@ -131,6 +214,8 @@ def test_build_spectra_model_equals_from_shells(tmp_path):
         CTC,
         h_field=H_FIELD,
         verbose=False,
+        valence_l=2,
+        core_l=1,
     )
 
     assert wrapped.h0 == direct.h0
@@ -159,6 +244,8 @@ def test_labelled_and_flat_h0_build_the_same_spectra_model(tmp_path):
         slater_condon=(FDD, FPP, FPD, GPD),
         socs=(XI_2P, XI_3D),
         charge_transfer_correction=CTC,
+        valence_l=2,
+        core_l=1,
         h_field=H_FIELD,
         verbose=False,
     )
@@ -182,6 +269,8 @@ def test_from_shells_flat_rejects_a_non_spherical_header(tmp_path):
             slater_condon=(FDD, FPP, FPD, GPD),
             socs=(XI_2P, XI_3D),
             charge_transfer_correction=CTC,
+            valence_l=2,
+            core_l=1,
             verbose=False,
         )
 
@@ -197,6 +286,8 @@ def test_from_shells_flat_rejects_a_bath_count_that_disagrees_with_the_header(tm
             slater_condon=(FDD, FPP, FPD, GPD),
             socs=(XI_2P, XI_3D),
             charge_transfer_correction=CTC,
+            valence_l=2,
+            core_l=1,
             verbose=False,
         )
 
@@ -212,6 +303,8 @@ def test_from_shells_flat_rejects_an_impurity_l_the_shells_dict_does_not_have(tm
             slater_condon=(FDD, FPP, FPD, GPD),
             socs=(XI_2P, XI_3D),
             charge_transfer_correction=CTC,
+            valence_l=2,
+            core_l=1,
             verbose=False,
         )
 
@@ -227,6 +320,8 @@ def test_from_shells_rejects_contains_soc_with_a_nonzero_xi_3d(tmp_path):
             slater_condon=(FDD, FPP, FPD, GPD),
             socs=(XI_2P, XI_3D),
             charge_transfer_correction=CTC,
+            valence_l=2,
+            core_l=1,
             verbose=False,
         )
 
@@ -248,6 +343,8 @@ def test_from_shells_rejects_an_absent_contains_soc_with_a_nonzero_xi_3d(tmp_pat
             slater_condon=(FDD, FPP, FPD, GPD),
             socs=(XI_2P, XI_3D),
             charge_transfer_correction=CTC,
+            valence_l=2,
+            core_l=1,
             verbose=False,
         )
 
@@ -264,6 +361,8 @@ def test_from_shells_allows_contains_soc_with_a_zero_xi_3d(tmp_path):
             slater_condon=(FDD, FPP, FPD, GPD),
             socs=(XI_2P, 0.0),
             charge_transfer_correction=CTC,
+            valence_l=2,
+            core_l=1,
             verbose=False,
         )
 
@@ -291,6 +390,8 @@ def test_from_shells_honors_a_noncontiguous_header_valence_split(tmp_path):
             (XI_2P, XI_3D),
             CTC,
             verbose=False,
+            valence_l=2,
+            core_l=1,
         )
 
     valence, conduction = model.bath_states
@@ -311,5 +412,7 @@ def test_from_shells_rejects_a_header_valence_count_mismatch(tmp_path):
             slater_condon=(FDD, FPP, FPD, GPD),
             socs=(XI_2P, XI_3D),
             charge_transfer_correction=CTC,
+            valence_l=2,
+            core_l=1,
             verbose=False,
         )

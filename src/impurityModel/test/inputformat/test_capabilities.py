@@ -15,20 +15,14 @@ def test_the_supported_case_passes():
     capabilities.check("spectroscopy", core_l=1, valence_l=2, techniques=("pes", "xps", "xas", "rixs", "nixs"))
 
 
-def test_an_unsupported_edge_is_refused_as_not_yet_not_as_invalid():
-    """The distinction the user has to be able to act on.
+@pytest.mark.parametrize("core_l, valence_l", [(0, 1), (1, 2), (2, 3), (3, 4)])
+def test_every_dipole_allowed_edge_is_accepted(core_l, valence_l):
+    """The restriction this table used to carry: spectroscopy was pinned to core_l=1, l_v=2.
 
-    An M4,5 (3d -> 4f) request is perfectly sensible physics; only this codebase cannot do it
-    yet. The message must say so, and must name what would have to change -- otherwise the
-    user cannot tell a missing feature from their own mistake.
+    An M4,5 (3d -> 4f) request is perfectly sensible physics, and the solver now assembles it;
+    the table must not keep refusing it.
     """
-    with pytest.raises(UnsupportedCalculation) as excinfo:
-        capabilities.check("spectroscopy", core_l=2, valence_l=3, techniques=("xas",))
-    message = str(excinfo.value)
-    assert "M4,5" in message
-    assert "The input file is valid" in message
-    assert "L2,3" in message, "the message must say what IS supported"
-    assert "ed/model.py:461" in message, "the message must name the blocking assumptions"
+    capabilities.check("spectroscopy", core_l=core_l, valence_l=valence_l, techniques=("xas", "rixs"))
 
 
 def test_a_selection_rule_violation_is_invalid_input_not_a_missing_feature():
@@ -53,8 +47,7 @@ def test_selfenergy_and_susceptibility_are_already_l_general(calculation, valenc
     """Not pessimism: these paths really are general.
 
     ``ImpurityModel.from_h0_file`` passes ``l`` straight through to ``getSOCop``,
-    ``atomic_u4`` and ``_add_soc_and_field``, none of which pins it. Only the spectroscopy
-    path goes through the 2p/3d-specific ``get_hamiltonian_operator``.
+    ``atomic_u4`` and ``_add_soc_and_field``, none of which pins it.
     """
     capabilities.check(calculation, core_l=None, valence_l=valence_l)
 
@@ -72,8 +65,23 @@ def test_edge_names_cover_the_common_edges():
 
 
 def test_every_blocker_names_a_location():
-    """The error message doubles as the to-do list for lifting the restriction."""
-    assert capabilities._BLOCKERS
+    """A blocker, if there is one, must say where it lives -- the message is the to-do list.
+
+    The table is empty today. This guards the shape of any row that gets added back, and
+    ``test_the_blocker_list_is_empty`` guards the fact that there are none.
+    """
     for text, where in capabilities._BLOCKERS:
         assert text.strip() and where.strip()
         assert "/" in where, f"{where!r} should point at a file"
+
+
+def test_the_blocker_list_is_empty():
+    """No angular-momentum assumption narrows the spectroscopy path any more."""
+    assert capabilities._BLOCKERS == ()
+
+
+def test_a_core_shell_is_still_refused_on_a_single_shell_calculation_by_shape():
+    """``core_l=None`` in the table means "no core shell", not "any" -- ANY means any."""
+    assert capabilities.SUPPORTED[0].core_l is capabilities.ANY
+    for row in capabilities.SUPPORTED[1:]:
+        assert row.core_l is None

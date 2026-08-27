@@ -32,16 +32,19 @@ def build_spectra_model(
     nBaths,
     nValBaths,
     n0imps,
-    Fdd,
-    Fpp,
-    Fpd,
-    Gpd,
-    xi_2p,
-    xi_3d,
+    F_vv,
+    F_cc,
+    F_cv,
+    G_cv,
+    xi_core,
+    xi_valence,
     chargeTransferCorrection,
     hField,
     rank=0,
     verbose=True,
+    *,
+    valence_l,
+    core_l=None,
 ):
     """Assemble the full interacting spectra model from a non-interacting ``h0`` file.
 
@@ -63,23 +66,31 @@ def build_spectra_model(
     h0_filename : str
         Non-interacting Hamiltonian file.
     ls : sequence of int
-        Angular momenta of the correlated shells (e.g. ``(1, 2)`` for 2p + 3d).
+        Angular momenta of the shells (e.g. ``(1, 2)`` for a 2p core + 3d valence shell).
+        This fixes the ``c2i`` index layout only; which shell is the core one is said by
+        ``core_l``, never by this sequence's order.
     nBaths, nValBaths : sequence of int
         Total / valence bath-state counts, one per shell in ``ls``.
     n0imps : sequence of int
         Nominal impurity occupation per shell (used for the double-counting term).
-    Fdd, Fpp, Fpd, Gpd : sequence of float
-        Slater-Condon parameters.
-    xi_2p, xi_3d : float
-        Spin-orbit couplings for the p- and d-shell.
+    F_vv, F_cc, F_cv, G_cv : sequence of float
+        Slater-Condon parameters: valence-valence direct, core-core direct, core-valence
+        direct and core-valence exchange. The last three are ignored when ``core_l`` is
+        ``None``.
+    xi_core, xi_valence : float
+        Spin-orbit couplings of the core and valence shells.
     chargeTransferCorrection : float
         Double-counting parameter.
     hField : sequence of float
-        Magnetic field ``(hx, hy, hz)``.
+        Magnetic field ``(hx, hy, hz)``, applied to the valence shell.
     rank : int
         MPI rank, forwarded to the reader for rank-0 logging.
     verbose : bool
         Whether the reader logs on rank 0.
+    valence_l : int
+        Angular momentum of the valence (correlated) shell.
+    core_l : int, optional
+        Angular momentum of the core shell; ``None`` when the model has no core shell.
 
     Returns
     -------
@@ -92,10 +103,12 @@ def build_spectra_model(
         shells=OrderedDict(zip(ls, nBaths)),
         val_shells=OrderedDict(zip(ls, nValBaths)),
         n0imps=OrderedDict(zip(ls, n0imps)),
-        slater_condon=(Fdd, Fpp, Fpd, Gpd),
-        socs=(xi_2p, xi_3d),
+        slater_condon=(F_vv, F_cc, F_cv, G_cv),
+        socs=(xi_core, xi_valence),
         charge_transfer_correction=chargeTransferCorrection,
         h_field=hField,
+        valence_l=valence_l,
+        core_l=core_l,
         rank=rank,
         verbose=verbose,
     )
@@ -171,6 +184,50 @@ def resolve_spectra_switches(options):
     return switches, wIn
 
 
+def _resolve_shell_roles(nBaths):
+    """Return ``(l_valence, l_core)`` for a spectra model, from the bath counts.
+
+    A last resort, for a model that does not carry :attr:`ImpurityModel.valence_l` -- one
+    built from an archive or a bare matrix rather than through
+    :meth:`ImpurityModel.from_shells`, which is told the roles outright. The rule is that the
+    core shell is the one with no bath of its own, which is what every RSPt-produced workload
+    looks like (one hybridization file per orbital group, and a core group has none).
+
+    It is a guess, and a bath-less *valence* shell -- the Hubbard-I approximation -- is exactly
+    the case it would get backwards. So a layout it cannot read unambiguously raises and says
+    to carry the roles instead.
+
+    Parameters
+    ----------
+    nBaths : Mapping
+        ``{l: n_bath}`` for every shell in the model.
+
+    Returns
+    -------
+    tuple
+        ``(l_valence, l_core)``; ``l_core`` is ``None`` when the model has no core shell.
+
+    Raises
+    ------
+    ValueError
+        If the shells do not resolve to exactly one valence shell and at most one core shell.
+    """
+    with_bath = [l for l, n in nBaths.items() if n > 0]
+    without_bath = [l for l, n in nBaths.items() if n == 0]
+
+    if len(nBaths) == 1:
+        return next(iter(nBaths)), None
+    if len(with_bath) == 1 and len(without_bath) == 1:
+        return with_bath[0], without_bath[0]
+    raise ValueError(
+        f"Cannot tell which shell is the core one from the bath counts {dict(nBaths)}. Read this "
+        "way, a spectra model needs exactly one shell with bath states (the valence shell) and at "
+        "most one without (the core shell) -- which a bath-less valence shell (Hubbard-I) "
+        "alongside a core shell is not. Build the model through ImpurityModel.from_shells, which "
+        "is told valence_l/core_l outright, rather than leaving them to be inferred."
+    )
+
+
 def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_filename="spectra.h5"):
     """Find the lowest eigenstates of ``model`` and calculate the requested spectra.
 
@@ -219,14 +276,18 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     )
     n_spin_orbitals = model.n_spin_orbitals
 
-    # Hand-coded fall-back block structure (2p + 3d): used when auto_block_structure is off.
+    # Fall-back block structure -- one block per impurity shell -- used when
+    # auto_block_structure is off. Derived from impurity_orbitals rather than written out as
+    # [range(6), range(6, 16)], which was the 2p + 3d spin-orbital counts spelled as literals.
+    shell_blocks = [sorted(orb for block in impurity_orbitals[l] for orb in block) for l in ls]
+    n_shell_blocks = len(shell_blocks)
     block_structure = BlockStructure(
-        blocks=[list(range(6)), list(range(6, 16))],
-        identical_blocks=[[i] for i in range(2)],
-        transposed_blocks=[[] for _ in range(2)],
-        particle_hole_blocks=[[] for _ in range(2)],
-        particle_hole_transposed_blocks=[[] for _ in range(2)],
-        inequivalent_blocks=list(range(2)),
+        blocks=shell_blocks,
+        identical_blocks=[[i] for i in range(n_shell_blocks)],
+        transposed_blocks=[[] for _ in range(n_shell_blocks)],
+        particle_hole_blocks=[[] for _ in range(n_shell_blocks)],
+        particle_hole_transposed_blocks=[[] for _ in range(n_shell_blocks)],
+        inequivalent_blocks=list(range(n_shell_blocks)),
     )
 
     # -- Spectra meshes / polarizations: fill the unset (None) fields with today's defaults. --
@@ -268,17 +329,24 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
     # fill-ratio gate; a d-shell with SOC densifies ~8x and stays spherical). The scalar XAS /
     # PES / NIXS / RIXS spectra are basis-invariant, so simulate_spectra just rotates the one-body
     # transition operators to match and deduplicates the now-degenerate PES/IPS operators (B2a).
+    # Which shell is which is carried by the model, because from_shells was told. Only a
+    # model built some other way (an archive, a bare matrix) falls back to reading the roles
+    # off the bath counts.
+    if model.valence_l is not None:
+        l_valence, l_core = model.valence_l, model.core_l
+    else:
+        l_valence, l_core = _resolve_shell_roles(nBaths)
+
     rotation = None
     correlated_block_structure = None
-    correlated_l = 2
     if spectra_options.auto_block_structure:
         impurity_indices = sorted(orb for blocks in impurity_orbitals.values() for block in blocks for orb in block)
         h_matrix = extract_tensors(hOp, n_orb=n_spin_orbitals, two_body=False)[0]
         block_structure = impurity_block_structure(hOp, impurity_indices, h0_matrix=h_matrix)
         report(f"Auto-derived block structure: {len(block_structure.blocks)} blocks", level=V_RESULT)
 
-        if correlated_l in impurity_orbitals:
-            d_indices = sorted(orb for block in impurity_orbitals[correlated_l] for orb in block)
+        if l_valence in impurity_orbitals:
+            d_indices = sorted(orb for block in impurity_orbitals[l_valence] for orb in block)
             W, u_imp = impurity_symmetry_rotation(hOp, d_indices, n_orb=n_spin_orbitals, h0_matrix=h_matrix)
             h_rotated = rotate_hamiltonian(hOp, W, tol=spectra._ROTATION_TRIM_TOL)
             fill_ratio = len(h_rotated) / max(1, len(hOp))
@@ -290,10 +358,11 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
                 correlated_block_structure = impurity_block_structure(hOp, d_indices, h0_matrix=h_matrix)
                 # rot_to_spherical maps the (rotated) computational basis back to spherical harmonics
                 # for the L/S/J Casimir reporting in calc_gs; identity on the un-rotated core p shell.
-                rot_to_spherical[correlated_l] = u_imp.conj().T
+                rot_to_spherical[l_valence] = u_imp.conj().T
                 n_classes = len(correlated_block_structure.inequivalent_blocks)
                 report(
-                    f"Rotated 3d shell into symmetry-adapted basis (fill {fill_ratio:.2f}x); "
+                    f"Rotated the l={l_valence} shell into symmetry-adapted basis "
+                    f"(fill {fill_ratio:.2f}x); "
                     f"{n_classes} inequivalent PES/IPS classes.",
                     level=V_RESULT,
                 )
@@ -313,7 +382,12 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         "impurity_orbital": impurity_orbitals,
         "bath_states": (valence_baths, conduction_baths),
         "nominal_impurity_occ": basis.nominal_occ,
-        "frozen_occupations": {i for i in nBaths if nBaths[i] == 0},
+        # Pin the core shell at generation time so it cannot drain into the valence shell (a
+        # 2p^4 d^10 configuration otherwise wins by ~23 eV and zeroes every core-level
+        # spectrum -- see doc/basis_and_restrictions.md). Keyed on the shell the model says is
+        # the core one, not on "the shell with no bath": those agreed only while both were the
+        # same inference, and a core shell that does carry bath states would be left unpinned.
+        "frozen_occupations": set() if l_core is None else {l_core},
         # None = "as many determinants as fit in RAM", resolved against the per-rank
         # available memory inside find_ground_state_basis (see memory_estimate).
         "truncation_threshold": basis.truncation_threshold,
@@ -382,8 +456,9 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         basis.slater_weight_min,
         verbosity >= 1,
         rotation=rotation,
-        correlated_l=correlated_l,
         correlated_block_structure=correlated_block_structure,
+        l_valence=l_valence,
+        l_core=l_core,
         **switches,
     )
 

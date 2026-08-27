@@ -22,6 +22,12 @@ from typing import Any, Optional
 import numpy as np
 
 from impurityModel.ed import h0_format
+from impurityModel.ed.atomic_physics import (
+    direct_array_length,
+    exchange_array_length,
+    octahedral_level_structure,
+)
+from impurityModel.ed.hamiltonian_io import cf_bath_blocks, cf_parameter_names
 from impurityModel.inputformat.reader import InputError
 
 __all__ = ["Built", "NO_ZEEMAN", "build", "deduce_bath_counts", "read_h0_header"]
@@ -297,16 +303,26 @@ def _slater_arrays(resolved, core_l, valence_l):
     """Slater-Condon arrays, with the lengths their angular momenta imply.
 
     The expected lengths are ``slater_condon_Uop``'s own contract (``2*l+1`` for a same-shell
-    F, ``2*l_c+2`` for the core-valence G), derived here from the declared shells rather than
-    restated in the file -- so a mismatch is caught with a message naming both numbers instead
-    of surfacing as an assertion deep inside the Coulomb assembly.
+    F; :func:`atomic_physics.direct_array_length` and
+    :func:`atomic_physics.exchange_array_length` for the core-valence pair), derived here from
+    the declared shells rather than restated in the file -- so a mismatch is caught with a
+    message naming both numbers instead of surfacing as an assertion deep inside the Coulomb
+    assembly. The exchange length is ``l_v + l_c + 1``, which equals the historical
+    ``2*l_c + 2`` at every dipole-allowed edge and is larger only for a pair the roles allow
+    but a transition operator would not.
     """
     if resolved.interaction_kind != "slater":
         return None
     table = resolved.tables["interaction.slater"]
     expected = {"F_vv": 2 * valence_l + 1}
     if core_l is not None:
-        expected.update({"F_cc": 2 * core_l + 1, "F_cv": 2 * core_l + 1, "G_cv": 2 * core_l + 2})
+        expected.update(
+            {
+                "F_cc": 2 * core_l + 1,
+                "F_cv": direct_array_length(valence_l, core_l),
+                "G_cv": exchange_array_length(valence_l, core_l),
+            }
+        )
     for name, length in expected.items():
         value = table.get(name)
         if value is None:
@@ -317,6 +333,11 @@ def _slater_arrays(resolved, core_l, valence_l):
                 f"l_core={core_l} / l_valence={valence_l} pair needs {length}."
             )
     return table
+
+
+def _opt_tuple(values):
+    """``tuple(values)``, but keep ``None`` as ``None`` rather than inventing a length."""
+    return None if values is None else tuple(values)
 
 
 def _build_model(resolved, header, notes, rank, verbose):
@@ -365,22 +386,73 @@ def _build_model(resolved, header, notes, rank, verbose):
                 "interacting assembly reads a file or a crystal-field parametrisation."
             )
         if source == "crystal_field":
-            # Handed over as a mapping rather than written to a .json, so all ten parameters
-            # come from the input file. The .json reader fills each absent one from a
+            # The octahedral parametrisation follows the valence shell's own O_h level
+            # structure, so which keys are required is decided here, where l and the bath
+            # counts are known, rather than by the schema. l >= 4 has no such structure (from
+            # l = 5 an irrep repeats and the point group no longer fixes the basis), and a
+            # partially-filled bath block is refused rather than silently halved --
+            # `cf_bath_blocks` says so in both cases.
+            #
+            # A bath block that is absent drops its keys instead of demanding values nothing
+            # reads: with no bath at all this is the Hubbard-I approximation, which needs only
+            # the impurity level and its splittings.
+            try:
+                blocks = cf_bath_blocks(
+                    {valence["l"]: valence["n_bath"]}, {valence["l"]: valence["n_valence_bath"]}, valence["l"]
+                )
+                required = set(cf_parameter_names(valence["l"], blocks))
+            except ValueError as exc:
+                raise InputError(f"[hamiltonian.crystal_field]: {exc}") from None
+            # Handed over as a mapping rather than written to a .json, so every parameter
+            # comes from the input file. The .json reader fills an absent d-shell key from a
             # hard-coded Ni-in-NiO value, which is how the shipped CoO/FeO/MnO files -- which
-            # set six of ten -- silently run with Ni's conduction bath.
-            table = dict(resolved.tables["hamiltonian.crystal_field"])
+            # set six of ten -- silently ran with Ni's conduction bath. Since the schema has
+            # to declare the union over every shell, that guarantee is re-established here.
+            table = {
+                name: value for name, value in resolved.tables["hamiltonian.crystal_field"].items() if value is not None
+            }
             basis_choice = table.pop("bath_state_basis")
+            # Three cases, and they are not the same kind of wrong. A missing required key is
+            # an error. A key belonging to a bath block this model does not have is inert --
+            # the shipped NiO/CoO/FeO/MnO files all set `*_con_*` while asking for no
+            # conduction bath, and those values have never done anything -- so it is reported
+            # rather than refused. A key that is not this shell's at all (`e_delta6_imp` on a
+            # d shell, `e_val_eg` on an f shell) is a description of a different shell.
+            for_this_shell = set(cf_parameter_names(valence["l"]))
+            missing = sorted(required - set(table))
+            inert = sorted((set(table) & for_this_shell) - required)
+            wrong = sorted(set(table) - for_this_shell)
+            if missing or wrong:
+                raise InputError(
+                    f"[hamiltonian.crystal_field] describes the l={valence['l']} valence shell, "
+                    f"whose octahedral levels are "
+                    f"{', '.join(irrep for irrep, _, _ in octahedral_level_structure(valence['l']))}. "
+                    + (f"Missing: {', '.join(missing)}. " if missing else "")
+                    + (f"Not a key for this shell: {', '.join(wrong)}. " if wrong else "")
+                    + f"Required: {', '.join(cf_parameter_names(valence['l'], blocks))}."
+                )
+            if inert:
+                absent = " and ".join(name for name, present in zip(("valence", "conduction"), blocks) if not present)
+                notes.append(
+                    f"Ignored, because this model has no {absent} bath: {', '.join(inert)}. "
+                    f"n_bath = {valence['n_bath']} and n_valence_bath = {valence['n_valence_bath']} "
+                    f"leave the {absent} block empty."
+                )
             h0_source = table
             notes.append(
-                f"Crystal-field Hamiltonian built from all ten parameters in this file "
-                f"(bath states in the {basis_choice} basis)."
+                f"Crystal-field Hamiltonian built from all {len(required)} parameters in this "
+                f"file (bath states in the {basis_choice} basis)."
             )
         else:
             h0_source = resolved.tables["hamiltonian.file"]["path"]
-        # Core first, then valence -- the order get_hamiltonian_operator's own c2i indexing
-        # assumes, and the order the equivalent command line spells as `--ls 1 2`.
+        # Core first, then valence -- the c2i index layout get_hamiltonian_operator assumes,
+        # and the order the equivalent command line spells as `--ls 1 2`. Which shell plays
+        # which role travels separately, as core_l/valence_l, so this ordering can never
+        # decide the physics.
         ordered = [shell for shell in (core, valence) if shell is not None]
+        # An omitted core-valence array stays None. A zero-filled placeholder would have to
+        # pick a length, and every length is an l_core assertion -- (0, 0, 0) says l_core = 1,
+        # which is a silent lie for any edge but L2,3.
         return (
             build_spectra_model(
                 h0_source,
@@ -389,15 +461,17 @@ def _build_model(resolved, header, notes, rank, verbose):
                 tuple(shell["n_valence_bath"] for shell in ordered),
                 tuple(shell["nominal_occupation"] for shell in ordered),
                 tuple(slater["F_vv"]),
-                tuple(slater["F_cc"] or (0.0, 0.0, 0.0)),
-                tuple(slater["F_cv"] or (0.0, 0.0, 0.0)),
-                tuple(slater["G_cv"] or (0.0, 0.0, 0.0, 0.0)),
+                _opt_tuple(slater["F_cc"]),
+                _opt_tuple(slater["F_cv"]),
+                _opt_tuple(slater["G_cv"]),
                 core["soc"] if core is not None else 0.0,
                 valence["soc"],
                 resolved.tables.get("double_counting.mlft", {}).get("c", 0.0),
                 tuple(valence["zeeman_splitting"] or NO_ZEEMAN),
                 rank=rank,
                 verbose=verbose,
+                valence_l=valence["l"],
+                core_l=None if core is None else core["l"],
             ),
             {},
         )
@@ -488,6 +562,7 @@ def _build_spectra_options(resolved, notes):
     table = resolved.tables["spectroscopy"]
     rixs = resolved.tables["spectroscopy.rixs"]
     nixs = resolved.tables["spectroscopy.nixs"]
+    valence = next(shell for shell in resolved.shells if shell["role"] == "valence")
 
     radial = None
     if nixs["enabled"]:
@@ -506,8 +581,9 @@ def _build_spectra_options(resolved, notes):
         deltaRIXS=rixs["final_state_broadening"],
         deltaNIXS=nixs["broadening"],
         qsNIXS=None if not nixs["q"] else [np.asarray(q, dtype=float) for q in nixs["q"]],
-        liNIXS=nixs["l_final"],
-        ljNIXS=nixs["l_initial"],
+        # NIXS is a valence probe: absent, both angular momenta are the valence shell's.
+        liNIXS=valence["l"] if nixs["l_final"] is None else nixs["l_final"],
+        ljNIXS=valence["l"] if nixs["l_initial"] is None else nixs["l_initial"],
         radial=radial,
         auto_block_structure=resolved.tables["solver"]["auto_block_structure"],
         pes=resolved.tables["spectroscopy.pes"]["enabled"],

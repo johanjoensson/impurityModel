@@ -675,6 +675,21 @@ def _cross_check(resolved, raw):
     if roles.count("core") > 1:
         raise InputError(f'At most one [[shell]] may have role = "core"; found {roles.count("core")}.')
 
+    # Every shell dict below this point -- nBaths, nValBaths, impurity_orbitals, the operator
+    # labels themselves -- is keyed by `l`, so two shells sharing one silently collapse into
+    # the last one written. That used to be unreachable while the solver accepted only the
+    # {1, 2} pair; now that any pair of angular momenta is allowed it is a typo away, and it
+    # surfaces far downstream as a nominal_occupation that belongs to the other shell.
+    seen = [shell["l"] for shell in resolved.shells]
+    duplicates = sorted({x for x in seen if seen.count(x) > 1})
+    if duplicates:
+        raise InputError(
+            f"Two [[shell]] tables share l={duplicates[0]}. A shell is identified by its "
+            "angular momentum everywhere below this file -- bath counts, orbital layout and "
+            "the Hamiltonian's own labels are all keyed by it -- so two shells cannot have "
+            "the same l. Give them different l, or describe them as one shell."
+        )
+
     for shell in resolved.shells:
         n_bath, n_valence = shell.get("n_bath"), shell.get("n_valence_bath")
         if n_bath is not None and n_valence is not None and n_valence > n_bath:

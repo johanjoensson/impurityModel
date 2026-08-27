@@ -188,6 +188,15 @@ def _validate(args):
     assert len(args.Fpd) == 3
     assert len(args.Gpd) == 4
     assert len(args.hField) == 3
+    # This CLI's flag names (--Fdd/--Fpp/--Fpd/--Gpd, --xi_2p/--xi_3d) and the array lengths
+    # asserted above are the 2p/3d edge spelled out, so it stays pinned there deliberately;
+    # the TOML input file (`impurityModel run`) is the front-end that describes any edge.
+    # `--ls 2` alone is still allowed -- a valence-only model with no core shell, which the
+    # gate this replaced (`set(shells) - {1, 2}`) also accepted.
+    assert tuple(args.ls) in ((1, 2), (2,)), (
+        f"--ls {args.ls} is not expressible on this command line, which is pinned to the "
+        "2p/3d edge by its own flag names. Use the TOML input format for any other edge."
+    )
 
     # xi_2p < 1.0 eV has no physical counterpart: every transition-metal 2p core level has SOC
     # well above 1 eV. This runs after --unit's conversion (see run()), so args.xi_2p is always
@@ -239,6 +248,8 @@ def run(args):
         tuple(args.hField),
         rank=rank,
         verbose=verbosity > 0,
+        valence_l=2,
+        core_l=1 if 1 in args.ls else None,
     )
 
     # The radial part of the correlated orbitals is only needed for NIXS; skip NIXS when absent.

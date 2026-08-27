@@ -444,6 +444,8 @@ def test_calc_map_mpi():
         basis=basis,
         verbose=False,
         slaterWeightMin=0.0,
+        l_core=1,
+        l_valence=2,
     )
 
     if comm.rank == 0:
@@ -878,6 +880,8 @@ def test_calc_map_win_chunk_invariant_mpi():
                 basis=basis,
                 verbose=False,
                 slaterWeightMin=0.0,
+                l_core=1,
+                l_valence=2,
             )
         finally:
             if old is None:

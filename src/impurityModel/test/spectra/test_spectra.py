@@ -41,7 +41,7 @@ def test_dipole_operator(mock_gauntC):
     nBaths = OrderedDict([(2, 10), (1, 6)])
     mock_gauntC.return_value = 1.0
     n = [1, 0, 0]
-    op = transition_operators.dipole_operator(nBaths, n)
+    op = transition_operators.dipole_operator(nBaths, n, 1, 2)
     assert isinstance(op, dict)
     assert len(op) > 0
 
@@ -49,7 +49,7 @@ def test_dipole_operator(mock_gauntC):
 @patch("impurityModel.ed.transition_operators.dipole_operator")
 def test_dipole_operators(mock_dipole_operator):
     mock_dipole_operator.return_value = {"mock": 1}
-    ops = transition_operators.dipole_operators(OrderedDict(), [[1, 0, 0], [0, 1, 0]])
+    ops = transition_operators.dipole_operators(OrderedDict(), [[1, 0, 0], [0, 1, 0]], 1, 2)
     assert len(ops) == 2
     assert ops[0] == {"mock": 1}
 
@@ -59,7 +59,7 @@ def test_dipole_operators(mock_dipole_operator):
 def test_daggered_dipole_operators(mock_daggerOp, mock_dipole_operator):
     mock_dipole_operator.return_value = {"mock": 1}
     mock_daggerOp.return_value = {"mock_dag": 1}
-    ops = transition_operators.daggered_dipole_operators(OrderedDict(), [[1, 0, 0]])
+    ops = transition_operators.daggered_dipole_operators(OrderedDict(), [[1, 0, 0]], 1, 2)
     assert len(ops) == 1
     assert ops[0] == {"mock_dag": 1}
 
@@ -184,6 +184,8 @@ def test_simulate_spectra(
         dN={},
         slaterWeightMin=1e-4,
         verbose=False,
+        l_valence=2,
+        l_core=1,
     )
     # The solvers are collective, so the mocks are called on every rank; the h5 datasets and
     # the file close, however, are written on the root rank only (simulate_spectra gates them
@@ -225,17 +227,29 @@ def test_read_pickled_file():
 def test_read_h0_CF_file():
     json_data = '{"e_imp": -1.0, "e_deltaO_imp": 0.5}'
     with patch("builtins.open", mock_open(read_data=json_data)):
-        res = hamiltonian_io.read_h0_CF_file("dummy.json")
-        assert res[0] == -1.0
-        assert res[1] == 0.5
+        e_imp, deltas, e_val, e_con, v_val, v_con = hamiltonian_io.read_h0_CF_file("dummy.json", l=2)
+        assert e_imp == -1.0
+        # One splitting for a d shell; an f shell would return two, which is the whole reason
+        # this is a tuple rather than a scalar.
+        assert deltas == (0.5,)
+        # The rest fall back to the Ni-in-NiO defaults, keyed by irrep rather than positional.
+        assert set(e_val) == set(e_con) == set(v_val) == set(v_con) == {"eg", "t2g"}
+        assert v_val["eg"] == 1.883
 
 
 @patch("impurityModel.ed.hamiltonian_io.read_h0_CF_file")
 def test_get_CF_hamiltonian(mock_read_cf):
-    mock_read_cf.return_value = (-1.0, 0.5, -4.0, -6.0, 3.0, 2.0, 1.0, 1.0, 0.5, 0.5)
+    mock_read_cf.return_value = (
+        -1.0,
+        (0.5,),
+        {"eg": -4.0, "t2g": -6.0},
+        {"eg": 3.0, "t2g": 2.0},
+        {"eg": 1.0, "t2g": 1.0},
+        {"eg": 0.5, "t2g": 0.5},
+    )
     nBaths = {2: 10}
     nValBaths = {2: 10}
-    h0 = hamiltonian_io.get_CF_hamiltonian(nBaths, nValBaths, "dummy.json")
+    h0 = hamiltonian_io.get_CF_hamiltonian(nBaths, nValBaths, "dummy.json", l=2)
     assert isinstance(h0, dict)
     assert len(h0) > 0
 
@@ -244,7 +258,16 @@ def test_get_CF_hamiltonian(mock_read_cf):
 def test_get_noninteracting_hamiltonian_operator(mock_read_h0):
     mock_read_h0.return_value = {}
     h0 = hamiltonian_io.get_noninteracting_hamiltonian_operator(
-        {2: 10, 1: 6}, {2: 10, 1: 6}, (0.1, 0.1), (0.0, 0.0, 0.0), "dummy.pickle", 0, False
+        {2: 10, 1: 6},
+        {2: 10, 1: 6},
+        "dummy.pickle",
+        0,
+        False,
+        valence_l=2,
+        xi_valence=0.1,
+        hField=(0.0, 0.0, 0.0),
+        core_l=1,
+        xi_core=0.1,
     )
     assert isinstance(h0, dict)
 
@@ -256,12 +279,15 @@ def test_get_hamiltonian_operator(mock_h0):
         {2: 10, 1: 6},
         {2: 10, 1: 6},
         ([1.0] * 5, [1.0] * 3, [1.0] * 3, [1.0] * 4),
-        (0.1, 0.1),
         ({2: 8, 1: 6}, 1.0),
-        (0.0, 0.0, 0.0),
         "dummy.pickle",
         0,
         False,
+        valence_l=2,
+        xi_valence=0.1,
+        hField=(0.0, 0.0, 0.0),
+        core_l=1,
+        xi_core=0.1,
     )
     assert isinstance(hOp, dict)
 

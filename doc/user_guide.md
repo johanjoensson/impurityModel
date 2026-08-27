@@ -92,13 +92,12 @@ straight to today's `-vv`; if a script parses stdout, re-check it against the ne
    `hamiltonian_io.py` and mapped to flat indices through `c2i`, which orders the orbitals
    differently — `hamiltonian_io.flat_h0_to_labelled` performs that relabelling for a `.h0`.
    `spectra` builds spin–orbit coupling, the Coulomb interaction and the double counting in
-   `(l,s,m)` labels; the file supplies the correlated (3d) shell and its bath, and the 2p core
-   shell is always synthesized from CLI parameters. In every format the impurity orbitals come
-   first, then the bath orbitals.
+   `(l,s,m)` labels; the file supplies the correlated valence shell and its bath, and the core
+   shell — which has no bath of its own — is synthesized from the input file's parameters. In
+   every format the impurity orbitals come first, then the bath orbitals.
 
    \* Only when the header guarantees `basis: "spherical"` and `spin_ordering: "down_first"`
-   (which `build_h0` now always writes) and the shell is `l = 2`; see
-   [Scope](h0_file_format.md#scope).
+   (which `build_h0` now always writes); see [Scope](h0_file_format.md#scope).
 
    Note the labelled `.dat` is an operator-term list (`(l,s,m) (l,s,m) re im`), **not** a
    dense matrix. `load_model` picks the reader by inspecting the file, not just its

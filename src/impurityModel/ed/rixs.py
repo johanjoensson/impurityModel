@@ -404,6 +404,9 @@ def _rixs_map_flat(
     eval_out,
     r1_caches=None,
     solver_stats=None,
+    *,
+    l_core,
+    l_valence,
 ):
     r"""Shared flat-unit RIXS driver behind :func:`calc_map` and :func:`calc_tensor_map`.
 
@@ -443,9 +446,12 @@ def _rixs_map_flat(
         hOp,
         psis,
         Es,
-        imp_change={1: (1, 0), 2: (1, 1)},
-        val_change={1: (0, 0), 2: (1, 0)},
-        con_change={1: (0, 0), 2: (0, 1)},
+        # Core-excited intermediate state: one hole in the core shell, and the valence shell
+        # may take that electron or give one to the bath. Keyed by the shells the caller
+        # named, never by the literal 1 and 2 of an L-edge model.
+        imp_change={l_core: (1, 0), l_valence: (1, 1)},
+        val_change={l_core: (0, 0), l_valence: (1, 0)},
+        con_change={l_core: (0, 0), l_valence: (0, 1)},
         slater_weight_min=slaterWeightMin,
     )
     # Weighted restrictions (e.g. the excitation budget) for the core-excited / final bases:
@@ -577,6 +583,9 @@ def calc_map(
     basis,
     verbose,
     slaterWeightMin,
+    *,
+    l_core,
+    l_valence,
 ):
     r"""
     Return RIXS Green's function for states.
@@ -713,6 +722,8 @@ def calc_map(
         n_o=n_out,
         eval_out=eval_out,
         solver_stats=solver_stats,
+        l_core=l_core,
+        l_valence=l_valence,
     )
     _report_rixs_solver_stats(solver_stats, basis.comm, verbose)
     return gs
@@ -733,6 +744,9 @@ def calc_tensor_map(
     verbose,
     slaterWeightMin,
     adaptive_wIn_tol=None,
+    *,
+    l_core,
+    l_valence,
 ):
     r"""Full rank-4 Kramers-Heisenberg tensor over Cartesian in/out transition components.
 
@@ -858,6 +872,8 @@ def calc_tensor_map(
             eval_out=eval_out,
             r1_caches=r1_caches,
             solver_stats=solver_stats,
+            l_core=l_core,
+            l_valence=l_valence,
         )
 
     tol = adaptive_wIn_tol if adaptive_wIn_tol is not None else _rixs_adaptive_tol()

@@ -87,6 +87,33 @@ def _pes_ips_equivalence_groups(nBaths, l, block_structure):
     return [label_of_local[local_of_global[c2i(nBaths, (l, s, m))]] for s in range(2) for m in range(-l, l + 1)]
 
 
+#: The three Cartesian polarization directions the spectral tensors are stored over.
+CARTESIAN = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+
+
+def _shell_windows(l_valence, l_core, *, imp, val, con, core_imp=(0, 0)):
+    """Build the ``dN_imp``/``dN_val``/``dN_con`` basis-expansion windows for one technique.
+
+    The windows say how far each shell's occupation may move while the excited basis is
+    generated. They used to be written as ``{1: ..., 2: ...}`` at every call site, which made
+    them silently wrong for any edge but L2,3; here the shells are named. A core shell has no
+    bath of its own, so its valence/conduction windows are always ``(0, 0)``.
+    """
+    # Core shell first, then valence. The consumers look these up by key, so the order is not
+    # semantic -- but basis generation walks the restrictions built from them, and a different
+    # walk order reorders the determinants and so the floating-point summation inside the
+    # Krylov recurrences. Keeping the historical order keeps the L2,3 spectra bit-reproducible.
+    dN_imp, dN_val, dN_con = {}, {}, {}
+    if l_core is not None:
+        dN_imp[l_core] = core_imp
+        dN_val[l_core] = (0, 0)
+        dN_con[l_core] = (0, 0)
+    dN_imp[l_valence] = imp
+    dN_val[l_valence] = val
+    dN_con[l_valence] = con
+    return dict(dN_imp=dN_imp, dN_val=dN_val, dN_con=dN_con)
+
+
 def simulate_spectra(
     es,
     psis,
@@ -118,13 +145,15 @@ def simulate_spectra(
     slaterWeightMin,
     verbose,
     rotation=None,
-    correlated_l=2,
     correlated_block_structure=None,
     pes=True,
     xps=True,
     xas=True,
     rixs=True,
     nixs=True,
+    *,
+    l_valence,
+    l_core=None,
 ):
     """
     Simulate various spectra.
@@ -201,8 +230,12 @@ def simulate_spectra(
         basis. When given, ``hOp`` and ``psis`` are assumed already expressed in that basis, so the
         one-body transition operators (dipole/NIXS/RIXS) are rotated to match; the scalar spectra
         are basis-invariant and need no un-rotation. ``None`` keeps the spherical-harmonics basis.
-    correlated_l : int, optional
-        Angular momentum of the rotated correlated shell (default 2, the 3d shell).
+    l_valence : int
+        Angular momentum of the valence (correlated) shell: the one PES/IPS probe, the one a
+        dipole transition ends on, and the one the symmetry rotation acts on.
+    l_core : int or None
+        Angular momentum of the core shell. Required by XPS, XAS and RIXS; ``None`` for a
+        model with no core shell, which then supports only PES/IPS and NIXS.
     correlated_block_structure : BlockStructure, optional
         Impurity block structure of the correlated shell in the symmetry-adapted basis. When given
         (with ``rotation``), degenerate PES/IPS operators of that shell are deduplicated (B2a).
@@ -217,8 +250,15 @@ def simulate_spectra(
             return [ManyBodyOperator(t) for t in tOp_dicts]
         return [_rotate_op(t, rotation) for t in tOp_dicts]
 
+    if xps or xas or rixs:
+        if l_core is None:
+            raise ValueError(
+                "XPS, XAS and RIXS all need a core hole, but no core shell was given "
+                "(l_core is None). Disable them, or build a model with a core shell."
+            )
+
     if rotation is not None and correlated_block_structure is not None:
-        correlated_groups = _pes_ips_equivalence_groups(nBaths, correlated_l, correlated_block_structure)
+        correlated_groups = _pes_ips_equivalence_groups(nBaths, l_valence, correlated_block_structure)
     else:
         correlated_groups = None
 
@@ -227,10 +267,10 @@ def simulate_spectra(
 
     if pes:
         if rank == 0:
-            print("Create 3d inverse photoemission and photoemission spectra...", flush=True)
+            print(f"Create l={l_valence} inverse photoemission and photoemission spectra...", flush=True)
         # Transition operators
-        tOpsIPS = inverse_photoemission_operators(nBaths, l=2)
-        tOpsPS = photoemission_operators(nBaths, l=2)
+        tOpsIPS = inverse_photoemission_operators(nBaths, l=l_valence)
+        tOpsPS = photoemission_operators(nBaths, l=l_valence)
         if rank == 0:
             print("Inverse photoemission Green's function..", flush=True)
         assert isinstance(hOp, ManyBodyOperator)
@@ -246,9 +286,7 @@ def simulate_spectra(
             slaterWeightMin,
             verbose,
             occ_cutoff,
-            dN_imp={1: (0, 0), 2: (0, 1)},
-            dN_val={1: (0, 0), 2: (1, 0)},
-            dN_con={1: (0, 0), 2: (0, 1)},
+            **_shell_windows(l_valence, l_core, imp=(0, 1), val=(1, 0), con=(0, 1)),
             equivalence_groups=correlated_groups,
         )
         if rank == 0:
@@ -265,9 +303,7 @@ def simulate_spectra(
             slaterWeightMin,
             verbose,
             occ_cutoff,
-            dN_imp={1: (0, 0), 2: (1, 0)},
-            dN_val={1: (0, 0), 2: (1, 0)},
-            dN_con={1: (0, 0), 2: (0, 1)},
+            **_shell_windows(l_valence, l_core, imp=(1, 0), val=(1, 0), con=(0, 1)),
             equivalence_groups=correlated_groups,
         )
         gsPS *= -1
@@ -283,9 +319,9 @@ def simulate_spectra(
 
     if xps:
         if rank == 0:
-            print("Create core 2p x-ray photoemission spectra (XPS) ...")
+            print(f"Create core l={l_core} x-ray photoemission spectra (XPS) ...")
         # Transition operators
-        tOpsPS = photoemission_operators(nBaths, l=1)
+        tOpsPS = photoemission_operators(nBaths, l=l_core)
         # Photoemission Green's function
         gs = calc_spectra(
             hOp,
@@ -299,9 +335,7 @@ def simulate_spectra(
             slaterWeightMin,
             verbose,
             occ_cutoff,
-            dN_imp={1: (1, 0), 2: (1, 1)},
-            dN_val={1: (0, 0), 2: (1, 0)},
-            dN_con={1: (0, 0), 2: (0, 1)},
+            **_shell_windows(l_valence, l_core, imp=(1, 1), val=(1, 0), con=(0, 1), core_imp=(1, 0)),
         )
         gs *= -1
         if rank == 0:
@@ -350,15 +384,11 @@ def simulate_spectra(
     if xas:
         if rank == 0:
             print("Create XAS spectra...", flush=True)
-        dN_XAS = dict(
-            dN_imp={1: (1, 0), 2: (0, 1)},
-            dN_val={1: (0, 0), 2: (1, 0)},
-            dN_con={1: (0, 0), 2: (0, 1)},
-        )
+        dN_XAS = _shell_windows(l_valence, l_core, imp=(0, 1), val=(1, 0), con=(0, 1), core_imp=(1, 0))
         if XAS_projectors:
             # Projected operators are not a plain Cartesian linear combination -> keep the
             # per-operator path.
-            tOps = dipole_operators(nBaths, epsilons)
+            tOps = dipole_operators(nBaths, epsilons, l_core, l_valence)
             iBasisProjectors = arrayOp2Dict(nBaths, XAS_projectors.values())
             projectedTOps = []
             for proj in iBasisProjectors:
@@ -388,7 +418,7 @@ def simulate_spectra(
             # 3 Cartesian components once (symmetry-reduced). Polarization contraction (arbitrary /
             # circular, dichroism, ...) is left to post-processing (impurityModel.ed.polarization),
             # so it never requires re-running the solve.
-            cartesian_ops = _prep_one_body(dipole_operators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+            cartesian_ops = _prep_one_body(dipole_operators(nBaths, CARTESIAN, l_core, l_valence))
             n_orb = basis.num_spin_orbitals
             h_onebody = extract_tensors(hOp, n_orb=n_orb, two_body=False)[0]
             reduction = component_symmetry_reduction(cartesian_ops, h_onebody, n_orb=n_orb)
@@ -423,8 +453,8 @@ def simulate_spectra(
         if RIXS_projectors:
             # Projected operators are not a plain Cartesian linear combination -> keep the
             # per-operator Kramers-Heisenberg path.
-            tOpsIn = dipole_operators(nBaths, epsilonsRIXSin)
-            tOpsOut = daggered_dipole_operators(nBaths, epsilonsRIXSout)
+            tOpsIn = dipole_operators(nBaths, epsilonsRIXSin, l_core, l_valence)
+            tOpsOut = daggered_dipole_operators(nBaths, epsilonsRIXSout, l_core, l_valence)
             iBasisProjectors = arrayOp2Dict(nBaths, RIXS_projectors.values())
             projectedTOpsIn = []
             projectedTOpsOut = []
@@ -447,6 +477,8 @@ def simulate_spectra(
                 basis,
                 verbose,
                 slaterWeightMin=slaterWeightMin,
+                l_core=l_core,
+                l_valence=l_valence,
             )
             if rank == 0:
                 print("RIXS projectors = {}".format(RIXS_projectors.keys()))
@@ -461,8 +493,8 @@ def simulate_spectra(
             # Kramers-Heisenberg tensor over the 3 Cartesian in/out components once (R4 -- the
             # RIXS analogue of B2b). Polarization contraction (arbitrary/circular, dichroism,
             # ...) is left to post-processing (impurityModel.ed.polarization).
-            in_component_ops = _prep_one_body(dipole_operators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
-            out_component_ops = _prep_one_body(daggered_dipole_operators(nBaths, [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+            in_component_ops = _prep_one_body(dipole_operators(nBaths, CARTESIAN, l_core, l_valence))
+            out_component_ops = _prep_one_body(daggered_dipole_operators(nBaths, CARTESIAN, l_core, l_valence))
             C = calc_tensor_map(
                 hOp,
                 in_component_ops,
@@ -477,6 +509,8 @@ def simulate_spectra(
                 basis,
                 verbose,
                 slaterWeightMin=slaterWeightMin,
+                l_core=l_core,
+                l_valence=l_valence,
             )
             if rank == 0:
                 print(f"shape(C) = {np.shape(C)}")

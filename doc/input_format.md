@@ -16,8 +16,8 @@ mpirun -n 8 impurityModel run input.toml
 
 **Units.** `[units].energy` is required and has no default. It converts every key of
 kind `energy` in the file, and nothing else -- a `count`, a `dimensionless` ratio and an
-`inverse length` are left alone, which is why `energy_cut` (a multiple of k_B*T, despite
-the name) and the NIXS `q` cannot be scaled by mistake. It never describes the
+`inverse length` are left alone, which is why a target `occupation` (electrons) and the
+NIXS `q` (reciprocal to the radial mesh) cannot be scaled by mistake. It never describes the
 Hamiltonian file, which carries its own unit in its header.
 
 **Choosing a calculation.** Write one of `[spectroscopy]`, `[selfenergy]`,
@@ -34,11 +34,33 @@ that record no layout (a legacy `.pickle`/`.json`, a crystal-field parametrisati
 bare matrix). A shell whose Hamiltonian is never read has no bath at all, which is the
 normal case for a core shell. Every deduction is reported by `--show-resolved`.
 
-**Angular momenta.** `l` is unrestricted here: the format can describe any core/valence
-pair. What the current solver can *run* is checked separately, and an unsupported
-combination exits saying so and naming what would have to change -- as opposed to a
-combination that is wrong at any generality (a dipole transition with
-|l_core - l_valence| != 1 is zero by selection rule), which is reported as invalid input.
+**Angular momenta.** `l` is unrestricted here, and the solver follows: any
+dipole-allowed core/valence pair is assembled on the shells declared, whether that is
+an L2,3 edge (2p -> 3d), a K edge (1s -> 2p) or an M4,5 edge (3d -> 4f). What the
+current solver can *run* is still checked separately, and an unsupported combination
+exits saying so and naming what would have to change -- as opposed to a combination
+that is wrong at any generality (a dipole transition with |l_core - l_valence| != 1 is
+zero by selection rule), which is reported as invalid input.
+
+`[hamiltonian.crystal_field]` follows the valence shell's octahedral level structure
+rather than assuming a d shell: e_g / t_2g under one 10Dq for l=2, and t_1u / t_2u /
+a_2u under TWO independent splittings for l=3, because the O_h invariants of an f
+shell span a two-dimensional space and one number cannot place three levels. From
+l=4 up there is no such parametrisation -- an irrep repeats and the point group alone
+no longer fixes the basis -- so those shells need a `.h0` file.
+
+Which keys are required follows the *model*, not just the shell. `n_bath = 0` is the
+Hubbard-I approximation -- a correlated shell diagonalised with no hybridization --
+and it needs only `e_imp` and its splittings; a bath block that is absent drops its
+`e_val_*`/`v_val_*` or `e_con_*`/`v_con_*` rows rather than demanding values nothing
+reads. Every required key must still be given. A bath block is all-or-nothing: one
+partner per impurity spin-orbital, so a partial count is refused rather than halved.
+
+**Shell roles.** `role` says which shell carries the core spin-orbit term and which
+the field, the valence spin-orbit term and the double counting -- meaningful for any
+pair of shells. Only XPS/XAS/RIXS build a transition operator between them, and only
+those are bound by |l_core - l_valence| = 1. A PES-only, self-energy or
+susceptibility run puts no constraint on the two angular momenta at all.
 
 **Compatibility.** `[format].version` is `[major, minor]`. A newer major is refused. An
 unknown key is a typo (error) when the file's minor is at or below this reader's, and a
@@ -168,20 +190,37 @@ Build from the impurity / hybridization / bath blocks, H = [[H_imp, V^dag], [V, 
 
 ## `[hamiltonian.crystal_field]`
 
-Build the Hamiltonian from crystal-field parameters. ALL TEN are required: the underlying reader fills each absent key from a hard-coded Ni-in-NiO value, so the shipped CoO/FeO/MnO files (which set six) silently run with Ni's conduction bath.
+Build the Hamiltonian from an octahedral crystal-field parametrisation. Which keys are required depends on the valence shell's l, because its O_h level structure does: a d shell has two levels (e_g, t_2g) split by one 10Dq, an f shell has three (t_1u, t_2u, a_2u) and needs TWO independent splittings -- one number cannot place three levels. The required set is checked when the shell is known, and EVERY key in it must be given: the underlying reader fills an absent d-shell key from a hard-coded Ni-in-NiO value, so the shipped CoO/FeO/MnO files (which set six) silently ran with Ni's conduction bath.
 
 | Key | Kind | Default | Description |
 | --- | --- | --- | --- |
-| `e_imp` | energy | **required** | Average valence-shell on-site energy. |
-| `e_deltaO_imp` | energy | **required** | Cubic (10Dq) splitting of the valence shell. |
-| `e_val_eg` | energy | **required** | Valence bath level coupled to the eg orbitals. |
-| `e_val_t2g` | energy | **required** | Valence bath level coupled to the t2g orbitals. |
-| `e_con_eg` | energy | **required** | Conduction bath level coupled to the eg orbitals. |
-| `e_con_t2g` | energy | **required** | Conduction bath level coupled to the t2g orbitals. |
-| `v_val_eg` | energy | **required** | Valence hybridization with the eg orbitals. |
-| `v_val_t2g` | energy | **required** | Valence hybridization with the t2g orbitals. |
-| `v_con_eg` | energy | **required** | Conduction hybridization with the eg orbitals. |
-| `v_con_t2g` | energy | **required** | Conduction hybridization with the t2g orbitals. |
+| `e_imp` | energy | `None` | Average valence-shell on-site energy. |
+| `e_deltaO_imp` | energy | `None` | Rank-4 octahedral splitting of the valence shell -- 10Dq for a d shell. Each splitting key is the full spread (highest level minus lowest) that invariant alone produces. Required for l >= 2; an l = 0 or 1 shell is a single O_h level and has no splitting at all. |
+| `e_delta6_imp` | energy | `None` | Rank-6 octahedral splitting, for l = 3 only. Independent of e_deltaO_imp: the two invariants place the f shell's three levels between them (t_1u : t_2u : a_2u = 3 : -1 : -6 for rank 4, 5 : -9 : 12 for rank 6). SIGN: both parameters carry the sign a point-charge octahedron produces, so a real octahedral field has both POSITIVE. The Stevens form B4(O_4^0 + 5 O_4^4) + B6(O_6^0 - 21 O_6^4) does not -- an octahedron gives B4 > 0 but B6 < 0 -- so e_deltaO_imp follows B4's sign and e_delta6_imp is the OPPOSITE of B6's. Importing B6 from a paper means flipping it. To set both from two level splittings instead, with d1 = E(t_1u) - E(a_2u) and d2 = E(t_2u) - E(a_2u): e_deltaO_imp = 9*(3*d1 - d2)/22, e_delta6_imp = 3*(e_deltaO_imp - d1). |
+| `e_val_a1g` | energy | `None` | Valence bath level coupled to the a1g orbitals. Give this for a valence shell whose octahedral levels include a1g (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `e_val_t1u` | energy | `None` | Valence bath level coupled to the t1u orbitals. Give this for a valence shell whose octahedral levels include t1u (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `e_val_eg` | energy | `None` | Valence bath level coupled to the eg orbitals. Give this for a valence shell whose octahedral levels include eg (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `e_val_t2g` | energy | `None` | Valence bath level coupled to the t2g orbitals. Give this for a valence shell whose octahedral levels include t2g (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `e_val_t2u` | energy | `None` | Valence bath level coupled to the t2u orbitals. Give this for a valence shell whose octahedral levels include t2u (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `e_val_a2u` | energy | `None` | Valence bath level coupled to the a2u orbitals. Give this for a valence shell whose octahedral levels include a2u (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `e_con_a1g` | energy | `None` | Conduction bath level coupled to the a1g orbitals. Give this for a valence shell whose octahedral levels include a1g (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `e_con_t1u` | energy | `None` | Conduction bath level coupled to the t1u orbitals. Give this for a valence shell whose octahedral levels include t1u (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `e_con_eg` | energy | `None` | Conduction bath level coupled to the eg orbitals. Give this for a valence shell whose octahedral levels include eg (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `e_con_t2g` | energy | `None` | Conduction bath level coupled to the t2g orbitals. Give this for a valence shell whose octahedral levels include t2g (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `e_con_t2u` | energy | `None` | Conduction bath level coupled to the t2u orbitals. Give this for a valence shell whose octahedral levels include t2u (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `e_con_a2u` | energy | `None` | Conduction bath level coupled to the a2u orbitals. Give this for a valence shell whose octahedral levels include a2u (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `v_val_a1g` | energy | `None` | Valence hybridization with the a1g orbitals. Give this for a valence shell whose octahedral levels include a1g (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `v_val_t1u` | energy | `None` | Valence hybridization with the t1u orbitals. Give this for a valence shell whose octahedral levels include t1u (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `v_val_eg` | energy | `None` | Valence hybridization with the eg orbitals. Give this for a valence shell whose octahedral levels include eg (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `v_val_t2g` | energy | `None` | Valence hybridization with the t2g orbitals. Give this for a valence shell whose octahedral levels include t2g (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `v_val_t2u` | energy | `None` | Valence hybridization with the t2u orbitals. Give this for a valence shell whose octahedral levels include t2u (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `v_val_a2u` | energy | `None` | Valence hybridization with the a2u orbitals. Give this for a valence shell whose octahedral levels include a2u (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `v_con_a1g` | energy | `None` | Conduction hybridization with the a1g orbitals. Give this for a valence shell whose octahedral levels include a1g (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `v_con_t1u` | energy | `None` | Conduction hybridization with the t1u orbitals. Give this for a valence shell whose octahedral levels include t1u (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `v_con_eg` | energy | `None` | Conduction hybridization with the eg orbitals. Give this for a valence shell whose octahedral levels include eg (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `v_con_t2g` | energy | `None` | Conduction hybridization with the t2g orbitals. Give this for a valence shell whose octahedral levels include t2g (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `v_con_t2u` | energy | `None` | Conduction hybridization with the t2u orbitals. Give this for a valence shell whose octahedral levels include t2u (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
+| `v_con_a2u` | energy | `None` | Conduction hybridization with the a2u orbitals. Give this for a valence shell whose octahedral levels include a2u (d: e_g, t_2g; f: t_1u, t_2u, a_2u; s: a_1g; p: t_1u). |
 | `bath_state_basis` | enum | `'spherical'` | Basis the bath states are expressed in. Reachable from no CLI today. Choices: `spherical`, `cubic`. |
 
 ## `[hamiltonian.file]`
@@ -219,8 +258,8 @@ Slater-Condon parameters. Array lengths are DERIVED from the shells' angular mom
 | --- | --- | --- | --- |
 | `F_vv` | energy list | **required** | Valence-valence F^k (was Fdd). Length 2*l_v + 1. |
 | `F_cc` | energy list | `None` | Core-core F^k (was Fpp). Length 2*l_c + 1. |
-| `F_cv` | energy list | `None` | Core-valence direct F^k (was Fpd). Length 2*l_c + 1. |
-| `G_cv` | energy list | `None` | Core-valence exchange G^k (was Gpd). Length 2*l_c + 2. |
+| `F_cv` | energy list | `None` | Core-valence direct F^k (was Fpd), indexed by k. Length 2*min(l_v, l_c) + 1, which is the familiar 2*l_c + 1 whenever the core shell is the lower one. |
+| `G_cv` | energy list | `None` | Core-valence exchange G^k (was Gpd), indexed by k. Length l_v + l_c + 1 -- the same as the familiar 2*l_c + 2 at every dipole-allowed edge, and longer only for a shell pair more than one apart, which the roles allow but no transition operator does. |
 
 ## `[interaction.u4_file]`
 
@@ -296,7 +335,7 @@ One correlated or core shell. An array of tables, so a shell's angular momentum 
 
 | Key | Kind | Default | Description |
 | --- | --- | --- | --- |
-| `l` | count | **required** | Angular momentum. UNRESTRICTED by this schema: the format must be able to express any (core l, valence l) pair before the solver can execute it, or it needs replacing the day the 2p/3d restriction lifts. What the solver can actually do is checked separately -- see inputformat.capabilities. |
+| `l` | count | **required** | Angular momentum. UNRESTRICTED by this schema, and the solver now follows: any dipole-allowed (core l, valence l) pair is assembled on the shells declared here. What the solver can actually do is still checked separately -- see inputformat.capabilities. |
 | `role` | enum | **required** | REQUIRED and never inferred from `l`. The inference 'l=1 means core, l=2 means valence' is precisely the hardcoding this format has to outlive. Choices: `core`, `valence`. |
 | `n_bath` | count | *deduced* | Total bath states for this shell. Deduced from the .h0 header (n_orb minus the impurity block) for the shell the file describes; 0 for every other shell, since a shell with no Hamiltonian has no fitted bath -- the normal case for a core shell. Required for any non-.h0 source, none of which records a bath layout. |
 | `n_valence_bath` | count | *deduced* | Bath states that start occupied. Must not exceed n_bath. Deduced from the .h0 header's valence_bath/conduction_bath lists when present; otherwise from the bath on-site energies, h[o,o] < 0 being valence -- the same rule solver_basis.classify_bath_occupation already applies. 0 for a shell the file does not describe. |
@@ -314,7 +353,7 @@ Green's-function kernel and eigensolver settings.
 | `reort` | auto/enum | `'auto'` | Block-Lanczos reorthogonalization. 'auto' is the solver's own default, which is NOT one mode: it means NONE on the Green's-function path and PARTIAL on the eigensolver path. Writing a mode also moves the derived determinant budget, since retention switches the memory model to its worst case. Choices: `auto`, `none`, `partial`, `periodic`, `selective`, `full`. |
 | `dense_cutoff` | count | `500` | Use a dense eigensolver below this matrix size. |
 | `sparse_green` | bool | `True` | Use the sparse block-Lanczos Green's-function path. |
-| `auto_block_structure` | bool | `True` | Derive the block structure and symmetry-adapted solver basis from the hybridization-dressed impurity matrix instead of the hand-coded 2p/3d one. A solver-basis decision (it replaces the Hamiltonian operator the solve runs on), which is why it lives here and not under a spectroscopy table. |
+| `auto_block_structure` | bool | `True` | Derive the block structure and symmetry-adapted solver basis from the hybridization-dressed impurity matrix instead of the fall-back one block per shell. A solver-basis decision (it replaces the Hamiltonian operator the solve runs on), which is why it lives here and not under a spectroscopy table. |
 
 ## `[spectroscopy]`
 
@@ -337,9 +376,9 @@ Non-resonant inelastic x-ray scattering, on the shared w_loss mesh.
 | `enabled` | bool | `False` | Compute it. Previously implied by supplying a radial file; now explicit, and the radial file is required when this is on. |
 | `radial_file` | path | `None` | Two-column radial wavefunction of the correlated orbitals. Its length unit is what makes `q` meaningful -- they are reciprocal. |
 | `broadening` | energy | `0.1` | HWHM for NIXS. |
-| `q` | vector list | `None` | Momentum transfers, reciprocal to the radial mesh's length unit -- an inverse length, so [units].energy does not touch it. NOTE: a q exactly along z currently yields NaN in the transition operator; use a tilted q until that is fixed. |
-| `l_final` | count | `2` | Angular momentum of the final orbitals (was liNIXS). |
-| `l_initial` | count | `2` | Angular momentum of the initial orbitals (was ljNIXS). |
+| `q` | vector list | `None` | Momentum transfers, reciprocal to the radial mesh's length unit -- an inverse length, so [units].energy does not touch it. Any direction is fine, the pole included; |q| = 0 is refused, having no scattering direction. |
+| `l_final` | count | `None` | Angular momentum of the final orbitals (was liNIXS). Omitted means the valence shell's l -- NIXS is a valence probe, so a fixed default of 2 would silently give a non-d model the d shell's angular momentum. |
+| `l_initial` | count | `None` | Angular momentum of the initial orbitals (was ljNIXS). Omitted means the valence shell's l. |
 
 ## `[spectroscopy.pes]`
 
@@ -383,8 +422,6 @@ Dynamical impurity susceptibilities chi(w) / chi(i nu).
 | --- | --- | --- | --- |
 | `cluster` | string | `'cluster'` | Cluster label used in the output. |
 | `output` | output path | `'chi.h5'` | Output archive, relative to [run].outdir. |
-| `n_psi_max` | count | `5` | Eigenstates to solve for. Configurable on THIS path only: the spectroscopy driver ignores it and the self-energy driver hardcodes its own count. |
-| `energy_cut` | dimensionless | `10.0` | Thermal window in multiples of k_B*T -- a MULTIPLIER, not an energy, despite the name; [units].energy must not touch it. |
 
 ## `[susceptibility.matsubara]`
 

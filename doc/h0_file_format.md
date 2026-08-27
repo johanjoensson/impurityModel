@@ -263,12 +263,14 @@ dict is the exact inverse of the flat impurity-block-first layout for one shell,
 depends entirely on `basis: "spherical"` and `spin_ordering: "down_first"` holding -- both
 are re-checked at read time (missing or contradicted, either raises) rather than assumed.
 
-The file supplies only the *correlated* shell (in practice the 3d shell) and its bath; the
-core shell (2p) is always empty in real workloads (RSPt writes one file per orbital group and
-the 2p group has no bath) and is entirely synthesized from CLI parameters (SOC `xi_2p`,
-`dc_MLFT`). Because the relabelling is 2p3d-specific machinery (`get2p3dSlaterCondonUop`,
-`dc_MLFT(n2p_i=...)`, the magnetic field hard-coded to `l=2`), a file whose `impurity_l` is
-not 2 is refused rather than assembled with the wrong physics silently applied.
+The file supplies only the *correlated valence* shell and its bath; the core shell is always
+empty in real workloads (RSPt writes one file per orbital group and a core group has no bath)
+and is synthesized entirely from the input file's parameters (its spin-orbit coupling, and the
+core-valence Slater integrals that feed `dc_MLFT`). The assembly no longer pins those shells
+to 2p and 3d — `slater_condon_Uop`, `dc_MLFT` and the spin-orbit/Zeeman terms are all told
+which shell is which — so a file whose `impurity_l` is not 2 is assembled on the shell it
+declares. The header's `impurity_l` is still cross-checked against the `[[shell]]` carrying
+`role = "valence"`; a disagreement is an error, since one of the two is then wrong.
 
 ## Legacy format
 
