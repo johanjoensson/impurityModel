@@ -13,8 +13,12 @@ from impurityModel.ed import config
 from impurityModel.ed.gf_primitives import _block_cf_inverse, _trim_blocks
 
 # Relative-change convergence floor for the block-Lanczos Green's function, shared by the
-# runtime monitor (_make_gf_convergence_monitor) and the post-hoc diagnostic summary
-# (_lanczos_convergence_summary) so the two can never disagree -- single source of truth.
+# runtime monitor (_make_gf_convergence_monitor) and the post-hoc band-wide diagnostic summary
+# (_lanczos_convergence_summary) so both apply the same threshold -- but note they measure
+# different things: the runtime monitor tests G on the caller's own eval_meshes when given one,
+# while _lanczos_convergence_summary always tests the whole resolved Ritz band (see its
+# docstring). The two verdicts are complementary, not required to agree -- greens_function.py
+# reports the runtime one under "lanczos" and the band-wide one under "lanczos_band".
 #
 # 1e-9, not the historical 1e-6. While the monitor sampled the whole Ritz band on the real axis it
 # converged a resolvent the caller often never evaluated, and so *over*-delivered: a declared 1e-6
@@ -319,26 +323,33 @@ def _greens_function_change(alphas, betas, block_widths, delta, omegaP=None, cac
 
 
 def _lanczos_convergence_summary(alphas_list, betas_list, delta, tol=_GF_REL_TOL_FLOOR):
-    r"""Post-hoc block-Lanczos convergence summary over the per-thermal-state coefficients.
+    r"""Post-hoc, band-wide block-Lanczos convergence summary over the per-thermal-state
+    coefficients.
 
-    Avoids threading run-time monitor state out of ``block_Green_sparse``: for each thermal
-    state's trimmed ``(alphas, betas)`` it re-evaluates the final relative resolvent change via
-    :func:`_greens_function_change`.  To agree with the run-time monitor's verdict (and not
-    raise spurious "not converged" warnings) it mirrors that monitor exactly:
+    **Does not mirror the runtime monitor** (:func:`_make_gf_convergence_monitor`) and is not
+    meant to: when the caller supplies ``eval_meshes``, the runtime monitor tests convergence
+    only on the frequencies that will actually be evaluated, while this function always tests
+    the *whole* resolved Ritz band via the adaptively-frozen mesh (:func:`_gf_converged_mesh`,
+    a pure function of the alpha blocks -- it freezes once the spectral edges settle and
+    re-extends if a later block escapes the window). The two verdicts can legitimately disagree
+    whenever spectral weight sits outside the caller's evaluation mesh; that disagreement is the
+    point -- it is exactly the signal :func:`gf_diagnostics.check_lanczos_band_resolution` (fed
+    by this function) reports, complementary to :func:`gf_diagnostics.check_lanczos_convergence`
+    (fed by the runtime monitor's own ``info`` output). Without an ``eval_meshes``-based runtime
+    monitor (the fallback path) the two do agree, since both then use this same adaptive mesh.
 
-    * **Same frozen mesh.**  The monitor freezes its sample mesh after the first
-      ``_GF_MESH_FREEZE_BLOCKS`` blocks; here we rebuild it from those same leading blocks
-      (``A[:_GF_MESH_FREEZE_BLOCKS]``), not from the full final Ritz range -- otherwise the
-      last block's spectral-edge contribution registers as a large change on a wider mesh the
-      monitor never used.
-    * **Invariant subspace == exact.**  When the recurrence terminated on an invariant subspace
-      the trailing coupling block vanished (``betas[-1] ~ 0``); the continued fraction is then
-      exact regardless of the relative-change value, so that state counts as converged.  (A run
-      that stopped on the tolerance instead has a normal, nonzero trailing ``beta``.)
+    For each thermal state's trimmed ``(alphas, betas)`` this re-evaluates the final relative
+    resolvent change via :func:`_greens_function_change` on that adaptive mesh. An invariant
+    subspace (the trailing coupling block vanished, ``betas[-1] ~ 0``) makes the continued
+    fraction exact regardless of the relative-change value, so that state counts as converged --
+    matching the kernel's ``"invariant_subspace"`` status, which the runtime monitor also treats
+    as converged.
 
     Args:
         alphas_list, betas_list: Per-thermal-state lists of trimmed Lanczos blocks.
-        delta: Broadening used to place the frozen sample mesh off the real axis.
+        delta: Signed broadening used to place the frozen sample mesh off the real axis --
+            pass the same signed value the coefficients were produced with (``+delta`` for the
+            addition side, ``-delta`` for removal; see ``SIDES`` in ``greens_function.py``).
         tol: Relative-change threshold below which a state counts as converged. Defaults to
             :data:`_GF_REL_TOL_FLOOR`; pass :func:`_gf_rel_tol` (slaterWeightMin) to match the
             monitor's basis-truncation floor.

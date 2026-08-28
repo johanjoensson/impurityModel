@@ -381,6 +381,7 @@ def get_Greens_function(
             print("weight restrictions:")
             for weights, sum_rest in excited_weighted_restrictions:
                 print(f"{weights}: {sum_rest}")
+        conv_stats = {}
         alphas, betas, r, cap_stats = _block_green_group(
             split_basis,
             hOp,
@@ -393,6 +394,7 @@ def get_Greens_function(
             unit_restrictions[u],
             excited_weighted_restrictions,
             eval_meshes=eval_meshes,
+            conv_stats=conv_stats,
         )
         if verbose_extra and unit_rank0:
             print(f"Expanded excited state basis contains {cap_stats['retained_size']} elements.")
@@ -401,6 +403,7 @@ def get_Greens_function(
             betas,
             [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))],
             cap_stats,
+            conv_stats,
         )
 
     # This unit-level dump belongs at -vv (verbose_extra): the roots/per-color summary is
@@ -422,7 +425,12 @@ def get_Greens_function(
         # Worst-case cap state per block over all its (side, eigenstate) solves: any
         # frozen solve marks the block; retained_size is the smallest frozen size.
         cap_acc: dict[int, dict] = {}
-        for unit, (_alphas, _betas, _r_slices, cap_stats) in zip(units, results):
+        # Worst-case convergence verdict per block, over all its (side, eigenstate) solves --
+        # the solver's own runtime verdict (see block_Green_sparse/block_green_impl's `info`),
+        # not a post-hoc recompute: a block reports converged only if every unit feeding it did,
+        # and d_g/n_blocks take the worst (max) over those units.
+        conv_acc: dict[int, dict] = {}
+        for unit, (_alphas, _betas, _r_slices, cap_stats, conv_stats) in zip(units, results):
             block_i, _ = group_meta[unit.group_i]
             stats = cap_acc.setdefault(block_i, {"cap_hit": False, "retained_size": None, "cap": cap_stats["cap"]})
             if cap_stats["cap_hit"]:
@@ -431,10 +439,20 @@ def get_Greens_function(
                 retained = cap_stats.get("retained_size")
                 if retained is not None and (stats["retained_size"] is None or retained < stats["retained_size"]):
                     stats["retained_size"] = retained
+            cstats = conv_acc.setdefault(
+                block_i, {"converged": True, "d_g": 0.0, "n_blocks": 0, "tol": conv_stats.get("tol", np.nan)}
+            )
+            cstats["converged"] = cstats["converged"] and bool(conv_stats.get("converged", True))
+            # A trivially-converged (empty seed) unit reports d_g=nan -- it made no measurement,
+            # so it must not poison the block's worst-case max with a NaN.
+            unit_d_g = conv_stats.get("d_g")
+            if unit_d_g is not None and not np.isnan(unit_d_g):
+                cstats["d_g"] = max(cstats["d_g"], unit_d_g)
+            cstats["n_blocks"] = max(cstats["n_blocks"], conv_stats.get("n_blocks", 0))
         if pairwise:
             # pw_cf[(block_i, side_i, ei)] = {"diag": {i: cf}, "sum": {(i,j): cf}, "imag": {(i,j): cf}}
             pw_cf: defaultdict = defaultdict(lambda: {"diag": {}, "sum": {}, "imag": {}})
-            for unit, (alphas, betas, r_slices, _cap_stats) in zip(units, results):
+            for unit, (alphas, betas, r_slices, _cap_stats, _conv_stats) in zip(units, results):
                 block_i, side_i = group_meta[unit.group_i]
                 cf = (alphas, betas, r_slices[0])
                 assert unit.pw_tag is not None  # always set on the pairwise path
@@ -447,7 +465,7 @@ def get_Greens_function(
                 pairs = {ij: (roles["sum"][ij], roles["imag"][ij]) for ij in roles["sum"]}
                 acc[(block_i, side_i)][2][ei] = PairwiseGF(n, diag, pairs)
         else:
-            for unit, (alphas, betas, r_slices, _cap_stats) in zip(units, results):
+            for unit, (alphas, betas, r_slices, _cap_stats, _conv_stats) in zip(units, results):
                 block_i, side_i = group_meta[unit.group_i]
                 a_list, b_list, r_list = acc[(block_i, side_i)]
                 for p, ei in enumerate(unit.chunk):
@@ -494,14 +512,20 @@ def get_Greens_function(
             if not pairwise:
                 diags.insert(0, _gfd.check_spectral_sum_rule(r_add, r_rem, es, e0, tau, len(block)))
                 lanczos_tol = _gf_rel_tol(slaterWeightMin)
-                conv_add = _lanczos_convergence_summary(a_add, b_add, delta, tol=lanczos_tol)
-                conv_rem = _lanczos_convergence_summary(a_rem, b_rem, delta, tol=lanczos_tol)
-                n_blocks = max(conv_add[2], conv_rem[2])
+                # The solver's own runtime verdict (block_Green_sparse/block_green_impl's
+                # `converged_fn`, tested on the caller's actual eval_meshes) -- not a recompute.
+                conv_stats = conv_acc.get(block_i, {"converged": True, "d_g": 0.0, "n_blocks": 0, "tol": lanczos_tol})
                 diags.append(
                     _gfd.check_lanczos_convergence(
-                        conv_add[0] and conv_rem[0], max(conv_add[1], conv_rem[1]), n_blocks, n_blocks
+                        conv_stats["converged"], conv_stats["d_g"], conv_stats["n_blocks"], conv_stats["tol"]
                     )
                 )
+                # Complementary, band-wide measure: convergence of the *whole* resolved Ritz
+                # band, not just the caller's evaluation mesh -- signals spectral weight the
+                # solver never had to (and didn't) resolve, e.g. outside the omega window.
+                conv_add = _lanczos_convergence_summary(a_add, b_add, delta, tol=lanczos_tol)
+                conv_rem = _lanczos_convergence_summary(a_rem, b_rem, -delta, tol=lanczos_tol)
+                diags.append(_gfd.check_lanczos_band_resolution(max(conv_add[1], conv_rem[1]), lanczos_tol))
             if G_IPS_real is not None:
                 diags.append(_gfd.check_mesh_density(omega_mesh, delta))
                 if not pairwise:
@@ -990,6 +1014,7 @@ def _block_green_group(
     excited_restrictions,
     excited_weighted_restrictions,
     eval_meshes=None,
+    conv_stats=None,
 ):
     """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
 
@@ -1004,6 +1029,11 @@ def _block_green_group(
     ``eval_meshes`` (:func:`_gf_eval_meshes`) tells the convergence monitor which frequencies this
     unit's ``G`` will be evaluated on. Passing ``None`` -- the default, and what the spectra/RIXS
     callers do -- leaves it converging the real-axis resolvent over the resolved Ritz band.
+
+    ``conv_stats`` (optional dict) is filled with the solver's own convergence verdict --
+    ``{"converged", "d_g", "n_blocks", "tol"}``, forwarded verbatim from
+    :func:`block_Green_sparse`/:func:`block_Green` (see their ``info`` parameter). ``None``
+    (the default) skips it -- only the caller assembling the ``lanczos`` diagnostic needs it.
     """
     excited_basis = split_basis.clone(
         initial_basis={state for p in group_seed_states for state in p},
@@ -1028,6 +1058,7 @@ def _block_green_group(
             verbose=verbose,
             cap_info=cap_info,
             eval_meshes=eval_meshes,
+            info=conv_stats,
         )
         cap_stats = {
             "cap_hit": bool(cap_info.get("cap_hit", False)),
@@ -1044,6 +1075,7 @@ def _block_green_group(
             slaterWeightMin=slaterWeightMin,
             verbose=verbose,
             eval_meshes=eval_meshes,
+            info=conv_stats,
         )
         # The array path stops expanding when the basis crosses the cap (never removes).
         cap_stats = {

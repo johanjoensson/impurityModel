@@ -138,10 +138,22 @@ def test_thermal_cutoff_unknown_num_wanted_is_safe():
 
 
 def test_lanczos_convergence_flag():
-    ok = gd.check_lanczos_convergence(True, 1e-9, 12, 50)
+    ok = gd.check_lanczos_convergence(True, 1e-9, 12, 1e-9)
     assert ok.severity == gd.Severity.OK and not ok.needs_more_iterations
-    bad = gd.check_lanczos_convergence(False, 4.8e-2, 50, 50)
+    assert "max_iter" not in ok.message and "max_iter" not in ok.suggestion
+    bad = gd.check_lanczos_convergence(False, 4.8e-2, 50, 1e-9)
     assert bad.severity == gd.Severity.WARN and bad.needs_more_iterations
+    assert "max_iter" not in bad.message and "max_iter" not in bad.suggestion
+
+
+def test_lanczos_band_resolution_flag():
+    # Converged on the caller's own mesh (the "lanczos" check) does not imply the whole Ritz
+    # band is resolved -- this is the complementary, informational check, and never asks for
+    # more iterations even when it warns.
+    ok = gd.check_lanczos_band_resolution(7.465e-10, 1e-9)
+    assert ok.severity == gd.Severity.OK and not ok.needs_more_iterations
+    bad = gd.check_lanczos_band_resolution(6.081e-05, 1e-9)
+    assert bad.severity == gd.Severity.WARN and not bad.needs_more_iterations
 
 
 def test_causality_sign_convention():
@@ -162,7 +174,7 @@ def test_report_aggregation_and_render():
     sr = gd.check_spectral_sum_rule([np.eye(1, dtype=complex)], [np.zeros((1, 1), complex)], [0.0], 0.0, 1.0, 1)
     rep.add("[0,1]", sr)
     rep.add("[0,1]", gd.check_thermal_weight_cutoff([0.0, 0.05], 0.0, 0.5, n_returned=10, num_wanted=10))
-    rep.add("[2]", gd.check_lanczos_convergence(False, 0.1, 50, 50))
+    rep.add("[2]", gd.check_lanczos_convergence(False, 0.1, 50, 1e-9))
 
     assert rep.needs_more_states is True
     assert rep.needs_more_iterations is True

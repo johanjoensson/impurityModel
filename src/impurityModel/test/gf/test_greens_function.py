@@ -682,3 +682,74 @@ def test_get_Greens_function_mesh_is_none():
     gs_mat, gs_real, _ = run(matsubara_mesh, None)
     assert gs_real is None
     assert len(gs_mat) == 1 and gs_mat[0].shape == (2, 1, 1)
+
+
+def test_get_Greens_function_reports_solver_own_verdict(monkeypatch):
+    """The ``lanczos`` diagnostic must report the solver's *own* runtime verdict (threaded out
+    via ``block_Green_sparse``'s ``info`` dict through ``_block_green_group`` and aggregated in
+    ``get_Greens_function``), not a silent "converged" fallback.
+
+    Regression for the reporting bug this module fixes: the old ``check_lanczos_convergence``
+    call fabricated its ``max_iter`` argument from ``n_blocks`` and the post-hoc
+    ``_lanczos_convergence_summary`` measured a different (band-wide) quantity than the runtime
+    monitor decided on. Here the real block-Lanczos run is left untouched (the returned
+    coefficients are genuine and downstream ``G`` is unaffected -- see the causality/sum-rule
+    checks below) and only the ``info`` dict populated by ``block_Green_sparse`` is overwritten
+    after the fact, to a value the tiny fixture's own real recurrence would never produce on its
+    own. If ``conv_stats`` were not actually wired end-to-end (e.g. a mismatched ``block_i`` key
+    silently falling back to the aggregation's default), this forced value would never reach the
+    report and this test would not catch it.
+    """
+    import impurityModel.ed.greens_function as gf_mod
+    from impurityModel.ed.gf_solvers import block_Green_sparse as real_block_Green_sparse
+
+    forced = {"converged": False, "d_g": 0.0234, "n_blocks": 17, "tol": 1e-9}
+
+    def fake_block_Green_sparse(*args, info=None, **kwargs):
+        result = real_block_Green_sparse(*args, info=info, **kwargs)
+        if info is not None:
+            info.update(forced)
+        return result
+
+    monkeypatch.setattr(gf_mod, "block_Green_sparse", fake_block_Green_sparse)
+
+    omega_mesh = np.linspace(-1.0, 1.0, 5)
+    hOp = ManyBodyOperator({((0, "c"), (0, "a")): 0.5})
+    states = [b"\x80", b"\x00"]
+    basis = Basis(
+        impurity_orbitals={0: [[0]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=MPI.COMM_SELF,
+    )
+    psi = ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})
+
+    _gs_mat, _gs_real, report = get_Greens_function(
+        matsubara_mesh=None,
+        omega_mesh=omega_mesh,
+        psis=[psi],
+        es=[0.5],
+        tau=1.0,
+        basis=basis,
+        hOp=hOp,
+        delta=0.1,
+        blocks=[[0]],
+        verbose=False,
+        verbose_extra=False,
+        reort=None,
+        dN=1,
+        occ_cutoff=1e-6,
+        slaterWeightMin=0.0,
+        sparse=True,
+    )
+
+    (lanczos,) = [d for d in report.diagnostics if d.name == "lanczos"]
+    assert lanczos.severity.name == "WARN"
+    assert lanczos.value == pytest.approx(0.0234)
+    assert "17 block(s)" in lanczos.message
+    assert "max_iter" not in lanczos.message and "max_iter" not in lanczos.suggestion
+    assert lanczos.needs_more_iterations
+
+    band_names = [d.name for d in report.diagnostics]
+    assert "lanczos_band" in band_names
+    assert "max_iter" not in report.render()

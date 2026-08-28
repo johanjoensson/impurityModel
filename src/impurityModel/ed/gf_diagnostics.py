@@ -368,18 +368,26 @@ def check_thermal_weight_cutoff(
     )
 
 
-def check_lanczos_convergence(converged: bool, d_g: float, n_blocks: int, max_iter: int) -> Diagnostic:
-    r"""Surface the block-Lanczos Green's-function convergence-monitor result.
+def check_lanczos_convergence(converged: bool, d_g: float, n_blocks: int, tol: float) -> Diagnostic:
+    r"""Surface the block-Lanczos Green's-function solver's *own* convergence verdict.
 
-    The monitor stops when the relative change of the resolvent on a frozen mesh drops below
-    its tolerance.  Reaching ``max_iter`` without that (``converged is False``) means the
-    spectral function is not fully resolved.
+    ``converged``/``d_g``/``n_blocks`` come straight from the runtime monitor
+    (:func:`gf_convergence._make_gf_convergence_monitor`, threaded out via the ``info`` dict
+    of :func:`gf_solvers.block_Green_sparse`/:func:`gf_solvers.block_green_impl`) -- this is
+    the actual decision the solver made, tested on the caller's own evaluation mesh
+    (``eval_meshes``), not a post-hoc recompute. Neither GF kernel exposes a raisable
+    iteration cap: :func:`gf_solvers.block_Green_sparse` only stops unconverged when its
+    divergence guard truncates a corrupted tail (``status == "diverged"``), and the dense/array
+    kernel (:func:`gf_solvers.block_green_impl`) only by exhausting the entire reachable Krylov
+    dimension. So a ``WARN`` here means the recurrence itself gave up, not that some
+    configurable budget was too small.
 
     Args:
         converged: Whether the GF Lanczos reached its convergence tolerance.
         d_g: Last relative-change value reported by the monitor (``nan`` if unavailable).
         n_blocks: Number of Lanczos blocks actually run.
-        max_iter: The block cap that was in effect.
+        tol: The relative-change tolerance the monitor was testing against
+            (:func:`gf_convergence._gf_rel_tol`).
 
     Returns:
         Diagnostic: ``OK`` if converged, else ``WARN`` + ``needs_more_iterations``.
@@ -389,14 +397,53 @@ def check_lanczos_convergence(converged: bool, d_g: float, n_blocks: int, max_it
         name="lanczos",
         severity=Severity.OK if converged else Severity.WARN,
         value=value,
-        threshold=float("nan"),
-        message=(
-            f"converged in {n_blocks} block(s)"
+        threshold=float(tol) if tol is not None else float("nan"),
+        message=(f"converged in {n_blocks} block(s)" if converged else f"not converged after {n_blocks} block(s)"),
+        suggestion=(
+            ""
             if converged
-            else f"not converged at max_iter={max_iter} ({n_blocks} blocks)"
+            else "the recurrence's own divergence guard truncated it; try reort=full or a tighter slaterWeightMin"
         ),
-        suggestion="" if converged else "raise the Lanczos block cap (max_iter) for this Green's-function solve",
         needs_more_iterations=not converged,
+    )
+
+
+def check_lanczos_band_resolution(d_g_band: float, tol: float) -> Diagnostic:
+    r"""Surface how well the block-Lanczos recurrence resolves the *whole* Ritz band, beyond
+    just the caller's evaluation mesh.
+
+    Complementary to :func:`check_lanczos_convergence`: the runtime monitor (and thus the
+    ``lanczos`` check) only pays for -- and only reports on -- the frequencies the caller
+    actually evaluates ``G`` at (``eval_meshes``). This check instead measures the post-hoc,
+    band-wide relative change (:func:`gf_convergence._lanczos_convergence_summary`, on the full
+    resolved Ritz spectrum) so spectral weight sitting outside the caller's mesh -- and so never
+    charged to the recurrence -- is still visible somewhere in the report. It is purely
+    informational: a solver that converged on its own mesh is not deficient for not having
+    resolved spectrum nobody asked it to evaluate, so this never asks for more iterations.
+
+    Args:
+        d_g_band: Worst band-wide relative change over the addition/removal sides
+            (:func:`gf_convergence._lanczos_convergence_summary`).
+        tol: The same relative-change tolerance :func:`check_lanczos_convergence` used.
+
+    Returns:
+        Diagnostic: ``OK`` if the band-wide change is below ``tol``, else ``WARN``
+        (``needs_more_iterations=False`` -- this is not an iteration shortfall).
+    """
+    value = float(d_g_band) if d_g_band is not None and np.isfinite(d_g_band) else float("nan")
+    ok = np.isfinite(value) and value < tol
+    return Diagnostic(
+        name="lanczos_band",
+        severity=Severity.OK if ok else Severity.WARN,
+        value=value,
+        threshold=float(tol) if tol is not None else float("nan"),
+        message=("spectral band resolved" if ok else "spectral band beyond the evaluation mesh not resolved"),
+        suggestion=(
+            ""
+            if ok
+            else "informational: G is converged where it is evaluated; widen omega_mesh to resolve the outlying weight"
+        ),
+        needs_more_iterations=False,
     )
 
 

@@ -23,7 +23,7 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.cipsi_solver import CIPSISolver
-from impurityModel.ed.gf_convergence import _make_gf_convergence_monitor
+from impurityModel.ed.gf_convergence import _gf_rel_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
     _CappedBasisProxy,
     _distributed_seed_qr,
@@ -191,6 +191,14 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         psi_dense_local, r = _distributed_seed_qr(basis, psi_arr, 0)
 
     if psi_dense_local.shape[1] == 0:
+        # A deflated-to-nothing seed block never runs the Lanczos recurrence at all --
+        # trivially converged (there is no continued fraction to be wrong), and set here
+        # so `info` never leaves this call with a missing key.
+        if info is not None:
+            info["converged"] = True
+            info["d_g"] = float("nan")
+            info["n_blocks"] = 0
+            info["tol"] = _gf_rel_tol(slaterWeightMin)
         return np.zeros((0, n, n), dtype=complex), np.zeros((0, n, n), dtype=complex), r, psi_arr, []
 
     converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
@@ -291,6 +299,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         info["converged"] = converged_flag[0]
         info["d_g"] = last_dg[0]
         info["n_blocks"] = len(alphas)
+        info["tol"] = delta_min
     # Keep alphas/betas padded (k, P, P) for the caller's elementwise cross-expansion diff;
     # only drop a corrupted trailing tail (whole blocks + widths) so it never reaches the
     # continued fraction. Norms of padded blocks equal those of the true blocks (zeros add
@@ -313,6 +322,7 @@ def block_Green_sparse(
     cap_info=None,
     krylov_dtype=None,
     eval_meshes=None,
+    info=None,
 ):
     """
     Calculate one block of the Greens function. This function builds the many body basis
@@ -338,12 +348,24 @@ def block_Green_sparse(
     ``eval_meshes`` is the caller's evaluation mesh per axis (see :func:`_gf_eval_meshes`), which
     the convergence monitor tests ``G`` on. ``None`` leaves it on the spectral-edge fallback, which
     converges the real-axis resolvent whether or not a real-axis mesh was asked for.
+
+    ``info`` (optional dict) is filled with ``{"converged", "d_g", "n_blocks", "tol"}`` -- the
+    runtime monitor's own verdict, mirroring the ``block_green_impl``/``block_Green`` contract.
+    A caller-supplied dict is mutated in place. Filled with a trivially-converged default
+    immediately on entry so both early-return paths below (an empty basis/seed, or a seed block
+    that deflates to nothing) still leave every key present.
     """
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
 
     N = len(basis)
     n = len(psi_arr)
+
+    if info is not None:
+        info["converged"] = True
+        info["d_g"] = float("nan")
+        info["n_blocks"] = 0
+        info["tol"] = _gf_rel_tol(slaterWeightMin)
 
     if N == 0 or n == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), np.zeros((n, n), dtype=complex)
@@ -352,7 +374,7 @@ def block_Green_sparse(
     if len(psi_arr) == 0:
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), r
 
-    converged, converged_flag, delta_min, _last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
+    converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
 
     # The block-Lanczos matvec (h_op.apply_multi) discovers new Slater determinants as the
     # recurrence proceeds, so the reachable Krylov dimension is *not* bounded by the initial
@@ -431,6 +453,11 @@ def block_Green_sparse(
             f"subspace built so far.",
             flush=True,
         )
+    if info is not None:
+        info["converged"] = converged_flag[0]
+        info["d_g"] = last_dg[0]
+        info["n_blocks"] = len(alphas)
+        info["tol"] = delta_min
 
     alphas, betas = _trim_blocks(alphas, betas, widths)
     alphas, betas = _sanitize_continued_fraction(alphas, betas, rank=rank)
