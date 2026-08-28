@@ -60,7 +60,14 @@ def _pack_units(
         Ranks per color, each at least 1, summing to ``comm_size``.
     """
     normalized = np.abs(np.asarray(weights, dtype=float))
-    normalized /= np.sum(normalized)
+    total = np.sum(normalized)
+    if not np.isfinite(total) or total <= 0.0:
+        # A NaN/inf weight silently reorders the argsort below and a zero sum makes the
+        # normalization NaN; either way ranks would disagree on the packing. Fail loudly
+        # and identically on every rank instead (weights are already Allreduced, so this
+        # check is rank-invariant).
+        raise ValueError(f"_pack_units: weights must be finite and sum to a positive value, got sum {total}")
+    normalized /= total
     n_colors = min(comm_size, len(normalized))
     participation = 1.0 / np.sum(normalized**2)
     n_colors = min(n_colors, max(1, int(np.ceil(participation * split_threshold))))
@@ -148,6 +155,32 @@ def split_basis_and_redistribute_psi(
     # largest-remainder rank apportionment) lives in _pack_units; it is pure and
     # deterministic, so every rank computes the identical packing.
     subgroups, procs_per_color = _pack_units(priorities, comm.size, basis.split_threshold, max_colors)
+
+    # Every send/receive target below is derived from `procs_per_color`, so the packing
+    # MUST be bit-identical on every rank. It is a pure function of (already Allreduced)
+    # inputs, but nothing else checks that -- and a divergence deadlocks rather than
+    # errors (a rank that computes the unified packing returns just below while the
+    # others enter `comm.Split`). Verify here, before that early return, with an
+    # unconditional collective on every rank (CLAUDE.md MPI rule).
+    n_colors_local = 1 if procs_per_color is None else len(procs_per_color)
+    if comm.allreduce(n_colors_local, op=MPI.MIN) != comm.allreduce(n_colors_local, op=MPI.MAX):
+        raise RuntimeError(
+            f"split_basis_and_redistribute_psi: ranks disagree on the unit packing "
+            f"(rank {comm.rank} computed {n_colors_local} color(s)); the _pack_units inputs "
+            f"(unit weights / max_colors / split_threshold) are not rank-invariant"
+        )
+    if procs_per_color is not None:
+        ppc = np.ascontiguousarray(procs_per_color)
+        lo = np.empty_like(ppc)
+        hi = np.empty_like(ppc)
+        comm.Allreduce(ppc, lo, op=MPI.MIN)
+        comm.Allreduce(ppc, hi, op=MPI.MAX)
+        if not (np.array_equal(lo, ppc) and np.array_equal(hi, ppc)):
+            raise RuntimeError(
+                f"split_basis_and_redistribute_psi: ranks disagree on procs_per_color "
+                f"(rank {comm.rank} computed {list(ppc)}; communicator min {list(lo)}, max {list(hi)})"
+            )
+
     if subgroups is None:
         # Unified: all ranks process every block together (no actual split).
         return list(range(len(priorities))), [0], 0, [len(priorities)], basis, psis, [None]

@@ -242,6 +242,51 @@ def test_memory_budget_caps_unit_split_mpi(monkeypatch):
     assert observed and all(size == comm.size for size in observed)
 
 
+@pytest.mark.mpi
+def test_split_basis_rejects_rank_divergent_packing_mpi(monkeypatch):
+    """If `_pack_units` returns a rank-dependent packing (its inputs were not
+    rank-invariant), `split_basis_and_redistribute_psi` must raise on *every* rank
+    rather than deadlock in the send/receive that follows."""
+    import impurityModel.ed.basis_split as bs
+
+    comm = MPI.COMM_WORLD
+    if comm.size < 2:
+        pytest.skip("This test requires at least 2 MPI ranks")
+
+    states = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=comm,
+    )
+    psi0 = [
+        ManyBodyState.from_states([ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})])
+        if comm.rank == 0
+        else ManyBodyState(width=1)
+    ]
+
+    # Rank 0 sees 2 colors, everyone else sees 1 -- a divergence in the color count.
+    def diverging_pack(weights, comm_size, split_threshold, max_colors=None):
+        if comm.rank == 0:
+            return [(0,), (1,)], np.array([1, comm_size - 1])
+        return None, None
+
+    monkeypatch.setattr(bs, "_pack_units", diverging_pack)
+    with pytest.raises(RuntimeError, match="disagree on the unit packing"):
+        bs.split_basis_and_redistribute_psi(basis, [1.0, 1.0], psi0)
+
+    # And a same-length-but-different-values divergence.
+    def diverging_pack2(weights, comm_size, split_threshold, max_colors=None):
+        a = 1 if comm.rank == 0 else 2
+        return [(0,), (1,)], np.array([a, comm_size - a])
+
+    monkeypatch.setattr(bs, "_pack_units", diverging_pack2)
+    if comm.size >= 3:
+        with pytest.raises(RuntimeError, match="disagree on procs_per_color"):
+            bs.split_basis_and_redistribute_psi(basis, [1.0, 1.0], psi0)
+
+
 def test_calc_Greens_function_with_offdiag_serial():
     # Setup simple Hamiltonian H = 0.5 * c_0^\dagger c_0
     np.array([0.5])

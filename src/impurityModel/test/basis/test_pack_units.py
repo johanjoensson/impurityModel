@@ -98,6 +98,15 @@ def test_randomized_packings_valid(comm_size, seed):
         _check_valid_packing(*packed, n_units, comm_size)
 
 
+@pytest.mark.parametrize("bad", [[1.0, np.nan, 1.0], [1.0, np.inf, 1.0], [0.0, 0.0], []])
+def test_non_finite_or_zero_weights_raise(bad):
+    # A NaN/inf weight silently reorders the argsort and a zero (or empty) sum makes the
+    # normalization NaN -- either way ranks would compute different packings and deadlock.
+    # _pack_units must reject such weight vectors loudly and identically on every rank.
+    with pytest.raises(ValueError):
+        _pack_units(bad, 4, 1.0)
+
+
 def test_deterministic():
     rng = np.random.default_rng(1)
     weights = rng.random(17)
