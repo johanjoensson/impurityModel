@@ -58,10 +58,11 @@ These are load-bearing. Hold them when changing distributed code.
 2. **No full state-vector gathers.** Determinants are hash-distributed; there is one owner per
    determinant. Observables go apply-local → `redistribute_psis` → local-inner → `Allreduce`.
 
-3. **`MPI_Comm_free` is collective.** Free communicators and intercommunicators at
-   synchronized points where every rank of the communicator runs the same free, never from a
-   destructor or the garbage collector (which fires at rank-dependent times). See the
-   collective free in `basis_split.py`.
+3. **`MPI_Comm_free` is collective.** Free communicators at synchronized points where every
+   rank of the communicator runs the same free, never from a destructor or the garbage
+   collector (which fires at rank-dependent times). See the split-communicator lifecycle:
+   `basis_split.py` creates it, `gf_units.run_units_distributed` frees it collectively once
+   the color's kernels are done.
 
 4. **Empty-rank edge cases are real.** A rank can own zero determinants. Keep collective calls
    unconditional and buffer dtypes fixed regardless of the local partition size — an empty

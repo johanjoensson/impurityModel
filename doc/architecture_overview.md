@@ -250,4 +250,4 @@ callers) invoke with an `ImpurityModel` + option groups.
 These invariants have bitten before; hold them when changing code:
 - Never gate an MPI collective on rank-local state (e.g. a `verbose` flag that differs per rank).
 - No full state-vector gathers: determinants are hash-distributed, one owner per determinant. Observables use apply-local → redistribute → local-inner → `Allreduce`.
-- `MPI_Comm_free` is collective: free communicators/intercomms at synchronized points (see `basis_split.py`), never from the garbage collector.
+- `MPI_Comm_free` is collective: free communicators at synchronized points (the split communicator from `basis_split.py` is freed in `gf_units.run_units_distributed`), never from the garbage collector.

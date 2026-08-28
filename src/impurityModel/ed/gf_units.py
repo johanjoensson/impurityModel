@@ -242,7 +242,6 @@ def run_units_distributed(
         units_per_color,
         split_basis,
         split_seeds,
-        _,  # intercomms -- freed collectively inside the split
     ) = split_basis_and_redistribute_psi(basis, unit_weights, [s for seeds in unit_seeds for s in seeds], max_colors)
     if verbose and basis.comm.rank == 0:
         print(f"New unit roots: {unit_roots}")

@@ -4,7 +4,9 @@ into per-color sub-communicators, with redistribution of wavefunctions onto
 the split bases. `_pack_units` is the pure packing math (color cap, LPT unit
 packing, largest-remainder rank apportionment); every rank computes the
 identical packing. `split_basis_and_redistribute_psi` is collective over
-``basis.comm`` and frees its intercommunicators collectively before returning.
+``basis.comm``: it replicates the basis (and the seeds) into every color with
+one sparse all-to-all per phase (`mpi_comm.graph_alltoall`), then lets each
+color's `Basis` hash-repartition its copy over the split sub-communicator.
 """
 
 from typing import Optional
@@ -14,6 +16,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
+from impurityModel.ed.mpi_comm import graph_alltoall
 
 
 def _pack_units(
@@ -116,7 +119,7 @@ def _pack_units(
 
 def split_basis_and_redistribute_psi(
     basis, priorities: list[float] | np.ndarray, psis: Optional[list[ManyBodyState]], max_colors: Optional[int] = None
-) -> tuple[list[int], list[int], int, list[int], Basis, Optional[list[ManyBodyState]], list[Optional[MPI.Intercomm]]]:
+) -> tuple[list[int], list[int], int, list[int], Basis, Optional[list[ManyBodyState]]]:
     """Split the basis and redistribute wavefunctions over a split communicator.
 
     Parameters
@@ -143,12 +146,10 @@ def split_basis_and_redistribute_psi(
         The new Basis associated with the split communicator.
     psis : list of ManyBodyState, optional
         Redistributed wavefunctions.
-    intercomms : list of MPI.Intercomm
-        MPI intercommunicators (all set to None after being freed).
     """
 
     if (not basis.is_distributed) or len(priorities) <= 1:
-        return list(range(len(priorities))), [0], 0, [len(priorities)], basis, psis, [None]
+        return list(range(len(priorities))), [0], 0, [len(priorities)], basis, psis
 
     comm = basis.comm
     # All packing math (participation-ratio color cap, LPT unit packing,
@@ -183,7 +184,7 @@ def split_basis_and_redistribute_psi(
 
     if subgroups is None:
         # Unified: all ranks process every block together (no actual split).
-        return list(range(len(priorities))), [0], 0, [len(priorities)], basis, psis, [None]
+        return list(range(len(priorities))), [0], 0, [len(priorities)], basis, psis
 
     # _pack_units returns (None, None) or two non-None values together; the guard above
     # rules out the None case, so procs_per_color is a real array from here on.
@@ -196,44 +197,33 @@ def split_basis_and_redistribute_psi(
     items_per_color = [len(subgroup) for subgroup in subgroups]
     assert sum(items_per_color) == len(priorities)
 
-    # None for this rank's own color; a real intercommunicator for every other color.
-    intercomms: list[MPI.Intercomm | None] = []
-    for c, c_root in enumerate(split_roots):
-        if c == color:
-            intercomms.append(None)
-            continue
-        intercomms.append(split_comm.Create_intercomm(0, comm, c_root))
     indices = sorted(subgroups[color])
 
     if split_comm.rank == 0:
         assert comm.rank in split_roots
 
+    # Pure-Python ints: routing_hash() is a uint64 that can exceed C long, and
+    # `big_int % np.int64` overflows on the numpy coercion.
+    ppc_int = [int(p) for p in procs_per_color]
+    roots_int = [int(r) for r in split_roots]
+
+    def _owner(routing_hash: int) -> list[int]:
+        """Global rank that owns ``routing_hash`` in every color other than mine
+        (my color already holds it). Routing to the eventual within-color owner
+        makes the ``Basis`` re-partition below a no-op for that determinant."""
+        return [roots_int[other] + routing_hash % ppc_int[other] for other in range(len(roots_int)) if other != color]
+
+    # Replicate the full basis into every color with one sparse all-to-all over
+    # ``comm``: every determinant I own goes to its owner-to-be in each other color.
+    det_send: list[list[bytes]] = [[] for _ in range(comm.size)]
+    for state in basis.local_basis:
+        key_bytes = bytes(state.to_bytearray()[: basis.n_bytes])
+        for g in _owner(state.routing_hash()):
+            det_send[g].append(key_bytes)
     new_states = set(basis.local_basis)
-    # Distribute my local basis states among all other colors
-    for c, _c_root in enumerate(split_roots):
-        # I will send  states to this color
-        if color != c:
-            serialized_local_basis = bytearray().join(
-                state.to_bytearray()[: basis.n_bytes] for state in basis.local_basis
-            )
-            target = intercomms[c]
-            assert target is not None  # never None on the color != c branch
-            target.send(serialized_local_basis, dest=split_comm.rank % procs_per_color[c])
-        # I will receive states from all other colors
-        else:
-            for send_color in range(len(split_roots)):
-                if send_color == color:
-                    continue
-                for sender in range(procs_per_color[send_color]):
-                    if sender % procs_per_color[c] != split_comm.rank:
-                        continue
-                    source_comm = intercomms[send_color]
-                    assert source_comm is not None
-                    received_bytes = source_comm.recv(source=sender)
-                    new_states.update(
-                        basis.type.from_bytes(bytes(received_bytes[i : i + basis.n_bytes]))
-                        for i in range(0, len(received_bytes), basis.n_bytes)
-                    )
+    for chunk in graph_alltoall(det_send, comm):
+        if chunk:
+            new_states.update(basis.type.from_bytes(kb) for kb in chunk)
 
     split_basis = Basis(
         basis.impurity_orbitals,
@@ -254,38 +244,32 @@ def split_basis_and_redistribute_psi(
     if psis is not None:
         # ManyBodyState is block storage throughout; the split-basis wire format only
         # supports width-1 (same convention as Basis.redistribute_psis). The payload
-        # serializes to plain scalars (``v[0]`` unwraps the Row).
+        # carries plain scalars (``v[0]`` unwraps the Row).
         for p in psis:
             if p.width != 1:
                 raise ValueError(f"split_basis_and_redistribute_psi: expected width-1 blocks, got width {p.width}")
+        # Same routing as the determinants: each (seed, determinant, amplitude) entry to
+        # its owner-to-be in every other color; redistribute_psis then finalises placement
+        # on the split communicator (and sums any duplicate rows).
+        psi_send: list[list[tuple[int, bytes, complex]]] = [[] for _ in range(comm.size)]
+        for i, p in enumerate(psis):
+            for k, v in p.items():
+                key_bytes = bytes(k.to_bytearray()[: basis.n_bytes])
+                amp = v[0]
+                for g in _owner(k.routing_hash()):
+                    psi_send[g].append((i, key_bytes, amp))
+        received_rows: list[dict] = [dict() for _ in psis]
+        for chunk in graph_alltoall(psi_send, comm):
+            if not chunk:
+                continue
+            for i, key_bytes, amp in chunk:
+                d = received_rows[i]
+                sd = basis.type.from_bytes(key_bytes)
+                d[sd] = d.get(sd, 0) + amp
         new_psis = [p.copy() for p in psis]
-        for c, _c_root in enumerate(split_roots):
-            if color != c:
-                serialized_psis = [{bytes(k.to_bytearray()[: basis.n_bytes]): v[0] for k, v in p.items()} for p in psis]
-                target = intercomms[c]
-                assert target is not None  # never None on the color != c branch
-                target.send(serialized_psis, dest=split_comm.rank % procs_per_color[c])
-            else:
-                for send_color in range(len(split_roots)):
-                    if send_color == color:
-                        continue
-                    for sender in range(procs_per_color[send_color]):
-                        if sender % procs_per_color[color] != split_comm.rank:
-                            continue
-                        source_comm = intercomms[send_color]
-                        assert source_comm is not None
-                        received_psis = source_comm.recv(source=sender)
-                        for i, received_psi in enumerate(received_psis):
-                            new_psis[i] += ManyBodyState({basis.type.from_bytes(k): v for k, v in received_psi.items()})
+        for i, rows in enumerate(received_rows):
+            if rows:
+                new_psis[i] += ManyBodyState(rows)
         psis = split_basis.redistribute_psis(*new_psis)
 
-    # Free the intercommunicators collectively while all ranks are still
-    # synchronised here.  MPI_Comm_free is collective — leaving the objects
-    # for Python gc means they may be freed at different times on different
-    # ranks, causing crashes.  The split_comm itself (split_basis.comm) must
-    # NOT be freed here because the caller still needs split_basis.
-    for ic in intercomms:
-        if ic is not None and ic != MPI.COMM_NULL:
-            ic.Free()
-
-    return indices, split_roots, color, items_per_color, split_basis, psis, [None] * len(intercomms)
+    return indices, split_roots, color, items_per_color, split_basis, psis

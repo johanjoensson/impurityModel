@@ -44,7 +44,7 @@ def test_basis_split_and_redistribute_serial():
 
     # Test split_basis_and_redistribute_psi
     priorities = [1, 2]
-    indices, split_roots, color, items_per_color, split_basis, psis_out, _intercomms = split_basis_and_redistribute_psi(
+    indices, split_roots, color, items_per_color, split_basis, psis_out = split_basis_and_redistribute_psi(
         basis, priorities, psi0
     )
 
@@ -70,7 +70,7 @@ def test_basis_split_and_redistribute_block_serial():
 
     psi0 = [ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})]
     priorities = [1, 2]
-    indices, split_roots, color, items_per_color, split_basis, psis_out, _intercomms = split_basis_and_redistribute_psi(
+    indices, split_roots, color, items_per_color, split_basis, psis_out = split_basis_and_redistribute_psi(
         basis, priorities, psi0
     )
 
@@ -125,7 +125,7 @@ def test_basis_split_and_redistribute_mpi():
     # With priorities for 2 items, rank 0 should get item 0, rank 1 should get item 1
     priorities = [1.0, 1.0]
     result = split_basis_and_redistribute_psi(basis, priorities, psi0)
-    indices, split_roots, color, items_per_color, split_basis, _psis_out, _intercomms = result
+    indices, split_roots, color, items_per_color, split_basis, _psis_out = result
 
     assert len(indices) == 1
     assert indices[0] in [0, 1]
@@ -142,10 +142,10 @@ def test_basis_split_and_redistribute_mpi():
 
 @pytest.mark.mpi
 def test_basis_split_and_redistribute_block_mpi():
-    """Width-1 ManyBodyState lists take the same split_basis_and_redistribute_psi
-    send/receive path as flat ManyBodyState lists (Phase 7 step 2b): the intercomm wire
-    format unwraps each Row to a plain scalar (``v[0]``) and reconstructs a width-1 block
-    on receipt, so the total seeded weight must round-trip exactly like the flat path."""
+    """Width-1 ManyBodyState lists take the split_basis_and_redistribute_psi
+    redistribution path (Phase 7 step 2b): the wire format unwraps each Row to a plain
+    scalar (``v[0]``) and reconstructs a width-1 block on receipt, so the total seeded
+    weight must round-trip exactly."""
     comm = MPI.COMM_WORLD
     if comm.size < 2:
         pytest.skip("This test requires at least 2 MPI ranks")
@@ -171,7 +171,7 @@ def test_basis_split_and_redistribute_block_mpi():
 
     priorities = [1.0, 1.0]
     result = split_basis_and_redistribute_psi(basis, priorities, psi0)
-    indices, split_roots, color, items_per_color, split_basis, psis_out, _intercomms = result
+    indices, split_roots, color, items_per_color, split_basis, psis_out = result
 
     assert len(indices) == 1
     assert indices[0] in [0, 1]
@@ -243,6 +243,72 @@ def test_memory_budget_caps_unit_split_mpi(monkeypatch):
 
 
 @pytest.mark.mpi
+def test_split_basis_replicates_full_basis_across_lopsided_colors_mpi():
+    """The color split must give every color the *full* determinant set and preserve
+    the total seed weight -- even with a lopsided packing that puts a single rank in the
+    tail color and many ranks in the head color. Regression for the intercommunicator
+    two-phase exchange that lost a determinant message under >= 3 colors (Arrhenius NiO
+    self-energy crash); the loop makes the former race deterministic to catch.
+    """
+    from itertools import combinations
+
+    comm = MPI.COMM_WORLD
+    if comm.size < 3:
+        pytest.skip("Need >= 3 ranks for a >= 3-color lopsided split")
+
+    n_orb, n_el = 12, 6
+    det_bytes = []
+    for occ in combinations(range(n_orb), n_el):
+        b = bytearray((n_orb + 7) // 8)
+        for o in occ:
+            b[o // 8] |= 1 << (7 - o % 8)
+        det_bytes.append(bytes(b))
+    global_set = {SlaterDeterminant.from_bytes(d) for d in det_bytes}
+    all_sd = sorted(global_set)
+
+    # Lopsided weights -> _pack_units yields several colors, one of them a single rank.
+    n_units = 8
+    weights = [200.0, 120.0, 90.0, 60.0] + [1.0] * (n_units - 4)
+
+    for trial in range(8):
+        basis = Basis(
+            impurity_orbitals={0: [list(range(n_orb))]},
+            bath_states=({0: [[]]}, {0: [[]]}),
+            initial_basis=det_bytes,
+            comm=comm,
+            split_threshold=1.0,
+        )
+        rng = np.random.default_rng(100 + trial)
+        seeds = []
+        expected_norm2 = 0.0
+        for _u in range(n_units):
+            if comm.rank == 0:
+                amps = rng.standard_normal(len(all_sd)) + 1j * rng.standard_normal(len(all_sd))
+                expected_norm2 += float(np.sum(np.abs(amps) ** 2))
+                blk = ManyBodyState.from_states([ManyBodyState({sd: a for sd, a in zip(all_sd, amps)})])
+            else:
+                blk = ManyBodyState(width=1)
+            seeds.append(blk)
+        expected_norm2 = comm.bcast(expected_norm2, root=0)
+        seeds = [blk.to_states()[0] for blk in basis.redistribute_psis(*seeds)]
+
+        _idx, _roots, color, _ipc, split_basis, psis_out = split_basis_and_redistribute_psi(basis, weights, seeds)
+
+        color_dets = set()
+        for chunk in split_basis.comm.allgather(list(split_basis.local_basis)):
+            color_dets.update(chunk)
+        assert color_dets == global_set, f"trial {trial}: color {color} is missing determinants"
+
+        norm2 = split_basis.comm.allreduce(
+            sum(float(sum(abs(v[0]) ** 2 for v in p.values())) for p in psis_out), op=MPI.SUM
+        )
+        assert abs(norm2 - expected_norm2) <= 1e-6 * expected_norm2
+
+        if split_basis.comm is not None and split_basis.comm != comm:
+            split_basis.free_comm()
+
+
+@pytest.mark.mpi
 def test_split_basis_rejects_rank_divergent_packing_mpi(monkeypatch):
     """If `_pack_units` returns a rank-dependent packing (its inputs were not
     rank-invariant), `split_basis_and_redistribute_psi` must raise on *every* rank
@@ -261,9 +327,11 @@ def test_split_basis_rejects_rank_divergent_packing_mpi(monkeypatch):
         comm=comm,
     )
     psi0 = [
-        ManyBodyState.from_states([ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})])
-        if comm.rank == 0
-        else ManyBodyState(width=1)
+        (
+            ManyBodyState.from_states([ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0})])
+            if comm.rank == 0
+            else ManyBodyState(width=1)
+        )
     ]
 
     # Rank 0 sees 2 colors, everyone else sees 1 -- a divergence in the color count.
