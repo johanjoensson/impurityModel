@@ -85,6 +85,52 @@ def test_check_greens_function_invalid():
         selfenergy.check_greens_function(G)
 
 
+def test_check_greens_function_below_tolerance_warns_and_continues(capsys):
+    # A single-orbital violation whose ratio (max Im / max |Im|) sits below tol must not raise.
+    G = np.zeros((2, 1, 1), dtype=complex)
+    G[0, 0, 0] = -1.0j  # causal
+    G[1, 0, 0] = 1e-4j  # violates, but ratio 1e-4/1.0 = 1e-4 < tol
+    selfenergy.check_greens_function(G, tol=1e-3)  # must not raise
+    out = capsys.readouterr().out
+    assert "warning" in out and "causality" in out
+
+
+def test_check_greens_function_above_tolerance_raises_with_report():
+    G = np.zeros((2, 1, 1), dtype=complex)
+    G[0, 0, 0] = -1.0j
+    G[1, 0, 0] = 0.5j  # ratio 0.5/1.0 = 0.5 > tol
+    with pytest.raises(UnphysicalGreensFunctionError, match="positive imaginary part") as exc_info:
+        selfenergy.check_greens_function(G, tol=1e-3, label="Sigma")
+    message = str(exc_info.value)
+    assert "violate causality" in message
+    assert "worst per-orbital ratio" in message
+
+
+def test_check_greens_function_normalizer_is_per_orbital_not_whole_block():
+    # A wide, high-weight orbital (0) must not mask a violation on a nearly-empty orbital (1):
+    # the whole-block max|Im| is dominated by orbital 0, but the correct normalizer compares
+    # each orbital only against its own scale.
+    G = np.zeros((2, 2, 2), dtype=complex)
+    G[0, 0, 0] = -1e6j
+    G[1, 0, 0] = -1e6j  # orbital 0: huge weight, always causal
+    G[0, 1, 1] = -2e-3j  # orbital 1: causal
+    G[1, 1, 1] = 2e-3j  # orbital 1: violates -- ratio 1.0 against its own scale
+    with pytest.raises(UnphysicalGreensFunctionError):
+        selfenergy.check_greens_function(G, tol=0.5)
+    # Below the per-orbital ratio (1.0), so this one must not raise.
+    selfenergy.check_greens_function(G, tol=1.5)
+
+
+def test_check_greens_function_reports_g0_inv_breakdown():
+    G = np.zeros((1, 1, 1), dtype=complex)
+    G[0, 0, 0] = 0.5j
+    g0_inv = np.array([[[1.0 + 0.2j]]])
+    ginv = np.array([[[0.5 - 0.3j]]])
+    with pytest.raises(UnphysicalGreensFunctionError) as exc_info:
+        selfenergy.check_greens_function(G, tol=0.0, g0_inv=g0_inv, ginv=ginv)
+    assert "Im(G0^-1)" in str(exc_info.value) and "Im(G^-1)" in str(exc_info.value)
+
+
 def test_raise_together_serial():
     selfenergy._raise_together(None, None)  # clean verdict: must not raise
     with pytest.raises(UnphysicalGreensFunctionError, match="boom"):
@@ -278,6 +324,62 @@ def test_get_sigma():
     np.testing.assert_allclose(sigma[0], np.zeros((2, 2, 2), dtype=complex), atol=1e-12)
 
 
+def test_get_sigma_non_full_width_block_uses_matching_orbitals():
+    """``get_sigma`` must index ``hcorr``/``hyb`` by the *same* orbitals as the ``g`` block it
+    is given -- not, say, the first ``len(block)`` orbitals, or some other stale index.
+
+    ``test_get_sigma`` above only exercises ``blocks = [[0, 1]]``, the *full* impurity width,
+    where a block/index mixup is invisible (see the "impurity_indices shape bug" and the
+    50+10-bath indexing bug in project history: both were invisible exactly when the block
+    happened to be full-width). Here the impurity has three orbitals and the solved block is
+    the single *middle* one, ``[1]`` -- neither the first orbital nor the whole impurity -- so a
+    stride/offset bug in either ``hcorr[block_ix]`` or ``v_full[:, block]`` would misalign.
+    """
+    omega_mesh = np.array([0.0, 1.0])
+    delta = 0.1
+    impurity_orbitals = {0: 3}
+    nBaths = {0: 3}
+    # Each impurity orbital has a distinct energy and a distinct, orbital-specific
+    # hybridization partner, so any cross-orbital mixup changes the result.
+    h0op = {
+        ((0, "c"), (0, "a")): 1.0,
+        ((1, "c"), (1, "a")): 2.0,
+        ((2, "c"), (2, "a")): 3.0,
+        ((3, "c"), (3, "a")): -1.0,
+        ((4, "c"), (4, "a")): -2.0,
+        ((5, "c"), (5, "a")): -3.0,
+        ((0, "c"), (3, "a")): 0.3,
+        ((3, "c"), (0, "a")): 0.3,
+        ((1, "c"), (4, "a")): 0.5,
+        ((4, "c"), (1, "a")): 0.5,
+        ((2, "c"), (5, "a")): 0.7,
+        ((5, "c"), (2, "a")): 0.7,
+    }
+    block = [1]  # the middle orbital -- not the first, not the whole impurity.
+    blocks = [block]
+
+    hcorr, v_full, _, h_bath = selfenergy.get_hcorr_v_hbath(h0op, impurity_orbitals, nBaths)
+    block_ix = np.ix_(block, block)
+    wIs = (omega_mesh + 1j * delta)[:, np.newaxis, np.newaxis] * np.eye(len(block))[np.newaxis, :, :]
+
+    # The correct g0 for *this* block: orbital 1's own on-site energy and hybridization.
+    g0_inv_correct = wIs - hcorr[block_ix] - selfenergy.hyb(omega_mesh, v_full[:, block], h_bath, delta)
+    g0_correct = np.linalg.inv(g0_inv_correct)
+    sigma_correct = selfenergy.get_sigma(omega_mesh, impurity_orbitals, nBaths, [g0_correct], h0op, delta, blocks)
+    np.testing.assert_allclose(sigma_correct[0], np.zeros_like(sigma_correct[0]), atol=1e-12)
+
+    # Discriminating check: feeding get_sigma the *wrong* orbital's non-interacting g0 (built
+    # from orbital 0 instead of orbital 1) for the same block must NOT come out zero -- if it
+    # did, this test would be vacuous (unable to distinguish a real index bug from a passing
+    # correct implementation).
+    wrong_block = [0]
+    wrong_block_ix = np.ix_(wrong_block, wrong_block)
+    g0_inv_wrong = wIs - hcorr[wrong_block_ix] - selfenergy.hyb(omega_mesh, v_full[:, wrong_block], h_bath, delta)
+    g0_wrong = np.linalg.inv(g0_inv_wrong)
+    sigma_wrong = selfenergy.get_sigma(omega_mesh, impurity_orbitals, nBaths, [g0_wrong], h0op, delta, blocks)
+    assert np.max(np.abs(sigma_wrong[0])) > 0.1
+
+
 def _identity_moments(n_corr=1, max_order=3):
     """A stand-in for get_greens_function_moments in the mocked orchestration tests."""
     M = np.zeros((max_order + 1, n_corr, n_corr), dtype=complex)
@@ -408,16 +510,20 @@ def test_calc_selfenergy_sigma_exceptions(mock_get_sigma, mock_get_gf, mock_calc
         {"rhos": [np.array([[1.0]])]},
     )
 
+    # get_sigma is called with return_components=True since the causality check localizes
+    # against the G0^-1/G^-1 breakdown; the components' values don't matter for these tests.
+    dummy_components = [(np.zeros((1, 1, 1), dtype=complex), np.zeros((1, 1, 1), dtype=complex))]
+
     # Test unphysical sigma_real
     mock_get_gf.return_value = (None, [np.array([[[-1j]]])], None)  # Valid GS
-    mock_get_sigma.return_value = [np.array([[[1j]]])]  # Invalid sigma
+    mock_get_sigma.return_value = ([np.array([[[1j]]])], dummy_components)  # Invalid sigma
 
     with pytest.raises(UnphysicalGreensFunctionError):
         selfenergy.calc_selfenergy(**_selfenergy_args(), comm=None)
 
     # Test unphysical sigma matsubara
     mock_get_gf.return_value = ([np.array([[[-1j]]])], None, None)  # Valid GS
-    mock_get_sigma.return_value = [np.array([[[1j]]])]  # Invalid sigma
+    mock_get_sigma.return_value = ([np.array([[[1j]]])], dummy_components)  # Invalid sigma
 
     with pytest.raises(UnphysicalGreensFunctionError):
         selfenergy.calc_selfenergy(**_selfenergy_args(), comm=None)

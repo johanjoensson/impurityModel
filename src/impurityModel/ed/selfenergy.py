@@ -1,5 +1,6 @@
 import numpy as np
 
+from impurityModel.ed import config
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 
 # The double-counting criteria live in their own modules; re-export their public entry points so
@@ -108,7 +109,7 @@ def _self_energy_on_mesh(
     sigma = None
     message = None
     if gss is not None:
-        sigma = get_sigma(
+        sigma, components = get_sigma(
             omega_mesh=mesh,
             impurity_orbitals=total_impurity_orbitals,
             nBaths=sum_bath_states,
@@ -117,10 +118,14 @@ def _self_energy_on_mesh(
             delta=delta,
             clustername=cluster_label,
             blocks=blocks,
+            return_components=True,
         )
+        tol = config.SIGMA_CAUSALITY_TOL.get()
         try:
-            for sig in sigma:
-                check_greens_function(sig)
+            for sig, (g0_inv, ginv) in zip(sigma, components):
+                check_greens_function(
+                    sig, tol=tol, omega_mesh=mesh, label=f"{label} self-energy", g0_inv=g0_inv, ginv=ginv
+                )
         except UnphysicalGreensFunctionError as err:
             for i, sig in enumerate(sigma):
                 # "sig", not "sig+dc": the returned self-energy is the pure interaction term.

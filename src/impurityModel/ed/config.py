@@ -428,6 +428,32 @@ DC_DIAGNOSTICS = Knob(
 )
 
 
+# --- Self-energy: causality tolerance --------------------------------------------------------
+
+SIGMA_CAUSALITY_TOL = Knob(
+    name="SIGMA_CAUSALITY_TOL",
+    kind="float",
+    default=1e-3,
+    minimum=0.0,
+    group="sigma",
+    doc="""Relative tolerance for the self-energy causality check (sigma.check_greens_function,
+    called on Sigma from selfenergy._self_energy_on_mesh). Causality requires Im Sigma_ii(w) <=
+    0 on every diagonal element. Since Sigma = G0^-1 - G^-1, a positive Im Sigma_ii means the
+    interacting G is narrower than the bare hybridized G0 there -- a real solver artifact (basis
+    truncation, a restricted excited sector, or finite pole discreteness at small delta), not
+    roundoff. The normalizer is *per diagonal element*: for
+    orbital i compare max_w Im(Sigma_ii(w)) against max_w |Im(Sigma_ii(w))|, worst over i -- not
+    a whole-block max, which lets a wide, high-weight orbital mask a violation on a narrow one.
+    Below this threshold the violation is reported (gf_diagnostics-style: violating window,
+    worst value/ratio, and the Im(G0^-1) vs Im(G^-1) breakdown at the worst point) as a WARN and
+    the run continues; above it the run raises, as it always has. Default 1e-3: comfortably
+    above roundoff, and below the ~7.6e-3 lobe that a real 128-rank Mn self-energy run hit at a
+    sharp hybridization resonance (see doc/, the Lanczos-diagnostics writeup) -- so the default
+    does not silently rescue a run with a genuine artifact, only ones with a much smaller one.
+    0 restores the historical always-raise behaviour.""",
+)
+
+
 KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_ATOL,
     GF_BICGSTAB_MAX_ITER,
@@ -456,6 +482,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_RIXS_ADAPTIVE_TOL,
     GF_RIXS_ADAPTIVE_BATCH,
     DC_DIAGNOSTICS,
+    SIGMA_CAUSALITY_TOL,
 )
 
 GROUP_TITLES = {
@@ -467,6 +494,7 @@ GROUP_TITLES = {
     "rixs-solvers": "RIXS shift-recycling solver tiers",
     "rixs-sampling": "RIXS incoming-energy sampling",
     "double-counting": "Double-counting search diagnostics",
+    "sigma": "Self-energy causality tolerance",
 }
 
 
