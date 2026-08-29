@@ -45,6 +45,7 @@ from impurityModel.ed.TSQR import (
     EPS,
     DEFLATE_EVAL_TOL,
     BREAKDOWN_TOL,
+    robust_svd,
     tsqr,
 )
 
@@ -381,7 +382,7 @@ cpdef np.ndarray estimate_orthonormality(
     # One SVD of the current beta gives both the 2-norm (largest singular value) and
     # sigma_min — np.linalg.norm(ord=2) computes the same SVD internally, so this is
     # bit-identical and drops a redundant factorization per step.
-    _sv_bi = la.svd(betas[i, :w_next, :w_curr], compute_uv=False)
+    _sv_bi = robust_svd(betas[i, :w_next, :w_curr], compute_uv=False)
     _sig_min_bi = float(_sv_bi[len(_sv_bi) - 1])
     _binv_norm = 1.0 / max(_sig_min_bi, eps)
     _bnorm_i = float(_sv_bi[0])

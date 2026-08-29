@@ -757,7 +757,7 @@ def block_lanczos_cy(
         # function. The trailing beta then plays the role of the (ignored) residual coupling.
         # One SVD of beta_i per step: its largest singular value is the 2-norm (guard/verbose)
         # and its smallest gives ||beta_i^-1|| for the locked-reort estimate below.
-        _svb = np.linalg.svd(beta_i, compute_uv=False)
+        _svb = robust_svd(beta_i, compute_uv=False)
         beta_norm = float(_svb[0])
         if beta_norm_hist is not None:
             beta_norm_hist.append(beta_norm)

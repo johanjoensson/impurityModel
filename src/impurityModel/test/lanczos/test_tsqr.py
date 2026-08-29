@@ -31,6 +31,7 @@ from impurityModel.ed.TSQR import (
     pack_upper,
     packed_len,
     reduce_r,
+    robust_svd,
     tsqr,
     tsqr_r,
     unpack_upper,
@@ -232,6 +233,50 @@ def test_tsqr_of_singular_block_deflates():
     np.testing.assert_allclose(A, Q @ beta, atol=1e-12 * np.linalg.norm(A))
     np.testing.assert_allclose(Q.conj().T @ Q, np.eye(k), atol=inner_atol(Q.shape[0], 1.0))
     assert sv[3] < DEFLATE_TOL * sv[0]
+
+
+def _break_gesdd(monkeypatch):
+    """Make LAPACK's default ``gesdd`` driver raise ``LinAlgError`` while letting an explicit
+    ``gesvd`` request through — the failure mode that killed a production NiO DC run inside
+    ``tsqr``'s ``p x p`` SVD, which ``gesdd`` hits occasionally on finite, well-formed input.
+    """
+    import scipy.linalg as sla
+
+    real_svd = sla.svd
+
+    def fake_svd(a, *args, lapack_driver="gesdd", **kw):
+        if lapack_driver == "gesdd":
+            raise np.linalg.LinAlgError("SVD did not converge for slice = 0.")
+        return real_svd(a, *args, lapack_driver=lapack_driver, **kw)
+
+    monkeypatch.setattr(sla, "svd", fake_svd)
+
+
+def test_robust_svd_falls_back_to_gesvd(monkeypatch):
+    """``robust_svd`` retries with ``gesvd`` on a ``gesdd`` non-convergence and warns."""
+    _break_gesdd(monkeypatch)
+    rng = _rng(4)
+    A = rng.standard_normal((6, 6)) + 1j * rng.standard_normal((6, 6))
+    with pytest.warns(RuntimeWarning, match="gesdd failed to converge"):
+        U, sv, Vh = robust_svd(A)
+    np.testing.assert_allclose(U @ np.diag(sv) @ Vh, A, atol=1e-12 * np.linalg.norm(A))
+    with pytest.warns(RuntimeWarning):
+        sv_only = robust_svd(A, compute_uv=False)
+    np.testing.assert_allclose(sv_only, sv, atol=1e-12)
+
+
+def test_tsqr_recovers_when_gesdd_fails(monkeypatch):
+    """The regression: with ``gesdd`` broken, ``tsqr`` still deflates and factors exactly
+    (before the ``gesvd`` fallback it propagated ``LinAlgError`` out of a distributed solve).
+    """
+    _break_gesdd(monkeypatch)
+    A = _block(200, 3, seed=31)
+    A = np.hstack([A, 2.0 * A[:, :1]])  # rank 3, one exactly dependent column
+    with pytest.warns(RuntimeWarning):
+        Q, beta, k, sv = tsqr(A, scale=1.0)
+    assert k == 3
+    np.testing.assert_allclose(A, Q @ beta, atol=1e-12 * np.linalg.norm(A))
+    np.testing.assert_allclose(Q.conj().T @ Q, np.eye(k), atol=inner_atol(Q.shape[0], 1.0))
 
 
 def test_tsqr_rank_matches_the_singular_value_floor():

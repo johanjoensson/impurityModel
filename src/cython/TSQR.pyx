@@ -47,6 +47,8 @@ constants and deflation floors that ``BlockLanczosArray`` (and through it every 
 Krylov module) re-exports.
 """
 
+import warnings
+
 import numpy as np
 cimport numpy as np
 import scipy.linalg as la
@@ -103,6 +105,39 @@ BREAKDOWN_TOL = 1e-12                      # absolute: ||beta||_2 <= this * scal
 # ||Q^H Q - I|| ~ kappa * EPS, so this bounds it by EPS**(3/4) ~ 1e-12.
 REFINE_TOL = EPS_VAL ** (-0.25)            # ~1.5e4
 PANEL_ROWS = 512                           # default local panel height
+
+
+def robust_svd(a, compute_uv=True):
+    """:func:`scipy.linalg.svd` with a ``gesvd`` fallback on non-convergence.
+
+    SciPy/NumPy default to LAPACK's divide-and-conquer driver ``gesdd``, which has rare but
+    real convergence failures (``LinAlgError: SVD did not converge``) on finite, well-formed
+    inputs where the slower QR-iteration driver ``gesvd`` succeeds. Every SVD in the Krylov
+    machinery is of a tiny ``p x p`` block (a triangular TSQR factor, or a ``beta`` block for
+    conditioning / reort estimates), so the one-off cost of a retry is negligible and an
+    uncaught failure aborts a whole distributed solve mid-recurrence.
+
+    Returns whatever ``scipy.linalg.svd`` returns for the given ``compute_uv`` (the ``s``
+    vector alone when ``compute_uv=False``, else ``(U, s, Vh)``); ``full_matrices`` keeps
+    scipy's default, which is what every call site here already relied on (and is moot anyway
+    -- every block is square or singular-values-only).
+    """
+    try:
+        return la.svd(a, compute_uv=compute_uv, lapack_driver="gesdd")
+    except la.LinAlgError:
+        result = la.svd(a, compute_uv=compute_uv, lapack_driver="gesvd")
+        sv = result[1] if compute_uv else result
+        s_max = float(sv[0]) if sv.size else 0.0
+        s_min = float(sv[-1]) if sv.size else 0.0
+        warnings.warn(
+            "robust_svd: LAPACK gesdd failed to converge on a "
+            f"{np.shape(a)} block; recovered with gesvd "
+            f"(sigma_max={s_max:.3e}, sigma_min={s_min:.3e}, "
+            f"kappa={s_max / s_min if s_min > 0 else np.inf:.3e}).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return result
 
 
 # ===========================================================================
@@ -532,7 +567,7 @@ def tsqr(A, comm=None, double scale=1.0, Py_ssize_t panel_rows=PANEL_ROWS, bint 
         return None, None, -1, None
     R = unpack_upper(R_packed, p)
 
-    _, sv, Vh = la.svd(R)
+    _, sv, Vh = robust_svd(R)
     cdef double s_max = float(sv[0]) if sv.size else 0.0
     if s_max <= BREAKDOWN_TOL * scale:
         return None, None, 0, sv

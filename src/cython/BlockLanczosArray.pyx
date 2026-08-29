@@ -130,6 +130,7 @@ from impurityModel.ed.TSQR import (
     EPS,
     DEFLATE_EVAL_TOL,
     BREAKDOWN_TOL,
+    robust_svd,
 )
 
 
@@ -811,7 +812,7 @@ def block_lanczos_array_cy(
         # have replaced beta_i) for the estimator's noise floor at later iterations.
         if beta_norm_hist is not None:
             beta_norm_hist.append(
-                float(np.linalg.svd(beta_i, compute_uv=False)[0]) if _reort_acted else beta_norm
+                float(robust_svd(beta_i, compute_uv=False)[0]) if _reort_acted else beta_norm
             )
 
         if converged(alphas_buf[: it + 1], betas_buf[: it + 1], verbose=verbose, block_widths=block_widths + [n_curr]):
