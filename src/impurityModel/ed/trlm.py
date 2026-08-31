@@ -50,6 +50,40 @@ __all__ = [
 ]
 
 
+#: How many continuation blocks to add between mid-restart convergence checks.
+#:
+#: The thick-restart continuation (see :func:`_trlm_core`) rebuilds ``m - k_blocks`` blocks on
+#: every restart, and used to test convergence only *after* all of them -- so a solve whose wanted
+#: Ritz pairs stopped moving early still paid for the rest. Checking costs one dense ``eigh`` of
+#: the current ``T``; a continuation block costs a matvec plus the two unconditional CGS2 passes
+#: against the whole ``Q_basis``. Neither reliably dominates, so the check is amortized.
+#:
+#: Measured, not chosen: NiO 7-bath from ``impmod_tests``, production settings, single rank,
+#: ``OPENBLAS_NUM_THREADS=1``, timing spent *inside* the eigensolver (total wall is dominated by
+#: the Green's function and hides the effect), two repetitions per point.
+#:
+#: ===========  ======  ======  ======  ======  ======  ======  ======  =====
+#: cadence           1       2       4       8      12      16      24    off
+#: block matvecs  2677    2682    2698    2721    2744    2769    2804   2945
+#: TRLM seconds   40.7    37.2    36.8    35.1    35.1    35.7    36.3   39.5
+#: ===========  ======  ======  ======  ======  ======  ======  ======  =====
+#:
+#: Two things that table settles. Fewest matvecs is **not** fastest -- checking every block
+#: (cadence 1) is slower than never checking, because the ``eigh`` outweighs the block it saves.
+#: And the minimum is a broad plateau at 8-12 rather than a cliff: every cadence from 2 to 24
+#: beats ``off``, so this is not tuned to one workload's edge. 8 is the matvec-conservative end
+#: of the plateau. ``sigma_static`` is bit-identical to the un-checked run at every cadence.
+#:
+#: **TRLM only, deliberately.** The same check was written for IRLM (whose continuation is a
+#: ``sweep`` call, so the hook is its ``converged_fn``) and measured: it fired **zero** times
+#: across three problem shapes while adding 9-24 banded eigendecompositions, costing ~13% at
+#: ``p=21, m=24`` (four reps, no overlap between the distributions). IRLM does not need it -- it
+#: **locks** converged Ritz pairs and deflates them out of the active subspace between sweeps
+#: (EA16 §2.2.2), so it has no equivalent of the thick restart's unconditional
+#: ``m - k_blocks``-block rebuild for a mid-sweep test to catch.
+CONTINUATION_CHECK_EVERY = 8
+
+
 def _trlm_extract(T_full, Q, dim, num_wanted, comm, slater):
     """Diagonalize the leading ``dim`` x ``dim`` block of the (possibly arrowhead)
     ``T_full`` and form the ``num_wanted`` lowest Ritz vectors as combinations of
@@ -413,6 +447,34 @@ def _trlm_core(
                 if verbose and rank0:
                     print(f"[TRLM] Invariant subspace found during restart at block {i}. Stopping early.")
                 return _trlm_extract(T_full, Q_basis, off + w1, num_wanted, comm, slater)
+
+            # Converged already? Exactly the test the restart-loop head runs at the top of this
+            # function (`max ||beta s_i|| < tol` over the `num_wanted` lowest Ritz pairs, plain
+            # `tol` and no scale rule), just applied before the subspace has been grown to its
+            # full `m` blocks. Without it the continuation always rebuilds every one of the
+            # `m - k_blocks` blocks, each a matvec plus the two unconditional CGS2 passes above,
+            # even when the wanted pairs stopped moving many blocks ago.
+            #
+            # The estimate is honest here in a way it would not be inside the initial sweep: this
+            # loop fully reorthogonalizes against `Q_basis` whatever `reort` asks for, so the
+            # recurrence identity the residual rests on holds to working precision and a ghost
+            # Ritz value cannot pass the test on lost orthogonality alone.
+            D_now = off + w1
+            if i < m - 1 and D_now > num_wanted and (i - k_blocks + 1) % CONTINUATION_CHECK_EVERY == 0:
+                theta_now, s_now = sp.eigh(T_full[:D_now, :D_now])
+                res_now = np.linalg.norm(beta_i @ s_now[D_now - w1 : D_now, :], axis=0)
+                done_now = float(np.max(res_now[np.argsort(theta_now)[:num_wanted]])) < tol
+                # `sp.eigh` is a rank-local LAPACK call on a replicated `T_full`; a multithreaded
+                # BLAS can make its output differ in the last bits between ranks. Deciding
+                # per-rank would let some ranks return here while the others enter the next
+                # block's collectives -- decide on rank 0 and broadcast, per CLAUDE.md's MPI rule
+                # and matching `done` at the head of the restart loop.
+                if mpi:
+                    done_now = comm.bcast(done_now, root=0)
+                if done_now:
+                    if verbose and rank0:
+                        print(f"[TRLM] Converged during restart {restart} at block {i} (dim {D_now}).")
+                    return _trlm_extract(T_full, Q_basis, D_now, num_wanted, comm, slater)
 
             # Partial deflation shrinks the block: beta_i is (w_next, w1), q_next has
             # w_next <= w1 columns; place the arrowhead with those widths.
