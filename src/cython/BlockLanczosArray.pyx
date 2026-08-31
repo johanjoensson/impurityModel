@@ -145,7 +145,11 @@ def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=N
         e = e[sorted_indices]
         s = s[:, sorted_indices]
         mask = e - np.min(e) <= e_max
-        return np.linalg.norm(betas[-1] @ s[-block_size:, mask], ord=2) < THERMAL_GS_RESIDUAL_TOL
+        # Positive indices only: this module is compiled with `wraparound=False`, under which
+        # `betas[-1]` reaches numpy as `-1 - len(betas)` and raises IndexError.
+        beta_last = betas[len(betas) - 1]
+        s_last = s[s.shape[0] - block_size:, mask]
+        return np.linalg.norm(beta_last @ s_last, ord=2) < THERMAL_GS_RESIDUAL_TOL
 
     if v0 is None:
         v0 = np.random.rand(h.shape[1], block_size) + 1j * np.random.rand(h.shape[1], block_size)
@@ -720,7 +724,7 @@ def block_lanczos_array_cy(
                 # current diagnostic run needs.
                 _n_blks = W.shape[1] - 1
                 _widths_trace = block_widths + [n_curr]
-                _predicted_max = [float(np.max(np.abs(W[-1, j]))) for j in range(_n_blks)]
+                _predicted_max = [float(np.max(np.abs(W[W.shape[0] - 1, j]))) for j in range(_n_blks)]
                 _bad_idx_predicted = [j for j in range(_n_blks) if _predicted_max[j] > BAD_BLOCK_TOL]
                 _triggered = bool(_force_reort) or (max(_predicted_max) > REORT_TOL if _predicted_max else False)
                 _Q_mat = Q_list[0]

@@ -63,6 +63,12 @@ Lanczos kernels import it at runtime.
 
 - Formatting: black (line length 120, target py311) + cython-lint via pre-commit;
   ruff/mypy via `make check` (configs in `pyproject.toml`/`setup.cfg`).
+- **Never write `x[-1]` in `src/cython/`.** Every kernel there carries a module-wide
+  `# cython: ... wraparound=False ...` header, which applies to plain `def` functions too:
+  on an inferred ndarray, `x[-1]` reaches numpy as `-1 - len(x)` and raises `IndexError`
+  (or, on a slice, silently addresses the wrong rows). Spell it `x[len(x) - 1]` /
+  `x[x.shape[0] - 1]` — the idiom the kernels already use. This has landed twice: once in
+  a perf pass, and again when `robust_svd` and `calculate_thermal_gs` took out 21 tests.
 - Docstrings: numpy style (Sphinx napoleon).
 - Commits: small, single-concern steps (see the R-numbered history on this branch);
   refactors move code verbatim and keep every commit green on the test gate.

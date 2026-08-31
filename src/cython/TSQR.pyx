@@ -127,8 +127,12 @@ def robust_svd(a, compute_uv=True):
     except la.LinAlgError:
         result = la.svd(a, compute_uv=compute_uv, lapack_driver="gesvd")
         sv = result[1] if compute_uv else result
+        # `sv[len(sv) - 1]`, never `sv[-1]`: this module is compiled with `wraparound=False`
+        # (see the directive header), under which Cython does not add the length to a negative
+        # index on an inferred ndarray -- `sv[-1]` reaches numpy as `-1 - len(sv)` and raises
+        # IndexError. Every other negative index in these kernels is spelled out the same way.
         s_max = float(sv[0]) if sv.size else 0.0
-        s_min = float(sv[-1]) if sv.size else 0.0
+        s_min = float(sv[len(sv) - 1]) if sv.size else 0.0
         warnings.warn(
             "robust_svd: LAPACK gesdd failed to converge on a "
             f"{np.shape(a)} block; recovered with gesvd "

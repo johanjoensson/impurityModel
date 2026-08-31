@@ -96,8 +96,11 @@ def spectral_bounds(hOp, basis, n_iter=40, pad_rel=0.05, seed=1):
             T[i, i + 1] = np.conj(b)
             T[i + 1, i] = b
     ev = np.linalg.eigvalsh(T)
-    pad = pad_rel * (ev[-1] - ev[0])
-    return float(ev[0] - pad), float(ev[-1] + pad)
+    # `ev[len(ev) - 1]`, never `ev[-1]`: compiled with `wraparound=False` (directive header),
+    # under which a negative index on an inferred ndarray reaches numpy unwrapped and raises.
+    ev_max = ev[len(ev) - 1]
+    pad = pad_rel * (ev_max - ev[0])
+    return float(ev[0] - pad), float(ev_max + pad)
 
 
 def partition_of_unity(bounds, slice_edges, degree):
