@@ -134,6 +134,14 @@ That is the stronger negative — ASan traps the bad access when it happens, so 
 corrupts the heap without crashing is still caught. The file is re-enabled, with the evidence
 and the remaining untested variables recorded in its module comment.
 
+**Re-enabled, but isolated.** A failed reproduction is not a fix, and the failure mode is a
+whole-process SIGSEGV: a recurrence would not fail five tests, it would kill the step and take
+every other result on that leg with it — which is the damage the skip was really avoiding, at a
+rate of 1-2 of 8 legs normally and 5 of 8 once. So the file is deselected from the three
+standing MPI legs and runs in three steps of its own at the end of the job, after the coverage
+upload. It runs exactly once either way; a recurrence now fails one step whose predecessors
+have already reported.
+
 **Two theories killed on the way.** `_graph_comm_cache` is keyed on `id(comm)` and never
 evicts, and the GF layer clones a communicator per unit — but it holds 10 live entries after an
 entire `-n 3` suite across 18387 lookups, nowhere near MPICH's context-id space. And the

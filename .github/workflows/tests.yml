@@ -143,7 +143,9 @@ jobs:
 
       - name: Run MPI tests (1 rank)
         run: |
-          mpiexec -n 1 python -m pytest --cache-clear --with-mpi $PYTEST_COV_ARGS
+          # test_rank_independence.py is deselected here and run in its own steps at the
+          # end of this job -- see "Run rank-invariance guards" below.
+          mpiexec -n 1 python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py $PYTEST_COV_ARGS
 
       - name: Run MPI tests (2 ranks)
         run: |
@@ -151,7 +153,7 @@ jobs:
           # to combine into a shared .coverage (which crashes rank>0 with exit 3). The
           # rank env var is PMI_RANK under MPICH (the CI MPI) and OMPI_COMM_WORLD_RANK
           # under Open MPI; default 0 keeps this a no-op when coverage is off.
-          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi '"$PYTEST_COV_ARGS"
+          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
 
       - name: Run MPI tests (3 ranks)
         run: |
@@ -159,7 +161,7 @@ jobs:
           # in play for small fixtures -- i.e. only visible at 3+ ranks, never at 2. This
           # leg is what caught the locked-reort deadlock in _lanczos_step.pxi (empty-rank
           # collectives silently skipped on some ranks but not others).
-          mpiexec -n 3 bash -c 'COVERAGE_FILE=.coverage.mpi3_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi '"$PYTEST_COV_ARGS"
+          mpiexec -n 3 bash -c 'COVERAGE_FILE=.coverage.mpi3_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
 
       - name: Combine coverage and write XML
         if: matrix.coverage == true
@@ -177,6 +179,34 @@ jobs:
         with:
           file: coverage.xml
           format: cobertura
+
+      # Deliberately the last steps in the job, and deliberately three of them.
+      #
+      # These five tests are the only end-to-end rank-invariance guards in the suite, and they
+      # spent a long time skipped behind an intermittent whole-process SIGSEGV (MPICH "BAD
+      # TERMINATION", exit 139) that hit 1-2 of 8 legs on a normal run and 5 of 8 on one -- two
+      # solver bugs went through everything else while they were off. The reproduction attempt
+      # came back empty (110 MPICH runs plus a clean AddressSanitizer suite; the evidence is in
+      # the module comment), so they are back in the gate -- but a 139 kills the process, taking
+      # every other test result in that step down with it, and that collateral damage is what
+      # the skip was really avoiding. Running them separately, after the coverage upload, buys
+      # the isolation without a second skip: if the crash returns it fails one step at the end
+      # of a job whose other results are already recorded.
+      #
+      # No $PYTEST_COV_ARGS on purpose. Coverage is combined and uploaded above, so data written
+      # here would be too late to count; leaving coverage off also removes any chance of the
+      # ranks racing a data file and exiting 3, which would read like the crash returning.
+      - name: Run rank-invariance guards (1 rank)
+        run: |
+          mpiexec -n 1 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
+
+      - name: Run rank-invariance guards (2 ranks)
+        run: |
+          mpiexec -n 2 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
+
+      - name: Run rank-invariance guards (3 ranks)
+        run: |
+          mpiexec -n 3 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
 
   # test-asan:
   #   # Diagnostic leg for the intermittent SIGSEGV in test_mpi_infra/test_rank_independence.py

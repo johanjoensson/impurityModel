@@ -83,8 +83,11 @@ from impurityModel.test.support._nio_workload import (
 # `g++ -print-file-name=libasan.so` resolves to an ASCII *linker script*, not a preloadable
 # object, so it silently does nothing -- it must name the real libasan.so.<N>.
 #
-# If the crash does return, the proportionate response is to give this file its own CI step so
-# a 139 fails one step instead of taking the suite down with it -- not to skip it again. These
+# So that a recurrence costs what it should and no more, this file is deselected from the three
+# standing MPI legs in .github/workflows/tests.yml and run in its own steps at the end of that
+# job instead. A 139 there fails one step, after the rest of the leg has already reported --
+# that collateral damage, not the crash itself, is what the skip was really buying. If it does
+# come back, the response is to diagnose it from that step, not to skip the file again: these
 # are the only end-to-end rank-invariance guards there are, and two solver bugs got through the
 # rest of the suite while they were switched off.
 
