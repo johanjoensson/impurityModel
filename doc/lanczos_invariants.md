@@ -201,6 +201,43 @@ site on a real workload. Every tolerance in the stack above the kernels — incl
 accuracy — floors on the tolerance the solver was *asked* for. Nothing checked what it
 achieved, and the full pytest suite caught neither bug.
 
+## Block width bounds the manifold a solve can resolve (2026-09-01)
+
+**Rule: a block-Krylov space cannot hold more of a degenerate eigenspace than its block is
+wide.** For any `m`, restarts included, `dim(K(H, V) ∩ E_λ) ≤ rank(P_λ V) ≤ p`, because
+`P_λ H^j V c = λ^j P_λ V c`: every Krylov power lands in `range(P_λ V)`. This is the same
+fact `test_no_ghost_bands.py` documents (multiplicity 3 against block size 2) and it
+constrains *width*, never depth — enlarging `m` cannot cure it and shrinking `m` cannot
+cause it.
+
+It bears on the thermal-manifold completeness guarantee, because
+`cipsi_solver.get_eigenvectors` runs at `p = 1` on two paths: `expand`'s first round
+(`psi_refs = getattr(self, "psi_refs", None)` is `None` on a fresh solver) and the
+warm-start cold retry, which deliberately *replaces* a wide warm block with the single
+full-support hash vector. Read literally, the bound says such a solve can return one member
+of a 3-fold manifold, whereupon `_energy_cut_indices` sees a state beyond the cut, reports
+`need_more = False`, and certifies a manifold holding a third of its states.
+
+**Measured, it does not do that** — recorded here so the next reader does not re-derive the
+worry and act on it. Cold (`p = 1`) versus warm (`p = 7`) on the cubic d-shell fixture, same
+basis, `max_energy = 1e-7`:
+
+| basis | cold `p=1` | warm `p=7` | ground splittings |
+|---|---|---|---|
+| capped at 800 determinants | 3 states | 3 states | 0, 1.5e-9, 1.4e-8 |
+| uncapped, 1771 determinants | 3 states | 3 states | 0, 1.8e-15, 8.4e-10 |
+
+Two reasons, both worth knowing. On a *capped* basis the truncation breaks the symmetry, so
+the triplet is split at 1.4e-8 and its members are distinct eigenvalues that any block
+resolves. Uncapped, where two members are degenerate to 1.8e-15, floating-point Lanczos
+under PARTIAL reorthogonalization reproduces near-degenerate copies anyway — the classic
+ghost mechanism, tolerated up to `REORT_TOL ~ sqrt(EPS)`. The exact-arithmetic bound is a
+statement about exact arithmetic.
+
+So: the constraint is real and worth respecting when reasoning about a *new* code path, but
+a floor on `p` is **unmotivated pending evidence**, not merely unmeasured. If it is ever
+revisited, the measurement to beat is the table above.
+
 ## PRO estimator honesty
 
 `estimate_orthonormality` (`BlockLanczosArray.pyx`) tracks the Paige-Simon partial
