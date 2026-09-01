@@ -225,9 +225,12 @@ def test_the_analytic_edges_move_with_the_double_counting_shift():
 def test_solve_sector_and_calc_energy_agree_on_the_ground_state_energy():
     """The extraction that made this diagnostic possible did not move the number.
 
-    ``groundstate.solve_sector`` is ``calc_energy``'s body with the eigenvectors kept; the latter
-    is now the former plus ``min`` plus a broadcast. Different truncation conventions between the
-    two would make every energy in this module incomparable with the criterion's own.
+    ``solve_sector`` and ``calc_energy`` are two heads on one shared body (``_solve_sector_core``)
+    that differ in one argument: the former applies the Boltzmann cut, the latter none, because it
+    keeps only ``min(es)`` and a minimum does not depend on which states above it were retained.
+    That is the invariant asserted here -- the cut is invisible to the minimum -- and it is what
+    keeps every energy in this module comparable with the criterion's own. Different truncation
+    conventions between the two heads would break both claims at once.
     """
     from mpi4py import MPI
 

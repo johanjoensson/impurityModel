@@ -17,6 +17,10 @@ showed up as a noisy, non-monotone occupation in the NiO DC search. Two guards:
 
 The Lanczos kernel is replaced by a deterministic fake (same on every rank, so all collective
 decisions stay rank-invariant); the real physics is covered by the NiO end-to-end reproduction.
+
+The last two tests are not about warm starts: they pin what ``max_energy=None`` returns on the
+*dense* branch, which the fake never reaches and which ``calc_energy`` takes on every sector basis
+below ``dense_cutoff``.
 """
 
 import itertools
@@ -174,3 +178,35 @@ def test_full_return_without_a_thermal_cut_does_not_retry(monkeypatch):
     )
 
     assert len(calls) == 1
+
+
+def test_no_cut_dense_branch_returns_exactly_num_wanted_states():
+    """The dense branch is bounded by ``num_wanted`` when there is no cut.
+
+    ``eigensystem`` reads ``e_max=None`` as "no cutoff" and returns the *whole* dense spectrum,
+    so without a bound in ``get_eigenvectors`` a cut-less caller would build one ``ManyBodyState``
+    per determinant -- a cost set by the basis size rather than by the request. This is the branch
+    ``calc_energy`` takes on every sector basis below ``dense_cutoff``, and the tests above run
+    the Krylov branch (``dense_cutoff=1``), so it needs its own.
+
+    The slice is by count alone: with no cut there is no manifold to keep whole, and it can land
+    inside a degenerate group. That is sound here only because ``calc_energy``, the sole caller
+    of the no-cut path, keeps ``min(es)``.
+    """
+    basis, solver = _make_solver()
+    h_op = _h_op()
+
+    e_ref, psi_refs = solver.get_eigenvectors(h_op, num_wanted=3, max_energy=None)
+
+    assert len(e_ref) == len(psi_refs) == 3
+    # H is diagonal in this basis, so the exact spectrum is the per-determinant occupation sum.
+    exact = sorted(sum(orb + 1 for orb in occ) for occ in itertools.combinations(range(N_SPIN_ORBITALS), 4))
+    np.testing.assert_allclose(sorted(e_ref.real), exact[:3])
+
+
+def test_no_cut_request_above_the_basis_size_is_clamped_not_an_error():
+    basis, solver = _make_solver()
+
+    e_ref, psi_refs = solver.get_eigenvectors(_h_op(), num_wanted=10 * len(basis), max_energy=None)
+
+    assert len(e_ref) == len(psi_refs) == len(basis)

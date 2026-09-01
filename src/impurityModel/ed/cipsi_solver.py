@@ -915,9 +915,13 @@ class CIPSISolver:
         computed, with no trim and no widening. The widening loop below exists only to certify
         that a *kept manifold* is whole -- a degenerate manifold has no preferred basis, so
         keeping part of one makes the result depend on the rotation the solver returned -- and
-        without a cut nothing is dropped, so there is nothing to certify. `calc_energy`, which
-        keeps only ``min(es)``, is the caller that wants this. The warm-start cold retry is a
-        different question (reachability, not completeness) and still applies; see it below.
+        without a cut nothing is dropped, so there is nothing to certify. The dense branch's
+        slice is by count alone for the same reason, which does mean the boundary can fall
+        inside a degenerate group. Both are sound only for a caller whose answer does not depend
+        on which basis a manifold came back in: :func:`groundstate.calc_energy`, which keeps
+        ``min(es)``, is the only one, and no other caller should pass ``None``. The warm-start
+        cold retry is a different question (reachability, not completeness) and still applies;
+        see it below.
 
         ``psi_refs``, if given, warm-starts the Krylov solve from a previously converged
         eigenvector block (e.g. the caller's own ``solver.psi_refs`` from a prior ``expand``/
