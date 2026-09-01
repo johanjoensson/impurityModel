@@ -25,6 +25,10 @@ reason not to.
 | — | Block deflation treated as a closed Krylov space (TRLM) | **BUG, FIXED** `8a9f337` |
 | — | IRLM reporting Ritz pairs it never converged | **BUG, FIXED** `3715862` |
 | — | The sparse-kernel bench's cross-kernel E0 assertion | **BUG, FIXED** `afdca32` (test bug; both kernels correct) |
+| C2 | Restore the rank-invariance guard rail | **SHIPPED** `d96f5cf`..`af5059b` + the re-enable — two new tests, one strict xfail |
+| C2 | Reproduce the CI-only SIGSEGV locally | **NEGATIVE** — 110 MPICH runs and a clean ASan suite; file re-enabled on the evidence |
+| — | `_graph_comm_cache` context-id exhaustion | **REFUTED** — 10 live entries after a whole `-n 3` suite |
+| — | Cold `p = 1` cannot certify a degenerate manifold | **REFUTED by measurement** — see `doc/lanczos_invariants.md` |
 
 C2, C3, C7, C11 were not reached or were narrowed to nothing by the measurements; the
 successor lever at the end is unstarted.
@@ -99,6 +103,44 @@ is to be no tighter than the achieved accuracy — floors on the tolerance the s
 
 See `doc/lanczos_invariants.md` ("Deflation is not closure", "Never report a Ritz pair that
 failed the acceptance test") for the invariants and the numbers.
+
+## Restoring the guard rail (C2)
+
+The campaign's own safety net was off: `test/mpi_infra/test_rank_independence.py`, which holds
+the only end-to-end rank-invariance guards, was skipped behind an intermittent CI-only SIGSEGV.
+Two solver bugs went through the rest of the suite while it was.
+
+**Two tests that should have existed already.**
+
+- `test/lanczos/test_manifold_completeness_krylov.py` — the degenerate-manifold guarantee, on
+  the Krylov branch. Every previous test of it ran *dense*, which does not execute the same
+  code: the dense path applies a hard `es - min(es) <= e_max` mask with no manifold-absorbing
+  step, so `_energy_cut_indices` is reachable only through Krylov. Both the expansion and the
+  solve now run through TRLM; expanding densely would only have shown that Krylov *preserves* a
+  manifold handed to it.
+- `test/lanczos/test_subspace_sizing.py` — the first test of the block-count arithmetic every
+  production solve runs at, enabled by lifting it out of `get_eigenvectors` into
+  `_size_subspace` (verified bit-identical against both original spellings over a 4,500-point
+  grid). Seven green properties plus a **strict xfail**: the final clamp is not a no-op. When
+  the basis-size bound wins it trims `num_wanted` — the *certified* output of the manifold
+  search — and it does so on ~30% of that grid. The remedy is to give up block width or fall
+  through to the dense branch, never the certified count.
+
+**The SIGSEGV did not reproduce.** 100 whole-file iterations alternating `-n 2`/`-n 3` plus 10
+interleaved full-suite runs under MPICH 4.2.2 (the CI MPI family, which the old skip note's
+"not locally reproducible under Open MPI" had never tested): 110 runs, all rc=0. Then the file
+*and* the whole suite under AddressSanitizer, MPICH-linked, at `-n 2` and `-n 3`: zero reports.
+That is the stronger negative — ASan traps the bad access when it happens, so a run that
+corrupts the heap without crashing is still caught. The file is re-enabled, with the evidence
+and the remaining untested variables recorded in its module comment.
+
+**Two theories killed on the way.** `_graph_comm_cache` is keyed on `id(comm)` and never
+evicts, and the GF layer clones a communicator per unit — but it holds 10 live entries after an
+entire `-n 3` suite across 18387 lookups, nowhere near MPICH's context-id space. And the
+block-width bound `dim(K ∩ E_λ) ≤ p`, which says a cold `p = 1` solve cannot resolve a 3-fold
+manifold and so could certify a third of one, does not bite in practice: cold and warm both
+return all 3 states, capped *and* uncapped. Recorded in `doc/lanczos_invariants.md` rather than
+acted on.
 
 ## Successor lever — unstarted, unmeasured
 
