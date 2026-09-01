@@ -869,13 +869,18 @@ def test_the_edge_character_costs_no_sector_solves_of_its_own(monkeypatch):
     from impurityModel.ed import groundstate as gs_module
 
     solves = {"n": 0}
-    real_solve_sector = gs_module.solve_sector
+    # `_solve_sector_core`, not `solve_sector`: the core is the one body both `solve_sector` and
+    # `calc_energy` run, so a counter on it sees every sector solve regardless of which head the
+    # search entered through. `_measure_edge_character` reaches neither today, which is exactly
+    # what makes the assertion below meaningful -- but a counter on one head only would report
+    # zero for a solve that moved to the other.
+    real_solve_sector = gs_module._solve_sector_core
 
     def counted(*args, **kwargs):
         solves["n"] += 1
         return real_solve_sector(*args, **kwargs)
 
-    monkeypatch.setattr(gs_module, "solve_sector", counted)
+    monkeypatch.setattr(gs_module, "_solve_sector_core", counted)
 
     spent = {}
     real_measure = dc_module._measure_edge_character
