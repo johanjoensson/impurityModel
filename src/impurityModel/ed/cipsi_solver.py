@@ -1036,9 +1036,9 @@ class CIPSISolver:
                     max_subspace_blocks=max_subspace_blocks,
                     tol=_eigen_tol(slaterWeightMin),
                     max_restarts=100,
-                    # The TRLM/IRLM kernels already rank-gate every print internally
-                    # (rank0 = (not mpi) or comm.rank == 0, see _trlm.pxi/_irlm.pxi); no need
-                    # to pre-AND rank 0 into the bool here too.
+                    # The TRLM/IRLM drivers already rank-gate every print internally
+                    # (`rank0 = (not mpi) or comm.rank == 0` in ed/trlm.py and ed/irlm.py);
+                    # no need to pre-AND rank 0 into the bool here too.
                     verbose=self.basis.verbose,
                     slaterWeightMin=slaterWeightMin,
                     reort=reort,

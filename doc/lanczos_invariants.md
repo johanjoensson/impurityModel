@@ -4,8 +4,15 @@ Landing place for the incident knowledge stripped out of inline comments during 
 R2 comment-triage pass of the Lanczos/IRLM/TRLM redesign (see the plan at
 `i-want-a-thorough-agile-fern.md`). The source still carries a one-line pointer at each
 site this document expands on; this is where the "why", the numbers and the history
-live. Covers `BlockLanczos.pyx`, `_lanczos_step.pxi`, `_trlm.pxi`, `_irlm.pxi`,
-`BlockLanczosArray.pyx`, `_reort.pxi`.
+live. Covers `BlockLanczos.pyx`, `_lanczos_step.pxi`, `BlockLanczosArray.pyx`,
+`_reort.pxi`, and the restart layer in `ed/trlm.py` / `ed/irlm.py`.
+
+**Note on file names.** The restart-layer business logic named below used to live in
+`_trlm.pxi` / `_irlm.pxi`. Those files no longer exist: `_trlm_core` / `_irlm_core`,
+locking, purging and result assembly are plain Python in `ed/trlm.py` and `ed/irlm.py`,
+which `BlockLanczos.pyx` re-exports. References here have been updated; older plan
+documents under `doc/plans/` still use the `.pxi` names and are left as historical
+record.
 
 ## Representation dispatch
 
@@ -21,7 +28,7 @@ bookkeeping) a bare `list[ManyBodyState]`.
 **Rule: get the block branch right BEFORE the list branch, in every dispatcher.** A
 `ManyBodyState`'s own `len()` is its row count (dict-like, matching `len(dict)`), not
 its column/width count — silently wrong for "how many Krylov columns are here", not a
-raise. `_q_cols` (`_irlm.pxi`) is the canonical column-count helper that gets this
+raise. `block_cols` (`ed/block_view.py`) is the canonical column-count helper that gets this
 right for array / `ManyBodyState` / plain list uniformly; every restart-loop width
 computation goes through it rather than a bare `len()`.
 
@@ -49,7 +56,7 @@ zero determinants under the hash-distribution) can have `width > 0` but `rows ==
 gating on `_q_cols(locked) > 0` instead, which is the rank-invariant column count,
 replicated identically everywhere.
 
-**Defense-in-depth pattern** (`_irlm.pxi`, the `res_width < p` early-stop before
+**Defense-in-depth pattern** (`irlm.py`, the `res_width < p` early-stop before
 `purge_restart`): `total`/`res_width` are rank-invariant *by construction* — they
 descend from `tsqr`'s globally-reduced `active_k` (an `Allgather` across ranks in
 `TSQR.pyx`) and from `_q_cols`/`SparseKrylovDense.n_cols`, which an empty-local-partition
@@ -89,7 +96,7 @@ TRLM warm-started from `CIPSISolver.expand`'s eigenvectors returned them unimpro
 existed but was referenced nowhere; invariant-subspace detection rode entirely on the
 clamp.
 
-**`f_plus`'s breakdown reference must be `tnorm`, not `1.0`** (`_irlm.pxi`, the residual
+**`f_plus`'s breakdown reference must be `tnorm`, not `1.0`** (`irlm.py`, the residual
 block after re-banding): `f_plus` is a *residual* block — `O(‖H‖)`, not `O(1)` — so its
 breakdown reference must be the operator norm, like the two Lanczos sweeps and unlike
 `block_normalize`. `tnorm` (the largest-magnitude Ritz value including locked ones) is
@@ -102,7 +109,7 @@ branch. Kept anyway: an isotropic residual block numerically zero against `‖H�
 otherwise deflate to nothing yet still be normalized, amplifying its rounding noise by
 `‖H‖/eps`.
 
-**Why `res_width < p` must be tested BEFORE `purge_restart`** (`_irlm.pxi`): the
+**Why `res_width < p` must be tested BEFORE `purge_restart`** (`irlm.py`): the
 trailing residual block can be rank-deficient when the sweep reaches a (near-)invariant
 subspace without shrinking a *diagonal* block, so the alpha-width guard doesn't fire.
 The extreme form is an exact breakdown (`res_width == 0`, `beta_last` exactly zero):
@@ -113,6 +120,86 @@ against the reachable Krylov space) `n_need` stays positive with no unlocked can
 left. `select_restart_indices` then legitimately returns an empty `kept_idx`, and
 `purge_restart` — which needs at least one full block of retained pairs — used to die
 on an empty `np.concatenate`. The guard now runs first and locks-and-stops cleanly.
+
+## Deflation is not closure (2026-09-01)
+
+**Rule: a rank-deficient residual narrows the block; it does not close the space.** Only
+two things close a block-Krylov space, and both are about the *sweep*, not about widths:
+the sweep returned fewer blocks than asked (`m_actual < m`), or it stored no trailing
+residual block at all (`q_m is None`, which only happens on breakdown). A sweep that
+deflates at step 1 and then runs all `m` blocks at the reduced width ends with a
+perfectly good residual block and has closed nothing.
+
+`trlm._extract_invariant_subspace` used to accept `deflated = total < m_actual * p` as a
+third condition, on the stated warrant that "the spanned space is (near-)invariant, so its
+Ritz pairs are accurate eigenpairs". Measured on NiO 7-bath: one solve took that exit with
+widths `[3, 2, 2, …]`, `m_actual == m == 48` and `q_m` present, and returned 20 states of
+which **only the lowest 2 were converged** — the rest carrying true residuals from 3.6e-5
+up to **4.0e-2** against a requested `tol` of 1e-8, two of them inside the thermal cut and
+so inside the returned manifold. It had skipped the restart loop, which is what converges
+the Ritz pairs. On a minimal fixture (diagonal `H`, two-fold ground state, start block
+spanning both plus one generic vector) it returned `[0, 0, 1.93, 6.69, 15.93, 24.32,
+31.34, 37.57]` for a true lowest eight of `[0, 0, 1, 2, 3, 4, 5, 6]`.
+
+**Corollary, and why this survived so long: the TRLM restart loop had never once run on a
+width-deflated sweep.** Removing the short-circuit surfaced a latent shape crash
+immediately — `beta_res = betas[-1][:p_resid, :]` sliced off the trailing coupling's padded
+*rows* but not its padded *columns*. By `_build_full_T`'s convention that block is
+`(width coupled to, width coupled from)`, and a sweep that narrows its diagonal blocks
+leaves the second below `p` as well. Any guard that makes a code path unreachable also
+makes it untested.
+
+The same trap sits in `ea16.ritz_residual_norms`, whose `Z[nrows - p:, :]` slice assumes
+uniform width. `_irlm_core` establishes that before calling it; the two width-varying sites
+form the residual against the real widths instead.
+
+## Never report a Ritz pair that failed the acceptance test (2026-09-01)
+
+**Rule: locking is what certifies a pair. Any exit that returns pairs it did not lock must
+apply the same eq. (15) test, and must stop at the first failure rather than skipping it.**
+
+IRLM's `total < m_act * p` break is *correct* — unlike TRLM's width-aware thick restart,
+the uniform-width purge/restart genuinely cannot continue a narrowed factorization, so
+there is nothing to fall through to. What was wrong is where the pairs then came from. Two
+exits returned Ritz pairs with no residual test at all:
+
+- `_assemble_results` took the lowest *active* Ritz pairs of whatever the last
+  factorization held. An active pair is by construction one that never converged well
+  enough to be locked.
+- `lock_remaining_and_stop` locked its whole `order`. Its rationale was that an exact
+  breakdown zeroes every Ritz residual — true, but it fires on `res_width < p`, which also
+  covers a residual block that merely *narrowed* and leaves the residuals at `O(‖H‖)`.
+
+Measured: eigenvalues wrong by 31.6 with residuals of 5.3 against `tol = 1e-10` on the
+deflating fixture, and a pair at 3.1e-6 on a generic Hermitian.
+
+**Stop, do not skip.** Callers read the result as the lowest `len(eigvals)` eigenvalues —
+`cipsi_solver._energy_cut_indices` measures its thermal window from `eigvals[0]` and trims
+the top — so accepting a converged pair after rejecting a lower unconverged one produces a
+set with a hole, which is a wrong answer where a short list is an honest one. Returning
+fewer than `num_wanted` is the documented contract, and `get_eigenvectors` treats a short
+return as an exhausted start block and retries once from the cold vector.
+
+**At final acceptance, `EPS*‖T‖` is the floor, not a threshold.** This belongs beside
+"Deflation vs breakdown scales" above: it is the same lesson one level up. Eq. (15)'s
+`u = EPS` term is right for *locking*, a commitment made while the iteration can still
+improve a pair, so conservatism there costs only work. At final acceptance the question is
+whether a pair is fit to report, and there `EPS*‖T‖` is the residual floor of double
+precision itself — the estimate accumulates over the whole `m*p`-dimensional
+factorization, so converged pairs land at a small, arithmetic-dependent multiple of it
+rather than under it. A gate at ten times that floor kept 3 of 3 wanted pairs in serial and
+**1 of 3 at `-n 2`** on the same fixture (‖H‖ = 2.5e5), decided by reduction order alone.
+`FINAL_ACCEPT_SCALE = BREAKDOWN_TOL` makes the threshold operator-relative —
+`BREAKDOWN_TOL*‖T_k‖ + |CNTL(2)|`, the same construction as TRLM's `stop_beta`, not a
+second literal — and still leaves five to eleven orders of margin on what the gate exists
+to reject.
+
+**How both of these were found, which is the reusable part.** Not by reading the code:
+by probing the *true* residual `max_i ‖H v_i − e_i v_i‖` at the `get_eigenvectors` call
+site on a real workload. Every tolerance in the stack above the kernels — including
+`cipsi_solver._degeneracy_tol`, whose whole job is to be no tighter than the achieved
+accuracy — floors on the tolerance the solver was *asked* for. Nothing checked what it
+achieved, and the full pytest suite caught neither bug.
 
 ## PRO estimator honesty
 
