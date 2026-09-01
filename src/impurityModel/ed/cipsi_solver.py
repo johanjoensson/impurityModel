@@ -190,6 +190,53 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
     return [int(i) for i in order[:n_keep]], n_keep == len(e_sorted)
 
 
+def _size_subspace(num_wanted, width, cap):
+    """Krylov subspace depth for a ``num_wanted``-state request from a width-``width`` block.
+
+    Returns ``(max_subspace_blocks, num_wanted)``. The request is padded to ``2 * num_wanted``
+    (or ``num_wanted + 10``, whichever is larger), capped at the basis size, converted to a block
+    count with a flat ``+20`` of headroom, and then bounded by what the basis itself can hold --
+    ``cap // width - 1`` blocks, since the sweep needs room for a trailing residual block.
+    ``num_wanted`` is finally clamped to ``(blocks - 1) * width``, the most those blocks can
+    deliver.
+
+    One function rather than two copies: ``get_eigenvectors`` sizes the subspace once up front
+    and again whenever the request or the block width changes, and the two spellings had drifted
+    apart cosmetically (an ``if width > 0`` guard against a ``max(1, width)``) while computing the
+    same thing. ``width`` is in fact never 0 -- the start block always carries at least the cold
+    full-support column, and :func:`block_normalize` raises rather than returning a width-0 block
+    -- so the guard was dead either way.
+
+    **The final clamp is not always a no-op, and when it binds it silently reduces the certified
+    output.** It cannot bind on the padding term, which gives ``(blocks - 1) * width >=
+    4 * num_wanted``. It binds when the basis-size bound wins: that leaves ``(blocks - 1) * width
+    ~ cap - 2 * width``, so any request above ``cap - 2 * width`` is trimmed, and at
+    ``cap < 3 * width`` the bound collapses to two blocks and the request is trimmed to ``width``.
+    ``num_wanted`` is the *certified* output of the thermal-manifold search, so trimming it is
+    the wrong trade -- shrinking ``width`` (dropping warm columns) or falling through to the dense
+    branch would both preserve it. Left as-is here because this function is a verbatim lift;
+    ``test_subspace_sizing.py`` pins the behaviour and marks the defect.
+
+    Parameters
+    ----------
+    num_wanted : int
+        States requested, before padding.
+    width : int
+        Lanczos block width, i.e. the number of columns in the start block.
+    cap : int
+        Basis size; nothing may exceed it.
+
+    Returns
+    -------
+    tuple of (int, int)
+        ``(max_subspace_blocks, num_wanted)``.
+    """
+    width = max(1, width)
+    max_subspace = min(max(2 * num_wanted, num_wanted + 10), cap)
+    blocks = min(2 * int(np.ceil(max_subspace / width)) + 20, max(2, cap // width - 1))
+    return blocks, min(num_wanted, (blocks - 1) * width)
+
+
 def _amplitude_from_hash(det_hash: int) -> complex:
     """A deterministic pseudo-random start amplitude for one determinant.
 
@@ -987,17 +1034,8 @@ class CIPSISolver:
             psi0 = list(psi_refs) + cold_start_block() if warm_started else cold_start_block()
 
             num_wanted = min(num_wanted + 10, len(self.basis))
-
-            max_subspace = min(max(2 * num_wanted, num_wanted + 10), len(self.basis))
-            if len(psi0) > 0:
-                psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
-
-            max_subspace_blocks = 2 * int(np.ceil(max_subspace / max(1, len(psi0)))) + 20
-            if len(psi0) > 0:
-                max_blocks = max(2, len(self.basis) // len(psi0) - 1)
-                max_subspace_blocks = min(max_subspace_blocks, max_blocks)
-
-            num_wanted = min(num_wanted, (max_subspace_blocks - 1) * len(psi0))
+            psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
+            max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), len(self.basis))
 
             H_mat = build_sparse_matrix(self.basis, H) if h_matrix is None else h_matrix
             if self.basis.is_distributed:
@@ -1016,15 +1054,6 @@ class CIPSISolver:
             # eigensolver returned -- which depends on the MPI rank count. Cheap in practice: the
             # first solve almost always overshoots the cut already.
             cap = len(self.basis)
-
-            def resize_subspace(num_wanted, width):
-                # Same sizing as the initial setup above, re-applied whenever the request or the
-                # block width changes: pad the subspace, cap it at the basis size, then clamp
-                # `num_wanted` back to what that many blocks can actually hold.
-                width = max(1, width)
-                max_subspace = min(max(2 * num_wanted, num_wanted + 10), cap)
-                blocks = min(2 * int(np.ceil(max_subspace / width)) + 20, max(2, cap // width - 1))
-                return blocks, min(num_wanted, (blocks - 1) * width)
 
             cold_retry_available = warm_started
             for _ in range(_MAX_EIGENSTATE_DOUBLINGS):
@@ -1080,13 +1109,13 @@ class CIPSISolver:
                         psi0 = cold_start_block()
                         psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
                         psi0_arr = build_distributed_vector(self.basis, psi0).T
-                        max_subspace_blocks, num_wanted = resize_subspace(num_wanted, len(psi0))
+                        max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), cap)
                         continue
                     break
                 if max_energy is None or not need_more or num_wanted >= cap:
                     break
                 num_wanted = min(2 * num_wanted, cap)
-                max_subspace_blocks, num_wanted = resize_subspace(num_wanted, len(psi0))
+                max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), cap)
 
             if len(e_ref) > 0:
                 psi_refs = build_state(self.basis, psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
