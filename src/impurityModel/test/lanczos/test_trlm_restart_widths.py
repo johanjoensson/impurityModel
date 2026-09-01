@@ -42,6 +42,7 @@ from impurityModel.ed.BlockLanczos import (
     thick_restart_block_lanczos_cy,
 )
 from impurityModel.ed.BlockLanczosArray import RESTART_ORTH_TOL, Reort, block_normalize
+from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.ed.block_view import check_width_sync as _check_width_sync
 from impurityModel.ed.greens_function import _trim_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
@@ -272,3 +273,98 @@ def test_trlm_rank_deficient_restart_is_collective():
     # Every rank agrees on the answer (the Ritz values are broadcast from rank 0).
     spread = comm.allreduce(float(np.max(np.abs(got - comm.bcast(got, root=0)))), op=MPI.MAX)
     assert spread == 0.0
+
+
+# --------------------------------------------------------------------------------------
+# Sweep deflation is not a closed space
+# --------------------------------------------------------------------------------------
+
+
+def _deflating_start_block(n=40, seed=7):
+    """``(h, psi0, exact)`` for a sweep that deflates at the first step and then runs on.
+
+    ``h`` is diagonal with a two-fold ground state at 0 and a nondegenerate ladder
+    ``1, 2, 3, ...`` above it. The start block spans both ground-state directions plus one
+    generic vector orthogonal to them, so ``H q - q alpha`` has rank 1 where the block has
+    rank 3: the block narrows at step 1 and the sweep then runs its full ``m`` blocks at the
+    reduced width, ending with a live residual block. That is deflation, not closure --
+    ``m_actual == m`` and ``q_m`` is present -- and only the restart loop can converge the
+    ladder from a width-1 recurrence.
+    """
+    d = np.concatenate([[0.0, 0.0], np.arange(1.0, n - 1.0)])
+    h = sps.csr_matrix(np.diag(d).astype(complex))
+    rng = np.random.default_rng(seed)
+    v = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+    v[0] = v[1] = 0.0
+    v /= np.linalg.norm(v)
+    psi0 = np.zeros((n, 3), dtype=complex)
+    psi0[0, 0] = 1.0
+    psi0[1, 1] = 1.0
+    psi0[:, 2] = v
+    return h, psi0, np.sort(d)
+
+
+@pytest.mark.parametrize("num_wanted,max_blocks", [(8, 6), (10, 8)])
+def test_sweep_deflation_does_not_short_circuit_the_restart_loop(num_wanted, max_blocks):
+    """A narrowed block is not an invariant subspace, and extracting from one returns junk.
+
+    ``deflated = total < m_actual * p`` used to send this straight to
+    ``_extract_invariant_subspace``, whose warrant is that the spanned space is
+    (near-)invariant so its Ritz pairs are accurate eigenpairs. It is not and they are not:
+    the sweep here spans 8 dimensions of a 40-dimensional operator and its Ritz values are
+    the Ritz values of *that* subspace. Pre-fix this returned
+    ``[0, 0, 1.93, 6.69, 15.93, 24.32, 31.34, 37.57]`` for a true lowest eight of
+    ``[0, 0, 1, 2, 3, 4, 5, 6]``, with residuals of 5.3 against a requested ``tol`` of
+    1e-10 -- and said nothing.
+
+    Asserted on the residual as well as the eigenvalues: a returned number that happens to
+    sit near an eigenvalue is not an eigenpair, and it is the eigen*vectors* that seed the
+    CIPSI selection and the Green's function downstream.
+    """
+    h, psi0, exact = _deflating_start_block()
+
+    got, vecs = thick_restart_block_lanczos(
+        psi0=psi0,
+        h_op=h,
+        basis=None,
+        num_wanted=num_wanted,
+        max_subspace_blocks=max_blocks,
+        tol=1e-10,
+        max_restarts=100,
+        verbose=False,
+        reort="full",
+    )
+
+    assert len(got) == num_wanted
+    np.testing.assert_allclose(np.sort(got.real), exact[:num_wanted], atol=1e-8)
+    residuals = np.linalg.norm(h @ vecs - vecs * np.asarray(got)[None, :], axis=0)
+    assert np.max(residuals) < 1e-8, residuals
+
+
+def test_the_deflating_fixture_really_deflates():
+    """Guards the test above from passing vacuously.
+
+    If a future change stopped this start block from narrowing, the assertions above would
+    still pass -- on a path that never exercises deflation at all. The verbose log is the
+    only place the sweep reports it.
+    """
+    h, psi0, _ = _deflating_start_block()
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        thick_restart_block_lanczos(
+            psi0=psi0,
+            h_op=h,
+            basis=None,
+            num_wanted=8,
+            max_subspace_blocks=6,
+            tol=1e-10,
+            max_restarts=100,
+            verbose=True,
+            reort="full",
+        )
+
+    out = buf.getvalue()
+    assert "Sweep deflated" in out, out
+    # ...and it went to the restart loop rather than extracting directly.
+    assert "Extracting directly" not in out, out

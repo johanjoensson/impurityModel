@@ -83,6 +83,8 @@ __all__ = [
 #: ``m - k_blocks``-block rebuild for a mid-sweep test to catch.
 CONTINUATION_CHECK_EVERY = 8
 
+_TRLM_EXIT = ["?"]
+
 
 def _trlm_extract(T_full, Q, dim, num_wanted, comm, slater):
     """Diagonalize the leading ``dim`` x ``dim`` block of the (possibly arrowhead)
@@ -105,26 +107,37 @@ def _trlm_extract(T_full, Q, dim, num_wanted, comm, slater):
 
 
 def _extract_invariant_subspace(
-    alphas, betas_off, widths, Q_basis, num_wanted, comm, slater, verbose, rank0, total, m_actual, m, deflated, q_m
+    alphas, betas_off, widths, Q_basis, num_wanted, comm, slater, verbose, rank0, total, m_actual, m, q_m
 ):
-    """Terminal early-exit for ``_trlm_core``'s initial sweep: a genuine invariant
-    subspace (fewer blocks than asked), block deflation (rank-deficient residual),
-    or a sweep that stored no trailing residual block at all. That last case
-    (``q_m is None``) means the sweep broke out before appending ``q_next``, which
-    it only does on breakdown -- the block-Krylov space is closed under H. In all
-    three the spanned space is (near-)invariant, so its Ritz pairs are accurate
-    eigenpairs and we extract directly. T here is a pure block-tridiagonal, so the
-    banded solver suffices (no dense T); this also avoids the restart loop, which
-    needs a residual block to hang the thick-restart spike on.
+    """Terminal early-exit for ``_trlm_core``'s initial sweep, for the two ways the
+    block-Krylov space can be **closed**: a sweep that returned fewer blocks than
+    asked (``m_actual < m``), and one that stored no trailing residual block at all
+    (``q_m is None``, i.e. it broke out before appending ``q_next``, which it only
+    does on breakdown). In both the spanned space is (near-)invariant, so its Ritz
+    pairs are accurate eigenpairs and we extract directly. T here is a pure
+    block-tridiagonal, so the banded solver suffices (no dense T); this also avoids
+    the restart loop, which needs a residual block to hang the thick-restart spike on.
+
+    **Block deflation is deliberately not one of them.** A rank-deficient residual at
+    some step narrows the block; it does not close the space. A sweep that deflates at
+    step 1 and then runs all ``m`` blocks at the reduced width ends with a perfectly
+    good residual block, and routing it here skips the restart loop -- which is what
+    actually converges the Ritz pairs. Measured on NiO 7-bath: one such solve (widths
+    ``[3, 2, 2, ...]``, ``m_actual == m == 48``, ``q_m`` present) returned 20 states of
+    which only the lowest 2 were converged, the rest carrying true residuals from
+    3.6e-5 up to 4.0e-2 against a requested ``tol`` of 1e-8 -- and two of the
+    unconverged ones sat inside the thermal cut, i.e. in the returned manifold. The
+    restart loop handles narrowed blocks by design (it tracks ``cur_widths`` and sizes
+    the continuation off ``p_resid``, not the nominal ``p``), so deflation with a live
+    residual block belongs there.
 
     Returns the ``(eigvals, eigvecs)`` result, or ``None`` if the restart loop
     should run instead.
     """
-    if not (m_actual < m or deflated or q_m is None):
+    if not (m_actual < m or q_m is None):
         return None
     if verbose and rank0:
-        reason = "Invariant subspace" if m_actual < m or q_m is None else "Block deflation"
-        print(f"[TRLM] {reason} (dim {total}). Extracting directly.")
+        print(f"[TRLM] Invariant subspace (dim {total}). Extracting directly.")
     eigvals_T, eigvecs_T = eigh_block_tridiagonal(alphas, betas_off, block_widths=widths)
     if comm is not None:
         eigvals_T = comm.bcast(eigvals_T, root=0)
@@ -274,6 +287,8 @@ def _trlm_core(
         deflates below that and the continuation then closes on an invariant subspace: only
         ``k_ret`` independent directions were ever there. Callers must use ``len(eigvals)``.
     """
+    _TRLM_EXIT[0] = "?"
+    done = False
     mpi = comm is not None and getattr(comm, "size", 1) > 1
     rank0 = (not mpi) or comm.rank == 0
 
@@ -294,7 +309,10 @@ def _trlm_core(
     # dimension is sum(widths), not the padded m_actual * p. All slicing / T construction
     # must use the real widths or they desynchronize from Q_basis.
     total = width_synced_total(Q_basis, widths, m_actual, p, "TRLM initial sweep")
-    deflated = total < m_actual * p
+    if verbose and rank0 and total < m_actual * p:
+        # Narrowed blocks, not a closed space: the restart loop below is width-aware and
+        # takes it from here.
+        print(f"[TRLM] Sweep deflated to dim {total} (< {m_actual * p}); continuing to the restart loop.")
 
     # Split the trailing residual block off the basis.
     q_m = copy_block(slice_cols(Q_basis, total, block_cols(Q_basis))) if block_cols(Q_basis) > total else None
@@ -302,12 +320,13 @@ def _trlm_core(
 
     _betas_off = trim_trailing_beta(betas, m_actual)
 
-    # A genuine invariant subspace, block deflation, or a sweep that never reached a
-    # trailing residual block -- see _extract_invariant_subspace's docstring.
+    # A closed block-Krylov space -- fewer blocks than asked for, or no trailing residual
+    # block at all. Deflation alone is NOT closure; see _extract_invariant_subspace's docstring.
     early_result = _extract_invariant_subspace(
-        alphas, _betas_off, widths, Q_basis, num_wanted, comm, slater, verbose, rank0, total, m_actual, m, deflated, q_m
+        alphas, _betas_off, widths, Q_basis, num_wanted, comm, slater, verbose, rank0, total, m_actual, m, q_m
     )
     if early_result is not None:
+        _TRLM_EXIT[0] = "invariant_subspace_sweep"
         return early_result
 
     # The thick restart below builds an *arrowhead* T (a spike couples the retained Ritz
@@ -317,10 +336,14 @@ def _trlm_core(
     # --- Width-aware thick restart -------------------------------------------------
     nkeep = k_blocks * p
     p_resid = block_cols(q_m)  # q_m is not None here: the closed-space case extracted above
-    # betas[-1] is the trailing coupling, padded to (p, p) by the kernel. The residual block
-    # can deflate (rank p_resid < p) even when the diagonal blocks do not, leaving total ==
-    # m_actual*p (so we still reach here); slice off the phantom padded rows.
-    beta_res = betas[len(betas) - 1][:p_resid, :]
+    # betas[-1] is the trailing coupling, padded to (p, p) by the kernel, and by the
+    # convention _build_full_T uses its real shape is (width of the block it couples *to*,
+    # width of the block it couples *from*) -- here (p_resid, widths[-1]). Both can be below
+    # the nominal p: the residual block deflates on its own, and a sweep that narrowed its
+    # diagonal blocks leaves widths[-1] < p as well. Slicing only the rows was enough while
+    # block deflation short-circuited into _extract_invariant_subspace and never got here;
+    # it raised a shape ValueError in `beta_res @ eigvecs_T[...]` the moment that stopped.
+    beta_res = betas[len(betas) - 1][:p_resid, : widths[len(widths) - 1]]
     cur_widths = list(widths)
 
     for restart in range(max_restarts):
@@ -404,6 +427,7 @@ def _trlm_core(
             rank0,
         )
         if early_result is not None:
+            _TRLM_EXIT[0] = "restart_coefficients"
             return early_result
 
         # The continuation adds at most (m - k_blocks) blocks, and block widths are
@@ -446,6 +470,7 @@ def _trlm_core(
             if q_next is None or np.linalg.norm(beta_i, ord=2) <= stop_beta:
                 if verbose and rank0:
                     print(f"[TRLM] Invariant subspace found during restart at block {i}. Stopping early.")
+                _TRLM_EXIT[0] = "invariant_subspace_continuation"
                 return _trlm_extract(T_full, Q_basis, off + w1, num_wanted, comm, slater)
 
             # Converged already? Exactly the test the restart-loop head runs at the top of this
@@ -474,6 +499,7 @@ def _trlm_core(
                 if done_now:
                     if verbose and rank0:
                         print(f"[TRLM] Converged during restart {restart} at block {i} (dim {D_now}).")
+                    _TRLM_EXIT[0] = "continuation_converged"
                     return _trlm_extract(T_full, Q_basis, D_now, num_wanted, comm, slater)
 
             # Partial deflation shrinks the block: beta_i is (w_next, w1), q_next has
@@ -493,6 +519,7 @@ def _trlm_core(
                 p_resid = w_next
 
     # --- Final extraction -----------------------------------------------
+    _TRLM_EXIT[0] = "restart_loop_end_converged" if done else "restart_loop_end_cap"
     final_eigvals, final_eigvecs = _trlm_extract(T_full, Q_basis, int(sum(cur_widths)), num_wanted, comm, slater)
     if verbose and rank0:
         print(f"[TRLM] Final eigvals:\n{final_eigvals}")
