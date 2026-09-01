@@ -49,22 +49,44 @@ from impurityModel.test.support._nio_workload import (
     build_selfenergy_inputs,
 )
 
-# Skipped, not xfail: an xfail still runs the test body, and the failure mode here is an
-# intermittent SIGSEGV (MPICH "BAD TERMINATION", exit 139) that kills the whole test
-# process, not a catchable Python exception -- xfail cannot absorb that, it would just
-# take the rest of the suite down with it. First surfaced once the numeric test-suite
-# fixes let CI reach the MPI steps for the first time (this file's serial-only
-# predecessor was masked behind those failures). Confirmed on real CI, not locally
-# reproducible under Open MPI (CI uses mpich): crash location has moved between runs (0,
-# 2, and 2 dots into this file across three occurrences) and crash *rate* scales with MPI
-# rank count (5/8 legs at -n2/-n3 on one run vs 1-2/8 normally) -- the signature of a
-# genuine timing race, not a fixed logic bug. An AddressSanitizer diagnostic CI leg
-# (test-asan in tests.yml) is set up to localize it but hasn't gotten past environment-
-# level obstacles yet. Re-enable once the root cause is found and fixed.
-pytestmark = pytest.mark.skip(
-    reason="intermittent SIGSEGV under MPI (MPICH BAD TERMINATION, exit 139) -- see the "
-    "module docstring comment above this marker; tracked, not yet root-caused"
-)
+# Re-enabled 2026-09-01 after the reproduction attempt below came back empty. Kept in one
+# piece deliberately: what is written here is the evidence, so the next person who sees an
+# exit-139 in CI does not repeat this hunt -- and does not reach for the skip marker first.
+#
+# The history. This file was skipped (not xfailed -- an xfail still runs the body, and an
+# intermittent SIGSEGV kills the whole process rather than raising something xfail can absorb)
+# behind an MPICH "BAD TERMINATION", exit 139, in CI. It first appeared once the numeric
+# test-suite fixes let CI reach the MPI steps at all. It hit three different legs (intel/c++17,
+# gcc-12/c++20/coverage, gcc-12/c++17) at three different points *within this one file* (0, 2
+# and 2 dots in), and the crash rate scaled with rank count (5/8 legs at -n2/-n3 on one run
+# against 1-2/8 normally) -- the signature of heap corruption that surfaces wherever the
+# corrupted memory next gets touched, not of a logic bug at a fixed place.
+#
+# What was tried, all negative:
+#   * The whole file, 100 iterations alternating -n 2 and -n 3, plus 10 interleaved full-suite
+#     --with-mpi runs, under MPICH 4.2.2 (ch4:ofi) with mpi4py built from source against it --
+#     i.e. under the CI MPI family, which the old skip comment's "not locally reproducible
+#     under Open MPI" had never actually tested. 110 runs, every one rc=0.
+#   * The same file and the full suite under AddressSanitizer, MPICH-linked, at -n 2 and -n 3.
+#     Zero reports. This is the stronger negative: ASan traps the bad read/write when it
+#     happens, so a run that corrupts the heap but would have survived is still caught.
+#     (The one failure in that run was test_suggest_threshold_fits_budget, the known
+#     free-RAM-derived flake, over budget by 0.015% -- not a memory-safety finding.)
+#   * The _graph_comm_cache-leak theory (mpi_comm.py keys it on id(comm) and never evicts, and
+#     the GF layer clones a communicator per unit): measured at 10 live entries after an entire
+#     -n 3 suite run, across 18387 lookups. Nowhere near MPICH's context-id space. Refuted.
+#
+# What is still untested locally, in rough order of suspicion, if it comes back: MPICH version
+# (ubuntu-22.04 ships 4.0, the reproduction ran 4.2.2), compiler (gcc-12/clang-15/icpx at
+# -std=c++17/20/2b in CI, gcc 16.2.1 locally), coverage instrumentation, and 4 vCPUs against 8
+# cores. And note the ASan CI leg in tests.yml is commented out with a broken LD_PRELOAD:
+# `g++ -print-file-name=libasan.so` resolves to an ASCII *linker script*, not a preloadable
+# object, so it silently does nothing -- it must name the real libasan.so.<N>.
+#
+# If the crash does return, the proportionate response is to give this file its own CI step so
+# a 139 fails one step instead of taking the suite down with it -- not to skip it again. These
+# are the only end-to-end rank-invariance guards there are, and two solver bugs got through the
+# rest of the suite while they were switched off.
 
 _MASK = (1 << 64) - 1
 _GF_RTOL = 1e-10
