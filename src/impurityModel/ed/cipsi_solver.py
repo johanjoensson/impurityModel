@@ -911,6 +911,14 @@ class CIPSISolver:
     ):
         """Solve for the ``num_wanted`` lowest eigenstates below ``max_energy``.
 
+        ``max_energy=None`` means **no cut**: the lowest ``num_wanted`` states are returned as
+        computed, with no trim and no widening. The widening loop below exists only to certify
+        that a *kept manifold* is whole -- a degenerate manifold has no preferred basis, so
+        keeping part of one makes the result depend on the rotation the solver returned -- and
+        without a cut nothing is dropped, so there is nothing to certify. `calc_energy`, which
+        keeps only ``min(es)``, is the caller that wants this. The warm-start cold retry is a
+        different question (reachability, not completeness) and still applies; see it below.
+
         ``psi_refs``, if given, warm-starts the Krylov solve from a previously converged
         eigenvector block (e.g. the caller's own ``solver.psi_refs`` from a prior ``expand``/
         ``get_eigenvectors`` call); ``None`` is a cold start from the rank-independent hash
@@ -1004,6 +1012,16 @@ class CIPSISolver:
             # eigensolver returned -- which depends on the MPI rank count. Cheap in practice: the
             # first solve almost always overshoots the cut already.
             cap = len(self.basis)
+
+            def resize_subspace(num_wanted, width):
+                # Same sizing as the initial setup above, re-applied whenever the request or the
+                # block width changes: pad the subspace, cap it at the basis size, then clamp
+                # `num_wanted` back to what that many blocks can actually hold.
+                width = max(1, width)
+                max_subspace = min(max(2 * num_wanted, num_wanted + 10), cap)
+                blocks = min(2 * int(np.ceil(max_subspace / width)) + 20, max(2, cap // width - 1))
+                return blocks, min(num_wanted, (blocks - 1) * width)
+
             cold_retry_available = warm_started
             for _ in range(_MAX_EIGENSTATE_DOUBLINGS):
                 e_ref, psi_refs_arr = restarted_lanczos(
@@ -1021,9 +1039,15 @@ class CIPSISolver:
                     slaterWeightMin=slaterWeightMin,
                     reort=reort,
                 )
-                if max_energy is None or len(e_ref) == 0:
+                if len(e_ref) == 0:
                     break
-                _, need_more = _energy_cut_indices(e_ref, max_energy, tol=_degeneracy_tol(e_ref, slaterWeightMin))
+                # `need_more` asks a question only a thermal cut can pose -- "is the boundary
+                # manifold provably complete?" -- so with `max_energy=None` there is nothing to
+                # certify and it stays False. The *exhaustion* test below is a different
+                # question and is asked either way; see the retry block.
+                need_more = False
+                if max_energy is not None:
+                    _, need_more = _energy_cut_indices(e_ref, max_energy, tol=_degeneracy_tol(e_ref, slaterWeightMin))
                 # A short return means the eigensolver exhausted the Krylov space reachable from
                 # `psi0` -- it hit an invariant subspace, which a block warm-started from converged
                 # eigenvectors does immediately. Doubling `num_wanted` then re-solves the *same*
@@ -1034,26 +1058,31 @@ class CIPSISolver:
                 # deadlock. Decide on rank 0 and broadcast, per the MPI rule in CLAUDE.md.
                 if self.basis.is_distributed:
                     need_more, exhausted = self.basis.comm.bcast((need_more, exhausted), root=0)
-                if not need_more or (exhausted and not cold_retry_available) or (not exhausted and num_wanted >= cap):
-                    break
                 if exhausted:
-                    # The warm block spans a (near-)invariant subspace, so the missing thermal
-                    # states -- typically the other charge sector of a near-degenerate crossing,
-                    # e.g. the fixed-occupation DC search walking over a charge-transfer point --
-                    # are unreachable from it at any num_wanted. Retry once from the cold
+                    # The warm block spans a (near-)invariant subspace, so the missing states --
+                    # typically the other charge sector of a near-degenerate crossing, e.g. the
+                    # fixed-occupation DC search walking over a charge-transfer point -- are
+                    # unreachable from it at any num_wanted. Retry once from the cold
                     # rank-independent start vector, whose support covers the whole basis.
-                    cold_retry_available = False
-                    psi0 = cold_start_block()
-                    psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
-                    psi0_arr = build_distributed_vector(self.basis, psi0).T
-                else:
-                    num_wanted = min(2 * num_wanted, cap)
-                max_subspace = min(max(2 * num_wanted, num_wanted + 10), cap)
-                max_subspace_blocks = min(
-                    2 * int(np.ceil(max_subspace / max(1, len(psi0)))) + 20,
-                    max(2, cap // max(1, len(psi0)) - 1),
-                )
-                num_wanted = min(num_wanted, (max_subspace_blocks - 1) * max(1, len(psi0)))
+                    #
+                    # Reachability, not completeness: this guard is about whether `psi0` could
+                    # see the state at all, so it must fire on the no-cut path too. It used to
+                    # sit behind an early `max_energy is None` break, which meant the caller
+                    # that most needs it never got it -- `calc_energy`'s occupation walk, whose
+                    # whole job is to step across charge sectors, and which keeps exactly the
+                    # `min(es)` a sector-blind warm block silently gets wrong.
+                    if cold_retry_available and (need_more or max_energy is None):
+                        cold_retry_available = False
+                        psi0 = cold_start_block()
+                        psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
+                        psi0_arr = build_distributed_vector(self.basis, psi0).T
+                        max_subspace_blocks, num_wanted = resize_subspace(num_wanted, len(psi0))
+                        continue
+                    break
+                if max_energy is None or not need_more or num_wanted >= cap:
+                    break
+                num_wanted = min(2 * num_wanted, cap)
+                max_subspace_blocks, num_wanted = resize_subspace(num_wanted, len(psi0))
 
             if len(e_ref) > 0:
                 psi_refs = build_state(self.basis, psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
@@ -1107,6 +1136,16 @@ class CIPSISolver:
                 dense=self.basis.size < dense_cutoff,
                 return_eigvecs=True,
             )
+            if max_energy is None:
+                # `eigensystem` reads `e_max=None` as "no cut" and returns the *whole* dense
+                # spectrum, so without a bound here a cut-less caller would materialise one
+                # ManyBodyState per determinant -- a cost set by the basis size rather than by
+                # the request, and not what asking for `num_wanted` states means. With the cut
+                # gone `num_wanted` is the only bound left, and it is the same one the Krylov
+                # branch above obeys: that branch never returns more than it asked for either.
+                # `es` comes back ascending, so this is the lowest `num_wanted`.
+                e_ref = e_ref[:num_wanted]
+                psi_ref_dense = psi_ref_dense[:, :num_wanted]
             psi_refs = build_state(self.basis, psi_ref_dense.T, slaterWeightMin=slaterWeightMin)
 
         return e_ref, psi_refs
