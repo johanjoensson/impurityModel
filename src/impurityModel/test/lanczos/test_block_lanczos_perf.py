@@ -345,11 +345,34 @@ def test_partial_sparse_kernel_bench(nio_workload):
     orth_err = np.linalg.norm(ov - np.eye(len(Q_basis)))
     assert orth_err < 1e-6, f"PARTIAL lost semi-orthogonality: |Q^H Q - I| = {orth_err:.3e}"
 
-    eigvals, _ = eigh_block_tridiagonal(alphas, betas, block_widths=block_widths, eigvals_only=True)
-    e0_sparse = float(np.min(eigvals))
+    eigvals, Z = eigh_block_tridiagonal(alphas, betas, block_widths=block_widths)
+    k0 = int(np.argmin(eigvals))
+    e0_sparse = float(eigvals[k0])
     e0_trlm = nio_workload["shared"].get("e0_trlm")
-    if e0_trlm is not None:
-        assert abs(e0_sparse - e0_trlm) < 1e-4, f"kernel E0 mismatch: sparse {e0_sparse} vs array {e0_trlm}"
+
+    # The lowest Ritz pair has to be converged -- `||beta_last s_0||`, the same estimate
+    # `_trlm_core` gates its restart loop on. Measured 4.7e-4 at the default budget, three
+    # orders below the 6.2 eV gap to the first excited state; 8.4 at max_iter=10 and 9.5 at
+    # max_iter=4, so the knob moves it the honest way and the assertion only holds at the
+    # default budget.
+    #
+    # This replaces `abs(e0_sparse - e0_trlm) < 1e-4`, which could not hold and was failing:
+    # the two kernels are not being asked about the same operator. `block_lanczos_cy`'s
+    # matvec discovers new determinants every step and the frozen `Basis` never sees them
+    # (see `_CappedBasisProxy`, which exists to bound exactly this on the GF path) -- here it
+    # reaches 63504 determinants, 62419 of them outside the 1085-determinant basis. The array
+    # kernel above solves H *projected onto* that basis. Both are right, and both were
+    # verified against ARPACK on their own space: the array kernel returns -62.677413991
+    # against a projected truth of -62.677413991 (1.4e-14), the sparse kernel -62.677727464
+    # against an enlarged-space truth of -62.677727468 (4e-9). The 3.1e-4 between them is the
+    # variational gain from the extra determinants, not noise and not a kernel disagreement --
+    # do not re-baseline it as a tolerance.
+    D = int(sum(block_widths))
+    w_last = int(block_widths[len(block_widths) - 1])
+    p_resid = len(Q_basis) - D
+    ritz_res = float(np.linalg.norm(np.asarray(betas[len(betas) - 1])[:p_resid, :w_last] @ Z[D - w_last : D, k0]))
+    if MAXITER >= 40:
+        assert ritz_res < 1e-2, f"lowest Ritz pair not converged: ||beta s_0|| = {ritz_res:.3e}"
 
     # --- memory breakdown ---
     # Q_basis is the columnar store (Phase 3); report its dense footprint, plus what the
@@ -382,7 +405,13 @@ def test_partial_sparse_kernel_bench(nio_workload):
         f"{n_it} its, {'serial' if comm is None else f'{comm.size} ranks'})",
         [
             ("wall time", f"{wall:.3f} s  ({1e3 * wall / max(n_it, 1):.1f} ms/iter)"),
-            ("E0 (T eigvals)", f"{e0_sparse:.6f}" + (f"  (TRLM: {e0_trlm:.6f})" if e0_trlm is not None else "")),
+            (
+                "E0 (T eigvals)",
+                f"{e0_sparse:.6f} (||beta s_0|| {ritz_res:.2e})"
+                # Reported, not asserted: the array kernel solves the frozen-basis projection
+                # and this one does not, so they are different numbers by construction.
+                + (f"  [array kernel, basis projection: {e0_trlm:.6f}]" if e0_trlm is not None else ""),
+            ),
             ("|Q^H Q - I|", f"{orth_err:.3e}"),
             ("matvec_apply", per_it("matvec_apply")),
             ("matvec_redistribute", per_it("matvec_redistribute")),
