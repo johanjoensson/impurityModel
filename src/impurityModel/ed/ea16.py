@@ -87,6 +87,16 @@ def ritz_residual_norms(beta_last, Z, p):
     This is ``||B_{k+1} E_k^T z_i||`` of EA16 §2.1 — the exact residual of the Ritz
     pair ``(theta_i, V_k z_i)`` of the standard problem.
 
+    **Uniform block width only.** The ``Z[nrows - p:, :]`` slice below takes the last ``p``
+    rows as the trailing block's rows, and ``beta_last`` is used whole. Both are wrong once
+    a sweep has deflated: the real shape of the trailing coupling is (stored residual width,
+    width of the last diagonal block), and under deflation each can be below ``p``, so the
+    slice addresses the wrong rows of ``Z``. Callers must establish uniform widths first --
+    ``_irlm_core`` does, by handling ``total < m_act * p`` before reaching here. Where widths
+    can vary, form the residual against the real widths instead (``_assemble_results`` and
+    ``trlm._trlm_core`` both do). This is the same trap that made TRLM report a deflated
+    sweep as an invariant subspace.
+
     Args:
         beta_last: Trailing ``(p, p)`` off-diagonal (residual-coupling) block.
         Z: ``(m*p, m*p)`` matrix of Ritz vectors (columns), from ``eigh(T)``.

@@ -92,3 +92,38 @@ def _contiguous_counts_with_empty_last(global_N, size):
     assert sum(counts) == global_N
     assert counts[-1] == 0
     return counts
+
+
+def deflating_start_block(n=40, seed=7):
+    """``(h, psi0, exact)`` for a sweep that deflates at the first step and then runs on.
+
+    ``h`` is diagonal with a two-fold ground state at 0 and a nondegenerate ladder
+    ``1, 2, 3, ...`` above it. The start block spans both ground-state directions plus one
+    generic vector orthogonal to them, so ``H q - q alpha`` has rank 1 where the block has
+    rank 3: the block narrows at the first step and the sweep then runs its full ``m``
+    blocks at the reduced width, ending with a live residual block.
+
+    That is *deflation*, not closure of the block-Krylov space -- ``m_actual == m`` and the
+    trailing residual block is present -- and both restarted solvers used to conflate the
+    two. It is the smallest shape that separates them, so it is shared: TRLM must route it
+    to its (width-aware) restart loop rather than extracting directly, and IRLM, whose
+    uniform-width purge/restart genuinely cannot continue such a factorization, must report
+    only the pairs it actually converged instead of whatever the last factorization held.
+
+    ``exact`` is the full sorted spectrum; the lowest ``k`` of it is the answer for any
+    ``num_wanted = k``.
+    """
+    import numpy as _np
+    import scipy.sparse as _sps
+
+    d = _np.concatenate([[0.0, 0.0], _np.arange(1.0, n - 1.0)])
+    h = _sps.csr_matrix(_np.diag(d).astype(complex))
+    rng = _np.random.default_rng(seed)
+    v = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+    v[0] = v[1] = 0.0
+    v /= _np.linalg.norm(v)
+    psi0 = _np.zeros((n, 3), dtype=complex)
+    psi0[0, 0] = 1.0
+    psi0[1, 1] = 1.0
+    psi0[:, 2] = v
+    return h, psi0, _np.sort(d)

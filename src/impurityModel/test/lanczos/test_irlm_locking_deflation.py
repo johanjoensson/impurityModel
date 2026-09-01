@@ -35,9 +35,13 @@ from mpi4py import MPI
 
 from impurityModel.ed.BlockLanczos import implicitly_restarted_block_lanczos_cy as mbs_irlm
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
+from impurityModel.ed.irlm import (
+    FINAL_ACCEPT_SCALE,
+    implicitly_restarted_block_lanczos,
+    implicitly_restarted_block_lanczos_cy,
+)
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.test.support.lanczos_fixtures import MockBasis
+from impurityModel.test.support.lanczos_fixtures import MockBasis, deflating_start_block
 
 
 def _build_system(n_orb=10, n_part=5, seed=42):
@@ -731,3 +735,101 @@ def test_locked_reort_step_guards_tiny_sigma_min():
         omega_min,
     )
     np.testing.assert_array_equal(xi_tiny, xi_eps)
+
+
+# --------------------------------------------------------------------------------------
+# Never report a Ritz pair that was not converged
+# --------------------------------------------------------------------------------------
+
+
+def _true_residuals(h, es, vecs):
+    vecs = np.asarray(vecs)
+    return np.linalg.norm(h @ vecs - vecs * np.asarray(es)[None, :], axis=0)
+
+
+@pytest.mark.parametrize("num_wanted,max_blocks", [(8, 6), (10, 8), (6, 5)])
+def test_irlm_never_reports_an_unconverged_ritz_pair(num_wanted, max_blocks):
+    """A deflated factorization is not a converged one, and IRLM used to hand it over anyway.
+
+    ``total < m_act * p`` breaks out of the restart loop -- IRLM's uniform-width
+    purge/restart genuinely cannot continue a factorization whose blocks have narrowed, so
+    unlike TRLM it has no width-aware continuation to fall through to. That break is fine.
+    What was not fine is where the pairs then came from: ``_assemble_results`` took the
+    lowest active Ritz pairs of whatever the last factorization held, and
+    ``lock_remaining_and_stop`` locked its own set, neither applying the EA16 eq. (15)
+    acceptance test that defines "converged". On this fixture that returned eigenvalues
+    wrong by up to 31.6 with residuals of 5.3, against a requested ``tol`` of 1e-10.
+
+    IRLM converges only the two exact ground-state directions here and now says so by
+    returning two pairs. Fewer than ``num_wanted`` is the documented contract; wrong is not.
+    """
+    h, psi0, exact = deflating_start_block()
+
+    es, vecs = implicitly_restarted_block_lanczos(
+        psi0=psi0,
+        h_op=h,
+        basis=None,
+        num_wanted=num_wanted,
+        max_subspace_blocks=max_blocks,
+        tol=1e-10,
+        max_restarts=100,
+        verbose=False,
+        reort="full",
+    )
+
+    assert 0 < len(es) <= num_wanted
+    # A prefix of the spectrum, not a subset of it: callers read the result as the lowest
+    # len(es) eigenvalues, so a gap in the middle would be a wrong answer, not a short one.
+    np.testing.assert_allclose(np.sort(np.asarray(es).real), exact[: len(es)], atol=1e-8)
+    residuals = _true_residuals(h, es, vecs)
+    assert np.max(residuals) < 1e-8, residuals
+
+
+def test_irlm_reports_a_prefix_when_the_trailing_block_deflates():
+    """The other leak: ``lock_remaining_and_stop`` locked without testing convergence.
+
+    Its rationale was that an exact breakdown zeroes every Ritz residual -- true, but it
+    fires on ``res_width < p``, which includes a residual block that merely *narrowed* and
+    leaves the residuals at ``O(||H||)``. This shape used to return 6 pairs, one of them at
+    a true residual of 3.1e-6 against ``tol = 1e-10``; it now returns the 4 it converged.
+    """
+    import scipy.sparse as sps
+
+    rng = np.random.default_rng(11)
+    n = 40
+    a = rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))
+    a = a + a.conj().T
+    h = sps.csr_matrix(a)
+    psi0 = np.linalg.qr(rng.standard_normal((n, 3)) + 0j)[0].astype(complex)
+    exact = np.sort(np.linalg.eigvalsh(a))
+
+    es, vecs = implicitly_restarted_block_lanczos(
+        psi0=psi0,
+        h_op=h,
+        basis=None,
+        num_wanted=6,
+        max_subspace_blocks=5,
+        tol=1e-10,
+        max_restarts=100,
+        verbose=False,
+        reort="full",
+    )
+
+    assert 0 < len(es) <= 6
+    np.testing.assert_allclose(np.sort(np.asarray(es).real), exact[: len(es)], atol=1e-8)
+    assert np.max(_true_residuals(h, es, vecs)) < 1e-8
+
+
+def test_final_accept_scale_is_operator_relative_not_the_bare_eps_floor():
+    """The acceptance gate must discriminate against real non-convergence only.
+
+    ``EPS * ||T||`` is the residual floor of double precision, not a threshold: converged
+    pairs land at a small, arithmetic-dependent multiple of it. A gate at one or ten times
+    that floor decides by reduction order -- measured on the warm-restart fixture
+    (``||H|| = 2.5e5``), ten times the floor kept 3 of 3 wanted pairs in serial and 1 of 3
+    at ``-n 2``. What this gate exists to reject sits five to eleven orders above the floor.
+    """
+    from impurityModel.ed.BlockLanczosCore import BREAKDOWN_TOL
+
+    assert FINAL_ACCEPT_SCALE == BREAKDOWN_TOL
+    assert FINAL_ACCEPT_SCALE > np.finfo(float).eps * 1e3

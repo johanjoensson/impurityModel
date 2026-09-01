@@ -18,6 +18,7 @@ import numpy as np
 
 from impurityModel.ed import ea16
 from impurityModel.ed.BlockLanczosCore import (
+    BREAKDOWN_TOL,
     DEFAULT_EIGEN_TOL,
     DEFLATE_EVAL_TOL,
     REORT_TOL,
@@ -290,17 +291,75 @@ class LockedSet:
         }
 
 
-def lock_remaining_and_stop(locked, Q_basis, total, Z, order, evals, num_wanted, slater, tag, verbose, rank0, reason):
-    """Lock the lowest wanted Ritz pairs from the current factorization and print
-    why -- the shared tail of every "the sweep/residual/restart block deflated,
-    nothing more to gain by continuing" exit in ``_irlm_core``/``_purge_and_reband``.
-    The caller still does its own ``break``: this only performs the locking and the
-    diagnostic, not the loop control.
+#: Operator-relative scale for *accepting* a never-locked Ritz pair at the final extraction,
+#: substituted for eq. (15)'s ``u`` there. ``ea16.acceptance_tol`` then returns
+#: ``BREAKDOWN_TOL*||T_k|| + |CNTL(2)|``, the same construction TRLM's ``stop_beta`` uses --
+#: "numerically zero against the operator scale" -- rather than a second literal.
+#:
+#: Why not eq. (15)'s bare ``u = EPS``. *Locking* is a commitment made while the iteration can
+#: still improve a pair: it deflates that direction out and stops refining it, so being
+#: conservative costs only work. Final acceptance asks whether a pair is fit to report, and
+#: there ``EPS*||T||`` is not a threshold but the floor itself -- converged pairs land at a
+#: small, arithmetic-dependent multiple of it, so a test at one or ten times the floor decides
+#: by rounding noise. Measured on the warm-restart fixture (``||H|| = 2.5e5``): at ten times
+#: the floor it kept 3 of 3 wanted pairs in serial and **1 of 3 at -n 2**, purely from the
+#: reduction order. Whereas what this gate exists to reject is nowhere near the floor: 3.1e-6
+#: against a 1.2e-11 threshold, and 5.3 against 3.8e-11.
+FINAL_ACCEPT_SCALE = BREAKDOWN_TOL
+
+
+def lock_remaining_and_stop(
+    locked,
+    Q_basis,
+    total,
+    Z,
+    order,
+    evals,
+    num_wanted,
+    slater,
+    tag,
+    verbose,
+    rank0,
+    reason,
+    res=None,
+    tnorm=0.0,
+    cntl2=0.0,
+    cntl3=0.0,
+    u=ea16.EPS,
+):
+    """Lock the lowest **converged** Ritz pairs from the current factorization and print
+    why -- the shared tail of every "the sweep/residual/restart block deflated, nothing
+    more to gain by continuing" exit in ``_irlm_core``/``_purge_and_reband``. The caller
+    still does its own ``break``: this only performs the locking and the diagnostic, not
+    the loop control.
+
+    ``res`` (with the eq. (15) parameters beside it) filters ``order`` down to its leading
+    converged run. Locking is what tells the caller a pair is an eigenpair, so locking
+    without the test that defines convergence hands back Ritz values of a subspace and
+    calls them eigenvalues. The exits that come here are *deflations*, and the two are not
+    the same: an exact breakdown does zero every Ritz residual, which is the case this
+    used to be argued from, but a residual block that merely deflated from width ``p`` to
+    width 1 leaves them O(||H||). Measured with ``res=None``: pairs accepted at a residual
+    of 3.1e-6 against a requested ``tol`` of 1e-10.
+
+    A leading *run*, not a subset -- the same reason as
+    :func:`_assemble_results`: callers read the result as the lowest ``len(eigvals)``
+    eigenvalues, so a gap in the middle is a wrong answer where a short list is an honest
+    one. ``res=None`` keeps the old unconditional behaviour for callers that have already
+    established the pairs are exact.
     """
-    X_rem = block_combine(slice_cols(Q_basis, 0, total), Z[:, order], slater)
-    locked.lock_block(X_rem, [evals[i].real for i in order], num_wanted)
+    if res is not None:
+        keep = []
+        for i in order:
+            if res[i] > ea16.acceptance_tol(evals[i], tnorm, cntl2, cntl3, FINAL_ACCEPT_SCALE):
+                break
+            keep.append(int(i))
+        order = np.asarray(keep, dtype=int)
+    if len(order) > 0:
+        X_rem = block_combine(slice_cols(Q_basis, 0, total), Z[:, order], slater)
+        locked.lock_block(X_rem, [evals[i].real for i in order], num_wanted)
     if verbose and rank0:
-        print(f"[{tag}] {reason}")
+        print(f"[{tag}] {reason} (locked {len(order)} converged)")
 
 
 def _purge_and_reband(
@@ -324,6 +383,9 @@ def _purge_and_reband(
     restart,
     order,
     num_wanted,
+    cntl2=0.0,
+    cntl3=0.0,
+    u=ea16.EPS,
 ):
     """Purge + restart in the Ritz basis (EA16 §2.2.1, eq. 6): compress the ``m``
     active blocks down to ``n_keep`` in the Ritz basis, re-band the trailing
@@ -375,6 +437,11 @@ def _purge_and_reband(
             verbose,
             rank0,
             f"Restart-block deflation (active_k={active_k}). Locking remaining & stopping.",
+            res=ea16.ritz_residual_norms(beta_last, Z, p),
+            tnorm=tnorm,
+            cntl2=cntl2,
+            cntl3=cntl3,
+            u=u,
         )
         return True, None, None, None
     Q_basis_new = concat_cols(Q_new, q_k_next)
@@ -546,6 +613,11 @@ def _irlm_core(
                 verbose,
                 rank0,
                 f"Restart {restart:3d} | trailing residual block deflated (width {res_width}<{p}). Locking remaining & stopping.",
+                res=res,
+                tnorm=tnorm,
+                cntl2=cntl2,
+                cntl3=cntl3,
+                u=u,
             )
             break
 
@@ -572,6 +644,9 @@ def _irlm_core(
             restart,
             order,
             num_wanted,
+            cntl2=cntl2,
+            cntl3=cntl3,
+            u=u,
         )
         if stop:
             break
@@ -603,17 +678,63 @@ def _irlm_core(
 
     # --- Final extraction -----------------------------------------------
     return _assemble_results(
-        locked.Xl, locked.theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths
+        locked.Xl,
+        locked.theta_l,
+        alphas,
+        betas,
+        Q_basis,
+        num_wanted,
+        p,
+        mpi,
+        comm,
+        slater,
+        is_arr,
+        widths,
+        cntl2=cntl2,
+        cntl3=cntl3,
+        u=u,
     )
 
 
-def _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, comm, slater, is_arr, widths=None):
+def _assemble_results(
+    Xl,
+    theta_l,
+    alphas,
+    betas,
+    Q_basis,
+    num_wanted,
+    p,
+    mpi,
+    comm,
+    slater,
+    is_arr,
+    widths=None,
+    cntl2=None,
+    cntl3=0.0,
+    u=ea16.EPS,
+):
     """Combine locked pairs with the best remaining active Ritz pairs, sorted ascending.
 
-    Active Ritz candidates are deflated against the locked set (and each other) and any
-    that collapse are skipped, so the result never contains duplicate eigenpairs. May
-    return **fewer than ``num_wanted``** pairs when the reachable invariant subspace is
-    smaller than ``num_wanted``; callers must use ``len(eigvals)``.
+    Active Ritz candidates face two tests. They are deflated against the locked set (and
+    each other) and any that collapse are skipped, so the result never contains duplicate
+    eigenpairs; and they must **pass the same EA16 eq. (15) acceptance test the locking
+    step applies**, because an active Ritz pair is by definition one that never converged
+    well enough to be locked. Without that second test this function returned whatever the
+    last factorization happened to hold: on a sweep that deflates to a width-1 recurrence,
+    eigenvalues wrong by 31.6 with residuals of 5.3 against a requested ``tol`` of 1e-10,
+    reported as eigenpairs. The locked pairs need no test -- passing it is what locked them.
+
+    Candidates are walked in ascending eigenvalue order and the walk **stops** at the first
+    one that fails, rather than skipping it: callers read the result as the lowest
+    ``len(eigvals)`` eigenvalues (``_energy_cut_indices`` measures its thermal window from
+    ``eigvals[0]`` and trims the top), and a set with a hole in the middle would be a
+    quietly wrong answer rather than a short one.
+
+    May therefore return **fewer than ``num_wanted``** pairs -- when the reachable invariant
+    subspace is smaller than ``num_wanted``, and now also when the factorization simply did
+    not converge that many. Callers must use ``len(eigvals)``;
+    :meth:`CIPSISolver.get_eigenvectors` treats a short return as an exhausted start block
+    and retries once from the cold vector.
     """
     eigvals_list = list(theta_l)
     nlock = Xl.shape[1] if is_arr else block_cols(Xl)
@@ -629,6 +750,21 @@ def _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, c
         if mpi:
             evals = comm.bcast(evals, root=0)
             Z = comm.bcast(Z, root=0)
+        # Ritz residuals of the *active* pairs, width-aware. `betas[m_act - 1]` is the
+        # trailing residual coupling, padded to (p, p) by the kernel; its real shape is
+        # (stored residual width, width of the last diagonal block), and under deflation
+        # both are below p -- `ea16.ritz_residual_norms`' `Z[nrows - p:, :]` slice assumes
+        # neither is. A zero-width residual block means the block-Krylov space is closed,
+        # so every Ritz pair is exact and the acceptance test below passes trivially.
+        res_width = block_cols(Q_basis) - total
+        if res_width > 0:
+            w_last = int(widths[len(widths) - 1]) if widths is not None else p
+            beta_last = np.asarray(betas[m_act - 1])[:res_width, :w_last]
+            active_res = np.linalg.norm(beta_last @ Z[total - w_last : total, :], axis=0)
+        else:
+            active_res = np.zeros(Z.shape[1])
+        tnorm = ea16.operator_norm_estimate(evals, theta_l)
+        accept_tol = cntl2 if cntl2 is not None else 0.0
         # Deflate active Ritz candidates against the locked set (and against each other)
         # before accepting them, so near-copies of locked Ritz vectors are not accepted as
         # spurious duplicate eigenpairs.
@@ -648,6 +784,10 @@ def _assemble_results(Xl, theta_l, alphas, betas, Q_basis, num_wanted, p, mpi, c
             # near-copy of one already taken.
             if float(np.abs(g[0, 0])) < DEFLATE_EVAL_TOL:
                 continue
+            # Unconverged: stop, do not skip. See the docstring -- a hole in the middle of
+            # the returned set is a wrong answer, a short set is an honest one.
+            if active_res[k] > ea16.acceptance_tol(evals[k], tnorm, accept_tol, cntl3, FINAL_ACCEPT_SCALE):
+                break
             try:
                 col, _ = block_normalize(col, mpi, comm, slater)
             except ValueError:
