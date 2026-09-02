@@ -62,53 +62,47 @@ from impurityModel.test.support._nio_workload import (
 # against 1-2/8 normally) -- the signature of heap corruption that surfaces wherever the
 # corrupted memory next gets touched, not of a logic bug at a fixed place.
 #
-# What CI has shown since, which corrects the paragraph above. Between 2026-08-28 and 08-29, with
-# this file still skipped, master crashed with exit 139 four times across three runs -- so the crash
-# is not confined to these tests, and skipping them was never going to stop it. The four land in two
-# tight clusters rather than moving at random:
+# What CI has shown since, which corrects the paragraph above. Ten crashes are now on record
+# across five runs -- four on master while this file was still skipped, then three on each of two
+# PR runs after it was re-enabled. **Every one of the ten happened on a step where these tests
+# were skipped, deselected, or already finished**, so the crash is not in them and skipping them
+# was never going to stop it. (The deselect is confirmed by the steps' own counts: 23 deselected
+# against serial's 18, i.e. these five.)
 #
-#   * 41%, immediately after inputformat/test_f_shell_crystal_field.py, on the MPI -n 3 step,
-#     twice: run 33192921138 (gcc-12, -std=c++17) and run 33256083896 (gcc-12, -std=c++20,
-#     parallel).
-#   * 97%, immediately after symmetry/test_symmetry_observables.py -- which is the *last* file the
-#     suite collects -- twice: run 33215746448's intel/-std=c++17 MPI -n 3 step, and the same run's
-#     gcc-12/-std=c++20/coverage step named "Run serial tests", whose command is
-#     `pytest --cache-clear $PYTEST_COV_ARGS`, with no mpiexec and no ranks at all:
-#     `3202 Segmentation fault (core dumped) pytest --cache-clear`.
+# Where they land -- three sites, none of them random:
 #
-# Neither cluster is explained by the build. Across the four: gcc-12 three times and intel once,
-# -std=c++17 twice and -std=c++20 twice, `parallel` on one, `coverage` on one. They share no
-# ingredient the other four legs lack -- so what organizes these crashes is *where in the run* they
-# happen, not how the extension was compiled.
+#   * inputformat/test_f_shell_crystal_field.py, 5 crashes, at 7-8 of its 10 dots. -n 2 and -n 3;
+#     gcc-12 c++17, gcc-12 c++20 parallel (twice), gcc-12 c++20 coverage, clang-15 c++17.
+#   * restrictions/test_excitation_budget.py, 2 crashes, at 10-11 of its 19 dots. Once at -n 3
+#     (clang-15 c++20) and once on a **serial** step (intel c++17), which is the observation that
+#     kills "multi-rank MPI" as a requirement for the mid-suite cluster too, not just the tail.
+#   * End of run, 3 crashes: twice just after symmetry/test_symmetry_observables.py (the last file
+#     the suite collects), once after this file's own isolated -n 3 step reached [100%]. None of
+#     the three printed pytest's `N passed in Xs` summary, though earlier steps on the same leg
+#     did -- so these are finalize-time, after the last test and before teardown finished.
 #
-# And it recurred three times on the very first run after this file was re-enabled: run 33665523145
-# (PR #2), 3 of 8 legs, every one on a step where this file is **deselected** -- which those steps'
-# own counts confirm (23 deselected against serial's 18: the five tests here). The guard rail was
-# demonstrably not running when they crashed.
+# Each mid-suite crash landed on its file's one heavyweight full-stack test, not anywhere within
+# it: test_f_shell_crystal_field.py's 9th of 10 (test_an_f_shell_crystal_field_model_solves) is
+# the only one there that runs a solver at all -- the other nine are input-format validation --
+# and test_excitation_budget.py's 12th of 19 (test_calc_selfenergy_excitation_budget_oracle) runs
+# calc_selfenergy twice through the full driver and GF stack. Dots are flushed as tests finish and
+# a partial line is lost when the process dies, so the counts are lower bounds; the windows are
+# tests 8-10 and 11-13.
 #
-#   * gcc-12/-std=c++20/coverage, -n 2: inputformat/test_f_shell_crystal_field.py, 8 dots in.
-#   * clang-15/-std=c++17, -n 3: the same file, 8 dots in.
-#   * clang-15/-std=c++20, -n 3: restrictions/test_excitation_budget.py, 11 dots in -- a new site.
+# Nothing in the build explains any of it. Across the ten: gcc-12 six times, clang-15 twice, intel
+# twice; -std=c++17 and -std=c++20 roughly even; `parallel` on two, `coverage` on two; -n 2, -n 3
+# and plain serial all represented. They share no ingredient the passing legs lack -- what
+# organizes these crashes is *where in the run* they happen and *what the test does*, not how the
+# extension was compiled.
 #
-# Seven crashes now, and they resolve into a pattern worth acting on. Five are mid-suite, and each
-# landed on its file's one heavyweight full-stack test rather than anywhere in it: four in
-# test_f_shell_crystal_field.py, whose 9th of 10 tests
-# (test_an_f_shell_crystal_field_model_solves) is the only one there that runs a solver -- the
-# other nine are input-format validation; and one on test_excitation_budget.py's 12th of 19,
-# test_calc_selfenergy_excitation_budget_oracle, which runs calc_selfenergy twice through the full
-# driver and GF stack. Dots are flushed as tests finish and a partial line is lost when the process
-# dies, so the counts are lower bounds and the windows are tests 8-10 and 12-13 respectively. The
-# remaining two are the 97% finalize-time pair. Rank count does not discriminate (-n 2 and -n 3),
-# and neither does the build.
-#
-# What the serial one does and does not rule out. It rules out multi-rank MPI: no ranks, no message
-# passing, no communicator lifetimes, which retires the _graph_comm_cache theory below on its own
-# terms as well as by the measurement. It does **not** rule out MPI, because 72 modules import
-# mpi4py at module scope, so a bare `pytest` initializes MPI on import and finalizes it at exit --
-# verified locally: importing manybody_basis alone leaves MPI.Is_initialized() true. Both 97%
-# crashes are therefore consistent with one finalize-time fault, which is a tighter hypothesis than
-# "somewhere in teardown". Supporting it: neither crashing step ever printed pytest's
-# `N passed in Xs` summary, though the steps before it on the same leg all did.
+# What the serial ones do and do not rule out. Two of the ten ran under a bare `pytest` -- one
+# finalize-time, one mid-suite in test_excitation_budget.py -- so both clusters are reachable with
+# no ranks, no message passing and no communicator lifetimes. That retires the _graph_comm_cache
+# theory below on its own terms as well as by the measurement. It does **not** rule out MPI: 72
+# modules import mpi4py at module scope, so a bare `pytest` still initializes MPI on import and
+# finalizes it at exit -- verified locally, importing manybody_basis alone leaves
+# MPI.Is_initialized() true. So "multi-rank MPI", never "MPI", is the thing the serial crashes
+# exclude.
 #
 # That also makes the next probe much cheaper than anything tried below. A single-process,
 # single-rank crash needs no MPICH build and no rank sweep -- run the whole suite under
@@ -158,9 +152,15 @@ from impurityModel.test.support._nio_workload import (
 # of the leg has already reported. That collateral damage, not the crash itself, is what the skip
 # was really buying, and it is now bought for the price of three extra steps.
 #
-# If a 139 does land in one of those steps, diagnose it from there; do not skip the file again.
-# These are the only end-to-end rank-invariance guards there are, and two solver bugs got through
-# the rest of the suite while they were switched off.
+# One already has, and it behaved as designed: on run 33673571249 the gcc-12/-std=c++17 leg
+# segfaulted in "Run rank-invariance guards (3 ranks)" -- *after* the step reached [100%], all
+# five tests passed, i.e. at finalize, which is the third site above and not a failure of these
+# tests. One step went red; the serial, -n 1 and -n 2 results on that leg had already reported,
+# which under the old arrangement they would not have.
+#
+# So: diagnose a 139 from that step, do not skip the file again. These are the only end-to-end
+# rank-invariance guards there are, and two solver bugs got through the rest of the suite while
+# they were switched off.
 
 _MASK = (1 << 64) - 1
 _GF_RTOL = 1e-10

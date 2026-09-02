@@ -316,6 +316,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev g++-12
 
+      - name: Make room for ASan's shadow mapping
+        run: |
+          # ASan reserves a fixed shadow range and aborts with "Shadow memory range interleaves
+          # with an existing memory mapping ... ABORTING" (google/sanitizers#856) if anything
+          # else lands in it. `setarch -R` on each invocation below is the documented workaround
+          # and is NOT sufficient here: the first run of this job died exactly that way on the
+          # mpi4py import step, at ASan init, having passed the same invocation twice already in
+          # earlier steps -- i.e. it is placement entropy, not something about that import.
+          #
+          # The cause is mmap randomization, which `setarch -R` does not fully cover: runner
+          # kernels ship vm.mmap_rnd_bits=32, enough entropy to drop a mapping inside the shadow
+          # range. Lowering it to 28 is the standard fix and affects only where mappings land,
+          # not what this job is looking for. Print both values so a recurrence is diagnosable
+          # from the log rather than by guessing whether the setting took.
+          echo "vm.mmap_rnd_bits before: $(sysctl -n vm.mmap_rnd_bits || echo '<unreadable>')"
+          sudo sysctl -w vm.mmap_rnd_bits=28 || echo "::warning::could not lower vm.mmap_rnd_bits"
+          echo "vm.mmap_rnd_bits after:  $(sysctl -n vm.mmap_rnd_bits || echo '<unreadable>')"
+          # If it still aborts at ASan init after this, the next lever is
+          # ASAN_OPTIONS=protect_shadow_gap=0. Not stacked pre-emptively: it weakens a real check,
+          # and one change at a time is what makes the next log readable.
+
       - name: Install Boost (headers)
         uses: MarkusJx/install-boost@v2.4.5
         id: install-boost

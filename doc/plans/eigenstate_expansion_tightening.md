@@ -157,22 +157,22 @@ Nothing in the build explains it: gcc-12 three times and intel once, `-std=c++17
 `-std=c++20` twice, `parallel` on one leg and `coverage` on one. What organizes these crashes is
 *where in the run* they happen, not how the extension was compiled.
 
-**And it recurred three times immediately, with the guard rail deselected.** The first CI run after
-the re-enable -- run 33665523145, PR #2 -- crashed on **3 of 8 legs**, every one on a step where
-this file is deselected (those steps report 23 deselected against serial's 18: the five tests).
-gcc-12/`-std=c++20`/coverage at `-n 2` and clang-15/`-std=c++17` at `-n 3` both died in
-`inputformat/test_f_shell_crystal_field.py`; clang-15/`-std=c++20` at `-n 3` died in
-`restrictions/test_excitation_budget.py`, a new site.
+**And it kept happening, with the guard rail deselected.** Two PR runs after the re-enable
+crashed on 3 of 8 legs each. **Ten crashes are now on record across five runs, and every one
+happened on a step where these tests were skipped, deselected, or already finished.** They land on
+three sites: `inputformat/test_f_shell_crystal_field.py` (5, at 7-8 of its 10 dots),
+`restrictions/test_excitation_budget.py` (2, at 10-11 of 19), and end-of-run (3 -- twice after the
+last file the suite collects, once after this file's own isolated `-n 3` step reached `[100%]`;
+none printed pytest's `N passed` summary, so they are finalize-time).
 
-**Seven crashes now, and they resolve into a pattern.** Five are mid-suite, and each landed on its
-file's one heavyweight full-stack test rather than anywhere within it -- four in
-`test_f_shell_crystal_field.py`, whose 9th of 10 tests
-(`test_an_f_shell_crystal_field_model_solves`) is the only one there that runs a solver at all, the
-other nine being input-format validation; and one on `test_excitation_budget.py`'s 12th of 19,
-`test_calc_selfenergy_excitation_budget_oracle`, which runs `calc_selfenergy` twice through the
-full driver and GF stack. Dot counts are lower bounds (a partial line is lost when the process
-dies), so the windows are tests 8-10 and 12-13. The other two are the 97% finalize-time pair.
-Neither rank count nor build discriminates.
+Each mid-suite crash landed on its file's one heavyweight full-stack test:
+`test_an_f_shell_crystal_field_model_solves` (the only test in its file that runs a solver -- the
+other nine are input-format validation) and `test_calc_selfenergy_excitation_budget_oracle` (runs
+`calc_selfenergy` twice through the full driver and GF stack). **Two of the ten ran under a bare
+`pytest`** -- one finalize-time, one mid-suite -- so both clusters are reachable with no ranks at
+all. Nothing in the build explains any of it: gcc-12 six times, clang-15 twice, intel twice;
+c++17 and c++20 roughly even; `parallel` on two, `coverage` on two; `-n 2`, `-n 3` and serial all
+represented.
 
 A targeted local loop -- 120 runs of `test_f_shell_crystal_field.py` alone, alternating `-n 2` and
 `-n 3` -- came back all rc=0, consistent with every other local attempt. Whatever discriminates is
@@ -193,13 +193,11 @@ was meaningless. It now resolves the SONAME, verifies ELF magic, and checks a bu
 carries `__asan_` symbols -- the self-test alone would not, since it compiles its own binary with
 `-fsanitize=address` and passes whether or not `CXXFLAGS` reached the build.
 
-The serial crash is the one that reframes the hunt, but read it precisely. It rules out **multi-rank
+The serial crashes are what reframe the hunt, but read them precisely. They rule out **multi-rank
 MPI** -- no ranks, no message passing, no communicator lifetimes -- not MPI itself: 72 modules
 import mpi4py at module scope, so a bare `pytest` still runs `MPI_Init` on import and `MPI_Finalize`
-at exit. Both 97% crashes are therefore consistent with a single finalize-time fault, and neither
-crashing step printed pytest's `N passed` summary while every earlier step on the same leg did.
-So the 550 whole-file iterations looped the wrong unit; only the 50 full-suite runs were on the
-right one, and the ASan work all ran under `mpiexec`, never on a serial exit path. The cheapest
+at exit. So the 550 whole-file iterations looped the wrong unit; only the 50 full-suite runs were on
+the right one, and the ASan work all ran under `mpiexec`, never on a serial exit path. The cheapest
 remaining probe is correspondingly cheap: the whole suite under ASan, **single process**, watching
 the exit path -- no MPICH build, no rank sweep.
 
