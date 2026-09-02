@@ -142,7 +142,10 @@ from impurityModel.test.support._nio_workload import (
 # *linker script*, not a preloadable object, so LD_PRELOAD-ing it silently did nothing and every
 # run came back clean while uninstrumented. It now asks for the SONAME, verifies ELF magic, and
 # checks a built extension carries __asan_ symbols -- because a self-test that compiles its own
-# binary with -fsanitize=address proves ASan works, not that this build was instrumented.
+# binary with -fsanitize=address proves ASan works, not that this build was instrumented. And
+# mpi4py is installed with the sanitizer flags unset: measured, importing it aborts ASan even
+# with rc.initialize=False, because LDFLAGS reaches its link step while CXXFLAGS never reaches
+# its C sources, leaving it linked against libasan without being instrumented.
 #
 # This file is nonetheless deselected from the three standing MPI legs in
 # .github/workflows/tests.yml and run in three steps of its own at the end of that job. Read that

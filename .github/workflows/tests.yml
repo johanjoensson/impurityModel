@@ -350,10 +350,38 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install numpy scipy "setuptools>=77.0.3" setuptools-scm cython build
-          # Built from source under the same CXXFLAGS/LDFLAGS above, so mpi4py's own
-          # extension is ASan-instrumented too, not just impurityModel's.
-          pip install --no-binary mpi4py mpi4py pytest pytest-mpi
+          pip install numpy scipy "setuptools>=77.0.3" setuptools-scm cython build pytest pytest-mpi
+
+          # mpi4py is built from source -- so it links the *system* MPICH these tests run under,
+          # which a PyPI wheel might not, since wheels can bundle their own MPI and then disagree
+          # with the system mpiexec -- but deliberately WITHOUT the sanitizer flags.
+          #
+          # Measured, not assumed. With the job's flags applied, all eight cells of the layout
+          # search below reported `control=ok noinit=FAIL full=FAIL`: ASan starts python fine,
+          # and merely *importing* mpi4py aborts with "Shadow memory range interleaves ..." even
+          # with mpi4py.rc.initialize=False, i.e. without MPI_Init ever being called. So the
+          # fault is in loading the extension, not in starting MPI, and not in the memory layout
+          # or the launcher -- both of which were varied across those eight cells and made no
+          # difference.
+          #
+          # What is unusual about that extension: the job sets CXXFLAGS, which never reaches
+          # mpi4py's C sources, while LDFLAGS=-fsanitize=address does reach its link step. So it
+          # ends up *linked* against libasan without being instrumented -- the worst of both, and
+          # a second path to the ASan runtime in a process that already has it preloaded.
+          # Unsetting all three for this one install removes that, and costs nothing the
+          # diagnostic needs: the extensions under investigation are impurityModel's.
+          env -u CFLAGS -u CXXFLAGS -u LDFLAGS pip install --no-binary mpi4py mpi4py
+
+          # Prove it took, rather than trusting it: an instrumented or ASan-linked build would
+          # still show libasan here, and a clean result from this job would then mean nothing.
+          MPI4PY_SO="$(python -c 'import mpi4py.MPI as m; print(m.__file__)')"
+          echo "mpi4py extension: $MPI4PY_SO"
+          if ldd "$MPI4PY_SO" | grep -q libasan; then
+            echo "::error::mpi4py still links libasan -- the flag unset did not take"
+            ldd "$MPI4PY_SO" | sed 's/^/    /'
+            exit 1
+          fi
+          echo "mpi4py does not link libasan, as intended"
 
       - name: Build and install impurityModel (ASan)
         run: |
