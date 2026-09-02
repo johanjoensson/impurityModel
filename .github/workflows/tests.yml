@@ -382,9 +382,16 @@ jobs:
             exit 1
           fi
           echo "using libasan: $ASAN_LIB"
-          # Needs to be in the process environment before python starts, so every later step in
-          # this job inherits it (mpiexec propagates the local environment to what it launches).
-          echo "LD_PRELOAD=$ASAN_LIB" >> "$GITHUB_ENV"
+          # Export the PATH, not LD_PRELOAD itself. Putting LD_PRELOAD in $GITHUB_ENV preloads
+          # libasan into every process the job starts afterwards -- mpiexec, hydra's process
+          # manager, sudo, git, node -- not just the python under test. That is what broke the
+          # two previous rounds: a bare `python -c "print()"` and a plain Cython import both
+          # start fine, but `from mpi4py import MPI` initializes MPI, and MPICH singleton init
+          # spawns a process manager which inherits the preload and aborts in *its* ASan init.
+          # The abort was never in the python process, which is why it looked like the import.
+          # Preload per invocation instead, and hand it to MPI ranks with `mpiexec -genv` so the
+          # launcher itself stays clean.
+          echo "ASAN_LIB=$ASAN_LIB" >> "$GITHUB_ENV"
 
           # And prove the build actually took the sanitizer flags. This is a different question
           # from "is ASan working" -- the self-test in the next step compiles its own binary with
@@ -420,7 +427,7 @@ jobs:
           # job's processes is the standard workaround; it's about address-space layout,
           # not the memory-safety bug this job exists to catch, so it doesn't weaken the
           # diagnostic.
-          setarch "$(uname -m)" -R python -c "print('asan smoke test ok')"
+          LD_PRELOAD="$ASAN_LIB" setarch "$(uname -m)" -R python -c "print('asan smoke test ok')"
 
       - name: ASan smoke test (ASan is actually active)
         run: |
@@ -446,7 +453,7 @@ jobs:
         run: |
           # Isolates "loading an ASan-instrumented .so at all" from anything pytest- or
           # mpi4py-specific. TSQR is one of the smaller extensions with few dependents.
-          setarch "$(uname -m)" -R python -c "import impurityModel.ed.TSQR; print('TSQR import ok')"
+          LD_PRELOAD="$ASAN_LIB" setarch "$(uname -m)" -R python -c "import impurityModel.ed.TSQR; print('TSQR import ok')"
 
       - name: Pick an ASan memory layout that works
         run: |
@@ -466,51 +473,79 @@ jobs:
           #   * protect_shadow_gap=0 stops ASan reserving the gap between low and high shadow.
           #     That gap is what the error says is interleaving. It costs a real check (the gap
           #     traps wild pointers), which is why it is not the default here.
-          BEST_SETARCH=""; BEST_OPTS=""; FOUND=0
-          for use_setarch in yes no; do
-            for gap in keep drop; do
-              OPTS="$ASAN_OPTIONS"
-              [ "$gap" = drop ] && OPTS="$OPTS:protect_shadow_gap=0"
-              PREFIX=""
-              [ "$use_setarch" = yes ] && PREFIX="setarch $(uname -m) -R"
-              echo "--- setarch=$use_setarch shadow_gap=$gap ---"
-              # Match a marker the failure output cannot contain by accident: ASan's abort
-              # message and any stack trace under it are free text, and a bare "ok" appears
-              # inside plenty of ordinary words.
-              if ASAN_OPTIONS="$OPTS" $PREFIX python \
-                   -c "from mpi4py import MPI; print('MPI4PY_IMPORT_OK')" 2>&1 \
-                   | sed 's/^/  /' | grep -q "MPI4PY_IMPORT_OK"; then
-                echo "  WORKS"
-                if [ "$FOUND" -eq 0 ]; then
-                  FOUND=1; BEST_SETARCH="$PREFIX"; BEST_OPTS="$OPTS"
+          # Three axes, eight cells, seconds each. The third is new and is the one the
+          # LD_PRELOAD scoping fix implicates: mpi4py initializes MPI at import, and MPICH
+          # singleton init (no mpiexec) spawns a process manager that inherits the invocation's
+          # environment -- including LD_PRELOAD. Under `mpiexec -genv` the ranks get libasan and
+          # the launcher and its proxies do not, so the two launch modes are genuinely different
+          # experiments and the probes below all use the second one.
+          BEST_SETARCH=""; BEST_OPTS=""; BEST_LAUNCH=""; FOUND=0
+          for launch in mpiexec1 bare; do
+            for use_setarch in yes no; do
+              for gap in keep drop; do
+                OPTS="$ASAN_OPTIONS"
+                [ "$gap" = drop ] && OPTS="$OPTS:protect_shadow_gap=0"
+                PREFIX=""
+                [ "$use_setarch" = yes ] && PREFIX="setarch $(uname -m) -R"
+                echo "--- launch=$launch setarch=$use_setarch shadow_gap=$gap ---"
+                if [ "$launch" = mpiexec1 ]; then
+                  OUT=$(mpiexec -n 1 -genv LD_PRELOAD "$ASAN_LIB" -genv ASAN_OPTIONS "$OPTS" \
+                        $PREFIX python -c "from mpi4py import MPI; print('MPI4PY_IMPORT_OK')" 2>&1 || true)
+                else
+                  OUT=$(LD_PRELOAD="$ASAN_LIB" ASAN_OPTIONS="$OPTS" \
+                        $PREFIX python -c "from mpi4py import MPI; print('MPI4PY_IMPORT_OK')" 2>&1 || true)
                 fi
-              else
-                echo "  fails"
-              fi
+                # Match a marker the failure output cannot contain by accident: ASan's abort
+                # message and any stack trace under it are free text, and a bare "ok" appears
+                # inside plenty of ordinary words.
+                if printf '%s' "$OUT" | grep -q "MPI4PY_IMPORT_OK"; then
+                  echo "  WORKS"
+                  if [ "$FOUND" -eq 0 ]; then
+                    FOUND=1; BEST_SETARCH="$PREFIX"; BEST_OPTS="$OPTS"; BEST_LAUNCH="$launch"
+                  fi
+                else
+                  echo "  fails"
+                  printf '%s\n' "$OUT" | tail -5 | sed 's/^/    /'
+                fi
+              done
             done
           done
           if [ "$FOUND" -eq 0 ]; then
             echo "::error::no ASan memory layout allows mpi4py to import"
-            # If all four fail, the remaining variable is the build rather than the layout:
-            # mpi4py is installed --no-binary here so its own extension is instrumented too, which
-            # means two ASan-linked modules plus the LD_PRELOAD in one process. The crash being
-            # hunted is in impurityModel's extensions, not mpi4py's, so dropping to a plain
-            # mpi4py wheel would keep the diagnostic intact while taking mpi4py out of the ASan
-            # picture entirely. That is a build change, not a runtime one, so it belongs in its
-            # own round -- do it next rather than adding a fifth combination here.
-            echo "::error::next lever: install mpi4py as a plain wheel (drop --no-binary), since"
-            echo "::error::the target extensions are impurityModel's, not mpi4py's"
+            # If all eight fail, the remaining variable is the build rather than the layout or
+            # the launcher. mpi4py is installed --no-binary here, and while the job sets CXXFLAGS
+            # (C++) rather than CFLAGS, LDFLAGS=-fsanitize=address still applies -- so mpi4py ends
+            # up *linked* against libasan without being instrumented, which is the worst of both.
+            # Rebuilding it with empty CFLAGS/LDFLAGS keeps system MPICH and takes mpi4py out of
+            # the ASan picture; the extensions under investigation are impurityModel's. Prefer
+            # that to a PyPI wheel, which may bundle its own MPI and would then disagree with the
+            # system mpiexec these tests run under.
+            echo "::error::next lever: reinstall mpi4py from source with empty CFLAGS/LDFLAGS so"
+            echo "::error::it links system MPICH without linking libasan"
             exit 1
           fi
-          echo "chosen: setarch='$BEST_SETARCH' ASAN_OPTIONS='$BEST_OPTS'"
-          # Every later step uses these rather than hardcoding setarch, so the layout that was
-          # actually shown to work is the one the probes run under.
+          echo "chosen: launch=$BEST_LAUNCH setarch='$BEST_SETARCH' ASAN_OPTIONS='$BEST_OPTS'"
+          # Every later step uses these rather than hardcoding a layout, so the probes run under
+          # the combination that was actually shown to work.
           echo "ASAN_SETARCH=$BEST_SETARCH" >> "$GITHUB_ENV"
           echo "ASAN_OPTIONS=$BEST_OPTS" >> "$GITHUB_ENV"
+          echo "ASAN_LAUNCH=$BEST_LAUNCH" >> "$GITHUB_ENV"
 
       - name: ASan smoke test (import the main extension)
         run: |
-          $ASAN_SETARCH python -c "import impurityModel.ed.ManyBodyUtils; print('ManyBodyUtils import ok')"
+          # Run under whichever launch mode the search above found workable. `bare` is the
+          # scenario we would rather reproduce -- two of the ten recorded crashes were a plain
+          # `pytest` with no ranks -- but if MPICH singleton init cannot come up under ASan at
+          # all, `mpiexec -n 1` is still a single process on a single rank, and running the probe
+          # is worth more than matching the launcher exactly. Which one ran is in the log.
+          if [ "$ASAN_LAUNCH" = bare ]; then
+            RUN() { LD_PRELOAD="$ASAN_LIB" $ASAN_SETARCH "$@"; }
+          else
+            RUN() { mpiexec -n 1 -genv LD_PRELOAD "$ASAN_LIB" -genv ASAN_OPTIONS "$ASAN_OPTIONS" \
+                      $ASAN_SETARCH "$@"; }
+          fi
+          echo "launch mode: $ASAN_LAUNCH"
+          RUN python -c "import impurityModel.ed.ManyBodyUtils; print('ManyBodyUtils import ok')"
 
       - name: ASan smoke test (pytest collection only)
         id: smoke_collect
@@ -518,7 +553,19 @@ jobs:
           # Collection imports every test module (and transitively every extension) but
           # runs nothing -- narrows a silent crash to "importing something" vs "running
           # something" before paying for the full, much slower, ASan test run.
-          $ASAN_SETARCH pytest --collect-only -q
+          # Run under whichever launch mode the search above found workable. `bare` is the
+          # scenario we would rather reproduce -- two of the ten recorded crashes were a plain
+          # `pytest` with no ranks -- but if MPICH singleton init cannot come up under ASan at
+          # all, `mpiexec -n 1` is still a single process on a single rank, and running the probe
+          # is worth more than matching the launcher exactly. Which one ran is in the log.
+          if [ "$ASAN_LAUNCH" = bare ]; then
+            RUN() { LD_PRELOAD="$ASAN_LIB" $ASAN_SETARCH "$@"; }
+          else
+            RUN() { mpiexec -n 1 -genv LD_PRELOAD "$ASAN_LIB" -genv ASAN_OPTIONS "$ASAN_OPTIONS" \
+                      $ASAN_SETARCH "$@"; }
+          fi
+          echo "launch mode: $ASAN_LAUNCH"
+          RUN pytest --collect-only -q
 
       - name: ASan on the two crash sites, looped
         run: |
@@ -566,7 +613,10 @@ jobs:
             for i in $(seq 1 "$2"); do
               echo "--- $3, -n $1, iter $i/$2 ---"
               rc=0
-              mpiexec -n "$1" $ASAN_SETARCH python -m pytest --cache-clear \
+              # -genv, not the ambient environment: the ranks get libasan, mpiexec and the
+              # hydra proxies that launch them do not.
+              mpiexec -n "$1" -genv LD_PRELOAD "$ASAN_LIB" -genv ASAN_OPTIONS "$ASAN_OPTIONS" \
+                $ASAN_SETARCH python -m pytest --cache-clear \
                 --with-mpi "src/impurityModel/test/$3" > /tmp/asan_run.log 2>&1 || rc=$?
               cat /tmp/asan_run.log
               if [ "$rc" -ne 0 ]; then
@@ -606,7 +656,19 @@ jobs:
           # 72 modules import mpi4py at module scope, so MPI_Init still runs on import and
           # MPI_Finalize at exit, which is precisely the window of interest.
           rc=0
-          $ASAN_SETARCH pytest --cache-clear > /tmp/asan_serial.log 2>&1 || rc=$?
+          # Run under whichever launch mode the search above found workable. `bare` is the
+          # scenario we would rather reproduce -- two of the ten recorded crashes were a plain
+          # `pytest` with no ranks -- but if MPICH singleton init cannot come up under ASan at
+          # all, `mpiexec -n 1` is still a single process on a single rank, and running the probe
+          # is worth more than matching the launcher exactly. Which one ran is in the log.
+          if [ "$ASAN_LAUNCH" = bare ]; then
+            RUN() { LD_PRELOAD="$ASAN_LIB" $ASAN_SETARCH "$@"; }
+          else
+            RUN() { mpiexec -n 1 -genv LD_PRELOAD "$ASAN_LIB" -genv ASAN_OPTIONS "$ASAN_OPTIONS" \
+                      $ASAN_SETARCH "$@"; }
+          fi
+          echo "launch mode: $ASAN_LAUNCH"
+          RUN pytest --cache-clear > /tmp/asan_serial.log 2>&1 || rc=$?
           cat /tmp/asan_serial.log
           if [ "$rc" -ne 0 ]; then
             {
