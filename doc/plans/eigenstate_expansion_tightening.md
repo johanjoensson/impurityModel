@@ -26,7 +26,7 @@ reason not to.
 | — | IRLM reporting Ritz pairs it never converged | **BUG, FIXED** `3715862` |
 | — | The sparse-kernel bench's cross-kernel E0 assertion | **BUG, FIXED** `afdca32` (test bug; both kernels correct) |
 | C2 | Restore the rank-invariance guard rail | **SHIPPED** `d96f5cf`..`af5059b` + the re-enable — two new tests, one strict xfail |
-| C2 | Reproduce the CI-only SIGSEGV locally | **NEGATIVE** — 550 MPICH runs and a clean ASan suite; file re-enabled, and isolated in CI |
+| C2 | Reproduce the CI-only SIGSEGV locally | **NEGATIVE** — 550 MPICH runs, clean ASan; and CI then crashed 4x with the file skipped, once with no MPI at all |
 | — | `_graph_comm_cache` context-id exhaustion | **REFUTED** — 10 live entries after a whole `-n 3` suite |
 | — | Cold `p = 1` cannot certify a degenerate manifold | **REFUTED by measurement** — see `doc/lanczos_invariants.md` |
 
@@ -143,6 +143,39 @@ rate of 1-2 of 8 legs normally and 5 of 8 once. So the file is deselected from t
 standing MPI legs and runs in three steps of its own at the end of the job, after the coverage
 upload. It runs exactly once either way; a recurrence now fails one step whose predecessors
 have already reported.
+
+**And CI answered the question the reproduction could not.** Between 2026-08-28 and 08-29, with the
+file still skipped, master crashed with exit 139 **four times across three runs** -- so the crash is
+not confined to these tests, and skipping them was never going to stop it. Two landed at 41%, just
+after `inputformat/test_f_shell_crystal_field.py`, on the `-n 3` step (runs 33192921138 and
+33256083896). Two landed at 97%, just after `symmetry/test_symmetry_observables.py` -- the *last*
+file collected -- in run 33215746448: one on the intel `-n 3` step, and one on the step named **"Run
+serial tests"**, whose command is `pytest --cache-clear $PYTEST_COV_ARGS`, no `mpiexec`, no ranks
+(`3202 Segmentation fault (core dumped) pytest --cache-clear`).
+
+Nothing in the build explains it: gcc-12 three times and intel once, `-std=c++17` twice and
+`-std=c++20` twice, `parallel` on one leg and `coverage` on one. What organizes these crashes is
+*where in the run* they happen, not how the extension was compiled.
+
+**And it recurred immediately, with the guard rail deselected.** The first CI run after the
+re-enable -- run 33665523145, PR #2 -- crashed on the gcc-12/`-std=c++20`/coverage leg's **"Run MPI
+tests (2 ranks)"** step, where this file is deselected (that step reports 23 deselected against
+serial's 18: the five tests). It died *inside* `inputformat/test_f_shell_crystal_field.py`, after 8
+of its 10 dots; the two earlier 41% crashes died in the same file after 7. Dots are flushed as tests
+finish and a partial line is lost when the process dies, so those are lower bounds -- the window is
+tests 8-10, of which only `test_an_f_shell_crystal_field_model_solves` runs a solver. Five crashes
+now, and the 41% cluster has a single named file and a three-test window, across `-n 2` and `-n 3`
+and three compiler configurations. That is the first thing in this hunt cheap enough to loop.
+
+The serial crash is the one that reframes the hunt, but read it precisely. It rules out **multi-rank
+MPI** -- no ranks, no message passing, no communicator lifetimes -- not MPI itself: 72 modules
+import mpi4py at module scope, so a bare `pytest` still runs `MPI_Init` on import and `MPI_Finalize`
+at exit. Both 97% crashes are therefore consistent with a single finalize-time fault, and neither
+crashing step printed pytest's `N passed` summary while every earlier step on the same leg did.
+So the 550 whole-file iterations looped the wrong unit; only the 50 full-suite runs were on the
+right one, and the ASan work all ran under `mpiexec`, never on a serial exit path. The cheapest
+remaining probe is correspondingly cheap: the whole suite under ASan, **single process**, watching
+the exit path -- no MPICH build, no rank sweep.
 
 **Two theories killed on the way.** `_graph_comm_cache` is keyed on `id(comm)` and never
 evicts, and the GF layer clones a communicator per unit — but it holds 10 live entries after an

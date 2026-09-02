@@ -62,6 +62,50 @@ from impurityModel.test.support._nio_workload import (
 # against 1-2/8 normally) -- the signature of heap corruption that surfaces wherever the
 # corrupted memory next gets touched, not of a logic bug at a fixed place.
 #
+# What CI has shown since, which corrects the paragraph above. Between 2026-08-28 and 08-29, with
+# this file still skipped, master crashed with exit 139 four times across three runs -- so the crash
+# is not confined to these tests, and skipping them was never going to stop it. The four land in two
+# tight clusters rather than moving at random:
+#
+#   * 41%, immediately after inputformat/test_f_shell_crystal_field.py, on the MPI -n 3 step,
+#     twice: run 33192921138 (gcc-12, -std=c++17) and run 33256083896 (gcc-12, -std=c++20,
+#     parallel).
+#   * 97%, immediately after symmetry/test_symmetry_observables.py -- which is the *last* file the
+#     suite collects -- twice: run 33215746448's intel/-std=c++17 MPI -n 3 step, and the same run's
+#     gcc-12/-std=c++20/coverage step named "Run serial tests", whose command is
+#     `pytest --cache-clear $PYTEST_COV_ARGS`, with no mpiexec and no ranks at all:
+#     `3202 Segmentation fault (core dumped) pytest --cache-clear`.
+#
+# Neither cluster is explained by the build. Across the four: gcc-12 three times and intel once,
+# -std=c++17 twice and -std=c++20 twice, `parallel` on one, `coverage` on one. They share no
+# ingredient the other four legs lack -- so what organizes these crashes is *where in the run* they
+# happen, not how the extension was compiled.
+#
+# And it recurred on the very first run after this file was re-enabled -- run 33665523145, PR #2,
+# the gcc-12/-std=c++20/coverage leg, on the **"Run MPI tests (2 ranks)"** step, where this file is
+# explicitly deselected (that step reports 23 deselected against serial's 18: the five tests here).
+# So the guard rail was demonstrably not running when it crashed. That is a fifth data point and
+# the most useful one, because it narrows the 41% cluster to a single file: it died inside
+# inputformat/test_f_shell_crystal_field.py, which collects 10 tests, after 8 dots. The two earlier
+# 41% crashes died in the same file after 7. Dots are flushed as tests finish and a partial line is
+# lost when the process dies, so read those counts as lower bounds -- the window is tests 8-10, and
+# only one of them, test_an_f_shell_crystal_field_model_solves, runs a solver at all; the other
+# nine are input-format validation. It also crossed a rank count: the earlier two were -n 3, this
+# was -n 2.
+#
+# What the serial one does and does not rule out. It rules out multi-rank MPI: no ranks, no message
+# passing, no communicator lifetimes, which retires the _graph_comm_cache theory below on its own
+# terms as well as by the measurement. It does **not** rule out MPI, because 72 modules import
+# mpi4py at module scope, so a bare `pytest` initializes MPI on import and finalizes it at exit --
+# verified locally: importing manybody_basis alone leaves MPI.Is_initialized() true. Both 97%
+# crashes are therefore consistent with one finalize-time fault, which is a tighter hypothesis than
+# "somewhere in teardown". Supporting it: neither crashing step ever printed pytest's
+# `N passed in Xs` summary, though the steps before it on the same leg all did.
+#
+# That also makes the next probe much cheaper than anything tried below. A single-process,
+# single-rank crash needs no MPICH build and no rank sweep -- run the whole suite under
+# AddressSanitizer serially and watch the exit path.
+#
 # What was tried, all negative:
 #   * The whole file, 500 iterations alternating -n 2 and -n 3, plus 50 interleaved full-suite
 #     --with-mpi runs, under MPICH 4.2.2 (ch4:ofi) with mpi4py built from source against it --
@@ -78,20 +122,25 @@ from impurityModel.test.support._nio_workload import (
 #     the GF layer clones a communicator per unit): measured at 10 live entries after an entire
 #     -n 3 suite run, across 18387 lookups. Nowhere near MPICH's context-id space. Refuted.
 #
-# What is still untested locally, in rough order of suspicion, if it comes back: MPICH version
-# (ubuntu-22.04 ships 4.0, the reproduction ran 4.2.2), compiler (gcc-12/clang-15/icpx at
-# -std=c++17/20/2b in CI, gcc 16.2.1 locally), coverage instrumentation, and 4 vCPUs against 8
-# cores. And note the ASan CI leg in tests.yml is commented out with a broken LD_PRELOAD:
+# What is still untested locally, reordered by the clusters above: the exit path of a serial run
+# (never instrumented here -- the ASan work all ran under mpiexec), coverage instrumentation,
+# compiler (gcc-12/clang-15/icpx at -std=c++17/20/2b in CI, gcc 16.2.1 locally), and 4 vCPUs
+# against 8 cores. MPICH version (ubuntu-22.04 ships 4.0, the reproduction ran 4.2.2) drops near
+# the bottom now that a single-rank process has crashed the same way. And note the ASan CI leg in
+# tests.yml is commented out with a broken LD_PRELOAD:
 # `g++ -print-file-name=libasan.so` resolves to an ASCII *linker script*, not a preloadable
 # object, so it silently does nothing -- it must name the real libasan.so.<N>.
 #
-# So that a recurrence costs what it should and no more, this file is deselected from the three
-# standing MPI legs in .github/workflows/tests.yml and run in its own steps at the end of that
-# job instead. A 139 there fails one step, after the rest of the leg has already reported --
-# that collateral damage, not the crash itself, is what the skip was really buying. If it does
-# come back, the response is to diagnose it from that step, not to skip the file again: these
-# are the only end-to-end rank-invariance guards there are, and two solver bugs got through the
-# rest of the suite while they were switched off.
+# This file is nonetheless deselected from the three standing MPI legs in
+# .github/workflows/tests.yml and run in three steps of its own at the end of that job. Read that
+# as cheap insurance, not as containment: the evidence above says the crash is not this file's, so
+# the isolation bounds only what a recurrence *here* would cost -- one failed step, after the rest
+# of the leg has already reported. That collateral damage, not the crash itself, is what the skip
+# was really buying, and it is now bought for the price of three extra steps.
+#
+# If a 139 does land in one of those steps, diagnose it from there; do not skip the file again.
+# These are the only end-to-end rank-invariance guards there are, and two solver bugs got through
+# the rest of the suite while they were switched off.
 
 _MASK = (1 << 64) - 1
 _GF_RTOL = 1e-10
