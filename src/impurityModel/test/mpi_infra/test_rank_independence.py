@@ -81,17 +81,25 @@ from impurityModel.test.support._nio_workload import (
 # ingredient the other four legs lack -- so what organizes these crashes is *where in the run* they
 # happen, not how the extension was compiled.
 #
-# And it recurred on the very first run after this file was re-enabled -- run 33665523145, PR #2,
-# the gcc-12/-std=c++20/coverage leg, on the **"Run MPI tests (2 ranks)"** step, where this file is
-# explicitly deselected (that step reports 23 deselected against serial's 18: the five tests here).
-# So the guard rail was demonstrably not running when it crashed. That is a fifth data point and
-# the most useful one, because it narrows the 41% cluster to a single file: it died inside
-# inputformat/test_f_shell_crystal_field.py, which collects 10 tests, after 8 dots. The two earlier
-# 41% crashes died in the same file after 7. Dots are flushed as tests finish and a partial line is
-# lost when the process dies, so read those counts as lower bounds -- the window is tests 8-10, and
-# only one of them, test_an_f_shell_crystal_field_model_solves, runs a solver at all; the other
-# nine are input-format validation. It also crossed a rank count: the earlier two were -n 3, this
-# was -n 2.
+# And it recurred three times on the very first run after this file was re-enabled: run 33665523145
+# (PR #2), 3 of 8 legs, every one on a step where this file is **deselected** -- which those steps'
+# own counts confirm (23 deselected against serial's 18: the five tests here). The guard rail was
+# demonstrably not running when they crashed.
+#
+#   * gcc-12/-std=c++20/coverage, -n 2: inputformat/test_f_shell_crystal_field.py, 8 dots in.
+#   * clang-15/-std=c++17, -n 3: the same file, 8 dots in.
+#   * clang-15/-std=c++20, -n 3: restrictions/test_excitation_budget.py, 11 dots in -- a new site.
+#
+# Seven crashes now, and they resolve into a pattern worth acting on. Five are mid-suite, and each
+# landed on its file's one heavyweight full-stack test rather than anywhere in it: four in
+# test_f_shell_crystal_field.py, whose 9th of 10 tests
+# (test_an_f_shell_crystal_field_model_solves) is the only one there that runs a solver -- the
+# other nine are input-format validation; and one on test_excitation_budget.py's 12th of 19,
+# test_calc_selfenergy_excitation_budget_oracle, which runs calc_selfenergy twice through the full
+# driver and GF stack. Dots are flushed as tests finish and a partial line is lost when the process
+# dies, so the counts are lower bounds and the windows are tests 8-10 and 12-13 respectively. The
+# remaining two are the 97% finalize-time pair. Rank count does not discriminate (-n 2 and -n 3),
+# and neither does the build.
 #
 # What the serial one does and does not rule out. It rules out multi-rank MPI: no ranks, no message
 # passing, no communicator lifetimes, which retires the _graph_comm_cache theory below on its own
@@ -118,6 +126,9 @@ from impurityModel.test.support._nio_workload import (
 #     happens, so a run that corrupts the heap but would have survived is still caught.
 #     (The one failure in that run was test_suggest_threshold_fits_budget, the known
 #     free-RAM-derived flake, over budget by 0.015% -- not a memory-safety finding.)
+#   * The narrowed target, once CI named it: 120 runs of test_f_shell_crystal_field.py alone,
+#     alternating -n 2 and -n 3 under Open MPI. All rc=0. Consistent with every other local
+#     attempt -- whatever discriminates is not on this machine, so the next probe belongs in CI.
 #   * The _graph_comm_cache-leak theory (mpi_comm.py keys it on id(comm) and never evicts, and
 #     the GF layer clones a communicator per unit): measured at 10 live entries after an entire
 #     -n 3 suite run, across 18387 lookups. Nowhere near MPICH's context-id space. Refuted.

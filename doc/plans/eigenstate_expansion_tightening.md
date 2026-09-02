@@ -157,15 +157,27 @@ Nothing in the build explains it: gcc-12 three times and intel once, `-std=c++17
 `-std=c++20` twice, `parallel` on one leg and `coverage` on one. What organizes these crashes is
 *where in the run* they happen, not how the extension was compiled.
 
-**And it recurred immediately, with the guard rail deselected.** The first CI run after the
-re-enable -- run 33665523145, PR #2 -- crashed on the gcc-12/`-std=c++20`/coverage leg's **"Run MPI
-tests (2 ranks)"** step, where this file is deselected (that step reports 23 deselected against
-serial's 18: the five tests). It died *inside* `inputformat/test_f_shell_crystal_field.py`, after 8
-of its 10 dots; the two earlier 41% crashes died in the same file after 7. Dots are flushed as tests
-finish and a partial line is lost when the process dies, so those are lower bounds -- the window is
-tests 8-10, of which only `test_an_f_shell_crystal_field_model_solves` runs a solver. Five crashes
-now, and the 41% cluster has a single named file and a three-test window, across `-n 2` and `-n 3`
-and three compiler configurations. That is the first thing in this hunt cheap enough to loop.
+**And it recurred three times immediately, with the guard rail deselected.** The first CI run after
+the re-enable -- run 33665523145, PR #2 -- crashed on **3 of 8 legs**, every one on a step where
+this file is deselected (those steps report 23 deselected against serial's 18: the five tests).
+gcc-12/`-std=c++20`/coverage at `-n 2` and clang-15/`-std=c++17` at `-n 3` both died in
+`inputformat/test_f_shell_crystal_field.py`; clang-15/`-std=c++20` at `-n 3` died in
+`restrictions/test_excitation_budget.py`, a new site.
+
+**Seven crashes now, and they resolve into a pattern.** Five are mid-suite, and each landed on its
+file's one heavyweight full-stack test rather than anywhere within it -- four in
+`test_f_shell_crystal_field.py`, whose 9th of 10 tests
+(`test_an_f_shell_crystal_field_model_solves`) is the only one there that runs a solver at all, the
+other nine being input-format validation; and one on `test_excitation_budget.py`'s 12th of 19,
+`test_calc_selfenergy_excitation_budget_oracle`, which runs `calc_selfenergy` twice through the
+full driver and GF stack. Dot counts are lower bounds (a partial line is lost when the process
+dies), so the windows are tests 8-10 and 12-13. The other two are the 97% finalize-time pair.
+Neither rank count nor build discriminates.
+
+A targeted local loop -- 120 runs of `test_f_shell_crystal_field.py` alone, alternating `-n 2` and
+`-n 3` -- came back all rc=0, consistent with every other local attempt. Whatever discriminates is
+not on this machine, so the next probe belongs in CI: an ASan leg, now that there is a named file
+and a three-test window to point it at rather than a whole suite.
 
 The serial crash is the one that reframes the hunt, but read it precisely. It rules out **multi-rank
 MPI** -- no ranks, no message passing, no communicator lifetimes -- not MPI itself: 72 modules
