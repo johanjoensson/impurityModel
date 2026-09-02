@@ -473,13 +473,41 @@ jobs:
           #   * protect_shadow_gap=0 stops ASan reserving the gap between low and high shadow.
           #     That gap is what the error says is interleaving. It costs a real check (the gap
           #     traps wild pointers), which is why it is not the default here.
-          # Three axes, eight cells, seconds each. The third is new and is the one the
-          # LD_PRELOAD scoping fix implicates: mpi4py initializes MPI at import, and MPICH
-          # singleton init (no mpiexec) spawns a process manager that inherits the invocation's
-          # environment -- including LD_PRELOAD. Under `mpiexec -genv` the ranks get libasan and
-          # the launcher and its proxies do not, so the two launch modes are genuinely different
-          # experiments and the probes below all use the second one.
+          # Three probes per cell, because the previous two rounds could not distinguish
+          # "ASan cannot start a python here" from "mpi4py is what breaks it", and I guessed
+          # instead of measuring. Each cell now runs:
+          #
+          #   control  python -c "print(...)"            -- no mpi4py at all. If this fails, the
+          #                                                 problem is ASan startup in this
+          #                                                 launch mode and mpi4py is innocent.
+          #   noinit   import mpi4py, rc.initialize=0    -- loads the extension, does NOT call
+          #                                                 MPI_Init. Separates "loading libmpi"
+          #                                                 from "initializing MPI".
+          #   full     from mpi4py import MPI            -- the real thing, auto-init.
+          #
+          # Whichever of the three first fails names the stage, and the excerpt below prints the
+          # ASan error line rather than the tail of its memory map -- the earlier version tailed
+          # the dump, which is several hundred lines of address ranges and told me nothing.
           BEST_SETARCH=""; BEST_OPTS=""; BEST_LAUNCH=""; FOUND=0
+          probe() {  # launch, prefix, opts, python-code -> prints ok/FAIL and an excerpt
+            if [ "$1" = mpiexec1 ]; then
+              OUT=$(mpiexec -n 1 -genv LD_PRELOAD "$ASAN_LIB" -genv ASAN_OPTIONS "$3" \
+                    $2 python -c "$4" 2>&1 || true)
+            else
+              OUT=$(LD_PRELOAD="$ASAN_LIB" ASAN_OPTIONS="$3" $2 python -c "$4" 2>&1 || true)
+            fi
+            if printf '%s' "$OUT" | grep -q "PROBE_OK"; then
+              printf 'ok'
+              return 0
+            fi
+            printf 'FAIL'
+            # First matching diagnostic line, not the tail: ASan prints its verdict first and
+            # then dumps the whole process memory map under it.
+            printf '%s\n' "$OUT" \
+              | grep -m2 -E "AddressSanitizer|Shadow memory|Sanitizer CHECK|Error|error" \
+              | sed 's/^/      /' > /tmp/probe_excerpt.txt || true
+            return 1
+          }
           for launch in mpiexec1 bare; do
             for use_setarch in yes no; do
               for gap in keep drop; do
@@ -488,40 +516,29 @@ jobs:
                 PREFIX=""
                 [ "$use_setarch" = yes ] && PREFIX="setarch $(uname -m) -R"
                 echo "--- launch=$launch setarch=$use_setarch shadow_gap=$gap ---"
-                if [ "$launch" = mpiexec1 ]; then
-                  OUT=$(mpiexec -n 1 -genv LD_PRELOAD "$ASAN_LIB" -genv ASAN_OPTIONS "$OPTS" \
-                        $PREFIX python -c "from mpi4py import MPI; print('MPI4PY_IMPORT_OK')" 2>&1 || true)
-                else
-                  OUT=$(LD_PRELOAD="$ASAN_LIB" ASAN_OPTIONS="$OPTS" \
-                        $PREFIX python -c "from mpi4py import MPI; print('MPI4PY_IMPORT_OK')" 2>&1 || true)
-                fi
-                # Match a marker the failure output cannot contain by accident: ASan's abort
-                # message and any stack trace under it are free text, and a bare "ok" appears
-                # inside plenty of ordinary words.
-                if printf '%s' "$OUT" | grep -q "MPI4PY_IMPORT_OK"; then
-                  echo "  WORKS"
-                  if [ "$FOUND" -eq 0 ]; then
-                    FOUND=1; BEST_SETARCH="$PREFIX"; BEST_OPTS="$OPTS"; BEST_LAUNCH="$launch"
-                  fi
-                else
-                  echo "  fails"
-                  printf '%s\n' "$OUT" | tail -5 | sed 's/^/    /'
+                : > /tmp/probe_excerpt.txt
+                printf '    control='; probe "$launch" "$PREFIX" "$OPTS" \
+                  "print('PROBE_OK')" && CTL=1 || CTL=0
+                printf ' noinit='; probe "$launch" "$PREFIX" "$OPTS" \
+                  "import mpi4py; mpi4py.rc.initialize=False; from mpi4py import MPI; print('PROBE_OK')" \
+                  && NOI=1 || NOI=0
+                printf ' full='; probe "$launch" "$PREFIX" "$OPTS" \
+                  "from mpi4py import MPI; print('PROBE_OK')" && FUL=1 || FUL=0
+                echo
+                [ -s /tmp/probe_excerpt.txt ] && cat /tmp/probe_excerpt.txt
+                if [ "$FUL" -eq 1 ] && [ "$FOUND" -eq 0 ]; then
+                  FOUND=1; BEST_SETARCH="$PREFIX"; BEST_OPTS="$OPTS"; BEST_LAUNCH="$launch"
                 fi
               done
             done
           done
           if [ "$FOUND" -eq 0 ]; then
-            echo "::error::no ASan memory layout allows mpi4py to import"
-            # If all eight fail, the remaining variable is the build rather than the layout or
-            # the launcher. mpi4py is installed --no-binary here, and while the job sets CXXFLAGS
-            # (C++) rather than CFLAGS, LDFLAGS=-fsanitize=address still applies -- so mpi4py ends
-            # up *linked* against libasan without being instrumented, which is the worst of both.
-            # Rebuilding it with empty CFLAGS/LDFLAGS keeps system MPICH and takes mpi4py out of
-            # the ASan picture; the extensions under investigation are impurityModel's. Prefer
-            # that to a PyPI wheel, which may bundle its own MPI and would then disagree with the
-            # system mpiexec these tests run under.
-            echo "::error::next lever: reinstall mpi4py from source with empty CFLAGS/LDFLAGS so"
-            echo "::error::it links system MPICH without linking libasan"
+            echo "::error::no configuration lets mpi4py import under ASan"
+            echo "::error::read the control/noinit/full columns above: control=FAIL means ASan"
+            echo "::error::cannot start python here at all and mpi4py is not the variable;"
+            echo "::error::noinit=ok with full=FAIL means MPI_Init is, and the next lever is to"
+            echo "::error::rebuild mpi4py from source with empty CFLAGS/LDFLAGS so it links"
+            echo "::error::system MPICH without linking libasan."
             exit 1
           fi
           echo "chosen: launch=$BEST_LAUNCH setarch='$BEST_SETARCH' ASAN_OPTIONS='$BEST_OPTS'"
