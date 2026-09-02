@@ -26,7 +26,7 @@ reason not to.
 | — | IRLM reporting Ritz pairs it never converged | **BUG, FIXED** `3715862` |
 | — | The sparse-kernel bench's cross-kernel E0 assertion | **BUG, FIXED** `afdca32` (test bug; both kernels correct) |
 | C2 | Restore the rank-invariance guard rail | **SHIPPED** `d96f5cf`..`af5059b` + the re-enable — two new tests, one strict xfail |
-| C2 | Reproduce the CI-only SIGSEGV locally | **NEGATIVE** — 110 MPICH runs and a clean ASan suite; file re-enabled on the evidence |
+| C2 | Reproduce the CI-only SIGSEGV locally | **NEGATIVE** — 550 MPICH runs and a clean ASan suite; file re-enabled, and isolated in CI |
 | — | `_graph_comm_cache` context-id exhaustion | **REFUTED** — 10 live entries after a whole `-n 3` suite |
 | — | Cold `p = 1` cannot certify a degenerate manifold | **REFUTED by measurement** — see `doc/lanczos_invariants.md` |
 
@@ -126,9 +126,11 @@ Two solver bugs went through the rest of the suite while it was.
   search — and it does so on ~30% of that grid. The remedy is to give up block width or fall
   through to the dense branch, never the certified count.
 
-**The SIGSEGV did not reproduce.** 100 whole-file iterations alternating `-n 2`/`-n 3` plus 10
+**The SIGSEGV did not reproduce.** 500 whole-file iterations alternating `-n 2`/`-n 3` plus 50
 interleaved full-suite runs under MPICH 4.2.2 (the CI MPI family, which the old skip note's
-"not locally reproducible under Open MPI" had never tested): 110 runs, all rc=0. Then the file
+"not locally reproducible under Open MPI" had never tested): **550 runs over ~9.5 hours, all
+rc=0**. Against the CI rate of 1-2 of 8 legs — once 5 of 8 — a few dozen should have sufficed,
+so what this establishes is that the discriminating variable is not on this machine. Then the file
 *and* the whole suite under AddressSanitizer, MPICH-linked, at `-n 2` and `-n 3`: zero reports.
 That is the stronger negative — ASan traps the bad access when it happens, so a run that
 corrupts the heap without crashing is still caught. The file is re-enabled, with the evidence

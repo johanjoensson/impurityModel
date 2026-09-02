@@ -63,10 +63,12 @@ from impurityModel.test.support._nio_workload import (
 # corrupted memory next gets touched, not of a logic bug at a fixed place.
 #
 # What was tried, all negative:
-#   * The whole file, 100 iterations alternating -n 2 and -n 3, plus 10 interleaved full-suite
+#   * The whole file, 500 iterations alternating -n 2 and -n 3, plus 50 interleaved full-suite
 #     --with-mpi runs, under MPICH 4.2.2 (ch4:ofi) with mpi4py built from source against it --
 #     i.e. under the CI MPI family, which the old skip comment's "not locally reproducible
-#     under Open MPI" had never actually tested. 110 runs, every one rc=0.
+#     under Open MPI" had never actually tested. 550 runs over ~9.5 hours, every one rc=0.
+#     At the CI rate (1-2 of 8 legs, once 5 of 8) a few dozen runs should have been enough,
+#     so this is a negative about *this machine*, not a bound on the crash's rate in CI.
 #   * The same file and the full suite under AddressSanitizer, MPICH-linked, at -n 2 and -n 3.
 #     Zero reports. This is the stronger negative: ASan traps the bad read/write when it
 #     happens, so a run that corrupts the heap but would have survived is still caught.
