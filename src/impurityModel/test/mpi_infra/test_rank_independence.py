@@ -62,24 +62,21 @@ from impurityModel.test.support._nio_workload import (
 # against 1-2/8 normally) -- the signature of heap corruption that surfaces wherever the
 # corrupted memory next gets touched, not of a logic bug at a fixed place.
 #
-# What CI has shown since, which corrects the paragraph above. Ten crashes are now on record
-# across five runs -- four on master while this file was still skipped, then three on each of two
-# PR runs after it was re-enabled. **Every one of the ten happened on a step where these tests
-# were skipped, deselected, or already finished**, so the crash is not in them and skipping them
-# was never going to stop it. (The deselect is confirmed by the steps' own counts: 23 deselected
-# against serial's 18, i.e. these five.)
+# What CI has shown since, which corrects the paragraph above. Twelve crashes are on record, over
+# six crashing runs (a seventh full run came back 0 of 8 -- the rate is 0-3 legs per run).
+# **Every one of the twelve happened on a step where these tests were skipped, deselected, or had
+# already finished**, so the crash is not in them and skipping them was never going to stop it.
+# (The deselect is confirmed by the steps' own counts: 23 deselected against serial's 18, i.e.
+# these five.)
 #
 # Where they land -- three sites, none of them random:
 #
-#   * inputformat/test_f_shell_crystal_field.py, 5 crashes, at 7-8 of its 10 dots. -n 2 and -n 3;
-#     gcc-12 c++17, gcc-12 c++20 parallel (twice), gcc-12 c++20 coverage, clang-15 c++17.
-#   * restrictions/test_excitation_budget.py, 2 crashes, at 10-11 of its 19 dots. Once at -n 3
-#     (clang-15 c++20) and once on a **serial** step (intel c++17), which is the observation that
-#     kills "multi-rank MPI" as a requirement for the mid-suite cluster too, not just the tail.
-#   * End of run, 3 crashes: twice just after symmetry/test_symmetry_observables.py (the last file
-#     the suite collects), once after this file's own isolated -n 3 step reached [100%]. None of
-#     the three printed pytest's `N passed in Xs` summary, though earlier steps on the same leg
-#     did -- so these are finalize-time, after the last test and before teardown finished.
+#   * inputformat/test_f_shell_crystal_field.py, 5 crashes, at 7-8 of its 10 dots.
+#   * restrictions/test_excitation_budget.py, 3 crashes, at 10-11 of its 19 dots.
+#   * End of run, 4 crashes: three just after symmetry/test_symmetry_observables.py (the last file
+#     the suite collects), one after this file's own isolated -n 3 step reached [100%]. None
+#     printed pytest's `N passed in Xs` summary, though earlier steps on the same leg did -- so
+#     these are finalize-time, after the last test and before teardown finished.
 #
 # Each mid-suite crash landed on its file's one heavyweight full-stack test, not anywhere within
 # it: test_f_shell_crystal_field.py's 9th of 10 (test_an_f_shell_crystal_field_model_solves) is
@@ -89,15 +86,17 @@ from impurityModel.test.support._nio_workload import (
 # a partial line is lost when the process dies, so the counts are lower bounds; the windows are
 # tests 8-10 and 11-13.
 #
-# Nothing in the build explains any of it. Across the ten: gcc-12 six times, clang-15 twice, intel
-# twice; -std=c++17 and -std=c++20 roughly even; `parallel` on two, `coverage` on two; -n 2, -n 3
-# and plain serial all represented. They share no ingredient the passing legs lack -- what
-# organizes these crashes is *where in the run* they happen and *what the test does*, not how the
-# extension was compiled.
+# Nothing in the configuration explains any of it. Across the twelve: gcc-12 eight times,
+# clang-15 twice, intel twice; -std=c++17 five and -std=c++20 seven; `parallel` on three,
+# `coverage` on three. And **every launch mode has now produced one** -- serial three times,
+# mpiexec -n 1 once, -n 2 twice, -n 3 six times -- which closes rank count as a variable the way
+# the others were already closed. They share no ingredient the passing legs lack: what organizes
+# these crashes is *where in the run* they happen and *what the test does*, not how the extension
+# was compiled or how it was launched.
 #
-# What the serial ones do and do not rule out. Two of the ten ran under a bare `pytest` -- one
-# finalize-time, one mid-suite in test_excitation_budget.py -- so both clusters are reachable with
-# no ranks, no message passing and no communicator lifetimes. That retires the _graph_comm_cache
+# What the serial ones do and do not rule out. Three of the twelve ran under a bare `pytest` --
+# two finalize-time, one mid-suite in test_excitation_budget.py -- so both clusters are reachable
+# with no ranks, no message passing and no communicator lifetimes. That retires the _graph_comm_cache
 # theory below on its own terms as well as by the measurement. It does **not** rule out MPI: 72
 # modules import mpi4py at module scope, so a bare `pytest` still initializes MPI on import and
 # finalizes it at exit -- verified locally, importing manybody_basis alone leaves
