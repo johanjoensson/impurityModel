@@ -330,12 +330,16 @@ jobs:
           # range. Lowering it to 28 is the standard fix and affects only where mappings land,
           # not what this job is looking for. Print both values so a recurrence is diagnosable
           # from the log rather than by guessing whether the setting took.
-          echo "vm.mmap_rnd_bits before: $(sysctl -n vm.mmap_rnd_bits || echo '<unreadable>')"
+          # Read with sudo: this key is not world-readable on the runner, and an unprivileged
+          # `sysctl -n` returns "permission denied", which reads exactly like the write having
+          # failed when it did not.
+          echo "vm.mmap_rnd_bits before: $(sudo sysctl -n vm.mmap_rnd_bits || echo '<unreadable>')"
           sudo sysctl -w vm.mmap_rnd_bits=28 || echo "::warning::could not lower vm.mmap_rnd_bits"
-          echo "vm.mmap_rnd_bits after:  $(sysctl -n vm.mmap_rnd_bits || echo '<unreadable>')"
-          # If it still aborts at ASan init after this, the next lever is
-          # ASAN_OPTIONS=protect_shadow_gap=0. Not stacked pre-emptively: it weakens a real check,
-          # and one change at a time is what makes the next log readable.
+          echo "vm.mmap_rnd_bits after:  $(sudo sysctl -n vm.mmap_rnd_bits || echo '<unreadable>')"
+          # Measured: this alone does NOT fix it. The write succeeds and the abort still happens
+          # on the mpi4py import, so the entropy setting was not the discriminator. Kept because
+          # it removes one variable cheaply; the step that actually resolves the layout is
+          # "Pick an ASan memory layout that works" below.
 
       - name: Install Boost (headers)
         uses: MarkusJx/install-boost@v2.4.5
@@ -444,10 +448,69 @@ jobs:
           # mpi4py-specific. TSQR is one of the smaller extensions with few dependents.
           setarch "$(uname -m)" -R python -c "import impurityModel.ed.TSQR; print('TSQR import ok')"
 
-      - name: ASan smoke test (import mpi4py and the main extension)
+      - name: Pick an ASan memory layout that works
         run: |
-          setarch "$(uname -m)" -R python -c "from mpi4py import MPI; print('mpi4py import ok')"
-          setarch "$(uname -m)" -R python -c "import impurityModel.ed.ManyBodyUtils; print('ManyBodyUtils import ok')"
+          # Importing mpi4py under ASan aborts at *init* -- before the import runs -- with
+          # "Shadow memory range interleaves with an existing memory mapping" -- while the bare
+          # interpreter and a plain Cython extension start fine under the identical invocation.
+          # Two runs died here, and the two obvious levers were tried one at a time and did not
+          # fix it: `setarch -R` is applied throughout, and vm.mmap_rnd_bits=28 above is now
+          # confirmed to be set. So stop guessing one lever per CI round-trip -- each costs an
+          # hour -- and measure all four combinations here, in seconds, then pin whichever works.
+          #
+          # The two axes, and why neither direction is obviously right:
+          #   * setarch -R disables ASLR. It is the documented workaround for #856, but the same
+          #     issue is about ELF_ET_DYN_BASE, and on kernels >=4.12 *disabling* randomization
+          #     can itself place the binary where it collides. It is a plausible cause as well as
+          #     a plausible cure, so it has to be tested both ways.
+          #   * protect_shadow_gap=0 stops ASan reserving the gap between low and high shadow.
+          #     That gap is what the error says is interleaving. It costs a real check (the gap
+          #     traps wild pointers), which is why it is not the default here.
+          BEST_SETARCH=""; BEST_OPTS=""; FOUND=0
+          for use_setarch in yes no; do
+            for gap in keep drop; do
+              OPTS="$ASAN_OPTIONS"
+              [ "$gap" = drop ] && OPTS="$OPTS:protect_shadow_gap=0"
+              PREFIX=""
+              [ "$use_setarch" = yes ] && PREFIX="setarch $(uname -m) -R"
+              echo "--- setarch=$use_setarch shadow_gap=$gap ---"
+              # Match a marker the failure output cannot contain by accident: ASan's abort
+              # message and any stack trace under it are free text, and a bare "ok" appears
+              # inside plenty of ordinary words.
+              if ASAN_OPTIONS="$OPTS" $PREFIX python \
+                   -c "from mpi4py import MPI; print('MPI4PY_IMPORT_OK')" 2>&1 \
+                   | sed 's/^/  /' | grep -q "MPI4PY_IMPORT_OK"; then
+                echo "  WORKS"
+                if [ "$FOUND" -eq 0 ]; then
+                  FOUND=1; BEST_SETARCH="$PREFIX"; BEST_OPTS="$OPTS"
+                fi
+              else
+                echo "  fails"
+              fi
+            done
+          done
+          if [ "$FOUND" -eq 0 ]; then
+            echo "::error::no ASan memory layout allows mpi4py to import"
+            # If all four fail, the remaining variable is the build rather than the layout:
+            # mpi4py is installed --no-binary here so its own extension is instrumented too, which
+            # means two ASan-linked modules plus the LD_PRELOAD in one process. The crash being
+            # hunted is in impurityModel's extensions, not mpi4py's, so dropping to a plain
+            # mpi4py wheel would keep the diagnostic intact while taking mpi4py out of the ASan
+            # picture entirely. That is a build change, not a runtime one, so it belongs in its
+            # own round -- do it next rather than adding a fifth combination here.
+            echo "::error::next lever: install mpi4py as a plain wheel (drop --no-binary), since"
+            echo "::error::the target extensions are impurityModel's, not mpi4py's"
+            exit 1
+          fi
+          echo "chosen: setarch='$BEST_SETARCH' ASAN_OPTIONS='$BEST_OPTS'"
+          # Every later step uses these rather than hardcoding setarch, so the layout that was
+          # actually shown to work is the one the probes run under.
+          echo "ASAN_SETARCH=$BEST_SETARCH" >> "$GITHUB_ENV"
+          echo "ASAN_OPTIONS=$BEST_OPTS" >> "$GITHUB_ENV"
+
+      - name: ASan smoke test (import the main extension)
+        run: |
+          $ASAN_SETARCH python -c "import impurityModel.ed.ManyBodyUtils; print('ManyBodyUtils import ok')"
 
       - name: ASan smoke test (pytest collection only)
         id: smoke_collect
@@ -455,7 +518,7 @@ jobs:
           # Collection imports every test module (and transitively every extension) but
           # runs nothing -- narrows a silent crash to "importing something" vs "running
           # something" before paying for the full, much slower, ASan test run.
-          setarch "$(uname -m)" -R pytest --collect-only -q
+          $ASAN_SETARCH pytest --collect-only -q
 
       - name: ASan on the two crash sites, looped
         run: |
@@ -503,7 +566,7 @@ jobs:
             for i in $(seq 1 "$2"); do
               echo "--- $3, -n $1, iter $i/$2 ---"
               rc=0
-              mpiexec -n "$1" setarch "$(uname -m)" -R python -m pytest --cache-clear \
+              mpiexec -n "$1" $ASAN_SETARCH python -m pytest --cache-clear \
                 --with-mpi "src/impurityModel/test/$3" > /tmp/asan_run.log 2>&1 || rc=$?
               cat /tmp/asan_run.log
               if [ "$rc" -ne 0 ]; then
@@ -543,7 +606,7 @@ jobs:
           # 72 modules import mpi4py at module scope, so MPI_Init still runs on import and
           # MPI_Finalize at exit, which is precisely the window of interest.
           rc=0
-          setarch "$(uname -m)" -R pytest --cache-clear > /tmp/asan_serial.log 2>&1 || rc=$?
+          $ASAN_SETARCH pytest --cache-clear > /tmp/asan_serial.log 2>&1 || rc=$?
           cat /tmp/asan_serial.log
           if [ "$rc" -ne 0 ]; then
             {
