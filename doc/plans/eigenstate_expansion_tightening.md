@@ -176,8 +176,22 @@ Neither rank count nor build discriminates.
 
 A targeted local loop -- 120 runs of `test_f_shell_crystal_field.py` alone, alternating `-n 2` and
 `-n 3` -- came back all rc=0, consistent with every other local attempt. Whatever discriminates is
-not on this machine, so the next probe belongs in CI: an ASan leg, now that there is a named file
-and a three-test window to point it at rather than a whole suite.
+not on this machine, so the probe had to go to CI.
+
+**That probe is now live.** The `test-asan` job in `.github/workflows/tests.yml` was commented out;
+it is re-enabled and pointed at the two named files instead of the whole suite, which is what makes
+looping affordable -- and looping is the point when the crash needs 1-3 of 8 legs to fire.
+Iterations are split by cost and crash share (10 per rank count on the f-shell file at ~10 s a run,
+2 on the excitation-budget file at ~45 s), plus one serial full-suite pass for the other hypothesis
+and the finalize-time pair. `workflow_dispatch` takes an iteration count, so another sample costs a
+button rather than a push, and the job is `continue-on-error` with any ASan report copied into
+`$GITHUB_STEP_SUMMARY` -- non-blocking, because the matrix legs already gate, but loud.
+
+Why it had never worked: `g++ -print-file-name=libasan.so` returns an ASCII **linker script**, not
+a preloadable object, so the old recipe's `LD_PRELOAD` silently did nothing and any clean result
+was meaningless. It now resolves the SONAME, verifies ELF magic, and checks a built extension
+carries `__asan_` symbols -- the self-test alone would not, since it compiles its own binary with
+`-fsanitize=address` and passes whether or not `CXXFLAGS` reached the build.
 
 The serial crash is the one that reframes the hunt, but read it precisely. It rules out **multi-rank
 MPI** -- no ranks, no message passing, no communicator lifetimes -- not MPI itself: 72 modules

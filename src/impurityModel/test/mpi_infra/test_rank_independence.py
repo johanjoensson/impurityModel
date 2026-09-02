@@ -137,10 +137,19 @@ from impurityModel.test.support._nio_workload import (
 # (never instrumented here -- the ASan work all ran under mpiexec), coverage instrumentation,
 # compiler (gcc-12/clang-15/icpx at -std=c++17/20/2b in CI, gcc 16.2.1 locally), and 4 vCPUs
 # against 8 cores. MPICH version (ubuntu-22.04 ships 4.0, the reproduction ran 4.2.2) drops near
-# the bottom now that a single-rank process has crashed the same way. And note the ASan CI leg in
-# tests.yml is commented out with a broken LD_PRELOAD:
-# `g++ -print-file-name=libasan.so` resolves to an ASCII *linker script*, not a preloadable
-# object, so it silently does nothing -- it must name the real libasan.so.<N>.
+# the bottom now that a single-rank process has crashed the same way.
+#
+# The probe for all of that is now live: the `test-asan` job in .github/workflows/tests.yml was
+# commented out and is re-enabled, pointed at the two named files rather than the whole suite --
+# which is what makes it affordable to loop, and looping is the point when the crash needs 1-3 of
+# 8 legs to fire. It also runs one serial full-suite pass, for the other hypothesis (heap
+# corrupted earlier, those tests merely touch it first) and for the finalize-time pair.
+# `workflow_dispatch` takes an iteration count, so another sample costs a button rather than a
+# push. Why it never worked before: `g++ -print-file-name=libasan.so` resolves to an ASCII
+# *linker script*, not a preloadable object, so LD_PRELOAD-ing it silently did nothing and every
+# run came back clean while uninstrumented. It now asks for the SONAME, verifies ELF magic, and
+# checks a built extension carries __asan_ symbols -- because a self-test that compiles its own
+# binary with -fsanitize=address proves ASan works, not that this build was instrumented.
 #
 # This file is nonetheless deselected from the three standing MPI legs in
 # .github/workflows/tests.yml and run in three steps of its own at the end of that job. Read that
