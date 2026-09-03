@@ -273,21 +273,31 @@ jobs:
             echo "::warning::printed by the failing step above)"
             exit 0
           fi
+          # gdb needs the *executable* as well as the core to resolve symbols. Passing only
+          # --core produced a backtrace of pure "?? ()" on the first run that captured one --
+          # a 179 MB, complete core, rendered useless by a one-argument mistake. It was
+          # "validated" locally beforehand and passed, because this machine has debuginfod and
+          # resolves everything from the build-id; the runner has neither that nor the
+          # executable, so the local check could not see the difference. Keep the executable
+          # argument even though a local test will pass without it.
+          PY="$(command -v python)"
+          echo "executable: $PY"
           for c in "${cores[@]}"; do
             echo "=============================================================="
             echo "core: $c  ($(du -h "$c" | cut -f1))"
-            # The executable is encoded in the filename by core_pattern (%e), but resolving it
-            # to a path is unreliable for a venv python, so let gdb take it from the core.
             gdb --batch \
                 -ex "set pagination off" \
+                -ex "set sysroot /" \
+                -ex "info sharedlibrary" \
                 -ex "thread apply all bt" \
-                --core "$c" 2>&1 | head -120
+                "$PY" "$c" 2>&1 | head -200
           done
           {
             echo "### Core dump backtrace"
             echo
             echo '```'
-            gdb --batch -ex "set pagination off" -ex "bt" --core "${cores[0]}" 2>&1 | head -40
+            gdb --batch -ex "set pagination off" -ex "set sysroot /" \
+                -ex "thread apply all bt" "$PY" "${cores[0]}" 2>&1 | head -60
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
