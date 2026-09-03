@@ -176,6 +176,17 @@ from impurityModel.test.support._nio_workload import (
 # neighbourhoods were the next candidate; measured, they say something worth keeping but they do
 # not explain the rank count either.
 #
+# **Fixed, measured, and it is not the crash.** The cache now keys on the topology instead of
+# "unchanged since last call" (1991c58): 51% -> 3% miss, 4 creates and 0 frees per build where
+# there were ~80 create/free cycles. The first CI run afterwards crashed **2 of 8 legs** --
+# gcc-12/c++2b at -n 1 in the finalize cluster, gcc-12/c++20/parallel at -n 3 in
+# test_excitation_budget.py -- against a baseline mean of 2.8 of 8. The threshold for claiming
+# movement was fixed before the result was visible (three consecutive clean runs, 24 legs,
+# p=3.6e-05, since one clean run is p=0.03 and a 0-of-8 run had already happened with no change
+# at all). One crashing run settles it: communicator churn was a real defect and is not the
+# mechanism. Do not re-open it on the strength of the 20x improvement -- that improvement is
+# real and irrelevant to this crash.
+#
 # Instrumenting _cached_dist_graph over a NiO 10-bath workload build: the neighbourhood
 # oscillates between self-only, all-ranks and **empty** from call to call, because it is derived
 # from whichever block is being redistributed and different blocks have different support. The
