@@ -644,8 +644,7 @@ jobs:
 
       - name: ASan on the two crash sites, looped
         run: |
-          # The targeted probe. Both named files, alternating -n 2 and -n 3 -- the two rank
-          # counts the mid-suite crashes actually used. Looped because the crash is
+          # The targeted probe: the named crash sites, alternating -n 2 and -n 3. Looped because the crash is
           # intermittent: it took 1-3 of 8 full-suite legs to fire, so a single pass here would
           # prove nothing either way, and one file is cheap enough that repetition is the whole
           # point of narrowing to it.
@@ -654,11 +653,18 @@ jobs:
           # would stop on the very run whose companion rank-count case is the interesting
           # comparison, and ASan has already written its report by then. The summary at the end
           # is what fails the step.
-          # Iteration counts are split by cost and by crash share, not spread evenly: the f-shell
-          # file holds 4 of the 7 recorded crashes and takes ~10 s a run, while
-          # test_excitation_budget.py holds 1 and takes ~45 s. Equal loops would spend most of
-          # the budget on the less likely site. Measured uninstrumented at -n 2/-n 3 locally:
-          # f-shell 8.7/12.4 s, excitation-budget 33.6/58.3 s; ASan costs roughly 3x on top.
+          # Iteration counts are split by cost and by crash share, not spread evenly. Measured
+          # uninstrumented at -n 2/-n 3 locally: f-shell 8.7/12.4 s, guard file ~25/35 s,
+          # excitation-budget 33.6/58.3 s; ASan costs roughly 3x on top.
+          #
+          # test_rank_independence.py is here as a probe target, which is not a contradiction of
+          # everything above saying the crash is not in these tests. It is the opposite: this
+          # file's own isolated CI step has now segfaulted four times, every time *after* the
+          # step printed [100%] with all five tests passed -- i.e. at finalize. Seven of the
+          # nineteen recorded crashes are finalize-time, the largest single cluster, and the
+          # other five of those happen at the end of the full 2300-test suite, which is an
+          # expensive thing to loop. This step reproduces the same window in five tests and about
+          # 35 s, so it is by far the cheapest handle on that cluster.
           fail=0
           # Lift any ASan report into the run summary. `continue-on-error` above means a hit shows
           # only as a neutral mark, so without this the interesting 40 lines stay buried in a log
@@ -703,10 +709,12 @@ jobs:
           }
           N="${{ github.event.inputs.asan_iterations || '10' }}"
           case "$N" in ''|*[!0-9]*) N=10 ;; esac   # ignore a non-numeric manual input
+          NG=$(( N / 2 )); [ "$NG" -lt 1 ] && NG=1
           NB=$(( N / 5 )); [ "$NB" -lt 1 ] && NB=1
-          echo "f-shell: $N iterations per rank count; excitation-budget: $NB"
+          echo "f-shell: $N per rank count; guard file: $NG; excitation-budget: $NB"
           for n in 2 3; do
             run_case "$n" "$N"  inputformat/test_f_shell_crystal_field.py
+            run_case "$n" "$NG" mpi_infra/test_rank_independence.py
             run_case "$n" "$NB" restrictions/test_excitation_budget.py
           done
           if [ "$fail" -ne 0 ]; then
