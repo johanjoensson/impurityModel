@@ -55,6 +55,16 @@ jobs:
       OPENBLAS_NUM_THREADS: "1"
       OMP_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
+      # Dump the Python stack on a fatal signal. pytest's own plugin already enables
+      # faulthandler, and measured locally it does fire for a segfault *during* a test (full
+      # traceback) but not for one at interpreter shutdown (nothing at all). Since none of the
+      # 27 recorded crashes carries a "Fatal Python error" line, either they are not in the
+      # Python main thread or something pre-empts the handler -- MPICH installs its own SIGSEGV
+      # handler for its "BAD TERMINATION" banner. Setting this enables the handler from
+      # interpreter start, before MPI_Init, which is the one ordering pytest's plugin cannot
+      # give us. If tracebacks still never appear, that is itself the answer, and the core dumps
+      # below do not depend on any handler.
+      PYTHONFAULTHANDLER: "1"
 
     steps:
       - name: Checkout code
@@ -72,7 +82,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y mpich libmpich-dev
+          sudo apt-get install -y mpich libmpich-dev gdb
           COMPILER="${{ matrix.compiler }}"
           if [[ "$COMPILER" == gcc-* ]]; then
             sudo apt-get install -y "g++-${COMPILER#gcc-}"
@@ -134,7 +144,12 @@ jobs:
 
           # setup.py adds -std=c++17 only if CXXFLAGS has no -std flag, and reads
           # BOOST_ROOT to locate the Boost headers.
-          export CXXFLAGS="${{ matrix.cxx_std }}"
+          # -g -fno-omit-frame-pointer so a core dump has names and line numbers for our own
+          # frames. Neither changes code generation -- -g only emits debug sections, and the
+          # frame pointer costs a register, not semantics -- so the crash this job exists to
+          # catch is not perturbed by making it legible. Without them a backtrace of the
+          # extensions is bare addresses, which is most of what we would want to read.
+          export CXXFLAGS="${{ matrix.cxx_std }} -g -fno-omit-frame-pointer"
           export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
 
           # Enable the threaded apply path the way setup.py expects: this adds
@@ -146,12 +161,32 @@ jobs:
 
           pip install --no-build-isolation -e .
 
+      - name: Enable core dumps
+        run: |
+          # The kernel writes a core regardless of what signal handlers the process installed,
+          # which is why this is worth more here than faulthandler: measured locally,
+          # faulthandler fires for a segfault during a test but not for one at interpreter
+          # shutdown, and none of the 27 recorded crashes has ever produced a traceback. A core
+          # gives the real backtrace of the real crash, in the process that actually died.
+          #
+          # core_pattern is global and needs root; the per-process size limit is inherited from
+          # the shell, so `ulimit -c unlimited` has to be set inside each step that runs tests
+          # (a step is a fresh shell, so setting it here would not carry).
+          sudo mkdir -p /cores
+          sudo chmod 1777 /cores
+          echo '/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern
+          # Some MPI launchers reset this; record what it actually is.
+          echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
+          ulimit -c unlimited && echo "core limit in this shell: $(ulimit -c)"
+
       - name: Run serial tests
         run: |
+          ulimit -c unlimited
           pytest --cache-clear $PYTEST_COV_ARGS
 
       - name: Run MPI tests (1 rank)
         run: |
+          ulimit -c unlimited
           # test_rank_independence.py is deselected here and run in its own steps at the
           # end of this job -- see "Run rank-invariance guards" below.
           mpiexec -n 1 python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py $PYTEST_COV_ARGS
@@ -162,6 +197,7 @@ jobs:
           # to combine into a shared .coverage (which crashes rank>0 with exit 3). The
           # rank env var is PMI_RANK under MPICH (the CI MPI) and OMPI_COMM_WORLD_RANK
           # under Open MPI; default 0 keeps this a no-op when coverage is off.
+          ulimit -c unlimited
           mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
 
       - name: Run MPI tests (3 ranks)
@@ -170,6 +206,7 @@ jobs:
           # in play for small fixtures -- i.e. only visible at 3+ ranks, never at 2. This
           # leg is what caught the locked-reort deadlock in _lanczos_step.pxi (empty-rank
           # collectives silently skipped on some ranks but not others).
+          ulimit -c unlimited
           mpiexec -n 3 bash -c 'COVERAGE_FILE=.coverage.mpi3_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
 
       - name: Combine coverage and write XML
@@ -207,15 +244,52 @@ jobs:
       # ranks racing a data file and exiting 3, which would read like the crash returning.
       - name: Run rank-invariance guards (1 rank)
         run: |
+          ulimit -c unlimited
           mpiexec -n 1 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
 
       - name: Run rank-invariance guards (2 ranks)
         run: |
+          ulimit -c unlimited
           mpiexec -n 2 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
 
       - name: Run rank-invariance guards (3 ranks)
         run: |
+          ulimit -c unlimited
           mpiexec -n 3 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
+
+      - name: Backtrace any core dump
+        # The payoff step. Runs whenever anything above failed, which for this job means an
+        # exit-139 leg. 27 crashes have been recorded by *where the dots stopped* and nothing
+        # else -- no Python traceback has ever appeared, and AddressSanitizer reports nothing --
+        # so this is the first thing that can say what the process was actually executing.
+        if: failure()
+        run: |
+          shopt -s nullglob
+          cores=(/cores/core.*)
+          echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
+          if [ ${#cores[@]} -eq 0 ]; then
+            echo "::warning::no core dump was written -- the crash produced none, or the limit"
+            echo "::warning::did not survive into the process that died (check the ulimit line"
+            echo "::warning::printed by the failing step above)"
+            exit 0
+          fi
+          for c in "${cores[@]}"; do
+            echo "=============================================================="
+            echo "core: $c  ($(du -h "$c" | cut -f1))"
+            # The executable is encoded in the filename by core_pattern (%e), but resolving it
+            # to a path is unreliable for a venv python, so let gdb take it from the core.
+            gdb --batch \
+                -ex "set pagination off" \
+                -ex "thread apply all bt" \
+                --core "$c" 2>&1 | head -120
+          done
+          {
+            echo "### Core dump backtrace"
+            echo
+            echo '```'
+            gdb --batch -ex "set pagination off" -ex "bt" --core "${cores[0]}" 2>&1 | head -40
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   test-asan:
     # Diagnostic leg for the intermittent SIGSEGV (MPICH "BAD TERMINATION", exit 139) that has
