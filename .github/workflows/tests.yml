@@ -286,7 +286,13 @@ jobs:
       # known false alarm for exactly this LD_PRELOAD-onto-an-unlinked-interpreter setup
       # (first attempt of this job failed silently in <2s at that check, before pytest
       # printed anything).
-      ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1:verify_asan_link_order=0"
+      # log_path: ASan writes each report to <log_path>.<pid> instead of stderr. The serial
+      # probe died with exit 1 after printing only pytest's header -- during startup/collection,
+      # before any test ran -- with no report in captured stdout or stderr. That is exactly the
+      # case where a file is more reliable than a stream: reports survive redirection, block
+      # buffering, and a process that dies without flushing. Every step that can fail cats
+      # /tmp/asan_report.* afterwards, so "no report" becomes a fact rather than an assumption.
+      ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1:verify_asan_link_order=0:log_path=/tmp/asan_report"
       # CPython's own small-object allocator (pymalloc) pools memory in arenas, which hides
       # individual allocations from ASan's redzone tracking. Disabling it routes every Python
       # allocation through the system malloc ASan already intercepts.
@@ -532,9 +538,10 @@ jobs:
             printf 'FAIL'
             # First matching diagnostic line, not the tail: ASan prints its verdict first and
             # then dumps the whole process memory map under it.
-            printf '%s\n' "$OUT" \
-              | grep -m2 -E "AddressSanitizer|Shadow memory|Sanitizer CHECK|Error|error" \
-              | sed 's/^/      /' > /tmp/probe_excerpt.txt || true
+            { printf '%s\n' "$OUT" | grep -m2 -E "AddressSanitizer|Shadow memory|Sanitizer CHECK|Error|error"
+              cat /tmp/asan_report.* 2>/dev/null | head -20
+            } | sed 's/^/      /' > /tmp/probe_excerpt.txt || true
+            rm -f /tmp/asan_report.* 2>/dev/null || true
             return 1
           }
           # `bare` first, deliberately: the search takes the first working cell, and on the run
@@ -638,7 +645,10 @@ jobs:
               echo "### ASan collection smoke test: exit $rc"
               echo
               echo '```'
-              if grep -qa "ERROR: AddressSanitizer" /tmp/asan_collect.log; then
+              if ls /tmp/asan_report.* >/dev/null 2>&1; then
+                echo "-- ASan report file(s) --"
+                head -40 /tmp/asan_report.*
+              elif grep -qa "ERROR: AddressSanitizer" /tmp/asan_collect.log; then
                 sed -n '/ERROR: AddressSanitizer/,$p' /tmp/asan_collect.log | head -40
               else
                 echo "no AddressSanitizer report; last 20 lines (may be empty):"
@@ -683,7 +693,10 @@ jobs:
               echo "### ASan hit: $1 (rc=$3)"
               echo
               echo '```'
-              if grep -qa "ERROR: AddressSanitizer" "$2"; then
+              if ls /tmp/asan_report.* >/dev/null 2>&1; then
+                echo "-- ASan report file(s) --"
+                head -40 /tmp/asan_report.*
+              elif grep -qa "ERROR: AddressSanitizer" "$2"; then
                 sed -n '/ERROR: AddressSanitizer/,$p' "$2" | head -40
               else
                 echo "no AddressSanitizer report -- died without one:"
@@ -758,14 +771,25 @@ jobs:
                       $ASAN_SETARCH "$@"; }
           fi
           echo "launch mode: $ASAN_LAUNCH"
+          rm -f /tmp/asan_report.* 2>/dev/null || true
           RUN python -m pytest --cache-clear > /tmp/asan_serial.log 2>&1 || rc=$?
+          echo "exit=$rc, $(wc -l < /tmp/asan_serial.log) lines of output"
           cat /tmp/asan_serial.log
+          if ls /tmp/asan_report.* >/dev/null 2>&1; then
+            echo "-- ASan report file(s) --"
+            cat /tmp/asan_report.*
+          else
+            echo "-- no ASan report file was written --"
+          fi
           if [ "$rc" -ne 0 ]; then
             {
               echo "### ASan hit: serial full suite (rc=$rc)"
               echo
               echo '```'
-              if grep -qa "ERROR: AddressSanitizer" /tmp/asan_serial.log; then
+              if ls /tmp/asan_report.* >/dev/null 2>&1; then
+                echo "-- ASan report file(s) --"
+                head -40 /tmp/asan_report.*
+              elif grep -qa "ERROR: AddressSanitizer" /tmp/asan_serial.log; then
                 sed -n '/ERROR: AddressSanitizer/,$p' /tmp/asan_serial.log | head -40
               else
                 echo "no AddressSanitizer report -- died without one:"
