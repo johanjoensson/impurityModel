@@ -172,9 +172,29 @@ from impurityModel.test.support._nio_workload import (
 #     empties a rank here, and CLAUDE.md's general statement about -n 3 does not apply to this
 #     workload.
 #
-# So -n 3 needs a different explanation. What else changes at three ranks: the dist-graph
-# neighbour sets stop being symmetric, and the pairing acquires an odd rank. That is the next
-# thing to look at, and it is not a buffer-length question.
+# So -n 3 needs a different explanation, and it is not a buffer-length question. The dist-graph
+# neighbourhoods were the next candidate; measured, they say something worth keeping but they do
+# not explain the rank count either.
+#
+# Instrumenting _cached_dist_graph over a NiO 10-bath workload build: the neighbourhood
+# oscillates between self-only, all-ranks and **empty** from call to call, because it is derived
+# from whichever block is being redistributed and different blocks have different support. The
+# cache keys on "(sources, destinations) unchanged", so it thrashes:
+#
+#     size=2   159 calls, 81 collective rebuilds  (51% miss)
+#     size=3   155 calls, 79 collective rebuilds  (51% miss)
+#
+# That is ~80 x (Comm_free + Create_dist_graph_adjacent) per workload build on every rank, plus
+# an Allreduce on all 155 calls to agree the rebuild. The cache's own comment justifies it by
+# rebuild cost at "100s-1000s of ranks"; at this scale it pays that cost on half the calls
+# anyway. Three to five of those calls per rank build an **empty** neighbourhood and then hand
+# Neighbor_alltoallv zero-length count and displacement arrays.
+#
+# Two honest limits on that. The miss rate is identical at -n 2 and -n 3, so communicator churn
+# does not by itself explain why only -n 3 crashes under ASan. And the churn is inside MPICH,
+# which is not instrumented -- consistent with segfaults that produce no ASan report, but
+# consistent is not the same as demonstrated. It is a real defect and a plausible mechanism, not
+# a diagnosis.
 #
 # Coverage note, since "no ASan report" is only as strong as what ASan instrumented:
 # MpiUtils.cpp is a source of the ManyBodyUtils extension in setup.py and ManyBodyBlockState.h
