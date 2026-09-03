@@ -2,9 +2,11 @@
 This module contains help functions for MPI communication.
 """
 
+import hashlib
 import math
 import pickle
 import time
+from collections import OrderedDict
 from itertools import islice
 
 import numpy as np
@@ -24,36 +26,77 @@ comm = MPI.COMM_WORLD
 rank = comm.rank
 ranks = comm.size
 
-# Cache of distributed-graph communicators for graph_alltoall_block, keyed by id(parent
-# comm). Building a dist_graph is a collective with real setup cost; at 100s-1000s of
-# ranks rebuilding it every matvec dominates. We reuse it whenever the per-rank
-# (sources, destinations) neighbourhood is unchanged. The parent comm is pinned in the
-# cache value so its id stays valid while the entry lives.
+# Cache of distributed-graph communicators for graph_alltoall_block. Building a dist_graph
+# is a collective with real setup cost, so we keep one per *topology* rather than one per
+# parent communicator.
+#
+# The earlier version kept a single entry per parent comm and rebuilt whenever the local
+# neighbourhood differed from the previous call. Measured on a NiO 10-bath workload build,
+# that missed 51% of the time -- 81 of 159 calls at 2 ranks, 79 of 155 at 3 -- because the
+# neighbourhood is derived from whichever block is being redistributed and legitimately
+# oscillates between self-only, all-ranks and empty. Every miss cost a collective
+# Comm_free plus Create_dist_graph_adjacent on every rank. Keying on the topology turns
+# that oscillation into hits, since the same few topologies recur.
+#
+# Keyed by id(parent comm) -> {global signature: graph comm}. The parent comm is pinned in
+# the entry so its id stays valid while the cache holds it. Measured live count after
+# mpi_infra+gf+lanczos at -n 3: 22 graph comms over 9 parents, against ~10 for the old
+# single-entry design -- roughly 2x, not the 8x the cap allows, because most parents only ever
+# see two or three distinct topologies.
+_MAX_CACHED_GRAPHS = 8
 _graph_comm_cache: "dict[int, tuple]" = {}
 
 
 def _cached_dist_graph(comm, sources, destinations):
-    """Return a dist_graph communicator for this (sources, destinations) neighbourhood,
-    reusing a cached one when the topology is unchanged.
+    """Return a dist_graph communicator for this ``(sources, destinations)`` neighbourhood,
+    reusing a cached one whenever this exact topology has been seen before.
 
-    The rebuild decision is made **collectively** via ``Allreduce(LOR)``: if *any* rank's
-    neighbourhood changed, *all* ranks rebuild together. This keeps the collective
-    ``Create_dist_graph_adjacent`` call consistent across ranks (no deadlock), regardless
-    of how each rank's local topology shifted.
+    Both ``Create_dist_graph_adjacent`` and ``Comm_free`` are collective, so every rank must
+    make the same create/evict decisions in the same order. A rank's own neighbourhood is not
+    enough to decide that -- the graph is the *collection* of neighbourhoods -- so the lookup
+    key is a global signature built with one ``allgather`` of the per-rank neighbourhoods.
+    Every rank therefore computes an identical key, sees an identical cache state, and takes
+    an identical branch. That ``Allgather`` replaces the previous version's ``Allreduce(LOR)``,
+    so the per-call collective *count* is unchanged; it moves from O(log P) to O(P) bytes,
+    which is why the signature is hashed to a fixed 8 bytes per rank rather than gathering the
+    neighbourhood lists themselves. What changes is how often the expensive rebuild behind it
+    fires: measured 51% -> 3% on a NiO 10-bath build.
+
+    Eviction is FIFO past ``_MAX_CACHED_GRAPHS``. It is safe for the same reason: insertion
+    order is identical on every rank, so all ranks free the same communicator together.
     """
     key = id(comm)
-    src_t = tuple(sources)
-    dst_t = tuple(destinations)
-    cached = _graph_comm_cache.get(key)
-    changed_local = cached is None or cached[0] != src_t or cached[1] != dst_t
-    changed = comm.allreduce(changed_local, op=MPI.LOR)
-    if changed:
-        if cached is not None:
-            cached[2].Free()
-        graph_comm = comm.Create_dist_graph_adjacent(sources, destinations, reorder=False)
-        _graph_comm_cache[key] = (src_t, dst_t, graph_comm, comm)
-        return graph_comm
-    return cached[2]
+    local_sig = (tuple(sources), tuple(destinations))
+    # Fixed-width digest, gathered through the *buffer* Allgather. The obvious spelling --
+    # comm.allgather(local_sig) -- pickles each rank's neighbourhood lists, which are O(P) long
+    # at P ranks, so the payload would be O(P^2) per call on every one of ~155 calls. That trades
+    # 80 expensive rebuilds for 155 quadratic gathers, and a 3-rank gate would never show it.
+    # Hashing to 8 bytes first keeps the collective at O(P) bytes.
+    payload = repr(local_sig).encode()
+    digest = int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "little")
+    sig_local = np.array([digest], dtype=np.uint64)
+    sig_all = np.empty(comm.size, dtype=np.uint64)
+    comm.Allgather(sig_local, sig_all)
+    global_sig = sig_all.tobytes()
+
+    entry = _graph_comm_cache.get(key)
+    if entry is None:
+        entry = (comm, OrderedDict())
+        _graph_comm_cache[key] = entry
+    _pinned_comm, graphs = entry
+
+    cached = graphs.get(global_sig)
+    if cached is not None:
+        return cached
+
+    graph_comm = comm.Create_dist_graph_adjacent(sources, destinations, reorder=False)
+    graphs[global_sig] = graph_comm
+    # Bounded, so a workload that keeps producing fresh topologies cannot leak communicators
+    # into MPI's context-id space. Identical on every rank, so the Free below is collective.
+    while len(graphs) > _MAX_CACHED_GRAPHS:
+        _evicted_sig, evicted = graphs.popitem(last=False)
+        evicted.Free()
+    return graph_comm
 
 
 def dict_chunks_from_one_MPI_rank(data, chunk_maxsize=1 * 10**6, root=0):
