@@ -474,14 +474,28 @@ jobs:
           int main(void) { char *p = malloc(1); char c = p[3]; return (int) c; }
           EOF
           g++-12 -x c -fsanitize=address -O1 -g /tmp/asan_selftest.c -o /tmp/asan_selftest
+          rm -f /tmp/asan_report.* 2>/dev/null || true
           if setarch "$(uname -m)" -R /tmp/asan_selftest 2>/tmp/asan_selftest.log; then
             echo "::error::ASan self-test did NOT trap a heap-buffer-overflow -- ASan is not active"
             cat /tmp/asan_selftest.log
             exit 1
           fi
-          grep -q "heap-buffer-overflow" /tmp/asan_selftest.log \
-            || { echo "::error::ASan self-test failed for the wrong reason"; cat /tmp/asan_selftest.log; exit 1; }
-          echo "ASan is active and trapping"
+          # Look in BOTH places. ASAN_OPTIONS sets log_path, so the report goes to
+          # /tmp/asan_report.<pid> and NOT to stderr -- checking only stderr made this step fail
+          # with "for the wrong reason" while ASan was working perfectly, which is what happened
+          # the first time log_path was introduced. The self-test is fail-closed by design, so a
+          # detector that cannot see a successful trap stops the whole job.
+          if grep -qa "heap-buffer-overflow" /tmp/asan_selftest.log 2>/dev/null \
+             || cat /tmp/asan_report.* 2>/dev/null | grep -qa "heap-buffer-overflow"; then
+            echo "ASan is active and trapping"
+          else
+            echo "::error::ASan self-test failed for the wrong reason -- it exited non-zero but"
+            echo "::error::no heap-buffer-overflow report was found on stderr or in log_path"
+            echo "-- stderr --"; cat /tmp/asan_selftest.log
+            echo "-- log_path files --"; cat /tmp/asan_report.* 2>/dev/null || echo "(none)"
+            exit 1
+          fi
+          rm -f /tmp/asan_report.* 2>/dev/null || true
 
       - name: ASan smoke test (import one Cython extension)
         run: |
