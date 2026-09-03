@@ -153,14 +153,34 @@ from impurityModel.test.support._nio_workload import (
 # intercepted mem/str functions -- which is most of what a memoryview audit would look for. And
 # it needs three ranks.
 #
-# That last part is the lead, because -n 3 is not just "more ranks" in this codebase: it is the
-# smallest size at which a rank can own **zero** determinants under routing_hash() % comm.size
-# (CLAUDE.md says so, and -n 2 never produces one). Empty ranks have bitten here before. The
-# original C2.4 plan had already flagged the mechanism without evidence for it: `&buf[0]` on a
+# The obvious reading of "-n 3 only" was empty ranks -- -n 3 being the smallest size at which a
+# rank can own zero determinants under routing_hash() % comm.size, a class of bug that has bitten
+# this codebase before, and the mechanism the C2.4 plan flagged a year ago: `&buf[0]` on a
 # **zero-length** memoryview is undefined behaviour under boundscheck=False, no negative index
-# required, and it listed the sites -- _mpi_pack.pxi:34,37,47,50, TSQR.pyx:304,336,381,
-# _block_state.pxi:281,649,717,846. "Can this buffer have length 0 on an empty rank or a fully
-# deflated block?" is now a question with a measurement behind it.
+# required. **Both halves of that were checked, and both came back negative.**
+#
+#   * The audit. All 17 raw-pointer sites in the hand-written Cython are already guarded --
+#     _mpi_pack.pxi:34,37,47,50 (`if comm_size > 0`, `if total_states > 0`,
+#     `if state_buf.shape[0] > 0`), _block_state.pxi:649,717,889,892,904,909 (`if n > 0`,
+#     `if width() > 0`, `if total > 0`, and buf_ptr left NULL when recv_buf is empty), and every
+#     TSQR.pyx site behind `if p == 0 or n == 0: return` or `if p == 0: return`. The one
+#     unchecked precondition -- guards testing `comm_size` while indexing a caller-supplied
+#     recv_counts -- holds at both call sites, which build it as np.empty(comm.size).
+#   * The premise. The guard file's own workload does not produce an empty rank at -n 3:
+#     measured local determinant counts are [299, 393, 393] at 3 ranks, [537, 548] at 2 and
+#     [260, 300, 277, 248] at 4. So the rank count that crashes is not the rank count that
+#     empties a rank here, and CLAUDE.md's general statement about -n 3 does not apply to this
+#     workload.
+#
+# So -n 3 needs a different explanation. What else changes at three ranks: the dist-graph
+# neighbour sets stop being symmetric, and the pairing acquires an odd rank. That is the next
+# thing to look at, and it is not a buffer-length question.
+#
+# Coverage note, since "no ASan report" is only as strong as what ASan instrumented:
+# MpiUtils.cpp is a source of the ManyBodyUtils extension in setup.py and ManyBodyBlockState.h
+# is header-only, so the hand-written C++ compiles into the same .so under the same flags -- and
+# the build step now asserts that .so carries both __asan_ symbols *and* the MpiUtils symbols,
+# so this is checked rather than inferred.
 #
 # Two honest caveats. The probe loops only -n 2 and -n 3, so it says nothing about -n 1; and the
 # standing legs do crash at serial and -n 1, so either there is more than one mechanism or the

@@ -463,7 +463,18 @@ jobs:
             echo "::error::every run below would be uninstrumented and a clean result meaningless"
             exit 1
           fi
-          echo "extension is ASan-instrumented: $SO"
+          # And that the hand-written C++ layer is inside this same object rather than somewhere
+          # ASan never saw. MpiUtils.cpp is listed as a source of the ManyBodyUtils extension in
+          # setup.py and ManyBodyBlockState.h is header-only, so both compile into this .so under
+          # the same flags -- but "no ASan report" is a claim about coverage, and coverage should
+          # be checked, not inferred from a build file. These are the sites the crash hypothesis
+          # keeps pointing at, so if they ever move to their own library this must fail.
+          if [ "$(nm -C "$SO" | grep -c 'unpack_block_fused\|pack_block_fill')" -eq 0 ]; then
+            echo "::error::$SO does not contain the MpiUtils C++ symbols -- the hand-written C++"
+            echo "::error::layer is compiled elsewhere and is NOT covered by this instrumentation"
+            exit 1
+          fi
+          echo "extension is ASan-instrumented, and carries the C++ layer: $SO"
 
       - name: ASan smoke test
         run: |
