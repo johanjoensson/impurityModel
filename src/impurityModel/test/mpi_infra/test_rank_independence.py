@@ -62,21 +62,24 @@ from impurityModel.test.support._nio_workload import (
 # against 1-2/8 normally) -- the signature of heap corruption that surfaces wherever the
 # corrupted memory next gets touched, not of a logic bug at a fixed place.
 #
-# What CI has shown since, which corrects the paragraph above. Twelve crashes are on record, over
-# six crashing runs (a seventh full run came back 0 of 8 -- the rate is 0-3 legs per run).
-# **Every one of the twelve happened on a step where these tests were skipped, deselected, or had
-# already finished**, so the crash is not in them and skipping them was never going to stop it.
+# What CI has shown since, which corrects the paragraph above. Fourteen crashes are on record,
+# over seven crashing runs (an eighth came back 0 of 8 -- the rate is 0-3 legs per run).
+# **Every one of the fourteen happened on a step where these tests were skipped, deselected, or
+# had already finished**, so the crash is not in them and skipping them was never going to stop
+# it.
 # (The deselect is confirmed by the steps' own counts: 23 deselected against serial's 18, i.e.
 # these five.)
 #
 # Where they land -- three sites, none of them random:
 #
 #   * inputformat/test_f_shell_crystal_field.py, 5 crashes, at 7-8 of its 10 dots.
-#   * restrictions/test_excitation_budget.py, 3 crashes, at 10-11 of its 19 dots.
-#   * End of run, 4 crashes: three just after symmetry/test_symmetry_observables.py (the last file
-#     the suite collects), one after this file's own isolated -n 3 step reached [100%]. None
-#     printed pytest's `N passed in Xs` summary, though earlier steps on the same leg did -- so
-#     these are finalize-time, after the last test and before teardown finished.
+#   * restrictions/test_excitation_budget.py, 4 crashes, at 10-11 of its 19 dots.
+#   * End of run, 5 crashes: three just after symmetry/test_symmetry_observables.py (the last file
+#     the suite collects), and twice after this file's own isolated step reached [100%] with all
+#     five tests passed -- at -n 3 and at -n 2. None printed pytest's `N passed in Xs` summary,
+#     though earlier steps on the same leg did, so these are finalize-time: after the last test
+#     and before teardown finished. Both times the isolation did its job, one step red with the
+#     rest of the leg already reported.
 #
 # Each mid-suite crash landed on its file's one heavyweight full-stack test, not anywhere within
 # it: test_f_shell_crystal_field.py's 9th of 10 (test_an_f_shell_crystal_field_model_solves) is
@@ -86,10 +89,10 @@ from impurityModel.test.support._nio_workload import (
 # a partial line is lost when the process dies, so the counts are lower bounds; the windows are
 # tests 8-10 and 11-13.
 #
-# Nothing in the configuration explains any of it. Across the twelve: gcc-12 eight times,
-# clang-15 twice, intel twice; -std=c++17 five and -std=c++20 seven; `parallel` on three,
-# `coverage` on three. And **every launch mode has now produced one** -- serial three times,
-# mpiexec -n 1 once, -n 2 twice, -n 3 six times -- which closes rank count as a variable the way
+# Nothing in the configuration explains any of it. Across the fourteen: gcc-12 nine times,
+# clang-15 three, intel twice; both -std=c++17 and -std=c++20 well represented; `parallel` on
+# three, `coverage` on three. And **every launch mode has produced one** -- serial three times,
+# mpiexec -n 1 twice, -n 2 three times, -n 3 six -- which closes rank count as a variable the way
 # the others were already closed. They share no ingredient the passing legs lack: what organizes
 # these crashes is *where in the run* they happen and *what the test does*, not how the extension
 # was compiled or how it was launched.
@@ -119,9 +122,11 @@ from impurityModel.test.support._nio_workload import (
 #     happens, so a run that corrupts the heap but would have survived is still caught.
 #     (The one failure in that run was test_suggest_threshold_fits_budget, the known
 #     free-RAM-derived flake, over budget by 0.015% -- not a memory-safety finding.)
-#   * The narrowed target, once CI named it: 120 runs of test_f_shell_crystal_field.py alone,
-#     alternating -n 2 and -n 3 under Open MPI. All rc=0. Consistent with every other local
-#     attempt -- whatever discriminates is not on this machine, so the next probe belongs in CI.
+#   * The narrowed targets, once CI named them: 120 runs of test_f_shell_crystal_field.py alone,
+#     alternating -n 2 and -n 3, and then 40 runs of the whole suite *serially* -- the
+#     configuration behind three of the crashes, and the one shape the earlier 550-run hunt never
+#     tried, since it looped whole-file MPI runs. All rc=0. Consistent with every other local
+#     attempt -- whatever discriminates is not on this machine, so the probe belongs in CI.
 #   * The _graph_comm_cache-leak theory (mpi_comm.py keys it on id(comm) and never evicts, and
 #     the GF layer clones a communicator per unit): measured at 10 live entries after an entire
 #     -n 3 suite run, across 18387 lookups. Nowhere near MPICH's context-id space. Refuted.

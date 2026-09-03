@@ -157,26 +157,28 @@ Nothing in the build explains it: gcc-12 three times and intel once, `-std=c++17
 `-std=c++20` twice, `parallel` on one leg and `coverage` on one. What organizes these crashes is
 *where in the run* they happen, not how the extension was compiled.
 
-**And it kept happening, with the guard rail deselected.** **Twelve crashes are on record over six
-crashing runs** (a seventh came back 0 of 8; the rate is 0-3 legs per run), **and every one
+**And it kept happening, with the guard rail deselected.** **Fourteen crashes are on record over seven
+crashing runs** (an eighth came back 0 of 8; the rate is 0-3 legs per run), **and every one
 happened on a step where these tests were skipped, deselected, or had already finished.** They
 land on three sites: `inputformat/test_f_shell_crystal_field.py` (5, at 7-8 of its 10 dots),
-`restrictions/test_excitation_budget.py` (3, at 10-11 of 19), and end-of-run (4 -- three after the
-last file the suite collects, one after this file's own isolated `-n 3` step reached `[100%]`;
-none printed pytest's `N passed` summary, so they are finalize-time).
+`restrictions/test_excitation_budget.py` (4, at 10-11 of 19), and end-of-run (5 -- three after the
+last file the suite collects, twice after this file's own isolated step reached `[100%]` with all
+five tests passed; none printed pytest's `N passed` summary, so they are finalize-time).
 
 Each mid-suite crash landed on its file's one heavyweight full-stack test:
 `test_an_f_shell_crystal_field_model_solves` (the only test in its file that runs a solver -- the
 other nine are input-format validation) and `test_calc_selfenergy_excitation_budget_oracle` (runs
-`calc_selfenergy` twice through the full driver and GF stack). **Three of the twelve ran under a
+`calc_selfenergy` twice through the full driver and GF stack). **Three of the fourteen ran under a
 bare `pytest`** -- two finalize-time, one mid-suite -- so both clusters are reachable with no ranks
-at all. Nothing in the configuration explains any of it: gcc-12 eight times, clang-15 twice, intel
-twice; c++17 five and c++20 seven; `parallel` on three, `coverage` on three. And **every launch
-mode has now produced one** -- serial 3, `-n 1` 1, `-n 2` 2, `-n 3` 6 -- which closes rank count
-as a variable the way the others were already closed.
+at all. Nothing in the configuration explains any of it: gcc-12 nine, clang-15 three, intel two;
+both C++ standards well represented; `parallel` on three, `coverage` on three. And **every launch
+mode has produced one** -- serial 3, `-n 1` 2, `-n 2` 3, `-n 3` 6 -- which closes rank count as a
+variable the way the others were already closed.
 
-A targeted local loop -- 120 runs of `test_f_shell_crystal_field.py` alone, alternating `-n 2` and
-`-n 3` -- came back all rc=0, consistent with every other local attempt. Whatever discriminates is
+Targeted local loops -- 120 runs of `test_f_shell_crystal_field.py` alone alternating `-n 2`/`-n 3`,
+then 40 runs of the whole suite **serially**, the configuration behind three of the crashes and the
+one shape the 550-run hunt never tried -- came back all rc=0, consistent with every other local
+attempt. Whatever discriminates is
 not on this machine, so the probe had to go to CI.
 
 **That probe is now live.** The `test-asan` job in `.github/workflows/tests.yml` was commented out;
