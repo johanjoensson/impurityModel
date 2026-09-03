@@ -294,12 +294,18 @@ jobs:
           for c in "${cores[@]}"; do
             echo "=============================================================="
             echo "core: $c  ($(du -h "$c" | cut -f1))"
+            # Backtrace FIRST, and generously. `info sharedlibrary` was previously listed
+            # before it and prints ~150 lines on this image, so a head -200 swallowed the
+            # entire backtrace and left exactly one frame in the log. Order the commands by
+            # what is worth reading, and cap high enough that a deep stack survives.
             gdb --batch \
                 -ex "set pagination off" \
                 -ex "set sysroot /" \
-                -ex "info sharedlibrary" \
-                -ex "thread apply all bt" \
-                "$PY" "$c" 2>&1 | head -200
+                -ex "thread apply all bt full" \
+                "$PY" "$c" 2>&1 | head -400
+            echo "---- loaded objects (tail of the diagnostic, not the point) ----"
+            gdb --batch -ex "set pagination off" -ex "info sharedlibrary" "$PY" "$c" 2>&1 \
+              | grep -aE "impurityModel|libmpich|No symbol table" | head -20
           done
           {
             echo "### Core dump backtrace"
