@@ -91,9 +91,11 @@ from impurityModel.test.support._nio_workload import (
 # tests 8-10 and 11-13.
 #
 # Nothing in the configuration explains any of it. Across the twenty-five: every compiler, both
-# C++ standards, `parallel` and `coverage` legs and plain ones. And **every launch mode has produced one** -- serial three times,
-# mpiexec -n 1 twice, -n 2 three times, -n 3 six -- which closes rank count as a variable the way
-# the others were already closed. They share no ingredient the passing legs lack: what organizes
+# C++ standards, `parallel` and `coverage` legs and plain ones. And **every launch mode has
+# produced one** -- serial, mpiexec -n 1, -n 2 and -n 3 -- which closes rank count as a variable
+# for the *uninstrumented* legs the way the others were already closed. (Under ASan the picture
+# is different and sharper: there, only -n 3 fails. See the ASan section above.) They share no
+# ingredient the passing legs lack: what organizes
 # these crashes is *where in the run* they happen and *what the test does*, not how the extension
 # was compiled or how it was launched.
 #
