@@ -537,7 +537,14 @@ jobs:
               | sed 's/^/      /' > /tmp/probe_excerpt.txt || true
             return 1
           }
-          for launch in mpiexec1 bare; do
+          # `bare` first, deliberately: the search takes the first working cell, and on the run
+          # where mpi4py finally imported, every cell passed -- so mpiexec1 won purely by loop
+          # order and the "ASan on the whole suite, serial" step then ran under `mpiexec -n 1`,
+          # i.e. never serially at all. Three of the recorded crashes are a plain `pytest` with
+          # no ranks, so bare is the scenario worth reproducing; prefer it whenever it works.
+          # run_case below always uses mpiexec explicitly, so this ordering does not weaken the
+          # multi-rank probes.
+          for launch in bare mpiexec1; do
             for use_setarch in yes no; do
               for gap in keep drop; do
                 OPTS="$ASAN_OPTIONS"

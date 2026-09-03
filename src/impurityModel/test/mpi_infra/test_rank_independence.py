@@ -137,6 +137,17 @@ from impurityModel.test.support._nio_workload import (
 # against 8 cores. MPICH version (ubuntu-22.04 ships 4.0, the reproduction ran 4.2.2) drops near
 # the bottom now that a single-rank process has crashed the same way.
 #
+# First ASan result, run 33700200164: **24 instrumented runs of the two mid-suite sites came
+# back clean** -- 20 of test_f_shell_crystal_field.py and 4 of test_excitation_budget.py, across
+# -n 2 and -n 3, with no sanitizer report and no crash. Read that as evidence about *where the
+# corruption originates*, not as a clean bill of health: the same two files crash readily inside
+# a full suite run and did not crash on their own under instrumentation, which is what you would
+# expect if something earlier in the run corrupts the heap and these tests are merely the next to
+# touch it. It also fits the finalize cluster, and argues the whole-suite probes matter more than
+# the targeted ones. (The serial whole-suite probe on that run does not count either way: the
+# layout search returns the first workable cell and had picked `mpiexec -n 1`, so the step
+# intended to reproduce a plain serial `pytest` was not serial. Fixed by preferring `bare`.)
+#
 # The probe for all of that is now live: the `test-asan` job in .github/workflows/tests.yml was
 # commented out and is re-enabled, pointed at the two named files rather than the whole suite --
 # which is what makes it affordable to loop, and looping is the point when the crash needs 1-3 of
