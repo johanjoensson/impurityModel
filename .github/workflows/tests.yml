@@ -484,6 +484,7 @@ jobs:
           LD_PRELOAD="$ASAN_LIB" setarch "$(uname -m)" -R python -c "import impurityModel.ed.TSQR; print('TSQR import ok')"
 
       - name: Pick an ASan memory layout that works
+        id: asan_layout
         run: |
           # Importing mpi4py under ASan aborts at *init* -- before the import runs -- with
           # "Shadow memory range interleaves with an existing memory mapping" -- while the bare
@@ -594,6 +595,13 @@ jobs:
 
       - name: ASan smoke test (pytest collection only)
         id: smoke_collect
+        # Informational, not a gate. It exists to fail fast before the expensive probes, but on
+        # its first run it exited 1 with *no output whatsoever* -- not a segfault, and not
+        # anything the preceding step (same RUN helper, same launcher, a python -c that
+        # succeeded) predicts. Blocking the probes on a smoke test that fails in a way nobody
+        # understands gets the priority backwards: the probes are the point of this job, and they
+        # have never once run. Capture what it does and carry on.
+        continue-on-error: true
         run: |
           # Collection imports every test module (and transitively every extension) but
           # runs nothing -- narrows a silent crash to "importing something" vs "running
@@ -610,7 +618,29 @@ jobs:
                       $ASAN_SETARCH "$@"; }
           fi
           echo "launch mode: $ASAN_LAUNCH"
-          RUN pytest --collect-only -q
+          rc=0
+          # `python -m pytest`, matching the probes below. The first run of this step used the
+          # bare `pytest` console script and exited 1 with no output; the module form is what the
+          # rest of the job launches, so normalize on it rather than have the smoke test exercise
+          # a path nothing else uses.
+          RUN python -m pytest --collect-only -q > /tmp/asan_collect.log 2>&1 || rc=$?
+          echo "exit=$rc, $(wc -l < /tmp/asan_collect.log) lines of output"
+          cat /tmp/asan_collect.log
+          if [ "$rc" -ne 0 ]; then
+            {
+              echo "### ASan collection smoke test: exit $rc"
+              echo
+              echo '```'
+              if grep -qa "ERROR: AddressSanitizer" /tmp/asan_collect.log; then
+                sed -n '/ERROR: AddressSanitizer/,$p' /tmp/asan_collect.log | head -40
+              else
+                echo "no AddressSanitizer report; last 20 lines (may be empty):"
+                tail -20 /tmp/asan_collect.log
+              fi
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$rc"
 
       - name: ASan on the two crash sites, looped
         run: |
@@ -691,7 +721,7 @@ jobs:
         # does not answer the other. Gated on the smoke tests rather than always(), so a broken
         # build or an inactive ASan runtime skips this instead of spending 15 minutes producing
         # an error that says nothing about the crash.
-        if: always() && steps.smoke_collect.outcome == 'success'
+        if: always() && steps.asan_layout.outcome == 'success'
         run: |
           # The other hypothesis, and the one the earlier ASan work never tested: every previous
           # ASan run went through mpiexec, so a single-process exit path has never been
@@ -713,7 +743,7 @@ jobs:
                       $ASAN_SETARCH "$@"; }
           fi
           echo "launch mode: $ASAN_LAUNCH"
-          RUN pytest --cache-clear > /tmp/asan_serial.log 2>&1 || rc=$?
+          RUN python -m pytest --cache-clear > /tmp/asan_serial.log 2>&1 || rc=$?
           cat /tmp/asan_serial.log
           if [ "$rc" -ne 0 ]; then
             {
