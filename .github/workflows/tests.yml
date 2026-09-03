@@ -415,7 +415,27 @@ jobs:
             echo "::error::could not resolve a preloadable libasan (got '${ASAN_LIB:-<empty>}')"
             exit 1
           fi
-          echo "using libasan: $ASAN_LIB"
+          # libstdc++ must be preloaded alongside libasan. ASan resolves its __cxa_throw
+          # interceptor at init; if libstdc++ is not loaded yet the pointer stays null, and the
+          # first C++ exception thrown by any later-loaded extension aborts the process with
+          #   CHECK failed: asan_interceptors.cpp:320 "((real___cxa_throw)) != (0)"
+          # Measured on run 33737452212: matplotlib's ft2font throws during import and killed the
+          # run that way, which is also what made the serial probe die during collection with
+          # exit 1. That is an artifact of this instrumentation, not the crash being hunted, and
+          # it has to go before "ASan reported nothing" means anything.
+          #
+          # Preloading libstdc++ is the documented remedy, but note it is NOT verified locally:
+          # this machine's gcc 16 libasan resolves the interceptor either way, so the CHECK does
+          # not reproduce here and only CI can confirm the fix. If it comes back, the next lever
+          # is ASAN_OPTIONS=handle_cxx_exceptions=0.
+          ASAN_CXX="$(g++-12 -print-file-name=libstdc++.so.6)"
+          if [ ! -f "$ASAN_CXX" ] \
+             || [ "$(head -c 4 "$ASAN_CXX" | od -An -tx1 | tr -d ' ')" != "7f454c46" ]; then
+            echo "::error::could not resolve libstdc++.so.6 (got '${ASAN_CXX:-<empty>}')"
+            exit 1
+          fi
+          ASAN_LIB="$ASAN_LIB:$ASAN_CXX"
+          echo "using preload: $ASAN_LIB"
           # Export the PATH, not LD_PRELOAD itself. Putting LD_PRELOAD in $GITHUB_ENV preloads
           # libasan into every process the job starts afterwards -- mpiexec, hydra's process
           # manager, sudo, git, node -- not just the python under test. That is what broke the
