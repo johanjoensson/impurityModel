@@ -62,21 +62,22 @@ from impurityModel.test.support._nio_workload import (
 # against 1-2/8 normally) -- the signature of heap corruption that surfaces wherever the
 # corrupted memory next gets touched, not of a logic bug at a fixed place.
 #
-# What CI has shown since, which corrects the paragraph above. Fourteen crashes are on record,
-# over seven crashing runs (an eighth came back 0 of 8 -- the rate is 0-3 legs per run).
-# **Every one of the fourteen happened on a step where these tests were skipped, deselected, or
-# had already finished**, so the crash is not in them and skipping them was never going to stop
-# it.
+# What CI has shown since, which corrects the paragraph above. Twenty-five crashes are on record,
+# over ten crashing runs (one came back 0 of 8 -- the rate is 0-5 legs per run).
+# **Every one of the twenty-five happened on a step where these tests were skipped, deselected,
+# or had already finished**, so the crash is not in them and skipping them was never going to
+# stop it.
 # (The deselect is confirmed by the steps' own counts: 23 deselected against serial's 18, i.e.
 # these five.)
 #
 # Where they land -- three sites, none of them random:
 #
-#   * inputformat/test_f_shell_crystal_field.py, 5 crashes, at 7-8 of its 10 dots.
-#   * restrictions/test_excitation_budget.py, 4 crashes, at 10-11 of its 19 dots.
-#   * End of run, 5 crashes: three just after symmetry/test_symmetry_observables.py (the last file
-#     the suite collects), and twice after this file's own isolated step reached [100%] with all
-#     five tests passed -- at -n 3 and at -n 2. None printed pytest's `N passed in Xs` summary,
+#   * inputformat/test_f_shell_crystal_field.py, 8 crashes, at 5-8 of its 10 dots.
+#   * restrictions/test_excitation_budget.py, 5 crashes, at 8-11 of its 19 dots.
+#   * lanczos/test_no_ghost_bands.py, 1 crash, at 63% of the suite.
+#   * End of run, 11 crashes: three just after symmetry/test_symmetry_observables.py (the last
+#     file the suite collects), and eight after this file's own isolated step reached [100%] with
+#     all five tests passed, mostly at -n 3. None printed pytest's `N passed in Xs` summary,
 #     though earlier steps on the same leg did, so these are finalize-time: after the last test
 #     and before teardown finished. Both times the isolation did its job, one step red with the
 #     rest of the leg already reported.
@@ -89,9 +90,8 @@ from impurityModel.test.support._nio_workload import (
 # a partial line is lost when the process dies, so the counts are lower bounds; the windows are
 # tests 8-10 and 11-13.
 #
-# Nothing in the configuration explains any of it. Across the fourteen: gcc-12 nine times,
-# clang-15 three, intel twice; both -std=c++17 and -std=c++20 well represented; `parallel` on
-# three, `coverage` on three. And **every launch mode has produced one** -- serial three times,
+# Nothing in the configuration explains any of it. Across the twenty-five: every compiler, both
+# C++ standards, `parallel` and `coverage` legs and plain ones. And **every launch mode has produced one** -- serial three times,
 # mpiexec -n 1 twice, -n 2 three times, -n 3 six -- which closes rank count as a variable the way
 # the others were already closed. They share no ingredient the passing legs lack: what organizes
 # these crashes is *where in the run* they happen and *what the test does*, not how the extension
@@ -136,6 +136,33 @@ from impurityModel.test.support._nio_workload import (
 # compiler (gcc-12/clang-15/icpx at -std=c++17/20/2b in CI, gcc 16.2.1 locally), and 4 vCPUs
 # against 8 cores. MPICH version (ubuntu-22.04 ships 4.0, the reproduction ran 4.2.2) drops near
 # the bottom now that a single-rank process has crashed the same way.
+#
+# **The ASan result that matters, and it points somewhere specific.** Across two instrumented
+# runs (33737452212 and 33744309521, the second with the __cxa_throw artifact removed):
+#
+#   * 5 segfaults in 68 instrumented probe iterations, **every one of them at -n 3**. Zero at
+#     -n 2, which the same loop exercises equally often.
+#   * **Not one AddressSanitizer memory-error report.** No heap-buffer-overflow, no
+#     use-after-free, nothing -- and log_path means a report would have survived the process
+#     dying, so this is now a checked fact rather than an absence in a lost stream.
+#   * The whole suite under ASan **serially** passed clean: 1998 tests, 497 s, no report.
+#
+# So the fault is not a heap error in instrumented code, nor one committed through ASan's
+# intercepted mem/str functions -- which is most of what a memoryview audit would look for. And
+# it needs three ranks.
+#
+# That last part is the lead, because -n 3 is not just "more ranks" in this codebase: it is the
+# smallest size at which a rank can own **zero** determinants under routing_hash() % comm.size
+# (CLAUDE.md says so, and -n 2 never produces one). Empty ranks have bitten here before. The
+# original C2.4 plan had already flagged the mechanism without evidence for it: `&buf[0]` on a
+# **zero-length** memoryview is undefined behaviour under boundscheck=False, no negative index
+# required, and it listed the sites -- _mpi_pack.pxi:34,37,47,50, TSQR.pyx:304,336,381,
+# _block_state.pxi:281,649,717,846. "Can this buffer have length 0 on an empty rank or a fully
+# deflated block?" is now a question with a measurement behind it.
+#
+# Two honest caveats. The probe loops only -n 2 and -n 3, so it says nothing about -n 1; and the
+# standing legs do crash at serial and -n 1, so either there is more than one mechanism or the
+# -n 3 exclusivity under ASan is partly a timing effect of the ~3x slowdown.
 #
 # First ASan result, run 33700200164: **24 instrumented runs of the two mid-suite sites came
 # back clean** -- 20 of test_f_shell_crystal_field.py and 4 of test_excitation_budget.py, across
