@@ -55,16 +55,25 @@ jobs:
       OPENBLAS_NUM_THREADS: "1"
       OMP_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
-      # Dump the Python stack on a fatal signal. pytest's own plugin already enables
-      # faulthandler, and measured locally it does fire for a segfault *during* a test (full
-      # traceback) but not for one at interpreter shutdown (nothing at all). Since none of the
-      # 27 recorded crashes carries a "Fatal Python error" line, either they are not in the
-      # Python main thread or something pre-empts the handler -- MPICH installs its own SIGSEGV
-      # handler for its "BAD TERMINATION" banner. Setting this enables the handler from
-      # interpreter start, before MPI_Init, which is the one ordering pytest's plugin cannot
-      # give us. If tracebacks still never appear, that is itself the answer, and the core dumps
-      # below do not depend on any handler.
-      PYTHONFAULTHANDLER: "1"
+      # faulthandler is turned OFF, deliberately, and this is the most important line in the
+      # job. The first three symbolised cores (run 33808549353) all died on the traceback
+      # dumping path itself:
+      #
+      #   #0 dump_frame (frame=..., fd=38)                     Python/traceback.c:1264
+      #   #0 _PyCode_LineNumberFromArray (index=76643932, ...) pycore_code.h:556
+      #   #0 PyType_HasFeature (...)                           object.h:772
+      #
+      # dump_frame is faulthandler's frame dumper, and an index of 76643932 is garbage -- it is
+      # walking frames that are being mutated underneath it. faulthandler dumps *all threads* on
+      # a fatal signal without holding the GIL, so on a process with live threads it can fault
+      # inside the handler. The core then records the handler's crash and the original fault is
+      # lost, which is exactly why 30 crashes produced neither a usable backtrace nor the
+      # "Fatal Python error" banner the dump is supposed to print.
+      #
+      # So: no faulthandler, and the kernel writes the core at the *original* fault. Disabling
+      # pytest's plugin is what matters (it enables faulthandler itself); PYTHONFAULTHANDLER is
+      # simply not set. Turn this back on only to study the handler, never to diagnose the crash.
+      PYTEST_ADDOPTS: "-p no:faulthandler"
 
     steps:
       - name: Checkout code
