@@ -11,6 +11,17 @@ from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
 
 
+def _window_str(lo: int, hi: int) -> str:
+    """``"3"`` for a pinned occupation, ``"2-4"`` for a window."""
+    return f"{lo}" if lo == hi else f"{lo}-{hi}"
+
+
+def _bounds(patterns: list[tuple[int, int, int]], slot: int) -> tuple[int, int]:
+    """``(min, max)`` of one component of the enumerated (impurity, valence, conduction) patterns."""
+    values = [pattern[slot] for pattern in patterns]
+    return min(values), max(values)
+
+
 def generate_initial_basis(
     impurity_orbitals: dict[int, list[list[int]]],
     bath_states: tuple[dict[int, list[list[int]]], dict[int, list[list[int]]]],
@@ -136,6 +147,13 @@ def generate_initial_basis(
         default=0,
     )
     group_configurations = {}
+    # Per-group occupation windows actually enumerated, for the one-line report at the end:
+    # {group: [imp_lo, imp_hi, val_lo, val_hi, con_lo, con_hi, n_patterns]}. Reported as ranges
+    # rather than one block per (impurity, valence, conduction) pattern: this function is
+    # re-entered once per trial occupation of the ground-state search, so anything printed per
+    # pattern here is multiplied by the number of patterns *and* the number of trials -- which
+    # is how a four-line block per pattern became hundreds of lines of scrollback per solve.
+    occupation_patterns: dict[int, list[tuple[int, int, int]]] = {i: [] for i in valence_baths}
     for i in valence_baths:
         configs = []
         impurity_electron_indices = [orb for imp_orbs in impurity_orbitals[i] for orb in imp_orbs]
@@ -168,11 +186,7 @@ def generate_initial_basis(
                         impurity_occupation = nominal_occ + delta_impurity
                         valence_occupation = len(valence_electron_indices) - delta_valence
                         conduction_occupation = delta_conduction
-                        if verbose:
-                            print(f"Partition {i} occupations")
-                            print(f"Impurity occupation:   {impurity_occupation:d}")
-                            print(f"Valence occupation:   {valence_occupation:d}")
-                            print(f"Conduction occupation: {conduction_occupation:d}")
+                        occupation_patterns[i].append((impurity_occupation, valence_occupation, conduction_occupation))
                         for imp_c, val_c, con_c in itertools.product(
                             itertools.combinations(impurity_electron_indices, impurity_occupation),
                             itertools.combinations(valence_electron_indices, valence_occupation),
@@ -235,6 +249,22 @@ def generate_initial_basis(
             if next_occ + suffix_min[t + 1] > hi_tot or next_occ + suffix_max[t + 1] < lo_tot:
                 continue
             stack.append((t + 1, next_occ, occupied + orbs))
+
+    if verbose:
+        groups = "; ".join(
+            f"{i}: imp {_window_str(*_bounds(patterns, 0))}, val {_window_str(*_bounds(patterns, 1))},"
+            f" con {_window_str(*_bounds(patterns, 2))} ({len(patterns)} cfg)"
+            for i, patterns in sorted(occupation_patterns.items())
+            if patterns
+        )
+        # Indented one level: this is the detail *behind* a row of the occupation-search table
+        # in `groundstate.find_ground_state_basis`, which is re-entered once per trial sector.
+        print(
+            f"    seed basis: {len(basis)} determinants, {n_electrons} electrons, "
+            f"impurity occupation {_window_str(lo_tot, hi_tot)}"
+        )
+        if groups:
+            print(f"      per group -- {groups}")
 
     return [SlaterDeterminant.from_bytes(bytestring) for bytestring in basis], num_spin_orbitals
 
