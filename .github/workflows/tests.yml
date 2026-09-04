@@ -410,8 +410,16 @@ jobs:
       # -O1 (not -O0/-O2+): ASan's own docs recommend -O1 as the sweet spot -- enough
       # optimization that the build finishes and runs in reasonable time, not so much that
       # inlining/reordering degrades stack traces the way -O2/-O3 can.
-      CXXFLAGS: "-std=c++20 -fsanitize=address -fno-omit-frame-pointer -g -O1"
-      LDFLAGS: "-fsanitize=address"
+      # address,undefined compose in one build: same objects, one extra flag, and UBSan's
+      # runtime arrives as a DT_NEEDED of our own extensions rather than needing its own
+      # preload. UBSan covers a class ASan structurally cannot see -- ASan answers "is this
+      # access valid", UBSan answers "is this operation defined" -- and the surface here is
+      # real: signed-overflow in the kernels' index arithmetic, out-of-range shifts in
+      # SlaterDeterminant.h and ManyBodyOperator.h (the MSB-first orbital<->bit conversion),
+      # and integer-divide-by-zero, which is unguarded because cdivision=True in every module
+      # removes Cython's check.
+      CXXFLAGS: "-std=c++20 -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1"
+      LDFLAGS: "-fsanitize=address,undefined"
       # detect_leaks=0: Python/mpi4py hold plenty of memory alive by design until interpreter
       # shutdown (reference cycles, cached small objects); leak reports on that would bury the
       # actual signal (heap-buffer-overflow / use-after-free) this leg exists to catch.
@@ -428,6 +436,13 @@ jobs:
       # buffering, and a process that dies without flushing. Every step that can fail cats
       # /tmp/asan_report.* afterwards, so "no report" becomes a fact rather than an assumption.
       ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1:verify_asan_link_order=0:log_path=/tmp/asan_report"
+      # print_stacktrace: a UBSan report without one names the source line but not how it was
+      # reached, which for a kernel called from three drivers is half the question.
+      # halt_on_error: UBSan recovers by default, so a run could otherwise report dozens of
+      # violations and still exit 0 -- the same fail-open shape as an unrun sanitizer.
+      # log_path for the same reason it is set for ASan: a report on stderr is lost when the
+      # process dies without flushing, and this whole hunt spent rounds on absent output.
+      UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1:log_path=/tmp/ubsan_report"
       # CPython's own small-object allocator (pymalloc) pools memory in arenas, which hides
       # individual allocations from ASan's redzone tracking. Disabling it routes every Python
       # allocation through the system malloc ASan already intercepts.
@@ -662,6 +677,45 @@ jobs:
             exit 1
           fi
           rm -f /tmp/asan_report.* 2>/dev/null || true
+
+      - name: UBSan smoke test (UBSan is actually active)
+        run: |
+          # Same fail-closed reasoning as the ASan self-test above, and the same trap: a
+          # sanitizer that is silently not running produces a clean report that means
+          # nothing. UBSan is easier to get wrong than ASan because it recovers by default
+          # and needs no preload, so "no output" is indistinguishable from "no violations".
+          #
+          # The UB has to be opaque to the optimizer or it is constant-folded at -O1 and
+          # nothing is left to trap at runtime -- the first draft of this used literal
+          # constants and detected nothing while looking correct. Reading the operand from
+          # argv defeats that.
+          cat > /tmp/ubsan_selftest.c <<'EOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          int main(int argc, char **argv) {
+              int n = atoi(argv[1]);
+              int x = 0x7fffffff + n;      /* signed overflow */
+              int s = 1 << (n + 39);       /* shift past the width of int */
+              printf("%d %d\n", x, s);
+              return 0;
+          }
+          EOF
+          rm -f /tmp/ubsan_report.* 2>/dev/null || true
+          g++-12 -x c -fsanitize=undefined -fno-omit-frame-pointer -g -O1 \
+            /tmp/ubsan_selftest.c -o /tmp/ubsan_selftest
+          UBSAN_OPTIONS="print_stacktrace=1:log_path=/tmp/ubsan_report" /tmp/ubsan_selftest 1 \
+            > /dev/null 2>/tmp/ubsan_selftest.log || true
+          if grep -qa "runtime error" /tmp/ubsan_selftest.log 2>/dev/null \
+             || cat /tmp/ubsan_report.* 2>/dev/null | grep -qa "runtime error"; then
+            echo "UBSan is active and trapping"
+          else
+            echo "::error::UBSan self-test trapped nothing -- UBSan is not active, and every"
+            echo "::error::clean result from this job would be meaningless"
+            echo "-- stderr --"; cat /tmp/ubsan_selftest.log
+            echo "-- log_path --"; cat /tmp/ubsan_report.* 2>/dev/null || echo "(none)"
+            exit 1
+          fi
+          rm -f /tmp/ubsan_report.* 2>/dev/null || true
 
       - name: ASan smoke test (import one Cython extension)
         run: |
@@ -979,6 +1033,170 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit "$rc"
           fi
+
+  test-tsan:
+    # ThreadSanitizer: the class ASan and UBSan structurally cannot see. ASan asks "is this
+    # access valid", UBSan "is this operation defined"; neither asks "did two threads touch
+    # this without synchronization". That gap is not academic here -- the intermittent CI
+    # exit-139 that took ~30 crashes to pin down was a data race (faulthandler's watchdog
+    # thread walking Python frames the main thread was mutating), and AddressSanitizer ran 68
+    # instrumented times without a word, because reading a live frame is a perfectly *valid*
+    # heap access.
+    #
+    # This job exists in the shape it does for a specific reason: it builds with
+    # IMPURITYMODEL_PARALLEL=1 and OMP_NUM_THREADS>1. The standing matrix caps OpenBLAS and
+    # OMP at one thread and leaves the threaded ManyBodyOperator::apply off, so our own code
+    # is effectively single-threaded there and TSan would instrument faithfully and find
+    # nothing. That also closes a real gap: IMPURITYMODEL_PARALLEL is a supported build mode
+    # with no other CI coverage at all.
+    #
+    # Measured locally before being added, because the received wisdom says this does not
+    # work: TSan *is* usable with LD_PRELOAD here (the import fails without it and succeeds
+    # with it), it produced *zero* false positives from the uninstrumented CPython across 524
+    # tests, and it cost 74 s for the lanczos+operators subset. It found no races.
+    #
+    # Serial only, deliberately. The threaded apply is documented for single-process,
+    # few-rank-many-core runs, so that is where the concurrency is; adding mpiexec would put
+    # an uninstrumented MPICH between TSan and the code under test for no extra coverage.
+    #
+    # Separate job because -fsanitize=thread and -fsanitize=address are mutually exclusive.
+    # continue-on-error for the same reason test-asan is: a diagnostic, not a gate.
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    timeout-minutes: 90
+    env:
+      OPENBLAS_NUM_THREADS: "1"
+      # >1 on purpose: apply_thread_cap() in ManyBodyOperator.cpp reads this, and at 1 the
+      # threaded path degenerates to the serial one and there is nothing to race.
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "1"
+      CXXFLAGS: "-std=c++20 -fsanitize=thread -fno-omit-frame-pointer -g -O1"
+      LDFLAGS: "-fsanitize=thread"
+      # halt_on_error=0: report every race in one run rather than stopping at the first --
+      # the point of a standing job is the full list. log_path for the reason it is set on
+      # the ASan job: a report on stderr is lost when a process dies without flushing.
+      TSAN_OPTIONS: "halt_on_error=0:log_path=/tmp/tsan_report"
+      PYTEST_ADDOPTS: "-p no:faulthandler"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mpich libmpich-dev g++-12
+
+      - name: Install Boost (headers)
+        uses: MarkusJx/install-boost@v2.4.5
+        id: install-boost
+        with:
+          boost_version: 1.83.0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy "setuptools>=77.0.3" setuptools-scm cython build
+          # mpi4py without the sanitizer flags, for the reason the ASan job documents: with
+          # them it ends up linked against a sanitizer runtime without being instrumented.
+          env -u CFLAGS -u CXXFLAGS -u LDFLAGS pip install --no-binary mpi4py mpi4py
+          pip install pytest pytest-mpi
+
+      - name: Build and install impurityModel (TSan, threaded apply)
+        run: |
+          export CXX="g++-12"
+          export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
+          # safe, not release: -march=native and reassociation are irrelevant to finding
+          # races and only add variables.
+          export IMPURITYMODEL_BUILD=safe
+          export IMPURITYMODEL_PARALLEL=1
+          pip install --no-build-isolation -e .
+
+          TSAN_LIB="$(g++-12 -print-file-name=libtsan.so.2)"
+          if [ ! -f "$TSAN_LIB" ]; then
+            SCRIPT="$(g++-12 -print-file-name=libtsan.so)"
+            TSAN_LIB="$(sed -n 's/.*INPUT *( *\([^ )]*\).*/\1/p' "$SCRIPT" 2>/dev/null || true)"
+          fi
+          if [ ! -f "$TSAN_LIB" ] \
+             || [ "$(head -c 4 "$TSAN_LIB" | od -An -tx1 | tr -d ' ')" != "7f454c46" ]; then
+            echo "::error::could not resolve a preloadable libtsan (got '${TSAN_LIB:-<empty>}')"
+            exit 1
+          fi
+          echo "TSAN_LIB=$TSAN_LIB" >> "$GITHUB_ENV"
+          echo "using libtsan: $TSAN_LIB"
+
+      - name: Verify the build is instrumented and threaded
+        run: |
+          # Fail closed. A TSan job that silently built uninstrumented reports "no races"
+          # and means nothing -- the same shape as an inactive ASan run, which this
+          # workflow has already been caught by once.
+          SO="$(find src/impurityModel -name 'ManyBodyUtils*.so' -print -quit)"
+          [ -n "$SO" ] || { echo "::error::no built extension found"; exit 1; }
+          n_tsan=$(nm -D "$SO" | grep -c '__tsan_' || true)
+          echo "$SO: ${n_tsan} __tsan_ symbols"
+          if [ "${n_tsan:-0}" -eq 0 ]; then
+            echo "::error::the extension carries no __tsan_ symbols -- CXXFLAGS did not reach"
+            echo "::error::the build, so every clean result below would be meaningless"
+            exit 1
+          fi
+
+      - name: TSan smoke test (TSan is actually trapping)
+        run: |
+          # A deliberate race that must be caught, for the same reason the ASan and UBSan
+          # self-tests exist: "no output" is otherwise indistinguishable between "no races"
+          # and "not running".
+          cat > /tmp/tsan_selftest.c <<'EOF'
+          #include <pthread.h>
+          #include <stdio.h>
+          static int shared = 0;
+          static void *bump(void *a) { for (int i = 0; i < 1000; i++) shared++; return 0; }
+          int main(void) {
+              pthread_t t1, t2;
+              pthread_create(&t1, 0, bump, 0); pthread_create(&t2, 0, bump, 0);
+              pthread_join(t1, 0); pthread_join(t2, 0);
+              printf("%d\n", shared);
+              return 0;
+          }
+          EOF
+          g++-12 -x c -fsanitize=thread -fno-omit-frame-pointer -g -O1 \
+            /tmp/tsan_selftest.c -o /tmp/tsan_selftest
+          TSAN_OPTIONS="halt_on_error=0" /tmp/tsan_selftest > /dev/null 2>/tmp/tsan_selftest.log || true
+          if grep -qa "WARNING: ThreadSanitizer" /tmp/tsan_selftest.log; then
+            echo "TSan is active and trapping"
+          else
+            echo "::error::TSan self-test found no race in a deliberate one -- TSan is not active"
+            cat /tmp/tsan_selftest.log
+            exit 1
+          fi
+
+      - name: Run the suite under TSan
+        run: |
+          rm -f /tmp/tsan_report.* 2>/dev/null || true
+          rc=0
+          LD_PRELOAD="$TSAN_LIB" python -m pytest -q --cache-clear > /tmp/tsan_suite.log 2>&1 || rc=$?
+          echo "exit=$rc, $(wc -l < /tmp/tsan_suite.log) lines"
+          tail -20 /tmp/tsan_suite.log
+          n=$(cat /tmp/tsan_report.* 2>/dev/null | grep -c "WARNING: ThreadSanitizer" || true)
+          echo "ThreadSanitizer warnings: ${n:-0}"
+          if [ "${n:-0}" -gt 0 ]; then
+            {
+              echo "### ThreadSanitizer: ${n} warning(s)"
+              echo
+              echo '```'
+              cat /tmp/tsan_report.* | head -120
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            cat /tmp/tsan_report.* | head -200
+            exit 1
+          fi
+          exit "$rc"
 
   docs:
     # Build the Sphinx documentation. autodoc imports the package (only
