@@ -5,6 +5,7 @@ basis, many-body spin/orbital/Casimir operators, and (thermally averaged)
 expectation-value reporting for degenerate manifolds.
 """
 
+from collections import Counter
 from functools import lru_cache
 from typing import Optional
 
@@ -28,47 +29,39 @@ def _letter(idx):
     return "".join(reversed(letters))
 
 
-def _block_shell_tag(orbs, impurity_orbitals):
-    """Classify a block's global orbitals by impurity_orbitals partition/shell membership.
+def block_group_labels(equivalent_blocks, block_structure, impurity_orbitals=None):
+    r"""Name each block equivalence class after the orbital group it belongs to.
 
-    Returns ``None`` when no ``impurity_orbitals`` was given (no shell information at
-    all -- distinct from ``"mixed"``, which means shell information *is* available but
-    ``orbs`` doesn't fall cleanly into one shell), ``"mixed"`` when ``orbs`` spans more
-    than one partition or its partition isn't a full spin-doubled shell, or ``"l=<l>"``.
-    """
-    if not impurity_orbitals:
-        return None
-    orb_to_partition = {
-        orb: partition for partition, blocks in impurity_orbitals.items() for blk in blocks for orb in blk
-    }
-    partitions = {orb_to_partition.get(orb) for orb in orbs}
-    if len(partitions) != 1 or None in partitions:
-        return "mixed"
-    partition = next(iter(partitions))
-    n = sum(len(blk) for blk in impurity_orbitals[partition])
-    l = (n // 2 - 1) // 2
-    if 2 * (2 * l + 1) != n:
-        return "mixed"
-    return f"l={l}"
+    The classes from :func:`block_structure.get_equivalent_blocks` need a reader-facing name:
+    their raw *block indices* are positions in ``block_structure.blocks``, so a column headed
+    ``N(4,6,9,11)`` neither identifies orbitals nor spans the impurity. The name used here is
+    the ``impurity_orbitals`` group key -- exactly what the occupation search, the
+    basis-generation windows and the frozen-shell notes call the same set of orbitals.
 
+    Naming is by containment, never by inference:
 
-def shell_qualified_block_labels(equivalent_blocks, block_structure, impurity_orbitals=None):
-    r"""Assign compact, shell-qualified labels to :func:`block_structure.get_equivalent_blocks`'
-    groups, instead of joining their raw *block indices* (meaningless to a reader -- those
-    are positions in ``block_structure.blocks``, not orbital indices, and e.g.
-    ``N(4,6,9,11)`` neither identifies orbitals nor spans the impurity).
+    * one class per group -> ``group 1``;
+    * a group the block structure splits further (e.g. one ``3d`` shell auto-split into
+      ``eg`` and ``t2g``) -> ``group 1.a``, ``group 1.b``;
+    * a class spanning several groups -> ``groups 1,2``;
+    * no ``impurity_orbitals``, or a class holding an orbital outside every group -> a plain
+      letter, since there is then no group to name it after.
 
-    Each equivalence-class group gets a label like ``l=2,a`` (its shell, plus a per-shell
-    letter distinguishing multiple equivalence classes within one shell, e.g. eg vs t2g),
-    ``mixed,a`` if the group's orbitals don't fall cleanly into one shell, or plain ``a``
-    when no ``impurity_orbitals`` was given (no shell information available at all).
+    Labels used to carry a guessed shell instead (``l=2,a``). The guess inverted
+    ``n = 2(2l+1)`` on the *orbital count* of the group, which is only meaningful when a group
+    is a whole spin-doubled shell. Groups derived by :func:`symmetries.group_orbitals_by_blocks`
+    -- the selfenergy and double-counting paths -- are single symmetry manifolds by
+    construction, so the inversion labelled a 6-orbital ``t2g`` manifold ``l=1`` (a p shell,
+    which has the same orbital count) and degraded ``eg``'s 4 orbitals to ``mixed``.
 
     Parameters
     ----------
     equivalent_blocks : list of list of int
         From :func:`block_structure.get_equivalent_blocks`.
     block_structure : BlockStructure
-        Its ``.blocks`` are global spin-orbital indices per block.
+        Its ``.blocks`` hold the orbital indices of each block, in the same convention as
+        ``impurity_orbitals`` (both are the impurity spin-orbital indices of the basis being
+        reported on).
     impurity_orbitals : dict, optional
         ``Basis.impurity_orbitals``.
 
@@ -76,19 +69,36 @@ def shell_qualified_block_labels(equivalent_blocks, block_structure, impurity_or
     -------
     (labels, legend) : (list of str, list of (str, list of int))
         ``labels[i]`` is the label for ``equivalent_blocks[i]``; ``legend`` pairs each
-        label with its sorted global orbital indices, for a legend line.
+        label with its sorted orbital indices, for a legend line.
     """
-    counters = {}
+    orb_to_group = {orb: group for group, blocks in (impurity_orbitals or {}).items() for blk in blocks for orb in blk}
+    class_orbs = [sorted(orb for b in blocks for orb in block_structure.blocks[b]) for blocks in equivalent_blocks]
+    # Which groups each class draws on; None as soon as one of its orbitals belongs to no
+    # group at all, which is the one case there is no group name to give.
+    signatures = []
+    for orbs in class_orbs:
+        groups = {orb_to_group.get(orb) for orb in orbs}
+        signatures.append(None if None in groups else tuple(sorted(groups)))
+    split_groups = Counter(sig for sig in signatures if sig is not None and len(sig) == 1)
+
+    counters: dict = {}
+
+    def _next(key):
+        idx = counters.get(key, 0)
+        counters[key] = idx + 1
+        return idx
+
     labels = []
     legend = []
-    for blocks in equivalent_blocks:
-        orbs = sorted(orb for b in blocks for orb in block_structure.blocks[b])
-        tag = _block_shell_tag(orbs, impurity_orbitals)
-        counter_key = tag if tag is not None else ""
-        idx = counters.get(counter_key, 0)
-        counters[counter_key] = idx + 1
-        letter = _letter(idx)
-        label = f"{tag},{letter}" if tag is not None else letter
+    for orbs, sig in zip(class_orbs, signatures):
+        if sig is None:
+            label = _letter(_next(None))
+        elif len(sig) > 1:
+            label = "groups " + ",".join(str(group) for group in sig)
+        elif split_groups[sig] > 1:
+            label = f"group {sig[0]}.{_letter(_next(sig))}"
+        else:
+            label = f"group {sig[0]}"
         labels.append(label)
         legend.append((label, orbs))
     return labels, legend
@@ -97,26 +107,16 @@ def shell_qualified_block_labels(equivalent_blocks, block_structure, impurity_or
 def print_impurity_orbital_groups(equivalent_blocks, block_structure, impurity_orbitals=None, file=None):
     """Print the legend mapping each ``N(...)`` column label to its global orbital indices.
 
-    A label whose orbitals are exactly one ``impurity_orbitals`` group also carries that
-    group's integer key, which is the name the occupation search and the basis-generation
-    windows use for it (:func:`solver_basis.prepare_solver_basis` prints the matching legend).
-    Production groupings are derived from this same block structure, so the two coincide; the
-    key is omitted rather than guessed when they do not.
+    The labels are the ``impurity_orbitals`` group keys (see :func:`block_group_labels`), the
+    same names the occupation search uses, so this line and
+    :func:`solver_basis.prepare_solver_basis`'s legend describe the same groups.
 
     A no-op when there is only one group (nothing to disambiguate).
     """
-    _, legend = shell_qualified_block_labels(equivalent_blocks, block_structure, impurity_orbitals)
+    _, legend = block_group_labels(equivalent_blocks, block_structure, impurity_orbitals)
     if len(legend) <= 1:
         return
-    # Matched on the orbital set, never on position: the two legends enumerate their groups
-    # independently, and a positional zip would silently mislabel them if the orders diverged.
-    group_of = {
-        frozenset(orb for blk in blocks for orb in blk): group for group, blocks in (impurity_orbitals or {}).items()
-    }
-    entries = []
-    for label, orbs in legend:
-        group = group_of.get(frozenset(orbs))
-        entries.append(f"{label}: {orbs}" if group is None else f"group {group} ({label}): {orbs}")
+    entries = [f"{label}: {orbs}" for label, orbs in legend]
     print(f"Impurity orbital groups:  {'  '.join(entries)}", file=file)
 
 
@@ -153,7 +153,7 @@ def print_expectation_values(
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
     print(f"E0 = {es[0]:9.6f}")
-    block_labels, _ = shell_qualified_block_labels(equivalent_blocks, block_structure, impurity_orbitals)
+    block_labels, _ = block_group_labels(equivalent_blocks, block_structure, impurity_orbitals)
     block_N_string = [f"N({label})" for label in block_labels]
     # Each block-occupation column is right-aligned to a width that fits both its header
     # and the 7-8 char ``.5f`` value below it, so header and numbers line up.
@@ -1909,7 +1909,7 @@ def print_thermal_expectation_values(
     """
     orb_offset = min(orb for block in block_structure.blocks for orb in block)
     equivalent_blocks = get_equivalent_blocks(block_structure)
-    block_labels, _ = shell_qualified_block_labels(equivalent_blocks, block_structure, impurity_orbitals)
+    block_labels, _ = block_group_labels(equivalent_blocks, block_structure, impurity_orbitals)
     shell_observables = compute_shell_observables(rho_thermal, rot_to_spherical, impurity_orbitals)
     totals = shell_observables["total"]
     N, Ndn, Nup = totals["n"], totals["n_dn"], totals["n_up"]

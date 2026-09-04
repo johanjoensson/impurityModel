@@ -20,6 +20,7 @@ from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import log_memory_budget, suggest_truncation_threshold
 from impurityModel.ed.observables import (
+    block_group_labels,
     casimir_operator,
     casimir_to_quantum_number,
     compute_correlation_diagnostics,
@@ -39,7 +40,6 @@ from impurityModel.ed.observables import (
     print_screening_diagnostics,
     print_state_summary,
     print_thermal_expectation_values,
-    shell_qualified_block_labels,
     spin_correlation_operator,
     static_susceptibility_rows,
     thermal_observable_value,
@@ -1555,14 +1555,14 @@ def calc_gs(
                 psis_blk, es, tau, thermal_rho, imp_pairs, comm=mov_comm, redistribute=mov_redistribute
             )
             # Impurity channels grouped like the N(...) columns (equivalent-block groups),
-            # using the same shell-qualified labels (e.g. "l=2,a") as the printed report,
-            # not the raw block indices (which are positions in block_structure.blocks,
-            # not orbital indices, and don't identify which shell a group belongs to).
+            # using the same orbital-group labels (e.g. "group 1") as the printed report, not
+            # the raw block indices (which are positions in block_structure.blocks, not
+            # orbital indices, and name nothing the rest of the run refers to).
             # Block orbitals are positions into the sorted impurity list (offset like
             # print_expectation_values); map them back to global spin-orbital indices.
             orb_offset = min(orb for block in block_structure.blocks for orb in block)
             equivalent_blocks = get_equivalent_blocks(block_structure)
-            block_labels, _ = shell_qualified_block_labels(
+            block_labels, _ = block_group_labels(
                 equivalent_blocks, block_structure, ground_state_basis.impurity_orbitals
             )
             imp_groups = {}

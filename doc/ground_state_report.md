@@ -79,8 +79,18 @@ belong to it; `nominal` is the seed impurity occupation the basis is generated a
 `window` the mixed-valence half-width it may fluctuate by. In this example
 (`examples/NiO_selfenergy.toml`, ten bath orbitals) group 1 is the $e_g$ manifold and
 group 0 the $t_{2g}$ one — that mapping is exactly what the legend is for, since the
-integer keys carry no meaning on their own. The same grouping is named again, with its
-symmetry labels, in the `Impurity orbital groups` line of the report further down.
+integer keys carry no meaning on their own. The same keys name the `N(...)` columns and
+the `Impurity orbital groups` line of the report further down, so one legend covers the
+whole run.
+
+Group keys are whatever the caller's `impurity_orbitals` dict is keyed by, and the two
+front-ends key it differently: `selfenergy` / the double-counting search group the
+impurity into symmetry manifolds and key them `0, 1, 2, ...`
+(`symmetries.group_orbitals_by_blocks`), while `get_spectra` keys whole shells by their
+angular momentum `l` (`model.py`). A label is always the key, never an inference from it.
+When the block structure splits one group further — a whole $3d$ shell auto-split into
+$e_g$ and $t_{2g}$ — the classes are told apart with a letter, `group 2.a` / `group 2.b`;
+a class spanning several groups is named `groups 1,2`.
 
 ### The occupation search
 
@@ -198,8 +208,8 @@ Charge & occupations:
   <N>              =    8.2736778
   <N(Dn)>          =    4.1368389
   <N(Up)>          =    4.1368389
-  <N(0,1,5,6)>     =    2.2736778
-  <N(2,3,4,7,8,9)> =    6.0000000
+  <N(group 0)>     =    2.2736778
+  <N(group 1)>     =    6.0000000
 
 Magnetism & multiplets:
   <Lz>             =   -0.0000000
@@ -377,10 +387,10 @@ per state in the next table. In output produced before mid-2026 this row was lab
 
 ```text
 E0 = -53.888031
-  i         E-E0         N     N(Dn)     N(Up)  N(0,1,5,6)  N(2,3,4,7,8,9)         Lz         Sz        L.S          S          L          J      Si.Sb
-  0   0.00000000   8.27368   3.27368   5.00000     2.27368         6.00000   0.000000   0.863161   0.000000   0.882930   2.756982   3.002917   0.063826
-  1   0.00000000   8.27368   4.65537   3.61831     2.27368         6.00000   0.000000  -0.518534   0.000000   0.882930   2.756982   3.002917   0.063826
-  2   0.00000000   8.27368   4.48147   3.79221     2.27368         6.00000   0.000000  -0.344627   0.000000   0.882930   2.756982   3.002917   0.063826
+  i         E-E0         N     N(Dn)     N(Up)  N(group 0)  N(group 1)         Lz         Sz        L.S          S          L          J      Si.Sb
+  0   0.00000000   8.27368   3.27368   5.00000     2.27368     6.00000   0.000000   0.863161   0.000000   0.882930   2.756982   3.002917   0.063826
+  1   0.00000000   8.27368   4.65537   3.61831     2.27368     6.00000   0.000000  -0.518534   0.000000   0.882930   2.756982   3.002917   0.063826
+  2   0.00000000   8.27368   4.48147   3.79221     2.27368     6.00000   0.000000  -0.344627   0.000000   0.882930   2.756982   3.002917   0.063826
 ```
 
 Printed by `observables.print_expectation_values`: the same quantities as above, but
@@ -607,7 +617,7 @@ diagonal. Reading them:
   here the six $t_{2g}$ spin-orbitals are filled and effectively spectators;
 - fractional occupations identify the *active*, correlated/hybridized orbitals — the
   four $e_g$ spin-orbitals at 0.5684 each ($4 \times 0.5684 = 2.27$ electrons, matching
-  `<N(0,1,5,6)>`). Note 0.5684 is *not* close to 0 or 1: these orbitals are genuinely
+  `<N(group 0)>`). Note 0.5684 is *not* close to 0 or 1: these orbitals are genuinely
   fractionally occupied, the hallmark of an open correlated shell;
 - the degeneracy pattern is a symmetry check: the clean 6+4 split reflects unbroken
   cubic symmetry; split values within a manifold that should be degenerate indicate
@@ -756,7 +766,7 @@ spin-orbitals). The full chain of reasoning a reader should be able to reproduce
    *not* a numerical error. Three degenerate states at Boltzmann weight $1/3$ confirm
    the (slightly quenched) triplet; their individual `Sz` values are arbitrary manifold
    slices summing to zero.
-4. Orbital resolution: `<N(2,3,4,7,8,9)>` $= 6.000$ and six natural occupations at
+4. Orbital resolution: `<N(group 1)>` $= 6.000$ and six natural occupations at
    1.0000 — a closed $t_{2g}^6$ core; the remaining 2.27 electrons live in four $e_g$
    spin-orbitals at 0.5684 each, whose triplet structure is visible directly in the top
    determinants (two 24.5% determinants = $S_z = \pm 1$, two 12.3% = the $S_z{=}0$

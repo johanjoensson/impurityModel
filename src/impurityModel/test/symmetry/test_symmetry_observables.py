@@ -1618,7 +1618,7 @@ def test_make_impurity_casimir_operators_per_shell_raises_like_the_totals():
 
 
 # --------------------------------------------------------------------------- #
-# shell_qualified_block_labels / print_impurity_orbital_groups / per-shell table
+# block_group_labels / print_impurity_orbital_groups / per-shell table
 # (Stage 4: N(...) label fix + per-shell report table)
 # --------------------------------------------------------------------------- #
 def _eg_t2g_block_structure():
@@ -1636,39 +1636,51 @@ def _eg_t2g_block_structure():
     )
 
 
-def test_shell_qualified_block_labels_single_shell_no_impurity_orbitals():
-    """Without impurity_orbitals (no shell info), labels are plain letters -- distinct
-    from "mixed", which asserts something (that orbitals span multiple shells) that
-    cannot be known here."""
-    from impurityModel.ed.observables import get_equivalent_blocks, shell_qualified_block_labels
+def test_block_group_labels_no_impurity_orbitals():
+    """Without impurity_orbitals there is no group to name a class after, so labels fall
+    back to plain letters."""
+    from impurityModel.ed.observables import block_group_labels, get_equivalent_blocks
 
     bs = _eg_t2g_block_structure()
     eq = get_equivalent_blocks(bs)
-    labels, legend = shell_qualified_block_labels(eq, bs)
+    labels, legend = block_group_labels(eq, bs)
     assert labels == ["a", "b"]
     assert [orbs for _, orbs in legend] == [[0, 1, 4, 5], [2, 3, 6, 7, 8, 9]]
 
 
-def test_shell_qualified_block_labels_tags_by_shell():
-    """With impurity_orbitals given, both eg and t2g groups are correctly tagged l=2
-    (a single d-shell auto-split into eg/t2g classes), distinguished by letter."""
-    from impurityModel.ed.observables import get_equivalent_blocks, shell_qualified_block_labels
+def test_block_group_labels_one_class_per_group():
+    """One equivalence class per group -- the grouping every solver path derives from the
+    block structure -- names each class after its group key, nothing else."""
+    from impurityModel.ed.observables import block_group_labels, get_equivalent_blocks
 
     bs = _eg_t2g_block_structure()
     eq = get_equivalent_blocks(bs)
-    impurity_orbitals = {0: [list(range(10))]}  # one l=2 shell, 10 spin-orbitals
-    labels, legend = shell_qualified_block_labels(eq, bs, impurity_orbitals)
-    assert labels == ["l=2,a", "l=2,b"]
-    assert dict(legend)["l=2,a"] == [0, 1, 4, 5]
-    assert dict(legend)["l=2,b"] == [2, 3, 6, 7, 8, 9]
+    impurity_orbitals = {0: [[0, 1, 4, 5]], 1: [[2, 3, 6, 7, 8, 9]]}
+    labels, legend = block_group_labels(eq, bs, impurity_orbitals)
+    assert labels == ["group 0", "group 1"]
+    assert dict(legend)["group 0"] == [0, 1, 4, 5]
+    assert dict(legend)["group 1"] == [2, 3, 6, 7, 8, 9]
 
 
-def test_shell_qualified_block_labels_multi_shell():
-    """A two-shell impurity (l=1 core + l=2 valence) tags each block with its own shell,
-    and per-shell letter counters are independent (a p-shell block and a d-shell block
-    both starting at 'a')."""
+def test_block_group_labels_group_split_into_several_classes():
+    """A single group the block structure splits further (one d shell auto-split into
+    eg/t2g) keeps the group key and adds a letter, so the classes stay distinguishable."""
+    from impurityModel.ed.observables import block_group_labels, get_equivalent_blocks
+
+    bs = _eg_t2g_block_structure()
+    eq = get_equivalent_blocks(bs)
+    impurity_orbitals = {2: [list(range(10))]}  # one shell, split into two classes
+    labels, legend = block_group_labels(eq, bs, impurity_orbitals)
+    assert labels == ["group 2.a", "group 2.b"]
+    assert dict(legend)["group 2.a"] == [0, 1, 4, 5]
+    assert dict(legend)["group 2.b"] == [2, 3, 6, 7, 8, 9]
+
+
+def test_block_group_labels_multi_group_impurity():
+    """A two-group impurity names each class after its own group; the keys are whatever the
+    caller's impurity_orbitals uses (here the angular momenta of a 2p + 3d impurity)."""
     from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.observables import get_equivalent_blocks, shell_qualified_block_labels
+    from impurityModel.ed.observables import block_group_labels, get_equivalent_blocks
 
     bs = BlockStructure(
         blocks=[list(range(6)), list(range(6, 16))],
@@ -1680,20 +1692,20 @@ def test_shell_qualified_block_labels_multi_shell():
     )
     impurity_orbitals = {1: [list(range(6))], 2: [list(range(6, 16))]}
     eq = get_equivalent_blocks(bs)
-    labels, legend = shell_qualified_block_labels(eq, bs, impurity_orbitals)
-    assert labels == ["l=1,a", "l=2,a"]
-    assert dict(legend)["l=1,a"] == list(range(6))
-    assert dict(legend)["l=2,a"] == list(range(6, 16))
+    labels, legend = block_group_labels(eq, bs, impurity_orbitals)
+    assert labels == ["group 1", "group 2"]
+    assert dict(legend)["group 1"] == list(range(6))
+    assert dict(legend)["group 2"] == list(range(6, 16))
 
 
-def test_shell_qualified_block_labels_mixed_when_block_spans_shells():
-    """A (synthetic, shouldn't happen in practice) block spanning two shells is tagged
-    "mixed" rather than silently attributed to either shell."""
+def test_block_group_labels_class_spanning_groups():
+    """A (synthetic, shouldn't happen in practice) class spanning two groups is named after
+    both rather than silently attributed to either."""
     from impurityModel.ed.block_structure import BlockStructure
-    from impurityModel.ed.observables import get_equivalent_blocks, shell_qualified_block_labels
+    from impurityModel.ed.observables import block_group_labels, get_equivalent_blocks
 
     bs = BlockStructure(
-        blocks=[list(range(6)) + list(range(6, 16))],  # one block spanning both shells
+        blocks=[list(range(6)) + list(range(6, 16))],  # one block spanning both groups
         identical_blocks=[[0]],
         transposed_blocks=[[]],
         particle_hole_blocks=[[]],
@@ -1702,8 +1714,27 @@ def test_shell_qualified_block_labels_mixed_when_block_spans_shells():
     )
     impurity_orbitals = {1: [list(range(6))], 2: [list(range(6, 16))]}
     eq = get_equivalent_blocks(bs)
-    labels, _ = shell_qualified_block_labels(eq, bs, impurity_orbitals)
-    assert labels == ["mixed,a"]
+    labels, _ = block_group_labels(eq, bs, impurity_orbitals)
+    assert labels == ["groups 1,2"]
+
+
+def test_block_group_labels_orbital_outside_every_group():
+    """An orbital in no group at all leaves nothing to name the class after, so it falls
+    back to a letter instead of guessing a group."""
+    from impurityModel.ed.block_structure import BlockStructure
+    from impurityModel.ed.observables import block_group_labels, get_equivalent_blocks
+
+    bs = BlockStructure(
+        blocks=[[0, 1], [2, 3]],
+        identical_blocks=[[0], [1]],
+        transposed_blocks=[[], []],
+        particle_hole_blocks=[[], []],
+        particle_hole_transposed_blocks=[[], []],
+        inequivalent_blocks=[0, 1],
+    )
+    eq = get_equivalent_blocks(bs)
+    labels, _ = block_group_labels(eq, bs, {0: [[0, 1]]})  # orbitals 2, 3 belong to no group
+    assert labels == ["group 0", "a"]
 
 
 def test_print_impurity_orbital_groups_legend(capsys):
@@ -1713,11 +1744,11 @@ def test_print_impurity_orbital_groups_legend(capsys):
     from impurityModel.ed.observables import get_equivalent_blocks, print_impurity_orbital_groups
 
     bs = _eg_t2g_block_structure()
-    impurity_orbitals = {0: [list(range(10))]}
+    impurity_orbitals = {0: [[0, 1, 4, 5]], 1: [[2, 3, 6, 7, 8, 9]]}
     print_impurity_orbital_groups(get_equivalent_blocks(bs), bs, impurity_orbitals)
     out = capsys.readouterr().out
-    assert "l=2,a: [0, 1, 4, 5]" in out
-    assert "l=2,b: [2, 3, 6, 7, 8, 9]" in out
+    assert "group 0: [0, 1, 4, 5]" in out
+    assert "group 1: [2, 3, 6, 7, 8, 9]" in out
 
     single_bs = BlockStructure(
         blocks=[list(range(10))],
@@ -1731,9 +1762,10 @@ def test_print_impurity_orbital_groups_legend(capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_print_thermal_expectation_values_n_labels_are_shell_qualified(capsys):
-    """The N(...) column labels in the thermal report are shell-qualified, not raw block
-    indices -- the bug that produced the tutorial's meaningless N(4,6,9,11) label."""
+def test_print_thermal_expectation_values_n_labels_name_their_group(capsys):
+    """The N(...) column labels in the thermal report name the orbital group the column is
+    for -- not raw block indices (the bug that produced the tutorial's meaningless
+    N(4,6,9,11) label), and not a shell guessed from the group's orbital count."""
     from impurityModel.ed.observables import print_thermal_expectation_values
 
     bs = _eg_t2g_block_structure()
@@ -1742,8 +1774,8 @@ def test_print_thermal_expectation_values_n_labels_are_shell_qualified(capsys):
     rho = np.eye(10, dtype=complex)
     print_thermal_expectation_values(rho, 0.0, rot_to_spherical, bs, impurity_orbitals=impurity_orbitals)
     out = capsys.readouterr().out
-    assert "<N(l=2,a)>" in out
-    assert "<N(l=2,b)>" in out
+    assert "<N(group 0.a)>" in out
+    assert "<N(group 0.b)>" in out
     # The old, meaningless block-index join must not reappear.
     assert "<N(0,1)>" not in out and "<N(2,3)>" not in out
 
