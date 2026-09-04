@@ -1,5 +1,7 @@
 # distutils: language = c++
-# cython: language_level=3, boundscheck=False, wraparound=True, initializedcheck=False, cdivision=True, freethreading_compatible=True
+# Compiler directives are centralized in setup.py (_DIRECTIVES), so a build mode can
+# turn Cython's runtime checks on: IMPURITYMODEL_BUILD=debug. A `# cython:` header here
+# would override that and silently defeat it.
 
 """BlockLanczosCore.pyx
 =====================
@@ -461,8 +463,13 @@ def _build_banded_lower(alphas, betas, widths):
     m = len(widths)
     offsets = [0]
     for w in widths:
-        offsets.append(offsets[-1] + w)
-    total = offsets[-1]
+        # `offsets[len(offsets) - 1]`, never `offsets[-1]`: this module now compiles with
+        # wraparound=False like every other kernel, and under that directive Cython does not
+        # add the length to a negative index -- even on a plain list, where it lowers to
+        # PyList_GET_ITEM and reads out of bounds. Measured: a one-line extension doing
+        # `xs[-1]` on a 3-element list segfaults (exit 139) when built wraparound=False.
+        offsets.append(offsets[len(offsets) - 1] + w)
+    total = offsets[len(offsets) - 1]
     bw = 0
     for i in range(m):
         bw = max(bw, widths[i] - 1)

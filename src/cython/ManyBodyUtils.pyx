@@ -1,5 +1,7 @@
 # distutils: language = c++
-# cython: language_level=3, boundscheck=False, initializedcheck=False, wraparound=False, freethreading_compatible=True, cdivision=True, cpow=True
+# Compiler directives are centralized in setup.py (_DIRECTIVES), so a build mode can
+# turn Cython's runtime checks on: IMPURITYMODEL_BUILD=debug. A `# cython:` header here
+# would override that and silently defeat it.
 
 
 from ManyBodyBlockState cimport (

@@ -34,3 +34,4 @@ ground_state_statistics.json
 
 # R0a golden-fingerprint harness baselines (Lanczos redesign, plan i-want-a-thorough-agile-fern)
 .lanczos_golden/
+src/cython/.build-mode

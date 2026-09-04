@@ -6,13 +6,31 @@ Architecture: see `doc/architecture_overview.md` (module map, layer diagram, exe
 ## Build
 
 ```bash
-pip install --no-build-isolation -e .
+pip install --no-build-isolation -e .                      # release (default)
+IMPURITYMODEL_BUILD=debug pip install --no-build-isolation -e .   # Cython checks on
 ```
 
 `--no-build-isolation` requires the build prerequisites in the environment first:
 `pip install numpy scipy cython "setuptools>=77.0.3" setuptools-scm`.
 The C++ layer needs Boost headers (env var `BOOST_ROOT` for custom locations) and C++17+
 (`CXX`/`CXXFLAGS` respected). Threaded apply: `IMPURITYMODEL_PARALLEL=1` at install time.
+
+**Build modes** (`IMPURITYMODEL_BUILD`, all directives centralized in `setup.py`'s
+`_DIRECTIVES` — a `# cython:` header in a `.pyx` would override them and silently defeat
+the mode, which is why there are none):
+
+| mode | what it is for |
+|---|---|
+| `release` (default) | `-O3 -march=native -ffast-math`. Fastest. Not portable off this CPU, and `-ffast-math` may let the compiler drop NaN/Inf guards. |
+| `debug` | `boundscheck`/`initializedcheck` on at `-O1 -g`. **The only build that catches an out-of-bounds kernel access** — otherwise such a read just returns whatever is there (measured: `1.4e-309`, a subnormal that looks like a plausible number). |
+| `safe` | `-O3` only. For heterogeneous clusters, and to reproduce pre-2026-09 numerics. |
+
+`release` deliberately trades the bitwise-identical-across-ranks property that
+`cipsi_solver.py` relies on; use `safe` when building per node on a cluster.
+
+Switching mode re-cythonizes: cythonize decides staleness from timestamps and does *not*
+notice a directive change, so `setup.py` records the mode in `src/cython/.build-mode` and
+forces regeneration when it differs. Without that, switching modes silently keeps the old one.
 
 Editing anything under `src/cython/` requires re-running the pip install to recompile.
 Extras: `.[dev]` (pytest, pytest-mpi, black, ruff, mypy, cython-lint), `.[doc]` (Sphinx).
