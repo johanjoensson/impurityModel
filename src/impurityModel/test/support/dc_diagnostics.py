@@ -48,6 +48,7 @@ from dataclasses import replace
 from time import perf_counter
 
 import numpy as np
+import pytest
 
 from impurityModel.ed import config, solver_trace
 from impurityModel.ed.memory_estimate import suggest_truncation_threshold
@@ -501,9 +502,8 @@ def print_occupation_convergence(rows, occ_tol=1e-2):
 RUN = os.environ.get("RUN_DC_DIAG") == "1"
 
 
+@pytest.mark.benchmark
 def test_dc_baseline():
-    import pytest
-
     if not RUN:
         pytest.skip("Set RUN_DC_DIAG=1 to run the double-counting baseline.")
     from mpi4py import MPI
@@ -543,9 +543,6 @@ def test_dc_baseline():
         verbosity=verbosity,
         iteration=iteration,
     )
-
-
-test_dc_baseline.benchmark = True  # type: ignore[attr-defined]  # pytest-benchmark marker
 
 
 if __name__ == "__main__":
