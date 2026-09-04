@@ -602,7 +602,8 @@ def hartree_fock_seed_occupation(
     )
     if verbose and (comm is None or comm.rank == 0):
         status = "converged" if converged else "NOT converged"
-        print(f"HF seed occupation: {winning_N0}  (E_HF ~ {energy:6.3f}, {status})")
+        per_group = ", ".join(f"group {i} = {winning_N0[i]}" for i in sorted(winning_N0))
+        print(f"HF seed: impurity occupation {sum(winning_N0.values())} ({per_group}), E_HF = {energy:.3f}, {status}")
     if comm is not None:
         winning_N0 = comm.bcast(winning_N0, root=0)
         converged = comm.bcast(converged, root=0)
@@ -640,9 +641,10 @@ def find_ground_state_basis(
 
     verbose : int or bool
         Verbosity level (see ``impurityModel.ed.utils.V_SUMMARY``/``V_DETAIL``); the
-        occupation-search summary prints at ``V_SUMMARY``, per-trial energies at
-        ``V_DETAIL``. A plain ``bool`` degrades gracefully: ``True`` behaves like
-        ``V_SUMMARY`` (int subclass of bool in Python), ``False`` like the terse default.
+        occupation-search table (one row per distinct charge sector solved) and its result
+        line print at ``V_SUMMARY``, the per-trial basis-generation windows at ``V_DETAIL``.
+        A plain ``bool`` degrades gracefully: ``True`` behaves like ``V_SUMMARY`` (int
+        subclass of bool in Python), ``False`` like the terse default.
 
     truncation_threshold (default None): global cap on the number of Slater determinants in
     the basis; when the basis would grow past it, only the currently most important
@@ -772,6 +774,40 @@ def find_ground_state_basis(
         return e_trial
 
     keys = list(N0.keys())
+    # One report for every branch of the walk (HF seed, its diagonal probe, the axis walk and
+    # the legacy dN scan), so the search reads as a single table however it was reached.
+    frozen_keys = sorted(i for i in keys if i in frozen_occupations)
+    reported_sectors: set = set()
+
+    def report_trial(trial, energy, note=""):
+        """Print one row of the occupation-search table, once per distinct sector.
+
+        The row is keyed by the *total* impurity occupation (plus the frozen groups, which are
+        genuinely pinned) rather than by the per-group split, because that is what the solve is
+        a function of -- see :func:`sector_key`. The old per-group rows invited reading the
+        split as orbital polarization, which it is not: with two or more unfrozen groups every
+        split of one total builds the identical determinant set, so the printed split was
+        merely whichever the walk happened to reach first, and an out-of-bounds *group* value
+        (a group occupation of -1) still showed a perfectly finite energy. The per-group
+        filling is a measurement only in the impurity density matrix, further downstream.
+
+        Deduplicating on the sector also removes the repeats: the diagonal probe and the axis
+        walk revisit the same total many times, and every repeat was an energy-cache hit that
+        printed another identical line.
+        """
+        if not (verbose >= V_SUMMARY and (comm is None or comm.rank == 0)):
+            return
+        key = sector_key(trial, frozen_occupations)
+        if key in reported_sectors:
+            return
+        if not reported_sectors:
+            header = f"  {'N_imp':>5}" + "".join(f"  {f'grp {i}':>7}" for i in frozen_keys) + f"  {'E':>14}"
+            print("Impurity occupation search:")
+            print(header)
+        reported_sectors.add(key)
+        row = f"  {sum(trial.values()):>5d}" + "".join(f"  {trial[i]:>7d}" for i in frozen_keys)
+        row += f"  {energy:>14.6f}" if np.isfinite(energy) else f"  {'out of range':>14}"
+        print(f"{row}  {note}".rstrip(), flush=True)
 
     def _hf_seed():
         """The HF seed occupation, or ``None`` when it cannot be trusted.
@@ -828,8 +864,7 @@ def find_ground_state_basis(
         # (no broad-window CIPSI expansion), which matters for long bath chains.
         winning_impurity_occ = hf_seed
         e_gs = get_energy(winning_impurity_occ)
-        if verbose >= V_SUMMARY and (comm is None or comm.rank == 0):
-            print("HF-seeded ground state occupation:", winning_impurity_occ, f"~ {e_gs:6.3f}", flush=True)
+        report_trial(winning_impurity_occ, e_gs, note="HF seed")
 
         # The HF seed is a single mean-field determinant and can miss the true sector along more
         # than one group at once -- e.g. an inter-group charge transfer (dN = (-1, +1)) whose two
@@ -850,8 +885,7 @@ def find_ground_state_basis(
                     for i in range(len(keys))
                 }
                 e_trial = get_energy(trial)
-                if verbose >= V_DETAIL and (comm is None or comm.rank == 0):
-                    print("{" + " ".join(f" {k} : {trial[k]}" for k in keys) + f"}} ~ {e_trial:6.3f}")
+                report_trial(trial, e_trial)
                 if e_trial < best_combo_e:
                     best_combo_e = e_trial
                     best_combo = trial
@@ -871,8 +905,7 @@ def find_ground_state_basis(
                     max_occ = sum(len(block) for block in impurity_orbitals[i])
                     if 0 <= trial[i] <= max_occ:
                         e_trial = get_energy(trial)
-                        if verbose >= V_DETAIL and (comm is None or comm.rank == 0):
-                            print("{" + " ".join(f" {k} : {trial[k]}" for k in keys) + f"}} ~ {e_trial:6.3f}")
+                        report_trial(trial, e_trial)
                         if e_trial < best_e:
                             best_e = e_trial
                             best_neighbor = trial
@@ -892,8 +925,7 @@ def find_ground_state_basis(
         for dN in dN_trials:
             trial_N0 = {i: N0[i] + dN[i] for i in N0}
             e_trial = get_energy(trial_N0)
-            if verbose >= V_DETAIL and (comm is None or comm.rank == 0):
-                print("{" + " ".join(f" {i} : {trial_N0[i]}" for i in dN) + f"}} ~ {e_trial:6.3f}")
+            report_trial(trial_N0, e_trial)
             if e_trial < e_gs:
                 e_gs = e_trial
                 dN_gs = dN
@@ -909,10 +941,7 @@ def find_ground_state_basis(
             ):
                 trial_N0 = {j: n + dN_gs[i] if i == j else n for j, n in winning_impurity_occ.items()}
                 e_trial = get_energy(trial_N0)
-                if verbose >= V_DETAIL and (comm is None or comm.rank == 0):
-                    print(
-                        "{" + " ".join(f" {j} : {trial_N0[j]}" for j in dN_gs) + f"}} ~ {e_trial:6.3f}",
-                    )
+                report_trial(trial_N0, e_trial)
                 if e_trial >= e_gs:
                     break
                 winning_impurity_occ[i] += dN_gs[i]
@@ -938,12 +967,13 @@ def find_ground_state_basis(
         # table invited reading it as orbital polarization, which it is not -- the actual per-group
         # filling is the impurity density matrix calc_gs reports downstream.
         total = sum(winning_impurity_occ.values())
-        pinned = sorted(i for i in winning_impurity_occ if i in frozen_occupations)
-        print(f"Ground state impurity occupation: {total}")
-        if pinned:
-            print("  frozen groups: " + ", ".join(f"{i}: {winning_impurity_occ[i]}" for i in pinned))
-        print("  (per-group filling: see the impurity density matrix below)")
-        print(rf"E$_{{GS}}$ = {e_gs:^7.4f}")
+        frozen_note = (
+            "  (frozen: " + ", ".join(f"group {i} = {winning_impurity_occ[i]}" for i in frozen_keys) + ")"
+            if frozen_keys
+            else ""
+        )
+        print(f"Ground state: impurity occupation {total}{frozen_note}, E_GS = {e_gs:.4f}")
+        print("  per-group filling is not determined here -- see the impurity density matrix below")
         print("=" * 80)
     energy_cache.clear()
     # G4: clear the *basis* cache too, not just the energies. The call below is a deliberate

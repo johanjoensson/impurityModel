@@ -52,30 +52,76 @@ The averages are evaluated by `average.thermal_average_scale_indep` (density mat
 energies) and `observables.thermal_observable_value` (Casimirs, spin correlations);
 `gs_statistics._boltzmann_weights` computes the same $w_n$ for the statistics block.
 
-## Before the report: occupation search and basis
+## Before the report: orbital groups, occupation search and basis
 
 These lines are printed while the ground-state sector and variational basis are being
-determined (`groundstate.find_ground_state_basis`), before any observables. The final
-occupation-search summary (below) prints at `-v`; the per-trial `{...} ~ E` energies it
-is picked from print only at `-vv`.
+determined, before any observables. Everything in this section prints at `-v`, except
+the per-trial `seed basis` detail lines, which print at `-vv`.
+
+### The orbital-group legend
+
+Every occupation report below is written in terms of *orbital-symmetry groups* — the
+inequivalent blocks of the impurity one-particle space, each holding both spins of one
+manifold, keyed by a plain integer. `solver_basis.prepare_solver_basis` prints the
+legend once, where the grouping is derived:
 
 ```text
-HF-seeded ground state occupation: {0: 2, 1: 6} ~ -53.888
-Ground state impurity occupation: 8
-  (per-group filling: see the impurity density matrix below)
-E$_{GS}$ = -53.8880
+Block structure: 10 blocks, solving in the symmetry-adapted basis (operator fill 1.0x)
+Impurity orbital groups:
+  group  orbitals              imp  val  con nominal  window
+      0  0-1,5-6                 4   40   20       2    +/-1
+      1  2-4,7-9                 6   60   30       6    +/-1
+```
+
+`orbitals` are the impurity spin-orbital indices the group holds (compressed to ranges);
+`imp`/`val`/`con` are how many impurity, valence-bath and conduction-bath spin-orbitals
+belong to it; `nominal` is the seed impurity occupation the basis is generated around and
+`window` the mixed-valence half-width it may fluctuate by. In the example group 0 is the
+$e_g$ manifold and group 1 the $t_{2g}$ one — that mapping is exactly what the legend is
+for, since the integer keys carry no meaning on their own.
+
+### The occupation search
+
+```text
+HF seed: impurity occupation 8 (group 0 = 2, group 1 = 6), E_HF = -53.888, converged
+Impurity occupation search:
+  N_imp               E
+      8      -53.888031  HF seed
+      7      -52.104229
+      9      -53.117742
+Ground state: impurity occupation 8, E_GS = -53.8880
+  per-group filling is not determined here -- see the impurity density matrix below
 ```
 
 The impurity occupation sector is chosen either from a cheap unrestricted Hartree–Fock
-seed (`groundstate.hartree_fock_seed_occupation`; the printed dict maps orbital-symmetry
-group → electron count, e.g. group 0 = $e_g$, group 1 = $t_{2g}$) or, when the seed is
-rejected, from an explicit scan over occupations `{...} ~ E` (only at `-vv`) where each
-candidate sector is solved variationally and the lowest energy wins. `E_GS` is the
-winning variational ground-state energy — compare it with `E0` further down (the final,
-better-converged basis) to see how much the final expansion gained. Only the *total*
-occupation is printed (the per-group split is a basis-generation window, not a
-measurement of orbital polarization); the actual per-group filling is the impurity
-density matrix further down.
+seed (`groundstate.hartree_fock_seed_occupation`) or, when the seed is rejected, from an
+explicit scan over occupations, and either way is refined by a walk over neighbouring
+sectors. Each row of the table is one sector actually solved variationally; the lowest
+energy wins. `E_GS` is the winning variational ground-state energy — compare it with
+`E0` further down (the final, better-converged basis) to see how much the final
+expansion gained.
+
+The row is keyed by the **total** impurity occupation `N_imp`, not by the per-group
+split, because that is what the solve is a function of (`groundstate.sector_key`): with
+two or more unfrozen groups, every split of one total generates the identical
+determinant set, so a printed split would be merely whichever the walk reached first —
+and reading it as orbital polarization is a mistake. The per-group filling is a
+measurement only in the impurity density matrix further down. A *frozen* group (a
+bath-less core shell, pinned by `frozen_occupations`) is the exception: it is genuinely
+per-group, so it gets its own `grp <i>` column in the table and is repeated in the
+result line. Sectors are deduplicated, so each distinct solve prints exactly one row
+however many times the walk revisited it.
+
+At `-vv` each row is preceded by the basis actually generated for that sector:
+
+```text
+    seed basis: 78 determinants, 6 electrons, impurity occupation 1-3
+      per group -- 0: imp 0-2, val 1-2, con 0-1 (7 cfg); 1: imp 0-2, val 1-2, con 0-1 (7 cfg)
+```
+
+— the determinant count and conserved electron number of the seed, the total impurity
+occupation window it spans, and per group the impurity/valence/conduction occupation
+windows enumerated together with how many occupation patterns that came to.
 
 The full report (`-v` and above) starts with a full-width `Ground-state report` banner;
 every further part of it is introduced by a `-- <section> ----` rule (*Thermal
