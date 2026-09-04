@@ -199,7 +199,9 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     rank = comm.rank if comm is not None else 0
     report = Reporter(verbosity, rank)
 
-    sb = prepare_solver_basis(h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity)
+    sb = prepare_solver_basis(
+        h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity, rank=rank
+    )
     h = sb.h
     h0_solve = sb.h0_solve
     n_spin_orbitals = sb.n_spin_orbitals

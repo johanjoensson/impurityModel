@@ -12,6 +12,7 @@ from impurityModel.ed.symmetries import (
     impurity_symmetry_rotation,
     rotate_hamiltonian,
 )
+from impurityModel.ed.utils import format_index_ranges
 
 # Adaptive symmetry-adapted-basis rotation (calc_selfenergy): drop rotated operator terms below
 # this magnitude (eV; removes rotation round-off fill), and rotate into the symmetry-adapted
@@ -115,7 +116,7 @@ def _per_group_scalar(value, impurity_orbitals, default=0):
     return dict.fromkeys(keys, abs(int(value)))
 
 
-def prepare_solver_basis(h0, dc, u, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity):
+def prepare_solver_basis(h0, dc, u, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity, rank=0):
     """Build the solver-basis Hamiltonian and derive its orbital/block layout.
 
     Assembles the interacting Hamiltonian ``H = h0 - DC + U(u4)`` in the caller's input basis, then
@@ -124,6 +125,9 @@ def prepare_solver_basis(h0, dc, u, impurity_orbitals, nominal_occ, mixed_valenc
     Derives the bath valence/conduction split, the Green's-function block structure, and the
     per-group impurity/bath orbital grouping and occupation windows -- all in whichever basis is
     solved in. Returns a :class:`SolverBasis`.
+
+    ``rank`` gates the report only. This function performs no MPI communication and every rank
+    computes the identical layout, so without the gate the legend prints once per rank.
     """
     # construct local, interacting, hamiltonian (in the caller's input/correlated basis B)
     h_input = ManyBodyOperator(h0) - ManyBodyOperator(dc) + ManyBodyOperator(u)
@@ -210,9 +214,26 @@ def prepare_solver_basis(h0, dc, u, impurity_orbitals, nominal_occ, mixed_valenc
         for i in valence_baths
     }
 
-    if verbosity > 0:
-        basis_note = f"symmetry-adapted (fill {fill_ratio:.1f}x)" if rotate else f"input basis (fill {fill_ratio:.1f}x)"
-        print(f"Block structure: {len(block_structure.blocks)} blocks, solving in {basis_note}")
+    if verbosity > 0 and rank == 0:
+        # The group keys below are the labels every later occupation report speaks in (the
+        # occupation search, the basis-generation windows, the frozen-shell notes). Printed
+        # once, here, where the grouping is derived -- without this legend an integer key says
+        # nothing about which orbitals it stands for.
+        basis_note = "symmetry-adapted basis" if rotate else "input basis"
+        print(
+            f"Block structure: {len(block_structure.blocks)} blocks, "
+            f"solving in the {basis_note} (operator fill {fill_ratio:.1f}x)"
+        )
+        print("Impurity orbital groups:")
+        print(f"  {'group':>5}  {'orbitals':<20} {'imp':>4} {'val':>4} {'con':>4}" f" {'nominal':>7} {'window':>7}")
+        for i in sorted(impurity_orbitals):
+            orbs = sorted(orb for block in impurity_orbitals[i] for orb in block)
+            n_val = sum(len(block) for block in valence_baths[i])
+            n_con = sum(len(block) for block in conduction_baths[i])
+            print(
+                f"  {i:>5}  {format_index_ranges(orbs):<20} {len(orbs):>4} {n_val:>4} {n_con:>4}"
+                f" {nominal_occ[i]:>7} {'+/-' + str(mixed_valence[i]):>7}"
+            )
     return SolverBasis(
         h=h,
         h0_solve=h0_solve,

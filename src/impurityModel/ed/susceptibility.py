@@ -445,7 +445,9 @@ def calc_susceptibility_workflow(
     dense_cutoff = solver.dense_cutoff
 
     rank = comm.rank if comm is not None else 0
-    sb = prepare_solver_basis(h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity)
+    sb = prepare_solver_basis(
+        h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity, rank=rank
+    )
     gf_block_width = max(4, *(len(block) for block in sb.block_structure.blocks))
     if truncation_threshold is None:
         truncation_threshold = suggest_truncation_threshold(

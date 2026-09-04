@@ -106,6 +106,39 @@ def matrix_to_string(m: np.ndarray, n_prec: int = 15, offset: int = 0) -> str:
     )
 
 
+def format_index_ranges(indices: Iterable[int]) -> str:
+    """Compress a collection of integer indices into a compact ``0-3,7,9-11`` string.
+
+    Long orbital lists are the bulk of the occupation/grouping reports, and spelled out in
+    full (``[0, 1, 2, ..., 9]``) they hide the one thing the reader is after -- which
+    orbitals a group holds. Consecutive runs collapse to ``lo-hi``; isolated indices stay
+    as they are. An empty collection formats as ``-``.
+
+    Parameters
+    ----------
+    indices : Iterable of int
+        Indices to compress; need not be sorted or unique.
+
+    Returns
+    -------
+    str
+        The compressed representation.
+    """
+    values = sorted(set(int(i) for i in indices))
+    if not values:
+        return "-"
+    runs = []
+    start = prev = values[0]
+    for value in values[1:]:
+        if value == prev + 1:
+            prev = value
+            continue
+        runs.append((start, prev))
+        start = prev = value
+    runs.append((start, prev))
+    return ",".join(f"{lo}" if lo == hi else f"{lo}-{hi}" for lo, hi in runs)
+
+
 def matrix_print(m: np.ndarray, label: Optional[str] = None, n_prec: int = 15, **kwargs) -> None:
     """Pretty print the matrix m.
 

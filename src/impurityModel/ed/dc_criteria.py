@@ -533,6 +533,7 @@ def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, mem
         basis.mixed_valence,
         model.rot_to_spherical,
         verbosity,
+        rank=rank,
     )
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
@@ -1551,7 +1552,15 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     # which commutes with the impurity block and hence with any rotation prepare_solver_basis
     # applies, so the layout derived once here at the guess dc is valid for every trial mu.
     sb = prepare_solver_basis(
-        h0_op, model.dc, u, model.impurity_orbitals, N0, mixed_valence, model.rot_to_spherical, verbosity
+        h0_op,
+        model.dc,
+        u,
+        model.impurity_orbitals,
+        N0,
+        mixed_valence,
+        model.rot_to_spherical,
+        verbosity,
+        rank=comm.rank if comm is not None else 0,
     )
     impurity_orbitals = sb.impurity_orbitals
     bath_states = sb.bath_states
