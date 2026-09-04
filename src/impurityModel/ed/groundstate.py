@@ -50,6 +50,7 @@ from impurityModel.ed.utils import (
     V_DETAIL,
     V_SUMMARY,
     Reporter,
+    format_index_ranges,
     matrix_print,
     print_density_matrix_summary,
     report_banner,
@@ -1660,9 +1661,11 @@ def calc_gs(
         try:
             report_banner("Ground-state report")
             print(f"impurity spin-orbitals: {impurity_indices}")
-            print("Effective GS restrictions:")
+            # Range-compressed: a bath set spans ~90 spin-orbitals, and spelled out in full the
+            # index list is all one sees of a line whose point is the occupation window at its end.
+            print("Effective GS restrictions (observed electron count per orbital set):")
             for indices, occupations in effective_restrictions.items():
-                print(f"  {sorted(indices)} : {occupations}")
+                print(f"  {format_index_ranges(indices)} : {occupations[0]}-{occupations[1]}")
             print("Block structure:")
             print_block_structure(block_structure)
             print_impurity_orbital_groups(

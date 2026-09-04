@@ -97,12 +97,26 @@ def shell_qualified_block_labels(equivalent_blocks, block_structure, impurity_or
 def print_impurity_orbital_groups(equivalent_blocks, block_structure, impurity_orbitals=None, file=None):
     """Print the legend mapping each ``N(...)`` column label to its global orbital indices.
 
+    A label whose orbitals are exactly one ``impurity_orbitals`` group also carries that
+    group's integer key, which is the name the occupation search and the basis-generation
+    windows use for it (:func:`solver_basis.prepare_solver_basis` prints the matching legend).
+    Production groupings are derived from this same block structure, so the two coincide; the
+    key is omitted rather than guessed when they do not.
+
     A no-op when there is only one group (nothing to disambiguate).
     """
     _, legend = shell_qualified_block_labels(equivalent_blocks, block_structure, impurity_orbitals)
     if len(legend) <= 1:
         return
-    entries = [f"{label}: {orbs}" for label, orbs in legend]
+    # Matched on the orbital set, never on position: the two legends enumerate their groups
+    # independently, and a positional zip would silently mislabel them if the orders diverged.
+    group_of = {
+        frozenset(orb for blk in blocks for orb in blk): group for group, blocks in (impurity_orbitals or {}).items()
+    }
+    entries = []
+    for label, orbs in legend:
+        group = group_of.get(frozenset(orbs))
+        entries.append(f"{label}: {orbs}" if group is None else f"group {group} ({label}): {orbs}")
     print(f"Impurity orbital groups:  {'  '.join(entries)}", file=file)
 
 

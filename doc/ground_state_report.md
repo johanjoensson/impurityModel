@@ -66,30 +66,34 @@ manifold, keyed by a plain integer. `solver_basis.prepare_solver_basis` prints t
 legend once, where the grouping is derived:
 
 ```text
-Block structure: 10 blocks, solving in the symmetry-adapted basis (operator fill 1.0x)
+Block structure: 10 blocks, solving in the symmetry-adapted basis (operator fill 1.3x)
 Impurity orbital groups:
   group  orbitals              imp  val  con nominal  window
-      0  0-1,5-6                 4   40   20       2    +/-1
-      1  2-4,7-9                 6   60   30       6    +/-1
+      0  0-1,3,5-6,8             6    4    0       6    +/-0
+      1  2,4,7,9                 4    6    0       2    +/-0
 ```
 
 `orbitals` are the impurity spin-orbital indices the group holds (compressed to ranges);
 `imp`/`val`/`con` are how many impurity, valence-bath and conduction-bath spin-orbitals
 belong to it; `nominal` is the seed impurity occupation the basis is generated around and
-`window` the mixed-valence half-width it may fluctuate by. In the example group 0 is the
-$e_g$ manifold and group 1 the $t_{2g}$ one — that mapping is exactly what the legend is
-for, since the integer keys carry no meaning on their own.
+`window` the mixed-valence half-width it may fluctuate by. In this example
+(`examples/NiO_selfenergy.toml`, ten bath orbitals) group 1 is the $e_g$ manifold and
+group 0 the $t_{2g}$ one — that mapping is exactly what the legend is for, since the
+integer keys carry no meaning on their own. The same grouping is named again, with its
+symmetry labels, in the `Impurity orbital groups` line of the report further down.
 
 ### The occupation search
 
 ```text
-HF seed: impurity occupation 8 (group 0 = 2, group 1 = 6), E_HF = -53.888, converged
+HF seed: impurity occupation 8 (group 0 = 4, group 1 = 4), E_HF = -291.200, converged
 Impurity occupation search:
   N_imp               E
-      8      -53.888031  HF seed
-      7      -52.104229
-      9      -53.117742
-Ground state: impurity occupation 8, E_GS = -53.8880
+      8     -293.314148  HF seed
+      7     -291.515765
+      9     -288.851605
+      6     -287.568675
+     10     -279.036305
+Ground state: impurity occupation 8, E_GS = -293.3141
   per-group filling is not determined here -- see the impurity density matrix below
 ```
 
@@ -115,8 +119,8 @@ however many times the walk revisited it.
 At `-vv` each row is preceded by the basis actually generated for that sector:
 
 ```text
-    seed basis: 78 determinants, 6 electrons, impurity occupation 1-3
-      per group -- 0: imp 0-2, val 1-2, con 0-1 (7 cfg); 1: imp 0-2, val 1-2, con 0-1 (7 cfg)
+    seed basis: 120 determinants, 17 electrons, impurity occupation 7
+      per group -- 0: imp 0-6, val 4, con 0 (7 cfg); 1: imp 0-4, val 6, con 0 (5 cfg)
 ```
 
 — the determinant count and conserved electron number of the seed, the total impurity
@@ -136,18 +140,19 @@ here):
   Ground-state report
 ================================================================================
 impurity spin-orbitals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-Effective GS restrictions:
-  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] : (8, 10)
-  [10, 11, ..., 103] : (82, 84)
-  [40, 41, ..., 97, 104, 105] : (12, 12)
+Effective GS restrictions (observed electron count per orbital set):
+  0-9 : 8-10
+  10-103 : 82-84
+  40-97,104-105 : 12-12
 ```
 
 `basis_restrictions.get_effective_restrictions` reports, for each orbital subset
 (the whole impurity, each valence-bath set, each conduction-bath set), the *observed*
-minimum and maximum electron count across the converged basis. In the example: the
-impurity (spin-orbitals 0–9) fluctuates between 8 and 10 electrons, one bath group is
-pinned at exactly 12 (a frozen, fully occupied set), and the main valence group holds
-82–84. Use this to check that the basis explored the charge fluctuations you expect —
+minimum and maximum electron count across the converged basis. Orbital indices are
+compressed to ranges (`10-103`), since these sets run to tens of orbitals. In the
+example: the impurity (spin-orbitals 0–9) fluctuates between 8 and 10 electrons, one
+bath group is pinned at exactly 12 (a frozen, fully occupied set), and the main valence
+group holds 82–84. Use this to check that the basis explored the charge fluctuations you expect —
 a channel pinned at a single value contributes no screening/covalency, and a window
 that hits the edge of what you configured suggests the configured restriction is
 binding.
