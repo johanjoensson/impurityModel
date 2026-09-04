@@ -862,8 +862,12 @@ jobs:
     env:
       OPENBLAS_NUM_THREADS: "1"
       # >1 on purpose: apply_thread_cap() in ManyBodyOperator.cpp reads this, and at 1 the
-      # threaded path degenerates to the serial one and there is nothing to race.
-      OMP_NUM_THREADS: "4"
+      # threaded path degenerates to the serial one and there is nothing to race. 2 rather
+      # than 4: the runner has 4 vCPUs, and 4 instrumented threads on 4 cores is
+      # oversubscription stacked on TSan's ~2.8x slowdown. Two threads racing is as
+      # detectable as four -- TSan finds a race from a single conflicting pair, it does not
+      # need contention -- so the extra threads bought latency, not coverage.
+      OMP_NUM_THREADS: "2"
       MKL_NUM_THREADS: "1"
       CXXFLAGS: "-std=c++20 -fsanitize=thread -fno-omit-frame-pointer -g -O1"
       LDFLAGS: "-fsanitize=thread"
@@ -989,9 +993,23 @@ jobs:
 
       - name: Run the suite under TSan
         run: |
+          # Scoped, not the whole suite, and the scope is derived rather than guessed: every
+          # threaded region in this codebase is inside ManyBodyOperator.cpp -- three
+          # `#if defined(PARALLEL)` blocks, all on the apply path -- and nothing else spawns a
+          # thread. A test that never drives ManyBodyOperator::apply cannot exercise a race,
+          # so running it under TSan pays the ~2.8x slowdown for no coverage.
+          #
+          # These directories are where apply is driven from. Measured: lanczos+operators is
+          # 26.0 s uninstrumented and 73.8 s under TSan locally. The full suite took over 40
+          # minutes on a runner, which is what prompted this -- the first version ran
+          # everything because that was the obvious thing to do, not because the coverage
+          # justified it.
           rm -f /tmp/tsan_report.* 2>/dev/null || true
           rc=0
-          LD_PRELOAD="$TSAN_LIB" python -m pytest -q --cache-clear > /tmp/tsan_suite.log 2>&1 || rc=$?
+          LD_PRELOAD="$TSAN_LIB" python -m pytest -q --cache-clear \
+            src/impurityModel/test/operators \
+            src/impurityModel/test/lanczos \
+            src/impurityModel/test/basis > /tmp/tsan_suite.log 2>&1 || rc=$?
           echo "exit=$rc, $(wc -l < /tmp/tsan_suite.log) lines"
           tail -20 /tmp/tsan_suite.log
           # Count data races specifically. Any other ThreadSanitizer class that shows up is
