@@ -870,7 +870,23 @@ jobs:
       # halt_on_error=0: report every race in one run rather than stopping at the first --
       # the point of a standing job is the full list. log_path for the reason it is set on
       # the ASan job: a report on stderr is lost when a process dies without flushing.
-      TSAN_OPTIONS: "halt_on_error=0:log_path=/tmp/tsan_report"
+      #
+      # report_signal_unsafe=0 turns off a *different class* from the one this job is for.
+      # Its first CI run produced 24 warnings and not one was a data race: all were
+      # "signal-unsafe call inside of a signal", and all in third-party code --
+      #
+      #     #0 malloc (libtsan interceptor)
+      #     #1 ld-linux
+      #     #2 libinfinipath.so.4
+      #     #3 libfabric.so.1
+      #     #4 do_fork_exec  _posixsubprocess.c:797
+      #
+      # i.e. libfabric's pthread_atfork handler calling malloc in the post-fork child, and
+      # the same shape 17 times over in h5py's bundled libhdf5. Neither is ours to fix, and
+      # leaving them on would make this job permanently red and therefore ignored.
+      # Verified that disabling the class does not disable race detection: the deliberate
+      # race in the self-test below is still reported with this flag set.
+      TSAN_OPTIONS: "halt_on_error=0:report_signal_unsafe=0:log_path=/tmp/tsan_report"
       PYTEST_ADDOPTS: "-p no:faulthandler"
 
     steps:
@@ -978,8 +994,13 @@ jobs:
           LD_PRELOAD="$TSAN_LIB" python -m pytest -q --cache-clear > /tmp/tsan_suite.log 2>&1 || rc=$?
           echo "exit=$rc, $(wc -l < /tmp/tsan_suite.log) lines"
           tail -20 /tmp/tsan_suite.log
-          n=$(cat /tmp/tsan_report.* 2>/dev/null | grep -c "WARNING: ThreadSanitizer" || true)
-          echo "ThreadSanitizer warnings: ${n:-0}"
+          # Count data races specifically. Any other ThreadSanitizer class that shows up is
+          # worth reading but should not fail a job whose stated purpose is races -- and the
+          # first run proved that distinction matters, when 24 signal-unsafe reports from
+          # libfabric and libhdf5 would otherwise have failed it permanently.
+          n=$(cat /tmp/tsan_report.* 2>/dev/null | grep -c "WARNING: ThreadSanitizer: data race" || true)
+          other=$(cat /tmp/tsan_report.* 2>/dev/null | grep -c "WARNING: ThreadSanitizer" || true)
+          echo "ThreadSanitizer: ${n:-0} data race(s), $(( ${other:-0} - ${n:-0} )) other report(s)"
           if [ "${n:-0}" -gt 0 ]; then
             {
               echo "### ThreadSanitizer: ${n} warning(s)"
