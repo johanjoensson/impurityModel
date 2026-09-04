@@ -31,11 +31,22 @@ jobs:
         # ubuntu-22.04 runner (gcc-12, clang-15) plus the Intel oneAPI compiler.
         # The `parallel` jobs exercise the threaded ManyBodyOperator::apply path;
         # the `coverage` job is the single canonical run uploaded to Coveralls.
+        #
+        # The `build: debug` leg is the checked build (IMPURITYMODEL_BUILD, see setup.py):
+        # boundscheck and initializedcheck on, which is the *only* configuration that
+        # catches an out-of-bounds kernel access. Everywhere else those directives are off
+        # and such a read silently returns whatever is there -- measured
+        # 1.429631004289123e-309, a subnormal that reads as a plausible small number rather
+        # than an error. It is one leg because it is nearly free: measured locally at
+        # serial 124.9 s / -n 2 347.8 s / -n 3 547.0 s against a release build's
+        # ~120 / ~362 / ~547, i.e. inside run-to-run noise. The first full run of it found
+        # nothing, so it is standing insurance against a future regression, not a backlog.
         include:
           - { compiler: gcc-12,   cxx_std: "-std=c++17", parallel: false }
           - { compiler: gcc-12,   cxx_std: "-std=c++20", parallel: false, coverage: true }
           - { compiler: gcc-12,   cxx_std: "-std=c++2b", parallel: false }
           - { compiler: gcc-12,   cxx_std: "-std=c++20", parallel: true }
+          - { compiler: gcc-12,   cxx_std: "-std=c++20", parallel: false, build: debug }
           - { compiler: clang-15, cxx_std: "-std=c++17", parallel: false }
           - { compiler: clang-15, cxx_std: "-std=c++20", parallel: false }
           - { compiler: intel,    cxx_std: "-std=c++17", parallel: false }
@@ -161,6 +172,12 @@ jobs:
           export CXXFLAGS="${{ matrix.cxx_std }} -g -fno-omit-frame-pointer"
           export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
 
+          # Build mode (setup.py). Unset on every leg but the checked one, hence the
+          # default -- an empty IMPURITYMODEL_BUILD is rejected rather than ignored, so
+          # this cannot silently degrade to "no mode".
+          export IMPURITYMODEL_BUILD="${{ matrix.build || 'release' }}"
+          echo "build mode: $IMPURITYMODEL_BUILD"
+
           # Enable the threaded apply path the way setup.py expects: this adds
           # -DPARALLEL -pthread to BOTH the compile and link steps. Passing
           # -DPARALLEL via CXXFLAGS alone would omit -pthread at link time.
@@ -169,6 +186,25 @@ jobs:
           fi
 
           pip install --no-build-isolation -e .
+
+      - name: Verify the checked build is actually checked
+        if: matrix.build == 'debug'
+        run: |
+          # Fail closed. A checked leg that silently built unchecked would pass and mean
+          # nothing, and that is not hypothetical: locally, switching IMPURITYMODEL_BUILD
+          # reused the previously generated C++ because cythonize decides staleness from
+          # timestamps and ignores directive changes. setup.py's .build-mode stamp fixes
+          # that, and this asserts the fix worked rather than trusting it.
+          #
+          # __Pyx_RaiseBufferIndexError is emitted only under boundscheck=True: measured
+          # 32 sites in TSQR.cpp for the checked build and 0 for release.
+          n=$(grep -c "__Pyx_RaiseBufferIndexError" src/cython/TSQR.cpp || true)
+          echo "bounds-check sites in TSQR.cpp: $n"
+          if [ "${n:-0}" -eq 0 ]; then
+            echo "::error::IMPURITYMODEL_BUILD=debug produced no bounds checks -- this leg"
+            echo "::error::would report success while testing an unchecked build"
+            exit 1
+          fi
 
       - name: Enable core dumps
         run: |
