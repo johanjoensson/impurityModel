@@ -33,6 +33,7 @@ from impurityModel.ed.BlockLanczosCore import (
     resolve_reort,
 )
 from impurityModel.ed.block_view import (
+    StagnationMonitor,
     block_cols,
     concat_cols,
     copy_block,
@@ -41,6 +42,12 @@ from impurityModel.ed.block_view import (
     width_synced_total,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
+
+#: How close to its EA16 acceptance tolerance a wanted residual must be for the pair to count as
+#: "about to lock", suppressing a stagnation verdict for one more window. Guards the only case
+#: where IRLM's early stop is net-negative: a factorization that locks nothing for a window and
+#: then starts locking would otherwise be cut off and charged a cold-start re-solve.
+_NEAR_LOCK_FACTOR = 10.0
 
 __all__ = [
     "_assemble_results",
@@ -505,7 +512,16 @@ def _irlm_core(
     # --- Initial Lanczos run --------------------------------------------
     alphas, betas, Q_basis, _W, widths = sweep(psi0, m, **locked.sweep_kwargs(cntl2))
 
-    for restart in range(max_restarts):
+    # Give up on a factorization that has stopped making progress, rather than running to
+    # `max_restarts` on an acceptance tolerance it will never reach. Unlike TRLM, *locking* is
+    # progress here even when the residual does not fall: once a pair locks, `wanted` re-aims at
+    # the next unconverged pairs and the max-over-wanted residual legitimately rises. The locked
+    # count is therefore passed as the monitor's progress counter, so only a window with neither
+    # a new lock nor a real residual improvement counts as stagnant.
+    monitor = StagnationMonitor()
+    stagnated = False
+
+    for restart in range(max_restarts):  # noqa: B007 - `restart` is read by the stagnation report
         n_need = num_wanted - len(locked.theta_l)
         if n_need <= 0:
             break
@@ -563,6 +579,35 @@ def _irlm_core(
             n_need = num_wanted - len(locked.theta_l)
             if n_need <= 0:
                 break
+
+        # Judged after the locking step so a restart that locked a pair counts as progress.
+        stagnated = monitor.update(restart, float(np.max(res[wanted])) if len(wanted) else 0.0, len(locked.theta_l))
+        if stagnated and len(wanted):
+            # Unlike TRLM's, this early stop is *not* free. TRLM returns `num_wanted` pairs from
+            # `_trlm_extract` however the loop ended, so stopping early only costs accuracy on the
+            # tail. IRLM returns what it locked (plus active pairs that pass the same acceptance
+            # test, `_assemble_results` stopping at the first failure), so breaking with pairs
+            # still unlocked returns a *short* block -- which `get_eigenvectors` reads as
+            # `exhausted` and answers with a full cold-start re-solve. Against the `max_restarts`
+            # path that is still a win, since that returns short too, just later. The one case it
+            # loses is a factorization that locks nothing for a whole window and then starts
+            # locking. So: never call it stagnant while a pair is on the verge of locking.
+            about_to_lock = any(
+                res[i] <= _NEAR_LOCK_FACTOR * ea16.acceptance_tol(evals[i], tnorm, cntl2, cntl3, u) for i in wanted
+            )
+            stagnated = not about_to_lock
+        if mpi:
+            # Decided collectively for the same reason every other break here is: ranks
+            # disagreeing would take different exits from a loop whose body is collective.
+            stagnated = comm.bcast(stagnated, root=0)
+        if stagnated:
+            if verbose and rank0:
+                print(
+                    f"[{tag}] Stagnated: best residual {monitor.best:.2e} improved by less than "
+                    f"{monitor.factor:g}x over {monitor.patience} restarts with no new pair locked; "
+                    f"stopping at restart {restart} with {len(locked.theta_l)}/{num_wanted} locked."
+                )
+            break
 
         k_blocks = int(np.ceil(n_need / p))
         n_keep = k_blocks * p

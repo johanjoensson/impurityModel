@@ -30,6 +30,7 @@ from impurityModel.ed.BlockLanczosCore import (
     resolve_reort,
 )
 from impurityModel.ed.block_view import (
+    StagnationMonitor,
     as_state_list,
     block_cols,
     check_width_sync,
@@ -84,18 +85,6 @@ __all__ = [
 CONTINUATION_CHECK_EVERY = 8
 
 _TRLM_EXIT = ["?"]
-
-#: Restarts of no real progress before the restart loop gives up. The residual is *not*
-#: monotone across thick restarts -- measured on an SrMnO3 ground state it swung between
-#: 3.9e-5 and 7.7e-4 while the eigenvalue stayed bit-identical -- so progress is judged on
-#: the best residual seen so far, never on the latest one.
-STAGNATION_PATIENCE = 20
-#: Factor the best-so-far residual must improve by within one patience window to count as
-#: progress. Calibrated on 69 real TRLM solves: every one that reached `tol` improved its
-#: best-so-far by 34x-30000x after restart 10, while the one that never converged managed
-#: 17.6x over 89 restarts and plateaued three orders of magnitude above `tol`. 10x sits
-#: inside that gap with room on both sides.
-STAGNATION_FACTOR = 10.0
 
 
 def _trlm_extract(T_full, Q, dim, num_wanted, comm, slater):
@@ -369,11 +358,7 @@ def _trlm_core(
     # the eigenvalue sat bit-identical for the last 61 of them -- 10% of every Lanczos restart
     # in that run, for nothing.
     n_converge = num_wanted if num_converge is None else max(1, min(int(num_converge), num_wanted))
-    best_res = np.inf
-    # Best residual at the start of the current patience window; seeded from the first
-    # restart's value so the first window is measured rather than skipped.
-    window_ref = np.inf
-    window_start = 0
+    monitor = StagnationMonitor()
     stagnated = False
 
     for restart in range(max_restarts):
@@ -410,12 +395,7 @@ def _trlm_core(
         # `max_restarts` cap already returns under-converged Ritz pairs; stopping here reaches
         # the same outcome sooner rather than a worse one, and `_TRLM_EXIT` distinguishes the
         # two so a caller (or a test) can tell why the loop ended.
-        best_res = min(best_res, max_res)
-        if restart == 0:
-            window_ref = max_res
-        elif restart - window_start >= STAGNATION_PATIENCE:
-            stagnated = best_res > window_ref / STAGNATION_FACTOR
-            window_ref, window_start = best_res, restart
+        stagnated = monitor.update(restart, max_res)
         if mpi:
             # One collective for both decisions, unconditionally on every rank. `max_res` is
             # derived from a root-broadcast eigendecomposition and should already agree, but a
@@ -429,8 +409,8 @@ def _trlm_core(
         if stagnated:
             if verbose and rank0:
                 print(
-                    f"[TRLM] Stagnated: best residual {best_res:.2e} improved by less than "
-                    f"{STAGNATION_FACTOR:g}x over {STAGNATION_PATIENCE} restarts (tol {tol:.2e}); "
+                    f"[TRLM] Stagnated: best residual {monitor.best:.2e} improved by less than "
+                    f"{monitor.factor:g}x over {monitor.patience} restarts (tol {tol:.2e}); "
                     f"stopping at restart {restart} with under-converged Ritz pairs."
                 )
             break

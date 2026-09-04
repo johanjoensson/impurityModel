@@ -133,3 +133,72 @@ def as_state_list(V):
     bookkeeping, so a ``ManyBodyState`` result is materialized once here, at the
     actual return boundary -- never inside the restart loop itself."""
     return V.to_states() if isinstance(V, ManyBodyState) else V
+
+
+#: Restarts of no real progress before a restart loop gives up. The residual is *not*
+#: monotone across restarts -- measured on an SrMnO3 ground state it swung between 3.9e-5 and
+#: 7.7e-4 while the eigenvalue stayed bit-identical -- so progress is judged on the best value
+#: seen so far, never on the latest one.
+STAGNATION_PATIENCE = 20
+#: Factor the best-so-far residual must improve by within one patience window to count as
+#: progress. Calibrated on the 69 TRLM solves of one real SrMnO3 gap-DC run: every solve that
+#: reached ``tol`` improved its best-so-far by 34x-30000x after restart 10, while the one that
+#: never converged managed 17.6x over 89 restarts and plateaued three orders of magnitude
+#: above ``tol``. 10x sits inside that gap with room on both sides.
+STAGNATION_FACTOR = 10.0
+
+
+class StagnationMonitor:
+    """Windowed no-progress detector for the TRLM/IRLM restart loops.
+
+    Both loops could previously run to ``max_restarts`` on a tolerance they were never going
+    to reach. Measured on a real SrMnO3 gap-DC run: one TRLM solve spent all 100 restarts
+    moving its max residual from 6.9e-5 to 6.4e-5 while the eigenvalue stayed bit-identical
+    for the last 61 and the Krylov basis stayed perfectly orthogonal -- about 10% of every
+    Lanczos restart in that run, for nothing.
+
+    Two things make this more than "did the residual go down":
+
+    * the residual is **not monotone** across restarts, so the test is on the best value seen
+      so far, compared across a window of ``patience`` restarts;
+    * a loop can make real progress **without** the residual moving. IRLM locks converged
+      pairs one at a time and then re-aims at the next unconverged ones, so its
+      max-over-wanted residual legitimately *rises* on a productive restart. ``progress``
+      is any monotone counter of that (locked pairs); an increase resets the window.
+
+    Stopping early is not worse than the status quo -- exhausting ``max_restarts`` already
+    returns under-converged Ritz pairs -- it reaches the same outcome sooner.
+    """
+
+    def __init__(self, patience=None, factor=None):
+        # Read at construction, not as default arguments, so a test can monkeypatch the
+        # module-level calibration (default arguments bind at def time and would not see it).
+        self.patience = STAGNATION_PATIENCE if patience is None else int(patience)
+        self.factor = STAGNATION_FACTOR if factor is None else float(factor)
+        self.best = float("inf")
+        self._window_ref = float("inf")
+        self._window_progress = None
+        self._window_start = 0
+
+    def update(self, restart, residual, progress=0):
+        """Record one restart; return True when the loop has stopped making progress.
+
+        ``residual`` is the quantity the loop is driving to ``tol`` (its max over the states
+        it must converge). ``progress`` is an optional monotone counter of work completed
+        that the residual does not reflect.
+        """
+        residual = float(residual)
+        self.best = min(self.best, residual)
+        if restart == 0 or self._window_progress is None:
+            # Seed the window from the first restart rather than skipping it.
+            self._window_ref = residual
+            self._window_progress = progress
+            self._window_start = restart
+            return False
+        if restart - self._window_start < self.patience:
+            return False
+        advanced = progress > self._window_progress or self.best <= self._window_ref / self.factor
+        self._window_ref = self.best
+        self._window_progress = progress
+        self._window_start = restart
+        return not advanced

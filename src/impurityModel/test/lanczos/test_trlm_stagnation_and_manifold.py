@@ -31,7 +31,7 @@ happened.
 import numpy as np
 import pytest
 
-from impurityModel.ed import trlm as trlm_mod
+from impurityModel.ed import block_view as block_view_mod
 from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.cipsi_solver import SOLVERS
 from impurityModel.ed.trlm import _thick_restart_block_lanczos_array, _TRLM_EXIT
@@ -116,8 +116,8 @@ def test_stagnation_stops_before_the_restart_cap(monkeypatch):
     failure: the residual plateaus and no number of restarts gets under the bar. Patience is
     shortened so the test does not have to run 40+ restarts to observe it.
     """
-    monkeypatch.setattr(trlm_mod, "STAGNATION_PATIENCE", 3)
-    monkeypatch.setattr(trlm_mod, "STAGNATION_FACTOR", 10.0)
+    monkeypatch.setattr(block_view_mod, "STAGNATION_PATIENCE", 3)
+    monkeypatch.setattr(block_view_mod, "STAGNATION_FACTOR", 10.0)
 
     h, _ = _split_spectrum()
     _run(h, num_wanted=12, tol=1e-30, num_converge=None, max_restarts=100)
@@ -127,8 +127,8 @@ def test_stagnation_stops_before_the_restart_cap(monkeypatch):
 
 def test_stagnation_does_not_fire_on_a_solve_that_converges(monkeypatch):
     """The detector must not cut off a solve still making real progress."""
-    monkeypatch.setattr(trlm_mod, "STAGNATION_PATIENCE", 3)
-    monkeypatch.setattr(trlm_mod, "STAGNATION_FACTOR", 10.0)
+    monkeypatch.setattr(block_view_mod, "STAGNATION_PATIENCE", 3)
+    monkeypatch.setattr(block_view_mod, "STAGNATION_FACTOR", 10.0)
 
     h, exact = _split_spectrum()
     eigvals, _ = _run(h, num_wanted=3, tol=1e-10, num_converge=3, max_restarts=100)
@@ -147,3 +147,36 @@ def test_every_registered_solver_accepts_num_converge(name):
     import inspect
 
     assert "num_converge" in inspect.signature(SOLVERS[name]).parameters
+
+
+def test_monitor_stops_on_a_plateau():
+    """The shape that motivated all of this: a residual that creeps but never converges."""
+    from impurityModel.ed.block_view import StagnationMonitor
+
+    monitor = StagnationMonitor(patience=3, factor=10.0)
+    verdicts = [monitor.update(i, r) for i, r in enumerate([1e-2, 5e-3, 4e-3, 3.9e-3, 3.8e-3])]
+    assert any(verdicts)
+
+
+def test_monitor_never_stops_a_converging_run():
+    """A decade per restart must never look like stagnation."""
+    from impurityModel.ed.block_view import StagnationMonitor
+
+    monitor = StagnationMonitor(patience=3, factor=10.0)
+    assert not any(monitor.update(i, 10.0**-i) for i in range(8))
+
+
+def test_monitor_counts_locking_as_progress():
+    """IRLM's case: the residual is flat, yet a pair locks every restart.
+
+    Once a pair locks, ``wanted`` re-aims at the next unconverged pairs, so the
+    max-over-wanted residual can sit still (or rise) on a restart that did real work.
+    Without the progress counter this is indistinguishable from a plateau.
+    """
+    from impurityModel.ed.block_view import StagnationMonitor
+
+    monitor = StagnationMonitor(patience=3, factor=10.0)
+    assert not any(monitor.update(i, 5e-3, progress=i) for i in range(8))
+    # ... and with the locking stopped, the same flat residual does trip it.
+    stuck = StagnationMonitor(patience=3, factor=10.0)
+    assert any(stuck.update(i, 5e-3, progress=0) for i in range(8))
