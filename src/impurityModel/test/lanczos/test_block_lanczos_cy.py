@@ -672,6 +672,7 @@ def test_estimate_orthonormality_bounded_buffer_bit_identical():
     """Phase 1: the caller-provided ping-pong buffer (`out`) and the beta-norm history
     (`beta_norms`) must reproduce the allocating/no-history path bit-for-bit."""
     from impurityModel.ed.BlockLanczosArray import estimate_orthonormality
+    from impurityModel.ed.TSQR import spectral_norm
 
     rng = np.random.default_rng(77)
     p, k = 3, 12
@@ -697,7 +698,14 @@ def test_estimate_orthonormality_bounded_buffer_bit_identical():
             beta_norms=hist,
         )
         np.testing.assert_array_equal(W_buf, W_ref)  # bit-for-bit
-        hist.append(float(np.linalg.svd(betas[it, :p, :p], compute_uv=False)[0]))
+        # Fill the history the way production does -- BlockLanczosArray and _lanczos_step both
+        # append `robust_svd(beta_i, compute_uv=False)[0]`. Building it with numpy's SVD instead
+        # made this test pass for the wrong reason: it matched the estimator's *on-demand*
+        # fallback, which used np.linalg.norm(ord=2), rather than what the callers actually
+        # store. The two LAPACK front ends agree only to ~4 eps, so production was already
+        # bit-inconsistent depending on whether a block's norm was cached or recomputed. Both
+        # sides now go through spectral_norm, and this line has to follow.
+        hist.append(spectral_norm(betas[it, :p, :p]))
     # resume-style None placeholders fall back to on-demand norms, still bit-identical
     hist_holes = [None] * len(hist)
     W_h = np.zeros((2, 1, p, p), dtype=complex)

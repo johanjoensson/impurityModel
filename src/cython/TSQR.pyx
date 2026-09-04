@@ -107,6 +107,29 @@ REFINE_TOL = EPS_VAL ** (-0.25)            # ~1.5e4
 PANEL_ROWS = 512                           # default local panel height
 
 
+def spectral_norm(a):
+    """``||a||_2`` (largest singular value) through :func:`robust_svd`.
+
+    Use this instead of ``np.linalg.norm(a, ord=2)`` anywhere in the Krylov machinery.
+    numpy's ``ord=2`` computes the same SVD but calls LAPACK's ``gesdd`` directly, with no
+    fallback -- and a core dump from CI run 33817368575 put the intermittent exit-139 inside
+    exactly such a call, in ``estimate_orthonormality``, on a block that had deflated to width
+    1. LAPACK is not instrumented by AddressSanitizer, which is why 68 instrumented runs
+    crashed while reporting nothing.
+
+    Returns ``0.0`` for an empty matrix, matching ``np.linalg.norm(..., ord=2)``; scipy's SVD
+    returns an empty singular-value array there instead.
+
+    Not bit-identical to numpy's spelling, despite a comment in BlockLanczosCore that used to
+    claim it was: measured over 2000 random small blocks, 251 differ, by at most 8.5e-16
+    relative (~4 eps) -- last-bit rounding between two LAPACK front ends. Every consumer uses
+    the result as a *scale* for a heuristic tolerance, and every rank computes it from
+    replicated data with the same library, so rank-invariance is unaffected.
+    """
+    sv = robust_svd(a, compute_uv=False)
+    return float(sv[0]) if sv.size else 0.0
+
+
 def robust_svd(a, compute_uv=True):
     """:func:`scipy.linalg.svd` with a ``gesvd`` fallback on non-convergence.
 

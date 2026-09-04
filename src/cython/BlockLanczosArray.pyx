@@ -131,6 +131,7 @@ from impurityModel.ed.TSQR import (
     DEFLATE_EVAL_TOL,
     BREAKDOWN_TOL,
     robust_svd,
+    spectral_norm,
 )
 
 
@@ -149,7 +150,7 @@ def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=N
         # `betas[-1]` reaches numpy as `-1 - len(betas)` and raises IndexError.
         beta_last = betas[len(betas) - 1]
         s_last = s[s.shape[0] - block_size:, mask]
-        return np.linalg.norm(beta_last @ s_last, ord=2) < THERMAL_GS_RESIDUAL_TOL
+        return spectral_norm(beta_last @ s_last) < THERMAL_GS_RESIDUAL_TOL
 
     if v0 is None:
         v0 = np.random.rand(h.shape[1], block_size) + 1j * np.random.rand(h.shape[1], block_size)
@@ -633,7 +634,7 @@ def block_lanczos_array_cy(
         # running spectral-scale estimate (max of the block norms seen so far, all bounded by
         # ||H||), widened by this step's alpha since the guard has not run yet. On the first
         # step of a cold start h_norm_est is still 0 and alpha_0 carries the scale.
-        _h_scale = max(h_norm_est, t_norm_max, float(np.linalg.norm(alpha_i_arr, ord=2)))
+        _h_scale = max(h_norm_est, t_norm_max, spectral_norm(alpha_i_arr))
         q_next, beta_i, active_k, sv_i = factor_residual(
             wp_arr, mpi, comm, _h_scale, deflate_tol=deflate_tol
         )
@@ -667,7 +668,7 @@ def block_lanczos_array_cy(
         # below) with no SVD of its own.
         beta_norm = float(sv_i[0])
         _reort_acted = False
-        alpha_norm = np.linalg.norm(alpha_i_arr, ord=2)
+        alpha_norm = spectral_norm(alpha_i_arr)
         # first_step = it == start_it: this kernel's own absolute loop counter, always
         # start_it on the first step executed by THIS call (including a resumed call)
         # -- see check_divergence's docstring for why this must not be "it == 0".

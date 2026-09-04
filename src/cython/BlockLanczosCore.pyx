@@ -46,6 +46,7 @@ from impurityModel.ed.TSQR import (
     DEFLATE_EVAL_TOL,
     BREAKDOWN_TOL,
     robust_svd,
+    spectral_norm,
     tsqr,
 )
 
@@ -313,9 +314,14 @@ cpdef np.ndarray estimate_orthonormality(
     # ||H|| and O(||H||) for a warm start; beta_0 covers a cold start whose spectrum straddles
     # zero. On a cold start the two forms agree in magnitude and the reort trigger rate is
     # unchanged (measured identical: 38/120, 8/60, 9/60 blocks acted).
+    # spectral_norm, not np.linalg.norm(ord=2): both are an SVD of a tiny block, but numpy's
+    # goes straight to LAPACK gesdd with no fallback, and a core dump from CI run 33817368575
+    # put the intermittent exit-139 inside exactly this statement -- anorm still unassigned
+    # (reading as a subnormal), on a block deflated from width 2 to 1. gesdd is why robust_svd
+    # exists twenty lines below; these two calls were the ones that never used it.
     cdef double anorm = max(
-        float(np.linalg.norm(alphas[0, :w_0, :w_0], ord=2)),
-        float(np.linalg.norm(betas[0, :widths[1], :w_0], ord=2)),
+        spectral_norm(alphas[0, :w_0, :w_0]),
+        spectral_norm(betas[0, :widths[1], :w_0]),
     )
     # A magnitude, like the noise floor below and unlike the signed three-term propagation:
     # this term models a rounding *injection*, which has no sign structure to cancel.
@@ -380,8 +386,10 @@ cpdef np.ndarray estimate_orthonormality(
     # carries the per-step rounding injection, and with the sqrt(N) scale it upper-bounds the
     # measured true loss by a stable ~2-10x on the NiO ground-state workload.
     # One SVD of the current beta gives both the 2-norm (largest singular value) and
-    # sigma_min — np.linalg.norm(ord=2) computes the same SVD internally, so this is
-    # bit-identical and drops a redundant factorization per step.
+    # sigma_min, dropping a redundant factorization per step. (This comment used to claim the
+    # result was bit-identical to np.linalg.norm(ord=2). Measured over 2000 random small
+    # blocks, 251 differ -- by at most 8.5e-16 relative, i.e. last-bit rounding between two
+    # LAPACK front ends. Harmless for a heuristic scale, but not bit-identity.)
     _sv_bi = robust_svd(betas[i, :w_next, :w_curr], compute_uv=False)
     _sig_min_bi = float(_sv_bi[len(_sv_bi) - 1])
     _binv_norm = 1.0 / max(_sig_min_bi, eps)
@@ -393,7 +401,7 @@ cpdef np.ndarray estimate_orthonormality(
         if beta_norms is not None and j < len(beta_norms) and beta_norms[j] is not None:
             _bnorm_j = float(beta_norms[j])
         else:
-            _bnorm_j = float(np.linalg.norm(betas[j, :widths[j+1], :widths[j]], ord=2))
+            _bnorm_j = spectral_norm(betas[j, :widths[j+1], :widths[j]])
         _floor_j = eps * n_scale * (_bnorm_i + _bnorm_j) * _binv_norm
         w_bar[j, :w_next, :widths[j]] += _floor_j
         if parts_out is not None:

@@ -85,7 +85,7 @@ from impurityModel.ed.BlockLanczosCore import (
     REORT_PERIOD,
     BAD_BLOCK_TOL,
 )
-from impurityModel.ed.TSQR import robust_svd
+from impurityModel.ed.TSQR import robust_svd, spectral_norm
 
 # --- Optional per-step profiling (env-gated, ~zero cost when off) -------------------
 # Set BLOCKLANCZOS_PROFILE=1 to accumulate wall time per sub-operation of the sparse

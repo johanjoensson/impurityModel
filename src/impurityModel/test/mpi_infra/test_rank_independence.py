@@ -62,6 +62,34 @@ from impurityModel.test.support._nio_workload import (
 # against 1-2/8 normally) -- the signature of heap corruption that surfaces wherever the
 # corrupted memory next gets touched, not of a logic bug at a fixed place.
 #
+# **LOCALIZED (2026-09-04, run 33817368575).** A core dump with symbols puts the crash in our
+# own code, in one function:
+#
+#   #0 estimate_orthonormality (W=..., alphas=..., betas=...)  BlockLanczosCore.pyx:316-322
+#   #6 block_lanczos_array_cy                                   BlockLanczosArray.pyx
+#
+# The other threads are libfabric progress threads parked in epoll_wait. Locals at the crash:
+# i=32, n=2, w_0=2, w_curr=w_next=1 (the block has deflated), N=2977, and **anorm =
+# 6.9047087228707365e-310** -- a subnormal, i.e. the variable had not been assigned yet. So the
+# fault is in the statement that computes it, lines 316-318:
+#
+#     cdef double anorm = max(
+#         float(np.linalg.norm(alphas[0, :w_0, :w_0], ord=2)),
+#         float(np.linalg.norm(betas[0, :widths[1], :w_0], ord=2)),
+#     )
+#
+# `ord=2` on a matrix is the spectral norm -- an SVD, through LAPACK's gesdd. This module
+# imports `robust_svd` from TSQR precisely because gesdd "has rare but real convergence
+# failures on finite, well-formed inputs", and the noise-floor block below already uses it;
+# these two calls do not. LAPACK/OpenBLAS is not instrumented by ASan, which is exactly why 68
+# instrumented runs reported nothing while still crashing.
+#
+# One hypothesis checked and REFUTED before it got written down as fact: an out-of-bounds write
+# at line 322 under this module's boundscheck=False. `W_out = out[:, :i+2]` would clamp silently
+# if `out` were short, and `w_bar[i]` is unchecked -- but the sizes fit. The driver loops
+# `while it < _buf_size` and allocates `out` as `(2, _buf_size+2, n, n)`, so `it+2` is at most
+# `_buf_size+1`. The bounds are correct.
+#
 # What CI has shown since, which corrects the paragraph above. Twenty-five crashes are on record,
 # over ten crashing runs (one came back 0 of 8 -- the rate is 0-5 legs per run).
 # **Every one of the twenty-five happened on a step where these tests were skipped, deselected,
