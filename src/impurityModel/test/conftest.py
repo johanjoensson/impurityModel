@@ -70,16 +70,40 @@ def _watchdog_file(config):
     return f
 
 
+# Seconds before the hang watchdog dumps a traceback, or 0/unset to disable it.
+#
+# OFF BY DEFAULT, and that default is the fix for a year-long CI mystery. This watchdog was
+# the cause of the intermittent exit-139 that got test_rank_independence.py skipped and then
+# hunted across ~30 crashes: faulthandler.dump_traceback_later() arms a timer thread that,
+# when it fires, walks *every* thread's Python frames without holding the GIL. The main
+# thread is still running and mutating those frames, so the walk can read a half-updated
+# frame and segfault inside CPython's dump_frame -- which is exactly what the core dumps
+# show, with garbage arguments like frame=0x3, co=0x1 and line index 76643932.
+#
+# Everything the hunt found follows from that:
+#   * the "crash sites" were just the tests slow enough to trip 15 s (the calc_selfenergy
+#     oracle at 30 s, the CIPSI rank-invariance workload at 20 s, the f-shell solve);
+#   * more ranks meant slower tests meant more crashes, so it looked rank-dependent;
+#   * AddressSanitizer reported nothing across 68 instrumented runs because reading a live
+#     frame is a perfectly valid heap access -- it is a data race, not an overflow;
+#   * no traceback ever appeared in a CI log because the dump goes to
+#     .pytest_watchdog*.out, a file nobody was collecting.
+#
+# It stays available because the diagnosis it was written for is real -- telling "slow" from
+# "stuck on an MPI collective" without a py-spy bisect -- but it must be asked for, and never
+# on a run whose result anyone depends on. py-spy is the safe alternative: it inspects from
+# outside the process instead of racing it from within.
+_WATCHDOG_SECONDS = float(os.environ.get("IMPURITYMODEL_TEST_WATCHDOG", "0") or 0)
+
+
 def pytest_runtest_setup(item):
-    # Dump traceback if any test runs longer than 15 seconds. This is a diagnostic
-    # snapshot, not a failure: a legitimately slow test just gets one recorded
-    # stack showing it mid-computation (e.g. inside eigh), distinguishing "slow"
-    # from "actually stuck on an MPI collective" without a manual py-spy bisect.
-    faulthandler.dump_traceback_later(15, file=_watchdog_file(item.config))
+    if _WATCHDOG_SECONDS > 0:
+        faulthandler.dump_traceback_later(_WATCHDOG_SECONDS, file=_watchdog_file(item.config))
 
 
 def pytest_runtest_teardown(item, nextitem):
-    faulthandler.cancel_dump_traceback_later()
+    if _WATCHDOG_SECONDS > 0:
+        faulthandler.cancel_dump_traceback_later()
     # MPI_Comm_free is collective: without a barrier, one rank could be inside gc.collect()
     # (freeing a split communicator -- see basis_split.py) while another rank has already
     # moved on to the next test, a protocol violation that segfaults. gc.collect() is what

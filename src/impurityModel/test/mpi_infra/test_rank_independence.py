@@ -62,8 +62,42 @@ from impurityModel.test.support._nio_workload import (
 # against 1-2/8 normally) -- the signature of heap corruption that surfaces wherever the
 # corrupted memory next gets touched, not of a logic bug at a fixed place.
 #
-# **LOCALIZED (2026-09-04, run 33817368575).** A core dump with symbols puts the crash in our
-# own code, in one function:
+# **ROOT CAUSE FOUND (2026-09-04): this test suite's own hang watchdog.**
+#
+# conftest.py armed `faulthandler.dump_traceback_later(15, ...)` before every test. When it
+# fires, that timer thread walks *every* thread's Python frames without holding the GIL, while
+# the main thread is still mutating them -- so it can read a half-updated frame and segfault
+# inside CPython's dump_frame. Confirmed directly: the excitation-budget oracle at -n 3 prints
+# `Timeout (0:00:15)!` and dumps on all three ranks. It is now opt-in via
+# IMPURITYMODEL_TEST_WATCHDOG, off by default.
+#
+# Every unexplained observation in this comment follows from that, and none of them needed the
+# elaborate theories they got:
+#
+#   * The "crash sites" are simply the tests slow enough to trip 15 s -- measured at -n 3:
+#     test_calc_selfenergy_excitation_budget_oracle 30.6 s,
+#     test_cipsi_ground_state_basis_is_rank_independent 20.2 s, and the f-shell solve 6.7 s
+#     here but ~2-3x that on a 4-vCPU runner.
+#   * Rank count "mattered" because more ranks means slower tests means more trip the timer.
+#   * AddressSanitizer reported nothing across 68 instrumented runs because reading a live
+#     frame is a *valid* heap access. It is a data race, not an overflow -- so no tool that
+#     checks memory validity was ever going to see it.
+#   * No traceback ever appeared in 30 crash logs because the dump is written to
+#     .pytest_watchdog*.out, a file nobody was collecting.
+#   * The garbage in the cores -- frame=0x3, co=0x1, line index 76643932 -- is a frame read
+#     mid-update, and the "moving" crash location is wherever the racing walk lands.
+#
+# **A correction worth keeping, because it nearly shipped as a fix.** The first symbolised core
+# showed estimate_orthonormality in the trace and it was read as the crash site; the
+# `Current thread` marker says otherwise -- that was Thread 2, the main thread, merely executing
+# while Thread 1 (the watchdog) died walking its frames. Seeing your own code in a backtrace is
+# not the same as it being the fault. Check which thread is current, first.
+#
+# (The spectral_norm change made on the strength of that misreading was kept: routing every
+# ord=2 matrix norm through robust_svd removed a real bit-inconsistency, since production filled
+# beta_norm_hist with scipy and recomputed it with numpy. It is hardening, not this crash's fix.)
+#
+# For the record, the superseded localization: a core dump put the main thread in
 #
 #   #0 estimate_orthonormality (W=..., alphas=..., betas=...)  BlockLanczosCore.pyx:316-322
 #   #6 block_lanczos_array_cy                                   BlockLanczosArray.pyx
