@@ -85,6 +85,18 @@ CONTINUATION_CHECK_EVERY = 8
 
 _TRLM_EXIT = ["?"]
 
+#: Restarts of no real progress before the restart loop gives up. The residual is *not*
+#: monotone across thick restarts -- measured on an SrMnO3 ground state it swung between
+#: 3.9e-5 and 7.7e-4 while the eigenvalue stayed bit-identical -- so progress is judged on
+#: the best residual seen so far, never on the latest one.
+STAGNATION_PATIENCE = 20
+#: Factor the best-so-far residual must improve by within one patience window to count as
+#: progress. Calibrated on 69 real TRLM solves: every one that reached `tol` improved its
+#: best-so-far by 34x-30000x after restart 10, while the one that never converged managed
+#: 17.6x over 89 restarts and plateaued three orders of magnitude above `tol`. 10x sits
+#: inside that gap with room on both sides.
+STAGNATION_FACTOR = 10.0
+
 
 def _trlm_extract(T_full, Q, dim, num_wanted, comm, slater):
     """Diagonalize the leading ``dim`` x ``dim`` block of the (possibly arrowhead)
@@ -236,6 +248,7 @@ def _trlm_core(
     slater,
     comm,
     sweep,
+    num_converge=None,
 ):
     """Path-agnostic thick-restart block Lanczos (TRLM).
 
@@ -346,6 +359,23 @@ def _trlm_core(
     beta_res = betas[len(betas) - 1][:p_resid, : widths[len(widths) - 1]]
     cur_widths = list(widths)
 
+    # Converge the states the caller actually needs, not the padding. `get_eigenvectors`
+    # asks for `num_wanted + 10` so it can certify that a kept manifold is whole (a state
+    # landing outside the thermal cut proves the boundary is complete), but those extra
+    # states are dropped by the energy cut and only their *energies* are ever read. Holding
+    # the whole solve to `tol` on their residuals lets one slow padding state stall a solve
+    # whose wanted states converged long ago: measured on an SrMnO3 ground state, a single
+    # such solve burned all 100 restarts moving the max residual from 6.9e-5 to 6.4e-5 while
+    # the eigenvalue sat bit-identical for the last 61 of them -- 10% of every Lanczos restart
+    # in that run, for nothing.
+    n_converge = num_wanted if num_converge is None else max(1, min(int(num_converge), num_wanted))
+    best_res = np.inf
+    # Best residual at the start of the current patience window; seeded from the first
+    # restart's value so the first window is measured rather than skipped.
+    window_ref = np.inf
+    window_start = 0
+    stagnated = False
+
     for restart in range(max_restarts):
         # Q_basis carries exactly the columns T_full[:D, :D] is expressed in: the trailing
         # residual block lives in q_m, not in Q_basis.
@@ -357,7 +387,7 @@ def _trlm_core(
             eigvals_T = comm.bcast(eigvals_T, root=0)
             eigvecs_T = comm.bcast(eigvecs_T, root=0)
         res_norms = np.linalg.norm(beta_res @ eigvecs_T[D - p_last : D, :], axis=0)
-        wanted = np.argsort(eigvals_T)[:num_wanted]
+        wanted = np.argsort(eigvals_T)[:n_converge]
         max_res = float(np.max(res_norms[wanted]))
 
         # Threshold below which a residual block means "stop here". Two reasons to stop,
@@ -373,11 +403,36 @@ def _trlm_core(
             print(f"[TRLM] Restart {restart:3d} | MinEigval={eigvals_T[0]:.6f} | MaxWantedRes={max_res:.2e}")
 
         done = max_res < tol
+
+        # Give up on a solve that has stopped making progress. The residual oscillates across
+        # thick restarts, so this tracks the best value seen and asks whether *that* improved
+        # by `STAGNATION_FACTOR` over the last `STAGNATION_PATIENCE` restarts. Reaching the
+        # `max_restarts` cap already returns under-converged Ritz pairs; stopping here reaches
+        # the same outcome sooner rather than a worse one, and `_TRLM_EXIT` distinguishes the
+        # two so a caller (or a test) can tell why the loop ended.
+        best_res = min(best_res, max_res)
+        if restart == 0:
+            window_ref = max_res
+        elif restart - window_start >= STAGNATION_PATIENCE:
+            stagnated = best_res > window_ref / STAGNATION_FACTOR
+            window_ref, window_start = best_res, restart
         if mpi:
-            done = comm.bcast(done, root=0)
+            # One collective for both decisions, unconditionally on every rank. `max_res` is
+            # derived from a root-broadcast eigendecomposition and should already agree, but a
+            # rank-local disagreement here would be two ranks taking different `break`s out of
+            # a loop whose body is collective -- the deadlock this file's MPI rule exists for.
+            done, stagnated = comm.bcast((done, stagnated), root=0)
         if done:
             if verbose and rank0:
                 print("[TRLM] Converged!")
+            break
+        if stagnated:
+            if verbose and rank0:
+                print(
+                    f"[TRLM] Stagnated: best residual {best_res:.2e} improved by less than "
+                    f"{STAGNATION_FACTOR:g}x over {STAGNATION_PATIENCE} restarts (tol {tol:.2e}); "
+                    f"stopping at restart {restart} with under-converged Ritz pairs."
+                )
             break
 
         keep = np.argsort(eigvals_T)[:nkeep]
@@ -519,7 +574,10 @@ def _trlm_core(
                 p_resid = w_next
 
     # --- Final extraction -----------------------------------------------
-    _TRLM_EXIT[0] = "restart_loop_end_converged" if done else "restart_loop_end_cap"
+    if done:
+        _TRLM_EXIT[0] = "restart_loop_end_converged"
+    else:
+        _TRLM_EXIT[0] = "restart_loop_end_stagnated" if stagnated else "restart_loop_end_cap"
     final_eigvals, final_eigvecs = _trlm_extract(T_full, Q_basis, int(sum(cur_widths)), num_wanted, comm, slater)
     if verbose and rank0:
         print(f"[TRLM] Final eigvals:\n{final_eigvals}")
@@ -527,7 +585,7 @@ def _trlm_core(
 
 
 def _thick_restart_block_lanczos_array(
-    psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, reort_mode, comm
+    psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, reort_mode, comm, num_converge=None
 ):
     """Array-path entry point: prepares the ``(N, p)`` start block and the
     ``block_lanczos_array`` sweep, then delegates to the shared :func:`_trlm_core`."""
@@ -566,6 +624,7 @@ def _thick_restart_block_lanczos_array(
         0.0,
         comm,
         sweep,
+        num_converge=num_converge,
     )
 
 
@@ -582,6 +641,7 @@ def thick_restart_block_lanczos_cy(
     truncation_threshold: int = 0,
     reort="partial",
     comm=None,
+    num_converge=None,
 ):
     """Thick-restart block Lanczos (TRLM) for the ManyBodyState path.
 
@@ -659,6 +719,7 @@ def thick_restart_block_lanczos_cy(
         slaterWeightMin,
         comm,
         sweep,
+        num_converge=num_converge,
     )
 
 
@@ -673,11 +734,15 @@ def thick_restart_block_lanczos(
     verbose: bool = False,
     slaterWeightMin: float = 0,
     reort=Reort.PARTIAL,
+    num_converge=None,
 ):
     """Thick-restart block Lanczos (TRLM), dispatching on the operator type.
 
     Routes to the array path (dense/sparse ``h_op``) or the ManyBodyState path
     (``ManyBodyOperator``); both share the path-agnostic :func:`_trlm_core`.
+
+    ``num_converge`` is how many of the lowest states must reach ``tol``; the rest are still
+    computed and returned, just not gated on. ``None`` means all ``num_wanted`` of them.
 
     Returns:
         tuple[numpy.ndarray, list | numpy.ndarray]: ``(eigvals, eigvecs)``.
@@ -699,8 +764,19 @@ def thick_restart_block_lanczos(
             slaterWeightMin=slaterWeightMin,
             reort=reort_mode,
             comm=comm,
+            num_converge=num_converge,
         )
 
     return _thick_restart_block_lanczos_array(
-        psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, reort_mode, comm
+        psi0,
+        h_op,
+        basis,
+        num_wanted,
+        max_subspace_blocks,
+        tol,
+        max_restarts,
+        verbose,
+        reort_mode,
+        comm,
+        num_converge=num_converge,
     )

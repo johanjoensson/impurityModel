@@ -824,8 +824,14 @@ def implicitly_restarted_block_lanczos(
     reort=None,
     comm=None,
     locked_reort: str = "full",
+    num_converge=None,
 ):
     """Implicitly-restarted block Lanczos (IRLM), dispatching on the operator type.
+
+    ``num_converge`` is **accepted and not applied** -- see
+    :func:`_implicitly_restarted_block_lanczos_cy_manybody` for why IRLM's locking-based
+    stopping rule cannot take TRLM's narrowed residual test unchanged. It is in the signature
+    so that both entries of ``cipsi_solver.SOLVERS`` accept the same keywords.
 
     Finds the ``num_wanted`` algebraically smallest eigenvalues of ``h_op`` via the EA16
     block Lanczos algorithm with locking, explicit purging, partial reorthogonalization
@@ -885,12 +891,22 @@ def _implicitly_restarted_block_lanczos_cy_manybody(
     truncation_threshold: int = 0,
     reort="partial",
     comm=None,
+    num_converge=None,
 ):
     """Implicitly-restarted block Lanczos (IRLM) for the ManyBodyState path (EA16).
 
     The MBS-only entry point. Resolves ``reort`` and the communicator, then runs the
     shared path-agnostic :func:`_irlm_core` via the ManyBodyState sweep kernel
     ``block_lanczos_cy``.
+
+    ``num_converge`` is **accepted and not applied**, so that both entries of
+    ``cipsi_solver.SOLVERS`` take the same keywords. In TRLM it narrows a single
+    max-over-wanted-residuals test, which is a pure stopping-criterion change. IRLM has no
+    such test: it converges by *locking* pairs one at a time and stops once ``num_wanted`` of
+    them are locked, so lowering that target would return a shorter block -- which
+    ``get_eigenvectors`` reads as ``exhausted`` and answers with a full cold-start re-solve,
+    costing more than it saves. The equivalent saving here would be a different change
+    (locking against a per-state tolerance), and it is not this one.
 
     Re-exported from :mod:`impurityModel.ed.BlockLanczos` as
     ``implicitly_restarted_block_lanczos_cy`` -- see the module docstring above for why

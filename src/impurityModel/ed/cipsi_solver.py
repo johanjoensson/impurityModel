@@ -23,6 +23,11 @@ SOLVERS = {
     "irlm": implicitly_restarted_block_lanczos_cy,
 }
 
+#: Extra eigenstates requested beyond what the caller wants, so that a state landing outside the
+#: thermal cut can certify the kept manifold is complete. Bought for their energies, not their
+#: eigenvectors -- see `num_required` in `get_eigenvectors`.
+_EIGENSTATE_PAD = 10
+
 _U64 = (1 << 64) - 1
 
 
@@ -1033,9 +1038,20 @@ class CIPSISolver:
             # columns retain their fast convergence.
             psi0 = list(psi_refs) + cold_start_block() if warm_started else cold_start_block()
 
-            num_wanted = min(num_wanted + 10, len(self.basis))
+            num_wanted = min(num_wanted + _EIGENSTATE_PAD, len(self.basis))
             psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
             max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), len(self.basis))
+            # How many of those the eigensolver must actually converge to `tol`. The pad above is
+            # bought for its *energies* -- a state landing outside the thermal cut is what certifies
+            # the kept manifold is whole -- and `_energy_cut_indices` keeps a prefix of the sorted
+            # spectrum, so the pad is exactly the top tail that gets discarded. Holding the solve to
+            # `tol` on the tail's residuals is what let a single slow padding state burn all 100
+            # restarts on an SrMnO3 ground state while the wanted states had long since converged.
+            #
+            # Safe against the case the pad is reached into (more states inside the cut than were
+            # asked for): that is `need_more`, and the loop below re-solves with a larger request --
+            # which raises this floor with it -- rather than keeping the under-converged tail.
+            num_required = max(1, num_wanted - _EIGENSTATE_PAD)
 
             H_mat = build_sparse_matrix(self.basis, H) if h_matrix is None else h_matrix
             if self.basis.is_distributed:
@@ -1071,6 +1087,7 @@ class CIPSISolver:
                     verbose=self.basis.verbose,
                     slaterWeightMin=slaterWeightMin,
                     reort=reort,
+                    num_converge=num_required,
                 )
                 if len(e_ref) == 0:
                     break
@@ -1110,12 +1127,14 @@ class CIPSISolver:
                         psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
                         psi0_arr = build_distributed_vector(self.basis, psi0).T
                         max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), cap)
+                        num_required = max(1, num_wanted - _EIGENSTATE_PAD)
                         continue
                     break
                 if max_energy is None or not need_more or num_wanted >= cap:
                     break
                 num_wanted = min(2 * num_wanted, cap)
                 max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), cap)
+                num_required = max(1, num_wanted - _EIGENSTATE_PAD)
 
             if len(e_ref) > 0:
                 psi_refs = build_state(self.basis, psi_refs_arr.T, slaterWeightMin=slaterWeightMin)

@@ -80,7 +80,22 @@ def _fake_lanczos(exhaust_first_calls, calls):
     cut (a short, exhausted solve); later calls return the full request with the last state far
     beyond the cut (a certified boundary manifold)."""
 
-    def fake(psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, slaterWeightMin, reort):
+    # **kwargs: this stub stands in for a real solver whose keyword set grows over time
+    # (`num_converge` was added when the residual gate stopped covering the eigenstate pad).
+    # These tests are about the cold-retry control flow, not the solver's signature.
+    def fake(
+        psi0,
+        h_op,
+        basis,
+        num_wanted,
+        max_subspace_blocks,
+        tol,
+        max_restarts,
+        verbose,
+        slaterWeightMin,
+        reort,
+        **kwargs,
+    ):
         calls.append(np.array(psi0, copy=True))
         if len(calls) <= exhaust_first_calls:
             e = np.array([0.0, 1e-4, 2e-4])
