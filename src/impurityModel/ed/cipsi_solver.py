@@ -34,12 +34,24 @@ def _splitmix64(x: int) -> int:
     return x ^ (x >> 31)
 
 
-#: Reference eigenvalues closer than this are treated as one degenerate manifold when scoring
-#: CIPSI candidates. A restarted Lanczos converges the invariant *subspace*, not a basis within
-#: it -- every rotation of a degenerate block has the same residual -- so any per-eigenvector
-#: score must be summed over the block to be well defined. Chosen well above the eigensolver's
-#: attainable eigenvalue accuracy and far below any physical splitting of interest.
+#: *Floor* on the tolerance below which reference eigenvalues are treated as one degenerate
+#: manifold. A restarted Lanczos converges the invariant *subspace*, not a basis within it --
+#: every rotation of a degenerate block has the same residual -- so any per-eigenvector score
+#: must be summed over the block to be well defined. Far below any physical splitting of
+#: interest (crystal field, exchange and spin-orbit are all >= 1e-2 eV here).
+#:
+#: This is a floor, not the tolerance: use :func:`_degeneracy_tol`, which raises it to track the
+#: residual the eigensolver was actually asked to achieve. It used to be the tolerance, and the
+#: claim that it sits "well above the eigensolver's attainable eigenvalue accuracy" was false on
+#: every path that does not pass a tight ``slaterWeightMin`` -- see :func:`_degeneracy_tol`.
 DEGENERACY_TOL = 1e-9
+
+#: How far above the eigensolver's residual tolerance the degeneracy grouping tolerance must sit.
+#: A Ritz pair converged to ``||r||`` has ``|theta - lambda| <= ||r||``, and *within* a cluster the
+#: returned Ritz values are generically split by ``O(||r||)``, so grouping at anything below the
+#: residual splits manifolds that are exactly degenerate. One order of margin: large enough that
+#: an ``O(||r||)`` splitting is absorbed, small enough to stay orders below any physical scale.
+DEGENERACY_TOL_MARGIN = 10.0
 
 #: How many times ``get_eigenvectors`` may double ``num_wanted`` looking for an eigenstate beyond
 #: the thermal energy cut. Each doubling is a full re-solve, so this bounds the worst case; in
@@ -75,11 +87,64 @@ def _eigen_tol(slaterWeightMin):
     return max(min(float(slaterWeightMin), _EIGEN_TOL_MAX), _EIGEN_TOL_FLOOR)
 
 
+def _degeneracy_tol(e_ref, slaterWeightMin):
+    """The tolerance at which ``e_ref`` may be partitioned into degenerate manifolds.
+
+    ``DEGENERACY_TOL`` alone is **not** safe as a fixed absolute tolerance, because it is
+    unrelated to how hard the eigensolver was asked to work. A Ritz pair at residual ``||r||``
+    satisfies ``|theta - lambda| <= ||r||``, and the members of a genuinely degenerate cluster
+    come back split by ``O(||r||)``. So whenever ``_eigen_tol(slaterWeightMin)`` exceeds
+    ``DEGENERACY_TOL / DEGENERACY_TOL_MARGIN`` the grouping is *tighter than the solver's own
+    accuracy*, and an exactly degenerate manifold is split into singletons -- which is precisely
+    the failure the manifold-summed CIPSI score and :func:`_energy_cut_indices` exist to prevent.
+
+    That was the case in production, not in principle: ``_eigen_tol`` returns ``_EIGEN_TOL_MAX``
+    (1e-8, ten times *looser* than ``DEGENERACY_TOL``) whenever ``slaterWeightMin`` is 0 or above
+    1e-8, and three manifold-consuming paths run exactly there -- ``dc_frozen.FrozenSpaceSweep``
+    and ``dc_criteria`` both default ``slater_weight_min=0``, and the occupation walk runs at
+    ``sqrt(slaterWeightMin)`` (1e-6 for the usual 1e-12). The production ground-state path
+    (``slaterWeightMin = 1e-12``) is unaffected: 10 * 1e-12 is far under the 1e-9 floor.
+
+    The third term keeps the tolerance meaningful when the spectrum itself is large. Eigenvalues
+    of magnitude ``E`` carry ``eps * E`` of rounding noise, so a fixed 1e-9 stops being "well
+    above roundoff" once ``E`` reaches ~1e5 (this code has run charge-transfer poles at 1.5e4).
+
+    Rank-invariant: a pure function of ``e_ref``, which the callers either broadcast or rely on
+    being bit-identical (see the comment in :meth:`CIPSISolver.get_eigenvectors`).
+
+    Parameters
+    ----------
+    e_ref : array_like
+        The reference eigenvalues about to be grouped. Only their magnitude is used.
+    slaterWeightMin : float or None
+        The amplitude cutoff the eigensolver was run at, i.e. the argument
+        :func:`_eigen_tol` turned into the residual tolerance.
+
+    Returns
+    -------
+    float
+        ``max(DEGENERACY_TOL, MARGIN * _eigen_tol(cutoff), MARGIN * eps * max|e_ref|)``.
+    """
+    e = np.asarray(e_ref).real
+    scale = float(np.max(np.abs(e))) if e.size else 0.0
+    return max(
+        DEGENERACY_TOL,
+        DEGENERACY_TOL_MARGIN * _eigen_tol(slaterWeightMin),
+        DEGENERACY_TOL_MARGIN * float(np.finfo(float).eps) * scale,
+    )
+
+
 def _degenerate_groups(e_ref, tol=DEGENERACY_TOL):
     """Partition reference-state indices into runs of (near-)degenerate eigenvalues.
 
     ``e_ref`` comes from the eigensolver in ascending order, so a single forward scan suffices.
     Returns a list of index lists, one per manifold.
+
+    ``tol`` defaults to the :data:`DEGENERACY_TOL` *floor* so this stays a pure, directly
+    testable function of its arguments. **Production callers must pass**
+    ``tol=_degeneracy_tol(e_ref, slaterWeightMin)`` instead: the floor alone is tighter than the
+    eigensolver's own accuracy whenever ``slaterWeightMin`` is loose, and then splits manifolds
+    that are exactly degenerate.
     """
     e = np.asarray(e_ref).real
     groups, start = [], 0
@@ -103,6 +168,10 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
     eigenstate was kept: the solver never produced a state beyond the cut, so there is no evidence
     that the boundary manifold is complete (or even that the cut was reached). Only a computed
     state lying strictly outside -- and not degenerate with the last kept one -- certifies that.
+
+    As for :func:`_degenerate_groups`, ``tol`` defaults to the :data:`DEGENERACY_TOL` floor for
+    testability and production callers must pass :func:`_degeneracy_tol`; grouping below the
+    achieved residual bisects the very manifolds this function exists to keep whole.
     """
     e = np.asarray(e_ref).real
     if len(e) == 0:
@@ -119,6 +188,53 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
     while n_keep < len(e_sorted) and abs(e_sorted[n_keep] - e_sorted[original_n_keep - 1]) <= tol:
         n_keep += 1
     return [int(i) for i in order[:n_keep]], n_keep == len(e_sorted)
+
+
+def _size_subspace(num_wanted, width, cap):
+    """Krylov subspace depth for a ``num_wanted``-state request from a width-``width`` block.
+
+    Returns ``(max_subspace_blocks, num_wanted)``. The request is padded to ``2 * num_wanted``
+    (or ``num_wanted + 10``, whichever is larger), capped at the basis size, converted to a block
+    count with a flat ``+20`` of headroom, and then bounded by what the basis itself can hold --
+    ``cap // width - 1`` blocks, since the sweep needs room for a trailing residual block.
+    ``num_wanted`` is finally clamped to ``(blocks - 1) * width``, the most those blocks can
+    deliver.
+
+    One function rather than two copies: ``get_eigenvectors`` sizes the subspace once up front
+    and again whenever the request or the block width changes, and the two spellings had drifted
+    apart cosmetically (an ``if width > 0`` guard against a ``max(1, width)``) while computing the
+    same thing. ``width`` is in fact never 0 -- the start block always carries at least the cold
+    full-support column, and :func:`block_normalize` raises rather than returning a width-0 block
+    -- so the guard was dead either way.
+
+    **The final clamp is not always a no-op, and when it binds it silently reduces the certified
+    output.** It cannot bind on the padding term, which gives ``(blocks - 1) * width >=
+    4 * num_wanted``. It binds when the basis-size bound wins: that leaves ``(blocks - 1) * width
+    ~ cap - 2 * width``, so any request above ``cap - 2 * width`` is trimmed, and at
+    ``cap < 3 * width`` the bound collapses to two blocks and the request is trimmed to ``width``.
+    ``num_wanted`` is the *certified* output of the thermal-manifold search, so trimming it is
+    the wrong trade -- shrinking ``width`` (dropping warm columns) or falling through to the dense
+    branch would both preserve it. Left as-is here because this function is a verbatim lift;
+    ``test_subspace_sizing.py`` pins the behaviour and marks the defect.
+
+    Parameters
+    ----------
+    num_wanted : int
+        States requested, before padding.
+    width : int
+        Lanczos block width, i.e. the number of columns in the start block.
+    cap : int
+        Basis size; nothing may exceed it.
+
+    Returns
+    -------
+    tuple of (int, int)
+        ``(max_subspace_blocks, num_wanted)``.
+    """
+    width = max(1, width)
+    max_subspace = min(max(2 * num_wanted, num_wanted + 10), cap)
+    blocks = min(2 * int(np.ceil(max_subspace / width)) + 20, max(2, cap // width - 1))
+    return blocks, min(num_wanted, (blocks - 1) * width)
 
 
 def _amplitude_from_hash(det_hash: int) -> complex:
@@ -218,7 +334,7 @@ class CIPSISolver:
             )
             self.truncate(psi_ref, _e_ref)
 
-    def truncate(self, psis: list[ManyBodyState], e_ref=None, target=None) -> list[ManyBodyState]:
+    def truncate(self, psis: list[ManyBodyState], e_ref=None, target=None, slaterWeightMin=0) -> list[ManyBodyState]:
         """Keep the globally top-``target`` determinants by eigenvector amplitude.
 
         Importance is the max ``|amplitude|^2`` over ``psis`` (each determinant counted
@@ -226,6 +342,11 @@ class CIPSISolver:
         from the collective amplitude bisection, so every rank retains the identical set
         and the global count never exceeds ``target`` (ties at the cutoff are
         under-admitted). Collective on ``basis.comm``.
+
+        ``slaterWeightMin`` is the cutoff the eigenvectors were converged at. It does not
+        affect the amplitude bisection, only :func:`_degeneracy_tol` -- the importance is
+        summed over degenerate manifolds (see below), so how those manifolds are delimited
+        has to track the eigensolver's accuracy rather than a fixed constant.
         """
         if target is None:
             target = self.basis.truncation_threshold
@@ -245,7 +366,7 @@ class CIPSISolver:
             amps = np.array(blk)
             norms2 = np.zeros(len(keys), dtype=float)
             if amps.size > 0:
-                for group in _degenerate_groups(e_ref):
+                for group in _degenerate_groups(e_ref, tol=_degeneracy_tol(e_ref, slaterWeightMin)):
                     group_amps = amps[:, group]
                     group_norms2 = np.real(group_amps * np.conj(group_amps)).sum(axis=1)
                     norms2 = np.maximum(norms2, group_norms2)
@@ -568,7 +689,8 @@ class CIPSISolver:
         # non-degenerate.
         if len(local_Djs):
             de2_abs = np.abs(de2)
-            scores = np.max(np.stack([de2_abs[g, :].sum(axis=0) for g in _degenerate_groups(e_ref)]), axis=0)
+            groups = _degenerate_groups(e_ref, tol=_degeneracy_tol(e_ref, slater_cutoff))
+            scores = np.max(np.stack([de2_abs[g, :].sum(axis=0) for g in groups]), axis=0)
         else:
             scores = np.zeros(0)
         de2_mask, selection_stats = self._admit_top(scores, scores >= de2_min, max_new)
@@ -764,7 +886,7 @@ class CIPSISolver:
                 # repeats until the energy stabilizes.
                 cap_cycles += 1
                 keep = max(int(threshold) - n_new, int(threshold) // 2, 1)
-                psi_refs = self.truncate(psi_refs, e_ref, target=keep)
+                psi_refs = self.truncate(psi_refs, e_ref, target=keep, slaterWeightMin=slaterWeightMin)
                 if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
                     print(
                         f"------> Basis truncated! (cycle {cap_cycles}: kept "
@@ -788,7 +910,7 @@ class CIPSISolver:
             # the hard threshold on exit (downstream get_eigenvectors re-solves). e_ref
             # must describe the *current* psi_refs -- after a best_basis restore above,
             # that is best_e_ref, not the last cycle's (possibly length-mismatched) e_ref.
-            self.psi_refs = self.truncate(self.psi_refs, e_ref)
+            self.psi_refs = self.truncate(self.psi_refs, e_ref, slaterWeightMin=slaterWeightMin)
         if cap_cycles > 0:
             sel = self.last_selection or {}
             self.truncation_report = {
@@ -835,6 +957,18 @@ class CIPSISolver:
         h_matrix=None,
     ):
         """Solve for the ``num_wanted`` lowest eigenstates below ``max_energy``.
+
+        ``max_energy=None`` means **no cut**: the lowest ``num_wanted`` states are returned as
+        computed, with no trim and no widening. The widening loop below exists only to certify
+        that a *kept manifold* is whole -- a degenerate manifold has no preferred basis, so
+        keeping part of one makes the result depend on the rotation the solver returned -- and
+        without a cut nothing is dropped, so there is nothing to certify. The dense branch's
+        slice is by count alone for the same reason, which does mean the boundary can fall
+        inside a degenerate group. Both are sound only for a caller whose answer does not depend
+        on which basis a manifold came back in: :func:`groundstate.calc_energy`, which keeps
+        ``min(es)``, is the only one, and no other caller should pass ``None``. The warm-start
+        cold retry is a different question (reachability, not completeness) and still applies;
+        see it below.
 
         ``psi_refs``, if given, warm-starts the Krylov solve from a previously converged
         eigenvector block (e.g. the caller's own ``solver.psi_refs`` from a prior ``expand``/
@@ -900,17 +1034,8 @@ class CIPSISolver:
             psi0 = list(psi_refs) + cold_start_block() if warm_started else cold_start_block()
 
             num_wanted = min(num_wanted + 10, len(self.basis))
-
-            max_subspace = min(max(2 * num_wanted, num_wanted + 10), len(self.basis))
-            if len(psi0) > 0:
-                psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
-
-            max_subspace_blocks = 2 * int(np.ceil(max_subspace / max(1, len(psi0)))) + 20
-            if len(psi0) > 0:
-                max_blocks = max(2, len(self.basis) // len(psi0) - 1)
-                max_subspace_blocks = min(max_subspace_blocks, max_blocks)
-
-            num_wanted = min(num_wanted, (max_subspace_blocks - 1) * len(psi0))
+            psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
+            max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), len(self.basis))
 
             H_mat = build_sparse_matrix(self.basis, H) if h_matrix is None else h_matrix
             if self.basis.is_distributed:
@@ -929,6 +1054,7 @@ class CIPSISolver:
             # eigensolver returned -- which depends on the MPI rank count. Cheap in practice: the
             # first solve almost always overshoots the cut already.
             cap = len(self.basis)
+
             cold_retry_available = warm_started
             for _ in range(_MAX_EIGENSTATE_DOUBLINGS):
                 e_ref, psi_refs_arr = restarted_lanczos(
@@ -939,16 +1065,22 @@ class CIPSISolver:
                     max_subspace_blocks=max_subspace_blocks,
                     tol=_eigen_tol(slaterWeightMin),
                     max_restarts=100,
-                    # The TRLM/IRLM kernels already rank-gate every print internally
-                    # (rank0 = (not mpi) or comm.rank == 0, see _trlm.pxi/_irlm.pxi); no need
-                    # to pre-AND rank 0 into the bool here too.
+                    # The TRLM/IRLM drivers already rank-gate every print internally
+                    # (`rank0 = (not mpi) or comm.rank == 0` in ed/trlm.py and ed/irlm.py);
+                    # no need to pre-AND rank 0 into the bool here too.
                     verbose=self.basis.verbose,
                     slaterWeightMin=slaterWeightMin,
                     reort=reort,
                 )
-                if max_energy is None or len(e_ref) == 0:
+                if len(e_ref) == 0:
                     break
-                _, need_more = _energy_cut_indices(e_ref, max_energy)
+                # `need_more` asks a question only a thermal cut can pose -- "is the boundary
+                # manifold provably complete?" -- so with `max_energy=None` there is nothing to
+                # certify and it stays False. The *exhaustion* test below is a different
+                # question and is asked either way; see the retry block.
+                need_more = False
+                if max_energy is not None:
+                    _, need_more = _energy_cut_indices(e_ref, max_energy, tol=_degeneracy_tol(e_ref, slaterWeightMin))
                 # A short return means the eigensolver exhausted the Krylov space reachable from
                 # `psi0` -- it hit an invariant subspace, which a block warm-started from converged
                 # eigenvectors does immediately. Doubling `num_wanted` then re-solves the *same*
@@ -959,26 +1091,31 @@ class CIPSISolver:
                 # deadlock. Decide on rank 0 and broadcast, per the MPI rule in CLAUDE.md.
                 if self.basis.is_distributed:
                     need_more, exhausted = self.basis.comm.bcast((need_more, exhausted), root=0)
-                if not need_more or (exhausted and not cold_retry_available) or (not exhausted and num_wanted >= cap):
-                    break
                 if exhausted:
-                    # The warm block spans a (near-)invariant subspace, so the missing thermal
-                    # states -- typically the other charge sector of a near-degenerate crossing,
-                    # e.g. the fixed-occupation DC search walking over a charge-transfer point --
-                    # are unreachable from it at any num_wanted. Retry once from the cold
+                    # The warm block spans a (near-)invariant subspace, so the missing states --
+                    # typically the other charge sector of a near-degenerate crossing, e.g. the
+                    # fixed-occupation DC search walking over a charge-transfer point -- are
+                    # unreachable from it at any num_wanted. Retry once from the cold
                     # rank-independent start vector, whose support covers the whole basis.
-                    cold_retry_available = False
-                    psi0 = cold_start_block()
-                    psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
-                    psi0_arr = build_distributed_vector(self.basis, psi0).T
-                else:
-                    num_wanted = min(2 * num_wanted, cap)
-                max_subspace = min(max(2 * num_wanted, num_wanted + 10), cap)
-                max_subspace_blocks = min(
-                    2 * int(np.ceil(max_subspace / max(1, len(psi0)))) + 20,
-                    max(2, cap // max(1, len(psi0)) - 1),
-                )
-                num_wanted = min(num_wanted, (max_subspace_blocks - 1) * max(1, len(psi0)))
+                    #
+                    # Reachability, not completeness: this guard is about whether `psi0` could
+                    # see the state at all, so it must fire on the no-cut path too. It used to
+                    # sit behind an early `max_energy is None` break, which meant the caller
+                    # that most needs it never got it -- `calc_energy`'s occupation walk, whose
+                    # whole job is to step across charge sectors, and which keeps exactly the
+                    # `min(es)` a sector-blind warm block silently gets wrong.
+                    if cold_retry_available and (need_more or max_energy is None):
+                        cold_retry_available = False
+                        psi0 = cold_start_block()
+                        psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
+                        psi0_arr = build_distributed_vector(self.basis, psi0).T
+                        max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), cap)
+                        continue
+                    break
+                if max_energy is None or not need_more or num_wanted >= cap:
+                    break
+                num_wanted = min(2 * num_wanted, cap)
+                max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), cap)
 
             if len(e_ref) > 0:
                 psi_refs = build_state(self.basis, psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
@@ -996,14 +1133,18 @@ class CIPSISolver:
                 # function of identical input. Measured, not assumed: the full suite at -n 2 and
                 # -n 3 allgathered `e_ref.tobytes()` from every call -- 7036 and 7040 checked, 375
                 # and 379 of them through this Krylov branch -- with zero divergence in either the
-                # length or the bytes.
+                # length or the bytes. `_degeneracy_tol` is part of that pure function: it reads
+                # only `max|e_ref|` and `slaterWeightMin` (a replicated argument), so it inherits
+                # the same bit-identity rather than adding a new way for ranks to disagree.
                 #
                 # Two things that measurement does not cover, so do not widen the claim: the
                 # suite's Krylov cases are small (no production-cap solve with partial
                 # reorthogonalization), and it ran at OPENBLAS_NUM_THREADS=1 throughout. A
                 # multithreaded LAPACK whose thread count differed between ranks could break the
                 # determinism this relies on.
-                valid_idx, need_more = _energy_cut_indices(e_ref, max_energy)
+                valid_idx, need_more = _energy_cut_indices(
+                    e_ref, max_energy, tol=_degeneracy_tol(e_ref, slaterWeightMin)
+                )
                 if need_more and (self.basis.comm is None or self.basis.comm.rank == 0):
                     print(
                         f"warning: every one of the {len(e_ref)} computed eigenstates falls inside "
@@ -1028,6 +1169,16 @@ class CIPSISolver:
                 dense=self.basis.size < dense_cutoff,
                 return_eigvecs=True,
             )
+            if max_energy is None:
+                # `eigensystem` reads `e_max=None` as "no cut" and returns the *whole* dense
+                # spectrum, so without a bound here a cut-less caller would materialise one
+                # ManyBodyState per determinant -- a cost set by the basis size rather than by
+                # the request, and not what asking for `num_wanted` states means. With the cut
+                # gone `num_wanted` is the only bound left, and it is the same one the Krylov
+                # branch above obeys: that branch never returns more than it asked for either.
+                # `es` comes back ascending, so this is the lowest `num_wanted`.
+                e_ref = e_ref[:num_wanted]
+                psi_ref_dense = psi_ref_dense[:, :num_wanted]
             psi_refs = build_state(self.basis, psi_ref_dense.T, slaterWeightMin=slaterWeightMin)
 
         return e_ref, psi_refs

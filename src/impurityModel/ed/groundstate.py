@@ -179,14 +179,16 @@ def build_basis_and_solver(
     dense_cutoff=1e3,
 ):
     # Deliberately keyed on the exact per-group occupation, NOT on sector_key's (total, frozen):
-    # calc_energy mutates the basis it is handed (`basis.clear(); basis.add_states(support)` at
-    # its tail), and this cache stores that same object, so a hit resumes from the previous
-    # solve's collapsed eigenvector support rather than from a freshly generated seed -- measured
-    # on a toy: seed 2 determinants, 16 returned by the next hit. Widening the key to the total
-    # would make far more trials resume from an unrelated split's converged support, changing the
-    # sector comparison the walk exists to get right. There is also nothing to win: basis
-    # construction is 3.4 s of a 2814.6 s NiO search (0.12 %). The dedupe that pays lives in
-    # find_ground_state_basis's energy_cache, which skips the whole solve.
+    # this cache stores the Basis *object*, which the solve then expands in place, so a hit
+    # resumes from the previous trial's CIPSI-expanded basis rather than from a freshly generated
+    # seed. Widening the key to the total would make far more trials resume from an unrelated
+    # split's expanded basis, changing the sector comparison the walk exists to get right.
+    # (This used to be argued from `calc_energy` collapsing the basis onto its eigenvector
+    # support at its tail. It no longer does -- see the tail of `_solve_sector_core`, which
+    # records why the basis is returned whole -- but the resumption, and so the argument, is the
+    # same either way.) There is also nothing to win: basis construction is 3.4 s of a 2814.6 s
+    # NiO search (0.12 %). The dedupe that pays lives in find_ground_state_basis's energy_cache,
+    # which skips the whole solve.
     key = frozenset(N0.items())
     if sector_cache is not None:
         cached = sector_cache.get(key)
@@ -247,9 +249,12 @@ def calc_energy(
 
     This function initializes a CIPSI basis for a nominal occupation config `N0`,
     expands the basis variationally using the Hamiltonian `h_op`, constructs the
-    sparse Hamiltonian matrix, solves the eigensystem to obtain the lowest
-    eigen-energies and states within a threshold of the ground state, and returns
-    the minimum eigenvalue along with the optimized basis.
+    sparse Hamiltonian matrix, solves for the lowest ``num_wanted`` eigen-energies and
+    returns the minimum along with the optimized basis.
+
+    No thermal cut is applied, unlike :func:`solve_sector`: the minimum of a set of eigenvalues
+    is independent of the basis a degenerate manifold came back in, so the completeness the cut
+    certifies buys this function nothing and the eigenvectors are discarded anyway.
 
     Parameters
     ----------
@@ -300,7 +305,14 @@ def calc_energy(
         The optimized many-body basis.
     """
 
-    es, _eigen_psis, basis = solve_sector(
+    # `_solve_sector_core`, not `solve_sector`, and `max_energy=None` meaning *no cut*: this
+    # function keeps `min(es)`, and the minimum of a set of eigenvalues does not depend on which
+    # basis a degenerate manifold came back in. The Boltzmann cut, and the doubling loop inside
+    # `get_eigenvectors` that widens `num_wanted` until a computed state lands outside it, exist
+    # solely to certify that a *kept manifold* is whole -- work whose entire product this function
+    # throws away one line below. Nothing else changes: the same expansion, the same `num_wanted`,
+    # the same warm start; only the post-solve trim and the widening it drives are skipped.
+    es, _eigen_psis, basis = _solve_sector_core(
         h_op,
         impurity_indices,
         bath_states,
@@ -321,6 +333,7 @@ def calc_energy(
         symmetry_generators=symmetry_generators,
         sector_cache=sector_cache,
         de2_min=de2_min,
+        max_energy=None,
     )
     # Broadcast, not merely returned. A Lanczos eigenvalue is replicated across ranks only to
     # roundoff, and every caller compares it against something: the occupation walk against the
@@ -336,7 +349,7 @@ def calc_energy(
     return (e0 if comm is None else comm.bcast(e0, root=0)), basis
 
 
-def solve_sector(
+def _solve_sector_core(
     h_op,
     impurity_indices,
     bath_states,
@@ -360,17 +373,16 @@ def solve_sector(
     max_energy=None,
     de2_min=SECTOR_WALK_DE2_MIN,
 ):
-    """The thermal eigenmanifold of one charge sector: ``(es, psis, basis)``.
+    """One sector solve, with ``max_energy`` taken **literally**: ``None`` means *no cut*.
 
-    Everything :func:`calc_energy` does except taking the minimum -- it is this function's body,
-    moved here unchanged, so the two cannot drift. Split out because the eigenvectors are needed
-    by callers that the energy alone cannot serve: an impurity occupation ``Tr rho_imp`` per
-    sector, and the Lehmann weight ``|<n|c_d^dagger|0>|^2`` that says whether a sector's lowest
-    state carries any impurity spectral weight at all. ``calc_energy`` deliberately does *not*
-    return them (the arrays are large and every production caller wants one float), so a
-    diagnostic that needs them would otherwise have to re-implement the conventions -- the
-    ``de2_min``, ``num_wanted``, ``energy_cut`` and warm-start choices below -- and would then be
-    measuring a different solve from the one the criterion runs.
+    The shared body of :func:`solve_sector` and :func:`calc_energy`; the two differ only in what
+    they ask :meth:`CIPSISolver.get_eigenvectors` to keep, so they are two thin heads on this one
+    body rather than one calling the other. :func:`solve_sector` resolves ``None`` into the
+    Boltzmann cut for its callers, which want the thermal manifold; :func:`calc_energy` passes
+    ``None`` through, because it keeps ``min(es)`` and the minimum of an eigenvalue set is
+    rotation-invariant -- manifold *completeness*, the thing the cut and its doubling loop exist
+    to certify, is irrelevant to it. Two heads instead of one flag because a ``None`` that means
+    "use the default" to one caller and "no cut" to the other is the overload this seam removes.
 
     ``es`` is **not** broadcast here; :func:`calc_energy` broadcasts the minimum it takes. A
     caller reading these arrays directly is reading rank-local Lanczos output and must say so.
@@ -383,9 +395,9 @@ def solve_sector(
         looking for the lowest state that carries impurity spectral weight has to raise it: the
         lowest few states of an ``N +- 1`` sector can all be bath excitations.
     max_energy : float, optional
-        Cut on ``e - e0``. ``None`` (the default) means :func:`average.energy_cut` at ``tau``,
-        i.e. the Boltzmann manifold the rest of the stack uses. Pass a larger number to enumerate
-        past it -- ``num_wanted`` alone will not, because the cut is applied after the solve.
+        Cut on ``e - e0``, taken literally. ``None`` means no cut at all -- every computed state
+        is returned, up to ``num_wanted``. :func:`solve_sector` substitutes
+        :func:`average.energy_cut` at ``tau`` before getting here.
 
     Returns
     -------
@@ -444,13 +456,11 @@ def solve_sector(
                 # only until the plumbing is removed.
             )
 
-        energy_cut = boltzmann_energy_cut(tau) if max_energy is None else max_energy
-
         with solver_trace.timed("eigensolve"):
             es, eigen_psis = solver.get_eigenvectors(
                 h_op,
                 num_wanted=num_wanted,
-                max_energy=energy_cut,
+                max_energy=max_energy,
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
                 solver=cipsi_solver_method,
@@ -472,6 +482,76 @@ def solve_sector(
         # `ground_state_occupation`, which the support could never encode anyway (the expansion
         # widens the impurity occupation window, so it spans several occupations).
         return es, eigen_psis, basis
+
+
+def solve_sector(
+    h_op,
+    impurity_indices,
+    bath_states,
+    N0,
+    mixed_valence,
+    tau,
+    chain_restrict,
+    spin_flip_dj,
+    dense_cutoff,
+    comm=None,
+    verbose=True,
+    truncation_threshold=None,
+    slaterWeightMin=1e-12,
+    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
+    reort="full",
+    weighted_restrictions=None,
+    frozen_occupations=None,
+    symmetry_generators=None,
+    sector_cache=None,
+    num_wanted=10,
+    max_energy=None,
+    de2_min=SECTOR_WALK_DE2_MIN,
+):
+    """The thermal eigenmanifold of one charge sector: ``(es, psis, basis)``.
+
+    :func:`_solve_sector_core` with the Boltzmann cut supplied: ``max_energy=None`` here means
+    "the manifold the rest of the stack uses", ``energy_cut(tau)``, not "no cut". Callers wanting
+    a wider window -- the double-counting weight tables enumerating past the thermal manifold into
+    the upper Hubbard band -- pass an explicit number.
+
+    Everything :func:`calc_energy` does except taking the minimum, and it runs the same body, so
+    the two cannot drift. It exists because the eigenvectors are needed by callers that the energy
+    alone cannot serve: an impurity occupation ``Tr rho_imp`` per sector, and the Lehmann weight
+    ``|<n|c_d^dagger|0>|^2`` that says whether a sector's lowest state carries any impurity
+    spectral weight at all. ``calc_energy`` deliberately does *not* return them (the arrays are
+    large and every production caller wants one float), so a diagnostic that needs them would
+    otherwise have to re-implement the conventions -- the ``de2_min``, ``num_wanted``,
+    ``max_energy`` and warm-start choices -- and would then be measuring a different solve from
+    the one the criterion runs.
+
+    Every other parameter is :func:`_solve_sector_core`'s; see it for the contract, and
+    :func:`calc_energy` for the same solve reduced to its lowest eigenvalue.
+    """
+    return _solve_sector_core(
+        h_op,
+        impurity_indices,
+        bath_states,
+        N0,
+        mixed_valence,
+        tau,
+        chain_restrict,
+        spin_flip_dj,
+        dense_cutoff,
+        comm=comm,
+        verbose=verbose,
+        truncation_threshold=truncation_threshold,
+        slaterWeightMin=slaterWeightMin,
+        cipsi_solver_method=cipsi_solver_method,
+        reort=reort,
+        weighted_restrictions=weighted_restrictions,
+        frozen_occupations=frozen_occupations,
+        symmetry_generators=symmetry_generators,
+        sector_cache=sector_cache,
+        num_wanted=num_wanted,
+        max_energy=boltzmann_energy_cut(tau) if max_energy is None else max_energy,
+        de2_min=de2_min,
+    )
 
 
 def hartree_fock_seed_occupation(

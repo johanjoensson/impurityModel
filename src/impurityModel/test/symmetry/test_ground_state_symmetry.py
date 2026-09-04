@@ -17,12 +17,10 @@ beyond spin is broken by ``U``.
 
 import numpy as np
 
-from impurityModel.ed import atomic_physics
 from impurityModel.ed.cipsi_solver import CIPSISolver, _commutes_with
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed.model import atomic_u4
 from impurityModel.ed.observables import (
     casimir_operator,
     casimir_to_quantum_number,
@@ -31,39 +29,7 @@ from impurityModel.ed.observables import (
 )
 from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs
-
-N_IMP = 10
-SLATER = (9.0, 0.0, 8.0, 0.0, 6.0)
-EG_SPATIAL = (0, 1)
-
-
-def _cubic_d_shell(*, n_bath_sets=2, soc=0.0):
-    """(h_op, H_full, impurity_orbitals, bath_states) for a cubic d-shell.
-
-    ``n_bath_sets=2`` gives the production layout, a valence *and* a conduction bath -- the case
-    the old one-body-commutant path silently returned ``[]`` for.
-    """
-    n_orb = N_IMP * (1 + n_bath_sets)
-    h = np.zeros((n_orb, n_orb), dtype=complex)
-    for orb in range(N_IMP):
-        # Cubic field splits the SPATIAL orbitals; both spin channels see the same splitting.
-        h[orb, orb] = 0.6 if (orb % 5) in EG_SPATIAL else -0.4
-        for which in range(n_bath_sets):
-            partner = N_IMP * (which + 1) + orb
-            h[partner, partner] = -2.0 if which == 0 else 2.0
-            h[orb, partner] = h[partner, orb] = 0.3 if which == 0 else 0.2
-    if soc:
-        # A spin-mixing term: S_+- stops being a symmetry, and the pairing must be rejected.
-        for spatial in range(5):
-            h[spatial, spatial + 5] += soc
-            h[spatial + 5, spatial] += soc
-    h_op = tensors_to_operator(h)
-    u_op = ManyBodyOperator(atomic_physics.getUop_from_rspt_u4(atomic_u4(2, SLATER)))
-    impurity_orbitals = {0: [list(range(N_IMP))]}
-    bath_sets = [{0: [[N_IMP * (w + 1) + o for o in range(N_IMP)]]} for w in range(n_bath_sets)]
-    while len(bath_sets) < 2:
-        bath_sets.append({0: []})
-    return h_op, h_op + u_op, impurity_orbitals, tuple(bath_sets)
+from impurityModel.test.support.cubic_d_shell import cubic_d_shell
 
 
 def _as_operator(generator):
@@ -77,7 +43,7 @@ def test_every_generator_offered_is_a_symmetry_of_the_full_hamiltonian():
     binding ``truncation_threshold`` its images displace determinants that carry real weight --
     which is how a "symmetry-adapted" run came back with a *higher* variational energy.
     """
-    h_op, h_full, impurity_orbitals, bath_states = _cubic_d_shell()
+    h_op, h_full, impurity_orbitals, bath_states = cubic_d_shell()
     generators = get_symmetry_generators(h_op, impurity_orbitals, bath_states)
 
     assert generators, "no symmetry generators offered for a cubic d-shell with SU(2) spin symmetry"
@@ -89,7 +55,7 @@ def test_every_generator_offered_is_a_symmetry_of_the_full_hamiltonian():
 
 def test_spin_orbit_coupling_withdraws_the_spin_generators():
     """``S_+-`` is genuinely not a symmetry once spin is mixed, and must not be offered."""
-    h_op, h_full, impurity_orbitals, bath_states = _cubic_d_shell(soc=0.15)
+    h_op, h_full, impurity_orbitals, bath_states = cubic_d_shell(soc=0.15)
     generators = get_symmetry_generators(h_op, impurity_orbitals, bath_states)
 
     for i, generator in enumerate(generators):
@@ -104,7 +70,7 @@ def test_the_ground_state_is_a_spin_eigenstate():
     """
     # One bath set, not two: the full 30-orbital layout takes ~60 s here, and the property under
     # test (good Sz / S^2 on the produced state) does not depend on having a conduction bath.
-    _h_op, h_full, impurity_orbitals, bath_states = _cubic_d_shell(n_bath_sets=1)
+    _h_op, h_full, impurity_orbitals, bath_states = cubic_d_shell(n_bath_sets=1)
     pairs = impurity_spin_pairs(impurity_orbitals) + bath_spin_pairs(bath_states)
     s_plus, s_minus, s_z = make_spin_operators(pairs)
 
@@ -159,7 +125,7 @@ def test_the_closure_trades_energy_for_spin_purity_under_a_cap():
     generally the highest-de2 candidates and displace ones that are. Both goals are legitimate;
     they conflict, so the caller chooses.
     """
-    h_op, h_full, impurity_orbitals, bath_states = _cubic_d_shell(n_bath_sets=1)
+    h_op, h_full, impurity_orbitals, bath_states = cubic_d_shell(n_bath_sets=1)
 
     def run(generators, threshold):
         basis = Basis(

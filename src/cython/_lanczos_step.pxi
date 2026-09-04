@@ -203,7 +203,7 @@ def block_lanczos_step_cy(
     # negligible when it is small compared to H. `h_norm_est` is the driver's running estimate
     # (0 on the first step of a cold start, where alpha_i carries the scale).
     q_next, beta_i, active_k, sv_i = factor_residual(
-        wp, mpi, comm, max(float(h_norm_est), float(np.linalg.norm(alpha_i, ord=2))),
+        wp, mpi, comm, max(float(h_norm_est), spectral_norm(alpha_i)),
         deflate_tol=deflate_tol,
     )
     if active_k < 0:
@@ -295,7 +295,7 @@ def block_lanczos_step_cy(
             # SparseKrylovDense.combine_block).
             q_next = selective_orthogonalize(
                 q_next, Q_basis, alphas, betas, W, block_widths,
-                it, p, np.linalg.norm(beta_i, ord=2), reort_eps, reort_period, mpi, comm,
+                it, p, spectral_norm(beta_i), reort_eps, reort_period, mpi, comm,
             )
 
         # --- 8. Bad-block reort + renormalize ----------------------------
@@ -761,7 +761,7 @@ def block_lanczos_cy(
         beta_norm = float(_svb[0])
         if beta_norm_hist is not None:
             beta_norm_hist.append(beta_norm)
-        alpha_norm = np.linalg.norm(alpha_i, ord=2)
+        alpha_norm = spectral_norm(alpha_i)
         # first_step = it == 0: this driver's own loop-local counter, always 0 on the
         # first step executed by THIS call (including a resumed call) -- see
         # check_divergence's docstring for why this must not be "it_abs == 0".

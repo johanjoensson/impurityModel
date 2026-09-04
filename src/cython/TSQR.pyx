@@ -1,5 +1,7 @@
 # distutils: language = c++
-# cython: language_level=3, boundscheck=False, wraparound=False, initializedcheck=False, cdivision=True, freethreading_compatible=True
+# Compiler directives are centralized in setup.py (_DIRECTIVES), so a build mode can
+# turn Cython's runtime checks on: IMPURITYMODEL_BUILD=debug. A `# cython:` header here
+# would override that and silently defeat it.
 
 r"""Tall-skinny QR (TSQR) for row-distributed blocks — the orthonormalization primitive.
 
@@ -107,6 +109,29 @@ REFINE_TOL = EPS_VAL ** (-0.25)            # ~1.5e4
 PANEL_ROWS = 512                           # default local panel height
 
 
+def spectral_norm(a):
+    """``||a||_2`` (largest singular value) through :func:`robust_svd`.
+
+    Use this instead of ``np.linalg.norm(a, ord=2)`` anywhere in the Krylov machinery.
+    numpy's ``ord=2`` computes the same SVD but calls LAPACK's ``gesdd`` directly, with no
+    fallback -- and a core dump from CI run 33817368575 put the intermittent exit-139 inside
+    exactly such a call, in ``estimate_orthonormality``, on a block that had deflated to width
+    1. LAPACK is not instrumented by AddressSanitizer, which is why 68 instrumented runs
+    crashed while reporting nothing.
+
+    Returns ``0.0`` for an empty matrix, matching ``np.linalg.norm(..., ord=2)``; scipy's SVD
+    returns an empty singular-value array there instead.
+
+    Not bit-identical to numpy's spelling, despite a comment in BlockLanczosCore that used to
+    claim it was: measured over 2000 random small blocks, 251 differ, by at most 8.5e-16
+    relative (~4 eps) -- last-bit rounding between two LAPACK front ends. Every consumer uses
+    the result as a *scale* for a heuristic tolerance, and every rank computes it from
+    replicated data with the same library, so rank-invariance is unaffected.
+    """
+    sv = robust_svd(a, compute_uv=False)
+    return float(sv[0]) if sv.size else 0.0
+
+
 def robust_svd(a, compute_uv=True):
     """:func:`scipy.linalg.svd` with a ``gesvd`` fallback on non-convergence.
 
@@ -127,8 +152,12 @@ def robust_svd(a, compute_uv=True):
     except la.LinAlgError:
         result = la.svd(a, compute_uv=compute_uv, lapack_driver="gesvd")
         sv = result[1] if compute_uv else result
+        # `sv[len(sv) - 1]`, never `sv[-1]`: this module is compiled with `wraparound=False`
+        # (see the directive header), under which Cython does not add the length to a negative
+        # index on an inferred ndarray -- `sv[-1]` reaches numpy as `-1 - len(sv)` and raises
+        # IndexError. Every other negative index in these kernels is spelled out the same way.
         s_max = float(sv[0]) if sv.size else 0.0
-        s_min = float(sv[-1]) if sv.size else 0.0
+        s_min = float(sv[len(sv) - 1]) if sv.size else 0.0
         warnings.warn(
             "robust_svd: LAPACK gesdd failed to converge on a "
             f"{np.shape(a)} block; recovered with gesvd "

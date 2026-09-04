@@ -60,11 +60,13 @@ Rule of thumb: **array kernel for small/dense, BLAS-friendly sectors; sparse ker
 when the matrix cannot be formed.** Both are driven through the same `Reort` modes and
 the same TRLM/IRLM drivers, so switching is a matter of the input type.
 
-The IRLM/TRLM restart logic lives inside `BlockLanczos.pyx` (`_irlm_core`,
-`_trlm_core`); the shared EA16 numerics (residual norms, acceptance tolerances,
-restart compression, locked-overlap recurrence) live in the Python module
-`ed/ea16.py`, which both Cython kernels import at runtime. `ed/irlm.py` and
-`ed/trlm.py` are thin re-export wrappers around the compiled entry points.
+The IRLM/TRLM restart logic lives in the Python modules `ed/trlm.py` and
+`ed/irlm.py` (`_trlm_core`, `_irlm_core`, locking, purging, result assembly);
+`BlockLanczos.pyx` re-exports them, not the other way round. The shared EA16
+numerics (residual norms, acceptance tolerances, restart compression,
+locked-overlap recurrence) live in `ed/ea16.py`, which the Cython kernels also
+import at runtime. What stays compiled is the per-step recurrence itself
+(`_lanczos_step.pxi`) and the block primitives.
 
 ### Block orthonormalization: `TSQR.pyx`
 
@@ -102,8 +104,9 @@ The three large kernels are split into `.pxi` textual includes for readability (
 compiled modules; `setup.py` lists them in each Extension's `depends=` so edits trigger a
 recompile). Each `.pxi` opens with a reading-map header:
 
-- `BlockLanczos.pyx` = `_lanczos_step.pxi` (core recurrence) + `_trlm.pxi` (thick-restart) +
-  `_irlm.pxi` (implicitly-restarted / EA16). Imports the shared layer from
+- `BlockLanczos.pyx` = `_lanczos_step.pxi` (core recurrence) plus re-exports of the
+  restart layer, which is Python: `ed/trlm.py` (thick-restart) and `ed/irlm.py`
+  (implicitly-restarted / EA16). Imports the shared layer from
   `BlockLanczosCore.pyx`; no local block-primitive `.pxi`.
 - `BlockLanczosCore.pyx` = the shared layer (`Reort`, tolerances, `estimate_orthonormality`,
   the block-tridiagonal eigensolvers) + `_block_ops.pxi` (the representation-dispatching

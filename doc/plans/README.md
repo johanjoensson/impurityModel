@@ -23,7 +23,12 @@ at a glance.
 > opt-in *memory* win on metals, and the split-cutoff idea (looser ground-state cutoff) was
 > **tested and refuted** — loosening the GS cutoff rotates the metal eigenvector above the
 > 1e-3 bar while ΔE₀ stays ~1e-5 (ΔE₀ is a misleading proxy for correlated metals). No
-> production defaults were changed.
+> production defaults were changed. The **eigenstate-expansion study**
+> (`eigenstate_expansion_tightening.md`) is **closed and mostly refuted**, retained with its
+> verdicts: four of the five growth loops it targeted never fire in production, and shrinking
+> the Krylov subspace was measured to move work into the restart continuation, which is 85% of
+> the cost. It is worth reading before proposing eigensolver work of that shape again — and for
+> the two real solver bugs the measurements turned up.
 
 ## Reading order
 

@@ -1,5 +1,7 @@
 # distutils: language = c++
-# cython: language_level=3, boundscheck=False, wraparound=False, initializedcheck=False, cdivision=True, freethreading_compatible=True
+# Compiler directives are centralized in setup.py (_DIRECTIVES), so a build mode can
+# turn Cython's runtime checks on: IMPURITYMODEL_BUILD=debug. A `# cython:` header here
+# would override that and silently defeat it.
 # Permissive on purpose, unlike BlockLanczos.pyx -- see "Compiler directives" in
 # doc/lanczos_invariants.md.
 
@@ -131,6 +133,7 @@ from impurityModel.ed.TSQR import (
     DEFLATE_EVAL_TOL,
     BREAKDOWN_TOL,
     robust_svd,
+    spectral_norm,
 )
 
 
@@ -145,7 +148,11 @@ def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=N
         e = e[sorted_indices]
         s = s[:, sorted_indices]
         mask = e - np.min(e) <= e_max
-        return np.linalg.norm(betas[-1] @ s[-block_size:, mask], ord=2) < THERMAL_GS_RESIDUAL_TOL
+        # Positive indices only: this module is compiled with `wraparound=False`, under which
+        # `betas[-1]` reaches numpy as `-1 - len(betas)` and raises IndexError.
+        beta_last = betas[len(betas) - 1]
+        s_last = s[s.shape[0] - block_size:, mask]
+        return spectral_norm(beta_last @ s_last) < THERMAL_GS_RESIDUAL_TOL
 
     if v0 is None:
         v0 = np.random.rand(h.shape[1], block_size) + 1j * np.random.rand(h.shape[1], block_size)
@@ -629,7 +636,7 @@ def block_lanczos_array_cy(
         # running spectral-scale estimate (max of the block norms seen so far, all bounded by
         # ||H||), widened by this step's alpha since the guard has not run yet. On the first
         # step of a cold start h_norm_est is still 0 and alpha_0 carries the scale.
-        _h_scale = max(h_norm_est, t_norm_max, float(np.linalg.norm(alpha_i_arr, ord=2)))
+        _h_scale = max(h_norm_est, t_norm_max, spectral_norm(alpha_i_arr))
         q_next, beta_i, active_k, sv_i = factor_residual(
             wp_arr, mpi, comm, _h_scale, deflate_tol=deflate_tol
         )
@@ -663,7 +670,7 @@ def block_lanczos_array_cy(
         # below) with no SVD of its own.
         beta_norm = float(sv_i[0])
         _reort_acted = False
-        alpha_norm = np.linalg.norm(alpha_i_arr, ord=2)
+        alpha_norm = spectral_norm(alpha_i_arr)
         # first_step = it == start_it: this kernel's own absolute loop counter, always
         # start_it on the first step executed by THIS call (including a resumed call)
         # -- see check_divergence's docstring for why this must not be "it == 0".
@@ -720,7 +727,7 @@ def block_lanczos_array_cy(
                 # current diagnostic run needs.
                 _n_blks = W.shape[1] - 1
                 _widths_trace = block_widths + [n_curr]
-                _predicted_max = [float(np.max(np.abs(W[-1, j]))) for j in range(_n_blks)]
+                _predicted_max = [float(np.max(np.abs(W[W.shape[0] - 1, j]))) for j in range(_n_blks)]
                 _bad_idx_predicted = [j for j in range(_n_blks) if _predicted_max[j] > BAD_BLOCK_TOL]
                 _triggered = bool(_force_reort) or (max(_predicted_max) > REORT_TOL if _predicted_max else False)
                 _Q_mat = Q_list[0]

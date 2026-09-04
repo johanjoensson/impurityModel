@@ -23,7 +23,9 @@ from impurityModel.ed.cipsi_solver import (
     _EIGEN_TOL_FLOOR,
     _EIGEN_TOL_MAX,
     DEGENERACY_TOL,
+    DEGENERACY_TOL_MARGIN,
     _amplitude_from_hash,
+    _degeneracy_tol,
     _degenerate_groups,
     _eigen_tol,
     _energy_cut_indices,
@@ -49,6 +51,64 @@ def test_eigen_tol_follows_slater_weight_min():
     cuts = [1e-4, 1e-6, 1e-8, 1e-10, 1e-12, 1e-14]
     tols = [_eigen_tol(c) for c in cuts]
     assert all(a >= b for a, b in itertools.pairwise(tols))
+
+
+def test_degeneracy_tol_never_groups_below_the_achieved_residual():
+    """The grouping tolerance must track how hard the eigensolver was asked to work.
+
+    A Ritz pair converged to ``||r||`` has ``|theta - lambda| <= ||r||``, and the members of an
+    exactly degenerate cluster come back split by ``O(||r||)``. Grouping below that splits
+    manifolds that *are* degenerate -- the precise failure the manifold-summed CIPSI score and
+    ``_energy_cut_indices`` exist to prevent.
+    """
+    e = np.array([-111.17, -111.17, -110.0])
+    for cutoff in (0.0, None, 1e-6, 1e-5):
+        assert _degeneracy_tol(e, cutoff) >= DEGENERACY_TOL_MARGIN * _eigen_tol(cutoff)
+
+
+def test_degeneracy_tol_is_unchanged_on_the_production_ground_state_path():
+    """`slaterWeightMin = 1e-12` demands a 1e-12 residual, three orders under the floor, so the
+    floor still governs. This is what keeps the fix a no-op for the ground-state goldens."""
+    e = np.array([-111.17, -111.17, -110.0])
+    assert _degeneracy_tol(e, 1e-12) == DEGENERACY_TOL
+
+
+def test_degeneracy_tol_was_ten_times_too_tight_on_the_loose_paths():
+    """The bug this function fixes, stated as a test.
+
+    ``_eigen_tol`` returns ``_EIGEN_TOL_MAX`` (1e-8) whenever ``slaterWeightMin`` is 0 or above
+    1e-8 -- ten times *looser* than the old fixed ``DEGENERACY_TOL`` -- and three
+    manifold-consuming paths run exactly there: ``dc_frozen.FrozenSpaceSweep`` and
+    ``dc_criteria`` both default ``slater_weight_min=0``, and the occupation walk runs at
+    ``sqrt(slaterWeightMin)``, i.e. 1e-6 for the usual 1e-12.
+    """
+    e = np.array([-111.17, -111.17, -110.0])
+    for cutoff in (0.0, 1e-6):
+        assert _eigen_tol(cutoff) > DEGENERACY_TOL, "premise: the residual is looser than the floor"
+        assert _degeneracy_tol(e, cutoff) > _eigen_tol(cutoff)
+
+    # An exactly degenerate pair returned split by the residual the solver was allowed:
+    # the old fixed floor bisects it, the derived tolerance keeps it whole.
+    split = np.array([0.0, _eigen_tol(0.0), 5.0])
+    assert _degenerate_groups(split, tol=DEGENERACY_TOL) == [[0], [1], [2]]
+    assert _degenerate_groups(split, tol=_degeneracy_tol(split, 0.0)) == [[0, 1], [2]]
+
+    # ...and the same for the cut, which must not hand back half a manifold.
+    idx, _ = _energy_cut_indices(split, max_energy=0.0, tol=DEGENERACY_TOL)
+    assert idx == [0], "premise: the floor cuts the pair in half"
+    idx, _ = _energy_cut_indices(split, max_energy=0.0, tol=_degeneracy_tol(split, 0.0))
+    assert idx == [0, 1]
+
+
+def test_degeneracy_tol_stays_above_roundoff_on_a_large_spectrum():
+    """A fixed 1e-9 stops being "well above roundoff" once eigenvalues reach ~1e5; this code has
+    run charge-transfer poles at 1.5e4."""
+    eps = float(np.finfo(float).eps)
+    assert _degeneracy_tol(np.array([1e6]), 1e-12) == pytest.approx(DEGENERACY_TOL_MARGIN * eps * 1e6)
+    # ...but the scale term must not weaken the floor at ordinary scales
+    assert _degeneracy_tol(np.array([1e2]), 1e-12) == DEGENERACY_TOL
+    # degenerate edge: no eigenvalues, no scale
+    assert _degeneracy_tol([], 1e-12) == DEGENERACY_TOL
 
 
 def test_amplitude_from_hash_is_deterministic_and_rank_independent():

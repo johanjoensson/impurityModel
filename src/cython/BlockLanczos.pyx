@@ -1,5 +1,7 @@
 # distutils: language = c++
-# cython: language_level=3, boundscheck=False, initializedcheck=False, wraparound=False, freethreading_compatible=True, cdivision=True, cpow=True
+# Compiler directives are centralized in setup.py (_DIRECTIVES), so a build mode can
+# turn Cython's runtime checks on: IMPURITYMODEL_BUILD=debug. A `# cython:` header here
+# would override that and silently defeat it.
 # Strict on purpose, unlike BlockLanczosArray.pyx -- see "Compiler directives" in
 # doc/lanczos_invariants.md. wraparound=False means _lanczos_step.pxi's cdef-typed
 # lists must use lst[len(lst) - 1], never lst[-1].
@@ -85,7 +87,7 @@ from impurityModel.ed.BlockLanczosCore import (
     REORT_PERIOD,
     BAD_BLOCK_TOL,
 )
-from impurityModel.ed.TSQR import robust_svd
+from impurityModel.ed.TSQR import robust_svd, spectral_norm
 
 # --- Optional per-step profiling (env-gated, ~zero cost when off) -------------------
 # Set BLOCKLANCZOS_PROFILE=1 to accumulate wall time per sub-operation of the sparse

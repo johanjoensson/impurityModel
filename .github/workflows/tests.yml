@@ -7,6 +7,8 @@ on:
   pull_request:
     branches:
       - master
+  # Manual trigger, so a sanitizer run can be taken without pushing to master or a PR.
+  workflow_dispatch:
 
 concurrency:
   group: tests-${{ github.workflow }}-${{ github.ref }}
@@ -22,11 +24,22 @@ jobs:
         # ubuntu-22.04 runner (gcc-12, clang-15) plus the Intel oneAPI compiler.
         # The `parallel` jobs exercise the threaded ManyBodyOperator::apply path;
         # the `coverage` job is the single canonical run uploaded to Coveralls.
+        #
+        # The `build: debug` leg is the checked build (IMPURITYMODEL_BUILD, see setup.py):
+        # boundscheck and initializedcheck on, which is the *only* configuration that
+        # catches an out-of-bounds kernel access. Everywhere else those directives are off
+        # and such a read silently returns whatever is there -- measured
+        # 1.429631004289123e-309, a subnormal that reads as a plausible small number rather
+        # than an error. It is one leg because it is nearly free: measured locally at
+        # serial 124.9 s / -n 2 347.8 s / -n 3 547.0 s against a release build's
+        # ~120 / ~362 / ~547, i.e. inside run-to-run noise. The first full run of it found
+        # nothing, so it is standing insurance against a future regression, not a backlog.
         include:
           - { compiler: gcc-12,   cxx_std: "-std=c++17", parallel: false }
           - { compiler: gcc-12,   cxx_std: "-std=c++20", parallel: false, coverage: true }
           - { compiler: gcc-12,   cxx_std: "-std=c++2b", parallel: false }
           - { compiler: gcc-12,   cxx_std: "-std=c++20", parallel: true }
+          - { compiler: gcc-12,   cxx_std: "-std=c++20", parallel: false, build: debug }
           - { compiler: clang-15, cxx_std: "-std=c++17", parallel: false }
           - { compiler: clang-15, cxx_std: "-std=c++20", parallel: false }
           - { compiler: intel,    cxx_std: "-std=c++17", parallel: false }
@@ -46,6 +59,25 @@ jobs:
       OPENBLAS_NUM_THREADS: "1"
       OMP_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
+      # faulthandler is turned OFF, deliberately, and this is the most important line in the
+      # job. The first three symbolised cores (run 33808549353) all died on the traceback
+      # dumping path itself:
+      #
+      #   #0 dump_frame (frame=..., fd=38)                     Python/traceback.c:1264
+      #   #0 _PyCode_LineNumberFromArray (index=76643932, ...) pycore_code.h:556
+      #   #0 PyType_HasFeature (...)                           object.h:772
+      #
+      # dump_frame is faulthandler's frame dumper, and an index of 76643932 is garbage -- it is
+      # walking frames that are being mutated underneath it. faulthandler dumps *all threads* on
+      # a fatal signal without holding the GIL, so on a process with live threads it can fault
+      # inside the handler. The core then records the handler's crash and the original fault is
+      # lost, which is exactly why 30 crashes produced neither a usable backtrace nor the
+      # "Fatal Python error" banner the dump is supposed to print.
+      #
+      # So: no faulthandler, and the kernel writes the core at the *original* fault. Disabling
+      # pytest's plugin is what matters (it enables faulthandler itself); PYTHONFAULTHANDLER is
+      # simply not set. Turn this back on only to study the handler, never to diagnose the crash.
+      PYTEST_ADDOPTS: "-p no:faulthandler"
 
     steps:
       - name: Checkout code
@@ -63,7 +95,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y mpich libmpich-dev
+          sudo apt-get install -y mpich libmpich-dev gdb
           COMPILER="${{ matrix.compiler }}"
           if [[ "$COMPILER" == gcc-* ]]; then
             sudo apt-get install -y "g++-${COMPILER#gcc-}"
@@ -125,8 +157,19 @@ jobs:
 
           # setup.py adds -std=c++17 only if CXXFLAGS has no -std flag, and reads
           # BOOST_ROOT to locate the Boost headers.
-          export CXXFLAGS="${{ matrix.cxx_std }}"
+          # -g -fno-omit-frame-pointer so a core dump has names and line numbers for our own
+          # frames. Neither changes code generation -- -g only emits debug sections, and the
+          # frame pointer costs a register, not semantics -- so the crash this job exists to
+          # catch is not perturbed by making it legible. Without them a backtrace of the
+          # extensions is bare addresses, which is most of what we would want to read.
+          export CXXFLAGS="${{ matrix.cxx_std }} -g -fno-omit-frame-pointer"
           export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
+
+          # Build mode (setup.py). Unset on every leg but the checked one, hence the
+          # default -- an empty IMPURITYMODEL_BUILD is rejected rather than ignored, so
+          # this cannot silently degrade to "no mode".
+          export IMPURITYMODEL_BUILD="${{ matrix.build || 'release' }}"
+          echo "build mode: $IMPURITYMODEL_BUILD"
 
           # Enable the threaded apply path the way setup.py expects: this adds
           # -DPARALLEL -pthread to BOTH the compile and link steps. Passing
@@ -137,13 +180,54 @@ jobs:
 
           pip install --no-build-isolation -e .
 
+      - name: Verify the checked build is actually checked
+        if: matrix.build == 'debug'
+        run: |
+          # Fail closed. A checked leg that silently built unchecked would pass and mean
+          # nothing, and that is not hypothetical: locally, switching IMPURITYMODEL_BUILD
+          # reused the previously generated C++ because cythonize decides staleness from
+          # timestamps and ignores directive changes. setup.py's .build-mode stamp fixes
+          # that, and this asserts the fix worked rather than trusting it.
+          #
+          # __Pyx_RaiseBufferIndexError is emitted only under boundscheck=True: measured
+          # 32 sites in TSQR.cpp for the checked build and 0 for release.
+          n=$(grep -c "__Pyx_RaiseBufferIndexError" src/cython/TSQR.cpp || true)
+          echo "bounds-check sites in TSQR.cpp: $n"
+          if [ "${n:-0}" -eq 0 ]; then
+            echo "::error::IMPURITYMODEL_BUILD=debug produced no bounds checks -- this leg"
+            echo "::error::would report success while testing an unchecked build"
+            exit 1
+          fi
+
+      - name: Enable core dumps
+        run: |
+          # The kernel writes a core regardless of what signal handlers the process installed,
+          # which is why this is worth more here than faulthandler: measured locally,
+          # faulthandler fires for a segfault during a test but not for one at interpreter
+          # shutdown, and none of the 27 recorded crashes has ever produced a traceback. A core
+          # gives the real backtrace of the real crash, in the process that actually died.
+          #
+          # core_pattern is global and needs root; the per-process size limit is inherited from
+          # the shell, so `ulimit -c unlimited` has to be set inside each step that runs tests
+          # (a step is a fresh shell, so setting it here would not carry).
+          sudo mkdir -p /cores
+          sudo chmod 1777 /cores
+          echo '/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern
+          # Some MPI launchers reset this; record what it actually is.
+          echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
+          ulimit -c unlimited && echo "core limit in this shell: $(ulimit -c)"
+
       - name: Run serial tests
         run: |
+          ulimit -c unlimited
           pytest --cache-clear $PYTEST_COV_ARGS
 
       - name: Run MPI tests (1 rank)
         run: |
-          mpiexec -n 1 python -m pytest --cache-clear --with-mpi $PYTEST_COV_ARGS
+          ulimit -c unlimited
+          # test_rank_independence.py is deselected here and run in its own steps at the
+          # end of this job -- see "Run rank-invariance guards" below.
+          mpiexec -n 1 python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py $PYTEST_COV_ARGS
 
       - name: Run MPI tests (2 ranks)
         run: |
@@ -151,7 +235,8 @@ jobs:
           # to combine into a shared .coverage (which crashes rank>0 with exit 3). The
           # rank env var is PMI_RANK under MPICH (the CI MPI) and OMPI_COMM_WORLD_RANK
           # under Open MPI; default 0 keeps this a no-op when coverage is off.
-          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi '"$PYTEST_COV_ARGS"
+          ulimit -c unlimited
+          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
 
       - name: Run MPI tests (3 ranks)
         run: |
@@ -159,7 +244,8 @@ jobs:
           # in play for small fixtures -- i.e. only visible at 3+ ranks, never at 2. This
           # leg is what caught the locked-reort deadlock in _lanczos_step.pxi (empty-rank
           # collectives silently skipped on some ranks but not others).
-          mpiexec -n 3 bash -c 'COVERAGE_FILE=.coverage.mpi3_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi '"$PYTEST_COV_ARGS"
+          ulimit -c unlimited
+          mpiexec -n 3 bash -c 'COVERAGE_FILE=.coverage.mpi3_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
 
       - name: Combine coverage and write XML
         if: matrix.coverage == true
@@ -178,145 +264,773 @@ jobs:
           file: coverage.xml
           format: cobertura
 
-  # test-asan:
-  #   # Diagnostic leg for the intermittent SIGSEGV in test_mpi_infra/test_rank_independence.py
-  #   # (MPICH "BAD TERMINATION", exit 139) first seen once the numeric test-suite fixes let CI
-  #   # reach the MPI steps for the first time. It has hit three different legs (intel/c++17,
-  #   # gcc-12/c++20/coverage, gcc-12/c++17 plain) at three different points within that one file
-  #   # (0, 2, and 2 dots in), which rules out a bug tied to one compiler or one specific test
-  #   # transition and points at heap corruption elsewhere that only crashes later, wherever the
-  #   # corrupted memory next gets touched -- not something a debugger attached after the fact, or
-  #   # more code reading, can localize. AddressSanitizer instruments every allocation with redzones
-  #   # and aborts with a precise stack trace *at the actual bad read/write*, which is the right tool
-  #   # for exactly this failure mode. Not part of the `fail-fast: false` matrix above (deliberately
-  #   # single-compiler, no coverage/parallel) -- this is a standing diagnostic job while the crash
-  #   # is open, not a release-quality gate; remove or demote it once the root cause is found and
-  #   # fixed (or confirmed not to be in this codebase's own extension code).
-  #   runs-on: ubuntu-22.04
-  #   env:
-  #     OPENBLAS_NUM_THREADS: "1"
-  #     OMP_NUM_THREADS: "1"
-  #     MKL_NUM_THREADS: "1"
-  #     # -O1 (not -O0/-O2+): ASan's own docs recommend -O1 as the sweet spot -- enough
-  #     # optimization that the build finishes and runs in reasonable time, not so much that
-  #     # inlining/reordering degrades stack traces the way -O2/-O3 can.
-  #     CXXFLAGS: "-std=c++20 -fsanitize=address -fno-omit-frame-pointer -g -O1"
-  #     LDFLAGS: "-fsanitize=address"
-  #     # detect_leaks=0: Python/mpi4py hold plenty of memory alive by design until interpreter
-  #     # shutdown (reference cycles, cached small objects); leak reports on that would bury the
-  #     # actual signal (heap-buffer-overflow / use-after-free) this leg exists to catch.
-  #     # verify_asan_link_order=0: actions/setup-python's prebuilt CPython interpreter isn't
-  #     # itself linked against ASan, so LD_PRELOAD-ing libasan.so into it trips ASan's own
-  #     # startup check for "runtime does not come first in the initial library list" -- a
-  #     # known false alarm for exactly this LD_PRELOAD-onto-an-unlinked-interpreter setup
-  #     # (first attempt of this job failed silently in <2s at that check, before pytest
-  #     # printed anything).
-  #     ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1:verify_asan_link_order=0"
-  #     # CPython's own small-object allocator (pymalloc) pools memory in arenas, which hides
-  #     # individual allocations from ASan's redzone tracking. Disabling it routes every Python
-  #     # allocation through the system malloc ASan already intercepts.
-  #     PYTHONMALLOC: "malloc"
-  #     # Stdout is fully block-buffered (not line-buffered) once GitHub Actions' log
-  #     # capture has it on a pipe, not a TTY. A process that dies from a raw signal skips
-  #     # the normal flush-on-exit, so output right before a crash can vanish from the log
-  #     # even though it executed -- exactly what happened to the bare interpreter's own
-  #     # startup print on the first ASan attempt. ASan's own reports use unbuffered
-  #     # writes and are unaffected; this is insurance for everything else (pytest's
-  #     # banner, any print in the code under test).
-  #     PYTHONUNBUFFERED: "1"
+      # Deliberately the last steps in the job, and deliberately three of them.
+      #
+      # These five tests are the only end-to-end rank-invariance guards in the suite, and they
+      # spent a long time skipped behind an intermittent whole-process SIGSEGV (MPICH "BAD
+      # TERMINATION", exit 139) that hit 1-2 of 8 legs on a normal run and 5 of 8 on one -- two
+      # solver bugs went through everything else while they were off. The reproduction attempt
+      # came back empty (110 MPICH runs plus a clean AddressSanitizer suite; the evidence is in
+      # the module comment), so they are back in the gate -- but a 139 kills the process, taking
+      # every other test result in that step down with it, and that collateral damage is what
+      # the skip was really avoiding. Running them separately, after the coverage upload, buys
+      # the isolation without a second skip: if the crash returns it fails one step at the end
+      # of a job whose other results are already recorded.
+      #
+      # No $PYTEST_COV_ARGS on purpose. Coverage is combined and uploaded above, so data written
+      # here would be too late to count; leaving coverage off also removes any chance of the
+      # ranks racing a data file and exiting 3, which would read like the crash returning.
+      - name: Run rank-invariance guards (1 rank)
+        run: |
+          ulimit -c unlimited
+          mpiexec -n 1 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
 
-  #   steps:
-  #     - name: Checkout code
-  #       uses: actions/checkout@v4
-  #       with:
-  #         fetch-depth: 0
+      - name: Run rank-invariance guards (2 ranks)
+        run: |
+          ulimit -c unlimited
+          mpiexec -n 2 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
 
-  #     - name: Set up Python
-  #       uses: actions/setup-python@v5
-  #       with:
-  #         python-version: '3.11'
+      - name: Run rank-invariance guards (3 ranks)
+        run: |
+          ulimit -c unlimited
+          mpiexec -n 3 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
 
-  #     - name: Install system dependencies
-  #       run: |
-  #         sudo apt-get update
-  #         sudo apt-get install -y mpich libmpich-dev g++-12
+      - name: Backtrace any core dump
+        # The payoff step. Runs whenever anything above failed, which for this job means an
+        # exit-139 leg. 27 crashes have been recorded by *where the dots stopped* and nothing
+        # else -- no Python traceback has ever appeared, and AddressSanitizer reports nothing --
+        # so this is the first thing that can say what the process was actually executing.
+        if: failure()
+        run: |
+          shopt -s nullglob
+          cores=(/cores/core.*)
+          echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
+          if [ ${#cores[@]} -eq 0 ]; then
+            echo "::warning::no core dump was written -- the crash produced none, or the limit"
+            echo "::warning::did not survive into the process that died (check the ulimit line"
+            echo "::warning::printed by the failing step above)"
+            exit 0
+          fi
+          # gdb needs the *executable* as well as the core to resolve symbols. Passing only
+          # --core produced a backtrace of pure "?? ()" on the first run that captured one --
+          # a 179 MB, complete core, rendered useless by a one-argument mistake. It was
+          # "validated" locally beforehand and passed, because this machine has debuginfod and
+          # resolves everything from the build-id; the runner has neither that nor the
+          # executable, so the local check could not see the difference. Keep the executable
+          # argument even though a local test will pass without it.
+          PY="$(command -v python)"
+          echo "executable: $PY"
+          for c in "${cores[@]}"; do
+            echo "=============================================================="
+            echo "core: $c  ($(du -h "$c" | cut -f1))"
+            # Backtrace FIRST, and generously. `info sharedlibrary` was previously listed
+            # before it and prints ~150 lines on this image, so a head -200 swallowed the
+            # entire backtrace and left exactly one frame in the log. Order the commands by
+            # what is worth reading, and cap high enough that a deep stack survives.
+            gdb --batch \
+                -ex "set pagination off" \
+                -ex "set sysroot /" \
+                -ex "thread apply all bt full" \
+                "$PY" "$c" 2>&1 | head -400
+            echo "---- loaded objects (tail of the diagnostic, not the point) ----"
+            gdb --batch -ex "set pagination off" -ex "info sharedlibrary" "$PY" "$c" 2>&1 \
+              | grep -aE "impurityModel|libmpich|No symbol table" | head -20
+          done
+          {
+            echo "### Core dump backtrace"
+            echo
+            echo '```'
+            gdb --batch -ex "set pagination off" -ex "set sysroot /" \
+                -ex "thread apply all bt" "$PY" "${cores[0]}" 2>&1 | head -60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-  #     - name: Install Boost (headers)
-  #       uses: MarkusJx/install-boost@v2.4.5
-  #       id: install-boost
-  #       with:
-  #         boost_version: 1.83.0
+  test-asan:
+    # Standing memory-safety instrumentation: AddressSanitizer + UndefinedBehaviorSanitizer
+    # over one serial run of the whole suite.
+    #
+    # This job began as a hunt for an intermittent exit-139 and was shaped around it -- looping
+    # the files the crashes clustered on, searching for a working ASan memory layout. That
+    # hunt is over: the crash was this suite's own hang watchdog
+    # (faulthandler.dump_traceback_later in conftest, walking every thread's Python frames
+    # without the GIL while the main thread mutated them), fixed by making it opt-in. The
+    # search and the crash-site loops are gone with it; they are in git history if a similar
+    # hunt ever needs them.
+    #
+    # What remains is worth keeping on its own terms, and the hunt is the argument for it: ASan
+    # ran 68 instrumented times against that crash and reported nothing, because a data race on
+    # a live frame is a perfectly *valid* heap access. That is a lesson about coverage classes,
+    # not a failure of the tool -- ASan answers "is this access valid", UBSan "is this operation
+    # defined", and test-tsan below "did two threads touch this without synchronization". Each
+    # is blind to the others' class.
+    #
+    # Serial, one compiler, no coverage or parallel: this is instrumentation, not a matrix. The
+    # threaded configuration is test-tsan's job, and the checked Cython build (bounds and
+    # initialized-memoryview checks) is a leg of the matrix above.
+    runs-on: ubuntu-22.04
+    # Non-blocking on purpose: the matrix legs above already fail when this crash fires, so a
+    # second red X would gate merges on a probe that is *expected* to trip. The cost of that
+    # choice is that a real ASan report reduces to a soft neutral mark nobody clicks -- so the
+    # steps below also write any report they find to $GITHUB_STEP_SUMMARY, which is visible on
+    # the run page without opening a log. Non-blocking and quiet would be useless; this is
+    # non-blocking and loud.
+    continue-on-error: true
+    # ~65 min expected (ASan build with mpi4py from source, then ~35 min of looped runs and a
+    # ~15 min serial suite). The cap is there so a hang -- which is a plausible outcome when the
+    # thing under investigation is memory corruption -- gets killed rather than occupying a
+    # runner for six hours.
+    timeout-minutes: 120
+    env:
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      # -O1 (not -O0/-O2+): ASan's own docs recommend -O1 as the sweet spot -- enough
+      # optimization that the build finishes and runs in reasonable time, not so much that
+      # inlining/reordering degrades stack traces the way -O2/-O3 can.
+      # address,undefined compose in one build: same objects, one extra flag, and UBSan's
+      # runtime arrives as a DT_NEEDED of our own extensions rather than needing its own
+      # preload. UBSan covers a class ASan structurally cannot see -- ASan answers "is this
+      # access valid", UBSan answers "is this operation defined" -- and the surface here is
+      # real: signed-overflow in the kernels' index arithmetic, out-of-range shifts in
+      # SlaterDeterminant.h and ManyBodyOperator.h (the MSB-first orbital<->bit conversion),
+      # and integer-divide-by-zero, which is unguarded because cdivision=True in every module
+      # removes Cython's check.
+      CXXFLAGS: "-std=c++20 -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1"
+      LDFLAGS: "-fsanitize=address,undefined"
+      # detect_leaks=0: Python/mpi4py hold plenty of memory alive by design until interpreter
+      # shutdown (reference cycles, cached small objects); leak reports on that would bury the
+      # actual signal (heap-buffer-overflow / use-after-free) this leg exists to catch.
+      # verify_asan_link_order=0: actions/setup-python's prebuilt CPython interpreter isn't
+      # itself linked against ASan, so LD_PRELOAD-ing libasan.so into it trips ASan's own
+      # startup check for "runtime does not come first in the initial library list" -- a
+      # known false alarm for exactly this LD_PRELOAD-onto-an-unlinked-interpreter setup
+      # (first attempt of this job failed silently in <2s at that check, before pytest
+      # printed anything).
+      # log_path: ASan writes each report to <log_path>.<pid> instead of stderr. The serial
+      # probe died with exit 1 after printing only pytest's header -- during startup/collection,
+      # before any test ran -- with no report in captured stdout or stderr. That is exactly the
+      # case where a file is more reliable than a stream: reports survive redirection, block
+      # buffering, and a process that dies without flushing. Every step that can fail cats
+      # /tmp/asan_report.* afterwards, so "no report" becomes a fact rather than an assumption.
+      ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1:verify_asan_link_order=0:log_path=/tmp/asan_report"
+      # print_stacktrace: a UBSan report without one names the source line but not how it was
+      # reached, which for a kernel called from three drivers is half the question.
+      # halt_on_error: UBSan recovers by default, so a run could otherwise report dozens of
+      # violations and still exit 0 -- the same fail-open shape as an unrun sanitizer.
+      # log_path for the same reason it is set for ASan: a report on stderr is lost when the
+      # process dies without flushing, and this whole hunt spent rounds on absent output.
+      UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1:log_path=/tmp/ubsan_report"
+      # CPython's own small-object allocator (pymalloc) pools memory in arenas, which hides
+      # individual allocations from ASan's redzone tracking. Disabling it routes every Python
+      # allocation through the system malloc ASan already intercepts.
+      PYTHONMALLOC: "malloc"
+      # Stdout is fully block-buffered (not line-buffered) once GitHub Actions' log
+      # capture has it on a pipe, not a TTY. A process that dies from a raw signal skips
+      # the normal flush-on-exit, so output right before a crash can vanish from the log
+      # even though it executed -- exactly what happened to the bare interpreter's own
+      # startup print on the first ASan attempt. ASan's own reports use unbuffered
+      # writes and are unaffected; this is insurance for everything else (pytest's
+      # banner, any print in the code under test).
+      PYTHONUNBUFFERED: "1"
 
-  #     - name: Install Python dependencies
-  #       run: |
-  #         python -m pip install --upgrade pip
-  #         pip install numpy scipy "setuptools>=77.0.3" setuptools-scm cython build
-  #         # Built from source under the same CXXFLAGS/LDFLAGS above, so mpi4py's own
-  #         # extension is ASan-instrumented too, not just impurityModel's.
-  #         pip install --no-binary mpi4py mpi4py pytest pytest-mpi
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-  #     - name: Build and install impurityModel (ASan)
-  #       run: |
-  #         export CXX="g++-12"
-  #         export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
-  #         pip install --no-build-isolation -e .
-  #         # LD_PRELOAD must name the exact libasan matching the compiler that built the
-  #         # extension, and needs to be in the process environment before python starts so
-  #         # every later step in this job inherits it (mpiexec propagates the local
-  #         # environment to the processes it launches).
-  #         echo "LD_PRELOAD=$(g++-12 -print-file-name=libasan.so)" >> "$GITHUB_ENV"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-  #     - name: ASan smoke test
-  #       run: |
-  #         # A bare interpreter start under LD_PRELOAD=libasan.so, so a startup-level ASan
-  #         # problem (link order, missing symbol, etc.) fails here with real output instead
-  #         # of pytest's own startup silently eating a <2s crash (see the ASAN_OPTIONS
-  #         # comment above -- that's what this step would have caught immediately).
-  #         #
-  #         # setarch -R (every python/pytest/mpiexec invocation below): the third attempt at
-  #         # this job died with "Shadow memory range interleaves with an existing memory
-  #         # mapping. ASan cannot proceed correctly. ABORTING." on the mpi4py import step --
-  #         # a known ASan/ASLR incompatibility (google/sanitizers#856): ASan reserves a huge
-  #         # fixed shadow-memory range, and on kernels >=4.12 the default high-entropy mmap
-  #         # placement can land a normal mapping inside it. Disabling ASLR for just this
-  #         # job's processes is the standard workaround; it's about address-space layout,
-  #         # not the memory-safety bug this job exists to catch, so it doesn't weaken the
-  #         # diagnostic.
-  #         setarch "$(uname -m)" -R python -c "print('asan smoke test ok')"
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mpich libmpich-dev g++-12
 
-  #     - name: ASan smoke test (import one Cython extension)
-  #       run: |
-  #         # Isolates "loading an ASan-instrumented .so at all" from anything pytest- or
-  #         # mpi4py-specific. TSQR is one of the smaller extensions with few dependents.
-  #         setarch "$(uname -m)" -R python -c "import impurityModel.ed.TSQR; print('TSQR import ok')"
+      - name: Make room for ASan's shadow mapping
+        run: |
+          # ASan reserves a fixed shadow range and aborts with "Shadow memory range interleaves
+          # with an existing memory mapping ... ABORTING" (google/sanitizers#856) if anything
+          # else lands in it. `setarch -R` on each invocation below is the documented workaround
+          # and is NOT sufficient here: the first run of this job died exactly that way on the
+          # mpi4py import step, at ASan init, having passed the same invocation twice already in
+          # earlier steps -- i.e. it is placement entropy, not something about that import.
+          #
+          # The cause is mmap randomization, which `setarch -R` does not fully cover: runner
+          # kernels ship vm.mmap_rnd_bits=32, enough entropy to drop a mapping inside the shadow
+          # range. Lowering it to 28 is the standard fix and affects only where mappings land,
+          # not what this job is looking for. Print both values so a recurrence is diagnosable
+          # from the log rather than by guessing whether the setting took.
+          # Read with sudo: this key is not world-readable on the runner, and an unprivileged
+          # `sysctl -n` returns "permission denied", which reads exactly like the write having
+          # failed when it did not.
+          echo "vm.mmap_rnd_bits before: $(sudo sysctl -n vm.mmap_rnd_bits || echo '<unreadable>')"
+          sudo sysctl -w vm.mmap_rnd_bits=28 || echo "::warning::could not lower vm.mmap_rnd_bits"
+          echo "vm.mmap_rnd_bits after:  $(sudo sysctl -n vm.mmap_rnd_bits || echo '<unreadable>')"
+          # Measured: this alone fixes nothing. The write succeeds and the mpi4py-import abort
+          # it was aimed at still happened; the actual cause was mpi4py linking libasan without
+          # being instrumented (see the install step). Kept anyway because it costs one sysctl
+          # and removes a real source of shadow-mapping flakiness on high-entropy kernels --
+          # but it is insurance, not the fix, and should not be read as one.
 
-  #     - name: ASan smoke test (import mpi4py and the main extension)
-  #       run: |
-  #         setarch "$(uname -m)" -R python -c "from mpi4py import MPI; print('mpi4py import ok')"
-  #         setarch "$(uname -m)" -R python -c "import impurityModel.ed.ManyBodyUtils; print('ManyBodyUtils import ok')"
+      - name: Install Boost (headers)
+        uses: MarkusJx/install-boost@v2.4.5
+        id: install-boost
+        with:
+          boost_version: 1.83.0
 
-  #     - name: ASan smoke test (pytest collection only)
-  #       run: |
-  #         # Collection imports every test module (and transitively every extension) but
-  #         # runs nothing -- narrows a silent crash to "importing something" vs "running
-  #         # something" before paying for the full, much slower, ASan test run.
-  #         setarch "$(uname -m)" -R pytest --collect-only -q
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy "setuptools>=77.0.3" setuptools-scm cython build pytest pytest-mpi
 
-  #     - name: Run serial tests (ASan)
-  #       run: |
-  #         setarch "$(uname -m)" -R pytest --cache-clear
+          # mpi4py is built from source -- so it links the *system* MPICH these tests run under,
+          # which a PyPI wheel might not, since wheels can bundle their own MPI and then disagree
+          # with the system mpiexec -- but deliberately WITHOUT the sanitizer flags.
+          #
+          # Measured, not assumed. With the job's flags applied, all eight cells of the layout
+          # search below reported `control=ok noinit=FAIL full=FAIL`: ASan starts python fine,
+          # and merely *importing* mpi4py aborts with "Shadow memory range interleaves ..." even
+          # with mpi4py.rc.initialize=False, i.e. without MPI_Init ever being called. So the
+          # fault is in loading the extension, not in starting MPI, and not in the memory layout
+          # or the launcher -- both of which were varied across those eight cells and made no
+          # difference.
+          #
+          # What is unusual about that extension: the job sets CXXFLAGS, which never reaches
+          # mpi4py's C sources, while LDFLAGS=-fsanitize=address does reach its link step. So it
+          # ends up *linked* against libasan without being instrumented -- the worst of both, and
+          # a second path to the ASan runtime in a process that already has it preloaded.
+          # Unsetting all three for this one install removes that, and costs nothing the
+          # diagnostic needs: the extensions under investigation are impurityModel's.
+          env -u CFLAGS -u CXXFLAGS -u LDFLAGS pip install --no-binary mpi4py mpi4py
 
-  #     - name: Run MPI tests (1 rank, ASan)
-  #       run: |
-  #         mpiexec -n 1 setarch "$(uname -m)" -R python -m pytest --cache-clear --with-mpi
+          # Prove it took, rather than trusting it: an instrumented or ASan-linked build would
+          # still show libasan here, and a clean result from this job would then mean nothing.
+          MPI4PY_SO="$(python -c 'import mpi4py.MPI as m; print(m.__file__)')"
+          echo "mpi4py extension: $MPI4PY_SO"
+          if ldd "$MPI4PY_SO" | grep -q libasan; then
+            echo "::error::mpi4py still links libasan -- the flag unset did not take"
+            ldd "$MPI4PY_SO" | sed 's/^/    /'
+            exit 1
+          fi
+          echo "mpi4py does not link libasan, as intended"
 
-  #     - name: Run MPI tests (2 ranks, ASan)
-  #       run: |
-  #         mpiexec -n 2 setarch "$(uname -m)" -R python -m pytest --cache-clear --with-mpi
+      - name: Build and install impurityModel (ASan)
+        run: |
+          export CXX="g++-12"
+          export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
+          pip install --no-build-isolation -e .
 
-  #     - name: Run MPI tests (3 ranks, ASan)
-  #       run: |
-  #         mpiexec -n 3 setarch "$(uname -m)" -R python -m pytest --cache-clear --with-mpi
+          # LD_PRELOAD must name the *real* shared object, and this is where the previous
+          # attempt at this job silently died: `g++-12 -print-file-name=libasan.so` returns the
+          # linker's development entry, which on several distributions is an ASCII linker script
+          # (`INPUT ( /usr/lib64/libasan.so.8.0.0 )`), not an ELF. Preloading a text file does
+          # nothing at all -- no error, no ASan, and every step below then runs uninstrumented
+          # while looking healthy. Ask for the SONAME instead, and verify the ELF magic rather
+          # than trusting it, so a wrong answer fails loudly here instead of quietly producing a
+          # clean run that proves nothing.
+          ASAN_LIB="$(g++-12 -print-file-name=libasan.so.8)"
+          if [ ! -f "$ASAN_LIB" ]; then
+            # -print-file-name echoes its argument back unchanged when it cannot resolve it.
+            # Fall back to dereferencing the linker script the plain name points at.
+            SCRIPT="$(g++-12 -print-file-name=libasan.so)"
+            ASAN_LIB="$(sed -n 's/.*INPUT *( *\([^ )]*\).*/\1/p' "$SCRIPT" 2>/dev/null || true)"
+          fi
+          if [ ! -f "$ASAN_LIB" ] \
+             || [ "$(head -c 4 "$ASAN_LIB" | od -An -tx1 | tr -d ' ')" != "7f454c46" ]; then
+            echo "::error::could not resolve a preloadable libasan (got '${ASAN_LIB:-<empty>}')"
+            exit 1
+          fi
+          # libstdc++ must be preloaded alongside libasan. ASan resolves its __cxa_throw
+          # interceptor at init; if libstdc++ is not loaded yet the pointer stays null, and the
+          # first C++ exception thrown by any later-loaded extension aborts the process with
+          #   CHECK failed: asan_interceptors.cpp:320 "((real___cxa_throw)) != (0)"
+          # Measured on run 33737452212: matplotlib's ft2font throws during import and killed the
+          # run that way, which is also what made the serial probe die during collection with
+          # exit 1. That is an artifact of this instrumentation, not the crash being hunted, and
+          # it has to go before "ASan reported nothing" means anything.
+          #
+          # Preloading libstdc++ is the documented remedy, but note it is NOT verified locally:
+          # this machine's gcc 16 libasan resolves the interceptor either way, so the CHECK does
+          # not reproduce here and only CI can confirm the fix. If it comes back, the next lever
+          # is ASAN_OPTIONS=handle_cxx_exceptions=0.
+          ASAN_CXX="$(g++-12 -print-file-name=libstdc++.so.6)"
+          if [ ! -f "$ASAN_CXX" ] \
+             || [ "$(head -c 4 "$ASAN_CXX" | od -An -tx1 | tr -d ' ')" != "7f454c46" ]; then
+            echo "::error::could not resolve libstdc++.so.6 (got '${ASAN_CXX:-<empty>}')"
+            exit 1
+          fi
+          ASAN_LIB="$ASAN_LIB:$ASAN_CXX"
+          echo "using preload: $ASAN_LIB"
+          # Export the PATH, not LD_PRELOAD itself. Putting LD_PRELOAD in $GITHUB_ENV preloads
+          # libasan into every process the job starts afterwards -- mpiexec, hydra's process
+          # manager, sudo, git, node -- not just the python under test. That is what broke the
+          # two previous rounds: a bare `python -c "print()"` and a plain Cython import both
+          # start fine, but `from mpi4py import MPI` initializes MPI, and MPICH singleton init
+          # spawns a process manager which inherits the preload and aborts in *its* ASan init.
+          # The abort was never in the python process, which is why it looked like the import.
+          # Preload per invocation instead, and hand it to MPI ranks with `mpiexec -genv` so the
+          # launcher itself stays clean.
+          echo "ASAN_LIB=$ASAN_LIB" >> "$GITHUB_ENV"
+
+          # And prove the build actually took the sanitizer flags. This is a different question
+          # from "is ASan working" -- the self-test in the next step compiles its own binary with
+          # -fsanitize=address and would pass even if CXXFLAGS never reached this build, which is
+          # exactly the shape of the failure the linker-script bug produced: a clean run that
+          # proved nothing. An instrumented extension carries __asan_ symbols; an uninstrumented
+          # one carries none.
+          SO="$(find src/impurityModel -name 'ManyBodyUtils*.so' -print -quit)"
+          if [ -z "$SO" ]; then
+            echo "::error::no built ManyBodyUtils extension found to check"
+            exit 1
+          fi
+          if [ "$(nm -D "$SO" | grep -c '__asan_')" -eq 0 ]; then
+            echo "::error::$SO has no __asan_ symbols -- CXXFLAGS did not reach the build, so"
+            echo "::error::every run below would be uninstrumented and a clean result meaningless"
+            exit 1
+          fi
+          # And that the hand-written C++ layer is inside this same object rather than somewhere
+          # ASan never saw. MpiUtils.cpp is listed as a source of the ManyBodyUtils extension in
+          # setup.py and ManyBodyBlockState.h is header-only, so both compile into this .so under
+          # the same flags -- but "no ASan report" is a claim about coverage, and coverage should
+          # be checked, not inferred from a build file. These are the sites the crash hypothesis
+          # keeps pointing at, so if they ever move to their own library this must fail.
+          if [ "$(nm -C "$SO" | grep -c 'unpack_block_fused\|pack_block_fill')" -eq 0 ]; then
+            echo "::error::$SO does not contain the MpiUtils C++ symbols -- the hand-written C++"
+            echo "::error::layer is compiled elsewhere and is NOT covered by this instrumentation"
+            exit 1
+          fi
+          echo "extension is ASan-instrumented, and carries the C++ layer: $SO"
+
+      - name: ASan smoke test
+        run: |
+          # A bare interpreter start under LD_PRELOAD=libasan.so, so a startup-level ASan
+          # problem (link order, missing symbol, etc.) fails here with real output instead
+          # of pytest's own startup silently eating a <2s crash (see the ASAN_OPTIONS
+          # comment above -- that's what this step would have caught immediately).
+          #
+          # setarch -R (every python/pytest/mpiexec invocation below): the third attempt at
+          # this job died with "Shadow memory range interleaves with an existing memory
+          # mapping. ASan cannot proceed correctly. ABORTING." on the mpi4py import step --
+          # a known ASan/ASLR incompatibility (google/sanitizers#856): ASan reserves a huge
+          # fixed shadow-memory range, and on kernels >=4.12 the default high-entropy mmap
+          # placement can land a normal mapping inside it. Disabling ASLR for just this
+          # job's processes is the standard workaround; it's about address-space layout,
+          # not the memory-safety bug this job exists to catch, so it doesn't weaken the
+          # diagnostic.
+          LD_PRELOAD="$ASAN_LIB" setarch "$(uname -m)" -R python -c "print('asan smoke test ok')"
+
+      - name: ASan smoke test (ASan is actually active)
+        run: |
+          # The LD_PRELOAD trap above fails open, not closed: an uninstrumented run looks
+          # exactly like a clean one. So prove the runtime is loaded and armed before spending
+          # half an hour on steps whose only output might be "no reports". A deliberate
+          # heap-buffer-overflow must be caught; if it is not, ASan is not really on.
+          cat > /tmp/asan_selftest.c <<'EOF'
+          #include <stdlib.h>
+          int main(void) { char *p = malloc(1); char c = p[3]; return (int) c; }
+          EOF
+          g++-12 -x c -fsanitize=address -O1 -g /tmp/asan_selftest.c -o /tmp/asan_selftest
+          rm -f /tmp/asan_report.* 2>/dev/null || true
+          if setarch "$(uname -m)" -R /tmp/asan_selftest 2>/tmp/asan_selftest.log; then
+            echo "::error::ASan self-test did NOT trap a heap-buffer-overflow -- ASan is not active"
+            cat /tmp/asan_selftest.log
+            exit 1
+          fi
+          # Look in BOTH places. ASAN_OPTIONS sets log_path, so the report goes to
+          # /tmp/asan_report.<pid> and NOT to stderr -- checking only stderr made this step fail
+          # with "for the wrong reason" while ASan was working perfectly, which is what happened
+          # the first time log_path was introduced. The self-test is fail-closed by design, so a
+          # detector that cannot see a successful trap stops the whole job.
+          if grep -qa "heap-buffer-overflow" /tmp/asan_selftest.log 2>/dev/null \
+             || cat /tmp/asan_report.* 2>/dev/null | grep -qa "heap-buffer-overflow"; then
+            echo "ASan is active and trapping"
+          else
+            echo "::error::ASan self-test failed for the wrong reason -- it exited non-zero but"
+            echo "::error::no heap-buffer-overflow report was found on stderr or in log_path"
+            echo "-- stderr --"; cat /tmp/asan_selftest.log
+            echo "-- log_path files --"; cat /tmp/asan_report.* 2>/dev/null || echo "(none)"
+            exit 1
+          fi
+          rm -f /tmp/asan_report.* 2>/dev/null || true
+
+      - name: UBSan smoke test (UBSan is actually active)
+        run: |
+          # Same fail-closed reasoning as the ASan self-test above, and the same trap: a
+          # sanitizer that is silently not running produces a clean report that means
+          # nothing. UBSan is easier to get wrong than ASan because it recovers by default
+          # and needs no preload, so "no output" is indistinguishable from "no violations".
+          #
+          # The UB has to be opaque to the optimizer or it is constant-folded at -O1 and
+          # nothing is left to trap at runtime -- the first draft of this used literal
+          # constants and detected nothing while looking correct. Reading the operand from
+          # argv defeats that.
+          cat > /tmp/ubsan_selftest.c <<'EOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          int main(int argc, char **argv) {
+              int n = atoi(argv[1]);
+              int x = 0x7fffffff + n;      /* signed overflow */
+              int s = 1 << (n + 39);       /* shift past the width of int */
+              printf("%d %d\n", x, s);
+              return 0;
+          }
+          EOF
+          rm -f /tmp/ubsan_report.* 2>/dev/null || true
+          g++-12 -x c -fsanitize=undefined -fno-omit-frame-pointer -g -O1 \
+            /tmp/ubsan_selftest.c -o /tmp/ubsan_selftest
+          UBSAN_OPTIONS="print_stacktrace=1:log_path=/tmp/ubsan_report" /tmp/ubsan_selftest 1 \
+            > /dev/null 2>/tmp/ubsan_selftest.log || true
+          if grep -qa "runtime error" /tmp/ubsan_selftest.log 2>/dev/null \
+             || cat /tmp/ubsan_report.* 2>/dev/null | grep -qa "runtime error"; then
+            echo "UBSan is active and trapping"
+          else
+            echo "::error::UBSan self-test trapped nothing -- UBSan is not active, and every"
+            echo "::error::clean result from this job would be meaningless"
+            echo "-- stderr --"; cat /tmp/ubsan_selftest.log
+            echo "-- log_path --"; cat /tmp/ubsan_report.* 2>/dev/null || echo "(none)"
+            exit 1
+          fi
+          rm -f /tmp/ubsan_report.* 2>/dev/null || true
+
+      - name: Fix the ASan launch configuration
+        id: asan_layout
+        run: |
+          # This replaces an 8-cell search (setarch on/off x shadow-gap on/off x bare vs
+          # mpiexec -n 1, three probes each) that existed while mpi4py could not be imported
+          # under ASan at all. That had a cause, not a configuration: mpi4py was installed
+          # --no-binary with the job's LDFLAGS, so it linked libasan without being
+          # instrumented. Once it is built with the sanitizer flags unset (see the install
+          # step), every cell of that search passes, and re-deriving the same answer with 24
+          # interpreter starts on every run is waste.
+          #
+          # So pin what the search chose -- launch=bare, setarch -R -- and assert it still
+          # works. If this assertion ever fails, the search is in the git history at the
+          # commit that removed it, and it is the right tool for the job again.
+          #
+          # bare rather than mpiexec -n 1: two of the crashes that motivated this job were a
+          # plain `pytest` with no ranks, so the serial exit path is the one worth covering,
+          # and mpiexec would put an uninstrumented launcher in front of it.
+          echo "ASAN_SETARCH=setarch $(uname -m) -R" >> "$GITHUB_ENV"
+          echo "ASAN_LAUNCH=bare" >> "$GITHUB_ENV"
+
+          if LD_PRELOAD="$ASAN_LIB" setarch "$(uname -m)" -R \
+               python -c "from mpi4py import MPI; print('MPI4PY_IMPORT_OK')" 2>&1 \
+               | grep -q "MPI4PY_IMPORT_OK"; then
+            echo "mpi4py imports under ASan in the pinned configuration"
+          else
+            echo "::error::mpi4py cannot be imported under ASan in the pinned configuration."
+            echo "::error::Check that mpi4py is still installed with the sanitizer flags unset;"
+            echo "::error::if that is not it, restore the 8-cell layout search from git history."
+            exit 1
+          fi
+
+      - name: ASan smoke test (pytest collection only)
+        id: smoke_collect
+        run: |
+          # Collection imports every test module (and transitively every extension) but
+          # runs nothing -- narrows a silent crash to "importing something" vs "running
+          # something" before paying for the full, much slower, ASan test run.
+          # Run under whichever launch mode the search above found workable. `bare` is the
+          # scenario we would rather reproduce -- two of the ten recorded crashes were a plain
+          # `pytest` with no ranks -- but if MPICH singleton init cannot come up under ASan at
+          # all, `mpiexec -n 1` is still a single process on a single rank, and running the probe
+          # is worth more than matching the launcher exactly. Which one ran is in the log.
+          if [ "$ASAN_LAUNCH" = bare ]; then
+            RUN() { LD_PRELOAD="$ASAN_LIB" $ASAN_SETARCH "$@"; }
+          else
+            RUN() { mpiexec -n 1 -genv LD_PRELOAD "$ASAN_LIB" -genv ASAN_OPTIONS "$ASAN_OPTIONS" \
+                      $ASAN_SETARCH "$@"; }
+          fi
+          echo "launch mode: $ASAN_LAUNCH"
+          rc=0
+          # `python -m pytest`, matching the probes below. The first run of this step used the
+          # bare `pytest` console script and exited 1 with no output; the module form is what the
+          # rest of the job launches, so normalize on it rather than have the smoke test exercise
+          # a path nothing else uses.
+          RUN python -m pytest --collect-only -q > /tmp/asan_collect.log 2>&1 || rc=$?
+          echo "exit=$rc, $(wc -l < /tmp/asan_collect.log) lines of output"
+          cat /tmp/asan_collect.log
+          if [ "$rc" -ne 0 ]; then
+            {
+              echo "### ASan collection smoke test: exit $rc"
+              echo
+              echo '```'
+              if ls /tmp/asan_report.* >/dev/null 2>&1; then
+                echo "-- ASan report file(s) --"
+                head -40 /tmp/asan_report.*
+              elif grep -qa "ERROR: AddressSanitizer" /tmp/asan_collect.log; then
+                sed -n '/ERROR: AddressSanitizer/,$p' /tmp/asan_collect.log | head -40
+              else
+                echo "no AddressSanitizer report; last 20 lines (may be empty):"
+                tail -20 /tmp/asan_collect.log
+              fi
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$rc"
+
+      - name: ASan on the whole suite, serial
+        # Runs even if the targeted step above found something: the two cover different
+        # hypotheses (fault local to those tests vs heap corrupted earlier), and a hit in one
+        # does not answer the other. Gated on the smoke tests rather than always(), so a broken
+        # build or an inactive ASan runtime skips this instead of spending 15 minutes producing
+        # an error that says nothing about the crash.
+        if: always() && steps.asan_layout.outcome == 'success'
+        run: |
+          # The other hypothesis, and the one the earlier ASan work never tested: every previous
+          # ASan run went through mpiexec, so a single-process exit path has never been
+          # instrumented. This covers it, and with it the finalize-time pair -- both of those
+          # crashes landed after the last file the suite collects, and one was a bare `pytest`
+          # with no ranks at all. Note this is not an MPI-free process despite having no ranks:
+          # 72 modules import mpi4py at module scope, so MPI_Init still runs on import and
+          # MPI_Finalize at exit, which is precisely the window of interest.
+          rc=0
+          # Run under whichever launch mode the search above found workable. `bare` is the
+          # scenario we would rather reproduce -- two of the ten recorded crashes were a plain
+          # `pytest` with no ranks -- but if MPICH singleton init cannot come up under ASan at
+          # all, `mpiexec -n 1` is still a single process on a single rank, and running the probe
+          # is worth more than matching the launcher exactly. Which one ran is in the log.
+          if [ "$ASAN_LAUNCH" = bare ]; then
+            RUN() { LD_PRELOAD="$ASAN_LIB" $ASAN_SETARCH "$@"; }
+          else
+            RUN() { mpiexec -n 1 -genv LD_PRELOAD "$ASAN_LIB" -genv ASAN_OPTIONS "$ASAN_OPTIONS" \
+                      $ASAN_SETARCH "$@"; }
+          fi
+          echo "launch mode: $ASAN_LAUNCH"
+          rm -f /tmp/asan_report.* 2>/dev/null || true
+          RUN python -m pytest --cache-clear > /tmp/asan_serial.log 2>&1 || rc=$?
+          echo "exit=$rc, $(wc -l < /tmp/asan_serial.log) lines of output"
+          cat /tmp/asan_serial.log
+          if ls /tmp/asan_report.* >/dev/null 2>&1; then
+            echo "-- ASan report file(s) --"
+            cat /tmp/asan_report.*
+          else
+            echo "-- no ASan report file was written --"
+          fi
+          if [ "$rc" -ne 0 ]; then
+            {
+              echo "### ASan hit: serial full suite (rc=$rc)"
+              echo
+              echo '```'
+              if ls /tmp/asan_report.* >/dev/null 2>&1; then
+                echo "-- ASan report file(s) --"
+                head -40 /tmp/asan_report.*
+              elif grep -qa "ERROR: AddressSanitizer" /tmp/asan_serial.log; then
+                sed -n '/ERROR: AddressSanitizer/,$p' /tmp/asan_serial.log | head -40
+              else
+                echo "no AddressSanitizer report -- died without one:"
+                tail -20 /tmp/asan_serial.log
+              fi
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "$rc"
+          fi
+
+  test-tsan:
+    # ThreadSanitizer: the class ASan and UBSan structurally cannot see. ASan asks "is this
+    # access valid", UBSan "is this operation defined"; neither asks "did two threads touch
+    # this without synchronization". That gap is not academic here -- the intermittent CI
+    # exit-139 that took ~30 crashes to pin down was a data race (faulthandler's watchdog
+    # thread walking Python frames the main thread was mutating), and AddressSanitizer ran 68
+    # instrumented times without a word, because reading a live frame is a perfectly *valid*
+    # heap access.
+    #
+    # This job exists in the shape it does for a specific reason: it builds with
+    # IMPURITYMODEL_PARALLEL=1 and OMP_NUM_THREADS>1. The standing matrix caps OpenBLAS and
+    # OMP at one thread and leaves the threaded ManyBodyOperator::apply off, so our own code
+    # is effectively single-threaded there and TSan would instrument faithfully and find
+    # nothing. That also closes a real gap: IMPURITYMODEL_PARALLEL is a supported build mode
+    # with no other CI coverage at all.
+    #
+    # Measured locally before being added, because the received wisdom says this does not
+    # work: TSan *is* usable with LD_PRELOAD here (the import fails without it and succeeds
+    # with it), it produced *zero* false positives from the uninstrumented CPython across 524
+    # tests, and it cost 74 s for the lanczos+operators subset. It found no races.
+    #
+    # Serial only, deliberately. The threaded apply is documented for single-process,
+    # few-rank-many-core runs, so that is where the concurrency is; adding mpiexec would put
+    # an uninstrumented MPICH between TSan and the code under test for no extra coverage.
+    #
+    # Separate job because -fsanitize=thread and -fsanitize=address are mutually exclusive.
+    # continue-on-error for the same reason test-asan is: a diagnostic, not a gate.
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    timeout-minutes: 90
+    env:
+      OPENBLAS_NUM_THREADS: "1"
+      # >1 on purpose: apply_thread_cap() in ManyBodyOperator.cpp reads this, and at 1 the
+      # threaded path degenerates to the serial one and there is nothing to race. 2 rather
+      # than 4: the runner has 4 vCPUs, and 4 instrumented threads on 4 cores is
+      # oversubscription stacked on TSan's ~2.8x slowdown. Two threads racing is as
+      # detectable as four -- TSan finds a race from a single conflicting pair, it does not
+      # need contention -- so the extra threads bought latency, not coverage.
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "1"
+      CXXFLAGS: "-std=c++20 -fsanitize=thread -fno-omit-frame-pointer -g -O1"
+      LDFLAGS: "-fsanitize=thread"
+      # halt_on_error=0: report every race in one run rather than stopping at the first --
+      # the point of a standing job is the full list. log_path for the reason it is set on
+      # the ASan job: a report on stderr is lost when a process dies without flushing.
+      #
+      # report_signal_unsafe=0 turns off a *different class* from the one this job is for.
+      # Its first CI run produced 24 warnings and not one was a data race: all were
+      # "signal-unsafe call inside of a signal", and all in third-party code --
+      #
+      #     #0 malloc (libtsan interceptor)
+      #     #1 ld-linux
+      #     #2 libinfinipath.so.4
+      #     #3 libfabric.so.1
+      #     #4 do_fork_exec  _posixsubprocess.c:797
+      #
+      # i.e. libfabric's pthread_atfork handler calling malloc in the post-fork child, and
+      # the same shape 17 times over in h5py's bundled libhdf5. Neither is ours to fix, and
+      # leaving them on would make this job permanently red and therefore ignored.
+      # Verified that disabling the class does not disable race detection: the deliberate
+      # race in the self-test below is still reported with this flag set.
+      TSAN_OPTIONS: "halt_on_error=0:report_signal_unsafe=0:log_path=/tmp/tsan_report"
+      PYTEST_ADDOPTS: "-p no:faulthandler"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mpich libmpich-dev g++-12
+
+      - name: Install Boost (headers)
+        uses: MarkusJx/install-boost@v2.4.5
+        id: install-boost
+        with:
+          boost_version: 1.83.0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy "setuptools>=77.0.3" setuptools-scm cython build
+          # mpi4py without the sanitizer flags, for the reason the ASan job documents: with
+          # them it ends up linked against a sanitizer runtime without being instrumented.
+          env -u CFLAGS -u CXXFLAGS -u LDFLAGS pip install --no-binary mpi4py mpi4py
+          pip install pytest pytest-mpi
+
+      - name: Build and install impurityModel (TSan, threaded apply)
+        run: |
+          export CXX="g++-12"
+          export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
+          # safe, not release: -march=native and reassociation are irrelevant to finding
+          # races and only add variables.
+          export IMPURITYMODEL_BUILD=safe
+          export IMPURITYMODEL_PARALLEL=1
+          pip install --no-build-isolation -e .
+
+          TSAN_LIB="$(g++-12 -print-file-name=libtsan.so.2)"
+          if [ ! -f "$TSAN_LIB" ]; then
+            SCRIPT="$(g++-12 -print-file-name=libtsan.so)"
+            TSAN_LIB="$(sed -n 's/.*INPUT *( *\([^ )]*\).*/\1/p' "$SCRIPT" 2>/dev/null || true)"
+          fi
+          if [ ! -f "$TSAN_LIB" ] \
+             || [ "$(head -c 4 "$TSAN_LIB" | od -An -tx1 | tr -d ' ')" != "7f454c46" ]; then
+            echo "::error::could not resolve a preloadable libtsan (got '${TSAN_LIB:-<empty>}')"
+            exit 1
+          fi
+          echo "TSAN_LIB=$TSAN_LIB" >> "$GITHUB_ENV"
+          echo "using libtsan: $TSAN_LIB"
+
+      - name: Verify the build is instrumented and threaded
+        run: |
+          # Fail closed. A TSan job that silently built uninstrumented reports "no races"
+          # and means nothing -- the same shape as an inactive ASan run, which this
+          # workflow has already been caught by once.
+          SO="$(find src/impurityModel -name 'ManyBodyUtils*.so' -print -quit)"
+          [ -n "$SO" ] || { echo "::error::no built extension found"; exit 1; }
+          n_tsan=$(nm -D "$SO" | grep -c '__tsan_' || true)
+          echo "$SO: ${n_tsan} __tsan_ symbols"
+          if [ "${n_tsan:-0}" -eq 0 ]; then
+            echo "::error::the extension carries no __tsan_ symbols -- CXXFLAGS did not reach"
+            echo "::error::the build, so every clean result below would be meaningless"
+            exit 1
+          fi
+
+      - name: TSan smoke test (TSan is actually trapping)
+        run: |
+          # A deliberate race that must be caught, for the same reason the ASan and UBSan
+          # self-tests exist: "no output" is otherwise indistinguishable between "no races"
+          # and "not running".
+          cat > /tmp/tsan_selftest.c <<'EOF'
+          #include <pthread.h>
+          #include <stdio.h>
+          static int shared = 0;
+          static void *bump(void *a) { for (int i = 0; i < 1000; i++) shared++; return 0; }
+          int main(void) {
+              pthread_t t1, t2;
+              pthread_create(&t1, 0, bump, 0); pthread_create(&t2, 0, bump, 0);
+              pthread_join(t1, 0); pthread_join(t2, 0);
+              printf("%d\n", shared);
+              return 0;
+          }
+          EOF
+          g++-12 -x c -fsanitize=thread -fno-omit-frame-pointer -g -O1 \
+            /tmp/tsan_selftest.c -o /tmp/tsan_selftest
+          TSAN_OPTIONS="halt_on_error=0" /tmp/tsan_selftest > /dev/null 2>/tmp/tsan_selftest.log || true
+          if grep -qa "WARNING: ThreadSanitizer" /tmp/tsan_selftest.log; then
+            echo "TSan is active and trapping"
+          else
+            echo "::error::TSan self-test found no race in a deliberate one -- TSan is not active"
+            cat /tmp/tsan_selftest.log
+            exit 1
+          fi
+
+      - name: Run the suite under TSan
+        run: |
+          # Scoped, not the whole suite, and the scope is derived rather than guessed: every
+          # threaded region in this codebase is inside ManyBodyOperator.cpp -- three
+          # `#if defined(PARALLEL)` blocks, all on the apply path -- and nothing else spawns a
+          # thread. A test that never drives ManyBodyOperator::apply cannot exercise a race,
+          # so running it under TSan pays the ~2.8x slowdown for no coverage.
+          #
+          # These directories are where apply is driven from. Measured: lanczos+operators is
+          # 26.0 s uninstrumented and 73.8 s under TSan locally. The full suite took over 40
+          # minutes on a runner, which is what prompted this -- the first version ran
+          # everything because that was the obvious thing to do, not because the coverage
+          # justified it.
+          rm -f /tmp/tsan_report.* 2>/dev/null || true
+          rc=0
+          LD_PRELOAD="$TSAN_LIB" python -m pytest -q --cache-clear \
+            src/impurityModel/test/operators \
+            src/impurityModel/test/lanczos \
+            src/impurityModel/test/basis > /tmp/tsan_suite.log 2>&1 || rc=$?
+          echo "exit=$rc, $(wc -l < /tmp/tsan_suite.log) lines"
+          tail -20 /tmp/tsan_suite.log
+          # Count data races specifically. Any other ThreadSanitizer class that shows up is
+          # worth reading but should not fail a job whose stated purpose is races -- and the
+          # first run proved that distinction matters, when 24 signal-unsafe reports from
+          # libfabric and libhdf5 would otherwise have failed it permanently.
+          n=$(cat /tmp/tsan_report.* 2>/dev/null | grep -c "WARNING: ThreadSanitizer: data race" || true)
+          other=$(cat /tmp/tsan_report.* 2>/dev/null | grep -c "WARNING: ThreadSanitizer" || true)
+          echo "ThreadSanitizer: ${n:-0} data race(s), $(( ${other:-0} - ${n:-0} )) other report(s)"
+          if [ "${n:-0}" -gt 0 ]; then
+            {
+              echo "### ThreadSanitizer: ${n} warning(s)"
+              echo
+              echo '```'
+              cat /tmp/tsan_report.* | head -120
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            cat /tmp/tsan_report.* | head -200
+            exit 1
+          fi
+          exit "$rc"
 
   docs:
     # Build the Sphinx documentation. autodoc imports the package (only

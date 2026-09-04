@@ -10,11 +10,17 @@ showed up as a noisy, non-monotone occupation in the NiO DC search. Two guards:
 
 1. the warm block is always augmented with the cold rank-independent full-support hash vector,
    so no sector is ever unreachable;
-2. if a warm-started solve nevertheless exhausts inside the thermal cut, it is retried ONCE
-   from the cold vector alone before the uncertified manifold is accepted.
+2. if a warm-started solve nevertheless returns short, it is retried ONCE from the cold vector
+   alone before the manifold is accepted -- with a thermal cut (the manifold is uncertified) and
+   without one (`calc_energy`'s occupation walk, which keeps only the lowest eigenvalue and is
+   the caller that actually steps across charge sectors).
 
 The Lanczos kernel is replaced by a deterministic fake (same on every rank, so all collective
 decisions stay rank-invariant); the real physics is covered by the NiO end-to-end reproduction.
+
+The last two tests are not about warm starts: they pin what ``max_energy=None`` returns on the
+*dense* branch, which the fake never reaches and which ``calc_energy`` takes on every sector basis
+below ``dense_cutoff``.
 """
 
 import itertools
@@ -136,3 +142,71 @@ def test_cold_start_exhaustion_does_not_loop(monkeypatch, capsys):
     rank = basis.comm.rank if basis.is_distributed else 0
     if rank == 0:
         assert "cannot be shown to be complete" in capsys.readouterr().out
+
+
+def test_warm_start_exhaustion_retries_once_without_a_thermal_cut(monkeypatch):
+    """`max_energy=None` (calc_energy's occupation walk) still gets the sector-blindness retry.
+
+    Completeness is a question only a thermal cut can pose, so `need_more` is meaningless here --
+    but *reachability* is not, and the walk is precisely the caller that steps across charge
+    sectors. A short warm solve must still be retried from the cold full-support vector before its
+    "lowest" eigenvalue is believed.
+    """
+    basis, solver = _make_solver()
+    calls = []
+    monkeypatch.setitem(cipsi_module.SOLVERS, "irlm", _fake_lanczos(1, calls))
+
+    e_ref, psi_refs = solver.get_eigenvectors(
+        _h_op(), num_wanted=1, max_energy=None, dense_cutoff=1, solver="irlm", psi_refs=_warm_refs(basis)
+    )
+
+    assert len(calls) == 2
+    assert calls[0].shape[1] == 2  # warm block + cold guard column
+    assert calls[1].shape[1] == 1  # the retry, cold alone
+    # Nothing is trimmed without a cut, so the beyond-cut state survives into the result.
+    assert len(e_ref) == len(psi_refs)
+    assert np.max(e_ref) > CUT
+
+
+def test_full_return_without_a_thermal_cut_does_not_retry(monkeypatch):
+    basis, solver = _make_solver()
+    calls = []
+    monkeypatch.setitem(cipsi_module.SOLVERS, "irlm", _fake_lanczos(0, calls))
+
+    solver.get_eigenvectors(
+        _h_op(), num_wanted=1, max_energy=None, dense_cutoff=1, solver="irlm", psi_refs=_warm_refs(basis)
+    )
+
+    assert len(calls) == 1
+
+
+def test_no_cut_dense_branch_returns_exactly_num_wanted_states():
+    """The dense branch is bounded by ``num_wanted`` when there is no cut.
+
+    ``eigensystem`` reads ``e_max=None`` as "no cutoff" and returns the *whole* dense spectrum,
+    so without a bound in ``get_eigenvectors`` a cut-less caller would build one ``ManyBodyState``
+    per determinant -- a cost set by the basis size rather than by the request. This is the branch
+    ``calc_energy`` takes on every sector basis below ``dense_cutoff``, and the tests above run
+    the Krylov branch (``dense_cutoff=1``), so it needs its own.
+
+    The slice is by count alone: with no cut there is no manifold to keep whole, and it can land
+    inside a degenerate group. That is sound here only because ``calc_energy``, the sole caller
+    of the no-cut path, keeps ``min(es)``.
+    """
+    basis, solver = _make_solver()
+    h_op = _h_op()
+
+    e_ref, psi_refs = solver.get_eigenvectors(h_op, num_wanted=3, max_energy=None)
+
+    assert len(e_ref) == len(psi_refs) == 3
+    # H is diagonal in this basis, so the exact spectrum is the per-determinant occupation sum.
+    exact = sorted(sum(orb + 1 for orb in occ) for occ in itertools.combinations(range(N_SPIN_ORBITALS), 4))
+    np.testing.assert_allclose(sorted(e_ref.real), exact[:3])
+
+
+def test_no_cut_request_above_the_basis_size_is_clamped_not_an_error():
+    basis, solver = _make_solver()
+
+    e_ref, psi_refs = solver.get_eigenvectors(_h_op(), num_wanted=10 * len(basis), max_energy=None)
+
+    assert len(e_ref) == len(psi_refs) == len(basis)

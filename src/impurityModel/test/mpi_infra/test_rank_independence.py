@@ -49,22 +49,278 @@ from impurityModel.test.support._nio_workload import (
     build_selfenergy_inputs,
 )
 
-# Skipped, not xfail: an xfail still runs the test body, and the failure mode here is an
-# intermittent SIGSEGV (MPICH "BAD TERMINATION", exit 139) that kills the whole test
-# process, not a catchable Python exception -- xfail cannot absorb that, it would just
-# take the rest of the suite down with it. First surfaced once the numeric test-suite
-# fixes let CI reach the MPI steps for the first time (this file's serial-only
-# predecessor was masked behind those failures). Confirmed on real CI, not locally
-# reproducible under Open MPI (CI uses mpich): crash location has moved between runs (0,
-# 2, and 2 dots into this file across three occurrences) and crash *rate* scales with MPI
-# rank count (5/8 legs at -n2/-n3 on one run vs 1-2/8 normally) -- the signature of a
-# genuine timing race, not a fixed logic bug. An AddressSanitizer diagnostic CI leg
-# (test-asan in tests.yml) is set up to localize it but hasn't gotten past environment-
-# level obstacles yet. Re-enable once the root cause is found and fixed.
-pytestmark = pytest.mark.skip(
-    reason="intermittent SIGSEGV under MPI (MPICH BAD TERMINATION, exit 139) -- see the "
-    "module docstring comment above this marker; tracked, not yet root-caused"
-)
+# Re-enabled 2026-09-01 after the reproduction attempt below came back empty. Kept in one
+# piece deliberately: what is written here is the evidence, so the next person who sees an
+# exit-139 in CI does not repeat this hunt -- and does not reach for the skip marker first.
+#
+# The history. This file was skipped (not xfailed -- an xfail still runs the body, and an
+# intermittent SIGSEGV kills the whole process rather than raising something xfail can absorb)
+# behind an MPICH "BAD TERMINATION", exit 139, in CI. It first appeared once the numeric
+# test-suite fixes let CI reach the MPI steps at all. It hit three different legs (intel/c++17,
+# gcc-12/c++20/coverage, gcc-12/c++17) at three different points *within this one file* (0, 2
+# and 2 dots in), and the crash rate scaled with rank count (5/8 legs at -n2/-n3 on one run
+# against 1-2/8 normally) -- the signature of heap corruption that surfaces wherever the
+# corrupted memory next gets touched, not of a logic bug at a fixed place.
+#
+# **ROOT CAUSE FOUND (2026-09-04): this test suite's own hang watchdog.**
+#
+# conftest.py armed `faulthandler.dump_traceback_later(15, ...)` before every test. When it
+# fires, that timer thread walks *every* thread's Python frames without holding the GIL, while
+# the main thread is still mutating them -- so it can read a half-updated frame and segfault
+# inside CPython's dump_frame. Confirmed directly: the excitation-budget oracle at -n 3 prints
+# `Timeout (0:00:15)!` and dumps on all three ranks. It is now opt-in via
+# IMPURITYMODEL_TEST_WATCHDOG, off by default.
+#
+# Every unexplained observation in this comment follows from that, and none of them needed the
+# elaborate theories they got:
+#
+#   * The "crash sites" are simply the tests slow enough to trip 15 s -- measured at -n 3:
+#     test_calc_selfenergy_excitation_budget_oracle 30.6 s,
+#     test_cipsi_ground_state_basis_is_rank_independent 20.2 s, and the f-shell solve 6.7 s
+#     here but ~2-3x that on a 4-vCPU runner.
+#   * Rank count "mattered" because more ranks means slower tests means more trip the timer.
+#   * AddressSanitizer reported nothing across 68 instrumented runs because reading a live
+#     frame is a *valid* heap access. It is a data race, not an overflow -- so no tool that
+#     checks memory validity was ever going to see it.
+#   * No traceback ever appeared in 30 crash logs because the dump is written to
+#     .pytest_watchdog*.out, a file nobody was collecting.
+#   * The garbage in the cores -- frame=0x3, co=0x1, line index 76643932 -- is a frame read
+#     mid-update, and the "moving" crash location is wherever the racing walk lands.
+#
+# **A correction worth keeping, because it nearly shipped as a fix.** The first symbolised core
+# showed estimate_orthonormality in the trace and it was read as the crash site; the
+# `Current thread` marker says otherwise -- that was Thread 2, the main thread, merely executing
+# while Thread 1 (the watchdog) died walking its frames. Seeing your own code in a backtrace is
+# not the same as it being the fault. Check which thread is current, first.
+#
+# (The spectral_norm change made on the strength of that misreading was kept: routing every
+# ord=2 matrix norm through robust_svd removed a real bit-inconsistency, since production filled
+# beta_norm_hist with scipy and recomputed it with numpy. It is hardening, not this crash's fix.)
+#
+# For the record, the superseded localization: a core dump put the main thread in
+#
+#   #0 estimate_orthonormality (W=..., alphas=..., betas=...)  BlockLanczosCore.pyx:316-322
+#   #6 block_lanczos_array_cy                                   BlockLanczosArray.pyx
+#
+# The other threads are libfabric progress threads parked in epoll_wait. Locals at the crash:
+# i=32, n=2, w_0=2, w_curr=w_next=1 (the block has deflated), N=2977, and **anorm =
+# 6.9047087228707365e-310** -- a subnormal, i.e. the variable had not been assigned yet. So the
+# fault is in the statement that computes it, lines 316-318:
+#
+#     cdef double anorm = max(
+#         float(np.linalg.norm(alphas[0, :w_0, :w_0], ord=2)),
+#         float(np.linalg.norm(betas[0, :widths[1], :w_0], ord=2)),
+#     )
+#
+# `ord=2` on a matrix is the spectral norm -- an SVD, through LAPACK's gesdd. This module
+# imports `robust_svd` from TSQR precisely because gesdd "has rare but real convergence
+# failures on finite, well-formed inputs", and the noise-floor block below already uses it;
+# these two calls do not. LAPACK/OpenBLAS is not instrumented by ASan, which is exactly why 68
+# instrumented runs reported nothing while still crashing.
+#
+# One hypothesis checked and REFUTED before it got written down as fact: an out-of-bounds write
+# at line 322 under this module's boundscheck=False. `W_out = out[:, :i+2]` would clamp silently
+# if `out` were short, and `w_bar[i]` is unchecked -- but the sizes fit. The driver loops
+# `while it < _buf_size` and allocates `out` as `(2, _buf_size+2, n, n)`, so `it+2` is at most
+# `_buf_size+1`. The bounds are correct.
+#
+# What CI has shown since, which corrects the paragraph above. Twenty-five crashes are on record,
+# over ten crashing runs (one came back 0 of 8 -- the rate is 0-5 legs per run).
+# **Every one of the twenty-five happened on a step where these tests were skipped, deselected,
+# or had already finished**, so the crash is not in them and skipping them was never going to
+# stop it.
+# (The deselect is confirmed by the steps' own counts: 23 deselected against serial's 18, i.e.
+# these five.)
+#
+# Where they land -- three sites, none of them random:
+#
+#   * inputformat/test_f_shell_crystal_field.py, 8 crashes, at 5-8 of its 10 dots.
+#   * restrictions/test_excitation_budget.py, 5 crashes, at 8-11 of its 19 dots.
+#   * lanczos/test_no_ghost_bands.py, 1 crash, at 63% of the suite.
+#   * End of run, 11 crashes: three just after symmetry/test_symmetry_observables.py (the last
+#     file the suite collects), and eight after this file's own isolated step reached [100%] with
+#     all five tests passed, mostly at -n 3. None printed pytest's `N passed in Xs` summary,
+#     though earlier steps on the same leg did, so these are finalize-time: after the last test
+#     and before teardown finished. Both times the isolation did its job, one step red with the
+#     rest of the leg already reported.
+#
+# Each mid-suite crash landed on its file's one heavyweight full-stack test, not anywhere within
+# it: test_f_shell_crystal_field.py's 9th of 10 (test_an_f_shell_crystal_field_model_solves) is
+# the only one there that runs a solver at all -- the other nine are input-format validation --
+# and test_excitation_budget.py's 12th of 19 (test_calc_selfenergy_excitation_budget_oracle) runs
+# calc_selfenergy twice through the full driver and GF stack. Dots are flushed as tests finish and
+# a partial line is lost when the process dies, so the counts are lower bounds; the windows are
+# tests 8-10 and 11-13.
+#
+# Nothing in the configuration explains any of it. Across the twenty-five: every compiler, both
+# C++ standards, `parallel` and `coverage` legs and plain ones. And **every launch mode has
+# produced one** -- serial, mpiexec -n 1, -n 2 and -n 3 -- which closes rank count as a variable
+# for the *uninstrumented* legs the way the others were already closed. (Under ASan the picture
+# is different and sharper: there, only -n 3 fails. See the ASan section above.) They share no
+# ingredient the passing legs lack: what organizes
+# these crashes is *where in the run* they happen and *what the test does*, not how the extension
+# was compiled or how it was launched.
+#
+# What the serial ones do and do not rule out. Three of the twelve ran under a bare `pytest` --
+# two finalize-time, one mid-suite in test_excitation_budget.py -- so both clusters are reachable
+# with no ranks, no message passing and no communicator lifetimes. That retires the _graph_comm_cache
+# theory below on its own terms as well as by the measurement. It does **not** rule out MPI: 72
+# modules import mpi4py at module scope, so a bare `pytest` still initializes MPI on import and
+# finalizes it at exit -- verified locally, importing manybody_basis alone leaves
+# MPI.Is_initialized() true. So "multi-rank MPI", never "MPI", is the thing the serial crashes
+# exclude.
+#
+# That also makes the next probe much cheaper than anything tried below. A single-process,
+# single-rank crash needs no MPICH build and no rank sweep -- run the whole suite under
+# AddressSanitizer serially and watch the exit path.
+#
+# What was tried, all negative:
+#   * The whole file, 500 iterations alternating -n 2 and -n 3, plus 50 interleaved full-suite
+#     --with-mpi runs, under MPICH 4.2.2 (ch4:ofi) with mpi4py built from source against it --
+#     i.e. under the CI MPI family, which the old skip comment's "not locally reproducible
+#     under Open MPI" had never actually tested. 550 runs over ~9.5 hours, every one rc=0.
+#     At the CI rate (1-2 of 8 legs, once 5 of 8) a few dozen runs should have been enough,
+#     so this is a negative about *this machine*, not a bound on the crash's rate in CI.
+#   * The same file and the full suite under AddressSanitizer, MPICH-linked, at -n 2 and -n 3.
+#     Zero reports. This is the stronger negative: ASan traps the bad read/write when it
+#     happens, so a run that corrupts the heap but would have survived is still caught.
+#     (The one failure in that run was test_suggest_threshold_fits_budget, the known
+#     free-RAM-derived flake, over budget by 0.015% -- not a memory-safety finding.)
+#   * The narrowed targets, once CI named them: 120 runs of test_f_shell_crystal_field.py alone,
+#     alternating -n 2 and -n 3, and then 40 runs of the whole suite *serially* -- the
+#     configuration behind three of the crashes, and the one shape the earlier 550-run hunt never
+#     tried, since it looped whole-file MPI runs. All rc=0. Consistent with every other local
+#     attempt -- whatever discriminates is not on this machine, so the probe belongs in CI.
+#   * The _graph_comm_cache-leak theory (mpi_comm.py keys it on id(comm) and never evicts, and
+#     the GF layer clones a communicator per unit): measured at 10 live entries after an entire
+#     -n 3 suite run, across 18387 lookups. Nowhere near MPICH's context-id space. Refuted.
+#
+# What is still untested locally, reordered by the clusters above: the exit path of a serial run
+# (never instrumented here -- the ASan work all ran under mpiexec), coverage instrumentation,
+# compiler (gcc-12/clang-15/icpx at -std=c++17/20/2b in CI, gcc 16.2.1 locally), and 4 vCPUs
+# against 8 cores. MPICH version (ubuntu-22.04 ships 4.0, the reproduction ran 4.2.2) drops near
+# the bottom now that a single-rank process has crashed the same way.
+#
+# **The ASan result that matters, and it points somewhere specific.** Across two instrumented
+# runs (33737452212 and 33744309521, the second with the __cxa_throw artifact removed):
+#
+#   * 5 segfaults in 68 instrumented probe iterations, **every one of them at -n 3**. Zero at
+#     -n 2, which the same loop exercises equally often.
+#   * **Not one AddressSanitizer memory-error report.** No heap-buffer-overflow, no
+#     use-after-free, nothing -- and log_path means a report would have survived the process
+#     dying, so this is now a checked fact rather than an absence in a lost stream.
+#   * The whole suite under ASan **serially** passed clean: 1998 tests, 497 s, no report.
+#
+# So the fault is not a heap error in instrumented code, nor one committed through ASan's
+# intercepted mem/str functions -- which is most of what a memoryview audit would look for. And
+# it needs three ranks.
+#
+# The obvious reading of "-n 3 only" was empty ranks -- -n 3 being the smallest size at which a
+# rank can own zero determinants under routing_hash() % comm.size, a class of bug that has bitten
+# this codebase before, and the mechanism the C2.4 plan flagged a year ago: `&buf[0]` on a
+# **zero-length** memoryview is undefined behaviour under boundscheck=False, no negative index
+# required. **Both halves of that were checked, and both came back negative.**
+#
+#   * The audit. All 17 raw-pointer sites in the hand-written Cython are already guarded --
+#     _mpi_pack.pxi:34,37,47,50 (`if comm_size > 0`, `if total_states > 0`,
+#     `if state_buf.shape[0] > 0`), _block_state.pxi:649,717,889,892,904,909 (`if n > 0`,
+#     `if width() > 0`, `if total > 0`, and buf_ptr left NULL when recv_buf is empty), and every
+#     TSQR.pyx site behind `if p == 0 or n == 0: return` or `if p == 0: return`. The one
+#     unchecked precondition -- guards testing `comm_size` while indexing a caller-supplied
+#     recv_counts -- holds at both call sites, which build it as np.empty(comm.size).
+#   * The premise. The guard file's own workload does not produce an empty rank at -n 3:
+#     measured local determinant counts are [299, 393, 393] at 3 ranks, [537, 548] at 2 and
+#     [260, 300, 277, 248] at 4. So the rank count that crashes is not the rank count that
+#     empties a rank here, and CLAUDE.md's general statement about -n 3 does not apply to this
+#     workload.
+#
+# So -n 3 needs a different explanation, and it is not a buffer-length question. The dist-graph
+# neighbourhoods were the next candidate; measured, they say something worth keeping but they do
+# not explain the rank count either.
+#
+# **Fixed, measured, and it is not the crash.** The cache now keys on the topology instead of
+# "unchanged since last call" (1991c58): 51% -> 3% miss, 4 creates and 0 frees per build where
+# there were ~80 create/free cycles. The first CI run afterwards crashed **2 of 8 legs** --
+# gcc-12/c++2b at -n 1 in the finalize cluster, gcc-12/c++20/parallel at -n 3 in
+# test_excitation_budget.py -- against a baseline mean of 2.8 of 8. The threshold for claiming
+# movement was fixed before the result was visible (three consecutive clean runs, 24 legs,
+# p=3.6e-05, since one clean run is p=0.03 and a 0-of-8 run had already happened with no change
+# at all). One crashing run settles it: communicator churn was a real defect and is not the
+# mechanism. Do not re-open it on the strength of the 20x improvement -- that improvement is
+# real and irrelevant to this crash.
+#
+# Instrumenting _cached_dist_graph over a NiO 10-bath workload build: the neighbourhood
+# oscillates between self-only, all-ranks and **empty** from call to call, because it is derived
+# from whichever block is being redistributed and different blocks have different support. The
+# cache keys on "(sources, destinations) unchanged", so it thrashes:
+#
+#     size=2   159 calls, 81 collective rebuilds  (51% miss)
+#     size=3   155 calls, 79 collective rebuilds  (51% miss)
+#
+# That is ~80 x (Comm_free + Create_dist_graph_adjacent) per workload build on every rank, plus
+# an Allreduce on all 155 calls to agree the rebuild. The cache's own comment justifies it by
+# rebuild cost at "100s-1000s of ranks"; at this scale it pays that cost on half the calls
+# anyway. Three to five of those calls per rank build an **empty** neighbourhood and then hand
+# Neighbor_alltoallv zero-length count and displacement arrays.
+#
+# Two honest limits on that. The miss rate is identical at -n 2 and -n 3, so communicator churn
+# does not by itself explain why only -n 3 crashes under ASan. And the churn is inside MPICH,
+# which is not instrumented -- consistent with segfaults that produce no ASan report, but
+# consistent is not the same as demonstrated. It is a real defect and a plausible mechanism, not
+# a diagnosis.
+#
+# Coverage note, since "no ASan report" is only as strong as what ASan instrumented:
+# MpiUtils.cpp is a source of the ManyBodyUtils extension in setup.py and ManyBodyBlockState.h
+# is header-only, so the hand-written C++ compiles into the same .so under the same flags -- and
+# the build step now asserts that .so carries both __asan_ symbols *and* the MpiUtils symbols,
+# so this is checked rather than inferred.
+#
+# Two honest caveats. The probe loops only -n 2 and -n 3, so it says nothing about -n 1; and the
+# standing legs do crash at serial and -n 1, so either there is more than one mechanism or the
+# -n 3 exclusivity under ASan is partly a timing effect of the ~3x slowdown.
+#
+# First ASan result, run 33700200164: **24 instrumented runs of the two mid-suite sites came
+# back clean** -- 20 of test_f_shell_crystal_field.py and 4 of test_excitation_budget.py, across
+# -n 2 and -n 3, with no sanitizer report and no crash. Read that as evidence about *where the
+# corruption originates*, not as a clean bill of health: the same two files crash readily inside
+# a full suite run and did not crash on their own under instrumentation, which is what you would
+# expect if something earlier in the run corrupts the heap and these tests are merely the next to
+# touch it. It also fits the finalize cluster, and argues the whole-suite probes matter more than
+# the targeted ones. (The serial whole-suite probe on that run does not count either way: the
+# layout search returns the first workable cell and had picked `mpiexec -n 1`, so the step
+# intended to reproduce a plain serial `pytest` was not serial. Fixed by preferring `bare`.)
+#
+# The probe for all of that is now live: the `test-asan` job in .github/workflows/tests.yml was
+# commented out and is re-enabled, pointed at the two named files rather than the whole suite --
+# which is what makes it affordable to loop, and looping is the point when the crash needs 1-3 of
+# 8 legs to fire. It also runs one serial full-suite pass, for the other hypothesis (heap
+# corrupted earlier, those tests merely touch it first) and for the finalize-time pair.
+# `workflow_dispatch` takes an iteration count, so another sample costs a button rather than a
+# push. Why it never worked before: `g++ -print-file-name=libasan.so` resolves to an ASCII
+# *linker script*, not a preloadable object, so LD_PRELOAD-ing it silently did nothing and every
+# run came back clean while uninstrumented. It now asks for the SONAME, verifies ELF magic, and
+# checks a built extension carries __asan_ symbols -- because a self-test that compiles its own
+# binary with -fsanitize=address proves ASan works, not that this build was instrumented. And
+# mpi4py is installed with the sanitizer flags unset: measured, importing it aborts ASan even
+# with rc.initialize=False, because LDFLAGS reaches its link step while CXXFLAGS never reaches
+# its C sources, leaving it linked against libasan without being instrumented.
+#
+# This file is nonetheless deselected from the three standing MPI legs in
+# .github/workflows/tests.yml and run in three steps of its own at the end of that job. Read that
+# as cheap insurance, not as containment: the evidence above says the crash is not this file's, so
+# the isolation bounds only what a recurrence *here* would cost -- one failed step, after the rest
+# of the leg has already reported. That collateral damage, not the crash itself, is what the skip
+# was really buying, and it is now bought for the price of three extra steps.
+#
+# One already has, and it behaved as designed: on run 33673571249 the gcc-12/-std=c++17 leg
+# segfaulted in "Run rank-invariance guards (3 ranks)" -- *after* the step reached [100%], all
+# five tests passed, i.e. at finalize, which is the third site above and not a failure of these
+# tests. One step went red; the serial, -n 1 and -n 2 results on that leg had already reported,
+# which under the old arrangement they would not have.
+#
+# So: diagnose a 139 from that step, do not skip the file again. These are the only end-to-end
+# rank-invariance guards there are, and two solver bugs got through the rest of the suite while
+# they were switched off.
 
 _MASK = (1 << 64) - 1
 _GF_RTOL = 1e-10

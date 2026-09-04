@@ -681,7 +681,7 @@ def test_block_combine_dispatcher_accepts_blocks():
     ``combine_columns`` rather than falling through to the list-only
     ``block_combine_sparse`` (prerequisite for Phase 5's TRLM/IRLM Q_basis conversion:
     once Q_basis stays a block across a restart, every ``block_combine(Q_basis, ...)``
-    call in ``_trlm.pxi``/``_irlm.pxi`` hits this path)."""
+    call in ``ed/trlm.py``/``ed/irlm.py`` hits this path)."""
     from impurityModel.ed.BlockLanczosArray import block_combine
 
     rng = np.random.default_rng(70)
