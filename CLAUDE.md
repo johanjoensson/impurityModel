@@ -55,6 +55,25 @@ deadlocked the locked-reort Allreduce in `_lanczos_step.pxi` exactly this way).
 
 Docs build: `make -s -C doc/sphinx html` (needs `.[doc]`).
 
+**Diagnostic CI jobs** (`continue-on-error` — they report, they do not gate):
+
+| job | what it covers |
+|---|---|
+| `test` leg `build: debug` | the checked Cython build — bounds and initialized-memoryview checks. The only configuration that catches an out-of-bounds kernel access; elsewhere such a read silently returns a plausible-looking subnormal. ~0% overhead. |
+| `test-asan` | ASan + UBSan over one serial suite run |
+| `test-tsan` | ThreadSanitizer with `IMPURITYMODEL_PARALLEL=1`, scoped to `operators`/`lanczos`/`basis` — the only places `ManyBodyOperator::apply`'s three `#if defined(PARALLEL)` blocks run, and the only threaded code in the repo. Also the sole CI coverage of the threaded build. |
+
+Every one of these asserts it is actually active before its clean result counts — a
+deliberate out-of-bounds/UB/race must be trapped first. That is not ceremony: ASan ran 68
+instrumented times against a real crash while silently misconfigured, and a build-mode
+switch was once a no-op because cythonize ignores directive changes. A sanitizer that is
+not running and one that finds nothing produce identical output.
+
+**Read sanitizer logs with line-anchored patterns.** `grep "data race"` matches the step's
+own script text where it greps for that string; anchor to the report body
+(`^.*WARNING: ThreadSanitizer`) or you will report findings that do not exist. This
+misfired twice in one session.
+
 ## Layering rule
 
 Modules only import downward (see the layer diagram in `doc/architecture_overview.md`):
