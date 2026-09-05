@@ -73,7 +73,13 @@ _PY_BASIS_OVERHEAD_BYTES = 260
 DEFAULT_TRUNCATION_THRESHOLD = 1_000_000
 
 #: Fraction of the available per-rank RAM the sizing helpers budget by default; the rest
-#: absorbs transient matvec fanout, allocator slack and unmodeled overheads (MPI buffers).
+#: absorbs transient matvec fanout, allocator slack, unmodeled overheads (MPI buffers), and
+#: hash-partition skew: ``estimate_gs_peak_bytes``'s ``replicated_bytes`` term approximates
+#: the Phase 1 chunked matvec transient's true bound, ``max(counts)`` over *all* ranks, with
+#: *this* rank's own ``local`` share (``doc/plans/dc_smo_performance.md``) -- exact only for a
+#: perfectly balanced hash partition. A rank computing its own estimate cannot see another
+#: rank's share, so no closed-form correction is possible without measuring the real partition
+#: at plan time; this margin is what stands in for it.
 DEFAULT_MEMORY_SAFETY = 0.5
 
 # cgroup v1 reports "no limit" as a huge number (PAGE_COUNTER_MAX); anything this large
@@ -307,8 +313,9 @@ def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_
     transient (``_block_ops.pxi``'s ``block_apply``, post row-chunking: bounded by
     ``max(counts)`` -- the largest single rank's local row/column count under the hash
     partition, approximated here as ``local`` since a materially skewed partition, not
-    ``global_N``, is now the risk this term misses), and the retained dense Krylov blocks
-    at the ground-state default ``reort="full"``.
+    ``global_N``, is now the risk this term misses -- see :data:`DEFAULT_MEMORY_SAFETY`,
+    which is what absorbs it: this function has no way to see another rank's share), and
+    the retained dense Krylov blocks at the ground-state default ``reort="full"``.
 
     Parameters
     ----------

@@ -206,8 +206,10 @@ def _restart_coefficients(
     # stores only the sub-diagonal coupling, so a dropped piece of (I - P) H Q_ret would
     # leave H q_next with an uncaptured component on Q_ret.
     # Phase 0 measurement (doc/plans/dc_smo_performance.md): `block_apply`'s array branch
-    # peaks at global_N * block_cols(Q_ret) per rank (see _block_ops.pxi). This is the
-    # rebuild arm, so this width can reach `nkeep` (up to 3p), wider than the sweep width.
+    # peaks at max(counts) * block_cols(Q_ret) per rank since the Phase 1 row-chunked
+    # reduce-scatter fix (see _block_ops.pxi) -- previously global_N * block_cols(Q_ret),
+    # the bug that fix removed. This is the rebuild arm, so this width can reach `nkeep`
+    # (up to 3p), wider than the sweep width.
     _trace_note("block_apply_width", site="restart_rebuild", w=block_cols(Q_ret))
     HQ = block_apply(h_op, Q_ret, basis, mpi, slater)
     ovl = block_inner(Q_ret, HQ, mpi, comm)
