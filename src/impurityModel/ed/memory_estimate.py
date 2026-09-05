@@ -240,23 +240,49 @@ def estimate_gf_peak_bytes(
     return basis_bytes + live_bytes + store_bytes
 
 
-#: Default retained-Krylov depth for :func:`estimate_gs_peak_bytes`, in units of the Lanczos
-#: block width ``p``. Not 30 (the pre-Phase-1 literal): TRLM's thick restart trims the retained
-#: Ritz block to ``nkeep = k_blocks * p`` every restart (``trlm.py``, ``nkeep = k_blocks * p``)
-#: rather than accumulating history across ``max_restarts``, and ``k_blocks = ceil(num_wanted /
-#: p)`` with ``num_wanted`` padded to ``~2p`` (``cipsi_solver._size_subspace``) gives
-#: ``k_blocks ~ 2`` in the regime that matters for capacity planning (``p`` large enough that the
-#: ``+10``/``_EIGENSTATE_PAD`` additive pads are negligible next to ``2p``) -- measured on the
-#: Arrhenius crash log as ``nkeep = 3p`` in all five observed solves (315/105, 297/99, 273/91,
-#: 225/75, 129/43), which already includes the +1 spike block coupling the residual. The same
-#: ``_size_subspace`` call also bounds the *initial* sweep's peak block count (before any
-#: restart trims it) to ``ceil(max(2*num_wanted, num_wanted+10) / p) ~ 4`` in that regime, so 4
-#: covers both the initial-sweep and restart-steady-state peaks; keep it a documented constant
-#: derived from these two call sites, not a re-measured literal every time p changes.
-DEFAULT_GS_KRYLOV_BLOCKS = 4
+#: Additive eigenstate padding TRLM's initial sizing applies before certifying a manifold
+#: complete (mirrors ``cipsi_solver._EIGENSTATE_PAD``; not imported -- this module sits below
+#: the solver stack, see the module docstring -- so keep the two in sync by hand if that
+#: constant changes; both are 10 as of this writing).
+_GS_EIGENSTATE_PAD = 10
 
 
-def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_per_state=100, n_blocks=None):
+def _gs_krylov_columns(block_width, num_wanted=None):
+    """Peak column count of the retained dense Krylov store, at the ground-state default
+    ``reort="full"``.
+
+    Mirrors ``cipsi_solver._size_subspace`` (``max_subspace = max(2*nw, nw+10); blocks =
+    ceil(max_subspace / p)``), not imported for the same layering reason as
+    :data:`_GS_EIGENSTATE_PAD`. **This replaced a flat ``n_blocks`` constant** (measured wrong:
+    the SMO cap-2000 probe's own ``size_subspace`` trace showed ``blocks/width`` up to 30, not
+    a small constant -- see ``doc/plans/dc_smo_performance.md``'s "Phase resequencing" section).
+    The ratio is not bounded by a universal constant because ``num_wanted`` and ``block_width``
+    are two different quantities that happen to move together *only* before
+    ``GS_MAX_BLOCK_WIDTH`` (not yet implemented; tracked in that same section) decouples them --
+    once it exists, ``num_wanted`` can stay large while ``block_width`` is capped, and calling
+    this with the real ``num_wanted`` (not the default) is what keeps the estimate honest then.
+
+    Parameters
+    ----------
+    block_width : int
+        The Lanczos block width ``p``.
+    num_wanted : int, optional
+        The *unpadded* eigenstate request (``get_eigenvectors``'s own argument). ``None``
+        (default) assumes ``2 * block_width`` -- the relationship that holds while
+        ``num_wanted`` tracks the block width 1:1, i.e. before ``GS_MAX_BLOCK_WIDTH`` exists.
+
+    Returns
+    -------
+    int
+        Column count (a multiple of ``block_width``).
+    """
+    p = max(1, block_width)
+    nw = (2 * p if num_wanted is None else num_wanted) + _GS_EIGENSTATE_PAD
+    max_subspace = max(2 * nw, nw + 10)
+    return p * ceil(max_subspace / p)
+
+
+def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_per_state=100, num_wanted=None):
     """Predicted per-rank peak bytes of the ground-state (CIPSI + array-kernel) path.
 
     Counts the ``Basis`` bookkeeping and the CSR Hamiltonian snapshot (both hash
@@ -275,35 +301,32 @@ def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_
         Determinant bit width.
     block_width : int
         Lanczos block width (number of sought eigenvectors). **Not yet threaded from a
-        measured/capped value at every call site** (see ``doc/plans/dc_smo_performance.md``
-        and the plan's Phase 2/3/4 resequencing note): Phase 0 measured the real width
-        growing with the determinant cap itself (2-16 at cap 2000, 105-315 at the ~1M
-        production cap that crashed), so a cheap probe at a small cap under-reports it and
-        the default ``4`` remains a placeholder until ``GS_MAX_BLOCK_WIDTH`` (Phase 4) pins
+        measured/capped value at every call site** (see ``doc/plans/dc_smo_performance.md``'s
+        "Phase resequencing" section): Phase 0 measured the real width growing with the
+        determinant cap itself (2-16 at cap 2000, 105-315 at the ~1M production cap that
+        crashed), so a cheap probe at a small cap under-reports it and the default ``4``
+        remains a placeholder until ``GS_MAX_BLOCK_WIDTH`` (planned, not yet implemented) pins
         the width to a config constant.
     ranks : int
         MPI ranks sharing the basis.
     nnz_per_state : int
         Stored Hamiltonian elements per basis state (measure on a small run; grows with
         the number of one-/two-body terms).
-    n_blocks : int, optional
-        Retained Krylov depth in units of ``block_width`` (see
-        :data:`DEFAULT_GS_KRYLOV_BLOCKS`). ``None`` (default) uses that constant.
+    num_wanted : int, optional
+        Forwarded to :func:`_gs_krylov_columns`; ``None`` assumes ``2 * block_width``.
 
     Returns
     -------
     int
         Predicted per-rank peak bytes.
     """
-    if n_blocks is None:
-        n_blocks = DEFAULT_GS_KRYLOV_BLOCKS
     local = ceil(n_dets / max(1, ranks))
     basis_bytes = local * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     csr_bytes = local * nnz_per_state * _CSR_BYTES_PER_NNZ
     # Chunked reduce-scatter transient (Phase 1): one (max(counts), w) chunk buffer plus the
     # (local, w) result live at once; max(counts) ~ local under a balanced hash partition.
     replicated_bytes = 2 * local * block_width * _COMPLEX_BYTES
-    krylov_bytes = local * block_width * n_blocks * _COMPLEX_BYTES
+    krylov_bytes = local * _gs_krylov_columns(block_width, num_wanted) * _COMPLEX_BYTES
     return basis_bytes + csr_bytes + replicated_bytes + krylov_bytes
 
 

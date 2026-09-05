@@ -121,3 +121,62 @@ than on whatever fixture that note measured, or the referenced TRLM fix (`num_co
 the eigensolver gate off the eigenstate pad) is not the current behavior. Current measurements
 supersede the stale note; flagged rather than chased further, since it does not block Phase 1's
 correctness gate.
+
+## Phase resequencing: Phase 2's block-width threading needs Phase 4 first
+
+Found while implementing Phase 2's "make the cap honest" item 2 (thread a real block width
+through `memory_estimate`'s five call sites), before writing that code: the plan's original
+order (Phase 2, then Phase 3, then Phase 4) assumed a cheap probe solve at a small cap could
+stand in for the real production block width. Measurement 1 above refutes that directly: `p` at
+cap 2000 is 2-16, against 105-315 at the ~1M-determinant production cap that actually crashed --
+the width grows with the cap itself (the `num_wanted = min(2*len(psi_refs), len(self.basis))`
+feedback loop, `cipsi_solver.py:852`, is bounded only by the *current* basis size, not by
+`_EIGENSTATE_PAD`/`_MAX_EIGENSTATE_DOUBLINGS`/`_size_subspace` in isolation). A probe at a small
+cap would under-report `p`, and since `block_width` still dominates
+`estimate_gs_peak_bytes` post-Phase-1 (now via `krylov_bytes`, not `replicated_bytes` -- verified:
+at the Arrhenius point, `p=315` alone gives `krylov_bytes` on the order of a GiB against tens of
+MiB for `replicated_bytes`), threading an under-measured width through the five call sites would
+*raise* the suggested cap, reproducing the OOM this campaign exists to fix.
+
+The width only stops being a moving, unmeasurable target once a Lanczos-block-width cap (Phase
+4's `GS_MAX_BLOCK_WIDTH`, **not yet implemented**) pins it to a config constant -- and that
+phase's own gate must be measured against Phase 3's manifold-shrinking output, not today's (Phase
+4's text says so explicitly), so the real dependency order is **Phase 3 -> Phase 4 -> Phase 2's
+remainder -> Phase 5**, not the original 2-3-4-5 listing. What still landed from Phase 2
+independent of that dependency (`estimate_gs_peak_bytes`'s `replicated_bytes` chunked-bound fix)
+is safe regardless of `block_width`'s value, since it only lowers a term that no longer matched
+Phase 1's code.
+
+### The Krylov-store term needed a second look: no flat constant is safe
+
+The first attempt at this section replaced the pre-Phase-1 `n_blocks=30` literal with a
+documented constant of 4, derived from `k_blocks = ceil(num_wanted / p) ~ 2` in the regime where
+`num_wanted` tracks `2p` (true today, since nothing decouples them yet). That derivation has a
+real hole: it only holds while `num_wanted` and `block_width` move together. Once a block-width
+cap exists, `num_wanted` is explicitly *not* touched (Phase 4's own text: "Keep `num_wanted`
+untouched. The manifold that gets *returned* must not shrink") while `block_width` is capped --
+so `k_blocks = ceil(num_wanted / p)` can exceed the coupled-regime asymptote by a wide margin.
+
+Instrumented `cipsi_solver._size_subspace`'s three call sites directly (`solver_trace.note`,
+kind `size_subspace`) and re-ran the cap-2000 SMO probe:
+
+| site | n events | blocks range |
+|---|---|---|
+| initial | 388 | 26-60 |
+
+`blocks/width` ratio: min 1.62, max **30.00**, mean 14.31 -- the worst case (`blocks=60` at
+`width=2`, `num_wanted=20`) comes from an early, tiny-basis CIPSI iteration where `cap =
+len(self.basis)` itself binds `_size_subspace`'s `max_subspace`, not the `2*num_wanted` term. At
+production scale (a large basis, so `cap` never binds) the same shape of blowup recurs whenever
+`num_wanted` is large relative to a capped `block_width` -- exactly the post-Phase-4 regime, e.g.
+`num_wanted ~ 600` (an uncapped manifold request, historically observed) against
+`block_width = 20` (a hypothetical `GS_MAX_BLOCK_WIDTH`) gives `blocks = ceil(1200/20) = 60`,
+matching the empirical worst case's magnitude by the same mechanism.
+
+No flat constant covers this: the ratio is unbounded as `num_wanted/block_width` grows, since the
+two are no longer coupled. Fixed by replacing the constant with
+`memory_estimate._gs_krylov_columns(block_width, num_wanted)`, which mirrors
+`_size_subspace`'s own formula (`max_subspace = max(2*nw, nw+10)`, `nw = num_wanted +
+_EIGENSTATE_PAD`) rather than assuming a ratio. Its default (`num_wanted=None` -> `2*block_width`)
+reproduces today's coupled-regime behavior; Phase 2's remainder must pass the real `num_wanted`
+once Phase 3/4 land, or this will under-predict again.
