@@ -253,6 +253,13 @@ def estimate_gf_peak_bytes(
 #: constant changes; both are 10 as of this writing).
 _GS_EIGENSTATE_PAD = 10
 
+#: The pre-Phase-4 coupled-regime assumption ``num_wanted ~= _GS_COUPLED_NUM_WANTED_RATIO *
+#: block_width`` (``cipsi_solver.expand``'s ``num_wanted = 2 * len(psi_refs)`` against
+#: ``block_width = len(psi_refs) + 1``, true only while ``GS_MAX_BLOCK_WIDTH`` is unset). A
+#: single source of truth for both :func:`_gs_krylov_columns`'s default and
+#: :func:`log_memory_budget`'s warning message, so the two cannot silently drift apart.
+_GS_COUPLED_NUM_WANTED_RATIO = 2
+
 
 def _gs_krylov_columns(n_dets, block_width, num_wanted=None):
     """Peak column count of the retained dense Krylov store, at the ground-state default
@@ -301,7 +308,7 @@ def _gs_krylov_columns(n_dets, block_width, num_wanted=None):
         Column count (a multiple of ``block_width``).
     """
     p = max(1, block_width)
-    nw = (2 * p if num_wanted is None else num_wanted) + _GS_EIGENSTATE_PAD
+    nw = (_GS_COUPLED_NUM_WANTED_RATIO * p if num_wanted is None else num_wanted) + _GS_EIGENSTATE_PAD
     max_subspace = min(max(2 * nw, nw + 10), n_dets)
     blocks = min(2 * ceil(max_subspace / p) + 20, max(2, n_dets // p - 1))
     return p * blocks
@@ -751,12 +758,13 @@ def log_memory_budget(
                 flush=True,
             )
         elif gs_num_wanted is None:
+            assumed = _GS_COUPLED_NUM_WANTED_RATIO * block_width
             print(
                 f"{prefix}GS_MAX_BLOCK_WIDTH is set but gs_num_wanted was not supplied: the ground-state "
-                f"Krylov term assumes num_wanted~=2*block_width={2 * block_width}, which under-counts by "
-                "the manifold-to-width ratio measured at production scale (up to ~30x, see "
-                "doc/plans/dc_smo_performance.md) -- pass the value measured by the same width sweep "
-                "that set GS_MAX_BLOCK_WIDTH.",
+                f"Krylov term assumes num_wanted~={assumed} ({_GS_COUPLED_NUM_WANTED_RATIO}*block_width), "
+                "which under-counts by the manifold-to-width ratio measured at production scale (up to "
+                "~30x, see doc/plans/dc_smo_performance.md) -- pass the value measured by the same width "
+                "sweep that set GS_MAX_BLOCK_WIDTH.",
                 flush=True,
             )
     # Ungated: an OOM prediction is a warning about a real problem, not detail. The
