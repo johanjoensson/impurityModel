@@ -121,8 +121,10 @@ def _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol, ma
 
 #: Successive rungs of the cap ladder must agree within this fraction of the criterion's own
 #: tolerance before :func:`calibrate_truncation_threshold` accepts a cap. ``0.25`` keeps the
-#: truncation error the ladder leaves in well under the search's own convergence tolerance,
-#: matching the margin :func:`bracket_width_tol` and the gap tolerance already use.
+#: truncation error the ladder leaves in well under the search's own convergence tolerance --
+#: an independent choice, not derived from :func:`bracket_width_tol` or any other tolerance
+#: fraction in this module (coincidentally, `_refine_bracket`'s unrelated bisection margin is
+#: also 0.25; that is not a shared constant, just the same round number twice).
 CAP_CONVERGENCE_FRACTION = 0.25
 
 #: Width (in trailing rungs, beyond the one just evaluated) of the window
@@ -149,7 +151,12 @@ CAP_LADDER_MAX_RUNGS = 8
 
 
 def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, rank=0, comm=None):
-    r"""The smallest determinant cap at which the criterion's answer has stopped moving.
+    r"""The determinant cap at which the criterion's answer has stopped moving.
+
+    Returns the *largest* cap in the trailing window that established convergence (see
+    ``Returns``), not the smallest one the same span check already certifies as sufficient --
+    deliberately: it is the rung this function evaluated last, so a caller can keep its cached
+    solves instead of paying for one more at whatever smaller cap would also have qualified.
 
     **Why this exists.** The DC criteria's own sector expansions saturate the cap at every cap
     tried -- the ``GS_DE2_MIN`` selection does not converge in size, it keeps admitting
@@ -182,10 +189,21 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
         The cap the memory budget would have allowed. Reported as the parity reference, and used
         as the ceiling: the ladder never proposes a cap the machine could not have run.
     verbose : bool
-        Gate for the informational progress line printed on acceptance (rank 0 only). The warning
-        printed when the ladder exhausts its rung budget without settling is unconditional --
-        matching this module's convention that a result the caller should distrust is never hidden
-        behind a verbosity flag.
+        Gate for the informational progress line printed on acceptance (rank 0 only). Not the
+        durable record of which cap was used -- that is :mod:`dc_record`'s unconditional
+        ``dc_cap``/``dc_cap_drift`` fields (:mod:`dc_criteria` writes them once this function is
+        wired in), which is what makes gating this progress line behind ``verbose`` safe rather
+        than hiding the answer. The warning printed when the ladder exhausts its rung budget
+        without settling is unconditional regardless -- matching this module's convention that a
+        result the caller should distrust is never hidden behind a verbosity flag.
+        ``verbose``/``rank`` (rather than :class:`impurityModel.ed.utils.Reporter`, the
+        rank-and-verbosity-gated print helper used elsewhere, e.g. ``groundstate.py``) match
+        this module's own existing convention: every other print in ``dc_search.py`` and its
+        caller ``dc_criteria.py`` already takes a plain ``verbose: bool``/``rank: int`` pair, not
+        a ``Reporter``. Introducing a second convention into this one function, when the module
+        around it uses neither, would be a net increase in how many ways this codebase gates a
+        print -- if this whole call chain moves to ``Reporter``, it should move together, not
+        function by function.
     rank : int
         This rank's index, for the rank-0-only prints.
     comm : MPI communicator, optional
@@ -202,8 +220,10 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
         three exit paths (the window settled, the memory ceiling was hit, the rung budget ran
         out). That is part of the contract, not an accident of the loop: a caller may keep the
         caches ``quantity`` filled on its final call instead of re-solving at the accepted cap,
-        which is only sound while the last rung *is* the accepted one -- verify that before
-        relying on it (see :func:`dc_criteria.fixed_gap_dc`'s ``cached_cap`` guard).
+        which is only sound while the last rung *is* the accepted one -- a caller doing this
+        must verify that itself (e.g. by having ``quantity`` record which cap its own caches were
+        last built at, and comparing that against the returned ``cap``) rather than assume it.
+        Not yet done by any caller in this codebase; :mod:`dc_criteria` wires this in next.
     """
     target = CAP_CONVERGENCE_FRACTION * tol
     rungs = []
@@ -223,8 +243,14 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
         # difference repeated -- see :data:`CAP_CONVERGENCE_RUNS`'s docstring for why a pairwise
         # gate bounds nothing against the limit.
         window = ([] if value is None else (window + [value]))[-(CAP_CONVERGENCE_RUNS + 1) :]
-        if len(window) > 1:
-            drift = max(window) - min(window)
+        # Recomputed from the CURRENT window every rung, not merely updated when there is enough
+        # of it to compute -- an undefined rung resets `window` to `[]` above, and `drift` must
+        # reset with it. A version that only ever overwrote `drift` under `len(window) > 1` left
+        # it holding a stale value from *before* a `None` reset the window: `[1.0, 1.0, None,
+        # 5.0]` would report `drift = 0.0` (the span of the pre-reset window) at the loop's exit,
+        # when the real, unmeasured jump from 1.0 to 5.0 was never bounded at all -- found by
+        # review, reproduced, and pinned by a test below.
+        drift = (max(window) - min(window)) if len(window) > 1 else None
         if len(window) == CAP_CONVERGENCE_RUNS + 1 and drift <= target:
             if verbose and rank == 0:
                 print(

@@ -129,6 +129,27 @@ def test_an_undefined_rung_does_not_count_as_agreement():
     assert cap is not None
 
 
+def test_an_undefined_rung_resets_drift_along_with_the_window():
+    """``drift`` must reset to ``None`` alongside ``window`` on a ``None`` rung, not keep
+    reporting the span of a window that no longer exists.
+
+    Found by review: a version that only ever overwrote ``drift`` under ``len(window) > 1`` left
+    it holding the last *pre-reset* value. ``[1.0, 1.0, None, 5.0]`` has a real, unmeasured jump
+    of 4.0 across the ``None`` -- accepting it (the ladder settles at rung 4, since only one
+    value follows the reset and the window never refills to ``CAP_CONVERGENCE_RUNS + 1``) must
+    not report the stale ``drift = 0.0`` left over from the ``[1.0, 1.0]`` window the ``None``
+    wiped out.
+    """
+    # memory_cap chosen so the ladder's 4th rung (cap 500*2**3 = 4000) hits the ceiling and
+    # breaks right there -- before the None's reset window could refill and settle "for real".
+    quantity, _seen = _ladder([1.0, 1.0, None, 5.0])
+    _cap, drift, rungs = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=4000)
+
+    assert len(rungs) == 4
+    # Only rung 4 (value 5.0) survives the None's reset -- a window of one value has no span.
+    assert drift is None, drift
+
+
 def test_the_ladder_reports_the_memory_parity_verbosely(capsys):
     """The accepted-cap progress line is gated on ``verbose``, not printed unconditionally."""
     quantity, _seen = _ladder([0.0, 1.0, 2.0, 2.0, 2.0])
