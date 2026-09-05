@@ -480,6 +480,42 @@ def test_block_apply_sparse_matches_dense_reference_with_an_empty_rank():
     np.testing.assert_allclose(result, expected_local, atol=1e-12)
 
 
+def test_block_apply_mpi_preserves_a_real_dtype():
+    """``/code-review`` found the row-chunked reduce-scatter forcing ``dtype=complex``
+    unconditionally, doubling memory for a real-valued ``H``/``V`` where the non-mpi branch
+    (plain ``H @ V_arr``) and the pre-Phase-1 code both preserved the natural result dtype.
+    Runs under any rank count (the ``mpi=True`` chunked branch triggers regardless of
+    ``comm.size``, see ``_block_ops.pxi``'s guard), so no ``@pytest.mark.mpi``/skip needed.
+    """
+    import scipy.sparse as sps
+
+    from impurityModel.ed.BlockLanczosCore import block_apply
+
+    comm = MPI.COMM_WORLD
+    rank = comm.rank
+    H_global = np.array([[2.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 4.0]], dtype=np.float64)
+    v_global = np.array([1.0, 2.0, 3.0], dtype=np.float64).reshape(-1, 1)
+    expected = H_global @ v_global
+
+    # Rank 0 owns every column/row, every other rank owns none -- a valid partition at any
+    # comm.size (including 1, where rank 0 is the only rank), unlike passing the full arrays
+    # unpartitioned on every rank (block_apply's `Allgather` would then see local_N = 3 on
+    # every rank and derive a wrong, oversized global_N).
+    local_cols = [0, 1, 2] if rank == 0 else []
+    H_local = sps.csr_matrix(H_global[:, local_cols]) if local_cols else sps.csr_matrix((3, 0), dtype=np.float64)
+    v_local = v_global[local_cols, :] if local_cols else np.zeros((0, 1), dtype=np.float64)
+
+    class _FakeBasis:
+        pass
+
+    fake_basis = _FakeBasis()
+    fake_basis.comm = comm
+    result = block_apply(H_local, v_local, basis=fake_basis, mpi=True)
+    assert result.dtype == np.float64, result.dtype
+    expected_local = expected[local_cols, :] if local_cols else np.zeros((0, 1), dtype=np.float64)
+    np.testing.assert_allclose(result, expected_local, atol=1e-12)
+
+
 @pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
 def test_get_block_Lanczos_matrices_dense(reort_mode):
     from impurityModel.ed.BlockLanczosArray import block_lanczos_array

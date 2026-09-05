@@ -98,11 +98,15 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
             # restart loop this runs in, so the many calls here never each pay for it. A CSC `H`
             # still produces the correct answer, just slower.
             w = V_arr.shape[1]
-            result = np.empty((local_N, w), dtype=complex, order='C')
+            # Match what `H @ V_arr` would produce (the non-mpi branch below, and this
+            # branch's own pre-chunking behaviour): a real H against a real V_arr must stay
+            # real, not silently upcast to complex128 and double this buffer's footprint.
+            result_dtype = np.result_type(H.dtype, V_arr.dtype)
+            result = np.empty((local_N, w), dtype=result_dtype, order='C')
             for dest in range(size):
                 row_lo = offsets[dest]
                 row_hi = row_lo + counts[dest]
-                chunk = np.ascontiguousarray(H[row_lo:row_hi, :] @ V_arr, dtype=complex)
+                chunk = np.ascontiguousarray(H[row_lo:row_hi, :] @ V_arr, dtype=result_dtype)
                 if rank == dest:
                     comm.Reduce(MPI.IN_PLACE, chunk, op=MPI.SUM, root=dest)
                     result[:, :] = chunk
