@@ -119,6 +119,142 @@ def _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol, ma
     return best[0], best[1], step
 
 
+#: Successive rungs of the cap ladder must agree within this fraction of the criterion's own
+#: tolerance before :func:`calibrate_truncation_threshold` accepts a cap. ``0.25`` keeps the
+#: truncation error the ladder leaves in well under the search's own convergence tolerance,
+#: matching the margin :func:`bracket_width_tol` and the gap tolerance already use.
+CAP_CONVERGENCE_FRACTION = 0.25
+
+#: Width (in trailing rungs, beyond the one just evaluated) of the window
+#: :func:`calibrate_truncation_threshold` tests for convergence: the SPAN over the last
+#: ``CAP_CONVERGENCE_RUNS + 1`` values, not one pairwise difference. A pairwise gate bounds
+#: nothing against the limit -- a monotone staircase whose every step is exactly ``target``
+#: passes at every rung, and after eight rungs the quantity has moved ``7 * target``, 1.75x the
+#: whole tolerance. That shape is the *expected* one here (the CIPSI selection does not converge
+#: in size, it saturates the budget every time), not a contrivance, so the span -- which bounds
+#: the actual variation over the window -- is what rejects it at the first rung.
+CAP_CONVERGENCE_RUNS = 2
+
+#: Starting rung of the geometric cap ladder. Small enough that the first few rungs are cheap
+#: relative to the production caps this exists to avoid, so a workload that settles quickly pays
+#: almost nothing for the calibration.
+CAP_LADDER_START = 500
+
+#: Ceiling on how many times the ladder doubles before giving up and reporting the largest rung it
+#: reached as truncation-limited, rather than search-limited. Eight doublings from
+#: :data:`CAP_LADDER_START` top out at 64,000 determinants -- comfortably below the ~1e6-scale
+#: memory-derived caps this module runs against, so the rung budget is the binding limit only on
+#: a workload whose answer genuinely has not settled by then.
+CAP_LADDER_MAX_RUNGS = 8
+
+
+def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, rank=0, comm=None):
+    r"""The smallest determinant cap at which the criterion's answer has stopped moving.
+
+    **Why this exists.** The DC criteria's own sector expansions saturate the cap at every cap
+    tried -- the ``GS_DE2_MIN`` selection does not converge in size, it keeps admitting
+    determinants until the budget stops it -- so cost is linear in the cap while the criterion's
+    answer moves far less: on ``nio_5peeled`` the gap centre moved 6.7e-3 in ``mu`` across a
+    500-to-8000 cap ladder, against an acceptance band of ``tol / |chi| = 8.5e-3`` (see
+    ``doc/plans/dc_performance.md``, the campaign this ported from). Running at the full
+    memory-derived cap regardless spends time on resolution the criterion cannot use.
+
+    So the cap is *measured* rather than maximised: double it until two successive rungs agree to
+    within ``CAP_CONVERGENCE_FRACTION * tol``, and stop. The ladder is geometric, so its whole
+    cost is ~2x the rung it accepts.
+
+    **What this trades away, stated plainly.** The double counting is then determined on a
+    smaller variational space than ``calc_selfenergy`` will use at that ``dc`` -- a DC<->GS parity
+    gap of the same shape this module exists to close elsewhere (a halved memory budget). The
+    difference is that this one is *measured and recorded* -- the caller records ``dc_cap``,
+    ``dc_cap_drift`` and the memory-derived ceiling beside it -- rather than inherited silently.
+
+    Parameters
+    ----------
+    quantity : callable
+        ``quantity(cap) -> float or None``. The number the criterion controls (the gap centre, the
+        impurity occupation), evaluated at that cap. **Collective**: it runs the eigensolver, so
+        it must be called the same number of times on every rank -- which is why the loop below
+        broadcasts every value before branching on it.
+    tol : float
+        The criterion's own convergence tolerance, in the units of ``quantity``.
+    memory_cap : int or float
+        The cap the memory budget would have allowed. Reported as the parity reference, and used
+        as the ceiling: the ladder never proposes a cap the machine could not have run.
+    verbose : bool
+        Gate for the informational progress line printed on acceptance (rank 0 only). The warning
+        printed when the ladder exhausts its rung budget without settling is unconditional --
+        matching this module's convention that a result the caller should distrust is never hidden
+        behind a verbosity flag.
+    rank : int
+        This rank's index, for the rank-0-only prints.
+    comm : MPI communicator, optional
+        Used only to broadcast each rung's ``value`` before branching on it (see ``quantity``).
+        ``None`` (serial) skips the broadcast.
+
+    Returns
+    -------
+    (cap, drift, rungs) : tuple
+        The accepted cap, the last change in ``quantity`` between rungs (``None`` if the ladder
+        never got two comparable values), and the list of ``(cap, value)`` pairs evaluated.
+
+        ``cap`` is always ``rungs[-1][0]``, the rung this function evaluated **last**, on all
+        three exit paths (the window settled, the memory ceiling was hit, the rung budget ran
+        out). That is part of the contract, not an accident of the loop: a caller may keep the
+        caches ``quantity`` filled on its final call instead of re-solving at the accepted cap,
+        which is only sound while the last rung *is* the accepted one -- verify that before
+        relying on it (see :func:`dc_criteria.fixed_gap_dc`'s ``cached_cap`` guard).
+    """
+    target = CAP_CONVERGENCE_FRACTION * tol
+    rungs = []
+    cap = min(CAP_LADDER_START, memory_cap)
+    drift = None
+    window = []
+    for _rung in range(CAP_LADDER_MAX_RUNGS):
+        value = quantity(cap)
+        # Broadcast before any branch: `quantity` ends in Lanczos energies replicated only to
+        # roundoff, and the comparison below decides whether the next collective solve happens.
+        # Ranks disagreeing by an ulp would issue different sequences of collectives and hang --
+        # CLAUDE.md's rule, and the deadlock class this module has already shipped once.
+        if comm is not None:
+            value = comm.bcast(value, root=0)
+        rungs.append((cap, value))
+        # The test is the SPAN of the last `CAP_CONVERGENCE_RUNS + 1` values, not a pairwise
+        # difference repeated -- see :data:`CAP_CONVERGENCE_RUNS`'s docstring for why a pairwise
+        # gate bounds nothing against the limit.
+        window = ([] if value is None else (window + [value]))[-(CAP_CONVERGENCE_RUNS + 1) :]
+        if len(window) > 1:
+            drift = max(window) - min(window)
+        if len(window) == CAP_CONVERGENCE_RUNS + 1 and drift <= target:
+            if verbose and rank == 0:
+                print(
+                    f"cap: calibrated to {cap} determinants over {len(rungs)} rungs; the "
+                    f"controlled quantity varies by {drift:.3e} over the last {len(window)} "
+                    f"rungs, within {CAP_CONVERGENCE_FRACTION:g} of the tolerance {tol:.3e}; the "
+                    f"memory budget would have allowed {memory_cap}.",
+                    flush=True,
+                )
+            return cap, drift, rungs
+        if cap >= memory_cap:
+            break
+        cap = min(2 * cap, memory_cap)
+    # The LAST EVALUATED rung, never a further-doubled `cap` -- the loop doubles at the end of
+    # its final iteration too, so `cap` is then one doubling past anything that was measured.
+    # Returning it would run the whole search at twice the largest cap whose behaviour is known,
+    # at twice the cost, beside a `drift` describing a different cap.
+    settled = rungs[-1][0]
+    if rank == 0:
+        print(
+            f"WARNING: the determinant cap ladder reached {settled} without the answer settling "
+            f"(it still varies by {drift if drift is None else f'{drift:.3e}'} over the last "
+            f"{len(window)} rungs, against a target of {target:.3e}). The double counting is "
+            "truncation-limited here, not search-limited. The reported dc inherits that drift, "
+            "and a cap ladder (test/support/dc_diagnostics.py) is the only honest error bar.",
+            flush=True,
+        )
+    return settled, drift, rungs
+
+
 def _report_unattainable_target(mu, g, step, target, width_tol):
     r"""Report a target the observable *steps across* rather than crosses.
 

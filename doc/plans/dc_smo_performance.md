@@ -247,3 +247,65 @@ to the pre-Phase-1 `n_blocks=30` literal, for an unrelated reason: that literal 
 derived, this is a converged asymptote of the real formula for large `p` in the coupled regime).
 Phase 2's remainder must pass the real `num_wanted` once Phase 3/4 land and decouple it from
 `block_width`, or this will under-predict again.
+
+## Phase 5 — the calibrated determinant cap, ported from `DC_gap_perf`
+
+Ported from branch `DC_gap_perf` (`f61bfaa` + `91109b8`, itself 119 commits stale against
+`master`), re-derived rather than cherry-picked as the plan requires. That branch's commits mix
+three concerns: the cap ladder itself, a verbosity/output overhaul (`Reporter`/`SILENT`, a
+`-v`/`-vv`/`-vvv` ladder collapsing `Basis.verbose` into a separate `solver_verbose`), and a
+post-search cap re-verification/retry mechanism. Only the first is this phase's scope; the second
+is out of scope entirely (today's `dc_criteria.py` already has its own plain `verbose`/`rank`
+convention, and duplicating a second verbosity abstraction on top of it is not this phase's job);
+the third is scoped out below.
+
+**Landed:** `dc_search.calibrate_truncation_threshold` (the cap ladder itself, its four
+constants), ported with `narrate=SILENT`/`Reporter` replaced by this module's existing
+`verbose: bool, rank: int` convention (matching `_find_nominal_sector_point`'s pattern: an
+informational line gated on `verbose`, an unconditional `WARNING:` when the ladder exhausts its
+rung budget without settling — matching `_report_unattainable_target`'s convention that a result
+worth distrusting is never hidden behind a verbosity flag). Its three documented invariants
+(returning `rungs[-1][0]`, never a further-doubled cap past the last measured rung; the SPAN over
+a trailing window rather than one pairwise step; a `None` rung resetting the window rather than
+being skipped) are pinned by `test/gf/test_dc_search_cap_ladder.py`, each checked against the
+specific wrong behaviour it guards (a synthetic staircase whose every step sits exactly on the
+pairwise gate; an undefined rung sitting between two agreeing pairs) rather than only against the
+correct implementation, which is how the original bugs got past four tests on `DC_gap_perf`.
+
+**Not yet landed (next commits in this phase):** wiring `calibrate_truncation_threshold` into
+`fixed_gap_dc`/`fixed_occupation_dc` (only recalibrating a cap that defaulted from the memory
+probe — an explicit `truncation_threshold` stays the caller's instruction), the cache-reuse fix
+for the gap criterion (`91109b8`: the ladder's last-evaluated rung is the one about to be
+consumed, so keeping its caches instead of clearing them unconditionally saves a full re-solve at
+`mu = 0` — verified safe only because `calibrate_truncation_threshold`'s contract guarantees
+`cap == rungs[-1][0]`, checked by an explicit `cached_cap != cap` guard rather than assumed), and
+the accompanying `dc_record.py` field additions (`dc_cap`, `dc_cap_drift`, `dc_cap_parity`,
+`mu_tol_effective`, plus the `slope`/`dc_cap_mu`/`dc_cap_retried` group the retry mechanism below
+would use).
+
+**Note on Phase 2's mid-search-cap-change hazard.** Phase 2's remainder section above argues that
+changing `block_width` mid-search is hazardous because a populated `sector_at`/`n_center_at` cache
+would then describe a different width than the context claims. The cap ladder changes
+`ctx.truncation_threshold` mid-search in exactly the same sense — but it is not the same hazard:
+every rung's evaluation clears every cache first (`ctx.sector_at.clear()`,
+`ctx.n_center_at.clear()`, and the criterion's own local `sectors_at`/`width_at`), and the accept
+path either keeps the last rung's caches (verified via the `cached_cap` guard) or clears them
+too. No cache is ever read against a cap it was not built at. The two situations differ in that
+respect: the cap ladder was designed around this hazard from the start, while a hypothetical
+mid-search `block_width` change (Phase 2's concern) would need the same discipline added.
+
+**Deferred, deliberately, past this phase: the post-search cap re-verification/retry
+mechanism** (`_cap_holds_at`/`_run_gap_search` on the `DC_gap_perf` branch, gap criterion only).
+The ladder above certifies the cap at `mu = 0` — the double-counting *guess* — but the cap is
+*consumed* at whatever `mu` the search actually returns, which measured 0.325 away from the guess
+on the workload the branch measured it on. The branch's own measurement: transporting a cap-2000
+run's answer to a cap-500 run's `mu` along the measured slope leaves ~5.1e-3 in the gap centre —
+60% of the acceptance band `tol/|chi|` — from the cap alone, at the point the answer is actually
+returned. That is a systematic, not noise that averages out across charge-self-consistency
+iterations. The mechanism re-solves the two off-centre sectors at double the accepted cap, at the
+converged `mu`, and re-runs the whole search (once, not to convergence) if the answer moved more
+than the calibration's own target — a second, separate correctness surface (saving and restoring
+individual `sector_at` entries around the probe, a bounded retry loop) that deserves its own
+adversarial review rather than riding in on this phase's first commits. Tracked here exactly as
+Phase 1b is tracked above; the record field it would populate (`dc_cap_check`) is named in this
+document's own earlier phase-5 sketch and its absence here is this deferral, not an oversight.

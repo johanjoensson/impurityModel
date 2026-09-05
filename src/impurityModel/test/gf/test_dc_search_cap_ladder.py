@@ -1,0 +1,149 @@
+"""Unit tests for :func:`impurityModel.ed.dc_search.calibrate_truncation_threshold`.
+
+The DC criteria's own sector expansions saturate whatever determinant cap they are given (the
+``GS_DE2_MIN`` selection does not converge in size, it keeps admitting until the budget stops
+it), so cost is linear in the cap while the criterion's own answer is not. Ported from branch
+``DC_gap_perf`` (``f61bfaa``/``91109b8``, ``doc/plans/dc_smo_performance.md``'s Phase 5) as
+pure-Python synthetic-sequence tests: what is under test is the stopping rule, which has nothing
+to do with what a rung costs, so no eigensolver or MPI communicator is involved here.
+"""
+
+import pytest
+
+from impurityModel.ed.dc_search import (
+    CAP_CONVERGENCE_FRACTION,
+    CAP_CONVERGENCE_RUNS,
+    CAP_LADDER_START,
+    calibrate_truncation_threshold,
+)
+
+
+def _ladder(values):
+    """A ``quantity(cap)`` returning ``values`` in order, plus the caps it was asked for."""
+    seen = []
+
+    def quantity(cap):
+        seen.append(cap)
+        return values[min(len(seen) - 1, len(values) - 1)]
+
+    return quantity, seen
+
+
+def test_the_cap_ladder_doubles_and_stops_when_the_window_stops_moving():
+    # The last three values span 0, so the ladder stops at the rung that completed that window.
+    quantity, seen = _ladder([0.0, 1.0, 2.0, 2.0, 2.0])
+    cap, drift, rungs = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6)
+
+    assert seen == [CAP_LADDER_START * 2**i for i in range(5)], seen
+    # The accepted cap is the last one *evaluated*, not one the ladder merely reasoned about.
+    assert cap == CAP_LADDER_START * 2**4
+    assert drift == pytest.approx(0.0)
+    assert len(rungs) == CAP_CONVERGENCE_RUNS + 3
+
+
+def test_the_returned_cap_was_actually_evaluated():
+    """The ladder must never return a cap it did not measure.
+
+    A version that doubles ``cap`` at the end of its final iteration and returns *that* would
+    hand back one doubling past the largest rung it ever ran -- an internally inconsistent
+    triple, with ``cap`` describing one rung and ``drift`` another. Reachable in production,
+    where the memory budget (~1e6-1e7) is far above the top of an eight-rung ladder from 500, so
+    the ``cap >= memory_cap`` break never fires and only the rung-budget exit is reached.
+    """
+    # Never settles, and never reaches the memory ceiling: the max-rungs exit, which is the one
+    # test_the_ladder_never_proposes_a_cap_the_machine_could_not_run cannot reach.
+    quantity, _seen = _ladder([float(i) for i in range(20)])
+    cap, _drift, rungs = calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=10**7)
+
+    assert cap in dict(rungs), f"returned an unevaluated cap {cap}; measured {[c for c, _ in rungs]}"
+    assert cap == rungs[-1][0]
+
+
+def test_a_staircase_within_the_pairwise_gate_does_not_stop_the_ladder():
+    """A pairwise gate bounds nothing against the limit; the span over the window does.
+
+    Every step here is exactly the pairwise target, so a "two consecutive agreements" rule
+    accepts at the first opportunity while the quantity keeps walking away -- after eight rungs
+    it has moved 7x the gate. That is the *expected* shape for a selection that does not converge
+    in size (``E(cap) ~ E_inf + A cap**-p`` with small ``p``), not a contrived one.
+    """
+    tol = 1.0
+    step = CAP_CONVERGENCE_FRACTION * tol
+    quantity, seen = _ladder([i * step for i in range(20)])
+    _cap, drift, rungs = calibrate_truncation_threshold(quantity, tol=tol, memory_cap=10**7)
+
+    assert len(seen) > 3, "accepted a staircase whose every step sits exactly on the gate"
+    assert drift > CAP_CONVERGENCE_FRACTION * tol
+    assert len(rungs) == len(seen)
+
+
+def test_a_single_agreeing_pair_does_not_stop_the_ladder():
+    """The regression measured against a real cap ladder (nio_5peeled).
+
+    The gap centre there runs -1.55e-3, -1.33e-3, -4.0e-5, +4.3e-4 over caps 500/1000/2000/8000:
+    the first step is small enough to pass a quarter-of-tolerance target while the very next one
+    is six times larger. Stopping on one agreement accepted cap 1000 there and would have landed
+    5.9e-3 in mu from the cap-8000 answer -- 70% of the whole acceptance band, spent on noise.
+    """
+    quantity, seen = _ladder([-1.55, -1.33, -0.04, 0.43, 0.43, 0.43])
+    cap, _drift, _rungs = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6)
+
+    # 0.25 * tol = 0.25: the -1.55 -> -1.33 step (0.22) agrees, -1.33 -> -0.04 (1.29) does not.
+    assert len(seen) > 2, "stopped on the first agreeing pair"
+    assert cap >= CAP_LADDER_START * 8
+
+
+def test_the_ladder_never_proposes_a_cap_the_machine_could_not_run():
+    quantity, seen = _ladder([0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0])
+    cap, _drift, _rungs = calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=1200)
+
+    assert max(seen) <= 1200 and cap <= 1200
+
+
+def test_an_undefined_rung_between_two_agreements_breaks_the_run():
+    """A ``None`` rung must RESET the evidence, not be skipped over.
+
+    A counter-based rule that only reset on a *disagreement* would let an undefined rung sit
+    between two agreeing pairs and certify convergence from two non-consecutive ones -- the same
+    false-convergence class the multi-rung requirement exists to kill. Undefined rungs are not
+    hypothetical: the gap centre is ``None`` whenever a low cap starves one of the ``N +- 1``
+    sectors, which is exactly what the ladder's small first rungs can do.
+    """
+    quantity, seen = _ladder([1.0, 1.0, None, 1.0, 1.0])
+    cap, _drift, rungs = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6)
+
+    # The window is cleared by the None, so the two rungs after it are not enough on their own.
+    assert len(seen) >= 5, seen
+    assert cap in dict(rungs)
+
+
+def test_an_undefined_rung_does_not_count_as_agreement():
+    """``None`` means the criterion is undefined at that cap, not that it agreed with the last one.
+
+    Treating it as a value would let two undefined rungs certify convergence on nothing.
+    """
+    quantity, seen = _ladder([None, None, 1.0, 1.0, 1.0])
+    cap, _drift, _rungs = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6)
+
+    assert len(seen) >= 5, seen
+    assert cap is not None
+
+
+def test_the_ladder_reports_the_memory_parity_verbosely(capsys):
+    """The accepted-cap progress line is gated on ``verbose``, not printed unconditionally."""
+    quantity, _seen = _ladder([0.0, 1.0, 2.0, 2.0, 2.0])
+    calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6, verbose=False, rank=0)
+    assert capsys.readouterr().out == ""
+
+    quantity, _seen = _ladder([0.0, 1.0, 2.0, 2.0, 2.0])
+    calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6, verbose=True, rank=0)
+    out = capsys.readouterr().out
+    assert "calibrated to" in out and "memory budget would have allowed" in out
+
+
+def test_the_ladder_warns_unconditionally_when_it_does_not_settle(capsys):
+    """Reaching the rung budget without settling is a WARNING -- unconditional, like the rest of
+    this module's warnings (``_report_unattainable_target``), never gated behind ``verbose``."""
+    quantity, _seen = _ladder([float(i) for i in range(20)])
+    calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=10**7, verbose=False, rank=0)
+    assert "WARNING" in capsys.readouterr().out
