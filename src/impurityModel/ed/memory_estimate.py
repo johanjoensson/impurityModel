@@ -331,6 +331,31 @@ def resolve_gs_block_width(default=4):
     return default if configured is None else configured
 
 
+def gs_block_width_is_capped():
+    """Whether :data:`config.GS_MAX_BLOCK_WIDTH` is set -- i.e. whether the block width fed to
+    :func:`estimate_gs_peak_bytes` is a real cap, decoupled from ``num_wanted``, rather than the
+    pre-Phase-4 assumption that the two move together 1:1 (see :func:`_gs_krylov_columns`).
+
+    Callers that resolve their block width via :func:`resolve_gs_block_width` must pass this
+    through to :func:`suggest_truncation_threshold`/:func:`log_memory_budget` as
+    ``gs_manifold_unbounded``: when the width is capped, ``num_wanted`` is explicitly *not*
+    (Phase 4's own text: "Keep ``num_wanted`` untouched") and keeps growing with the manifold
+    independent of the cap, so the pre-Phase-4 default assumption (``num_wanted ~ 2*block_width``)
+    would badly under-count the retained Krylov store.
+    """
+    return config.GS_MAX_BLOCK_WIDTH.get() is not None
+
+
+def resolve_sizing_block_width(gf_block_width):
+    """Block width to size a call site that estimates both a GF and a GS solve with one shared
+    ``block_width`` parameter (``selfenergy.py``/``susceptibility.py``): the larger of the
+    driver's own GF block width and the resolved GS width (:func:`resolve_gs_block_width`,
+    falling back to ``gf_block_width`` itself when ``GS_MAX_BLOCK_WIDTH`` is unset -- so this
+    equals ``gf_block_width`` exactly, unchanged, on that path).
+    """
+    return max(gf_block_width, resolve_gs_block_width(gf_block_width))
+
+
 def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_per_state=100, num_wanted=None):
     """Predicted per-rank peak bytes of the ground-state (CIPSI + array-kernel) path.
 
@@ -363,7 +388,10 @@ def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_
         Stored Hamiltonian elements per basis state (measure on a small run; grows with
         the number of one-/two-body terms).
     num_wanted : int, optional
-        Forwarded to :func:`_gs_krylov_columns`; ``None`` assumes ``2 * block_width``.
+        Forwarded to :func:`_gs_krylov_columns`; ``None`` assumes ``2 * block_width`` (the
+        pre-Phase-4 coupled regime). Callers sizing a capped ``block_width``
+        (:func:`gs_block_width_is_capped`) should pass ``n_dets`` here instead -- the
+        invariant-subspace worst case, since ``num_wanted`` is not bounded by the cap.
 
     Returns
     -------
@@ -496,6 +524,7 @@ def suggest_truncation_threshold(
     safety=DEFAULT_MEMORY_SAFETY,
     krylov_dtype=None,
     method="lanczos",
+    gs_manifold_unbounded=False,
 ):
     """Largest ``truncation_threshold`` whose predicted peak fits in per-rank RAM.
 
@@ -524,6 +553,12 @@ def suggest_truncation_threshold(
         Fraction of available RAM to budget (default ``DEFAULT_MEMORY_SAFETY``).
     krylov_dtype : optional
         Krylov store dtype; ``complex64`` halves the store and so raises the cap.
+    gs_manifold_unbounded : bool
+        Pass :func:`gs_block_width_is_capped`'s result here whenever ``block_width`` came from
+        :func:`resolve_gs_block_width`. When ``True``, ``block_width`` is a real cap decoupled
+        from ``num_wanted`` (Phase 4), so the ground-state Krylov term is sized for
+        ``num_wanted``'s worst case instead of the pre-Phase-4 ``2*block_width`` assumption --
+        without this, setting ``GS_MAX_BLOCK_WIDTH`` would silently under-count that term.
 
     Returns
     -------
@@ -533,7 +568,16 @@ def suggest_truncation_threshold(
     budget = safety * available_bytes_per_rank(comm)
     ranks = comm.size if comm is not None else 1
     return _suggest_for_budget(
-        budget, n_spin_orbitals, block_width, reort, n_parallel_units, nnz_per_state, ranks, krylov_dtype, method
+        budget,
+        n_spin_orbitals,
+        block_width,
+        reort,
+        n_parallel_units,
+        nnz_per_state,
+        ranks,
+        krylov_dtype,
+        method,
+        gs_manifold_unbounded,
     )
 
 
@@ -611,12 +655,17 @@ def _suggest_for_budget(
     ranks,
     krylov_dtype=None,
     method="lanczos",
+    gs_manifold_unbounded=False,
 ):
     """Largest ``n`` with both path estimates within ``budget``, by bisection. Rank-local."""
     ranks_per_unit = max(1, ranks // max(1, n_parallel_units))
 
     def fits(n):
-        gs = estimate_gs_peak_bytes(n, n_spin_orbitals, block_width, ranks, nnz_per_state)
+        # `num_wanted=n` forces `_gs_krylov_columns`'s own `min(..., n_dets)` clamp to bind,
+        # i.e. the invariant-subspace worst case -- the honest bound once `block_width` is a
+        # real cap decoupled from `num_wanted` (see `gs_block_width_is_capped`'s docstring).
+        num_wanted = n if gs_manifold_unbounded else None
+        gs = estimate_gs_peak_bytes(n, n_spin_orbitals, block_width, ranks, nnz_per_state, num_wanted=num_wanted)
         gf = estimate_gf_peak_bytes(
             n, n_spin_orbitals, block_width, reort, ranks_per_unit, krylov_dtype=krylov_dtype, method=method
         )
@@ -648,6 +697,7 @@ def log_memory_budget(
     label="",
     krylov_dtype=None,
     method="lanczos",
+    gs_manifold_unbounded=False,
 ):
     """Predict peak memory for a chosen threshold, print it on rank 0, warn if it won't fit.
 
@@ -666,6 +716,8 @@ def log_memory_budget(
         Gate for the rank-0 print (may safely differ across ranks).
     label : str
         Prefix for the log lines (e.g. the cluster name).
+    gs_manifold_unbounded : bool
+        See :func:`suggest_truncation_threshold`.
 
     Returns
     -------
@@ -683,7 +735,8 @@ def log_memory_budget(
     else:
         n = int(truncation_threshold)
         ranks_per_unit = max(1, ranks // max(1, n_parallel_units))
-        gs = estimate_gs_peak_bytes(n, n_spin_orbitals, block_width, ranks, nnz_per_state)
+        num_wanted = n if gs_manifold_unbounded else None
+        gs = estimate_gs_peak_bytes(n, n_spin_orbitals, block_width, ranks, nnz_per_state, num_wanted=num_wanted)
         gf = estimate_gf_peak_bytes(
             n, n_spin_orbitals, block_width, reort, ranks_per_unit, krylov_dtype=krylov_dtype, method=method
         )
@@ -699,7 +752,9 @@ def log_memory_budget(
                 f"{format_bytes(available)}/rank available.",
                 flush=True,
             )
-    if verbose and rank == 0 and config.GS_MAX_BLOCK_WIDTH.get() is None:
+    # Only meaningful once a peak was actually computed above -- the uncapped branch never
+    # calls estimate_gs_peak_bytes, so there is no "block_width used above" to warn about.
+    if verbose and rank == 0 and not uncapped and config.GS_MAX_BLOCK_WIDTH.get() is None:
         print(
             f"{prefix}GS_MAX_BLOCK_WIDTH is unset: the ground-state Lanczos block width grows "
             f"with the manifold and is not bounded by the block_width={block_width} used above -- "
@@ -720,6 +775,7 @@ def log_memory_budget(
             ranks,
             krylov_dtype,
             method,
+            gs_manifold_unbounded,
         )
         print(
             f"{prefix}WARNING: predicted peak exceeds available memory; consider "

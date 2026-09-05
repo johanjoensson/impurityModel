@@ -243,6 +243,48 @@ def test_log_memory_budget_is_quiet_when_gs_max_block_width_is_set(capsys, monke
     assert "GS_MAX_BLOCK_WIDTH is unset" not in capsys.readouterr().out
 
 
+def test_log_memory_budget_does_not_warn_when_uncapped(capsys, monkeypatch):
+    """No estimate_gs_peak_bytes call happens on the uncapped path, so there is no "block_width
+    used above" to warn about -- the unset-knob warning must not fire there (review finding)."""
+    monkeypatch.delenv("GS_MAX_BLOCK_WIDTH", raising=False)
+    me.log_memory_budget(None, 100, comm=None, block_width=4, verbose=True, label="test")
+    assert "GS_MAX_BLOCK_WIDTH is unset" not in capsys.readouterr().out
+
+
+def test_resolve_sizing_block_width_matches_gf_width_when_the_knob_is_unset(monkeypatch):
+    """Preserves today's behaviour exactly on the unset path (review finding)."""
+    monkeypatch.delenv("GS_MAX_BLOCK_WIDTH", raising=False)
+    assert me.resolve_sizing_block_width(6) == 6
+
+
+def test_resolve_sizing_block_width_takes_the_larger_of_gf_and_gs_widths(monkeypatch):
+    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "20")
+    assert me.resolve_sizing_block_width(6) == 20
+    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "2")
+    assert me.resolve_sizing_block_width(6) == 6
+
+
+def test_gs_manifold_unbounded_sizes_the_krylov_term_for_num_wanteds_worst_case():
+    """Without gs_manifold_unbounded, a capped block_width still assumes num_wanted=2*p (the
+    pre-Phase-4 coupled regime) and badly under-counts the Krylov term once GS_MAX_BLOCK_WIDTH
+    actually decouples the two (review finding: this was the real remaining OOM risk)."""
+    n, nso, p = 200_000, 106, 4
+    coupled = me.estimate_gs_peak_bytes(n, nso, block_width=p)
+    worst_case = me.estimate_gs_peak_bytes(n, nso, block_width=p, num_wanted=n)
+    assert worst_case > coupled
+
+    budget = coupled + 1  # fits the coupled assumption, not the worst case
+    assert me._suggest_for_budget(budget, nso, p, "none", 1, 100, ranks=1, gs_manifold_unbounded=False) >= n
+    assert me._suggest_for_budget(budget, nso, p, "none", 1, 100, ranks=1, gs_manifold_unbounded=True) < n
+
+
+def test_log_memory_budget_gs_manifold_unbounded_raises_the_predicted_gs_peak():
+    n, nso, p = 200_000, 106, 4
+    without = me.log_memory_budget(n, nso, comm=None, block_width=p, verbose=False)
+    with_worst_case = me.log_memory_budget(n, nso, comm=None, block_width=p, verbose=False, gs_manifold_unbounded=True)
+    assert with_worst_case["gs_peak"] > without["gs_peak"]
+
+
 def _siam_6_pieces():
     """Single-impurity Anderson model, 6 spin-orbitals (see test_sectorization)."""
     ed_, u, ev, ec, v = -1.0, 4.0, -3.0, 3.0, 0.5

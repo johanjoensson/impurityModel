@@ -150,16 +150,31 @@ of `block_width`'s value, since it only lowers a term that no longer matched Pha
 through every `estimate_gs_peak_bytes` call site via `memory_estimate.resolve_gs_block_width`:
 `groundstate.calc_gs` and `dc_criteria.py`'s two sites read it directly (falling back to the
 historical `4` when unset); `selfenergy.py`/`susceptibility.py` combine it with their own
-GF-derived block width via `max()`, since `suggest_truncation_threshold`/`log_memory_budget`
-size both paths through one `block_width` parameter and a real refactor to two separate
-parameters was judged not worth it for this campaign. **The knob defaults to unset** (Phase 4's
-own gate -- the SMO width sweep against `0.25*tol/|chi|` in `mu` -- has not run), so production
-still sizes the ground-state term with `block_width=4` unless an operator sets
-`GS_MAX_BLOCK_WIDTH` by hand; `log_memory_budget` now prints a warning on that path rather than
-letting the placeholder look like a measured bound. **The original failure mode -- `suggest_truncation_threshold`
-returning ~118M determinants at the Arrhenius point, predicting 139 GiB/rank at the real `p=315`
--- is therefore still reachable after this commit.** Running the width sweep and setting the
-knob from its result is what actually closes it; see the Verification section.
+GF-derived block width via `resolve_sizing_block_width`'s `max()`, since
+`suggest_truncation_threshold`/`log_memory_budget` size both paths through one `block_width`
+parameter and a real refactor to two separate parameters was judged not worth it for this
+campaign. **The knob defaults to unset** (Phase 4's own gate -- the SMO width sweep against
+`0.25*tol/|chi|` in `mu` -- has not run), so production still sizes the ground-state term with
+`block_width=4` unless an operator sets `GS_MAX_BLOCK_WIDTH` by hand; `log_memory_budget` now
+prints a warning on that path rather than letting the placeholder look like a measured bound.
+**The original failure mode -- `suggest_truncation_threshold` returning ~118M determinants at
+the Arrhenius point, predicting 139 GiB/rank at the real `p=315` -- is therefore still reachable
+after this commit.** Running the width sweep and setting the knob from its result is what
+actually closes it; see the Verification section.
+
+A review of the first version of this threading caught a second hole in it: capping
+`block_width` alone is not enough, because `num_wanted` is explicitly *not* capped (Phase 4's
+own text -- "Keep `num_wanted` untouched") and keeps growing with the manifold independent of
+the block-width cap. `_gs_krylov_columns`'s default (`num_wanted=None` assumes `2*block_width`)
+is only valid in the pre-Phase-4 coupled regime; once `GS_MAX_BLOCK_WIDTH` decouples the two,
+that default silently under-counts the retained Krylov store by the same ratio Phase 0 measured
+between `num_wanted` and `p` (up to ~30x). Fixed by `gs_block_width_is_capped()` plus a new
+`gs_manifold_unbounded` parameter threaded through `suggest_truncation_threshold`/
+`log_memory_budget`/`_suggest_for_budget`: when the block width is a real (knob-derived) cap,
+the bisection candidate `n` itself is passed as `num_wanted`, which forces
+`_gs_krylov_columns`'s own `min(..., n_dets)` clamp to bind -- the invariant-subspace worst
+case, the same style `estimate_gf_peak_bytes` already uses for its Krylov store when `n_blocks`
+is unmeasured. All five call sites pass this flag now.
 
 ### The Krylov-store term needed a second look: no flat constant is safe
 
