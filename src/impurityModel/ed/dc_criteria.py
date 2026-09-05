@@ -298,6 +298,16 @@ class _SectorContext:
     #: solves the same sector at the same shift twice. Two floats per entry, not eigenvectors --
     #: see that method for why retaining ``psis`` does not scale.
     sector_at: dict = None
+    #: Opt-in, default off. When set, :meth:`sector_solve` asks for just the degenerate ground
+    #: multiplet (``max_energy=0.0``, not the full thermal window) and :meth:`sector_occupation`
+    #: reports ``occupation_ground`` instead of the thermal ``occupation``. Only correct as a
+    #: default where the two agree -- ``occupation_spread`` (Phase 0,
+    #: ``doc/plans/dc_smo_performance.md``) is machine-zero on every fixture checked so far but
+    #: *not* on SMO (up to 0.065 at cap 2000, growing with cap), so this stays a knob rather than
+    #: shipping as the default. Narrowing the request also shrinks the manifold ``expand`` warm-
+    #: starts the *next* solve from, which is the actual memory/speed lever this exists for --
+    #: see ``doc/plans/dc_smo_performance.md``'s Phase 3 discussion.
+    ground_state_manifold: bool = False
 
     def __post_init__(self):
         if self.n_center_at is None:
@@ -432,6 +442,17 @@ class _SectorContext:
             # self-energy run that consumes it. Last unshared convention on the parity list in
             # this module's docstring.
             de2_min=GS_DE2_MIN,
+            # Opt-in (see the field docstring): ask for just the degenerate ground multiplet
+            # rather than the full thermal window. `max_energy=0.0` reuses `solve_sector`'s own
+            # degeneracy tolerance (`_energy_cut_indices`'s `tol` absorbs any state degenerate
+            # with the ground state), so this needs no separate tunable -- and it is `max_energy`
+            # relative to *this solve's own* `min(es)`, not an absolute value, so it is well
+            # defined at every `mu` without knowing the ground energy in advance
+            # (`_energy_cut_indices`: `e_sorted - e_sorted[0] <= max_energy`). `num_wanted` is
+            # deliberately left at `solve_sector`'s own default: it decides how many states must
+            # converge to `tol`, not how many get reported, and touching it doubles the number of
+            # things this change could be blamed for against one measurement.
+            max_energy=(0.0 if self.ground_state_manifold else None),
         )
         # Broadcast the verdict *before* branching on it, not the answer afterwards. `es` and
         # `psis` come back rank-local from `solve_sector` (its docstring says so), and the next
@@ -517,10 +538,20 @@ class _SectorContext:
         basis-reselection error.
         """
         solution = self.sector_solve(h_op, mu, n_trial)
-        return None if solution is None else solution.occupation
+        if solution is None:
+            return None
+        # Opt-in (see the `ground_state_manifold` field docstring): the T=0 occupation of the
+        # state at `min(es)`, the one Hellmann-Feynman actually relates `d(energy)/dmu` to,
+        # instead of the Boltzmann average over the retained manifold. Consistent with
+        # `sector_solve` narrowing the request to that same manifold under this flag -- a
+        # thermal average over a deliberately-narrowed window would no longer be the real
+        # thermal average.
+        return solution.occupation_ground if self.ground_state_manifold else solution.occupation
 
 
-def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, memory_label):
+def _prepare_sector_context(
+    model, basis, solver, *, comm=None, verbosity=0, memory_label, ground_state_manifold=False
+):
     """Build the setup :class:`_SectorContext` holds, from the grouped option objects.
 
     Verbatim extraction of the preamble :func:`fixed_peak_dc` used to open with, so that
@@ -607,6 +638,7 @@ def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, mem
         bandwidth=max(float(np.ptp(np.linalg.eigvalsh(h1_for_scale))), 1.0),
         rank=rank,
         verbose=verbose,
+        ground_state_manifold=ground_state_manifold,
     )
 
 
@@ -621,6 +653,7 @@ def fixed_peak_dc(
     allow_charge_state_change=False,
     return_sector=False,
     report=None,
+    ground_state_manifold=False,
 ):
     r"""
     Calculate the double counting correction using a fixed peak position criterion.
@@ -697,6 +730,15 @@ def fixed_peak_dc(
         silently returned -- placing a peak in the wrong charge state is not a tolerable
         approximation of the request, any more than a mis-sectored occupation search is (see the
         module docstring). Set ``True`` to accept whichever charge state the search lands on.
+    ground_state_manifold : bool
+        Opt-in, default ``False``. When ``True``, each sector solve asks for just the degenerate
+        ground multiplet instead of the full thermal window, and the impurity occupation used is
+        ``occupation_ground`` (the ``T = 0`` state at ``min(es)``) rather than the thermal
+        Boltzmann average. The two agree exactly where ``occupation_spread`` is zero (every
+        fixture checked so far, per ``doc/plans/dc_smo_performance.md``, except SrMnO3 cubic:
+        up to 0.065 at cap 2000) -- leave this ``False`` unless that spread has been checked to
+        be negligible on the workload at hand. The performance benefit (narrower sector solves,
+        smaller Lanczos block widths on the following DC evaluation) is why this exists.
 
     Returns
     -------
@@ -718,7 +760,13 @@ def fixed_peak_dc(
         "peak", rank=comm.rank if comm is not None else MPI.COMM_WORLD.rank, report=report
     ) as dc_rec:
         ctx = _prepare_sector_context(
-            model, basis, solver, comm=comm, verbosity=verbosity, memory_label="fixed-peak dc"
+            model,
+            basis,
+            solver,
+            comm=comm,
+            verbosity=verbosity,
+            memory_label="fixed-peak dc",
+            ground_state_manifold=ground_state_manifold,
         )
         rank, verbose, tau = ctx.rank, ctx.verbose, ctx.tau
 
@@ -1091,6 +1139,7 @@ def fixed_gap_dc(
     allow_charge_state_change=False,
     return_sector=False,
     report=None,
+    ground_state_manifold=False,
 ):
     r"""Double counting from the **centre of the charge gap** -- after Karolak's insulator
     prescription.
@@ -1253,6 +1302,10 @@ def fixed_gap_dc(
         this one used to have a private dialect of its own (``gap_centre``, ``energy_tol``, the
         search's raw internal status), which is how a caller could assert on a field that had
         quietly stopped being written.
+    ground_state_manifold : bool
+        As :func:`fixed_peak_dc`: opt-in, default ``False``. Check ``occupation_spread`` (in
+        ``report``, or via ``solver_trace``) is negligible on the workload before enabling it --
+        it is not on SrMnO3 cubic (see ``doc/plans/dc_smo_performance.md``).
 
     Returns
     -------
@@ -1272,7 +1325,15 @@ def fixed_gap_dc(
     with dc_record.recording(
         "gap", rank=comm.rank if comm is not None else MPI.COMM_WORLD.rank, report=report
     ) as dc_rec:
-        ctx = _prepare_sector_context(model, basis, solver, comm=comm, verbosity=verbosity, memory_label="fixed-gap dc")
+        ctx = _prepare_sector_context(
+            model,
+            basis,
+            solver,
+            comm=comm,
+            verbosity=verbosity,
+            memory_label="fixed-gap dc",
+            ground_state_manifold=ground_state_manifold,
+        )
         rank, verbose, tau = ctx.rank, ctx.verbose, ctx.tau
 
         # The residual *is* a sector energy difference, so it inherits the E_F = 0 convention every

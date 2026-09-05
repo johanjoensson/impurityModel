@@ -312,6 +312,28 @@ def test_fixed_gap_dc_honours_an_offset():
     np.testing.assert_allclose(np.diag(dc).real, EPS + U / 2 - offset, atol=5e-3)
 
 
+def test_fixed_gap_dc_ground_state_manifold_matches_default_on_a_spin_degenerate_model():
+    """``ground_state_manifold=True`` (opt-in, default off) must reproduce the default answer
+    exactly where the two occupation conventions agree.
+
+    This fixture's ``N_imp = 1`` sector is an exact spin doublet (identical up/down hopping,
+    no field breaking the symmetry): both degenerate states share ``N_imp``, so
+    ``occupation_spread`` is zero by symmetry, not by luck -- the module docstring's own
+    example of a distinction that "is empty". A real regression here (the narrower manifold
+    request missing part of the ground multiplet, or the wrong occupation field being read)
+    would move ``dc`` outside the search's own tolerance, not just add noise.
+    """
+    kwargs, dc_guess = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
+    report_default, report_ground = {}, {}
+    dc_default = fixed_gap_dc(offset=0.0, report=report_default, **kwargs)
+    dc_ground = fixed_gap_dc(offset=0.0, ground_state_manifold=True, report=report_ground, **kwargs)
+    assert_uniform_shift(dc_default, dc_guess)
+    assert_uniform_shift(dc_ground, dc_guess)
+    np.testing.assert_allclose(np.diag(dc_default).real, np.diag(dc_ground).real, atol=5e-3)
+    assert report_default["manifold_spread"] < 1e-9
+    assert report_ground["manifold_spread"] < 1e-9
+
+
 def test_the_gap_centre_responds_to_the_shift_with_the_slope_it_claims():
     """The conditioning claim, measured rather than asserted.
 
