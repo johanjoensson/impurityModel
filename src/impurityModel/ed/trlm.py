@@ -13,6 +13,7 @@ same functions.
 
 import numpy as np
 import scipy.linalg as sp
+import scipy.sparse as sps
 
 from impurityModel.ed.BlockLanczosCore import (
     BREAKDOWN_TOL,
@@ -41,6 +42,7 @@ from impurityModel.ed.block_view import (
     width_synced_total,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
+from impurityModel.ed.solver_trace import note as _trace_note
 
 __all__ = [
     "_thick_restart_block_lanczos_array",
@@ -203,6 +205,10 @@ def _restart_coefficients(
     # off p_resid below, not off p. Keeping the *whole* residual matters: the inner loop
     # stores only the sub-diagonal coupling, so a dropped piece of (I - P) H Q_ret would
     # leave H q_next with an uncaptured component on Q_ret.
+    # Phase 0 measurement (doc/plans/dc_smo_performance.md): `block_apply`'s array branch
+    # peaks at global_N * block_cols(Q_ret) per rank (see _block_ops.pxi). This is the
+    # rebuild arm, so this width can reach `nkeep` (up to 3p), wider than the sweep width.
+    _trace_note("block_apply_width", site="restart_rebuild", w=block_cols(Q_ret))
     HQ = block_apply(h_op, Q_ret, basis, mpi, slater)
     ovl = block_inner(Q_ret, HQ, mpi, comm)
     T_lead = 0.5 * (ovl + np.conj(ovl.T))
@@ -484,6 +490,10 @@ def _trlm_core(
         q_m = None  # consumed; the new trailing residual is set at the last inner step
 
         for i in range(k_blocks, m):
+            # Phase 0 measurement: this fires once per continuation block, every restart --
+            # the dominant call count for `block_apply`'s array-branch peak (see the rebuild
+            # arm's note above and doc/plans/dc_smo_performance.md).
+            _trace_note("block_apply_width", site="continuation", w=block_cols(q1))
             wp = block_apply(h_op, q1, basis, mpi, slater)
 
             overlaps = block_inner(Q_basis, wp, mpi, comm)
@@ -576,6 +586,17 @@ def _thick_restart_block_lanczos_array(
     # internally); normalize here so the betas do not grow geometrically and overflow T.
     psi0 = np.ascontiguousarray(psi0 if psi0.ndim == 2 else np.reshape(psi0, (-1, 1)), dtype=complex)
     psi0, _ = block_normalize(psi0, mpi, comm, 0.0)
+
+    # `h_op` is column-sliced CSC (cipsi_solver.py builds it from `build_sparse_matrix`, which
+    # returns CSC; column-slicing to `local_indices` is CSC's cheap axis). block_apply's chunked
+    # matvec (see _block_ops.pxi) row-slices it once per restart-continuation block -- expensive
+    # on CSC, which has no efficient row axis. Converting here, ONCE per get_eigenvectors call,
+    # means every later block_apply call in this restart loop (there can be dozens) row-slices a
+    # matrix that already has the right axis, instead of re-converting (or, worse, silently
+    # paying O(nnz) per row-slice) on every one of them. block_lanczos_array's own sweep already
+    # does the same conversion internally, so this makes it a no-op there.
+    if sps.issparse(h_op) and not sps.isspmatrix_csr(h_op):
+        h_op = h_op.tocsr()
 
     def sweep(v0, max_iter):
         res = block_lanczos_array(

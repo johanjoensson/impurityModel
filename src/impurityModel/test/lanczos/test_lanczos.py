@@ -367,6 +367,82 @@ def test_get_block_Lanczos_matrices_and_GS_mpi(reort_mode):
     np.testing.assert_allclose(np.min(ev_gs), 0.5, atol=1e-5)
 
 
+@pytest.mark.mpi
+def test_get_block_Lanczos_array_matvec_survives_an_empty_rank():
+    """The array kernel's MPI matvec is a row-chunked reduce-scatter (BlockLanczosArray.pyx +
+    _block_ops.pxi's block_apply, one `Reduce` per destination rank's own row range) -- a
+    pattern with no history of running against a rank owning zero local determinants, unlike
+    the sparse/ManyBodyState kernel (see the "Empty-rank edge cases" note in CLAUDE.md). The
+    test above never exercises this: 6 determinants over up to 3 ranks never leaves one empty.
+    Two determinants over 3+ ranks does -- at least one rank empty, and at ``comm.size >= 4``
+    more than one simultaneously.
+    """
+    comm = MPI.COMM_WORLD
+    if comm.size < 3:
+        pytest.skip("needs >= 3 ranks to guarantee an empty rank with 2 determinants")
+    from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+
+    eigvals = np.array([0.5, 1.0])
+    states = [b"\x80", b"\x40"]
+    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        verbose=True,
+        comm=comm,
+    )
+    H_mat = build_dense_matrix(basis, hop)
+    local_n = len(basis.local_basis)
+    psi0 = np.zeros((local_n, 1), dtype=complex)
+    if local_n:
+        psi0[:, 0] = 1 / np.sqrt(2)
+
+    def converged(alphas, betas, *args, **kwargs):
+        return alphas.shape[0] > 1
+
+    alphas, betas, _Q = block_lanczos_array(
+        psi0, H_mat[:, basis.local_indices], converged, comm=comm, reort="full"
+    )[:3]
+    ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
+    assert np.allclose(sorted(ev), sorted(eigvals)[: len(ev)])
+
+
+@pytest.mark.mpi
+def test_block_apply_sparse_matches_dense_reference_with_an_empty_rank():
+    """``block_apply``'s array branch (``_block_ops.pxi``) is the site TRLM's restart-
+    continuation loop calls once per block of every restart -- the dominant call count in a
+    real search. Isolated from the solver stack: a known 3x3 Hamiltonian, one rank owning zero
+    local columns/rows, checked against the exact serial answer rather than "did not crash".
+    """
+    comm = MPI.COMM_WORLD
+    if comm.size < 3:
+        pytest.skip("needs >= 3 ranks to exercise a genuinely empty rank")
+    from impurityModel.ed.BlockLanczosCore import block_apply
+
+    rank = comm.rank
+    H_global = np.array([[2.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 4.0]], dtype=complex)
+    v_global = np.array([1.0, 2.0, 3.0], dtype=complex).reshape(-1, 1)
+    expected = H_global @ v_global
+
+    # Every rank but rank 1 owns nothing -- at comm.size >= 3 this leaves at least one
+    # (rank 0) and, at comm.size >= 4, several ranks simultaneously empty.
+    local_cols = [0, 1, 2] if rank == 1 else []
+    import scipy.sparse as sps
+
+    H_local = sps.csr_matrix(H_global[:, local_cols]) if local_cols else sps.csr_matrix((3, 0), dtype=complex)
+    v_local = v_global[local_cols, :] if local_cols else np.zeros((0, 1), dtype=complex)
+
+    class _FakeBasis:
+        pass
+
+    fake_basis = _FakeBasis()
+    fake_basis.comm = comm
+    result = block_apply(H_local, v_local, basis=fake_basis, mpi=True)
+    expected_local = expected[local_cols, :] if local_cols else np.zeros((0, 1), dtype=complex)
+    np.testing.assert_allclose(result, expected_local, atol=1e-12)
+
+
 @pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
 def test_get_block_Lanczos_matrices_dense(reort_mode):
     from impurityModel.ed.BlockLanczosArray import block_lanczos_array

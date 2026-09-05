@@ -65,23 +65,42 @@ cpdef object block_inner(object V, object W, bint mpi=False, object comm=None):
 
 cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, double slaterWeightMin=0.0):
     if is_array(V) or getattr(H, "is_array_operator", False) or isinstance(H, np.ndarray) or isinstance(H, sps.spmatrix):
-        if isinstance(V, list) and isinstance(V[0], np.ndarray):
-            V_arr = np.column_stack(V)
-            res = H @ V_arr
-        else:
-            res = H @ V
+        V_arr = np.column_stack(V) if isinstance(V, list) and isinstance(V[0], np.ndarray) else V
 
         if mpi and basis is not None and getattr(basis, 'comm', None) is not None:
             comm = basis.comm
-            res_global = np.ascontiguousarray(res)
-            comm.Allreduce(MPI.IN_PLACE, res_global, op=MPI.SUM)
             rank = comm.rank
-            counts = np.empty(comm.size, dtype=int)
-            local_N = V_arr.shape[0] if isinstance(V, list) else V.shape[0]
+            size = comm.size
+            local_N = V_arr.shape[0]
+            counts = np.empty(size, dtype=int)
             comm.Allgather(np.array([local_N], dtype=int), counts)
-            offsets = np.array([np.sum(counts[:r]) for r in range(comm.size)], dtype=int)
-            return res_global[offsets[rank] : offsets[rank] + local_N, :]
-        return res
+            offsets = np.array([np.sum(counts[:r]) for r in range(size)], dtype=int)
+            # Row-chunked reduce-scatter, one chunk per destination rank's own row range (the
+            # same partition `offsets`/`counts` already describe) -- never materialize the full
+            # (global_N, w) product on any rank. The previous version formed it, Allreduced it,
+            # then threw away every row but this rank's own 1/size share; on SrMnO3 at 128 ranks
+            # a single call from inside the TRLM restart loop (trlm.py, every continuation block
+            # of every restart) peaked at several GiB/rank from exactly that discarded majority.
+            # This keeps the peak at max(counts) * w, which shrinks with rank count instead of
+            # growing with global_N -- see doc/plans/dc_smo_performance.md.
+            #
+            # `H` needs an efficient ROW axis for the slice below to pay off (CSR, not CSC);
+            # callers are responsible for that -- trlm.py converts once, before entering the
+            # restart loop this runs in, so the many calls here never each pay for it. A CSC `H`
+            # still produces the correct answer, just slower.
+            w = V_arr.shape[1]
+            result = np.empty((local_N, w), dtype=complex, order='C')
+            for dest in range(size):
+                row_lo = offsets[dest]
+                row_hi = row_lo + counts[dest]
+                chunk = np.ascontiguousarray(H[row_lo:row_hi, :] @ V_arr, dtype=complex)
+                if rank == dest:
+                    comm.Reduce(MPI.IN_PLACE, chunk, op=MPI.SUM, root=dest)
+                    result[:, :] = chunk
+                else:
+                    comm.Reduce(chunk, None, op=MPI.SUM, root=dest)
+            return result
+        return H @ V_arr
     elif isinstance(V, ManyBodyState):
         # apply_multi is list-typed (a plain ManyBodyState would raise TypeError
         # there); apply_block is the block-native counterpart, near-flat cost in

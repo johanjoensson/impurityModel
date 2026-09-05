@@ -255,7 +255,8 @@ def _matmul_nogil_test(A, int transA, B, int transB, alpha, beta, C, int m, int 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef void apply_sparse_csr_nogil(
-    int num_rows,
+    int row_begin,
+    int row_count,
     int num_cols,
     int p,
     double complex[:] data,
@@ -264,18 +265,26 @@ cdef void apply_sparse_csr_nogil(
     double complex[:, ::1] X,
     double complex[:, ::1] Y
 ) noexcept nogil:
-    cdef int i, j, k
-    cdef long row_start, row_end
+    """``Y[:row_count] = H[row_begin:row_begin+row_count, :] @ X``, output row-indexed from 0.
+
+    ``row_begin=0, row_count=global_N`` (the whole matrix) recovers the original single-shot
+    apply; the MPI matvec loop below instead calls this once per destination-rank row chunk
+    (see the chunked-reduce comment there), so ``Y`` never has to hold more than one rank's
+    own row range at a time.
+    """
+    cdef int i, j, k, ii
+    cdef long row_start, row_stop
     cdef double complex val
-    for i in range(num_rows):
+    for ii in range(row_count):
+        i = row_begin + ii
         row_start = indptr[i]
-        row_end = indptr[i+1]
+        row_stop = indptr[i+1]
         for k in range(p):
-            Y[i, k] = 0.0
-        for j in range(row_start, row_end):
+            Y[ii, k] = 0.0
+        for j in range(row_start, row_stop):
             val = data[j]
             for k in range(p):
-                Y[i, k] = Y[i, k] + val * X[indices[j], k]
+                Y[ii, k] = Y[ii, k] + val * X[indices[j], k]
 
 
 @cython.boundscheck(False)
@@ -455,6 +464,7 @@ def block_lanczos_array_cy(
     cdef bint is_dense = isinstance(h_op, np.ndarray)
 
     cdef int it = start_it
+    cdef int dest, dest_off, dest_count  # row-chunk bounds for the MPI reduce-scatter matvec
     cdef double t_norm_max = 0.0
     cdef double h_norm_est = 0.0
     cdef double _h_scale = 0.0
@@ -491,16 +501,22 @@ def block_lanczos_array_cy(
     cdef double complex[:, ::1] q1, q0, beta_prev_dag_mv
     cdef double complex[:, ::1] alpha_i
 
-    # GUARDRAIL: the MPI matvec forms the full (global_N, n) partial product on *every*
-    # rank (column-distributed H -> Allreduce -> slice local rows), so per-rank memory
-    # here scales with global_N, not local_N. This is intentional: the array kernel is
-    # for small/dense sectors. For a large global_N use the sparse hash-distributed
-    # kernel (BlockLanczos.pyx / block_lanczos_cy), which never forms a dense global
-    # vector. We deliberately do NOT halo-exchange this (see blocklanczos_blas_
-    # acceleration.md §3, "WON'T FIX"): the dense path already OOMs on the global_N^2
-    # matrix first, and the memory-bound CIPSI/GF case runs on the sparse kernel anyway.
-    cdef np.ndarray wp_global = np.empty((global_N, n), dtype=complex, order='C') if mpi else None
-    cdef double complex[:, ::1] wp_g = wp_global
+    # The MPI matvec below is a row-chunked reduce-scatter (one chunk per destination
+    # rank's own row range, `Reduce`d straight to it) -- it never materializes a
+    # (global_N, n_curr) product on any rank. This used to allocate exactly that buffer
+    # here and Allreduce it before discarding every row but this rank's own share; see
+    # doc/plans/dc_smo_performance.md for the measured cost (several GiB/rank on a
+    # production-size SrMnO3 solve). `chunk_buf`, sized to the largest chunk this rank
+    # will ever compute, is reused across both the chunk loop below and the destination
+    # slots -- ranks are not equal-sized in general (deflation aside, hash distribution
+    # only balances approximately), so this is `max(counts)`, not `N`.
+    # Allocated unconditionally (mirroring wp_arr/wp above), not just on a width change: the
+    # loop's reallocation guard (`wp_arr.shape[1] != n_curr`) is false on iteration 0, since
+    # wp_arr was already built at the initial width -- an allocation gated the same way here
+    # would leave chunk_view unassigned (and a slice into it a segfault) on every run whose
+    # first sweep never deflates.
+    cdef np.ndarray chunk_buf = np.empty((int(np.max(counts)), n), dtype=complex, order='C') if mpi else None
+    cdef double complex[:, ::1] chunk_view = chunk_buf
 
     cdef list block_widths = list(block_widths_init) if block_widths_init is not None else [n] * start_it
     cdef int n_curr, n_prev, active_k
@@ -552,27 +568,57 @@ def block_lanczos_array_cy(
         q1 = np.ascontiguousarray(q[1])
         n_curr = q1.shape[1]
 
-        # --- 1. Block matvec: wp = H q_curr (+ MPI redistribute) ------------
-        # Re-allocate wp buffers to match current active width for contiguous alignment
+        # --- 1. Block matvec: wp = H q_curr (+ MPI row-chunked reduce-scatter) ------------
+        # Re-allocate wp/chunk buffers to match current active width for contiguous alignment
         if wp_arr.shape[1] != n_curr:
             wp_arr = np.empty((N, n_curr), dtype=complex, order='C')
             wp = wp_arr
             if mpi:
-                wp_global = np.empty((global_N, n_curr), dtype=complex, order='C')
-                wp_g = wp_global
+                chunk_buf = np.empty((int(np.max(counts)), n_curr), dtype=complex, order='C')
+                chunk_view = chunk_buf
 
         if is_sparse:
-            with nogil:
-                apply_sparse_csr_nogil(global_N, N, n_curr, h_data, h_indices, h_indptr, q1, wp_g if mpi else wp)
             if mpi:
-                comm.Allreduce(MPI.IN_PLACE, wp_global, op=MPI.SUM)
-                wp_arr[:] = wp_global[offsets[rank] : offsets[rank] + N, :]
+                # One destination-rank row range at a time, Reduced straight to its owner --
+                # never a (global_N, n_curr) buffer. See the comment on `chunk_buf`'s
+                # declaration above; the same pattern (and its bit-identity caveat) lives in
+                # _block_ops.pxi's block_apply. `dest_off`/`dest_count` are plain C ints,
+                # read from `offsets`/`counts` before the nogil block -- indexing a numpy
+                # array is a Python-level operation and cannot happen without the GIL.
+                for dest in range(size):
+                    dest_off = offsets[dest]
+                    dest_count = counts[dest]
+                    with nogil:
+                        apply_sparse_csr_nogil(
+                            dest_off, dest_count, N, n_curr,
+                            h_data, h_indices, h_indptr, q1, chunk_view[:dest_count, :],
+                        )
+                    if rank == dest:
+                        comm.Reduce(MPI.IN_PLACE, chunk_buf[:dest_count, :], op=MPI.SUM, root=dest)
+                        wp_arr[:] = chunk_buf[:dest_count, :]
+                    else:
+                        comm.Reduce(chunk_buf[:dest_count, :], None, op=MPI.SUM, root=dest)
+            else:
+                with nogil:
+                    apply_sparse_csr_nogil(0, global_N, N, n_curr, h_data, h_indices, h_indptr, q1, wp)
         elif is_dense:
-            with nogil:
-                apply_dense_nogil(global_N, N, n_curr, h_dense, q1, wp_g if mpi else wp)
             if mpi:
-                comm.Allreduce(MPI.IN_PLACE, wp_global, op=MPI.SUM)
-                wp_arr[:] = wp_global[offsets[rank] : offsets[rank] + N, :]
+                for dest in range(size):
+                    dest_off = offsets[dest]
+                    dest_count = counts[dest]
+                    with nogil:
+                        apply_dense_nogil(
+                            dest_count, N, n_curr, h_dense[dest_off : dest_off + dest_count, :], q1,
+                            chunk_view[:dest_count, :],
+                        )
+                    if rank == dest:
+                        comm.Reduce(MPI.IN_PLACE, chunk_buf[:dest_count, :], op=MPI.SUM, root=dest)
+                        wp_arr[:] = chunk_buf[:dest_count, :]
+                    else:
+                        comm.Reduce(chunk_buf[:dest_count, :], None, op=MPI.SUM, root=dest)
+            else:
+                with nogil:
+                    apply_dense_nogil(global_N, N, n_curr, h_dense, q1, wp)
         else:
             if hasattr(h_op, "dot"):
                 wp_arr[:] = h_op.dot(q1)
