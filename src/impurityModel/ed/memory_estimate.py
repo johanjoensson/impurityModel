@@ -247,23 +247,39 @@ def estimate_gf_peak_bytes(
 _GS_EIGENSTATE_PAD = 10
 
 
-def _gs_krylov_columns(block_width, num_wanted=None):
+def _gs_krylov_columns(n_dets, block_width, num_wanted=None):
     """Peak column count of the retained dense Krylov store, at the ground-state default
     ``reort="full"``.
 
-    Mirrors ``cipsi_solver._size_subspace`` (``max_subspace = max(2*nw, nw+10); blocks =
-    ceil(max_subspace / p)``), not imported for the same layering reason as
-    :data:`_GS_EIGENSTATE_PAD`. **This replaced a flat ``n_blocks`` constant** (measured wrong:
-    the SMO cap-2000 probe's own ``size_subspace`` trace showed ``blocks/width`` up to 30, not
-    a small constant -- see ``doc/plans/dc_smo_performance.md``'s "Phase resequencing" section).
-    The ratio is not bounded by a universal constant because ``num_wanted`` and ``block_width``
-    are two different quantities that happen to move together *only* before
-    ``GS_MAX_BLOCK_WIDTH`` (not yet implemented; tracked in that same section) decouples them --
-    once it exists, ``num_wanted`` can stay large while ``block_width`` is capped, and calling
-    this with the real ``num_wanted`` (not the default) is what keeps the estimate honest then.
+    Mirrors ``cipsi_solver._size_subspace`` **exactly** (re-read from source, not from memory --
+    an earlier version of this function got the formula wrong by omitting a factor of 2 and a
+    flat +20 headroom the real one carries, caught by review; see the git history of this file
+    and ``doc/plans/dc_smo_performance.md``'s "Phase resequencing" section):
+
+    .. code-block:: text
+
+        max_subspace = min(max(2*nw, nw+10), n_dets)
+        blocks = min(2*ceil(max_subspace/p) + 20, max(2, n_dets//p - 1))
+
+    where ``nw = num_wanted + _GS_EIGENSTATE_PAD``. Not imported (this module sits below the
+    solver stack, see the module docstring); keep the two in sync by hand if
+    ``_size_subspace`` changes -- there is no automated guard against drift here, only the
+    cross-reference.
+
+    **This replaced a flat ``n_blocks`` constant**, itself replacing a still-earlier guess of
+    30: neither a constant ratio nor (as this function's first version assumed) a ratio-free
+    formula covers the real behaviour, because ``num_wanted`` and ``block_width`` are two
+    different quantities that happen to move together *only* before ``GS_MAX_BLOCK_WIDTH`` (not
+    yet implemented; tracked in the doc section above) decouples them -- once it exists,
+    ``num_wanted`` can stay large while ``block_width`` is capped, and calling this with the
+    real ``num_wanted`` (not the default) is what keeps the estimate honest then.
 
     Parameters
     ----------
+    n_dets : int
+        Global determinant count -- ``_size_subspace``'s ``cap`` argument (``len(self.basis)``
+        in production; the same basis-size bound applies here since the Krylov store cannot
+        hold more orthonormal columns than there are determinants).
     block_width : int
         The Lanczos block width ``p``.
     num_wanted : int, optional
@@ -278,8 +294,9 @@ def _gs_krylov_columns(block_width, num_wanted=None):
     """
     p = max(1, block_width)
     nw = (2 * p if num_wanted is None else num_wanted) + _GS_EIGENSTATE_PAD
-    max_subspace = max(2 * nw, nw + 10)
-    return p * ceil(max_subspace / p)
+    max_subspace = min(max(2 * nw, nw + 10), n_dets)
+    blocks = min(2 * ceil(max_subspace / p) + 20, max(2, n_dets // p - 1))
+    return p * blocks
 
 
 def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_per_state=100, num_wanted=None):
@@ -326,7 +343,7 @@ def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_
     # Chunked reduce-scatter transient (Phase 1): one (max(counts), w) chunk buffer plus the
     # (local, w) result live at once; max(counts) ~ local under a balanced hash partition.
     replicated_bytes = 2 * local * block_width * _COMPLEX_BYTES
-    krylov_bytes = local * _gs_krylov_columns(block_width, num_wanted) * _COMPLEX_BYTES
+    krylov_bytes = local * _gs_krylov_columns(n_dets, block_width, num_wanted) * _COMPLEX_BYTES
     return basis_bytes + csr_bytes + replicated_bytes + krylov_bytes
 
 

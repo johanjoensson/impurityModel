@@ -164,19 +164,35 @@ kind `size_subspace`) and re-ran the cap-2000 SMO probe:
 |---|---|---|
 | initial | 388 | 26-60 |
 
-`blocks/width` ratio: min 1.62, max **30.00**, mean 14.31 -- the worst case (`blocks=60` at
-`width=2`, `num_wanted=20`) comes from an early, tiny-basis CIPSI iteration where `cap =
-len(self.basis)` itself binds `_size_subspace`'s `max_subspace`, not the `2*num_wanted` term. At
-production scale (a large basis, so `cap` never binds) the same shape of blowup recurs whenever
-`num_wanted` is large relative to a capped `block_width` -- exactly the post-Phase-4 regime, e.g.
-`num_wanted ~ 600` (an uncapped manifold request, historically observed) against
-`block_width = 20` (a hypothetical `GS_MAX_BLOCK_WIDTH`) gives `blocks = ceil(1200/20) = 60`,
-matching the empirical worst case's magnitude by the same mechanism.
+`blocks/width` ratio: min 1.62, max **30.00**, mean 14.31 -- worst case `blocks=60` at
+`width=2`, recorded (already-padded) `num_wanted=20`.
 
-No flat constant covers this: the ratio is unbounded as `num_wanted/block_width` grows, since the
-two are no longer coupled. Fixed by replacing the constant with
-`memory_estimate._gs_krylov_columns(block_width, num_wanted)`, which mirrors
-`_size_subspace`'s own formula (`max_subspace = max(2*nw, nw+10)`, `nw = num_wanted +
-_EIGENSTATE_PAD`) rather than assuming a ratio. Its default (`num_wanted=None` -> `2*block_width`)
-reproduces today's coupled-regime behavior; Phase 2's remainder must pass the real `num_wanted`
-once Phase 3/4 land, or this will under-predict again.
+No flat constant covers this: the ratio is unbounded as `num_wanted/block_width` grows once the
+two are decoupled. Fixed by replacing the constant with a function,
+`memory_estimate._gs_krylov_columns(n_dets, block_width, num_wanted)`, meant to mirror
+`_size_subspace` exactly.
+
+**The first version of that function got the mirror wrong, caught by `/code-review`:** it
+reproduced only `max_subspace = max(2*nw, nw+10)` and dropped `_size_subspace`'s own
+`blocks = min(2*ceil(max_subspace/p) + 20, max(2, cap//p - 1))` -- both the factor of 2 and the
+flat `+20` block headroom, replacing it with a bare `ceil(max_subspace/p)`. Checked against the
+measured worst case above (`width=2`, internal `num_wanted=20`, i.e. unpadded `num_wanted=10` in
+this function's own convention): the first version gave `blocks=20` against the real 60, a 3x
+undercount, in the same direction as the OOM this campaign exists to fix. The `2*` and `+20` are
+not a rounding nicety -- they are most of the formula at small-to-moderate width.
+
+Fixed by transcribing `_size_subspace`'s body verbatim rather than its docstring's prose summary
+(the earlier version was written from the *prose*, which itself omits the `2*` and `+20` --
+they are only visible in the actual return statement). Cross-checked by direct comparison: 2000
+randomized `(num_wanted, width, cap)` triples fed to both `_size_subspace` (real) and
+`_gs_krylov_columns` (mirror, with the internal/unpadded `num_wanted` convention translated
+between them), zero mismatches. The corrected function also reproduces the measured worst case
+above exactly (`_gs_krylov_columns(n_dets=2000, block_width=2, num_wanted=10)` returns 120
+columns = 60 blocks).
+
+Its default (`num_wanted=None` -> internally `2*block_width`) reproduces today's coupled-regime
+behavior (e.g. at `block_width=315`, `n_dets=1e6`: 9450 columns, 30 blocks -- coincidentally close
+to the pre-Phase-1 `n_blocks=30` literal, for an unrelated reason: that literal was never
+derived, this is a converged asymptote of the real formula for large `p` in the coupled regime).
+Phase 2's remainder must pass the real `num_wanted` once Phase 3/4 land and decouple it from
+`block_width`, or this will under-predict again.
