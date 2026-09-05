@@ -101,7 +101,12 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
             # Match what `H @ V_arr` would produce (the non-mpi branch below, and this
             # branch's own pre-chunking behaviour): a real H against a real V_arr must stay
             # real, not silently upcast to complex128 and double this buffer's footprint.
-            result_dtype = np.result_type(H.dtype, V_arr.dtype)
+            # `H` need not be an ndarray/sparse matrix here -- this branch is also entered by
+            # any object carrying `is_array_operator=True` -- so a missing `.dtype` falls back
+            # to `V_arr`'s rather than raising (`/code-review` caught this as a latent
+            # regression; currently no such operator exists in the tree, but the pre-fix code
+            # never touched `H.dtype` at all).
+            result_dtype = np.result_type(getattr(H, "dtype", V_arr.dtype), V_arr.dtype)
             result = np.empty((local_N, w), dtype=result_dtype, order='C')
             for dest in range(size):
                 row_lo = offsets[dest]
