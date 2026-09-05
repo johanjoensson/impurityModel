@@ -60,10 +60,20 @@ def test_gf_ranks_reduce_per_rank_cost():
     assert four >= one // 4
 
 
-def test_gs_array_kernel_replication_does_not_shrink_with_ranks():
-    """The replicated (global_N, width) term must persist at high rank counts."""
+def test_gs_array_kernel_replication_shrinks_with_ranks():
+    """Post-Phase-1 (row-chunked reduce-scatter, doc/plans/dc_smo_performance.md), the array
+    kernel's matvec transient is bounded by ``max(counts) ~ local``, not ``global_N`` -- the
+    inverse of this test's pre-fix name and assertion, which locked in the very replication bug
+    the fix removes. A few ranks should already beat the un-chunked whole-basis bound; many
+    ranks should shrink further still, not merely fail to grow.
+    """
+    few_ranks = me.estimate_gs_peak_bytes(100_000, 100, block_width=4, ranks=4)
+    more_ranks = me.estimate_gs_peak_bytes(100_000, 100, block_width=4, ranks=64)
     many_ranks = me.estimate_gs_peak_bytes(100_000, 100, block_width=4, ranks=1024)
-    assert many_ranks >= 100_000 * 4 * 16
+    assert many_ranks < more_ranks < few_ranks
+    # At 1024 ranks (local ~ 98 determinants) the whole estimate -- not just the replicated
+    # term -- should be far below the pre-Phase-1 un-chunked bound on the replicated term alone.
+    assert many_ranks < 100_000 * 4 * 16
 
 
 def test_suggest_threshold_monotone_in_safety():

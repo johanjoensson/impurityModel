@@ -18,9 +18,13 @@ Two per-rank scaling regimes matter (see ``doc/architecture_overview.md``):
 
 * the sparse (hash-distributed) kernels hold ``~n_dets / ranks`` determinants per
   rank, so per-rank memory shrinks with the communicator size;
-* the array block-Lanczos kernel replicates the full ``(global_N, block_width)``
-  matvec product on every rank (``BlockLanczosArray.pyx``), so that term does *not*
-  shrink with the rank count. It usually dominates the ground-state estimate.
+* the array block-Lanczos kernel's matvec (``BlockLanczosArray.pyx`` / ``_block_ops.pxi``'s
+  ``block_apply``) used to replicate the full ``(global_N, block_width)`` product on every
+  rank; since the row-chunked reduce-scatter fix (``doc/plans/dc_smo_performance.md``) it
+  is bounded by ``max(counts, over ranks) * block_width`` instead, so this term now shrinks
+  with rank count like the others. ``block_width`` itself is not yet a reliably bounded
+  quantity at every call site (see :func:`estimate_gs_peak_bytes`'s docstring) and, at
+  production widths, the retained dense Krylov term dominates instead.
 
 Under ``run_units_distributed`` the communicator is split into colors and every unit
 basis inherits the same numeric ``truncation_threshold``, so each rank's share of a
@@ -236,14 +240,32 @@ def estimate_gf_peak_bytes(
     return basis_bytes + live_bytes + store_bytes
 
 
-def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_per_state=100, n_blocks=30):
+#: Default retained-Krylov depth for :func:`estimate_gs_peak_bytes`, in units of the Lanczos
+#: block width ``p``. Not 30 (the pre-Phase-1 literal): TRLM's thick restart trims the retained
+#: Ritz block to ``nkeep = k_blocks * p`` every restart (``trlm.py``, ``nkeep = k_blocks * p``)
+#: rather than accumulating history across ``max_restarts``, and ``k_blocks = ceil(num_wanted /
+#: p)`` with ``num_wanted`` padded to ``~2p`` (``cipsi_solver._size_subspace``) gives
+#: ``k_blocks ~ 2`` in the regime that matters for capacity planning (``p`` large enough that the
+#: ``+10``/``_EIGENSTATE_PAD`` additive pads are negligible next to ``2p``) -- measured on the
+#: Arrhenius crash log as ``nkeep = 3p`` in all five observed solves (315/105, 297/99, 273/91,
+#: 225/75, 129/43), which already includes the +1 spike block coupling the residual. The same
+#: ``_size_subspace`` call also bounds the *initial* sweep's peak block count (before any
+#: restart trims it) to ``ceil(max(2*num_wanted, num_wanted+10) / p) ~ 4`` in that regime, so 4
+#: covers both the initial-sweep and restart-steady-state peaks; keep it a documented constant
+#: derived from these two call sites, not a re-measured literal every time p changes.
+DEFAULT_GS_KRYLOV_BLOCKS = 4
+
+
+def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_per_state=100, n_blocks=None):
     """Predicted per-rank peak bytes of the ground-state (CIPSI + array-kernel) path.
 
     Counts the ``Basis`` bookkeeping and the CSR Hamiltonian snapshot (both hash
-    distributed, ~1/ranks per rank), the array kernel's replicated full
-    ``(global_N, block_width)`` matvec product (per rank, *not* divided by ranks — see
-    ``BlockLanczosArray.pyx``), and the retained dense Krylov blocks at the ground-state
-    default ``reort="full"``.
+    distributed, ~1/ranks per rank), the array kernel's chunked reduce-scatter matvec
+    transient (``_block_ops.pxi``'s ``block_apply``, post row-chunking: bounded by
+    ``max(counts)`` -- the largest single rank's local row/column count under the hash
+    partition, approximated here as ``local`` since a materially skewed partition, not
+    ``global_N``, is now the risk this term misses), and the retained dense Krylov blocks
+    at the ground-state default ``reort="full"``.
 
     Parameters
     ----------
@@ -252,24 +274,35 @@ def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_
     n_spin_orbitals : int
         Determinant bit width.
     block_width : int
-        Lanczos block width (number of sought eigenvectors).
+        Lanczos block width (number of sought eigenvectors). **Not yet threaded from a
+        measured/capped value at every call site** (see ``doc/plans/dc_smo_performance.md``
+        and the plan's Phase 2/3/4 resequencing note): Phase 0 measured the real width
+        growing with the determinant cap itself (2-16 at cap 2000, 105-315 at the ~1M
+        production cap that crashed), so a cheap probe at a small cap under-reports it and
+        the default ``4`` remains a placeholder until ``GS_MAX_BLOCK_WIDTH`` (Phase 4) pins
+        the width to a config constant.
     ranks : int
         MPI ranks sharing the basis.
     nnz_per_state : int
         Stored Hamiltonian elements per basis state (measure on a small run; grows with
         the number of one-/two-body terms).
-    n_blocks : int
-        Typical converged Lanczos depth for the retained dense Krylov basis.
+    n_blocks : int, optional
+        Retained Krylov depth in units of ``block_width`` (see
+        :data:`DEFAULT_GS_KRYLOV_BLOCKS`). ``None`` (default) uses that constant.
 
     Returns
     -------
     int
         Predicted per-rank peak bytes.
     """
+    if n_blocks is None:
+        n_blocks = DEFAULT_GS_KRYLOV_BLOCKS
     local = ceil(n_dets / max(1, ranks))
     basis_bytes = local * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     csr_bytes = local * nnz_per_state * _CSR_BYTES_PER_NNZ
-    replicated_bytes = n_dets * block_width * _COMPLEX_BYTES
+    # Chunked reduce-scatter transient (Phase 1): one (max(counts), w) chunk buffer plus the
+    # (local, w) result live at once; max(counts) ~ local under a balanced hash partition.
+    replicated_bytes = 2 * local * block_width * _COMPLEX_BYTES
     krylov_bytes = local * block_width * n_blocks * _COMPLEX_BYTES
     return basis_bytes + csr_bytes + replicated_bytes + krylov_bytes
 
