@@ -453,8 +453,8 @@ def test_block_apply_sparse_matches_dense_reference_with_an_empty_rank():
     local columns/rows, checked against the exact serial answer rather than "did not crash".
     """
     comm = MPI.COMM_WORLD
-    if comm.size < 3:
-        pytest.skip("needs >= 3 ranks to exercise a genuinely empty rank")
+    if comm.size < 2:
+        pytest.skip("needs >= 2 ranks to exercise a genuinely empty rank")
     from impurityModel.ed.BlockLanczosCore import block_apply
 
     rank = comm.rank
@@ -462,8 +462,8 @@ def test_block_apply_sparse_matches_dense_reference_with_an_empty_rank():
     v_global = np.array([1.0, 2.0, 3.0], dtype=complex).reshape(-1, 1)
     expected = H_global @ v_global
 
-    # Every rank but rank 1 owns nothing -- at comm.size >= 3 this leaves at least one
-    # (rank 0) and, at comm.size >= 4, several ranks simultaneously empty.
+    # Every rank but rank 1 owns nothing -- at comm.size >= 2 this already leaves rank 0 empty
+    # (the mandatory `-n 2` local gate), and at comm.size >= 3 several ranks simultaneously.
     local_cols = [0, 1, 2] if rank == 1 else []
     import scipy.sparse as sps
 
