@@ -405,6 +405,32 @@ GF_RIXS_ADAPTIVE_BATCH = Knob(
 )
 
 
+# --- Ground state: block-Lanczos width -------------------------------------------------------
+
+GS_MAX_BLOCK_WIDTH = Knob(
+    name="GS_MAX_BLOCK_WIDTH",
+    kind="int",
+    default=None,  # unset = uncapped (today's behaviour)
+    minimum=1,
+    group="groundstate",
+    doc="""Caps the ground-state array-kernel Lanczos block width (`cipsi_solver.CIPSISolver.
+    get_eigenvectors`'s warm-start block, `p = len(psi_refs) + 1`). Unset (the default) leaves
+    it uncapped, which is what grows unboundedly through `expand`'s own warm-start feedback loop
+    (`num_wanted = 2 * len(psi_refs)` feeding back into the next solve's block width) -- measured
+    on SrMnO3 reaching p=105 (sweep) / 315 (TRLM's retained block after a restart) at the
+    ~1M-determinant production cap, and this is what the memory model (`memory_estimate`,
+    `estimate_gs_peak_bytes`'s `krylov_bytes` term) has to size for once its remaining call
+    sites stop defaulting `block_width=4`. Only the warm block fed *into* the next Lanczos solve
+    is truncated (to the lowest `min(len(psi_refs), GS_MAX_BLOCK_WIDTH)` energies -- already
+    ordered ascending); the cold full-support vector is still appended (a correctness guard, not
+    an optimization: it keeps every charge sector reachable), and `num_wanted` -- how many states
+    the caller actually asked for -- is untouched, so `expand`'s manifold does not shrink, only
+    the block width the solver uses to find it. See `doc/plans/dc_smo_performance.md`'s Phase 4
+    discussion for the wall-clock/gap-centre-stability gate a chosen value should pass before it
+    becomes the default rather than an opt-in override.""",
+)
+
+
 # --- Double counting: search diagnostics -----------------------------------------------------
 
 DC_DIAGNOSTICS = Knob(
@@ -481,6 +507,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_RIXS_WIN_CHUNK,
     GF_RIXS_ADAPTIVE_TOL,
     GF_RIXS_ADAPTIVE_BATCH,
+    GS_MAX_BLOCK_WIDTH,
     DC_DIAGNOSTICS,
     SIGMA_CAUSALITY_TOL,
 )
@@ -493,6 +520,7 @@ GROUP_TITLES = {
     "convergence": "Block-Lanczos convergence monitor",
     "rixs-solvers": "RIXS shift-recycling solver tiers",
     "rixs-sampling": "RIXS incoming-energy sampling",
+    "groundstate": "Ground-state block-Lanczos width",
     "double-counting": "Double-counting search diagnostics",
     "sigma": "Self-energy causality tolerance",
 }

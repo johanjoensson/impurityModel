@@ -10,6 +10,7 @@ from impurityModel.ed.basis_transcription import (
     build_state,
 )
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
+from impurityModel.ed import config
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
@@ -1037,7 +1038,19 @@ class CIPSISolver:
             # lies beyond the thermal cut, and the miss is undetectable downstream. Appending
             # the cold full-support start vector keeps every sector reachable while the warm
             # columns retain their fast convergence.
-            psi0 = list(psi_refs) + cold_start_block() if warm_started else cold_start_block()
+            warm_block = list(psi_refs) if warm_started else []
+            max_block_width = config.GS_MAX_BLOCK_WIDTH.get()
+            if max_block_width is not None and len(warm_block) > max_block_width:
+                # Truncate the block the *solver* uses, not the manifold the caller asked for:
+                # `psi_refs` is already energy-ordered ascending (the caller's own return path,
+                # `_energy_cut_indices`'s `order = np.argsort(e_ref)`), so the lowest
+                # `max_block_width` states are kept -- the ones a restart is most likely to need
+                # again. `num_wanted` below is untouched: this narrows the block Lanczos runs
+                # with, not how many states get returned, which is what caps `krylov_bytes`
+                # (`memory_estimate._gs_krylov_columns`) without shrinking the certified manifold
+                # `expand`'s "exhausted" check reads.
+                warm_block = warm_block[:max_block_width]
+            psi0 = warm_block + cold_start_block() if warm_started else cold_start_block()
 
             num_wanted = min(num_wanted + _EIGENSTATE_PAD, len(self.basis))
             psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
