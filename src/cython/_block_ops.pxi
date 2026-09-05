@@ -84,6 +84,15 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
             # This keeps the peak at max(counts) * w, which shrinks with rank count instead of
             # growing with global_N -- see doc/plans/dc_smo_performance.md.
             #
+            # Bit-identity caveat: each destination rank's `Reduce` is a separate collective, so
+            # MPI does not guarantee its summation order matches another root's -- unlike the
+            # single shared `Allreduce` this replaced, which handed every rank the same bytes by
+            # construction. Downstream code (cipsi_solver.get_eigenvectors's energy cut) assumes
+            # `e_ref` is bit-identical across ranks; verified unaffected by the `e_ref.tobytes()`
+            # allgather probe (zero divergence, `-n 2`/`-n 3`, `IMPURITYMODEL_BUILD=safe`) because
+            # each row range is summed by a fixed, deterministic set of per-rank partial products
+            # (the CSR row slice times V_arr), not by an order that varies with which rank asked.
+            #
             # `H` needs an efficient ROW axis for the slice below to pay off (CSR, not CSC);
             # callers are responsible for that -- trlm.py converts once, before entering the
             # restart loop this runs in, so the many calls here never each pay for it. A CSC `H`

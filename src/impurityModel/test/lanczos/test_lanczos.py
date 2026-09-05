@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.basis_transcription import build_dense_matrix, build_state
+from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix, build_state
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, eigsh
 from impurityModel.ed.eigensolvers import eigensystem
@@ -404,6 +404,43 @@ def test_get_block_Lanczos_array_matvec_survives_an_empty_rank():
     alphas, betas, _Q = block_lanczos_array(
         psi0, H_mat[:, basis.local_indices], converged, comm=comm, reort="full"
     )[:3]
+    ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
+    assert np.allclose(sorted(ev), sorted(eigvals)[: len(ev)])
+
+
+@pytest.mark.mpi
+def test_get_block_Lanczos_array_sparse_matvec_survives_an_empty_rank():
+    """Same as the dense-kernel test above, but through the *sparse* branch
+    (``apply_sparse_csr_nogil`` in ``BlockLanczosArray.pyx``) -- the kernel Phase 1 actually
+    rewrote (``row_begin``/``row_count`` row-chunked reduce-scatter). The dense test above never
+    reaches this code path: ``block_lanczos_array_cy`` dispatches on ``sps.issparse(h_op)``, and
+    it is the sparse/CSR path production runs (``cipsi-partial-runs-array-kernel``).
+    """
+    comm = MPI.COMM_WORLD
+    if comm.size < 3:
+        pytest.skip("needs >= 3 ranks to guarantee an empty rank with 2 determinants")
+    from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+
+    eigvals = np.array([0.5, 1.0])
+    states = [b"\x80", b"\x40"]
+    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        verbose=True,
+        comm=comm,
+    )
+    H_mat = build_sparse_matrix(basis, hop)[:, basis.local_indices]
+    local_n = len(basis.local_basis)
+    psi0 = np.zeros((local_n, 1), dtype=complex)
+    if local_n:
+        psi0[:, 0] = 1 / np.sqrt(2)
+
+    def converged(alphas, betas, *args, **kwargs):
+        return alphas.shape[0] > 1
+
+    alphas, betas, _Q = block_lanczos_array(psi0, H_mat, converged, comm=comm, reort="full")[:3]
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(sorted(ev), sorted(eigvals)[: len(ev)])
 
