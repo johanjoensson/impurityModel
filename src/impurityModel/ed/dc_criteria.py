@@ -549,9 +549,7 @@ class _SectorContext:
         return solution.occupation_ground if self.ground_state_manifold else solution.occupation
 
 
-def _prepare_sector_context(
-    model, basis, solver, *, comm=None, verbosity=0, memory_label, ground_state_manifold=False
-):
+def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, memory_label, ground_state_manifold=False):
     """Build the setup :class:`_SectorContext` holds, from the grouped option objects.
 
     Verbatim extraction of the preamble :func:`fixed_peak_dc` used to open with, so that
@@ -739,6 +737,14 @@ def fixed_peak_dc(
         up to 0.065 at cap 2000) -- leave this ``False`` unless that spread has been checked to
         be negligible on the workload at hand. The performance benefit (narrower sector solves,
         smaller Lanczos block widths on the following DC evaluation) is why this exists.
+
+        **Check the spread with this flag left ``False``, never with it ``True``.** Once
+        enabled, ``sector_solve`` itself narrows the manifold it measures ``occupation_spread``
+        over (``max_energy=0.0``), so ``report``'s spread then describes the already-narrowed
+        multiplet, not the full thermal window this flag trades away -- it will read small (often
+        near-zero, since a tightly degenerate multiplet is the common case) regardless of whether
+        the *real* thermal spread would have been safe. Run once with the default first, read
+        that evaluation's spread, and only then decide whether to enable this.
 
     Returns
     -------
@@ -1303,9 +1309,12 @@ def fixed_gap_dc(
         search's raw internal status), which is how a caller could assert on a field that had
         quietly stopped being written.
     ground_state_manifold : bool
-        As :func:`fixed_peak_dc`: opt-in, default ``False``. Check ``occupation_spread`` (in
-        ``report``, or via ``solver_trace``) is negligible on the workload before enabling it --
-        it is not on SrMnO3 cubic (see ``doc/plans/dc_smo_performance.md``).
+        As :func:`fixed_peak_dc`: opt-in, default ``False``. Check ``manifold_spread`` (in
+        ``report``, or ``occupation_spread`` via ``solver_trace``) from a **prior evaluation with
+        this flag left ``False``** -- it is not negligible on SrMnO3 cubic (see
+        ``doc/plans/dc_smo_performance.md``). Reading the spread back from a call that already
+        had this flag ``True`` does not check what it looks like it checks: see the field
+        docstring on :func:`fixed_peak_dc`.
 
     Returns
     -------
