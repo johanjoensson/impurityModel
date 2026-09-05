@@ -1042,7 +1042,13 @@ class CIPSISolver:
             num_wanted = min(num_wanted + _EIGENSTATE_PAD, len(self.basis))
             psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
             max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), len(self.basis))
-            _trace_note("size_subspace", site="initial", blocks=int(max_subspace_blocks), width=int(len(psi0)), num_wanted=int(num_wanted))
+            _trace_note(
+                "size_subspace",
+                site="initial",
+                blocks=int(max_subspace_blocks),
+                width=int(len(psi0)),
+                num_wanted=int(num_wanted),
+            )
             # How many of those the eigensolver must actually converge to `tol`. The pad above is
             # bought for its *energies* -- a state landing outside the thermal cut is what certifies
             # the kept manifold is whole -- and `_energy_cut_indices` keeps a prefix of the sorted
@@ -1141,8 +1147,11 @@ class CIPSISolver:
                         psi0_arr = build_distributed_vector(self.basis, psi0).T
                         max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), cap)
                         _trace_note(
-                            "size_subspace", site="cold_retry", blocks=int(max_subspace_blocks),
-                            width=int(len(psi0)), num_wanted=int(num_wanted),
+                            "size_subspace",
+                            site="cold_retry",
+                            blocks=int(max_subspace_blocks),
+                            width=int(len(psi0)),
+                            num_wanted=int(num_wanted),
                         )
                         num_required = max(1, num_wanted - _EIGENSTATE_PAD)
                         continue
@@ -1152,8 +1161,11 @@ class CIPSISolver:
                 num_wanted = min(2 * num_wanted, cap)
                 max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), cap)
                 _trace_note(
-                    "size_subspace", site="doubling", blocks=int(max_subspace_blocks),
-                    width=int(len(psi0)), num_wanted=int(num_wanted),
+                    "size_subspace",
+                    site="doubling",
+                    blocks=int(max_subspace_blocks),
+                    width=int(len(psi0)),
+                    num_wanted=int(num_wanted),
                 )
                 num_required = max(1, num_wanted - _EIGENSTATE_PAD)
 
