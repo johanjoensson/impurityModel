@@ -168,13 +168,35 @@ own text -- "Keep `num_wanted` untouched") and keeps growing with the manifold i
 the block-width cap. `_gs_krylov_columns`'s default (`num_wanted=None` assumes `2*block_width`)
 is only valid in the pre-Phase-4 coupled regime; once `GS_MAX_BLOCK_WIDTH` decouples the two,
 that default silently under-counts the retained Krylov store by the same ratio Phase 0 measured
-between `num_wanted` and `p` (up to ~30x). Fixed by `gs_block_width_is_capped()` plus a new
-`gs_manifold_unbounded` parameter threaded through `suggest_truncation_threshold`/
-`log_memory_budget`/`_suggest_for_budget`: when the block width is a real (knob-derived) cap,
-the bisection candidate `n` itself is passed as `num_wanted`, which forces
-`_gs_krylov_columns`'s own `min(..., n_dets)` clamp to bind -- the invariant-subspace worst
-case, the same style `estimate_gf_peak_bytes` already uses for its Krylov store when `n_blocks`
-is unmeasured. All five call sites pass this flag now.
+between `num_wanted` and `p` (up to ~30x).
+
+**The first fix attempt was itself wrong, caught by a second review round.** It passed the
+bisection candidate `n` itself as `num_wanted` whenever the block width was knob-capped, on the
+reasoning that this forces `_gs_krylov_columns`'s own `min(..., n_dets)` clamp to bind -- an
+"invariant-subspace worst case" in the same style `estimate_gf_peak_bytes` already uses for its
+Krylov store. The parity claim doesn't hold: `estimate_gf_peak_bytes` only takes that worst case
+when `reort != "none"`, not the GF production default; `estimate_gs_peak_bytes` has no `reort`
+parameter and models `reort="full"` unconditionally, so the same substitution is *unconditional*
+on GS sizing -- exactly the path `GS_MAX_BLOCK_WIDTH` exists to enable. Worse, the substitution
+makes the term scale like `n_dets^2/ranks` (verified: `blocks -> n_dets/p`, `columns -> n_dets`),
+astronomically more pessimistic than the real `num_wanted` Phase 0 measured (105-315 at the ~1M
+production cap). Setting `GS_MAX_BLOCK_WIDTH` under this fix made `suggest_truncation_threshold`
+recommend a cap 5-30x *smaller* than the real target at realistic rank counts -- inverting the
+knob's purpose.
+
+**Reverted.** There is no analytically-safe worst case for `num_wanted` other than `n_dets`
+itself, and that bound is useless in practice. `num_wanted` is a measured quantity, exactly like
+`nnz_per_state` already is (Phase 2 item 3): `estimate_gs_peak_bytes`'s `num_wanted=None` default
+keeps the pre-Phase-4 `2*block_width` assumption unconditionally (a no-op whether or not the knob
+is set), and a new `gs_num_wanted` parameter (`suggest_truncation_threshold`/`log_memory_budget`/
+`_suggest_for_budget`/the `_main()` CLI probe's `--gs-num-wanted`) lets a caller supply the real
+value once measured. `log_memory_budget` now warns specifically on the dangerous configuration --
+`GS_MAX_BLOCK_WIDTH` set but `gs_num_wanted` not supplied -- rather than silently assuming the
+coupled default or silently over-correcting to the useless quadratic bound. None of the five
+production call sites supply `gs_num_wanted` yet: doing so needs the same width sweep that sets
+`GS_MAX_BLOCK_WIDTH`, which also has to record the resulting `num_wanted` (unaffected by the
+block-width cap -- Phase 4 explicitly preserves the returned manifold, so this is an independent
+measurement, not a derived one).
 
 ### The Krylov-store term needed a second look: no flat constant is safe
 

@@ -105,7 +105,6 @@ from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
-    gs_block_width_is_capped,
     log_memory_budget,
     resolve_gs_block_width,
     suggest_truncation_threshold,
@@ -605,13 +604,11 @@ def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, mem
         # sector energies is the dominant error in both the gap centre and its width.
         # `fixed_occupation_dc` never halved, so this also makes the three criteria agree.
         gs_block_width = resolve_gs_block_width()
-        gs_manifold_unbounded = gs_block_width_is_capped()
         truncation_threshold = suggest_truncation_threshold(
             model.n_spin_orbitals,
             comm=MPI.COMM_WORLD,
             block_width=gs_block_width,
             safety=DEFAULT_MEMORY_SAFETY,
-            gs_manifold_unbounded=gs_manifold_unbounded,
         )
         log_memory_budget(
             truncation_threshold,
@@ -620,7 +617,6 @@ def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, mem
             block_width=gs_block_width,
             verbose=verbose,
             label=memory_label,
-            gs_manifold_unbounded=gs_manifold_unbounded,
         )
 
     # The spread of the one-body h0 eigenvalues: the scale a sector-energy difference can move
@@ -1680,12 +1676,10 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     truncation_threshold = basis.truncation_threshold
     if truncation_threshold is None:
         gs_block_width = resolve_gs_block_width()
-        gs_manifold_unbounded = gs_block_width_is_capped()
         truncation_threshold = suggest_truncation_threshold(
             model.n_spin_orbitals,
             comm=MPI.COMM_WORLD,
             block_width=gs_block_width,
-            gs_manifold_unbounded=gs_manifold_unbounded,
         )
         log_memory_budget(
             truncation_threshold,
@@ -1694,7 +1688,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
             block_width=gs_block_width,
             verbose=verbose,
             label="fixed-occupation dc",
-            gs_manifold_unbounded=gs_manifold_unbounded,
         )
 
     # DFT reference occupation: Fermi filling of the raw h0 (the KS Hamiltonian of the

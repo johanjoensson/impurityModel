@@ -237,18 +237,32 @@ def test_log_memory_budget_warns_when_gs_max_block_width_is_unset(capsys, monkey
     assert "GS_MAX_BLOCK_WIDTH is unset" in capsys.readouterr().out
 
 
-def test_log_memory_budget_is_quiet_when_gs_max_block_width_is_set(capsys, monkeypatch):
+def test_log_memory_budget_warns_when_gs_num_wanted_not_supplied(capsys, monkeypatch):
+    """Knob set but no measured num_wanted is the dangerous configuration: the Krylov term
+    silently keeps the pre-Phase-4 num_wanted~=2*block_width assumption."""
     monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "8")
     me.log_memory_budget(100_000, 100, comm=None, block_width=4, verbose=True, label="test")
-    assert "GS_MAX_BLOCK_WIDTH is unset" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "gs_num_wanted was not supplied" in out
+    assert "GS_MAX_BLOCK_WIDTH is unset" not in out
+
+
+def test_log_memory_budget_is_quiet_when_gs_num_wanted_is_supplied(capsys, monkeypatch):
+    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "8")
+    me.log_memory_budget(100_000, 100, comm=None, block_width=4, verbose=True, label="test", gs_num_wanted=20)
+    out = capsys.readouterr().out
+    assert "GS_MAX_BLOCK_WIDTH is unset" not in out
+    assert "gs_num_wanted was not supplied" not in out
 
 
 def test_log_memory_budget_does_not_warn_when_uncapped(capsys, monkeypatch):
     """No estimate_gs_peak_bytes call happens on the uncapped path, so there is no "block_width
-    used above" to warn about -- the unset-knob warning must not fire there (review finding)."""
+    used above" to warn about -- neither warning must fire there (review finding)."""
     monkeypatch.delenv("GS_MAX_BLOCK_WIDTH", raising=False)
     me.log_memory_budget(None, 100, comm=None, block_width=4, verbose=True, label="test")
-    assert "GS_MAX_BLOCK_WIDTH is unset" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "GS_MAX_BLOCK_WIDTH is unset" not in out
+    assert "gs_num_wanted" not in out
 
 
 def test_resolve_sizing_block_width_matches_gf_width_when_the_knob_is_unset(monkeypatch):
@@ -264,25 +278,33 @@ def test_resolve_sizing_block_width_takes_the_larger_of_gf_and_gs_widths(monkeyp
     assert me.resolve_sizing_block_width(6) == 6
 
 
-def test_gs_manifold_unbounded_sizes_the_krylov_term_for_num_wanteds_worst_case():
-    """Without gs_manifold_unbounded, a capped block_width still assumes num_wanted=2*p (the
-    pre-Phase-4 coupled regime) and badly under-counts the Krylov term once GS_MAX_BLOCK_WIDTH
-    actually decouples the two (review finding: this was the real remaining OOM risk)."""
+def test_gs_num_wanted_none_keeps_the_pre_phase4_coupled_default():
+    """gs_num_wanted=None (the default, whether or not GS_MAX_BLOCK_WIDTH is set) must be a
+    total no-op: byte-identical to bceaef5's pre-this-fix behaviour. A review round found that
+    substituting n_dets as a "worst case" for an unmeasured num_wanted makes the Krylov term
+    scale like n_dets^2 (_gs_krylov_columns's min(...,n_dets) clamp binds and blocks~n_dets/p),
+    inverting the whole point of GS_MAX_BLOCK_WIDTH -- reverted; see
+    doc/plans/dc_smo_performance.md. The honest fix is a measured value, like nnz_per_state."""
+    n, nso, p = 200_000, 106, 4
+    baseline = me.estimate_gs_peak_bytes(n, nso, block_width=p)
+    assert me.estimate_gs_peak_bytes(n, nso, block_width=p, num_wanted=None) == baseline
+
+
+def test_gs_num_wanted_when_supplied_changes_the_krylov_term():
     n, nso, p = 200_000, 106, 4
     coupled = me.estimate_gs_peak_bytes(n, nso, block_width=p)
-    worst_case = me.estimate_gs_peak_bytes(n, nso, block_width=p, num_wanted=n)
-    assert worst_case > coupled
-
-    budget = coupled + 1  # fits the coupled assumption, not the worst case
-    assert me._suggest_for_budget(budget, nso, p, "none", 1, 100, ranks=1, gs_manifold_unbounded=False) >= n
-    assert me._suggest_for_budget(budget, nso, p, "none", 1, 100, ranks=1, gs_manifold_unbounded=True) < n
+    measured = me.estimate_gs_peak_bytes(n, nso, block_width=p, num_wanted=250)
+    assert measured != coupled
 
 
-def test_log_memory_budget_gs_manifold_unbounded_raises_the_predicted_gs_peak():
-    n, nso, p = 200_000, 106, 4
-    without = me.log_memory_budget(n, nso, comm=None, block_width=p, verbose=False)
-    with_worst_case = me.log_memory_budget(n, nso, comm=None, block_width=p, verbose=False, gs_manifold_unbounded=True)
-    assert with_worst_case["gs_peak"] > without["gs_peak"]
+def test_suggest_truncation_threshold_gs_num_wanted_reaches_estimate_gs_peak_bytes():
+    """gs_num_wanted must actually thread through _suggest_for_budget down to
+    estimate_gs_peak_bytes, not just sit unused on the outer signature."""
+    nso, p = 106, 4
+    budget = 5 * me.estimate_gs_peak_bytes(50_000, nso, block_width=p, num_wanted=2 * p)
+    with_default = me._suggest_for_budget(budget, nso, p, "none", 1, 100, ranks=1)
+    with_measured = me._suggest_for_budget(budget, nso, p, "none", 1, 100, ranks=1, gs_num_wanted=400)
+    assert with_measured != with_default
 
 
 def _siam_6_pieces():

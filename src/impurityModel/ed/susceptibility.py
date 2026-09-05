@@ -425,11 +425,7 @@ def calc_susceptibility_workflow(
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
     from impurityModel.ed.groundstate import calc_gs
-    from impurityModel.ed.memory_estimate import (
-        gs_block_width_is_capped,
-        resolve_sizing_block_width,
-        suggest_truncation_threshold,
-    )
+    from impurityModel.ed.memory_estimate import resolve_sizing_block_width, suggest_truncation_threshold
     from impurityModel.ed.solver_basis import prepare_solver_basis
 
     # Unpack the grouped parameters into the local names used throughout the body.
@@ -463,7 +459,6 @@ def calc_susceptibility_workflow(
             block_width=sizing_block_width,
             reort=None,
             method="lanczos",
-            gs_manifold_unbounded=gs_block_width_is_capped(),
         )
     basis_information = {
         "impurity_orbitals": sb.impurity_orbitals,

@@ -26,7 +26,6 @@ from impurityModel.ed.greens_function import (
 )
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.memory_estimate import (
-    gs_block_width_is_capped,
     log_memory_budget,
     log_peak_vs_predicted,
     resolve_sizing_block_width,
@@ -230,7 +229,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     # over both rather than favouring whichever solve this variable was named for.
     gf_block_width = max(4, *(len(block) for block in block_structure.blocks))
     sizing_block_width = resolve_sizing_block_width(gf_block_width)
-    gs_manifold_unbounded = gs_block_width_is_capped()
     if truncation_threshold is None:
         truncation_threshold = suggest_truncation_threshold(
             n_spin_orbitals,
@@ -238,7 +236,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             block_width=sizing_block_width,
             reort=reort,
             method=gf_method,
-            gs_manifold_unbounded=gs_manifold_unbounded,
         )
     memory_budget = log_memory_budget(
         truncation_threshold,
@@ -249,7 +246,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         verbose=verbosity > 0,
         label=cluster_label,
         method=gf_method,
-        gs_manifold_unbounded=gs_manifold_unbounded,
     )
     basis_information = {
         "impurity_orbitals": impurity_orbitals,
