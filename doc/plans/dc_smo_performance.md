@@ -139,13 +139,27 @@ MiB for `replicated_bytes`), threading an under-measured width through the five 
 *raise* the suggested cap, reproducing the OOM this campaign exists to fix.
 
 The width only stops being a moving, unmeasurable target once a Lanczos-block-width cap (Phase
-4's `GS_MAX_BLOCK_WIDTH`, **not yet implemented**) pins it to a config constant -- and that
-phase's own gate must be measured against Phase 3's manifold-shrinking output, not today's (Phase
-4's text says so explicitly), so the real dependency order is **Phase 3 -> Phase 4 -> Phase 2's
-remainder -> Phase 5**, not the original 2-3-4-5 listing. What still landed from Phase 2
-independent of that dependency (`estimate_gs_peak_bytes`'s `replicated_bytes` chunked-bound fix)
-is safe regardless of `block_width`'s value, since it only lowers a term that no longer matched
-Phase 1's code.
+4's `GS_MAX_BLOCK_WIDTH`) pins it to a config constant -- and that phase's own gate must be
+measured against Phase 3's manifold-shrinking output, not today's (Phase 4's text says so
+explicitly), so the real dependency order is **Phase 3 -> Phase 4 -> Phase 2's remainder ->
+Phase 5**, not the original 2-3-4-5 listing. What still landed from Phase 2 independent of that
+dependency (`estimate_gs_peak_bytes`'s `replicated_bytes` chunked-bound fix) is safe regardless
+of `block_width`'s value, since it only lowers a term that no longer matched Phase 1's code.
+
+**Phase 2's remainder, done:** `GS_MAX_BLOCK_WIDTH` is implemented (Phase 4) and now threaded
+through every `estimate_gs_peak_bytes` call site via `memory_estimate.resolve_gs_block_width`:
+`groundstate.calc_gs` and `dc_criteria.py`'s two sites read it directly (falling back to the
+historical `4` when unset); `selfenergy.py`/`susceptibility.py` combine it with their own
+GF-derived block width via `max()`, since `suggest_truncation_threshold`/`log_memory_budget`
+size both paths through one `block_width` parameter and a real refactor to two separate
+parameters was judged not worth it for this campaign. **The knob defaults to unset** (Phase 4's
+own gate -- the SMO width sweep against `0.25*tol/|chi|` in `mu` -- has not run), so production
+still sizes the ground-state term with `block_width=4` unless an operator sets
+`GS_MAX_BLOCK_WIDTH` by hand; `log_memory_budget` now prints a warning on that path rather than
+letting the placeholder look like a measured bound. **The original failure mode -- `suggest_truncation_threshold`
+returning ~118M determinants at the Arrhenius point, predicting 139 GiB/rank at the real `p=315`
+-- is therefore still reachable after this commit.** Running the width sweep and setting the
+knob from its result is what actually closes it; see the Verification section.
 
 ### The Krylov-store term needed a second look: no flat constant is safe
 

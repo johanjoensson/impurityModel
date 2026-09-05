@@ -25,7 +25,12 @@ from impurityModel.ed.greens_function import (
     save_Greens_function,
 )
 from impurityModel.ed.groundstate import calc_gs
-from impurityModel.ed.memory_estimate import log_memory_budget, log_peak_vs_predicted, suggest_truncation_threshold
+from impurityModel.ed.memory_estimate import (
+    log_memory_budget,
+    log_peak_vs_predicted,
+    resolve_gs_block_width,
+    suggest_truncation_threshold,
+)
 from impurityModel.ed.sigma import (  # noqa: F401
     UnphysicalGreensFunctionError,
     check_greens_function,
@@ -218,16 +223,21 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     # Resolve the basis cap: None means "as many determinants as fit in RAM". Both the
     # suggestion and the budget log are collective on comm (memory probe + allreduce), so
     # they run unconditionally on every rank; only the printing is verbosity-gated.
+    # The GF block width and the GS block width size two different solves that share this one
+    # `block_width` parameter (`suggest_truncation_threshold`/`log_memory_budget` do not take
+    # separate widths); max() keeps the estimate an upper bound over both rather than favouring
+    # whichever solve this variable was named for.
     gf_block_width = max(4, *(len(block) for block in block_structure.blocks))
+    sizing_block_width = max(gf_block_width, resolve_gs_block_width(gf_block_width))
     if truncation_threshold is None:
         truncation_threshold = suggest_truncation_threshold(
-            n_spin_orbitals, comm=comm, block_width=gf_block_width, reort=reort, method=gf_method
+            n_spin_orbitals, comm=comm, block_width=sizing_block_width, reort=reort, method=gf_method
         )
     memory_budget = log_memory_budget(
         truncation_threshold,
         n_spin_orbitals,
         comm=comm,
-        block_width=gf_block_width,
+        block_width=sizing_block_width,
         reort=reort,
         verbose=verbosity > 0,
         label=cluster_label,

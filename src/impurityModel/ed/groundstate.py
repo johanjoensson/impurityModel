@@ -18,7 +18,7 @@ from impurityModel.ed.gs_statistics import (
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed.memory_estimate import log_memory_budget, suggest_truncation_threshold
+from impurityModel.ed.memory_estimate import log_memory_budget, resolve_gs_block_width, suggest_truncation_threshold
 from impurityModel.ed.observables import (
     block_group_labels,
     casimir_operator,
@@ -664,9 +664,15 @@ def find_ground_state_basis(
             + sum(len(orbs) for orbs in bath_states[1][i])
             for i in bath_states[0]
         )
-        truncation_threshold = suggest_truncation_threshold(num_spin_orbitals, comm=comm)
+        gs_block_width = resolve_gs_block_width()
+        truncation_threshold = suggest_truncation_threshold(num_spin_orbitals, comm=comm, block_width=gs_block_width)
         log_memory_budget(
-            truncation_threshold, num_spin_orbitals, comm=comm, verbose=verbose, label="ground-state basis"
+            truncation_threshold,
+            num_spin_orbitals,
+            comm=comm,
+            block_width=gs_block_width,
+            verbose=verbose,
+            label="ground-state basis",
         )
     if mixed_valence is None or mixed_valence is False:
         mixed_valence = dict.fromkeys(N0, 0)

@@ -219,6 +219,30 @@ def test_log_memory_budget_warns_when_too_big(capsys):
     assert "WARNING" in capsys.readouterr().out
 
 
+def test_resolve_gs_block_width_uses_default_when_the_knob_is_unset(monkeypatch):
+    monkeypatch.delenv("GS_MAX_BLOCK_WIDTH", raising=False)
+    assert me.resolve_gs_block_width() == 4
+    assert me.resolve_gs_block_width(default=7) == 7
+
+
+def test_resolve_gs_block_width_uses_the_configured_cap_when_set(monkeypatch):
+    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "12")
+    assert me.resolve_gs_block_width() == 12
+    assert me.resolve_gs_block_width(default=7) == 12
+
+
+def test_log_memory_budget_warns_when_gs_max_block_width_is_unset(capsys, monkeypatch):
+    monkeypatch.delenv("GS_MAX_BLOCK_WIDTH", raising=False)
+    me.log_memory_budget(100_000, 100, comm=None, block_width=4, verbose=True, label="test")
+    assert "GS_MAX_BLOCK_WIDTH is unset" in capsys.readouterr().out
+
+
+def test_log_memory_budget_is_quiet_when_gs_max_block_width_is_set(capsys, monkeypatch):
+    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "8")
+    me.log_memory_budget(100_000, 100, comm=None, block_width=4, verbose=True, label="test")
+    assert "GS_MAX_BLOCK_WIDTH is unset" not in capsys.readouterr().out
+
+
 def _siam_6_pieces():
     """Single-impurity Anderson model, 6 spin-orbitals (see test_sectorization)."""
     ed_, u, ev, ec, v = -1.0, 4.0, -3.0, 3.0, 0.5

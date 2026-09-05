@@ -22,9 +22,10 @@ Two per-rank scaling regimes matter (see ``doc/architecture_overview.md``):
   ``block_apply``) used to replicate the full ``(global_N, block_width)`` product on every
   rank; since the row-chunked reduce-scatter fix (``doc/plans/dc_smo_performance.md``) it
   is bounded by ``max(counts, over ranks) * block_width`` instead, so this term now shrinks
-  with rank count like the others. ``block_width`` itself is not yet a reliably bounded
-  quantity at every call site (see :func:`estimate_gs_peak_bytes`'s docstring) and, at
-  production widths, the retained dense Krylov term dominates instead.
+  with rank count like the others. ``block_width`` itself is bounded at every call site via
+  :func:`resolve_gs_block_width` when ``GS_MAX_BLOCK_WIDTH`` (Phase 4) is set; unset, it falls
+  back to a placeholder (see :func:`estimate_gs_peak_bytes`'s docstring) and, at production
+  widths, the retained dense Krylov term dominates instead.
 
 Under ``run_units_distributed`` the communicator is split into colors and every unit
 basis inherits the same numeric ``truncation_threshold``, so each rank's share of a
@@ -275,10 +276,11 @@ def _gs_krylov_columns(n_dets, block_width, num_wanted=None):
     **This replaced a flat ``n_blocks`` constant**, itself replacing a still-earlier guess of
     30: neither a constant ratio nor (as this function's first version assumed) a ratio-free
     formula covers the real behaviour, because ``num_wanted`` and ``block_width`` are two
-    different quantities that happen to move together *only* before ``GS_MAX_BLOCK_WIDTH`` (not
-    yet implemented; tracked in the doc section above) decouples them -- once it exists,
-    ``num_wanted`` can stay large while ``block_width`` is capped, and calling this with the
-    real ``num_wanted`` (not the default) is what keeps the estimate honest then.
+    different quantities that happen to move together 1:1 only when ``GS_MAX_BLOCK_WIDTH`` is
+    unset. Now that it exists (Phase 4), ``num_wanted`` can stay large while ``block_width`` is
+    capped -- callers pass the real, resolved ``block_width`` (:func:`resolve_gs_block_width`)
+    to keep this honest, and ``num_wanted``'s ``None`` default here still assumes the pre-cap
+    1:1 relationship for any caller that has not measured its own ``num_wanted``.
 
     Parameters
     ----------
@@ -305,6 +307,30 @@ def _gs_krylov_columns(n_dets, block_width, num_wanted=None):
     return p * blocks
 
 
+def resolve_gs_block_width(default=4):
+    """The ground-state Lanczos block width to size a memory estimate with.
+
+    Returns the configured :data:`config.GS_MAX_BLOCK_WIDTH` cap when set (Phase 4,
+    ``doc/plans/dc_smo_performance.md``); otherwise ``default``, a placeholder -- the real,
+    uncapped width grows with the warm-start manifold (``cipsi_solver.get_eigenvectors``) and
+    has no static bound this function can report honestly. :func:`log_memory_budget` prints a
+    warning on that unset path rather than letting the fallback look like a measured number.
+
+    Parameters
+    ----------
+    default : int
+        Value to return when the knob is unset (the historical ``block_width=4``, or a
+        driver's own Green's-function block width when it wants ``max(gf, gs)`` sizing).
+
+    Returns
+    -------
+    int
+        Block width to feed :func:`estimate_gs_peak_bytes` / :func:`suggest_truncation_threshold`.
+    """
+    configured = config.GS_MAX_BLOCK_WIDTH.get()
+    return default if configured is None else configured
+
+
 def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_per_state=100, num_wanted=None):
     """Predicted per-rank peak bytes of the ground-state (CIPSI + array-kernel) path.
 
@@ -324,13 +350,13 @@ def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_
     n_spin_orbitals : int
         Determinant bit width.
     block_width : int
-        Lanczos block width (number of sought eigenvectors). **Not yet threaded from a
-        measured/capped value at every call site** (see ``doc/plans/dc_smo_performance.md``'s
-        "Phase resequencing" section): Phase 0 measured the real width growing with the
-        determinant cap itself (2-16 at cap 2000, 105-315 at the ~1M production cap that
-        crashed), so a cheap probe at a small cap under-reports it and the default ``4``
-        remains a placeholder until ``GS_MAX_BLOCK_WIDTH`` (planned, not yet implemented) pins
-        the width to a config constant.
+        Lanczos block width (number of sought eigenvectors). Every production call site now
+        resolves this via :func:`resolve_gs_block_width`, which reads the configured
+        ``GS_MAX_BLOCK_WIDTH`` cap (Phase 4) when set. The default ``4`` here is only reached
+        when that knob is unset, in which case it is a placeholder, not a measurement: Phase 0
+        found the real width growing with the determinant cap itself (2-16 at cap 2000,
+        105-315 at the ~1M production cap that crashed), so it has no honest static bound until
+        the knob is set. :func:`log_memory_budget` warns on that path.
     ranks : int
         MPI ranks sharing the basis.
     nnz_per_state : int
@@ -673,6 +699,14 @@ def log_memory_budget(
                 f"{format_bytes(available)}/rank available.",
                 flush=True,
             )
+    if verbose and rank == 0 and config.GS_MAX_BLOCK_WIDTH.get() is None:
+        print(
+            f"{prefix}GS_MAX_BLOCK_WIDTH is unset: the ground-state Lanczos block width grows "
+            f"with the manifold and is not bounded by the block_width={block_width} used above -- "
+            "the ground-state peak figure is a placeholder, not a measured bound. Set "
+            "GS_MAX_BLOCK_WIDTH for a budget that reflects the real solve.",
+            flush=True,
+        )
     # Ungated: an OOM prediction is a warning about a real problem, not detail. The
     # informational budget lines above stay behind `verbose`.
     if not uncapped and not fits and rank == 0:

@@ -103,7 +103,12 @@ from impurityModel.ed.dc_reference import (
 from impurityModel.ed.dc_search import _dc_chi, _dc_search_trace, _solve_dc_shift, bracket_width_tol
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
-from impurityModel.ed.memory_estimate import DEFAULT_MEMORY_SAFETY, log_memory_budget, suggest_truncation_threshold
+from impurityModel.ed.memory_estimate import (
+    DEFAULT_MEMORY_SAFETY,
+    log_memory_budget,
+    resolve_gs_block_width,
+    suggest_truncation_threshold,
+)
 from impurityModel.ed.solver_basis import _per_group_occupation, get_symmetry_generators, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
 
@@ -598,11 +603,17 @@ def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, mem
         # size of the one `calc_selfenergy` will use at that dc, and truncation error in the
         # sector energies is the dominant error in both the gap centre and its width.
         # `fixed_occupation_dc` never halved, so this also makes the three criteria agree.
+        gs_block_width = resolve_gs_block_width()
         truncation_threshold = suggest_truncation_threshold(
-            model.n_spin_orbitals, comm=MPI.COMM_WORLD, safety=DEFAULT_MEMORY_SAFETY
+            model.n_spin_orbitals, comm=MPI.COMM_WORLD, block_width=gs_block_width, safety=DEFAULT_MEMORY_SAFETY
         )
         log_memory_budget(
-            truncation_threshold, model.n_spin_orbitals, comm=MPI.COMM_WORLD, verbose=verbose, label=memory_label
+            truncation_threshold,
+            model.n_spin_orbitals,
+            comm=MPI.COMM_WORLD,
+            block_width=gs_block_width,
+            verbose=verbose,
+            label=memory_label,
         )
 
     # The spread of the one-body h0 eigenvalues: the scale a sector-energy difference can move
@@ -1661,11 +1672,15 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
 
     truncation_threshold = basis.truncation_threshold
     if truncation_threshold is None:
-        truncation_threshold = suggest_truncation_threshold(model.n_spin_orbitals, comm=MPI.COMM_WORLD)
+        gs_block_width = resolve_gs_block_width()
+        truncation_threshold = suggest_truncation_threshold(
+            model.n_spin_orbitals, comm=MPI.COMM_WORLD, block_width=gs_block_width
+        )
         log_memory_budget(
             truncation_threshold,
             model.n_spin_orbitals,
             comm=MPI.COMM_WORLD,
+            block_width=gs_block_width,
             verbose=verbose,
             label="fixed-occupation dc",
         )
