@@ -16,6 +16,7 @@ from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.solver_basis import get_symmetry_generators
+from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 
 SOLVERS = {
@@ -1053,7 +1054,13 @@ class CIPSISolver:
             # which raises this floor with it -- rather than keeping the under-converged tail.
             num_required = max(1, num_wanted - _EIGENSTATE_PAD)
 
-            H_mat = build_sparse_matrix(self.basis, H) if h_matrix is None else h_matrix
+            if h_matrix is None:
+                H_mat = build_sparse_matrix(self.basis, H)
+                # Phase 0 measurement (doc/plans/dc_smo_performance.md): calibrates
+                # memory_estimate's nnz_per_state default against a real solve.
+                _trace_note("h_matrix_nnz", nnz=int(H_mat.nnz), n=int(H_mat.shape[0]))
+            else:
+                H_mat = h_matrix
             if self.basis.is_distributed:
                 H_mat = H_mat[:, self.basis.local_indices]
 
@@ -1062,6 +1069,11 @@ class CIPSISolver:
                 if len(psi0) > 0
                 else np.zeros((len(self.basis.local_basis), 1), dtype=complex)
             )
+            # Phase 0 measurement (doc/plans/dc_smo_performance.md): the array kernel's
+            # per-rank matvec buffer scales with this width, not with a fixed default -- see
+            # memory_estimate.estimate_gs_peak_bytes. Zero-cost when no solver_trace.tracing()
+            # block is open.
+            _trace_note("eigensolve_block_width", p=int(psi0_arr.shape[1]), num_wanted=int(num_wanted))
 
             # Solve for more and more eigenstates until at least one lands *outside* the thermal
             # cut. Only then is the boundary manifold provably complete: a degenerate manifold has
@@ -1176,7 +1188,13 @@ class CIPSISolver:
                 psi_refs = [psi_refs[i] for i in valid_idx]
 
         else:
-            H_mat = build_sparse_matrix(self.basis, H) if h_matrix is None else h_matrix
+            if h_matrix is None:
+                H_mat = build_sparse_matrix(self.basis, H)
+                # Phase 0 measurement (doc/plans/dc_smo_performance.md): calibrates
+                # memory_estimate's nnz_per_state default against a real solve.
+                _trace_note("h_matrix_nnz", nnz=int(H_mat.nnz), n=int(H_mat.shape[0]))
+            else:
+                H_mat = h_matrix
             e_ref, psi_ref_dense = eigensystem(
                 H_mat,
                 e_max=max_energy,

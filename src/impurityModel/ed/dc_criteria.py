@@ -482,6 +482,16 @@ class _SectorContext:
         )
         solution = MPI.COMM_WORLD.bcast(solution, root=0)
         self.sector_at[(mu, n_trial)] = solution
+        # Phase 0 measurement (doc/plans/dc_smo_performance.md): decides whether Phase 3's
+        # occupation_ground substitution can default on a given workload -- machine-zero here
+        # on every fixture measured so far (gap-criterion-adversarial-review, F4), SMO untested.
+        solver_trace.note(
+            "sector_occupation_spread",
+            mu=mu,
+            n_trial=n_trial,
+            n_states=solution.n_states,
+            spread=solution.occupation_spread,
+        )
         return solution
 
     def sector_energy(self, h_op, mu, n_trial):
