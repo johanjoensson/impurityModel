@@ -272,16 +272,22 @@ specific wrong behaviour it guards (a synthetic staircase whose every step sits 
 pairwise gate; an undefined rung sitting between two agreeing pairs) rather than only against the
 correct implementation, which is how the original bugs got past four tests on `DC_gap_perf`.
 
-**Not yet landed (next commits in this phase):** wiring `calibrate_truncation_threshold` into
+Also landed: the `dc_record.py` vocabulary this phase needs — `_FIELDS` (`dc_cap`, `dc_cap_drift`,
+`dc_cap_check`, `slope`, `mu_tol_effective`) and `_ANNOTATIONS` (`dc_cap_parity`, `dc_cap_mu`,
+`dc_cap_retried`), plus the seven `_annotate` cases, ported as one group per the review of Phase 5
+(1/3) even though `dc_cap_mu`/`dc_cap_retried`/`slope` belong to the retry mechanism deferred
+below — `dc_cap`'s own annotation reads `dc_cap_parity`/`dc_cap_retried`, so the group does not
+fragment across commits. No caller writes any of these fields yet.
+
+**Not yet landed (next commit in this phase):** wiring `calibrate_truncation_threshold` into
 `fixed_gap_dc`/`fixed_occupation_dc` (only recalibrating a cap that defaulted from the memory
 probe — an explicit `truncation_threshold` stays the caller's instruction), the cache-reuse fix
 for the gap criterion (`91109b8`: the ladder's last-evaluated rung is the one about to be
 consumed, so keeping its caches instead of clearing them unconditionally saves a full re-solve at
 `mu = 0` — verified safe only because `calibrate_truncation_threshold`'s contract guarantees
 `cap == rungs[-1][0]`, checked by an explicit `cached_cap != cap` guard rather than assumed), and
-the accompanying `dc_record.py` field additions (`dc_cap`, `dc_cap_drift`, `dc_cap_parity`,
-`mu_tol_effective`, plus the `slope`/`dc_cap_mu`/`dc_cap_retried` group the retry mechanism below
-would use).
+actually filling the `dc_record.py` fields already landed above (`dc_cap`, `dc_cap_drift`,
+`dc_cap_parity`, `mu_tol_effective`) from the two criteria's own state.
 
 **Note on Phase 2's mid-search-cap-change hazard.** Phase 2's remainder section above argues that
 changing `block_width` mid-search is hazardous because a populated `sector_at`/`n_center_at` cache

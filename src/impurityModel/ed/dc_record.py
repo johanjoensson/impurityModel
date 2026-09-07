@@ -281,8 +281,12 @@ def _annotate(record, key, text):
         # The slope this converts through: the gap criterion measures it from eigenvector
         # occupations (`delta_sum/2`), the occupation criterion from the secant (`chi`).
         delta_sum, chi = record.get("delta_sum"), record.get("chi")
-        per_mu = (0.5 * delta_sum) if delta_sum else chi
-        if drift and per_mu:
+        # `is not None`, not truthiness: a real charge-transfer level crossing can make delta_sum
+        # (delta_plus + delta_minus, and delta_minus can be negative) land on exactly 0.0, which is
+        # a measured slope, not a missing one -- falling through to chi there would divide by the
+        # wrong physical quantity once a caller starts writing these fields (Phase 5 (3/3)).
+        per_mu = (0.5 * delta_sum) if delta_sum is not None else chi
+        if drift is not None and per_mu:
             truncation = f"; truncation adds ~{abs(drift / per_mu):.2e}"
         return f"{text}   (search tolerance / measured slope{truncation}; not a total)"
     if key == "chi":

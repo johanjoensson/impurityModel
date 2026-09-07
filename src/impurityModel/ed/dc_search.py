@@ -175,8 +175,8 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
     gap of the same shape this module exists to close elsewhere (a halved memory budget). The
     difference is that this one is meant to be *measured and recorded* -- the caller is meant to
     record ``dc_cap``, ``dc_cap_drift`` and the memory-derived ceiling beside it, rather than
-    inherit it silently. Not yet true: :mod:`dc_record` has no ``dc_cap``/``dc_cap_drift`` fields
-    yet, and no caller wires this function in -- both are the next commits in this phase.
+    inherit it silently. Not yet true: :mod:`dc_record` has the vocabulary for these fields, but no
+    caller wires this function in yet to fill them -- that is the next commit in this phase.
 
     Parameters
     ----------
@@ -195,9 +195,9 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
         be the durable record of which cap was used -- that is meant to be :mod:`dc_record`'s
         unconditional ``dc_cap``/``dc_cap_drift`` fields (:mod:`dc_criteria` would write them once
         this function is wired in), which is what would make gating this progress line behind
-        ``verbose`` safe rather than hiding the answer. Neither field exists in :mod:`dc_record`
-        yet, and no caller wires this function in yet -- that is why this is phrased as intent,
-        not fact; both are the next two commits in this phase.
+        ``verbose`` safe rather than hiding the answer. :mod:`dc_record` already knows how to print
+        both fields, but no caller wires this function in yet to fill them -- that is why this is
+        still phrased as intent, not fact; the wiring is the next commit in this phase.
         The warning printed when the ladder exhausts its rung budget
         without settling is unconditional regardless -- matching this module's convention that a
         result the caller should distrust is never hidden behind a verbosity flag.
