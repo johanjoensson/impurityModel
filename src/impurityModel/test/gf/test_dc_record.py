@@ -277,6 +277,63 @@ def test_chi_carries_the_uncertainty_it_implies():
     )
 
 
+def test_mu_tol_effective_treats_a_measured_zero_slope_as_a_real_answer():
+    """``per_mu`` must key off ``delta_sum is not None``, not truthiness.
+
+    A real charge-transfer level crossing can land ``delta_sum`` (``delta_plus + delta_minus``,
+    and ``delta_minus`` can be negative) on exactly ``0.0`` -- a measured slope, not a missing
+    one. A truthiness check there would silently substitute the unrelated ``chi`` secant instead,
+    which is exactly the class of bug ``f113b6b``'s stale-drift fix exists to keep out.
+    """
+    lines = "\n".join(
+        dc_record.format_record(
+            {
+                "criterion": "gap",
+                "mu_tol_effective": 8.5e-3,
+                "dc_cap_drift": 6.4e-5,
+                "delta_sum": 0.0,
+                # A non-zero chi must NOT be reached: delta_sum == 0.0 wins by presence, not value.
+                "chi": 0.02,
+            }
+        )
+    )
+    assert "truncation undetermined (the observable does not respond to mu)" in lines
+    assert "truncation adds ~3.20e-03" not in lines  # what abs(6.4e-5 / 0.02) would have printed
+
+
+def test_mu_tol_effective_reports_a_measured_zero_drift_rather_than_omitting_it():
+    """``dc_cap_drift == 0.0`` (a fully settled ladder) is a real answer too -- it must show the
+    truncation term, not silently drop the clause the way an unmeasured drift does."""
+    settled = "\n".join(
+        dc_record.format_record(
+            {"criterion": "gap", "mu_tol_effective": 8.5e-3, "dc_cap_drift": 0.0, "delta_sum": 0.593}
+        )
+    )
+    assert "truncation adds ~0.00e+00" in settled
+
+    unmeasured = "\n".join(dc_record.format_record({"criterion": "gap", "mu_tol_effective": 8.5e-3}))
+    assert "truncation" not in unmeasured
+
+
+def test_mu_tol_effective_does_not_divide_by_a_zero_slope():
+    """``per_mu == 0.0`` (a flat observable, measured via either route) must not raise
+    ``ZeroDivisionError``, and must say so explicitly rather than reading like a missing
+    measurement -- mirroring ``chi``'s own "dc undetermined" branch above."""
+    via_delta_sum = "\n".join(
+        dc_record.format_record(
+            {"criterion": "gap", "mu_tol_effective": 8.5e-3, "dc_cap_drift": 6.4e-5, "delta_sum": 0.0}
+        )
+    )
+    assert "truncation undetermined" in via_delta_sum
+
+    via_chi = "\n".join(
+        dc_record.format_record(
+            {"criterion": "occupation", "mu_tol_effective": 8.5e-3, "dc_cap_drift": 6.4e-5, "chi": 0.0}
+        )
+    )
+    assert "truncation undetermined" in via_chi
+
+
 def test_the_record_prints_on_rank_zero_of_the_communicator_it_was_given(capsys):
     """The rank convention is the criteria's own: they warn and report on ``comm.rank == 0``, not
     on the world root, so a per-cluster solve on a sub-communicator leaves one record per cluster

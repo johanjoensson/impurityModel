@@ -268,8 +268,13 @@ def _annotate(record, key, text):
     if key == "mu_tol_effective":
         # The number a reader of `mu` actually needs, and the one the record could not print
         # before: `tol` says how well the *observable* was converged, and tol/|chi| converts that
-        # into the answer. `chi` is a secant and is absent on a one-evaluation search; `delta_sum`
-        # comes from eigenvectors and is not, so this is available on every run.
+        # into the answer. Both `chi` and `delta_sum` can be missing at once: the NiO 5-bath
+        # archive already satisfies `|g0| <= tol` at `mu = 0`, so a one-evaluation search returns
+        # with no secant and no eigenvector measurement either
+        # (`dc_criteria.sector_occupation`'s own docstring). `delta_sum` is not independent of
+        # `chi` either -- it falls back to `-2*chi` at a sector edge where the direct measurement
+        # is undefined -- so `per_mu` below still needs its own `None` fallback and this field can
+        # legitimately be absent from the record.
         #
         # It is the SEARCH term only, and it is not the larger one. Measured on nio_5peeled, the
         # truncation term is 5.1e-3 in mu against this 8.5e-3 -- the same order -- and two runs
@@ -286,8 +291,15 @@ def _annotate(record, key, text):
         # a measured slope, not a missing one -- falling through to chi there would divide by the
         # wrong physical quantity once a caller starts writing these fields (Phase 5 (3/3)).
         per_mu = (0.5 * delta_sum) if delta_sum is not None else chi
-        if drift is not None and per_mu:
-            truncation = f"; truncation adds ~{abs(drift / per_mu):.2e}"
+        if drift is not None and per_mu is not None:
+            # `per_mu == 0.0` is a real answer (a flat observable, `chi`'s own branch below calls
+            # it "undetermined"), not a missing one -- say so explicitly rather than silently
+            # dropping the clause, which would read identically to "no drift/slope measured at
+            # all" and hide the one case this field exists to flag.
+            if per_mu == 0.0:
+                truncation = "; truncation undetermined (the observable does not respond to mu)"
+            else:
+                truncation = f"; truncation adds ~{abs(drift / per_mu):.2e}"
         return f"{text}   (search tolerance / measured slope{truncation}; not a total)"
     if key == "chi":
         # The residual is converged to `tol`; what the *answer* is determined to is tol / |chi|.
