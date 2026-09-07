@@ -139,6 +139,60 @@ def _dump_dc_matrices(dc_guess, dc, rank):
     matrix_print(dc, label="DC found:")
 
 
+def _calibrate_cap(ctx, evaluate_at_guess, clear_caches, tol, dc_rec, *, verbose, rank):
+    """Run :func:`dc_search.calibrate_truncation_threshold` against ``ctx``, and record the
+    result. Shared by :func:`fixed_gap_dc` and :func:`fixed_occupation_dc`, which differ only in
+    *what* they evaluate at ``mu = 0`` and in what a cache-reuse guard needs to clear -- the
+    ladder call itself, the ``dc_cap``/``dc_cap_drift``/``dc_cap_parity`` bookkeeping, and the
+    ``cached_cap`` tracking that a cache-reuse guard verifies against were duplicated near-
+    verbatim between the two before this, which is exactly how the two copies' ``mu_tol_effective``
+    guards independently picked up the same truthiness bug (review of ``6176c4f``).
+
+    Only called when ``ctx.cap_from_memory``; an explicit ``truncation_threshold`` is the caller's
+    instruction, never a candidate for recalibration -- checked by the caller, not here, so that a
+    caller skipping this entirely never even imports the closures it would need.
+
+    Parameters
+    ----------
+    evaluate_at_guess : callable
+        ``() -> float or None``, the criterion's own controlled quantity at ``mu = 0`` under
+        whatever ``ctx.truncation_threshold`` is current when it is called -- this function sets
+        that before every rung, the callable only has to read it (indirectly, through ``ctx`` and
+        whatever local caches it closes over).
+    clear_caches : callable
+        ``() -> None``. Every cache the criterion keyed by ``mu`` (not by cap), cleared before
+        every rung -- a hit from the previous rung would otherwise answer with another cap's
+        energy. Called by this function on every rung; the caller applies it once more afterward
+        only if it wants an unconditional clear (:func:`fixed_occupation_dc`) rather than the
+        verified keep-or-clear :func:`fixed_gap_dc` applies via this function's return value.
+
+    Returns
+    -------
+    (cap, cached_cap) : tuple
+        ``cap`` is the accepted cap (already applied to ``ctx.truncation_threshold``).
+        ``cached_cap`` is the cap the caches described when the ladder last called
+        ``evaluate_at_guess`` -- compare it to ``cap`` before deciding whether they may be kept
+        (``cached_cap != cap`` means they must be cleared; verified, not assumed, per 91109b8's
+        history of a bug of exactly the opposite shape).
+    """
+    cached_cap = None
+
+    def quantity(cap):
+        nonlocal cached_cap
+        ctx.truncation_threshold = cap
+        clear_caches()
+        cached_cap = cap
+        return evaluate_at_guess()
+
+    cap, cap_drift, _rungs = calibrate_truncation_threshold(
+        quantity, tol, memory_cap=ctx.memory_cap, verbose=verbose, rank=rank, comm=MPI.COMM_WORLD
+    )
+    ctx.truncation_threshold = cap
+    dc_rec["dc_cap"], dc_rec["dc_cap_drift"] = cap, cap_drift
+    dc_rec["dc_cap_parity"] = ctx.memory_cap
+    return cap, cached_cap
+
+
 def build_union_space(
     h_op,
     impurity_orbitals,
@@ -1488,47 +1542,29 @@ def fixed_gap_dc(
             # the tolerance resolves to anyway (`tol_basis = "mu_resolution"`). Targeting the
             # floor errs toward a *larger* cap, the safe direction.
             if ctx.cap_from_memory:
-                # Which cap the four caches below currently describe. Written by every rung and
-                # read once after the ladder, so the accept can *verify* what they hold belongs
-                # to the cap actually returned rather than assume it (91109b8: a bug of exactly
-                # this shape -- accepting a rung whose caches held a later, larger rung's solves
-                # -- has shipped here before).
-                cached_cap = None
 
-                def _centre_at_cap(cap):
-                    # Every cache is keyed by mu, not by cap, so all four have to go: a hit from
-                    # the previous rung would answer with another cap's energy. Clearing is also
-                    # what keeps the ladder's own cost geometric rather than cumulative.
-                    nonlocal cached_cap
-                    ctx.truncation_threshold = cap
+                def _clear_gap_caches():
                     ctx.sector_at.clear()
                     ctx.n_center_at.clear()
                     sectors_at.clear()
                     width_at.clear()
-                    cached_cap = cap
-                    return _gap_centre_at_mu(0.0)
 
-                cap, cap_drift, _rungs = calibrate_truncation_threshold(
-                    _centre_at_cap,
+                cap, cached_cap = _calibrate_cap(
+                    ctx,
+                    lambda: _gap_centre_at_mu(0.0),
+                    _clear_gap_caches,
                     mu_tol,
-                    memory_cap=ctx.memory_cap,
+                    dc_rec,
                     verbose=verbose,
                     rank=rank,
-                    comm=MPI.COMM_WORLD,
                 )
-                ctx.truncation_threshold = cap
-                dc_rec["dc_cap"], dc_rec["dc_cap_drift"] = cap, cap_drift
-                dc_rec["dc_cap_parity"] = ctx.memory_cap
                 # Keep the ladder's last rung when it *is* the accepted cap (the normal case:
                 # `calibrate_truncation_threshold` returns the rung it last evaluated on every
                 # exit path) rather than re-solving mu = 0 for values already in hand. Verified,
                 # not assumed: keeping caches that describe a *different* cap would run the rest
                 # of the search on another cap's energies while the record named the accepted one.
                 if cached_cap != cap:
-                    ctx.sector_at.clear()
-                    ctx.n_center_at.clear()
-                    sectors_at.clear()
-                    width_at.clear()
+                    _clear_gap_caches()
 
             # Size the energy tolerance against the gap the model actually has. Falls back to the
             # mu resolution when the width is undefined at the guess (a shell edge, or a sector
@@ -1648,11 +1684,22 @@ def fixed_gap_dc(
         # search that converged in one evaluation -- the common case in a converged CSC loop, and
         # exactly where a reader is most likely to take `mu` at face value. `delta_sum` is measured
         # from eigenvectors and is therefore available on every run that measured it, so the error
-        # bar can be too. Truthiness, not `is not None`: a genuine `delta_sum == 0.0` divides by
-        # zero here and must be skipped, not computed -- unlike `dc_record`'s own annotation of
-        # this field, which has to tell that case apart from a missing measurement instead.
-        if dc_rec.get("delta_sum"):
-            dc_rec["mu_tol_effective"] = abs(energy_tol / (0.5 * dc_rec["delta_sum"]))
+        # bar can be too.
+        #
+        # `is not None`, not truthiness: `delta_sum` is a real charge-transfer level crossing away
+        # from landing on exactly `0.0` (`delta_minus`'s own docstring: it can go negative), and
+        # that is a measured zero slope, not a missing measurement -- the same distinction
+        # `dc_record`'s own annotation of this field was fixed twice (review of `29e0a58`,
+        # `c355962`) to draw. Skipping the write entirely there would make the print-side
+        # "the observable does not respond to mu" branch unreachable from this criterion and
+        # leave the one case this field exists to flag silently absent instead of reported.
+        # `float("inf")` stands in for the undefined ratio rather than raising ZeroDivisionError;
+        # `dc_record`'s annotation recomputes the same zero-slope test independently and prints
+        # "not a meaningful bound" beside it rather than trusting the literal value.
+        delta_sum = dc_rec.get("delta_sum")
+        if delta_sum is not None:
+            per_mu = 0.5 * delta_sum
+            dc_rec["mu_tol_effective"] = abs(energy_tol / per_mu) if per_mu else float("inf")
         dc_rec["dc_trace"], dc_rec["dc_level"] = dc_record.dc_levels(dc)
         dc_rec["dc_spread"] = dc_record.dc_spread(dc)
         _dump_dc_matrices(ctx.dc_guess, dc, rank)
@@ -2089,23 +2136,19 @@ def fixed_occupation_dc(
             # ladder costs a couple of cheap evaluations to establish that rather than assuming it.
             if ctx.cap_from_memory:
 
-                def _occupation_at_cap(cap):
-                    ctx.truncation_threshold = cap
+                def _clear_occupation_caches():
                     occupation_at.clear()
                     sector_at.clear()
-                    return _evaluate_occupation_and_energy_at_mu(ctx, 0.0, verbose, rank)[0]
 
-                cap, cap_drift, _rungs = calibrate_truncation_threshold(
-                    _occupation_at_cap,
+                _calibrate_cap(
+                    ctx,
+                    lambda: _evaluate_occupation_and_energy_at_mu(ctx, 0.0, verbose, rank)[0],
+                    _clear_occupation_caches,
                     occ_tol,
-                    memory_cap=ctx.memory_cap,
+                    dc_rec,
                     verbose=verbose,
                     rank=rank,
-                    comm=MPI.COMM_WORLD,
                 )
-                ctx.truncation_threshold = cap
-                dc_rec["dc_cap"], dc_rec["dc_cap_drift"] = cap, cap_drift
-                dc_rec["dc_cap_parity"] = ctx.memory_cap
                 # Cleared unconditionally, unlike the gap criterion's cache-reuse fix -- there is
                 # nothing here to keep. `_evaluate_occupation_and_energy_at_mu` holds no cache of
                 # its own (every call is a fresh `solve_ground_state`), and `occupation_at`/
@@ -2115,8 +2158,7 @@ def fixed_occupation_dc(
                 # (91109b8), since closing it would mean seeding `_solve_dc_shift`'s own cache
                 # with the ladder's last rung -- an API change on the search all three criteria
                 # share, not a decision local to this loop.
-                occupation_at.clear()
-                sector_at.clear()
+                _clear_occupation_caches()
 
             mu = _solve_dc_shift(
                 occupation_observable,
@@ -2190,10 +2232,13 @@ def fixed_occupation_dc(
         # caller reading the record programmatically gets one for both. This criterion has no
         # `delta_sum` -- it is a sector-energy quantity, and this one is not -- so it comes from
         # `chi`, the secant, which is `None` exactly when the search converged in one evaluation.
-        # Truthiness, not `is not None`: `occ_chi == 0.0` divides by zero here and must be
-        # skipped, matching the gap criterion's own guard on `delta_sum`.
-        if occ_chi:
-            dc_rec["mu_tol_effective"] = abs(occ_tol / occ_chi)
+        #
+        # `is not None`, not truthiness, matching the gap criterion's own fix: `occ_chi == 0.0` is
+        # a genuine plateau (this same function's `plateau_ok=True` treats it as a real, expected
+        # case, not an error) -- a measured zero slope, not a missing measurement -- and
+        # `float("inf")` stands in for the undefined ratio rather than raising ZeroDivisionError.
+        if occ_chi is not None:
+            dc_rec["mu_tol_effective"] = abs(occ_tol / occ_chi) if occ_chi else float("inf")
         dc_rec["dc_trace"], dc_rec["dc_level"] = dc_record.dc_levels(dc)
         dc_rec["dc_spread"] = dc_record.dc_spread(dc)
         # No "achieved occupation misses the target" line (B3): _solve_dc_shift only returns via a

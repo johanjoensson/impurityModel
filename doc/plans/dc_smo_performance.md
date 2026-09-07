@@ -279,18 +279,31 @@ Also landed: the `dc_record.py` vocabulary this phase needs — `_FIELDS` (`dc_c
 separate cases), ported as one group per the review of Phase 5 (1/3) even though
 `dc_cap_mu`/`dc_cap_retried`/`slope` belong to the retry mechanism deferred below — `dc_cap`'s own
 annotation reads `dc_cap_parity`/`dc_cap_retried`, so the group does not fragment across commits.
-No caller writes any of these fields yet.
+No caller wrote any of these fields yet at this point in the phase — see Phase 5 (3/3) below.
 
-**Not yet landed (next commits in this phase):** wiring `calibrate_truncation_threshold` into
-`fixed_gap_dc`/`fixed_occupation_dc` (only recalibrating a cap that defaulted from the memory
-probe — an explicit `truncation_threshold` stays the caller's instruction); the cache-reuse fix
-for the gap criterion (`91109b8`: the ladder's last-evaluated rung is the one about to be
-consumed, so keeping its caches instead of clearing them unconditionally saves a full re-solve at
-`mu = 0` — verified safe only because `calibrate_truncation_threshold`'s contract guarantees
-`cap == rungs[-1][0]`, checked by an explicit `cached_cap != cap` guard rather than assumed); and
-actually filling the `dc_record.py` fields already landed above (`dc_cap`, `dc_cap_drift`,
-`dc_cap_parity`, `mu_tol_effective`) from the two criteria's own state — three separable pieces of
-work, expected to land as separate commits per this repo's small-single-concern convention.
+**Landed (Phase 5, 3/3):** `calibrate_truncation_threshold` wired into `fixed_gap_dc`/
+`fixed_occupation_dc` (only recalibrating a cap that defaulted from the memory probe — an
+explicit `truncation_threshold` stays the caller's instruction, gated by the broadcast
+`ctx.cap_from_memory` on `_SectorContext`/`_OccupationContext`); the cache-reuse fix for the gap
+criterion (`91109b8`: the ladder's last-evaluated rung is the one about to be consumed, so keeping
+its caches instead of clearing them unconditionally saves a full re-solve at `mu = 0` — verified
+safe via an explicit `cached_cap != cap` guard rather than assumed, since `calibrate_truncation_
+threshold`'s contract guarantees `cap == rungs[-1][0]` but a caller should check that itself
+rather than trust it blindly); and the `dc_record.py` fields already landed in Phase 5 (2/3)
+(`dc_cap`, `dc_cap_drift`, `dc_cap_parity`, `mu_tol_effective`) now actually filled from the two
+criteria's own state. Landed together in one commit rather than three, once it became clear the
+three pieces share one small block of code in each criterion and splitting them would mean an
+intermediate commit that calibrates a cap and then discards it unrecorded.
+
+A review of that commit found `mu_tol_effective`'s write sites in both criteria used truthiness
+(`if dc_rec.get("delta_sum"):` / `if occ_chi:`) to guard against dividing by a zero slope —
+correct against a crash, but it silently omitted the field on a genuinely measured zero slope
+(a real charge-transfer level crossing, or occupation plateau) instead of recording it, which is
+exactly the case `dc_record.py`'s own annotation of this field exists to flag and had already been
+fixed twice to tell apart from a missing measurement (Phase 5 (2/3)'s own review rounds). Fixed to
+`is not None`, writing `float("inf")` when the slope is exactly zero rather than dividing by it —
+`dc_record`'s annotation recomputes the same zero-slope test independently and prints "not a
+meaningful bound" beside it.
 
 **Note on Phase 2's mid-search-cap-change hazard.** Phase 2's remainder section above argues that
 changing `block_width` mid-search is hazardous because a populated `sector_at`/`n_center_at` cache

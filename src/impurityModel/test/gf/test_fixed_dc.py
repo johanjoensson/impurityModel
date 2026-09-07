@@ -1592,6 +1592,45 @@ def test_fixed_occupation_dc_records_mu_tol_effective_from_chi(monkeypatch):
     assert report["mu_tol_effective"] == pytest.approx(abs(report["tol"] / 0.4))
 
 
+def test_fixed_gap_dc_records_mu_tol_effective_as_inf_at_a_genuine_zero_slope(monkeypatch):
+    """``delta_sum == 0.0`` is a measured answer (a real charge-transfer level crossing, per
+    ``delta_minus``'s own docstring), not a missing one -- review of ``6176c4f`` found the write
+    site used truthiness and silently omitted the field there instead of recording it, which made
+    ``dc_record.py``'s own "not a meaningful bound" handling of this exact case unreachable from
+    the real caller. ``delta_plus``/``delta_minus`` are stubbed directly (not via a fixture that
+    happens to measure a zero sum) because forcing that exact physical case through the toy model
+    is not the point of this unit -- the record's handling of the value it is handed is.
+    """
+    import impurityModel.ed.dc_criteria as dc_module
+
+    monkeypatch.setattr(dc_module, "_measure_edge_character", lambda *a, **kw: (0.4, -0.4))
+
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
+    report = {}
+    fixed_gap_dc(offset=-0.4, report=report, **kwargs)
+    if MPI.COMM_WORLD.rank != 0:
+        return
+    assert report["delta_sum"] == pytest.approx(0.0)
+    assert report["mu_tol_effective"] == float("inf")
+
+
+def test_fixed_occupation_dc_records_mu_tol_effective_as_inf_at_a_genuine_zero_slope(monkeypatch):
+    """As the gap criterion's zero-slope test above, but ``occ_chi == 0.0`` -- a genuine
+    charge-sector plateau, which this same function's ``plateau_ok=True`` already treats as a
+    real, expected case rather than an error."""
+    import impurityModel.ed.dc_criteria as dc_module
+
+    monkeypatch.setattr(dc_module, "_dc_chi", lambda *a, **kw: (0.0, 0.1))
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    report = {}
+    fixed_occupation_dc(occupation=1.0, report=report, **kwargs)
+    if MPI.COMM_WORLD.rank != 0:
+        return
+    assert report["chi"] == pytest.approx(0.0)
+    assert report["mu_tol_effective"] == float("inf")
+
+
 @pytest.mark.mpi
 def test_fixed_occupation_dc_none_threshold_ranks_agree():
     # Exercises the real (un-monkeypatched) collective memory probe under multiple ranks.
