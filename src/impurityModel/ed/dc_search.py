@@ -196,7 +196,8 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
         unconditional ``dc_cap``/``dc_cap_drift`` fields (:mod:`dc_criteria` would write them once
         this function is wired in), which is what would make gating this progress line behind
         ``verbose`` safe rather than hiding the answer. Neither field exists in :mod:`dc_record`
-        yet -- that is why this is phrased as intent, not fact; see the ``Returns`` section below.
+        yet, and no caller wires this function in yet -- that is why this is phrased as intent,
+        not fact; both are the next two commits in this phase.
         The warning printed when the ladder exhausts its rung budget
         without settling is unconditional regardless -- matching this module's convention that a
         result the caller should distrust is never hidden behind a verbosity flag.
