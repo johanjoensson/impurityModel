@@ -297,7 +297,7 @@ def test_mu_tol_effective_treats_a_measured_zero_slope_as_a_real_answer():
             }
         )
     )
-    assert "truncation undetermined (the observable does not respond to mu)" in lines
+    assert "the observable does not respond to mu; not a meaningful bound" in lines
     assert "truncation adds ~3.20e-03" not in lines  # what abs(6.4e-5 / 0.02) would have printed
 
 
@@ -317,21 +317,27 @@ def test_mu_tol_effective_reports_a_measured_zero_drift_rather_than_omitting_it(
 
 def test_mu_tol_effective_does_not_divide_by_a_zero_slope():
     """``per_mu == 0.0`` (a flat observable, measured via either route) must not raise
-    ``ZeroDivisionError``, and must say so explicitly rather than reading like a missing
-    measurement -- mirroring ``chi``'s own "dc undetermined" branch above."""
+    ``ZeroDivisionError``. The whole value -- not just the truncation clause -- must be flagged as
+    not meaningful: ``mu_tol_effective`` is itself a division by ``per_mu``, so a zero slope makes
+    the printed number a division-by-zero artifact, not merely an unconverted truncation term.
+    Mirrors ``chi``'s own "dc undetermined" branch, and shares its exact wording via
+    ``_FLAT_OBSERVABLE_NOTE`` rather than a second hand-written copy.
+    """
     via_delta_sum = "\n".join(
         dc_record.format_record(
             {"criterion": "gap", "mu_tol_effective": 8.5e-3, "dc_cap_drift": 6.4e-5, "delta_sum": 0.0}
         )
     )
-    assert "truncation undetermined" in via_delta_sum
+    assert "not a meaningful bound" in via_delta_sum
+    assert "search tolerance / measured slope" not in via_delta_sum
 
     via_chi = "\n".join(
         dc_record.format_record(
             {"criterion": "occupation", "mu_tol_effective": 8.5e-3, "dc_cap_drift": 6.4e-5, "chi": 0.0}
         )
     )
-    assert "truncation undetermined" in via_chi
+    assert "not a meaningful bound" in via_chi
+    assert dc_record._FLAT_OBSERVABLE_NOTE in via_delta_sum and dc_record._FLAT_OBSERVABLE_NOTE in via_chi
 
 
 def test_the_record_prints_on_rank_zero_of_the_communicator_it_was_given(capsys):

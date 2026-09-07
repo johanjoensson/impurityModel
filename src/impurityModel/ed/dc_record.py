@@ -175,6 +175,12 @@ def dc_spread(dc):
     return None if spread <= 1e-10 else spread
 
 
+#: Shared between the ``chi`` and ``mu_tol_effective`` annotations below -- both hit the same
+#: physical case (a criterion whose controlled quantity has zero slope in ``mu``) and must say so
+#: identically, not in two hand-maintained copies that can drift apart in wording.
+_FLAT_OBSERVABLE_NOTE = "the observable does not respond to mu"
+
+
 def _annotate(record, key, text):
     """The parenthetical that follows a value: what makes ``sector`` and ``chi`` readable."""
     if key == "sector":
@@ -281,7 +287,6 @@ def _annotate(record, key, text):
         # that differed only in their determinant cap disagreed by 2.2e-3, which this number does
         # not predict. Naming the scope is the difference between an error bar and a false total;
         # `dc_cap_drift / |chi|` is the other half where a cap was calibrated.
-        truncation = ""
         drift = record.get("dc_cap_drift")
         # The slope this converts through: the gap criterion measures it from eigenvector
         # occupations (`delta_sum/2`), the occupation criterion from the secant (`chi`).
@@ -291,15 +296,17 @@ def _annotate(record, key, text):
         # a measured slope, not a missing one -- falling through to chi there would divide by the
         # wrong physical quantity once a caller starts writing these fields (Phase 5 (3/3)).
         per_mu = (0.5 * delta_sum) if delta_sum is not None else chi
+        if per_mu == 0.0:
+            # A flat observable determines nothing -- the same case `chi`'s own branch below calls
+            # "undetermined", and for the same reason: tol/|per_mu| is a division by zero, not a
+            # small number. The printed `mu_tol_effective` value itself is whatever a caller wrote
+            # (it should not have been written at all, mirroring `chi`'s branch, but this function
+            # only decorates -- it does not choose what the caller filled in), so the parenthetical
+            # must not gloss that value as a valid "search tolerance / measured slope" conversion.
+            return f"{text}   ({_FLAT_OBSERVABLE_NOTE}; not a meaningful bound)"
+        truncation = ""
         if drift is not None and per_mu is not None:
-            # `per_mu == 0.0` is a real answer (a flat observable, `chi`'s own branch below calls
-            # it "undetermined"), not a missing one -- say so explicitly rather than silently
-            # dropping the clause, which would read identically to "no drift/slope measured at
-            # all" and hide the one case this field exists to flag.
-            if per_mu == 0.0:
-                truncation = "; truncation undetermined (the observable does not respond to mu)"
-            else:
-                truncation = f"; truncation adds ~{abs(drift / per_mu):.2e}"
+            truncation = f"; truncation adds ~{abs(drift / per_mu):.2e}"
         return f"{text}   (search tolerance / measured slope{truncation}; not a total)"
     if key == "chi":
         # The residual is converged to `tol`; what the *answer* is determined to is tol / |chi|.
@@ -309,7 +316,7 @@ def _annotate(record, key, text):
         tol = record.get("tol")
         chi = record["chi"]
         if not chi:
-            return f"{text}   (dc undetermined: the observable does not respond to mu)"
+            return f"{text}   (dc undetermined: {_FLAT_OBSERVABLE_NOTE})"
         if tol is None:
             # A measured slope with no tolerance beside it is still worth reporting; it just does
             # not convert into an error bar, and claiming one from a missing number would be worse
