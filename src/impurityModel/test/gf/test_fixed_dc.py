@@ -1414,6 +1414,184 @@ def test_explicit_threshold_skips_memory_probe(monkeypatch):
     assert not calls
 
 
+def test_fixed_occupation_dc_calibrates_and_records_the_cap_when_threshold_is_none(monkeypatch):
+    """Phase 5 (3/3), doc/plans/dc_smo_performance.md: the cap ladder is wired in, and only when
+    the cap defaulted from the memory probe."""
+    import impurityModel.ed.dc_criteria as dc_module
+
+    calls = []
+
+    def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm):
+        calls.append((tol, memory_cap))
+        value = quantity(memory_cap)  # a single rung, at the (stubbed) memory cap itself
+        return memory_cap, 0.0, [(memory_cap, value)]
+
+    monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", fake_ladder)
+    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 50)
+    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
+    report = {}
+    fixed_occupation_dc(occupation=1.0, report=report, **kwargs)
+
+    assert len(calls) == 1, "the cap ladder must run exactly once per search"
+    assert report["dc_cap"] == 50
+    assert report["dc_cap_drift"] == pytest.approx(0.0)
+    assert report["dc_cap_parity"] == 50
+
+
+def test_fixed_occupation_dc_skips_the_cap_ladder_when_threshold_is_explicit(monkeypatch):
+    """An explicit ``truncation_threshold`` is the caller's instruction, never a candidate for
+    recalibration -- the ladder must not run, and the record must carry no cap fields at all."""
+    import impurityModel.ed.dc_criteria as dc_module
+
+    def exploding_ladder(*args, **kwargs):
+        raise AssertionError("calibrate_truncation_threshold ran on an explicit truncation_threshold")
+
+    monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", exploding_ladder)
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)  # truncation_threshold is set by common_kwargs
+    report = {}
+    fixed_occupation_dc(occupation=1.0, report=report, **kwargs)
+
+    assert "dc_cap" not in report and "dc_cap_drift" not in report and "dc_cap_parity" not in report
+
+
+def test_fixed_gap_dc_calibrates_and_records_the_cap_when_threshold_is_none(monkeypatch):
+    import impurityModel.ed.dc_criteria as dc_module
+
+    calls = []
+
+    def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm):
+        calls.append((tol, memory_cap))
+        value = quantity(memory_cap)
+        return memory_cap, 0.0, [(memory_cap, value)]
+
+    monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", fake_ladder)
+    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 50)
+    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
+    report = {}
+    fixed_gap_dc(offset=-0.4, report=report, **kwargs)
+
+    assert len(calls) == 1
+    assert report["dc_cap"] == 50
+    assert report["dc_cap_drift"] == pytest.approx(0.0)
+    assert report["dc_cap_parity"] == 50
+
+
+def test_fixed_gap_dc_skips_the_cap_ladder_when_threshold_is_explicit(monkeypatch):
+    import impurityModel.ed.dc_criteria as dc_module
+
+    def exploding_ladder(*args, **kwargs):
+        raise AssertionError("calibrate_truncation_threshold ran on an explicit truncation_threshold")
+
+    monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", exploding_ladder)
+
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)  # truncation_threshold is set by common_kwargs
+    report = {}
+    fixed_gap_dc(offset=-0.4, report=report, **kwargs)
+
+    assert "dc_cap" not in report and "dc_cap_drift" not in report and "dc_cap_parity" not in report
+
+
+def _run_gap_dc_with_a_fake_ladder(monkeypatch, accepted_cap, ladder_cap=700):
+    """``fixed_gap_dc`` with the cap ladder stubbed to solve exactly one rung (at ``ladder_cap``)
+    and then accept ``accepted_cap``, recording every genuinely new (not cache-hit) sector solve
+    as ``(mu, n_trial, cap)`` -- the observable the cache-reuse guard (91109b8) is about.
+    """
+    import impurityModel.ed.dc_criteria as dc_module
+
+    misses = []
+    original_solve = dc_module._SectorContext.sector_solve
+
+    def counting_solve(self, h_op, mu, n_trial):
+        was_cached = (mu, n_trial) in self.sector_at
+        result = original_solve(self, h_op, mu, n_trial)
+        if not was_cached:
+            misses.append((mu, n_trial, self.truncation_threshold))
+        return result
+
+    monkeypatch.setattr(dc_module._SectorContext, "sector_solve", counting_solve)
+
+    def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm):
+        value = quantity(ladder_cap)
+        return accepted_cap, 0.0, [(ladder_cap, value)]
+
+    monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", fake_ladder)
+    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 10**6)
+    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
+    fixed_gap_dc(offset=-0.4, **kwargs)
+    return misses
+
+
+def test_fixed_gap_dc_keeps_the_ladders_last_rung_when_it_is_the_accepted_cap(monkeypatch):
+    """91109b8: when the ladder's last-evaluated rung *is* the accepted cap, the caches it just
+    filled must be kept -- the width-at-guess solve and the search's own mu=0 evaluation must
+    read the two off-centre sectors from ``ctx.sector_at``, not re-solve them."""
+    misses = _run_gap_dc_with_a_fake_ladder(monkeypatch, accepted_cap=700, ladder_cap=700)
+
+    assert len(misses) >= 2 and misses[0][2] == 700 and misses[1][2] == 700
+    ladder_keys = {(mu, n_trial) for mu, n_trial, _cap in misses[:2]}
+    recomputed = [m for m in misses[2:] if (m[0], m[1]) in ladder_keys]
+    assert not recomputed, f"cache-reuse guard failed to keep the ladder's last rung: {recomputed}"
+
+
+def test_fixed_gap_dc_clears_caches_when_the_accepted_cap_differs_from_the_ladders_last_rung(monkeypatch):
+    """91109b8's guard the other way: when ``calibrate_truncation_threshold``'s return value does
+    NOT match the cap its own last call to ``quantity`` used (which should never happen from the
+    real ladder -- see its own contract -- but the guard must not simply trust it), the caches
+    must be cleared rather than kept, so the two off-centre sectors are re-solved at the cap the
+    context actually ends up with."""
+    misses = _run_gap_dc_with_a_fake_ladder(monkeypatch, accepted_cap=1400, ladder_cap=700)
+
+    assert len(misses) >= 2 and misses[0][2] == 700 and misses[1][2] == 700
+    ladder_keys = {(mu, n_trial) for mu, n_trial, _cap in misses[:2]}
+    recomputed_at_new_cap = [m for m in misses[2:] if (m[0], m[1]) in ladder_keys and m[2] == 1400]
+    assert len(recomputed_at_new_cap) == 2, f"cache-reuse guard kept a stale cache across a cap change: {misses}"
+
+
+def test_fixed_gap_dc_records_mu_tol_effective_from_delta_sum():
+    """The search-tolerance error bar in mu, independent of the cap ladder -- available whenever
+    delta_sum was measured (see test_the_two_estimators_of_delta_sum_agree)."""
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
+    report = {}
+    fixed_gap_dc(offset=-0.4, report=report, **kwargs)
+    if MPI.COMM_WORLD.rank != 0:
+        return
+    assert report.get("delta_sum") is not None
+    assert report["mu_tol_effective"] == pytest.approx(abs(report["tol"] / (0.5 * report["delta_sum"])))
+
+
+def test_fixed_occupation_dc_records_mu_tol_effective_from_chi(monkeypatch):
+    """As the gap criterion's mu_tol_effective, but from chi -- this criterion has no delta_sum.
+
+    ``_dc_chi`` is stubbed to a fixed nonzero value rather than relying on a fixture that happens
+    to walk through two points: the toy model's occupation targets mostly land on a plateau or a
+    charge-sector boundary at the couplings this suite otherwise uses (unreachable, or chi = 0),
+    which is a fine property of the model and a bad one to depend on for this unit's own logic.
+    """
+    import impurityModel.ed.dc_criteria as dc_module
+
+    monkeypatch.setattr(dc_module, "_dc_chi", lambda *a, **kw: (0.4, 0.1))
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    report = {}
+    fixed_occupation_dc(occupation=1.0, report=report, **kwargs)  # occupation=1.0 is the guess's
+    # own value (see test_fixed_occupation_dc_reports_chi_in_its_record): mu=0 fast path, one
+    # evaluation -- the search itself contributes nothing to what this test is checking.
+    if MPI.COMM_WORLD.rank != 0:
+        return
+    assert report["chi"] == pytest.approx(0.4)
+    assert report["mu_tol_effective"] == pytest.approx(abs(report["tol"] / 0.4))
+
+
 @pytest.mark.mpi
 def test_fixed_occupation_dc_none_threshold_ranks_agree():
     # Exercises the real (un-monkeypatched) collective memory probe under multiple ranks.

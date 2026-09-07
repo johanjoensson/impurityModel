@@ -100,7 +100,13 @@ from impurityModel.ed.dc_reference import (
     _warn_if_reference_far_from_nominal,
     _warn_if_reference_saturated,
 )
-from impurityModel.ed.dc_search import _dc_chi, _dc_search_trace, _solve_dc_shift, bracket_width_tol
+from impurityModel.ed.dc_search import (
+    _dc_chi,
+    _dc_search_trace,
+    _solve_dc_shift,
+    bracket_width_tol,
+    calibrate_truncation_threshold,
+)
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.memory_estimate import (
@@ -298,6 +304,13 @@ class _SectorContext:
     bandwidth: float
     rank: int
     verbose: bool
+    #: The cap the memory budget would have allowed, and whether that is where
+    #: :attr:`truncation_threshold` came from. Only a memory-derived cap is a candidate for
+    #: recalibration (:func:`dc_search.calibrate_truncation_threshold`, wired into
+    #: :func:`fixed_gap_dc`); a cap the caller passed explicitly is an instruction, not a default
+    #: to second-guess.
+    memory_cap: object = None
+    cap_from_memory: bool = False
     n_center_at: dict = None
     #: ``(mu, n_trial) -> _SectorSolution | None``. Filled by :meth:`sector_solve`, which never
     #: solves the same sector at the same shift twice. Two floats per entry, not eigenvectors --
@@ -589,6 +602,16 @@ def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, mem
     h_solver_matrix = extract_tensors(sb.h0_solve, n_orb=sb.n_spin_orbitals, two_body=False)[0]
 
     truncation_threshold = basis.truncation_threshold
+    # Provenance, not just value: only a cap that *defaulted* is a candidate for recalibration
+    # against the search's tolerance (:func:`dc_search.calibrate_truncation_threshold`, wired into
+    # :func:`fixed_gap_dc` below). A cap the caller passed explicitly is an instruction.
+    #
+    # Broadcast, though it is derived from a replicated input (``basis.truncation_threshold`` is
+    # the same object on every rank): this flag gates the whole cap ladder -- a dozen collective
+    # solves -- and CLAUDE.md's rule against gating a collective on rank-local state is categorical
+    # for a reason. One bool against a CIPSI expansion is a cheap place to honour it.
+    cap_from_memory = MPI.COMM_WORLD.bcast(truncation_threshold is None, root=0)
+    memory_cap = truncation_threshold
     if truncation_threshold is None:
         # The full safety fraction, as every other driver uses. This used to be halved, on the
         # grounds that "two fixed-sector solves (N +- 1) are built alongside the centre search's
@@ -618,6 +641,7 @@ def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, mem
             verbose=verbose,
             label=memory_label,
         )
+        memory_cap = truncation_threshold
 
     # The spread of the one-body h0 eigenvalues: the scale a sector-energy difference can move
     # over, used to size the search range. Nothing is derived from a penalty value any more -- an
@@ -642,6 +666,8 @@ def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, mem
         # restrictions find_ground_state_basis applies to its own occupation-scan trials.
         weighted_restrictions=build_weighted_restrictions(bath_states, basis.excitation_budget),
         truncation_threshold=truncation_threshold,
+        memory_cap=memory_cap,
+        cap_from_memory=cap_from_memory,
         tau=basis.tau,
         slater_weight_min=basis.slater_weight_min,
         chain_restrict=basis.chain_restrict,
@@ -1451,6 +1477,59 @@ def fixed_gap_dc(
             # one evaluation whose result gates every later branch was invisible to the check
             # designed to notice it diverging.
             #
+            # Calibrate the determinant cap against the tolerance BEFORE sizing that tolerance,
+            # because the cap decides every number the sizing reads. Only when the cap defaulted:
+            # an explicit `truncation_threshold` is the caller's instruction, not a candidate for
+            # recalibration.
+            #
+            # Targets `mu_tol`, not the gap-scaled tolerance -- that one needs a width, which
+            # needs a cap. `mu_tol` is `_size_gap_tolerance`'s own floor and, on both real
+            # workloads this was measured against (`doc/plans/dc_smo_performance.md`), is what
+            # the tolerance resolves to anyway (`tol_basis = "mu_resolution"`). Targeting the
+            # floor errs toward a *larger* cap, the safe direction.
+            if ctx.cap_from_memory:
+                # Which cap the four caches below currently describe. Written by every rung and
+                # read once after the ladder, so the accept can *verify* what they hold belongs
+                # to the cap actually returned rather than assume it (91109b8: a bug of exactly
+                # this shape -- accepting a rung whose caches held a later, larger rung's solves
+                # -- has shipped here before).
+                cached_cap = None
+
+                def _centre_at_cap(cap):
+                    # Every cache is keyed by mu, not by cap, so all four have to go: a hit from
+                    # the previous rung would answer with another cap's energy. Clearing is also
+                    # what keeps the ladder's own cost geometric rather than cumulative.
+                    nonlocal cached_cap
+                    ctx.truncation_threshold = cap
+                    ctx.sector_at.clear()
+                    ctx.n_center_at.clear()
+                    sectors_at.clear()
+                    width_at.clear()
+                    cached_cap = cap
+                    return _gap_centre_at_mu(0.0)
+
+                cap, cap_drift, _rungs = calibrate_truncation_threshold(
+                    _centre_at_cap,
+                    mu_tol,
+                    memory_cap=ctx.memory_cap,
+                    verbose=verbose,
+                    rank=rank,
+                    comm=MPI.COMM_WORLD,
+                )
+                ctx.truncation_threshold = cap
+                dc_rec["dc_cap"], dc_rec["dc_cap_drift"] = cap, cap_drift
+                dc_rec["dc_cap_parity"] = ctx.memory_cap
+                # Keep the ladder's last rung when it *is* the accepted cap (the normal case:
+                # `calibrate_truncation_threshold` returns the rung it last evaluated on every
+                # exit path) rather than re-solving mu = 0 for values already in hand. Verified,
+                # not assumed: keeping caches that describe a *different* cap would run the rest
+                # of the search on another cap's energies while the record named the accepted one.
+                if cached_cap != cap:
+                    ctx.sector_at.clear()
+                    ctx.n_center_at.clear()
+                    sectors_at.clear()
+                    width_at.clear()
+
             # Size the energy tolerance against the gap the model actually has. Falls back to the
             # mu resolution when the width is undefined at the guess (a shell edge, or a sector
             # the restrictions admit no determinants for) -- the search's own undefined-start
@@ -1564,6 +1643,16 @@ def fixed_gap_dc(
             # Fall back to the secant only where the direct measurement is undefined (a sector at
             # a shell edge), so the field is never silently absent when something can be said.
             dc_rec["delta_sum"] = -2.0 * chi
+        # What the answer is actually pinned to, in the units of the answer. `chi` already carries
+        # this conversion in its own annotation, but `chi` is a *secant* and is `None` on any
+        # search that converged in one evaluation -- the common case in a converged CSC loop, and
+        # exactly where a reader is most likely to take `mu` at face value. `delta_sum` is measured
+        # from eigenvectors and is therefore available on every run that measured it, so the error
+        # bar can be too. Truthiness, not `is not None`: a genuine `delta_sum == 0.0` divides by
+        # zero here and must be skipped, not computed -- unlike `dc_record`'s own annotation of
+        # this field, which has to tell that case apart from a missing measurement instead.
+        if dc_rec.get("delta_sum"):
+            dc_rec["mu_tol_effective"] = abs(energy_tol / (0.5 * dc_rec["delta_sum"]))
         dc_rec["dc_trace"], dc_rec["dc_level"] = dc_record.dc_levels(dc)
         dc_rec["dc_spread"] = dc_record.dc_spread(dc)
         _dump_dc_matrices(ctx.dc_guess, dc, rank)
@@ -1604,6 +1693,10 @@ class _OccupationContext:
     spin_flip_dj: bool
     slaterWeightMin: float
     truncation_threshold: int
+    #: As :class:`_SectorContext`: only a cap that defaulted may be recalibrated against the
+    #: search's tolerance, and the memory-derived value is kept as the parity reference.
+    memory_cap: object
+    cap_from_memory: bool
     weighted_restrictions: object
     symmetry_generators: object
     impurity_indices: list
@@ -1674,6 +1767,9 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     symmetry_generators = get_symmetry_generators(h_op_i, impurity_orbitals, bath_states)
 
     truncation_threshold = basis.truncation_threshold
+    # As `_prepare_sector_context`: provenance decides whether the cap may be recalibrated.
+    cap_from_memory = MPI.COMM_WORLD.bcast(truncation_threshold is None, root=0)
+    memory_cap = truncation_threshold
     if truncation_threshold is None:
         gs_block_width = resolve_gs_block_width()
         truncation_threshold = suggest_truncation_threshold(
@@ -1689,6 +1785,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
             verbose=verbose,
             label="fixed-occupation dc",
         )
+        memory_cap = truncation_threshold
 
     # DFT reference occupation: Fermi filling of the raw h0 (the KS Hamiltonian of the
     # h0 - dc + U contract; no double counting subtracted before filling), independent of
@@ -1713,6 +1810,8 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
         spin_flip_dj=spin_flip_dj,
         slaterWeightMin=slaterWeightMin,
         truncation_threshold=truncation_threshold,
+        memory_cap=memory_cap,
+        cap_from_memory=cap_from_memory,
         weighted_restrictions=build_weighted_restrictions(bath_states, excitation_budget),
         symmetry_generators=symmetry_generators,
         impurity_indices=impurity_indices,
@@ -1983,6 +2082,42 @@ def fixed_occupation_dc(
         dc_rec["tol"] = occ_tol
         dc_rec["n_ref"] = ctx.n0
         with _dc_search_trace("fixed-occupation", MPI.COMM_WORLD, rank, width_tol=occ_width_tol, report=search_report):
+            # Same calibration as the gap criterion, against this criterion's own tolerance. Only
+            # when the cap defaulted -- an explicit truncation_threshold is the caller's
+            # instruction. Measured on nio_5peeled, this criterion's answer was identical to six
+            # decimals across caps 500/2000/8000, so it should settle on the first rung -- the
+            # ladder costs a couple of cheap evaluations to establish that rather than assuming it.
+            if ctx.cap_from_memory:
+
+                def _occupation_at_cap(cap):
+                    ctx.truncation_threshold = cap
+                    occupation_at.clear()
+                    sector_at.clear()
+                    return _evaluate_occupation_and_energy_at_mu(ctx, 0.0, verbose, rank)[0]
+
+                cap, cap_drift, _rungs = calibrate_truncation_threshold(
+                    _occupation_at_cap,
+                    occ_tol,
+                    memory_cap=ctx.memory_cap,
+                    verbose=verbose,
+                    rank=rank,
+                    comm=MPI.COMM_WORLD,
+                )
+                ctx.truncation_threshold = cap
+                dc_rec["dc_cap"], dc_rec["dc_cap_drift"] = cap, cap_drift
+                dc_rec["dc_cap_parity"] = ctx.memory_cap
+                # Cleared unconditionally, unlike the gap criterion's cache-reuse fix -- there is
+                # nothing here to keep. `_evaluate_occupation_and_energy_at_mu` holds no cache of
+                # its own (every call is a fresh `solve_ground_state`), and `occupation_at`/
+                # `sector_at` are written only by `occupation_observable`, which the ladder calls
+                # directly and bypasses. So the rung's ground state is already gone by the time
+                # this runs regardless of what these two dicts hold; left open deliberately
+                # (91109b8), since closing it would mean seeding `_solve_dc_shift`'s own cache
+                # with the ladder's last rung -- an API change on the search all three criteria
+                # share, not a decision local to this loop.
+                occupation_at.clear()
+                sector_at.clear()
+
             mu = _solve_dc_shift(
                 occupation_observable,
                 target,
@@ -2051,6 +2186,14 @@ def fixed_occupation_dc(
             chi=occ_chi,
             chi_span=occ_chi_span,
         )
+        # The same error bar the gap criterion reports (see its own comment on this field), so a
+        # caller reading the record programmatically gets one for both. This criterion has no
+        # `delta_sum` -- it is a sector-energy quantity, and this one is not -- so it comes from
+        # `chi`, the secant, which is `None` exactly when the search converged in one evaluation.
+        # Truthiness, not `is not None`: `occ_chi == 0.0` divides by zero here and must be
+        # skipped, matching the gap criterion's own guard on `delta_sum`.
+        if occ_chi:
+            dc_rec["mu_tol_effective"] = abs(occ_tol / occ_chi)
         dc_rec["dc_trace"], dc_rec["dc_level"] = dc_record.dc_levels(dc)
         dc_rec["dc_spread"] = dc_record.dc_spread(dc)
         # No "achieved occupation misses the target" line (B3): _solve_dc_shift only returns via a
