@@ -73,6 +73,11 @@ _FIELDS = (
     ("chi_span", "{:.4g}"),
     ("tol", "{:.2e}"),
     ("tol_basis", "{}"),
+    ("dc_cap", "{}"),
+    ("dc_cap_drift", "{:.2e}"),
+    ("dc_cap_check", "{:.2e}"),
+    ("slope", "{:.4f}"),
+    ("mu_tol_effective", "{:.2e}"),
     ("alpha", "{:.3g}"),
     ("evaluations", "{}"),
     ("walltime", "{:.1f} s"),
@@ -84,7 +89,22 @@ _FIELDS = (
 #: nominal integer ``nominal_dc`` was handed. Same key, same units, incomparable provenance.
 #: ``manifold_states`` follows ``manifold_spread`` because a spread is unreadable without the
 #: number of states it is a spread over: zero across one state is silence, not agreement.
-_ANNOTATIONS = frozenset({"nominal_sector", "n_ref_kind", "manifold_states"})
+#: ``dc_cap_parity`` follows ``dc_cap`` (the memory-derived cap the calibrated ladder gave up, so
+#: the record can say what a run without the ladder would have used); ``dc_cap_mu`` and
+#: ``dc_cap_retried`` follow ``dc_cap_check`` (where in ``mu`` the cap was re-checked, and whether
+#: that check failed and forced a retry) -- not yet written by any caller (:mod:`dc_search`'s
+#: cap ladder has no cache-reuse/retry mechanism wired in yet), but part of the same annotation
+#: group as ``dc_cap`` and ported together with it so the group does not fragment across commits.
+_ANNOTATIONS = frozenset(
+    {
+        "nominal_sector",
+        "n_ref_kind",
+        "manifold_states",
+        "dc_cap_parity",
+        "dc_cap_mu",
+        "dc_cap_retried",
+    }
+)
 
 #: Everything a criterion may write into a record. Enforced by a test, not at runtime: a key this
 #: module does not know is dropped silently at print time, which is exactly the failure mode the
@@ -215,6 +235,56 @@ def _annotate(record, key, text):
         sizes = record.get("manifold_states")
         over = "" if sizes is None else f" over {sizes} states (N+1/N/N-1)"
         return f"{text}   (max N_imp spread within a retained manifold{over}; 0 = thermal and T=0 agree)"
+    if key == "dc_cap":
+        # The cap is now a *measured* quantity, not the memory maximum, so the record has to say
+        # both what it settled on and what it gave up. `dc_cap_parity` is the memory-derived cap
+        # the run would otherwise have used: the DC is determined on a smaller variational space
+        # than `calc_selfenergy` will use at this dc, and that gap is the price of not spending a
+        # cap the answer cannot distinguish. Reported, never silent.
+        parity = record.get("dc_cap_parity")
+        retried = (
+            "; RAISED after the check at the answer failed, and not re-checked" if record.get("dc_cap_retried") else ""
+        )
+        if parity is None:
+            return f"{text}{'   (' + retried.lstrip('; ') + ')' if retried else ''}"
+        return f"{text}   (calibrated against tol; the memory budget allowed {parity}{retried})"
+    if key == "dc_cap_check":
+        # The cap ladder certifies at mu = 0, i.e. at the *guess*; the cap is consumed at the mu
+        # the search returns. This is the one number that speaks to the cap's adequacy THERE:
+        # how far the controlled quantity moves when the cap is doubled, measured at the answer.
+        # Not yet written by any caller -- the post-search re-verification/retry mechanism this
+        # annotates is its own future phase (see doc/plans/dc_smo_performance.md's Phase 5 note).
+        at = record.get("dc_cap_mu")
+        where = "" if at is None else f" at mu = {at:.6f}"
+        return f"{text}   (movement on doubling the cap{where} -- the cap checked at the answer)"
+    if key == "dc_cap_drift":
+        # The SPAN over the rungs that certified the cap, not one pairwise step. A pairwise
+        # difference understated it 7x on the workload this was measured on (6.4e-5 reported for
+        # an accepted cap whose distance to the top rung was 4.7e-4) -- and this is the number a
+        # reader divides by |chi| to get the truncation term of the error on dc.
+        return f"{text}   (span of the controlled quantity over the rungs that certified the cap)"
+    if key == "slope":
+        return f"{text}   (d(observable)/dmu = -(delta_+ + delta_-)/2, measured, not assumed)"
+    if key == "mu_tol_effective":
+        # The number a reader of `mu` actually needs, and the one the record could not print
+        # before: `tol` says how well the *observable* was converged, and tol/|chi| converts that
+        # into the answer. `chi` is a secant and is absent on a one-evaluation search; `delta_sum`
+        # comes from eigenvectors and is not, so this is available on every run.
+        #
+        # It is the SEARCH term only, and it is not the larger one. Measured on nio_5peeled, the
+        # truncation term is 5.1e-3 in mu against this 8.5e-3 -- the same order -- and two runs
+        # that differed only in their determinant cap disagreed by 2.2e-3, which this number does
+        # not predict. Naming the scope is the difference between an error bar and a false total;
+        # `dc_cap_drift / |chi|` is the other half where a cap was calibrated.
+        truncation = ""
+        drift = record.get("dc_cap_drift")
+        # The slope this converts through: the gap criterion measures it from eigenvector
+        # occupations (`delta_sum/2`), the occupation criterion from the secant (`chi`).
+        delta_sum, chi = record.get("delta_sum"), record.get("chi")
+        per_mu = (0.5 * delta_sum) if delta_sum else chi
+        if drift and per_mu:
+            truncation = f"; truncation adds ~{abs(drift / per_mu):.2e}"
+        return f"{text}   (search tolerance / measured slope{truncation}; not a total)"
     if key == "chi":
         # The residual is converged to `tol`; what the *answer* is determined to is tol / |chi|.
         # That conversion is the entire reason chi is reported (review correction 5): a criterion
