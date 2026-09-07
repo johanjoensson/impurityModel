@@ -173,8 +173,10 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
     **What this trades away, stated plainly.** The double counting is then determined on a
     smaller variational space than ``calc_selfenergy`` will use at that ``dc`` -- a DC<->GS parity
     gap of the same shape this module exists to close elsewhere (a halved memory budget). The
-    difference is that this one is *measured and recorded* -- the caller records ``dc_cap``,
-    ``dc_cap_drift`` and the memory-derived ceiling beside it -- rather than inherited silently.
+    difference is that this one is meant to be *measured and recorded* -- the caller is meant to
+    record ``dc_cap``, ``dc_cap_drift`` and the memory-derived ceiling beside it, rather than
+    inherit it silently. Not yet true: :mod:`dc_record` has no ``dc_cap``/``dc_cap_drift`` fields
+    yet, and no caller wires this function in -- both are the next commits in this phase.
 
     Parameters
     ----------
@@ -189,11 +191,13 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
         The cap the memory budget would have allowed. Reported as the parity reference, and used
         as the ceiling: the ladder never proposes a cap the machine could not have run.
     verbose : bool
-        Gate for the informational progress line printed on acceptance (rank 0 only). Not the
-        durable record of which cap was used -- that is :mod:`dc_record`'s unconditional
-        ``dc_cap``/``dc_cap_drift`` fields (:mod:`dc_criteria` writes them once this function is
-        wired in), which is what makes gating this progress line behind ``verbose`` safe rather
-        than hiding the answer. The warning printed when the ladder exhausts its rung budget
+        Gate for the informational progress line printed on acceptance (rank 0 only). Not meant to
+        be the durable record of which cap was used -- that is meant to be :mod:`dc_record`'s
+        unconditional ``dc_cap``/``dc_cap_drift`` fields (:mod:`dc_criteria` would write them once
+        this function is wired in), which is what would make gating this progress line behind
+        ``verbose`` safe rather than hiding the answer. Neither field exists in :mod:`dc_record`
+        yet -- that is why this is phrased as intent, not fact; see the ``Returns`` section below.
+        The warning printed when the ladder exhausts its rung budget
         without settling is unconditional regardless -- matching this module's convention that a
         result the caller should distrust is never hidden behind a verbosity flag.
         ``verbose``/``rank`` (rather than :class:`impurityModel.ed.utils.Reporter`, the
