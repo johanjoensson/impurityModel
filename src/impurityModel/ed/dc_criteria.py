@@ -144,9 +144,13 @@ def _calibrate_cap(ctx, evaluate_at_guess, clear_caches, tol, dc_rec, *, verbose
     result. Shared by :func:`fixed_gap_dc` and :func:`fixed_occupation_dc`, which differ only in
     *what* they evaluate at ``mu = 0`` and in what a cache-reuse guard needs to clear -- the
     ladder call itself, the ``dc_cap``/``dc_cap_drift``/``dc_cap_parity`` bookkeeping, and the
-    ``cached_cap`` tracking that a cache-reuse guard verifies against were duplicated near-
-    verbatim between the two before this, which is exactly how the two copies' ``mu_tol_effective``
-    guards independently picked up the same truthiness bug (review of ``6176c4f``).
+    ``cached_cap`` tracking a cache-reuse guard verifies against were duplicated near-verbatim
+    between the two before this (review of ``6176c4f``, finding 4). Note what this does **not**
+    cover: the ``mu_tol_effective`` truthiness bug that same review found (finding 1/2) was in a
+    *different* duplicated block, ~150 lines further down in each function, where each criterion
+    decides whether its own zero-slope case is a measured answer or a missing one -- unrelated to
+    the cap-calibration bookkeeping this function consolidates. See :func:`_mu_tol_effective` for
+    that duplication instead.
 
     Only called when ``ctx.cap_from_memory``; an explicit ``truncation_threshold`` is the caller's
     instruction, never a candidate for recalibration -- checked by the caller, not here, so that a
@@ -191,6 +195,29 @@ def _calibrate_cap(ctx, evaluate_at_guess, clear_caches, tol, dc_rec, *, verbose
     dc_rec["dc_cap"], dc_rec["dc_cap_drift"] = cap, cap_drift
     dc_rec["dc_cap_parity"] = ctx.memory_cap
     return cap, cached_cap
+
+
+def _mu_tol_effective(tol, per_mu):
+    """``|tol / per_mu|``, the search-tolerance error bar in ``mu`` -- shared by
+    :func:`fixed_gap_dc` (``per_mu = 0.5 * delta_sum``) and :func:`fixed_occupation_dc`
+    (``per_mu = occ_chi``), which previously computed this independently and picked up the same
+    truthiness bug in both places (review of ``6176c4f``, finding 1/2).
+
+    ``per_mu == 0.0`` is a *measured* answer -- a real charge-transfer level crossing
+    (``delta_minus``'s own docstring: it can go negative, so the sum can land on exactly zero) or
+    a genuine occupation plateau -- not a missing one, so this returns ``float("inf")`` rather
+    than raising ``ZeroDivisionError`` or the caller silently skipping the write. Callers still
+    check ``per_mu is not None`` themselves before calling this: that case (no slope measured at
+    all) has nothing to report, which ``inf`` would misstate as "measured but undetermined".
+
+    ``dc_record``'s own annotation of ``mu_tol_effective`` recomputes ``per_mu`` independently
+    from the record's ``delta_sum``/``chi`` fields (rather than reading it from here) and prints
+    "not a meaningful bound" beside the ``inf`` -- a deliberate second copy of the same zero-slope
+    test, in the display layer rather than the write layer, so that a record built by hand (as
+    ``dc_record``'s own tests do) is still annotated correctly without going through this
+    function at all.
+    """
+    return abs(tol / per_mu) if per_mu else float("inf")
 
 
 def build_union_space(
@@ -1688,18 +1715,10 @@ def fixed_gap_dc(
         #
         # `is not None`, not truthiness: `delta_sum` is a real charge-transfer level crossing away
         # from landing on exactly `0.0` (`delta_minus`'s own docstring: it can go negative), and
-        # that is a measured zero slope, not a missing measurement -- the same distinction
-        # `dc_record`'s own annotation of this field was fixed twice (review of `29e0a58`,
-        # `c355962`) to draw. Skipping the write entirely there would make the print-side
-        # "the observable does not respond to mu" branch unreachable from this criterion and
-        # leave the one case this field exists to flag silently absent instead of reported.
-        # `float("inf")` stands in for the undefined ratio rather than raising ZeroDivisionError;
-        # `dc_record`'s annotation recomputes the same zero-slope test independently and prints
-        # "not a meaningful bound" beside it rather than trusting the literal value.
+        # that is a measured zero slope, not a missing measurement -- see `_mu_tol_effective`.
         delta_sum = dc_rec.get("delta_sum")
         if delta_sum is not None:
-            per_mu = 0.5 * delta_sum
-            dc_rec["mu_tol_effective"] = abs(energy_tol / per_mu) if per_mu else float("inf")
+            dc_rec["mu_tol_effective"] = _mu_tol_effective(energy_tol, 0.5 * delta_sum)
         dc_rec["dc_trace"], dc_rec["dc_level"] = dc_record.dc_levels(dc)
         dc_rec["dc_spread"] = dc_record.dc_spread(dc)
         _dump_dc_matrices(ctx.dc_guess, dc, rank)
@@ -2235,10 +2254,10 @@ def fixed_occupation_dc(
         #
         # `is not None`, not truthiness, matching the gap criterion's own fix: `occ_chi == 0.0` is
         # a genuine plateau (this same function's `plateau_ok=True` treats it as a real, expected
-        # case, not an error) -- a measured zero slope, not a missing measurement -- and
-        # `float("inf")` stands in for the undefined ratio rather than raising ZeroDivisionError.
+        # case, not an error) -- a measured zero slope, not a missing measurement -- see
+        # `_mu_tol_effective`.
         if occ_chi is not None:
-            dc_rec["mu_tol_effective"] = abs(occ_tol / occ_chi) if occ_chi else float("inf")
+            dc_rec["mu_tol_effective"] = _mu_tol_effective(occ_tol, occ_chi)
         dc_rec["dc_trace"], dc_rec["dc_level"] = dc_record.dc_levels(dc)
         dc_rec["dc_spread"] = dc_record.dc_spread(dc)
         # No "achieved occupation misses the target" line (B3): _solve_dc_shift only returns via a

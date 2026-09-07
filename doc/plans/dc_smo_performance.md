@@ -303,7 +303,19 @@ exactly the case `dc_record.py`'s own annotation of this field exists to flag an
 fixed twice to tell apart from a missing measurement (Phase 5 (2/3)'s own review rounds). Fixed to
 `is not None`, writing `float("inf")` when the slope is exactly zero rather than dividing by it —
 `dc_record`'s annotation recomputes the same zero-slope test independently and prints "not a
-meaningful bound" beside it.
+meaningful bound" beside it. Extracted into a shared `_mu_tol_effective(tol, per_mu)` helper, since
+the two criteria had computed this independently and picked up the identical truthiness bug in
+both places — one formula, one place to get it right, rather than two copies free to drift apart.
+
+That same review also found the ~20-line cap-calibration block (the ladder call, the
+`dc_cap`/`dc_cap_drift`/`dc_cap_parity` bookkeeping, the `cached_cap` tracking a cache-reuse guard
+verifies against) duplicated near-verbatim between the two criteria — a separate duplication from
+`mu_tol_effective`'s, not its cause, despite an inaccurate claim to that effect in the first draft
+of this fix (corrected in `_calibrate_cap`'s own docstring). Extracted into a shared
+`_calibrate_cap` helper, parameterized by each criterion's own evaluate-at-`mu=0` callback and
+cache-clearing callback; each criterion still supplies its own keep-vs-clear cache policy
+explicitly (the one genuine difference between them — see `_calibrate_cap`'s docstring for why the
+occupation criterion has nothing to keep) rather than duplicating the boilerplate around it.
 
 **Note on Phase 2's mid-search-cap-change hazard.** Phase 2's remainder section above argues that
 changing `block_width` mid-search is hazardous because a populated `sector_at`/`n_center_at` cache
