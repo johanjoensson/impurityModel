@@ -349,21 +349,25 @@ def test_a_rung_degenerate_on_one_estimator_is_dropped_not_adjudicated():
     # The disagreement is surfaced, and the rung stays out of the spread.
     line = dc_diagnostics._mu_verdict([row, {"cap": 2000, "mu": 0.9, "mu_tol": 1e-3}])
     assert "disagrees" in line, line
-    assert "1 rung(s) left to grade" in line, line
+    assert "need two rungs to grade, 1 left" in line, line
     # With no fallback at all the source carries no disagreement claim.
     assert dc_diagnostics._row_resolution({"mu_tol": float("inf")}) == (float("inf"), "mu_tol_effective")
+    # And a NaN mu_tol measured nothing, so there is no degeneracy to disagree about -- labelling
+    # it as a disagreement would print a claim to the operator that nothing supports.
+    nan_row = {"mu_tol": float("nan"), "tol": 1e-3, "criterion_chi": -0.5}
+    assert dc_diagnostics._row_resolution(nan_row)[1] == "mu_tol_effective"
 
 
 def test_mu_verdict_needs_two_gradable_rungs():
-    assert "1 rung(s) left to grade" in dc_diagnostics._mu_verdict(_ladder((0.1, 5e-3)))
-    assert "1 rung(s) left to grade" in dc_diagnostics._mu_verdict(_ladder((float("nan"), 5e-3), (0.3, 5e-3)))
+    assert "need two rungs to grade, 1 left" in dc_diagnostics._mu_verdict(_ladder((0.1, 5e-3)))
+    assert "need two rungs to grade, 1 left" in dc_diagnostics._mu_verdict(_ladder((float("nan"), 5e-3), (0.3, 5e-3)))
 
 
 def test_the_short_ladder_message_counts_gradable_rungs_not_ones_with_a_resolution():
     """A rung reporting no resolution IS counted in the spread, so a message saying "need two
     rungs with a finite mu and a usable resolution" would misdescribe what is short."""
     line = dc_diagnostics._mu_verdict([{"cap": 1, "mu": 0.1, "mu_tol": float("inf")}, {"cap": 2, "mu": 0.9}])
-    assert "1 rung(s) left to grade" in line, line
+    assert "need two rungs to grade, 1 left" in line, line
     assert "usable resolution" not in line, line
 
 

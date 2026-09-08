@@ -668,13 +668,23 @@ class as `gf-monitor-was-converging-the-wrong-axis`.
 
 **Fixed.** `print_ladder` now grades `mu` against the criterion's own resolution
 (`_mu_verdict`/`_row_resolution`), prints the per-cap resolutions it used, and prints the value
-spread unlabelled as a verdict. Re-running the ladder above today reports **`DRIFTS` at 24x** —
-the same 24x as the table below, because the fixed code grades a gap ladder against
-`mu_tol_effective` and on this workload that agrees with `tol/|chi|` to within 6% (measured at
-cap 500: 5.19e-03 against 5.51e-03). An earlier revision of this paragraph struck the 24x on the
-grounds that the two estimators disagree by 3.7x; that comparison used the *harness's* `chi`
-column (-1.9566 at cap 500) rather than the criterion's (-0.5011), and the harness's column is
-exactly the one `_row_resolution` refuses to build a band from. Kept here as the run that
+spread unlabelled as a verdict. Re-running the ladder above today reports **`DRIFTS`**, by
+roughly **20-25x**.
+
+That multiplier is deliberately approximate, and the reason is worth recording because two
+earlier revisions of this paragraph each got it wrong in a different direction. The `chi` column
+in the table below is the *harness's* recomputation, which `_row_resolution` refuses to build a
+band from; the fixed code grades against the criterion's own `mu_tol_effective`, which the
+ladder run never recorded per rung. So the resolutions tabulated below cannot be substituted into
+the verdict, and quoting "the same 24x as the table" would assume exactly the equality
+`_row_resolution` exists to deny — at cap 500, where both are recorded, they differ by 3.7x
+(5.19e-03 against 1.41e-03).
+
+What *does* support the range is the one criterion-side datum at a comparable cap: the item-3
+ladder run at cap 64,000 recorded `mu_tol_effective` = 1.13e-02 (criterion `chi` = -0.2213),
+against which the 0.255 spread is **22.6x**. The harness column at cap 32,000 gives 1.05e-02 and
+24.3x. Both land in the same place, which is why the verdict is robust even though the
+multiplier is not pinned: 0.255 dwarfs any band of order 1e-2. Kept here as the run that
 motivated the fix, not as current behaviour.
 
 On the right axis the ladder is emphatically not stable:

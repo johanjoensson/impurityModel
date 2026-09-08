@@ -282,8 +282,9 @@ def run_dc_search(
         # `fixed_peak_dc` writes `tol` but no `mu_tol_effective`, so `mu_tol` stays None there
         # and `_row_resolution` falls back to `tol`/`criterion_chi`.
         #
-        # `criterion_chi` is the CRITERION's own slope, not the `chi` column above. The single
-        # difference is `in_sector`: the gap and occupation criteria pass the *same*
+        # `criterion_chi` is the CRITERION's own slope, not the `chi` column above. The
+        # difference that matters here is `in_sector`: the gap and occupation criteria pass the
+        # *same*
         # `bracket_width_tol(tau)` this harness does (`dc_criteria.py:1542`, `:2129`) but also a
         # sector predicate, which the column above deliberately omits. So the column can pair
         # two points either side of a charge-sector boundary. That is not a vanishing-width
@@ -291,6 +292,11 @@ def run_dc_search(
         # secant of a *different function* on each side, which is why the criteria filter it and
         # why a band built from it would not describe either branch. Measured on SMO at cap 500:
         # the criterion reports chi = -0.5011 where this column reports -1.9566.
+        #
+        # Two further differences, neither of which the fallback depends on but both of which
+        # stop this from being called the *only* one: the criterion filters its sample map to
+        # evaluations where both band edges resolved, and it measures at its own returned `mu`
+        # rather than at the snapped `mu_evaluated` this module uses (see its comment below).
         "criterion_chi": record.get("chi"),
         "tol": record.get("tol"),
         "tol_basis": record.get("tol_basis"),
@@ -381,6 +387,13 @@ def _format_row(row):
     return " ".join(fmt.format(**row) for _, _, fmt in _COLUMNS)
 
 
+#: Appended to a rung's resolution *source* when the criterion's own ``mu_tol_effective`` says
+#: the slope is degenerate while its ``tol``/``chi`` says it is not. One constant rather than the
+#: string typed at both the producing and consuming site: :func:`_mu_verdict` counts these by
+#: matching it, so a reworded label would otherwise zero that count silently.
+_DISAGREES = " (estimators disagree)"
+
+
 def _row_resolution(row):
     """One rung's resolution in ``mu``, and the name of the estimator it came from.
 
@@ -429,8 +442,11 @@ def _row_resolution(row):
         if np.isfinite(mu_tol):
             return mu_tol, "mu_tol_effective"
         fallback, _source = _fallback()
-        disagrees = fallback is not None and np.isfinite(fallback)
-        return mu_tol, ("mu_tol_effective (estimators disagree)" if disagrees else "mu_tol_effective")
+        # Only an *infinite* mu_tol can disagree about degeneracy. A NaN one measured nothing, so
+        # there is no degeneracy for the other estimator to contradict, and labelling it as a
+        # disagreement would put a claim in front of the operator that nothing supports.
+        disagrees = np.isinf(mu_tol) and fallback is not None and np.isfinite(fallback)
+        return mu_tol, (f"mu_tol_effective{_DISAGREES}" if disagrees else "mu_tol_effective")
     return _fallback()
 
 
@@ -452,11 +468,13 @@ def _mu_verdict(rows):
 
     The three degenerate rungs are handled differently, because they are different situations:
 
-    * **Infinite resolution** on every available estimator -- a measured zero slope, which
-      ``dc_criteria`` records as ``inf`` rather than dividing by zero. Dropped from **both** the
-      spread and the band. Its ``mu`` is unresolvable by the criterion's own admission, so it may
-      sit anywhere on the plateau; letting it inflate the spread while excluding it from the band
-      would print ``DRIFTS`` and blame the cap for one rung's degenerate slope.
+    * **Infinite resolution** -- a measured zero slope, which ``dc_criteria`` records as ``inf``
+      rather than dividing by zero. Dropped from **both** the spread and the band, and dropped
+      even when the *other* estimator would have given a finite band: see
+      :func:`_row_resolution` on why that disagreement is reported rather than adjudicated. Its
+      ``mu`` is unresolvable by the criterion's own admission, so it may sit anywhere on the
+      plateau; letting it inflate the spread while excluding it from the band would print
+      ``DRIFTS`` and blame the cap for one rung's degenerate slope.
     * **A NaN resolution** -- not a measurement at all. Dropped like the infinite case, but
       reported as its own cause, so the line never claims a slope was "measured as zero" when
       nothing was measured. Reachable: ``_mu_tol_effective`` gates on truthiness and NaN is
@@ -495,7 +513,8 @@ def _mu_verdict(rows):
             continue
         if resolution is not None and np.isinf(resolution):
             flat += 1
-            disagreed += "disagree" in (source or "")
+            if (source or "").endswith(_DISAGREES):
+                disagreed += 1
             continue
         mus.append(mu)
         if resolution is None:
@@ -516,7 +535,7 @@ def _mu_verdict(rows):
     if len(mus) < 2:
         # Deliberately does NOT say "have N with a usable resolution": a rung with no resolution
         # at all is counted in `mus`. What is short is gradable rungs; `note` carries the causes.
-        return f"mu across the ladder: UNGRADED -- {len(mus)} rung(s) left to grade{note}"
+        return f"mu across the ladder: UNGRADED -- need two rungs to grade, {len(mus)} left{note}"
     spread = max(mus) - min(mus)
     if not banded:
         return (
