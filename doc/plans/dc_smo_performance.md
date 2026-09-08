@@ -672,31 +672,40 @@ class as `gf-monitor-was-converging-the-wrong-axis`.
 
 **Fixed.** `print_ladder` now grades `mu` against the criterion's own resolution
 (`_mu_verdict`/`_row_resolution`), prints the per-cap resolutions it used, and prints the value
-spread unlabelled as a verdict. Re-running the ladder above today reports **`DRIFTS`**, by a
-multiplier this document cannot pin: **at least ~6x, plausibly ~23x**.
+spread unlabelled as a verdict. Re-running the ladder above would report **`DRIFTS`**, by
+roughly **23x to 50x**. (Would: the ladder has not been re-run at caps 2,000/8,000/32,000 since
+the fix. The only live `print_ladder` output this file cites is the caps 500/1,000 run below.)
 
-That range is wide on purpose, and the reason is worth recording because three earlier revisions
-of this paragraph each asserted a tighter number and each got it wrong in a different direction. The `chi` column
-in the table below is the *harness's* recomputation, which `_row_resolution` refuses to build a
-band from; the fixed code grades against the criterion's own `mu_tol_effective`, which the
-ladder run never recorded per rung. So the resolutions tabulated below cannot be substituted into
-the verdict, and quoting "the same 24x as the table" would assume exactly the equality
-`_row_resolution` exists to deny — at cap 500, where both are recorded, they differ by 3.7x
-(5.19e-03 against 1.41e-03).
+Four earlier revisions of this paragraph each asserted a different multiplier and each was wrong,
+so here is the derivation. The `chi` column in the table below is the *harness's* recomputation,
+which `_row_resolution` refuses to build a band from; the fixed code grades against the
+criterion's own `mu_tol_effective`. The two differ by 3.7x at cap 500, the one cap where both
+are recorded (5.19e-03 against 1.41e-03), so the resolutions tabulated below cannot be
+substituted into the verdict — quoting "the same 24x as the table" would assume exactly the
+equality `_row_resolution` exists to deny.
 
-What supports the range is one datum: the item-3 ladder run at cap 64,000 recorded
-`mu_tol_effective` = 1.13e-02 (criterion `chi` = -0.2213), against which the 0.255 spread is
-**22.6x**. The harness column's 24.3x at cap 32,000 is *not* a second, corroborating
-measurement -- by the paragraph above it is the estimator this section disowns, and at cap 500 it
-runs 3.7x tight, which would put the true multiplier nearer 6x if that ratio held at the top of
-the ladder. It does not obviously hold (the criterion's -0.2213 at cap 64,000 sits within 8% of
-the harness's -0.2384 at cap 32,000), but two similar slopes at neighbouring caps is weak
-evidence when `chi` collapses 5.4x along the ladder anyway.
+The bracket comes from criterion-side data only, and turns on one fact about how `_mu_verdict`
+grades: **against the loosest per-rung band**, i.e. the ladder's *top* rung, cap 32,000. The
+criterion's slope collapses with cap (|`chi`| = 0.5011 at 500, 0.4905 at 2,000, 0.2213 at
+64,000), so its band `tol/|chi|` *grows* with cap, and the band at cap 32,000 is bracketed by its
+two recorded neighbours:
 
-So: the multiplier is somewhere between ~6x and ~23x and this document cannot pin it further
-without the criterion's `chi` at caps 2,000/8,000/32,000, which was never recorded. **The verdict
-does not depend on pinning it** -- 0.255 against any band from 1e-2 to 4e-2 is 6x or more. Kept here as
-the run that motivated the fix, not as current behaviour.
+| | criterion band | 0.255 spread against it |
+|---|---|---|
+| cap 2,000 (recorded, Phase 0 table) | 5.10e-03 | 50.0x |
+| cap 32,000 (**not recorded** — this is the one that grades) | between them | 23x-50x |
+| cap 64,000 (recorded, item-3 run) | 1.13e-02 | 22.6x |
+
+So **22.6x is a floor, not a ceiling** — an earlier revision had this inverted, and derived a
+~6x lower end by extrapolating the harness column, the very estimator this section disowns. The
+harness column's own 24.3x at cap 32,000 is likewise not a corroborating measurement; that it
+lands inside the bracket is a coincidence of two similar slopes at neighbouring caps, which is
+weak evidence when `chi` collapses 5.4x along the ladder anyway.
+
+Pinning it further needs the criterion's `chi` at caps 8,000 and 32,000, which the ladder run
+did not record per rung — `print_ladder` now prints exactly that, so a re-run would close it.
+**The verdict never depended on pinning it**: 0.255 against any band from 1e-2 to 4e-2 is 6x or
+more. Kept here as the run that motivated the fix, not as current behaviour.
 
 On the right axis the ladder is emphatically not stable:
 
@@ -738,7 +747,8 @@ This document reports two quantities both called `chi`, and an earlier revision 
 They are not close. At cap 500, the one cap where both were recorded -- the criterion's from the
 Phase-0 table above, the harness's from a `RUN_DC_DIAG` gap ladder at caps 500/1,000 run while
 fixing this verdict, whose `mu_tol_effective` of 5.19e-03 is the only per-rung band this campaign
-recorded from a live `print_ladder` -- the criterion reports -0.5011 and the harness -1.9566 -- so `tol/|chi|` on the harness column (2.76e-3/1.9566 =
+recorded from a live `print_ladder` -- the criterion reports -0.5011 and the harness -1.9566 -- so
+`tol/|chi|` on the harness column (2.76e-3/1.9566 =
 1.41e-03) is 3.7x tighter than the criterion's `mu_tol_effective` (5.19e-03, itself within 6% of
 the criterion-column 5.51e-03). Note also the two tables use different `tol` (2.76e-3 at cap 500,
 2.50e-3 at the item-2 caps), so rows cannot be carried between them either.

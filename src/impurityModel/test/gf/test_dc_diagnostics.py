@@ -590,3 +590,34 @@ def test_cap_ladder_forwards_gap_report_and_gap_offset(monkeypatch):
     assert all(rep is report for _cap, _off, rep in seen), seen
     # And it holds the last rung's record alone.
     assert report == {"cap": 20}
+
+
+def test_run_dc_search_drops_unresolved_evaluations_from_its_sample_map(monkeypatch):
+    """A successful search can record an evaluation whose observable did not resolve.
+
+    `gap_observable` writes `evaluation_fields["gap_centre"] = centre` even when
+    `_gap_centre_at_mu` returned `None` at a shell edge, and `_solve_dc_shift` propagates that
+    `None` and keeps searching. Unfiltered, such a point can be one of the two neighbours
+    `_dc_chi` picks as straddling the answer, and the subtraction raises `TypeError` at the very
+    end of a rung -- or `achieved` comes back `None` and breaks the table's float format.
+    """
+    from impurityModel.test.support import dc_diagnostics as diag
+
+    _stub_archive(monkeypatch, diag)
+
+    def fake_gap_dc(**kwargs):
+        kwargs["report"].update({"tol": 2.5e-3, "chi": -0.5, "mu_tol_effective": 5e-3})
+        # An unresolved neighbour on each side of the answer, which is what makes it the pair
+        # `_dc_chi` would otherwise select.
+        solver_trace.note("dc_evaluation", mu=0.20, gap_centre=None)
+        solver_trace.note("dc_evaluation", mu=0.25, gap_centre=1e-4)
+        solver_trace.note("dc_evaluation", mu=0.30, gap_centre=None)
+        return 0.25 * np.identity(2)
+
+    monkeypatch.setattr(diag, "fixed_gap_dc", fake_gap_dc)
+
+    row = diag.run_dc_search("_stub", cap=1000, criterion="gap")
+    assert row["value"] == pytest.approx(1e-4)
+    assert row["mu"] == pytest.approx(0.25)
+    # Formatting the row is where a None `value` would surface in production.
+    assert "0.00010" in diag._format_row(row)

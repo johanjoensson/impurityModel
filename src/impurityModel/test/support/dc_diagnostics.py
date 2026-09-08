@@ -244,7 +244,20 @@ def run_dc_search(
         (name for name in ("n", "gap", "gap_centre") if any(name in event for event in evaluations)),
         "n",
     )
-    samples = {event["mu"]: event[field] for event in evaluations if field in event and "mu" in event}
+    # Filtered on the VALUE, not just on key presence. `gap_observable` writes
+    # `evaluation_fields["gap_centre"] = centre` even when `_gap_centre_at_mu` returned `None` at
+    # a shell edge, and `_solve_dc_shift.evaluate` propagates that `None` and keeps searching --
+    # so a search that *succeeded* can leave `{mu: None}` here. Unfiltered, such a point can be
+    # one of the two `_dc_chi` picks as straddling neighbours, and `samples[mu_high] -
+    # samples[mu_low]` then raises `TypeError` at the very end of a rung that may have cost an
+    # hour; `achieved` could likewise come back `None` and break `_format_row`'s float format.
+    # The gap and peak criteria filter their own sample maps for exactly this reason
+    # (`centre_at`; `peak_at[mu] = gap` only `if gap is not None`) -- this mirrors them.
+    samples = {
+        event["mu"]: event[field]
+        for event in evaluations
+        if field in event and "mu" in event and event[field] is not None
+    }
     # The achieved value is the one at the shift actually returned; the search always evaluated
     # it (mu is either the mu=0 fast path, a direct scan hit, or a refined bracket point), but
     # match on the closest recorded mu rather than on equality, since mu came back through a
