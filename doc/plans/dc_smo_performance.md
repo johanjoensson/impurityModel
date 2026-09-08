@@ -386,10 +386,9 @@ that caveat is not decoration.
   *cap* against a CIPSI *expansion size*. The two pinned-cap runs below reach the identical
   88,164-determinant first expansion at two caps 6 % apart, neither of which bound — so within
   that narrow range the expansion size is invariant to the cap, which is as much as those two
-  runs can show (`dc_search`'s own docstring claims these expansions saturate the cap at every
-  cap tried, and the ladder run at 64,000 obviously never reached 88,164). The category error
-  voids the comparison on its own; no stronger claim is needed. Both pinned runs also *survived*
-  88,164 and died at 517,759, 5.87x higher.
+  runs can show (the ladder run at 64,000 obviously never reached 88,164, so nothing here claims
+  cap-independence in general). The category error voids the comparison on its own; no stronger
+  claim is needed. Both pinned runs also *survived* 88,164 and died at 517,759, 5.87x higher.
 - **Not a validation of the production budget.** This is a serial probe of a whole 15 GiB
   desktop, not 128 ranks inside a Slurm `--mem` cgroup. It validates the formula's *sensitivity*
   to `block_width`, nothing about the budget itself. Item 4 closes that.
@@ -432,15 +431,25 @@ what was measured; which variable *does* drive the growth is not established her
 The two runs are **not** a controlled A/B of `GS_MAX_BLOCK_WIDTH`, and the ~1 GiB peak difference
 between them is not evidence the knob did anything:
 
-- The **cap** difference has a measured cause and the **peak** difference does not. Both runs
-  sized their cap by calling `suggest_truncation_threshold(n_spin_orbitals, comm=comm)` with no
-  `block_width` argument, i.e. at the function's own `block_width=4` default — that call path
-  does *not* consult `resolve_gs_block_width`, so the knob never reached the cap probe and the
-  6 % cap difference is purely the live `MemAvailable` probe seeing a quieter machine. The peak
-  RSS difference is a different matter: neither run reached its cap, so the cap cannot have sized
-  their peaks either, and nothing that was recorded explains the gap. An earlier draft first
-  attributed it to the cap and then, having withdrawn that, offered sampling coarseness instead —
-  which is no better. It has no measured cause; that is the entry.
+- The **cap** difference is explained; the **peak** difference is not. These two experiment
+  scripts sized their own cap with a direct `suggest_truncation_threshold(n_spin_orbitals,
+  comm=comm)` call, passing no `block_width`, so they took that function's own `block_width=4`
+  default. (That is a property of *these scripts*, not of the code path production uses:
+  `dc_criteria._prepare_sector_context`, `fixed_occupation_dc` and `groundstate.py` all call
+  `resolve_gs_block_width()` and pass the result, so in production the knob *does* move the
+  memory-derived cap. The ladder run in row 1 went through that production path, where
+  `resolve_gs_block_width()` returned 4 because the knob was unset.) The `block_width=4` premise
+  is checkable from the recorded caps themselves: inverting `_suggest_for_budget` at 6 ranks and
+  `safety 0.5`, cap 1,132,656 implies node `MemAvailable` of 11.16 GiB at `bw=4` and **15.49 GiB
+  at `bw=8` — impossible on a 15 GiB machine**. So the `=8` run's cap was sized at width 4, and
+  the two runs' caps imply 10.52 and 11.16 GiB of node `MemAvailable`: a quieter machine for the
+  second, which is the whole of the 6 % difference. Note this is inverted from the caps, not read
+  from a recorded probe — neither run logged `MemAvailable` itself.
+
+  The peak RSS difference is a different matter: neither run reached its cap, so the cap cannot
+  have sized their peaks either, and nothing recorded explains the gap. An earlier draft
+  attributed it to the cap, then to sampling coarseness — neither better than the other. It has
+  no measured cause; that is the entry.
 - `p` was never recorded: `solver_trace.tracing()` was not open in either run, and TRLM's
   `rank k_ret/nkeep` lines cannot stand in for it. `nkeep = k_blocks * p` with
   `k_blocks = ceil(num_wanted / p)`, so `nkeep` tracks `num_wanted` — precisely the quantity
@@ -464,25 +473,48 @@ That refutes the width-cap hypothesis this document carried in its first draft (
 reach a settling cap"). Pinning the width cannot move a bound that is `2^rungs * start`; only
 raising `CAP_LADDER_MAX_RUNGS` or `CAP_LADDER_START` can.
 
-**And the affordability half of that hypothesis does not survive either**, once the arithmetic is
-done at this run's own budget rather than at the production one. Back-solving the budget from the
-cap the run reported (`dc_cap_parity = 1,059,144` at `block_width=4`, 6 ranks) gives ~0.870
-GiB/rank. At that budget, rung 9 — 128,000 — is affordable at **any block width up to 80**
-(bw 80 → 128,280; bw 81 → 126,798). Phase 0 measured `p` maxing at 16 at cap 2,000, and the ~105
-figure belongs to the ~1M production cap, not to a 128,000 one; `p(128,000)` is unrecorded but
-has no reason to be near 80. So the likely position is that **rung 9 is affordable here with no
-width cap at all**, and the closing prescription below should not assume otherwise. (The
-often-quoted 90,283 is at the 4.750 GiB/rank pinned budget of item 1, a different budget
-entirely — at this run's 0.870 GiB/rank the production-width figure is 99,216. Don't read the
-two as one estimate at two rank counts.)
+**The affordability half of that hypothesis is undetermined**, and three drafts of this paragraph
+have now each asserted an answer the numbers do not support — first "rung 9 is unaffordable at
+uncapped width", then "rung 9 is affordable at any width, no cap needed". Neither is established.
+What can actually be said:
+
+Back-solving this run's budget from the cap it reported (`dc_cap_parity = 1,059,144` at
+`block_width=4`, 6 ranks) gives ~0.870 GiB/rank. At that budget, `_suggest_for_budget` says rung 9
+— 128,000 — is affordable up to `block_width` **80** (bw 80 → 128,280; bw 81 → 126,798). Two
+things stop that 80 from settling the question:
+
+- **The threshold moves 5x with an assumption the estimator makes about a quantity Phase 4
+  deliberately left uncapped.** With `gs_num_wanted=None` the model assumes `num_wanted = 2 *
+  block_width`; `memory_estimate`'s own docstring says that under-counts by up to ~30x at
+  production scale, precisely because `GS_MAX_BLOCK_WIDTH` caps the width and *not* `num_wanted`.
+  Measured at the same budget: the largest width affording rung 9 is 80 at `num_wanted = 2p`,
+  58 at 5p, 40 at 10p, and **17 at 30p** — below the `p = 16` already measured at cap 2,000.
+- **`p(128,000)` is unrecorded, and interpolation puts it in range of 80, not comfortably below
+  it.** Log-interpolating the two recorded points — `p` maxing at 16 at cap 2,000, and ~105 at
+  the ~1M production cap — gives `p(128,000) ≈ 56`. Measurement 1's other production figure
+  (`k_ret` up to 315) interpolates to ~118, i.e. *above* 80.
+
+So rung 9 may or may not need a width cap; deciding it needs `p` and `num_wanted` measured at
+that cap, not another estimator call. (The often-quoted 90,283 is at item 1's 4.750 GiB/rank
+pinned budget, a different budget entirely — at this run's 0.870 GiB/rank the production-width
+figure is 99,216. Don't read the two as one estimate at two rank counts.)
+
+**A caution that applies to every `_suggest_for_budget` number in this document.** The one place
+in this campaign where the estimator meets a realized determinant count and a measured RSS, it
+under-predicts badly: `estimate_gs_peak_bytes(517_759, 58, block_width=4, ranks=6)` gives
+435.5 MiB/rank against the 1.9 GiB max-rank peak both pinned runs reached at that basis size —
+4.5x low, and the runs were *killed*, so the true peak was higher still. That is not a refutation
+of the model (feeding it `block_width=4` when the real `p` is much larger is exactly the campaign's
+diagnosis), but it does mean an estimator call at an assumed width is a hypothesis, not a budget.
 
 Corollary, and the reason this belongs in the record rather than a footnote: **"survivability:
 fixed" is currently contingent on a hard-coded rung budget happening to land at a size this
 machine can afford**, not on a measured budget. The grid is geometric and coarse — a factor of
-two between neighbouring rungs, everywhere. (It is *not* restricted to powers of two: the loop
-steps `cap = min(2 * cap, memory_cap)`, so a binding `memory_cap` always gets its own final rung.
-An earlier draft claimed a machine that cannot fit 64,000 would fall back to 32,000; it would in
-fact evaluate its own `memory_cap` as the last rung.) What the code genuinely cannot do is tell
+two between neighbouring rungs, except for the last one when `memory_cap` binds. (It is *not*
+restricted to powers of two: the loop steps `cap = min(2 * cap, memory_cap)`, so a binding
+`memory_cap` always gets its own final rung, at whatever ratio that lands on. An earlier draft
+claimed a machine that cannot fit 64,000 would fall back to 32,000; it would in fact evaluate its
+own `memory_cap` as the last rung.) What the code genuinely cannot do is tell
 "stopped because the answer settled" from "stopped because it ran out of rungs" — nothing marks
 the difference except the warning below.
 
@@ -539,21 +571,27 @@ gap root was expected positive). Whether these are the same problem is not estab
 machine is half, not a pass.)
 
 The middle row was omitted from an earlier draft of this section, which is a worse error than
-getting it wrong, since the runs did record RSS. What can be said: `estimate_gs_peak_bytes(64_000,
-58, ranks=6)` predicts **53.8 MiB/rank** at `block_width=4`, **116 MiB** at 16, **195 MiB** at 32
-and 574.7 MiB at 105. Against that, the measurement is ~0.5 GiB/rank — but ~335-420 MiB of that
-is the Python/import floor Phase 0's Measurement 4 charted (335.5 MiB measured at cap 500, where
-the model predicts 2.2 MiB), so the solve's own share is roughly 90-210 MiB.
+getting it wrong, since the runs did record RSS. The model, for reference:
+`estimate_gs_peak_bytes(64_000, 58, ranks=6)` predicts **53.8 MiB/rank** at `block_width=4`,
+**116.3 MiB** at 16, **194.5 MiB** at 32 and 574.7 MiB at 105 (that last is the ~1M-cap width and
+has no business being applied to a 64,000-determinant solve; an earlier draft anchored the
+bracket there and read the measurement as sitting "at the top" of it, which was wrong twice over).
 
-That residual is consistent with the model at a block width in the 16-32 range, which is a
-plausible `p` at cap 64,000 given Phase 0's max of 16 at cap 2,000. It is *not* evidence for the
-574.7 MiB row: 105 is the ~1M-cap width and has no business being applied to a 64,000-determinant
-solve. An earlier draft anchored the bracket there and read the measurement as sitting "at the
-top" of it — wrong on both counts, since netting out the floor puts the residual near the bottom.
-The verdict stands as "cannot be adjudicated": `p` at cap 64,000 was not recorded (same gap as
-above), and a floor subtracted by eye is not a measurement. Item 2's runs have `solver_trace`
-open and will record `eigensolve_block_width` at caps 2,000/8,000/32,000, which is what turns
-this row into a verdict.
+Against that, the two recorded figures are ~2 GiB across six ranks and ~0.5 GiB on the max rank —
+and **they do not leave room for a useful subtraction.** Six ranks are six Python processes, so
+Phase 0's serial floor of 335.5 MiB/rank is already 1.97 GiB of the ~2 GiB total on its own. A
+second draft tried netting that floor off the max rank and quoting "roughly 90-210 MiB" of solve;
+the arithmetic is 512 − 335.5 = 176.5 and 512 − 422.1 = 89.9, so the range was mis-stated (210 has
+no derivation), and calling 335-420 MiB "the Python/import floor" also mislabels Measurement 4,
+whose own text attributes that gap to the floor **plus** the 18x `nnz_per_state` over-prediction
+**plus** cap-dependent transients — not a constant, and 422.1 MiB is itself a cap-2,000 peak, so
+using it as the floor's ceiling double-counts growth with cap.
+
+**Verdict: cannot be adjudicated, and this measurement cannot be rescued by arithmetic.** The
+totals are too coarse and the floor too poorly separated to place the solve's own share anywhere
+useful; `p` at cap 64,000 was never recorded either. What this row needs is
+`log_peak_vs_predicted` at a run with `solver_trace` open — the hook Phase 0 item 4 named for
+exactly this — not another subtraction by eye.
 
 Read together, that splits the campaign's outcome:
 
@@ -576,11 +614,17 @@ question needs its own A/B at one pinned cap with `solver_trace` open, at a cap 
 barely binds).
 
 Deciding the accuracy question needs a rung above 64,000, and the cheapest experiment that could
-is simply **raising `CAP_LADDER_MAX_RUNGS` and re-running** — no width cap required on the face
-of it, since rung 9 fits this run's own budget at any width below 80 (above). Whether it settles
-at rung 9, or whether SMO's `mu` keeps walking, is the question; the drift has not shrunk over
-the last three rungs, so the honest prior is that a single extra rung will not close it and the
-deferred post-search cap re-verification is the more promising of the two deferred remedies.
+is **raising `CAP_LADDER_MAX_RUNGS` and re-running**. Whether that run also needs a width cap to
+afford rung 9 is genuinely open (above); the experiment should measure `p` and `num_wanted` at
+that cap rather than assume either answer.
+
+No prediction is offered here about whether rung 9 would settle. An earlier draft argued "the
+drift has not shrunk over the last three rungs" — that claim has no source: `dc_cap_drift` is a
+*single* span over the trailing window, and `_calibrate_cap` discards the ladder's `rungs` list
+(`cap, cap_drift, _rungs = calibrate_truncation_threshold(...)`), so no per-rung history reaches
+`dc_record` and no trend is recoverable after the fact. Plumbing `rungs` through would make that
+question answerable from a run that already happened, which is probably worth doing before
+spending another ladder on it.
 
 ## Item 2: the `RUN_DC_DIAG` cap ladder
 
