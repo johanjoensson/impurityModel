@@ -19,7 +19,7 @@ search drove onto its target -- the gap centre to zero, the occupation to the DF
 its spread across the ladder is bounded by the search tolerance and stays small whether or not
 the answer transferred. Grading it (against a flat ``1e-2``, as this module did until the SMO
 verification runs) reported SrMnO3's gap ladder as ``STABLE`` while ``mu`` moved 0.255 and changed
-sign -- once here, and again on the independent Phase 5 ladder. See :func:`_mu_verdict`.
+sign. See :func:`_mu_verdict`.
 
 The accounting comes from :mod:`impurityModel.ed.solver_trace`, which the production search
 writes into unconditionally -- so what is measured here is the production path, not a
@@ -640,10 +640,13 @@ def print_ladder(rows):
     # Labelled by cap, not positional. A `None` chi is reachable on a rung that *succeeded* --
     # `_dc_chi` returns `(None, None)` when no evaluated pair straddles the answer by more than
     # `width_tol`. That predates the `samples` value-filter above, which widened the route rather
-    # than creating it: `_dc_chi` already had a single-point `mu = 0` fast path, and a
-    # one-evaluation occupation search already left one sample (see the `occ_chi` note above).
-    # Unlabelled, a three-cap ladder whose middle rung lost its pair printed two numbers under a
-    # header saying "per cap", which reads positionally onto the first two.
+    # than creating it. Two routes were already there, and neither involves an unresolved trial:
+    # `_solve_dc_shift`'s `converged_at_guess` returns after one evaluation (criterion-agnostic),
+    # leaving a single sample that `_dc_chi`'s containment filter reports as `None`; and any
+    # bracket collapsed at a sector discontinuity is narrowed to exactly `width_tol`, which its
+    # resolution filter then excludes. Unlabelled, a three-cap ladder whose middle rung lost its
+    # pair printed two numbers under a header saying "per cap", which reads positionally onto the
+    # first two.
     chis = [(row["cap"], row["chi"]) for row in rows if row["chi"] is not None]
     if chis:
         print("chi = d(value)/dmu per cap: " + ", ".join(f"{cap}:{chi:.4f}" for cap, chi in chis))

@@ -638,16 +638,63 @@ def test_a_dropped_evaluation_still_leaves_a_slope_measurable_from_the_survivors
         solver_trace.note("dc_evaluation", mu=0.20, gap_centre=-1.0)
         solver_trace.note("dc_evaluation", mu=0.22, gap_centre=None)  # unresolved, dropped
         solver_trace.note("dc_evaluation", mu=0.25, gap_centre=0.0)
-        # Deliberately NOT collinear with the pair below: on linear data every candidate pair
-        # gives the same slope, so the assertion could not tell which points were used.
-        solver_trace.note("dc_evaluation", mu=0.30, gap_centre=3.0)
+        # Neither collinear with the pair below nor equidistant from the answer. Collinear data
+        # gives every candidate pair the same slope; an equidistant one (0.30) leaves the two
+        # candidates tied on width, so `_dc_chi`'s `min` would decide on list order and the
+        # assertion would pin that tie-break rather than the documented narrowest-pair rule.
+        solver_trace.note("dc_evaluation", mu=0.32, gap_centre=3.0)
         return 0.25 * np.identity(2)
 
     monkeypatch.setattr(diag, "fixed_gap_dc", fake_gap_dc)
 
     row = diag.run_dc_search("_stub", cap=1000, criterion="gap")
     assert row["value"] == pytest.approx(0.0)
-    # Measured from the surviving neighbours 0.20 and 0.25: (0.0 - -1.0) / 0.05 = 20. The pair
-    # (0.25, 0.30) would give 60 and (0.20, 0.30) 40, so this pins the points, not just the fact
-    # that some slope was recovered.
+    # Measured from the surviving neighbours 0.20 and 0.25: (0.0 - -1.0) / 0.05 = 20. The only
+    # other candidate, (0.25, 0.32), is wider and would give 42.9 -- so this pins which points
+    # were used, not merely that some slope was recovered.
     assert row["chi"] == pytest.approx(20.0)
+
+
+def test_print_ladder_names_the_caps_its_value_spread_covers_and_the_ones_it_drops(capsys):
+    """A rung whose observable never resolved must not vanish silently from the spread.
+
+    `print_ladder`'s aggregate lines are the module's whole output, and until this test nothing
+    pinned any of them. The specific hazard is an aggregate over an unstated subset: `value` is
+    `nan` on a rung that resolved nothing (`run_dc_search`'s `achieved`), `np.isfinite` drops it,
+    and the printed spread then describes two caps under a heading that names none. That is the
+    same misread the `cap:value` labelling on the chi line exists to prevent.
+    """
+    from impurityModel.test.support import dc_diagnostics as diag
+
+    def _row(cap, value, mu):
+        return {
+            "workload": "_stub",
+            "label": "stub",
+            "criterion": "gap",
+            "cap": cap,
+            "seconds": 1.0,
+            "evaluations": 3,
+            "sector_solves": 3,
+            "cache_hits": 0,
+            "max_dets": cap,
+            "build_s": 0.1,
+            "expand_s": 0.5,
+            "eigensolve_s": 0.2,
+            "mu": mu,
+            "value": value,
+            "chi": -0.5,
+            "tol": 2.5e-3,
+            "tol_basis": "fixed",
+            "mu_tol": 5e-3,
+            "criterion_chi": -0.5,
+        }
+
+    diag.print_ladder([_row(500, 0.001, 0.10), _row(1000, float("nan"), 0.11), _row(2000, 0.003, 0.12)])
+    out = capsys.readouterr().out
+
+    spread = next(line for line in out.splitlines() if line.startswith("achieved value across the ladder"))
+    # Both halves: which caps the spread is over, and which one it is not.
+    assert "over caps [500, 2000]" in spread
+    assert "dropped as non-finite: [1000]" in spread
+    # And the chi line stays labelled by cap, so it cannot be read positionally either.
+    assert "chi = d(value)/dmu per cap: 500:-0.5000, 1000:-0.5000, 2000:-0.5000" in out
