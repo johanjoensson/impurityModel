@@ -223,8 +223,12 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
     -------
     (cap, drift, rungs) : tuple
         The accepted cap, the ``drift`` -- the SPAN (``max - min``) of ``quantity`` over the
-        trailing window of up to ``CAP_CONVERGENCE_RUNS + 1`` rungs, ``None`` if the ladder never
-        got two comparable values -- and the list of ``(cap, value)`` pairs evaluated. Reading
+        trailing window of up to ``CAP_CONVERGENCE_RUNS + 1`` rungs, ``None`` when that window
+        holds fewer than two values -- and the list of ``(cap, value)`` pairs evaluated. Note
+        that a ``None`` rung *resets* the window, so ``drift`` can come back ``None`` from a
+        ladder that did evaluate two or more comparable values earlier: on the sequence
+        ``[1.0, 1.0, None, 5.0]`` the window is ``[5.0]`` at the end and the drift is ``None``,
+        not 4.0. Reading
         ``drift`` as a pairwise change between the last two rungs under-reports the error bar
         (:mod:`dc_record` records a measured 7x from exactly that confusion).
 

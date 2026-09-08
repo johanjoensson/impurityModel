@@ -495,10 +495,13 @@ things stop that 80 from settling the question:
   production scale, precisely because `GS_MAX_BLOCK_WIDTH` caps the width and *not* `num_wanted`.
   Measured at the same budget: the largest width affording rung 9 is 80 at `num_wanted = 2p`,
   58 at 5p, 40 at 10p, and **17 at 30p** — below the `p = 16` already measured at cap 2,000.
-- **`p(128,000)` is unrecorded, and interpolation puts it in range of 80, not comfortably below
-  it.** Log-interpolating the two recorded points — `p` maxing at 16 at cap 2,000, and ~105 at
-  the ~1M production cap — gives `p(128,000) ≈ 56`. Measurement 1's other production figure
-  (`k_ret` up to 315) interpolates to ~118, i.e. *above* 80.
+- **`p(128,000)` is unrecorded, and cannot be interpolated.** ~~Log-interpolating the two
+  recorded points — `p` maxing at 16 at cap 2,000, and ~105 at the ~1M production cap — gives
+  `p(128,000) ≈ 56`; Measurement 1's other production figure (`k_ret` up to 315) interpolates to
+  ~118.~~ **Withdrawn** — see "Phase 1b / Side-finding" at the end of this document: `p`'s
+  maximum is *still* 16 at cap 8,000, so the curve those two points were fitted through is not
+  smooth and neither number means anything. All that stands is that `p(128,000)` is unmeasured
+  and the threshold it has to clear is somewhere between 17 and 80 depending on `num_wanted`.
 
 So rung 9 may or may not need a width cap; deciding it needs `p` and `num_wanted` measured at
 that cap, not another estimator call. (The often-quoted 90,283 is at item 1's 4.750 GiB/rank
@@ -747,35 +750,61 @@ which is what the trace was already open for.
 
 ### The per-call cost split, measured in situ
 
-One full gap DC search at cap 8,000, `mpiexec -n 6`, `solver_trace` open. Two runs, for
-reproducibility:
+One full gap DC search at cap 8,000, `mpiexec -n 6`, `solver_trace` open. Three runs:
 
-| | run 1 | run 2 |
-|---|---|---|
-| walltime | 349.3 s | 352.2 s |
-| `block_apply` total | 33.06 s (**9.46 %**) | 33.16 s (**9.42 %**) |
-| calls | 13,802 | 13,802 |
-| mean | 2.395 ms/call | 2.403 ms/call |
+| | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| walltime | 349.3 s | 352.2 s | 355.8 s |
+| `block_apply`, rank 0 | 33.06 s (**9.46 %**) | 33.16 s (9.42 %) | 33.87 s (9.52 %) |
+| calls | 13,802 | 13,802 | 13,802 |
 
-All calls come from `site=continuation`; the rebuild arm never fired at this cap, as in Phase 0.
-Width: min 1, max 16, mean 3.23. Per-width mean cost, and the call-count-weighted least-squares
-split into a `w`-independent term and a `w`-proportional one:
+`solver_trace` is rank-local, so those are **rank 0's** numbers, and `block_apply` ends in
+`Allgather`/`Reduce` — one rank's total is its own work *plus* its wait for the slowest peer.
+Run 3 gathered every rank to separate them:
+
+```
+per-rank totals (s): 33.87, 33.61, 23.75, 24.37, 24.17, 25.97
+  max 33.87 s = 9.52 % of walltime      min 23.75 s = 6.68 %
+  spread 10.12 s = 2.84 % of the search = 30 % of the max
+```
+
+**Nearly a third of `block_apply`'s apparent cost is collective wait**, and no amount of
+pre-slicing removes wait. The honest work figure is the rank that waits least: **6.68 % of the
+search**, not the 9.4-9.5 % a single-rank trace reports. (An earlier draft of this section quoted
+the rank-0 number as if it were the workload; a review round then argued upward from it to
+5-6 %. Both were reading the same confound.)
+
+Widths: min 1, max 16, mean 3.23, all from `site=continuation` (the rebuild arm never fired at
+this cap, as in Phase 0). Per-width mean cost on rank 0, and the call-count-weighted
+least-squares split into a `w`-independent term and a `w`-proportional one:
 
 ```
 w=1:1.665(n=4674)  w=2:1.951(n=1944)  w=3:2.337(n=3850)  w=4:2.647(n=160)   w=5:2.871(n=1184)
 w=6:3.027(n=600)   w=7:4.240(n=582)   w=10:2.623(n=124)  w=11:4.639(n=380)  w=16:7.880(n=304)
 
-cost(w) ~ 1.257 + 0.354*w  ms
+cost(w) ~ 1.257 + 0.354*w  ms      (run 2; run 3 gives 1.310 + 0.354*w)
 ```
 
-**The `w`-independent term is 1.257 ms/call = 17.35 s = 4.93 % of the search. That is the
-ceiling on what CSR pre-slicing can remove**, and it is a ceiling rather than an estimate: the
-slice is `O(nnz)` while the matmul and reduce are `O(nnz * w)`, so pre-slicing can only ever
-touch the intercept — and it cannot take all of it, since that intercept also holds the
-`Allgather`, the result-buffer allocation, the per-call Python dispatch, and the latency floor of
-`size` small `Reduce`s. Judging from the synthetic benchmark's own split, pre-slicing plus the
-`Allgather` hoist together remove most but not all of it, so the realistic figure is **~3-4 % of
-the DC search, against a hard ceiling of 4.9 %**.
+Only `w`-independent work is reachable: the CSR row-slice is `O(nnz)` while the matmul and
+reduce are `O(nnz * w)`. The intercept is **52 % of mean per-call cost** — and the synthetic
+benchmark's pre-slice-only column agrees closely with that structural share (46.8 % measured at
+cap 8,000/`w=4` against the model's 47.0 %; 19.4 % against 18.2 % at `w=16`), which says
+pre-slicing removes close to the whole intercept rather than part of it.
+
+So the reachable saving is **~3 % of the DC search**: 52 % of the wait-free 6.68 %. Bounds on
+that, since the intercept is a fitted quantity and the width distribution is very uneven
+(74 % of calls at `w <= 3`):
+
+| | share of the search |
+|---|---|
+| rank-0 intercept, weighted fit (what an earlier draft called a "hard ceiling") | 5.08 % |
+| same, unweighted | 4.31 % |
+| same, fit over `w <= 6` only | 5.44 % |
+| `w=1`'s own measured mean — a real upper bound on `w`-independent work, rank 0 | 6.5 % |
+| **net of collective wait (the min rank), which is the removable one** | **3.1-3.5 %** |
+
+The "hard ceiling of 4.9 %" claimed earlier was neither hard nor a ceiling: two of the fits above
+exceed it, and all of them sit on rank 0's wait-inflated total.
 
 ### The synthetic benchmark, kept for the one thing only it can answer
 
@@ -813,32 +842,41 @@ columns add:
 
 ### Verdict: do not do Phase 1b
 
-~3-4 % of a DC search (ceiling 4.9 %) does not justify a correctness-sensitive change to a
-function three call sites share (`trlm.py`'s continuation and rebuild arms, and `BiCGSTAB.pyx`),
-in a campaign whose own history includes a rank-local early return in an extracted helper
-deadlocking a collective. Doing it properly means hoisting the partition and the row-slices out
-to the caller and threading them through that shared signature, or caching them inside
-`block_apply` on a key that correctly invalidates when `H` changes — the second is the cache-
-staleness hazard this document already records twice. Half of the deferred work is a measured
-pessimization anyway.
+**~3 % of a DC search**, once collective wait is netted out, does not justify a
+correctness-sensitive change to a function three call sites share (`trlm.py`'s continuation and
+rebuild arms, and `BiCGSTAB.pyx`), in a campaign whose own history includes a rank-local early
+return in an extracted helper deadlocking a collective. Doing it properly means hoisting the
+partition and the row-slices out to the caller and threading them through that shared signature,
+or caching them inside `block_apply` on a key that correctly invalidates when `H` changes — the
+second is the cache-staleness hazard this document already records twice. Half of the deferred
+work is a measured pessimization anyway.
 
-The opportunity cost is the argument that settles it: `expand` is **91 %** of this search
-(322.0 s of 352.2 s; `eigensolve` 27.5 s, `build` 1.5 s — siblings under `sector_solve`, so they
-do not overlap, though `expand`'s own internal `get_eigenvectors` calls are not separately timed
-and carry most of the Lanczos work). A 3-4 % lever is not where the next effort belongs.
+**The opportunity-cost argument, stated correctly this time.** An earlier draft wrote "`expand`
+is 91 % of this search, so a 3-4 % lever is not where the next effort belongs" — which compares a
+part against its own whole: `cipsi_solver.expand` calls `get_eigenvectors` internally, so almost
+all of `block_apply`'s 33 s sits *inside* `expand`'s 322 s. Speeding up `block_apply` **is**
+speeding up `expand`. The valid form of the claim is that `expand`'s **other** ~289 s — candidate
+generation, PT2 scoring, the restriction bookkeeping — is 82 % of the search and untouched by
+anything in Phase 1b. That is where a lever of any size has room to be found.
 
 What would change this verdict: a rank count where the `size` sequential `Reduce`s actually hurt
 (the 128-rank Arrhenius configuration is the case the deferral was written for, and is
 untested), or a workload whose widths are large enough for `block_apply` to dominate — the
 opposite of this one, where the mean width is 3.2 and the intercept carries half the cost.
 
+**A better target than pre-slicing, visible in the same data.** The per-rank spread is 10.12 s —
+30 % of `block_apply`'s cost on the slowest-observed rank, 2.8 % of the whole search — and it is
+load imbalance across the row partition, not slicing. It is also larger than the ~3 % pre-slicing
+could win. Nothing here investigates it; noted because the measurement fell out of the same run
+and points at partitioning rather than at the per-call code path.
+
 **Not measured, despite an earlier claim here that it was:** how the share moves with cap. The
 in-situ probe was run at cap 8,000 only. An earlier draft asserted "at cap 32,000 the same
-arithmetic lands near 3 %"; the call count, width histogram and wall time at that cap are not
-recorded anywhere, so that number had no derivation. Reconstructing from item 2's own
-per-evaluation scaling (88.7 s → 389.6 s, 4.39x for a 4x cap) against a per-call cost roughly
-linear in `nnz`, the share more likely stays flat near 5 % than falls to 3 %. Flat is enough for
-the verdict; the specific number was invented and is withdrawn.
+arithmetic lands near 3 %", then a correction said "flat near 5 %" — the first had no derivation,
+and the second silently reused the withdrawn synthetic arithmetic's 5 % while the measured share
+is 9.4 % (rank 0) or 6.7 % (wait-free). Both are withdrawn. The call count, width histogram and
+wall time at cap 32,000 are not recorded anywhere; "flat" is what the verdict rests on and is
+itself a reconstruction from item 2's per-evaluation scaling, not a measurement.
 
 ### Side-finding: `p`'s *maximum* did not grow between cap 2,000 and cap 8,000
 
@@ -857,10 +895,20 @@ reading a curve off two points that this measurement shows is not smooth. Also w
 this cap's `p` as an anchor for the RSS row at cap 64,000, for the same reason.
 
 **One correction that runs the other way from what an earlier draft claimed.** `num_wanted / p`
-here is **3.63** (means: 18.39 / 5.06), not the 2.2 an earlier version of this section stated
-with no derivation. Against `memory_estimate._GS_COUPLED_NUM_WANTED_RATIO = 2`, a measured 3.63
-means `estimate_gs_peak_bytes` **under**-counts the Krylov term by ~1.8x at this cap — the
-opposite of the "the estimator's `num_wanted` assumption is sound" conclusion drawn from the
-mis-derived number, and it pushes the rung-9 width threshold *down* from 80 rather than
-confirming it. The production-scale ratio, which is what `memory_estimate`'s own ~30x warning is
-about, remains unmeasured.
+here is **3.63** (18.39 / 5.06), not the 2.2 an earlier version of this section stated with no
+derivation. Against `memory_estimate._GS_COUPLED_NUM_WANTED_RATIO = 2` that is an *under*-count
+in `estimate_gs_peak_bytes`'s Krylov term — the opposite of the "the estimator's `num_wanted`
+assumption is sound" conclusion drawn from the mis-derived number.
+
+Its size is **1.17-1.22x, not the ~1.8x a second draft claimed** by taking 3.63/2 directly.
+`_gs_krylov_columns` does not scale linearly in the ratio: it computes
+`nw = num_wanted + _GS_EIGENSTATE_PAD` (10) and `blocks = 2*ceil(max_subspace/p) + 20`, and both
+the additive pad and the flat +20 dilute it. Evaluated at `n_dets = 8,000`: `p=4` gives 152
+columns assumed against 184 measured (1.21x), `p=5` 180 vs 220 (1.22x), `p=6` 216 vs 252 (1.17x),
+`p=16` 512 vs 608 (1.19x).
+
+Two caveats on the 3.63 itself. It is a ratio of means; the estimator wants the mean of the
+per-solve ratio, and both quantities are recorded per solve but only the means were kept. And it
+is a cap-8,000 number, so it says nothing about `memory_estimate`'s own ~30x warning, which is
+explicitly about production scale. The rung-9 width threshold moves *down* from 80 on this
+correction, but by ~20 %, not by the factor a 1.8x under-count would imply.
