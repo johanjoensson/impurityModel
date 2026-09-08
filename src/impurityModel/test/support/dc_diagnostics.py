@@ -170,55 +170,64 @@ def run_dc_search(
     # drop it.
     #
     # A FRESH dict per call, never the caller's: `dc_record.recording` fills the out-parameter
-    # with `report.update(record)` and never clears it, and `mu_tol_effective` is written
-    # *conditionally* by both criteria (only when the slope was measured -- a search that
-    # converged in one evaluation has no secant). Handing the same dict to every rung of a
-    # ladder would therefore let a rung that measured no slope read back the previous rung's
-    # `mu_tol_effective`/`tol` as if they were its own, and `_mu_verdict` would grade against a
-    # band no rung measured. The caller's dict is refreshed from this one below.
+    # with `report.update(record)` and never clears it, while `mu_tol_effective` is written
+    # conditionally -- `fixed_occupation_dc` gates it on `occ_chi`, a secant a one-evaluation
+    # search never measures, and `fixed_gap_dc` gates it on `delta_sum`, which is usually
+    # present (it comes from the band-edge eigenvector occupations, not a secant) but not
+    # guaranteed. Handing the same dict to every rung of a ladder would therefore let a rung
+    # that wrote no band read back the previous rung's `mu_tol_effective`/`tol` as if they were
+    # its own, and `_mu_verdict` would grade against a band no rung measured. The caller's dict
+    # is refreshed from this one below.
     record = {}
 
-    with solver_trace.tracing() as trace:
-        start = perf_counter()
-        if criterion == "occupation":
-            dc = fixed_occupation_dc(
-                model=model, basis=basis, solver=solver, comm=comm, verbosity=verbosity, report=record
-            )
-        elif criterion == "peak":
-            if peak_position is None:
-                raise ValueError('criterion="peak" needs a peak_position.')
-            dc = fixed_peak_dc(
-                model=model,
-                basis=basis,
-                solver=solver,
-                peak_position=peak_position,
-                comm=comm,
-                verbosity=verbosity,
-                # This harness measures search cost, not charge-state fidelity; a real workload's
-                # peak criterion landing on a non-nominal sector is not a benchmark failure.
-                allow_charge_state_change=True,
-                report=record,
-            )
-        elif criterion == "gap":
-            dc = fixed_gap_dc(
-                model=model,
-                basis=basis,
-                solver=solver,
-                offset=gap_offset,
-                comm=comm,
-                verbosity=verbosity,
-                allow_charge_state_change=True,
-                report=record,
-            )
-        else:
-            raise ValueError(f"unknown criterion {criterion!r}")
-        seconds = perf_counter() - start
-
-    if gap_report is not None:
-        # Cleared, not merely updated, so the caller sees exactly one rung's record rather than
-        # this rung's keys layered over whatever the last one left behind.
-        gap_report.clear()
-        gap_report.update(record)
+    try:
+        with solver_trace.tracing() as trace:
+            start = perf_counter()
+            if criterion == "occupation":
+                dc = fixed_occupation_dc(
+                    model=model, basis=basis, solver=solver, comm=comm, verbosity=verbosity, report=record
+                )
+            elif criterion == "peak":
+                if peak_position is None:
+                    raise ValueError('criterion="peak" needs a peak_position.')
+                dc = fixed_peak_dc(
+                    model=model,
+                    basis=basis,
+                    solver=solver,
+                    peak_position=peak_position,
+                    comm=comm,
+                    verbosity=verbosity,
+                    # This harness measures search cost, not charge-state fidelity; a real workload's
+                    # peak criterion landing on a non-nominal sector is not a benchmark failure.
+                    allow_charge_state_change=True,
+                    report=record,
+                )
+            elif criterion == "gap":
+                dc = fixed_gap_dc(
+                    model=model,
+                    basis=basis,
+                    solver=solver,
+                    offset=gap_offset,
+                    comm=comm,
+                    verbosity=verbosity,
+                    allow_charge_state_change=True,
+                    report=record,
+                )
+            else:
+                raise ValueError(f"unknown criterion {criterion!r}")
+            seconds = perf_counter() - start
+    finally:
+        # In a `finally` for the same reason `dc_record.recording` fills its own out-parameter
+        # from one (`dc_record.py`: "a criterion which raises still hands back how far it got"):
+        # a rung that raises -- `DoubleCountingUnreachable`, or the charge-state guard -- must
+        # hand back its own partial record, not leave the caller holding the PREVIOUS rung's.
+        # Putting this after the block instead reintroduced exactly the stale-record
+        # misattribution the fresh dict above exists to prevent, on the exception path.
+        if gap_report is not None:
+            # Cleared, not merely updated, so the caller sees exactly one rung's record rather
+            # than this rung's keys layered over whatever the last one left behind.
+            gap_report.clear()
+            gap_report.update(record)
 
     from impurityModel.ed.lie_algebra import extract_tensors
 
@@ -269,7 +278,16 @@ def run_dc_search(
         # measured bracket width and reports which basis it used in `tol_basis`), and a
         # hard-coded threshold in this harness is exactly what made its verdict wrong before.
         # `fixed_peak_dc` writes `tol` but no `mu_tol_effective`, so `mu_tol` stays None there
-        # and `_row_resolution` falls back to this row's own `tol`/`chi`.
+        # and `_row_resolution` falls back to `tol`/`criterion_chi`.
+        #
+        # `criterion_chi` is the CRITERION's own slope, not the `chi` column above. They are
+        # different measurements: the criterion calls `_dc_chi` with an `in_sector` predicate
+        # and its own width tolerance, while this harness's column deliberately passes neither
+        # (see its comment). Dividing `tol` by the unfiltered column would divide by a secant
+        # taken across a charge-sector discontinuity -- a jump over a vanishing width, i.e. an
+        # arbitrarily large slope -- producing a spuriously tight band and a manufactured
+        # DRIFTS, which is the failure `_mu_verdict` says picking the tightest band would cause.
+        "criterion_chi": record.get("chi"),
         "tol": record.get("tol"),
         "tol_basis": record.get("tol_basis"),
         "mu_tol": record.get("mu_tol_effective"),
@@ -375,20 +393,40 @@ def _row_resolution(row):
         own secant under its own width tolerance, not from the harness's independent ``_dc_chi``.
 
     ``tol / |chi|``
-        The fallback, from this harness's own two columns. ``fixed_peak_dc`` records ``tol`` and
-        a ``chi`` but no ``mu_tol_effective``, and refusing to grade a peak ladder forever
-        would be a coverage regression against the (wrong-axis) verdict this replaced.
+        The fallback, built from the criterion's own ``tol`` and its own ``chi``
+        (``row["criterion_chi"]``) -- **not** the table's ``chi`` column, which is this harness's
+        independent recomputation with no ``in_sector`` predicate and would divide ``tol`` by a
+        secant across a charge-sector discontinuity. ``fixed_peak_dc`` records ``tol`` and
+        ``chi`` but no ``mu_tol_effective``, and refusing to grade a peak ladder forever would
+        be a coverage regression against the (wrong-axis) verdict this replaced.
 
-    Returns ``(resolution, source)``; ``resolution`` is ``None`` when neither is available, and
-    ``inf`` when the criterion measured a genuinely flat slope.
+    The fallback is also taken when ``mu_tol_effective`` is present but *infinite* and the
+    fallback is finite: the two estimators are documented to disagree, so discarding a rung's
+    ``mu`` on one's degeneracy while another measurement is in hand throws away information.
+
+    Returns ``(resolution, source)``; ``resolution`` is ``None`` when neither is available,
+    ``inf`` when every available estimator measured a flat slope, and ``nan`` is passed through
+    as-is so the caller can tell "measured flat" from "not a number".
     """
+
+    def _fallback():
+        tol, chi = row.get("tol"), row.get("criterion_chi")
+        if tol is None or chi is None or not np.isfinite(tol) or not np.isfinite(chi):
+            return None, None
+        return (float("inf") if chi == 0 else abs(tol / chi)), "tol/|chi|"
+
     mu_tol = row.get("mu_tol")
     if mu_tol is not None:
-        return float(mu_tol), "mu_tol_effective"
-    tol, chi = row.get("tol"), row.get("chi")
-    if tol is not None and chi is not None and np.isfinite(tol) and np.isfinite(chi):
-        return (float("inf") if chi == 0 else abs(tol / chi)), "tol/|chi|"
-    return None, None
+        mu_tol = float(mu_tol)
+        if np.isfinite(mu_tol):
+            return mu_tol, "mu_tol_effective"
+        # Degenerate on this estimator; prefer a finite reading from the other one if there is
+        # one, and otherwise report the degeneracy rather than inventing a band.
+        fallback, source = _fallback()
+        if fallback is not None and np.isfinite(fallback):
+            return fallback, source
+        return mu_tol, "mu_tol_effective"
+    return _fallback()
 
 
 def _mu_verdict(rows):
@@ -407,54 +445,76 @@ def _mu_verdict(rows):
     degrades by ~5x across the ladder as the measured slope collapses -- so a single number has
     to pick one, and picking the tightest would manufacture ``DRIFTS``.
 
-    The two degenerate rungs are handled differently, because they are different situations:
+    The three degenerate rungs are handled differently, because they are different situations:
 
-    * **Infinite resolution** -- a genuinely measured zero slope, which ``dc_criteria`` records
-      as ``inf`` rather than dividing by zero. Dropped from **both** the spread and the band.
-      Its ``mu`` is unresolvable by the criterion's own admission, so it may sit anywhere on the
-      plateau; letting it inflate the spread while excluding it from the band would print
-      ``DRIFTS`` and blame the cap for one rung's degenerate slope.
-    * **No resolution reported at all** -- its ``mu`` is a perfectly well-determined answer, only
-      its precision is unknown, so it still counts toward the spread and is merely excluded from
-      the band. Dropping it would discard a real measurement.
+    * **Infinite resolution** on every available estimator -- a measured zero slope, which
+      ``dc_criteria`` records as ``inf`` rather than dividing by zero. Dropped from **both** the
+      spread and the band. Its ``mu`` is unresolvable by the criterion's own admission, so it may
+      sit anywhere on the plateau; letting it inflate the spread while excluding it from the band
+      would print ``DRIFTS`` and blame the cap for one rung's degenerate slope.
+    * **A NaN resolution** -- not a measurement at all. Dropped like the infinite case, but
+      reported as its own cause, so the line never claims a slope was "measured as zero" when
+      nothing was measured.
+    * **No resolution reported at all** -- kept in the spread, excluded from the band. Note this
+      is the *more conservative* default rather than a claim that the ``mu`` is well determined:
+      a rung with no reported resolution is one where no slope was measured, so its ``mu`` may be
+      as unresolvable as the infinite case's. It is counted because silently dropping a
+      measurement that cannot be bounded is the more dangerous of the two errors -- it can only
+      hide drift, whereas keeping it can only over-report it.
 
-    Both drops are reported in the line.
+    Every drop is reported in the line, with its cause and count.
+
+    **Known limit.** Only the exact ``inf`` endpoint is special-cased. A rung reporting a merely
+    *huge* finite resolution -- a near-zero but non-zero ``delta_sum`` -- becomes ``max(bands)``
+    and grades the whole ladder ``STABLE`` with no note. Thresholding "too large" would be
+    exactly the invented constant this verdict exists to remove, so instead ``print_ladder``
+    prints every per-rung resolution beside this line: a band orders of magnitude above its
+    neighbours is visible there.
 
     Returns a line rather than printing, so the caller keeps the output order and this stays
     testable without capturing stdout.
     """
-    mus, bands, sources, unresolved, unbanded = [], [], set(), 0, 0
+    mus, banded, flat, undefined, unbanded = [], [], 0, 0, 0
     for row in rows:
         mu = row.get("mu")
         if mu is None or not np.isfinite(mu):
             continue
         resolution, source = _row_resolution(row)
-        if resolution is not None and not np.isfinite(resolution):
-            unresolved += 1
+        if resolution is not None and np.isnan(resolution):
+            undefined += 1
+            continue
+        if resolution is not None and np.isinf(resolution):
+            flat += 1
             continue
         mus.append(mu)
         if resolution is None:
             unbanded += 1
         else:
-            bands.append(resolution)
-            sources.add(source)
+            banded.append((resolution, source))
 
     note = ""
-    if unresolved:
-        note += f"; {unresolved} rung(s) dropped entirely for a measured zero slope (resolution unbounded)"
+    if flat:
+        note += f"; {flat} rung(s) dropped entirely for a measured zero slope (resolution unbounded)"
+    if undefined:
+        note += f"; {undefined} rung(s) dropped entirely for an undefined (NaN) resolution"
     if unbanded:
         note += f"; {unbanded} rung(s) counted in the spread but reported no resolution"
 
     if len(mus) < 2:
-        return f"mu across the ladder: UNGRADED -- need two rungs with a finite mu, have {len(mus)}{note}"
+        return (
+            f"mu across the ladder: UNGRADED -- need two rungs with a finite mu and a usable "
+            f"resolution, have {len(mus)}{note}"
+        )
     spread = max(mus) - min(mus)
-    if not bands:
+    if not banded:
         return (
             f"mu across the ladder: spread {spread:.6f} (UNGRADED -- no rung reported a finite "
             f"resolution to judge it against){note}"
         )
-    band = max(bands)
-    sources = sorted(sources)
+    # Name the estimator that produced *this* band, not every estimator on the ladder: `band` is
+    # one rung's number, and joining all the sources reads as a single expression
+    # ("mu_tol_effective/tol/|chi|") that attributes it to the wrong one.
+    band, source = max(banded)
     if band <= 0:
         # Only reachable if a criterion reports tol == 0. Guarded rather than divided into: this
         # line is the last thing printed after a multi-hour benchmark whose per-rung rows have
@@ -465,7 +525,7 @@ def _mu_verdict(rows):
     verdict = "STABLE" if spread <= band else "DRIFTS -- low-cap answers do not transfer"
     return (
         f"mu across the ladder: spread {spread:.6f} against the loosest per-rung resolution "
-        f"{'/'.join(sources)} = {band:.2e} ({spread / band:.1f}x) ({verdict}){note}"
+        f"({source}) = {band:.2e} ({spread / band:.1f}x) ({verdict}){note}"
     )
 
 

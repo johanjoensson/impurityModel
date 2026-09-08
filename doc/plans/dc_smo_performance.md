@@ -668,8 +668,11 @@ class as `gf-monitor-was-converging-the-wrong-axis`.
 
 **Fixed.** `print_ladder` now grades `mu` against the criterion's own resolution
 (`_mu_verdict`/`_row_resolution`), prints the per-cap resolutions it used, and prints the value
-spread unlabelled as a verdict. Re-running the ladder above today would report `DRIFTS` at 24x.
-Kept here as the run that motivated the fix, not as current behaviour.
+spread unlabelled as a verdict. Re-running the ladder above today would report `DRIFTS`. The
+"24x" in the table below is on the `tol/|chi|` estimator, which is *not* what the fixed code
+grades a gap ladder against — it prefers the criterion's own `mu_tol_effective`, and the two
+disagree by a factor 3.7 on a measured SMO rung (5.19e-03 against 1.41e-03 at cap 500). Kept
+here as the run that motivated the fix, not as current behaviour.
 
 On the right axis the ladder is emphatically not stable:
 

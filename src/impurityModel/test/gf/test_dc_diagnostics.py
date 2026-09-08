@@ -281,13 +281,67 @@ def test_mu_verdict_falls_back_to_tol_over_chi_when_the_criterion_reports_no_mu_
     """`fixed_peak_dc` records `tol` and `chi` but no `mu_tol_effective`. Refusing to grade a
     peak ladder forever would be a coverage regression against the verdict this replaced."""
     rows = [
-        {"cap": 1000, "mu": 0.10, "mu_tol": None, "tol": 1e-3, "chi": -0.5},
-        {"cap": 2000, "mu": 0.40, "mu_tol": None, "tol": 1e-3, "chi": -0.5},
+        {"cap": 1000, "mu": 0.10, "mu_tol": None, "tol": 1e-3, "criterion_chi": -0.5},
+        {"cap": 2000, "mu": 0.40, "mu_tol": None, "tol": 1e-3, "criterion_chi": -0.5},
     ]
     line = dc_diagnostics._mu_verdict(rows)
     assert "DRIFTS" in line and "tol/|chi|" in line, line
     # 1e-3/0.5 = 2e-3, and the spread is 0.3.
     assert "2.00e-03" in line, line
+
+
+def test_the_fallback_uses_the_criterions_chi_not_the_harnesss_unfiltered_one():
+    """The table's `chi` column is recomputed here with no `in_sector` predicate, so across a
+    charge-sector boundary it is a jump over a vanishing width -- an arbitrarily large slope,
+    hence an arbitrarily tight band, hence a manufactured DRIFTS. Only `criterion_chi` (measured
+    by the criterion under its own sector predicate and width tolerance) may feed the fallback.
+    """
+    rows = [
+        # A sector-crossing secant in the harness's column, 1000x the criterion's own slope.
+        {"cap": 1000, "mu": 0.10, "mu_tol": None, "tol": 1e-3, "criterion_chi": -0.5, "chi": -500.0},
+        {"cap": 2000, "mu": 0.1005, "mu_tol": None, "tol": 1e-3, "criterion_chi": -0.5, "chi": -500.0},
+    ]
+    line = dc_diagnostics._mu_verdict(rows)
+    # criterion_chi gives a 2e-3 band, which the 5e-4 spread sits inside.
+    assert "STABLE" in line and "2.00e-03" in line, line
+    # The reading this rules out: the harness column would give 2e-6 and call it DRIFTS.
+    assert 0.0005 > 1e-3 / 500.0
+
+
+def test_mu_verdict_names_the_estimator_that_produced_the_band_not_every_estimator_present():
+    """`band` is one rung's number. Joining every source reads as a single expression
+    ("mu_tol_effective/tol/|chi|") and attributes the band to the wrong estimator."""
+    rows = [
+        {"cap": 1000, "mu": 0.10, "mu_tol": 1e-3},
+        {"cap": 2000, "mu": 0.90, "mu_tol": None, "tol": 1e-3, "criterion_chi": -0.05},  # 2e-2, the max
+    ]
+    line = dc_diagnostics._mu_verdict(rows)
+    assert "(tol/|chi|) = 2.00e-02" in line, line
+    assert "mu_tol_effective/tol" not in line, line
+
+
+def test_mu_verdict_keeps_the_spread_and_names_the_cause_when_every_rung_is_flat():
+    """The all-degenerate branch must not claim there were no finite mu values -- there were,
+    they were dropped for an unbounded resolution -- and must not lose the spread."""
+    line = dc_diagnostics._mu_verdict(_ladder((0.1, float("inf")), (0.9, float("inf"))))
+    assert "UNGRADED" in line and "measured zero slope" in line, line
+    assert "have 0" in line, line
+
+
+def test_mu_verdict_reports_a_nan_resolution_as_undefined_not_as_a_measured_zero_slope():
+    """A NaN band is not a measurement; saying "measured zero slope" would assert one."""
+    line = dc_diagnostics._mu_verdict(_ladder((0.1, float("nan")), (0.9, 5e-3)))
+    assert "undefined (NaN)" in line, line
+    assert "measured zero slope" not in line, line
+
+
+def test_a_rung_degenerate_on_one_estimator_uses_the_other_when_it_is_finite():
+    """`delta_sum == 0` makes the gap criterion's own band infinite, but the same rung may carry
+    a perfectly finite `tol`/`criterion_chi`. Dropping its mu anyway discards a measurement."""
+    row = {"cap": 1000, "mu": 0.1, "mu_tol": float("inf"), "tol": 1e-3, "criterion_chi": -0.5}
+    assert dc_diagnostics._row_resolution(row) == (pytest.approx(2e-3), "tol/|chi|")
+    # With no usable fallback it stays degenerate rather than inventing a band.
+    assert dc_diagnostics._row_resolution({"mu_tol": float("inf")})[0] == float("inf")
 
 
 def test_mu_verdict_needs_two_finite_shifts():
@@ -415,3 +469,102 @@ def test_run_dc_search_hands_each_rung_a_fresh_record(monkeypatch):
     assert first["mu_tol"] == pytest.approx(6.49e-3)
     # The bug this pins: with a shared dict, `second["mu_tol"]` came back as the first rung's.
     assert second["mu_tol"] is None
+
+
+def _stub_archive(monkeypatch, diag):
+    """Wire `run_dc_search`'s archive load out, leaving its own record/row assembly intact."""
+
+    @dataclass
+    class _Basis:
+        truncation_threshold: object = None
+        tau: float = 1e-3
+
+    class _Model:
+        dc = None
+        n_spin_orbitals = 4
+
+    monkeypatch.setitem(diag.WORKLOADS, "_stub", "unused")
+    monkeypatch.setattr(diag, "load_selfenergy_archive", lambda *a, **k: (_Model(), None, _Basis(), None, "stub"))
+    monkeypatch.setattr(diag, "suggest_truncation_threshold", lambda *a, **k: 12345)
+
+
+def test_a_rung_that_raises_hands_back_its_own_record_not_the_previous_rungs(monkeypatch):
+    """The stale-record bug, relocated onto the exception path by an earlier version of the fix.
+
+    `dc_record.recording` fills its out-parameter from a `finally` so a criterion that raises
+    still reports how far it got. Copying into the caller's dict *after* the search block undid
+    that: a rung that raised left the caller holding the previous rung's record, which is the
+    misattribution the fresh-dict change exists to prevent.
+    """
+    from impurityModel.test.support import dc_diagnostics as diag
+
+    _stub_archive(monkeypatch, diag)
+    calls = {"n": 0}
+
+    def fake_gap_dc(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            kwargs["report"].update({"tol": 1.0, "mu_tol_effective": 1.0, "status": "rung1"})
+            solver_trace.note("dc_evaluation", mu=0.25, gap=0.0)
+            return 0.25 * np.identity(2)
+        kwargs["report"].update({"tol": 2.0, "status": "unreachable-rung2"})
+        raise dc_search.DoubleCountingUnreachable("rung 2 could not reach its target")
+
+    monkeypatch.setattr(diag, "fixed_gap_dc", fake_gap_dc)
+
+    shared = {}
+    diag.run_dc_search("_stub", cap=1000, criterion="gap", gap_report=shared)
+    assert shared["status"] == "rung1"
+    with pytest.raises(dc_search.DoubleCountingUnreachable):
+        diag.run_dc_search("_stub", cap=2000, criterion="gap", gap_report=shared)
+    # Its own partial record, not rung 1's -- and rung 1's band must be gone, or a later reader
+    # attributes a resolution to a rung that never measured one.
+    assert shared["status"] == "unreachable-rung2"
+    assert shared["tol"] == 2.0
+    assert "mu_tol_effective" not in shared
+
+
+def test_cap_ladder_forwards_gap_report_and_gap_offset(monkeypatch):
+    """Both parameters existed on `cap_ladder` and were dropped: a caller asking for the record
+    off a ladder run got an untouched dict, and a non-zero offset was silently ignored."""
+    from impurityModel.test.support import dc_diagnostics as diag
+
+    seen = []
+
+    def fake_run(workload_key, cap, **kwargs):
+        seen.append((cap, kwargs.get("gap_offset"), kwargs.get("gap_report")))
+        if kwargs.get("gap_report") is not None:
+            kwargs["gap_report"].clear()
+            kwargs["gap_report"].update({"cap": cap})
+        return {
+            "workload": workload_key,
+            "label": "stub",
+            "criterion": "gap",
+            "cap": cap,
+            "production_cap": 0,
+            "seconds": 1.0,
+            "mu": 0.1 * cap,
+            "value": 0.0,
+            "chi": -1.0,
+            "criterion_chi": -1.0,
+            "tol": 1e-3,
+            "tol_basis": "mu_resolution",
+            "mu_tol": 1e-3,
+            "evaluations": 1,
+            "sector_solves": 1,
+            "cache_hits": 0,
+            "build_s": 0.0,
+            "expand_s": 0.0,
+            "eigensolve_s": 0.0,
+            "max_dets": cap,
+        }
+
+    monkeypatch.setattr(diag, "run_dc_search", fake_run)
+    report = {"stale": True}
+    diag.cap_ladder("_stub", [10, 20], criterion="gap", gap_offset=0.75, gap_report=report, comm=None)
+
+    assert [cap for cap, _off, _rep in seen] == [10, 20]
+    assert all(offset == 0.75 for _cap, offset, _rep in seen), seen
+    assert all(rep is report for _cap, _off, rep in seen), seen
+    # And it holds the last rung's record alone.
+    assert report == {"cap": 20}
