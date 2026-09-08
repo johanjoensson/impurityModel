@@ -659,19 +659,27 @@ def test_print_ladder_names_the_caps_its_value_spread_covers_and_the_ones_it_dro
     """A rung whose observable never resolved must not vanish silently from the spread.
 
     `print_ladder`'s aggregate lines are the module's whole output, and until this test nothing
-    pinned any of them. The specific hazard is an aggregate over an unstated subset: `value` is
-    `nan` on a rung that resolved nothing (`run_dc_search`'s `achieved`), `np.isfinite` drops it,
-    and the printed spread then describes two caps under a heading that names none. That is the
-    same misread the `cap:value` labelling on the chi line exists to prevent.
+    pinned any line it composes itself (`_mu_verdict`'s is pinned by the tests above, which is why
+    that one returns a string instead of printing). The hazard is an aggregate over an unstated
+    subset: `value` is `nan` on a rung that resolved nothing (`run_dc_search`'s `achieved`),
+    `np.isfinite` drops it, and the printed spread then describes two caps under a heading that
+    names none.
+
+    The middle rung carries `chi = None` with its `nan` value, which is the pairing production
+    actually produces: an empty `samples` map gives `mu_evaluated = None`, so `achieved` is `nan`
+    *and* `_dc_chi` returns `None` together. Pairing that `nan` with a numeric `chi` would leave
+    the chi line printing one number per rung, where positional misreading is impossible and the
+    `cap:value` labelling this asserts is untested.
     """
     from impurityModel.test.support import dc_diagnostics as diag
 
-    def _row(cap, value, mu):
+    def _row(cap, value, mu, chi):
         return {
             "workload": "_stub",
             "label": "stub",
             "criterion": "gap",
             "cap": cap,
+            "production_cap": 100000,
             "seconds": 1.0,
             "evaluations": 3,
             "sector_solves": 3,
@@ -682,19 +690,67 @@ def test_print_ladder_names_the_caps_its_value_spread_covers_and_the_ones_it_dro
             "eigensolve_s": 0.2,
             "mu": mu,
             "value": value,
-            "chi": -0.5,
+            "chi": chi,
             "tol": 2.5e-3,
             "tol_basis": "fixed",
             "mu_tol": 5e-3,
             "criterion_chi": -0.5,
         }
 
-    diag.print_ladder([_row(500, 0.001, 0.10), _row(1000, float("nan"), 0.11), _row(2000, 0.003, 0.12)])
+    diag.print_ladder(
+        [
+            _row(500, 0.001, 0.10, -0.5),
+            _row(1000, float("nan"), 0.11, None),
+            _row(2000, 0.003, 0.12, -0.25),
+        ]
+    )
     out = capsys.readouterr().out
 
     spread = next(line for line in out.splitlines() if line.startswith("achieved value across the ladder"))
     # Both halves: which caps the spread is over, and which one it is not.
     assert "over caps [500, 2000]" in spread
     assert "dropped as non-finite: [1000]" in spread
-    # And the chi line stays labelled by cap, so it cannot be read positionally either.
-    assert "chi = d(value)/dmu per cap: 500:-0.5000, 1000:-0.5000, 2000:-0.5000" in out
+    # The chi line drops the middle rung, so it prints two numbers for a three-rung ladder. Read
+    # positionally those land on caps 500 and 1000; the labels are what make them land on 500 and
+    # 2000. Distinct values, so an implementation that labelled but mismatched would fail too.
+    assert "chi = d(value)/dmu per cap: 500:-0.5000, 2000:-0.2500" in out
+
+
+def test_the_direct_invocation_honours_dc_diag_criterion(monkeypatch):
+    """The two documented ways to run the ladder must select the same criterion.
+
+    They did not. `__main__` called `cap_ladder` without `criterion`, so `python -m ...
+    dc_diagnostics smo 2000 8000 32000` took the "occupation" default however `DC_DIAG_CRITERION`
+    was set, while the pytest entry point beside it read the variable. Nothing announced the
+    substitution except the criterion name in the table header, which prints *after* the ladder --
+    so a `DC_DIAG_CRITERION=gap` run measured the occupation search and said so 28 minutes later.
+    """
+    seen = {}
+    monkeypatch.setattr(dc_diagnostics, "cap_ladder", lambda key, caps, **kw: seen.update(key=key, caps=caps, **kw))
+
+    dc_diagnostics.main(["dc_diagnostics", "smo", "2000", "8000"], {"DC_DIAG_CRITERION": "gap"})
+
+    assert seen["criterion"] == "gap"
+    assert seen["key"] == "smo" and seen["caps"] == [2000, 8000]
+    # The default is unchanged when the variable is absent -- the fix must not silently switch it.
+    seen.clear()
+    dc_diagnostics.main(["dc_diagnostics", "smo"], {})
+    assert seen["criterion"] == "occupation"
+
+
+def test_the_direct_invocation_routes_the_convergence_sweep_and_demands_its_mu(monkeypatch):
+    """The other branch of the same dispatch, including the argument it refuses to guess."""
+    seen = {}
+    monkeypatch.setattr(
+        dc_diagnostics, "occupation_convergence_sweep", lambda key, mu, **kw: seen.update(key=key, mu=mu, **kw)
+    )
+
+    dc_diagnostics.main(
+        ["dc_diagnostics", "nio_15", "2000", "4000"],
+        {"DC_DIAG_MODE": "occupation_convergence", "DC_DIAG_MU": "0.41"},
+    )
+    assert seen["mu"] == pytest.approx(0.41) and seen["caps"] == [2000, 4000]
+
+    # A sweep at an unstated mu is not a sweep at mu = 0; it has to fail before the compute.
+    with pytest.raises(RuntimeError, match="needs DC_DIAG_MU"):
+        dc_diagnostics.main(["dc_diagnostics", "nio_15"], {"DC_DIAG_MODE": "occupation_convergence"})

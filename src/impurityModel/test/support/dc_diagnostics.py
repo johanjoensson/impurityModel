@@ -858,6 +858,45 @@ def test_dc_baseline():
     )
 
 
+def main(argv, environ, comm=None):
+    """Dispatch the direct ``python -m`` invocation. Separate so it can be tested without a run.
+
+    It reads the same ``DC_DIAG_*`` variables as the pytest entry point above, and that parity is
+    the point: ``criterion`` used to be missing here, so the documented direct invocation ran the
+    ``"occupation"`` default whatever ``DC_DIAG_CRITERION`` said. The only symptom was the
+    criterion named in the table header -- printed *after* the ladder, which on SMO is half an
+    hour. A wrong knob has to fail before the compute, not after it.
+    """
+    key = argv[1] if len(argv) > 1 else "nio_20"
+    verbosity = int(environ.get("DC_DIAG_VERBOSITY", "0"))
+    iteration = int(environ.get("DC_DIAG_ITERATION", DEFAULT_ITERATION))
+
+    if environ.get("DC_DIAG_MODE") == "occupation_convergence":
+        mu_env = environ.get("DC_DIAG_MU")
+        if mu_env is None:
+            raise RuntimeError("DC_DIAG_MODE=occupation_convergence needs DC_DIAG_MU set.")
+        caps = [int(c) for c in argv[2:]] or list(DEFAULT_CONVERGENCE_CAPS)
+        occupation_convergence_sweep(
+            key,
+            float(mu_env),
+            caps=caps,
+            comm=comm,
+            verbosity=verbosity,
+            iteration=iteration,
+        )
+        return
+
+    caps = [int(c) for c in argv[2:]] or list(DEFAULT_CAPS)
+    cap_ladder(
+        key,
+        caps,
+        criterion=environ.get("DC_DIAG_CRITERION", "occupation"),
+        comm=comm,
+        verbosity=verbosity,
+        iteration=iteration,
+    )
+
+
 if __name__ == "__main__":
     import sys
 
@@ -867,29 +906,4 @@ if __name__ == "__main__":
         _comm = MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None
     except ImportError:
         _comm = None
-    _key = sys.argv[1] if len(sys.argv) > 1 else "nio_20"
-    _verbosity = int(os.environ.get("DC_DIAG_VERBOSITY", "0"))
-    _iteration = int(os.environ.get("DC_DIAG_ITERATION", DEFAULT_ITERATION))
-
-    if os.environ.get("DC_DIAG_MODE") == "occupation_convergence":
-        _mu_env = os.environ.get("DC_DIAG_MU")
-        if _mu_env is None:
-            raise RuntimeError("DC_DIAG_MODE=occupation_convergence needs DC_DIAG_MU set.")
-        _caps = [int(c) for c in sys.argv[2:]] or list(DEFAULT_CONVERGENCE_CAPS)
-        occupation_convergence_sweep(
-            _key,
-            float(_mu_env),
-            caps=_caps,
-            comm=_comm,
-            verbosity=_verbosity,
-            iteration=_iteration,
-        )
-    else:
-        _caps = [int(c) for c in sys.argv[2:]] or list(DEFAULT_CAPS)
-        cap_ladder(
-            _key,
-            _caps,
-            comm=_comm,
-            verbosity=_verbosity,
-            iteration=_iteration,
-        )
+    main(sys.argv, os.environ, comm=_comm)
