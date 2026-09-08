@@ -173,10 +173,10 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
     **What this trades away, stated plainly.** The double counting is then determined on a
     smaller variational space than ``calc_selfenergy`` will use at that ``dc`` -- a DC<->GS parity
     gap of the same shape this module exists to close elsewhere (a halved memory budget). The
-    difference is that this one is meant to be *measured and recorded* -- the caller is meant to
-    record ``dc_cap``, ``dc_cap_drift`` and the memory-derived ceiling beside it, rather than
-    inherit it silently. Not yet true: :mod:`dc_record` has the vocabulary for these fields, but no
-    caller wires this function in yet to fill them -- that is the next commit in this phase.
+    difference is that this one is *measured and recorded*: the caller records ``dc_cap``,
+    ``dc_cap_drift`` and the memory-derived ceiling (``dc_cap_parity``) beside it, rather than
+    inheriting it silently. :func:`impurityModel.ed.dc_criteria._calibrate_cap` does that wiring
+    for both criteria.
 
     Parameters
     ----------
@@ -192,12 +192,10 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
         as the ceiling: the ladder never proposes a cap the machine could not have run.
     verbose : bool
         Gate for the informational progress line printed on acceptance (rank 0 only). Not meant to
-        be the durable record of which cap was used -- that is meant to be :mod:`dc_record`'s
-        unconditional ``dc_cap``/``dc_cap_drift`` fields (:mod:`dc_criteria` would write them once
-        this function is wired in), which is what would make gating this progress line behind
-        ``verbose`` safe rather than hiding the answer. :mod:`dc_record` already knows how to print
-        both fields, but no caller wires this function in yet to fill them -- that is why this is
-        still phrased as intent, not fact; the wiring is the next commit in this phase.
+        be the durable record of which cap was used -- that is :mod:`dc_record`'s unconditional
+        ``dc_cap``/``dc_cap_drift`` fields, which :mod:`dc_criteria` writes from
+        ``_calibrate_cap``. That is what makes gating this progress line behind ``verbose`` safe
+        rather than hiding the answer.
         The warning printed when the ladder exhausts its rung budget
         without settling is unconditional regardless -- matching this module's convention that a
         result the caller should distrust is never hidden behind a verbosity flag.
@@ -228,7 +226,14 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
         which is only sound while the last rung *is* the accepted one -- a caller doing this
         must verify that itself (e.g. by having ``quantity`` record which cap its own caches were
         last built at, and comparing that against the returned ``cap``) rather than assume it.
-        Not yet done by any caller in this codebase; :mod:`dc_criteria` wires this in next.
+        :func:`impurityModel.ed.dc_criteria.fixed_gap_dc` does exactly that, comparing its own
+        ``cached_cap`` against this ``cap`` before deciding to keep or clear its caches.
+
+        ``rungs`` is currently discarded by both callers (``_calibrate_cap`` binds it to ``_``),
+        so no per-rung history reaches :mod:`dc_record` and no *trend* in the drift is
+        recoverable after the fact -- only the single span ``drift`` reports. Anything that wants
+        to argue "the drift is or is not shrinking with cap" needs this list plumbed through
+        first, or its own ladder run.
     """
     target = CAP_CONVERGENCE_FRACTION * tol
     rungs = []
