@@ -619,5 +619,31 @@ def test_run_dc_search_drops_unresolved_evaluations_from_its_sample_map(monkeypa
     row = diag.run_dc_search("_stub", cap=1000, criterion="gap")
     assert row["value"] == pytest.approx(1e-4)
     assert row["mu"] == pytest.approx(0.25)
+    # Only the resolved point survives, so no pair straddles the answer and the slope is
+    # genuinely unresolvable. Asserted, because an implementation that coerced None -> nan
+    # instead of dropping would satisfy every other assertion here.
+    assert row["chi"] is None
     # Formatting the row is where a None `value` would surface in production.
     assert "0.00010" in diag._format_row(row)
+
+
+def test_a_dropped_evaluation_still_leaves_a_slope_measurable_from_the_survivors(monkeypatch):
+    """The filter must drop only the unresolved point, not the rung's ability to measure chi."""
+    from impurityModel.test.support import dc_diagnostics as diag
+
+    _stub_archive(monkeypatch, diag)
+
+    def fake_gap_dc(**kwargs):
+        kwargs["report"].update({"tol": 2.5e-3, "chi": -0.5, "mu_tol_effective": 5e-3})
+        solver_trace.note("dc_evaluation", mu=0.20, gap_centre=-1.0)
+        solver_trace.note("dc_evaluation", mu=0.22, gap_centre=None)  # unresolved, dropped
+        solver_trace.note("dc_evaluation", mu=0.25, gap_centre=0.0)
+        solver_trace.note("dc_evaluation", mu=0.30, gap_centre=1.0)
+        return 0.25 * np.identity(2)
+
+    monkeypatch.setattr(diag, "fixed_gap_dc", fake_gap_dc)
+
+    row = diag.run_dc_search("_stub", cap=1000, criterion="gap")
+    assert row["value"] == pytest.approx(0.0)
+    # Measured from the surviving neighbours 0.20 and 0.25: (0.0 - -1.0) / 0.05 = 20.
+    assert row["chi"] == pytest.approx(20.0)

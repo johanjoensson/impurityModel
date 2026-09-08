@@ -305,14 +305,12 @@ def run_dc_search(
         # why a band built from it would not describe either branch. Measured on SMO at cap 500:
         # the criterion reports chi = -0.5011 where this column reports -1.9566.
         #
-        # Two further differences, neither of which the fallback depends on but both of which
-        # stop `in_sector` from being called the *only* one. First, the sample maps differ: the
-        # gap and peak criteria drop trials whose observable did not resolve (`centre_at` needs
-        # both band edges; `peak_at[mu]` is written only `if gap is not None`), while the
-        # occupation criterion does not filter -- and this module's `samples` filters on key
-        # presence, not on value, so it can hold a `None` the gap and peak criteria excluded.
-        # Second, every criterion measures at its own returned `mu` rather than at the snapped
-        # `mu_evaluated` this module uses (see the comment above it).
+        # One further difference, which the fallback does not depend on but which stops
+        # `in_sector` from being called the *only* one: every criterion measures at its own
+        # returned `mu`, this module at the snapped `mu_evaluated` (see the comment above it).
+        # The sample maps used to differ too -- this module kept trials whose observable did not
+        # resolve, where the gap and peak criteria drop them -- but `samples` now filters on
+        # value for the same reason they do, so that difference is gone.
         "criterion_chi": record.get("chi"),
         "tol": record.get("tol"),
         "tol_basis": record.get("tol_basis"),
@@ -630,9 +628,14 @@ def print_ladder(rows):
                 f"production cap on this machine: {production_cap} determinants "
                 f"-> projected {projected:.0f} s ({projected / 3600:.1f} h) per DC search"
             )
-    chis = [row["chi"] for row in rows if row["chi"] is not None]
+    # Labelled by cap, not positional. A `None` chi is reachable on a rung that *succeeded* --
+    # `_dc_chi` returns `(None, None)` when no evaluated pair straddles the answer by more than
+    # `width_tol`, which the `samples` value-filter above made newly possible by dropping
+    # unresolved trials. Unlabelled, a three-cap ladder whose middle rung lost its pair printed
+    # two numbers under a header saying "per cap", which reads positionally onto the first two.
+    chis = [(row["cap"], row["chi"]) for row in rows if row["chi"] is not None]
     if chis:
-        print("chi = d(value)/dmu per cap: " + ", ".join(f"{chi:.4f}" for chi in chis))
+        print("chi = d(value)/dmu per cap: " + ", ".join(f"{cap}:{chi:.4f}" for cap, chi in chis))
     print("", flush=True)
 
 
