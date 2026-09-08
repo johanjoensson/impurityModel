@@ -105,7 +105,11 @@ cap.
 
 ## Gap centre in `mu` (for judging later phases' savings)
 
-| cap | mu | gap_center | chi | tol | tol/\|chi\| |
+`chi` here is the **criterion's own** slope, out of its record. (The item-2 table further down
+has a column with the same name that is a *different* measurement -- this document holds two,
+and they are not interchangeable. See "Two different `chi` columns" below.)
+
+| cap | mu | gap_center | chi (criterion) | tol | tol/\|chi\| |
 |---|---|---|---|---|---|
 | 500  | 0.068424 | -0.001360 | -0.5011 | 2.76e-3 | 5.51e-3 |
 | 2000 | 0.139038 | -0.000962 | -0.4905 | 2.50e-3 | 5.10e-3 |
@@ -680,23 +684,34 @@ the verdict, and quoting "the same 24x as the table" would assume exactly the eq
 `_row_resolution` exists to deny — at cap 500, where both are recorded, they differ by 3.7x
 (5.19e-03 against 1.41e-03).
 
-What *does* support the range is the one criterion-side datum at a comparable cap: the item-3
-ladder run at cap 64,000 recorded `mu_tol_effective` = 1.13e-02 (criterion `chi` = -0.2213),
-against which the 0.255 spread is **22.6x**. The harness column at cap 32,000 gives 1.05e-02 and
-24.3x. Both land in the same place, which is why the verdict is robust even though the
-multiplier is not pinned: 0.255 dwarfs any band of order 1e-2. Kept here as the run that
-motivated the fix, not as current behaviour.
+What supports the range is one datum: the item-3 ladder run at cap 64,000 recorded
+`mu_tol_effective` = 1.13e-02 (criterion `chi` = -0.2213), against which the 0.255 spread is
+**22.6x**. The harness column's 24.3x at cap 32,000 is *not* a second, corroborating
+measurement -- by the paragraph above it is the estimator this section disowns, and at cap 500 it
+runs 3.7x tight, which would put the true multiplier nearer 6x if that ratio held at the top of
+the ladder. It does not obviously hold (the criterion's -0.2213 at cap 64,000 sits within 7% of
+the harness's -0.2384 at cap 32,000), but two similar slopes at neighbouring caps is weak
+evidence when `chi` collapses 5.4x along the ladder anyway.
+
+So: the multiplier is somewhere between ~6x and ~23x and this document cannot pin it further
+without the criterion's `chi` at those caps, which was never recorded. **The verdict does not
+depend on pinning it** -- 0.255 against any band from 1e-2 to 4e-2 is 6x or more. Kept here as
+the run that motivated the fix, not as current behaviour.
 
 On the right axis the ladder is emphatically not stable:
 
-| cap | `mu` | `chi` | resolution `tol/\|chi\|` |
+`chi` here is the **harness's** own recomputation (`print_ladder` prints `row["chi"]`), *not* the
+criterion's -- see "Two different `chi` columns" below before dividing anything by it.
+
+| cap | `mu` | `chi` (harness) | `tol/\|chi\|` on that column |
 |---|---|---|---|
 | 2,000 | 0.141796 | -1.2797 | 1.95e-03 |
 | 8,000 | 0.208290 | -0.4730 | 5.29e-03 |
 | 32,000 | -0.046748 | -0.2384 | 1.05e-02 |
 
-`mu` spans **0.255**, between 24x (against the loosest per-cap resolution) and 130x (against the
-tightest) the band the criterion claims to deliver. It also changes sign between 8,000 and
+`mu` spans **0.255**, between 24x and 130x those numbers. Read them as an order-of-magnitude
+scale rather than as the criterion's own band: they are built from the harness column, and the
+criterion's resolution at these caps was not recorded. It also changes sign between 8,000 and
 32,000, independently reproducing the sign change the item-3 ladder run showed at 64,000 — on a
 different code path, at a pinned iteration, with the cap ladder bypassed. The non-settling is
 not an artifact of the Phase 5 ladder.
@@ -704,8 +719,27 @@ not an artifact of the Phase 5 ladder.
 `chi` collapsing by 5.4x across the ladder is the mechanism, and it is worth stating separately
 because it makes the two axes move in opposite directions: `mu` is recovered from the returned
 `dc`, and the centre is driven to zero, so a nearly-constant `value` divided by a collapsing
-slope produces a wandering `mu`. It also means the criterion's own resolution *degrades* with
-cap (1.95e-03 → 1.05e-02): spending more determinants buys a looser bound, not a tighter one.
+slope produces a wandering `mu`. It also means the resolution *degrades* with cap (1.95e-03 →
+1.05e-02 on this column): spending more determinants buys a looser bound, not a tighter one.
+
+### Two different `chi` columns, and why they must not be mixed
+
+This document reports two quantities both called `chi`, and an earlier revision of the
+`STABLE`-verdict section mixed them in three separate ways before this note existed.
+
+* **The criterion's** (`dc_record`'s `chi`, the "Gap centre in `mu`" table above): measured by
+  `_dc_chi` under the criterion's own `in_sector` predicate, on its own filtered sample map, at
+  its own returned `mu`. This is the one `mu_tol_effective` is consistent with, and the one
+  `dc_diagnostics._row_resolution` will build a band from.
+* **The harness's** (`run_dc_search`'s `chi`, the item-2 table): the same `_dc_chi` with the same
+  `width_tol` but **no** sector predicate, evaluated at a snapped `mu_evaluated`. Recomputed here
+  deliberately, and deliberately *not* used as a resolution.
+
+They are not close. At cap 500, the one cap where both were recorded, the criterion reports
+-0.5011 and the harness -1.9566 -- so `tol/|chi|` on the harness column (2.76e-3/1.9566 =
+1.41e-03) is 3.7x tighter than the criterion's `mu_tol_effective` (5.19e-03, itself within 6% of
+the criterion-column 5.51e-03). Note also the two tables use different `tol` (2.76e-3 at cap 500,
+2.50e-3 at the item-2 caps), so rows cannot be carried between them either.
 
 ### Cost: the scaling exponent is not the whole story
 

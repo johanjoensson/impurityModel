@@ -284,8 +284,7 @@ def run_dc_search(
         #
         # `criterion_chi` is the CRITERION's own slope, not the `chi` column above. The
         # difference that matters here is `in_sector`: the gap and occupation criteria pass the
-        # *same*
-        # `bracket_width_tol(tau)` this harness does (`dc_criteria.py:1542`, `:2129`) but also a
+        # *same* `bracket_width_tol(tau)` this harness does (`dc_criteria.py:1542`, `:2129`) but a
         # sector predicate, which the column above deliberately omits. So the column can pair
         # two points either side of a charge-sector boundary. That is not a vanishing-width
         # jump -- `_dc_chi` already drops pairs narrower than `width_tol` -- it is a finite-width
@@ -294,9 +293,10 @@ def run_dc_search(
         # the criterion reports chi = -0.5011 where this column reports -1.9566.
         #
         # Two further differences, neither of which the fallback depends on but both of which
-        # stop this from being called the *only* one: the criterion filters its sample map to
-        # evaluations where both band edges resolved, and it measures at its own returned `mu`
-        # rather than at the snapped `mu_evaluated` this module uses (see its comment below).
+        # stop `in_sector` from being called the *only* one: the gap criterion filters its sample
+        # map to evaluations where both band edges resolved (`centre_at`; the occupation
+        # criterion does not filter), and every criterion measures at its own returned `mu`
+        # rather than at the snapped `mu_evaluated` this module uses (see the comment above it).
         "criterion_chi": record.get("chi"),
         "tol": record.get("tol"),
         "tol_basis": record.get("tol_basis"),
