@@ -567,8 +567,10 @@ Read together, that splits the campaign's outcome:
 **What would actually resolve this**, since item 2 on its own will not: it varies caps only
 (2,000/8,000/32,000), and every one of those is a rung the ladder already ran and already
 reported as unsettled, so it cannot arbitrate between the deferred post-search cap
-re-verification and a width cap. What it *does* deliver is `p(cap)` — the quantity missing from
-every measurement above — plus the cost scaling and the per-kind timings. Deciding the width
+re-verification and a width cap. What it *does* deliver is the cost scaling, the per-kind
+timings, and an independent `mu`-drift measurement (below). It does **not** deliver `p(cap)`,
+the quantity missing from every measurement above: `run_dc_search`'s returned row carries
+per-kind seconds and counts but no block widths, so that needs its own probe. Deciding the width
 question needs its own A/B at one pinned cap with `solver_trace` open, at a cap large enough for
 `GS_MAX_BLOCK_WIDTH` to bind (at cap 2,000, Phase 0 measured `p` maxing at 16, so a cap of 8
 barely binds).
@@ -579,3 +581,94 @@ of it, since rung 9 fits this run's own budget at any width below 80 (above). Wh
 at rung 9, or whether SMO's `mu` keeps walking, is the question; the drift has not shrunk over
 the last three rungs, so the honest prior is that a single extra rung will not close it and the
 deferred post-search cap re-verification is the more promising of the two deferred remedies.
+
+## Item 2: the `RUN_DC_DIAG` cap ladder
+
+`RUN_DC_DIAG=1 DC_DIAG_CRITERION=gap DC_DIAG_WORKLOAD=smo DC_DIAG_CAPS=2000,8000,32000` under
+`mpiexec -n 6`, `OPENBLAS_NUM_THREADS=1`, 28 min total. The harness pins `iteration=1`; the SMO
+archive holds only one iteration (the cluster group carries the datasets directly, no iteration
+subgroups), so this is the same data the item-3 runs loaded through the loader's `last` default
+— the confound `archives-differ-on-whether-h0-contains-dc` warns about does not arise here.
+
+```
+      cap    seconds  evals  solves   hits     dets   build_s   expand_s   eigen_s         mu      value
+     2000      178.4      6      51     47     2000       1.4      162.1      14.2   0.141796   -0.00207
+     8000      354.9      4      35     31     8000       1.5      324.6      27.6   0.208290   -0.00106
+    32000     1168.8      3      26     21    32000       2.3     1050.4     112.7  -0.046748    0.00034
+achieved value across the ladder: spread 0.0024 (STABLE)
+mu across the ladder: spread 0.255037
+scaling: seconds ~ cap**0.68
+production cap on this machine: 1085040 determinants -> projected 12742 s (3.5 h) per DC search
+chi = d(value)/dmu per cap: -1.2797, -0.4730, -0.2384
+```
+
+### The `STABLE` verdict is measuring the wrong axis, and should not be believed here
+
+This is the headline. `achieved value across the ladder: spread 0.0024 (STABLE)` is graded on
+`value`, which for `criterion="gap"` is **the gap centre** — the quantity the search itself
+drives to zero at every cap. Its spread across the ladder is therefore bounded by the search
+tolerance, not by truncation, and a "STABLE" verdict is close to vacuous for this criterion. The
+campaign plan says exactly this ("judge every later saving on this [the centre converted to
+`mu`], never on one sector's `e0`"), and `dc-perf-campaign-measured-levers` records it as a
+lesson already learned once. The harness's own verdict line has not caught up, which makes it
+actively misleading on the gap criterion — the same failure class as
+`gf-monitor-was-converging-the-wrong-axis`. **Not fixed here** (it is a code change to
+`dc_diagnostics.print_ladder` and wants its own review); recorded so the next reader does not
+take the verdict at face value.
+
+On the right axis the ladder is emphatically not stable:
+
+| cap | `mu` | `chi` | resolution `tol/\|chi\|` |
+|---|---|---|---|
+| 2,000 | 0.141796 | -1.2797 | 1.95e-03 |
+| 8,000 | 0.208290 | -0.4730 | 5.29e-03 |
+| 32,000 | -0.046748 | -0.2384 | 1.05e-02 |
+
+`mu` spans **0.255**, between 24x (against the loosest per-cap resolution) and 130x (against the
+tightest) the band the criterion claims to deliver. It also changes sign between 8,000 and
+32,000, independently reproducing the sign change the item-3 ladder run showed at 64,000 — on a
+different code path, at a pinned iteration, with the cap ladder bypassed. The non-settling is
+not an artifact of the Phase 5 ladder.
+
+`chi` collapsing by 5.4x across the ladder is the mechanism, and it is worth stating separately
+because it makes the two axes move in opposite directions: `mu` is recovered from the returned
+`dc`, and the centre is driven to zero, so a nearly-constant `value` divided by a collapsing
+slope produces a wandering `mu`. It also means the criterion's own resolution *degrades* with
+cap (1.95e-03 → 1.05e-02): spending more determinants buys a looser bound, not a tighter one.
+
+### Cost: the scaling exponent is not the whole story
+
+`seconds ~ cap**0.68` is a real improvement on the `cap**0.98` this campaign started from
+(`smo-gap-dc-is-the-real-bottleneck`) — but most of it is an artifact of the evaluation count
+falling with cap (6 → 4 → 3), not of any evaluation getting cheaper. Per evaluation:
+
+| cap | seconds/evaluation |
+|---|---|
+| 2,000 | 29.7 |
+| 8,000 | 88.7 |
+| 32,000 | 389.6 |
+
+which fits `cap**0.93` — essentially the original 0.98 within the noise of three points. The
+harness's own projection to this machine's production cap (1,085,040 determinants → 3.5 h)
+inherits the 0.68 and is correspondingly optimistic; at 0.93 per evaluation and three
+evaluations it is **~8.5 h**, against the campaign's opening estimate of ~12 h. Quote the
+per-evaluation number when projecting, since nothing guarantees a harder DC surface will keep
+converging in three evaluations.
+
+`expand` is 90-91 % of wall-clock at every cap, `eigensolve` 8-10 %, `build` under 1 %. Note
+these are *siblings* under `sector_solve` (`groundstate.py` times `solver.expand(...)` and
+`solver.get_eigenvectors(...)` as two consecutive blocks), so they do not overlap — but
+`expand`'s internal CIPSI iterations call `get_eigenvectors` themselves and those calls are
+**not** separately timed, so the Lanczos work is spread across both columns and `eigensolve_s`
+is only the final solve. Do not read 8-10 % as the eigensolver's share of the run.
+
+### Against Phase 0's baseline
+
+At cap 2,000 Phase 0 recorded `mu = 0.139038`, `gap_center = -0.000962`; this run gives
+`0.141796` / `-0.00207`. The `mu` difference is 2.8e-03, at the edge of that cap's own 1.95e-03
+resolution — **Phases 1-5 did not move the answer** at this cap, which is what the campaign
+needed to show.
+
+Wall-clock is **not** comparable between the two: Phase 0's 450.8 s at cap 2,000 was serial
+(`comm=None`, as its header states) and this is `-n 6`. Reading the 2.5x as a campaign speedup
+would be wrong; most or all of it is parallelism.
