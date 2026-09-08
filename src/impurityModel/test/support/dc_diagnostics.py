@@ -129,17 +129,21 @@ def run_dc_search(
     gap_offset : float
         Where to put the gap centre, for ``criterion="gap"``. ``0.0`` is the prescription.
     gap_report : dict, optional
-        Filled with the criterion's own result record (gap centre, width, omega_+-), which is
-        what makes the occ-vs-gap comparison quantitative rather than two numbers side by side.
-        Passed to *whichever* criterion runs, not only the gap one, despite the name: the row's
-        ``tol``/``mu_tol`` come from it and :func:`_mu_verdict` needs them on every criterion.
+        Filled with the criterion's own result record -- for the gap criterion the gap centre,
+        width and ``omega_+-``, which is what makes the occ-vs-gap comparison quantitative
+        rather than two numbers side by side. Despite the name a record is requested from
+        *whichever* criterion runs (the row's ``tol``/``mu_tol`` come from it and
+        :func:`_mu_verdict` needs them on every criterion), so on an occupation or peak ladder
+        this comes back holding that criterion's fields and **no gap fields at all**. Cleared
+        before each fill, so after a ladder it holds the last rung's record alone.
 
     Returns
     -------
     dict
         ``cap``, ``seconds``, ``mu``, ``value`` (achieved ``n`` or gap), ``chi``, ``tol``,
-        ``tol_basis``, ``mu_tol`` (the criterion's resolution in ``mu``, ``tol / |chi|``), and
-        the per-kind counts and seconds the trace recorded.
+        ``tol_basis``, ``mu_tol`` (the criterion's own ``mu_tol_effective`` -- its resolution in
+        ``mu``, which is **not** ``tol / |chi|`` for the gap criterion; see
+        :func:`_row_resolution`), and the per-kind counts and seconds the trace recorded.
     """
     from impurityModel.ed.dc_search import _dc_chi, bracket_width_tol
 
@@ -162,10 +166,17 @@ def run_dc_search(
 
     # Every criterion fills a `report`, and the ladder's verdict depends on two of its fields
     # (`tol` and `mu_tol_effective`), so one is always requested rather than only on the gap
-    # path. `gap_report`, when a caller passed one, is that same dict, so it still comes back
-    # filled -- and now it is filled on the ladder path too, where `cap_ladder` used to accept
-    # the argument and drop it.
-    record = gap_report if gap_report is not None else {}
+    # path -- and now on the ladder path too, where `cap_ladder` used to accept `gap_report` and
+    # drop it.
+    #
+    # A FRESH dict per call, never the caller's: `dc_record.recording` fills the out-parameter
+    # with `report.update(record)` and never clears it, and `mu_tol_effective` is written
+    # *conditionally* by both criteria (only when the slope was measured -- a search that
+    # converged in one evaluation has no secant). Handing the same dict to every rung of a
+    # ladder would therefore let a rung that measured no slope read back the previous rung's
+    # `mu_tol_effective`/`tol` as if they were its own, and `_mu_verdict` would grade against a
+    # band no rung measured. The caller's dict is refreshed from this one below.
+    record = {}
 
     with solver_trace.tracing() as trace:
         start = perf_counter()
@@ -202,6 +213,12 @@ def run_dc_search(
         else:
             raise ValueError(f"unknown criterion {criterion!r}")
         seconds = perf_counter() - start
+
+    if gap_report is not None:
+        # Cleared, not merely updated, so the caller sees exactly one rung's record rather than
+        # this rung's keys layered over whatever the last one left behind.
+        gap_report.clear()
+        gap_report.update(record)
 
     from impurityModel.ed.lie_algebra import extract_tensors
 
@@ -251,7 +268,8 @@ def run_dc_search(
         # than assumed here: `tol` is not a constant (the gap criterion sizes it from the
         # measured bracket width and reports which basis it used in `tol_basis`), and a
         # hard-coded threshold in this harness is exactly what made its verdict wrong before.
-        # `fixed_peak_dc` writes `tol` but no `mu_tol_effective`, so that stays None there.
+        # `fixed_peak_dc` writes `tol` but no `mu_tol_effective`, so `mu_tol` stays None there
+        # and `_row_resolution` falls back to this row's own `tol`/`chi`.
         "tol": record.get("tol"),
         "tol_basis": record.get("tol_basis"),
         "mu_tol": record.get("mu_tol_effective"),
@@ -302,9 +320,9 @@ def cap_ladder(
             gap_offset=gap_offset,
             # Forwarded, not dropped: this parameter existed on both signatures but `cap_ladder`
             # never passed it on, so a caller asking for the criterion's record off a ladder run
-            # got an untouched dict back. One dict across the whole ladder, so it ends up holding
-            # the LAST rung's record -- the per-cap fields the verdict needs are copied into each
-            # row as they are produced, so the verdict does not depend on which rung wins here.
+            # got an untouched dict back. It ends up holding the LAST rung's record, cleared of
+            # the ones before it; the verdict does not read it at all -- each rung's own fields
+            # are copied into that rung's row from a fresh dict inside `run_dc_search`.
             gap_report=gap_report,
             comm=comm,
             verbosity=verbosity,
@@ -341,50 +359,113 @@ def _format_row(row):
     return " ".join(fmt.format(**row) for _, _, fmt in _COLUMNS)
 
 
+def _row_resolution(row):
+    """One rung's resolution in ``mu``, and the name of the estimator it came from.
+
+    Two sources, in order, because they are *different quantities* and conflating them is how
+    this line got mislabelled once already:
+
+    ``mu_tol_effective``
+        The criterion's own, and the one to prefer. For the gap criterion it is
+        ``|tol / (0.5 * delta_sum)|``, where ``delta_sum`` is measured from the eigenvector
+        occupations at the two band edges -- **not** ``tol/|chi|``. The criterion records
+        ``delta_sum_vs_chi`` precisely because those two slope estimators disagree, so a reader
+        cannot divide the table's ``chi`` column into this band and expect it to come out.
+        For the occupation criterion it *is* ``|tol/chi|``, but computed from the criterion's
+        own secant under its own width tolerance, not from the harness's independent ``_dc_chi``.
+
+    ``tol / |chi|``
+        The fallback, from this harness's own two columns. ``fixed_peak_dc`` records ``tol`` and
+        a ``chi`` but no ``mu_tol_effective``, and refusing to grade a peak ladder forever
+        would be a coverage regression against the (wrong-axis) verdict this replaced.
+
+    Returns ``(resolution, source)``; ``resolution`` is ``None`` when neither is available, and
+    ``inf`` when the criterion measured a genuinely flat slope.
+    """
+    mu_tol = row.get("mu_tol")
+    if mu_tol is not None:
+        return float(mu_tol), "mu_tol_effective"
+    tol, chi = row.get("tol"), row.get("chi")
+    if tol is not None and chi is not None and np.isfinite(tol) and np.isfinite(chi):
+        return (float("inf") if chi == 0 else abs(tol / chi)), "tol/|chi|"
+    return None, None
+
+
 def _mu_verdict(rows):
     r"""Grade the ladder on ``mu``, against the resolution the criterion itself delivers.
 
     ``mu`` is the double counting the search returns, so it is the thing a later run inherits and
     the only axis on which "did the low-cap answer transfer?" is a real question. The scale to
-    grade it against is the criterion's own ``mu_tol_effective`` -- its convergence tolerance
-    divided by its measured slope ``|chi|`` -- because that is the resolution the search can
-    deliver at all, and a drift inside it is not a measurement of anything.
+    grade it against is the criterion's own resolution in ``mu`` (:func:`_row_resolution`),
+    because that is what the search can deliver at all, and a drift inside it is not a
+    measurement of anything.
 
-    Graded against the **loosest** (largest) per-cap resolution on the ladder, which is the
-    reading most generous to a ``STABLE`` verdict: a ladder that drifts past even that has
-    drifted past every cap's own claim. The resolution is per-cap and varies -- on SMO it
-    degrades from 1.95e-03 to 1.05e-02 across the ladder as ``|chi|`` collapses -- so a single
-    number would have to pick one, and picking the tightest would manufacture ``DRIFTS``.
+    Graded against the **loosest** (largest) per-rung resolution, which is the reading most
+    generous to a ``STABLE`` verdict: a ladder that drifts past even that has drifted past every
+    rung's own claim. It is also stricter than textbook error propagation, which would compare a
+    pair against ``r_i + r_j >= max(r)``. The resolution is per-rung and varies -- on SMO it
+    degrades by ~5x across the ladder as the measured slope collapses -- so a single number has
+    to pick one, and picking the tightest would manufacture ``DRIFTS``.
+
+    The two degenerate rungs are handled differently, because they are different situations:
+
+    * **Infinite resolution** -- a genuinely measured zero slope, which ``dc_criteria`` records
+      as ``inf`` rather than dividing by zero. Dropped from **both** the spread and the band.
+      Its ``mu`` is unresolvable by the criterion's own admission, so it may sit anywhere on the
+      plateau; letting it inflate the spread while excluding it from the band would print
+      ``DRIFTS`` and blame the cap for one rung's degenerate slope.
+    * **No resolution reported at all** -- its ``mu`` is a perfectly well-determined answer, only
+      its precision is unknown, so it still counts toward the spread and is merely excluded from
+      the band. Dropping it would discard a real measurement.
+
+    Both drops are reported in the line.
 
     Returns a line rather than printing, so the caller keeps the output order and this stays
     testable without capturing stdout.
     """
-    mus = [row["mu"] for row in rows if row.get("mu") is not None and np.isfinite(row["mu"])]
+    mus, bands, sources, unresolved, unbanded = [], [], set(), 0, 0
+    for row in rows:
+        mu = row.get("mu")
+        if mu is None or not np.isfinite(mu):
+            continue
+        resolution, source = _row_resolution(row)
+        if resolution is not None and not np.isfinite(resolution):
+            unresolved += 1
+            continue
+        mus.append(mu)
+        if resolution is None:
+            unbanded += 1
+        else:
+            bands.append(resolution)
+            sources.add(source)
+
+    note = ""
+    if unresolved:
+        note += f"; {unresolved} rung(s) dropped entirely for a measured zero slope (resolution unbounded)"
+    if unbanded:
+        note += f"; {unbanded} rung(s) counted in the spread but reported no resolution"
+
     if len(mus) < 2:
-        return "mu across the ladder: need two finite mu values to grade a drift"
+        return f"mu across the ladder: UNGRADED -- need two rungs with a finite mu, have {len(mus)}{note}"
     spread = max(mus) - min(mus)
-
-    # `mu_tol_effective` is inf when the criterion measured a genuinely flat slope (dc_criteria
-    # writes float("inf") rather than dividing by zero). An infinite resolution grades every
-    # drift STABLE, which is the opposite of informative, so say so instead of grading.
-    resolutions = [row["mu_tol"] for row in rows if row.get("mu_tol") is not None]
-    finite = [r for r in resolutions if np.isfinite(r)]
-    if not resolutions:
+    if not bands:
         return (
-            f"mu across the ladder: spread {spread:.6f} (UNGRADED -- this criterion reports no "
-            f"mu_tol_effective, so there is no resolution to judge it against)"
+            f"mu across the ladder: spread {spread:.6f} (UNGRADED -- no rung reported a finite "
+            f"resolution to judge it against){note}"
         )
-    if not finite:
-        return (
-            f"mu across the ladder: spread {spread:.6f} (UNGRADED -- the measured slope is zero "
-            f"at every cap, so the criterion's resolution in mu is unbounded)"
-        )
+    band = max(bands)
+    sources = sorted(sources)
+    if band <= 0:
+        # Only reachable if a criterion reports tol == 0. Guarded rather than divided into: this
+        # line is the last thing printed after a multi-hour benchmark whose per-rung rows have
+        # already been flushed, and a ZeroDivisionError inside the f-string would lose the whole
+        # summary rather than one number.
+        return f"mu across the ladder: spread {spread:.6f} (UNGRADED -- the reported resolution is {band:g}){note}"
 
-    band = max(finite)
     verdict = "STABLE" if spread <= band else "DRIFTS -- low-cap answers do not transfer"
     return (
-        f"mu across the ladder: spread {spread:.6f} against the loosest per-cap resolution "
-        f"tol/|chi| = {band:.2e} ({spread / band:.1f}x) ({verdict})"
+        f"mu across the ladder: spread {spread:.6f} against the loosest per-rung resolution "
+        f"{'/'.join(sources)} = {band:.2e} ({spread / band:.1f}x) ({verdict}){note}"
     )
 
 
@@ -413,6 +494,21 @@ def print_ladder(rows):
             f"(the controlled quantity, at its target by construction -- not a convergence test)"
         )
     print(_mu_verdict(rows))
+    # The per-rung resolutions the verdict is built from. Printed because the verdict quotes only
+    # the loosest, and its whole justification is that they vary across the ladder -- a reader
+    # cannot check that against a single number. Not a table column: `mu_tol` is absent on the
+    # peak criterion and infinite on a measured zero slope, neither of which a fixed float
+    # format survives.
+    resolutions = [(row["cap"], *_row_resolution(row)) for row in rows]
+    if any(resolution is not None for _cap, resolution, _source in resolutions):
+        print(
+            "per-cap resolution in mu: "
+            + ", ".join(
+                f"{cap}:{'--' if resolution is None else format(resolution, '.2e')}"
+                f"{'' if source is None else f'({source})'}"
+                for cap, resolution, source in resolutions
+            )
+        )
     exponent = _scaling_exponent(rows)
     if exponent is not None:
         print(f"scaling: seconds ~ cap**{exponent:.2f}")
@@ -571,6 +667,11 @@ def print_occupation_convergence(rows, occ_tol=1e-2):
             continue
         n_spread = abs(top_two[-1]["n"] - top_two[0]["n"])
         e0_spread = abs(top_two[-1]["E0"] - top_two[0]["E0"])
+        # Grading `n` here is correct, unlike in the cap ladder above, and the difference is
+        # worth stating so this does not get "fixed" by analogy: no search runs in this mode.
+        # `mu` is FIXED, so `n` is a free variable the truncation moves, not a quantity driven
+        # onto a target -- which is exactly what makes its spread a convergence measurement
+        # rather than a restatement of the search tolerance. See :func:`_mu_verdict`.
         verdict = "CONVERGED" if n_spread <= occ_tol else "DRIFTS -- dc would absorb this"
         sector_note = (
             ""

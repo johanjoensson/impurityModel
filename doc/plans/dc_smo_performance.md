@@ -655,19 +655,21 @@ production cap on this machine: 1085040 determinants -> projected 12742 s (3.5 h
 chi = d(value)/dmu per cap: -1.2797, -0.4730, -0.2384
 ```
 
-### The `STABLE` verdict is measuring the wrong axis, and should not be believed here
+### The `STABLE` verdict was measuring the wrong axis — since fixed
 
-This is the headline. `achieved value across the ladder: spread 0.0024 (STABLE)` is graded on
-`value`, which for `criterion="gap"` is **the gap centre** — the quantity the search itself
-drives to zero at every cap. Its spread across the ladder is therefore bounded by the search
-tolerance, not by truncation, and a "STABLE" verdict is close to vacuous for this criterion. The
-campaign plan says exactly this ("judge every later saving on this [the centre converted to
-`mu`], never on one sector's `e0`"), and `dc-perf-campaign-measured-levers` records it as a
-lesson already learned once. The harness's own verdict line has not caught up, which makes it
-actively misleading on the gap criterion — the same failure class as
-`gf-monitor-was-converging-the-wrong-axis`. **Not fixed here** (it is a code change to
-`dc_diagnostics.print_ladder` and wants its own review); recorded so the next reader does not
-take the verdict at face value.
+**The output above is the historical run, printed by the pre-fix harness.** The
+`achieved value across the ladder: spread 0.0024 (STABLE)` line was graded on `value`, which for
+`criterion="gap"` is **the gap centre** — the quantity the search itself drives to zero at every
+cap. Its spread is therefore bounded by the search tolerance, not by truncation, and a "STABLE"
+verdict was close to vacuous for this criterion. The campaign plan says exactly this ("judge
+every later saving on this [the centre converted to `mu`], never on one sector's `e0`"), and
+`dc-perf-campaign-measured-levers` records it as a lesson already learned once — the same failure
+class as `gf-monitor-was-converging-the-wrong-axis`.
+
+**Fixed.** `print_ladder` now grades `mu` against the criterion's own resolution
+(`_mu_verdict`/`_row_resolution`), prints the per-cap resolutions it used, and prints the value
+spread unlabelled as a verdict. Re-running the ladder above today would report `DRIFTS` at 24x.
+Kept here as the run that motivated the fix, not as current behaviour.
 
 On the right axis the ladder is emphatically not stable:
 

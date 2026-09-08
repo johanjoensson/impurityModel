@@ -7,6 +7,8 @@ rank 0 only -- a per-rank report would bury a production log, and a per-rank *co
 be the very deadlock class the DC search was just fixed for.
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 import pytest
 from mpi4py import MPI
@@ -209,15 +211,21 @@ def test_every_rank_runs_the_same_number_of_sector_solves():
 
 def _ladder(*pairs):
     """Rows carrying only what `_mu_verdict` reads: the returned shift and its own resolution."""
-    return [{"mu": mu, "mu_tol": mu_tol} for mu, mu_tol in pairs]
+    return [{"cap": 1000 * (i + 1), "mu": mu, "mu_tol": mu_tol} for i, (mu, mu_tol) in enumerate(pairs)]
 
 
 def test_mu_verdict_drifts_on_the_smo_ladder_the_old_verdict_called_stable():
-    """The regression this function exists for, with the real numbers.
+    """The regression this function exists for.
 
-    SMO gap ladder at caps 2000/8000/32000: gap centres -0.00207/-0.00106/0.00034 (spread
-    0.0024, which the old flat 1e-2 gate graded STABLE) against mu 0.141796/0.208290/-0.046748
-    (spread 0.255, 24x the loosest per-cap resolution).
+    SMO gap ladder at caps 2000/8000/32000 (doc/plans/dc_smo_performance.md): the measured mu
+    values are 0.141796/0.208290/-0.046748, and the gap centres -0.00207/-0.00106/0.00034 --
+    a 0.0024 spread that the old flat 1e-2 gate graded STABLE.
+
+    The resolutions here are `tol/|chi|` built from that run's recorded tol and chi columns,
+    NOT its `mu_tol_effective`, which was not recorded per rung at the time and which for the
+    gap criterion is `tol/(0.5*delta_sum)` -- a different slope estimator (see
+    `_row_resolution`). Either is a resolution of the right order; the verdict arithmetic under
+    test does not care which produced the band, and this test does not claim they are equal.
     """
     rows = _ladder((0.141796, 0.0025 / 1.2797), (0.208290, 0.0025 / 0.4730), (-0.046748, 0.0025 / 0.2384))
     line = dc_diagnostics._mu_verdict(rows)
@@ -257,19 +265,153 @@ def test_mu_verdict_refuses_to_grade_a_flat_slope_rather_than_calling_it_stable(
     assert spread <= max(row["mu_tol"] for row in rows)
 
 
-def test_mu_verdict_refuses_to_grade_a_criterion_that_reports_no_resolution():
-    """`fixed_peak_dc` writes `tol` but no `mu_tol_effective`; inventing a band for it is how
-    this harness got the verdict wrong in the first place."""
+def test_mu_verdict_refuses_to_grade_when_no_rung_reports_a_resolution():
+    """Inventing a band is how this harness got the verdict wrong in the first place.
+
+    A row with neither `mu_tol` nor a usable `tol`/`chi` has nothing to be graded against. Its
+    `mu` still counts toward the spread -- it is a well-determined answer whose precision is
+    merely unknown -- but with no band anywhere the line refuses rather than picking a number.
+    """
     line = dc_diagnostics._mu_verdict(_ladder((0.1, None), (0.9, None)))
     assert "UNGRADED" in line and "STABLE" not in line, line
+    assert "0.800000" in line, line
+
+
+def test_mu_verdict_falls_back_to_tol_over_chi_when_the_criterion_reports_no_mu_tol():
+    """`fixed_peak_dc` records `tol` and `chi` but no `mu_tol_effective`. Refusing to grade a
+    peak ladder forever would be a coverage regression against the verdict this replaced."""
+    rows = [
+        {"cap": 1000, "mu": 0.10, "mu_tol": None, "tol": 1e-3, "chi": -0.5},
+        {"cap": 2000, "mu": 0.40, "mu_tol": None, "tol": 1e-3, "chi": -0.5},
+    ]
+    line = dc_diagnostics._mu_verdict(rows)
+    assert "DRIFTS" in line and "tol/|chi|" in line, line
+    # 1e-3/0.5 = 2e-3, and the spread is 0.3.
+    assert "2.00e-03" in line, line
 
 
 def test_mu_verdict_needs_two_finite_shifts():
-    assert "need two finite" in dc_diagnostics._mu_verdict(_ladder((0.1, 5e-3)))
-    assert "need two finite" in dc_diagnostics._mu_verdict(_ladder((float("nan"), 5e-3), (0.3, 5e-3)))
+    assert "need two rungs with a finite mu" in dc_diagnostics._mu_verdict(_ladder((0.1, 5e-3)))
+    assert "need two rungs with a finite mu" in dc_diagnostics._mu_verdict(_ladder((float("nan"), 5e-3), (0.3, 5e-3)))
+
+
+def test_mu_verdict_drops_an_unresolvable_rung_from_the_spread_not_only_from_the_band():
+    """A rung with a measured zero slope may sit anywhere on its plateau, so counting its mu
+    toward the spread while excluding it from the band would print DRIFTS and blame the cap."""
+    rows = _ladder((0.10, 5e-3), (0.1005, 5e-3), (9.0, float("inf")))
+    line = dc_diagnostics._mu_verdict(rows)
+    assert "STABLE" in line, line
+    assert "dropped entirely" in line, line
+    # The reading this rules out: keeping that mu in the spread makes it 8.9, i.e. DRIFTS.
+    assert max(row["mu"] for row in rows) - min(row["mu"] for row in rows) > 5e-3
+
+
+def test_mu_verdict_guards_a_zero_resolution_instead_of_dividing_by_it():
+    """print_ladder's last line, after a multi-hour benchmark whose rows are already flushed --
+    a ZeroDivisionError inside the f-string would lose the whole summary."""
+    line = dc_diagnostics._mu_verdict(_ladder((0.1, 0.0), (0.3, 0.0)))
+    assert "UNGRADED" in line, line
 
 
 def test_mu_verdict_ignores_a_single_missing_resolution_when_others_have_one():
     """One rung failing to report `mu_tol_effective` must not ungrade the whole ladder."""
     line = dc_diagnostics._mu_verdict(_ladder((0.10, None), (0.50, 5e-3)))
     assert "DRIFTS" in line, line
+
+
+def test_run_dc_search_copies_the_criterions_resolution_into_the_row(monkeypatch):
+    """The plumbing the verdict depends on, which the arithmetic tests above cannot see.
+
+    `_mu_verdict` grades against `row["mu_tol"]`, which only exists because `run_dc_search`
+    passes a `report` dict to whichever criterion runs and copies `mu_tol_effective` out of it.
+    A revert of that -- or a rename of the record key -- would leave every test above green
+    while every real ladder printed UNGRADED, so this drives `run_dc_search` itself with the
+    archive load and the criterion stubbed out.
+    """
+    import numpy as _np
+
+    from impurityModel.test.support import dc_diagnostics as diag
+
+    dc_guess = _np.zeros((2, 2))
+
+    class _Model:
+        dc = None
+        n_spin_orbitals = 4
+
+    @dataclass
+    class _Basis:
+        truncation_threshold: object = None
+        tau: float = 1e-3
+
+    monkeypatch.setitem(diag.WORKLOADS, "_stub", "unused")
+    monkeypatch.setattr(diag, "load_selfenergy_archive", lambda *a, **k: (_Model(), None, _Basis(), None, "stub"))
+    monkeypatch.setattr(diag, "suggest_truncation_threshold", lambda *a, **k: 12345)
+
+    def fake_gap_dc(**kwargs):
+        # What a real criterion does: fill the caller's record, including the two fields the
+        # verdict reads, and return the shifted dc.
+        kwargs["report"].update({"tol": 2.5e-3, "tol_basis": "mu_resolution", "mu_tol_effective": 6.49e-3})
+        solver_trace.note("dc_evaluation", mu=0.25, gap=1e-4)
+        return dc_guess + 0.25 * _np.identity(2)
+
+    monkeypatch.setattr(diag, "fixed_gap_dc", fake_gap_dc)
+
+    caller_report = {"stale": "from a previous rung"}
+    row = diag.run_dc_search("_stub", cap=1000, criterion="gap", gap_report=caller_report)
+
+    assert row["mu"] == pytest.approx(0.25)
+    assert row["mu_tol"] == pytest.approx(6.49e-3)
+    assert row["tol"] == pytest.approx(2.5e-3)
+    assert row["tol_basis"] == "mu_resolution"
+    # And the caller's dict was refreshed, not layered over: a key from an earlier rung that this
+    # rung did not write must be gone, or a rung that measured no slope would inherit one.
+    assert "stale" not in caller_report
+    assert caller_report["mu_tol_effective"] == pytest.approx(6.49e-3)
+
+
+def test_run_dc_search_hands_each_rung_a_fresh_record(monkeypatch):
+    """Two rungs through one shared `gap_report`: the second must not inherit the first's band.
+
+    `dc_record.recording` fills the out-parameter with `report.update(record)` and never clears,
+    and both criteria write `mu_tol_effective` only when a slope was measured -- so reusing the
+    caller's dict would let a rung that measured none read back its predecessor's, and the
+    verdict would grade against a band no rung produced.
+    """
+    import numpy as _np
+
+    from impurityModel.test.support import dc_diagnostics as diag
+
+    dc_guess = _np.zeros((2, 2))
+
+    class _Model:
+        dc = None
+        n_spin_orbitals = 4
+
+    @dataclass
+    class _Basis:
+        truncation_threshold: object = None
+        tau: float = 1e-3
+
+    monkeypatch.setitem(diag.WORKLOADS, "_stub", "unused")
+    monkeypatch.setattr(diag, "load_selfenergy_archive", lambda *a, **k: (_Model(), None, _Basis(), None, "stub"))
+    monkeypatch.setattr(diag, "suggest_truncation_threshold", lambda *a, **k: 12345)
+
+    measured = iter([True, False])  # rung 1 measures a slope, rung 2 does not
+
+    def fake_gap_dc(**kwargs):
+        fields = {"tol": 2.5e-3}
+        if next(measured):
+            fields["mu_tol_effective"] = 6.49e-3
+        kwargs["report"].update(fields)
+        solver_trace.note("dc_evaluation", mu=0.25, gap=1e-4)
+        return dc_guess + 0.25 * _np.identity(2)
+
+    monkeypatch.setattr(diag, "fixed_gap_dc", fake_gap_dc)
+
+    shared = {}
+    first = diag.run_dc_search("_stub", cap=1000, criterion="gap", gap_report=shared)
+    second = diag.run_dc_search("_stub", cap=2000, criterion="gap", gap_report=shared)
+
+    assert first["mu_tol"] == pytest.approx(6.49e-3)
+    # The bug this pins: with a shared dict, `second["mu_tol"]` came back as the first rung's.
+    assert second["mu_tol"] is None
