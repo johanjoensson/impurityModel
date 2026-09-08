@@ -143,7 +143,9 @@ def run_dc_search(
         ``cap``, ``seconds``, ``mu``, ``value`` (achieved ``n`` or gap), ``chi``, ``tol``,
         ``tol_basis``, ``mu_tol`` (the criterion's own ``mu_tol_effective`` -- its resolution in
         ``mu``, which is **not** ``tol / |chi|`` for the gap criterion; see
-        :func:`_row_resolution`), and the per-kind counts and seconds the trace recorded.
+        :func:`_row_resolution`), ``criterion_chi`` (the criterion's own slope, distinct from the
+        ``chi`` column, which omits the sector predicate), and the per-kind counts and seconds
+        the trace recorded.
     """
     from impurityModel.ed.dc_search import _dc_chi, bracket_width_tol
 
@@ -280,13 +282,15 @@ def run_dc_search(
         # `fixed_peak_dc` writes `tol` but no `mu_tol_effective`, so `mu_tol` stays None there
         # and `_row_resolution` falls back to `tol`/`criterion_chi`.
         #
-        # `criterion_chi` is the CRITERION's own slope, not the `chi` column above. They are
-        # different measurements: the criterion calls `_dc_chi` with an `in_sector` predicate
-        # and its own width tolerance, while this harness's column deliberately passes neither
-        # (see its comment). Dividing `tol` by the unfiltered column would divide by a secant
-        # taken across a charge-sector discontinuity -- a jump over a vanishing width, i.e. an
-        # arbitrarily large slope -- producing a spuriously tight band and a manufactured
-        # DRIFTS, which is the failure `_mu_verdict` says picking the tightest band would cause.
+        # `criterion_chi` is the CRITERION's own slope, not the `chi` column above. The single
+        # difference is `in_sector`: the gap and occupation criteria pass the *same*
+        # `bracket_width_tol(tau)` this harness does (`dc_criteria.py:1542`, `:2129`) but also a
+        # sector predicate, which the column above deliberately omits. So the column can pair
+        # two points either side of a charge-sector boundary. That is not a vanishing-width
+        # jump -- `_dc_chi` already drops pairs narrower than `width_tol` -- it is a finite-width
+        # secant of a *different function* on each side, which is why the criteria filter it and
+        # why a band built from it would not describe either branch. Measured on SMO at cap 500:
+        # the criterion reports chi = -0.5011 where this column reports -1.9566.
         "criterion_chi": record.get("chi"),
         "tol": record.get("tol"),
         "tol_basis": record.get("tol_basis"),
@@ -393,20 +397,24 @@ def _row_resolution(row):
         own secant under its own width tolerance, not from the harness's independent ``_dc_chi``.
 
     ``tol / |chi|``
-        The fallback, built from the criterion's own ``tol`` and its own ``chi``
-        (``row["criterion_chi"]``) -- **not** the table's ``chi`` column, which is this harness's
-        independent recomputation with no ``in_sector`` predicate and would divide ``tol`` by a
-        secant across a charge-sector discontinuity. ``fixed_peak_dc`` records ``tol`` and
-        ``chi`` but no ``mu_tol_effective``, and refusing to grade a peak ladder forever would
-        be a coverage regression against the (wrong-axis) verdict this replaced.
+        The fallback, used **only when the criterion reported no** ``mu_tol_effective`` at all.
+        Built from the criterion's own ``tol`` and its own ``chi`` (``row["criterion_chi"]``) --
+        not the table's ``chi`` column, whose missing ``in_sector`` predicate lets it pair points
+        across a charge-sector boundary. ``fixed_peak_dc`` records ``tol`` and ``chi`` but no
+        ``mu_tol_effective``, and refusing to grade a peak ladder forever would be a coverage
+        regression against the (wrong-axis) verdict this replaced.
 
-    The fallback is also taken when ``mu_tol_effective`` is present but *infinite* and the
-    fallback is finite: the two estimators are documented to disagree, so discarding a rung's
-    ``mu`` on one's degeneracy while another measurement is in hand throws away information.
+    **The fallback does not override a degenerate** ``mu_tol_effective``. An earlier version
+    preferred a finite ``tol/|chi|`` when ``mu_tol_effective`` came back infinite, which looked
+    like salvaging information and was two mistakes: it silently resolved a disagreement
+    ``dc_criteria`` deliberately *records* rather than resolves (``delta_sum_vs_chi``, "recorded
+    rather than silently resolved in favour of one"), and it let that rung's ``mu`` back into the
+    spread -- exactly what :func:`_mu_verdict`'s infinite-resolution drop exists to prevent. When
+    the two estimators disagree about whether the slope is degenerate, the rung is reported as
+    disagreeing and dropped, not adjudicated here.
 
-    Returns ``(resolution, source)``; ``resolution`` is ``None`` when neither is available,
-    ``inf`` when every available estimator measured a flat slope, and ``nan`` is passed through
-    as-is so the caller can tell "measured flat" from "not a number".
+    Returns ``(resolution, source)``; ``resolution`` is ``None`` when no estimator is available,
+    and non-finite (``inf`` or ``nan``) exactly as the criterion reported it.
     """
 
     def _fallback():
@@ -420,12 +428,9 @@ def _row_resolution(row):
         mu_tol = float(mu_tol)
         if np.isfinite(mu_tol):
             return mu_tol, "mu_tol_effective"
-        # Degenerate on this estimator; prefer a finite reading from the other one if there is
-        # one, and otherwise report the degeneracy rather than inventing a band.
-        fallback, source = _fallback()
-        if fallback is not None and np.isfinite(fallback):
-            return fallback, source
-        return mu_tol, "mu_tol_effective"
+        fallback, _source = _fallback()
+        disagrees = fallback is not None and np.isfinite(fallback)
+        return mu_tol, ("mu_tol_effective (estimators disagree)" if disagrees else "mu_tol_effective")
     return _fallback()
 
 
@@ -454,7 +459,8 @@ def _mu_verdict(rows):
       would print ``DRIFTS`` and blame the cap for one rung's degenerate slope.
     * **A NaN resolution** -- not a measurement at all. Dropped like the infinite case, but
       reported as its own cause, so the line never claims a slope was "measured as zero" when
-      nothing was measured.
+      nothing was measured. Reachable: ``_mu_tol_effective`` gates on truthiness and NaN is
+      truthy, so a NaN ``delta_sum`` yields a NaN ``mu_tol_effective``.
     * **No resolution reported at all** -- kept in the spread, excluded from the band. Note this
       is the *more conservative* default rather than a claim that the ``mu`` is well determined:
       a rung with no reported resolution is one where no slope was measured, so its ``mu`` may be
@@ -465,16 +471,20 @@ def _mu_verdict(rows):
     Every drop is reported in the line, with its cause and count.
 
     **Known limit.** Only the exact ``inf`` endpoint is special-cased. A rung reporting a merely
-    *huge* finite resolution -- a near-zero but non-zero ``delta_sum`` -- becomes ``max(bands)``
+    *huge* finite resolution -- a near-zero but non-zero ``delta_sum`` -- becomes the ``max``
     and grades the whole ladder ``STABLE`` with no note. Thresholding "too large" would be
     exactly the invented constant this verdict exists to remove, so instead ``print_ladder``
     prints every per-rung resolution beside this line: a band orders of magnitude above its
     neighbours is visible there.
 
+    Note also that the ``UNGRADED`` line for a short ladder counts *gradable rungs*, not rungs
+    with a usable resolution -- a rung reporting no resolution is still counted in the spread,
+    per the third bullet above.
+
     Returns a line rather than printing, so the caller keeps the output order and this stays
     testable without capturing stdout.
     """
-    mus, banded, flat, undefined, unbanded = [], [], 0, 0, 0
+    mus, banded, flat, undefined, disagreed, unbanded = [], [], 0, 0, 0, 0
     for row in rows:
         mu = row.get("mu")
         if mu is None or not np.isfinite(mu):
@@ -485,6 +495,7 @@ def _mu_verdict(rows):
             continue
         if resolution is not None and np.isinf(resolution):
             flat += 1
+            disagreed += "disagree" in (source or "")
             continue
         mus.append(mu)
         if resolution is None:
@@ -495,16 +506,17 @@ def _mu_verdict(rows):
     note = ""
     if flat:
         note += f"; {flat} rung(s) dropped entirely for a measured zero slope (resolution unbounded)"
+        if disagreed:
+            note += f" ({disagreed} of them with a finite tol/|chi| that disagrees -- not adjudicated here)"
     if undefined:
         note += f"; {undefined} rung(s) dropped entirely for an undefined (NaN) resolution"
     if unbanded:
         note += f"; {unbanded} rung(s) counted in the spread but reported no resolution"
 
     if len(mus) < 2:
-        return (
-            f"mu across the ladder: UNGRADED -- need two rungs with a finite mu and a usable "
-            f"resolution, have {len(mus)}{note}"
-        )
+        # Deliberately does NOT say "have N with a usable resolution": a rung with no resolution
+        # at all is counted in `mus`. What is short is gradable rungs; `note` carries the causes.
+        return f"mu across the ladder: UNGRADED -- {len(mus)} rung(s) left to grade{note}"
     spread = max(mus) - min(mus)
     if not banded:
         return (
@@ -513,8 +525,9 @@ def _mu_verdict(rows):
         )
     # Name the estimator that produced *this* band, not every estimator on the ladder: `band` is
     # one rung's number, and joining all the sources reads as a single expression
-    # ("mu_tol_effective/tol/|chi|") that attributes it to the wrong one.
-    band, source = max(banded)
+    # ("mu_tol_effective/tol/|chi|") that attributes it to the wrong one. Keyed on the resolution
+    # alone so an exact tie never falls through to comparing the source *strings*.
+    band, source = max(banded, key=lambda pair: pair[0])
     if band <= 0:
         # Only reachable if a criterion reports tol == 0. Guarded rather than divided into: this
         # line is the last thing printed after a multi-hour benchmark whose per-rung rows have

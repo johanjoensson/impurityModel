@@ -320,12 +320,14 @@ def test_mu_verdict_names_the_estimator_that_produced_the_band_not_every_estimat
     assert "mu_tol_effective/tol" not in line, line
 
 
-def test_mu_verdict_keeps_the_spread_and_names_the_cause_when_every_rung_is_flat():
-    """The all-degenerate branch must not claim there were no finite mu values -- there were,
-    they were dropped for an unbounded resolution -- and must not lose the spread."""
+def test_mu_verdict_names_the_cause_when_every_rung_is_flat():
+    """The all-degenerate branch must say *why* nothing was gradable rather than reporting a
+    bare shortfall, and must not claim the mu values were missing -- they were finite and were
+    dropped for an unbounded resolution."""
     line = dc_diagnostics._mu_verdict(_ladder((0.1, float("inf")), (0.9, float("inf"))))
-    assert "UNGRADED" in line and "measured zero slope" in line, line
-    assert "have 0" in line, line
+    assert "UNGRADED" in line, line
+    assert "2 rung(s) dropped entirely for a measured zero slope" in line, line
+    assert "finite mu" not in line, line
 
 
 def test_mu_verdict_reports_a_nan_resolution_as_undefined_not_as_a_measured_zero_slope():
@@ -335,18 +337,34 @@ def test_mu_verdict_reports_a_nan_resolution_as_undefined_not_as_a_measured_zero
     assert "measured zero slope" not in line, line
 
 
-def test_a_rung_degenerate_on_one_estimator_uses_the_other_when_it_is_finite():
-    """`delta_sum == 0` makes the gap criterion's own band infinite, but the same rung may carry
-    a perfectly finite `tol`/`criterion_chi`. Dropping its mu anyway discards a measurement."""
+def test_a_rung_degenerate_on_one_estimator_is_dropped_not_adjudicated():
+    """`delta_sum == 0` makes the gap criterion's band infinite while `tol`/`criterion_chi` may
+    still be finite. An earlier version preferred the finite one -- which silently resolved a
+    disagreement `dc_criteria` deliberately *records* (`delta_sum_vs_chi`), and let that rung's
+    mu back into the spread, exactly what the infinite-resolution drop exists to prevent."""
     row = {"cap": 1000, "mu": 0.1, "mu_tol": float("inf"), "tol": 1e-3, "criterion_chi": -0.5}
-    assert dc_diagnostics._row_resolution(row) == (pytest.approx(2e-3), "tol/|chi|")
-    # With no usable fallback it stays degenerate rather than inventing a band.
-    assert dc_diagnostics._row_resolution({"mu_tol": float("inf")})[0] == float("inf")
+    resolution, source = dc_diagnostics._row_resolution(row)
+    assert resolution == float("inf"), (resolution, source)
+    assert "disagree" in source, source
+    # The disagreement is surfaced, and the rung stays out of the spread.
+    line = dc_diagnostics._mu_verdict([row, {"cap": 2000, "mu": 0.9, "mu_tol": 1e-3}])
+    assert "disagrees" in line, line
+    assert "1 rung(s) left to grade" in line, line
+    # With no fallback at all the source carries no disagreement claim.
+    assert dc_diagnostics._row_resolution({"mu_tol": float("inf")}) == (float("inf"), "mu_tol_effective")
 
 
-def test_mu_verdict_needs_two_finite_shifts():
-    assert "need two rungs with a finite mu" in dc_diagnostics._mu_verdict(_ladder((0.1, 5e-3)))
-    assert "need two rungs with a finite mu" in dc_diagnostics._mu_verdict(_ladder((float("nan"), 5e-3), (0.3, 5e-3)))
+def test_mu_verdict_needs_two_gradable_rungs():
+    assert "1 rung(s) left to grade" in dc_diagnostics._mu_verdict(_ladder((0.1, 5e-3)))
+    assert "1 rung(s) left to grade" in dc_diagnostics._mu_verdict(_ladder((float("nan"), 5e-3), (0.3, 5e-3)))
+
+
+def test_the_short_ladder_message_counts_gradable_rungs_not_ones_with_a_resolution():
+    """A rung reporting no resolution IS counted in the spread, so a message saying "need two
+    rungs with a finite mu and a usable resolution" would misdescribe what is short."""
+    line = dc_diagnostics._mu_verdict([{"cap": 1, "mu": 0.1, "mu_tol": float("inf")}, {"cap": 2, "mu": 0.9}])
+    assert "1 rung(s) left to grade" in line, line
+    assert "usable resolution" not in line, line
 
 
 def test_mu_verdict_drops_an_unresolvable_rung_from_the_spread_not_only_from_the_band():
