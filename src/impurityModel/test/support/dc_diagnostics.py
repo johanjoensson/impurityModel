@@ -9,10 +9,17 @@ determinant cap**.
 That last point is the whole design of this module. The cap decides which determinants survive
 the CIPSI truncation, and therefore decides the impurity occupation ``n`` the search is driving
 onto its target -- not just how long the search takes. A speedup demonstrated at one cheap cap
-does not transfer to production unless ``n`` is stable across the ladder, so every row here
-carries **achieved ``n`` and ``mu`` next to the seconds**. If ``n`` drifts, that is the finding,
-and it invalidates cap-2000 measurements of everything Phases 4-6 do; the scaling exponent is
-the secondary product.
+does not transfer to production unless the answer is stable across the ladder, so every row here
+carries **the returned shift ``mu`` and the achieved value next to the seconds**. If ``mu``
+drifts, that is the finding, and it invalidates cap-2000 measurements of everything Phases 4-6
+do; the scaling exponent is the secondary product.
+
+**The ladder is graded on ``mu``, not on the achieved value.** The achieved value is whatever the
+search drove onto its target -- the gap centre to zero, the occupation to the DFT reference -- so
+its spread across the ladder is bounded by the search tolerance and stays small whether or not
+the answer transferred. Grading it (against a flat ``1e-2``, as this module did until the SMO
+verification runs) reported SrMnO3's gap ladder as ``STABLE`` while ``mu`` moved 0.255 and changed
+sign twice. See :func:`_mu_verdict`.
 
 The accounting comes from :mod:`impurityModel.ed.solver_trace`, which the production search
 writes into unconditionally -- so what is measured here is the production path, not a
@@ -122,14 +129,17 @@ def run_dc_search(
     gap_offset : float
         Where to put the gap centre, for ``criterion="gap"``. ``0.0`` is the prescription.
     gap_report : dict, optional
-        Filled with the gap criterion's own result record (gap centre, width, omega_+-), which is
+        Filled with the criterion's own result record (gap centre, width, omega_+-), which is
         what makes the occ-vs-gap comparison quantitative rather than two numbers side by side.
+        Passed to *whichever* criterion runs, not only the gap one, despite the name: the row's
+        ``tol``/``mu_tol`` come from it and :func:`_mu_verdict` needs them on every criterion.
 
     Returns
     -------
     dict
-        ``cap``, ``seconds``, ``mu``, ``value`` (achieved ``n`` or gap), ``chi``, and the
-        per-kind counts and seconds the trace recorded.
+        ``cap``, ``seconds``, ``mu``, ``value`` (achieved ``n`` or gap), ``chi``, ``tol``,
+        ``tol_basis``, ``mu_tol`` (the criterion's resolution in ``mu``, ``tol / |chi|``), and
+        the per-kind counts and seconds the trace recorded.
     """
     from impurityModel.ed.dc_search import _dc_chi, bracket_width_tol
 
@@ -150,10 +160,19 @@ def run_dc_search(
     basis = replace(basis, truncation_threshold=cap)
     dc_guess = model.dc
 
+    # Every criterion fills a `report`, and the ladder's verdict depends on two of its fields
+    # (`tol` and `mu_tol_effective`), so one is always requested rather than only on the gap
+    # path. `gap_report`, when a caller passed one, is that same dict, so it still comes back
+    # filled -- and now it is filled on the ladder path too, where `cap_ladder` used to accept
+    # the argument and drop it.
+    record = gap_report if gap_report is not None else {}
+
     with solver_trace.tracing() as trace:
         start = perf_counter()
         if criterion == "occupation":
-            dc = fixed_occupation_dc(model=model, basis=basis, solver=solver, comm=comm, verbosity=verbosity)
+            dc = fixed_occupation_dc(
+                model=model, basis=basis, solver=solver, comm=comm, verbosity=verbosity, report=record
+            )
         elif criterion == "peak":
             if peak_position is None:
                 raise ValueError('criterion="peak" needs a peak_position.')
@@ -167,6 +186,7 @@ def run_dc_search(
                 # This harness measures search cost, not charge-state fidelity; a real workload's
                 # peak criterion landing on a non-nominal sector is not a benchmark failure.
                 allow_charge_state_change=True,
+                report=record,
             )
         elif criterion == "gap":
             dc = fixed_gap_dc(
@@ -177,7 +197,7 @@ def run_dc_search(
                 comm=comm,
                 verbosity=verbosity,
                 allow_charge_state_change=True,
-                report=gap_report,
+                report=record,
             )
         else:
             raise ValueError(f"unknown criterion {criterion!r}")
@@ -225,6 +245,16 @@ def run_dc_search(
         # the point the slope must describe; no sector predicate, because the trace's events carry
         # no sector and inventing one would be a wider claim than the data supports.
         "chi": _dc_chi(samples, mu_evaluated, width_tol=bracket_width_tol(basis.tau))[0],
+        # The criterion's own convergence tolerance, and that tolerance divided by its own
+        # measured slope -- i.e. the resolution the search delivers *in mu*, which is the axis
+        # the ladder's verdict has to be judged on. Taken from the criterion's record rather
+        # than assumed here: `tol` is not a constant (the gap criterion sizes it from the
+        # measured bracket width and reports which basis it used in `tol_basis`), and a
+        # hard-coded threshold in this harness is exactly what made its verdict wrong before.
+        # `fixed_peak_dc` writes `tol` but no `mu_tol_effective`, so that stays None there.
+        "tol": record.get("tol"),
+        "tol_basis": record.get("tol_basis"),
+        "mu_tol": record.get("mu_tol_effective"),
         "evaluations": trace.count("dc_evaluation"),
         "sector_solves": trace.count("sector_solve"),
         "cache_hits": trace.count("sector_cache_hit"),
@@ -269,6 +299,13 @@ def cap_ladder(
             cap,
             criterion=criterion,
             peak_position=peak_position,
+            gap_offset=gap_offset,
+            # Forwarded, not dropped: this parameter existed on both signatures but `cap_ladder`
+            # never passed it on, so a caller asking for the criterion's record off a ladder run
+            # got an untouched dict back. One dict across the whole ladder, so it ends up holding
+            # the LAST rung's record -- the per-cap fields the verdict needs are copied into each
+            # row as they are produced, so the verdict does not depend on which rung wins here.
+            gap_report=gap_report,
             comm=comm,
             verbosity=verbosity,
             iteration=iteration,
@@ -304,8 +341,55 @@ def _format_row(row):
     return " ".join(fmt.format(**row) for _, _, fmt in _COLUMNS)
 
 
+def _mu_verdict(rows):
+    r"""Grade the ladder on ``mu``, against the resolution the criterion itself delivers.
+
+    ``mu`` is the double counting the search returns, so it is the thing a later run inherits and
+    the only axis on which "did the low-cap answer transfer?" is a real question. The scale to
+    grade it against is the criterion's own ``mu_tol_effective`` -- its convergence tolerance
+    divided by its measured slope ``|chi|`` -- because that is the resolution the search can
+    deliver at all, and a drift inside it is not a measurement of anything.
+
+    Graded against the **loosest** (largest) per-cap resolution on the ladder, which is the
+    reading most generous to a ``STABLE`` verdict: a ladder that drifts past even that has
+    drifted past every cap's own claim. The resolution is per-cap and varies -- on SMO it
+    degrades from 1.95e-03 to 1.05e-02 across the ladder as ``|chi|`` collapses -- so a single
+    number would have to pick one, and picking the tightest would manufacture ``DRIFTS``.
+
+    Returns a line rather than printing, so the caller keeps the output order and this stays
+    testable without capturing stdout.
+    """
+    mus = [row["mu"] for row in rows if row.get("mu") is not None and np.isfinite(row["mu"])]
+    if len(mus) < 2:
+        return "mu across the ladder: need two finite mu values to grade a drift"
+    spread = max(mus) - min(mus)
+
+    # `mu_tol_effective` is inf when the criterion measured a genuinely flat slope (dc_criteria
+    # writes float("inf") rather than dividing by zero). An infinite resolution grades every
+    # drift STABLE, which is the opposite of informative, so say so instead of grading.
+    resolutions = [row["mu_tol"] for row in rows if row.get("mu_tol") is not None]
+    finite = [r for r in resolutions if np.isfinite(r)]
+    if not resolutions:
+        return (
+            f"mu across the ladder: spread {spread:.6f} (UNGRADED -- this criterion reports no "
+            f"mu_tol_effective, so there is no resolution to judge it against)"
+        )
+    if not finite:
+        return (
+            f"mu across the ladder: spread {spread:.6f} (UNGRADED -- the measured slope is zero "
+            f"at every cap, so the criterion's resolution in mu is unbounded)"
+        )
+
+    band = max(finite)
+    verdict = "STABLE" if spread <= band else "DRIFTS -- low-cap answers do not transfer"
+    return (
+        f"mu across the ladder: spread {spread:.6f} against the loosest per-cap resolution "
+        f"tol/|chi| = {band:.2e} ({spread / band:.1f}x) ({verdict})"
+    )
+
+
 def print_ladder(rows):
-    """The per-cap table, the achieved-value drift across it, and the scaling exponent."""
+    """The per-cap table, the drift in ``mu`` across it, and the scaling exponent."""
     if not rows:
         return
     head = rows[0]
@@ -318,14 +402,17 @@ def print_ladder(rows):
 
     values = [row["value"] for row in rows if np.isfinite(row["value"])]
     if len(values) >= 2:
-        drift = max(values) - min(values)
-        # occ_tol, the tolerance the search itself converges to, is the scale that decides
-        # whether the cap ladder is measuring one physical answer or several.
-        verdict = "STABLE" if drift <= 1e-2 else "DRIFTS -- low-cap speedups do not transfer"
-        print(f"achieved value across the ladder: spread {drift:.4f} ({verdict})")
-    mus = [row["mu"] for row in rows]
-    if len(mus) >= 2:
-        print(f"mu across the ladder: spread {max(mus) - min(mus):.6f}")
+        # NOT a verdict, and deliberately no longer graded. `value` is the quantity the search
+        # *drives to its target* at every cap (the gap centre to zero, the occupation to the DFT
+        # reference), so its spread across the ladder is bounded by the search tolerance rather
+        # than by the truncation the ladder varies -- it is small whether or not the answer
+        # transferred. Grading it against a flat 1e-2 reported SMO's gap ladder as STABLE while
+        # `mu` moved 0.255 and changed sign twice. Judge `mu`; see below.
+        print(
+            f"achieved value across the ladder: spread {max(values) - min(values):.4f} "
+            f"(the controlled quantity, at its target by construction -- not a convergence test)"
+        )
+    print(_mu_verdict(rows))
     exponent = _scaling_exponent(rows)
     if exponent is not None:
         print(f"scaling: seconds ~ cap**{exponent:.2f}")

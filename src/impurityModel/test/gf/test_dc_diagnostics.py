@@ -13,6 +13,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import dc_search, solver_trace
 from impurityModel.ed.selfenergy import fixed_occupation_dc, fixed_peak_dc
+from impurityModel.test.support import dc_diagnostics
 
 from .test_fixed_dc import common_kwargs
 
@@ -195,3 +196,80 @@ def test_every_rank_runs_the_same_number_of_sector_solves():
     assert counts[0] > 0
     mus = comm.allgather(sorted({event["mu"] for event in trace.events if "mu" in event}))
     assert all(np.allclose(m, mus[0]) for m in mus), mus
+
+
+# ---- the cap ladder's verdict grades `mu`, not the controlled quantity --------------------
+#
+# `_mu_verdict` replaced a verdict computed on `row["value"]` against a flat 1e-2. That was the
+# wrong axis for every criterion: `value` is what the search *drives to its target* at each cap,
+# so its spread is bounded by the search tolerance rather than by the truncation the ladder
+# varies. On SMO it reported STABLE while `mu` moved 0.255 and changed sign twice. Each test
+# below is checked against the specific wrong behaviour it guards, not just against the fix.
+
+
+def _ladder(*pairs):
+    """Rows carrying only what `_mu_verdict` reads: the returned shift and its own resolution."""
+    return [{"mu": mu, "mu_tol": mu_tol} for mu, mu_tol in pairs]
+
+
+def test_mu_verdict_drifts_on_the_smo_ladder_the_old_verdict_called_stable():
+    """The regression this function exists for, with the real numbers.
+
+    SMO gap ladder at caps 2000/8000/32000: gap centres -0.00207/-0.00106/0.00034 (spread
+    0.0024, which the old flat 1e-2 gate graded STABLE) against mu 0.141796/0.208290/-0.046748
+    (spread 0.255, 24x the loosest per-cap resolution).
+    """
+    rows = _ladder((0.141796, 0.0025 / 1.2797), (0.208290, 0.0025 / 0.4730), (-0.046748, 0.0025 / 0.2384))
+    line = dc_diagnostics._mu_verdict(rows)
+    assert "DRIFTS" in line, line
+    assert "0.255" in line
+    # The old gate would have passed: the controlled quantity really does sit inside 1e-2.
+    values = [-0.00207, -0.00106, 0.00034]
+    assert max(values) - min(values) <= 1e-2
+
+
+def test_mu_verdict_is_stable_when_the_shift_settles_inside_the_resolution():
+    line = dc_diagnostics._mu_verdict(_ladder((0.10, 5e-3), (0.1005, 5e-3)))
+    assert "STABLE" in line and "DRIFTS" not in line, line
+
+
+def test_mu_verdict_grades_against_the_loosest_resolution_not_the_tightest():
+    """A drift inside the loosest per-cap band is not evidence of anything, so it is not graded
+    as one. Picking the tightest band instead would manufacture DRIFTS on this ladder."""
+    rows = _ladder((0.10, 1e-3), (0.106, 1e-2))
+    line = dc_diagnostics._mu_verdict(rows)
+    assert "STABLE" in line, line
+    # Pin the reading this rules out, off the same rows: graded against the tightest band the
+    # spread is 6x over and the verdict would flip.
+    spread = max(row["mu"] for row in rows) - min(row["mu"] for row in rows)
+    assert spread > min(row["mu_tol"] for row in rows)
+
+
+def test_mu_verdict_refuses_to_grade_a_flat_slope_rather_than_calling_it_stable():
+    """`mu_tol_effective` is inf when the criterion measured a genuinely zero slope. Comparing
+    against inf grades *any* drift STABLE, which is the opposite of informative."""
+    rows = _ladder((0.1, float("inf")), (0.9, float("inf")))
+    line = dc_diagnostics._mu_verdict(rows)
+    assert "UNGRADED" in line and "STABLE" not in line, line
+    # Pin what a naive `spread <= band` would have concluded off these same rows: an infinite
+    # band accepts an arbitrarily large drift, so every ladder would read STABLE.
+    spread = max(row["mu"] for row in rows) - min(row["mu"] for row in rows)
+    assert spread <= max(row["mu_tol"] for row in rows)
+
+
+def test_mu_verdict_refuses_to_grade_a_criterion_that_reports_no_resolution():
+    """`fixed_peak_dc` writes `tol` but no `mu_tol_effective`; inventing a band for it is how
+    this harness got the verdict wrong in the first place."""
+    line = dc_diagnostics._mu_verdict(_ladder((0.1, None), (0.9, None)))
+    assert "UNGRADED" in line and "STABLE" not in line, line
+
+
+def test_mu_verdict_needs_two_finite_shifts():
+    assert "need two finite" in dc_diagnostics._mu_verdict(_ladder((0.1, 5e-3)))
+    assert "need two finite" in dc_diagnostics._mu_verdict(_ladder((float("nan"), 5e-3), (0.3, 5e-3)))
+
+
+def test_mu_verdict_ignores_a_single_missing_resolution_when_others_have_one():
+    """One rung failing to report `mu_tol_effective` must not ungrade the whole ladder."""
+    line = dc_diagnostics._mu_verdict(_ladder((0.10, None), (0.50, 5e-3)))
+    assert "DRIFTS" in line, line
