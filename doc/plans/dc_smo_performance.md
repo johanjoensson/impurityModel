@@ -672,11 +672,11 @@ class as `gf-monitor-was-converging-the-wrong-axis`.
 
 **Fixed.** `print_ladder` now grades `mu` against the criterion's own resolution
 (`_mu_verdict`/`_row_resolution`), prints the per-cap resolutions it used, and prints the value
-spread unlabelled as a verdict. Re-running the ladder above today reports **`DRIFTS`**, by
-roughly **20-25x**.
+spread unlabelled as a verdict. Re-running the ladder above today reports **`DRIFTS`**, by a
+multiplier this document cannot pin: **at least ~6x, plausibly ~23x**.
 
-That multiplier is deliberately approximate, and the reason is worth recording because two
-earlier revisions of this paragraph each got it wrong in a different direction. The `chi` column
+That range is wide on purpose, and the reason is worth recording because three earlier revisions
+of this paragraph each asserted a tighter number and each got it wrong in a different direction. The `chi` column
 in the table below is the *harness's* recomputation, which `_row_resolution` refuses to build a
 band from; the fixed code grades against the criterion's own `mu_tol_effective`, which the
 ladder run never recorded per rung. So the resolutions tabulated below cannot be substituted into
@@ -689,13 +689,13 @@ What supports the range is one datum: the item-3 ladder run at cap 64,000 record
 **22.6x**. The harness column's 24.3x at cap 32,000 is *not* a second, corroborating
 measurement -- by the paragraph above it is the estimator this section disowns, and at cap 500 it
 runs 3.7x tight, which would put the true multiplier nearer 6x if that ratio held at the top of
-the ladder. It does not obviously hold (the criterion's -0.2213 at cap 64,000 sits within 7% of
+the ladder. It does not obviously hold (the criterion's -0.2213 at cap 64,000 sits within 8% of
 the harness's -0.2384 at cap 32,000), but two similar slopes at neighbouring caps is weak
 evidence when `chi` collapses 5.4x along the ladder anyway.
 
 So: the multiplier is somewhere between ~6x and ~23x and this document cannot pin it further
-without the criterion's `chi` at those caps, which was never recorded. **The verdict does not
-depend on pinning it** -- 0.255 against any band from 1e-2 to 4e-2 is 6x or more. Kept here as
+without the criterion's `chi` at caps 2,000/8,000/32,000, which was never recorded. **The verdict
+does not depend on pinning it** -- 0.255 against any band from 1e-2 to 4e-2 is 6x or more. Kept here as
 the run that motivated the fix, not as current behaviour.
 
 On the right axis the ladder is emphatically not stable:
@@ -735,8 +735,10 @@ This document reports two quantities both called `chi`, and an earlier revision 
   `width_tol` but **no** sector predicate, evaluated at a snapped `mu_evaluated`. Recomputed here
   deliberately, and deliberately *not* used as a resolution.
 
-They are not close. At cap 500, the one cap where both were recorded, the criterion reports
--0.5011 and the harness -1.9566 -- so `tol/|chi|` on the harness column (2.76e-3/1.9566 =
+They are not close. At cap 500, the one cap where both were recorded -- the criterion's from the
+Phase-0 table above, the harness's from a `RUN_DC_DIAG` gap ladder at caps 500/1,000 run while
+fixing this verdict, whose `mu_tol_effective` of 5.19e-03 is the only per-rung band this campaign
+recorded from a live `print_ladder` -- the criterion reports -0.5011 and the harness -1.9566 -- so `tol/|chi|` on the harness column (2.76e-3/1.9566 =
 1.41e-03) is 3.7x tighter than the criterion's `mu_tol_effective` (5.19e-03, itself within 6% of
 the criterion-column 5.51e-03). Note also the two tables use different `tol` (2.76e-3 at cap 500,
 2.50e-3 at the item-2 caps), so rows cannot be carried between them either.
@@ -770,9 +772,11 @@ is only the final solve. Do not read 8-10 % as the eigensolver's share of the ru
 ### Against Phase 0's baseline
 
 At cap 2,000 Phase 0 recorded `mu = 0.139038`, `gap_center = -0.000962`; this run gives
-`0.141796` / `-0.00207`. The `mu` difference is 2.8e-03, at the edge of that cap's own 1.95e-03
-resolution — **Phases 1-5 did not move the answer** at this cap, which is what the campaign
-needed to show.
+`0.141796` / `-0.00207`. The `mu` difference is 2.8e-03, against that cap's criterion-side
+resolution of 5.10e-03 (the Phase-0 table) — about **55% of it**, comfortably inside.
+**Phases 1-5 did not move the answer** at this cap, which is what the campaign needed to show.
+(An earlier revision compared it against 1.95e-03 and called it "at the edge"; that is the
+item-2 harness column, and the mistake made the campaign's own result look weaker than it is.)
 
 Wall-clock is **not** comparable between the two: Phase 0's 450.8 s at cap 2,000 was serial
 (`comm=None`, as its header states) and this is `-n 6`. Reading the 2.5x as a campaign speedup

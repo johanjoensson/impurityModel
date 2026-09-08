@@ -293,10 +293,13 @@ def run_dc_search(
         # the criterion reports chi = -0.5011 where this column reports -1.9566.
         #
         # Two further differences, neither of which the fallback depends on but both of which
-        # stop `in_sector` from being called the *only* one: the gap criterion filters its sample
-        # map to evaluations where both band edges resolved (`centre_at`; the occupation
-        # criterion does not filter), and every criterion measures at its own returned `mu`
-        # rather than at the snapped `mu_evaluated` this module uses (see the comment above it).
+        # stop `in_sector` from being called the *only* one. First, the sample maps differ: the
+        # gap and peak criteria drop trials whose observable did not resolve (`centre_at` needs
+        # both band edges; `peak_at[mu]` is written only `if gap is not None`), while the
+        # occupation criterion does not filter -- and this module's `samples` filters on key
+        # presence, not on value, so it can hold a `None` the gap and peak criteria excluded.
+        # Second, every criterion measures at its own returned `mu` rather than at the snapped
+        # `mu_evaluated` this module uses (see the comment above it).
         "criterion_chi": record.get("chi"),
         "tol": record.get("tol"),
         "tol_basis": record.get("tol_basis"),
