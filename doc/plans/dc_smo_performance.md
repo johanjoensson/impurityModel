@@ -343,3 +343,119 @@ individual `sector_at` entries around the probe, a bounded retry loop) that dese
 adversarial review rather than riding in on this phase's first commits. Tracked here exactly as
 Phase 1b is tracked above; the record field it would populate (`dc_cap_check`) is named in this
 document's own earlier phase-5 sketch and its absence here is this deferral, not an oversight.
+
+---
+
+# Verification: the campaign's acceptance tests, run locally
+
+The plan's four end-to-end acceptance tests, run on the local desktop (8 cores, 15 GiB RAM,
+8 GiB swap) against the same archive the production run crashed on. Items 1 and 3 are done and
+recorded below; item 2 (the `RUN_DC_DIAG` cap-ladder comparison) and item 4 (the Arrhenius
+resubmission) are not.
+
+## Item 1: the suggested cap at SMO's production geometry
+
+`python -m impurityModel.ed.memory_estimate --n-spin-orbitals 58 --nnz-per-state 100`,
+serial, `safety 0.5`, against ~9.5 GiB of probed `MemAvailable`:
+
+| `--block-width` | suggested `truncation_threshold` |
+|---|---|
+| 4 (the stale default every call site used to pass) | 962,476 |
+| 105 (the block width the crashed Arrhenius run actually reached) | **88,906** |
+
+88,906 is inside the plan's required 1e4-1e6 acceptance band, and within ~1 % of the 88,164
+determinants the crash's first expansion actually reached — the honest model now predicts the
+crash point instead of sitting 26x above it. Both invocations additionally emit the Phase 2/4
+caveat that `GS_MAX_BLOCK_WIDTH` is unset, so the ground-state figure is a placeholder rather
+than a bound; the second run confirms that caveat is not decoration (the answer moves 11x when
+the width does).
+
+**Caveat on the transfer to Arrhenius.** This is a serial probe of a whole 15 GiB desktop, not
+128 ranks inside a Slurm `--mem` cgroup, so it validates the *formula's* sensitivity to
+`block_width`, not the production budget itself. Item 4 is what closes that.
+
+## Item 3: the local SMO DC search completes
+
+Three `mpiexec -n 6` runs of `fixed_gap_dc` (`offset=0.0`, `allow_charge_state_change=True`,
+`verbosity=1`) against `impmod_tests/SMO/cubic/impmod/impurityModel_data.h5`, loaded directly
+via `model.load_selfenergy_archive` — the archived Hamiltonian the production run died on,
+without re-running the multi-hour RSPt pipeline in front of it. Cross-check that this is the
+same workload: the first expansion reaches 88,164 determinants here against the crash log's
+88,298, and `n_spin_orbitals=58` matches.
+
+| run | cap | outcome | peak RSS (all 6 ranks / max rank) |
+|---|---|---|---|
+| ladder (`truncation_threshold=None`, Phase 5 live) | ladder settled on **64,000**; the memory budget would have allowed 1,059,144 | **COMPLETED, 3290.3 s**, `sector=4`, 3 evaluations | ~2 GiB / ~0.5 GiB |
+| no ladder, cap pinned to the memory probe's own answer | 1,067,592 | killed by the host's memory guard, inside the *second* expansion | ~10.6 GiB / 1.9 GiB |
+| no ladder + `GS_MAX_BLOCK_WIDTH=8` | 1,132,656 | killed, same place | ~11.5 GiB / 2.2 GiB |
+
+**Item 3 passes: the search completes where it previously died in the first evaluation.** The
+lever that does it is the cap ladder — at 64,000 determinants the whole search fits in ~2 GiB
+across six ranks and finishes in 55 minutes.
+
+**What the two pinned-cap runs establish, and what they do not.** Both grew the basis along the
+identical path — 88,164 determinants at the first expansion, 517,759 at the second, the same
+numbers in both logs — and both died in the second. Basis growth at a pinned cap is cap-driven;
+neither `GS_MAX_BLOCK_WIDTH` nor anything else about the block width moves it. That is the solid
+conclusion.
+
+The two runs are **not** a controlled A/B of `GS_MAX_BLOCK_WIDTH`, and the ~1 GiB peak difference
+between them is not evidence the knob did anything:
+
+- The caps differ (1,067,592 vs 1,132,656). `suggest_truncation_threshold` probes live
+  `MemAvailable` at launch, so the second run drew a ~6 % larger cap from a slightly quieter
+  machine — enough on its own to account for the peak difference.
+- `p` was never recorded: `solver_trace.tracing()` was not open in either run, and TRLM's
+  `rank k_ret/nkeep` lines cannot stand in for it. `nkeep = k_blocks * p` with
+  `k_blocks = ceil(num_wanted / p)`, so `nkeep` tracks `num_wanted` — precisely the quantity
+  Phase 4 deliberately leaves uncapped. The two runs' retained-block ranks are near-identical
+  (20/20 x31, 28/28 x13, 21/21 x3 in both; 33/33 vs 36/36 the only difference), which is what
+  Phase 4 predicts either way and therefore says nothing about whether the warm block was
+  truncated.
+
+So `GS_MAX_BLOCK_WIDTH`'s effect on this workload is **unmeasured**. What is measured is that
+setting it to 8 does not rescue a pinned ~1.1M cap.
+
+**Hypothesis worth testing, not a conclusion.** The ladder stopped at 64,000 (below), and the
+memory budget at uncapped width allowed 1,059,144 while the *honest* estimate at production
+`p = 105` is ~88,906 (item 1). A rung above 64,000 is therefore unaffordable at uncapped width
+and might become affordable with the width pinned. If so the knob's role is "lets the ladder
+reach a settling cap", not "prevents the crash at 1.1M" — which it demonstrably does not.
+
+## The convergence criterion is *not* met, even though the run completes
+
+The ladder run finished, but it exhausted all `CAP_LADDER_MAX_RUNGS = 8` rungs (500 → 64,000)
+without the answer settling, and said so:
+
+```
+WARNING: the determinant cap ladder reached 64000 without the answer settling (it still varies
+by 1.060e-01 over the last 3 rungs, against a target of 6.250e-04). The double counting is
+truncation-limited here, not search-limited.
+```
+
+| quantity | value |
+|---|---|
+| `dc_cap` | 64,000 (`dc_cap_parity` = 1,059,144, the budget it stayed under) |
+| `dc_cap_drift` | 1.06e-01 |
+| ladder target (`0.25 * tol`) | 6.25e-04 |
+| `mu_tol_effective` (search tolerance / measured slope) | 1.13e-02 |
+| truncation's own contribution, `drift / (delta_sum/2)` | ~4.77e-01 |
+| `mu`, `gap_center`, `chi` | -0.0230, 1.16e-04, -0.2213 |
+
+The plan's success criterion is "gap centre in `mu` stable across the cap ladder to within the
+criterion's own `tol/|chi|`". **It is not satisfied**: truncation moves the answer ~40x more
+than the search tolerance does. This is the same behaviour Phase 0 saw and flagged (`mu` moved
+~0.07 between caps 500 and 2000, against a ~5e-3 resolution) — SMO had not settled at cap 2,000
+and it still has not at 64,000.
+
+Read together, that splits the campaign's outcome cleanly:
+
+- **Survivability: fixed.** The run no longer dies; it produces a DC value in 55 minutes where
+  it previously OOM'd in the first evaluation.
+- **Accuracy at the cap it can afford: not established.** The returned DC inherits a ~4.8e-01
+  truncation drift in `mu`, and the code says so unprompted rather than hiding it — which is the
+  behaviour the Phase 5 warning was written for, working as intended on the first real workload
+  it met.
+
+The deferred post-search cap re-verification (previous section) and the width-cap hypothesis
+above are both aimed at this gap, and item 2 is the measurement that should decide between them.
