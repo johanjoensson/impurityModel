@@ -672,47 +672,43 @@ class as `gf-monitor-was-converging-the-wrong-axis`.
 
 **Fixed.** `print_ladder` now grades `mu` against the criterion's own resolution
 (`_mu_verdict`/`_row_resolution`), prints the per-cap resolutions it used, and prints the value
-spread unlabelled as a verdict. Re-running the ladder above would report **`DRIFTS`**, by a
-multiplier this document cannot pin below ~50x. (Would: the ladder has not been re-run at caps
-2,000/8,000/32,000 since the fix. The only live `print_ladder` output this file cites is the caps
-500/1,000 run below.)
+spread unlabelled as a verdict. Re-running the ladder above would report **`DRIFTS`** — *by how
+much is not recoverable from anything in this file*, and the paragraph below is about why.
+(Would: the ladder has not been re-run at caps 2,000/8,000/32,000 since the fix. The only live
+`print_ladder` output this file cites is the caps 500/1,000 run below.)
 
-Five earlier revisions of this paragraph each asserted a different multiplier and each was wrong,
-in both directions, so here is what the data actually carry. The `chi` column in the table below
-is the *harness's* recomputation, which `_row_resolution` refuses to build a band from; the fixed
-code grades against the
-criterion's own `mu_tol_effective`. The two differ by 3.7x at cap 500, the one cap where both
-are recorded (5.19e-03 against 1.41e-03), so the resolutions tabulated below cannot be
-substituted into the verdict — quoting "the same 24x as the table" would assume exactly the
-equality `_row_resolution` exists to deny.
+**The multiplier is not computable from anything recorded, in either direction.** Six revisions
+of this paragraph asserted one — four distinct values (24x, 20-25x, 6-23x, 23-50x) across five of
+them, then a ~50x ceiling — and every one of them was *underived* rather than demonstrably false:
+the quantity they estimate is undetermined, so none of them can be graded right or wrong. What is
+missing is not an argument but a measurement. `_mu_verdict` grades the spread against
+`max(banded)`, the **loosest** band over the rungs *of the graded ladder*, and **no criterion-side
+band was recorded at any rung of this ladder** (caps 2,000/8,000/32,000):
 
-What *is* established, and what is not. `_mu_verdict` grades against the **loosest** per-rung
-band (`max(banded)`), so any single recorded band puts a *ceiling* on the multiplier:
+- cap 500's `mu_tol_effective` (5.19e-03) and cap 64,000's (1.13e-02) belong to **other runs**,
+  and cap 64,000 is not a rung of any ladder — it is the item-3 run's own internal cap. Neither
+  constrains `max(banded)` here.
+- the `tol/|chi|` numbers tabulated below are the *harness's* recomputation, which
+  `_row_resolution` refuses to build a band from at all; the two estimators differ by 3.7x at cap
+  500, the one cap where both are recorded (5.19e-03 against 1.41e-03). Substituting them would
+  assume exactly the equality `_row_resolution` exists to deny.
+- transporting cap 2,000's Phase-0 `tol/|chi|` (5.10e-03) across both gaps at once — different
+  run, different estimator — has no margin in either. The runs disagree at that very cap
+  (`gap_center` -0.000962 against -0.00207, `mu` 0.139038 against 0.141796; see "Against Phase 0's
+  baseline"), so the secant differs; and at both caps where both estimators are recorded the one
+  that actually grades is the **smaller** (5.19e-03 against 5.51e-03; 1.126e-02 against
+  1.130e-02), so the transported number more likely over-states the band and *under*-states the
+  multiplier. A ceiling is the one direction that substitution does not support.
+- and the anchor can disappear silently: cap 2,000's `mu` (0.141796) lies strictly *between* the
+  spread's endpoints, so a rung whose `mu_tol_effective` came back `inf` or `NaN` drops out of
+  `banded` while the 0.255 spread is unchanged.
 
-| | criterion-side band | 0.255 spread against it |
-|---|---|---|
-| cap 2,000 (`tol/\|chi\|`, Phase-0 run) | 5.10e-03 | 50.0x |
-| cap 64,000 (`mu_tol_effective`, item-3 run) | 1.13e-02 | 22.6x |
-
-The **ceiling of ~50x holds**: cap 2,000 is a rung of this ladder, so `max(banded)` is at least
-its band. **No floor is established.** An earlier revision claimed 22.6x as one by arguing the
-band grows monotonically with cap, which this document's own two lowest recorded bands refute --
-5.51e-03 at cap 500 *falls* to 5.10e-03 at cap 2,000, because `tol` moved 9.4% while `|chi|`
-moved 2.1%, and `tol` is not cap-independent. Caps 8,000 and 32,000 were never measured on the
-criterion side, and either could hold a looser band than cap 64,000's. The two readings the
-document can support differ by 3.5x: 22.6x if the cap-64,000 band is representative, ~6.5x if the
-cap-500 criterion/harness ratio is applied to the harness's cap-32,000 column instead.
-
-Note the two bands above are also two different estimators -- `mu_tol_effective` is
-`tol/(0.5*delta_sum)` and is the only one `_row_resolution` grades the gap criterion against,
-while cap 2,000 has only a `tol/|chi|`. They happen to coincide at cap 64,000 (1.126e-02 against
-1.130e-02) and agree within 6% at cap 500, which is why the ceiling is quotable at all, but a
-column holding one of each is the substitution this section otherwise forbids.
-
-So the multiplier is **not determined by anything recorded** -- it is somewhere below ~50x, and
-this write-up has now guessed at its lower end four times and been wrong four times. **The
-verdict never depended on it**: 0.255 against any band from 1e-2 to 4e-2 is 6x or more, and
-`print_ladder` now prints the per-rung resolutions, so one re-run of the ladder settles it.
+**The verdict does not depend on the multiplier.** For this ladder to print `STABLE`, some rung's
+band would have to exceed the whole 0.255 spread, i.e. `0.5*delta_sum` below about 0.01 — against
+0.53 at cap 500 and 0.22 at cap 64,000, the only two caps where the slope was recorded at all.
+That is not a bound on the multiplier and must not be read as one; it is the statement that
+`DRIFTS` is robust to the band being wrong by a factor of tens. The number itself is one re-run
+away: `print_ladder` now prints the per-rung resolutions with the estimator that produced each.
 Kept here as the run that motivated the fix, not as current behaviour.
 
 On the right axis the ladder is emphatically not stable:
@@ -726,9 +722,10 @@ criterion's -- see "Two different `chi` columns" below before dividing anything 
 | 8,000 | 0.208290 | -0.4730 | 5.29e-03 |
 | 32,000 | -0.046748 | -0.2384 | 1.05e-02 |
 
-`mu` spans **0.255**, between 24x and 130x those numbers. Read them as an order-of-magnitude
-scale rather than as the criterion's own band: they are built from the harness column, and the
-criterion's resolution at these caps was not recorded. It also changes sign between 8,000 and
+`mu` spans **0.255**, between 24x and 130x those numbers. **Those are not the verdict's
+multiplier** — they are built from the harness column, which `_row_resolution` does not grade
+against, and the criterion's resolution at these caps was not recorded (see the paragraph above).
+Read them as an order-of-magnitude scale only. `mu` also changes sign between 8,000 and
 32,000, independently reproducing the sign change the item-3 ladder run showed at 64,000 — on a
 different code path, at a pinned iteration, with the cap ladder bypassed. The non-settling is
 not an artifact of the Phase 5 ladder.

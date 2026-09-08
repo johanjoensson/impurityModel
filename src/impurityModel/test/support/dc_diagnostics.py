@@ -19,7 +19,7 @@ search drove onto its target -- the gap centre to zero, the occupation to the DF
 its spread across the ladder is bounded by the search tolerance and stays small whether or not
 the answer transferred. Grading it (against a flat ``1e-2``, as this module did until the SMO
 verification runs) reported SrMnO3's gap ladder as ``STABLE`` while ``mu`` moved 0.255 and changed
-sign twice. See :func:`_mu_verdict`.
+sign -- once here, and again on the independent Phase 5 ladder. See :func:`_mu_verdict`.
 
 The accounting comes from :mod:`impurityModel.ed.solver_trace`, which the production search
 writes into unconditionally -- so what is measured here is the production path, not a
@@ -587,16 +587,25 @@ def print_ladder(rows):
     for row in rows:
         print(_format_row(row))
 
-    values = [row["value"] for row in rows if np.isfinite(row["value"])]
-    if len(values) >= 2:
+    kept = [(row["cap"], row["value"]) for row in rows if np.isfinite(row["value"])]
+    dropped = [row["cap"] for row in rows if not np.isfinite(row["value"])]
+    if len(kept) >= 2:
         # NOT a verdict, and deliberately no longer graded. `value` is the quantity the search
         # *drives to its target* at every cap (the gap centre to zero, the occupation to the DFT
         # reference), so its spread across the ladder is bounded by the search tolerance rather
         # than by the truncation the ladder varies -- it is small whether or not the answer
         # transferred. Grading it against a flat 1e-2 reported SMO's gap ladder as STABLE while
-        # `mu` moved 0.255 and changed sign twice. Judge `mu`; see below.
+        # `mu` moved 0.255 and changed sign. Judge `mu`; see below.
+        #
+        # Name the caps this spread is over, and the ones it is not. A rung whose observable never
+        # resolved carries `value = nan` (`run_dc_search`'s `achieved`), so it silently leaves --
+        # the same "spread over an unstated subset" the chi line is labelled by cap to avoid, and
+        # which `_mu_verdict` reports with a per-cause count.
+        values = [value for _cap, value in kept]
+        note = f"; dropped as non-finite: {dropped}" if dropped else ""
         print(
             f"achieved value across the ladder: spread {max(values) - min(values):.4f} "
+            f"over caps {[cap for cap, _value in kept]}{note} "
             f"(the controlled quantity, at its target by construction -- not a convergence test)"
         )
     print(_mu_verdict(rows))
@@ -630,9 +639,11 @@ def print_ladder(rows):
             )
     # Labelled by cap, not positional. A `None` chi is reachable on a rung that *succeeded* --
     # `_dc_chi` returns `(None, None)` when no evaluated pair straddles the answer by more than
-    # `width_tol`, which the `samples` value-filter above made newly possible by dropping
-    # unresolved trials. Unlabelled, a three-cap ladder whose middle rung lost its pair printed
-    # two numbers under a header saying "per cap", which reads positionally onto the first two.
+    # `width_tol`. That predates the `samples` value-filter above, which widened the route rather
+    # than creating it: `_dc_chi` already had a single-point `mu = 0` fast path, and a
+    # one-evaluation occupation search already left one sample (see the `occ_chi` note above).
+    # Unlabelled, a three-cap ladder whose middle rung lost its pair printed two numbers under a
+    # header saying "per cap", which reads positionally onto the first two.
     chis = [(row["cap"], row["chi"]) for row in rows if row["chi"] is not None]
     if chis:
         print("chi = d(value)/dmu per cap: " + ", ".join(f"{cap}:{chi:.4f}" for cap, chi in chis))

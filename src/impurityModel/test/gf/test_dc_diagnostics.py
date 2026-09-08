@@ -205,7 +205,7 @@ def test_every_rank_runs_the_same_number_of_sector_solves():
 # `_mu_verdict` replaced a verdict computed on `row["value"]` against a flat 1e-2. That was the
 # wrong axis for every criterion: `value` is what the search *drives to its target* at each cap,
 # so its spread is bounded by the search tolerance rather than by the truncation the ladder
-# varies. On SMO it reported STABLE while `mu` moved 0.255 and changed sign twice. Each test
+# varies. On SMO it reported STABLE while `mu` moved 0.255 and changed sign. Each test
 # below is checked against the specific wrong behaviour it guards, not just against the fix.
 
 
@@ -638,12 +638,16 @@ def test_a_dropped_evaluation_still_leaves_a_slope_measurable_from_the_survivors
         solver_trace.note("dc_evaluation", mu=0.20, gap_centre=-1.0)
         solver_trace.note("dc_evaluation", mu=0.22, gap_centre=None)  # unresolved, dropped
         solver_trace.note("dc_evaluation", mu=0.25, gap_centre=0.0)
-        solver_trace.note("dc_evaluation", mu=0.30, gap_centre=1.0)
+        # Deliberately NOT collinear with the pair below: on linear data every candidate pair
+        # gives the same slope, so the assertion could not tell which points were used.
+        solver_trace.note("dc_evaluation", mu=0.30, gap_centre=3.0)
         return 0.25 * np.identity(2)
 
     monkeypatch.setattr(diag, "fixed_gap_dc", fake_gap_dc)
 
     row = diag.run_dc_search("_stub", cap=1000, criterion="gap")
     assert row["value"] == pytest.approx(0.0)
-    # Measured from the surviving neighbours 0.20 and 0.25: (0.0 - -1.0) / 0.05 = 20.
+    # Measured from the surviving neighbours 0.20 and 0.25: (0.0 - -1.0) / 0.05 = 20. The pair
+    # (0.25, 0.30) would give 60 and (0.20, 0.30) 40, so this pins the points, not just the fact
+    # that some slope was recovered.
     assert row["chi"] == pytest.approx(20.0)
