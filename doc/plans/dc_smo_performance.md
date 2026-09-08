@@ -27,9 +27,15 @@ product on every rank before an `Allreduce` and a 1/size slice.
 
 ## Measurement 1: block widths (`p`, `w`) scale with cap, confirming the mechanism
 
-Instrumented via `solver_trace.note` in `cipsi_solver.get_eigenvectors` (`eigensolve_block_width`)
-and `trlm.py`'s two `block_apply` call sites (`block_apply_width`, `site=continuation` /
-`site=restart_rebuild`).
+> **Superseded in part -- see "Phase 1b / Side-finding" at the end of this document.** This
+> heading rests on a single TRLM data point (cap 2,000; cap 500 is below `dense_cutoff` and runs
+> the dense path). A later measurement at cap 8,000 finds `p`'s *maximum* unchanged at 16 and its
+> *mean* grown only 4.7 -> 5.06, so "scale with cap" is not established between these caps and
+> `p` should not be interpolated across them in either direction.
+
+Instrumented via `solver_trace` in `cipsi_solver.get_eigenvectors` (`eigensolve_block_width`)
+and `trlm.py`'s two `block_apply` call sites (`site=continuation` / `site=restart_rebuild`;
+originally a `block_apply_width` note, now the timed `block_apply` kind -- see Phase 1b).
 
 | cap | eigensolve p (sweep) | block_apply[continuation] w | block_apply calls | walltime |
 |---|---|---|---|---|
@@ -726,24 +732,71 @@ whole TRLM restart loop), and replacing the `size` sequential blocking `Reduce` 
 depth-bounded `Ireduce` pipeline. Both were accepted-and-deferred on plausibility, never
 measured. They are measured now.
 
-### The per-call cost split
+### How this was measured, after a first attempt that was not a measurement
+
+`trlm.py`'s two `block_apply` call sites are now wrapped in `solver_trace.timed("block_apply",
+site=..., w=...)` rather than only noted, so a traced run reports the call's own wall time
+alongside its width. That instrumentation exists because the first version of this section did
+something else: it took per-call costs from a synthetic-CSR benchmark and folded them through the
+recorded width histogram. That was wrong by 1.74x (1.38 ms/call synthetic against 2.40 ms/call
+measured), and wrong in *two* directions at once with neither bound — the benchmark sizes every
+call at the cap while the real calls run over CIPSI bases still growing toward it, and it used
+Phase 0's `nnz_per_state = 5.6`, a cap-500 sample whose own Measurement 2 says to re-check it at
+a larger cap before trusting it. Both flaws are avoidable by reading the clock at the call site,
+which is what the trace was already open for.
+
+### The per-call cost split, measured in situ
+
+One full gap DC search at cap 8,000, `mpiexec -n 6`, `solver_trace` open. Two runs, for
+reproducibility:
+
+| | run 1 | run 2 |
+|---|---|---|
+| walltime | 349.3 s | 352.2 s |
+| `block_apply` total | 33.06 s (**9.46 %**) | 33.16 s (**9.42 %**) |
+| calls | 13,802 | 13,802 |
+| mean | 2.395 ms/call | 2.403 ms/call |
+
+All calls come from `site=continuation`; the rebuild arm never fired at this cap, as in Phase 0.
+Width: min 1, max 16, mean 3.23. Per-width mean cost, and the call-count-weighted least-squares
+split into a `w`-independent term and a `w`-proportional one:
+
+```
+w=1:1.665(n=4674)  w=2:1.951(n=1944)  w=3:2.337(n=3850)  w=4:2.647(n=160)   w=5:2.871(n=1184)
+w=6:3.027(n=600)   w=7:4.240(n=582)   w=10:2.623(n=124)  w=11:4.639(n=380)  w=16:7.880(n=304)
+
+cost(w) ~ 1.257 + 0.354*w  ms
+```
+
+**The `w`-independent term is 1.257 ms/call = 17.35 s = 4.93 % of the search. That is the
+ceiling on what CSR pre-slicing can remove**, and it is a ceiling rather than an estimate: the
+slice is `O(nnz)` while the matmul and reduce are `O(nnz * w)`, so pre-slicing can only ever
+touch the intercept — and it cannot take all of it, since that intercept also holds the
+`Allgather`, the result-buffer allocation, the per-call Python dispatch, and the latency floor of
+`size` small `Reduce`s. Judging from the synthetic benchmark's own split, pre-slicing plus the
+`Allgather` hoist together remove most but not all of it, so the realistic figure is **~3-4 % of
+the DC search, against a hard ceiling of 4.9 %**.
+
+### The synthetic benchmark, kept for the one thing only it can answer
 
 `bench_block_apply.py` (scratchpad), `mpiexec -n 6`, 100 reps per point, each variant a faithful
 copy of the shipped code with exactly one thing changed and cross-checked against it for
-bit-level agreement. Synthetic CSR at Phase 0's measured sparsity (`nnz_per_state = 5.6`).
-Savings against the shipped code, positive = faster:
+agreement. Its *absolute* numbers are superseded by the in-situ measurement above; what it can
+still answer is the relative ranking of variants, which the in-situ clock cannot. Each column is
+that variant's own increment, expressed as a percentage of the shipped code's total, so the
+columns add:
 
 ```
-   cap    w | hoist Allgather  + preslice CSR  + Ireduce   (a) total   v4 (pre-Phase-1) vs v0
-  8000    4 |            10.0            46.8      -31.8        56.8       29.3
-  8000   16 |             4.2            19.4      -52.1        23.6      -38.7
-  8000   64 |            -0.6            12.7      -57.1        12.2      -45.6
- 32000    4 |            -3.6            37.4      -38.4        33.9       -8.2
- 32000   16 |             1.3            14.8      -40.9        16.1      -14.6
- 32000   64 |            -1.0             3.7      -21.9         2.7      -12.4
- 64000    4 |            10.8            23.7      -37.3        34.5      -20.4
- 64000   16 |            -3.2             6.5      -23.9         3.2       -4.1
- 64000   64 |             1.2             1.6      -25.0         2.7      -22.8
+   cap    w | hoist Allgather  + preslice CSR  + Ireduce   hoist+preslice   pre-Phase-1 vs shipped
+  8000    4 |            10.0            46.8      -31.8             56.8       29.3
+  8000   16 |             4.2            19.4      -52.1             23.6      -38.7
+  8000   64 |            -0.6            12.7      -57.1             12.2      -45.6
+ 32000    4 |            -3.6            37.4      -38.4             33.9       -8.2
+ 32000   16 |             1.3            14.8      -40.9             16.1      -14.6
+ 32000   64 |            -1.0             3.7      -21.9              2.7      -12.4
+ 64000    4 |            10.8            23.7      -37.3             34.5      -20.4
+ 64000   16 |            -3.2             6.5      -23.9              3.2       -4.1
+ 64000   64 |             1.2             1.6      -25.0              2.7      -22.8
 ```
 
 - **The `Ireduce` pipeline is a pessimization at this rank count**, by 22-57 %, at every one of
@@ -751,65 +804,63 @@ Savings against the shipped code, positive = faster:
   it dead: the latency argument for it was always about large `size`, and 6 round trips is not
   128, so it deserves a high-rank-count check. But nothing should be implemented on the strength
   of the original reasoning.
-- **Pre-slicing the CSR is the only real saving**, and it decays exactly where the cost is: 47 %
-  at cap 8,000/`w=4` down to 1.6 % at cap 64,000/`w=64`. Slicing is a fixed per-call cost
-  proportional to `nnz`, so it only matters while the matmul it precedes is small.
 - **Hoisting the `Allgather` is noise**, -3.6 % to +10.8 %, straddling zero.
+- **Pre-slicing the CSR is the only real saving**, and it decays with `w` exactly as the in-situ
+  intercept predicts it must, since it removes fixed work from a growing denominator.
 - Incidentally: **Phase 1 was not a pure speed win, and the sign depends on the width.** The
   pre-Phase-1 `Allreduce` is 29 % faster at cap 8,000/`w=4` and 46 % slower at `w=64`. That is
   the memory-for-latency trade Phase 1 made deliberately, now measured rather than assumed.
 
-### The share of a real search, which is what decides it
+### Verdict: do not do Phase 1b
 
-`probe_widths.py` (scratchpad), one full gap DC search at cap 8,000, `mpiexec -n 6`, 377.8 s,
-`solver_trace` open:
+~3-4 % of a DC search (ceiling 4.9 %) does not justify a correctness-sensitive change to a
+function three call sites share (`trlm.py`'s continuation and rebuild arms, and `BiCGSTAB.pyx`),
+in a campaign whose own history includes a rank-local early return in an extracted helper
+deadlocking a collective. Doing it properly means hoisting the partition and the row-slices out
+to the caller and threading them through that shared signature, or caching them inside
+`block_apply` on a key that correctly invalidates when `H` changes — the second is the cache-
+staleness hazard this document already records twice. Half of the deferred work is a measured
+pessimization anyway.
 
-| quantity | value |
-|---|---|
-| `block_apply` calls (all from `site=continuation`; the rebuild arm never fired) | 13,802 |
-| width `w` | min 1, max 16, **mean 3.23** |
-| per-kind seconds | `build` 1.5, `expand` 345.3, `eigensolve` 29.7 |
+The opportunity cost is the argument that settles it: `expand` is **91 %** of this search
+(322.0 s of 352.2 s; `eigensolve` 27.5 s, `build` 1.5 s — siblings under `sector_solve`, so they
+do not overlap, though `expand`'s own internal `get_eigenvectors` calls are not separately timed
+and carry most of the Lanczos work). A 3-4 % lever is not where the next effort belongs.
 
-Folding the measured width histogram through the measured per-call cost
-(`cost(w) ≈ 0.513 + 0.268·w` ms, fit on the cap-8,000 `w=4`/`w=16` points) gives **19.0 s in
-`block_apply`, 5.0 % of the search**. Phase 1b's best case is therefore:
+What would change this verdict: a rank count where the `size` sequential `Reduce`s actually hurt
+(the 128-rank Arrhenius configuration is the case the deferral was written for, and is
+untested), or a workload whose widths are large enough for `block_apply` to dominate — the
+opposite of this one, where the mean width is 3.2 and the intercept carries half the cost.
 
-| | saving |
-|---|---|
-| at the `w=4` split (56.8 % of `block_apply`) | 10.8 s = **2.9 %** of the search |
-| at the `w=16` split (23.6 %) | 4.5 s = **1.2 %** of the search |
+**Not measured, despite an earlier claim here that it was:** how the share moves with cap. The
+in-situ probe was run at cap 8,000 only. An earlier draft asserted "at cap 32,000 the same
+arithmetic lands near 3 %"; the call count, width histogram and wall time at that cap are not
+recorded anywhere, so that number had no derivation. Reconstructing from item 2's own
+per-evaluation scaling (88.7 s → 389.6 s, 4.39x for a 4x cap) against a per-call cost roughly
+linear in `nnz`, the share more likely stays flat near 5 % than falls to 3 %. Flat is enough for
+the verdict; the specific number was invented and is withdrawn.
 
-**Verdict: do not do Phase 1b.** A 1-3 % end-to-end saving does not justify a correctness-
-sensitive refactor to a function three call sites share (`trlm.py`'s continuation and rebuild
-arms, and `BiCGSTAB.pyx`), in a campaign whose own history includes a rank-local early return in
-an extracted helper deadlocking a collective. Half of the deferred work is a measured
-pessimization anyway. The share does not grow with cap either — at cap 32,000 the same
-arithmetic lands near 3 % — because `expand`'s other work (candidate generation, PT2) grows
-faster than the matvec does.
-
-What would change this verdict: a rank count where the `size` sequential `Reduce`s actually
-hurt (the 128-rank Arrhenius configuration is the case the deferral was written for, and is
-untested), or a workload where `w` is large enough that `block_apply` dominates — which is the
-opposite of this one, where the mean width is 3.2.
-
-### Side-finding: `p` did not grow between cap 2,000 and cap 8,000
+### Side-finding: `p`'s *maximum* did not grow between cap 2,000 and cap 8,000
 
 `eigensolve_block_width` at cap 8,000: n=327 solves, `p` min 2, **max 16**, mean 5.06, with
-`num_wanted` min 12, max 40, mean 18.4.
+`num_wanted` min 12, max 40, mean 18.39.
 
-Phase 0 measured `p` maxing at **16** at cap 2,000. It is still 16 at cap 8,000. The campaign's
-mechanism (`num_wanted = 2·len(psi_refs)` feeding the next warm start, so `p` grows with the cap)
-is a real effect between cap 2,000 and the ~1M production cap where `p` reached 105 — but it is
-**flat across this 4x range**, so `p` is not a smooth function of the cap and interpolating it is
-unsafe. That cuts against this document's own earlier log-interpolation of `p(128,000) ≈ 56`
-just as much as it cuts against the assertion that interpolation replaced.
+Phase 0 measured `p` max **16**, mean 4.7 at cap 2,000, and `block_apply` width mean 2.8. So
+across this 4x range the *maximum* is pinned at 16 while the *means* grow modestly (4.7 → 5.06,
+and 2.8 → 3.23). "`p` did not grow" is true only of the maximum, and the growth that is there is
+far too slow to reach the `p ≈ 105` recorded at the ~1M production cap.
 
-Two consequences worth recording:
+That makes `p` a poor candidate for interpolation across caps, and this document should stop
+doing it in both directions. Withdrawn accordingly: the log-interpolated `p(128,000) ≈ 56` from
+an earlier commit, and the attempt before that to assert `p` is nowhere near 80 — both were
+reading a curve off two points that this measurement shows is not smooth. Also withdrawn: using
+this cap's `p` as an anchor for the RSS row at cap 64,000, for the same reason.
 
-- The RSS row's plausible-width question now has one real anchor: if `p` at cap 64,000 is nearer
-  16 than 105, `estimate_gs_peak_bytes` predicts ~116 MiB/rank there. Still not a verdict — `p`
-  at 64,000 was not measured, and the measured flatness is exactly the reason not to extrapolate.
-- `num_wanted / p` measured here is ~2.2 (means) to 2.5 (maxima), i.e. close to the `2p` that
-  `estimate_gs_peak_bytes` assumes at `gs_num_wanted=None` — not the ~30x its docstring warns
-  about at production scale. So at *this* cap the estimator's `num_wanted` assumption is sound,
-  and the rung-9 width threshold nearer 80 than 17. At the production cap it remains unmeasured.
+**One correction that runs the other way from what an earlier draft claimed.** `num_wanted / p`
+here is **3.63** (means: 18.39 / 5.06), not the 2.2 an earlier version of this section stated
+with no derivation. Against `memory_estimate._GS_COUPLED_NUM_WANTED_RATIO = 2`, a measured 3.63
+means `estimate_gs_peak_bytes` **under**-counts the Krylov term by ~1.8x at this cap — the
+opposite of the "the estimator's `num_wanted` assumption is sound" conclusion drawn from the
+mis-derived number, and it pushes the rung-9 width threshold *down* from 80 rather than
+confirming it. The production-scale ratio, which is what `memory_estimate`'s own ~30x warning is
+about, remains unmeasured.

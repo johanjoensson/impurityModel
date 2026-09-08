@@ -42,7 +42,7 @@ from impurityModel.ed.block_view import (
     width_synced_total,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
-from impurityModel.ed.solver_trace import note as _trace_note
+from impurityModel.ed.solver_trace import timed as _trace_timed
 
 __all__ = [
     "_thick_restart_block_lanczos_array",
@@ -210,8 +210,12 @@ def _restart_coefficients(
     # reduce-scatter fix (see _block_ops.pxi) -- previously global_N * block_cols(Q_ret),
     # the bug that fix removed. This is the rebuild arm, so this width can reach `nkeep`
     # (up to 3p), wider than the sweep width.
-    _trace_note("block_apply_width", site="restart_rebuild", w=block_cols(Q_ret))
-    HQ = block_apply(h_op, Q_ret, basis, mpi, slater)
+    # Timed, not just noted: reading this call's cost off a synthetic benchmark and folding it
+    # through the recorded widths gave a share with unbounded bias in both directions (the
+    # benchmark sizes every call at the cap, while the real calls run over bases still growing
+    # toward it), which is no basis for a keep-or-drop decision on the code it measures.
+    with _trace_timed("block_apply", site="restart_rebuild", w=block_cols(Q_ret)):
+        HQ = block_apply(h_op, Q_ret, basis, mpi, slater)
     ovl = block_inner(Q_ret, HQ, mpi, comm)
     T_lead = 0.5 * (ovl + np.conj(ovl.T))
     # Thick restart always full-reorthogonalizes the residual against the retained
@@ -495,8 +499,8 @@ def _trlm_core(
             # Phase 0 measurement: this fires once per continuation block, every restart --
             # the dominant call count for `block_apply`'s array-branch peak (see the rebuild
             # arm's note above and doc/plans/dc_smo_performance.md).
-            _trace_note("block_apply_width", site="continuation", w=block_cols(q1))
-            wp = block_apply(h_op, q1, basis, mpi, slater)
+            with _trace_timed("block_apply", site="continuation", w=block_cols(q1)):
+                wp = block_apply(h_op, q1, basis, mpi, slater)
 
             overlaps = block_inner(Q_basis, wp, mpi, comm)
             alpha_i = overlaps[overlaps.shape[0] - w1 :, :]  # q1^H H q1  (w1, w1)

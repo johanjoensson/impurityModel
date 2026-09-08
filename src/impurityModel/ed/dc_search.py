@@ -166,17 +166,23 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
     ``doc/plans/dc_performance.md``, the campaign this ported from). Running at the full
     memory-derived cap regardless spends time on resolution the criterion cannot use.
 
-    So the cap is *measured* rather than maximised: double it until two successive rungs agree to
-    within ``CAP_CONVERGENCE_FRACTION * tol``, and stop. The ladder is geometric, so its whole
-    cost is ~2x the rung it accepts.
+    So the cap is *measured* rather than maximised: double it until the SPAN over the last
+    ``CAP_CONVERGENCE_RUNS + 1`` rungs is within ``CAP_CONVERGENCE_FRACTION * tol``, and stop.
+    The ladder is geometric, so its whole cost is ~2x the rung it accepts. (Not "until two
+    successive rungs agree" -- that pairwise reading is the bug :data:`CAP_CONVERGENCE_RUNS`'s
+    own docstring exists to reject: a staircase can step under a pairwise gate at every step
+    while drifting without bound.)
 
     **What this trades away, stated plainly.** The double counting is then determined on a
     smaller variational space than ``calc_selfenergy`` will use at that ``dc`` -- a DC<->GS parity
     gap of the same shape this module exists to close elsewhere (a halved memory budget). The
     difference is that this one is *measured and recorded*: the caller records ``dc_cap``,
     ``dc_cap_drift`` and the memory-derived ceiling (``dc_cap_parity``) beside it, rather than
-    inheriting it silently. :func:`impurityModel.ed.dc_criteria._calibrate_cap` does that wiring
-    for both criteria.
+    inheriting it silently. ``dc_criteria._calibrate_cap`` does that wiring for the gap and
+    occupation criteria (:func:`impurityModel.ed.dc_criteria.fixed_gap_dc`,
+    :func:`impurityModel.ed.dc_criteria.fixed_occupation_dc`). **Not** for
+    :func:`impurityModel.ed.dc_criteria.fixed_peak_dc`, which does not call it: a peak search
+    still inherits whatever cap it was given, with no ``dc_cap`` in its record.
 
     Parameters
     ----------
@@ -216,8 +222,11 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
     Returns
     -------
     (cap, drift, rungs) : tuple
-        The accepted cap, the last change in ``quantity`` between rungs (``None`` if the ladder
-        never got two comparable values), and the list of ``(cap, value)`` pairs evaluated.
+        The accepted cap, the ``drift`` -- the SPAN (``max - min``) of ``quantity`` over the
+        trailing window of up to ``CAP_CONVERGENCE_RUNS + 1`` rungs, ``None`` if the ladder never
+        got two comparable values -- and the list of ``(cap, value)`` pairs evaluated. Reading
+        ``drift`` as a pairwise change between the last two rungs under-reports the error bar
+        (:mod:`dc_record` records a measured 7x from exactly that confusion).
 
         ``cap`` is always ``rungs[-1][0]``, the rung this function evaluated **last**, on all
         three exit paths (the window settled, the memory ceiling was hit, the rung budget ran
@@ -229,11 +238,12 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
         :func:`impurityModel.ed.dc_criteria.fixed_gap_dc` does exactly that, comparing its own
         ``cached_cap`` against this ``cap`` before deciding to keep or clear its caches.
 
-        ``rungs`` is currently discarded by both callers (``_calibrate_cap`` binds it to ``_``),
-        so no per-rung history reaches :mod:`dc_record` and no *trend* in the drift is
-        recoverable after the fact -- only the single span ``drift`` reports. Anything that wants
-        to argue "the drift is or is not shrinking with cap" needs this list plumbed through
-        first, or its own ladder run.
+        ``rungs`` is consumed only by this module's own tests; the single production caller
+        (``dc_criteria._calibrate_cap``) discards it, binding it to ``_rungs``. So no per-rung
+        history reaches :mod:`dc_record`, and no *trend* in the drift is recoverable after the
+        fact -- only the single span ``drift`` reports. Anything that wants to argue "the drift
+        is or is not shrinking with cap" needs this list plumbed through first, or its own
+        ladder run.
     """
     target = CAP_CONVERGENCE_FRACTION * tol
     rungs = []
