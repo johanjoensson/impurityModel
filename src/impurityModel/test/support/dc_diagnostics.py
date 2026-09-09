@@ -477,8 +477,12 @@ def _mu_verdict(rows):
     generous to a ``STABLE`` verdict: a ladder that drifts past even that has drifted past every
     rung's own claim. It is also stricter than textbook error propagation, which would compare a
     pair against ``r_i + r_j >= max(r)``. The resolution is per-rung and varies -- on SMO it
-    degrades by ~5x across the ladder as the measured slope collapses -- so a single number has
-    to pick one, and picking the tightest would manufacture ``DRIFTS``.
+    degrades by 1.86x across the ladder (5.48e-03 to 1.02e-02) as ``delta_sum`` collapses -- so a
+    single number has to pick one, and picking the tightest would manufacture ``DRIFTS``: the
+    same ladder reads 46.5x off its bottom rung against 25.0x off its top. Note the degradation
+    is ``delta_sum``'s, **not** ``chi``'s, which collapses 5.4x over the same caps; for the gap
+    criterion the band divides by the former, and conflating the two is what produced this
+    campaign's refuted ``24x-130x`` span.
 
     The three degenerate rungs are handled differently, because they are different situations:
 

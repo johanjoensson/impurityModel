@@ -762,8 +762,11 @@ def test_the_direct_invocation_forwards_the_communicator_and_the_remaining_knobs
     A dropped `comm=` is the worst of them: every rank of `mpiexec -n 6 python -m ...` would then
     run its own independent serial search, six times the work for one answer, with no error and a
     green suite. The cap defaults differ per branch (`DEFAULT_CAPS` vs `DEFAULT_CONVERGENCE_CAPS`)
-    and swapping them is equally quiet, and `DC_DIAG_EXCITATION_BUDGETS` was ignored outright here
-    until the same fix that landed `criterion`.
+    and swapping them is equally quiet. `iteration` is the same class and arguably worse:
+    `run_dc_search`'s docstring exists because `nio_15`'s last iteration is a runaway whose DFT
+    reference occupation is 1.54 against a nominal 8, so a dropped `iteration=` silently
+    benchmarks a diverging iterate. `DC_DIAG_EXCITATION_BUDGETS` was ignored outright here until
+    the commit that added this test -- one commit later than `criterion`, same defect.
     """
     seen = {}
     sentinel = object()
@@ -772,20 +775,29 @@ def test_the_direct_invocation_forwards_the_communicator_and_the_remaining_knobs
         dc_diagnostics, "occupation_convergence_sweep", lambda key, mu, **kw: seen.update(key=key, mu=mu, **kw)
     )
 
-    dc_diagnostics.main(["dc_diagnostics", "smo"], {"DC_DIAG_VERBOSITY": "2"}, comm=sentinel)
+    dc_diagnostics.main(["dc_diagnostics", "smo"], {"DC_DIAG_VERBOSITY": "2", "DC_DIAG_ITERATION": "3"}, comm=sentinel)
     assert seen["comm"] is sentinel
     assert seen["verbosity"] == 2
+    assert seen["iteration"] == 3
     # No caps on the command line means the ladder's own default, not the sweep's.
     assert seen["caps"] == list(dc_diagnostics.DEFAULT_CAPS)
 
     seen.clear()
     dc_diagnostics.main(
         ["dc_diagnostics", "nio_15"],
-        {"DC_DIAG_MODE": "occupation_convergence", "DC_DIAG_MU": "0.41", "DC_DIAG_EXCITATION_BUDGETS": "6,7"},
+        {
+            "DC_DIAG_MODE": "occupation_convergence",
+            "DC_DIAG_MU": "0.41",
+            "DC_DIAG_EXCITATION_BUDGETS": "6,7",
+            "DC_DIAG_ITERATION": "3",
+            "DC_DIAG_VERBOSITY": "2",
+        },
         comm=sentinel,
     )
     assert seen["comm"] is sentinel
     assert seen["excitation_budgets"] == [6, 7]
+    # Both branches, not just the ladder: each forwards these separately.
+    assert seen["iteration"] == 3 and seen["verbosity"] == 2
     assert seen["caps"] == list(dc_diagnostics.DEFAULT_CONVERGENCE_CAPS)
     # ... and the two defaults are actually different, or the assertions above prove nothing.
     assert list(dc_diagnostics.DEFAULT_CAPS) != list(dc_diagnostics.DEFAULT_CONVERGENCE_CAPS)

@@ -685,33 +685,49 @@ chi = d(value)/dmu per cap: 2000:-1.2797, 8000:-0.4730, 32000:-0.2384
 ```
 
 `mu` reproduced to all six printed digits at every rung, and so did every count (evals 6/4/3,
-solves 51/35/26, hits 47/31/21). The two runs differ in wall-clock and in the `production cap`
-line, which is not a ladder quantity at all: `suggest_truncation_threshold` derives it from RAM
+solves 51/35/26, hits 47/31/21). The two runs differ in exactly two things: wall-clock (and so the
+exponent and projection derived from it), and the `production cap` line, which is not a ladder
+quantity at all: `suggest_truncation_threshold` derives it from RAM
 free at run time, so 1,085,040 then and 1,041,612 now is a 4% difference in the machine, not in
 the answer. **Where this document quotes a projection off that number, it is quoting the earlier
-run** (the cost sections below were written against `cap**0.68` and 3.5 h; this ladder gives
-`cap**0.65` and 3.1 h, a difference of the same kind).
+run** — the cost sections below were written against the earlier ladder throughout: `cap**0.68`
+and 3.5 h here, and `cap**0.93` / ~8.5 h further down, which this ladder's seconds would make
+`cap**0.90` / ~7.3 h. The cap change is the smaller half of that: holding the exponent fixed, 4%
+fewer determinants moves 3.5 h to about 3.4 h, and the rest is the faster wall-clock.
 
-**`DRIFTS` by 25.0x**, and that number is now measured rather than argued: every rung of the
-graded ladder carries its own criterion-side `mu_tol_effective`, from the same run as the spread,
-and `max(banded)` is cap 32,000's `1.02e-02`. Nothing is transported — which is the whole point,
-because **eight earlier revisions of this paragraph were refuted, one after another**: 24x and
-20-25x substituted the harness's `chi` column, 6-23x inverted the bracket, 23-50x assumed the band
-grows monotonically with cap, the ~50x "ceiling" transported a band across both a run and an
-estimator, and one more restated that ceiling's operands inside a sentence disclaiming them. The
-last two asserted no multiplier at all and were refuted anyway -- one for supplying a denominator a
-reader could still divide with, the last for the flat claim that *no* criterion-side band had been
-recorded at any rung, when the Phase-0 table records one at cap 2,000, which is a graded rung. The band *does* rise with cap
-here (5.48e-03 → 6.49e-03 → 1.02e-02), so the monotonicity assumption happened to be right; it
-was still an assumption, and the campaign spent eight review rounds on it because a resolution
-that is cheap to measure was being inferred instead. **Measure the denominator on the rungs you
-are grading.** That is the lesson, not the 25.0x.
+**`DRIFTS` by 25.0x**: `max(banded)` is cap 32,000's `1.02e-02`, and every rung of the graded
+ladder carries its own criterion-side `mu_tol_effective` from the same run as the spread. Nothing
+is transported.
+
+**And it never needed to be. The number was in the campaign's own first log all along.** The
+item-2 run quoted above — the one whose table this section prints — recorded, at all three graded
+rungs, `delta_sum` 0.913 / 0.771 / 0.491 and `mu_tol_effective` 5.48e-03 / 6.49e-03 / 1.02e-02,
+bit-identical to the re-run's. The pre-fix `print_ladder` simply never divided by them, so the
+numbers sat in the per-rung records under the table while **ten revisions of this paragraph
+across nine review rounds** argued about what the denominator might be: 24x (three revisions) and
+20-25x substituted the harness's `chi` column, 6-23x (two) inverted the bracket, 23-50x assumed
+the band grows monotonically with cap, the ~50x "ceiling" transported a band across both a run and
+an estimator, one asserted no multiplier while still listing operands a reader could divide, and
+the last claimed flatly that *no* criterion-side band had been recorded at any rung — refuted not
+by the Phase-0 table (that row is a different run, and citing it would be the very cross-run
+transport this section forbids) but by the item-2 log, which had the same-run bands the whole
+time.
+
+So the lesson is **not** "measure the denominator" — it had been measured, printed, and archived
+before the first revision was written. It is: **read the record the run already produced before
+arguing about what it would have said.** The 28-minute re-run was not what settled this; it
+confirmed six-digit reproducibility and produced the live verdict line, both worth having, but
+`grep mu_tol_effective` on a log already on disk would have ended it in round one.
 
 Two things worth keeping from the failures. `max(banded)` is the *loosest* band, and here that is
 the largest-cap rung (the bands rise monotonically on this ladder — not guaranteed, just measured),
 so a multiplier quoted off the small-cap band would read 46.5x instead of 25.0x. The mechanism is
-`delta_sum` collapsing 0.913 → 0.771 → 0.491, **not** `|chi|`: `mu_tol_effective` is
-`tol/(0.5*delta_sum)` and does not involve `chi` at all. The two are worth keeping apart because
+`delta_sum` collapsing 0.913 → 0.771 → 0.491, **not** `|chi|`: for the gap criterion
+`mu_tol_effective` is `tol/(0.5*delta_sum)`, where `delta_sum` comes from the band-edge
+eigenvector occupations rather than from a secant. (It is not *always* `chi`-free: at a shell edge
+where the direct measurement is undefined the criterion falls back to `delta_sum = -2*chi`, making
+the band exactly `tol/|chi|`, and `fixed_occupation_dc` uses `tol/occ_chi` outright. Check which
+applies before relying on the distinction.) The two estimators are worth keeping apart because
 they collapse at different rates — `delta_sum` by 1.86x across this ladder, `|chi|` by 5.4x — and
 substituting the second for the first is what produced the refuted `24x-130x` span. And the
 anchor is not guaranteed: cap 2,000's `mu` lies strictly *between* the spread's endpoints, so if
@@ -764,24 +780,28 @@ This document reports two quantities both called `chi`, and an earlier revision 
   `width_tol` but **no** sector predicate, evaluated at a snapped `mu_evaluated`. Recomputed here
   deliberately, and deliberately *not* used as a resolution.
 
-**How far apart they are depends on whether a sector boundary is in play, so neither "they agree"
-nor "they differ" is a safe default.** Two measurements, and they disagree with each other:
+**How far apart they are is not predictable, so neither "they agree" nor "they differ" is a safe
+default.** Two measurements, pulling opposite ways:
 
-* On the **re-run above**, which records both columns at all three graded rungs of the *same* run,
-  they coincide to four significant figures: criterion -1.28 / -0.473 / -0.2384 against harness
-  -1.2797 / -0.4730 / -0.2384. No evaluated pair straddled a sector boundary, so the predicate
-  that distinguishes them never fired.
+* On the **item-2 ladder** (and its re-run, identically), which records both columns at all three
+  graded rungs of the *same* run, they coincide to the four significant figures `dc_record` prints:
+  criterion -1.28 / -0.473 / -0.2384 against harness -1.2797 / -0.4730 / -0.2384.
 * At **cap 500** they are 3.7x apart -- criterion -0.5011 (Phase-0 table) against harness -1.9566
   (a `RUN_DC_DIAG` gap ladder at caps 500/1,000, run while fixing this verdict), so `tol/|chi|` on
   the harness column (2.76e-3/1.9566 = 1.41e-03) is 3.7x tighter than the criterion's
   `mu_tol_effective` there (5.19e-03, itself within 6% of the criterion-column 5.51e-03). That
   pair is cross-run as well as cross-estimator, so it does not isolate the estimator either.
 
+**Why they coincided on the item-2 ladder is not recorded**, and it is worth not guessing: the
+logs carry only the final sector per rung, not one per evaluation, so "no pair straddled a
+boundary" is an inference from the agreement rather than an explanation of it — and `in_sector` is
+not the only difference anyway (each criterion measures at its own returned `mu`, this module at
+the snapped `mu_evaluated`; see the note in `run_dc_search`).
+
 The rule is therefore about *provenance, not magnitude*: `_row_resolution` builds a band only from
-the criterion's own record, and the fact that the two columns happened to coincide on this ladder
-is not licence to substitute one for the other on the next. Note also that the tables use
-different `tol` (2.76e-3 at cap 500, 2.50e-3 at the item-2 caps), so rows cannot be carried between
-them either.
+the criterion's own record, whatever the two columns happen to do on a given ladder. Note also that
+the tables use different `tol` (2.76e-3 at cap 500, 2.50e-3 at the item-2 caps), so rows cannot be
+carried between them either.
 
 ### Cost: the scaling exponent is not the whole story
 
