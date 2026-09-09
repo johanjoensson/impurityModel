@@ -754,3 +754,38 @@ def test_the_direct_invocation_routes_the_convergence_sweep_and_demands_its_mu(m
     # A sweep at an unstated mu is not a sweep at mu = 0; it has to fail before the compute.
     with pytest.raises(RuntimeError, match="needs DC_DIAG_MU"):
         dc_diagnostics.main(["dc_diagnostics", "nio_15"], {"DC_DIAG_MODE": "occupation_convergence"})
+
+
+def test_the_direct_invocation_forwards_the_communicator_and_the_remaining_knobs(monkeypatch):
+    """The arguments whose loss is silent rather than loud.
+
+    A dropped `comm=` is the worst of them: every rank of `mpiexec -n 6 python -m ...` would then
+    run its own independent serial search, six times the work for one answer, with no error and a
+    green suite. The cap defaults differ per branch (`DEFAULT_CAPS` vs `DEFAULT_CONVERGENCE_CAPS`)
+    and swapping them is equally quiet, and `DC_DIAG_EXCITATION_BUDGETS` was ignored outright here
+    until the same fix that landed `criterion`.
+    """
+    seen = {}
+    sentinel = object()
+    monkeypatch.setattr(dc_diagnostics, "cap_ladder", lambda key, caps, **kw: seen.update(key=key, caps=caps, **kw))
+    monkeypatch.setattr(
+        dc_diagnostics, "occupation_convergence_sweep", lambda key, mu, **kw: seen.update(key=key, mu=mu, **kw)
+    )
+
+    dc_diagnostics.main(["dc_diagnostics", "smo"], {"DC_DIAG_VERBOSITY": "2"}, comm=sentinel)
+    assert seen["comm"] is sentinel
+    assert seen["verbosity"] == 2
+    # No caps on the command line means the ladder's own default, not the sweep's.
+    assert seen["caps"] == list(dc_diagnostics.DEFAULT_CAPS)
+
+    seen.clear()
+    dc_diagnostics.main(
+        ["dc_diagnostics", "nio_15"],
+        {"DC_DIAG_MODE": "occupation_convergence", "DC_DIAG_MU": "0.41", "DC_DIAG_EXCITATION_BUDGETS": "6,7"},
+        comm=sentinel,
+    )
+    assert seen["comm"] is sentinel
+    assert seen["excitation_budgets"] == [6, 7]
+    assert seen["caps"] == list(dc_diagnostics.DEFAULT_CONVERGENCE_CAPS)
+    # ... and the two defaults are actually different, or the assertions above prove nothing.
+    assert list(dc_diagnostics.DEFAULT_CAPS) != list(dc_diagnostics.DEFAULT_CONVERGENCE_CAPS)

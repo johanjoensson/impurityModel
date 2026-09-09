@@ -861,11 +861,14 @@ def test_dc_baseline():
 def main(argv, environ, comm=None):
     """Dispatch the direct ``python -m`` invocation. Separate so it can be tested without a run.
 
-    It reads the same ``DC_DIAG_*`` variables as the pytest entry point above, and that parity is
-    the point: ``criterion`` used to be missing here, so the documented direct invocation ran the
-    ``"occupation"`` default whatever ``DC_DIAG_CRITERION`` said. The only symptom was the
-    criterion named in the table header -- printed *after* the ladder, which on SMO is half an
-    hour. A wrong knob has to fail before the compute, not after it.
+    Every ``DC_DIAG_*`` variable the pytest entry point reads is read here too, except the two with
+    positional substitutes in this module's own usage text (``DC_DIAG_WORKLOAD`` is ``argv[1]``,
+    ``DC_DIAG_CAPS`` is ``argv[2:]``). That parity is the point: ``criterion`` used to be missing,
+    so the documented direct invocation ran the ``"occupation"`` default whatever
+    ``DC_DIAG_CRITERION`` said, and ``excitation_budgets`` was missing the same way, so a sweep ran
+    the default grid whatever ``DC_DIAG_EXCITATION_BUDGETS`` said. Both announced themselves only
+    in output printed *after* the run -- which on SMO is half an hour. A wrong knob has to fail
+    before the compute, not after it.
     """
     key = argv[1] if len(argv) > 1 else "nio_20"
     verbosity = int(environ.get("DC_DIAG_VERBOSITY", "0"))
@@ -876,10 +879,14 @@ def main(argv, environ, comm=None):
         if mu_env is None:
             raise RuntimeError("DC_DIAG_MODE=occupation_convergence needs DC_DIAG_MU set.")
         caps = [int(c) for c in argv[2:]] or list(DEFAULT_CONVERGENCE_CAPS)
+        budgets = [int(b) for b in environ.get("DC_DIAG_EXCITATION_BUDGETS", "").split(",") if b.strip()] or list(
+            DEFAULT_EXCITATION_BUDGETS
+        )
         occupation_convergence_sweep(
             key,
             float(mu_env),
             caps=caps,
+            excitation_budgets=budgets,
             comm=comm,
             verbosity=verbosity,
             iteration=iteration,
