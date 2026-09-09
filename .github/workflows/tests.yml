@@ -217,6 +217,27 @@ jobs:
           echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
           ulimit -c unlimited && echo "core limit in this shell: $(ulimit -c)"
 
+      - name: Probe the 2-rank failure in isolation
+        # Diagnostic for the deterministic 9-leg failure inside test_gs_max_block_width.py at
+        # 2 ranks. Deliberately BEFORE the full-suite steps and continue-on-error, so it reports
+        # without gating and the later steps still run. It answers the one question the local
+        # gate cannot: is the failure intrinsic to this file at 2 ranks, or does it need the
+        # ~1300 tests of prior session state that precede it in a full run? Locally the file
+        # passes at -n 2 under both Intel MPI and MPICH, so the isolated CI result discriminates
+        # "CI environment" from "interaction with earlier tests".
+        # --capture=tee-sys because an MPI_Abort site prints its reason and then kills the
+        # process: under pytest's default fd capture that message is buffered into a failure
+        # report that never gets printed, which is exactly how a rank can die mute.
+        continue-on-error: true
+        run: |
+          ulimit -c unlimited
+          set +e
+          mpiexec -n 2 python -m pytest -v --capture=tee-sys --with-mpi \
+            src/impurityModel/test/lanczos/test_gs_max_block_width.py
+          rc=$?
+          set -e
+          echo "isolated 2-rank probe: mpiexec rc=$rc"
+
       - name: Run serial tests
         run: |
           ulimit -c unlimited
@@ -236,7 +257,19 @@ jobs:
           # rank env var is PMI_RANK under MPICH (the CI MPI) and OMPI_COMM_WORLD_RANK
           # under Open MPI; default 0 keeps this a no-op when coverage is off.
           ulimit -c unlimited
-          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
+          # -v so every test writes its own newline-terminated line: an unterminated line is
+          # only flushed to the runner log at EOF, which timestamps it at process death and
+          # makes the last-named file look like the crash site whether or not it is.
+          # --capture=tee-sys so a message printed just before an MPI_Abort reaches the log
+          # instead of dying inside pytest's fd capture with the process.
+          set +e
+          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest -v --capture=tee-sys --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
+          rc=$?
+          set -e
+          # 1 = a normal nonzero exit (pytest failure, or MPI_Abort); 139 = signal; 137 = killed
+          # (OOM). GitHub renders them all as "exit code 1", so print the real one.
+          echo "2-rank mpiexec rc=$rc"
+          exit $rc
 
       - name: Run MPI tests (3 ranks)
         run: |
@@ -307,7 +340,7 @@ jobs:
         if: failure()
         run: |
           shopt -s nullglob
-          ranks=(.pytest_mpi_rank*.out)
+          ranks=(.pytest_mpi_rank*.out .pytest_watchdog*.out)
           if [ ${#ranks[@]} -eq 0 ]; then
             echo "no .pytest_mpi_rank*.out files -- the failing rank was rank 0, or the run"
             echo "died before pytest-mpi created them"
@@ -319,6 +352,10 @@ jobs:
             echo "=============================================================="
             cat "$f"
           done
+          # Settles "was a rank OOM-killed?", which looks identical to every other silent
+          # death from inside the job. Costs nothing on the runs where it was not.
+          echo "== kernel ring buffer (OOM kills land here) =="
+          sudo dmesg 2>/dev/null | tail -50 || echo "dmesg unavailable"
 
       - name: Backtrace any core dump
         # The payoff step. Runs whenever anything above failed, which for this job means an
