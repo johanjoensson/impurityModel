@@ -912,6 +912,55 @@ jobs:
             exit "$rc"
           fi
 
+      - name: ASan at 2 ranks on the segfaulting file
+        # The gap this job did not cover, and the reason a 2-rank overrun survived: every
+        # ASan run here is single-process (bare, or `mpiexec -n 1`), so a fault that needs
+        # two ranks has never been instrumented at all.
+        #
+        # The target is a SIGSEGV in memcpy inside MPI_Reduce, reached from the array
+        # Lanczos block matvec, reproducible at -n 2 on this one file alone. The element
+        # counts are not the cause: an unconditional cross-rank check of the block width
+        # (BlockLanczosArray.pyx) passes, and the row counts come from an Allgather. That
+        # leaves the buffer itself being corrupted by an earlier out-of-bounds write, which
+        # is exactly what ASan names and a backtrace cannot: the crash surfaces inside
+        # MPICH, arbitrarily far from whoever wrote past the end.
+        #
+        # Note the kernels here carry a per-function `@cython.boundscheck(False)`, which
+        # OVERRIDES the module directive, so the `debug` build leg cannot catch this either
+        # -- it segfaults identically. ASan is the only instrument that sees it.
+        if: always() && steps.asan_layout.outcome == 'success'
+        run: |
+          rc=0
+          rm -f /tmp/asan_report.* 2>/dev/null || true
+          mpiexec -n 2 -genv LD_PRELOAD "$ASAN_LIB" -genv ASAN_OPTIONS "$ASAN_OPTIONS" \
+            $ASAN_SETARCH python -m pytest -v --capture=tee-sys --with-mpi \
+            src/impurityModel/test/lanczos/test_gs_max_block_width.py \
+            > /tmp/asan_mpi2.log 2>&1 || rc=$?
+          echo "exit=$rc, $(wc -l < /tmp/asan_mpi2.log) lines"
+          cat /tmp/asan_mpi2.log
+          if ls /tmp/asan_report.* >/dev/null 2>&1; then
+            echo "-- ASan report file(s) --"
+            cat /tmp/asan_report.*
+          fi
+          # Reported, not gated: this step exists to name the write, and the run is already
+          # failing on the same crash in the `test` job.
+          if [ "$rc" -ne 0 ]; then
+            {
+              echo "### ASan at 2 ranks (rc=$rc)"
+              echo
+              echo '```'
+              if ls /tmp/asan_report.* >/dev/null 2>&1; then
+                head -60 /tmp/asan_report.*
+              elif grep -qa "ERROR: AddressSanitizer" /tmp/asan_mpi2.log; then
+                sed -n '/ERROR: AddressSanitizer/,$p' /tmp/asan_mpi2.log | head -60
+              else
+                echo "no AddressSanitizer report -- died without one:"
+                tail -30 /tmp/asan_mpi2.log
+              fi
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   test-tsan:
     # ThreadSanitizer: the class ASan and UBSan structurally cannot see. ASan asks "is this
     # access valid", UBSan "is this operation defined"; neither asks "did two threads touch
