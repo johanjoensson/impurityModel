@@ -268,12 +268,13 @@ jobs:
           # rank env var is PMI_RANK under MPICH (the CI MPI) and OMPI_COMM_WORLD_RANK
           # under Open MPI; default 0 keeps this a no-op when coverage is off.
           ulimit -c unlimited
-          # --capture=tee-sys so a message printed just before an abort reaches the log
-          # instead of dying inside pytest's fd capture along with the process -- an
-          # MPI_Abort site prints its reason and then guarantees the failure report that
-          # would have carried it is never written.
+          # Default capture, deliberately: --capture=tee-sys here echoed every test's own
+          # stdout into the log and made this step 4533 lines against ~235 for the 1- and
+          # 3-rank steps. It earns its place only while chasing a hard abort (which prints
+          # its reason and then kills the process before pytest writes the report that
+          # would have carried it) -- turn it on for that, not as standing policy.
           set +e
-          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --capture=tee-sys --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
+          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
           rc=$?
           set -e
           # 1 = a normal nonzero exit (pytest failure, or MPI_Abort); 139 = signal; 137 = killed
@@ -838,7 +839,9 @@ jobs:
           # a path nothing else uses.
           RUN python -m pytest --collect-only -q > /tmp/asan_collect.log 2>&1 || rc=$?
           echo "exit=$rc, $(wc -l < /tmp/asan_collect.log) lines of output"
-          cat /tmp/asan_collect.log
+          # Printed only on failure: the whole listing is ~2400 test ids
+          # and the line count above already says it ran.
+          if [ "$rc" -ne 0 ]; then cat /tmp/asan_collect.log; fi
           if [ "$rc" -ne 0 ]; then
             {
               echo "### ASan collection smoke test: exit $rc"
@@ -889,7 +892,9 @@ jobs:
           rm -f /tmp/asan_report.* 2>/dev/null || true
           RUN python -m pytest --cache-clear > /tmp/asan_serial.log 2>&1 || rc=$?
           echo "exit=$rc, $(wc -l < /tmp/asan_serial.log) lines of output"
-          cat /tmp/asan_serial.log
+          # Printed only on failure: the whole listing is the full run
+          # and the line count above already says it ran.
+          if [ "$rc" -ne 0 ]; then cat /tmp/asan_serial.log; fi
           if ls /tmp/asan_report.* >/dev/null 2>&1; then
             echo "-- ASan report file(s) --"
             cat /tmp/asan_report.*
@@ -934,7 +939,9 @@ jobs:
             src/impurityModel/test/lanczos/test_gs_max_block_width.py \
             > /tmp/asan_mpi2.log 2>&1 || rc=$?
           echo "exit=$rc, $(wc -l < /tmp/asan_mpi2.log) lines"
-          cat /tmp/asan_mpi2.log
+          # Printed only on failure: the whole listing is the full run
+          # and the line count above already says it ran.
+          if [ "$rc" -ne 0 ]; then cat /tmp/asan_mpi2.log; fi
           if ls /tmp/asan_report.* >/dev/null 2>&1; then
             echo "-- ASan report file(s) --"
             cat /tmp/asan_report.*
