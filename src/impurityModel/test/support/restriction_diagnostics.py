@@ -1,4 +1,4 @@
-"""Phase-1 restriction diagnostics: where does the many-body basis carry dead weight?
+r"""Phase-1 restriction diagnostics: where does the many-body basis carry dead weight?
 
 This module answers, on a real workload, two questions that decide whether the existing
 occupation restrictions can be tightened or a new *graded* restriction can be added:
