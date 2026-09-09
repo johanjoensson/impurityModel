@@ -232,11 +232,28 @@ jobs:
         run: |
           ulimit -c unlimited
           set +e
+          # Under gdb, because the bare run cannot say where it dies. MPICH installs its own
+          # SIGSEGV handler that prints a hex-offset backtrace and then exit(1)s -- which is
+          # why this crash produced no core, no "BAD TERMINATION" and a status of 1 rather
+          # than 139, and read for two rounds like a plain test failure. gdb intercepts the
+          # signal first, so `bt full` reports the real frame with names, line numbers and
+          # locals (the extensions carry -g; see setup.py).
+          # Two runs, because one cannot report both things honestly: gdb -batch exits 1
+          # when its last command fails, and on a clean run "bt full" fails with "No stack",
+          # so gdb's status cannot be read as the test result.
+          # (1) authoritative status:
           mpiexec -n 2 python -m pytest -v --capture=tee-sys --with-mpi \
             src/impurityModel/test/lanczos/test_gs_max_block_width.py
           rc=$?
-          set -e
           echo "isolated 2-rank probe: mpiexec rc=$rc"
+          # (2) the backtrace, only worth taking when (1) actually failed:
+          if [ $rc -ne 0 ]; then
+            echo "== re-running under gdb for a symbolized backtrace =="
+            mpiexec -n 2 gdb -batch -ex run -ex "bt full" \
+              --args python -m pytest -v --capture=tee-sys --with-mpi \
+              src/impurityModel/test/lanczos/test_gs_max_block_width.py || true
+          fi
+          set -e
 
       - name: Run serial tests
         run: |
