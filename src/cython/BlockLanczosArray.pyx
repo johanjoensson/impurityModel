@@ -69,6 +69,13 @@ from scipy.linalg.cython_blas cimport zgemm
 
 from mpi4py import MPI
 
+import os as _os
+
+# Set IMPURITYMODEL_MATVEC_DEBUG=1 to dump the exact arguments of the matvec's
+# row-chunked Reduce from every rank. Off by default and read once at import, so it
+# costs one already-loaded global per iteration when unset.
+_MATVEC_DEBUG = bool(_os.environ.get('IMPURITYMODEL_MATVEC_DEBUG'))
+
 # Shared numerical layer: Reort, every tolerance constant, the Paige-Simon estimator,
 # the block-tridiagonal eigensolvers, and the representation-dispatching block
 # primitives all now live in BlockLanczosCore.pyx -- re-exported here so every existing
@@ -606,6 +613,16 @@ def block_lanczos_array_cy(
                             dest_off, dest_count, N, n_curr,
                             h_data, h_indices, h_indptr, q1, chunk_view[:dest_count, :],
                         )
+                    if _MATVEC_DEBUG:
+                        _v = chunk_buf[:dest_count, :]
+                        print(
+                            f"[matvec rank={rank}] it={it} dest={dest} counts={list(counts)} "
+                            f"dest_count={dest_count} n_curr={n_curr} "
+                            f"chunk=({chunk_buf.shape[0]},{chunk_buf.shape[1]}) "
+                            f"wp=({wp_arr.shape[0]},{wp_arr.shape[1]}) "
+                            f"nbytes={_v.nbytes} contig={_v.flags['C_CONTIGUOUS']}",
+                            flush=True,
+                        )
                     if rank == dest:
                         comm.Reduce(MPI.IN_PLACE, chunk_buf[:dest_count, :], op=MPI.SUM, root=dest)
                         wp_arr[:] = chunk_buf[:dest_count, :]
@@ -623,6 +640,16 @@ def block_lanczos_array_cy(
                         apply_dense_nogil(
                             dest_count, N, n_curr, h_dense[dest_off : dest_off + dest_count, :], q1,
                             chunk_view[:dest_count, :],
+                        )
+                    if _MATVEC_DEBUG:
+                        _v = chunk_buf[:dest_count, :]
+                        print(
+                            f"[matvec rank={rank}] it={it} dest={dest} counts={list(counts)} "
+                            f"dest_count={dest_count} n_curr={n_curr} "
+                            f"chunk=({chunk_buf.shape[0]},{chunk_buf.shape[1]}) "
+                            f"wp=({wp_arr.shape[0]},{wp_arr.shape[1]}) "
+                            f"nbytes={_v.nbytes} contig={_v.flags['C_CONTIGUOUS']}",
+                            flush=True,
                         )
                     if rank == dest:
                         comm.Reduce(MPI.IN_PLACE, chunk_buf[:dest_count, :], op=MPI.SUM, root=dest)

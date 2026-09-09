@@ -250,49 +250,49 @@ jobs:
           import numpy as np
           from mpi4py import MPI
 
-          mode, root, n_curr = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+          mode, root, count, n_curr = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
           comm = MPI.COMM_WORLD
           rank = comm.rank
-          # An uneven split, as the 252-determinant fixture hashes to. The kernel sizes its
-          # chunk buffer to max(counts) and passes a PREFIX SLICE of it for each destination,
-          # so for a destination owning fewer rows the buffer handed to Reduce is a partial
-          # view of a larger allocation. That is the one structural difference between this
-          # collective and the exactly-sized buffers that already passed here.
-          counts = [132, 120]
-          dc = counts[root]
-          if mode == "slice":
-              base = np.zeros((max(counts), n_curr), dtype=complex, order="C")
-              base[:] = rank + 1.0
-              send = base[:dc, :]
+          send = np.full((count, n_curr), rank + 1.0, dtype=complex, order="C")
+          recv = np.zeros((count, n_curr), dtype=complex, order="C")
+          if mode == "inplace":
+              if rank == root:
+                  comm.Reduce(MPI.IN_PLACE, send, op=MPI.SUM, root=root)
+              else:
+                  comm.Reduce(send, None, op=MPI.SUM, root=root)
+              got = send
           else:
-              send = np.full((dc, n_curr), rank + 1.0, dtype=complex, order="C")
-          if rank == root:
-              comm.Reduce(MPI.IN_PLACE, send, op=MPI.SUM, root=root)
-          else:
-              comm.Reduce(send, None, op=MPI.SUM, root=root)
+              comm.Reduce(send, recv if rank == root else None, op=MPI.SUM, root=root)
+              got = recv
           comm.Barrier()
           if rank == root:
               want = float(sum(r + 1 for r in range(comm.size)))
-              assert np.allclose(send.real, want), (send.real.flat[0], want)
+              assert np.allclose(got.real, want), (got.real.flat[0], want)
               print("PROBE_OK", flush=True)
           PROBE
-          # The probe has to be known-good before a clean result from it means anything: the
-          # previous revision of this step died with an IndentationError and its rc=1 was read
-          # as a crash. Same lesson as the sanitizer jobs above -- a probe that did not run and
-          # a probe that found nothing produce the same exit status.
+          # A probe's result counts only once it is shown to have RUN: a previous revision of
+          # this step died with an IndentationError and its rc=1 was read as a segfault. Same
+          # rule the sanitizer steps follow -- not-running and finding-nothing exit alike.
           python -m py_compile /tmp/reduce_variants.py || { echo "PROBE DOES NOT PARSE"; exit 1; }
           echo "== MPI stack version =="
           python -c "from mpi4py import MPI; print(MPI.Get_library_version().strip().splitlines()[0])"
-          echo "== bare MPI_Reduce, one variant per process (no impurityModel) =="
-          for mode in exact slice; do
+          echo "== bare MPI_Reduce grid (no impurityModel in the process) =="
+          # The kernel's own numbers, dumped from a local run: counts=[120,132], so the
+          # destination-1 chunk is 132 x 1 complex128 = 2112 bytes and destination-0's is
+          # 1920. Only the 2112-byte one at root=1 crashes. 2112 is just over the 2048-byte
+          # eager/rendezvous threshold and 1920 just under, and a long-message reduce at a
+          # NON-ZERO root is a separate code path -- so sweep root x size x mode rather than
+          # guessing which of the three varies.
+          for mode in inplace separate; do
             for root in 0 1; do
-              for n_curr in 1 3; do
-                mpiexec -n 2 python /tmp/reduce_variants.py $mode $root $n_curr >/tmp/v.log 2>&1
+              for count in 120 127 128 129 132 200; do
+                mpiexec -n 2 python /tmp/reduce_variants.py $mode $root $count 1 >/tmp/v.log 2>&1
                 vrc=$?
                 if grep -q PROBE_OK /tmp/v.log; then verdict=OK; else verdict="NO-OK-LINE"; fi
-                echo "  bare Reduce: mode=$mode root=$root n_curr=$n_curr -> rc=$vrc $verdict"
-                if [ $vrc -ne 0 ]; then sed -n '1,12p' /tmp/v.log; fi
+                echo "  Reduce mode=$mode root=$root count=$count ($((count*16)) B) -> rc=$vrc $verdict"
               done
+            done
+          done
             done
           done
           done
@@ -306,7 +306,7 @@ jobs:
           # when its last command fails, and on a clean run "bt full" fails with "No stack",
           # so gdb's status cannot be read as the test result.
           # (1) authoritative status:
-          mpiexec -n 2 python -m pytest -v --capture=tee-sys --with-mpi \
+          IMPURITYMODEL_MATVEC_DEBUG=1 mpiexec -n 2 python -m pytest -v --capture=tee-sys --with-mpi \
             src/impurityModel/test/lanczos/test_gs_max_block_width.py
           rc=$?
           echo "isolated 2-rank probe: mpiexec rc=$rc"
