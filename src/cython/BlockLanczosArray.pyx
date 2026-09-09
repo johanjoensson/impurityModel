@@ -60,7 +60,6 @@ RAL-TR-2000-011) rather than zero-padding or terminating, so ``beta`` becomes re
 and ``T`` carries variable-size blocks; the recurrence keeps converging.
 """
 
-cimport cython
 import numpy as np
 cimport numpy as np
 import scipy.linalg as la
@@ -200,8 +199,6 @@ cdef extern from "complex.h":
     double complex conj(double complex z) nogil
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
 cdef void matmul_nogil(
     int m, int n, int k,
     double complex alpha,
@@ -252,8 +249,6 @@ def _matmul_nogil_test(A, int transA, B, int transB, alpha, beta, C, int m, int 
     return np.asarray(Cv)
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
 cdef void apply_sparse_csr_nogil(
     int row_begin,
     int row_count,
@@ -287,8 +282,6 @@ cdef void apply_sparse_csr_nogil(
                 Y[ii, k] = Y[ii, k] + val * X[indices[j], k]
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
 cdef void apply_dense_nogil(
     int M, int K, int p,
     double complex[:, ::1] H,

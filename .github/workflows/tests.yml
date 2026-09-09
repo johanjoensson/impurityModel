@@ -236,6 +236,41 @@ jobs:
         run: |
           ulimit -c unlimited
           set +e
+          # First: is this our bug at all? ASan reports the crash as a bad-size memcpy
+          # inside MPI_Reduce_c -- the MPI-4 large-count entry point, reached through
+          # mpi4py's MPICH compatibility shim (compat/mpich.h). This runner has MPICH
+          # 4.0.0, the release that introduced those entry points; the same code passes
+          # under 4.2.2 locally. So reproduce the exact collective with no impurityModel
+          # in the process: same dtype, same MPI.IN_PLACE-on-root pattern, and the row
+          # count the crash reported (2112 bytes = 132 complex128, an uneven hash split
+          # of the 252-determinant fixture). If this segfaults, the fault is in the MPI
+          # stack and no change to the kernel can fix it.
+          cat > /tmp/reduce_probe.py <<'PROBE'
+          import numpy as np
+          from mpi4py import MPI
+
+          comm = MPI.COMM_WORLD
+          rank, size = comm.rank, comm.size
+          counts = np.array([132, 120] + [100] * (size - 2))
+          for n_curr in (1, 2, 3):
+              buf = np.empty((int(counts.max()), n_curr), dtype=complex, order="C")
+              for dest in range(size):
+                  dc = int(counts[dest])
+                  buf[:] = rank + 1
+                  if rank == dest:
+                      comm.Reduce(MPI.IN_PLACE, buf[:dc, :], op=MPI.SUM, root=dest)
+                  else:
+                      comm.Reduce(buf[:dc, :], None, op=MPI.SUM, root=dest)
+              comm.Barrier()
+              if rank == 0:
+                  print(f"n_curr={n_curr}: ok", flush=True)
+          PROBE
+          sed -i 's/^          //' /tmp/reduce_probe.py
+          echo "== MPI stack version =="
+          python -c "from mpi4py import MPI; print(MPI.Get_library_version().strip().splitlines()[0]); print('mpi4py', MPI.__file__)"
+          echo "== bare MPI_Reduce reproduction (no impurityModel) =="
+          mpiexec -n 2 python /tmp/reduce_probe.py
+          echo "bare Reduce probe rc=$?"
           # Under gdb, because the bare run cannot say where it dies. MPICH installs its own
           # SIGSEGV handler that prints a hex-offset backtrace and then exit(1)s -- which is
           # why this crash produced no core, no "BAD TERMINATION" and a status of 1 rather
