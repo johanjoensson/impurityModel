@@ -295,6 +295,31 @@ jobs:
           ulimit -c unlimited
           mpiexec -n 3 python -m pytest --cache-clear --with-mpi src/impurityModel/test/mpi_infra/test_rank_independence.py
 
+      - name: Show non-root rank output
+        # Non-root ranks write to .pytest_mpi_rank*.out (pytest-mpi) and NOTHING in this job
+        # ever printed them, so a failure on rank>0 was invisible: hydra SIGKILLs the other
+        # ranks, rank 0's block-buffered progress output is lost mid-line, and the log ends
+        # with a truncated dot sequence and a bare "exit code 1" -- which reads like a crash
+        # at the last test printed, several tests before wherever it really was. That is
+        # exactly how a deterministic 9-leg 2-rank failure was diagnosed from the wrong file.
+        # Print every rank file, and say so when there are none (which is itself the answer:
+        # the failure was on rank 0 after all).
+        if: failure()
+        run: |
+          shopt -s nullglob
+          ranks=(.pytest_mpi_rank*.out)
+          if [ ${#ranks[@]} -eq 0 ]; then
+            echo "no .pytest_mpi_rank*.out files -- the failing rank was rank 0, or the run"
+            echo "died before pytest-mpi created them"
+            exit 0
+          fi
+          for f in "${ranks[@]}"; do
+            echo "=============================================================="
+            echo "== $f"
+            echo "=============================================================="
+            cat "$f"
+          done
+
       - name: Backtrace any core dump
         # The payoff step. Runs whenever anything above failed, which for this job means an
         # exit-139 leg. 27 crashes have been recorded by *where the dots stopped* and nothing
