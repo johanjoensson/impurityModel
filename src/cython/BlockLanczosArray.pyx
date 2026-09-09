@@ -624,8 +624,14 @@ def block_lanczos_array_cy(
                             flush=True,
                         )
                     if rank == dest:
-                        comm.Reduce(MPI.IN_PLACE, chunk_buf[:dest_count, :], op=MPI.SUM, root=dest)
-                        wp_arr[:] = chunk_buf[:dest_count, :]
+                        # MPICH 4.0 (ubuntu-24.04's) segfaults inside MPI_Reduce when sendbuf is
+                        # MPI.IN_PLACE, the root is NOT rank 0, and the message is over the
+                        # 2048-byte eager threshold -- measured on a bare mpi4py grid: root 0
+                        # passes at every size, root 1 passes to 2048 B and dies from 2064 B up,
+                        # and the non-IN_PLACE form passes everywhere. Reducing straight into
+                        # the destination buffer avoids it and drops a copy: on the destination
+                        # rank dest_count == counts[rank] == N, so the shapes already match.
+                        comm.Reduce(chunk_buf[:dest_count, :], wp_arr, op=MPI.SUM, root=dest)
                     else:
                         comm.Reduce(chunk_buf[:dest_count, :], None, op=MPI.SUM, root=dest)
             else:
@@ -652,8 +658,14 @@ def block_lanczos_array_cy(
                             flush=True,
                         )
                     if rank == dest:
-                        comm.Reduce(MPI.IN_PLACE, chunk_buf[:dest_count, :], op=MPI.SUM, root=dest)
-                        wp_arr[:] = chunk_buf[:dest_count, :]
+                        # MPICH 4.0 (ubuntu-24.04's) segfaults inside MPI_Reduce when sendbuf is
+                        # MPI.IN_PLACE, the root is NOT rank 0, and the message is over the
+                        # 2048-byte eager threshold -- measured on a bare mpi4py grid: root 0
+                        # passes at every size, root 1 passes to 2048 B and dies from 2064 B up,
+                        # and the non-IN_PLACE form passes everywhere. Reducing straight into
+                        # the destination buffer avoids it and drops a copy: on the destination
+                        # rank dest_count == counts[rank] == N, so the shapes already match.
+                        comm.Reduce(chunk_buf[:dest_count, :], wp_arr, op=MPI.SUM, root=dest)
                     else:
                         comm.Reduce(chunk_buf[:dest_count, :], None, op=MPI.SUM, root=dest)
             else:

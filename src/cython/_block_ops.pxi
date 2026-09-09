@@ -113,8 +113,11 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
                 row_hi = row_lo + counts[dest]
                 chunk = np.ascontiguousarray(H[row_lo:row_hi, :] @ V_arr, dtype=result_dtype)
                 if rank == dest:
-                    comm.Reduce(MPI.IN_PLACE, chunk, op=MPI.SUM, root=dest)
-                    result[:, :] = chunk
+                    # Same MPICH 4.0 IN_PLACE-at-non-zero-root crash the array kernel's
+                    # matvec avoids (see BlockLanczosArray.pyx): reduce into the destination
+                    # buffer instead. chunk is (counts[dest], w) and on the destination rank
+                    # that is exactly result's shape, so this also drops a copy.
+                    comm.Reduce(chunk, result, op=MPI.SUM, root=dest)
                 else:
                     comm.Reduce(chunk, None, op=MPI.SUM, root=dest)
             return result

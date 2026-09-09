@@ -56,8 +56,18 @@ def build_vector(
 
     if basis.is_distributed and root is None:
         basis.comm.Allreduce(MPI.IN_PLACE, v, op=MPI.SUM)
-    elif basis.is_distributed:
+    elif basis.is_distributed and root == 0:
         basis.comm.Reduce(MPI.IN_PLACE if basis.comm.rank == root else v, v, op=MPI.SUM, root=root)
+    elif basis.is_distributed:
+        # Every caller passes root=0 or None today, so this branch is unreached -- but an
+        # IN_PLACE Reduce at a non-zero root segfaults on MPICH 4.0 above the 2048-byte
+        # eager threshold (measured; see BlockLanczosArray.pyx's matvec), and `v` here is
+        # (n_psis x n_basis), so a future caller passing root=1 would hit it at any real
+        # size. Pay for a temporary on that path rather than leave the trap armed.
+        out = np.zeros_like(v) if basis.comm.rank == root else None
+        basis.comm.Reduce(v, out, op=MPI.SUM, root=root)
+        if basis.comm.rank == root:
+            v[...] = out
     return v
 
 
