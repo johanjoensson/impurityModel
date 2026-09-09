@@ -607,8 +607,12 @@ def block_lanczos_array_cy(
                             h_data, h_indices, h_indptr, q1, chunk_view[:dest_count, :],
                         )
                     if rank == dest:
-                        comm.Reduce(MPI.IN_PLACE, chunk_buf[:dest_count, :], op=MPI.SUM, root=dest)
-                        wp_arr[:] = chunk_buf[:dest_count, :]
+                        # Reduced straight into wp_arr rather than MPI.IN_PLACE into chunk_buf:
+                        # on the destination rank dest_count == counts[rank] == N, so wp_arr is
+                        # exactly the right shape, and this also drops a full (N x n_curr) copy
+                        # per destination. IN_PLACE at a NON-ZERO root is the specific thing
+                        # being avoided; see the comment on the loop.
+                        comm.Reduce(chunk_buf[:dest_count, :], wp_arr, op=MPI.SUM, root=dest)
                     else:
                         comm.Reduce(chunk_buf[:dest_count, :], None, op=MPI.SUM, root=dest)
             else:
@@ -625,8 +629,12 @@ def block_lanczos_array_cy(
                             chunk_view[:dest_count, :],
                         )
                     if rank == dest:
-                        comm.Reduce(MPI.IN_PLACE, chunk_buf[:dest_count, :], op=MPI.SUM, root=dest)
-                        wp_arr[:] = chunk_buf[:dest_count, :]
+                        # Reduced straight into wp_arr rather than MPI.IN_PLACE into chunk_buf:
+                        # on the destination rank dest_count == counts[rank] == N, so wp_arr is
+                        # exactly the right shape, and this also drops a full (N x n_curr) copy
+                        # per destination. IN_PLACE at a NON-ZERO root is the specific thing
+                        # being avoided; see the comment on the loop.
+                        comm.Reduce(chunk_buf[:dest_count, :], wp_arr, op=MPI.SUM, root=dest)
                     else:
                         comm.Reduce(chunk_buf[:dest_count, :], None, op=MPI.SUM, root=dest)
             else:

@@ -245,32 +245,47 @@ jobs:
           # count the crash reported (2112 bytes = 132 complex128, an uneven hash split
           # of the 252-determinant fixture). If this segfaults, the fault is in the MPI
           # stack and no change to the kernel can fix it.
-          cat > /tmp/reduce_probe.py <<'PROBE'
+          cat > /tmp/reduce_variants.py <<'PROBE'
+          import sys
           import numpy as np
           from mpi4py import MPI
 
+          mode, root = sys.argv[1], int(sys.argv[2])
           comm = MPI.COMM_WORLD
-          rank, size = comm.rank, comm.size
-          counts = np.array([132, 120] + [100] * (size - 2))
-          for n_curr in (1, 2, 3):
-              buf = np.empty((int(counts.max()), n_curr), dtype=complex, order="C")
-              for dest in range(size):
-                  dc = int(counts[dest])
-                  buf[:] = rank + 1
-                  if rank == dest:
-                      comm.Reduce(MPI.IN_PLACE, buf[:dc, :], op=MPI.SUM, root=dest)
-                  else:
-                      comm.Reduce(buf[:dc, :], None, op=MPI.SUM, root=dest)
-              comm.Barrier()
-              if rank == 0:
-                  print(f"n_curr={n_curr}: ok", flush=True)
+          rank = comm.rank
+          counts = np.array([132, 120])
+          dc = int(counts[root])
+          send = np.full((dc, 1), rank + 1.0, dtype=complex, order="C")
+          recv = np.zeros((dc, 1), dtype=complex, order="C")
+          if mode == "inplace":
+              if rank == root:
+                  comm.Reduce(MPI.IN_PLACE, send, op=MPI.SUM, root=root)
+              else:
+                  comm.Reduce(send, None, op=MPI.SUM, root=root)
+              got = send
+          else:
+              comm.Reduce(send, recv if rank == root else None, op=MPI.SUM, root=root)
+              got = recv
+          comm.Barrier()
+          if rank == root:
+              want = float(sum(r + 1 for r in range(comm.size)))
+              assert np.allclose(got.real, want), (got.real.flat[0], want)
+              print(f"  {mode} root={root}: OK", flush=True)
           PROBE
-          sed -i 's/^          //' /tmp/reduce_probe.py
+          sed -i 's/^          //' /tmp/reduce_variants.py
           echo "== MPI stack version =="
-          python -c "from mpi4py import MPI; print(MPI.Get_library_version().strip().splitlines()[0]); print('mpi4py', MPI.__file__)"
-          echo "== bare MPI_Reduce reproduction (no impurityModel) =="
-          mpiexec -n 2 python /tmp/reduce_probe.py
-          echo "bare Reduce probe rc=$?"
+          python -c "from mpi4py import MPI; print(MPI.Get_library_version().strip().splitlines()[0])"
+          echo "== bare MPI_Reduce, one variant per process (no impurityModel) =="
+          # One mpiexec per variant: a segfault kills the process, so variants sharing a
+          # process would hide every failure after the first. This says exactly which
+          # shapes this MPI stack survives, and therefore whether avoiding MPI_IN_PLACE
+          # in the kernel is sufficient or the MPI itself has to change.
+          for mode in inplace separate; do
+            for root in 0 1; do
+              mpiexec -n 2 python /tmp/reduce_variants.py $mode $root >/tmp/v.log 2>&1
+              echo "  bare Reduce: $mode root=$root -> rc=$? $(grep -c 'OK' /tmp/v.log 2>/dev/null)"
+            done
+          done
           # Under gdb, because the bare run cannot say where it dies. MPICH installs its own
           # SIGSEGV handler that prints a hex-offset backtrace and then exit(1)s -- which is
           # why this crash produced no core, no "BAD TERMINATION" and a status of 1 rather
