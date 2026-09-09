@@ -104,8 +104,14 @@ jobs:
           # single test runs -- Chrome's index did exactly that, persistently, and cost two
           # full rounds. Drop the lists we do not use rather than `|| true` the update,
           # which would also swallow a real failure of the repos we do use.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
-                     /etc/apt/sources.list.d/microsoft-prod.list
+          # Match by CONTENT, not by filename: the first attempt removed
+          # `google-chrome.list` and the job failed again identically, because the image
+          # now writes deb822 `.sources` files. Anything under sources.list.d pointing at
+          # a host this build never installs from goes, whatever it is called.
+          echo "apt sources before pruning:"; ls -1 /etc/apt/sources.list.d/ || true
+          sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
+               /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          echo "after pruning:"; ls -1 /etc/apt/sources.list.d/ || true
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev gdb
           COMPILER="${{ matrix.compiler }}"
@@ -126,8 +132,14 @@ jobs:
           # single test runs -- Chrome's index did exactly that, persistently, and cost two
           # full rounds. Drop the lists we do not use rather than `|| true` the update,
           # which would also swallow a real failure of the repos we do use.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
-                     /etc/apt/sources.list.d/microsoft-prod.list
+          # Match by CONTENT, not by filename: the first attempt removed
+          # `google-chrome.list` and the job failed again identically, because the image
+          # now writes deb822 `.sources` files. Anything under sources.list.d pointing at
+          # a host this build never installs from goes, whatever it is called.
+          echo "apt sources before pruning:"; ls -1 /etc/apt/sources.list.d/ || true
+          sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
+               /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          echo "after pruning:"; ls -1 /etc/apt/sources.list.d/ || true
           sudo apt-get update
           sudo apt-get install -y intel-oneapi-compiler-dpcpp-cpp
 
@@ -611,8 +623,14 @@ jobs:
           # single test runs -- Chrome's index did exactly that, persistently, and cost two
           # full rounds. Drop the lists we do not use rather than `|| true` the update,
           # which would also swallow a real failure of the repos we do use.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
-                     /etc/apt/sources.list.d/microsoft-prod.list
+          # Match by CONTENT, not by filename: the first attempt removed
+          # `google-chrome.list` and the job failed again identically, because the image
+          # now writes deb822 `.sources` files. Anything under sources.list.d pointing at
+          # a host this build never installs from goes, whatever it is called.
+          echo "apt sources before pruning:"; ls -1 /etc/apt/sources.list.d/ || true
+          sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
+               /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          echo "after pruning:"; ls -1 /etc/apt/sources.list.d/ || true
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev g++-12
 
@@ -1128,8 +1146,14 @@ jobs:
           # single test runs -- Chrome's index did exactly that, persistently, and cost two
           # full rounds. Drop the lists we do not use rather than `|| true` the update,
           # which would also swallow a real failure of the repos we do use.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
-                     /etc/apt/sources.list.d/microsoft-prod.list
+          # Match by CONTENT, not by filename: the first attempt removed
+          # `google-chrome.list` and the job failed again identically, because the image
+          # now writes deb822 `.sources` files. Anything under sources.list.d pointing at
+          # a host this build never installs from goes, whatever it is called.
+          echo "apt sources before pruning:"; ls -1 /etc/apt/sources.list.d/ || true
+          sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
+               /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          echo "after pruning:"; ls -1 /etc/apt/sources.list.d/ || true
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev g++-12
 
@@ -1284,8 +1308,14 @@ jobs:
           # single test runs -- Chrome's index did exactly that, persistently, and cost two
           # full rounds. Drop the lists we do not use rather than `|| true` the update,
           # which would also swallow a real failure of the repos we do use.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
-                     /etc/apt/sources.list.d/microsoft-prod.list
+          # Match by CONTENT, not by filename: the first attempt removed
+          # `google-chrome.list` and the job failed again identically, because the image
+          # now writes deb822 `.sources` files. Anything under sources.list.d pointing at
+          # a host this build never installs from goes, whatever it is called.
+          echo "apt sources before pruning:"; ls -1 /etc/apt/sources.list.d/ || true
+          sudo grep -rlE 'dl\.google\.com|packages\.microsoft\.com' \
+               /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          echo "after pruning:"; ls -1 /etc/apt/sources.list.d/ || true
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev
 
