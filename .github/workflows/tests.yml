@@ -17,6 +17,10 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-22.04
+    # No cap here meant a hang burned the GitHub default of 6 hours, on every one of the
+    # nine legs at once. The longest green leg on record is 30m28s, so this is generous
+    # while still failing an MPI deadlock in minutes instead of hours.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

@@ -568,6 +568,26 @@ def block_lanczos_array_cy(
         q1 = np.ascontiguousarray(q[1])
         n_curr = q1.shape[1]
 
+        # The block matvec below Reduces `dest_count * n_curr` elements per destination rank.
+        # `dest_count` comes from an Allgather so it agrees by construction, but `n_curr` is
+        # read from this rank's own block: if the ranks ever disagree about the width, they
+        # post the same Reduce with different counts and MPICH memcpys past the receive
+        # buffer -- a SIGSEGV inside MPI_Reduce, with no Python traceback, no core dump (the
+        # MPI runtime's own SIGSEGV handler exits 1 instead of re-raising) and both ranks
+        # dying mute. Unconditional and collective on every rank, so it cannot itself
+        # desynchronize; one 2-element Allreduce against a matvec is not measurable.
+        if mpi:
+            _w_probe = np.array([n_curr, -n_curr], dtype=np.int64)
+            comm.Allreduce(MPI.IN_PLACE, _w_probe, op=MPI.MAX)
+            if _w_probe[0] != -_w_probe[1]:
+                raise RuntimeError(
+                    f"block width disagrees across ranks at iteration {it}: this rank has "
+                    f"n_curr={n_curr}, the communicator spans "
+                    f"[{-_w_probe[1]}, {_w_probe[0]}]. The width is set by block_tsqr's "
+                    "retained rank, which is computed from a replicated R and must therefore "
+                    "be rank-invariant; a disagreement means that invariant has broken."
+                )
+
         # --- 1. Block matvec: wp = H q_curr (+ MPI row-chunked reduce-scatter) ------------
         # Re-allocate wp/chunk buffers to match current active width for contiguous alignment
         if wp_arr.shape[1] != n_curr:
