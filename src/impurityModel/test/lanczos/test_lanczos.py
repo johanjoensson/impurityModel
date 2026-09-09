@@ -401,9 +401,7 @@ def test_get_block_Lanczos_array_matvec_survives_an_empty_rank():
     def converged(alphas, betas, *args, **kwargs):
         return alphas.shape[0] > 1
 
-    alphas, betas, _Q = block_lanczos_array(
-        psi0, H_mat[:, basis.local_indices], converged, comm=comm, reort="full"
-    )[:3]
+    alphas, betas, _Q = block_lanczos_array(psi0, H_mat[:, basis.local_indices], converged, comm=comm, reort="full")[:3]
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(sorted(ev), sorted(eigvals)[: len(ev)])
 
