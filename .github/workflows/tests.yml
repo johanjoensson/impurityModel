@@ -98,6 +98,14 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # The runner image ships third-party apt lists (Google Chrome, Microsoft) that
+          # this build never installs from. A broken index on any one of them makes
+          # `apt-get update` exit 100, which takes down every job in the matrix before a
+          # single test runs -- Chrome's index did exactly that, persistently, and cost two
+          # full rounds. Drop the lists we do not use rather than `|| true` the update,
+          # which would also swallow a real failure of the repos we do use.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev gdb
           COMPILER="${{ matrix.compiler }}"
@@ -112,6 +120,14 @@ jobs:
         run: |
           wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
           echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list
+          # The runner image ships third-party apt lists (Google Chrome, Microsoft) that
+          # this build never installs from. A broken index on any one of them makes
+          # `apt-get update` exit 100, which takes down every job in the matrix before a
+          # single test runs -- Chrome's index did exactly that, persistently, and cost two
+          # full rounds. Drop the lists we do not use rather than `|| true` the update,
+          # which would also swallow a real failure of the repos we do use.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list
           sudo apt-get update
           sudo apt-get install -y intel-oneapi-compiler-dpcpp-cpp
 
@@ -589,6 +605,14 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # The runner image ships third-party apt lists (Google Chrome, Microsoft) that
+          # this build never installs from. A broken index on any one of them makes
+          # `apt-get update` exit 100, which takes down every job in the matrix before a
+          # single test runs -- Chrome's index did exactly that, persistently, and cost two
+          # full rounds. Drop the lists we do not use rather than `|| true` the update,
+          # which would also swallow a real failure of the repos we do use.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev g++-12
 
@@ -1098,6 +1122,14 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # The runner image ships third-party apt lists (Google Chrome, Microsoft) that
+          # this build never installs from. A broken index on any one of them makes
+          # `apt-get update` exit 100, which takes down every job in the matrix before a
+          # single test runs -- Chrome's index did exactly that, persistently, and cost two
+          # full rounds. Drop the lists we do not use rather than `|| true` the update,
+          # which would also swallow a real failure of the repos we do use.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev g++-12
 
@@ -1246,6 +1278,14 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # The runner image ships third-party apt lists (Google Chrome, Microsoft) that
+          # this build never installs from. A broken index on any one of them makes
+          # `apt-get update` exit 100, which takes down every job in the matrix before a
+          # single test runs -- Chrome's index did exactly that, persistently, and cost two
+          # full rounds. Drop the lists we do not use rather than `|| true` the update,
+          # which would also swallow a real failure of the repos we do use.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list
           sudo apt-get update
           sudo apt-get install -y mpich libmpich-dev
 
