@@ -249,104 +249,6 @@ jobs:
           echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
           ulimit -c unlimited && echo "core limit in this shell: $(ulimit -c)"
 
-      - name: Probe the 2-rank failure in isolation
-        # Diagnostic for the deterministic 9-leg failure inside test_gs_max_block_width.py at
-        # 2 ranks. Deliberately BEFORE the full-suite steps and continue-on-error, so it reports
-        # without gating and the later steps still run. It answers the one question the local
-        # gate cannot: is the failure intrinsic to this file at 2 ranks, or does it need the
-        # ~1300 tests of prior session state that precede it in a full run? Locally the file
-        # passes at -n 2 under both Intel MPI and MPICH, so the isolated CI result discriminates
-        # "CI environment" from "interaction with earlier tests".
-        # --capture=tee-sys because an MPI_Abort site prints its reason and then kills the
-        # process: under pytest's default fd capture that message is buffered into a failure
-        # report that never gets printed, which is exactly how a rank can die mute.
-        continue-on-error: true
-        run: |
-          ulimit -c unlimited
-          set +e
-          # First: is this our bug at all? ASan reports the crash as a bad-size memcpy
-          # inside MPI_Reduce_c -- the MPI-4 large-count entry point, reached through
-          # mpi4py's MPICH compatibility shim (compat/mpich.h). This runner has MPICH
-          # 4.0.0, the release that introduced those entry points; the same code passes
-          # under 4.2.2 locally. So reproduce the exact collective with no impurityModel
-          # in the process: same dtype, same MPI.IN_PLACE-on-root pattern, and the row
-          # count the crash reported (2112 bytes = 132 complex128, an uneven hash split
-          # of the 252-determinant fixture). If this segfaults, the fault is in the MPI
-          # stack and no change to the kernel can fix it.
-          cat > /tmp/reduce_variants.py <<'PROBE'
-          import sys
-          import numpy as np
-          from mpi4py import MPI
-
-          mode, root, count, n_curr = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
-          comm = MPI.COMM_WORLD
-          rank = comm.rank
-          send = np.full((count, n_curr), rank + 1.0, dtype=complex, order="C")
-          recv = np.zeros((count, n_curr), dtype=complex, order="C")
-          if mode == "inplace":
-              if rank == root:
-                  comm.Reduce(MPI.IN_PLACE, send, op=MPI.SUM, root=root)
-              else:
-                  comm.Reduce(send, None, op=MPI.SUM, root=root)
-              got = send
-          else:
-              comm.Reduce(send, recv if rank == root else None, op=MPI.SUM, root=root)
-              got = recv
-          comm.Barrier()
-          if rank == root:
-              want = float(sum(r + 1 for r in range(comm.size)))
-              assert np.allclose(got.real, want), (got.real.flat[0], want)
-              print("PROBE_OK", flush=True)
-          PROBE
-          # A probe's result counts only once it is shown to have RUN: a previous revision of
-          # this step died with an IndentationError and its rc=1 was read as a segfault. Same
-          # rule the sanitizer steps follow -- not-running and finding-nothing exit alike.
-          python -m py_compile /tmp/reduce_variants.py || { echo "PROBE DOES NOT PARSE"; exit 1; }
-          echo "== MPI stack version =="
-          python -c "from mpi4py import MPI; print(MPI.Get_library_version().strip().splitlines()[0])"
-          echo "== bare MPI_Reduce grid (no impurityModel in the process) =="
-          # The kernel's own numbers, dumped from a local run: counts=[120,132], so the
-          # destination-1 chunk is 132 x 1 complex128 = 2112 bytes and destination-0's is
-          # 1920. Only the 2112-byte one at root=1 crashes. 2112 is just over the 2048-byte
-          # eager/rendezvous threshold and 1920 just under, and a long-message reduce at a
-          # NON-ZERO root is a separate code path -- so sweep root x size x mode rather than
-          # guessing which of the three varies.
-          for mode in inplace separate; do
-            for root in 0 1; do
-              for count in 120 127 128 129 132 200; do
-                mpiexec -n 2 python /tmp/reduce_variants.py $mode $root $count 1 >/tmp/v.log 2>&1
-                vrc=$?
-                if grep -q PROBE_OK /tmp/v.log; then verdict=OK; else verdict="NO-OK-LINE"; fi
-                echo "  Reduce mode=$mode root=$root count=$count ($((count*16)) B) -> rc=$vrc $verdict"
-              done
-            done
-          done
-            done
-          done
-          done
-          # Under gdb, because the bare run cannot say where it dies. MPICH installs its own
-          # SIGSEGV handler that prints a hex-offset backtrace and then exit(1)s -- which is
-          # why this crash produced no core, no "BAD TERMINATION" and a status of 1 rather
-          # than 139, and read for two rounds like a plain test failure. gdb intercepts the
-          # signal first, so `bt full` reports the real frame with names, line numbers and
-          # locals (the extensions carry -g; see setup.py).
-          # Two runs, because one cannot report both things honestly: gdb -batch exits 1
-          # when its last command fails, and on a clean run "bt full" fails with "No stack",
-          # so gdb's status cannot be read as the test result.
-          # (1) authoritative status:
-          IMPURITYMODEL_MATVEC_DEBUG=1 mpiexec -n 2 python -m pytest -v --capture=tee-sys --with-mpi \
-            src/impurityModel/test/lanczos/test_gs_max_block_width.py
-          rc=$?
-          echo "isolated 2-rank probe: mpiexec rc=$rc"
-          # (2) the backtrace, only worth taking when (1) actually failed:
-          if [ $rc -ne 0 ]; then
-            echo "== re-running under gdb for a symbolized backtrace =="
-            mpiexec -n 2 gdb -batch -ex run -ex "bt full" \
-              --args python -m pytest -v --capture=tee-sys --with-mpi \
-              src/impurityModel/test/lanczos/test_gs_max_block_width.py || true
-          fi
-          set -e
-
       - name: Run serial tests
         run: |
           ulimit -c unlimited
@@ -366,13 +268,12 @@ jobs:
           # rank env var is PMI_RANK under MPICH (the CI MPI) and OMPI_COMM_WORLD_RANK
           # under Open MPI; default 0 keeps this a no-op when coverage is off.
           ulimit -c unlimited
-          # -v so every test writes its own newline-terminated line: an unterminated line is
-          # only flushed to the runner log at EOF, which timestamps it at process death and
-          # makes the last-named file look like the crash site whether or not it is.
-          # --capture=tee-sys so a message printed just before an MPI_Abort reaches the log
-          # instead of dying inside pytest's fd capture with the process.
+          # --capture=tee-sys so a message printed just before an abort reaches the log
+          # instead of dying inside pytest's fd capture along with the process -- an
+          # MPI_Abort site prints its reason and then guarantees the failure report that
+          # would have carried it is never written.
           set +e
-          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest -v --capture=tee-sys --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
+          mpiexec -n 2 bash -c 'COVERAGE_FILE=.coverage.mpi_rank${PMI_RANK:-${OMPI_COMM_WORLD_RANK:-0}} python -m pytest --capture=tee-sys --cache-clear --with-mpi --deselect src/impurityModel/test/mpi_infra/test_rank_independence.py '"$PYTEST_COV_ARGS"
           rc=$?
           set -e
           # 1 = a normal nonzero exit (pytest failure, or MPI_Abort); 139 = signal; 137 = killed
@@ -1014,22 +915,16 @@ jobs:
             exit "$rc"
           fi
 
-      - name: ASan at 2 ranks on the segfaulting file
-        # The gap this job did not cover, and the reason a 2-rank overrun survived: every
-        # ASan run here is single-process (bare, or `mpiexec -n 1`), so a fault that needs
-        # two ranks has never been instrumented at all.
+      - name: ASan at 2 ranks
+        # Every other ASan run in this job is single-process (bare, or `mpiexec -n 1`), so
+        # nothing here instruments a fault that needs two ranks. That gap is what let a
+        # 2-rank crash in the array Lanczos matvec live undetected: `test-asan` could not
+        # see it for being serial, and the `debug` leg could not either, because that file's
+        # kernels carried per-function `@cython.boundscheck(False)` decorators overriding
+        # the build mode (since removed -- the directives are central in setup.py).
         #
-        # The target is a SIGSEGV in memcpy inside MPI_Reduce, reached from the array
-        # Lanczos block matvec, reproducible at -n 2 on this one file alone. The element
-        # counts are not the cause: an unconditional cross-rank check of the block width
-        # (BlockLanczosArray.pyx) passes, and the row counts come from an Allgather. That
-        # leaves the buffer itself being corrupted by an earlier out-of-bounds write, which
-        # is exactly what ASan names and a backtrace cannot: the crash surfaces inside
-        # MPICH, arbitrarily far from whoever wrote past the end.
-        #
-        # Note the kernels here carry a per-function `@cython.boundscheck(False)`, which
-        # OVERRIDES the module directive, so the `debug` build leg cannot catch this either
-        # -- it segfaults identically. ASan is the only instrument that sees it.
+        # Kept pointed at a small, collective-heavy file: the value is the multi-rank
+        # instrumentation, not this particular test.
         if: always() && steps.asan_layout.outcome == 'success'
         run: |
           rc=0

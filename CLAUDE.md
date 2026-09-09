@@ -93,6 +93,14 @@ Lanczos kernels import it at runtime.
   local inner product → `Allreduce`.
 - `MPI_Comm_free` is collective: free communicators at synchronized points, never from
   the garbage collector (see `basis_split.py`).
+- **Never pass `MPI.IN_PLACE` to `Reduce` with a non-zero root.** MPICH 4.0 (what
+  ubuntu-24.04, and so CI, ships) segfaults inside `MPI_Reduce` when the sendbuf is
+  `MPI_IN_PLACE`, the root is not rank 0, and the message crosses the 2048-byte eager
+  threshold — measured on a bare mpi4py grid: root 0 passes at every size, root 1 passes
+  to 2048 B and dies from 2064 B up, and the non-`IN_PLACE` form passes everywhere.
+  MPICH 4.2.2 passes every cell, so this reproduces on CI and on no local machine.
+  Reduce into the destination buffer instead — it is both safe and one copy cheaper
+  (`BlockLanczosArray.pyx`'s matvec, `_block_ops.pxi`'s `block_apply`).
 - Empty-rank edge cases (a rank owning zero determinants) have bitten before — keep
   collective calls unconditional and buffer dtypes fixed.
 
