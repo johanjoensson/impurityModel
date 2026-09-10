@@ -1,8 +1,15 @@
 """Tests for the central knob registry (:mod:`impurityModel.ed.config`)."""
 
+from pathlib import Path
+
 import pytest
 
 from impurityModel.ed import config
+
+#: Repo root, for the generated-documentation check. Same walk as
+#: ``test/spectra/test_bath_layout.py``'s ``h0`` lookup: test file -> its directory -> test ->
+#: impurityModel -> src -> root.
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 def test_defaults_when_unset(monkeypatch):
@@ -78,3 +85,23 @@ def test_dump_covers_every_knob():
     table = config.dump()
     for name in config.KNOBS:
         assert f"`{name}`" in table, f"{name} missing from dump()"
+
+
+def test_the_generated_configuration_doc_is_in_sync_with_the_registry():
+    """``doc/configuration.md`` is generated from ``dump()``, so it must still equal it.
+
+    ``test_dump_covers_every_knob`` above checks the *generator*, not the file, which is why the
+    file could and did drift: ``GS_MAX_BLOCK_WIDTH`` and ``SIGMA_CAUSALITY_TOL`` were declared and
+    registered but missing from the document until someone noticed and resynced it by hand. A
+    knob is only documented by construction if something asserts the construction was run.
+
+    Regenerate with ``python -m impurityModel.ed.config > /tmp/tables.md`` and splice the tables
+    in under the document's preamble, which is hand-written and deliberately not checked here.
+    """
+    doc = _REPO_ROOT / "doc" / "configuration.md"
+    if not doc.is_file():
+        pytest.skip("running against an installed package without the source tree")
+    assert config.dump().strip() in doc.read_text(), (
+        "doc/configuration.md no longer matches config.dump(); regenerate the tables from the "
+        "registry rather than editing the document."
+    )
