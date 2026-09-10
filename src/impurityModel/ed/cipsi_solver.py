@@ -1071,7 +1071,7 @@ class CIPSISolver:
             n_warm = len(psi0) - 1
             # Free outside a `solver_trace.tracing()` block, so this costs nothing in a normal
             # run -- and buys nothing there either: `tracing()` only opens under `DC_DIAGNOSTICS`
-            # (`dc_search._dc_diagnostics`). It is for the run that is already being investigated;
+            # (`dc_search._dc_search_trace`). It is for the run that is already being investigated;
             # the default-run signal is the rank-0 print below, which stays unconditional.
             _trace_note("warm_block_fallback", warm_columns=int(n_warm), health=health)
             if self.basis.comm is None or self.basis.comm.rank == 0:
