@@ -283,13 +283,21 @@ cdef str _block_normalize_failure(object wp, int active_k, object sv):
     on.
     """
     cdef object rows
+    cdef str what = "local rows"
     if is_array(wp):
+        # Every entry of a list-of-arrays shares the row partition, so the first one's height is
+        # the block's.
         rows = wp[0].shape[0] if isinstance(wp, list) else wp.shape[0]
     elif isinstance(wp, ManyBodyState):
         rows = len(wp)
     else:
+        # A list of states does NOT share a support: the block's row count is the union
+        # `from_states` would build, and this is only the first column's. Labelled for what it is
+        # rather than paying a merge on a failure path -- it is a size cue, and calling it "local
+        # rows" made it read as the block's height, which it is not.
         rows = len(wp[0]) if len(wp) > 0 else 0
-    cdef str where = f"width {block_cols(wp)}, {rows} local rows"
+        what = "determinants in its first column"
+    cdef str where = f"width {block_cols(wp)}, {rows} {what}"
     if active_k < 0:
         return (
             f"Block normalization got a non-finite factor ({where}): the block holds NaN/Inf, "
