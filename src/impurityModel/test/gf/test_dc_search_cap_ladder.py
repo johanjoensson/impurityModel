@@ -216,16 +216,23 @@ def test_the_ladder_bounds_are_environment_knobs_read_lazily(monkeypatch):
     assert cap == 16000 and len(rungs) == 3
 
 
-def test_the_default_ladder_reaches_past_the_64000_that_stopped_srmno3():
-    """The default ceiling is ``start * 2**(rungs - 1)`` and must clear the old one.
+def test_the_default_ladder_climbs_past_the_64000_that_stopped_srmno3():
+    """Driven, not computed: run the shipped ladder and see where it actually gets to.
 
-    Not a restatement of the defaults: the *reason* the pre-2026-09 ladder returned an
-    unconverged SrMnO3 double counting is that its ceiling (500 * 2**7 = 64,000) sat below the
-    caps that workload needs, while its memory budget allowed 1.35e8. This pins that the shipped
-    ladder can now climb past that ceiling on its own.
+    The *reason* the pre-2026-09 ladder returned an unconverged SrMnO3 double counting is that its
+    ceiling (500 * 2**7 = 64,000) sat below the caps that workload needs, while its memory budget
+    allowed 1.35e8. Asserting ``start * 2**(rungs - 1) > 64_000`` would only restate the two
+    defaults back to themselves and could not fail for any reason worth knowing; this drives the
+    real loop on a quantity that never settles, with a memory cap far above the ceiling so the
+    rung budget is what binds -- the same shape as the run that was cut short.
     """
-    ceiling = config.DC_CAP_LADDER_START.default * 2 ** (config.DC_CAP_LADDER_MAX_RUNGS.default - 1)
-    assert ceiling > 64_000
+    quantity, seen = _ladder([float(i) for i in range(50)])
+    cap, _drift, rungs, status = calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=10**9)
+
+    assert status == "rung_budget", "the memory cap must not be what stops this ladder"
+    assert cap == seen[len(seen) - 1] == max(seen)
+    assert cap > 64_000, f"the shipped ladder tops out at {cap}, at or below the old ceiling"
+    assert seen == [config.DC_CAP_LADDER_START.default * 2**i for i in range(len(rungs))], seen
 
 
 def test_the_ladder_names_which_of_its_three_exits_produced_the_cap():

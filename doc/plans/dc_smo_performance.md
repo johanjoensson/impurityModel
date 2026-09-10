@@ -478,6 +478,12 @@ mis-diagnosis pointed at the wrong fix. `CAP_LADDER_START = 500` and `CAP_LADDER
 put the last rung at `500 * 2^7 = 64,000` **whenever `memory_cap >= 64,000`** — which it was, by
 16x (`dc_cap_parity = 1,059,144`). Memory never entered into it. The ladder ran out of rungs.
 
+> Since 2026-09: those two module constants are the environment knobs `DC_CAP_LADDER_START` and
+> `DC_CAP_LADDER_MAX_RUNGS` (`impurityModel.ed.config`), and the rung budget now defaults to 11,
+> putting the ceiling at 512,000. The record also names which exit produced the cap
+> (`dc_cap_status`), so "the ladder ran out of rungs" no longer has to be reconstructed the way
+> this section reconstructs it. The names below are kept as they were written.
+
 That refutes the width-cap hypothesis this document carried in its first draft ("a rung above
 64,000 is unaffordable at uncapped width, so pinning `GS_MAX_BLOCK_WIDTH` might let the ladder
 reach a settling cap"). Pinning the width cannot move a bound that is `2^rungs * start`; only
@@ -627,9 +633,9 @@ question needs its own A/B at one pinned cap with `solver_trace` open, at a cap 
 barely binds).
 
 Deciding the accuracy question needs a rung above 64,000, and the cheapest experiment that could
-is **raising `CAP_LADDER_MAX_RUNGS` and re-running**. Whether that run also needs a width cap to
-afford rung 9 is genuinely open (above); the experiment should measure `p` and `num_wanted` at
-that cap rather than assume either answer.
+is **raising `DC_CAP_LADDER_MAX_RUNGS` and re-running** (a shell variable now, not an edit).
+Whether that run also needs a width cap to afford rung 9 is genuinely open (above); the experiment
+should measure `p` and `num_wanted` at that cap rather than assume either answer.
 
 No prediction is offered here about whether rung 9 would settle. An earlier draft argued "the
 drift has not shrunk over the last three rungs" — that claim has no source: `dc_cap_drift` is a
