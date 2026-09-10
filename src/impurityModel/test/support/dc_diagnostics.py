@@ -104,6 +104,7 @@ def run_dc_search(
     comm=None,
     verbosity=0,
     iteration=DEFAULT_ITERATION,
+    ground_state_manifold=False,
 ):
     """One double-counting search at one determinant cap; return its cost accounting.
 
@@ -128,6 +129,13 @@ def run_dc_search(
         Required for ``criterion="peak"``.
     gap_offset : float
         Where to put the gap centre, for ``criterion="gap"``. ``0.0`` is the prescription.
+    ground_state_manifold : bool
+        Forwarded to the ``"gap"`` and ``"peak"`` criteria, whose residual reads only each
+        sector's lowest energy: ask each sector for its degenerate ground multiplet instead of
+        the whole thermal window. ``"occupation"`` rejects it (its observable *is* the thermal
+        average), so a ladder run with this set and ``criterion="occupation"`` raises rather than
+        silently measuring the same thing twice -- which is the failure mode an A/B harness must
+        not have.
     gap_report : dict, optional
         Filled with the criterion's own result record -- for the gap criterion the gap centre,
         width and ``omega_+-``, which is what makes the occ-vs-gap comparison quantitative
@@ -148,6 +156,15 @@ def run_dc_search(
         the trace recorded.
     """
     from impurityModel.ed.dc_search import _dc_chi, bracket_width_tol
+
+    # Before the compute, not after: an A/B whose two arms silently ran the same configuration
+    # produces a difference of zero that looks like a verdict.
+    if ground_state_manifold and criterion == "occupation":
+        raise ValueError(
+            'ground_state_manifold does not apply to criterion="occupation": its observable IS '
+            "the thermal impurity occupation, so narrowing the manifold would change the "
+            "criterion rather than its cost. Use criterion='gap' or 'peak'."
+        )
 
     # This harness derives its whole result from a trace it opens itself, and DC_DIAGNOSTICS makes
     # the search open one too. They are mutually exclusive by construction -- solver_trace refuses
@@ -202,6 +219,7 @@ def run_dc_search(
                     # This harness measures search cost, not charge-state fidelity; a real workload's
                     # peak criterion landing on a non-nominal sector is not a benchmark failure.
                     allow_charge_state_change=True,
+                    ground_state_manifold=ground_state_manifold,
                     report=record,
                 )
             elif criterion == "gap":
@@ -213,6 +231,7 @@ def run_dc_search(
                     comm=comm,
                     verbosity=verbosity,
                     allow_charge_state_change=True,
+                    ground_state_manifold=ground_state_manifold,
                     report=record,
                 )
             else:
@@ -349,6 +368,7 @@ def cap_ladder(
     comm=None,
     verbosity=0,
     iteration=DEFAULT_ITERATION,
+    ground_state_manifold=False,
 ):
     """Baseline one workload across a ladder of determinant caps and print the table."""
     rank = comm.rank if comm is not None else 0
@@ -369,6 +389,7 @@ def cap_ladder(
             comm=comm,
             verbosity=verbosity,
             iteration=iteration,
+            ground_state_manifold=ground_state_manifold,
         )
         rows.append(row)
         if rank == 0:
@@ -859,6 +880,7 @@ def test_dc_baseline():
         comm=MPI.COMM_WORLD,
         verbosity=verbosity,
         iteration=iteration,
+        ground_state_manifold=os.environ.get("DC_DIAG_GROUND_STATE_MANIFOLD") == "1",
     )
 
 

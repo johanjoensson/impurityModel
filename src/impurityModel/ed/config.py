@@ -456,6 +456,40 @@ DC_DIAGNOSTICS = Knob(
 
 # --- Double counting: the determinant-cap ladder ----------------------------------------------
 
+DC_CAP_STRATEGY = Knob(
+    name="DC_CAP_STRATEGY",
+    kind="str",
+    default="max",
+    group="double-counting",
+    doc="""How the double-counting search picks its determinant cap when
+    `BasisOptions.truncation_threshold` was left at `None`.
+
+    `max` (the default) runs once at the memory-derived ceiling and asks the expansion whether the
+    cap bound it -- `CIPSISolver.truncation_report is None` means it did not, i.e. the expansion
+    ran out of candidates above `de2_min` rather than out of budget, so the basis is already the
+    one any larger cap would build and the answer cannot move by raising the cap. That is an
+    exact per-sector test from a single evaluation. Only when something *did* bind is a second
+    rung at half the cap evaluated, to put a measured number on how far from converged the answer
+    is. Retreats by halving if the ceiling cannot be evaluated (`MemoryError`, broadcast so every
+    rank retreats together; a hard OOM kill is not catchable).
+
+    `ladder` is the previous behaviour: double the cap from `DC_CAP_LADDER_START` until the
+    criterion's own answer stops moving (`DC_CAP_LADDER_MAX_RUNGS`, `CAP_CONVERGENCE_RUNS`).
+
+    **Why the default changed.** Measured on SrMnO3 cubic at 6 ranks, one gap-centre evaluation:
+    the full ladder 32k->512k costs 4299 s to reach a conclusion the 1890 s top rung reports
+    directly, and the N+1 sector returns a *bit-identical* energy at 128k, 256k and 512k because
+    it self-limits at 88,164 determinants -- it never binds, so no ladder rung above 128k could
+    have told anyone anything. Only N-1 binds. The ladder also cannot distinguish "the cap is the
+    limit" from "de2_min is the limit", which is the question a caller actually has to act on.
+
+    Keep `ladder` when the operating cap matters more than the answer -- it accepts the *smallest*
+    sufficient cap and so makes every subsequent trial-mu evaluation cheaper, where `max` runs
+    them all at the ceiling. That trade is only worth taking when the answer is known to converge
+    below the ceiling; on a workload that is still truncation-limited there (SrMnO3 is, up to at
+    least 512,000) the ladder buys nothing and costs 2.3x.""",
+)
+
 DC_CAP_LADDER_START = Knob(
     name="DC_CAP_LADDER_START",
     kind="int",
@@ -554,6 +588,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_RIXS_ADAPTIVE_TOL,
     GF_RIXS_ADAPTIVE_BATCH,
     GS_MAX_BLOCK_WIDTH,
+    DC_CAP_STRATEGY,
     DC_CAP_LADDER_START,
     DC_CAP_LADDER_MAX_RUNGS,
     DC_DIAGNOSTICS,

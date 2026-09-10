@@ -50,6 +50,17 @@ from impurityModel.ed.dc_criteria import GAP_ENERGY_TOLERANCE_FRACTION
 from impurityModel.ed.dc_search import bracket_width_tol
 from impurityModel.ed.groundstate import find_ground_state_basis
 from impurityModel.ed.lie_algebra import tensors_to_operator
+
+
+@pytest.fixture(autouse=True)
+def _clear_dc_cap_strategy(monkeypatch):
+    """``DC_CAP_STRATEGY`` is read lazily from the environment on every call, so a value set in the
+    developer's shell would silently send these tests down the other cap strategy. Cleared rather
+    than pinned, so the default stays declared only in :mod:`impurityModel.ed.config`; the tests
+    that are *about* a strategy set it themselves and layer over this removal."""
+    monkeypatch.delenv("DC_CAP_STRATEGY", raising=False)
+
+
 from impurityModel.ed.model import BasisOptions, ImpurityModel, SolverOptions
 from impurityModel.ed.selfenergy import (
     DoubleCountingUnreachable,
@@ -332,6 +343,12 @@ def test_fixed_gap_dc_ground_state_manifold_matches_default_on_a_spin_degenerate
     np.testing.assert_allclose(np.diag(dc_default).real, np.diag(dc_ground).real, atol=5e-3)
     assert report_default["manifold_spread"] < 1e-9
     assert report_ground["manifold_spread"] < 1e-9
+    # Which convention produced each row, recorded rather than inferred. On this fixture the two
+    # `dc` values agree to the search's tolerance and both manifolds are narrow, so the reports
+    # are otherwise indistinguishable -- and a reader comparing a *real* pair of runs needs to
+    # know that the second one's occupations are the ground state's, not a thermal average.
+    assert report_default["ground_state_manifold"] is False
+    assert report_ground["ground_state_manifold"] is True
 
 
 def test_the_gap_centre_responds_to_the_shift_with_the_slope_it_claims():
@@ -1417,6 +1434,7 @@ def test_explicit_threshold_skips_memory_probe(monkeypatch):
 def test_fixed_occupation_dc_calibrates_and_records_the_cap_when_threshold_is_none(monkeypatch):
     """Phase 5 (3/3), doc/plans/dc_smo_performance.md: the cap ladder is wired in, and only when
     the cap defaulted from the memory probe."""
+    monkeypatch.setenv("DC_CAP_STRATEGY", "ladder")
     import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
@@ -1459,6 +1477,8 @@ def test_fixed_occupation_dc_skips_the_cap_ladder_when_threshold_is_explicit(mon
 
 
 def test_fixed_gap_dc_calibrates_and_records_the_cap_when_threshold_is_none(monkeypatch):
+    monkeypatch.setenv("DC_CAP_STRATEGY", "ladder")
+
     import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
@@ -1535,6 +1555,7 @@ def test_fixed_gap_dc_keeps_the_ladders_last_rung_when_it_is_the_accepted_cap(mo
     """91109b8: when the ladder's last-evaluated rung *is* the accepted cap, the caches it just
     filled must be kept -- the width-at-guess solve and the search's own mu=0 evaluation must
     read the two off-centre sectors from ``ctx.sector_at``, not re-solve them."""
+    monkeypatch.setenv("DC_CAP_STRATEGY", "ladder")
     misses = _run_gap_dc_with_a_fake_ladder(monkeypatch, accepted_cap=700, ladder_cap=700)
 
     assert len(misses) >= 2 and misses[0][2] == 700 and misses[1][2] == 700
@@ -1549,6 +1570,7 @@ def test_fixed_gap_dc_clears_caches_when_the_accepted_cap_differs_from_the_ladde
     real ladder -- see its own contract -- but the guard must not simply trust it), the caches
     must be cleared rather than kept, so the two off-centre sectors are re-solved at the cap the
     context actually ends up with."""
+    monkeypatch.setenv("DC_CAP_STRATEGY", "ladder")
     misses = _run_gap_dc_with_a_fake_ladder(monkeypatch, accepted_cap=1400, ladder_cap=700)
 
     assert len(misses) >= 2 and misses[0][2] == 700 and misses[1][2] == 700
@@ -2276,3 +2298,85 @@ def test_the_sector_is_opt_in_so_existing_callers_keep_a_bare_matrix(criterion, 
     except (DoubleCountingUnreachable, RuntimeError):
         pytest.skip(f"{criterion}: this fixture does not converge")
     assert not isinstance(result, tuple), f"{criterion}: default return changed shape"
+
+
+def test_fixed_gap_dc_runs_at_the_ceiling_and_records_whether_the_cap_bound(monkeypatch):
+    """The default ``DC_CAP_STRATEGY="max"`` end to end: no ladder, and the record says whether the
+    cap was the limiting factor.
+
+    On this fixture the sectors are tiny and the stubbed memory cap is far above them, so nothing
+    binds -- which is the case the strategy exists for: one evaluation, ``dc_cap_bound = "no"``,
+    and the strong statement that no larger cap could move the answer.
+    """
+    import impurityModel.ed.dc_criteria as dc_module
+
+    def exploding_ladder(*args, **kwargs):
+        raise AssertionError("the ascending ladder ran under DC_CAP_STRATEGY='max'")
+
+    monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", exploding_ladder)
+    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 100_000)
+    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
+    report = {}
+    fixed_gap_dc(offset=0.0, report=report, **kwargs)
+
+    assert report["dc_cap"] == 100_000
+    assert report["dc_cap_bound"] == "no", "a sector that never hit the cap must say so"
+    assert report["dc_cap_status"] == "unbound"
+
+
+def test_an_unknown_cap_strategy_is_rejected(monkeypatch):
+    """A misspelled strategy must fail loudly rather than silently taking a default -- the
+    misnamed-knob failure mode this stack has already shipped once."""
+    import impurityModel.ed.dc_criteria as dc_module
+
+    monkeypatch.setenv("DC_CAP_STRATEGY", "laddder")
+    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 100_000)
+    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
+    with pytest.raises(ValueError, match="DC_CAP_STRATEGY"):
+        fixed_gap_dc(offset=0.0, **kwargs)
+
+
+def test_fixed_occupation_dc_probes_whether_the_cap_bound_it(monkeypatch):
+    """The occupation criterion measures its own cap verdict rather than falling back to the
+    conservative ``"unknown"``.
+
+    It solves no charge *sectors* -- it runs the whole ``solve_ground_state`` walk-and-refine at
+    each ``mu`` -- so its verdict comes from that determination's truncation report, recorded per
+    ``mu`` on the context. Before this was wired, every occupation search reported
+    ``dc_cap_bound = "unknown"`` and paid an extra half-cap rung it did not need.
+    """
+    import impurityModel.ed.dc_criteria as dc_module
+
+    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 100_000)
+    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
+    report = {}
+    fixed_occupation_dc(occupation=1.0, report=report, **kwargs)
+
+    assert report["dc_cap_bound"] in ("yes", "no"), report.get("dc_cap_bound")
+    assert report["dc_cap_bound"] == "no", "this fixture is far below the stubbed 100,000 cap"
+    assert report["dc_cap_status"] == "unbound"
+
+
+def test_the_occupation_context_records_a_cap_verdict_per_mu():
+    """``cap_bound_at`` is keyed by ``mu`` because the verdict genuinely can differ between
+    shifts: the walk can settle on a different charge sector at a different ``mu``, and a sector
+    that fits under the cap at one shift need not at another."""
+    from impurityModel.ed.dc_criteria import _evaluate_occupation_and_energy_at_mu, _prepare_occupation_context
+
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    ctx = _prepare_occupation_context(kwargs["model"], kwargs["basis"], kwargs["solver"])
+    assert ctx.cap_bound_at == {}, "a fresh context has measured nothing and must claim nothing"
+
+    for mu in (0.0, 0.1):
+        _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose=False, rank=0)
+    assert sorted(ctx.cap_bound_at) == [0.0, 0.1]
+    assert all(isinstance(v, bool) for v in ctx.cap_bound_at.values())

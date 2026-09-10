@@ -106,6 +106,7 @@ from impurityModel.ed.dc_search import (
     _solve_dc_shift,
     bracket_width_tol,
     calibrate_truncation_threshold,
+    resolve_cap_at_max,
 )
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
@@ -137,6 +138,37 @@ def _dump_dc_matrices(dc_guess, dc, rank):
         return
     matrix_print(dc_guess, label="DC guess:")
     matrix_print(dc, label="DC found:")
+
+
+def _any_cap_bound(ctx):
+    """Did the determinant cap bind anything solved so far? ``None`` when it cannot be told.
+
+    Both criterion contexts answer this, from the two different shapes their solves take:
+
+    * :class:`_SectorContext` (gap, peak) reads ``cap_bound`` off each cached
+      :class:`_SectorSolution` -- one per ``(mu, n_trial)`` charge sector.
+    * :class:`_OccupationContext` reads ``cap_bound_at``, one entry per evaluated ``mu``, which
+      :func:`_evaluate_occupation_and_energy_at_mu` fills from the ground-state determination's
+      own truncation report.
+
+    ``None`` is not "no": it is "nothing has been solved yet, so nothing can be said". The cap
+    strategy treats it exactly as ``True`` (:func:`dc_search.resolve_cap_at_max`), which costs one
+    extra rung rather than reporting a convergence the run never established.
+
+    Both readings are already rank-replicated where they are stored -- ``_SectorSolution`` is
+    broadcast whole, ``cap_bound_at`` is broadcast on write -- so this is a pure local reduction
+    over replicated facts and adds no collective of its own.
+    """
+    verdicts = []
+    sector_at = getattr(ctx, "sector_at", None)
+    if sector_at:
+        verdicts += [solution.cap_bound for solution in sector_at.values() if solution is not None]
+    cap_bound_at = getattr(ctx, "cap_bound_at", None)
+    if cap_bound_at:
+        verdicts += list(cap_bound_at.values())
+    if not verdicts:
+        return None
+    return any(verdicts)
 
 
 def _calibrate_cap(ctx, evaluate_at_guess, clear_caches, tol, dc_rec, *, verbose, rank):
@@ -188,9 +220,26 @@ def _calibrate_cap(ctx, evaluate_at_guess, clear_caches, tol, dc_rec, *, verbose
         cached_cap = cap
         return evaluate_at_guess()
 
-    cap, cap_drift, _rungs, cap_status = calibrate_truncation_threshold(
-        quantity, tol, memory_cap=ctx.memory_cap, verbose=verbose, rank=rank, comm=MPI.COMM_WORLD
-    )
+    # Which strategy picks the cap. `max` (the default) runs at the ceiling and asks the
+    # expansion whether the cap bound it -- see `DC_CAP_STRATEGY` for the measurement behind the
+    # default, and `dc_search.resolve_cap_at_max` for why an unbound expansion needs no ladder.
+    strategy = MPI.COMM_WORLD.bcast(config.DC_CAP_STRATEGY.get(), root=0)
+    if strategy not in ("max", "ladder"):
+        raise ValueError(f"DC_CAP_STRATEGY must be 'max' or 'ladder', got {strategy!r}")
+    if strategy == "ladder":
+        cap, cap_drift, _rungs, cap_status = calibrate_truncation_threshold(
+            quantity, tol, memory_cap=ctx.memory_cap, verbose=verbose, rank=rank, comm=MPI.COMM_WORLD
+        )
+    else:
+        cap, cap_drift, _rungs, cap_status = resolve_cap_at_max(
+            quantity,
+            tol,
+            memory_cap=ctx.memory_cap,
+            bound_probe=lambda: _any_cap_bound(ctx),
+            verbose=verbose,
+            rank=rank,
+            comm=MPI.COMM_WORLD,
+        )
     ctx.truncation_threshold = cap
     dc_rec["dc_cap"], dc_rec["dc_cap_drift"] = cap, cap_drift
     dc_rec["dc_cap_parity"] = ctx.memory_cap
@@ -200,6 +249,10 @@ def _calibrate_cap(ctx, evaluate_at_guess, clear_caches, tol, dc_rec, *, verbose
     # cannot distinguish a converged answer from a truncation-limited one -- which is exactly what
     # `DC_CAP_LADDER_MAX_RUNGS`'s own documentation asks a reader to act on.
     dc_rec["dc_cap_status"] = cap_status
+    # Recorded next to the cap it qualifies. "no" is the strong statement -- no sector was stopped
+    # by the cap, so no larger cap can move this answer -- and it is the one a reader acts on.
+    bound = _any_cap_bound(ctx)
+    dc_rec["dc_cap_bound"] = "unknown" if bound is None else ("yes" if bound else "no")
     return cap, cached_cap
 
 
@@ -341,6 +394,18 @@ class _SectorSolution:
     occupation_ground: float
     n_states: int
     occupation_spread: float
+    #: Did ``truncation_threshold`` bind this sector's CIPSI expansion? ``True`` when the
+    #: fixed-budget branch engaged (``CIPSISolver.truncation_report is not None``), i.e. the
+    #: expansion was stopped by the cap rather than by running out of candidates above
+    #: ``de2_min``. This is the exact, per-sector, single-run test for "is the cap the limiting
+    #: factor here", and it is what makes a cap ladder unnecessary in the common case: a sector
+    #: that did **not** bind has already found the basis any larger cap would give it, so its
+    #: energy cannot move by raising the cap. Measured on SrMnO3: the N+1 sector self-limits at
+    #: 88,164 determinants and returns a bit-identical energy at caps 128k, 256k and 512k, while
+    #: N-1 binds at every one of them. Note what it does *not* say: an unbound sector is
+    #: converged **in the cap**, not exact -- whatever error is left is the ``de2_min`` /
+    #: ``slaterWeightMin`` truncation, a different knob.
+    cap_bound: bool = False
 
 
 @dataclass
@@ -605,6 +670,13 @@ class _SectorContext:
             occupation_ground=float(occupations[int(np.argmin(es))]),
             n_states=int(n_states),
             occupation_spread=float(np.max(occupations) - np.min(occupations)),
+            # `_solve_sector_core` hangs its solver's `truncation_report` on the basis it returns
+            # (`occupation_search_truncation`) precisely so a caller that never sees the solver can
+            # still tell a cap-limited expansion from a converged one. Read as a bool here: the
+            # report's contents describe *how* the cap bound, which the cap strategy does not need
+            # -- only whether it did. Rank-local until the broadcast below, like everything else
+            # in this constructor.
+            cap_bound=bool(getattr(sector_basis, "occupation_search_truncation", None) is not None),
         )
         solution = MPI.COMM_WORLD.bcast(solution, root=0)
         self.sector_at[(mu, n_trial)] = solution
@@ -1014,6 +1086,12 @@ def fixed_peak_dc(
         )
         dc_rec["dc_trace"], dc_rec["dc_level"] = dc_record.dc_levels(dc)
         dc_rec["dc_spread"] = dc_record.dc_spread(dc)
+        # This criterion measures no manifold spread, but it takes the flag through both
+        # front-ends, so its record still has to say which convention produced the occupations it
+        # reports -- otherwise a peak search run with the flag on is indistinguishable from one
+        # run without it. (This is also why the key is a printed field rather than an annotation
+        # on `manifold_spread`: there is no such line here to hang it off.)
+        dc_rec["ground_state_manifold"] = ctx.ground_state_manifold
         _dump_dc_matrices(ctx.dc_guess, dc, rank)
         if n_center != nominal_total and not allow_charge_state_change:
             raise RuntimeError(
@@ -1663,9 +1741,18 @@ def fixed_gap_dc(
                 # shift actually evaluated -- the best available stand-in for `mu` when the search
                 # never returned one.
                 mu_seen = mu if mu is not None else (next(reversed(sectors_at)) if sectors_at else None)
+                # Unconditional, unlike the measurements below: this is a property of how the
+                # search *ran*, not of whether a diagnostic could be taken at some `mu`. Written
+                # conditionally it would be absent exactly on the failure paths, where "which
+                # manifold convention produced this" is most worth knowing -- and a record key
+                # written on some paths and not others is how a stale value gets inherited
+                # (`dc_record.recording` does `report.update(record)` and never clears).
+                dc_rec["ground_state_manifold"] = ctx.ground_state_manifold
                 if mu_seen is not None:
                     delta_plus, delta_minus = _measure_edge_character(ctx, mu_seen, n_center_at[mu_seen])
                     dc_rec["delta_plus"], dc_rec["delta_minus"] = delta_plus, delta_minus
+                    # Under the flag above, these sizes are the ground multiplet by request and the
+                    # spread is over that narrowed window rather than the thermal one.
                     spread, sizes = _measure_manifold_spread(ctx, mu_seen, n_center_at[mu_seen])
                     dc_rec["manifold_spread"], dc_rec["manifold_states"] = spread, sizes
                     _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank)
@@ -1781,6 +1868,19 @@ class _OccupationContext:
     # groundstate.GS_CIPSI_SOLVER_METHOD (imported lazily; groundstate imports back into this
     # module), never spelled out as a literal here.
     cipsi_solver_method: str
+    #: ``mu -> bool``: did ``truncation_threshold`` bind the ground-state determination at that
+    #: shift? Filled by :func:`_evaluate_occupation_and_energy_at_mu`, and **broadcast** there, so
+    #: this holds a rank-replicated fact rather than one rank's view of its own solver -- the same
+    #: contract :class:`_SectorContext` states for ``sector_at``.
+    #:
+    #: Recorded on the context rather than returned, because the public
+    #: :func:`occupation_and_energy_at_mu` has a documented ``(n, E0, sector)`` return and this is
+    #: not part of the answer -- it qualifies it.
+    cap_bound_at: dict = None
+
+    def __post_init__(self):
+        if self.cap_bound_at is None:
+            self.cap_bound_at = {}
 
 
 def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
@@ -1923,7 +2023,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     # from the previous mu): feeding the walk its own last answer would make the result
     # path-dependent on the bracket's evaluation order, which breaks parity by another route.
     with solver_trace.timed("expand", stage="dc_refine"):
-        mb_basis, _mb_solver, es, psis = solve_ground_state(
+        mb_basis, mb_solver, es, psis = solve_ground_state(
             h_op,
             ctx.impurity_orbitals,
             ctx.bath_states,
@@ -1941,6 +2041,21 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             weighted_restrictions=ctx.weighted_restrictions,
             cipsi_solver_method=ctx.cipsi_solver_method,
         )
+
+    # Did the determinant cap bind this ground-state determination? Two places can say so, and
+    # both count: the final refinement's own `truncation_report`, and the occupation walk's
+    # sector solves, which hang theirs on the basis (`occupation_search_truncation`) precisely so
+    # a caller that never sees those solvers can still tell. `groundstate.calc_gs` combines the
+    # same pair for its `gs_stats["truncation"]`.
+    #
+    # Broadcast before it is stored: `truncation_report` is rank-local solver state, and the cap
+    # strategy branches on this to decide whether to run a second, collective evaluation. A
+    # rank-local verdict in front of that decision is the deadlock class this module documents.
+    bound_local = bool(
+        getattr(mb_solver, "truncation_report", None) is not None
+        or getattr(mb_basis, "occupation_search_truncation", None) is not None
+    )
+    ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bound_local, root=0)
 
     rhos = build_density_matrices(mb_basis, psis, ctx.impurity_indices, ctx.impurity_indices)
     rho = thermal_average_scale_indep(es, rhos, ctx.tau)

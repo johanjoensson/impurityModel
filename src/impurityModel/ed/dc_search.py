@@ -160,6 +160,146 @@ def _cap_ladder_max_rungs() -> int:
     return config.DC_CAP_LADDER_MAX_RUNGS.get()
 
 
+def resolve_cap_at_max(quantity, tol, *, memory_cap, bound_probe=None, verbose=False, rank=0, comm=None, min_cap=1):
+    r"""The determinant cap, chosen by *running at the ceiling and asking whether it bound*.
+
+    The alternative to :func:`calibrate_truncation_threshold`'s ascending ladder, and the default
+    (``DC_CAP_STRATEGY``). Same return shape, so the caller's bookkeeping is unchanged.
+
+    **Why this replaces climbing.** ``CIPSISolver.truncation_report`` is ``None`` exactly when the
+    fixed-budget branch never engaged -- i.e. the expansion stopped because it ran out of
+    candidates above ``de2_min``, not because it hit the cap. A sector that did not bind has
+    therefore already built the basis *any* larger cap would give it, and its energy cannot move
+    by raising the cap. That is an exact, per-sector test available from **one** evaluation, and
+    it makes the ladder unnecessary in the case the ladder was built to detect.
+
+    Measured on SrMnO3 cubic (the workload the ladder was tuned against), one gap-centre
+    evaluation at 6 ranks:
+
+    ==========  =========  ============================================
+    cap         seconds    outcome
+    ==========  =========  ============================================
+    32,000        301.6    both sectors bind
+    128,000       779.2    N+1 stops binding at 88,164 determinants
+    256,000      1328.5    N+1 unchanged, N-1 binds
+    512,000      1890.1    N+1 unchanged, N-1 binds
+    ==========  =========  ============================================
+
+    The full ladder costs 4299 s to conclude what the 1890 s top rung reports directly, and N+1's
+    energy is *bit-identical* at the last three caps. Note this also corrects a claim
+    :func:`calibrate_truncation_threshold`'s docstring still makes -- that the sector expansions
+    "saturate the cap at every cap tried". N+1 does not; only N-1 does.
+
+    **What the ladder still had that this does not.** When a sector *does* bind you learn "the cap
+    is the limiting factor" but not *by how much* the answer would still move. So one extra rung
+    at half the cap is evaluated in that case, and only in that case, to give ``drift`` a
+    measured value. That is two evaluations rather than the ladder's many.
+
+    **On failure to fit.** ``memory_cap`` is a prediction, so the ceiling can be unaffordable in
+    practice. A :class:`MemoryError` from ``quantity`` is caught, **broadcast**, and the cap
+    halved -- every rank retreating together, because a rank-local retreat would put the ranks on
+    different collective paths (the deadlock class this module's callers document). This cannot
+    catch a hard OOM kill by the operating system, which is not a Python exception; it covers the
+    allocation failures that surface as one.
+
+    Parameters
+    ----------
+    quantity : callable
+        ``quantity(cap) -> float or None``, the criterion's controlled quantity at that cap.
+        **Collective** -- see :func:`calibrate_truncation_threshold`.
+    tol : float
+        The criterion's convergence tolerance, in the units of ``quantity``. Not used to *choose*
+        the cap here (there is nothing to choose -- the ceiling is the answer); carried so the
+        acceptance line can say whether the measured ``drift`` is inside it.
+    memory_cap : int or float
+        The ceiling, and the first cap tried.
+    bound_probe : callable, optional
+        ``() -> bool or None``, asked after each evaluation: did the cap bind anything? ``None``
+        means "cannot tell", which is treated exactly like ``True`` -- the conservative reading,
+        since it costs one extra rung rather than silently claiming convergence. Omitted entirely
+        (the default) behaves the same way, which is what lets a criterion that has not wired up a
+        probe use this function without claiming a certainty it cannot support.
+    min_cap : int
+        Floor for the halving retreat, so a pathological loop cannot drive the cap to zero.
+
+    Returns
+    -------
+    (cap, drift, rungs, status) : tuple
+        As :func:`calibrate_truncation_threshold`. ``status`` is ``"unbound"`` (nothing bound: the
+        answer is converged **in the cap**, and no further cap buys anything), ``"cap_bound"``
+        (something bound; ``drift`` is measured against the half-cap rung) or ``"memory_retreat"``
+        (the ceiling could not be evaluated and the cap was halved to fit).
+
+        ``cap`` is the accepted -- largest evaluated -- cap. Unlike the ladder's, it is **not**
+        necessarily ``rungs[-1][0]``: on the ``"cap_bound"`` path the half-cap rung is evaluated
+        last, so a caller reusing caches keyed on the evaluation must clear them. ``_calibrate_cap``
+        does exactly that, comparing its own ``cached_cap`` against this ``cap``.
+    """
+    cap = memory_cap
+    rungs = []
+    status = None
+    value = None
+
+    while True:
+        try:
+            value = quantity(cap)
+            failed = False
+        except MemoryError:
+            failed = True
+        # Broadcast before branching: a rank-local retreat sends ranks down different collective
+        # paths. `bcast` of a bool is cheap next to the evaluation that just ran.
+        if comm is not None:
+            failed = comm.bcast(failed, root=0)
+        if not failed:
+            break
+        if cap <= min_cap:
+            raise MemoryError(
+                f"the double-counting cap could not be evaluated even at the floor of {min_cap:,} " "determinants"
+            )
+        cap = max(int(cap) // 2, min_cap)
+        status = "memory_retreat"
+        if verbose and rank == 0:
+            print(f"dc cap: evaluation ran out of memory; retreating to {cap:,} determinants", flush=True)
+
+    rungs.append((cap, value))
+
+    bound = None if bound_probe is None else bound_probe()
+    if comm is not None:
+        bound = comm.bcast(bound, root=0)
+    # `None` (no probe, or a probe that cannot tell) is read as "bound": it costs one extra rung
+    # and reports a measured drift, where the optimistic reading would report convergence the run
+    # never established.
+    if bound is False:
+        if verbose and rank == 0:
+            print(
+                f"dc cap: {cap:,} determinants did not bind any sector -- the answer is converged "
+                "in the cap (any remaining error is de2_min/slaterWeightMin, not the cap).",
+                flush=True,
+            )
+        return cap, 0.0, rungs, (status or "unbound")
+
+    half = max(int(cap) // 2, min_cap)
+    drift = None
+    if half < cap:
+        value_half = quantity(half)
+        rungs.append((half, value_half))
+        if value is not None and value_half is not None:
+            drift = abs(value - value_half)
+    if rank == 0:
+        inside = (
+            ""
+            if drift is None or tol is None
+            else (f" ({'within' if drift <= tol else 'OUTSIDE'} the criterion's tol {tol:.2e})")
+        )
+        drift_text = "unmeasured" if drift is None else f"{drift:.2e}"
+        print(
+            f"WARNING: dc cap: the expansion was cap-bound at {cap:,} determinants, so the answer "
+            f"may not be converged; it moved {drift_text} between {half:,} and {cap:,}{inside}.",
+            flush=True,
+        )
+    return cap, drift, rungs, (status or "cap_bound")
+
+
 def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, rank=0, comm=None):
     r"""The determinant cap at which the criterion's answer has stopped moving.
 
@@ -168,9 +308,9 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
     deliberately: it is the rung this function evaluated last, so a caller can keep its cached
     solves instead of paying for one more at whatever smaller cap would also have qualified.
 
-    **Why this exists.** The DC criteria's own sector expansions saturate the cap at every cap
-    tried -- the ``GS_DE2_MIN`` selection does not converge in size, it keeps admitting
-    determinants until the budget stops it -- so cost is linear in the cap while the criterion's
+    **Why this exists.** On the workload this was tuned against, the DC criteria's sector
+    expansions saturated the cap at every cap tried -- the ``GS_DE2_MIN`` selection kept admitting
+    determinants until the budget stopped it -- so cost is linear in the cap while the criterion's
     answer moves far less: on ``nio_5peeled`` the gap centre moved 6.7e-3 in ``mu`` across a
     500-to-8000 cap ladder, against an acceptance band of ``tol / |chi| = 8.5e-3`` (see
     ``doc/plans/dc_performance.md``, the campaign this ported from). Running at the full
@@ -188,7 +328,17 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
     gap of the same shape this module exists to close elsewhere (a halved memory budget). The
     difference is that this one is *measured and recorded*: the caller records ``dc_cap``,
     ``dc_cap_drift`` and the memory-derived ceiling (``dc_cap_parity``) beside it, rather than
-    inheriting it silently. ``dc_criteria._calibrate_cap`` does that wiring for the gap and
+    inheriting it silently.
+
+    **That premise does not hold in general, which is why this is no longer the default**
+    (``DC_CAP_STRATEGY``; see :func:`resolve_cap_at_max`). Measured on SrMnO3 cubic, the ``N+1``
+    sector *self-limits* at 88,164 determinants and returns a bit-identical energy at caps
+    128,000, 256,000 and 512,000 -- it never binds, so no rung above 128,000 could have said
+    anything about it; only ``N-1`` saturates. An expansion that stops on its own terms is
+    detectable directly (``CIPSISolver.truncation_report is None``) without climbing to it, and
+    this ladder cannot distinguish "the cap is the limit" from "``de2_min`` is the limit" at all.
+
+    ``dc_criteria._calibrate_cap`` does that wiring for the gap and
     occupation criteria (:func:`impurityModel.ed.dc_criteria.fixed_gap_dc`,
     :func:`impurityModel.ed.dc_criteria.fixed_occupation_dc`). **Not** for
     :func:`impurityModel.ed.dc_criteria.fixed_peak_dc`, which does not call it: a peak search

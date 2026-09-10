@@ -343,3 +343,42 @@ def test_an_output_path_is_relative_to_the_working_directory_not_the_file(write_
 
     # ... while an input path is rebased, so the file keeps working from any directory.
     assert str(tmp_path) in defaulted.tables["hamiltonian.file"]["path"]
+
+
+# ------------------------------------------------- ground_state_manifold, per criterion
+
+
+@pytest.mark.parametrize("scheme", ["fixed_gap", "fixed_peak"])
+def test_ground_state_manifold_is_accepted_by_the_energy_difference_criteria(write_input, scheme):
+    """Both read a *difference of sector energies*, each that sector's lowest eigenvalue, so the
+    thermal window around it is cost the residual never reads."""
+    text = MINIMAL_SELFENERGY + f"\n[double_counting.{scheme}]\nground_state_manifold = true\n"
+    if scheme == "fixed_peak":
+        text += "peak_position = 1.0\n"
+    resolved = load_input(write_input(text))
+    assert resolved.tables[f"double_counting.{scheme}"]["ground_state_manifold"] is True
+
+
+@pytest.mark.parametrize("scheme", ["fixed_gap", "fixed_peak"])
+def test_ground_state_manifold_defaults_off(write_input, scheme):
+    """Opt-in by design: it also switches the criterion's reported impurity occupation from the
+    thermal average to the ground state's, and those differ on SrMnO3."""
+    text = MINIMAL_SELFENERGY + f"\n[double_counting.{scheme}]\n"
+    if scheme == "fixed_peak":
+        text += "peak_position = 1.0\n"
+    resolved = load_input(write_input(text))
+    assert resolved.tables[f"double_counting.{scheme}"]["ground_state_manifold"] is False
+
+
+def test_the_occupation_criterion_does_not_have_ground_state_manifold(write_input):
+    """Not an oversight, and it must not be "fixed" by moving the key into `_DC_SEARCH_KEYS`.
+
+    ``fixed_occupation``'s observable *is* the thermal impurity occupation, so narrowing the
+    manifold would change the criterion rather than the cost of evaluating it --
+    :func:`dc_criteria.fixed_occupation_dc` accordingly does not accept the argument at all.
+    Declaring the key here anyway would let it parse and then do nothing, which is exactly what
+    the RSPt double-counting line rejects for the same spelling.
+    """
+    text = MINIMAL_SELFENERGY + "\n[double_counting.fixed_occupation]\nground_state_manifold = true\n"
+    with pytest.raises(InputError, match="unknown key 'ground_state_manifold'"):
+        load_input(write_input(text))

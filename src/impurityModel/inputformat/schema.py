@@ -241,6 +241,29 @@ _DC_SEARCH_KEYS = (
     Key("max_shift", Kind.ENERGY, 20.0, "Largest |mu| the search will try before giving up."),
 )
 
+#: Keys for the two searching variants whose residual is a *difference of sector energies*, each
+#: taken as that sector's lowest eigenvalue. Deliberately NOT in :data:`_DC_SEARCH_KEYS`:
+#: ``fixed_occupation`` pins the thermal impurity occupation itself, so narrowing the manifold
+#: would change its criterion rather than the cost of evaluating it, and
+#: :func:`dc_criteria.fixed_occupation_dc` accordingly does not accept the argument. Declaring it
+#: there anyway would make the key parse and then do nothing -- the RSPt double-counting line
+#: rejects the same spelling on the same grounds, and the two front-ends share one DC vocabulary.
+_DC_ENERGY_DIFFERENCE_KEYS = (
+    Key(
+        "ground_state_manifold",
+        Kind.BOOL,
+        False,
+        "Ask each charge sector for its degenerate ground multiplet alone instead of the whole "
+        "thermal window at [temperature].tau. This criterion reads only the lowest energy of "
+        "each sector, so on a model whose N +- 1 spectrum is dense inside that window the "
+        "widening is bought and discarded -- SrMnO3 cubic stacks four solves per sector, ending "
+        "at 160 states. Off by default because it also switches the criterion's REPORTED "
+        "impurity occupation from the thermal average to the ground state's; those agree only "
+        "where occupation_spread is negligible, which is not so on SrMnO3. It moves the reported "
+        "mu resolution, not the root. Check the spread from a run with this off first.",
+    ),
+)
+
 _TABLE_LIST = [
     Table(
         "format",
@@ -646,7 +669,9 @@ _TABLE_LIST += [
         "double_counting.fixed_peak",
         "Choose dc so a peak in the impurity spectral function lands at a given energy. "
         "Positive places an electron-addition peak, negative a removal peak. Runs a search.",
-        (Key("peak_position", Kind.ENERGY, UNSET, "Where to put the peak, relative to E_F."),) + _DC_SEARCH_KEYS,
+        (Key("peak_position", Kind.ENERGY, UNSET, "Where to put the peak, relative to E_F."),)
+        + _DC_SEARCH_KEYS
+        + _DC_ENERGY_DIFFERENCE_KEYS,
         variant_of="double_counting",
     ),
     Table(
@@ -656,7 +681,9 @@ _TABLE_LIST += [
         "INSULATORS, where the fixed-occupation condition breaks down. Note what is actually "
         "measured is the gap of the whole cluster, not of the impurity; the criterion reports "
         "its own exposure per edge. Runs a search.",
-        (Key("offset", Kind.ENERGY, 0.0, "Where to centre the gap; 0 is the Fermi level."),) + _DC_SEARCH_KEYS,
+        (Key("offset", Kind.ENERGY, 0.0, "Where to centre the gap; 0 is the Fermi level."),)
+        + _DC_SEARCH_KEYS
+        + _DC_ENERGY_DIFFERENCE_KEYS,
         variant_of="double_counting",
     ),
     Table("double_counting.none", "No double counting.", (), variant_of="double_counting"),

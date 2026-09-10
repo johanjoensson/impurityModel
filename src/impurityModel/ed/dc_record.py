@@ -68,6 +68,7 @@ _FIELDS = (
     ("delta_sum", "{:.3f}"),
     ("delta_sum_vs_chi", "{:.3f}"),
     ("manifold_spread", "{:.3f}"),
+    ("ground_state_manifold", "{}"),
     ("peak", "{:.6f}"),
     ("chi", "{:.4g}"),
     ("chi_span", "{:.4g}"),
@@ -75,6 +76,7 @@ _FIELDS = (
     ("tol_basis", "{}"),
     ("dc_cap", "{}"),
     ("dc_cap_drift", "{:.2e}"),
+    ("dc_cap_bound", "{}"),
     ("dc_cap_check", "{:.2e}"),
     ("slope", "{:.4f}"),
     ("mu_tol_effective", "{:.2e}"),
@@ -245,6 +247,28 @@ def _annotate(record, key, text):
         sizes = record.get("manifold_states")
         over = "" if sizes is None else f" over {sizes} states (N+1/N/N-1)"
         return f"{text}   (max N_imp spread within a retained manifold{over}; 0 = thermal and T=0 agree)"
+    if key == "ground_state_manifold":
+        # Which manifold convention the sector solves ran under, and so which occupation the rest
+        # of this record reports. A field rather than an annotation on `manifold_spread`: only
+        # `fixed_gap_dc` measures a spread, and `fixed_peak_dc` takes the same flag, so hanging it
+        # off that line would leave the peak criterion unable to say what it did. Printed even
+        # when False, because "absent" would otherwise have to mean both "thermal" and "written by
+        # a version that predates the flag".
+        if record.get(key):
+            return f"{text}   (sector solves narrowed to the ground multiplet; occupations are T=0, not thermal)"
+        return f"{text}   (full thermal window at tau; occupations are Boltzmann averages)"
+    if key == "dc_cap_bound":
+        # The exact, per-sector, single-run answer to "is the cap the limiting factor here" --
+        # `CIPSISolver.truncation_report is None` means the expansion ran out of candidates above
+        # `de2_min` rather than out of budget, so its basis is already the one any larger cap
+        # would build. That is why `DC_CAP_STRATEGY=max` needs no ladder in the unbound case.
+        # An unbound expansion is converged IN THE CAP, not exact: what remains is the
+        # `de2_min`/`slaterWeightMin` truncation, which no cap will improve.
+        if record.get(key) == "no":
+            return f"{text}   (no sector hit the cap; raising it cannot move this answer)"
+        if record.get(key) == "unknown":
+            return f"{text}   (not probed; the cap was treated as binding, the conservative reading)"
+        return f"{text}   (a sector was stopped by the cap; the answer may not be converged in it)"
     if key == "dc_cap":
         # The cap is now a *measured* quantity, not the memory maximum, so the record has to say
         # both what it settled on and what it gave up. `dc_cap_parity` is the memory-derived cap

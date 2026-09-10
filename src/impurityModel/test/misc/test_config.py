@@ -76,6 +76,23 @@ def test_registry_is_keyed_by_name_and_grouped():
         assert knob.group in config.GROUP_TITLES, f"{name} has an unrendered group {knob.group!r}"
 
 
+def test_every_declared_knob_is_registered():
+    """A ``Knob`` assigned at module scope but left out of ``KNOBS`` is invisible to everything.
+
+    ``test_dump_covers_every_knob`` below iterates ``KNOBS``, so it cannot see this: an
+    unregistered knob is absent from the registry *and* from the table, and the two agree with
+    each other while the knob is silently undocumented -- even though it is fully functional at
+    its call site, because ``Knob.get`` reads the environment directly and never consults
+    ``KNOBS``. That is exactly what happened to ``DC_CAP_STRATEGY``: declared, wired into
+    ``dc_criteria._calibrate_cap``, working, and in no document. This scans the module's own
+    globals instead, which is the only place the omission is visible, and makes ``dump``'s
+    docstring claim -- "a knob declared here is documented by construction" -- actually true.
+    """
+    declared = {value.name for value in vars(config).values() if isinstance(value, config.Knob)}
+    missing = sorted(declared - set(config.KNOBS))
+    assert not missing, f"declared but not in KNOBS (so undocumented and undumpable): {missing}"
+
+
 def test_dump_covers_every_knob():
     """The generated configuration table names every declared knob.
 

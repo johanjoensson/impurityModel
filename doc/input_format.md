@@ -86,6 +86,7 @@ Centre dc in the charge gap (Karolak's insulator prescription): put the midpoint
 | `occ_tol` | dimensionless | `0.01` | Occupation convergence tolerance. |
 | `initial_step` | energy | `0.25` | First trial step of the shift search. |
 | `max_shift` | energy | `20.0` | Largest |mu| the search will try before giving up. |
+| `ground_state_manifold` | bool | `False` | Ask each charge sector for its degenerate ground multiplet alone instead of the whole thermal window at [temperature].tau. This criterion reads only the lowest energy of each sector, so on a model whose N +- 1 spectrum is dense inside that window the widening is bought and discarded -- SrMnO3 cubic stacks four solves per sector, ending at 160 states. Off by default because it also switches the criterion's REPORTED impurity occupation from the thermal average to the ground state's; those agree only where occupation_spread is negligible, which is not so on SrMnO3. It moves the reported mu resolution, not the root. Check the spread from a run with this off first. |
 
 ## `[double_counting.fixed_occupation]`
 
@@ -114,6 +115,7 @@ Choose dc so a peak in the impurity spectral function lands at a given energy. P
 | `occ_tol` | dimensionless | `0.01` | Occupation convergence tolerance. |
 | `initial_step` | energy | `0.25` | First trial step of the shift search. |
 | `max_shift` | energy | `20.0` | Largest |mu| the search will try before giving up. |
+| `ground_state_manifold` | bool | `False` | Ask each charge sector for its degenerate ground multiplet alone instead of the whole thermal window at [temperature].tau. This criterion reads only the lowest energy of each sector, so on a model whose N +- 1 spectrum is dense inside that window the widening is bought and discarded -- SrMnO3 cubic stacks four solves per sector, ending at 160 states. Off by default because it also switches the criterion's REPORTED impurity occupation from the thermal average to the ground state's; those agree only where occupation_spread is negligible, which is not so on SrMnO3. It moves the reported mu resolution, not the root. Check the spread from a run with this off first. |
 
 ## `[double_counting.fll]`
 
