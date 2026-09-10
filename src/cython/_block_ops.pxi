@@ -223,12 +223,47 @@ cpdef tuple block_normalize(object wp, bint mpi=False, object comm=None, double 
     representation dispatch) into one function -- they were the same 5-line body twice.
     """
     if is_array(wp):
-        q_next, beta_j, active_k, _ = tsqr(wp, comm if mpi else None, 1.0)
+        q_next, beta_j, active_k, sv = tsqr(wp, comm if mpi else None, 1.0)
     else:
-        q_next, beta_j, active_k, _ = block_tsqr(wp, mpi, comm, 1.0, slaterWeightMin)
+        q_next, beta_j, active_k, sv = block_tsqr(wp, mpi, comm, 1.0, slaterWeightMin)
     if active_k <= 0:
-        raise ValueError("Block collapsed to zero rank")
+        raise ValueError(_block_normalize_failure(wp, active_k, sv))
     return q_next, beta_j
+
+
+cdef str _block_normalize_failure(object wp, int active_k, object sv):
+    """Spell out *which* of ``tsqr``'s two failure codes fired, and on what block.
+
+    ``tsqr`` distinguishes them deliberately -- ``k == 0`` is a numerically zero block (a
+    genuine invariant subspace / closed Krylov space), ``k == -1`` is a **non-finite** factor,
+    i.e. a corrupted recurrence upstream -- and this raise used to flatten both into one
+    "Block collapsed to zero rank", which sent a production SrMnO3 double-counting crash
+    (:mod:`impurityModel.ed.dc_criteria`'s cap ladder, a 262-column warm-started CIPSI start
+    block) down the wrong diagnosis for want of one integer.
+
+    ``active_k`` and ``sv`` are replicated (``block_tsqr`` returns the same ``k``/``sv`` on
+    every rank), so every rank raises together: this builds a *message*, it never decides
+    whether to raise. The row count is rank-local and labelled as such -- read, never branched
+    on.
+    """
+    cdef object rows
+    if is_array(wp):
+        rows = wp[0].shape[0] if isinstance(wp, list) else wp.shape[0]
+    elif isinstance(wp, ManyBodyState):
+        rows = len(wp)
+    else:
+        rows = len(wp[0]) if len(wp) > 0 else 0
+    cdef str where = f"width {block_cols(wp)}, {rows} local rows"
+    if active_k < 0:
+        return (
+            f"Block normalization got a non-finite factor ({where}): the block holds NaN/Inf, "
+            "so the recurrence feeding it is corrupted -- this is not a closed Krylov space"
+        )
+    cdef object s_max = None if sv is None or len(sv) == 0 else float(sv[0])
+    return (
+        f"Block collapsed to zero rank ({where}): largest singular value {s_max} is at or "
+        "below the breakdown floor, i.e. the block is numerically zero"
+    )
 
 
 cpdef tuple block_tsqr(object wp, bint mpi=False, object comm=None, double scale=1.0,

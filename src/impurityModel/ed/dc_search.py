@@ -137,17 +137,27 @@ CAP_CONVERGENCE_FRACTION = 0.25
 #: the actual variation over the window -- is what rejects it at the first rung.
 CAP_CONVERGENCE_RUNS = 2
 
-#: Starting rung of the geometric cap ladder. Small enough that the first few rungs are cheap
-#: relative to the production caps this exists to avoid, so a workload that settles quickly pays
-#: almost nothing for the calibration.
-CAP_LADDER_START = 500
+#: Starting rung, and rung budget, of the geometric cap ladder -- both environment knobs rather
+#: than literals here (:data:`impurityModel.ed.config.DC_CAP_LADDER_START` /
+#: ``DC_CAP_LADDER_MAX_RUNGS`` carry the rationale for the defaults, and
+#: ``doc/configuration.md`` is generated from them). They are read through these two functions,
+#: not captured at import, so a caller or a test may set the variables at any point -- the same
+#: lazy contract every other knob in this stack has.
+#:
+#: The pair fixes the ladder's *reach*: ``start * 2**(rungs - 1)``, 512,000 determinants at the
+#: defaults. That ceiling, not the memory-derived cap, is what binds on a workload whose answer
+#: has not settled -- the rung budget of 8 this module shipped with until 2026-09 stopped SrMnO3
+#: at 64,000 with a memory budget 2000x larger and an answer still moving.
 
-#: Ceiling on how many times the ladder doubles before giving up and reporting the largest rung it
-#: reached as truncation-limited, rather than search-limited. Eight doublings from
-#: :data:`CAP_LADDER_START` top out at 64,000 determinants -- comfortably below the ~1e6-scale
-#: memory-derived caps this module runs against, so the rung budget is the binding limit only on
-#: a workload whose answer genuinely has not settled by then.
-CAP_LADDER_MAX_RUNGS = 8
+
+def _cap_ladder_start() -> int:
+    """First rung of the cap ladder (:data:`config.DC_CAP_LADDER_START`)."""
+    return config.DC_CAP_LADDER_START.get()
+
+
+def _cap_ladder_max_rungs() -> int:
+    """Rung budget of the cap ladder (:data:`config.DC_CAP_LADDER_MAX_RUNGS`)."""
+    return config.DC_CAP_LADDER_MAX_RUNGS.get()
 
 
 def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, rank=0, comm=None):
@@ -251,10 +261,10 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
     """
     target = CAP_CONVERGENCE_FRACTION * tol
     rungs = []
-    cap = min(CAP_LADDER_START, memory_cap)
+    cap = min(_cap_ladder_start(), memory_cap)
     drift = None
     window = []
-    for _rung in range(CAP_LADDER_MAX_RUNGS):
+    for _rung in range(_cap_ladder_max_rungs()):
         value = quantity(cap)
         # Broadcast before any branch: `quantity` ends in Lanczos energies replicated only to
         # roundoff, and the comparison below decides whether the next collective solve happens.

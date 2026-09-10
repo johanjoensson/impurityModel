@@ -454,6 +454,46 @@ DC_DIAGNOSTICS = Knob(
 )
 
 
+# --- Double counting: the determinant-cap ladder ----------------------------------------------
+
+DC_CAP_LADDER_START = Knob(
+    name="DC_CAP_LADDER_START",
+    kind="int",
+    default=500,
+    minimum=1,
+    group="double-counting",
+    doc="""First rung of the determinant-cap ladder :func:`dc_search.calibrate_truncation_threshold`
+    climbs, doubling, until the criterion's answer stops moving (see ``DC_CAP_LADDER_MAX_RUNGS``).
+    Small enough that the first rungs are cheap relative to the production caps the ladder exists
+    to avoid, so a workload that settles quickly pays almost nothing for the calibration. Raising
+    it skips rungs known to be meaningless on a given workload -- SrMnO3 discards PT2 weight of
+    order 1 at caps of 500-2,000 -- but the saving is small and the ladder's *reach* is what
+    usually matters: a rung costs roughly linearly in its cap (measured ``cap**0.98``), so the
+    whole geometric ladder costs about twice its top rung whatever the first one is. It is not a
+    free change either -- it raises the smallest cap the ladder can *accept*, which moves the
+    answer on workloads that do settle early.""",
+)
+
+DC_CAP_LADDER_MAX_RUNGS = Knob(
+    name="DC_CAP_LADDER_MAX_RUNGS",
+    kind="int",
+    default=11,
+    minimum=1,
+    group="double-counting",
+    doc="""How many times the determinant-cap ladder doubles before giving up and reporting its
+    largest rung as truncation-limited rather than search-limited. The reachable ceiling is
+    ``DC_CAP_LADDER_START * 2**(N-1)`` -- 512,000 determinants at the defaults. The memory-derived
+    cap bounds the ladder as well and is usually far above that (1.35e8 on a 128-rank SrMnO3 run),
+    so on a workload whose answer has not settled it is *this* budget that binds: the pre-2026-09
+    default of 8 stopped the ladder at 64,000 with the answer still moving, and the record could
+    not distinguish that from a converged one. Cost, not memory, is what this trades -- the ladder
+    costs about twice its top rung, so each extra rung roughly doubles the whole search. Lower it
+    when a search has to fit inside a per-iteration time budget; raise it when the record's
+    ``dc_cap`` comes back *equal to the ceiling* with a ``dc_cap_drift`` that has not settled,
+    which is the signal that the answer is still truncation-limited.""",
+)
+
+
 # --- Self-energy: causality tolerance --------------------------------------------------------
 
 SIGMA_CAUSALITY_TOL = Knob(
@@ -508,6 +548,8 @@ KNOBS: dict[str, Knob] = _register(
     GF_RIXS_ADAPTIVE_TOL,
     GF_RIXS_ADAPTIVE_BATCH,
     GS_MAX_BLOCK_WIDTH,
+    DC_CAP_LADDER_START,
+    DC_CAP_LADDER_MAX_RUNGS,
     DC_DIAGNOSTICS,
     SIGMA_CAUSALITY_TOL,
 )
@@ -521,7 +563,7 @@ GROUP_TITLES = {
     "rixs-solvers": "RIXS shift-recycling solver tiers",
     "rixs-sampling": "RIXS incoming-energy sampling",
     "groundstate": "Ground-state block-Lanczos width",
-    "double-counting": "Double-counting search diagnostics",
+    "double-counting": "Double-counting search: the cap ladder and diagnostics",
     "sigma": "Self-energy causality tolerance",
 }
 

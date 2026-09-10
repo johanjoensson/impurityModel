@@ -10,12 +10,16 @@ to do with what a rung costs, so no eigensolver or MPI communicator is involved 
 
 import pytest
 
+from impurityModel.ed import config
 from impurityModel.ed.dc_search import (
     CAP_CONVERGENCE_FRACTION,
     CAP_CONVERGENCE_RUNS,
-    CAP_LADDER_START,
+    _cap_ladder_max_rungs,
+    _cap_ladder_start,
     calibrate_truncation_threshold,
 )
+
+CAP_LADDER_START = _cap_ladder_start()
 
 
 def _ladder(values):
@@ -168,3 +172,34 @@ def test_the_ladder_warns_unconditionally_when_it_does_not_settle(capsys):
     quantity, _seen = _ladder([float(i) for i in range(20)])
     calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=10**7, verbose=False, rank=0)
     assert "WARNING" in capsys.readouterr().out
+
+
+def test_the_ladder_bounds_are_environment_knobs_read_lazily(monkeypatch):
+    """Both ends of the ladder come from the environment, per read -- not captured at import.
+
+    The rung budget is what binds on a workload whose answer has not settled (the memory-derived
+    cap is typically orders of magnitude above the ladder's reach), so an operator has to be able
+    to move it for one run without editing the package: SrMnO3's production search stopped at
+    64,000 under the old hard-coded budget of 8 with a memory budget 2000x larger.
+    """
+    monkeypatch.setenv("DC_CAP_LADDER_START", "4000")
+    monkeypatch.setenv("DC_CAP_LADDER_MAX_RUNGS", "3")
+    assert (_cap_ladder_start(), _cap_ladder_max_rungs()) == (4000, 3)
+
+    quantity, seen = _ladder([float(i) for i in range(20)])
+    cap, _drift, rungs = calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=10**9)
+
+    assert seen == [4000, 8000, 16000], seen
+    assert cap == 16000 and len(rungs) == 3
+
+
+def test_the_default_ladder_reaches_past_the_64000_that_stopped_srmno3():
+    """The default ceiling is ``start * 2**(rungs - 1)`` and must clear the old one.
+
+    Not a restatement of the defaults: the *reason* the pre-2026-09 ladder returned an
+    unconverged SrMnO3 double counting is that its ceiling (500 * 2**7 = 64,000) sat below the
+    caps that workload needs, while its memory budget allowed 1.35e8. This pins that the shipped
+    ladder can now climb past that ceiling on its own.
+    """
+    ceiling = config.DC_CAP_LADDER_START.default * 2 ** (config.DC_CAP_LADDER_MAX_RUNGS.default - 1)
+    assert ceiling > 64_000

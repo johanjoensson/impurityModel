@@ -225,3 +225,84 @@ def test_no_cut_request_above_the_basis_size_is_clamped_not_an_error():
     e_ref, psi_refs = solver.get_eigenvectors(_h_op(), num_wanted=10 * len(basis), max_energy=None)
 
     assert len(e_ref) == len(psi_refs) == len(basis)
+
+
+def _uniform_refs(basis, value):
+    """A one-column warm block holding ``value`` on every determinant this rank owns.
+
+    Built from ``local_basis`` directly rather than through ``redistribute_psis``: the point is
+    to hand ``get_eigenvectors`` a block in a specific numerical state on every rank, and a
+    redistribute would sum replicas and change the value (see the note on ``_warm_refs``).
+    """
+    return [ManyBodyState({det: value for det in basis.local_basis}, width=1)]
+
+
+def test_a_non_finite_warm_block_falls_back_to_the_cold_start(monkeypatch, capsys):
+    """A corrupted warm block costs iterations, not the whole calculation.
+
+    The regression: a production SrMnO3 double-counting search died here outright --
+    ``block_normalize`` raised on the warm-started start block in the ``N-1`` sector's second
+    refinement cycle, nothing caught it, and ``fixed_gap_dc`` returned its input double counting
+    unchanged after 20 minutes. The cold full-support vector was available the whole time; it is
+    what the first cycle of every expansion already runs on.
+
+    Non-finite is the only way the *combined* block can fail, which is why this is the case that
+    has to recover -- see the companion test below.
+    """
+    basis, solver = _make_solver()
+    calls = []
+    monkeypatch.setitem(cipsi_module.SOLVERS, "irlm", _fake_lanczos(0, calls))
+
+    e_ref, psi_refs = solver.get_eigenvectors(
+        _h_op(),
+        num_wanted=1,
+        max_energy=CUT,
+        dense_cutoff=1,
+        solver="irlm",
+        psi_refs=_uniform_refs(basis, complex(np.nan, 0.0)),
+    )
+
+    # One solve, on the cold block alone -- the corrupted warm column is gone, not merely
+    # deflated, and no second retry was spent (the fallback already is the cold start).
+    assert len(calls) == 1
+    assert calls[0].shape[1] == 1
+    assert np.all(np.isfinite(calls[0]))
+    assert len(e_ref) == len(psi_refs) > 0
+
+    if not basis.is_distributed or basis.comm.rank == 0:
+        warning = capsys.readouterr().out
+        assert "did not orthonormalize" in warning
+        # The failure path's own measurement: which of tsqr's two codes fired, and on what.
+        assert "non-finite" in warning and "NaN/Inf" in warning
+        # Which column, not just that something failed: exactly the warm one is corrupted and
+        # none is empty -- the measurement that says where such a block came from.
+        assert "non-finite columns: 1" in warning
+        assert "all-zero columns: 0" in warning
+
+
+def test_a_zero_warm_block_needs_no_fallback_because_the_cold_column_carries_it(monkeypatch):
+    """Why non-finite is the *only* fatal case, pinned rather than left to reasoning.
+
+    The start block is always the warm columns **plus** the cold full-support vector, and that
+    column is nonzero whenever the basis is (``_amplitude_from_hash`` is a bounded ratio of
+    integers). So an all-zero warm block cannot drive the global maximum singular value to the
+    breakdown floor -- it deflates and the solve proceeds. Only NaN/Inf, which poisons the whole
+    factorization rather than one direction of it, can take the block down.
+    """
+    basis, solver = _make_solver()
+    calls = []
+    monkeypatch.setitem(cipsi_module.SOLVERS, "irlm", _fake_lanczos(0, calls))
+
+    e_ref, _psi_refs = solver.get_eigenvectors(
+        _h_op(),
+        num_wanted=1,
+        max_energy=CUT,
+        dense_cutoff=1,
+        solver="irlm",
+        psi_refs=_uniform_refs(basis, 0.0),
+    )
+
+    assert len(calls) == 1
+    # Deflated to the one direction the cold column spans, and never routed through the fallback.
+    assert calls[0].shape[1] == 1
+    assert len(e_ref) > 0

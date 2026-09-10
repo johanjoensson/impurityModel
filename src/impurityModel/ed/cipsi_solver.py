@@ -197,6 +197,67 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
     return [int(i) for i in order[:n_keep]], n_keep == len(e_sorted)
 
 
+def _describe_block_health(psi0, comm):
+    """Why a start block failed to orthonormalize: corrupted, or merely empty.
+
+    ``tsqr``'s two failure codes answer this at the level of the whole block (non-finite factor
+    vs numerically zero); this answers it *per column*, which is what says whether the warm
+    eigenvectors arrived corrupted or the basis underneath them is gone. Both numbers are global
+    -- a column is non-finite if any rank's slice of it is, and empty only if every rank's is --
+    so this is **collective on** ``comm`` and every rank must call it.
+
+    Only ever called on a failure path, so the full pass over the block costs nothing in a
+    healthy run.
+
+    The local measurement is wrapped because **the three reductions below must be reached by
+    every rank unconditionally**. This runs inside the recovery branch -- the least-exercised
+    path in ``get_eigenvectors`` -- on a block already known to be malformed, and on ranks whose
+    row partition may be empty. A rank that raised its way out of a diagnostic while the others
+    waited in its ``allreduce`` would turn a report about a deadlock-free failure into a deadlock
+    (the extracted-helper class CLAUDE.md's MPI rules name). A rank that cannot measure its own
+    slice contributes nothing to the OR and nothing to the row count, which is the right neutral
+    element for both, and the answer stays whatever the other ranks could see.
+    """
+    local_bad = np.zeros(len(psi0), np.int64)
+    local_nonzero = np.zeros(len(psi0), np.int64)
+    rows = np.int64(0)
+    try:
+        block = ManyBodyState.from_states(list(psi0))
+        amps = np.asarray(block) if len(block) else np.zeros((0, len(psi0)), dtype=complex)
+        rows = np.int64(len(block))
+        if amps.size:
+            # Per column, on this rank's rows: corrupted anywhere makes the column corrupted, so
+            # these combine with OR (MAX over 0/1); nonzero anywhere makes it non-empty, likewise.
+            local_bad = (~np.isfinite(amps)).any(axis=0).astype(np.int64)
+            local_nonzero = (amps != 0).any(axis=0).astype(np.int64)
+    except Exception:
+        pass
+    if comm is not None and comm.size > 1:
+        # Buffer-based `Allreduce`, NOT the lowercase object form, and that is load-bearing:
+        # mpi4py implements `comm.allreduce(obj, op)` as gather-to-root, apply `op` in PYTHON on
+        # the root, broadcast. With a numpy array operand, `MPI.MAX` reduces to a Python `max()`
+        # on arrays, which raises "truth value of an array is ambiguous" -- **on rank 0 only**,
+        # while every other rank sits in the following broadcast. Measured, not reasoned about:
+        # the `-n 2` gate hung here, py-spy showing rank 0 already in pytest teardown after a
+        # failed test and rank 1 still inside this function. A diagnostic that deadlocks the run
+        # it is diagnosing is worse than no diagnostic, and a *reduction* is the wrong place for
+        # Python semantics: these are fixed-shape int64 buffers, so the elementwise MPI op
+        # applies on every rank with no interpreter involved. Reduced into a destination buffer
+        # rather than `MPI.IN_PLACE`, per CLAUDE.md's MPI rules.
+        reduced = np.empty_like(local_bad)
+        comm.Allreduce(local_bad, reduced, op=MPI.MAX)
+        local_bad = reduced
+        reduced = np.empty_like(local_nonzero)
+        comm.Allreduce(local_nonzero, reduced, op=MPI.MAX)
+        local_nonzero = reduced
+        # A plain Python int: the object form is safe for a scalar, whose `op` is a real `max`.
+        rows = comm.allreduce(int(rows), op=MPI.SUM)
+    return (
+        f"non-finite columns: {int(local_bad.sum())}, all-zero columns: "
+        f"{int(len(psi0) - local_nonzero.sum())}, determinants: {int(rows)}"
+    )
+
+
 def _size_subspace(num_wanted, width, cap):
     """Krylov subspace depth for a ``num_wanted``-state request from a width-``width`` block.
 
@@ -951,6 +1012,53 @@ class CIPSISolver:
         if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
             print(f"After expansion, the basis contains {self.basis.size} elements.", flush=True)
 
+    def _normalize_start_block(self, psi0, cold_start_block, warm_started, slaterWeightMin):
+        """Orthonormalize the Lanczos start block, falling back to a cold start if it fails.
+
+        A warm block is *inherited* state -- the previous CIPSI cycle's converged eigenvectors --
+        so unlike the cold hash vector it can arrive unusable, and when it does the failure lands
+        here, one function away from anything that could have caused it. That killed a production
+        SrMnO3 double-counting search outright (rung 7 of the cap ladder, the ``N-1`` sector's
+        second refinement cycle, a 261-column warm block): ``block_normalize`` raised, nothing
+        caught it, and the whole search returned its unchanged input double counting after 20
+        minutes of work.
+
+        Nothing about that is unrecoverable. The cold full-support start vector is always
+        available, always finite (``_amplitude_from_hash`` is a bounded integer ratio), and spans
+        the whole basis -- it is what the *first* cycle of every expansion uses, and what the
+        exhaustion guard below already falls back to. Losing the warm columns costs Krylov
+        iterations, not correctness.
+
+        The retry is rank-symmetric, which is what makes it safe to wrap a collective:
+        ``block_tsqr`` returns the same rank code on every rank (TSQR's ``R`` is bitwise
+        identical), so ``block_normalize`` raises on all ranks or none, and every rank therefore
+        takes the same branch into the same second collective. A cold block that fails too is a
+        genuinely empty basis, and that re-raises.
+
+        The diagnostic is computed *only* on the failure path -- a full finiteness pass over the
+        block, which says whether the warm columns were corrupted (non-finite) or merely
+        degenerate, and is the measurement that pins where such a block came from. Free in the
+        normal case, and the one case where the cost does not matter is the one where it runs.
+        """
+        try:
+            psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
+            return psi0, warm_started
+        except ValueError as exc:
+            if not warm_started:
+                raise
+            # Collective (it allreduces over the row partition), so every rank calls it and
+            # only the printing is rank-gated -- the ordering CLAUDE.md's MPI rule requires.
+            health = _describe_block_health(psi0, self.basis.comm)
+            if self.basis.comm is None or self.basis.comm.rank == 0:
+                print(
+                    f"warning: the warm-started Lanczos block ({len(psi0)} columns) did not "
+                    f"orthonormalize ({exc}); {health}. Restarting this solve from the cold "
+                    "full-support vector instead -- slower to converge, same subspace reachable.",
+                    flush=True,
+                )
+            psi0, _ = block_normalize(cold_start_block(), self.basis.is_distributed, self.basis.comm, slaterWeightMin)
+            return psi0, False
+
     def get_eigenvectors(
         self,
         H,
@@ -1053,7 +1161,7 @@ class CIPSISolver:
             psi0 = warm_block + cold_start_block() if warm_started else cold_start_block()
 
             num_wanted = min(num_wanted + _EIGENSTATE_PAD, len(self.basis))
-            psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
+            psi0, warm_started = self._normalize_start_block(psi0, cold_start_block, warm_started, slaterWeightMin)
             max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), len(self.basis))
             _trace_note(
                 "size_subspace",
