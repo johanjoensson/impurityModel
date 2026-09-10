@@ -209,6 +209,14 @@ def _describe_block_health(psi0, comm):
     Only ever called on a failure path, so the full pass over the block costs nothing in a
     healthy run.
 
+    Both reductions are sized ``len(psi0)`` -- the number of *states* -- while the measurement
+    below reads ``amps.shape[1]``, the block's total *width*. Those agree, and the ``all-zero``
+    count is arithmetic on the same length, only because ``ManyBodyState.from_states`` rejects
+    anything but width-1 columns: a wider column would raise rather than silently widen the
+    block. That raise lands in the ``except`` below, which leaves the buffers at their
+    ``len(psi0)`` shape, so the length stays rank-invariant on every path through here -- which
+    is what the reductions require.
+
     The local measurement is wrapped because **the three reductions below must be reached by
     every rank unconditionally**. This runs inside the recovery branch -- the least-exercised
     path in ``get_eigenvectors`` -- on a block already known to be malformed, and on ranks whose
@@ -1058,11 +1066,20 @@ class CIPSISolver:
             # Collective (it allreduces over the row partition), so every rank calls it and
             # only the printing is rank-gated -- the ordering CLAUDE.md's MPI rule requires.
             health = _describe_block_health(psi0, self.basis.comm)
+            # `psi0` is the warm columns PLUS the appended cold vector, so the warm count is one
+            # less -- reporting `len(psi0)` overstated how many inherited columns were in play.
+            n_warm = len(psi0) - 1
+            # Free outside a `solver_trace.tracing()` block, so this costs nothing in a normal
+            # run -- and buys nothing there either: `tracing()` only opens under `DC_DIAGNOSTICS`
+            # (`dc_search._dc_diagnostics`). It is for the run that is already being investigated;
+            # the default-run signal is the rank-0 print below, which stays unconditional.
+            _trace_note("warm_block_fallback", warm_columns=int(n_warm), health=health)
             if self.basis.comm is None or self.basis.comm.rank == 0:
                 print(
-                    f"warning: the warm-started Lanczos block ({len(psi0)} columns) did not "
-                    f"orthonormalize ({exc}); {health}. Restarting this solve from the cold "
-                    "full-support vector instead -- slower to converge, same subspace reachable.",
+                    f"warning: the warm-started Lanczos block ({n_warm} warm columns plus the "
+                    f"cold vector) did not orthonormalize ({exc}); {health}. Restarting this "
+                    "solve from the cold full-support vector instead -- slower to converge, same "
+                    "subspace reachable.",
                     flush=True,
                 )
             psi0, _ = block_normalize(cold_start_block(), self.basis.is_distributed, self.basis.comm, slaterWeightMin)
