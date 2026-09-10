@@ -1424,7 +1424,7 @@ def test_fixed_occupation_dc_calibrates_and_records_the_cap_when_threshold_is_no
     def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm):
         calls.append((tol, memory_cap))
         value = quantity(memory_cap)  # a single rung, at the (stubbed) memory cap itself
-        return memory_cap, 0.0, [(memory_cap, value)]
+        return memory_cap, 0.0, [(memory_cap, value)], "settled"
 
     monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", fake_ladder)
     monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 50)
@@ -1466,7 +1466,7 @@ def test_fixed_gap_dc_calibrates_and_records_the_cap_when_threshold_is_none(monk
     def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm):
         calls.append((tol, memory_cap))
         value = quantity(memory_cap)
-        return memory_cap, 0.0, [(memory_cap, value)]
+        return memory_cap, 0.0, [(memory_cap, value)], "settled"
 
     monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", fake_ladder)
     monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 50)
@@ -1519,7 +1519,7 @@ def _run_gap_dc_with_a_fake_ladder(monkeypatch, accepted_cap, ladder_cap=700):
 
     def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm):
         value = quantity(ladder_cap)
-        return accepted_cap, 0.0, [(ladder_cap, value)]
+        return accepted_cap, 0.0, [(ladder_cap, value)], "settled"
 
     monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", fake_ladder)
     monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 10**6)

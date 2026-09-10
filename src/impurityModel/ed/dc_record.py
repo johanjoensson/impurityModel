@@ -89,8 +89,11 @@ _FIELDS = (
 #: nominal integer ``nominal_dc`` was handed. Same key, same units, incomparable provenance.
 #: ``manifold_states`` follows ``manifold_spread`` because a spread is unreadable without the
 #: number of states it is a spread over: zero across one state is silence, not agreement.
-#: ``dc_cap_parity`` follows ``dc_cap`` (the memory-derived cap the calibrated ladder gave up, so
-#: the record can say what a run without the ladder would have used); ``dc_cap_mu`` and
+#: ``dc_cap_parity`` and ``dc_cap_status`` follow ``dc_cap`` (the memory-derived cap the calibrated
+#: ladder gave up, so the record can say what a run without the ladder would have used; and which
+#: of the ladder's three exits produced the cap, which neither the cap nor the drift determines --
+#: a ladder that gave up on its last rung and one that converged on it report the same two
+#: numbers); ``dc_cap_mu`` and
 #: ``dc_cap_retried`` follow ``dc_cap_check`` (where in ``mu`` the cap was re-checked, and whether
 #: that check failed and forced a retry) -- not yet written by any caller (:mod:`dc_search`'s
 #: cap ladder has no cache-reuse/retry mechanism wired in yet), but part of the same annotation
@@ -101,6 +104,7 @@ _ANNOTATIONS = frozenset(
         "n_ref_kind",
         "manifold_states",
         "dc_cap_parity",
+        "dc_cap_status",
         "dc_cap_mu",
         "dc_cap_retried",
     }
@@ -251,9 +255,20 @@ def _annotate(record, key, text):
         retried = (
             "; RAISED after the check at the answer failed, and not re-checked" if record.get("dc_cap_retried") else ""
         )
+        # Which exit produced the cap. "calibrated against tol" is a claim only the settled exit
+        # earns: the other two stopped for a reason that has nothing to do with the answer having
+        # converged, and reporting them the same way is what let a ceiling-limited SrMnO3 cap read
+        # as a converged one. `None` on a record written before this field existed, or by hand.
+        how = {
+            "settled": "calibrated against tol",
+            "rung_budget": "NOT converged -- the ladder ran out of rungs (raise DC_CAP_LADDER_MAX_RUNGS); "
+            "the dc is truncation-limited here, not search-limited",
+            "memory_cap": "NOT converged -- the ladder reached the memory ceiling; the dc is "
+            "truncation-limited here and no rung budget can lift it",
+        }.get(record.get("dc_cap_status"), "calibrated against tol")
         if parity is None:
-            return f"{text}{'   (' + retried.lstrip('; ') + ')' if retried else ''}"
-        return f"{text}   (calibrated against tol; the memory budget allowed {parity}{retried})"
+            return f"{text}   ({how}{retried})"
+        return f"{text}   ({how}; the memory budget allowed {parity}{retried})"
     if key == "dc_cap_check":
         # The cap ladder certifies at mu = 0, i.e. at the *guess*; the cap is consumed at the mu
         # the search returns. This is the one number that speaks to the cap's adequacy THERE:

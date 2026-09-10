@@ -188,12 +188,18 @@ def _calibrate_cap(ctx, evaluate_at_guess, clear_caches, tol, dc_rec, *, verbose
         cached_cap = cap
         return evaluate_at_guess()
 
-    cap, cap_drift, _rungs = calibrate_truncation_threshold(
+    cap, cap_drift, _rungs, cap_status = calibrate_truncation_threshold(
         quantity, tol, memory_cap=ctx.memory_cap, verbose=verbose, rank=rank, comm=MPI.COMM_WORLD
     )
     ctx.truncation_threshold = cap
     dc_rec["dc_cap"], dc_rec["dc_cap_drift"] = cap, cap_drift
     dc_rec["dc_cap_parity"] = ctx.memory_cap
+    # Which of the ladder's three exits produced `cap`. Taken from the ladder rather than
+    # re-derived from `cap_drift` against `tol` here: a ladder that gave up on its last rung and
+    # one that converged on it return the same cap and the same drift, so without this the record
+    # cannot distinguish a converged answer from a truncation-limited one -- which is exactly what
+    # `DC_CAP_LADDER_MAX_RUNGS`'s own documentation asks a reader to act on.
+    dc_rec["dc_cap_status"] = cap_status
     return cap, cached_cap
 
 

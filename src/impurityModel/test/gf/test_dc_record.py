@@ -349,3 +349,43 @@ def test_the_record_prints_on_rank_zero_of_the_communicator_it_was_given(capsys)
     assert capsys.readouterr().out == ""
     dc_record.emit(record, rank=0)
     assert "criterion   = fll" in capsys.readouterr().out
+
+
+def _cap_line(record):
+    """The record's ``dc_cap`` line, with its annotation."""
+    # ``dc_cap_drift`` is its own printed field, so match the key, not a substring of the line.
+    (line,) = [ln for ln in dc_record.format_record({"criterion": "gap", **record}) if ln.split()[:1] == ["dc_cap"]]
+    return line
+
+
+def test_the_record_distinguishes_a_converged_cap_from_a_ceiling_limited_one():
+    """A cap the ladder settled on and a cap it merely stopped at must not read the same.
+
+    They carry identical ``dc_cap``/``dc_cap_drift``/``dc_cap_parity``, so before ``dc_cap_status``
+    a run that converged at 512,000 determinants and one that ran out of rungs there produced the
+    same record -- while ``DC_CAP_LADDER_MAX_RUNGS``'s own documentation asks an operator to act on
+    exactly that difference.
+    """
+    common = {"dc_cap": 512_000, "dc_cap_drift": 6.4e-5, "dc_cap_parity": 1.35e8}
+    settled = _cap_line({**common, "dc_cap_status": "settled"})
+    exhausted = _cap_line({**common, "dc_cap_status": "rung_budget"})
+
+    assert "calibrated against tol" in settled and "NOT converged" not in settled
+    assert "NOT converged" in exhausted and "DC_CAP_LADDER_MAX_RUNGS" in exhausted
+    assert settled != exhausted
+
+
+def test_the_memory_ceiling_is_not_reported_as_a_rung_shortage():
+    """The two unsettled exits call for opposite responses, so they must not share a message.
+
+    ``rung_budget`` has memory left and only needs a larger rung budget; ``memory_cap`` is already
+    at the largest cap the run can afford, and raising the budget would do nothing.
+    """
+    line = _cap_line({"dc_cap": 512_000, "dc_cap_status": "memory_cap", "dc_cap_parity": 512_000})
+    assert "memory ceiling" in line
+    assert "DC_CAP_LADDER_MAX_RUNGS" not in line
+
+
+def test_a_record_without_a_status_still_reads_as_before():
+    """Records written by hand (as these tests do) and by any pre-``dc_cap_status`` caller."""
+    assert "calibrated against tol" in _cap_line({"dc_cap": 8000, "dc_cap_parity": 10**6})

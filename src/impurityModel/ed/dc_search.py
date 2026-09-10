@@ -231,7 +231,7 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
 
     Returns
     -------
-    (cap, drift, rungs) : tuple
+    (cap, drift, rungs, status) : tuple
         The accepted cap, the ``drift`` -- the SPAN (``max - min``) of ``quantity`` over the
         trailing window of up to ``CAP_CONVERGENCE_RUNS + 1`` rungs, ``None`` when that window
         holds fewer than two values -- and the list of ``(cap, value)`` pairs evaluated. Note
@@ -258,8 +258,18 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
         fact -- only the single span ``drift`` reports. Anything that wants to argue "the drift
         is or is not shrinking with cap" needs this list plumbed through first, or its own
         ladder run.
+
+        ``status`` names *which* of the three exits produced ``cap`` -- ``"settled"``,
+        ``"memory_cap"`` or ``"rung_budget"``. Returned rather than left to the caller because
+        ``cap`` and ``drift`` do not determine it: a ladder that gave up at its last rung and one
+        that converged on it return the same two numbers, and before this the record could not
+        tell a converged 512,000 from a ceiling-limited one. Reconstructing it downstream would
+        mean re-evaluating ``drift <= CAP_CONVERGENCE_FRACTION * tol`` in a second place, which is
+        the duplicated-acceptance-test shape :func:`dc_criteria._mu_tol_effective`'s docstring
+        records as having produced a real bug in both of its copies.
     """
     target = CAP_CONVERGENCE_FRACTION * tol
+    limit = "rung_budget"
     rungs = []
     cap = min(_cap_ladder_start(), memory_cap)
     drift = None
@@ -294,8 +304,13 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
                     f"memory budget would have allowed {memory_cap}.",
                     flush=True,
                 )
-            return cap, drift, rungs
+            return cap, drift, rungs, "settled"
         if cap >= memory_cap:
+            # The memory ceiling, not the rung budget, is what stopped this ladder. Recorded
+            # apart from `rung_budget` because the two call for opposite responses: this one is
+            # already at the largest cap the run can afford, while the other has budget left and
+            # only needs `DC_CAP_LADDER_MAX_RUNGS` raised.
+            limit = "memory_cap"
             break
         cap = min(2 * cap, memory_cap)
     # The LAST EVALUATED rung, never a further-doubled `cap` -- the loop doubles at the end of
@@ -312,7 +327,7 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
             "and a cap ladder (test/support/dc_diagnostics.py) is the only honest error bar.",
             flush=True,
         )
-    return settled, drift, rungs
+    return settled, drift, rungs, limit
 
 
 def _report_unattainable_target(mu, g, step, target, width_tol):

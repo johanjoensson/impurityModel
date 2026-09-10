@@ -59,7 +59,7 @@ def _ladder(values):
 def test_the_cap_ladder_doubles_and_stops_when_the_window_stops_moving():
     # The last three values span 0, so the ladder stops at the rung that completed that window.
     quantity, seen = _ladder([0.0, 1.0, 2.0, 2.0, 2.0])
-    cap, drift, rungs = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6)
+    cap, drift, rungs, _status = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6)
 
     assert seen == [CAP_LADDER_START * 2**i for i in range(5)], seen
     # The accepted cap is the last one *evaluated*, not one the ladder merely reasoned about.
@@ -80,7 +80,7 @@ def test_the_returned_cap_was_actually_evaluated():
     # Never settles, and never reaches the memory ceiling: the max-rungs exit, which is the one
     # test_the_ladder_never_proposes_a_cap_the_machine_could_not_run cannot reach.
     quantity, _seen = _ladder([float(i) for i in range(20)])
-    cap, _drift, rungs = calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=10**7)
+    cap, _drift, rungs, _status = calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=10**7)
 
     assert cap in dict(rungs), f"returned an unevaluated cap {cap}; measured {[c for c, _ in rungs]}"
     assert cap == rungs[-1][0]
@@ -97,7 +97,7 @@ def test_a_staircase_within_the_pairwise_gate_does_not_stop_the_ladder():
     tol = 1.0
     step = CAP_CONVERGENCE_FRACTION * tol
     quantity, seen = _ladder([i * step for i in range(20)])
-    _cap, drift, rungs = calibrate_truncation_threshold(quantity, tol=tol, memory_cap=10**7)
+    _cap, drift, rungs, _status = calibrate_truncation_threshold(quantity, tol=tol, memory_cap=10**7)
 
     assert len(seen) > 3, "accepted a staircase whose every step sits exactly on the gate"
     assert drift > CAP_CONVERGENCE_FRACTION * tol
@@ -113,7 +113,7 @@ def test_a_single_agreeing_pair_does_not_stop_the_ladder():
     5.9e-3 in mu from the cap-8000 answer -- 70% of the whole acceptance band, spent on noise.
     """
     quantity, seen = _ladder([-1.55, -1.33, -0.04, 0.43, 0.43, 0.43])
-    cap, _drift, _rungs = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6)
+    cap, _drift, _rungs, _status = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6)
 
     # 0.25 * tol = 0.25: the -1.55 -> -1.33 step (0.22) agrees, -1.33 -> -0.04 (1.29) does not.
     assert len(seen) > 2, "stopped on the first agreeing pair"
@@ -122,7 +122,7 @@ def test_a_single_agreeing_pair_does_not_stop_the_ladder():
 
 def test_the_ladder_never_proposes_a_cap_the_machine_could_not_run():
     quantity, seen = _ladder([0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0])
-    cap, _drift, _rungs = calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=1200)
+    cap, _drift, _rungs, _status = calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=1200)
 
     assert max(seen) <= 1200 and cap <= 1200
 
@@ -137,7 +137,7 @@ def test_an_undefined_rung_between_two_agreements_breaks_the_run():
     sectors, which is exactly what the ladder's small first rungs can do.
     """
     quantity, seen = _ladder([1.0, 1.0, None, 1.0, 1.0])
-    cap, _drift, rungs = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6)
+    cap, _drift, rungs, _status = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6)
 
     # The window is cleared by the None, so the two rungs after it are not enough on their own.
     assert len(seen) >= 5, seen
@@ -150,7 +150,7 @@ def test_an_undefined_rung_does_not_count_as_agreement():
     Treating it as a value would let two undefined rungs certify convergence on nothing.
     """
     quantity, seen = _ladder([None, None, 1.0, 1.0, 1.0])
-    cap, _drift, _rungs = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6)
+    cap, _drift, _rungs, _status = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**6)
 
     assert len(seen) >= 5, seen
     assert cap is not None
@@ -170,7 +170,7 @@ def test_an_undefined_rung_resets_drift_along_with_the_window():
     # memory_cap chosen so the ladder's 4th rung (cap 500*2**3 = 4000) hits the ceiling and
     # breaks right there -- before the None's reset window could refill and settle "for real".
     quantity, _seen = _ladder([1.0, 1.0, None, 5.0])
-    _cap, drift, rungs = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=4000)
+    _cap, drift, rungs, _status = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=4000)
 
     assert len(rungs) == 4
     # Only rung 4 (value 5.0) survives the None's reset -- a window of one value has no span.
@@ -210,7 +210,7 @@ def test_the_ladder_bounds_are_environment_knobs_read_lazily(monkeypatch):
     assert (_cap_ladder_start(), _cap_ladder_max_rungs()) == (4000, 3)
 
     quantity, seen = _ladder([float(i) for i in range(20)])
-    cap, _drift, rungs = calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=10**9)
+    cap, _drift, rungs, _status = calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=10**9)
 
     assert seen == [4000, 8000, 16000], seen
     assert cap == 16000 and len(rungs) == 3
@@ -226,3 +226,28 @@ def test_the_default_ladder_reaches_past_the_64000_that_stopped_srmno3():
     """
     ceiling = config.DC_CAP_LADDER_START.default * 2 ** (config.DC_CAP_LADDER_MAX_RUNGS.default - 1)
     assert ceiling > 64_000
+
+
+def test_the_ladder_names_which_of_its_three_exits_produced_the_cap():
+    """``status``, because ``cap`` and ``drift`` do not determine it.
+
+    A ladder that settled on its last rung and one that merely stopped there return the same cap
+    and the same drift, so a caller cannot tell them apart after the fact -- and re-deriving the
+    acceptance test downstream would put a second copy of it in the tree. All three exits are
+    driven here from the same synthetic ladder, varying only what stops it.
+    """
+    # Settles: a constant sequence clears the span gate as soon as the window is full.
+    quantity, _seen = _ladder([1.0] * 10)
+    _cap, _drift, _rungs, status = calibrate_truncation_threshold(quantity, tol=1.0, memory_cap=10**7)
+    assert status == "settled"
+
+    # Never settles, and the memory ceiling is far away: the rung budget is what binds.
+    quantity, _seen = _ladder([float(i) for i in range(30)])
+    _cap, _drift, _rungs, status = calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=10**9)
+    assert status == "rung_budget"
+
+    # Never settles, and the memory cap bites first -- a distinct answer, because no rung budget
+    # can lift it.
+    quantity, _seen = _ladder([float(i) for i in range(30)])
+    _cap, _drift, _rungs, status = calibrate_truncation_threshold(quantity, tol=1e-9, memory_cap=1200)
+    assert status == "memory_cap"
