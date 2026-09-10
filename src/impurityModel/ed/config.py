@@ -486,11 +486,17 @@ DC_CAP_LADDER_MAX_RUNGS = Knob(
     cap bounds the ladder as well and is usually far above that (1.35e8 on a 128-rank SrMnO3 run),
     so on a workload whose answer has not settled it is *this* budget that binds: the pre-2026-09
     default of 8 stopped the ladder at 64,000 with the answer still moving, and the record could
-    not distinguish that from a converged one. Cost, not memory, is what this trades -- the ladder
-    costs about twice its top rung, so each extra rung roughly doubles the whole search. Lower it
-    when a search has to fit inside a per-iteration time budget; raise it when the record's
-    ``dc_cap`` comes back *equal to the ceiling* with a ``dc_cap_drift`` that has not settled,
-    which is the signal that the answer is still truncation-limited.""",
+    not distinguish that from a converged one. Cost is what this trades, and not only the
+    calibration's: ``dc_criteria._calibrate_cap`` applies the accepted cap to
+    ``ctx.truncation_threshold``, so it is the operating cap of every subsequent trial-``mu`` too.
+    A rung costs roughly linearly in its cap (measured ``cap**0.98``), so raising the ceiling from
+    64,000 to 512,000 is ~7.7x on the dominant cost of a search whose answer never settles --
+    which is why this is a knob and not just a bigger constant. Lower it when a search has to fit
+    inside a per-iteration time budget; raise it when the record's ``dc_cap_status`` comes back
+    ``rung_budget``, which is the ladder saying in as many words that it stopped because it ran
+    out of doublings and the answer is still truncation-limited. (``memory_cap`` there means the
+    opposite: the run is already at the largest cap it can afford and no rung budget will lift
+    it.)""",
 )
 
 
