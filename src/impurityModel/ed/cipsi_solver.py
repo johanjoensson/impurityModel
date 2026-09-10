@@ -9,7 +9,7 @@ from impurityModel.ed.basis_transcription import (
     build_sparse_matrix,
     build_state,
 )
-from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
+from impurityModel.ed.BlockLanczosArray import BlockBreakdown, Reort, block_normalize
 from impurityModel.ed import config
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
@@ -1031,9 +1031,18 @@ class CIPSISolver:
 
         The retry is rank-symmetric, which is what makes it safe to wrap a collective:
         ``block_tsqr`` returns the same rank code on every rank (TSQR's ``R`` is bitwise
-        identical), so ``block_normalize`` raises on all ranks or none, and every rank therefore
-        takes the same branch into the same second collective. A cold block that fails too is a
-        genuinely empty basis, and that re-raises.
+        identical), so ``block_normalize`` raises :class:`BlockBreakdown` on all ranks or none,
+        and every rank therefore takes the same branch into the same second collective. A cold
+        block that fails too is a genuinely empty basis, and that re-raises.
+
+        That argument is why the ``except`` names :class:`BlockBreakdown` and not ``ValueError``.
+        It is narrower on purpose: ``block_normalize`` also raises *before* reaching the
+        collective -- ``ManyBodyState.from_states`` rejects a width-0 block, which is a
+        **rank-local** condition (a rank owning no determinants builds the polymorphic zero while
+        its peers do not; see ``cold_start_block``'s own ``width=1`` note below). Recovering from
+        that one would send this rank into ``_describe_block_health``'s ``Allreduce``s and a
+        second ``block_normalize`` while every other rank was still inside the first, which is a
+        deadlock rather than a recovery.
 
         The diagnostic is computed *only* on the failure path -- a full finiteness pass over the
         block, which says whether the warm columns were corrupted (non-finite) or merely
@@ -1043,7 +1052,7 @@ class CIPSISolver:
         try:
             psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
             return psi0, warm_started
-        except ValueError as exc:
+        except BlockBreakdown as exc:
             if not warm_started:
                 raise
             # Collective (it allreduces over the row partition), so every rank calls it and

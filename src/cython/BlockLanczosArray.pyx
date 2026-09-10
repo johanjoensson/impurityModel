@@ -116,6 +116,7 @@ from impurityModel.ed.BlockLanczosCore import (  # noqa: F401
     block_combine,
     block_orthogonalize,
     block_normalize,
+    BlockBreakdown,
     block_tsqr,
     selective_orthogonalize,
     apply_reort,

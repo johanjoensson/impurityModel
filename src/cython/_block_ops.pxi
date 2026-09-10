@@ -31,8 +31,24 @@ cpdef object block_cols(object Q):
     matching ``len(dict)``), not its column count -- silently wrong for "how many Krylov
     columns", not a raise. Called from the restart layer's per-restart bookkeeping (not the
     per-step hot path), so it stays a plain dispatch rather than something perf-sensitive.
+
+    ``is_array`` accepts a ``list[np.ndarray]`` as well as a bare array, and that case has no
+    ``.shape`` -- a bare ``Q.shape[1]`` raised ``AttributeError`` on it rather than counting.
+    It reached nothing while every caller passed an array, then became reachable from
+    ``_block_normalize_failure``, where an ``AttributeError`` *from inside the error
+    formatter* replaced the ``ValueError`` the caller was meant to see. Counted the way the
+    rest of the module consumes that representation (``block_inner``/``block_tsqr``'s
+    ``np.column_stack``): one column per 1-D entry, ``shape[1]`` per 2-D one -- without
+    allocating the stacked copy just to read its width.
     """
+    cdef Py_ssize_t cols = 0
     if is_array(Q):
+        if isinstance(Q, list):
+            # An explicit loop, not a generator expression: a closure inside a cpdef function
+            # is a Cython compile error.
+            for a in Q:
+                cols += 1 if a.ndim == 1 else a.shape[1]
+            return cols
         return Q.shape[1]
     if isinstance(Q, ManyBodyState):
         return Q.width
@@ -212,6 +228,26 @@ cpdef tuple block_orthogonalize(object wp, object Q, object overlaps=None, bint 
         # is converted to a block at the entry point before reaching this dispatcher.
         raise TypeError(f"block_orthogonalize: unsupported wp type {type(wp)!r}")
 
+
+class BlockBreakdown(ValueError):
+    """The rank code came back non-positive: ``block_normalize`` could not orthonormalize.
+
+    A distinct type because the callers that *recover* from a breakdown (``irlm``'s three
+    lock/restart sites, ``cipsi_solver._normalize_start_block``'s cold-start fallback) all sit
+    around a **collective** call, and their recovery is only MPI-safe because this particular
+    failure is rank-symmetric: it is decided by ``block_tsqr``'s ``k``, which TSQR replicates
+    bitwise. A bare ``except ValueError`` there was wider than that argument. ``block_normalize``
+    also raises before ever reaching the collective -- ``ManyBodyState.from_states`` rejects a
+    width-0 block, and *that* is a rank-local condition (a rank whose local support is empty
+    builds the polymorphic zero while its peers do not). Caught, it would send one rank into the
+    recovery's own collectives while the others were still inside the first one: an asymmetric
+    deadlock, the class CLAUDE.md's MPI rules name.
+
+    Subclasses ``ValueError`` so any handler that predates it keeps working; the point is that
+    handlers wrapping a collective can now name the narrower type.
+    """
+
+
 cpdef tuple block_normalize(object wp, bint mpi=False, object comm=None, double slaterWeightMin=0.0):
     """Orthonormalize a block, in whatever representation it comes.
 
@@ -227,7 +263,7 @@ cpdef tuple block_normalize(object wp, bint mpi=False, object comm=None, double 
     else:
         q_next, beta_j, active_k, sv = block_tsqr(wp, mpi, comm, 1.0, slaterWeightMin)
     if active_k <= 0:
-        raise ValueError(_block_normalize_failure(wp, active_k, sv))
+        raise BlockBreakdown(_block_normalize_failure(wp, active_k, sv))
     return q_next, beta_j
 
 

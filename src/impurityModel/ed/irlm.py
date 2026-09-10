@@ -22,6 +22,7 @@ from impurityModel.ed.BlockLanczosCore import (
     DEFAULT_EIGEN_TOL,
     DEFLATE_EVAL_TOL,
     REORT_TOL,
+    BlockBreakdown,
     Reort,
     block_combine,
     block_inner,
@@ -274,7 +275,7 @@ class LockedSet:
                 continue
             try:
                 col, _ = block_normalize(col, self.mpi, self.comm, self.slater)
-            except ValueError:
+            except BlockBreakdown:
                 # Belt and braces: block_normalize's own breakdown test (1e-12 absolute, since a
                 # unit-norm column wants scale=1) is looser than the guard above, so this is
                 # reached only on an exactly-zero column. It reduces M with a collective
@@ -620,7 +621,7 @@ def _irlm_core(
             v0 = locked.orth_against(copy_block(psi0))
             try:
                 v0, _ = block_normalize(v0, mpi, comm, slater)
-            except ValueError:
+            except BlockBreakdown:
                 # The start block, projected orthogonal to the locked Ritz vectors, has
                 # collapsed: psi0's Krylov space lies entirely within the already-locked
                 # subspace, so no further wanted pairs are reachable. Collective-safe break.
@@ -835,7 +836,7 @@ def _assemble_results(
                 break
             try:
                 col, _ = block_normalize(col, mpi, comm, slater)
-            except ValueError:
+            except BlockBreakdown:
                 continue
             eigvals_list.append(float(evals[k].real))
             eigvecs_cols.append(col)
