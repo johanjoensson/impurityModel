@@ -19,7 +19,30 @@ from impurityModel.ed.dc_search import (
     calibrate_truncation_threshold,
 )
 
-CAP_LADDER_START = _cap_ladder_start()
+#: The ladder's shipped first rung. Read from the knob's ``default``, never from
+#: ``_cap_ladder_start()``: that reads the environment, and the whole point of the fixture below
+#: is that these tests describe the *shipped* ladder rather than whatever the shell exports.
+CAP_LADDER_START = config.DC_CAP_LADDER_START.default
+
+
+@pytest.fixture(autouse=True)
+def _shipped_ladder_bounds(monkeypatch):
+    """Run every test in this module against the declared defaults, not the ambient environment.
+
+    Both ends of the ladder became environment knobs (:data:`config.DC_CAP_LADDER_START` /
+    ``DC_CAP_LADDER_MAX_RUNGS``), read lazily on every call -- which is what an operator wants,
+    and which silently made this module's expectations follow the shell. Exporting the very knob
+    these tests cover broke 7 of them: ``DC_CAP_LADDER_MAX_RUNGS=3`` cuts the ladder short, so
+    every test asserting on a rung sequence longer than three fails for a reason that has nothing
+    to do with the stopping rule under test.
+
+    Cleared rather than pinned to a literal, so the defaults stay declared in exactly one place
+    (:mod:`impurityModel.ed.config`) and a deliberate change to them shows up here as a test
+    failure rather than being masked by a second copy. The one test that *is* about the knobs
+    sets them itself, and ``monkeypatch`` layers over this fixture's own removal.
+    """
+    monkeypatch.delenv("DC_CAP_LADDER_START", raising=False)
+    monkeypatch.delenv("DC_CAP_LADDER_MAX_RUNGS", raising=False)
 
 
 def _ladder(values):
