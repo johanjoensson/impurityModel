@@ -103,7 +103,9 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
             # Bit-identity caveat: each destination rank's `Reduce` is a separate collective, so
             # MPI does not guarantee its summation order matches another root's -- unlike the
             # single shared `Allreduce` this replaced, which handed every rank the same bytes by
-            # construction. Downstream code (cipsi_solver.get_eigenvectors's energy cut) assumes
+            # construction. (The graph exchange below sums in ascending source order instead, which
+            # is deterministic but differs from the Reduce tree in the last bits -- the two modes
+            # are not bit-identical to each other.) Downstream code (cipsi_solver.get_eigenvectors's energy cut) assumes
             # `e_ref` is bit-identical across ranks; verified unaffected by the `e_ref.tobytes()`
             # allgather probe (zero divergence, `-n 2`/`-n 3`, `IMPURITYMODEL_BUILD=safe`) because
             # each row range is summed by a fixed, deterministic set of per-rank partial products
@@ -124,6 +126,32 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
             # never touched `H.dtype` at all).
             result_dtype = np.result_type(getattr(H, "dtype", V_arr.dtype), V_arr.dtype)
             result = np.empty((local_N, w), dtype=result_dtype, order='C')
+            # GS_MATVEC_EXCHANGE=graph (the default): send only the structurally nonzero row
+            # blocks, over one Neighbor_alltoallv per column round on the cached dist-graph, and
+            # sum in fixed source order (mpi_comm.MatvecExchangePlan). The wire format is
+            # complex128, so a real-valued product (no production caller) keeps the Reduce loop
+            # rather than being upcast; `result_dtype` is replicated, so the branch is rank-invariant.
+            # `H.format` rather than `isspmatrix_csr`: build_sparse_matrix returns the sparse-*array*
+            # API, which the spmatrix predicate does not recognise.
+            if matvec_exchange_mode() == "graph" and np.dtype(result_dtype) == np.complex128:
+                if sps.issparse(H) and H.format == "csr":
+                    dest_flags = dest_flags_from_csr_indptr(np.asarray(H.indptr, dtype=np.int64), counts, offsets)
+                else:
+                    dest_flags = dest_flags_all(counts)
+                plan = MatvecExchangePlan(comm, counts, offsets, dest_flags, w, config.GS_MATVEC_EXCHANGE_BYTES.get())
+                _trace_note("matvec_exchange", site="block_apply", **plan.describe())
+                own_lo = offsets[rank]
+                for c0, c1 in plan.column_rounds(w):
+                    wc = c1 - c0
+                    V_cols = V_arr[:, c0:c1]
+                    for i, dest in enumerate(plan.destinations):
+                        row_lo = offsets[dest]
+                        plan.send_slot(i, wc)[...] = H[row_lo:row_lo + counts[dest], :] @ V_cols
+                    plan.self_slot(wc)[...] = H[own_lo:own_lo + local_N, :] @ V_cols
+                    plan.exchange(wc)
+                    plan.accumulate(result[:, c0:c1], wc)
+                return result
+            # GS_MATVEC_EXCHANGE=reduce: one full-communicator Reduce per destination rank.
             for dest in range(size):
                 row_lo = offsets[dest]
                 row_hi = row_lo + counts[dest]

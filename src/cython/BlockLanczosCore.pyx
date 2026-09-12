@@ -43,6 +43,14 @@ class Reort(Enum):
 # applies them; a second literal here would be a second source of truth. ``DEFLATE_TOL``
 # itself is only read by callers, who import it straight from ``TSQR`` (cython-lint has no
 # noqa escape for a pure re-export).
+from impurityModel.ed import config
+from impurityModel.ed.mpi_comm import (
+    MatvecExchangePlan,
+    dest_flags_all,
+    dest_flags_from_csr_indptr,
+    matvec_exchange_mode,
+)
+from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.TSQR import (
     EPS,
     DEFLATE_EVAL_TOL,

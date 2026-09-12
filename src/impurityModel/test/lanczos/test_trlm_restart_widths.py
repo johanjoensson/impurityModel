@@ -240,7 +240,11 @@ def test_manybodystate_trlm_survives_a_rank_deficient_retained_ritz_block():
 
 @pytest.mark.mpi
 @pytest.mark.skipif(not _has_mpi, reason="mpi4py not available")
-def test_trlm_rank_deficient_restart_is_collective():
+@pytest.mark.parametrize("exchange", ["graph", "reduce"])
+def test_trlm_rank_deficient_restart_is_collective(exchange, monkeypatch):
+    # Both spellings of block_apply's reduce-scatter (GS_MATVEC_EXCHANGE) must keep the
+    # restart collective; they differ only in summation order.
+    monkeypatch.setenv("GS_MATVEC_EXCHANGE", exchange)
     """Every rank must take the same branch, or the extra collectives deadlock.
 
     ``k_ret`` and ``orth_err`` are read off an Allreduced Gram matrix, so the decision is
