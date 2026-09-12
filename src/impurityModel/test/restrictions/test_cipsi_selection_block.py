@@ -19,7 +19,9 @@ is which entries the cutoff test zeros, and a boundary mismatch there is exactly
 once flipped a candidate across ``de2_min`` and changed a produced basis by 5%). Test amplitudes
 are chosen well clear of every cutoff tested, so no case here is a coin flip on a cutoff-boundary
 rounding artifact -- see ``test_cutoff_lands_between_two_real_magnitudes`` for the check that this
-premise holds.
+premise holds, and for the one class of entry that is compiler-dependent: the exact cancellations
+(two opposite-sign Fermi paths onto one determinant), which gcc and clang leave as ``0.0`` and
+icpx leaves as the rounding error of one product (``CANCELLATION_RESIDUE`` below).
 """
 
 import itertools
@@ -27,6 +29,10 @@ import itertools
 import numpy as np
 import pytest
 from mpi4py import MPI
+
+from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 
 @pytest.fixture(autouse=True)
@@ -38,9 +44,6 @@ def _one_shot_apply(monkeypatch):
     it runs on the unchunked path."""
     monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", "1")
 
-from impurityModel.ed.cipsi_solver import CIPSISolver
-from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 IMPURITY_ORBITALS = {0: [[0, 1]]}
 BATH_STATES = ({0: [[2, 3]]}, {0: [[4, 5]]})
@@ -49,6 +52,17 @@ N_ELECTRONS = 3
 # Hopping magnitude chosen so the couplings this Hamiltonian actually produces sit far from
 # every cutoff tested below (see test_cutoff_lands_between_two_real_magnitudes).
 _HOP = 0.15 + 0.05j
+# Two entries of the reference block are exact cancellations: the column with support on both
+# determinants of a hopping pair reaches the same target determinant along two Fermi paths with
+# equal amplitude and opposite sign. Whether that sums to exactly 0.0 depends on the compiler:
+# gcc and clang evaluate both `dst += coeff * amp` the same way and cancel exactly, while icpx
+# reassociates the complex multiply-accumulate (its default -fp-model=fast, and the release
+# build's own -fassociative-math licenses it) and leaves one rounding error behind -- measured
+# 2^-56 with icpx 2026.1 here and 1.3e-17 on the CI runner, unchanged by -ffp-contract=off, and
+# exactly 0.0 under -fp-model=precise. Both are the same "zero" for every comparison in this
+# file: the two paths under test consume one and the same block, and no cutoff tested sits
+# within 1e-9 of either value.
+CANCELLATION_RESIDUE = 1e-15
 
 
 def _det(occupied):
@@ -101,10 +115,13 @@ def test_cutoff_lands_between_two_real_magnitudes():
     raw = H.apply_block(ManyBodyState.from_states(_psi_ref_block(basis_dets)), 0.0)
     mags = np.sort(np.unique(np.abs(np.asarray(raw))))
     mags = mags[mags > 0]
-    assert mags[0] > 1e-3, "premise: the smallest nonzero coupling is well clear of cutoff=0.0"
+    # Nonzero magnitudes split into the exact-cancellation residues an FMA-contracting compiler
+    # leaves behind (see CANCELLATION_RESIDUE) and the couplings the Hamiltonian actually produces.
+    couplings = mags[mags >= CANCELLATION_RESIDUE]
+    assert couplings[0] > 1e-3, "premise: the smallest real coupling is well clear of cutoff=0.0"
     for cutoff in (0.001, 0.1):
         # every tested cutoff must fall strictly between two produced magnitudes (or below all
-        # of them), never within 1e-9 of one
+        # of them), never within 1e-9 of one -- residues included
         assert np.all(np.abs(mags - cutoff) > 1e-9), (cutoff, mags)
 
 
