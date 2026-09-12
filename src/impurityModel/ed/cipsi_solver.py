@@ -691,17 +691,62 @@ class CIPSISolver:
         cross-rank cancellation on every column of a row into that row's removal -- a
         real selection-rule cancellation, not a truncation artifact.
         """
-        raw = H.apply_block(ManyBodyState.from_states(psi_ref), cutoff)
+        block = ManyBodyState.from_states(psi_ref)
+        n_chunks = config.GS_APPLY_ROW_CHUNKS.get()
+        if n_chunks is None or n_chunks <= 1:
+            raw = self._apply_and_prune_columns(H, block, cutoff)
+            merged = self.basis.redistribute_block(raw)
+            merged.prune_rows(0.0)
+            return merged
+
+        # Row-chunked: the round's peak is the raw apply output, its packed send buffer, the
+        # receive buffer and the merged block all alive at once (~6x the owned block, measured;
+        # see doc/plans/dc_smo_memory.md round 6). Applying one chunk of the reference rows at
+        # a time bounds the first three to chunk size; only the accumulating merged block stays.
+        # Exact up to summation order (a candidate reached from rows in different chunks has its
+        # partial sums added chunk by chunk, and the per-column prune sees those partials), which
+        # is the same class of difference a change of rank count makes.
+        #
+        # The chunk COUNT is the knob, replicated on every rank, so every rank makes exactly
+        # `n_chunks` collective `redistribute_block` calls whatever its row count -- a rank with
+        # fewer rows than chunks sends empty chunks (an explicit width-p block with no rows, which
+        # `apply_block` and the packer both accept; never the width-0 polymorphic zero).
+        keys = block.keys()
+        n_rows = len(keys)
+        bounds = np.linspace(0, n_rows, int(n_chunks) + 1).astype(int)
+        merged = None
+        for lo, hi in zip(bounds[:-1], bounds[1:]):
+            mask = ManyBodyState.from_states([ManyBodyState(dict.fromkeys(keys[lo:hi], 1.0 + 0j), width=1)])
+            part = block.copy()
+            part.keep_rows(mask)
+            del mask
+            raw = self._apply_and_prune_columns(H, part, cutoff)
+            del part
+            piece = self.basis.redistribute_block(raw)
+            del raw
+            if merged is None:
+                merged = piece
+            elif len(piece):
+                # Rank-local decision on a rank-local quantity (no collective inside), so an
+                # empty piece on one rank cannot desynchronize the others.
+                merged += piece
+            del piece
+        merged.prune_rows(0.0)
+        return merged
+
+    @staticmethod
+    def _apply_and_prune_columns(H, block, cutoff):
+        """``H`` applied to ``block`` with every column pruned to ``cutoff`` in place (the
+        one-shot body of :meth:`_apply_block_and_redistribute`, shared with its chunked path)."""
+        raw = H.apply_block(block, cutoff)
         view = np.asarray(raw)  # zero-copy (rows, p) view; buffer.readonly=0, so this writes through
         # `std::norm(v) <= cutoff**2` (no sqrt), matching ManyBodyBlockState::prune_rows'
         # C++ criterion exactly -- not `np.abs(view) <= cutoff`, which takes a sqrt first and so
         # is not guaranteed bit-identical to the C++ comparison at the cutoff boundary.
         norm2 = view.real**2 + view.imag**2
         view[norm2 <= cutoff * cutoff] = 0.0
-        del view, norm2  # release the buffer export -- prune_rows/redistribute below refuse to run while it's alive
-        merged = self.basis.redistribute_block(raw)
-        merged.prune_rows(0.0)
-        return merged
+        del view, norm2  # release the buffer export -- prune_rows/redistribute refuse to run while it's alive
+        return raw
 
     def _candidate_overlaps_and_energies(self, H, Hpsi_ref, slaterWeightMin: float = 0):
         """Enumerate the out-of-basis candidates of ``Hpsi_ref`` with couplings and energies.

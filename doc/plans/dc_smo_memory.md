@@ -1166,7 +1166,19 @@ transient is measurable.
    `b_{k+1} = b_k + n_new` by `T_k x (b_{k+1}/b_k) x (p_next/p_k) <= budget - RSS_now`, re-truncating
    `new_Dj` through a second `_admit_top` (which needs the scores kept from `determine_new_Dj`); when
    no growth is affordable, adopt a fixed-budget cap at the current size. Measured RSS only, no model.
-2. **Chunked `_apply_block_and_redistribute`.** Apply H to row chunks of the reference block,
+2. **Chunked `_apply_block_and_redistribute`.** *Implemented (2026-09-12) as the
+   `GS_APPLY_ROW_CHUNKS` knob, off by default.* Measured on the SrMnO3 archive at 4 ranks, cap
+   20,000, on the growth cycle (basis 4,152 -> 20,000, owned candidate block 92 MiB):
+
+   | chunks | step peak | step time | `e0` |
+   |---|---|---|---|
+   | unset | 673 MiB | 1.43 s | -16.940022121819 |
+   | 4 | 243 MiB | 2.27 s | -16.940022121819 |
+   | 8 | 248 MiB | 2.25 s | -16.940022121819 |
+
+   2.8x less on the step that killed the production job, a plateau from 4 chunks on (the
+   accumulating merged block and its `+=` reallocation are the floor), `e0` bit-identical here,
+   and about +1 s per growth cycle. The approach: apply H to row chunks of the reference block,
    redistribute each chunk and accumulate with the in-place `+=` (`add_scaled` over the union
    support), so three of the four copies are bounded to chunk size: ~1.4x the owned block instead
    of 6x. Row chunks prune partial sums at the `slater_weight_min` cutoff (1.5e-8 here), so they are
