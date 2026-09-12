@@ -1167,7 +1167,8 @@ transient is measurable.
    `new_Dj` through a second `_admit_top` (which needs the scores kept from `determine_new_Dj`); when
    no growth is affordable, adopt a fixed-budget cap at the current size. Measured RSS only, no model.
 2. **Chunked `_apply_block_and_redistribute`.** *Implemented (2026-09-12) as the
-   `GS_APPLY_ROW_CHUNKS` knob, off by default.* Measured on the SrMnO3 archive at 4 ranks, cap
+   `GS_APPLY_ROW_CHUNKS` knob; default 4 since the same day, `1` recovers the one-shot path.*
+   Measured on the SrMnO3 archive at 4 ranks, cap
    20,000, on the growth cycle (basis 4,152 -> 20,000, owned candidate block 92 MiB):
 
    | chunks | step peak | step time | `e0` |

@@ -28,6 +28,16 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+
+@pytest.fixture(autouse=True)
+def _one_shot_apply(monkeypatch):
+    """Pin the one-shot apply. ``GS_APPLY_ROW_CHUNKS`` defaults to 4 (row chunks, each redistributed
+    and accumulated in turn), which changes the floating-point summation order of a candidate
+    reached from rows in different chunks -- a last-bit difference that ``test_cipsi_apply_chunking``
+    covers to tolerance. The comparison here is bit-for-bit against the unchunked round trip, so
+    it runs on the unchunked path."""
+    monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", "1")
+
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant

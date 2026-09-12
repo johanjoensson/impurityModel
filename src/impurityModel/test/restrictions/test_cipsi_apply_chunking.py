@@ -9,8 +9,8 @@ rows at a time and accumulates the redistributed pieces.
 What is pinned here: the chunked result has the *same support* as the one-shot one and agrees
 to roundoff (summation order differs when a candidate is reached from rows in different
 chunks); a chunk count larger than a rank's row count (empty chunks, including ranks that own
-nothing) is handled without desynchronizing the collectives; and the knob unset is the one-shot
-path bit for bit.
+nothing) is handled without desynchronizing the collectives; the knob unset is the default of 4
+chunks; and ``1`` is the one-shot path bit for bit.
 """
 
 import itertools
@@ -75,9 +75,10 @@ def _run(comm, n_chunks, cutoff, monkeypatch):
     psi_ref = _psi_ref_block(solver, basis_dets)
     if n_chunks is None:
         monkeypatch.delenv("GS_APPLY_ROW_CHUNKS", raising=False)
+        assert config.GS_APPLY_ROW_CHUNKS.get() == 4, "unset must be the measured default of 4 chunks"
     else:
         monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", str(n_chunks))
-    assert config.GS_APPLY_ROW_CHUNKS.get() == n_chunks
+        assert config.GS_APPLY_ROW_CHUNKS.get() == n_chunks
     return solver._apply_block_and_redistribute(H, psi_ref, cutoff)
 
 
@@ -90,7 +91,7 @@ def _assert_same(chunked, one_shot):
 @pytest.mark.parametrize("n_chunks", [1, 2, 3, 7, 50])
 @pytest.mark.parametrize("cutoff", [0.0, 0.001])
 def test_chunked_matches_one_shot_serial(n_chunks, cutoff, monkeypatch):
-    one_shot = _run(None, None, cutoff, monkeypatch)
+    one_shot = _run(None, 1, cutoff, monkeypatch)
     chunked = _run(None, n_chunks, cutoff, monkeypatch)
     _assert_same(chunked, one_shot)
     if n_chunks == 1:
@@ -98,10 +99,17 @@ def test_chunked_matches_one_shot_serial(n_chunks, cutoff, monkeypatch):
         np.testing.assert_array_equal(np.asarray(chunked), np.asarray(one_shot))
 
 
-@pytest.mark.parametrize("n_chunks, expected_applies", [(None, 1), (1, 1), (3, 3), (50, 50)])
+@pytest.mark.parametrize("cutoff", [0.0, 0.001])
+def test_default_is_four_chunks_and_matches_one_shot(cutoff, monkeypatch):
+    """Unset, the knob is the measured default of 4 chunks, and that default agrees with the
+    one-shot path to roundoff."""
+    _assert_same(_run(None, None, cutoff, monkeypatch), _run(None, 1, cutoff, monkeypatch))
+
+
+@pytest.mark.parametrize("n_chunks, expected_applies", [(None, 4), (1, 1), (3, 3), (50, 50)])
 def test_apply_count_follows_the_knob(n_chunks, expected_applies, monkeypatch):
-    """Unset and 1 are the one-shot path (a single operator apply); `n` chunks apply exactly `n`
-    times, empty chunks included -- that count is what keeps the collective redistributions in
+    """Unset is the default of 4 chunks and 1 is the one-shot path (a single operator apply); `n`
+    chunks apply exactly `n` times, empty chunks included -- that count is what keeps the collective redistributions in
     step across ranks, so it must not depend on how many rows a rank happens to own."""
     calls = []
     original = CIPSISolver._apply_and_prune_columns
@@ -122,7 +130,7 @@ def test_chunked_matches_one_shot_mpi(n_chunks, monkeypatch):
     at 3 ranks some rank may own no reference rows at all -- every one of them must still make
     the same number of collective redistributions."""
     comm = MPI.COMM_WORLD
-    one_shot = _run(comm, None, 0.001, monkeypatch)
+    one_shot = _run(comm, 1, 0.001, monkeypatch)
     chunked = _run(comm, n_chunks, 0.001, monkeypatch)
     _assert_same(chunked, one_shot)
     # And the result is a consistent global object: every rank agrees on the total row count.

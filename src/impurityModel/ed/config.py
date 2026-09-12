@@ -493,23 +493,26 @@ GS_MEMORY_BUDGET_SAFETY = Knob(
 GS_APPLY_ROW_CHUNKS = Knob(
     name="GS_APPLY_ROW_CHUNKS",
     kind="int",
-    default=None,  # unset = one shot (today's behaviour): apply to the whole reference block at once
+    default=4,
     minimum=1,
     group="groundstate",
     doc="""How many row chunks `CIPSISolver._apply_block_and_redistribute` splits the reference
-    block into before applying `H` and redistributing. Unset (or 1) applies to the whole block at
-    once. With `n` chunks, each chunk of the local reference rows is applied, pruned, redistributed
-    and accumulated into the owned candidate block in turn, so only one chunk's raw output, packed
-    send buffer and receive buffer are alive at a time. Those three, plus the merged block, are
-    the selection round's peak: measured on the SrMnO3 double-counting workload at 4 ranks the step
-    holds **6x** the owned candidate block, and on the 256-rank job that was OOM-killed the same
-    step accounted for the 2.4 -> 5.8 GiB jump in one cycle (`doc/plans/dc_smo_memory.md`, round 6).
-    Exact up to floating-point summation order: a candidate reached from reference rows in
-    different chunks has its partial sums added in a different order than the one-shot apply, and
-    the per-column `slater_weight_min` prune acts on those partial sums -- the same class of
-    difference a change of MPI rank count already makes. Costs `n` operator walks over the
-    reference rows in total (each row is walked once), not `n` times the work. Off by default until
-    measured on more than one workload; set it in the job script alongside `GS_MAX_BLOCK_WIDTH`.""",
+    block into before applying `H` and redistributing. `1` applies to the whole block at once (the
+    pre-2026-09 one-shot path). With `n` chunks, each chunk of the local reference rows is applied,
+    pruned, redistributed and accumulated into the owned candidate block in turn, so only one
+    chunk's raw output, packed send buffer and receive buffer are alive at a time. Those three, plus
+    the merged block, are the selection round's peak: measured on the SrMnO3 double-counting
+    workload at 4 ranks the one-shot step holds **6x** the owned candidate block, and on the
+    256-rank job that was OOM-killed the same step accounted for the 2.4 -> 5.8 GiB jump in one
+    cycle (`doc/plans/dc_smo_memory.md`, round 6). Exact up to floating-point summation order: a
+    candidate reached from reference rows in different chunks has its partial sums added in a
+    different order than the one-shot apply, and the per-column `slater_weight_min` prune acts on
+    those partial sums -- the same class of difference a change of MPI rank count already makes.
+    Costs `n` operator walks over the reference rows in total (each row is walked once), not `n`
+    times the work. The default of 4 is the measured plateau on that workload (cap 20,000, growth
+    cycle: step peak 673 MiB one-shot, 243 at 4 chunks, 248 at 8; `e0` bit-identical; about +1 s
+    per growth cycle) -- the accumulating merged block is the floor past 4, so more chunks buy
+    nothing. Set `1` to recover the one-shot path.""",
 )
 
 GS_NUM_WANTED = Knob(
