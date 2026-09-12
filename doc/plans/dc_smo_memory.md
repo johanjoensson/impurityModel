@@ -1104,3 +1104,62 @@ physical exhaustion. `arrhenius_handover/shm_pattern.py` measures `/proc/meminfo
 production message sizes, a `Reduce_scatter`, and a 28-neighbour sparse exchange, then around a real
 solve, under default settings, Intel's cell-size knobs, and `I_MPI_SHM=off`. The sparse-exchange fix
 is not implemented until that log says the shared memory is physical.
+
+## ROUND 6: the shared memory was accounting, and the crash log names the mechanism itself
+
+**Shared memory is not the OOM.** `from_arrhenius/shmpattern-2331617.out` measured, on each node,
+`/proc/meminfo` `Shmem` and `/dev/shm` usage next to the sum of the ranks' `RssShmem`: after a real
+cap-20,000 solve the ranks summed to **19.0 GiB per node while the node physically held 0.39 GiB**.
+The round-5 ratchet is each rank touching pages of one node-wide Intel MPI pool -- a 48x overcount.
+`I_MPI_SHM=off` removes it and makes the matvec's `Reduce` loop 5x slower, so it is not a
+recommendation. Two side results: a 28-neighbour sparse `Neighbor_alltoallv` is 4x faster than the
+256-root `Reduce` loop at production message sizes (1.7 s vs 7.0 s at 10,000 x 110), and
+`block_apply` is 62% of the solve's wall-clock at cap 300,000 -- a performance lever, not a memory one.
+
+**A second crash, with the mechanism in its own log.** Job 2327163 (killed 14:12 on 2026-09-12,
+before the trip-wire fix `0beab43` was deployed, so the guard never ran) prints the MAX-over-ranks
+`VmHWM` on every CIPSI cycle line:
+
+| sector | cycle | basis | p | Hpsi_rows | admitted | VmHWM |
+|---|---|---|---|---|---|---|
+| N_imp 5 | 12 (saturated) | 949,834 | 104 | 2.43M | 0 | 2.0 GiB |
+| N_imp 3 | 2 | 67,344 | 82 | 703k | 613k | 2.0 GiB |
+| N_imp 3 | 3 | 680,774 | 100 | 5.0M | 2.94M | 2.4 GiB |
+| N_imp 3 | 4 | 3,625,002 | 150 | 21.1M | 5.41M | **5.8 GiB** |
+| N_imp 3 | 5 | ~9M | | | | OOM-killed |
+
+The first-cycle mark of 939 MiB is the in-process RSPt plus Python floor. Under a 43.75M cap the
+N_imp 3 sector admits everything, the basis grows 5-10x per cycle, and the selection round's memory
+follows `Hpsi_rows x p`.
+
+**The memory hog is `CIPSISolver._apply_block_and_redistribute`.** Measured at 4 ranks, cap 20,000
+(`dup_probe`): on the growth cycle the owned candidate block is **92 MiB and the step's high-water
+mark is 572 MiB -- 6.2x**. The pre-redistribution row duplication is only 1.6-1.8x; the factor is the
+number of *simultaneous copies*: the raw apply output (~1.6x the owned rows), its packed send buffer,
+the receive buffer and the merged block are all alive at once. Scaled to the crash's cycle 4
+(21M rows x 150 columns, skew ~2) that is ~0.4 GiB owned on the binding rank, x6, plus the overlaps
+step -- the 4.9 GiB of growth observed. The eigensolver is minor at every size that matters (69 of
+489 MiB at cap 300,000 on 256 ranks).
+
+**The trip-wire cannot catch this, even as fixed.** It compares a high-water mark *after* the round
+that set it, and one cycle grows the basis 5x, so a 2x safety margin is overrun in a single step
+(2.4 GiB under a 2.5 GiB budget, then 5.8). When it fires it still admits the already-selected
+candidates (3.6M + 5.4M = 7.2M). And the global `VmHWM` never resets, so once an earlier solve set a
+higher mark a round's own peak is invisible: sector 2's cycles 0-2 all read "2.0 GiB". Writing `5` to
+`/proc/self/clear_refs` resets `VmHWM` unprivileged (`memtax_probe` relies on it), so a per-round
+transient is measurable.
+
+### Fixes this points to
+
+1. **A look-ahead admission cap in `expand`.** Reset the high-water mark before the selection round
+   and read the round's transient `T_k = HWM_after - RSS_before`. Bound the next basis
+   `b_{k+1} = b_k + n_new` by `T_k x (b_{k+1}/b_k) x (p_next/p_k) <= budget - RSS_now`, re-truncating
+   `new_Dj` through a second `_admit_top` (which needs the scores kept from `determine_new_Dj`); when
+   no growth is affordable, adopt a fixed-budget cap at the current size. Measured RSS only, no model.
+2. **Chunked `_apply_block_and_redistribute`.** Apply H to row chunks of the reference block,
+   redistribute each chunk and accumulate with the in-place `+=` (`add_scaled` over the union
+   support), so three of the four copies are bounded to chunk size: ~1.4x the owned block instead
+   of 6x. Row chunks prune partial sums at the `slater_weight_min` cutoff (1.5e-8 here), so they are
+   not bit-identical to today's path at that boundary; column chunks would be, but `concat_cols` on
+   block states goes through the `to_states`/`from_states` round trip this function was rewritten
+   to avoid. Knob-gated, measured on the SrMnO3 workload before any default changes.
