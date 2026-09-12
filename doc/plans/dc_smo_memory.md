@@ -1051,3 +1051,56 @@ average rank under an assumed manifold of ~10. Reordered accordingly:
   wall-clock (254.9 s unset vs 254.6 s at 8; selection rounds 31.7 s vs 31.2 s).
 - **Not yet done**: any multi-rank measurement at all (item 5 above). Every number in this
   document is single-rank, and the production residual is a multi-rank question.
+
+## ROUND 5 (256 ranks): memory by CATEGORY, and the ratchet is MPI shared memory
+
+Every earlier probe sampled only `VmHWM`, which cannot separate numpy arrays from Cython-owned C++
+objects, glibc heap retained after frees, or MPI shared-memory pages. `arrhenius_handover/memtax_probe.py`
+brackets every step of one sector solve with rank-local samples of `RssAnon`/`RssShmem`/`RssFile`/
+`VmHWM`, the `tracemalloc` peak, `mallinfo2()` (outer frames only -- 14 ms/call on a fragmented heap)
+and `malloc_trim(0)`, resets `VmHWM` between caps via `/proc/self/clear_refs`, and A/B-tests a
+`mallopt`-tuned allocator in the same job. Log: `from_arrhenius/memtax-2331040.out` (Intel MPI 2021.16,
+128 ranks/node).
+
+| cap | HWM above start, binding rank | `RssShmem` growth | numpy-visible | C/C++-owned live | glibc-retained |
+|---|---|---|---|---|---|
+| 2,000 (first solve) | 144 MiB | 80 | 0 | 14 | 44 |
+| 20,000 | 74 | 32 | 16 | 0 | 0 |
+| 100,000 | 169 | 97 | 0 | 37 | 0 |
+| 300,000 | 489 | **296** | 0 | 32 | 9 |
+
+**`RssShmem` ratchets and is never released.** At the *start* of each successive solve the binding
+rank holds 1.8 -> 90 -> 112 -> 125 -> 178 -> 276 MiB of shared memory; anonymous memory over the same
+six solves is flat (192 -> 226 MiB). At cap 300,000 it is 85% of the growth, and it grows inside the
+all-pairs collectives: the matvec's per-destination `Reduce` loop (110 MiB in `_block_ops.pxi`'s
+`block_apply`, 37 in the sweep kernel), TSQR's `Allgather` (12) and the packed `Neighbor_alltoallv`
+(74). Round 4's "the Reduce loop costs 5 MiB" was measured with 7 KB messages; production chunks are
+megabytes, and message size was the axis that measurement did not vary.
+
+**The selection round is 86% of the binding rank's peak at cap 300,000** (420 of 489 MiB:
+`_apply_block_and_redistribute` 228 MiB of its own plus 192 in the exchange), the eigensolver 69.
+Round 3/4's "eigensolver 95%" at cap 2,000 was the shared-memory first-touch -- connection setup,
+80 MiB -- landing in the first collective-heavy step of a workload too small to show anything else.
+The "composition inverts with rank count" reading was really "first-touch lands wherever the first
+all-pairs collective runs".
+
+`mallopt` tuning does nothing at 256 ranks (the glibc-retained share is already small there; it was
+worth 9% at 4 ranks). `HWM above start ~ global^0.68`, about 0.93 GiB/rank for a single solve at
+949,834 determinants -- production runs many solves with `num_wanted` ~222 against ~100 here.
+
+**H's coupling graph is sparse under the routing hash.** Measured offline at cap 20,000 with 256
+buckets: 11% of (source, destination) rank pairs carry a nonzero block, ~28 sources per rank (37 max).
+A sparse `Neighbor_alltoallv` can therefore replace the 256 dense `Reduce`s per matvec, and 89% of
+rank pairs would never open a shared-memory connection in the matvec at all.
+
+### The open question: physical, or accounting?
+
+`RssShmem` counts every shared page a process has touched. Intel MPI's shm transport is a node-wide
+pool (forward/backward cells per rank, one extended-cell pool per node), so a page written by a sender
+and read by a receiver counts in both ranks' RSS and a pool page touched by many ranks counts many
+times. Summed per-rank RSS can overstate physical use by a large factor, and the OOM killer fires on
+physical exhaustion. `arrhenius_handover/shm_pattern.py` measures `/proc/meminfo` `Shmem` and
+`/dev/shm` usage per node against the summed `RssShmem` around the kernel's `Reduce` loop at
+production message sizes, a `Reduce_scatter`, and a 28-neighbour sparse exchange, then around a real
+solve, under default settings, Intel's cell-size knobs, and `I_MPI_SHM=off`. The sparse-exchange fix
+is not implemented until that log says the shared memory is physical.
