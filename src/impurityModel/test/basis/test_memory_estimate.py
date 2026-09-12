@@ -76,6 +76,28 @@ def test_gs_array_kernel_replication_shrinks_with_ranks():
     assert many_ranks < 100_000 * 4 * 16
 
 
+def test_gs_graph_exchange_term_is_bounded_by_the_byte_budget(monkeypatch):
+    """Under ``graph`` the exchange buffers are sized by the neighbour count and capped by
+    ``GS_MATVEC_EXCHANGE_BYTES`` (both alive at once, so 2x); ``reduce`` keeps the single
+    chunk buffer. A tiny budget must therefore remove the difference between the two modes."""
+    monkeypatch.delenv("GS_MATVEC_EXCHANGE_BYTES", raising=False)
+    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "reduce")
+    loop = me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256)
+    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "graph")
+    graph = me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256)
+    local = -(-1_000_000 // 256)
+    # 37 neighbours x local x 110 x 16 B ~ 254 MiB per buffer, well over the 64 MiB default cap.
+    assert graph - loop == 2 * me.config.GS_MATVEC_EXCHANGE_BYTES.default - local * 110 * 16
+    monkeypatch.setenv("GS_MATVEC_EXCHANGE_BYTES", "16")
+    assert me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256) < loop
+    # Below the cap the term is degree-proportional: two ranks have one neighbour each.
+    monkeypatch.delenv("GS_MATVEC_EXCHANGE_BYTES", raising=False)
+    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "reduce")
+    loop2 = me.estimate_gs_peak_bytes(1000, 100, block_width=4, ranks=2)
+    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "graph")
+    assert me.estimate_gs_peak_bytes(1000, 100, block_width=4, ranks=2) - loop2 == 500 * 4 * 16
+
+
 def test_suggest_threshold_monotone_in_safety():
     lo = me.suggest_truncation_threshold(100, safety=0.1)
     hi = me.suggest_truncation_threshold(100, safety=0.5)

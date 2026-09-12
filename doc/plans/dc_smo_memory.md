@@ -581,6 +581,17 @@ At cap 20,000 each rank generates ~1,950 candidate rows into 256 buckets (~7.6 p
 probability a given peer receives nothing is `e^-7.6` ~ 0.05%: **the graph is complete.** The design's
 cost (load skew) is paid in full while its benefit (sparsity) is not realised at this rank count.
 
+*Correction (round 5 measurement, and the reason behind it).* That estimate assumed the ~1,950
+images scatter *uniformly* over the buckets. They do not: `routing_hash` is exactly linear in the
+occupied orbitals (one 64-bit weight per occupied orbital, `SlaterDeterminant.h`), so an operator
+term that flips a fixed set of bits shifts the hash by a constant and every image of a rank's
+determinants lands on `(rank + Δ_term) mod size`. The reachable set is the term set's Δ-shifts, not
+a Poisson draw -- measured at 11% of rank pairs, ~28 sources per rank (37 max), on the real
+Hamiltonian at 256 buckets (below), and independent of how many determinants a rank owns. The
+`matvec_exchange` trace note (`GS_MATVEC_EXCHANGE=graph`, `doc/plans/dc_smo_performance.md`)
+reports that degree from every run. The candidate redistribution and the matvec reduce-scatter
+are the same Δ-shift graph, so neither needs an offline count any more.
+
 **Not yet proven**, and the gap is named: 4 MiB/neighbour is Open MPI 5.0.9 on a laptop, while
 Arrhenius runs a different MPI under `mpprun`. The cluster's 447-801 MiB above floor is the same order
 as a 256-neighbour graph at 1.7-3.1 MiB each, which is supportive, not conclusive.

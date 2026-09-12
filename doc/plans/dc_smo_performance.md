@@ -1038,3 +1038,62 @@ per-solve ratio, and both quantities are recorded per solve but only the means w
 is a cap-8,000 number, so it says nothing about `memory_estimate`'s own ~30x warning, which is
 explicitly about production scale. The rung-9 width threshold moves *down* from 80 on this
 correction, but by ~20 %, not by the factor a 1.8x under-count would imply.
+
+## Phase 1c: the matvec reduce-scatter over the coupling graph (shipped 2026-09-12)
+
+Phase 1b's verdict stands at 6 ranks and is overturned at 256. Round 6 of
+`doc/plans/dc_smo_memory.md` measured, on Arrhenius (Intel MPI 2021.16, 256 ranks, 128 per node,
+`from_arrhenius/shmpattern-2331617.out`), the kernel's own spelling of the reduce-scatter -- one
+full-communicator `Reduce` per root -- against the two alternatives at production message sizes
+(10000 x 110 complex per (source, destination) pair):
+
+| pattern | wall time |
+|---|---|
+| `Reduce` loop, 256 roots | 6.4-7.3 s |
+| one `Reduce_scatter` | 12.5 s |
+| `Neighbor_alltoallv`, 28 neighbours | **1.6-1.7 s** |
+
+and `trlm.block_apply` is 62% of a cap-300,000 solve's wall-clock there. The 28 is not a guess:
+`routing_hash` is linear in the occupied orbitals, so an operator term shifts a determinant's owner
+by a constant and the matvec's communication graph is the Hamiltonian's set of term shifts,
+independent of basis size -- measured 11% dense at 256 ranks on SrMnO3 (28 sources per rank, 37
+max). Phase 1b's own caveat named this case ("a rank count where the `size` sequential `Reduce`s
+actually hurt ... is untested").
+
+**What shipped.** `mpi_comm.MatvecExchangePlan`: destinations read off the CSR row pointers
+(`H` is `(global_N, N_local)` in both kernels, so rank `d` is a destination iff its row range holds
+a stored entry), sources learned by an `Alltoall` of those flags (never inferred from Hermitian
+symmetry -- an inconsistent dist-graph hangs `Neighbor_alltoallv` rather than erroring), the
+graph communicator from the topology-keyed `_cached_dist_graph`, one `Neighbor_alltoallv` per
+column round, and the received pieces summed in ascending source order after the rank's own
+contribution (which never crosses MPI). Both array kernels -- `block_lanczos_array_cy`'s sweep and
+`block_apply`'s array branch -- run it under `GS_MATVEC_EXCHANGE=graph`, the default; `reduce` keeps
+the per-root loop as the A/B arm and escape hatch. The two differ in the last bits (fixed source
+order vs MPI's reduction tree), the same class of difference a change of rank count makes.
+
+**Memory.** Send and receive buffers scale with the *degree* (one row block per neighbour each,
+both alive at once), so the exchange is chunked over the block's columns until neither exceeds
+`GS_MATVEC_EXCHANGE_BYTES` (default 64 MiB, so at most +128 MiB per rank; the production
+`GS_MAX_BLOCK_WIDTH=5` exchange is ~3 MiB and runs in one round). The bound is a correctness guard,
+not a tuning: on a complete graph -- every small rank count, or a Hamiltonian whose terms reach
+every rank -- an unchunked send buffer is the `(global_N - N_local) x width` product Phase 1
+removed. `estimate_gs_peak_bytes` models the term as `2 x min(budget, degree x local x w x 16)` with
+a measured default degree of 37. The plan is rebuilt per kernel call (three tiny collectives) rather
+than cached on `h_op`: the perf doc records the cache-staleness hazard twice, and a cached plan
+would hold a graph communicator that `_cached_dist_graph`'s eviction can `Free()` behind it.
+
+**What local runs can and cannot show.** Correctness: the suite runs both modes at 1, 2 and 3
+ranks, including an empty rank (no neighbours, every collective still joined) and a 16-byte budget
+(one column per round). Speed: not at <= 8 ranks -- the `Reduce` loop is latency-cheap there
+(Phase 1b measured `Ireduce` pipelining as a pessimization at 6 ranks for the same reason). The
+verdict is the cluster A/B in `arrhenius_handover/matvec_ab.py`: a real `solve_sector` at caps
+20,000 and 300,000 under `reduce` and `graph` alternately, printing wall time, `e0` and the
+`matvec_exchange` degree. Decision rule: `graph` faster at 300,000 with `|Δe0| < 1e-9` records the
+numbers here; otherwise the default reverts to `reduce` in a one-line commit and this section says
+why.
+
+**Not touched.** The Green's-function sparse path's `LinearOperator.matmat` (`gf_solvers.py`)
+`Reduce`s the full `(global_N, w)` product to root 0 per matvec -- a third instance of the pattern,
+on a different path; `build_vector`'s dense global gather; `basis_split`'s pickled replication into
+colours; TSQR's `Allgather` (inherent to its bitwise-identical-R design).
+

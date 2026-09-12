@@ -55,6 +55,15 @@ _SD_STRUCT_BYTES = 24
 # SparseKrylovDense support-map node overhead per registered row (ManyBodyUtils.pyx).
 _KRYLOV_NODE_BYTES = 72
 _COMPLEX_BYTES = 16
+
+#: Neighbours per rank the ``graph`` matvec exchange is sized for when the real coupling graph
+#: is not in hand (the estimator runs before any Hamiltonian exists). A *measured* input, like
+#: ``nnz_per_state``: the maximum source count over ranks on the SrMnO3 double-counting
+#: workload at 256 ranks (mean ~28, ``doc/plans/dc_smo_memory.md`` round 5). ``routing_hash``
+#: is linear in the occupied orbitals, so the degree is set by the operator's term set, not the
+#: basis size, and saturates at ``ranks - 1`` on small communicators. The ``matvec_exchange``
+#: trace note reports the real degree of every run; replace this when a workload measures larger.
+_MATVEC_EXCHANGE_DEGREE_DEFAULT = 37
 # scipy CSC complex128: 16 B value + index/indptr (int32 or int64) per stored element.
 _CSR_BYTES_PER_NNZ = 24
 # Default candidate fan-out per basis determinant during a CIPSI selection round
@@ -484,9 +493,19 @@ def estimate_gs_peak_bytes(
     local = ceil(n_dets / max(1, ranks))
     basis_bytes = local * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     csr_bytes = local * nnz_per_state * _CSR_BYTES_PER_NNZ
-    # Chunked reduce-scatter transient (Phase 1): one (max(counts), w) chunk buffer plus the
-    # (local, w) result live at once; max(counts) ~ local under a balanced hash partition.
-    replicated_bytes = 2 * local * block_width * _COMPLEX_BYTES
+    # The matvec's reduce-scatter transient, plus the (local, w) result. Under
+    # GS_MATVEC_EXCHANGE=graph (the default) the send and receive buffers each hold one row
+    # block per neighbour -- degree x local x w complex, both alive at once -- chunked over
+    # columns so neither exceeds GS_MATVEC_EXCHANGE_BYTES (mpi_comm.MatvecExchangePlan). Under
+    # `reduce` it is the one (max(counts), w) chunk buffer of the per-root Reduce loop
+    # (Phase 1); max(counts) ~ local under a balanced hash partition either way.
+    if config.GS_MATVEC_EXCHANGE.get() == "graph":
+        degree = min(max(ranks - 1, 0), _MATVEC_EXCHANGE_DEGREE_DEFAULT)
+        per_buffer = min(config.GS_MATVEC_EXCHANGE_BYTES.get(), degree * local * block_width * _COMPLEX_BYTES)
+        exchange_bytes = 2 * per_buffer
+    else:
+        exchange_bytes = local * block_width * _COMPLEX_BYTES
+    replicated_bytes = local * block_width * _COMPLEX_BYTES + exchange_bytes
     krylov_bytes = local * _gs_krylov_columns(n_dets, block_width, num_wanted) * _COMPLEX_BYTES
     # CIPSI selection round transient (doc/plans/dc_smo_memory.md): `local * selection_fanout`
     # approximates this rank's local candidate-row count the same way `local * nnz_per_state`
@@ -494,6 +513,9 @@ def estimate_gs_peak_bytes(
     # before pruning), times `block_width` reference columns, times the per-pair cost that
     # survives Phase 2's rewrite of `_apply_block_and_redistribute` /
     # `_candidate_overlaps_and_energies` / `_score_candidates`.
+    # Calibrated against the one-shot apply; the row-chunked default (GS_APPLY_ROW_CHUNKS=4)
+    # holds ~1/2.8 of that on the step that set the constant, so this is now an upper bound
+    # (deliberately: the model's failure mode was optimism, see GS_MEMORY_BUDGET_SAFETY).
     selection_bytes = local * selection_fanout * block_width * _SELECTION_BYTES_PER_PAIR
     return basis_bytes + csr_bytes + replicated_bytes + krylov_bytes + selection_bytes
 
