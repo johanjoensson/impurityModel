@@ -515,6 +515,54 @@ GS_APPLY_ROW_CHUNKS = Knob(
     nothing. Set `1` to recover the one-shot path.""",
 )
 
+GS_MATVEC_EXCHANGE = Knob(
+    name="GS_MATVEC_EXCHANGE",
+    kind="str",
+    default="graph",
+    group="groundstate",
+    doc="""How the distributed *array-path* block matvec (`block_lanczos_array_cy`'s sweep and
+    `block_apply`'s array branch, the TRLM restart-loop matvec) combines the per-rank partial products
+    into each destination rank's rows. Each rank holds every global row of `H` for its own columns, so
+    a matvec is a reduce-scatter: rank `s` contributes `H[rows of d, cols of s] @ V_s` to every `d`.
+
+    `graph` (the default) sends only the structurally nonzero contributions, over one
+    `Neighbor_alltoallv` on a cached distributed-graph communicator whose edges are read from the CSR
+    row pointers (`mpi_comm.MatvecExchangePlan`), and sums the received pieces in a fixed source
+    order. `routing_hash` is linear in the occupied orbitals, so an operator term shifts a
+    determinant's owner by a constant and the graph is a property of `H`'s term set, not of the basis
+    size: measured 11% dense at 256 ranks on SrMnO3 (~28 sources per rank). `reduce` is the previous
+    spelling -- `comm.size` full-communicator `Reduce`s per matvec, one per root, every rank
+    contributing a chunk that is zero for every non-neighbour. Measured at 256 ranks on
+    production-sized messages (`from_arrhenius/shmpattern-2331617.out`, 10000x110 complex per pair):
+    the `Reduce` loop 7.0 s, the sparse exchange 1.7 s, and that matvec is 62% of a cap-300,000
+    solve's wall-clock (`doc/plans/dc_smo_memory.md`, round 6). The two differ in floating-point
+    summation order (fixed source order vs MPI's per-root reduction tree) -- the same class of
+    difference a change of rank count already makes; neither is bit-identical to the other. Keep
+    `reduce` as the A/B arm and the escape hatch; at a handful of ranks the loop is latency-cheap and
+    the two are within noise of each other.""",
+)
+
+GS_MATVEC_EXCHANGE_BYTES = Knob(
+    name="GS_MATVEC_EXCHANGE_BYTES",
+    kind="int",
+    default=64 * 2**20,
+    minimum=16,
+    group="groundstate",
+    doc="""Per-buffer byte bound on one round of the `graph` matvec exchange (`GS_MATVEC_EXCHANGE`).
+    The send buffer holds one row block per destination neighbour and the receive buffer one
+    `(local rows x columns)` block per source neighbour, so both scale with the graph *degree*; the
+    exchange is chunked over the block's columns so that neither exceeds this bound (peak 2x, both
+    are alive at once). This is a correctness guard, not a tuning: on a complete graph (every small
+    rank count, or a Hamiltonian whose terms reach every rank) an unchunked send buffer would be the
+    whole `(global rows - local rows) x width` product -- the several-GiB-per-rank buffer the
+    row-chunked reduce-scatter was introduced to remove (`doc/plans/dc_smo_performance.md`). 64 MiB
+    is at most +128 MiB per rank, 2.5% of the 5.2 GiB/rank the SrMnO3 double-counting job runs at;
+    the production exchange (`GS_MAX_BLOCK_WIDTH=5`, 28 neighbours) is ~3 MiB and runs in one round,
+    and the exchange is bandwidth-bound so extra rounds cost little down to a few MiB. Clamped at
+    1 GiB at the call site so `Neighbor_alltoallv`'s C-int element counts cannot overflow.""",
+)
+
+
 GS_NUM_WANTED = Knob(
     name="GS_NUM_WANTED",
     kind="int",
@@ -707,6 +755,8 @@ KNOBS: dict[str, Knob] = _register(
     GS_MAX_BLOCK_WIDTH,
     GS_SELECTION_CHUNK,
     GS_APPLY_ROW_CHUNKS,
+    GS_MATVEC_EXCHANGE,
+    GS_MATVEC_EXCHANGE_BYTES,
     GS_NUM_WANTED,
     GS_MEMORY_BUDGET_SAFETY,
     DC_CAP_STRATEGY,
@@ -724,7 +774,7 @@ GROUP_TITLES = {
     "convergence": "Block-Lanczos convergence monitor",
     "rixs-solvers": "RIXS shift-recycling solver tiers",
     "rixs-sampling": "RIXS incoming-energy sampling",
-    "groundstate": "Ground-state block-Lanczos width and CIPSI selection sizing",
+    "groundstate": "Ground-state block-Lanczos width, matvec exchange and CIPSI selection sizing",
     "double-counting": "Double-counting search: the cap ladder and diagnostics",
     "sigma": "Self-energy causality tolerance",
 }
