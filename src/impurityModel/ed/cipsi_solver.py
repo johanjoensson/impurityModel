@@ -1107,6 +1107,14 @@ class CIPSISolver:
 
         threshold = self.basis.truncation_threshold
         capped = np.isfinite(threshold)
+        # The memory trip-wire's own latch. It used to ride on `not capped`, which silently
+        # disabled the guard for exactly the configuration that crashed: a cap that is finite but
+        # far beyond what memory allows. Production ran with `truncation_threshold=119,555,328`
+        # and died at 949,834 determinants -- 0.79% of its own cap -- so the cap never bound, yet
+        # its mere existence made `capped` true and skipped the check. A separate latch also stops
+        # the guard from ratcheting the threshold down every cycle once it has fired, since
+        # `peak_rss` is a high-water mark and stays above the budget forever after.
+        budget_tripped = False
         cap_cycles = 0
         no_improve = 0
         e0 = np.inf
@@ -1209,23 +1217,28 @@ class CIPSISolver:
                     flush=True,
                 )
             cycle += 1
-            if memory_budget_bytes is not None and not capped and peak_rss >= memory_budget_bytes:
+            if memory_budget_bytes is not None and not budget_tripped and peak_rss >= memory_budget_bytes:
                 # `peak_rss` and `self.basis.size` are both already rank-replicated at this point
                 # (VmHWM was just MAX-allreduced above; `Basis.size` is the global count by
                 # construction), so every rank evaluates this condition identically without a
                 # separate collective for the decision itself.
-                threshold = float(self.basis.size)
+                budget_tripped = True
+                # `min`, never a bare assignment: an existing cap that already binds tighter than
+                # the current basis is an instruction from the caller and must not be loosened.
+                previous = threshold
+                threshold = min(float(threshold), float(self.basis.size))
                 capped = True
                 # Written back, not just held locally: a caller inspecting
                 # `basis.truncation_threshold` after `expand()` returns must see the cap that
-                # actually governed the rest of this run, not the `inf` it was constructed with.
+                # actually governed the rest of this run, not the one it was constructed with.
                 self.basis.truncation_threshold = threshold
                 if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
+                    was = "uncapped" if not np.isfinite(previous) else f"a cap of {int(previous):,}"
                     print(
                         f"WARNING: measured per-rank RSS {format_bytes(peak_rss)} reached the "
-                        f"{format_bytes(memory_budget_bytes)} memory budget mid-expansion; adopting "
-                        f"a fixed-budget cap at the current basis ({self.basis.size:,} determinants) "
-                        "rather than risk an uncatchable OOM kill.",
+                        f"{format_bytes(memory_budget_bytes)} memory budget mid-expansion; tightening "
+                        f"{was} to a fixed-budget cap at the current basis "
+                        f"({self.basis.size:,} determinants) rather than risk an uncatchable OOM kill.",
                         flush=True,
                     )
             if capped and self.basis.size + n_new > threshold:
