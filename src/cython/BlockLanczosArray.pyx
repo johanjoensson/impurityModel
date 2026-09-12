@@ -69,6 +69,15 @@ from scipy.linalg.cython_blas cimport zgemm
 
 from mpi4py import MPI
 
+from impurityModel.ed import config
+from impurityModel.ed.mpi_comm import (
+    MatvecExchangePlan,
+    dest_flags_all,
+    dest_flags_from_csr_indptr,
+    matvec_exchange_mode,
+)
+from impurityModel.ed.solver_trace import note as _trace_note
+
 import os as _os
 
 # Set IMPURITYMODEL_MATVEC_DEBUG=1 to dump the exact arguments of the matvec's
@@ -262,18 +271,22 @@ cdef void apply_sparse_csr_nogil(
     int row_count,
     int num_cols,
     int p,
+    int col_begin,
     double complex[:] data,
     long[:] indices,
     long[:] indptr,
     double complex[:, ::1] X,
     double complex[:, ::1] Y
 ) noexcept nogil:
-    """``Y[:row_count] = H[row_begin:row_begin+row_count, :] @ X``, output row-indexed from 0.
+    """``Y[:row_count, :p] = H[row_begin:row_begin+row_count, :] @ X[:, col_begin:col_begin+p]``,
+    output row-indexed from 0.
 
-    ``row_begin=0, row_count=global_N`` (the whole matrix) recovers the original single-shot
-    apply; the MPI matvec loop below instead calls this once per destination-rank row chunk
-    (see the chunked-reduce comment there), so ``Y`` never has to hold more than one rank's
-    own row range at a time.
+    ``row_begin=0, row_count=global_N, col_begin=0`` (the whole matrix, every column) recovers
+    the original single-shot apply; the MPI matvec loops below instead call this once per
+    destination-rank row chunk (see the chunked-reduce comment there), so ``Y`` never has to
+    hold more than one rank's own row range at a time. ``col_begin`` lets the graph exchange
+    process the block in column rounds without copying ``X``'s column slice to a contiguous
+    buffer each round.
     """
     cdef int i, j, k, ii
     cdef long row_start, row_stop
@@ -287,7 +300,7 @@ cdef void apply_sparse_csr_nogil(
         for j in range(row_start, row_stop):
             val = data[j]
             for k in range(p):
-                Y[ii, k] = Y[ii, k] + val * X[indices[j], k]
+                Y[ii, k] = Y[ii, k] + val * X[indices[j], col_begin + k]
 
 
 cdef void apply_dense_nogil(
@@ -466,6 +479,8 @@ def block_lanczos_array_cy(
 
     cdef int it = start_it
     cdef int dest, dest_off, dest_count  # row-chunk bounds for the MPI reduce-scatter matvec
+    cdef int c0, c1, wc, nb_i  # column round and neighbour index of the graph exchange
+    cdef double complex[:, ::1] slot_view, q1_cols  # graph exchange: a send/self slot, a column slice
     cdef double t_norm_max = 0.0
     cdef double h_norm_est = 0.0
     cdef double _h_scale = 0.0
@@ -493,18 +508,37 @@ def block_lanczos_array_cy(
         h_op = h_op.tocsr()
         h_data = h_op.data
         h_indices = np.ascontiguousarray(h_op.indices, dtype=np.int64)
-        h_indptr = np.ascontiguousarray(h_op.indptr, dtype=np.int64)
+        h_indptr_arr = np.ascontiguousarray(h_op.indptr, dtype=np.int64)
+        h_indptr = h_indptr_arr
     elif is_dense:
         h_dense = np.ascontiguousarray(h_op)
+
+    # GS_MATVEC_EXCHANGE=graph (the default): the matvec's reduce-scatter sends only the
+    # structurally nonzero row blocks -- the destinations read off the CSR row pointers (a
+    # complete graph for a dense H) -- over one Neighbor_alltoallv per column round on a cached
+    # dist-graph, and sums in fixed source order (mpi_comm.MatvecExchangePlan). Built once per
+    # call: three tiny collectives, and `n` is the widest block this call will see (`n_curr`
+    # only ever shrinks, so every round fits the plan's buffers). `reduce` keeps the per-root
+    # Reduce loop below. The generic operator branch (`h_op.dot`) has no MPI matvec either way.
+    cdef bint use_graph = mpi and (is_sparse or is_dense) and matvec_exchange_mode() == "graph"
+    plan = None
+    if use_graph:
+        if is_sparse:
+            dest_flags = dest_flags_from_csr_indptr(h_indptr_arr, counts, offsets)
+        else:
+            dest_flags = dest_flags_all(counts)
+        plan = MatvecExchangePlan(comm, counts, offsets, dest_flags, n, config.GS_MATVEC_EXCHANGE_BYTES.get())
+        _trace_note("matvec_exchange", site="block_lanczos_array", **plan.describe())
 
     cdef np.ndarray wp_arr = np.empty((N, n), dtype=complex, order='C')
     cdef double complex[:, ::1] wp = wp_arr
     cdef double complex[:, ::1] q1, q0, beta_prev_dag_mv
     cdef double complex[:, ::1] alpha_i
 
-    # The MPI matvec below is a row-chunked reduce-scatter (one chunk per destination
-    # rank's own row range, `Reduce`d straight to it) -- it never materializes a
-    # (global_N, n_curr) product on any rank. This used to allocate exactly that buffer
+    # The `reduce`-mode MPI matvec below is a row-chunked reduce-scatter (one chunk per
+    # destination rank's own row range, `Reduce`d straight to it) -- it never materializes a
+    # (global_N, n_curr) product on any rank. (The `graph` mode keeps its own slots inside
+    # `plan` and does not use `chunk_buf`.) This used to allocate exactly that buffer
     # here and Allreduce it before discarding every row but this rank's own share; see
     # doc/plans/dc_smo_performance.md for the measured cost (several GiB/rank on a
     # production-size SrMnO3 solve). `chunk_buf`, sized to the largest chunk this rank
@@ -516,7 +550,7 @@ def block_lanczos_array_cy(
     # wp_arr was already built at the initial width -- an allocation gated the same way here
     # would leave chunk_view unassigned (and a slice into it a segfault) on every run whose
     # first sweep never deflates.
-    cdef np.ndarray chunk_buf = np.empty((int(np.max(counts)), n), dtype=complex, order='C') if mpi else None
+    cdef np.ndarray chunk_buf = np.empty((int(np.max(counts)), n), dtype=complex, order='C') if (mpi and not use_graph) else None
     cdef double complex[:, ::1] chunk_view = chunk_buf
 
     cdef list block_widths = list(block_widths_init) if block_widths_init is not None else [n] * start_it
@@ -566,7 +600,8 @@ def block_lanczos_array_cy(
     _force_reort = False
 
     while it < _buf_size:
-        q1 = np.ascontiguousarray(q[1])
+        q1_arr = np.ascontiguousarray(q[1])
+        q1 = q1_arr
         n_curr = q1.shape[1]
 
         # The block matvec below Reduces `dest_count * n_curr` elements per destination rank.
@@ -594,12 +629,33 @@ def block_lanczos_array_cy(
         if wp_arr.shape[1] != n_curr:
             wp_arr = np.empty((N, n_curr), dtype=complex, order='C')
             wp = wp_arr
-            if mpi:
+            if mpi and not use_graph:
                 chunk_buf = np.empty((int(np.max(counts)), n_curr), dtype=complex, order='C')
                 chunk_view = chunk_buf
 
         if is_sparse:
-            if mpi:
+            if use_graph:
+                for c0, c1 in plan.column_rounds(n_curr):
+                    wc = c1 - c0
+                    for nb_i, dest in enumerate(plan.destinations):
+                        dest_off = offsets[dest]
+                        dest_count = counts[dest]
+                        slot_view = plan.send_slot(nb_i, wc)
+                        with nogil:
+                            apply_sparse_csr_nogil(
+                                dest_off, dest_count, N, wc, c0,
+                                h_data, h_indices, h_indptr, q1, slot_view,
+                            )
+                    # This rank's own rows from its own columns never cross MPI.
+                    dest_off = offsets[rank]
+                    slot_view = plan.self_slot(wc)
+                    with nogil:
+                        apply_sparse_csr_nogil(dest_off, N, N, wc, c0, h_data, h_indices, h_indptr, q1, slot_view)
+                    if _MATVEC_DEBUG:
+                        print(f"[matvec rank={rank}] it={it} graph round=({c0},{c1}) {plan.describe()}", flush=True)
+                    plan.exchange(wc)
+                    plan.accumulate(wp_arr[:, c0:c1], wc)
+            elif mpi:
                 # One destination-rank row range at a time, Reduced straight to its owner --
                 # never a (global_N, n_curr) buffer. See the comment on `chunk_buf`'s
                 # declaration above; the same pattern (and its bit-identity caveat) lives in
@@ -611,7 +667,7 @@ def block_lanczos_array_cy(
                     dest_count = counts[dest]
                     with nogil:
                         apply_sparse_csr_nogil(
-                            dest_off, dest_count, N, n_curr,
+                            dest_off, dest_count, N, n_curr, 0,
                             h_data, h_indices, h_indptr, q1, chunk_view[:dest_count, :],
                         )
                     if _MATVEC_DEBUG:
@@ -637,9 +693,27 @@ def block_lanczos_array_cy(
                         comm.Reduce(chunk_buf[:dest_count, :], None, op=MPI.SUM, root=dest)
             else:
                 with nogil:
-                    apply_sparse_csr_nogil(0, global_N, N, n_curr, h_data, h_indices, h_indptr, q1, wp)
+                    apply_sparse_csr_nogil(0, global_N, N, n_curr, 0, h_data, h_indices, h_indptr, q1, wp)
         elif is_dense:
-            if mpi:
+            if use_graph:
+                for c0, c1 in plan.column_rounds(n_curr):
+                    wc = c1 - c0
+                    q1_cols = np.ascontiguousarray(q1_arr[:, c0:c1])
+                    for nb_i, dest in enumerate(plan.destinations):
+                        dest_off = offsets[dest]
+                        dest_count = counts[dest]
+                        slot_view = plan.send_slot(nb_i, wc)
+                        with nogil:
+                            apply_dense_nogil(
+                                dest_count, N, wc, h_dense[dest_off : dest_off + dest_count, :], q1_cols, slot_view,
+                            )
+                    dest_off = offsets[rank]
+                    slot_view = plan.self_slot(wc)
+                    with nogil:
+                        apply_dense_nogil(N, N, wc, h_dense[dest_off : dest_off + N, :], q1_cols, slot_view)
+                    plan.exchange(wc)
+                    plan.accumulate(wp_arr[:, c0:c1], wc)
+            elif mpi:
                 for dest in range(size):
                     dest_off = offsets[dest]
                     dest_count = counts[dest]

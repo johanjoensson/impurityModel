@@ -14,6 +14,12 @@ These tests force the empty-rank condition deterministically (independent of the
 hash distribution) by partitioning a known Hermitian matrix across the
 communicator with the last rank(s) deliberately empty, and assert the
 distributed run completes and reproduces the dense eigenvalues.
+
+They run under both ``GS_MATVEC_EXCHANGE`` spellings -- ``graph`` (the default: the
+sparse neighbourhood exchange, where the empty rank has no neighbours and must
+still join every collective) and ``reduce`` (one Reduce per root) -- with the
+CSR and the dense form of ``H``, and once with a width-2 block under a 16-byte
+``GS_MATVEC_EXCHANGE_BYTES`` so the exchange runs one column per round.
 """
 
 import numpy as np
@@ -24,7 +30,13 @@ from impurityModel.ed.BlockLanczosArray import Reort, _build_full_T, block_lancz
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
 
 
-def _run_distributed_array_lanczos(H_global, comm):
+@pytest.fixture(autouse=True)
+def _knobs_unset(monkeypatch):
+    monkeypatch.delenv("GS_MATVEC_EXCHANGE", raising=False)
+    monkeypatch.delenv("GS_MATVEC_EXCHANGE_BYTES", raising=False)
+
+
+def _run_distributed_array_lanczos(H_global, comm, form="csr", width=1):
     """Run the distributed array Block Lanczos on a contiguous row/col partition.
 
     ``H_global`` is the full Hermitian matrix (identical on every rank).  Each
@@ -45,15 +57,16 @@ def _run_distributed_array_lanczos(H_global, comm):
     # is the (global_N, 0) slice that triggers scipy's int32 index dtype.
     import scipy.sparse as sps
 
-    h_local = sps.csr_matrix(H_global[:, c0:c1])
+    h_local = sps.csr_matrix(H_global[:, c0:c1]) if form == "csr" else np.ascontiguousarray(H_global[:, c0:c1])
 
-    # Deterministic, globally-normalised starting block (single vector).
+    # Deterministic, globally-orthonormal starting block.
     rng = np.random.default_rng(0)
-    psi0_full = rng.standard_normal((global_N, 1)) + 1j * rng.standard_normal((global_N, 1))
-    psi0_full /= np.linalg.norm(psi0_full)
+    psi0_full = rng.standard_normal((global_N, width)) + 1j * rng.standard_normal((global_N, width))
+    psi0_full = np.linalg.qr(psi0_full)[0]
     psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
 
-    # Full Krylov space (n=1 block, global_N steps) reproduces every eigenvalue.
+    # Full Krylov space (global_N steps) reproduces every eigenvalue; a wider block closes
+    # the space in fewer steps and stops on the invariant subspace.
     alphas, betas, _Q, *_ = block_lanczos_array(
         psi0=psi0_local,
         h_op=h_local,
@@ -70,8 +83,11 @@ def _run_distributed_array_lanczos(H_global, comm):
 
 
 @pytest.mark.mpi
-def test_array_lanczos_empty_rank_tridiagonal():
+@pytest.mark.parametrize("mode", ["graph", "reduce"])
+@pytest.mark.parametrize("form", ["csr", "dense"])
+def test_array_lanczos_empty_rank_tridiagonal(mode, form, monkeypatch):
     """1D tight-binding chain; last rank empty; eigenvalues match the dense ones."""
+    monkeypatch.setenv("GS_MATVEC_EXCHANGE", mode)
     comm = MPI.COMM_WORLD
     global_N = 6
 
@@ -82,14 +98,17 @@ def test_array_lanczos_empty_rank_tridiagonal():
         H[i + 1, i] = -1.0
 
     exact = np.sort(np.linalg.eigvalsh(H))
-    got = _run_distributed_array_lanczos(H, comm)
+    got = _run_distributed_array_lanczos(H, comm, form=form)
 
     np.testing.assert_allclose(got, exact, atol=1e-8)
 
 
 @pytest.mark.mpi
-def test_array_lanczos_empty_rank_random_hermitian():
+@pytest.mark.parametrize("mode", ["graph", "reduce"])
+@pytest.mark.parametrize("form", ["csr", "dense"])
+def test_array_lanczos_empty_rank_random_hermitian(mode, form, monkeypatch):
     """Dense random Hermitian; last rank empty; eigenvalues match the dense ones."""
+    monkeypatch.setenv("GS_MATVEC_EXCHANGE", mode)
     comm = MPI.COMM_WORLD
     global_N = 6
 
@@ -98,6 +117,25 @@ def test_array_lanczos_empty_rank_random_hermitian():
     H = A + A.conj().T  # Hermitian
 
     exact = np.sort(np.linalg.eigvalsh(H))
-    got = _run_distributed_array_lanczos(H, comm)
+    got = _run_distributed_array_lanczos(H, comm, form=form)
+
+    np.testing.assert_allclose(got, exact, atol=1e-8)
+
+
+@pytest.mark.mpi
+def test_array_lanczos_graph_exchange_one_column_per_round(monkeypatch):
+    """A 16-byte budget makes every rank with a neighbour exchange one column per round: a
+    width-2 block runs two rounds per matvec and must still reproduce the spectrum."""
+    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "graph")
+    monkeypatch.setenv("GS_MATVEC_EXCHANGE_BYTES", "16")
+    comm = MPI.COMM_WORLD
+    global_N = 8
+
+    rng = np.random.default_rng(7)
+    A = rng.standard_normal((global_N, global_N)) + 1j * rng.standard_normal((global_N, global_N))
+    H = A + A.conj().T
+
+    exact = np.sort(np.linalg.eigvalsh(H))
+    got = _run_distributed_array_lanczos(H, comm, width=2)
 
     np.testing.assert_allclose(got, exact, atol=1e-8)
