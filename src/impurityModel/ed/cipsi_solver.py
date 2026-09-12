@@ -16,7 +16,7 @@ from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
-from impurityModel.ed.memory_estimate import format_bytes, peak_rss_bytes
+from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes, peak_rss_bytes, reset_peak_rss
 from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
@@ -287,6 +287,41 @@ def _manifold_request(n_kept, prev_kept):
     """
     growth = 0 if prev_kept is None else max(0, n_kept - prev_kept)
     return n_kept + max(_EIGENSTATE_PAD, 2 * growth)
+
+
+def _memory_growth_bound(budget_bytes, basis_size, p_now, p_next):
+    """The look-ahead half of ``expand``'s memory guard, as a callable for ``determine_new_Dj``.
+
+    A CIPSI selection round's transient memory scales with the candidate space it enumerates,
+    ``Hpsi_rows x p`` -- proportional to the basis it runs on and to the reference-block width.
+    Given this round's measured transient ``T`` on a basis of ``basis_size`` determinants, the
+    next round on ``b_next`` determinants with ``p_next`` references is predicted to peak at
+    ``rss + T * (b_next / basis_size) * (p_next / p_now)``, and the largest ``b_next`` that keeps
+    that under ``budget_bytes`` bounds how many determinants this round may admit.
+
+    Linear in the basis is conservative: the fan-out ``Hpsi_rows / basis`` falls as the basis
+    grows (10.4 -> 7.4 -> 5.8 across the crashed SrMnO3 sector's last cycles). ``p_next`` is the
+    request the next eigensolve will make (:func:`_manifold_request`), an upper bound on what it
+    keeps. No byte model anywhere: only the round's own measured peak, so a skewed partition or
+    an under-counted term in :mod:`memory_estimate` cannot fool it.
+
+    Returns ``callable(transient_bytes, rss_bytes) -> int | None``: the affordable admission, or
+    ``None`` when the transient was not measurable (``<= 0``).
+    """
+    p_ratio = max(1.0, float(p_next) / max(1, int(p_now)))
+    budget_bytes = float(budget_bytes)
+    basis_size = int(basis_size)
+
+    def affordable(transient_bytes, rss_bytes):
+        if transient_bytes <= 0:
+            return None
+        headroom = budget_bytes - float(rss_bytes)
+        if headroom <= 0.0:
+            return 0
+        next_max = basis_size * headroom / (float(transient_bytes) * p_ratio)
+        return max(0, int(next_max) - basis_size)
+
+    return affordable
 
 
 def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
@@ -900,7 +935,16 @@ class CIPSISolver:
         return new_Dj, stats
 
     def determine_new_Dj(
-        self, e_ref, psi_ref, H, de2_min, slater_cutoff=0, return_Hpsi_ref=False, gen_ops=None, max_new=None
+        self,
+        e_ref,
+        psi_ref,
+        H,
+        de2_min,
+        slater_cutoff=0,
+        return_Hpsi_ref=False,
+        gen_ops=None,
+        max_new=None,
+        affordable_growth=None,
     ):
         """Select the candidate determinants to add to the basis.
 
@@ -911,7 +955,29 @@ class CIPSISolver:
         before the symmetry closure, and ``self.last_selection`` records
         ``{"n_candidates", "n_admitted", "discarded_de2_mass", "subthreshold_de2_mass",
         "hpsi_rows"}``. Collective on ``basis.comm``.
+
+        ``affordable_growth``, optional
+            ``callable(transient_bytes, rss_bytes) -> int | None``: a second, *memory-derived*
+            cap on the admitted count, evaluated after the candidate space has been built and
+            scored but before anything is admitted. ``transient_bytes`` is this round's own
+            memory peak above the RSS it started from and ``rss_bytes`` the RSS it ends at, both
+            MAX over ranks; the callable returns how many new determinants the *next* round can
+            afford (``None`` for "no opinion", e.g. the peak could not be measured). The result
+            is combined with ``max_new`` by ``min``. Every rank must pass the same callable (or
+            ``None``): the measurement is collective. The selection stats then also carry
+            ``"round_transient_bytes"``, ``"round_rss_bytes"`` and ``"memory_admit_cap"``.
+
+            This is the look-ahead half of ``expand``'s memory guard: the round that would not
+            fit is the *next* one, on the basis this admission creates, and its cost scales with
+            that basis. A guard that only compares the high-water mark *after* a round can be
+            overrun in one step by an expansion growing 5-10x per cycle -- which is what killed
+            the SrMnO3 double-counting search at 3.6M determinants, one cycle after reading
+            2.4 GiB against a 2.5 GiB budget (``doc/plans/dc_smo_memory.md``, round 6).
         """
+        measure = affordable_growth is not None
+        if measure:
+            rss_start = current_rss_bytes()
+            peak_is_own = reset_peak_rss()
         Hpsi_ref = self._apply_block_and_redistribute(H, psi_ref, slater_cutoff)
         # Global row count of the shared support H|psi_ref> spans (before the not-in-basis
         # filter): the quantity `_apply_block_and_redistribute`'s and `_calc_de2`'s per-round
@@ -941,8 +1007,32 @@ class CIPSISolver:
             scores = _score_candidates(overlaps, e_ref, e_Dj, groups, chunk_size=config.GS_SELECTION_CHUNK.get())
         else:
             scores = np.zeros(0)
+        memory_stats = {}
+        if measure:
+            # The apply, the redistribution and the overlaps above are where this round peaks
+            # (measured: ~6x the owned candidate block, doc/plans/dc_smo_memory.md round 6);
+            # `_admit_top` below adds only per-candidate scalars. Sampled per rank, then reduced
+            # unconditionally -- the callable is replicated, so every rank takes this branch.
+            transient = (peak_rss_bytes() - rss_start) if peak_is_own else -1
+            transient = self._allreduce_max(int(transient))
+            # The baseline is the RSS the round *started* from, not the RSS now: at this point
+            # the candidate space (`Hpsi_ref`, `local_Djs`, `overlaps`, `scores`) is still
+            # resident, so "now" already contains most of the transient and would count it
+            # twice in the prediction `baseline + transient * growth`. Measured on SrMnO3 at
+            # 2 ranks: 953 MiB "now" against a ~600 MiB start, under a 1.2 GiB transient.
+            rss_base = self._allreduce_max(int(rss_start))
+            cap = affordable_growth(transient, rss_base) if transient >= 0 else None
+            if cap is not None:
+                cap = int(cap)
+                max_new = cap if max_new is None else min(int(max_new), cap)
+            memory_stats = {
+                "round_transient_bytes": int(transient),
+                "round_rss_bytes": int(rss_base),
+                "memory_admit_cap": cap,
+            }
         de2_mask, selection_stats = self._admit_top(scores, scores >= de2_min, max_new)
         selection_stats["hpsi_rows"] = hpsi_rows
+        selection_stats.update(memory_stats)
         self.last_selection = selection_stats
         new_Dj = set(itertools.compress(local_Djs, de2_mask))
 
@@ -1038,28 +1128,32 @@ class CIPSISolver:
 
         ``memory_budget_bytes``, optional
             Per-rank byte budget (e.g. ``memory_estimate.available_bytes_per_rank(comm) *
-            memory_estimate.DEFAULT_MEMORY_SAFETY``). ``None`` (the default) disables this
-            guard entirely -- today's behaviour, unchanged. When set, an *uncapped*
-            expansion (``basis.truncation_threshold`` left at ``inf``, i.e. exactly the
-            configuration that let the crashed SrMnO3 double-counting search run to
-            949,834 determinants before an uncatchable kernel OOM kill --
-            ``doc/plans/dc_smo_memory.md``) checks its own measured peak RSS -- already
-            sampled every cycle for the diagnostic log -- against this budget. The first
-            cycle whose RSS reaches it retroactively adopts a fixed-budget cap at the
-            *current* basis size, which hands control to the fixed-budget machinery above
-            for every subsequent cycle -- the same code path a pre-chosen
-            ``truncation_threshold`` would have taken, not a new one. This is a measured
-            empirical trip-wire, not a byte-formula prediction: it catches whatever the
-            memory model under- or over-counts (including a skewed hash partition, which
-            :func:`memory_estimate.estimate_gs_peak_bytes`'s own docstring admits it cannot
-            see), because it reacts to what the process actually allocated rather than to
-            what a formula expected it to.
+            memory_estimate.DEFAULT_MEMORY_SAFETY``). ``None`` (the default) disables both
+            guards below entirely and the expansion never samples its memory.
 
-            Deliberately **not yet wired to any production call site**
-            (``groundstate.py``'s two ``expand`` calls) -- doing so needs the same
-            per-call-site ``available_bytes_per_rank``/safety-factor plumbing
-            ``gs_num_wanted`` only partly has today. The guard is complete and tested in
-            isolation; wiring it in is the next step, not this one.
+            **Look-ahead bound** (:func:`_memory_growth_bound`, evaluated inside
+            :meth:`determine_new_Dj`): every selection round measures its own transient -- the
+            process high-water mark is reset before the round (``memory_estimate.reset_peak_rss``)
+            -- and this cycle's admission is capped so that the *next* round, on the basis it
+            creates and with the reference-block width the next eigensolve will request, is
+            predicted to fit the budget. When that bound decides the admission, the affordable
+            size becomes the fixed budget (``truncation_threshold``, tightened only) and the
+            fixed-budget machinery above takes over; ``truncation_report["memory_bound"]``
+            records it. This is what an expansion that admits everything needs: its basis grows
+            5-10x per cycle and the selection round's memory follows ``Hpsi_rows x p``, so a guard
+            that only looks at the mark *after* a round is overrun in a single step -- the SrMnO3
+            double-counting search read 2.4 GiB against a 2.5 GiB budget and was OOM-killed at
+            5.8 GiB one cycle later (``doc/plans/dc_smo_memory.md``, round 6).
+
+            **After-the-fact trip-wire** (the backstop): the first cycle whose measured peak RSS
+            (MAX over ranks, already sampled for the diagnostic log) reaches the budget adopts a
+            fixed-budget cap at the *current* basis size and warns. It fires whatever the cap --
+            a finite cap far beyond what memory allows is exactly the configuration that crashed
+            -- and only ever tightens one.
+
+            Both are empirical: they react to what the process actually allocated, so a skewed
+            hash partition or an under-counted term in :mod:`memory_estimate` cannot fool them.
+            Wired at both production call sites through ``groundstate.expand_memory_budget``.
         """
         if self.basis.restrictions is not None:
             H.set_restrictions(self.basis.restrictions)
@@ -1115,6 +1209,7 @@ class CIPSISolver:
         # the guard from ratcheting the threshold down every cycle once it has fired, since
         # `peak_rss` is a high-water mark and stays above the budget forever after.
         budget_tripped = False
+        memory_bound = False
         cap_cycles = 0
         no_improve = 0
         e0 = np.inf
@@ -1170,12 +1265,58 @@ class CIPSISolver:
                 budget = int(threshold) - self.basis.size
                 admit_target = max(budget, -(-int(threshold) // 10))
             old_size = self.basis.size
+            # The look-ahead half of the memory guard (see `_memory_growth_bound`): bound this
+            # cycle's admission by what the *next* selection round can afford, predicted from
+            # this round's own measured transient. `prev_kept` already holds the previous
+            # cycle's kept count here, so this is exactly the request the next loop head makes.
+            affordable_growth = None
+            if memory_budget_bytes is not None:
+                p_now = len(psi_refs)
+                affordable_growth = _memory_growth_bound(
+                    memory_budget_bytes, old_size, p_now, _manifold_request(p_now, prev_kept)
+                )
             with _trace_timed("cipsi_selection", cycle=cycle) as _sel_event:
                 new_Dj = self.determine_new_Dj(
-                    e_ref, psi_refs, H, de2_min, slater_cutoff=slaterWeightMin, gen_ops=gen_ops, max_new=admit_target
+                    e_ref,
+                    psi_refs,
+                    H,
+                    de2_min,
+                    slater_cutoff=slaterWeightMin,
+                    gen_ops=gen_ops,
+                    max_new=admit_target,
+                    affordable_growth=affordable_growth,
                 )
                 n_new = self._allreduce_sum(len(new_Dj))
                 sel = self.last_selection or {}
+                memory_cap = sel.get("memory_admit_cap")
+                # The memory bound decided this admission only if it was the tightest of the
+                # three limits (candidates above de2_min, an existing cap's `admit_target`, and
+                # itself). A bound looser than the cap already in force is not a memory event
+                # and must neither warn nor touch the threshold.
+                if (
+                    memory_cap is not None
+                    and memory_cap < sel.get("n_candidates", 0)
+                    and (admit_target is None or memory_cap < admit_target)
+                ):
+                    # The next round could not afford the full candidate set. Adopt the
+                    # affordable size as the fixed budget from here on -- the same machinery a
+                    # caller's cap uses -- tightening only (`min`), never loosening an existing cap.
+                    memory_bound = True
+                    previous = threshold
+                    threshold = min(float(threshold), float(old_size + memory_cap))
+                    capped = True
+                    self.basis.truncation_threshold = threshold
+                    if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
+                        was = "uncapped" if not np.isfinite(previous) else f"a cap of {int(previous):,}"
+                        print(
+                            f"WARNING: the selection round on {old_size:,} determinants peaked "
+                            f"{format_bytes(sel.get('round_transient_bytes', 0))} above its "
+                            f"{format_bytes(sel.get('round_rss_bytes', 0))} resident set against a "
+                            f"{format_bytes(memory_budget_bytes)} budget; the next round can afford "
+                            f"{memory_cap:,} of the {sel.get('n_candidates', 0):,} candidates. "
+                            f"Tightening {was} to {int(threshold):,}.",
+                            flush=True,
+                        )
                 _sel_event.update(
                     basis_size=int(old_size),
                     p=len(psi_refs),
@@ -1273,7 +1414,10 @@ class CIPSISolver:
             # must describe the *current* psi_refs -- after a best_basis restore above,
             # that is best_e_ref, not the last cycle's (possibly length-mismatched) e_ref.
             self.psi_refs = self.truncate(self.psi_refs, e_ref, slaterWeightMin=slaterWeightMin)
-        if cap_cycles > 0:
+        if cap_cycles > 0 or memory_bound:
+            # `memory_bound` alone (no refinement cycle ran) is the case where the memory guard
+            # found even a same-size round unaffordable and the expansion stopped where it stood;
+            # that must still be reported as a cap, not pass for a converged expansion.
             sel = self.last_selection or {}
             self.truncation_report = {
                 "cap_hit": True,
@@ -1282,6 +1426,7 @@ class CIPSISolver:
                 "threshold": int(threshold),
                 "discarded_de2_mass": float(sel.get("discarded_de2_mass", 0.0)),
                 "n_candidates_last": int(sel.get("n_candidates", 0)),
+                "memory_bound": bool(memory_bound),
             }
             rank = self.basis.comm.rank if self.basis.is_distributed else 0
             if rank == 0:

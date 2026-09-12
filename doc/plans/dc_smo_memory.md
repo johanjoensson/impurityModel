@@ -1151,7 +1151,17 @@ transient is measurable.
 
 ### Fixes this points to
 
-1. **A look-ahead admission cap in `expand`.** Reset the high-water mark before the selection round
+1. **A look-ahead admission cap in `expand`.** *Implemented (2026-09-12).* Measured on the
+   SrMnO3 archive at 2 ranks, cap 20,000: with the default budget the bound never binds and `e0`
+   is bit-identical to the guard-disabled run (`-16.940022121819`); with a budget of 0.12 x
+   available (666 MiB) it binds once, at the 120-determinant seed ("peaked 20.4 MiB above its
+   319.7 MiB resident set ... the next round can afford 1,705 of the 4,032 candidates"), adopts a
+   cap of 1,825 and hands over to fixed-budget refinement, and `truncation_report["memory_bound"]`
+   records it. Two things the first cut got wrong and the workload run caught: the baseline must
+   be the RSS the round *started* from (sampled inside the round, the candidate arrays are still
+   resident and the transient is counted twice -- 953 MiB "now" against a ~600 MiB start), and
+   the bound only counts as binding when it is tighter than an existing cap's own admission
+   target (otherwise it warned "tightening a cap of 20,000 to 20,000" on every cycle). Reset the high-water mark before the selection round
    and read the round's transient `T_k = HWM_after - RSS_before`. Bound the next basis
    `b_{k+1} = b_k + n_new` by `T_k x (b_{k+1}/b_k) x (p_next/p_k) <= budget - RSS_now`, re-truncating
    `new_Dj` through a second `_admit_top` (which needs the scores kept from `determine_new_Dj`); when

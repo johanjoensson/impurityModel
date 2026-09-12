@@ -883,16 +883,45 @@ def log_memory_budget(
     return {"available_per_rank": available, "gs_peak": gs, "gf_peak": gf, "fits": fits}
 
 
-def peak_rss_bytes():
-    """This process's high-water-mark RSS (``VmHWM`` from /proc/self/status); 0 if unreadable."""
+def _proc_status_bytes(key):
     try:
         with open("/proc/self/status") as f:
             for line in f:
-                if line.startswith("VmHWM:"):
+                if line.startswith(key):
                     return int(line.split()[1]) * 1024
     except OSError:
         pass
     return 0
+
+
+def peak_rss_bytes():
+    """This process's high-water-mark RSS (``VmHWM`` from /proc/self/status); 0 if unreadable."""
+    return _proc_status_bytes("VmHWM:")
+
+
+def current_rss_bytes():
+    """This process's resident set right now (``VmRSS`` from /proc/self/status); 0 if unreadable."""
+    return _proc_status_bytes("VmRSS:")
+
+
+def reset_peak_rss():
+    """Reset this process's ``VmHWM`` to its current RSS, so the next :func:`peak_rss_bytes` reads
+    the peak of what runs *after* this call rather than of the whole process lifetime.
+
+    Writes ``5`` to ``/proc/self/clear_refs`` (Linux >= 4.0; needs no privilege). Returns whether
+    it worked -- a caller that cannot reset must treat the peak as cumulative, not as its own.
+
+    Why it exists: ``VmHWM`` never decreases, so once one solve has set a high mark every later
+    step's own peak is invisible behind it. The SrMnO3 double-counting crash log shows exactly
+    that -- three CIPSI cycles whose selection rounds grew 10x each all reported the previous
+    sector's "2.0 GiB" (``doc/plans/dc_smo_memory.md``, round 6).
+    """
+    try:
+        with open("/proc/self/clear_refs", "w") as f:
+            f.write("5")
+        return True
+    except OSError:
+        return False
 
 
 def log_peak_vs_predicted(memory_budget, comm=None, verbose=True, label=""):

@@ -476,12 +476,17 @@ GS_MEMORY_BUDGET_SAFETY = Knob(
     trip-wire on measured RSS is indifferent to every one of those modelling errors, which is why
     it is the default rather than a tuning option.
 
-    Only uncapped expansions are affected: when `truncation_threshold` is already set, the
-    fixed-budget machinery governs and this guard never fires, so a capped run is bit-identical.
-    When it does fire it adopts a fixed-budget cap at the *current* basis size and warns, handing
-    control to the same code path a pre-chosen threshold would have taken. The margin has to cover
-    one cycle's growth, not a modelling error: the measured worst single-cycle increase on that
-    workload was ~50% of the running peak, which is what the 0.5 default is sized against.""",
+    Two guards share the budget, both on measured RSS. The **look-ahead** one
+    (`cipsi_solver._memory_growth_bound`) resets the process high-water mark before every CIPSI
+    selection round, measures that round's own transient, and caps the admission so the *next*
+    round -- whose cost scales with the basis this admission creates and with the reference-block
+    width -- is predicted to fit; when it binds, the affordable size becomes the fixed budget. It
+    exists because the after-the-fact trip-wire cannot catch an expansion that admits everything:
+    the basis grows 5-10x per cycle, so the crashed SrMnO3 run read 2.4 GiB against a 2.5 GiB
+    budget and was killed at 5.8 GiB one cycle later. The **after-the-fact** trip-wire stays as a
+    backstop: the first cycle whose measured peak reaches the budget tightens the cap to the current
+    basis size. Both only ever *tighten* a caller's cap, never loosen it, and a run that stays under
+    budget is bit-identical to one without the guard.""",
 )
 
 
