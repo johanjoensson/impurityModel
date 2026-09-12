@@ -12,6 +12,7 @@ from itertools import islice
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed import config
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     SlaterDeterminant,
@@ -561,3 +562,198 @@ def get_job_tasks(rank, ranks, tasks_tot):
     if rank < rest:
         tasks.append(tasks_tot[n_tot - rest + rank])
     return tuple(tasks)
+
+
+# ---------------------------------------------------------------------------------------------
+# Sparse reduce-scatter for the distributed array matvec
+# ---------------------------------------------------------------------------------------------
+
+#: Upper clamp on ``GS_MATVEC_EXCHANGE_BYTES``. ``Neighbor_alltoallv`` takes C-``int`` element
+#: counts; 1 GiB of complex128 is 2**26 elements, 32x below ``INT_MAX``, so no per-neighbour count
+#: or displacement produced under this clamp can overflow.
+MATVEC_EXCHANGE_MAX_BYTES = 1 << 30
+_COMPLEX_BYTES = 16
+
+
+def dest_flags_from_csr_indptr(indptr, counts, offsets):
+    """Which destination ranks this rank's local columns couple to, read from the CSR row pointers.
+
+    The array-path matvec kernels hold ``H`` as a ``(global_N, N_local)`` CSR -- every global row,
+    this rank's own columns -- so the rows owned by rank ``d`` (``offsets[d]`` to
+    ``offsets[d] + counts[d]``) receive a nonzero contribution from this rank iff that row range
+    holds at least one stored entry. Returns a bool array over ranks; an empty rank (``counts[d] == 0``)
+    is never a destination.
+    """
+    indptr = np.asarray(indptr)
+    counts = np.asarray(counts, dtype=np.int64)
+    offsets = np.asarray(offsets, dtype=np.int64)
+    return (indptr[offsets + counts] - indptr[offsets]) > 0
+
+
+def dest_flags_all(counts):
+    """Every non-empty rank is a destination -- for a dense ``H`` or any operator whose structure is
+    not readable (the graph is then complete, and column chunking alone bounds the buffers)."""
+    return np.asarray(counts, dtype=np.int64) > 0
+
+
+def matvec_column_chunk_width(need_max, width, budget_bytes):
+    """Columns per exchange round so that neither the send nor the receive buffer exceeds
+    ``budget_bytes``: ``need_max`` is the larger of the two buffers' row counts (rank-invariant by
+    construction, see :class:`MatvecExchangePlan`), ``width`` the block width. At least one column
+    per round; never more than the block has. Raises if even one column would overflow the C-int
+    element counts ``Neighbor_alltoallv`` takes -- a rank owning more than ``budget/16`` rows, which
+    is not a basis size this code runs at.
+    """
+    width = max(1, int(width))
+    budget = min(int(budget_bytes), MATVEC_EXCHANGE_MAX_BYTES)
+    if need_max <= 0:
+        return width
+    w_c = max(1, min(width, budget // (_COMPLEX_BYTES * int(need_max))))
+    if int(need_max) * w_c >= 2**31:
+        raise ValueError(
+            f"matvec exchange: {need_max} rows x {w_c} columns exceeds the C-int element count "
+            "Neighbor_alltoallv accepts; lower GS_MATVEC_EXCHANGE_BYTES or use more ranks"
+        )
+    return w_c
+
+
+class MatvecExchangePlan:
+    """One matvec's worth of sparse reduce-scatter over the coupling graph of ``H``.
+
+    The distributed array kernels (``block_lanczos_array_cy``, ``block_apply``'s array branch) hold
+    ``H`` as ``(global_N, N_local)`` -- every global row, this rank's columns -- so a block matvec is
+    a reduce-scatter: rank ``s`` contributes ``H[rows of d, cols of s] @ V_s`` to every destination
+    ``d``. ``routing_hash`` is linear in the occupied orbitals, so an operator term shifts an owner
+    by a constant and most of those contributions are structurally zero (measured 11% dense at 256
+    ranks on SrMnO3). This plan sends only the nonzero ones, over one ``Neighbor_alltoallv`` per
+    column round on a cached distributed-graph communicator, and sums what arrives in a fixed
+    source order -- deterministic, independent of MPI's reduction trees.
+
+    **Graph consistency.** Sources are learned from an ``Alltoall`` of the destination flags, never
+    inferred from Hermitian symmetry of ``H``: a distributed graph whose in-edges do not match the
+    out-edges declared elsewhere makes ``Neighbor_alltoallv`` hang rather than error.
+
+    **Every call here is collective and unconditional.** A rank owning no determinants has no
+    sources and no destinations, still builds the (empty) graph and still posts every zero-length
+    exchange; an early return on an empty neighbourhood would deadlock the others.
+
+    **Rank-invariant rounds.** The column chunk width is derived from one ``Allreduce(MAX)`` of the
+    per-rank buffer need, so every rank runs the same number of rounds; the same Allreduce carries
+    the block width and raises if the ranks disagree about it.
+
+    **Not for reuse across kernel calls.** Building one costs three tiny collectives (the flags
+    ``Alltoall``, the topology-cache ``Allgather``, the need ``Allreduce``). Holding a plan across
+    calls would keep a graph communicator that ``_cached_dist_graph``'s FIFO eviction can ``Free()``
+    behind it on a later redistribution, and ``H`` is rebuilt every CIPSI cycle anyway.
+
+    The self contribution (this rank's rows from its own columns) never touches MPI: it goes into
+    :meth:`self_slot` and is the first term of :meth:`accumulate`.
+    """
+
+    def __init__(self, comm, counts, offsets, dest_flags, width, budget_bytes):
+        self.comm = comm
+        self.rank = comm.rank
+        size = comm.size
+        counts = np.asarray(counts, dtype=np.int64)
+        self.counts = counts
+        self.n_local = int(counts[self.rank])
+        flags = np.asarray(dest_flags, dtype=bool).copy()
+        if flags.shape != (size,):
+            raise ValueError(f"dest_flags must have one entry per rank ({size}), got shape {flags.shape}")
+        flags &= counts > 0
+        flags[self.rank] = False
+        send_flags = flags.astype(np.uint8)
+        recv_flags = np.empty(size, dtype=np.uint8)
+        comm.Alltoall(send_flags, recv_flags)
+        self.destinations = [int(r) for r in np.flatnonzero(send_flags)]
+        self.sources = [int(r) for r in np.flatnonzero(recv_flags)]
+        self.graph = _cached_dist_graph(comm, self.sources, self.destinations)
+
+        self.send_rows = counts[self.destinations] if self.destinations else np.zeros(0, dtype=np.int64)
+        self.send_row_offsets = np.concatenate(([0], np.cumsum(self.send_rows))).astype(np.int64)
+        self.total_send_rows = int(self.send_rows.sum())
+        self.total_recv_rows = self.n_local * len(self.sources)
+
+        probe = np.array([max(self.total_send_rows, self.total_recv_rows), width, -width], dtype=np.int64)
+        comm.Allreduce(MPI.IN_PLACE, probe, op=MPI.MAX)
+        if probe[1] != -probe[2]:
+            raise RuntimeError(
+                f"block width disagrees across ranks: this rank has width {width}, the communicator "
+                f"spans [{-probe[2]}, {probe[1]}]. The width is set by block_tsqr's retained rank, "
+                "computed from a replicated R, and must be rank-invariant."
+            )
+        self.need_max = int(probe[0])
+        self.width = int(width)
+        self.w_c = matvec_column_chunk_width(self.need_max, self.width, budget_bytes)
+
+        self._send_flat = np.empty(self.total_send_rows * self.w_c, dtype=complex)
+        self._recv_flat = np.empty(self.total_recv_rows * self.w_c, dtype=complex)
+        self._self_flat = np.empty(self.n_local * self.w_c, dtype=complex)
+
+    # -- layout ---------------------------------------------------------------------------------
+
+    def column_rounds(self, width):
+        """``[(c0, c1), ...]`` column ranges, ``w_c`` wide except possibly the last."""
+        return [(c0, min(c0 + self.w_c, width)) for c0 in range(0, int(width), self.w_c)]
+
+    def _send_view(self, w):
+        return self._send_flat[: self.total_send_rows * w].reshape(self.total_send_rows, w)
+
+    def _recv_view(self, w):
+        return self._recv_flat[: self.total_recv_rows * w].reshape(self.total_recv_rows, w)
+
+    def send_slot(self, i, w):
+        """C-contiguous ``(counts[destinations[i]], w)`` block to fill with this rank's contribution
+        to destination ``i``'s rows for the current ``w`` columns."""
+        r0 = int(self.send_row_offsets[i])
+        r1 = int(self.send_row_offsets[i + 1])
+        return self._send_view(w)[r0:r1]
+
+    def self_slot(self, w):
+        """C-contiguous ``(N_local, w)`` block for this rank's own rows from its own columns."""
+        return self._self_flat[: self.n_local * w].reshape(self.n_local, w)
+
+    # -- communication --------------------------------------------------------------------------
+
+    def exchange(self, w):
+        """One ``Neighbor_alltoallv`` of the current ``w`` columns. Collective on every rank."""
+        n_dest = len(self.destinations)
+        n_src = len(self.sources)
+        s_counts = self.send_rows * w
+        s_displs = self.send_row_offsets[:n_dest] * w
+        r_counts = np.full(n_src, self.n_local * w, dtype=np.int64)
+        r_displs = np.arange(n_src, dtype=np.int64) * (self.n_local * w)
+        self.graph.Neighbor_alltoallv(
+            [self._send_view(w), s_counts, s_displs, MPI.C_DOUBLE_COMPLEX],
+            [self._recv_view(w), r_counts, r_displs, MPI.C_DOUBLE_COMPLEX],
+        )
+
+    def accumulate(self, out, w):
+        """``out[:, :] = self contribution + sum over sources (ascending rank)`` for ``w`` columns.
+        ``out`` is any ``(N_local, w)`` array view (a column slice of the result is fine)."""
+        out[...] = self.self_slot(w)
+        recv = self._recv_view(w)
+        n = self.n_local
+        for s in range(len(self.sources)):
+            np.add(out, recv[s * n : (s + 1) * n], out=out)
+
+    def describe(self):
+        """Rank-local summary for a ``solver_trace`` note: the measured graph degree and the
+        round structure this plan will run with."""
+        return {
+            "n_dest": len(self.destinations),
+            "n_src": len(self.sources),
+            "w_c": self.w_c,
+            "rounds": len(self.column_rounds(self.width)),
+            "send_bytes": self.total_send_rows * self.w_c * _COMPLEX_BYTES,
+            "recv_bytes": self.total_recv_rows * self.w_c * _COMPLEX_BYTES,
+        }
+
+
+def matvec_exchange_mode():
+    """The validated ``GS_MATVEC_EXCHANGE`` spelling (``graph`` or ``reduce``). The environment is
+    replicated across ranks, so an invalid value raises on every rank together."""
+    mode = config.GS_MATVEC_EXCHANGE.get()
+    if mode not in ("graph", "reduce"):
+        raise ValueError(f"GS_MATVEC_EXCHANGE must be 'graph' or 'reduce', got {mode!r}")
+    return mode
