@@ -3,6 +3,7 @@ import itertools
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed import config
 from impurityModel.ed.average import energy_cut
 from impurityModel.ed.basis_transcription import (
     build_distributed_vector,
@@ -10,14 +11,15 @@ from impurityModel.ed.basis_transcription import (
     build_state,
 )
 from impurityModel.ed.BlockLanczosArray import BlockBreakdown, Reort, block_normalize
-from impurityModel.ed import config
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
+from impurityModel.ed.memory_estimate import format_bytes, peak_rss_bytes
 from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.ed.solver_trace import note as _trace_note
+from impurityModel.ed.solver_trace import timed as _trace_timed
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 
 SOLVERS = {
@@ -160,6 +162,131 @@ def _degenerate_groups(e_ref, tol=DEGENERACY_TOL):
             groups.append(list(range(start, i)))
             start = i
     return groups
+
+
+def _chunk_groups(groups, chunk_size):
+    """Batch ``groups`` (a list of index lists) into runs of at least ``chunk_size`` reference
+    rows each, never splitting a group across a batch. ``chunk_size=None`` yields one batch
+    holding every group -- today's unchunked behaviour exactly."""
+    if chunk_size is None or not groups:
+        return [groups] if groups else []
+    batches = []
+    pending: list = []
+    pending_width = 0
+    for g in groups:
+        pending.append(g)
+        pending_width += len(g)
+        if pending_width >= chunk_size:
+            batches.append(pending)
+            pending, pending_width = [], 0
+    if pending:
+        batches.append(pending)
+    return batches
+
+
+def _score_candidates(overlaps, e_ref, e_Dj, groups, chunk_size=None):
+    """Manifold-summed Epstein-Nesbet importance ``max over degenerate groups of
+    (group-summed de2)``, computed in group-aligned batches over the reference (``p``) axis
+    instead of materializing the whole ``(p, n_Dj)`` de2/mask stack at once.
+
+    Exactly equal to the unchunked computation (``np.max(np.stack([...for g in groups]))``):
+    each group's contribution ``sum_{i in g} |<Dj|H|psi_i>|^2 / |E_i - E_Dj|`` is independent
+    of every other group, so accumulating an elementwise running max over already-processed
+    groups is identical to stacking every group's sum and maxing once at the end -- the same
+    "a degenerate manifold has no preferred basis, so only a quantity summed over the whole
+    manifold is well defined" argument :data:`DEGENERACY_TOL` and :func:`_degenerate_groups`
+    already rest on, one level up: a batch boundary is only ever placed *between* manifolds.
+
+    Written to size the CIPSI selection round's memory peak
+    (``doc/plans/dc_smo_memory.md``): the temporaries this function needs live only for one
+    batch's rows (``de``, ``de2``, ``mask``, all ``(batch_width, n_Dj)``) rather than for the
+    whole ``p``, at the cost of processing ``overlaps`` in ``ceil(p / chunk_size)`` passes
+    instead of one. ``overlaps`` and ``e_Dj`` themselves are **not** chunked here -- they come
+    from :meth:`CIPSISolver._candidate_overlaps_and_energies`'s single, unchanged diagonal-probe
+    pass, which is unsound to chunk (the probe needs the full candidate support to see every
+    candidate-candidate coupling).
+
+    Parameters
+    ----------
+    overlaps : ndarray, complex, shape (p, n_Dj)
+        ``overlaps[i, j] = <Dj_j | H | psi_i>``.
+    e_ref : ndarray, shape (p,)
+        Reference-state energies (ascending), the axis ``groups`` partitions.
+    e_Dj : ndarray, shape (n_Dj,)
+        Diagonal-probe candidate energies.
+    groups : list of list of int
+        Degenerate-manifold partition of ``range(p)`` (:func:`_degenerate_groups`).
+    chunk_size : int, optional
+        Target number of reference rows per batch (:func:`_chunk_groups`); ``None``
+        processes every group in one batch -- the unchunked computation, bit-for-bit.
+
+    Returns
+    -------
+    ndarray, shape (n_Dj,)
+        Real, non-negative candidate importance scores.
+    """
+    n_Dj = overlaps.shape[1]
+    scores = np.zeros(n_Dj, dtype=float)
+    for batch in _chunk_groups(groups, chunk_size):
+        idx = np.fromiter(itertools.chain.from_iterable(batch), dtype=np.intp)
+        de = np.maximum(np.abs(e_ref[idx, None] - e_Dj[None, :]), 1e-12)
+        ov = overlaps[idx]
+        de2 = np.zeros(ov.shape, dtype=float)
+        mask = np.abs(ov) > 1e-12
+        de2[mask] = np.square(np.abs(ov[mask])) / de[mask]
+        offset = 0
+        for g in batch:
+            width = len(g)
+            np.maximum(scores, de2[offset : offset + width].sum(axis=0), out=scores)
+            offset += width
+    return scores
+
+
+def _manifold_request(n_kept, prev_kept):
+    """How many eigenstates one CIPSI cycle should ask for, given what the last one kept.
+
+    ``expand`` used to ask for ``2 * n_kept``. The *request*, not the kept count, is what sizes
+    the eigensolver -- :func:`_size_subspace` turns it into roughly ``4 * num_wanted`` retained
+    Krylov columns, and :meth:`CIPSISolver.get_eigenvectors` holds that many residuals to ``tol``
+    -- so the doubling was a permanent tax. What it bought was keeping
+    ``get_eigenvectors``' ``need_more`` re-solve loop from ever firing, and that loop was measured
+    dead on every real workload precisely *because* of the doubling: a permanent 2x against an
+    occasional re-solve is the wrong side of the trade.
+
+    So: ask for what the last cycle actually kept, plus room to grow at twice the rate it last
+    grew at, floored at :data:`_EIGENSTATE_PAD`. An undershoot is not a wrong answer, it is one
+    extra solve -- ``need_more`` fires and ``get_eigenvectors`` re-solves, the mechanism that has
+    always been there for it.
+
+    Two conventions that are load-bearing rather than cosmetic:
+
+    * ``prev_kept is None`` means *no history*, and is **not** the same as ``0``. A first cycle has
+      no predecessor to extrapolate from. On the SrMnO3 double-counting reproduction cycle 0 runs
+      the *dense* branch, which ignores ``num_wanted`` entirely when given a cut and returns every
+      state inside it -- 86 of the 120-determinant seed basis, a property of a basis too small to
+      resolve the 0.23 eV window rather than of the physics. Scoring that as growth from zero
+      would size the next cycle at 258, larger than the 182 this function exists to cut.
+    * ``max(0, ...)`` on the growth: a *shrinking* manifold gets the flat pad, never a negative
+      margin. Shrinking is the common case once the seed basis is left behind (86 -> 78 -> 10 on
+      that same run), and it does mean a cycle following a large one still requests off the large
+      count. Deliberate: the request has to cover the manifold that is actually there, and only
+      the next cycle can know it shrank.
+
+    Parameters
+    ----------
+    n_kept : int
+        States the previous cycle kept inside the thermal cut.
+    prev_kept : int or None
+        What the cycle before *that* kept, or ``None`` when there was none.
+
+    Returns
+    -------
+    int
+        The unpadded request. ``get_eigenvectors`` adds its own ``_EIGENSTATE_PAD`` on top, for a
+        different purpose (certifying the boundary manifold is whole, not covering growth).
+    """
+    growth = 0 if prev_kept is None else max(0, n_kept - prev_kept)
+    return n_kept + max(_EIGENSTATE_PAD, 2 * growth)
 
 
 def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
@@ -499,24 +626,45 @@ class CIPSISolver:
         ``len(psi_ref)`` columns in a single :meth:`ManyBodyOperator.apply_block` call,
         instead of ``len(psi_ref)`` separate per-state applies. ``apply_block`` keeps a
         row if ANY column exceeds ``cutoff`` -- a safe superset per column, but not the
-        same as pruning each column to its own threshold -- so each split-out column is
-        re-pruned to ``cutoff`` before the cross-rank sum. This reproduces the old
+        same as pruning each column to its own threshold -- so every column still needs
+        pruning to ``cutoff`` before the cross-rank sum. This reproduces the old
         per-state ``applyOp(H, psi_i, cutoff)`` bit-for-bit, including pruning locally
         *before* redistributing (the same order every other probe in this module uses,
         e.g. ``psi_all_Dj`` above), rather than pruning the already-summed total.
 
+        The per-column prune runs as one vectorized pass over the block's own buffer-
+        protocol view (zero-copy, in place) rather than -- as it did before -- splitting
+        the block into ``p`` separate width-1 ``ManyBodyState`` objects
+        (:meth:`ManyBodyState.to_states`) and reassembling them
+        (:meth:`ManyBodyState.from_states`). That round trip copies the full determinant
+        key *for every (row, column) pair twice* (once out, once back in): measured at
+        ~104 B/pair, the dominant term in the CIPSI selection round's memory peak (see
+        ``doc/plans/dc_smo_memory.md`` -- it is what the crashed SrMnO3 DC search actually
+        ran out of memory in). Zeroing entries in place changes nothing ``to_states()``
+        would not also have produced: a dropped entry in a per-column state and an
+        explicit-zero entry in the shared block read identically to every downstream
+        consumer, and ``apply_block``'s own row-survival test already guarantees a row
+        that makes it this far has at least one column above ``cutoff`` -- so no row can
+        come out of this all-zero (the corner case where that guarantee is looser than it
+        looks costs nothing beyond an all-zero row briefly crossing the network, since
+        the identical ``prune_rows(0.0)`` after the redistribute below drops it either
+        way).
+
         Returns the merged **block** (not a list): ``_candidate_overlaps_and_energies``
         reads it via the buffer protocol (``np.asarray``) instead of iterating
-        ``.items()``. ``prune_rows(0.0)`` after the redistribute reproduces the old
-        ``to_states()``-based union exactly: a determinant survives iff at least one
-        column is genuinely nonzero, so an exact cross-rank cancellation on every
-        column of a given row is the only way to drop it -- a real selection-rule
-        cancellation, not a truncation artifact.
+        ``.items()``. ``prune_rows(0.0)`` after the redistribute is what turns an exact
+        cross-rank cancellation on every column of a row into that row's removal -- a
+        real selection-rule cancellation, not a truncation artifact.
         """
-        cols = H.apply_block(ManyBodyState.from_states(psi_ref), cutoff).to_states()
-        for s in cols:
-            s.prune_rows(cutoff)
-        merged = self.basis.redistribute_block(ManyBodyState.from_states(cols))
+        raw = H.apply_block(ManyBodyState.from_states(psi_ref), cutoff)
+        view = np.asarray(raw)  # zero-copy (rows, p) view; buffer.readonly=0, so this writes through
+        # `std::norm(v) <= cutoff**2` (no sqrt), matching ManyBodyBlockState::prune_rows'
+        # C++ criterion exactly -- not `np.abs(view) <= cutoff`, which takes a sqrt first and so
+        # is not guaranteed bit-identical to the C++ comparison at the cutoff boundary.
+        norm2 = view.real**2 + view.imag**2
+        view[norm2 <= cutoff * cutoff] = 0.0
+        del view, norm2  # release the buffer export -- prune_rows/redistribute below refuse to run while it's alive
+        merged = self.basis.redistribute_block(raw)
         merged.prune_rows(0.0)
         return merged
 
@@ -611,7 +759,11 @@ class CIPSISolver:
         # max(E_ref - E_Dj, eps) would collapse to eps and turn the selection into a
         # bare coupling filter.
         de = np.maximum(np.abs(e_ref[:, None] - e_Dj[None, :]), 1e-12)
-        de2 = np.zeros_like(overlaps)
+        # Real-valued by construction (a ratio of two non-negative magnitudes) -- `zeros_like`
+        # used to inherit `overlaps`' complex128 dtype, doubling this array's footprint for no
+        # reason (every value assigned into it is already real; found while sizing the CIPSI
+        # selection round's memory peak, doc/plans/dc_smo_memory.md).
+        de2 = np.zeros(overlaps.shape, dtype=float)
         mask = np.abs(overlaps) > 1e-12
         de2[mask] = np.square(np.abs(overlaps[mask])) / de[mask]
         return local_Djs, de2
@@ -625,8 +777,16 @@ class CIPSISolver:
         the cutoff under-admitted, with the all-tied fallback admitting the max-score
         tie class rather than nothing). Collective on ``basis.comm``; returns
         ``(admitted_mask, stats)`` with the ``last_selection``-shaped stats dict.
+
+        ``stats["subthreshold_de2_mass"]`` is the PT2 importance of candidates that never
+        passed ``mask`` (typically ``scores >= de2_min``) at all -- unconditional, unlike
+        ``discarded_de2_mass`` below (which is only populated once a cap actually binds).
+        It is the error bound a *de2_min* choice spends, as opposed to the error bound a
+        *cap* spends: the two are compared side by side when calibrating ``de2_min``
+        against the DC search's own answer (see ``doc/plans/dc_smo_memory.md``).
         """
         n_candidates = self._allreduce_sum(int(np.count_nonzero(mask)))
+        subthreshold_de2_mass = self._allreduce_sum(float(scores[~mask].sum()))
         discarded_de2_mass = 0.0
         if max_new is not None and n_candidates > max_new:
             if max_new <= 0:
@@ -651,6 +811,7 @@ class CIPSISolver:
             "n_candidates": n_candidates,
             "n_admitted": self._allreduce_sum(int(np.count_nonzero(mask))),
             "discarded_de2_mass": discarded_de2_mass,
+            "subthreshold_de2_mass": subthreshold_de2_mass,
         }
         return mask, stats
 
@@ -748,11 +909,23 @@ class CIPSISolver:
         optionally caps the *global* number of selected candidates: the top ``max_new``
         by de2 importance are kept (collective bisection cutoff, ties under-admitted)
         before the symmetry closure, and ``self.last_selection`` records
-        ``{"n_candidates", "n_admitted", "discarded_de2_mass"}``. Collective on
-        ``basis.comm``.
+        ``{"n_candidates", "n_admitted", "discarded_de2_mass", "subthreshold_de2_mass",
+        "hpsi_rows"}``. Collective on ``basis.comm``.
         """
         Hpsi_ref = self._apply_block_and_redistribute(H, psi_ref, slater_cutoff)
-        local_Djs, de2 = self._calc_de2(H, Hpsi_ref, e_ref)
+        # Global row count of the shared support H|psi_ref> spans (before the not-in-basis
+        # filter): the quantity `_apply_block_and_redistribute`'s and `_calc_de2`'s per-round
+        # transient scale with (see doc/plans/dc_smo_memory.md) -- recorded here, once, rather
+        # than re-derived by every caller that wants the per-cycle memory/timing picture.
+        hpsi_rows = self._allreduce_sum(len(Hpsi_ref))
+        # `_candidate_overlaps_and_energies` directly, not `_calc_de2`: the latter materializes
+        # the whole (p, n_Dj) de2 array in one shot, which is exactly the per-cycle memory peak
+        # `_score_candidates` below exists to bound (doc/plans/dc_smo_memory.md). `0`, not
+        # `slater_cutoff`, matches `_calc_de2`'s own default -- this call site never passed
+        # `slater_cutoff` through `_calc_de2` either, so this preserves that behaviour exactly
+        # rather than changing what the diagonal probe prunes to as a side effect of this
+        # refactor.
+        local_Djs, overlaps, e_Dj = self._candidate_overlaps_and_energies(H, Hpsi_ref, 0)
         # Importance = max over reference *manifolds* of the manifold-summed de2, not max over
         # individual reference states. Within a degenerate manifold the eigensolver returns an
         # arbitrary basis (all rotations share the same residual), and `max_i |<Dj|H|psi_i>|^2`
@@ -764,12 +937,12 @@ class CIPSISolver:
         # summing de2 directly equivalent. Reduces to the old max when the spectrum is
         # non-degenerate.
         if len(local_Djs):
-            de2_abs = np.abs(de2)
             groups = _degenerate_groups(e_ref, tol=_degeneracy_tol(e_ref, slater_cutoff))
-            scores = np.max(np.stack([de2_abs[g, :].sum(axis=0) for g in groups]), axis=0)
+            scores = _score_candidates(overlaps, e_ref, e_Dj, groups, chunk_size=config.GS_SELECTION_CHUNK.get())
         else:
             scores = np.zeros(0)
         de2_mask, selection_stats = self._admit_top(scores, scores >= de2_min, max_new)
+        selection_stats["hpsi_rows"] = hpsi_rows
         self.last_selection = selection_stats
         new_Dj = set(itertools.compress(local_Djs, de2_mask))
 
@@ -851,6 +1024,7 @@ class CIPSISolver:
         symmetry_generators=None,
         cap_e_tol=1e-8,
         max_cap_cycles=10,
+        memory_budget_bytes=None,
     ):
         """Expand the basis variationally (CIPSI) until it stops growing.
 
@@ -861,6 +1035,31 @@ class CIPSISolver:
         re-diagonalizes; cycles stop when the ground-state energy changes by less
         than ``cap_e_tol`` or after ``max_cap_cycles`` cycles. ``truncation_report``
         records whether (and how) the cap bound the expansion.
+
+        ``memory_budget_bytes``, optional
+            Per-rank byte budget (e.g. ``memory_estimate.available_bytes_per_rank(comm) *
+            memory_estimate.DEFAULT_MEMORY_SAFETY``). ``None`` (the default) disables this
+            guard entirely -- today's behaviour, unchanged. When set, an *uncapped*
+            expansion (``basis.truncation_threshold`` left at ``inf``, i.e. exactly the
+            configuration that let the crashed SrMnO3 double-counting search run to
+            949,834 determinants before an uncatchable kernel OOM kill --
+            ``doc/plans/dc_smo_memory.md``) checks its own measured peak RSS -- already
+            sampled every cycle for the diagnostic log -- against this budget. The first
+            cycle whose RSS reaches it retroactively adopts a fixed-budget cap at the
+            *current* basis size, which hands control to the fixed-budget machinery above
+            for every subsequent cycle -- the same code path a pre-chosen
+            ``truncation_threshold`` would have taken, not a new one. This is a measured
+            empirical trip-wire, not a byte-formula prediction: it catches whatever the
+            memory model under- or over-counts (including a skewed hash partition, which
+            :func:`memory_estimate.estimate_gs_peak_bytes`'s own docstring admits it cannot
+            see), because it reacts to what the process actually allocated rather than to
+            what a formula expected it to.
+
+            Deliberately **not yet wired to any production call site**
+            (``groundstate.py``'s two ``expand`` calls) -- doing so needs the same
+            per-call-site ``available_bytes_per_rank``/safety-factor plumbing
+            ``gs_num_wanted`` only partly has today. The guard is complete and tested in
+            isolation; wiring it in is the next step, not this one.
         """
         if self.basis.restrictions is not None:
             H.set_restrictions(self.basis.restrictions)
@@ -916,10 +1115,22 @@ class CIPSISolver:
         best_psis = None
         best_e_ref = None
         self.truncation_report = None
+        cycle = 0
+        # The kept manifold two cycles back, for the growth margin below. `None` until there is
+        # one, which is not the same as zero: a first cycle has no growth to extrapolate.
+        prev_kept = None
         while True:
+            if psi_refs is None:
+                num_wanted = 10
+                # Left at `None` deliberately; see `_manifold_request` for why that is not 0.
+                prev_kept = None
+            else:
+                n_kept = len(psi_refs)
+                num_wanted = _manifold_request(n_kept, prev_kept)
+                prev_kept = n_kept
             e_ref, psi_refs = self.get_eigenvectors(
                 H,
-                num_wanted=min(2 * len(psi_refs) if psi_refs is not None else 10, len(self.basis)),
+                num_wanted=min(num_wanted, len(self.basis)),
                 max_energy=de0_max,
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
@@ -950,11 +1161,73 @@ class CIPSISolver:
                 # (or fills the remaining budget, whichever is larger).
                 budget = int(threshold) - self.basis.size
                 admit_target = max(budget, -(-int(threshold) // 10))
-            new_Dj = self.determine_new_Dj(
-                e_ref, psi_refs, H, de2_min, slater_cutoff=slaterWeightMin, gen_ops=gen_ops, max_new=admit_target
-            )
             old_size = self.basis.size
-            n_new = self._allreduce_sum(len(new_Dj))
+            with _trace_timed("cipsi_selection", cycle=cycle) as _sel_event:
+                new_Dj = self.determine_new_Dj(
+                    e_ref, psi_refs, H, de2_min, slater_cutoff=slaterWeightMin, gen_ops=gen_ops, max_new=admit_target
+                )
+                n_new = self._allreduce_sum(len(new_Dj))
+                sel = self.last_selection or {}
+                _sel_event.update(
+                    basis_size=int(old_size),
+                    p=len(psi_refs),
+                    hpsi_rows=int(sel.get("hpsi_rows", 0)),
+                    n_candidates=int(sel.get("n_candidates", 0)),
+                    n_admitted=int(sel.get("n_admitted", 0)),
+                    n_new=int(n_new),
+                    subthreshold_de2_mass=float(sel.get("subthreshold_de2_mass", 0.0)),
+                )
+            # Unconditional collectives (CLAUDE.md: never gate a collective on rank-local
+            # state, and `self.basis.verbose` may differ across ranks) -- only the print
+            # below is gated. Cheap relative to the cycle they describe: single-scalar
+            # reductions against a selection round that costs seconds to minutes.
+            local_count = len(self.basis.local_basis)
+            peak_rss = peak_rss_bytes()
+            if self.basis.is_distributed:
+                local_max = self.basis.comm.allreduce(local_count, op=MPI.MAX)
+                local_min = self.basis.comm.allreduce(local_count, op=MPI.MIN)
+                peak_rss = self.basis.comm.allreduce(peak_rss, op=MPI.MAX)
+            else:
+                local_max = local_min = local_count
+            _trace_note(
+                "cipsi_cycle",
+                cycle=cycle,
+                local_max=int(local_max),
+                local_min=int(local_min),
+                vm_hwm_bytes=int(peak_rss),
+            )
+            if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
+                # Surfaced every cycle, not only once a cap has bound (see
+                # doc/plans/dc_smo_memory.md) -- `last_selection`'s counts used to be
+                # visible only behind the cap-hit WARNING below.
+                print(
+                    f"  cycle {cycle}: basis={old_size:,} p={len(psi_refs):,} "
+                    f"Hpsi_rows={sel.get('hpsi_rows', 0):,} candidates={sel.get('n_candidates', 0):,} "
+                    f"admitted={sel.get('n_admitted', 0):,} new={n_new:,} "
+                    f"subthreshold_de2_mass={sel.get('subthreshold_de2_mass', 0.0):.3e} "
+                    f"local[min,max]=[{local_min:,},{local_max:,}] VmHWM={format_bytes(peak_rss)}",
+                    flush=True,
+                )
+            cycle += 1
+            if memory_budget_bytes is not None and not capped and peak_rss >= memory_budget_bytes:
+                # `peak_rss` and `self.basis.size` are both already rank-replicated at this point
+                # (VmHWM was just MAX-allreduced above; `Basis.size` is the global count by
+                # construction), so every rank evaluates this condition identically without a
+                # separate collective for the decision itself.
+                threshold = float(self.basis.size)
+                capped = True
+                # Written back, not just held locally: a caller inspecting
+                # `basis.truncation_threshold` after `expand()` returns must see the cap that
+                # actually governed the rest of this run, not the `inf` it was constructed with.
+                self.basis.truncation_threshold = threshold
+                if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
+                    print(
+                        f"WARNING: measured per-rank RSS {format_bytes(peak_rss)} reached the "
+                        f"{format_bytes(memory_budget_bytes)} memory budget mid-expansion; adopting "
+                        f"a fixed-budget cap at the current basis ({self.basis.size:,} determinants) "
+                        "rather than risk an uncatchable OOM kill.",
+                        flush=True,
+                    )
             if capped and self.basis.size + n_new > threshold:
                 # Fixed-budget CIPSI cycle: make room by dropping the currently least
                 # important determinants (by eigenvector amplitude), then admit the
@@ -1316,8 +1589,7 @@ class CIPSISolver:
                 )
                 num_required = max(1, num_wanted - _EIGENSTATE_PAD)
 
-            if len(e_ref) > 0:
-                psi_refs = build_state(self.basis, psi_refs_arr.T, slaterWeightMin=slaterWeightMin)
+            valid_idx = None
             if max_energy is not None and len(e_ref) > 0:
                 # Rank-locally, unlike the `need_more`/`exhausted` decision twenty lines up, and
                 # deliberately: this cut sets `len(e_ref)`, which callers feeding `psi_refs` into
@@ -1352,8 +1624,32 @@ class CIPSISolver:
                         f"basis and makes the results depend on the MPI rank count.",
                         flush=True,
                     )
+                # Phase 0 measurement (doc/plans/dc_smo_memory.md): `n_computed` is what the
+                # eigensolver was held to and what `build_state` above materialised; `n_kept` is
+                # what survives the thermal cut and becomes the next cycle's `psi_refs`. The gap
+                # between them is what `expand`'s `num_wanted = 2 * len(psi_refs)` buys, and the
+                # only number that says whether the manifold grows with the basis.
+                _trace_note(
+                    "thermal_manifold",
+                    n_computed=len(e_ref),
+                    n_kept=len(valid_idx),
+                    num_wanted=int(num_wanted),
+                    n_dets=len(self.basis),
+                    need_more=bool(need_more),
+                )
                 e_ref = e_ref[valid_idx]
-                psi_refs = [psi_refs[i] for i in valid_idx]
+            if len(e_ref) > 0:
+                # Built *after* the cut, not before it: `build_state` materialises one
+                # `ManyBodyState` per column, each carrying every determinant this rank owns, and
+                # the cut above typically keeps well under half of them (measured on the SrMnO3
+                # double-counting solve: 104 kept of 206 computed). Building all of them and then
+                # dropping most is the same waste as the request itself, one layer down -- and it
+                # peaks at the same moment the Krylov store is still live. Selecting the columns
+                # first is otherwise a no-op: `valid_idx` is already the energy-ascending order
+                # the old list comprehension applied, so the retained states and their order are
+                # unchanged.
+                cols = psi_refs_arr if valid_idx is None else psi_refs_arr[:, valid_idx]
+                psi_refs = build_state(self.basis, cols.T, slaterWeightMin=slaterWeightMin)
 
         else:
             if h_matrix is None:

@@ -57,6 +57,37 @@ _KRYLOV_NODE_BYTES = 72
 _COMPLEX_BYTES = 16
 # scipy CSC complex128: 16 B value + index/indptr (int32 or int64) per stored element.
 _CSR_BYTES_PER_NNZ = 24
+# Default candidate fan-out per basis determinant during a CIPSI selection round
+# (`CIPSISolver.determine_new_Dj`'s `H|psi_ref>` block) -- a *different*, larger quantity than
+# `nnz_per_state` above: this is the raw H-connectivity a selection round explores, before the
+# pruning that produces the smaller, *stored* nnz. Measured directly on the SrMnO3 workload this
+# term exists for (`doc/plans/dc_smo_memory.md`): `build_local_operator_list` gives a mean raw
+# fan-out of 41.1 rows/determinant (max 47); the CIPSI cycles' own `H·psi_ref` row counts ranged
+# 16-35 rows/determinant early in the expansion (partial-overlap effects shrink it below the raw
+# figure as the basis grows). 40 sits at the conservative (raw-connectivity) end on purpose --
+# this term exists because the model was 15-23x *too optimistic* once, and the fix must not
+# repeat that in the opposite corner case.
+_SELECTION_FANOUT_DEFAULT = 40
+# Per (determinant, reference-column) pair, the CIPSI selection round's own temporaries
+# (`CIPSISolver._apply_block_and_redistribute`, `_candidate_overlaps_and_energies`,
+# `_score_candidates`) hold at once, summed from the arrays that survive Phase 2's rewrite
+# (`doc/plans/dc_smo_memory.md`): the redistributed H|psi_ref> block and the derived coupling
+# matrix `overlaps` (complex128, 16 B each -- roughly equal-sized and briefly coexistent, so
+# counted as 2x16), the Epstein-Nesbet denominator `de` (float64, 8 B) and numerator `de2`
+# (float64, 8 B -- was complex128 before the dtype fix Phase 2 also made) and the `>1e-12` mask
+# (bool, 1 B). `_score_candidates` chunks this last group over `GS_SELECTION_CHUNK`, but this
+# constant does not assume the knob is set (its default, unchunked, is what every call site gets
+# unless someone opts in) -- see `estimate_gs_peak_bytes`'s `selection_bytes` term.
+#
+# 50 is derived from these array sizes, not fitted to a VmHWM measurement: the pre-Phase-2
+# round trip this replaced measured 80-170 B/pair end to end (see the growth-cycle fit in
+# `doc/plans/dc_smo_memory.md`), and summing what Phase 2 actually removed --
+# `ManyBodyState.to_states`/`from_states`'s ~72 B/pair key-copy round trip, `de2_abs`'s 8 B/pair,
+# the group-stack's up to 8 B/pair, and the 8 B/pair the complex-to-float `de2` fix recovers --
+# against that range lands close to 50, not further out at the sweep's own uncertainty. A clean
+# controlled sweep (isolating this term the way `doc/plans/truncation_reliability.md`'s VmHWM
+# sweep isolated `_PY_BASIS_OVERHEAD_BYTES`) should replace this once cluster time allows it.
+_SELECTION_BYTES_PER_PAIR = 50
 # Python-side Basis bookkeeping per local determinant: SlaterDeterminant wrapper object,
 # local_basis list slot and _index_dict entry (over and above bytes_per_determinant, which
 # is the flat_map entry + key heap). Calibrated by the VmHWM sweep in
@@ -348,7 +379,15 @@ def resolve_sizing_block_width(gf_block_width):
     return max(gf_block_width, resolve_gs_block_width(gf_block_width))
 
 
-def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_per_state=100, num_wanted=None):
+def estimate_gs_peak_bytes(
+    n_dets,
+    n_spin_orbitals,
+    block_width=4,
+    ranks=1,
+    nnz_per_state=100,
+    num_wanted=None,
+    selection_fanout=_SELECTION_FANOUT_DEFAULT,
+):
     """Predicted per-rank peak bytes of the ground-state (CIPSI + array-kernel) path.
 
     Counts the ``Basis`` bookkeeping and the CSR Hamiltonian snapshot (both hash
@@ -357,8 +396,19 @@ def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_
     ``max(counts)`` -- the largest single rank's local row/column count under the hash
     partition, approximated here as ``local`` since a materially skewed partition, not
     ``global_N``, is now the risk this term misses -- see :data:`DEFAULT_MEMORY_SAFETY`,
-    which is what absorbs it: this function has no way to see another rank's share), and
-    the retained dense Krylov blocks at the ground-state default ``reort="full"``.
+    which is what absorbs it: this function has no way to see another rank's share), the
+    retained dense Krylov blocks at the ground-state default ``reort="full"``, and the
+    CIPSI selection round's own transient (``selection_bytes`` below).
+
+    The selection term is what this function was missing until
+    ``doc/plans/dc_smo_memory.md``: a production SrMnO3 double-counting search was
+    OOM-killed at a basis this function (pre-fix) predicted needed 2.5 GiB/rank, of a
+    5 GiB/rank budget -- 15-23x too optimistic across every plausible choice of its other
+    inputs, because nothing here charged for ``CIPSISolver.determine_new_Dj``'s own
+    per-cycle arrays (``_apply_block_and_redistribute``'s redistributed ``H|psi_ref>``
+    block, ``_candidate_overlaps_and_energies``'s coupling matrix, ``_score_candidates``'s
+    Epstein-Nesbet temporaries), which scale with the *raw* candidate connectivity, not
+    with the basis or the stored Hamiltonian this function already counted.
 
     Parameters
     ----------
@@ -373,12 +423,18 @@ def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_
         when that knob is unset, in which case it is a placeholder, not a measurement: Phase 0
         found the real width growing with the determinant cap itself (2-16 at cap 2000,
         105-315 at the ~1M production cap that crashed), so it has no honest static bound until
-        the knob is set. :func:`log_memory_budget` warns on that path.
+        the knob is set. :func:`log_memory_budget` warns on that path. Also the width
+        ``selection_bytes`` sizes: the selection round's own block width is
+        ``len(psi_ref)``, which tracks this same quantity (see
+        ``cipsi_solver.CIPSISolver.expand``'s warm-start feedback loop).
     ranks : int
         MPI ranks sharing the basis.
     nnz_per_state : int
         Stored Hamiltonian elements per basis state (measure on a small run; grows with
-        the number of one-/two-body terms).
+        the number of one-/two-body terms). Not the same quantity as ``selection_fanout``
+        below -- this is the *pruned, stored* matrix; measured 6.4 on SrMnO3 against a raw
+        connectivity of ~41 (``doc/plans/dc_smo_memory.md``), so conflating the two would
+        undercount the selection term by an order of magnitude.
     num_wanted : int, optional
         Forwarded to :func:`_gs_krylov_columns`; ``None`` assumes ``2 * block_width`` (the
         pre-Phase-4 coupled regime -- still the best available default even when
@@ -389,6 +445,15 @@ def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_
         same width sweep that sets ``GS_MAX_BLOCK_WIDTH`` (Phase 0 recorded the real ratio
         growing to ~30x this default at production scale); pass it here once measured, the same
         way ``nnz_per_state`` is a measured, not derived, input.
+    selection_fanout : int
+        Candidate determinants a CIPSI selection round connects to, per basis determinant,
+        *before* pruning (see :data:`_SELECTION_FANOUT_DEFAULT`). Deliberately not threaded
+        through :func:`suggest_truncation_threshold`/:func:`log_memory_budget` yet -- unlike
+        ``nnz_per_state`` and ``num_wanted``, no measured value from a real width sweep exists
+        for it (that sweep needs the multi-rank run ``doc/plans/dc_smo_memory.md`` Phase 1
+        describes); every production call site therefore gets this conservative default,
+        which is deliberately biased toward *over*-predicting the peak -- the failure mode
+        this term exists to close was the model being too optimistic, not too pessimistic.
 
     Returns
     -------
@@ -402,7 +467,14 @@ def estimate_gs_peak_bytes(n_dets, n_spin_orbitals, block_width=4, ranks=1, nnz_
     # (local, w) result live at once; max(counts) ~ local under a balanced hash partition.
     replicated_bytes = 2 * local * block_width * _COMPLEX_BYTES
     krylov_bytes = local * _gs_krylov_columns(n_dets, block_width, num_wanted) * _COMPLEX_BYTES
-    return basis_bytes + csr_bytes + replicated_bytes + krylov_bytes
+    # CIPSI selection round transient (doc/plans/dc_smo_memory.md): `local * selection_fanout`
+    # approximates this rank's local candidate-row count the same way `local * nnz_per_state`
+    # approximates the stored CSR nnz above -- a different, larger quantity (raw connectivity
+    # before pruning), times `block_width` reference columns, times the per-pair cost that
+    # survives Phase 2's rewrite of `_apply_block_and_redistribute` /
+    # `_candidate_overlaps_and_energies` / `_score_candidates`.
+    selection_bytes = local * selection_fanout * block_width * _SELECTION_BYTES_PER_PAIR
+    return basis_bytes + csr_bytes + replicated_bytes + krylov_bytes + selection_bytes
 
 
 def _read_cgroup_int(path):

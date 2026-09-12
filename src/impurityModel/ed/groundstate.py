@@ -18,7 +18,14 @@ from impurityModel.ed.gs_statistics import (
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed.memory_estimate import log_memory_budget, resolve_gs_block_width, suggest_truncation_threshold
+from impurityModel.ed import config
+from impurityModel.ed.memory_estimate import (
+    DEFAULT_MEMORY_SAFETY,
+    available_bytes_per_rank,
+    log_memory_budget,
+    resolve_gs_block_width,
+    suggest_truncation_threshold,
+)
 from impurityModel.ed.observables import (
     block_group_labels,
     casimir_operator,
@@ -158,6 +165,30 @@ def sector_key(trial_N0, frozen_occupations=None):
     total = sum(int(occ) for occ in trial_N0.values())
     pinned = tuple(sorted((i, int(trial_N0[i])) for i in trial_N0 if i in frozen_occupations))
     return total, pinned
+
+
+def expand_memory_budget(comm):
+    """Per-rank RSS trip-wire for :meth:`CIPSISolver.expand`, or ``None`` when disabled.
+
+    .. warning:: **Collective on** ``comm`` -- :func:`memory_estimate.available_bytes_per_rank`
+       splits a shared-memory sub-communicator and min-reduces the result, so every rank must
+       reach this. It is called unconditionally at both :meth:`CIPSISolver.expand` call sites for
+       that reason; never move it behind a rank-local test.
+
+    The fraction comes from ``GS_MEMORY_BUDGET_SAFETY``, defaulting to
+    :data:`memory_estimate.DEFAULT_MEMORY_SAFETY`. A safety of ``0`` disables the guard and
+    returns ``None``, which restores the behaviour in which an uncapped expansion grows until the
+    kernel kills the rank.
+
+    Shared by both call sites on purpose: the budget is a policy, and two copies of a policy
+    expressed as arithmetic is how they drift.
+    """
+    safety = config.GS_MEMORY_BUDGET_SAFETY.get()
+    if safety is None:
+        safety = DEFAULT_MEMORY_SAFETY
+    if safety <= 0.0:
+        return None
+    return int(safety * available_bytes_per_rank(comm))
 
 
 def build_basis_and_solver(
@@ -450,6 +481,10 @@ def _solve_sector_core(
                 slaterWeightMin=slaterWeightMin,
                 solver=cipsi_solver_method,
                 reort=reort,
+                # Measured-RSS trip-wire. Only uncapped expansions are affected (a set
+                # `truncation_threshold` means the fixed-budget path governs and this never
+                # fires), so a capped run stays bit-identical. See `expand_memory_budget`.
+                memory_budget_bytes=expand_memory_budget(comm),
                 # `symmetry_generators` deliberately not forwarded: CIPSISolver.expand re-derives
                 # them from the H it is actually expanding when the argument is None, which is
                 # always the right operator. Passing a set derived elsewhere risks handing it
@@ -1179,6 +1214,7 @@ def solve_ground_state(
             de2_min=de2_min,
             slaterWeightMin=slaterWeightMin,
             solver=cipsi_solver_method,
+            memory_budget_bytes=expand_memory_budget(comm),
             # `symmetry_generators` deliberately not passed: expand re-derives them from the H it
             # is expanding (and the closure is opt-in, cipsi_solver.SYMMETRY_CLOSURE_DEFAULT).
         )

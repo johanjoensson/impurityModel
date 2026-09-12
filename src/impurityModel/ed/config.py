@@ -430,6 +430,60 @@ GS_MAX_BLOCK_WIDTH = Knob(
     becomes the default rather than an opt-in override.""",
 )
 
+GS_SELECTION_CHUNK = Knob(
+    name="GS_SELECTION_CHUNK",
+    kind="int",
+    default=None,  # unset = unchunked (today's behaviour): the whole (p, n_Dj) score stack at once
+    minimum=1,
+    group="groundstate",
+    doc="""Caps how many reference rows (`p`, `len(psi_ref)` in `CIPSISolver.determine_new_Dj`)
+    the CIPSI selection round's Epstein-Nesbet score computation processes at once
+    (`cipsi_solver._score_candidates`), instead of materializing the whole `(p, n_Dj)` de2/mask
+    temporary stack in one shot. `n_Dj` -- the candidate count -- reaches the hundreds of
+    thousands at production scale, so that stack (several same-shape arrays, measured
+    ~50 B/element combined) is a real per-cycle memory peak: see `doc/plans/dc_smo_memory.md`,
+    written against the SrMnO3 double-counting search that was OOM-killed with a selection round
+    at p~68-104 and n_Dj in the hundreds of thousands. Chunking happens on group boundaries only
+    (`_degenerate_groups`) -- a degenerate manifold is never split across a chunk -- which is what
+    keeps the result exact: the manifold-summed score is `max over independent groups of
+    (group-summed de2)`, and an elementwise running max over already-processed groups equals
+    stacking every group and maxing once at the end. Unset (the default) processes every group in
+    one chunk, i.e. today's behaviour, bit-for-bit; a chosen chunk size should come from the same
+    width sweep that sets `GS_MAX_BLOCK_WIDTH`, not from a guess.""",
+)
+
+
+GS_MEMORY_BUDGET_SAFETY = Knob(
+    name="GS_MEMORY_BUDGET_SAFETY",
+    kind="float",
+    # Derived from `memory_estimate.DEFAULT_MEMORY_SAFETY` rather than repeating 0.5: one source of
+    # truth for "what fraction of available RAM is it safe to be holding" (see the no-duplicated-
+    # tolerance-literals convention). 0 disables the trip-wire.
+    default=None,
+    minimum=0.0,
+    group="groundstate",
+    doc="""Fraction of `memory_estimate.available_bytes_per_rank` at which an **uncapped** CIPSI
+    ground-state expansion stops growing its basis, measured against its own peak RSS rather than
+    against a predicted one (`CIPSISolver.expand`'s `memory_budget_bytes`). Unset uses
+    `memory_estimate.DEFAULT_MEMORY_SAFETY`; `0` disables the guard and restores the pre-2026-09
+    behaviour, in which an uncapped expansion grows until the kernel OOM-kills the rank.
+
+    This exists because the *predictive* path cannot be trusted at scale. Measured on the SrMnO3
+    double-counting search that was OOM-killed (`doc/plans/dc_smo_memory.md`):
+    `estimate_gs_peak_bytes` under-predicted the per-rank peak by 4-5x on a laptop-sized basis and
+    by **372-1028x** at 256 ranks, because the dominant term is not proportional to a rank's own
+    determinant count -- a 14.5x spread in local determinants moves per-rank RSS by ~10%. A
+    trip-wire on measured RSS is indifferent to every one of those modelling errors, which is why
+    it is the default rather than a tuning option.
+
+    Only uncapped expansions are affected: when `truncation_threshold` is already set, the
+    fixed-budget machinery governs and this guard never fires, so a capped run is bit-identical.
+    When it does fire it adopts a fixed-budget cap at the *current* basis size and warns, handing
+    control to the same code path a pre-chosen threshold would have taken. The margin has to cover
+    one cycle's growth, not a modelling error: the measured worst single-cycle increase on that
+    workload was ~50% of the running peak, which is what the 0.5 default is sized against.""",
+)
+
 
 # --- Double counting: search diagnostics -----------------------------------------------------
 
@@ -588,6 +642,8 @@ KNOBS: dict[str, Knob] = _register(
     GF_RIXS_ADAPTIVE_TOL,
     GF_RIXS_ADAPTIVE_BATCH,
     GS_MAX_BLOCK_WIDTH,
+    GS_SELECTION_CHUNK,
+    GS_MEMORY_BUDGET_SAFETY,
     DC_CAP_STRATEGY,
     DC_CAP_LADDER_START,
     DC_CAP_LADDER_MAX_RUNGS,
@@ -603,7 +659,7 @@ GROUP_TITLES = {
     "convergence": "Block-Lanczos convergence monitor",
     "rixs-solvers": "RIXS shift-recycling solver tiers",
     "rixs-sampling": "RIXS incoming-energy sampling",
-    "groundstate": "Ground-state block-Lanczos width",
+    "groundstate": "Ground-state block-Lanczos width and CIPSI selection sizing",
     "double-counting": "Double-counting search: the cap ladder and diagnostics",
     "sigma": "Self-energy causality tolerance",
 }

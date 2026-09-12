@@ -42,6 +42,7 @@ from impurityModel.ed.block_view import (
     width_synced_total,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
+from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
 
 __all__ = [
@@ -482,6 +483,28 @@ def _trlm_core(
         # from. Sizing off p_resid (not the constant p) is what keeps the deflating branch --
         # whose residual can be wider than p -- inside T_full.
         dim = k_ret + (m - k_blocks) * p_resid
+        # `T_full` is allocated at `dim` *before* a single continuation block is built, and `dim`
+        # multiplies `p_resid` by the whole continuation length. On the textbook arm `p_resid` is
+        # the sweep width `p`; on the Rayleigh-Ritz rebuild arm the residual has rank up to
+        # `k_ret`, which would size this allocation off a width the loop may never reach -- at
+        # SrMnO3's production point, `186 + 111*186 = 20,832`, i.e. a 6.9 GB `np.zeros` on every
+        # rank with nothing bounding it.
+        #
+        # Measured, so the concern can be retired rather than carried: over 115 restarts of the
+        # SrMnO3 double-counting reproduction at three determinant caps, `dim` never once exceeded
+        # `m * p`, `p_resid` never exceeded `p` (6), and `orth_err` sat at ~2e-12 against a
+        # `RESTART_ORTH_TOL` of 1.5e-8 -- the rebuild arm does not fire at the ground state's
+        # `reort="full"`. Kept as a trace note, not an assertion: it is the cheap way to notice if
+        # a future caller at a weaker `reort` ever does reach that arm.
+        _trace_note(
+            "trlm_restart",
+            restart=int(restart),
+            k_ret=int(k_ret),
+            p_resid=int(p_resid),
+            dim=int(dim),
+            budget=int(m * p),
+            orth_err=float(orth_err),
+        )
         T_full = np.zeros((dim, dim), dtype=complex)
         T_full[:k_ret, :k_ret] = T_lead
 
