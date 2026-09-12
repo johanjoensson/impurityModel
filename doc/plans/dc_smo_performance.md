@@ -1090,7 +1090,35 @@ verdict is the cluster A/B in `arrhenius_handover/matvec_ab.py`: a real `solve_s
 20,000 and 300,000 under `reduce` and `graph` alternately, printing wall time, `e0` and the
 `matvec_exchange` degree. Decision rule: `graph` faster at 300,000 with `|Δe0| < 1e-9` records the
 numbers here; otherwise the default reverts to `reduce` in a one-line commit and this section says
-why.
+why. The result is in the next paragraph.
+
+**Measured (Arrhenius job 2339192, 2026-09-12; 256 ranks, 128 per node, Intel MPI 2021.16,
+`GS_MAX_BLOCK_WIDTH=5`, `from_arrhenius/matvecab-2339192.out`).** One warm-up, then `reduce` and
+`graph` alternated twice per cap on the real SrMnO3 `solve_sector`; `block_apply` is rank 0's
+summed `solver_trace` seconds over the solve, `n_src` the min/max over ranks of the measured
+plan degree:
+
+| cap | mode | wall (s) | `block_apply` (s) | plans | `n_src` min/max | rounds | `e0` |
+|---|---|---|---|---|---|---|---|
+| 20,000 | reduce | 24.6, 25.0 | 14.3, 14.4 | 0 | -- | -- | -13.831636550 |
+| 20,000 | graph | 10.4, 11.2, 11.4 | 2.4, 2.8, 2.8 | 1926 | 0 / 33 | 1 | -13.831636550 |
+| 300,000 | reduce | 87.5, 87.7 | 48.6, 48.6 | 0 | -- | -- | -13.860025401 |
+| 300,000 | graph | 50.6, 50.9, 51.0 | 16.8, 17.2, 17.9 | 1628 | 25 / 38 | 1 | -13.860025401 |
+| 300,000 | graph, 8 MiB budget | 52.2, 53.1 | 20.2, 20.3 | 1628 | 25 / 38 | 2 | -13.860025401 |
+
+So at production geometry the exchange itself is **2.8x faster at cap 300,000** (48.6 -> 17 s) and
+**5.5x at cap 20,000** (14.4 -> 2.6 s), the whole solve **1.72x** and **2.3x**, and `e0` is
+identical to the printed 1e-9 in every row. The measured degree, 25-38 sources of 256, is the
+11%-dense graph the offline count predicted (28 mean, 37 max) -- the linear-hash argument holds on
+the real run, and the "complete graph" arithmetic it replaces is now refuted in situ as well.
+Halving the budget to 8 MiB doubles the rounds and costs ~3 s of `block_apply` (~6% of wall): the
+exchange is not purely bandwidth-bound at this size, so the 64 MiB default (one round at
+`GS_MAX_BLOCK_WIDTH=5`) stays. Verdict per the decision rule: **the `graph` default stands.**
+
+*Job 2338255, the first attempt, was void:* both arms printed `0 plans`, i.e. the cluster build
+predated the exchange (the commits had not been pushed), and "no gain, no loss" compared the old
+code with itself. The probe now aborts when the `graph` arm builds no plan; the plan count is the
+line to read first on any future A/B.
 
 **Not touched.** The Green's-function sparse path's `LinearOperator.matmat` (`gf_solvers.py`)
 `Reduce`s the full `(global_N, w)` product to root 0 per matvec -- a third instance of the pattern,
