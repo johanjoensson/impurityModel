@@ -114,6 +114,7 @@ from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
     log_memory_budget,
     resolve_gs_block_width,
+    resolve_gs_num_wanted,
     suggest_truncation_threshold,
 )
 from impurityModel.ed.solver_basis import _per_group_occupation, get_symmetry_generators, prepare_solver_basis
@@ -786,17 +787,25 @@ def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, mem
         # sector energies is the dominant error in both the gap centre and its width.
         # `fixed_occupation_dc` never halved, so this also makes the three criteria agree.
         gs_block_width = resolve_gs_block_width()
+        # Sizing the cap without this is what approved the threshold behind the SrMnO3 OOM: the
+        # model assumed `2 * block_width` (~10) and predicted 2.51 GiB/rank, where the manifold the
+        # run actually reached (222) predicts 8.43 GiB -- over budget, so the cap would have been
+        # cut before any determinant was generated. `None` when unset, which keeps today's
+        # behaviour and leaves `log_memory_budget` free to warn that it is guessing.
+        gs_num_wanted = resolve_gs_num_wanted()
         truncation_threshold = suggest_truncation_threshold(
             model.n_spin_orbitals,
             comm=MPI.COMM_WORLD,
             block_width=gs_block_width,
             safety=DEFAULT_MEMORY_SAFETY,
+            gs_num_wanted=gs_num_wanted,
         )
         log_memory_budget(
             truncation_threshold,
             model.n_spin_orbitals,
             comm=MPI.COMM_WORLD,
             block_width=gs_block_width,
+            gs_num_wanted=gs_num_wanted,
             verbose=verbose,
             label=memory_label,
         )
@@ -1944,16 +1953,19 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     memory_cap = truncation_threshold
     if truncation_threshold is None:
         gs_block_width = resolve_gs_block_width()
+        gs_num_wanted = resolve_gs_num_wanted()
         truncation_threshold = suggest_truncation_threshold(
             model.n_spin_orbitals,
             comm=MPI.COMM_WORLD,
             block_width=gs_block_width,
+            gs_num_wanted=gs_num_wanted,
         )
         log_memory_budget(
             truncation_threshold,
             model.n_spin_orbitals,
             comm=MPI.COMM_WORLD,
             block_width=gs_block_width,
+            gs_num_wanted=gs_num_wanted,
             verbose=verbose,
             label="fixed-occupation dc",
         )

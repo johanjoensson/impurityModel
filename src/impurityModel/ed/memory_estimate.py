@@ -369,6 +369,27 @@ def resolve_gs_block_width(default=4):
     return default if configured is None else configured
 
 
+def resolve_gs_num_wanted():
+    """Eigenstate count to size a ground-state memory estimate with, or ``None`` when unset.
+
+    The twin of :func:`resolve_gs_block_width`, and deliberately shaped the same way: it reports
+    the configured :data:`config.GS_NUM_WANTED` and otherwise ``None``, letting
+    :func:`estimate_gs_peak_bytes` fall back to its ``2 * block_width`` assumption and
+    :func:`log_memory_budget` warn that the number is a guess.
+
+    No default is invented here. The kept manifold grows with basis size and saturates at a
+    workload-specific value (measured 44 / 87 / ~105 at 20,000 / 100,000 / 949,834 determinants on
+    SrMnO3), so any constant would silently mis-size every cap it touched; an honest warning beats
+    a confident wrong number. See ``doc/plans/dc_smo_memory.md``.
+
+    Returns
+    -------
+    int or None
+        ``num_wanted`` for :func:`estimate_gs_peak_bytes` / :func:`suggest_truncation_threshold`.
+    """
+    return config.GS_NUM_WANTED.get()
+
+
 def resolve_sizing_block_width(gf_block_width):
     """Block width to size a call site that estimates both a GF and a GS solve with one shared
     ``block_width`` parameter (``selfenergy.py``/``susceptibility.py``): the larger of the

@@ -485,6 +485,39 @@ GS_MEMORY_BUDGET_SAFETY = Knob(
 )
 
 
+GS_NUM_WANTED = Knob(
+    name="GS_NUM_WANTED",
+    kind="int",
+    default=None,
+    minimum=1,
+    group="groundstate",
+    doc="""Eigenstates the ground-state CIPSI solve actually converges, used *only* to size memory
+    estimates (`memory_estimate.estimate_gs_peak_bytes`'s `num_wanted`). It does not change what the
+    solver computes -- `CIPSISolver.expand` derives that from the thermal manifold it measures.
+
+    Unset, `estimate_gs_peak_bytes` assumes `2 * block_width` (~10 at the production
+    `GS_MAX_BLOCK_WIDTH=5`), and `log_memory_budget` warns that it is guessing. That guess approved
+    the cap behind the SrMnO3 double-counting OOM: the pre-`selection_bytes` model predicted
+    2.51 GiB/rank at `truncation_threshold=119,555,328` against 5.0 GiB available, where the
+    manifold the run actually reached (222) predicts 8.43 GiB.
+
+    **What it buys now, measured.** With `selection_bytes` in the model that particular cap is
+    already refused on every path, so the remaining effect is on the cap the search *chooses*: at
+    256 ranks and a 2.5 GiB budget, `suggest_truncation_threshold` returns 43,570,432 unset against
+    31,447,552 at 105 and 23,396,096 at 222 -- a 1.4-1.9x reduction. **It does not make the cap
+    safe**: all of those remain 24-46x above the 949,834 determinants that actually exhausted
+    memory, because the estimate is structurally low by 372-1028x at that rank count. The
+    measured-RSS trip-wire (`GS_MEMORY_BUDGET_SAFETY`) is the mitigation that does not depend on the
+    model being right; this one narrows the gap it has to cover (`doc/plans/dc_smo_memory.md`).
+
+    Supply the value measured by the same width sweep that sets `GS_MAX_BLOCK_WIDTH`, in the same
+    place (`job.rspt`). For SrMnO3 the kept manifold grows with basis size and saturates near 105
+    (44 at cap 20,000, 87 at 100,000, ~105 at 949,834), so it is a per-workload number and
+    deliberately has no default: a wrong default here silently resizes every cap, and the existing
+    warning is a better failure mode than a confident guess.""",
+)
+
+
 # --- Double counting: search diagnostics -----------------------------------------------------
 
 DC_DIAGNOSTICS = Knob(
@@ -643,6 +676,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_RIXS_ADAPTIVE_BATCH,
     GS_MAX_BLOCK_WIDTH,
     GS_SELECTION_CHUNK,
+    GS_NUM_WANTED,
     GS_MEMORY_BUDGET_SAFETY,
     DC_CAP_STRATEGY,
     DC_CAP_LADDER_START,
