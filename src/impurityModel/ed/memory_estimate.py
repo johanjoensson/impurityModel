@@ -828,6 +828,7 @@ def max_unit_dets_within_budget(
     safety=DEFAULT_MEMORY_SAFETY,
     krylov_dtype=None,
     method="lanczos",
+    resident_bytes=None,
 ):
     """Largest per-unit ``truncation_threshold`` whose predicted GF peak fits ``ranks`` ranks.
 
@@ -847,6 +848,18 @@ def max_unit_dets_within_budget(
     :func:`estimate_gf_peak_bytes` (which is where :func:`_routing_skew_factor` lives), so
     they compose rather than double-count: a skew-tightened color count means *more* ranks
     per color, which this function then reports as a *larger* affordable per-unit cap.
+
+    **That composition is exactly why ``resident_bytes`` exists.** Given the *same* budget,
+    this function cannot tighten anything: whenever ``max_colors_within_budget`` returns
+    ``n_colors >= 2`` it returned from inside its loop, i.e. it already verified the cap fits
+    at that color's rank count; the split can only *reduce* the color count, which only
+    *raises* ``ranks``; and :func:`estimate_gf_peak_bytes` is monotone non-increasing in
+    ``ranks``. So ``unit_cap >= cap`` identically and ``min(cap, unit_cap) == cap`` -- a
+    no-op. (Measured over a 400-cell grid of rank count x unit count x cap x budget: 385
+    no-op, and all 15 binding cells had ``n_colors == 1``.) An adversarial review caught
+    that this made the first shipped version of this function inert in exactly the
+    production geometry it was written for. To bind, it must be given information the color
+    inversion did not have -- which is what the resident set is.
 
     Exponential-then-bisection, mirroring :func:`_suggest_for_budget`.
 
@@ -870,14 +883,42 @@ def max_unit_dets_within_budget(
         Krylov store dtype; ``complex64`` halves the store and so raises the cap.
     method : str
         See :func:`estimate_gf_peak_bytes`.
+    resident_bytes : int, optional
+        What this rank already holds when the GF phase starts (``current_rss_bytes()``,
+        MAX-reduced over the communicator by the caller). ``None`` (default) reproduces the
+        pre-2026-09-14 budget, ``safety * available``, and with it this function cannot bind
+        (see above).
+
+        Given it, the budget becomes ``safety * (available + resident) - resident``: the
+        process may occupy at most ``safety`` of its total per-rank share, it already holds
+        ``resident``, so the GF phase may *add* only the difference. This is a strictly
+        tighter bound than ``safety * available`` (by ``resident * (1 - safety)``) and it is
+        the constraint the color inversion structurally cannot express -- that inversion runs
+        against *remaining* headroom, which is a snapshot taken before every rank on the node
+        grows its unit basis at once.
+
+        ``available`` is node ``MemAvailable`` divided by ranks-per-node, so it is already
+        net of what this process holds; adding ``resident`` back reconstructs the rank's total
+        share before applying ``safety`` to it. If the process is already over its safety
+        share the difference is non-positive, which would cap the GF at the 1-determinant
+        floor and silently destroy the physics; that case falls back to ``safety * available``
+        and is the caller's cue to warn.
 
     Returns
     -------
     int
         Largest determinant count (at least 1) whose predicted per-rank GF peak, at
-        ``ranks``, fits ``safety * available_bytes_per_rank(comm)``.
+        ``ranks``, fits the budget described above.
     """
-    budget = safety * available_bytes_per_rank(comm)
+    available = available_bytes_per_rank(comm)
+    budget = safety * available
+    if resident_bytes is not None and resident_bytes > 0:
+        # See `resident_bytes` above. Never let an already-over-budget process drive the cap
+        # to the floor -- that memory is spent either way, and a 1-determinant GF is garbage
+        # physics, not a safety measure.
+        headroom = safety * (available + float(resident_bytes)) - float(resident_bytes)
+        if headroom > 0:
+            budget = headroom
 
     def fits(n):
         return (

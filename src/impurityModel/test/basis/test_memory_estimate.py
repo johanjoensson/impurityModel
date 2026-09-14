@@ -513,11 +513,17 @@ def test_max_unit_dets_within_budget_floor_is_one(monkeypatch):
     assert me.max_unit_dets_within_budget(100, 4, "none", 4, comm) >= 1
 
 
-def test_max_colors_and_max_unit_dets_compose_without_double_counting(monkeypatch):
-    """Both inversions read the same `_routing_skew_factor` off the same
-    `estimate_gf_peak_bytes`, so they must anti-correlate rather than compound: the color
-    count `max_colors_within_budget` picks for a cap implies a `ranks_per_color` that, fed
-    back into `max_unit_dets_within_budget`, must afford at least that original cap again."""
+def test_max_unit_dets_without_residency_is_structurally_a_no_op(monkeypatch):
+    """Given the SAME budget, the per-unit cap can never tighten a cap the color inversion
+    already approved -- and this test exists to say that out loud rather than dress it up.
+
+    `max_colors_within_budget` returns `n_colors >= 2` only from inside its loop, i.e. having
+    verified the cap fits at that color's rank count; the split can only reduce the color
+    count, which only raises `ranks`; `estimate_gf_peak_bytes` is monotone non-increasing in
+    `ranks`. So `unit_cap >= cap` identically. The first shipped version of the per-unit cap
+    asserted exactly this and read it as evidence the design was sound -- it is in fact proof
+    the design was inert (an adversarial review caught it). `resident_bytes` is what makes it
+    bind; see the test below."""
     from types import SimpleNamespace
 
     comm = SimpleNamespace(size=128)
@@ -530,3 +536,51 @@ def test_max_colors_and_max_unit_dets_compose_without_double_counting(monkeypatc
     ranks_per_color = max(1, comm.size // n_colors)
     unit_cap = me.max_unit_dets_within_budget(nso, width, "none", ranks_per_color, comm)
     assert unit_cap >= cap, (n_colors, ranks_per_color, unit_cap)
+
+
+def test_resident_bytes_tightens_the_unit_cap(monkeypatch):
+    """The resident set is the information the color inversion does not have, so passing it
+    must produce a strictly smaller budget -- and hence a strictly smaller cap -- than the
+    same call without it. Without this the per-unit cap is inert (test above)."""
+    from types import SimpleNamespace
+
+    comm = SimpleNamespace(size=128)
+    nso, width, ranks = 58, 1, 5
+    available = 8 * 2**30
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: available)
+
+    loose = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm)
+    tight = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=3 * 2**30)
+    assert tight < loose
+
+    # The budget is `safety * (available + resident) - resident`, so a bigger resident set
+    # must tighten monotonically.
+    caps = [
+        me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=r * 2**30) for r in (1, 2, 3, 4)
+    ]
+    assert all(b <= a for a, b in pairwise(caps)), caps
+
+    # And the predicted peak at the derived cap must actually fit that tighter budget.
+    resident = 3 * 2**30
+    budget = me.DEFAULT_MEMORY_SAFETY * (available + resident) - resident
+    assert me.estimate_gf_peak_bytes(tight, nso, width, "none", ranks=ranks) <= budget
+
+
+def test_resident_bytes_over_the_safety_share_falls_back_rather_than_flooring(monkeypatch):
+    """A process already past its safety share must not drive the cap to the 1-determinant
+    floor: that memory is spent either way, and a 1-determinant GF is garbage physics, not a
+    safety measure. The budget falls back to `safety * available`."""
+    from types import SimpleNamespace
+
+    comm = SimpleNamespace(size=8)
+    nso, width, ranks = 58, 1, 4
+    available = 1 * 2**30
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: available)
+
+    # resident so large that safety*(available+resident) - resident <= 0
+    huge = 100 * 2**30
+    assert me.DEFAULT_MEMORY_SAFETY * (available + huge) - huge <= 0
+    fallback = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=huge)
+    baseline = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm)
+    assert fallback == baseline
+    assert fallback > 1
