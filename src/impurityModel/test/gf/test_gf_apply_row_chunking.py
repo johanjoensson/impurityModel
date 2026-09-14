@@ -15,9 +15,10 @@ the right test for a change that is explicitly "exact up to summation order." A 
 recurrence never binds the cap (so no boundary tie-break exists at all) is additionally checked
 for tight numerical agreement against the unchunked run.
 
-The knob is registered under ``group="units"`` and its unset default (1, the one-shot path) is
-covered generically by ``test_config.py``'s ``test_defaults_when_unset``; only the chunked
-*behaviour* is this file's job.
+The knob is registered under ``group="units"`` and its unset default (4, chunked -- on since
+2026-09-14) is covered generically by ``test_config.py``'s ``test_defaults_when_unset``; this
+file's job is the chunked *behaviour*, comparing explicitly against ``n_chunks=1`` (the
+one-shot path) as the baseline throughout rather than relying on "unset" to mean one-shot.
 """
 
 import numpy as np
@@ -82,9 +83,11 @@ def _excited_basis(cap):
 
 
 def _run(cap, n_chunks, monkeypatch, reort=None):
+    """``n_chunks=None`` leaves the knob unset (today's default, 4 -- chunked); pass ``1``
+    explicitly for the one-shot baseline rather than relying on "unset" to mean that."""
     if n_chunks is None:
         monkeypatch.delenv("GF_APPLY_ROW_CHUNKS", raising=False)
-        assert config.GF_APPLY_ROW_CHUNKS.get() == 1, "unset must be the one-shot path"
+        assert config.GF_APPLY_ROW_CHUNKS.get() == 4, "unset must be the measured default of 4 chunks"
     else:
         monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", str(n_chunks))
         assert config.GF_APPLY_ROW_CHUNKS.get() == n_chunks
@@ -110,14 +113,23 @@ def _dense_reference_on(retained_keys):
     return G
 
 
-@pytest.mark.parametrize("n_chunks", [2, 3, 4])
+@pytest.mark.parametrize("n_chunks", [2, 3, 4, 8])
 def test_chunked_matches_one_shot_above_the_reachable_space(n_chunks, monkeypatch):
     """A cap the recurrence never reaches has no admission boundary to perturb: chunking
     must reproduce the one-shot result to numerical precision, not just the same physics."""
-    g_one_shot, info_one_shot = _run(1000, None, monkeypatch)
+    g_one_shot, info_one_shot = _run(1000, 1, monkeypatch)
     g_chunked, info_chunked = _run(1000, n_chunks, monkeypatch)
     assert not info_one_shot["cap_hit"] and not info_chunked["cap_hit"]
     np.testing.assert_allclose(g_chunked, g_one_shot, rtol=1e-10, atol=1e-12)
+
+
+def test_unset_default_is_four_chunks_and_matches_explicit_four(monkeypatch):
+    """The registry default (4, on since 2026-09-14) must actually be what an unset run gets,
+    not just what the Knob declares -- pin it against the explicit spelling too."""
+    g_unset, info_unset = _run(1000, None, monkeypatch)
+    g_explicit, info_explicit = _run(1000, 4, monkeypatch)
+    assert not info_unset["cap_hit"] and not info_explicit["cap_hit"]
+    np.testing.assert_array_equal(g_unset, g_explicit)
 
 
 @pytest.mark.parametrize("reort", [None, "full", "partial"])
@@ -139,6 +151,6 @@ def test_capped_gf_equals_dense_php_resolvent_with_row_chunking(cap, reort, n_ch
 
 def test_more_chunks_than_rows_does_not_crash(monkeypatch):
     """A chunk count larger than the row count (empty chunks) must be handled, not desync."""
-    g_one_shot, _ = _run(1000, None, monkeypatch)
+    g_one_shot, _ = _run(1000, 1, monkeypatch)
     g_many_chunks, _ = _run(1000, 64, monkeypatch)
     np.testing.assert_allclose(g_many_chunks, g_one_shot, rtol=1e-10, atol=1e-12)

@@ -1295,17 +1295,23 @@ split site).
    it over the unit's own color and reports it (`_trace_note` + an optional print) alongside the
    retained basis size and Lanczos block count -- the number this round needed arithmetic to
    reconstruct.
-4. **`GF_APPLY_ROW_CHUNKS` (default 1, off).** Mirrors `GS_APPLY_ROW_CHUNKS` at the GF unit's own
-   matvec (`_lanczos_step.pxi`'s `wp = h_op.apply_block(q_curr, ...)`): row-chunked apply +
-   redistribute + accumulate bounds the pack/send/receive transient `estimate_gf_peak_bytes`'s
-   docstring already documents as unmodelled. Off by default: unlike the CIPSI selection round's
-   chunked output (feeds a `slater_weight_min` prune and a candidate ranking), this sum feeds the
-   Lanczos recurrence directly, so a summation-order change can in principle move a deflation or
-   iteration-count decision. Verified against the same strong oracle `test_gf_truncation.py` holds
-   the one-shot path to (a capped recurrence's continued fraction must equal the dense resolvent of
-   `H` projected on whatever it actually retained) across cap/reort/chunk-count combinations, plus
-   tight numerical agreement with the one-shot path above the reachable space (no admission
-   boundary to perturb there).
+4. **`GF_APPLY_ROW_CHUNKS` (default 4, on since 2026-09-14).** Mirrors `GS_APPLY_ROW_CHUNKS` at the
+   GF unit's own matvec (`_lanczos_step.pxi`'s `wp = h_op.apply_block(q_curr, ...)`): row-chunked
+   apply + redistribute + accumulate bounds the pack/send/receive transient
+   `estimate_gf_peak_bytes`'s docstring already documents as unmodelled. Shipped off by default;
+   turned on (at `GS_APPLY_ROW_CHUNKS`'s own measured plateau of 4, not a value separately measured
+   for the GF matvec) on explicit instruction. The numerical caveat did not go away: unlike the
+   CIPSI selection round's chunked output (feeds a `slater_weight_min` prune and a candidate
+   ranking), this sum feeds the Lanczos recurrence directly, so a summation-order change can in
+   principle move a deflation or iteration-count decision. Verified against the same strong oracle
+   `test_gf_truncation.py` holds the one-shot path to (a capped recurrence's continued fraction must
+   equal the dense resolvent of `H` projected on whatever it actually retained) across
+   cap/reort/chunk-count combinations, plus tight numerical agreement with the one-shot path above
+   the reachable space (no admission boundary to perturb there) -- but not against a step-peak/
+   wall-time plateau sweep at production GF scale the way `GS_APPLY_ROW_CHUNKS`'s 4 was; see
+   "GF_APPLY_ROW_CHUNKS default flip" below for the local sweep run after turning this on.
+   `GF_APPLY_ROW_CHUNKS=1` recovers the one-shot path bit-for-bit with a pre-2026-09 run if a
+   workload needs it.
 5. **Two-strike look-ahead, memory-cap==0 excepted.** `CIPSISolver.expand`'s look-ahead guard used
    to adopt a permanent fixed budget the first time one round's measured transient predicted the
    next round would not fit -- a single noisy reading (allocator jitter, a GC pause inside the
@@ -1321,3 +1327,29 @@ split site).
 Not shipped: a production-scale repro against the actual crash archive (gone) or a cluster job.
 The substitute-archive repro above and the corrected arithmetic are the evidence; the next
 production job is the first real test at scale.
+
+### `GF_APPLY_ROW_CHUNKS` default flip (2026-09-14) and the 2-rank sweep against it
+
+Turned on by default (4, mirroring `GS_APPLY_ROW_CHUNKS`'s own measured plateau) on explicit
+instruction, ahead of a GF-specific measurement. A same-day 2-rank sweep on the substitute
+archive (one ground-state solve at `cap=5,000`, `GF_APPLY_ROW_CHUNKS` varied 1/2/4/8 on the
+*same* basis so only the GF phase's own cost is compared) came back the opposite of a win at
+this rank count:
+
+| `n_chunks` | GF-phase wall | GF-phase MAX `VmHWM` |
+|---|---|---|
+| 1 (one-shot) | 46.9 s | 403.9 MiB |
+| 2 | 71.2 s | 407.5 MiB |
+| 4 | 74.8 s | 407.5 MiB |
+| 8 | 143.4 s | 407.5 MiB |
+
+Chunking is **both slower and no smaller** here: 1.6-3.1x the wall time and a slightly *higher*
+peak, not lower. This is the mechanism the knob doc always predicted at the low end -- a 2-rank
+`redistribute_block` has almost no pack/send/receive transient to bound in the first place (the
+term the knob targets), so chunking only adds fixed per-chunk overhead (a mask build, a
+`keep_rows` copy, a separate collective) with nothing to amortize it against. `GS_APPLY_ROW_CHUNKS`'s
+own plateau was measured at 4 *ranks*, not 2, for the same reason; this sweep is exactly that
+gap, unmeasured. Whether 4 is a net win at the rank counts a real GF unit color runs at (5-10
+ranks in the crash's own geometry, not 2) is still open -- the default stands on the explicit
+instruction that shipped it, not on this measurement, which argues the opposite at small rank
+counts. `GF_APPLY_ROW_CHUNKS=1` recovers the one-shot path for anyone who hits this.

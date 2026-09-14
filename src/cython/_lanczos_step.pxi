@@ -134,7 +134,8 @@ def block_lanczos_step_cy(
     _needs_redistribute = basis is not None and ((mpi and comm is not None) or getattr(basis, "caps_growth", False))
     # Chunking only where a redistribute actually follows -- with none, there is no
     # pack/send/receive transient to bound and chunking would just add per-chunk
-    # Python overhead for nothing. `GF_APPLY_ROW_CHUNKS` defaults to 1 (off).
+    # Python overhead for nothing. `GF_APPLY_ROW_CHUNKS` defaults to 4 (on); `1`
+    # recovers the pre-2026-09 one-shot path.
     _n_chunks = config.GF_APPLY_ROW_CHUNKS.get() if _needs_redistribute else 1
     if _n_chunks is None or _n_chunks <= 1:
         wp = h_op.apply_block(q_curr, slaterWeightMin)
@@ -162,7 +163,8 @@ def block_lanczos_step_cy(
         # subtraction, reorthogonalization, TSQR) rather than a slater_weight_min
         # prune and a candidate ranking -- a summation-order change can in principle
         # move a deflation or iteration-count decision, not just the last digit of
-        # G. Off by default; measure on the workload that needs it before opting in.
+        # G. On by default since 2026-09-14 (see config.GF_APPLY_ROW_CHUNKS); set to 1
+        # to recover bit-identical agreement with a pre-2026-09 run.
         # The chunk COUNT is the knob, replicated on every rank, so every rank makes
         # the same number of collective redistribute_block calls whatever its own
         # row count (a rank with fewer rows than chunks sends explicit width-p empty

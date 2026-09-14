@@ -117,8 +117,16 @@ def _dense_reference_on(retained_keys, comm=None):
     return G
 
 
-def test_cap_above_reachable_space_is_identity():
-    """A cap the recurrence never reaches must not change the result at all."""
+def test_cap_above_reachable_space_is_identity(monkeypatch):
+    """A cap the recurrence never reaches must not change the result at all -- bit for bit,
+    which is a property of the one-shot matvec specifically (GF_APPLY_ROW_CHUNKS=1): the
+    uncapped run never redistributes at all in serial (no proxy, no caps_growth), while the
+    capped-but-never-binding run does one redistribute through _CappedBasisProxy, and
+    GF_APPLY_ROW_CHUNKS's default since 2026-09-14 is 4 chunks, whose accumulate (`+=`)
+    changes floating-point summation order relative to that single one-shot call (see
+    test_gf_apply_row_chunking.py's test_chunked_matches_one_shot_above_the_reachable_space,
+    which pins that difference to ~1e-15 explicitly instead of asserting it away)."""
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
     g_uncapped, info_u = _run_capped(np.inf)
     g_capped, info_c = _run_capped(1000)
     assert info_u["proxy"] is None
