@@ -1253,25 +1253,89 @@ also cap-hit and, as expected at that small a size, made `calc_selfenergy`'s own
 raise (`UnphysicalGreensFunctionError`) -- an unrelated, correctly-firing guard, not evidence
 against the fix.
 
-**The arithmetic, corrected for the resident ground-state footprint.** `available_bytes_per_rank`
-is a *live* probe (`/proc/meminfo` `MemAvailable` at call time), so the budget the GF phase
-actually sees already reflects whatever the ground-state solve left resident -- not the bare
-9.4 GiB of an empty process. With the GS phase's own measured `VmHWM` (~2.6 GiB) subtracted first:
+**The arithmetic — and the first version of it, which was wrong.** An adversarial review of this
+round found the original write-up's budget table unsupportable and the fix it described inert.
+Both corrections are below; the superseded table is not reproduced, because nothing in it was
+worth keeping.
 
-| | job-wide cap (40.2M), unchanged | derived per-unit cap, this fix |
-|---|---|---|
-| available at GF-phase start (per rank) | 6.8 GiB | 6.8 GiB |
-| budget (`0.5x`) | 3.4 GiB | 3.4 GiB |
-| cap a 5-rank unit is given | 40,234,112 (inherited verbatim) | 30,790,637 (`max_unit_dets_within_budget`) |
-| predicted peak at that cap, 5 ranks, `_routing_skew_factor(5)=1.082` | **4.4 GiB** -- over budget | **3.4 GiB** -- fits |
+*What was claimed:* that the GF phase sees `9.4 - 2.6 = 6.8 GiB` available, that
+`max_unit_dets_within_budget` therefore derives `30,790,637` against the job's `40,234,112`, and
+that this 23% recovers the margin that was lost.
 
-23% off the cap recovers a real margin (4.4 -> 3.4 GiB against a 3.4 GiB budget), on top of
-whatever the (still unmodelled) pack/send/receive transient and the tail of the rank-skew
-distribution were already contributing on the three ranks that actually died. The fix does not
-claim to explain the whole overrun by itself -- the skew factor and `GF_APPLY_ROW_CHUNKS` cover
-the rest -- but it is the term that was completely unaccounted for before this round, and the one
-`basis_split.py` had all the information to get right already (`ranks_per_color` is known at the
-split site).
+*Why it does not hold.* The run's own log contains
+
+```
+Memory budget caps the unit split at 25 simultaneous unit bases (truncation_threshold=40,234,112).
+```
+
+That line prints **only** when `max_colors_within_budget` actually bound, i.e. when it returned
+from inside its loop having verified `estimate_gf_peak_bytes(40.2M, ranks=128//25=5) <= 0.5 *
+available`. On master (pre-skew) that estimate is 4.107 GiB, so `available >= 8.21 GiB` at split
+time — not 6.8. The write-up's budget contradicts the log it was derived from.
+
+*The deeper problem: the fix as first written could not bind at all.* Whenever
+`max_colors_within_budget` returns `n_colors >= 2` it has already verified the cap fits at that
+color's rank count; the split can only reduce the color count, which only raises `ranks`; and
+`estimate_gf_peak_bytes` is monotone non-increasing in `ranks` (verified, 1030 points, zero
+inversions). So `unit_cap >= cap` identically and `min(cap, unit_cap) == cap`. Measured over a
+400-cell grid of rank count x unit count x cap x budget: **385 no-op, 15 binding, and all 15
+binding cells had `n_colors == 1`** — which is precisely the case where `basis_split` returns the
+caller's own basis object, so the only cases where it did anything were the cases where it
+corrupted the caller (see "Two defects the review found", below). In the actual crash geometry
+(128 ranks, 40 units, cap 40.2M) it was a no-op at *every* plausible budget from 6.8 to 12 GiB.
+
+The branch's own test `test_max_colors_and_max_unit_dets_compose_without_double_counting`
+asserted `unit_cap >= cap` and read it as evidence the composition was sound. It was in fact
+proof the feature was inert. That test is now renamed
+`test_max_unit_dets_without_residency_is_structurally_a_no_op` and says so.
+
+*What actually makes it bind.* The two inversions used the same budget, so the second could add
+nothing. The per-unit cap now takes `resident_bytes` — this rank's measured RSS entering the GF
+phase, MAX-reduced over the communicator — and budgets
+`safety * (available + resident) - resident`: the process may occupy at most `safety` of its
+total per-rank share, it already holds `resident`, so the GF phase may *add* only the difference.
+That is strictly tighter than `safety * available` (by `resident * (1 - safety)`) and it is the
+constraint the color inversion structurally cannot express, because that one runs against
+*remaining* headroom — a snapshot taken before every rank on the node grows its unit basis at
+once. In the crash geometry, at `resident = 2.6 GiB`:
+
+| available at split | colors | ranks/color | unit cap before | unit cap now | binds |
+|---|---|---|---|---|---|
+| 6.8 GiB | 18 | 7 | 42,818,434 | 26,446,682 | no -> **yes** |
+| 8.2 GiB | 21 | 6 | 44,394,057 | 30,317,895 | no -> **yes** |
+| 9.4 GiB | 25 | 5 | 42,563,530 | 30,790,637 | no -> **yes** |
+| 12.0 GiB | 32 | 4 | 43,663,127 | 34,202,781 | no -> **yes** |
+
+(The 9.4 GiB row reproduces the original write-up's 30,790,637 — the same number, now reached
+because the budget accounts for residency rather than because `available` was assumed wrong.)
+
+**What this does *not* establish.** The model still predicts a 4.4 GiB peak against ~6.8 GiB of
+headroom on the crashing configuration, which would not OOM. So the per-unit cap is a real bound
+that was missing, but it is **not** a demonstrated explanation of this crash, and this round
+should not be read as having found the cause. The unexplained remainder is still the unmodelled
+pack/send/receive transient, the tail of the rank-skew distribution, and whatever the model does
+not capture about the excited basis. On this branch the change that actually moves the 128-rank
+behaviour is the **skew factor inside `max_colors_within_budget`** (it lowers the color count,
+raising ranks per unit), not the per-unit cap.
+
+### Two defects the review found in this round's own code
+
+1. **`run_units_distributed` rewrote the caller's basis.** `basis_split` returns the caller's
+   `basis` object itself as `split_basis` whenever the split collapses to one color, so
+   `split_basis.truncation_threshold = ...` leaked out of the GF phase. Confirmed at 2 ranks:
+   `1,000,000,000 -> 7,636`, persisting after the call. `spectra.simulate_spectra` reuses one
+   basis across IPS/PS/XAS/NIXS/RIXS, so each single-color call would have ratcheted the next
+   spectrum's cap down (`min`), an order-dependent accuracy loss with no opt-out and a floor of
+   one determinant. The cap is now scoped to the GF phase with a `finally` restore, and
+   `test_run_units_distributed_does_not_mutate_the_callers_basis_cap_mpi` pins it.
+2. **The chunked matvec allocated a full copy of the block per chunk.** `copy()` + `keep_rows(mask)`
+   duplicates the whole block and then shrinks only its logical length — `keep_rows`' `resize`
+   does not release `std::vector` capacity — so each "bounded" chunk ran alongside a full-size
+   copy, and the mask cost one Python key object per row per step. That is the mechanism behind
+   the measured "chunking is slower with a higher peak". Replaced by a new C++/Cython
+   `row_slice(lo, hi)` primitive that allocates exactly the chunk's rows. The identical pattern
+   was in the already-shipped `cipsi_solver._apply_block_and_redistribute`, running by default
+   since 2026-09-12, and is fixed with it.
 
 ### What shipped
 
@@ -1343,13 +1407,47 @@ this rank count:
 | 4 | 74.8 s | 407.5 MiB |
 | 8 | 143.4 s | 407.5 MiB |
 
-Chunking is **both slower and no smaller** here: 1.6-3.1x the wall time and a slightly *higher*
-peak, not lower. This is the mechanism the knob doc always predicted at the low end -- a 2-rank
-`redistribute_block` has almost no pack/send/receive transient to bound in the first place (the
-term the knob targets), so chunking only adds fixed per-chunk overhead (a mask build, a
-`keep_rows` copy, a separate collective) with nothing to amortize it against. `GS_APPLY_ROW_CHUNKS`'s
-own plateau was measured at 4 *ranks*, not 2, for the same reason; this sweep is exactly that
-gap, unmeasured. Whether 4 is a net win at the rank counts a real GF unit color runs at (5-10
-ranks in the crash's own geometry, not 2) is still open -- the default stands on the explicit
-instruction that shipped it, not on this measurement, which argues the opposite at small rank
-counts. `GF_APPLY_ROW_CHUNKS=1` recovers the one-shot path for anyone who hits this.
+Chunking was **both slower and no smaller** here: 1.6-3.1x the wall time and a slightly *higher*
+peak, not lower.
+
+**The adversarial review then found why, and it was a bug, not a law of nature.** Each chunk was
+built as `q_curr.copy()` + `keep_rows(mask)` — a full-size duplicate of the block whose logical
+length is then shrunk, without releasing `std::vector` capacity — so every "bounded" chunk apply
+ran alongside a full copy of the very block it was chunking, and the mask cost one Python
+`SlaterDeterminant` per row of `q_curr` on every step. Replaced by a `row_slice(lo, hi)` C++
+primitive that allocates exactly the chunk's rows. Re-measured, same harness:
+
+| `n_chunks` | wall before | wall after | GF-phase MAX `VmHWM` after |
+|---|---|---|---|
+| 1 (one-shot) | 46.9 s | 47.0 s | 423.7 MiB |
+| 2 | 71.2 s | 54.2 s | 423.7 MiB |
+| 4 | 74.8 s | 58.4 s | 423.7 MiB |
+| 8 | 143.4 s | 64.2 s | 423.7 MiB |
+
+The overhead collapses (2.2x faster at 8 chunks, 1.28x at 4) but does not vanish: at 2 ranks
+chunking is still ~1.24x slower than one-shot and the peak does not move at all — every chunk
+count reports the identical 423.7 MiB, and the one-shot figure itself drifts 403.9 -> 423.7 MiB
+between runs, so ~5% is run-to-run noise and the peak is simply insensitive to the knob here.
+That insensitivity is the mechanism the knob doc always predicted at the low end: a 2-rank
+`redistribute_block` has almost no pack/send/receive transient to bound in the first place, so
+there is nothing for chunking to save. `GS_APPLY_ROW_CHUNKS`'s own plateau was measured at 4
+*ranks*, not 2, for the same reason.
+
+Whether 4 is a net win at the rank counts a real GF unit color runs at (5-10 in the crash's own
+geometry) is **still open** — the default stands on the explicit instruction that shipped it, not
+on this measurement, which shows only a cost at 2 ranks. `GF_APPLY_ROW_CHUNKS=1` recovers the
+one-shot path.
+
+Same-run side observation, single sample so treat it as indicative: the ground-state phase's peak
+went 752.1 -> 694.8 MiB across the copy fix. The GS path has run chunked by default
+(`GS_APPLY_ROW_CHUNKS=4`) since 2026-09-12 and carried the identical duplicate-per-chunk, so the
+fix applies there too — which means the measured "6x -> 1.4x" that justified the GS default was
+itself understating what the mechanism can do.
+
+**The whole-suite timing corroborates that this was one bug, not a property of chunking.** The
+serial test gate ran 114 s before the GF default flip, 519 s after it (4.5x, which is what made
+the cost look structural — hundreds of small tests using a finite cap, each paying a full block
+duplicate per chunk), and **105 s** once `row_slice` replaced the copy. Chunking on by default now
+costs the serial suite nothing measurable. The `-n2` / `-n3` legs were never slower (350 s / 546 s,
+in line with their pre-flip 370 s / 551 s) — consistent with the duplicate being proportional to
+block size, which those legs spread over more ranks.
