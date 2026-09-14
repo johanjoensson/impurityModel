@@ -1,6 +1,7 @@
 """Tests for the truncation_threshold memory sizing helpers."""
 
 import math
+from itertools import pairwise
 
 import numpy as np
 import pytest
@@ -422,3 +423,110 @@ def test_krylov_dtype_complex64_rejected_for_estimator_modes(reort):
     """The model must refuse a combination the kernel refuses to run."""
     with pytest.raises(ValueError, match="incompatible with reort"):
         me.estimate_gf_peak_bytes(1000, 106, 2, reort=reort, krylov_dtype=np.complex64)
+
+
+# ---------------------------------------------------------------------------------------
+# routing_hash skew (doc/plans/dc_smo_memory.md, "GF unit memory")
+# ---------------------------------------------------------------------------------------
+
+
+def test_routing_skew_factor_matches_measured_anchors():
+    """The measured points themselves must come back exactly, not just interpolate near them."""
+    for ranks, skew in me._ROUTING_SKEW_ANCHORS:
+        assert me._routing_skew_factor(ranks) == pytest.approx(skew)
+
+
+def test_routing_skew_factor_is_one_for_a_single_rank():
+    """ranks<=1 is not a partition at all; the ratio is exactly 1 by definition."""
+    assert me._routing_skew_factor(1) == 1.0
+    assert me._routing_skew_factor(0) == 1.0
+
+
+def test_routing_skew_factor_clamps_outside_the_measured_range():
+    """Outside [2, 256] the factor clamps to the nearest anchor rather than extrapolating."""
+    assert me._routing_skew_factor(1000) == me._routing_skew_factor(256)
+
+
+def test_routing_skew_factor_is_monotone_increasing_in_ranks():
+    """Skew grows with rank count (doc/plans/dc_smo_memory.md); interpolation must not reverse
+    that between anchors."""
+    ranks = [2, 3, 4, 6, 8, 12, 16, 32, 64, 96, 128, 200, 256]
+    skews = [me._routing_skew_factor(r) for r in ranks]
+    assert all(b >= a for a, b in pairwise(skews)), skews
+
+
+def test_estimate_gf_peak_bytes_scales_local_rows_by_the_skew():
+    """Peak bytes at a given `ranks` must equal the unskewed estimate scaled by the same
+    factor `max_colors_within_budget`/`max_unit_dets_within_budget` see -- otherwise the two
+    inversions and the direct estimate would disagree on what they are budgeting."""
+    n, nso, width = 100_000, 100, 4
+    for ranks in (2, 5, 16, 64):
+        skew = me._routing_skew_factor(ranks)
+        unskewed_local_rows = math.ceil(n / ranks)
+        skewed_local_rows = math.ceil(n / ranks * skew)
+        row_bytes = 16 * width + me._key_heap_bytes(nso) + me._SD_STRUCT_BYTES
+        expected = skewed_local_rows * (me.bytes_per_determinant(nso) + me._PY_BASIS_OVERHEAD_BYTES)
+        expected += 3 * skewed_local_rows * row_bytes
+        got = me.estimate_gf_peak_bytes(n, nso, width, "none", ranks=ranks)
+        assert got == expected, (ranks, skew, unskewed_local_rows, skewed_local_rows)
+
+
+# ---------------------------------------------------------------------------------------
+# max_unit_dets_within_budget: the complement of max_colors_within_budget
+# ---------------------------------------------------------------------------------------
+
+
+def test_max_unit_dets_within_budget_inverts_estimate_gf_peak_bytes(monkeypatch):
+    """The returned cap must fit the budget, and one more determinant must not."""
+    from types import SimpleNamespace
+
+    comm = SimpleNamespace(size=5)
+    nso, width, ranks = 100, 4, 5
+    target_n = 20_000
+    budget = me.estimate_gf_peak_bytes(target_n, nso, width, "none", ranks=ranks)
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: budget / me.DEFAULT_MEMORY_SAFETY)
+
+    cap = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm)
+    assert me.estimate_gf_peak_bytes(cap, nso, width, "none", ranks=ranks) <= budget
+    assert me.estimate_gf_peak_bytes(cap + 1, nso, width, "none", ranks=ranks) > budget
+    assert cap == pytest.approx(target_n, rel=0.01)
+
+
+def test_max_unit_dets_within_budget_grows_with_ranks(monkeypatch):
+    """More ranks sharing a unit basis must afford a larger cap under the same node budget."""
+    from types import SimpleNamespace
+
+    comm = SimpleNamespace(size=64)
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 1 * 2**30)
+    nso, width = 100, 4
+    few = me.max_unit_dets_within_budget(nso, width, "none", 2, comm)
+    many = me.max_unit_dets_within_budget(nso, width, "none", 32, comm)
+    assert many > few
+
+
+def test_max_unit_dets_within_budget_floor_is_one(monkeypatch):
+    """An unaffordable budget still returns a usable (if pessimistic) positive cap."""
+    from types import SimpleNamespace
+
+    comm = SimpleNamespace(size=4)
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 1)
+    assert me.max_unit_dets_within_budget(100, 4, "none", 4, comm) >= 1
+
+
+def test_max_colors_and_max_unit_dets_compose_without_double_counting(monkeypatch):
+    """Both inversions read the same `_routing_skew_factor` off the same
+    `estimate_gf_peak_bytes`, so they must anti-correlate rather than compound: the color
+    count `max_colors_within_budget` picks for a cap implies a `ranks_per_color` that, fed
+    back into `max_unit_dets_within_budget`, must afford at least that original cap again."""
+    from types import SimpleNamespace
+
+    comm = SimpleNamespace(size=128)
+    nso, width = 100, 4
+    cap = 40_000
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2 * 2**30)
+
+    max_candidate = 32
+    n_colors = me.max_colors_within_budget(cap, nso, width, "none", comm, max_candidate)
+    ranks_per_color = max(1, comm.size // n_colors)
+    unit_cap = me.max_unit_dets_within_budget(nso, width, "none", ranks_per_color, comm)
+    assert unit_cap >= cap, (n_colors, ranks_per_color, unit_cap)

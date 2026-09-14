@@ -41,7 +41,8 @@ buffers) are absorbed by ``DEFAULT_MEMORY_SAFETY``.
 """
 
 import os
-from math import ceil
+from itertools import pairwise
+from math import ceil, exp, log, log2
 
 from mpi4py import MPI
 
@@ -183,6 +184,52 @@ def bytes_per_determinant(n_spin_orbitals):
     return _FLAT_MAP_ENTRY_BYTES + _key_heap_bytes(n_spin_orbitals)
 
 
+# `SlaterDeterminant::routing_hash` is deliberately locality-preserving, not dispersing (see
+# its own comment): a fixed-electron-number charge sector lives on a restricted popcount
+# lattice, so `hash % ranks` is not uniform and the skew GROWS with rank count. Measured
+# directly (not fitted) on 20,000 real determinants from the SrMnO3 workload against a
+# uniform-null Monte-Carlo baseline, cross-validated against two independent GS solves'
+# reported `local[min,max]` (doc/plans/dc_smo_memory.md, "routing_hash is deliberately
+# non-uniform"): the busiest rank's share over the mean share, at rank count:
+_ROUTING_SKEW_ANCHORS = (
+    (2, 1.002),
+    (4, 1.077),
+    (8, 1.092),
+    (16, 1.378),
+    (64, 1.808),
+    (128, 1.901),
+    (256, 2.790),
+)
+
+
+def _routing_skew_factor(ranks):
+    """Measured max/mean local-determinant-count ratio at ``ranks`` (:data:`_ROUTING_SKEW_ANCHORS`).
+
+    Log-log interpolated between the measured anchors (the skew is a measurement at each
+    rank count, not a fitted curve -- ``doc/plans/dc_smo_memory.md`` explicitly found no
+    power law that survives extrapolation for the *related* local-count-response exponent,
+    so this deliberately does not extrapolate either): outside ``[2, 256]`` it clamps to the
+    nearest anchor rather than guess beyond the measured range. ``ranks <= 1`` is not a
+    partition at all, so the ratio is exactly 1 by definition.
+    """
+    ranks = int(ranks)
+    if ranks <= 1:
+        return 1.0
+    lo_r, lo_s = _ROUTING_SKEW_ANCHORS[0]
+    hi_r, hi_s = _ROUTING_SKEW_ANCHORS[-1]
+    if ranks <= lo_r:
+        return lo_s
+    if ranks >= hi_r:
+        return hi_s
+    x = log2(ranks)
+    for (r0, s0), (r1, s1) in pairwise(_ROUTING_SKEW_ANCHORS):
+        x0, x1 = log2(r0), log2(r1)
+        if x0 <= x <= x1:
+            t = (x - x0) / (x1 - x0)
+            return exp(log(s0) + t * (log(s1) - log(s0)))
+    return hi_s  # unreachable given the clamps above
+
+
 def estimate_gf_peak_bytes(
     n_dets,
     n_spin_orbitals,
@@ -229,7 +276,21 @@ def estimate_gf_peak_bytes(
         Reorthogonalization mode; anything but ``"none"`` retains the Krylov store.
     ranks : int
         MPI ranks sharing this basis (the unit's sub-communicator size under
-        ``run_units_distributed``).
+        ``run_units_distributed``). Peak bytes scale with the *binding* rank, not the
+        mean: ``local_rows`` is the mean local determinant count times
+        :func:`_routing_skew_factor`, ``routing_hash``'s measured max/mean skew at this
+        rank count -- the OOM killer fires on the heaviest rank's share of a hash-
+        distributed basis, not the average one. This is why a color split into few ranks
+        (a small unit under ``run_units_distributed``) is not simply "mean x safety
+        margin": the skew is small at few ranks (1.08x at 4) and large at many (2.79x at
+        256), so it must be evaluated at the unit's own rank count, not the job's.
+        :func:`estimate_gs_peak_bytes` deliberately does **not** apply this factor: the
+        ground-state solve spans the full communicator, its measured skew there (1.62x
+        on the SrMnO3 archive's own final cycle) sits inside ``DEFAULT_MEMORY_SAFETY``,
+        and the cap it produces is what the whole double-counting search is calibrated
+        against -- moving it would change ``dc_search.resolve_cap_at_max``'s behaviour on
+        every DC iteration, a much larger change than this function's docstring should
+        decide by itself.
     n_blocks : int, optional
         Krylov blocks retained at ``reort != "none"``. Defaults to the invariant-subspace
         bound ``ceil(n_dets / block_width)`` (worst case).
@@ -258,7 +319,7 @@ def estimate_gf_peak_bytes(
     int
         Predicted per-rank peak bytes.
     """
-    local_rows = ceil(n_dets / max(1, ranks))
+    local_rows = ceil(n_dets / max(1, ranks) * _routing_skew_factor(ranks))
     key_heap = _key_heap_bytes(n_spin_orbitals)
     basis_bytes = local_rows * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
@@ -756,6 +817,88 @@ def max_colors_within_budget(
         ):
             return n_colors
     return 1
+
+
+def max_unit_dets_within_budget(
+    n_spin_orbitals,
+    block_width,
+    reort,
+    ranks,
+    comm,
+    safety=DEFAULT_MEMORY_SAFETY,
+    krylov_dtype=None,
+    method="lanczos",
+):
+    """Largest per-unit ``truncation_threshold`` whose predicted GF peak fits ``ranks`` ranks.
+
+    .. warning:: **Collective on** ``comm`` (calls :func:`available_bytes_per_rank`).
+
+    The complement of :func:`max_colors_within_budget`: that function fixes the cap and
+    finds the largest color count (so the smallest ``ranks``) that still fits the budget;
+    this fixes ``ranks`` -- the color a unit actually landed on, from
+    ``comm.size // len(units_per_color)`` -- and finds the largest cap that basis can fill.
+    A unit basis inheriting the *job-wide* ``truncation_threshold`` verbatim (today's
+    behaviour, ``basis_split.py``'s ``truncation_threshold=basis.truncation_threshold``) was
+    sized for all of ``comm.size`` ranks, not the ``ranks`` its color actually has, which is
+    the root cause this function exists to fix (see ``doc/plans/dc_smo_memory.md``, "GF
+    unit memory").
+
+    Both this function and :func:`max_colors_within_budget` invert the same
+    :func:`estimate_gf_peak_bytes` (which is where :func:`_routing_skew_factor` lives), so
+    they compose rather than double-count: a skew-tightened color count means *more* ranks
+    per color, which this function then reports as a *larger* affordable per-unit cap.
+
+    Exponential-then-bisection, mirroring :func:`_suggest_for_budget`.
+
+    Parameters
+    ----------
+    n_spin_orbitals : int
+        Determinant bit width.
+    block_width : int
+        Widest unit's seed count (GF block width) about to run on this color.
+    reort : str or None
+        GF reorthogonalization mode.
+    ranks : int
+        Ranks in this unit's color (``comm.size // n_colors`` at the split site) --
+        **not** ``comm.size``.
+    comm : MPI communicator
+        The full communicator (``available_bytes_per_rank`` reads the per-node memory
+        budget from it; the search itself is rank-local once the budget is known).
+    safety : float
+        Fraction of available RAM to budget (default ``DEFAULT_MEMORY_SAFETY``).
+    krylov_dtype : optional
+        Krylov store dtype; ``complex64`` halves the store and so raises the cap.
+    method : str
+        See :func:`estimate_gf_peak_bytes`.
+
+    Returns
+    -------
+    int
+        Largest determinant count (at least 1) whose predicted per-rank GF peak, at
+        ``ranks``, fits ``safety * available_bytes_per_rank(comm)``.
+    """
+    budget = safety * available_bytes_per_rank(comm)
+
+    def fits(n):
+        return (
+            estimate_gf_peak_bytes(
+                n, n_spin_orbitals, block_width, reort, ranks=ranks, krylov_dtype=krylov_dtype, method=method
+            )
+            <= budget
+        )
+
+    lo, hi = 1, 1024
+    while fits(hi) and hi < 10**13:
+        lo, hi = hi, hi * 2
+    if hi >= 10**13:
+        return hi
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
 
 
 def _suggest_for_budget(
