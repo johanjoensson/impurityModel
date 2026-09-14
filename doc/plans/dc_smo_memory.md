@@ -1197,3 +1197,127 @@ transient is measurable.
    not bit-identical to today's path at that boundary; column chunks would be, but `concat_cols` on
    block states goes through the `to_states`/`from_states` round trip this function was rewritten
    to avoid. Knob-gated, measured on the SrMnO3 workload before any default changes.
+
+## Round 7: GF unit memory -- a job-wide cap inherited onto a 5-rank color
+
+A second production job (128 ranks x 4 threads, 2 nodes, ~9.4 GiB/rank) finished the Gap
+double-counting section and the ground-state solve (`VmHWM=2.4-2.7 GiB` every cycle, cap never
+bound: `truncation = None` in `ground_state_statistics.json`), then was OOM-killed inside the
+interacting Green's function:
+
+```
+[2026-09-13T02:00:00] error: Detected 2 oom_kill events in StepId=2339929.0
+srun: error: n367: tasks 24,43,45: Out Of Memory
+```
+
+**3 of 128 ranks died -- the signature of a skewed per-rank term, not a global over-allocation.**
+The log's own two lines name the mechanism:
+
+```
+Mn: truncation_threshold=40,234,112: predicted per-rank peak 4.7 GiB (ground state)
+    / 221.8 MiB (Green's function), 9.4 GiB/rank available.
+...
+25 simultaneous unit bases at truncation_threshold=40,234,112:
+    predicted per-rank GF peak 4.1 GiB if a unit fills its cap.
+```
+
+`suggest_truncation_threshold` sizes `truncation_threshold` so the *ground state* fits `0.5 x
+available_bytes_per_rank` **on all 128 ranks** (reproduced exactly:
+`estimate_gs_peak_bytes(40_234_112, 58, 5, ranks=128) = 4.7 GiB`). `basis_split.py` then handed
+that same number, verbatim, to each split unit basis -- but each unit basis runs on
+`128 // 25 = 5` ranks, not 128. `_CappedBasisProxy` enforces the cap it is given; nothing enforced
+one sized for the ranks a unit actually landed on.
+
+**The crash archive (`~/Dokument/arrhenius/SMO/cubic/impmod/`) is no longer available on this
+machine.** The closest surviving substitute is `impmod_tests/SMO/cubic/impmod/impurityModel_data.h5`
+-- the same Mn cluster and 58 spin-orbitals, but `WORKLOADS["smo"]`'s `tau=0.0025`, not the crash's
+`tau=0.025` (see `arrhenius-smo-crash-archive-is-not-the-workloads-key`). A local repro at 2 ranks
+against this substitute answers the one question the crash log could not: does a GF unit's basis
+actually run toward the cap, or does it plateau below it regardless (in which case a per-unit cap
+would be a no-op)?
+
+```
+cap=20,000:
+  unit 1: n0=1,061 -> retained=20,000  cap_hit=True   n_blocks=317
+  unit 2: n0=  698 -> retained=20,000  cap_hit=True   n_blocks=266
+  unit 3: n0=1,068 -> retained=20,000  cap_hit=True   n_blocks=259
+  unit 4: n0=  263 -> retained= 4,570  cap_hit=False  n_blocks=114
+  unit 5: n0=1,339 -> retained=19,999  cap_hit=True   n_blocks=916
+```
+
+Both halves of the plan's premise hold, in the same run: most units genuinely grow toward
+whatever cap they are given (4 of 5 above), so a cap sized for the wrong rank count really does
+starve them; one unit (4) plateaus naturally below the cap on its own H-connectivity closure, so
+a correctly-sized cap costs it nothing (it never binds there either way). Caps 2,000 and 5,000
+also cap-hit and, as expected at that small a size, made `calc_selfenergy`'s own causality check
+raise (`UnphysicalGreensFunctionError`) -- an unrelated, correctly-firing guard, not evidence
+against the fix.
+
+**The arithmetic, corrected for the resident ground-state footprint.** `available_bytes_per_rank`
+is a *live* probe (`/proc/meminfo` `MemAvailable` at call time), so the budget the GF phase
+actually sees already reflects whatever the ground-state solve left resident -- not the bare
+9.4 GiB of an empty process. With the GS phase's own measured `VmHWM` (~2.6 GiB) subtracted first:
+
+| | job-wide cap (40.2M), unchanged | derived per-unit cap, this fix |
+|---|---|---|
+| available at GF-phase start (per rank) | 6.8 GiB | 6.8 GiB |
+| budget (`0.5x`) | 3.4 GiB | 3.4 GiB |
+| cap a 5-rank unit is given | 40,234,112 (inherited verbatim) | 30,790,637 (`max_unit_dets_within_budget`) |
+| predicted peak at that cap, 5 ranks, `_routing_skew_factor(5)=1.082` | **4.4 GiB** -- over budget | **3.4 GiB** -- fits |
+
+23% off the cap recovers a real margin (4.4 -> 3.4 GiB against a 3.4 GiB budget), on top of
+whatever the (still unmodelled) pack/send/receive transient and the tail of the rank-skew
+distribution were already contributing on the three ranks that actually died. The fix does not
+claim to explain the whole overrun by itself -- the skew factor and `GF_APPLY_ROW_CHUNKS` cover
+the rest -- but it is the term that was completely unaccounted for before this round, and the one
+`basis_split.py` had all the information to get right already (`ranks_per_color` is known at the
+split site).
+
+### What shipped
+
+1. **Per-unit cap, sized for the unit's own rank count.** `memory_estimate.max_unit_dets_within_budget`
+   inverts `estimate_gf_peak_bytes` at a fixed `ranks` (the complement of the existing
+   `max_colors_within_budget`, which inverts it at a fixed cap). `gf_units.run_units_distributed`
+   calls it right after the split, at `ranks_per_color = comm.size // n_colors`, and tightens
+   (never loosens) `split_basis.truncation_threshold` to `min(inherited_cap, unit_cap)`.
+2. **A measured rank-skew factor in `estimate_gf_peak_bytes`.** `routing_hash`'s max/mean skew was
+   already measured at 2, 4, 8, 16, 64, 128, 256 ranks (see "`routing_hash` is deliberately
+   non-uniform" above); `_routing_skew_factor` log-log interpolates between those anchors (clamped
+   outside `[2, 256]`, never extrapolated) and multiplies `local_rows`. One factor, shared by both
+   inversions, so they compose (a tighter color count implies more ranks per color, hence a larger
+   affordable per-unit cap) rather than double-count. `estimate_gs_peak_bytes` is deliberately left
+   alone -- the GS solve spans the whole communicator, its measured skew there is smaller (1.62x on
+   this archive's own final cycle) and already inside `DEFAULT_MEMORY_SAFETY`, and moving it would
+   re-calibrate every DC-search iteration, a much larger change than this round's scope.
+3. **Per-unit memory reporting.** The GS phase prints `VmHWM` every CIPSI cycle; the GF phase
+   printed only the two split-time predictions above and then nothing until it finished or was
+   killed. `_block_green_group` now resets `peak_rss_bytes()` on entry and, on return, MAX-allreduces
+   it over the unit's own color and reports it (`_trace_note` + an optional print) alongside the
+   retained basis size and Lanczos block count -- the number this round needed arithmetic to
+   reconstruct.
+4. **`GF_APPLY_ROW_CHUNKS` (default 1, off).** Mirrors `GS_APPLY_ROW_CHUNKS` at the GF unit's own
+   matvec (`_lanczos_step.pxi`'s `wp = h_op.apply_block(q_curr, ...)`): row-chunked apply +
+   redistribute + accumulate bounds the pack/send/receive transient `estimate_gf_peak_bytes`'s
+   docstring already documents as unmodelled. Off by default: unlike the CIPSI selection round's
+   chunked output (feeds a `slater_weight_min` prune and a candidate ranking), this sum feeds the
+   Lanczos recurrence directly, so a summation-order change can in principle move a deflation or
+   iteration-count decision. Verified against the same strong oracle `test_gf_truncation.py` holds
+   the one-shot path to (a capped recurrence's continued fraction must equal the dense resolvent of
+   `H` projected on whatever it actually retained) across cap/reort/chunk-count combinations, plus
+   tight numerical agreement with the one-shot path above the reachable space (no admission
+   boundary to perturb there).
+5. **Two-strike look-ahead, memory-cap==0 excepted.** `CIPSISolver.expand`'s look-ahead guard used
+   to adopt a permanent fixed budget the first time one round's measured transient predicted the
+   next round would not fit -- a single noisy reading (allocator jitter, a GC pause inside the
+   measured window) then pinned the basis at that cycle's size for the rest of the run. Now it
+   waits for two consecutive binding rounds, *except* when the affordable growth is exactly zero:
+   a round that admits nothing leaves the basis unchanged, so the loop's own termination
+   (`cap_cycles == 0 and self.basis.size == old_size: break`) would exit before a second round
+   could ever confirm the reading -- and zero is a floor, not a noisy estimate a second sample
+   could revise upward. `determine_new_Dj` already applies the round's own `memory_cap` to its
+   admission regardless of the streak, so the guard's safety property is unchanged either way;
+   only *when* it locks into permanent fixed-budget mode moved.
+
+Not shipped: a production-scale repro against the actual crash archive (gone) or a cluster job.
+The substitute-archive repro above and the corrected arithmetic are the evidence; the next
+production job is the first real test at scale.
