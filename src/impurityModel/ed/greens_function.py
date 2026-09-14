@@ -57,6 +57,8 @@ from impurityModel.ed.gf_units import (
 )
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
+from impurityModel.ed.memory_estimate import format_bytes, peak_rss_bytes, reset_peak_rss
+from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.symmetries import widen_weighted_restrictions
 
 comm = MPI.COMM_WORLD
@@ -395,6 +397,7 @@ def get_Greens_function(
             excited_weighted_restrictions,
             eval_meshes=eval_meshes,
             conv_stats=conv_stats,
+            unit_label=u,
         )
         if verbose_extra and unit_rank0:
             print(f"Expanded excited state basis contains {cap_stats['retained_size']} elements.")
@@ -1015,6 +1018,7 @@ def _block_green_group(
     excited_weighted_restrictions,
     eval_meshes=None,
     conv_stats=None,
+    unit_label=None,
 ):
     """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
 
@@ -1034,7 +1038,26 @@ def _block_green_group(
     ``{"converged", "d_g", "n_blocks", "tol"}``, forwarded verbatim from
     :func:`block_Green_sparse`/:func:`block_Green` (see their ``info`` parameter). ``None``
     (the default) skips it -- only the caller assembling the ``lanczos`` diagnostic needs it.
+    This function always reads ``n_blocks`` back for its own memory report below, regardless
+    of whether the caller wants the rest of ``conv_stats``.
+
+    ``unit_label`` (optional) identifies this unit in the memory report below -- a plain
+    string or index, not interpreted otherwise.
+
+    Every call -- one per work unit, this being the per-unit body ``run_units_distributed``
+    calls into -- reports its own peak: the GS phase prints ``VmHWM`` on every CIPSI cycle,
+    but before this the GF phase printed only the two split-time *predictions* and then
+    nothing until it finished or was OOM-killed (the SrMnO3 crash this closes needed
+    arithmetic to reconstruct, instead of a log line -- see ``doc/plans/dc_smo_memory.md``,
+    "GF unit memory"). ``peak_rss_bytes()`` is reset on entry (this call's own transient,
+    not a run-wide high-water mark that never resets) and MAX-allreduced over
+    ``split_basis.comm`` -- the color this unit ran on, not the job -- so the binding rank's
+    peak is what gets reported, matching how the memory model itself is sized (see
+    :func:`memory_estimate._routing_skew_factor`). Collective, called unconditionally
+    whether or not the print fires; the note is recorded even with no active
+    :func:`solver_trace.tracing` block (a no-op then).
     """
+    reset_peak_rss()
     excited_basis = split_basis.clone(
         initial_basis={state for p in group_seed_states for state in p},
         restrictions=excited_restrictions,
@@ -1046,6 +1069,9 @@ def _block_green_group(
     if excited_basis.weighted_restrictions is not None:
         hOp.set_weighted_restrictions(excited_basis.weighted_restrictions)
     cap = getattr(excited_basis, "truncation_threshold", np.inf)
+    # `conv_stats` stays None to the caller that didn't ask for it; this function still wants
+    # `n_blocks` for its own report, so it reads back through its own dict either way.
+    info = {} if conv_stats is None else conv_stats
     if sparse:
         cap_info = {}
         alphas, betas, r = block_Green_sparse(
@@ -1058,7 +1084,7 @@ def _block_green_group(
             verbose=verbose,
             cap_info=cap_info,
             eval_meshes=eval_meshes,
-            info=conv_stats,
+            info=info,
         )
         cap_stats = {
             "cap_hit": bool(cap_info.get("cap_hit", False)),
@@ -1075,7 +1101,7 @@ def _block_green_group(
             slaterWeightMin=slaterWeightMin,
             verbose=verbose,
             eval_meshes=eval_meshes,
-            info=conv_stats,
+            info=info,
         )
         # The array path stops expanding when the basis crosses the cap (never removes).
         cap_stats = {
@@ -1083,6 +1109,30 @@ def _block_green_group(
             "retained_size": len(excited_basis),
             "cap": cap,
         }
+    comm = split_basis.comm
+    peak = peak_rss_bytes()
+    if comm is not None:
+        peak = comm.allreduce(peak, op=MPI.MAX)
+    retained_size = cap_stats["retained_size"]
+    n_blocks = info.get("n_blocks")
+    _trace_note(
+        "gf_unit_memory",
+        unit=unit_label,
+        retained_size=int(retained_size) if retained_size is not None else None,
+        cap=float(cap) if np.isfinite(cap) else None,
+        cap_hit=bool(cap_stats["cap_hit"]),
+        n_blocks=int(n_blocks) if n_blocks is not None else None,
+        peak_rss_bytes=int(peak),
+    )
+    if verbose and (comm is None or comm.rank == 0):
+        label = f"unit {unit_label}" if unit_label is not None else "unit"
+        retained_display = f"{retained_size:,}" if retained_size is not None else "n/a"
+        print(
+            f"  {label}: excited basis {retained_display} determinants "
+            f"(cap={cap:,.0f}, cap_hit={cap_stats['cap_hit']}) n_blocks={n_blocks} "
+            f"color MAX VmHWM={format_bytes(peak)}",
+            flush=True,
+        )
     return alphas, betas, r, cap_stats
 
 
@@ -1199,6 +1249,7 @@ def calc_Greens_function_with_offdiag(
             verbose,
             unit_restrictions[u],
             excited_weighted_restrictions,
+            unit_label=u,
         )
         if verbose and (split_basis.comm is None or split_basis.comm.rank == 0):
             print(f"Expanded excited state basis contains {_cap_stats['retained_size']} elements.")
