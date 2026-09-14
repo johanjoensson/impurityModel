@@ -243,6 +243,58 @@ def test_memory_budget_caps_unit_split_mpi(monkeypatch):
 
 
 @pytest.mark.mpi
+def test_run_units_distributed_tightens_cap_to_the_units_own_rank_count_mpi(monkeypatch):
+    """A unit basis must not inherit the job-wide cap verbatim once split onto fewer ranks.
+
+    Before this fix, `split_basis` kept the caller's `truncation_threshold` -- sized for the
+    whole communicator -- unchanged after landing on a smaller color; each color's unit could
+    then grow ~n_colors x past what its own rank count affords (doc/plans/dc_smo_memory.md,
+    "GF unit memory": a 40M cap sized for 128 ranks, unchanged on a 5-rank color, predicted a
+    4.1 GiB unit peak that a per-unit-sized cap would have caught).
+    """
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD
+    if comm.size < 2:
+        pytest.skip("This test requires at least 2 MPI ranks")
+
+    states = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    inherited_cap = 10**9  # sized for the whole communicator; must never be loosened
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=comm,
+        truncation_threshold=inherited_cap,
+    )
+    psi = ManyBodyState.from_states(
+        [ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0} if comm.rank == 0 else {}, width=1)]
+    )
+    unit_seeds = [[psi], [psi]]
+    unit_weights = np.array([1.0, 1.0])
+    observed_caps: list[float] = []
+    observed_ranks: list[int] = []
+
+    def kernel(split_basis, u, seeds):
+        observed_caps.append(float(split_basis.truncation_threshold))
+        observed_ranks.append(split_basis.comm.size if split_basis.comm is not None else 1)
+
+    # A budget generous enough to split into two colors (so ranks_per_color < comm.size) but
+    # not so generous that the per-unit cap fails to bind below `inherited_cap`.
+    budget_per_rank = 4 * 2**20
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: budget_per_rank)
+    run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=False)
+
+    assert observed_caps, "kernel never ran"
+    for cap, ranks in zip(observed_caps, observed_ranks):
+        assert cap < inherited_cap, "the unit cap must be tightened, not inherited verbatim"
+        assert cap == pytest.approx(
+            me.max_unit_dets_within_budget(basis.num_spin_orbitals, 1, None, ranks, comm), rel=0.01
+        )
+
+
+@pytest.mark.mpi
 def test_split_basis_replicates_full_basis_across_lopsided_colors_mpi():
     """The color split must give every color the *full* determinant set and preserve
     the total seed weight -- even with a lopsided packing that puts a single rank in the

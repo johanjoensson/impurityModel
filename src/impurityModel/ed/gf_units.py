@@ -19,7 +19,12 @@ from impurityModel.ed import config
 from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed.memory_estimate import estimate_gf_peak_bytes, format_bytes, max_colors_within_budget
+from impurityModel.ed.memory_estimate import (
+    estimate_gf_peak_bytes,
+    format_bytes,
+    max_colors_within_budget,
+    max_unit_dets_within_budget,
+)
 from impurityModel.ed.mpi_comm import gather_distributed_results
 
 comm = MPI.COMM_WORLD
@@ -247,23 +252,37 @@ def run_units_distributed(
         print(f"New unit roots: {unit_roots}")
         print(f"Units per color: {units_per_color}")
         print("=" * 80, flush=True)
-    # All inputs of the per-color prediction are replicated (no collectives), so gating the
-    # print on rank 0 is safe.
-    if verbose and basis.comm.rank == 0 and np.isfinite(cap):
-        n_colors = len(units_per_color)
-        per_rank = estimate_gf_peak_bytes(
-            int(cap),
-            basis.num_spin_orbitals,
-            width,
-            reort,
-            ranks=max(1, basis.comm.size // max(1, n_colors)),
-            method=gf_method,
+    # `split_basis` inherited the job-wide `cap` verbatim (sized for basis.comm.size ranks),
+    # but this color runs on only `ranks_per_color` of them -- the mismatch that let a unit
+    # basis grow ~n_colors x too large before this fix (doc/plans/dc_smo_memory.md, "GF unit
+    # memory"). Re-derive the cap this color's own rank count can actually afford and tighten
+    # (never loosen) `split_basis`'s cap to it. `max_unit_dets_within_budget` is collective on
+    # `basis.comm` (it probes available memory); every input up to here is replicated, so every
+    # rank of every color computes the identical bound and calls it unconditionally, whether or
+    # not the print below fires.
+    n_colors = len(units_per_color)
+    ranks_per_color = max(1, basis.comm.size // max(1, n_colors))
+    if np.isfinite(cap):
+        unit_cap = max_unit_dets_within_budget(
+            basis.num_spin_orbitals, width, reort, ranks_per_color, basis.comm, method=gf_method
         )
-        print(
-            f"{n_colors} simultaneous unit bases at truncation_threshold={int(cap):,}: "
-            f"predicted per-rank GF peak {format_bytes(per_rank)} if a unit fills its cap.",
-            flush=True,
-        )
+        split_basis.truncation_threshold = min(float(cap), float(unit_cap))
+        if verbose and basis.comm.rank == 0:
+            per_rank = estimate_gf_peak_bytes(
+                int(split_basis.truncation_threshold),
+                basis.num_spin_orbitals,
+                width,
+                reort,
+                ranks=ranks_per_color,
+                method=gf_method,
+            )
+            print(
+                f"{n_colors} simultaneous unit bases on {ranks_per_color} rank(s) each: unit basis "
+                f"capped at {int(split_basis.truncation_threshold):,} determinants "
+                f"(job-wide truncation_threshold={int(cap):,}; predicted per-rank GF peak "
+                f"{format_bytes(per_rank)}).",
+                flush=True,
+            )
     sub_rank = split_basis.comm.rank if split_basis.comm is not None else 0
     unit_indices_per_color = gather_distributed_results(
         basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices), is_array=True
