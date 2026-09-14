@@ -295,6 +295,68 @@ def test_run_units_distributed_tightens_cap_to_the_units_own_rank_count_mpi(monk
 
 
 @pytest.mark.mpi
+def test_run_units_distributed_does_not_mutate_the_callers_basis_cap_mpi(monkeypatch):
+    """ADVERSARIAL REVIEW (added by review, currently FAILING): the per-unit cap tightening
+    must not reach back into the caller's own basis.
+
+    ``split_basis_and_redistribute_psi`` returns the *caller's* ``basis`` object itself
+    whenever the packing collapses to a single color (``_pack_units`` returns
+    ``(None, None)`` at ``n_colors <= 1``; also the ``len(priorities) <= 1`` early return).
+    ``run_units_distributed`` then executes
+    ``split_basis.truncation_threshold = min(cap, unit_cap)`` on that same object, so a
+    Green's-function memory probe permanently rewrites the ground-state basis's cap. Callers
+    that reuse one basis for several spectra (``spectra.simulate_spectra`` calls
+    ``calc_spectra`` for IPS/PS/XAS/NIXS/RIXS on the same object) ratchet it down further on
+    every call.
+
+    Worse, at a stable memory budget the tightening can only bind when the split collapsed to
+    one color: whenever ``max_colors_within_budget`` returned >= 2 it already checked that the
+    inherited cap fits at that color's rank count, and ``estimate_gf_peak_bytes`` is monotone
+    non-increasing in ``ranks``, so ``max_unit_dets_within_budget`` at the same (or larger)
+    rank count returns >= cap and the ``min`` is inert -- which is exactly what
+    ``test_max_colors_and_max_unit_dets_compose_without_double_counting`` asserts. The
+    remaining binding case is budget drift between the two ``available_bytes_per_rank``
+    probes, which lands on a genuine split basis but is driven by transient memory noise.
+    """
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD
+    if comm.size < 2:
+        pytest.skip("This test requires at least 2 MPI ranks")
+
+    states = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    inherited_cap = 10**9
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=comm,
+        truncation_threshold=inherited_cap,
+    )
+    psi = ManyBodyState.from_states(
+        [ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0} if comm.rank == 0 else {}, width=1)]
+    )
+    # A budget so small that max_colors_within_budget falls through to 1 color -- the only
+    # regime in which the new per-unit tightening binds at all.
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+
+    aliased: list[bool] = []
+
+    def kernel(split_basis, u, seeds):
+        aliased.append(split_basis is basis)
+
+    run_units_distributed(basis, [[psi], [psi]], np.array([1.0, 1.0]), kernel, verbose=False)
+
+    assert aliased and all(aliased), "precondition: this budget must collapse the split to one color"
+    assert basis.truncation_threshold == inherited_cap, (
+        "run_units_distributed permanently lowered the CALLER's truncation_threshold "
+        f"({inherited_cap:,} -> {basis.truncation_threshold:,}); the GF unit cap must not "
+        "outlive the GF phase"
+    )
+
+
+@pytest.mark.mpi
 def test_split_basis_replicates_full_basis_across_lopsided_colors_mpi():
     """The color split must give every color the *full* determinant set and preserve
     the total seed weight -- even with a lopsided packing that puts a single rank in the

@@ -20,6 +20,7 @@ from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
+    current_rss_bytes,
     estimate_gf_peak_bytes,
     format_bytes,
     max_colors_within_budget,
@@ -260,63 +261,94 @@ def run_units_distributed(
     # `basis.comm` (it probes available memory); every input up to here is replicated, so every
     # rank of every color computes the identical bound and calls it unconditionally, whether or
     # not the print below fires.
+    #
+    # `split_basis` IS `basis` whenever the split collapses to a single color
+    # (`basis_split._pack_units` returns `None` subgroups at `n_colors <= 1`, and
+    # `split_basis_and_redistribute_psi` then hands the caller's own object back). Writing the
+    # unit cap onto it would therefore outlive this call and silently ratchet the caller's cap
+    # down -- `spectra.simulate_spectra` reuses ONE basis across IPS/PS/XAS/NIXS/RIXS, so each
+    # such call would tighten the next spectrum's basis, an order-dependent accuracy loss with
+    # no opt-out. The cap is scoped to this GF phase instead: set below, restored in the
+    # `finally` at the end of the function, on every path including an exception.
     n_colors = len(units_per_color)
     ranks_per_color = max(1, basis.comm.size // max(1, n_colors))
-    if np.isfinite(cap):
-        unit_cap = max_unit_dets_within_budget(
-            basis.num_spin_orbitals, width, reort, ranks_per_color, basis.comm, method=gf_method
-        )
-        split_basis.truncation_threshold = min(float(cap), float(unit_cap))
-        if verbose and basis.comm.rank == 0:
-            per_rank = estimate_gf_peak_bytes(
-                int(split_basis.truncation_threshold),
+    caller_cap = basis.truncation_threshold
+    # What this rank already holds entering the GF phase (ground-state basis, eigenvectors,
+    # stored Hamiltonian, the RSPt/Python floor). MAX over the communicator, because the cap
+    # has to hold on the rank that is worst off. Sampled unconditionally, outside the
+    # `np.isfinite(cap)` gate: it is the only collective here, and keeping it off a
+    # conditional keeps the gate's rank-invariance from mattering (CLAUDE.md -- never gate a
+    # collective on state that could differ). Without this the per-unit cap below cannot bind
+    # at all; see `max_unit_dets_within_budget`'s `resident_bytes`.
+    resident_bytes = basis.comm.allreduce(current_rss_bytes(), op=MPI.MAX)
+    try:
+        if np.isfinite(cap):
+            unit_cap = max_unit_dets_within_budget(
                 basis.num_spin_orbitals,
                 width,
                 reort,
-                ranks=ranks_per_color,
+                ranks_per_color,
+                basis.comm,
                 method=gf_method,
+                resident_bytes=resident_bytes,
             )
-            print(
-                f"{n_colors} simultaneous unit bases on {ranks_per_color} rank(s) each: unit basis "
-                f"capped at {int(split_basis.truncation_threshold):,} determinants "
-                f"(job-wide truncation_threshold={int(cap):,}; predicted per-rank GF peak "
-                f"{format_bytes(per_rank)}).",
-                flush=True,
-            )
-    sub_rank = split_basis.comm.rank if split_basis.comm is not None else 0
-    unit_indices_per_color = gather_distributed_results(
-        basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices), is_array=True
-    )
-
-    assert split_seeds is not None  # seeds passed in are a (possibly empty) list, never None
-    local_results = [kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]) for u in unit_indices]
-
-    results = None
-    if reduce_fn is None:
-        gathered = gather_distributed_results(
-            basis.comm, sub_rank, unit_roots, units_per_color, local_results, is_array=False
+            split_basis.truncation_threshold = min(float(cap), float(unit_cap))
+            if verbose and basis.comm.rank == 0:
+                per_rank = estimate_gf_peak_bytes(
+                    int(split_basis.truncation_threshold),
+                    basis.num_spin_orbitals,
+                    width,
+                    reort,
+                    ranks=ranks_per_color,
+                    method=gf_method,
+                )
+                print(
+                    f"{n_colors} simultaneous unit bases on {ranks_per_color} rank(s) each: unit basis "
+                    f"capped at {int(split_basis.truncation_threshold):,} determinants "
+                    f"(job-wide truncation_threshold={int(cap):,}; predicted per-rank GF peak "
+                    f"{format_bytes(per_rank)}).",
+                    flush=True,
+                )
+        sub_rank = split_basis.comm.rank if split_basis.comm is not None else 0
+        unit_indices_per_color = gather_distributed_results(
+            basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices), is_array=True
         )
-        if basis.comm.rank == 0:
-            results = [None] * n_units
-            for i, u in enumerate(unit_indices_per_color):
-                results[int(u)] = gathered[i]
-    elif basis.comm.rank == 0:
-        # Streaming consume: receive one color's payload at a time (same color order and
-        # send/recv pairing as gather_distributed_results), reduce it, drop it.
-        offset = 0
-        for count, root in zip(units_per_color, unit_roots):
-            if count == 0:
-                continue
-            payload = local_results if root == 0 else basis.comm.recv(source=root)
-            for i in range(count):
-                reduce_fn(int(unit_indices_per_color[offset + i]), payload[i])
-            payload = None
-            offset += count
-        local_results = None
-        results = True
-    elif sub_rank == 0:
-        basis.comm.send(local_results, dest=0)
-        local_results = None
+
+        assert split_seeds is not None  # seeds passed in are a (possibly empty) list, never None
+        local_results = [
+            kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]) for u in unit_indices
+        ]
+
+        results = None
+        if reduce_fn is None:
+            gathered = gather_distributed_results(
+                basis.comm, sub_rank, unit_roots, units_per_color, local_results, is_array=False
+            )
+            if basis.comm.rank == 0:
+                results = [None] * n_units
+                for i, u in enumerate(unit_indices_per_color):
+                    results[int(u)] = gathered[i]
+        elif basis.comm.rank == 0:
+            # Streaming consume: receive one color's payload at a time (same color order and
+            # send/recv pairing as gather_distributed_results), reduce it, drop it.
+            offset = 0
+            for count, root in zip(units_per_color, unit_roots):
+                if count == 0:
+                    continue
+                payload = local_results if root == 0 else basis.comm.recv(source=root)
+                for i in range(count):
+                    reduce_fn(int(unit_indices_per_color[offset + i]), payload[i])
+                payload = None
+                offset += count
+            local_results = None
+            results = True
+        elif sub_rank == 0:
+            basis.comm.send(local_results, dest=0)
+            local_results = None
+    finally:
+        # Rank-local attribute write, executed identically on every rank (no collective here),
+        # so an exception on one rank cannot desynchronize the others through this path.
+        basis.truncation_threshold = caller_cap
 
     # Free the split communicator collectively before returning. MPI_Comm_free is collective --
     # it must be called by all ranks in the comm at the same time. Leaving it for Python gc risks
