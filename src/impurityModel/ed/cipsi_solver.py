@@ -1256,6 +1256,11 @@ class CIPSISolver:
         # `peak_rss` is a high-water mark and stays above the budget forever after.
         budget_tripped = False
         memory_bound = False
+        # Whether the look-ahead bound was ever the binding limit, independent of whether it
+        # was tightened into a permanent cap (see the two-strike rule below). This is what
+        # `truncation_report` keys off, so a memory-limited expansion is reported as such
+        # even when the loop ended before a second strike could confirm the first.
+        memory_bound_observed = False
         cap_cycles = 0
         no_improve = 0
         e0 = np.inf
@@ -1356,6 +1361,14 @@ class CIPSISolver:
                     and (admit_target is None or memory_cap < admit_target)
                 )
                 memory_bound_streak = memory_bound_streak + 1 if round_memory_bound else 0
+                # Any strike at all, permanent tightening or not: this is what the expansion
+                # *reports*. Without it a first strike followed by a round that admits nothing
+                # leaves `memory_bound` False, the loop exits on
+                # `cap_cycles == 0 and self.basis.size == old_size`, and `truncation_report`
+                # is never written -- so a memory-limited expansion reads as a converged one,
+                # and `dc_search.resolve_cap_at_max` (which tests `truncation_report is None`)
+                # would record the cap as "unbound" and never look lower.
+                memory_bound_observed = memory_bound_observed or round_memory_bound
                 # Two consecutive binding rounds, not one: `determine_new_Dj` already applied
                 # this round's `memory_cap` to its own admission regardless (the guard's safety
                 # property does not depend on what happens here), so a single-round strike costs
@@ -1489,19 +1502,26 @@ class CIPSISolver:
             # must describe the *current* psi_refs -- after a best_basis restore above,
             # that is best_e_ref, not the last cycle's (possibly length-mismatched) e_ref.
             self.psi_refs = self.truncate(self.psi_refs, e_ref, slaterWeightMin=slaterWeightMin)
-        if cap_cycles > 0 or memory_bound:
+        if cap_cycles > 0 or memory_bound or memory_bound_observed:
             # `memory_bound` alone (no refinement cycle ran) is the case where the memory guard
             # found even a same-size round unaffordable and the expansion stopped where it stood;
             # that must still be reported as a cap, not pass for a converged expansion.
+            # `memory_bound_observed` covers the same thing one strike earlier: the look-ahead
+            # limited an admission but the loop ended before the second strike that would have
+            # made the cap permanent. The expansion was memory-limited either way, and
+            # `dc_search.resolve_cap_at_max` reads `truncation_report is None` as "unbound".
             sel = self.last_selection or {}
             self.truncation_report = {
                 "cap_hit": True,
                 "cycles": cap_cycles,
                 "retained": int(self.basis.size),
-                "threshold": int(threshold),
+                # Still `inf` when only `memory_bound_observed` fired (the look-ahead bounded a
+                # round's admission without ever adopting a permanent cap), and `int(inf)`
+                # raises -- report the basis it actually stopped at instead.
+                "threshold": int(threshold) if np.isfinite(threshold) else int(self.basis.size),
                 "discarded_de2_mass": float(sel.get("discarded_de2_mass", 0.0)),
                 "n_candidates_last": int(sel.get("n_candidates", 0)),
-                "memory_bound": bool(memory_bound),
+                "memory_bound": bool(memory_bound or memory_bound_observed),
             }
             rank = self.basis.comm.rank if self.basis.is_distributed else 0
             if rank == 0:
