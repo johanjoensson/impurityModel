@@ -1057,7 +1057,11 @@ def _block_green_group(
     whether or not the print fires; the note is recorded even with no active
     :func:`solver_trace.tracing` block (a no-op then).
     """
-    reset_peak_rss()
+    # Capture whether the reset actually worked, the way cipsi_solver does: on a kernel or
+    # container where /proc/self/clear_refs is unwritable, `peak_rss_bytes()` below is a
+    # run-wide cumulative mark, not this unit's transient, and reporting it as the latter is
+    # exactly the staleness that misled an earlier debugging session (round 6).
+    peak_is_own = reset_peak_rss()
     excited_basis = split_basis.clone(
         initial_basis={state for p in group_seed_states for state in p},
         restrictions=excited_restrictions,
@@ -1113,6 +1117,8 @@ def _block_green_group(
     peak = peak_rss_bytes()
     if comm is not None:
         peak = comm.allreduce(peak, op=MPI.MAX)
+    # A cumulative mark is not this unit's peak; say so rather than quietly overstating it.
+    peak_kind = "unit" if peak_is_own else "cumulative"
     retained_size = cap_stats["retained_size"]
     n_blocks = info.get("n_blocks")
     _trace_note(
@@ -1123,6 +1129,7 @@ def _block_green_group(
         cap_hit=bool(cap_stats["cap_hit"]),
         n_blocks=int(n_blocks) if n_blocks is not None else None,
         peak_rss_bytes=int(peak),
+        peak_is_unit_transient=bool(peak_is_own),
     )
     if verbose and (comm is None or comm.rank == 0):
         label = f"unit {unit_label}" if unit_label is not None else "unit"
@@ -1130,7 +1137,7 @@ def _block_green_group(
         print(
             f"  {label}: excited basis {retained_display} determinants "
             f"(cap={cap:,.0f}, cap_hit={cap_stats['cap_hit']}) n_blocks={n_blocks} "
-            f"color MAX VmHWM={format_bytes(peak)}",
+            f"color MAX VmHWM={format_bytes(peak)} ({peak_kind})",
             flush=True,
         )
     return alphas, betas, r, cap_stats
