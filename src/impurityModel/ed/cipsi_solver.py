@@ -1267,6 +1267,17 @@ class CIPSISolver:
         # The kept manifold two cycles back, for the growth margin below. `None` until there is
         # one, which is not the same as zero: a first cycle has no growth to extrapolate.
         prev_kept = None
+        # Consecutive cycles the look-ahead bound has been the binding one (reset to 0 the
+        # moment a cycle is not memory-bound). One binding cycle already caps *that* cycle's
+        # admission (`determine_new_Dj`'s own `min(max_new, cap)`, unconditional -- see
+        # `_memory_growth_bound`); this streak only gates the *permanent* threshold tightening
+        # below, so one round's noisy transient (allocator jitter, a GC pause landing inside the
+        # measured window, a one-off skew to the sampled rank) cannot freeze the basis for the
+        # rest of the run on a single bad reading. Two consecutive rounds agreeing is a real
+        # trend, not noise, and still tightens promptly -- this is not the every-round-forever
+        # staleness the after-the-fact `peak_rss` trip-wire below has (that one never resets,
+        # so an earlier cycle's mark keeps reading as current; see its own comment).
+        memory_bound_streak = 0
         while True:
             if psi_refs is None:
                 num_wanted = 10
@@ -1338,14 +1349,28 @@ class CIPSISolver:
                 # three limits (candidates above de2_min, an existing cap's `admit_target`, and
                 # itself). A bound looser than the cap already in force is not a memory event
                 # and must neither warn nor touch the threshold.
-                if (
+                round_memory_bound = (
                     memory_cap is not None
                     and memory_cap < sel.get("n_candidates", 0)
                     and (admit_target is None or memory_cap < admit_target)
-                ):
-                    # The next round could not afford the full candidate set. Adopt the
-                    # affordable size as the fixed budget from here on -- the same machinery a
-                    # caller's cap uses -- tightening only (`min`), never loosening an existing cap.
+                )
+                memory_bound_streak = memory_bound_streak + 1 if round_memory_bound else 0
+                # Two consecutive binding rounds, not one: `determine_new_Dj` already applied
+                # this round's `memory_cap` to its own admission regardless (the guard's safety
+                # property does not depend on what happens here), so a single-round strike costs
+                # nothing to wait out, and waiting is what stops one noisy reading from pinning
+                # the basis at that cycle's size for good.
+                #
+                # `memory_cap == 0` locks in on the first strike: zero affordable growth means
+                # this round admitted nothing, so `self.basis.size == old_size` and the loop's
+                # own termination (`cap_cycles == 0 and self.basis.size == old_size: break`,
+                # below) exits before a second round could ever run to confirm the reading --
+                # unlike a positive-but-tight cap, there is no "wait and see" available, and
+                # zero is a floor, not a noisy estimate that a second sample could revise upward.
+                if not memory_bound and round_memory_bound and (memory_cap == 0 or memory_bound_streak >= 2):
+                    # The affordable size becomes the fixed budget from here on -- the same
+                    # machinery a caller's cap uses -- tightening only (`min`), never loosening
+                    # an existing cap.
                     memory_bound = True
                     previous = threshold
                     threshold = min(float(threshold), float(old_size + memory_cap))
@@ -1353,13 +1378,17 @@ class CIPSISolver:
                     self.basis.truncation_threshold = threshold
                     if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
                         was = "uncapped" if not np.isfinite(previous) else f"a cap of {int(previous):,}"
+                        streak_note = (
+                            "no growth at all is affordable" if memory_cap == 0 else "for the second round running"
+                        )
                         print(
                             f"WARNING: the selection round on {old_size:,} determinants peaked "
                             f"{format_bytes(sel.get('round_transient_bytes', 0))} above its "
                             f"{format_bytes(sel.get('round_rss_bytes', 0))} resident set against a "
-                            f"{format_bytes(memory_budget_bytes)} budget; the next round can afford "
-                            f"{memory_cap:,} of the {sel.get('n_candidates', 0):,} candidates. "
-                            f"Tightening {was} to {int(threshold):,}.",
+                            f"{format_bytes(memory_budget_bytes)} budget ({streak_note}); "
+                            f"the next round can afford {memory_cap:,} of the "
+                            f"{sel.get('n_candidates', 0):,} candidates. Tightening {was} to "
+                            f"{int(threshold):,}.",
                             flush=True,
                         )
                 _sel_event.update(
