@@ -47,7 +47,8 @@ Issues = "https://github.com/johanjoensson/impurityModel//issues"
 # `from scipy.linalg.cython_blas cimport zgemm`, so Cython needs scipy's
 # cython_blas.pxd present when compiling (not just at runtime).
 requires = ["setuptools >= 77.0.3", "setuptools-scm", "cython", "numpy", "scipy"]
-build-backend = "setuptools.build_meta"
+build-backend = "_build_backend"
+backend-path = ["."]
 
 [tool.setuptools_scm]
 
