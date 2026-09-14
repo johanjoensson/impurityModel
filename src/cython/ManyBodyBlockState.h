@@ -498,6 +498,43 @@ public:
     m_amps.resize(out * m_width);
   }
 
+  /**
+   * @brief A new block holding rows `[lo, hi)` of this one, same width.
+   *
+   * Rows are stored in sorted key order, so a contiguous row range is already a
+   * valid support (sorted, unique) and both arrays copy as flat ranges -- no
+   * merge, no per-row work, and the result allocates exactly `hi - lo` rows.
+   *
+   * This exists for the row-chunked matvec (`_lanczos_step.pxi`) and the CIPSI
+   * selection round (`cipsi_solver._apply_block_and_redistribute`), which used
+   * to build a chunk as `copy()` + `keep_rows(mask)`. That allocates a
+   * FULL-SIZE duplicate of the block and then shrinks its logical length --
+   * `keep_rows`' `resize` does not release `std::vector` capacity -- so the
+   * duplicate stayed resident at full size for the whole chunk, defeating the
+   * point of chunking (measured: chunking ran slower with a HIGHER peak than
+   * the one-shot path, see doc/plans/dc_smo_memory.md). It also required
+   * materializing one Python key object per row to build the mask.
+   *
+   * `lo`/`hi` are clamped to `[0, rows()]` and an empty or inverted range gives
+   * an empty block of the same width -- never the width-0 polymorphic zero,
+   * which would be an asymmetric value on a rank that owns no rows.
+   */
+  ManyBodyBlockState row_slice(std::size_t lo, std::size_t hi) const {
+    const std::size_t n = rows();
+    lo = std::min(lo, n);
+    hi = std::min(hi, n);
+    ManyBodyBlockState out;
+    out.m_width = m_width;
+    if (hi <= lo) {
+      return out;
+    }
+    out.m_keys.assign(m_keys.begin() + static_cast<std::ptrdiff_t>(lo),
+                      m_keys.begin() + static_cast<std::ptrdiff_t>(hi));
+    out.m_amps.assign(m_amps.begin() + static_cast<std::ptrdiff_t>(lo * m_width),
+                      m_amps.begin() + static_cast<std::ptrdiff_t>(hi * m_width));
+    return out;
+  }
+
   /** @brief Per-row max column |amp|^2 into out[0..rows()). */
   void row_max_norm2(double *out) const noexcept {
     for (std::size_t r = 0; r < rows(); ++r) {

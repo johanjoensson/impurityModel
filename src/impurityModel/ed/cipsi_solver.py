@@ -711,15 +711,16 @@ class CIPSISolver:
         # `n_chunks` collective `redistribute_block` calls whatever its row count -- a rank with
         # fewer rows than chunks sends empty chunks (an explicit width-p block with no rows, which
         # `apply_block` and the packer both accept; never the width-0 polymorphic zero).
-        keys = block.keys()
-        n_rows = len(keys)
+        n_rows = len(block)
         bounds = np.linspace(0, n_rows, int(n_chunks) + 1).astype(int)
         merged = None
         for lo, hi in zip(bounds[:-1], bounds[1:]):
-            mask = ManyBodyState.from_states([ManyBodyState(dict.fromkeys(keys[lo:hi], 1.0 + 0j), width=1)])
-            part = block.copy()
-            part.keep_rows(mask)
-            del mask
+            # `row_slice` allocates exactly this chunk's rows. The earlier spelling
+            # (`block.copy()` then `keep_rows(mask)`) allocated a FULL-SIZE duplicate of the
+            # reference block per chunk -- `keep_rows` shrinks the logical length but not the
+            # vector's capacity -- so every chunk's "bounded" apply ran alongside a full-size
+            # copy, and the mask cost one Python key object per row of the whole block.
+            part = block.row_slice(int(lo), int(hi))
             raw = self._apply_and_prune_columns(H, part, cutoff)
             del part
             piece = self.basis.redistribute_block(raw)

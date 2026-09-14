@@ -169,8 +169,7 @@ def block_lanczos_step_cy(
         # the same number of collective redistribute_block calls whatever its own
         # row count (a rank with fewer rows than chunks sends explicit width-p empty
         # chunks, never the width-0 polymorphic zero -- see doc/lanczos_invariants.md).
-        _keys = q_curr.keys()
-        _n_rows = len(_keys)
+        _n_rows = len(q_curr)
         _bounds = np.linspace(0, _n_rows, int(_n_chunks) + 1).astype(int)
         wp = None
         # `_bounds[i], _bounds[i + 1]` rather than the `[:-1]`/`[1:]` slice pair: this
@@ -179,12 +178,14 @@ def block_lanczos_step_cy(
         for _idx in range(_bounds.shape[0] - 1):
             _lo = _bounds[_idx]
             _hi = _bounds[_idx + 1]
-            _mask = ManyBodyState.from_states(
-                [ManyBodyState(dict.fromkeys(_keys[_lo:_hi], 1.0 + 0j), width=1)]
-            )
-            _part = q_curr.copy()
-            _part.keep_rows(_mask)
-            del _mask
+            # `row_slice` allocates exactly this chunk's rows. The earlier spelling
+            # (`q_curr.copy()` then `keep_rows(mask)`) allocated a FULL-SIZE duplicate of
+            # q_curr per chunk -- `keep_rows` shrinks the logical length but not the
+            # vector's capacity -- so the chunk's "bounded" apply ran alongside a
+            # full-size copy, which is why chunking measured slower with a HIGHER peak
+            # than the one-shot path. It also built one Python key object per row of
+            # q_curr on every step just to form the mask.
+            _part = q_curr.row_slice(_lo, _hi)
             _raw = h_op.apply_block(_part, slaterWeightMin)
             del _part
             if hasattr(basis, "redistribute_block"):

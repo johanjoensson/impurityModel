@@ -634,6 +634,37 @@ cdef class ManyBodyState:
             self.b.keep_rows(mask.b.keys())
         self._bump_generation()
 
+    def row_slice(self, Py_ssize_t lo, Py_ssize_t hi):
+        """A new block holding rows ``[lo, hi)`` of this one, at the same width.
+
+        Rows are stored in sorted key order, so a contiguous row range is already a valid
+        support and both the key and amplitude arrays copy as flat ranges: no merge, no
+        per-row Python objects, and the result allocates exactly ``hi - lo`` rows.
+
+        This is the row-chunking primitive. The chunked matvec
+        (``_lanczos_step.pxi``) and the CIPSI selection round
+        (``cipsi_solver._apply_block_and_redistribute``) previously built a chunk as
+        ``copy()`` + ``keep_rows(mask)``, which allocates a **full-size duplicate** of the
+        block and then only shrinks its logical length -- ``keep_rows``' ``resize`` does
+        not release ``std::vector`` capacity -- so the duplicate stayed resident at full
+        size while the chunk was applied, defeating the point of chunking. It also
+        required materializing one Python key object per row to build the mask. Measured
+        consequence of the old spelling: chunking ran *slower* with a *higher* peak than
+        the one-shot path (``doc/plans/dc_smo_memory.md``).
+
+        Indices are clamped to ``[0, rows()]``; an empty or inverted range gives an empty
+        block **of the same width**, never the width-0 polymorphic zero (which would be an
+        asymmetric value on a rank that happens to own no rows, the known deadlock class).
+        """
+        cdef ManyBodyState res = ManyBodyState()
+        if lo < 0:
+            lo = 0
+        if hi < 0:
+            hi = 0
+        with nogil:
+            res.b = self.b.row_slice(<size_t>lo, <size_t>hi)
+        return res
+
     def row_max_norms2(self):
         """Per-row max column ``|amp|^2`` and the row keys, as ``(keys, norms2)``.
 

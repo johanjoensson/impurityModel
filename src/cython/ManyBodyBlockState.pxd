@@ -79,6 +79,7 @@ cdef extern from "ManyBodyBlockState.h" nogil:
 
         void prune_rows(double)
         void keep_rows(const vector[Key]&) except +
+        ManyBodyBlockState row_slice(size_t, size_t) except +
         void row_max_norm2(double*)
         size_t count_rows_in(const vector[Key]&)
         void new_row_max_norm2(const vector[Key]&, vector[double]&) except +
