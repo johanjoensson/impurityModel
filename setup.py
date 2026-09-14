@@ -7,21 +7,29 @@ from Cython.Build import cythonize
 
 include_dirs = []
 
+
 def get_boost_include_dirs():
     boost_dir = os.environ.get("BOOST_ROOT") or os.environ.get("BOOST_DIR")
     if boost_dir:
         return [os.path.join(boost_dir, "include"), boost_dir]
-    
-    system_paths = ["/usr/include/boost", "/usr/local/include/boost", "/opt/homebrew/include/boost", "/opt/local/include/boost"]
+
+    system_paths = [
+        "/usr/include/boost",
+        "/usr/local/include/boost",
+        "/opt/homebrew/include/boost",
+        "/opt/local/include/boost",
+    ]
     for path in system_paths:
         if os.path.exists(path):
             return [os.path.dirname(path)]
-            
+
     try:
         import boost_headers
+
         return [str(boost_headers.get_include())]
     except ImportError:
         return []
+
 
 include_dirs.extend(get_boost_include_dirs())
 
