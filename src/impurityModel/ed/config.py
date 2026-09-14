@@ -277,6 +277,41 @@ GF_EIGENSTATE_GROUP = Knob(
     The default (1) gives each eigenstate its own unit and its own Krylov space.""",
 )
 
+GF_APPLY_ROW_CHUNKS = Knob(
+    name="GF_APPLY_ROW_CHUNKS",
+    kind="int",
+    default=1,
+    minimum=1,
+    group="units",
+    doc="""How many row chunks the sparse block-Lanczos matvec (``_lanczos_step.pxi``'s
+    ``wp = h_op.apply_block(q_curr, ...)``) splits the reference block into before applying
+    ``H`` and redistributing. ``1`` (the default) applies the whole block at once -- unchanged
+    behaviour. With ``n`` chunks, one chunk of ``q_curr``'s rows is applied, redistributed and
+    accumulated into ``wp`` in turn, so only one chunk's raw apply output, packed send buffer
+    and receive buffer are alive at a time, mirroring ``GS_APPLY_ROW_CHUNKS``
+    (``CIPSISolver._apply_block_and_redistribute``) -- the same mechanism, moved to the GF
+    unit's own matvec (see ``doc/plans/dc_smo_memory.md``, "GF unit memory").
+
+    Only bounds one term of the GF unit's peak: the pack/send/receive transient that
+    ``memory_estimate.estimate_gf_peak_bytes`` documents as deliberately unmodelled, not the
+    resident excited-basis size or the recurrence's own live blocks (both scale with the unit's
+    determinant cap and rank count, which ``GF_APPLY_ROW_CHUNKS`` does not touch). **Off by
+    default and opt-in only**: unlike the CIPSI selection round, whose chunked output feeds a
+    ``slater_weight_min`` prune and a candidate ranking, this sum feeds a block-Lanczos
+    recurrence directly -- ``alpha_i``, the ``q_prev``/``q_curr`` subtraction, reorthogonalization
+    and TSQR all consume it -- so a summation-order change (exact only up to floating-point
+    order, the same class of difference a change of MPI rank count already makes) can in
+    principle move a deflation or iteration-count decision, not just the last digit of ``G``.
+    Measure on the workload that needs it before raising this from 1.
+
+    Ignored (chunking skipped) when the step's matvec has no redistribute to bound in the first
+    place (serial, or an unbounded basis under a non-collective run) -- chunking then adds
+    per-chunk overhead with no memory to save. Under a capped recurrence (finite
+    ``truncation_threshold``), each chunk runs ``_CappedBasisProxy``'s freeze/admit decision on
+    its own candidate rows rather than once for the whole step -- see its docstring
+    (``gf_primitives.py``) -- but the cap itself binds identically either way.""",
+)
+
 GF_OPERATOR_SPLIT = Knob(
     name="GF_OPERATOR_SPLIT",
     kind="bool",
@@ -742,6 +777,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_SLICE_DEGREE,
     GF_SLICE_TOL,
     GF_EIGENSTATE_GROUP,
+    GF_APPLY_ROW_CHUNKS,
     GF_OPERATOR_SPLIT,
     GF_PER_STATE_RESTRICT,
     GF_CHECK_EVERY,

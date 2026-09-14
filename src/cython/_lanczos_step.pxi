@@ -128,20 +128,76 @@ def block_lanczos_step_cy(
 
     # --- 1. Block matvec: wp = H q_curr ---------------------------------
     _t0 = _time.perf_counter()
-    wp = h_op.apply_block(q_curr, slaterWeightMin)
-    _prof_acc("matvec_apply", _t0)
-    _t1 = _time.perf_counter()
     # A growth-capping basis proxy (caps_growth=True) must see every step's residual
     # even serially: its redistribute_block enforces the truncation_threshold there
     # (the inner Basis redistribute no-ops without MPI).
-    if basis is not None and ((mpi and comm is not None) or getattr(basis, "caps_growth", False)):
-        if hasattr(basis, "redistribute_block"):
-            wp = basis.redistribute_block(wp)
-        else:
-            # Duck-typed basis without the block method (e.g. a test mock): fall back
-            # to the scalar redistribute through a boundary conversion.
-            wp = ManyBodyState.from_states(basis.redistribute_psis(*wp.to_states()))
-    _prof_acc("matvec_redistribute", _t1)
+    _needs_redistribute = basis is not None and ((mpi and comm is not None) or getattr(basis, "caps_growth", False))
+    # Chunking only where a redistribute actually follows -- with none, there is no
+    # pack/send/receive transient to bound and chunking would just add per-chunk
+    # Python overhead for nothing. `GF_APPLY_ROW_CHUNKS` defaults to 1 (off).
+    _n_chunks = config.GF_APPLY_ROW_CHUNKS.get() if _needs_redistribute else 1
+    if _n_chunks is None or _n_chunks <= 1:
+        wp = h_op.apply_block(q_curr, slaterWeightMin)
+        _prof_acc("matvec_apply", _t0)
+        _t1 = _time.perf_counter()
+        if _needs_redistribute:
+            if hasattr(basis, "redistribute_block"):
+                wp = basis.redistribute_block(wp)
+            else:
+                # Duck-typed basis without the block method (e.g. a test mock): fall back
+                # to the scalar redistribute through a boundary conversion.
+                wp = ManyBodyState.from_states(basis.redistribute_psis(*wp.to_states()))
+        _prof_acc("matvec_redistribute", _t1)
+    else:
+        # Row-chunked matvec: apply H to one chunk of q_curr's rows at a time and
+        # redistribute+accumulate before moving to the next, so the raw apply output,
+        # its packed send buffer and the receive buffer are bounded to chunk size
+        # instead of the whole block -- mirroring
+        # CIPSISolver._apply_block_and_redistribute's GS_APPLY_ROW_CHUNKS
+        # (doc/plans/dc_smo_memory.md, "GF unit memory"). Exact up to floating-point
+        # summation order: a candidate reached through different chunks accumulates
+        # its partial sums in a different order, the same class of difference a
+        # change of MPI rank count already makes. Unlike the CIPSI selection round,
+        # this sum feeds a Lanczos recurrence (alpha_i below, the q_prev/q_curr
+        # subtraction, reorthogonalization, TSQR) rather than a slater_weight_min
+        # prune and a candidate ranking -- a summation-order change can in principle
+        # move a deflation or iteration-count decision, not just the last digit of
+        # G. Off by default; measure on the workload that needs it before opting in.
+        # The chunk COUNT is the knob, replicated on every rank, so every rank makes
+        # the same number of collective redistribute_block calls whatever its own
+        # row count (a rank with fewer rows than chunks sends explicit width-p empty
+        # chunks, never the width-0 polymorphic zero -- see doc/lanczos_invariants.md).
+        _keys = q_curr.keys()
+        _n_rows = len(_keys)
+        _bounds = np.linspace(0, _n_rows, int(_n_chunks) + 1).astype(int)
+        wp = None
+        # `_bounds[i], _bounds[i + 1]` rather than the `[:-1]`/`[1:]` slice pair: this
+        # module carries `wraparound=False` (CLAUDE.md), which the `x[-1]` idiom trips
+        # even on a slice boundary -- spelled with explicit non-negative bounds instead.
+        for _idx in range(_bounds.shape[0] - 1):
+            _lo = _bounds[_idx]
+            _hi = _bounds[_idx + 1]
+            _mask = ManyBodyState.from_states(
+                [ManyBodyState(dict.fromkeys(_keys[_lo:_hi], 1.0 + 0j), width=1)]
+            )
+            _part = q_curr.copy()
+            _part.keep_rows(_mask)
+            del _mask
+            _raw = h_op.apply_block(_part, slaterWeightMin)
+            del _part
+            if hasattr(basis, "redistribute_block"):
+                _piece = basis.redistribute_block(_raw)
+            else:
+                _piece = ManyBodyState.from_states(basis.redistribute_psis(*_raw.to_states()))
+            del _raw
+            if wp is None:
+                wp = _piece
+            elif len(_piece):
+                # Rank-local decision on a rank-local quantity (no collective inside),
+                # so an empty piece on one rank cannot desynchronize the others.
+                wp += _piece
+            del _piece
+        _prof_acc("matvec_apply", _t0)
     _prof_acc("matvec", _t0)
 
     # --- 2. alpha_i = <q_curr | wp> -------------------------------------

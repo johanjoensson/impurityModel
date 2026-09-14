@@ -50,6 +50,7 @@ Reorthogonalization modes (``Reort`` enum from ``lanczos.py``):
 """
 
 import numpy as np
+from impurityModel.ed import config
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     apply_global_truncation,

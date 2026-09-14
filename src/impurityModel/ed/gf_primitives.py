@@ -230,8 +230,18 @@ class _CappedBasisProxy:
     ``block_lanczos_cy``'s matvec discovers new Slater determinants every step, so the
     live block-state support (and, at reort != none, the Krylov store) grows without
     bound — the excited ``Basis`` itself stays frozen and never sees them. This proxy
-    wraps that basis and caps the growth at the one point where every residual row
-    sits on its hash-owner rank: the per-step ``redistribute_block`` call.
+    wraps that basis and caps the growth at the point where every residual row sits on
+    its hash-owner rank: the ``redistribute_block`` call. Ordinarily that is one call
+    per step (the whole matvec residual at once); under ``GF_APPLY_ROW_CHUNKS`` > 1
+    (``_lanczos_step.pxi``'s row-chunked matvec) it is ``n_chunks`` calls per step
+    instead, one per chunk of ``q_curr``'s rows -- each chunk runs the freeze/admit
+    decision below on its own candidate rows rather than once on the whole step's new
+    rows. The cap itself is unaffected (a chunked step still ends at ``retained <=
+    cap``, exactly as an unchunked one does -- see ``test_gf_apply_row_chunking.py``),
+    but which specific rows land on the admitted side of a freeze that happens to fall
+    mid-step can differ: the importance ranking below is collective over one chunk's
+    candidates, not the whole step's, so the boundary tie-break is finer-grained than
+    the unchunked path's.
 
     Policy (freeze-growth + importance-ranked boundary admission):
 
