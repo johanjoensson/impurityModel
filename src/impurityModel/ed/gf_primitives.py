@@ -11,7 +11,7 @@ import numpy as np
 import scipy as sp
 from mpi4py import MPI
 
-from impurityModel.ed.basis_transcription import build_vector
+from impurityModel.ed.basis_transcription import build_distributed_vector, build_vector
 from impurityModel.ed.BlockLanczosArray import BETA_BLOWUP_FACTOR
 from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
@@ -87,15 +87,57 @@ def _scatter_qr_columns(comm, psi_dense, r, local_size):
     return psi_dense_local, r
 
 
+def _gather_qr_rows(comm, psi_local):
+    """Gather each rank's local ``(local_size, n)`` row-block onto rank 0 as ``(N, n)``.
+
+    The ``Gatherv`` counterpart of :func:`_scatter_qr_columns`. Every rank contributes only
+    its own local block; only rank 0 ever holds the full ``(N, n)`` array -- unavoidable
+    since the seed QR must run on the whole block, but a real bound compared to
+    :func:`~impurityModel.ed.basis_transcription.build_vector`'s ``root=0`` path, which
+    allocates the full ``(n, N)`` array on *every* rank before reducing into rank 0's copy
+    (see that function's ``Reduce`` branch and CLAUDE.md's "No full state-vector gathers").
+
+    Returns
+    -------
+    ndarray or None
+        The ``(N, n)`` matrix on rank 0; ``None`` on every other rank.
+    """
+    rank = comm.rank
+    n = psi_local.shape[1]
+    recv_counts = np.empty(comm.size, dtype=int) if rank == 0 else None
+    comm.Gather(np.array([psi_local.size]), recv_counts, root=0)
+    if rank == 0:
+        offsets = np.array([np.sum(recv_counts[:rr]) for rr in range(comm.size)], dtype=int)
+        psi_dense = np.empty((int(np.sum(recv_counts)) // n, n), dtype=complex, order="C")
+    else:
+        offsets = None
+        psi_dense = None
+    comm.Gatherv(
+        np.ascontiguousarray(psi_local),
+        [psi_dense, recv_counts, offsets, MPI.C_DOUBLE_COMPLEX] if rank == 0 else None,
+        root=0,
+    )
+    return psi_dense
+
+
 def _distributed_seed_qr(basis, psi_arr, slaterWeightMin=0):
     """Row-distributed orthonormal seed block + its ``R`` factor.
 
     Shared preamble of every resolvent solver that needs an orthonormal seed block
     distributed by ``basis``'s ownership (:func:`block_Green_sparse`, the sparse branch
     of :func:`block_green_impl`, :class:`KrylovShiftedResolvent`): build the dense seed
-    matrix on rank 0, QR it there (:func:`build_qr`), then scatter ``Q``'s rows onto each
-    rank's local partition (:func:`_scatter_qr_columns`) so every rank ends up with only
-    its own slice. Serial (``basis.comm is None``) just runs ``build_qr`` directly.
+    matrix, QR it on rank 0 (:func:`build_qr`), then scatter ``Q``'s rows onto each rank's
+    local partition (:func:`_scatter_qr_columns`) so every rank ends up with only its own
+    slice. Serial (``basis.comm is None``) just runs ``build_qr`` directly.
+
+    The MPI branch builds the seed matrix via
+    :func:`~impurityModel.ed.basis_transcription.build_distributed_vector` (local-shaped,
+    ``(n, len(local_basis))`` per rank) and :func:`_gather_qr_rows`, not
+    ``build_vector(..., root=0)``: the latter allocates the full ``(n, basis.size)`` array
+    on every rank before its ``Reduce`` -- unbounded in the basis size and invisible to
+    :func:`~impurityModel.ed.memory_estimate.estimate_gf_peak_bytes` (see
+    ``doc/plans/dc_smo_memory.md``, "GF unit memory", item 5). Only rank 0 now holds a
+    global-shaped array, which is unavoidable since the QR itself runs there.
 
     Returns
     -------
@@ -107,7 +149,16 @@ def _distributed_seed_qr(basis, psi_arr, slaterWeightMin=0):
     comm = basis.comm
     mpi = comm is not None
     rank = comm.rank if mpi else 0
-    psi_dense = build_vector(basis, psi_arr, root=0, slaterWeightMin=slaterWeightMin).T
+    if mpi:
+        psi_local = build_distributed_vector(basis, psi_arr).T
+        if slaterWeightMin > 0:
+            # Reproduce build_vector's amplitude cutoff (entries below slaterWeightMin are
+            # left at their initialized zero there); applied post-hoc since
+            # build_distributed_vector has no cutoff parameter of its own.
+            psi_local[np.abs(psi_local) < slaterWeightMin] = 0
+        psi_dense = _gather_qr_rows(comm, psi_local)
+    else:
+        psi_dense = build_vector(basis, psi_arr, slaterWeightMin=slaterWeightMin).T
     r = None
     if rank == 0:
         psi_dense, r = build_qr(psi_dense)
