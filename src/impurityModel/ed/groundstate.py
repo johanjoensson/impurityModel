@@ -21,8 +21,10 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed import config
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
+    absolute_rss_budget,
     available_bytes_per_rank,
     log_memory_budget,
+    resident_bytes_per_rank,
     resolve_gs_block_width,
     suggest_truncation_threshold,
 )
@@ -180,6 +182,19 @@ def expand_memory_budget(comm):
     returns ``None``, which restores the behaviour in which an uncapped expansion grows until the
     kernel kills the rank.
 
+    The budget is **absolute**, not an increment allowance: both guards in
+    :meth:`CIPSISolver.expand` measure this process's *whole* RSS, so what they may be compared
+    against is the rank's whole share of node RAM -- :func:`memory_estimate.absolute_rss_budget`,
+    i.e. ``safety * (available + resident)``. ``safety * available_bytes_per_rank`` alone is the
+    *free* memory fraction, and comparing that against absolute RSS is what pinned the SrMnO3
+    cubic gap-DC search at its seed basis in every sector after the first: 2.5 GiB resident
+    against a 2.45 GiB budget, negative headroom before any work was done, and a first strike
+    that locked the threshold there permanently (``doc/plans/dc_smo_memory.md``, round 9).
+
+    Re-sampled on every call, which is per expansion: a process whose RSS has grown gets a
+    budget that has grown with it, and `available` falls by the same amount when the growth is
+    real, so the ceiling tracks the rank's share rather than drifting with allocator history.
+
     Shared by both call sites on purpose: the budget is a policy, and two copies of a policy
     expressed as arithmetic is how they drift.
     """
@@ -188,7 +203,10 @@ def expand_memory_budget(comm):
         safety = DEFAULT_MEMORY_SAFETY
     if safety <= 0.0:
         return None
-    return int(safety * available_bytes_per_rank(comm))
+    # Both collectives, both unconditional and in a fixed order on every rank.
+    available = available_bytes_per_rank(comm)
+    resident = resident_bytes_per_rank(comm)
+    return int(absolute_rss_budget(safety, available, resident))
 
 
 def build_basis_and_solver(

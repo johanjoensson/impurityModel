@@ -13,7 +13,7 @@ import pytest
 
 from impurityModel.ed import config, groundstate
 from impurityModel.ed.cipsi_solver import _memory_growth_bound
-from impurityModel.ed.memory_estimate import DEFAULT_MEMORY_SAFETY, available_bytes_per_rank
+from impurityModel.ed.memory_estimate import DEFAULT_MEMORY_SAFETY
 
 
 @pytest.fixture(autouse=True)
@@ -22,8 +22,12 @@ def _no_inherited_knob(monkeypatch):
     monkeypatch.delenv("GS_MEMORY_BUDGET_SAFETY", raising=False)
 
 
-def test_the_default_budget_is_the_shared_safety_fraction_of_available_ram():
-    assert groundstate.expand_memory_budget(None) == int(DEFAULT_MEMORY_SAFETY * available_bytes_per_rank(None))
+def test_the_default_budget_is_the_shared_safety_fraction_of_the_ranks_whole_share(monkeypatch):
+    """`safety * (available + resident)`, not `safety * available`. See `absolute_rss_budget`:
+    `available` is *free* memory, so the fraction of it alone is an increment allowance, and both
+    guards it feeds measure absolute RSS."""
+    available, resident = _crashed_run_numbers(monkeypatch)
+    assert groundstate.expand_memory_budget(None) == int(DEFAULT_MEMORY_SAFETY * (available + resident))
 
 
 def test_the_safety_fraction_is_not_a_second_hard_coded_literal():
@@ -38,8 +42,9 @@ def test_zero_disables_the_guard(monkeypatch, safety):
 
 
 def test_a_set_fraction_scales_the_budget(monkeypatch):
+    available, resident = _crashed_run_numbers(monkeypatch)
     monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "0.25")
-    assert groundstate.expand_memory_budget(None) == int(0.25 * available_bytes_per_rank(None))
+    assert groundstate.expand_memory_budget(None) == int(0.25 * (available + resident))
 
 
 def test_a_negative_fraction_is_clamped_not_honoured(monkeypatch):
@@ -73,12 +78,16 @@ def _crashed_run_numbers(monkeypatch, available=4900 * MiB, resident=2500 * MiB)
 
     `groundstate` binds both names with `from ... import`, so they must be patched *there*
     rather than in `memory_estimate` (the same trap `test_greens_function_and_basis_split`
-    documents). `raising=False` on the second: before the fix `groundstate` does not import
-    `current_rss_bytes` at all, and this test must fail on its assertion -- demonstrating the
-    defect -- rather than error out during setup.
+    documents).
+
+    It must be `resident_bytes_per_rank`, not `current_rss_bytes`: the budget reads the former,
+    so patching the latter silently does nothing and the test falls through to the *host's* real
+    RSS. Measured while writing this: that left it passing by 46 MiB of pytest-process footprint,
+    i.e. green for the wrong reason and one allocation away from flaking
+    (cf. the flaky memory-budget test).
     """
     monkeypatch.setattr(groundstate, "available_bytes_per_rank", lambda comm: available)
-    monkeypatch.setattr(groundstate, "current_rss_bytes", lambda: resident, raising=False)
+    monkeypatch.setattr(groundstate, "resident_bytes_per_rank", lambda comm: resident)
     return available, resident
 
 
@@ -112,9 +121,9 @@ def test_a_kilobyte_selection_round_can_still_grow_a_seed_basis(monkeypatch):
 
     # The crashed round's own shape: 120 determinants, 86 references, next request 96.
     affordable = _memory_growth_bound(budget, basis_size=120, p_now=86, p_next=96)
-    assert affordable(8 * 1024, resident) > 0, (
-        "a selection round costing 8 KiB was refused all growth on a 120-determinant basis"
-    )
+    assert (
+        affordable(8 * 1024, resident) > 0
+    ), "a selection round costing 8 KiB was refused all growth on a 120-determinant basis"
 
 
 def test_the_guard_still_refuses_growth_when_memory_is_genuinely_gone(monkeypatch):

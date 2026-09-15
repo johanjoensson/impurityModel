@@ -869,24 +869,69 @@ def suggest_truncation_threshold(
     )
 
 
+def absolute_rss_budget(safety, available, resident_bytes):
+    """The rank's share of node RAM as an **absolute** RSS ceiling: ``safety * (available +
+    resident)``.
+
+    ``available_bytes_per_rank`` is ``MemAvailable / ranks_on_node`` -- memory that is *free*,
+    already net of what this process holds. ``safety * available`` is therefore an *increment*
+    allowance, and comparing it against a process's *absolute* RSS mixes two quantities. Adding
+    ``resident`` back before applying ``safety`` recovers the rank's whole share, which is what
+    an absolute RSS reading may be measured against.
+
+    That confusion is not hypothetical: it pinned the SrMnO3 cubic gap-DC search at its seed
+    basis in every sector after the first, because the process sat at 2.5 GiB resident against a
+    ``0.5 * 4.9 = 2.45 GiB`` budget and the guard read negative headroom before doing any work
+    (``doc/plans/dc_smo_memory.md``, round 9).
+
+    ``resident_bytes`` of ``None`` or ``0`` degrades to ``safety * available``, the pre-2026-09
+    behaviour, so a caller that cannot measure its own RSS is no worse off than before.
+
+    **On the reduction directions**: production callers pass a MIN-reduced ``available``
+    (:func:`available_bytes_per_rank`) and a MAX-reduced ``resident``
+    (:func:`resident_bytes_per_rank`). That is deliberately the worst case on both terms, and it
+    means the sum is *not* any single rank's quantity -- do not reason about it as one.
+    """
+    resident = 0.0 if resident_bytes is None else max(0.0, float(resident_bytes))
+    return safety * (float(available) + resident)
+
+
 def _resident_adjusted_budget(safety, available, resident_bytes):
-    """The one policy behind both GF budget inversions: ``safety * available`` by default,
-    tightened to ``safety * (available + resident) - resident`` when ``resident_bytes`` is
-    given and that tightening is actually binding (see :func:`max_unit_dets_within_budget`'s
-    ``resident_bytes`` parameter for the derivation -- ``available`` is already net of what
-    this process holds, so adding ``resident`` back and re-applying ``safety`` bounds the
-    process's *total* per-rank share rather than just its remaining headroom).
+    """The head*room* form of :func:`absolute_rss_budget`: how much more this process may add.
+
+    ``safety * available`` by default, tightened to ``absolute_rss_budget(...) - resident`` when
+    ``resident_bytes`` is given and that tightening is actually binding (see
+    :func:`max_unit_dets_within_budget`'s ``resident_bytes`` parameter for the derivation).
 
     Never lets an already-over-budget process drive the result to a non-positive headroom --
     that memory is spent either way, and callers use this as a bisection bound, not a signal
-    to shrink toward zero.
+    to shrink toward zero. Callers that compare against an *absolute* RSS reading want
+    :func:`absolute_rss_budget` instead; the two differ by exactly ``resident``, and picking the
+    wrong one is the defect described there.
     """
     budget = safety * available
     if resident_bytes is not None and resident_bytes > 0:
-        headroom = safety * (available + float(resident_bytes)) - float(resident_bytes)
+        headroom = absolute_rss_budget(safety, available, resident_bytes) - float(resident_bytes)
         if headroom > 0:
             budget = headroom
     return budget
+
+
+def resident_bytes_per_rank(comm=None):
+    """This process's resident set (:func:`current_rss_bytes`), MAX-reduced over ``comm``.
+
+    .. warning:: **Collective on** ``comm``. Every rank must reach it; never gate the call on
+       rank-local state (CLAUDE.md's MPI rules). The lowercase ``allreduce`` is safe here only
+       because the payload is a plain Python ``int`` -- an ndarray payload deadlocks
+       (see the ``mpi4py`` lowercase-allreduce note).
+
+    MAX rather than mean: the budget has to hold on the heaviest rank, and ``routing_hash`` is
+    deliberately locality-preserving, so the busiest rank owns ~2.79x the mean at 256 ranks.
+    """
+    resident = current_rss_bytes()
+    if comm is None or comm.size == 1:
+        return resident
+    return comm.allreduce(resident, op=MPI.MAX)
 
 
 def max_colors_within_budget(
