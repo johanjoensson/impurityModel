@@ -1912,12 +1912,61 @@ allocated"* -- and that distinction is the entire question. It read `applyOp` as
 a 408 MiB mark. Resetting at **every** boundary shows its own cost is 503 MiB and the mark it
 inherits is irrelevant. Per-step resets, not a cumulative column.
 
-**Where step 2 goes.** `applyOp(H, psi_all_Dj)` on the 296k-determinant probe produces a 2,936k-row
-state, retaining ~244 MiB (~87 B/row) and transiently ~503 MiB (~180 B/row). Note that **chunking
-the probe is not bit-identical**: `H psi_all = sum_k phase_k H|D_k>`, so splitting the probe and
-summing the partial states changes the floating-point accumulation order per determinant. Any fix
-here has to reduce the apply's own working set, not partition its input -- or else give up the
-bit-identity the rest of this campaign has held to, which needs the user's call, not mine.
+### Step 2 measurement: 90% of the probe's H-image is never read
+
+`applyOp(H, psi_all_Dj)` on the 296k-determinant probe produces a 2,936k-row state, retaining
+~244 MiB (~87 B/row) and transiently ~503 MiB (~180 B/row). But `e_Dj` reads exactly one row per
+candidate -- `H_psi_all.get(Dj)` for `Dj in local_Djs` -- and nothing else in the function touches
+that state. Measured across every round (`from_arrhenius/probe_waste.py`):
+
+| round | probe dets | H-image rows | rows read | read |
+|---|---|---|---|---|
+| 0 | 4,032 | 67,344 | 4,032 | 6.0% |
+| 1 | 63,192 | 703,012 | 63,192 | 9.0% |
+| 2-9 | ~295k each | ~2,940k each | ~295k each | **10.0%** |
+| all | — | 24,279,145 | 2,424,030 | **10.0%** |
+
+The ratio is stable at 10.0x once the basis is past its first cycles. Nine tenths of the
+selection round's peak term is building off-diagonal rows that are discarded one line later.
+
+**Three options, not two.** An earlier draft of this section framed the choice as "reduce the
+apply's own working set, or give up bit-identity". Restricting the apply's *output support* is a
+third, and it is the only one that is both large and exact:
+
+1. **Chunk the probe -- not bit-identical, and not recoverable.** `H psi_all = sum_k p_k H|D_k>`,
+   so splitting the probe and summing partials regroups each row's floating-point accumulation:
+   the single pass computes `((a1+a2)+b1)+b2` and the chunked one `(a1+a2)+(b1+b2)`. Preserving
+   chunk order does not help; addition is not associative.
+2. **Restrict the apply to the candidate keys -- bit-identical, and the C++ is already shaped for
+   it.** All three `emit_row_t(out_sd)` sites in `ManyBodyOperator::apply`
+   (`ManyBodyOperator.cpp:636`, `:653`, `:684`) are already guarded by a per-output-determinant
+   predicate, `!check_restrictions || state_is_within_restrictions(out_sd)`; diagonal terms never
+   emit a row at all (they go to `diag_accum`). Adding a key-set predicate at those same guards
+   only *skips* emissions, so every surviving row accumulates the identical contributions in the
+   identical order -- exact by construction, not by testing. **The distributed path is the open
+   design question**: rank `r` can only test membership in *its own* `local_Djs`, while a row it
+   emits matters if the determinant is a candidate on whichever rank hash-owns it. Making the
+   global candidate set locally testable costs either an allgather of the keys (8 B x global
+   candidate count per rank -- at the crashed run's scale ~10M candidates, i.e. ~80 MB per rank
+   replicated 128x per node, which eats much of the saving) or an approximate membership filter
+   (~12 MB at 1% false positives; false positives only retain a few extra rows, so the result
+   stays exact). Both are new machinery in the Cython/C++ layer and need a rebuild and a full gate.
+3. **Compute the diagonal exactly and drop the probe.** `e_Dj[j] = <Dj|H|Dj> + Re(sum_{k != j}
+   conj(p_j) p_k <Dj|H|Dk>)`; the second term is the quasi-random noise the random phases exist to
+   scatter, which is why the docstring says `e_Dj[j] ~ <Dj|H|Dj>` with a tilde. A direct diagonal
+   evaluator is `O(n_Dj)` memory instead of `O(10 n_Dj)` and needs no probe, no phases and no
+   redistribute. It is **not** bit-identical -- it removes the noise rather than reproducing it --
+   and so it changes which determinants CIPSI selects. Whether that is a regression or an
+   improvement is a physics judgement, not a discipline question.
+
+**What is measured and what is not.** The 10.0x is a 1-rank number, as is everything in step 0 and
+step 1. It should carry to the cluster -- the ratio is set by H's connectivity per determinant,
+not by the partition -- but that is a prediction. Note also what option 2 would buy end to end:
+dropping the overlap site's peak to ~930 MiB makes `_score_candidates` (absolute peak 1335.6 MiB)
+the new peak-setter, so the process peak moves 1376 -> ~1336, **2.9%** -- until `GS_SELECTION_CHUNK`
+is switched on, which would then cut that site's 397 MiB to ~60 and bring the whole solve to
+~1000 MiB. The knob step 0 refuted is not dead; it is **blocked behind this site**, and only
+becomes worth setting once this one is fixed. Neither number should be quoted as achieved.
 
 ### Corrections to earlier claims in this document
 

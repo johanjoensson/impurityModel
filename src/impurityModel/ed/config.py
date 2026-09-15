@@ -496,11 +496,16 @@ GS_SELECTION_CHUNK = Knob(
     doc="""Caps how many reference rows (`p`, `len(psi_ref)` in `CIPSISolver.determine_new_Dj`)
     the CIPSI selection round's Epstein-Nesbet score computation processes at once
     (`cipsi_solver._score_candidates`), instead of materializing the whole `(p, n_Dj)` de2/mask
-    temporary stack in one shot. `n_Dj` -- the candidate count -- reaches the hundreds of
-    thousands at production scale, so that stack (several same-shape arrays, measured
-    ~50 B/element combined) is a real per-cycle memory peak: see `doc/plans/dc_smo_memory.md`,
-    written against the SrMnO3 double-counting search that was OOM-killed with a selection round
-    at p~68-104 and n_Dj in the hundreds of thousands. Chunking happens on group boundaries only
+    temporary stack in one shot. `n_Dj` here is this rank's **local** candidate count, not the
+    global one the cycle log reports (that field is an `_allreduce_sum`), so the stack this knob
+    bounds is smaller than the log suggests by roughly the rank count over the routing skew: see
+    `doc/plans/dc_smo_memory.md`, written against the SrMnO3 double-counting search that was
+    OOM-killed with a selection round at p~68-104. **Measured verdict: setting this does not lower
+    the process peak.** The knob works exactly as documented -- the score stack goes 332 -> 60 MiB
+    for chunk off/1 at production shape, checksums identical -- but `_score_candidates` retains
+    almost nothing and runs after the selection round's high-water mark is already set elsewhere,
+    so a full solve moved 1376.0 -> 1375.6 MiB. Leave it unset unless a measurement on *your*
+    workload says otherwise. Chunking happens on group boundaries only
     (`_degenerate_groups`) -- a degenerate manifold is never split across a chunk -- which is what
     keeps the result exact: the manifold-summed score is `max over independent groups of
     (group-summed de2)`, and an elementwise running max over already-processed groups equals
