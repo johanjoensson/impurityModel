@@ -1816,11 +1816,19 @@ Per-site ledger (`from_arrhenius/site_ledger.py`, round 6's method: reset `VmHWM
 before a site, read it immediately after, difference from the site's entry RSS). SrMnO3 archive,
 cap 20,000, **1 rank**, ten selection rounds, maxima over rounds:
 
-| site | max transient | max d(anon) |
-|---|---|---|
-| `_candidate_overlaps_and_energies` | **708.5 MiB** | 269.2 MiB |
-| `_apply_block_and_redistribute` | 526.6 MiB | 272.7 MiB |
-| `_score_candidates` | 397.4 MiB | **16.7 MiB** |
+| site | max ABS peak | max growth | max d(anon) |
+|---|---|---|---|
+| `_candidate_overlaps_and_energies` | **1378.9 MiB** | 708.5 MiB | 269.2 MiB |
+| `_score_candidates` | 1335.6 MiB | 397.4 MiB | **16.7 MiB** |
+| `_apply_block_and_redistribute` | 980.8 MiB | 526.6 MiB | 272.7 MiB |
+
+The **growth** column is each site's peak measured from its own entry RSS, in its own worst round.
+Those are not disjoint windows over a common baseline, so they must not be summed: 708 + 527 + 397
+= 1632 MiB against a 1376 MiB process peak is a meaningless total, not evidence of double-counting.
+What identifies the peak-setter is the **absolute** column, and `_candidate_overlaps_and_energies`
+reaches 1378.9 MiB against the 1376.0 MiB measured in an *uninstrumented* run -- so it is the site
+that sets the process high-water mark, and `_apply_block_and_redistribute`, despite the second
+largest growth, never comes near it.
 
 `e0` is unchanged at -13.291093624866 with the instrumentation in place.
 
@@ -1841,6 +1849,7 @@ campaign to evaporate on measurement (`dc-perf-campaign-measured-levers`).
 flagged its shape -- `overlaps = np.ascontiguousarray(amps[new_mask].T)` is a boolean-index *copy*
 at `p x n_Dj x 16 B`, alongside `psi_all_Dj` materialized by dict comprehension over every local
 candidate, plus `H_psi_all` and a redistribute inside it -- but ranked it below the two knobs.
+(Step 1 below decomposes it, and finds the survey pointed at the wrong term inside it.)
 
 **Two caveats on these numbers, before they drive anything.** They are **1-rank**, where `n_Dj` is
 the *global* candidate count; at 128 ranks each rank holds ~1/128 of it times the ~2.79 routing
@@ -1853,6 +1862,62 @@ three, because `_score_candidates` is a module-level function and the probe look
 `CIPSISolver` with `hasattr` -- finding nothing and saying nothing. It now asserts. A probe that
 silently measures less than it claims is the same failure class as a sanitizer that is not
 running.
+
+### Step 1 result: the peak inside that site is `applyOp`, and the overlaps copy buys nothing either
+
+Step 0 named `_candidate_overlaps_and_energies`; it did not say *which part* of it. The survey's
+suspect was the boolean-index copy. Decomposing the function one level further
+(`from_arrhenius/overlap_decompose.py`, a line-for-line copy that reads RSS at every internal
+boundary) at the worst of ten rounds -- a 316,093 x 44 `Hpsi_ref` block, 296,093 of whose rows are
+new candidates:
+
+| boundary | RSS since entry | that step's OWN transient | term |
+|---|---|---|---|
+| `keys()` / `new_mask` / `local_Djs` | 4.6 MiB | 2.3 MiB | 5.3 MiB |
+| `amps[new_mask]` | 205.6 MiB | 201.0 MiB | 198.8 MiB |
+| `ascontiguousarray(.T)` | 404.4 MiB | 198.8 MiB | a *second* 198.8 MiB |
+| `del` the copy | 205.6 MiB | — | — |
+| `phases` / probe dict / `ManyBodyState` | 244.3 MiB | 39.6 MiB | 14.5 MiB |
+| `applyOp` | 488.7 MiB | **503.1 MiB** | 2,936k rows |
+| `e_Dj` | 489.0 MiB | 0.6 MiB | 2.3 MiB |
+
+**The suspect was real and it still bought nothing.** `np.ascontiguousarray(amps[new_mask].T)`
+genuinely holds two full `(p, n_Dj)` buffers at once -- the boolean index copies `(n_Dj, p)`, then
+`ascontiguousarray` copies its transpose into a second one -- so the line peaks at 400 MiB to
+retain 199. Replacing it with a row-tiled gather that fills one preallocated destination is
+bit-identical (md5 of the result buffer matches across five shapes including empty and width 0)
+and, measured standalone at exactly that shape, strictly better on both axes:
+
+| form | peak | time |
+|---|---|---|
+| `ascontiguousarray(amps[mask].T)` | 399.6 MiB | 113.7 ms |
+| column-at-a-time `np.compress(..., out=)` | 210.0 MiB | 235.6 ms |
+| **row-tiled (2 MiB tile)** | **199.5 MiB** | **58.7 ms** |
+
+And in the full solve it moved the process peak 1376.0 -> 1375.6 MiB and the site's own growth
+708.7 -> 708.4 MiB. **Zero.** Reverted.
+
+**Why, and this is the reusable part:** `applyOp` runs *after* the duplicate has been freed, and
+carries a 503.1 MiB transient of its own -- larger than the whole two-buffer overlaps sequence.
+The site's peak is therefore `RSS on entry to applyOp` + 503 MiB, and RSS on entry to `applyOp` is
+insensitive to anything freed before it. Removing a term that is neither live at the peak nor
+larger than the peak-setter moves nothing, however large the term is. That is the same shape as
+the `GS_SELECTION_CHUNK` refutation one level up, and it is now the **fourth** predicted lever in
+this campaign to evaporate on measurement.
+
+**A methodological correction that caused this to be nearly missed.** The first decomposition reset
+`VmHWM` once, at function entry, and reported the running maximum at each boundary. That column
+cannot distinguish *"this step allocated 300 MiB"* from *"this step ran after 300 MiB was already
+allocated"* -- and that distinction is the entire question. It read `applyOp` as +300 MiB on top of
+a 408 MiB mark. Resetting at **every** boundary shows its own cost is 503 MiB and the mark it
+inherits is irrelevant. Per-step resets, not a cumulative column.
+
+**Where step 2 goes.** `applyOp(H, psi_all_Dj)` on the 296k-determinant probe produces a 2,936k-row
+state, retaining ~244 MiB (~87 B/row) and transiently ~503 MiB (~180 B/row). Note that **chunking
+the probe is not bit-identical**: `H psi_all = sum_k phase_k H|D_k>`, so splitting the probe and
+summing the partial states changes the floating-point accumulation order per determinant. Any fix
+here has to reduce the apply's own working set, not partition its input -- or else give up the
+bit-identity the rest of this campaign has held to, which needs the user's call, not mine.
 
 ### Corrections to earlier claims in this document
 
