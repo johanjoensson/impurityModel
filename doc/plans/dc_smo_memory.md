@@ -1636,3 +1636,146 @@ a term it had over-priced ~4.7x.
 **Before the next cluster launch: verify the installed package actually contains the current
 work.** A stale install is what cost this run — the same install-verification step round 7 closed
 with should be standard practice before every production launch.
+
+---
+
+## Round 9: the guard budgeted against free memory, and pinned every sector at its seed
+
+A cubic-SrMnO3 DFT+DMFT run with the gap DC (slurm 2483188, 15 Sep 14:33→14:39, 128 ranks all on
+one node `n325`, `-n 128 -c 2`, `GS_MAX_BLOCK_WIDTH=5`) died six minutes in. It is the first crash
+in this series that is **not** an OOM.
+
+### It was not an OOM
+
+All 128 ranks print `MPI_Abort(…, -1)` (`slurm-2483188.out:11-138`) *before* the `SIGNAL Killed`
+line (`:139`); exit 137 is srun's teardown after the abort. There are no OOM strings anywhere. The
+terminating event is `UnphysicalGreensFunctionError` from `selfenergy.py:141` — 469 of 2001
+real-frequency Σ points (23.4%) with positive `Im Σ`.
+
+Two traps in reading that log, both of which cost time:
+
+* `impurityModel-Mn-<N>.out` are **per-rank** files (0-127), not per-iteration. There was one
+  iteration: `slurm:4,10` says fresh start, no `sig` file.
+* The `p=108` in the CIPSI cycle lines is `len(psi_refs)` (`cipsi_solver.py:1441`) — the
+  *manifold*, **not** the Lanczos block width. `GS_MAX_BLOCK_WIDTH=5` had already sliced the warm
+  block to 5 and appended the cold column, so the run executed at width **6**: every subspace
+  dimension in the log (24, 42, 66, 84, 126, 132, 150, 162, 222, 462) is divisible by 6 and none
+  by 108. This repeats the warning in `smo-thermal-manifold-is-a-seed-basis-artifact`.
+
+### What the log shows
+
+| line | event |
+|---|---|
+| 286–347 | sector `N_imp=5` expands 252 → 4,860 → 53,894 → 322,837 dets, all at **VmHWM 1.2 GiB** |
+| 383–392 | → 839,148 dets; VmHWM 1.4 → 2.3 GiB |
+| 403 | guard fires at 934,289 dets: *"peaked 381.1 MiB above its 2.3 GiB resident set against a 2.5 GiB budget"*. PT2 mass 1.4e-3 — a good solve |
+| 507→742 | **every later sector pinned at its seed basis** — 10, 45, 120, 210, 252 dets — each reporting a **2.5 GiB resident set** against a round transient of **4–68 KiB** |
+
+A 120-determinant basis reporting 2.5 GiB resident, in a process that held a 322,837-determinant
+basis at 1.2 GiB. The main solver in the same process inherited it
+(`impurityModel-Mn.out:247-303`).
+
+### Root cause: two quantities that are not the same quantity
+
+`groundstate.expand_memory_budget` returned `safety * available_bytes_per_rank`, and `available`
+is `MemAvailable / ranks_on_node` — memory that is **free**, already net of what the process
+holds. That is an *increment* allowance. Both guards in `CIPSISolver.expand` compare it against
+**absolute** process RSS.
+
+At 2.5 GiB resident against a `0.5 * 4.9 = 2.45 GiB` budget, headroom was negative before any work
+was done. `_memory_growth_bound.affordable` returns `0` from the `headroom <= 0` branch **without
+ever consulting the round's own measured transient**, and `cipsi_solver.py:1384` locks that in on
+the first strike. Hence a 4–68 KiB round refused all growth, permanently.
+
+### Why the resident set was 2.5 GiB — and why `malloc_trim` is the wrong instinct
+
+Not glibc-retained heap. Round 5's `memtax` probe already measured this cluster's geometry (256
+ranks, 128/node): glibc-retained 44/0/0/9 MiB, while `RssShmem` ratchets 1.8 → 276 MiB with
+`shm ~ global^0.81`, extrapolating to ~700 MiB at 934k determinants. `current_rss_bytes()` reads
+`VmRSS`, **which includes `RssShmem`** — MPI shared pages touched by 128 co-resident ranks inflate
+each rank's RSS without moving `MemAvailable`. `malloc_trim` was measured at **0%** at 256 ranks.
+The remainder is the in-process RSPt Fortran side.
+
+### The chain to the crash, and why the bath fit is *not* the culprit
+
+An adversarial review argued the causality violation is "carried by `G₀`" because
+`Im(G₀⁻¹) = 2.968` against `Im(G⁻¹) = 1.98e-2`, and pointed at the `-0.6699` bath-fit
+discretization error at `:230`. That reading is wrong. **`G₀` and `G` are both functionals of the
+same fitted bath, so a fit error is common-mode and cancels in `Σ = G₀⁻¹ − G⁻¹`.** Causality of
+`Σ` is guaranteed by `G` being the *exact* Green's function of that Hamiltonian, not by the bath
+being accurate — a poor bath gives a wrong-but-causal `Σ`. What breaks it is `G` and `G₀` computed
+to *different fidelity*, which is exactly what a truncated determinant basis does.
+
+Every step is in the log:
+
+| step | evidence |
+|---|---|
+| the guard freezes the GS at 120 dets | `impurityModel-Mn.out:301-304` |
+| that pins the job-wide cap | `:1079` — *"unit basis capped at 120 determinants (**job-wide truncation_threshold=120**)"* |
+| the GF support freezes | `:1241`, `:1405` — 113 / 118 / 120 determinants |
+| `G` itself stays causal | `:1422`, `:1435` — as a truncated Lehmann sum must: positive weights, too few poles |
+| `G` has no weight where the bath does | `Im(G⁻¹) = 1.98e-2`, i.e. nearly real — no pole nearby |
+| and that is exactly where the bath lives | violating window **[−0.551, −0.11]** contains **every** bath level: block 0 at −0.309, −0.286, −0.272, −0.257, −0.169, −0.145 and block 2 at −0.297, −0.259, −0.227, −0.183 (`impurityModel-Mn-dc.out:48`, `:61`) |
+
+### What shipped
+
+1. **`memory_estimate.absolute_rss_budget(safety, available, resident)`** = `safety * (available +
+   resident)`, the rank's whole share, which is what an absolute RSS reading may be compared
+   against. `_resident_adjusted_budget` — round 8's headroom form — is redefined in terms of it so
+   the policy keeps one definition. **Note for anyone re-deriving this:** round 8's helper is
+   *already* the right formula; it returns the head*room* (`absolute − resident`), and comparing
+   that against the budget number instead of against RSS is the same units confusion as the bug.
+2. **`memory_estimate.resident_bytes_per_rank(comm)`**, a MAX-reduce of `current_rss_bytes()`.
+   `available` stays MIN-reduced. Worst case on both, deliberately — which means the sum is *not*
+   any single rank's quantity and must not be reasoned about as one.
+3. **`expand_memory_budget` re-samples both per expansion.** The budget stays a plain `int`, so
+   all five consumers in `cipsi_solver` are unchanged.
+4. **`_memory_growth_bound` reports *why* it capped**: `(cap, reason)` with reason in
+   `{"unmeasured", "budget", "transient"}`, and the warning names the side and the margin. The
+   crashed run would now print *"the resident set alone is over the 100.0 MiB budget by 400.0 MiB,
+   so the round's own cost did not enter into it"* — absurd on sight, which is the point.
+5. **`GS_MEMORY_BUDGET_INCLUDE_RESIDENT=0`** rolls the arithmetic back without disabling the guard.
+6. **A memory-bound DC no longer reports `converged`**: `truncation_report["memory_bound"]`
+   propagates onto `_SectorSolution` and `ctx.memory_bound_at`, and `_reject_if_memory_bound`
+   raises `DoubleCountingUnreachable` at all three criteria unless `DC_ALLOW_MEMORY_BOUND=1`.
+
+### Two things deliberately *not* done, and why
+
+* **A two-round streak for budget-side zeros.** Unreachable: a `"budget"` zero means
+  `rss_base >= budget`, the after-the-fact trip-wire fires on `peak_rss >= budget`, and
+  `peak_rss >= rss_base` by construction (VmHWM is reset to the round's starting RSS), so the
+  backstop has always capped first. Also unnecessary — `available` is `MemAvailable /
+  ranks_on_node`, so a neighbouring rank allocating a whole GiB moves the budget by ~8 MiB at 128
+  ranks/node. The argument depends on both reductions staying as they are.
+* **Gating the DC on `dc_cap_drift / tol`** (22.6x on this run). Drift is the *cap-calibration
+  ladder's* spread, and it is silent in exactly this failure: a run pinned at its seed returns the
+  same frozen answer on every rung, so the rungs agree and drift → 0. It is also unpopulated when
+  `DC_CAP_STRATEGY` resolves the cap without a ladder. Raw `discarded_de2_mass` is likewise wrong
+  — unnormalized `sum(scores[discarded])` (`cipsi_solver.py:889`), so it grows with how *many*
+  candidates were dropped, and a healthy large-cap run would trip it.
+
+### Corrections to earlier claims in this document
+
+* **`reort="partial"` saves projection FLOPs, not store bytes.** Retention is mode-independent
+  (`_lanczos_step.pxi:850-853` appends unconditionally); the mode only selects which columns are
+  *read*. The "30x/43x the store dominates" multipliers in
+  `blocklanczos_reort_memory.md` Phase 0 came from a run that hit the divergence guard and never
+  converged; `memory_estimate.py:337-343` already walks that framing back.
+* **`GS_SELECTION_CHUNK` is worth ~54 MB at 128 ranks, not 1.5 GB.** `_score_candidates` runs on
+  **rank-local** candidates, while the `n_candidates` in the cycle log is `_allreduce_sum`
+  (`cipsi_solver.py:869`) — a global count. The ledger's "+202 MB" came from a few-rank run where
+  local ≈ global.
+
+### Still open
+
+* **Whether unfreezing the GS clears the causality error.** The chain above predicts it does. Re-run
+  and check; if `Σ` is still acausal on a healthy basis, the common-mode argument says look at GF
+  convergence or the Lanczos band (`:1426` warns `lanczos_band 1.028e-03`, and `weight_add
+  1.380e-01` is lost off-mesh) — **not** at the bath fit.
+* **`GS_NUM_WANTED` is unset** and `impurityModel-Mn.out:241` says so: the GS peak estimate
+  under-counts by up to ~30x, which is why the 20,358,272 cap was optimistic. One line in
+  `job.rspt`, next to raising `-c`.
+* **The broader memory campaign.** Two full-repo surveys found ~40 candidate sites across DC / GS /
+  GF. The ranking is not yet trustworthy — see the `GS_SELECTION_CHUNK` correction above — so the
+  next step is a per-site RSS ledger that **attributes `RssShmem` separately from anonymous RSS**,
+  since conflating them is what produced the wrong diagnosis here.
