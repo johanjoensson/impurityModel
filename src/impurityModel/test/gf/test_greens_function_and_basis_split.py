@@ -295,6 +295,71 @@ def test_run_units_distributed_tightens_cap_to_the_units_own_rank_count_mpi(monk
 
 
 @pytest.mark.mpi
+def test_run_units_distributed_sizes_each_color_on_its_own_rank_count_mpi(monkeypatch):
+    """A color that lands on FEWER ranks than the job-wide mean (`comm.size // n_colors`)
+    must get a cap sized to its own real rank count, not the mean.
+
+    Round-8 regression: `run_units_distributed` and `max_colors_within_budget` both used to
+    size the per-unit cap on `comm.size // n_colors` -- but `_pack_units` apportions ranks to
+    colors proportionally to bin mass with a floor of 1, not evenly, so colors genuinely
+    differ (a round-8 SrMnO3 archive had colors on 4, 5 AND 6 ranks at one split). At 3 ranks
+    with 2 equal-weight units, `_pack_units` gives one color 2 ranks and the other 1 (the mean
+    is 1 for both) -- exactly the shape needed to tell mean and real apart. Confirmed against
+    the pre-fix code (temporarily checked out during development): both colors got the
+    identical, over-tightened 1-rank cap; after the fix the 2-rank color keeps the untightened
+    job-wide cap and only the 1-rank color is tightened.
+    """
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD
+    if comm.size != 3:
+        pytest.skip("This test needs the specific 2-vs-1 rank split _pack_units gives at 3 ranks")
+
+    states = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    inherited_cap = 200_000
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=comm,
+        truncation_threshold=inherited_cap,
+    )
+    psi = ManyBodyState.from_states(
+        [ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0} if comm.rank == 0 else {}, width=1)]
+    )
+    unit_seeds = [[psi], [psi]]
+    unit_weights = np.array([1.0, 1.0])
+
+    # Large enough that max_colors_within_budget (mean ranks=1 for its own n_colors=2 check)
+    # accepts a 2-color split, and that sits strictly between what ranks=1 and ranks=2 can
+    # each afford -- so the tightening binds differently for the two colors instead of
+    # saturating at the same value either way.
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 800 * 2**20)
+
+    def kernel(split_basis, u, seeds):
+        ranks = split_basis.comm.size if split_basis.comm is not None else 1
+        return (ranks, float(split_basis.truncation_threshold))
+
+    # reduce_fn is None, so the per-unit results (each color runs a DIFFERENT unit here) are
+    # gathered onto rank 0 in global unit order -- a rank-local side-effect list (as the test
+    # above uses) only sees the units ITS OWN color ran, which is exactly one of the two here.
+    results = run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=False)
+
+    if comm.rank == 0:
+        by_ranks = dict(results)
+        assert by_ranks.keys() == {1, 2}, results
+        assert by_ranks[2] == inherited_cap, "the 2-rank color must keep the untightened job-wide cap"
+        assert by_ranks[1] < inherited_cap, "the 1-rank color must be tightened"
+        # The discriminating assertion: under the pre-fix mean-based sizing (comm.size //
+        # n_colors == 1 for BOTH colors here), the 2-rank color would have been tightened to
+        # the SAME value as the 1-rank color instead of keeping the job-wide cap -- confirmed
+        # by temporarily checking out the pre-fix gf_units.py during development, which
+        # reproduced exactly that.
+        assert by_ranks[1] < by_ranks[2], (by_ranks, "each color's cap must reflect ITS OWN rank count, not the mean")
+
+
+@pytest.mark.mpi
 def test_run_units_distributed_does_not_mutate_the_callers_basis_cap_mpi(monkeypatch):
     """ADVERSARIAL REVIEW (added by review, currently FAILING): the per-unit cap tightening
     must not reach back into the caller's own basis.
