@@ -1992,6 +1992,62 @@ is switched on, which would then cut that site's 397 MiB to ~60 and bring the wh
 ~1000 MiB. The knob step 0 refuted is not dead; it is **blocked behind this site**, and only
 becomes worth setting once this one is fixed. Neither number should be quoted as achieved.
 
+### Step 3, SHIPPED: the exact diagonal, and what it unblocked
+
+`ManyBodyOperator::diagonal(block)` is the diagonal half of `apply()` with every row-emitting
+branch removed -- the same term loop in the same order, keeping the density terms and the strings
+flagged `m_flat_diagonal`, skipping one-body hops (`i != j`, never diagonal) before they touch the
+scratch determinant. It returns **bit-identically** what reading row `D` out of `apply()`-on-`{D:
+1}` returns, and that is a property rather than a coincidence: a term maps `D` to itself only if
+its created and annihilated multisets agree, which makes it diagonal for *every* determinant, so
+no off-diagonal term can reach that row. The test asserts it as a byte compare (sensitive to
+1 ulp), over three random draws covering all three branches of the loop.
+
+`_candidate_overlaps_and_energies` calls it over the `Hpsi_ref` support and masks the candidates
+out, so no state is built for the purpose, and the function **becomes rank-local** -- the
+`redistribute_psis` existed only because the probe's estimate depended on the partition, and a
+determinant's diagonal element does not.
+
+**Measured, SrMnO3 archive, 1 rank, cap 20,000:**
+
+| | peak | time | `e0` |
+|---|---|---|---|
+| before | 1376.0 MiB | 186.9 s | -13.291093624866 |
+| exact diagonal | 1306.3 MiB | 103.5 s | -13.290692028926 |
+| + `GS_SELECTION_CHUNK=8` | **1109.6 MiB** | 105.1 s | identical to the row above |
+| + `GS_SELECTION_CHUNK=1` | **1106.1 MiB** | 103.3 s | identical |
+
+**-19.6% peak and 1.81x faster**, and the selection round's peak-setter moved as predicted:
+`_score_candidates` now sets it (absolute 1308.7 MiB against the overlap site's 1099.5), which is
+why the knob step 0 refuted is live again. Its docstring in `config.py` has been corrected; the
+default stays unset, because this is a 1-rank measurement and `GS_MATVEC_EXCHANGE` /
+`GS_APPLY_ROW_CHUNKS` were both confirmed at 256 ranks before they became defaults.
+
+**On accuracy, and the control that settles it.** At fixed cap the exact rule returns `e0` 0.3-0.9
+meV *higher* -- worse, variationally, since both legs are exact on their own retained subspace.
+That is a budget artifact, not an accuracy regression, and the discriminating test is to remove the
+budget: with no binding cap both rules run to PT2 exhaustion and must agree, because the criterion
+decides the *order* determinants are admitted in, not which ones clear `de2_min`. They do:
+
+| `de2_min` | probe basis / `e0` | exact basis / `e0` | difference |
+|---|---|---|---|
+| 3e-3 | 2,489 / -13.204027753991 | 2,454 / -13.204027753991 | **2.3e-14 Ha** |
+| 1e-3 | 3,781 / -13.215475065180 | 3,784 / -13.215475065180 | **1.8e-15 Ha** |
+
+Where a cap or threshold *does* bind, the probe's advantage has a mundane source: noise shrinking
+`|dE|` inflates scores past the cutoff, so the probe admits **more determinants at the same nominal
+threshold** -- 608 vs 576, 2,489 vs 2,454, 5,136 vs 5,064. A ~1.4% larger basis buys ~0.5 meV.
+That is a miscalibrated threshold, not a better ranking, and it leaves the minimum Epstein-Nesbet
+denominator at 7.06e-03 where the true minimum is 3.18e-01 -- i.e. the probe manufactures
+near-intruder states that do not exist. In the cap-bound runs the basis sizes are equal and the
+probe's remaining edge comes from churning more refinement cycles (10 against 6) on a noisy score.
+
+**What is NOT measured here.** `e_Dj` has two other consumers -- `select_at` (`cipsi_solver.py:990`,
+`|z - e_Dj|^2`) and `gf_solvers.py:1046` (`z - e_Dj` as a Lehmann pole). Both inherit the change and
+are covered by the test gate for correctness, but every accuracy number above is from the
+ground-state selection path. Nothing here says what the change does to a GF or resolvent-targeted
+selection, and the SMO figures should not be read as covering them.
+
 ### Corrections to earlier claims in this document
 
 * **`reort="partial"` saves projection FLOPs, not store bytes.** Retention is mode-independent

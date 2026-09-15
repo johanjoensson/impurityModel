@@ -500,12 +500,15 @@ GS_SELECTION_CHUNK = Knob(
     global one the cycle log reports (that field is an `_allreduce_sum`), so the stack this knob
     bounds is smaller than the log suggests by roughly the rank count over the routing skew: see
     `doc/plans/dc_smo_memory.md`, written against the SrMnO3 double-counting search that was
-    OOM-killed with a selection round at p~68-104. **Measured verdict: setting this does not lower
-    the process peak.** The knob works exactly as documented -- the score stack goes 332 -> 60 MiB
-    for chunk off/1 at production shape, checksums identical -- but `_score_candidates` retains
-    almost nothing and runs after the selection round's high-water mark is already set elsewhere,
-    so a full solve moved 1376.0 -> 1375.6 MiB. Leave it unset unless a measurement on *your*
-    workload says otherwise. Chunking happens on group boundaries only
+    OOM-killed with a selection round at p~68-104. **Measured verdict: worth setting, since the
+    CIPSI candidate energies became exact.** While the round still built the candidates' whole
+    off-diagonal image, `_score_candidates` ran *after* the high-water mark was already set
+    elsewhere and chunking moved a full solve only 1376.0 -> 1375.6 MiB. With that image gone
+    this site sets the peak, and the same knob now moves the same solve 1306.3 -> 1109.6 MiB at
+    chunk 8 (-15%), 1106.1 at chunk 1, `e0` bit-identical and runtime unchanged. The default is
+    still unset because that measurement is at 1 rank; confirm on your own geometry before
+    relying on it, as `GS_MATVEC_EXCHANGE` and `GS_APPLY_ROW_CHUNKS` were before they became
+    defaults. Chunking happens on group boundaries only
     (`_degenerate_groups`) -- a degenerate manifold is never split across a chunk -- which is what
     keeps the result exact: the manifold-summed score is `max over independent groups of
     (group-summed de2)`, and an elementwise running max over already-processed groups equals

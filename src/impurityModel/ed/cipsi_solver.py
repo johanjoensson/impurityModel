@@ -541,11 +541,6 @@ def _commutes_with(h_op, op, tol: float = 1e-10) -> bool:
     return not residual or max((abs(v) for v in residual.values()), default=0.0) <= tol
 
 
-def _scalar_amp(row, default: complex = 0.0) -> complex:
-    """Read back a width-1 block ``Row`` (or ``None``) as a plain scalar amplitude."""
-    return default if row is None else row[0]
-
-
 class CIPSISolver:
     def __init__(self, basis: Basis):
         self.basis = basis
