@@ -203,9 +203,14 @@ def expand_memory_budget(comm):
         safety = DEFAULT_MEMORY_SAFETY
     if safety <= 0.0:
         return None
-    # Both collectives, both unconditional and in a fixed order on every rank.
+    # Both collectives, both unconditional and in a fixed order on every rank -- including the
+    # resident one, which runs even when the knob below is about to discard its result. An env
+    # var is not guaranteed uniform across ranks, and a collective skipped on some of them is
+    # the deadlock class CLAUDE.md's MPI rules exist for.
     available = available_bytes_per_rank(comm)
     resident = resident_bytes_per_rank(comm)
+    if not config.GS_MEMORY_BUDGET_INCLUDE_RESIDENT.get():
+        resident = 0  # rollback to the pre-2026-09 free-memory arithmetic; see the knob's doc
     return int(absolute_rss_budget(safety, available, resident))
 
 

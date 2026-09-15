@@ -519,11 +519,19 @@ GS_MEMORY_BUDGET_SAFETY = Knob(
     default=None,
     minimum=0.0,
     group="groundstate",
-    doc="""Fraction of `memory_estimate.available_bytes_per_rank` at which an **uncapped** CIPSI
+    doc="""Fraction of the rank's **whole share** of node RAM at which an **uncapped** CIPSI
     ground-state expansion stops growing its basis, measured against its own peak RSS rather than
     against a predicted one (`CIPSISolver.expand`'s `memory_budget_bytes`). Unset uses
     `memory_estimate.DEFAULT_MEMORY_SAFETY`; `0` disables the guard and restores the pre-2026-09
     behaviour, in which an uncapped expansion grows until the kernel OOM-kills the rank.
+
+    The share is `memory_estimate.absolute_rss_budget` = `safety * (available + resident)`, not
+    `safety * available_bytes_per_rank`. `available` is `MemAvailable / ranks_on_node`, i.e.
+    memory that is *free* and already net of what this process holds, so a fraction of it is an
+    **increment** allowance -- and both guards below measure **absolute** RSS. Budgeting one
+    against the other pinned every SrMnO3 gap-DC sector after the first at its seed basis
+    (`doc/plans/dc_smo_memory.md`, round 9). `GS_MEMORY_BUDGET_INCLUDE_RESIDENT=0` rolls that
+    arithmetic back without switching the guard off.
 
     This exists because the *predictive* path cannot be trusted at scale. Measured on the SrMnO3
     double-counting search that was OOM-killed (`doc/plans/dc_smo_memory.md`):
@@ -542,8 +550,39 @@ GS_MEMORY_BUDGET_SAFETY = Knob(
     the basis grows 5-10x per cycle, so the crashed SrMnO3 run read 2.4 GiB against a 2.5 GiB
     budget and was killed at 5.8 GiB one cycle later. The **after-the-fact** trip-wire stays as a
     backstop: the first cycle whose measured peak reaches the budget tightens the cap to the current
-    basis size. Both only ever *tighten* a caller's cap, never loosen it, and a run that stays under
-    budget is bit-identical to one without the guard.""",
+    basis size. The two overlap by construction -- the look-ahead reports a `"budget"`-reason zero
+    only when the round's starting RSS is already over budget, and the trip-wire's `peak_rss` is
+    never below that -- so in that case the backstop has always fired first. Both only ever
+    *tighten* a caller's cap, never loosen it, and a run that stays under budget is bit-identical
+    to one without the guard.""",
+)
+
+
+GS_MEMORY_BUDGET_INCLUDE_RESIDENT = Knob(
+    name="GS_MEMORY_BUDGET_INCLUDE_RESIDENT",
+    kind="bool",
+    default=True,
+    group="groundstate",
+    doc="""Whether `groundstate.expand_memory_budget` budgets the ground-state CIPSI guard
+    against the rank's **whole share** of node RAM (`safety * (available + resident)`,
+    `memory_estimate.absolute_rss_budget`) or, set to `0`, against **free** memory alone
+    (`safety * available`, the pre-2026-09 arithmetic).
+
+    The rollback exists because this guard's job is preventing an uncatchable OOM kill, and
+    changing the arithmetic it uses with no way back is not a safe thing to ship into a
+    production DMFT loop. It is not a tuning parameter: the default is correct, and `0` restores
+    a known defect.
+
+    That defect: `available_bytes_per_rank` is `MemAvailable / ranks_on_node`, i.e. memory that
+    is *free*, already net of what this process holds -- so a fraction of it is an **increment**
+    allowance, while both guards it feeds measure **absolute** RSS. On the SrMnO3 cubic gap-DC
+    run that was 2.5 GiB resident against a `0.5 * 4.9 = 2.45 GiB` budget: negative headroom
+    before any work, the round's own transient never consulted, and every sector after the first
+    pinned at its seed basis (10-252 determinants) while its selection round cost 4-68 KiB.
+    See `doc/plans/dc_smo_memory.md`, round 9.
+
+    To disable the guard entirely rather than change its arithmetic, use
+    `GS_MEMORY_BUDGET_SAFETY=0`.""",
 )
 
 
@@ -817,6 +856,7 @@ KNOBS: dict[str, Knob] = _register(
     GS_MATVEC_EXCHANGE_BYTES,
     GS_NUM_WANTED,
     GS_MEMORY_BUDGET_SAFETY,
+    GS_MEMORY_BUDGET_INCLUDE_RESIDENT,
     DC_CAP_STRATEGY,
     DC_CAP_LADDER_START,
     DC_CAP_LADDER_MAX_RUNGS,

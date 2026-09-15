@@ -121,9 +121,9 @@ def test_a_kilobyte_selection_round_can_still_grow_a_seed_basis(monkeypatch):
 
     # The crashed round's own shape: 120 determinants, 86 references, next request 96.
     affordable = _memory_growth_bound(budget, basis_size=120, p_now=86, p_next=96)
-    assert (
-        affordable(8 * 1024, resident) > 0
-    ), "a selection round costing 8 KiB was refused all growth on a 120-determinant basis"
+    cap, reason = affordable(8 * 1024, resident)
+    assert reason == "transient", "the budget alone decided this, without consulting the round"
+    assert cap > 0, "a selection round costing 8 KiB was refused all growth on a 120-determinant basis"
 
 
 def test_the_guard_still_refuses_growth_when_memory_is_genuinely_gone(monkeypatch):
@@ -132,4 +132,25 @@ def test_the_guard_still_refuses_growth_when_memory_is_genuinely_gone(monkeypatc
     _available, resident = _crashed_run_numbers(monkeypatch, available=64 * MiB, resident=8192 * MiB)
     budget = groundstate.expand_memory_budget(None)
     affordable = _memory_growth_bound(budget, basis_size=120, p_now=86, p_next=96)
-    assert affordable(8 * 1024, resident) == 0
+    assert affordable(8 * 1024, resident) == (0, "budget")
+
+
+# The repo's `_parse_bool` treats only these as false ("only explicit falsehoods are false"),
+# so these are the spellings a user can actually roll back with.
+@pytest.mark.parametrize("off", ["0", "false", "False"])
+def test_the_rollback_knob_restores_the_free_memory_arithmetic(monkeypatch, off):
+    """`GS_MEMORY_BUDGET_INCLUDE_RESIDENT=0` is the way back to the pre-2026-09 budget.
+
+    This guard's job is preventing an uncatchable OOM kill, so changing the arithmetic it runs on
+    needs an escape hatch that does not also switch the guard off entirely
+    (`GS_MEMORY_BUDGET_SAFETY=0` is the separate, blunter lever).
+    """
+    available, _resident = _crashed_run_numbers(monkeypatch)
+    monkeypatch.setenv("GS_MEMORY_BUDGET_INCLUDE_RESIDENT", off)
+    assert groundstate.expand_memory_budget(None) == int(DEFAULT_MEMORY_SAFETY * available)
+
+
+def test_the_rollback_knob_is_registered():
+    """An unregistered knob reads from the environment but never appears in `config.dump`, so a
+    run cannot be reproduced from its own log."""
+    assert "GS_MEMORY_BUDGET_INCLUDE_RESIDENT" in config.KNOBS

@@ -305,8 +305,26 @@ def _memory_growth_bound(budget_bytes, basis_size, p_now, p_next):
     keeps. No byte model anywhere: only the round's own measured peak, so a skewed partition or
     an under-counted term in :mod:`memory_estimate` cannot fool it.
 
-    Returns ``callable(transient_bytes, rss_bytes) -> int | None``: the affordable admission, or
-    ``None`` when the transient was not measurable (``<= 0``).
+    ``budget_bytes`` is an **absolute** RSS ceiling -- the rank's whole share of node RAM, from
+    :func:`memory_estimate.absolute_rss_budget` -- because ``rss_bytes`` is an absolute reading.
+    Handing it the *free*-memory fraction instead is what pinned the SrMnO3 gap-DC search at its
+    seed basis in every sector after the first (``doc/plans/dc_smo_memory.md``, round 9).
+
+    Returns ``callable(transient_bytes, rss_bytes) -> (int | None, str)``: the affordable
+    admission and *why* it came out that way --
+
+    ``"unmeasured"``
+        the transient could not be measured; the cap is ``None`` ("no opinion").
+    ``"budget"``
+        the process already holds its whole share, so headroom is non-positive and nothing is
+        affordable *whatever* this round cost.
+    ``"transient"``
+        headroom is positive and this round's own measured cost is what bounds the next one.
+
+    The caller needs that distinction: only a ``"transient"`` zero is a measurement of *this*
+    round. A ``"budget"`` zero is one sample of a ceiling that moves with the other ranks on the
+    node, so acting on it immediately lets a momentary dip in ``MemAvailable`` pin a sector's
+    basis for the rest of the run -- the shape of the very bug this function was fixed for.
     """
     p_ratio = max(1.0, float(p_next) / max(1, int(p_now)))
     budget_bytes = float(budget_bytes)
@@ -314,12 +332,12 @@ def _memory_growth_bound(budget_bytes, basis_size, p_now, p_next):
 
     def affordable(transient_bytes, rss_bytes):
         if transient_bytes <= 0:
-            return None
+            return None, "unmeasured"
         headroom = budget_bytes - float(rss_bytes)
         if headroom <= 0.0:
-            return 0
+            return 0, "budget"
         next_max = basis_size * headroom / (float(transient_bytes) * p_ratio)
-        return max(0, int(next_max) - basis_size)
+        return max(0, int(next_max) - basis_size), "transient"
 
     return affordable
 
@@ -1067,7 +1085,7 @@ class CIPSISolver:
             # twice in the prediction `baseline + transient * growth`. Measured on SrMnO3 at
             # 2 ranks: 953 MiB "now" against a ~600 MiB start, under a 1.2 GiB transient.
             rss_base = self._allreduce_max(int(rss_start))
-            cap = affordable_growth(transient, rss_base) if transient >= 0 else None
+            cap, cap_reason = affordable_growth(transient, rss_base) if transient >= 0 else (None, "unmeasured")
             if cap is not None:
                 cap = int(cap)
                 max_new = cap if max_new is None else min(int(max_new), cap)
@@ -1075,6 +1093,7 @@ class CIPSISolver:
                 "round_transient_bytes": int(transient),
                 "round_rss_bytes": int(rss_base),
                 "memory_admit_cap": cap,
+                "memory_cap_reason": cap_reason,
             }
         de2_mask, selection_stats = self._admit_top(scores, scores >= de2_min, max_new)
         selection_stats["hpsi_rows"] = hpsi_rows
@@ -1381,6 +1400,16 @@ class CIPSISolver:
                 # below) exits before a second round could ever run to confirm the reading --
                 # unlike a positive-but-tight cap, there is no "wait and see" available, and
                 # zero is a floor, not a noisy estimate that a second sample could revise upward.
+                #
+                # This holds for a `"budget"`-reason zero too, and deliberately so. Such a zero
+                # means `rss_base >= budget`, and the after-the-fact trip-wire below fires on
+                # `peak_rss >= budget` with `peak_rss >= rss_base` by construction (VmHWM was
+                # reset to the round's starting RSS) -- so by the time a budget-side zero is
+                # visible here, the OOM backstop has *already* capped. Giving this branch its own
+                # streak would be unreachable code. It is also unnecessary: the budget is
+                # `safety * (available + resident)`, and `available` is `MemAvailable /
+                # ranks_on_node`, so another rank allocating a whole GiB moves it by ~8 MiB at
+                # 128 ranks/node. The budget does not jitter across the resident set.
                 if not memory_bound and round_memory_bound and (memory_cap == 0 or memory_bound_streak >= 2):
                     # The affordable size becomes the fixed budget from here on -- the same
                     # machinery a caller's cap uses -- tightening only (`min`), never loosening
@@ -1395,12 +1424,29 @@ class CIPSISolver:
                         streak_note = (
                             "no growth at all is affordable" if memory_cap == 0 else "for the second round running"
                         )
+                        # Which side bound, and by how much. Without this the two cases are
+                        # indistinguishable in a log -- and telling them apart is what took the
+                        # round-9 diagnosis from "the basis is mysteriously frozen" to a named
+                        # defect: a 4-68 KiB round refused all growth is a budget verdict, not a
+                        # transient one, and reads absurd the moment both numbers are on the line.
+                        rss_now = sel.get("round_rss_bytes", 0)
+                        if sel.get("memory_cap_reason") == "budget":
+                            why = (
+                                f"the resident set alone is over the {format_bytes(memory_budget_bytes)} "
+                                f"budget by {format_bytes(rss_now - memory_budget_bytes)}, so the round's "
+                                "own cost did not enter into it"
+                            )
+                        else:
+                            why = (
+                                f"that leaves {format_bytes(memory_budget_bytes - rss_now)} under the "
+                                f"{format_bytes(memory_budget_bytes)} budget, which this round's cost "
+                                "does not fit a larger basis into"
+                            )
                         print(
                             f"WARNING: the selection round on {old_size:,} determinants peaked "
                             f"{format_bytes(sel.get('round_transient_bytes', 0))} above its "
-                            f"{format_bytes(sel.get('round_rss_bytes', 0))} resident set against a "
-                            f"{format_bytes(memory_budget_bytes)} budget ({streak_note}); "
-                            f"the next round can afford {memory_cap:,} of the "
+                            f"{format_bytes(rss_now)} resident set ({streak_note}); {why}. "
+                            f"The next round can afford {memory_cap:,} of the "
                             f"{sel.get('n_candidates', 0):,} candidates. Tightening {was} to "
                             f"{int(threshold):,}.",
                             flush=True,
