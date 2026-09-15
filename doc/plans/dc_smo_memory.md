@@ -1810,6 +1810,50 @@ Probe: `width_controlled.py` (scratch). It needs `psi_refs` passed in -- a cold 
 width-1 block whatever the knob says, so a naive "call `get_eigenvectors` at two widths" measures
 nothing.
 
+### Step 0 result: the peak is `_candidate_overlaps_and_energies`, and Tier 1 buys nothing
+
+Per-site ledger (`from_arrhenius/site_ledger.py`, round 6's method: reset `VmHWM` immediately
+before a site, read it immediately after, difference from the site's entry RSS). SrMnO3 archive,
+cap 20,000, **1 rank**, ten selection rounds, maxima over rounds:
+
+| site | max transient | max d(anon) |
+|---|---|---|
+| `_candidate_overlaps_and_energies` | **708.5 MiB** | 269.2 MiB |
+| `_apply_block_and_redistribute` | 526.6 MiB | 272.7 MiB |
+| `_score_candidates` | 397.4 MiB | **16.7 MiB** |
+
+`e0` is unchanged at -13.291093624866 with the instrumentation in place.
+
+**`GS_SELECTION_CHUNK` is not the cheap win the ranking claimed.** The knob does exactly what it
+documents -- at production shape (p=44, 137k candidates) the score stack goes 332 -> 111 -> 60 MiB
+for chunk off/8/1, checksums identical, so the exactness claim holds too. But in a full solve
+`e0` was bit-identical and the process peak moved 1376.0 -> 1375.6 MiB: **0.03%**. The `d(anon)`
+column says why. `_score_candidates` retains 16.7 MiB; it is almost pure transient, and it runs
+*after* `_candidate_overlaps_and_energies` has already set the mark. Cutting 221 MiB out of a site
+that is not the high-water mark moves the high-water mark by nothing.
+
+So Tier 1's "cheapest possible win, no new code" is **refuted**: flipping this default buys
+nothing until whatever sets the peak is brought below ~332 MiB. Third predicted lever in this
+campaign to evaporate on measurement (`dc-perf-campaign-measured-levers`).
+
+**Where the campaign should go instead:** `_candidate_overlaps_and_energies`
+(`cipsi_solver.py:772-832`), which both sets the peak and retains the most. The survey had already
+flagged its shape -- `overlaps = np.ascontiguousarray(amps[new_mask].T)` is a boolean-index *copy*
+at `p x n_Dj x 16 B`, alongside `psi_all_Dj` materialized by dict comprehension over every local
+candidate, plus `H_psi_all` and a redistribute inside it -- but ranked it below the two knobs.
+
+**Two caveats on these numbers, before they drive anything.** They are **1-rank**, where `n_Dj` is
+the *global* candidate count; at 128 ranks each rank holds ~1/128 of it times the ~2.79 routing
+skew. All three sites scale with the local candidate count so the ordering should carry, but
+`_apply_block_and_redistribute` also carries communication buffers that scale differently. The
+ordering is a hypothesis for the cluster, not a measurement of it.
+
+**A note on the instrument itself:** the first version of the ledger reported two sites, not
+three, because `_score_candidates` is a module-level function and the probe looked for it on
+`CIPSISolver` with `hasattr` -- finding nothing and saying nothing. It now asserts. A probe that
+silently measures less than it claims is the same failure class as a sanitizer that is not
+running.
+
 ### Corrections to earlier claims in this document
 
 * **`reort="partial"` saves projection FLOPs, not store bytes.** Retention is mode-independent
