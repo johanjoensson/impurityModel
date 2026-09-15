@@ -309,6 +309,8 @@ def test_run_units_distributed_sizes_each_color_on_its_own_rank_count_mpi(monkey
     identical, over-tightened 1-rank cap; after the fix the 2-rank color keeps the untightened
     job-wide cap and only the 1-rank color is tightened.
     """
+    from types import SimpleNamespace
+
     from impurityModel.ed import gf_units as gu
     from impurityModel.ed import memory_estimate as me
     from impurityModel.ed.gf_units import run_units_distributed
@@ -317,8 +319,37 @@ def test_run_units_distributed_sizes_each_color_on_its_own_rank_count_mpi(monkey
     if comm.size != 3:
         pytest.skip("This test needs the specific 2-vs-1 rank split _pack_units gives at 3 ranks")
 
+    # Pinned inputs, not ambient ones. `run_units_distributed` folds `current_rss_bytes()` into
+    # the budget as `resident_bytes`, and the real value drifts with how much of the suite has
+    # already run in this process -- enough to move a color's cap across `inherited_cap` and
+    # flake this test (observed: 194,431 instead of 200,000 when run deep in the full suite).
+    # `gf_units` binds `current_rss_bytes` via `from ... import`, so it must be patched there,
+    # not on the `memory_estimate` module object. `GF_APPLY_ROW_CHUNKS` is pinned because
+    # `estimate_gf_peak_bytes` now reads it (the chunking credit on the fanout term).
+    available, resident = 800 * 2**20, 237 * 2**20
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: available)
+    monkeypatch.setattr(gu, "current_rss_bytes", lambda: resident)
+
+    # Derive the operating point from the model instead of hard-coding one. An earlier version
+    # hard-coded 200,000, which silently stopped discriminating the moment the fanout constant
+    # was re-measured (the window below moved out from under it). `inherited_cap` has to sit
+    # strictly above what a 1-rank color can afford and at or below what a 2-rank color can,
+    # while still being small enough that `max_colors_within_budget` -- which runs on the looser
+    # no-resident budget and the mean rank count -- picks 2 colors rather than collapsing to 1.
+    stub = SimpleNamespace(size=comm.size)
+    afford_1 = me.max_unit_dets_within_budget(4, 1, None, 1, stub, resident_bytes=resident)
+    afford_2 = me.max_unit_dets_within_budget(4, 1, None, 2, stub, resident_bytes=resident)
+    splits_into_2 = me.max_unit_dets_within_budget(4, 1, None, 1, stub)  # no resident: the looser bound
+    lo, hi = afford_1, min(afford_2, splits_into_2)
+    assert lo < hi, (
+        f"this test's premise no longer holds: no cap both tightens a 1-rank color ({afford_1:,}) "
+        f"and leaves a 2-rank color alone ({afford_2:,}) while still splitting into 2 colors "
+        f"({splits_into_2:,}). Re-derive the geometry rather than deleting the test."
+    )
+    inherited_cap = (lo + hi) // 2
+
     states = [b"\x80", b"\x40", b"\x20", b"\x10"]
-    inherited_cap = 200_000
     basis = Basis(
         impurity_orbitals={0: [[0, 1, 2, 3]]},
         bath_states=({0: [[]]}, {0: [[]]}),
@@ -331,20 +362,6 @@ def test_run_units_distributed_sizes_each_color_on_its_own_rank_count_mpi(monkey
     )
     unit_seeds = [[psi], [psi]]
     unit_weights = np.array([1.0, 1.0])
-
-    # Large enough that max_colors_within_budget (mean ranks=1 for its own n_colors=2 check)
-    # accepts a 2-color split, and that sits strictly between what ranks=1 and ranks=2 can
-    # each afford -- so the tightening binds differently for the two colors instead of
-    # saturating at the same value either way.
-    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 800 * 2**20)
-    # Pinned, not the real process RSS: run_units_distributed folds `current_rss_bytes()` into
-    # the budget as `resident_bytes` (max_unit_dets_within_budget's resident-adjustment), and
-    # the real value drifts with how much of the test suite has already run in this process --
-    # enough to move the 2-rank color's cap either side of `inherited_cap` and flake this test
-    # (observed: 194,431 instead of 200,000 when run deep in the full suite). gf_units.py binds
-    # `current_rss_bytes` via `from ... import`, so it must be patched on gf_units itself, not
-    # on the memory_estimate module object.
-    monkeypatch.setattr(gu, "current_rss_bytes", lambda: 237 * 2**20)
 
     def kernel(split_basis, u, seeds):
         ranks = split_basis.comm.size if split_basis.comm is not None else 1
