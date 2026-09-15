@@ -755,6 +755,26 @@ def suggest_truncation_threshold(
     )
 
 
+def _resident_adjusted_budget(safety, available, resident_bytes):
+    """The one policy behind both GF budget inversions: ``safety * available`` by default,
+    tightened to ``safety * (available + resident) - resident`` when ``resident_bytes`` is
+    given and that tightening is actually binding (see :func:`max_unit_dets_within_budget`'s
+    ``resident_bytes`` parameter for the derivation -- ``available`` is already net of what
+    this process holds, so adding ``resident`` back and re-applying ``safety`` bounds the
+    process's *total* per-rank share rather than just its remaining headroom).
+
+    Never lets an already-over-budget process drive the result to a non-positive headroom --
+    that memory is spent either way, and callers use this as a bisection bound, not a signal
+    to shrink toward zero.
+    """
+    budget = safety * available
+    if resident_bytes is not None and resident_bytes > 0:
+        headroom = safety * (available + float(resident_bytes)) - float(resident_bytes)
+        if headroom > 0:
+            budget = headroom
+    return budget
+
+
 def max_colors_within_budget(
     n_dets,
     n_spin_orbitals,
@@ -765,6 +785,7 @@ def max_colors_within_budget(
     safety=DEFAULT_MEMORY_SAFETY,
     krylov_dtype=None,
     method="lanczos",
+    resident_bytes=None,
 ):
     """Largest unit-color count whose predicted per-rank GF peak fits the memory budget.
 
@@ -773,10 +794,12 @@ def max_colors_within_budget(
     Under ``run_units_distributed`` each color's unit basis may fill the same
     ``truncation_threshold`` on only ``comm.size / n_colors`` ranks, so per-rank memory
     grows with the color count. This inverts :func:`estimate_gf_peak_bytes`: the largest
-    ``n_colors <= max_candidate`` for which a cap-filling unit basis still fits
-    ``safety * available_bytes_per_rank``. At ``reort != "none"`` the estimate uses the
-    invariant-subspace worst case for the Krylov store (very conservative), consistent
-    with :func:`suggest_truncation_threshold`.
+    ``n_colors <= max_candidate`` for which a cap-filling unit basis still fits the budget
+    (see :func:`_resident_adjusted_budget` -- the same policy
+    :func:`max_unit_dets_within_budget` uses, so the two no longer diverge on whether the
+    resident set counts). At ``reort != "none"`` the estimate uses the invariant-subspace
+    worst case for the Krylov store (very conservative), consistent with
+    :func:`suggest_truncation_threshold`.
 
     Parameters
     ----------
@@ -794,14 +817,30 @@ def max_colors_within_budget(
         Upper bound on the color count (``min(comm.size, n_units)`` at the split site).
     safety : float
         Fraction of available RAM to budget (default ``DEFAULT_MEMORY_SAFETY``).
+    resident_bytes : int, optional
+        What this rank already holds entering the split (``current_rss_bytes()``, MAX-reduced
+        over the communicator by the caller). ``None`` (default) reproduces the historical
+        ``safety * available`` budget; see :func:`_resident_adjusted_budget`.
 
     Returns
     -------
     int
         Color count in ``[1, max_candidate]``.
     """
-    budget = safety * available_bytes_per_rank(comm)
+    budget = _resident_adjusted_budget(safety, available_bytes_per_rank(comm), resident_bytes)
     for n_colors in range(max_candidate, 1, -1):
+        # The mean, not each color's real count: `_pack_units` (basis_split.py) apportions
+        # ranks to colors proportionally to bin mass with a floor of 1, not evenly, so colors
+        # genuinely differ -- a round-8 SrMnO3 archive had colors on 4, 5 *and* 6 ranks at
+        # n_colors=25 (mean 5.12). This function runs *before* `_pack_units` (it decides
+        # `max_colors`, one of `_pack_units`'s own inputs) and sits below `basis_split` in the
+        # layering (CLAUDE.md), so it cannot call the real packer to learn the true spread, and
+        # the only bound it *could* guarantee -- 1 rank/color -- would make it always return 1.
+        # The real per-color bound lives where it can actually be seen: `run_units_distributed`
+        # sizes each color's own cap on `split_basis.comm.size` after the real split runs
+        # (doc/plans/dc_smo_memory.md, "GF unit memory", item 3) and never loosens what this
+        # function's mean-based `max_colors` allows -- this is deliberately the coarser of the
+        # two bounds, not a second, independent one to fix.
         ranks_per_color = max(1, comm.size // n_colors)
         if (
             estimate_gf_peak_bytes(
@@ -910,15 +949,7 @@ def max_unit_dets_within_budget(
         Largest determinant count (at least 1) whose predicted per-rank GF peak, at
         ``ranks``, fits the budget described above.
     """
-    available = available_bytes_per_rank(comm)
-    budget = safety * available
-    if resident_bytes is not None and resident_bytes > 0:
-        # See `resident_bytes` above. Never let an already-over-budget process drive the cap
-        # to the floor -- that memory is spent either way, and a 1-determinant GF is garbage
-        # physics, not a safety measure.
-        headroom = safety * (available + float(resident_bytes)) - float(resident_bytes)
-        if headroom > 0:
-            budget = headroom
+    budget = _resident_adjusted_budget(safety, available_bytes_per_rank(comm), resident_bytes)
 
     def fits(n):
         return (
