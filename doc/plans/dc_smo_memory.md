@@ -1772,6 +1772,44 @@ proves the call site is *reached*, where the source-level count only proves it e
 one asserting the rejection is rank-invariant at `-n 2` and `-n 3` -- a split verdict would turn a
 memory problem into a hang inside a collective.
 
+### Part 1b, CLOSED: the block width was never the constraint
+
+A width-`w` block Lanczos spans at most `w` vectors per eigenvalue, so a manifold of multiplicity
+`m > w` comes back with `w` copies and the rest silently missing. The crashed run executed at
+`w = 6`. If the bottom multiplicity were >= 6, every number it produced would rest on an
+under-resolved manifold -- a correctness question, not a memory one.
+
+**Measured, and the answer is no.** The valid experiment builds **one** basis and diagonalizes it
+at several widths from an identical warm block, so width is the only thing that varies. On the
+crash archive at cap 20,000 (20,000 determinants, 44 reference states):
+
+| block width | `e0` | max abs dE vs p=6, all 44 states |
+|---|---|---|
+| 6  | -13.291093624866 | — |
+| 16 | -13.291093624866 | 6.6e-14 |
+| 32 | -13.291093624866 | 4.3e-14 |
+
+`e0` bit-identical, the whole retained spectrum agreeing to machine precision, the same 44 states
+and the same group structure at every width. Width 6 is sufficient for this workload.
+
+**Two ways to get this wrong, both of which happened here:**
+
+1. **Reading the multiplicity off a single dump.** It is basis-dependent -- 1 at cap 2,000, 1 at
+   cap 20,000, three doublets (split 4e-8) in the production 934k dump. The first attempt at this
+   question read the **252-determinant seed** dump, saw "-17.026 x6", and concluded the ceiling
+   might be binding. A seed basis says nothing about the converged manifold
+   (`smo-thermal-manifold-is-a-seed-basis-artifact`, again).
+2. **Sweeping the width across separate CIPSI runs.** The basis CIPSI grows depends on the
+   reference states, hence on the width, so the runs end on different bases. At cap 50,000 that
+   gave 47,356 determinants at p=6 against 50,000 at p=16, and a 1.1e-4 difference in `e0` that
+   is entirely the basis, not the width. (The cap-20,000 sweep agreed only because both runs hit
+   the cap exactly and so shared a basis -- luck, not design.) Note in passing that p=6 reached
+   the *lower* variational energy on the *smaller* basis.
+
+Probe: `width_controlled.py` (scratch). It needs `psi_refs` passed in -- a cold start builds a
+width-1 block whatever the knob says, so a naive "call `get_eigenvectors` at two widths" measures
+nothing.
+
 ### Corrections to earlier claims in this document
 
 * **`reort="partial"` saves projection FLOPs, not store bytes.** Retention is mode-independent
@@ -1786,6 +1824,7 @@ memory problem into a hang inside a collective.
 
 ### Still open
 
+* ~~Whether the width-6 block under-resolved the manifold.~~ **Closed above: it did not.**
 * **Whether unfreezing the GS clears the causality error.** The chain above predicts it does. Re-run
   and check; if `Σ` is still acausal on a healthy basis, the common-mode argument says look at GF
   convergence or the Lanczos band (`:1426` warns `lanczos_band 1.028e-03`, and `weight_add
