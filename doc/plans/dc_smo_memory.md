@@ -2101,6 +2101,46 @@ ranking on a workload large enough for the ranking to matter: the repo's oracle 
 discriminate, and building a larger CIPSI-GF workload was judged out of proportion for a path that
 is experimental, off by default, and off the re-run's route.
 
+### Step 5, REFUTED: truncating the stored `psi_refs` frees 95% of it and ~1% of the peak
+
+The plan's proposal, and the one item that came from the original request to stop caching
+`psi_refs`: the only consumers of a *stored* `solver.psi_refs` slice it to `GS_MAX_BLOCK_WIDTH`
+(`get_eigenvectors`, `cipsi_solver.py:1754`), so storing `psi_refs[:width+1]` plus the original
+length as an int should be bit-identical while the knob is set.
+
+**The premise holds.** Both external readers (`groundstate.py:527`, `:1255`) feed
+`solver.psi_refs` straight into `get_eigenvectors(psi_refs=...)`, which slices. The length is
+load-bearing on its own -- `expand` sizes `num_wanted` from `len(psi_refs)` through
+`_manifold_request` (`:1292`), so truncating without recording it separately would silently
+collapse `num_wanted` from 54 to 6.
+
+**The payoff does not.** Measured on the SMO archive at `GS_MAX_BLOCK_WIDTH=5` (so the warm block
+keeps 6 of them):
+
+| cap | basis | states stored | bytes held | freed by `[:6]` | of the stored block | of the solve's peak |
+|---|---|---|---|---|---|---|
+| 5,000 | 4,999 | 54 | 4.0 MiB | 3.9 MiB | 97.2% | **1.7%** |
+| 10,000 | 9,998 | 54 | 8.0 MiB | 7.6 MiB | 95.7% | **1.6%** |
+| 20,000 | 19,998 | 54 | 11.6 MiB | 10.9 MiB | 94.3% | **1.2%** |
+
+The state count is the thermal manifold and is constant at 54; the bytes scale linearly with the
+basis (~0.59 KiB per determinant for all 54 together). Both numerator and denominator scale
+together, so the ~1-2% fraction is stable and does not improve at production size. Freeing 95% of
+the stored block moves the process peak by about one percent.
+
+**And it is not free.** `GS_MAX_BLOCK_WIDTH` defaults to `None`, i.e. uncapped, and the slice at
+`:1754` is guarded on the knob being set -- so the optimization is a **no-op for every default
+configuration**, including CI, and exists only on the production setting. The knob is also read per
+call rather than captured, so a stored `psi_refs[:6]` later consumed by a solve running at a wider
+setting would silently give a 6-wide warm block instead, with nothing reporting it. Conditional
+storage plus a parallel stored length plus that hazard, for ~1%.
+
+**Closed out, not implemented** -- the campaign's own rule, and the **fifth** predicted lever here
+to evaporate on measurement (after `GS_SELECTION_CHUNK` at step 0, the `overlaps` double buffer at
+step 1, and before them the block width in Part 1b and `ground_state_manifold`). The measurement
+script is `from_arrhenius/psi_refs_cost.py` if a future workload with a much larger manifold makes
+it worth revisiting.
+
 ### Corrections to earlier claims in this document
 
 * **`reort="partial"` saves projection FLOPs, not store bytes.** Retention is mode-independent
