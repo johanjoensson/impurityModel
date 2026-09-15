@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from impurityModel.ed import config, groundstate
+from impurityModel.ed.cipsi_solver import _memory_growth_bound
 from impurityModel.ed.memory_estimate import DEFAULT_MEMORY_SAFETY, available_bytes_per_rank
 
 
@@ -57,3 +58,69 @@ def test_both_expand_call_sites_pass_the_budget():
     n_expand = src.count("solver.expand(")
     n_wired = src.count("memory_budget_bytes=expand_memory_budget(comm)")
     assert n_expand == n_wired == 2, f"{n_expand} expand call sites, {n_wired} pass a budget"
+
+
+# ---------------------------------------------------------------------------------------
+# Regression: the budget must not be swallowed by the process's own resident set
+# (doc/plans/dc_smo_memory.md, round 9 -- the SrMnO3 cubic gap-DC collapse)
+# ---------------------------------------------------------------------------------------
+
+MiB = 2**20
+
+
+def _crashed_run_numbers(monkeypatch, available=4900 * MiB, resident=2500 * MiB):
+    """The SrMnO3 crash's own readings: 4.9 GiB/rank still free, 2.5 GiB already resident.
+
+    `groundstate` binds both names with `from ... import`, so they must be patched *there*
+    rather than in `memory_estimate` (the same trap `test_greens_function_and_basis_split`
+    documents). `raising=False` on the second: before the fix `groundstate` does not import
+    `current_rss_bytes` at all, and this test must fail on its assertion -- demonstrating the
+    defect -- rather than error out during setup.
+    """
+    monkeypatch.setattr(groundstate, "available_bytes_per_rank", lambda comm: available)
+    monkeypatch.setattr(groundstate, "current_rss_bytes", lambda: resident, raising=False)
+    return available, resident
+
+
+def test_the_budget_exceeds_a_resident_set_that_already_fills_free_memory(monkeypatch):
+    """`available_bytes_per_rank` is `MemAvailable / ranks_on_node` -- memory that is *free*,
+    already net of what this process holds. `safety * available` is therefore an **increment**
+    allowance, but `_memory_growth_bound` compares it against **absolute** RSS. Once the process
+    is resident above that fraction the guard refuses all growth forever.
+
+    On the crashed run that is 0.5 * 4.9 = 2.45 GiB against a 2.5 GiB resident set, and every
+    sector after the first was pinned at its seed basis (10-252 determinants) while its own
+    selection round cost 4-68 KiB.
+    """
+    _available, resident = _crashed_run_numbers(monkeypatch)
+    budget = groundstate.expand_memory_budget(None)
+    assert budget > resident, (
+        f"budget {budget / MiB:.0f} MiB does not even cover the {resident / MiB:.0f} MiB already "
+        "resident, so the look-ahead bound has negative headroom before any work is done"
+    )
+
+
+def test_a_kilobyte_selection_round_can_still_grow_a_seed_basis(monkeypatch):
+    """The defect as the crash log shows it, end to end.
+
+    `impurityModel-Mn-dc.out:509`: a 120-determinant basis, p=86, whose selection round peaked
+    **8 KiB** above its resident set, was told it could afford **0** of 4,032 candidates. Nothing
+    about 8 KiB is unaffordable; the bound was comparing incommensurable quantities.
+    """
+    _available, resident = _crashed_run_numbers(monkeypatch)
+    budget = groundstate.expand_memory_budget(None)
+
+    # The crashed round's own shape: 120 determinants, 86 references, next request 96.
+    affordable = _memory_growth_bound(budget, basis_size=120, p_now=86, p_next=96)
+    assert affordable(8 * 1024, resident) > 0, (
+        "a selection round costing 8 KiB was refused all growth on a 120-determinant basis"
+    )
+
+
+def test_the_guard_still_refuses_growth_when_memory_is_genuinely_gone(monkeypatch):
+    """The safety property the fix must not trade away: when the resident set really has consumed
+    the rank's share, headroom is zero and the expansion stops."""
+    _available, resident = _crashed_run_numbers(monkeypatch, available=64 * MiB, resident=8192 * MiB)
+    budget = groundstate.expand_memory_budget(None)
+    affordable = _memory_growth_bound(budget, basis_size=120, p_now=86, p_next=96)
+    assert affordable(8 * 1024, resident) == 0
