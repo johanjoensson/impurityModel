@@ -595,16 +595,23 @@ def test_resident_bytes_over_the_safety_share_falls_back_rather_than_flooring(mo
     assert fallback > 1
 
 
-def test_replay_round8_smo_crash_geometry_now_predicts_the_kill(monkeypatch):
-    """The round-8 SrMnO3 crash's own numbers, replayed through the corrected model.
+def test_round8_smo_crash_geometry_is_refused(monkeypatch):
+    """The round-8 SrMnO3 crash's own numbers must be refused by the model.
 
     Pinned geometry (doc/plans/dc_smo_memory.md, round 8): job-wide cap 40,340,864, nso=58,
     block width 1, available 9.5 GiB/rank, resident ~2.2 GiB at GF entry. 4/5/6 are the
-    smallest color sizes in the crash's own split ([6,6,6,6,6, 5x8, 4,4, 5x10]) -- exactly the
-    colors that lost ranks (16, 25, 32, 33) to the OOM killer. Before the round-8 fanout term,
-    `estimate_gf_peak_bytes` predicted every one of these colors would survive; the corrected
-    model must refuse all three, and `max_unit_dets_within_budget` must therefore never hand
-    any of them the job-wide cap verbatim.
+    smallest color sizes in the crash's own split ([6,6,6,6,6, 5x8, 4,4, 5x10]) -- the colors
+    that lost ranks (16, 25, 32, 33) to the OOM killer.
+
+    **This test does NOT discriminate the round-8 fanout term**, and an earlier version of it
+    claimed to. It passes identically with `_GF_MATVEC_ROW_FANOUT_DEFAULT = 0` (verified),
+    because round 7's mechanism -- the resident-adjusted budget at `safety=0.5`, which is
+    3.65 GiB here, not the 9.5 GiB a first draft of the round-8 write-up mistakenly used --
+    already refuses all three colors on its own. Its value is as a **guard on the production
+    geometry**: these are real numbers off a real crashed job, and the model must never start
+    calling this configuration affordable. The fanout term's own presence and magnitude are
+    pinned by `test_estimate_gf_peak_bytes_scales_local_rows_by_the_skew`, which asserts the
+    exact formula and fails if the term is removed.
     """
     from types import SimpleNamespace
 

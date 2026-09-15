@@ -1477,16 +1477,38 @@ question round 7 left open (why ranks died when the model said they should not).
 | ranks per color | 6,6,6,6,6, 5×8, 4,4, 5×10 | `np.diff(unit_roots + [128])` |
 | block width | 1 | `impurityModel_data.h5`'s `vs_star`: two inequivalent 1×1 blocks × 2 sides × 10 eigenstates = 40 units |
 
-### What killed it
+### What killed it: the stale install, and nothing more exotic
 
-At the cap, the *pre-round-8* `estimate_gf_peak_bytes` predicted every one of the crash's smaller
-colors would survive (4/5/6 ranks: 5.54/4.45/3.73 GiB model peak, 1.76-3.57 GiB of headroom left
-against 9.5 GiB available) — and four ranks died anyway. The gap was the term the function's own
-docstring conceded it did not count: `block_lanczos_step_cy` calls `h_op.apply_block(q_curr)`, and
+**This section originally claimed the model predicted these colors would survive. That claim was
+wrong, and an adversarial review caught it.** It is recorded here rather than deleted, because the
+error is instructive and is the second time this project has made it.
+
+The original arithmetic asked whether `5.54/4.45/3.73 GiB` (the modelled peak at 4/5/6 ranks) plus
+`2.2 GiB` resident fits in `9.5 GiB` available — leaving `1.76-3.57 GiB` of apparent headroom, and
+so "the model says every color survives." But `9.5 GiB` is not the budget the code enforces.
+`_resident_adjusted_budget(safety=0.5, available=9.5 GiB, resident=2.2 GiB)` is **3.65 GiB**. The
+table had silently used `safety = 1.0`. Against the real budget, with the fanout term set to zero
+— i.e. exactly round 7's shipped model:
+
+| ranks in color | modelled peak | exceeds the 3.65 GiB budget? | `max_unit_dets_within_budget` | below the 40,340,864 cap? |
+|---|---|---|---|---|
+| 4 | 5.54 GiB | **yes** | 26,561,734 | **yes** |
+| 5 | 4.45 GiB | **yes** | 33,054,656 | **yes** |
+| 6 | 3.73 GiB | **yes** | 39,521,539 | **yes** |
+
+Round 7's mechanism already refuses all three colors and already tightens all three caps, with no
+fanout term at all. **The stale install is the whole explanation for this crash** — as the section
+above established independently, and as is sufficient on its own. There is no residual unexplained
+kill for a new term to account for.
+
+What survives from this round is narrower and worth stating precisely: `estimate_gf_peak_bytes` was
+genuinely missing a term. `block_lanczos_step_cy` calls `h_op.apply_block(q_curr)`, and
 `ManyBodyOperator::apply` returns a **fully materialized** `ManyBodyBlockState` by value
 (`ManyBodyOperator.h:114`, no streaming) — not hash-partitioned, everything the rank's rows reach
-under H, before `redistribute_block` routes and the cap prunes. A dedup'd fanout of only 2.4-7.3
-rows/det sufficed to consume that headroom at 4-6 ranks.
+under H, before `redistribute_block` routes and the cap prunes. That allocation is real, it is
+unmodelled, and the function's own docstring conceded as much. Closing a known model gap is a
+legitimate reason to ship the term. Claiming it explains a crash that round 7's own mechanism
+already refuses is not, and the first draft of this round did exactly that.
 
 **A defect found along the way, but NOT this crash's cause:** `run_units_distributed` and
 `max_colors_within_budget` both sized a color's per-rank cap on `comm.size // n_colors` — the

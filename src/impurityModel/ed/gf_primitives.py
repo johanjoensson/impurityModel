@@ -108,7 +108,13 @@ def _gather_qr_rows(comm, psi_local):
     comm.Gather(np.array([psi_local.size]), recv_counts, root=0)
     if rank == 0:
         offsets = np.array([np.sum(recv_counts[:rr]) for rr in range(comm.size)], dtype=int)
-        psi_dense = np.empty((int(np.sum(recv_counts)) // n, n), dtype=complex, order="C")
+        # `// n` only when there is a column to divide by: a width-0 seed block gives every
+        # rank a (local_size, 0) slice and a zero element count, and `block_green_impl` calls
+        # this *before* its own `shape[1] == 0` early return (gf_solvers.py), so this must stay
+        # total the way the `build_vector` path it replaced was. A (0, 0) result is what the
+        # QR and scatter below both expect on that path.
+        rows = int(np.sum(recv_counts)) // n if n else 0
+        psi_dense = np.empty((rows, n), dtype=complex, order="C")
     else:
         offsets = None
         psi_dense = None

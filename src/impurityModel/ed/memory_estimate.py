@@ -825,7 +825,6 @@ def max_colors_within_budget(
     safety=DEFAULT_MEMORY_SAFETY,
     krylov_dtype=None,
     method="lanczos",
-    resident_bytes=None,
 ):
     """Largest unit-color count whose predicted per-rank GF peak fits the memory budget.
 
@@ -857,17 +856,25 @@ def max_colors_within_budget(
         Upper bound on the color count (``min(comm.size, n_units)`` at the split site).
     safety : float
         Fraction of available RAM to budget (default ``DEFAULT_MEMORY_SAFETY``).
-    resident_bytes : int, optional
-        What this rank already holds entering the split (``current_rss_bytes()``, MAX-reduced
-        over the communicator by the caller). ``None`` (default) reproduces the historical
-        ``safety * available`` budget; see :func:`_resident_adjusted_budget`.
 
     Returns
     -------
     int
         Color count in ``[1, max_candidate]``.
+
+    Notes
+    -----
+    This deliberately does **not** take a ``resident_bytes`` argument the way
+    :func:`max_unit_dets_within_budget` does. Passing the resident set here would tighten the
+    *concurrency* bound as well as the per-unit cap, and the two are not interchangeable: the
+    per-unit cap trades basis size (accuracy) for safety, while this one trades color count
+    (wall clock) for safety, and nothing has measured that the second trade is wanted. It also
+    underpins the composition argument in :func:`max_unit_dets_within_budget`'s docstring,
+    which assumes the two inversions run against the *same* budget. Both share
+    :func:`_resident_adjusted_budget` so the policy has one definition; only this call site
+    passes no resident set.
     """
-    budget = _resident_adjusted_budget(safety, available_bytes_per_rank(comm), resident_bytes)
+    budget = _resident_adjusted_budget(safety, available_bytes_per_rank(comm), None)
     for n_colors in range(max_candidate, 1, -1):
         # The mean, not each color's real count: `_pack_units` (basis_split.py) apportions
         # ranks to colors proportionally to bin mass with a floor of 1, not evenly, so colors
@@ -916,7 +923,7 @@ def max_unit_dets_within_budget(
     The complement of :func:`max_colors_within_budget`: that function fixes the cap and
     finds the largest color count (so the smallest ``ranks``) that still fits the budget;
     this fixes ``ranks`` -- the color a unit actually landed on, from
-    ``comm.size // len(units_per_color)`` -- and finds the largest cap that basis can fill.
+    its own ``split_basis.comm.size`` -- and finds the largest cap that basis can fill.
     A unit basis inheriting the *job-wide* ``truncation_threshold`` verbatim (today's
     behaviour, ``basis_split.py``'s ``truncation_threshold=basis.truncation_threshold``) was
     sized for all of ``comm.size`` ranks, not the ``ranks`` its color actually has, which is
@@ -928,17 +935,26 @@ def max_unit_dets_within_budget(
     they compose rather than double-count: a skew-tightened color count means *more* ranks
     per color, which this function then reports as a *larger* affordable per-unit cap.
 
-    **That composition is exactly why ``resident_bytes`` exists.** Given the *same* budget,
-    this function cannot tighten anything: whenever ``max_colors_within_budget`` returns
-    ``n_colors >= 2`` it returned from inside its loop, i.e. it already verified the cap fits
-    at that color's rank count; the split can only *reduce* the color count, which only
-    *raises* ``ranks``; and :func:`estimate_gf_peak_bytes` is monotone non-increasing in
-    ``ranks``. So ``unit_cap >= cap`` identically and ``min(cap, unit_cap) == cap`` -- a
-    no-op. (Measured over a 400-cell grid of rank count x unit count x cap x budget: 385
-    no-op, and all 15 binding cells had ``n_colors == 1``.) An adversarial review caught
-    that this made the first shipped version of this function inert in exactly the
-    production geometry it was written for. To bind, it must be given information the color
-    inversion did not have -- which is what the resident set is.
+    **That composition is why ``resident_bytes`` exists.** Given the *same* budget and the
+    *mean* rank count, this function could not tighten anything: whenever
+    ``max_colors_within_budget`` returns ``n_colors >= 2`` it returned from inside its loop,
+    i.e. it already verified the cap fits at the rank count it assumed; the split can only
+    *reduce* the color count, which only *raises* the mean ``ranks``; and
+    :func:`estimate_gf_peak_bytes` is monotone non-increasing in ``ranks``. So
+    ``unit_cap >= cap`` identically and ``min(cap, unit_cap) == cap`` -- a no-op. (Measured
+    over a 400-cell grid of rank count x unit count x cap x budget: 385 no-op, and all 15
+    binding cells had ``n_colors == 1``.) An adversarial review caught that this made the
+    first shipped version of this function inert in exactly the production geometry it was
+    written for. To bind, it must be given information the color inversion did not have --
+    which is what the resident set is.
+
+    **That no-op argument assumed the mean, and is now only half true.** Since
+    ``run_units_distributed`` sizes each color on its own ``split_basis.comm.size``, a color
+    apportioned *fewer* ranks than ``comm.size // n_colors`` (``_pack_units``'s floor-of-1
+    step can do this whenever the mean is >= 2) evaluates this function at a *smaller*
+    ``ranks`` than the color inversion assumed, so ``unit_cap < cap`` can bind on the real
+    rank count alone, with no resident set involved. Colors at or above the mean still fall
+    under the original argument. Both mechanisms tighten; neither loosens.
 
     Exponential-then-bisection, mirroring :func:`_suggest_for_budget`.
 
@@ -951,8 +967,9 @@ def max_unit_dets_within_budget(
     reort : str or None
         GF reorthogonalization mode.
     ranks : int
-        Ranks in this unit's color (``comm.size // n_colors`` at the split site) --
-        **not** ``comm.size``.
+        Ranks in this unit's color -- the color's own ``split_basis.comm.size`` at the split
+        site, **not** ``comm.size`` and **not** the mean ``comm.size // n_colors``
+        (``_pack_units`` apportions ranks proportionally to bin mass, so colors differ).
     comm : MPI communicator
         The full communicator (``available_bytes_per_rank`` reads the per-node memory
         budget from it; the search itself is rank-local once the budget is known).
