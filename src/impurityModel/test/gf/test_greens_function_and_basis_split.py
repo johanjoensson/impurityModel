@@ -309,6 +309,7 @@ def test_run_units_distributed_sizes_each_color_on_its_own_rank_count_mpi(monkey
     identical, over-tightened 1-rank cap; after the fix the 2-rank color keeps the untightened
     job-wide cap and only the 1-rank color is tightened.
     """
+    from impurityModel.ed import gf_units as gu
     from impurityModel.ed import memory_estimate as me
     from impurityModel.ed.gf_units import run_units_distributed
 
@@ -336,6 +337,14 @@ def test_run_units_distributed_sizes_each_color_on_its_own_rank_count_mpi(monkey
     # each afford -- so the tightening binds differently for the two colors instead of
     # saturating at the same value either way.
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 800 * 2**20)
+    # Pinned, not the real process RSS: run_units_distributed folds `current_rss_bytes()` into
+    # the budget as `resident_bytes` (max_unit_dets_within_budget's resident-adjustment), and
+    # the real value drifts with how much of the test suite has already run in this process --
+    # enough to move the 2-rank color's cap either side of `inherited_cap` and flake this test
+    # (observed: 194,431 instead of 200,000 when run deep in the full suite). gf_units.py binds
+    # `current_rss_bytes` via `from ... import`, so it must be patched on gf_units itself, not
+    # on the memory_estimate module object.
+    monkeypatch.setattr(gu, "current_rss_bytes", lambda: 237 * 2**20)
 
     def kernel(split_basis, u, seeds):
         ranks = split_basis.comm.size if split_basis.comm is not None else 1
