@@ -2141,6 +2141,49 @@ step 1, and before them the block width in Part 1b and `ground_state_manifold`).
 script is `from_arrhenius/psi_refs_cost.py` if a future workload with a much larger manifold makes
 it worth revisiting.
 
+### Step 6: the Tier 2/3 survey sites, measured at last -- and none of them is the peak
+
+The two full-repo surveys flagged ~40 candidate sites and ranked none of them. The four the
+surveys argued hardest for, measured in one production solve at three rank counts
+(`from_arrhenius/tier23_ledger.py`, absolute peaks and per-site VmHWM resets as steps 0-3
+established):
+
+| site | growth @1 | growth @2 | growth @3 | max ABS peak @3 |
+|---|---|---|---|---|
+| `build_sparse_matrix` | 22.9 MiB | **106.7 MiB** | 81.9 MiB | 469.0 MiB |
+| `add_states` (rebuilds `_index_dict` whole) | 0.5 MiB | 6.6 MiB | 11.0 MiB | 436.6 MiB |
+| `redistribute_psis` | *(no-op)* | 1.5 MiB | 7.5 MiB | 448.5 MiB |
+| `generate_initial_basis` | 0.0 MiB | 0.0 MiB | 0.0 MiB | 309.5 MiB |
+
+**None of them sets the peak.** The highest absolute figure here is 469 MiB against the selection
+round's ~1100 MiB at the same cap. Every growth is under 107 MiB against a process peak of
+~1300 MiB. On this evidence nothing in Tier 2/3 warrants implementation, and the campaign's rule
+applies: measured small, closed out in the write-up.
+
+**Two readings of the table that would be wrong.**
+
+*`build_sparse_matrix` is not blowing up with rank count.* 22.9 -> 106.7 -> 81.9 is not a trend;
+the 1-rank figure is the outlier, because at one rank the basis is not distributed and the
+exchange path does not run at all. Between 2 and 3 ranks it is flat-to-falling, so the survey's
+"globally-shaped CSC" concern (`basis_transcription.py:215`) is not visible in the measurement.
+Note `indptr` there is int32 for `n < 2^31`, i.e. 4 MB at `N = 1M`, not 8.
+
+*`redistribute_psis` is the one to re-measure at scale.* 0.0 -> 1.5 -> 7.5 MiB is genuinely
+rank-dependent, and it is the only site here that is. But 1.5 -> 7.5 MiB across a 1.5x change in
+rank count is a jump on numbers small enough that extrapolating it to 128 ranks would be exactly
+the kind of model this campaign keeps refuting. It is a thing to look for in the re-run's
+per-cycle lines, not a prediction.
+
+**A trap this ledger hit, again.** Its first version reported `generate_initial_basis` with **zero
+rows** and said nothing, because `manybody_basis.py:10` does `from basis_generation import
+generate_initial_basis` -- binding the function into the importer's namespace at load, so patching
+the *defining* module never reaches the call at `:185`. The same class of miss as the module-level
+`_score_candidates` in step 0, and the assertion that was supposed to catch it only checked that
+the attribute existed, not that it was ever entered. It now asserts every expected site produced at
+least one row. Likewise, `redistribute_psis` returns its inputs unchanged when the basis is not
+distributed (`manybody_basis.py:367`), so its 1-rank row is a no-op rather than a measurement --
+the ledger now says so in its own output instead of leaving a plausible 0.0 in the table.
+
 ### Corrections to earlier claims in this document
 
 * **`reort="partial"` saves projection FLOPs, not store bytes.** Retention is mode-independent
