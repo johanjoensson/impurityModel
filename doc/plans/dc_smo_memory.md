@@ -1451,3 +1451,136 @@ duplicate per chunk), and **105 s** once `row_slice` replaced the copy. Chunking
 costs the serial suite nothing measurable. The `-n2` / `-n3` legs were never slower (350 s / 546 s,
 in line with their pre-flip 370 s / 551 s) — consistent with the duplicate being proportional to
 block size, which those legs spread over more ranks.
+
+## Round 8: a second SrMnO3 GF OOM, and the matvec fanout was the missing term
+
+A second cubic-SrMnO3 self-energy run (slurm 2399956, 14 Sep 14:59→19:30, 128 ranks / 2 nodes) was
+OOM-killed in the same place as the round-7 crash: inside the interacting Green's function, ~2 min
+after the ground state finished (`n347: tasks 16,25,32-33: Out Of Memory`).
+
+**First, the thing that mattered most: this run predated round 7's fix.** Its split line is the
+pre-fix message (`25 simultaneous unit bases ...: predicted per-rank GF peak 4.1 GiB if a unit
+fills its cap`), and `git log -S "if a unit fills its cap"` shows that string was *deleted* by
+`c4c3cf7`. The cluster install was stale. So this was a second, independent sample of the
+*original* bug, not evidence the round-7 fix failed — valuable precisely because it closes the
+question round 7 left open (why ranks died when the model said they should not).
+
+### The geometry, pinned
+
+| quantity | value | source |
+|---|---|---|
+| job-wide cap | 40,340,864 | log |
+| GS final basis | 329,632 dets (cap never bound) | log, cycle 22 |
+| resident at GF entry | ~2.2 GiB | log, `VmHWM` last GS cycle |
+| available | 9.5 GiB/rank | log |
+| units / colors | 40 / 25 | log |
+| ranks per color | 6,6,6,6,6, 5×8, 4,4, 5×10 | `np.diff(unit_roots + [128])` |
+| block width | 1 | `impurityModel_data.h5`'s `vs_star`: two inequivalent 1×1 blocks × 2 sides × 10 eigenstates = 40 units |
+
+### What killed it
+
+At the cap, the *pre-round-8* `estimate_gf_peak_bytes` predicted every one of the crash's smaller
+colors would survive (4/5/6 ranks: 5.54/4.45/3.73 GiB model peak, 1.76-3.57 GiB of headroom left
+against 9.5 GiB available) — and four ranks died anyway. The gap was the term the function's own
+docstring conceded it did not count: `block_lanczos_step_cy` calls `h_op.apply_block(q_curr)`, and
+`ManyBodyOperator::apply` returns a **fully materialized** `ManyBodyBlockState` by value
+(`ManyBodyOperator.h:114`, no streaming) — not hash-partitioned, everything the rank's rows reach
+under H, before `redistribute_block` routes and the cap prunes. A dedup'd fanout of only 2.4-7.3
+rows/det sufficed to consume that headroom at 4-6 ranks.
+
+**A defect found along the way, but NOT this crash's cause:** `run_units_distributed` and
+`max_colors_within_budget` both sized a color's per-rank cap on `comm.size // n_colors` — the
+*mean* — while `_pack_units` apportions ranks to colors proportionally to bin mass with a floor of
+1, so colors genuinely differ (two of this crash's own colors sat on 4 ranks while the mean said
+5). The dead ranks (16, 25, 32, 33) sit in colors with 6, 6 and 5 ranks — the *larger*, not
+smaller, colors — so this defect predicts the opposite of what killed this run. Real, and fixed
+(below), but a second finding, not the explanation. Do not let a found defect become a claimed
+explanation twice in one project.
+
+### Measuring the fanout: pairs vs. rows, and why `_SELECTION_FANOUT_DEFAULT` was the wrong number
+
+The first draft of this round reached for `_SELECTION_FANOUT_DEFAULT = 40` (CIPSI's own measured
+raw connectivity) to size the new term. **That was caught before it shipped.** `40` counts
+source-determinant/candidate *pairs* from a list of per-state output states
+(`build_local_operator_list`); the GF matvec's `wp = h_op.apply_block(q_curr)` returns one *row*
+per determinant it reaches, keyed — multiple source rows in `q_curr` landing on the same target
+determinant collapse into a single row there. Pricing the new term at the pair count would have
+been off by roughly the dedup factor: at width 1, `local_rows * 40 * row_bytes` is ~8.7x the basis
+term alone, which would have cut `max_unit_dets_within_budget`'s returned cap by roughly the same
+factor — the wrong direction for a workload already described as truncation-limited
+(`smo-dc-is-truncation-limited`).
+
+So the row fanout was measured directly instead, cheaply, in plain Python — no cluster, no
+Cython rebuild: `h_op.apply_block(q, 0)` is callable on any width-1 block built directly from a
+basis's own determinants. Built the real solver Hamiltonian from the **crash archive itself**
+(`/home/johan/Dokument/arrhenius/SMO/cubic/impmod/impurityModel_data.h5`, `tau=0.025` — **not**
+`restriction_diagnostics.WORKLOADS["smo"]`, a different SrMnO3 archive at `tau=0.0025`, see
+`arrhenius-smo-crash-archive-is-not-the-workloads-key`), ran the real ground-state CIPSI solve
+(`prepare_solver_basis` + `calc_gs`, no MPI) at three basis sizes, and on each converged basis
+measured `len(h_op.apply_block(q, 0)) / len(q)` over four disjoint width-1 chunks of the real
+determinant set:
+
+| cap requested | GS basis built | build time | fanout per chunk | mean |
+|---|---|---|---|---|
+| 5,000 | 5,000 | 83.2 s | 20.68 / 22.12 / 20.74 / 15.32 | **19.72** |
+| 20,000 | 20,000 | 377.8 s | 18.60 / 19.88 / 17.67 / 12.45 | **17.15** |
+| 100,000 | 100,000 | 1206.1 s | 14.77 / 16.43 / 14.35 / 9.34 | **13.72** |
+
+A real, mild decrease with basis size — not a collapse, and not extrapolated past 100,000 (400x
+smaller than the crash's own 40.3M cap; the *composition* of a CIPSI-selected basis, not just its
+size, likely drives part of the decrease, since the retained determinants at a small cap are the
+most strongly-coupled ones). All three points sit far above the 2.4-7.3 rows/det this crash's own
+geometry needed to explain its OOM — **the diagnosis holds even using the smaller, correctly
+row-deduplicated quantity.** `_GF_MATVEC_ROW_FANOUT_DEFAULT = 20` (`memory_estimate.py`) sits at
+the conservative (higher, small-basis) end of what was measured, the same rounding convention
+`_SELECTION_FANOUT_DEFAULT` already uses and for the same reason.
+
+Replaying the crash's exact geometry through the corrected model (`ranks` ∈ {4, 5, 6}, cap
+40,340,864, available 9.5 GiB, resident 2.2 GiB) now predicts 20.1 / 16.2 / 13.5 GiB against a
+3.65 GiB resident-adjusted budget — refused at all three, as it must be
+(`test_replay_round8_smo_crash_geometry_now_predicts_the_kill`).
+
+### `GF_APPLY_ROW_CHUNKS`: no credit taken
+
+The new fanout term does not divide by the configured chunk count. The only existing measurement
+of `GF_APPLY_ROW_CHUNKS` (the 2-rank sweep recorded above, "GF_APPLY_ROW_CHUNKS default flip") is
+**negative** — peak unmoved across 1/2/4/8 chunks, within ~5% run-to-run noise — so crediting it
+here would repeat exactly this project's own recurring mistake (a change credited with a fix it
+was not measured to produce). Shipping the term undivided is the conservative choice and costs
+nothing but a wider margin; it is a one-line change if a production-scale (5-10 rank) measurement
+ever shows chunking actually bounds this transient.
+
+### What shipped
+
+1. **`_GF_MATVEC_ROW_FANOUT_DEFAULT`** (`memory_estimate.py`): the measured row fanout, added to
+   `estimate_gf_peak_bytes` as `local_rows * 20 * row_bytes`, inherited identically by both
+   `max_colors_within_budget` and `max_unit_dets_within_budget` (same composition property the
+   skew factor already has).
+2. **Per-color rank sizing** (`gf_units.py`): `run_units_distributed` sizes each color's cap on
+   `split_basis.comm.size` — the color's real rank count — instead of the job-wide mean.
+   `max_colors_within_budget`'s own mean-based `ranks_per_color` is documented, not fixed: it runs
+   *before* `_pack_units` (deciding one of that function's own inputs) and sits below
+   `basis_split` in the layering, so it cannot see the true spread; the real per-color bound lives
+   in `gf_units.py`, which never loosens what the coarser color count allows.
+3. **Split-time diagnostics** (`gf_units.py`): the split print now records block width, resident
+   set, job-wide available bytes, and the rank-count spread across colors (derived from
+   `unit_roots`, no extra collective) before any unit runs — reconstructing this crash needed
+   inverting `max_colors_within_budget`'s return to recover a number the process had in hand the
+   whole time.
+4. **`build_vector`'s full-size gather on the seed-QR path** (`gf_primitives.py`):
+   `_distributed_seed_qr` allocated the full `(n, basis.size)` array on every rank via
+   `build_vector(..., root=0)` before reducing into rank 0's copy. Switched to
+   `build_distributed_vector` (local-shaped) plus a new `_gather_qr_rows` `Gatherv` — the mirror
+   of the existing `_scatter_qr_columns`. Only rank 0 now holds a global-shaped array, which is
+   unavoidable since the QR itself runs there. Not this crash's cause (~16 MB at width 1 on this
+   workload) but a standing model gap (`build-vector-is-a-full-dense-state-gather`) that was never
+   fixed. `build_vector` itself is untouched — still used, and tested, elsewhere.
+5. **One resident-adjusted budget policy** (`memory_estimate.py`): `max_colors_within_budget` and
+   `max_unit_dets_within_budget` used two different budget expressions (`safety * available` vs.
+   `safety * (available + resident) - resident`). Factored into `_resident_adjusted_budget`;
+   `max_colors_within_budget` gained the same optional `resident_bytes` parameter (default `None`,
+   so no call site's behavior changed).
+
+**Before the next cluster launch: verify the installed package actually contains the current
+work.** A stale install is what cost this run — the same install-verification step round 7 closed
+with should be standard practice before every production launch.
