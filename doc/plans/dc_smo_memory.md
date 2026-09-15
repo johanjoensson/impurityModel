@@ -1548,36 +1548,66 @@ determinant set:
 | 20,000 | 20,000 | 377.8 s | 18.60 / 19.88 / 17.67 / 12.45 | **17.15** |
 | 100,000 | 100,000 | 1206.1 s | 14.77 / 16.43 / 14.35 / 9.34 | **13.72** |
 
-A real, mild decrease with basis size — not a collapse, and not extrapolated past 100,000 (400x
-smaller than the crash's own 40.3M cap; the *composition* of a CIPSI-selected basis, not just its
-size, likely drives part of the decrease, since the retained determinants at a small cap are the
-most strongly-coupled ones). All three points sit far above the 2.4-7.3 rows/det this crash's own
-geometry needed to explain its OOM — **the diagnosis holds even using the smaller, correctly
-row-deduplicated quantity.** `_GF_MATVEC_ROW_FANOUT_DEFAULT = 20` (`memory_estimate.py`) sits at
-the conservative (higher, small-basis) end of what was measured, the same rounding convention
-`_SELECTION_FANOUT_DEFAULT` already uses and for the same reason.
+**Those numbers are the fanout of a QUARTER-block, and shipping them as a whole-step constant was
+the second error of this round.** The probe chunked the basis into four before applying, so each
+measurement is `len(apply(N/4 dets)) / (N/4)`. Fanout falls as the block grows — a bigger block's
+reachable set overlaps itself more — so a quarter-block figure over-counts a whole step by exactly
+the dedup the chunking destroyed. `_SELECTION_FANOUT_DEFAULT` was rejected for conflating pairs
+with rows; this conflated *block sizes*, which is the same class of mistake one level down.
+Measure the block you are modelling.
 
-Replaying the crash's exact geometry through the corrected model (`ranks` ∈ {4, 5, 6}, cap
-40,340,864, available 9.5 GiB, resident 2.2 GiB) now predicts 20.1 / 16.2 / 13.5 GiB against a
-3.65 GiB resident-adjusted budget — refused at all three, as it must be
-(`test_replay_round8_smo_crash_geometry_now_predicts_the_kill`).
+### The corrected measurement: whole-step fanout, and what chunking actually saves
 
-### `GF_APPLY_ROW_CHUNKS`: no credit taken
+Re-measured on the same three bases, applying H to a width-1 block spanning the **whole** basis,
+and separately to contiguous `row_slice`-shaped chunks of it (the same shape
+`_lanczos_step.pxi` builds, since `ManyBodyState` keys are sorted and `row_slice` takes a
+contiguous span of them). The peak a chunked step pays is the **largest single chunk's** raw
+output, because each `_raw` is freed before the next chunk runs (`del _raw`), so the saving is
+`whole / max_over_chunks`:
 
-The new fanout term does not divide by the configured chunk count. The only existing measurement
-of `GF_APPLY_ROW_CHUNKS` (the 2-rank sweep recorded above, "GF_APPLY_ROW_CHUNKS default flip") is
-**negative** — peak unmoved across 1/2/4/8 chunks, within ~5% run-to-run noise — so crediting it
-here would repeat exactly this project's own recurring mistake (a change credited with a fix it
-was not measured to produce). Shipping the term undivided is the conservative choice and costs
-nothing but a wider margin; it is a one-line change if a production-scale (5-10 rank) measurement
-ever shows chunking actually bounds this transient.
+| basis | whole-step rows | fanout | `whole/max` @2 | @4 | @8 |
+|---|---|---|---|---|---|
+| 5,000 | 66,525 | **13.30** | 1.48 | 2.41 | 3.99 |
+| 20,000 | 213,650 | **10.68** | 1.41 | 2.15 | 3.83 |
+| 100,000 | 805,871 | **8.06** | 1.35 | 1.96 | 3.49 |
+
+Two results, both of which contradict a position this round had already shipped:
+
+1. **Whole-step fanout is 8.06 at the largest basis, not 20.** Monotone decreasing, log-log slope
+   −0.167. Extrapolated to a 10⁷-determinant block it would be ~3.7, but this module does not
+   extrapolate past its measured range (`_routing_skew_factor` clamps for exactly this reason), so
+   `_GF_MATVEC_ROW_FANOUT_DEFAULT = 8.1` clamps at the largest anchor — which over-predicts
+   relative to the trend, the safe direction.
+2. **Chunking does bound this transient — by ~1.9x at the default of 4, not 1x and not 4x.**
+   Both previously-held positions were wrong and neither was measured. The mechanism is plain in
+   the code (`row_slice` → `apply_block` → `del _raw` per chunk), so "no credit" was never
+   defensible on mechanism; and chunks reach heavily overlapping sets, so the full chunk count was
+   never available either. `_GF_CHUNK_DIVISOR_ANCHORS` carries the measured values rounded down
+   (the divisors themselves decline with basis size — 2.41 → 2.15 → 1.96 at 4 chunks — so
+   production is likely lower still, and under-crediting over-predicts, which is safe).
+
+The earlier justification for taking no credit cited the 2-rank sweep in
+"`GF_APPLY_ROW_CHUNKS` default flip" above. That sweep measured *total process VmHWM* at
+`cap=5,000` on 2 ranks, where this term is a rounding error against the ~213 MiB Python floor — it
+could not have resolved a change in it either way. Absence of a signal in an instrument that
+cannot see the quantity is not evidence of absence.
+
+Net effect of the two corrections, on the crash's own geometry: the effective coefficient falls
+20 → **4.26** per determinant (8.1 ÷ 1.9), per-determinant GF cost 1988 → **855 B** (548 B with no
+term at all), and the affordable color count recovers **5 → 16** (25 with no term). The first
+shipped version of this round would have cost roughly two thirds of the GF phase's concurrency to
+a term it had over-priced ~4.7x.
 
 ### What shipped
 
-1. **`_GF_MATVEC_ROW_FANOUT_DEFAULT`** (`memory_estimate.py`): the measured row fanout, added to
-   `estimate_gf_peak_bytes` as `local_rows * 20 * row_bytes`, inherited identically by both
-   `max_colors_within_budget` and `max_unit_dets_within_budget` (same composition property the
-   skew factor already has).
+1. **`_GF_MATVEC_ROW_FANOUT_DEFAULT` = 8.1, divided by `_GF_CHUNK_DIVISOR_ANCHORS`**
+   (`memory_estimate.py`): the measured whole-step row fanout, added to `estimate_gf_peak_bytes`
+   as `ceil(local_rows * 8.1 / divisor(GF_APPLY_ROW_CHUNKS)) * row_bytes`, inherited identically
+   by both `max_colors_within_budget` and `max_unit_dets_within_budget` (same composition property
+   the skew factor already has). The model reads the chunking knob, so `GF_APPLY_ROW_CHUNKS=1`
+   correctly prices the larger one-shot transient. Pinned by
+   `test_estimate_gf_peak_bytes_scales_local_rows_by_the_skew` (exact byte formula) and
+   `test_gf_chunk_divisor_credits_chunking_but_never_the_full_chunk_count`.
 2. **Per-color rank sizing** (`gf_units.py`): `run_units_distributed` sizes each color's cap on
    `split_basis.comm.size` — the color's real rank count — instead of the job-wide mean.
    `max_colors_within_budget`'s own mean-based `ranks_per_color` is documented, not fixed: it runs

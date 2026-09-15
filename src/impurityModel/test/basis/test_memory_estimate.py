@@ -44,10 +44,10 @@ def test_gf_reort_retention_costs_more():
     assert full > none
 
 
-def test_gf_reort_none_per_det_matches_measured_slope():
+def test_gf_reort_none_per_det_matches_measured_slope(monkeypatch):
     """reort=none per-det stays near the VmHWM-calibrated ~550 B/det (width 1), once the
-    round-8 matvec-fanout term (:data:`me._GF_MATVEC_ROW_FANOUT_DEFAULT`) is subtracted back
-    out.
+    round-8 matvec-fanout term (:data:`me._GF_MATVEC_ROW_FANOUT_DEFAULT`, divided by the
+    chunking credit) is subtracted back out.
 
     Guards the ``s_live`` constant against a wild miscalibration: a prior recalibration put it
     at ~1.4 kB/det (3x the measured slope). See doc/plans/truncation_reliability.md. The fanout
@@ -55,8 +55,9 @@ def test_gf_reort_none_per_det_matches_measured_slope():
     subtracted here rather than folded into a wider bound, so a future miscalibration of
     *this* constant still trips this test.
     """
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
     row_bytes = 16 * 1 + me._key_heap_bytes(124) + me._SD_STRUCT_BYTES
-    fanout_per_det = me._GF_MATVEC_ROW_FANOUT_DEFAULT * row_bytes
+    fanout_per_det = me._GF_MATVEC_ROW_FANOUT_DEFAULT / me._gf_chunk_divisor(4) * row_bytes
     total = me.estimate_gf_peak_bytes(100_000, 124, block_width=1, reort="none")
     per_det = total / 100_000 - fanout_per_det
     assert 450 <= per_det <= 700, per_det
@@ -463,10 +464,16 @@ def test_routing_skew_factor_is_monotone_increasing_in_ranks():
     assert all(b >= a for a, b in pairwise(skews)), skews
 
 
-def test_estimate_gf_peak_bytes_scales_local_rows_by_the_skew():
+def test_estimate_gf_peak_bytes_scales_local_rows_by_the_skew(monkeypatch):
     """Peak bytes at a given `ranks` must equal the unskewed estimate scaled by the same
     factor `max_colors_within_budget`/`max_unit_dets_within_budget` see -- otherwise the two
-    inversions and the direct estimate would disagree on what they are budgeting."""
+    inversions and the direct estimate would disagree on what they are budgeting.
+
+    This is also the test that pins the round-8 matvec-fanout term itself: it asserts the exact
+    byte formula, so removing the term, or changing its constant or its chunking credit without
+    updating this, fails here. (`test_round8_smo_crash_geometry_is_refused` does NOT pin it --
+    that geometry is refused with or without the term.)"""
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
     n, nso, width = 100_000, 100, 4
     for ranks in (2, 5, 16, 64):
         skew = me._routing_skew_factor(ranks)
@@ -475,9 +482,36 @@ def test_estimate_gf_peak_bytes_scales_local_rows_by_the_skew():
         row_bytes = 16 * width + me._key_heap_bytes(nso) + me._SD_STRUCT_BYTES
         expected = skewed_local_rows * (me.bytes_per_determinant(nso) + me._PY_BASIS_OVERHEAD_BYTES)
         expected += 3 * skewed_local_rows * row_bytes
-        expected += me._GF_MATVEC_ROW_FANOUT_DEFAULT * skewed_local_rows * row_bytes
+        expected += (
+            math.ceil(skewed_local_rows * me._GF_MATVEC_ROW_FANOUT_DEFAULT / me._gf_chunk_divisor(4)) * row_bytes
+        )
         got = me.estimate_gf_peak_bytes(n, nso, width, "none", ranks=ranks)
         assert got == expected, (ranks, skew, unskewed_local_rows, skewed_local_rows)
+
+
+def test_gf_chunk_divisor_credits_chunking_but_never_the_full_chunk_count(monkeypatch):
+    """The chunked apply bounds the fanout transient, but by less than the chunk count.
+
+    Both of this round's earlier positions were wrong and unmeasured: that chunking saves
+    nothing here (shipped first), and that it saves the full chunk count. Measured on the real
+    SrMnO3 archive it is ~1.9x at the default of 4 chunks. Guards the direction and the bound.
+    """
+    assert me._gf_chunk_divisor(1) == 1.0
+    assert me._gf_chunk_divisor(None) == 1.0
+    for n_chunks in (2, 4, 8):
+        d = me._gf_chunk_divisor(n_chunks)
+        assert 1.0 < d < n_chunks, (n_chunks, d)
+    # Monotone in the chunk count, and clamped (not extrapolated) beyond the measured range.
+    ds = [me._gf_chunk_divisor(c) for c in (1, 2, 4, 8)]
+    assert all(a < b for a, b in pairwise(ds)), ds
+    assert me._gf_chunk_divisor(64) == me._gf_chunk_divisor(8)
+
+    # The knob is read, so the one-shot escape hatch is priced without the credit.
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
+    one_shot = me.estimate_gf_peak_bytes(100_000, 58, 1, "none", ranks=4)
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
+    chunked = me.estimate_gf_peak_bytes(100_000, 58, 1, "none", ranks=4)
+    assert one_shot > chunked, (one_shot, chunked)
 
 
 # ---------------------------------------------------------------------------------------

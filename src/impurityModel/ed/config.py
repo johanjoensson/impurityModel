@@ -292,10 +292,20 @@ GF_APPLY_ROW_CHUNKS = Knob(
     (``CIPSISolver._apply_block_and_redistribute``) -- the same mechanism, moved to the GF
     unit's own matvec (see ``doc/plans/dc_smo_memory.md``, "GF unit memory").
 
-    Only bounds one term of the GF unit's peak: the pack/send/receive transient that
-    ``memory_estimate.estimate_gf_peak_bytes`` documents as deliberately unmodelled, not the
-    resident excited-basis size or the recurrence's own live blocks (both scale with the unit's
-    determinant cap and rank count, which ``GF_APPLY_ROW_CHUNKS`` does not touch).
+    Only bounds one term of the GF unit's peak -- the raw apply output and its pack/send/receive
+    transient -- not the resident excited-basis size or the recurrence's own live blocks (both
+    scale with the unit's determinant cap and rank count, which ``GF_APPLY_ROW_CHUNKS`` does not
+    touch).
+
+    **That term is modelled, and this knob feeds the model.**
+    ``memory_estimate.estimate_gf_peak_bytes`` prices the raw apply output and divides it by the
+    measured saving chunking delivers at the configured count
+    (``memory_estimate._GF_CHUNK_DIVISOR_ANCHORS``): ~1.9x at the default of 4, *not* the full
+    chunk count, because chunks reach overlapping sets. So changing this knob changes every cap
+    derived from that estimate -- setting it to ``1`` correctly prices the one-shot path's larger
+    transient and yields a smaller affordable cap. Measured on the real SrMnO3 archive
+    (``doc/plans/dc_smo_memory.md``, round 8); an earlier draft of that round assumed chunking
+    bought nothing here and over-priced the term ~4x as a result.
 
     **On by default since 2026-09-14**, at ``GS_APPLY_ROW_CHUNKS``'s own measured plateau (4)
     rather than a value measured separately for the GF matvec -- turned on ahead of that
