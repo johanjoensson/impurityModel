@@ -16,7 +16,13 @@ from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
-from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes, peak_rss_bytes, reset_peak_rss
+from impurityModel.ed.memory_estimate import (
+    current_rss_bytes,
+    format_bytes,
+    peak_rss_bytes,
+    reset_peak_rss,
+    rss_breakdown,
+)
 from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
@@ -1466,10 +1472,20 @@ class CIPSISolver:
             # reductions against a selection round that costs seconds to minutes.
             local_count = len(self.basis.local_basis)
             peak_rss = peak_rss_bytes()
+            # `VmHWM` alone cannot be attributed: it is anon + file + shmem, and under an MPI that
+            # uses shared memory for intra-node transport the shmem part is a node-wide pool every
+            # rank counts, which does not move `MemAvailable` and which no allocator tuning
+            # returns. Reading the ratchet as the solver's own allocations is what round 5 and
+            # round 9 both did (`doc/plans/dc_smo_memory.md`); `anon` is the part a code change
+            # can move, so it is reported beside the total rather than left to be inferred.
+            rss_parts = rss_breakdown()
+            anon_rss, shmem_rss = rss_parts["anon"], rss_parts["shmem"]
             if self.basis.is_distributed:
                 local_max = self.basis.comm.allreduce(local_count, op=MPI.MAX)
                 local_min = self.basis.comm.allreduce(local_count, op=MPI.MIN)
                 peak_rss = self.basis.comm.allreduce(peak_rss, op=MPI.MAX)
+                anon_rss = self.basis.comm.allreduce(anon_rss, op=MPI.MAX)
+                shmem_rss = self.basis.comm.allreduce(shmem_rss, op=MPI.MAX)
             else:
                 local_max = local_min = local_count
             _trace_note(
@@ -1478,6 +1494,8 @@ class CIPSISolver:
                 local_max=int(local_max),
                 local_min=int(local_min),
                 vm_hwm_bytes=int(peak_rss),
+                anon_rss_bytes=int(anon_rss),
+                shmem_rss_bytes=int(shmem_rss),
             )
             if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
                 # Surfaced every cycle, not only once a cap has bound (see
@@ -1488,7 +1506,8 @@ class CIPSISolver:
                     f"Hpsi_rows={sel.get('hpsi_rows', 0):,} candidates={sel.get('n_candidates', 0):,} "
                     f"admitted={sel.get('n_admitted', 0):,} new={n_new:,} "
                     f"subthreshold_de2_mass={sel.get('subthreshold_de2_mass', 0.0):.3e} "
-                    f"local[min,max]=[{local_min:,},{local_max:,}] VmHWM={format_bytes(peak_rss)}",
+                    f"local[min,max]=[{local_min:,},{local_max:,}] VmHWM={format_bytes(peak_rss)} "
+                    f"(anon={format_bytes(anon_rss)} shm={format_bytes(shmem_rss)})",
                     flush=True,
                 )
             cycle += 1

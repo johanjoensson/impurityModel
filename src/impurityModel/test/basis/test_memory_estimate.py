@@ -712,3 +712,32 @@ def test_the_ranks_per_node_count_is_attached_to_the_communicator_not_to_its_han
         assert me.available_bytes_per_rank(b) == me.available_bytes_per_rank(MPI.COMM_WORLD)
     finally:
         b.Free()
+
+
+def test_the_rss_breakdown_sums_to_the_resident_set():
+    """`VmRSS` -- what both CIPSI memory guards measure -- is anon + file + shmem."""
+    parts = me.rss_breakdown()
+    assert set(parts) == {"anon", "file", "shmem"}
+    if any(parts.values()):  # 0 everywhere only if /proc/self/status is unreadable
+        # Sampled a moment apart, so allow the process to have moved a little in between.
+        assert abs(sum(parts.values()) - me.current_rss_bytes()) < 8 * 2**20
+
+
+def test_an_anonymous_allocation_lands_in_anon_and_not_in_shmem():
+    """The distinction the whole ledger rests on.
+
+    Round 5 read a ratcheting `VmRSS` as the solver's own allocations and round 9 called the
+    crashed run's 2.5 GiB "retained heap"; both were largely `RssShmem`, which is a node-wide
+    pool every rank counts, does not move `MemAvailable`, and no allocator tuning returns
+    (`malloc_trim` measured 0% at 256 ranks). A site's cost is its `anon` delta.
+    """
+    before = me.rss_breakdown()
+    block = np.ones((3000, 3000))  # ~68.7 MiB, touched by `ones` so it is resident
+    after = me.rss_breakdown()
+    try:
+        assert after["anon"] - before["anon"] > 32 * 2**20, (before, after)
+        # File-backed and shared pages have no reason to follow a heap allocation.
+        assert after["shmem"] - before["shmem"] < 8 * 2**20, (before, after)
+        assert after["file"] - before["file"] < 8 * 2**20, (before, after)
+    finally:
+        del block

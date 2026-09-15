@@ -1336,6 +1336,38 @@ def current_rss_bytes():
     return _proc_status_bytes("VmRSS:")
 
 
+def rss_breakdown():
+    """This process's resident set split into ``anon``, ``file`` and ``shmem`` bytes.
+
+    ``VmRSS`` -- what :func:`current_rss_bytes` returns, and what both CIPSI memory guards measure
+    -- is the **sum** of these three, and they behave completely differently under MPI:
+
+    ``anon``
+        ``RssAnon``: this process's own heap and stacks. What a determinant basis, a Krylov store
+        or a selection round's temporaries actually cost, and the only part a code change moves.
+    ``shmem``
+        ``RssShmem``: pages of shared-memory segments this rank has *touched*. Under an MPI that
+        uses shared memory for intra-node transport these are one node-wide pool, so every rank
+        counts the same physical pages and a per-rank sum over-reports the node by the
+        ranks-per-node factor -- measured at 19.0 GiB summed against 0.39 GiB physically present
+        (``doc/plans/dc_smo_memory.md``, round 6). They also do not move ``MemAvailable``.
+    ``file``
+        ``RssFile``: mapped executables and libraries. Effectively a constant floor.
+
+    Conflating them is how round 5 concluded the ratchet was the solver's own allocations and
+    round 9 initially called the crashed run's 2.5 GiB "retained heap": it was largely ``shmem``,
+    which no allocator tuning can return (``malloc_trim`` measured 0% at 256 ranks). Any
+    attribution of a memory cost to a *site* has to look at ``anon``.
+
+    Returns a dict; values are 0 where ``/proc/self/status`` cannot be read.
+    """
+    return {
+        "anon": _proc_status_bytes("RssAnon:"),
+        "file": _proc_status_bytes("RssFile:"),
+        "shmem": _proc_status_bytes("RssShmem:"),
+    }
+
+
 def reset_peak_rss():
     """Reset this process's ``VmHWM`` to its current RSS, so the next :func:`peak_rss_bytes` reads
     the peak of what runs *after* this call rather than of the whole process lifetime.
