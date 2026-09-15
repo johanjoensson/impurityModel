@@ -1498,6 +1498,19 @@ class CIPSISolver:
                 # construction), so every rank evaluates this condition identically without a
                 # separate collective for the decision itself.
                 budget_tripped = True
+                # Report this as a memory-bound stop, like the look-ahead's own cap. Only
+                # `memory_bound_observed` (a pure reporting flag) is set, never `memory_bound`,
+                # which also gates whether the look-ahead may still adopt a *tighter* cap of its
+                # own later in the expansion -- that decision is unaffected by this backstop
+                # having fired.
+                #
+                # Without this the backstop is invisible downstream: `truncation_report` still
+                # says `cap_hit`, but with `memory_bound` False it is indistinguishable from a
+                # `truncation_threshold` the caller chose, and `dc_criteria._reject_if_memory_bound`
+                # -- which exists to refuse exactly this answer -- lets it through. Caught by
+                # driving a real search at a near-zero budget; the unit tests could not see it
+                # because they exercise the look-ahead half only.
+                memory_bound_observed = True
                 # `min`, never a bare assignment: an existing cap that already binds tighter than
                 # the current basis is an instruction from the caller and must not be loosened.
                 previous = threshold

@@ -1754,6 +1754,24 @@ Every step is in the log:
   — unnormalized `sum(scores[discarded])` (`cipsi_solver.py:889`), so it grows with how *many*
   candidates were dropped, and a healthy large-cap run would trip it.
 
+### The gate was half-wired, and only an end-to-end test could see it
+
+Worth recording as a method point. The DC gate reads `truncation_report["memory_bound"]`, and six
+unit tests over `_reject_if_memory_bound` plus a source-level count of its three call sites all
+passed -- but the **after-the-fact trip-wire never set that flag**. Only the look-ahead half did.
+So a run stopped by the OOM backstop produced a report saying `cap_hit` with `memory_bound` False,
+indistinguishable from a `truncation_threshold` the caller chose, and the gate let it through.
+
+It surfaced only on driving a real `fixed_gap_dc` at `GS_MEMORY_BUDGET_SAFETY=1e-9`: the basis was
+held at 1-2 determinants, every "GS basis cap hit" warning fired, and `dc_memory_bound` still came
+back `no`. Fixed by setting `memory_bound_observed` (a pure reporting flag) in the trip-wire, never
+`memory_bound`, which also gates whether the look-ahead may adopt a tighter cap later.
+
+The same run is now two tests: one asserting a healthy search records `dc_memory_bound = no` (which
+proves the call site is *reached*, where the source-level count only proves it exists), and an MPI
+one asserting the rejection is rank-invariant at `-n 2` and `-n 3` -- a split verdict would turn a
+memory problem into a hang inside a collective.
+
 ### Corrections to earlier claims in this document
 
 * **`reort="partial"` saves projection FLOPs, not store bytes.** Retention is mode-independent

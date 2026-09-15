@@ -2462,3 +2462,43 @@ def test_every_criterion_gates_its_own_return():
     *call*, not the helper. All three -- peak, gap and occupation -- must check."""
     src = Path(dc_criteria.__file__).read_text()
     assert src.count("_reject_if_memory_bound(ctx, dc_rec, rank=rank)") == 3
+
+
+def test_a_healthy_search_records_the_memory_verdict(capsys):
+    """The acceptance check is actually *reached* by a real search, not merely present.
+
+    `test_every_criterion_gates_its_own_return` counts call sites in the source, which would keep
+    passing if the line were unreachable or raised `NameError` on a variable that is not in scope
+    there. This drives the whole criterion and reads the verdict back out of the emitted record.
+    """
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.0)
+    fixed_gap_dc(offset=0.0, **kwargs)
+    out = capsys.readouterr().out
+    if MPI.COMM_WORLD.rank == 0:
+        assert parse_record(out)["dc_memory_bound"].strip() == "no", out
+
+
+@pytest.mark.mpi
+def test_a_memory_bound_search_raises_on_every_rank(monkeypatch):
+    """`DoubleCountingUnreachable` is raised from inside a collective function, on every rank.
+
+    If it fired on some ranks and not others, the ranks that kept going would sit in the next
+    collective while the others unwound -- converting a memory problem into a hang, which is the
+    failure class `extracted-helper-early-return-skips-collective` and the no-collectives-under-
+    per-rank-verbose rule exist for. `_any_memory_bound` reduces over facts that are broadcast
+    where they are stored, so the verdict should be rank-invariant; this asserts that it is.
+
+    A near-zero safety fraction makes the guard trip on the first cycle of every sector, which is
+    the production failure in miniature.
+    """
+    monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "1e-9")
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.0)
+    raised = False
+    try:
+        fixed_gap_dc(offset=0.0, **kwargs)
+    except DoubleCountingUnreachable:
+        raised = True
+    # Every rank reaches this line either way, so a split verdict fails loudly instead of hanging
+    # here -- a hang would instead show up earlier, inside the criterion, which is the point.
+    verdicts = MPI.COMM_WORLD.allgather(raised)
+    assert all(verdicts), f"the rejection was not rank-invariant: {verdicts}"
