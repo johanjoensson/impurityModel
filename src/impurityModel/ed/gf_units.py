@@ -20,6 +20,7 @@ from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
+    available_bytes_per_rank,
     current_rss_bytes,
     estimate_gf_peak_bytes,
     format_bytes,
@@ -249,18 +250,14 @@ def run_units_distributed(
         split_basis,
         split_seeds,
     ) = split_basis_and_redistribute_psi(basis, unit_weights, [s for seeds in unit_seeds for s in seeds], max_colors)
-    if verbose and basis.comm.rank == 0:
-        print(f"New unit roots: {unit_roots}")
-        print(f"Units per color: {units_per_color}")
-        print("=" * 80, flush=True)
     # `split_basis` inherited the job-wide `cap` verbatim (sized for basis.comm.size ranks),
-    # but this color runs on only `ranks_per_color` of them -- the mismatch that let a unit
-    # basis grow ~n_colors x too large before this fix (doc/plans/dc_smo_memory.md, "GF unit
-    # memory"). Re-derive the cap this color's own rank count can actually afford and tighten
-    # (never loosen) `split_basis`'s cap to it. `max_unit_dets_within_budget` is collective on
-    # `basis.comm` (it probes available memory); every input up to here is replicated, so every
-    # rank of every color computes the identical bound and calls it unconditionally, whether or
-    # not the print below fires.
+    # but this color runs on only its own share of them -- the mismatch that let a unit basis
+    # grow ~n_colors x too large before the previous round's fix (doc/plans/dc_smo_memory.md,
+    # "GF unit memory"). Re-derive the cap this color's own rank count can actually afford and
+    # tighten (never loosen) `split_basis`'s cap to it. `max_unit_dets_within_budget` is
+    # collective on `basis.comm` (it probes available memory); every input up to here is
+    # replicated, so every rank of every color computes the identical bound and calls it
+    # unconditionally, whether or not the print below fires.
     #
     # `split_basis` IS `basis` whenever the split collapses to a single color
     # (`basis_split._pack_units` returns `None` subgroups at `n_colors <= 1`, and
@@ -271,7 +268,19 @@ def run_units_distributed(
     # no opt-out. The cap is scoped to this GF phase instead: set below, restored in the
     # `finally` at the end of the function, on every path including an exception.
     n_colors = len(units_per_color)
-    ranks_per_color = max(1, basis.comm.size // max(1, n_colors))
+    # `_pack_units` apportions ranks to colors proportionally to bin mass with a floor of 1
+    # (basis_split.py's largest-remainder step), NOT evenly -- colors genuinely differ in rank
+    # count. `split_basis.comm.size` is THIS color's real count (identical across every rank of
+    # the color, since `split_basis_and_redistribute_psi` verified the packing is rank-invariant
+    # before splitting); using the job-wide mean `basis.comm.size // n_colors` here (as a round-7
+    # version of this function did) under-caps the larger colors and over-caps the smaller ones --
+    # a round-8 SrMnO3 archive had two colors on 4 ranks while the mean said 5, a 25% miss. The
+    # collective memory probe itself stays on `basis.comm` (`available_bytes_per_rank` splits a
+    # shared-memory sub-communicator internally; calling it on `split_basis.comm` would blind the
+    # ranks-per-node count to the OTHER colors sharing this node, which run simultaneously, and
+    # over-estimate the per-rank budget) -- only the `ranks` argument fed to the pure bisection
+    # after that probe varies per color.
+    ranks_per_color = split_basis.comm.size if split_basis.comm is not None else 1
     caller_cap = basis.truncation_threshold
     # What this rank already holds entering the GF phase (ground-state basis, eigenvectors,
     # stored Hamiltonian, the RSPt/Python floor). MAX over the communicator, because the cap
@@ -281,6 +290,28 @@ def run_units_distributed(
     # collective on state that could differ). Without this the per-unit cap below cannot bind
     # at all; see `max_unit_dets_within_budget`'s `resident_bytes`.
     resident_bytes = basis.comm.allreduce(current_rss_bytes(), op=MPI.MAX)
+    # Collective on basis.comm (same function max_unit_dets_within_budget calls below); sampled
+    # here, unconditionally, purely to report it -- reconstructing this crash needed inverting
+    # max_colors_within_budget's return to recover a number the process had in hand the whole
+    # time (doc/plans/dc_smo_memory.md, "GF unit memory", item 4). Printed once, before any unit
+    # runs, alongside the block width and the rank-count spread across colors -- none of which
+    # the split print recorded before this round, and round 7's own per-unit reporting never
+    # fires when the kill lands inside the first unit.
+    available_bytes = available_bytes_per_rank(basis.comm)
+    if verbose and basis.comm.rank == 0:
+        # Derived from `unit_roots` (already rank-invariant, verified in
+        # split_basis_and_redistribute_psi) rather than a fresh collective -- the same
+        # arithmetic (`np.diff(unit_roots + [comm.size])`) this round used to reconstruct the
+        # crash's rank apportionment from the log alone.
+        color_rank_counts = [int(d) for d in np.diff(unit_roots + [basis.comm.size])]
+        print(f"New unit roots: {unit_roots}")
+        print(f"Units per color: {units_per_color}")
+        print(
+            f"Ranks per color: {color_rank_counts} (block width={width}, "
+            f"resident={format_bytes(resident_bytes)}, available={format_bytes(available_bytes)}/rank).",
+            flush=True,
+        )
+        print("=" * 80, flush=True)
     try:
         if np.isfinite(cap):
             unit_cap = max_unit_dets_within_budget(
@@ -303,8 +334,9 @@ def run_units_distributed(
                     method=gf_method,
                 )
                 print(
-                    f"{n_colors} simultaneous unit bases on {ranks_per_color} rank(s) each: unit basis "
-                    f"capped at {int(split_basis.truncation_threshold):,} determinants "
+                    f"{n_colors} simultaneous unit bases (rank 0's own color has "
+                    f"{ranks_per_color} rank(s) -- see 'Ranks per color' above for the rest): "
+                    f"unit basis capped at {int(split_basis.truncation_threshold):,} determinants "
                     f"(job-wide truncation_threshold={int(cap):,}; predicted per-rank GF peak "
                     f"{format_bytes(per_rank)}).",
                     flush=True,
