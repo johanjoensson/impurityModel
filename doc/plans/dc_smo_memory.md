@@ -2048,6 +2048,59 @@ are covered by the test gate for correctness, but every accuracy number above is
 ground-state selection path. Nothing here says what the change does to a GF or resolvent-targeted
 selection, and the SMO figures should not be read as covering them.
 
+### Step 4: closing the GF/resolvent gap the step 3 write-up left open
+
+Step 3 flagged that `e_Dj`'s other two consumers -- `CIPSISolver.select_at` (`cipsi_solver.py:990`,
+`|z - e_Dj|^2`) and `gf_solvers.py:1046`'s PT2 downfolding (`dG = ov/(z - e_Dj) @ ov.T`) -- inherited
+the exact diagonal with no accuracy measurement.
+
+**First, the scope.** Both are reachable only under `gf_method="cipsi"`, which is experimental and
+not the default. The crashed SrMnO3 run used the block-Lanczos GF driver and its `job.rspt` sets no
+`gf_method` or `GF_CIPSI_*`, so this path is **not** on the re-run's critical path.
+
+**The oracle.** `_dense_G_on` is the dense resolvent on the closed N=3 sector -- ground truth, not
+agreement with another solver -- and `test_gf_cipsi_driver`'s own `_max_rel_err` measures against
+it. Reused verbatim (`from_arrhenius/gf_cipsi_diag_ab.py`) so the comparison cannot drift from what
+the suite already asserts.
+
+**A binding budget is not sufficient, and finding that out is the instructive part.** The first run
+reported the probe and the exact diagonal identical to every digit at every budget -- the shape of a
+test that is green for the wrong reason. Three perturbation probes settled it:
+
+| `e_Dj` replaced by | rel. err |
+|---|---|
+| itself | 1.759113e-01 |
+| itself + 5 eV (uniform) | 1.759113e-01 |
+| **a constant (all-equal)** | **1.759113e-01** |
+| itself, permuted against its candidates | 1.659554e-01 |
+
+So the value *is* consumed (permuting it moves the answer) but is *not discriminating*: this
+workload offers at most **6 candidates per round** against a budget of 9, the selection admits
+everything available, and the energy denominator only reorders a set that is taken whole. Erasing
+the energies entirely changes nothing. **A budget that binds on the total basis size does not make
+the ranking bind.** What does is `GF_CIPSI_MAX_NEW`, which caps admissions *per round*.
+
+**The measurement.** With the ranking forced to decide and the PT2 correction actually exercised:
+
+| PT2 | budget | `max_new` | probe rel. err | exact rel. err | ratio |
+|---|---|---|---|---|---|
+| off | 9 / 15 / 18 / uncapped | 1, 2, - | — | — | **1.000 (tie throughout)** |
+| on | 9, 15 | 1, 2 | — | — | 1.000 (tie) |
+| **on** | **18** | **1** | 7.864e-06 | **2.225e-06** | **0.283** |
+| **on** | **uncapped** | **1** | 7.864e-06 | **2.225e-06** | **0.283** |
+
+Where a discriminating measurement exists at all, the exact diagonal is **3.5x more accurate**, and
+the reason is structural: `dG` uses `e_Dj` as a *pole position*, so an exact pole beats a noisy one.
+`max_new=1` is what leaves candidates unadmitted in the final round, which is precisely when the
+downfolding correction has anything to correct -- an uncapped run with no `max_new` admits
+everything, `dG` is empty, and the error falls to the solver floor of 1.36e-11.
+
+**What this does and does not establish.** It establishes that the `dG` consumer improved, and that
+nothing regressed anywhere measurable. It does **not** establish anything about `select_at`'s
+ranking on a workload large enough for the ranking to matter: the repo's oracle fixture cannot
+discriminate, and building a larger CIPSI-GF workload was judged out of proportion for a path that
+is experimental, off by default, and off the re-run's route.
+
 ### Corrections to earlier claims in this document
 
 * **`reort="partial"` saves projection FLOPs, not store bytes.** Retention is mode-independent
