@@ -78,6 +78,29 @@ _CSR_BYTES_PER_NNZ = 24
 # this term exists because the model was 15-23x *too optimistic* once, and the fix must not
 # repeat that in the opposite corner case.
 _SELECTION_FANOUT_DEFAULT = 40
+# Dedup'd ROW fanout of one GF block-Lanczos matvec (`h_op.apply_block(q_curr, ...)` inside
+# `_lanczos_step.pxi`'s `block_lanczos_step_cy`) before `redistribute_block` routes rows to their
+# owners and the truncation cap prunes. `ManyBodyOperator::apply` returns a fully materialized
+# `ManyBodyBlockState` BY VALUE, keyed one row per REACHED determinant -- a different, SMALLER
+# quantity than `_SELECTION_FANOUT_DEFAULT` above, which counts source-determinant/candidate
+# PAIRS before CIPSI's own dedup. Multiple source rows in `q_curr` reaching the same target
+# determinant collapse into one row here; they do not in a pair count.
+#
+# Measured directly (`doc/plans/dc_smo_memory.md`, round 8): `h_op.apply_block(q, 0)` on real
+# width-1 blocks drawn from the real SrMnO3 crash archive's own converged ground-state basis
+# (NOT the WORKLOADS["smo"] key -- a different archive, see
+# arrhenius-smo-crash-archive-is-not-the-workloads-key), at basis sizes 5,000 / 20,000 / 100,000:
+# mean fanout 19.72 / 17.15 / 13.72 -- a real, mild decrease with basis size (not a collapse; the
+# largest basis measured is still 400x smaller than the crash's own 40.3M cap, and the composition
+# of a CIPSI-selected basis, not just its size, likely drives some of the decrease, so this is not
+# extrapolated further). All three measured points sit far above the 2.4-7.3 rows/det the round-8
+# crash's own geometry needed to explain its OOM (see :func:`estimate_gf_peak_bytes`'s docstring)
+# -- the diagnosis holds even using the smaller, row-deduplicated quantity this constant is. 20
+# is the conservative (higher, small-basis) end of what was measured, the same rounding
+# convention `_SELECTION_FANOUT_DEFAULT` uses and for the same reason: this term exists to close
+# a case where the model was too optimistic, and the fix must not repeat that in the opposite
+# corner.
+_GF_MATVEC_ROW_FANOUT_DEFAULT = 20
 # Per (determinant, reference-column) pair, the CIPSI selection round's own temporaries
 # (`CIPSISolver._apply_block_and_redistribute`, `_candidate_overlaps_and_energies`,
 # `_score_candidates`) hold at once, summed from the arrays that survive Phase 2's rewrite
@@ -255,10 +278,14 @@ def estimate_gf_peak_bytes(
 
     Which term leads depends on the run: the store scales with ``n_blocks`` (``m``), so at
     width 1 it overtakes ``s_live`` once ``m`` passes ~30, but at ``reort="none"`` (the
-    production self-energy path) ``s_live`` is the whole cost. Neither universally dominates —
-    the earlier "the store dominates against ~450 for everything else" framing was only half
-    right (the ~450 is real; the store does not always win). The recurrence's transient matvec
-    fanout past the cap is deliberately *not* modelled here; ``DEFAULT_MEMORY_SAFETY`` absorbs it.
+    production self-energy path) ``s_live`` is the whole cost -- **plus** the recurrence's
+    transient matvec fanout (below), which at ``reort="none"`` is usually the largest term of
+    all. Neither ``s_live`` nor the store universally dominates the *other* -- the earlier
+    "the store dominates against ~450 for everything else" framing was only half right (the
+    ~450 is real; the store does not always win) -- but the fanout term can dominate both: a
+    round-8 SrMnO3 archive OOM-killed ranks whose ``s_live`` + store prediction left 1.8-3.6 GiB
+    of headroom, entirely consumed by a fanout of just 2.4-7.3 rows/det against a measured raw
+    dedup'd fanout of 12-20 (see :data:`_GF_MATVEC_ROW_FANOUT_DEFAULT`).
 
     Since the reort projection now streams the store chunk by chunk, the old
     ``(n_rows x n_cols)`` gather transient (which peaked at ~1.85x the store) is gone and
@@ -339,13 +366,26 @@ def estimate_gf_peak_bytes(
             live = max(live, 3 + n_windows)
         return basis_bytes + live * local_rows * row_bytes
     live_bytes = 3 * local_rows * row_bytes
+    # The recurrence's transient matvec fanout: `wp_raw = h_op.apply_block(q_curr, ...)` inside
+    # `block_lanczos_step_cy` is NOT hash-partitioned -- it is everything this rank's rows reach
+    # under H, before `redistribute_block` routes rows to their eventual owners and the cap
+    # prunes admissions (see `_GF_MATVEC_ROW_FANOUT_DEFAULT`'s derivation). Priced at the same
+    # `row_bytes` per row as the other live blocks. `GF_APPLY_ROW_CHUNKS` chunks the apply, but
+    # the only wall-clock/memory measurement of it (`doc/plans/dc_smo_memory.md`,
+    # "GF_APPLY_ROW_CHUNKS default flip") found the peak UNMOVED across 1/2/4/8 chunks at the
+    # rank count measured -- a negative result -- so no chunk-count credit is taken here; this is
+    # a one-line change (dividing by the configured chunk count) if a production-scale
+    # measurement ever shows chunking bounds this term. Scoped to the Lanczos recurrence only
+    # (not the bicgstab/sliced/cipsi branch above, which returned already): that branch's own
+    # per-point solve was not the diagnosed path (the round-8 crash ran `reort="none"` Lanczos).
+    fanout_bytes = local_rows * _GF_MATVEC_ROW_FANOUT_DEFAULT * row_bytes
     store_bytes = 0
     if _retains_krylov(reort):
         if n_blocks is None:
             n_blocks = ceil(n_dets / max(1, block_width))
         itemsize = _krylov_itemsize(reort, krylov_dtype)
         store_bytes = local_rows * (itemsize * block_width * n_blocks + 2 * key_heap + _KRYLOV_NODE_BYTES)
-    return basis_bytes + live_bytes + store_bytes
+    return basis_bytes + live_bytes + fanout_bytes + store_bytes
 
 
 #: Additive eigenstate padding TRLM's initial sizing applies before certifying a manifold

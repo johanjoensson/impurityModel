@@ -45,12 +45,20 @@ def test_gf_reort_retention_costs_more():
 
 
 def test_gf_reort_none_per_det_matches_measured_slope():
-    """reort=none per-det stays near the VmHWM-calibrated ~550 B/det (width 1).
+    """reort=none per-det stays near the VmHWM-calibrated ~550 B/det (width 1), once the
+    round-8 matvec-fanout term (:data:`me._GF_MATVEC_ROW_FANOUT_DEFAULT`) is subtracted back
+    out.
 
-    Guards the constant against a wild miscalibration: a prior recalibration put it at
-    ~1.4 kB/det (3x the measured slope). See doc/plans/truncation_reliability.md.
+    Guards the ``s_live`` constant against a wild miscalibration: a prior recalibration put it
+    at ~1.4 kB/det (3x the measured slope). See doc/plans/truncation_reliability.md. The fanout
+    term is a real, separately-derived addition (doc/plans/dc_smo_memory.md, round 8) and is
+    subtracted here rather than folded into a wider bound, so a future miscalibration of
+    *this* constant still trips this test.
     """
-    per_det = me.estimate_gf_peak_bytes(100_000, 124, block_width=1, reort="none") / 100_000
+    row_bytes = 16 * 1 + me._key_heap_bytes(124) + me._SD_STRUCT_BYTES
+    fanout_per_det = me._GF_MATVEC_ROW_FANOUT_DEFAULT * row_bytes
+    total = me.estimate_gf_peak_bytes(100_000, 124, block_width=1, reort="none")
+    per_det = total / 100_000 - fanout_per_det
     assert 450 <= per_det <= 700, per_det
 
 
@@ -467,6 +475,7 @@ def test_estimate_gf_peak_bytes_scales_local_rows_by_the_skew():
         row_bytes = 16 * width + me._key_heap_bytes(nso) + me._SD_STRUCT_BYTES
         expected = skewed_local_rows * (me.bytes_per_determinant(nso) + me._PY_BASIS_OVERHEAD_BYTES)
         expected += 3 * skewed_local_rows * row_bytes
+        expected += me._GF_MATVEC_ROW_FANOUT_DEFAULT * skewed_local_rows * row_bytes
         got = me.estimate_gf_peak_bytes(n, nso, width, "none", ranks=ranks)
         assert got == expected, (ranks, skew, unskewed_local_rows, skewed_local_rows)
 
@@ -584,3 +593,36 @@ def test_resident_bytes_over_the_safety_share_falls_back_rather_than_flooring(mo
     baseline = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm)
     assert fallback == baseline
     assert fallback > 1
+
+
+def test_replay_round8_smo_crash_geometry_now_predicts_the_kill(monkeypatch):
+    """The round-8 SrMnO3 crash's own numbers, replayed through the corrected model.
+
+    Pinned geometry (doc/plans/dc_smo_memory.md, round 8): job-wide cap 40,340,864, nso=58,
+    block width 1, available 9.5 GiB/rank, resident ~2.2 GiB at GF entry. 4/5/6 are the
+    smallest color sizes in the crash's own split ([6,6,6,6,6, 5x8, 4,4, 5x10]) -- exactly the
+    colors that lost ranks (16, 25, 32, 33) to the OOM killer. Before the round-8 fanout term,
+    `estimate_gf_peak_bytes` predicted every one of these colors would survive; the corrected
+    model must refuse all three, and `max_unit_dets_within_budget` must therefore never hand
+    any of them the job-wide cap verbatim.
+    """
+    from types import SimpleNamespace
+
+    comm = SimpleNamespace(size=128)
+    cap, nso, width = 40_340_864, 58, 1
+    available = int(9.5 * 2**30)
+    resident = int(2.2 * 2**30)
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: available)
+
+    budget = me._resident_adjusted_budget(me.DEFAULT_MEMORY_SAFETY, available, resident)
+    for ranks in (4, 5, 6):
+        peak = me.estimate_gf_peak_bytes(cap, nso, width, "none", ranks=ranks)
+        assert peak > budget, (
+            ranks,
+            peak,
+            budget,
+            "the corrected model must predict this configuration does NOT fit -- it is "
+            "exactly what killed ranks 16, 25, 32, 33 on the round-8 archive",
+        )
+        unit_cap = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=resident)
+        assert unit_cap < cap, (ranks, unit_cap)
