@@ -37,11 +37,13 @@ analytic formula there.
 """
 
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed import dc_criteria
 from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_transcription import build_density_matrices
@@ -2380,3 +2382,83 @@ def test_the_occupation_context_records_a_cap_verdict_per_mu():
         _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose=False, rank=0)
     assert sorted(ctx.cap_bound_at) == [0.0, 0.1]
     assert all(isinstance(v, bool) for v in ctx.cap_bound_at.values())
+
+
+# ---------------------------------------------------------------------------------------
+# A memory-bound search must not report a double counting
+# (doc/plans/dc_smo_memory.md, round 9 -- the SrMnO3 cubic gap-DC collapse)
+# ---------------------------------------------------------------------------------------
+
+
+class _FakeCtx:
+    """The two shapes `_any_memory_bound` reads, and nothing else."""
+
+    def __init__(self, sector_at=None, memory_bound_at=None):
+        self.sector_at = sector_at or {}
+        self.memory_bound_at = memory_bound_at or {}
+
+
+def _solution(*, cap_bound=False, memory_bound=False):
+    return dc_criteria._SectorSolution(
+        energy=-1.0,
+        occupation=1.0,
+        occupation_ground=1.0,
+        n_states=1,
+        occupation_spread=0.0,
+        cap_bound=cap_bound,
+        memory_bound=memory_bound,
+    )
+
+
+def test_nothing_solved_yet_is_unknown_not_a_rejection():
+    rec = {}
+    dc_criteria._reject_if_memory_bound(_FakeCtx(), rec, rank=0)
+    assert rec["dc_memory_bound"] == "unknown"
+
+
+def test_a_deliberately_capped_search_is_accepted():
+    """The false positive that matters. Spending a `truncation_threshold` on purpose is the
+    normal mode: `cap_bound` is true for every healthy capped run, which is exactly why the gate
+    reads `memory_bound` instead. Gating on `cap_bound` would reject routine production runs."""
+    ctx = _FakeCtx(sector_at={("mu", 1): _solution(cap_bound=True, memory_bound=False)})
+    rec = {}
+    dc_criteria._reject_if_memory_bound(ctx, rec, rank=0)
+    assert rec["dc_memory_bound"] == "no"
+
+
+def test_one_memory_bound_sector_rejects_the_answer():
+    ctx = _FakeCtx(
+        sector_at={
+            ("mu", 1): _solution(cap_bound=True, memory_bound=False),
+            ("mu", 2): _solution(cap_bound=True, memory_bound=True),
+        }
+    )
+    rec = {}
+    with pytest.raises(DoubleCountingUnreachable, match="ran out of memory"):
+        dc_criteria._reject_if_memory_bound(ctx, rec, rank=0)
+    assert rec["dc_memory_bound"] == "yes", "the record must say so even when the call raises"
+
+
+def test_the_occupation_criterions_per_mu_verdict_gates_too():
+    """`fixed_occupation_dc` stores its verdict per evaluated mu rather than per sector
+    solution, so both shapes have to be read or the gate is silently half-wired."""
+    ctx = _FakeCtx(memory_bound_at={0.0: False, 0.25: True})
+    with pytest.raises(DoubleCountingUnreachable, match="ran out of memory"):
+        dc_criteria._reject_if_memory_bound(ctx, {}, rank=0)
+
+
+def test_the_escape_hatch_downgrades_the_rejection_to_a_warning(monkeypatch, capsys):
+    monkeypatch.setenv("DC_ALLOW_MEMORY_BOUND", "1")
+    ctx = _FakeCtx(sector_at={("mu", 1): _solution(memory_bound=True)})
+    rec = {}
+    dc_criteria._reject_if_memory_bound(ctx, rec, rank=0)
+    assert rec["dc_memory_bound"] == "yes"
+    assert "ran out of memory" in capsys.readouterr().out
+
+
+def test_every_criterion_gates_its_own_return():
+    """Source-level, like `test_both_expand_call_sites_pass_the_budget`: the three criteria are
+    long collective functions that need a full solve to reach, and what would regress is the
+    *call*, not the helper. All three -- peak, gap and occupation -- must check."""
+    src = Path(dc_criteria.__file__).read_text()
+    assert src.count("_reject_if_memory_bound(ctx, dc_rec, rank=rank)") == 3

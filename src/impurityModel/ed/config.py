@@ -717,6 +717,30 @@ DC_DIAGNOSTICS = Knob(
 
 # --- Double counting: the determinant-cap ladder ----------------------------------------------
 
+DC_ALLOW_MEMORY_BOUND = Knob(
+    name="DC_ALLOW_MEMORY_BOUND",
+    kind="bool",
+    default=False,
+    group="double-counting",
+    doc="""Accept a double counting whose charge-sector ground states were stopped by the
+    **memory guard** instead of by convergence. Unset, such a search raises
+    `dc_search.DoubleCountingUnreachable` rather than returning a number.
+
+    The failure this exists for: the SrMnO3 cubic gap-DC run reported `status = converged` and
+    handed `dc_level = 0.580041` to the DMFT loop from ground states of 10 to 252 determinants,
+    because the memory guard had pinned every sector after the first at its seed basis. The
+    energies the bisection ran on were those of whatever basis each expansion happened to reach.
+    See `doc/plans/dc_smo_memory.md`, round 9.
+
+    Note what does *not* trip this: a `truncation_threshold` that binds. Spending a determinant
+    budget deliberately is the normal mode, and it is reported separately as `dc_cap_bound`.
+    Only `truncation_report["memory_bound"]` -- the rank actually running out of room -- gates
+    the answer.
+
+    Set it when you want the number anyway, knowing it is not converged in the basis.""",
+)
+
+
 DC_CAP_STRATEGY = Knob(
     name="DC_CAP_STRATEGY",
     kind="str",
@@ -857,6 +881,7 @@ KNOBS: dict[str, Knob] = _register(
     GS_NUM_WANTED,
     GS_MEMORY_BUDGET_SAFETY,
     GS_MEMORY_BUDGET_INCLUDE_RESIDENT,
+    DC_ALLOW_MEMORY_BOUND,
     DC_CAP_STRATEGY,
     DC_CAP_LADDER_START,
     DC_CAP_LADDER_MAX_RUNGS,

@@ -101,6 +101,7 @@ from impurityModel.ed.dc_reference import (
     _warn_if_reference_saturated,
 )
 from impurityModel.ed.dc_search import (
+    DoubleCountingUnreachable,
     _dc_chi,
     _dc_search_trace,
     _solve_dc_shift,
@@ -170,6 +171,74 @@ def _any_cap_bound(ctx):
     if not verdicts:
         return None
     return any(verdicts)
+
+
+def _any_memory_bound(ctx):
+    """Was any sector behind this answer stopped by the **memory guard**? ``None`` when untold.
+
+    The same two shapes :func:`_any_cap_bound` reads, but the stronger field: ``cap_bound`` is
+    true whenever the fixed-budget branch engaged at all, which a perfectly healthy capped run
+    does on purpose. ``memory_bound`` is true only when the rank ran out of room, so the basis is
+    not a budget that was chosen but whatever the expansion had reached when it was stopped.
+
+    The union over the search, deliberately, not just the converged ``mu``: every evaluation
+    steers the bisection, so one memory-bound energy anywhere moves the bracket and therefore the
+    answer. There is no such thing as a discarded evaluation in a bisection.
+    """
+    verdicts = []
+    sector_at = getattr(ctx, "sector_at", None)
+    if sector_at:
+        verdicts += [sol.memory_bound for sol in sector_at.values() if sol is not None]
+    memory_bound_at = getattr(ctx, "memory_bound_at", None)
+    if memory_bound_at:
+        verdicts += list(memory_bound_at.values())
+    if not verdicts:
+        return None
+    return any(verdicts)
+
+
+def _reject_if_memory_bound(ctx, dc_rec, *, rank):
+    """Refuse to hand back a double counting whose sectors ran out of memory.
+
+    The SrMnO3 cubic gap-DC run reported ``status = converged`` and shipped
+    ``dc_level = 0.580041`` into the DMFT loop from ground states of 10 to 252 determinants
+    (``doc/plans/dc_smo_memory.md``, round 9). Every signal needed to catch it was already in the
+    record -- ``dc_cap_bound = yes``, per-sector truncation reports -- and none was wired to the
+    verdict.
+
+    Why this and not ``dc_cap_drift`` against ``tol``: drift is the *cap-calibration ladder's*
+    spread, i.e. how far the controlled quantity moved between the rungs that certified the cap.
+    It is silent in exactly this failure -- a run pinned at its seed basis returns the same frozen
+    answer on every rung, so the rungs agree and drift goes to zero -- and it is not populated at
+    all when ``DC_CAP_STRATEGY`` resolves the cap without a ladder. It stays in the record as
+    context; it is not the gate.
+
+    Why not the raw ``discarded_de2_mass``: ``_admit_top`` computes it as an unnormalized
+    ``sum(scores[discarded])``, so it grows with how *many* candidates were dropped rather than
+    how badly. A healthy run at a large cap discarding millions of marginal candidates would trip
+    it. It bounds the error from above: below tolerance proves the answer is fine, above it
+    proves nothing.
+
+    ``DC_ALLOW_MEMORY_BOUND=1`` downgrades the refusal to a warning.
+    """
+    bound = _any_memory_bound(ctx)
+    dc_rec["dc_memory_bound"] = "unknown" if bound is None else ("yes" if bound else "no")
+    if not bound:
+        return
+    message = (
+        "the double-counting search ran out of memory: at least one charge-sector ground state "
+        "was stopped by the memory guard rather than by convergence, so the energies the search "
+        "bisected on are those of whatever basis each expansion had reached, not of a basis "
+        "anyone chose. Raise the per-rank memory (fewer ranks per node, e.g. a larger '-c'), "
+        "lower the determinant cap so the budget is spent deliberately, or set "
+        "DC_ALLOW_MEMORY_BOUND=1 to accept the answer anyway. The per-sector 'GS basis cap hit' "
+        "warnings above say how much PT2 importance each retained subspace left behind."
+    )
+    if config.DC_ALLOW_MEMORY_BOUND.get():
+        if rank == 0:
+            print(f"WARNING: {message}", flush=True)
+        return
+    raise DoubleCountingUnreachable(message)
 
 
 def _calibrate_cap(ctx, evaluate_at_guess, clear_caches, tol, dc_rec, *, verbose, rank):
@@ -407,6 +476,13 @@ class _SectorSolution:
     #: converged **in the cap**, not exact -- whatever error is left is the ``de2_min`` /
     #: ``slaterWeightMin`` truncation, a different knob.
     cap_bound: bool = False
+    #: Did the **memory guard** -- not the caller's cap -- stop this sector's expansion?
+    #: ``truncation_report["memory_bound"]``. Strictly stronger than ``cap_bound``, and the
+    #: distinction is the whole point: a cap that binds is a deliberate budget being spent, while
+    #: a memory-bound stop means the rank ran out of room and the basis is whatever it had
+    #: reached. On the SrMnO3 cubic gap-DC run that was the seed basis -- 10 to 252 determinants
+    #: -- and the search still reported ``status = converged``.
+    memory_bound: bool = False
 
 
 @dataclass
@@ -678,6 +754,9 @@ class _SectorContext:
             # -- only whether it did. Rank-local until the broadcast below, like everything else
             # in this constructor.
             cap_bound=bool(getattr(sector_basis, "occupation_search_truncation", None) is not None),
+            memory_bound=bool(
+                (getattr(sector_basis, "occupation_search_truncation", None) or {}).get("memory_bound", False)
+            ),
         )
         solution = MPI.COMM_WORLD.bcast(solution, root=0)
         self.sector_at[(mu, n_trial)] = solution
@@ -1113,6 +1192,7 @@ def fixed_peak_dc(
                 "anyway, or adjust dc_guess/peak_position to land nearer the nominal sector."
             )
 
+        _reject_if_memory_bound(ctx, dc_rec, rank=rank)
         return (dc, n_center) if return_sector else dc
 
 
@@ -1834,6 +1914,7 @@ def fixed_gap_dc(
                 "dc_guess/offset to land nearer the nominal sector."
             )
 
+        _reject_if_memory_bound(ctx, dc_rec, rank=rank)
         return (dc, n_center) if return_sector else dc
 
 
@@ -1886,10 +1967,13 @@ class _OccupationContext:
     #: :func:`occupation_and_energy_at_mu` has a documented ``(n, E0, sector)`` return and this is
     #: not part of the answer -- it qualifies it.
     cap_bound_at: dict = None
+    memory_bound_at: dict = None
 
     def __post_init__(self):
         if self.cap_bound_at is None:
             self.cap_bound_at = {}
+        if self.memory_bound_at is None:
+            self.memory_bound_at = {}
 
 
 def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
@@ -2068,6 +2152,11 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
         or getattr(mb_basis, "occupation_search_truncation", None) is not None
     )
     ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bound_local, root=0)
+    # The memory verdict alongside it, from the same two reports. Broadcast for the same reason:
+    # it is rank-local solver state, and the acceptance check that reads it must be rank-invariant.
+    report = getattr(mb_solver, "truncation_report", None) or getattr(mb_basis, "occupation_search_truncation", None)
+    memory_local = bool((report or {}).get("memory_bound", False))
+    ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(memory_local, root=0)
 
     rhos = build_density_matrices(mb_basis, psis, ctx.impurity_indices, ctx.impurity_indices)
     rho = thermal_average_scale_indep(es, rhos, ctx.tau)
@@ -2397,4 +2486,5 @@ def fixed_occupation_dc(
         # path where |n - target| <= occ_tol -- a miss beyond that raises DoubleCountingUnreachable
         # instead, so the record's n_gs never has a genuine miss hidden in it.
         _dump_dc_matrices(dc_guess, dc, rank)
+        _reject_if_memory_bound(ctx, dc_rec, rank=rank)
         return (dc, sector) if return_sector else dc

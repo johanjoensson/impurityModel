@@ -77,6 +77,7 @@ _FIELDS = (
     ("dc_cap", "{}"),
     ("dc_cap_drift", "{:.2e}"),
     ("dc_cap_bound", "{}"),
+    ("dc_memory_bound", "{}"),
     ("dc_cap_check", "{:.2e}"),
     ("slope", "{:.4f}"),
     ("mu_tol_effective", "{:.2e}"),
