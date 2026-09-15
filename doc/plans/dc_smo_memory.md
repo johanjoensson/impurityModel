@@ -1929,9 +1929,11 @@ that state. Measured across every round (`from_arrhenius/probe_waste.py`):
 The ratio is stable at 10.0x once the basis is past its first cycles. Nine tenths of the
 selection round's peak term is building off-diagonal rows that are discarded one line later.
 
-**Three options, not two.** An earlier draft of this section framed the choice as "reduce the
-apply's own working set, or give up bit-identity". Restricting the apply's *output support* is a
-third, and it is the only one that is both large and exact:
+**Three options -- and the third supersedes the other two.** An earlier draft framed the choice as
+"reduce the apply's own working set, or give up bit-identity", and then, having found option 2,
+ranked bit-identity above correctness. That was backwards: the probe the other two options work so
+hard to reproduce bit-for-bit is itself an approximation to the quantity CIPSI actually wants.
+Options 1 and 2 are recorded because the reasoning is reusable, not because either should ship.
 
 1. **Chunk the probe -- not bit-identical, and not recoverable.** `H psi_all = sum_k p_k H|D_k>`,
    so splitting the probe and summing partials regroups each row's floating-point accumulation:
@@ -1951,16 +1953,38 @@ third, and it is the only one that is both large and exact:
    replicated 128x per node, which eats much of the saving) or an approximate membership filter
    (~12 MB at 1% false positives; false positives only retain a few extra rows, so the result
    stays exact). Both are new machinery in the Cython/C++ layer and need a rebuild and a full gate.
-3. **Compute the diagonal exactly and drop the probe.** `e_Dj[j] = <Dj|H|Dj> + Re(sum_{k != j}
-   conj(p_j) p_k <Dj|H|Dk>)`; the second term is the quasi-random noise the random phases exist to
-   scatter, which is why the docstring says `e_Dj[j] ~ <Dj|H|Dj>` with a tilde. A direct diagonal
-   evaluator is `O(n_Dj)` memory instead of `O(10 n_Dj)` and needs no probe, no phases and no
-   redistribute. It is **not** bit-identical -- it removes the noise rather than reproducing it --
-   and so it changes which determinants CIPSI selects. Whether that is a regression or an
-   improvement is a physics judgement, not a discipline question.
+3. **Compute the diagonal exactly and drop the probe. This is the right answer, and the two
+   options above are chasing the wrong target.** Only the *diagonal* enters Epstein-Nesbet PT2.
+   Every consumer of `e_Dj` uses it as the energy *of determinant Dj*: `|e_ref - e_Dj|` in
+   `_score_candidates` (`cipsi_solver.py:238`) and `_calc_de2` (`:866`), `|z - e_Dj|^2` in
+   `select_at` (`:990`), and `(z - e_Dj)` as a pole in `gf_solvers.py:1046`. That quantity is
+   `<Dj|H|Dj>`, full stop. The probe computes
 
-**What is measured and what is not.** The 10.0x is a 1-rank number, as is everything in step 0 and
-step 1. It should carry to the cluster -- the ratio is set by H's connectivity per determinant,
+       e_Dj[j] = <Dj|H|Dj> + Re(sum_{k != j} conj(p_j) p_k <Dj|H|Dk>)
+
+   so the second term is **error**, not a feature -- the random phases scatter its sign, they do
+   not remove it, and a single sample is not an average. Measured against exact diagonals for a
+   3,000-candidate sample of a 296,093-candidate round (`from_arrhenius/diag_error.py`):
+
+   | quantity | value |
+   |---|---|
+   | spread of exact `<Dj\|H\|Dj>` | 3.4941 eV |
+   | probe error, mean / std | +1.6e-03 / **1.02e-01** eV |
+   | probe error, max abs | **8.49e-01** eV |
+   | relative error on the EN denominator | median 2.22%, p90 6.58%, **max 62.59%** |
+
+   And it moves the selection where the selection matters most -- agreement of the top-K admitted
+   set against the exact-diagonal ranking: **66.7% at top 1%**, 94.7% at 5%, 98.0% at 10%, 99.5%
+   at 25%. A third of the highest-scoring candidates are the wrong ones.
+
+   So this is **not** a memory-for-accuracy trade. A direct diagonal evaluator is `O(n_Dj)` instead
+   of `O(10 n_Dj)`, needs no probe, no phases and no `applyOp` of `H^2`, **and deletes the
+   `redistribute_psis` collective** from the selection round -- while being more accurate than what
+   it replaces. It is of course not bit-identical: it is correct where the current code is
+   approximate, so `e0` and the selected basis will both move.
+
+**What is measured and what is not.** The 10.0x and the probe-error numbers are 1-rank, as is
+everything in step 0 and step 1. It should carry to the cluster -- the ratio is set by H's connectivity per determinant,
 not by the partition -- but that is a prediction. Note also what option 2 would buy end to end:
 dropping the overlap site's peak to ~930 MiB makes `_score_candidates` (absolute peak 1335.6 MiB)
 the new peak-setter, so the process peak moves 1376 -> ~1336, **2.9%** -- until `GS_SELECTION_CHUNK`
