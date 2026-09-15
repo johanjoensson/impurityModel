@@ -349,6 +349,38 @@ cdef class ManyBodyOperator:
             res.b = self.o.apply(block.b, cutoff)
         return res
 
+    def diagonal(self, ManyBodyState block):
+        """The diagonal elements ``<D|H|D>`` for every determinant of ``block``, in row order.
+
+        Amplitudes and width are ignored — only the keys are read — so the natural argument is
+        whatever block already holds the determinants of interest, with no new state built for
+        the purpose. Returns a complex ndarray of length ``len(block)``.
+
+        This is the diagonal half of :meth:`apply_block` with every row-emitting branch removed,
+        and it returns bit-identically what reading row ``D`` out of ``apply``-on-``{D: 1}``
+        would: a term can map ``D`` to itself only if its created and annihilated multisets
+        agree, which makes it diagonal for *every* determinant, so no off-diagonal term ever
+        reaches that row.
+
+        Epstein-Nesbet PT2 needs `<D|H|D>` and nothing else, and getting it out of an apply costs
+        the entire off-diagonal image — measured at 10 rows built per row read in the CIPSI
+        selection round (`doc/plans/dc_smo_memory.md` round 9). This costs O(rows x terms) time
+        and O(rows) memory, and — unlike the probe it replaces — it is exact rather than an
+        estimate contaminated by candidate-candidate couplings.
+        """
+        cdef vector[ManyBodyBlockState_cpp.Value] vals
+        cdef Py_ssize_t n
+        cdef Py_ssize_t i
+        with nogil:
+            vals = self.o.diagonal(block.b)
+        n = <Py_ssize_t>vals.size()
+        out = np.empty(n, dtype=complex)
+        cdef double complex[::1] ov = out
+        with nogil:
+            for i in range(n):
+                ov[i] = _amp_to_py(vals[i])
+        return out
+
     def erase(self, tuple[tuple[int, str]]key):
         """
         Remove a term from the operator.

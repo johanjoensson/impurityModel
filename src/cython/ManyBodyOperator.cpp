@@ -543,6 +543,75 @@ bool apply_parallel_build() noexcept {
 #endif
 }
 
+[[nodiscard]] std::vector<std::complex<double>>
+ManyBodyOperator::diagonal(const ManyBodyBlockState &block) const {
+  // The diagonal half of apply(), lifted out: same flat-term loop, same order,
+  // every row-emitting branch dropped. Serial on purpose -- this is O(rows x
+  // terms) with no accumulator and no hashing, and it replaces an apply() whose
+  // output was 10x the rows anyone read.
+  if (m_flat_dirty) {
+    build_flat_representation();
+  }
+  const bool check_restrictions = !std::get<0>(m_restrictions_mask).empty() ||
+                                  !m_weighted_restrictions_mask.empty();
+  std::vector<std::complex<double>> out(block.rows(), {0.0, 0.0});
+  SLATER out_slater_determinant;
+  for (std::size_t r = 0; r < block.rows(); ++r) {
+    const auto &slater = block.key(r);
+    std::complex<double> diag_accum{0.0, 0.0};
+    out_slater_determinant = slater;
+    for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
+      if (m_flat_density[op_idx]) {
+        if (mask_occupied(slater, m_density_mask[op_idx]) &&
+            (!check_restrictions || state_is_within_restrictions(slater))) {
+          diag_accum += m_density_coeff[op_idx];
+        }
+        continue;
+      }
+      if (m_flat_onebody[op_idx]) {
+        // c^d_i c_j with i != j: moves an electron, so never diagonal.
+        continue;
+      }
+      if (!m_flat_diagonal[op_idx]) {
+        // Off-diagonal string: apply() would emit a row here and we want none.
+        // Skipping it before touching the scratch determinant is what makes
+        // this cheap -- no create/annihilate, no restore pass.
+        continue;
+      }
+      double sign = 1;
+      const size_t start_idx = m_flat_offsets[op_idx];
+      const size_t end_idx = m_flat_offsets[op_idx + 1];
+      size_t i = start_idx;
+      for (; i < end_idx; i++) {
+        const int64_t idx = m_flat_indices[i];
+        const int s =
+            idx >= 0 ? create(out_slater_determinant, static_cast<size_t>(idx))
+                     : annihilate(out_slater_determinant,
+                                  static_cast<size_t>(-(idx + 1)));
+        if (s == 0) {
+          sign = 0;
+          break;
+        }
+        sign *= s;
+      }
+      if (sign != 0 && (!check_restrictions ||
+                        state_is_within_restrictions(out_slater_determinant))) {
+        // out_slater_determinant == slater here (occupation conserved), which
+        // is what m_flat_diagonal certifies.
+        diag_accum += m_flat_coeffs[op_idx] * sign;
+      }
+      for (size_t j = start_idx; j < i; j++) {
+        const int64_t idx = m_flat_indices[j];
+        toggle_bit(out_slater_determinant,
+                   idx >= 0 ? static_cast<size_t>(idx)
+                            : static_cast<size_t>(-(idx + 1)));
+      }
+    }
+    out[r] = diag_accum;
+  }
+  return out;
+}
+
 [[nodiscard]] ManyBodyBlockState
 ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
   // Block variant of the serial apply above: one pass over the shared support,

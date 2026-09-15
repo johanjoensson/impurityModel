@@ -781,7 +781,7 @@ class CIPSISolver:
         importance denominator applied on top): this rank's hash-owned candidate
         determinants ``local_Djs`` (sorted, so rank-independent given ``Hpsi_ref`` is
         redistributed), the coupling matrix ``overlaps[i, j] = <Dj | H | psi_i>`` read off
-        ``Hpsi_ref``, and the diagonal-probe energies ``e_Dj[j] ~ <Dj|H|Dj>``.
+        ``Hpsi_ref``, and the candidate diagonal energies ``e_Dj[j] = <Dj|H|Dj>``.
 
         ``Hpsi_ref`` is normally the block :meth:`_apply_block_and_redistribute` returns
         (already redistributed and pruned to its own support); a bare list of width-1
@@ -792,8 +792,17 @@ class CIPSISolver:
         across two problem sizes, `doc/plans/manybodystate_block_unification.md`'s
         Phase 9 write-up).
 
-        Collective on ``basis.comm`` (the probe redistribution), so it must run on every
-        rank -- including one that owns no candidates, whose arrays come back empty.
+        Rank-local: nothing here communicates. It used to, because ``e_Dj`` was estimated
+        by applying ``H`` to one random-phase superposition of every candidate and reading
+        back the diagonal, which made each rank's estimate depend on the partition and so
+        needed a ``redistribute_psis`` to restore rank-independence. That probe was also an
+        *approximation* -- the superposition contributes ``Re(sum_{k != j} conj(p_j) p_k
+        <Dj|H|Dk>)`` on top of the wanted element, which the random phases scatter the sign
+        of but do not remove. Measured on the SrMnO3 workload it reached 63% of the
+        Epstein-Nesbet denominator, and only 67% of the top-1% admitted set agreed with the
+        exact ranking (``doc/plans/dc_smo_memory.md`` round 9). Epstein-Nesbet needs the
+        diagonal and nothing else, so :meth:`ManyBodyOperator.diagonal` now computes it
+        exactly, for a tenth of the memory and no collective.
         """
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
@@ -815,42 +824,12 @@ class CIPSISolver:
         overlaps = np.ascontiguousarray(amps[new_mask].T)  # (p, n_Dj); boolean indexing copies
         del amps  # release the buffer export before any later mutation of Hpsi_ref
 
-        # Diagonal probe <Dj|H|Dj> from a single H application to one superposition of
-        # all candidates. Unit-modulus pseudo-random phases (derived from the
-        # determinant hash, so deterministic and rank-independent) make the
-        # candidate-candidate couplings enter with quasi-random phases instead of the
-        # systematic offset an all-ones probe would add to the diagonal estimate.
-        #
-        # `local_Djs` is this rank's share of the hash-routed candidates (the *union* over
-        # ranks is partition independent, the per-rank slice is not). So `H psi_all_Dj`
-        # computed locally is a partial sum: it misses every candidate-candidate coupling
-        # <Dj|H|Dk> whose Dk is owned by another rank -- and *which* ones are missing depends
-        # on `comm.size`. Redistributing accumulates each determinant's contributions on its
-        # hash owner, reconstructing the exact global probe, so `e_Dj` (and hence the whole
-        # CIPSI selection, and every basis derived from it) is the same at any rank count.
-        #
-        # `redistribute_psis` is COLLECTIVE, so it must run on every rank -- including a rank
-        # that happens to own no candidates at all, whose probe is simply empty. Returning
-        # early on `not local_Djs` before it deadlocks the ranks that do have candidates.
-        phases = np.exp(2j * np.pi * np.array([(hash(Dj) & 0xFFFF) / 65536.0 for Dj in local_Djs]))
-        # width=1 even when local_Djs is empty on this rank: a bare empty dict would
-        # construct the width-0 polymorphic zero, which would make this rank's total
-        # flattened width in redistribute_psis' combined block disagree with every
-        # other rank's -- an asymmetric wire shape in the shared collective, the same
-        # deadlock class fixed in Phase 7 step 2b (there caught as a clean per-rank
-        # raise; here it would surface as a silently mismatched pack instead).
-        psi_all_Dj = ManyBodyState({Dj: phases[j] for j, Dj in enumerate(local_Djs)}, width=1)
-        H_psi_all = applyOp_test(H, psi_all_Dj, cutoff=slaterWeightMin)
-        if self.basis.is_distributed:
-            H_psi_all = self.basis.redistribute_psis(H_psi_all)[0]
-
-        if not local_Djs:
-            return local_Djs, overlaps, np.zeros(0, dtype=float)
-
-        e_Dj = np.array(
-            [np.real(np.conj(phases[j]) * _scalar_amp(H_psi_all.get(Dj))) for j, Dj in enumerate(local_Djs)],
-            dtype=float,
-        )
+        # The candidate diagonals <Dj|H|Dj>, evaluated directly. `diagonal` reads only the
+        # block's keys, so this needs no state built for the purpose: it runs over the whole
+        # `Hpsi_ref` support (a few percent more determinants than there are candidates) and
+        # the mask selects the candidates out. Purely rank-local -- a determinant's diagonal
+        # element depends on nothing but the determinant.
+        e_Dj = np.real(H.diagonal(blk))[new_mask]
         return local_Djs, overlaps, e_Dj
 
     def _calc_de2(self, H, Hpsi_ref, e_ref: np.ndarray, slaterWeightMin: float = 0):

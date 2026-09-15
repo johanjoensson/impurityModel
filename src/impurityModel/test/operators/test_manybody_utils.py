@@ -264,3 +264,87 @@ def test_apply_multi():
         for key in r_multi:
             assert key in r_loop
             np.testing.assert_allclose(r_multi[key][0], r_loop[key][0], atol=1e-12)
+
+
+def _random_operator(n_orb, n_terms, seed):
+    """A mix of density, one-body and general two-body terms, so `diagonal` meets every
+    branch of the term loop -- the density fast path, the one-body hops it must skip, and
+    the general strings it has to sign-evaluate."""
+    rng = np.random.default_rng(seed)
+    terms = {}
+    while len(terms) < n_terms:
+        kind = rng.integers(0, 3)
+        if kind == 0:  # density n_i n_j
+            i, j = rng.integers(0, n_orb, 2)
+            key = ((int(i), "c"), (int(i), "a"), (int(j), "c"), (int(j), "a"))
+        elif kind == 1:  # one-body hop
+            i, j = rng.integers(0, n_orb, 2)
+            key = ((int(i), "c"), (int(j), "a"))
+        else:  # general two-body
+            i, j, k, m = rng.integers(0, n_orb, 4)
+            key = ((int(i), "c"), (int(j), "c"), (int(k), "a"), (int(m), "a"))
+        terms[key] = complex(rng.standard_normal(), rng.standard_normal())
+    return ManyBodyOperator(terms)
+
+
+def _determinants(n_orb, n_dets, seed):
+    rng = np.random.default_rng(seed)
+    out, seen = [], set()
+    n_bytes = (n_orb + 7) // 8
+    while len(out) < n_dets:
+        b = bytes(rng.integers(0, 256, n_bytes).tolist())
+        if b not in seen:
+            seen.add(b)
+            out.append(SlaterDeterminant.from_bytes(b))
+    return out
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_diagonal_matches_applying_to_each_determinant_alone(seed):
+    """`diagonal` must return exactly what reading row D out of `op({D: 1})` returns.
+
+    Not approximately: a term maps D to itself only when its created and annihilated
+    multisets agree, which makes it diagonal for *every* determinant, so no off-diagonal
+    term can ever contribute to that row. `diagonal` therefore accumulates the identical
+    contributions in the identical term order, and the equality is bit-for-bit. Asserting
+    `approx` here would let a reordering through, and CIPSI's candidate ranking is
+    sensitive to exactly that.
+    """
+    op = _random_operator(n_orb=12, n_terms=60, seed=seed)
+    dets = _determinants(n_orb=12, n_dets=40, seed=seed + 100)
+    block = ManyBodyState(dict.fromkeys(dets, 1.0 + 0j), width=1)
+
+    got = op.diagonal(block)
+    assert got.shape == (len(block),)
+
+    # `diagonal` reports in the block's ROW order, which is sorted, not insertion order.
+    expected = []
+    for key in block.keys():
+        row = op(ManyBodyState({key: 1.0 + 0j}, width=1), 0).get(key)
+        expected.append(0j if row is None else row[0])
+    assert got.tobytes() == np.array(expected, dtype=complex).tobytes()
+
+
+def test_diagonal_ignores_amplitudes_and_reads_only_the_keys():
+    """Scaling the block must not move the answer: `<D|H|D>` is a property of `D`."""
+    op = _random_operator(n_orb=10, n_terms=40, seed=7)
+    dets = _determinants(n_orb=10, n_dets=25, seed=707)
+    ones = ManyBodyState(dict.fromkeys(dets, 1.0 + 0j), width=1)
+    scaled = ManyBodyState(dict.fromkeys(dets, 0.5 - 3j), width=1)
+    assert op.diagonal(ones).tobytes() == op.diagonal(scaled).tobytes()
+
+
+def test_diagonal_of_an_empty_block_is_an_empty_array():
+    op = _random_operator(n_orb=8, n_terms=20, seed=3)
+    out = op.diagonal(ManyBodyState(width=1))
+    assert out.shape == (0,)
+    assert out.dtype == complex
+
+
+def test_diagonal_of_a_hermitian_operator_is_real():
+    """A Hermitian `H` has real diagonal elements, which is why CIPSI takes `.real` of
+    this without a tolerance check."""
+    op = _random_operator(n_orb=10, n_terms=40, seed=11).hermitian_part()
+    dets = _determinants(n_orb=10, n_dets=30, seed=1111)
+    got = op.diagonal(ManyBodyState(dict.fromkeys(dets, 1.0 + 0j), width=1))
+    assert np.max(np.abs(got.imag)) < 1e-14

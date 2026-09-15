@@ -114,6 +114,30 @@ public:
   [[nodiscard]] ManyBodyBlockState apply(const ManyBodyBlockState &block,
                                          double cutoff = 0) const;
 
+  /**
+   * @brief The diagonal matrix elements <D|H|D> for every determinant of
+   * @p block, in row order. Amplitudes and width are ignored: only the keys
+   * are read.
+   *
+   * Exactly the `diag_accum` half of apply(): the same term loop in the same
+   * order, keeping only the terms that map a determinant to itself (the
+   * density terms and the general strings flagged m_flat_diagonal; a one-body
+   * hop has i != j and is never diagonal), and emitting no rows at all. So the
+   * result is bit-identical to reading back row D of `apply()` applied to the
+   * single-determinant state {D: 1} -- no off-diagonal term can contribute to
+   * that row, because a term maps D to D for one determinant only if its
+   * created and annihilated multisets agree, which makes it diagonal for every
+   * determinant.
+   *
+   * This exists because Epstein-Nesbet PT2 needs <D|H|D> and nothing else,
+   * while obtaining it from apply() costs the whole off-diagonal image: the
+   * CIPSI selection round measured a 10:1 ratio of rows built to rows read
+   * (doc/plans/dc_smo_memory.md round 9). Cost is O(rows x terms) time and
+   * O(rows) memory, with no accumulator and no hashing.
+   */
+  [[nodiscard]] std::vector<std::complex<double>>
+  diagonal(const ManyBodyBlockState &block) const;
+
   [[nodiscard]] size_type size() const noexcept;
   [[nodiscard]] bool empty() const noexcept;
   bool clear();

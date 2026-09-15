@@ -41,6 +41,7 @@ cdef extern from "ManyBodyOperator.h" nogil:
         void build_restriction_mask(const restrictions&)
         void build_weighted_restriction_mask(const weighted_restrictions&)
         ManyBodyBlockState apply(const ManyBodyBlockState&, double)
+        vector[ManyBodyBlockState.Value] diagonal(const ManyBodyBlockState&)
 
         mapped_type constant()
         void set_constant(mapped_type)
