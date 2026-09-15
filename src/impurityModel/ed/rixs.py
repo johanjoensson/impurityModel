@@ -386,6 +386,21 @@ class _R1SolverChain:
         return psi2_all
 
 
+def _n_live_sector_caches(psis):
+    """How many :class:`greens_function.SectorResolventCache` objects are alive at once.
+
+    One R1 cache per thermal eigenstate (``calc_map_cartesian``'s ``r1_caches``, keyed by
+    eigenstate and never evicted) plus the single R2 cache. It is the *size bound* that needs
+    this: each retained cache holds an ``(N, N)`` complex eigenvector matrix, and
+    :func:`gf_shift_recycling._sector_dense_max` derived that bound as if one cache existed --
+    under-counting the live set by exactly this factor (``doc/plans/dc_smo_memory.md``, round 9).
+
+    One definition, used by both the owner and the per-eigenstate call site, so the two cannot
+    disagree about how much memory the run is committed to.
+    """
+    return len(psis) + 1
+
+
 def _rixs_map_flat(
     hOp,
     in_ops,
@@ -532,7 +547,11 @@ def _rixs_map_flat(
         # alongside genuinely-populated psi1_all (see _R1SolverChain.solve's fallback
         # tier), so it must not be the width-0 polymorphic zero.
         psi2_all = [ManyBodyState(width=1) for _ in in_ops]
-        r1_cache = r1_caches.setdefault(e, gf.SectorResolventCache()) if r1_caches is not None else None
+        r1_cache = (
+            r1_caches.setdefault(e, gf.SectorResolventCache(n_live_caches=_n_live_sector_caches(psis)))
+            if r1_caches is not None
+            else None
+        )
         chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats)
         out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
         wins = wIns[w_chunk]
@@ -811,8 +830,13 @@ def calc_tensor_map(
     # eigendecomposition is computed once: every point's intermediate solve and
     # resolvent matrix become dense contractions. Held in this closure so they outlive
     # the per-round _rixs_map_flat calls of the adaptive sampler.
+    # One R1 cache per thermal eigenstate plus the single R2 cache, and none is ever evicted --
+    # a rebuild costs the full `eigh` (~450 s at 5565 determinants), so eviction is not the
+    # cheaper option. What has to know about the count is the *size bound*: each retained cache
+    # holds an (N, N) complex eigenvector matrix, so deriving that bound as if one cache existed
+    # under-counts the live set by `len(psis) + 1` (round 9).
     r1_caches = {}
-    r2_cache = gf.SectorResolventCache()
+    r2_cache = gf.SectorResolventCache(n_live_caches=_n_live_sector_caches(psis))
     solver_stats = _new_rixs_solver_stats()
 
     def eval_out(green_basis, psi2_all, E_e):

@@ -14,9 +14,13 @@ tests never check directly (they only check the final reconstructed x, not the i
 residual bookkeeping the resume/convergence loop actually relies on).
 """
 
+from itertools import pairwise
+
 import numpy as np
 
+from impurityModel.ed import gf_shift_recycling, rixs
 from impurityModel.ed.gf_shift_recycling import _shifted_tridiag_solutions
+from impurityModel.ed.memory_estimate import available_bytes_per_rank
 
 
 def _hermitian_2x2(diag_a, diag_b, off):
@@ -106,3 +110,50 @@ def test_shifted_tridiag_solutions_would_catch_a_wrong_coupling_bug():
     Y_perturbed, _ = _shifted_tridiag_solutions(alphas, betas_perturbed, widths, b0, zs)
 
     assert not np.allclose(Y, Y_perturbed, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------------------
+# The dense-sector bound must be sized against the caches that are actually alive
+# (doc/plans/dc_smo_memory.md, round 9)
+# ---------------------------------------------------------------------------------------
+
+
+def test_the_dense_bound_is_unchanged_for_a_single_cache():
+    """The derivation callers already relied on: ~3 dense (N, N) arrays during one build, in a
+    quarter of the per-rank memory. Sizing for a live set must not move the single-cache case."""
+    expected = int(np.sqrt(0.25 * available_bytes_per_rank() / (3 * 16)))
+    assert gf_shift_recycling._sector_dense_max() == expected
+    assert gf_shift_recycling._sector_dense_max(1) == expected
+
+
+def test_the_dense_bound_shrinks_as_more_caches_are_held_live():
+    """`calc_map_cartesian` keeps one `SectorResolventCache` per thermal eigenstate plus the R2
+    one, and never evicts. Each retains an (N, N) complex eigenvector matrix, so the budget the
+    bound was derived against is spent `n_live` times over -- with 10 eigenstates, ~3.5x.
+
+    The bound must fall with the live count. It is not a tuning preference: the alternative is a
+    live set that outgrows the memory the cap was chosen to respect.
+    """
+    caps = [gf_shift_recycling._sector_dense_max(n) for n in (1, 2, 5, 10, 20)]
+    assert caps == sorted(caps, reverse=True), caps
+    assert all(a > b for a, b in pairwise(caps)), caps
+    # The retained bytes are what the bound exists to hold down: n_live * N^2 * 16 must stay
+    # inside the budget the single-cache derivation used for its own peak.
+    budget = 0.25 * available_bytes_per_rank()
+    for n, cap in zip((1, 2, 5, 10, 20), caps):
+        assert (n + 2) * cap**2 * 16 <= budget * 1.001, (n, cap)
+
+
+def test_an_explicit_override_still_wins():
+    """`GF_SECTOR_DENSE_MAX` is the user's, and the live-set derivation must not override it."""
+    import os
+
+    os.environ["GF_SECTOR_DENSE_MAX"] = "1234"
+    try:
+        assert gf_shift_recycling._sector_dense_max(50) == 1234
+    finally:
+        del os.environ["GF_SECTOR_DENSE_MAX"]
+
+
+def test_the_live_cache_count_is_one_per_eigenstate_plus_r2():
+    assert rixs._n_live_sector_caches([object()] * 7) == 8

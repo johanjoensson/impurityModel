@@ -184,7 +184,25 @@ DEFAULT_MEMORY_SAFETY = 0.5
 # is unlimited in practice.
 _CGROUP_UNLIMITED = 1 << 60
 
-_ranks_per_node_cache: dict = {}
+#: Communicator attribute holding this communicator's ranks-per-node count.
+#:
+#: Not a module-level ``dict`` keyed by ``comm.py2f()``, which is what this used to be. That
+#: handle is an MPI *Fortran handle*, and MPI is free to **reuse it once the communicator is
+#: freed** -- which this stack does in several places (``manybody_basis.Basis.__del__``'s explicit
+#: free, ``mpi_comm``'s evictions, and ``available_bytes_per_rank``'s own ``shared.Free()``). A
+#: recycled handle would then read back the previous communicator's count, scaling every memory
+#: budget derived from it by the ratio of their ranks-per-node. Never observed in a log, but the
+#: budget is exactly what round 9 was about, so a latent factor-of-anything under it is not worth
+#: keeping.
+#:
+#: An MPI attribute is destroyed with the communicator it is attached to, so staleness is
+#: impossible by construction. No copy function is registered, so a ``Dup`` re-derives its own
+#: value rather than inheriting one -- correct either way here, and the cheaper assumption to
+#: defend.
+try:
+    _RANKS_PER_NODE_KEYVAL = MPI.Comm.Create_keyval()
+except Exception:  # pragma: no cover - an MPI without attribute caching
+    _RANKS_PER_NODE_KEYVAL = None
 
 
 def _retains_krylov(reort):
@@ -774,9 +792,10 @@ def available_bytes_per_rank(comm=None):
        result). Never gate the call on rank-local state.
 
     The node's ``MemAvailable`` is divided by the number of ranks on that node
-    (``MPI.COMM_TYPE_SHARED`` split, freed immediately at this synchronized point;
-    the ranks-per-node count is cached per communicator). The global minimum is
-    returned so all ranks agree on one budget.
+    (``MPI.COMM_TYPE_SHARED`` split, freed immediately at this synchronized point; the
+    ranks-per-node count is cached **on the communicator**, as an MPI attribute, so it cannot
+    outlive it -- see :data:`_RANKS_PER_NODE_KEYVAL`). The global minimum is returned so all ranks
+    agree on one budget.
 
     Parameters
     ----------
@@ -791,13 +810,13 @@ def available_bytes_per_rank(comm=None):
     node_bytes = _node_available_bytes()
     if comm is None or comm.size == 1:
         return node_bytes
-    cache_key = comm.py2f()
-    ranks_on_node = _ranks_per_node_cache.get(cache_key)
+    ranks_on_node = None if _RANKS_PER_NODE_KEYVAL is None else comm.Get_attr(_RANKS_PER_NODE_KEYVAL)
     if ranks_on_node is None:
         shared = comm.Split_type(MPI.COMM_TYPE_SHARED)
         ranks_on_node = shared.size
         shared.Free()
-        _ranks_per_node_cache[cache_key] = ranks_on_node
+        if _RANKS_PER_NODE_KEYVAL is not None:
+            comm.Set_attr(_RANKS_PER_NODE_KEYVAL, ranks_on_node)
     return comm.allreduce(node_bytes // max(1, ranks_on_node), op=MPI.MIN)
 
 

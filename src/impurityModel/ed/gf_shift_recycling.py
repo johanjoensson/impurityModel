@@ -28,17 +28,34 @@ from impurityModel.ed.memory_estimate import available_bytes_per_rank, format_by
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 
 
-def _sector_dense_max():
+def _sector_dense_max(n_live_caches=1):
     """Largest sector size the spectral cache may densify (:data:`config.GF_SECTOR_DENSE_MAX`).
 
-    The eigendecomposition holds ~3 dense ``(N, N)`` complex arrays (H, the eigenvector
-    matrix and LAPACK workspace); unset, the cap is derived so that fits in a quarter of the
-    available per-rank memory.
+    Building one cache holds ~3 dense ``(N, N)`` complex arrays (H, the eigenvector matrix and
+    LAPACK workspace); afterwards only the eigenvector matrix is retained. Unset, the cap is
+    derived so the whole live set fits in a quarter of the available per-rank memory.
+
+    ``n_live_caches`` is how many caches will be **alive at once**, which is not always one:
+    :func:`rixs.calc_map_cartesian` keeps one ``SectorResolventCache`` per thermal eigenstate in
+    its ``r1_caches`` dict, plus ``r2_cache``, and none is ever evicted. Deriving the cap as if a
+    single cache existed therefore under-counts the live total by that factor -- with 10 retained
+    eigenstates the budget it is sized against is already spent ~3.5x over. The peak is
+    ``(n_live - 1)`` retained eigenvector matrices plus the 3 arrays of the build in progress:
+
+        N = sqrt(0.25 * available / ((n_live + 2) * 16))
+
+    which reduces to the previous expression at ``n_live = 1``, so the single-cache callers are
+    unchanged. A smaller ``N`` means more sectors are *declined* and fall back to the per-seed
+    solver -- slower, and the right trade against an unbounded live set. Eviction is not the
+    alternative: a rebuild costs the full ``eigh`` (measured ~450 s at 5565 determinants).
+
+    See ``doc/plans/dc_smo_memory.md``, round 9.
     """
     override = config.GF_SECTOR_DENSE_MAX.get()
     if override is not None:
         return override
-    return int(np.sqrt(0.25 * available_bytes_per_rank() / (3 * 16)))
+    n_live = max(1, int(n_live_caches))
+    return int(np.sqrt(0.25 * available_bytes_per_rank() / ((n_live + 2) * 16)))
 
 
 def _sector_cache_dir():
@@ -87,7 +104,11 @@ class SectorResolventCache:
     replicated dense eigenbasis.
     """
 
-    def __init__(self):
+    def __init__(self, n_live_caches=1):
+        #: How many caches the owner keeps alive at once, so the size bound can be derived
+        #: against the real live set rather than against this one cache. See
+        #: :func:`_sector_dense_max`.
+        self._n_live_caches = max(1, int(n_live_caches))
         self._index = None  # determinant -> row
         self._evals = None
         self._evecs = None
@@ -110,7 +131,7 @@ class SectorResolventCache:
             return False
         if self._covers(seeds):
             return True
-        bound = _sector_dense_max()
+        bound = _sector_dense_max(self._n_live_caches)
         self._expand_to_closure(basis, hOp, seeds, slaterWeightMin, size_bound=bound)
         if len(basis) > bound:
             self._declined = True

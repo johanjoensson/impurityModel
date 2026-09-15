@@ -667,3 +667,48 @@ def test_round8_smo_crash_geometry_is_refused(monkeypatch):
         )
         unit_cap = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=resident)
         assert unit_cap < cap, (ranks, unit_cap)
+
+
+# ---------------------------------------------------------------------------------------
+# The ranks-per-node count must not outlive the communicator it was measured on
+# (doc/plans/dc_smo_memory.md, round 9)
+# ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.mpi
+def test_the_ranks_per_node_count_is_attached_to_the_communicator_not_to_its_handle():
+    """This was cached in a module-level dict keyed on ``comm.py2f()``.
+
+    That is an MPI *Fortran handle*, and MPI may reuse it once the communicator is freed -- which
+    this stack does in several places, including inside ``available_bytes_per_rank`` itself. A
+    recycled handle would then read back the previous communicator's ranks-per-node count and
+    scale every memory budget derived from it by the ratio of the two.
+
+    An MPI attribute is destroyed with its communicator, so the stale read is impossible by
+    construction rather than merely unlikely. Asserted here on a communicator that is freed and
+    replaced; the test reports whether the handle was actually recycled on this run, because that
+    is the case the old key got wrong and it is not reproducible on demand.
+    """
+    # Freed, not leaked: `MPI_Comm_free` is collective, and a communicator left to the garbage
+    # collector can be freed after `MPI_Finalize` (CLAUDE.md's MPI rules).
+    shared = MPI.COMM_WORLD.Split_type(MPI.COMM_TYPE_SHARED)
+    expected_ranks_on_node = shared.size
+    shared.Free()
+
+    a = MPI.COMM_WORLD.Dup()
+    me.available_bytes_per_rank(a)
+    assert a.Get_attr(me._RANKS_PER_NODE_KEYVAL) == expected_ranks_on_node
+    handle = a.py2f()
+    a.Free()
+
+    b = MPI.COMM_WORLD.Dup()
+    recycled = b.py2f() == handle
+    try:
+        assert (
+            b.Get_attr(me._RANKS_PER_NODE_KEYVAL) is None
+        ), f"a fresh communicator saw a freed one's cached count (handle recycled: {recycled})"
+        # And it re-derives the same value from scratch, i.e. dropping the stale read costs
+        # correctness nothing.
+        assert me.available_bytes_per_rank(b) == me.available_bytes_per_rank(MPI.COMM_WORLD)
+    finally:
+        b.Free()
