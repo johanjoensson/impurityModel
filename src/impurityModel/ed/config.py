@@ -506,9 +506,16 @@ GS_SELECTION_CHUNK = Knob(
     chunk 8 (-15%) with `e0` bit-identical. That did not survive contact with the cluster: on the
     128-rank SrMnO3 gap-DC run, a chunk-8 job and an unchunked one hit the *identical* memory-guard
     message (a 2.9 GiB round transient over a 1.9 GiB resident set) and tightened to the *same*
-    3,630,778 determinants. The reason is the one this docstring already gives above -- `n_Dj` is
-    rank-local, so at 128 ranks the score stack is tens of MB, not hundreds, and bounding it
-    changes nothing. The 1-rank number was an artifact of local == global. Chunking happens on
+    3,630,778 determinants.
+
+    **The reason is not that the score stack is small.** A 128-rank site ledger measured
+    `_score_candidates` growing by **1,327 MiB** on the N-1 sector at `p=326`: `n_Dj` is
+    rank-local, but `p` is not, and it reaches the hundreds at production, so the `(p, n_Dj)`
+    stack is over a gigabyte. Bounding it still changes nothing, because that site is **not the
+    peak-setter** -- `_apply_block_and_redistribute` reaches 5,514 MiB absolute against
+    `_score_candidates`' 4,748 -- so chunking lowers a site that never touches the high-water
+    mark. `GS_APPLY_ROW_CHUNKS`, which bounds the apply, is the knob that acts on the peak at
+    this shape. Chunking happens on
     group boundaries only
     (`_degenerate_groups`) -- a degenerate manifold is never split across a chunk -- which is what
     keeps the result exact: the manifold-summed score is `max over independent groups of
