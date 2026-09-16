@@ -500,15 +500,16 @@ GS_SELECTION_CHUNK = Knob(
     global one the cycle log reports (that field is an `_allreduce_sum`), so the stack this knob
     bounds is smaller than the log suggests by roughly the rank count over the routing skew: see
     `doc/plans/dc_smo_memory.md`, written against the SrMnO3 double-counting search that was
-    OOM-killed with a selection round at p~68-104. **Measured verdict: worth setting, since the
-    CIPSI candidate energies became exact.** While the round still built the candidates' whole
-    off-diagonal image, `_score_candidates` ran *after* the high-water mark was already set
-    elsewhere and chunking moved a full solve only 1376.0 -> 1375.6 MiB. With that image gone
-    this site sets the peak, and the same knob now moves the same solve 1306.3 -> 1109.6 MiB at
-    chunk 8 (-15%), 1106.1 at chunk 1, `e0` bit-identical and runtime unchanged. The default is
-    still unset because that measurement is at 1 rank; confirm on your own geometry before
-    relying on it, as `GS_MATVEC_EXCHANGE` and `GS_APPLY_ROW_CHUNKS` were before they became
-    defaults. Chunking happens on group boundaries only
+    OOM-killed with a selection round at p~68-104. **Measured verdict: leave it unset -- it is a
+    no-op at production rank counts.** At 1 rank, once the CIPSI candidate energies became exact
+    and this site started setting the peak, the knob moved a full solve 1306.3 -> 1109.6 MiB at
+    chunk 8 (-15%) with `e0` bit-identical. That did not survive contact with the cluster: on the
+    128-rank SrMnO3 gap-DC run, a chunk-8 job and an unchunked one hit the *identical* memory-guard
+    message (a 2.9 GiB round transient over a 1.9 GiB resident set) and tightened to the *same*
+    3,630,778 determinants. The reason is the one this docstring already gives above -- `n_Dj` is
+    rank-local, so at 128 ranks the score stack is tens of MB, not hundreds, and bounding it
+    changes nothing. The 1-rank number was an artifact of local == global. Chunking happens on
+    group boundaries only
     (`_degenerate_groups`) -- a degenerate manifold is never split across a chunk -- which is what
     keeps the result exact: the manifold-summed score is `max over independent groups of
     (group-summed de2)`, and an elementwise running max over already-processed groups equals
