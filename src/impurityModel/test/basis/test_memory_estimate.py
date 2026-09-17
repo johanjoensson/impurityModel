@@ -676,6 +676,11 @@ def test_round8_smo_crash_geometry_is_refused(monkeypatch):
 
 
 @pytest.mark.mpi
+@pytest.mark.skipif(
+    MPI.COMM_WORLD.size == 1,
+    reason="`available_bytes_per_rank` returns the node's bytes before it reaches the cache when "
+    "`comm.size == 1`, so no count is ever attached and there is nothing here to assert",
+)
 def test_the_ranks_per_node_count_is_attached_to_the_communicator_not_to_its_handle():
     """This was cached in a module-level dict keyed on ``comm.py2f()``.
 
