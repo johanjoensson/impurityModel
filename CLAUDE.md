@@ -37,14 +37,26 @@ Extras: `.[dev]` (pytest, pytest-mpi, black, ruff, mypy, cython-lint), `.[doc]` 
 
 ## Test gate
 
-Run both after every change; each commit should be green on both:
+Run all three after every change; each commit should be green on all three:
 
 ```bash
 python -m pytest
+mpiexec -n 1 python -m pytest --with-mpi
 mpiexec -n 2 python -m pytest --with-mpi
 ```
 
-CI runs serial, `-n 1`, `-n 2`, and `-n 3`. Benchmarks are opt-in: `pytest -m benchmark`.
+CI runs serial, `-n 1`, `-n 2`, and `-n 3`. `-n 1` is in the gate because it is a CI leg and
+it is the one rank count a multi-rank precondition cannot satisfy: a `@pytest.mark.mpi` test
+that needs `comm.size > 1` goes green at `-n 2`/`-n 3` and is born red in CI. That is how
+`test_the_ranks_per_node_count_is_attached_to_the_communicator_not_to_its_handle` shipped —
+`available_bytes_per_rank` returns from its `comm.size == 1` early return before it reaches
+the cache the test asserts on. Such a test needs
+`@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason=...)`, not a version that runs at one
+rank on only the assertions that happen to hold. `-n 1` is also the *first* MPI step in CI,
+so a failure there takes the `-n 2`, `-n 3`, coverage and rank-invariance steps down with it
+and you learn nothing about them.
+
+Benchmarks are opt-in: `pytest -m benchmark`.
 MPI tests are marked `@pytest.mark.mpi`; non-root rank output goes to `.pytest_mpi_rank*.out`.
 An empty rank (owns zero local determinants under `routing_hash() % comm.size`) only
 appears at `-n 3`+ for small hash-distributed test fixtures — `-n 2` never exercises it.
