@@ -2502,3 +2502,45 @@ def test_a_memory_bound_search_raises_on_every_rank(monkeypatch):
     # here -- a hang would instead show up earlier, inside the criterion, which is the point.
     verdicts = MPI.COMM_WORLD.allgather(raised)
     assert all(verdicts), f"the rejection was not rank-invariant: {verdicts}"
+
+
+@pytest.fixture(autouse=True)
+def _clear_dc_de2_min(monkeypatch):
+    """`DC_DE2_MIN` is read lazily from the environment, so a stray export in the shell that runs
+    the suite would otherwise change what these tests measure (the trap recorded for every knob
+    promoted from a literal)."""
+    monkeypatch.delenv("DC_DE2_MIN", raising=False)
+
+
+def test_dc_de2_min_defaults_to_the_ground_state_threshold():
+    """Unset, the double-counting sector solves must use exactly `GS_DE2_MIN` -- adding the knob
+    must not move any existing answer."""
+    from impurityModel.ed import config
+    from impurityModel.ed.groundstate import GS_DE2_MIN
+
+    assert config.DC_DE2_MIN.get() is None
+    assert (config.DC_DE2_MIN.get() or GS_DE2_MIN) == GS_DE2_MIN
+
+
+def test_dc_de2_min_overrides_when_set(monkeypatch):
+    from impurityModel.ed import config
+    from impurityModel.ed.groundstate import GS_DE2_MIN
+
+    monkeypatch.setenv("DC_DE2_MIN", "1e-6")
+    resolved = config.DC_DE2_MIN.get() or GS_DE2_MIN
+    assert resolved == 1e-6
+    assert resolved > GS_DE2_MIN, "the knob exists to LOOSEN the floor"
+
+
+def test_dc_sector_solve_reads_the_knob_not_the_constant():
+    """Pin the call site: the sector solve must resolve `DC_DE2_MIN`, not pass `GS_DE2_MIN`
+    directly. Asserted against the source because the defect this guards against is a dropped
+    override at one call site -- the same shape as the `gs_num_wanted` gap, where a test that
+    drove the call itself was green against the bug."""
+    import inspect
+
+    from impurityModel.ed import dc_criteria
+
+    src = inspect.getsource(dc_criteria)
+    assert "de2_min=(config.DC_DE2_MIN.get() or GS_DE2_MIN)" in src
+    assert "de2_min=GS_DE2_MIN," not in src, "the unconditional constant must be gone"

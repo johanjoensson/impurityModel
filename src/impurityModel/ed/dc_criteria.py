@@ -688,7 +688,13 @@ class _SectorContext:
             # on -- so the DC would be determined on a looser variational space than the
             # self-energy run that consumes it. Last unshared convention on the parity list in
             # this module's docstring.
-            de2_min=GS_DE2_MIN,
+            # `DC_DE2_MIN` overrides this; unset it is `GS_DE2_MIN` exactly. The reason to
+            # match is parity, not accuracy, and parity is only real when both spaces are
+            # PT2-converged -- on a workload whose DC sectors are memory-bound (SrMnO3: 1.6 of
+            # PT2 importance discarded at 2,745,510 determinants, against a production ground
+            # state that converged at 200,565) the memory guard sets that space, not this
+            # threshold, and the knob's docstring carries the measured cost of loosening it.
+            de2_min=(config.DC_DE2_MIN.get() or GS_DE2_MIN),
             # Opt-in (see the field docstring): ask for just the degenerate ground multiplet
             # rather than the full thermal window. `max_energy=0.0` reuses `solve_sector`'s own
             # degeneracy tolerance (`_energy_cut_indices`'s `tol` absorbs any state degenerate

@@ -779,6 +779,41 @@ DC_ALLOW_MEMORY_BOUND = Knob(
 )
 
 
+DC_DE2_MIN = Knob(
+    name="DC_DE2_MIN",
+    kind="float",
+    default=None,  # unset = GS_DE2_MIN, i.e. today's behaviour exactly
+    minimum=0.0,
+    group="double-counting",
+    doc="""Epstein-Nesbet PT2 admission floor for the double-counting search's **charge-sector
+    solves** (`dc_criteria`'s `solve_sector` calls). Unset uses :data:`groundstate.GS_DE2_MIN`
+    (1e-8), which is what the search has always done.
+
+    **Why this is separable, and when to loosen it.** Matching `GS_DE2_MIN` buys *parity* -- the DC
+    determined on the same variational space as the self-energy run that consumes it -- not
+    accuracy; `groundstate`'s own note records the measurement, on `nio_5peeled`: moving these
+    sector energies from `1e-6` to `1e-8` shifts the gap centre 0.3 meV, i.e. ~2.7 meV in `mu`
+    after the `1 / |chi|` amplification, **at 4x the cost**, while raising the determinant cap from
+    2,000 to 8,000 shifts it ~54 meV. Truncation drift dominates; the PT2 floor does not.
+
+    Weigh 2.7 meV against the tolerance the search itself already admits. On the SrMnO3 gap-DC the
+    record reports `chi = -0.4537` with *"dc determined to +- 5.51e-02 by the search tolerance
+    alone"* -- so at `1e-8` the sector energies are converged roughly **20x finer than the search
+    resolves**, for 4x the time and a proportionally larger basis.
+
+    **And on that workload the parity argument does not apply**, because parity is not achieved:
+    the production ground state was PT2-converged at 200,565 determinants (`candidates=0`), while
+    the DC's N-1 sector was *memory-bound* at 2,745,510 with 1.6 of PT2 importance discarded. What
+    sets that sector's space is the memory guard, not this threshold. Loosening it there costs
+    little that was being bought, and shrinks a basis whose size is the reason the search needs
+    64 ranks per node (`doc/plans/dc_smo_memory.md`, round 9).
+
+    Keep the default when the DC's answer is the deliverable and cost is not binding; raise it to
+    `1e-6` when the search is what stands between you and a self-energy. It does **not** loosen the
+    sector *walk*, which has its own looser constant for its own reason
+    (:data:`groundstate.SECTOR_WALK_DE2_MIN`), nor the production ground state.""",
+)
+
 DC_CAP_STRATEGY = Knob(
     name="DC_CAP_STRATEGY",
     kind="str",
@@ -920,6 +955,7 @@ KNOBS: dict[str, Knob] = _register(
     GS_MEMORY_BUDGET_SAFETY,
     GS_MEMORY_BUDGET_INCLUDE_RESIDENT,
     DC_ALLOW_MEMORY_BOUND,
+    DC_DE2_MIN,
     DC_CAP_STRATEGY,
     DC_CAP_LADDER_START,
     DC_CAP_LADDER_MAX_RUNGS,

@@ -2289,6 +2289,54 @@ always said "gs_num_wanted was not supplied" on this path. Nothing diffed the tw
 asymmetry -- present in one, absent in the other, in the same job -- went unread. That is the same
 failure mode as this round's other findings: the information was in the log.
 
+### Step 9: the DC search is not strict where it looks strict
+
+Asked whether the double-counting search could be loosened -- 1e-6 would do, 1e-3 would be
+acceptable -- the record says the *search* tolerance is not the tight thing:
+
+```
+tol              = 2.50e-02
+mu_tol_effective = 9.89e-02
+chi              = -0.4537   (dc determined to +- 5.51e-02 by the search tolerance alone)
+evaluations      = 3
+```
+
+`tol` is already **2.5e-2**, looser than 1e-3, and the search converged in **3 evaluations**.
+Loosening it saves at most one. The 6.3 h is per-evaluation cost, not evaluation count.
+
+**What is converged 20x finer than the answer is resolved** is the PT2 admission floor on the
+sector solves: `dc_criteria` passed `de2_min=GS_DE2_MIN` = **1e-8**. `groundstate`'s own note
+records the measurement (`nio_5peeled`): moving these energies from `1e-6` to `1e-8` shifts the gap
+centre 0.3 meV -- ~2.7 meV in `mu` after the `1 / |chi|` amplification -- **at 4x the cost**, while
+a cap change from 2,000 to 8,000 moves it ~54 meV. So the sector energies are held to ~2.7 meV
+inside a search that admits **+-55 meV**.
+
+**And the stated reason for 1e-8 does not hold on this workload.** The note is explicit that
+matching `GS_DE2_MIN` buys *parity* -- the DC determined on the same variational space as the
+self-energy run that consumes it -- "not accuracy". Parity is not achieved here:
+
+| | space reached | how it stopped |
+|---|---|---|
+| production ground state | 200,565 determinants | **PT2-converged** (`candidates=0`, subthreshold mass 5.1e-04) |
+| DC N-1 sector | 2,745,510 determinants | **memory-bound**, 1.6 of PT2 importance discarded |
+
+The memory guard sets the DC sector's space, not `de2_min`. Paying 4x for parity with a space that
+is not PT2-converged buys nothing that was on offer.
+
+**Shipped:** `DC_DE2_MIN`, defaulting to `None` = `GS_DE2_MIN`, so nothing moves unless it is set.
+It loosens only the DC's charge-sector solves -- not the sector walk (which has its own looser
+constant for its own reason) and not the production ground state. The knob's docstring carries the
+measured cost of loosening.
+
+**Why this is the right kind of approximation to take, and the cap is not.** A binding cap in the
+GF truncates the *basis*, losing spectral weight where the bath lives -- that is the mechanism that
+produced this crash's acausal `Sigma`, and lowering the cap makes it worse. Raising `de2_min`
+instead stops admitting candidates whose PT2 importance is below a stated floor, and the error is
+**bounded and reported** (`subthreshold_de2_mass`). The second is a controlled approximation with a
+number attached; the first is not. It also shrinks the basis whose size is the only reason the DC
+needs 64 ranks per node, which is what puts the DC and the production phases at odds when the whole
+job must fit two nodes.
+
 ### Corrections to earlier claims in this document
 
 * **`reort="partial"` saves projection FLOPs, not store bytes.** Retention is mode-independent
