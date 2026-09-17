@@ -2532,15 +2532,74 @@ def test_dc_de2_min_overrides_when_set(monkeypatch):
     assert resolved > GS_DE2_MIN, "the knob exists to LOOSEN the floor"
 
 
-def test_dc_sector_solve_reads_the_knob_not_the_constant():
-    """Pin the call site: the sector solve must resolve `DC_DE2_MIN`, not pass `GS_DE2_MIN`
-    directly. Asserted against the source because the defect this guards against is a dropped
-    override at one call site -- the same shape as the `gs_num_wanted` gap, where a test that
-    drove the call itself was green against the bug."""
+def test_dc_sector_solve_reads_the_resolved_threshold_not_a_constant():
+    """Pin the call site: the sector solve must use the context's resolved `de2_min`, never a
+    hard-coded constant. Asserted against the source because the defect this guards against is a
+    dropped override at one call site -- the same shape as the `gs_num_wanted` gap, where a test
+    that drove the call itself was green against the bug."""
     import inspect
 
     from impurityModel.ed import dc_criteria
 
     src = inspect.getsource(dc_criteria)
-    assert "de2_min=(config.DC_DE2_MIN.get() or GS_DE2_MIN)" in src
+    assert "de2_min=self.de2_min," in src
     assert "de2_min=GS_DE2_MIN," not in src, "the unconditional constant must be gone"
+
+
+def test_dc_de2_min_precedence_argument_beats_knob_beats_default(monkeypatch):
+    """RSPt line > DC_DE2_MIN > GS_DE2_MIN. Input files are the intended way to set this, so the
+    explicit argument has to win over the environment."""
+    from impurityModel.ed.dc_criteria import _resolve_dc_de2_min
+    from impurityModel.ed.groundstate import GS_DE2_MIN
+
+    monkeypatch.delenv("DC_DE2_MIN", raising=False)
+    assert _resolve_dc_de2_min() == GS_DE2_MIN
+    assert _resolve_dc_de2_min(1e-5) == 1e-5
+
+    monkeypatch.setenv("DC_DE2_MIN", "1e-6")
+    assert _resolve_dc_de2_min() == 1e-6
+    assert _resolve_dc_de2_min(1e-5) == 1e-5, "the explicit argument must beat the environment"
+
+
+def test_dc_criteria_accept_de2_min_and_carry_it_to_the_context():
+    """Both sector-based criteria take the parameter and hand it to the shared context, the same
+    route `ground_state_manifold` takes. `fixed_occupation_dc` is deliberately excluded: it solves
+    through `calc_gs`, the production ground-state path, so loosening it there would change the
+    self-energy's own basis rather than only the double counting's."""
+    import inspect
+
+    from impurityModel.ed import dc_criteria
+
+    for name in ("fixed_gap_dc", "fixed_peak_dc"):
+        sig = inspect.signature(getattr(dc_criteria, name))
+        assert "de2_min" in sig.parameters, name
+        assert sig.parameters["de2_min"].default is None, name
+    assert "de2_min" not in inspect.signature(dc_criteria.fixed_occupation_dc).parameters
+    assert "de2_min" in inspect.signature(dc_criteria._prepare_sector_context).parameters
+
+
+def test_fixed_gap_dc_de2_min_reaches_the_sector_solves_and_is_recorded():
+    """A `de2_min` passed to the criterion (the route the RSPt double-counting line uses) must
+    reach the charge-sector solves and be reported, not silently dropped.
+
+    Recorded rather than inferred, for the same reason `ground_state_manifold` is: two runs at
+    different PT2 floors are otherwise indistinguishable in the record, and a reader comparing
+    them needs to know which variational space produced each answer.
+
+    A loose floor on this tiny fixture must not move `dc` outside the search's own tolerance --
+    the fixture's sectors are small enough to be PT2-converged either way, so this pins the
+    plumbing rather than the physics. The physics claim (that loosening is cheap) is measured on
+    real workloads and recorded in `DC_DE2_MIN`'s docstring, not asserted here.
+    """
+    kwargs, dc_guess = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
+    report_default, report_loose = {}, {}
+    dc_default = fixed_gap_dc(offset=0.0, report=report_default, **kwargs)
+    dc_loose = fixed_gap_dc(offset=0.0, de2_min=1e-5, report=report_loose, **kwargs)
+    assert_uniform_shift(dc_default, dc_guess)
+    assert_uniform_shift(dc_loose, dc_guess)
+
+    from impurityModel.ed.groundstate import GS_DE2_MIN
+
+    assert report_default["de2_min"] == GS_DE2_MIN, "unset must reproduce the historical floor"
+    assert report_loose["de2_min"] == 1e-5, "the criterion's argument must reach the context"
+    np.testing.assert_allclose(np.diag(dc_default).real, np.diag(dc_loose).real, atol=5e-3)

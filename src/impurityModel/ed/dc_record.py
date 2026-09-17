@@ -69,6 +69,7 @@ _FIELDS = (
     ("delta_sum_vs_chi", "{:.3f}"),
     ("manifold_spread", "{:.3f}"),
     ("ground_state_manifold", "{}"),
+    ("de2_min", "{:.2e}"),
     ("peak", "{:.6f}"),
     ("chi", "{:.4g}"),
     ("chi_span", "{:.4g}"),
@@ -248,6 +249,18 @@ def _annotate(record, key, text):
         sizes = record.get("manifold_states")
         over = "" if sizes is None else f" over {sizes} states (N+1/N/N-1)"
         return f"{text}   (max N_imp spread within a retained manifold{over}; 0 = thermal and T=0 agree)"
+    if key == "de2_min":
+        # The PT2 admission floor the charge-sector solves actually ran at, recorded because two
+        # runs at different floors are otherwise indistinguishable in this record -- and the
+        # variational space behind an answer is exactly what a reader comparing them needs. Read
+        # it next to `subthreshold_de2_mass`, which is the weight this floor declined: together
+        # they bound the approximation, which is what makes loosening it safer than lowering the
+        # determinant cap (that truncates the basis with no comparable bound).
+        from impurityModel.ed.groundstate import GS_DE2_MIN
+
+        if record.get(key) == GS_DE2_MIN:
+            return f"{text}   (PT2 admission floor of the sector solves; the default)"
+        return f"{text}   (PT2 admission floor of the sector solves; set on the DC line)"
     if key == "ground_state_manifold":
         # Which manifold convention the sector solves ran under, and so which occupation the rest
         # of this record reports. A field rather than an annotation on `manifold_spread`: only

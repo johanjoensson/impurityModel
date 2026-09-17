@@ -555,8 +555,21 @@ class _SectorContext:
     #: starts the *next* solve from, which is the actual memory/speed lever this exists for --
     #: see ``doc/plans/dc_smo_performance.md``'s Phase 3 discussion.
     ground_state_manifold: bool = False
+    #: Epstein-Nesbet PT2 admission floor for :meth:`sector_solve`'s CIPSI expansions. Resolved by
+    #: :func:`_prepare_sector_context` from, in order, the criterion's own ``de2_min`` argument
+    #: (the RSPt double-counting line), the ``DC_DE2_MIN`` environment knob, and finally
+    #: :data:`groundstate.GS_DE2_MIN` -- so leaving it unset reproduces the historical behaviour
+    #: exactly. Matching ``GS_DE2_MIN`` buys *parity* with the self-energy run that consumes the
+    #: answer, not accuracy; see the knob's docstring for the measured cost of loosening it, and
+    #: note that parity is only real when both spaces are PT2-converged rather than cap- or
+    #: memory-bound.
+    #: ``None`` resolves in :meth:`__post_init__`; `groundstate` is imported lazily throughout
+    #: this module (circular import), so the fallback cannot be a module-level default here.
+    de2_min: float = None
 
     def __post_init__(self):
+        if self.de2_min is None:
+            self.de2_min = _resolve_dc_de2_min()
         if self.n_center_at is None:
             self.n_center_at = {}
         if self.sector_at is None:
@@ -688,13 +701,9 @@ class _SectorContext:
             # on -- so the DC would be determined on a looser variational space than the
             # self-energy run that consumes it. Last unshared convention on the parity list in
             # this module's docstring.
-            # `DC_DE2_MIN` overrides this; unset it is `GS_DE2_MIN` exactly. The reason to
-            # match is parity, not accuracy, and parity is only real when both spaces are
-            # PT2-converged -- on a workload whose DC sectors are memory-bound (SrMnO3: 1.6 of
-            # PT2 importance discarded at 2,745,510 determinants, against a production ground
-            # state that converged at 200,565) the memory guard sets that space, not this
-            # threshold, and the knob's docstring carries the measured cost of loosening it.
-            de2_min=(config.DC_DE2_MIN.get() or GS_DE2_MIN),
+            # Resolved once in `_prepare_sector_context` (RSPt line > DC_DE2_MIN > GS_DE2_MIN),
+            # so every sector of a search shares one threshold and the record can report it.
+            de2_min=self.de2_min,
             # Opt-in (see the field docstring): ask for just the degenerate ground multiplet
             # rather than the full thermal window. `max_energy=0.0` reuses `solve_sector`'s own
             # degeneracy tolerance (`_energy_cut_indices`'s `tol` absorbs any state degenerate
@@ -812,7 +821,24 @@ class _SectorContext:
         return solution.occupation_ground if self.ground_state_manifold else solution.occupation
 
 
-def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, memory_label, ground_state_manifold=False):
+def _resolve_dc_de2_min(de2_min=None):
+    """The PT2 admission floor a double-counting sector solve should use.
+
+    Precedence: the criterion's own argument (which the RSPt double-counting line supplies) beats
+    the ``DC_DE2_MIN`` environment knob, which beats :data:`groundstate.GS_DE2_MIN`. Input files
+    are the intended way to set this; the knob stays for experiments and for sweeping a value
+    without editing an input.
+    """
+    from impurityModel.ed.groundstate import GS_DE2_MIN
+
+    if de2_min is not None:
+        return float(de2_min)
+    return config.DC_DE2_MIN.get() or GS_DE2_MIN
+
+
+def _prepare_sector_context(
+    model, basis, solver, *, comm=None, verbosity=0, memory_label, ground_state_manifold=False, de2_min=None
+):
     """Build the setup :class:`_SectorContext` holds, from the grouped option objects.
 
     Verbatim extraction of the preamble :func:`fixed_peak_dc` used to open with, so that
@@ -930,6 +956,7 @@ def _prepare_sector_context(model, basis, solver, *, comm=None, verbosity=0, mem
         rank=rank,
         verbose=verbose,
         ground_state_manifold=ground_state_manifold,
+        de2_min=_resolve_dc_de2_min(de2_min),
     )
 
 
@@ -945,6 +972,7 @@ def fixed_peak_dc(
     return_sector=False,
     report=None,
     ground_state_manifold=False,
+    de2_min=None,
 ):
     r"""
     Calculate the double counting correction using a fixed peak position criterion.
@@ -1021,6 +1049,13 @@ def fixed_peak_dc(
         silently returned -- placing a peak in the wrong charge state is not a tolerable
         approximation of the request, any more than a mis-sectored occupation search is (see the
         module docstring). Set ``True`` to accept whichever charge state the search lands on.
+    de2_min : float, optional
+        Epstein-Nesbet PT2 admission floor for the charge-sector CIPSI expansions. ``None``
+        (the default) falls back to the ``DC_DE2_MIN`` environment knob and then to
+        :data:`groundstate.GS_DE2_MIN`, i.e. the historical behaviour. Supplied from the RSPt
+        double-counting line as ``de2_min X``. Loosening it is a *bounded* approximation --
+        the skipped weight is reported as ``subthreshold_de2_mass`` -- unlike lowering the
+        determinant cap, which truncates the basis itself.
     ground_state_manifold : bool
         Opt-in, default ``False``. When ``True``, each sector solve asks for just the degenerate
         ground multiplet instead of the full thermal window, and the impurity occupation used is
@@ -1066,6 +1101,7 @@ def fixed_peak_dc(
             verbosity=verbosity,
             memory_label="fixed-peak dc",
             ground_state_manifold=ground_state_manifold,
+            de2_min=de2_min,
         )
         rank, verbose, tau = ctx.rank, ctx.verbose, ctx.tau
 
@@ -1186,6 +1222,7 @@ def fixed_peak_dc(
         # run without it. (This is also why the key is a printed field rather than an annotation
         # on `manifold_spread`: there is no such line here to hang it off.)
         dc_rec["ground_state_manifold"] = ctx.ground_state_manifold
+        dc_rec["de2_min"] = ctx.de2_min
         _dump_dc_matrices(ctx.dc_guess, dc, rank)
         if n_center != nominal_total and not allow_charge_state_change:
             raise RuntimeError(
@@ -1446,6 +1483,7 @@ def fixed_gap_dc(
     return_sector=False,
     report=None,
     ground_state_manifold=False,
+    de2_min=None,
 ):
     r"""Double counting from the **centre of the charge gap** -- after Karolak's insulator
     prescription.
@@ -1608,6 +1646,13 @@ def fixed_gap_dc(
         this one used to have a private dialect of its own (``gap_centre``, ``energy_tol``, the
         search's raw internal status), which is how a caller could assert on a field that had
         quietly stopped being written.
+    de2_min : float, optional
+        Epstein-Nesbet PT2 admission floor for the charge-sector CIPSI expansions. ``None``
+        (the default) falls back to the ``DC_DE2_MIN`` environment knob and then to
+        :data:`groundstate.GS_DE2_MIN`, i.e. the historical behaviour. Supplied from the RSPt
+        double-counting line as ``de2_min X``. Loosening it is a *bounded* approximation --
+        the skipped weight is reported as ``subthreshold_de2_mass`` -- unlike lowering the
+        determinant cap, which truncates the basis itself.
     ground_state_manifold : bool
         As :func:`fixed_peak_dc`: opt-in, default ``False``. Check ``manifold_spread`` (in
         ``report``, or ``occupation_spread`` via ``solver_trace``) from a **prior evaluation with
@@ -1642,6 +1687,7 @@ def fixed_gap_dc(
             verbosity=verbosity,
             memory_label="fixed-gap dc",
             ground_state_manifold=ground_state_manifold,
+            de2_min=de2_min,
         )
         rank, verbose, tau = ctx.rank, ctx.verbose, ctx.tau
 
@@ -1843,6 +1889,7 @@ def fixed_gap_dc(
                 # written on some paths and not others is how a stale value gets inherited
                 # (`dc_record.recording` does `report.update(record)` and never clears).
                 dc_rec["ground_state_manifold"] = ctx.ground_state_manifold
+                dc_rec["de2_min"] = ctx.de2_min
                 if mu_seen is not None:
                     delta_plus, delta_minus = _measure_edge_character(ctx, mu_seen, n_center_at[mu_seen])
                     dc_rec["delta_plus"], dc_rec["delta_minus"] = delta_plus, delta_minus
