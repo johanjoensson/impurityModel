@@ -2184,6 +2184,82 @@ least one row. Likewise, `redistribute_psis` returns its inputs unchanged when t
 distributed (`manybody_basis.py:367`), so its 1-rank row is a no-op rather than a measurement --
 the ledger now says so in its own output instead of leaving a plausible 0.0 in the table.
 
+### Step 7: the 128-rank ledger, which inverts this document's ranking
+
+Everything above is a 1-rank measurement. Measured at the geometry and shape the guard actually
+bound at -- 128 ranks, N-1 sector (impurity occupation 2), cap 2,745,510, `p` around 320, via
+`arrhenius_handover/round9/site_ledger_mpi.py`:
+
+| site | ABS peak | own transient | anon | shm |
+|---|---|---|---|---|
+| **`_apply_block_and_redistribute`** | **5,508 MiB** | **3,623 MiB** | 1,927 MiB | 1,015 MiB |
+| `_score_candidates` | 4,747 MiB | 1,337 MiB | 2,591 MiB | 1,015 MiB |
+| `_candidate_overlaps_and_energies` | 4,082 MiB | 1,323 MiB | 2,591 MiB | 1,015 MiB |
+
+**This inverts the ranking every earlier step worked from.** At 1 rank the apply was *last*
+(960.8 MiB absolute, behind the overlap build's 1,099.5); here it is first by 2.7x on the
+transient. The caveat attached to step 0 -- *"a hypothesis for the cluster, not a measurement of
+it"* -- was the right caveat, and the hypothesis was wrong.
+
+**Reproducibility, for the first time in this campaign.** Two independent 128-rank jobs ran the
+same leg: absolute peaks 5,508 vs 5,514 MiB (0.1%) and transients 3,623 vs 3,608 MiB (0.4%). Every
+other number in this document is single-sample; these are not.
+
+**Two corrections this forces.**
+
+*`_score_candidates` is not small at scale.* An earlier correction in this document said the score
+stack is "tens of MB, not hundreds" at 128 ranks because `n_Dj` is rank-local. It grows by
+**1,337 MiB**. `n_Dj` is rank-local but **`p` is not**, and `p` reaches the hundreds at production.
+The conclusion that `GS_SELECTION_CHUNK` buys nothing survived, but for the other reason: at the
+default apply chunking that site is not the peak-setter.
+
+*Ranking on the absolute column was the wrong cross-scale predictor.* This document's own rule --
+"the site whose ABS peak matches the process peak is the one that sets it" -- is correct within a
+run, and that is what it was introduced for. But for deciding *what to fix*, the **growth** column
+carried the signal: at 1 rank the apply already had the largest transient (541.9 MiB) while its
+absolute peak put it last. Rank candidates on their own cost; use the absolute column to identify
+which one currently touches the mark.
+
+### Step 7b: `GS_APPLY_ROW_CHUNKS=8`, and the peak moving to the next site
+
+`GS_APPLY_ROW_CHUNKS` bounds exactly the site that turned out to set the peak, and its default of 4
+was measured at cap 20,000 with a reference block ~4 columns wide. At `p` around 320:
+
+| | chunks=4 | chunks=8 |
+|---|---|---|
+| `_apply_block_and_redistribute` | **5,508** / 3,623 MiB | 4,323 / **2,409** MiB |
+| `_score_candidates` | 4,747 / 1,337 | **4,778** / 1,332 |
+| `_candidate_overlaps_and_energies` | 4,082 / 1,323 | 4,114 / 1,332 |
+| leg wall time | 4,911 s | 5,023 s |
+
+**-33% on the step, -13.2% on the selection round's high-water mark, for +2.3% wall time and one
+environment variable.** And the peak passes to `_score_candidates` (4,778), with the overlap build
+next at 4,114 -- so `GS_SELECTION_CHUNK`, refuted twice in this document, becomes the knob acting
+on the peak once the apply is chunked, with about 660 MiB of headroom between those two sites. Its
+docstring now carries that condition. This is the third time in round 9 that fixing the peak-setter
+promoted a previously-refuted knob; it is the campaign's most reliable pattern.
+
+**Inside the apply there is no single hot spot.** Splitting it (`--depth 2`):
+
+| | chunks=4 | chunks=8 |
+|---|---|---|
+| `redistribute_block` | 5,322 / 2,542 MiB | 4,288 / 1,485 MiB |
+| `_apply_and_prune_columns` | 5,196 / 2,877 MiB | 4,014 / 1,490 MiB |
+
+Both halves fall by ~45% together. The H-application and the pack/send/receive cost roughly the
+same and scale the same way, which is what the knob's own model says. So chunking is the mechanism
+and there is nothing obvious to rewrite: the accumulating merged block (`owned rows x p x 16 B`) is
+the floor, and `p` is set by the thermal window at `tau`.
+
+**`shm` is a ~1 GiB per-rank floor** on every row, at every chunk count. That is MPI's shared
+segment; `malloc_trim` measured 0% against it at 256 ranks, and no code change in the selection
+round touches it. It bounds what any fix here can ever return.
+
+**What to set on the production job.** `GS_APPLY_ROW_CHUNKS=8`, measured. It is not bit-identical
+(chunking changes the summation order of a candidate reached from rows in different chunks, the
+same class of difference a change of rank count makes), and the default stays 4 because 8 buys
+nothing at small `p` -- this is a per-workload setting like `GS_NUM_WANTED`.
+
 ### Corrections to earlier claims in this document
 
 * **`reort="partial"` saves projection FLOPs, not store bytes.** Retention is mode-independent

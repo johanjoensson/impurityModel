@@ -508,14 +508,18 @@ GS_SELECTION_CHUNK = Knob(
     message (a 2.9 GiB round transient over a 1.9 GiB resident set) and tightened to the *same*
     3,630,778 determinants.
 
-    **The reason is not that the score stack is small.** A 128-rank site ledger measured
-    `_score_candidates` growing by **1,327 MiB** on the N-1 sector at `p=326`: `n_Dj` is
-    rank-local, but `p` is not, and it reaches the hundreds at production, so the `(p, n_Dj)`
-    stack is over a gigabyte. Bounding it still changes nothing, because that site is **not the
-    peak-setter** -- `_apply_block_and_redistribute` reaches 5,514 MiB absolute against
-    `_score_candidates`' 4,748 -- so chunking lowers a site that never touches the high-water
-    mark. `GS_APPLY_ROW_CHUNKS`, which bounds the apply, is the knob that acts on the peak at
-    this shape. Chunking happens on
+    **The reason is not that the score stack is small, and the verdict is conditional on
+    `GS_APPLY_ROW_CHUNKS`.** A 128-rank site ledger on the N-1 sector (`p` around 320) measures
+    `_score_candidates` growing by **1,331 MiB**: `n_Dj` is rank-local, but `p` is not, and it
+    reaches the hundreds at production, so the `(p, n_Dj)` stack is over a gigabyte. At the
+    default `GS_APPLY_ROW_CHUNKS=4` bounding it still buys nothing, because it is not the
+    peak-setter -- `_apply_block_and_redistribute` reaches **5,508 MiB** absolute against
+    `_score_candidates`' 4,747. **At `GS_APPLY_ROW_CHUNKS=8` that inverts**: the apply drops to
+    4,323 MiB and `_score_candidates` becomes the high-water mark at 4,778, with
+    `_candidate_overlaps_and_energies` next at 4,114. So on a workload whose `p` is in the
+    hundreds, set the apply chunking first; this knob is then the one acting on the peak, and
+    its remaining headroom is the ~660 MiB between those two sites. Measured at 128 ranks, cap
+    2,745,510 (`doc/plans/dc_smo_memory.md`, round 9 step 7). Chunking happens on
     group boundaries only
     (`_degenerate_groups`) -- a degenerate manifold is never split across a chunk -- which is what
     keeps the result exact: the manifold-summed score is `max over independent groups of
@@ -623,8 +627,26 @@ GS_APPLY_ROW_CHUNKS = Knob(
     Costs `n` operator walks over the reference rows in total (each row is walked once), not `n`
     times the work. The default of 4 is the measured plateau on that workload (cap 20,000, growth
     cycle: step peak 673 MiB one-shot, 243 at 4 chunks, 248 at 8; `e0` bit-identical; about +1 s
-    per growth cycle) -- the accumulating merged block is the floor past 4, so more chunks buy
-    nothing. Set `1` to recover the one-shot path.""",
+    per growth cycle). **That plateau is a property of that shape, not of the code.** It was
+    measured with a reference block only ~4 columns wide; this step's cost scales with `p`, and a
+    production SrMnO3 double-counting sector runs at `p` in the low hundreds. Measured there --
+    128 ranks, N-1 sector, cap 2,745,510, `p` around 320 (`doc/plans/dc_smo_memory.md`, round 9
+    step 7):
+
+    | | chunks=4 | chunks=8 |
+    |---|---|---|
+    | this step, absolute peak | **5,508 MiB** | 4,323 MiB |
+    | this step, own transient | 3,623 MiB | **2,409 MiB** |
+    | the whole round's peak | 5,508 MiB | **4,778 MiB** |
+
+    i.e. **-33% on this step and -13% on the selection round's high-water mark**, at +2.3% wall
+    time, with the peak passing to `_score_candidates` (see `GS_SELECTION_CHUNK`, whose verdict is
+    conditional on this knob). Splitting the step further (`--depth 2`) shows both halves falling
+    together -- `_apply_and_prune_columns` 2,877 -> 1,490 MiB and `redistribute_block` 2,542 ->
+    1,485 -- so there is no single hot spot inside it to attack in code; chunking is the mechanism,
+    and the merged block remains the floor. **The default stays 4** because 8 is measured on one
+    workload and buys nothing at small `p` (248 vs 243 MiB at cap 20,000); set it per workload,
+    like `GS_NUM_WANTED`. Set `1` to recover the one-shot path.""",
 )
 
 GS_MATVEC_EXCHANGE = Knob(
