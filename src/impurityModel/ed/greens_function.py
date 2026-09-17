@@ -239,6 +239,112 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
     return thermal_average_scale_indep(es, M_per_state, tau)
 
 
+# Spectral side of a Green's-function work unit, in `get_Greens_function`'s `SIDES` order:
+# 0 = addition (a creation operator on the thermal state, inverse photoemission),
+# 1 = removal (an annihilation operator, photoemission).
+_UNIT_SIDE_LABELS = ("create (addition)", "annihilate (removal)")
+
+
+def _report_max_unit_basis(heading, rows):
+    """Print the largest basis each work unit reached, one line per unit.
+
+    Called once per completed calculation, on the rank that holds the assembled results
+    (global rank 0, or every rank of a serial run). Shared by the Green's-function drivers
+    here and by :func:`spectra.calc_spectra`, which differ in how they label a unit and in
+    *which* basis they measure -- hence the caller-supplied ``heading`` and pre-formatted
+    row labels. The sizes are global determinant counts (``Basis.size`` is the Allreduce'd
+    total, not this rank's share).
+
+    Not behind ``verbose``: sizing the next run's basis budget is exactly what someone reads
+    off a finished calculation, whereas the existing per-unit lines
+    (:func:`_block_green_group`, :func:`gf_solvers.block_Green_bicgstab`) are emitted mid-run
+    at ``-vv``, interleaved with every other unit's output.
+
+    Parameters
+    ----------
+    heading : str
+        Names the measurement, e.g. ``"Maximum excited basis size per unit"``. Callers must
+        distinguish measurements that are not the same construction -- the block-Lanczos
+        excited basis and the per-frequency rebuilt solve basis are both "how big did this
+        unit get" but are not comparable.
+    rows : list of (str, int or None, bool)
+        ``(label, size, cap_hit)`` per unit, in print order. ``size`` is ``None`` when the
+        recurrence's support was not tracked (the sparse block-Lanczos path with no finite
+        determinant cap -- only :class:`gf_primitives._CappedBasisProxy` counts the support
+        the matvec discovers, and it is installed only under a finite cap). ``cap_hit`` marks
+        a unit that froze at the cap, where the number reported *is* the cap and therefore
+        says nothing about how large the unit wanted to be. An empty list prints nothing.
+    """
+    if not rows:
+        return
+    label_width = max(len(label) for label, _, _ in rows)
+    tracked = [size for _, size, _ in rows if size is not None]
+    size_width = max((len(f"{size:,}") for size in tracked), default=0)
+    print(f"{heading}:", flush=True)
+    for label, size, cap_hit in rows:
+        if size is None:
+            detail = "not tracked (no determinant cap set)"
+        else:
+            noun = "determinant" if size == 1 else "determinants"
+            detail = f"{size:>{size_width},} {noun}" + (" -- frozen at the cap" if cap_hit else "")
+        print(f"  {label:<{label_width}}  {detail}", flush=True)
+    if tracked:
+        # Qualify the headline number wherever it is not the plain answer to "how big did the
+        # largest unit get": a frozen unit reports the cap, not its demand, and an untracked
+        # unit is missing from the maximum entirely -- without which "maximum over all units:
+        # 0 determinants" is what an uncapped run with two empty units prints.
+        untracked = sum(1 for _, size, _ in rows if size is None)
+        notes = []
+        if any(cap_hit for _, size, cap_hit in rows if size is not None):
+            notes.append("at least one unit froze at the cap, so this is a lower bound")
+        if untracked:
+            notes.append(f"{untracked} of {len(rows)} units not tracked and not counted here")
+        scope = "the tracked units" if untracked else "all units"
+        suffix = f" ({'; '.join(notes)})" if notes else ""
+        top = max(tracked)
+        print(f"  maximum over {scope}: {top:,} determinant{'' if top == 1 else 's'}{suffix}", flush=True)
+
+
+def _unit_basis_rows(blocks, max_basis):
+    """``(label, size, cap_hit)`` rows for a ``(block_i, side_i)``-keyed accumulator.
+
+    The row label pads the orbital block and the spectral side into fixed columns, measured
+    over the units that actually reported -- a block with no units contributes no line and no
+    indentation. ``max_basis[key]`` is ``(size, cap_hit)``; see :func:`_report_max_unit_basis`
+    for what a ``None`` size means.
+    """
+    labels = [str(block) for block in blocks]
+    reported = [(bi, si) for bi in range(len(labels)) for si in range(len(_UNIT_SIDE_LABELS)) if (bi, si) in max_basis]
+    if not reported:
+        return []
+    block_width = max(len(labels[bi]) for bi, _ in reported)
+    side_width = max(len(_UNIT_SIDE_LABELS[si]) for _, si in reported)
+    rows = []
+    for bi, si in reported:
+        size, cap_hit = max_basis[(bi, si)]
+        rows.append((f"block {labels[bi]:<{block_width}}  {_UNIT_SIDE_LABELS[si]:<{side_width}}", size, cap_hit))
+    return rows
+
+
+def _merge_unit_basis(acc, key, size, cap_hit):
+    """Fold one work unit's basis size into the per-unit maximum ``acc[key]``.
+
+    Several units feed one ``(block, side)`` pair -- the eigenstate chunks, the pairwise
+    scalar sub-units, the sliced driver's spectral-window terms -- and within one unit the
+    basis only grows, so its final size is that unit's own maximum. Tracking is a property of
+    the phase's cap, uniform across the units of a pair, so a ``None`` size never competes
+    with a real one here; it is carried through so the row can say so.
+    """
+    prev_size, prev_cap = acc.get(key, (None, False))
+    if size is None:
+        merged = prev_size
+    elif prev_size is None:
+        merged = int(size)
+    else:
+        merged = max(prev_size, int(size))
+    acc[key] = (merged, prev_cap or bool(cap_hit))
+
+
 def get_Greens_function(
     matsubara_mesh: np.ndarray,
     omega_mesh: np.ndarray,
@@ -433,8 +539,13 @@ def get_Greens_function(
         # not a post-hoc recompute: a block reports converged only if every unit feeding it did,
         # and d_g/n_blocks take the worst (max) over those units.
         conv_acc: dict[int, dict] = {}
+        # Largest excited basis per (block, spectral side) work unit, over the eigenstate
+        # chunks / pairwise scalar sub-units feeding it. Separate from `cap_acc`, which takes
+        # the *smallest* frozen size and only of the units that actually hit the cap.
+        max_basis: dict[tuple[int, int], tuple[Optional[int], bool]] = {}
         for unit, (_alphas, _betas, _r_slices, cap_stats, conv_stats) in zip(units, results):
-            block_i, _ = group_meta[unit.group_i]
+            block_i, unit_side_i = group_meta[unit.group_i]
+            _merge_unit_basis(max_basis, (block_i, unit_side_i), cap_stats.get("retained_size"), cap_stats["cap_hit"])
             stats = cap_acc.setdefault(block_i, {"cap_hit": False, "retained_size": None, "cap": cap_stats["cap"]})
             if cap_stats["cap_hit"]:
                 stats["cap_hit"] = True
@@ -540,6 +651,8 @@ def get_Greens_function(
                     )
                 diags.append(_gfd.check_causality(combined_real, "G"))
             report.extend(str(block), diags)
+
+        _report_max_unit_basis("Maximum excited basis size per unit", _unit_basis_rows(blocks, max_basis))
 
     return (gs_matsubara, gs_realaxis, report)
 
@@ -665,10 +778,18 @@ def _run_evaluated_gf_units(
         else None
     )
     stats_acc = {} if is_root else None
+    # Largest per-frequency solve basis per (block, spectral side) work unit. `stats_acc` keys
+    # on the block alone (its diagnostics are per-block) and its `retained_size` is the
+    # *smallest* frozen size, so neither answers "how big did this unit's basis get". This is a
+    # different construction from the block-Lanczos path's excited basis -- a basis rebuilt and
+    # discarded per frequency point, not one recurrence's support -- so it is reported under
+    # its own heading below and the two numbers must not be compared.
+    max_basis_acc = {} if is_root else None
 
     def reduce_fn(u, result):
         G_axes, stats = result
         block_i, side_i, chunk = units_meta[u]
+        _merge_unit_basis(max_basis_acc, (block_i, side_i), stats["max_solve_basis"], stats["cap_hit"])
         for p, ei in enumerate(chunk):
             for ax in range(len(axis_lens)):
                 G_acc[(block_i, side_i)][ax] += boltzmann[ei] * G_axes[ax][p]
@@ -774,6 +895,8 @@ def _run_evaluated_gf_units(
         if extra_diags is not None:
             diags.extend(extra_diags(block_i))
         report.extend(str(block), diags)
+
+    _report_max_unit_basis("Maximum per-frequency solve basis size per unit", _unit_basis_rows(blocks, max_basis_acc))
 
     return gs_matsubara, gs_realaxis, report
 
@@ -1029,6 +1152,9 @@ def _block_green_group(
     per eigenstate (``r[:, p*n_ops:(p+1)*n_ops]``) since ``(alphas, betas)`` are shared by the
     group. ``cap_stats`` is ``{"cap_hit", "retained_size", "cap"}`` describing whether this
     solve froze at ``truncation_threshold`` (feeds the basis_cap diagnostic).
+    ``retained_size`` is the global determinant count the recurrence ran on -- this unit's
+    maximum basis size -- or ``None`` on the sparse path with no finite cap, where nothing
+    tracks the support the matvec discovers (see the comment at the sparse branch).
 
     ``eval_meshes`` (:func:`_gf_eval_meshes`) tells the convergence monitor which frequencies this
     unit's ``G`` will be evaluated on. Passing ``None`` -- the default, and what the spectra/RIXS
@@ -1090,6 +1216,16 @@ def _block_green_group(
             eval_meshes=eval_meshes,
             info=info,
         )
+        # `retained_size` stays None when the cap is infinite, and that is not a formatting
+        # gap to paper over: the sparse recurrence's support is tracked *only* by
+        # `_CappedBasisProxy.redistribute_block`, which `block_Green_sparse` installs only when
+        # the cap is finite. `excited_basis` is the clone of the seed support and the matvec
+        # never adds to it (`Basis.redistribute_block` routes rows, it does not register them),
+        # so `len(excited_basis)` here is the SEED size, not the Krylov support -- measured 1 vs
+        # 15 determinants for identical physics, uncapped vs a non-binding cap. See
+        # block_Green_sparse's own note that "the reachable Krylov dimension is *not* bounded by
+        # the initial excited-basis size". The dense branch below is the opposite case: the
+        # array kernel cannot leave its basis, so there `len(excited_basis)` IS the support.
         cap_stats = {
             "cap_hit": bool(cap_info.get("cap_hit", False)),
             "retained_size": cap_info.get("retained_size"),
@@ -1160,6 +1296,7 @@ def calc_Greens_function_with_offdiag(
     dN_val=None,
     dN_con=None,
     extra_restrictions=None,
+    unit_report_label=None,
 ):
     r"""
     Return block-Lanczos Green's-function coefficients for the given transition operators.
@@ -1193,6 +1330,12 @@ def calc_Greens_function_with_offdiag(
         Deviation from the real axis (broadening/resolution parameter).
     slaterWeightMin : float
         Restrict the number of product states by looking at ``|amplitudes|^2``.
+    unit_report_label : str, optional
+        When given, the completed calculation prints the maximum excited basis size its work
+        units reached, under a heading naming this spectrum
+        (:func:`_report_max_unit_basis`). One operator group means one reported row -- the
+        maximum over the eigenstate chunks sharing the recurrence. ``None`` (the default)
+        prints nothing.
     extra_restrictions : dict, optional
         Conserved-charge sector confinement, intersected onto the excited-sector occupation
         window (it can only tighten the excited basis, never loosen it).
@@ -1260,7 +1403,15 @@ def calc_Greens_function_with_offdiag(
         )
         if verbose and (split_basis.comm is None or split_basis.comm.rank == 0):
             print(f"Expanded excited state basis contains {_cap_stats['retained_size']} elements.")
-        return alphas, betas, [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))]
+        # The basis size rides back with the coefficients: only the ranks of the colour that ran
+        # this unit see it locally, and the gather of the kernel's return value is the one path
+        # that carries every unit's result to rank 0.
+        return (
+            alphas,
+            betas,
+            [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))],
+            _cap_stats,
+        )
 
     results = run_units_distributed(block_basis, unit_seeds, unit_weights, kernel, verbose=verbose, reort=reort)
 
@@ -1270,11 +1421,21 @@ def calc_Greens_function_with_offdiag(
         excited_alphas = [None for _ in psis]
         excited_betas = [None for _ in psis]
         excited_r = [None for _ in psis]
-        for unit, (alphas, betas, r_slices) in zip(units, results):
+        # This function enumerates ONE operator group -- the whole `tOps` block shares a single
+        # recurrence -- so the units are its eigenstate chunks and they collapse to one reported
+        # row, the maximum over them.
+        max_basis: dict[int, tuple[Optional[int], bool]] = {}
+        for unit, (alphas, betas, r_slices, cap_stats) in zip(units, results):
             for p, ei in enumerate(unit.chunk):
                 excited_alphas[ei] = alphas
                 excited_betas[ei] = betas
                 excited_r[ei] = r_slices[p]
+            _merge_unit_basis(max_basis, 0, cap_stats["retained_size"], cap_stats["cap_hit"])
+        if unit_report_label is not None and 0 in max_basis:
+            _report_max_unit_basis(
+                f"Maximum excited basis size per unit -- {unit_report_label}",
+                [("transition block", *max_basis[0])],
+            )
         assert not any(alpha is None for alpha in excited_alphas), f"{excited_alphas=}"
         assert not any(beta is None for beta in excited_betas), f"{excited_betas=}"
         assert not any(r is None for r in excited_r), f"{excited_r=}"
