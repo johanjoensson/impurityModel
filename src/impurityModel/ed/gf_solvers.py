@@ -332,7 +332,10 @@ def block_Green_sparse(
     recurrence may touch (see :class:`_CappedBasisProxy`); ``np.inf`` (the ``Basis``
     default) leaves the growth bounded only by ``slaterWeightMin`` and the
     restrictions. Pass a dict as ``cap_info`` to receive ``{"cap_hit",
-    "retained_size", "proxy"}`` back (diagnostics/tests).
+    "retained_size", "proxy"}`` back (diagnostics/tests). ``retained_size`` is the global
+    determinant count the recurrence ran on, ``0`` when there was no seed to run one, and
+    ``None`` when the support was not tracked -- only ``_CappedBasisProxy`` counts the
+    determinants the matvec discovers, and it is installed only under a finite cap.
 
     ``krylov_dtype`` sets the storage precision of the retained Krylov basis, which is the
     dominant allocation of a reorthogonalized run (``16 * p * n_blocks`` bytes per retained
@@ -366,12 +369,25 @@ def block_Green_sparse(
         info["d_g"] = float("nan")
         info["n_blocks"] = 0
         info["tol"] = _gf_rel_tol(slaterWeightMin)
+    if cap_info is not None:
+        # Same "set every key on entry" discipline as `info` above, for the same reason: both
+        # early returns below leave a caller reading `cap_info` with a fully-populated dict.
+        # `retained_size` None means "the support was not tracked" (no proxy, see below), which
+        # is NOT what an empty seed means -- that one ran no recurrence at all, so the two early
+        # returns say 0 rather than leaving the caller to report an unmeasured quantity.
+        cap_info["cap_hit"] = False
+        cap_info["retained_size"] = None
+        cap_info["proxy"] = None
 
     if N == 0 or n == 0:
+        if cap_info is not None:
+            cap_info["retained_size"] = 0
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), np.zeros((n, n), dtype=complex)
     psi_dense_local, r = _distributed_seed_qr(basis, psi_arr, slaterWeightMin)
     psi_arr = build_state(basis, psi_dense_local.T, slaterWeightMin=0)
     if len(psi_arr) == 0:
+        if cap_info is not None:
+            cap_info["retained_size"] = 0
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), r
 
     converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)

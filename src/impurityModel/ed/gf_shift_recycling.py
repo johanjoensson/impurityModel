@@ -116,6 +116,15 @@ class SectorResolventCache:
         self._n_solves = 0
         self._n_builds = 0
 
+    @property
+    def sector_size(self):
+        """Determinants in the cached sector, or ``None`` before one is built.
+
+        The sector's H-connectivity closure, which is the basis every spectral solve off this
+        cache runs on -- reported rather than read off the caller's basis object, which
+        ``_ensure`` regrows only on a cache miss and so goes stale on a hit."""
+        return None if self._index is None else len(self._index)
+
     def _covers(self, seeds):
         return self._index is not None and all(state in self._index for psi in seeds for state in psi.keys())
 
@@ -389,7 +398,7 @@ class KrylovShiftedResolvent:
     def __init__(self, reort="full"):
         self._reort = resolve_reort(reort)
 
-    def solve(self, basis, hOp, rhs, zs, slaterWeightMin=0, atol=1e-6, verbose=False):
+    def solve(self, basis, hOp, rhs, zs, slaterWeightMin=0, atol=1e-6, verbose=False, cap_info=None):
         """Solutions ``[x_k(z) for k] for z in zs`` as ``ManyBodyState`` lists, or ``None``.
 
         ``None`` means declined -- the memory bound would be exceeded before the shifted
@@ -399,7 +408,19 @@ class KrylovShiftedResolvent:
         cleared and regrown toward the seeds' H-closure (the same contract as the
         per-point iterative solvers' rebuild loop); the returned states are distributed
         by the grown basis's ownership.
+
+        Pass a dict as ``cap_info`` to receive ``{"cap_hit", "retained_size"}`` back, the same
+        contract as :func:`gf_solvers.block_Green_sparse`. ``retained_size`` is the global
+        determinant count the recurrence ran on, or ``None`` when it was not tracked. That
+        distinction matters here for the same reason it does there: the recurrence runs on
+        ``_CappedBasisProxy`` only under a finite cap, and only the proxy counts the
+        determinants the matvec discovers -- ``basis.size`` is left at the right-hand side's
+        support, so reading it back would report the seed, not the Krylov space.
         """
+        if cap_info is not None:
+            # Every key present on every return path, including the early declines below.
+            cap_info["cap_hit"] = False
+            cap_info["retained_size"] = None
         comm = basis.comm
         mpi = comm is not None
         rank = comm.rank if mpi else 0
@@ -426,6 +447,10 @@ class KrylovShiftedResolvent:
         # Enforce the determinant cap on the recurrence (post-freeze: exact P H P).
         cap = getattr(basis, "truncation_threshold", np.inf)
         lanczos_basis = _CappedBasisProxy(basis, cap) if np.isfinite(cap) else basis
+        if cap_info is not None and isinstance(lanczos_basis, _CappedBasisProxy):
+            # The proxy tracks growth in place, so recording it here (rather than at each
+            # return) reports the support reached even on the paths that decline below.
+            cap_info["proxy"] = lanczos_basis
 
         # Resume in growing budget rounds (the block_Green_sparse pattern): convergence
         # is judged between rounds on the exact shifted residuals, not by the kernel.
@@ -494,4 +519,7 @@ class KrylovShiftedResolvent:
         # The store's leading sum(widths) columns are the Lanczos blocks (laid out by
         # true, deflated widths); the trailing residual block is excluded.
         n_keep = int(np.sum(widths))
+        if cap_info is not None and isinstance(lanczos_basis, _CappedBasisProxy):
+            cap_info["cap_hit"] = lanczos_basis.cap_hit
+            cap_info["retained_size"] = lanczos_basis.retained_size
         return [Q.combine(Y[wi], 0, n_keep, slaterWeightMin) for wi in range(len(zs))]
