@@ -741,3 +741,29 @@ def test_an_anonymous_allocation_lands_in_anon_and_not_in_shmem():
         assert after["file"] - before["file"] < 8 * 2**20, (before, after)
     finally:
         del block
+
+
+def test_selfenergy_module_actually_forwards_gs_num_wanted():
+    """`GS_NUM_WANTED` must reach the cap sizing on the SELF-ENERGY path, not just the DC's.
+
+    It was wired in `dc_criteria` and missing here, so a production job exporting the variable saw
+    it honoured during the double-counting search and silently ignored when the main solver chose
+    its own cap -- which then fell back to assuming `2 * block_width` (~10) eigenstates against a
+    kept manifold in the hundreds. That under-count is what approved the 20,358,272 cap behind the
+    SrMnO3 crash, and the only outward sign was `log_memory_budget`'s own "gs_num_wanted was not
+    supplied" line in a log nobody was diffing (`doc/plans/dc_smo_memory.md`, round 9).
+
+    Asserted against the module source rather than by driving the calls. A test that builds the
+    two calls itself and checks they carry the argument passes whether or not `selfenergy` forwards
+    it -- the first draft of this test did exactly that and was green against the bug. The defect
+    is a dropped argument at a specific call site, so the call site is what has to be pinned.
+    """
+    import inspect
+
+    from impurityModel.ed import selfenergy
+
+    src = inspect.getsource(selfenergy)
+    head = src[src.index("sizing_block_width = resolve_sizing_block_width") :]
+    head = head[: head.index("basis_information")]
+    assert "gs_num_wanted = resolve_gs_num_wanted()" in head
+    assert head.count("gs_num_wanted=gs_num_wanted") == 2, "both suggest_* and log_memory_budget"

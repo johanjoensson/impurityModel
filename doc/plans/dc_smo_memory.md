@@ -2260,6 +2260,35 @@ round touches it. It bounds what any fix here can ever return.
 same class of difference a change of rank count makes), and the default stays 4 because 8 buys
 nothing at small `p` -- this is a per-workload setting like `GS_NUM_WANTED`.
 
+### Step 8: `GS_NUM_WANTED` was wired on one path and dropped on the other
+
+Found while reading the acceptance run's log for why it ran out of walltime. `job.rspt` exports
+`GS_NUM_WANTED=222`; `impurityModel-Mn-dc.out` carries **zero** "gs_num_wanted was not supplied"
+warnings, and `impurityModel-Mn.out` carries **one**.
+
+`dc_criteria.py:874-887` resolves the knob and passes it to both sizing calls.
+`selfenergy.py` never mentioned it -- not the knob, not the helper. So a job exporting the variable
+had it honoured through the double-counting search and **silently ignored when the main solver
+chose its own cap**, which fell back to `estimate_gs_peak_bytes`' `2 * block_width` assumption:
+about 10 eigenstates at the production `GS_MAX_BLOCK_WIDTH=5`, against a kept manifold that reaches
+the hundreds. That under-count is exactly what approved the 20,358,272 cap behind this crash, and
+the knob exists to correct it.
+
+Fixed by resolving `resolve_gs_num_wanted()` in `selfenergy` and forwarding it to
+`suggest_truncation_threshold` and `log_memory_budget`, as `dc_criteria` already did.
+
+**A note on how it was nearly tested wrongly.** The first regression test monkeypatched both sizing
+functions, drove them with the resolved value, and asserted they received it. It passed **against
+the buggy version**, because it constructed the calls itself rather than exercising the module's.
+The defect is a dropped argument at a specific call site, so the call site is what has to be
+pinned; the shipped test asserts against the module source and was verified to fail before the fix.
+A test that is green either way is worse than no test, because it is evidence that will be cited.
+
+**The warning was the only outward sign, and it was printed for a year.** `log_memory_budget` has
+always said "gs_num_wanted was not supplied" on this path. Nothing diffed the two logs, so the
+asymmetry -- present in one, absent in the other, in the same job -- went unread. That is the same
+failure mode as this round's other findings: the information was in the log.
+
 ### Corrections to earlier claims in this document
 
 * **`reort="partial"` saves projection FLOPs, not store bytes.** Retention is mode-independent
