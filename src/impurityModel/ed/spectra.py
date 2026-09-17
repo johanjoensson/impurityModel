@@ -3,6 +3,7 @@ This module contains functions for calculating various spectra.
 """
 
 import time
+from typing import Optional
 
 import numpy as np
 from mpi4py import MPI
@@ -288,6 +289,7 @@ def simulate_spectra(
             occ_cutoff,
             **_shell_windows(l_valence, l_core, imp=(0, 1), val=(1, 0), con=(0, 1)),
             equivalence_groups=correlated_groups,
+            unit_report_label=f"inverse photoemission, l={l_valence} (create)",
         )
         if rank == 0:
             print("Photoemission Green's function..", flush=True)
@@ -305,6 +307,7 @@ def simulate_spectra(
             occ_cutoff,
             **_shell_windows(l_valence, l_core, imp=(1, 0), val=(1, 0), con=(0, 1)),
             equivalence_groups=correlated_groups,
+            unit_report_label=f"photoemission, l={l_valence} (annihilate)",
         )
         gsPS *= -1
         gs = gsPS + gsIPS
@@ -336,6 +339,7 @@ def simulate_spectra(
             verbose,
             occ_cutoff,
             **_shell_windows(l_valence, l_core, imp=(1, 1), val=(1, 0), con=(0, 1), core_imp=(1, 0)),
+            unit_report_label=f"x-ray photoemission, core l={l_core} (annihilate)",
         )
         gs *= -1
         if rank == 0:
@@ -370,6 +374,7 @@ def simulate_spectra(
             dN_imp={liNIXS: (1, 1), ljNIXS: (1, 1)},
             dN_val={liNIXS: (1, 0), ljNIXS: (1, 0)},
             dN_con={liNIXS: (0, 1), ljNIXS: (0, 1)},
+            unit_report_label="NIXS",
         )
         if rank == 0:
             print("#q-points = {:d}".format(np.shape(gs)[1]))
@@ -407,6 +412,7 @@ def simulate_spectra(
                 verbose,
                 occ_cutoff,
                 **dN_XAS,
+                unit_report_label=f"XAS, core l={l_core} (projected operators)",
             )
             if rank == 0:
                 print("#projected operators = {:d}".format(np.shape(gs)[1]))
@@ -436,6 +442,7 @@ def simulate_spectra(
                 occ_cutoff,
                 reduction=reduction,
                 **dN_XAS,
+                unit_report_label=f"XAS, core l={l_core} (Cartesian tensor)",
             )
             if rank == 0:
                 print("#Cartesian components = {:d}".format(chi.shape[1]))
@@ -578,6 +585,8 @@ def calc_spectra(
     equivalence_groups=None,
     extra_meshes=None,
     seed_transform=None,
+    unit_report_label=None,
+    _unit_row_indices=None,
 ):
     """
     Calculate the Green's function spectra for a list of transition operators.
@@ -633,6 +642,17 @@ def calc_spectra(
         identical order on every rank, so it may perform collectives on ``basis.comm``.
         Incompatible with ``equivalence_groups``; forces the non-pairwise unit
         decomposition.
+    unit_report_label : str, optional
+        When given, the completed calculation prints the maximum excited basis size each
+        work unit reached -- one line per transition operator -- under a heading naming this
+        spectrum (:func:`greens_function._report_max_unit_basis`). ``None`` (the default)
+        prints nothing, which is what a caller that runs this function several times for one
+        result wants (the susceptibility driver calls it once per spin sector).
+    _unit_row_indices : list of int, optional
+        Internal. The caller's operator index for each entry of ``tOps``, used only to label
+        the report's rows. The ``equivalence_groups`` recursion below passes the original
+        indices of the representatives it kept, so a row names the operator the reader has
+        rather than a position in a symmetry-reduced list.
 
     Returns
     -------
@@ -669,6 +689,8 @@ def calc_spectra(
             dN_con,
             equivalence_groups=None,
             extra_meshes=extra_meshes,
+            unit_report_label=unit_report_label,
+            _unit_row_indices=[first_index[label] for label in rep_order],
         )
         reduced_list = reduced if extra_meshes is not None else [reduced]
         if reduced_list[0].size == 0:  # non-root ranks return (a list of) empty arrays
@@ -747,7 +769,15 @@ def calc_spectra(
         )
         if verbose and (split_basis.comm is None or split_basis.comm.rank == 0):
             print(f"Expanded excited state basis contains {_cap_stats['retained_size']} elements.")
-        return alphas, betas, [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))]
+        # `retained_size` rides back with the coefficients rather than through a closure: only
+        # the ranks of the colour that ran this unit ever see it locally, and the gather of the
+        # kernel's return value is the one path that carries every unit's result to rank 0.
+        return (
+            alphas,
+            betas,
+            [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))],
+            _cap_stats,
+        )
 
     results = gf.run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose)
     if results is None:  # non-root rank of a distributed run
@@ -761,11 +791,27 @@ def calc_spectra(
     acc_alphas = [[None] * len(psis) for _ in tOps]
     acc_betas = [[None] * len(psis) for _ in tOps]
     acc_r = [[None] * len(psis) for _ in tOps]
-    for unit, (alphas, betas, r_slices) in zip(units, results):
+    # Largest excited basis per transition operator, over the eigenstate chunks / pairwise
+    # scalar sub-units feeding it; within one unit the basis only grows, so its final size is
+    # that unit's maximum.
+    max_basis: dict[int, tuple[Optional[int], bool]] = {}
+    for unit, (alphas, betas, r_slices, cap_stats) in zip(units, results):
         for p, ei in enumerate(unit.chunk):
             acc_alphas[unit.group_i][ei] = alphas
             acc_betas[unit.group_i][ei] = betas
             acc_r[unit.group_i][ei] = r_slices[p]
+        gf._merge_unit_basis(max_basis, unit.group_i, cap_stats["retained_size"], cap_stats["cap_hit"])
+    if unit_report_label is not None:
+        # One row per transition operator, named by the CALLER's operator index: under
+        # `equivalence_groups` the recursion above reduced `tOps` to one representative per
+        # symmetry class, so `group_i` is a position in that reduced list and labelling rows
+        # with it would point a reader at the wrong orbital.
+        names = {i: f"operator {i if _unit_row_indices is None else _unit_row_indices[i]}" for i in max_basis}
+        width = max((len(name) for name in names.values()), default=0)
+        gf._report_max_unit_basis(
+            f"Maximum excited basis size per unit -- {unit_report_label}",
+            [(names[i].ljust(width), *max_basis[i]) for i in sorted(max_basis)],
+        )
 
     e0 = np.min(es)
     Z = np.sum(np.exp(-(es - e0) / tau))
@@ -858,6 +904,7 @@ def calc_spectra_tensor(
     dN_val,
     dN_con,
     reduction=None,
+    unit_report_label=None,
 ):
     r"""One-body spectral tensor over Cartesian transition components (B2b).
 
@@ -942,6 +989,7 @@ def calc_spectra_tensor(
         dN_val=dN_val,
         dN_con=dN_con,
         extra_restrictions=extra,
+        unit_report_label=unit_report_label,
     )
     if comm is not None and comm.rank != 0:
         return np.empty((0, 0, 0), dtype=complex)
