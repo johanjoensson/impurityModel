@@ -296,6 +296,20 @@ class _R1SolverChain:
         self.counters = counters
         self._recycled = None  # in-chunk wIn index -> shift-recycled solution
         self._recycle_declined = r1_cache is None
+        # Largest intermediate-resolvent support this chain ran on, and whether any solve's
+        # support could not be measured. Each tier reports its own: the spectral cache knows
+        # its sector, the shift recycler reports its cap proxy's count, and the bicgstab
+        # fallback grows `tmp_basis` in place. `tmp_basis.size` is NOT a general answer -- the
+        # recycler leaves it at the right-hand side's support (see KrylovShiftedResolvent.solve).
+        self.max_support = None
+        self.support_untracked = False
+
+    def _record_support(self, size):
+        """Fold one solve's intermediate support into this chain's maximum."""
+        if size is None:
+            self.support_untracked = True
+        elif self.max_support is None or size > self.max_support:
+            self.max_support = int(size)
 
     def solve(self, tmp_basis, hOp, psi1_all, psi2_all, k, win, remaining_wins, delta1, E_e, slaterWeightMin, verbose):
         """Intermediate-resolvent solution at wIn index ``k`` of the chunk.
@@ -313,12 +327,14 @@ class _R1SolverChain:
             if psi2_spectral is not None:
                 if self.counters is not None:
                     self.counters["r1_spectral"] += 1
+                self._record_support(self.r1_cache.sector_size)
                 return psi2_spectral
             if self._recycled is None and not self._recycle_declined:
                 # The dense sector cache declined (distributed basis or oversized
                 # sector): recycle ONE block-Lanczos recurrence across every remaining
                 # shift of the chunk -- the right-hand-side block is wIn-independent,
                 # so all shifts share the same Krylov space.
+                recycle_cap_info = {}
                 sols = gf.KrylovShiftedResolvent().solve(
                     tmp_basis,
                     hOp,
@@ -327,7 +343,12 @@ class _R1SolverChain:
                     slaterWeightMin=slaterWeightMin,
                     atol=_RIXS_R1_ATOL,
                     verbose=verbose,
+                    cap_info=recycle_cap_info,
                 )
+                if sols is not None:
+                    # One recurrence serves every remaining shift of the chunk, so its support
+                    # is recorded once here rather than on each `pop` below.
+                    self._record_support(recycle_cap_info["retained_size"])
                 if sols is None:
                     self._recycle_declined = True
                 else:
@@ -370,6 +391,9 @@ class _R1SolverChain:
             rtol=1e-7,
             info=solve_info,
         ).to_states()
+        # block_bicgstab registers every determinant it reaches (BiCGSTAB.pyx's offered mask
+        # calls add_states), so tmp_basis really is this solve's support here.
+        self._record_support(tmp_basis.size)
         if self.counters is not None:
             self.counters["r1_bicgstab"] += 1
             if solve_info["gmres_used"]:
@@ -401,6 +425,40 @@ def _n_live_sector_caches(psis):
     return len(psis) + 1
 
 
+def _chain_support(chain):
+    """One unit's intermediate-resolvent support, or ``None`` if any solve went unmeasured.
+
+    An unmeasured solve makes the whole unit's number a lower bound over an unknown subset of
+    its points, which is not what the report's row means, so the unit says "not tracked"
+    instead. In practice the tiers are consistent within a chain -- the spectral cache's
+    decline is sticky and the recycler's tracking depends only on the cap being finite, which
+    both CLIs always set -- so this is the uncapped library case, not a production one.
+    """
+    return None if chain.support_untracked else chain.max_support
+
+
+def _new_basis_acc():
+    """Caller-owned accumulator for :func:`_rixs_map_flat`'s per-unit basis maxima."""
+    return {"intermediate": {}, "final": {}}
+
+
+def _report_rixs_unit_basis(label, basis_acc):
+    """Print a completed RIXS map's per-unit basis maxima, one report per construction.
+
+    The core-excited intermediate resolvent and the final-state basis are different bases
+    reached by different solvers; they are reported separately so neither is mistaken for the
+    other, and each is keyed by eigenstate (RIXS units are ``(eigenstate, wIn chunk)``, whose
+    chunks collapse into one row the same way eigenstate chunks do elsewhere).
+    """
+    for heading, acc in (
+        (f"Maximum intermediate-resolvent basis size per unit -- {label}", basis_acc["intermediate"]),
+        (f"Maximum final-state basis size per unit -- {label}", basis_acc["final"]),
+    ):
+        names = {e: f"eigenstate {e}" for e in acc}
+        width = max((len(name) for name in names.values()), default=0)
+        gf._report_max_unit_basis(heading, [(names[e].ljust(width), *acc[e]) for e in sorted(acc)])
+
+
 def _rixs_map_flat(
     hOp,
     in_ops,
@@ -419,6 +477,7 @@ def _rixs_map_flat(
     eval_out,
     r1_caches=None,
     solver_stats=None,
+    basis_acc=None,
     *,
     l_core,
     l_valence,
@@ -555,26 +614,55 @@ def _rixs_map_flat(
         chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats)
         out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
         wins = wIns[w_chunk]
+        # `eval_out` reports the final-state basis it actually ran on rather than leaving the
+        # caller to read `green_basis.size`: the tensor variant's out-resolvent cache serves a
+        # hit WITHOUT regrowing that basis, so reading it back gives the cleared size (measured:
+        # 0 where the solve really ran on the cached sector), the same seed-vs-support trap as
+        # the intermediate resolvent's recycler tier.
+        final_support, final_untracked = None, False
         for k, win in enumerate(wins):
             psi2 = chain.solve(
                 tmp_basis, hOp, psi1_all, psi2_all, k, win, wins[k:], delta1, E_e, slaterWeightMin, verbose
             )
-            out[k] = eval_out(green_basis, psi2, E_e) * thermal_weight
+            value, support = eval_out(green_basis, psi2, E_e)
+            out[k] = value * thermal_weight
+            if support is None:
+                final_untracked = True
+            elif final_support is None or support > final_support:
+                final_support = int(support)
         # Free the per-unit cloned sub-communicator collectively -- every rank of this color
         # runs the same unit list in the same order. green_basis's clone outlives the unit
         # (per-color cache) and is freed after run_units_distributed.
         if sub_comm is not None:
             tmp_basis.free_comm()
-        return out
+        # green_basis is cleared at the top of the NEXT unit on this colour, so its size is
+        # read here, while it still holds this unit's accumulated final-state support. Both
+        # eval_out variants either grow it through add_states + the array block_Green (which
+        # cannot leave its basis) or expand it to the sector closure, so it is measured, not
+        # inferred.
+        return out, (_chain_support(chain), None if final_untracked else final_support)
 
     # Accumulate each unit's contribution into the preallocated output as it arrives, so
     # rank 0 never holds all unit results plus the assembled tensor simultaneously.
     gs = np.zeros((n_i, n_win, n_o, len(wLoss)), dtype=complex)
 
+    # Largest basis each eigenstate's units ran on. RIXS units are (eigenstate, wIn chunk), so
+    # -- as elsewhere -- the sub-units of one eigenstate collapse into a single reported row.
+    # The intermediate (core-excited) resolvent and the final-state basis are different
+    # constructions and get separate reports; collapsing them would invite comparing them.
+    # `basis_acc` is owned by the caller and merged into across every call: the adaptive wIn
+    # sampler runs this driver once per refinement pass, and the report belongs to the finished
+    # map, not to each pass.
+    max_intermediate = {} if basis_acc is None else basis_acc["intermediate"]
+    max_final = {} if basis_acc is None else basis_acc["final"]
+
     def accumulate(u, res):
-        _e, w_chunk = unit_infos[u]
+        e, w_chunk = unit_infos[u]
+        out, (intermediate, final) = res
         for k, w_global in enumerate(w_chunk):
-            gs[:, w_global, :, :] += res[k]
+            gs[:, w_global, :, :] += out[k]
+        gf._merge_unit_basis(max_intermediate, e, intermediate, False)
+        gf._merge_unit_basis(max_final, e, final, False)
 
     got = gf.run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=accumulate)
     # Collective on each color's clone: every rank of a color created (at most) one cached
@@ -722,8 +810,11 @@ def calc_map(
             g_tensor = gf.calc_G(alphas, betas, r, wLoss, E_e, delta2)
             for j in range(n_out):
                 out[i, j, :] = g_tensor[:, j, j]
-        return out
+        # add_states above plus the array `block_Green` (which expands its basis and cannot
+        # leave it) make green_basis this solve's real support.
+        return out, int(green_basis.size)
 
+    basis_acc = _new_basis_acc()
     gs = _rixs_map_flat(
         hOp,
         tOpsIn,
@@ -741,10 +832,13 @@ def calc_map(
         n_o=n_out,
         eval_out=eval_out,
         solver_stats=solver_stats,
+        basis_acc=basis_acc,
         l_core=l_core,
         l_valence=l_valence,
     )
     _report_rixs_solver_stats(solver_stats, basis.comm, verbose)
+    if gs is not None:
+        _report_rixs_unit_basis(f"RIXS, core l={l_core}", basis_acc)
     return gs
 
 
@@ -869,13 +963,19 @@ def calc_tensor_map(
             if r2_info.get("d_g") is not None:
                 solver_stats["r2_worst_d_g"] = max(solver_stats["r2_worst_d_g"], r2_info["d_g"])
             g_flat = gf.calc_G(alphas, betas, r, wLoss, E_e, delta2)
+            final_support = int(green_basis.size)
         else:
             solver_stats["r2_cache"] += 1
+            # Served from the cached sector, which `try_eval` does not regrow green_basis to:
+            # the sector's own size is the basis this solve ran on.
+            final_support = r2_cache.sector_size
         # C[w, alpha, beta, alpha', beta'] = <s_{alpha,beta}| R2 |s_{alpha',beta'}>; flatten the
         # (alpha, beta) / (alpha', beta') pairs into the (n_i, n_o) work-unit axes expected by
         # _rixs_map_flat (kf = a * n_out + b matches the seed ordering above).
         C5 = g_flat.reshape(len(wLoss), n_in, n_out, n_in, n_out)
-        return np.moveaxis(C5, 0, -1).reshape(n_pairs, n_pairs, len(wLoss))
+        return np.moveaxis(C5, 0, -1).reshape(n_pairs, n_pairs, len(wLoss)), final_support
+
+    basis_acc = _new_basis_acc()
 
     def map_fn(wIn_subset):
         return _rixs_map_flat(
@@ -896,6 +996,7 @@ def calc_tensor_map(
             eval_out=eval_out,
             r1_caches=r1_caches,
             solver_stats=solver_stats,
+            basis_acc=basis_acc,
             l_core=l_core,
             l_valence=l_valence,
         )
@@ -908,5 +1009,6 @@ def calc_tensor_map(
     _report_rixs_solver_stats(solver_stats, basis.comm, verbose)
     if gs is None:  # non-root rank of a distributed run
         return None
+    _report_rixs_unit_basis(f"RIXS tensor, core l={l_core}", basis_acc)
     n_win = gs.shape[2]
     return gs.reshape(n_in, n_out, n_in, n_out, n_win, len(wLoss))
