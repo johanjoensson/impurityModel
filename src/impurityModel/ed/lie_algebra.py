@@ -693,6 +693,97 @@ def _matrix_commutant(mats, tol=None):
     return [null[:, a].reshape(n, n, order="F") for a in range(null.shape[1])]
 
 
+# Row-block budget for the residual block of :func:`_residual_r_factor`. The block is streamed,
+# so this bounds the transient rather than the total: the full block is (m n_orb^2, n_gen) and
+# was measured at 443.6 MiB (n_orb=151, n_gen=425) on an FCC-Ni archive geometry, with a peak of
+# 1800 MiB once LAPACK's never-read left-singular block is included.
+#
+# The transient runs ~5.7x this budget, because `vstack` copies the block next to the carried
+# factor and `np.linalg.qr` copies again internally. Swept at n_orb=151, n_gen=425 (transient /
+# wall time): 64 MiB -> 295.5 MiB / 3.31 s, 32 -> 193.1 / 3.26, 16 -> 91.5 / 3.52,
+# 8 -> 52.2 / 4.95, 4 -> 32.7 / 8.06. The knee is at 16: below it the per-block O(n_gen^3)
+# re-triangularisation starts to dominate, above it the transient grows for nothing. Every
+# budget gave a bit-identical leading singular value to 12 digits.
+_RESIDUAL_BLOCK_BYTES = 16 * 2**20
+
+
+def _residual_r_factor(Ts, gens, q_t, n_orb):
+    r"""Triangular factor ``R`` of the "leaves-the-span" residual block, without forming it.
+
+    The residual block ``B`` has one column per generator ``C_k`` and one row per
+    ``(component, matrix entry)`` pair::
+
+        B[(alpha, i, j), k] = ([C_k, T_alpha] - P [C_k, T_alpha])[i, j]
+
+    where ``P = q_t q_t^dagger`` projects onto ``span(T)``. Only the null space of ``B`` is
+    ever used, and ``B = QR`` with orthonormal ``Q`` gives ``B^dagger B = R^dagger R`` -- so
+    ``R`` carries the same singular values and right singular vectors. ``R`` is
+    ``(n_gen, n_gen)``; ``B`` is ``(m n_orb^2, n_gen)`` and is **never materialised**, which is
+    the point: it is ``O(n_orb^3)``, replicated on every rank, and live on the default XAS path.
+
+    Two passes, because a row block needs every column but the projection needs whole columns:
+
+    1. The projection coefficients ``q_t^dagger vec([C_k, T])``, via the trace identity
+       ``<q_j, [C, T]> = tr(Q_j^dagger [C, T]) = tr([T, Q_j^dagger] C)``. The bracket
+       ``[T, Q_j^dagger]`` does not depend on ``k``, so each coefficient costs one ``O(n^2)``
+       contraction instead of an ``O(n^3)`` commutator.
+    2. Row blocks of ``B``, generated from the same dense generators and reduced into ``R`` by
+       stacking onto the running factor and re-triangularising.
+
+    Parameters
+    ----------
+    Ts : list of np.ndarray
+        The component matrices, each ``(n_orb, n_orb)``.
+    gens : list of np.ndarray
+        The commutant generators ``C_k``, each ``(n_orb, n_orb)``.
+    q_t : np.ndarray, shape (n_orb**2, r)
+        Orthonormal basis of ``span(T)``, columns matching ``T.reshape(-1)`` (C order).
+    n_orb : int
+        Number of spin-orbitals.
+
+    Returns
+    -------
+    np.ndarray
+        ``R``, shape ``(min(m n_orb^2, n_gen), n_gen)``.
+
+    Notes
+    -----
+    The residual values differ from a directly-formed ``B`` in the last bits (the projection
+    coefficients take a different summation order), and the null-space basis ``R`` yields is a
+    different -- equally valid -- basis of the same subspace. Everything downstream depends on
+    that subspace, not on the basis: see :func:`component_symmetry_reduction`.
+    """
+    n_gen = len(gens)
+    n_rows_per_component = n_orb * n_orb
+    n_q = q_t.shape[1]
+
+    # Pass 1: projection coefficients, without ever forming a commutator.
+    coeffs = np.empty((len(Ts), n_q, n_gen), dtype=complex)
+    for a, T in enumerate(Ts):
+        for j in range(n_q):
+            q_j_dag = q_t[:, j].reshape(n_orb, n_orb).conj().T
+            bracket = (T @ q_j_dag - q_j_dag @ T).T.reshape(-1)  # tr(X C) = X.T.ravel() . C.ravel()
+            for k, c in enumerate(gens):
+                coeffs[a, j, k] = bracket @ c.reshape(-1)
+
+    # Pass 2: stream row blocks of B into R. Chunk over the row index i of the (i, j) entry, so
+    # a chunk is a contiguous slice of both the flattened matrix and q_t's rows.
+    rows_per_i = n_orb
+    chunk_i = max(1, int(_RESIDUAL_BLOCK_BYTES // (16 * rows_per_i * max(n_gen, 1))))
+    r_factor = np.zeros((0, n_gen), dtype=complex)
+    for a, T in enumerate(Ts):
+        for i0 in range(0, n_orb, chunk_i):
+            i1 = min(i0 + chunk_i, n_orb)
+            block = np.empty(((i1 - i0) * n_orb, n_gen), dtype=complex)
+            for k, c in enumerate(gens):
+                block[:, k] = (c[i0:i1] @ T - T[i0:i1] @ c).reshape(-1)
+            block -= q_t[i0 * rows_per_i : i1 * rows_per_i, :] @ coeffs[a]
+            r_factor = np.linalg.qr(np.vstack((r_factor, block)), mode="r")
+            del block
+    assert r_factor.shape[1] == n_gen, f"R has {r_factor.shape[1]} columns, expected {n_gen}"
+    return r_factor
+
+
 def component_symmetry_reduction(component_ops, h_onebody, n_orb=None, tol=1e-8):
     r"""Point-group dedup of a set of one-body *component* transition operators.
 
@@ -751,28 +842,20 @@ def component_symmetry_reduction(component_ops, h_onebody, n_orb=None, tol=1e-8)
     # Solve for that closing subalgebra as the null space of the "leaves-the-span" residual,
     # then represent each closing generator on the component span as an m x m matrix M.
     gens = [np.asarray(g, dtype=complex) for g in generators]
-    # Fill the residual matrix column by column, in place. The previous spelling accumulated a
-    # Python list of per-generator column vectors and then did `np.array(columns).T`, so the
-    # whole `(m n^2, n_gen)` block existed twice at once -- the list and the array built from
-    # it. That block is O(n_orb^3) (n_gen is one generator per non-degenerate eigenvalue, so
-    # ~n_orb generically) and this function is replicated on every rank with no rank guard:
-    # measured 23.1 MiB at n_orb=62 and 177.6 MiB at n_orb=124 for the pair, i.e. the duplicate
-    # alone is ~87 MiB/rank at 124 spin-orbitals, before multiplying by ranks per node.
-    b_matrix = np.empty((m * n_orb * n_orb, len(gens)), dtype=complex)  # (m * n^2, n_gen)
-    for k, c in enumerate(gens):
-        off = 0
-        for T in Ts:
-            r = (c @ T - T @ c).reshape(-1)
-            r = r - q_t @ (q_t.conj().T @ r)  # component of [C, T_alpha] orthogonal to span(T)
-            b_matrix[off : off + r.size, k] = r
-            off += r.size
-    # Economy SVD: with m * n^2 rows, full_matrices=True materialises a (m n^2)^2 U
-    # (~21 GiB at n = 112) that is never read. Full right-singular vectors are only
-    # needed when there are more generators than rows (then the extra rows of vh span
-    # part of the null space, picked up by the ``i >= len(s_b)`` branch below).
-    _, s_b, vh_b = np.linalg.svd(b_matrix, full_matrices=b_matrix.shape[1] > b_matrix.shape[0])
+    r_triangular = _residual_r_factor(Ts, gens, q_t, n_orb)
+    # The null space of the residual block B is the null space of its R factor: B = QR with Q
+    # orthonormal gives B^dagger B = R^dagger R, so R has the same singular values and the same
+    # right singular vectors. R is (n_gen, n_gen) instead of (m n^2, n_gen), and
+    # :func:`_residual_r_factor` never holds more than one row block of B at a time.
+    _, s_b, vh_b = np.linalg.svd(r_triangular, full_matrices=r_triangular.shape[1] > r_triangular.shape[0])
     scale = s_b[0] if s_b.size else 0.0
-    cut = max(scale, 1.0) * b_matrix.shape[0] * np.finfo(float).eps
+    # The row count is B's, not R's: it scales the tolerance to the size of the problem that was
+    # actually solved, and R has only n_gen rows. `m * n_orb * n_orb` reconstructs that count
+    # rather than reading it off the block, so it relies on an invariant worth stating: `m` is
+    # `len(component_ops)` == `len(Ts)`, and every `T` is `(n_orb, n_orb)` because `Ts` comes
+    # from `extract_tensors(..., n_orb=n_orb)`. Under that, this is exactly the number of rows
+    # `_residual_r_factor` streamed. Do not "simplify" it to `r_triangular.shape[0]`.
+    cut = max(scale, 1.0) * (m * n_orb * n_orb) * np.finfo(float).eps
     null_coeffs = [vh_b[i].conj() for i in range(vh_b.shape[0]) if i >= len(s_b) or s_b[i] <= cut]
 
     reps = []

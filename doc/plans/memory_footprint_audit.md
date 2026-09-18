@@ -473,6 +473,98 @@ then retracted it: every production caller passes `two_body=False`, and the para
 correct. The module was nonetheless the right place to look — just for a different object, three
 functions away. Retracting a wrong reason is not the same as clearing the area.
 
+### P1-4. `component_symmetry_reduction`'s residual block is no longer formed — FIXED
+
+The follow-on to P1-3, which removed the *duplicate* and left the cubic term standing. Two
+corrections to what P1-3 recorded, both from measurement rather than argument:
+
+**`n_gen` is not `~n_orb`.** P1-3 assumed one generator per non-degenerate eigenvalue.
+`discover_one_body_symmetries` actually returns one per *pair* within each degenerate group, so
+`n_gen = sum over groups of (group size)^2`. Measured on the real archive `h_solver` matrices
+(`test/support/restriction_diagnostics.WORKLOADS`):
+
+| workload | n_orb | groups | max group | n_gen | n_gen / n_orb |
+|---|---|---|---|---|---|
+| `fcc_ni_5` | 59 | 23 | 3 | 157 | 2.7 |
+| `fcc_ni_15` | 145 | 56 | 3 | 389 | 2.7 |
+
+**The peak was understated by ~3x.** P1-3 extrapolated ~660 MiB/rank at 192 spin-orbitals.
+Measured at XAS shape (the archive `h_solver` under a degenerate core-p block, the layout
+`spectra.py:428-430` builds), VmHWM growth in a cold process, both sides through the same probe:
+
+| n_orb | n_gen | before | after | wall time |
+|---|---|---|---|---|
+| 65 | 193 | 170.5 MiB | **80.2 MiB** | 0.40 s -> 0.20 s |
+| 151 | 425 | **1950.9 MiB** | **244.9 MiB** (-87%) | 8.17 s -> 3.95 s |
+
+1951 MiB/rank, replicated, is the largest single allocation this campaign has measured. The
+`(m n_orb^2, n_gen)` block is 443.6 MiB of it; the rest is LAPACK's left-singular block of the
+same shape (never read) plus `gesdd` workspace.
+
+*The first version of this table read 157.0 -> 66.8 and 1800.2 -> 298.8, and was wrong in the
+same direction on both sides.* The probe reported `n_gen` by calling
+`discover_one_body_symmetries` **before** taking its baseline, so the heap had already absorbed
+one generator list and every growth figure was understated. It was caught by the end-to-end
+number coming out smaller than one of its own stages -- an arithmetic impossibility that a
+plausible-looking figure would have hidden. `n_gen` is now read off after the measurement.
+
+**The fix.** Only the *null space* of the residual block `B` is ever used, and `B = QR` gives
+`B^dagger B = R^dagger R` — so `R`, which is `(n_gen, n_gen)`, carries the same singular values
+and the same right singular vectors. `_residual_r_factor` streams `B` one row block at a time
+into `R` and never holds the whole thing. Two passes, because a row block needs every column
+while the projection needs whole columns: pass 1 takes the projection coefficients through the
+trace identity `<q_j, [C,T]> = tr([T, q_j^dagger] C)`, which drops an `O(n^3)` commutator per
+generator to an `O(n^2)` contraction — which is why the function also got *faster* rather than
+paying the usual streaming tax.
+
+**Tier 2, not tier 1, and this is a correction to how P1-3 framed the area.** The null-space
+basis is arbitrary, so `R` returns a different — equally valid — basis than the SVD of `B` did,
+and `Q` changes (measured `||Q_old - Q_new|| ~ 2.8`). Bit-identity, which is what P1-3 earned by
+array equality, is *not* available here and was not claimed. What was verified instead, against
+the pre-change code from `git HEAD` on both synthetic and real geometries:
+
+- identical `diagonalizable` flag and identical set *partition* of components into groups
+  (compared as a partition, not as labels — the labelling may permute);
+- `Q` unitary to 1e-10;
+- **cross-reconstruction both ways**: a symmetry-respecting `chi` built in one implementation's
+  basis is diagonalised (off-diagonal < 4.2e-12) and rebuilt (rel. err < 2.6e-12) by the other.
+  This is the non-circular form of the existing soundness test, which builds `chi` from the same
+  `Q` it then checks.
+
+The caller tolerates the change by construction: `Q` reaches `calc_spectra_tensor` only through
+`_combine_component_ops(component_ops, Q[:, c])` and
+`einsum("wa,pa,qa->wpq", chi_diag, Q, Q.conj())`, both invariant under a per-column phase. That
+was checked before the rewrite, not after.
+
+**The tolerance is deliberately not simplified.** `cut` still scales with `m * n_orb^2`, the row
+count of the block that was conceptually solved, not `R.shape[0]`. That expression reconstructs
+the row count instead of reading it off the block, so it holds only while `m == len(Ts)` and
+every `T` is `(n_orb, n_orb)`; the comment at the site states that invariant, because an
+arithmetic expression correct only under an unstated invariant is how the `n_bytes // 8` hang
+got in.
+
+**The row-block budget is measured, not guessed.** The transient runs ~5.7x the budget
+(`vstack` copies the block beside the carried factor, then `np.linalg.qr` copies again), so the
+constant matters. Swept at `n_orb=151` -- 64 MiB: 295.5 MiB / 3.31 s, 32: 193.1 / 3.26,
+16: 91.5 / 3.52, 8: 52.2 / 4.95, 4: 32.7 / 8.06. The knee is at **16 MiB**, which is the
+default; below it the per-block `O(n_gen^3)` re-triangularisation dominates. Every budget
+returned a leading singular value identical to 12 digits.
+
+**Four injected bugs confirm the tests discriminate** (chunk-offset slice, missing transpose in
+the trace contraction, missing conjugation, transposed commutator block) — each turns the new
+tests red. Written down because a test that is green for the wrong reason is this campaign's
+most repeated failure.
+
+**What is left standing here, by measurement rather than assertion.** Per-stage VmHWM with a
+`clear_refs` reset at every boundary, at `n_orb=151`: component tensors 0.4 MiB, `q_t` 4.1,
+**`discover_one_body_symmetries` 150.2**, the streamed residual 91.6, `svd(R)` and downstream
+14.3 -- which sums to the 244.9 above, so the total is accounted for. The dense generator list
+is now the dominant term at 61% of what remains: `n_gen` matrices of `n_orb^2` complex
+(147.9 MiB of payload at `n_orb=151`), still `O(n_orb^3)` and still replicated.
+Since every generator is a rank-1 outer product `u_a u_b^dagger` of eigenvectors, a factored
+representation would make it `O(n_orb^2)` — but that changes `discover_one_body_symmetries`'
+public contract, so it is a separate change and is **not** made here.
+
 ### P1-1b. `build_sparse_matrix` FIXED for serial; the distributed peak relocated to `_index_sequence`
 
 | | before | after |
