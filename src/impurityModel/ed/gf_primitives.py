@@ -341,11 +341,14 @@ class _CappedBasisProxy:
         self.comm = basis.comm
         # Width-0 key-only mask of the retained determinants on this rank; grown by
         # in-place C++ sorted merges only (no per-row Python objects in the hot path).
-        # An explicit width=1 keeps this a real width-1 block (not the width-0
-        # polymorphic zero) on a rank that legitimately owns zero determinants --
-        # from_states below would otherwise raise on that rank only.
-        seed = ManyBodyState(dict.fromkeys(basis.local_basis, 1.0 + 0j), width=1)
-        self._mask = ManyBodyState.from_states([seed]).key_union(ManyBodyState())
+        # Straight to the width-0 key mask. The previous spelling went via a
+        # `dict.fromkeys` and an intermediate width-1 block, which cost a throwaway
+        # Python dict and a full block of amplitudes that were never read -- and needed
+        # an explicit width=1 so that a rank owning zero determinants did not fall into
+        # the width-0 polymorphic zero and raise in `from_states`. `from_keys` returns a
+        # width-0 block for an empty input, which is what the mask is anyway, so the
+        # empty-rank case stops being a special case.
+        self._mask = ManyBodyState.from_keys(basis.local_basis)
         self._global_count = int(basis.size)
         self._frozen = self._global_count >= self.cap
         self.cap_hit = self._frozen
