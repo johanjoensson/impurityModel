@@ -350,6 +350,50 @@ This is the fifth time in this campaign's history that a predicted mechanism tur
 the mechanism. The memory result stands on its own measurement; the speed result is reported as
 measured, including the part that did not work.
 
+### 0i. The peak was the number that mattered, and the storage work had been aimed at the other one
+
+Everything up to 0h measured **retained** RSS. The cap model, the memory guard and the OOM killer
+all act on **VmHWM**. Measured properly, the storage work looked very different:
+
+| | retained (marginal) | peak VmHWM (marginal) |
+|---|---|---|
+| original (`_index_dict`) | 172.8 | 250.5 |
+| C++ key block as first committed | 52.3 | **284.4** — *worse* |
+| + `ManyBodyState.from_keys` | 52.3 | 233.1 |
+
+The first version built the block through `dict.fromkeys(states, ())`, an N-entry throwaway dict,
+so a change that cut retained cost 3.3x made the peak 13.5% **worse than the code it replaced** —
+and that was invisible in the retained column, which is identical either way.
+
+**Rule this earns: measure a storage change on the metric its guard uses, not the one that
+flatters it.** This caught two of this campaign's own commits within an hour.
+
+### 0j. ...and then the probe measured the wrong scenario, which inverted the verdict again
+
+With the peak identified, ~180 B/det of it was construction transient in `add_states`: a
+`list(merge(self.local_basis, unique_new))` that — now `local_basis` is a view — materialized the
+*entire existing basis* as Python objects on every call, plus a sortedness assert that allocated
+2N wrapper objects per call while guarding a property the C++ block cannot violate. Replacing the
+merge with `ManyBodyBlockState::merge_keys` (in-place, `nogil`, O(n+m)) and dropping the assert
+measured **worse** on the one-shot probe: 233.1 -> 248.6 B/det peak.
+
+That probe builds a basis in a single `add_states` from empty — a case production never runs.
+CIPSI *grows* a basis over many cycles, and the whole point of `merge_keys` is not having to
+rebuild what is already there. Measured on that pattern instead (N determinants added in 10
+calls):
+
+| | peak VmHWM | steady |
+|---|---|---|
+| `list(merge(...))` | 282.5 B/det | 244.8 |
+| **`merge_keys`** | **66.3 B/det** | **50.6** |
+
+**4.3x lower peak**, and the one-shot regression (233 -> 249) is real but confined to a shape
+production does not use.
+
+This is the second time in one session that the *scenario* rather than the instrument decided the
+answer, and it is the campaign's oldest recorded lesson — "measure the block you are modelling" —
+re-earned. Both probes were correct; one of them was answering a question nobody asked.
+
 ## Phase 0 review — feasibility of the headline fix
 
 Reviewed read-only against the whole call-site surface. **Verdict: feasible, no fundamental
