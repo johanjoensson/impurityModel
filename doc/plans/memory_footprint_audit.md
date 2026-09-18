@@ -565,6 +565,64 @@ Since every generator is a rank-1 outer product `u_a u_b^dagger` of eigenvectors
 representation would make it `O(n_orb^2)` — but that changes `discover_one_body_symmetries`'
 public contract, so it is a separate change and is **not** made here.
 
+### P1-5. `compute_impurity_rdm`'s guard protects the wrong stage — MEASURED, open
+
+`gs_statistics.compute_impurity_rdm` takes `max_bytes=256 MiB`. The guard is evaluated at
+`gs_statistics.py:470`, **after** the local pass has built `local_groups` and after the whole
+thing has been `graph_alltoall`'d. It bounds `state_blocks` only, which is the one allocation
+in the function that is not the problem.
+
+Measured with a stand-in basis carrying a real communicator (the function reads only
+`num_spin_orbitals`, `impurity_spin_orbital_indices`, `comm`, `is_distributed`; the state is a
+real `ManyBodyState`), `n_orb=124`, VmHWM growth per rank, sampled at the stage boundaries by
+wrapping the `graph_alltoall` name **in `gs_statistics`'** namespace — patching the defining
+module would not have reached the call site:
+
+| N_local | width | ranks | total | local pass | alltoall | guard + blocks | what the guard bounds |
+|---|---|---|---|---|---|---|---|
+| 5,000 | 54 | 2 | 126.6 MiB | 28.7 | 80.1 | 17.8 | 52.3 MiB |
+| 10,000 | 54 | 2 | 211.2 | 57.3 | 153.8 | 0.0 | 52.3 |
+| 20,000 | 54 | 2 | **420.1** | 111.2 | 308.9 | 0.0 | 52.3 |
+| 40,000 | 54 | 2 | **858.7** | 199.3 | 659.4 | 0.0 | 52.3 |
+
+Linear in `N_local` and linear in `width` (at `N_local=20,000`: p=1 -> 8.7 MiB, p=8 -> 62.2,
+p=27 -> 212.9, p=54 -> 420.3), and **flat in rank count** at fixed per-rank load (2/3/4 ranks:
+419.8 / 408.9 / 391.1 MiB). So the transient is set by `N_local x width` and every rank pays it
+at once — on a node it multiplies by ranks per node.
+
+**The sharpest form of the finding: when the guard fires, it has already paid.** At `n_imp=14`
+(an f shell) the blocks would be 9,705 MiB, so the guard trips and returns `None` — after
+spending **462.6 MiB/rank**, 1.8x its own budget, to reach the decision. A guard that exists to
+avoid an allocation cannot be placed after the allocation it is avoiding is already dwarfed.
+
+**Where the ~400 B/entry goes**, per `(determinant x nonzero column)` entry — the measured
+constant is 397-413 B across every point above:
+
+| | bytes/entry |
+|---|---|
+| `local_groups` tuple `(n, n_e, m, amp)` + list slot | 120 |
+| pickled send buffer | 33 |
+| pickled receive buffer | 33 |
+| received tuples, materialised again as Python objects | 120 |
+| dict/list overhead, allocator slack | remainder |
+
+**Nothing is freed until the function returns**: `local_groups`, `send` (which holds the *same*
+list objects, so it is a re-indexing and not a copy), `received` and `groups` are all still
+bound while the blocks are accumulated and Allreduced.
+
+**The wire is not the problem, the objects are.** Pickle puts a distinct entry on the wire in
+33 B against 23 B for a packed record — only 1.4x. The 16x is in materialising Python tuples
+and complex objects twice. Every field is fixed-width (`n < width`: uint16, `n_e <= n_imp`:
+uint8, `m < C(n_imp, n_e)`: uint32, `amp`: complex128 = 23 B packed), so a record array would
+carry the same information at ~23 B/entry live *and* on the wire, taking the ~400 B/entry to
+roughly 50-70 including both copies. This is the same shape as the `_index_sequence` pickle
+peak (P1-1b), and the same fix applies.
+
+**Ranking.** `O(N_local x width)`, distributed, flat in rank count — which the plan's
+`O(N_local)` filter would drop, *except* that the filter explicitly does not drop a dominant
+distributed term whose constant is reducible, and 400 -> ~60 B/entry is reducible. `N_local`
+grows as `de2_min` tightens, so it is also convergence-sensitive. Not yet fixed.
+
 ### P1-1b. `build_sparse_matrix` FIXED for serial; the distributed peak relocated to `_index_sequence`
 
 | | before | after |
