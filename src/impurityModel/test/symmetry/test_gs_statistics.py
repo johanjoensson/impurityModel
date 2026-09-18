@@ -400,3 +400,111 @@ def test_rdm_guard_refuses_without_communicating(monkeypatch):
         comm = MPI.COMM_WORLD
 
     assert gss.compute_impurity_rdm(_DistBasis(), _make_psis(), max_bytes=1) is None
+
+
+# --- the impurity RDM carries entries as flat arrays; check it against a naive oracle ---
+
+_RDM_N_ORB = 24
+_RDM_IMP = [0, 1, 2, 3]
+
+
+class _RdmBasis:
+    num_spin_orbitals = _RDM_N_ORB
+    impurity_spin_orbital_indices = _RDM_IMP
+    is_distributed = False
+    comm = None
+
+
+def _rdm_det(occupied):
+    data = bytearray((_RDM_N_ORB + 7) // 8)
+    for orb in occupied:
+        data[orb // 8] |= 1 << (7 - orb % 8)
+    return SlaterDeterminant.from_bytes(bytes(data))
+
+
+def _naive_impurity_rdm(psis, n_orb, imp_idx, width):
+    """Oracle: trace out the bath by grouping determinants on their bath occupation.
+
+    Deliberately a re-derivation rather than a refactor of the implementation -- it groups
+    with a Python dict keyed on a tuple of bath orbitals and takes the outer products one
+    group at a time, so it shares no code path with the packed version under test.
+    """
+    from math import comb as _comb
+
+    from impurityModel.ed.gs_statistics import _combination_rank
+    from impurityModel.ed import product_state_representation as _psr
+
+    imp_set = set(imp_idx)
+    bath = [i for i in range(n_orb) if i not in imp_set]
+    groups = {}
+    observed = set()
+    for state, row in psis.items():
+        bits = _psr.bytes2bitarray(bytes(state.to_bytearray()), n_orb)
+        positions = [k for k, orb in enumerate(imp_idx) if bits[orb]]
+        key = tuple(1 if bits[o] else 0 for o in bath)
+        for n in range(width):
+            if row[n] != 0:
+                groups.setdefault(key, []).append((n, len(positions), _combination_rank(positions), row[n]))
+                observed.add(len(positions))
+    blocks = [{n_e: np.zeros((_comb(len(imp_idx), n_e),) * 2, dtype=complex) for n_e in observed} for _ in range(width)]
+    for entries in groups.values():
+        for n, n_e, m, amp in entries:
+            for n2, n_e2, m2, amp2 in entries:
+                if n2 == n and n_e2 == n_e:
+                    blocks[n][n_e][m, m2] += amp * np.conj(amp2)
+    return blocks
+
+
+def _build_rdm_state(width, seed, zero_fraction=0.25):
+    rng = np.random.default_rng(seed)
+    bath_orbs = list(range(len(_RDM_IMP), _RDM_N_ORB))
+    imp_cfgs = [(0,), (1, 2), (0, 1, 3), (2,), (0, 2)]
+    keys = []
+    for _ in range(12):  # 12 bath configurations x 5 impurity configurations
+        b = tuple(sorted(rng.choice(bath_orbs, size=4, replace=False).tolist()))
+        for c in imp_cfgs:
+            keys.append(_rdm_det(tuple(c) + b))
+    # A second family whose configurations all carry the SAME impurity count. Entries are
+    # ordered (bath group, state, N_imp, config), so in a group with several N_imp values the
+    # count resets at every state boundary and accidentally marks it. Only a single-N_imp group
+    # leaves consecutive entries differing by their state alone -- which is what catches a
+    # segment boundary that forgets the state index. Established by injecting that bug: the
+    # mixed family above does not catch it.
+    for _ in range(6):
+        b = tuple(sorted(rng.choice(bath_orbs, size=4, replace=False).tolist()))
+        for c in [(0,), (1,), (3,)]:  # every one has N_imp = 1
+            keys.append(_rdm_det(tuple(c) + b))
+    block = ManyBodyState.from_keys(keys)
+    amps = rng.standard_normal((len(block), width)) + 1j * rng.standard_normal((len(block), width))
+    if zero_fraction:
+        amps[rng.random(amps.shape) < zero_fraction] = 0  # exercise the nonzero-amplitude skip
+    return ManyBodyState.from_keys_and_amps(block, amps)
+
+
+@pytest.mark.parametrize("width,zero_fraction", [(1, 0.25), (3, 0.25), (3, 0.0), (4, 0.0)])
+def test_rdm_matches_a_naive_bath_trace(width, zero_fraction):
+    """Several bath groups, several impurity counts, and exact zeros in the amplitudes --
+    none of which the 3-determinant fixtures above reach."""
+    from impurityModel.ed.gs_statistics import compute_impurity_rdm
+
+    psis = _build_rdm_state(width, seed=4, zero_fraction=zero_fraction)
+    got = compute_impurity_rdm(_RdmBasis(), psis, max_bytes=1 << 30)
+    want = _naive_impurity_rdm(psis, _RDM_N_ORB, _RDM_IMP, width)
+
+    assert got is not None
+    assert len(got) == len(want) == width
+    for n in range(width):
+        assert set(got[n]) == set(want[n]), f"state {n}: N blocks {sorted(got[n])} != {sorted(want[n])}"
+        for n_e in got[n]:
+            np.testing.assert_allclose(got[n][n_e], want[n][n_e], atol=1e-12)
+    assert sum(np.trace(got[0][k]).real for k in got[0]) > 0, "oracle comparison ran on an all-zero RDM"
+
+
+def test_unique_rows_handles_zero_rows():
+    """A rank can own no determinants at all (only visible at three ranks or more), and
+    np.unique(axis=0) is not defined on a zero-row array."""
+    from impurityModel.ed.gs_statistics import _unique_rows
+
+    uniq, inverse = _unique_rows(np.zeros((0, 3), dtype=np.uint8), np.zeros(0, dtype=np.int64))
+    assert uniq.shape == (0, 3)
+    assert inverse.shape == (0,)

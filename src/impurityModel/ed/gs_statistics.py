@@ -385,6 +385,60 @@ def _combination_rank(positions):
     return sum(comb(p, i + 1) for i, p in enumerate(positions))
 
 
+def _unique_rows(rows, index):
+    """Distinct rows of ``rows`` and, for each ``index`` entry, which distinct row it names.
+
+    ``np.unique(axis=0)`` is not defined on a zero-row array, which is reachable: a rank can
+    own no determinants at all (only at three ranks or more, for a hash-distributed basis).
+    """
+    if rows.shape[0] == 0:
+        return rows, np.zeros(0, dtype=np.int64)
+    uniq, inverse = np.unique(rows, axis=0, return_inverse=True)
+    inverse = np.asarray(inverse).reshape(-1)  # numpy >= 2.0 keeps the input's shape here
+    return uniq, inverse[index]
+
+
+def _merge_received(received, key_bytes):
+    """Concatenate the received entry arrays and re-key them on the merged bath configurations.
+
+    The same bath configuration can arrive from several ranks -- that is the point of routing on
+    it -- so the per-sender group ids are local and have to be resolved against the union.
+    """
+    keys, groups, ns, n_es, ms, amps = [], [], [], [], [], []
+    offset = 0
+    for chunk in received:
+        if not chunk or len(chunk["m"]) == 0 and len(chunk["keys"]) == 0:
+            continue
+        keys.append(chunk["keys"])
+        groups.append(np.asarray(chunk["group"], dtype=np.int64) + offset)
+        offset += len(chunk["keys"])
+        ns.append(chunk["n"])
+        n_es.append(chunk["n_e"])
+        ms.append(chunk["m"])
+        amps.append(chunk["amp"])
+    if not keys:
+        empty_i = np.zeros(0, dtype=np.int64)
+        return (
+            np.zeros((0, key_bytes), dtype=np.uint8),
+            empty_i,
+            np.zeros(0, dtype=np.int16),
+            np.zeros(0, dtype=np.int16),
+            empty_i,
+            np.zeros(0, dtype=complex),
+        )
+    all_keys = np.concatenate(keys)
+    all_groups = np.concatenate(groups)
+    uniq, merged = _unique_rows(all_keys, all_groups)
+    return (
+        uniq,
+        merged,
+        np.concatenate(ns),
+        np.concatenate(n_es),
+        np.concatenate(ms),
+        np.concatenate(amps),
+    )
+
+
 def _rdm_block_bytes(impurity_counts, n_imp, width):
     """Bytes the dense RDM blocks need for the given impurity electron counts."""
     return sum(comb(n_imp, n_e) ** 2 for n_e in impurity_counts) * 16 * max(width, 1)
@@ -482,32 +536,85 @@ def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
     # per-state sparse traversal exactly (a zero-amplitude outer product contributes
     # nothing to the RDM either way) while avoiding shipping p-fold more entries
     # through the alltoall below than the sparse states actually held.
-    local_groups = defaultdict(list)
-    observed_n = set()
-    for state, row in psis.items():
+    # Entries are held in flat typed arrays, not Python tuples. A `(n, n_e, m, amp)` tuple plus
+    # its list slot is 120 B live and the alltoall materialises every entry a second time on the
+    # receiving side, which measured ~400 B of peak per entry; the same four fields packed are
+    # 23 B, and all of them are fixed-width. Pickle is not the problem -- a distinct entry goes
+    # on the wire in 33 B against 23 B packed -- so this is about never building the objects.
+    # See P1-5 in doc/plans/memory_footprint_audit.md.
+    amps = np.asarray(psis)
+    if amps.ndim == 1:
+        amps = amps[:, np.newaxis]
+    nonzero = amps != 0
+    keep = np.any(nonzero, axis=1)
+    n_keep = int(keep.sum())
+
+    # bitarray.tobytes() pads the last byte, so a bath key is exactly this wide. The same width
+    # has to be used for grouping and for routing: group on one width and crc32 on another and
+    # entries land on a rank that files them under a different key -- wrong answers, no crash.
+    key_bytes = (len(bath_idx) + 7) // 8
+
+    bath_keys = np.zeros((n_keep, key_bytes), dtype=np.uint8)
+    row_n_e = np.zeros(n_keep, dtype=np.int16)
+    row_m = np.zeros(n_keep, dtype=np.int64)
+    kept = 0
+    for r, (state, _row) in enumerate(psis.items()):
+        if not keep[r]:
+            continue
         bits = psr.bytes2bitarray(bytes(state.to_bytearray()), n_orb)
         imp_positions = [k for k, orb in enumerate(imp_idx) if bits[orb]]
-        n_e = len(imp_positions)
+        row_n_e[kept] = len(imp_positions)
+        row_m[kept] = _combination_rank(imp_positions)
         bath_key = bits[bath_idx].tobytes()
-        m = _combination_rank(imp_positions)
-        for n in range(width):
-            amp = row[n]
-            if amp != 0:
-                local_groups[bath_key].append((n, n_e, m, complex(amp)))
-                observed_n.add(n_e)
+        if len(bath_key) != key_bytes:
+            raise AssertionError(f"bath key is {len(bath_key)} B, expected {key_bytes}")
+        bath_keys[kept] = np.frombuffer(bath_key, dtype=np.uint8)
+        kept += 1
+
+    # One entry per (determinant, nonzero column), in row-major order.
+    ent_row, ent_col = np.nonzero(nonzero)
+    kept_of_row = np.cumsum(keep) - 1
+    ent_kept = kept_of_row[ent_row]
+    ent_n = ent_col.astype(np.int16)
+    ent_n_e = row_n_e[ent_kept]
+    ent_m = row_m[ent_kept].astype(np.int32)  # m < comb(n_imp, n_e), far inside int32
+    ent_amp = amps[ent_row, ent_col]
+    observed_n = set(np.unique(ent_n_e).tolist())
+
+    uniq_keys, ent_group = _unique_rows(bath_keys, ent_kept)
+    ent_group = ent_group.astype(np.int32)
+    # The int64 row/column index arrays are 24 B per entry between them and are finished with;
+    # holding them through the alltoall would cost more than the entry payload itself.
+    del ent_row, ent_col, ent_kept, nonzero, keep, bath_keys, row_n_e, row_m
 
     if comm is not None and comm.size > 1:
-        send = [defaultdict(list) for _ in range(comm.size)]
-        for bath_key, entries in local_groups.items():
-            send[zlib.crc32(bath_key) % comm.size][bath_key] = entries
-        received = graph_alltoall([dict(s) for s in send], comm)
-        groups = defaultdict(list)
-        for d in received:
-            for bath_key, entries in (d or {}).items():
-                groups[bath_key].extend(entries)
-        observed_n = set().union(*comm.allgather(observed_n)) if comm.size > 1 else observed_n
-    else:
-        groups = local_groups
+        dest = np.array(
+            [zlib.crc32(uniq_keys[g].tobytes()) % comm.size for g in range(len(uniq_keys))],
+            dtype=np.int64,
+        )
+        ent_dest = dest[ent_group] if len(ent_group) else np.zeros(0, dtype=np.int64)
+        send = []
+        for d in range(comm.size):
+            groups_here = np.nonzero(dest == d)[0]
+            local_id = np.full(len(uniq_keys), -1, dtype=np.int64)
+            local_id[groups_here] = np.arange(len(groups_here))
+            pick = ent_dest == d
+            send.append(
+                {
+                    "keys": uniq_keys[groups_here],
+                    "group": local_id[ent_group[pick]].astype(np.int32),
+                    "n": ent_n[pick],
+                    "n_e": ent_n_e[pick],
+                    "m": ent_m[pick],
+                    "amp": ent_amp[pick],
+                }
+            )
+        del ent_dest, ent_group, ent_n, ent_n_e, ent_m, ent_amp  # now held only by `send`
+        received = graph_alltoall(send, comm)
+        del send
+        uniq_keys, ent_group, ent_n, ent_n_e, ent_m, ent_amp = _merge_received(received, key_bytes)
+        del received
+        observed_n = set().union(*comm.allgather(observed_n))
 
     # Memory guard on the dense blocks (identical decision on every rank: observed_n is
     # the allgathered union).
@@ -519,14 +626,31 @@ def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
         return None
 
     state_blocks = [{n_e: np.zeros((dims[n_e], dims[n_e]), dtype=complex) for n_e in observed_n} for _ in range(width)]
-    for entries in groups.values():
-        per_state = defaultdict(list)
-        for n, n_e, m, amp in entries:
-            per_state[(n, n_e)].append((m, amp))
-        for (n, n_e), lst in per_state.items():
-            idx = [m for m, _ in lst]
-            amps = np.array([a for _, a in lst], dtype=complex)
-            state_blocks[n][n_e][np.ix_(idx, idx)] += np.outer(amps, amps.conj())
+    # One outer product per (bath configuration, state, N_imp). Sorting brings each of those to
+    # a contiguous run, so the segment walk replaces the per-group Python dict the tuple form
+    # needed. `m` last in the key makes the duplicate check below a neighbour comparison.
+    order = np.lexsort((ent_m, ent_n_e, ent_n, ent_group))
+    seg_group, seg_n, seg_n_e = ent_group[order], ent_n[order], ent_n_e[order]
+    seg_m, seg_amp = ent_m[order], ent_amp[order]
+
+    starts = np.ones(len(order), dtype=bool)
+    starts[1:] = (seg_group[1:] != seg_group[:-1]) | (seg_n[1:] != seg_n[:-1]) | (seg_n_e[1:] != seg_n_e[:-1])
+    # `np.ix_` ASSIGNS rather than accumulates on a repeated index, so a duplicate
+    # (bath configuration, state, N_imp, imp-config) would silently drop a contribution instead
+    # of summing it. Distinct impurity configurations within a bath group cannot collide and one
+    # rank owns each determinant, so this cannot fire -- which is exactly why it is cheap to
+    # check and worth checking: the tuple form never relied on the property, this form does.
+    if len(order) > 1:
+        repeated = (~starts[1:]) & (seg_m[1:] == seg_m[:-1])
+        if repeated.any():
+            raise AssertionError("duplicate impurity configuration within one bath group; RDM would drop a term")
+
+    begin = np.nonzero(starts)[0]
+    end = np.append(begin[1:], len(order))
+    for s_i, e_i in zip(begin, end):
+        idx = seg_m[s_i:e_i]
+        block_amps = seg_amp[s_i:e_i]
+        state_blocks[seg_n[s_i]][seg_n_e[s_i]][np.ix_(idx, idx)] += np.outer(block_amps, block_amps.conj())
 
     if comm is not None and comm.size > 1:
         for n in range(width):
