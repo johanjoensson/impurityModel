@@ -39,6 +39,33 @@ def pack_determinants_cy(list dets, int comm_size):
     return send_counts_np, state_buf_np
 
 
+def pack_determinants_ordered_cy(list dets, int64_t[:] order, size_t chunks_per_state):
+    """Pack ``dets[order[i]]`` into one flat ``uint64`` buffer, in the order given.
+
+    Unlike :func:`pack_determinants_cy` this preserves order and keeps duplicates. That one
+    routes and **deduplicates** through an ``unordered_set``, which is what ``add_states``
+    wants and what an index lookup must not do: a lookup has to answer for every query it was
+    given, in the order it was given them.
+    """
+    cdef Py_ssize_t n = order.shape[0]
+    out = np.empty(<Py_ssize_t>(n * <Py_ssize_t>chunks_per_state), dtype=np.uint64)
+    if n == 0 or chunks_per_state == 0:
+        return out
+    cdef uint64_t[::1] view = out
+    cdef SlaterDeterminant sd
+    cdef Py_ssize_t i, c, base
+    for i in range(n):
+        sd = <SlaterDeterminant?>dets[order[i]]
+        if sd.s.size() != chunks_per_state:
+            raise ValueError(
+                f"determinant of {sd.s.size()} chunks packed into a {chunks_per_state}-chunk buffer"
+            )
+        base = i * <Py_ssize_t>chunks_per_state
+        for c in range(<Py_ssize_t>chunks_per_state):
+            view[base + c] = sd.s[c]
+    return out
+
+
 def unpack_determinants_cy(int comm_size, int64_t[:] recv_counts, uint64_t[:] state_buf, size_t chunks_per_state):
     cdef vector[int64_t] c_recv_counts
     cdef vector[uint64_t] c_state_buf

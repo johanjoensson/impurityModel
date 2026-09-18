@@ -18,6 +18,7 @@ from impurityModel.ed.ManyBodyUtils import (
     SlaterDeterminant,
     pack_block_fused_cy,
     pack_determinants_cy,
+    pack_determinants_ordered_cy,
     unpack_block_fused_cy,
     unpack_determinants_cy,
 )
@@ -344,6 +345,101 @@ def graph_alltoall(send_list, comm):
         if result[r] is None:
             result[r] = empty_clone(send_list[r])
 
+    return result
+
+
+def routed_index_lookup(keys, chunks_per_state, resolve, comm):
+    """Resolve every determinant in ``keys`` on its owning rank, over raw buffers.
+
+    The buffer-based counterpart of routing the same queries through
+    :func:`graph_alltoall`. That path ``pickle.dumps`` its payload, so a lookup pickles
+    ``SlaterDeterminant`` objects outbound, reconstructs them on the receiving rank, and
+    pickles a list of boxed Python ints back -- two object round trips per lookup. Measured on
+    a 484k-determinant basis at two ranks, that accounted for 596 MiB of
+    ``build_sparse_matrix``'s ~783 MiB peak.
+
+    Here the queries travel as packed ``uint64`` chunks, are looked up without ever becoming
+    Python objects on the far side (``ManyBodyState.find_rows_packed``), and the answers come
+    back as ``int64``.
+
+    Parameters
+    ----------
+    keys : list[SlaterDeterminant]
+        This rank's queries, in any order; duplicates are kept and answered individually.
+    chunks_per_state : int
+        ``uint64`` words per determinant. Every key must have exactly this many.
+    resolve : callable
+        Takes the received ``uint64`` buffer and returns one ``int64`` answer per determinant
+        packed in it. Runs on the rank that owns those determinants.
+    comm : MPI.Intracomm
+
+    Returns
+    -------
+    np.ndarray
+        ``int64``, one answer per entry of ``keys``, in the caller's order.
+
+    Notes
+    -----
+    Collective, and unconditionally so: every rank runs the same sequence of calls
+    (``Alltoall``, ``Create_dist_graph_adjacent``, two ``Neighbor_alltoallv``, ``Free``)
+    whatever its own query count, including none at all.
+    """
+    size = comm.size
+    n = len(keys)
+    if chunks_per_state < 1:
+        raise ValueError(f"chunks_per_state must be >= 1, got {chunks_per_state}")
+
+    dest = np.empty(n, dtype=np.int64)
+    for i, key in enumerate(keys):
+        dest[i] = key.routing_hash() % size
+    # Stable, so queries keep their relative order inside each destination bucket and the
+    # packed layout matches the per-destination counts below.
+    order = np.argsort(dest, kind="stable")
+    send_counts = np.bincount(dest, minlength=size).astype(np.int64) if n else np.zeros(size, dtype=np.int64)
+
+    # Packed BEFORE the first collective, deliberately. `pack_determinants_ordered_cy`
+    # validates every determinant's width and raises on a mismatch; raising after a collective
+    # has run leaves the other ranks waiting in an exchange this one has already left, which
+    # turns a loud local error into a hang. Everything that can fail locally fails here.
+    send_buf = pack_determinants_ordered_cy(keys, order, chunks_per_state)
+
+    recv_counts = np.empty(size, dtype=np.int64)
+    comm.Alltoall(send_counts, recv_counts)
+
+    # One symmetric neighbourhood serves both legs: whoever I query answers me, so the
+    # forward graph's destinations are the return leg's sources and vice versa. Ranks that
+    # appear in only one direction contribute a zero count in the other.
+    neighbors = [r for r in range(size) if send_counts[r] > 0 or recv_counts[r] > 0]
+    s_cnt = np.array([send_counts[r] for r in neighbors], dtype=np.int64)
+    r_cnt = np.array([recv_counts[r] for r in neighbors], dtype=np.int64)
+    s_dsp = np.concatenate(([0], np.cumsum(s_cnt[:-1]))) if s_cnt.size else np.zeros(0, dtype=np.int64)
+    r_dsp = np.concatenate(([0], np.cumsum(r_cnt[:-1]))) if r_cnt.size else np.zeros(0, dtype=np.int64)
+
+    recv_buf = np.empty(int(r_cnt.sum()) * chunks_per_state, dtype=np.uint64)
+
+    graph_comm = comm.Create_dist_graph_adjacent(neighbors, neighbors, reorder=False)
+    try:
+        w = chunks_per_state * 8
+        graph_comm.Neighbor_alltoallv(
+            [send_buf, s_cnt * w, s_dsp * w, MPI.BYTE],
+            [recv_buf, r_cnt * w, r_dsp * w, MPI.BYTE],
+        )
+        answers = np.ascontiguousarray(resolve(recv_buf), dtype=np.int64)
+        if answers.shape[0] != int(r_cnt.sum()):
+            raise ValueError(
+                f"resolve returned {answers.shape[0]} answers for {int(r_cnt.sum())} received determinants"
+            )
+        back = np.empty(n, dtype=np.int64)
+        graph_comm.Neighbor_alltoallv(
+            [answers, r_cnt * 8, r_dsp * 8, MPI.BYTE],
+            [back, s_cnt * 8, s_dsp * 8, MPI.BYTE],
+        )
+    finally:
+        # Collective, at a synchronized point -- never from the garbage collector.
+        graph_comm.Free()
+
+    result = np.empty(n, dtype=np.int64)
+    result[order] = back
     return result
 
 

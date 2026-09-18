@@ -390,6 +390,28 @@ cdef class ManyBodyState:
             view[i] = <int64_t>self.b.find_row(sd.s)
         return out
 
+    def find_rows_packed(self, uint64_t[:] buf, size_t chunks_per_state):
+        """Row indices for determinants packed flat in ``buf``, ``rows()`` for a miss.
+
+        The point is what it does *not* allocate: the queries stay as raw chunks, so a routed
+        lookup never materializes a ``SlaterDeterminant`` per received determinant. One scratch
+        key is reused for every probe.
+        """
+        cdef Py_ssize_t n = 0 if chunks_per_state == 0 else (buf.shape[0] // <Py_ssize_t>chunks_per_state)
+        out = np.empty(n, dtype=np.int64)
+        if n == 0:
+            return out
+        cdef int64_t[::1] view = out
+        cdef SlaterDeterminant_cpp[uint64_t] key
+        key.resize(chunks_per_state)
+        cdef Py_ssize_t i, c, base
+        for i in range(n):
+            base = i * <Py_ssize_t>chunks_per_state
+            for c in range(<Py_ssize_t>chunks_per_state):
+                key[c] = buf[base + c]
+            view[i] = <int64_t>self.b.find_row(key)
+        return out
+
     def key_at(self, Py_ssize_t i):
         """The determinant at row ``i`` in sorted order.
 

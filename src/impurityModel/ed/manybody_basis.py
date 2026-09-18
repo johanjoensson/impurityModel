@@ -15,7 +15,12 @@ from impurityModel.ed.ManyBodyUtils import (
 from impurityModel.ed.ManyBodyUtils import (
     applyOp as applyOp_test,
 )
-from impurityModel.ed.mpi_comm import distribute_determinants, graph_alltoall, graph_alltoall_block
+from impurityModel.ed.mpi_comm import (
+    distribute_determinants,
+    graph_alltoall,
+    graph_alltoall_block,
+    routed_index_lookup,
+)
 
 
 def collective_amplitude_cutoff(scores, k, comm):
@@ -756,27 +761,28 @@ class Basis:
             return (self.offset + r if r != n_local else self.size for r in self._keys.find_rows(s))
 
         s = list(s)
-        send_list: list[list[SlaterDeterminant]] = [[] for _ in range(self.comm.size)]
-        send_to_ranks = np.empty((len(s)), dtype=int)
-        send_to_ranks[:] = self.size
-        for i, val in enumerate(s):
-            r = val.routing_hash() % self.comm.size
-            send_list[r].append(val)
-            send_to_ranks[i] = r
+        n_local = len(self._keys)
+        _offset = self.offset
+        _size = self.size
 
-        send_order = np.argsort(send_to_ranks, kind="stable")
+        # `n_bytes` counts BYTES per determinant, not 64-bit words: `Basis.__init__` derives it
+        # as ceil(num_spin_orbitals / 8) rounded up to whole chunks, so a 10-spin-orbital basis
+        # has n_bytes = 2. The chunk count is ceil(n_bytes / 8) -- the spelling
+        # `distribute_determinants` already uses. `n_bytes // 8` is 0 for every basis under 64
+        # spin-orbitals, which sends zero bytes while still counting determinants.
+        chunks_per_state = (self.n_bytes + 7) // 8
 
-        queries = Basis._point2point(send_list, self.comm)
+        def _resolve(buf):
+            """Answer the determinants this rank owns, without unpacking them into objects."""
+            rows = self._keys.find_rows_packed(buf, chunks_per_state)
+            miss = rows == n_local
+            out = rows + _offset
+            out[miss] = _size
+            return out
 
-        results: list[list[int]] = [[] for _ in range(self.comm.size)]
-        for r in range(self.comm.size):
-            n_local = len(self._keys)
-            results[r] = [
-                self.offset + row if row != n_local else self.size for row in self._keys.find_rows(queries[r])
-            ]
-        result = np.array([i for r_i in Basis._point2point(results, self.comm) for i in r_i], dtype=int)
+        result = routed_index_lookup(s, chunks_per_state, _resolve, self.comm)
 
-        # The retry re-enters this method, which runs two `graph_alltoall` exchanges -- so
+        # The retry re-enters this method, which runs a routed collective exchange -- so
         # whether to retry is a COLLECTIVE decision and must not be taken from rank-local
         # state. Both of the old guards were rank-local: `len(result) > 0` is this rank's bra
         # count (a rank asked to resolve nothing skipped the loop entirely) and `np.any(...)`
@@ -802,7 +808,7 @@ class Basis:
 
                 warnings.warn(f"Failed to resolve all indices after {max_retries} retries", stacklevel=2)
 
-        return (res for res in result[np.argsort(send_order)])
+        return (res for res in result)
 
     def _contains_sequence(self, items) -> Iterator[bool]:
         """Check membership for a sequence of states."""

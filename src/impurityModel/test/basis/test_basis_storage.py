@@ -134,3 +134,32 @@ def test_distributed_global_size_and_lookup():
     # Every state this rank created is present in the (possibly distributed) basis.
     for s in states:
         assert s in b
+
+
+def test_chunk_count_is_ceil_of_n_bytes_not_a_floor_division():
+    """``n_bytes`` counts BYTES, so the chunk count is ``ceil(n_bytes / 8)``.
+
+    Pins the arithmetic behind the routed index lookup. ``n_bytes // 8`` is 0 for every basis
+    under 64 spin-orbitals, which makes a buffer exchange send zero bytes while still counting
+    determinants -- the receiving rank then answers nothing for determinants it was told to
+    expect. That failure showed up as an MPI hang rather than an error, so it is pinned here
+    as a local assertion that fails loudly instead.
+    """
+    basis = _make_basis(_make_states())
+    chunks = (basis.n_bytes + 7) // 8
+    assert chunks >= 1
+    assert basis.n_bytes // 8 != chunks or basis.n_bytes % 8 == 0
+    for state in basis.local_basis:
+        assert len(state) == chunks, f"determinant has {len(state)} chunks, basis implies {chunks}"
+
+
+def test_routed_index_lookup_rejects_a_zero_chunk_width():
+    """The guard that turns the hang above into an immediate, local error.
+
+    It has to raise *before* any collective runs: raising afterwards leaves the other ranks
+    waiting in an exchange this one has already left.
+    """
+    from impurityModel.ed.mpi_comm import routed_index_lookup
+
+    with pytest.raises(ValueError, match="chunks_per_state"):
+        routed_index_lookup([], 0, lambda buf: None, MPI.COMM_SELF)
