@@ -385,6 +385,27 @@ def _combination_rank(positions):
     return sum(comb(p, i + 1) for i, p in enumerate(positions))
 
 
+def _rdm_block_bytes(impurity_counts, n_imp, width):
+    """Bytes the dense RDM blocks need for the given impurity electron counts."""
+    return sum(comb(n_imp, n_e) ** 2 for n_e in impurity_counts) * 16 * max(width, 1)
+
+
+def _observed_impurity_counts(psis, imp_idx, n_orb):
+    """The impurity electron counts carried by rank-local determinants with a nonzero row.
+
+    Allocation-free companion to :func:`compute_impurity_rdm`'s main pass, which records the
+    same counts as a by-product of building its groups. Kept in step with that pass: a count
+    is observed exactly when the determinant has at least one nonzero amplitude.
+    """
+    observed = set()
+    for state, row in psis.items():
+        if not np.any(row):
+            continue
+        bits = psr.bytes2bitarray(bytes(state.to_bytearray()), n_orb)
+        observed.add(sum(1 for orb in imp_idx if bits[orb]))
+    return observed
+
+
 def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
     r"""Many-body impurity reduced density matrices :math:`\rho_\mathrm{imp} =
     \mathrm{Tr}_\mathrm{bath}|\psi_n\rangle\langle\psi_n|`, one per eigenstate.
@@ -430,6 +451,28 @@ def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
     bath_idx = [i for i in range(n_orb) if i not in imp_set]
     comm = basis.comm if basis.is_distributed else None
 
+    # Memory guard, stage 1 -- BEFORE anything large is built. The guard below (which is the
+    # authority, and stays) can only refuse after the local pass and the alltoall have already
+    # run, so on the path where it says "too big" it has spent more than it was protecting:
+    # measured 462.6 MiB/rank to decide against allocating, at a 256 MiB budget (P1-5 in
+    # doc/plans/memory_footprint_audit.md). Stage 1 bounds the blocks over EVERY impurity count
+    # rather than the observed ones, so it needs no pass at all; when that bound fits, the exact
+    # decision cannot differ and nothing else is computed. Only when it does not fit is the
+    # exact `observed_n` worth one allocation-free pass, and then the refusal is free.
+    #
+    # Both stages decide from `guard_width`, not from the local `width`: the trigger below gates
+    # a collective, and a rank-local width would gate it differently on different ranks -- the
+    # deadlock this repo already has on record for a width-0 block on one rank. The rest of the
+    # function assumes the same invariant anyway (the Allreduce loop at the end runs
+    # `range(width)` on every rank), so the max is the value that makes the guard agree with it.
+    guard_width = width if comm is None or comm.size == 1 else comm.allreduce(width, op=MPI.MAX)
+    if _rdm_block_bytes(range(n_imp + 1), n_imp, guard_width) > max_bytes:
+        early_n = _observed_impurity_counts(psis, imp_idx, n_orb)
+        if comm is not None and comm.size > 1:
+            early_n = set().union(*comm.allgather(early_n))
+        if _rdm_block_bytes(early_n, n_imp, guard_width) > max_bytes:
+            return None
+
     # Local pass: bath configuration -> [(state, N_imp, imp-config rank, amplitude)].
     # Each determinant (row) is visited once regardless of width: its impurity
     # configuration / bath key depend only on its own bit pattern, not on which
@@ -469,7 +512,10 @@ def compute_impurity_rdm(basis, psis, max_bytes=256 * 1024**2):
     # Memory guard on the dense blocks (identical decision on every rank: observed_n is
     # the allgathered union).
     dims = {n_e: comb(n_imp, n_e) for n_e in observed_n}
-    if sum(d * d for d in dims.values()) * 16 * max(width, 1) > max_bytes:
+    # Retained as the authority: stage 1 can only have let us through, never in, so this cannot
+    # refuse something stage 1 accepted unless the two disagree about `observed_n` -- in which
+    # case the allocation is still guarded rather than merely predicted.
+    if _rdm_block_bytes(observed_n, n_imp, guard_width) > max_bytes:
         return None
 
     state_blocks = [{n_e: np.zeros((dims[n_e], dims[n_e]), dtype=complex) for n_e in observed_n} for _ in range(width)]

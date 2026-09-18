@@ -11,6 +11,7 @@ import math
 
 import numpy as np
 import pytest
+from mpi4py import MPI
 
 from impurityModel.ed.gs_statistics import (
     _det_participation,
@@ -332,3 +333,70 @@ def test_marginal_axis_selects_channel():
     thermal_config = {(2, 1, 1): 0.3, (1, 2, 2): 0.2, (1, 1, 1): 0.5}
     con = _marginal(thermal_config, axis=2)
     assert dict(con["distribution"]) == {1: pytest.approx(0.8), 2: pytest.approx(0.2)}
+
+
+# --- the impurity-RDM memory guard is staged to refuse before it builds anything ---
+
+
+def _rdm_budgets():
+    """Exact and crude block budgets for the shared fixture, in bytes.
+
+    The fixture's states carry impurity counts {1, 2} of a 2-orbital impurity, so the exact
+    budget covers N=1,2 while the crude bound (used before any pass) also counts N=0.
+    """
+    from impurityModel.ed.gs_statistics import _rdm_block_bytes
+
+    width = 2
+    exact = _rdm_block_bytes({1, 2}, len(IMPURITY), width)
+    crude = _rdm_block_bytes(range(len(IMPURITY) + 1), len(IMPURITY), width)
+    assert crude > exact, "the crude bound must be strictly looser, or it tests nothing"
+    return exact, crude
+
+
+def test_rdm_guard_refuses_before_any_per_determinant_work(monkeypatch):
+    """A refusal must cost nothing. `_combination_rank` is called once per determinant in the
+    build; if the guard still reaches it, the guard is behind the work it exists to prevent."""
+    import impurityModel.ed.gs_statistics as gss
+
+    def boom(*a, **k):
+        raise AssertionError("per-determinant work ran before the memory guard refused")
+
+    monkeypatch.setattr(gss, "_combination_rank", boom)
+    assert gss.compute_impurity_rdm(_FakeBasis(), _make_psis(), max_bytes=1) is None
+
+
+def test_rdm_crude_bound_does_not_change_the_decision():
+    """Between the exact and crude budgets the crude bound is exceeded but the exact one is
+    not, so the blocks must still be built. Guards against the cheap pre-pass bound being
+    used as the decision rather than as a trigger for computing the exact one."""
+    import impurityModel.ed.gs_statistics as gss
+
+    exact, crude = _rdm_budgets()
+    between = (exact + crude) // 2
+    assert exact <= between < crude
+
+    blocks = gss.compute_impurity_rdm(_FakeBasis(), _make_psis(), max_bytes=between)
+    assert blocks is not None, "the crude bound refused something the exact budget admits"
+    reference = gss.compute_impurity_rdm(_FakeBasis(), _make_psis(), max_bytes=crude * 100)
+    assert set(blocks[0]) == set(reference[0])
+    for n in range(len(blocks)):
+        for n_e in blocks[n]:
+            np.testing.assert_allclose(blocks[n][n_e], reference[n][n_e], atol=1e-14)
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the alltoall branch needs comm.size > 1")
+def test_rdm_guard_refuses_without_communicating(monkeypatch):
+    """The distributed refusal must not pay for an alltoall of groups it will discard."""
+    import impurityModel.ed.gs_statistics as gss
+
+    def boom(*a, **k):
+        raise AssertionError("graph_alltoall ran before the memory guard refused")
+
+    monkeypatch.setattr(gss, "graph_alltoall", boom)
+
+    class _DistBasis(_FakeBasis):
+        is_distributed = True
+        comm = MPI.COMM_WORLD
+
+    assert gss.compute_impurity_rdm(_DistBasis(), _make_psis(), max_bytes=1) is None
