@@ -775,17 +775,29 @@ class Basis:
                 self.offset + row if row != n_local else self.size for row in self._keys.find_rows(queries[r])
             ]
         result = np.array([i for r_i in Basis._point2point(results, self.comm) for i in r_i], dtype=int)
-        if len(result) > 0:
-            max_retries = 3
-            retry_count = 0
-            while np.any(np.logical_or(result > self.size, result < 0)) and retry_count < max_retries:
-                mask = np.logical_or(result > self.size, result < 0)
-                result[mask] = np.fromiter(
-                    self._index_sequence(itertools.compress(s, mask)), dtype=int, count=int(np.sum(mask))
-                )
-                retry_count += 1
 
-            if retry_count >= max_retries:
+        # The retry re-enters this method, which runs two `graph_alltoall` exchanges -- so
+        # whether to retry is a COLLECTIVE decision and must not be taken from rank-local
+        # state. Both of the old guards were rank-local: `len(result) > 0` is this rank's bra
+        # count (a rank asked to resolve nothing skipped the loop entirely) and `np.any(...)`
+        # is this rank's unresolved entries. A rank whose lookups all resolved would walk out
+        # of the loop while another rank entered it and blocked in the exchange, waiting for a
+        # partner that was never going to arrive. That is the failure mode CLAUDE.md's MPI
+        # rules name first, and it was reachable here the moment the retry fired on a subset
+        # of ranks.
+        max_retries = 3
+        for _ in range(max_retries):
+            mask = np.logical_or(result > self.size, result < 0)
+            # One scalar reduction, on every rank, every pass: the loop now runs the same
+            # number of times everywhere. Ranks with nothing to re-resolve still enter the
+            # recursive call with an empty sequence, because it is collective for them too.
+            if not self.comm.allreduce(bool(mask.any()), op=MPI.LOR):
+                break
+            result[mask] = np.fromiter(
+                self._index_sequence(itertools.compress(s, mask)), dtype=int, count=int(np.sum(mask))
+            )
+        else:
+            if self.comm.rank == 0:
                 import warnings
 
                 warnings.warn(f"Failed to resolve all indices after {max_retries} retries", stacklevel=2)
