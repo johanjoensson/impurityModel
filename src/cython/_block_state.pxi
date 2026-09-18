@@ -213,6 +213,35 @@ cdef class ManyBodyState:
         self.b = ManyBodyBlockState_cpp.from_unsorted(keys, amps, <size_t>w)
 
     @staticmethod
+    def from_keys(keys):
+        """A width-0 block over ``keys``, built without a Python mapping.
+
+        ``ManyBodyState(dict.fromkeys(keys, ()), width=0)`` is the obvious spelling and it
+        costs an N-entry Python dict that exists only to be walked once and thrown away.
+        For a determinant *index* -- which is what ``Basis`` keeps -- that transient sets
+        the process high-water mark, i.e. exactly the number that OOM-kills: building a
+        400k-determinant basis through the dict spelling measured a **higher** VmHWM than
+        the Python list it was replacing, even though the retained size was a third of it.
+
+        Keys are sorted and deduplicated in C++ (``from_unsorted``), so the caller need not
+        pre-sort, and no amplitudes are stored.
+        """
+        cdef vector[SlaterDeterminant_cpp[uint64_t]] ks
+        cdef vector[ManyBodyBlockState_cpp.Value] amps
+        cdef SlaterDeterminant sd
+        cdef ManyBodyState out = ManyBodyState.__new__(ManyBodyState)
+        try:
+            ks.reserve(len(keys))
+        except TypeError:
+            keys = list(keys)
+            ks.reserve(len(keys))
+        for key in keys:
+            sd = <SlaterDeterminant?>key
+            ks.push_back(sd.s)
+        out.b = ManyBodyBlockState_cpp.from_unsorted(ks, amps, <size_t>0)
+        return out
+
+    @staticmethod
     def from_states(list states):
         """Build the block from a list of width-1 ``ManyBodyState``s over their
         union support.

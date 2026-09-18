@@ -315,7 +315,7 @@ class Basis:
 
     @local_basis.setter
     def local_basis(self, states) -> None:
-        self._keys = ManyBodyState(dict.fromkeys(states, ()), width=0)
+        self._keys = ManyBodyState.from_keys(states)
 
     def _as_determinant(self, state):
         """Convert ``state`` to this basis's determinant type at its canonical width.
