@@ -565,7 +565,7 @@ Since every generator is a rank-1 outer product `u_a u_b^dagger` of eigenvectors
 representation would make it `O(n_orb^2)` — but that changes `discover_one_body_symmetries`'
 public contract, so it is a separate change and is **not** made here.
 
-### P1-5. `compute_impurity_rdm`'s guard protects the wrong stage — MEASURED, open
+### P1-5. `compute_impurity_rdm`'s guard protects the wrong stage — MEASURED, FIXED
 
 `gs_statistics.compute_impurity_rdm` takes `max_bytes=256 MiB`. The guard is evaluated at
 `gs_statistics.py:470`, **after** the local pass has built `local_groups` and after the whole
@@ -620,8 +620,50 @@ peak (P1-1b), and the same fix applies.
 
 **Ranking.** `O(N_local x width)`, distributed, flat in rank count — which the plan's
 `O(N_local)` filter would drop, *except* that the filter explicitly does not drop a dominant
-distributed term whose constant is reducible, and 400 -> ~60 B/entry is reducible. `N_local`
-grows as `de2_min` tightens, so it is also convergence-sensitive. Not yet fixed.
+distributed term whose constant is reducible. `N_local` grows as `de2_min` tightens, so it is
+also convergence-sensitive.
+
+### Both halves fixed
+
+**Staging** (`03e2d0f`). A crude bound over *every* impurity count needs no pass at all; when
+it fits, the exact decision cannot differ, so the common case pays nothing. Only when it fails
+is the exact `observed_n` worth one allocation-free pass, and the refusal is then free. The
+original late guard stays as the authority.
+
+| | before | after |
+|---|---|---|
+| guard trips (`n_imp=14`) | 462.6 MiB / 1.94 s | **0.0 MiB / 0.09 s** |
+| guard passes (`n_imp=10`) | 420.1 MiB | 420.6 MiB (unchanged) |
+
+Both stages decide from an **allreduced** `guard_width`. The first draft gated the new
+`allgather` on the rank-local `width`, which is the asymmetric-deadlock shape this repo already
+has on record for a width-0 block on one rank.
+
+**Representation** (`55ee8e9`). Entries became flat typed arrays.
+
+| N_local (width 54, 2 ranks) | before | after |
+|---|---|---|
+| 20,000 | 420.1 MiB / 3.10 s | **142.1 MiB / 1.61 s** |
+| 40,000 | 858.7 MiB / 6.79 s | **275.6 MiB / 3.08 s** |
+
+~400 -> ~138 B/entry, and about 2x faster. Tier 2: the accumulation order changes, though the
+old code already varied with rank count through `defaultdict` iteration order. Verified against
+the pre-change implementation at 1/2/3/4 ranks, an empty rank, widths 1-27 and several impurity
+counts: worst elementwise and worst block-trace deviation both 4.4e-16.
+
+**The prediction that was wrong, recorded because it was the obvious one.** This looked like
+the `_index_sequence` pickle peak and the expectation was that the wire format dominated. It
+does not: a distinct entry pickles to 33 B against 23 B packed, only 1.4x. The 16x was in
+materialising Python objects on both sides. *Measuring the serialized size before choosing the
+fix is what separated these two cases*, which otherwise present identically.
+
+**A test that was green for the wrong reason, found by injection.** Four plausible bugs were
+injected; three turned the new tests red and "segment boundary forgets the state index" did
+not. Two rounds of reasoning about why were both wrong. The reason, from direct experiment:
+entries sort as `(bath group, state, N_imp, config)`, so a group with several `N_imp` values
+resets the count at each state boundary and accidentally marks it. Only a bath group whose
+configurations all share one `N_imp` leaves consecutive entries differing by state alone. The
+oracle fixture now contains such a family.
 
 ### P1-1b. `build_sparse_matrix` FIXED for serial; the distributed peak relocated to `_index_sequence`
 
