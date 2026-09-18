@@ -1,7 +1,6 @@
 import itertools
 from collections.abc import Iterable, Iterator, Sequence
 from heapq import merge
-from bisect import bisect_left
 from math import ceil
 from typing import overload
 
@@ -69,6 +68,45 @@ def collective_amplitude_cutoff(scores, k, comm):
         else:
             lo = mid
     return hi
+
+
+class _LocalBasisView:
+    """A read-only sequence view of a rank's local determinants.
+
+    ``Basis`` stores its determinants in a width-0 ``ManyBodyState`` -- a sorted C++ key
+    vector -- rather than a Python list, so the per-determinant cost is the key itself
+    instead of a key plus a ``SlaterDeterminant`` wrapper object plus a list slot. This
+    view keeps ``basis.local_basis`` a sequence for the callers that index it, take its
+    length or test membership, without rebuilding that list to answer them: ``len`` and
+    ``in`` and ``[i]`` all go straight to the C++ block.
+
+    Iteration is the one operation that must materialize, because the caller is asking for
+    the determinant objects themselves.
+    """
+
+    __slots__ = ("_keys",)
+
+    def __init__(self, keys):
+        self._keys = keys
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def __iter__(self):
+        return iter(self._keys.keys())
+
+    def __contains__(self, item) -> bool:
+        return item in self._keys
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return self._keys.keys()[index]
+        if index < 0:
+            index += len(self._keys)
+        return self._keys.key_at(index)
+
+    def __repr__(self) -> str:
+        return f"<local basis of {len(self._keys)} determinants>"
 
 
 class Basis:
@@ -219,7 +257,7 @@ class Basis:
         # rank-partition bookkeeping. States are hash-distributed across ranks; lookups and
         # retrievals use sparse point-to-point communication (graph_alltoall).
         self.rng = np.random.default_rng()
-        self.local_basis = []
+        self._keys = ManyBodyState(width=0)
         self.offset = 0
         self.size = 0
         self.local_indices = range(0, 0)
@@ -268,6 +306,17 @@ class Basis:
         """Sparse point-to-point MPI exchange of per-rank data lists."""
         return graph_alltoall(send_list, comm)
 
+    @property
+    def local_basis(self):
+        """This rank's determinants, in sorted order, as a sequence view (see
+        :class:`_LocalBasisView`). Assigning any iterable of determinants rebuilds the
+        underlying sorted key block."""
+        return _LocalBasisView(self._keys)
+
+    @local_basis.setter
+    def local_basis(self, states) -> None:
+        self._keys = ManyBodyState(dict.fromkeys(states, ()), width=0)
+
     def _as_determinant(self, state):
         """Convert ``state`` to this basis's determinant type at its canonical width.
 
@@ -310,11 +359,11 @@ class Basis:
             unique_new = [s for s in sorted(set(new_states)) if not self._contains_local(s)]
             if unique_new:
                 self.local_basis = list(merge(self.local_basis, unique_new))
-                self.size = len(self.local_basis)
+                self.size = len(self._keys)
                 self.offset = 0
-                self.local_indices = range(0, len(self.local_basis))
+                self.local_indices = range(0, len(self._keys))
                 if __debug__:
-                    assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
+                    assert all(self._keys.key_at(i) < self._keys.key_at(i + 1) for i in range(len(self._keys) - 1))
             return
 
         unique_new_states = list(set(new_states))
@@ -336,11 +385,11 @@ class Basis:
         if unique_new:
             self.local_basis = list(merge(self.local_basis, unique_new))
 
-        local_length = len(self.local_basis)
+        local_length = len(self._keys)
         size_arr = np.array(self.comm.allgather(local_length), dtype=int)
         self.size = np.sum(size_arr)
         self.offset = np.sum(size_arr[: self.comm.rank])
-        self.local_indices = range(self.offset, self.offset + len(self.local_basis))
+        self.local_indices = range(self.offset, self.offset + len(self._keys))
         self.index_bounds = [np.sum(size_arr[: r + 1]) if size_arr[r] > 0 else None for r in range(self.comm.size)]
         state_bounds = list(self._getitem_sequence([i for i in self.index_bounds if i is not None and i < self.size]))
         self.state_bounds = state_bounds + [None] * (self.comm.size - len(state_bounds))
@@ -353,7 +402,7 @@ class Basis:
             for r in range(self.comm.size)
         ]
         if __debug__:
-            assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
+            assert all(self._keys.key_at(i) < self._keys.key_at(i + 1) for i in range(len(self._keys) - 1))
 
     def redistribute_psis(self, *blocks):
         """Redistribute one or more ``ManyBodyState`` blocks across MPI ranks by
@@ -653,7 +702,7 @@ class Basis:
     def _getitem_sequence(self, l: Iterable[int]) -> Iterator[SlaterDeterminant]:
         """Retrieve the states for a sequence of global indices (sparse point-to-point)."""
         if not self.is_distributed:
-            return (self.local_basis[i] for i in l)
+            return (self._keys.key_at(i) for i in l)
 
         l = np.fromiter((i if i >= 0 else self.size + i for i in l), dtype=int)
 
@@ -673,8 +722,8 @@ class Basis:
         results: list[list[SlaterDeterminant]] = [[] for _ in range(self.comm.size)]
         for r in range(len(queries)):
             for query in queries[r]:
-                if query >= self.offset and query < self.offset + len(self.local_basis):
-                    results[r].append(self.local_basis[query - self.offset])
+                if query >= self.offset and query < self.offset + len(self._keys):
+                    results[r].append(self._keys.key_at(query - self.offset))
 
         result = [state for r_results in Basis._point2point(results, self.comm) for state in r_results]
 
@@ -694,20 +743,22 @@ class Basis:
         answer would sail through it and land as a fabricated row or column in
         ``basis_transcription.build_sparse_matrix`` -- a wrong number, not a crash.
         """
-        i = bisect_left(self.local_basis, state)
-        if i < len(self.local_basis) and self.local_basis[i] == state:
-            return self.offset + i
-        return self.size
+        row = self._keys.find_row(state)
+        return self.offset + row if row != len(self._keys) else self.size
 
     def _contains_local(self, state) -> bool:
         """Whether this rank owns ``state``; the membership half of :meth:`_local_index`."""
-        i = bisect_left(self.local_basis, state)
-        return i < len(self.local_basis) and self.local_basis[i] == state
+        return state in self._keys
 
     def _index_sequence(self, s: Iterable[SlaterDeterminant]) -> Iterator[int]:
         """Find the global indices for a sequence of states (hash-routed lookups)."""
         if not self.is_distributed:
-            return (self._local_index(val) for val in s)
+            # Batched: one call into the extension for the whole sequence. A per-element
+            # `find_row` is dominated by the Python/Cython call boundary rather than by the
+            # search itself (measured), so the loop belongs on the other side of it.
+            s = list(s)
+            n_local = len(self._keys)
+            return (self.offset + r if r != n_local else self.size for r in self._keys.find_rows(s))
 
         s = list(s)
         send_list: list[list[SlaterDeterminant]] = [[] for _ in range(self.comm.size)]
@@ -724,8 +775,10 @@ class Basis:
 
         results: list[list[int]] = [[] for _ in range(self.comm.size)]
         for r in range(self.comm.size):
-            for query in queries[r]:
-                results[r].append(self._local_index(query))
+            n_local = len(self._keys)
+            results[r] = [
+                self.offset + row if row != n_local else self.size for row in self._keys.find_rows(queries[r])
+            ]
         result = np.array([i for r_i in Basis._point2point(results, self.comm) for i in r_i], dtype=int)
         if len(result) > 0:
             max_retries = 3
@@ -775,7 +828,7 @@ class Basis:
 
     def clear(self) -> None:
         """Clear all states from the basis."""
-        self.local_basis.clear()
+        self._keys = ManyBodyState(width=0)
         self.offset = 0
         self.size = 0
         self.local_indices = range(0, 0)

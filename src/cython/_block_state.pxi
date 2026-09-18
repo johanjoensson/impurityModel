@@ -339,6 +339,60 @@ cdef class ManyBodyState:
     def __contains__(self, SlaterDeterminant key):
         return self.b.contains(key.s)
 
+    def find_rows(self, keys):
+        """Row indices for a sequence of determinants, as an ``int64`` array.
+
+        The batched form of :meth:`find_row`, and the one worth using. A single lookup is
+        dominated by the Python call boundary rather than by the search -- measured, the
+        per-call C++ ``lower_bound`` is barely faster than a Python ``bisect`` and still
+        slower than a dict. Batching amortizes that boundary over the whole sequence, so
+        the search cost is what is left.
+
+        Absent determinants get :func:`len` of the block, the same miss sentinel
+        :meth:`find_row` uses.
+        """
+        cdef Py_ssize_t n = len(keys)
+        out = np.empty(n, dtype=np.int64)
+        cdef int64_t[::1] view = out
+        cdef Py_ssize_t i
+        cdef SlaterDeterminant sd
+        for i in range(n):
+            sd = <SlaterDeterminant?>keys[i]
+            view[i] = <int64_t>self.b.find_row(sd.s)
+        return out
+
+    def key_at(self, Py_ssize_t i):
+        """The determinant at row ``i`` in sorted order.
+
+        Positional access without materializing :meth:`keys`, so a caller that wants one
+        determinant out of a large block does not pay a list of every determinant in it.
+        ``Basis`` uses this to expose its local determinants as a sequence view over the
+        C++ key vector rather than as a Python list.
+        """
+        if i < 0 or i >= <Py_ssize_t>self.b.rows():
+            raise IndexError(f"row {i} out of range for a block of {self.b.rows()} rows")
+        cdef SlaterDeterminant out = SlaterDeterminant.__new__(SlaterDeterminant)
+        out.s = self.b.key(<size_t>i)
+        return out
+
+    def find_row(self, SlaterDeterminant key):
+        """Row index of ``key`` in sorted order, or :meth:`rows` when it is absent.
+
+        The block's keys are kept sorted and unique, so this is one ``std::lower_bound``
+        plus an equality check -- the same search ``__contains__``, ``__getitem__`` and
+        ``get`` already run, exposed for callers that want the *position* rather than the
+        amplitudes. ``Basis`` uses it as its determinant index: a width-0 block of the
+        local determinants answers "which global index is this?" in C++, instead of a
+        Python-side dict (one machine word per determinant of table, plus an ``int``
+        object) or a Python-level ``bisect`` (whose every comparison is a
+        ``SlaterDeterminant.__lt__`` call).
+
+        Returning ``rows()`` rather than ``-1`` on a miss is deliberate: it keeps the
+        out-of-range answer distinct from any valid position without a negative index,
+        which ``wraparound=False`` would reinterpret.
+        """
+        return <Py_ssize_t>self.b.find_row(key.s)
+
     def __getitem__(self, SlaterDeterminant key):
         """The determinant's row of amplitudes, or ``KeyError`` if it is absent."""
         cdef size_t r = self.b.find_row(key.s)
