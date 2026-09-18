@@ -142,18 +142,30 @@ def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin:
     return res
 
 
+def iter_local_operator_images(basis, op, slaterWeightMin):
+    """Yield ``op`` applied to each (MPI local) basis state, in basis order.
+
+    The streaming counterpart of :func:`build_local_operator_list`. A caller that consumes
+    one image at a time should use this: the list form keeps every image alive at once, so
+    the whole ``H|D>`` image of the local basis -- ``O(N_local * fan-out)`` rows -- is
+    resident before the first one is read, and stays resident until the consumer finishes.
+    """
+    unit_state = ManyBodyState()
+    for state in basis.local_basis:
+        unit_state[state] = 1.0
+        yield applyOp(op, unit_state, cutoff=slaterWeightMin)
+        unit_state.erase(state)
+
+
 def build_local_operator_list(basis, op, slaterWeightMin):
     """
     Apply the operator to all (MPI local) basis states, in order.
     Return the results in a list.
+
+    Materializes every image at once; prefer :func:`iter_local_operator_images` unless the
+    whole list is genuinely needed.
     """
-    res = []
-    unit_state = ManyBodyState()
-    for state in basis.local_basis:
-        unit_state[state] = 1.0
-        res.append(applyOp(op, unit_state, cutoff=slaterWeightMin))
-        unit_state.erase(state)
-    return res
+    return list(iter_local_operator_images(basis, op, slaterWeightMin))
 
 
 def build_dense_matrix(basis, op, distribute=True):
@@ -178,44 +190,71 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
     if isinstance(op, dict):
         op = ManyBodyOperator(op)
 
-    rows = []
-    cols = []
-    vals = []
     # `ket` walks `local_basis` in order and `local_indices` is
     # `range(offset, offset + len(local_basis))`, so the column index is the loop position --
     # the old `_index_dict[ket]` was looking up an answer the enumerate already had.
     _offset = basis.offset
     _size = basis.size
-    if not basis.is_distributed:
-        for i, (ket_state,) in enumerate(zip(build_local_operator_list(basis, op, 0))):
-            col = _offset + i
-            for bra, val in ket_state.items():
-                row = basis._local_index(bra)
-                if row != _size:
-                    rows.append(row)
-                    cols.append(col)
-                    vals.append(val[0])
-    else:
-        columns = []
-        bras = []
-        values = []
-        for i, (ket_state,) in enumerate(zip(build_local_operator_list(basis, op, 0))):
-            col = _offset + i
-            for bra, val in ket_state.items():
-                columns.append(col)
-                bras.append(bra)
-                values.append(val[0])
 
-        global_rows = list(basis._index_sequence(bras))
-        _size = basis.size
-        for row, col, val in zip(global_rows, columns, values):
-            if row != _size:
-                rows.append(row)
-                cols.append(col)
-                vals.append(val)
+    # Images are streamed, not listed: the list form holds the whole `H|D>` image of the
+    # local basis (`O(N_local * fan-out)` rows) resident for the entire build. Amplitudes are
+    # read through the buffer protocol rather than `.items()`, which allocated a
+    # `SlaterDeterminant` and a `Row` object per matrix element -- the same cost the CIPSI
+    # selection round removed and measured at 33-43% of a round (`cipsi_solver.py`'s
+    # `_candidate_overlaps_and_energies`). `keys()` is in row order, so the buffer's rows and
+    # the key list line up.
+    row_chunks = []
+    col_chunks = []
+    val_chunks = []
+    if not basis.is_distributed:
+        # Filter as we go. Only a minority of the image survives -- every bra outside the
+        # basis is dropped -- so accumulating the whole image first and masking at the end
+        # (which the distributed branch below is forced into by its single collective) costs
+        # several times the final matrix. Measured: doing that here took the serial peak from
+        # 291 to 520 MiB on a 393k-determinant basis, because ~76% of image rows are discarded.
+        keys_block = basis._keys
+        n_local_keys = len(keys_block)
+        for i, ket_state in enumerate(iter_local_operator_images(basis, op, 0)):
+            ks = ket_state.keys()
+            if not ks:
+                continue
+            local_rows = keys_block.find_rows(ks)
+            keep = local_rows != n_local_keys
+            if not keep.any():
+                continue
+            row_chunks.append(local_rows[keep].astype(np.int64, copy=False) + _offset)
+            col_chunks.append(np.full(int(keep.sum()), _offset + i, dtype=np.int64))
+            val_chunks.append(np.asarray(ket_state)[:, 0][keep])
+    else:
+        # The routed lookup is collective and must run exactly once on every rank, so the bras
+        # cannot be resolved image by image -- they are accumulated, resolved together, and
+        # masked afterwards.
+        bras = []
+        for i, ket_state in enumerate(iter_local_operator_images(basis, op, 0)):
+            ks = ket_state.keys()
+            if not ks:
+                continue
+            bras.extend(ks)
+            col_chunks.append(np.full(len(ks), _offset + i, dtype=np.int64))
+            val_chunks.append(np.asarray(ket_state)[:, 0].copy())
+        columns = np.concatenate(col_chunks) if col_chunks else np.empty(0, dtype=np.int64)
+        values = np.concatenate(val_chunks) if val_chunks else np.empty(0, dtype=complex)
+        del col_chunks, val_chunks
+        global_rows = np.fromiter(basis._index_sequence(bras), dtype=np.int64, count=len(bras))
+        del bras
+        keep = global_rows != _size
+        row_chunks = [global_rows[keep]]
+        col_chunks = [columns[keep]]
+        val_chunks = [values[keep]]
+        del global_rows, columns, values, keep
+
+    rows = np.concatenate(row_chunks) if row_chunks else np.empty(0, dtype=np.int64)
+    cols = np.concatenate(col_chunks) if col_chunks else np.empty(0, dtype=np.int64)
+    vals = np.concatenate(val_chunks) if val_chunks else np.empty(0, dtype=complex)
+    del row_chunks, col_chunks, val_chunks
 
     n = len(basis)
-    if rows:
+    if len(rows):
         res = sp.sparse.csc_array((vals, (rows, cols)), shape=(n, n), dtype=complex)
     else:
         res = sp.sparse.csc_array((n, n), dtype=complex)

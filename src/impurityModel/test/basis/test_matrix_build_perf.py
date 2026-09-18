@@ -43,7 +43,7 @@ What it records
   time, grouped by which ``expand`` it belongs to (``solve_ground_state`` runs one expand per
   trial occupation in ``walk_to_ground_state_sector`` before the final refinement expand, and
   ``sum|B_i|/|B_final|`` is only meaningful *within* one expand);
-* the split inside each build: (a) ``build_local_operator_list`` -- the C++ apply plus the
+* the split inside each build: (a) ``iter_local_operator_images`` -- the C++ apply plus the
   per-determinant Python ``ManyBodyState``/``.items()`` walk, (b) ``Basis._index_sequence`` --
   the routed all-to-all resolving bras to global row indices (pickled determinant *bytes*, so
   its volume is nnz x n_bytes; zero in serial), (c) the remainder, i.e. the Python-list -> COO
@@ -163,7 +163,7 @@ def _install(recorder):
 
     original = {
         "build": cipsi_solver.build_sparse_matrix,
-        "apply": basis_transcription.build_local_operator_list,
+        "apply": basis_transcription.iter_local_operator_images,
         "index": Basis._index_sequence,
         "eigen": cipsi_solver.CIPSISolver.get_eigenvectors,
         "state": cipsi_solver.build_state,
@@ -178,10 +178,22 @@ def _install(recorder):
         return result
 
     def timed_apply(basis, op, slaterWeightMin):
-        t0 = time.perf_counter()
-        result = original["apply"](basis, op, slaterWeightMin)
-        recorder.add_leg("apply", time.perf_counter() - t0)
-        return result
+        # `iter_local_operator_images` is a GENERATOR: timing the call itself would measure
+        # generator creation (microseconds) and silently report ~0 for the apply leg. Time each
+        # image as it is produced and charge the total, so the leg keeps meaning what it meant
+        # when this wrapped the list-building version.
+        it = original["apply"](basis, op, slaterWeightMin)
+        elapsed = 0.0
+        while True:
+            t0 = time.perf_counter()
+            try:
+                image = next(it)
+            except StopIteration:
+                elapsed += time.perf_counter() - t0
+                break
+            elapsed += time.perf_counter() - t0
+            yield image
+        recorder.add_leg("apply", elapsed)
 
     def timed_index(self, s):
         # Outside a build, hand back the untouched lazy generator. `_index_sequence` wraps a
@@ -236,7 +248,7 @@ def _install(recorder):
         return result
 
     cipsi_solver.build_sparse_matrix = timed_build
-    basis_transcription.build_local_operator_list = timed_apply
+    basis_transcription.iter_local_operator_images = timed_apply
     Basis._index_sequence = timed_index
     cipsi_solver.build_state = timed_state
     cipsi_solver.build_distributed_vector = timed_vector
@@ -244,7 +256,7 @@ def _install(recorder):
 
     def restore():
         cipsi_solver.build_sparse_matrix = original["build"]
-        basis_transcription.build_local_operator_list = original["apply"]
+        basis_transcription.iter_local_operator_images = original["apply"]
         Basis._index_sequence = original["index"]
         cipsi_solver.build_state = original["state"]
         cipsi_solver.build_distributed_vector = original["vector"]
