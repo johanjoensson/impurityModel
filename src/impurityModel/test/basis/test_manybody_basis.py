@@ -1073,9 +1073,9 @@ def test_simple_vector():
         comm=None,
     )
     state = {}
-    if states[0] in basis._index_dict:
+    if basis.contains_local(states[0]):
         state[states[0]] = 0.25 + 0.2j
-    if states[1] in basis._index_dict:
+    if basis.contains_local(states[1]):
         state[states[1]] = 0.33 + 0.15j
 
     v = build_vector(basis, [state])[0]
@@ -1127,7 +1127,7 @@ def test_vector():
     )
     state = {states[-1]: 1 + 1j}
     state[states[0]] = 0.25 + 0.2j
-    if states[1] in basis._index_dict:
+    if basis.contains_local(states[1]):
         state[states[1]] = 0.33 + 0.15j
     v = build_vector(basis, [state])[0]
     v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j, 0, 0], dtype=complex)

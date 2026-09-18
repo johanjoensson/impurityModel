@@ -802,7 +802,7 @@ class CIPSISolver:
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
 
-        _index_dict = self.basis._index_dict
+        _contains = self.basis.contains_local
         blk = Hpsi_ref if isinstance(Hpsi_ref, ManyBodyState) else ManyBodyState.from_states(Hpsi_ref)
 
         # `keys()` returns the shared support in row (sorted) order -- the same order the
@@ -814,7 +814,7 @@ class CIPSISolver:
         # campaign has been bitten by before).
         keys = blk.keys()
         amps = np.asarray(blk)  # (rows, p) zero-copy buffer-protocol view
-        new_mask = np.fromiter((k not in _index_dict for k in keys), dtype=bool, count=len(keys))
+        new_mask = np.fromiter((not _contains(k) for k in keys), dtype=bool, count=len(keys))
         local_Djs = list(itertools.compress(keys, new_mask))
         overlaps = np.ascontiguousarray(amps[new_mask].T)  # (p, n_Dj); boolean indexing copies
         del amps  # release the buffer export before any later mutation of Hpsi_ref

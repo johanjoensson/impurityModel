@@ -87,7 +87,7 @@ def _dense_lehmann_setup(hOp, impurity_orbitals, bath_states, n_orb, impurity_in
     basis = Basis(
         impurity_orbitals, bath_states, initial_basis=unsorted_dets, comm=comm or MPI.COMM_SELF, verbose=False
     )
-    index = basis._index_dict
+    index = {d: basis._local_index(d) for d in basis.local_basis}
     # Basis sorts/reindexes initial_basis internally, so eigvecs' row order follows
     # basis.local_basis, NOT the caller's construction order -- return that ordering
     # (not unsorted_dets) so eigvecs[:, m] can be zipped back into a ManyBodyState correctly.

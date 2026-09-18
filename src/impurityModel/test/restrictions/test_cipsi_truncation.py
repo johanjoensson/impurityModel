@@ -372,8 +372,8 @@ def _oracle_candidate_overlaps_and_energies(solver, H, hpsi_states, slaterWeight
     match bit-for-bit -- the block-native rewrite touches ordering and zero-row handling,
     exactly the kind of change a green test suite alone would not catch (see Phase 7/9).
     """
-    _index_dict = solver.basis._index_dict
-    local_Djs = sorted({state for hp in hpsi_states for state in hp if state not in _index_dict})
+    _contains = solver.basis.contains_local
+    local_Djs = sorted({state for hp in hpsi_states for state in hp if not _contains(state)})
     if not local_Djs:
         return local_Djs, np.zeros((len(hpsi_states), 0), dtype=complex)
     Dj_index = {Dj: j for j, Dj in enumerate(local_Djs)}

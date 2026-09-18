@@ -43,14 +43,14 @@ def build_vector(
     # row_states_in_basis: list[bytes] = []
     # row_dict = {state: basis._index_dict[state] for state in basis.local_basis}
     # col_dict = dict(zip(basis.local_basis, range(basis.local_indices.start, basis.local_indices.stop)))
-    _index_dict = basis._index_dict
+    _size = basis.size
     for row, psi in enumerate(psis):
         for state, val in psi.items():
-            idx = _index_dict.get(state)
+            idx = basis._local_index(state)
             # psi may be a ManyBodyState (val is a width-1 Row) or a plain dict of
             # scalars (a documented duck-typed input): only a Row needs unwrapping.
             amp = val[0] if isinstance(val, Row) else val
-            if idx is None or abs(amp) < slaterWeightMin:
+            if idx == _size or abs(amp) < slaterWeightMin:
                 continue
             v[row, idx] = amp
 
@@ -181,13 +181,17 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
     rows = []
     cols = []
     vals = []
-    _index_dict = basis._index_dict
+    # `ket` walks `local_basis` in order and `local_indices` is
+    # `range(offset, offset + len(local_basis))`, so the column index is the loop position --
+    # the old `_index_dict[ket]` was looking up an answer the enumerate already had.
+    _offset = basis.offset
+    _size = basis.size
     if not basis.is_distributed:
-        for ket, ket_state in zip(basis.local_basis, build_local_operator_list(basis, op, 0)):
-            col = _index_dict[ket]
+        for i, (ket_state,) in enumerate(zip(build_local_operator_list(basis, op, 0))):
+            col = _offset + i
             for bra, val in ket_state.items():
-                row = _index_dict.get(bra)
-                if row is not None:
+                row = basis._local_index(bra)
+                if row != _size:
                     rows.append(row)
                     cols.append(col)
                     vals.append(val[0])
@@ -195,8 +199,8 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
         columns = []
         bras = []
         values = []
-        for ket, ket_state in zip(basis.local_basis, build_local_operator_list(basis, op, 0)):
-            col = _index_dict[ket]
+        for i, (ket_state,) in enumerate(zip(build_local_operator_list(basis, op, 0))):
+            col = _offset + i
             for bra, val in ket_state.items():
                 columns.append(col)
                 bras.append(bra)

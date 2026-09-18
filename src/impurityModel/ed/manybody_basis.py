@@ -1,6 +1,7 @@
 import itertools
 from collections.abc import Iterable, Iterator, Sequence
 from heapq import merge
+from bisect import bisect_left
 from math import ceil
 from typing import overload
 
@@ -177,9 +178,7 @@ class Basis:
             assert delta_valence_occ is None
             assert delta_conduction_occ is None
             assert delta_impurity_occ is None
-            initial_basis = [
-                self.type.from_bytes(state) if isinstance(state, bytes) else state for state in initial_basis
-            ]
+            initial_basis = [self._as_determinant(state) for state in initial_basis]
         else:
             assert nominal_impurity_occ is not None
             initial_basis, _num_spin_orbitals = generate_initial_basis(
@@ -224,7 +223,6 @@ class Basis:
         self.offset = 0
         self.size = 0
         self.local_indices = range(0, 0)
-        self._index_dict: dict = {}
         self.index_bounds = [None] * comm.size if self.is_distributed else [None]
         self.state_bounds = [None] * comm.size if self.is_distributed else [None]
         self.add_states(initial_basis)
@@ -270,20 +268,51 @@ class Basis:
         """Sparse point-to-point MPI exchange of per-rank data lists."""
         return graph_alltoall(send_list, comm)
 
+    def _as_determinant(self, state):
+        """Convert ``state`` to this basis's determinant type at its canonical width.
+
+        Determinant keys are ``std::vector<uint64_t>`` and compare element-wise, so a proper
+        prefix sorts strictly before its zero-extended twin: the *same* physical occupation
+        built from byte strings of different length yields two unequal keys with different
+        hashes. Padding every input to ``n_bytes`` here makes the width an invariant of the
+        container rather than a property of whatever the caller happened to pass, which is
+        what lets ordering, hashing and index arithmetic agree across ranks.
+
+        Production already satisfies this (``basis_generation.generate_initial_basis`` emits
+        ``tuple2bytes(occupied, 8 * n_bytes)``); the normalization exists so that it cannot
+        silently stop being true.
+        """
+        if not isinstance(state, bytes):
+            return state
+        if len(state) > self.n_bytes:
+            # Over-wide input is accepted only when the excess carries no occupation, which
+            # makes the trim lossless. This is not hypothetical: `SlaterDeterminant.to_bytearray`
+            # returns eight bytes per chunk-byte (`_slater_state.pxi:44` allocates
+            # `8 * n_bytes * len(self)` and fills an eighth of it), so any caller that
+            # round-trips `from_bytes(to_bytearray())` hands us a determinant eight times too
+            # wide -- which, unnormalized, is a key that compares unequal to the same
+            # occupation built any other way.
+            if any(state[self.n_bytes :]):
+                raise ValueError(
+                    f"determinant of {len(state)} bytes exceeds this basis's width of "
+                    f"{self.n_bytes} ({self.num_spin_orbitals} spin-orbitals) and carries "
+                    f"occupation beyond it; trimming would drop orbitals"
+                )
+            state = state[: self.n_bytes]
+        return self.type.from_bytes(state.ljust(self.n_bytes, b"\x00"))
+
     def add_states(self, new_states: Iterable[bytes], unique_sorted=False) -> None:
         """
         Extend the current basis by adding the new_states to it.
         """
-        new_states = [self.type.from_bytes(state) if isinstance(state, bytes) else state for state in new_states]
+        new_states = [self._as_determinant(state) for state in new_states]
         if not self.is_distributed:
-            existing_set = self._index_dict
-            unique_new = [s for s in sorted(set(new_states)) if s not in existing_set]
+            unique_new = [s for s in sorted(set(new_states)) if not self._contains_local(s)]
             if unique_new:
                 self.local_basis = list(merge(self.local_basis, unique_new))
                 self.size = len(self.local_basis)
                 self.offset = 0
                 self.local_indices = range(0, len(self.local_basis))
-                self._index_dict = {state: i for i, state in enumerate(self.local_basis)}
                 if __debug__:
                     assert all(self.local_basis[i] < self.local_basis[i + 1] for i in range(len(self.local_basis) - 1))
             return
@@ -296,9 +325,8 @@ class Basis:
             if r_data:
                 all_received.extend(r_data)
 
-        existing_set = self._index_dict
         unique_received = sorted(set(all_received))
-        unique_new = [s for s in unique_received if s not in existing_set]
+        unique_new = [s for s in unique_received if not self._contains_local(s)]
 
         local_added = len(unique_new)
         any_added = self.comm.allreduce(local_added, op=MPI.SUM)
@@ -314,7 +342,6 @@ class Basis:
         self.offset = np.sum(size_arr[: self.comm.rank])
         self.local_indices = range(self.offset, self.offset + len(self.local_basis))
         self.index_bounds = [np.sum(size_arr[: r + 1]) if size_arr[r] > 0 else None for r in range(self.comm.size)]
-        self._index_dict = {state: self.offset + i for i, state in enumerate(self.local_basis)}
         state_bounds = list(self._getitem_sequence([i for i in self.index_bounds if i is not None and i < self.size]))
         self.state_bounds = state_bounds + [None] * (self.comm.size - len(state_bounds))
         self.state_bounds = [
@@ -567,7 +594,7 @@ class Basis:
         if isinstance(item, bytes):
             item = self.type.from_bytes(item)
         if not self.is_distributed:
-            return item in self._index_dict
+            return self._contains_local(item)
         return next(self._index_sequence([item])) != self.size
 
     def contains_local(self, item: SlaterDeterminant) -> bool:
@@ -579,7 +606,7 @@ class Basis:
         payload) want this: ``item in self.local_basis`` is the same predicate but scans a
         list, and at solver support sizes that scan dominates the matvec it accompanies.
         """
-        return item in self._index_dict
+        return self._contains_local(item)
 
     @overload
     def contains(self, item: SlaterDeterminant | bytes) -> bool: ...
@@ -653,10 +680,34 @@ class Basis:
 
         return (result[i] for i in np.argsort(send_order))
 
+    def _local_index(self, state) -> int:
+        """Global index of ``state`` if this rank owns it, else the miss sentinel ``self.size``.
+
+        ``local_basis`` is kept sorted and ``local_indices`` is ``range(offset, offset + len)``,
+        so the global index of an owned determinant is exactly ``offset + position`` -- which is
+        what ``_index_dict`` stored. The dict is therefore derivable, not informative.
+
+        **The sentinel is the whole subtlety.** A miss must return the *global* ``self.size``,
+        never ``offset + len(local_basis)``: on any rank but the last non-empty one the latter is
+        a perfectly valid global index belonging to another rank, and the retry loop in
+        :meth:`_index_sequence` only re-queries results outside ``[0, size]``. A bogus-but-in-range
+        answer would sail through it and land as a fabricated row or column in
+        ``basis_transcription.build_sparse_matrix`` -- a wrong number, not a crash.
+        """
+        i = bisect_left(self.local_basis, state)
+        if i < len(self.local_basis) and self.local_basis[i] == state:
+            return self.offset + i
+        return self.size
+
+    def _contains_local(self, state) -> bool:
+        """Whether this rank owns ``state``; the membership half of :meth:`_local_index`."""
+        i = bisect_left(self.local_basis, state)
+        return i < len(self.local_basis) and self.local_basis[i] == state
+
     def _index_sequence(self, s: Iterable[SlaterDeterminant]) -> Iterator[int]:
         """Find the global indices for a sequence of states (hash-routed lookups)."""
         if not self.is_distributed:
-            return (self._index_dict.get(val, self.size) for val in s)
+            return (self._local_index(val) for val in s)
 
         s = list(s)
         send_list: list[list[SlaterDeterminant]] = [[] for _ in range(self.comm.size)]
@@ -674,7 +725,7 @@ class Basis:
         results: list[list[int]] = [[] for _ in range(self.comm.size)]
         for r in range(self.comm.size):
             for query in queries[r]:
-                results[r].append(self._index_dict.get(query, self.size))
+                results[r].append(self._local_index(query))
         result = np.array([i for r_i in Basis._point2point(results, self.comm) for i in r_i], dtype=int)
         if len(result) > 0:
             max_retries = 3
@@ -696,7 +747,7 @@ class Basis:
     def _contains_sequence(self, items) -> Iterator[bool]:
         """Check membership for a sequence of states."""
         if not self.is_distributed:
-            return (item in self._index_dict for item in items)
+            return (self._contains_local(item) for item in items)
         return (index < self.size for index in self._index_sequence(items))
 
     def copy(self) -> "Basis":
@@ -728,7 +779,6 @@ class Basis:
         self.offset = 0
         self.size = 0
         self.local_indices = range(0, 0)
-        self._index_dict = {}
         self.index_bounds = [None] * self.comm.size if self.is_distributed else [None]
         self.state_bounds = [None] * self.comm.size if self.is_distributed else [None]
         self.add_states([])
