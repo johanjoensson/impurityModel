@@ -87,7 +87,7 @@ def block_Green(
         for _i in range(5):
             probe = hOp.apply_block(probe, slaterWeightMin)
             basis.add_states(
-                {state for state in probe.support_keys(0.0) if state not in basis.local_basis},
+                {state for state in probe.support_keys(0.0) if not basis.contains_local(state)},
             )
             if basis.size > basis.truncation_threshold:
                 capped = True
