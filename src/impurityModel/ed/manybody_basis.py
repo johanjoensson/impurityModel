@@ -1,6 +1,5 @@
 import itertools
 from collections.abc import Iterable, Iterator, Sequence
-from heapq import merge
 from math import ceil
 from typing import overload
 
@@ -358,12 +357,10 @@ class Basis:
         if not self.is_distributed:
             unique_new = [s for s in sorted(set(new_states)) if not self._contains_local(s)]
             if unique_new:
-                self.local_basis = list(merge(self.local_basis, unique_new))
+                self._keys.merge_keys(ManyBodyState.from_keys(unique_new))
                 self.size = len(self._keys)
                 self.offset = 0
                 self.local_indices = range(0, len(self._keys))
-                if __debug__:
-                    assert all(self._keys.key_at(i) < self._keys.key_at(i + 1) for i in range(len(self._keys) - 1))
             return
 
         unique_new_states = list(set(new_states))
@@ -383,7 +380,7 @@ class Basis:
             return
 
         if unique_new:
-            self.local_basis = list(merge(self.local_basis, unique_new))
+            self._keys.merge_keys(ManyBodyState.from_keys(unique_new))
 
         local_length = len(self._keys)
         size_arr = np.array(self.comm.allgather(local_length), dtype=int)
@@ -401,8 +398,6 @@ class Basis:
             )
             for r in range(self.comm.size)
         ]
-        if __debug__:
-            assert all(self._keys.key_at(i) < self._keys.key_at(i + 1) for i in range(len(self._keys) - 1))
 
     def redistribute_psis(self, *blocks):
         """Redistribute one or more ``ManyBodyState`` blocks across MPI ranks by
