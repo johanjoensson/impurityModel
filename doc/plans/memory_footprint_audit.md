@@ -394,6 +394,106 @@ This is the second time in one session that the *scenario* rather than the instr
 answer, and it is the campaign's oldest recorded lesson — "measure the block you are modelling" —
 re-earned. Both probes were correct; one of them was answering a question nobody asked.
 
+## Phase 1 findings
+
+### P1-1. `build_sparse_matrix`'s distributed branch grows with rank count
+
+Measured, VmHWM, one cold process per point, synthetic basis closed under a hopping
+Hamiltonian (see caveats):
+
+| | 1 rank, N ~393k | 2 ranks, N ~484k |
+|---|---|---|
+| `build_local_operator_list` | 230.7 MiB | **136.8 MiB** |
+| `build_sparse_matrix` | 291.2 MiB | **810.4 MiB** |
+
+The image build halves from 1 to 2 ranks, which is what a distributed structure should do. The
+matrix build nearly **triples**, adding ~670 MiB on top of a 137 MiB image. It is called from
+`get_eigenvectors` (`cipsi_solver.py:1790,1961`), i.e. **once per CIPSI cycle**, plus once per
+eigenstate-doubling retry.
+
+**Why.** The distributed branch (`basis_transcription.py:198-215`) keeps `columns`, `bras` and
+`values` (each nnz-long, `bras` holding nnz *boxed* `SlaterDeterminant` objects), then builds
+`global_rows` (nnz) while those are still alive, then `rows`, `cols`, `vals` (three more nnz
+lists) while all four are still alive — up to **seven nnz-sized Python containers concurrently**,
+none deleted before the function returns. `basis._index_sequence(bras)` adds its own `list(s)`
+copy, a `comm.size`-way send bucketing and a result array on top, which is why the term grows
+with rank count rather than shrinking.
+
+It also reads the applied image through `.items()` (`:192,204`), allocating a `SlaterDeterminant`
+and a `Row` per (row, column) pair. The CIPSI selection round eliminated exactly this by reading
+through the buffer protocol instead, and measured it at **33-43% of a selection round**
+(`cipsi_solver.py:784-789`). `build_sparse_matrix` was never migrated.
+
+**Caveats, stated because the absolute numbers are not production values.** The probe's operator
+gives a fan-out of ~6.9 rows per determinant against a production figure nearer 40, and the basis
+is the closure of a random determinant set rather than a physical charge sector. So the *shape*
+(seven concurrent nnz containers; growth with rank count) is the finding; the MiB figures
+indicate scale, and a production-geometry measurement belongs in the cluster handover.
+
+**A probe bug worth recording**, because it is the failure mode this campaign keeps hitting: the
+first version of this measurement reported `nnz = 0` and a meaningless B/nnz, because a random
+determinant set is not closed under hopping and `build_sparse_matrix` drops every bra that is not
+in the basis. It measured an empty matrix and would have said nothing had the derived figure not
+come out absurd. The probe now asserts the closure added determinants.
+
+### P1-3. `component_symmetry_reduction` held its residual block twice — FIXED
+
+The top-ranked finding of Phase 1 by the campaign's own rule: **replicated per rank**,
+**superlinear in `n_orb`**, and **unconditionally live** on the default XAS path
+(`spectra.py:429-430`, reached from `scripts/run_cmd.py` -> `get_spectra.run_spectra` ->
+`spectra.simulate_spectra`, with no rank guard anywhere on the chain).
+
+`lie_algebra.component_symmetry_reduction` built its residual block as a Python list of
+per-generator column vectors and then did `np.array(columns).T`, so the whole `(m n_orb^2, n_gen)`
+block existed **twice at once**. With `m = 3` (the Cartesian components) and `n_gen ~ n_orb` for a
+generic non-degenerate spectrum, that block is O(n_orb^3). Measured, VmHWM, cold process:
+
+| n_orb | before | after |
+|---|---|---|
+| 62 | 23.1 MiB | 12.4 MiB |
+| 124 | **177.6 MiB** | **90.8 MiB** |
+
+Doubling `n_orb` costs 7.7x, confirming the cubic scaling. Filling the array in place removes the
+duplicate; the resulting matrix is **bit-identical** (verified by array equality against the old
+spelling at two sizes), so this is tier 1. 127 symmetry tests pass.
+
+Per rank, so it multiplies by ranks per node: ~87 MiB/rank of pure duplicate removed at 124
+spin-orbitals, and the term itself grows as `n_orb^3` — at 192 spin-orbitals the block is ~660
+MiB/rank even after this fix. **The duplicate is fixed; the cubic term is not**, and it remains
+the largest known replicated-per-rank allocation on a production spectra path.
+
+This site already had memory history: its own comment records that the SVD below it once
+materialized a `(m n^2)^2` left-singular block, *"~21 GiB at n = 112"*, fixed by switching to an
+economy SVD. The duplicate above it survived that pass.
+
+**A note on how this was found, because it corrects an earlier claim in this campaign.** An
+earlier message in this session flagged `lie_algebra`'s `(n_orb,)**4` tensor as a top finding and
+then retracted it: every production caller passes `two_body=False`, and the parameter named
+`n_orb` is bound to the *impurity* count at the only `two_body=True` caller. That retraction was
+correct. The module was nonetheless the right place to look — just for a different object, three
+functions away. Retracting a wrong reason is not the same as clearing the area.
+
+### P1-2. Materialization sites created by the `local_basis` view (open)
+
+Making `local_basis` a non-materializing view left every site that *iterates* it paying for
+objects it did not previously allocate. Found in the ground-state path, in call-frequency order:
+`build_local_operator_list` (`basis_transcription.py:152`, every cycle),
+`build_distributed_vector` (`:91`, every cycle — and `itertools.product` materializes its
+arguments to tuples up front, so the whole local basis is realized before the outer loop starts),
+`cipsi_solver.py:1732` (`list(self.basis.local_basis)` every cycle, feeding a dict comprehension
+over every determinant), `basis_restrictions.py:114` (per occupation trial, plus a fresh
+`bytearray` and `bitarray` per determinant), and `basis_split.py:219,223` (per GF unit split,
+walking the basis twice).
+
+Not yet measured, so not yet ranked — these are hazards introduced by this campaign's own change
+and are listed so they are not lost.
+
+### P1-3. `best_basis` doubles the basis representation during refinement (open)
+
+`cipsi_solver.py:1315` holds `best_basis = list(self.basis.local_basis)` plus `best_psis` across
+every subsequent refinement cycle of a capped expansion, alongside the live basis being expanded.
+Not measured yet.
+
 ## Phase 0 review — feasibility of the headline fix
 
 Reviewed read-only against the whole call-site surface. **Verdict: feasible, no fundamental
