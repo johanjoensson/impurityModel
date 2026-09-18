@@ -473,6 +473,35 @@ then retracted it: every production caller passes `two_body=False`, and the para
 correct. The module was nonetheless the right place to look — just for a different object, three
 functions away. Retracting a wrong reason is not the same as clearing the area.
 
+### P1-1b. `build_sparse_matrix` FIXED for serial; the distributed peak relocated to `_index_sequence`
+
+| | before | after |
+|---|---|---|
+| serial, N ~393k | 291.2 MiB | **171.7 MiB** (-41%) |
+| 2 ranks, N ~484k | 810.4 MiB | 783.1 MiB (-3.4%) |
+
+Streamed the operator image instead of listing it, read amplitudes through the buffer protocol
+instead of `.items()`, and built numpy arrays instead of Python lists. Verified bit-identical
+against a dense matrix built directly from the images.
+
+**The distributed branch barely moved, and attributing it relocates the target.** At two ranks,
+building the `bras` list costs **113.9 MiB** and `Basis._index_sequence` costs **596.0 MiB** of the
+~783. The peak-setter is the routed all-to-all that resolves bras to global row indices, which
+pickles `SlaterDeterminant` objects -- not this function's own accumulation. **Further work inside
+`build_sparse_matrix` buys nothing distributed;** the next increment is `_index_sequence` /
+`mpi_comm`, and that is where the rank-count growth lives.
+
+**An intermediate version of this fix made serial worse** -- 291 -> 520 MiB -- by unifying the two
+branches, so the serial path stopped filtering inline and accumulated the whole image before
+masking. About 76% of image rows are dropped, so *where* the filter runs is most of the cost. The
+distributed branch cannot filter early: its lookup is collective and must run exactly once per
+rank.
+
+**Fourth silent-zero of the campaign, caught before it fired.** Switching this function to a
+generator would have silently zeroed the perf harness's "apply" leg: it patches by module-global
+name, and timing a generator *call* measures only its creation. The harness now wraps the
+generator and charges each image as produced.
+
 ### P1-2. Materialization sites created by the `local_basis` view (open)
 
 Making `local_basis` a non-materializing view left every site that *iterates* it paying for
