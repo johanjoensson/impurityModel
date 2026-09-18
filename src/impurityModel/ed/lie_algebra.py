@@ -751,15 +751,21 @@ def component_symmetry_reduction(component_ops, h_onebody, n_orb=None, tol=1e-8)
     # Solve for that closing subalgebra as the null space of the "leaves-the-span" residual,
     # then represent each closing generator on the component span as an m x m matrix M.
     gens = [np.asarray(g, dtype=complex) for g in generators]
-    columns = []
-    for c in gens:
-        res_c = []
+    # Fill the residual matrix column by column, in place. The previous spelling accumulated a
+    # Python list of per-generator column vectors and then did `np.array(columns).T`, so the
+    # whole `(m n^2, n_gen)` block existed twice at once -- the list and the array built from
+    # it. That block is O(n_orb^3) (n_gen is one generator per non-degenerate eigenvalue, so
+    # ~n_orb generically) and this function is replicated on every rank with no rank guard:
+    # measured 23.1 MiB at n_orb=62 and 177.6 MiB at n_orb=124 for the pair, i.e. the duplicate
+    # alone is ~87 MiB/rank at 124 spin-orbitals, before multiplying by ranks per node.
+    b_matrix = np.empty((m * n_orb * n_orb, len(gens)), dtype=complex)  # (m * n^2, n_gen)
+    for k, c in enumerate(gens):
+        off = 0
         for T in Ts:
             r = (c @ T - T @ c).reshape(-1)
             r = r - q_t @ (q_t.conj().T @ r)  # component of [C, T_alpha] orthogonal to span(T)
-            res_c.append(r)
-        columns.append(np.concatenate(res_c))
-    b_matrix = np.array(columns).T  # (m * n^2, n_gen)
+            b_matrix[off : off + r.size, k] = r
+            off += r.size
     # Economy SVD: with m * n^2 rows, full_matrices=True materialises a (m n^2)^2 U
     # (~21 GiB at n = 112) that is never read. Full right-singular vectors are only
     # needed when there are more generators than rows (then the extra rows of vh span
