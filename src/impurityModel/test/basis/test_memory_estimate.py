@@ -45,7 +45,7 @@ def test_gf_reort_retention_costs_more():
 
 
 def test_gf_reort_none_per_det_matches_measured_slope(monkeypatch):
-    """reort=none per-det stays near the VmHWM-calibrated ~550 B/det (width 1), once the
+    """reort=none per-det stays near the VmHWM-calibrated slope (width 1), once the
     round-8 matvec-fanout term (:data:`me._GF_MATVEC_ROW_FANOUT_DEFAULT`, divided by the
     chunking credit) is subtracted back out.
 
@@ -54,13 +54,23 @@ def test_gf_reort_none_per_det_matches_measured_slope(monkeypatch):
     term is a real, separately-derived addition (doc/plans/dc_smo_memory.md, round 8) and is
     subtracted here rather than folded into a wider bound, so a future miscalibration of
     *this* constant still trips this test.
+
+    **The anchor moved once, for a representation change, not a recalibration.** It was
+    ~550 B/det = basis ~330 + the recurrence's ~3 live blocks ~216 at width 1. The basis
+    determinant store then moved into a C++ key block, and its VmHWM slope was re-measured at
+    233 B/det (from 250.5 before; one cold process per point, marginal over N = 200k -> 400k,
+    see ``memory_estimate._PY_BASIS_OVERHEAD_BYTES``). So the expected value is now
+    233 + 216 = ~449 and the window is re-centred on that, keeping the same relative width it
+    had before -- this is not a bound widened to admit a failure: the model's own arithmetic
+    predicts the new centre to within a byte, and a 3x miscalibration of ``s_live`` still lands
+    far outside.
     """
     monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
     row_bytes = 16 * 1 + me._key_heap_bytes(124) + me._SD_STRUCT_BYTES
     fanout_per_det = me._GF_MATVEC_ROW_FANOUT_DEFAULT / me._gf_chunk_divisor(4) * row_bytes
     total = me.estimate_gf_peak_bytes(100_000, 124, block_width=1, reort="none")
     per_det = total / 100_000 - fanout_per_det
-    assert 450 <= per_det <= 700, per_det
+    assert 370 <= per_det <= 570, per_det
 
 
 def test_gf_ranks_reduce_per_rank_cost():

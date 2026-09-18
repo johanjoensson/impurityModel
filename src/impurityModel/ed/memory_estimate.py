@@ -154,17 +154,37 @@ _GF_CHUNK_DIVISOR_ANCHORS = ((1, 1.0), (2, 1.3), (4, 1.9), (8, 3.4))
 # controlled sweep (isolating this term the way `doc/plans/truncation_reliability.md`'s VmHWM
 # sweep isolated `_PY_BASIS_OVERHEAD_BYTES`) should replace this once cluster time allows it.
 _SELECTION_BYTES_PER_PAIR = 50
-# Python-side Basis bookkeeping per local determinant: SlaterDeterminant wrapper object,
-# local_basis list slot and _index_dict entry (over and above bytes_per_determinant, which
-# is the flat_map entry + key heap). Calibrated by the VmHWM sweep in
-# ``doc/plans/truncation_reliability.md``: a synthetic Basis of N distinct determinants at
-# nso=124 has resident RSS slope 273 B/det and VmHWM slope 333 B/det above a stable 213 MiB
-# floor (N in {1,2,4}e5, R^2 ~ 1). With bytes_per_determinant(124)=72 that leaves
-# 333-72 = 261 B/det of Python/allocator overhead; 260 matches the peak (VmHWM), which is
-# what OOM-kills. This is the same Basis object on the GS and GF paths, so both estimators
-# use it. (A prior recalibration to 1100 was wrong: it came from raw delta-RSS figures that
-# were floor-contaminated, not clean per-determinant slopes.)
-_PY_BASIS_OVERHEAD_BYTES = 260
+# Per-local-determinant cost of a ``Basis`` over and above ``bytes_per_determinant``, so that
+# ``bytes_per_determinant(nso) + _PY_BASIS_OVERHEAD_BYTES`` is the whole basis term.
+#
+# Recalibrated (2026-09-18) after the determinant store moved into a C++ key block. The number
+# it replaced, 260, described a representation that no longer exists: a Python list of
+# ``SlaterDeterminant`` wrapper objects plus an ``_index_dict`` mapping each to an ``int``.
+#
+# Measured the same way the old constant was -- VmHWM, because that is what OOM-kills, not the
+# retained set -- on a synthetic ``Basis`` of N distinct determinants at nso=124, **one cold
+# process per point** (three points in one process is history-dependent: pymalloc returns an
+# arena only when it is wholly empty, so a later point measures a heap the earlier one warmed,
+# and the same sweep re-run drifts by 20% with physically impossible negative intercepts).
+# Marginal slope over N = 200k -> 400k:
+#
+#     before (list + _index_dict)   250.5 B/det peak    172.8 B/det retained
+#     after  (C++ key block)        233.1 B/det peak     52.3 B/det retained
+#
+# With bytes_per_determinant(124) = 72 that leaves 233.1 - 72 = 161.
+#
+# **The two columns differ by ~180 B/det and that gap is now the story.** Retained cost fell
+# 3.3x; peak barely moved, because the peak is set by the transients ``add_states`` builds while
+# constructing the block (the converted list, the ``set``, the sorted copy), not by what the
+# basis ends up holding. Anything that wants the peak down has to attack those, and the first
+# attempt at this store made the peak *worse* (284.4 B/det) by building the block through a
+# throwaway ``dict.fromkeys`` -- which is why ``ManyBodyState.from_keys`` exists.
+#
+# Direction of risk, stated because it is the unsafe direction: lowering this constant makes
+# ``suggest_truncation_threshold`` return *larger* caps. The measured-RSS trip-wire
+# (``GS_MEMORY_BUDGET_SAFETY``) and ``DEFAULT_MEMORY_SAFETY`` are what stand between a wrong
+# value here and an OOM; this constant is not a safety margin and should not be used as one.
+_PY_BASIS_OVERHEAD_BYTES = 161
 
 #: Fallback cap used by drivers when no memory probe is possible (matches the historical
 #: ``groundstate.calc_gs`` default).
