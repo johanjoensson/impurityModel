@@ -233,3 +233,89 @@ def test_iteration_is_repeatable():
     caller that reads the basis twice."""
     basis = _make_basis(_make_states())
     assert list(basis.local_basis) == list(basis.local_basis)
+
+
+# --------------------------------------------------------------------------- #
+# The packed basis snapshot CIPSI keeps across refinement cycles
+# --------------------------------------------------------------------------- #
+
+
+def _wide_basis(n_dets=64, n_orb=128, seed=5):
+    """A basis whose determinants occupy bits in EVERY chunk.
+
+    Occupation beyond the first 8 bytes is the point: a snapshot that packed too few bytes
+    per determinant would round-trip perfectly on a single-chunk basis and silently drop
+    orbitals here.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    keys = set()
+    while len(keys) < n_dets:
+        word = bytearray(n_orb // 8)
+        for orb in rng.choice(n_orb, size=12, replace=False):
+            word[orb // 8] |= 1 << (7 - orb % 8)
+        keys.add(bytes(word))
+    # Not `_make_basis`: that one is pinned at 64 spin-orbitals, so an over-wide key is
+    # rejected rather than stored.
+    basis = Basis(
+        impurity_orbitals={0: [list(range(n_orb))]},
+        bath_states=({0: []}, {0: []}),
+        initial_basis=sorted(keys),
+        comm=MPI.COMM_SELF,
+        verbose=False,
+    )
+    assert basis.n_bytes == n_orb // 8
+    return basis
+
+
+def test_a_packed_key_snapshot_restores_the_identical_basis():
+    """``CIPSISolver`` keeps the best capped basis as packed keys and restores it later.
+
+    The snapshot is retained across every subsequent refinement cycle, alongside the live
+    basis it is a copy of, so it is stored as an ``(n, n_bytes)`` byte array rather than a
+    list of determinants -- 9.8 B/det against 80.2 measured on a 400k-determinant basis.
+    What that buys is only worth having if the restore is exact, including the ORDER, since
+    a rank's global indices are ``offset + position``.
+    """
+    import numpy as np
+
+    basis = _wide_basis()
+    assert any(
+        bytes(d.to_bytearray())[8:16] != b"\x00" * 8 for d in basis.local_basis
+    ), "fixture does not occupy the second chunk, so it cannot catch a short pack"
+    before = list(basis.local_basis)
+
+    snapshot = np.empty((len(basis.local_basis), basis.n_bytes), dtype=np.uint8)
+    for row, state in enumerate(basis.local_basis):
+        snapshot[row] = np.frombuffer(bytes(state.to_bytearray()[: basis.n_bytes]), dtype=np.uint8)
+
+    basis.clear()
+    assert len(basis.local_basis) == 0
+    basis.add_states(snapshot[row].tobytes() for row in range(snapshot.shape[0]))
+
+    after = list(basis.local_basis)
+    assert after == before
+    assert len(basis) == len(before)
+    for i, state in enumerate(after):
+        assert basis._local_index(state) == i
+
+
+def test_a_short_key_snapshot_loses_orbitals():
+    """The failure the test above exists to catch, made explicit.
+
+    Packing only the first chunk is not a crash and not an exception -- ``_as_determinant``
+    zero-pads a short key back to the basis width -- it is a different determinant. Pinning
+    it here means the round-trip test above cannot pass for the wrong reason.
+    """
+    import numpy as np
+
+    basis = _wide_basis()
+    before = list(basis.local_basis)
+    short = np.empty((len(before), 8), dtype=np.uint8)
+    for row, state in enumerate(before):
+        short[row] = np.frombuffer(bytes(state.to_bytearray()[:8]), dtype=np.uint8)
+
+    basis.clear()
+    basis.add_states(short[row].tobytes() for row in range(short.shape[0]))
+    assert list(basis.local_basis) != before

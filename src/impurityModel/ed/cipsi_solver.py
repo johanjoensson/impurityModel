@@ -1312,7 +1312,23 @@ class CIPSISolver:
                 improved = best_e0 is None or e0 < best_e0 - cap_e_tol
                 if best_e0 is None or e0 < best_e0:
                     best_e0 = e0
-                    best_basis = list(self.basis.local_basis)
+                    # Packed keys, not `list(self.basis.local_basis)`: this snapshot is
+                    # retained across every later refinement cycle, alongside the live basis
+                    # it is a copy of. Measured on a 400k-determinant basis:
+                    #
+                    #     list(local_basis)             80.2 B/det
+                    #     ManyBodyState.from_keys(...) 115.2 B/det
+                    #     packed key array               9.8 B/det
+                    #
+                    # The C++ key block being *worse* than the list is not a mistake: it
+                    # builds a `vector<SlaterDeterminant>` and copies it into the block, and
+                    # glibc does not return the freed transient, so VmHWM -- the metric the
+                    # guard and the OOM killer act on -- keeps both.
+                    best_basis = np.empty((len(self.basis.local_basis), self.basis.n_bytes), dtype=np.uint8)
+                    for row, state in enumerate(self.basis.local_basis):
+                        best_basis[row] = np.frombuffer(
+                            bytes(state.to_bytearray()[: self.basis.n_bytes]), dtype=np.uint8
+                        )
                     best_psis = psi_refs
                     best_e_ref = e_ref
                 no_improve = 0 if improved else no_improve + 1
@@ -1544,7 +1560,9 @@ class CIPSISolver:
             # The last refinement cycle left a worse basis (e.g. score/amplitude
             # ping-pong): restore the best capped basis seen during the cycles.
             self.basis.clear()
-            self.basis.add_states(best_basis)
+            # `add_states` normalizes `bytes` through `_as_determinant`, so the keys are
+            # rebuilt one at a time rather than materialized as a list first.
+            self.basis.add_states(best_basis[row].tobytes() for row in range(best_basis.shape[0]))
             psi_refs = self.basis.redistribute_psis(*best_psis)
             e_ref = best_e_ref
         self.psi_refs = psi_refs
