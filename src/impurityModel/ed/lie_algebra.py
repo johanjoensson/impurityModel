@@ -575,6 +575,10 @@ def cartan_subalgebra(generators, seed=0, tol=None):
     # Solve sum_k c_k [X, H_k] = 0 for real c.
     cols = np.array([(x @ h - h @ x).reshape(-1) for h in herm]).T  # (n^2, m), complex
     real_sys = np.vstack([cols.real, cols.imag])  # (2 n^2, m), real -> enforces real c
+    # `cols` is dead the moment `real_sys` exists, and it is one of five simultaneous copies of
+    # the same O(m n^2) content in this function (`generators`, `herm`, `cols`, `real_sys`, the
+    # economy left block). Measured at n=150: 103.0 MiB of a 726.7 MiB peak.
+    del cols
     # `full_matrices=False` is not an optimization here, it is what makes this function run at
     # all. `real_sys` is (2 n^2, m) with m ~ 2n, so the discarded left-singular block is
     # (2 n^2, 2 n^2): 1.3 GiB at n=80 and 16 GiB at n=150, where this was OOM-killed. Only `s`
