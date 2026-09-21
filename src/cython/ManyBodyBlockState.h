@@ -223,6 +223,19 @@ public:
    * with the flat_map class's forwarded std::map::max_size(). */
   size_type max_size() const noexcept { return m_keys.max_size(); }
 
+  /** @brief Rows the key vector could hold without reallocating.
+   *
+   * `prune_rows`, `keep_rows` and `truncate` shrink the logical length with `resize`,
+   * which never releases `std::vector` capacity, and nothing in this layer calls
+   * `shrink_to_fit`. So a block that was built large and then projected small keeps its
+   * high-water allocation for as long as it lives. This exposes that gap so it can be
+   * measured rather than argued about; it is an instrument, not part of the block's
+   * contract. */
+  size_type row_capacity() const noexcept { return m_keys.capacity(); }
+  /** @brief Amplitude slots the value vector could hold without reallocating. See
+   * :func:`row_capacity`. */
+  size_type amp_capacity() const noexcept { return m_amps.capacity(); }
+
   const Key &key(std::size_t r) const { return m_keys[r]; }
   const std::vector<Key> &keys() const noexcept { return m_keys; }
   Value *data() noexcept { return m_amps.data(); }

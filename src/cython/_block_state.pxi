@@ -271,6 +271,12 @@ cdef class ManyBodyState:
                 support.push_back(ms.b.key(row))
         sort(support.begin(), support.end())
         support.erase(unique(support.begin(), support.end()), support.end())
+        # `erase` shrinks the logical length and keeps the allocation, and this vector was
+        # grown to `p * rows` push_backs before the dedup -- so without this the block's key
+        # store carries `width` times the capacity it needs, for its whole life. Measured on
+        # a 40k-row block: 12.00 MiB of key slots for 0.92 MiB of keys at width 8, 48.00 MiB
+        # at width 32. The amplitude vector is unaffected (it is `resize`d once, exactly).
+        support.shrink_to_fit()
         cdef Py_ssize_t ns = <Py_ssize_t>support.size()
 
         cdef vector[ManyBodyBlockState_cpp.Value] amps
@@ -852,6 +858,29 @@ cdef class ManyBodyState:
         if self.b.width() > 0:
             self.b.col_norm2(&rv[0])
         return res
+
+    def capacity_stats(self):
+        """Logical size against allocated capacity, in rows and in bytes.
+
+        `prune_rows`, `keep_rows` and `truncate` shrink the logical length with `resize`,
+        which never releases `std::vector` capacity, and nothing in this layer calls
+        `shrink_to_fit`. A block built large and then projected small therefore keeps its
+        high-water allocation for as long as it lives. This is the instrument for measuring
+        that; `memory_bytes` reports the logical size and cannot see it.
+        """
+        cdef size_t rows = self.b.rows()
+        cdef size_t cap_rows = self.b.row_capacity()
+        cdef size_t width = self.b.width()
+        cdef size_t amp_cap = self.b.amp_capacity()
+        cdef size_t key_slot = sizeof(SlaterDeterminant_cpp[uint64_t])
+        return {
+            "rows": int(rows),
+            "row_capacity": int(cap_rows),
+            "amp_bytes": int(rows * width * 16),
+            "amp_capacity_bytes": int(amp_cap * 16),
+            "key_slot_bytes": int(rows * key_slot),
+            "key_slot_capacity_bytes": int(cap_rows * key_slot),
+        }
 
     def memory_bytes(self):
         """Estimated heap bytes: dense amplitude array + one heap block per key vector."""

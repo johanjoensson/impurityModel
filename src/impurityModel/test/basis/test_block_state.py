@@ -976,3 +976,69 @@ def test_inner_multi_rejects_non_width_one_blocks():
     wide = ManyBodyState.from_states(states)
     with pytest.raises(ValueError):
         inner_multi([wide], states)
+
+
+# ---------------------------------------------------------------------------
+# Allocated capacity, not just logical size
+# ---------------------------------------------------------------------------
+
+
+def _block_of(n_rows, width, seed=0):
+    rng = np.random.default_rng(seed)
+    keys = set()
+    while len(keys) < n_rows:
+        word = bytearray(8)
+        for orb in rng.choice(56, size=14, replace=False):
+            word[orb // 8] |= 1 << (7 - orb % 8)
+        keys.add(bytes(word))
+    dets = [SlaterDeterminant.from_bytes(k) for k in sorted(keys)]
+    block = ManyBodyState.from_states(
+        [ManyBodyState({d: complex(*rng.standard_normal(2)) for d in dets}, width=1) for _ in range(width)]
+    )
+    return block, dets
+
+
+@pytest.mark.parametrize("width", [1, 8, 32])
+def test_from_states_does_not_leave_width_times_the_key_capacity(width):
+    """``from_states`` builds the union support by pushing every column's keys and then
+    deduplicating, so the key vector grows to ``width * rows`` entries before the
+    ``erase`` -- which shrinks the length and keeps the allocation.
+
+    Without the ``shrink_to_fit`` this is not slack that a later operation reclaims: the
+    block carries it for its whole life. Measured on a 40k-row block, 12.00 MiB of key
+    slots for 0.92 MiB of keys at width 8 and 48.00 MiB at width 32.
+
+    The bound is on the ratio rather than on bytes so it does not drift with the key type's
+    size, and it is checked at three widths because the defect is invisible at width 1 --
+    where the ratio is ordinary geometric growth.
+    """
+    n_rows = 4000
+    block, _ = _block_of(n_rows, width)
+    stats = block.capacity_stats()
+
+    assert stats["rows"] == n_rows
+    assert stats["row_capacity"] == n_rows, (
+        f"width {width}: key capacity is {stats['row_capacity']} rows for {n_rows} rows "
+        f"({stats['row_capacity'] / n_rows:.1f}x)"
+    )
+    # The amplitude vector is sized once, exactly; pinned so a later change cannot start
+    # over-allocating it while this test watches only the keys.
+    assert stats["amp_capacity_bytes"] == stats["amp_bytes"]
+
+
+def test_capacity_stats_reports_the_slack_a_projection_leaves():
+    """``keep_rows`` shrinks the logical length with ``resize`` and keeps the allocation.
+
+    This is the other half of the same property, and it is deliberately NOT fixed: shrinking
+    inside ``keep_rows`` reallocates and copies on the capped Green's-function recurrence's
+    hot path, which has not been measured. The test pins the behaviour so the cost is a
+    known quantity rather than a surprise -- if a later change adds the shrink, this test is
+    the one that has to be updated on purpose.
+    """
+    block, dets = _block_of(4000, 8)
+    block.keep_rows(ManyBodyState.from_keys(dets[:400]))
+    stats = block.capacity_stats()
+
+    assert stats["rows"] == 400
+    assert stats["row_capacity"] == 4000, "projection is expected to keep the pre-shrink capacity"
+    assert stats["amp_capacity_bytes"] == 10 * stats["amp_bytes"]
