@@ -394,6 +394,64 @@ This is the second time in one session that the *scenario* rather than the instr
 answer, and it is the campaign's oldest recorded lesson — "measure the block you are modelling" —
 re-earned. Both probes were correct; one of them was answering a question nobody asked.
 
+## The ranked table
+
+Ranked lexicographically by the plan's keys — replicated-per-rank > superlinear > grows with
+`de2_min` > never-evicted > simultaneous copies — with bytes at the stated geometry as the
+tiebreak *within* a class. Two filters run first: a distributed `O(N_local)` term with no
+reducible constant is dropped rather than ranked, and a row whose absolute peak is out of reach
+of the process high-water mark is marked **blocked**.
+
+Sections are numbered in the order they were written, which is not rank order and by now is not
+even numeric order in the file (`P1-3` was used twice). This table is the index; the numbers
+below are anchors, not a ranking.
+
+| # | finding | class | tier | at the stated geometry | state |
+|---|---|---|---|---|---|
+| [P1-6](#p1-6) | `cartan_subalgebra`'s never-read left-singular block | superlinear, `O(n^4)`, replicated | 1 | **OOM-killed at n=150** -> 623.7 MiB | FIXED |
+| [P1-7](#p1-7) | the fused unpack held the amplitudes twice | simultaneous copies on the peak-setting path | 1 | 517.4 -> 224.0 MiB at width 320 | FIXED |
+| [P1-4](#p1-4) | `component_symmetry_reduction`'s residual block | superlinear, replicated | 2 | 1950.9 -> 244.9 MiB at n_orb=151 | FIXED |
+| [P1-5](#p1-5) | `compute_impurity_rdm`'s guard stage and entry packing | replicated block, `2^n_imp` | 2 | 462.6 -> 0.0 (refused), 420.1 -> 142.1 MiB | FIXED |
+| [P1-1](#p1-1) | `build_sparse_matrix` grew with rank count | anti-scaling with `comm.size` | 1 | 810.4 -> 414.8 MiB at 2 ranks | FIXED |
+| [P1-2](#p1-2) | every walk of `local_basis` materialized it | constant on the dominant distributed term | 1 | 83.2 -> 0.0 B/det | FIXED |
+| [P1-8](#p1-8) | the basis split's wire payloads | simultaneous copies, `x n_colors` | 1 | 158.3 -> 16.1 B/entry | FIXED |
+| [P1-9](#p1-9) | `best_basis` doubled the basis | simultaneous copies, retained across cycles | 1 | 80.2 -> 9.8 B/det | FIXED |
+| — | the `Basis` determinant store (Phase 0e-0j) | constant on the dominant distributed term | 1 + 3 | 282.5 -> 66.3 B/det | FIXED |
+| — | replicated `ManyBodyOperator` + flat caches | replicated-per-rank | — | 8.3 MiB/rank at n_orb=124 | **blocked** (0.2% of peak) |
+| — | `SectorResolventCache._index` | never-evicted | — | 0.06% of the `(N,N)` it sits beside | **blocked** |
+| — | `ManyBodyOperator::apply`'s `num_threads^2` accumulators | replicated per thread | — | unmeasured | open, needs `IMPURITYMODEL_PARALLEL=1` |
+| — | no `shrink_to_fit` anywhere in the C++ layer | capacity slack, monotone | — | unmeasured | open, needs a capacity accessor |
+| — | `max_colors_within_budget` ignores the split's replication | replicated `x n_colors` | — | unmeasured | open |
+| — | path C (double counting) | — | — | never reviewed | open |
+
+**An `unmeasured` row may never outrank a measured one**, which is why the four open rows sit
+below every fixed one regardless of their class.
+
+## The promotion chain, written as a prediction
+
+The record's one reliable predictive pattern is that cutting the peak-setter promotes a
+previously-refuted knob or a previously-invisible site. It has held three times. **Writing the
+successor down before the next measurement is the only version of this that is a prediction**,
+and the five fixes shipped on 2026-09-21 were all landed without one — so these are registered
+now, before the cluster round, and the round either confirms them or does not.
+
+1. **P1-7 cut `unpack_block_fused` 2.3x at production width.** `redistribute_block` is what the
+   128-rank ledger named as the CIPSI peak-setter, so the peak should now move *within* the
+   apply round trip rather than out of it — most likely to `pack_block_fused`'s send buffer,
+   which is `total x bpe` and still built in full before the exchange. Prediction: at 128 ranks
+   the apply remains the top site, and its residue is dominated by the send buffer plus the
+   received buffer being alive simultaneously.
+2. **`GS_SELECTION_CHUNK` becomes live for the third time.** It was refuted twice because the
+   apply, not the selection stack, set the peak. P1-7 cut the apply. Prediction: it measures
+   non-zero at 128 ranks now, and the correct response is still to re-measure rather than to
+   assume — the first two refutations were also predictions.
+3. **P1-2 and P1-9 removed Python-object materialization from the ground-state path.** What is
+   left there is the `psi_refs` block itself (`p x N_local x 16`), which no packing can shrink.
+   Prediction: the ground-state path's residue is now genuinely `p`-bound, so it responds to
+   `GS_MAX_BLOCK_WIDTH` and to nothing else.
+
+A prediction that fails is the useful outcome here; it is recorded so that it *can* fail.
+
 ## Phase 1 findings
 
 ### P1-1. `build_sparse_matrix`'s distributed branch grows with rank count
