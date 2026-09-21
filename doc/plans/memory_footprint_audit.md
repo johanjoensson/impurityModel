@@ -971,6 +971,38 @@ with no `reserve`). Both are real and both are worth nothing at this scale.
 `n_orb^4` blow-up already closed by `extract_tensors(..., two_body=False)` — and measuring it
 first would have promoted this item by 30x on a geometry nothing runs.
 
+### Plan item 6's three never-evicted caches — CLOSED, none of them is one
+
+- **`SectorCache` (`groundstate.py:107-143`)** is not never-evicted: it is an LRU bounded at
+  `max_size=3`, with an explicit `clear(keep=...)` that also nulls the MPI communicator on the
+  losing bases to break a reference cycle (a split communicator freed by the cyclic GC can be
+  collected after `MPI_Finalize` and crash). Three whole `(Basis, CIPSISolver)` pairs is a real
+  3x multiplier on the basis, and it is the documented trade for not re-walking a sector.
+
+- **`SectorResolventCache._index` (`gf_shift_recycling.py:148`)** *is* the `state -> index`
+  Python dict this campaign removed from `Basis`, resurrected in the GF path. It is
+  nevertheless **blocked, not ranked**: it sits beside `_evecs`, a dense `(N, N)` complex
+  eigenvector matrix, and `_sector_dense_max` derives the admissible `N` from exactly that
+  array. At the campaign's own measured 73.1 B/det (0e), the dict is 0.3% of `_evecs` at
+  `N = 1000` and **0.06% at `N = 8000`**; the bound puts `N` in that range by construction.
+
+  *A note on how this was measured, because the first attempt produced nonsense.* Building the
+  dict on a freshly-built `Basis` reported 3.1 and 1.5 B/det at `N = 4000` and `8000` — below
+  the 8 B of a bare pointer, so not a measurement of anything. The basis construction had left
+  arenas the dict allocated into, the same contamination that made P1-2's first probe report
+  29 B/det. At these sizes the term is far too small to measure against a warm heap at all,
+  which is itself the answer; the 73.1 B/det figure above comes from 0e, where it was measured
+  on a geometry that could carry it.
+
+  The multi-cache hazard the plan flagged separately — `rixs.calc_map_cartesian` keeping one
+  cache per thermal eigenstate — is already handled: `_sector_dense_max` takes `n_live_caches`
+  and sizes `N = sqrt(0.25 * available / ((n_live + 2) * 16))`.
+
+- **`_rixs_map_adaptive`'s `cols` (`rixs.py:125`)** is not a cache. It accumulates one map
+  column per *solved* `wIn` point, and the assembled map is the function's return value — every
+  column in it is needed to produce the result. At the sampler's measured 28 solves of 121 it
+  is also the smaller of the two possible shapes.
+
 ## Phase 0 review — feasibility of the headline fix
 
 Reviewed read-only against the whole call-site surface. **Verdict: feasible, no fundamental
