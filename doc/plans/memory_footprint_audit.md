@@ -1354,26 +1354,37 @@ Two changes to the instrument, both of which the plan's Phase 0 item 2 asked for
 
 ## Status
 
-Phase 0 complete. 0a was re-measured after review found it priced the wrong container; the
-pre-registered ordering check ran in reframed form at 0d (reaching production `p` locally is
-time-bound, not memory-bound, so the experiment tested the mechanism instead), and the `Basis`
-key store shipped at 0e-0j.
+**The plan is complete except Phase 3 and Phase 6.**
 
-**The plan is complete except Phase 3 and Phase 6.** Phase 3 (the error-budget harness) is
-not needed yet — everything shipped is tier 1 or 2 — and gates the first tier-3/4 change, most
-likely a `_PY_BASIS_OVERHEAD_BYTES` recalibration. Phase 6 is prepared and is the user's to run.
+| phase | state |
+|---|---|
+| 0 — instrumentation and the high-`p` rig | complete (0a-0j); the ordering check ran reframed at 0d, because reaching production `p` locally is time-bound, not memory-bound |
+| 1 — path-scoped review, five paths | complete; A, B, D, E produced findings, **C produced none** and that is recorded with the condition that would overturn it |
+| 2 — cross-cutting pass | complete; two quarter-of-RAM budgets that compose, and the five encodings down to three |
+| 3 — error-budget harness | **not built, and not needed**: everything shipped is tier 1 or 2. It gates the first tier-3/4 change, most likely a `_PY_BASIS_OVERHEAD_BYTES` recalibration |
+| 4 — the audit document | complete: ranked table, promotion chain as a prediction, closed-as-not-worth-it, blocked rows |
+| 5 — implementation | items 1-8 all resolved: fixed, closed on measurement, or refuted |
+| 6 — cluster handover | **prepared, the user runs it** (`arrhenius_handover/round10/`) |
 
-Phase 1: P1-1 (both halves), P1-3 (the residual block), P1-4 (the residual block is no longer
-formed), P1-5 (the impurity-RDM guard and its entry packing), P1-2 (the `local_basis` iteration
-sites) P1-6 (the never-read left-singular block, which turned an OOM into a 623.7 MiB run)
-P1-7 (the fused unpack's duplicate amplitude copy, plan item 3), P1-8 (the basis split's wire
-payloads) and P1-9 (`best_basis`) are fixed. Open and unmeasured: the split payload carved out of P1-2, and
-`best_basis` (P1-3 in the refinement sense, `cipsi_solver.py:1315`). Path **D** is now open rather than unexamined: P1-7 was its first finding, and plan items 4
-(`ManyBodyOperator::apply`'s `num_threads^2` accumulators) and 5 (no `shrink_to_fit` anywhere in
-the layer — confirmed absent by grep, unpriced) remain. Path **C** (double counting) has still
-had no pass. Plan item 8's other half -- `max_colors_within_budget` not accounting for the split
-replicating the full basis into every color -- is untouched; P1-8 cut the payload, not the
-replication. Also open: the remaining simultaneous copies in `cartan_subalgebra` (`generators` and `herm`, measured in P1-6), and the
-dense generator list in `discover_one_body_symmetries` — `O(n_orb^3)` replicated per rank, but
-**17%** of the symmetry path's peak rather than the 61% previously recorded (P1-6 corrects that
-figure and the call path it was measured on).
+Ten findings fixed (P1-1 through P1-10), each on the four-leg gate. Four closed on measurement
+rather than fixed: the replicated `ManyBodyOperator` (8.3 MiB/rank), plan item 6's three caches,
+path C, and the determinant-key representation (0b). Two refuted by reading: plan item 8's
+second half, and — against a prediction of this campaign's own — the C++ key block as a
+`best_basis` snapshot.
+
+**Deliberately left open, each with its reason in the section above, not an oversight:**
+
+- `keep_rows`/`prune_rows` keep the pre-shrink capacity (10x after a 10% projection). Shrinking
+  there reallocates on the capped-GF hot path and that cost is unmeasured. A test pins the
+  current behaviour so adding the shrink has to be deliberate.
+- `_CappedBasisProxy._mask` — a duplicate of the basis in the *canonical* representation, so it
+  cannot be argued away as a different view. The one encoding the campaign did not remove.
+- `_sector_dense_max` + `_gf_krylov_recycle_max_bytes` compose to 50% of available per-rank RAM
+  and are both live in `rixs.py`. Tightening either declines more sectors, trading wall clock
+  for safety, which nothing has measured.
+- The dense generator list in `discover_one_body_symmetries` — `O(n_orb^3)` replicated, but
+  **17%** of the symmetry path's peak, not the 61% first recorded against a different call path.
+  A factored form is `O(n_orb^2)` and changes a public contract.
+- The basis split's *construction* transient (the replication itself is counted).
+- `_PY_BASIS_OVERHEAD_BYTES`: the re-run reproduces the peak column to ~5% but not the retained
+  column, so it is a partial reproduction and the constant stays at 161.
