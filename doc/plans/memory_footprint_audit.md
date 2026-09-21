@@ -694,20 +694,59 @@ generator would have silently zeroed the perf harness's "apply" leg: it patches 
 name, and timing a generator *call* measures only its creation. The harness now wraps the
 generator and charges each image as produced.
 
-### P1-2. Materialization sites created by the `local_basis` view (open)
+### P1-2. Materialization sites created by the `local_basis` view — MEASURED, FIXED
 
 Making `local_basis` a non-materializing view left every site that *iterates* it paying for
-objects it did not previously allocate. Found in the ground-state path, in call-frequency order:
-`build_local_operator_list` (`basis_transcription.py:152`, every cycle),
-`build_distributed_vector` (`:91`, every cycle — and `itertools.product` materializes its
-arguments to tuples up front, so the whole local basis is realized before the outer loop starts),
-`cipsi_solver.py:1732` (`list(self.basis.local_basis)` every cycle, feeding a dict comprehension
-over every determinant), `basis_restrictions.py:114` (per occupation trial, plus a fresh
-`bytearray` and `bitarray` per determinant), and `basis_split.py:219,223` (per GF unit split,
-walking the basis twice).
+objects it did not previously allocate. Measured before ranking, on a 400k-determinant basis,
+cold process, `VmHWM` reset at the stage boundary:
 
-Not yet measured, so not yet ranked — these are hazards introduced by this campaign's own change
-and are listed so they are not lost.
+| stage | peak before | peak after |
+|---|---|---|
+| `len(local_basis)` (control) | 0.0 B/det | 0.0 |
+| walk the basis, keep nothing | 83.2 | **0.0** |
+| `list(local_basis)` | 95.7 | 95.7 (the caller keeps them; unchanged by design) |
+| `build_distributed_vector` | 200.5 | **13.4** |
+| the restriction scan (`basis_restrictions.py:114`) | 83.1 | **0.0** |
+| the GF unit split (`basis_split.py:219,223`) | 222.3 | 187.2 — *payload, not walk; still open* |
+
+**The probe had to be rewritten before any of this was true.** Its first version built the
+basis from one N-element list and reported `list(local_basis)` at **29 B/det** — impossible
+for an object that cannot cost under ~80. The setup had left N determinants' worth of freed
+pymalloc arenas behind, and the stage allocated into them. Growing the basis in chunks, the
+way CIPSI actually grows one, gave 95.7. *A setup must not pre-warm the heap to the size of
+the thing being measured* — and the tell was an arithmetically impossible figure, the same
+shape of tell that caught the biased baseline in P1-4.
+
+**Two fixes, two commits.**
+
+1. `_LocalBasisView.__iter__` was `iter(self._keys.keys())` — a Python list of every
+   determinant built before the first one is yielded. It now streams `key_at(i)`. This is
+   *also faster*: 26.1 ms against 30.9 ms per 400k walk, because building the list is itself
+   work. The memory win and the time win point the same way, which is unusual enough in this
+   campaign to be worth stating.
+
+2. `build_distributed_vector` kept `itertools.product`, which **materializes each argument to
+   a tuple when it is constructed** — so it defeats a streaming iterator by construction, and
+   fix 1 does nothing for it. Nested loops: 200.5 -> 13.4 B/det, against a 16 B/det output.
+   The visit order is identical (product yields its last argument fastest), so the values are
+   bit-identical.
+
+Both are tier 1. The guard that makes fix 1 safe is the interesting part: `add_states` merges
+into the key block **in place** (`ManyBodyBlockState::merge_keys`), so growing the basis
+mid-walk shifts the positions of determinants not yet yielded, and a streaming walk would
+silently skip or repeat them — wrong answers, no crash, the class this plan named as its top
+risk. The size is therefore checked *before* each step and iteration raises, the way a `dict`
+does. Every `local_basis` use in the repo was audited first, including the Cython ones
+(`_lanczos_step.pxi:631,673` take only `len()`; `ChebyshevFilter.pyx:74` consumes the walk
+once); no production site mutates the basis while iterating it.
+
+Of the four new tests, two fail against the pre-fix code, plus the `build_distributed_vector`
+bound — verified by reverting each, not assumed.
+
+**Still open, and deliberately not folded into these numbers**: the split walk's remaining
+187.2 B/det is not iteration at all. `basis_split.py:219-223` retains a list of key `bytes`
+*and* `set(basis.local_basis)` simultaneously — that is the wire payload, and it needs its own
+finding rather than credit from this one.
 
 ### P1-3. `best_basis` doubles the basis representation during refinement (open)
 
@@ -815,6 +854,15 @@ commit would launder a selection-changing effect through an "exact by constructi
 
 ## Status
 
-Phase 0 items 0a-0c complete, 0a re-measured after review found it priced the wrong container.
-Remaining Phase 0: the high-`p` local rig and the pre-registered ordering check. Nothing
-implemented yet; no production code changed.
+Phase 0 items 0a-0c complete, 0a re-measured after review found it priced the wrong container;
+0d-0j complete, the `Basis` key store shipped. Remaining Phase 0: the high-`p` local rig and the
+pre-registered ordering check.
+
+Phase 1: P1-1 (both halves), P1-3 (the residual block), P1-4 (the residual block is no longer
+formed), P1-5 (the impurity-RDM guard and its entry packing) and P1-2 (the `local_basis`
+iteration sites) are fixed. Open and unmeasured: the split payload carved out of P1-2, and
+`best_basis` (P1-3 in the refinement sense, `cipsi_solver.py:1315`). Also open, and the largest
+known remaining single term: the dense generator list in `discover_one_body_symmetries`
+(150.2 MiB, 61% of what is left in `component_symmetry_reduction`, `O(n_orb^3)` replicated per
+rank). Each generator is a rank-1 outer product, so a factored form is `O(n_orb^2)` — but that
+changes a public contract, which is why it has not been taken.
