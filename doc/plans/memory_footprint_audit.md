@@ -419,7 +419,7 @@ below are anchors, not a ranking.
 | — | the `Basis` determinant store (Phase 0e-0j) | constant on the dominant distributed term | 1 + 3 | 282.5 -> 66.3 B/det | FIXED |
 | — | replicated `ManyBodyOperator` + flat caches | replicated-per-rank | — | 8.3 MiB/rank at n_orb=124 | **blocked** (0.2% of peak) |
 | — | `SectorResolventCache._index` | never-evicted | — | 0.06% of the `(N,N)` it sits beside | **blocked** |
-| — | `ManyBodyOperator::apply`'s `num_threads^2` accumulators | replicated per thread | — | unmeasured | open, needs `IMPURITYMODEL_PARALLEL=1` |
+| — | `ManyBodyOperator::apply`'s `num_threads^2` accumulators | replicated per thread | 1 | 1148 -> 596-685 MiB at width 320 | FIXED |
 | — | no `shrink_to_fit` anywhere in the C++ layer | capacity slack, monotone | — | unmeasured | open, needs a capacity accessor |
 | — | the split's *construction* transient (the replication itself is counted — claim refuted) | simultaneous copies | — | unmeasured | open |
 | — | path C (double counting) | — | — | never reviewed | open |
@@ -1035,6 +1035,40 @@ because it is the unsafe one: if 172 is right, 161 is optimistic, and optimistic
 Nothing shipped in this campaign touched that path. `add_states`' serial branch still builds a
 list, a `set` and a sorted list of N determinants before `merge_keys`, and that is what sets
 the 244 B/det peak — the next thing to attack if this term is ever worth attacking.
+
+### P1-10. `from_states` left `width x` the key capacity — MEASURED, FIXED
+
+Plan item 5 ("no `shrink_to_fit` anywhere in this layer"), and the waste was **not where the
+item predicted it**. It is at construction, not after a shrink.
+
+`ManyBodyState.from_states` builds the union support by pushing every column's keys —
+`width * rows` of them — then sorts, deduplicates and `erase`s. `erase` shrinks the logical
+length and keeps the allocation, so the block carries `width` times the key capacity it needs
+for its whole life. Measured on a 40k-row block, key slots live -> allocated:
+
+| width | live | allocated | factor |
+|---|---|---|---|
+| 1 | 0.92 MiB | 1.50 MiB | 1.6x (ordinary geometric growth) |
+| 8 | 0.92 | 12.00 | **13.1x** |
+| 32 | 0.92 | 48.00 | **52.4x** |
+
+One `shrink_to_fit` makes every one exact, taking a width-32 block from 68.45 to 20.45 MiB —
+**3.3x** — and the Lanczos and GF recurrences hold several blocks at once. The amplitude
+vector was always exact (it is `resize`d once) and is now pinned so that cannot silently
+change.
+
+**It needed an instrument, and that is the transferable part.** `RSS` cannot see this:
+shrinking a `std::vector` returns nothing to the allocator, so the slack is invisible from
+outside the process. `memory_bytes()` reports the logical size and is blind to it too. This
+finding only exists because `row_capacity`/`amp_capacity` were added to the C++ block and
+exposed as `capacity_stats()` first — an instrument commit *before* a number, which is the
+shape the plan asked for and the reason item 5 sat unpriced for the whole campaign.
+
+**The predicted half is real and deliberately left alone.** After a 10% `keep_rows`
+projection the block keeps 10x the capacity. Shrinking there reallocates and copies on the
+capped Green's-function recurrence's hot path, and that cost is unmeasured. A test pins the
+current behaviour, so it stays a known quantity and adding the shrink has to be a deliberate
+act rather than a drive-by.
 
 ## Closed as not worth it
 
