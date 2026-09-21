@@ -801,7 +801,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
       merge_threads.push_back(std::thread([&, b]() {
         BucketAcc macc;
         for (unsigned int t = 0; t < num_threads; t++) {
-          const BucketAcc &src =
+          BucketAcc &src =
               local_buckets[static_cast<size_t>(t) * num_buckets + b];
           for (const auto &[k, row] : src.row_of) {
             const auto [it, inserted] =
@@ -815,6 +815,22 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
               dst[c] += add[c];
             }
           }
+          // Release this source the moment it has been merged, instead of holding
+          // all `num_threads^2` of them until the function returns. Merge thread `b`
+          // owns column `b` of `local_buckets` exclusively -- every other merge
+          // thread touches a different column -- so this is disjoint, not shared.
+          // Swapping against an empty container, rather than clear(), is what
+          // actually returns the capacity: nothing in this layer has a
+          // shrink_to_fit and clear() keeps the high-water allocation.
+          //
+          // Both halves, and the split is not what the per-entry arithmetic
+          // suggests. The amplitudes are `p * 16` B per entry against roughly 90 for
+          // a map entry, so freeing `acc` alone looks like it should capture most of
+          // it; measured at p = 32 it captures about half (1148 -> 896 MiB, against
+          // 1148 -> 657 for both). Freeing the map also returns capacity the merged
+          // `macc` then reuses, which the per-entry ratio does not model.
+          decltype(src.row_of)().swap(src.row_of);
+          std::vector<ManyBodyBlockState::Value>().swap(src.acc);
         }
         auto &okeys = bucket_keys[b];
         auto &oamps = bucket_amps[b];

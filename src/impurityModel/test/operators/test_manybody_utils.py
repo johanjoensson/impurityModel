@@ -348,3 +348,74 @@ def test_diagonal_of_a_hermitian_operator_is_real():
     dets = _determinants(n_orb=10, n_dets=30, seed=1111)
     got = op.diagonal(ManyBodyState(dict.fromkeys(dets, 1.0 + 0j), width=1))
     assert np.max(np.abs(got.imag)) < 1e-14
+
+
+# ---------------------------------------------------------------------------
+# The threaded block apply
+# ---------------------------------------------------------------------------
+
+
+def _threaded_apply_active():
+    """Whether this process will actually take the threaded branch.
+
+    Both conditions are required and neither is the default: the extension must be built
+    with ``IMPURITYMODEL_PARALLEL=1``, and ``OMP_NUM_THREADS`` must exceed 1 -- the thread
+    cap defaults to 1 and the whole threaded block sits behind ``if (num_threads > 1)``.
+    CI pairs them in the ThreadSanitizer job for exactly this reason. Reported rather than
+    assumed, so a skip here is never mistaken for a pass.
+    """
+    import os
+
+    from impurityModel.ed.ManyBodyUtils import parallel_apply_build
+
+    return parallel_apply_build() and int(os.environ.get("OMP_NUM_THREADS", "1")) > 1
+
+
+@pytest.mark.skipif(not _threaded_apply_active(), reason="needs IMPURITYMODEL_PARALLEL=1 and OMP_NUM_THREADS>1")
+def test_threaded_block_apply_matches_a_row_by_row_reference():
+    """The threaded merge must reproduce the serial image.
+
+    The reference applies one row at a time: a single-row block takes ``num_threads == 1``
+    and therefore the serial branch, so this compares the two code paths rather than the
+    same path twice. The row count and width are chosen so more than one thread is actually
+    spawned (``num_threads = min(cap, rows / max(1, 256 / p))``).
+
+    A tolerance, not equality: the threaded merge sums duplicate contributions in bucket
+    order, which is a different order from the serial accumulator's.
+    """
+    n_orb, n_rows, p = 24, 600, 4
+    rng = np.random.default_rng(11)
+
+    terms = {}
+    for i in range(n_orb):
+        for j in range(n_orb):
+            terms[((i, "c"), (j, "a"))] = complex(rng.standard_normal(), rng.standard_normal())
+    op = ManyBodyOperator(terms)
+
+    keys = set()
+    while len(keys) < n_rows:
+        word = bytearray(8)
+        for orb in rng.choice(n_orb, size=6, replace=False):
+            word[orb // 8] |= 1 << (7 - orb % 8)
+        keys.add(bytes(word))
+    dets = [SlaterDeterminant.from_bytes(k) for k in sorted(keys)]
+    amps = rng.standard_normal((n_rows, p)) + 1j * rng.standard_normal((n_rows, p))
+    block = ManyBodyState.from_states(
+        [ManyBodyState({d: complex(amps[r, c]) for r, d in enumerate(dets)}, width=1) for c in range(p)]
+    )
+    assert block.width == p
+
+    got = op.apply_block(block, 0.0)
+
+    expected = {}
+    for r, d in enumerate(dets):
+        one = ManyBodyState.from_states([ManyBodyState({d: complex(amps[r, c])}, width=1) for c in range(p)])
+        image = op.apply_block(one, 0.0)
+        for k, row in image.items():
+            acc = expected.setdefault(k, np.zeros(p, dtype=complex))
+            acc += np.asarray([row[c] for c in range(p)])
+
+    assert len(got) == len(expected), f"threaded image has {len(got)} rows, reference has {len(expected)}"
+    for k, row in got.items():
+        ref = expected[k]
+        np.testing.assert_allclose(np.asarray([row[c] for c in range(p)]), ref, rtol=1e-10, atol=1e-12)
