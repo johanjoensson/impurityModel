@@ -995,6 +995,47 @@ with `kind="quicksort"` fails it.
 `graph_alltoall` and not the fused path. That check cost one probe run; the assumption it
 replaced is the one that produced the stale 61% figure corrected in P1-6.
 
+## Verification: benchmarks and the calibrated constant
+
+### `pytest -m benchmark` — green, and the apply golden holds
+
+The plan requires this because a memory win must not cost wall time silently. Default set:
+8 passed, 11 skipped (all env-gated `RUN_*_BENCH`, not missing data). The two that cover paths
+touched here were run with their gates set — `test_matrix_build_perf` and
+`test_symmetry_golden`, both pass. The block-apply golden is unmoved:
+
+    [apply-block] p=1  block=  98.94 ms  speedup=0.99x
+    [apply-block] p=8  block=  99.57 ms  speedup=6.94x   n_out=188056
+
+### `_PY_BASIS_OVERHEAD_BYTES` — re-measured, NOT changed, and the reproduction is partial
+
+Re-run by the method the constant's own comment specifies: VmHWM, nso=124, one cold process
+per point, marginal slope over N = 200k -> 400k. Three repeats, and the slope is stable to
+0.5 B/det.
+
+| | recorded 2026-09-18 | re-measured 2026-09-21 |
+|---|---|---|
+| marginal **peak** slope | 233.1 B/det | **243.7 - 244.2** |
+| marginal **retained** slope | 52.3 B/det | **130.4** |
+
+The peak column — the one the constant is derived from — reproduces to ~5%, implying 172
+against the stored 161. **The retained column does not reproduce at all**, and that is the
+part worth stating rather than smoothing over: the C++ key block should retain ~56 B/det at
+`n_bytes = 16` structurally, which matches the recorded 52.3 and not the 130.4 measured here.
+So this probe is inflated by construction transients glibc never returned, which makes it a
+*partial* reproduction of the original instrument, not a replacement for it.
+
+**The constant is therefore left at 161**, for two reasons. The probe cannot be shown to
+reproduce the instrument, and changing it is **tier 3 by effect** — it resizes RAM-derived
+truncation caps, hence which determinants are admitted, hence energies on capped runs — which
+the plan routes through the Phase-3 harness that does not yet exist. The direction is recorded
+because it is the unsafe one: if 172 is right, 161 is optimistic, and optimistic here means
+*larger* caps.
+
+Nothing shipped in this campaign touched that path. `add_states`' serial branch still builds a
+list, a `set` and a sorted list of N determinants before `merge_keys`, and that is what sets
+the 244 B/det peak — the next thing to attack if this term is ever worth attacking.
+
 ## Closed as not worth it
 
 The prior campaign's most valuable output was its refutations, so each row here carries the
