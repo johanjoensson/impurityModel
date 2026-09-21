@@ -163,3 +163,73 @@ def test_routed_index_lookup_rejects_a_zero_chunk_width():
 
     with pytest.raises(ValueError, match="chunks_per_state"):
         routed_index_lookup([], 0, lambda buf: None, MPI.COMM_SELF)
+
+
+# --------------------------------------------------------------------------- #
+# Iteration streams; it does not rebuild the determinant list
+# --------------------------------------------------------------------------- #
+
+
+class _NoMaterializeKeys:
+    """A key block that forwards everything except ``keys()``.
+
+    Pins the mechanism rather than the symptom: a memory assertion on iteration would be a
+    threshold that drifts, but "iteration never calls ``keys()``" is exactly the property
+    that makes it free, and it fails loudly the moment the view goes back to materializing.
+    """
+
+    def __init__(self, keys):
+        self._inner = keys
+
+    def __len__(self):
+        return len(self._inner)
+
+    def __contains__(self, item):
+        return item in self._inner
+
+    def key_at(self, i):
+        return self._inner.key_at(i)
+
+    def keys(self):
+        raise AssertionError("iterating the local basis materialized the whole determinant list")
+
+
+def test_iterating_the_local_basis_does_not_materialize_the_determinant_list():
+    from impurityModel.ed.manybody_basis import _LocalBasisView
+
+    basis = _make_basis(_make_states())
+    expected = [basis.local_basis[i] for i in range(len(basis.local_basis))]
+
+    view = _LocalBasisView(_NoMaterializeKeys(basis._keys))
+    assert list(view) == expected
+
+
+def test_iterating_the_local_basis_yields_sorted_order():
+    """The order is the contract: ``local_indices`` is ``range(offset, offset + len)``, so the
+    loop position of an iteration *is* the determinant's global index."""
+    basis = _make_basis(_make_states())
+    walked = list(basis.local_basis)
+    assert walked == sorted(walked)
+    assert walked == [basis.local_basis[i] for i in range(len(walked))]
+    assert len(walked) == len(basis.local_basis)
+
+
+def test_growing_the_basis_mid_iteration_raises_instead_of_skipping():
+    """``add_states`` merges into the key block in place, so a streaming walk would silently
+    skip or repeat determinants that move. It must raise, the way a ``dict`` does."""
+    basis = _make_basis(_make_states())
+    new = _sd(0x08)
+    assert new not in basis.local_basis
+
+    it = iter(basis.local_basis)
+    next(it)
+    basis.add_states([new])
+    with pytest.raises(RuntimeError, match="changed size during iteration"):
+        next(it)
+
+
+def test_iteration_is_repeatable():
+    """``__iter__`` hands back a fresh walk each time; a one-shot iterator would break every
+    caller that reads the basis twice."""
+    basis = _make_basis(_make_states())
+    assert list(basis.local_basis) == list(basis.local_basis)
