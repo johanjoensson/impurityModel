@@ -207,23 +207,63 @@ def split_basis_and_redistribute_psi(
     ppc_int = [int(p) for p in procs_per_color]
     roots_int = [int(r) for r in split_roots]
 
-    def _owner(routing_hash: int) -> list[int]:
-        """Global rank that owns ``routing_hash`` in every color other than mine
-        (my color already holds it). Routing to the eventual within-color owner
-        makes the ``Basis`` re-partition below a no-op for that determinant."""
-        return [roots_int[other] + routing_hash % ppc_int[other] for other in range(len(roots_int)) if other != color]
+    def _group_by_destination(routing_hashes):
+        """``(destination rank, row indices)`` for every other color, rows in table order.
+
+        Every determinant I own goes to its owner-to-be in each color other than mine (my
+        color already holds it); routing to the eventual within-color owner makes the
+        ``Basis`` re-partition below a no-op for that determinant. Per determinant that
+        owner is ``roots_int[other] + routing_hash % ppc_int[other]``, which is the scalar
+        spelling the tests use as an oracle.
+
+        The modulus is taken in ``uint64`` throughout: ``routing_hash()`` does not fit a C
+        long, which is why the scalar path insisted on pure-Python ints rather than letting
+        numpy coerce to ``int64``, and ``uint64 % uint64`` has the same no-overflow
+        property. Grouping is a stable argsort, so each destination receives its rows in the
+        order they were enumerated -- the order the receiving side accumulates duplicates
+        in, and therefore the order the sum is taken in.
+        """
+        for other in range(len(roots_int)):
+            if other == color:
+                continue
+            dest = (routing_hashes % np.uint64(ppc_int[other])).astype(np.int64) + roots_int[other]
+            if dest.size == 0:
+                continue
+            order = np.argsort(dest, kind="stable")
+            bounds = np.flatnonzero(np.diff(dest[order])) + 1
+            for rows in np.split(order, bounds):
+                yield int(dest[rows[0]]), rows
 
     # Replicate the full basis into every color with one sparse all-to-all over
     # ``comm``: every determinant I own goes to its owner-to-be in each other color.
-    det_send: list[list[bytes]] = [[] for _ in range(comm.size)]
-    for state in basis.local_basis:
-        key_bytes = bytes(state.to_bytearray()[: basis.n_bytes])
-        for g in _owner(state.routing_hash()):
-            det_send[g].append(key_bytes)
+    #
+    # The payload is a packed key array per destination, not a list of `bytes` objects.
+    # `graph_alltoall` pickles a numpy array as a raw buffer and a Python object as objects
+    # on BOTH sides -- the distinction that decided `compute_impurity_rdm`, where the wire
+    # format was only 1.4x and materializing the objects was the other 16x. Measured here
+    # at 200k determinants: 87.2 B/entry to build the list form, 0.0 for the array.
+    n_key_bytes = basis.n_bytes
+    n_local = len(basis.local_basis)
+    local_keys = np.empty((n_local, n_key_bytes), dtype=np.uint8)
+    local_hashes = np.empty(n_local, dtype=np.uint64)
+    for i, state in enumerate(basis.local_basis):
+        local_keys[i] = np.frombuffer(bytes(state.to_bytearray()[:n_key_bytes]), dtype=np.uint8)
+        local_hashes[i] = state.routing_hash()
+
+    # A dict, never a bare array: `is_empty` only understands None/list/dict/set, and
+    # `if chunk:` on a numpy array of more than one element raises rather than answering.
+    det_send: list = [None] * comm.size
+    for g, rows in _group_by_destination(local_hashes):
+        det_send[g] = {"keys": local_keys[rows]}
+    del local_keys, local_hashes
+
     new_states = set(basis.local_basis)
     for chunk in graph_alltoall(det_send, comm):
-        if chunk:
-            new_states.update(basis.type.from_bytes(kb) for kb in chunk)
+        if not chunk:
+            continue
+        received = chunk["keys"]
+        new_states.update(basis.type.from_bytes(received[j].tobytes()) for j in range(received.shape[0]))
+    del det_send
 
     split_basis = Basis(
         basis.impurity_orbitals,
@@ -251,21 +291,42 @@ def split_basis_and_redistribute_psi(
         # Same routing as the determinants: each (seed, determinant, amplitude) entry to
         # its owner-to-be in every other color; redistribute_psis then finalises placement
         # on the split communicator (and sums any duplicate rows).
-        psi_send: list[list[tuple[int, bytes, complex]]] = [[] for _ in range(comm.size)]
+        # One flat table over all seeds, sliced per destination -- the same packing as the
+        # determinants above, and the bigger half of it: a `(int, bytes, complex)` tuple per
+        # entry measured 158.3 B against 16.1 packed, 9.8x, at 800k entries.
+        n_rows = sum(len(p) for p in psis)
+        seed_index = np.empty(n_rows, dtype=np.int32)
+        seed_keys = np.empty((n_rows, basis.n_bytes), dtype=np.uint8)
+        seed_amps = np.empty(n_rows, dtype=complex)
+        seed_hashes = np.empty(n_rows, dtype=np.uint64)
+        at = 0
         for i, p in enumerate(psis):
             for k, v in p.items():
-                key_bytes = bytes(k.to_bytearray()[: basis.n_bytes])
-                amp = v[0]
-                for g in _owner(k.routing_hash()):
-                    psi_send[g].append((i, key_bytes, amp))
+                seed_index[at] = i
+                seed_keys[at] = np.frombuffer(bytes(k.to_bytearray()[: basis.n_bytes]), dtype=np.uint8)
+                seed_amps[at] = v[0]
+                seed_hashes[at] = k.routing_hash()
+                at += 1
+        assert at == n_rows, f"psi table filled {at} of {n_rows} rows"
+
+        psi_send: list = [None] * comm.size
+        for g, rows in _group_by_destination(seed_hashes):
+            psi_send[g] = {"i": seed_index[rows], "keys": seed_keys[rows], "amp": seed_amps[rows]}
+        del seed_index, seed_keys, seed_amps, seed_hashes
+
         received_rows: list[dict] = [dict() for _ in psis]
         for chunk in graph_alltoall(psi_send, comm):
             if not chunk:
                 continue
-            for i, key_bytes, amp in chunk:
-                d = received_rows[i]
-                sd = basis.type.from_bytes(key_bytes)
-                d[sd] = d.get(sd, 0) + amp
+            chunk_i, chunk_keys, chunk_amp = chunk["i"], chunk["keys"], chunk["amp"]
+            for j in range(chunk_i.shape[0]):
+                d = received_rows[int(chunk_i[j])]
+                sd = basis.type.from_bytes(chunk_keys[j].tobytes())
+                # `complex(...)`, not the numpy scalar: the accumulated values go into a
+                # `ManyBodyState`, and the rows are summed in the same order as before, so
+                # keeping the Python type keeps the arithmetic identical too.
+                d[sd] = d.get(sd, 0) + complex(chunk_amp[j])
+        del psi_send
         new_psis = [p.copy() for p in psis]
         for i, rows in enumerate(received_rows):
             if rows:

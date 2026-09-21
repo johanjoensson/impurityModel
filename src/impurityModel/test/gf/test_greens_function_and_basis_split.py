@@ -1214,3 +1214,55 @@ def test_calc_map_win_chunk_invariant_mpi():
         if comm.rank == 0:
             assert g.shape == g_ref.shape
             np.testing.assert_allclose(g, g_ref, atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# The split's packed wire payload
+# ---------------------------------------------------------------------------
+
+
+def test_vectorised_split_ownership_matches_the_scalar_modulus():
+    """The split routes determinants with a ``uint64`` modulus taken over a whole array.
+
+    The scalar path deliberately used pure-Python ints, because ``routing_hash()`` is a
+    ``uint64`` that does not fit a C long and ``big_int % np.int64`` overflows on the numpy
+    coercion. ``uint64 % uint64`` does not, but that is the one thing the packed payload
+    changed about *which rank gets which determinant*, and getting it wrong would scatter
+    determinants to the wrong color -- wrong answers, no crash. So it is pinned against the
+    scalar spelling, over hashes that span the top of the range.
+    """
+    rng = np.random.default_rng(3)
+    hashes = np.concatenate(
+        [
+            rng.integers(0, 2**63, size=2000, dtype=np.uint64),
+            # The half of the range a signed coercion cannot represent.
+            rng.integers(2**63, 2**64, size=2000, dtype=np.uint64),
+            np.array([0, 1, 2**63 - 1, 2**63, 2**64 - 1], dtype=np.uint64),
+        ]
+    )
+    for procs_per_color, root in ((1, 0), (2, 0), (3, 5), (7, 11), (128, 3)):
+        vectorised = (hashes % np.uint64(procs_per_color)).astype(np.int64) + root
+        scalar = [int(h) % procs_per_color + root for h in hashes]
+        np.testing.assert_array_equal(vectorised, np.array(scalar, dtype=np.int64))
+
+
+def test_split_payload_grouping_preserves_enumeration_order_per_destination():
+    """Duplicates are summed on arrival, so the order within a destination is the sum order.
+
+    The packed payload groups rows with a stable argsort over the destination array. If that
+    were an unstable sort the rows would still all arrive, and the totals would still be
+    right to rounding -- which is exactly why this is pinned as an ordering property rather
+    than left to a numerical test to notice.
+    """
+    rng = np.random.default_rng(4)
+    dest = rng.integers(0, 6, size=500).astype(np.int64)
+
+    order = np.argsort(dest, kind="stable")
+    bounds = np.flatnonzero(np.diff(dest[order])) + 1
+    groups = {int(dest[rows[0]]): rows for rows in np.split(order, bounds)}
+
+    assert sorted(groups) == sorted(set(dest.tolist()))
+    for g, rows in groups.items():
+        np.testing.assert_array_equal(rows, np.flatnonzero(dest == g))
+        assert list(rows) == sorted(rows), "rows within a destination must stay in table order"
+    assert sum(len(rows) for rows in groups.values()) == dest.size
