@@ -758,11 +758,38 @@ to exercise it. Recorded here rather than changed.
 *and* `set(basis.local_basis)` simultaneously — that is the wire payload, and it needs its own
 finding rather than credit from this one.
 
-### P1-3. `best_basis` doubles the basis representation during refinement (open)
+### P1-9. `best_basis` doubled the basis representation during refinement — MEASURED, FIXED
 
-`cipsi_solver.py:1315` holds `best_basis = list(self.basis.local_basis)` plus `best_psis` across
-every subsequent refinement cycle of a capped expansion, alongside the live basis being expanded.
-Not measured yet.
+(Numbered 9 rather than 3: an earlier pass gave two findings the number P1-3, and renumbering
+them now would break the references already written above.)
+
+`cipsi_solver.py:1315` held `best_basis = list(self.basis.local_basis)` across every subsequent
+refinement cycle of a capped expansion, alongside the live basis it is a copy of. Measured on a
+400k-determinant basis, peak equal to steady in all three cases:
+
+| snapshot representation | cost |
+|---|---|
+| `list(local_basis)` — what it was | 80.2 B/det |
+| `ManyBodyState.from_keys(...)` — the obvious fix | **115.2 B/det, worse** |
+| packed `(n, n_bytes)` key array — what shipped | **9.8 B/det** |
+
+**The obvious fix is the wrong one, and the reason is 0i's rule applied to a prediction of this
+campaign's own.** The C++ key block is the representation the `Basis` store itself moved to, so
+it looked certain to win. It loses: `from_keys` builds a `vector<SlaterDeterminant>` and copies
+it into the block, and glibc does not return the freed transient, so `VmHWM` — the metric the
+guard and the OOM killer act on — keeps both. On retained RSS it would have looked fine. The
+measurement was taken before the change was written, which is the only reason this was a
+refuted prediction rather than a shipped regression.
+
+The restore goes through `add_states`, which normalizes `bytes` one determinant at a time, so
+nothing is materialized as a list on the way back either.
+
+**The second test exists because the first could pass for the wrong reason.** Packing only the
+first chunk is not a crash and not an exception — `_as_determinant` zero-pads a short key back
+to the basis width — it is a *different determinant*. So the fixture asserts it actually
+occupies the second chunk before the round trip means anything, and it needed its own `Basis`:
+the shared helper in that test file is pinned at 64 spin-orbitals and rejects an over-wide key
+rather than storing it.
 
 ### P1-6. `cartan_subalgebra` asked LAPACK for a 16 GiB block nothing reads — MEASURED, FIXED
 
@@ -1018,8 +1045,8 @@ key store shipped at 0e-0j.
 Phase 1: P1-1 (both halves), P1-3 (the residual block), P1-4 (the residual block is no longer
 formed), P1-5 (the impurity-RDM guard and its entry packing), P1-2 (the `local_basis` iteration
 sites) P1-6 (the never-read left-singular block, which turned an OOM into a 623.7 MiB run)
-P1-7 (the fused unpack's duplicate amplitude copy, plan item 3) and P1-8 (the basis split's
-wire payloads) are fixed. Open and unmeasured: the split payload carved out of P1-2, and
+P1-7 (the fused unpack's duplicate amplitude copy, plan item 3), P1-8 (the basis split's wire
+payloads) and P1-9 (`best_basis`) are fixed. Open and unmeasured: the split payload carved out of P1-2, and
 `best_basis` (P1-3 in the refinement sense, `cipsi_solver.py:1315`). Path **D** is now open rather than unexamined: P1-7 was its first finding, and plan items 4
 (`ManyBodyOperator::apply`'s `num_threads^2` accumulators) and 5 (no `shrink_to_fit` anywhere in
 the layer — confirmed absent by grep, unpriced) remain. Path **C** (double counting) has still
