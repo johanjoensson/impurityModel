@@ -418,3 +418,76 @@ def test_check_kramers_degeneracy_ignores_noise_below_rtol():
     """A sub-rtol splitting is numerical noise, not a real Kramers violation."""
     h = np.diag([-2.0, -2.0 + 1e-14, -1.0, -1.0]).astype(complex)
     assert check_kramers_degeneracy(h) == []
+
+
+# ---------------------------------------------------------------------------
+# The never-read left-singular block
+# ---------------------------------------------------------------------------
+
+
+def _degenerate_hermitian(n, group, seed=0):
+    """Hermitian ``h`` whose spectrum comes in ``group``-fold degenerate levels.
+
+    ``group=2`` is spin degeneracy, which gives a commutant of dimension ``2n``.
+    """
+    rng = np.random.default_rng(seed)
+    levels = np.repeat(rng.standard_normal((n + group - 1) // group), group)[:n]
+    a = rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))
+    q, _ = np.linalg.qr(a)
+    h = (q * levels) @ q.conj().T
+    return 0.5 * (h + h.conj().T)
+
+
+def _svd_left_block_spy(monkeypatch):
+    """Record the shape of every left-singular block LAPACK is asked to produce."""
+    real_svd = np.linalg.svd
+    calls = []
+
+    def spy(a, *args, **kwargs):
+        out = real_svd(a, *args, **kwargs)
+        # A `compute_uv=False` call returns the bare singular values; only the tuple form
+        # carries a left block, so that is the only one with a shape to check.
+        if isinstance(out, tuple):
+            calls.append((np.shape(a), out[0].shape))
+        return out
+
+    monkeypatch.setattr(np.linalg, "svd", spy)
+    return calls
+
+
+@pytest.mark.parametrize(
+    "run, expect_calls",
+    [("cartan", 1), ("commutant", 1)],
+)
+def test_symmetry_svds_never_ask_for_the_full_left_singular_block(monkeypatch, run, expect_calls):
+    """These systems are tall, and nothing reads their left singular vectors.
+
+    ``cartan_subalgebra`` solves a ``(2 n^2, m)`` real system with ``m ~ 2n``; the full form
+    hands back a ``(2 n^2, 2 n^2)`` array that is discarded on the next line -- 1.3 GiB at
+    ``n = 80`` and 16 GiB at ``n = 150``, where it was OOM-killed. ``_matrix_commutant``'s
+    system is ``(k n^2, n^2)`` with the same shape of waste. The assertion is on the shape
+    LAPACK is asked for rather than on a memory figure, because that is the actual mechanism
+    and it does not drift with the machine.
+    """
+    from impurityModel.ed.lie_algebra import _matrix_commutant, cartan_subalgebra
+    from impurityModel.ed.symmetries import discover_one_body_symmetries
+
+    if run == "cartan":
+        gens = discover_one_body_symmetries(_degenerate_hermitian(12, 2))
+        calls = _svd_left_block_spy(monkeypatch)
+        assert cartan_subalgebra(gens)
+    else:
+        # TWO matrices, not one. With a single matrix the system is (n^2, n^2) -- square, where
+        # the full and economy forms are the same array, so the test would pass against the
+        # unfixed code. It needs the stacking that makes the system tall.
+        mats = [_degenerate_hermitian(6, 2, seed=k) for k in (0, 1)]
+        calls = _svd_left_block_spy(monkeypatch)
+        assert _matrix_commutant(mats) is not None
+
+    assert len(calls) >= expect_calls, f"{run} recorded no SVD with left singular vectors"
+    for shape_in, u_shape in calls:
+        economy = min(shape_in)
+        assert u_shape[1] <= economy, (
+            f"{run}: asked LAPACK for a {u_shape} left block from a {shape_in} system; "
+            f"the economy form is {(shape_in[0], economy)} and nothing reads it"
+        )

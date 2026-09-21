@@ -575,7 +575,11 @@ def cartan_subalgebra(generators, seed=0, tol=None):
     # Solve sum_k c_k [X, H_k] = 0 for real c.
     cols = np.array([(x @ h - h @ x).reshape(-1) for h in herm]).T  # (n^2, m), complex
     real_sys = np.vstack([cols.real, cols.imag])  # (2 n^2, m), real -> enforces real c
-    _, s, vt = np.linalg.svd(real_sys)
+    # `full_matrices=False` is not an optimization here, it is what makes this function run at
+    # all. `real_sys` is (2 n^2, m) with m ~ 2n, so the discarded left-singular block is
+    # (2 n^2, 2 n^2): 1.3 GiB at n=80 and 16 GiB at n=150, where this was OOM-killed. Only `s`
+    # and `vt` are read, and for a tall matrix `vt` is (m, m) either way.
+    _, s, vt = np.linalg.svd(real_sys, full_matrices=False)
     if tol is None:
         tol = max(s[0] if s.size else 0.0, 1.0) * max(n, m) * np.finfo(float).eps
     # Right singular vectors (rows of vt) with singular value <= tol span the null space.
@@ -685,7 +689,10 @@ def _matrix_commutant(mats, tol=None):
     eye = np.eye(n)
     rows = [np.kron(m.T, eye) - np.kron(eye, m) for m in mats]
     system = np.vstack(rows)
-    _, s, vh = np.linalg.svd(system)
+    # Same never-read left-singular block as in `cartan_subalgebra`: `system` is
+    # (len(mats) n^2, n^2), so the full form asks LAPACK for a (len(mats) n^2)^2 array that
+    # nothing below reads. `vh` is (n^2, n^2) either way.
+    _, s, vh = np.linalg.svd(system, full_matrices=False)
     norm = s[0] if s.size else 0.0
     if tol is None:
         tol = max(norm, 1.0) * n * np.finfo(float).eps
