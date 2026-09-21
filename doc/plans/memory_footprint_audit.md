@@ -1330,12 +1330,38 @@ commit would launder a selection-changing effect through an "exact by constructi
 - **Precedent exists**: `_CappedBasisProxy` (`gf_primitives.py:284-449`) already does all its
   bookkeeping in the C++ sorted-key layer in production.
 
+## Phase 6 — prepared, not run
+
+`arrhenius_handover/round10/{probe.py, job.sbatch, README.md}`, untracked like round 9. The
+instrument is round 9's `site_ledger_mpi.py` copied unchanged, so the two logs compare site by
+site — and **the extension must be built without `IMPURITYMODEL_PARALLEL`** for that reason. A
+threaded binary moves every site's numbers, not just the apply's, which would cost the round
+the comparison it exists for; the threaded-apply fix therefore gets its own short leg instead
+of being mixed in.
+
+Two changes to the instrument, both of which the plan's Phase 0 item 2 asked for:
+
+- **Depth 3** splits `redistribute_block` into `pack_block_fused_cy` / `unpack_block_fused_cy`.
+  Prediction 1 is specifically about the *send* buffer, and depth 2 resolves no further than
+  `redistribute_block`, which is one site covering both halves. They are patched in
+  `mpi_comm`'s namespace, not in `ManyBodyUtils` where they are defined — `mpi_comm.py:19,22`
+  binds them at import, so patching the defining module never reaches the call site, which is
+  exactly how `generate_initial_basis` produced a silent zero.
+- **The probe now fails loudly** when an expected site recorded no rows. The inherited
+  `assert hasattr(...)` checks that a *name exists*, which is not the same thing: a probe that
+  measures nothing reports a plausible `0.0`, and a four-hour job reporting three of five sites
+  looks identical to a clean result. Four silent zeros are on record.
+
 ## Status
 
 Phase 0 complete. 0a was re-measured after review found it priced the wrong container; the
 pre-registered ordering check ran in reframed form at 0d (reaching production `p` locally is
 time-bound, not memory-bound, so the experiment tested the mechanism instead), and the `Basis`
 key store shipped at 0e-0j.
+
+**The plan is complete except Phase 3 and Phase 6.** Phase 3 (the error-budget harness) is
+not needed yet — everything shipped is tier 1 or 2 — and gates the first tier-3/4 change, most
+likely a `_PY_BASIS_OVERHEAD_BYTES` recalibration. Phase 6 is prepared and is the user's to run.
 
 Phase 1: P1-1 (both halves), P1-3 (the residual block), P1-4 (the residual block is no longer
 formed), P1-5 (the impurity-RDM guard and its entry packing), P1-2 (the `local_basis` iteration
