@@ -875,6 +875,41 @@ shape of a suite that tests nothing.
 the output keys through `to_bytearray()`, which writes each chunk big-endian and over-allocates
 8x (the latent defect recorded below). The chunk accessor `k[c]` is the way in.
 
+### P1-8. The basis split's wire payloads were Python objects — MEASURED, FIXED
+
+The half of P1-2 that was carved out as payload rather than walk, plus the seed vectors beside
+it. `split_basis_and_redistribute_psi` replicates the basis into every color, so both payloads
+are built once per determinant per other color and materialized again on arrival.
+
+| payload | built as Python objects | packed as arrays |
+|---|---|---|
+| `det_send` (a `bytes` per determinant) | 87.2 B/entry | **0.0** |
+| `psi_send` (an `(int, bytes, complex)` tuple per entry) | 158.3 B/entry | **16.1** |
+
+At 200k determinants and 4 seeds that is 120.8 -> 12.3 MiB on the seed payload alone, 9.8x.
+The reasoning is P1-5's, reused: `graph_alltoall` pickles a numpy array as a raw buffer and a
+Python object as objects on **both** sides, and in `compute_impurity_rdm` the wire format was
+only 1.4x of the packed one while materializing the objects was the other 16x.
+
+**The risk was routing, not packing**, and that is where the tests went. The scalar path used
+pure-Python ints deliberately — `routing_hash()` is a `uint64` that does not fit a C long, and
+`big_int % np.int64` overflows on the numpy coercion — so the vectorized modulus is taken in
+`uint64` throughout. Getting it wrong scatters determinants to the wrong color: wrong answers,
+no crash, the class this plan ranks first among risks. It is pinned against the scalar
+spelling over hashes spanning the top of the range, where the `int64`-coerced form gives
+`[1, 2, 2]` for the correct `[2, 0, 0]`.
+
+Grouping is a stable argsort, so each destination's rows keep their enumeration order — the
+order duplicates are summed in on arrival. That is pinned as an **ordering** property rather
+than a numerical one, because an unstable sort would still deliver every row and still total
+correctly to rounding; a tolerance test would not have noticed. Verified: the same grouping
+with `kind="quicksort"` fails it.
+
+**Re-measured before assuming**: the carve-out was 187.2 B/det when P1-2 recorded it, and
+186.7 after the P1-7 unpack rewrite — unchanged, because the split goes through
+`graph_alltoall` and not the fused path. That check cost one probe run; the assumption it
+replaced is the one that produced the stale 61% figure corrected in P1-6.
+
 ## Phase 0 review — feasibility of the headline fix
 
 Reviewed read-only against the whole call-site surface. **Verdict: feasible, no fundamental
@@ -983,11 +1018,14 @@ key store shipped at 0e-0j.
 Phase 1: P1-1 (both halves), P1-3 (the residual block), P1-4 (the residual block is no longer
 formed), P1-5 (the impurity-RDM guard and its entry packing), P1-2 (the `local_basis` iteration
 sites) P1-6 (the never-read left-singular block, which turned an OOM into a 623.7 MiB run)
-and P1-7 (the fused unpack's duplicate amplitude copy, plan item 3) are fixed. Open and unmeasured: the split payload carved out of P1-2, and
+P1-7 (the fused unpack's duplicate amplitude copy, plan item 3) and P1-8 (the basis split's
+wire payloads) are fixed. Open and unmeasured: the split payload carved out of P1-2, and
 `best_basis` (P1-3 in the refinement sense, `cipsi_solver.py:1315`). Path **D** is now open rather than unexamined: P1-7 was its first finding, and plan items 4
 (`ManyBodyOperator::apply`'s `num_threads^2` accumulators) and 5 (no `shrink_to_fit` anywhere in
 the layer — confirmed absent by grep, unpriced) remain. Path **C** (double counting) has still
-had no pass. Also open: the remaining simultaneous copies in `cartan_subalgebra` (`generators` and `herm`, measured in P1-6), and the
+had no pass. Plan item 8's other half -- `max_colors_within_budget` not accounting for the split
+replicating the full basis into every color -- is untouched; P1-8 cut the payload, not the
+replication. Also open: the remaining simultaneous copies in `cartan_subalgebra` (`generators` and `herm`, measured in P1-6), and the
 dense generator list in `discover_one_body_symmetries` — `O(n_orb^3)` replicated per rank, but
 **17%** of the symmetry path's peak rather than the 61% previously recorded (P1-6 corrects that
 figure and the call path it was measured on).
