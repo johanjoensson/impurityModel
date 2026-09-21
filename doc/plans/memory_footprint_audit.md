@@ -421,7 +421,7 @@ below are anchors, not a ranking.
 | — | `SectorResolventCache._index` | never-evicted | — | 0.06% of the `(N,N)` it sits beside | **blocked** |
 | — | `ManyBodyOperator::apply`'s `num_threads^2` accumulators | replicated per thread | — | unmeasured | open, needs `IMPURITYMODEL_PARALLEL=1` |
 | — | no `shrink_to_fit` anywhere in the C++ layer | capacity slack, monotone | — | unmeasured | open, needs a capacity accessor |
-| — | `max_colors_within_budget` ignores the split's replication | replicated `x n_colors` | — | unmeasured | open |
+| — | the split's *construction* transient (the replication itself is counted — claim refuted) | simultaneous copies | — | unmeasured | open |
 | — | path C (double counting) | — | — | never reviewed | open |
 
 **An `unmeasured` row may never outrank a measured one**, which is why the four open rows sit
@@ -1069,6 +1069,27 @@ with no `reserve`). Both are real and both are worth nothing at this scale.
 *all* orbitals gives 610k terms and ~267 MiB/rank. That is not a production shape — it is the
 `n_orb^4` blow-up already closed by `extract_tensors(..., two_body=False)` — and measuring it
 first would have promoted this item by 30x on a geometry nothing runs.
+
+### Plan item 8's second half — the claim is REFUTED by reading the function
+
+The plan listed "`basis_split` replicating the full basis into every color, uncounted by
+`max_colors_within_budget`". It is counted. The function estimates the per-rank GF peak with
+`ranks=ranks_per_color = comm.size // n_colors` (`memory_estimate.py:1046`), and that argument
+*is* the replication: after the split each color holds the whole `n_dets` on
+`comm.size / n_colors` ranks, so the per-rank share is `n_dets * n_colors / comm.size`, which
+is exactly what passing the reduced rank count models. Its own docstring says so — "each
+color's unit basis may fill the same `truncation_threshold` on only `comm.size / n_colors`
+ranks, so per-rank memory grows with the color count".
+
+**What is genuinely not modelled** is the split's own *construction* transient, which is a
+different thing from the steady replication: inside `split_basis_and_redistribute_psi` a rank
+briefly holds its pre-split share, the received keys, the `new_states` set and the new
+`Basis` being built from it. That is of order the post-split basis, and P1-8 has just removed
+its payload half. Unmeasured — it needs a real multi-color split — so it is recorded as a row,
+not ranked.
+
+The ranked table's row for this item is updated accordingly: the term is real but it is the
+transient, not the replication.
 
 ### Plan item 6's three never-evicted caches — CLOSED, none of them is one
 
