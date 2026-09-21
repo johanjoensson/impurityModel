@@ -937,6 +937,40 @@ with `kind="quicksort"` fails it.
 `graph_alltoall` and not the fused path. That check cost one probe run; the assumption it
 replaced is the one that produced the stale 61% figure corrected in P1-6.
 
+## Closed as not worth it
+
+The prior campaign's most valuable output was its refutations, so each row here carries the
+measurement that closed it rather than an argument.
+
+### The replicated `ManyBodyOperator` — CLOSED at ~8 MiB/rank
+
+Plan item 7's remaining half, and the item the plan's own schedule said to start with: a
+replicated cost is independent of `comm.size`, so one rank settles it authoritatively.
+
+Measured at production shape — the two-body Coulomb block on an f shell (14 spin-orbitals),
+the one-body block spanning every orbital:
+
+| n_orb | terms | `m_ops` retained | flat caches retained | total/rank |
+|---|---|---|---|---|
+| 124 | 23,657 | 3.8 MiB (168.5 B/term) | 4.5 MiB (198.4 B/term) | **8.3 MiB** |
+| 248 | 69,785 | 9.8 MiB (146.9 B/term) | 16.8 MiB (251.7 B/term) | 26.6 MiB |
+
+**8.3 MiB/rank at the f-shell geometry is ~0.2% of the per-rank peak**, so by the plan's own
+"blocked, not ranked" filter this is not a finding, however good its scaling class looks. The
+per-node figure (~1.1 GiB at 128 ranks/node) is real, and the remedy for it is already on
+record and needs no code: halving ranks per node doubles the per-rank budget.
+
+Recorded so the next pass does not re-derive it: of the flat caches' 198 B/term, 48 B is two
+`std::vector` headers per term — `m_density_mask` and `m_onebody_between` are pushed for
+*every* term, empty when that term's flag is unset. Construction peaks at ~1.7x the retained
+size (`collect_flat_terms` copies the whole term list, and eleven vectors grow geometrically
+with no `reserve`). Both are real and both are worth nothing at this scale.
+
+**The shape matters more than the size here.** The same probe with the two-body block over
+*all* orbitals gives 610k terms and ~267 MiB/rank. That is not a production shape — it is the
+`n_orb^4` blow-up already closed by `extract_tensors(..., two_body=False)` — and measuring it
+first would have promoted this item by 30x on a geometry nothing runs.
+
 ## Phase 0 review — feasibility of the headline fix
 
 Reviewed read-only against the whole call-site surface. **Verdict: feasible, no fundamental
