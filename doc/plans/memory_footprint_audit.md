@@ -764,6 +764,65 @@ finding rather than credit from this one.
 every subsequent refinement cycle of a capped expansion, alongside the live basis being expanded.
 Not measured yet.
 
+### P1-6. `cartan_subalgebra` asked LAPACK for a 16 GiB block nothing reads — MEASURED, FIXED
+
+Found by pricing an unmeasured path, not from either open-items list. The intent was to measure
+the dense generator list of `discover_one_body_symmetries` (the top-ranked open item); the first
+stage above it turned out to be four orders of magnitude worse.
+
+`cartan_subalgebra` solves `sum_k c_k [X, H_k] = 0` as the null space of a `(2 n^2, m)` real
+system with `m ~ 2n`, and reads only `s` and `vt`. The default `full_matrices=True` makes LAPACK
+produce the `(2 n^2, 2 n^2)` left-singular block as well, and it is discarded on the next line.
+`_matrix_commutant` stacks a `(len(mats) n^2, n^2)` system and does the same.
+
+Measured on a spin-degenerate `h` (group size 2, so `n_gen = 2n`), VmHWM reset at the boundary:
+
+| n | before | after `full_matrices=False` | after `del cols` |
+|---|---|---|---|
+| 80 | 2605.0 MiB / 30.30 s | 129.7 MiB / 0.79 s | **114.2 MiB / 0.73 s** |
+| 150 | **OOM-killed** (exit 137) | 726.7 MiB / 12.91 s | **623.7 MiB / 9.19 s** |
+| 200 | unreachable | 1716.9 MiB / 35.76 s | **1473.2 MiB / 36.28 s** |
+
+The discarded block is 1.3 GiB at `n = 80` and 16 GiB at `n = 150`. This is a **production
+path** — `solver_basis.py:286,363` -> `symmetry_adapted_basis` /
+`symmetry_adapted_transformation` — so a symmetric `h` at these sizes was OOM-killed inside
+symmetry discovery, not inside the many-body machinery.
+
+**Tier 1 by structure**, and the distinction matters: the left block is never read, and for a
+tall system `vt` is `(m, m)` under either form, so `s` and `vt` are the same mathematical
+objects. Verified bit-identical on the shapes this code builds (the whole Cartan and the rotated
+one-body diagonal agree exactly at `n = 12, 30, 50`; `s` and `vh` agree exactly on `(1800, 60)`,
+`(5000, 100)`, `(12800, 160)`). It is *not* a general LAPACK guarantee — on one synthetic
+`(2000, 40)` real matrix gesdd's two paths differ by 8.3e-16 — so the claim is "same object,
+verified identical here", not "bit-identical by construction".
+
+**The uncomfortable part.** This is the *third* instance of this pattern in this one file. Two
+were fixed in `002a971`, and the note written at the time says in as many words: *"Watch
+`np.linalg.svd` defaults: `full_matrices=True` on tall matrices allocates M x M."* The rule was
+recorded and not applied exhaustively. A grep for `linalg.svd` without `full_matrices` across
+`src/` takes seconds and would have found both; it has now been run, and the only remaining
+hit is the square `(n^2, n^2)` superoperator at `lie_algebra.py:405`, where the two forms are
+the same array.
+
+**The test asserts the shape LAPACK is asked for**, not a memory figure — that is the mechanism,
+and it does not drift with the machine. Its first version passed against the unfixed
+`_matrix_commutant`: with a single matrix the system is `(n^2, n^2)`, square, where both forms
+are the same array. It needs two matrices to be tall. Both parametrizations now fail against
+the pre-fix code.
+
+**Open, measured, and the reason the generator list was demoted.** `cartan_subalgebra` still
+holds five simultaneous copies of the same `O(m n^2)` content: `generators`, `herm`, `cols`,
+`real_sys` and the economy left block. Dropping `cols` the moment `real_sys` exists removes one
+of them — predicted 15.6 / 103.0 / 244.1 MiB at `n = 80 / 150 / 200`, measured 15.5 / 103.0 /
+243.7, which is as close as this campaign's predictions have come. `generators` cannot be freed
+from inside, because the caller holds the list; `herm` is read after the SVD. Those remain.
+
+The dense generator list itself is **103.0 MiB of a 623.7 MiB peak at n=150, i.e. 17%** — not
+the 61% recorded in the handover, which was measured against the post-P1-4
+`component_symmetry_reduction` peak, a different call path. Each generator is a rank-1
+`u_a u_b^dagger`, so a factored form would be `O(n_orb^2)`; it changes a public contract and is
+now worth less than it looked.
+
 ## Phase 0 review — feasibility of the headline fix
 
 Reviewed read-only against the whole call-site surface. **Verdict: feasible, no fundamental
@@ -864,15 +923,17 @@ commit would launder a selection-changing effect through an "exact by constructi
 
 ## Status
 
-Phase 0 items 0a-0c complete, 0a re-measured after review found it priced the wrong container;
-0d-0j complete, the `Basis` key store shipped. Remaining Phase 0: the high-`p` local rig and the
-pre-registered ordering check.
+Phase 0 complete. 0a was re-measured after review found it priced the wrong container; the
+pre-registered ordering check ran in reframed form at 0d (reaching production `p` locally is
+time-bound, not memory-bound, so the experiment tested the mechanism instead), and the `Basis`
+key store shipped at 0e-0j.
 
 Phase 1: P1-1 (both halves), P1-3 (the residual block), P1-4 (the residual block is no longer
-formed), P1-5 (the impurity-RDM guard and its entry packing) and P1-2 (the `local_basis`
-iteration sites) are fixed. Open and unmeasured: the split payload carved out of P1-2, and
-`best_basis` (P1-3 in the refinement sense, `cipsi_solver.py:1315`). Also open, and the largest
-known remaining single term: the dense generator list in `discover_one_body_symmetries`
-(150.2 MiB, 61% of what is left in `component_symmetry_reduction`, `O(n_orb^3)` replicated per
-rank). Each generator is a rank-1 outer product, so a factored form is `O(n_orb^2)` — but that
-changes a public contract, which is why it has not been taken.
+formed), P1-5 (the impurity-RDM guard and its entry packing), P1-2 (the `local_basis` iteration
+sites) and P1-6 (the never-read left-singular block, which turned an OOM into a 623.7 MiB run)
+are fixed. Open and unmeasured: the split payload carved out of P1-2, and
+`best_basis` (P1-3 in the refinement sense, `cipsi_solver.py:1315`). Also open: the remaining
+simultaneous copies in `cartan_subalgebra` (`generators` and `herm`, measured in P1-6), and the
+dense generator list in `discover_one_body_symmetries` — `O(n_orb^3)` replicated per rank, but
+**17%** of the symmetry path's peak rather than the 61% previously recorded (P1-6 corrects that
+figure and the call path it was measured on).
