@@ -1527,3 +1527,49 @@ def test_two_sets_of_imp_orbs():
     assert restrictions[impurity_indices] == (7, 7)
     assert restrictions[valence_indices] == (5, 5)
     assert restrictions[conduction_indices] == (0, 0)
+
+
+def test_build_distributed_vector_does_not_materialize_the_local_basis():
+    """The output is the only thing that should scale with the basis.
+
+    ``itertools.product`` materializes each argument to a tuple when it is constructed, so
+    ``enumerate(basis.local_basis)`` realized every determinant as a ``SlaterDeterminant``
+    -- plus an index tuple each -- before the first amplitude was read, and held it there
+    for the whole build. Measured at 166.8 B/det traced against a 16 B/det output; nested
+    loops bring it to 16.1. The bound below is 2x the output, which the product form misses
+    by 5x.
+    """
+    import tracemalloc
+
+    rng = np.random.default_rng(0)
+    n_orb, n_dets = 64, 4000
+    keys = set()
+    while len(keys) < n_dets:
+        occupied = rng.choice(n_orb, size=16, replace=False)
+        word = bytearray(8)
+        for orb in occupied:
+            word[orb // 8] |= 1 << (7 - orb % 8)
+        keys.add(bytes(word))
+    basis = Basis(
+        impurity_orbitals={0: [tuple(range(10))]},
+        bath_states=({0: [tuple(range(10, 40))]}, {0: [tuple(range(40, n_orb))]}),
+        initial_basis=sorted(keys),
+        comm=MPI.COMM_SELF,
+    )
+    n_local = len(basis.local_basis)
+    amplitudes = {basis.local_basis[i]: float(i + 1) for i in range(0, n_local, 7)}
+    psi = ManyBodyState(amplitudes, width=1)
+
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        base = tracemalloc.get_traced_memory()[0]
+        v = build_distributed_vector(basis, [psi])
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    expected = np.array([[amplitudes.get(basis.local_basis[i], 0.0) for i in range(n_local)]], dtype=complex)
+    assert np.array_equal(v, expected)
+    transient = peak - base
+    assert transient < 2 * v.nbytes, f"transient {transient} B for a {v.nbytes} B vector over {n_local} determinants"
