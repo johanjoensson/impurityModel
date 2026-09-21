@@ -1070,6 +1070,50 @@ capped Green's-function recurrence's hot path, and that cost is unmeasured. A te
 current behaviour, so it stays a known quantity and adding the shrink has to be a deliberate
 act rather than a drive-by.
 
+## Phase 2 — the cross-cutting pass
+
+The one lens that is genuinely global. Two findings, neither of which is a code change here:
+the first is a composition nobody owns, and the second is a count that the campaign has
+already moved.
+
+### Two independent quarter-of-RAM claims, and they CAN be live at once
+
+`_sector_dense_max` budgets the dense spectral cache at `0.25 * available / ((n_live + 2) * 16)`
+(`gf_shift_recycling.py:31`), and `_gf_krylov_recycle_max_bytes` budgets the recycled Krylov
+store at `available_bytes_per_rank() // 4` (`:262`). The second's docstring says it *mirrors*
+the first — which acknowledges the duplication without coordinating it.
+
+**They are not alternatives.** `rixs.py` constructs `KrylovShiftedResolvent()` at `:338` and
+`SectorResolventCache` at `:610` and `:933`, in the same call path: sectors small enough to
+densify are served by the retained `(N, N)` caches, sectors above the bound fall back to the
+per-seed solver, and the recycled Krylov store is retained across that. So in the worst case
+the two budgets compose to **50% of available per-rank memory**, on top of the basis, the
+operator and the recurrence — and neither can see the other.
+
+*Recorded, not fixed*, for the same reason `max_colors_within_budget` declines to take a
+`resident_bytes` argument: tightening either budget declines more sectors, which trades wall
+clock for safety, and nothing has measured that the trade is wanted. It is also not a physics
+change — a declined sector falls back to a different solver, not a different answer — so it is
+a performance decision, and the honest form of it is one ledger both consult rather than two
+constants that happen to say 25%.
+
+### The five encodings are down to three, and the campaign is why
+
+The plan opened on "Python `bytes` list + dict + C++ sorted key array + `_CappedBasisProxy`
+mask + krylov support map — five encodings of one determinant set". Two are gone: Phase 0's
+store work removed the Python list and `_index_dict` from `Basis`, which is now the C++ sorted
+key block alone. What survives:
+
+1. `Basis._keys` — the C++ sorted key block. The canonical one.
+2. `_CappedBasisProxy._mask` (`gf_primitives.py:351`) — `ManyBodyState.from_keys(basis.local_basis)`,
+   the same content in the same representation, a second copy by construction.
+3. `SectorResolventCache._index` (`gf_shift_recycling.py:148`) — the `state -> index` Python
+   dict `Basis` no longer has. Blocked, not ranked: 0.06% of the `(N, N)` matrix beside it.
+
+(2) is the one worth a future look: it is a *duplicate in the canonical representation*, so it
+cannot be argued away as a different view of the data, and P1-10's `shrink_to_fit` now applies
+to it as well.
+
 ## Closed as not worth it
 
 The prior campaign's most valuable output was its refutations, so each row here carries the
