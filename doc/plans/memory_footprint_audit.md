@@ -731,7 +731,11 @@ shape of tell that caught the biased baseline in P1-4.
    The visit order is identical (product yields its last argument fastest), so the values are
    bit-identical.
 
-Both are tier 1. The guard that makes fix 1 safe is the interesting part: `add_states` merges
+Both are tier 1 on values — every amplitude is bit-identical. Fix 1 carries one qualifier
+that a bare "exact by construction" claim would hide: code that grew the basis mid-walk used
+to get silently wrong results and now raises. The tier-1 claim therefore rests on the
+**audit** below finding no such caller, not on the change being incapable of altering
+behaviour. The guard that makes fix 1 safe is the interesting part: `add_states` merges
 into the key block **in place** (`ManyBodyBlockState::merge_keys`), so growing the basis
 mid-walk shifts the positions of determinants not yet yielded, and a streaming walk would
 silently skip or repeat them — wrong answers, no crash, the class this plan named as its top
@@ -742,6 +746,12 @@ once); no production site mutates the basis while iterating it.
 
 Of the four new tests, two fail against the pre-fix code, plus the `build_distributed_vector`
 bound — verified by reverting each, not assumed.
+
+**One eager path remains on the view, unfixed and deliberately so.** `__getitem__` still calls
+`self._keys.keys()[index]` for a *slice* — the same materialization `__iter__` just lost. No
+production or test site slices `local_basis` (checked: no `local_basis[...:...]` anywhere in
+`src/`), so it costs nothing today and a lazy replacement would be a code path with no caller
+to exercise it. Recorded here rather than changed.
 
 **Still open, and deliberately not folded into these numbers**: the split walk's remaining
 187.2 B/det is not iteration at all. `basis_split.py:219-223` retains a list of key `bytes`
