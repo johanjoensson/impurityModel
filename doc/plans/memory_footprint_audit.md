@@ -823,6 +823,58 @@ the 61% recorded in the handover, which was measured against the post-P1-4
 `u_a u_b^dagger`, so a factored form would be `O(n_orb^2)`; it changes a public contract and is
 now worth less than it looked.
 
+### P1-7. The fused unpack held the amplitudes twice — MEASURED, FIXED
+
+Plan item 3, and the first finding from path **D** (the Cython/C++ storage, operator and
+MPI-packing layer), which no earlier pass had looked at.
+
+`unpack_block_fused` (`MpiUtils.cpp`) parsed every received entry into `keys` — a vector of
+vectors, one heap allocation per determinant — and `amps`, `total x width` complex, then
+deduplicated those into `out_keys`/`out_amps`. So the coefficients were resident twice at the
+worst instant, on top of the MPI receive buffer, which is alive for the whole call.
+
+| total entries | width | peak before | peak after | time |
+|---|---|---|---|---|
+| 60k | 32 | 56.2 MiB | **26.3** | 0.03 -> 0.02 s |
+| 60k | 128 | 209.6 | **92.3** | 0.10 -> 0.04 |
+| 60k | **320** (production `p`) | 517.4 | **224.0** | 0.24 -> 0.09 |
+| 100k | 64 | 178.6 | **80.1** | 0.09 -> 0.05 |
+| 100k | 64, no duplicates | 203.9 | **105.8** | 0.10 -> 0.05 |
+
+The excess tracked `amps` exactly (`60000 x 320 x 16` = 293 MiB). Only the keys come out now,
+into one flat `uint64` array `chunks/width` times smaller and with no per-key allocation; each
+amplitude row is read once from `recv_buf` at emit time. The distinct determinants are counted
+before reserving, so the long-lived result carries no capacity slack either. **Peak now equals
+steady** — 224.0 MiB for a 220.4 MiB result, 1.6% overhead — and the call is 2.4x faster.
+
+This is `redistribute_block`, which the 128-rank ledger names as the CIPSI peak-setter.
+
+**Tier 1, measured rather than argued.** The previous implementation was rebuilt from a file
+backup and its keys and amplitudes compared against this one's: `array_equal` on both, max
+difference 0.0. The property that makes that hold is that the comparison is element-wise over
+`uint64` — what `std::vector<uint64_t>::operator<` does. A byte compare would disagree on a
+little-endian machine, and key order is what every rank's `offset`-based global index
+arithmetic depends on.
+
+**The rebuild silently did not happen, and the arithmetic is what caught it.** The first
+attempt failed to compile (`SlaterDeterminant` inherits `std::vector` without
+`using vector::vector`, so it has no iterator-range constructor), `pip` printed
+`failed-wheel-build-for-install`, and the shell still exited 0 — so the old `.so` stayed
+loaded and five measurements of unchanged code were taken as the result. The tell was that
+they reproduced the baseline to 0.1%, which a 2x change cannot do. After editing
+`src/cython/`, assert the rebuild positively (`grep -c '^Successfully installed'`); an exit
+code and a log tail both miss it.
+
+**One test discriminates and one does not, deliberately.** The memory bound fails against the
+previous implementation (2.32x the payload against a 1.5x bound). The oracle test passes
+against both, because the old code was also correct — it pins the wire contract going forward.
+Saying which is which matters: a suite where every test passes against the pre-fix code is the
+shape of a suite that tests nothing.
+
+**Also worth recording**: the oracle initially failed against *correct* code because it decoded
+the output keys through `to_bytearray()`, which writes each chunk big-endian and over-allocates
+8x (the latent defect recorded below). The chunk accessor `k[c]` is the way in.
+
 ## Phase 0 review — feasibility of the headline fix
 
 Reviewed read-only against the whole call-site surface. **Verdict: feasible, no fundamental
@@ -930,10 +982,12 @@ key store shipped at 0e-0j.
 
 Phase 1: P1-1 (both halves), P1-3 (the residual block), P1-4 (the residual block is no longer
 formed), P1-5 (the impurity-RDM guard and its entry packing), P1-2 (the `local_basis` iteration
-sites) and P1-6 (the never-read left-singular block, which turned an OOM into a 623.7 MiB run)
-are fixed. Open and unmeasured: the split payload carved out of P1-2, and
-`best_basis` (P1-3 in the refinement sense, `cipsi_solver.py:1315`). Also open: the remaining
-simultaneous copies in `cartan_subalgebra` (`generators` and `herm`, measured in P1-6), and the
+sites) P1-6 (the never-read left-singular block, which turned an OOM into a 623.7 MiB run)
+and P1-7 (the fused unpack's duplicate amplitude copy, plan item 3) are fixed. Open and unmeasured: the split payload carved out of P1-2, and
+`best_basis` (P1-3 in the refinement sense, `cipsi_solver.py:1315`). Path **D** is now open rather than unexamined: P1-7 was its first finding, and plan items 4
+(`ManyBodyOperator::apply`'s `num_threads^2` accumulators) and 5 (no `shrink_to_fit` anywhere in
+the layer — confirmed absent by grep, unpriced) remain. Path **C** (double counting) has still
+had no pass. Also open: the remaining simultaneous copies in `cartan_subalgebra` (`generators` and `herm`, measured in P1-6), and the
 dense generator list in `discover_one_body_symmetries` — `O(n_orb^3)` replicated per rank, but
 **17%** of the symmetry path's peak rather than the 61% previously recorded (P1-6 corrects that
 figure and the call path it was measured on).
