@@ -422,7 +422,7 @@ below are anchors, not a ranking.
 | — | `ManyBodyOperator::apply`'s `num_threads^2` accumulators | replicated per thread | 1 | 1148 -> 596-685 MiB at width 320 | FIXED |
 | — | no `shrink_to_fit` anywhere in the C++ layer | capacity slack, monotone | — | unmeasured | open, needs a capacity accessor |
 | — | the split's *construction* transient (the replication itself is counted — claim refuted) | simultaneous copies | — | unmeasured | open |
-| — | path C (double counting) | — | — | never reviewed | open |
+| — | path C (double counting) | — | — | scalars only; no array in 5,333 lines | **no findings** (read) |
 
 **An `unmeasured` row may never outrank a measured one**, which is why the four open rows sit
 below every fixed one regardless of their class.
@@ -1103,6 +1103,37 @@ with no `reserve`). Both are real and both are worth nothing at this scale.
 *all* orbitals gives 610k terms and ~267 MiB/rank. That is not a production shape — it is the
 `n_orb^4` blow-up already closed by `extract_tensors(..., two_body=False)` — and measuring it
 first would have promoted this item by 30x on a geometry nothing runs.
+
+### Path C (double counting) — reviewed, NO findings. Evidence: read, not measured.
+
+The last wholly unexamined path. Reviewed against the hazard checklist across
+`dc_criteria.py`, `dc_search.py`, `dc_static.py`, `dc_reference.py`, `dc_record.py`,
+`dc_frozen.py` (5,333 lines).
+
+1. **Replication across ranks** — `_SectorSolution` is explicitly rank-replicated, and that is
+   the point: it is broadcast. It holds six scalars.
+2. **Simultaneous copies** — none. There is not a single `np.zeros`/`np.empty`/`np.ones`/
+   `np.full` in any of the six modules; nothing here allocates an array sized by determinants,
+   orbitals or frequencies.
+3. **Superlinear growth** — none; the accumulators are `rungs`, `attempts`, `edges`, `spreads`,
+   `sizes` and `lines`, all one scalar or tuple per search step.
+4. **Never-evicted caches** — `_SectorContext.sector_at` is keyed by `(mu, n_trial)` and never
+   bounded, but it stores `_SectorSolution`s (~200 B) and is cleared at `dc_criteria.py:1799`
+   and `:2435`. A search of a hundred evaluations holds ~20 KB.
+5. **Peak-vs-steady transients** — the DC layer's peak is entirely the ground-state solves it
+   drives, which is the machinery the rest of this campaign audited.
+
+**Someone already applied this campaign's reasoning here, before the campaign.**
+`sector_solve`'s docstring records the decision not to retain eigenvectors across a search in
+exactly these terms: *"~20 states over a sector basis is ~2 GB across a search at the
+400k-determinant caps this stack runs at, where a float pair is nothing."* The cache keeps the
+two floats and pays one extra `build_density_matrices` per solve instead.
+
+**Stated as a read, deliberately.** The ranking schema admits `read` as an evidence level, and
+this is one: no probe was run, because there is no term here whose size depends on anything
+this campaign varies. What would overturn it is a DC path that starts retaining a `Basis`, a
+`psis` list or a density matrix across evaluations — so that is the thing to re-check, not the
+line count.
 
 ### Plan item 8's second half — the claim is REFUTED by reading the function
 
