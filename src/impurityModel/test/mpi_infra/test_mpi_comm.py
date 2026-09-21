@@ -599,3 +599,92 @@ def test_get_job_tasks():
     tasks = [0, 1, 2, 3, 4]
     assert get_job_tasks(0, 2, tasks) == (0, 1, 4)
     assert get_job_tasks(1, 2, tasks) == (2, 3)
+
+
+# ---------------------------------------------------------------------------
+# The fused wire format: the amplitudes are never resident twice
+# ---------------------------------------------------------------------------
+
+
+def _fused_recv_buffer(total, width, n_unique, chunks=2, seed=12345):
+    """A receive buffer in the fused layout: ``[det | width x complex amp]`` per entry."""
+    bpe = chunks * 8 + width * 16
+    rng = np.random.default_rng(seed)
+    uniq = rng.integers(0, 2**63, size=(n_unique, chunks), dtype=np.uint64)
+    pick = np.concatenate([np.arange(n_unique), rng.integers(0, n_unique, size=total - n_unique)])
+    rng.shuffle(pick)
+    recv = np.empty(total * bpe, dtype=np.uint8)
+    view = recv.reshape(total, bpe)
+    view[:, : chunks * 8] = uniq[pick].view(np.uint8)
+    amps = rng.standard_normal((total, width)) + 1j * rng.standard_normal((total, width))
+    view[:, chunks * 8 :] = amps.view(np.uint8)
+    return recv, uniq[pick], amps, chunks
+
+
+def test_unpack_block_fused_matches_a_sorted_arrival_order_oracle():
+    """Duplicates from several source ranks sum in arrival order, per column.
+
+    The oracle sums in exactly that order, so the comparison is exact rather than
+    tolerance-based: the wire format's whole claim is that it reproduces the scalar
+    unpack bit-for-bit, and a tolerance would not test it.
+    """
+    from impurityModel.ed.ManyBodyUtils import unpack_block_fused_cy
+
+    total, width, n_unique, sources = 4000, 5, 2500, 4
+    recv, keys, amps, chunks = _fused_recv_buffer(total, width, n_unique)
+    counts = np.full(sources, total // sources, dtype=np.int64)
+    counts[-1] += total - counts.sum()
+
+    out = unpack_block_fused_cy(sources, width, counts, recv, chunks)
+
+    # `np.lexsort` orders by the LAST key first, so the columns are reversed to get
+    # element-wise ascending order over the uint64 chunks -- which is what
+    # `std::vector<uint64_t>::operator<` does, and what the C++ side sorts on.
+    order = np.lexsort(tuple(keys[:, c] for c in range(chunks - 1, -1, -1)))
+    expected = {}
+    for e in order:
+        expected.setdefault(tuple(keys[e]), np.zeros(width, dtype=complex))
+        expected[tuple(keys[e])] += amps[e]
+
+    # Read the chunks straight off the determinant. `to_bytearray` is not the way in here:
+    # it writes each chunk big-endian and over-allocates 8x, so a `frombuffer` round trip
+    # produces a different key and the test would fail against correct code.
+    got_keys = [tuple(k[c] for c in range(len(k))) for k in out.keys()]
+    assert len(got_keys) == len(expected)
+    assert got_keys == list(expected)
+    np.testing.assert_array_equal(np.asarray(out), np.array(list(expected.values())))
+
+
+def test_unpack_block_fused_does_not_copy_the_amplitudes_out_of_the_receive_buffer():
+    """The coefficients arrive in ``recv_buf``, which MPI keeps alive for the call.
+
+    Parsing them into a second array before deduplicating held them twice: measured at
+    total=60k, width=320 that was a 517.4 MiB peak for a 220.4 MiB result, the excess being
+    exactly ``total * width * 16``. Only the keys are copied out now -- into a flat
+    ``uint64`` array, ``chunks/width`` times smaller -- and each amplitude row is read once,
+    at emit time.
+
+    The bound is on the peak rather than on a call count because the copy was a C++
+    allocation, which no Python-level instrument can see.
+    """
+    from impurityModel.ed.ManyBodyUtils import unpack_block_fused_cy
+    from impurityModel.ed.memory_estimate import current_rss_bytes, peak_rss_bytes, reset_peak_rss
+
+    total, width, n_unique, sources = 40000, 64, 30000, 4
+    recv, _, _, chunks = _fused_recv_buffer(total, width, n_unique, seed=7)
+    counts = np.full(sources, total // sources, dtype=np.int64)
+    counts[-1] += total - counts.sum()
+
+    if not reset_peak_rss():
+        pytest.skip("/proc/self/clear_refs is unavailable, so the peak would be cumulative")
+    entry = current_rss_bytes()
+    out = unpack_block_fused_cy(sources, width, counts, recv, chunks)
+    peak = peak_rss_bytes()
+
+    payload = len(out) * (chunks * 8 + width * 16)
+    assert len(out) == n_unique
+    growth = peak - entry
+    assert growth < 1.5 * payload, (
+        f"unpack grew {growth / 2**20:.1f} MiB for a {payload / 2**20:.1f} MiB result; "
+        "the amplitudes are being held twice"
+    )

@@ -1,4 +1,5 @@
 #include "MpiUtils.h"
+#include <algorithm>
 #include <cstring>
 #include <numeric>
 #include <unordered_set>
@@ -107,47 +108,77 @@ ManyBodyBlockState unpack_block_fused(int comm_size, size_t width,
 
   const size_t state_bytes = chunks_per_state * sizeof(uint64_t);
   const size_t amp_bytes = width * sizeof(ManyBodyBlockState::Value);
+  const size_t bpe = state_bytes + amp_bytes;
   size_t total = 0;
   for (int r = 0; r < comm_size; ++r) {
     total += static_cast<size_t>(recv_counts[r]);
   }
 
-  std::vector<ManyBodyBlockState::Key> keys(total);
-  std::vector<ManyBodyBlockState::Value> amps(total * width);
-  const char *src = recv_buf;
+  // Only the KEYS come out of the receive buffer, and into one flat array rather than a
+  // vector-of-vectors: `total * chunks_per_state * 8` B against the `total * width * 16` B
+  // the amplitudes used to cost, and no per-key heap allocation. The amplitudes stay in
+  // `recv_buf` -- which MPI keeps alive for the whole call -- and are read once, at emit
+  // time, so the coefficients are never resident twice. Measured at total=60k, width=320:
+  // 517.4 MiB peak for a 220.4 MiB result before, because `amps` alone was 293 MiB.
+  const size_t cps = chunks_per_state;
+  std::vector<uint64_t> flat_keys(total * cps);
   for (size_t e = 0; e < total; ++e) {
-    keys[e].resize(chunks_per_state);
-    std::memcpy(keys[e].data(), src, state_bytes);
-    src += state_bytes;
-    std::memcpy(amps.data() + e * width, src, amp_bytes);
-    src += amp_bytes;
+    std::memcpy(flat_keys.data() + e * cps, recv_buf + e * bpe, state_bytes);
   }
+  const uint64_t *fk = flat_keys.data();
 
   // Stable sort keeps duplicates (the same determinant from several source
   // ranks) in arrival order, so the left-to-right summation below reproduces
   // the scalar unpack's insert-then-accumulate order bit-for-bit per column.
+  // The comparison is element-wise over uint64 because that is what
+  // `std::vector<uint64_t>::operator<` does; a byte compare would disagree with
+  // it on a little-endian machine, and the key order is what every rank's
+  // `offset`-based global index arithmetic depends on.
   std::vector<size_t> idx(total);
   std::iota(idx.begin(), idx.end(), 0);
-  std::stable_sort(idx.begin(), idx.end(),
-                   [&keys](size_t a, size_t b) { return keys[a] < keys[b]; });
+  std::stable_sort(idx.begin(), idx.end(), [fk, cps](size_t a, size_t b) {
+    return std::lexicographical_compare(fk + a * cps, fk + (a + 1) * cps, fk + b * cps,
+                                        fk + (b + 1) * cps);
+  });
+
+  // Count the distinct determinants before reserving. `total` over-reserves by the
+  // duplicate fraction, and `std::vector` never hands that capacity back -- the result
+  // is long-lived, so the slack would be retained rather than transient.
+  size_t n_unique = 0;
+  for (size_t t = 0; t < total; ++t) {
+    if (t == 0 || !std::equal(fk + idx[t] * cps, fk + (idx[t] + 1) * cps, fk + idx[t - 1] * cps)) {
+      ++n_unique;
+    }
+  }
 
   std::vector<ManyBodyBlockState::Key> out_keys;
-  out_keys.reserve(total);
+  out_keys.reserve(n_unique);
   std::vector<ManyBodyBlockState::Value> out_amps;
-  out_amps.reserve(total * width);
+  out_amps.reserve(n_unique * width);
+  // One row's worth of scratch, so the duplicate branch reads `recv_buf` through a
+  // `memcpy` rather than a reinterpret_cast of `char*` to `std::complex<double>*`.
+  std::vector<ManyBodyBlockState::Value> scratch(width);
   for (size_t t = 0; t < total; ++t) {
     const size_t e = idx[t];
-    if (!out_keys.empty() && out_keys.back() == keys[e]) {
-      ManyBodyBlockState::Value *dst =
-          out_amps.data() + (out_keys.size() - 1) * width;
-      const ManyBodyBlockState::Value *add = amps.data() + e * width;
+    const char *src_amp = recv_buf + e * bpe + state_bytes;
+    if (!out_keys.empty() && std::equal(fk + e * cps, fk + (e + 1) * cps, out_keys.back().data())) {
+      ManyBodyBlockState::Value *dst = out_amps.data() + (out_keys.size() - 1) * width;
+      if (amp_bytes > 0) {
+        std::memcpy(scratch.data(), src_amp, amp_bytes);
+      }
       for (size_t c = 0; c < width; ++c) {
-        dst[c] += add[c];
+        dst[c] += scratch[c];
       }
     } else {
-      out_keys.push_back(std::move(keys[e]));
-      out_amps.insert(out_amps.end(), amps.begin() + e * width,
-                      amps.begin() + (e + 1) * width);
+      // `SlaterDeterminant` inherits `std::vector` without `using vector::vector`, so it
+      // has only the default constructor -- no iterator-range form.
+      out_keys.emplace_back();
+      out_keys.back().assign(fk + e * cps, fk + (e + 1) * cps);
+      const size_t base = out_amps.size();
+      out_amps.resize(base + width);
+      if (amp_bytes > 0) {
+        std::memcpy(out_amps.data() + base, src_amp, amp_bytes);
+      }
     }
   }
   return ManyBodyBlockState(std::move(out_keys), std::move(out_amps), width);
