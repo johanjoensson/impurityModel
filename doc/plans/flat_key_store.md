@@ -136,6 +136,47 @@ digits at production block widths), and nothing above changes that. What the rou
 evidence about *construction* and *capacity*, not about the per-row bytes. The bar stays what
 it was — beat 358 ns/lookup at N = 1M — and it is not met by arguing.
 
+## The gate measurement (2026-09-22) — it clears the bar, on the path production uses
+
+Run before any refactor, because this is the measurement that could refute the whole item.
+Two parts: the C++ core of both representations in isolation, and the Python-level baselines
+re-measured on this machine so the ratio is not applied to transplanted numbers. Three runs
+each; both are stable to ~1%.
+
+**C++ core, `lower_bound` at N = 1M, `n_chunks = 2`:**
+
+| representation | ns/lookup | key store |
+|---|---|---|
+| `vector<vector<uint64_t>>` (today) | 588-591 | 53.41 MiB |
+| flat `N x n_chunks` buffer | **180-182** | **15.26 MiB** |
+
+**3.27x faster and 3.5x smaller** — 56 B/det down to 16. The comparison in the flat version is
+element-wise over `uint64`, matching `std::vector<uint64_t>::operator<`; a byte compare would
+be faster still and would break the cross-rank total order on a little-endian machine.
+
+**Python level, same N, measured here:** `find_rows` 732-734 ns, `find_rows_packed` 617-641 ns,
+the dict baseline **284-290 ns**. (The doc's recorded 830/358 reproduce as 733/287 on this
+machine — same ratio, faster hardware.)
+
+Subtracting the core from each total gives the Python-side overhead, which the flat store does
+not change:
+
+| path | total | core | overhead | flat predicts | vs the 286 ns bar |
+|---|---|---|---|---|---|
+| `find_rows` (a Python object per query) | 733 | 590 | 143 | **324 ns** | ~ties, slightly over |
+| `find_rows_packed` (raw chunks) | 628 | 590 | 38 | **218 ns** | **beats it by 1.31x** |
+
+**The packed path is the one that decides it**, and it is the one production uses: the routed
+lookup and `_index_sequence` hand over a flat buffer precisely to avoid materializing a
+`SlaterDeterminant` per query. The dict cannot compete there at all — it needs a hashable
+Python object per query, so its 286 ns *includes* the object construction the packed path has
+already eliminated.
+
+**Stated as a prediction, not a result.** The 218 ns is a decomposition — measured overhead
+plus measured core — not a measurement of an implementation that exists. The bar is re-measured
+on the real thing before the change is called a success, and if it lands above 286 ns on the
+packed path the honest outcome is to say so.
+
 ## Scope note
 
 This is a substrate change touching `SlaterDeterminant.h`, `ManyBodyBlockState.h`,
