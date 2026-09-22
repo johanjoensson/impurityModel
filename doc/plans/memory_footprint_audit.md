@@ -1330,14 +1330,33 @@ commit would launder a selection-changing effect through an "exact by constructi
 - **Precedent exists**: `_CappedBasisProxy` (`gf_primitives.py:284-449`) already does all its
   bookkeeping in the C++ sorted-key layer in production.
 
-## Phase 6 — prepared, not run
+## Phase 6 — run, all six legs read
 
-`arrhenius_handover/round10/{probe.py, job.sbatch, README.md}`, untracked like round 9. The
-instrument is round 9's `site_ledger_mpi.py` copied unchanged, so the two logs compare site by
-site — and **the extension must be built without `IMPURITYMODEL_PARALLEL`** for that reason. A
-threaded binary moves every site's numbers, not just the apply's, which would cost the round
-the comparison it exists for; the threaded-apply fix therefore gets its own short leg instead
-of being mixed in.
+Job `2819928` on arrhenius, `-n 128 -c 4`, `OCC=2`, `CAP=2745510`, `GS_MAX_BLOCK_WIDTH=5`,
+`GS_NUM_WANTED=222`, six legs (`CHUNKS="0 4"` x `DEPTHS="1 2 3"`). All six legs complete. **No `PROBE FAILED`** on any
+leg — the site self-assertion added for this round held at 128 ranks, which is the first time
+this campaign's probe has been positively confirmed to have measured what it claimed.
+
+**What the round can and cannot test.** A per-determinant saving is only visible here when it is
+multiplied by a large number of live containers. `local_basis` and `best_basis` are single-copy,
+so at 31k determinants per rank even 100 B/det is ~3 MB — below this ledger's resolution, and
+this log says nothing about them either way. The flat key store **is** visible, because
+`psi_refs` holds 314 separate blocks (see below). The rest of what the round tests is the
+`p`-coupled block and MPI-round-trip terms, which is where the production peak lives.
+
+**Baseline.** Round 9 job `2551760` (`~/Dokument/arrhenius/SMO/cubic/new_test/`), same probe,
+same geometry, `GS_APPLY_ROW_CHUNKS` at its shipped default of 4 in both rounds — so the
+comparison is like for like, and the round-9 comparand is **5,513.7 MiB, not the 4,778 MiB**
+chunked arm. Round 9's leg reached `p = 326` against round 10's `p = 314` (-3.7%), so every
+reduction below is *slightly understated* per unit `p`.
+
+### The instrument
+
+Round 9's `site_ledger_mpi.py` copied unchanged, so the two logs compare site by site — and the
+extension is built **without `IMPURITYMODEL_PARALLEL`** for that reason. A threaded binary moves
+every site's numbers, not just the apply's, which would cost the round the comparison it exists
+for; the threaded-apply fix (1148 -> 596-685 MiB at width 320 locally) therefore still needs its
+own short leg and is *not* exercised here.
 
 Two changes to the instrument, both of which the plan's Phase 0 item 2 asked for:
 
@@ -1347,14 +1366,195 @@ Two changes to the instrument, both of which the plan's Phase 0 item 2 asked for
   `mpi_comm`'s namespace, not in `ManyBodyUtils` where they are defined — `mpi_comm.py:19,22`
   binds them at import, so patching the defining module never reaches the call site, which is
   exactly how `generate_initial_basis` produced a silent zero.
-- **The probe now fails loudly** when an expected site recorded no rows. The inherited
+- **The probe fails loudly** when an expected site recorded no rows. The inherited
   `assert hasattr(...)` checks that a *name exists*, which is not the same thing: a probe that
   measures nothing reports a plausible `0.0`, and a four-hour job reporting three of five sites
-  looks identical to a clean result. Four silent zeros are on record.
+  looks identical to a clean result. Four silent zeros are on record. **It did not fire on any
+  leg**, which is what licenses reading the numbers below at all.
+
+### Depth 1 — the three selection sites
+
+| site | ABS peak R9 -> R10 | growth R9 -> R10 | anon R9 -> R10 |
+|---|---|---|---|
+| `_apply_block_and_redistribute` | 5,513.7 -> **4,449.3** (-19.3%) | 3,608.1 -> **3,078.2** (-14.7%) | 1,913.4 -> 1,451.8 (-24.1%) |
+| `_score_candidates` | 4,748.2 -> 4,300.5 (-9.4%) | 1,327.4 -> 1,322.9 (-0.3%) | 2,576.0 -> 2,119.6 (-17.7%) |
+| `_candidate_overlaps_and_energies` | 4,085.2 -> 3,623.0 (-11.3%) | 1,326.5 -> 1,321.9 (-0.3%) | 2,576.0 -> 2,119.6 (-17.7%) |
+
+`shm` moved 1,002.3 -> 981.5 MiB (-2.1%), so the drop is **`anon`, not MPI's segment** — the
+one column a code change can move.
+
+**The high-water mark at the rank nearest OOM fell 1,064 MiB, 19.3%.** That is the number the
+campaign exists to move, and it is the round's headline.
+
+It decomposes into two independent parts, and conflating them would be the mistake:
+
+- **-530 MiB of the apply's own transient.** The fixes aimed at the apply landed.
+- **-460 MiB of *retained* state, uniform across all three sites** (-461.6, -456.4, -456.4).
+  **This is the flat key store, and the arithmetic closes to 3%.**
+
+  (An earlier draft argued this *had* to be separately-held memory because "a site's transient
+  is freed before the next site runs, so it cannot lower the next baseline." That reasoning is
+  wrong and is dropped: freeing a C++ container returns nothing to the OS, so RSS at a site's
+  entry does carry the previous site's freed-but-retained heap. The conclusion stands on the
+  arithmetic below, not on that argument.)
+
+  The cluster built `b40a498`, the branch tip, so all six fixes were under test. The key fact is
+  the *number of live blocks*, not the size of one: `build_state`
+  (`basis_transcription.py:151`) returns **one width-1 `ManyBodyState` per column**, so
+  `psi_refs` at `p` = 314 is **314 separate blocks**, each carrying this rank's ~31,097
+  determinants, and each alive for the whole cycle. That is why the drop is *uniform* across
+  the three sites — it is state retained across all of them, not a transient.
+
+  The flat key store replaced `std::vector<SlaterDeterminant>` (itself a `std::vector<uint64_t>`
+  per determinant) with one contiguous buffer. At this workload's **one 64-bit chunk per
+  determinant** (`H solver` is `(58, 58)`), the old form cost 24 B for the inline vector header
+  plus a 32 B malloc chunk for an 8 B payload — **56 B/det against the flat store's 8**:
+
+  ```
+  48 B/det x 31,097 dets x 314 blocks = 447 MiB      predicted
+                                       ~460 MiB      measured
+  ```
+
+  P1-10 contributes **nothing** here: its slack is `(width - 1) x rows x chunks`, and these
+  blocks are width 1.
+
+  **This is the one place round 10 does test a per-determinant fix**, and it does so only
+  because the per-determinant cost is multiplied by 314 live blocks. The `local_basis` and
+  `best_basis` wins are genuinely untestable at this resolution — they are single-copy.
+
+  **Two corrections to earlier drafts of this section, both the same error.** The first said the
+  magnitude "fits P1-10" using two chunks per determinant; the workload has one. The second then
+  concluded that *no* shipped fix accounted for the 460 MiB and that the campaign should not be
+  credited with it — reached by comparing a **per-block** figure against a **whole-process**
+  one, without multiplying by the number of live blocks. Both are the same failure in opposite
+  directions: a number accepted before its parameters were looked up. The ranking rule exists to
+  prevent exactly this, and it did not, because neither figure was written into a table with its
+  named scaling parameters until now.
+
+The two selection sites' transients are **unchanged to 0.3%**, exactly as they should be:
+nothing shipped this campaign touches them.
+
+### Depth 2 — inside the apply
+
+| site | ABS peak R9 -> R10 | growth R9 -> R10 |
+|---|---|---|
+| `redistribute_block` | 5,343.3 -> 4,561.2 (-14.6%) | 2,536.6 -> **1,860.6** (-26.7%) |
+| `_apply_and_prune_columns` | 5,186.3 -> 3,622.5 (-30.2%) | 2,870.2 -> **1,552.6** (-45.9%) |
+
+Round 9's depth-2 leg ran at `p = 299` against round 10's `p = 313`, i.e. **5% higher `p` for
+the smaller number**, so both reductions are understated.
+
+**The ordering inside the apply inverted.** Round 9 had `_apply_and_prune_columns` above
+`redistribute_block` (2,870 > 2,537); round 10 has `redistribute_block` above
+`_apply_and_prune_columns` (1,861 > 1,553). The MPI round trip is now the larger half of the
+apply, which is what makes depth 3 the right place to look next.
+
+### Depth 3 — the pack/unpack split, new this round
+
+| site | ABS peak | growth | implied entry baseline |
+|---|---|---|---|
+| `unpack_block_fused_cy` | **4,592.5 MiB** | 439.0 MiB | ~4,153 MiB |
+| `pack_block_fused_cy` | 3,620.7 MiB | 779.6 MiB | ~2,841 MiB |
+
+Two things this split shows that depth 2 could not:
+
+1. **The unpack is where the high-water mark is *reached*, but not where the memory is
+   *created*.** Its ABS peak is the largest figure in the whole round, yet it grows by only
+   439 MiB — it runs on top of ~4.15 GiB already allocated. P1-7's local 2.3x cut of
+   `unpack_block_fused` (517.4 -> 224.0 MiB at width 320) is consistent with it no longer being
+   the creator of the transient it was named for in round 9.
+2. **RSS rises ~1.3 GiB between pack's entry and unpack's entry**, which is the mechanism
+   prediction 1 named: the send buffer is still alive when the receive lands. Caveat: every
+   column is a MAX over ranks and the two rows may come from different ranks.
+
+`pack + unpack` growth is 1,219 MiB against `redistribute_block`'s 1,860 MiB at depth 2, leaving
+~640 MiB in neither half — plausibly `graph_alltoall`'s own buffers. That is a **cross-run**
+comparison (different legs, different baselines), so it is suggestive and not measured.
+
+**Leg 6 is the control, and it passed.** Running depth 3 again under `GS_SELECTION_CHUNK=4`
+should move nothing, because the knob acts inside `_score_candidates` and the MPI round trip is
+a different part of the cycle. It moved nothing:
+
+| site | chunk=0 growth | chunk=4 growth | chunk=0 ABS | chunk=4 ABS |
+|---|---|---|---|---|
+| `unpack_block_fused_cy` | 439.0 MiB | 438.9 MiB | 4,592.5 | 4,597.5 |
+| `pack_block_fused_cy` | 779.6 MiB | 779.6 MiB | 3,620.7 | 3,627.5 |
+
+Two things follow. `GS_SELECTION_CHUNK` is **cleanly scoped** — it buys 1,294.7 MiB inside
+`_score_candidates` and costs nothing anywhere else measured. And the depth-3 measurement
+**reproduces across independent legs to 0.02% on growth and 0.15% on the absolute peak**, which
+is 20x tighter than round 9's repeat (0.4% on transient) and puts the pack/unpack asymmetry well
+outside noise.
+
+### The three registered predictions
+
+**1. The apply stays the peak-setter, and the peak moves within it toward the send buffer —
+CONFIRMED.** The apply is still top on both columns at depth 1, and depth 3 shows the pack half
+growing nearly 2x the unpack half (779.6 vs 439.0), the reverse of round 9's naming of the
+unpack as the peak-setter.
+
+**2. `GS_SELECTION_CHUNK` measures non-zero for the first time — CONFIRMED, and it is the
+cleanest result of the round.** At depth 1, `chunk=0` vs `chunk=4`:
+
+| | growth | ABS peak |
+|---|---|---|
+| `_score_candidates`, chunk=0 | 1,322.9 MiB | 4,300.5 MiB |
+| `_score_candidates`, chunk=4 | **28.2 MiB** | 2,982.2 MiB |
+
+**-97.9%.** Refuted twice at 1 rank and once at 128, always because the apply set the peak;
+this is the fourth measurement and the first non-zero one. The knob is real.
+
+**But it does not move the process peak**: the apply's ABS is 4,449.3 (chunk=0) vs 4,451.4
+(chunk=4), unchanged. `GS_SELECTION_CHUNK` is now **live but blocked behind the apply** — it
+converts `_score_candidates` from the second-ranked site to a non-participant, and buys nothing
+until the apply is cut below ~4.3 GiB. This is the promotion chain's fourth confirmed instance,
+and it now predicts its own successor: cut the apply and `_candidate_overlaps_and_energies`
+(3,623.0 MiB, transient 1,321.9) becomes the peak-setter, with `GS_SELECTION_CHUNK` already in
+place to keep `_score_candidates` out of the way.
+
+**3. The GS path is `p`-bound and nothing else, what remains being `p x N_local x 16` for
+`psi_refs` — FAILED AS STATED.** The predicted quantity is `314 x 31,097 x 16 B` = **149 MiB**;
+`_score_candidates` grows by **1,322.9 MiB**, 8.9x that.
+
+The *axis* survives and the *coefficient* does not, and the chunk sweep tests the axis without
+assuming anything about `n_Dj`: growth falls 1,322.9 -> 28.2 MiB, a factor of 46.9, when the
+batch is capped at ~4 reference rows out of `p = 314`. That implies ~6.7 rows per realized
+batch, which is what a target of 4 gives once `_chunk_groups` quantizes boundaries to degenerate
+manifolds of size 2 and 4 (the eigenvalue listings in the log are full of both). **Growth is
+linear in reference rows held at once — `p`-bound, confirmed non-circularly.**
+
+The coefficient is wrong because the prediction counted one complex array at 16 B/element, while
+`_score_candidates`' masked-assignment idiom holds `de`, `de2`, `mask` and `ov` concurrently, and
+`de2[mask] = np.square(np.abs(ov[mask])) / de[mask]` adds four more boolean-indexed temporaries
+at the same instant. ~73 B/element, not 16. **The prediction was registered so it could fail;
+this is the failure, and the lesson is that sizing a numpy expression by its output array
+under-counts the idiom by 4-5x.**
+
+### Two method notes
+
+**Leg-to-leg variation is pre-existing and smaller this round, not larger.** Round 10's five
+legs span `p = 313-314` and `e0` over 3.1e-5. Round 9's two legs span `p = 299-326` (9%) and
+`e0` over 6.8e-5. Identical inputs, so this is the threaded-BLAS nondeterminism already on
+record; it does not touch the memory conclusions, since every leg saturates the cap by cycle 5.
+
+**The probe logs no version string, and it should.** Which commit was built on the cluster
+cannot be read off the log — **`b40a498` per the user**, the branch tip, so all six fixes were
+under test including the flat key store. `README.md` and `probe.py` were written 2026-09-22
+02:30, *before* the flat key store landed (`c6fb80d`, 03:52), so the README's five-fix table is
+stale and does not list it. That the commit had to be asked for is the finding: a future probe
+must print `importlib.metadata.version("impurityModel")` and the git SHA on rank 0, because a
+four-hour 128-rank job whose binary cannot be identified from its own log is one memory lapse
+away from being unattributable.
 
 ## Status
 
-**The plan is complete except Phase 3 and Phase 6.**
+**The plan is complete except Phase 3, with Phase 6 run and all six legs read.**
+
+**Headline, measured at production geometry (128 ranks, `p` = 314, cap 2,745,510):** the
+high-water mark at the rank nearest OOM fell **5,513.7 -> 4,449.3 MiB, -19.3%**, against round 9
+at the same `GS_APPLY_ROW_CHUNKS` default and 3.7% higher `p`. It splits cleanly: **-530 MiB** is the
+apply's own transient, and **-460 MiB** is retained `psi_refs` state returned by the flat key
+store, which predicts 447 MiB across 314 live width-1 blocks.
 
 | phase | state |
 |---|---|
@@ -1364,7 +1564,7 @@ Two changes to the instrument, both of which the plan's Phase 0 item 2 asked for
 | 3 — error-budget harness | **not built, and not needed**: everything shipped is tier 1 or 2. It gates the first tier-3/4 change, most likely a `_PY_BASIS_OVERHEAD_BYTES` recalibration |
 | 4 — the audit document | complete: ranked table, promotion chain as a prediction, closed-as-not-worth-it, blocked rows |
 | 5 — implementation | items 1-8 all resolved: fixed, closed on measurement, or refuted |
-| 6 — cluster handover | **prepared, the user runs it** (`arrhenius_handover/round10/`) |
+| 6 — cluster handover | **complete** (job `2819928`, six legs). Predictions 1 and 2 confirmed, 3 failed as stated; **-19.3% on the high-water mark**, fully attributed |
 
 Ten findings fixed (P1-1 through P1-10), each on the four-leg gate. Four closed on measurement
 rather than fixed: the replicated `ManyBodyOperator` (8.3 MiB/rank), plan item 6's three caches,
