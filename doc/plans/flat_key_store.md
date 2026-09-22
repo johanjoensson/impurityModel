@@ -96,6 +96,35 @@ Same instruments as this campaign used, no new ones: the cold-process per-determ
 and the four-leg test gate. The memory prediction above is arithmetic, not a measurement, and
 should be labelled as such until a cold-process slope says otherwise.
 
+### The cheaper middle path, priced and REFUTED
+
+Before committing to the view split, the obvious cheaper variant was measured: give
+`SlaterDeterminant` fixed **inline** storage (capacity 4 chunks, covering nso <= 256) instead
+of a heap block. `std::vector<Key>` then *is* a contiguous strided array — the cache win
+without a view type, without touching `key(r)`'s return type, and without a single call site
+changing, since `size()`/`data()`/`operator[]` all still work.
+
+Same harness, same probes, N = 1M, three runs:
+
+| representation | ns/lookup | key store | packed-path prediction | vs the 286 ns bar |
+|---|---|---|---|---|
+| `vector<vector<uint64_t>>` (today) | 595-618 | 53.41 MiB | 628 (measured) | 2.2x slower |
+| **inline, `vector<InlineKey>`** | 304-316 | 38.15 MiB | **344** | **still loses** |
+| **flat `N x n_chunks`** | 174-185 | 15.26 MiB | **216** | **beats by 1.33x** |
+
+The middle path buys 2x on speed and only 1.4x on memory, and lands at 344 ns — **above the
+dict it has to beat**. It would be a real improvement that fails the gate, which is precisely
+the shape this campaign exists to avoid shipping: four predicted levers were each standalone
+2x better and each moved the peak 0.03%.
+
+Why it falls short is structural, not incidental: `sizeof(InlineKey)` is 40 B against the flat
+store's 16 B stride, so a binary search touches ~2.5x the cache lines. Shrinking the inline
+capacity to 2 chunks gives 24 B, still 1.5x the stride and still short.
+
+**So the design as written is the one to build.** This is recorded because the middle path is
+the natural thing for the next reader to propose, and the answer is a number rather than an
+argument.
+
 ## Scope note
 
 This is a substrate change touching `SlaterDeterminant.h`, `ManyBodyBlockState.h`,
