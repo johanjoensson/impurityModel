@@ -96,6 +96,46 @@ Same instruments as this campaign used, no new ones: the cold-process per-determ
 and the four-leg test gate. The memory prediction above is arithmetic, not a measurement, and
 should be labelled as such until a cold-process slope says otherwise.
 
+## What the 2026-09-21 campaign round adds to the case
+
+Three measurements from `memory_footprint_audit.md` that were not available when this was
+written. None of them changes the design; two strengthen it and one is a caution.
+
+**1. The vector-of-vectors cost more than 52.3 B/det — it also over-allocated by `width`.**
+P1-10 measured `m_keys` on a 40k-row block built by `from_states`: 0.92 MiB of live keys
+against **48.00 MiB of allocated key slots at width 32** (52.4x), because the support is built
+by pushing `width * rows` keys and then `erase`-ing, which keeps the capacity. A
+`shrink_to_fit` fixed it. But the *class* of defect exists only because `m_keys` is a growable
+vector of heap-owning vectors: a flat `N x n_chunks` buffer sized once from a known row count
+cannot have it. This is the second defect in this campaign whose root cause is the same
+structure.
+
+**2. Building the block is expensive in a way the per-determinant slope does not show.** P1-9
+compared three representations for a retained basis snapshot, on VmHWM:
+
+    list(local_basis)             80.2 B/det
+    ManyBodyState.from_keys(...) 115.2 B/det   <- the C++ key block, WORSE
+    packed (n, n_bytes) array      9.8 B/det
+
+The key block loses to the Python list it was supposed to replace, because `from_keys` builds
+a `vector<SlaterDeterminant>` — N separate mallocs — and copies it into the block, and glibc
+does not return the freed transient. A flat store writes the buffer directly and has no such
+intermediate. **The retained slope is not the whole cost of this representation; the
+construction path is the other half**, and it is the half that sets VmHWM.
+
+**3. The instrument now exists.** `ManyBodyBlockState::row_capacity`/`amp_capacity`, exposed as
+`ManyBodyState.capacity_stats()`, report allocated against logical size. RSS cannot see vector
+capacity — shrinking returns nothing to the allocator — so before this there was no way to
+measure the flat store's win on the axis where it is largest. The confirmation bar below should
+gain a row: `capacity_stats()` on a freshly built block must show allocated == logical, which
+the flat store gets by construction rather than by remembering to shrink.
+
+The caution: **the speed claim is still the one that decides this.** The memory case was
+already demoted at 0b (the key representation is a falling share as `nso` grows, and low single
+digits at production block widths), and nothing above changes that. What the round adds is
+evidence about *construction* and *capacity*, not about the per-row bytes. The bar stays what
+it was — beat 358 ns/lookup at N = 1M — and it is not met by arguing.
+
 ## Scope note
 
 This is a substrate change touching `SlaterDeterminant.h`, `ManyBodyBlockState.h`,
