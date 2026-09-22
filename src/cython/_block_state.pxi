@@ -847,7 +847,15 @@ cdef class ManyBodyState:
         return res
 
     def memory_bytes(self):
-        """Estimated heap bytes: dense amplitude array + one heap block per key vector."""
+        """Estimated heap bytes: dense amplitude array + one heap block per key vector.
+
+        **Over-states since the flat key store landed**, and deliberately so for now: the
+        keys are one contiguous buffer, so the `key_heap + sizeof(SlaterDeterminant)` term
+        below is ~40 B/row of cost that no longer exists. `gf_shift_recycling` guards the
+        recycled Krylov store on this figure (`:497`), so correcting it *loosens* that
+        guard -- a behaviour change in the direction that uses more memory, which wants a
+        measurement rather than a tidy-up. Over-stating declines earlier, which is safe.
+        """
         cdef size_t n_chunks = self.b.key(0).size() if self.b.rows() > 0 else 1
         cdef size_t key_heap = (8 * n_chunks + 8 + 15) & (~<size_t>15)
         if key_heap < 32:
