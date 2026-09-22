@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <bitset>
 #include <complex>
+#include <numeric>
 #include <cstddef>
 #include <functional>
 #include <iterator>
@@ -399,6 +400,73 @@ public:
   /** @brief Adopt a flat key buffer directly -- no per-key allocation on the way in. */
   ManyBodyBlockState(FlatKeyStore keys, std::vector<Value> amps, std::size_t width)
       : m_keys(std::move(keys)), m_amps(std::move(amps)), m_width(width) {}
+
+  /**
+   * @brief A width-`cols.size()` block over the UNION support of width-1 columns.
+   *
+   * The Cython `from_states` used to do this with a `std::vector<Key> support`: one heap
+   * allocation per determinant per column, a `lower_bound` per row that materialized a key
+   * only to search with it, and -- because `erase` after the dedup keeps the allocation --
+   * a key store left holding `width` times the capacity it needs, for the block's whole
+   * life. Building it here keeps everything in the flat buffer.
+   *
+   * Missing determinants of a column are exact zeros, and every stored coefficient
+   * round-trips bit-identically, which is the contract `to_states` relies on.
+   */
+  static ManyBodyBlockState
+  from_columns(const std::vector<const ManyBodyBlockState *> &cols) {
+    const std::size_t p = cols.size();
+    ManyBodyBlockState out(p);
+    if (p == 0) {
+      return out;
+    }
+    std::size_t total = 0, n_chunks = 0;
+    for (const ManyBodyBlockState *c : cols) {
+      total += c->rows();
+      if (n_chunks == 0) {
+        n_chunks = c->m_keys.chunks();
+      }
+    }
+    if (total == 0 || n_chunks == 0) {
+      return out;
+    }
+
+    // Gather every column's keys into one buffer, then order by index and emit the distinct
+    // rows. Sized once from the exact total, so the dedup leaves no capacity behind.
+    FlatKeyStore gathered;
+    gathered.set_chunks(n_chunks);
+    gathered.reserve_rows(total);
+    for (const ManyBodyBlockState *c : cols) {
+      for (std::size_t r = 0; r < c->rows(); ++r) {
+        gathered.push_back(c->m_keys.view(r));
+      }
+    }
+    std::vector<std::size_t> order(total);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&gathered](std::size_t a, std::size_t b) {
+      return FlatKeyStore::less(gathered.view(a), gathered.view(b));
+    });
+    out.m_keys.set_chunks(n_chunks);
+    out.m_keys.reserve_rows(total);
+    for (std::size_t i = 0; i < total; ++i) {
+      if (i != 0 && FlatKeyStore::equal(gathered.view(order[i]), gathered.view(order[i - 1]))) {
+        continue;
+      }
+      out.m_keys.push_back(gathered.view(order[i]));
+    }
+    out.m_keys.shrink_to_fit();
+
+    const std::size_t ns = out.m_keys.rows();
+    out.m_amps.assign(ns * p, Value{0.0, 0.0});
+    for (std::size_t ci = 0; ci < p; ++ci) {
+      const ManyBodyBlockState *c = cols[ci];
+      for (std::size_t r = 0; r < c->rows(); ++r) {
+        const std::size_t pos = out.m_keys.lower_bound(c->m_keys.view(r));
+        out.m_amps[pos * p + ci] = c->m_amps[r];
+      }
+    }
+    return out;
+  }
 
   /**
    * @brief State from parallel (key, row) arrays given in ANY order.

@@ -262,27 +262,20 @@ cdef class ManyBodyState:
                 raise ValueError(f"from_states: expected width-1 blocks, got width {ms.b.width()}")
             elems.append(ms)
 
-        cdef vector[SlaterDeterminant_cpp[uint64_t]] support
-        cdef Py_ssize_t ci, row, nr
+        # The union support, the dedup and the scatter all happen in C++ over the flat key
+        # buffer (`ManyBodyBlockState::from_columns`). The loop this replaces built a
+        # `vector<Key>` -- one heap allocation per determinant per column -- and called
+        # `lower_bound` with a key materialized only to search with; it also left the block
+        # holding `width` times the key capacity it needs, because `erase` after the dedup
+        # keeps the allocation and nothing here shrank it.
+        cdef vector[const ManyBodyBlockState_cpp*] cols
+        cdef Py_ssize_t ci
+        cols.reserve(p)
         for ci in range(p):
             ms = elems[ci]
-            nr = <Py_ssize_t>ms.b.rows()
-            for row in range(nr):
-                support.push_back(ms.b.key(row))
-        sort(support.begin(), support.end())
-        support.erase(unique(support.begin(), support.end()), support.end())
-        cdef Py_ssize_t ns = <Py_ssize_t>support.size()
-
-        cdef vector[ManyBodyBlockState_cpp.Value] amps
-        amps.resize(ns * p)  # value-initialized: exact zeros
-        cdef Py_ssize_t r
-        for ci in range(p):
-            ms = elems[ci]
-            nr = <Py_ssize_t>ms.b.rows()
-            for row in range(nr):
-                r = lower_bound(support.begin(), support.end(), ms.b.key(row)) - support.begin()
-                amps[r * p + ci] = ms.b.data()[row]
-        out.b = ManyBodyBlockState_cpp(move(support), move(amps), <size_t>p)
+            cols.push_back(&ms.b)
+        with nogil:
+            out.b = ManyBodyBlockState_cpp.from_columns(cols)
         return out
 
     @staticmethod

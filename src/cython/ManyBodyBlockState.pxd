@@ -38,6 +38,9 @@ cdef extern from "ManyBodyBlockState.h" nogil:
 
         Key key(size_t)
         vector[Key] keys()
+
+        @staticmethod
+        ManyBodyBlockState from_columns(const vector[const ManyBodyBlockState*]&) except +
         Value* data()
         Row row(size_t)
         size_t find_row(const Key&)
