@@ -92,10 +92,25 @@ def build_distributed_vector(basis, psis: list[ManyBodyState], dtype: Any = comp
     # basis as `SlaterDeterminant` objects -- plus one index tuple each -- before the first
     # amplitude was read, and held it there for the whole build. Measured on a
     # 400k-determinant basis: 200.5 B/det at the peak for an output that is 16 B/det.
-    # Streaming the basis is free (see `_LocalBasisView.__iter__`). The visit order is
-    # unchanged, so the amplitudes are written in the same sequence as before.
-    for row, psi in enumerate(psis):
-        for col, state in enumerate(basis.local_basis):
+    #
+    # The basis is the OUTER loop, and that is the whole point. `local_basis` streams now
+    # (see `_LocalBasisView.__iter__`), so it is free to walk but not free to walk twice:
+    # nesting the other way re-runs the walk once per column, allocating `len(psis) *
+    # n_local` determinant wrappers instead of `n_local`. Measured on a 60k basis:
+    #
+    #     columns     1        4       16
+    #     psis-outer  0.017 s  0.067   0.268
+    #     basis-outer 0.025 s  0.061   0.171
+    #
+    # so this is a deliberate trade, not a free win: one column gets ~1.5x slower (an extra
+    # inner-loop frame per determinant for a single psi) and everything above two gets
+    # faster, up to 1.57x at 16. Production calls it with one column per Green's-function
+    # seed (`gf_primitives.py:159`), typically 10-30, which is the case worth having.
+    #
+    # Every cell is written exactly once from a pure function of `(psi, state)`, so only
+    # the write ORDER changes against the product form, not any value.
+    for col, state in enumerate(basis.local_basis):
+        for row, psi in enumerate(psis):
             row_amp = psi.get(state)
             v[row, col] = 0 if row_amp is None else row_amp[0]
     return v

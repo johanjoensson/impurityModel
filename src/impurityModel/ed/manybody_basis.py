@@ -96,8 +96,27 @@ class _LocalBasisView:
     Streaming means the iterator reads the block as it goes, so growing the basis mid-walk
     would shift the positions of determinants not yet yielded. ``add_states`` merges in
     place (``ManyBodyBlockState::merge_keys``), which would make such a walk silently skip
-    or repeat determinants rather than fail. The size is therefore checked before each
-    step, and iteration raises, the way a ``dict`` does.
+    or repeat determinants rather than fail. The size is therefore checked before each step.
+
+    **The check is best-effort, and rank-local. It is not a ``dict``'s guarantee.** It sees
+    only mutations made in place on the block this walk captured, which is exactly one
+    mutator -- ``add_states`` -> ``merge_keys``. ``Basis.clear`` and the ``local_basis``
+    setter *rebind* ``_keys`` to a fresh block, leaving a suspended walk on a detached one
+    that never changes length: it yields stale determinants and does not raise. A
+    ``clear()`` followed by ``add_states`` of the same count is the length-preserving hole.
+
+    It is also **not symmetric across ranks**, which is the sharper half. Distributed
+    ``add_states`` calls ``merge_keys`` only when that rank actually received new local
+    determinants, so one rank can raise while another does not -- and every ``local_basis``
+    walk in this repo is followed by a collective (``basis_restrictions.py:114`` walks, then
+    ``:125`` allreduces). The raising rank would unwind past the collective and the others
+    would block: a hang, not a crash. That is the failure shape CLAUDE.md's MPI rules exist
+    to prevent, so **do not rely on this check in anything collective**; it is a developer
+    tripwire for the common in-place case, not a contract.
+
+    No production site mutates a basis while a walk is suspended (``expand_basis`` takes an
+    eager ``set`` on both sides; ``build_sparse_matrix`` and ``iter_local_operator_images``
+    only read), which is why this is documented rather than made collective.
     """
 
     __slots__ = ("_keys",)

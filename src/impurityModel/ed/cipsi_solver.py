@@ -1560,8 +1560,11 @@ class CIPSISolver:
             # The last refinement cycle left a worse basis (e.g. score/amplitude
             # ping-pong): restore the best capped basis seen during the cycles.
             self.basis.clear()
-            # `add_states` normalizes `bytes` through `_as_determinant`, so the keys are
-            # rebuilt one at a time rather than materialized as a list first.
+            # `add_states` normalizes `bytes` through `_as_determinant`. Note what this does
+            # NOT buy: `add_states`' first statement is a list comprehension over its whole
+            # argument, so the restore peak is the same as it was before this change. The win
+            # here is RETENTION -- the snapshot held across every refinement cycle is 9.8
+            # B/det instead of 80.2 -- not the cost of putting it back.
             self.basis.add_states(best_basis[row].tobytes() for row in range(best_basis.shape[0]))
             psi_refs = self.basis.redistribute_psis(*best_psis)
             e_ref = best_e_ref
