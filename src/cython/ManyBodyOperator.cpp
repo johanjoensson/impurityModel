@@ -556,8 +556,13 @@ ManyBodyOperator::diagonal(const ManyBodyBlockState &block) const {
                                   !m_weighted_restrictions_mask.empty();
   std::vector<std::complex<double>> out(block.rows(), {0.0, 0.0});
   SLATER out_slater_determinant;
+  // The block keeps its keys in ONE flat buffer, so `key(r)` materializes. Copy the
+  // view into a scratch key declared outside the loop instead: `assign` into existing
+  // capacity does not allocate, while `key(r)` per row would.
+  SLATER slater;
   for (std::size_t r = 0; r < block.rows(); ++r) {
-    const auto &slater = block.key(r);
+    const auto kv = block.key_view(r);
+    slater.assign(kv.data(), kv.data() + kv.size());
     std::complex<double> diag_accum{0.0, 0.0};
     out_slater_determinant = slater;
     for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
@@ -693,8 +698,13 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
         // signature).
         std::vector<ManyBodyBlockState::Value> diag_accum(p);
         SlaterKey out_sd;
+        // The block keeps its keys in ONE flat buffer, so `key(r)` materializes. Copy the
+        // view into a scratch key declared outside the loop instead: `assign` into existing
+        // capacity does not allocate, while `key(r)` per row would.
+        SlaterKey slater;
         for (std::size_t r = start_row; r < end_row; ++r) {
-          const auto &slater = block.key(r);
+          const auto kv = block.key_view(r);
+          slater.assign(kv.data(), kv.data() + kv.size());
           const ManyBodyBlockState::ConstRow amp = block.row(r);
           out_sd = slater;
           std::fill(diag_accum.begin(), diag_accum.end(),
@@ -868,8 +878,13 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
 
   std::vector<ManyBodyBlockState::Value> diag_accum(p);
   SlaterKey out_slater_determinant;
+  // The block keeps its keys in ONE flat buffer, so `key(r)` materializes. Copy the
+  // view into a scratch key declared outside the loop instead: `assign` into existing
+  // capacity does not allocate, while `key(r)` per row would.
+  SlaterKey slater;
   for (std::size_t r = 0; r < block.rows(); ++r) {
-    const auto &slater = block.key(r);
+    const auto kv = block.key_view(r);
+    slater.assign(kv.data(), kv.data() + kv.size());
     const ManyBodyBlockState::ConstRow amp = block.row(r);
     out_slater_determinant = slater;
     std::fill(diag_accum.begin(), diag_accum.end(),

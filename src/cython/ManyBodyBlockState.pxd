@@ -36,8 +36,8 @@ cdef extern from "ManyBodyBlockState.h" nogil:
         size_t max_size()
         bint empty()
 
-        const Key& key(size_t)
-        const vector[Key]& keys()
+        Key key(size_t)
+        vector[Key] keys()
         Value* data()
         Row row(size_t)
         size_t find_row(const Key&)

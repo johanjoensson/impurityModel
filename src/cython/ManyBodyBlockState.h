@@ -83,6 +83,190 @@ private:
  * Invariants: m_keys is sorted and unique; m_amps.size() == m_keys.size() *
  * m_width. The block width is a runtime value (no compile-time bound).
  */
+/**
+ * @brief A sorted, strictly-increasing set of fixed-width determinant keys, in ONE buffer.
+ *
+ * Replaces `std::vector<SlaterDeterminant<>>`, where every key is itself a heap-owning
+ * vector, so an N-determinant block was N separate small allocations plus the pointer array
+ * indexing them. Here the keys are a row-major `N x n_chunks` matrix of `uint64_t`, which is
+ * the shape the amplitudes (`m_amps`) already had -- so this makes keys match amplitudes
+ * rather than introducing a new idiom.
+ *
+ * Measured at N = 1M, n_chunks = 2 (`doc/plans/flat_key_store.md`): `lower_bound` 595 -> 178
+ * ns/lookup and the key store 53.41 -> 15.26 MiB, i.e. 56 B/det down to 16.
+ *
+ * **The ordering contract is load-bearing across MPI ranks.** `Basis` derives global indices
+ * as `offset + position` with `offset` from an allgather of local lengths, so every rank must
+ * compute the same total order. Comparison here is therefore element-wise over `uint64` --
+ * exactly what `std::vector<uint64_t>::operator<` did -- and NEVER `memcmp`, which is faster
+ * and disagrees on a little-endian machine (`0x1` ranks above `0x100` byte-wise and below it
+ * element-wise). `test_block_state.py` pins this.
+ *
+ * **Width is a hard invariant**, not an inherited accident: every key in one store has exactly
+ * `n_chunks` chunks. That was already assumed (`MpiUtils.cpp:16` takes `chunks_per_state` from
+ * `dets[0].size()` for a whole set, and `Basis` normalizes every input to `n_bytes`), and it
+ * forecloses the variable-length ambiguity where the same occupation built from byte strings
+ * of different length yields two unequal keys. An empty store has `n_chunks == 0` and adopts
+ * the width of whatever is first put into it.
+ */
+class FlatKeyStore {
+public:
+  using Key = SlaterDeterminant<>;
+
+  /**
+   * @brief A non-owning, ordered view of one key. Trivially copyable, no allocation.
+   *
+   * Invalidated by anything that reallocates the owning store, exactly like an iterator.
+   * Callers that need to outlive a mutation must materialize with `to_key()`.
+   */
+  struct View {
+    const uint64_t *ptr{nullptr};
+    std::size_t len{0};
+
+    const uint64_t *data() const noexcept { return ptr; }
+    std::size_t size() const noexcept { return len; }
+    const uint64_t &operator[](std::size_t i) const noexcept { return ptr[i]; }
+    Key to_key() const {
+      Key out;
+      out.assign(ptr, ptr + len);
+      return out;
+    }
+  };
+
+  /** @brief Element-wise over `uint64`, the one comparison every rank must agree on. */
+  static bool less(const uint64_t *a, std::size_t na, const uint64_t *b, std::size_t nb) noexcept {
+    const std::size_t n = na < nb ? na : nb;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (a[i] != b[i]) {
+        return a[i] < b[i];
+      }
+    }
+    return na < nb;
+  }
+  static bool equal(const uint64_t *a, std::size_t na, const uint64_t *b, std::size_t nb) noexcept {
+    if (na != nb) {
+      return false;
+    }
+    for (std::size_t i = 0; i < na; ++i) {
+      if (a[i] != b[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+  static bool less(View a, View b) noexcept { return less(a.ptr, a.len, b.ptr, b.len); }
+  static bool less(View a, const Key &b) noexcept { return less(a.ptr, a.len, b.data(), b.size()); }
+  static bool less(const Key &a, View b) noexcept { return less(a.data(), a.size(), b.ptr, b.len); }
+  static bool equal(View a, const Key &b) noexcept { return equal(a.ptr, a.len, b.data(), b.size()); }
+  static bool equal(View a, View b) noexcept { return equal(a.ptr, a.len, b.ptr, b.len); }
+
+  std::size_t chunks() const noexcept { return m_n_chunks; }
+  std::size_t rows() const noexcept { return m_n_chunks == 0 ? 0 : m_data.size() / m_n_chunks; }
+  bool empty() const noexcept { return rows() == 0; }
+
+  View view(std::size_t r) const noexcept {
+    return View{m_data.data() + r * m_n_chunks, m_n_chunks};
+  }
+  Key key(std::size_t r) const { return view(r).to_key(); }
+
+  /** @brief First row whose key is not less than `k`; `rows()` when there is none. */
+  std::size_t lower_bound(const uint64_t *k, std::size_t n) const noexcept {
+    std::size_t lo = 0, hi = rows();
+    while (lo < hi) {
+      const std::size_t mid = lo + (hi - lo) / 2;
+      if (less(m_data.data() + mid * m_n_chunks, m_n_chunks, k, n)) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo;
+  }
+  std::size_t lower_bound(const Key &k) const noexcept { return lower_bound(k.data(), k.size()); }
+  std::size_t lower_bound(View v) const noexcept { return lower_bound(v.ptr, v.len); }
+
+  /** @brief Row holding `k`, or `rows()` when absent. */
+  std::size_t find(const uint64_t *k, std::size_t n) const noexcept {
+    const std::size_t pos = lower_bound(k, n);
+    if (pos < rows() && equal(view(pos), View{k, n})) {
+      return pos;
+    }
+    return rows();
+  }
+  std::size_t find(const Key &k) const noexcept { return find(k.data(), k.size()); }
+
+  void set_chunks(std::size_t n) {
+    if (m_n_chunks == 0) {
+      m_n_chunks = n;
+    }
+  }
+  void clear() noexcept {
+    m_data.clear();
+    m_n_chunks = 0;
+  }
+  void reserve_rows(std::size_t n) { m_data.reserve(n * (m_n_chunks == 0 ? 1 : m_n_chunks)); }
+  void resize_rows(std::size_t n) { m_data.resize(n * m_n_chunks); }
+  void shrink_to_fit() { m_data.shrink_to_fit(); }
+  void swap(FlatKeyStore &o) noexcept {
+    m_data.swap(o.m_data);
+    std::swap(m_n_chunks, o.m_n_chunks);
+  }
+
+  void push_back(const uint64_t *k, std::size_t n) {
+    set_chunks(n);
+    m_data.insert(m_data.end(), k, k + n);
+  }
+  void push_back(const Key &k) { push_back(k.data(), k.size()); }
+  void push_back(View v) { push_back(v.ptr, v.len); }
+
+  /** @brief Copy row `from` onto row `to`; used by the in-place compactions. */
+  void move_row(std::size_t to, std::size_t from) noexcept {
+    if (to == from) {
+      return;
+    }
+    uint64_t *dst = m_data.data() + to * m_n_chunks;
+    const uint64_t *src = m_data.data() + from * m_n_chunks;
+    for (std::size_t c = 0; c < m_n_chunks; ++c) {
+      dst[c] = src[c];
+    }
+  }
+
+  void insert_at(std::size_t pos, const uint64_t *k, std::size_t n) {
+    set_chunks(n);
+    m_data.insert(m_data.begin() + static_cast<std::ptrdiff_t>(pos * m_n_chunks), k, k + n);
+  }
+  void insert_at(std::size_t pos, const Key &k) { insert_at(pos, k.data(), k.size()); }
+
+  void erase_at(std::size_t r) {
+    const auto first = m_data.begin() + static_cast<std::ptrdiff_t>(r * m_n_chunks);
+    m_data.erase(first, first + static_cast<std::ptrdiff_t>(m_n_chunks));
+  }
+
+  /** @brief Replace contents with rows `[lo, hi)` of `src`. */
+  void assign_range(const FlatKeyStore &src, std::size_t lo, std::size_t hi) {
+    m_n_chunks = src.m_n_chunks;
+    m_data.assign(src.m_data.begin() + static_cast<std::ptrdiff_t>(lo * m_n_chunks),
+                  src.m_data.begin() + static_cast<std::ptrdiff_t>(hi * m_n_chunks));
+  }
+
+  /** @brief Raw buffer access, for bulk packing and the buffer protocol. */
+  const std::vector<uint64_t> &data() const noexcept { return m_data; }
+  std::vector<uint64_t> &data() noexcept { return m_data; }
+
+  std::size_t row_capacity() const noexcept {
+    return m_n_chunks == 0 ? 0 : m_data.capacity() / m_n_chunks;
+  }
+
+  bool operator==(const FlatKeyStore &o) const noexcept {
+    return m_n_chunks == o.m_n_chunks && m_data == o.m_data;
+  }
+  bool operator!=(const FlatKeyStore &o) const noexcept { return !(*this == o); }
+
+private:
+  std::vector<uint64_t> m_data;
+  std::size_t m_n_chunks{0};
+};
+
 class ManyBodyBlockState {
 public:
   using Key = SlaterDeterminant<>;
@@ -99,8 +283,8 @@ public:
   using difference_type = std::ptrdiff_t;
 
 private:
-  std::vector<Key> m_keys;   // sorted, strictly increasing
-  std::vector<Value> m_amps; // row-major, m_keys.size() * m_width
+  FlatKeyStore m_keys;       // sorted, strictly increasing, one flat buffer
+  std::vector<Value> m_amps; // row-major, m_keys.rows() * m_width
   std::size_t m_width{0};
 
 public:
@@ -198,8 +382,22 @@ public:
    * @brief Adopt pre-built storage. `keys` must be sorted and unique and
    * `amps.size() == keys.size() * width` (unchecked in release builds).
    */
-  ManyBodyBlockState(std::vector<Key> keys, std::vector<Value> amps,
+  ManyBodyBlockState(const std::vector<Key> &keys, std::vector<Value> amps,
                      std::size_t width)
+      : m_amps(std::move(amps)), m_width(width) {
+    // Pack the owning keys into the flat buffer. Every key must have the same chunk count --
+    // the invariant `FlatKeyStore` makes explicit rather than inherits.
+    if (!keys.empty()) {
+      m_keys.set_chunks(keys[0].size());
+      m_keys.reserve_rows(keys.size());
+      for (const Key &k : keys) {
+        m_keys.push_back(k);
+      }
+    }
+  }
+
+  /** @brief Adopt a flat key buffer directly -- no per-key allocation on the way in. */
+  ManyBodyBlockState(FlatKeyStore keys, std::vector<Value> amps, std::size_t width)
       : m_keys(std::move(keys)), m_amps(std::move(amps)), m_width(width) {}
 
   /**
@@ -214,17 +412,31 @@ public:
                                           std::size_t width);
 
   std::size_t width() const noexcept { return m_width; }
-  std::size_t rows() const noexcept { return m_keys.size(); }
+  std::size_t rows() const noexcept { return m_keys.rows(); }
   /** @brief Number of stored determinants -- rows(), spelled for the map surface. */
-  size_type size() const noexcept { return m_keys.size(); }
+  size_type size() const noexcept { return m_keys.rows(); }
   bool empty() const noexcept { return m_keys.empty(); }
   /** @brief Theoretical row-count bound (the key vector's own max_size()) -- a
    * container-capacity figure, not a real usable limit; spelled for map-surface parity
    * with the flat_map class's forwarded std::map::max_size(). */
-  size_type max_size() const noexcept { return m_keys.max_size(); }
+  size_type max_size() const noexcept { return m_keys.data().max_size(); }
 
-  const Key &key(std::size_t r) const { return m_keys[r]; }
-  const std::vector<Key> &keys() const noexcept { return m_keys; }
+  /** @brief Row `r`'s key, materialized. Prefer `key_view` in a loop: this allocates. */
+  Key key(std::size_t r) const { return m_keys.key(r); }
+  /** @brief Row `r`'s key as a non-owning view -- no allocation, invalidated by any
+   * mutation of this block, exactly like an iterator. */
+  FlatKeyStore::View key_view(std::size_t r) const noexcept { return m_keys.view(r); }
+  /** @brief The flat key store itself, for bulk packing and ordered search. */
+  const FlatKeyStore &key_store() const noexcept { return m_keys; }
+  /** @brief Every key, materialized. O(rows) allocations; `key_store()` avoids them. */
+  std::vector<Key> keys() const {
+    std::vector<Key> out;
+    out.reserve(m_keys.rows());
+    for (std::size_t r = 0; r < m_keys.rows(); ++r) {
+      out.push_back(m_keys.key(r));
+    }
+    return out;
+  }
   Value *data() noexcept { return m_amps.data(); }
   const Value *data() const noexcept { return m_amps.data(); }
 
@@ -257,11 +469,7 @@ public:
 
   /** @brief Row index of `k`, or rows() when absent (binary search). */
   std::size_t find_row(const Key &k) const noexcept {
-    auto it = std::lower_bound(m_keys.begin(), m_keys.end(), k);
-    if (it != m_keys.end() && *it == k) {
-      return static_cast<std::size_t>(it - m_keys.begin());
-    }
-    return m_keys.size();
+    return m_keys.find(k);
   }
 
   // --- map surface -------------------------------------------------------
@@ -300,12 +508,11 @@ public:
    * @return (row index, true if a row was inserted).
    */
   std::pair<std::size_t, bool> insert_row(const Key &k) {
-    auto it = std::lower_bound(m_keys.begin(), m_keys.end(), k);
-    const auto pos = static_cast<std::size_t>(it - m_keys.begin());
-    if (it != m_keys.end() && *it == k) {
+    const std::size_t pos = m_keys.lower_bound(k);
+    if (pos < m_keys.rows() && FlatKeyStore::equal(m_keys.view(pos), k)) {
       return {pos, false};
     }
-    m_keys.insert(it, k);
+    m_keys.insert_at(pos, k);
     m_amps.insert(m_amps.begin() +
                       static_cast<difference_type>(pos * m_width),
                   m_width, Value{0.0, 0.0});
@@ -323,7 +530,7 @@ public:
   }
 
   void erase_row(std::size_t r) {
-    m_keys.erase(m_keys.begin() + static_cast<difference_type>(r));
+    m_keys.erase_at(r);
     const auto first = m_amps.begin() + static_cast<difference_type>(r * m_width);
     m_amps.erase(first, first + static_cast<difference_type>(m_width));
   }
@@ -334,7 +541,7 @@ public:
   }
 
   void reserve(size_type n) {
-    m_keys.reserve(n);
+    m_keys.reserve_rows(n);
     m_amps.reserve(n * m_width);
   }
 
@@ -460,13 +667,13 @@ public:
       }
       if (keep) {
         if (out != r) {
-          m_keys[out] = std::move(m_keys[r]);
+          m_keys.move_row(out, r);
           std::copy(src.begin(), src.end(), m_amps.data() + out * m_width);
         }
         ++out;
       }
     }
-    m_keys.resize(out);
+    m_keys.resize_rows(out);
     m_amps.resize(out * m_width);
   }
 
@@ -481,20 +688,20 @@ public:
     std::size_t out = 0;
     std::size_t ik = 0;
     for (std::size_t r = 0; r < rows(); ++r) {
-      while (ik < keep.size() && keep[ik] < m_keys[r]) {
+      while (ik < keep.size() && FlatKeyStore::less(keep[ik], m_keys.view(r))) {
         ++ik;
       }
-      if (ik < keep.size() && keep[ik] == m_keys[r]) {
+      if (ik < keep.size() && FlatKeyStore::equal(m_keys.view(r), keep[ik])) {
         if (out != r) {
           const ConstRow src = row(r);
-          m_keys[out] = std::move(m_keys[r]);
+          m_keys.move_row(out, r);
           std::copy(src.begin(), src.end(), m_amps.data() + out * m_width);
         }
         ++out;
         ++ik;
       }
     }
-    m_keys.resize(out);
+    m_keys.resize_rows(out);
     m_amps.resize(out * m_width);
   }
 
@@ -528,8 +735,7 @@ public:
     if (hi <= lo) {
       return out;
     }
-    out.m_keys.assign(m_keys.begin() + static_cast<std::ptrdiff_t>(lo),
-                      m_keys.begin() + static_cast<std::ptrdiff_t>(hi));
+    out.m_keys.assign_range(m_keys, lo, hi);
     out.m_amps.assign(m_amps.begin() + static_cast<std::ptrdiff_t>(lo * m_width),
                       m_amps.begin() + static_cast<std::ptrdiff_t>(hi * m_width));
     return out;
@@ -556,10 +762,10 @@ public:
     std::size_t n = 0;
     std::size_t ik = 0;
     for (std::size_t r = 0; r < rows(); ++r) {
-      while (ik < keep.size() && keep[ik] < m_keys[r]) {
+      while (ik < keep.size() && FlatKeyStore::less(keep[ik], m_keys.view(r))) {
         ++ik;
       }
-      if (ik < keep.size() && keep[ik] == m_keys[r]) {
+      if (ik < keep.size() && FlatKeyStore::equal(m_keys.view(r), keep[ik])) {
         ++n;
         ++ik;
       }
@@ -577,10 +783,10 @@ public:
                          std::vector<double> &out) const {
     std::size_t ik = 0;
     for (std::size_t r = 0; r < rows(); ++r) {
-      while (ik < keep.size() && keep[ik] < m_keys[r]) {
+      while (ik < keep.size() && FlatKeyStore::less(keep[ik], m_keys.view(r))) {
         ++ik;
       }
-      if (ik < keep.size() && keep[ik] == m_keys[r]) {
+      if (ik < keep.size() && FlatKeyStore::equal(m_keys.view(r), keep[ik])) {
         ++ik;
       } else {
         out.push_back(row_max2(r));
@@ -598,13 +804,13 @@ public:
     std::vector<Key> out;
     std::size_t ik = 0;
     for (std::size_t r = 0; r < rows(); ++r) {
-      while (ik < keep.size() && keep[ik] < m_keys[r]) {
+      while (ik < keep.size() && FlatKeyStore::less(keep[ik], m_keys.view(r))) {
         ++ik;
       }
-      if (ik < keep.size() && keep[ik] == m_keys[r]) {
+      if (ik < keep.size() && FlatKeyStore::equal(m_keys.view(r), keep[ik])) {
         ++ik;
       } else if (row_max2(r) > cutoff2) {
-        out.push_back(m_keys[r]);
+        out.push_back(m_keys.key(r));
       }
     }
     return ManyBodyBlockState(std::move(out), {}, 0);
@@ -617,10 +823,24 @@ public:
    * project later blocks with keep_rows.
    */
   ManyBodyBlockState key_union(const ManyBodyBlockState &other) const {
-    std::vector<Key> out;
-    out.reserve(rows() + other.rows());
-    std::set_union(m_keys.begin(), m_keys.end(), other.m_keys.begin(),
-                   other.m_keys.end(), std::back_inserter(out));
+    FlatKeyStore out;
+    out.set_chunks(m_keys.chunks() != 0 ? m_keys.chunks() : other.m_keys.chunks());
+    out.reserve_rows(rows() + other.rows());
+    std::size_t ia = 0, ib = 0;
+    while (ia < rows() || ib < other.rows()) {
+      if (ib >= other.rows()) {
+        out.push_back(m_keys.view(ia++));
+      } else if (ia >= rows()) {
+        out.push_back(other.m_keys.view(ib++));
+      } else if (FlatKeyStore::less(m_keys.view(ia), other.m_keys.view(ib))) {
+        out.push_back(m_keys.view(ia++));
+      } else if (FlatKeyStore::less(other.m_keys.view(ib), m_keys.view(ia))) {
+        out.push_back(other.m_keys.view(ib++));
+      } else {
+        out.push_back(m_keys.view(ia++));
+        ++ib;
+      }
+    }
     return ManyBodyBlockState(std::move(out), {}, 0);
   }
 
@@ -632,25 +852,41 @@ public:
    * (amplitude storage must stay empty); checked by the Cython wrapper.
    */
   void merge_keys(const ManyBodyBlockState &other) {
-    std::vector<Key> add;
-    std::size_t ik = 0;
+    // Count first so the merged buffer is allocated exactly once and carries no slack --
+    // `erase`/`resize` never return capacity, and nothing in this layer had a shrink_to_fit.
+    std::size_t n_new = 0, ik = 0;
     for (std::size_t r = 0; r < other.rows(); ++r) {
-      while (ik < m_keys.size() && m_keys[ik] < other.m_keys[r]) {
+      while (ik < m_keys.rows() && FlatKeyStore::less(m_keys.view(ik), other.m_keys.view(r))) {
         ++ik;
       }
-      if (ik >= m_keys.size() || other.m_keys[r] < m_keys[ik]) {
-        add.push_back(other.m_keys[r]);
+      if (ik >= m_keys.rows() || FlatKeyStore::less(other.m_keys.view(r), m_keys.view(ik))) {
+        ++n_new;
       } else {
         ++ik;
       }
     }
-    if (add.empty()) {
+    if (n_new == 0) {
       return;
     }
-    const auto mid = static_cast<std::ptrdiff_t>(m_keys.size());
-    m_keys.insert(m_keys.end(), std::make_move_iterator(add.begin()),
-                  std::make_move_iterator(add.end()));
-    std::inplace_merge(m_keys.begin(), m_keys.begin() + mid, m_keys.end());
+    FlatKeyStore merged;
+    merged.set_chunks(m_keys.chunks() != 0 ? m_keys.chunks() : other.m_keys.chunks());
+    merged.reserve_rows(m_keys.rows() + n_new);
+    std::size_t ia = 0, ib = 0;
+    while (ia < m_keys.rows() || ib < other.rows()) {
+      if (ib >= other.rows()) {
+        merged.push_back(m_keys.view(ia++));
+      } else if (ia >= m_keys.rows()) {
+        merged.push_back(other.m_keys.view(ib++));
+      } else if (FlatKeyStore::less(m_keys.view(ia), other.m_keys.view(ib))) {
+        merged.push_back(m_keys.view(ia++));
+      } else if (FlatKeyStore::less(other.m_keys.view(ib), m_keys.view(ia))) {
+        merged.push_back(other.m_keys.view(ib++));
+      } else {
+        merged.push_back(m_keys.view(ia++));
+        ++ib;
+      }
+    }
+    m_keys.swap(merged);
   }
 
   /**
@@ -672,7 +908,7 @@ public:
         dst[k] = src[cols[k]];
       }
     }
-    return ManyBodyBlockState(m_keys, std::move(out_amps), n);
+    return ManyBodyBlockState(m_keys, std::move(out_amps), n);  // flat store, copied as a buffer
   }
 
   /** @brief Per-column sum of |amp|^2 into out[0..width). */
@@ -718,10 +954,14 @@ ManyBodyBlockState::from_unsorted(const std::vector<Key> &keys,
       order.begin(), order.end(),
       [&keys](std::size_t a, std::size_t b) { return keys[a] < keys[b]; });
   ManyBodyBlockState res(width);
-  res.m_keys.reserve(n);
+  if (n > 0) {
+    res.m_keys.set_chunks(keys[0].size());
+  }
+  res.m_keys.reserve_rows(n);
   res.m_amps.reserve(n * width);
   for (const std::size_t i : order) {
-    if (!res.m_keys.empty() && res.m_keys.back() == keys[i]) {
+    if (!res.m_keys.empty() &&
+        FlatKeyStore::equal(res.m_keys.view(res.m_keys.rows() - 1), keys[i])) {
       continue;
     }
     res.m_keys.push_back(keys[i]);
@@ -760,13 +1000,14 @@ ManyBodyBlockState::add_scaled(const ManyBodyBlockState &other, Value scale) {
   // Linear merge over the two sorted supports into fresh storage: rows present
   // only in `other` have to be inserted, which an in-place update cannot do
   // without repeatedly shifting the tail.
-  std::vector<Key> keys;
+  FlatKeyStore keys;
+  keys.set_chunks(m_keys.chunks() != 0 ? m_keys.chunks() : other.m_keys.chunks());
   std::vector<Value> amps;
-  keys.reserve(rows() + other.rows());
+  keys.reserve_rows(rows() + other.rows());
   amps.reserve((rows() + other.rows()) * m_width);
   std::size_t ia = 0;
   std::size_t ib = 0;
-  const auto emit = [&](const Key &k, ConstRow a, ConstRow b) {
+  const auto emit = [&](FlatKeyStore::View k, ConstRow a, ConstRow b) {
     keys.push_back(k);
     for (std::size_t c = 0; c < m_width; ++c) {
       Value v = a.empty() ? Value{0.0, 0.0} : a[c];
@@ -778,14 +1019,16 @@ ManyBodyBlockState::add_scaled(const ManyBodyBlockState &other, Value scale) {
   };
   const ConstRow absent{};
   while (ia < rows() || ib < other.rows()) {
-    if (ib >= other.rows() || (ia < rows() && m_keys[ia] < other.m_keys[ib])) {
-      emit(m_keys[ia], row(ia), absent);
+    if (ib >= other.rows() ||
+        (ia < rows() && FlatKeyStore::less(m_keys.view(ia), other.m_keys.view(ib)))) {
+      emit(m_keys.view(ia), row(ia), absent);
       ++ia;
-    } else if (ia >= rows() || other.m_keys[ib] < m_keys[ia]) {
-      emit(other.m_keys[ib], absent, other.row(ib));
+    } else if (ia >= rows() ||
+               FlatKeyStore::less(other.m_keys.view(ib), m_keys.view(ia))) {
+      emit(other.m_keys.view(ib), absent, other.row(ib));
       ++ib;
     } else {
-      emit(m_keys[ia], row(ia), other.row(ib));
+      emit(m_keys.view(ia), row(ia), other.row(ib));
       ++ia;
       ++ib;
     }
@@ -818,12 +1061,12 @@ inline void ManyBodyBlockState::truncate(std::size_t max_rows) {
     }
     if (out != r) {
       const ConstRow src = row(r);
-      m_keys[out] = std::move(m_keys[r]);
+      m_keys.move_row(out, r);
       std::copy(src.begin(), src.end(), m_amps.data() + out * m_width);
     }
     ++out;
   }
-  m_keys.resize(out);
+  m_keys.resize_rows(out);
   m_amps.resize(out * m_width);
 }
 
