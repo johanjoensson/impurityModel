@@ -262,33 +262,20 @@ cdef class ManyBodyState:
                 raise ValueError(f"from_states: expected width-1 blocks, got width {ms.b.width()}")
             elems.append(ms)
 
-        cdef vector[SlaterDeterminant_cpp[uint64_t]] support
-        cdef Py_ssize_t ci, row, nr
+        # The union support, the dedup and the scatter all happen in C++ over the flat key
+        # buffer (`ManyBodyBlockState::from_columns`). The loop this replaces built a
+        # `vector<Key>` -- one heap allocation per determinant per column -- and called
+        # `lower_bound` with a key materialized only to search with; it also left the block
+        # holding `width` times the key capacity it needs, because `erase` after the dedup
+        # keeps the allocation and nothing here shrank it.
+        cdef vector[const ManyBodyBlockState_cpp*] cols
+        cdef Py_ssize_t ci
+        cols.reserve(p)
         for ci in range(p):
             ms = elems[ci]
-            nr = <Py_ssize_t>ms.b.rows()
-            for row in range(nr):
-                support.push_back(ms.b.key(row))
-        sort(support.begin(), support.end())
-        support.erase(unique(support.begin(), support.end()), support.end())
-        # `erase` shrinks the logical length and keeps the allocation, and this vector was
-        # grown to `p * rows` push_backs before the dedup -- so without this the block's key
-        # store carries `width` times the capacity it needs, for its whole life. Measured on
-        # a 40k-row block: 12.00 MiB of key slots for 0.92 MiB of keys at width 8, 48.00 MiB
-        # at width 32. The amplitude vector is unaffected (it is `resize`d once, exactly).
-        support.shrink_to_fit()
-        cdef Py_ssize_t ns = <Py_ssize_t>support.size()
-
-        cdef vector[ManyBodyBlockState_cpp.Value] amps
-        amps.resize(ns * p)  # value-initialized: exact zeros
-        cdef Py_ssize_t r
-        for ci in range(p):
-            ms = elems[ci]
-            nr = <Py_ssize_t>ms.b.rows()
-            for row in range(nr):
-                r = lower_bound(support.begin(), support.end(), ms.b.key(row)) - support.begin()
-                amps[r * p + ci] = ms.b.data()[row]
-        out.b = ManyBodyBlockState_cpp(move(support), move(amps), <size_t>p)
+            cols.push_back(&ms.b)
+        with nogil:
+            out.b = ManyBodyBlockState_cpp.from_columns(cols)
         return out
 
     @staticmethod
@@ -742,7 +729,7 @@ cdef class ManyBodyState:
         if self._n_exports > 0:
             raise RuntimeError("cannot keep_rows while a buffer view is exported (np.asarray view alive)")
         with nogil:
-            self.b.keep_rows(mask.b.keys())
+            self.b.keep_rows(mask.b.key_store())
         self._bump_generation()
 
     def row_slice(self, Py_ssize_t lo, Py_ssize_t hi):
@@ -803,7 +790,7 @@ cdef class ManyBodyState:
         merge over the two sorted key vectors; no Python-object traffic)."""
         cdef size_t n
         with nogil:
-            n = self.b.count_rows_in(mask.b.keys())
+            n = self.b.count_rows_in(mask.b.key_store())
         return n
 
     def new_row_max_norms2(self, ManyBodyState mask):
@@ -812,7 +799,7 @@ cdef class ManyBodyState:
         overflow-step amplitude bisection."""
         cdef vector[double] out
         with nogil:
-            self.b.new_row_max_norm2(mask.b.keys(), out)
+            self.b.new_row_max_norm2(mask.b.key_store(), out)
         res = np.empty(out.size(), dtype=float)
         cdef double[:] rv = res
         cdef Py_ssize_t i
@@ -826,7 +813,7 @@ cdef class ManyBodyState:
         overflow bisection has fixed the cutoff)."""
         cdef ManyBodyState res = ManyBodyState()
         with nogil:
-            res.b = self.b.keys_new_above(mask.b.keys(), cutoff2)
+            res.b = self.b.keys_new_above(mask.b.key_store(), cutoff2)
         return res
 
     def key_union(self, ManyBodyState other):
@@ -883,8 +870,16 @@ cdef class ManyBodyState:
         }
 
     def memory_bytes(self):
-        """Estimated heap bytes: dense amplitude array + one heap block per key vector."""
-        cdef size_t n_chunks = self.b.key(0).size() if self.b.rows() > 0 else 1
+        """Estimated heap bytes: dense amplitude array + one heap block per key vector.
+
+        **Over-states since the flat key store landed**, and deliberately so for now: the
+        keys are one contiguous buffer, so the `key_heap + sizeof(SlaterDeterminant)` term
+        below is ~40 B/row of cost that no longer exists. `gf_shift_recycling` guards the
+        recycled Krylov store on this figure (`:497`), so correcting it *loosens* that
+        guard -- a behaviour change in the direction that uses more memory, which wants a
+        measurement rather than a tidy-up. Over-stating declines earlier, which is safe.
+        """
+        cdef size_t n_chunks = self.b.key_store().chunks() if self.b.rows() > 0 else 1
         cdef size_t key_heap = (8 * n_chunks + 8 + 15) & (~<size_t>15)
         if key_heap < 32:
             key_heap = 32

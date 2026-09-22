@@ -1000,16 +1000,19 @@ def _block_of(n_rows, width, seed=0):
 
 @pytest.mark.parametrize("width", [1, 8, 32])
 def test_from_states_does_not_leave_width_times_the_key_capacity(width):
-    """``from_states`` builds the union support by pushing every column's keys and then
-    deduplicating, so the key vector grows to ``width * rows`` entries before the
-    ``erase`` -- which shrinks the length and keeps the allocation.
+    """A freshly built block must allocate exactly the rows it holds.
 
-    Without the ``shrink_to_fit`` this is not slack that a later operation reclaims: the
-    block carries it for its whole life. Measured on a 40k-row block, 12.00 MiB of key
-    slots for 0.92 MiB of keys at width 8 and 48.00 MiB at width 32.
+    History, because the mechanism changed underneath this test and the property did not.
+    ``from_states`` used to build the union support as a ``std::vector<Key>``, pushing every
+    column's keys and then ``erase``-ing the duplicates -- and ``erase`` keeps the
+    allocation, so the block carried ``width`` times the key capacity it needs for its whole
+    life: 12.00 MiB of key slots for 0.92 MiB of keys at width 8, 48.00 MiB at width 32. A
+    ``shrink_to_fit`` fixed that. The flat key store then replaced the whole function with
+    ``from_columns``, which sizes one buffer from the total row count, so the property now
+    holds by construction rather than by remembering to shrink.
 
-    The bound is on the ratio rather than on bytes so it does not drift with the key type's
-    size, and it is checked at three widths because the defect is invisible at width 1 --
+    Kept, and kept at three widths, precisely because it outlived the fix it was written
+    for: it pins the outcome, not the implementation, and the defect is invisible at width 1
     where the ratio is ordinary geometric growth.
     """
     n_rows = 4000
@@ -1042,3 +1045,182 @@ def test_capacity_stats_reports_the_slack_a_projection_leaves():
     assert stats["rows"] == 400
     assert stats["row_capacity"] == 4000, "projection is expected to keep the pre-shrink capacity"
     assert stats["amp_capacity_bytes"] == 10 * stats["amp_bytes"]
+
+
+# The determinant total order, pinned before the key store is reshaped
+# ---------------------------------------------------------------------------
+#
+# `Basis` derives global indices as `offset + position`, with `offset` from an allgather of
+# local lengths, so EVERY RANK MUST COMPUTE THE SAME TOTAL ORDER. If two ranks disagree, the
+# result is wrong answers with no crash. These tests pin that order against the current
+# implementation so a change to the key store has to preserve it rather than rediscover it.
+
+
+def _key(*chunks):
+    return SlaterDeterminant(tuple(chunks))
+
+
+def test_determinant_order_is_element_wise_over_chunks_not_bytes():
+    """The comparison is `std::vector<uint64_t>::operator<` — element-wise over ``uint64``.
+
+    A byte comparison (``memcmp``) is the obvious way to implement this over a flat buffer and
+    it is WRONG on a little-endian machine: ``0x0000000000000001`` has leading byte ``01`` and
+    ``0x0000000000000100`` has leading byte ``00``, so ``memcmp`` ranks them the opposite way
+    round from their numeric order. The pair below is chosen so the two disagree.
+    """
+    low, high = _key(0, 0x0000000000000001), _key(0, 0x0000000000000100)
+    assert low < high, "element-wise uint64 order"
+
+    # The fixture has to actually distinguish the two, or this passes for the wrong reason.
+    # `to_bytearray` is NOT the instrument for that: it re-encodes each chunk big-endian, so
+    # its byte order agrees with the element order and hides the hazard entirely. What a flat
+    # buffer would `memcmp` is the IN-MEMORY image, which is little-endian on this machine.
+    low_mem = np.array([0, 0x0000000000000001], dtype=np.uint64).tobytes()
+    high_mem = np.array([0, 0x0000000000000100], dtype=np.uint64).tobytes()
+    assert low_mem > high_mem, "in-memory bytes must rank these the OPPOSITE way"
+    assert (low < high) != (
+        low_mem < high_mem
+    ), "element order and raw-byte order must disagree on this pair, or the test is vacuous"
+
+
+def test_determinant_order_is_decided_by_the_high_chunk_first():
+    """Multi-chunk keys order lexicographically from chunk 0, which is the HIGH chunk.
+
+    A flat store indexes rows as ``row * n_chunks``; getting the chunk order backwards there
+    still produces a total order, still sorts, and still looks correct in any test that checks
+    only membership. Only an order assertion on keys differing in their high chunks catches it.
+    """
+    keys = [_key(0, 5), _key(0, 9), _key(1, 0), _key(1, 3), _key(2, 0)]
+    assert keys == sorted(keys)
+    # Differing ONLY in the high chunk: the low chunk points the other way.
+    assert _key(1, 0) < _key(2, 0)
+    assert _key(1, 9999) < _key(2, 0), "the high chunk must dominate the low one"
+    # ...and only in the low chunk.
+    assert _key(1, 3) < _key(1, 4)
+
+
+def test_block_row_order_membership_and_lookup_all_agree():
+    """Iteration order, `find_row`, `find_rows` and `find_rows_packed` must tell one story.
+
+    The packed form is the one production routes through, and it takes raw chunks rather than
+    determinant objects — so it is the one that could silently disagree with the object form
+    about which row a determinant is in.
+    """
+    rng = np.random.default_rng(17)
+    raw = np.unique(rng.integers(0, 2**63, size=(500, 2), dtype=np.uint64), axis=0)
+    keys = [_key(int(raw[i, 0]), int(raw[i, 1])) for i in range(raw.shape[0])]
+    block = ManyBodyState.from_keys(keys)
+
+    stored = block.keys()
+    assert stored == sorted(stored), "the block's rows must be in the determinant total order"
+    assert len(stored) == len(keys)
+
+    for position, det in enumerate(stored):
+        assert block.find_row(det) == position
+
+    np.testing.assert_array_equal(block.find_rows(stored), np.arange(len(stored), dtype=np.int64))
+
+    packed = np.ascontiguousarray(np.array([[d[0], d[1]] for d in stored], dtype=np.uint64).reshape(-1))
+    np.testing.assert_array_equal(block.find_rows_packed(packed, 2), np.arange(len(stored), dtype=np.int64))
+
+
+def test_a_missing_determinant_reports_the_row_count_in_every_lookup_form():
+    """The miss sentinel is `rows()`, and all three forms must use the same one.
+
+    `Basis` turns this into the global `size` sentinel; a form that returned -1, or 0, or a
+    valid row would become a fabricated global index rather than an error.
+    """
+    keys = [_key(0, 1), _key(0, 2), _key(3, 0)]
+    block = ManyBodyState.from_keys(keys)
+    absent = _key(9, 9)
+
+    assert block.find_row(absent) == len(block)
+    np.testing.assert_array_equal(block.find_rows([absent]), np.array([len(block)], dtype=np.int64))
+    np.testing.assert_array_equal(
+        block.find_rows_packed(np.array([9, 9], dtype=np.uint64), 2),
+        np.array([len(block)], dtype=np.int64),
+    )
+
+
+# ---------------------------------------------------------------------------
+# The uniform-width invariant is CHECKED, not merely documented
+# ---------------------------------------------------------------------------
+#
+# `SlaterDeterminant.from_bytes` takes its chunk count from the input length with no
+# normalization, so two determinants of different width are one call apart. Only `Basis`
+# pads its inputs. When the block's key store asserted this invariant in a comment and
+# enforced nothing, a differently-sized key was inserted into a buffer striding by the
+# store's width: later rows misaligned, the support stopped being sorted (so every binary
+# search in the class was unsound), and `from_columns`' amplitude scatter wrote past the
+# end of its array -- a segfault from three lines of Python, and on a near-miss variant a
+# silently dropped determinant instead.
+#
+# These cases are NOT "verified to fail against the pre-fix code" in the usual way: on the
+# pre-fix build the first one killed the interpreter (exit 139), which pytest reports as a
+# crashed worker rather than a failed test. That is the reason they exist.
+
+
+def _one_chunk():
+    return SlaterDeterminant.from_bytes(b"\x80")
+
+
+def _two_chunk(first=b"\x80"):
+    return SlaterDeterminant.from_bytes(first + b"\x00" * 8)
+
+
+def test_mixed_width_columns_collapse_to_one_determinant():
+    """The same occupation at two chunk widths is ONE determinant, with both amplitudes.
+
+    Previously a heap-buffer-overflow write (SIGSEGV). Rejecting mixed widths was the first
+    fix and was wrong: `ManyBodyState` has always accepted them -- `get_random_state` in
+    `test/operators/test_manybody_utils.py` builds keys from 1-4 random chunks on purpose --
+    so a throw is a public contract change. Zero-extending to a common stride is the third
+    option, and it is what the design claimed to deliver: the variable-length ambiguity is
+    foreclosed rather than merely made safe.
+    """
+    a, b = _one_chunk(), _two_chunk()
+    assert len(a) != len(b), "fixture must actually differ in chunk count"
+    block = ManyBodyState.from_states([ManyBodyState({a: 1.0}), ManyBodyState({b: 2.0})])
+    assert len(block) == 1, "same occupation, so one row"
+    np.testing.assert_array_equal(np.asarray(block).ravel(), np.array([1.0 + 0j, 2.0 + 0j]))
+
+
+def test_mixed_width_keys_of_different_occupations_stay_distinct_and_ordered():
+    """Zero-extension must not merge determinants that differ, nor disturb the total order.
+
+    The order is what every rank's `offset + position` global index depends on, so a
+    re-stride that reordered rows would be wrong answers with no crash.
+    """
+    a, b = _one_chunk(), _two_chunk(b"\x40")
+    block = ManyBodyState({a: 1.0, b: 2.0})
+    assert len(block) == 2
+    stored = block.keys()
+    assert stored == sorted(stored)
+    assert all(len(k) == 2 for k in stored), "every row padded to the widest stride"
+    assert {block.get(k)[0] for k in stored} == {1.0 + 0j, 2.0 + 0j}
+
+
+def test_combining_blocks_of_different_width_widens_rather_than_corrupting():
+    """`key_union`/`merge_keys` used to take `this`'s width and misalign every row from the
+    other operand."""
+    wide = ManyBodyState.from_keys([_two_chunk(b"\x80"), _two_chunk(b"\x40")])
+    narrow = ManyBodyState.from_keys([SlaterDeterminant((0x2000000000000000,))])
+    wide.merge_keys(narrow)
+    assert len(wide) == 3
+    assert wide.keys() == sorted(wide.keys())
+    assert all(len(k) == 2 for k in wide.keys())
+
+
+def test_a_zero_chunk_key_is_rejected():
+    """Previously: the push was a no-op while the amplitude was stored, so `rows()` and
+    `m_amps.size() / width` disagreed -- the invariant the class docstring states."""
+    with pytest.raises(ValueError, match="at least one chunk"):
+        ManyBodyState({SlaterDeterminant(()): 1.0})
+
+
+def test_uniform_width_is_unaffected_by_the_normalization():
+    """The common case -- every key already the same width -- must not re-stride or dedup."""
+    keys = [_two_chunk(b"\x80"), _two_chunk(b"\x40"), _two_chunk(b"\x20")]
+    block = ManyBodyState.from_keys(keys)
+    assert len(block) == 3
+    assert block.keys() == sorted(block.keys())

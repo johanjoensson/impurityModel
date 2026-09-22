@@ -253,7 +253,22 @@ def _krylov_itemsize(reort, krylov_dtype):
 
 
 def _key_heap_bytes(n_spin_orbitals):
-    """Heap bytes of one determinant key allocation (16-byte glibc classes, min 32 B)."""
+    """Heap bytes of one determinant key allocation (16-byte glibc classes, min 32 B).
+
+    .. warning:: **Stale by design since the flat key store landed, and deliberately not
+       corrected here.** ``ManyBodyBlockState`` keeps its keys in one ``N x n_chunks``
+       buffer, so there is no per-key heap block any more: the true cost is ``8 * n_chunks``
+       (16 B at nso <= 128) against the 32 B this returns.
+
+       It is left alone because it feeds ``estimate_gf_peak_bytes`` and
+       ``bytes_per_determinant``, which derive RAM-fitted ``truncation_threshold`` defaults
+       -- so correcting it *raises* the caps, which changes **which determinants are
+       admitted** on a capped run, which changes energies. That is a tier-3 effect and wants
+       its own commit with before/after numbers through the Phase-3 error-budget harness,
+       exactly as the `Basis` store's recalibration did (`doc/plans/memory_footprint_audit.md`).
+
+       The direction is the safe one: over-stating the cost yields *smaller* caps.
+    """
     n_chunks = max(1, ceil(n_spin_orbitals / 64))
     key_heap = (8 * n_chunks + 8 + 15) & ~15
     return max(key_heap, 32)

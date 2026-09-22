@@ -6,6 +6,10 @@ from libcpp.complex cimport complex
 from libc.stdint cimport uint64_t
 
 cdef extern from "ManyBodyBlockState.h" nogil:
+    cdef cppclass FlatKeyStore:
+        size_t chunks()
+        size_t rows()
+
     # One determinant's amplitudes: std::span where the standard library has it,
     # the header's stand-in otherwise. Declared as a class so Cython can name the
     # return type of row(); the generated C++ is the same either way.
@@ -38,8 +42,12 @@ cdef extern from "ManyBodyBlockState.h" nogil:
         size_t amp_capacity()
         bint empty()
 
-        const Key& key(size_t)
-        const vector[Key]& keys()
+        Key key(size_t)
+        vector[Key] keys()
+        const FlatKeyStore& key_store()
+
+        @staticmethod
+        ManyBodyBlockState from_columns(const vector[const ManyBodyBlockState*]&) except +
         Value* data()
         Row row(size_t)
         size_t find_row(const Key&)
@@ -81,11 +89,15 @@ cdef extern from "ManyBodyBlockState.h" nogil:
 
         void prune_rows(double)
         void keep_rows(const vector[Key]&) except +
+        void keep_rows(const FlatKeyStore&) except +
         ManyBodyBlockState row_slice(size_t, size_t) except +
         void row_max_norm2(double*)
         size_t count_rows_in(const vector[Key]&)
+        size_t count_rows_in(const FlatKeyStore&)
         void new_row_max_norm2(const vector[Key]&, vector[double]&) except +
+        void new_row_max_norm2(const FlatKeyStore&, vector[double]&) except +
         ManyBodyBlockState keys_new_above(const vector[Key]&, double) except +
+        ManyBodyBlockState keys_new_above(const FlatKeyStore&, double) except +
         ManyBodyBlockState key_union(const ManyBodyBlockState&) except +
         void merge_keys(const ManyBodyBlockState&) except +
         void col_norm2(double*)

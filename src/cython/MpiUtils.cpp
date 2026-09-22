@@ -69,8 +69,13 @@ void pack_block_count(const ManyBodyBlockState &block, int comm_size,
 
   send_counts.assign(comm_size, 0);
   owners.resize(block.rows());
+  SlaterDeterminant<uint64_t> scratch;
   for (size_t r = 0; r < block.rows(); ++r) {
-    owners[r] = static_cast<int>(block.key(r).routing_hash() % comm_size);
+    // One scratch key for the whole loop: `routing_hash` needs a determinant, and the
+    // block's keys live in a flat buffer, so `key(r)` would allocate per row.
+    const auto kv = block.key_view(r);
+    scratch.assign(kv.data(), kv.data() + kv.size());
+    owners[r] = static_cast<int>(scratch.routing_hash() % comm_size);
     send_counts[owners[r]]++;
   }
 }
@@ -96,7 +101,7 @@ void pack_block_fill(const ManyBodyBlockState &block, int comm_size,
   }
   for (size_t r = 0; r < block.rows(); ++r) {
     char *dst = send_buf + (next[owners[r]]++) * bpe;
-    std::memcpy(dst, block.key(r).data(), state_bytes);
+    std::memcpy(dst, block.key_view(r).data(), state_bytes);
     std::memcpy(dst + state_bytes, block.row(r).data(), amp_bytes);
   }
 }
