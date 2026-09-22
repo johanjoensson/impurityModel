@@ -1224,3 +1224,67 @@ def test_uniform_width_is_unaffected_by_the_normalization():
     block = ManyBodyState.from_keys(keys)
     assert len(block) == 3
     assert block.keys() == sorted(block.keys())
+
+
+# ---------------------------------------------------------------------------
+# The block primitives the Lanczos recurrence actually spends its time in
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.benchmark
+def test_block_merge_primitives_do_not_allocate_per_merge_step(capsys):
+    """`block_inner` and `count_rows_in` walk the same merge join; only one may allocate.
+
+    This exists because a regression in exactly these two shipped with the benchmark suite
+    green. `ManyBodyBlockState::key(r)` returns by value now that keys live in one flat
+    buffer, and `block_inner`'s join compared `A.key(ia) < B.key(ib)` -- two heap
+    allocations per merge step, in `_lanczos_step.pxi`'s innermost loop -- while four mask
+    entry points called `mask.keys()`, rebuilding the whole `vector<vector<uint64_t>>` the
+    flat store exists to delete. Measured 4.0x and 7.2x slower than master. Nothing in
+    `pytest -m benchmark` covered either, so "green and faster" was reported and was wrong
+    for the two functions that matter most.
+
+    **The assertion is a RATIO, not a time.** The perf tests here deliberately assert no
+    absolute duration (machine-dependent), and the defect was allocation rather than speed.
+    `count_rows_in` is the same linear merge over the same support with no per-row
+    allocation and no arithmetic, so it is the natural yardstick: `block_inner` should cost
+    a small multiple of it -- the multiple being its `width^2` multiply-accumulate, not
+    malloc traffic.
+
+    Measured at 200k rows, width 4: **4.3x** with views, and ~13x when the join
+    materialized keys. The bound below sits between them with margin on both sides.
+    """
+    import time
+
+    n_rows, width = 200_000, 4
+    rng = np.random.default_rng(3)
+    raw = np.unique(rng.integers(0, 2**63, size=(n_rows, 2), dtype=np.uint64), axis=0)
+    dets = [SlaterDeterminant((int(raw[i, 0]), int(raw[i, 1]))) for i in range(raw.shape[0])]
+    cols_a = [ManyBodyState(dict.fromkeys(dets, 1.0 + 0j), width=1) for _ in range(width)]
+    cols_b = [ManyBodyState(dict.fromkeys(dets, 2.0 + 0j), width=1) for _ in range(width)]
+    a, b = ManyBodyState.from_states(cols_a), ManyBodyState.from_states(cols_b)
+    mask = ManyBodyState.from_keys(dets)
+
+    def best(fn, reps=5):
+        out = []
+        for _ in range(reps):
+            start = time.perf_counter()
+            fn()
+            out.append(time.perf_counter() - start)
+        return min(out)
+
+    t_inner = best(lambda: block_inner_cy(a, b))
+    t_count = best(lambda: a.count_rows_in(mask))
+    ratio = t_inner / t_count
+
+    with capsys.disabled():
+        print(
+            f"\n[block-merge] rows={len(a)} width={width}  "
+            f"block_inner {t_inner / len(a) * 1e9:6.2f} ns/row  "
+            f"count_rows_in {t_count / len(a) * 1e9:6.2f} ns/row  ratio {ratio:5.2f}"
+        )
+
+    assert ratio < 8.0, (
+        f"block_inner costs {ratio:.1f}x an allocation-free merge over the same support; "
+        "it is materializing keys in the join again (use key_view + FlatKeyStore::less)"
+    )

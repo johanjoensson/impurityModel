@@ -118,10 +118,20 @@ def test_shifted_tridiag_solutions_would_catch_a_wrong_coupling_bug():
 # ---------------------------------------------------------------------------------------
 
 
-def test_the_dense_bound_is_unchanged_for_a_single_cache():
+def test_the_dense_bound_is_unchanged_for_a_single_cache(monkeypatch):
     """The derivation callers already relied on: ~3 dense (N, N) arrays during one build, in a
-    quarter of the per-rank memory. Sizing for a live set must not move the single-cache case."""
-    expected = int(np.sqrt(0.25 * available_bytes_per_rank() / (3 * 16)))
+    quarter of the per-rank memory. Sizing for a live set must not move the single-cache case.
+
+    The budget is PINNED for the duration. This test used to sample
+    ``available_bytes_per_rank()`` for its own ``expected`` and let ``_sector_dense_max`` sample
+    it again, then require exact equality through a ``sqrt`` -- so under memory pressure the two
+    reads differ and the bound moves by one (observed: 7488 against an expected 7487, while the
+    same test passes three times out of three on an idle machine). The property under test is
+    the derivation, not the machine's free RAM at two instants.
+    """
+    pinned = 8 * 1024**3
+    monkeypatch.setattr(gf_shift_recycling, "available_bytes_per_rank", lambda *a, **k: pinned)
+    expected = int(np.sqrt(0.25 * pinned / (3 * 16)))
     assert gf_shift_recycling._sector_dense_max() == expected
     assert gf_shift_recycling._sector_dense_max(1) == expected
 

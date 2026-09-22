@@ -83,11 +83,21 @@ occupation, because `std::vector::operator<` ranks a proper prefix below its zer
    capped run** — a tier-3 effect requiring its own commit and its own before/after numbers, not a
    silent follow-on. (`_PY_BASIS_OVERHEAD_BYTES` is *already* stale from the Step A/B work and is
    an outstanding item independent of this note.)
-6. **The `debug` build is the only one that catches an out-of-bounds read here.** A flat buffer
-   indexed by `row * n_chunks` is exactly the shape where an off-by-one returns a plausible
-   neighbouring determinant instead of crashing. Develop this under
-   `IMPURITYMODEL_BUILD=debug`, and note every kernel carries `wraparound=False`, so a negative
-   index is not a safety net.
+6. ~~**The `debug` build is the only one that catches an out-of-bounds read here.**~~
+   **FALSE, and this was the costly one.** The shape of the hazard was right -- a flat buffer
+   indexed by `row * n_chunks` is exactly where an off-by-one returns a plausible neighbouring
+   determinant instead of crashing -- but the remedy named does not work. `IMPURITYMODEL_BUILD=debug`
+   turns on Cython's `boundscheck`/`initializedcheck`, and **those do not reach the C++ layer
+   at all**. The implementation shipped a heap-buffer-overflow *write* in `from_columns`,
+   reachable from three lines of Python, and the four-leg debug gate was green through every
+   commit that contained it. Only ASan found it, and the `test-asan` CI job does not exercise
+   these paths.
+
+   Worse than useless: believing this made a green debug gate feel like evidence the indexing
+   was sound, and that belief was repeated in commit messages. **For C++-layer indexing, the
+   instrument is ASan or a deliberate reproducer, never the `debug` build.** What `debug` does
+   still buy here is the Cython-side bounds checks, which is a different and much narrower
+   thing than this hazard claimed.
 
 ## What would confirm it
 

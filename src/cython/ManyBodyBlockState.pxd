@@ -29,7 +29,11 @@ cdef extern from "ManyBodyBlockState.h" nogil:
         ManyBodyBlockState()
         ManyBodyBlockState(const ManyBodyBlockState&)
         ManyBodyBlockState(size_t)
-        ManyBodyBlockState(vector[Key], vector[Value], size_t)
+        # `except +` because this one PACKS its keys into the flat store, and the store
+        # rejects a zero-chunk key. Without it a throw here would cross the Cython boundary
+        # as `std::terminate` -- SIGABRT with no traceback and, from a `nogil` block, no
+        # rank output either.
+        ManyBodyBlockState(vector[Key], vector[Value], size_t) except +
 
         @staticmethod
         ManyBodyBlockState from_unsorted(const vector[Key]&, const vector[Value]&, size_t) except +
