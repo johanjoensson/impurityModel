@@ -1072,3 +1072,87 @@ def test_a_missing_determinant_reports_the_row_count_in_every_lookup_form():
         block.find_rows_packed(np.array([9, 9], dtype=np.uint64), 2),
         np.array([len(block)], dtype=np.int64),
     )
+
+
+# ---------------------------------------------------------------------------
+# The uniform-width invariant is CHECKED, not merely documented
+# ---------------------------------------------------------------------------
+#
+# `SlaterDeterminant.from_bytes` takes its chunk count from the input length with no
+# normalization, so two determinants of different width are one call apart. Only `Basis`
+# pads its inputs. When the block's key store asserted this invariant in a comment and
+# enforced nothing, a differently-sized key was inserted into a buffer striding by the
+# store's width: later rows misaligned, the support stopped being sorted (so every binary
+# search in the class was unsound), and `from_columns`' amplitude scatter wrote past the
+# end of its array -- a segfault from three lines of Python, and on a near-miss variant a
+# silently dropped determinant instead.
+#
+# These cases are NOT "verified to fail against the pre-fix code" in the usual way: on the
+# pre-fix build the first one killed the interpreter (exit 139), which pytest reports as a
+# crashed worker rather than a failed test. That is the reason they exist.
+
+
+def _one_chunk():
+    return SlaterDeterminant.from_bytes(b"\x80")
+
+
+def _two_chunk(first=b"\x80"):
+    return SlaterDeterminant.from_bytes(first + b"\x00" * 8)
+
+
+def test_mixed_width_columns_collapse_to_one_determinant():
+    """The same occupation at two chunk widths is ONE determinant, with both amplitudes.
+
+    Previously a heap-buffer-overflow write (SIGSEGV). Rejecting mixed widths was the first
+    fix and was wrong: `ManyBodyState` has always accepted them -- `get_random_state` in
+    `test/operators/test_manybody_utils.py` builds keys from 1-4 random chunks on purpose --
+    so a throw is a public contract change. Zero-extending to a common stride is the third
+    option, and it is what the design claimed to deliver: the variable-length ambiguity is
+    foreclosed rather than merely made safe.
+    """
+    a, b = _one_chunk(), _two_chunk()
+    assert len(a) != len(b), "fixture must actually differ in chunk count"
+    block = ManyBodyState.from_states([ManyBodyState({a: 1.0}), ManyBodyState({b: 2.0})])
+    assert len(block) == 1, "same occupation, so one row"
+    np.testing.assert_array_equal(np.asarray(block).ravel(), np.array([1.0 + 0j, 2.0 + 0j]))
+
+
+def test_mixed_width_keys_of_different_occupations_stay_distinct_and_ordered():
+    """Zero-extension must not merge determinants that differ, nor disturb the total order.
+
+    The order is what every rank's `offset + position` global index depends on, so a
+    re-stride that reordered rows would be wrong answers with no crash.
+    """
+    a, b = _one_chunk(), _two_chunk(b"\x40")
+    block = ManyBodyState({a: 1.0, b: 2.0})
+    assert len(block) == 2
+    stored = block.keys()
+    assert stored == sorted(stored)
+    assert all(len(k) == 2 for k in stored), "every row padded to the widest stride"
+    assert {block.get(k)[0] for k in stored} == {1.0 + 0j, 2.0 + 0j}
+
+
+def test_combining_blocks_of_different_width_widens_rather_than_corrupting():
+    """`key_union`/`merge_keys` used to take `this`'s width and misalign every row from the
+    other operand."""
+    wide = ManyBodyState.from_keys([_two_chunk(b"\x80"), _two_chunk(b"\x40")])
+    narrow = ManyBodyState.from_keys([SlaterDeterminant((0x2000000000000000,))])
+    wide.merge_keys(narrow)
+    assert len(wide) == 3
+    assert wide.keys() == sorted(wide.keys())
+    assert all(len(k) == 2 for k in wide.keys())
+
+
+def test_a_zero_chunk_key_is_rejected():
+    """Previously: the push was a no-op while the amplitude was stored, so `rows()` and
+    `m_amps.size() / width` disagreed -- the invariant the class docstring states."""
+    with pytest.raises(ValueError, match="at least one chunk"):
+        ManyBodyState({SlaterDeterminant(()): 1.0})
+
+
+def test_uniform_width_is_unaffected_by_the_normalization():
+    """The common case -- every key already the same width -- must not re-stride or dedup."""
+    keys = [_two_chunk(b"\x80"), _two_chunk(b"\x40"), _two_chunk(b"\x20")]
+    block = ManyBodyState.from_keys(keys)
+    assert len(block) == 3
+    assert block.keys() == sorted(block.keys())

@@ -729,7 +729,7 @@ cdef class ManyBodyState:
         if self._n_exports > 0:
             raise RuntimeError("cannot keep_rows while a buffer view is exported (np.asarray view alive)")
         with nogil:
-            self.b.keep_rows(mask.b.keys())
+            self.b.keep_rows(mask.b.key_store())
         self._bump_generation()
 
     def row_slice(self, Py_ssize_t lo, Py_ssize_t hi):
@@ -790,7 +790,7 @@ cdef class ManyBodyState:
         merge over the two sorted key vectors; no Python-object traffic)."""
         cdef size_t n
         with nogil:
-            n = self.b.count_rows_in(mask.b.keys())
+            n = self.b.count_rows_in(mask.b.key_store())
         return n
 
     def new_row_max_norms2(self, ManyBodyState mask):
@@ -799,7 +799,7 @@ cdef class ManyBodyState:
         overflow-step amplitude bisection."""
         cdef vector[double] out
         with nogil:
-            self.b.new_row_max_norm2(mask.b.keys(), out)
+            self.b.new_row_max_norm2(mask.b.key_store(), out)
         res = np.empty(out.size(), dtype=float)
         cdef double[:] rv = res
         cdef Py_ssize_t i
@@ -813,7 +813,7 @@ cdef class ManyBodyState:
         overflow bisection has fixed the cutoff)."""
         cdef ManyBodyState res = ManyBodyState()
         with nogil:
-            res.b = self.b.keys_new_above(mask.b.keys(), cutoff2)
+            res.b = self.b.keys_new_above(mask.b.key_store(), cutoff2)
         return res
 
     def key_union(self, ManyBodyState other):
@@ -856,7 +856,7 @@ cdef class ManyBodyState:
         guard -- a behaviour change in the direction that uses more memory, which wants a
         measurement rather than a tidy-up. Over-stating declines earlier, which is safe.
         """
-        cdef size_t n_chunks = self.b.key(0).size() if self.b.rows() > 0 else 1
+        cdef size_t n_chunks = self.b.key_store().chunks() if self.b.rows() > 0 else 1
         cdef size_t key_heap = (8 * n_chunks + 8 + 15) & (~<size_t>15)
         if key_heap < 32:
             key_heap = 32
