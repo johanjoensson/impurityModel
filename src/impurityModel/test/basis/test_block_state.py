@@ -976,3 +976,99 @@ def test_inner_multi_rejects_non_width_one_blocks():
     wide = ManyBodyState.from_states(states)
     with pytest.raises(ValueError):
         inner_multi([wide], states)
+
+
+# ---------------------------------------------------------------------------
+# The determinant total order, pinned before the key store is reshaped
+# ---------------------------------------------------------------------------
+#
+# `Basis` derives global indices as `offset + position`, with `offset` from an allgather of
+# local lengths, so EVERY RANK MUST COMPUTE THE SAME TOTAL ORDER. If two ranks disagree, the
+# result is wrong answers with no crash. These tests pin that order against the current
+# implementation so a change to the key store has to preserve it rather than rediscover it.
+
+
+def _key(*chunks):
+    return SlaterDeterminant(tuple(chunks))
+
+
+def test_determinant_order_is_element_wise_over_chunks_not_bytes():
+    """The comparison is `std::vector<uint64_t>::operator<` — element-wise over ``uint64``.
+
+    A byte comparison (``memcmp``) is the obvious way to implement this over a flat buffer and
+    it is WRONG on a little-endian machine: ``0x0000000000000001`` has leading byte ``01`` and
+    ``0x0000000000000100`` has leading byte ``00``, so ``memcmp`` ranks them the opposite way
+    round from their numeric order. The pair below is chosen so the two disagree.
+    """
+    low, high = _key(0, 0x0000000000000001), _key(0, 0x0000000000000100)
+    assert low < high, "element-wise uint64 order"
+
+    # The fixture has to actually distinguish the two, or this passes for the wrong reason.
+    # `to_bytearray` is NOT the instrument for that: it re-encodes each chunk big-endian, so
+    # its byte order agrees with the element order and hides the hazard entirely. What a flat
+    # buffer would `memcmp` is the IN-MEMORY image, which is little-endian on this machine.
+    low_mem = np.array([0, 0x0000000000000001], dtype=np.uint64).tobytes()
+    high_mem = np.array([0, 0x0000000000000100], dtype=np.uint64).tobytes()
+    assert low_mem > high_mem, "in-memory bytes must rank these the OPPOSITE way"
+    assert (low < high) != (
+        low_mem < high_mem
+    ), "element order and raw-byte order must disagree on this pair, or the test is vacuous"
+
+
+def test_determinant_order_is_decided_by_the_high_chunk_first():
+    """Multi-chunk keys order lexicographically from chunk 0, which is the HIGH chunk.
+
+    A flat store indexes rows as ``row * n_chunks``; getting the chunk order backwards there
+    still produces a total order, still sorts, and still looks correct in any test that checks
+    only membership. Only an order assertion on keys differing in their high chunks catches it.
+    """
+    keys = [_key(0, 5), _key(0, 9), _key(1, 0), _key(1, 3), _key(2, 0)]
+    assert keys == sorted(keys)
+    # Differing ONLY in the high chunk: the low chunk points the other way.
+    assert _key(1, 0) < _key(2, 0)
+    assert _key(1, 9999) < _key(2, 0), "the high chunk must dominate the low one"
+    # ...and only in the low chunk.
+    assert _key(1, 3) < _key(1, 4)
+
+
+def test_block_row_order_membership_and_lookup_all_agree():
+    """Iteration order, `find_row`, `find_rows` and `find_rows_packed` must tell one story.
+
+    The packed form is the one production routes through, and it takes raw chunks rather than
+    determinant objects — so it is the one that could silently disagree with the object form
+    about which row a determinant is in.
+    """
+    rng = np.random.default_rng(17)
+    raw = np.unique(rng.integers(0, 2**63, size=(500, 2), dtype=np.uint64), axis=0)
+    keys = [_key(int(raw[i, 0]), int(raw[i, 1])) for i in range(raw.shape[0])]
+    block = ManyBodyState.from_keys(keys)
+
+    stored = block.keys()
+    assert stored == sorted(stored), "the block's rows must be in the determinant total order"
+    assert len(stored) == len(keys)
+
+    for position, det in enumerate(stored):
+        assert block.find_row(det) == position
+
+    np.testing.assert_array_equal(block.find_rows(stored), np.arange(len(stored), dtype=np.int64))
+
+    packed = np.ascontiguousarray(np.array([[d[0], d[1]] for d in stored], dtype=np.uint64).reshape(-1))
+    np.testing.assert_array_equal(block.find_rows_packed(packed, 2), np.arange(len(stored), dtype=np.int64))
+
+
+def test_a_missing_determinant_reports_the_row_count_in_every_lookup_form():
+    """The miss sentinel is `rows()`, and all three forms must use the same one.
+
+    `Basis` turns this into the global `size` sentinel; a form that returned -1, or 0, or a
+    valid row would become a fabricated global index rather than an error.
+    """
+    keys = [_key(0, 1), _key(0, 2), _key(3, 0)]
+    block = ManyBodyState.from_keys(keys)
+    absent = _key(9, 9)
+
+    assert block.find_row(absent) == len(block)
+    np.testing.assert_array_equal(block.find_rows([absent]), np.array([len(block)], dtype=np.int64))
+    np.testing.assert_array_equal(
+        block.find_rows_packed(np.array([9, 9], dtype=np.uint64), 2),
+        np.array([len(block)], dtype=np.int64),
+    )
