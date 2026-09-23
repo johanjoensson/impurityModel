@@ -397,3 +397,39 @@ def test_polarized_bath_transverse_matches_dense_lehmann():
     retained_idx = list(range(len(es)))
     chi_ref = _lehmann_chi(w + 1j * delta, a_p, a_m, E, retained_idx, weights)
     np.testing.assert_allclose(res["operators"]["transverse"]["realaxis"], chi_ref, atol=1e-8)
+
+
+def test_the_workflow_solves_saves_and_keeps_su2(tmp_path):
+    """calc_susceptibility_workflow -- what the API, the susceptibility CLI and `run` all call --
+    had never run. It is glue (solver basis -> calc_gs -> calc_susceptibility -> save), so this
+    checks the glue: the meshes, tau and delta reach the result, the file it writes round-trips,
+    and a spin-symmetric model keeps chi_+- = 2 chi_zz through the whole pipeline. Genuinely
+    distributed at -n 2/-n 3; the result and the file are rank 0's."""
+    h5py = pytest.importorskip("h5py")
+    from impurityModel.ed.model import Meshes
+
+    from .test_selfenergy_end_to_end import _basis_and_solver, _siam_model
+
+    basis, solver = _basis_and_solver()
+    w = np.linspace(-3.0, 3.0, 13)
+    meshes = Meshes(iw=None, w=w, delta=0.1)
+    output = tmp_path / "chi.h5"
+    comm = MPI.COMM_WORLD
+    result = susceptibility.calc_susceptibility_workflow(
+        _siam_model(), meshes, basis, solver, comm=comm, n_matsubara=4, output_filename=str(output)
+    )
+    if comm.rank != 0:
+        return
+    np.testing.assert_allclose(result["w"], w)
+    np.testing.assert_allclose(result["matsubara"], susceptibility.bosonic_matsubara_mesh(basis.tau, 4))
+    assert result["tau"] == basis.tau and result["delta"] == 0.1
+
+    zz, pm = result["operators"]["spin_z"], result["operators"]["transverse"]
+    assert np.abs(zz["realaxis"]).max() > 0
+    np.testing.assert_allclose(pm["realaxis"], 2.0 * zz["realaxis"], atol=1e-8)
+    np.testing.assert_allclose(pm["matsubara"], 2.0 * zz["matsubara"], atol=1e-8)
+
+    with h5py.File(output, "r") as h5f:
+        np.testing.assert_allclose(h5f["w"][()], w)
+        np.testing.assert_allclose(h5f["chi/spin_z/realaxis"][()], zz["realaxis"])
+        assert h5f.attrs["tau"] == pytest.approx(basis.tau)
