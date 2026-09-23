@@ -106,7 +106,7 @@ def _gapped_hermitian():
 
 
 def _solve_with_one_failure(monkeypatch, make_error):
-    import impurityModel.ed.eigensolvers as eigensolvers
+    from impurityModel.ed import eigensolvers
 
     h = _gapped_hermitian()
     real_eigsh = eigensolvers.eigsh

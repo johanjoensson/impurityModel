@@ -13,7 +13,7 @@ from impurityModel.ed.get_spectra import _resolve_shell_roles
 
 
 def test_every_name_the_api_exports_resolves():
-    import impurityModel.api as api
+    from impurityModel import api
 
     assert len(api.__all__) == len(set(api.__all__)), "duplicate names in api.__all__"
     missing = [name for name in api.__all__ if not hasattr(api, name)]

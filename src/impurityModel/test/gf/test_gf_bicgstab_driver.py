@@ -323,7 +323,7 @@ def _warm_start_case():
     extras = [d for d in _n3_sector_dets() if d not in seed_keys][:4]
     amplitudes = dict(zip(extras, [0.9, 0.5, 0.1, 0.01]))
     x0 = [
-        ManyBodyState({**{k: 0.2 + 0j for k in seed_keys}, **{d: a + 0j for d, a in amplitudes.items()}}, width=1),
+        ManyBodyState({**dict.fromkeys(seed_keys, 0.2 + 0j), **{d: a + 0j for d, a in amplitudes.items()}}, width=1),
         ManyBodyState({extras[1]: 0.05 + 0j}, width=1),
     ]
     basis = Basis(_IMP, _BATHS, initial_basis=sorted(seed_keys | set(extras)), verbose=False)
@@ -342,7 +342,7 @@ def test_warm_start_support_is_cut_top_k_and_the_seeds_are_kept():
 
 
 def test_a_budget_at_the_seed_support_leaves_everything_and_flags_overflow():
-    fit, seeds, seed_keys, extras, x0, basis = _warm_start_case()
+    fit, seeds, seed_keys, _extras, x0, basis = _warm_start_case()
     before = set(basis)
     x0_fit, overflowed = fit(basis, seeds, x0, budget=len(seed_keys))
     assert overflowed
