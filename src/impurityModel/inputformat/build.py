@@ -28,7 +28,7 @@ from impurityModel.ed.atomic_physics import (
     octahedral_level_structure,
 )
 from impurityModel.ed.hamiltonian_io import cf_bath_blocks, cf_parameter_names
-from impurityModel.inputformat.reader import InputError
+from impurityModel.inputformat.reader import InputError, shell_name
 
 __all__ = ["Built", "NO_ZEEMAN", "build", "deduce_bath_counts", "read_h0_header"]
 
@@ -139,7 +139,7 @@ def deduce_bath_counts(resolved, header, notes):
                 for key in ("n_bath", "n_valence_bath"):
                     if shell.get(key) is None:
                         raise InputError(
-                            f'[[shell]] l={shell["l"]}: {key} is required here. '
+                            f"[[shell]] {shell_name(shell)}: {key} is required here. "
                             f"[hamiltonian.{resolved.hamiltonian_source}] records no bath "
                             "layout, so there is nothing to deduce it from; only a "
                             "self-describing .h0 carries one."
@@ -150,17 +150,19 @@ def deduce_bath_counts(resolved, header, notes):
                     shell[key] = 0
             if shell["n_bath"] == 0:
                 notes.append(
-                    f'l={shell["l"]} (role {shell["role"]}): no bath states -- no Hamiltonian '
+                    f'{shell_name(shell)} (role {shell["role"]}): no bath states -- no Hamiltonian '
                     "was read for this shell."
                 )
         return
 
     bath = _bath_indices(header)
+    # A spin-degenerate file lists spatial orbitals; the model has both spin copies of each.
+    spin_copies = 2 if resolved.tables.get("hamiltonian.file", {}).get("spin") == "degenerate" else 1
     described = header.impurity_l if header.impurity_l is not None else valence_shell["l"]
     if header.impurity_l is None:
         notes.append(
             f"The .h0 header does not record impurity_l; assuming its {len(bath)} bath "
-            f"orbitals belong to the valence shell (l={valence_shell['l']})."
+            f"orbitals belong to the valence shell ({shell_name(valence_shell)})."
         )
 
     if header.valence_bath is not None:
@@ -177,8 +179,8 @@ def deduce_bath_counts(resolved, header, notes):
     for shell in shells:
         described_here = shell["l"] == described
         deduced = {
-            "n_bath": len(bath) if described_here else 0,
-            "n_valence_bath": len(valence) if described_here else 0,
+            "n_bath": spin_copies * len(bath) if described_here else 0,
+            "n_valence_bath": spin_copies * len(valence) if described_here else 0,
         }
         for key, value in deduced.items():
             written = shell.get(key)
@@ -186,17 +188,17 @@ def deduce_bath_counts(resolved, header, notes):
                 shell[key] = value
             elif written != value:
                 raise InputError(
-                    f'[[shell]] l={shell["l"]}: {key} = {written}, but the .h0 file gives '
+                    f"[[shell]] {shell_name(shell)}: {key} = {written}, but the .h0 file gives "
                     f"{value}. A written count that disagrees with the file is an error, not "
                     "an override -- remove it, or use a Hamiltonian that matches."
                 )
         if described_here:
             notes.append(
-                f"l={shell['l']}: {shell['n_bath']} bath orbitals from the .h0 header, "
+                f"{shell_name(shell)}: {shell['n_bath']} bath orbitals from the .h0 header, "
                 f"{shell['n_valence_bath']} of them valence, from {source}."
             )
         elif deduced["n_bath"] == 0 and shell.get("n_bath") == 0:
-            notes.append(f"l={shell['l']}: no bath states (the .h0 file does not describe this shell).")
+            notes.append(f"{shell_name(shell)}: no bath states (the .h0 file does not describe this shell).")
 
 
 def check_header_agreement(resolved, header, notes):
@@ -311,9 +313,13 @@ def _slater_arrays(resolved, core_l, valence_l):
     ``2*l_c + 2`` at every dipole-allowed edge and is larger only for a pair the roles allow
     but a transition operator would not.
     """
-    if resolved.interaction_kind != "slater":
+    if resolved.interaction_kind == "slater":
+        table = resolved.tables["interaction.slater"]
+    elif "interaction.core" in resolved.tables:
+        # A model valence interaction with Slater-Condon core integrals: same lengths, no F_vv.
+        table = dict(resolved.tables["interaction.core"], F_vv=None)
+    else:
         return None
-    table = resolved.tables["interaction.slater"]
     expected = {"F_vv": 2 * valence_l + 1}
     if core_l is not None:
         expected.update(
@@ -335,12 +341,98 @@ def _slater_arrays(resolved, core_l, valence_l):
     return table
 
 
+def _interaction_u4(resolved, valence):
+    """The valence shell's Coulomb tensor, compiled from whichever ``[interaction.*]`` is declared.
+
+    Every interaction form ends up as the one dense RSPt-convention tensor over the valence
+    shell's ``2 * n_orbitals`` spin-orbitals (spin-major, down first) that
+    :meth:`ImpurityModel.from_solver_matrix` takes -- there is no second route into the
+    operator. ``None`` for ``[interaction.none]``. The tensor is checked for Hermiticity here,
+    because a non-Hermitian one makes every eigen-solve meaningless without failing anywhere.
+    """
+    from impurityModel.ed import interaction_models as im
+    from impurityModel.ed.model import atomic_u4
+
+    kind = resolved.interaction_kind
+    if kind == "none":
+        return None
+    n = valence["n_orbitals"]
+    if kind == "slater":
+        return atomic_u4(valence["l"], resolved.tables["interaction.slater"]["F_vv"])
+    table = resolved.tables[f"interaction.{kind}"]
+    try:
+        if kind == "kanamori":
+            u4 = im.kanamori_u4(n, table["U"], J=table["J"], U_prime=table["U_prime"], J_pair=table["J_pair"])
+        elif kind == "density_density":
+            u_opp = np.asarray(table["U_opposite_spin"])
+            if u_opp.shape != (n, n):
+                raise ValueError(
+                    f"U_opposite_spin must be {n}x{n} for {n} orbitals, got {u_opp.shape[0]}x{u_opp.shape[0]}."
+                )
+            u4 = im.density_density_u4(u_opp, table["U_same_spin"])
+        elif kind == "terms":
+            u4 = im.terms_u4(
+                n,
+                spatial=table["spatial"] or (),
+                spin_orbital=table["spin_orbital"] or (),
+                complete_symmetries=table["complete_symmetries"],
+            )
+        else:  # u4_file
+            factor = h0_format.ENERGY_UNITS[resolved.tables["units"]["energy"]]
+            raw = np.asarray(np.load(table["path"]), dtype=complex) * factor
+            if table["index_space"] == "spatial":
+                if raw.shape != (n,) * 4:
+                    raise ValueError(f"a spatial tensor for {n} orbitals has shape {(n,) * 4}, got {raw.shape}.")
+                u4 = im.spatial_to_spin_u4(raw)
+            else:
+                u4 = raw
+        if table.get("orbital_basis") == "real_cubic":
+            u4 = im.cubic_to_spherical_u4(u4, valence["l"])
+        return im.validate_u4(u4, 2 * n)
+    except ValueError as exc:
+        raise InputError(f"[interaction.{kind}]: {exc}") from None
+
+
+#: Interaction kinds built from spatial matrix elements, whose spin expansion places spin down
+#: first in each half of the impurity block.
+_SPATIAL_FORMS = ("kanamori", "density_density", "terms")
+
+
+def _check_spin_layout(resolved, header):
+    """A spatial interaction on an explicit-spin Hamiltonian assumes the file's spin layout.
+
+    The expansion puts spin-orbital ``s*n + p`` at spatial orbital ``p``, spin ``s`` (down first),
+    which is the file's own layout only when its header guarantees ``spin_ordering: down_first``
+    and a single impurity group. Same guard as the xi / h_field dressing, for the same reason:
+    guessing wrong silently builds a different interaction.
+    """
+    kind = resolved.interaction_kind
+    table = resolved.tables.get(f"interaction.{kind}", {})
+    spatial = kind in _SPATIAL_FORMS or (kind == "u4_file" and table.get("index_space") == "spatial")
+    if not spatial or header is None:
+        return
+    if resolved.tables["hamiltonian.file"]["spin"] == "degenerate":
+        return
+    if header.spin_ordering != "down_first" or len(header.impurity_orbitals) != 1:
+        raise InputError(
+            f"[interaction.{kind}] is written in spatial orbitals and expanded over spin as "
+            "[all orbitals spin down, all orbitals spin up], but the .h0 header "
+            + (
+                f"declares spin_ordering = {header.spin_ordering!r}"
+                if header.spin_ordering != "down_first"
+                else "declares more than one impurity group"
+            )
+            + ", so that is not guaranteed to be the file's layout. Use the spin_orbital form, "
+            "or a file with spin_ordering = 'down_first' and one impurity group."
+        )
+
+
 def _opt_tuple(values):
     """``tuple(values)``, but keep ``None`` as ``None`` rather than inventing a length."""
     return None if values is None else tuple(values)
 
 
-def _model_from_matrix_source(resolved, source, valence, core, slater):
+def _model_from_matrix_source(resolved, source, valence, core):
     """``[hamiltonian.blocks]`` / ``[hamiltonian.matrix]``: the one-particle matrix as written,
     plus the declared interaction.
 
@@ -351,9 +443,8 @@ def _model_from_matrix_source(resolved, source, valence, core, slater):
     basis too, but a bare matrix does not state its basis, so a non-zero value is refused rather
     than applied to orbitals it might not describe -- or, as before, silently dropped.
     """
-    from impurityModel.ed.model import ImpurityModel, atomic_u4
+    from impurityModel.ed.model import ImpurityModel
 
-    l = valence["l"]
     if core is not None:
         raise InputError(
             f"A {resolved.calculation} run builds a single correlated shell, but a "
@@ -363,7 +454,7 @@ def _model_from_matrix_source(resolved, source, valence, core, slater):
         value = valence.get(key)
         if value is not None and np.any(np.asarray(value, dtype=float) != 0):
             raise InputError(
-                f"[[shell]] l={l}: `{key}` is a one-body term on the (l, s, m) basis, and "
+                f"[[shell]] {shell_name(valence)}: `{key}` is a one-body term on the (l, s, m) basis, and "
                 f"[hamiltonian.{source}] does not say what basis its matrix is in, so it cannot be "
                 "placed. It is not dropped either: fold it into the matrix instead."
             )
@@ -375,14 +466,14 @@ def _model_from_matrix_source(resolved, source, valence, core, slater):
     else:
         table = resolved.tables["hamiltonian.matrix"]
         n_imp = table["n_impurity_orbitals"]
-    expected = 2 * (2 * l + 1)
+    expected = 2 * valence["n_orbitals"]
     if n_imp != expected:
         raise InputError(
-            f"[hamiltonian.{source}]'s impurity block is {n_imp}x{n_imp}, but an l={l} valence "
-            f"shell has {expected} impurity spin-orbitals."
+            f"[hamiltonian.{source}]'s impurity block is {n_imp}x{n_imp}, but the "
+            f"{shell_name(valence)} valence shell has {expected} impurity spin-orbitals."
         )
 
-    u4 = None if slater is None else atomic_u4(l, slater["F_vv"])
+    u4 = _interaction_u4(resolved, valence)
     rot = np.eye(n_imp, dtype=complex)
     if source == "blocks":
         return ImpurityModel.from_blocks(
@@ -419,7 +510,7 @@ def _build_model(resolved, header, notes, rank, verbose):
         )
 
     if source in ("blocks", "matrix"):
-        return _model_from_matrix_source(resolved, source, valence, core, slater), {}
+        return _model_from_matrix_source(resolved, source, valence, core), {}
 
     if resolved.calculation == "spectroscopy":
         if source == "crystal_field":
@@ -487,6 +578,16 @@ def _build_model(resolved, header, notes, rank, verbose):
         # which role travels separately, as core_l/valence_l, so this ordering can never
         # decide the physics.
         ordered = [shell for shell in (core, valence) if shell is not None]
+        if resolved.interaction_kind == "none":
+            raise InputError(
+                "A spectroscopy run needs an interaction: [interaction.none] would leave the core "
+                "hole without its Coulomb attraction. Give [interaction.slater] or a model form."
+            )
+        valence_u4 = None
+        if resolved.interaction_kind != "slater":
+            valence_u4 = _interaction_u4(resolved, valence)
+            if slater is None:
+                slater = {"F_vv": None, "F_cc": None, "F_cv": None, "G_cv": None}
         # An omitted core-valence array stays None. A zero-filled placeholder would have to
         # pick a length, and every length is an l_core assertion -- (0, 0, 0) says l_core = 1,
         # which is a silent lie for any edge but L2,3.
@@ -497,7 +598,7 @@ def _build_model(resolved, header, notes, rank, verbose):
                 tuple(shell["n_bath"] for shell in ordered),
                 tuple(shell["n_valence_bath"] for shell in ordered),
                 tuple(shell["nominal_occupation"] for shell in ordered),
-                tuple(slater["F_vv"]),
+                _opt_tuple(slater["F_vv"]),
                 _opt_tuple(slater["F_cc"]),
                 _opt_tuple(slater["F_cv"]),
                 _opt_tuple(slater["G_cv"]),
@@ -509,6 +610,7 @@ def _build_model(resolved, header, notes, rank, verbose):
                 verbose=verbose,
                 valence_l=valence["l"],
                 core_l=None if core is None else core["l"],
+                valence_u4=valence_u4,
             ),
             {},
         )
@@ -519,12 +621,30 @@ def _build_model(resolved, header, notes, rank, verbose):
             f'[[shell]] with role = "core" is declared.'
         )
     zeeman = valence["zeeman_splitting"]
+    file_table = resolved.tables["hamiltonian.file"]
+    spin_degenerate = file_table["spin"] == "degenerate"
+    if spin_degenerate and not h0_format.is_h0_format(file_table["path"]):
+        raise InputError(
+            '[hamiltonian.file].spin = "degenerate" needs a self-describing .h0 file: only its '
+            "header says which orbitals are the impurity, and doubling a file whose layout is "
+            "guessed would build a different model."
+        )
+    if not spin_degenerate and header is not None and header.n_imp % 2:
+        raise InputError(
+            f"The .h0 impurity block holds {header.n_imp} orbitals, an odd number, so they cannot be "
+            "spin-orbitals in pairs. If the file is a spinless model Hamiltonian, set "
+            '[hamiltonian.file].spin = "degenerate" to copy each orbital to both spins.'
+        )
+    _check_spin_layout(resolved, header)
+    model_interaction = resolved.interaction_kind not in ("slater", "none")
     return (
         load_model(
-            resolved.tables["hamiltonian.file"]["path"],
+            file_table["path"],
             l=valence["l"],
             n_baths=valence["n_bath"],
             slater=None if slater is None else slater["F_vv"],
+            u4=_interaction_u4(resolved, valence) if model_interaction else None,
+            spin_degenerate=spin_degenerate,
             xi=valence["soc"],
             # An explicit zero, never None. None would select each format's own hidden
             # default, which for the labelled formats is a symmetry-breaking nudge -- so
@@ -551,11 +671,14 @@ def _build_basis(resolved):
     if resolved.calculation == "spectroscopy":
         nominal = OrderedDict((shell["l"], shell["nominal_occupation"]) for shell in shells)
     else:
-        nominal = {valence["l"]: valence["nominal_occupation"]}
+        # The key only labels the one correlated shell (the solver redistributes the total over
+        # its own groups); a model shell has no l, so it is labelled 0.
+        key = valence["l"] if valence["l"] is not None else 0
+        nominal = {key: valence["nominal_occupation"]}
 
     mixed = table["mixed_valence"]
     if mixed is not None and resolved.calculation != "spectroscopy":
-        mixed = {valence["l"]: mixed}
+        mixed = {valence["l"] if valence["l"] is not None else 0: mixed}
 
     budget = table["excitation_budget"]
     threshold = table["truncation_threshold"]

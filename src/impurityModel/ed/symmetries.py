@@ -289,6 +289,198 @@ def group_orbitals_by_charges(op, impurity_orbitals, valence_orbitals, conductio
     return impurity_dict, (valence_dict, conduction_dict)
 
 
+def impurity_two_body_tensor(op, impurity_orbitals):
+    """Antisymmetrized two-body tensor of ``op`` on the impurity orbitals, in local indices.
+
+    ``A[a, b, c, d]`` over the sorted ``impurity_orbitals`` (local ``0 .. n_imp-1``), antisymmetric
+    in ``(a, b)`` and in ``(c, d)``, from every term ``c+_a c+_b c_c c_d`` of ``op`` whose four
+    orbitals are all impurity orbitals. The antisymmetrization makes it a property of the
+    operator rather than of how its terms happen to be stored, so norms taken from it are
+    basis-covariant. ``O(n_imp^4)``, never ``O(n_orb^4)``.
+    """
+    imp = sorted(impurity_orbitals)
+    local = {o: i for i, o in enumerate(imp)}
+    n = len(imp)
+    x = np.zeros((n, n, n, n), dtype=complex)
+    for process, value in op.items():
+        if len(process) != 4:
+            continue
+        orbs = [o for o, _ in process]
+        actions = "".join(a for _, a in process)
+        if actions != "ccaa" or any(o not in local for o in orbs):
+            continue
+        a, b, c, d = (local[o] for o in orbs)
+        x[a, b, c, d] += value
+    return x - x.transpose(1, 0, 2, 3) - x.transpose(0, 1, 3, 2) + x.transpose(1, 0, 3, 2)
+
+
+def _interaction_probes(two_body, m):
+    r"""Single-particle matrices built from the interaction that every joint symmetry of ``M`` and
+    ``U`` leaves invariant.
+
+    For a unitary ``W`` commuting with both the dressed one-body matrix ``M`` and the interaction,
+    each probe ``P`` satisfies ``W^\dagger P W = P``: the mean fields
+    ``X_rho[i, j] = sum_kl A[i, k, j, l] rho[l, k]`` for ``rho`` a function of ``M`` (``1``, ``M``,
+    ``M^2``), and the Gram matrices of the tensor's creator and annihilator sides. By Schur's lemma a
+    probe therefore cannot couple orbitals that such a symmetry separates, nor tell apart orbitals
+    it maps onto one another -- which is exactly what the one-body block structure asserts.
+    """
+    n = m.shape[0]
+    scale = float(np.max(np.abs(m), initial=0.0)) or 1.0
+    mn = m / scale
+    probes = [np.einsum("ikjl,lk->ij", two_body, rho) for rho in (np.eye(n), mn, mn @ mn)]
+    probes.append(np.einsum("iklm,jklm->ij", two_body, two_body.conj()))
+    probes.append(np.einsum("klim,kljm->ij", two_body, two_body.conj()))
+    return probes
+
+
+def reconcile_block_structure_with_interaction(block_structure, two_body, m, tol=1e-8):
+    r"""Make a one-body-derived GF block structure correct for a two-body interaction too.
+
+    :func:`impurity_block_structure` reads the blocks and their equivalences off the dressed
+    one-body matrix ``M`` alone, on the premise that the interaction has at least the symmetry of
+    ``M``. A Slater-Condon interaction does. A user-supplied one need not, and two things then go
+    wrong silently: a term couples blocks (``G`` has elements between them that the block
+    structure drops), or it distinguishes blocks ``M`` calls equivalent (their Green's functions
+    are copied from one another although they differ).
+
+    The test uses :func:`_interaction_probes`, which any symmetry shared by ``M`` and the
+    interaction leaves invariant. Conserved charges would be the wrong test: a Slater-Condon
+    tensor breaks every per-orbital charge and parity in every basis, and ``e_g`` / ``t_2g`` stay
+    apart by point-group symmetry alone.
+
+    * **Merging.** Two blocks are merged when a probe has an element between them.
+    * **Equivalences.** An identical (transposed) relation survives only between blocks the
+      merging left alone whose probe restrictions are equal (transposed); a particle-hole relation
+      only when the Gram diagonals agree, since particle-hole conjugation turns ``U`` into ``U``
+      plus one-body terms that the mean-field probes would see.
+
+    The test is necessary, not sufficient -- a probe can vanish between blocks by accident -- and
+    it errs in the safe direction for equivalences: dropping one costs a Green's function,
+    keeping a false one gives a wrong one.
+
+    Parameters
+    ----------
+    block_structure : BlockStructure
+        Blocks in local ``0 .. n_imp-1`` indices, from :func:`impurity_block_structure`.
+    two_body : numpy.ndarray, shape (n_imp, n_imp, n_imp, n_imp)
+        :func:`impurity_two_body_tensor` of the Hamiltonian, in the same (solver) basis.
+    m : numpy.ndarray, shape (n_imp, n_imp)
+        The dressed one-body matrix the block structure was derived from.
+    tol : float, optional
+        Relative tolerance on the probe elements.
+
+    Returns
+    -------
+    block_structure : BlockStructure
+        The same object when the interaction respects it.
+    changed : bool
+    """
+    from impurityModel.ed.block_structure import BlockStructure, get_inequivalent_blocks
+
+    if float(np.max(np.abs(two_body), initial=0.0)) == 0.0:
+        return block_structure, False
+    blocks = [list(b) for b in block_structure.blocks]
+    probes = _interaction_probes(two_body, np.asarray(m))
+    cutoffs = [tol * max(float(np.max(np.abs(p))), 1e-300) for p in probes]
+    orb_block = {o: bi for bi, b in enumerate(blocks) for o in b}
+
+    # --- merging, union-find over the original blocks
+    parent = list(range(len(blocks)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for probe, cutoff in zip(probes, cutoffs):
+        for i, j in zip(*np.nonzero(np.abs(probe) > cutoff)):
+            bi, bj = find(orb_block[int(i)]), find(orb_block[int(j)])
+            if bi != bj:
+                parent[bj] = bi
+    groups = {}
+    for bi in range(len(blocks)):
+        groups.setdefault(find(bi), []).append(bi)
+    merged = {bi for members in groups.values() if len(members) > 1 for bi in members}
+
+    def restricted(x, y, probe):
+        return probe[np.ix_(blocks[x], blocks[y])]
+
+    def agree(x, y, transpose=False, gram_only=False):
+        if x == y:
+            return True
+        if x in merged or y in merged or len(blocks[x]) != len(blocks[y]):
+            return False
+        chosen = list(zip(probes, cutoffs))
+        if gram_only:
+            chosen = chosen[3:]
+        for probe, cutoff in chosen:
+            px, py = restricted(x, x, probe), restricted(y, y, probe)
+            if gram_only:
+                px, py = np.diag(px), np.diag(py)
+            elif transpose:
+                py = py.T
+            if np.max(np.abs(px - py), initial=0.0) > cutoff:
+                return False
+        return True
+
+    kinds = (
+        ("identical_blocks", {}),
+        ("transposed_blocks", {"transpose": True}),
+        ("particle_hole_blocks", {"gram_only": True}),
+        ("particle_hole_transposed_blocks", {"gram_only": True}),
+    )
+    relations = {name: getattr(block_structure, name) for name, _ in kinds}
+    dropped = any(
+        not agree(x, y, **kw) for name, kw in kinds for x, members in enumerate(relations[name]) for y in members
+    )
+    if not merged and not dropped:
+        return block_structure, False
+
+    # --- rebuild: merged groups become single inequivalent blocks, the rest keep what survives
+    order = sorted(groups.values(), key=lambda members: min(o for bi in members for o in blocks[bi]))
+    new_index = {}
+    new_blocks = []
+    for members in order:
+        for bi in members:
+            new_index[bi] = len(new_blocks)
+        new_blocks.append(sorted(o for bi in members for o in blocks[bi]))
+    n_new = len(new_blocks)
+
+    # Each original identical class is re-partitioned, not just pruned: members the leader no
+    # longer matches may still match one another (both spins of a second orbital).
+    identical = [[] for _ in range(n_new)]
+    covered = set()
+    for x, members in enumerate(relations["identical_blocks"]):
+        if not members:
+            continue
+        classes = []
+        for y in [x] + [y for y in members if y != x]:
+            if y in merged:
+                continue
+            home = next((cls for cls in classes if agree(cls[0], y)), None)
+            if home is None:
+                classes.append([y])
+            else:
+                home.append(y)
+        for cls in classes:
+            identical[new_index[cls[0]]] = [new_index[y] for y in cls]
+            covered.update(new_index[y] for y in cls)
+    for nb in range(n_new):
+        if nb not in covered and not identical[nb]:
+            identical[nb] = [nb]
+    others = []
+    for name, kw in kinds[1:]:
+        new_rel = [[] for _ in range(n_new)]
+        for x, members in enumerate(relations[name]):
+            if x not in merged:
+                new_rel[new_index[x]] = [new_index[y] for y in members if agree(x, y, **kw)]
+        others.append(new_rel)
+    inequivalent = get_inequivalent_blocks(identical, *others)
+    return BlockStructure(new_blocks, identical, *others, inequivalent), True
+
+
 def group_orbitals_by_blocks(
     op, impurity_orbitals, valence_orbitals, conduction_orbitals, block_structure, n_orb=None, h0_matrix=None
 ):

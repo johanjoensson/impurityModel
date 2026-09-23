@@ -236,6 +236,7 @@ Read the one-particle Hamiltonian from a file: a self-describing flat `.h0`, or 
 | `n_impurity_orbitals` | count | `None` | Impurity block size, for the legacy bare-integer format only -- it records no orbital layout. Validated against the file's sparsity pattern. |
 | `contains_soc` | bool | `None` | Cross-check against a .h0 header, never an override. The header treats an absent value as *unknown*, not false, and requesting a non-zero shell `soc` against an unknown or true value is a hard error -- this exact SOC double-counting has shipped once already. |
 | `energy_reference` | enum | `None` | Cross-check against the header. 'absolute' is refused for any double-counting scheme, sector walk or Fermi-centred mesh: the bath valence/conduction split is taken from sign(h[o,o]) and the DFT reference filling from mu_chem = 0, so an offset zero silently re-partitions the bath into a different model. Choices: `fermi`, `absolute`. |
+| `spin` | enum | `'explicit'` | How the file's orbitals relate to spin. 'explicit': every orbital is a spin-orbital, as written. 'degenerate': the file holds SPATIAL orbitals only (a spinless model Hamiltonian), and each is copied to both spins, spin down first -- impurity block [down, up], then the bath's down copies, then its up copies. .h0 files only. Never inferred from an odd impurity block: a file missing its second spin would otherwise be silently repaired into a different model. Choices: `explicit`, `degenerate`. |
 
 ## `[hamiltonian.matrix]`
 
@@ -245,6 +246,38 @@ Build from the full one-particle solver matrix, impurity block first. The impuri
 | --- | --- | --- | --- |
 | `h` | matrix | **required** | Full (n, n) one-particle Hamiltonian. |
 | `n_impurity_orbitals` | count | **required** | Leading impurity block dimension. |
+
+## `[interaction.core]`
+
+Core-shell Slater-Condon integrals for a spectroscopy run whose VALENCE interaction is one of the model forms (kanamori, density_density, terms, u4_file). With [interaction.slater] give these there instead; declaring both is an error.
+
+| Key | Kind | Default | Description |
+| --- | --- | --- | --- |
+| `F_cc` | energy list | `None` | Core-core F^k. Length 2*l_c + 1. |
+| `F_cv` | energy list | `None` | Core-valence direct F^k. Length 2*min(l_v, l_c) + 1. |
+| `G_cv` | energy list | `None` | Core-valence exchange G^k. Length l_v + l_c + 1. |
+
+## `[interaction.density_density]`
+
+Density-density interaction, H = sum_(a,b) U_opp[a,b] n_a,up n_b,dn + sum_(a<b,s) U_same[a,b] n_a,s n_b,s. Both matrices symmetric; each unordered same-spin pair is counted once.
+
+| Key | Kind | Default | Description |
+| --- | --- | --- | --- |
+| `U_opposite_spin` | energy matrix | **required** | n x n opposite-spin repulsion; its diagonal is the intra-orbital Hubbard U. |
+| `U_same_spin` | energy matrix | `None` | n x n same-spin repulsion, zero diagonal (Pauli). Zero when absent. |
+| `orbital_basis` | enum | `None` | Which orbitals the indices refer to, on an l >= 1 shell (required there, meaningless on a model shell or l = 0). The interaction is defined among REAL orbitals and is not invariant under a complex rotation, so this cannot be defaulted. 'real_cubic': the cubic harmonics, in the O_h level order of atomic_physics.get_spherical_2_cubic_matrix (d: e_g, e_g, t_2g, t_2g, t_2g); the tensor is rotated to the shell's spherical (l, s, m) basis. 'as_hamiltonian': the Hamiltonian file's own impurity orbitals, in its order. Choices: `real_cubic`, `as_hamiltonian`. |
+
+## `[interaction.kanamori]`
+
+Hubbard-Kanamori interaction on the valence shell's n orbitals: H = U sum_a n_a,up n_a,dn + U' sum_(a!=b) n_a,up n_b,dn + (U'-J) sum_(a<b,s) n_a,s n_b,s - J sum_(a!=b) c+_a,up c_a,dn c+_b,dn c_b,up + J_pair sum_(a!=b) c+_a,up c+_a,dn c_b,dn c_b,up. One orbital is the single-band Hubbard U n_up n_dn. Each parameter is independently settable, so the rotationally invariant point is a default rather than a constraint.
+
+| Key | Kind | Default | Description |
+| --- | --- | --- | --- |
+| `U` | energy | **required** | Intra-orbital repulsion. |
+| `J` | energy | `0.0` | Hund's exchange: the spin flip, and the same-spin reduction U' - J. |
+| `U_prime` | energy | `None` | Inter-orbital repulsion. Defaults to U - 2J. |
+| `J_pair` | energy | `None` | Pair hopping. Defaults to J. |
+| `orbital_basis` | enum | `None` | Which orbitals the indices refer to, on an l >= 1 shell (required there, meaningless on a model shell or l = 0). The interaction is defined among REAL orbitals and is not invariant under a complex rotation, so this cannot be defaulted. 'real_cubic': the cubic harmonics, in the O_h level order of atomic_physics.get_spherical_2_cubic_matrix (d: e_g, e_g, t_2g, t_2g, t_2g); the tensor is rotated to the shell's spherical (l, s, m) basis. 'as_hamiltonian': the Hamiltonian file's own impurity orbitals, in its order. Choices: `real_cubic`, `as_hamiltonian`. |
 
 ## `[interaction.none]`
 
@@ -263,13 +296,26 @@ Slater-Condon parameters. Array lengths are DERIVED from the shells' angular mom
 | `F_cv` | energy list | `None` | Core-valence direct F^k (was Fpd), indexed by k. Length 2*min(l_v, l_c) + 1, which is the familiar 2*l_c + 1 whenever the core shell is the lower one. |
 | `G_cv` | energy list | `None` | Core-valence exchange G^k (was Gpd), indexed by k. Length l_v + l_c + 1 -- the same as the familiar 2*l_c + 2 at every dipole-allowed edge, and longer only for a shell pair more than one apart, which the roles allow but no transition operator does. |
 
-## `[interaction.u4_file]`
+## `[interaction.terms]`
 
-Read the four-index Coulomb tensor from a file. Out-of-line only: nobody hand-writes n_imp^4 numbers, and the RSPt index convention must be named at the reference site.
+Explicit interaction matrix elements <pq|V|rs> (physicists' notation: electron 1 goes p -> r, electron 2 goes q -> s), H = 1/2 sum <pq|V|rs> c+_p c+_q c_s c_r. Each entry is [p, q, r, s, value] or [p, q, r, s, re, im]. The fully general form, for teaching and for interactions no parametrisation covers.
 
 | Key | Kind | Default | Description |
 | --- | --- | --- | --- |
-| `path` | path | **required** | A .npy holding the rank-4 tensor in RSPt convention. |
+| `spatial` | energy terms | `None` | Elements between SPATIAL orbitals 0..n-1, expanded over spin so that the interaction is spin-rotation invariant: <pq|V|rs> applies to every spin pair, spin carried along each electron line. U n_up n_dn on orbital 0 is [0, 0, 0, 0, U]. |
+| `spin_orbital` | energy terms | `None` | Elements between SPIN-orbitals 0..2n-1 (spin-orbital s*n + p, spin down first), taken literally: for spin-dependent interactions. Added to the expanded `spatial` list. |
+| `complete_symmetries` | bool | `True` | Fill in each element's images <qp|V|sr> = <pq|V|rs> and <rs|V|pq> = <pq|V|rs>*, so each distinct element is written once. Writing an image as well is harmless (it is filled, never added); writing it with a DIFFERENT value is an error. false takes the lists literally, which is rarely what you want: a missing Hermitian partner is refused. |
+| `orbital_basis` | enum | `None` | Which orbitals the indices refer to, on an l >= 1 shell (required there, meaningless on a model shell or l = 0). The interaction is defined among REAL orbitals and is not invariant under a complex rotation, so this cannot be defaulted. 'real_cubic': the cubic harmonics, in the O_h level order of atomic_physics.get_spherical_2_cubic_matrix (d: e_g, e_g, t_2g, t_2g, t_2g); the tensor is rotated to the shell's spherical (l, s, m) basis. 'as_hamiltonian': the Hamiltonian file's own impurity orbitals, in its order. Choices: `real_cubic`, `as_hamiltonian`. |
+
+## `[interaction.u4_file]`
+
+Read the four-index Coulomb tensor from a .npy file, in [units].energy, in RSPt convention: u4[i,j,k,l] = <ij|V|kl>, H = 1/2 sum u4[i,j,k,l] c+_i c+_j c_l c_k. For a tensor too large to write out; small ones read better as [interaction.terms].
+
+| Key | Kind | Default | Description |
+| --- | --- | --- | --- |
+| `path` | path | **required** | The .npy file. |
+| `index_space` | enum | `'spin_orbital'` | 'spin_orbital': the tensor spans the 2n impurity spin-orbitals (spin-major, down first), taken as written. 'spatial': it spans the n spatial orbitals and is expanded over spin, like [interaction.terms].spatial. Choices: `spin_orbital`, `spatial`. |
+| `orbital_basis` | enum | `None` | Which orbitals the indices refer to, on an l >= 1 shell (required there, meaningless on a model shell or l = 0). The interaction is defined among REAL orbitals and is not invariant under a complex rotation, so this cannot be defaulted. 'real_cubic': the cubic harmonics, in the O_h level order of atomic_physics.get_spherical_2_cubic_matrix (d: e_g, e_g, t_2g, t_2g, t_2g); the tensor is rotated to the shell's spherical (l, s, m) basis. 'as_hamiltonian': the Hamiltonian file's own impurity orbitals, in its order. Choices: `real_cubic`, `as_hamiltonian`. |
 
 ## `[many_body_basis]`
 
@@ -336,7 +382,8 @@ One correlated or core shell. An array of tables, so a shell's angular momentum 
 
 | Key | Kind | Default | Description |
 | --- | --- | --- | --- |
-| `l` | count | **required** | Angular momentum. UNRESTRICTED by this schema, and the solver now follows: any dipole-allowed (core l, valence l) pair is assembled on the shells declared here. What the solver can actually do is still checked separately -- see inputformat.capabilities. |
+| `l` | count | `None` | Angular momentum. UNRESTRICTED by this schema, and the solver now follows: any dipole-allowed (core l, valence l) pair is assembled on the shells declared here. What the solver can actually do is still checked separately -- see inputformat.capabilities. Give exactly one of `l` and `n_orbitals`. |
+| `n_orbitals` | count | `None` | Number of spatial orbitals of a MODEL shell -- one with no angular momentum, such as a single-orbital Anderson model or a two-orbital Hubbard model. The shell has 2*n_orbitals spin-orbitals, spin down first. Instead of `l`, never with it: an l shell has 2l+1 orbitals and a spherical structure, a model shell only has its count. Valence shells only, and not for spectroscopy, whose transition operators need l; nor with [interaction.slater], whose integrals are defined on an l shell. |
 | `role` | enum | **required** | REQUIRED and never inferred from `l`. The inference 'l=1 means core, l=2 means valence' is precisely the hardcoding this format has to outlive. Choices: `core`, `valence`. |
 | `n_bath` | count | *deduced* | Total bath states for this shell. Deduced from the .h0 header (n_orb minus the impurity block) for the shell the file describes; 0 for every other shell, since a shell with no Hamiltonian has no fitted bath -- the normal case for a core shell. Required for any non-.h0 source, none of which records a bath layout. |
 | `n_valence_bath` | count | *deduced* | Bath states that start occupied. Must not exceed n_bath. Deduced from the .h0 header's valence_bath/conduction_bath lists when present; otherwise from the bath on-site energies, h[o,o] < 0 being valence -- the same rule solver_basis.classify_bath_occupation already applies. 0 for a shell the file does not describe. |

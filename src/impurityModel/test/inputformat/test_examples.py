@@ -13,7 +13,7 @@ from impurityModel.inputformat.build import build
 from impurityModel.inputformat.reader import load_input
 
 REPO = Path(__file__).resolve().parents[4]
-EXAMPLES = sorted((REPO / "examples").glob("*.toml")) if (REPO / "examples").is_dir() else []
+EXAMPLES = sorted((REPO / "examples").glob("**/*.toml")) if (REPO / "examples").is_dir() else []
 SCRIPTS = sorted((REPO / "scripts").glob("run_*.sh")) if (REPO / "scripts").is_dir() else []
 
 pytestmark = pytest.mark.skipif(not EXAMPLES, reason="examples/ is not part of an installed package")

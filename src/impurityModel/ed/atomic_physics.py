@@ -16,7 +16,7 @@ from sympy import Rational
 from impurityModel.ed.operator_algebra import addOps
 
 
-def dc_MLFT(lv, n_val_i, c, Fvv, lc=None, n_core_i=None, Fcv=None, Gcv=None):
+def dc_MLFT(lv, n_val_i, c, Fvv, lc=None, n_core_i=None, Fcv=None, Gcv=None, *, Uvv=None):
     r"""
     Return double counting (DC) in multiplet ligand field theory.
 
@@ -45,6 +45,10 @@ def dc_MLFT(lv, n_val_i, c, Fvv, lc=None, n_core_i=None, Fcv=None, Gcv=None):
         Slater integrals :math:`F^k_{cv}`, ``2*lc + 1`` components.
     Gcv : sequence of float, optional
         Slater integrals :math:`G^k_{cv}`, ``2*lc + 2`` components.
+    Uvv : float, optional
+        The average valence-valence repulsion itself, for a valence interaction that is not
+        Slater-Condon (see :func:`impurityModel.ed.interaction_models.mlft_uvv`). Pass ``Fvv=None``
+        with it.
 
     Returns
     -------
@@ -63,13 +67,15 @@ def dc_MLFT(lv, n_val_i, c, Fvv, lc=None, n_core_i=None, Fcv=None, Gcv=None):
         raise ValueError(f"valence (l={lv}) occupation should be an integer, got {n_val_i}")
     if n_core_i is not None and int(n_core_i) != n_core_i:
         raise ValueError(f"core (l={lc}) occupation should be an integer, got {n_core_i}")
-    if len(Fvv) != 2 * lv + 1:
-        raise ValueError(f"Fvv has {len(Fvv)} components, but l_valence={lv} requires {2 * lv + 1}.")
-
-    # Average valence-valence repulsion: F^0 minus the spherical average of the higher F^k.
-    Uvv = Fvv[0] - sum(
-        float(coeff) * Fvv[k] for k, coeff in zip(intra_orbital_k_values(lv), intra_orbital_coefficients(lv))
-    )
+    if (Fvv is None) == (Uvv is None):
+        raise ValueError("dc_MLFT needs exactly one of Fvv and Uvv.")
+    if Fvv is not None:
+        if len(Fvv) != 2 * lv + 1:
+            raise ValueError(f"Fvv has {len(Fvv)} components, but l_valence={lv} requires {2 * lv + 1}.")
+        # Average valence-valence repulsion: F^0 minus the spherical average of the higher F^k.
+        Uvv = Fvv[0] - sum(
+            float(coeff) * Fvv[k] for k, coeff in zip(intra_orbital_k_values(lv), intra_orbital_coefficients(lv))
+        )
 
     core_given = (lc, n_core_i, Fcv, Gcv)
     if all(x is None for x in core_given):
@@ -111,9 +117,12 @@ def uj_from_u4(u4, tol=1e-8):
     spherical, spin-collinear Coulomb tensor.
 
     ``u4`` must be in the RSPt convention (``u4[i,j,k,l] = <ij|V|kl>``, see
-    :func:`getUop_from_rspt_u4`), in the spherical-harmonics basis, with the spin-major
-    ordering :func:`impurityModel.ed.operator_algebra.c2i` produces: the first half of the
-    spin-orbital indices is one spin (all orbitals), the second half the other.
+    :func:`getUop_from_rspt_u4`), with the spin-major ordering
+    :func:`impurityModel.ed.operator_algebra.c2i` produces: the first half of the spin-orbital
+    indices is one spin (all orbitals), the second half the other. The *orbital* basis is free:
+    both averages are traces over pair space (the exchange one taken on the antisymmetrized
+    element), so any spin-independent unitary within the shell leaves them unchanged, and a
+    model shell with no spherical structure is as valid an input as a Slater-Condon one.
 
     This is the Anisimov / LDA+U spherical average that pairs with :math:`\bar U = F^0` in the
     FLL and AMF double-counting functionals -- not the bare average exchange integral. It is
@@ -175,9 +184,15 @@ def uj_from_u4(u4, tol=1e-8):
     if n_orb == 1:
         J = 0.0
     else:
+        # U - J is the mean same-spin pair energy <ab|V|ab> - <ab|V|ba>, read from the
+        # *antisymmetrized* element. The operator fixes only that combination: a tensor with its
+        # Pauli-forbidden entries dropped (getUop's, and every model builder's) describes the same
+        # operator as one that keeps them, but after a rotation the two differ entry by entry in
+        # the same-spin block. The raw exchange entries would then give a basis-dependent J.
         off_diag = ~np.eye(n_orb, dtype=bool)
-        exchange = u4[down[:, None], down[None, :], down[None, :], down[:, None]]
-        J = float(np.real(U - np.mean(direct[off_diag]) + np.mean(exchange[off_diag])))
+        a, b = down[:, None], down[None, :]
+        same_spin = 0.5 * (u4[a, b, a, b] - u4[a, b, b, a] - u4[b, a, a, b] + u4[b, a, b, a])
+        J = float(np.real(U - np.mean(same_spin[off_diag])))
     return U, J
 
 

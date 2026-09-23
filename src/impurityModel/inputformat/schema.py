@@ -123,6 +123,11 @@ class Kind(Enum):
     VERSION = "version"
     #: A list of free-text strings (``required_features``).
     STRING_LIST = "string list"
+    #: A small inline matrix of energies, ``[[a, b], [c, d]]``, converted elementwise.
+    ENERGY_MATRIX = "energy matrix"
+    #: A list of interaction matrix elements ``[p, q, r, s, re]`` or ``[p, q, r, s, re, im]``:
+    #: four integer indices, then an energy. Only the energy columns are converted.
+    ENERGY_TERMS = "energy terms"
 
 
 @dataclass(frozen=True)
@@ -200,7 +205,7 @@ CALCULATIONS = ("spectroscopy", "selfenergy", "susceptibility")
 HAMILTONIAN_SOURCES = ("file", "crystal_field", "archive", "blocks", "matrix")
 
 #: Interaction variants, as sub-tables of ``[interaction]``.
-INTERACTION_KINDS = ("slater", "u4_file", "none")
+INTERACTION_KINDS = ("slater", "kanamori", "density_density", "terms", "u4_file", "none")
 
 #: Double-counting variants, as sub-tables of ``[double_counting]``. ``mlft`` is not a
 #: double-counting *matrix* at all -- it is RSPt's charge-transfer correction ``c``, folded
@@ -387,6 +392,19 @@ _TABLE_LIST += [
                 "an offset zero silently re-partitions the bath into a different model.",
                 choices=("fermi", "absolute"),
             ),
+            Key(
+                "spin",
+                Kind.ENUM,
+                "explicit",
+                "How the file's orbitals relate to spin. 'explicit': every orbital is a "
+                "spin-orbital, as written. 'degenerate': the file holds SPATIAL orbitals only "
+                "(a spinless model Hamiltonian), and each is copied to both spins, spin down "
+                "first -- impurity block [down, up], then the bath's down copies, then its up "
+                "copies. .h0 files only. Never inferred from an odd impurity block: a file "
+                "missing its second spin would otherwise be silently repaired into a "
+                "different model.",
+                choices=("explicit", "degenerate"),
+            ),
         ),
         variant_of="hamiltonian",
     ),
@@ -513,12 +531,25 @@ _TABLE_LIST += [
             Key(
                 "l",
                 Kind.COUNT,
-                UNSET,
+                None,
                 "Angular momentum. UNRESTRICTED by this schema, and the solver now follows: "
                 "any dipole-allowed (core l, valence l) pair is assembled on the shells "
                 "declared here. What the solver can actually do is still checked separately "
-                "-- see inputformat.capabilities.",
+                "-- see inputformat.capabilities. Give exactly one of `l` and `n_orbitals`.",
                 minimum=0,
+            ),
+            Key(
+                "n_orbitals",
+                Kind.COUNT,
+                None,
+                "Number of spatial orbitals of a MODEL shell -- one with no angular momentum, "
+                "such as a single-orbital Anderson model or a two-orbital Hubbard model. The "
+                "shell has 2*n_orbitals spin-orbitals, spin down first. Instead of `l`, never "
+                "with it: an l shell has 2l+1 orbitals and a spherical structure, a model shell "
+                "only has its count. Valence shells only, and not for spectroscopy, whose "
+                "transition operators need l; nor with [interaction.slater], whose integrals "
+                "are defined on an l shell.",
+                minimum=1,
             ),
             Key(
                 "role",
@@ -606,11 +637,158 @@ _TABLE_LIST += [
         variant_of="interaction",
     ),
     Table(
-        "interaction.u4_file",
-        "Read the four-index Coulomb tensor from a file. Out-of-line only: nobody hand-writes "
-        "n_imp^4 numbers, and the RSPt index convention must be named at the reference site.",
-        (Key("path", Kind.PATH, UNSET, "A .npy holding the rank-4 tensor in RSPt convention."),),
+        "interaction.kanamori",
+        "Hubbard-Kanamori interaction on the valence shell's n orbitals: "
+        "H = U sum_a n_a,up n_a,dn + U' sum_(a!=b) n_a,up n_b,dn + (U'-J) sum_(a<b,s) n_a,s n_b,s "
+        "- J sum_(a!=b) c+_a,up c_a,dn c+_b,dn c_b,up + J_pair sum_(a!=b) c+_a,up c+_a,dn c_b,dn c_b,up. "
+        "One orbital is the single-band Hubbard U n_up n_dn. Each parameter is independently "
+        "settable, so the rotationally invariant point is a default rather than a constraint.",
+        (
+            Key("U", Kind.ENERGY, UNSET, "Intra-orbital repulsion."),
+            Key("J", Kind.ENERGY, 0.0, "Hund's exchange: the spin flip, and the same-spin reduction U' - J."),
+            Key("U_prime", Kind.ENERGY, None, "Inter-orbital repulsion. Defaults to U - 2J."),
+            Key("J_pair", Kind.ENERGY, None, "Pair hopping. Defaults to J."),
+            Key(
+                "orbital_basis",
+                Kind.ENUM,
+                None,
+                "Which orbitals the indices refer to, on an l >= 1 shell (required there, "
+                "meaningless on a model shell or l = 0). The interaction is defined among REAL "
+                "orbitals and is not invariant under a complex rotation, so this cannot be "
+                "defaulted. 'real_cubic': the cubic harmonics, in the O_h level order of "
+                "atomic_physics.get_spherical_2_cubic_matrix (d: e_g, e_g, t_2g, t_2g, t_2g); "
+                "the tensor is rotated to the shell's spherical (l, s, m) basis. "
+                "'as_hamiltonian': the Hamiltonian file's own impurity orbitals, in its order.",
+                choices=("real_cubic", "as_hamiltonian"),
+            ),
+        ),
         variant_of="interaction",
+    ),
+    Table(
+        "interaction.density_density",
+        "Density-density interaction, H = sum_(a,b) U_opp[a,b] n_a,up n_b,dn + "
+        "sum_(a<b,s) U_same[a,b] n_a,s n_b,s. Both matrices symmetric; each unordered "
+        "same-spin pair is counted once.",
+        (
+            Key(
+                "U_opposite_spin",
+                Kind.ENERGY_MATRIX,
+                UNSET,
+                "n x n opposite-spin repulsion; its diagonal is the intra-orbital Hubbard U.",
+            ),
+            Key(
+                "U_same_spin",
+                Kind.ENERGY_MATRIX,
+                None,
+                "n x n same-spin repulsion, zero diagonal (Pauli). Zero when absent.",
+            ),
+            Key(
+                "orbital_basis",
+                Kind.ENUM,
+                None,
+                "Which orbitals the indices refer to, on an l >= 1 shell (required there, "
+                "meaningless on a model shell or l = 0). The interaction is defined among REAL "
+                "orbitals and is not invariant under a complex rotation, so this cannot be "
+                "defaulted. 'real_cubic': the cubic harmonics, in the O_h level order of "
+                "atomic_physics.get_spherical_2_cubic_matrix (d: e_g, e_g, t_2g, t_2g, t_2g); "
+                "the tensor is rotated to the shell's spherical (l, s, m) basis. "
+                "'as_hamiltonian': the Hamiltonian file's own impurity orbitals, in its order.",
+                choices=("real_cubic", "as_hamiltonian"),
+            ),
+        ),
+        variant_of="interaction",
+    ),
+    Table(
+        "interaction.terms",
+        "Explicit interaction matrix elements <pq|V|rs> (physicists' notation: electron 1 "
+        "goes p -> r, electron 2 goes q -> s), H = 1/2 sum <pq|V|rs> c+_p c+_q c_s c_r. Each "
+        "entry is [p, q, r, s, value] or [p, q, r, s, re, im]. The fully general form, for "
+        "teaching and for interactions no parametrisation covers.",
+        (
+            Key(
+                "spatial",
+                Kind.ENERGY_TERMS,
+                None,
+                "Elements between SPATIAL orbitals 0..n-1, expanded over spin so that the "
+                "interaction is spin-rotation invariant: <pq|V|rs> applies to every spin pair, "
+                "spin carried along each electron line. U n_up n_dn on orbital 0 is [0, 0, 0, 0, U].",
+            ),
+            Key(
+                "spin_orbital",
+                Kind.ENERGY_TERMS,
+                None,
+                "Elements between SPIN-orbitals 0..2n-1 (spin-orbital s*n + p, spin down "
+                "first), taken literally: for spin-dependent interactions. Added to the "
+                "expanded `spatial` list.",
+            ),
+            Key(
+                "complete_symmetries",
+                Kind.BOOL,
+                True,
+                "Fill in each element's images <qp|V|sr> = <pq|V|rs> and <rs|V|pq> = <pq|V|rs>*, "
+                "so each distinct element is written once. Writing an image as well is "
+                "harmless (it is filled, never added); writing it with a DIFFERENT value is an "
+                "error. false takes the lists literally, which is rarely what you want: a "
+                "missing Hermitian partner is refused.",
+            ),
+            Key(
+                "orbital_basis",
+                Kind.ENUM,
+                None,
+                "Which orbitals the indices refer to, on an l >= 1 shell (required there, "
+                "meaningless on a model shell or l = 0). The interaction is defined among REAL "
+                "orbitals and is not invariant under a complex rotation, so this cannot be "
+                "defaulted. 'real_cubic': the cubic harmonics, in the O_h level order of "
+                "atomic_physics.get_spherical_2_cubic_matrix (d: e_g, e_g, t_2g, t_2g, t_2g); "
+                "the tensor is rotated to the shell's spherical (l, s, m) basis. "
+                "'as_hamiltonian': the Hamiltonian file's own impurity orbitals, in its order.",
+                choices=("real_cubic", "as_hamiltonian"),
+            ),
+        ),
+        variant_of="interaction",
+    ),
+    Table(
+        "interaction.u4_file",
+        "Read the four-index Coulomb tensor from a .npy file, in [units].energy, in RSPt "
+        "convention: u4[i,j,k,l] = <ij|V|kl>, H = 1/2 sum u4[i,j,k,l] c+_i c+_j c_l c_k. For a "
+        "tensor too large to write out; small ones read better as [interaction.terms].",
+        (
+            Key("path", Kind.PATH, UNSET, "The .npy file."),
+            Key(
+                "index_space",
+                Kind.ENUM,
+                "spin_orbital",
+                "'spin_orbital': the tensor spans the 2n impurity spin-orbitals (spin-major, "
+                "down first), taken as written. 'spatial': it spans the n spatial orbitals and "
+                "is expanded over spin, like [interaction.terms].spatial.",
+                choices=("spin_orbital", "spatial"),
+            ),
+            Key(
+                "orbital_basis",
+                Kind.ENUM,
+                None,
+                "Which orbitals the indices refer to, on an l >= 1 shell (required there, "
+                "meaningless on a model shell or l = 0). The interaction is defined among REAL "
+                "orbitals and is not invariant under a complex rotation, so this cannot be "
+                "defaulted. 'real_cubic': the cubic harmonics, in the O_h level order of "
+                "atomic_physics.get_spherical_2_cubic_matrix (d: e_g, e_g, t_2g, t_2g, t_2g); "
+                "the tensor is rotated to the shell's spherical (l, s, m) basis. "
+                "'as_hamiltonian': the Hamiltonian file's own impurity orbitals, in its order.",
+                choices=("real_cubic", "as_hamiltonian"),
+            ),
+        ),
+        variant_of="interaction",
+    ),
+    Table(
+        "interaction.core",
+        "Core-shell Slater-Condon integrals for a spectroscopy run whose VALENCE interaction is "
+        "one of the model forms (kanamori, density_density, terms, u4_file). With "
+        "[interaction.slater] give these there instead; declaring both is an error.",
+        (
+            Key("F_cc", Kind.ENERGY_LIST, None, "Core-core F^k. Length 2*l_c + 1."),
+            Key("F_cv", Kind.ENERGY_LIST, None, "Core-valence direct F^k. Length 2*min(l_v, l_c) + 1."),
+            Key("G_cv", Kind.ENERGY_LIST, None, "Core-valence exchange G^k. Length l_v + l_c + 1."),
+        ),
     ),
     Table(
         "interaction.none",

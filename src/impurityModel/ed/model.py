@@ -96,6 +96,45 @@ def atomic_u4(l: int, slater) -> np.ndarray:
     return u4
 
 
+def _spin_doubled_bath_indices(indices, n_spatial_imp, n_spatial_total):
+    """Where spatial bath orbitals land after :func:`spin_double_solver_matrix`: down copies, then up."""
+    n_bath = n_spatial_total - n_spatial_imp
+    first = [2 * n_spatial_imp + (i - n_spatial_imp) for i in indices]
+    return tuple(first + [i + n_bath for i in first])
+
+
+def spin_double_solver_matrix(h_spatial, n_spatial_imp):
+    """Copy a spinless one-particle matrix (impurity block first) to both spins.
+
+    The layout keeps the impurity block first and pairs spins the way every consumer of the
+    solver matrix expects them (``spin_pairs``: within a block, orbital ``k`` pairs with
+    ``k + n/2``, spin down first)::
+
+        [imp_down (n), imp_up (n), bath_down (n_b), bath_up (n_b)]
+
+    Parameters
+    ----------
+    h_spatial : numpy.ndarray, shape (n + n_b, n + n_b)
+        Spinless Hamiltonian, the ``n`` impurity orbitals first.
+    n_spatial_imp : int
+        ``n``, the number of spatial impurity orbitals.
+
+    Returns
+    -------
+    h : numpy.ndarray, shape (2(n + n_b), 2(n + n_b))
+    n_imp : int
+        ``2n``, the impurity spin-orbital count.
+    """
+    h_spatial = np.asarray(h_spatial, dtype=complex)
+    n_total = h_spatial.shape[0]
+    n, n_bath = n_spatial_imp, n_total - n_spatial_imp
+    h = np.zeros((2 * n_total, 2 * n_total), dtype=complex)
+    for spin in range(2):
+        index = [spin * n + i for i in range(n)] + [2 * n + spin * n_bath + i for i in range(n_bath)]
+        h[np.ix_(index, index)] = h_spatial
+    return h, 2 * n
+
+
 @dataclass(frozen=True)
 class ImpurityModel:
     """The physics of one impurity problem: ``h0``, ``u4`` and the orbital layout.
@@ -246,6 +285,8 @@ class ImpurityModel:
         xi: float = 0.0,
         h_field=(0.0, 0.0, 0.0),
         allow_noninteracting: bool = False,
+        u4: Optional[np.ndarray] = None,
+        spin_degenerate: bool = False,
     ) -> "ImpurityModel":
         """Build a model from a ``.h0`` file (or the legacy bare-integer form).
 
@@ -278,6 +319,13 @@ class ImpurityModel:
         allow_noninteracting : bool, optional
             Permit ``u4=None``. Off by default, because a model with no Coulomb tensor runs a
             *non-interacting* solve to completion and prints a plausible-looking self-energy.
+        u4 : numpy.ndarray, optional
+            The impurity Coulomb tensor itself (RSPt convention, over the impurity
+            spin-orbitals -- after spin doubling, when that applies), for an interaction that is
+            not Slater-Condon. Mutually exclusive with ``slater``.
+        spin_degenerate : bool, optional
+            The file holds spatial orbitals only; copy each to both spins with
+            :func:`spin_double_solver_matrix`. ``.h0`` files only, and never inferred.
 
         Returns
         -------
@@ -301,11 +349,61 @@ class ImpurityModel:
             ``spin_ordering`` (files written before the .h0 format tracked it) also refuses,
             rather than assume it.
         """
+        if u4 is not None and slater is not None:
+            raise ValueError(
+                f"{path}: pass either slater= or u4=, not both; they are two descriptions of one interaction."
+            )
+        if spin_degenerate and not h0_format.is_h0_format(path):
+            raise ValueError(
+                f"{path}: spin_degenerate needs a self-describing .h0 file; a legacy flat file does not "
+                "record which orbitals are the impurity, so its spatial layout cannot be doubled safely."
+            )
         parsed = (
             h0_format.read_h0_file(path)
             if h0_format.is_h0_format(path)
             else h0_format.read_legacy_flat_h0(path, _require_n_imp(path, n_impurity_orbitals))
         )
+        if spin_degenerate:
+            if xi or any(h_field):
+                raise ValueError(
+                    f"{path}: xi/h_field act on spin, and a spin-degenerate file is spinless; build the "
+                    "spin-orbital Hamiltonian explicitly instead."
+                )
+            if l is not None and 2 * int(l) + 1 != parsed.n_imp:
+                raise ValueError(
+                    f"{path}: the file's impurity block holds {parsed.n_imp} spatial orbitals, but l={l} "
+                    f"has {2 * int(l) + 1}. One of the two is wrong; refusing to guess."
+                )
+            n_spatial = parsed.n_imp
+            h, n_imp = spin_double_solver_matrix(parsed.to_matrix(), n_spatial)
+            bath_valence_conduction = None
+            if parsed.valence_bath is not None and parsed.conduction_bath is not None:
+                bath_valence_conduction = tuple(
+                    _spin_doubled_bath_indices(indices, n_spatial, parsed.n_orb)
+                    for indices in (parsed.valence_bath, parsed.conduction_bath)
+                )
+            if u4 is None and slater is None:
+                slater = (parsed.interaction or {}).get("F")
+                if slater is not None:
+                    l = (parsed.interaction or {}).get("l", l)
+            if u4 is None and slater is not None:
+                if l is None:
+                    raise ValueError(f"{path}: Slater parameters need the shell's l; pass l=.")
+                u4 = atomic_u4(int(l), slater)
+            if u4 is None and not allow_noninteracting:
+                raise ValueError(
+                    f"{path}: no Coulomb interaction available (pass u4= or slater=, or "
+                    "allow_noninteracting=True if a non-interacting model is genuinely wanted)."
+                )
+            if u4 is not None and np.shape(u4) != (n_imp,) * 4:
+                raise ValueError(f"{path}: u4 must span the {n_imp} impurity spin-orbitals, got shape {np.shape(u4)}.")
+            return cls.from_solver_matrix(
+                h,
+                n_imp,
+                u4=u4,
+                rot_to_spherical=np.eye(n_imp, dtype=complex),
+                bath_valence_conduction=bath_valence_conduction,
+            )
 
         if parsed.contains_soc is not False and xi:
             reason = (
@@ -319,9 +417,14 @@ class ImpurityModel:
             )
 
         interaction = parsed.interaction or {}
+        if interaction and interaction.get("kind", "slater") != "slater":
+            raise ValueError(
+                f"{path}: the header's interaction block is of kind {interaction.get('kind')!r}; only "
+                "'slater' is understood there. Give the interaction to the reader instead (u4=)."
+            )
         if l is None:
             l = interaction.get("l", parsed.header.get("impurity_l"))
-        if slater is None:
+        if slater is None and u4 is None:
             slater = interaction.get("F")
 
         n_imp = parsed.n_imp
@@ -359,7 +462,10 @@ class ImpurityModel:
                     "operator cannot be mapped into the flat matrix unambiguously; refusing."
                 )
 
-        if slater is None:
+        if u4 is not None:
+            if np.shape(u4) != (n_imp,) * 4:
+                raise ValueError(f"{path}: u4 must span the {n_imp} impurity spin-orbitals, got shape {np.shape(u4)}.")
+        elif slater is None:
             if not allow_noninteracting:
                 raise ValueError(
                     f"{path}: no Coulomb interaction available -- the header carries no 'interaction' "
@@ -408,6 +514,7 @@ class ImpurityModel:
         *,
         valence_l: int,
         core_l: Optional[int] = None,
+        valence_u4: Optional[np.ndarray] = None,
     ) -> "ImpurityModel":
         """Build a multi-shell (2p core + 3d correlated) interacting model from an ``h0`` file.
 
@@ -449,7 +556,8 @@ class ImpurityModel:
             ``{l: nominal_occupation}``, used for the double-counting term.
         slater_condon : sequence of sequence of float
             ``(F_vv, F_cc, F_cv, G_cv)`` Slater-Condon parameters. The three core-valence
-            arrays are ignored when ``core_l`` is ``None``.
+            arrays are ignored when ``core_l`` is ``None``. ``F_vv`` is ``None`` when
+            ``valence_u4`` is given.
         socs : sequence of float
             ``(xi_core, xi_valence)`` spin-orbit couplings. The first entry is ignored when
             ``core_l`` is ``None``.
@@ -459,6 +567,10 @@ class ImpurityModel:
             Magnetic field ``(hx, hy, hz)``, applied to the valence shell only.
         rank, verbose
             Forwarded to the reader for rank-0 logging.
+        valence_u4 : numpy.ndarray, optional
+            The valence shell's Coulomb tensor, for an interaction that is not Slater-Condon,
+            in the shell's ``(l, s, m)`` order (:func:`hamiltonian_io.labelled_shell_uop`). The
+            core blocks stay Slater-Condon.
 
         Returns
         -------
@@ -594,6 +706,7 @@ class ImpurityModel:
             hField=h_field,
             core_l=core_l,
             xi_core=xi_core,
+            valence_u4=valence_u4,
         )
         return cls(
             h0=hOp,
@@ -771,6 +884,8 @@ def load_model(
     n_val_baths=None,
     n_impurity_orbitals=None,
     allow_noninteracting: bool = False,
+    u4=None,
+    spin_degenerate: bool = False,
     shells=None,
     val_shells=None,
     n0imps=None,
@@ -817,6 +932,12 @@ def load_model(
         Impurity block size, required only by the legacy flat format.
     allow_noninteracting : bool, optional
         Permit a model with no Coulomb tensor; see :meth:`ImpurityModel.from_h0_text`.
+    u4 : numpy.ndarray, optional
+        A ready Coulomb tensor instead of ``slater``, for the flat formats; see
+        :meth:`ImpurityModel.from_h0_text`. On the multi-shell path (``shells`` given) it is the
+        VALENCE shell's tensor, replacing ``slater_condon[0]`` (see :meth:`ImpurityModel.from_shells`).
+    spin_degenerate : bool, optional
+        The ``.h0`` file is spinless; see :meth:`ImpurityModel.from_h0_text`.
     shells, val_shells, n0imps, slater_condon, socs, charge_transfer_correction, valence_l, core_l
         The multi-shell (core + correlated) spectra path -- see
         :meth:`ImpurityModel.from_shells`. ``valence_l`` is required alongside ``shells``;
@@ -850,6 +971,7 @@ def load_model(
             verbose=verbose,
             valence_l=valence_l,
             core_l=core_l,
+            valence_u4=u4,
         )
 
     path = str(h0_filename)
@@ -869,8 +991,15 @@ def load_model(
             xi=xi,
             h_field=(0.0, 0.0, 0.0) if h_field is None else tuple(h_field),
             allow_noninteracting=allow_noninteracting,
+            u4=u4,
+            spin_degenerate=spin_degenerate,
         )
 
+    if u4 is not None or spin_degenerate:
+        raise ValueError(
+            f"{path}: u4= and spin_degenerate= are only supported for the flat-index formats (.h0); "
+            "the labelled formats carry (l, s, m) labels and take Slater parameters."
+        )
     if ext in _LABELLED_EXTENSIONS or ext == ".dat":
         if l is None or n_baths is None or slater is None:
             raise ValueError(

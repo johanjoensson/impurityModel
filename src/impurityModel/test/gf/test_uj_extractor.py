@@ -64,15 +64,20 @@ def test_model_uj_pins_the_rotation_direction():
     assert np.isclose(J, (F2 + F4) / 14, atol=1e-9)
 
 
-def test_model_uj_wrong_rotation_direction_disagrees():
-    """Sanity check that the previous test is actually sensitive to the rotation direction."""
+def test_model_uj_does_not_depend_on_a_spin_diagonal_rotation():
+    """U and J are properties of the operator, so an orbital rotation within the shell -- even the
+    wrong-direction one -- leaves them unchanged. This used to assert the opposite: uj_from_u4 read
+    J off the raw exchange entries, and atomic_u4 drops the Pauli-forbidden ones, so a rotation
+    shifted J although the operator was the same. The direction of rot_to_spherical still matters
+    wherever it mixes spins (a (j, m_j) basis); it cannot matter here."""
     u4_spherical = atomic_u4(L, [F0, 0, F2, 0, F4])
     u_cubic = get_spherical_2_cubic_matrix(spinpol=True, l=L)
     u4_cubic = rotate_two_body(u4_spherical, u_cubic)
 
     model = _build_model(u4_cubic, u_cubic)  # wrong direction
-    _, J = _model_uj(model)
-    assert not np.isclose(J, (F2 + F4) / 14, atol=1e-6)
+    U, J = _model_uj(model)
+    assert np.isclose(U, F0, atol=1e-9)
+    assert np.isclose(J, (F2 + F4) / 14, atol=1e-9)
 
 
 def test_model_uj_rejects_multigroup_rot_to_spherical():

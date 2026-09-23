@@ -217,6 +217,64 @@ occupation (`dc_criteria.py`; the closed-form FLL/AMF/Σ(∞) schemes are in `dc
 `chi.h5` and a Curie/Van-Vleck/screening-scale summary (the Hund's-metal diagnostic). It also
 accepts `--from-archive`.
 
+## Model Hamiltonians
+
+Besides atomic shells with Slater-Condon integrals, an input file can describe a *model*: a
+single-orbital Anderson model, a two-orbital Hubbard model, or any interaction you write down.
+`examples/semicircular_siam/` is a worked single-orbital example.
+
+**The shell.** A model shell gives its orbital count instead of an angular momentum:
+
+```toml
+[[shell]]
+n_orbitals = 1        # instead of l; the shell has 2 * n_orbitals spin-orbitals
+role = "valence"
+nominal_occupation = 1
+```
+
+It cannot drive a spectroscopy run (the transition operators need `l`) and takes no
+`[interaction.slater]`.
+
+**Spinless Hamiltonians.** A `.h0` file that holds spatial orbitals only is declared as such and
+copied to both spins; it is never guessed from an odd impurity block:
+
+```toml
+[hamiltonian.file]
+path = "semicircular_star.h0"
+spin = "degenerate"   # layout after doubling: [imp down, imp up, bath down..., bath up...]
+```
+
+**The interaction.** Exactly one `[interaction.*]` table. All of them become the same
+Coulomb tensor in the RSPt convention, `H_U = 1/2 sum u4[i,j,k,l] c+_i c+_j c_l c_k` with
+`u4[i,j,k,l] = <ij|V|kl>`, on the spin-orbitals `s*n + p` (spin down first).
+
+| table | for |
+| --- | --- |
+| `[interaction.kanamori]` | `U`, `J`, `U_prime`, `J_pair`, each settable. One orbital is `U n_up n_dn`. |
+| `[interaction.density_density]` | `U_opposite_spin` / `U_same_spin` matrices. |
+| `[interaction.terms]` | explicit `<pq|V|rs>` elements, `[p, q, r, s, value]`: `spatial` ones are expanded over spin, `spin_orbital` ones are literal. Symmetry images are filled in. |
+| `[interaction.u4_file]` | a `.npy` tensor, spin-orbital or spatial. |
+| `[interaction.slater]` | Slater-Condon `F^k` on an `l` shell. |
+
+The notation is the physicists' one: in `<pq|V|rs>` electron 1 goes `p -> r` and electron 2
+goes `q -> s`. So `[0, 1, 0, 1, U']` is the inter-orbital density repulsion, `[0, 1, 1, 0, J]` the
+exchange, and `[0, 0, 1, 1, J_p]` pair hopping. The Hubbard U of a single orbital is
+`spatial = [[0, 0, 0, 0, U]]`. On an `l >= 1` shell the orbitals of a spatial form must be named,
+`orbital_basis = "real_cubic"` or `"as_hamiltonian"`: Kanamori and density-density are not
+invariant under a complex rotation, so this is never defaulted.
+
+**Double counting.** `fll` and `nominal` take the averaged U and J from the tensor. These are
+orbital-basis independent, so a model shell needs no spherical rotation. For Kanamori they are
+the orbital averages `(U + (n-1)U')/n` and so on, not the table's intra-orbital `U`. For one
+orbital, `[double_counting.nominal]` at `nominal_occupation = 1` is `U/2`: the particle-hole
+symmetric point.
+
+**Symmetry sectors.** The Green's-function blocks are read off the one-body part and then
+checked against the interaction. A term that couples orbitals the one-body part keeps apart
+(density-assisted hopping, or a spin-dependent term) merges their blocks. A term that
+distinguishes orbitals the one-body part calls equivalent (a different U per degenerate
+orbital) stops their Green's functions being copied from one another.
+
 ## Python API
 
 The CLIs are thin wrappers over a small API (`impurityModel.api`). Build an `ImpurityModel` plus

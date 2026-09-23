@@ -294,6 +294,25 @@ def _coerce(where, key, value, units, base_dir):
         if matrix["kind"] == "path":
             matrix["path"] = str(Path(base_dir, matrix["path"]))
         return matrix
+    if kind is Kind.ENERGY_MATRIX:
+        rows = [[_as_float(where, v) * factor for v in _as_sequence(where, row)] for row in _as_sequence(where, value)]
+        if not rows or any(len(row) != len(rows) for row in rows):
+            raise InputError(
+                f"[{where}]: expected a square matrix [[...], [...]], got {len(rows)} rows of lengths "
+                f"{[len(row) for row in rows]}"
+            )
+        return rows
+    if kind is Kind.ENERGY_TERMS:
+        terms = []
+        for raw_entry in _as_sequence(where, value):
+            entry = _as_sequence(where, raw_entry)
+            if len(entry) not in (5, 6):
+                raise InputError(
+                    f"[{where}]: each term is [p, q, r, s, value] or [p, q, r, s, re, im], got {list(entry)}"
+                )
+            indices = [_as_int(where, v) for v in entry[:4]]
+            terms.append(indices + [_as_float(where, v) * factor for v in entry[4:]])
+        return terms
     if kind is Kind.VECTOR_LIST:
         vectors = []
         for entry in _as_sequence(where, value):
@@ -556,6 +575,10 @@ def _resolve(raw, input_path, raw_text):
         f"double_counting.{dc_scheme}",
     ]
     wanted += [calculation] + [p for p in schema.TABLES if p.startswith(f"{calculation}.")]
+    # [interaction.core] rides along with a model valence interaction; it is not a variant.
+    raw_interaction = raw.get("interaction", {})
+    if isinstance(raw_interaction, dict) and isinstance(raw_interaction.get("core"), dict):
+        wanted.append("interaction.core")
 
     tables = {}
     for path in wanted:
@@ -690,6 +713,21 @@ def _cross_check(resolved, raw):
     # the last one written. That used to be unreachable while the solver accepted only the
     # {1, 2} pair; now that any pair of angular momenta is allowed it is a typo away, and it
     # surfaces far downstream as a nominal_occupation that belongs to the other shell.
+    for shell in resolved.shells:
+        has_l, has_n = shell.get("l") is not None, shell.get("n_orbitals") is not None
+        if has_l == has_n:
+            raise InputError(
+                "Each [[shell]] needs exactly one of `l` (an angular-momentum shell) and "
+                f"`n_orbitals` (a model shell); this one has {'both' if has_l else 'neither'}."
+            )
+        if has_n and shell["role"] != "valence":
+            raise InputError(
+                f'[[shell]] n_orbitals={shell["n_orbitals"]}: a model shell must have role = "valence". '
+                "A core shell is excited from by a dipole transition, which needs its l."
+            )
+        if has_l:
+            shell["n_orbitals"] = 2 * shell["l"] + 1
+
     seen = [shell["l"] for shell in resolved.shells]
     duplicates = sorted({x for x in seen if seen.count(x) > 1})
     if duplicates:
@@ -703,12 +741,12 @@ def _cross_check(resolved, raw):
     for shell in resolved.shells:
         n_bath, n_valence = shell.get("n_bath"), shell.get("n_valence_bath")
         if n_bath is not None and n_valence is not None and n_valence > n_bath:
-            raise InputError(f"[[shell]] l={shell['l']}: n_valence_bath ({n_valence}) exceeds n_bath ({n_bath}).")
-        max_occupation = 2 * (2 * shell["l"] + 1)
+            raise InputError(f"[[shell]] {shell_name(shell)}: n_valence_bath ({n_valence}) exceeds n_bath ({n_bath}).")
+        max_occupation = 2 * shell["n_orbitals"]
         if shell["nominal_occupation"] > max_occupation:
             raise InputError(
-                f"[[shell]] l={shell['l']}: nominal_occupation {shell['nominal_occupation']} "
-                f"exceeds the {max_occupation} spin-orbitals an l={shell['l']} shell has."
+                f"[[shell]] {shell_name(shell)}: nominal_occupation {shell['nominal_occupation']} "
+                f"exceeds the {max_occupation} spin-orbitals the shell has."
             )
 
     techniques = ()
@@ -728,6 +766,7 @@ def _cross_check(resolved, raw):
 
     valence = next(shell for shell in resolved.shells if shell["role"] == "valence")
     core = next((shell for shell in resolved.shells if shell["role"] == "core"), None)
+    _check_interaction(resolved, valence)
     capabilities.check(
         resolved.calculation,
         core_l=None if core is None else core["l"],
@@ -735,6 +774,62 @@ def _cross_check(resolved, raw):
         techniques=techniques,
     )
     return resolved
+
+
+def shell_name(shell):
+    """``l=2`` for an angular-momentum shell, ``n_orbitals=3`` for a model shell -- for messages."""
+    return f"l={shell['l']}" if shell.get("l") is not None else f"n_orbitals={shell['n_orbitals']}"
+
+
+#: Interaction kinds whose indices are orbitals of the valence shell (the model forms).
+MODEL_INTERACTIONS = ("kanamori", "density_density", "terms", "u4_file")
+
+
+def _check_interaction(resolved, valence):
+    """Cross-check the interaction against the shells. Schema-level only: sizes of tensors that
+    live in files are checked when the model is built."""
+    kind = resolved.interaction_kind
+    model_shell = valence.get("l") is None
+    if model_shell and kind == "slater":
+        raise InputError(
+            f"[interaction.slater] needs an l shell: Slater-Condon integrals are defined on one, "
+            f"and the valence shell is a model shell ({shell_name(valence)}). Use "
+            "[interaction.kanamori], [interaction.density_density] or [interaction.terms]."
+        )
+    if model_shell and resolved.calculation == "spectroscopy":
+        raise InputError(
+            f"A spectroscopy run needs an l valence shell -- its transition operators are built "
+            f"from the angular momentum -- but the valence shell is a model shell ({shell_name(valence)})."
+        )
+    if "interaction.core" in resolved.tables:
+        if kind == "slater":
+            raise InputError(
+                "[interaction.core] and [interaction.slater] both give core integrals; with a "
+                "Slater valence interaction, put F_cc / F_cv / G_cv in [interaction.slater]."
+            )
+        if kind not in MODEL_INTERACTIONS or resolved.calculation != "spectroscopy":
+            raise InputError(
+                "[interaction.core] only applies to a spectroscopy run with a model valence "
+                f"interaction; here it would be ignored (interaction {kind!r}, {resolved.calculation} run)."
+            )
+    if kind in MODEL_INTERACTIONS:
+        table = resolved.tables[f"interaction.{kind}"]
+        if kind == "terms" and not (table["spatial"] or table["spin_orbital"]):
+            raise InputError("[interaction.terms] needs at least one entry in `spatial` or `spin_orbital`.")
+        needs_basis = valence.get("l") is not None and valence["l"] >= 1
+        spatial_indices = kind != "u4_file" or table["index_space"] == "spatial" or kind == "terms"
+        if needs_basis and spatial_indices and table["orbital_basis"] is None:
+            raise InputError(
+                f"[interaction.{kind}] on an l={valence['l']} shell needs `orbital_basis`: its "
+                "orbitals could be the real cubic harmonics or the Hamiltonian file's own "
+                "orbitals, and the interaction differs between them (it is not invariant under "
+                "a complex rotation). Say which."
+            )
+        if not needs_basis and table["orbital_basis"] is not None and valence.get("l") is None:
+            raise InputError(
+                f"[interaction.{kind}].orbital_basis is meaningless on a model shell, which has "
+                "only its own orbitals. Remove it."
+            )
 
 
 def _parse(path):

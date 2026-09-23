@@ -45,6 +45,7 @@ def build_spectra_model(
     *,
     valence_l,
     core_l=None,
+    valence_u4=None,
 ):
     """Assemble the full interacting spectra model from a non-interacting ``h0`` file.
 
@@ -109,6 +110,7 @@ def build_spectra_model(
         h_field=hField,
         valence_l=valence_l,
         core_l=core_l,
+        u4=valence_u4,
         rank=rank,
         verbose=verbose,
     )

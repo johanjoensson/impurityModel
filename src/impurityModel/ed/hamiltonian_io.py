@@ -265,6 +265,30 @@ def flat_h0_to_labelled(parsed, nBaths, path=None, rank=0, verbose=True):
     return operator
 
 
+def labelled_shell_uop(l, u4):
+    """One shell's RSPt-convention Coulomb tensor as an ``(l, s, m)``-labelled operator dict.
+
+    ``u4`` spans the shell's ``2(2l+1)`` spin-orbitals in :func:`operator_algebra.c2i`'s order,
+    index ``s*(2l+1) + (m+l)`` with spin down first -- the layout :func:`model.atomic_u4` builds.
+    The keys follow :func:`atomic_physics.getUop_from_rspt_u4`: ``u4[i,j,k,l]/2`` on
+    ``c+_i c+_j c_l c_k``.
+    """
+    labels = [(l, s, m) for s in range(2) for m in range(-l, l + 1)]
+    u4 = np.asarray(u4)
+    if u4.shape != (len(labels),) * 4:
+        raise ValueError(f"an l={l} valence tensor spans {len(labels)} spin-orbitals, got shape {u4.shape}.")
+    return {
+        (
+            (labels[i], "c"),
+            (labels[j], "c"),
+            (labels[k2], "a"),
+            (labels[k1], "a"),
+        ): u4[i, j, k1, k2]
+        / 2
+        for i, j, k1, k2 in zip(*np.nonzero(np.abs(u4) > 1e-10))
+    }
+
+
 def get_hamiltonian_operator(
     nBaths,
     nValBaths,
@@ -279,6 +303,7 @@ def get_hamiltonian_operator(
     hField=(0.0, 0.0, 0.0),
     core_l=None,
     xi_core=0.0,
+    valence_u4=None,
 ):
     """
     Return the Hamiltonian, in operator form.
@@ -303,6 +328,10 @@ def get_hamiltonian_operator(
         Whether to print output on rank 0.
     valence_l, xi_valence, hField, core_l, xi_core
         The shell layout; see :func:`get_noninteracting_hamiltonian_operator`.
+    valence_u4 : numpy.ndarray, optional
+        A valence-shell Coulomb tensor (see :func:`labelled_shell_uop` for its layout) instead of
+        the Slater integrals ``slaterCondon[0]``, which must then be ``None``. The core blocks
+        stay Slater-Condon, and the MLFT double counting takes its ``U_vv`` from the tensor.
 
     Returns
     -------
@@ -319,6 +348,8 @@ def get_hamiltonian_operator(
     n0imps, chargeTransferCorrection = DCinfo
     if core_l is None:
         Fcc = Fcv = Gcv = None
+    if (Fvv is None) == (valence_u4 is None):
+        raise ValueError("get_hamiltonian_operator needs exactly one of Fvv (slaterCondon[0]) and valence_u4.")
 
     h_non_interacting = get_noninteracting_hamiltonian_operator(
         nBaths,
@@ -333,7 +364,22 @@ def get_hamiltonian_operator(
         xi_core=xi_core,
     )
     # Calculate the U operator, in spherical harmonics basis.
-    uOperator = atomic_physics.slater_condon_Uop(valence_l, core_l, Fvv, Fcc=Fcc, Fcv=Fcv, Gcv=Gcv)
+    if valence_u4 is None:
+        uOperator = atomic_physics.slater_condon_Uop(valence_l, core_l, Fvv, Fcc=Fcc, Fcv=Fcv, Gcv=Gcv)
+        uvv = None
+    else:
+        # A model valence interaction: its tensor replaces the valence-valence Slater block, and
+        # the core blocks (still Slater-Condon) come from a zero-F_vv assembly.
+        from impurityModel.ed.interaction_models import mlft_uvv
+
+        zero_fvv = [0.0] * (2 * valence_l + 1)
+        uOperator = addOps(
+            [
+                atomic_physics.slater_condon_Uop(valence_l, core_l, zero_fvv, Fcc=Fcc, Fcv=Fcv, Gcv=Gcv),
+                labelled_shell_uop(valence_l, valence_u4),
+            ]
+        )
+        uvv = mlft_uvv(valence_u4)
     dc = atomic_physics.dc_MLFT(
         valence_l,
         n0imps[valence_l],
@@ -343,6 +389,7 @@ def get_hamiltonian_operator(
         n_core_i=None if core_l is None else n0imps[core_l],
         Fcv=Fcv,
         Gcv=Gcv,
+        Uvv=uvv,
     )
     eDCOperator = {}
     for l in dc:
