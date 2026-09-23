@@ -1,3 +1,5 @@
+import functools
+
 import numpy as np
 import pytest
 import scipy.sparse as sps
@@ -125,6 +127,46 @@ def assert_orthonormal(eigvecs, path, comm=None):
     np.testing.assert_allclose(overlaps, expected, atol=sqrt_eps)
 
 
+EXACT_DEGENERATE = np.array([1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], dtype=float)
+NEAR_DEGENERATE = np.array(
+    [1.0, 1.0 + 1e-9, 2.0, 2.0 + 1e-9, 2.0 + 2e-9, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], dtype=float
+)
+NUM_WANTED = 6
+
+
+def _exact_spectrum(spectrum_type):
+    return EXACT_DEGENERATE if spectrum_type == "exact_degenerate" else NEAR_DEGENERATE
+
+
+def _run_solver(solver, h_op, basis, psi0, mode, comm):
+    kwargs = dict(
+        psi0=psi0,
+        h_op=h_op,
+        basis=basis,
+        num_wanted=NUM_WANTED,
+        max_subspace_blocks=5,  # force restarts
+        tol=1e-8,
+        max_restarts=50,
+        verbose=False,
+        reort=mode,
+    )
+    if solver == "TRLM":
+        return thick_restart_block_lanczos(**kwargs)
+    return implicitly_restarted_block_lanczos_cy(**kwargs, comm=comm)
+
+
+@functools.cache
+def _serial_solve(mode, path, solver, spectrum_type):
+    """One serial solve per cell, shared by ``test_no_ghost_bands`` and its Ritz-floor twin.
+
+    The two assert different invariants of the same run -- the multiplicity match (xfail on the
+    known-limited cells) and the spectral floor (never xfail) -- so they used to solve the same
+    restarted Lanczos twice. Neither mutates the result.
+    """
+    h_op, basis, psi0, _ = create_diagonal_system(_exact_spectrum(spectrum_type), path, comm=None)
+    return _run_solver(solver, h_op, basis, psi0, mode, comm=None)
+
+
 def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     # On this 12-state spectrum with block size 2 and a tight restart subspace
     # (max_subspace_blocks=5), the array path converges whenever the degeneracies are
@@ -183,50 +225,16 @@ def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
     if marker is not None:
         request.node.add_marker(marker)
 
-    if spectrum_type == "exact_degenerate":
-        eigvals_exact = np.array([1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], dtype=float)
-    else:
-        # near degenerate
-        eigvals_exact = np.array(
-            [1.0, 1.0 + 1e-9, 2.0, 2.0 + 1e-9, 2.0 + 2e-9, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], dtype=float
-        )
-
-    h_op, basis, psi0, _ = create_diagonal_system(eigvals_exact, path, comm=None)
-    num_wanted = 6
-    max_subspace_blocks = 5  # force restarts
-
-    if solver == "TRLM":
-        eigvals, eigvecs = thick_restart_block_lanczos(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-        )
-    else:
-        eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-            comm=None,
-        )
+    eigvals, eigvecs = _serial_solve(mode, path, solver, spectrum_type)
 
     # Check eigenvalues match exact ones with multiplicity (sorted). Solver was asked for
     # tol=1e-8; c=100 gives real headroom above that (not the literal 1e-6 this used to be
     # tightened to before it was tied back to the solver's own criterion) -- see
     # get_xfail_marker for why NONE/PERIODIC on the near-degenerate array path are excused
     # from this instead of margin-widened further.
-    np.testing.assert_allclose(np.sort(eigvals), eigvals_exact[:num_wanted], atol=solver_atol(1e-8, c=100))
+    np.testing.assert_allclose(
+        np.sort(eigvals), _exact_spectrum(spectrum_type)[:NUM_WANTED], atol=solver_atol(1e-8, c=100)
+    )
 
     if mode != Reort.NONE:
         assert_orthonormal(eigvecs, path, comm=None)
@@ -240,7 +248,7 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
     """The hard invariant behind this module's name, asserted WITHOUT the xfail that
     covers the exact-multiplicity-match assertion in ``test_no_ghost_bands``.
 
-    The 60 xfail(strict=False) nodes there assert nothing when they fail (the point of
+    The 34 xfail(strict=False) nodes there assert nothing when they fail (the point of
     ``strict=False`` is exactly to let a partial T_full through without breaking the
     suite) -- but "the restart subspace was too tight to resolve every degenerate copy"
     and "a spurious (e.g. zero) Ritz value appeared below the true ground state" are two
@@ -270,44 +278,9 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
     characterization, not a blanket floor assertion. Tracked for
     ``doc/lanczos_invariants.md``'s "known open issues" section (R2).
     """
-    if spectrum_type == "exact_degenerate":
-        eigvals_exact = np.array([1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], dtype=float)
-    else:
-        eigvals_exact = np.array(
-            [1.0, 1.0 + 1e-9, 2.0, 2.0 + 1e-9, 2.0 + 2e-9, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], dtype=float
-        )
+    eigvals, _eigvecs = _serial_solve(mode, path, solver, spectrum_type)
 
-    h_op, basis, psi0, _ = create_diagonal_system(eigvals_exact, path, comm=None)
-    num_wanted = 6
-    max_subspace_blocks = 5  # force restarts
-
-    if solver == "TRLM":
-        eigvals, _eigvecs = thick_restart_block_lanczos(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-        )
-    else:
-        eigvals, _eigvecs = implicitly_restarted_block_lanczos_cy(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-            comm=None,
-        )
-
-    lambda_min = eigvals_exact.min()
+    lambda_min = _exact_spectrum(spectrum_type).min()
     ev_min = np.min(np.asarray(eigvals).real)
     assert ev_min >= lambda_min - 1e-6, f"spurious Ritz value {ev_min} < true spectral minimum {lambda_min}"
 
@@ -323,47 +296,13 @@ def test_no_ghost_bands_mpi(mode, path, solver, spectrum_type, request):
     if marker is not None:
         request.node.add_marker(marker)
 
-    if spectrum_type == "exact_degenerate":
-        eigvals_exact = np.array([1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], dtype=float)
-    else:
-        # near degenerate
-        eigvals_exact = np.array(
-            [1.0, 1.0 + 1e-9, 2.0, 2.0 + 1e-9, 2.0 + 2e-9, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], dtype=float
-        )
-
+    eigvals_exact = _exact_spectrum(spectrum_type)
     h_op, basis, psi0, _ = create_diagonal_system(eigvals_exact, path, comm=comm)
-    num_wanted = 6
-    max_subspace_blocks = 5  # force restarts
-
-    if solver == "TRLM":
-        eigvals, eigvecs = thick_restart_block_lanczos(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-        )
-    else:
-        eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-            comm=comm,
-        )
+    eigvals, eigvecs = _run_solver(solver, h_op, basis, psi0, mode, comm=comm)
 
     # Check eigenvalues match exact ones with multiplicity (sorted); see the serial
     # variant above for why this margin is solver_atol(1e-8, c=100).
-    np.testing.assert_allclose(np.sort(eigvals), eigvals_exact[:num_wanted], atol=solver_atol(1e-8, c=100))
+    np.testing.assert_allclose(np.sort(eigvals), eigvals_exact[:NUM_WANTED], atol=solver_atol(1e-8, c=100))
 
     if mode != Reort.NONE:
         assert_orthonormal(eigvecs, path, comm=comm)
