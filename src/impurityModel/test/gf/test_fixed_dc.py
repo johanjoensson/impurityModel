@@ -79,6 +79,13 @@ EPS = -1.0
 U = 3.0
 EPS_B = -4.0
 
+# The ``*_ranks_agree`` tests gather a result and compare ``gathered[1:]`` against rank 0. At one
+# rank that slice is empty: the test runs a full DC search and asserts nothing. Skip rather than
+# let a vacuous pass stand in for the check (CLAUDE.md, "Test gate").
+needs_two_ranks = pytest.mark.skipif(
+    MPI.COMM_WORLD.size == 1, reason="compares results across ranks; nothing to compare at one rank"
+)
+
 
 def build_model(v, dc_scale):
     h0 = np.zeros((4, 4), dtype=complex)
@@ -727,6 +734,7 @@ def test_fixed_occupation_dc_reference_ignores_dc_guess():
 
 
 @pytest.mark.mpi
+@needs_two_ranks
 def test_fixed_peak_dc_ranks_agree():
     # The Newton loop in fixed_peak_dc branches on Lanczos energies, which are
     # only replicated to roundoff across ranks. Every rank must nevertheless run
@@ -742,6 +750,7 @@ def test_fixed_peak_dc_ranks_agree():
 
 
 @pytest.mark.mpi
+@needs_two_ranks
 def test_fixed_gap_dc_ranks_agree():
     # Same hazard as the peak criterion: the gap centre is a difference of Lanczos energies,
     # replicated only to roundoff, and it gates every branch that decides whether the next
@@ -756,6 +765,7 @@ def test_fixed_gap_dc_ranks_agree():
 
 
 @pytest.mark.mpi
+@needs_two_ranks
 def test_fixed_occupation_dc_ranks_agree():
     # Occupation control keys off the Allreduced density matrix, so agreement is
     # by construction; guard it against regressions all the same.
@@ -1266,6 +1276,7 @@ def test_calc_energy_returns_a_bitwise_identical_energy_on_every_rank():
 
 
 @pytest.mark.mpi
+@needs_two_ranks
 @pytest.mark.parametrize(
     "criterion, call",
     [
@@ -1656,6 +1667,7 @@ def test_fixed_occupation_dc_records_mu_tol_effective_as_inf_at_a_genuine_zero_s
 
 
 @pytest.mark.mpi
+@needs_two_ranks
 def test_fixed_occupation_dc_none_threshold_ranks_agree():
     # Exercises the real (un-monkeypatched) collective memory probe under multiple ranks.
     comm = MPI.COMM_WORLD
@@ -1742,6 +1754,7 @@ def test_dc_search_chain_restrict_forwarded(monkeypatch):
 
 
 @pytest.mark.mpi
+@needs_two_ranks
 def test_fixed_occupation_dc_self_consistent_ranks_agree():
     # The self-consistent search targets the DFT reference occupation, computed once from the
     # replicated raw h0 (deterministic NumPy, identical on every rank); the interacting
@@ -2079,6 +2092,7 @@ def test_occupation_and_energy_at_mu_matches_the_search_at_mu_zero():
     np.testing.assert_allclose(dc, dc_guess, atol=1e-9)
 
 
+@needs_two_ranks
 def test_occupation_and_energy_at_mu_ranks_agree():
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     model, basis, solver = kwargs["model"], kwargs["basis"], kwargs["solver"]
