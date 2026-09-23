@@ -82,7 +82,7 @@ def _excited_basis(cap):
     return Basis(_IMP, _BATHS, initial_basis=seed_support, truncation_threshold=cap, verbose=False)
 
 
-def _run(cap, n_chunks, monkeypatch, reort=None):
+def _run(cap, n_chunks, monkeypatch):
     """``n_chunks=None`` leaves the knob unset (today's default, 4 -- chunked); pass ``1``
     explicitly for the one-shot baseline rather than relying on "unset" to mean that."""
     if n_chunks is None:
@@ -94,7 +94,7 @@ def _run(cap, n_chunks, monkeypatch, reort=None):
     basis = _excited_basis(cap)
     seeds = [ManyBodyState.from_states([s]).to_states()[0] for s in _seeds()]
     info = {}
-    alphas, betas, r = block_Green_sparse(_siam_6(), seeds, basis, DELTA, reort=reort, verbose=False, cap_info=info)
+    alphas, betas, r = block_Green_sparse(_siam_6(), seeds, basis, DELTA, verbose=False, cap_info=info)
     return calc_G(alphas, betas, r, OMEGA, 0.0, DELTA), info
 
 
@@ -132,15 +132,17 @@ def test_unset_default_is_four_chunks_and_matches_explicit_four(monkeypatch):
     np.testing.assert_array_equal(g_unset, g_explicit)
 
 
-@pytest.mark.parametrize("reort", [None, "full", "partial"])
 @pytest.mark.parametrize("cap", [6, 12, 17])
 @pytest.mark.parametrize("n_chunks", [2, 4])
-def test_capped_gf_equals_dense_php_resolvent_with_row_chunking(cap, reort, n_chunks, monkeypatch):
+def test_capped_gf_equals_dense_php_resolvent_with_row_chunking(cap, n_chunks, monkeypatch):
     """The strong oracle (test_gf_truncation.py) must survive chunking under a binding cap:
     whatever the chunked matvec's summation order admits, the result must still be the exact
     GF of H projected on the retained set -- the boundary tie-break may differ from the
-    one-shot path, but the recurrence's exactness on whatever it retained may not."""
-    g, info = _run(cap, n_chunks, monkeypatch, reort=reort)
+    one-shot path, but the recurrence's exactness on whatever it retained may not.
+
+    No reort axis: chunking changes only how the matvec is summed, and the reort x cap grid is
+    already the oracle in test_gf_truncation.py::test_capped_gf_equals_dense_php_resolvent."""
+    g, info = _run(cap, n_chunks, monkeypatch)
     assert info["cap_hit"]
     assert info["retained_size"] <= cap
     retained = info["proxy"].retained_keys()

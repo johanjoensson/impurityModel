@@ -14,11 +14,7 @@ from impurityModel.ed.basis_transcription import (
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.solver_basis import get_symmetry_generators
-
-# The comm=None and COMM_WORLD variants of a test used to be two copies differing in one keyword.
-# One parametrized test keeps both: the COMM_WORLD case carries the mpi marker, so it runs only
-# under --with-mpi and is distributed at -n 2/-n 3.
-COMMS = [pytest.param(None, id="serial"), pytest.param(MPI.COMM_WORLD, id="mpi", marks=pytest.mark.mpi)]
+from impurityModel.test.support.comms import COMMS
 
 
 def build_operator_dict(basis, op):

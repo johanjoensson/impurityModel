@@ -9,6 +9,7 @@ from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import calc_energy, calc_gs, find_ground_state_basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.test.support.comms import COMMS
 
 
 def ground_state_support(basis, h_op, dense_cutoff=10):
@@ -213,34 +214,8 @@ def test_groundstate_and_density_matrix_serial():
     np.testing.assert_allclose(rho_basis[0], rho, rtol=1e-10, atol=1e-10)
 
 
-def test_calc_energy_serial():
-    eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
-    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
-    Hop = ManyBodyOperator(hop)
-
-    energy, basis = calc_energy(
-        h_op=Hop,
-        impurity_indices={0: [[0, 1, 2, 3, 4]]},
-        bath_states=({0: [[]]}, {0: [[]]}),
-        N0={0: 2},
-        mixed_valence={0: 0},
-        tau=0.01,
-        chain_restrict=False,
-        spin_flip_dj=False,
-        dense_cutoff=10,
-        comm=None,
-        verbose=True,
-        truncation_threshold=1000,
-        slaterWeightMin=1e-12,
-    )
-    np.testing.assert_allclose(energy, 1.5, rtol=1e-10, atol=1e-10)
-    assert basis is not None
-    assert len(basis) > 0
-
-
-@pytest.mark.mpi
-def test_calc_energy_mpi():
-    comm = MPI.COMM_WORLD
+@pytest.mark.parametrize("comm", COMMS)
+def test_calc_energy(comm):
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
@@ -265,7 +240,8 @@ def test_calc_energy_mpi():
     assert len(basis) > 0
 
 
-def test_find_ground_state_basis_serial():
+@pytest.mark.parametrize("comm", COMMS)
+def test_find_ground_state_basis(comm):
     # Two bound (negative) levels below a gap, three unbound (positive) levels above it, so
     # N=2 (filling the two negative levels) is a genuine local -- and here global -- minimum in
     # total particle number, not merely the value nearest the input N0. (An all-positive-spectrum
@@ -286,7 +262,7 @@ def test_find_ground_state_basis_serial():
         chain_restrict=False,
         dense_cutoff=10,
         spin_flip_dj=False,
-        comm=None,
+        comm=comm,
         verbose=True,
         truncation_threshold=1000,
         slaterWeightMin=1e-12,
@@ -300,7 +276,7 @@ def test_find_ground_state_basis_serial():
 
 
 def test_find_ground_state_basis_walk_rescues_seed_off_by_two(monkeypatch):
-    # Same model as test_find_ground_state_basis_serial: N=2 (filling the two negative-energy
+    # Same model as test_find_ground_state_basis: N=2 (filling the two negative-energy
     # levels) is the true minimum. Force the HF seed to miss by 2 (N0=0, the vacuum) -- the
     # scenario the NiO bug report hit (HF pushed 3 electrons into the wrong sector) -- and assert
     # the post-seed walk still corrects it back to the true minimum, matching what the legacy
@@ -337,39 +313,6 @@ def test_find_ground_state_basis_walk_rescues_seed_off_by_two(monkeypatch):
         assert basis is not None
         assert ground_state_support(basis, Hop) == {(0, 1)}
         assert basis.ground_state_occupation == {0: 2}
-
-
-@pytest.mark.mpi
-def test_find_ground_state_basis_mpi():
-    comm = MPI.COMM_WORLD
-    # Same reasoning as test_find_ground_state_basis_serial: two bound (negative) levels below a
-    # gap, so N=2 (filling them) is a genuine minimum -- an all-positive spectrum would make the
-    # unconstrained ground state the vacuum N=0 regardless of N0, which is not what this test
-    # means to exercise.
-    eigvals = np.array([-1.0, -0.5, 0.5, 1.0, 1.5])
-    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
-    Hop = ManyBodyOperator(hop)
-
-    basis = find_ground_state_basis(
-        h_op=Hop,
-        impurity_orbitals={0: [[0, 1, 2, 3, 4]]},
-        bath_states=({0: [[]]}, {0: [[]]}),
-        N0={0: 2},
-        mixed_valence=None,
-        tau=0.01,
-        chain_restrict=False,
-        dense_cutoff=10,
-        spin_flip_dj=False,
-        comm=comm,
-        verbose=True,
-        truncation_threshold=1000,
-        slaterWeightMin=1e-12,
-    )
-    assert basis is not None
-    # N0={0:2}: the two-electron ground state fills the two lowest (negative-energy) orbitals
-    # (-1.0 + -0.5 = -1.5).
-    assert ground_state_support(basis, Hop) == {(0, 1)}
-    assert basis.ground_state_occupation == {0: 2}
 
 
 def test_calc_gs_options_serial():
