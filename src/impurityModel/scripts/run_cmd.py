@@ -173,7 +173,7 @@ def _dispatch(resolved, built, comm, verbosity, outdir):
         )
         target = str(Path(outdir, output or f"selfenergy-{cluster}.h5"))
         if (comm is None or comm.rank == 0) and result is not None:
-            _save_results(result, built.meshes, cluster, target)
+            _save_results(result, built.meshes, cluster, target, directory=outdir)
         return target
 
     from impurityModel.ed.susceptibility import calc_susceptibility_workflow

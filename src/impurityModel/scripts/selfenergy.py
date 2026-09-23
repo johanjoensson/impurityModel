@@ -7,6 +7,7 @@ disk: the frequency-dependent self-energy and impurity Green's function in RSPt 
 ``.dat`` file, and everything into a per-cluster HDF5 archive.
 """
 
+import os
 from dataclasses import replace
 
 import numpy as np
@@ -158,9 +159,9 @@ def _fermionic_matsubara(tau, n_points):
     return 1j * (2 * np.arange(n_points) + 1) * np.pi * tau
 
 
-def _save_static(sigma_static, cluster_label):
+def _save_static(sigma_static, cluster_label, directory=None):
     """Write the static (Hartree-Fock) self-energy matrix to ``sigma_static-<cluster>.dat`` (real, imag)."""
-    filename = f"sigma_static-{cluster_label}.dat"
+    filename = os.path.join("." if directory is None else directory, f"sigma_static-{cluster_label}.dat")
     flat = np.asarray(sigma_static).reshape(-1)
     np.savetxt(
         filename,
@@ -170,19 +171,23 @@ def _save_static(sigma_static, cluster_label):
     print(f"Wrote static self-energy to {filename}")
 
 
-def _save_results(result, meshes, cluster_label, output):
-    """Rank-0 saving: RSPt ``.dat`` files for Sigma/G, static Sigma, and a per-cluster HDF5 archive."""
+def _save_results(result, meshes, cluster_label, output, directory=None):
+    """Rank-0 saving: RSPt ``.dat`` files for Sigma/G, static Sigma, and a per-cluster HDF5 archive.
+
+    The ``.dat`` files go to ``directory`` (default: the current directory, where RSPt reads
+    them); ``output`` is the archive's own path.
+    """
     import h5py
 
     from impurityModel.ed.greens_function import save_Greens_function
 
     if meshes.iw is not None and result["sigma"] is not None:
-        save_Greens_function(result["sigma"], meshes.iw, "Sigma", cluster_label)
-        save_Greens_function(result["gs_matsubara"], meshes.iw, "Gimp", cluster_label)
+        save_Greens_function(result["sigma"], meshes.iw, "Sigma", cluster_label, directory=directory)
+        save_Greens_function(result["gs_matsubara"], meshes.iw, "Gimp", cluster_label, directory=directory)
     if meshes.w is not None and result["sigma_real"] is not None:
-        save_Greens_function(result["sigma_real"], meshes.w, "Sigma", cluster_label)
-        save_Greens_function(result["gs_realaxis"], meshes.w, "Gimp", cluster_label)
-    _save_static(result["sigma_static"], cluster_label)
+        save_Greens_function(result["sigma_real"], meshes.w, "Sigma", cluster_label, directory=directory)
+        save_Greens_function(result["gs_realaxis"], meshes.w, "Gimp", cluster_label, directory=directory)
+    _save_static(result["sigma_static"], cluster_label, directory=directory)
 
     output = output or f"selfenergy-{cluster_label}.h5"
     with h5py.File(output, "w") as f:

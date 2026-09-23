@@ -274,3 +274,50 @@ def test_every_sub_command_offers_the_flag(module_name):
     module.add_arguments(parser)
     assert parser.parse_args(["h0.h0", "--emit-toml"]).emit_toml is True
     assert parser.parse_args(["h0.h0"]).emit_toml is False
+
+
+# ------------------------------------------------------------------------ outdir
+
+
+def test_a_selfenergy_run_writes_every_output_under_outdir(tmp_path, monkeypatch):
+    """``[run].outdir`` used to route only the ``.h5`` archive; the RSPt ``.dat`` files for Sigma
+    and G and the static self-energy went to the current directory. The solve is stubbed --
+    this is about where ``_dispatch`` puts files, not what is in them."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    import impurityModel.ed.selfenergy as selfenergy_module
+
+    n_orb, iw, w = 2, 1j * np.linspace(0.5, 3.0, 4), np.linspace(-1.0, 1.0, 5)
+    g_iw, g_w = np.ones((4, n_orb, n_orb), complex), np.ones((5, n_orb, n_orb), complex)
+    result = {
+        "sigma": g_iw,
+        "gs_matsubara": g_iw,
+        "sigma_real": g_w,
+        "gs_realaxis": g_w,
+        "sigma_static": np.eye(n_orb, dtype=complex),
+        "sigma_moment_1": np.eye(n_orb, dtype=complex),
+        "sigma_moment_2": np.eye(n_orb, dtype=complex),
+        "thermal_rho": np.eye(n_orb),
+        "gs_energies": np.zeros(1),
+    }
+    monkeypatch.setattr(selfenergy_module, "calc_selfenergy", lambda *args, **kwargs: result)
+
+    outdir, elsewhere = tmp_path / "out", tmp_path / "cwd"
+    outdir.mkdir()
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    built = SimpleNamespace(
+        model=None, meshes=SimpleNamespace(iw=iw, w=w), basis=None, solver=None, extra={"cluster_label": "c"}
+    )
+    target = run_cmd._dispatch(SimpleNamespace(calculation="selfenergy"), built, None, 0, str(outdir))
+
+    assert target == str(outdir / "selfenergy-c.h5")
+    assert sorted(p.name for p in elsewhere.iterdir()) == [], "outputs leaked into the working directory"
+    written = sorted(p.name for p in outdir.iterdir())
+    assert "selfenergy-c.h5" in written
+    assert "sigma_static-c.dat" in written
+    for label in ("Sigma", "Gimp"):
+        for axis in ("", "-realaxis"):
+            assert f"real-{label}{axis}-c.dat" in written and f"imag-{label}{axis}-c.dat" in written

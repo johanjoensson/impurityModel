@@ -1,3 +1,4 @@
+import os
 from collections import defaultdict
 from typing import Optional
 
@@ -1528,9 +1529,12 @@ def rotate_4index_U(U4, T):
     return np.einsum("ij,kl, jlmo, mn, op", np.conj(T.T), np.conj(T.T), U4, T, T)
 
 
-def save_Greens_function(gs, omega_mesh, label, cluster_label, e_scale=1, tol=1e-8):
+def save_Greens_function(gs, omega_mesh, label, cluster_label, e_scale=1, tol=1e-8, directory=None):
     """
     Save Greens function to file, using RSPt .dat format. Including offdiagonal elements.
+
+    The files go to ``directory``, or the current directory when it is ``None`` -- which is
+    where RSPt's interface reads them from, so that stays the default.
 
     Caller contract: every in-tree caller invokes this only on rank 0 (selfenergy.py's
     unphysical-result save and scripts/selfenergy.py's ``_save_results``, both already
@@ -1552,9 +1556,10 @@ def save_Greens_function(gs, omega_mesh, label, cluster_label, e_scale=1, tol=1e
                 off_diags.append((row, column))
 
     print(f"Writing {label}{axis_label}-{cluster_label} to files")
+    directory = "." if directory is None else directory
     with (
-        open(f"real-{label}{axis_label}-{cluster_label}.dat", "w") as fg_real,
-        open(f"imag-{label}{axis_label}-{cluster_label}.dat", "w") as fg_imag,
+        open(os.path.join(directory, f"real-{label}{axis_label}-{cluster_label}.dat"), "w") as fg_real,
+        open(os.path.join(directory, f"imag-{label}{axis_label}-{cluster_label}.dat"), "w") as fg_imag,
     ):
         header = "# Frequency, total, spin down, spin up\n"
         header += "# indexmap: (column index of projected elements)"
