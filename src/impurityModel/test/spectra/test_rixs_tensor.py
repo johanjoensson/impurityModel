@@ -825,3 +825,24 @@ def test_rixs_tensor_distributed_krylov_recycler_matches_dense(monkeypatch):
         np.testing.assert_allclose(got, ref, atol=1e-8)
     else:
         assert C is None
+
+
+@pytest.mark.parametrize("sector_cache", ["available", "declined"])
+def test_rixs_tensor_with_in_components_in_different_charge_sectors_matches_dense(monkeypatch, sector_cache):
+    """Every test above hybridizes the two valence orbitals, so both in-components shift the same
+    conserved charge. Without that hopping n0 and n1 are separately conserved and c0^dag c2 /
+    c1^dag c2 reach different sectors -- and the core-excited basis was confined to
+    in-component 0's sector for all of them. The dense sector cache builds its own basis and
+    hid that; once it declines (a sector above GF_SECTOR_DENSE_MAX), the fallback solvers run on
+    the confined basis and the other component's seed is pruned to nothing."""
+    if sector_cache == "declined":
+        monkeypatch.setenv("GF_SECTOR_DENSE_MAX", "1")
+    hopping = (((0, "c"), (1, "a")), ((1, "c"), (0, "a")))
+    op = ManyBodyOperator({k: v for k, v in _model().items() if k not in hopping})
+    assert len(op) == len(_model()) - 2
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    tin, tout = _tin_tout()
+    got = _run_rixs_tensor(op, psis, es, tin, tout, dets, EPS_IN, EPS_OUT)
+    ref = _dense_rixs_pol(op, tin, tout, EPS_IN, EPS_OUT, es, vecs, states)
+    assert np.abs(ref).max() > 0
+    np.testing.assert_allclose(got, ref, atol=1e-8)
