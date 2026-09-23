@@ -383,3 +383,97 @@ def test_a_matrix_source_cannot_drive_spectroscopy(tmp_path, source):
     )
     with pytest.raises(InputError, match="cannot drive a spectroscopy run"):
         build(load_input(path))
+
+
+# ---- apply_double_counting -----------------------------------------------------------------
+#
+# Only `nominal` was exercised (through an example file). The static schemes are checked against
+# a direct call on the same model, so what is tested is the dispatch and the plumbing -- the right
+# function, the right u/j, the matrix->operator conversion -- not the physics dc_static's own tests
+# cover. The search schemes cost a dozen ground-state solves each, so their plumbing (keep_guess,
+# abort, damping) is checked with the search stubbed.
+
+
+def _dc_input(tmp_path, dc_table):
+    # Spin-split impurity levels (folded into the matrix, the way this source takes one-body
+    # terms): the DFT density matrix is then NOT proportional to the identity, which is the only
+    # thing that separates sigma_inf (Sigma_static at rho) from amf (Sigma_static at N/n_imp * I).
+    # With the symmetric _BLOCKS they coincide exactly and swapping them goes unnoticed.
+    blocks = _BLOCKS.replace(
+        "h_imp = { real = [[-1.0, 0.0], [0.0, -1.0]] }", "h_imp = { real = [[-1.0, 0.0], [0.0, 2.0]] }"
+    )
+    assert blocks != _BLOCKS
+    path = tmp_path / "in.toml"
+    path.write_text(_HEADER + blocks + _S_SHELL.format(extra="") + dc_table)
+    return path
+
+
+def _dense_impurity_dc(model):
+    from impurityModel.inputformat.build import _dense_dc
+
+    return _dense_dc(model, 2)
+
+
+def test_each_static_dc_scheme_attaches_its_own_matrix(tmp_path):
+    from impurityModel.ed import dc_static
+
+    bare = build(load_input(_dc_input(tmp_path, ""))).model
+    assert bare.dc is None
+    tau = load_input(_dc_input(tmp_path, "")).tables["temperature"]["tau"]
+    expected = {
+        "fll": dc_static.fll_dc(bare, tau=tau, u=5.0, j=0.5),
+        "amf": dc_static.amf_dc(bare, tau=tau),
+        "sigma_inf": dc_static.sigma_inf_dc(bare, tau=tau),
+    }
+    tables = {"fll": "[double_counting.fll]\nu = 5.0\nj = 0.5\n", "amf": "[double_counting.amf]\n"}
+    tables["sigma_inf"] = "[double_counting.sigma_inf]\n"
+
+    got = {}
+    for scheme, table in tables.items():
+        got[scheme] = _dense_impurity_dc(build(load_input(_dc_input(tmp_path, table))).model)
+        np.testing.assert_allclose(got[scheme], expected[scheme], atol=1e-12, err_msg=scheme)
+        assert np.abs(got[scheme]).max() > 0, scheme
+    # The three differ on this model, so matching each one's own function is a real dispatch check.
+    assert not np.allclose(got["fll"], got["amf"])
+    assert not np.allclose(got["fll"], got["sigma_inf"])
+    assert not np.allclose(got["amf"], got["sigma_inf"])
+
+
+def _stub_occupation_search(monkeypatch, behaviour):
+    from impurityModel.ed import dc_criteria
+
+    calls = []
+
+    def stub(model, basis, solver, **kwargs):
+        calls.append((model, kwargs))
+        return behaviour(model)
+
+    monkeypatch.setattr(dc_criteria, "fixed_occupation_dc", stub)
+    return calls
+
+
+def test_an_unreachable_occupation_target_keeps_the_guess_only_when_asked(tmp_path, monkeypatch):
+    from impurityModel.ed.dc_search import DoubleCountingUnreachable
+
+    def unreachable(model):
+        raise DoubleCountingUnreachable("stub: plateau")
+
+    calls = _stub_occupation_search(monkeypatch, unreachable)
+    table = "[double_counting.fixed_occupation]\noccupation = 1.0\nguess = 0.3\n"
+    with pytest.raises(DoubleCountingUnreachable):
+        build(load_input(_dc_input(tmp_path, table)))
+
+    kept = build(load_input(_dc_input(tmp_path, table + 'on_unreachable = "keep_guess"\n')))
+    np.testing.assert_allclose(_dense_impurity_dc(kept.model), 0.3 * np.eye(2))
+    # The search was seeded with the guess, and asked for the requested occupation.
+    seeded, kwargs = calls[-1]
+    np.testing.assert_allclose(_dense_impurity_dc(seeded), 0.3 * np.eye(2))
+    assert kwargs["occupation"] == 1.0
+
+
+def test_occupation_dc_damping_mixes_the_answer_with_the_guess(tmp_path, monkeypatch):
+    _stub_occupation_search(monkeypatch, lambda model: 2.0 * np.eye(2, dtype=complex))
+    table = "[double_counting.fixed_occupation]\noccupation = 1.0\nguess = 1.0\ndamping = 0.25\n"
+    built = build(load_input(_dc_input(tmp_path, table)))
+    # guess + damping * (answer - guess) = 1 + 0.25 * (2 - 1)
+    np.testing.assert_allclose(_dense_impurity_dc(built.model), 1.25 * np.eye(2))
