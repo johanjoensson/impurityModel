@@ -37,15 +37,18 @@ Extras: `.[dev]` (pytest, pytest-mpi, black, ruff, mypy, cython-lint), `.[doc]` 
 
 ## Test gate
 
-Run all three after every change; each commit should be green on all three:
+Run both after every change; each commit should be green on both:
 
 ```bash
-python -m pytest
 mpiexec -n 1 python -m pytest --with-mpi
 mpiexec -n 2 python -m pytest --with-mpi
 ```
 
-CI runs serial, `-n 1`, `-n 2`, and `-n 3`. `-n 1` is in the gate because it is a CI leg and
+`--with-mpi` runs unmarked tests too, so `-n 1` is a strict superset of a plain
+`python -m pytest` (which skips the `mpi`-marked tests); the plain run is a quick smoke check,
+not a gate step. CI runs `-n 1`, `-n 2`, and `-n 3` (and a bare `pytest` under ASan).
+Coverage counts library code only (`[tool.coverage.run] omit` excludes `test/`), so adding an
+opt-in test cannot lower it. `-n 1` is in the gate because it is a CI leg and
 it is the one rank count a multi-rank precondition cannot satisfy: a `@pytest.mark.mpi` test
 that needs `comm.size > 1` goes green at `-n 2`/`-n 3` and is born red in CI. That is how
 `test_the_ranks_per_node_count_is_attached_to_the_communicator_not_to_its_handle` shipped —

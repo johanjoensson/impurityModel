@@ -249,11 +249,11 @@ jobs:
           echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
           ulimit -c unlimited && echo "core limit in this shell: $(ulimit -c)"
 
-      - name: Run serial tests
-        run: |
-          ulimit -c unlimited
-          pytest --cache-clear $PYTEST_COV_ARGS
-
+      # No separate plain `pytest` step. pytest-mpi's --with-mpi runs UNMARKED tests too, so the
+      # 1-rank step below is a strict superset of a serial run (every unmarked test, plus the mpi
+      # tests at size 1; Basis treats comm=None and a size-1 communicator alike). A serial step
+      # here ran every unmarked test a fourth time per leg for nothing. A bare `pytest` with no
+      # launcher still runs in test-asan below, which is where its exit path is worth covering.
       - name: Run MPI tests (1 rank)
         run: |
           ulimit -c unlimited
@@ -294,14 +294,15 @@ jobs:
       - name: Combine coverage and write XML
         if: matrix.coverage == true
         run: |
-          # Merge the per-rank 2- and 3-rank data files INTO the serial + 1-rank .coverage
+          # Merge the per-rank 2- and 3-rank data files INTO the 1-rank .coverage
           # and emit the authoritative report. Combining here (once) rather than in each
           # run is what keeps the concurrent MPI ranks from corrupting the data file.
           #
           # --append is load-bearing: without it `coverage combine` does not read the
           # existing .coverage, it overwrites it with the .coverage.* files alone. That is
           # how this step reported "Combined 5 files" for a long time while the serial and
-          # 1-rank data -- every line reached only at comm.size == 1 -- were thrown away.
+          # 1-rank data -- every line reached only at comm.size == 1 -- were thrown away
+          # (there was a separate serial step then; the 1-rank step now covers it).
           # Test code itself is omitted in pyproject.toml ([tool.coverage.run] omit), so
           # the figure is library coverage, not "how much of the test suite ran".
           coverage combine --append
