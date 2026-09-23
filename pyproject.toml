@@ -62,6 +62,11 @@ plot_spectra="impurityModel.scripts.plot_spectra:main"
 # `src/` install records absolute paths (/home/runner/work/...), which Coveralls
 # cannot map back to the repository and ends up reporting empty/incorrect coverage.
 relative_files = true
+# Measure the library, not the test suite. Test modules were ~65% of the measured
+# statements, so an opt-in benchmark (never run in CI) *lowered* the headline figure and
+# turned the Coveralls status red on a commit that only added tests. The wildcard form
+# matches however the path is recorded (cwd differs under `mpiexec bash -c`).
+omit = ["*/impurityModel/test/*"]
 
 [tool.black]
 line-length = 120
