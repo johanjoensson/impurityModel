@@ -257,8 +257,6 @@ def test_contains_2():
     assert basis.contains(build_states([b"\x00\x1a\x2b"])[0])
     assert not basis.contains(build_states([b"\xff\x1a\x2b"])[0])
     assert all(basis.contains(states))
-    # assert basis.index(states[0]) == 0
-    # assert basis.index(states[1]) == 1
 
 
 @pytest.mark.mpi
@@ -287,7 +285,6 @@ def test_contains_random(n_bytes, n_states):
         comm=MPI.COMM_WORLD,
     )
     sorted_states = sorted(set(states))
-    # sorted_indices = basis.index(sorted_states)
     import copy
 
     too_large_state = copy.copy(sorted_states[-1])
@@ -297,9 +294,6 @@ def test_contains_random(n_bytes, n_states):
     assert all(basis.contains(states))
     assert too_large_state not in basis
     assert not list(basis.contains(states + [too_large_state]))[-1]
-    # assert all(si == i for si, i in enumerate(sorted_indices))
-    # for i in range(len(sorted_states)):
-    #     assert basis.index(sorted_states[i]) == i
 
 
 @pytest.mark.mpi
@@ -336,9 +330,6 @@ def test_contains_random_distributed(n_bytes, n_states):
     assert too_large_state not in basis
     assert not list(basis.contains(states + [too_large_state]))[-1]
     basis.index(sorted_states)
-    # assert all(si == i for i, si in enumerate(sorted_indices))
-    # for i in range(len(sorted_states)):
-    #     assert basis.index(sorted_states[i]) == i
 
 
 @pytest.mark.mpi
@@ -991,8 +982,8 @@ def test_simple_vector_mpi():
     v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j], dtype=complex)
 
     assert v.shape == (len(basis),)
-    assert v.shape == v_exact.shape
-    # assert np.allclose(v, v_exact)
+    # Global positions follow the hash layout, not `states` order: compare through basis.index.
+    np.testing.assert_allclose(v[list(basis.index(states))], v_exact)
 
 
 def test_vector():
@@ -1038,11 +1029,13 @@ def test_vector_mpi():
     if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
     v = build_vector(basis, [state])[0]
+    # states[-1] is not in the basis and is dropped. states[0] is set on every rank, but each
+    # rank contributes only the entries it owns, so the replicated copies are NOT summed here
+    # (contrast build_distributed_vector below).
     v_exact = np.array([0.25 + 0.2j, 0.33 + 0.15j, 0, 0], dtype=complex)
 
     assert v.shape == (len(basis),)
-    assert v.shape == v_exact.shape
-    # assert np.allclose(v, v_exact)
+    np.testing.assert_allclose(v[list(basis.index(states[:-1]))], v_exact)
 
 
 def test_simple_state():
@@ -1266,15 +1259,11 @@ def test_distributed_simple_vector():
         state[states[1]] = 0.33 + 0.15j
 
     v = build_distributed_vector(basis, [ManyBodyState(state, width=1)])[0]
-    v_exact = np.zeros((len(basis.local_basis),), dtype=complex)
-    if states[0] in basis.local_basis:
-        v_exact[0] = 0.25 + 0.2j
-    if states[1] in basis.local_basis:
-        v_exact[-1] = 0.33 + 0.15j
+    values = {states[0]: 0.25 + 0.2j, states[1]: 0.33 + 0.15j}
+    v_exact = np.array([values[s] for s in basis.local_basis], dtype=complex)
 
     assert v.shape == (len(basis.local_basis),)
-    assert v.shape == v_exact.shape
-    # assert np.allclose(v, v_exact)
+    np.testing.assert_allclose(v, v_exact)
 
 
 @pytest.mark.mpi
@@ -1296,15 +1285,13 @@ def test_distributed_vector_mpi():
     if states[1] in basis.local_basis:
         state[states[1]] = 0.33 + 0.15j
     v = build_distributed_vector(basis, [ManyBodyState(state, width=1)])[0]
-    np.array([0.25 * comm.size + 0.2j * comm.size, 0.33 + 0.15j, 0, 0], dtype=complex)
+    # Replicated copies are SUMMED on redistribution: states[0] was set on every rank, so its
+    # owner receives comm.size copies. states[-1] is not in the basis and is dropped.
+    values = {states[0]: (0.25 + 0.2j) * comm.size, states[1]: 0.33 + 0.15j}
+    v_exact = np.array([values.get(s, 0) for s in basis.local_basis], dtype=complex)
 
-    len(basis.local_basis)
     assert v.shape == (len(basis.local_basis),)
-    end = basis.index_bounds[comm.rank]
-    if end is None:
-        end = len(basis)
-    # if n > 0:
-    # assert np.allclose(v, v_exact[end - n : end])
+    np.testing.assert_allclose(v, v_exact)
 
 
 @pytest.mark.mpi
