@@ -293,3 +293,57 @@ def test_capped_solve_mpi_matches_dense_php():
         assert len(retained) == proxy.retained_size
         ref = _dense_G_on(retained, [z])[0]
         np.testing.assert_allclose(G, ref, atol=1e-9)
+
+
+# ---- seed overflow: the right-hand side alone does not fit the budget -------------------------
+#
+# Both paths below had never run: every capped test left room for the seeds. The contract is
+# that the seeds are never truncated -- a budget below their support is solved frozen on the
+# support, exactly, and flagged -- while warm-start-only support is what gets cut.
+
+
+def test_a_cap_below_the_seed_support_solves_frozen_on_it_and_says_so():
+    seed_support = sorted({state for s in _seeds() for state in s})
+    cap = len(seed_support) - 1
+    e_shift = 0.3
+    z_axes = _gf_signed_axes(None, OMEGA, 0, DELTA)
+    G_axes, stats = block_Green_bicgstab(_siam_6(), _seeds(), _seed_basis(cap=cap), [e_shift], 2, z_axes, atol=1e-10)
+    assert stats["seed_overflow"]
+    assert stats["n_unconverged"] == 0
+    # Frozen on the seed support: the exact resolvent of P H P there, at every point.
+    ref = _dense_G_on(seed_support, z_axes[0] + e_shift)
+    np.testing.assert_allclose(G_axes[0][0], ref, atol=1e-8 * np.max(np.abs(ref)))
+
+
+def _warm_start_case():
+    from impurityModel.ed.gf_solvers import _fit_warm_start_to_budget
+
+    seeds = _seeds()
+    seed_keys = {state for s in seeds for state in s}
+    extras = [d for d in _n3_sector_dets() if d not in seed_keys][:4]
+    amplitudes = dict(zip(extras, [0.9, 0.5, 0.1, 0.01]))
+    x0 = [
+        ManyBodyState({**{k: 0.2 + 0j for k in seed_keys}, **{d: a + 0j for d, a in amplitudes.items()}}, width=1),
+        ManyBodyState({extras[1]: 0.05 + 0j}, width=1),
+    ]
+    basis = Basis(_IMP, _BATHS, initial_basis=sorted(seed_keys | set(extras)), verbose=False)
+    return _fit_warm_start_to_budget, seeds, seed_keys, extras, x0, basis
+
+
+def test_warm_start_support_is_cut_top_k_and_the_seeds_are_kept():
+    fit, seeds, seed_keys, extras, x0, basis = _warm_start_case()
+    x0_fit, overflowed = fit(basis, seeds, x0, budget=len(seed_keys) + 2)
+    assert not overflowed
+    kept = seed_keys | {extras[0], extras[1]}  # the two largest warm-start-only amplitudes
+    assert set(basis) == kept
+    for column in x0_fit:
+        assert set(column.keys()) <= kept
+    assert set(x0_fit[0].keys()) == kept
+
+
+def test_a_budget_at_the_seed_support_leaves_everything_and_flags_overflow():
+    fit, seeds, seed_keys, extras, x0, basis = _warm_start_case()
+    before = set(basis)
+    x0_fit, overflowed = fit(basis, seeds, x0, budget=len(seed_keys))
+    assert overflowed
+    assert x0_fit is x0 and set(basis) == before
