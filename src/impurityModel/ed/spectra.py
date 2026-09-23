@@ -967,9 +967,17 @@ def calc_spectra_tensor(
                 Q=Q, representatives=list(range(m)), group_of_column=list(range(m)), diagonalizable=False
             )
 
-    # One conserved-charge sector for the whole block (all components share the charge shift).
-    sector = _sector_restrictions_per_top(hOp, [rep_ops[0]], psis, basis)
-    extra = None if sector is None else sector[0]
+    # One excited basis serves the whole block, so it can be confined to a conserved-charge
+    # sector only when every component's seed lives in that same sector. This used to take
+    # component 0's sector for all of them -- "all components share the charge shift" -- which
+    # holds for the Cartesian dipole components (each sums over every core orbital) but not in
+    # general: two components with definite but different sectors (c2^dag c0 and c3^dag c1 when
+    # the core orbitals are separately conserved) had every other component's seed pruned to
+    # nothing, and its spectrum came back identically zero. Disagreement now falls back to the
+    # occupation window, exactly as a component with no definite sector already did.
+    sectors = _sector_restrictions_per_top(hOp, rep_ops, psis, basis)
+    shared = sectors is not None and sectors[0] is not None and all(s == sectors[0] for s in sectors)
+    extra = sectors[0] if shared else None
 
     comm = basis.comm
     e0 = np.min(es)

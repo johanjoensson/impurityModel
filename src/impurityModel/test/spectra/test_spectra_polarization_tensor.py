@@ -13,6 +13,7 @@ it -- this must reproduce :func:`spectra.calc_spectra` run on the combined opera
 from itertools import combinations
 
 import numpy as np
+import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import polarization, spectra
@@ -244,3 +245,79 @@ def test_moment_check_falls_back_on_incorrect_reduction():
             **_DN,
         )
         np.testing.assert_allclose(got[:, p], ref[:, 0], atol=1e-8, err_msg=f"polarization {eps}")
+
+
+def _separately_conserved_components():
+    """c2^dag c0 and c3^dag c1. _model never mixes the core orbitals, so n0 and n1 are separately
+    conserved and the two seeds live in different charge sectors."""
+    return [
+        ManyBodyOperator({((2, "c"), (0, "a")): 1.0}),
+        ManyBodyOperator({((3, "c"), (1, "a")): 1.0}),
+    ]
+
+
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_every_tensor_component_matches_its_own_spectrum_across_charge_sectors(order):
+    """The tensor path confined the whole block to component 0's conserved-charge sector, so a
+    component whose seed lives in another sector was pruned to nothing: its diagonal spectrum
+    came back identically zero (whichever component came second). Each diagonal element must
+    equal what the per-operator path computes for that component alone."""
+    op = _model()
+    gs, e0, dets = _ground_state(op, 2)
+    comps = [_separately_conserved_components()[i] for i in order]
+    w = np.linspace(-5.0, 5.0, 41)
+    kwargs = dict(tau=0.01, w=w, delta=0.2, slaterWeightMin=0.0, verbose=False, occ_cutoff=1e-12, **_DN)
+    chi = spectra.calc_spectra_tensor(op, comps, [gs], [e0], basis=_basis(dets), reduction=None, **kwargs)
+    got = polarization.contract_spectra_tensor(chi, [[1.0, 0.0], [0.0, 1.0]])
+    for a, comp in enumerate(comps):
+        ref = spectra.calc_spectra(op, [comp], [gs], [e0], basis=_basis(dets), **kwargs)
+        assert np.abs(got[:, a]).max() > 0, f"component {a} was pruned away"
+        np.testing.assert_allclose(got[:, a], ref[:, 0], atol=1e-8, err_msg=f"component {a}")
+
+
+def test_a_true_symmetry_dedup_is_taken_and_matches_the_full_tensor(monkeypatch):
+    """The fallback test above only ever reaches the *rejecting* branch of the safety net; in the
+    whole suite `_moments_consistent` had never returned True, i.e. the dedup production takes
+    when symmetry does hold had never run. Here it does: the model is symmetric under swapping
+    (0<->1, 2<->3) together, so c2^dag c0 and c3^dag c1 are exact partners (equal seed moments,
+    and seeds in sectors H never connects, so no off-diagonal response)."""
+    op = _model()
+    gs, e0, dets = _ground_state(op, 2)
+    comps = _separately_conserved_components()
+    w = np.linspace(-5.0, 5.0, 41)
+    verdicts = []
+    real_check = spectra._moments_consistent
+
+    def spy(*args, **kwargs):
+        verdicts.append(real_check(*args, **kwargs))
+        return verdicts[-1]
+
+    monkeypatch.setattr(spectra, "_moments_consistent", spy)
+    kwargs = dict(tau=0.01, w=w, delta=0.2, slaterWeightMin=0.0, verbose=False, occ_cutoff=1e-12, **_DN)
+    deduped = spectra.calc_spectra_tensor(
+        op,
+        comps,
+        [gs],
+        [e0],
+        basis=_basis(dets),
+        reduction=ComponentReduction(np.eye(2, dtype=complex), [0], [0, 0], True),
+        **kwargs,
+    )
+    assert verdicts == [True], "the safety net did not approve a dedup that is exact"
+    full = spectra.calc_spectra_tensor(op, comps, [gs], [e0], basis=_basis(dets), reduction=None, **kwargs)
+    assert np.abs(full[:, 1, 1]).max() > 0
+    np.testing.assert_allclose(deduped, full, atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    "m0, m1, groups, consistent",
+    [
+        ([1.0, 1.0], [0.5, 0.5], [0, 0], True),
+        ([1.0, 2.0], [0.5, 0.5], [0, 1], True),  # every group a singleton: nothing to compare
+        ([1.0, 2.0], [0.5, 1.0], [0, 0], False),  # seed norms differ
+        ([1.0, 1.0], [0.5, 0.9], [0, 0], False),  # equal norms, different mean energy
+        ([0.0, 0.0], [0.0, 0.3], [0, 0], True),  # empty seeds: no energy to compare
+    ],
+)
+def test_moments_consistent_compares_norms_and_mean_energies_within_groups(m0, m1, groups, consistent):
+    assert spectra._moments_consistent(np.array(m0), np.array(m1), groups) is consistent
