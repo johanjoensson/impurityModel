@@ -296,3 +296,90 @@ def test_auto_sentinels_stay_sentinels(written):
 def test_none_disables_the_cap_rather_than_deriving_one(written):
     text = SELFENERGY + '\n[many_body_basis]\ntruncation_threshold = "none"\n'
     assert build(load_input(written(text))).basis.truncation_threshold == np.inf
+
+
+# ---- [hamiltonian.blocks] / [hamiltonian.matrix] ----------------------------------------------
+
+_HEADER = """
+[format]
+version = [1, 0]
+[units]
+energy = "eV"
+"""
+
+_BLOCKS = """
+[hamiltonian.blocks]
+h_imp = { real = [[-1.0, 0.0], [0.0, -1.0]] }
+v = { real = [[0.5, 0.0], [0.0, 0.5]] }
+h_bath = { real = [[-3.0, 0.0], [0.0, -3.0]] }
+"""
+
+_MATRIX = """
+[hamiltonian.matrix]
+n_impurity_orbitals = 2
+h = { real = [[-1.0, 0.0, 0.5, 0.0], [0.0, -1.0, 0.0, 0.5], [0.5, 0.0, -3.0, 0.0], [0.0, 0.5, 0.0, -3.0]] }
+"""
+
+_S_SHELL = """
+[[shell]]
+l = 0
+role = "valence"
+n_bath = 2
+n_valence_bath = 2
+nominal_occupation = 1
+{extra}
+[interaction.slater]
+F_vv = [5.0]
+[selfenergy]
+"""
+
+
+def _blocks_or_matrix(tmp_path, source, extra=""):
+    path = tmp_path / "in.toml"
+    path.write_text(_HEADER + source + _S_SHELL.format(extra=extra))
+    return path
+
+
+@pytest.mark.parametrize("source", [_BLOCKS, _MATRIX], ids=["blocks", "matrix"])
+def test_a_matrix_source_keeps_the_declared_interaction(tmp_path, source):
+    """The Slater interaction used to be computed and then dropped for these two sources, so an
+    [interaction.slater] table silently produced a NON-interacting model."""
+    model = build(load_input(_blocks_or_matrix(tmp_path, source))).model
+    assert model.u4, "the declared F_vv never reached the model"
+    # l = 0: the only two-body interaction is U n_up n_dn with U = F0, stored as its two
+    # operator orderings at U/2 each.
+    assert len(model.u4) == 2
+    assert sum(model.u4.values()) == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize("source", [_BLOCKS, _MATRIX], ids=["blocks", "matrix"])
+@pytest.mark.parametrize("extra", ["soc = 0.1", "zeeman_splitting = [0.0, 0.0, 0.01]"], ids=["soc", "zeeman"])
+def test_a_matrix_source_refuses_one_body_terms_it_cannot_place(tmp_path, source, extra):
+    """SOC and a Zeeman field are one-body terms on the (l, s, m) basis; a bare matrix does not
+    say what basis it is in, so they are refused rather than silently dropped."""
+    with pytest.raises(InputError, match="fold it into the matrix"):
+        build(load_input(_blocks_or_matrix(tmp_path, source, extra)))
+
+
+def test_a_matrix_source_whose_impurity_block_does_not_match_the_shell_is_refused(tmp_path):
+    source = _BLOCKS.replace("[[-1.0, 0.0], [0.0, -1.0]]", "[[-1.0]]").replace(
+        "v = { real = [[0.5, 0.0], [0.0, 0.5]] }", "v = { real = [[0.5], [0.5]] }"
+    )
+    with pytest.raises(InputError, match="2 impurity spin-orbitals"):
+        build(load_input(_blocks_or_matrix(tmp_path, source)))
+
+
+@pytest.mark.parametrize("source", [_BLOCKS, _MATRIX], ids=["blocks", "matrix"])
+def test_a_matrix_source_cannot_drive_spectroscopy(tmp_path, source):
+    """This guard sat behind the blocks/matrix early return, so it could never fire for the two
+    sources it names; a spectroscopy run built a one-shell model with no core hole instead."""
+    spectroscopy = SPECTROSCOPY.split("[[shell]]", 1)[1]
+    path = tmp_path / "in.toml"
+    path.write_text(
+        _HEADER
+        + source
+        + "[[shell]]"
+        + spectroscopy.replace("n_bath = 60", "n_bath = 2").replace("n_valence_bath = 10", "n_valence_bath = 2")
+    )
+    with pytest.raises(InputError, match="cannot drive a spectroscopy run"):
+        build(load_input(path))

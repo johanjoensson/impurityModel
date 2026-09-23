@@ -182,7 +182,7 @@ Reconstruct the model from an impurityModel_data.h5 archive written by the RSPt 
 
 ## `[hamiltonian.blocks]`
 
-Build from the impurity / hybridization / bath blocks, H = [[H_imp, V^dag], [V, H_bath]].
+Build from the impurity / hybridization / bath blocks, H = [[H_imp, V^dag], [V, H_bath]]. The impurity block is the valence shell's 2(2l+1) spin-orbitals in the (l, s, m) layout, [interaction.slater] F_vv supplies the interaction, and a non-zero shell soc or zeeman_splitting is refused (the matrix does not state its basis): fold it into the matrix.
 
 | Key | Kind | Default | Description |
 | --- | --- | --- | --- |
@@ -239,7 +239,7 @@ Read the one-particle Hamiltonian from a file: a self-describing flat `.h0`, or 
 
 ## `[hamiltonian.matrix]`
 
-Build from the full one-particle solver matrix, impurity block first.
+Build from the full one-particle solver matrix, impurity block first. The impurity block is the valence shell's 2(2l+1) spin-orbitals in the (l, s, m) layout, [interaction.slater] F_vv supplies the interaction, and a non-zero shell soc or zeeman_splitting is refused (the matrix does not state its basis): fold it into the matrix.
 
 | Key | Kind | Default | Description |
 | --- | --- | --- | --- |

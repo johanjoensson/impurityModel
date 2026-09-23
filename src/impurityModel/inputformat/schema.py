@@ -463,7 +463,10 @@ _TABLE_LIST += [
     ),
     Table(
         "hamiltonian.blocks",
-        "Build from the impurity / hybridization / bath blocks, H = [[H_imp, V^dag], [V, H_bath]].",
+        (
+            "Build from the impurity / hybridization / bath blocks, H = [[H_imp, V^dag], [V, H_bath]]."
+            " The impurity block is the valence shell's 2(2l+1) spin-orbitals in the (l, s, m) layout, [interaction.slater] F_vv supplies the interaction, and a non-zero shell soc or zeeman_splitting is refused (the matrix does not state its basis): fold it into the matrix."
+        ),
         (
             Key("h_imp", Kind.MATRIX, UNSET, "Effective impurity block (n_imp, n_imp)."),
             Key("v", Kind.MATRIX, UNSET, "Impurity-bath hopping (n_bath, n_imp)."),
@@ -473,7 +476,10 @@ _TABLE_LIST += [
     ),
     Table(
         "hamiltonian.matrix",
-        "Build from the full one-particle solver matrix, impurity block first.",
+        (
+            "Build from the full one-particle solver matrix, impurity block first."
+            " The impurity block is the valence shell's 2(2l+1) spin-orbitals in the (l, s, m) layout, [interaction.slater] F_vv supplies the interaction, and a non-zero shell soc or zeeman_splitting is refused (the matrix does not state its basis): fold it into the matrix."
+        ),
         (
             Key("h", Kind.MATRIX, UNSET, "Full (n, n) one-particle Hamiltonian."),
             Key("n_impurity_orbitals", Kind.COUNT, UNSET, "Leading impurity block dimension.", minimum=1),

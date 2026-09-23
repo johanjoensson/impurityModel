@@ -340,10 +340,61 @@ def _opt_tuple(values):
     return None if values is None else tuple(values)
 
 
+def _model_from_matrix_source(resolved, source, valence, core, slater):
+    """``[hamiltonian.blocks]`` / ``[hamiltonian.matrix]``: the one-particle matrix as written,
+    plus the declared interaction.
+
+    The Slater interaction is the single-shell atomic tensor, on the same (l, s, m) impurity
+    layout the ``.h0`` path assumes with an identity ``rot_to_spherical``. It used to be
+    computed by the caller and then never passed, so an ``[interaction.slater]`` table built a
+    non-interacting model without a word. SOC and a Zeeman field are one-body terms on that
+    basis too, but a bare matrix does not state its basis, so a non-zero value is refused rather
+    than applied to orbitals it might not describe -- or, as before, silently dropped.
+    """
+    from impurityModel.ed.model import ImpurityModel, atomic_u4
+
+    l = valence["l"]
+    if core is not None:
+        raise InputError(
+            f"A {resolved.calculation} run builds a single correlated shell, but a "
+            f'[[shell]] with role = "core" is declared.'
+        )
+    for key in ("soc", "zeeman_splitting"):
+        value = valence.get(key)
+        if value is not None and np.any(np.asarray(value, dtype=float) != 0):
+            raise InputError(
+                f"[[shell]] l={l}: `{key}` is a one-body term on the (l, s, m) basis, and "
+                f"[hamiltonian.{source}] does not say what basis its matrix is in, so it cannot be "
+                "placed. It is not dropped either: fold it into the matrix instead."
+            )
+
+    if source == "blocks":
+        table = resolved.tables["hamiltonian.blocks"]
+        h_imp = _matrix_array(table["h_imp"])
+        n_imp = h_imp.shape[0]
+    else:
+        table = resolved.tables["hamiltonian.matrix"]
+        n_imp = table["n_impurity_orbitals"]
+    expected = 2 * (2 * l + 1)
+    if n_imp != expected:
+        raise InputError(
+            f"[hamiltonian.{source}]'s impurity block is {n_imp}x{n_imp}, but an l={l} valence "
+            f"shell has {expected} impurity spin-orbitals."
+        )
+
+    u4 = None if slater is None else atomic_u4(l, slater["F_vv"])
+    rot = np.eye(n_imp, dtype=complex)
+    if source == "blocks":
+        return ImpurityModel.from_blocks(
+            h_imp, _matrix_array(table["v"]), _matrix_array(table["h_bath"]), u4=u4, rot_to_spherical=rot
+        )
+    return ImpurityModel.from_solver_matrix(_matrix_array(table["h"]), n_imp, u4=u4, rot_to_spherical=rot)
+
+
 def _build_model(resolved, header, notes, rank, verbose):
     """Construct the ImpurityModel through the existing dispatch points, never around them."""
     from impurityModel.ed.get_spectra import build_spectra_model
-    from impurityModel.ed.model import ImpurityModel, load_model, load_selfenergy_archive
+    from impurityModel.ed.model import load_model, load_selfenergy_archive
 
     shells = resolved.shells
     valence = next(shell for shell in shells if shell["role"] == "valence")
@@ -359,32 +410,18 @@ def _build_model(resolved, header, notes, rank, verbose):
         notes.append(f"Model, meshes and recorded options taken from the archive (cluster {cluster!r}).")
         return model, {"archive": (meshes, basis, solver, cluster)}
 
+    if resolved.calculation == "spectroscopy" and source not in ("file", "crystal_field"):
+        # Ahead of the blocks/matrix branch below, which returns early: behind it, this guard
+        # was unreachable for exactly the two sources it names.
+        raise InputError(
+            f"[hamiltonian.{source}] cannot drive a spectroscopy run: the multi-shell "
+            "interacting assembly reads a file or a crystal-field parametrisation."
+        )
+
     if source in ("blocks", "matrix"):
-        if source == "blocks":
-            table = resolved.tables["hamiltonian.blocks"]
-            h_imp = _matrix_array(table["h_imp"])
-            model = ImpurityModel.from_blocks(
-                h_imp,
-                _matrix_array(table["v"]),
-                _matrix_array(table["h_bath"]),
-                rot_to_spherical=np.eye(h_imp.shape[0], dtype=complex),
-            )
-        else:
-            table = resolved.tables["hamiltonian.matrix"]
-            n_imp = table["n_impurity_orbitals"]
-            model = ImpurityModel.from_solver_matrix(
-                _matrix_array(table["h"]),
-                n_imp,
-                rot_to_spherical=np.eye(n_imp, dtype=complex),
-            )
-        return model, {}
+        return _model_from_matrix_source(resolved, source, valence, core, slater), {}
 
     if resolved.calculation == "spectroscopy":
-        if source not in ("file", "crystal_field"):
-            raise InputError(
-                f"[hamiltonian.{source}] cannot drive a spectroscopy run: the multi-shell "
-                "interacting assembly reads a file or a crystal-field parametrisation."
-            )
         if source == "crystal_field":
             # The octahedral parametrisation follows the valence shell's own O_h level
             # structure, so which keys are required is decided here, where l and the bath
