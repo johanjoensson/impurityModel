@@ -67,20 +67,20 @@ def test_gs_max_block_width_caps_the_warm_block_without_losing_the_ground_state(
 
     # Cold solve: wide enough that the returned manifold makes truncation meaningful.
     e_ref_cold, psi_refs = solver.get_eigenvectors(hop, 8, dense_cutoff=1, slaterWeightMin=0)
-    assert len(psi_refs) >= 4, f"need a wide warm block to truncate, got {len(psi_refs)}"
+    assert psi_refs.width >= 4, f"need a wide warm block to truncate, got {psi_refs.width}"
     np.testing.assert_allclose(min(e_ref_cold), ground_energy, atol=1e-8)
 
     # Reference: warm-started from that manifold, uncapped (today's default, knob unset).
     e_ref_uncapped, _ = solver.get_eigenvectors(hop, 8, dense_cutoff=1, slaterWeightMin=0, psi_refs=psi_refs)
     np.testing.assert_allclose(min(e_ref_uncapped), ground_energy, atol=1e-8)
 
-    # Capped: same warm-started call, GS_MAX_BLOCK_WIDTH=2 -- narrower than len(psi_refs).
+    # Capped: same warm-started call, GS_MAX_BLOCK_WIDTH=2 -- narrower than psi_refs.width.
     monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "2")
     with solver_trace.tracing() as trace:
         e_ref_capped, _ = solver.get_eigenvectors(hop, 8, dense_cutoff=1, slaterWeightMin=0, psi_refs=psi_refs)
     widths = [event["p"] for event in trace.of_kind("eigensolve_block_width")]
     assert widths, "no eigensolve_block_width events traced"
-    # 2 warm columns (the cap) + 1 cold full-support column = 3, never len(psi_refs) + 1.
+    # 2 warm columns (the cap) + 1 cold full-support column = 3, never psi_refs.width + 1.
     assert max(widths) <= 3, widths
 
     # Correctness: the cold-start reachability guard still finds the true ground state despite
@@ -108,5 +108,5 @@ def test_gs_max_block_width_leaves_the_returned_manifold_unchanged(monkeypatch):
     e_ref_capped, psi_refs_capped = solver.get_eigenvectors(
         hop, 8, dense_cutoff=1, slaterWeightMin=0, psi_refs=psi_refs
     )
-    assert len(psi_refs_capped) == len(psi_refs), (len(psi_refs_capped), len(psi_refs))
+    assert psi_refs_capped.width == psi_refs.width, (psi_refs_capped.width, psi_refs.width)
     np.testing.assert_allclose(sorted(e_ref_capped), sorted(e_ref_cold), atol=1e-8)

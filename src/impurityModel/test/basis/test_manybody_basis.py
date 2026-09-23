@@ -1180,8 +1180,12 @@ def test_simple_state():
     s = build_state(basis, v)
     s_exact = [{states[0]: v[0, 0], states[1]: v[0, 1]}]
 
-    for i in range(len(s)):
-        assert all(s[i][state] == s_exact[i][state] for state in s[i])
+    # `build_state` returns ONE block of `v.shape[0]` columns, so the column count is `.width`
+    # (`len(s)` is its row count) and a column is reached by indexing the row's `Row`.
+    assert s.width == len(s_exact)
+    for i, exact in enumerate(s_exact):
+        for state, amplitude in exact.items():
+            assert s[state][i] == amplitude
 
 
 @pytest.mark.mpi
@@ -1205,8 +1209,11 @@ def test_simple_state_mpi():
     s = build_state(basis, v)
     s_exact = [{states[0]: v[0, basis.index(states[0])], states[1]: v[0, basis.index(states[1])]}]
 
-    for i in range(len(s)):
-        assert all(s[i][state] == s_exact[i][state] for state in basis.local_basis), f"{s=} {s_exact=}"
+    # One block of `v.shape[0]` columns: `.width` is the column count, `len(s)` its rows.
+    assert s.width == len(s_exact)
+    for i, exact in enumerate(s_exact):
+        for state in basis.local_basis:
+            assert s[state][i] == exact[state], f"{s=} {s_exact=}"
 
 
 def test_state():
@@ -1229,8 +1236,15 @@ def test_state():
         {states[1]: v[1, 1], states[2]: v[1, 2]},
     ]
 
-    for i in range(len(s)):
-        assert all(s[i][state] == s_exact[i][state] for state in s[i])
+    # The block's support is the UNION over columns, and an entry a column does not carry is an
+    # exact zero rather than an absence -- that is the contract `from_states` had and this
+    # function now produces directly, so it is what the test pins.
+    assert s.width == len(s_exact)
+    support = set().union(*(set(d) for d in s_exact))
+    assert set(s.keys()) == support
+    for i, exact in enumerate(s_exact):
+        for state in support:
+            assert s[state][i] == exact.get(state, 0)
 
 
 @pytest.mark.mpi
@@ -1248,15 +1262,20 @@ def test_state_mpi():
         comm=comm,
     )
     v = np.array([[1.0, -2.5, 0, 0, 1.2], [0, 3, 1, 0, 0]])
-    build_state(basis, v)
+    s = build_state(basis, v)
     state_indices = list(basis.index(states))
-    [
-        {states[state_indices[0]]: v[0, 0], states[state_indices[1]]: v[0, 1], states[state_indices[4]]: v[0, 4]},
-        {states[state_indices[1]]: v[1, 1], states[state_indices[2]]: v[1, 2]},
-    ]
 
-    # for i in range(len(s)):
-    #     assert all(s[i][state] == s_exact[i][state] for state in s[i])
+    # This assertion block used to be commented out, so the test could not fail. Restored
+    # against the block contract: `v` is a full (replicated) vector indexed by GLOBAL position,
+    # each rank owns a hash-determined subset of the determinants, and `.width` is the one
+    # quantity that is the same on every rank -- including a rank that owns none of them.
+    assert s.width == v.shape[0]
+    local = set(s.keys())
+    for state, index in zip(states, state_indices):
+        if state not in local:
+            continue
+        for i in range(v.shape[0]):
+            assert s[state][i] == v[i, index]
 
 
 def test_eg_t2g_basis_expand():

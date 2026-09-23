@@ -110,7 +110,7 @@ from impurityModel.ed.dc_search import (
     resolve_cap_at_max,
 )
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
     log_memory_budget,
@@ -723,7 +723,13 @@ class _SectorContext:
         #
         # `solve_sector` returns `([inf], [])` for an empty basis -- a sector the restrictions
         # admit no determinants for -- undefined for the same reason as the bounds check above.
-        usable = MPI.COMM_WORLD.bcast(bool(len(psis)) and bool(np.all(np.isfinite(es))), root=0)
+        # `psis` is the block `get_eigenvectors` returns. `len()` on it is the rank-local ROW
+        # count, so `bool(len(psis))` would read "this rank owns no determinants" as "the sector
+        # is unusable" -- and since only rank 0's value is broadcast, an empty rank 0 (which
+        # appears from -n 3 up) would silently declare every sector unusable and let the DC
+        # search proceed on a wrong answer. `.width` is the manifold size and is rank-invariant.
+        n_kept = psis.width if isinstance(psis, ManyBodyState) else len(psis)
+        usable = MPI.COMM_WORLD.bcast(bool(n_kept) and bool(np.all(np.isfinite(es))), root=0)
         if not usable:
             self.sector_at[(mu, n_trial)] = None
             return None
@@ -736,18 +742,28 @@ class _SectorContext:
         # a pure function of `e_ref`, which is bit-identical across ranks (see the note there, and
         # the measurement behind it). Kept because it costs one bcast of an int and this class's
         # whole job is to make solver output a rank-replicated fact rather than a hope.
-        n_states = MPI.COMM_WORLD.bcast(len(psis), root=0)
-        if len(psis) < n_states:
+        # Now vacuous rather than belt-and-braces: `.width` comes from the replicated dense
+        # array `build_state` was handed, so ranks cannot disagree about it by construction --
+        # where the old `len(psis)` was a genuinely rank-local list length. Kept as an assertion
+        # of that invariant; it costs one bcast of an int.
+        n_states = MPI.COMM_WORLD.bcast(n_kept, root=0)
+        if n_kept < n_states:
             # Not a `raise`: a rank-local exception here strands the others inside the reduction
             # below, turning a diagnosable crash into a hang. Abort the job with the reason.
             print(
-                f"rank {MPI.COMM_WORLD.rank} kept {len(psis)} eigenstates where rank 0 kept "
+                f"rank {MPI.COMM_WORLD.rank} kept {n_kept} eigenstates where rank 0 kept "
                 f"{n_states}; the thermal manifold has to be rank-identical before its density "
                 "matrices are reduced.",
                 flush=True,
             )
             MPI.COMM_WORLD.Abort(1)
-        es, psis = es[:n_states], psis[:n_states]
+        # `select`, not `psis[:n_states]`: `__getitem__` on a block takes a determinant key.
+        es = es[:n_states]
+        if isinstance(psis, ManyBodyState):
+            if psis.width > n_states:
+                psis = psis.select(list(range(n_states)))
+        else:
+            psis = psis[:n_states]
         impurity_indices = [orb for blocks in self.impurity_orbitals.values() for block in blocks for orb in block]
         rhos = build_density_matrices(sector_basis, psis, impurity_indices, impurity_indices)
         # Per-state impurity occupations, then both conventions off the same array. `occupation`

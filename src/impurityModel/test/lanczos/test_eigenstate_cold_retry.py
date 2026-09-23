@@ -126,7 +126,7 @@ def test_warm_start_exhaustion_triggers_one_cold_retry(monkeypatch, capsys):
     if calls[1].shape[0] > 0:
         assert np.all(calls[1] != 0)
     # The certified manifold: the beyond-cut state is trimmed, the rest is returned.
-    assert len(e_ref) == len(psi_refs) > 3
+    assert len(e_ref) == psi_refs.width > 3
     assert np.max(e_ref) < CUT
     assert "cannot be shown to be complete" not in capsys.readouterr().out
 
@@ -179,7 +179,7 @@ def test_warm_start_exhaustion_retries_once_without_a_thermal_cut(monkeypatch):
     assert calls[0].shape[1] == 2  # warm block + cold guard column
     assert calls[1].shape[1] == 1  # the retry, cold alone
     # Nothing is trimmed without a cut, so the beyond-cut state survives into the result.
-    assert len(e_ref) == len(psi_refs)
+    assert len(e_ref) == psi_refs.width
     assert np.max(e_ref) > CUT
 
 
@@ -213,7 +213,7 @@ def test_no_cut_dense_branch_returns_exactly_num_wanted_states():
 
     e_ref, psi_refs = solver.get_eigenvectors(h_op, num_wanted=3, max_energy=None)
 
-    assert len(e_ref) == len(psi_refs) == 3
+    assert len(e_ref) == psi_refs.width == 3
     # H is diagonal in this basis, so the exact spectrum is the per-determinant occupation sum.
     exact = sorted(sum(orb + 1 for orb in occ) for occ in itertools.combinations(range(N_SPIN_ORBITALS), 4))
     np.testing.assert_allclose(sorted(e_ref.real), exact[:3])
@@ -224,7 +224,7 @@ def test_no_cut_request_above_the_basis_size_is_clamped_not_an_error():
 
     e_ref, psi_refs = solver.get_eigenvectors(_h_op(), num_wanted=10 * len(basis), max_energy=None)
 
-    assert len(e_ref) == len(psi_refs) == len(basis)
+    assert len(e_ref) == psi_refs.width == len(basis)
 
 
 def _uniform_refs(basis, value):
@@ -267,7 +267,7 @@ def test_a_non_finite_warm_block_falls_back_to_the_cold_start(monkeypatch, capsy
     assert len(calls) == 1
     assert calls[0].shape[1] == 1
     assert np.all(np.isfinite(calls[0]))
-    assert len(e_ref) == len(psi_refs) > 0
+    assert len(e_ref) == psi_refs.width > 0
 
     if not basis.is_distributed or basis.comm.rank == 0:
         warning = capsys.readouterr().out

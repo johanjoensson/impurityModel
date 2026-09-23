@@ -485,7 +485,8 @@ def test_warm_started_eigensolver_delivers_more_than_its_start_block():
     )
     solver = workload["solver"]
     assert solver.psi_refs is not None, "the workload no longer leaves a warm start; the test is moot"
-    width = len(solver.psi_refs)
+    # `.width`: `len()` on the block is its rank-local row count, not the start-block width.
+    width = solver.psi_refs.width
 
     e_ref, _ = solver.get_eigenvectors(
         workload["h"],

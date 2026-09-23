@@ -82,7 +82,9 @@ def block_Green(
         # overshoot the cap by at most one H-application batch (checking only after all
         # five rounds used to blow past it by the full five-fold fanout). basis.size is
         # replicated by add_states, so the break is collective-consistent.
-        probe = ManyBodyState.from_states(list(last_q))
+        # `last_q` is already the block `build_state` returned; `list()` on it would
+        # iterate determinant keys, not columns.
+        probe = last_q
         capped = False
         for _i in range(5):
             probe = hOp.apply_block(probe, slaterWeightMin)
@@ -199,7 +201,16 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             info["d_g"] = float("nan")
             info["n_blocks"] = 0
             info["tol"] = _gf_rel_tol(slaterWeightMin)
-        return np.zeros((0, n, n), dtype=complex), np.zeros((0, n, n), dtype=complex), r, psi_arr, []
+        # `last_q` must be a block on EVERY return: `block_Green` feeds it straight into
+        # `apply_block`. `psi_arr` here is `redistribute_psis(*psi_arr)`, i.e. a list, so it
+        # needs wrapping -- only the other return was migrated.
+        return (
+            np.zeros((0, n, n), dtype=complex),
+            np.zeros((0, n, n), dtype=complex),
+            r,
+            psi_arr if isinstance(psi_arr, ManyBodyState) else ManyBodyState.from_states(list(psi_arr)),
+            [],
+        )
 
     converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
 
@@ -385,7 +396,9 @@ def block_Green_sparse(
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), np.zeros((n, n), dtype=complex)
     psi_dense_local, r = _distributed_seed_qr(basis, psi_arr, slaterWeightMin)
     psi_arr = build_state(basis, psi_dense_local.T, slaterWeightMin=0)
-    if len(psi_arr) == 0:
+    # `.width`, not `len()`: len() is the rank-local row count, so an empty-rank early
+    # return here would skip the collectives the other ranks are entering.
+    if psi_arr.width == 0:
         if cap_info is not None:
             cap_info["retained_size"] = 0
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), r

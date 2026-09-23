@@ -120,7 +120,9 @@ def test_truncate_keeps_top_k_amplitudes():
     assert basis.size == 3
     assert _all_retained(basis) == sorted(dets[-3:])
     # The returned psis are filtered to the retained set with amplitudes intact.
-    kept = {det: amp for p in psis for det, amp in p.items()}
+    # `truncate` returns a block: iterating it yields determinant KEYS, so the columns come
+    # out through `to_states()`.
+    kept = {det: amp for p in psis.to_states() for det, amp in p.items()}
     assert kept == dict(zip(dets[-3:], amps[-3:]))
 
 
@@ -204,7 +206,10 @@ def test_truncate_top_k_mpi():
     assert basis.size == 4
     assert _all_retained(basis) == sorted(dets[-4:])
     # Each retained det lives on exactly one rank with its original amplitude.
-    kept_local = {det: amp[0] for p in psis for det, amp in p.items()}
+    # `to_states()`, not `psis`: iterating the block yields determinant keys, and `.items()`
+    # on a key raises -- but ONLY on a rank that owns rows. A rank owning none iterates nothing,
+    # raises nothing, and walks into the `allgather` below alone, hanging the whole -n 3 leg.
+    kept_local = {det: amp[0] for p in psis.to_states() for det, amp in p.items()}
     gathered = comm.allgather(kept_local)
     kept = {}
     for part in gathered:

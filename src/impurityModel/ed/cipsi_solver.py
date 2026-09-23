@@ -248,6 +248,20 @@ def _score_candidates(overlaps, e_ref, e_Dj, groups, chunk_size=None):
     return scores
 
 
+def _psi_ref_width(psi_refs):
+    """Number of reference columns, whether ``psi_refs`` is a block or a legacy list.
+
+    ``len()`` on a :class:`ManyBodyState` is its **rank-local row count**, not its width, so
+    every ``len(psi_refs)`` that meant "how many reference states" has to come through here.
+    Two of them size MPI collectives (``_manifold_request`` -> ``num_wanted``, and the memory
+    look-ahead -> ``max_new`` -> ``_admit_top``'s rank-dependent branch), and a rank-local value
+    there is the deadlock class this repo has hit twice. ``.width`` is rank-invariant by
+    construction: ``build_state`` takes it from the dense array's row count, which is replicated,
+    and it survives a rank owning zero determinants.
+    """
+    return psi_refs.width if isinstance(psi_refs, ManyBodyState) else len(psi_refs)
+
+
 def _manifold_request(n_kept, prev_kept):
     """How many eigenstates one CIPSI cycle should ask for, given what the last one kept.
 
@@ -591,7 +605,7 @@ class CIPSISolver:
             )
             self.truncate(psi_ref, _e_ref)
 
-    def truncate(self, psis: list[ManyBodyState], e_ref=None, target=None, slaterWeightMin=0) -> list[ManyBodyState]:
+    def truncate(self, psis, e_ref=None, target=None, slaterWeightMin=0) -> ManyBodyState:
         """Keep the globally top-``target`` determinants by eigenvector amplitude.
 
         Importance is the max ``|amplitude|^2`` over ``psis`` (each determinant counted
@@ -607,8 +621,19 @@ class CIPSISolver:
         """
         if target is None:
             target = self.basis.truncation_threshold
-        blk = ManyBodyState.from_states(list(psis))
-        if e_ref is not None and len(e_ref) == len(psis):
+        # `psis` is normally the block `get_eigenvectors` returns; a list of width-1 states is
+        # still accepted, the same way `_candidate_overlaps_and_energies` takes either.
+        #
+        # `.copy()`, NOT the caller's object: `keep_rows` and `prune_rows` below mutate IN
+        # PLACE, and `redistribute_block` returns its argument unchanged on a non-distributed
+        # basis -- so binding `blk` to the argument truncates the caller's block too. `expand`
+        # aliases exactly that (`best_psis = psi_refs`, then `psi_refs = self.truncate(psi_refs,
+        # ...)` in the same cycle), and the best-basis snapshot silently lost every row a later
+        # cycle dropped: measured -13.2657157 against -13.2657322 on the capped cubic d-shell,
+        # with a 240-determinant basis where 400 was asked for. No exception, just a worse
+        # answer. The list form was safe only because `from_states` always built a fresh block.
+        blk = psis.copy() if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis))
+        if e_ref is not None and len(e_ref) == blk.width:
             # e_ref is only replicated to roundoff (it comes from a Lanczos solve run
             # independently on every rank); a splitting sitting near DEGENERACY_TOL could group
             # differently per rank and desync which determinants survive. Broadcast rank 0's copy
@@ -671,7 +696,14 @@ class CIPSISolver:
         mask = ManyBodyState.from_states([ManyBodyState(dict.fromkeys(retained, 1.0 + 0j), width=1)])
         blk.keep_rows(mask)
         blk = self.basis.redistribute_block(blk)
-        return blk.to_states()
+        # The list form this used to return went out through `to_states()`, which drops a
+        # column's exact zeros, so a row that was zero in *every* column disappeared and the
+        # caller's `from_states` union never saw it. Returning the block keeps such a row, so
+        # prune them here: same support as before, and hence a bit-identical `e0`. This is the
+        # same `prune_rows(0.0)` `_apply_block_and_redistribute` applies after its own
+        # redistribute, for the same reason (exact cross-rank cancellation on every column).
+        blk.prune_rows(0.0)
+        return blk
 
     def _apply_block_and_redistribute(self, H, psi_ref, cutoff):
         """Apply ``H`` to the reference states as one shared-support block, then redistribute.
@@ -710,7 +742,7 @@ class CIPSISolver:
         cross-rank cancellation on every column of a row into that row's removal -- a
         real selection-rule cancellation, not a truncation artifact.
         """
-        block = ManyBodyState.from_states(psi_ref)
+        block = psi_ref if isinstance(psi_ref, ManyBodyState) else ManyBodyState.from_states(psi_ref)
         n_chunks = config.GS_APPLY_ROW_CHUNKS.get()
         if n_chunks is None or n_chunks <= 1:
             raw = self._apply_and_prune_columns(H, block, cutoff)
@@ -1289,7 +1321,10 @@ class CIPSISolver:
                 # Left at `None` deliberately; see `_manifold_request` for why that is not 0.
                 prev_kept = None
             else:
-                n_kept = len(psi_refs)
+                # `.width`, not `len()`: len() on a block is its rank-local ROW count, which
+                # would make num_wanted -- and the eigensolver collectives it sizes -- diverge
+                # across ranks.
+                n_kept = _psi_ref_width(psi_refs)
                 num_wanted = _manifold_request(n_kept, prev_kept)
                 prev_kept = n_kept
             e_ref, psi_refs = self.get_eigenvectors(
@@ -1348,7 +1383,10 @@ class CIPSISolver:
             # cycle's kept count here, so this is exactly the request the next loop head makes.
             affordable_growth = None
             if memory_budget_bytes is not None:
-                p_now = len(psi_refs)
+                # `.width`: `len()` is the rank-local ROW count, which would both mis-size
+                # the look-ahead by orders of magnitude and make `cap` -- hence `max_new`, hence
+                # `_admit_top`'s rank-dependent branch over collectives -- differ per rank.
+                p_now = _psi_ref_width(psi_refs)
                 affordable_growth = _memory_growth_bound(
                     memory_budget_bytes, old_size, p_now, _manifold_request(p_now, prev_kept)
                 )
@@ -1449,7 +1487,7 @@ class CIPSISolver:
                         )
                 _sel_event.update(
                     basis_size=int(old_size),
-                    p=len(psi_refs),
+                    p=_psi_ref_width(psi_refs),
                     hpsi_rows=int(sel.get("hpsi_rows", 0)),
                     n_candidates=int(sel.get("n_candidates", 0)),
                     n_admitted=int(sel.get("n_admitted", 0)),
@@ -1492,7 +1530,7 @@ class CIPSISolver:
                 # doc/plans/dc_smo_memory.md) -- `last_selection`'s counts used to be
                 # visible only behind the cap-hit WARNING below.
                 print(
-                    f"  cycle {cycle}: basis={old_size:,} p={len(psi_refs):,} "
+                    f"  cycle {cycle}: basis={old_size:,} p={_psi_ref_width(psi_refs):,} "
                     f"Hpsi_rows={sel.get('hpsi_rows', 0):,} candidates={sel.get('n_candidates', 0):,} "
                     f"admitted={sel.get('n_admitted', 0):,} new={n_new:,} "
                     f"subthreshold_de2_mass={sel.get('subthreshold_de2_mass', 0.0):.3e} "
@@ -1552,7 +1590,16 @@ class CIPSISolver:
                         f"{self.last_truncation['retained']:,} determinants, admitting {n_new:,} candidates)"
                     )
             self.basis.add_states(new_Dj)
-            psi_refs = self.basis.redistribute_psis(*psi_refs)
+            # `redistribute_block`, not `redistribute_psis(*psi_refs)`: unpacking a block with
+            # `*` iterates its determinant KEYS. At >1 rank that raises; at 1 rank
+            # `redistribute_psis` is a no-op that hands the keys straight back, so the next
+            # cycle silently reads a list of SlaterDeterminants as its reference block.
+            psi_refs = self.basis.redistribute_block(psi_refs)
+            # `redistribute_psis` pruned each column slice to 0.0 and the caller's `from_states`
+            # re-unioned, so a row that came out exactly zero in *every* column disappeared.
+            # `redistribute_block` does neither, so do it here -- otherwise an exact cross-rank
+            # cancellation leaves an all-zero row behind, and only at >1 rank.
+            psi_refs.prune_rows(0.0)
             if cap_cycles == 0 and self.basis.size == old_size:
                 break
             e0 = np.inf  # the basis was mutated; e0 no longer describes it
@@ -1566,7 +1613,10 @@ class CIPSISolver:
             # here is RETENTION -- the snapshot held across every refinement cycle is 9.8
             # B/det instead of 80.2 -- not the cost of putting it back.
             self.basis.add_states(best_basis[row].tobytes() for row in range(best_basis.shape[0]))
-            psi_refs = self.basis.redistribute_psis(*best_psis)
+            psi_refs = self.basis.redistribute_block(
+                best_psis if isinstance(best_psis, ManyBodyState) else ManyBodyState.from_states(list(best_psis))
+            )
+            psi_refs.prune_rows(0.0)
             e_ref = best_e_ref
         self.psi_refs = psi_refs
         if capped and self.basis.size > threshold and self.psi_refs is not None:
@@ -1771,9 +1821,16 @@ class CIPSISolver:
             # lies beyond the thermal cut, and the miss is undetectable downstream. Appending
             # the cold full-support start vector keeps every sector reachable while the warm
             # columns retain their fast convergence.
-            warm_block = list(psi_refs) if warm_started else []
             max_block_width = config.GS_MAX_BLOCK_WIDTH.get()
-            if max_block_width is not None and len(warm_block) > max_block_width:
+            if not warm_started:
+                warm_block = []
+            else:
+                # `psi_refs` is a block: `list(...)` on it would yield determinant KEYS, so the
+                # columns come out through `to_states()`. The narrowing below runs *first*, as a
+                # column `select`, so only the columns the solver will actually use are ever
+                # materialized as separate width-1 states -- `max_block_width` is 5 in
+                # production against a manifold in the hundreds.
+                #
                 # Truncate the block the *solver* uses, not the manifold the caller asked for:
                 # `psi_refs` is already energy-ordered ascending (the caller's own return path,
                 # `_energy_cut_indices`'s `order = np.argsort(e_ref)`), so the lowest
@@ -1782,7 +1839,17 @@ class CIPSISolver:
                 # with, not how many states get returned, which is what caps `krylov_bytes`
                 # (`memory_estimate._gs_krylov_columns`) without shrinking the certified manifold
                 # `expand`'s "exhausted" check reads.
-                warm_block = warm_block[:max_block_width]
+                # A caller may still hand in a list of width-1 warm-start states (the
+                # cold-retry tests, and anything that sets `solver.psi_refs` itself), so accept
+                # either -- the same way `truncate` and `_apply_block_and_redistribute` do.
+                if not isinstance(psi_refs, ManyBodyState):
+                    warm_block = list(psi_refs)
+                    if max_block_width is not None and len(warm_block) > max_block_width:
+                        warm_block = warm_block[:max_block_width]
+                elif max_block_width is not None and psi_refs.width > max_block_width:
+                    warm_block = psi_refs.select(list(range(max_block_width))).to_states()
+                else:
+                    warm_block = psi_refs.to_states()
             psi0 = warm_block + cold_start_block() if warm_started else cold_start_block()
 
             num_wanted = min(num_wanted + _EIGENSTATE_PAD, len(self.basis))

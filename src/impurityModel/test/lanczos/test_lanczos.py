@@ -42,7 +42,7 @@ def test_lancos():
         for op in value:
             op_mbo = ManyBodyOperator(op)
             gs_i = build_state(basis, gs_psis.T)
-            psi = applyOp(op_mbo, gs_i[0])
+            psi = applyOp(op_mbo, gs_i.column(0))
             N = psi.norm()
             if N > 1e-12:
                 psi = ManyBodyState({state: amp[0] / N for state, amp in psi.items()}, width=1)
@@ -107,7 +107,7 @@ def test_lancos_mpi():
             )
             gs_i = build_state(basis, gs_psis.T)
             print(f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} before applyOp for op {op}", flush=True)
-            psi = applyOp(op_mbo, gs_i[0])
+            psi = applyOp(op_mbo, gs_i.column(0))
             print(f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} before norm2 for op {op}", flush=True)
             N2 = psi.norm2()
             print(f"Rank {MPI.COMM_WORLD.rank if MPI.COMM_WORLD else 'no MPI'} at allreduce for N2", flush=True)

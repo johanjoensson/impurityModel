@@ -98,7 +98,7 @@ def test_the_ground_state_is_a_spin_eigenstate():
     # A degenerate block is only defined up to a rotation inside the manifold, so the physical
     # values come from diagonalising the observable on it -- the same route calc_gs's own
     # Casimir reporting takes (groundstate.py, manifold_observable_values).
-    psis_blk = ManyBodyState.from_states(psis)
+    psis_blk = psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(psis)
     s2_op = casimir_operator(s_plus, s_minus, s_z)
     sz_values = np.real(manifold_observable_values(psis_blk, es, lambda blk: s_z.apply_block(blk, 0)))
     s2_values = np.real(manifold_observable_values(psis_blk, es, lambda blk: s2_op.apply_block(blk, 0)))

@@ -26,7 +26,7 @@ def ground_state_support(basis, h_op, dense_cutoff=10):
     # including the ones with zero amplitude; the support is the ones actually carrying weight.
     local = {
         psr.bytes2tuple(bytes(state.to_bytearray())[:8], 64)
-        for state, amplitude in psis[0].items()
+        for state, amplitude in (psis.column(0) if hasattr(psis, "width") else psis[0]).items()
         if np.linalg.norm(amplitude) > 1e-8
     }
     if not basis.is_distributed:

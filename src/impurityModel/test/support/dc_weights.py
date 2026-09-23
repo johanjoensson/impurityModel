@@ -244,7 +244,9 @@ def sector_weight_table(
     es_c, psis_c, basis_c = sectors[n_center]
     order = np.argsort(np.real(es_c))
     e_ground = float(np.real(es_c[order[0]]))
-    psi_ground = psis_c[order[0]]
+    # `psis_c` is the block `get_eigenvectors` returns; `column()` selects one, where
+    # `psis_c[...]` would be a determinant lookup.
+    psi_ground = psis_c.column(int(order[0])) if hasattr(psis_c, "width") else psis_c[order[0]]
 
     # <n_d> in the ground state: the exact sum rules the enumerated weights are checked against
     # (sum_n w_n = sum_d (1 - n_d) for addition, sum_d n_d for removal).
@@ -297,7 +299,7 @@ def sector_weight_table(
         )
         rows = []
         for rank_index, k in enumerate(order):
-            psi = psis[k]
+            psi = psis.column(int(k)) if hasattr(psis, "width") else psis[k]
             rho = build_density_matrices(sector_basis, [psi], imp_flat, imp_flat)[0]
             weight = sum(abs(_overlap(psi, phi)) ** 2 for phi in phis)
             rows.append(

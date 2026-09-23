@@ -441,7 +441,9 @@ class KrylovShiftedResolvent:
         psi_arr = build_state(basis, psi_dense_local.T, slaterWeightMin=0)
         b0 = r
         scale = float(np.linalg.norm(b0))
-        if len(psi_arr) == 0 or scale == 0.0:
+        # `.width`, not `len()`: len() is the rank-local row count, and a rank-local
+        # early return here would skip collectives the other ranks enter.
+        if psi_arr.width == 0 or scale == 0.0:
             return [[ManyBodyState(width=1) for _ in range(n_rhs)] for _ in zs]
 
         # Enforce the determinant cap on the recurrence (post-freeze: exact P H P).
@@ -456,7 +458,7 @@ class KrylovShiftedResolvent:
         # is judged between rounds on the exact shifted residuals, not by the kernel.
         alphas = betas = Q = W = widths = None
         Y = None
-        budget = max(int(getattr(basis, "size", 0)) // max(len(psi_arr), 1), 8)
+        budget = max(int(getattr(basis, "size", 0)) // max(psi_arr.width, 1), 8)
         while True:
             alphas, betas, Q, W, widths, status = block_lanczos_cy(
                 psi_arr,

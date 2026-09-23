@@ -1354,7 +1354,15 @@ def calc_gs(
     # `psis`. The basis is also the seed space for the excited/Green's-function expansion
     # downstream, and shrinking it to the thermal eigenvectors' support throws away exactly the
     # determinants a transition operator is most likely to reach.
-    psis = ground_state_basis.redistribute_psis(*psis)
+    # `psis` is the block `get_eigenvectors` returns, so it redistributes as a block --
+    # `*psis` would unpack its determinant KEYS, and at 1 rank `redistribute_psis` no-ops and
+    # hands them straight back rather than raising. `prune_rows(0.0)` matches what
+    # `redistribute_psis` did per column (it pruned each slice, and the caller's `from_states`
+    # re-unioned), so the support is unchanged.
+    psis_blk = ground_state_basis.redistribute_block(
+        psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis))
+    )
+    psis_blk.prune_rows(0.0)
     # Shared-support block view of the same redistributed states, built once and used
     # by every observable diagnostic below (Phase 6a of the state-unification refactor,
     # doc/plans/manybodystate_block_unification.md) instead of `width` independent
@@ -1362,7 +1370,10 @@ def calc_gs(
     # contract is `list[ManyBodyState]`, and it is still needed as a list for
     # `add_states`/`redistribute_psis` above, so keeping both avoids a redundant
     # to_states() round trip at the return.
-    psis_blk = ManyBodyState.from_states(psis)
+    # `calc_gs`'s documented return contract is `list[ManyBodyState]` (the spectra / GF / RIXS
+    # seed paths consume it as one), so the list is materialized here from the block rather than
+    # the other way round. Migrating that contract outward is a separate, deliberate step.
+    psis = psis_blk.to_states()
 
     # The effective restrictions are printed in the ground-state-report overview below.
     effective_restrictions = get_effective_restrictions(ground_state_basis)

@@ -86,7 +86,8 @@ def test_the_krylov_branch_returns_the_whole_ground_manifold_and_stops_at_the_cu
     # satisfies dim(K(H, V) intersect E_lambda) <= rank(P_lambda V) <= p at any subspace depth,
     # restarts included (see test_no_ghost_bands.py), so a narrower block cannot represent the
     # whole manifold however hard it works.
-    width = len(solver.psi_refs) + 1
+    # `.width`: `len()` on the block counts its determinants, not its columns.
+    width = solver.psi_refs.width + 1
     assert width > MANIFOLD, f"block width {width} cannot hold a {MANIFOLD}-fold manifold"
 
     uncut, _ = solver.get_eigenvectors(
@@ -113,7 +114,8 @@ def test_the_krylov_branch_returns_the_whole_ground_manifold_and_stops_at_the_cu
         psi_refs=solver.psi_refs,
     )
 
-    assert len(es) == len(psis) == MANIFOLD, f"expected the whole {MANIFOLD}-fold manifold, got {len(es)}: {es}"
+    # `.width`: `len()` on the returned block is its rank-local determinant count.
+    assert len(es) == psis.width == MANIFOLD, f"expected the whole {MANIFOLD}-fold manifold, got {len(es)}: {es}"
     assert np.ptp(np.asarray(es).real) < CUT
     # Trimmed, not merely short: a solver that returned only these states would not certify
     # anything, because nothing would lie beyond the cut.

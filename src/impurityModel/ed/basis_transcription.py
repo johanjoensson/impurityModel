@@ -116,29 +116,45 @@ def build_distributed_vector(basis, psis: list[ManyBodyState], dtype: Any = comp
     return v
 
 
-def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin: float = 0) -> list[ManyBodyState]:
-    """Convert dense vectors back to a list of ManyBodyState objects.
+def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin: float = 0) -> ManyBodyState:
+    """Convert dense vectors to a single ``ManyBodyState`` block of ``vs.shape[0]`` columns.
 
     Parameters
     ----------
     vs : list of np.ndarray or np.ndarray
-        The dense vector representations.
+        The dense vector representations, one row per column of the returned block.
     slaterWeightMin : float, default 0
         Minimum amplitude threshold to keep.
 
     Returns
     -------
-    list of ManyBodyState
-        The corresponding list of many-body states.
+    ManyBodyState
+        One block of width ``vs.shape[0]`` over the union support: a determinant is a row
+        when *any* column has ``|amplitude| > slaterWeightMin`` there, and the entries that
+        fall below the cutoff are stored as exact zeros.
 
     Notes
     -----
-    Still a flat-state producer, not yet flipped to width-1 ``ManyBodyState``
-    (Phase 7 step 2a): its output flows unchanged (``.items()``/arithmetic on scalars)
-    into many not-yet-flipped consumers (GF stack, groundstate, spectra, rixs,
-    susceptibility, sectorization -- steps 2c-2f), so flipping this producer alone
-    breaks ~75 tests across those modules. Flip once its consumers are block-tolerant,
-    or as part of the mechanical rename in step 3.
+    **Returns one wide block, not a list of width-1 blocks.** The list form cost one key
+    array per column -- at the SrMnO3 production geometry (128 ranks, ``p`` = 314, ~31k
+    determinants per rank) that is 314 copies of one key set, measured at 447 MiB per rank
+    against round 9 (``doc/plans/memory_footprint_audit.md``, Phase 6). The block holds the
+    support once.
+
+    It is also what every consumer already wanted: ``CIPSISolver.truncate`` and
+    ``_apply_block_and_redistribute`` both opened with ``ManyBodyState.from_states(...)`` on
+    this function's output, and ``block_lanczos_cy`` has taken a block seed since the
+    block-native restart work. Those conversions are now gone rather than moved.
+
+    Exact by construction (tier 1), because ``from_states`` built precisely this union block
+    from the list form: same rows, same stored coefficients, same order. ``e0`` is
+    bit-identical at fixed rank count.
+
+    **``len()`` on the result is its ROW count, and iterating it yields determinant keys** --
+    neither is the column count. Use ``.width`` for the number of columns (it is
+    rank-invariant, including on a rank that owns no rows) and ``.to_states()`` or
+    ``.select(...)`` to reach individual columns. This is the same footgun
+    ``_lanczos_step.pxi``'s seed handling calls out.
     """
     if isinstance(vs, np.matrix):
         vs = vs.A
@@ -146,22 +162,26 @@ def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin:
         vs = vs.reshape((1, vs.shape[0]))
     if isinstance(vs, list):
         vs = np.array(vs)
-    # width=1: a row that never receives a setitem below (every entry <= slaterWeightMin,
-    # a real occurrence for a rank-deficient/deflated column) must not stay the width-0
-    # polymorphic zero -- every element of this list is expected to be width 1.
-    res = [ManyBodyState(width=1) for _ in range(vs.shape[0])]
     if vs.shape[1] == basis.size:
-        for j, i in np.argwhere(np.abs(vs[:, basis.local_indices]) > slaterWeightMin):
-            res[j][basis.local_basis[i]] = vs[j, i + basis.offset]
+        local = np.asarray(vs[:, basis.local_indices])
     elif vs.shape[1] == len(basis.local_basis):
-        for j, i in np.argwhere(np.abs(vs) > slaterWeightMin):
-            res[j][basis.local_basis[i]] = vs[j, i]
+        local = np.asarray(vs)
     else:
         raise RuntimeError(
             f"The dimensions of the input dense vector does not match a distributed, or full vector.\n"
             f"{vs.shape} != ({vs.shape[0]}, {basis.size}) || ({vs.shape[0]}, {len(basis.local_basis)})"
         )
-    return res
+    width = local.shape[0]
+    keep = np.abs(local) > slaterWeightMin
+    rows = np.flatnonzero(keep.any(axis=0)) if width else np.zeros(0, dtype=np.intp)
+    # Pre-allocated (rows, width) so the only (width, rows) temporary is the fancy-index
+    # gather; `.T` and the mask are views, and `from_keys_and_amps` finds it already
+    # contiguous and complex, so it does not copy again.
+    amps = np.zeros((rows.size, width), dtype=complex)
+    if rows.size and width:
+        np.copyto(amps, local[:, rows].T, where=keep[:, rows].T)
+    support = ManyBodyState.from_keys([basis.local_basis[i] for i in rows])
+    return ManyBodyState.from_keys_and_amps(support, amps)
 
 
 def iter_local_operator_images(basis, op, slaterWeightMin):
