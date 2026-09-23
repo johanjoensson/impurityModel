@@ -396,6 +396,9 @@ def _unknown_key(where, name, declared, version, warnings):
     so the risk here is a typo silently doing nothing for six hours. The minor version tells
     the two apart: at or below ours, an unknown key cannot be a future key, so it is a typo.
     """
+    removed = schema.REMOVED_KEYS.get((where, name))
+    if removed is not None:
+        raise InputError(f"[{where}]: {name!r} is no longer a key: {removed}")
     if version[1] > schema.SPEC_VERSION[1]:
         warnings.append(
             f"[{where}]: ignoring unknown key {name!r} -- the file declares format "

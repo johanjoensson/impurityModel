@@ -6,7 +6,7 @@ from typing import overload
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.basis_generation import generate_initial_basis, spin_flipped_determinants
+from impurityModel.ed.basis_generation import generate_initial_basis
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
     ManyBodyState,
@@ -174,7 +174,6 @@ class Basis:
         delta_impurity_occ=None,
         frozen_occupations=None,
         truncation_threshold=np.inf,
-        spin_flip_dj=False,
         tau=0,
         chain_restrict=False,
         collapse_chains=False,
@@ -219,8 +218,6 @@ class Basis:
             for the ground state, the capped GF drivers for spectra). ``None`` is
             normalized to ``np.inf``; drivers derive RAM-fitted values via
             :mod:`impurityModel.ed.memory_estimate`.
-        spin_flip_dj : bool, default False
-            Whether to enable spin-flip states.
         tau : float, default 0
             Tau parameter.
         chain_restrict : bool, default False
@@ -278,7 +275,6 @@ class Basis:
             )
         self.impurity_orbitals = impurity_orbitals
         self.bath_states = bath_states
-        self.spin_flip_dj = spin_flip_dj
         self.chain_restrict = chain_restrict
         self.collapse_chains = collapse_chains
         self.verbose = verbose
@@ -325,7 +321,6 @@ class Basis:
             ),
             split_threshold=self.split_threshold,
             truncation_threshold=self.truncation_threshold,
-            spin_flip_dj=self.spin_flip_dj,
             tau=self.tau,
             chain_restrict=self.chain_restrict,
             collapse_chains=self.collapse_chains,
@@ -546,8 +541,6 @@ class Basis:
                 apply_h_to_these = new_local_states
                 local_states |= new_local_states
             new_states = local_states - set(self.local_basis)
-            if self.spin_flip_dj:
-                new_states = spin_flipped_determinants(self.impurity_orbitals, new_states)
             old_size = self.size
 
             n_new_states = len(new_states)
@@ -869,7 +862,6 @@ class Basis:
             restrictions=self.restrictions,
             weighted_restrictions=self.weighted_restrictions,
             split_threshold=self.split_threshold,
-            spin_flip_dj=self.spin_flip_dj,
             chain_restrict=self.chain_restrict,
             collapse_chains=self.collapse_chains,
             comm=self.comm,

@@ -190,7 +190,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     mixed_valence = basis.mixed_valence
     tau = basis.tau
     chain_restrict = basis.chain_restrict
-    spin_flip_dj = basis.spin_flip_dj
     occ_cutoff = basis.occ_cutoff
     truncation_threshold = basis.truncation_threshold
     slaterWeightMin = basis.slater_weight_min
@@ -266,7 +265,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         "tau": tau,
         "chain_restrict": chain_restrict,
         "dense_cutoff": dense_cutoff,
-        "spin_flip_dj": spin_flip_dj,
         "rank": rank,
         "comm": comm,
         "truncation_threshold": truncation_threshold,

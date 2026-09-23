@@ -5,10 +5,10 @@ no MPI communication happens here.
 """
 
 import itertools
-from typing import Iterable, Optional
+from typing import Optional
 
 from impurityModel.ed import product_state_representation as psr
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
+from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
 
 
 def _window_str(lo: int, hi: int) -> str:
@@ -267,71 +267,3 @@ def generate_initial_basis(
             print(f"      per group -- {groups}")
 
     return [SlaterDeterminant.from_bytes(bytestring) for bytestring in basis], num_spin_orbitals
-
-
-def spin_flipped_determinants(
-    impurity_orbitals: dict[int, list[list[int]]], determinants: Iterable[SlaterDeterminant]
-) -> set[SlaterDeterminant]:
-    """Generate spin-flipped counterparts for a collection of determinants.
-
-    Parameters
-    ----------
-    determinants : Iterable of SlaterDeterminant
-        The starting Slater determinants to spin-flip.
-
-    Returns
-    -------
-    set of SlaterDeterminant
-        The original determinants plus their spin-flipped counterparts.
-    """
-    n_dn_op = {
-        ((i, "c"), (i, "a")): 1.0
-        for l in impurity_orbitals
-        for i in range(sum(len(orbs) for orbs in impurity_orbitals[l]) // 2)
-    }
-    n_up_op = {
-        ((i, "c"), (i, "a")): 1.0
-        for l in impurity_orbitals
-        for i in range(
-            sum(len(orbs) for orbs in impurity_orbitals[l]) // 2,
-            sum(len(orbs) for orbs in impurity_orbitals[l]),
-        )
-    }
-    n_dn_mbo = ManyBodyOperator(n_dn_op)
-    n_up_mbo = ManyBodyOperator(n_up_op)
-    spin_flip = set()
-    for det in determinants:
-        n_dn = _real_occupation(applyOp(n_dn_mbo, ManyBodyState({det: 1.0}), cutoff=0), det)
-        n_up = _real_occupation(applyOp(n_up_mbo, ManyBodyState({det: 1.0}), cutoff=0), det)
-        spin_flip.add(det)
-        to_flip = {det}
-        for _l, orb_groups in impurity_orbitals.items():
-            n_orb = sum(len(orbs) for orbs in orb_groups)
-            for i in range(n_orb // 2):
-                spin_flip_op = {
-                    ((i + n_orb // 2, "c"), (i, "a")): 1.0,
-                    ((i, "c"), (i + n_orb // 2, "a")): 1.0,
-                }
-                spin_flip_mbo = ManyBodyOperator(spin_flip_op)
-                for state in list(to_flip):
-                    flipped = applyOp(spin_flip_mbo, ManyBodyState({state: 1.0}), cutoff=0)
-                    to_flip.update(flipped.keys())
-                    if len(flipped) == 0:
-                        continue
-                    flipped_state = next(iter(flipped.keys()))
-                    new_n_dn = _real_occupation(
-                        applyOp(n_dn_mbo, ManyBodyState({flipped_state: 1.0}), cutoff=0), flipped_state
-                    )
-                    new_n_up = _real_occupation(
-                        applyOp(n_up_mbo, ManyBodyState({flipped_state: 1.0}), cutoff=0), flipped_state
-                    )
-                    if (new_n_dn == n_dn and new_n_up == n_up) or (new_n_dn == n_up and new_n_up == n_dn):
-                        spin_flip.update(flipped.keys())
-
-    return spin_flip
-
-
-def _real_occupation(psi: ManyBodyState, det: SlaterDeterminant) -> int:
-    """Read back a width-1 block's real amplitude for ``det`` (0 if absent)."""
-    row = psi.get(det)
-    return int(0 if row is None else row[0].real)

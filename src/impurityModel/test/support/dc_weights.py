@@ -164,7 +164,6 @@ def _sector_states(ctx, h_op, n_trial, num_states, max_energy):
         ctx.mixed_valence,
         ctx.tau,
         ctx.chain_restrict,
-        ctx.spin_flip_dj,
         ctx.dense_cutoff,
         comm=MPI.COMM_WORLD,
         verbose=ctx.verbose,

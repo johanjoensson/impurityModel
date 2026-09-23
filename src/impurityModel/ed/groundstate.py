@@ -222,7 +222,6 @@ def build_basis_and_solver(
     mixed_valence,
     tau,
     chain_restrict,
-    spin_flip_dj,
     truncation_threshold,
     comm,
     verbose,
@@ -264,7 +263,6 @@ def build_basis_and_solver(
         chain_restrict=chain_restrict,
         truncation_threshold=truncation_threshold,
         verbose=verbose,
-        spin_flip_dj=spin_flip_dj,
         comm=comm,
         weighted_restrictions=weighted_restrictions,
     )
@@ -285,7 +283,6 @@ def calc_energy(
     mixed_valence,
     tau,
     chain_restrict,
-    spin_flip_dj,
     dense_cutoff,
     comm=None,
     verbose=True,
@@ -327,8 +324,6 @@ def calc_energy(
         Characteristic energy scale used for basis selection (temperature scale).
     chain_restrict : bool
         If True, restricts the basis to states generated along hopping chains.
-    spin_flip_dj : bool
-        If True, enables spin flip basis excitation configurations.
     dense_cutoff : int
         Dimension threshold below which a dense eigensolver is used.
     comm : MPI.Comm or None
@@ -375,7 +370,6 @@ def calc_energy(
         mixed_valence,
         tau,
         chain_restrict,
-        spin_flip_dj,
         dense_cutoff,
         comm=comm,
         verbose=verbose,
@@ -412,7 +406,6 @@ def _solve_sector_core(
     mixed_valence,
     tau,
     chain_restrict,
-    spin_flip_dj,
     dense_cutoff,
     comm=None,
     verbose=True,
@@ -474,7 +467,6 @@ def _solve_sector_core(
                 mixed_valence,
                 tau,
                 chain_restrict,
-                spin_flip_dj,
                 truncation_threshold,
                 comm,
                 verbose,
@@ -551,7 +543,6 @@ def solve_sector(
     mixed_valence,
     tau,
     chain_restrict,
-    spin_flip_dj,
     dense_cutoff,
     comm=None,
     verbose=True,
@@ -595,7 +586,6 @@ def solve_sector(
         mixed_valence,
         tau,
         chain_restrict,
-        spin_flip_dj,
         dense_cutoff,
         comm=comm,
         verbose=verbose,
@@ -681,7 +671,6 @@ def find_ground_state_basis(
     chain_restrict=False,
     rank=0,
     dense_cutoff=1000,
-    spin_flip_dj=True,
     comm=None,
     truncation_threshold=None,
     verbose=0,
@@ -816,7 +805,6 @@ def find_ground_state_basis(
             mixed_valence,
             tau,
             chain_restrict,
-            spin_flip_dj,
             dense_cutoff,
             comm=comm,
             # CIPSI-round / basis-generation chatter is -vv (V_DETAIL) territory, not -v: the
@@ -1060,7 +1048,6 @@ def find_ground_state_basis(
         mixed_valence,
         tau,
         chain_restrict,
-        spin_flip_dj,
         dense_cutoff,
         comm=comm,
         # This basis is returned to the caller (solve_ground_state refines it further via
@@ -1110,7 +1097,6 @@ def walk_to_ground_state_sector(
     chain_restrict=False,
     rank=0,
     dense_cutoff=1000,
-    spin_flip_dj=True,
     comm=None,
     verbose=False,
     truncation_threshold=None,
@@ -1141,7 +1127,6 @@ def walk_to_ground_state_sector(
         chain_restrict=chain_restrict,
         rank=rank,
         dense_cutoff=dense_cutoff,
-        spin_flip_dj=spin_flip_dj,
         comm=comm,
         verbose=verbose,
         truncation_threshold=truncation_threshold,
@@ -1164,7 +1149,6 @@ def solve_ground_state(
     mixed_valence=None,
     chain_restrict=False,
     dense_cutoff=1000,
-    spin_flip_dj=True,
     comm=None,
     rank=0,
     verbose=False,
@@ -1219,7 +1203,6 @@ def solve_ground_state(
         chain_restrict=chain_restrict,
         rank=rank,
         dense_cutoff=dense_cutoff,
-        spin_flip_dj=spin_flip_dj,
         comm=comm,
         verbose=verbose,
         truncation_threshold=truncation_threshold,

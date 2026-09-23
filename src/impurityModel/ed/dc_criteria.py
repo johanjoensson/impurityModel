@@ -359,7 +359,6 @@ def build_union_space(
     sector_radius=1,
     tau=0.002,
     chain_restrict=False,
-    spin_flip_dj=False,
     truncation_threshold=np.inf,
     comm=None,
     verbose=False,
@@ -411,7 +410,6 @@ def build_union_space(
         mixed_valence,
         tau,
         chain_restrict,
-        spin_flip_dj,
         truncation_threshold,
         comm,
         verbose,
@@ -528,7 +526,6 @@ class _SectorContext:
     tau: float
     slater_weight_min: float
     chain_restrict: bool
-    spin_flip_dj: bool
     dense_cutoff: int
     bandwidth: float
     rank: int
@@ -617,7 +614,6 @@ class _SectorContext:
             mixed_valence=self.mixed_valence,
             chain_restrict=self.chain_restrict,
             dense_cutoff=self.dense_cutoff,
-            spin_flip_dj=self.spin_flip_dj,
             comm=MPI.COMM_WORLD,
             verbose=self.verbose,
             truncation_threshold=self.truncation_threshold,
@@ -685,7 +681,6 @@ class _SectorContext:
             self.mixed_valence,
             self.tau,
             self.chain_restrict,
-            self.spin_flip_dj,
             self.dense_cutoff,
             comm=MPI.COMM_WORLD,
             verbose=self.verbose,
@@ -966,7 +961,6 @@ def _prepare_sector_context(
         tau=basis.tau,
         slater_weight_min=basis.slater_weight_min,
         chain_restrict=basis.chain_restrict,
-        spin_flip_dj=basis.spin_flip_dj,
         dense_cutoff=solver.dense_cutoff,
         bandwidth=max(float(np.ptp(np.linalg.eigvalsh(h1_for_scale))), 1.0),
         rank=rank,
@@ -2008,7 +2002,6 @@ class _OccupationContext:
     tau: float
     chain_restrict: bool
     dense_cutoff: int
-    spin_flip_dj: bool
     slaterWeightMin: float
     truncation_threshold: int
     #: As :class:`_SectorContext`: only a cap that defaulted may be recalibrated against the
@@ -2059,7 +2052,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     n_imp = len(model.impurity_indices)
     N0 = basis.nominal_occ
     mixed_valence = basis.mixed_valence
-    spin_flip_dj = basis.spin_flip_dj
     tau = basis.tau
     excitation_budget = basis.excitation_budget
     chain_restrict = basis.chain_restrict
@@ -2144,7 +2136,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
         tau=tau,
         chain_restrict=chain_restrict,
         dense_cutoff=dense_cutoff,
-        spin_flip_dj=spin_flip_dj,
         slaterWeightMin=slaterWeightMin,
         truncation_threshold=truncation_threshold,
         memory_cap=memory_cap,
@@ -2199,7 +2190,6 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             mixed_valence=ctx.mixed_valence,
             chain_restrict=ctx.chain_restrict,
             dense_cutoff=ctx.dense_cutoff,
-            spin_flip_dj=ctx.spin_flip_dj,
             comm=MPI.COMM_WORLD,
             verbose=verbose,
             truncation_threshold=ctx.truncation_threshold,

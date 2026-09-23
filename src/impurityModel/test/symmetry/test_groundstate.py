@@ -82,7 +82,6 @@ def test_groundstate_and_density_matrix_mpi():
         "tau": tau,
         "chain_restrict": False,
         "dense_cutoff": 10,
-        "spin_flip_dj": False,
         "comm": comm,
         "truncation_threshold": 1000,
     }
@@ -111,7 +110,6 @@ def test_groundstate_and_density_matrix_mpi():
             "tau": tau,
             "chain_restrict": False,
             "dense_cutoff": 10,
-            "spin_flip_dj": False,
             "comm": None,  # Serial
             "truncation_threshold": 1000,
         }
@@ -191,7 +189,6 @@ def test_groundstate_and_density_matrix_serial():
         "tau": tau,
         "chain_restrict": False,
         "dense_cutoff": 10,
-        "spin_flip_dj": False,
         "comm": None,
         "truncation_threshold": 1000,
     }
@@ -228,7 +225,6 @@ def test_calc_energy(comm):
         mixed_valence={0: 0},
         tau=0.01,
         chain_restrict=False,
-        spin_flip_dj=False,
         dense_cutoff=10,
         comm=comm,
         verbose=True,
@@ -261,7 +257,6 @@ def test_find_ground_state_basis(comm):
         tau=0.01,
         chain_restrict=False,
         dense_cutoff=10,
-        spin_flip_dj=False,
         comm=comm,
         verbose=True,
         truncation_threshold=1000,
@@ -299,7 +294,6 @@ def test_find_ground_state_basis_walk_rescues_seed_off_by_two(monkeypatch):
         tau=0.01,
         chain_restrict=False,
         dense_cutoff=10,
-        spin_flip_dj=False,
         comm=None,
         verbose=True,
         truncation_threshold=1000,
@@ -316,7 +310,7 @@ def test_find_ground_state_basis_walk_rescues_seed_off_by_two(monkeypatch):
 
 
 def test_calc_gs_options_serial():
-    # Test with mixed_valence and spin_flip_dj options enabled in serial
+    # Test with the mixed_valence and chain_restrict options enabled in serial
     # We shift the eigenvalues so that N=2 is the true global ground state even when N can fluctuate.
     # Energy of N=2 is -1.5 + -1.0 = -2.5. Energy of N=1 is -1.5. Energy of N=3 is -2.5 + 1.5 = -1.0.
     eigvals = np.array([-1.5, -1.0, 1.5, 2.0, 2.5])
@@ -331,7 +325,6 @@ def test_calc_gs_options_serial():
         "tau": 0.01,
         "chain_restrict": True,  # Enable chain restriction
         "dense_cutoff": 10,
-        "spin_flip_dj": True,  # Enable spin flip DJ
         "comm": None,
         "truncation_threshold": 1000,
     }
@@ -380,7 +373,6 @@ def test_calc_gs_options_mpi():
         "tau": 0.01,
         "chain_restrict": True,
         "dense_cutoff": 10,
-        "spin_flip_dj": True,
         "comm": comm,
         "truncation_threshold": 1000,
     }

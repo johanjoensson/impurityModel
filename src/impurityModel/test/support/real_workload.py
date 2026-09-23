@@ -110,7 +110,6 @@ def load_workload(h5_path, cluster=None, iteration=None):
         "delta": float(attrs["delta"]),
         "reort": _attr(attrs, "reort"),
         "dense_cutoff": int(_attr(attrs, "dense_cutoff", 1000)),
-        "spin_flip_dj": bool(_attr(attrs, "spin_flip_dj", False)),
         "chain_restrict": bool(_attr(attrs, "chain_restrict", False)),
         "occ_cutoff": float(_attr(attrs, "occ_cutoff", 1e-6)),
         "truncation_threshold": truncation_threshold,
@@ -186,7 +185,6 @@ def run_selfenergy(
             workload["truncation_threshold"] if truncation_threshold == "archive" else truncation_threshold
         ),
         chain_restrict=workload["chain_restrict"],
-        spin_flip_dj=workload["spin_flip_dj"],
         occ_cutoff=workload["occ_cutoff"],
         slater_weight_min=workload["slaterWeightMin"],
         tau=workload["tau"],

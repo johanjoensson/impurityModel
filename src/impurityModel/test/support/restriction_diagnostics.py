@@ -126,7 +126,6 @@ def build_ground_state(
         "tau": wl["tau"],
         "chain_restrict": wl["chain_restrict"],
         "dense_cutoff": wl["dense_cutoff"],
-        "spin_flip_dj": wl["spin_flip_dj"],
         "rank": comm.rank if comm is not None else 0,
         "comm": comm,
         "truncation_threshold": truncation_threshold,

@@ -58,7 +58,6 @@ def _basis_and_solver():
         dN=None,
         truncation_threshold=np.inf,
         chain_restrict=False,
-        spin_flip_dj=False,
         occ_cutoff=1e-10,
         slater_weight_min=1e-10,
         tau=0.05,

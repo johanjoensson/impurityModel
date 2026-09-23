@@ -382,3 +382,11 @@ def test_the_occupation_criterion_does_not_have_ground_state_manifold(write_inpu
     text = MINIMAL_SELFENERGY + "\n[double_counting.fixed_occupation]\nground_state_manifold = true\n"
     with pytest.raises(InputError, match="unknown key 'ground_state_manifold'"):
         load_input(write_input(text))
+
+
+def test_a_removed_key_says_it_was_removed_not_that_it_is_a_typo(write_input):
+    """spin_flip_dj was a documented key; a file written while it existed should be told why it
+    now fails, not offered a spelling suggestion."""
+    text = MINIMAL_SELFENERGY.replace("[selfenergy]", "[many_body_basis]\nspin_flip_dj = true\n[selfenergy]")
+    with pytest.raises(InputError, match="'spin_flip_dj' is no longer a key: it never had an effect"):
+        load_input(write_input(text))

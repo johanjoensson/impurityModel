@@ -161,7 +161,6 @@ def build_selfenergy_inputs(
         cluster_label="bench",
         reort=reort,
         dense_cutoff=dense_cutoff,
-        spin_flip_dj=False,
         chain_restrict=False,
         occ_cutoff=occ_cutoff,
         truncation_threshold=truncation_threshold,
@@ -197,7 +196,6 @@ def as_calc_selfenergy_args(inputs):
         dN=inputs["dN"],
         truncation_threshold=inputs["truncation_threshold"],
         chain_restrict=inputs["chain_restrict"],
-        spin_flip_dj=inputs["spin_flip_dj"],
         occ_cutoff=inputs["occ_cutoff"],
         slater_weight_min=inputs["slaterWeightMin"],
         tau=inputs["tau"],
@@ -315,7 +313,6 @@ def build_ground_state_workload(
         tau=tau / 100,  # calc_gs runs the occupation search at tau/100
         chain_restrict=False,
         dense_cutoff=dense_cutoff,
-        spin_flip_dj=False,
         comm=comm,
         truncation_threshold=truncation_threshold,
         verbose=verbose,

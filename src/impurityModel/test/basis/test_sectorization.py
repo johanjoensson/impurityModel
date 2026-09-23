@@ -397,7 +397,6 @@ def test_hf_seed_matches_brute_force_loop():
         tau=0.01,
         chain_restrict=False,
         dense_cutoff=1000,
-        spin_flip_dj=False,
         comm=None,
         truncation_threshold=100000,
         verbose=False,

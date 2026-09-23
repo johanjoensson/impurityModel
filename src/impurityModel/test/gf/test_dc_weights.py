@@ -251,7 +251,6 @@ def test_solve_sector_and_calc_energy_agree_on_the_ground_state_energy():
         ctx.mixed_valence,
         ctx.tau,
         ctx.chain_restrict,
-        ctx.spin_flip_dj,
         ctx.dense_cutoff,
     )
     common = dict(

@@ -196,7 +196,6 @@ def nio_workload():
         tau=tau / 100,  # calc_gs runs the occupation search at tau/100
         chain_restrict=False,
         dense_cutoff=DENSE_CUTOFF,
-        spin_flip_dj=False,
         comm=comm,
         truncation_threshold=TRUNC,
         verbose=False,

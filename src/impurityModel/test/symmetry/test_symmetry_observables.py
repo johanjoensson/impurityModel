@@ -596,7 +596,6 @@ def test_kondo_correlation_reported(capsys):
         mixed_valence={0: 1},
         tau=0.01,
         dense_cutoff=1000,
-        spin_flip_dj=False,
         comm=None,
         truncation_threshold=100000,
     )
@@ -683,7 +682,6 @@ def test_kondo_correlation_reported_polarized_bath(capsys):
         mixed_valence={0: 1},
         tau=0.01,
         dense_cutoff=1000,
-        spin_flip_dj=False,
         comm=None,
         truncation_threshold=100000,
     )
@@ -1134,7 +1132,6 @@ def test_calc_gs_reports_casimirs_for_cubic_manifold_grouped_dshell(capsys):
         # sane-S(S+1) plumbing check with no golden numeric target, so the dense/iterative
         # choice is free: 200 keeps every trial iterative and measured 23s, unchanged assertions.
         dense_cutoff=200,
-        spin_flip_dj=True,
         comm=None,
         truncation_threshold=200000,
     )
@@ -1177,7 +1174,6 @@ def test_kondo_correlation_fallback_matches_fast_path(capsys):
             mixed_valence={0: 1},
             tau=0.01,
             dense_cutoff=1000,
-            spin_flip_dj=False,
             comm=None,
             truncation_threshold=100000,
         )

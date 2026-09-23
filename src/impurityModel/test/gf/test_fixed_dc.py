@@ -123,7 +123,6 @@ def common_kwargs(v, tau, dc_scale=0.5):
     basis = BasisOptions(
         nominal_occ={0: 1},
         mixed_valence=None,
-        spin_flip_dj=False,
         tau=tau,
         slater_weight_min=np.sqrt(np.finfo(float).eps),
         truncation_threshold=int(1e8),
@@ -171,7 +170,6 @@ def charge_transfer_kwargs(v=0.3, tau=1e-3, dc_scale=0.5, eps_cond=0.4):
     basis = BasisOptions(
         nominal_occ={0: 1},
         mixed_valence=None,
-        spin_flip_dj=False,
         tau=tau,
         slater_weight_min=np.sqrt(np.finfo(float).eps),
         truncation_threshold=int(1e8),
@@ -272,7 +270,6 @@ def spin_crossover_kwargs(u=8.0, j=1.0, delta=3.5, eps=-11.0, eps_bath=-25.0, v=
     basis = BasisOptions(
         nominal_occ={0: 2},
         mixed_valence=None,
-        spin_flip_dj=False,
         tau=tau,
         slater_weight_min=np.sqrt(np.finfo(float).eps),
         truncation_threshold=int(1e8),
@@ -467,7 +464,6 @@ def _split_block_kwargs(dc_scale=0.0):
     basis = BasisOptions(
         nominal_occ={0: 2},
         mixed_valence=None,
-        spin_flip_dj=False,
         tau=1e-3,
         slater_weight_min=np.sqrt(np.finfo(float).eps),
         truncation_threshold=int(1e6),
@@ -529,7 +525,6 @@ def test_ground_state_basis_reports_its_sector_because_the_basis_cannot():
         mixed_valence=sb.mixed_valence,
         tau=basis_opts.tau,
         dense_cutoff=1000,
-        spin_flip_dj=False,
         comm=None,
         verbose=False,
         truncation_threshold=int(1e6),
@@ -1266,7 +1261,6 @@ def test_calc_energy_returns_a_bitwise_identical_energy_on_every_rank():
         sb.mixed_valence,
         kwargs["basis"].tau,
         kwargs["basis"].chain_restrict,
-        kwargs["basis"].spin_flip_dj,
         kwargs["solver"].dense_cutoff,
         comm=comm,
         verbose=False,
@@ -1797,7 +1791,6 @@ def _selfenergy_gs_occupation(model, basis_opts, dc):
         tau=basis_opts.tau,
         chain_restrict=basis_opts.chain_restrict,
         dense_cutoff=1000,
-        spin_flip_dj=basis_opts.spin_flip_dj,
         comm=None,
         verbose=False,
         truncation_threshold=basis_opts.truncation_threshold,
@@ -1959,7 +1952,6 @@ def _frozen_core_kwargs():
     basis = BasisOptions(
         nominal_occ={0: 4},
         mixed_valence=None,
-        spin_flip_dj=False,
         tau=1e-3,
         slater_weight_min=np.sqrt(np.finfo(float).eps),
         truncation_threshold=int(1e6),

@@ -23,8 +23,7 @@ per-group and per-bath tolerances that bound how far the occupation may deviate.
 ## Enumeration and seeding
 
 - `basis_generation.generate_initial_basis(...)` — pure enumeration of the initial determinant
-  set from the occupation windows. No MPI. `spin_flipped_determinants` completes a set under
-  spin flips (for weighted / spin-flip restrictions).
+  set from the occupation windows. No MPI.
 - **Hartree–Fock seeding** — `groundstate.find_ground_state_basis(use_hf_seed=True)` picks the
   nominal occupation `N0` via a cheap memory-bounded UHF (`hartree_fock.py`) before enumeration.
   It chooses `N0`; it does **not** search — and it must never accept an occupation it could not

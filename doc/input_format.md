@@ -280,7 +280,6 @@ How the many-body determinant basis is built. Named for the determinant basis sp
 | `truncation_threshold` | auto/count | `'auto'` | Cap on determinants per basis. 'auto' derives it from available per-rank memory at the (collective) call site; 'none' disables capping. The two are NOT interchangeable even though the underlying code currently collapses both to infinity in one place. Choices: `auto`, `none`. |
 | `excitation_budget` | auto/count | `'auto'` | Maximum total bath excitations per determinant. 'auto' takes the solver's measured-lossless default; 'none' disables it. Prefer omitting to writing the number: the default is documented as the tightest MEASURED value and is expected to be re-measured, so a copy here would freeze a stale one. Choices: `auto`, `none`. |
 | `chain_restrict` | bool | `True` | Apply chain occupation restrictions. |
-| `spin_flip_dj` | bool | `False` | Generate spin-flipped determinants. |
 | `occ_cutoff` | dimensionless | `None` | Occupation cutoff deciding filled/partial/empty bath classification, i.e. the variational space -- not cosmetic. Per-calculation default. |
 | `slater_weight_min` | dimensionless | `None` | Minimum determinant weight retained. |
 | `dN` | count | `None` | Impurity occupation window (+-dN) for the excited bases. Note the sentinel means different things per driver: the spectroscopy path substitutes 2, the Green's-function path treats absent as NO window at all. |

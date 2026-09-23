@@ -40,6 +40,16 @@ __all__ = [
 #: (warn and ignore). See :func:`impurityModel.inputformat.reader.load_input`.
 SPEC_VERSION = (1, 0)
 
+#: Keys that were once declared and have been removed, with why and what to do instead. An
+#: unknown key is otherwise reported as a probable typo, which is the wrong message for a line
+#: that was valid when the file was written.
+REMOVED_KEYS = {
+    ("many_body_basis", "spin_flip_dj"): (
+        "it never had an effect -- only the pre-CIPSI basis expansion read it -- and has been "
+        "removed. Delete the line."
+    ),
+}
+
 
 class _Unset:
     """Sentinel for "no default"; distinct from ``None``, which is a meaningful default."""
@@ -749,7 +759,6 @@ _TABLE_LIST += [
                 choices=("auto", "none"),
             ),
             Key("chain_restrict", Kind.BOOL, True, "Apply chain occupation restrictions."),
-            Key("spin_flip_dj", Kind.BOOL, False, "Generate spin-flipped determinants."),
             Key(
                 "occ_cutoff",
                 Kind.DIMENSIONLESS,

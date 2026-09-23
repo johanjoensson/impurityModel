@@ -1020,7 +1020,6 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
         "delta": float(attrs["delta"]),
         "reort": _archive_attr(attrs, "reort"),
         "dense_cutoff": int(_archive_attr(attrs, "dense_cutoff", 1000)),
-        "spin_flip_dj": bool(_archive_attr(attrs, "spin_flip_dj", False)),
         "chain_restrict": bool(_archive_attr(attrs, "chain_restrict", False)),
         "occ_cutoff": float(_archive_attr(attrs, "occ_cutoff", 1e-6)),
         "truncation_threshold": truncation_threshold,
@@ -1072,7 +1071,6 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         dN=raw["dN"],
         truncation_threshold=raw["truncation_threshold"],
         chain_restrict=raw["chain_restrict"],
-        spin_flip_dj=raw["spin_flip_dj"],
         occ_cutoff=raw["occ_cutoff"],
         slater_weight_min=raw["slater_weight_min"],
         tau=raw["tau"],
@@ -1134,8 +1132,6 @@ class BasisOptions:
         available per-rank memory; ``numpy.inf`` disables capping.
     chain_restrict : bool
         Whether to apply chain occupation restrictions.
-    spin_flip_dj : bool
-        Whether to generate spin-flipped determinants.
     occ_cutoff : float
         Occupation cutoff.
     slater_weight_min : float
@@ -1157,7 +1153,6 @@ class BasisOptions:
     dN: Optional[int] = None
     truncation_threshold: Optional[Union[int, float]] = None
     chain_restrict: bool = True
-    spin_flip_dj: bool = False
     occ_cutoff: float = 1e-12
     slater_weight_min: float = float(np.sqrt(np.finfo(float).eps))
     tau: float = 0.002

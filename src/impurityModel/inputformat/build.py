@@ -567,7 +567,6 @@ def _build_basis(resolved):
         # infinity, which disables capping. The two are NOT the same thing.
         truncation_threshold=None if threshold == "auto" else (np.inf if threshold == "none" else threshold),
         chain_restrict=table["chain_restrict"],
-        spin_flip_dj=table["spin_flip_dj"],
         tau=resolved.tables["temperature"]["tau"],
         excitation_budget=resolve_excitation_budget(None if budget == "auto" else (-1 if budget == "none" else budget)),
     )

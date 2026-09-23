@@ -187,7 +187,6 @@ def _run_calc_gs(weighted_restrictions):
         mixed_valence={0: 1},
         tau=0.01,
         dense_cutoff=1000,
-        spin_flip_dj=False,
         comm=None,
         truncation_threshold=100000,
         weighted_restrictions=weighted_restrictions,

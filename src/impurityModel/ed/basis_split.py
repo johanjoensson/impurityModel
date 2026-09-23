@@ -278,7 +278,6 @@ def split_basis_and_redistribute_psi(
         verbose=basis.verbose,
         truncation_threshold=basis.truncation_threshold,
         tau=basis.tau,
-        spin_flip_dj=basis.spin_flip_dj,
     )
 
     if psis is not None:
