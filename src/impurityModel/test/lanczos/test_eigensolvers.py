@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.sparse
+import scipy.sparse.linalg
 
 from impurityModel.ed.eigensolvers import HermitianOperator
 
@@ -86,3 +87,84 @@ def test_eigensystem_none_e_max_keeps_all_states():
     assert len(es) == N
     assert np.allclose(es, ref)
     assert vs.shape == (N, N)
+
+
+# ---- ARPACK failure handling in _scipy_eigensystem_solve -------------------------------------
+#
+# Neither except-branch had ever run in the suite: ARPACK on a well-conditioned test matrix just
+# converges. They are forced here by a stub that raises once and then delegates to the real
+# eigsh, so what is checked is the recovery -- that the solve still returns the true lowest
+# eigenpairs -- and that the branch actually changed what the retry asked for.
+
+N = 60
+
+
+def _gapped_hermitian():
+    rng = np.random.default_rng(7)
+    a = rng.standard_normal((N, N)) + 1j * rng.standard_normal((N, N))
+    return np.diag(np.arange(N, dtype=float)) + 0.05 * (a + a.conj().T)
+
+
+def _solve_with_one_failure(monkeypatch, make_error):
+    import impurityModel.ed.eigensolvers as eigensolvers
+
+    h = _gapped_hermitian()
+    real_eigsh = eigensolvers.eigsh
+    calls = []
+
+    def flaky_eigsh(op, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise make_error(op, kwargs, real_eigsh)
+        return real_eigsh(op, **kwargs)
+
+    monkeypatch.setattr(eigensolvers, "eigsh", flaky_eigsh)
+    operator = scipy.sparse.linalg.aslinearoperator(h)
+    es, vecs = eigensolvers._scipy_eigensystem_solve(operator, e_max=2.5, k=4, v0=None, eigenValueTol=0)
+    return h, es, vecs, calls
+
+
+def _assert_true_lowest_eigenpairs(h, es, vecs):
+    exact = np.linalg.eigvalsh(h)
+    assert len(es) >= 4
+    np.testing.assert_allclose(es, exact[: len(es)], atol=1e-8)
+    np.testing.assert_allclose(h @ vecs, vecs * es, atol=1e-6)
+
+
+def test_arpack_no_convergence_with_nothing_retries_from_a_fresh_start(monkeypatch):
+    from scipy.sparse.linalg import ArpackNoConvergence
+
+    h, es, vecs, calls = _solve_with_one_failure(
+        monkeypatch, lambda op, kw, _: ArpackNoConvergence("stub", np.array([]), np.empty((N, 0)))
+    )
+    assert len(calls) >= 2
+    # The retry relaxes the requested accuracy from 0 (machine precision) to a finite tolerance.
+    assert calls[0]["tol"] == 0 and calls[1]["tol"] > 0
+    _assert_true_lowest_eigenpairs(h, es, vecs)
+
+
+def test_arpack_no_convergence_with_partial_results_warm_starts_from_them(monkeypatch):
+    from scipy.sparse.linalg import ArpackNoConvergence
+
+    returned = {}
+
+    def partial(op, kw, real_eigsh):
+        e, v = real_eigsh(op, k=1, which="SA")
+        returned["v"] = v[:, 0]
+        return ArpackNoConvergence("stub", e, v)
+
+    h, es, vecs, calls = _solve_with_one_failure(monkeypatch, partial)
+    assert len(calls) >= 2 and calls[1]["tol"] > 0
+    # Recovery must not throw the converged part away: the retry starts from it. (A fresh random
+    # start would still converge on this matrix, so only the start vector can tell them apart.)
+    np.testing.assert_allclose(calls[1]["v0"], returned["v"])
+    _assert_true_lowest_eigenpairs(h, es, vecs)
+
+
+def test_arpack_error_retries_with_a_larger_krylov_space(monkeypatch):
+    from scipy.sparse.linalg import ArpackError
+
+    h, es, vecs, calls = _solve_with_one_failure(monkeypatch, lambda op, kw, _: ArpackError(-9999))
+    assert len(calls) >= 2
+    assert calls[0]["ncv"] is None and calls[1]["ncv"] is not None and calls[1]["ncv"] >= 20
+    _assert_true_lowest_eigenpairs(h, es, vecs)
