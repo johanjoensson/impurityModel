@@ -15,6 +15,11 @@ from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.solver_basis import get_symmetry_generators
 
+# The comm=None and COMM_WORLD variants of a test used to be two copies differing in one keyword.
+# One parametrized test keeps both: the COMM_WORLD case carries the mpi marker, so it runs only
+# under --with-mpi and is distributed at -n 2/-n 3.
+COMMS = [pytest.param(None, id="serial"), pytest.param(MPI.COMM_WORLD, id="mpi", marks=pytest.mark.mpi)]
+
 
 def build_operator_dict(basis, op):
     """Express op in the current basis: map each local basis state to the result of applying op to it."""
@@ -129,6 +134,7 @@ def test_Basis_states_val():
     assert all(state in exact for state in basis)
 
 
+@pytest.mark.parametrize("comm", COMMS)
 @pytest.mark.parametrize(
     "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, "
     "delta_impurity_occ, nominal_impurity_occ, expected",
@@ -139,6 +145,7 @@ def test_Basis_states_val():
     ],
 )
 def test_Basis_len(
+    comm,
     valence_baths,
     conduction_baths,
     delta_valence_occ,
@@ -158,45 +165,12 @@ def test_Basis_len(
         delta_impurity_occ={0: delta_impurity_occ},
         nominal_impurity_occ={0: nominal_impurity_occ},
         verbose=True,
+        comm=comm,
     )
     assert len(basis) == expected
 
 
-@pytest.mark.mpi
-@pytest.mark.parametrize(
-    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, "
-    "delta_impurity_occ, nominal_impurity_occ, expected",
-    [
-        (0, 0, 0, 0, 0, 9, 10),
-        (10, 0, 2, 0, 3, 8, 190),
-        (10, 10, 2, 1, 3, 8, 10390),
-    ],
-)
-def test_Basis_len_mpi(
-    valence_baths,
-    conduction_baths,
-    delta_valence_occ,
-    delta_conduction_occ,
-    delta_impurity_occ,
-    nominal_impurity_occ,
-    expected,
-):
-    basis = Basis(
-        impurity_orbitals={0: [list(range(10))]},
-        bath_states=(
-            {0: [list(range(10, 10 + valence_baths))]},
-            {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
-        ),
-        delta_valence_occ={0: delta_valence_occ},
-        delta_conduction_occ={0: delta_conduction_occ},
-        delta_impurity_occ={0: delta_impurity_occ},
-        nominal_impurity_occ={0: nominal_impurity_occ},
-        verbose=True,
-        comm=MPI.COMM_WORLD,
-    )
-    assert len(basis) == expected
-
-
+@pytest.mark.parametrize("comm", COMMS)
 @pytest.mark.parametrize(
     "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, "
     "delta_impurity_occ, nominal_impurity_occ",
@@ -207,6 +181,7 @@ def test_Basis_len_mpi(
     ],
 )
 def test_Basis_in(
+    comm,
     valence_baths,
     conduction_baths,
     delta_valence_occ,
@@ -225,46 +200,13 @@ def test_Basis_in(
         delta_impurity_occ={0: delta_impurity_occ},
         nominal_impurity_occ={0: nominal_impurity_occ},
         verbose=True,
+        comm=comm,
     )
     for state in basis:
         assert state in basis
 
 
-@pytest.mark.mpi
-@pytest.mark.parametrize(
-    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, "
-    "delta_impurity_occ, nominal_impurity_occ",
-    [
-        (0, 0, 0, 0, 0, 9),
-        (10, 0, 2, 0, 3, 8),
-        (10, 10, 2, 1, 3, 8),
-    ],
-)
-def test_Basis_in_mpi(
-    valence_baths,
-    conduction_baths,
-    delta_valence_occ,
-    delta_conduction_occ,
-    delta_impurity_occ,
-    nominal_impurity_occ,
-):
-    basis = Basis(
-        impurity_orbitals={0: [list(range(10))]},
-        bath_states=(
-            {0: [list(range(10, 10 + valence_baths))]},
-            {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
-        ),
-        delta_valence_occ={0: delta_valence_occ},
-        delta_conduction_occ={0: delta_conduction_occ},
-        delta_impurity_occ={0: delta_impurity_occ},
-        nominal_impurity_occ={0: nominal_impurity_occ},
-        verbose=True,
-        comm=MPI.COMM_WORLD,
-    )
-    for state in basis:
-        assert state in basis
-
-
+@pytest.mark.parametrize("comm", COMMS)
 @pytest.mark.parametrize(
     "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, "
     "delta_impurity_occ, nominal_impurity_occ",
@@ -275,6 +217,7 @@ def test_Basis_in_mpi(
     ],
 )
 def test_Basis_list(
+    comm,
     valence_baths,
     conduction_baths,
     delta_valence_occ,
@@ -293,40 +236,7 @@ def test_Basis_list(
         delta_impurity_occ={0: delta_impurity_occ},
         nominal_impurity_occ={0: nominal_impurity_occ},
         verbose=True,
-    )
-    assert len(basis) == len(list(basis))
-
-
-@pytest.mark.mpi
-@pytest.mark.parametrize(
-    "valence_baths, conduction_baths, delta_valence_occ, delta_conduction_occ, "
-    "delta_impurity_occ, nominal_impurity_occ",
-    [
-        (0, 0, 0, 0, 0, 9),
-        (10, 0, 2, 0, 3, 8),
-        (10, 10, 2, 1, 3, 8),
-    ],
-)
-def test_Basis_list_mpi(
-    valence_baths,
-    conduction_baths,
-    delta_valence_occ,
-    delta_conduction_occ,
-    delta_impurity_occ,
-    nominal_impurity_occ,
-):
-    basis = Basis(
-        impurity_orbitals={0: [list(range(10))]},
-        bath_states=(
-            {0: [list(range(10, 10 + valence_baths))]},
-            {0: [list(range(10 + valence_baths, 10 + valence_baths + conduction_baths))]},
-        ),
-        delta_valence_occ={0: delta_valence_occ},
-        delta_conduction_occ={0: delta_conduction_occ},
-        delta_impurity_occ={0: delta_impurity_occ},
-        nominal_impurity_occ={0: nominal_impurity_occ},
-        verbose=True,
-        comm=MPI.COMM_WORLD,
+        comm=comm,
     )
     assert len(basis) == len(list(basis))
 
@@ -990,7 +900,8 @@ def test_simple_dense_matrix_mpi():
     assert dense_mat[0, 0] == 9 / 2
 
 
-def test_eg_t2g_dense_matrix():
+@pytest.mark.parametrize("comm", COMMS)
+def test_eg_t2g_dense_matrix(comm):
     operator = {
         ((0, "c"), (0, "a")): 1,
         ((0, "c"), (4, "a")): 1 / 2,
@@ -1009,64 +920,26 @@ def test_eg_t2g_dense_matrix():
         ),
         initial_basis=states,
         verbose=True,
-        comm=None,
+        comm=comm,
     )
 
     dense_mat = build_dense_matrix(basis, operator)
     assert dense_mat.shape == (5, 5)
-    assert np.allclose(
-        dense_mat,
-        np.array(
-            [
-                [9 / 2, 0, 0, 0, -1 / 2],
-                [0, 9 / 2, 0, 0, 0],
-                [0, 0, 4, 0, 0],
-                [0, 0, 0, 9 / 2, 0],
-                [-1 / 2, 0, 0, 0, 9 / 2],
-            ],
-            dtype=float,
-        ),
-    ), f"{dense_mat=}"
-
-
-@pytest.mark.mpi
-def test_eg_t2g_dense_matrix_mpi():
-    operator = {
-        ((0, "c"), (0, "a")): 1,
-        ((0, "c"), (4, "a")): 1 / 2,
-        ((4, "c"), (0, "a")): 1 / 2,
-        ((4, "c"), (4, "a")): 1,
-        ((2, "c"), (2, "a")): 3 / 2,
-        ((1, "c"), (1, "a")): 1,
-        ((3, "c"), (3, "a")): 1,
-    }
-    states = build_states([b"\x78", b"\xb8", b"\xd8", b"\xe8", b"\xf0"])
-    basis = Basis(
-        impurity_orbitals={0: [list(range(5))]},
-        bath_states=(
-            {0: [[]]},
-            {0: [[]]},
-        ),
-        initial_basis=states,
-        verbose=True,
-        comm=MPI.COMM_WORLD,
+    # Written in `states` order. The basis is not sorted (c6994af) and under distribution its
+    # global order is the hash layout, so the literal matrix is compared through basis.index --
+    # which is why the MPI twin of this test had its assertion commented out instead.
+    in_state_order = np.array(
+        [
+            [9 / 2, 0, 0, 0, -1 / 2],
+            [0, 9 / 2, 0, 0, 0],
+            [0, 0, 4, 0, 0],
+            [0, 0, 0, 9 / 2, 0],
+            [-1 / 2, 0, 0, 0, 9 / 2],
+        ],
+        dtype=float,
     )
-
-    dense_mat = build_dense_matrix(basis, operator)
-    assert dense_mat.shape == (5, 5)
-    # assert np.allclose(
-    #     dense_mat,
-    #     np.array(
-    #         [
-    #             [9 / 2, 0, 0, 0, -1 / 2],
-    #             [0, 9 / 2, 0, 0, 0],
-    #             [0, 0, 4, 0, 0],
-    #             [0, 0, 0, 9 / 2, 0],
-    #             [-1 / 2, 0, 0, 0, 9 / 2],
-    #         ],
-    #         dtype=float,
-    #     ),
-    # ), f"{dense_mat=}"
+    idx = list(basis.index(states))
+    np.testing.assert_allclose(dense_mat[np.ix_(idx, idx)], in_state_order)
 
 
 def test_simple_vector():
@@ -1287,7 +1160,8 @@ def test_state_mpi():
             assert s[state][i] == v[i, index]
 
 
-def test_eg_t2g_basis_expand():
+@pytest.mark.parametrize("comm", COMMS)
+def test_eg_t2g_basis_expand(comm):
     Hop = {
         ((0, "c"), (0, "a")): 1,
         ((0, "c"), (4, "a")): 1 / 2,
@@ -1315,7 +1189,7 @@ def test_eg_t2g_basis_expand():
         ),
         initial_basis=states,
         verbose=True,
-        comm=None,
+        comm=comm,
     )
 
     basis.expand(Hop)
@@ -1327,48 +1201,8 @@ def test_eg_t2g_basis_expand():
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
 
 
-@pytest.mark.mpi
-def test_eg_t2g_basis_expand_mpi():
-    Hop = {
-        ((0, "c"), (0, "a")): 1,
-        ((0, "c"), (4, "a")): 1 / 2,
-        ((4, "c"), (0, "a")): 1 / 2,
-        ((4, "c"), (4, "a")): 1,
-        ((2, "c"), (2, "a")): 3 / 2,
-        ((1, "c"), (1, "a")): 1,
-        ((3, "c"), (3, "a")): 1,
-        ((5, "c"), (5, "a")): 1,
-        ((5, "c"), (9, "a")): 1 / 2,
-        ((9, "c"), (5, "a")): 1 / 2,
-        ((9, "c"), (9, "a")): 1,
-        ((7, "c"), (7, "a")): 3 / 2,
-        ((6, "c"), (6, "a")): 1,
-        ((8, "c"), (8, "a")): 1,
-    }
-    # Start with 10000  01000
-    #            00000  00000
-    states = build_states([b"\x80\x00", b"\x40\x00"])
-    basis = Basis(
-        impurity_orbitals={2: [list(range(10))]},
-        bath_states=(
-            {2: [[]]},
-            {2: [[]]},
-        ),
-        initial_basis=states,
-        verbose=True,
-        comm=MPI.COMM_WORLD,
-    )
-
-    basis.expand(Hop)
-    # expect 10000  01000  00001  00000  00000  00000
-    #        00000  00000  00000  10000  01000  00001
-
-    expected = build_states([b"\x80\x00", b"\x40\x00", b"\x08\x00"])  # , b"\x04\x00", b"\x02\x00", b"\x00\x40"]
-    assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
-    assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
-
-
-def test_eg_t2g_CIPSI_basis_expand():
+@pytest.mark.parametrize("comm", COMMS)
+def test_eg_t2g_CIPSI_basis_expand(comm):
     Hop = {
         ((0, "c"), (0, "a")): 1,
         ((0, "c"), (4, "a")): 1 / 2,
@@ -1398,7 +1232,7 @@ def test_eg_t2g_CIPSI_basis_expand():
         ),
         initial_basis=states,
         verbose=True,
-        comm=None,
+        comm=comm,
     )
     solver = CIPSISolver(basis)
     solver.truncate_initial(Hop)
@@ -1406,53 +1240,6 @@ def test_eg_t2g_CIPSI_basis_expand():
     # The symmetry closure is opt-in (cipsi_solver.SYMMETRY_CLOSURE_DEFAULT): under a budget it
     # costs variational energy, so callers ask for it. This test is about the closure, so it asks.
     solver.expand(Hop, symmetry_generators=get_symmetry_generators(Hop, basis.impurity_orbitals, basis.bath_states))
-
-    expected = build_states([b"\x80\x00", b"\x08\x00"])
-    assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
-    assert len(basis) == 6, f"Expected full multiplet of 6 states, got {len(basis)}: {list(basis)}"
-
-
-@pytest.mark.mpi
-def test_eg_t2g_CIPSI_basis_expand_mpi():
-    Hop = {
-        ((0, "c"), (0, "a")): 1,
-        ((0, "c"), (4, "a")): 1 / 2,
-        ((4, "c"), (0, "a")): 1 / 2,
-        ((4, "c"), (4, "a")): 1,
-        ((2, "c"), (2, "a")): 3 / 2,
-        ((1, "c"), (1, "a")): 1,
-        ((3, "c"), (3, "a")): 1,
-        ((5, "c"), (5, "a")): 1,
-        ((5, "c"), (9, "a")): 1 / 2,
-        ((9, "c"), (5, "a")): 1 / 2,
-        ((9, "c"), (9, "a")): 1,
-        ((7, "c"), (7, "a")): 3 / 2,
-        ((6, "c"), (6, "a")): 1,
-        ((8, "c"), (8, "a")): 1,
-    }
-    # Start with 10000
-    #            00000
-    states = build_states([b"\x80\x00"])
-    from impurityModel.ed.cipsi_solver import CIPSISolver
-
-    basis = Basis(
-        impurity_orbitals={2: [list(range(10))]},
-        bath_states=(
-            {2: [[]]},
-            {2: [[]]},
-        ),
-        initial_basis=states,
-        verbose=True,
-        comm=MPI.COMM_WORLD,
-    )
-    solver = CIPSISolver(basis)
-    solver.truncate_initial(Hop)
-
-    # The symmetry closure is opt-in (cipsi_solver.SYMMETRY_CLOSURE_DEFAULT): under a budget it
-    # costs variational energy, so callers ask for it. This test is about the closure, so it asks.
-    solver.expand(Hop, symmetry_generators=get_symmetry_generators(Hop, basis.impurity_orbitals, basis.bath_states))
-    # expect 10000  00001  00000  00000
-    #        00000  00000  10000  00001
 
     expected = build_states([b"\x80\x00", b"\x08\x00"])
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
