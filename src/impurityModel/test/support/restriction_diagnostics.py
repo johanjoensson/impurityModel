@@ -21,17 +21,15 @@ basis is exactly what a real ``calc_selfenergy`` run would build. The per-determ
 reductions are MPI collectives (fixed bin edges on every rank, unconditional
 ``Allreduce``), matching the CLAUDE.md rules.
 
-Run as an opt-in pytest module (one workload per process for honest ``VmHWM``)::
-
-    RUN_RESTRICTION_DIAG=1 RESTRICTION_DIAG_WORKLOAD=fcc_ni_5 \\
-        pytest -s -m benchmark src/impurityModel/test/restriction_diagnostics.py
-
-or directly::
+Run one workload per process (for an honest ``VmHWM``)::
 
     python -m impurityModel.test.support.restriction_diagnostics fcc_ni_5
-"""
+    mpiexec -n 4 python -m impurityModel.test.support.restriction_diagnostics fcc_ni_5
+    python -m impurityModel.test.support.restriction_diagnostics fcc_ni_5 budget 8 4 2
 
-import os
+It is a script, not a test module: ``support/`` files never match ``test_*.py``, so pytest
+does not collect them (an opt-in pytest entry here was unreachable and has been removed).
+"""
 
 import numpy as np
 
@@ -510,25 +508,6 @@ def eigenvector_overlap_experiment(workload_key, budgets, comm=None, truncation_
         for r in rows:
             print(f"{r['budget']:>8}{r['gs_size']:>10d}{1 - r['min_fidelity']:>13.2e}{r['dE0']:>13.2e}")
     return rows
-
-
-# ---- opt-in pytest entry -------------------------------------------------------------
-
-RUN = os.environ.get("RUN_RESTRICTION_DIAG") == "1"
-
-
-def test_restriction_diagnostics():
-    import pytest
-
-    if not RUN:
-        pytest.skip("Set RUN_RESTRICTION_DIAG=1 to run the restriction diagnostics.")
-    from mpi4py import MPI
-
-    key = os.environ.get("RESTRICTION_DIAG_WORKLOAD", "nio_20")
-    _run(key, comm=MPI.COMM_WORLD, verbosity=int(os.environ.get("RESTRICTION_DIAG_VERBOSITY", "0")))
-
-
-test_restriction_diagnostics.benchmark = True  # type: ignore[attr-defined]  # pytest-benchmark marker
 
 
 if __name__ == "__main__":

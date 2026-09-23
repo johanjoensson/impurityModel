@@ -1,5 +1,8 @@
 # restrictions_redux: more restrictions, tighter cutoffs — measured verdict
 
+
+> **Note (2026-09-23):** `restriction_sweep.py` was deleted once its verdict was recorded here; it is recoverable from git history (`git log --diff-filter=D -- src/impurityModel/test/support/restriction_sweep.py`).
+
 > **Status (2026-07-17): measurement complete on the accessible workloads; verdict below.**
 > Implemented and shipped: named/overridable freeze-and-chain-window constants and the
 > `excitation_budget_restriction` weighted restriction in `basis_restrictions.py`, plus the

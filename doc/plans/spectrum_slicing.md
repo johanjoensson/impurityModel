@@ -1,5 +1,8 @@
 # Spectrum slicing + Chebyshev filtering for the real-axis Green's function
 
+
+> **Note (2026-09-23):** the probe (`test/lanczos/test_slicing_probe.py`) was deleted once its verdict was recorded here; it is recoverable from git history (`git log --diff-filter=D -- src/impurityModel/test/lanczos/test_slicing_probe.py`).
+
 **Status (2026-07-13): COMPLETE — the answer is no.** All phases built, tested (serial + MPI)
 and measured. `gf_method="sliced"` is correct and slice-count invariant, and it **buys no
 memory on either production workload**: on FCC Ni it costs *2x* the Lanczos baseline's peak

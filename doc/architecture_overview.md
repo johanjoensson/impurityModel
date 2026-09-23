@@ -238,7 +238,8 @@ callers) invoke with an `ImpurityModel` + option groups.
   Shared fixtures/oracles live in `support/` (not itself a test module): `testtol.py`
   (derived numerical tolerances), `lanczos_fixtures.py`, `gf_oracles.py`,
   `real_workload.py`/`_nio_workload.py` (realistic HDF5/pickle workload loaders),
-  `restriction_diagnostics.py`/`restriction_sweep.py` (opt-in sweep scripts).
+  `restriction_diagnostics.py` (a `python -m` measurement script; `support/` is never
+  collected by pytest).
   `conftest.py` stays at the `test/` root; it applies suite-wide.
 
 ## Execution Flow
