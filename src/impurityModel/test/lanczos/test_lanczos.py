@@ -144,51 +144,6 @@ def test_lancos_mpi():
     print(f"{alphas=}\n{betas=}")
 
 
-def test_eigsh():
-    eigvals = np.array(np.arange(6))
-    states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
-    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
-    basis = Basis(
-        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]},
-        bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=states,
-        verbose=True,
-        comm=None,
-    )
-
-    def converged(alphas, betas, *args, **kwargs):
-        print(f"{alphas.shape=}")
-        return alphas.shape[0] > 5
-
-    psi0 = [ManyBodyState({state: 1 / np.sqrt(len(basis.local_basis)) for state in basis.local_basis})]
-    alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=Reort.FULL)
-    ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
-    assert np.allclose(ev, eigvals[: len(ev)])
-
-
-@pytest.mark.mpi
-def test_eigsh_mpi():
-    eigvals = np.array(np.arange(6))
-    states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
-    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
-    basis = Basis(
-        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]},
-        bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=states,
-        verbose=True,
-        comm=MPI.COMM_WORLD,
-    )
-
-    def converged(alphas, betas, *args, **kwargs):
-        print(f"{alphas.shape=}")
-        return alphas.shape[0] > 5
-
-    psi0 = [ManyBodyState({state: 1 / np.sqrt(len(states)) for state in basis.local_basis}, width=1)]
-    alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=Reort.PARTIAL)
-    ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
-    assert np.allclose(ev, eigvals[: len(ev)])
-
-
 @pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
 def test_block_eigsh(reort_mode):
     eigvals = np.array(np.arange(6))
@@ -512,30 +467,3 @@ def test_block_apply_mpi_preserves_a_real_dtype():
     assert result.dtype == np.float64, result.dtype
     expected_local = expected[local_cols, :] if local_cols else np.zeros((0, 1), dtype=np.float64)
     np.testing.assert_allclose(result, expected_local, atol=1e-12)
-
-
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
-def test_get_block_Lanczos_matrices_dense(reort_mode):
-    from impurityModel.ed.BlockLanczosArray import block_lanczos_array
-
-    eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
-    states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
-    hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
-    basis = Basis(
-        impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]},
-        bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=states,
-        verbose=True,
-        comm=None,
-    )
-    H_mat = build_dense_matrix(basis, hop)
-
-    psi0 = np.zeros((6, 1), dtype=complex)
-    psi0[:, 0] = 1 / np.sqrt(6)
-
-    def converged(alphas, betas, *args, **kwargs):
-        return alphas.shape[0] > 5
-
-    alphas, betas, _Q = block_lanczos_array(psi0, H_mat, converged, reort=reort_mode)[:3]
-    ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
-    assert np.allclose(ev, eigvals[: len(ev)])

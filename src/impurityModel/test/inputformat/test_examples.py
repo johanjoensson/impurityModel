@@ -20,14 +20,8 @@ pytestmark = pytest.mark.skipif(not EXAMPLES, reason="examples/ is not part of a
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
-def test_every_example_validates(path):
-    """What `--check` does, which is what CI should run on each of these."""
-    load_input(path)
-
-
-@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
 def test_every_example_builds_a_model(path):
-    """Validation only checks the file; this checks it against the Hamiltonian it names."""
+    """Validates the file (what `--check` does) and checks it against the Hamiltonian it names."""
     built = build(load_input(path))
     assert built.model.n_spin_orbitals > 0
 

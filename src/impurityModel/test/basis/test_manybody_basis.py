@@ -478,8 +478,16 @@ def test_contains_random_distributed_random(n_bytes, n_states, n_sample_states):
     ],
 )
 def test_index_random_distributed_random(n_bytes, n_states, n_sample_states):
+    """``index`` is a bijection onto ``range(size)`` and ``__getitem__`` inverts it.
+
+    Indices are NOT sorted order -- determinants are hash-distributed -- which is why the
+    sorted-position assertions this test once carried were commented out rather than fixed.
+    The contract that does hold is the round trip. Queries are drawn from the gathered basis
+    (a uniformly random n_bytes determinant is essentially never in it) in a per-rank random
+    order and count, so the collective lookup is exercised with unequal query lengths.
+    """
     state_bytes = np.random.randint(0, high=255, size=n_states * n_bytes, dtype=np.ubyte)
-    states = [i.tobytes() for i in np.split(state_bytes, n_states)]
+    states = [SlaterDeterminant.from_bytes(i.tobytes()) for i in np.split(state_bytes, n_states)]
     basis = Basis(
         impurity_orbitals={0: [list(range(8 * n_bytes))]},
         bath_states=(
@@ -490,15 +498,16 @@ def test_index_random_distributed_random(n_bytes, n_states, n_sample_states):
         verbose=True,
         comm=MPI.COMM_WORLD,
     )
-    all_states = MPI.COMM_WORLD.allgather(states)
-    all_states = sorted({state for states in all_states for state in states})
-    sample_bytes = np.random.randint(0, high=255, size=n_sample_states * n_bytes, dtype=np.ubyte)
-    sample_states = [i.tobytes() for i in np.split(sample_bytes, n_sample_states)]
-    [all_states.index(state) for state in sample_states if state in all_states]
-    basis_mask = list(basis.contains(sample_states))
-    samples_in_basis = [sample_states[i] for i in range(len(sample_states)) if basis_mask[i]]
-    basis.index(samples_in_basis)
-    # assert all(bi == ci for bi, ci in zip(basis_indices, correct_indices))
+    all_states = sorted({state for states in MPI.COMM_WORLD.allgather(states) for state in states})
+    assert basis.size == len(all_states)
+
+    indices = list(basis.index(all_states))
+    assert sorted(indices) == list(range(basis.size))
+    assert list(basis[indices]) == all_states
+
+    picks = np.random.randint(0, len(all_states), size=np.random.randint(0, n_sample_states + 1))
+    queries = [all_states[i] for i in picks]
+    assert list(basis.index(queries)) == [indices[i] for i in picks]
 
 
 def test_operator_dict_simple():
