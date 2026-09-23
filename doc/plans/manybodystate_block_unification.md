@@ -385,6 +385,13 @@ different outcomes:
   each determinant can only be written once across the whole pass (the existing
   `state not in new_Dj` guard).
 
+> **REVERSED 2026-09-23** (commit `3d480f5`). The decision below is sound on its own terms --
+> there is no `ManyBodyOperator.apply` in that path for a block to speed up -- but it weighed
+> only *compute*. The *memory* argument was never made: one width-1 block per column means `p`
+> copies of one key set, measured at 226.65 -> 151.15 MiB per rank (75.5 MiB) at the SrMnO3
+> production geometry. `build_state` now returns one wide block and `psi_refs` is block-native
+> end to end. See "Phase 7 step 2a revisited" at the end of this document.
+
 `expand`'s own outer `psi_refs`/`psi0` were traced and deliberately **left as a list**: the
 actual eigensolve in the `dense_cutoff` branch runs through the *array* IRLM kernel
 (`build_distributed_vector`/`build_state` boundary conversions to/from a dense matrix, per
@@ -1664,3 +1671,60 @@ narrative for Phase 7 specifically.
      `block_orthogonalize` no longer have. Leave as is unless that calculus changes.
 - No further Phase 6 sites identified — 6a, 6b and 6c between them covered every module the
   plan's Phase 6 list named.
+
+
+## Phase 7 step 2a revisited — `build_state` flipped after all (DONE, commit `3d480f5`)
+
+The earlier attempt (see "`basis_transcription.py`'s `build_state` was the other named target"
+above) concluded that flipping this producer was `from_states`-bound and had to wait for step 3's
+rename. **That conclusion expired without anyone noticing, and the note left behind actively
+misled the next reader** -- this section is as much about that as about the change.
+
+Three of its premises no longer hold:
+
+- `from_states` rejecting block elements was the wall. `ManyBodyState` **is** the unified block
+  class now; `build_state` was already constructing `ManyBodyState(width=1)`.
+- `block_lanczos_cy` grew an explicit block-seed path (`_lanczos_step.pxi:663-669` dispatches on
+  `isinstance(psi0, ManyBodyState)` and uses `.width`/`redistribute_block`), so the kernel side
+  was ready.
+- The 75-test blast radius came from flipping the producer to a *list of width-1 blocks*, leaving
+  consumers doing scalar arithmetic on `.items()`. Returning **one wide block** is a different
+  shape: the three biggest consumers (`truncate`, `_apply_block_and_redistribute`, the GF
+  reachability probe) opened with `from_states` on this output, so they got *simpler*.
+
+The docstring note that recorded the old verdict was still on the function, still asserting
+"not yet flipped to width-1 `ManyBodyState`" against code that plainly built one. **A stale
+decision note reads exactly like a live constraint.** The lesson for the rest of step 3: before
+trusting a recorded "blocked on X", re-check X. Cheapest possible test, per this document's own
+rule at the end of the earlier section -- make the flip and run the full serial gate.
+
+### What it cost, and the defect class it carries
+
+Serial went 98 red, then 14, then green; the `-n 1` leg then caught three more that serial could
+not, and the `-n 2`/`-n 3` rank files five more. The whole tail was one idiom:
+
+> **`len()` on a block is its RANK-LOCAL ROW COUNT, and iterating it yields determinant KEYS.**
+> Neither is the column count; `.width` is, and it is rank-invariant by construction.
+
+Four production sites and sixteen test sites read `len()` as a width. Two fed MPI collectives
+(`_manifold_request` -> `num_wanted`, and the memory look-ahead -> `max_new` ->
+`_admit_top`'s rank-dependent branch). One was worse than a crash: `redistribute_psis(*psi_refs)`
+unpacks a block into determinants, which raises above one rank but **at one rank is a no-op that
+hands the keys straight back**, so the next cycle silently used a list of `SlaterDeterminant`s as
+its reference block. At 1 rank row count and width also coincide whenever a rank owns exactly
+`p` determinants, which is why so much of this survived the serial suite.
+
+**The one that produced a wrong number rather than a traceback** was aliasing. `truncate` bound
+its working block to its argument when handed one; `keep_rows`/`prune_rows` mutate in place and
+`redistribute_block` returns its argument unchanged on a non-distributed basis. `expand` aliases
+that object (`best_psis = psi_refs`, then `psi_refs = self.truncate(psi_refs, ...)` in the same
+cycle), so the best-basis snapshot lost every row a later cycle dropped -- **-13.2657157 against
+-13.2657322, on a 240-determinant basis where 400 was asked for, silently.** The list form was
+safe only because `from_states` always built a fresh block. *Any* producer flip that replaces a
+build-a-new-container step with pass-the-caller's-object inherits this hazard; step 3 should
+expect it rather than rediscover it.
+
+It was found by an adversarial review, not by the gate. The gate was green on the tree that
+contained it, because the equality check that "verified" the change exercised one fixture and
+the suite had not been run. Three of the defects sat directly underneath a new comment asserting
+the opposite -- comments written from the intended design rather than the code.
