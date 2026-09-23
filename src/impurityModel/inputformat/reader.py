@@ -215,7 +215,14 @@ def _coerce(where, key, value, units, base_dir):
     factor = ENERGY_UNITS[units["energy"]]
 
     if kind is Kind.ENERGY:
-        return _as_float(where, value) * factor
+        number = _as_float(where, value)
+        # Checked as written, before the unit conversion. Every energy minimum is 0 today (the
+        # broadenings), where the unit cannot matter; a non-zero one would have to say which
+        # unit it is in. This check used to be missing for ENERGY alone, so a negative
+        # broadening -- a resolvent on the wrong side of the real axis -- was accepted.
+        if key.minimum is not None and number < key.minimum:
+            raise InputError(f"[{where}]: must be >= {key.minimum}, got {number}")
+        return number * factor
     if kind is Kind.ENERGY_LIST:
         return [_as_float(where, v) * factor for v in _as_sequence(where, value)]
     if kind is Kind.ENERGY_VECTOR:

@@ -390,3 +390,91 @@ def test_a_removed_key_says_it_was_removed_not_that_it_is_a_typo(write_input):
     text = MINIMAL_SELFENERGY.replace("[selfenergy]", "[many_body_basis]\nspin_flip_dj = true\n[selfenergy]")
     with pytest.raises(InputError, match="'spin_flip_dj' is no longer a key: it never had an effect"):
         load_input(write_input(text))
+
+
+# ---- every refusal has a message that names the problem --------------------------------------
+#
+# Each case is one small edit of MINIMAL_SELFENERGY. Before this table most of these raises had
+# never executed: the reader's validation was covered for the happy path, so a refactor that
+# turned one of them into a silent default (or a TypeError deep in a driver) would have gone
+# unnoticed. The match is on the part of the message a user needs to fix the file.
+
+_BLOCKS = """[hamiltonian.blocks]
+h_imp = {h_imp}
+v = {{ scalar = 0.1 }}
+h_bath = {{ scalar = 0.0 }}
+"""
+
+
+def _with_blocks(h_imp):
+    return MINIMAL_SELFENERGY.replace('[hamiltonian.file]\npath = "h0.h0"\n', _BLOCKS.format(h_imp=h_imp))
+
+
+_REFUSED = {
+    # meshes
+    "mesh max below min": (
+        MINIMAL_SELFENERGY + "[selfenergy.real_axis]\nmesh = { min = 1, max = -1, n = 10 }\n",
+        r"max \(-1.0\) is below min \(1.0\)",
+    ),
+    "empty explicit mesh": (
+        MINIMAL_SELFENERGY + "[selfenergy.real_axis]\nmesh = { values = [] }\n",
+        "at least one point",
+    ),
+    "unrecognised mesh": (MINIMAL_SELFENERGY + "[selfenergy.real_axis]\nmesh = { foo = 1 }\n", "unrecognised mesh"),
+    "mesh not a table": (MINIMAL_SELFENERGY + "[selfenergy.real_axis]\nmesh = 3\n", "a mesh must be a table"),
+    # scalar coercion and bounds
+    # ENERGY alone skipped its declared minimum, so this was accepted: a negative broadening is
+    # a resolvent on the wrong side of the real axis.
+    "negative broadening": (
+        MINIMAL_SELFENERGY + "[selfenergy.real_axis]\nbroadening = -0.1\n",
+        "must be >= 0.0, got -0.1",
+    ),
+    "string for a number": (
+        MINIMAL_SELFENERGY + '[selfenergy.real_axis]\nbroadening = "wide"\n',
+        "expected a number, got 'wide'",
+    ),
+    "count below its minimum": (MINIMAL_SELFENERGY + "[solver]\ndense_cutoff = 0\n", "must be >= 1, got 0"),
+    "float for a count": (MINIMAL_SELFENERGY + "[solver]\ndense_cutoff = 1.5\n", "expected an integer, got 1.5"),
+    "int for a bool": (MINIMAL_SELFENERGY + "[rotation_to_spherical]\nfrom_h0 = 1\n", "expected true or false"),
+    "version without a minor": (MINIMAL_SELFENERGY.replace("version = [1, 0]", "version = [1]"), r"\[major, minor\]"),
+    "missing version": (MINIMAL_SELFENERGY.replace("version = [1, 0]\n", ""), r"\[format\].version is required"),
+    "zeeman with two components": (
+        MINIMAL_SELFENERGY.replace("nominal_occupation = 8\n", "nominal_occupation = 8\nzeeman_splitting = [0, 0]\n"),
+        "expected 3 components",
+    ),
+    # cross-checks between tables
+    "more valence bath than bath": (
+        MINIMAL_SELFENERGY.replace("n_valence_bath = 10", "n_valence_bath = 11"),
+        r"n_valence_bath \(11\) exceeds n_bath \(10\)",
+    ),
+    "two core shells": (
+        MINIMAL_SELFENERGY
+        + '[[shell]]\nl = 1\nrole = "core"\nnominal_occupation = 6\n'
+        + '[[shell]]\nl = 0\nrole = "core"\nnominal_occupation = 2\n',
+        'At most one \\[\\[shell\\]\\] may have role = "core"',
+    ),
+    "not TOML at all": (MINIMAL_SELFENERGY + "this is = = not toml\n", r"input\.toml: .*at line"),
+    # matrices
+    "matrix not a table": (_with_blocks("3"), "a matrix must be a table"),
+    "ragged matrix": (_with_blocks("{ real = [[1.0, 2.0], [3.0]] }"), "rows have unequal lengths"),
+    "imag shape mismatch": (_with_blocks("{ real = [[1.0]], imag = [[1.0, 2.0]] }"), "shape does not match"),
+    "declared shape mismatch": (_with_blocks("{ real = [[1.0]], shape = [2, 2] }"), r"declared \[2, 2\]"),
+    "unexpected matrix key": (_with_blocks("{ real = [[1.0]], bogus = 1 }"), "unexpected matrix keys"),
+    "unrecognised matrix": (_with_blocks("{ foo = 1 }"), "unrecognised matrix"),
+    "inline matrix too large": (
+        _with_blocks("{ real = [" + ", ".join(["[" + ", ".join(["0.0"] * 15) + "]"] * 15) + "] }"),
+        "too large to write inline",
+    ),
+}
+
+
+@pytest.mark.parametrize("text, message", list(_REFUSED.values()), ids=list(_REFUSED))
+def test_the_reader_refuses_with_a_message_that_names_the_problem(write_input, text, message):
+    with pytest.raises(InputError, match=message):
+        load_input(write_input(text))
+
+
+def test_an_unknown_top_level_table_is_a_warning_not_an_error(write_input):
+    """An unrecognised table is reported but tolerated, unlike an unknown key inside a table."""
+    resolved = load_input(write_input(MINIMAL_SELFENERGY + "[notes]\nauthor = 'me'\n"))
+    assert any("notes" in warning for warning in resolved.warnings), resolved.warnings
