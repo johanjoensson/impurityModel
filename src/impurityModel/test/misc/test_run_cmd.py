@@ -321,3 +321,40 @@ def test_a_selfenergy_run_writes_every_output_under_outdir(tmp_path, monkeypatch
     for label in ("Sigma", "Gimp"):
         for axis in ("", "-realaxis"):
             assert f"real-{label}{axis}-c.dat" in written and f"imag-{label}{axis}-c.dat" in written
+
+
+def _hubbard_i_input(tmp_path):
+    from impurityModel.test.inputformat.test_hubbard_i_and_shell_roles import HUBBARD_I
+
+    path = tmp_path / "in.toml"
+    path.write_text(HUBBARD_I + '\n[run]\noutdir = "out"\n')
+    return path
+
+
+def test_run_executes_an_input_file_end_to_end(tmp_path, monkeypatch):
+    """`impurityModel run` had only ever been exercised as far as --check: build, dispatch and the
+    provenance record never ran. The Hubbard-I PES input is the cheapest complete calculation.
+    Under mpiexec every rank takes part in the solve; rank 0 writes (and owns) the archive."""
+    from mpi4py import MPI
+
+    monkeypatch.chdir(tmp_path)
+    path = _hubbard_i_input(tmp_path)
+    assert cli.main(["run", str(path)]) == 0
+    if MPI.COMM_WORLD.rank != 0:
+        return
+    with h5py.File(tmp_path / "out" / "spectra.h5", "r") as f:
+        assert "PS" in f
+        record = f["provenance/input_toml"][()]
+        assert (record.decode() if isinstance(record, bytes) else record) == path.read_text()
+        assert json.loads(f["provenance/resolved"][()])
+
+
+@pytest.mark.parametrize("flag, expected", [("--check", "OK (spectroscopy"), ("--show-resolved", "spectroscopy")])
+def test_run_can_stop_before_solving(tmp_path, monkeypatch, capsys, flag, expected):
+    from mpi4py import MPI
+
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["run", str(_hubbard_i_input(tmp_path)), flag]) == 0
+    assert not (tmp_path / "out").exists(), f"{flag} must not create outputs"
+    if MPI.COMM_WORLD.rank == 0:
+        assert expected in capsys.readouterr().out
