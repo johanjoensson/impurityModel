@@ -15,6 +15,7 @@ without pulling in the many-body machinery.
 """
 
 import os
+import warnings
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Optional, Union
@@ -1083,6 +1084,32 @@ def _archive_attr(attrs, key, default=None):
     return value
 
 
+_MISSING = object()
+
+
+def _excitation_budget_from_solver_line(attrs, name):
+    """Excitation budget of an archive that predates the ``excitation_budget`` attribute.
+
+    The RSPt interface wrote every solver-line option except the budget, which is the line's
+    mandatory third token (``N0 nBaths excitation_budget ...``). Falling back to
+    ``EXCITATION_BUDGET_DEFAULT`` instead silently reproduces a differently restricted problem
+    (an SrMnO3 archive recorded ``solver line '3 3 8 peeled'`` and read back as budget 4), so
+    recover it from the stored line, and warn when even that is unavailable.
+    """
+    tokens = str(attrs.get("solver line", "")).split("!")[0].split("#")[0].split()
+    if len(tokens) >= 3:
+        try:
+            return int(tokens[2])
+        except ValueError:
+            pass
+    warnings.warn(
+        f"archive group {name!r} records no excitation budget (neither the attribute nor a parseable "
+        f"'solver line'); assuming the default {EXCITATION_BUDGET_DEFAULT}, which may not be what the run used",
+        stacklevel=3,
+    )
+    return EXCITATION_BUDGET_DEFAULT
+
+
 def _read_archive_group(path, cluster=None, iteration=None) -> dict:
     """Parse one ``(cluster, iteration)`` group of an ``impurityModel_data.h5`` archive.
 
@@ -1126,9 +1153,10 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
     dN = _archive_attr(attrs, "dN")
     if dN is not None:
         dN = int(dN)
-    # Missing attribute (older archives) falls back to the default budget; a stored
-    # negative value means the producing run explicitly disabled it.
-    excitation_budget = _archive_attr(attrs, "excitation_budget", EXCITATION_BUDGET_DEFAULT)
+    # A stored negative value means the producing run explicitly disabled the budget.
+    excitation_budget = _archive_attr(attrs, "excitation_budget", _MISSING)
+    if excitation_budget is _MISSING:
+        excitation_budget = _excitation_budget_from_solver_line(attrs, name)
     if excitation_budget is not None:
         excitation_budget = int(excitation_budget) if int(excitation_budget) >= 0 else None
 
@@ -1156,6 +1184,7 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
         "dN": dN,
         "excitation_budget": excitation_budget,
         "sparse_green": bool(_archive_attr(attrs, "sparse_green", True)),
+        "gf_method": str(_archive_attr(attrs, "gf_method", "lanczos")),
     }
 
 
@@ -1209,6 +1238,7 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         reort=raw["reort"],
         dense_cutoff=raw["dense_cutoff"],
         sparse_green=raw["sparse_green"],
+        gf_method=raw["gf_method"],
     )
     return model, meshes, basis, solver, raw["label"]
 
