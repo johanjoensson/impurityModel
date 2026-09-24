@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed import groundstate
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
@@ -151,3 +152,33 @@ def test_converged_energy_and_residual_are_rank_invariant(exact_e0):
     assert report["converged"] is True
     assert all(r == report for r in comm.allgather(report))
     assert abs(e0 - exact_e0) <= DEFAULT_E_PT2_TOL
+
+
+def _solve_ground_state():
+    return groundstate.solve_ground_state(
+        _hamiltonian(),
+        {0: [[0, 1]]},
+        ({0: [VALENCE]}, {0: [CONDUCTION]}),
+        {0: 1},
+        tau=0.001,
+        slaterWeightMin=0,
+        dense_cutoff=1000,
+        use_hf_seed=False,
+    )
+
+
+def test_solve_ground_state_reports_the_refinement_converged():
+    _, solver, es, _ = _solve_ground_state()
+    report = solver.convergence_report
+    assert report["converged"] is True and report["e_pt2_tol"] == groundstate.GS_E_PT2_TOL
+    assert len(es) <= groundstate._psi_ref_width(solver.psi_refs)
+
+
+def test_a_manifold_wider_than_the_references_is_not_reported_converged(monkeypatch, capsys):
+    """The residual covers only the states `expand` carried; any the thermal widening adds
+    afterwards have none, so the report must stop claiming convergence for the manifold."""
+    monkeypatch.setattr(groundstate, "_psi_ref_width", lambda _refs: 0)
+    _, solver, _, _ = _solve_ground_state()
+    report = solver.convergence_report
+    assert report["converged"] is False and report["limited_by"] == "manifold_widened"
+    assert "wider than" in capsys.readouterr().out

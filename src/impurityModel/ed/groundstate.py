@@ -8,7 +8,7 @@ from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, get_effective_restrictions
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.block_structure import BlockStructure, get_equivalent_blocks, print_block_structure
-from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
+from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver, _psi_ref_width
 from impurityModel.ed.gs_statistics import (
     compute_entanglement_entropy,
     compute_gs_statistics,
@@ -1250,6 +1250,10 @@ def solve_ground_state(
             # is expanding (and the closure is opt-in, cipsi_solver.SYMMETRY_CLOSURE_DEFAULT).
         )
 
+    # The residual in `solver.convergence_report` covers the reference states `expand` carried.
+    # Its own eigensolve already widens to the same Boltzmann cut, so the loop below should not
+    # find more; if it does, those states have no residual and the report must not claim them.
+    n_references = _psi_ref_width(solver.psi_refs) if solver.psi_refs is not None else 0
     wanted = num_wanted
     while True:
         with solver_trace.timed("eigensolve", stage="gs_thermal", num_wanted=wanted):
@@ -1272,6 +1276,20 @@ def solve_ground_state(
         if done:
             break
         wanted += num_wanted
+    widened = len(es) > n_references
+    if basis.is_distributed:
+        widened = basis.comm.bcast(widened, root=0)
+    report = getattr(solver, "convergence_report", None)
+    if widened and report is not None and report.get("converged"):
+        report["converged"] = False
+        report["limited_by"] = "manifold_widened"
+        if rank == 0:
+            print(
+                f"WARNING: the thermal manifold ({len(es)} states) is wider than the {n_references} "
+                "reference states the CIPSI expansion converged; the residual PT2 energy does not "
+                "cover the rest.",
+                flush=True,
+            )
     return basis, solver, es, psis
 
 

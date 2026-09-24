@@ -120,7 +120,8 @@ def collective_mass_cutoff(scores, budget, comm):
     lo *= 0.5
     for _ in range(45):
         mid = np.sqrt(lo * hi)
-        if global_sum(positive[positive <= mid].sum()) <= budget:
+        # `where=`, not `positive[positive <= mid]`: no filtered copy of the scores per step.
+        if global_sum(np.sum(positive, where=positive <= mid)) <= budget:
             lo = mid
         else:
             hi = mid
