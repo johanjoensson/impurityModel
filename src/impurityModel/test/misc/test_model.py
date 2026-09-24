@@ -218,11 +218,31 @@ def test_archive_without_budget_attribute_recovers_it_from_the_solver_line(tmp_p
 
 
 def test_archive_budget_stored_as_none_or_negative_is_disabled(tmp_path):
-    for stored in ("None", -1):
-        archive = tmp_path / f"impurityModel_data_{stored}.h5"
-        _write_synthetic_archive(str(archive), excitation_budget=stored)
+    archive = tmp_path / "impurityModel_data_none.h5"
+    _write_synthetic_archive(str(archive), excitation_budget="None")
+    _, _, basis, _, _ = load_selfenergy_archive(str(archive))
+    assert basis.excitation_budget is None
+
+    archive = tmp_path / "impurityModel_data_negative.h5"
+    _write_synthetic_archive(str(archive), excitation_budget=-1)
+    with pytest.warns(UserWarning, match="negative: the excitation budget is disabled"):
         _, _, basis, _, _ = load_selfenergy_archive(str(archive))
-        assert basis.excitation_budget is None
+    assert basis.excitation_budget is None
+
+
+def test_negative_excitation_budget_disables_it_with_a_warning():
+    """A negative budget would build an empty admissible window (q_max < q_min); it disables instead."""
+    with pytest.warns(UserWarning, match="excitation_budget=-2 is negative"):
+        basis = BasisOptions(nominal_occ={0: 1}, excitation_budget=-2)
+    assert basis.excitation_budget is None
+    assert BasisOptions(nominal_occ={0: 1}, excitation_budget=0).excitation_budget == 0
+
+
+def test_from_hdf5_does_not_warn_about_a_missing_budget(tmp_path):
+    """The physics-only reader never uses the budget, so an archive without one must load silently."""
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), solver_line=None)
+    ImpurityModel.from_hdf5(str(archive))  # filterwarnings=error turns any warning into a failure
 
 
 def test_archive_without_any_budget_record_warns_and_uses_the_default(tmp_path):
