@@ -786,8 +786,9 @@ DC_DE2_MIN = Knob(
     minimum=0.0,
     group="double-counting",
     doc="""Per-determinant Epstein-Nesbet PT2 floor for the double-counting search's **charge-sector
-    solves** (`dc_criteria`'s `solve_sector` calls). Unset uses :data:`groundstate.GS_DE2_MIN`,
-    which is 0: no floor. The solves are converged by `DC_E_PT2_TOL` instead; a floor bounds each
+    solves** (`dc_criteria`'s `solve_sector` calls). Unset uses the solver's own
+    `BasisOptions.de2_min` (TOML `[many_body_basis].de2_min`), else :data:`groundstate.GS_DE2_MIN`,
+    which is 0: no floor. The double-counting line's / criterion table's own `de2_min` beats it. The solves are converged by `DC_E_PT2_TOL` instead; a floor bounds each
     candidate it refuses but not their sum, so it is a way to *loosen* a solve, not to converge one.
 
     The notes below predate that change: they were measured when this floor, at 1e-8, was the only

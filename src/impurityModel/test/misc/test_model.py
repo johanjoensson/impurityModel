@@ -250,6 +250,12 @@ def test_a_non_positive_e_pt2_tol_is_refused(value):
         BasisOptions(nominal_occ={0: 1}, e_pt2_tol=value)
 
 
+def test_a_negative_de2_min_is_refused_and_zero_means_no_floor():
+    with pytest.raises(ValueError, match="de2_min must be non-negative"):
+        BasisOptions(nominal_occ={0: 1}, de2_min=-1e-8)
+    assert BasisOptions(nominal_occ={0: 1}, de2_min=0.0).de2_min == 0.0
+
+
 def test_negative_excitation_budget_disables_it_with_a_warning():
     """A negative budget would build an empty admissible window (q_max < q_min); it disables instead."""
     with pytest.warns(UserWarning, match="excitation_budget=-2 is negative"):

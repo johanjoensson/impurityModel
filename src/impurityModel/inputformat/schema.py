@@ -256,8 +256,25 @@ _DC_SEARCH_KEYS = (
     Key("max_shift", Kind.ENERGY, 20.0, "Largest |mu| the search will try before giving up."),
 )
 
+#: Shared by [many_body_basis] and the energy-difference criteria, which differ only in which
+#: solves the keys govern.
+_E_PT2_TOL_DOC = (
+    "Residual Epstein-Nesbet PT2 energy the CIPSI expansion is converged to: the SUMMED PT2 "
+    "contribution of every determinant left out, which is what the energy error follows (it "
+    "predicted the true error to 2% against exact diagonalization). THE accuracy control."
+)
+_DE2_MIN_DOC = (
+    "Optional per-determinant PT2 floor: candidates below it are refused whatever the residual. "
+    "It bounds each refused determinant, not their sum, so it LOOSENS a solve rather than "
+    "converging one -- at 1e-8 alone it left SrMnO3 5.0e-5 above its converged energy. An "
+    "expansion it stops short of e_pt2_tol warns with the residual it left."
+)
+
 #: Keys for the two searching variants whose residual is a *difference of sector energies*, each
-#: taken as that sector's lowest eigenvalue. Deliberately NOT in :data:`_DC_SEARCH_KEYS`:
+#: taken as that sector's lowest eigenvalue: how those sector solves are run. ``e_pt2_tol`` and
+#: ``de2_min`` belong here for a second reason: ``fixed_occupation`` solves on the production
+#: ground-state path and takes [many_body_basis]'s values, never an override (parity with the
+#: self-energy run). Deliberately NOT in :data:`_DC_SEARCH_KEYS`:
 #: ``fixed_occupation`` pins the thermal impurity occupation itself, so narrowing the manifold
 #: would change its criterion rather than the cost of evaluating it, and
 #: :func:`dc_criteria.fixed_occupation_dc` accordingly does not accept the argument. Declaring it
@@ -276,6 +293,25 @@ _DC_ENERGY_DIFFERENCE_KEYS = (
         "impurity occupation from the thermal average to the ground state's; those agree only "
         "where occupation_spread is negligible, which is not so on SrMnO3. It moves the reported "
         "mu resolution, not the root. Check the spread from a run with this off first.",
+    ),
+    Key(
+        "e_pt2_tol",
+        Kind.ENERGY,
+        None,
+        _E_PT2_TOL_DOC + " Here: the charge-sector solves. Absent inherits "
+        "[many_body_basis].e_pt2_tol (after the DC_E_PT2_TOL environment knob), so the double "
+        "counting is measured on a space converged as far as the self-energy run's. Loosen it "
+        "(e.g. 1e-5 eV) when the search is the cost. fixed_occupation takes no override: it "
+        "solves on the production ground-state path and uses [many_body_basis].e_pt2_tol.",
+        minimum=0.0,
+    ),
+    Key(
+        "de2_min",
+        Kind.ENERGY,
+        None,
+        _DE2_MIN_DOC + " Here: the charge-sector solves. Absent inherits [many_body_basis].de2_min "
+        "(after the DC_DE2_MIN environment knob).",
+        minimum=0.0,
     ),
 )
 
@@ -950,6 +986,23 @@ _TABLE_LIST += [
                 minimum=0.0,
             ),
             Key("slater_weight_min", Kind.DIMENSIONLESS, None, "Minimum determinant weight retained.", minimum=0.0),
+            Key(
+                "e_pt2_tol",
+                Kind.ENERGY,
+                None,
+                _E_PT2_TOL_DOC + " Here: the production ground state, and the default for the "
+                "double-counting search. Absent is the solver's default, 1e-8 eV. Must be "
+                "positive.",
+                minimum=0.0,
+            ),
+            Key(
+                "de2_min",
+                Kind.ENERGY,
+                None,
+                _DE2_MIN_DOC + " Here: the production ground state, and the default for the "
+                "double-counting search. Absent is no floor.",
+                minimum=0.0,
+            ),
             Key(
                 "dN",
                 Kind.COUNT,

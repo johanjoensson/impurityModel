@@ -195,8 +195,8 @@ class _Captured(Exception):
     pass
 
 
-@pytest.mark.parametrize("e_pt2_tol", [None, 1e-6])
-def test_calc_selfenergy_hands_the_basis_tolerance_to_the_ground_state(e_pt2_tol, monkeypatch):
+@pytest.mark.parametrize(("e_pt2_tol", "de2_min"), [(None, None), (1e-6, 1e-9)])
+def test_calc_selfenergy_hands_the_basis_tolerance_to_the_ground_state(e_pt2_tol, de2_min, monkeypatch):
     """BasisOptions.e_pt2_tol (the RSPt solver line's ``e_pt2 X``) is what the production ground
     state converges to; unset, the ground state's own default."""
     import dataclasses
@@ -212,7 +212,8 @@ def test_calc_selfenergy_hands_the_basis_tolerance_to_the_ground_state(e_pt2_tol
 
     monkeypatch.setattr(groundstate, "solve_ground_state", capture)
     args = as_calc_selfenergy_args(build_selfenergy_inputs(nBaths=10, n_omega=3, dense_cutoff=500))
-    args["basis"] = dataclasses.replace(args["basis"], e_pt2_tol=e_pt2_tol)
+    args["basis"] = dataclasses.replace(args["basis"], e_pt2_tol=e_pt2_tol, de2_min=de2_min)
     with pytest.raises(_Captured):
         calc_selfenergy(**args, comm=None)
     assert seen["e_pt2_tol"] == (groundstate.GS_E_PT2_TOL if e_pt2_tol is None else e_pt2_tol)
+    assert seen["de2_min"] == (groundstate.GS_DE2_MIN if de2_min is None else de2_min)

@@ -2567,6 +2567,17 @@ def test_dc_de2_min_precedence_argument_beats_knob_beats_default(monkeypatch):
     assert _resolve_dc_de2_min(1e-5) == 1e-5, "the explicit argument must beat the environment"
 
 
+def test_dc_de2_min_inherits_the_solver_floor_below_the_knob(monkeypatch):
+    """With nothing set on the DC side, the search runs at the production ground state's floor."""
+    from impurityModel.ed.dc_criteria import _resolve_dc_de2_min
+
+    monkeypatch.delenv("DC_DE2_MIN", raising=False)
+    assert _resolve_dc_de2_min(None, 1e-9) == 1e-9
+    assert _resolve_dc_de2_min(1e-5, 1e-9) == 1e-5
+    monkeypatch.setenv("DC_DE2_MIN", "1e-6")
+    assert _resolve_dc_de2_min(None, 1e-9) == 1e-6
+
+
 def test_dc_e_pt2_tol_precedence_line_beats_knob_beats_solver_line_beats_default(monkeypatch):
     """DC line > DC_E_PT2_TOL > the solver's BasisOptions.e_pt2_tol > GS_E_PT2_TOL. With nothing
     set on the DC side the search inherits the solver line's tolerance: parity with the ground
@@ -2619,10 +2630,13 @@ def test_the_occupation_criterion_takes_the_solver_tolerance_and_no_override(mon
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     ctx = dc_criteria._prepare_occupation_context(kwargs["model"], kwargs["basis"], kwargs["solver"])
     assert ctx.e_pt2_tol == GS_E_PT2_TOL
-    basis = dataclasses.replace(kwargs["basis"], e_pt2_tol=1e-6)
+    monkeypatch.setenv("DC_DE2_MIN", "1e-3")
+    basis = dataclasses.replace(kwargs["basis"], e_pt2_tol=1e-6, de2_min=1e-9)
     ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
     assert ctx.e_pt2_tol == 1e-6
-    assert "e_pt2_tol=ctx.e_pt2_tol," in inspect.getsource(dc_criteria._evaluate_occupation_and_energy_at_mu)
+    assert ctx.de2_min == 1e-9, "the DC knob must not reach the production-path criterion"
+    src = inspect.getsource(dc_criteria._evaluate_occupation_and_energy_at_mu)
+    assert "e_pt2_tol=ctx.e_pt2_tol," in src and "de2_min=ctx.de2_min," in src
 
 
 def test_dc_criteria_accept_de2_min_and_carry_it_to_the_context():

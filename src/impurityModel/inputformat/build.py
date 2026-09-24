@@ -697,7 +697,17 @@ def _build_basis(resolved):
         kwargs["occ_cutoff"] = table["occ_cutoff"]
     if table["slater_weight_min"] is not None:
         kwargs["slater_weight_min"] = table["slater_weight_min"]
+    kwargs["e_pt2_tol"] = _positive_e_pt2_tol(table["e_pt2_tol"], "many_body_basis")
+    kwargs["de2_min"] = table["de2_min"]
     return BasisOptions(**kwargs)
+
+
+def _positive_e_pt2_tol(value, where):
+    """A zero tolerance would admit every reachable determinant -- not a tight setting but an
+    unbounded expansion -- so the schema's ``minimum=0`` is not enough here."""
+    if value is not None and value == 0:
+        raise InputError(f"[{where}].e_pt2_tol: must be positive, got 0")
+    return value
 
 
 def _build_solver(resolved):
@@ -842,7 +852,15 @@ def apply_double_counting(resolved, model, basis, solver, notes, comm, verbosity
         # `_DC_ENERGY_DIFFERENCE_KEYS`, not `_DC_SEARCH_KEYS`, and `fixed_occupation` rejects it
         # as unknown. The RSPt double-counting line rejects the same spelling on the same grounds,
         # which is what keeps the two front-ends on one DC vocabulary.
-        target.update(ground_state_manifold=table["ground_state_manifold"])
+        #
+        # e_pt2_tol / de2_min likewise: how the sector solves converge. `fixed_occupation` takes
+        # [many_body_basis]'s values through `basis` and no override (it solves on the production
+        # ground-state path), matching the RSPt double-counting line. None inherits.
+        target.update(
+            ground_state_manifold=table["ground_state_manifold"],
+            e_pt2_tol=_positive_e_pt2_tol(table["e_pt2_tol"], f"double_counting.{scheme}"),
+            de2_min=table["de2_min"],
+        )
 
     guess = table["guess"]
     seeded = model if guess == 0.0 else replace(model, dc=_uniform_dc(model, guess))

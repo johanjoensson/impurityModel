@@ -1323,6 +1323,12 @@ class BasisOptions:
         follows; see ``doc/plans/cipsi_pt2_convergence.md``). ``None`` uses
         :data:`groundstate.GS_E_PT2_TOL` (``1e-8``). The double-counting search's charge-sector
         solves inherit it unless the double-counting line or ``DC_E_PT2_TOL`` sets their own.
+    de2_min : float or None
+        Optional per-determinant Epstein-Nesbet PT2 floor for the same expansion. It *loosens* a
+        solve -- it bounds each refused determinant, not their sum -- and an expansion it stops
+        short of ``e_pt2_tol`` warns with the residual it left. ``None`` uses
+        :data:`groundstate.GS_DE2_MIN` (0, no floor). Inherited by the double-counting search
+        like ``e_pt2_tol``.
     """
 
     nominal_occ: Any
@@ -1335,10 +1341,13 @@ class BasisOptions:
     tau: float = 0.002
     excitation_budget: Optional[int] = EXCITATION_BUDGET_DEFAULT
     e_pt2_tol: Optional[float] = None
+    de2_min: Optional[float] = None
 
     def __post_init__(self):
         if self.e_pt2_tol is not None and not self.e_pt2_tol > 0:
             raise ValueError(f"e_pt2_tol must be positive (or None for the default), got {self.e_pt2_tol}")
+        if self.de2_min is not None and not self.de2_min >= 0:
+            raise ValueError(f"de2_min must be non-negative (or None for the default), got {self.de2_min}")
         if self.excitation_budget is not None and self.excitation_budget < 0:
             warnings.warn(
                 f"excitation_budget={self.excitation_budget} is negative: the excitation budget is disabled",
