@@ -6,9 +6,14 @@ hybridised long chain stays free, while an orbital past a weak link is frozen re
 how few hops away it is.
 """
 
+import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.basis_restrictions import _impurity_coupling_distance, build_initial_restrictions
+from impurityModel.ed.basis_restrictions import (
+    _impurity_coupling_distance,
+    build_excited_restrictions,
+    build_initial_restrictions,
+)
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -73,3 +78,59 @@ def test_near_but_weakly_coupled_orbital_is_frozen():
     # Orbital 1 (weakly coupled) is beyond the cutoff; orbitals 2,3 (strong) are not.
     assert dist[0, 1] > cutoff
     assert dist[0, 2] <= cutoff and dist[0, 3] <= cutoff
+
+
+def _grouped_star():
+    """Star bath, two impurity groups whose orbitals are NOT in sorted order across groups.
+
+    Group 0 holds impurity orbitals [0, 2], group 1 holds [1, 3] -- the eg/t2g grouping of a real
+    d shell interleaves the same way. Every bath orbital couples directly (and equally strongly)
+    to its own impurity orbital: nothing is far from the impurity, so nothing may be windowed.
+    """
+    spokes = {0: [4, 5, 6], 2: [7, 8, 9], 1: [10, 11, 12], 3: [13, 14, 15]}
+    hop = {(imp, b): 0.1 for imp, baths in spokes.items() for b in baths}
+    onsite = {b: -0.3 for baths in spokes.values() for b in baths}
+    op = _chain_op(hop, onsite)
+    basis = Basis(
+        impurity_orbitals={0: [[0, 2]], 1: [[1, 3]]},
+        bath_states=({0: [spokes[0] + spokes[2]], 1: [spokes[1] + spokes[3]]}, {0: [[]], 1: [[]]}),
+        nominal_impurity_occ={0: 1, 1: 1},
+        # Every distance lookup in build_excited_restrictions sits under `if basis.chain_restrict`;
+        # without it the excited-side assertion below would pass whatever the row order.
+        chain_restrict=True,
+        comm=MPI.COMM_WORLD,
+        verbose=False,
+    )
+    return op, basis
+
+
+def test_coupling_distance_rows_are_indexed_by_orbital():
+    """Row k of the distance matrix is impurity orbital k, whatever order the groups list them in.
+
+    The callers index rows with impurity orbital numbers. Rows used to follow the order of
+    ``all_impurity_orbitals`` instead, so with interleaved groups a bath looked up from its own
+    group read the distance from a different impurity orbital -- infinite on a star.
+    """
+    op, _ = _grouped_star()
+    dist, cutoff = _impurity_coupling_distance(
+        op, tot_orb=16, all_impurity_orbitals=[0, 2, 1, 3], coupling_cutoff=1e-3, min_dist=4
+    )
+    for imp, bath in ((0, 4), (2, 7), (1, 10), (3, 13)):
+        assert dist[imp, bath] <= cutoff
+    assert dist[0, 7] == np.inf  # impurity 0 does not reach impurity 2's spoke on a star
+
+
+def test_star_with_interleaved_groups_gets_no_chain_window():
+    """A star has no chain, so neither the initial nor the ground-state window may restrict a bath.
+
+    Regression: an SrMnO3 star (eg group [0,1,5,6], t2g group [2,3,4,7,8,9]) had the baths of
+    impurity orbitals 3-6 windowed as if they were far chain sites, because the distance-matrix
+    rows were looked up by orbital number but ordered group by group.
+    """
+    op, basis = _grouped_star()
+    assert build_initial_restrictions(basis, op, coupling_cutoff=1e-3) is None
+    bath = set(range(4, 16))
+    # Plain (binary) windows, then the graded three-zone path (_emit_graded_chain_window).
+    for slater_weight_min in (None, 1e-6):
+        excited = build_excited_restrictions(basis, op, psis=None, es=None, slater_weight_min=slater_weight_min)
+        assert not any(set(k) & bath for k in (excited or {})), (slater_weight_min, excited)

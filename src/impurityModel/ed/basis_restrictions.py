@@ -182,9 +182,13 @@ def _impurity_coupling_distance(op, tot_orb, all_impurity_orbitals, coupling_cut
     With ``coupling_cutoff=None`` it falls back to the legacy unweighted hop-count distance
     with threshold ``min_dist``.
 
-    Returns ``(dist_matrix, threshold)`` with ``dist_matrix`` rows ordered as
-    ``all_impurity_orbitals`` (the callers index it with impurity orbital indices, valid for
-    the 0-based impurity layout) and an orbital frozen when ``dist > threshold``.
+    Returns ``(dist_matrix, threshold)``: ``dist_matrix`` is ``(tot_orb, tot_orb)`` with row
+    ``k`` the distance from impurity orbital ``k`` (``inf`` rows for non-impurity orbitals), so
+    callers can index rows by orbital number; an orbital is frozen when ``dist > threshold``.
+    Rows used to follow the order of ``all_impurity_orbitals``, which the callers' orbital-number
+    lookups only matched when the impurity orbitals were listed sorted -- with interleaved groups
+    (eg ``[0,1,5,6]`` before t2g ``[2,3,4,7,8,9]``) a bath read its distance from the wrong
+    impurity orbital, and on a star that is ``inf``, so directly hybridized baths were windowed.
     """
     hop = np.zeros((tot_orb, tot_orb))
     for i, j in itertools.product(range(tot_orb), repeat=2):
@@ -194,7 +198,7 @@ def _impurity_coupling_distance(op, tot_orb, all_impurity_orbitals, coupling_cut
     if coupling_cutoff is None:
         graph = hop > 1e-8
         dist = sp.sparse.csgraph.shortest_path(graph, directed=False, unweighted=True, indices=all_impurity_orbitals)
-        return dist, min_dist
+        return _rows_by_orbital(dist, tot_orb, all_impurity_orbitals), min_dist
     np.fill_diagonal(hop, 0.0)
     h_max = hop.max()
     mask = hop > 1e-8
@@ -205,7 +209,14 @@ def _impurity_coupling_distance(op, tot_orb, all_impurity_orbitals, coupling_cut
         # negligible for the cutoff (it takes thousands of hops to accumulate to it).
         graph[mask] = -np.log(hop[mask] / h_max) + 1e-3
     dist = sp.sparse.csgraph.shortest_path(graph, directed=False, indices=all_impurity_orbitals)
-    return dist, -np.log(coupling_cutoff)
+    return _rows_by_orbital(dist, tot_orb, all_impurity_orbitals), -np.log(coupling_cutoff)
+
+
+def _rows_by_orbital(dist, tot_orb, all_impurity_orbitals):
+    """Re-index ``shortest_path`` rows (in ``all_impurity_orbitals`` order) by orbital number."""
+    full = np.full((tot_orb, tot_orb), np.inf)
+    full[list(all_impurity_orbitals)] = dist
+    return full
 
 
 def build_initial_restrictions(

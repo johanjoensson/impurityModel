@@ -268,7 +268,7 @@ def _excitation_profiles(gs, coupling_cutoff=1e-3, min_dist=4, n_depth_bins=8, n
 
     op = gs["h"] if isinstance(gs["h"], ManyBodyOperator) else ManyBodyOperator(gs["h"])
     dist_matrix, dist_cutoff = _impurity_coupling_distance(op, tot_orb, all_impurity, coupling_cutoff, min_dist)
-    # dist_matrix rows are ordered as all_impurity; column o = distance to orbital o.
+    # dist_matrix row k = distance from impurity orbital k (inf for non-impurity rows); column o = orbital o.
     # depth(o) = min over impurity orbitals; +inf orbitals (disconnected) clip to the max finite.
     depth = {o: float(np.min(dist_matrix[:, o])) for o in valence_orbs + conduction_orbs}
     finite = [d for d in depth.values() if np.isfinite(d)]
