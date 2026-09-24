@@ -782,12 +782,17 @@ DC_ALLOW_MEMORY_BOUND = Knob(
 DC_DE2_MIN = Knob(
     name="DC_DE2_MIN",
     kind="float",
-    default=None,  # unset = GS_DE2_MIN, i.e. today's behaviour exactly
+    default=None,  # unset = GS_DE2_MIN (0: no floor)
     minimum=0.0,
     group="double-counting",
-    doc="""Epstein-Nesbet PT2 admission floor for the double-counting search's **charge-sector
-    solves** (`dc_criteria`'s `solve_sector` calls). Unset uses :data:`groundstate.GS_DE2_MIN`
-    (1e-8), which is what the search has always done.
+    doc="""Per-determinant Epstein-Nesbet PT2 floor for the double-counting search's **charge-sector
+    solves** (`dc_criteria`'s `solve_sector` calls). Unset uses the solver's own
+    `BasisOptions.de2_min` (TOML `[many_body_basis].de2_min`), else :data:`groundstate.GS_DE2_MIN`,
+    which is 0: no floor. The double-counting line's / criterion table's own `de2_min` beats it. The solves are converged by `DC_E_PT2_TOL` instead; a floor bounds each
+    candidate it refuses but not their sum, so it is a way to *loosen* a solve, not to converge one.
+
+    The notes below predate that change: they were measured when this floor, at 1e-8, was the only
+    selection criterion.
 
     **Why this is separable, and when to loosen it.** Matching `GS_DE2_MIN` buys *parity* -- the DC
     determined on the same variational space as the self-energy run that consumes it -- not
@@ -814,6 +819,28 @@ DC_DE2_MIN = Knob(
     (:data:`groundstate.SECTOR_WALK_DE2_MIN`), nor the production ground state.""",
 )
 
+DC_E_PT2_TOL = Knob(
+    name="DC_E_PT2_TOL",
+    kind="float",
+    default=None,  # unset = GS_E_PT2_TOL, the production ground state's own tolerance
+    minimum=0.0,
+    group="double-counting",
+    doc="""Residual Epstein-Nesbet PT2 energy the double-counting search's **charge-sector solves**
+    are converged to (`CIPSISolver.expand`'s `e_pt2_tol`). Unset uses the solver's own
+    `BasisOptions.e_pt2_tol` (the RSPt solver line's `e_pt2 X`), else
+    :data:`groundstate.GS_E_PT2_TOL` (1e-8): the tolerance the production ground state is
+    converged to, so the DC is determined on a space converged as far as the self-energy run's.
+    The double-counting line's own `e_pt2 X` beats this knob. The `occupation` criterion takes
+    none of these overrides, only the solver's tolerance: it solves on the production path.
+
+    This, not `DC_DE2_MIN`, is the accuracy control: `DC_DE2_MIN` bounds each candidate left out,
+    this bounds their sum -- the quantity the energy error follows (measured on a SIAM against
+    exact diagonalization: the residual predicts the error to 2%). Loosen it, e.g. to `1e-5`, when
+    the search is what stands between you and a self-energy; the sector energies are then
+    variational upper bounds with at most that much PT2 energy left out, and a solve that stops
+    short of it (cap, memory guard) warns with its residual.""",
+)
+
 DC_CAP_STRATEGY = Knob(
     name="DC_CAP_STRATEGY",
     kind="str",
@@ -824,7 +851,7 @@ DC_CAP_STRATEGY = Knob(
 
     `max` (the default) runs once at the memory-derived ceiling and asks the expansion whether the
     cap bound it -- `CIPSISolver.truncation_report is None` means it did not, i.e. the expansion
-    ran out of candidates above `de2_min` rather than out of budget, so the basis is already the
+    reached its PT2 tolerance (`e_pt2_tol`) rather than running out of budget, so the basis is already the
     one any larger cap would build and the answer cannot move by raising the cap. That is an
     exact per-sector test from a single evaluation. Only when something *did* bind is a second
     rung at half the cap evaluated, to put a measured number on how far from converged the answer
@@ -839,7 +866,7 @@ DC_CAP_STRATEGY = Knob(
     directly, and the N+1 sector returns a *bit-identical* energy at 128k, 256k and 512k because
     it self-limits at 88,164 determinants -- it never binds, so no ladder rung above 128k could
     have told anyone anything. Only N-1 binds. The ladder also cannot distinguish "the cap is the
-    limit" from "de2_min is the limit", which is the question a caller actually has to act on.
+    limit" from "PT2 convergence is the limit", which is the question a caller actually has to act on.
 
     Keep `ladder` when the operating cap matters more than the answer -- it accepts the *smallest*
     sufficient cap and so makes every subsequent trial-mu evaluation cheaper, where `max` runs
@@ -956,6 +983,7 @@ KNOBS: dict[str, Knob] = _register(
     GS_MEMORY_BUDGET_INCLUDE_RESIDENT,
     DC_ALLOW_MEMORY_BOUND,
     DC_DE2_MIN,
+    DC_E_PT2_TOL,
     DC_CAP_STRATEGY,
     DC_CAP_LADDER_START,
     DC_CAP_LADDER_MAX_RUNGS,

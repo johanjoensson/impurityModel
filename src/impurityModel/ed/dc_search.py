@@ -167,8 +167,9 @@ def resolve_cap_at_max(quantity, tol, *, memory_cap, bound_probe=None, verbose=F
     (``DC_CAP_STRATEGY``). Same return shape, so the caller's bookkeeping is unchanged.
 
     **Why this replaces climbing.** ``CIPSISolver.truncation_report`` is ``None`` exactly when the
-    fixed-budget branch never engaged -- i.e. the expansion stopped because it ran out of
-    candidates above ``de2_min``, not because it hit the cap. A sector that did not bind has
+    fixed-budget branch never engaged -- i.e. the expansion stopped because its residual PT2
+    energy reached ``e_pt2_tol`` (or a ``de2_min`` floor refused the rest), not because it hit the
+    cap. A sector that did not bind has
     therefore already built the basis *any* larger cap would give it, and its energy cannot move
     by raising the cap. That is an exact, per-sector test available from **one** evaluation, and
     it makes the ladder unnecessary in the case the ladder was built to detect.
@@ -273,7 +274,7 @@ def resolve_cap_at_max(quantity, tol, *, memory_cap, bound_probe=None, verbose=F
         if verbose and rank == 0:
             print(
                 f"dc cap: {cap:,} determinants did not bind any sector -- the answer is converged "
-                "in the cap (any remaining error is de2_min/slaterWeightMin, not the cap).",
+                "in the cap (any remaining error is the PT2 residual / slaterWeightMin, not the cap).",
                 flush=True,
             )
         return cap, 0.0, rungs, (status or "unbound")
@@ -336,7 +337,7 @@ def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, 
     128,000, 256,000 and 512,000 -- it never binds, so no rung above 128,000 could have said
     anything about it; only ``N-1`` saturates. An expansion that stops on its own terms is
     detectable directly (``CIPSISolver.truncation_report is None``) without climbing to it, and
-    this ladder cannot distinguish "the cap is the limit" from "``de2_min`` is the limit" at all.
+    this ladder cannot distinguish "the cap is the limit" from "PT2 convergence is the limit" at all.
 
     ``dc_criteria._calibrate_cap`` does that wiring for the gap and
     occupation criteria (:func:`impurityModel.ed.dc_criteria.fixed_gap_dc`,

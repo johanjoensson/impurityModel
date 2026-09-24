@@ -477,3 +477,72 @@ def test_occupation_dc_damping_mixes_the_answer_with_the_guess(tmp_path, monkeyp
     built = build(load_input(_dc_input(tmp_path, table)))
     # guess + damping * (answer - guess) = 1 + 0.25 * (2 - 1)
     np.testing.assert_allclose(_dense_impurity_dc(built.model), 1.25 * np.eye(2))
+
+
+# ----------------------------------------------- CIPSI convergence: e_pt2_tol and de2_min
+
+
+def test_the_ground_state_convergence_keys_reach_the_basis_options(written):
+    text = SELFENERGY + "\n[many_body_basis]\ne_pt2_tol = 1e-6\nde2_min = 1e-9\n"
+    basis = build(load_input(written(text))).basis
+    assert basis.e_pt2_tol == pytest.approx(1e-6)
+    assert basis.de2_min == pytest.approx(1e-9)
+
+
+def test_absent_convergence_keys_leave_the_solver_defaults_alone(written):
+    basis = build(load_input(written(SELFENERGY))).basis
+    assert basis.e_pt2_tol is None and basis.de2_min is None
+
+
+def test_the_convergence_keys_are_energies_and_follow_the_file_unit(tmp_path):
+    """A PT2 energy in a Rydberg file is a Rydberg energy: 1e-6 Ry is 1.36e-5 eV, not 1e-6."""
+    from impurityModel.inputformat.reader import ENERGY_UNITS
+
+    text = _HEADER.replace('energy = "eV"', 'energy = "Ry"') + _BLOCKS + _S_SHELL.format(extra="")
+    text += "[many_body_basis]\ne_pt2_tol = 1e-6\nde2_min = 1e-9\n"
+    path = tmp_path / "in.toml"
+    path.write_text(text)
+    basis = build(load_input(path)).basis
+    assert basis.e_pt2_tol == pytest.approx(1e-6 * ENERGY_UNITS["Ry"])
+    assert basis.de2_min == pytest.approx(1e-9 * ENERGY_UNITS["Ry"])
+    assert ENERGY_UNITS["Ry"] != 1.0
+
+
+def test_a_zero_e_pt2_tol_is_refused(written):
+    """Zero admits every reachable determinant: an unbounded expansion, not a tight one."""
+    text = SELFENERGY + "\n[many_body_basis]\ne_pt2_tol = 0\n"
+    with pytest.raises(InputError, match="e_pt2_tol: must be positive"):
+        build(load_input(written(text)))
+
+
+@pytest.mark.parametrize("scheme", ["fixed_gap", "fixed_peak"])
+def test_the_energy_difference_criteria_forward_their_convergence_keys(tmp_path, monkeypatch, scheme):
+    from impurityModel.ed import dc_criteria
+
+    calls = []
+
+    def stub(model, basis, solver, **kwargs):
+        calls.append(kwargs)
+        return np.zeros((2, 2), dtype=complex)
+
+    monkeypatch.setattr(dc_criteria, f"{scheme}_dc", stub)
+    table = f"[double_counting.{scheme}]\n" + ("peak_position = 1.0\n" if scheme == "fixed_peak" else "")
+    build(load_input(_dc_input(tmp_path, table)))
+    assert calls[-1]["e_pt2_tol"] is None and calls[-1]["de2_min"] is None, "absent inherits"
+
+    build(load_input(_dc_input(tmp_path, table + "e_pt2_tol = 1e-5\nde2_min = 1e-7\n")))
+    assert calls[-1]["e_pt2_tol"] == pytest.approx(1e-5)
+    assert calls[-1]["de2_min"] == pytest.approx(1e-7)
+
+    with pytest.raises(InputError, match="e_pt2_tol: must be positive"):
+        build(load_input(_dc_input(tmp_path, table + "e_pt2_tol = 0\n")))
+
+
+@pytest.mark.parametrize("key", ["e_pt2_tol", "de2_min"])
+def test_the_occupation_criterion_takes_no_convergence_override(tmp_path, key):
+    """It solves on the production ground-state path and so converges to [many_body_basis]'s
+    values; an override here could only be ignored, so it is an unknown key -- as the RSPt
+    double-counting line refuses 'e_pt2' on 'occ'."""
+    table = f"[double_counting.fixed_occupation]\noccupation = 1.0\n{key} = 1e-5\n"
+    with pytest.raises(InputError, match=f"unknown key '{key}'"):
+        load_input(_dc_input(tmp_path, table))

@@ -168,10 +168,20 @@ that hits the edge of what you configured suggests the configured restriction is
 binding.
 
 The determinant count is the size of the *variational* (CIPSI-selected) basis, not of
-the full Hilbert space: only determinants that matter for the low-energy states (per-
-determinant PT2 energy above `de2_min`, weight above `slaterWeightMin`) are kept. If a
-memory cap bound the expansion, a truncation record is stored in `gs_info["truncation"]`
-and in the JSON (`null` when the cap never bound).
+the full Hilbert space. The expansion stops once the determinants it has not admitted carry,
+**summed**, at most `e_pt2_tol` (default `1e-8`) of Epstein-Nesbet PT2 energy for every
+reference state of the expansion. That residual is a second-order estimate of the energy error
+and tracks it closely (within 2% on a SIAM checked against exact diagonalization). A per-determinant
+threshold (`de2_min`, off by default) bounds each omitted determinant but not their sum, and
+cannot converge the energy: on a SIAM checked against exact diagonalization, `de2_min = 1e-8`
+alone stopped 4.3e-7 above the exact ground state. `gs_info["convergence"]` and the JSON
+record `{"residual_pt2", "residual_is_current", "e_pt2_tol", "converged", "limited_by"}`.
+When a cap, the memory guard or a `de2_min` floor stops the expansion first, a `WARNING` gives
+the residual. The energies are still variational upper bounds, and the residual estimates how far
+above the converged ones they lie. After a binding cap the residual was measured before the last
+truncation (`residual_is_current` is false), so the kept basis may carry more than it shows. If a memory
+cap bound the expansion, a truncation record is also stored in `gs_info["truncation"]` and in
+the JSON (`null` when the cap never bound).
 
 ## Block structure
 

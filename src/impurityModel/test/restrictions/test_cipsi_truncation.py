@@ -9,7 +9,7 @@ from mpi4py import MPI
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import calc_gs
-from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
+from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff, collective_mass_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 
@@ -99,6 +99,56 @@ def test_collective_cutoff_mpi_agrees_and_caps():
     assert all(c == cutoff for c in comm.allgather(cutoff))
     n_above = comm.allreduce(int(np.count_nonzero(scores > cutoff)), op=MPI.SUM)
     assert n_above == 3
+
+
+# ---------------------------------------------------------------------------
+# collective_mass_cutoff
+# ---------------------------------------------------------------------------
+
+
+def test_mass_cutoff_leaves_the_largest_tail_within_budget():
+    scores = np.array([1e-3, 4e-9, 3e-9, 2e-9, 1e-9, 5e-2])
+    cutoff = collective_mass_cutoff(scores, 6.5e-9, None)
+    # 1+2+3 = 6e-9 fits, adding 4e-9 does not: exactly the three smallest are left out.
+    assert set(scores[scores <= cutoff]) == {1e-9, 2e-9, 3e-9}
+
+
+def test_mass_cutoff_is_not_a_per_entry_floor():
+    """Many entries each far below the budget still add up past it -- the defect it replaces."""
+    scores = np.full(1000, 1e-9)
+    cutoff = collective_mass_cutoff(scores, 1e-8, None)
+    assert scores[scores <= cutoff].sum() <= 1e-8
+    assert np.count_nonzero(scores > cutoff) > 0
+
+
+def test_mass_cutoff_total_within_budget_retains_nothing():
+    scores = np.array([3e-9, 1e-9, 0.0])
+    assert np.count_nonzero(scores > collective_mass_cutoff(scores, 1e-8, None)) == 0
+
+
+def test_mass_cutoff_zero_budget_retains_every_nonzero_score():
+    scores = np.array([3e-9, 1e-300, 0.0, 0.5])
+    assert np.count_nonzero(scores > collective_mass_cutoff(scores, 0.0, None)) == 3
+
+
+def test_mass_cutoff_empty_scores():
+    assert collective_mass_cutoff(np.array([]), 1e-8, None) == 0.0
+
+
+@pytest.mark.mpi
+def test_mass_cutoff_mpi_agrees_with_serial_including_an_empty_rank():
+    comm = MPI.COMM_WORLD
+    pool = np.array([10.0 ** -(k % 7 + 3) * (1 + k) for k in range(40)])
+    owners = np.arange(len(pool)) % comm.size
+    # The last rank owns nothing when there are several: its partial sums are all zero.
+    if comm.size > 1:
+        owners[owners == comm.size - 1] = 0
+    local = pool[owners == comm.rank]
+    budget = 1e-4
+    cutoff = collective_mass_cutoff(local, budget, comm)
+    assert all(c == cutoff for c in comm.allgather(cutoff))
+    assert np.array_equal(pool > cutoff, pool > collective_mass_cutoff(pool, budget, None))
+    assert pool[pool <= cutoff].sum() <= budget
 
 
 # ---------------------------------------------------------------------------

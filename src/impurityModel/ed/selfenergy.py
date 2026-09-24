@@ -24,7 +24,7 @@ from impurityModel.ed.greens_function import (
     get_greens_function_moments,
     save_Greens_function,
 )
-from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, calc_gs
 from impurityModel.ed.memory_estimate import (
     log_memory_budget,
     log_peak_vs_predicted,
@@ -271,6 +271,10 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         # Optional excitation-budget weighted restriction on the ground-state basis; the GF
         # excited bases inherit it (widened) via greens_function._build_excited_restrictions.
         "weighted_restrictions": build_weighted_restrictions(bath_states, excitation_budget),
+        # The residual PT2 energy the ground-state refinement converges to.
+        "e_pt2_tol": GS_E_PT2_TOL if basis.e_pt2_tol is None else basis.e_pt2_tol,
+        # ...and its optional per-determinant floor.
+        "de2_min": GS_DE2_MIN if basis.de2_min is None else basis.de2_min,
     }
     # Compute the thermal ground state and the interacting Green's function, with a single
     # auto-retry: the diagnostics report (gf_diagnostics) can detect that the thermal
@@ -436,4 +440,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         # None unless the truncation_threshold bound the ground-state basis; a dict with
         # the fixed-budget CIPSI refinement summary otherwise (see CIPSISolver.expand).
         "gs_truncation": gs_info.get("truncation"),
+        # The ground state's residual PT2 energy against its tolerance (CIPSISolver.expand's
+        # `convergence_report`): the error bar on the ground-state energy.
+        "gs_convergence": gs_info.get("convergence"),
     }

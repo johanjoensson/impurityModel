@@ -2,13 +2,13 @@ from itertools import product
 
 import numpy as np
 
-from impurityModel.ed import solver_trace
+from impurityModel.ed import config, solver_trace
 from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, get_effective_restrictions
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.block_structure import BlockStructure, get_equivalent_blocks, print_block_structure
-from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
 from impurityModel.ed.gs_statistics import (
     compute_entanglement_entropy,
     compute_gs_statistics,
@@ -18,7 +18,6 @@ from impurityModel.ed.gs_statistics import (
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed import config
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
     absolute_rss_budget,
@@ -72,17 +71,22 @@ from impurityModel.ed.utils import (
 #: that. ``dc_criteria`` imports this rather than repeating the string.
 GS_CIPSI_SOLVER_METHOD = "trlm"
 
-#: Epstein-Nesbet PT2 threshold for a *converged* solve: the production ground state, and every
-#: sector energy a double-counting criterion differences.
+#: Residual Epstein-Nesbet PT2 energy a *converged* solve is expanded to: the production ground
+#: state, and every sector energy a double-counting criterion differences.
 #:
 #: This is the accuracy the answer is quoted at, so it is the accuracy anything the answer is
-#: derived from has to be computed at. :func:`solve_ground_state` has always used it; the DC
-#: criteria did not, and the gap between them was the last unshared convention on the DC/GS parity
-#: list in :mod:`dc_criteria` -- the double counting was determined on a looser variational space
-#: than the self-energy run that consumes it.
-GS_DE2_MIN = 1e-8
+#: derived from has to be computed at. It bounds the *sum* of the PT2 contributions left out
+#: (:meth:`CIPSISolver.expand`'s ``e_pt2_tol``), which is what bounds the energy error.
+GS_E_PT2_TOL = DEFAULT_E_PT2_TOL
 
-#: Epstein-Nesbet PT2 threshold for the *sector walk*, one order looser.
+#: Per-determinant Epstein-Nesbet PT2 floor for the same solves: off. It used to be the accuracy
+#: control at ``1e-8``, and it cannot be one: it bounds each discarded candidate, not their sum.
+#: The SrMnO3 production ground state stopped "PT2-converged" at this floor with 5.1e-4 of PT2
+#: energy left below it (``doc/plans/dc_smo_memory.md``). Callers may still pass a floor to
+#: loosen a solve deliberately; :data:`GS_E_PT2_TOL` is what converges it.
+GS_DE2_MIN = 0.0
+
+#: Epstein-Nesbet PT2 threshold for the *sector walk*: a per-determinant floor, deliberately.
 #:
 #: Deliberately looser, and only defensible for what the walk does: compare charge sectors and
 #: keep the winner. Only the **ordering** matters there, the error is common to every sector to
@@ -101,7 +105,19 @@ GS_DE2_MIN = 1e-8
 #: on the same variational space as the self-energy run that consumes it -- not accuracy. The
 #: record reports ``tol`` and ``chi``, which propagate the search tolerance alone; a cap ladder
 #: (``dc_diagnostics.cap_ladder``) is the only honest error bar on ``mu``.
+#:
+#: (Those measurements were taken with the per-determinant ``de2_min`` at ``1e-6`` / ``1e-8``,
+#: before the residual PT2 sum became the convergence criterion.)
+#:
+#: **The walk is not PT2-converged, and that is measured, not assumed.** On the SrMnO3 cubic
+#: archive its sector solves stop with a residual PT2 energy of 1.3e-3 to 6.1e-2 (N_imp = 1..5,
+#: 3,464 to 144,555 determinants), against sector gaps of ~0.1 eV. Converging them would cost far
+#: more than the refinement the winner then gets anyway, so the walk keeps the floor and no
+#: residual tolerance (:data:`SECTOR_WALK_E_PT2_TOL` is ``None``).
 SECTOR_WALK_DE2_MIN = 1e-6
+
+#: No residual-PT2 criterion for the sector walk; see :data:`SECTOR_WALK_DE2_MIN`.
+SECTOR_WALK_E_PT2_TOL = None
 
 
 class SectorCache:
@@ -295,6 +311,7 @@ def calc_energy(
     symmetry_generators=None,
     sector_cache=None,
     de2_min=SECTOR_WALK_DE2_MIN,
+    e_pt2_tol=SECTOR_WALK_E_PT2_TOL,
 ):
     """
     Calculate the ground-state energy of the system for a given charge sector.
@@ -341,11 +358,14 @@ def calc_energy(
     slaterWeightMin : float
         Minimum weight (``|amplitude|^2``) below which Slater determinants are pruned.
     de2_min : float
-        Epstein-Nesbet PT2 selection threshold. Defaults to :data:`SECTOR_WALK_DE2_MIN`, which is
+        Per-determinant Epstein-Nesbet PT2 floor. Defaults to :data:`SECTOR_WALK_DE2_MIN`, which is
         right for the occupation walk (only the *ordering* of charge sectors is decided there).
-        Callers that **difference** two sector energies -- the double-counting peak and gap
-        criteria -- must pass :data:`GS_DE2_MIN` instead: the truncation error does not cancel in
-        a difference, and those criteria then amplify it by ``1 / |chi|``.
+    e_pt2_tol : float or None
+        Residual PT2 energy the expansion converges to; ``None`` (the walk's
+        :data:`SECTOR_WALK_E_PT2_TOL`) selects on the floor alone. Callers that **difference** two
+        sector energies -- the double-counting peak and gap criteria -- must pass
+        :data:`GS_DE2_MIN` and :data:`GS_E_PT2_TOL` instead: the truncation error does not cancel
+        in a difference, and those criteria then amplify it by ``1 / |chi|``.
 
     Returns
     -------
@@ -382,6 +402,7 @@ def calc_energy(
         symmetry_generators=symmetry_generators,
         sector_cache=sector_cache,
         de2_min=de2_min,
+        e_pt2_tol=e_pt2_tol,
         max_energy=None,
     )
     # Broadcast, not merely returned. A Lanczos eigenvalue is replicated across ranks only to
@@ -420,6 +441,7 @@ def _solve_sector_core(
     num_wanted=10,
     max_energy=None,
     de2_min=SECTOR_WALK_DE2_MIN,
+    e_pt2_tol=SECTOR_WALK_E_PT2_TOL,
 ):
     """One sector solve, with ``max_energy`` taken **literally**: ``None`` means *no cut*.
 
@@ -484,15 +506,13 @@ def _solve_sector_core(
             solver.expand(
                 h_op,
                 dense_cutoff=dense_cutoff,
-                # A per-determinant Epstein-Nesbet PT2 energy threshold
-                # (|<Dj|H|psi>|^2 / |E_ref - E_Dj|), now a *parameter* rather than a literal.
-                # It defaults to the walk's looser SECTOR_WALK_DE2_MIN, which is right when only
-                # the ordering of charge sectors is being decided, and the double-counting
-                # criteria override it with GS_DE2_MIN because they *difference* these energies
-                # and the truncation error does not cancel. See both constants for the argument;
-                # the single literal that used to sit here made the choice unavailable to callers
-                # and was the last unshared convention on the DC/GS parity list.
+                # The walk defaults to a per-determinant floor (SECTOR_WALK_DE2_MIN) and no
+                # residual criterion, which is right when only the ordering of charge sectors is
+                # being decided; the double-counting criteria override both with GS_DE2_MIN /
+                # GS_E_PT2_TOL because they *difference* these energies and the truncation error
+                # does not cancel. See the constants for the argument.
                 de2_min=de2_min,
+                e_pt2_tol=e_pt2_tol,
                 slaterWeightMin=slaterWeightMin,
                 solver=cipsi_solver_method,
                 reort=reort,
@@ -557,6 +577,7 @@ def solve_sector(
     num_wanted=10,
     max_energy=None,
     de2_min=SECTOR_WALK_DE2_MIN,
+    e_pt2_tol=SECTOR_WALK_E_PT2_TOL,
 ):
     """The thermal eigenmanifold of one charge sector: ``(es, psis, basis)``.
 
@@ -600,6 +621,7 @@ def solve_sector(
         num_wanted=num_wanted,
         max_energy=boltzmann_energy_cut(tau) if max_energy is None else max_energy,
         de2_min=de2_min,
+        e_pt2_tol=e_pt2_tol,
     )
 
 
@@ -1159,6 +1181,7 @@ def solve_ground_state(
     num_wanted=10,
     de2_min=GS_DE2_MIN,
     max_num_wanted=100,
+    e_pt2_tol=GS_E_PT2_TOL,
 ):
     """Find the thermal ground state: sector walk, refinement, low-energy manifold.
 
@@ -1180,7 +1203,8 @@ def solve_ground_state(
        the walk is the expensive part.
     2. **Restore ``tau``** on the basis, so the refinement's admission window
        (``energy_cut(basis.tau)``) is the physical one rather than the walk's.
-    3. **Refine** -- one ``expand`` at the full ``slaterWeightMin`` and a tight ``de2_min``.
+    3. **Refine** -- one ``expand`` at the full ``slaterWeightMin``, converged to a residual PT2
+       energy of ``e_pt2_tol``.
     4. **Thermal manifold** -- widen ``num_wanted`` until the states within ``energy_cut`` are
        all captured. The NiO ground state that motivated this is 3-fold quasi-degenerate, so a
        fixed request truncates the ensemble and misreports every thermal average taken from it.
@@ -1218,6 +1242,7 @@ def solve_ground_state(
             h_op,
             dense_cutoff=dense_cutoff,
             de2_min=de2_min,
+            e_pt2_tol=e_pt2_tol,
             slaterWeightMin=slaterWeightMin,
             solver=cipsi_solver_method,
             memory_budget_bytes=expand_memory_budget(comm),
@@ -1225,6 +1250,12 @@ def solve_ground_state(
             # is expanding (and the closure is opt-in, cipsi_solver.SYMMETRY_CLOSURE_DEFAULT).
         )
 
+    # The residual in `solver.convergence_report` covers the reference states `expand` carried.
+    # Its own eigensolve already widens to the same Boltzmann cut, so the loop below should not
+    # find more; if it does, those states have no residual and the report must not claim them.
+    # The states the last selection round scored, not `solver.psi_refs`: a capped expansion
+    # returns the block of an eigensolve that ran after that round and may be wider.
+    n_references = int((solver.last_selection or {}).get("n_references", 0))
     wanted = num_wanted
     while True:
         with solver_trace.timed("eigensolve", stage="gs_thermal", num_wanted=wanted):
@@ -1247,6 +1278,20 @@ def solve_ground_state(
         if done:
             break
         wanted += num_wanted
+    widened = len(es) > n_references
+    if basis.is_distributed:
+        widened = basis.comm.bcast(widened, root=0)
+    report = getattr(solver, "convergence_report", None)
+    if widened and report is not None and report.get("converged"):
+        report["converged"] = False
+        report["limited_by"] = "manifold_widened"
+        if rank == 0:
+            print(
+                f"WARNING: the thermal manifold ({len(es)} states) is wider than the {n_references} "
+                "reference states the CIPSI expansion converged; the residual PT2 energy does not "
+                "cover the rest.",
+                flush=True,
+            )
     return basis, solver, es, psis
 
 
@@ -1333,6 +1378,10 @@ def calc_gs(
     # The cap can bind either the final expansion here or the earlier occupation search
     # (whose final basis may then fit under the cap); report either.
     gs_truncation_report = solver.truncation_report or getattr(ground_state_basis, "occupation_search_truncation", None)
+    # How far the refinement is from PT2 convergence: `{"residual_pt2", "e_pt2_tol", "converged",
+    # "limited_by"}` (see CIPSISolver.expand). Always present, unlike the truncation report --
+    # an uncapped expansion can still stop short of its tolerance (a `de2_min` floor).
+    gs_convergence_report = getattr(solver, "convergence_report", None)
     # Redistribute onto the basis as it stands; do not first collapse it onto the support of
     # `psis`. The basis is also the seed space for the excited/Green's-function expansion
     # downstream, and shrinking it to the thermal eigenvectors' support throws away exactly the
@@ -1386,6 +1435,7 @@ def calc_gs(
         # Record whether the ground-state basis was truncation-capped (None = not capped),
         # so it lands in the saved statistics JSON alongside the occupation weights.
         gs_stats["truncation"] = gs_truncation_report
+        gs_stats["convergence"] = gs_convergence_report
 
     # Many-body impurity-bath entanglement from the impurity RDM (collective call; its
     # memory guard may skip it, deterministically on every rank). Degrades to None.
@@ -1828,6 +1878,7 @@ def calc_gs(
             "rhos": rhos,
             "statistics": gs_stats,
             "truncation": gs_truncation_report,
+            "convergence": gs_convergence_report,
             "correlation_diagnostics": corr_diagnostics,
             "screening_diagnostics": screening_diagnostics,
             "energy_decomposition": energy_decomposition,

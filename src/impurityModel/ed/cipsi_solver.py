@@ -13,7 +13,7 @@ from impurityModel.ed.basis_transcription import (
 from impurityModel.ed.BlockLanczosArray import BlockBreakdown, Reort, block_normalize
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
-from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff
+from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff, collective_mass_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.memory_estimate import (
@@ -60,6 +60,12 @@ def _splitmix64(x: int) -> int:
 #: claim that it sits "well above the eigensolver's attainable eigenvalue accuracy" was false on
 #: every path that does not pass a tight ``slaterWeightMin`` -- see :func:`_degeneracy_tol`.
 DEGENERACY_TOL = 1e-9
+
+#: Residual Epstein-Nesbet PT2 energy at which :meth:`CIPSISolver.expand` calls the reference
+#: states converged. A bound on the *sum* over every candidate left out, not on each one: the
+#: per-candidate ``de2_min`` it replaced as the accuracy control stopped the SrMnO3 production
+#: ground state with 5.1e-4 of PT2 energy left below a 1e-8 floor (doc/plans/dc_smo_memory.md).
+DEFAULT_E_PT2_TOL = 1e-8
 
 #: How far above the eigensolver's residual tolerance the degeneracy grouping tolerance must sit.
 #: A Ritz pair converged to ``||r||`` has ``|theta - lambda| <= ||r||``, and *within* a cluster the
@@ -889,6 +895,9 @@ class CIPSISolver:
         tie class rather than nothing). Collective on ``basis.comm``; returns
         ``(admitted_mask, stats)`` with the ``last_selection``-shaped stats dict.
 
+        ``stats["residual_pt2"]`` is the importance of every candidate *not* admitted, for any
+        reason; see :meth:`expand`'s ``e_pt2_tol``.
+
         ``stats["subthreshold_de2_mass"]`` is the PT2 importance of candidates that never
         passed ``mask`` (typically ``scores >= de2_min``) at all -- unconditional, unlike
         ``discarded_de2_mass`` below (which is only populated once a cap actually binds).
@@ -923,6 +932,11 @@ class CIPSISolver:
             "n_admitted": self._allreduce_sum(int(np.count_nonzero(mask))),
             "discarded_de2_mass": discarded_de2_mass,
             "subthreshold_de2_mass": subthreshold_de2_mass,
+            # Everything this round leaves out, whichever limit left it out: the pre-selection
+            # (`de2_min` floor, PT2 tail cutoff) and the cap alike. Once a round admits nothing it
+            # is the whole Epstein-Nesbet PT2 correction of the reference states -- the estimate of
+            # how far their energies are from converged.
+            "residual_pt2": self._allreduce_sum(float(scores[~mask].sum())),
         }
         return mask, stats
 
@@ -1021,16 +1035,20 @@ class CIPSISolver:
         gen_ops=None,
         max_new=None,
         affordable_growth=None,
+        e_pt2_tol=None,
     ):
         """Select the candidate determinants to add to the basis.
 
         Candidates connected to ``psi_ref`` through ``H`` are kept when their de2
-        importance (max over the reference states) reaches ``de2_min``. ``max_new``
+        importance (max over the reference states) reaches ``de2_min`` and, with
+        ``e_pt2_tol`` set, lies above the tail cutoff: the candidates left out then sum to at
+        most ``e_pt2_tol`` (:func:`collective_mass_cutoff`). ``de2_min`` bounds each discarded
+        term, ``e_pt2_tol`` their sum -- which is what bounds the energy error. ``max_new``
         optionally caps the *global* number of selected candidates: the top ``max_new``
         by de2 importance are kept (collective bisection cutoff, ties under-admitted)
         before the symmetry closure, and ``self.last_selection`` records
         ``{"n_candidates", "n_admitted", "discarded_de2_mass", "subthreshold_de2_mass",
-        "hpsi_rows"}``. Collective on ``basis.comm``.
+        "residual_pt2", "n_references", "hpsi_rows"}``. Collective on ``basis.comm``.
 
         ``affordable_growth``, optional
             ``callable(transient_bytes, rss_bytes) -> int | None``: a second, *memory-derived*
@@ -1107,8 +1125,20 @@ class CIPSISolver:
                 "memory_admit_cap": cap,
                 "memory_cap_reason": cap_reason,
             }
-        de2_mask, selection_stats = self._admit_top(scores, scores >= de2_min, max_new)
+        # `scores > 0` as well: a zero-importance candidate (coupling pruned below 1e-12) never
+        # carries energy, and with the floor at 0 `>=` alone would admit every one of them --
+        # measured: an expansion that no longer terminates on a 2,598-determinant SIAM.
+        preselect = (scores >= de2_min) & (scores > 0.0)
+        if e_pt2_tol is not None:
+            # Collective, and reached on every rank: `e_pt2_tol` is a replicated argument.
+            comm = self.basis.comm if self.basis.is_distributed else None
+            preselect &= scores > collective_mass_cutoff(scores, float(e_pt2_tol), comm)
+        de2_mask, selection_stats = self._admit_top(scores, preselect, max_new)
         selection_stats["hpsi_rows"] = hpsi_rows
+        # The reference states this round scored, i.e. the states `residual_pt2` covers. Not
+        # `psi_refs` after `expand` returns: a capped run exits at the loop head, after an
+        # eigensolve that may have widened the block past what was scored.
+        selection_stats["n_references"] = _psi_ref_width(psi_ref)
         selection_stats.update(memory_stats)
         self.last_selection = selection_stats
         new_Dj = set(itertools.compress(local_Djs, de2_mask))
@@ -1183,7 +1213,7 @@ class CIPSISolver:
     def expand(
         self,
         H,
-        de2_min=1e-10,
+        de2_min=0.0,
         dense_cutoff=1e3,
         slaterWeightMin=0,
         solver="trlm",
@@ -1192,8 +1222,27 @@ class CIPSISolver:
         cap_e_tol=1e-8,
         max_cap_cycles=10,
         memory_budget_bytes=None,
+        e_pt2_tol=DEFAULT_E_PT2_TOL,
     ):
         """Expand the basis variationally (CIPSI) until it stops growing.
+
+        ``e_pt2_tol`` is the convergence criterion: each selection round admits candidates until
+        the ones it leaves out carry at most ``e_pt2_tol`` of Epstein-Nesbet PT2 energy
+        (:func:`collective_mass_cutoff`), so the expansion stops -- a round admits nothing -- only
+        once the whole residual PT2 correction of the reference states is within ``e_pt2_tol``.
+        ``de2_min`` is an optional per-determinant floor on top of it; it bounds each discarded
+        term, not their sum, and is *not* an energy tolerance: at ``de2_min=1e-8`` alone a SIAM
+        with a few hundred determinants stops 4.3e-7 above its exact ground state (the residual
+        PT2 predicted it to within 2%). ``e_pt2_tol=None`` restores the floor-only selection.
+        ``convergence_report`` records ``{"residual_pt2", "e_pt2_tol", "converged",
+        "limited_by"}``, and an unconverged expansion (a cap, the memory guard or the floor
+        stopped it first) prints a warning with the residual as its error bar.
+
+        The residual is summed over the reference *manifolds* (``_score_candidates``), so it
+        covers every reference state the expansion carries -- conservatively, by up to a
+        manifold's degeneracy. It is a second-order *estimate* of the energy error, not a
+        rigorous bound (measured to within 2% on the SIAM above), and states found only after
+        the expansion (e.g. a later ``num_wanted`` widening) were never references.
 
         With a finite ``basis.truncation_threshold`` the expansion becomes a
         **fixed-budget CIPSI** once the cap binds: each cycle prunes the currently
@@ -1300,6 +1349,16 @@ class CIPSISolver:
         best_psis = None
         best_e_ref = None
         self.truncation_report = None
+        self.convergence_report = None
+        # Per-call: a `last_selection` left over from an earlier `expand` (or none at all, when
+        # the loop exits before its first round) must not be read as this call's residual.
+        self.last_selection = None
+        # Whether `last_selection["residual_pt2"]` describes the basis as it now stands: true only
+        # after a round that neither grew the basis nor was followed by a truncation. A capped
+        # cycle scores candidates, then `truncate` drops determinants, so its residual belongs to
+        # a basis that no longer exists (measured: reported 1.0e-8 "converged" at cap 640, true
+        # residual of the returned basis 1.7e-8).
+        residual_current = False
         cycle = 0
         # The kept manifold two cycles back, for the growth margin below. `None` until there is
         # one, which is not the same as zero: a first cycle has no growth to extrapolate.
@@ -1400,6 +1459,7 @@ class CIPSISolver:
                     gen_ops=gen_ops,
                     max_new=admit_target,
                     affordable_growth=affordable_growth,
+                    e_pt2_tol=e_pt2_tol,
                 )
                 n_new = self._allreduce_sum(len(new_Dj))
                 sel = self.last_selection or {}
@@ -1493,6 +1553,7 @@ class CIPSISolver:
                     n_admitted=int(sel.get("n_admitted", 0)),
                     n_new=int(n_new),
                     subthreshold_de2_mass=float(sel.get("subthreshold_de2_mass", 0.0)),
+                    residual_pt2=float(sel.get("residual_pt2", 0.0)),
                 )
             # Unconditional collectives (CLAUDE.md: never gate a collective on rank-local
             # state, and `self.basis.verbose` may differ across ranks) -- only the print
@@ -1534,6 +1595,7 @@ class CIPSISolver:
                     f"Hpsi_rows={sel.get('hpsi_rows', 0):,} candidates={sel.get('n_candidates', 0):,} "
                     f"admitted={sel.get('n_admitted', 0):,} new={n_new:,} "
                     f"subthreshold_de2_mass={sel.get('subthreshold_de2_mass', 0.0):.3e} "
+                    f"residual_pt2={sel.get('residual_pt2', 0.0):.3e} "
                     f"local[min,max]=[{local_min:,},{local_max:,}] VmHWM={format_bytes(peak_rss)} "
                     f"(anon={format_bytes(anon_rss)} shm={format_bytes(shmem_rss)})",
                     flush=True,
@@ -1576,12 +1638,14 @@ class CIPSISolver:
                         f"({self.basis.size:,} determinants) rather than risk an uncatchable OOM kill.",
                         flush=True,
                     )
+            truncated = False
             if capped and self.basis.size + n_new > threshold:
                 # Fixed-budget CIPSI cycle: make room by dropping the currently least
                 # important determinants (by eigenvector amplitude), then admit the
                 # de2-ranked candidates; the loop head re-diagonalizes and the cycle
                 # repeats until the energy stabilizes.
                 cap_cycles += 1
+                truncated = True
                 keep = max(int(threshold) - n_new, int(threshold) // 2, 1)
                 psi_refs = self.truncate(psi_refs, e_ref, target=keep, slaterWeightMin=slaterWeightMin)
                 if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
@@ -1600,6 +1664,7 @@ class CIPSISolver:
             # `redistribute_block` does neither, so do it here -- otherwise an exact cross-rank
             # cancellation leaves an all-zero row behind, and only at >1 rank.
             psi_refs.prune_rows(0.0)
+            residual_current = not truncated and self.basis.size == old_size
             if cap_cycles == 0 and self.basis.size == old_size:
                 break
             e0 = np.inf  # the basis was mutated; e0 no longer describes it
@@ -1618,6 +1683,7 @@ class CIPSISolver:
             )
             psi_refs.prune_rows(0.0)
             e_ref = best_e_ref
+            residual_current = False
         self.psi_refs = psi_refs
         if capped and self.basis.size > threshold and self.psi_refs is not None:
             # The symmetry closure can push an admission slightly past the cap; enforce
@@ -1625,6 +1691,7 @@ class CIPSISolver:
             # must describe the *current* psi_refs -- after a best_basis restore above,
             # that is best_e_ref, not the last cycle's (possibly length-mismatched) e_ref.
             self.psi_refs = self.truncate(self.psi_refs, e_ref, slaterWeightMin=slaterWeightMin)
+            residual_current = False
         if cap_cycles > 0 or memory_bound or memory_bound_observed:
             # `memory_bound` alone (no refinement cycle ran) is the case where the memory guard
             # found even a same-size round unaffordable and the expansion stopped where it stood;
@@ -1645,6 +1712,7 @@ class CIPSISolver:
                 "discarded_de2_mass": float(sel.get("discarded_de2_mass", 0.0)),
                 "n_candidates_last": int(sel.get("n_candidates", 0)),
                 "memory_bound": bool(memory_bound or memory_bound_observed),
+                "residual_pt2": float(sel.get("residual_pt2", 0.0)),
             }
             rank = self.basis.comm.rank if self.basis.is_distributed else 0
             if rank == 0:
@@ -1666,8 +1734,57 @@ class CIPSISolver:
                         flush=True,
                     )
 
+        self._report_convergence(
+            e_pt2_tol, de2_min, cap_cycles > 0, memory_bound or memory_bound_observed, residual_current
+        )
+
         if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
             print(f"After expansion, the basis contains {self.basis.size} elements.", flush=True)
+
+    def _report_convergence(self, e_pt2_tol, de2_min, cap_bound, memory_bound, residual_current):
+        """Record (and warn about) how far the expansion is from PT2 convergence.
+
+        ``residual_pt2`` is the last selection round's. When that round left the basis as it is
+        (``residual_current``) it is exactly the PT2 correction of the final references. Otherwise
+        -- a capped cycle truncated after scoring, or the best capped basis was restored -- it
+        describes an earlier basis, ``residual_is_current`` is False, and the expansion is not
+        reported converged whatever the number says. ``None`` when no round ran at all.
+        Every input is replicated (allreduced selection stats, replicated arguments and flags),
+        so every rank records the same report; only the print is rank-0.
+        """
+        selection = self.last_selection
+        residual = None if selection is None else float(selection.get("residual_pt2", 0.0))
+        converged = None if e_pt2_tol is None or residual is None else residual_current and residual <= e_pt2_tol
+        limited_by = None
+        if converged is False:
+            if memory_bound:
+                limited_by = "memory"
+            elif cap_bound:
+                limited_by = "cap"
+            elif de2_min > 0:
+                limited_by = "de2_min"
+        self.convergence_report = {
+            "residual_pt2": residual,
+            "residual_is_current": bool(residual_current),
+            "e_pt2_tol": e_pt2_tol,
+            "converged": converged,
+            "limited_by": limited_by,
+        }
+        rank = self.basis.comm.rank if self.basis.is_distributed else 0
+        if converged is False and rank == 0:
+            reason = {
+                "memory": "the memory guard held the basis",
+                "cap": "the truncation_threshold cap held the basis",
+                "de2_min": f"the de2_min={de2_min:.1e} floor refused the remaining candidates",
+            }.get(limited_by, "the expansion stopped")
+            when = "" if residual_current else " (measured before the last truncation; the kept basis may carry more)"
+            print(
+                f"WARNING: CIPSI ground state not converged: {reason} with a residual PT2 energy of "
+                f"{residual:.3e}{when} against e_pt2_tol={e_pt2_tol:.1e}. The reference energies are "
+                f"variational upper bounds; the residual estimates how far above the converged "
+                f"energies they lie.",
+                flush=True,
+            )
 
     def _normalize_start_block(self, psi0, cold_start_block, warm_started, slaterWeightMin):
         """Orthonormalize the Lanczos start block, falling back to a cold start if it fails.
