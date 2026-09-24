@@ -1,4 +1,5 @@
 import os
+import sys
 from collections import defaultdict
 from typing import Optional
 
@@ -394,6 +395,14 @@ def get_Greens_function(
     excited_restrictions, excited_weighted_restrictions = _build_excited_restrictions(
         basis, hOp, psis, es, dN, occ_cutoff, slater_weight_min=slaterWeightMin
     )
+    # The per-unit kernels print the restrictions only when they exist, so an unrestricted run
+    # would otherwise be silent -- indistinguishable from restrictions lost somewhere.
+    if verbose and (basis.comm is None or basis.comm.rank == 0):
+        if excited_restrictions is None:
+            reason = " (dN unset: no occupation window)" if dN is None else ""
+            print(f"Excited restrictions: none{reason}", flush=True)
+        if excited_weighted_restrictions is None:
+            print("Weight restrictions: none", flush=True)
     pairwise = _gf_operator_split() if gf_method == "lanczos" else False
     n_psis = len(psis)
 
@@ -486,10 +495,12 @@ def get_Greens_function(
             print("Excited restrictions:")
             for indices, occ_rest in unit_restrictions[u].items():
                 print(f"{sorted(indices)}: {occ_rest}")
+            sys.stdout.flush()
         if verbose and unit_rank0 and excited_weighted_restrictions is not None:
             print("weight restrictions:")
             for weights, sum_rest in excited_weighted_restrictions:
                 print(f"{weights}: {sum_rest}")
+            sys.stdout.flush()
         conv_stats = {}
         alphas, betas, r, cap_stats = _block_green_group(
             split_basis,
