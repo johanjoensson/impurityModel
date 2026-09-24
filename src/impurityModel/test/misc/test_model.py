@@ -117,8 +117,12 @@ def test_from_h0_file_matches_nio_workload_inputs():
     assert model.impurity_orbitals == inputs["impurity_orbitals"]
 
 
-def _write_synthetic_archive(path):
-    """Write a minimal impurityModel_data.h5 (one 2-orbital impurity + 1 bath) like the interface does."""
+def _write_synthetic_archive(path, solver_line="1 1 6 chain", excitation_budget=None):
+    """Write a minimal impurityModel_data.h5 (one 2-orbital impurity + 1 bath) like the interface does.
+
+    ``solver_line=None`` omits the provenance line; ``excitation_budget`` (when given) writes the
+    attribute newer interface versions store.
+    """
     import h5py
 
     h_solver = np.zeros((3, 3), dtype=complex)
@@ -150,6 +154,10 @@ def _write_synthetic_archive(path):
         g.attrs["slater_min"] = 0.0
         g.attrs["dN"] = "None"
         g.attrs["sparse_green"] = True
+        if solver_line is not None:
+            g.attrs["solver line"] = solver_line
+        if excitation_budget is not None:
+            g.attrs["excitation_budget"] = excitation_budget
 
 
 def test_from_hdf5_reads_archive_group(tmp_path):
@@ -188,7 +196,63 @@ def test_load_selfenergy_archive_recovers_options(tmp_path):
     assert basis.dN is None
     assert solver.reort == "partial"
     assert solver.dense_cutoff == 500
+    assert solver.gf_method == "lanczos"
     assert isinstance(model, ImpurityModel)
+
+
+def test_archive_excitation_budget_attribute_is_read(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), solver_line="1 1 6 chain", excitation_budget=3)
+    _, _, basis, _, _ = load_selfenergy_archive(str(archive))
+    # The attribute wins over the solver line.
+    assert basis.excitation_budget == 3
+
+
+def test_archive_without_budget_attribute_recovers_it_from_the_solver_line(tmp_path):
+    """Archives written before the interface stored the budget must not fall back to the default:
+    the SMO run's '3 3 8 peeled' read back as budget 4 and reproduced a different problem."""
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), solver_line="3 3 8 peeled ! comment 9")
+    _, _, basis, _, _ = load_selfenergy_archive(str(archive))
+    assert basis.excitation_budget == 8
+
+
+def test_archive_budget_stored_as_none_or_negative_is_disabled(tmp_path):
+    archive = tmp_path / "impurityModel_data_none.h5"
+    _write_synthetic_archive(str(archive), excitation_budget="None")
+    _, _, basis, _, _ = load_selfenergy_archive(str(archive))
+    assert basis.excitation_budget is None
+
+    archive = tmp_path / "impurityModel_data_negative.h5"
+    _write_synthetic_archive(str(archive), excitation_budget=-1)
+    with pytest.warns(UserWarning, match="negative: the excitation budget is disabled"):
+        _, _, basis, _, _ = load_selfenergy_archive(str(archive))
+    assert basis.excitation_budget is None
+
+
+def test_negative_excitation_budget_disables_it_with_a_warning():
+    """A negative budget would build an empty admissible window (q_max < q_min); it disables instead."""
+    with pytest.warns(UserWarning, match="excitation_budget=-2 is negative"):
+        basis = BasisOptions(nominal_occ={0: 1}, excitation_budget=-2)
+    assert basis.excitation_budget is None
+    assert BasisOptions(nominal_occ={0: 1}, excitation_budget=0).excitation_budget == 0
+
+
+def test_from_hdf5_does_not_warn_about_a_missing_budget(tmp_path):
+    """The physics-only reader never uses the budget, so an archive without one must load silently."""
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), solver_line=None)
+    ImpurityModel.from_hdf5(str(archive))  # filterwarnings=error turns any warning into a failure
+
+
+def test_archive_without_any_budget_record_warns_and_uses_the_default(tmp_path):
+    from impurityModel.ed.model import EXCITATION_BUDGET_DEFAULT
+
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), solver_line=None)
+    with pytest.warns(UserWarning, match="records no excitation budget"):
+        _, _, basis, _, _ = load_selfenergy_archive(str(archive))
+    assert basis.excitation_budget == EXCITATION_BUDGET_DEFAULT
 
 
 def _blocks():

@@ -15,6 +15,7 @@ without pulling in the many-body machinery.
 """
 
 import os
+import warnings
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Optional, Union
@@ -746,7 +747,7 @@ class ImpurityModel:
         -------
         ImpurityModel
         """
-        raw = _read_archive_group(path, cluster, iteration)
+        raw = _read_archive_group(path, cluster, iteration, with_options=False)
         return cls(
             h0=raw["h0"],
             u4=raw["u4"],
@@ -1083,13 +1084,40 @@ def _archive_attr(attrs, key, default=None):
     return value
 
 
-def _read_archive_group(path, cluster=None, iteration=None) -> dict:
+_MISSING = object()
+
+
+def _excitation_budget_from_solver_line(attrs, name):
+    """Excitation budget of an archive that predates the ``excitation_budget`` attribute.
+
+    The RSPt interface wrote every solver-line option except the budget, which is the line's
+    mandatory third token (``N0 nBaths excitation_budget ...``). Falling back to
+    ``EXCITATION_BUDGET_DEFAULT`` instead silently reproduces a differently restricted problem
+    (an SrMnO3 archive recorded ``solver line '3 3 8 peeled'`` and read back as budget 4), so
+    recover it from the stored line, and warn when even that is unavailable.
+    """
+    tokens = str(attrs.get("solver line", "")).split("!")[0].split("#")[0].split()
+    if len(tokens) >= 3:
+        try:
+            return int(tokens[2])
+        except ValueError:
+            pass
+    warnings.warn(
+        f"archive group {name!r} records no excitation budget (neither the attribute nor a parseable "
+        f"'solver line'); assuming the default {EXCITATION_BUDGET_DEFAULT}, which may not be what the run used",
+        stacklevel=4,
+    )
+    return EXCITATION_BUDGET_DEFAULT
+
+
+def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -> dict:
     """Parse one ``(cluster, iteration)`` group of an ``impurityModel_data.h5`` archive.
 
     Returns the raw physics arrays (``h0`` operator dict, ``u4``, ``impurity_orbitals``,
     ``rot_to_spherical``, ``n_spin_orbitals``), both frequency meshes and every recorded
     solver/basis option, plus the group ``label``. Shared by :meth:`ImpurityModel.from_hdf5`
-    and :func:`load_selfenergy_archive`.
+    and :func:`load_selfenergy_archive`. ``with_options=False`` (the physics-only
+    ``from_hdf5``) skips recovering the excitation budget from the solver line, and its warning.
     """
     import h5py
 
@@ -1126,11 +1154,15 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
     dN = _archive_attr(attrs, "dN")
     if dN is not None:
         dN = int(dN)
-    # Missing attribute (older archives) falls back to the default budget; a stored
-    # negative value means the producing run explicitly disabled it.
-    excitation_budget = _archive_attr(attrs, "excitation_budget", EXCITATION_BUDGET_DEFAULT)
+    # A stored negative value means the producing run explicitly disabled the budget.
+    excitation_budget = _archive_attr(attrs, "excitation_budget", _MISSING)
+    if excitation_budget is _MISSING:
+        # The physics-only reader (from_hdf5) has no use for the budget, so it neither parses
+        # the solver line nor warns about a missing one.
+        excitation_budget = _excitation_budget_from_solver_line(attrs, name) if with_options else None
     if excitation_budget is not None:
-        excitation_budget = int(excitation_budget) if int(excitation_budget) >= 0 else None
+        # A negative value is kept: BasisOptions disables the budget and says so.
+        excitation_budget = int(excitation_budget)
 
     return {
         "label": name,
@@ -1156,6 +1188,7 @@ def _read_archive_group(path, cluster=None, iteration=None) -> dict:
         "dN": dN,
         "excitation_budget": excitation_budget,
         "sparse_green": bool(_archive_attr(attrs, "sparse_green", True)),
+        "gf_method": str(_archive_attr(attrs, "gf_method", "lanczos")),
     }
 
 
@@ -1209,6 +1242,7 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         reort=raw["reort"],
         dense_cutoff=raw["dense_cutoff"],
         sparse_green=raw["sparse_green"],
+        gf_method=raw["gf_method"],
     )
     return model, meshes, basis, solver, raw["label"]
 
@@ -1272,9 +1306,10 @@ class BasisOptions:
         empty-conduction orbitals) a determinant may carry, enforced as a weighted
         restriction on the ground-state basis and inherited (widened) by the
         Green's-function / spectra excited bases. Defaults to ``EXCITATION_BUDGET_DEFAULT``
-        (4, the tightest measured-lossless value); ``None`` disables it. A memory lever on
-        metals; judge its accuracy on the eigenvector/spectral criterion, not ``E0`` (see
-        ``doc/plans/restrictions_redux.md``).
+        (4, the tightest measured-lossless value); ``None`` disables it, and so does a negative
+        value (with a warning -- it would otherwise build an empty admissible window). A memory
+        lever on metals; judge its accuracy on the eigenvector/spectral criterion, not ``E0``
+        (see ``doc/plans/restrictions_redux.md``).
     """
 
     nominal_occ: Any
@@ -1286,6 +1321,14 @@ class BasisOptions:
     slater_weight_min: float = float(np.sqrt(np.finfo(float).eps))
     tau: float = 0.002
     excitation_budget: Optional[int] = EXCITATION_BUDGET_DEFAULT
+
+    def __post_init__(self):
+        if self.excitation_budget is not None and self.excitation_budget < 0:
+            warnings.warn(
+                f"excitation_budget={self.excitation_budget} is negative: the excitation budget is disabled",
+                stacklevel=3,
+            )
+            object.__setattr__(self, "excitation_budget", None)
 
 
 @dataclass(frozen=True)
