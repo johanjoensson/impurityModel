@@ -1076,6 +1076,10 @@ def _operator_from_matrix(h_matrix) -> dict:
     return matrixToIOp(np.asarray(h_matrix))
 
 
+def _optional_float(value):
+    return None if value is None else float(value)
+
+
 def _archive_attr(attrs, key, default=None):
     """Group attribute with the interface's ``None``-stored-as-the-string-``"None"`` undone."""
     value = attrs.get(key, default)
@@ -1187,6 +1191,8 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         "slater_weight_min": float(_archive_attr(attrs, "slater_min", 0.0)),
         "dN": dN,
         "excitation_budget": excitation_budget,
+        # Absent from archives written before it was recorded: those runs used the default.
+        "e_pt2_tol": _optional_float(_archive_attr(attrs, "e_pt2_tol")),
         "sparse_green": bool(_archive_attr(attrs, "sparse_green", True)),
         "gf_method": str(_archive_attr(attrs, "gf_method", "lanczos")),
     }
@@ -1237,6 +1243,7 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         slater_weight_min=raw["slater_weight_min"],
         tau=raw["tau"],
         excitation_budget=raw["excitation_budget"],
+        e_pt2_tol=raw["e_pt2_tol"],
     )
     solver = SolverOptions(
         reort=raw["reort"],
@@ -1310,6 +1317,12 @@ class BasisOptions:
         value (with a warning -- it would otherwise build an empty admissible window). A memory
         lever on metals; judge its accuracy on the eigenvector/spectral criterion, not ``E0``
         (see ``doc/plans/restrictions_redux.md``).
+    e_pt2_tol : float or None
+        Residual Epstein-Nesbet PT2 energy the ground-state CIPSI expansion is converged to (the
+        *summed* PT2 contribution of every determinant left out, which is what the energy error
+        follows; see ``doc/plans/cipsi_pt2_convergence.md``). ``None`` uses
+        :data:`groundstate.GS_E_PT2_TOL` (``1e-8``). The double-counting search's charge-sector
+        solves inherit it unless the double-counting line or ``DC_E_PT2_TOL`` sets their own.
     """
 
     nominal_occ: Any
@@ -1321,8 +1334,11 @@ class BasisOptions:
     slater_weight_min: float = float(np.sqrt(np.finfo(float).eps))
     tau: float = 0.002
     excitation_budget: Optional[int] = EXCITATION_BUDGET_DEFAULT
+    e_pt2_tol: Optional[float] = None
 
     def __post_init__(self):
+        if self.e_pt2_tol is not None and not self.e_pt2_tol > 0:
+            raise ValueError(f"e_pt2_tol must be positive (or None for the default), got {self.e_pt2_tol}")
         if self.excitation_budget is not None and self.excitation_budget < 0:
             warnings.warn(
                 f"excitation_budget={self.excitation_budget} is negative: the excitation budget is disabled",

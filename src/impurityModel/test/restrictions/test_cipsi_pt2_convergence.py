@@ -189,3 +189,30 @@ def test_a_manifold_wider_than_the_references_is_not_reported_converged(monkeypa
     report = solver.convergence_report
     assert report["converged"] is False and report["limited_by"] == "manifold_widened"
     assert "wider than" in capsys.readouterr().out
+
+
+class _Captured(Exception):
+    pass
+
+
+@pytest.mark.parametrize("e_pt2_tol", [None, 1e-6])
+def test_calc_selfenergy_hands_the_basis_tolerance_to_the_ground_state(e_pt2_tol, monkeypatch):
+    """BasisOptions.e_pt2_tol (the RSPt solver line's ``e_pt2 X``) is what the production ground
+    state converges to; unset, the ground state's own default."""
+    import dataclasses
+
+    from impurityModel.ed.selfenergy import calc_selfenergy
+    from impurityModel.test.support._nio_workload import as_calc_selfenergy_args, build_selfenergy_inputs
+
+    seen = {}
+
+    def capture(*args, **kwargs):
+        seen.update(kwargs)
+        raise _Captured
+
+    monkeypatch.setattr(groundstate, "solve_ground_state", capture)
+    args = as_calc_selfenergy_args(build_selfenergy_inputs(nBaths=10, n_omega=3, dense_cutoff=500))
+    args["basis"] = dataclasses.replace(args["basis"], e_pt2_tol=e_pt2_tol)
+    with pytest.raises(_Captured):
+        calc_selfenergy(**args, comm=None)
+    assert seen["e_pt2_tol"] == (groundstate.GS_E_PT2_TOL if e_pt2_tol is None else e_pt2_tol)

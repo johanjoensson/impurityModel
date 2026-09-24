@@ -825,9 +825,12 @@ DC_E_PT2_TOL = Knob(
     minimum=0.0,
     group="double-counting",
     doc="""Residual Epstein-Nesbet PT2 energy the double-counting search's **charge-sector solves**
-    are converged to (`CIPSISolver.expand`'s `e_pt2_tol`). Unset uses
-    :data:`groundstate.GS_E_PT2_TOL` (1e-8), the tolerance the production ground state is converged
-    to, so the DC is determined on a space converged as far as the self-energy run's.
+    are converged to (`CIPSISolver.expand`'s `e_pt2_tol`). Unset uses the solver's own
+    `BasisOptions.e_pt2_tol` (the RSPt solver line's `e_pt2 X`), else
+    :data:`groundstate.GS_E_PT2_TOL` (1e-8): the tolerance the production ground state is
+    converged to, so the DC is determined on a space converged as far as the self-energy run's.
+    The double-counting line's own `e_pt2 X` beats this knob. The `occupation` criterion takes
+    none of these overrides, only the solver's tolerance: it solves on the production path.
 
     This, not `DC_DE2_MIN`, is the accuracy control: `DC_DE2_MIN` bounds each candidate left out,
     this bounds their sum -- the quantity the energy error follows (measured on a SIAM against

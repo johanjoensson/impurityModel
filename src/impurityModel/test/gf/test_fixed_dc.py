@@ -2567,6 +2567,64 @@ def test_dc_de2_min_precedence_argument_beats_knob_beats_default(monkeypatch):
     assert _resolve_dc_de2_min(1e-5) == 1e-5, "the explicit argument must beat the environment"
 
 
+def test_dc_e_pt2_tol_precedence_line_beats_knob_beats_solver_line_beats_default(monkeypatch):
+    """DC line > DC_E_PT2_TOL > the solver's BasisOptions.e_pt2_tol > GS_E_PT2_TOL. With nothing
+    set on the DC side the search inherits the solver line's tolerance: parity with the ground
+    state the self-energy run will find."""
+    from impurityModel.ed.dc_criteria import _resolve_dc_e_pt2_tol
+    from impurityModel.ed.groundstate import GS_E_PT2_TOL
+
+    monkeypatch.delenv("DC_E_PT2_TOL", raising=False)
+    assert _resolve_dc_e_pt2_tol(None, None) == GS_E_PT2_TOL
+    assert _resolve_dc_e_pt2_tol(None, 1e-6) == 1e-6
+    assert _resolve_dc_e_pt2_tol(1e-5, 1e-6) == 1e-5
+
+    monkeypatch.setenv("DC_E_PT2_TOL", "1e-7")
+    assert _resolve_dc_e_pt2_tol(None, 1e-6) == 1e-7
+    assert _resolve_dc_e_pt2_tol(1e-5, 1e-6) == 1e-5, "the double-counting line must beat the environment"
+
+
+@pytest.mark.parametrize("criterion", ["fixed_gap_dc", "fixed_peak_dc"])
+def test_the_energy_difference_criteria_carry_e_pt2_tol_to_their_sector_solves(criterion, monkeypatch):
+    """The argument reaches the context, and the context reaches every sector solve."""
+    import dataclasses
+    import inspect
+
+    from impurityModel.ed import dc_criteria
+
+    monkeypatch.delenv("DC_E_PT2_TOL", raising=False)
+    assert "e_pt2_tol" in inspect.signature(getattr(dc_criteria, criterion)).parameters
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    basis = dataclasses.replace(kwargs["basis"], e_pt2_tol=1e-6)
+    ctx = dc_criteria._prepare_sector_context(kwargs["model"], basis, kwargs["solver"], memory_label="test")
+    assert ctx.e_pt2_tol == 1e-6
+    ctx = dc_criteria._prepare_sector_context(
+        kwargs["model"], basis, kwargs["solver"], memory_label="test", e_pt2_tol=1e-5
+    )
+    assert ctx.e_pt2_tol == 1e-5
+    assert "e_pt2_tol=self.e_pt2_tol," in inspect.getsource(dc_criteria._SectorContext.sector_solve)
+
+
+def test_the_occupation_criterion_takes_the_solver_tolerance_and_no_override(monkeypatch):
+    """It solves on the production ground-state path, so neither the double-counting line nor
+    DC_E_PT2_TOL may loosen it -- only the solver line's own tolerance, which calc_gs uses too."""
+    import dataclasses
+    import inspect
+
+    from impurityModel.ed import dc_criteria
+    from impurityModel.ed.groundstate import GS_E_PT2_TOL
+
+    monkeypatch.setenv("DC_E_PT2_TOL", "1e-3")
+    assert "e_pt2_tol" not in inspect.signature(dc_criteria.fixed_occupation_dc).parameters
+    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
+    ctx = dc_criteria._prepare_occupation_context(kwargs["model"], kwargs["basis"], kwargs["solver"])
+    assert ctx.e_pt2_tol == GS_E_PT2_TOL
+    basis = dataclasses.replace(kwargs["basis"], e_pt2_tol=1e-6)
+    ctx = dc_criteria._prepare_occupation_context(kwargs["model"], basis, kwargs["solver"])
+    assert ctx.e_pt2_tol == 1e-6
+    assert "e_pt2_tol=ctx.e_pt2_tol," in inspect.getsource(dc_criteria._evaluate_occupation_and_energy_at_mu)
+
+
 def test_dc_criteria_accept_de2_min_and_carry_it_to_the_context():
     """Both sector-based criteria take the parameter and hand it to the shared context, the same
     route `ground_state_manifold` takes. `fixed_occupation_dc` is deliberately excluded: it solves

@@ -117,7 +117,7 @@ def test_from_h0_file_matches_nio_workload_inputs():
     assert model.impurity_orbitals == inputs["impurity_orbitals"]
 
 
-def _write_synthetic_archive(path, solver_line="1 1 6 chain", excitation_budget=None):
+def _write_synthetic_archive(path, solver_line="1 1 6 chain", excitation_budget=None, e_pt2_tol=None):
     """Write a minimal impurityModel_data.h5 (one 2-orbital impurity + 1 bath) like the interface does.
 
     ``solver_line=None`` omits the provenance line; ``excitation_budget`` (when given) writes the
@@ -158,6 +158,8 @@ def _write_synthetic_archive(path, solver_line="1 1 6 chain", excitation_budget=
             g.attrs["solver line"] = solver_line
         if excitation_budget is not None:
             g.attrs["excitation_budget"] = excitation_budget
+        if e_pt2_tol is not None:
+            g.attrs["e_pt2_tol"] = e_pt2_tol
 
 
 def test_from_hdf5_reads_archive_group(tmp_path):
@@ -228,6 +230,24 @@ def test_archive_budget_stored_as_none_or_negative_is_disabled(tmp_path):
     with pytest.warns(UserWarning, match="negative: the excitation budget is disabled"):
         _, _, basis, _, _ = load_selfenergy_archive(str(archive))
     assert basis.excitation_budget is None
+
+
+def test_archive_e_pt2_tol_round_trips_and_its_absence_means_the_default(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), excitation_budget=4, e_pt2_tol=1e-6)
+    _, _, basis, _, _ = load_selfenergy_archive(str(archive))
+    assert basis.e_pt2_tol == 1e-6
+
+    archive = tmp_path / "impurityModel_data_old.h5"
+    _write_synthetic_archive(str(archive), excitation_budget=4)
+    _, _, basis, _, _ = load_selfenergy_archive(str(archive))
+    assert basis.e_pt2_tol is None
+
+
+@pytest.mark.parametrize("value", [0.0, -1e-8])
+def test_a_non_positive_e_pt2_tol_is_refused(value):
+    with pytest.raises(ValueError, match="e_pt2_tol must be positive"):
+        BasisOptions(nominal_occ={0: 1}, e_pt2_tol=value)
 
 
 def test_negative_excitation_budget_disables_it_with_a_warning():

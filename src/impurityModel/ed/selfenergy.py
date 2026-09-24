@@ -24,7 +24,7 @@ from impurityModel.ed.greens_function import (
     get_greens_function_moments,
     save_Greens_function,
 )
-from impurityModel.ed.groundstate import calc_gs
+from impurityModel.ed.groundstate import GS_E_PT2_TOL, calc_gs
 from impurityModel.ed.memory_estimate import (
     log_memory_budget,
     log_peak_vs_predicted,
@@ -271,6 +271,8 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         # Optional excitation-budget weighted restriction on the ground-state basis; the GF
         # excited bases inherit it (widened) via greens_function._build_excited_restrictions.
         "weighted_restrictions": build_weighted_restrictions(bath_states, excitation_budget),
+        # The residual PT2 energy the ground-state refinement converges to.
+        "e_pt2_tol": GS_E_PT2_TOL if basis.e_pt2_tol is None else basis.e_pt2_tol,
     }
     # Compute the thermal ground state and the interacting Green's function, with a single
     # auto-retry: the diagnostics report (gf_diagnostics) can detect that the thermal

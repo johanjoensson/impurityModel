@@ -572,7 +572,7 @@ class _SectorContext:
         if self.de2_min is None:
             self.de2_min = _resolve_dc_de2_min()
         if self.e_pt2_tol is None:
-            self.e_pt2_tol = _resolve_dc_e_pt2_tol()
+            self.e_pt2_tol = _resolve_dc_e_pt2_tol(None, None)
         if self.n_center_at is None:
             self.n_center_at = {}
         if self.sector_at is None:
@@ -855,17 +855,34 @@ def _resolve_dc_de2_min(de2_min=None):
     return config.DC_DE2_MIN.get() or GS_DE2_MIN
 
 
-def _resolve_dc_e_pt2_tol():
-    """The residual PT2 energy a double-counting sector solve converges to: the ``DC_E_PT2_TOL``
-    knob, else :data:`groundstate.GS_E_PT2_TOL`."""
+def _resolve_dc_e_pt2_tol(e_pt2_tol, basis_e_pt2_tol):
+    """The residual PT2 energy a double-counting ground-state solve converges to.
+
+    Precedence: the criterion's own argument (the RSPt double-counting line's ``e_pt2 X``), then
+    the ``DC_E_PT2_TOL`` environment knob, then the solver's own ``BasisOptions.e_pt2_tol`` (the
+    solver line's ``e_pt2 X``) -- so by default the double counting is measured on a space
+    converged as far as the self-energy run's ground state -- and finally
+    :data:`groundstate.GS_E_PT2_TOL`.
+    """
     from impurityModel.ed.groundstate import GS_E_PT2_TOL
 
-    value = config.DC_E_PT2_TOL.get()
-    return GS_E_PT2_TOL if value is None else float(value)
+    for value in (e_pt2_tol, config.DC_E_PT2_TOL.get(), basis_e_pt2_tol):
+        if value is not None:
+            return float(value)
+    return GS_E_PT2_TOL
 
 
 def _prepare_sector_context(
-    model, basis, solver, *, comm=None, verbosity=0, memory_label, ground_state_manifold=False, de2_min=None
+    model,
+    basis,
+    solver,
+    *,
+    comm=None,
+    verbosity=0,
+    memory_label,
+    ground_state_manifold=False,
+    de2_min=None,
+    e_pt2_tol=None,
 ):
     """Build the setup :class:`_SectorContext` holds, from the grouped option objects.
 
@@ -984,6 +1001,7 @@ def _prepare_sector_context(
         verbose=verbose,
         ground_state_manifold=ground_state_manifold,
         de2_min=_resolve_dc_de2_min(de2_min),
+        e_pt2_tol=_resolve_dc_e_pt2_tol(e_pt2_tol, basis.e_pt2_tol),
     )
 
 
@@ -1000,6 +1018,7 @@ def fixed_peak_dc(
     report=None,
     ground_state_manifold=False,
     de2_min=None,
+    e_pt2_tol=None,
 ):
     r"""
     Calculate the double counting correction using a fixed peak position criterion.
@@ -1084,6 +1103,11 @@ def fixed_peak_dc(
         (default :data:`groundstate.GS_E_PT2_TOL`); a floor above that loosens them, and the
         expansion then warns with the residual it left -- a bounded approximation, unlike
         lowering the determinant cap, which truncates the basis itself.
+    e_pt2_tol : float, optional
+        Residual PT2 energy the charge-sector solves converge to. ``None`` (the default) falls
+        back to the ``DC_E_PT2_TOL`` environment knob, then to ``basis.e_pt2_tol``, then to
+        :data:`groundstate.GS_E_PT2_TOL`. Supplied from the RSPt double-counting line as
+        ``e_pt2 X``; loosen it (e.g. ``1e-5``) when the search, not its accuracy, is the cost.
     ground_state_manifold : bool
         Opt-in, default ``False``. When ``True``, each sector solve asks for just the degenerate
         ground multiplet instead of the full thermal window, and the impurity occupation used is
@@ -1130,6 +1154,7 @@ def fixed_peak_dc(
             memory_label="fixed-peak dc",
             ground_state_manifold=ground_state_manifold,
             de2_min=de2_min,
+            e_pt2_tol=e_pt2_tol,
         )
         rank, verbose, tau = ctx.rank, ctx.verbose, ctx.tau
 
@@ -1513,6 +1538,7 @@ def fixed_gap_dc(
     report=None,
     ground_state_manifold=False,
     de2_min=None,
+    e_pt2_tol=None,
 ):
     r"""Double counting from the **centre of the charge gap** -- after Karolak's insulator
     prescription.
@@ -1683,6 +1709,11 @@ def fixed_gap_dc(
         (default :data:`groundstate.GS_E_PT2_TOL`); a floor above that loosens them, and the
         expansion then warns with the residual it left -- a bounded approximation, unlike
         lowering the determinant cap, which truncates the basis itself.
+    e_pt2_tol : float, optional
+        Residual PT2 energy the charge-sector solves converge to. ``None`` (the default) falls
+        back to the ``DC_E_PT2_TOL`` environment knob, then to ``basis.e_pt2_tol``, then to
+        :data:`groundstate.GS_E_PT2_TOL`. Supplied from the RSPt double-counting line as
+        ``e_pt2 X``; loosen it (e.g. ``1e-5``) when the search, not its accuracy, is the cost.
     ground_state_manifold : bool
         As :func:`fixed_peak_dc`: opt-in, default ``False``. Check ``manifold_spread`` (in
         ``report``, or ``occupation_spread`` via ``solver_trace``) from a **prior evaluation with
@@ -1718,6 +1749,7 @@ def fixed_gap_dc(
             memory_label="fixed-gap dc",
             ground_state_manifold=ground_state_manifold,
             de2_min=de2_min,
+            e_pt2_tol=e_pt2_tol,
         )
         rank, verbose, tau = ctx.rank, ctx.verbose, ctx.tau
 
@@ -2041,6 +2073,12 @@ class _OccupationContext:
     # groundstate.GS_CIPSI_SOLVER_METHOD (imported lazily; groundstate imports back into this
     # module), never spelled out as a literal here.
     cipsi_solver_method: str
+    #: Residual PT2 energy the ground-state determinations converge to: the solver's own
+    #: ``BasisOptions.e_pt2_tol`` (else :data:`groundstate.GS_E_PT2_TOL`) and nothing else. This
+    #: criterion solves on the production ground-state path, so it takes the self-energy run's
+    #: tolerance rather than an override -- neither the double-counting line nor ``DC_E_PT2_TOL``
+    #: reaches it, for the same reason ``de2_min`` does not.
+    e_pt2_tol: float
     #: ``mu -> bool``: did ``truncation_threshold`` bind the ground-state determination at that
     #: shift? Filled by :func:`_evaluate_occupation_and_energy_at_mu`, and **broadcast** there, so
     #: this holds a rank-replicated fact rather than one rank's view of its own solver -- the same
@@ -2144,7 +2182,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     n0 = _noninteracting_impurity_occupation(h0_op, impurity_indices, model.n_spin_orbitals, tau)
 
     # Imported here, not at module scope: groundstate imports back into this module.
-    from impurityModel.ed.groundstate import GS_CIPSI_SOLVER_METHOD
+    from impurityModel.ed.groundstate import GS_CIPSI_SOLVER_METHOD, GS_E_PT2_TOL
 
     return _OccupationContext(
         h0_op=h0_op,
@@ -2168,6 +2206,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
         identity=np.identity(n_imp),
         total_impurity_orbitals=total_impurity_orbitals,
         n0=n0,
+        e_pt2_tol=GS_E_PT2_TOL if basis.e_pt2_tol is None else float(basis.e_pt2_tol),
         cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     )
 
@@ -2216,6 +2255,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             truncation_threshold=ctx.truncation_threshold,
             weighted_restrictions=ctx.weighted_restrictions,
             cipsi_solver_method=ctx.cipsi_solver_method,
+            e_pt2_tol=ctx.e_pt2_tol,
         )
 
     # Did the determinant cap bind this ground-state determination? Two places can say so, and
@@ -2449,6 +2489,7 @@ def fixed_occupation_dc(
         dc_rec["target"] = target
         dc_rec["tol"] = occ_tol
         dc_rec["n_ref"] = ctx.n0
+        dc_rec["e_pt2_tol"] = ctx.e_pt2_tol
         with _dc_search_trace("fixed-occupation", MPI.COMM_WORLD, rank, width_tol=occ_width_tol, report=search_report):
             # Same calibration as the gap criterion, against this criterion's own tolerance. Only
             # when the cap defaulted -- an explicit truncation_threshold is the caller's
