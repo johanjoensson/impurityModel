@@ -70,6 +70,7 @@ _FIELDS = (
     ("manifold_spread", "{:.3f}"),
     ("ground_state_manifold", "{}"),
     ("de2_min", "{:.2e}"),
+    ("e_pt2_tol", "{:.2e}"),
     ("peak", "{:.6f}"),
     ("chi", "{:.4g}"),
     ("chi_span", "{:.4g}"),
@@ -250,12 +251,12 @@ def _annotate(record, key, text):
         over = "" if sizes is None else f" over {sizes} states (N+1/N/N-1)"
         return f"{text}   (max N_imp spread within a retained manifold{over}; 0 = thermal and T=0 agree)"
     if key == "de2_min":
-        # The PT2 admission floor the charge-sector solves actually ran at, recorded because two
-        # runs at different floors are otherwise indistinguishable in this record -- and the
-        # variational space behind an answer is exactly what a reader comparing them needs. Read
-        # it next to `subthreshold_de2_mass`, which is the weight this floor declined: together
-        # they bound the approximation, which is what makes loosening it safer than lowering the
-        # determinant cap (that truncates the basis with no comparable bound).
+        # The per-determinant PT2 floor the charge-sector solves ran at (0 = none), recorded
+        # because two runs at different floors are otherwise indistinguishable in this record. It
+        # does not bound the approximation: the solves converge to `e_pt2_tol`, the *summed* PT2
+        # energy left out, and a floor above that is reported by the expansion as unconverged
+        # with its residual -- which is what makes loosening either safer than lowering the
+        # determinant cap (that truncates the basis with no comparable estimate).
         from impurityModel.ed.groundstate import GS_DE2_MIN
 
         if record.get(key) == GS_DE2_MIN:
@@ -277,7 +278,7 @@ def _annotate(record, key, text):
         # `de2_min` rather than out of budget, so its basis is already the one any larger cap
         # would build. That is why `DC_CAP_STRATEGY=max` needs no ladder in the unbound case.
         # An unbound expansion is converged IN THE CAP, not exact: what remains is the
-        # `de2_min`/`slaterWeightMin` truncation, which no cap will improve.
+        # PT2 residual (`e_pt2_tol`) / `slaterWeightMin` truncation, which no cap will improve.
         if record.get(key) == "no":
             return f"{text}   (no sector hit the cap; raising it cannot move this answer)"
         if record.get(key) == "unknown":

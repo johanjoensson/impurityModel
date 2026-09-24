@@ -436,4 +436,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         # None unless the truncation_threshold bound the ground-state basis; a dict with
         # the fixed-budget CIPSI refinement summary otherwise (see CIPSISolver.expand).
         "gs_truncation": gs_info.get("truncation"),
+        # The ground state's residual PT2 energy against its tolerance (CIPSISolver.expand's
+        # `convergence_report`): the error bar on the ground-state energy.
+        "gs_convergence": gs_info.get("convergence"),
     }

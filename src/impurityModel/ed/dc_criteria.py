@@ -365,7 +365,7 @@ def build_union_space(
     frozen_occupations=None,
     weighted_restrictions=None,
     slater_weight_min=0,
-    de2_min=1e-8,
+    de2_min=0.0,
     dense_cutoff=1000,
 ):
     """A frozen space spanning the *candidate* charge sectors, grown across a ``mu`` bracket.
@@ -563,10 +563,16 @@ class _SectorContext:
     #: ``None`` resolves in :meth:`__post_init__`; `groundstate` is imported lazily throughout
     #: this module (circular import), so the fallback cannot be a module-level default here.
     de2_min: float = None
+    #: Residual Epstein-Nesbet PT2 energy the sector solves converge to -- the accuracy control,
+    #: where ``de2_min`` is only an optional floor. Resolved from the ``DC_E_PT2_TOL`` knob, else
+    #: :data:`groundstate.GS_E_PT2_TOL`, the tolerance of the production ground state.
+    e_pt2_tol: float = None
 
     def __post_init__(self):
         if self.de2_min is None:
             self.de2_min = _resolve_dc_de2_min()
+        if self.e_pt2_tol is None:
+            self.e_pt2_tol = _resolve_dc_e_pt2_tol()
         if self.n_center_at is None:
             self.n_center_at = {}
         if self.sector_at is None:
@@ -696,9 +702,11 @@ class _SectorContext:
             # on -- so the DC would be determined on a looser variational space than the
             # self-energy run that consumes it. Last unshared convention on the parity list in
             # this module's docstring.
-            # Resolved once in `_prepare_sector_context` (RSPt line > DC_DE2_MIN > GS_DE2_MIN),
-            # so every sector of a search shares one threshold and the record can report it.
+            # Resolved once in `_prepare_sector_context` (RSPt line > DC_DE2_MIN > GS_DE2_MIN,
+            # DC_E_PT2_TOL > GS_E_PT2_TOL), so every sector of a search shares one convergence
+            # criterion and the record can report it.
             de2_min=self.de2_min,
+            e_pt2_tol=self.e_pt2_tol,
             # Opt-in (see the field docstring): ask for just the degenerate ground multiplet
             # rather than the full thermal window. `max_energy=0.0` reuses `solve_sector`'s own
             # degeneracy tolerance (`_energy_cut_indices`'s `tol` absorbs any state degenerate
@@ -845,6 +853,15 @@ def _resolve_dc_de2_min(de2_min=None):
     if de2_min is not None:
         return float(de2_min)
     return config.DC_DE2_MIN.get() or GS_DE2_MIN
+
+
+def _resolve_dc_e_pt2_tol():
+    """The residual PT2 energy a double-counting sector solve converges to: the ``DC_E_PT2_TOL``
+    knob, else :data:`groundstate.GS_E_PT2_TOL`."""
+    from impurityModel.ed.groundstate import GS_E_PT2_TOL
+
+    value = config.DC_E_PT2_TOL.get()
+    return GS_E_PT2_TOL if value is None else float(value)
 
 
 def _prepare_sector_context(
@@ -1060,12 +1077,13 @@ def fixed_peak_dc(
         approximation of the request, any more than a mis-sectored occupation search is (see the
         module docstring). Set ``True`` to accept whichever charge state the search lands on.
     de2_min : float, optional
-        Epstein-Nesbet PT2 admission floor for the charge-sector CIPSI expansions. ``None``
+        Per-determinant Epstein-Nesbet PT2 floor for the charge-sector CIPSI expansions. ``None``
         (the default) falls back to the ``DC_DE2_MIN`` environment knob and then to
-        :data:`groundstate.GS_DE2_MIN`, i.e. the historical behaviour. Supplied from the RSPt
-        double-counting line as ``de2_min X``. Loosening it is a *bounded* approximation --
-        the skipped weight is reported as ``subthreshold_de2_mass`` -- unlike lowering the
-        determinant cap, which truncates the basis itself.
+        :data:`groundstate.GS_DE2_MIN` (0: no floor). Supplied from the RSPt double-counting line
+        as ``de2_min X``. The solves are *converged* to the ``DC_E_PT2_TOL`` residual PT2 energy
+        (default :data:`groundstate.GS_E_PT2_TOL`); a floor above that loosens them, and the
+        expansion then warns with the residual it left -- a bounded approximation, unlike
+        lowering the determinant cap, which truncates the basis itself.
     ground_state_manifold : bool
         Opt-in, default ``False``. When ``True``, each sector solve asks for just the degenerate
         ground multiplet instead of the full thermal window, and the impurity occupation used is
@@ -1233,6 +1251,7 @@ def fixed_peak_dc(
         # on `manifold_spread`: there is no such line here to hang it off.)
         dc_rec["ground_state_manifold"] = ctx.ground_state_manifold
         dc_rec["de2_min"] = ctx.de2_min
+        dc_rec["e_pt2_tol"] = ctx.e_pt2_tol
         _dump_dc_matrices(ctx.dc_guess, dc, rank)
         if n_center != nominal_total and not allow_charge_state_change:
             raise RuntimeError(
@@ -1657,12 +1676,13 @@ def fixed_gap_dc(
         search's raw internal status), which is how a caller could assert on a field that had
         quietly stopped being written.
     de2_min : float, optional
-        Epstein-Nesbet PT2 admission floor for the charge-sector CIPSI expansions. ``None``
+        Per-determinant Epstein-Nesbet PT2 floor for the charge-sector CIPSI expansions. ``None``
         (the default) falls back to the ``DC_DE2_MIN`` environment knob and then to
-        :data:`groundstate.GS_DE2_MIN`, i.e. the historical behaviour. Supplied from the RSPt
-        double-counting line as ``de2_min X``. Loosening it is a *bounded* approximation --
-        the skipped weight is reported as ``subthreshold_de2_mass`` -- unlike lowering the
-        determinant cap, which truncates the basis itself.
+        :data:`groundstate.GS_DE2_MIN` (0: no floor). Supplied from the RSPt double-counting line
+        as ``de2_min X``. The solves are *converged* to the ``DC_E_PT2_TOL`` residual PT2 energy
+        (default :data:`groundstate.GS_E_PT2_TOL`); a floor above that loosens them, and the
+        expansion then warns with the residual it left -- a bounded approximation, unlike
+        lowering the determinant cap, which truncates the basis itself.
     ground_state_manifold : bool
         As :func:`fixed_peak_dc`: opt-in, default ``False``. Check ``manifold_spread`` (in
         ``report``, or ``occupation_spread`` via ``solver_trace``) from a **prior evaluation with
@@ -1900,6 +1920,7 @@ def fixed_gap_dc(
                 # (`dc_record.recording` does `report.update(record)` and never clears).
                 dc_rec["ground_state_manifold"] = ctx.ground_state_manifold
                 dc_rec["de2_min"] = ctx.de2_min
+                dc_rec["e_pt2_tol"] = ctx.e_pt2_tol
                 if mu_seen is not None:
                     delta_plus, delta_minus = _measure_edge_character(ctx, mu_seen, n_center_at[mu_seen])
                     dc_rec["delta_plus"], dc_rec["delta_minus"] = delta_plus, delta_minus
