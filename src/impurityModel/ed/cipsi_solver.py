@@ -1048,7 +1048,7 @@ class CIPSISolver:
         by de2 importance are kept (collective bisection cutoff, ties under-admitted)
         before the symmetry closure, and ``self.last_selection`` records
         ``{"n_candidates", "n_admitted", "discarded_de2_mass", "subthreshold_de2_mass",
-        "residual_pt2", "hpsi_rows"}``. Collective on ``basis.comm``.
+        "residual_pt2", "n_references", "hpsi_rows"}``. Collective on ``basis.comm``.
 
         ``affordable_growth``, optional
             ``callable(transient_bytes, rss_bytes) -> int | None``: a second, *memory-derived*
@@ -1135,6 +1135,10 @@ class CIPSISolver:
             preselect &= scores > collective_mass_cutoff(scores, float(e_pt2_tol), comm)
         de2_mask, selection_stats = self._admit_top(scores, preselect, max_new)
         selection_stats["hpsi_rows"] = hpsi_rows
+        # The reference states this round scored, i.e. the states `residual_pt2` covers. Not
+        # `psi_refs` after `expand` returns: a capped run exits at the loop head, after an
+        # eigensolve that may have widened the block past what was scored.
+        selection_stats["n_references"] = _psi_ref_width(psi_ref)
         selection_stats.update(memory_stats)
         self.last_selection = selection_stats
         new_Dj = set(itertools.compress(local_Djs, de2_mask))

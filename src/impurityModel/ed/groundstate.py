@@ -8,7 +8,7 @@ from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, get_effective_restrictions
 from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.block_structure import BlockStructure, get_equivalent_blocks, print_block_structure
-from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver, _psi_ref_width
+from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
 from impurityModel.ed.gs_statistics import (
     compute_entanglement_entropy,
     compute_gs_statistics,
@@ -1253,7 +1253,9 @@ def solve_ground_state(
     # The residual in `solver.convergence_report` covers the reference states `expand` carried.
     # Its own eigensolve already widens to the same Boltzmann cut, so the loop below should not
     # find more; if it does, those states have no residual and the report must not claim them.
-    n_references = _psi_ref_width(solver.psi_refs) if solver.psi_refs is not None else 0
+    # The states the last selection round scored, not `solver.psi_refs`: a capped expansion
+    # returns the block of an eigensolve that ran after that round and may be wider.
+    n_references = int((solver.last_selection or {}).get("n_references", 0))
     wanted = num_wanted
     while True:
         with solver_trace.timed("eigensolve", stage="gs_thermal", num_wanted=wanted):
