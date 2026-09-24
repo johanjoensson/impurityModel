@@ -74,6 +74,59 @@ def collective_amplitude_cutoff(scores, k, comm):
     return hi
 
 
+def collective_mass_cutoff(scores, budget, comm):
+    """Largest cutoff whose tail ``sum(score <= cutoff)`` stays within ``budget``, across all ranks.
+
+    The mass-weighted sibling of :func:`collective_amplitude_cutoff`: where that one bounds the
+    *number* of entries above the cutoff, this bounds the *summed importance* of the entries at or
+    below it. Retaining everything strictly above the returned cutoff therefore leaves out a set
+    whose global score sum is at most ``budget`` -- the error bound a CIPSI selection round
+    spends when ``scores`` are Epstein-Nesbet PT2 contributions, as opposed to a per-candidate
+    floor, which bounds each discarded term but not their sum.
+
+    The same fixed-count geometric bisection over the nonzero score range, on allreduce'd partial
+    sums, so every rank computes the identical cutoff. A global total within ``budget`` returns
+    the maximum score (retain nothing); ``budget = 0`` returns a value below the smallest nonzero
+    score (retain every nonzero score). **Collective on** ``comm``: call unconditionally on all
+    ranks (a rank may hold zero scores).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Rank-local nonnegative importance scores.
+    budget : float
+        Maximum global score sum allowed at or below the returned cutoff.
+    comm : MPI.Comm or None
+        Communicator; ``None`` (or size 1) means serial.
+
+    Returns
+    -------
+    float
+        The cutoff; retain entries with ``score > cutoff``.
+    """
+    mpi = comm is not None and comm.size > 1
+    positive = scores[scores > 0.0] if scores.size else scores
+
+    def global_sum(value):
+        return comm.allreduce(float(value), op=MPI.SUM) if mpi else float(value)
+
+    local_max = float(positive.max()) if positive.size else 0.0
+    hi = comm.allreduce(local_max, op=MPI.MAX) if mpi else local_max
+    if hi == 0.0 or global_sum(positive.sum()) <= budget:
+        return hi
+    local_min = float(positive.min()) if positive.size else np.inf
+    lo = comm.allreduce(local_min, op=MPI.MIN) if mpi else local_min
+    # Floor just below the smallest nonzero score: its tail is empty, so it is always feasible.
+    lo *= 0.5
+    for _ in range(45):
+        mid = np.sqrt(lo * hi)
+        if global_sum(positive[positive <= mid].sum()) <= budget:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 class _LocalBasisView:
     """A read-only sequence view of a rank's local determinants.
 
