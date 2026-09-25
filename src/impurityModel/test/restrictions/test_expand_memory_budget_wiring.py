@@ -63,6 +63,10 @@ def test_both_expand_call_sites_pass_the_budget():
     n_expand = src.count("solver.expand(")
     n_wired = src.count("memory_budget_bytes=expand_memory_budget(comm)")
     assert n_expand == n_wired == 2, f"{n_expand} expand call sites, {n_wired} pass a budget"
+    # ...and both say whether the cap may be tightened: a cap the user set is final, so its guard
+    # only warns. Omitting the argument would silently default to "tighten" on that path.
+    n_policy = src.count("memory_policy=_memory_policy(truncation_threshold)")
+    assert n_policy == 2, f"{n_policy} of 2 expand call sites pass the cap's memory policy"
 
 
 # ---------------------------------------------------------------------------------------

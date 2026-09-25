@@ -20,6 +20,7 @@ from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
+    CapPolicy,
     absolute_rss_budget,
     available_bytes_per_rank,
     cap_value,
@@ -228,6 +229,11 @@ def expand_memory_budget(comm):
     if not config.GS_MEMORY_BUDGET_INCLUDE_RESIDENT.get():
         resident = 0  # rollback to the pre-2026-09 free-memory arithmetic; see the knob's doc
     return int(absolute_rss_budget(safety, available, resident))
+
+
+def _memory_policy(truncation_threshold):
+    """``CIPSISolver.expand``'s ``memory_policy`` for a cap: ``"warn"`` only if the user set it."""
+    return "tighten" if CapPolicy.coerce(truncation_threshold).from_memory else "warn"
 
 
 def build_basis_and_solver(
@@ -516,10 +522,11 @@ def _solve_sector_core(
                 slaterWeightMin=slaterWeightMin,
                 solver=cipsi_solver_method,
                 reort=reort,
-                # Measured-RSS trip-wire. Only uncapped expansions are affected (a set
-                # `truncation_threshold` means the fixed-budget path governs and this never
-                # fires), so a capped run stays bit-identical. See `expand_memory_budget`.
+                # Measured-RSS guards (see `expand_memory_budget`). They may hold the basis below
+                # a cap derived from memory, or below no cap at all; a cap the user set is final,
+                # so for it they only warn. A run that stays under budget is unaffected either way.
                 memory_budget_bytes=expand_memory_budget(comm),
+                memory_policy=_memory_policy(truncation_threshold),
                 # `symmetry_generators` deliberately not forwarded: CIPSISolver.expand re-derives
                 # them from the H it is actually expanding when the argument is None, which is
                 # always the right operator. Passing a set derived elsewhere risks handing it
@@ -1245,6 +1252,7 @@ def solve_ground_state(
             slaterWeightMin=slaterWeightMin,
             solver=cipsi_solver_method,
             memory_budget_bytes=expand_memory_budget(comm),
+            memory_policy=_memory_policy(truncation_threshold),
             # `symmetry_generators` deliberately not passed: expand re-derives them from the H it
             # is expanding (and the closure is opt-in, cipsi_solver.SYMMETRY_CLOSURE_DEFAULT).
         )

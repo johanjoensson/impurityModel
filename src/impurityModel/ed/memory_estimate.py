@@ -201,6 +201,7 @@ DEFAULT_TRUNCATION_THRESHOLD = 1_000_000
 #: at plan time; this margin is what stands in for it.
 DEFAULT_MEMORY_SAFETY = 0.5
 
+
 @dataclass(frozen=True)
 class CapPolicy:
     """The determinant caps of one calculation, and whether memory may lower them.

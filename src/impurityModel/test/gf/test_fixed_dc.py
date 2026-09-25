@@ -2495,10 +2495,13 @@ def test_a_memory_bound_search_raises_on_every_rank(monkeypatch):
     where they are stored, so the verdict should be rank-invariant; this asserts that it is.
 
     A near-zero safety fraction makes the guard trip on the first cycle of every sector, which is
-    the production failure in miniature.
+    the production failure in miniature. The cap is left to memory (``None``): a cap the user set is
+    final and the guard only warns about it, so only an auto cap can become memory-bound -- see
+    ``test_a_user_cap_is_never_memory_bound`` below.
     """
     monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "1e-9")
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.0)
+    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
     raised = False
     try:
         fixed_gap_dc(offset=0.0, **kwargs)
@@ -2508,6 +2511,25 @@ def test_a_memory_bound_search_raises_on_every_rank(monkeypatch):
     # here -- a hang would instead show up earlier, inside the criterion, which is the point.
     verdicts = MPI.COMM_WORLD.allgather(raised)
     assert all(verdicts), f"the rejection was not rank-invariant: {verdicts}"
+
+
+@pytest.mark.mpi
+def test_a_user_cap_is_never_memory_bound(monkeypatch, capfd):
+    """The other half of the policy: at the same near-zero budget, a cap the user set is kept, so
+    no sector is memory-bound and the search is not rejected -- it warns instead, on every rank's
+    behalf from rank 0, and the verdict is rank-invariant."""
+    monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "1e-9")
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.0)
+    raised = False
+    try:
+        fixed_gap_dc(offset=0.0, **kwargs)
+    except DoubleCountingUnreachable:
+        raised = True
+    verdicts = MPI.COMM_WORLD.allgather(raised)
+    assert not any(verdicts), f"a user cap was treated as memory-bound: {verdicts}"
+    _out, err = capfd.readouterr()
+    if MPI.COMM_WORLD.rank == 0:
+        assert "WARNING determinant cap" in err
 
 
 @pytest.fixture(autouse=True)

@@ -539,9 +539,11 @@ GS_MEMORY_BUDGET_SAFETY = Knob(
     default=None,
     minimum=0.0,
     group="groundstate",
-    doc="""Fraction of the rank's **whole share** of node RAM at which an **uncapped** CIPSI
-    ground-state expansion stops growing its basis, measured against its own peak RSS rather than
-    against a predicted one (`CIPSISolver.expand`'s `memory_budget_bytes`). Unset uses
+    doc="""Fraction of the rank's **whole share** of node RAM at which a CIPSI ground-state
+    expansion stops growing its basis, measured against its own peak RSS rather than against a
+    predicted one (`CIPSISolver.expand`'s `memory_budget_bytes`). This applies when the cap was
+    derived from memory (`auto`) or there is none (`unlimited`). A `truncation_threshold` the user
+    set is final: the guard then only warns, on stdout and stderr, when the budget is reached. Unset uses
     `memory_estimate.DEFAULT_MEMORY_SAFETY`; `0` disables the guard and restores the pre-2026-09
     behaviour, in which an uncapped expansion grows until the kernel OOM-kills the rank.
 
@@ -573,8 +575,8 @@ GS_MEMORY_BUDGET_SAFETY = Knob(
     basis size. The two overlap by construction -- the look-ahead reports a `"budget"`-reason zero
     only when the round's starting RSS is already over budget, and the trip-wire's `peak_rss` is
     never below that -- so in that case the backstop has always fired first. Both only ever
-    *tighten* a caller's cap, never loosen it, and a run that stays under budget is bit-identical
-    to one without the guard.""",
+    *tighten* a memory-derived cap, never loosen it, never touch a cap the user set, and a run
+    that stays under budget is bit-identical to one without the guard.""",
 )
 
 

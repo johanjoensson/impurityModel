@@ -137,6 +137,10 @@ def test_the_guard_tightens_a_cap_that_memory_cannot_afford():
 
     The guard therefore now fires whatever the cap, and only ever **tightens** it -- the
     never-loosen invariant is kept by ``test_the_guard_never_loosens_a_caller_cap`` above.
+
+    That is ``memory_policy="tighten"`` (the default), the policy for a cap derived from memory.
+    A cap the **user** set is final and runs under ``"warn"`` instead -- see
+    ``test_warn_mode_keeps_a_user_cap_and_only_warns`` below.
     """
     H = _hamiltonian()
     all_dets = [_det(occ) for occ in itertools.combinations(range(N_SPIN_ORBITALS), N_ELECTRONS)]
@@ -197,3 +201,73 @@ def test_impossible_budget_adopts_a_cap_at_the_current_basis_size_mpi():
     assert np.isfinite(solver.basis.truncation_threshold)
     thresholds = comm.allgather(solver.basis.truncation_threshold)
     assert all(t == thresholds[0] for t in thresholds)
+
+
+def test_warn_mode_keeps_a_user_cap_and_only_warns(capfd):
+    """A cap the user set is final: at a budget every sample exceeds, ``memory_policy="warn"``
+    must leave the cap, the admissions and the truncation report exactly as an unguarded run
+    has them, and say so -- on stderr as well as stdout, at any verbosity."""
+    H = _hamiltonian()
+    all_dets = [_det(occ) for occ in itertools.combinations(range(N_SPIN_ORBITALS), N_ELECTRONS)]
+    user_cap = 10**6
+
+    reference = _make_solver(None, truncation_threshold=user_cap)
+    reference.basis.clear()
+    reference.basis.add_states([all_dets[0]])
+    reference.expand(H, de2_min=GS_DE2_MIN, solver="trlm")
+
+    solver = _make_solver(None, truncation_threshold=user_cap)
+    solver.basis.verbose = False
+    solver.basis.clear()
+    solver.basis.add_states([all_dets[0]])
+    capfd.readouterr()
+    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1, memory_policy="warn")
+    out, err = capfd.readouterr()
+
+    assert solver.basis.truncation_threshold == user_cap
+    assert set(solver.basis.local_basis) == set(reference.basis.local_basis)
+    assert solver.truncation_report is None, "warn mode must not report a memory-bound cap"
+    assert solver.memory_warning is not None and solver.memory_warning["cap"] == user_cap
+    assert "WARNING determinant cap" in err
+    assert "WARNING determinant cap" in out
+    assert err.count("WARNING determinant cap") == 1, "the warning is latched once per expansion"
+
+
+def test_warn_mode_is_a_no_op_under_budget():
+    """No budget exceeded, no warning and nothing recorded."""
+    H = _hamiltonian()
+    solver = _make_solver(None, truncation_threshold=10**6)
+    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=2**60, memory_policy="warn")
+    assert solver.memory_warning is None
+    assert solver.truncation_report is None
+
+
+def test_unknown_memory_policy_is_rejected():
+    with pytest.raises(ValueError, match="memory_policy"):
+        _make_solver(None).expand(_hamiltonian(), memory_policy="shrink")
+
+
+def test_groundstate_maps_cap_provenance_to_memory_policy():
+    """Only a finite cap the user set runs warn-only; auto and unlimited keep the guard."""
+    from impurityModel.ed.groundstate import _memory_policy
+    from impurityModel.ed.memory_estimate import CapPolicy
+
+    assert _memory_policy(None) == "tighten"
+    assert _memory_policy(np.inf) == "tighten"
+    assert _memory_policy(5000) == "warn"
+    assert _memory_policy(CapPolicy(gs=5000, gf=5000, from_memory=True)) == "tighten"
+    assert _memory_policy(CapPolicy(gs=5000, gf=5000, from_memory=False)) == "warn"
+
+
+@pytest.mark.mpi
+def test_warn_mode_keeps_a_user_cap_mpi():
+    """Warn mode's latch rides on the same replicated condition as the trip-wire, so every rank
+    must keep the cap and record the warning together -- run at -n 2 and -n 3."""
+    comm = MPI.COMM_WORLD
+    H = _hamiltonian()
+    solver = _make_solver(comm, truncation_threshold=10**6)
+    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1, memory_policy="warn")
+
+    assert solver.basis.truncation_threshold == 10**6
+    flags = comm.allgather(solver.memory_warning is not None)
+    assert all(flags), flags
