@@ -1109,6 +1109,11 @@ def find_ground_state_basis(
         # occupations -- measured {1, 2, 3} on a split-block toy whose winning sector is 2.
         # Callers that need the sector must read it here rather than inspect a determinant.
         basis_gs.ground_state_occupation = dict(winning_impurity_occ)
+        # The resolved cap policy, read-only and immutable, for the Green's-function stage to
+        # size its unit bases from (gf_units.gf_cap). Deliberately not
+        # `basis_gs.truncation_threshold`: the memory guard may lower that one for the ground
+        # state, and a GF unit must not inherit it.
+        basis_gs.cap_policy = CapPolicy.coerce(truncation_threshold)
     return basis_gs
 
 

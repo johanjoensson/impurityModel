@@ -33,6 +33,29 @@ comm = MPI.COMM_WORLD
 rank = comm.rank
 
 
+def gf_cap(basis):
+    """The determinant cap a Green's-function unit basis built from ``basis`` runs under.
+
+    When the ground-state solve attached its :class:`~impurityModel.ed.memory_estimate.CapPolicy`
+    (``basis.cap_policy``, set by ``find_ground_state_basis``), that policy's ``gf`` cap -- the
+    cap the driver resolved, *not* whatever ``basis.truncation_threshold`` the ground-state memory
+    guard left behind. The guard may hold one ground-state expansion below its cap; that says
+    nothing about what a Green's-function unit can afford, and inheriting it is how a 120-determinant
+    ground state once froze every SrMnO3 GF unit at 120 determinants and made Sigma acausal.
+    Without a policy (a basis built directly), the basis's own cap, as before.
+    """
+    policy = getattr(basis, "cap_policy", None)
+    if policy is not None and policy.gf is not None:
+        return policy.gf
+    return getattr(basis, "truncation_threshold", np.inf)
+
+
+def _may_lower_gf_cap(basis):
+    """Whether memory may size a GF unit below :func:`gf_cap`: not for a cap the user set."""
+    policy = getattr(basis, "cap_policy", None)
+    return policy is None or policy.from_memory
+
+
 @dataclass(frozen=True)
 class GFUnit:
     """One distributable Green's-function work unit: a (possibly wide) block-Lanczos recurrence.
@@ -217,11 +240,18 @@ def run_units_distributed(
     """
     n_units = len(unit_seeds)
     if basis.comm is None or basis.comm.size <= 1:
-        if reduce_fn is not None:
-            for u in range(n_units):
-                reduce_fn(u, kernel(basis, u, unit_seeds[u]))
-            return True
-        return [kernel(basis, u, unit_seeds[u]) for u in range(n_units)]
+        # The kernels clone `basis`, so the GF cap has to be on it for the duration; restored in
+        # the `finally`, so the caller's (ground-state) cap survives this call on every path.
+        caller_cap = basis.truncation_threshold
+        basis.truncation_threshold = gf_cap(basis)
+        try:
+            if reduce_fn is not None:
+                for u in range(n_units):
+                    reduce_fn(u, kernel(basis, u, unit_seeds[u]))
+                return True
+            return [kernel(basis, u, unit_seeds[u]) for u in range(n_units)]
+        finally:
+            basis.truncation_threshold = caller_cap
 
     seed_offsets = np.concatenate(([0], np.cumsum([len(s) for s in unit_seeds]))).astype(int)
     # Every color's unit basis inherits the same truncation_threshold, so colors multiply
@@ -229,7 +259,7 @@ def run_units_distributed(
     # Cap the concurrency so a cap-filling unit basis still fits the per-rank budget. The
     # probe is collective on basis.comm; the gates (cap finiteness, unit/rank counts) are
     # replicated, so every rank computes the identical max_colors.
-    cap = getattr(basis, "truncation_threshold", np.inf)
+    cap = gf_cap(basis)
     width = max((len(s) for s in unit_seeds), default=1)
     max_colors = None
     if np.isfinite(cap) and min(basis.comm.size, n_units) > 1:
@@ -313,7 +343,10 @@ def run_units_distributed(
         )
         print("=" * 80, flush=True)
     try:
-        if np.isfinite(cap):
+        # Every color starts from the GF cap, not from the cap `split_basis` inherited from the
+        # ground-state basis (which the memory guard may have lowered for the ground state).
+        split_basis.truncation_threshold = cap
+        if np.isfinite(cap) and _may_lower_gf_cap(basis):
             unit_cap = max_unit_dets_within_budget(
                 basis.num_spin_orbitals,
                 width,

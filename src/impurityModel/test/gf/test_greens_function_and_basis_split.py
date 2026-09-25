@@ -447,6 +447,89 @@ def test_run_units_distributed_does_not_mutate_the_callers_basis_cap_mpi(monkeyp
     )
 
 
+def _policy_basis(comm, gs_cap, policy):
+    """A 4-determinant basis whose own cap was lowered to ``gs_cap`` (as the ground-state memory
+    guard does) and which carries the driver's resolved ``policy`` (as find_ground_state_basis
+    attaches it), plus two identical width-1 unit seeds."""
+    states = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=comm,
+        truncation_threshold=gs_cap,
+    )
+    basis.cap_policy = policy
+    rank0 = comm is None or comm.rank == 0
+    psi = ManyBodyState.from_states(
+        [ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0} if rank0 else {}, width=1)]
+    )
+    return basis, [[psi], [psi]], np.array([1.0, 1.0])
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the unit split only runs on more than one rank")
+def test_a_user_gf_cap_is_exact_whatever_the_budget_mpi(monkeypatch):
+    """A cap the user set is final for every GF unit: neither the ground state's lowered cap nor
+    a budget that affords almost nothing may shrink it."""
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD
+    user_cap = 10**9
+    basis, seeds, weights = _policy_basis(comm, 10, me.CapPolicy(gs=user_cap, gf=user_cap, from_memory=False))
+    observed = []
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    run_units_distributed(
+        basis, seeds, weights, lambda b, u, s: observed.append(float(b.truncation_threshold)), verbose=False
+    )
+    assert observed and all(c == user_cap for c in observed), observed
+    assert basis.truncation_threshold == 10, "the ground-state basis keeps its own cap"
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the unit split only runs on more than one rank")
+def test_an_auto_gf_cap_does_not_inherit_a_lowered_ground_state_cap_mpi(monkeypatch):
+    """The ground-state guard held the ground state at 10 determinants; the GF units must be sized
+    from the resolved GF cap and their own memory, not from those 10 (the SrMnO3 round-9 acausal
+    Sigma: a 120-determinant ground state froze every GF unit at 120)."""
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD
+    basis, seeds, weights = _policy_basis(comm, 10, me.CapPolicy(gs=10**9, gf=10**9, from_memory=True))
+    observed = []
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    run_units_distributed(
+        basis, seeds, weights, lambda b, u, s: observed.append(float(b.truncation_threshold)), verbose=False
+    )
+    assert observed and all(c > 10 for c in observed), observed
+    assert all(c < 10**9 for c in observed), "an auto cap is still sized to the unit's memory"
+
+
+def test_the_serial_gf_path_uses_the_gf_cap_and_restores_the_ground_state_cap():
+    """Serially there is no split, so the kernels clone the ground-state basis itself: the GF cap
+    has to be on it while they run, and gone afterwards."""
+    from impurityModel.ed.gf_units import run_units_distributed
+    from impurityModel.ed.memory_estimate import CapPolicy
+
+    basis, seeds, weights = _policy_basis(None, 10, CapPolicy(gs=500, gf=500, from_memory=False))
+    observed = []
+    run_units_distributed(basis, seeds, weights, lambda b, u, s: observed.append(b.truncation_threshold))
+    assert observed == [500, 500]
+    assert basis.truncation_threshold == 10
+
+
+def test_a_basis_without_a_policy_keeps_its_own_cap_serial():
+    """Bases built directly (spectra, RIXS, tests) carry no policy: nothing changes for them."""
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    basis, seeds, weights = _policy_basis(None, 10, None)
+    observed = []
+    run_units_distributed(basis, seeds, weights, lambda b, u, s: observed.append(b.truncation_threshold))
+    assert observed == [10, 10]
+
+
 @pytest.mark.mpi
 def test_split_basis_replicates_full_basis_across_lopsided_colors_mpi():
     """The color split must give every color the *full* determinant set and preserve
