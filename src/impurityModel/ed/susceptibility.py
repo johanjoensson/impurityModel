@@ -425,7 +425,7 @@ def calc_susceptibility_workflow(
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
     from impurityModel.ed.groundstate import calc_gs
-    from impurityModel.ed.memory_estimate import resolve_sizing_block_width, suggest_truncation_threshold
+    from impurityModel.ed.memory_estimate import resolve_cap_policy, resolve_sizing_block_width
     from impurityModel.ed.solver_basis import prepare_solver_basis
 
     # Unpack the grouped parameters into the local names used throughout the body.
@@ -452,14 +452,16 @@ def calc_susceptibility_workflow(
     # so resolve_sizing_block_width's max() keeps the estimate an upper bound over both.
     gf_block_width = max(4, *(len(block) for block in sb.block_structure.blocks))
     sizing_block_width = resolve_sizing_block_width(gf_block_width)
-    if truncation_threshold is None:
-        truncation_threshold = suggest_truncation_threshold(
-            sb.n_spin_orbitals,
-            comm=comm,
-            block_width=sizing_block_width,
-            reort=None,
-            method="lanczos",
-        )
+    cap_policy, _ = resolve_cap_policy(
+        truncation_threshold,
+        sb.n_spin_orbitals,
+        comm=comm,
+        verbose=False,
+        log="never",
+        block_width=sizing_block_width,
+        reort=None,
+        method="lanczos",
+    )
     basis_information = {
         "impurity_orbitals": sb.impurity_orbitals,
         "bath_states": sb.bath_states,
@@ -470,7 +472,7 @@ def calc_susceptibility_workflow(
         "dense_cutoff": dense_cutoff,
         "rank": rank,
         "comm": comm,
-        "truncation_threshold": truncation_threshold,
+        "truncation_threshold": cap_policy,
     }
     psis, es, ground_state_basis, _thermal_rho, _gs_info = calc_gs(
         sb.h,

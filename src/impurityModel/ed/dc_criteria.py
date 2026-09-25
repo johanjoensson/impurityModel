@@ -113,6 +113,7 @@ from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
+    CapPolicy,
     log_memory_budget,
     resolve_gs_block_width,
     resolve_gs_num_wanted,
@@ -120,6 +121,19 @@ from impurityModel.ed.memory_estimate import (
 )
 from impurityModel.ed.solver_basis import _per_group_occupation, get_symmetry_generators, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
+
+
+def _ctx_cap_policy(ctx):
+    """The :class:`CapPolicy` a DC context's sector solves run under.
+
+    ``ctx.truncation_threshold`` is a plain number the search itself may move (the cap ladder),
+    so the policy is built at each solve rather than stored: memory may hold the basis below it
+    unless the caller set a finite cap, i.e. exactly when ``ctx.cap_from_memory`` or the cap is
+    unlimited.
+    """
+    cap = ctx.truncation_threshold
+    unlimited = cap is None or not cap < np.inf
+    return CapPolicy(gs=cap, gf=cap, from_memory=bool(ctx.cap_from_memory or unlimited))
 
 
 def _dump_dc_matrices(dc_guess, dc, rank):
@@ -620,7 +634,7 @@ class _SectorContext:
             dense_cutoff=self.dense_cutoff,
             comm=MPI.COMM_WORLD,
             verbose=self.verbose,
-            truncation_threshold=self.truncation_threshold,
+            truncation_threshold=_ctx_cap_policy(self),
             weighted_restrictions=self.weighted_restrictions,
         )
         # Read from the search that chose it. NOT from a determinant: the returned basis is the
@@ -688,7 +702,7 @@ class _SectorContext:
             self.dense_cutoff,
             comm=MPI.COMM_WORLD,
             verbose=self.verbose,
-            truncation_threshold=self.truncation_threshold,
+            truncation_threshold=_ctx_cap_policy(self),
             slaterWeightMin=self.slater_weight_min,
             weighted_restrictions=self.weighted_restrictions,
             frozen_occupations=self.frozen_occupations,
@@ -2258,7 +2272,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             dense_cutoff=ctx.dense_cutoff,
             comm=MPI.COMM_WORLD,
             verbose=verbose,
-            truncation_threshold=ctx.truncation_threshold,
+            truncation_threshold=_ctx_cap_policy(ctx),
             weighted_restrictions=ctx.weighted_restrictions,
             cipsi_solver_method=ctx.cipsi_solver_method,
             e_pt2_tol=ctx.e_pt2_tol,

@@ -22,10 +22,10 @@ from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
     absolute_rss_budget,
     available_bytes_per_rank,
-    log_memory_budget,
+    cap_value,
     resident_bytes_per_rank,
+    resolve_cap_policy,
     resolve_gs_block_width,
-    suggest_truncation_threshold,
 )
 from impurityModel.ed.observables import (
     block_group_labels,
@@ -277,7 +277,7 @@ def build_basis_and_solver(
         total_charge_slack=total_charge_slack,
         tau=tau,
         chain_restrict=chain_restrict,
-        truncation_threshold=truncation_threshold,
+        truncation_threshold=cap_value(truncation_threshold),
         verbose=verbose,
         comm=comm,
         weighted_restrictions=weighted_restrictions,
@@ -725,7 +725,7 @@ def find_ground_state_basis(
     Returns:
     basis_gs, ManybodyBasis: Initial basis for the ground state
     """
-    if truncation_threshold is None:
+    if cap_value(truncation_threshold) is None:
         # Same spin-orbital count formula as Basis.__init__ (blocked orbital lists).
         num_spin_orbitals = sum(
             sum(len(orbs) for orbs in impurity_orbitals[i])
@@ -733,15 +733,14 @@ def find_ground_state_basis(
             + sum(len(orbs) for orbs in bath_states[1][i])
             for i in bath_states[0]
         )
-        gs_block_width = resolve_gs_block_width()
-        truncation_threshold = suggest_truncation_threshold(num_spin_orbitals, comm=comm, block_width=gs_block_width)
-        log_memory_budget(
+        truncation_threshold, _ = resolve_cap_policy(
             truncation_threshold,
             num_spin_orbitals,
             comm=comm,
-            block_width=gs_block_width,
             verbose=verbose,
             label="ground-state basis",
+            log="derived",
+            block_width=resolve_gs_block_width(),
         )
     if mixed_valence is None or mixed_valence is False:
         mixed_valence = dict.fromkeys(N0, 0)

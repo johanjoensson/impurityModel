@@ -26,11 +26,10 @@ from impurityModel.ed.greens_function import (
 )
 from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, calc_gs
 from impurityModel.ed.memory_estimate import (
-    log_memory_budget,
     log_peak_vs_predicted,
+    resolve_cap_policy,
     resolve_gs_num_wanted,
     resolve_sizing_block_width,
-    suggest_truncation_threshold,
 )
 from impurityModel.ed.sigma import (  # noqa: F401
     UnphysicalGreensFunctionError,
@@ -237,24 +236,18 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     # saw it honoured there and silently ignored here, with the log's own "not supplied" warning
     # the only sign (`doc/plans/dc_smo_memory.md`, round 9).
     gs_num_wanted = resolve_gs_num_wanted()
-    if truncation_threshold is None:
-        truncation_threshold = suggest_truncation_threshold(
-            n_spin_orbitals,
-            comm=comm,
-            block_width=sizing_block_width,
-            gs_num_wanted=gs_num_wanted,
-            reort=reort,
-            method=gf_method,
-        )
-    memory_budget = log_memory_budget(
+    # Collective on comm (provenance broadcast + memory probe), so unconditional on every rank;
+    # only the printing is verbosity-gated. The policy, not a bare number, travels down to the
+    # ground-state solves so they know whether memory may hold the basis below this cap.
+    cap_policy, memory_budget = resolve_cap_policy(
         truncation_threshold,
         n_spin_orbitals,
         comm=comm,
+        verbose=verbosity > 0,
+        label=cluster_label,
         block_width=sizing_block_width,
         gs_num_wanted=gs_num_wanted,
         reort=reort,
-        verbose=verbosity > 0,
-        label=cluster_label,
         method=gf_method,
     )
     basis_information = {
@@ -267,7 +260,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         "dense_cutoff": dense_cutoff,
         "rank": rank,
         "comm": comm,
-        "truncation_threshold": truncation_threshold,
+        "truncation_threshold": cap_policy,
         # Optional excitation-budget weighted restriction on the ground-state basis; the GF
         # excited bases inherit it (widened) via greens_function._build_excited_restrictions.
         "weighted_restrictions": build_weighted_restrictions(bath_states, excitation_budget),

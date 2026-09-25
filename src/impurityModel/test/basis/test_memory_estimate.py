@@ -781,4 +781,7 @@ def test_selfenergy_module_actually_forwards_gs_num_wanted():
     head = src[src.index("sizing_block_width = resolve_sizing_block_width") :]
     head = head[: head.index("basis_information")]
     assert "gs_num_wanted = resolve_gs_num_wanted()" in head
-    assert head.count("gs_num_wanted=gs_num_wanted") == 2, "both suggest_* and log_memory_budget"
+    # One `resolve_cap_policy` call forwards its sizing kwargs to both `suggest_*` and
+    # `log_memory_budget`, so the argument has to appear exactly once, on that call.
+    assert "resolve_cap_policy(" in head
+    assert head.count("gs_num_wanted=gs_num_wanted") == 1

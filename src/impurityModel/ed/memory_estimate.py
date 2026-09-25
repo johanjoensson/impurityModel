@@ -41,6 +41,7 @@ buffers) are absorbed by ``DEFAULT_MEMORY_SAFETY``.
 """
 
 import os
+from dataclasses import dataclass
 from itertools import pairwise
 from math import ceil, exp, log, log2
 
@@ -199,6 +200,60 @@ DEFAULT_TRUNCATION_THRESHOLD = 1_000_000
 #: rank's share, so no closed-form correction is possible without measuring the real partition
 #: at plan time; this margin is what stands in for it.
 DEFAULT_MEMORY_SAFETY = 0.5
+
+@dataclass(frozen=True)
+class CapPolicy:
+    """The determinant caps of one calculation, and whether memory may lower them.
+
+    Resolved once per driver (:func:`resolve_cap_policy`) and passed down unchanged, so every
+    solve below knows not just *how large* its basis may grow but *who decided*: a cap the
+    user set is final, while a cap derived from memory (``auto``) or no cap at all
+    (``unlimited``) may be held lower at run time by the measured-RSS guards.
+
+    Attributes
+    ----------
+    gs : int, float or None
+        Ground-state determinant cap. ``None`` means auto and not yet resolved; ``inf`` means
+        uncapped.
+    gf : int, float or None
+        Cap on every Green's-function unit basis. ``None`` means auto and sized at GF entry.
+    from_memory : bool
+        ``False`` only for a finite cap the user set. Everything else -- auto, and
+        ``unlimited`` -- lets the memory guards hold a basis below its cap.
+    """
+
+    gs: object = None
+    gf: object = None
+    from_memory: bool = True
+
+    @classmethod
+    def coerce(cls, value):
+        """A ``CapPolicy`` from a legacy ``truncation_threshold`` value (or one passed through).
+
+        ``None`` is auto, ``inf`` is unlimited, and a finite number is a cap the user set.
+        """
+        if isinstance(value, CapPolicy):
+            return value
+        if value is None:
+            return cls(gs=None, gf=None, from_memory=True)
+        if not value < float("inf"):
+            return cls(gs=value, gf=value, from_memory=True)
+        return cls(gs=value, gf=value, from_memory=False)
+
+    @property
+    def source(self):
+        """``"user"``, ``"unlimited"`` or ``"auto"``, for log lines."""
+        if not self.from_memory:
+            return "user"
+        if self.gs is not None and not self.gs < float("inf"):
+            return "unlimited"
+        return "auto"
+
+
+def cap_value(value):
+    """The ground-state cap a legacy ``truncation_threshold`` or a :class:`CapPolicy` stands for."""
+    return value.gs if isinstance(value, CapPolicy) else value
+
 
 # cgroup v1 reports "no limit" as a huge number (PAGE_COUNTER_MAX); anything this large
 # is unlimited in practice.
@@ -1348,6 +1403,54 @@ def log_memory_budget(
             flush=True,
         )
     return {"available_per_rank": available, "gs_peak": gs, "gf_peak": gf, "fits": fits}
+
+
+def resolve_cap_policy(requested, n_spin_orbitals, comm=None, *, verbose=True, label="", log="always", **sizing):
+    """Resolve a driver's ``truncation_threshold`` into a :class:`CapPolicy`, and log it.
+
+    .. warning:: **Collective on** ``comm``: the provenance is broadcast from rank 0 and the
+       memory probe is collective. Call it unconditionally on every rank.
+
+    Parameters
+    ----------
+    requested : int, float, None or CapPolicy
+        The user's value: ``None`` for auto, ``inf`` for unlimited, a number for a fixed cap.
+        An already resolved :class:`CapPolicy` is only logged.
+    n_spin_orbitals : int
+        Determinant bit width.
+    comm : MPI communicator, optional
+        The communicator the solve runs on.
+    verbose : bool
+        Gate for the rank-0 budget print (may safely differ across ranks).
+    label : str
+        Prefix for the log lines.
+    log : {"always", "derived", "never"}
+        When to run :func:`log_memory_budget`: always, only when the cap was derived here, or
+        never.
+    **sizing
+        Forwarded to :func:`suggest_truncation_threshold` (and, minus ``safety``, to
+        :func:`log_memory_budget`).
+
+    Returns
+    -------
+    (CapPolicy, dict or None)
+        The resolved policy and :func:`log_memory_budget`'s return value (``None`` when
+        nothing was logged).
+    """
+    policy = CapPolicy.coerce(requested)
+    unresolved = policy.gs is None
+    from_memory = policy.from_memory
+    if comm is not None:
+        unresolved, from_memory = comm.bcast((unresolved, from_memory), root=0)
+    gs = policy.gs
+    if unresolved:
+        gs = suggest_truncation_threshold(n_spin_orbitals, comm=comm, **sizing)
+    budget = None
+    if log == "always" or (log == "derived" and unresolved):
+        log_sizing = {k: v for k, v in sizing.items() if k != "safety"}
+        budget = log_memory_budget(gs, n_spin_orbitals, comm=comm, verbose=verbose, label=label, **log_sizing)
+    gf = gs if policy.gf is None else policy.gf
+    return CapPolicy(gs=gs, gf=gf, from_memory=from_memory), budget
 
 
 def _proc_status_bytes(key):
