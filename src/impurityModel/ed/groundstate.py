@@ -1244,6 +1244,13 @@ def solve_ground_state(
         use_hf_seed=use_hf_seed,
     )
     basis.tau = tau
+    # The refinement solves one sector on one basis, so it starts from the resolved cap, not from
+    # a cap the memory guard lowered while the walk ran (at tau/100 and the walk's own de2 floor,
+    # with the walk's retained heap still counted in its RSS). Its own guard measures afresh. A
+    # cap the user set is never lowered in the first place, so this only concerns auto/unlimited.
+    policy = getattr(basis, "cap_policy", None)
+    if policy is not None and policy.from_memory and policy.gs is not None:
+        basis.truncation_threshold = policy.gs
     energy_cut = boltzmann_energy_cut(tau)
     solver = CIPSISolver(basis)
     with solver_trace.timed("expand", stage="gs_refine"):

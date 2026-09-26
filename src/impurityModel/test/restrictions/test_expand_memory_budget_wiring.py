@@ -158,3 +158,47 @@ def test_the_rollback_knob_is_registered():
     """An unregistered knob reads from the environment but never appears in `config.dump`, so a
     run cannot be reproduced from its own log."""
     assert "GS_MEMORY_BUDGET_INCLUDE_RESIDENT" in config.KNOBS
+
+
+class _StopAtRefine(Exception):
+    pass
+
+
+def _refine_start_cap(monkeypatch, walked_cap, policy):
+    """The cap `solve_ground_state`'s refinement expand starts from, after a walk that left its
+    basis at `walked_cap` and attached `policy`."""
+    from impurityModel.ed import cipsi_solver
+    from impurityModel.ed.manybody_basis import Basis
+
+    basis = Basis(
+        {0: [[0, 1]]}, ({0: [[2, 3]]}, {0: [[]]}), nominal_impurity_occ={0: 1}, truncation_threshold=walked_cap
+    )
+    basis.cap_policy = policy
+    monkeypatch.setattr(groundstate, "walk_to_ground_state_sector", lambda *a, **k: basis)
+    seen = {}
+
+    def fake_expand(self, *args, **kwargs):
+        seen["cap"] = self.basis.truncation_threshold
+        raise _StopAtRefine
+
+    monkeypatch.setattr(cipsi_solver.CIPSISolver, "expand", fake_expand)
+    with pytest.raises(_StopAtRefine):
+        groundstate.solve_ground_state(
+            None, {0: [[0, 1]]}, ({0: [[2, 3]]}, {0: [[]]}), {0: 1}, tau=0.01, slaterWeightMin=0
+        )
+    return seen["cap"]
+
+
+def test_the_refinement_does_not_inherit_a_cap_the_walk_lowered(monkeypatch):
+    """The walk keeps several sectors alive and may be held lower by the memory guard; the
+    refinement solves one sector on one basis and starts from the resolved (auto) cap, with its own
+    guard measuring afresh."""
+    from impurityModel.ed.memory_estimate import CapPolicy
+
+    assert _refine_start_cap(monkeypatch, 120, CapPolicy(gs=50_000, gf=50_000, from_memory=True)) == 50_000
+
+
+def test_the_refinement_keeps_a_user_cap(monkeypatch):
+    from impurityModel.ed.memory_estimate import CapPolicy
+
+    assert _refine_start_cap(monkeypatch, 2000, CapPolicy(gs=2000, gf=2000, from_memory=False)) == 2000
