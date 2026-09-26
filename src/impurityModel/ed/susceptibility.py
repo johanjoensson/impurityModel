@@ -425,7 +425,7 @@ def calc_susceptibility_workflow(
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
     from impurityModel.ed.groundstate import calc_gs
-    from impurityModel.ed.memory_estimate import resolve_cap_policy, resolve_sizing_block_width
+    from impurityModel.ed.memory_estimate import resolve_cap_policy
     from impurityModel.ed.solver_basis import prepare_solver_basis
 
     # Unpack the grouped parameters into the local names used throughout the body.
@@ -448,20 +448,8 @@ def calc_susceptibility_workflow(
     sb = prepare_solver_basis(
         h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity, rank=rank
     )
-    # See selfenergy.py's identical comment: block_width sizes both the GF and GS solves here,
-    # so resolve_sizing_block_width's max() keeps the estimate an upper bound over both.
-    gf_block_width = max(4, *(len(block) for block in sb.block_structure.blocks))
-    sizing_block_width = resolve_sizing_block_width(gf_block_width)
-    cap_policy, _ = resolve_cap_policy(
-        truncation_threshold,
-        sb.n_spin_orbitals,
-        comm=comm,
-        verbose=False,
-        log="never",
-        block_width=sizing_block_width,
-        reort=None,
-        method="lanczos",
-    )
+    # Sized on the ground-state path alone, like every driver (see selfenergy.py).
+    cap_policy, _ = resolve_cap_policy(truncation_threshold, sb.n_spin_orbitals, comm=comm, log="never")
     basis_information = {
         "impurity_orbitals": sb.impurity_orbitals,
         "bath_states": sb.bath_states,

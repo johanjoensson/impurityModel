@@ -650,8 +650,7 @@ def resolve_gs_block_width(default=4):
     Parameters
     ----------
     default : int
-        Value to return when the knob is unset (the historical ``block_width=4``, or a
-        driver's own Green's-function block width when it wants ``max(gf, gs)`` sizing).
+        Value to return when the knob is unset (the historical ``block_width=4``).
 
     Returns
     -------
@@ -681,16 +680,6 @@ def resolve_gs_num_wanted():
         ``num_wanted`` for :func:`estimate_gs_peak_bytes` / :func:`suggest_truncation_threshold`.
     """
     return config.GS_NUM_WANTED.get()
-
-
-def resolve_sizing_block_width(gf_block_width):
-    """Block width to size a call site that estimates both a GF and a GS solve with one shared
-    ``block_width`` parameter (``selfenergy.py``/``susceptibility.py``): the larger of the
-    driver's own GF block width and the resolved GS width (:func:`resolve_gs_block_width`,
-    falling back to ``gf_block_width`` itself when ``GS_MAX_BLOCK_WIDTH`` is unset -- so this
-    equals ``gf_block_width`` exactly, unchanged, on that path).
-    """
-    return max(gf_block_width, resolve_gs_block_width(gf_block_width))
 
 
 def estimate_gs_peak_bytes(
@@ -1406,11 +1395,79 @@ def log_memory_budget(
     return {"available_per_rank": available, "gs_peak": gs, "gf_peak": gf, "fits": fits}
 
 
-def resolve_cap_policy(requested, n_spin_orbitals, comm=None, *, verbose=True, label="", log="always", **sizing):
+def _largest_fitting(fits):
+    """Largest ``n >= 1`` with ``fits(n)``, for ``fits`` non-increasing in ``n``: exponential
+    search then bisection. At least 1 even when nothing fits, as every cap here must be."""
+    lo, hi = 1, 1024
+    while fits(hi) and hi < 10**13:
+        lo, hi = hi, hi * 2
+    if hi >= 10**13:
+        return hi
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def suggest_gs_truncation_threshold(
+    n_spin_orbitals,
+    comm=None,
+    *,
+    block_width=None,
+    gs_num_wanted=None,
+    nnz_per_state=100,
+    safety=DEFAULT_MEMORY_SAFETY,
+):
+    """Largest ground-state cap whose predicted peak (:func:`estimate_gs_peak_bytes`) fits in RAM.
+
+    .. warning:: **Collective on** ``comm`` (calls :func:`available_bytes_per_rank`).
+
+    Sized on the ground-state path alone. The Green's-function units are sized separately, at GF
+    entry, from the memory actually available then (``gf_units.run_units_distributed``), so their
+    block width must not shrink the ground state's cap -- charging the GF width to the GS terms
+    (the old ``max(gs, gf)`` sizing) cost the self-energy driver 1.5-2.9x of its cap against the
+    double-counting search, which never builds a GF, for the same model.
+
+    ``block_width`` and ``gs_num_wanted`` default to the configured
+    :func:`resolve_gs_block_width` / :func:`resolve_gs_num_wanted`, exactly what every driver and
+    the double-counting search pass, so all of them size the same ground state the same way.
+    """
+    if block_width is None:
+        block_width = resolve_gs_block_width()
+    if gs_num_wanted is None:
+        gs_num_wanted = resolve_gs_num_wanted()
+    budget = safety * available_bytes_per_rank(comm)
+    ranks = comm.size if comm is not None else 1
+    return _largest_fitting(
+        lambda n: estimate_gs_peak_bytes(
+            n, n_spin_orbitals, block_width, ranks, nnz_per_state, num_wanted=gs_num_wanted
+        )
+        <= budget
+    )
+
+
+def resolve_cap_policy(
+    requested,
+    n_spin_orbitals,
+    comm=None,
+    *,
+    verbose=True,
+    label="",
+    log="always",
+    safety=DEFAULT_MEMORY_SAFETY,
+    **log_extra,
+):
     """Resolve a driver's ``truncation_threshold`` into a :class:`CapPolicy`, and log it.
 
     .. warning:: **Collective on** ``comm``: the provenance is broadcast from rank 0 and the
        memory probe is collective. Call it unconditionally on every rank.
+
+    An auto cap is sized on the ground-state path alone
+    (:func:`suggest_gs_truncation_threshold`), identically for every driver; the GF cap of an
+    auto policy is left for the GF stage to size (``gf_units.gf_cap`` falls back to it).
 
     Parameters
     ----------
@@ -1428,9 +1485,11 @@ def resolve_cap_policy(requested, n_spin_orbitals, comm=None, *, verbose=True, l
     log : {"always", "derived", "never"}
         When to run :func:`log_memory_budget`: always, only when the cap was derived here, or
         never.
-    **sizing
-        Forwarded to :func:`suggest_truncation_threshold` (and, minus ``safety``, to
-        :func:`log_memory_budget`).
+    safety : float
+        Fraction of available RAM an auto cap is sized to.
+    **log_extra
+        Extra arguments for :func:`log_memory_budget`'s report only (``block_width``, ``reort``,
+        ``method`` of the Green's-function stage); they do not size the cap.
 
     Returns
     -------
@@ -1445,11 +1504,12 @@ def resolve_cap_policy(requested, n_spin_orbitals, comm=None, *, verbose=True, l
         unresolved, from_memory = comm.bcast((unresolved, from_memory), root=0)
     gs = policy.gs
     if unresolved:
-        gs = suggest_truncation_threshold(n_spin_orbitals, comm=comm, **sizing)
+        gs = suggest_gs_truncation_threshold(n_spin_orbitals, comm=comm, safety=safety)
     budget = None
     if log == "always" or (log == "derived" and unresolved):
-        log_sizing = {k: v for k, v in sizing.items() if k != "safety"}
-        budget = log_memory_budget(gs, n_spin_orbitals, comm=comm, verbose=verbose, label=label, **log_sizing)
+        log_args = {"block_width": resolve_gs_block_width(), "gs_num_wanted": resolve_gs_num_wanted()}
+        log_args.update(log_extra)
+        budget = log_memory_budget(gs, n_spin_orbitals, comm=comm, verbose=verbose, label=label, **log_args)
     gf = gs if policy.gf is None else policy.gf
     return CapPolicy(gs=gs, gf=gf, from_memory=from_memory), budget
 

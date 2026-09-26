@@ -307,19 +307,6 @@ def test_log_memory_budget_does_not_warn_when_uncapped(capsys, monkeypatch):
     assert "gs_num_wanted" not in out
 
 
-def test_resolve_sizing_block_width_matches_gf_width_when_the_knob_is_unset(monkeypatch):
-    """Preserves today's behaviour exactly on the unset path (review finding)."""
-    monkeypatch.delenv("GS_MAX_BLOCK_WIDTH", raising=False)
-    assert me.resolve_sizing_block_width(6) == 6
-
-
-def test_resolve_sizing_block_width_takes_the_larger_of_gf_and_gs_widths(monkeypatch):
-    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "20")
-    assert me.resolve_sizing_block_width(6) == 20
-    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "2")
-    assert me.resolve_sizing_block_width(6) == 6
-
-
 def test_gs_num_wanted_none_keeps_the_pre_phase4_coupled_default():
     """gs_num_wanted=None (the default, whether or not GS_MAX_BLOCK_WIDTH is set) must be a
     total no-op: byte-identical to bceaef5's pre-this-fix behaviour. A review round found that
@@ -758,30 +745,64 @@ def test_an_anonymous_allocation_lands_in_anon_and_not_in_shmem():
         del block
 
 
-def test_selfenergy_module_actually_forwards_gs_num_wanted():
-    """`GS_NUM_WANTED` must reach the cap sizing on the SELF-ENERGY path, not just the DC's.
+def test_every_driver_sizes_the_auto_cap_through_the_one_ground_state_function():
+    """`GS_NUM_WANTED` (and the rest of the ground-state sizing) must reach every driver's auto
+    cap, not just the double-counting search's.
 
-    It was wired in `dc_criteria` and missing here, so a production job exporting the variable saw
-    it honoured during the double-counting search and silently ignored when the main solver chose
-    its own cap -- which then fell back to assuming `2 * block_width` (~10) eigenstates against a
-    kept manifold in the hundreds. That under-count is what approved the 20,358,272 cap behind the
-    SrMnO3 crash, and the only outward sign was `log_memory_budget`'s own "gs_num_wanted was not
-    supplied" line in a log nobody was diffing (`doc/plans/dc_smo_memory.md`, round 9).
-
-    Asserted against the module source rather than by driving the calls. A test that builds the
-    two calls itself and checks they carry the argument passes whether or not `selfenergy` forwards
-    it -- the first draft of this test did exactly that and was green against the bug. The defect
-    is a dropped argument at a specific call site, so the call site is what has to be pinned.
+    It was once wired in `dc_criteria` and missing from the self-energy path, so a production job
+    exporting the variable saw it honoured during the search and silently ignored when the main
+    solver chose its own cap -- the under-count behind the SrMnO3 crash's 20,358,272 cap
+    (`doc/plans/dc_smo_memory.md`, round 9). Every driver now resolves through
+    `resolve_cap_policy`, which sizes with `suggest_gs_truncation_threshold`, which reads the knob
+    itself; so the structural pin is that no driver sizes a cap any other way.
     """
-    import inspect
+    from pathlib import Path
 
-    from impurityModel.ed import selfenergy
+    from impurityModel.ed import groundstate, selfenergy, susceptibility
 
-    src = inspect.getsource(selfenergy)
-    head = src[src.index("sizing_block_width = resolve_sizing_block_width") :]
-    head = head[: head.index("basis_information")]
-    assert "gs_num_wanted = resolve_gs_num_wanted()" in head
-    # One `resolve_cap_policy` call forwards its sizing kwargs to both `suggest_*` and
-    # `log_memory_budget`, so the argument has to appear exactly once, on that call.
-    assert "resolve_cap_policy(" in head
-    assert head.count("gs_num_wanted=gs_num_wanted") == 1
+    for module in (selfenergy, susceptibility, groundstate):
+        src = Path(module.__file__).read_text()
+        assert "resolve_cap_policy(" in src, module.__name__
+        assert "suggest_truncation_threshold(" not in src, f"{module.__name__} sizes a cap on its own"
+        assert "resolve_sizing_block_width" not in src, f"{module.__name__} charges the GF width to the GS cap"
+
+
+def test_the_ground_state_sizing_reads_gs_num_wanted(monkeypatch):
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda comm: 5 * 2**30)
+    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "5")
+    monkeypatch.delenv("GS_NUM_WANTED", raising=False)
+    unset = me.suggest_gs_truncation_threshold(58)
+    monkeypatch.setenv("GS_NUM_WANTED", "105")
+    assert me.suggest_gs_truncation_threshold(58) < unset
+
+
+@pytest.mark.parametrize("knob", [None, "5"])
+def test_every_driver_and_the_dc_search_size_the_same_ground_state_cap(monkeypatch, knob):
+    """Parity: the cap `calc_selfenergy` resolves for a model equals the one the double-counting
+    search resolves for it (`dc_criteria` sizes with `suggest_truncation_threshold` at the GS width,
+    whose GF term cannot bind there), so the dc a search finds is the dc of the ground state the
+    self-energy then solves."""
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda comm: 5 * 2**30)
+    monkeypatch.delenv("GS_NUM_WANTED", raising=False)
+    if knob is None:
+        monkeypatch.delenv("GS_MAX_BLOCK_WIDTH", raising=False)
+    else:
+        monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", knob)
+    for nso in (58, 124):
+        dc_cap = me.suggest_truncation_threshold(
+            nso, comm=None, block_width=me.resolve_gs_block_width(), gs_num_wanted=me.resolve_gs_num_wanted()
+        )
+        policy, _ = me.resolve_cap_policy(None, nso, comm=None, log="never")
+        assert policy.gs == dc_cap
+        assert policy.from_memory
+
+
+def test_a_wide_gf_block_no_longer_shrinks_the_ground_state_cap(monkeypatch):
+    """The old self-energy sizing charged the GF block width to the GS terms (`max(gs, gf)` width):
+    at width 14 against a GS width of 5 that cost ~2x of the cap. The GS cap now ignores it."""
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda comm: 5 * 2**30)
+    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "5")
+    monkeypatch.setenv("GS_NUM_WANTED", "105")
+    coupled = me.suggest_truncation_threshold(58, comm=None, block_width=14, gs_num_wanted=105)
+    policy, _ = me.resolve_cap_policy(None, 58, comm=None, log="never")
+    assert policy.gs > 1.5 * coupled

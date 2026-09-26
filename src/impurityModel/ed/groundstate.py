@@ -26,7 +26,6 @@ from impurityModel.ed.memory_estimate import (
     cap_value,
     resident_bytes_per_rank,
     resolve_cap_policy,
-    resolve_gs_block_width,
 )
 from impurityModel.ed.observables import (
     block_group_labels,
@@ -747,7 +746,6 @@ def find_ground_state_basis(
             verbose=verbose,
             label="ground-state basis",
             log="derived",
-            block_width=resolve_gs_block_width(),
         )
     if mixed_valence is None or mixed_valence is False:
         mixed_valence = dict.fromkeys(N0, 0)
