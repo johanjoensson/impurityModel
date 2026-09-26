@@ -1409,6 +1409,14 @@ class CIPSISolver:
                 n_kept = _psi_ref_width(psi_refs)
                 num_wanted = _manifold_request(n_kept, prev_kept)
                 prev_kept = n_kept
+            # The eigensolve is part of the cycle the guard must see. `determine_new_Dj` resets the
+            # high-water mark again at the start of the selection round (to measure that round's own
+            # transient), which used to hide the eigensolve's peak from both guards -- and at 256
+            # ranks the eigensolve is ~95% of an expansion's cost. So: reset here, sample right
+            # after the eigensolve, and let the trip-wire below take the larger of the two peaks.
+            # Rank-local, no collective; gated on a replicated argument.
+            if memory_budget_bytes is not None:
+                reset_peak_rss()
             e_ref, psi_refs = self.get_eigenvectors(
                 H,
                 num_wanted=min(num_wanted, len(self.basis)),
@@ -1420,6 +1428,7 @@ class CIPSISolver:
                 psi_refs=psi_refs,
             )
 
+            eigensolve_peak = peak_rss_bytes() if memory_budget_bytes is not None else 0
             if len(e_ref) == 0:
                 break
             e0 = float(np.min(e_ref))
@@ -1587,7 +1596,7 @@ class CIPSISolver:
             # below is gated. Cheap relative to the cycle they describe: single-scalar
             # reductions against a selection round that costs seconds to minutes.
             local_count = len(self.basis.local_basis)
-            peak_rss = peak_rss_bytes()
+            peak_rss = max(peak_rss_bytes(), eigensolve_peak)
             # `VmHWM` alone cannot be attributed: it is anon + file + shmem, and under an MPI that
             # uses shared memory for intra-node transport the shmem part is a node-wide pool every
             # rank counts, which does not move `MemAvailable` and which no allocator tuning

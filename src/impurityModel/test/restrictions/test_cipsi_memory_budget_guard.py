@@ -166,12 +166,20 @@ def test_the_guard_fires_once_and_does_not_ratchet_the_cap_down(monkeypatch):
     from impurityModel.ed import cipsi_solver as _cs
 
     budget = 1 << 40
-    calls = {"n": 0}
+    # Keyed on cycles (one eigensolve each), not on calls to `peak_rss_bytes`: a cycle samples the
+    # high-water mark more than once (after the eigensolve, in the selection round, at the
+    # trip-wire), so counting calls would move the "first two cycles" boundary.
+    cycles = {"n": 0}
+    real_eigenvectors = _cs.CIPSISolver.get_eigenvectors
+
+    def counting_eigenvectors(self, *args, **kwargs):
+        cycles["n"] += 1
+        return real_eigenvectors(self, *args, **kwargs)
 
     def fake_peak_rss():
-        calls["n"] += 1
-        return 0 if calls["n"] <= 2 else budget * 2
+        return 0 if cycles["n"] <= 2 else budget * 2
 
+    monkeypatch.setattr(_cs.CIPSISolver, "get_eigenvectors", counting_eigenvectors)
     monkeypatch.setattr(_cs, "peak_rss_bytes", fake_peak_rss)
 
     H = _hamiltonian()
@@ -271,3 +279,32 @@ def test_warn_mode_keeps_a_user_cap_mpi():
     assert solver.basis.truncation_threshold == 10**6
     flags = comm.allgather(solver.memory_warning is not None)
     assert all(flags), flags
+
+
+def test_the_trip_wire_sees_a_peak_that_happens_during_the_eigensolve(monkeypatch):
+    """The selection round resets the high-water mark to measure its own transient; a spike that
+    lives only inside the eigensolve (at scale ~95% of an expansion's cost) was wiped by that reset
+    before the trip-wire looked. Modelled directly: the fake high-water mark is huge only between an
+    eigensolve and the next reset."""
+    from impurityModel.ed import cipsi_solver as _cs
+
+    budget = 1 << 40
+    state = {"spiked": False}
+    real_eigenvectors = _cs.CIPSISolver.get_eigenvectors
+
+    def spiking_eigenvectors(self, *args, **kwargs):
+        result = real_eigenvectors(self, *args, **kwargs)
+        state["spiked"] = True
+        return result
+
+    def fake_reset():
+        state["spiked"] = False
+        return True
+
+    monkeypatch.setattr(_cs.CIPSISolver, "get_eigenvectors", spiking_eigenvectors)
+    monkeypatch.setattr(_cs, "reset_peak_rss", fake_reset)
+    monkeypatch.setattr(_cs, "peak_rss_bytes", lambda: budget * 2 if state["spiked"] else 0)
+
+    solver = _make_solver(None)
+    solver.expand(_hamiltonian(), de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=budget)
+    assert solver.truncation_report is not None and solver.truncation_report["memory_bound"]
