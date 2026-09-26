@@ -115,6 +115,7 @@ from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
     CapPolicy,
     log_memory_budget,
+    reset_user_cap_memory_warnings,
     resolve_gs_block_width,
     resolve_gs_num_wanted,
     suggest_truncation_threshold,
@@ -942,6 +943,7 @@ def _prepare_sector_context(
     # the same object on every rank): this flag gates the whole cap ladder -- a dozen collective
     # solves -- and CLAUDE.md's rule against gating a collective on rank-local state is categorical
     # for a reason. One bool against a CIPSI expansion is a cheap place to honour it.
+    reset_user_cap_memory_warnings()  # a new calculation: its first memory warning prints
     cap_from_memory = MPI.COMM_WORLD.bcast(truncation_threshold is None, root=0)
     memory_cap = truncation_threshold
     if truncation_threshold is None:
@@ -2172,6 +2174,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
 
     truncation_threshold = basis.truncation_threshold
     # As `_prepare_sector_context`: provenance decides whether the cap may be recalibrated.
+    reset_user_cap_memory_warnings()  # a new calculation: its first memory warning prints
     cap_from_memory = MPI.COMM_WORLD.bcast(truncation_threshold is None, root=0)
     memory_cap = truncation_threshold
     if truncation_threshold is None:

@@ -20,6 +20,7 @@ from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.memory_estimate import (
     current_rss_bytes,
     format_bytes,
+    note_user_cap_memory_warning,
     peak_rss_bytes,
     reset_peak_rss,
     rss_breakdown,
@@ -1655,7 +1656,8 @@ class CIPSISolver:
                     "basis_size": int(self.basis.size),
                     "cap": float(threshold),
                 }
-                if self.basis.comm is None or self.basis.comm.rank == 0:
+                first = note_user_cap_memory_warning()
+                if first and (self.basis.comm is None or self.basis.comm.rank == 0):
                     cap_text = f"{int(threshold):,}" if np.isfinite(threshold) else "unlimited"
                     message = (
                         f"WARNING determinant cap: GS basis at {self.basis.size:,} determinants uses "
@@ -1663,7 +1665,7 @@ class CIPSISolver:
                         f"{format_bytes(shmem_rss)}, max over ranks) >= the {format_bytes(memory_budget_bytes)} "
                         f"memory budget. Your truncation_threshold={cap_text} is kept as set; if the job is "
                         "killed, lower truncation_threshold, use 'auto', or run fewer ranks per node. "
-                        "(Shared memory may be over-counted under MPI.)"
+                        "(Shared memory may be over-counted under MPI. Printed once per calculation.)"
                     )
                     print(message, flush=True)
                     print(message, file=sys.__stderr__ or sys.stderr, flush=True)

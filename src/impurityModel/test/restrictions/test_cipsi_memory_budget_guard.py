@@ -30,6 +30,16 @@ N_SPIN_ORBITALS = 6
 N_ELECTRONS = 3
 
 
+@pytest.fixture(autouse=True)
+def _fresh_warning_latch():
+    """The user-cap memory warning prints once per calculation; each test is one."""
+    from impurityModel.ed.memory_estimate import reset_user_cap_memory_warnings
+
+    reset_user_cap_memory_warnings()
+    yield
+    reset_user_cap_memory_warnings()
+
+
 def _det(occupied):
     """SlaterDeterminant with the given orbitals occupied (MSB-first bit convention)."""
     chunk = 0
@@ -308,3 +318,24 @@ def test_the_trip_wire_sees_a_peak_that_happens_during_the_eigensolve(monkeypatc
     solver = _make_solver(None)
     solver.expand(_hamiltonian(), de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=budget)
     assert solver.truncation_report is not None and solver.truncation_report["memory_bound"]
+
+
+def test_the_user_cap_warning_prints_once_per_calculation(capfd):
+    """A double-counting search runs dozens of expansions; one warning per calculation, counted,
+    and a new calculation (a driver resolving its cap) warns again."""
+    from impurityModel.ed.memory_estimate import reset_user_cap_memory_warnings, resolve_cap_policy
+
+    H = _hamiltonian()
+    for _ in range(3):
+        _make_solver(None, truncation_threshold=10**6).expand(
+            H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1, memory_policy="warn"
+        )
+    _out, err = capfd.readouterr()
+    assert err.count("WARNING determinant cap") == 1
+    resolve_cap_policy(10**6, N_SPIN_ORBITALS, log="never")  # the next calculation starts
+    _make_solver(None, truncation_threshold=10**6).expand(
+        H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1, memory_policy="warn"
+    )
+    _out, err = capfd.readouterr()
+    assert err.count("WARNING determinant cap") == 1
+    assert reset_user_cap_memory_warnings() == 1

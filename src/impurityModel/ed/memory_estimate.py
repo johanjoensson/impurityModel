@@ -1490,6 +1490,30 @@ def suggest_gs_truncation_threshold(
     )
 
 
+#: How many times the memory budget was exceeded under a user cap since the current calculation
+#: resolved its cap. Rank-local, but every rank updates it on the same replicated condition.
+_USER_CAP_WARNINGS = {"count": 0}
+
+
+def note_user_cap_memory_warning():
+    """Record one budget excess under a user cap; ``True`` only for the first of the calculation.
+
+    The ground-state memory warning fires per expansion, and a double-counting search runs dozens
+    of expansions -- printing each would bury the one line that matters. Every driver resets the
+    count when it resolves its cap (:func:`resolve_cap_policy`, the double-counting contexts), so
+    each calculation -- each DMFT iteration under RSPt -- still warns once.
+    """
+    _USER_CAP_WARNINGS["count"] += 1
+    return _USER_CAP_WARNINGS["count"] == 1
+
+
+def reset_user_cap_memory_warnings():
+    """Start a new calculation's warning count; returns the previous calculation's count."""
+    previous = _USER_CAP_WARNINGS["count"]
+    _USER_CAP_WARNINGS["count"] = 0
+    return previous
+
+
 def resolve_cap_policy(
     requested,
     n_spin_orbitals,
@@ -1538,6 +1562,7 @@ def resolve_cap_policy(
         The resolved policy and :func:`log_memory_budget`'s return value (``None`` when
         nothing was logged).
     """
+    reset_user_cap_memory_warnings()
     policy = CapPolicy.coerce(requested)
     unresolved = policy.gs is None
     from_memory = policy.from_memory
