@@ -251,6 +251,47 @@ class CapPolicy:
         return "auto"
 
 
+#: The words a user may write for ``truncation_threshold`` besides a positive integer.
+CAP_AUTO_WORDS = ("auto",)
+CAP_UNLIMITED_WORDS = ("unlimited", "inf", "none")
+
+
+def parse_truncation_threshold(value):
+    """A user-written ``truncation_threshold`` as the solver takes it: ``None``, ``inf`` or an ``int``.
+
+    One vocabulary for every front-end (CLI, TOML input, RSPt solver line):
+
+    * ``auto`` (or ``None``) -- sized from available memory, separately per path;
+    * ``unlimited`` (aliases ``inf``, and ``none`` for older TOML inputs) -- no cap; the
+      measured-RSS guards still stop growth before an OOM kill;
+    * a positive integer, also written ``2e6`` or ``2_000_000`` -- the cap, final.
+
+    Raises ``ValueError`` on anything else, including ``0``, negatives and non-integers.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"truncation_threshold must be 'auto', 'unlimited' or a positive integer, got {value!r}")
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in CAP_AUTO_WORDS:
+            return None
+        if text in CAP_UNLIMITED_WORDS:
+            return float("inf")
+        try:
+            value = float(text.replace("_", ""))
+        except ValueError:
+            raise ValueError(
+                f"truncation_threshold must be 'auto', 'unlimited' or a positive integer, got {value!r}"
+            ) from None
+    number = float(value)
+    if not number < float("inf"):
+        return float("inf")
+    if number != int(number) or number < 1:
+        raise ValueError(f"truncation_threshold must be a positive integer, got {value!r}")
+    return int(number)
+
+
 def cap_value(value):
     """The ground-state cap a legacy ``truncation_threshold`` or a :class:`CapPolicy` stands for."""
     return value.gs if isinstance(value, CapPolicy) else value

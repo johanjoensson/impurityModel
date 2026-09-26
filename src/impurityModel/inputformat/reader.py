@@ -269,6 +269,16 @@ def _coerce(where, key, value, units, base_dir):
             raise InputError(f"[{where}]: expected [major, minor], got {value!r}")
         return tuple(parts)
     if kind in (Kind.ENUM, Kind.AUTO_ENUM, Kind.AUTO_COUNT):
+        if (
+            kind is Kind.AUTO_COUNT
+            and isinstance(value, float)
+            and value.is_integer()
+            and key.choices
+            and "unlimited" in key.choices
+        ):
+            # TOML writes `2e6` as a float; a count key that has an 'unlimited' spelling accepts
+            # an integer-valued float as the count it denotes.
+            value = int(value)
         if kind is Kind.AUTO_COUNT and isinstance(value, int) and not isinstance(value, bool):
             if key.minimum is not None and value < key.minimum:
                 raise InputError(f"[{where}]: must be >= {key.minimum}, got {value}")

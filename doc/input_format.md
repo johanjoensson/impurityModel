@@ -327,7 +327,7 @@ How the many-body determinant basis is built. Named for the determinant basis sp
 
 | Key | Kind | Default | Description |
 | --- | --- | --- | --- |
-| `truncation_threshold` | auto/count | `'auto'` | Cap on determinants per basis. 'auto' derives it from available per-rank memory at the (collective) call site; 'none' disables capping. The two are NOT interchangeable even though the underlying code currently collapses both to infinity in one place. Choices: `auto`, `none`. |
+| `truncation_threshold` | auto/count | `'auto'` | Cap on determinants per basis. 'auto' sizes it from available memory, separately for the ground state and the Green's-function units, and lets the measured-memory guard hold a basis lower at run time. 'unlimited' (alias 'inf'; 'none' is accepted for older inputs) sets no cap, the guard still active. A positive integer (e.g. 2000 or 2e6) is final: never lowered, only warned about. Choices: `auto`, `unlimited`, `inf`, `none`. |
 | `excitation_budget` | auto/count | `'auto'` | Maximum total bath excitations per determinant. 'auto' takes the solver's measured-lossless default; 'none' disables it. Prefer omitting to writing the number: the default is documented as the tightest MEASURED value and is expected to be re-measured, so a copy here would freeze a stale one. Choices: `auto`, `none`. |
 | `chain_restrict` | bool | `True` | Apply chain occupation restrictions. |
 | `occ_cutoff` | dimensionless | `None` | Occupation cutoff deciding filled/partial/empty bath classification, i.e. the variational space -- not cosmetic. Per-calculation default. |

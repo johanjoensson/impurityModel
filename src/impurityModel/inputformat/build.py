@@ -28,6 +28,7 @@ from impurityModel.ed.atomic_physics import (
     octahedral_level_structure,
 )
 from impurityModel.ed.hamiltonian_io import cf_bath_blocks, cf_parameter_names
+from impurityModel.ed.memory_estimate import parse_truncation_threshold
 from impurityModel.inputformat.reader import InputError, shell_name
 
 __all__ = ["Built", "NO_ZEEMAN", "build", "deduce_bath_counts", "read_h0_header"]
@@ -686,9 +687,9 @@ def _build_basis(resolved):
         nominal_occ=nominal,
         mixed_valence=mixed,
         dN=table["dN"],
-        # "auto" -> None, so the RAM-derived cap stays at its collective call site; "none" ->
-        # infinity, which disables capping. The two are NOT the same thing.
-        truncation_threshold=None if threshold == "auto" else (np.inf if threshold == "none" else threshold),
+        # One vocabulary with the CLI and the RSPt solver line: "auto" -> None (sized at the
+        # collective call site), "unlimited"/"inf"/"none" -> infinity, a count -> itself (final).
+        truncation_threshold=parse_truncation_threshold(threshold),
         chain_restrict=table["chain_restrict"],
         tau=resolved.tables["temperature"]["tau"],
         excitation_budget=resolve_excitation_budget(None if budget == "auto" else (-1 if budget == "none" else budget)),

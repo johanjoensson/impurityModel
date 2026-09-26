@@ -13,6 +13,7 @@ from dataclasses import replace
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed.memory_estimate import parse_truncation_threshold
 from impurityModel.ed.model import (
     EXCITATION_BUDGET_DEFAULT,
     BasisOptions,
@@ -28,6 +29,21 @@ from impurityModel.scripts._verbosity import add_verbosity_argument, resolve_ver
 
 #: CLI attributes converted by --unit; kept in one place so add_arguments and run agree on scope.
 _ENERGY_FIELDS = ("Fdd", "xi", "hField", "tau", "w_min", "w_max", "delta")
+
+
+#: argparse default telling "not given" apart from an explicit `auto`, which parses to None:
+#: under --from-archive only a cap actually passed may override the archived one.
+_CAP_NOT_GIVEN = object()
+
+
+def _cap_argument(text):
+    """argparse ``type`` for ``--truncation_threshold`` (see ``parse_truncation_threshold``)."""
+    from argparse import ArgumentTypeError
+
+    try:
+        return parse_truncation_threshold(text)
+    except ValueError as err:
+        raise ArgumentTypeError(str(err)) from None
 
 
 def add_arguments(parser):
@@ -105,7 +121,15 @@ def add_arguments(parser):
     # Basis / solver knobs.
     parser.add_argument("--dN", type=int, default=None, help="Impurity occupation window (+-dN) for the excited bases.")
     parser.add_argument(
-        "--truncation_threshold", type=int, default=None, help="Determinant budget (default: as many as fit in RAM)."
+        "--truncation_threshold",
+        type=_cap_argument,
+        default=_CAP_NOT_GIVEN,
+        help=(
+            "Determinant cap per basis: auto (default; sized from available memory, separately for the "
+            "ground state and the Green's-function units, and may be held lower at run time if measured "
+            "memory runs short), unlimited, or a positive integer such as 2e6 (final: never lowered, "
+            "you get a warning if memory runs short)."
+        ),
     )
     parser.add_argument(
         "--excitation_budget",
@@ -235,6 +259,9 @@ def run(args):
         if args.excitation_budget is not None:
             # An explicitly passed flag overrides the archived budget (negative disables).
             basis = replace(basis, excitation_budget=resolve_excitation_budget(args.excitation_budget))
+        if args.truncation_threshold is not _CAP_NOT_GIVEN:
+            # Likewise an explicit cap, including an explicit `auto`, overrides the archived one.
+            basis = replace(basis, truncation_threshold=args.truncation_threshold)
     else:
         if not args.h0_filename:
             raise SystemExit("Provide an h0 file (positional) or --from-archive PATH.")
@@ -261,7 +288,7 @@ def run(args):
             nominal_occ={ls: args.n0imps},
             mixed_valence={ls: 0},
             dN=args.dN,
-            truncation_threshold=args.truncation_threshold,
+            truncation_threshold=None if args.truncation_threshold is _CAP_NOT_GIVEN else args.truncation_threshold,
             chain_restrict=args.chain_restrict,
             tau=args.tau,
             excitation_budget=resolve_excitation_budget(args.excitation_budget),

@@ -13,6 +13,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.average import k_B
 from impurityModel.ed.get_spectra import build_spectra_model, run_spectra
+from impurityModel.ed.memory_estimate import parse_truncation_threshold
 from impurityModel.ed.model import EXCITATION_BUDGET_DEFAULT, BasisOptions, SpectraOptions, resolve_excitation_budget
 from impurityModel.scripts._units import convert_energy_args
 from impurityModel.scripts._verbosity import add_verbosity_argument, resolve_verbosity
@@ -31,6 +32,16 @@ _ENERGY_FIELDS = (
     "deltaRIXS",
     "deltaNIXS",
 )
+
+
+def _cap_argument(text):
+    """argparse ``type`` for ``--truncation_threshold`` (see ``parse_truncation_threshold``)."""
+    from argparse import ArgumentTypeError
+
+    try:
+        return parse_truncation_threshold(text)
+    except ValueError as err:
+        raise ArgumentTypeError(str(err)) from None
 
 
 def add_arguments(parser):
@@ -138,11 +149,13 @@ def add_arguments(parser):
     parser.add_argument("--deltaNIXS", type=float, default=0.100, help="Smearing HWHM for NIXS (eV).")
     parser.add_argument(
         "--truncation_threshold",
-        type=int,
+        type=_cap_argument,
         default=None,
         help=(
-            "Maximum number of Slater determinants in any many-body basis. "
-            "Default: as many as fit in RAM (see memory_estimate)."
+            "Determinant cap per basis: auto (default; sized from available memory, separately for the "
+            "ground state and the Green's-function units, and may be held lower at run time if measured "
+            "memory runs short), unlimited, or a positive integer such as 2e6 (final: never lowered, "
+            "you get a warning if memory runs short)."
         ),
     )
     parser.add_argument(

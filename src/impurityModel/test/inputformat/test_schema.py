@@ -84,11 +84,45 @@ def test_no_default_duplicates_a_constant_defined_in_ed():
     assert budget.default == "auto", "excitation_budget must default to 'auto', not a frozen number"
 
 
-def test_truncation_threshold_keeps_auto_and_none_distinct():
-    """Two different meanings that the solver currently collapses to one value."""
+def test_truncation_threshold_keeps_auto_and_unlimited_distinct():
+    """'auto' (sized from memory) and 'unlimited' (no cap) are different requests; 'inf' and the
+    older 'none' spell the second one. Counts must be at least 1."""
     key = next(k for k in schema.TABLES["many_body_basis"].keys if k.name == "truncation_threshold")
-    assert set(key.choices) == {"auto", "none"}
+    assert set(key.choices) == {"auto", "unlimited", "inf", "none"}
     assert key.default == "auto"
+    assert key.minimum == 1
+
+
+@pytest.mark.parametrize(
+    "written, expected",
+    [
+        ("auto", None),
+        ("unlimited", float("inf")),
+        ("inf", float("inf")),
+        ("none", float("inf")),
+        (2000, 2000),
+        (2e6, 2_000_000),
+    ],
+)
+def test_truncation_threshold_reads_every_spelling(written, expected):
+    """TOML writes `2e6` as a float; it must read as the count it denotes, and end up as the
+    solver's value through the one shared parser."""
+    from impurityModel.ed.memory_estimate import parse_truncation_threshold
+    from impurityModel.inputformat.reader import _coerce
+
+    key = next(k for k in schema.TABLES["many_body_basis"].keys if k.name == "truncation_threshold")
+    assert (
+        parse_truncation_threshold(_coerce("many_body_basis.truncation_threshold", key, written, {"energy": "eV"}, ".")) == expected
+    )
+
+
+@pytest.mark.parametrize("written", [0, -5, 1.5, "lots"])
+def test_truncation_threshold_rejects_nonsense(written):
+    from impurityModel.inputformat.reader import InputError, _coerce
+
+    key = next(k for k in schema.TABLES["many_body_basis"].keys if k.name == "truncation_threshold")
+    with pytest.raises(InputError):
+        _coerce("many_body_basis.truncation_threshold", key, written, {"energy": "eV"}, ".")
 
 
 def test_tagged_unions_are_sub_tables_not_string_tags():
