@@ -20,6 +20,8 @@ from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
+    DEFAULT_MEMORY_SAFETY,
+    absolute_rss_budget,
     available_bytes_per_rank,
     current_rss_bytes,
     estimate_gf_peak_bytes,
@@ -48,6 +50,33 @@ def gf_cap(basis):
     if policy is not None and policy.gf is not None:
         return policy.gf
     return getattr(basis, "truncation_threshold", np.inf)
+
+
+def _gf_memory_budget(available, resident):
+    """Absolute per-rank RSS budget for the GF units' measured guard, or ``None`` when disabled.
+
+    The same policy as the ground-state guard (``groundstate.expand_memory_budget``):
+    ``GS_MEMORY_BUDGET_SAFETY`` (default :data:`DEFAULT_MEMORY_SAFETY`) of the rank's whole share,
+    ``0`` switching it off. Pure; the caller samples ``available``/``resident`` collectively.
+    """
+    safety = config.GS_MEMORY_BUDGET_SAFETY.get()
+    if safety is None:
+        safety = DEFAULT_MEMORY_SAFETY
+    if safety <= 0.0:
+        return None
+    return int(absolute_rss_budget(safety, available, resident))
+
+
+def _set_gf_memory_guard(target, basis, budget):
+    """Put the guard's budget and policy on ``target`` for the kernels; returns what to restore."""
+    saved = (getattr(target, "gf_memory_budget", None), getattr(target, "gf_memory_policy", None))
+    target.gf_memory_budget = budget
+    target.gf_memory_policy = "tighten" if _may_lower_gf_cap(basis) else "warn"
+    return saved
+
+
+def _restore_gf_memory_guard(target, saved):
+    target.gf_memory_budget, target.gf_memory_policy = saved
 
 
 def _may_lower_gf_cap(basis):
@@ -244,6 +273,9 @@ def run_units_distributed(
         # the `finally`, so the caller's (ground-state) cap survives this call on every path.
         caller_cap = basis.truncation_threshold
         basis.truncation_threshold = gf_cap(basis)
+        guard = _set_gf_memory_guard(
+            basis, basis, _gf_memory_budget(available_bytes_per_rank(basis.comm), current_rss_bytes())
+        )
         try:
             if reduce_fn is not None:
                 for u in range(n_units):
@@ -252,6 +284,7 @@ def run_units_distributed(
             return [kernel(basis, u, unit_seeds[u]) for u in range(n_units)]
         finally:
             basis.truncation_threshold = caller_cap
+            _restore_gf_memory_guard(basis, guard)
 
     seed_offsets = np.concatenate(([0], np.cumsum([len(s) for s in unit_seeds]))).astype(int)
     # Every color's unit basis inherits the same truncation_threshold, so colors multiply
@@ -342,6 +375,7 @@ def run_units_distributed(
             flush=True,
         )
         print("=" * 80, flush=True)
+    guard = _set_gf_memory_guard(split_basis, basis, _gf_memory_budget(available_bytes, resident_bytes))
     try:
         # Every color starts from the GF cap, not from the cap `split_basis` inherited from the
         # ground-state basis (which the memory guard may have lowered for the ground state).
@@ -414,6 +448,7 @@ def run_units_distributed(
         # Rank-local attribute write, executed identically on every rank (no collective here),
         # so an exception on one rank cannot desynchronize the others through this path.
         basis.truncation_threshold = caller_cap
+        _restore_gf_memory_guard(split_basis, guard)
 
     # Free the split communicator collectively before returning. MPI_Comm_free is collective --
     # it must be called by all ranks in the comm at the same time. Leaving it for Python gc risks

@@ -15,6 +15,7 @@ from impurityModel.ed.basis_transcription import build_distributed_vector, build
 from impurityModel.ed.BlockLanczosArray import BETA_BLOWUP_FACTOR
 from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
+from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes, note_memory_warning
 
 
 def build_qr(psi):
@@ -335,9 +336,20 @@ class _CappedBasisProxy:
 
     caps_growth = True
 
-    def __init__(self, basis, cap):
+    def __init__(self, basis, cap, memory_budget=None, memory_policy="tighten"):
+        """``memory_budget`` (absolute per-rank bytes, ``None`` = off, the default) adds a measured
+        guard: before admitting a step's new rows, the color's MAX resident set is compared with
+        it, and at or over it the support freezes where it stands (``memory_policy="tighten"``,
+        for an auto cap; ``memory_frozen`` records it) or a warning is printed once
+        (``"warn"``, for a cap the user set, which is final). Must be replicated across the
+        communicator; it is computed once per color by ``gf_units.run_units_distributed``,
+        never probed here."""
         self._basis = basis
         self.cap = int(cap)
+        self.memory_budget = memory_budget
+        self.memory_policy = memory_policy
+        self.memory_frozen = False
+        self._memory_warned = False
         self.comm = basis.comm
         # Width-0 key-only mask of the retained determinants on this rank; grown by
         # in-place C++ sorted merges only (no per-row Python objects in the hot path).
@@ -410,9 +422,46 @@ class _CappedBasisProxy:
             return value
         return self.comm.allreduce(value, op=MPI.SUM)
 
+    def _over_memory_budget(self):
+        """Collective (on the color's comm) when the guard is on: is the color's MAX RSS at budget?
+
+        Called only on the pre-freeze path, right beside that path's own admission-count
+        allreduce, so every rank of the color reaches it equally often. The answer is replicated.
+        """
+        if self.memory_budget is None or self._memory_warned:
+            return False
+        rss = current_rss_bytes()
+        if self.comm is not None and self.comm.size > 1:
+            rss = self.comm.allreduce(rss, op=MPI.MAX)
+        if rss < self.memory_budget:
+            return False
+        if self.memory_policy == "tighten":
+            return True
+        self._memory_warned = True
+        if note_memory_warning() and (self.comm is None or self.comm.rank == 0):
+            import sys
+
+            message = (
+                f"WARNING determinant cap: a Green's-function unit at {self._global_count:,} determinants uses "
+                f"{format_bytes(rss)}/rank >= the {format_bytes(self.memory_budget)} memory budget. Your "
+                f"truncation_threshold={self.cap:,} is kept as set; if the job is killed, lower it or use 'auto'. "
+                "(Printed once per calculation.)"
+            )
+            print(message, flush=True)
+            print(message, file=sys.__stderr__ or sys.stderr, flush=True)
+        return False
+
     def redistribute_block(self, block):
         block = self._basis.redistribute_block(block)
         if self._frozen:
+            block.keep_rows(self._mask)
+            return block
+        if self._over_memory_budget():
+            # Freeze where it stands: nothing new is admitted from here on, exactly as a cap hit
+            # at the current size (the recurrence continues as the exact PHP on what is retained).
+            self._frozen = True
+            self.cap_hit = True
+            self.memory_frozen = True
             block.keep_rows(self._mask)
             return block
         n_new = self._allreduce_sum(len(block) - block.count_rows_in(self._mask))

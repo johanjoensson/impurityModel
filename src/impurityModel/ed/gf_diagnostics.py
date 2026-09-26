@@ -578,7 +578,9 @@ def check_slice_partition(n_windows: int, degree: int, edge_width: float, slice_
     )
 
 
-def check_basis_truncation(cap_hit: bool, retained, cap, seed_frozen: bool = False) -> Diagnostic:
+def check_basis_truncation(
+    cap_hit: bool, retained, cap, seed_frozen: bool = False, memory_frozen: bool = False
+) -> Diagnostic:
     r"""Surface a Green's-function basis frozen by ``truncation_threshold``.
 
     When the excited-basis determinant cap is hit, the recurrence continues as an exact
@@ -600,6 +602,8 @@ def check_basis_truncation(cap_hit: bool, retained, cap, seed_frozen: bool = Fal
             union over its block's operators (and stacked eigenstates), up to ``w * |supp psi|``.
             When that union reaches the cap the recurrence freezes at its first step and ``G`` is
             exact only on the span of the seeds -- the regime of the SrMnO3 acausal Sigma.
+        memory_frozen: Whether a solve was frozen by the measured memory guard (an auto cap)
+            before reaching its cap.
 
     Returns:
         Diagnostic: ``OK`` if the cap never bound, else ``WARN``.
@@ -612,6 +616,18 @@ def check_basis_truncation(cap_hit: bool, retained, cap, seed_frozen: bool = Fal
             value=float(retained) if retained is not None else float("nan"),
             threshold=cap_value,
             message="determinant cap not reached",
+        )
+    if memory_frozen and not seed_frozen:
+        return Diagnostic(
+            name="basis_cap",
+            severity=Severity.WARN,
+            value=float(retained) if retained is not None else float("nan"),
+            threshold=cap_value,
+            message=(
+                f"GF basis held at {int(retained or 0):,} determinants by the memory guard, below its cap "
+                "(measured memory reached the budget)"
+            ),
+            suggestion="more memory per rank (fewer ranks per node) or more nodes",
         )
     if seed_frozen:
         return Diagnostic(

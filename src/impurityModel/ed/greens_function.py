@@ -563,6 +563,8 @@ def get_Greens_function(
             seed_size = cap_stats.get("seed_size")
             if seed_size is not None and np.isfinite(cap_stats["cap"]) and seed_size >= cap_stats["cap"]:
                 stats["seed_frozen"] = True
+            if cap_stats.get("memory_frozen"):
+                stats["memory_frozen"] = True
             if cap_stats["cap_hit"]:
                 stats["cap_hit"] = True
                 stats["cap"] = cap_stats["cap"]
@@ -642,6 +644,7 @@ def get_Greens_function(
                         block_cap["retained_size"],
                         block_cap["cap"],
                         seed_frozen=block_cap.get("seed_frozen", False),
+                        memory_frozen=block_cap.get("memory_frozen", False),
                     )
                 )
             if not pairwise:
@@ -1241,6 +1244,10 @@ def _block_green_group(
             cap_info=cap_info,
             eval_meshes=eval_meshes,
             info=info,
+            # Set per color by gf_units.run_units_distributed (the GF memory guard); absent on a
+            # basis that did not come through it, which leaves the guard off.
+            memory_budget=getattr(split_basis, "gf_memory_budget", None),
+            memory_policy=getattr(split_basis, "gf_memory_policy", "tighten"),
         )
         # `retained_size` stays None when the cap is infinite, and that is not a formatting
         # gap to paper over: the sparse recurrence's support is tracked *only* by
@@ -1257,6 +1264,7 @@ def _block_green_group(
             "retained_size": cap_info.get("retained_size"),
             "cap": cap,
             "seed_size": seed_size,
+            "memory_frozen": bool(cap_info.get("memory_frozen", False)),
         }
     else:
         alphas, betas, r = block_Green(

@@ -334,10 +334,15 @@ def block_Green_sparse(
     krylov_dtype=None,
     eval_meshes=None,
     info=None,
+    memory_budget=None,
+    memory_policy="tighten",
 ):
     """
     Calculate one block of the Greens function. This function builds the many body basis
     iteratively, reducing memory requirements.
+
+    ``memory_budget``/``memory_policy`` switch on :class:`_CappedBasisProxy`'s measured memory
+    guard (off by default; only meaningful with a finite cap).
 
     ``basis.truncation_threshold`` caps the number of Slater determinants the
     recurrence may touch (see :class:`_CappedBasisProxy`); ``np.inf`` (the ``Basis``
@@ -419,7 +424,11 @@ def block_Green_sparse(
     # Enforce the determinant cap on the recurrence: the proxy persists across the
     # resume rounds below, so the retained set (and a freeze) carries over.
     cap = getattr(basis, "truncation_threshold", np.inf)
-    lanczos_basis = _CappedBasisProxy(basis, cap) if np.isfinite(cap) else basis
+    lanczos_basis = (
+        _CappedBasisProxy(basis, cap, memory_budget=memory_budget, memory_policy=memory_policy)
+        if np.isfinite(cap)
+        else basis
+    )
     # With reort NONE the kernel never projects against the accumulated Krylov basis and
     # the resume protocol reads only the two-block tail, so skip the full retention.
     resolved_reort = resolve_reort(reort if reort is not None else Reort.NONE)
@@ -468,6 +477,7 @@ def block_Green_sparse(
         if cap_info is not None:
             cap_info["cap_hit"] = lanczos_basis.cap_hit
             cap_info["retained_size"] = lanczos_basis.retained_size
+            cap_info["memory_frozen"] = lanczos_basis.memory_frozen
             cap_info["proxy"] = lanczos_basis
     elif cap_info is not None:
         cap_info["cap_hit"] = False
