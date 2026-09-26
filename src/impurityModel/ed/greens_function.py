@@ -560,6 +560,9 @@ def get_Greens_function(
             block_i, unit_side_i = group_meta[unit.group_i]
             _merge_unit_basis(max_basis, (block_i, unit_side_i), cap_stats.get("retained_size"), cap_stats["cap_hit"])
             stats = cap_acc.setdefault(block_i, {"cap_hit": False, "retained_size": None, "cap": cap_stats["cap"]})
+            seed_size = cap_stats.get("seed_size")
+            if seed_size is not None and np.isfinite(cap_stats["cap"]) and seed_size >= cap_stats["cap"]:
+                stats["seed_frozen"] = True
             if cap_stats["cap_hit"]:
                 stats["cap_hit"] = True
                 stats["cap"] = cap_stats["cap"]
@@ -634,7 +637,12 @@ def get_Greens_function(
             block_cap = cap_acc.get(block_i)
             if block_cap is not None:
                 diags.append(
-                    _gfd.check_basis_truncation(block_cap["cap_hit"], block_cap["retained_size"], block_cap["cap"])
+                    _gfd.check_basis_truncation(
+                        block_cap["cap_hit"],
+                        block_cap["retained_size"],
+                        block_cap["cap"],
+                        seed_frozen=block_cap.get("seed_frozen", False),
+                    )
                 )
             if not pairwise:
                 diags.insert(0, _gfd.check_spectral_sum_rule(r_add, r_rem, es, e0, tau, len(block)))
@@ -1214,6 +1222,9 @@ def _block_green_group(
     if excited_basis.weighted_restrictions is not None:
         hOp.set_weighted_restrictions(excited_basis.weighted_restrictions)
     cap = getattr(excited_basis, "truncation_threshold", np.inf)
+    # The seed support: the union of the unit's seed columns, before any recurrence step. When it
+    # alone reaches the cap the solve is frozen at its seeds (gf_diagnostics.check_basis_truncation).
+    seed_size = int(excited_basis.size)
     # `conv_stats` stays None to the caller that didn't ask for it; this function still wants
     # `n_blocks` for its own report, so it reads back through its own dict either way.
     info = {} if conv_stats is None else conv_stats
@@ -1245,6 +1256,7 @@ def _block_green_group(
             "cap_hit": bool(cap_info.get("cap_hit", False)),
             "retained_size": cap_info.get("retained_size"),
             "cap": cap,
+            "seed_size": seed_size,
         }
     else:
         alphas, betas, r = block_Green(
@@ -1263,6 +1275,7 @@ def _block_green_group(
             "cap_hit": bool(np.isfinite(cap) and excited_basis.size > cap),
             "retained_size": len(excited_basis),
             "cap": cap,
+            "seed_size": seed_size,
         }
     comm = split_basis.comm
     peak = peak_rss_bytes()

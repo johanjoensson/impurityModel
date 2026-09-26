@@ -18,6 +18,7 @@ from impurityModel.ed.dc_reference import (  # noqa: F401
 )
 from impurityModel.ed.dc_search import DoubleCountingUnreachable  # noqa: F401
 from impurityModel.ed.dc_static import amf_dc, fll_dc, nominal_dc, sigma_inf_dc  # noqa: F401
+from impurityModel.ed.gf_diagnostics import check_ground_state_truncation
 from impurityModel.ed.greens_function import (
     build_full_greens_function,
     get_Greens_function,
@@ -304,6 +305,9 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         # is broadcast so every rank re-enters calc_gs collectively (or all break).
         retry = False
         if rank == 0 and gf_report is not None:
+            gf_report.add(
+                "ground state", check_ground_state_truncation(gs_info.get("truncation"), gs_info.get("convergence"))
+            )
             # Always shown (this is the diagnostics report itself, not detail): only
             # problem rows at the terse default, the full table from -v.
             report(gf_report.render(only_problems=not report.enabled(V_SUMMARY)), level=V_RESULT)

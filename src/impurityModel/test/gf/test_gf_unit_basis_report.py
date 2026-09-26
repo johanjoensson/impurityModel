@@ -232,3 +232,38 @@ def test_offdiag_driver_reports_its_one_transition_block(capsys):
     rows, _ = _report_lines(out)
     assert len(rows) == 1 and rows[0].startswith("transition block")
     assert _sizes(rows)["transition block"] > _seed_support_size()
+
+
+def _basis_cap_messages(cap):
+    _, _, report = get_Greens_function(
+        matsubara_mesh=None,
+        omega_mesh=np.linspace(-3.0, 3.0, 21),
+        psis=[ManyBodyState({SlaterDeterminant.from_bytes(GROUND): 1.0})],
+        es=[0.0],
+        tau=1.0,
+        basis=_basis(cap),
+        hOp=HOP,
+        delta=0.1,
+        blocks=BLOCKS,
+        verbose=False,
+        verbose_extra=False,
+        reort=None,
+        dN=3,
+        occ_cutoff=1e-9,
+        slaterWeightMin=0.0,
+        sparse=True,
+    )
+    return [d.message for d in report.diagnostics if d.name == "basis_cap"]
+
+
+def test_a_unit_whose_seeds_fill_the_cap_is_reported_as_frozen_at_its_seeds():
+    """Cap 1 against a one-determinant removal seed: the recurrence never leaves the seed, and
+    the diagnostics must say that rather than the generic 'frozen at N determinants'."""
+    assert _seed_support_size() == 1
+    messages = _basis_cap_messages(1)
+    assert any("seed support" in m for m in messages), messages
+
+
+def test_a_unit_that_grew_to_the_cap_is_not_called_seed_frozen():
+    messages = _basis_cap_messages(4)
+    assert messages and not any("seed support" in m for m in messages), messages

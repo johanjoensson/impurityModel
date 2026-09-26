@@ -215,6 +215,39 @@ def test_basis_truncation_check():
     assert not report.needs_more_states
 
 
+def test_basis_truncation_names_a_solve_frozen_at_its_seeds():
+    """The seeds' union alone filled the cap: G is exact only on their span, which is a different
+    (worse) statement than 'the Krylov support grew to the cap', so it must be told apart."""
+    frozen = gd.check_basis_truncation(True, 5000, 5000, seed_frozen=True)
+    assert frozen.severity == gd.Severity.WARN
+    assert "seed support" in frozen.message
+    assert "truncation_threshold" in frozen.suggestion
+    grown = gd.check_basis_truncation(True, 5000, 5000, seed_frozen=False)
+    assert "seed" not in grown.message
+
+
+def test_ground_state_truncation_check():
+    assert gd.check_ground_state_truncation(None, {"residual_pt2": 1e-9}).severity == gd.Severity.OK
+    user_cap_hit = {"memory_bound": False, "retained": 2000, "residual_pt2": -3e-4}
+    assert gd.check_ground_state_truncation(user_cap_hit, None).severity == gd.Severity.OK
+    held = {"memory_bound": True, "retained": 350_000, "residual_pt2": -3e-4}
+    warn = gd.check_ground_state_truncation(held, {"residual_pt2": -3e-4})
+    assert warn.severity == gd.Severity.WARN
+    assert "350,000" in warn.message and "6.00e-04" in warn.message, warn.message
+    assert not warn.needs_more_states
+
+
+def test_the_self_energy_report_carries_the_ground_state_row():
+    """Source-level pin: the row is added where the report is rendered, on the path that decides
+    the retry, so a memory-bound ground state is visible in the one table users read."""
+    from pathlib import Path
+
+    from impurityModel.ed import selfenergy
+
+    src = Path(selfenergy.__file__).read_text()
+    assert 'check_ground_state_truncation(gs_info.get("truncation"), gs_info.get("convergence"))' in src
+
+
 def test_bicgstab_convergence_check():
     """check_bicgstab_convergence itself has no direct test elsewhere -- only the driver's
     own stats dict (test_gf_bicgstab_driver.py) is checked, never that the dict's
