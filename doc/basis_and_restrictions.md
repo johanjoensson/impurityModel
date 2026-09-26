@@ -84,6 +84,33 @@ result.** A collapsed basis is silent otherwise.
 
 `truncation_threshold` caps the *global* determinant count. The ground-state truncation is
 fixed-budget (refine to a budget, then top-K amplitude truncate); the GF excited basis caps via
-`_CappedBasisProxy`, after which the recurrence is exact Lanczos of the projected `PHP`. Sizing
-is in `memory_estimate.py` (`suggest_truncation_threshold`), which turns a RAM budget into a
-determinant cap. See `doc/plans/truncation_reliability.md`.
+`_CappedBasisProxy`, after which the recurrence is exact Lanczos of the projected `PHP`. See
+`doc/plans/truncation_reliability.md`.
+
+### How the determinant cap is decided
+
+`truncation_threshold` takes the same three spellings on the command line, in the TOML input
+(`[many_body_basis]`) and on the RSPt solver line:
+
+| you write | what the ground state gets | what each Green's-function unit gets | memory guard |
+|---|---|---|---|
+| a positive integer, e.g. `2000` or `2e6` | exactly that cap | exactly that cap | **warns only** -- your cap is never lowered |
+| `auto` (the default) | sized from available memory for the ground state alone | the ground state's auto cap, lowered at GF entry if the unit's own rank count cannot afford it (never lowered by the ground-state guard) | may hold a ground-state expansion lower when measured memory runs short |
+| `unlimited` (or `inf`) | no cap | no cap | may hold a ground-state expansion lower when measured memory runs short |
+
+A cap you set is **final**. If the run's measured memory reaches the budget
+(`GS_MEMORY_BUDGET_SAFETY` of the rank's share of node RAM) you get one line,
+`WARNING determinant cap: ...`, on stdout *and* stderr at any verbosity, and the job carries on
+-- it may then be killed by the kernel. Lower the cap, use `auto`, or run fewer ranks per node.
+
+An `auto` cap is sized the same way by every driver (`calc_selfenergy`, `calc_gs`, the
+double-counting search, spectra, susceptibility), from the ground-state path alone
+(`memory_estimate.suggest_gs_truncation_threshold`), so the double counting is found at the same
+determinant budget the self-energy then solves with. The Green's-function units never inherit a
+cap the ground-state guard lowered: they are sized from the resolved policy
+(`gf_units.gf_cap`). Likewise the ground-state refinement starts from the resolved cap, not from
+one the guard lowered during the occupation walk (which keeps several sectors alive at once).
+
+The byte model behind `auto` is a starting point, not a guarantee -- it has under-predicted by
+~50x at 256 ranks. The measured-RSS guard is what actually stops an `auto` or `unlimited` run
+before an OOM kill.
