@@ -66,6 +66,21 @@ def gf_cap_on_full_comm(basis, width, reort=None, gf_method="lanczos"):
     return _auto_gf_cap(basis, [ranks], width, reort, gf_method, resident)
 
 
+def _describe_gf_cap(basis, cap, layout):
+    """The ``determinant cap:`` line for a GF stage, or ``None`` for a basis without a policy."""
+    policy = getattr(basis, "cap_policy", None)
+    if policy is None:
+        return None
+    if not np.isfinite(cap):
+        how = "unlimited"
+    elif not policy.from_memory:
+        how = "set by you; final"
+    else:
+        how = "auto, sized for the Green's-function path; the memory guard may hold a unit lower"
+    size = "unlimited" if not np.isfinite(cap) else f"{int(cap):,}"
+    return f"determinant cap: GF {size} per unit ({how}); {layout}"
+
+
 def _is_auto_gf(basis):
     """Whether the GF cap is auto: sized at GF entry from the GF path's own memory, not the GS cap."""
     policy = getattr(basis, "cap_policy", None)
@@ -322,6 +337,9 @@ def run_units_distributed(
             _auto_gf_cap(basis, [1], width, reort, gf_method, resident) if _is_auto_gf(basis) else gf_cap(basis)
         )
         guard = _set_gf_memory_guard(basis, basis, _gf_memory_budget(available_bytes_per_rank(basis.comm), resident))
+        line = _describe_gf_cap(basis, basis.truncation_threshold, f"{n_units} units, serial")
+        if line is not None:
+            print(line, flush=True)
         try:
             if reduce_fn is not None:
                 for u in range(n_units):
@@ -459,6 +477,12 @@ def run_units_distributed(
                     f"{format_bytes(per_rank)}).",
                     flush=True,
                 )
+        if basis.comm.rank == 0:
+            color_sizes = [int(d) for d in np.diff(unit_roots + [basis.comm.size])]
+            layout = f"{n_units} units on {n_colors} colour(s) of {color_sizes} ranks"
+            line = _describe_gf_cap(basis, split_basis.truncation_threshold, layout)
+            if line is not None:
+                print(line, flush=True)
         sub_rank = split_basis.comm.rank if split_basis.comm is not None else 0
         unit_indices_per_color = gather_distributed_results(
             basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices), is_array=True

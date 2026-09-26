@@ -1579,7 +1579,24 @@ def resolve_cap_policy(
         budget = log_memory_budget(gs, n_spin_orbitals, comm=comm, verbose=verbose, label=label, **log_args)
     # An auto policy leaves the GF cap unset: the Green's-function stage sizes it from its own
     # path's memory at GF entry (gf_units), independently of the ground state's.
-    return CapPolicy(gs=gs, gf=policy.gf, from_memory=from_memory), budget
+    resolved = CapPolicy(gs=gs, gf=policy.gf, from_memory=from_memory)
+    if log != "never" and (comm is None or comm.rank == 0):
+        # Whatever the verbosity: the one line that says which cap governs and who set it.
+        prefix = f"{label}: " if label else ""
+        print(f"{prefix}determinant cap: {describe_gs_cap(resolved)}", flush=True)
+    return resolved, budget
+
+
+def describe_gs_cap(policy):
+    """The ground-state half of a :class:`CapPolicy`, in words, for the ``determinant cap:`` line."""
+    if policy.source == "user":
+        return f"GS {int(policy.gs):,} (set by you; final -- memory checks warn, never lower it)"
+    if policy.source == "unlimited":
+        return "GS unlimited (the measured-memory guard may still hold a basis lower)"
+    return (
+        f"GS {int(policy.gs):,} (auto, sized from available memory for the ground state alone; "
+        "the measured-memory guard may hold it lower)"
+    )
 
 
 def _proc_status_bytes(key):

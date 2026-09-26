@@ -690,7 +690,8 @@ def check_ground_state_truncation(truncation, convergence) -> Diagnostic:
             threshold=float("nan"),
             message="ground state not limited by memory",
         )
-    bias = "unknown" if residual is None else f"~{2 * residual:.2e}"
+    measured = residual is not None and residual > 0.0
+    bias = f", so the gap may be too small by ~{2 * residual:.2e}" if measured else " (not measured)"
     return Diagnostic(
         name="gs_memory",
         severity=Severity.WARN,
@@ -698,7 +699,7 @@ def check_ground_state_truncation(truncation, convergence) -> Diagnostic:
         threshold=float("nan"),
         message=(
             f"ground state held at {int(truncation.get('retained', 0)):,} determinants by the memory guard; "
-            f"residual PT2 {value:.2e}, so the gap may be too small by {bias}"
+            f"residual PT2{' ' + format(value, '.2e') if measured else ''}{bias}"
         ),
         suggestion=(
             "more memory per rank (fewer ranks per node) or more nodes; a set truncation_threshold is never lowered"
