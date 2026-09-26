@@ -507,6 +507,46 @@ def test_an_auto_gf_cap_does_not_inherit_a_lowered_ground_state_cap_mpi(monkeypa
     assert all(c < 10**9 for c in observed), "an auto cap is still sized to the unit's memory"
 
 
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the unit split only runs on more than one rank")
+def test_an_auto_gf_cap_is_one_number_sized_for_the_gf_path_mpi(monkeypatch):
+    """Auto (`gf=None`): every unit runs under the one cap the smallest color can afford -- equal
+    treatment whatever color a unit lands on -- and the ground-state cap (10 here, as if the GS
+    guard had lowered it) plays no part."""
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD
+    basis, seeds, weights = _policy_basis(comm, 10, me.CapPolicy(gs=10, gf=None, from_memory=True))
+    observed = []
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    run_units_distributed(
+        basis,
+        seeds,
+        weights,
+        lambda b, u, s: observed.append((float(b.truncation_threshold), b.comm.size if b.comm else 1)),
+        verbose=False,
+    )
+    caps = comm.allgather([c for c, _ in observed])
+    flat = [c for per_rank in caps for c in per_rank]
+    assert flat and len(set(flat)) == 1, f"units got different caps: {caps}"
+    assert flat[0] > 10
+    smallest = min(r for _, r in observed)
+    assert flat[0] <= me.max_unit_dets_within_budget(basis.num_spin_orbitals, 1, None, smallest, comm)
+
+
+def test_an_auto_gf_cap_is_sized_serially_too(monkeypatch):
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    basis, seeds, weights = _policy_basis(None, 10, me.CapPolicy(gs=10, gf=None, from_memory=True))
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    observed = []
+    run_units_distributed(basis, seeds, weights, lambda b, u, s: observed.append(b.truncation_threshold))
+    assert len(set(observed)) == 1 and 10 < observed[0] < np.inf
+    assert basis.truncation_threshold == 10
+
+
 def test_the_serial_gf_path_uses_the_gf_cap_and_restores_the_ground_state_cap():
     """Serially there is no split, so the kernels clone the ground-state basis itself: the GF cap
     has to be on it while they run, and gone afterwards."""

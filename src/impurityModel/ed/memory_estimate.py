@@ -1577,8 +1577,9 @@ def resolve_cap_policy(
         log_args = {"block_width": resolve_gs_block_width(), "gs_num_wanted": resolve_gs_num_wanted()}
         log_args.update(log_extra)
         budget = log_memory_budget(gs, n_spin_orbitals, comm=comm, verbose=verbose, label=label, **log_args)
-    gf = gs if policy.gf is None else policy.gf
-    return CapPolicy(gs=gs, gf=gf, from_memory=from_memory), budget
+    # An auto policy leaves the GF cap unset: the Green's-function stage sizes it from its own
+    # path's memory at GF entry (gf_units), independently of the ground state's.
+    return CapPolicy(gs=gs, gf=policy.gf, from_memory=from_memory), budget
 
 
 def _proc_status_bytes(key):

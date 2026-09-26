@@ -47,9 +47,53 @@ def gf_cap(basis):
     Without a policy (a basis built directly), the basis's own cap, as before.
     """
     policy = getattr(basis, "cap_policy", None)
-    if policy is not None and policy.gf is not None:
-        return policy.gf
+    if policy is not None:
+        # `gf is None` is an auto GF cap, sized at GF entry (`_auto_gf_cap`); until then, none.
+        return np.inf if policy.gf is None else policy.gf
     return getattr(basis, "truncation_threshold", np.inf)
+
+
+def gf_cap_on_full_comm(basis, width, reort=None, gf_method="lanczos"):
+    """The GF cap for work done on ``basis.comm`` as a whole, before any unit split (the sliced
+    driver's filter stage). An auto cap is sized for all of ``basis.comm``'s ranks; otherwise
+    :func:`gf_cap`. Collective on ``basis.comm`` when auto (memory probe + resident MAX)."""
+    if not _is_auto_gf(basis):
+        return gf_cap(basis)
+    resident = current_rss_bytes()
+    if basis.comm is not None and basis.comm.size > 1:
+        resident = basis.comm.allreduce(resident, op=MPI.MAX)
+    ranks = basis.comm.size if basis.comm is not None else 1
+    return _auto_gf_cap(basis, [ranks], width, reort, gf_method, resident)
+
+
+def _is_auto_gf(basis):
+    """Whether the GF cap is auto: sized at GF entry from the GF path's own memory, not the GS cap."""
+    policy = getattr(basis, "cap_policy", None)
+    return policy is not None and policy.from_memory and policy.gf is None
+
+
+def _auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes):
+    """The one GF cap every unit of an auto calculation runs under.
+
+    The largest unit basis the *smallest* color can afford (``max_unit_dets_within_budget`` at
+    each distinct color rank count, with what is already resident), applied to every unit: equal
+    treatment of equivalent blocks does not depend on which color a unit landed on, and the
+    ground-state cap -- sized for a different path -- plays no part. Collective on
+    ``basis.comm`` (the memory probe); ``rank_counts`` is replicated, so every rank makes the same
+    calls.
+    """
+    return min(
+        max_unit_dets_within_budget(
+            basis.num_spin_orbitals,
+            width,
+            reort,
+            ranks,
+            basis.comm,
+            method=gf_method,
+            resident_bytes=resident_bytes,
+        )
+        for ranks in sorted(set(int(r) for r in rank_counts))
+    )
 
 
 def _gf_memory_budget(available, resident):
@@ -272,10 +316,12 @@ def run_units_distributed(
         # The kernels clone `basis`, so the GF cap has to be on it for the duration; restored in
         # the `finally`, so the caller's (ground-state) cap survives this call on every path.
         caller_cap = basis.truncation_threshold
-        basis.truncation_threshold = gf_cap(basis)
-        guard = _set_gf_memory_guard(
-            basis, basis, _gf_memory_budget(available_bytes_per_rank(basis.comm), current_rss_bytes())
+        resident = current_rss_bytes()
+        width = max((len(s) for s in unit_seeds), default=1)
+        basis.truncation_threshold = (
+            _auto_gf_cap(basis, [1], width, reort, gf_method, resident) if _is_auto_gf(basis) else gf_cap(basis)
         )
+        guard = _set_gf_memory_guard(basis, basis, _gf_memory_budget(available_bytes_per_rank(basis.comm), resident))
         try:
             if reduce_fn is not None:
                 for u in range(n_units):
@@ -379,8 +425,13 @@ def run_units_distributed(
     try:
         # Every color starts from the GF cap, not from the cap `split_basis` inherited from the
         # ground-state basis (which the memory guard may have lowered for the ground state).
+        if _is_auto_gf(basis):
+            # Replicated (derived from the verified-rank-invariant `unit_roots`), so every rank
+            # makes the same collective memory-probe calls.
+            rank_counts = [int(d) for d in np.diff(unit_roots + [basis.comm.size])]
+            cap = _auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes)
         split_basis.truncation_threshold = cap
-        if np.isfinite(cap) and _may_lower_gf_cap(basis):
+        if np.isfinite(cap) and _may_lower_gf_cap(basis) and not _is_auto_gf(basis):
             unit_cap = max_unit_dets_within_budget(
                 basis.num_spin_orbitals,
                 width,

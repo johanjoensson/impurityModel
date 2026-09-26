@@ -54,7 +54,7 @@ from impurityModel.ed.gf_solvers import (
 from impurityModel.ed.gf_units import (
     _gf_operator_split,
     enumerate_gf_units,
-    gf_cap,
+    gf_cap_on_full_comm,
     run_units_distributed,
     unit_cost_weights,
 )
@@ -968,7 +968,7 @@ def _get_greens_function_sliced(
     """
     # The GF cap, not the ground-state basis's own (see gf_units.gf_cap): this filter stage runs
     # before run_units_distributed and must size its capped clones the same way the units do.
-    cap = gf_cap(basis)
+    cap = gf_cap_on_full_comm(basis, max((len(s) for s in unit_seeds), default=1), gf_method="sliced")
 
     def _excited_clone(u):
         return basis.clone(
