@@ -33,11 +33,11 @@ N_ELECTRONS = 3
 @pytest.fixture(autouse=True)
 def _fresh_warning_latch():
     """The user-cap memory warning prints once per calculation; each test is one."""
-    from impurityModel.ed.memory_estimate import reset_user_cap_memory_warnings
+    from impurityModel.ed.memory_estimate import reset_memory_warnings
 
-    reset_user_cap_memory_warnings()
+    reset_memory_warnings()
     yield
-    reset_user_cap_memory_warnings()
+    reset_memory_warnings()
 
 
 def _det(occupied):
@@ -323,7 +323,7 @@ def test_the_trip_wire_sees_a_peak_that_happens_during_the_eigensolve(monkeypatc
 def test_the_user_cap_warning_prints_once_per_calculation(capfd):
     """A double-counting search runs dozens of expansions; one warning per calculation, counted,
     and a new calculation (a driver resolving its cap) warns again."""
-    from impurityModel.ed.memory_estimate import reset_user_cap_memory_warnings, resolve_cap_policy
+    from impurityModel.ed.memory_estimate import reset_memory_warnings, resolve_cap_policy
 
     H = _hamiltonian()
     for _ in range(3):
@@ -338,4 +338,17 @@ def test_the_user_cap_warning_prints_once_per_calculation(capfd):
     )
     _out, err = capfd.readouterr()
     assert err.count("WARNING determinant cap") == 1
-    assert reset_user_cap_memory_warnings() == 1
+    assert reset_memory_warnings() == 1
+
+
+def test_an_auto_tightening_is_visible_at_default_verbosity_once_per_calculation(capfd):
+    """The guard holding an auto/unlimited basis lower is the answer to 'why did my basis stop
+    growing?' -- it used to print only at -vv. Now once per calculation at any verbosity."""
+    H = _hamiltonian()
+    for _ in range(2):
+        solver = _make_solver(None)
+        solver.basis.verbose = False
+        solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1)
+        assert solver.truncation_report["memory_bound"]
+    out, _err = capfd.readouterr()
+    assert out.count("WARNING determinant cap") == 1, out

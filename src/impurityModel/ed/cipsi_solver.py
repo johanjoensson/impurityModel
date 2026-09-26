@@ -20,7 +20,7 @@ from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.memory_estimate import (
     current_rss_bytes,
     format_bytes,
-    note_user_cap_memory_warning,
+    note_memory_warning,
     peak_rss_bytes,
     reset_peak_rss,
     rss_breakdown,
@@ -1550,7 +1550,10 @@ class CIPSISolver:
                     threshold = min(float(threshold), float(old_size + memory_cap))
                     capped = True
                     self.basis.truncation_threshold = threshold
-                    if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
+                    # Once per calculation at any verbosity (every event at -vv): this is the line
+                    # that says why a default run's basis stopped growing.
+                    say = note_memory_warning() or self.basis.verbose
+                    if say and (self.basis.comm is None or self.basis.comm.rank == 0):
                         was = "uncapped" if not np.isfinite(previous) else f"a cap of {int(previous):,}"
                         streak_note = (
                             "no growth at all is affordable" if memory_cap == 0 else "for the second round running"
@@ -1574,7 +1577,7 @@ class CIPSISolver:
                                 "does not fit a larger basis into"
                             )
                         print(
-                            f"WARNING: the selection round on {old_size:,} determinants peaked "
+                            f"WARNING determinant cap: the selection round on {old_size:,} determinants peaked "
                             f"{format_bytes(sel.get('round_transient_bytes', 0))} above its "
                             f"{format_bytes(rss_now)} resident set ({streak_note}); {why}. "
                             f"The next round can afford {memory_cap:,} of the "
@@ -1656,7 +1659,7 @@ class CIPSISolver:
                     "basis_size": int(self.basis.size),
                     "cap": float(threshold),
                 }
-                first = note_user_cap_memory_warning()
+                first = note_memory_warning()
                 if first and (self.basis.comm is None or self.basis.comm.rank == 0):
                     cap_text = f"{int(threshold):,}" if np.isfinite(threshold) else "unlimited"
                     message = (
@@ -1697,10 +1700,11 @@ class CIPSISolver:
                 # `basis.truncation_threshold` after `expand()` returns must see the cap that
                 # actually governed the rest of this run, not the one it was constructed with.
                 self.basis.truncation_threshold = threshold
-                if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
+                say = note_memory_warning() or self.basis.verbose
+                if say and (self.basis.comm is None or self.basis.comm.rank == 0):
                     was = "uncapped" if not np.isfinite(previous) else f"a cap of {int(previous):,}"
                     print(
-                        f"WARNING: measured per-rank RSS {format_bytes(peak_rss)} reached the "
+                        f"WARNING determinant cap: measured per-rank RSS {format_bytes(peak_rss)} reached the "
                         f"{format_bytes(memory_budget_bytes)} memory budget mid-expansion; tightening "
                         f"{was} to a fixed-budget cap at the current basis "
                         f"({self.basis.size:,} determinants) rather than risk an uncatchable OOM kill.",
