@@ -18,6 +18,7 @@ from impurityModel.ed.dc_reference import (  # noqa: F401
 )
 from impurityModel.ed.dc_search import DoubleCountingUnreachable  # noqa: F401
 from impurityModel.ed.dc_static import amf_dc, fll_dc, nominal_dc, sigma_inf_dc  # noqa: F401
+from impurityModel.ed.gf_diagnostics import check_ground_state_truncation
 from impurityModel.ed.greens_function import (
     build_full_greens_function,
     get_Greens_function,
@@ -26,11 +27,8 @@ from impurityModel.ed.greens_function import (
 )
 from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, calc_gs
 from impurityModel.ed.memory_estimate import (
-    log_memory_budget,
     log_peak_vs_predicted,
-    resolve_gs_num_wanted,
-    resolve_sizing_block_width,
-    suggest_truncation_threshold,
+    resolve_cap_policy,
 )
 from impurityModel.ed.sigma import (  # noqa: F401
     UnphysicalGreensFunctionError,
@@ -220,42 +218,19 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     rot_to_spherical = sb.rot_to_spherical
     total_impurity_orbitals = sb.total_impurity_orbitals
     sum_bath_states = sb.sum_bath_states
-    # Resolve the basis cap: None means "as many determinants as fit in RAM". Both the
-    # suggestion and the budget log are collective on comm (memory probe + allreduce), so
-    # they run unconditionally on every rank; only the printing is verbosity-gated.
-    # The GF block width and the GS block width size two different solves that share this one
-    # `block_width` parameter (`suggest_truncation_threshold`/`log_memory_budget` do not take
-    # separate widths); resolve_sizing_block_width's max() keeps the estimate an upper bound
-    # over both rather than favouring whichever solve this variable was named for.
-    gf_block_width = max(4, *(len(block) for block in block_structure.blocks))
-    sizing_block_width = resolve_sizing_block_width(gf_block_width)
-    # `GS_NUM_WANTED` has to be resolved and passed here exactly as `dc_criteria` does it. Without
-    # it `estimate_gs_peak_bytes` falls back to assuming `2 * block_width` eigenstates -- about 10
-    # at the production `GS_MAX_BLOCK_WIDTH=5` -- against a kept manifold that reaches the
-    # hundreds, which is the under-count that approved the 20,358,272 cap behind the SrMnO3 crash.
-    # It was missing on this path only: the DC search passed it, so a job exporting the variable
-    # saw it honoured there and silently ignored here, with the log's own "not supplied" warning
-    # the only sign (`doc/plans/dc_smo_memory.md`, round 9).
-    gs_num_wanted = resolve_gs_num_wanted()
-    if truncation_threshold is None:
-        truncation_threshold = suggest_truncation_threshold(
-            n_spin_orbitals,
-            comm=comm,
-            block_width=sizing_block_width,
-            gs_num_wanted=gs_num_wanted,
-            reort=reort,
-            method=gf_method,
-        )
-    memory_budget = log_memory_budget(
+    # Resolve the basis cap: None means "as many determinants as fit in RAM". Collective on comm
+    # (provenance broadcast + memory probe), so unconditional on every rank; only the printing is
+    # verbosity-gated. An auto cap is sized on the ground-state path alone, exactly as the
+    # double-counting search sizes it, so the dc a search found and the ground state solved here
+    # at that dc use the same determinant budget; the GF units size themselves at GF entry. The
+    # policy, not a bare number, travels down so the solves know whether memory may hold the
+    # basis below this cap.
+    cap_policy, memory_budget = resolve_cap_policy(
         truncation_threshold,
         n_spin_orbitals,
         comm=comm,
-        block_width=sizing_block_width,
-        gs_num_wanted=gs_num_wanted,
-        reort=reort,
         verbose=verbosity > 0,
         label=cluster_label,
-        method=gf_method,
     )
     basis_information = {
         "impurity_orbitals": impurity_orbitals,
@@ -267,7 +242,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         "dense_cutoff": dense_cutoff,
         "rank": rank,
         "comm": comm,
-        "truncation_threshold": truncation_threshold,
+        "truncation_threshold": cap_policy,
         # Optional excitation-budget weighted restriction on the ground-state basis; the GF
         # excited bases inherit it (widened) via greens_function._build_excited_restrictions.
         "weighted_restrictions": build_weighted_restrictions(bath_states, excitation_budget),
@@ -328,6 +303,9 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         # is broadcast so every rank re-enters calc_gs collectively (or all break).
         retry = False
         if rank == 0 and gf_report is not None:
+            gf_report.add(
+                "ground state", check_ground_state_truncation(gs_info.get("truncation"), gs_info.get("convergence"))
+            )
             # Always shown (this is the diagnostics report itself, not detail): only
             # problem rows at the terse default, the full table from -v.
             report(gf_report.render(only_problems=not report.enabled(V_SUMMARY)), level=V_RESULT)

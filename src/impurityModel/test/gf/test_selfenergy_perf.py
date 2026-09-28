@@ -34,7 +34,7 @@ Strong-scaling sweep (fixed problem, more ranks)::
    ``cipsi_solver.py``). The 20-bath workload is verified to complete on the production
    Lanczos path (``dense_cutoff=500``); the 100-bath default is memory-bound rather than
    correctness-bound — bound it with ``SELFENERGY_BENCH_TRUNC`` (see
-   ``memory_estimate.suggest_truncation_threshold`` for sizing). The quick smoke config
+   ``memory_estimate.suggest_gs_truncation_threshold`` for sizing). The quick smoke config
    remains the small 10-bath workload::
 
        RUN_SELFENERGY_BENCH=1 SELFENERGY_BENCH_NBATH=10 SELFENERGY_BENCH_NVALBATH=10 \

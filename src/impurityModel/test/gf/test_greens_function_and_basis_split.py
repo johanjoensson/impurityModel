@@ -289,25 +289,23 @@ def test_run_units_distributed_tightens_cap_to_the_units_own_rank_count_mpi(monk
     assert observed_caps, "kernel never ran"
     for cap, ranks in zip(observed_caps, observed_ranks):
         assert cap < inherited_cap, "the unit cap must be tightened, not inherited verbatim"
+        # The process's real resident set (hundreds of MiB) dwarfs the 4 MiB budget, so the
+        # resident-adjusted headroom sits on its floor, `(1 - s) * s * available` -- the same
+        # budget any over-resident process gets. (It used to fall back to `s * available`, i.e.
+        # the unadjusted cap, which made the heaviest process the most generously sized.)
         assert cap == pytest.approx(
-            me.max_unit_dets_within_budget(basis.num_spin_orbitals, 1, None, ranks, comm), rel=0.01
+            me.max_unit_dets_within_budget(basis.num_spin_orbitals, 1, None, ranks, comm, resident_bytes=10**15),
+            rel=0.01,
         )
 
 
 @pytest.mark.mpi
-def test_run_units_distributed_sizes_each_color_on_its_own_rank_count_mpi(monkeypatch):
-    """A color that lands on FEWER ranks than the job-wide mean (`comm.size // n_colors`)
-    must get a cap sized to its own real rank count, not the mean.
-
-    Round-8 regression: `run_units_distributed` and `max_colors_within_budget` both used to
-    size the per-unit cap on `comm.size // n_colors` -- but `_pack_units` apportions ranks to
-    colors proportionally to bin mass with a floor of 1, not evenly, so colors genuinely
-    differ (a round-8 SrMnO3 archive had colors on 4, 5 AND 6 ranks at one split). At 3 ranks
-    with 2 equal-weight units, `_pack_units` gives one color 2 ranks and the other 1 (the mean
-    is 1 for both) -- exactly the shape needed to tell mean and real apart. Confirmed against
-    the pre-fix code (temporarily checked out during development): both colors got the
-    identical, over-tightened 1-rank cap; after the fix the 2-rank color keeps the untightened
-    job-wide cap and only the 1-rank color is tightened.
+def test_run_units_distributed_never_runs_a_color_that_cannot_afford_the_cap_mpi(monkeypatch):
+    """At 3 ranks and 2 equal units `_pack_units` would give one color 2 ranks and the other 1.
+    With a cap a 2-rank color affords and a 1-rank color does not, the old mean-rank color rule
+    split anyway and then *lowered* the 1-rank color's cap -- the unit that landed there ran at
+    less than the cap. The color count is now cut until every color's real rank count affords the
+    cap, so both units run on one color at exactly the cap.
     """
     from types import SimpleNamespace
 
@@ -334,9 +332,8 @@ def test_run_units_distributed_sizes_each_color_on_its_own_rank_count_mpi(monkey
     # Derive the operating point from the model instead of hard-coding one. An earlier version
     # hard-coded 200,000, which silently stopped discriminating the moment the fanout constant
     # was re-measured (the window below moved out from under it). `inherited_cap` has to sit
-    # strictly above what a 1-rank color can afford and at or below what a 2-rank color can,
-    # while still being small enough that `max_colors_within_budget` -- which runs on the looser
-    # no-resident budget and the mean rank count -- picks 2 colors rather than collapsing to 1.
+    # strictly above what a 1-rank color can afford and at or below what a 2-rank color can (the
+    # `splits_into_2` bound keeps the geometry the old mean-rank rule would have split).
     stub = SimpleNamespace(size=comm.size)
     afford_1 = me.max_unit_dets_within_budget(4, 1, None, 1, stub, resident_bytes=resident)
     afford_2 = me.max_unit_dets_within_budget(4, 1, None, 2, stub, resident_bytes=resident)
@@ -373,16 +370,8 @@ def test_run_units_distributed_sizes_each_color_on_its_own_rank_count_mpi(monkey
     results = run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=False)
 
     if comm.rank == 0:
-        by_ranks = dict(results)
-        assert by_ranks.keys() == {1, 2}, results
-        assert by_ranks[2] == inherited_cap, "the 2-rank color must keep the untightened job-wide cap"
-        assert by_ranks[1] < inherited_cap, "the 1-rank color must be tightened"
-        # The discriminating assertion: under the pre-fix mean-based sizing (comm.size //
-        # n_colors == 1 for BOTH colors here), the 2-rank color would have been tightened to
-        # the SAME value as the 1-rank color instead of keeping the job-wide cap -- confirmed
-        # by temporarily checking out the pre-fix gf_units.py during development, which
-        # reproduced exactly that.
-        assert by_ranks[1] < by_ranks[2], (by_ranks, "each color's cap must reflect ITS OWN rank count, not the mean")
+        assert all(ranks >= 2 for ranks, _ in results), ("a color that cannot afford the cap ran", results)
+        assert all(cap == inherited_cap for _, cap in results), ("a unit ran below the cap", results)
 
 
 @pytest.mark.mpi
@@ -445,6 +434,186 @@ def test_run_units_distributed_does_not_mutate_the_callers_basis_cap_mpi(monkeyp
         f"({inherited_cap:,} -> {basis.truncation_threshold:,}); the GF unit cap must not "
         "outlive the GF phase"
     )
+
+
+def _policy_basis(comm, gs_cap, policy):
+    """A 4-determinant basis whose own cap was lowered to ``gs_cap`` (as the ground-state memory
+    guard does) and which carries the driver's resolved ``policy`` (as find_ground_state_basis
+    attaches it), plus two identical width-1 unit seeds."""
+    states = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=comm,
+        truncation_threshold=gs_cap,
+    )
+    basis.cap_policy = policy
+    rank0 = comm is None or comm.rank == 0
+    psi = ManyBodyState.from_states(
+        [ManyBodyState({SlaterDeterminant.from_bytes(states[0]): 1.0} if rank0 else {}, width=1)]
+    )
+    return basis, [[psi], [psi]], np.array([1.0, 1.0])
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the unit split only runs on more than one rank")
+def test_a_user_gf_cap_is_exact_whatever_the_budget_mpi(monkeypatch):
+    """A cap the user set is final for every GF unit: neither the ground state's lowered cap nor
+    a budget that affords almost nothing may shrink it."""
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD
+    user_cap = 10**9
+    basis, seeds, weights = _policy_basis(comm, 10, me.CapPolicy(gs=user_cap, gf=user_cap, from_memory=False))
+    observed = []
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    run_units_distributed(
+        basis, seeds, weights, lambda b, u, s: observed.append(float(b.truncation_threshold)), verbose=False
+    )
+    assert observed and all(c == user_cap for c in observed), observed
+    assert basis.truncation_threshold == 10, "the ground-state basis keeps its own cap"
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the unit split only runs on more than one rank")
+def test_an_auto_gf_cap_does_not_inherit_a_lowered_ground_state_cap_mpi(monkeypatch):
+    """The ground-state guard held the ground state at 10 determinants; the GF units must be sized
+    from the resolved GF cap and their own memory, not from those 10 (the SrMnO3 round-9 acausal
+    Sigma: a 120-determinant ground state froze every GF unit at 120)."""
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD
+    basis, seeds, weights = _policy_basis(comm, 10, me.CapPolicy(gs=10**9, gf=10**9, from_memory=True))
+    observed = []
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    run_units_distributed(
+        basis, seeds, weights, lambda b, u, s: observed.append(float(b.truncation_threshold)), verbose=False
+    )
+    assert observed and all(c > 10 for c in observed), observed
+    assert all(c < 10**9 for c in observed), "an auto cap is still sized to the unit's memory"
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the unit split only runs on more than one rank")
+def test_an_auto_gf_cap_is_one_number_sized_for_the_gf_path_mpi(monkeypatch):
+    """Auto (`gf=None`): every unit runs under the one cap the smallest color can afford -- equal
+    treatment whatever color a unit lands on -- and the ground-state cap (10 here, as if the GS
+    guard had lowered it) plays no part."""
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD
+    basis, seeds, weights = _policy_basis(comm, 10, me.CapPolicy(gs=10, gf=None, from_memory=True))
+    observed = []
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    run_units_distributed(
+        basis,
+        seeds,
+        weights,
+        lambda b, u, s: observed.append((float(b.truncation_threshold), b.comm.size if b.comm else 1)),
+        verbose=False,
+    )
+    caps = comm.allgather([c for c, _ in observed])
+    flat = [c for per_rank in caps for c in per_rank]
+    assert flat and len(set(flat)) == 1, f"units got different caps: {caps}"
+    assert flat[0] > 10
+    smallest = min(r for _, r in observed)
+    assert flat[0] <= me.max_unit_dets_within_budget(basis.num_spin_orbitals, 1, None, smallest, comm)
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the unit split only runs on more than one rank")
+def test_auto_gf_colors_are_cut_until_every_unit_affords_the_ground_state_support_mpi(monkeypatch):
+    """The concurrency floor is the ground-state basis's size (a unit's seeds are at least its
+    support), not the ground-state *cap*. With a floor only the whole communicator can afford,
+    every unit must run on one color; with a floor any color affords, the packing is left alone."""
+    from types import SimpleNamespace
+
+    from impurityModel.ed import gf_units as gu
+    from impurityModel.ed import memory_estimate as me
+
+    comm = MPI.COMM_WORLD
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    monkeypatch.setattr(gu, "current_rss_bytes", lambda: 0)
+    probe, _, _ = _policy_basis(comm, 10, None)
+    nso = probe.num_spin_orbitals
+    whole = me.max_unit_dets_within_budget(nso, 1, None, comm.size, comm, resident_bytes=0)
+    weights = np.ones(6)
+
+    def fake(size):
+        return SimpleNamespace(
+            comm=comm,
+            size=size,
+            num_spin_orbitals=nso,
+            split_threshold=1.0,
+            cap_policy=me.CapPolicy(gs=10**12, gf=None, from_memory=True),
+        )
+
+    assert gu._colors_affording(fake(whole), weights, 1, None, "lanczos") == 1
+    assert gu._colors_affording(fake(1), weights, 1, None, "lanczos") == min(comm.size, len(weights))
+
+
+def test_an_auto_gf_cap_is_sized_serially_too(monkeypatch):
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    basis, seeds, weights = _policy_basis(None, 10, me.CapPolicy(gs=10, gf=None, from_memory=True))
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    observed = []
+    run_units_distributed(basis, seeds, weights, lambda b, u, s: observed.append(b.truncation_threshold))
+    assert len(set(observed)) == 1 and 10 < observed[0] < np.inf
+    assert basis.truncation_threshold == 10
+
+
+@pytest.mark.mpi
+def test_every_gf_stage_of_a_calculation_runs_at_one_auto_cap(monkeypatch):
+    """IPS, PS, XAS and each adaptive RIXS round are separate GF stages on one ground-state basis,
+    and the resident set grows between them. Re-sizing per stage would run parts of one spectrum
+    at different caps; the first stage's cap is pinned for the calculation instead. Runs serially
+    and at -n 2/3."""
+    from impurityModel.ed import gf_units as gu
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None
+    basis, seeds, weights = _policy_basis(comm, 10, me.CapPolicy(gs=10, gf=None, from_memory=True))
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    resident = {"bytes": 0}
+    monkeypatch.setattr(gu, "current_rss_bytes", lambda: resident["bytes"])
+    stages = []
+    for grown in (0, 1 * 2**20):
+        resident["bytes"] = grown
+        observed = []
+        run_units_distributed(basis, seeds, weights, lambda b, u, s: observed.append(float(b.truncation_threshold)))
+        stages.append(observed)
+    first = {c for c in stages[0]}
+    assert len(first) == 1 and first == {c for c in stages[1]}, stages
+
+
+def test_the_serial_gf_path_uses_the_gf_cap_and_restores_the_ground_state_cap():
+    """Serially there is no split, so the kernels clone the ground-state basis itself: the GF cap
+    has to be on it while they run, and gone afterwards."""
+    from impurityModel.ed.gf_units import run_units_distributed
+    from impurityModel.ed.memory_estimate import CapPolicy
+
+    basis, seeds, weights = _policy_basis(None, 10, CapPolicy(gs=500, gf=500, from_memory=False))
+    observed = []
+    run_units_distributed(basis, seeds, weights, lambda b, u, s: observed.append(b.truncation_threshold))
+    assert observed == [500, 500]
+    assert basis.truncation_threshold == 10
+
+
+def test_a_basis_without_a_policy_keeps_its_own_cap_serial():
+    """Bases built directly (spectra, RIXS, tests) carry no policy: nothing changes for them."""
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    basis, seeds, weights = _policy_basis(None, 10, None)
+    observed = []
+    run_units_distributed(basis, seeds, weights, lambda b, u, s: observed.append(b.truncation_threshold))
+    assert observed == [10, 10]
 
 
 @pytest.mark.mpi

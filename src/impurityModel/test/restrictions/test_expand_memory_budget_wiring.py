@@ -63,6 +63,10 @@ def test_both_expand_call_sites_pass_the_budget():
     n_expand = src.count("solver.expand(")
     n_wired = src.count("memory_budget_bytes=expand_memory_budget(comm)")
     assert n_expand == n_wired == 2, f"{n_expand} expand call sites, {n_wired} pass a budget"
+    # ...and both say whether the cap may be tightened: a cap the user set is final, so its guard
+    # only warns. Omitting the argument would silently default to "tighten" on that path.
+    n_policy = src.count("memory_policy=_memory_policy(truncation_threshold)")
+    assert n_policy == 2, f"{n_policy} of 2 expand call sites pass the cap's memory policy"
 
 
 # ---------------------------------------------------------------------------------------
@@ -154,3 +158,65 @@ def test_the_rollback_knob_is_registered():
     """An unregistered knob reads from the environment but never appears in `config.dump`, so a
     run cannot be reproduced from its own log."""
     assert "GS_MEMORY_BUDGET_INCLUDE_RESIDENT" in config.KNOBS
+
+
+class _StopAtRefine(Exception):
+    pass
+
+
+def _refine_start_cap(monkeypatch, walked_cap, policy):
+    """The cap `solve_ground_state`'s refinement expand starts from, after a walk that left its
+    basis at `walked_cap` and attached `policy`."""
+    from impurityModel.ed import cipsi_solver
+    from impurityModel.ed.manybody_basis import Basis
+
+    basis = Basis(
+        {0: [[0, 1]]}, ({0: [[2, 3]]}, {0: [[]]}), nominal_impurity_occ={0: 1}, truncation_threshold=walked_cap
+    )
+    basis.cap_policy = policy
+    monkeypatch.setattr(groundstate, "walk_to_ground_state_sector", lambda *a, **k: basis)
+    seen = {}
+
+    def fake_expand(self, *args, **kwargs):
+        seen["cap"] = self.basis.truncation_threshold
+        raise _StopAtRefine
+
+    monkeypatch.setattr(cipsi_solver.CIPSISolver, "expand", fake_expand)
+    with pytest.raises(_StopAtRefine):
+        groundstate.solve_ground_state(
+            None, {0: [[0, 1]]}, ({0: [[2, 3]]}, {0: [[]]}), {0: 1}, tau=0.01, slaterWeightMin=0
+        )
+    return seen["cap"]
+
+
+def test_the_refinement_does_not_inherit_a_cap_the_walk_lowered(monkeypatch):
+    """The walk keeps several sectors alive and may be held lower by the memory guard; the
+    refinement solves one sector on one basis and starts from the resolved (auto) cap, with its own
+    guard measuring afresh."""
+    from impurityModel.ed.memory_estimate import CapPolicy
+
+    assert _refine_start_cap(monkeypatch, 120, CapPolicy(gs=50_000, gf=50_000, from_memory=True)) == 50_000
+
+
+def test_the_refinement_reset_is_for_memory_derived_caps_only(monkeypatch):
+    """A cap the user set is never lowered by the guard, so there is nothing to undo: whatever the
+    basis carries is left alone (a reset would be the one way this code could *change* a user
+    cap)."""
+    from impurityModel.ed.memory_estimate import CapPolicy
+
+    assert _refine_start_cap(monkeypatch, 120, CapPolicy(gs=2000, gf=2000, from_memory=False)) == 120
+
+
+def test_a_walk_the_memory_guard_held_is_not_reported_memory_bound_after_the_refinement():
+    """The refinement restarts from the resolved cap, so the walk's memory verdict no longer
+    describes the ground state: carrying it would raise a false gs_memory warning and a spurious
+    double-counting refusal. The cap verdict and the walk's own flag are kept."""
+    from types import SimpleNamespace
+
+    walk = {"cap_hit": True, "memory_bound": True, "retained": 120}
+    basis = SimpleNamespace(occupation_search_truncation=walk)
+    report = groundstate.refined_truncation_report(SimpleNamespace(truncation_report=None), basis)
+    assert report["memory_bound"] is False and report["walk_memory_bound"] is True
+    assert report["cap_hit"] is True
+    refined = {"cap_hit": True, "memory_bound": True}
+    assert groundstate.refined_truncation_report(SimpleNamespace(truncation_report=refined), basis) is refined

@@ -133,7 +133,7 @@ The key options (all have defaults; see `--help` for the full list):
 | `--energy_cut` | How many `k_B·T` above the ground state to keep -- a dimensionless multiplier, **not** affected by `--unit`. |
 | `--delta --deltaRIXS --deltaNIXS` | Broadenings (HWHM). |
 | `--nPsiMax` | Maximum number of eigenstates. |
-| `--truncation_threshold` | Global cap on determinants per basis (memory control). |
+| `--truncation_threshold` | Determinant cap per basis: `auto` (default), `unlimited`, or an integer such as `2e6` (final, never lowered). See [How the determinant cap is decided](basis_and_restrictions.md#how-the-determinant-cap-is-decided). |
 | `--no-auto-block-structure` | Keep the hand-coded block structure instead of deriving it. |
 
 `selfenergy`/`susceptibility` take the analogous `--unit`, converting `--Fdd --xi --hField --tau

@@ -20,12 +20,12 @@ from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
+    CapPolicy,
     absolute_rss_budget,
     available_bytes_per_rank,
-    log_memory_budget,
+    cap_value,
     resident_bytes_per_rank,
-    resolve_gs_block_width,
-    suggest_truncation_threshold,
+    resolve_cap_policy,
 )
 from impurityModel.ed.observables import (
     block_group_labels,
@@ -230,6 +230,11 @@ def expand_memory_budget(comm):
     return int(absolute_rss_budget(safety, available, resident))
 
 
+def _memory_policy(truncation_threshold):
+    """``CIPSISolver.expand``'s ``memory_policy`` for a cap: ``"warn"`` only if the user set it."""
+    return "tighten" if CapPolicy.coerce(truncation_threshold).from_memory else "warn"
+
+
 def build_basis_and_solver(
     h_op,
     impurity_indices,
@@ -277,7 +282,7 @@ def build_basis_and_solver(
         total_charge_slack=total_charge_slack,
         tau=tau,
         chain_restrict=chain_restrict,
-        truncation_threshold=truncation_threshold,
+        truncation_threshold=cap_value(truncation_threshold),
         verbose=verbose,
         comm=comm,
         weighted_restrictions=weighted_restrictions,
@@ -516,10 +521,11 @@ def _solve_sector_core(
                 slaterWeightMin=slaterWeightMin,
                 solver=cipsi_solver_method,
                 reort=reort,
-                # Measured-RSS trip-wire. Only uncapped expansions are affected (a set
-                # `truncation_threshold` means the fixed-budget path governs and this never
-                # fires), so a capped run stays bit-identical. See `expand_memory_budget`.
+                # Measured-RSS guards (see `expand_memory_budget`). They may hold the basis below
+                # a cap derived from memory, or below no cap at all; a cap the user set is final,
+                # so for it they only warn. A run that stays under budget is unaffected either way.
                 memory_budget_bytes=expand_memory_budget(comm),
+                memory_policy=_memory_policy(truncation_threshold),
                 # `symmetry_generators` deliberately not forwarded: CIPSISolver.expand re-derives
                 # them from the H it is actually expanding when the argument is None, which is
                 # always the right operator. Passing a set derived elsewhere risks handing it
@@ -719,13 +725,17 @@ def find_ground_state_basis(
     truncation_threshold (default None): global cap on the number of Slater determinants in
     the basis; when the basis would grow past it, only the currently most important
     determinants are kept. ``None`` derives the cap from the available per-rank memory
-    (:func:`impurityModel.ed.memory_estimate.suggest_truncation_threshold`; collective on
+    (:func:`impurityModel.ed.memory_estimate.resolve_cap_policy`; collective on
     ``comm``), ``np.inf`` disables capping.
 
     Returns:
     basis_gs, ManybodyBasis: Initial basis for the ground state
     """
-    if truncation_threshold is None:
+    # Resolve here only a cap no driver has resolved yet: a bare number or None (calc_gs callers
+    # such as get_spectra, library users). A CapPolicy arrives already resolved and announced --
+    # re-resolving it would reprint the cap line and restart the warning counts on every trial of
+    # a double-counting search.
+    if not isinstance(truncation_threshold, CapPolicy) or truncation_threshold.gs is None:
         # Same spin-orbital count formula as Basis.__init__ (blocked orbital lists).
         num_spin_orbitals = sum(
             sum(len(orbs) for orbs in impurity_orbitals[i])
@@ -733,15 +743,13 @@ def find_ground_state_basis(
             + sum(len(orbs) for orbs in bath_states[1][i])
             for i in bath_states[0]
         )
-        gs_block_width = resolve_gs_block_width()
-        truncation_threshold = suggest_truncation_threshold(num_spin_orbitals, comm=comm, block_width=gs_block_width)
-        log_memory_budget(
+        truncation_threshold, _ = resolve_cap_policy(
             truncation_threshold,
             num_spin_orbitals,
             comm=comm,
-            block_width=gs_block_width,
             verbose=verbose,
             label="ground-state basis",
+            log="derived",
         )
     if mixed_valence is None or mixed_valence is False:
         mixed_valence = dict.fromkeys(N0, 0)
@@ -1103,6 +1111,11 @@ def find_ground_state_basis(
         # occupations -- measured {1, 2, 3} on a split-block toy whose winning sector is 2.
         # Callers that need the sector must read it here rather than inspect a determinant.
         basis_gs.ground_state_occupation = dict(winning_impurity_occ)
+        # The resolved cap policy, read-only and immutable, for the Green's-function stage to
+        # size its unit bases from (gf_units.gf_cap). Deliberately not
+        # `basis_gs.truncation_threshold`: the memory guard may lower that one for the ground
+        # state, and a GF unit must not inherit it.
+        basis_gs.cap_policy = CapPolicy.coerce(truncation_threshold)
     return basis_gs
 
 
@@ -1235,6 +1248,13 @@ def solve_ground_state(
         use_hf_seed=use_hf_seed,
     )
     basis.tau = tau
+    # The refinement solves one sector on one basis, so it starts from the resolved cap, not from
+    # a cap the memory guard lowered while the walk ran (at tau/100 and the walk's own de2 floor,
+    # with the walk's retained heap still counted in its RSS). Its own guard measures afresh. A
+    # cap the user set is never lowered in the first place, so this only concerns auto/unlimited.
+    policy = getattr(basis, "cap_policy", None)
+    if policy is not None and policy.from_memory and policy.gs is not None:
+        basis.truncation_threshold = policy.gs
     energy_cut = boltzmann_energy_cut(tau)
     solver = CIPSISolver(basis)
     with solver_trace.timed("expand", stage="gs_refine"):
@@ -1246,6 +1266,7 @@ def solve_ground_state(
             slaterWeightMin=slaterWeightMin,
             solver=cipsi_solver_method,
             memory_budget_bytes=expand_memory_budget(comm),
+            memory_policy=_memory_policy(truncation_threshold),
             # `symmetry_generators` deliberately not passed: expand re-derives them from the H it
             # is expanding (and the closure is opt-in, cipsi_solver.SYMMETRY_CLOSURE_DEFAULT).
         )
@@ -1293,6 +1314,25 @@ def solve_ground_state(
                 flush=True,
             )
     return basis, solver, es, psis
+
+
+def refined_truncation_report(solver, basis):
+    """The truncation report that describes the ground state after the refinement.
+
+    The refinement's own report when it has one. Otherwise the occupation walk's, which still
+    says whether the *cap* bound the search -- but not its memory verdict: the refinement restarts
+    from the resolved cap (``solve_ground_state``), so a walk the memory guard held is no longer a
+    memory-bound ground state once the refinement ran unbound. Carrying ``memory_bound`` through
+    would raise a false ``gs_memory`` warning in the self-energy and a spurious refusal in the
+    double-counting search. The walk's verdict is kept as ``walk_memory_bound``, for the record.
+    """
+    report = getattr(solver, "truncation_report", None)
+    if report is not None:
+        return report
+    walk = getattr(basis, "occupation_search_truncation", None)
+    if walk is None:
+        return None
+    return {**walk, "memory_bound": False, "walk_memory_bound": bool(walk.get("memory_bound", False))}
 
 
 def calc_gs(
@@ -1377,7 +1417,7 @@ def calc_gs(
     # (returned in gs_info and saved to the statistics JSON). None when the cap never bound.
     # The cap can bind either the final expansion here or the earlier occupation search
     # (whose final basis may then fit under the cap); report either.
-    gs_truncation_report = solver.truncation_report or getattr(ground_state_basis, "occupation_search_truncation", None)
+    gs_truncation_report = refined_truncation_report(solver, ground_state_basis)
     # How far the refinement is from PT2 convergence: `{"residual_pt2", "e_pt2_tol", "converged",
     # "limited_by"}` (see CIPSISolver.expand). Always present, unlike the truncation report --
     # an uncapped expansion can still stop short of its tolerance (a `de2_min` floor).

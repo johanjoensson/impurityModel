@@ -74,7 +74,7 @@ wrong charge state, which is worse than not fixing anything at all.
 
 Like :func:`selfenergy.calc_selfenergy` and :func:`groundstate.find_ground_state_basis`, both
 derive their determinant budget from available per-rank memory
-(:func:`impurityModel.ed.memory_estimate.suggest_truncation_threshold`) when
+(:func:`impurityModel.ed.memory_estimate.resolve_cap_policy`) when
 ``BasisOptions.truncation_threshold`` is left at ``None``, and honor
 ``BasisOptions.excitation_budget``/``chain_restrict`` through the same
 :func:`impurityModel.ed.basis_restrictions.build_weighted_restrictions` the other ED drivers use
@@ -111,15 +111,22 @@ from impurityModel.ed.dc_search import (
 )
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed.memory_estimate import (
-    DEFAULT_MEMORY_SAFETY,
-    log_memory_budget,
-    resolve_gs_block_width,
-    resolve_gs_num_wanted,
-    suggest_truncation_threshold,
-)
+from impurityModel.ed.memory_estimate import CapPolicy, resolve_cap_policy
 from impurityModel.ed.solver_basis import _per_group_occupation, get_symmetry_generators, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
+
+
+def _ctx_cap_policy(ctx):
+    """The :class:`CapPolicy` a DC context's sector solves run under.
+
+    ``ctx.truncation_threshold`` is a plain number the search itself may move (the cap ladder),
+    so the policy is built at each solve rather than stored: memory may hold the basis below it
+    unless the caller set a finite cap, i.e. exactly when ``ctx.cap_from_memory`` or the cap is
+    unlimited.
+    """
+    cap = ctx.truncation_threshold
+    unlimited = cap is None or not cap < np.inf
+    return CapPolicy(gs=cap, gf=cap, from_memory=bool(ctx.cap_from_memory or unlimited))
 
 
 def _dump_dc_matrices(dc_guess, dc, rank):
@@ -620,7 +627,7 @@ class _SectorContext:
             dense_cutoff=self.dense_cutoff,
             comm=MPI.COMM_WORLD,
             verbose=self.verbose,
-            truncation_threshold=self.truncation_threshold,
+            truncation_threshold=_ctx_cap_policy(self),
             weighted_restrictions=self.weighted_restrictions,
         )
         # Read from the search that chose it. NOT from a determinant: the returned basis is the
@@ -688,7 +695,7 @@ class _SectorContext:
             self.dense_cutoff,
             comm=MPI.COMM_WORLD,
             verbose=self.verbose,
-            truncation_threshold=self.truncation_threshold,
+            truncation_threshold=_ctx_cap_policy(self),
             slaterWeightMin=self.slater_weight_min,
             weighted_restrictions=self.weighted_restrictions,
             frozen_occupations=self.frozen_occupations,
@@ -928,46 +935,23 @@ def _prepare_sector_context(
     # the same object on every rank): this flag gates the whole cap ladder -- a dozen collective
     # solves -- and CLAUDE.md's rule against gating a collective on rank-local state is categorical
     # for a reason. One bool against a CIPSI expansion is a cheap place to honour it.
+    # Recalibration (the cap ladder) is only for a cap the caller left to memory; `unlimited` and
+    # a set number are instructions. Broadcast, though derived from a replicated input.
     cap_from_memory = MPI.COMM_WORLD.bcast(truncation_threshold is None, root=0)
-    memory_cap = truncation_threshold
-    if truncation_threshold is None:
-        # The full safety fraction, as every other driver uses. This used to be halved, on the
-        # grounds that "two fixed-sector solves (N +- 1) are built alongside the centre search's
-        # own basis" -- which is not what happens. `centre_sector` reads the winning occupation off
-        # its basis and drops it; `sector_energy` discards its basis on the way out
-        # (`e_trial, _ = calc_energy(...)`). The three solves are strictly sequential and exactly
-        # one is live at a time, so the peak is the centre walk's own SectorCache -- the same peak
-        # `calc_gs` has, since it runs the same walk.
-        #
-        # Halving was not merely unnecessary, it was a DC<->GS parity break of the kind this
-        # module exists to close: it measured the double counting on a determinant budget half the
-        # size of the one `calc_selfenergy` will use at that dc, and truncation error in the
-        # sector energies is the dominant error in both the gap centre and its width.
-        # `fixed_occupation_dc` never halved, so this also makes the three criteria agree.
-        gs_block_width = resolve_gs_block_width()
-        # Sizing the cap without this is what approved the threshold behind the SrMnO3 OOM: the
-        # model assumed `2 * block_width` (~10) and predicted 2.51 GiB/rank, where the manifold the
-        # run actually reached (222) predicts 8.43 GiB -- over budget, so the cap would have been
-        # cut before any determinant was generated. `None` when unset, which keeps today's
-        # behaviour and leaves `log_memory_budget` free to warn that it is guessing.
-        gs_num_wanted = resolve_gs_num_wanted()
-        truncation_threshold = suggest_truncation_threshold(
-            model.n_spin_orbitals,
-            comm=MPI.COMM_WORLD,
-            block_width=gs_block_width,
-            safety=DEFAULT_MEMORY_SAFETY,
-            gs_num_wanted=gs_num_wanted,
-        )
-        log_memory_budget(
-            truncation_threshold,
-            model.n_spin_orbitals,
-            comm=MPI.COMM_WORLD,
-            block_width=gs_block_width,
-            gs_num_wanted=gs_num_wanted,
-            verbose=verbose,
-            label=memory_label,
-        )
-        memory_cap = truncation_threshold
+    # The one resolver every driver uses: the same ground-state-only sizing, safety and
+    # GS_NUM_WANTED as calc_selfenergy, so the dc is found at the determinant budget the
+    # self-energy then solves with; it prints the `determinant cap:` line and starts a new
+    # calculation's memory-warning count. Collective on COMM_WORLD, unconditional.
+    policy, _ = resolve_cap_policy(
+        truncation_threshold,
+        model.n_spin_orbitals,
+        comm=MPI.COMM_WORLD,
+        verbose=verbose,
+        label=memory_label,
+        log="derived",
+    )
+    truncation_threshold = policy.gs
+    memory_cap = policy.gs
 
     # The spread of the one-body h0 eigenvalues: the scale a sector-energy difference can move
     # over, used to size the search range. Nothing is derived from a penalty value any more -- an
@@ -1073,7 +1057,7 @@ def fixed_peak_dc(
         spin-flip determinants,
         temperature and the determinant budget. ``truncation_threshold=None`` (the default)
         derives the cap from available per-rank memory (collective on ``MPI.COMM_WORLD``,
-        :func:`impurityModel.ed.memory_estimate.suggest_truncation_threshold`) at the same safety
+        :func:`impurityModel.ed.memory_estimate.resolve_cap_policy`) at the same safety
         fraction ``calc_gs`` uses -- the three sector solves are sequential, so the live peak is
         the centre walk's own ``SectorCache``, which is the peak ``calc_gs`` has too; ``numpy.inf``
         disables capping.
@@ -2158,27 +2142,23 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
 
     truncation_threshold = basis.truncation_threshold
     # As `_prepare_sector_context`: provenance decides whether the cap may be recalibrated.
+    # Recalibration (the cap ladder) is only for a cap the caller left to memory; `unlimited` and
+    # a set number are instructions. Broadcast, though derived from a replicated input.
     cap_from_memory = MPI.COMM_WORLD.bcast(truncation_threshold is None, root=0)
-    memory_cap = truncation_threshold
-    if truncation_threshold is None:
-        gs_block_width = resolve_gs_block_width()
-        gs_num_wanted = resolve_gs_num_wanted()
-        truncation_threshold = suggest_truncation_threshold(
-            model.n_spin_orbitals,
-            comm=MPI.COMM_WORLD,
-            block_width=gs_block_width,
-            gs_num_wanted=gs_num_wanted,
-        )
-        log_memory_budget(
-            truncation_threshold,
-            model.n_spin_orbitals,
-            comm=MPI.COMM_WORLD,
-            block_width=gs_block_width,
-            gs_num_wanted=gs_num_wanted,
-            verbose=verbose,
-            label="fixed-occupation dc",
-        )
-        memory_cap = truncation_threshold
+    # The one resolver every driver uses: the same ground-state-only sizing, safety and
+    # GS_NUM_WANTED as calc_selfenergy, so the dc is found at the determinant budget the
+    # self-energy then solves with; it prints the `determinant cap:` line and starts a new
+    # calculation's memory-warning count. Collective on COMM_WORLD, unconditional.
+    policy, _ = resolve_cap_policy(
+        truncation_threshold,
+        model.n_spin_orbitals,
+        comm=MPI.COMM_WORLD,
+        verbose=verbose,
+        label="fixed-occupation dc",
+        log="derived",
+    )
+    truncation_threshold = policy.gs
+    memory_cap = policy.gs
 
     # DFT reference occupation: Fermi filling of the raw h0 (the KS Hamiltonian of the
     # h0 - dc + U contract; no double counting subtracted before filling), independent of
@@ -2258,7 +2238,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             dense_cutoff=ctx.dense_cutoff,
             comm=MPI.COMM_WORLD,
             verbose=verbose,
-            truncation_threshold=ctx.truncation_threshold,
+            truncation_threshold=_ctx_cap_policy(ctx),
             weighted_restrictions=ctx.weighted_restrictions,
             cipsi_solver_method=ctx.cipsi_solver_method,
             e_pt2_tol=ctx.e_pt2_tol,
@@ -2281,7 +2261,9 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bound_local, root=0)
     # The memory verdict alongside it, from the same two reports. Broadcast for the same reason:
     # it is rank-local solver state, and the acceptance check that reads it must be rank-invariant.
-    report = getattr(mb_solver, "truncation_report", None) or getattr(mb_basis, "occupation_search_truncation", None)
+    from impurityModel.ed.groundstate import refined_truncation_report
+
+    report = refined_truncation_report(mb_solver, mb_basis)
     memory_local = bool((report or {}).get("memory_bound", False))
     ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(memory_local, root=0)
 

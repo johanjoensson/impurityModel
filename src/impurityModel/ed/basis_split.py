@@ -50,7 +50,7 @@ def _pack_units(
         Scale factor on the participation-ratio cap of the number of colors.
     max_colors : int, optional
         Hard cap on the color count (e.g. the memory budget cap from
-        :func:`impurityModel.ed.memory_estimate.max_colors_within_budget` — every
+        ``gf_units._colors_affording`` — every
         simultaneous color may fill the same ``truncation_threshold``, so memory can
         bound the concurrency below what the participation ratio allows).
 

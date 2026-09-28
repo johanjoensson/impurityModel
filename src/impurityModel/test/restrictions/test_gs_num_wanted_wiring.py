@@ -21,6 +21,13 @@ def _no_inherited_knob(monkeypatch):
     monkeypatch.delenv("GS_NUM_WANTED", raising=False)
 
 
+def _gs_cap(num_wanted):
+    """The auto ground-state cap at production's rank count (256) and budget (0.5 x 5 GiB)."""
+    return memory_estimate._largest_fitting(
+        lambda n: memory_estimate.estimate_gs_peak_bytes(n, 58, 5, 256, 100, num_wanted=num_wanted) <= 0.5 * 5.0 * 2**30
+    )
+
+
 def test_unset_resolves_to_none_so_todays_behaviour_is_unchanged():
     assert memory_estimate.resolve_gs_num_wanted() is None
     assert config.GS_NUM_WANTED.default is None, "a default would silently resize every cap"
@@ -31,13 +38,18 @@ def test_a_set_value_is_resolved(monkeypatch):
     assert memory_estimate.resolve_gs_num_wanted() == 105
 
 
-def test_both_dc_sizing_sites_pass_it():
-    """Source-level, deliberately: both sites sit inside collective functions that need a full DC
-    search to reach, and what regressed before was the *argument*, not the behaviour -- the
-    parameter existed and was simply never supplied."""
+def test_every_driver_honours_it_through_the_one_resolver(monkeypatch):
+    """What regressed before was the *argument*: the parameter existed and one driver never passed
+    it. Every driver, the double-counting search included, now sizes through `resolve_cap_policy`,
+    which reads the knob itself -- so setting it must change the cap they all get."""
     src = Path(dc_criteria.__file__).read_text()
-    assert src.count("gs_num_wanted=gs_num_wanted") == 4, "two sizing calls x two sites"
-    assert src.count("gs_num_wanted = resolve_gs_num_wanted()") == 2
+    assert src.count("resolve_cap_policy(") == 2
+    monkeypatch.setattr(memory_estimate, "available_bytes_per_rank", lambda c: 5 * 2**30)
+    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "5")
+    unset, _ = memory_estimate.resolve_cap_policy(None, 58, log="never")
+    monkeypatch.setenv("GS_NUM_WANTED", "105")
+    supplied, _ = memory_estimate.resolve_cap_policy(None, 58, log="never")
+    assert supplied.gs < unset.gs
 
 
 def test_supplying_it_shrinks_the_suggested_cap():
@@ -49,20 +61,8 @@ def test_supplying_it_shrinks_the_suggested_cap():
     tree every path already refuses that cap (6.86 GiB unset, 12.78 GiB at 222, against 5.0 GiB
     available). What remains is that the knob shrinks the cap the search *chooses*.
     """
-    budget = 0.5 * 5.0 * 2**30
-    common = dict(
-        budget=budget,
-        n_spin_orbitals=58,
-        block_width=5,
-        reort="none",
-        n_parallel_units=1,
-        nnz_per_state=100,
-        krylov_dtype=None,
-        method="lanczos",
-        ranks=256,
-    )
-    unset = memory_estimate._suggest_for_budget(gs_num_wanted=None, **common)
-    supplied = memory_estimate._suggest_for_budget(gs_num_wanted=105, **common)
+    unset = _gs_cap(num_wanted=None)
+    supplied = _gs_cap(num_wanted=105)
 
     assert supplied < unset
     assert unset / supplied > 1.3, f"expected a materially smaller cap, got {unset / supplied:.2f}x"
@@ -76,18 +76,7 @@ def test_it_does_not_by_itself_make_the_cap_safe():
     372-1028x at 256 ranks (``doc/plans/dc_smo_memory.md``). Anything claiming this knob makes cap
     sizing correct should fail here.
     """
-    common = dict(
-        budget=0.5 * 5.0 * 2**30,
-        n_spin_orbitals=58,
-        block_width=5,
-        reort="none",
-        n_parallel_units=1,
-        nnz_per_state=100,
-        krylov_dtype=None,
-        method="lanczos",
-        ranks=256,
-    )
-    supplied = memory_estimate._suggest_for_budget(gs_num_wanted=222, **common)
+    supplied = _gs_cap(num_wanted=222)
     assert supplied > 10 * 949_834, (
         "if this ever fails the estimator has improved enough to revisit the claim that "
         "gs_num_wanted is a partial mitigation only"

@@ -84,6 +84,42 @@ result.** A collapsed basis is silent otherwise.
 
 `truncation_threshold` caps the *global* determinant count. The ground-state truncation is
 fixed-budget (refine to a budget, then top-K amplitude truncate); the GF excited basis caps via
-`_CappedBasisProxy`, after which the recurrence is exact Lanczos of the projected `PHP`. Sizing
-is in `memory_estimate.py` (`suggest_truncation_threshold`), which turns a RAM budget into a
-determinant cap. See `doc/plans/truncation_reliability.md`.
+`_CappedBasisProxy`, after which the recurrence is exact Lanczos of the projected `PHP`. See
+`doc/plans/truncation_reliability.md`.
+
+### How the determinant cap is decided
+
+`truncation_threshold` takes the same three spellings on the command line, in the TOML input
+(`[many_body_basis]`) and on the RSPt solver line:
+
+| you write | what the ground state gets | what each Green's-function unit gets | memory guard |
+|---|---|---|---|
+| a positive integer, e.g. `2000` or `2e6` | exactly that cap | exactly that cap | **warns only** -- your cap is never lowered |
+| `auto` (the default) | sized from available memory for the ground state alone | one cap per calculation and GF method, sized at the first GF stage for the Green's-function path (the largest unit basis the smallest color can afford) and reused by later stages; units are grouped onto fewer colors -- more of them run in series -- until every unit can afford at least the ground-state basis's size | may hold a ground-state expansion or a Green's-function unit lower |
+| `unlimited` (or `inf`) | no cap | no cap | may hold a ground-state expansion or a Green's-function unit lower |
+
+The measured-memory guards use one budget: `GS_MEMORY_BUDGET_SAFETY` (default 0.5) of the rank's share of node RAM; `0` switches them off. The Green's-function guard runs in every sparse GF solver (Lanczos, `bicgstab`/`cipsi`, `sliced` including its filter stage, and the shift-recycled resolvent RIXS uses); only the dense-array `block_Green` (the `dense_green` option, and RIXS's out-transition solves) is sized but not guarded.
+
+A cap you set is **final**. If the run's measured memory reaches the budget
+(`GS_MEMORY_BUDGET_SAFETY` of the rank's share of node RAM) you get one line,
+`WARNING determinant cap: ...`, on stdout *and* stderr at any verbosity, and the job carries on
+-- it may then be killed by the kernel. Lower the cap, use `auto`, or run fewer ranks per node.
+
+An `auto` cap is sized the same way by every driver (`calc_selfenergy`, `calc_gs`, the
+double-counting search, spectra, susceptibility), from the ground-state path alone
+(`memory_estimate.suggest_gs_truncation_threshold`), so the double counting is found at the same
+determinant budget the self-energy then solves with. The Green's-function units never inherit a
+cap the ground-state guard lowered: they are sized from the resolved policy
+(`gf_units.gf_cap`). Likewise the ground-state refinement starts from the resolved cap, not from
+one the guard lowered during the occupation walk (which keeps several sectors alive at once).
+
+**One consequence of sizing the paths separately.** A gap- or peak-based double counting
+differences CIPSI sector energies, `E(N±1) - E(N)`, solved at the ground-state cap; the
+self-energy's spectral gap comes from Green's-function units sized for their own (typically larger)
+cap. When the `N±1` sector solves are truncation-limited, the double counting is placed against a
+gap measured at a coarser truncation than the one the self-energy then shows. The `gs_memory`
+diagnostic row and the DC record's truncation fields say when that is the case.
+
+The byte model behind `auto` is a starting point, not a guarantee -- it has under-predicted by
+~50x at 256 ranks. The measured-RSS guard is what actually stops an `auto` or `unlimited` run
+before an OOM kill.

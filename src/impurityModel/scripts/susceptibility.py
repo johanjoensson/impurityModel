@@ -5,11 +5,14 @@ runs :func:`impurityModel.ed.susceptibility.calc_susceptibility_workflow`, which
 ``chi.h5`` file (one group per operator) and prints the static / screening-scale summary.
 """
 
+from dataclasses import replace
+
 import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.model import BasisOptions, Meshes, SolverOptions, load_model, load_selfenergy_archive
 from impurityModel.ed.susceptibility import calc_susceptibility_workflow
+from impurityModel.scripts._cap import CAP_NOT_GIVEN, add_cap_argument, requested_cap
 from impurityModel.scripts._units import convert_energy_args
 from impurityModel.scripts._verbosity import add_verbosity_argument, resolve_verbosity
 
@@ -76,6 +79,7 @@ def add_arguments(parser):
             "down the spin ordering a field would need."
         ),
     )
+    add_cap_argument(parser)
     parser.add_argument("--tau", type=float, default=0.002, help="Fundamental temperature (kb*T).")
     parser.add_argument("--w_min", type=float, default=-5.0, help="Lower edge of the real frequency mesh (eV).")
     parser.add_argument("--w_max", type=float, default=5.0, help="Upper edge of the real frequency mesh (eV).")
@@ -119,6 +123,8 @@ def run(args):
         model, _meshes, basis, _solver, cluster_label = load_selfenergy_archive(
             args.from_archive, cluster=args.cluster, iteration=args.iteration
         )
+        if args.truncation_threshold is not CAP_NOT_GIVEN:
+            basis = replace(basis, truncation_threshold=args.truncation_threshold)
     else:
         if not args.h0_filename:
             raise SystemExit("Provide an h0 file (positional) or --from-archive PATH.")
@@ -136,7 +142,9 @@ def run(args):
             rank=comm.rank,
             verbose=verbosity > 0,
         )
-        basis = BasisOptions(nominal_occ={ls: args.n0imps}, mixed_valence={ls: 0}, tau=args.tau)
+        basis = BasisOptions(
+            nominal_occ={ls: args.n0imps}, mixed_valence={ls: 0}, tau=args.tau, truncation_threshold=requested_cap(args)
+        )
         cluster_label = args.clustername
 
     meshes = Meshes(w=np.linspace(args.w_min, args.w_max, args.w_n), delta=args.delta)

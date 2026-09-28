@@ -16,21 +16,240 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
-from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
+from impurityModel.ed.basis_split import _pack_units, split_basis_and_redistribute_psi
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
+    DEFAULT_MEMORY_SAFETY,
+    _resident_adjusted_budget,
     available_bytes_per_rank,
     current_rss_bytes,
     estimate_gf_peak_bytes,
     format_bytes,
-    max_colors_within_budget,
     max_unit_dets_within_budget,
+    release_freed_heap,
 )
 from impurityModel.ed.mpi_comm import gather_distributed_results
 
 comm = MPI.COMM_WORLD
 rank = comm.rank
+
+
+def gf_cap(basis):
+    """The determinant cap a Green's-function unit basis built from ``basis`` runs under.
+
+    When the ground-state solve attached its :class:`~impurityModel.ed.memory_estimate.CapPolicy`
+    (``basis.cap_policy``, set by ``find_ground_state_basis``), that policy's ``gf`` cap -- the
+    cap the driver resolved, *not* whatever ``basis.truncation_threshold`` the ground-state memory
+    guard left behind. The guard may hold one ground-state expansion below its cap; that says
+    nothing about what a Green's-function unit can afford, and inheriting it is how a 120-determinant
+    ground state once froze every SrMnO3 GF unit at 120 determinants and made Sigma acausal.
+    Without a policy (a basis built directly), the basis's own cap, as before.
+    """
+    policy = getattr(basis, "cap_policy", None)
+    if policy is not None:
+        # `gf is None` is an auto GF cap, sized at GF entry (`_auto_gf_cap`); until then, none.
+        return np.inf if policy.gf is None else policy.gf
+    return getattr(basis, "truncation_threshold", np.inf)
+
+
+def gf_cap_on_full_comm(basis, width, reort=None, gf_method="lanczos"):
+    """The GF cap for work done on ``basis.comm`` as a whole, before any unit split (the sliced
+    driver's filter stage). An auto cap is the calculation's pinned cap for this kernel
+    (:func:`_pinned_auto_gf_cap`) -- the same number the units then run under, so filtered seeds
+    are never wider than the units' cap; otherwise :func:`gf_cap`. Collective on ``basis.comm``
+    when auto (memory probe + resident MAX)."""
+    if not _is_auto_gf(basis):
+        return gf_cap(basis)
+    resident = current_rss_bytes()
+    if basis.comm is not None and basis.comm.size > 1:
+        resident = basis.comm.allreduce(resident, op=MPI.MAX)
+    ranks = basis.comm.size if basis.comm is not None else 1
+    return _pinned_auto_gf_cap(basis, [ranks], width, reort, gf_method, resident)
+
+
+def gf_guard_on_full_comm(basis):
+    """``(budget, policy)`` of the GF memory guard for work on ``basis.comm`` before any split (the
+    sliced driver's filter stage), sized the way ``run_units_distributed`` sizes it for the units.
+    Collective on ``basis.comm`` (resident MAX, memory probe): call it on every rank."""
+    resident = current_rss_bytes()
+    if basis.comm is not None and basis.comm.size > 1:
+        resident = basis.comm.allreduce(resident, op=MPI.MAX)
+    budget = _gf_memory_budget(available_bytes_per_rank(basis.comm), resident)
+    return budget, ("tighten" if _may_lower_gf_cap(basis) else "warn")
+
+
+def _describe_gf_cap(basis, cap, layout):
+    """The ``determinant cap:`` line for a GF stage, or ``None`` for a basis without a policy."""
+    policy = getattr(basis, "cap_policy", None)
+    if policy is None:
+        return None
+    if not np.isfinite(cap):
+        how = "no cap; the GF memory guard may hold a unit lower"
+    elif not policy.from_memory:
+        how = "set by you; final"
+    else:
+        how = "auto, sized for the Green's-function path; the GF memory guard may hold a unit lower"
+    size = "unlimited" if not np.isfinite(cap) else f"{int(cap):,}"
+    return f"determinant cap: GF {size} per unit ({how}); {layout}"
+
+
+def _colors_affording(basis, unit_weights, width, reort, gf_method, floor=None):
+    """How many colors a GF stage may run so that every unit can afford ``floor`` determinants.
+
+    ``floor`` is the unit cap for a cap the user set (or a basis without a policy); for an auto
+    cap it defaults as described below.
+
+    An auto GF cap is the largest unit basis the *smallest* color affords, so concurrency trades
+    directly against it. The floor is the ground-state basis's actual size -- a unit's seeds are
+    the union of ``c^dagger psi`` over its block, at least the ground state's support, so a GF cap
+    below it would freeze units at their seeds -- or, once this kernel's cap is pinned for the
+    calculation, that pinned cap. Not the ground state's *cap*: at 256 ranks an auto GS cap of
+    tens of millions against a ground state of ~1M determinants would force two or three colors
+    where the support needs no such restriction. The largest color count whose *real* packing
+    (``_pack_units``, the same call the split makes) affords the floor on every color wins;
+    ``None`` leaves the packing alone.
+
+    Collective on ``basis.comm`` (memory probe, resident MAX); every input is replicated. The
+    resident set is sampled before the split, while the cap is sized after it (the split
+    replicates the ground-state basis into each color), so the floor is a target, not a guarantee.
+    """
+    if floor is None:
+        pinned = getattr(basis, "_auto_gf_caps", {}).get(_pin_key(reort, gf_method))
+        floor = pinned[0] if pinned is not None else int(basis.size)
+    candidates = min(basis.comm.size, len(unit_weights))
+    if candidates <= 1:
+        return None
+    resident = basis.comm.allreduce(current_rss_bytes(), op=MPI.MAX)
+    affordable = {}
+
+    def afford(ranks):
+        if ranks not in affordable:
+            affordable[ranks] = max_unit_dets_within_budget(
+                basis.num_spin_orbitals,
+                width,
+                reort,
+                ranks,
+                basis.comm,
+                safety=_gf_sizing_safety(),
+                method=gf_method,
+                resident_bytes=resident,
+            )
+        return affordable[ranks]
+
+    for n_colors in range(candidates, 1, -1):
+        _subgroups, procs = _pack_units(unit_weights, basis.comm.size, basis.split_threshold, n_colors)
+        if procs is None:
+            return 1
+        if min(afford(int(p)) for p in procs) >= floor:
+            return n_colors
+    return 1
+
+
+def _is_auto_gf(basis):
+    """Whether the GF cap is auto: sized at GF entry from the GF path's own memory, not the GS cap."""
+    policy = getattr(basis, "cap_policy", None)
+    return policy is not None and policy.from_memory and policy.gf is None
+
+
+def _pin_key(reort, gf_method):
+    """What an auto GF cap is pinned per: the kernel, whose per-determinant cost it was sized for."""
+    return (str(getattr(reort, "name", reort)), str(gf_method))
+
+
+def _pinned_auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes):
+    """The calculation's auto GF cap for this kernel: sized by its first GF stage, reused after.
+
+    A spectra or RIXS calculation runs several GF stages on one ground-state basis (IPS, PS, XAS,
+    each adaptive incoming-energy round), and the resident set grows between them as caches are
+    kept -- sizing each stage afresh would run parts of one spectrum at different caps. So the
+    first stage of each kernel (reort, method) pins its number on the ground-state basis (which
+    lives exactly as long as the calculation), and later stages of that kernel reuse it. A later
+    stage with wider units may not afford the pinned number even on one color spanning every
+    rank; it is clamped to what that affords rather than trusted to a guard it may not have.
+    Replicated: the sizing is collective and identical on every rank.
+    """
+    pins = getattr(basis, "_auto_gf_caps", None)
+    if pins is None:
+        pins = {}
+        basis._auto_gf_caps = pins
+    key = _pin_key(reort, gf_method)
+    if key not in pins:
+        pins[key] = (_auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes), resident_bytes)
+    cap, pinned_resident = pins[key]
+    # The clamp is for width, not for memory drift: it is evaluated against the resident set the
+    # pin was taken with, so a grown resident set does not move the calculation's cap.
+    all_ranks = basis.comm.size if basis.comm is not None else 1
+    return min(cap, _auto_gf_cap(basis, [all_ranks], width, reort, gf_method, pinned_resident))
+
+
+def _auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes):
+    """The largest unit basis the smallest of ``rank_counts`` can afford, with what is resident.
+
+    Applied to every unit of a stage: equal treatment of equivalent blocks does not depend on
+    which color a unit landed on, and the ground-state cap -- sized for a different path -- plays
+    no part. Collective on ``basis.comm`` (the memory probe); ``rank_counts`` is replicated.
+    """
+    return min(
+        max_unit_dets_within_budget(
+            basis.num_spin_orbitals,
+            width,
+            reort,
+            ranks,
+            basis.comm,
+            safety=_gf_sizing_safety(),
+            method=gf_method,
+            resident_bytes=resident_bytes,
+        )
+        for ranks in sorted(set(int(r) for r in rank_counts))
+    )
+
+
+def _guard_safety():
+    """``GS_MEMORY_BUDGET_SAFETY`` (default :data:`DEFAULT_MEMORY_SAFETY`); ``<= 0`` disables."""
+    safety = config.GS_MEMORY_BUDGET_SAFETY.get()
+    return DEFAULT_MEMORY_SAFETY if safety is None else safety
+
+
+def _gf_sizing_safety():
+    """The safety fraction an auto GF cap is sized with: the guard's, so the cap and the guard
+    that polices it agree; the default when the guard is switched off."""
+    safety = _guard_safety()
+    return safety if safety > 0.0 else DEFAULT_MEMORY_SAFETY
+
+
+def _gf_memory_budget(available, resident):
+    """Absolute per-rank RSS budget for the GF units' measured guard, or ``None`` when disabled.
+
+    ``resident + _resident_adjusted_budget(safety, available, resident)``: the very headroom the
+    auto GF cap was sized against (floor included), on top of what is resident at GF entry. A
+    guard budget of ``safety * (available + resident)`` instead has no floor, so after a heavy
+    ground state (``resident >= available`` at the default safety) it would sit at or below the
+    resident set and freeze every auto unit at its seeds -- the round-9 failure, on the GF side.
+    Pure; the caller samples ``available``/``resident`` collectively.
+    """
+    safety = _guard_safety()
+    if safety <= 0.0:
+        return None
+    return int(resident + _resident_adjusted_budget(safety, available, resident))
+
+
+def _set_gf_memory_guard(target, basis, budget):
+    """Put the guard's budget and policy on ``target`` for the kernels; returns what to restore."""
+    saved = (getattr(target, "gf_memory_budget", None), getattr(target, "gf_memory_policy", None))
+    target.gf_memory_budget = budget
+    target.gf_memory_policy = "tighten" if _may_lower_gf_cap(basis) else "warn"
+    return saved
+
+
+def _restore_gf_memory_guard(target, saved):
+    target.gf_memory_budget, target.gf_memory_policy = saved
+
+
+def _may_lower_gf_cap(basis):
+    """Whether memory may size a GF unit below :func:`gf_cap`: not for a cap the user set."""
+    policy = getattr(basis, "cap_policy", None)
+    return policy is None or policy.from_memory
 
 
 @dataclass(frozen=True)
@@ -217,11 +436,34 @@ def run_units_distributed(
     """
     n_units = len(unit_seeds)
     if basis.comm is None or basis.comm.size <= 1:
-        if reduce_fn is not None:
+        # The kernels clone `basis`, so the GF cap has to be on it for the duration; restored in
+        # the `finally`, so the caller's (ground-state) cap survives this call on every path.
+        caller_cap = basis.truncation_threshold
+        saved_guard = (getattr(basis, "gf_memory_budget", None), getattr(basis, "gf_memory_policy", None))
+        resident = current_rss_bytes()
+        width = max((len(s) for s in unit_seeds), default=1)
+        try:
+            basis.truncation_threshold = (
+                _pinned_auto_gf_cap(basis, [1], width, reort, gf_method, resident)
+                if _is_auto_gf(basis)
+                else gf_cap(basis)
+            )
+            _set_gf_memory_guard(basis, basis, _gf_memory_budget(available_bytes_per_rank(basis.comm), resident))
+            line = _describe_gf_cap(basis, basis.truncation_threshold, f"{n_units} units, serial")
+            if line is not None:
+                print(line, flush=True)
+            results = []
             for u in range(n_units):
-                reduce_fn(u, kernel(basis, u, unit_seeds[u]))
-            return True
-        return [kernel(basis, u, unit_seeds[u]) for u in range(n_units)]
+                result = kernel(basis, u, unit_seeds[u])
+                release_freed_heap()  # see release_freed_heap: the next unit starts from a clean RSS
+                if reduce_fn is not None:
+                    reduce_fn(u, result)
+                else:
+                    results.append(result)
+            return True if reduce_fn is not None else results
+        finally:
+            basis.truncation_threshold = caller_cap
+            _restore_gf_memory_guard(basis, saved_guard)
 
     seed_offsets = np.concatenate(([0], np.cumsum([len(s) for s in unit_seeds]))).astype(int)
     # Every color's unit basis inherits the same truncation_threshold, so colors multiply
@@ -229,19 +471,15 @@ def run_units_distributed(
     # Cap the concurrency so a cap-filling unit basis still fits the per-rank budget. The
     # probe is collective on basis.comm; the gates (cap finiteness, unit/rank counts) are
     # replicated, so every rank computes the identical max_colors.
-    cap = getattr(basis, "truncation_threshold", np.inf)
+    cap = gf_cap(basis)
     width = max((len(s) for s in unit_seeds), default=1)
+    # One rule for every cap: the most colors whose real packing lets each unit afford its floor
+    # (the user's cap exactly; for auto, the GS basis size or this kernel's pinned cap).
     max_colors = None
-    if np.isfinite(cap) and min(basis.comm.size, n_units) > 1:
-        max_colors = max_colors_within_budget(
-            int(cap), basis.num_spin_orbitals, width, reort, basis.comm, min(basis.comm.size, n_units), method=gf_method
-        )
-        if verbose and basis.comm.rank == 0 and max_colors < min(basis.comm.size, n_units):
-            print(
-                f"Memory budget caps the unit split at {max_colors} simultaneous unit bases "
-                f"(truncation_threshold={int(cap):,}).",
-                flush=True,
-            )
+    if _is_auto_gf(basis):
+        max_colors = _colors_affording(basis, unit_weights, width, reort, gf_method)
+    elif np.isfinite(cap):
+        max_colors = _colors_affording(basis, unit_weights, width, reort, gf_method, floor=int(cap))
     (
         unit_indices,
         unit_roots,
@@ -292,7 +530,7 @@ def run_units_distributed(
     resident_bytes = basis.comm.allreduce(current_rss_bytes(), op=MPI.MAX)
     # Collective on basis.comm (same function max_unit_dets_within_budget calls below); sampled
     # here, unconditionally, purely to report it -- reconstructing this crash needed inverting
-    # max_colors_within_budget's return to recover a number the process had in hand the whole
+    # the color-count bound to recover a number the process had in hand the whole
     # time (doc/plans/dc_smo_memory.md, "GF unit memory", item 4). Printed once, before any unit
     # runs, alongside the block width and the rank-count spread across colors -- none of which
     # the split print recorded before this round, and round 7's own per-unit reporting never
@@ -312,8 +550,17 @@ def run_units_distributed(
             flush=True,
         )
         print("=" * 80, flush=True)
+    guard = _set_gf_memory_guard(split_basis, basis, _gf_memory_budget(available_bytes, resident_bytes))
     try:
-        if np.isfinite(cap):
+        # Every color starts from the GF cap, not from the cap `split_basis` inherited from the
+        # ground-state basis (which the memory guard may have lowered for the ground state).
+        if _is_auto_gf(basis):
+            # Replicated (derived from the verified-rank-invariant `unit_roots`), so every rank
+            # makes the same collective memory-probe calls.
+            rank_counts = [int(d) for d in np.diff(unit_roots + [basis.comm.size])]
+            cap = _pinned_auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes)
+        split_basis.truncation_threshold = cap
+        if np.isfinite(cap) and _may_lower_gf_cap(basis) and not _is_auto_gf(basis):
             unit_cap = max_unit_dets_within_budget(
                 basis.num_spin_orbitals,
                 width,
@@ -341,15 +588,27 @@ def run_units_distributed(
                     f"{format_bytes(per_rank)}).",
                     flush=True,
                 )
+        if basis.comm.rank == 0:
+            color_sizes = [int(d) for d in np.diff(unit_roots + [basis.comm.size])]
+            layout = f"{n_units} units on {n_colors} color(s) of {color_sizes} ranks"
+            if max_colors is not None:
+                _unconstrained, procs = _pack_units(unit_weights, basis.comm.size, basis.split_threshold, None)
+                n_free = 1 if procs is None else len(procs)
+                if n_colors < n_free:
+                    layout += f" (memory cut this from {n_free} colors, so each unit can afford its cap)"
+            line = _describe_gf_cap(basis, split_basis.truncation_threshold, layout)
+            if line is not None:
+                print(line, flush=True)
         sub_rank = split_basis.comm.rank if split_basis.comm is not None else 0
         unit_indices_per_color = gather_distributed_results(
             basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices), is_array=True
         )
 
         assert split_seeds is not None  # seeds passed in are a (possibly empty) list, never None
-        local_results = [
-            kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]) for u in unit_indices
-        ]
+        local_results = []
+        for u in unit_indices:
+            local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
+            release_freed_heap()  # see release_freed_heap: the next unit starts from a clean RSS
 
         results = None
         if reduce_fn is None:
@@ -381,6 +640,7 @@ def run_units_distributed(
         # Rank-local attribute write, executed identically on every rank (no collective here),
         # so an exception on one rank cannot desynchronize the others through this path.
         basis.truncation_threshold = caller_cap
+        _restore_gf_memory_guard(split_basis, guard)
 
     # Free the split communicator collectively before returning. MPI_Comm_free is collective --
     # it must be called by all ranks in the comm at the same time. Leaving it for Python gc risks

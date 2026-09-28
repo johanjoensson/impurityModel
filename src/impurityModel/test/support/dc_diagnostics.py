@@ -58,7 +58,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed import config, solver_trace
-from impurityModel.ed.memory_estimate import suggest_truncation_threshold
+from impurityModel.ed.memory_estimate import suggest_gs_truncation_threshold
 from impurityModel.ed.model import load_selfenergy_archive
 from impurityModel.ed.selfenergy import (
     fixed_gap_dc,
@@ -295,7 +295,7 @@ def run_dc_search(
         # which means the cap is derived from available per-rank memory at run time. The ladder
         # is an extrapolation and this is the point it extrapolates *to*; without it the exponent
         # has no destination.
-        "production_cap": suggest_truncation_threshold(model.n_spin_orbitals, comm=comm),
+        "production_cap": suggest_gs_truncation_threshold(model.n_spin_orbitals, comm=comm),
         "seconds": seconds,
         "mu": mu,
         "value": achieved,

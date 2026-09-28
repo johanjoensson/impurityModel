@@ -31,6 +31,7 @@ from impurityModel.ed.gf_primitives import (
     _trim_blocks,
     build_qr,
     calc_G,
+    guarded_proxy,
 )
 from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
@@ -334,10 +335,15 @@ def block_Green_sparse(
     krylov_dtype=None,
     eval_meshes=None,
     info=None,
+    memory_budget=None,
+    memory_policy="tighten",
 ):
     """
     Calculate one block of the Greens function. This function builds the many body basis
     iteratively, reducing memory requirements.
+
+    ``memory_budget``/``memory_policy`` switch on :class:`_CappedBasisProxy`'s measured memory
+    guard (off by default; only meaningful with a finite cap).
 
     ``basis.truncation_threshold`` caps the number of Slater determinants the
     recurrence may touch (see :class:`_CappedBasisProxy`); ``np.inf`` (the ``Basis``
@@ -419,7 +425,18 @@ def block_Green_sparse(
     # Enforce the determinant cap on the recurrence: the proxy persists across the
     # resume rounds below, so the retained set (and a freeze) carries over.
     cap = getattr(basis, "truncation_threshold", np.inf)
-    lanczos_basis = _CappedBasisProxy(basis, cap) if np.isfinite(cap) else basis
+    # With a memory budget the proxy is installed even without a finite cap (`unlimited`): its
+    # measured guard is the only thing standing between an uncapped recurrence and an OOM kill.
+    # The count cap is then effectively infinite. (This routes an unlimited serial run through
+    # the capped, row-chunked path, which is not bit-identical to the unproxied one.)
+    if memory_budget is None:
+        # Not handed one explicitly: the guard the GF stage configured on this basis, if any
+        # (clones carry it), exactly as every other capped GF kernel reads it.
+        lanczos_basis = guarded_proxy(basis, cap)
+    else:
+        lanczos_basis = _CappedBasisProxy(
+            basis, cap if np.isfinite(cap) else 2**62, memory_budget=memory_budget, memory_policy=memory_policy
+        )
     # With reort NONE the kernel never projects against the accumulated Krylov basis and
     # the resume protocol reads only the two-block tail, so skip the full retention.
     resolved_reort = resolve_reort(reort if reort is not None else Reort.NONE)
@@ -468,6 +485,7 @@ def block_Green_sparse(
         if cap_info is not None:
             cap_info["cap_hit"] = lanczos_basis.cap_hit
             cap_info["retained_size"] = lanczos_basis.retained_size
+            cap_info["memory_frozen"] = lanczos_basis.memory_frozen
             cap_info["proxy"] = lanczos_basis
     elif cap_info is not None:
         cap_info["cap_hit"] = False
@@ -760,14 +778,12 @@ def block_Green_bicgstab(
                     bras = list(redistributed[2 * n_ops :])
                 stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], int(tmp_basis.size))
 
-                solve_basis = tmp_basis
-                if np.isfinite(cap):
-                    if tmp_basis.size > cap:
-                        # The seed/warm-start support alone exceeds the cap. Never truncate
-                        # the right-hand side silently: solve on it frozen (exact on that
-                        # subspace) and flag it for the diagnostics.
-                        stats["seed_overflow"] = True
-                    solve_basis = _CappedBasisProxy(tmp_basis, cap)
+                if np.isfinite(cap) and tmp_basis.size > cap:
+                    # The seed/warm-start support alone exceeds the cap. Never truncate the
+                    # right-hand side silently: solve on it frozen (exact on that subspace) and
+                    # flag it for the diagnostics.
+                    stats["seed_overflow"] = True
+                solve_basis = guarded_proxy(tmp_basis, cap)
 
                 # A fresh operator per point: block_bicgstab sets its occupation
                 # restrictions from the basis; the weighted restrictions are set here

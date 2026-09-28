@@ -118,15 +118,21 @@ def test_gs_graph_exchange_term_is_bounded_by_the_byte_budget(monkeypatch):
     assert me.estimate_gs_peak_bytes(1000, 100, block_width=4, ranks=2) - loop2 == 500 * 4 * 16
 
 
-def test_suggest_threshold_monotone_in_safety():
-    lo = me.suggest_truncation_threshold(100, safety=0.1)
-    hi = me.suggest_truncation_threshold(100, safety=0.5)
+def test_suggest_threshold_monotone_in_safety(monkeypatch):
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**30)
+    lo = me.suggest_gs_truncation_threshold(100, safety=0.1)
+    hi = me.suggest_gs_truncation_threshold(100, safety=0.5)
     assert 0 < lo <= hi
 
 
-def test_suggest_threshold_fits_budget():
-    n = me.suggest_truncation_threshold(100, block_width=4, reort="none", safety=0.25)
-    budget = 0.25 * me.available_bytes_per_rank(None)
+def test_suggest_threshold_fits_budget(monkeypatch):
+    """The available figure is pinned: read live, it moved between the sizing call and the
+    assertion's own read under memory pressure, which is what made this test flaky."""
+    available = 4 * 2**30
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: available)
+    monkeypatch.delenv("GS_NUM_WANTED", raising=False)
+    n = me.suggest_gs_truncation_threshold(100, block_width=4, safety=0.25)
+    budget = 0.25 * available
     assert me.estimate_gs_peak_bytes(n, 100, 4, 1) <= budget
     assert me.estimate_gs_peak_bytes(n + 1, 100, 4, 1) > budget or n >= 10**13
 
@@ -195,34 +201,19 @@ def test_node_available_bytes_respects_cgroup(monkeypatch):
     assert me._node_available_bytes() >= min(unconstrained, 12345)
 
 
-def test_max_colors_within_budget(monkeypatch):
-    """The color cap must invert estimate_gf_peak_bytes against the safety-scaled budget."""
-    from types import SimpleNamespace
-
-    comm = SimpleNamespace(size=16)
-    n, nso, width = 100_000, 100, 4
-    target = me.estimate_gf_peak_bytes(n, nso, width, "none", ranks=16 // 4)
-    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: target / me.DEFAULT_MEMORY_SAFETY)
-    assert me.max_colors_within_budget(n, nso, width, "none", comm, 16) == 4
-    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 1)
-    assert me.max_colors_within_budget(n, nso, width, "none", comm, 16) == 1
-    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2**60)
-    assert me.max_colors_within_budget(n, nso, width, "none", comm, 16) == 16
-
-
 def test_log_memory_budget_serial(capsys):
     report = me.log_memory_budget(100_000, 100, comm=None, block_width=4, verbose=True, label="test")
     out = capsys.readouterr().out
-    assert "truncation_threshold=100,000" in out
+    assert "ground-state cap 100,000" in out
     assert report["available_per_rank"] > 0
-    assert report["gs_peak"] > 0 and report["gf_peak"] > 0
+    assert report["gs_peak"] > 0 and "gf_peak" not in report
 
 
 def test_log_memory_budget_uncapped(capsys):
     for uncapped in (None, np.inf, float("inf")):
         report = me.log_memory_budget(uncapped, 100, comm=None, verbose=True)
-        assert report["gs_peak"] is None and report["gf_peak"] is None
-    assert "uncapped" in capsys.readouterr().out
+        assert report["gs_peak"] is None
+    assert "unlimited" in capsys.readouterr().out
 
 
 def test_log_peak_vs_predicted_serial(capsys):
@@ -307,19 +298,6 @@ def test_log_memory_budget_does_not_warn_when_uncapped(capsys, monkeypatch):
     assert "gs_num_wanted" not in out
 
 
-def test_resolve_sizing_block_width_matches_gf_width_when_the_knob_is_unset(monkeypatch):
-    """Preserves today's behaviour exactly on the unset path (review finding)."""
-    monkeypatch.delenv("GS_MAX_BLOCK_WIDTH", raising=False)
-    assert me.resolve_sizing_block_width(6) == 6
-
-
-def test_resolve_sizing_block_width_takes_the_larger_of_gf_and_gs_widths(monkeypatch):
-    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "20")
-    assert me.resolve_sizing_block_width(6) == 20
-    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "2")
-    assert me.resolve_sizing_block_width(6) == 6
-
-
 def test_gs_num_wanted_none_keeps_the_pre_phase4_coupled_default():
     """gs_num_wanted=None (the default, whether or not GS_MAX_BLOCK_WIDTH is set) must be a
     total no-op: byte-identical to bceaef5's pre-this-fix behaviour. A review round found that
@@ -339,13 +317,13 @@ def test_gs_num_wanted_when_supplied_changes_the_krylov_term():
     assert measured != coupled
 
 
-def test_suggest_truncation_threshold_gs_num_wanted_reaches_estimate_gs_peak_bytes():
-    """gs_num_wanted must actually thread through _suggest_for_budget down to
-    estimate_gs_peak_bytes, not just sit unused on the outer signature."""
+def test_suggest_gs_truncation_threshold_gs_num_wanted_reaches_estimate_gs_peak_bytes(monkeypatch):
+    """gs_num_wanted must actually thread through to estimate_gs_peak_bytes, not just sit unused
+    on the outer signature."""
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 5 * 2**30)
     nso, p = 106, 4
-    budget = 5 * me.estimate_gs_peak_bytes(50_000, nso, block_width=p, num_wanted=2 * p)
-    with_default = me._suggest_for_budget(budget, nso, p, "none", 1, 100, ranks=1)
-    with_measured = me._suggest_for_budget(budget, nso, p, "none", 1, 100, ranks=1, gs_num_wanted=400)
+    with_default = me.suggest_gs_truncation_threshold(nso, block_width=p, gs_num_wanted=None)
+    with_measured = me.suggest_gs_truncation_threshold(nso, block_width=p, gs_num_wanted=400)
     assert with_measured != with_default
 
 
@@ -431,9 +409,18 @@ def test_krylov_dtype_halves_the_store_term_and_raises_the_cap():
     store_only = me.estimate_gf_peak_bytes(**{**kw, "reort": "none"})
     assert wide - narrow == pytest.approx((wide - store_only) * 0.5, rel=0.02)
 
-    budget = 8 * 2**30
-    lo = me._suggest_for_budget(budget, 106, 2, "full", 1, 100, 4)
-    hi = me._suggest_for_budget(budget, 106, 2, "full", 1, 100, 4, np.complex64)
+    from types import SimpleNamespace
+
+    import impurityModel.ed.memory_estimate as mem
+
+    orig = mem.available_bytes_per_rank
+    mem.available_bytes_per_rank = lambda c: 16 * 2**30
+    try:
+        comm = SimpleNamespace(size=4)
+        lo = me.max_unit_dets_within_budget(106, 2, "full", 4, comm)
+        hi = me.max_unit_dets_within_budget(106, 2, "full", 4, comm, krylov_dtype=np.complex64)
+    finally:
+        mem.available_bytes_per_rank = orig
     assert hi > lo
 
 
@@ -476,7 +463,7 @@ def test_routing_skew_factor_is_monotone_increasing_in_ranks():
 
 def test_estimate_gf_peak_bytes_scales_local_rows_by_the_skew(monkeypatch):
     """Peak bytes at a given `ranks` must equal the unskewed estimate scaled by the same
-    factor `max_colors_within_budget`/`max_unit_dets_within_budget` see -- otherwise the two
+    factor `max_unit_dets_within_budget` (and so `gf_units._colors_affording`) sees -- otherwise the two
     inversions and the direct estimate would disagree on what they are budgeting.
 
     This is also the test that pins the round-8 matvec-fanout term itself: it asserts the exact
@@ -525,7 +512,7 @@ def test_gf_chunk_divisor_credits_chunking_but_never_the_full_chunk_count(monkey
 
 
 # ---------------------------------------------------------------------------------------
-# max_unit_dets_within_budget: the complement of max_colors_within_budget
+# max_unit_dets_within_budget: the per-unit inversion of the GF peak model
 # ---------------------------------------------------------------------------------------
 
 
@@ -566,31 +553,6 @@ def test_max_unit_dets_within_budget_floor_is_one(monkeypatch):
     assert me.max_unit_dets_within_budget(100, 4, "none", 4, comm) >= 1
 
 
-def test_max_unit_dets_without_residency_is_structurally_a_no_op(monkeypatch):
-    """Given the SAME budget, the per-unit cap can never tighten a cap the color inversion
-    already approved -- and this test exists to say that out loud rather than dress it up.
-
-    `max_colors_within_budget` returns `n_colors >= 2` only from inside its loop, i.e. having
-    verified the cap fits at that color's rank count; the split can only reduce the color
-    count, which only raises `ranks`; `estimate_gf_peak_bytes` is monotone non-increasing in
-    `ranks`. So `unit_cap >= cap` identically. The first shipped version of the per-unit cap
-    asserted exactly this and read it as evidence the design was sound -- it is in fact proof
-    the design was inert (an adversarial review caught it). `resident_bytes` is what makes it
-    bind; see the test below."""
-    from types import SimpleNamespace
-
-    comm = SimpleNamespace(size=128)
-    nso, width = 100, 4
-    cap = 40_000
-    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2 * 2**30)
-
-    max_candidate = 32
-    n_colors = me.max_colors_within_budget(cap, nso, width, "none", comm, max_candidate)
-    ranks_per_color = max(1, comm.size // n_colors)
-    unit_cap = me.max_unit_dets_within_budget(nso, width, "none", ranks_per_color, comm)
-    assert unit_cap >= cap, (n_colors, ranks_per_color, unit_cap)
-
-
 def test_resident_bytes_tightens_the_unit_cap(monkeypatch):
     """The resident set is the information the color inversion does not have, so passing it
     must produce a strictly smaller budget -- and hence a strictly smaller cap -- than the
@@ -619,10 +581,12 @@ def test_resident_bytes_tightens_the_unit_cap(monkeypatch):
     assert me.estimate_gf_peak_bytes(tight, nso, width, "none", ranks=ranks) <= budget
 
 
-def test_resident_bytes_over_the_safety_share_falls_back_rather_than_flooring(monkeypatch):
+def test_resident_bytes_over_the_safety_share_floors_rather_than_collapsing(monkeypatch):
     """A process already past its safety share must not drive the cap to the 1-determinant
-    floor: that memory is spent either way, and a 1-determinant GF is garbage physics, not a
-    safety measure. The budget falls back to `safety * available`."""
+    floor (garbage physics, and the resident reading over-counts MPI shared memory) -- but it
+    must not get the *loosest* budget either, which the old fallback to `safety * available`
+    gave it. It gets the floor `(1 - safety) * safety * available`: tighter than the unadjusted
+    budget, far above one determinant."""
     from types import SimpleNamespace
 
     comm = SimpleNamespace(size=8)
@@ -630,13 +594,22 @@ def test_resident_bytes_over_the_safety_share_falls_back_rather_than_flooring(mo
     available = 1 * 2**30
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: available)
 
-    # resident so large that safety*(available+resident) - resident <= 0
     huge = 100 * 2**30
     assert me.DEFAULT_MEMORY_SAFETY * (available + huge) - huge <= 0
-    fallback = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=huge)
+    floored = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=huge)
     baseline = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm)
-    assert fallback == baseline
-    assert fallback > 1
+    assert 1 < floored < baseline
+
+
+def test_the_resident_adjusted_budget_never_grows_with_the_resident_set():
+    """No cliff: across the zero crossing of the headroom the budget is continuous and
+    non-increasing (it used to jump back up to `safety * available`, ~40x, just past it)."""
+    safety, available = me.DEFAULT_MEMORY_SAFETY, 4 * 2**30
+    residents = [r * 2**26 for r in range(1, 400)]
+    budgets = [me._resident_adjusted_budget(safety, available, r) for r in residents]
+    assert all(b <= a for a, b in pairwise(budgets))
+    assert min(budgets) == pytest.approx((1 - safety) * safety * available)
+    assert max(b / a for a, b in pairwise(budgets)) <= 1.0
 
 
 def test_round8_smo_crash_geometry_is_refused(monkeypatch):
@@ -758,27 +731,63 @@ def test_an_anonymous_allocation_lands_in_anon_and_not_in_shmem():
         del block
 
 
-def test_selfenergy_module_actually_forwards_gs_num_wanted():
-    """`GS_NUM_WANTED` must reach the cap sizing on the SELF-ENERGY path, not just the DC's.
+def test_every_driver_sizes_the_auto_cap_through_the_one_ground_state_function():
+    """`GS_NUM_WANTED` (and the rest of the ground-state sizing) must reach every driver's auto
+    cap, not just the double-counting search's.
 
-    It was wired in `dc_criteria` and missing here, so a production job exporting the variable saw
-    it honoured during the double-counting search and silently ignored when the main solver chose
-    its own cap -- which then fell back to assuming `2 * block_width` (~10) eigenstates against a
-    kept manifold in the hundreds. That under-count is what approved the 20,358,272 cap behind the
-    SrMnO3 crash, and the only outward sign was `log_memory_budget`'s own "gs_num_wanted was not
-    supplied" line in a log nobody was diffing (`doc/plans/dc_smo_memory.md`, round 9).
-
-    Asserted against the module source rather than by driving the calls. A test that builds the
-    two calls itself and checks they carry the argument passes whether or not `selfenergy` forwards
-    it -- the first draft of this test did exactly that and was green against the bug. The defect
-    is a dropped argument at a specific call site, so the call site is what has to be pinned.
+    It was once wired in `dc_criteria` and missing from the self-energy path, so a production job
+    exporting the variable saw it honoured during the search and silently ignored when the main
+    solver chose its own cap -- the under-count behind the SrMnO3 crash's 20,358,272 cap
+    (`doc/plans/dc_smo_memory.md`, round 9). Every driver now resolves through
+    `resolve_cap_policy`, which sizes with `suggest_gs_truncation_threshold`, which reads the knob
+    itself; so the structural pin is that no driver sizes a cap any other way.
     """
-    import inspect
+    from pathlib import Path
 
-    from impurityModel.ed import selfenergy
+    from impurityModel.ed import groundstate, selfenergy, susceptibility
 
-    src = inspect.getsource(selfenergy)
-    head = src[src.index("sizing_block_width = resolve_sizing_block_width") :]
-    head = head[: head.index("basis_information")]
-    assert "gs_num_wanted = resolve_gs_num_wanted()" in head
-    assert head.count("gs_num_wanted=gs_num_wanted") == 2, "both suggest_* and log_memory_budget"
+    for module in (selfenergy, susceptibility, groundstate):
+        src = Path(module.__file__).read_text()
+        assert "resolve_cap_policy(" in src, module.__name__
+        assert "suggest_truncation_threshold(" not in src, f"{module.__name__} sizes a cap on its own"
+        assert "resolve_sizing_block_width" not in src, f"{module.__name__} charges the GF width to the GS cap"
+
+
+def test_the_ground_state_sizing_reads_gs_num_wanted(monkeypatch):
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda comm: 5 * 2**30)
+    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "5")
+    monkeypatch.delenv("GS_NUM_WANTED", raising=False)
+    unset = me.suggest_gs_truncation_threshold(58)
+    monkeypatch.setenv("GS_NUM_WANTED", "105")
+    assert me.suggest_gs_truncation_threshold(58) < unset
+
+
+def test_the_double_counting_search_resolves_its_cap_like_every_other_driver():
+    """Parity by construction: both DC contexts size through `resolve_cap_policy`, the one resolver
+    `calc_selfenergy` uses, so the dc a search finds is the dc of the ground state the self-energy
+    then solves -- not by two sizers happening to agree."""
+    from pathlib import Path
+
+    from impurityModel.ed import dc_criteria
+
+    src = Path(dc_criteria.__file__).read_text()
+    assert src.count("resolve_cap_policy(") == 2
+    assert "suggest_gs_truncation_threshold(" not in src and "suggest_truncation_threshold(" not in src
+
+
+def test_a_wide_gf_block_no_longer_shrinks_the_ground_state_cap(monkeypatch):
+    """The old self-energy sizing charged the GF block width to the GS terms (`max(gs, gf)` width):
+    at width 14 against a GS width of 5 that cost ~2x of the cap. The GS cap now ignores it."""
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda comm: 5 * 2**30)
+    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "5")
+    monkeypatch.setenv("GS_NUM_WANTED", "105")
+    # What the removed coupled sizing returned: max(GS, GF) estimates at the GF width.
+    coupled = me._largest_fitting(
+        lambda n: max(
+            me.estimate_gs_peak_bytes(n, 58, 14, 1, 100, num_wanted=105),
+            me.estimate_gf_peak_bytes(n, 58, 14, "none", 1),
+        )
+        <= 0.5 * 5 * 2**30
+    )
+    policy, _ = me.resolve_cap_policy(None, 58, comm=None, log="never")
+    assert policy.gs > 1.5 * coupled

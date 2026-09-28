@@ -960,11 +960,13 @@ _TABLE_LIST += [
                 "truncation_threshold",
                 Kind.AUTO_COUNT,
                 "auto",
-                "Cap on determinants per basis. 'auto' derives it from available per-rank "
-                "memory at the (collective) call site; 'none' disables capping. The two are "
-                "NOT interchangeable even though the underlying code currently collapses both "
-                "to infinity in one place.",
-                choices=("auto", "none"),
+                "Cap on determinants per basis. 'auto' sizes it from available memory, "
+                "separately for the ground state and the Green's-function units, and lets the "
+                "measured-memory guard hold a basis lower at run time. 'unlimited' (alias 'inf'; "
+                "'none' is accepted for older inputs) sets no cap; the memory guards stay active. A "
+                "positive integer (e.g. 2000 or 2e6) is final: never lowered, only warned about.",
+                choices=("auto", "unlimited", "inf", "none"),
+                minimum=1,
             ),
             Key(
                 "excitation_budget",

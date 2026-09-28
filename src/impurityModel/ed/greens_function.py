@@ -40,6 +40,7 @@ from impurityModel.ed.gf_primitives import (  # noqa: F401  -- re-exported for b
     calc_G,
     calc_G_pairwise,
     calc_thermally_averaged_G,
+    guarded_proxy,
 )
 from impurityModel.ed.gf_shift_recycling import (  # noqa: F401  -- re-exported for backward compat
     KrylovShiftedResolvent,
@@ -54,6 +55,8 @@ from impurityModel.ed.gf_solvers import (
 from impurityModel.ed.gf_units import (
     _gf_operator_split,
     enumerate_gf_units,
+    gf_cap_on_full_comm,
+    gf_guard_on_full_comm,
     run_units_distributed,
     unit_cost_weights,
 )
@@ -559,6 +562,11 @@ def get_Greens_function(
             block_i, unit_side_i = group_meta[unit.group_i]
             _merge_unit_basis(max_basis, (block_i, unit_side_i), cap_stats.get("retained_size"), cap_stats["cap_hit"])
             stats = cap_acc.setdefault(block_i, {"cap_hit": False, "retained_size": None, "cap": cap_stats["cap"]})
+            seed_size = cap_stats.get("seed_size")
+            if seed_size is not None and np.isfinite(cap_stats["cap"]) and seed_size >= cap_stats["cap"]:
+                stats["seed_frozen"] = True
+            if cap_stats.get("memory_frozen"):
+                stats["memory_frozen"] = True
             if cap_stats["cap_hit"]:
                 stats["cap_hit"] = True
                 stats["cap"] = cap_stats["cap"]
@@ -633,7 +641,13 @@ def get_Greens_function(
             block_cap = cap_acc.get(block_i)
             if block_cap is not None:
                 diags.append(
-                    _gfd.check_basis_truncation(block_cap["cap_hit"], block_cap["retained_size"], block_cap["cap"])
+                    _gfd.check_basis_truncation(
+                        block_cap["cap_hit"],
+                        block_cap["retained_size"],
+                        block_cap["cap"],
+                        seed_frozen=block_cap.get("seed_frozen", False),
+                        memory_frozen=block_cap.get("memory_frozen", False),
+                    )
                 )
             if not pairwise:
                 diags.insert(0, _gfd.check_spectral_sum_rule(r_add, r_rem, es, e0, tau, len(block)))
@@ -954,18 +968,24 @@ def _get_greens_function_sliced(
     estimated once and shared. Knobs: ``GF_SLICES`` (windows across the evaluation band),
     ``GF_SLICE_DEGREE`` (0 = auto from bandwidth/slice width), ``GF_SLICE_TOL``.
     """
-    cap = getattr(basis, "truncation_threshold", np.inf)
+    # The GF cap, not the ground-state basis's own (see gf_units.gf_cap): this filter stage runs
+    # before run_units_distributed and must size its capped clones the same way the units do.
+    cap = gf_cap_on_full_comm(basis, max((len(s) for s in unit_seeds), default=1), gf_method="sliced")
+    # The filter stage is guarded like the units: same budget policy, on the full communicator.
+    filter_budget, filter_policy = gf_guard_on_full_comm(basis)
 
     def _excited_clone(u):
-        return basis.clone(
+        clone = basis.clone(
             initial_basis=sorted({state for s in unit_seeds[u] for state in s.keys()}),
             restrictions=unit_restrictions[u],
             weighted_restrictions=excited_weighted_restrictions,
             verbose=False,
         )
+        clone.gf_memory_budget, clone.gf_memory_policy = filter_budget, filter_policy
+        return clone
 
     def _capped(b):
-        return _CappedBasisProxy(b, cap) if np.isfinite(cap) else b
+        return guarded_proxy(b, cap)
 
     w_lo, w_hi = float(np.min(omega_mesh)), float(np.max(omega_mesh))
     n_slices, degree_knob, slice_tol = _slice_count(), _slice_degree(), _slice_tol()
@@ -1211,6 +1231,9 @@ def _block_green_group(
     if excited_basis.weighted_restrictions is not None:
         hOp.set_weighted_restrictions(excited_basis.weighted_restrictions)
     cap = getattr(excited_basis, "truncation_threshold", np.inf)
+    # The seed support: the union of the unit's seed columns, before any recurrence step. When it
+    # alone reaches the cap the solve is frozen at its seeds (gf_diagnostics.check_basis_truncation).
+    seed_size = int(excited_basis.size)
     # `conv_stats` stays None to the caller that didn't ask for it; this function still wants
     # `n_blocks` for its own report, so it reads back through its own dict either way.
     info = {} if conv_stats is None else conv_stats
@@ -1227,6 +1250,10 @@ def _block_green_group(
             cap_info=cap_info,
             eval_meshes=eval_meshes,
             info=info,
+            # Set per color by gf_units.run_units_distributed (the GF memory guard); absent on a
+            # basis that did not come through it, which leaves the guard off.
+            memory_budget=getattr(split_basis, "gf_memory_budget", None),
+            memory_policy=getattr(split_basis, "gf_memory_policy", "tighten"),
         )
         # `retained_size` stays None when the cap is infinite, and that is not a formatting
         # gap to paper over: the sparse recurrence's support is tracked *only* by
@@ -1242,6 +1269,8 @@ def _block_green_group(
             "cap_hit": bool(cap_info.get("cap_hit", False)),
             "retained_size": cap_info.get("retained_size"),
             "cap": cap,
+            "seed_size": seed_size,
+            "memory_frozen": bool(cap_info.get("memory_frozen", False)),
         }
     else:
         alphas, betas, r = block_Green(
@@ -1260,6 +1289,7 @@ def _block_green_group(
             "cap_hit": bool(np.isfinite(cap) and excited_basis.size > cap),
             "retained_size": len(excited_basis),
             "cap": cap,
+            "seed_size": seed_size,
         }
     comm = split_basis.comm
     peak = peak_rss_bytes()

@@ -23,6 +23,7 @@ from impurityModel.ed.model import (
     resolve_excitation_budget,
 )
 from impurityModel.ed.selfenergy import calc_selfenergy
+from impurityModel.scripts._cap import CAP_NOT_GIVEN, add_cap_argument, requested_cap
 from impurityModel.scripts._units import convert_energy_args
 from impurityModel.scripts._verbosity import add_verbosity_argument, resolve_verbosity
 
@@ -104,9 +105,7 @@ def add_arguments(parser):
 
     # Basis / solver knobs.
     parser.add_argument("--dN", type=int, default=None, help="Impurity occupation window (+-dN) for the excited bases.")
-    parser.add_argument(
-        "--truncation_threshold", type=int, default=None, help="Determinant budget (default: as many as fit in RAM)."
-    )
+    add_cap_argument(parser)
     parser.add_argument(
         "--excitation_budget",
         type=int,
@@ -235,6 +234,9 @@ def run(args):
         if args.excitation_budget is not None:
             # An explicitly passed flag overrides the archived budget (negative disables).
             basis = replace(basis, excitation_budget=resolve_excitation_budget(args.excitation_budget))
+        if args.truncation_threshold is not CAP_NOT_GIVEN:
+            # Likewise an explicit cap, including an explicit `auto`, overrides the archived one.
+            basis = replace(basis, truncation_threshold=args.truncation_threshold)
     else:
         if not args.h0_filename:
             raise SystemExit("Provide an h0 file (positional) or --from-archive PATH.")
@@ -261,7 +263,7 @@ def run(args):
             nominal_occ={ls: args.n0imps},
             mixed_valence={ls: 0},
             dN=args.dN,
-            truncation_threshold=args.truncation_threshold,
+            truncation_threshold=requested_cap(args),
             chain_restrict=args.chain_restrict,
             tau=args.tau,
             excitation_budget=resolve_excitation_budget(args.excitation_budget),

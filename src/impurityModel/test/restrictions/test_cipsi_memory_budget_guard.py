@@ -30,6 +30,16 @@ N_SPIN_ORBITALS = 6
 N_ELECTRONS = 3
 
 
+@pytest.fixture(autouse=True)
+def _fresh_warning_latch():
+    """The user-cap memory warning prints once per calculation; each test is one."""
+    from impurityModel.ed.memory_estimate import reset_memory_warnings
+
+    reset_memory_warnings()
+    yield
+    reset_memory_warnings()
+
+
 def _det(occupied):
     """SlaterDeterminant with the given orbitals occupied (MSB-first bit convention)."""
     chunk = 0
@@ -137,6 +147,10 @@ def test_the_guard_tightens_a_cap_that_memory_cannot_afford():
 
     The guard therefore now fires whatever the cap, and only ever **tightens** it -- the
     never-loosen invariant is kept by ``test_the_guard_never_loosens_a_caller_cap`` above.
+
+    That is ``memory_policy="tighten"`` (the default), the policy for a cap derived from memory.
+    A cap the **user** set is final and runs under ``"warn"`` instead -- see
+    ``test_warn_mode_keeps_a_user_cap_and_only_warns`` below.
     """
     H = _hamiltonian()
     all_dets = [_det(occ) for occ in itertools.combinations(range(N_SPIN_ORBITALS), N_ELECTRONS)]
@@ -162,12 +176,20 @@ def test_the_guard_fires_once_and_does_not_ratchet_the_cap_down(monkeypatch):
     from impurityModel.ed import cipsi_solver as _cs
 
     budget = 1 << 40
-    calls = {"n": 0}
+    # Keyed on cycles (one eigensolve each), not on calls to `peak_rss_bytes`: a cycle samples the
+    # high-water mark more than once (after the eigensolve, in the selection round, at the
+    # trip-wire), so counting calls would move the "first two cycles" boundary.
+    cycles = {"n": 0}
+    real_eigenvectors = _cs.CIPSISolver.get_eigenvectors
+
+    def counting_eigenvectors(self, *args, **kwargs):
+        cycles["n"] += 1
+        return real_eigenvectors(self, *args, **kwargs)
 
     def fake_peak_rss():
-        calls["n"] += 1
-        return 0 if calls["n"] <= 2 else budget * 2
+        return 0 if cycles["n"] <= 2 else budget * 2
 
+    monkeypatch.setattr(_cs.CIPSISolver, "get_eigenvectors", counting_eigenvectors)
     monkeypatch.setattr(_cs, "peak_rss_bytes", fake_peak_rss)
 
     H = _hamiltonian()
@@ -197,3 +219,138 @@ def test_impossible_budget_adopts_a_cap_at_the_current_basis_size_mpi():
     assert np.isfinite(solver.basis.truncation_threshold)
     thresholds = comm.allgather(solver.basis.truncation_threshold)
     assert all(t == thresholds[0] for t in thresholds)
+
+
+def test_warn_mode_keeps_a_user_cap_and_only_warns(capfd):
+    """A cap the user set is final: at a budget every sample exceeds, ``memory_policy="warn"``
+    must leave the cap, the admissions and the truncation report exactly as an unguarded run
+    has them, and say so -- on stderr as well as stdout, at any verbosity."""
+    H = _hamiltonian()
+    all_dets = [_det(occ) for occ in itertools.combinations(range(N_SPIN_ORBITALS), N_ELECTRONS)]
+    user_cap = 10**6
+
+    reference = _make_solver(None, truncation_threshold=user_cap)
+    reference.basis.clear()
+    reference.basis.add_states([all_dets[0]])
+    reference.expand(H, de2_min=GS_DE2_MIN, solver="trlm")
+
+    solver = _make_solver(None, truncation_threshold=user_cap)
+    solver.basis.verbose = False
+    solver.basis.clear()
+    solver.basis.add_states([all_dets[0]])
+    capfd.readouterr()
+    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1, memory_policy="warn")
+    out, err = capfd.readouterr()
+
+    assert solver.basis.truncation_threshold == user_cap
+    assert set(solver.basis.local_basis) == set(reference.basis.local_basis)
+    assert solver.truncation_report is None, "warn mode must not report a memory-bound cap"
+    assert solver.memory_warning is not None and solver.memory_warning["cap"] == user_cap
+    assert "WARNING determinant cap" in err
+    assert "WARNING determinant cap" in out
+    assert err.count("WARNING determinant cap") == 1, "the warning is latched once per expansion"
+
+
+def test_warn_mode_is_a_no_op_under_budget():
+    """No budget exceeded, no warning and nothing recorded."""
+    H = _hamiltonian()
+    solver = _make_solver(None, truncation_threshold=10**6)
+    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=2**60, memory_policy="warn")
+    assert solver.memory_warning is None
+    assert solver.truncation_report is None
+
+
+def test_unknown_memory_policy_is_rejected():
+    with pytest.raises(ValueError, match="memory_policy"):
+        _make_solver(None).expand(_hamiltonian(), memory_policy="shrink")
+
+
+def test_groundstate_maps_cap_provenance_to_memory_policy():
+    """Only a finite cap the user set runs warn-only; auto and unlimited keep the guard."""
+    from impurityModel.ed.groundstate import _memory_policy
+    from impurityModel.ed.memory_estimate import CapPolicy
+
+    assert _memory_policy(None) == "tighten"
+    assert _memory_policy(np.inf) == "tighten"
+    assert _memory_policy(5000) == "warn"
+    assert _memory_policy(CapPolicy(gs=5000, gf=5000, from_memory=True)) == "tighten"
+    assert _memory_policy(CapPolicy(gs=5000, gf=5000, from_memory=False)) == "warn"
+
+
+@pytest.mark.mpi
+def test_warn_mode_keeps_a_user_cap_mpi():
+    """Warn mode's latch rides on the same replicated condition as the trip-wire, so every rank
+    must keep the cap and record the warning together -- run at -n 2 and -n 3."""
+    comm = MPI.COMM_WORLD
+    H = _hamiltonian()
+    solver = _make_solver(comm, truncation_threshold=10**6)
+    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1, memory_policy="warn")
+
+    assert solver.basis.truncation_threshold == 10**6
+    flags = comm.allgather(solver.memory_warning is not None)
+    assert all(flags), flags
+
+
+def test_the_trip_wire_sees_a_peak_that_happens_during_the_eigensolve(monkeypatch):
+    """The selection round resets the high-water mark to measure its own transient; a spike that
+    lives only inside the eigensolve (at scale ~95% of an expansion's cost) was wiped by that reset
+    before the trip-wire looked. Modelled directly: the fake high-water mark is huge only between an
+    eigensolve and the next reset."""
+    from impurityModel.ed import cipsi_solver as _cs
+
+    budget = 1 << 40
+    state = {"spiked": False}
+    real_eigenvectors = _cs.CIPSISolver.get_eigenvectors
+
+    def spiking_eigenvectors(self, *args, **kwargs):
+        result = real_eigenvectors(self, *args, **kwargs)
+        state["spiked"] = True
+        return result
+
+    def fake_reset():
+        state["spiked"] = False
+        return True
+
+    monkeypatch.setattr(_cs.CIPSISolver, "get_eigenvectors", spiking_eigenvectors)
+    monkeypatch.setattr(_cs, "reset_peak_rss", fake_reset)
+    monkeypatch.setattr(_cs, "peak_rss_bytes", lambda: budget * 2 if state["spiked"] else 0)
+
+    solver = _make_solver(None)
+    solver.expand(_hamiltonian(), de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=budget)
+    assert solver.truncation_report is not None and solver.truncation_report["memory_bound"]
+
+
+def test_the_user_cap_warning_prints_once_per_calculation(capfd):
+    """A double-counting search runs dozens of expansions; one warning per calculation, counted,
+    and a new calculation (a driver resolving its cap) warns again."""
+    from impurityModel.ed.memory_estimate import reset_memory_warnings, resolve_cap_policy
+
+    H = _hamiltonian()
+    for _ in range(3):
+        _make_solver(None, truncation_threshold=10**6).expand(
+            H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1, memory_policy="warn"
+        )
+    _out, err = capfd.readouterr()
+    assert err.count("WARNING determinant cap") == 1
+    resolve_cap_policy(10**6, N_SPIN_ORBITALS, log="never")  # the next calculation starts
+    _make_solver(None, truncation_threshold=10**6).expand(
+        H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1, memory_policy="warn"
+    )
+    _out, err = capfd.readouterr()
+    assert err.count("WARNING determinant cap") == 1
+    assert reset_memory_warnings() == 1
+
+
+def test_an_auto_tightening_is_visible_at_default_verbosity_once_per_calculation(capfd):
+    """The guard holding an auto/unlimited basis lower is the answer to 'why did my basis stop
+    growing?' -- it used to print only at -vv. Now once per calculation at any verbosity."""
+    H = _hamiltonian()
+    for _ in range(2):
+        solver = _make_solver(None)
+        solver.basis.verbose = False
+        solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1)
+        assert solver.truncation_report["memory_bound"]
+    out, _err = capfd.readouterr()
+    # Each kind of event once: the guard tightening, and the basis stopping short of convergence.
+    assert out.count("mid-expansion; tightening") == 1, out
+    assert out.count("WARNING determinant cap: GS basis stopped at") == 1, out

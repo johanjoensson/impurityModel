@@ -14,6 +14,7 @@ from mpi4py import MPI
 from impurityModel.ed.average import k_B
 from impurityModel.ed.get_spectra import build_spectra_model, run_spectra
 from impurityModel.ed.model import EXCITATION_BUDGET_DEFAULT, BasisOptions, SpectraOptions, resolve_excitation_budget
+from impurityModel.scripts._cap import add_cap_argument, requested_cap
 from impurityModel.scripts._units import convert_energy_args
 from impurityModel.scripts._verbosity import add_verbosity_argument, resolve_verbosity
 
@@ -136,15 +137,7 @@ def add_arguments(parser):
         help="Smearing HWHM for RIXS (eV); <= 0 disables the RIXS calculation.",
     )
     parser.add_argument("--deltaNIXS", type=float, default=0.100, help="Smearing HWHM for NIXS (eV).")
-    parser.add_argument(
-        "--truncation_threshold",
-        type=int,
-        default=None,
-        help=(
-            "Maximum number of Slater determinants in any many-body basis. "
-            "Default: as many as fit in RAM (see memory_estimate)."
-        ),
-    )
+    add_cap_argument(parser)
     parser.add_argument(
         "--excitation_budget",
         type=int,
@@ -270,7 +263,7 @@ def run(args):
     basis = BasisOptions(
         nominal_occ=OrderedDict(zip(args.ls, args.n0imps)),
         dN=2,
-        truncation_threshold=args.truncation_threshold,
+        truncation_threshold=requested_cap(args),
         occ_cutoff=1e-6,
         tau=k_B * args.T,
         excitation_budget=resolve_excitation_budget(args.excitation_budget),

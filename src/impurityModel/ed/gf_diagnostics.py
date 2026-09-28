@@ -578,7 +578,9 @@ def check_slice_partition(n_windows: int, degree: int, edge_width: float, slice_
     )
 
 
-def check_basis_truncation(cap_hit: bool, retained, cap) -> Diagnostic:
+def check_basis_truncation(
+    cap_hit: bool, retained, cap, seed_frozen: bool = False, memory_frozen: bool = False
+) -> Diagnostic:
     r"""Surface a Green's-function basis frozen by ``truncation_threshold``.
 
     When the excited-basis determinant cap is hit, the recurrence continues as an exact
@@ -595,6 +597,13 @@ def check_basis_truncation(cap_hit: bool, retained, cap) -> Diagnostic:
         cap_hit: Whether any of the block's GF solves froze at the cap.
         retained: Global retained determinant count (the largest over the block's solves).
         cap: The ``truncation_threshold`` in effect (``inf`` or ``None`` if uncapped).
+        seed_frozen: Whether a solve's seed support alone already filled the cap. One column
+            ``c^dagger psi`` has at most ``|supp psi|`` determinants, but a unit's basis is the
+            union over its block's operators (and stacked eigenstates), up to ``w * |supp psi|``.
+            When that union reaches the cap the recurrence freezes at its first step and ``G`` is
+            exact only on the span of the seeds -- the regime of the SrMnO3 acausal Sigma.
+        memory_frozen: Whether a solve was frozen by the measured memory guard (an auto cap)
+            before reaching its cap.
 
     Returns:
         Diagnostic: ``OK`` if the cap never bound, else ``WARN``.
@@ -608,6 +617,35 @@ def check_basis_truncation(cap_hit: bool, retained, cap) -> Diagnostic:
             threshold=cap_value,
             message="determinant cap not reached",
         )
+    if memory_frozen and not seed_frozen:
+        return Diagnostic(
+            name="basis_cap",
+            severity=Severity.WARN,
+            value=float(retained) if retained is not None else float("nan"),
+            threshold=cap_value,
+            message=(
+                f"GF basis held at {int(retained or 0):,} determinants by the memory guard, below its cap "
+                "(measured memory reached the budget)"
+            ),
+            suggestion="more memory per rank (fewer ranks per node) or more nodes",
+        )
+    if seed_frozen:
+        return Diagnostic(
+            name="basis_cap",
+            severity=Severity.WARN,
+            value=float(retained) if retained is not None else float("nan"),
+            threshold=cap_value,
+            message=(
+                "GF basis frozen at its seed support: the seeds alone fill the determinant cap, so "
+                "G is exact only on the span of c^dagger psi / c psi (relaxation and satellite "
+                "weight are missing)"
+            ),
+            suggestion=(
+                "with a truncation_threshold you set, raise it well above the ground-state basis size; with 'auto', give "
+                "each rank more memory (fewer ranks per node) or add nodes; or set GF_OPERATOR_SPLIT=1 so "
+                "a unit's seeds are one column each"
+            ),
+        )
     return Diagnostic(
         name="basis_cap",
         severity=Severity.WARN,
@@ -618,6 +656,71 @@ def check_basis_truncation(cap_hit: bool, retained, cap) -> Diagnostic:
             "result is exact on the retained subspace; raise truncation_threshold "
             "(more memory per rank or more ranks) to recover the missing spectral weight"
         ),
+    )
+
+
+def check_ground_state_truncation(truncation, convergence) -> Diagnostic:
+    r"""Surface a truncated ground state in the self-energy report.
+
+    A ground state held below convergence -- by its cap or by the memory guard -- is variationally
+    too high by roughly its residual PT2 energy :math:`\delta`, and is not an eigenstate of
+    :math:`H`. The Green's-function units are sized for their own path (and are typically larger),
+    so this truncation is no longer shared with them and does not cancel: addition poles move down
+    and removal poles up by about :math:`\delta`, and the gap shrinks by up to about
+    :math:`2\delta`. ``residual_pt2`` is summed over a degenerate ground manifold, so ``2 *
+    residual`` is an upper bound, not an estimate; and it is only a measurement of the kept basis
+    when ``residual_is_current``. A resource limit, so a ``WARN``; the double-counting search
+    refuses a memory-bound answer outright (``DC_ALLOW_MEMORY_BOUND``) because it differences
+    sector energies.
+
+    Args:
+        truncation: The ground state's ``truncation_report`` (``None`` if nothing bound it).
+        convergence: Its ``convergence_report`` (``residual_pt2``, ``residual_is_current``).
+
+    Returns:
+        Diagnostic: ``OK`` unless the cap or the memory guard bound the ground state.
+    """
+    memory_bound = bool(truncation and truncation.get("memory_bound"))
+    cap_bound = bool(truncation and truncation.get("cap_hit"))
+    residual = None
+    for source in (convergence, truncation):
+        if source and source.get("residual_pt2") is not None:
+            residual = abs(float(source["residual_pt2"]))
+            break
+    current = bool((convergence or {}).get("residual_is_current", True))
+    value = float("nan") if residual is None else residual
+    if not (memory_bound or cap_bound):
+        return Diagnostic(
+            name="gs_memory",
+            severity=Severity.OK,
+            value=value,
+            threshold=float("nan"),
+            message="ground state not truncated",
+        )
+    retained = int(truncation.get("retained", 0))
+    measured = residual is not None and residual > 0.0 and current
+    bias = (
+        f"residual PT2 {value:.2e}, so the gap may be too small by at most ~{2 * residual:.2e}"
+        if measured
+        else "residual PT2 not measured on the kept basis"
+    )
+    if memory_bound:
+        why = "by the memory guard"
+        suggestion = (
+            "more memory per rank (fewer ranks per node) or more nodes. To make the truncation "
+            f"deliberate instead, set truncation_threshold <= {retained:,}; a cap you set is never "
+            "lowered and may then be OOM-killed"
+        )
+    else:
+        why = f"at the cap of {int(truncation.get('threshold', retained)):,}"
+        suggestion = "raise truncation_threshold (or use 'auto') if memory allows"
+    return Diagnostic(
+        name="gs_memory",
+        severity=Severity.WARN,
+        value=value,
+        threshold=float("nan"),
+        message=f"ground state held at {retained:,} determinants {why}; {bias}",
+        suggestion=suggestion,
     )
 
 

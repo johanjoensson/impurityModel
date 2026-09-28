@@ -365,23 +365,36 @@ class Basis:
         If weighted_restrictions is None, the new basis inherits self.weighted_restrictions.
         If comm is None, the new basis will inherit self.comm.
         """
-        return Basis(
-            impurity_orbitals=self.impurity_orbitals,
-            bath_states=self.bath_states,
-            initial_basis=initial_basis if initial_basis is not None else list(self.local_basis),
-            restrictions=restrictions if restrictions is not None else self.restrictions,
-            weighted_restrictions=(
-                weighted_restrictions if weighted_restrictions is not None else self.weighted_restrictions
-            ),
-            split_threshold=self.split_threshold,
-            truncation_threshold=self.truncation_threshold,
-            tau=self.tau,
-            chain_restrict=self.chain_restrict,
-            collapse_chains=self.collapse_chains,
-            comm=comm if comm is not None else self.comm,
-            verbose=verbose if verbose is not None else self.verbose,
-            debug=self.debug,
+        return self._carry_cap_settings(
+            Basis(
+                impurity_orbitals=self.impurity_orbitals,
+                bath_states=self.bath_states,
+                initial_basis=initial_basis if initial_basis is not None else list(self.local_basis),
+                restrictions=restrictions if restrictions is not None else self.restrictions,
+                weighted_restrictions=(
+                    weighted_restrictions if weighted_restrictions is not None else self.weighted_restrictions
+                ),
+                split_threshold=self.split_threshold,
+                truncation_threshold=self.truncation_threshold,
+                tau=self.tau,
+                chain_restrict=self.chain_restrict,
+                collapse_chains=self.collapse_chains,
+                comm=comm if comm is not None else self.comm,
+                verbose=verbose if verbose is not None else self.verbose,
+                debug=self.debug,
+            )
         )
+
+    #: Attributes a solve hangs on a basis that describe *who may cap it and how memory is
+    #: guarded* (the resolved ``CapPolicy``; the Green's-function guard's budget and policy),
+    #: carried to every clone and copy so a kernel sees them whichever basis it was handed.
+    _CAP_SETTINGS = ("cap_policy", "gf_memory_budget", "gf_memory_policy")
+
+    def _carry_cap_settings(self, new):
+        for name in self._CAP_SETTINGS:
+            if name in self.__dict__:
+                setattr(new, name, self.__dict__[name])
+        return new
 
     def free_comm(self):
         """
@@ -909,18 +922,20 @@ class Basis:
         Basis
             A new Basis object with identical states and parameters.
         """
-        return Basis(
-            self.impurity_orbitals,
-            self.bath_states,
-            initial_basis=self.local_basis,
-            restrictions=self.restrictions,
-            weighted_restrictions=self.weighted_restrictions,
-            split_threshold=self.split_threshold,
-            chain_restrict=self.chain_restrict,
-            collapse_chains=self.collapse_chains,
-            comm=self.comm,
-            truncation_threshold=self.truncation_threshold,
-            verbose=self.verbose,
+        return self._carry_cap_settings(
+            Basis(
+                self.impurity_orbitals,
+                self.bath_states,
+                initial_basis=self.local_basis,
+                restrictions=self.restrictions,
+                weighted_restrictions=self.weighted_restrictions,
+                split_threshold=self.split_threshold,
+                chain_restrict=self.chain_restrict,
+                collapse_chains=self.collapse_chains,
+                comm=self.comm,
+                truncation_threshold=self.truncation_threshold,
+                verbose=self.verbose,
+            )
         )
 
     def clear(self) -> None:
