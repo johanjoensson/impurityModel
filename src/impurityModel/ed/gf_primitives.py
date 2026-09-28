@@ -500,6 +500,25 @@ class _CappedBasisProxy:
         )
 
 
+def guarded_proxy(basis, cap):
+    """``basis`` capped at ``cap`` and memory-guarded as the GF stage configured it.
+
+    The guard's budget and policy are the ones ``gf_units.run_units_distributed`` puts on the
+    split basis (``gf_memory_budget``/``gf_memory_policy``), which every clone carries. Returns a
+    :class:`_CappedBasisProxy` when there is a finite cap *or* a budget (an ``unlimited`` GF unit
+    keeps its guard, with an effectively infinite count cap), else ``basis`` itself.
+    """
+    budget = getattr(basis, "gf_memory_budget", None)
+    if np.isfinite(cap) or budget is not None:
+        return _CappedBasisProxy(
+            basis,
+            cap if np.isfinite(cap) else 2**62,
+            memory_budget=budget,
+            memory_policy=getattr(basis, "gf_memory_policy", None) or "tighten",
+        )
+    return basis
+
+
 def _trim_blocks(alphas, betas, block_widths):
     r"""Strip the zero padding from block-Lanczos coefficients (shrinking blocks).
 

@@ -40,6 +40,7 @@ from impurityModel.ed.gf_primitives import (  # noqa: F401  -- re-exported for b
     calc_G,
     calc_G_pairwise,
     calc_thermally_averaged_G,
+    guarded_proxy,
 )
 from impurityModel.ed.gf_shift_recycling import (  # noqa: F401  -- re-exported for backward compat
     KrylovShiftedResolvent,
@@ -55,6 +56,7 @@ from impurityModel.ed.gf_units import (
     _gf_operator_split,
     enumerate_gf_units,
     gf_cap_on_full_comm,
+    gf_guard_on_full_comm,
     run_units_distributed,
     unit_cost_weights,
 )
@@ -969,17 +971,21 @@ def _get_greens_function_sliced(
     # The GF cap, not the ground-state basis's own (see gf_units.gf_cap): this filter stage runs
     # before run_units_distributed and must size its capped clones the same way the units do.
     cap = gf_cap_on_full_comm(basis, max((len(s) for s in unit_seeds), default=1), gf_method="sliced")
+    # The filter stage is guarded like the units: same budget policy, on the full communicator.
+    filter_budget, filter_policy = gf_guard_on_full_comm(basis)
 
     def _excited_clone(u):
-        return basis.clone(
+        clone = basis.clone(
             initial_basis=sorted({state for s in unit_seeds[u] for state in s.keys()}),
             restrictions=unit_restrictions[u],
             weighted_restrictions=excited_weighted_restrictions,
             verbose=False,
         )
+        clone.gf_memory_budget, clone.gf_memory_policy = filter_budget, filter_policy
+        return clone
 
     def _capped(b):
-        return _CappedBasisProxy(b, cap) if np.isfinite(cap) else b
+        return guarded_proxy(b, cap)
 
     w_lo, w_hi = float(np.min(omega_mesh)), float(np.max(omega_mesh))
     n_slices, degree_knob, slice_tol = _slice_count(), _slice_degree(), _slice_tol()

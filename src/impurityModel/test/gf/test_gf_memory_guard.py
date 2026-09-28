@@ -50,7 +50,7 @@ def _basis(comm, policy, split_threshold=None):
     return basis
 
 
-def _gf(comm, policy, split_threshold=None):
+def _gf(comm, policy, split_threshold=None, gf_method="lanczos"):
     rank0 = comm is None or comm.rank == 0
     psi = ManyBodyState({SlaterDeterminant.from_bytes(GROUND): 1.0} if rank0 else {}, width=1)
     return get_Greens_function(
@@ -70,6 +70,7 @@ def _gf(comm, policy, split_threshold=None):
         occ_cutoff=1e-9,
         slaterWeightMin=0.0,
         sparse=True,
+        gf_method=gf_method,
     )
 
 
@@ -163,3 +164,36 @@ def test_auto_gf_caps_are_pinned_per_kernel_and_clamped(monkeypatch):
     other = gu._pinned_auto_gf_cap(basis, [1], 1, None, "bicgstab", 0)
     assert set(basis._auto_gf_caps) == {("None", "lanczos"), ("None", "bicgstab")}
     assert other != narrow
+
+
+def test_clones_carry_the_cap_policy_and_the_gf_guard():
+    """Kernels build their solve bases by cloning; the guard must reach them whichever basis
+    they were handed, not only the split basis `run_units_distributed` configured."""
+    policy = CapPolicy(gs=CAP, gf=None, from_memory=True)
+    basis = _basis(None, policy)
+    basis.gf_memory_budget, basis.gf_memory_policy = 123, "warn"
+    for derived in (basis.clone(initial_basis=[]), basis.copy()):
+        assert derived.cap_policy is policy
+        assert (derived.gf_memory_budget, derived.gf_memory_policy) == (123, "warn")
+    assert not hasattr(_basis(None, None).clone(initial_basis=[]), "gf_memory_budget")
+
+
+def test_guarded_proxy_proxies_for_a_cap_or_a_budget_only():
+    from impurityModel.ed.gf_primitives import _CappedBasisProxy, guarded_proxy
+
+    bare = _basis(None, None)
+    assert guarded_proxy(bare, np.inf) is bare
+    assert isinstance(guarded_proxy(bare, 50), _CappedBasisProxy)
+    bare.gf_memory_budget, bare.gf_memory_policy = 10**12, "warn"
+    unlimited = guarded_proxy(bare, np.inf)
+    assert isinstance(unlimited, _CappedBasisProxy)
+    assert unlimited.memory_budget == 10**12 and unlimited.memory_policy == "warn"
+
+
+def test_the_bicgstab_gf_kernel_is_guarded_too(monkeypatch, capfd):
+    """The per-frequency driver builds its own proxies; under a user cap and a budget every
+    sample exceeds, it must warn exactly as the Lanczos kernel does."""
+    monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "1e-12")
+    _gf(None, CapPolicy(gs=CAP, gf=CAP, from_memory=False), gf_method="bicgstab")
+    _out, err = capfd.readouterr()
+    assert err.count("WARNING determinant cap: a Green's-function unit") == 1

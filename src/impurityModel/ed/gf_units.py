@@ -68,17 +68,28 @@ def gf_cap_on_full_comm(basis, width, reort=None, gf_method="lanczos"):
     return _pinned_auto_gf_cap(basis, [ranks], width, reort, gf_method, resident)
 
 
+def gf_guard_on_full_comm(basis):
+    """``(budget, policy)`` of the GF memory guard for work on ``basis.comm`` before any split (the
+    sliced driver's filter stage), sized the way ``run_units_distributed`` sizes it for the units.
+    Collective on ``basis.comm`` (resident MAX, memory probe): call it on every rank."""
+    resident = current_rss_bytes()
+    if basis.comm is not None and basis.comm.size > 1:
+        resident = basis.comm.allreduce(resident, op=MPI.MAX)
+    budget = _gf_memory_budget(available_bytes_per_rank(basis.comm), resident)
+    return budget, ("tighten" if _may_lower_gf_cap(basis) else "warn")
+
+
 def _describe_gf_cap(basis, cap, layout):
     """The ``determinant cap:`` line for a GF stage, or ``None`` for a basis without a policy."""
     policy = getattr(basis, "cap_policy", None)
     if policy is None:
         return None
     if not np.isfinite(cap):
-        how = "no cap; the Lanczos GF memory guard may hold a unit lower, other GF methods are unguarded"
+        how = "no cap; the GF memory guard may hold a unit lower"
     elif not policy.from_memory:
         how = "set by you; final"
     else:
-        how = "auto, sized for the Green's-function path; the Lanczos GF memory guard may hold a unit lower"
+        how = "auto, sized for the Green's-function path; the GF memory guard may hold a unit lower"
     size = "unlimited" if not np.isfinite(cap) else f"{int(cap):,}"
     return f"determinant cap: GF {size} per unit ({how}); {layout}"
 
