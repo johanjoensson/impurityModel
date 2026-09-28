@@ -198,7 +198,25 @@ def test_the_refinement_does_not_inherit_a_cap_the_walk_lowered(monkeypatch):
     assert _refine_start_cap(monkeypatch, 120, CapPolicy(gs=50_000, gf=50_000, from_memory=True)) == 50_000
 
 
-def test_the_refinement_keeps_a_user_cap(monkeypatch):
+def test_the_refinement_reset_is_for_memory_derived_caps_only(monkeypatch):
+    """A cap the user set is never lowered by the guard, so there is nothing to undo: whatever the
+    basis carries is left alone (a reset would be the one way this code could *change* a user
+    cap)."""
     from impurityModel.ed.memory_estimate import CapPolicy
 
-    assert _refine_start_cap(monkeypatch, 2000, CapPolicy(gs=2000, gf=2000, from_memory=False)) == 2000
+    assert _refine_start_cap(monkeypatch, 120, CapPolicy(gs=2000, gf=2000, from_memory=False)) == 120
+
+
+def test_a_walk_the_memory_guard_held_is_not_reported_memory_bound_after_the_refinement():
+    """The refinement restarts from the resolved cap, so the walk's memory verdict no longer
+    describes the ground state: carrying it would raise a false gs_memory warning and a spurious
+    double-counting refusal. The cap verdict and the walk's own flag are kept."""
+    from types import SimpleNamespace
+
+    walk = {"cap_hit": True, "memory_bound": True, "retained": 120}
+    basis = SimpleNamespace(occupation_search_truncation=walk)
+    report = groundstate.refined_truncation_report(SimpleNamespace(truncation_report=None), basis)
+    assert report["memory_bound"] is False and report["walk_memory_bound"] is True
+    assert report["cap_hit"] is True
+    refined = {"cap_hit": True, "memory_bound": True}
+    assert groundstate.refined_truncation_report(SimpleNamespace(truncation_report=refined), basis) is refined

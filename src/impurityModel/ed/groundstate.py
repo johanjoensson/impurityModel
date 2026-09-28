@@ -1312,6 +1312,25 @@ def solve_ground_state(
     return basis, solver, es, psis
 
 
+def refined_truncation_report(solver, basis):
+    """The truncation report that describes the ground state after the refinement.
+
+    The refinement's own report when it has one. Otherwise the occupation walk's, which still
+    says whether the *cap* bound the search -- but not its memory verdict: the refinement restarts
+    from the resolved cap (``solve_ground_state``), so a walk the memory guard held is no longer a
+    memory-bound ground state once the refinement ran unbound. Carrying ``memory_bound`` through
+    would raise a false ``gs_memory`` warning in the self-energy and a spurious refusal in the
+    double-counting search. The walk's verdict is kept as ``walk_memory_bound``, for the record.
+    """
+    report = getattr(solver, "truncation_report", None)
+    if report is not None:
+        return report
+    walk = getattr(basis, "occupation_search_truncation", None)
+    if walk is None:
+        return None
+    return {**walk, "memory_bound": False, "walk_memory_bound": bool(walk.get("memory_bound", False))}
+
+
 def calc_gs(
     Hop: ManyBodyOperator,
     basis_setup: dict,
@@ -1394,7 +1413,7 @@ def calc_gs(
     # (returned in gs_info and saved to the statistics JSON). None when the cap never bound.
     # The cap can bind either the final expansion here or the earlier occupation search
     # (whose final basis may then fit under the cap); report either.
-    gs_truncation_report = solver.truncation_report or getattr(ground_state_basis, "occupation_search_truncation", None)
+    gs_truncation_report = refined_truncation_report(solver, ground_state_basis)
     # How far the refinement is from PT2 convergence: `{"residual_pt2", "e_pt2_tol", "converged",
     # "limited_by"}` (see CIPSISolver.expand). Always present, unlike the truncation report --
     # an uncapped expansion can still stop short of its tolerance (a `de2_min` floor).

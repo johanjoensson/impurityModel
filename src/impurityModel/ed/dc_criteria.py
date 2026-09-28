@@ -2298,7 +2298,9 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bound_local, root=0)
     # The memory verdict alongside it, from the same two reports. Broadcast for the same reason:
     # it is rank-local solver state, and the acceptance check that reads it must be rank-invariant.
-    report = getattr(mb_solver, "truncation_report", None) or getattr(mb_basis, "occupation_search_truncation", None)
+    from impurityModel.ed.groundstate import refined_truncation_report
+
+    report = refined_truncation_report(mb_solver, mb_basis)
     memory_local = bool((report or {}).get("memory_bound", False))
     ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(memory_local, root=0)
 
