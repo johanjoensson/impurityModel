@@ -535,6 +535,34 @@ def test_an_auto_gf_cap_is_one_number_sized_for_the_gf_path_mpi(monkeypatch):
     assert flat[0] <= me.max_unit_dets_within_budget(basis.num_spin_orbitals, 1, None, smallest, comm)
 
 
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the unit split only runs on more than one rank")
+def test_an_auto_gf_cap_never_drops_below_the_ground_state_cap_mpi(monkeypatch):
+    """Concurrency is traded for room: with a ground-state cap only the whole communicator can
+    afford, the auto GF stage must run its units in series on one color rather than split them
+    across small colors that could not reach it (a unit's seeds are at least the GS support)."""
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    probe, _, _ = _policy_basis(comm, 10, None)
+    gs_cap = me.max_unit_dets_within_budget(probe.num_spin_orbitals, 1, None, comm.size, comm, resident_bytes=0)
+    basis, seeds, weights = _policy_basis(comm, 10, me.CapPolicy(gs=gs_cap // 2, gf=None, from_memory=True))
+    seeds, weights = seeds * 3, np.ones(6)
+    observed = []
+    run_units_distributed(
+        basis,
+        seeds,
+        weights,
+        lambda b, u, s: observed.append((float(b.truncation_threshold), b.comm.size if b.comm else 1)),
+        verbose=False,
+    )
+    assert observed
+    for cap, ranks in observed:
+        assert cap >= gs_cap // 2, (cap, gs_cap)
+
+
 def test_an_auto_gf_cap_is_sized_serially_too(monkeypatch):
     from impurityModel.ed import memory_estimate as me
     from impurityModel.ed.gf_units import run_units_distributed

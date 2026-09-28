@@ -16,7 +16,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
-from impurityModel.ed.basis_split import split_basis_and_redistribute_psi
+from impurityModel.ed.basis_split import _pack_units, split_basis_and_redistribute_psi
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
@@ -79,6 +79,42 @@ def _describe_gf_cap(basis, cap, layout):
         how = "auto, sized for the Green's-function path; the memory guard may hold a unit lower"
     size = "unlimited" if not np.isfinite(cap) else f"{int(cap):,}"
     return f"determinant cap: GF {size} per unit ({how}); {layout}"
+
+
+def _auto_gf_colors(basis, unit_weights, width, reort, gf_method):
+    """How many colors an auto GF stage may run, so that every unit can afford the GS cap.
+
+    An auto GF cap is the largest unit basis the *smallest* color affords, so concurrency trades
+    directly against it: 40 colors of 2-3 ranks at 128 ranks leave every unit ~3x less room than
+    12-16 colors do. The floor is the ground state's own (auto) cap -- a unit's seeds are the union
+    of ``c^dagger psi`` over its block, at least the ground state's support, so a GF cap below the
+    GS basis size would freeze units at their seeds. The largest color count whose *real* packing
+    (``_pack_units``, the same call the split makes) affords that floor on every color wins;
+    ``None`` leaves the packing alone. Collective on ``basis.comm`` (memory probe, resident MAX);
+    every input is replicated, so every rank makes the same calls.
+    """
+    policy = basis.cap_policy
+    floor = policy.gs
+    candidates = min(basis.comm.size, len(unit_weights))
+    if floor is None or not np.isfinite(floor) or candidates <= 1:
+        return None
+    resident = basis.comm.allreduce(current_rss_bytes(), op=MPI.MAX)
+    affordable = {}
+
+    def afford(ranks):
+        if ranks not in affordable:
+            affordable[ranks] = max_unit_dets_within_budget(
+                basis.num_spin_orbitals, width, reort, ranks, basis.comm, method=gf_method, resident_bytes=resident
+            )
+        return affordable[ranks]
+
+    for n_colors in range(candidates, 1, -1):
+        _subgroups, procs = _pack_units(unit_weights, basis.comm.size, basis.split_threshold, n_colors)
+        if procs is None:
+            return 1
+        if min(afford(int(p)) for p in procs) >= floor:
+            return n_colors
+    return 1
 
 
 def _is_auto_gf(basis):
@@ -359,7 +395,9 @@ def run_units_distributed(
     cap = gf_cap(basis)
     width = max((len(s) for s in unit_seeds), default=1)
     max_colors = None
-    if np.isfinite(cap) and min(basis.comm.size, n_units) > 1:
+    if _is_auto_gf(basis):
+        max_colors = _auto_gf_colors(basis, unit_weights, width, reort, gf_method)
+    elif np.isfinite(cap) and min(basis.comm.size, n_units) > 1:
         max_colors = max_colors_within_budget(
             int(cap), basis.num_spin_orbitals, width, reort, basis.comm, min(basis.comm.size, n_units), method=gf_method
         )
