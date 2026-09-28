@@ -112,7 +112,8 @@ def test_truncation_threshold_reads_every_spelling(written, expected):
 
     key = next(k for k in schema.TABLES["many_body_basis"].keys if k.name == "truncation_threshold")
     assert (
-        parse_truncation_threshold(_coerce("many_body_basis.truncation_threshold", key, written, {"energy": "eV"}, ".")) == expected
+        parse_truncation_threshold(_coerce("many_body_basis.truncation_threshold", key, written, {"energy": "eV"}, "."))
+        == expected
     )
 
 

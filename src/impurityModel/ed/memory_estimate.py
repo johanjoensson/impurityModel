@@ -237,6 +237,8 @@ class CapPolicy:
             return value
         if value is None:
             return cls(gs=None, gf=None, from_memory=True)
+        if isinstance(value, bool) or value != value or value < 1:
+            raise ValueError(f"a determinant cap must be None, inf or a positive number, got {value!r}")
         if not value < float("inf"):
             return cls(gs=value, gf=value, from_memory=True)
         return cls(gs=value, gf=value, from_memory=False)
@@ -285,9 +287,11 @@ def parse_truncation_threshold(value):
                 f"truncation_threshold must be 'auto', 'unlimited' or a positive integer, got {value!r}"
             ) from None
     number = float(value)
-    if not number < float("inf"):
+    if number != number or number < 1:  # NaN, -inf, 0 and negatives
+        raise ValueError(f"truncation_threshold must be 'auto', 'unlimited' or a positive integer, got {value!r}")
+    if number == float("inf"):
         return float("inf")
-    if number != int(number) or number < 1:
+    if number != int(number):
         raise ValueError(f"truncation_threshold must be a positive integer, got {value!r}")
     return int(number)
 
@@ -1040,20 +1044,28 @@ def _resident_adjusted_budget(safety, available, resident_bytes):
     """The head*room* form of :func:`absolute_rss_budget`: how much more this process may add.
 
     ``safety * available`` by default, tightened to ``absolute_rss_budget(...) - resident`` when
-    ``resident_bytes`` is given and that tightening is actually binding (see
-    :func:`max_unit_dets_within_budget`'s ``resident_bytes`` parameter for the derivation).
+    ``resident_bytes`` is given (see :func:`max_unit_dets_within_budget`'s ``resident_bytes``
+    parameter for the derivation), and floored at ``(1 - safety) * safety * available``.
 
-    Never lets an already-over-budget process drive the result to a non-positive headroom --
-    that memory is spent either way, and callers use this as a bisection bound, not a signal
-    to shrink toward zero. Callers that compare against an *absolute* RSS reading want
-    :func:`absolute_rss_budget` instead; the two differ by exactly ``resident``, and picking the
-    wrong one is the defect described there.
+    **The floor, and why not the old fallback.** The headroom ``safety * available - (1 - safety)
+    * resident`` falls linearly with the resident set and reaches zero at ``resident =
+    safety * available / (1 - safety)``. It used to fall back to the full ``safety * available``
+    past that point, so a process that was *heavier* got the *loosest* budget -- a 40x jump
+    across the zero crossing, and the regime a ground-state guard event leaves behind. It also
+    must not shrink to zero: that caps a Green's-function unit at one determinant, which is
+    garbage physics rather than safety, and the resident reading counts MPI shared memory that
+    is over-counted per rank. The floor is the part of the free-memory allowance the resident
+    set cannot have consumed; the budget is continuous and never increases with ``resident``.
+    What is actually allocated is policed at run time by the measured guards, not by this.
+
+    Callers that compare against an *absolute* RSS reading want :func:`absolute_rss_budget`
+    instead; the two differ by exactly ``resident``, and picking the wrong one is the defect
+    described there.
     """
     budget = safety * available
     if resident_bytes is not None and resident_bytes > 0:
         headroom = absolute_rss_budget(safety, available, resident_bytes) - float(resident_bytes)
-        if headroom > 0:
-            budget = headroom
+        budget = max(headroom, max(0.0, 1.0 - safety) * safety * available)
     return budget
 
 
@@ -1275,18 +1287,7 @@ def max_unit_dets_within_budget(
             <= budget
         )
 
-    lo, hi = 1, 1024
-    while fits(hi) and hi < 10**13:
-        lo, hi = hi, hi * 2
-    if hi >= 10**13:
-        return hi
-    while hi - lo > 1:
-        mid = (lo + hi) // 2
-        if fits(mid):
-            lo = mid
-        else:
-            hi = mid
-    return lo
+    return _largest_fitting(fits)
 
 
 def _suggest_for_budget(
@@ -1311,18 +1312,7 @@ def _suggest_for_budget(
         )
         return max(gs, gf) <= budget
 
-    lo, hi = 1, 1024
-    while fits(hi) and hi < 10**13:
-        lo, hi = hi, hi * 2
-    if hi >= 10**13:
-        return hi
-    while hi - lo > 1:
-        mid = (lo + hi) // 2
-        if fits(mid):
-            lo = mid
-        else:
-            hi = mid
-    return lo
+    return _largest_fitting(fits)
 
 
 def log_memory_budget(

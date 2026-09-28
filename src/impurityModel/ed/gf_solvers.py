@@ -424,9 +424,15 @@ def block_Green_sparse(
     # Enforce the determinant cap on the recurrence: the proxy persists across the
     # resume rounds below, so the retained set (and a freeze) carries over.
     cap = getattr(basis, "truncation_threshold", np.inf)
+    # With a memory budget the proxy is installed even without a finite cap (`unlimited`): its
+    # measured guard is the only thing standing between an uncapped recurrence and an OOM kill.
+    # The count cap is then effectively infinite. (This routes an unlimited serial run through
+    # the capped, row-chunked path, which is not bit-identical to the unproxied one.)
     lanczos_basis = (
-        _CappedBasisProxy(basis, cap, memory_budget=memory_budget, memory_policy=memory_policy)
-        if np.isfinite(cap)
+        _CappedBasisProxy(
+            basis, cap if np.isfinite(cap) else 2**62, memory_budget=memory_budget, memory_policy=memory_policy
+        )
+        if np.isfinite(cap) or memory_budget is not None
         else basis
     )
     # With reort NONE the kernel never projects against the accumulated Krylov basis and

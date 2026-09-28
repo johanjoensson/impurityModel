@@ -99,12 +99,15 @@ def _seed_support_size():
     return len(seed.to_states()[0])
 
 
-def test_uncapped_sparse_path_reports_no_size_rather_than_the_seed_size(capsys):
+def test_uncapped_sparse_path_reports_no_size_rather_than_the_seed_size(capsys, monkeypatch):
     """With no determinant cap nothing tracks the support the matvec discovers, so the rows for
     the units that actually ran a recurrence must say so. This is the regression: the fallback
     printed ``len(excited_basis)`` here, which is the seed support -- a plausible number, an
     order of magnitude low, that would send someone sizing ``truncation_threshold`` into an OOM.
     """
+    # With the GF memory guard switched off nothing proxies an uncapped recurrence, so there is no
+    # support count to report; with it on (the default), see the test below.
+    monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "0")
     _run(np.inf)
     rows, summary = _report_lines(capsys.readouterr().out)
     ran = [row for row in rows if "annihilate" in row]
@@ -116,6 +119,16 @@ def test_uncapped_sparse_path_reports_no_size_rather_than_the_seed_size(capsys):
     assert all(row.endswith("0 determinants") for row in rows if "create" in row), rows
     assert summary is not None and "2 of 4 units not tracked and not counted here" in summary
     assert summary.startswith("maximum over the tracked units:")
+
+
+def test_uncapped_but_guarded_path_reports_the_krylov_support(capsys, monkeypatch):
+    """`unlimited` keeps the GF memory guard, whose proxy counts the support: the report shows the
+    recurrence's real support, never the seed size."""
+    monkeypatch.delenv("GS_MEMORY_BUDGET_SAFETY", raising=False)
+    _run(np.inf)
+    rows, _summary = _report_lines(capsys.readouterr().out)
+    sizes = [size for label, size in _sizes([r for r in rows if "annihilate" in r]).items()]
+    assert sizes and all(size > _seed_support_size() for size in sizes), rows
 
 
 def test_a_non_binding_cap_reports_the_krylov_support_not_the_seed(capsys):

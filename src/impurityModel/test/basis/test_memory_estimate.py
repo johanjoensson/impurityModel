@@ -606,10 +606,12 @@ def test_resident_bytes_tightens_the_unit_cap(monkeypatch):
     assert me.estimate_gf_peak_bytes(tight, nso, width, "none", ranks=ranks) <= budget
 
 
-def test_resident_bytes_over_the_safety_share_falls_back_rather_than_flooring(monkeypatch):
+def test_resident_bytes_over_the_safety_share_floors_rather_than_collapsing(monkeypatch):
     """A process already past its safety share must not drive the cap to the 1-determinant
-    floor: that memory is spent either way, and a 1-determinant GF is garbage physics, not a
-    safety measure. The budget falls back to `safety * available`."""
+    floor (garbage physics, and the resident reading over-counts MPI shared memory) -- but it
+    must not get the *loosest* budget either, which the old fallback to `safety * available`
+    gave it. It gets the floor `(1 - safety) * safety * available`: tighter than the unadjusted
+    budget, far above one determinant."""
     from types import SimpleNamespace
 
     comm = SimpleNamespace(size=8)
@@ -617,13 +619,22 @@ def test_resident_bytes_over_the_safety_share_falls_back_rather_than_flooring(mo
     available = 1 * 2**30
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: available)
 
-    # resident so large that safety*(available+resident) - resident <= 0
     huge = 100 * 2**30
     assert me.DEFAULT_MEMORY_SAFETY * (available + huge) - huge <= 0
-    fallback = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=huge)
+    floored = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=huge)
     baseline = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm)
-    assert fallback == baseline
-    assert fallback > 1
+    assert 1 < floored < baseline
+
+
+def test_the_resident_adjusted_budget_never_grows_with_the_resident_set():
+    """No cliff: across the zero crossing of the headroom the budget is continuous and
+    non-increasing (it used to jump back up to `safety * available`, ~40x, just past it)."""
+    safety, available = me.DEFAULT_MEMORY_SAFETY, 4 * 2**30
+    residents = [r * 2**26 for r in range(1, 400)]
+    budgets = [me._resident_adjusted_budget(safety, available, r) for r in residents]
+    assert all(b <= a for a, b in pairwise(budgets))
+    assert min(budgets) == pytest.approx((1 - safety) * safety * available)
+    assert max(b / a for a, b in pairwise(budgets)) <= 1.0
 
 
 def test_round8_smo_crash_geometry_is_refused(monkeypatch):

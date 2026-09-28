@@ -289,8 +289,13 @@ def test_run_units_distributed_tightens_cap_to_the_units_own_rank_count_mpi(monk
     assert observed_caps, "kernel never ran"
     for cap, ranks in zip(observed_caps, observed_ranks):
         assert cap < inherited_cap, "the unit cap must be tightened, not inherited verbatim"
+        # The process's real resident set (hundreds of MiB) dwarfs the 4 MiB budget, so the
+        # resident-adjusted headroom sits on its floor, `(1 - s) * s * available` -- the same
+        # budget any over-resident process gets. (It used to fall back to `s * available`, i.e.
+        # the unadjusted cap, which made the heaviest process the most generously sized.)
         assert cap == pytest.approx(
-            me.max_unit_dets_within_budget(basis.num_spin_orbitals, 1, None, ranks, comm), rel=0.01
+            me.max_unit_dets_within_budget(basis.num_spin_orbitals, 1, None, ranks, comm, resident_bytes=10**15),
+            rel=0.01,
         )
 
 
@@ -537,30 +542,34 @@ def test_an_auto_gf_cap_is_one_number_sized_for_the_gf_path_mpi(monkeypatch):
 
 @pytest.mark.mpi
 @pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the unit split only runs on more than one rank")
-def test_an_auto_gf_cap_never_drops_below_the_ground_state_cap_mpi(monkeypatch):
-    """Concurrency is traded for room: with a ground-state cap only the whole communicator can
-    afford, the auto GF stage must run its units in series on one color rather than split them
-    across small colors that could not reach it (a unit's seeds are at least the GS support)."""
+def test_auto_gf_colors_are_cut_until_every_unit_affords_the_ground_state_support_mpi(monkeypatch):
+    """The concurrency floor is the ground-state basis's size (a unit's seeds are at least its
+    support), not the ground-state *cap*. With a floor only the whole communicator can afford,
+    every unit must run on one color; with a floor any color affords, the packing is left alone."""
+    from types import SimpleNamespace
+
+    from impurityModel.ed import gf_units as gu
     from impurityModel.ed import memory_estimate as me
-    from impurityModel.ed.gf_units import run_units_distributed
 
     comm = MPI.COMM_WORLD
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    monkeypatch.setattr(gu, "current_rss_bytes", lambda: 0)
     probe, _, _ = _policy_basis(comm, 10, None)
-    gs_cap = me.max_unit_dets_within_budget(probe.num_spin_orbitals, 1, None, comm.size, comm, resident_bytes=0)
-    basis, seeds, weights = _policy_basis(comm, 10, me.CapPolicy(gs=gs_cap // 2, gf=None, from_memory=True))
-    seeds, weights = seeds * 3, np.ones(6)
-    observed = []
-    run_units_distributed(
-        basis,
-        seeds,
-        weights,
-        lambda b, u, s: observed.append((float(b.truncation_threshold), b.comm.size if b.comm else 1)),
-        verbose=False,
-    )
-    assert observed
-    for cap, ranks in observed:
-        assert cap >= gs_cap // 2, (cap, gs_cap)
+    nso = probe.num_spin_orbitals
+    whole = me.max_unit_dets_within_budget(nso, 1, None, comm.size, comm, resident_bytes=0)
+    weights = np.ones(6)
+
+    def fake(size):
+        return SimpleNamespace(
+            comm=comm,
+            size=size,
+            num_spin_orbitals=nso,
+            split_threshold=1.0,
+            cap_policy=me.CapPolicy(gs=10**12, gf=None, from_memory=True),
+        )
+
+    assert gu._auto_gf_colors(fake(whole), weights, 1, None, "lanczos") == 1
+    assert gu._auto_gf_colors(fake(1), weights, 1, None, "lanczos") == min(comm.size, len(weights))
 
 
 def test_an_auto_gf_cap_is_sized_serially_too(monkeypatch):
@@ -573,6 +582,31 @@ def test_an_auto_gf_cap_is_sized_serially_too(monkeypatch):
     run_units_distributed(basis, seeds, weights, lambda b, u, s: observed.append(b.truncation_threshold))
     assert len(set(observed)) == 1 and 10 < observed[0] < np.inf
     assert basis.truncation_threshold == 10
+
+
+@pytest.mark.mpi
+def test_every_gf_stage_of_a_calculation_runs_at_one_auto_cap(monkeypatch):
+    """IPS, PS, XAS and each adaptive RIXS round are separate GF stages on one ground-state basis,
+    and the resident set grows between them. Re-sizing per stage would run parts of one spectrum
+    at different caps; the first stage's cap is pinned for the calculation instead. Runs serially
+    and at -n 2/3."""
+    from impurityModel.ed import gf_units as gu
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+
+    comm = MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None
+    basis, seeds, weights = _policy_basis(comm, 10, me.CapPolicy(gs=10, gf=None, from_memory=True))
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    resident = {"bytes": 0}
+    monkeypatch.setattr(gu, "current_rss_bytes", lambda: resident["bytes"])
+    stages = []
+    for grown in (0, 1 * 2**20):
+        resident["bytes"] = grown
+        observed = []
+        run_units_distributed(basis, seeds, weights, lambda b, u, s: observed.append(float(b.truncation_threshold)))
+        stages.append(observed)
+    first = {c for c in stages[0]}
+    assert len(first) == 1 and first == {c for c in stages[1]}, stages
 
 
 def test_the_serial_gf_path_uses_the_gf_cap_and_restores_the_ground_state_cap():

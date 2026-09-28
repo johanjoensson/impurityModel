@@ -493,10 +493,10 @@ class _CappedBasisProxy:
 
     def freeze_message(self):
         """One-line description of the cap state (rank-0 logging)."""
+        why = "the measured-memory guard" if self.memory_frozen else f"the cap of {self.cap:,}"
         return (
-            f"GF basis cap hit: froze the recurrence support at {self._global_count:,} "
-            f"determinants (truncation_threshold={self.cap:,}); the Green's function is "
-            f"exact on the retained subspace."
+            f"GF basis frozen at {self._global_count:,} determinants by {why}; the Green's "
+            "function is exact on the retained subspace."
         )
 
 

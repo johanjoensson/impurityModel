@@ -95,8 +95,10 @@ fixed-budget (refine to a budget, then top-K amplitude truncate); the GF excited
 | you write | what the ground state gets | what each Green's-function unit gets | memory guard |
 |---|---|---|---|
 | a positive integer, e.g. `2000` or `2e6` | exactly that cap | exactly that cap | **warns only** -- your cap is never lowered |
-| `auto` (the default) | sized from available memory for the ground state alone | one cap for every unit, sized at GF entry for the Green's-function path (the largest unit basis the smallest color can afford); units are grouped onto fewer colors -- more of them run in series -- until that is at least the ground-state cap, and the GF memory guard may hold a unit lower if measured memory runs short | may hold a ground-state expansion or a Green's-function unit lower when measured memory runs short |
-| `unlimited` (or `inf`) | no cap | no cap | may hold a ground-state expansion lower when measured memory runs short (the Green's-function units are not guarded) |
+| `auto` (the default) | sized from available memory for the ground state alone | one cap per calculation and GF method, sized at the first GF stage for the Green's-function path (the largest unit basis the smallest color can afford) and reused by later stages; units are grouped onto fewer colors -- more of them run in series -- until every unit can afford at least the ground-state basis's size | may hold a ground-state expansion lower; for the Lanczos GF (the default method) may also hold a unit lower |
+| `unlimited` (or `inf`) | no cap | no cap | may hold a ground-state expansion lower; for the Lanczos GF may also hold a unit lower (other GF methods are not guarded) |
+
+The measured-memory guards use one budget: `GS_MEMORY_BUDGET_SAFETY` (default 0.5) of the rank's share of node RAM; `0` switches them off. The Green's-function guard runs only in the Lanczos GF kernel; `bicgstab`, `sliced` and RIXS GF kernels are sized but not guarded.
 
 A cap you set is **final**. If the run's measured memory reaches the budget
 (`GS_MEMORY_BUDGET_SAFETY` of the rank's share of node RAM) you get one line,

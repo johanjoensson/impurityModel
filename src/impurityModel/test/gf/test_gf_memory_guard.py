@@ -100,9 +100,11 @@ def test_a_user_gf_cap_is_not_frozen_by_memory_only_warned_about(monkeypatch, ca
     assert err.count("WARNING determinant cap: a Green's-function unit") == 1
 
 
-def test_the_guard_changes_nothing_under_budget():
-    """Default budget on a toy problem: bit-identical to the guard being absent."""
-    reference = _gf(None, None)
+def test_the_guard_changes_nothing_under_budget(monkeypatch):
+    """Default budget on a toy problem: bit-identical to the guard switched off."""
+    monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "0")
+    reference = _gf(None, CapPolicy(gs=CAP, gf=CAP, from_memory=True))
+    monkeypatch.delenv("GS_MEMORY_BUDGET_SAFETY")
     guarded = _gf(None, CapPolicy(gs=CAP, gf=CAP, from_memory=True))
     np.testing.assert_array_equal(reference[1][0], guarded[1][0])
     np.testing.assert_array_equal(reference[1][1], guarded[1][1])
@@ -122,3 +124,42 @@ def test_the_gf_guard_is_collective_safe_mpi(monkeypatch):
         assert any("memory guard" in m for m in _basis_cap_messages(report))
     _gf(comm, CapPolicy(gs=CAP, gf=CAP, from_memory=False), split_threshold=0)
     comm.Barrier()
+
+
+def test_the_guard_budget_has_the_sizing_floor():
+    """After a heavy ground state (resident >= available) the guard must still leave the headroom
+    the auto cap was sized with; a floorless `s * (A + R)` sits at the resident set and freezes
+    every unit at its seeds."""
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import _gf_memory_budget
+
+    available, resident = 1 * 2**30, 2 * 2**30
+    budget = _gf_memory_budget(available, resident)
+    assert budget - resident == pytest.approx(me._resident_adjusted_budget(0.5, available, resident), rel=1e-9)
+    assert budget - resident > 0.2 * available
+
+
+def test_an_unlimited_gf_unit_is_still_memory_guarded(monkeypatch):
+    """`unlimited` sets no cap but keeps the guard: the GF recurrence is proxied for the guard's
+    sake alone, and at a budget every sample exceeds it freezes."""
+    monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "1e-12")
+    _, _, report = _gf(None, CapPolicy(gs=float("inf"), gf=float("inf"), from_memory=True))
+    messages = _basis_cap_messages(report)
+    assert any("memory guard" in m for m in messages), messages
+
+
+def test_auto_gf_caps_are_pinned_per_kernel_and_clamped(monkeypatch):
+    """One pinned number per (reort, method) for a calculation; a later, wider stage that cannot
+    afford it on all ranks is clamped instead of trusted to a guard it may not have."""
+    from impurityModel.ed import gf_units as gu
+    from impurityModel.ed import memory_estimate as me
+
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 4 * 2**20)
+    basis = _basis(None, CapPolicy(gs=CAP, gf=None, from_memory=True))
+    narrow = gu._pinned_auto_gf_cap(basis, [1], 1, None, "lanczos", 0)
+    assert gu._pinned_auto_gf_cap(basis, [1], 1, None, "lanczos", 10**6) == narrow, "pinned"
+    wide = gu._pinned_auto_gf_cap(basis, [1], 40, None, "lanczos", 0)
+    assert wide < narrow, "a wider stage is clamped to what it can afford"
+    other = gu._pinned_auto_gf_cap(basis, [1], 1, None, "bicgstab", 0)
+    assert set(basis._auto_gf_caps) == {("None", "lanczos"), ("None", "bicgstab")}
+    assert other != narrow
