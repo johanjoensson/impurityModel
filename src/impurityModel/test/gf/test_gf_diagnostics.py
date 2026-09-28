@@ -228,13 +228,22 @@ def test_basis_truncation_names_a_solve_frozen_at_its_seeds():
 
 def test_ground_state_truncation_check():
     assert gd.check_ground_state_truncation(None, {"residual_pt2": 1e-9}).severity == gd.Severity.OK
-    user_cap_hit = {"memory_bound": False, "retained": 2000, "residual_pt2": -3e-4}
-    assert gd.check_ground_state_truncation(user_cap_hit, None).severity == gd.Severity.OK
-    held = {"memory_bound": True, "retained": 350_000, "residual_pt2": -3e-4}
-    warn = gd.check_ground_state_truncation(held, {"residual_pt2": -3e-4})
+    not_bound = {"memory_bound": False, "cap_hit": False, "retained": 2000, "residual_pt2": -3e-4}
+    assert gd.check_ground_state_truncation(not_bound, None).severity == gd.Severity.OK
+    held = {"memory_bound": True, "cap_hit": True, "retained": 350_000, "residual_pt2": -3e-4}
+    warn = gd.check_ground_state_truncation(held, {"residual_pt2": -3e-4, "residual_is_current": True})
     assert warn.severity == gd.Severity.WARN
-    assert "350,000" in warn.message and "6.00e-04" in warn.message, warn.message
+    assert "350,000" in warn.message and "memory guard" in warn.message
+    assert "at most ~6.00e-04" in warn.message, warn.message
+    assert "<= 350,000" in warn.suggestion
     assert not warn.needs_more_states
+    # A cap hit is the same asymmetry (the GF units are sized separately), so it warns too.
+    capped = {"memory_bound": False, "cap_hit": True, "retained": 2000, "threshold": 2000, "residual_pt2": 1e-5}
+    cap_warn = gd.check_ground_state_truncation(capped, {"residual_pt2": 1e-5, "residual_is_current": True})
+    assert cap_warn.severity == gd.Severity.WARN and "cap of 2,000" in cap_warn.message
+    # A residual measured before the last truncation is not a measurement of the kept basis.
+    stale = gd.check_ground_state_truncation(held, {"residual_pt2": -3e-4, "residual_is_current": False})
+    assert "not measured" in stale.message
 
 
 def test_the_self_energy_report_carries_the_ground_state_row():

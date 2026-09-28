@@ -113,6 +113,13 @@ cap the ground-state guard lowered: they are sized from the resolved policy
 (`gf_units.gf_cap`). Likewise the ground-state refinement starts from the resolved cap, not from
 one the guard lowered during the occupation walk (which keeps several sectors alive at once).
 
+**One consequence of sizing the paths separately.** A gap- or peak-based double counting
+differences CIPSI sector energies, `E(N±1) - E(N)`, solved at the ground-state cap; the
+self-energy's spectral gap comes from Green's-function units sized for their own (typically larger)
+cap. When the `N±1` sector solves are truncation-limited, the double counting is placed against a
+gap measured at a coarser truncation than the one the self-energy then shows. The `gs_memory`
+diagnostic row and the DC record's truncation fields say when that is the case.
+
 The byte model behind `auto` is a starting point, not a guarantee -- it has under-predicted by
 ~50x at 256 ranks. The measured-RSS guard is what actually stops an `auto` or `unlimited` run
 before an OOM kill.

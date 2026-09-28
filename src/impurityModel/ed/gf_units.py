@@ -26,8 +26,8 @@ from impurityModel.ed.memory_estimate import (
     current_rss_bytes,
     estimate_gf_peak_bytes,
     format_bytes,
-    max_colors_within_budget,
     max_unit_dets_within_budget,
+    release_freed_heap,
 )
 from impurityModel.ed.mpi_comm import gather_distributed_results
 
@@ -94,8 +94,11 @@ def _describe_gf_cap(basis, cap, layout):
     return f"determinant cap: GF {size} per unit ({how}); {layout}"
 
 
-def _auto_gf_colors(basis, unit_weights, width, reort, gf_method):
-    """How many colors an auto GF stage may run, so that every unit can afford the floor.
+def _colors_affording(basis, unit_weights, width, reort, gf_method, floor=None):
+    """How many colors a GF stage may run so that every unit can afford ``floor`` determinants.
+
+    ``floor`` is the unit cap for a cap the user set (or a basis without a policy); for an auto
+    cap it defaults as described below.
 
     An auto GF cap is the largest unit basis the *smallest* color affords, so concurrency trades
     directly against it. The floor is the ground-state basis's actual size -- a unit's seeds are
@@ -111,8 +114,9 @@ def _auto_gf_colors(basis, unit_weights, width, reort, gf_method):
     resident set is sampled before the split, while the cap is sized after it (the split
     replicates the ground-state basis into each color), so the floor is a target, not a guarantee.
     """
-    pinned = getattr(basis, "_auto_gf_caps", {}).get(_pin_key(reort, gf_method))
-    floor = pinned[0] if pinned is not None else int(basis.size)
+    if floor is None:
+        pinned = getattr(basis, "_auto_gf_caps", {}).get(_pin_key(reort, gf_method))
+        floor = pinned[0] if pinned is not None else int(basis.size)
     candidates = min(basis.comm.size, len(unit_weights))
     if candidates <= 1:
         return None
@@ -448,11 +452,15 @@ def run_units_distributed(
             line = _describe_gf_cap(basis, basis.truncation_threshold, f"{n_units} units, serial")
             if line is not None:
                 print(line, flush=True)
-            if reduce_fn is not None:
-                for u in range(n_units):
-                    reduce_fn(u, kernel(basis, u, unit_seeds[u]))
-                return True
-            return [kernel(basis, u, unit_seeds[u]) for u in range(n_units)]
+            results = []
+            for u in range(n_units):
+                result = kernel(basis, u, unit_seeds[u])
+                release_freed_heap()  # see release_freed_heap: the next unit starts from a clean RSS
+                if reduce_fn is not None:
+                    reduce_fn(u, result)
+                else:
+                    results.append(result)
+            return True if reduce_fn is not None else results
         finally:
             basis.truncation_threshold = caller_cap
             _restore_gf_memory_guard(basis, saved_guard)
@@ -465,19 +473,13 @@ def run_units_distributed(
     # replicated, so every rank computes the identical max_colors.
     cap = gf_cap(basis)
     width = max((len(s) for s in unit_seeds), default=1)
+    # One rule for every cap: the most colors whose real packing lets each unit afford its floor
+    # (the user's cap exactly; for auto, the GS basis size or this kernel's pinned cap).
     max_colors = None
     if _is_auto_gf(basis):
-        max_colors = _auto_gf_colors(basis, unit_weights, width, reort, gf_method)
-    elif np.isfinite(cap) and min(basis.comm.size, n_units) > 1:
-        max_colors = max_colors_within_budget(
-            int(cap), basis.num_spin_orbitals, width, reort, basis.comm, min(basis.comm.size, n_units), method=gf_method
-        )
-        if verbose and basis.comm.rank == 0 and max_colors < min(basis.comm.size, n_units):
-            print(
-                f"Memory budget caps the unit split at {max_colors} simultaneous unit bases "
-                f"(truncation_threshold={int(cap):,}).",
-                flush=True,
-            )
+        max_colors = _colors_affording(basis, unit_weights, width, reort, gf_method)
+    elif np.isfinite(cap):
+        max_colors = _colors_affording(basis, unit_weights, width, reort, gf_method, floor=int(cap))
     (
         unit_indices,
         unit_roots,
@@ -528,7 +530,7 @@ def run_units_distributed(
     resident_bytes = basis.comm.allreduce(current_rss_bytes(), op=MPI.MAX)
     # Collective on basis.comm (same function max_unit_dets_within_budget calls below); sampled
     # here, unconditionally, purely to report it -- reconstructing this crash needed inverting
-    # max_colors_within_budget's return to recover a number the process had in hand the whole
+    # the color-count bound to recover a number the process had in hand the whole
     # time (doc/plans/dc_smo_memory.md, "GF unit memory", item 4). Printed once, before any unit
     # runs, alongside the block width and the rank-count spread across colors -- none of which
     # the split print recorded before this round, and round 7's own per-unit reporting never
@@ -588,7 +590,12 @@ def run_units_distributed(
                 )
         if basis.comm.rank == 0:
             color_sizes = [int(d) for d in np.diff(unit_roots + [basis.comm.size])]
-            layout = f"{n_units} units on {n_colors} colour(s) of {color_sizes} ranks"
+            layout = f"{n_units} units on {n_colors} color(s) of {color_sizes} ranks"
+            if max_colors is not None:
+                _unconstrained, procs = _pack_units(unit_weights, basis.comm.size, basis.split_threshold, None)
+                n_free = 1 if procs is None else len(procs)
+                if n_colors < n_free:
+                    layout += f" (memory cut this from {n_free} colors, so each unit can afford its cap)"
             line = _describe_gf_cap(basis, split_basis.truncation_threshold, layout)
             if line is not None:
                 print(line, flush=True)
@@ -598,9 +605,10 @@ def run_units_distributed(
         )
 
         assert split_seeds is not None  # seeds passed in are a (possibly empty) list, never None
-        local_results = [
-            kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]) for u in unit_indices
-        ]
+        local_results = []
+        for u in unit_indices:
+            local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
+            release_freed_heap()  # see release_freed_heap: the next unit starts from a clean RSS
 
         results = None
         if reduce_fn is None:

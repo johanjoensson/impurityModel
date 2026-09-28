@@ -449,7 +449,9 @@ def calc_susceptibility_workflow(
         h0, dc, u4, impurity_orbitals, nominal_occ, mixed_valence, rot_to_spherical, verbosity, rank=rank
     )
     # Sized on the ground-state path alone, like every driver (see selfenergy.py).
-    cap_policy, _ = resolve_cap_policy(truncation_threshold, sb.n_spin_orbitals, comm=comm, log="never")
+    cap_policy, _ = resolve_cap_policy(
+        truncation_threshold, sb.n_spin_orbitals, comm=comm, verbose=verbosity > 0, log="derived"
+    )
     basis_information = {
         "impurity_orbitals": sb.impurity_orbitals,
         "bath_states": sb.bath_states,

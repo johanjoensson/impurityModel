@@ -300,19 +300,12 @@ def test_run_units_distributed_tightens_cap_to_the_units_own_rank_count_mpi(monk
 
 
 @pytest.mark.mpi
-def test_run_units_distributed_sizes_each_color_on_its_own_rank_count_mpi(monkeypatch):
-    """A color that lands on FEWER ranks than the job-wide mean (`comm.size // n_colors`)
-    must get a cap sized to its own real rank count, not the mean.
-
-    Round-8 regression: `run_units_distributed` and `max_colors_within_budget` both used to
-    size the per-unit cap on `comm.size // n_colors` -- but `_pack_units` apportions ranks to
-    colors proportionally to bin mass with a floor of 1, not evenly, so colors genuinely
-    differ (a round-8 SrMnO3 archive had colors on 4, 5 AND 6 ranks at one split). At 3 ranks
-    with 2 equal-weight units, `_pack_units` gives one color 2 ranks and the other 1 (the mean
-    is 1 for both) -- exactly the shape needed to tell mean and real apart. Confirmed against
-    the pre-fix code (temporarily checked out during development): both colors got the
-    identical, over-tightened 1-rank cap; after the fix the 2-rank color keeps the untightened
-    job-wide cap and only the 1-rank color is tightened.
+def test_run_units_distributed_never_runs_a_color_that_cannot_afford_the_cap_mpi(monkeypatch):
+    """At 3 ranks and 2 equal units `_pack_units` would give one color 2 ranks and the other 1.
+    With a cap a 2-rank color affords and a 1-rank color does not, the old mean-rank color rule
+    split anyway and then *lowered* the 1-rank color's cap -- the unit that landed there ran at
+    less than the cap. The color count is now cut until every color's real rank count affords the
+    cap, so both units run on one color at exactly the cap.
     """
     from types import SimpleNamespace
 
@@ -339,9 +332,8 @@ def test_run_units_distributed_sizes_each_color_on_its_own_rank_count_mpi(monkey
     # Derive the operating point from the model instead of hard-coding one. An earlier version
     # hard-coded 200,000, which silently stopped discriminating the moment the fanout constant
     # was re-measured (the window below moved out from under it). `inherited_cap` has to sit
-    # strictly above what a 1-rank color can afford and at or below what a 2-rank color can,
-    # while still being small enough that `max_colors_within_budget` -- which runs on the looser
-    # no-resident budget and the mean rank count -- picks 2 colors rather than collapsing to 1.
+    # strictly above what a 1-rank color can afford and at or below what a 2-rank color can (the
+    # `splits_into_2` bound keeps the geometry the old mean-rank rule would have split).
     stub = SimpleNamespace(size=comm.size)
     afford_1 = me.max_unit_dets_within_budget(4, 1, None, 1, stub, resident_bytes=resident)
     afford_2 = me.max_unit_dets_within_budget(4, 1, None, 2, stub, resident_bytes=resident)
@@ -378,16 +370,8 @@ def test_run_units_distributed_sizes_each_color_on_its_own_rank_count_mpi(monkey
     results = run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=False)
 
     if comm.rank == 0:
-        by_ranks = dict(results)
-        assert by_ranks.keys() == {1, 2}, results
-        assert by_ranks[2] == inherited_cap, "the 2-rank color must keep the untightened job-wide cap"
-        assert by_ranks[1] < inherited_cap, "the 1-rank color must be tightened"
-        # The discriminating assertion: under the pre-fix mean-based sizing (comm.size //
-        # n_colors == 1 for BOTH colors here), the 2-rank color would have been tightened to
-        # the SAME value as the 1-rank color instead of keeping the job-wide cap -- confirmed
-        # by temporarily checking out the pre-fix gf_units.py during development, which
-        # reproduced exactly that.
-        assert by_ranks[1] < by_ranks[2], (by_ranks, "each color's cap must reflect ITS OWN rank count, not the mean")
+        assert all(ranks >= 2 for ranks, _ in results), ("a color that cannot afford the cap ran", results)
+        assert all(cap == inherited_cap for _, cap in results), ("a unit ran below the cap", results)
 
 
 @pytest.mark.mpi
@@ -568,8 +552,8 @@ def test_auto_gf_colors_are_cut_until_every_unit_affords_the_ground_state_suppor
             cap_policy=me.CapPolicy(gs=10**12, gf=None, from_memory=True),
         )
 
-    assert gu._auto_gf_colors(fake(whole), weights, 1, None, "lanczos") == 1
-    assert gu._auto_gf_colors(fake(1), weights, 1, None, "lanczos") == min(comm.size, len(weights))
+    assert gu._colors_affording(fake(whole), weights, 1, None, "lanczos") == 1
+    assert gu._colors_affording(fake(1), weights, 1, None, "lanczos") == min(comm.size, len(weights))
 
 
 def test_an_auto_gf_cap_is_sized_serially_too(monkeypatch):

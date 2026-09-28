@@ -543,7 +543,9 @@ GS_MEMORY_BUDGET_SAFETY = Knob(
     expansion stops growing its basis, measured against its own peak RSS rather than against a
     predicted one (`CIPSISolver.expand`'s `memory_budget_bytes`). This applies when the cap was
     derived from memory (`auto`) or there is none (`unlimited`). A `truncation_threshold` the user
-    set is final: the guard then only warns, on stdout and stderr, when the budget is reached. Unset uses
+    set is final: the guard then only warns, on stdout and stderr, when the budget is reached.
+    The same fraction budgets the Green's-function units' measured guard and sizes their auto cap
+    (`gf_units`); `0` switches both guards off. Unset uses
     `memory_estimate.DEFAULT_MEMORY_SAFETY`; `0` disables the guard and restores the pre-2026-09
     behaviour, in which an uncapped expansion grows until the kernel OOM-kills the rank.
 

@@ -15,7 +15,7 @@ from impurityModel.ed.basis_transcription import build_distributed_vector, build
 from impurityModel.ed.BlockLanczosArray import BETA_BLOWUP_FACTOR
 from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
-from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes, note_memory_warning
+from impurityModel.ed.memory_estimate import current_rss_bytes, emit_memory_warning, format_bytes
 
 
 def build_qr(psi):
@@ -435,20 +435,26 @@ class _CappedBasisProxy:
             rss = self.comm.allreduce(rss, op=MPI.MAX)
         if rss < self.memory_budget:
             return False
+        root = self.comm is None or self.comm.rank == 0
         if self.memory_policy == "tighten":
+            cap_text = f"GF cap {self.cap:,}" if self.cap < 2**62 else "no GF cap"
+            emit_memory_warning(
+                f"WARNING determinant cap: a Green's-function unit stopped growing at {self._global_count:,} "
+                f"determinants ({cap_text}): measured {format_bytes(rss)}/rank reached the "
+                f"{format_bytes(self.memory_budget)} memory budget.",
+                root=root,
+                kind="gf-memory",
+            )
             return True
         self._memory_warned = True
-        if note_memory_warning() and (self.comm is None or self.comm.rank == 0):
-            import sys
-
-            message = (
-                f"WARNING determinant cap: a Green's-function unit at {self._global_count:,} determinants uses "
-                f"{format_bytes(rss)}/rank >= the {format_bytes(self.memory_budget)} memory budget. Your "
-                f"truncation_threshold={self.cap:,} is kept as set; if the job is killed, lower it or use 'auto'. "
-                "(Printed once per calculation.)"
-            )
-            print(message, flush=True)
-            print(message, file=sys.__stderr__ or sys.stderr, flush=True)
+        emit_memory_warning(
+            f"WARNING determinant cap: a Green's-function unit at {self._global_count:,} determinants uses "
+            f"{format_bytes(rss)}/rank >= the {format_bytes(self.memory_budget)} memory budget. Your "
+            f"truncation_threshold={self.cap:,} is kept as set; if the job is killed, lower it, use 'auto', or "
+            "run fewer ranks per node.",
+            root=root,
+            kind="gf-memory",
+        )
         return False
 
     def redistribute_block(self, block):

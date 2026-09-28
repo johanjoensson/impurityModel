@@ -963,7 +963,7 @@ _TABLE_LIST += [
                 "Cap on determinants per basis. 'auto' sizes it from available memory, "
                 "separately for the ground state and the Green's-function units, and lets the "
                 "measured-memory guard hold a basis lower at run time. 'unlimited' (alias 'inf'; "
-                "'none' is accepted for older inputs) sets no cap, the guard still active. A "
+                "'none' is accepted for older inputs) sets no cap; the memory guards stay active. A "
                 "positive integer (e.g. 2000 or 2e6) is final: never lowered, only warned about.",
                 choices=("auto", "unlimited", "inf", "none"),
                 minimum=1,

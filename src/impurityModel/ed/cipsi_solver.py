@@ -1,5 +1,4 @@
 import itertools
-import sys
 
 import numpy as np
 from mpi4py import MPI
@@ -20,6 +19,7 @@ from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.memory_estimate import (
     current_rss_bytes,
     format_bytes,
+    emit_memory_warning,
     note_memory_warning,
     peak_rss_bytes,
     reset_peak_rss,
@@ -1413,7 +1413,7 @@ class CIPSISolver:
             # The eigensolve is part of the cycle the guard must see. `determine_new_Dj` resets the
             # high-water mark again at the start of the selection round (to measure that round's own
             # transient), which used to hide the eigensolve's peak from both guards -- and at 256
-            # ranks the eigensolve is ~95% of an expansion's cost. So: reset here, sample right
+            # rank counts the eigensolve's own transient is not negligible. So: reset here, sample right
             # after the eigensolve, and let the trip-wire below take the larger of the two peaks.
             # Rank-local, no collective; gated on a replicated argument.
             if memory_budget_bytes is not None:
@@ -1552,9 +1552,11 @@ class CIPSISolver:
                     self.basis.truncation_threshold = threshold
                     # Once per calculation at any verbosity (every event at -vv): this is the line
                     # that says why a default run's basis stopped growing.
-                    say = note_memory_warning() or self.basis.verbose
+                    say = note_memory_warning("gs-memory") or self.basis.verbose
                     if say and (self.basis.comm is None or self.basis.comm.rank == 0):
-                        was = "uncapped" if not np.isfinite(previous) else f"a cap of {int(previous):,}"
+                        was = (
+                            "no cap (unlimited)" if not np.isfinite(previous) else f"the auto cap of {int(previous):,}"
+                        )
                         streak_note = (
                             "no growth at all is affordable" if memory_cap == 0 else "for the second round running"
                         )
@@ -1659,19 +1661,17 @@ class CIPSISolver:
                     "basis_size": int(self.basis.size),
                     "cap": float(threshold),
                 }
-                first = note_memory_warning()
-                if first and (self.basis.comm is None or self.basis.comm.rank == 0):
-                    cap_text = f"{int(threshold):,}" if np.isfinite(threshold) else "unlimited"
-                    message = (
-                        f"WARNING determinant cap: GS basis at {self.basis.size:,} determinants uses "
-                        f"{format_bytes(peak_rss)}/rank (anon {format_bytes(anon_rss)} + shm "
-                        f"{format_bytes(shmem_rss)}, max over ranks) >= the {format_bytes(memory_budget_bytes)} "
-                        f"memory budget. Your truncation_threshold={cap_text} is kept as set; if the job is "
-                        "killed, lower truncation_threshold, use 'auto', or run fewer ranks per node. "
-                        "(Shared memory may be over-counted under MPI. Printed once per calculation.)"
-                    )
-                    print(message, flush=True)
-                    print(message, file=sys.__stderr__ or sys.stderr, flush=True)
+                cap_text = f"{int(threshold):,}" if np.isfinite(threshold) else "unlimited"
+                emit_memory_warning(
+                    f"WARNING determinant cap: GS basis at {self.basis.size:,} determinants uses "
+                    f"{format_bytes(peak_rss)}/rank (anon {format_bytes(anon_rss)} + shm "
+                    f"{format_bytes(shmem_rss)}, max over ranks) >= the {format_bytes(memory_budget_bytes)} "
+                    f"memory budget. Your truncation_threshold={cap_text} is kept as set; if the job is "
+                    f"killed, set truncation_threshold <= {self.basis.size:,}, use 'auto', or run fewer ranks "
+                    "per node. (Shared memory may be over-counted under MPI.)",
+                    root=self.basis.comm is None or self.basis.comm.rank == 0,
+                    kind="gs-memory",
+                )
             if memory_budget_bytes is not None and not budget_tripped and peak_rss >= memory_budget_bytes:
                 # `peak_rss` and `self.basis.size` are both already rank-replicated at this point
                 # (VmHWM was just MAX-allreduced above; `Basis.size` is the global count by
@@ -1700,9 +1700,9 @@ class CIPSISolver:
                 # `basis.truncation_threshold` after `expand()` returns must see the cap that
                 # actually governed the rest of this run, not the one it was constructed with.
                 self.basis.truncation_threshold = threshold
-                say = note_memory_warning() or self.basis.verbose
+                say = note_memory_warning("gs-memory") or self.basis.verbose
                 if say and (self.basis.comm is None or self.basis.comm.rank == 0):
-                    was = "uncapped" if not np.isfinite(previous) else f"a cap of {int(previous):,}"
+                    was = "no cap (unlimited)" if not np.isfinite(previous) else f"the auto cap of {int(previous):,}"
                     print(
                         f"WARNING determinant cap: measured per-rank RSS {format_bytes(peak_rss)} reached the "
                         f"{format_bytes(memory_budget_bytes)} memory budget mid-expansion; tightening "
@@ -1787,18 +1787,20 @@ class CIPSISolver:
                 "residual_pt2": float(sel.get("residual_pt2", 0.0)),
             }
             rank = self.basis.comm.rank if self.basis.is_distributed else 0
+            rep = self.truncation_report
+            # discarded_de2_mass is an error bound on the ground state (PT2 importance left out
+            # of the retained subspace), so this is said at any verbosity -- once per calculation
+            # (a double-counting search runs dozens of expansions), every time at -vv.
+            why = "the memory guard" if rep["memory_bound"] else f"the cap of {rep['threshold']:,}"
+            if note_memory_warning("gs-cap") or self.basis.verbose:
+                if rank == 0:
+                    print(
+                        f"WARNING determinant cap: GS basis stopped at {rep['retained']:,} determinants "
+                        f"({why}); discarded candidates carry {rep['discarded_de2_mass']:.3e} of PT2 "
+                        "importance.",
+                        flush=True,
+                    )
             if rank == 0:
-                rep = self.truncation_report
-                # discarded_de2_mass is an error bound on the ground state (PT2 importance
-                # left out of the retained subspace), so this fires regardless of verbose;
-                # the refinement-cycle detail is cosmetic and stays behind -v.
-                print(
-                    f"WARNING: GS basis cap hit: fixed-budget CIPSI held the basis at "
-                    f"{rep['retained']:,} determinants (truncation_threshold={rep['threshold']:,}); "
-                    f"discarded candidates carry {rep['discarded_de2_mass']:.3e} of PT2 importance. "
-                    f"The ground state is exact on the retained subspace.",
-                    flush=True,
-                )
                 if self.basis.verbose:
                     print(
                         f"  ({rep['cycles']} refinement cycle(s); {rep['n_candidates_last']:,} "

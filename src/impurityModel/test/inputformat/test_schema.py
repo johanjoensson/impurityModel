@@ -97,11 +97,15 @@ def test_truncation_threshold_keeps_auto_and_unlimited_distinct():
     "written, expected",
     [
         ("auto", None),
+        ("Auto", None),
         ("unlimited", float("inf")),
+        ("Unlimited", float("inf")),
         ("inf", float("inf")),
         ("none", float("inf")),
         (2000, 2000),
         (2e6, 2_000_000),
+        ("2e6", 2_000_000),
+        ("2_000_000", 2_000_000),
     ],
 )
 def test_truncation_threshold_reads_every_spelling(written, expected):
@@ -232,3 +236,20 @@ def test_dump_renders_every_table():
     text = schema.dump()
     for path in schema.TABLES:
         assert f"`[{path}]`" in text or f"`[[{path}]]`" in text
+
+
+def test_the_cli_cap_option_tells_not_given_from_auto():
+    """Under --from-archive only a cap actually passed overrides the archived one, so `auto`
+    (which parses to None) must be distinguishable from not passing the flag at all."""
+    import argparse
+
+    from impurityModel.scripts._cap import CAP_NOT_GIVEN, add_cap_argument, requested_cap
+
+    parser = argparse.ArgumentParser()
+    add_cap_argument(parser)
+    assert parser.parse_args([]).truncation_threshold is CAP_NOT_GIVEN
+    assert requested_cap(parser.parse_args([])) is None
+    assert parser.parse_args(["--truncation_threshold", "auto"]).truncation_threshold is None
+    assert parser.parse_args(["--truncation_threshold", "2e6"]).truncation_threshold == 2_000_000
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--truncation_threshold", "0"])

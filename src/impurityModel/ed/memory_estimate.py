@@ -30,9 +30,9 @@ Two per-rank scaling regimes matter (see ``doc/architecture_overview.md``):
 Under ``run_units_distributed`` the communicator is split into colors and every unit
 basis inherits the same numeric ``truncation_threshold``, so each rank's share of a
 unit basis is ``threshold / (ranks / n_colors)`` — parallel units multiply per-rank
-memory accordingly. The split site enforces this: :func:`max_colors_within_budget`
-caps the color count so a cap-filling unit basis still fits the per-rank budget
-(``n_parallel_units`` remains available for sizing by hand).
+memory accordingly. The split site enforces this: ``gf_units._colors_affording`` cuts the
+color count until every color's real rank count affords the unit cap
+(:func:`max_unit_dets_within_budget`).
 
 The available-memory probe respects the enforced cgroup memory limit (SLURM ``--mem``
 and shared-node allocations), taking the minimum of ``MemAvailable`` and the cgroup
@@ -265,7 +265,8 @@ def parse_truncation_threshold(value):
 
     * ``auto`` (or ``None``) -- sized from available memory, separately per path;
     * ``unlimited`` (aliases ``inf``, and ``none`` for older TOML inputs) -- no cap; the
-      measured-RSS guards still stop growth before an OOM kill;
+      measured-RSS guards (ground state and the sparse Green's-function solvers) still stop growth
+      before an OOM kill;
     * a positive integer, also written ``2e6`` or ``2_000_000`` -- the cap, final.
 
     Raises ``ValueError`` on anything else, including ``0``, negatives and non-integers.
@@ -1018,96 +1019,6 @@ def resident_bytes_per_rank(comm=None):
     return comm.allreduce(resident, op=MPI.MAX)
 
 
-def max_colors_within_budget(
-    n_dets,
-    n_spin_orbitals,
-    block_width,
-    reort,
-    comm,
-    max_candidate,
-    safety=DEFAULT_MEMORY_SAFETY,
-    krylov_dtype=None,
-    method="lanczos",
-):
-    """Largest unit-color count whose predicted per-rank GF peak fits the memory budget.
-
-    .. warning:: **Collective on** ``comm`` (calls :func:`available_bytes_per_rank`).
-
-    Under ``run_units_distributed`` each color's unit basis may fill the same
-    ``truncation_threshold`` on only ``comm.size / n_colors`` ranks, so per-rank memory
-    grows with the color count. This inverts :func:`estimate_gf_peak_bytes`: the largest
-    ``n_colors <= max_candidate`` for which a cap-filling unit basis still fits the budget
-    (see :func:`_resident_adjusted_budget` -- the same policy
-    :func:`max_unit_dets_within_budget` uses, so the two no longer diverge on whether the
-    resident set counts). At ``reort != "none"`` the estimate uses the invariant-subspace
-    worst case for the Krylov store (very conservative), consistent with
-    :func:`suggest_gs_truncation_threshold`.
-
-    Parameters
-    ----------
-    n_dets : int
-        The basis cap (``truncation_threshold``) each unit basis may fill.
-    n_spin_orbitals : int
-        Determinant bit width.
-    block_width : int
-        Widest unit's seed count (GF block width).
-    reort : str or None
-        GF reorthogonalization mode.
-    comm : MPI communicator
-        The full communicator about to be split.
-    max_candidate : int
-        Upper bound on the color count (``min(comm.size, n_units)`` at the split site).
-    safety : float
-        Fraction of available RAM to budget (default ``DEFAULT_MEMORY_SAFETY``).
-
-    Returns
-    -------
-    int
-        Color count in ``[1, max_candidate]``.
-
-    Notes
-    -----
-    This deliberately does **not** take a ``resident_bytes`` argument the way
-    :func:`max_unit_dets_within_budget` does. Passing the resident set here would tighten the
-    *concurrency* bound as well as the per-unit cap, and the two are not interchangeable: the
-    per-unit cap trades basis size (accuracy) for safety, while this one trades color count
-    (wall clock) for safety, and nothing has measured that the second trade is wanted. It also
-    underpins the composition argument in :func:`max_unit_dets_within_budget`'s docstring,
-    which assumes the two inversions run against the *same* budget. Both share
-    :func:`_resident_adjusted_budget` so the policy has one definition; only this call site
-    passes no resident set.
-    """
-    budget = _resident_adjusted_budget(safety, available_bytes_per_rank(comm), None)
-    for n_colors in range(max_candidate, 1, -1):
-        # The mean, not each color's real count: `_pack_units` (basis_split.py) apportions
-        # ranks to colors proportionally to bin mass with a floor of 1, not evenly, so colors
-        # genuinely differ -- a round-8 SrMnO3 archive had colors on 4, 5 *and* 6 ranks at
-        # n_colors=25 (mean 5.12). This function runs *before* `_pack_units` (it decides
-        # `max_colors`, one of `_pack_units`'s own inputs) and sits below `basis_split` in the
-        # layering (CLAUDE.md), so it cannot call the real packer to learn the true spread, and
-        # the only bound it *could* guarantee -- 1 rank/color -- would make it always return 1.
-        # The real per-color bound lives where it can actually be seen: `run_units_distributed`
-        # sizes each color's own cap on `split_basis.comm.size` after the real split runs
-        # (doc/plans/dc_smo_memory.md, "GF unit memory", item 3) and never loosens what this
-        # function's mean-based `max_colors` allows -- this is deliberately the coarser of the
-        # two bounds, not a second, independent one to fix.
-        ranks_per_color = max(1, comm.size // n_colors)
-        if (
-            estimate_gf_peak_bytes(
-                n_dets,
-                n_spin_orbitals,
-                block_width,
-                reort,
-                ranks=ranks_per_color,
-                krylov_dtype=krylov_dtype,
-                method=method,
-            )
-            <= budget
-        ):
-            return n_colors
-    return 1
-
-
 def max_unit_dets_within_budget(
     n_spin_orbitals,
     block_width,
@@ -1123,43 +1034,17 @@ def max_unit_dets_within_budget(
 
     .. warning:: **Collective on** ``comm`` (calls :func:`available_bytes_per_rank`).
 
-    The complement of :func:`max_colors_within_budget`: that function fixes the cap and
-    finds the largest color count (so the smallest ``ranks``) that still fits the budget;
-    this fixes ``ranks`` -- the color a unit actually landed on, from
-    its own ``split_basis.comm.size`` -- and finds the largest cap that basis can fill.
-    A unit basis inheriting the *job-wide* ``truncation_threshold`` verbatim (today's
-    behaviour, ``basis_split.py``'s ``truncation_threshold=basis.truncation_threshold``) was
-    sized for all of ``comm.size`` ranks, not the ``ranks`` its color actually has, which is
-    the root cause this function exists to fix (see ``doc/plans/dc_smo_memory.md``, "GF
-    unit memory").
+    The unit-level inversion of :func:`estimate_gf_peak_bytes` (which is where
+    :func:`_routing_skew_factor` lives): given the rank count of the color a unit actually
+    landed on, the largest cap that basis can fill. ``gf_units`` uses it both ways round -- to
+    size an auto GF cap for the colors it has, and to cut the color count until every color can
+    afford a given cap (``_colors_affording``).
 
-    Both this function and :func:`max_colors_within_budget` invert the same
-    :func:`estimate_gf_peak_bytes` (which is where :func:`_routing_skew_factor` lives), so
-    they compose rather than double-count: a skew-tightened color count means *more* ranks
-    per color, which this function then reports as a *larger* affordable per-unit cap.
+    ``resident_bytes`` is what the process already holds at GF entry; with it the budget is the
+    resident-adjusted headroom (:func:`_resident_adjusted_budget`), the one the GF memory guard
+    then polices.
 
-    **That composition is why ``resident_bytes`` exists.** Given the *same* budget and the
-    *mean* rank count, this function could not tighten anything: whenever
-    ``max_colors_within_budget`` returns ``n_colors >= 2`` it returned from inside its loop,
-    i.e. it already verified the cap fits at the rank count it assumed; the split can only
-    *reduce* the color count, which only *raises* the mean ``ranks``; and
-    :func:`estimate_gf_peak_bytes` is monotone non-increasing in ``ranks``. So
-    ``unit_cap >= cap`` identically and ``min(cap, unit_cap) == cap`` -- a no-op. (Measured
-    over a 400-cell grid of rank count x unit count x cap x budget: 385 no-op, and all 15
-    binding cells had ``n_colors == 1``.) An adversarial review caught that this made the
-    first shipped version of this function inert in exactly the production geometry it was
-    written for. To bind, it must be given information the color inversion did not have --
-    which is what the resident set is.
-
-    **That no-op argument assumed the mean, and is now only half true.** Since
-    ``run_units_distributed`` sizes each color on its own ``split_basis.comm.size``, a color
-    apportioned *fewer* ranks than ``comm.size // n_colors`` (``_pack_units``'s floor-of-1
-    step can do this whenever the mean is >= 2) evaluates this function at a *smaller*
-    ``ranks`` than the color inversion assumed, so ``unit_cap < cap`` can bind on the real
-    rank count alone, with no resident set involved. Colors at or above the mean still fall
-    under the original argument. Both mechanisms tighten; neither loosens.
-
-    Exponential-then-bisection, mirroring :func:`_suggest_for_budget`.
+    Exponential search then bisection (:func:`_largest_fitting`).
 
     Parameters
     ----------
@@ -1200,8 +1085,8 @@ def max_unit_dets_within_budget(
         net of what this process holds; adding ``resident`` back reconstructs the rank's total
         share before applying ``safety`` to it. If the process is already over its safety
         share the difference is non-positive, which would cap the GF at the 1-determinant
-        floor and silently destroy the physics; that case falls back to ``safety * available``
-        and is the caller's cue to warn.
+        floor and silently destroy the physics; the headroom is therefore floored at
+        ``(1 - safety) * safety * available`` (see :func:`_resident_adjusted_budget`).
 
     Returns
     -------
@@ -1370,29 +1255,46 @@ def suggest_gs_truncation_threshold(
     )
 
 
-#: Memory warnings of the current calculation (a user cap outrunning memory, or the guard holding
-#: an auto/unlimited basis lower). Rank-local, but every rank updates it on the same replicated
-#: condition.
-_MEMORY_WARNINGS = {"count": 0}
+#: Cap and memory messages of the current calculation, counted per kind ("gs-memory",
+#: "gf-memory", "gs-cap"), so one kind never silences another. Rank-local; the conditions that
+#: update it are replicated, and only rank 0 (of a GF color, its root) prints.
+_MEMORY_WARNINGS = {}
 
 
-def note_memory_warning():
-    """Record one memory warning; ``True`` only for the first of the calculation.
+def note_memory_warning(kind="memory"):
+    """Record one message of ``kind``; ``True`` only for the first of the calculation.
 
-    The ground-state memory messages fire per expansion, and a double-counting search runs dozens
-    of expansions -- printing each would bury the one line that matters. Every driver resets the
-    count when it resolves its cap (:func:`resolve_cap_policy`, the double-counting contexts), so
-    each calculation -- each DMFT iteration under RSPt -- still says it once, at any verbosity.
+    A double-counting search runs dozens of expansions -- printing each would bury the line that
+    matters. Every driver resets the counts when it resolves its cap (:func:`resolve_cap_policy`),
+    so each calculation -- each DMFT iteration under RSPt -- still says each thing once, at any
+    verbosity. Under a GF color split each color's root prints its own first message.
     """
-    _MEMORY_WARNINGS["count"] += 1
-    return _MEMORY_WARNINGS["count"] == 1
+    _MEMORY_WARNINGS[kind] = _MEMORY_WARNINGS.get(kind, 0) + 1
+    return _MEMORY_WARNINGS[kind] == 1
 
 
 def reset_memory_warnings():
-    """Start a new calculation's warning count; returns the previous calculation's count."""
-    previous = _MEMORY_WARNINGS["count"]
-    _MEMORY_WARNINGS["count"] = 0
+    """Start a new calculation's counts; returns how many messages the previous one recorded."""
+    previous = sum(_MEMORY_WARNINGS.values())
+    _MEMORY_WARNINGS.clear()
     return previous
+
+
+def emit_memory_warning(message, *, root, kind, force=False):
+    """Print ``message`` on ``root`` to stdout and stderr, once per calculation per ``kind``.
+
+    ``force`` prints every occurrence (``-vv`` behaviour). stderr as well as stdout, because under
+    the RSPt interface rank 0's stdout goes to a per-cluster file nobody reads when a job dies.
+    Every rank must call it (the count is kept on all of them); only ``root`` prints.
+    """
+    import sys
+
+    first = note_memory_warning(kind)
+    if root and (first or force):
+        tail = "" if force else " (Printed once per calculation.)"
+        print(message + tail, flush=True)
+        print(message + tail, file=sys.__stderr__ or sys.stderr, flush=True)
+    return first
 
 
 def resolve_cap_policy(
@@ -1405,7 +1307,7 @@ def resolve_cap_policy(
 
     An auto cap is sized on the ground-state path alone
     (:func:`suggest_gs_truncation_threshold`), identically for every driver; the GF cap of an
-    auto policy is left for the GF stage to size (``gf_units.gf_cap`` falls back to it).
+    auto policy is left unset for the GF stage to size (``gf_units``).
 
     Parameters
     ----------
@@ -1477,6 +1379,23 @@ def _proc_status_bytes(key):
     except OSError:
         pass
     return 0
+
+
+def release_freed_heap():
+    """Return freed heap to the OS (glibc ``malloc_trim(0)``); rank-local, a no-op elsewhere.
+
+    Called between Green's-function units. The GF memory guard compares *absolute* RSS against its
+    budget, and glibc keeps a finished unit's freed arenas mapped (measured ~230 MiB per Lanczos
+    solve at 4 ranks), so without this one unit that ran near the budget would leave the next unit
+    on the same color over it from its first step -- frozen at its seeds by memory it never used.
+    Returns whether a trim was attempted.
+    """
+    try:
+        import ctypes
+
+        return bool(ctypes.CDLL("libc.so.6").malloc_trim(0) >= 0)
+    except (OSError, AttributeError):
+        return False
 
 
 def peak_rss_bytes():

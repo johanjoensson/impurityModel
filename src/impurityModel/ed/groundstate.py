@@ -731,7 +731,11 @@ def find_ground_state_basis(
     Returns:
     basis_gs, ManybodyBasis: Initial basis for the ground state
     """
-    if cap_value(truncation_threshold) is None:
+    # Resolve here only a cap no driver has resolved yet: a bare number or None (calc_gs callers
+    # such as get_spectra, library users). A CapPolicy arrives already resolved and announced --
+    # re-resolving it would reprint the cap line and restart the warning counts on every trial of
+    # a double-counting search.
+    if not isinstance(truncation_threshold, CapPolicy) or truncation_threshold.gs is None:
         # Same spin-orbital count formula as Basis.__init__ (blocked orbital lists).
         num_spin_orbitals = sum(
             sum(len(orbs) for orbs in impurity_orbitals[i])

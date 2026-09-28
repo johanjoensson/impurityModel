@@ -269,16 +269,20 @@ def _coerce(where, key, value, units, base_dir):
             raise InputError(f"[{where}]: expected [major, minor], got {value!r}")
         return tuple(parts)
     if kind in (Kind.ENUM, Kind.AUTO_ENUM, Kind.AUTO_COUNT):
-        if (
-            kind is Kind.AUTO_COUNT
-            and isinstance(value, float)
-            and value.is_integer()
-            and key.choices
-            and "unlimited" in key.choices
-        ):
-            # TOML writes `2e6` as a float; a count key that has an 'unlimited' spelling accepts
-            # an integer-valued float as the count it denotes.
-            value = int(value)
+        if kind is Kind.AUTO_COUNT and key.choices and "unlimited" in key.choices:
+            # The determinant-cap vocabulary is the same on the CLI, in TOML and on the RSPt solver
+            # line: case-insensitive words, and a count written as an integer, an integer-valued
+            # float (TOML reads a bare `2e6` as one) or a string ("2e6", "2_000_000").
+            if isinstance(value, str):
+                text = value.strip().lower()
+                try:
+                    number = float(text.replace("_", ""))
+                except ValueError:
+                    value = text
+                else:
+                    value = int(number) if number.is_integer() else number
+            if isinstance(value, float) and value.is_integer():
+                value = int(value)
         if kind is Kind.AUTO_COUNT and isinstance(value, int) and not isinstance(value, bool):
             if key.minimum is not None and value < key.minimum:
                 raise InputError(f"[{where}]: must be >= {key.minimum}, got {value}")

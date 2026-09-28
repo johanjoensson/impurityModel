@@ -351,4 +351,6 @@ def test_an_auto_tightening_is_visible_at_default_verbosity_once_per_calculation
         solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1)
         assert solver.truncation_report["memory_bound"]
     out, _err = capfd.readouterr()
-    assert out.count("WARNING determinant cap") == 1, out
+    # Each kind of event once: the guard tightening, and the basis stopping short of convergence.
+    assert out.count("mid-expansion; tightening") == 1, out
+    assert out.count("WARNING determinant cap: GS basis stopped at") == 1, out

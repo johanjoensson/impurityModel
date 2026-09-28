@@ -201,21 +201,6 @@ def test_node_available_bytes_respects_cgroup(monkeypatch):
     assert me._node_available_bytes() >= min(unconstrained, 12345)
 
 
-def test_max_colors_within_budget(monkeypatch):
-    """The color cap must invert estimate_gf_peak_bytes against the safety-scaled budget."""
-    from types import SimpleNamespace
-
-    comm = SimpleNamespace(size=16)
-    n, nso, width = 100_000, 100, 4
-    target = me.estimate_gf_peak_bytes(n, nso, width, "none", ranks=16 // 4)
-    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: target / me.DEFAULT_MEMORY_SAFETY)
-    assert me.max_colors_within_budget(n, nso, width, "none", comm, 16) == 4
-    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 1)
-    assert me.max_colors_within_budget(n, nso, width, "none", comm, 16) == 1
-    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2**60)
-    assert me.max_colors_within_budget(n, nso, width, "none", comm, 16) == 16
-
-
 def test_log_memory_budget_serial(capsys):
     report = me.log_memory_budget(100_000, 100, comm=None, block_width=4, verbose=True, label="test")
     out = capsys.readouterr().out
@@ -478,7 +463,7 @@ def test_routing_skew_factor_is_monotone_increasing_in_ranks():
 
 def test_estimate_gf_peak_bytes_scales_local_rows_by_the_skew(monkeypatch):
     """Peak bytes at a given `ranks` must equal the unskewed estimate scaled by the same
-    factor `max_colors_within_budget`/`max_unit_dets_within_budget` see -- otherwise the two
+    factor `max_unit_dets_within_budget` (and so `gf_units._colors_affording`) sees -- otherwise the two
     inversions and the direct estimate would disagree on what they are budgeting.
 
     This is also the test that pins the round-8 matvec-fanout term itself: it asserts the exact
@@ -527,7 +512,7 @@ def test_gf_chunk_divisor_credits_chunking_but_never_the_full_chunk_count(monkey
 
 
 # ---------------------------------------------------------------------------------------
-# max_unit_dets_within_budget: the complement of max_colors_within_budget
+# max_unit_dets_within_budget: the per-unit inversion of the GF peak model
 # ---------------------------------------------------------------------------------------
 
 
@@ -566,31 +551,6 @@ def test_max_unit_dets_within_budget_floor_is_one(monkeypatch):
     comm = SimpleNamespace(size=4)
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 1)
     assert me.max_unit_dets_within_budget(100, 4, "none", 4, comm) >= 1
-
-
-def test_max_unit_dets_without_residency_is_structurally_a_no_op(monkeypatch):
-    """Given the SAME budget, the per-unit cap can never tighten a cap the color inversion
-    already approved -- and this test exists to say that out loud rather than dress it up.
-
-    `max_colors_within_budget` returns `n_colors >= 2` only from inside its loop, i.e. having
-    verified the cap fits at that color's rank count; the split can only reduce the color
-    count, which only raises `ranks`; `estimate_gf_peak_bytes` is monotone non-increasing in
-    `ranks`. So `unit_cap >= cap` identically. The first shipped version of the per-unit cap
-    asserted exactly this and read it as evidence the design was sound -- it is in fact proof
-    the design was inert (an adversarial review caught it). `resident_bytes` is what makes it
-    bind; see the test below."""
-    from types import SimpleNamespace
-
-    comm = SimpleNamespace(size=128)
-    nso, width = 100, 4
-    cap = 40_000
-    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2 * 2**30)
-
-    max_candidate = 32
-    n_colors = me.max_colors_within_budget(cap, nso, width, "none", comm, max_candidate)
-    ranks_per_color = max(1, comm.size // n_colors)
-    unit_cap = me.max_unit_dets_within_budget(nso, width, "none", ranks_per_color, comm)
-    assert unit_cap >= cap, (n_colors, ranks_per_color, unit_cap)
 
 
 def test_resident_bytes_tightens_the_unit_cap(monkeypatch):

@@ -36,6 +36,15 @@ def _fresh(monkeypatch):
     reset_memory_warnings()
 
 
+def _force_budget(monkeypatch, budget_bytes):
+    """A GF guard budget every RSS sample exceeds. Patched at its source rather than driven by a
+    tiny GS_MEMORY_BUDGET_SAFETY: the budget is resident-at-entry plus a floored headroom, and the
+    heap trimmed between units can leave the current RSS *below* that entry figure."""
+    from impurityModel.ed import gf_units as gu
+
+    monkeypatch.setattr(gu, "_gf_memory_budget", lambda available, resident: budget_bytes)
+
+
 def _basis(comm, policy, split_threshold=None):
     kwargs = {} if split_threshold is None else {"split_threshold": split_threshold}
     basis = Basis(
@@ -86,14 +95,14 @@ def test_the_proxy_guard_is_off_by_default():
 def test_an_auto_gf_unit_freezes_when_measured_memory_reaches_the_budget(monkeypatch):
     """A budget every sample exceeds: the auto unit's support freezes at its seed, and the
     report attributes it to the memory guard, not to the cap."""
-    monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "1e-12")
+    _force_budget(monkeypatch, 1)
     _, _, report = _gf(None, CapPolicy(gs=CAP, gf=CAP, from_memory=True))
     messages = _basis_cap_messages(report)
     assert any("memory guard" in m for m in messages), messages
 
 
 def test_a_user_gf_cap_is_not_frozen_by_memory_only_warned_about(monkeypatch, capfd):
-    monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "1e-12")
+    _force_budget(monkeypatch, 1)
     _, _, report = _gf(None, CapPolicy(gs=CAP, gf=CAP, from_memory=False))
     messages = _basis_cap_messages(report)
     assert not any("memory guard" in m for m in messages), messages
@@ -116,7 +125,7 @@ def test_the_gf_guard_is_collective_safe_mpi(monkeypatch):
     """Run at -n 2 and -n 3 (an empty rank): the guard's RSS reduction sits on the pre-freeze path
     beside the admission count's, so a freeze must be reached on every rank of a color together
     -- a mismatch deadlocks here instead of passing."""
-    monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "1e-12")
+    _force_budget(monkeypatch, 1)
     comm = MPI.COMM_WORLD
     # split_threshold=0 forces one color spanning every rank, so the proxy's RSS reduction really
     # runs across ranks (and across an empty one at -n 3) instead of on one-rank colors.
@@ -143,7 +152,7 @@ def test_the_guard_budget_has_the_sizing_floor():
 def test_an_unlimited_gf_unit_is_still_memory_guarded(monkeypatch):
     """`unlimited` sets no cap but keeps the guard: the GF recurrence is proxied for the guard's
     sake alone, and at a budget every sample exceeds it freezes."""
-    monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "1e-12")
+    _force_budget(monkeypatch, 1)
     _, _, report = _gf(None, CapPolicy(gs=float("inf"), gf=float("inf"), from_memory=True))
     messages = _basis_cap_messages(report)
     assert any("memory guard" in m for m in messages), messages
@@ -193,7 +202,7 @@ def test_guarded_proxy_proxies_for_a_cap_or_a_budget_only():
 def test_the_bicgstab_gf_kernel_is_guarded_too(monkeypatch, capfd):
     """The per-frequency driver builds its own proxies; under a user cap and a budget every
     sample exceeds, it must warn exactly as the Lanczos kernel does."""
-    monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "1e-12")
+    _force_budget(monkeypatch, 1)
     _gf(None, CapPolicy(gs=CAP, gf=CAP, from_memory=False), gf_method="bicgstab")
     _out, err = capfd.readouterr()
     assert err.count("WARNING determinant cap: a Green's-function unit") == 1

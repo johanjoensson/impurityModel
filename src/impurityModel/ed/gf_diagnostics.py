@@ -641,8 +641,9 @@ def check_basis_truncation(
                 "weight are missing)"
             ),
             suggestion=(
-                "raise truncation_threshold well above the ground-state support (or use 'auto'), "
-                "or set GF_OPERATOR_SPLIT=1 so a unit's seeds are one column each"
+                "with a truncation_threshold you set, raise it well above the ground-state basis size; with 'auto', give "
+                "each rank more memory (fewer ranks per node) or add nodes; or set GF_OPERATOR_SPLIT=1 so "
+                "a unit's seeds are one column each"
             ),
         )
     return Diagnostic(
@@ -659,51 +660,67 @@ def check_basis_truncation(
 
 
 def check_ground_state_truncation(truncation, convergence) -> Diagnostic:
-    r"""Surface a ground state the memory guard held below its cap, in the self-energy report.
+    r"""Surface a truncated ground state in the self-energy report.
 
-    A memory-bound ground state is variationally too high by roughly its residual PT2 energy
-    :math:`\delta`, and is not an eigenstate of :math:`H`. With the Green's-function units sized
-    independently (and so closer to converged), addition poles move down and removal poles up by
-    about :math:`\delta`: the gap shrinks by about :math:`2\delta`. It is a resource limit, so a
-    ``WARN``; the double-counting search refuses the same situation outright
-    (``DC_ALLOW_MEMORY_BOUND``) because it differences sector energies.
+    A ground state held below convergence -- by its cap or by the memory guard -- is variationally
+    too high by roughly its residual PT2 energy :math:`\delta`, and is not an eigenstate of
+    :math:`H`. The Green's-function units are sized for their own path (and are typically larger),
+    so this truncation is no longer shared with them and does not cancel: addition poles move down
+    and removal poles up by about :math:`\delta`, and the gap shrinks by up to about
+    :math:`2\delta`. ``residual_pt2`` is summed over a degenerate ground manifold, so ``2 *
+    residual`` is an upper bound, not an estimate; and it is only a measurement of the kept basis
+    when ``residual_is_current``. A resource limit, so a ``WARN``; the double-counting search
+    refuses a memory-bound answer outright (``DC_ALLOW_MEMORY_BOUND``) because it differences
+    sector energies.
 
     Args:
-        truncation: The ground state's ``truncation_report`` (``None`` if no cap bound).
-        convergence: Its ``convergence_report`` (for ``residual_pt2``), or ``None``.
+        truncation: The ground state's ``truncation_report`` (``None`` if nothing bound it).
+        convergence: Its ``convergence_report`` (``residual_pt2``, ``residual_is_current``).
 
     Returns:
-        Diagnostic: ``OK`` unless the memory guard bound the ground state.
+        Diagnostic: ``OK`` unless the cap or the memory guard bound the ground state.
     """
     memory_bound = bool(truncation and truncation.get("memory_bound"))
+    cap_bound = bool(truncation and truncation.get("cap_hit"))
     residual = None
     for source in (convergence, truncation):
         if source and source.get("residual_pt2") is not None:
             residual = abs(float(source["residual_pt2"]))
             break
+    current = bool((convergence or {}).get("residual_is_current", True))
     value = float("nan") if residual is None else residual
-    if not memory_bound:
+    if not (memory_bound or cap_bound):
         return Diagnostic(
             name="gs_memory",
             severity=Severity.OK,
             value=value,
             threshold=float("nan"),
-            message="ground state not limited by memory",
+            message="ground state not truncated",
         )
-    measured = residual is not None and residual > 0.0
-    bias = f", so the gap may be too small by ~{2 * residual:.2e}" if measured else " (not measured)"
+    retained = int(truncation.get("retained", 0))
+    measured = residual is not None and residual > 0.0 and current
+    bias = (
+        f"residual PT2 {value:.2e}, so the gap may be too small by at most ~{2 * residual:.2e}"
+        if measured
+        else "residual PT2 not measured on the kept basis"
+    )
+    if memory_bound:
+        why = "by the memory guard"
+        suggestion = (
+            "more memory per rank (fewer ranks per node) or more nodes. To make the truncation "
+            f"deliberate instead, set truncation_threshold <= {retained:,}; a cap you set is never "
+            "lowered and may then be OOM-killed"
+        )
+    else:
+        why = f"at the cap of {int(truncation.get('threshold', retained)):,}"
+        suggestion = "raise truncation_threshold (or use 'auto') if memory allows"
     return Diagnostic(
         name="gs_memory",
         severity=Severity.WARN,
         value=value,
         threshold=float("nan"),
-        message=(
-            f"ground state held at {int(truncation.get('retained', 0)):,} determinants by the memory guard; "
-            f"residual PT2{' ' + format(value, '.2e') if measured else ''}{bias}"
-        ),
-        suggestion=(
-            "more memory per rank (fewer ranks per node) or more nodes; a set truncation_threshold is never lowered"
-        ),
+        message=f"ground state held at {retained:,} determinants {why}; {bias}",
+        suggestion=suggestion,
     )
 
 
