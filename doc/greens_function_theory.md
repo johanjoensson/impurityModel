@@ -572,9 +572,10 @@ $$
 $C$ = determinant cap, $s_{\mathrm{live}} \approx 450\text{–}550$ B/determinant (basis
 bookkeeping + the recurrence's three live blocks), and the Krylov-store term only for
 `reort != "none"`; the per-frequency driver replaces $16\,m\,p$ by its $\sim$12 live blocks
-plus the GMRES fallback transient. `suggest_truncation_threshold` inverts this against
-available RAM (cgroup-aware), and `max_colors_within_budget` caps how many work units run
-concurrently.
+plus the GMRES fallback transient. `max_unit_dets_within_budget` inverts this against
+available RAM (cgroup-aware) to size an auto GF cap at GF entry (`gf_units`), and the unit split
+is cut to fewer, larger colours until every unit can afford at least the ground-state basis
+size. See `doc/basis_and_restrictions.md`, "How the determinant cap is decided".
 
 ## 7. Use case B — core-level spectroscopy (`get_spectra` / `spectra.py`)
 

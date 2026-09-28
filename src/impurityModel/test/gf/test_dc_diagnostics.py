@@ -421,7 +421,7 @@ def test_run_dc_search_copies_the_criterions_resolution_into_the_row(monkeypatch
 
     monkeypatch.setitem(diag.WORKLOADS, "_stub", "unused")
     monkeypatch.setattr(diag, "load_selfenergy_archive", lambda *a, **k: (_Model(), None, _Basis(), None, "stub"))
-    monkeypatch.setattr(diag, "suggest_truncation_threshold", lambda *a, **k: 12345)
+    monkeypatch.setattr(diag, "suggest_gs_truncation_threshold", lambda *a, **k: 12345)
 
     def fake_gap_dc(**kwargs):
         # What a real criterion does: fill the caller's record, including the two fields the
@@ -470,7 +470,7 @@ def test_run_dc_search_hands_each_rung_a_fresh_record(monkeypatch):
 
     monkeypatch.setitem(diag.WORKLOADS, "_stub", "unused")
     monkeypatch.setattr(diag, "load_selfenergy_archive", lambda *a, **k: (_Model(), None, _Basis(), None, "stub"))
-    monkeypatch.setattr(diag, "suggest_truncation_threshold", lambda *a, **k: 12345)
+    monkeypatch.setattr(diag, "suggest_gs_truncation_threshold", lambda *a, **k: 12345)
 
     measured = iter([True, False])  # rung 1 measures a slope, rung 2 does not
 
@@ -507,7 +507,7 @@ def _stub_archive(monkeypatch, diag):
 
     monkeypatch.setitem(diag.WORKLOADS, "_stub", "unused")
     monkeypatch.setattr(diag, "load_selfenergy_archive", lambda *a, **k: (_Model(), None, _Basis(), None, "stub"))
-    monkeypatch.setattr(diag, "suggest_truncation_threshold", lambda *a, **k: 12345)
+    monkeypatch.setattr(diag, "suggest_gs_truncation_threshold", lambda *a, **k: 12345)
 
 
 def test_a_rung_that_raises_hands_back_its_own_record_not_the_previous_rungs(monkeypatch):

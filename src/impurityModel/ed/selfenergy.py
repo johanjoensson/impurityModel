@@ -231,8 +231,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         comm=comm,
         verbose=verbosity > 0,
         label=cluster_label,
-        reort=reort,
-        method=gf_method,
     )
     basis_information = {
         "impurity_orbitals": impurity_orbitals,

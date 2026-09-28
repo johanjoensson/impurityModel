@@ -725,7 +725,7 @@ def find_ground_state_basis(
     truncation_threshold (default None): global cap on the number of Slater determinants in
     the basis; when the basis would grow past it, only the currently most important
     determinants are kept. ``None`` derives the cap from the available per-rank memory
-    (:func:`impurityModel.ed.memory_estimate.suggest_truncation_threshold`; collective on
+    (:func:`impurityModel.ed.memory_estimate.resolve_cap_policy`; collective on
     ``comm``), ``np.inf`` disables capping.
 
     Returns:

@@ -182,7 +182,7 @@ _SELECTION_BYTES_PER_PAIR = 50
 # throwaway ``dict.fromkeys`` -- which is why ``ManyBodyState.from_keys`` exists.
 #
 # Direction of risk, stated because it is the unsafe direction: lowering this constant makes
-# ``suggest_truncation_threshold`` return *larger* caps. The measured-RSS trip-wire
+# ``suggest_gs_truncation_threshold`` return *larger* caps. The measured-RSS trip-wire
 # (``GS_MEMORY_BUDGET_SAFETY``) and ``DEFAULT_MEMORY_SAFETY`` are what stand between a wrong
 # value here and an OOM; this constant is not a safety margin and should not be used as one.
 _PY_BASIS_OVERHEAD_BYTES = 161
@@ -700,7 +700,7 @@ def resolve_gs_block_width(default=4):
     Returns
     -------
     int
-        Block width to feed :func:`estimate_gs_peak_bytes` / :func:`suggest_truncation_threshold`.
+        Block width to feed :func:`estimate_gs_peak_bytes` / :func:`suggest_gs_truncation_threshold`.
     """
     configured = config.GS_MAX_BLOCK_WIDTH.get()
     return default if configured is None else configured
@@ -722,7 +722,7 @@ def resolve_gs_num_wanted():
     Returns
     -------
     int or None
-        ``num_wanted`` for :func:`estimate_gs_peak_bytes` / :func:`suggest_truncation_threshold`.
+        ``num_wanted`` for :func:`estimate_gs_peak_bytes` / :func:`suggest_gs_truncation_threshold`.
     """
     return config.GS_NUM_WANTED.get()
 
@@ -796,7 +796,7 @@ def estimate_gs_peak_bytes(
     selection_fanout : int
         Candidate determinants a CIPSI selection round connects to, per basis determinant,
         *before* pruning (see :data:`_SELECTION_FANOUT_DEFAULT`). Deliberately not threaded
-        through :func:`suggest_truncation_threshold`/:func:`log_memory_budget` yet -- unlike
+        through :func:`suggest_gs_truncation_threshold`/:func:`log_memory_budget` yet -- unlike
         ``nnz_per_state`` and ``num_wanted``, no measured value from a real width sweep exists
         for it (that sweep needs the multi-rank run ``doc/plans/dc_smo_memory.md`` Phase 1
         describes); every production call site therefore gets this conservative default,
@@ -945,74 +945,6 @@ def available_bytes_per_rank(comm=None):
     return comm.allreduce(node_bytes // max(1, ranks_on_node), op=MPI.MIN)
 
 
-def suggest_truncation_threshold(
-    n_spin_orbitals,
-    comm=None,
-    block_width=4,
-    reort="none",
-    n_parallel_units=1,
-    nnz_per_state=100,
-    safety=DEFAULT_MEMORY_SAFETY,
-    krylov_dtype=None,
-    method="lanczos",
-    gs_num_wanted=None,
-):
-    """Largest ``truncation_threshold`` whose predicted peak fits in per-rank RAM.
-
-    .. warning:: **Collective on** ``comm`` (calls :func:`available_bytes_per_rank`).
-
-    The budget is ``safety * available_bytes_per_rank``; the safety factor absorbs
-    transient overshoot (one matvec fanout past the cap), allocator slack (up to ~2x on
-    the flat_map entry arrays after growth) and everything this model does not count.
-    The threshold is the largest ``n`` for which both :func:`estimate_gs_peak_bytes`
-    and :func:`estimate_gf_peak_bytes` stay within budget, found by bisection.
-
-    Parameters
-    ----------
-    n_spin_orbitals : int
-        Determinant bit width.
-    comm : MPI communicator, optional
-    block_width : int
-        Lanczos block width used for both path estimates.
-    reort : str
-        GF reorthogonalization mode (``"none"`` on the production self-energy path).
-    n_parallel_units : int
-        Simultaneous ``run_units_distributed`` colors; divides the ranks per unit basis.
-    nnz_per_state : int
-        Stored Hamiltonian elements per basis state for the ground-state CSR estimate.
-    safety : float
-        Fraction of available RAM to budget (default ``DEFAULT_MEMORY_SAFETY``).
-    krylov_dtype : optional
-        Krylov store dtype; ``complex64`` halves the store and so raises the cap.
-    gs_num_wanted : int, optional
-        Forwarded to :func:`estimate_gs_peak_bytes`'s ``num_wanted``. ``None`` (default) keeps
-        the pre-Phase-4 ``num_wanted ~ 2*block_width`` assumption, which under-counts the
-        ground-state Krylov term once ``GS_MAX_BLOCK_WIDTH`` caps ``block_width`` below the real
-        (uncapped) manifold width -- see :func:`estimate_gs_peak_bytes`'s docstring for why the
-        fix is a measured value, not a derived worst case. :func:`log_memory_budget` warns when
-        the knob is set and this is not supplied.
-
-    Returns
-    -------
-    int
-        Suggested global determinant cap (at least 1).
-    """
-    budget = safety * available_bytes_per_rank(comm)
-    ranks = comm.size if comm is not None else 1
-    return _suggest_for_budget(
-        budget,
-        n_spin_orbitals,
-        block_width,
-        reort,
-        n_parallel_units,
-        nnz_per_state,
-        ranks,
-        krylov_dtype,
-        method,
-        gs_num_wanted,
-    )
-
-
 def absolute_rss_budget(safety, available, resident_bytes):
     """The rank's share of node RAM as an **absolute** RSS ceiling: ``safety * (available +
     resident)``.
@@ -1109,7 +1041,7 @@ def max_colors_within_budget(
     :func:`max_unit_dets_within_budget` uses, so the two no longer diverge on whether the
     resident set counts). At ``reort != "none"`` the estimate uses the invariant-subspace
     worst case for the Krylov store (very conservative), consistent with
-    :func:`suggest_truncation_threshold`.
+    :func:`suggest_gs_truncation_threshold`.
 
     Parameters
     ----------
@@ -1290,140 +1222,98 @@ def max_unit_dets_within_budget(
     return _largest_fitting(fits)
 
 
-def _suggest_for_budget(
-    budget,
-    n_spin_orbitals,
-    block_width,
-    reort,
-    n_parallel_units,
-    nnz_per_state,
-    ranks,
-    krylov_dtype=None,
-    method="lanczos",
-    gs_num_wanted=None,
-):
-    """Largest ``n`` with both path estimates within ``budget``, by bisection. Rank-local."""
-    ranks_per_unit = max(1, ranks // max(1, n_parallel_units))
-
-    def fits(n):
-        gs = estimate_gs_peak_bytes(n, n_spin_orbitals, block_width, ranks, nnz_per_state, num_wanted=gs_num_wanted)
-        gf = estimate_gf_peak_bytes(
-            n, n_spin_orbitals, block_width, reort, ranks_per_unit, krylov_dtype=krylov_dtype, method=method
-        )
-        return max(gs, gf) <= budget
-
-    return _largest_fitting(fits)
-
-
 def log_memory_budget(
     truncation_threshold,
     n_spin_orbitals,
     comm=None,
-    block_width=4,
-    reort="none",
-    n_parallel_units=1,
+    block_width=None,
     nnz_per_state=100,
     verbose=True,
     label="",
-    krylov_dtype=None,
-    method="lanczos",
     gs_num_wanted=None,
+    warn_if_over=True,
 ):
-    """Predict peak memory for a chosen threshold, print it on rank 0, warn if it won't fit.
+    """Predict the ground-state peak for a cap, print it on rank 0, warn if it will not fit.
 
     .. warning:: **Collective on** ``comm`` (calls :func:`available_bytes_per_rank`).
        Call it unconditionally on every rank; only the printing is gated on
        ``verbose``/rank 0, so per-rank verbosity flags are safe.
 
+    Ground state only: the Green's-function units are sized separately, at GF entry, for their
+    own path (``gf_units``), so a GF figure here -- priced at the GS cap on the whole
+    communicator -- would describe a solve that never runs.
+
     Parameters
     ----------
     truncation_threshold : int or float
-        The chosen global determinant cap (``inf`` reports "uncapped" and only the
-        availability figure).
-    n_spin_orbitals, comm, block_width, reort, n_parallel_units, nnz_per_state
-        See :func:`suggest_truncation_threshold`.
+        The ground-state cap (``inf`` reports "uncapped" and only the availability figure).
+    n_spin_orbitals : int
+        Determinant bit width.
+    comm : MPI communicator, optional
+    block_width, gs_num_wanted : int, optional
+        GS sizing inputs; ``None`` reads :func:`resolve_gs_block_width` /
+        :func:`resolve_gs_num_wanted`, as the sizing itself does.
+    nnz_per_state : int
+        Stored Hamiltonian elements per basis state.
     verbose : bool
         Gate for the rank-0 print (may safely differ across ranks).
     label : str
         Prefix for the log lines (e.g. the cluster name).
-    gs_num_wanted : int, optional
-        See :func:`suggest_truncation_threshold`.
+    warn_if_over : bool
+        Print (at any verbosity) when the predicted peak exceeds the memory available -- for a
+        cap the user set; an auto cap fits by construction.
 
     Returns
     -------
     dict
-        ``{"available_per_rank", "gs_peak", "gf_peak", "fits"}`` in bytes/bool
-        (``gs_peak``/``gf_peak`` are ``None`` when uncapped).
+        ``{"available_per_rank", "gs_peak", "fits"}`` (``gs_peak`` is ``None`` when uncapped).
     """
+    if block_width is None:
+        block_width = resolve_gs_block_width()
+    if gs_num_wanted is None:
+        gs_num_wanted = resolve_gs_num_wanted()
     ranks = comm.size if comm is not None else 1
     rank = comm.rank if comm is not None else 0
     available = available_bytes_per_rank(comm)
     uncapped = truncation_threshold is None or not (truncation_threshold < float("inf"))
-    if uncapped:
-        gs = gf = None
-        fits = False
-    else:
-        n = int(truncation_threshold)
-        ranks_per_unit = max(1, ranks // max(1, n_parallel_units))
-        gs = estimate_gs_peak_bytes(n, n_spin_orbitals, block_width, ranks, nnz_per_state, num_wanted=gs_num_wanted)
-        gf = estimate_gf_peak_bytes(
-            n, n_spin_orbitals, block_width, reort, ranks_per_unit, krylov_dtype=krylov_dtype, method=method
+    gs = None
+    fits = False
+    if not uncapped:
+        gs = estimate_gs_peak_bytes(
+            int(truncation_threshold), n_spin_orbitals, block_width, ranks, nnz_per_state, num_wanted=gs_num_wanted
         )
-        fits = max(gs, gf) <= available
+        fits = gs <= available
     prefix = f"{label}: " if label else ""
     if verbose and rank == 0:
         if uncapped:
-            print(f"{prefix}truncation_threshold=inf (uncapped); {format_bytes(available)}/rank available.", flush=True)
+            print(f"{prefix}ground-state cap unlimited; {format_bytes(available)}/rank available.", flush=True)
         else:
             print(
-                f"{prefix}truncation_threshold={int(truncation_threshold):,}: predicted per-rank peak "
-                f"{format_bytes(gs)} (ground state) / {format_bytes(gf)} (Green's function), "
-                f"{format_bytes(available)}/rank available.",
+                f"{prefix}ground-state cap {int(truncation_threshold):,}: predicted per-rank peak "
+                f"{format_bytes(gs)}, {format_bytes(available)}/rank available.",
                 flush=True,
             )
-    # Only meaningful once a peak was actually computed above -- the uncapped branch never
-    # calls estimate_gs_peak_bytes, so there is nothing above to warn about.
-    if verbose and rank == 0 and not uncapped:
-        knob_set = config.GS_MAX_BLOCK_WIDTH.get() is not None
-        if not knob_set:
+        if config.GS_MAX_BLOCK_WIDTH.get() is None and not uncapped:
             print(
-                f"{prefix}GS_MAX_BLOCK_WIDTH is unset: the ground-state Lanczos block width grows "
-                f"with the manifold and is not bounded by the block_width={block_width} used above -- "
-                "the ground-state peak figure is a placeholder, not a measured bound. Set "
-                "GS_MAX_BLOCK_WIDTH for a budget that reflects the real solve.",
+                f"{prefix}GS_MAX_BLOCK_WIDTH is unset, so the ground-state peak above assumes a placeholder "
+                f"block width of {block_width}; set it (and GS_NUM_WANTED) for an estimate of the real solve.",
                 flush=True,
             )
-        elif gs_num_wanted is None:
-            assumed = _GS_COUPLED_NUM_WANTED_RATIO * block_width
+        elif gs_num_wanted is None and not uncapped:
             print(
-                f"{prefix}GS_MAX_BLOCK_WIDTH is set but gs_num_wanted was not supplied: the ground-state "
-                f"Krylov term assumes num_wanted~={assumed} ({_GS_COUPLED_NUM_WANTED_RATIO}*block_width), "
-                "which under-counts by the manifold-to-width ratio measured at production scale (up to "
-                "~30x, see doc/plans/dc_smo_performance.md) -- pass the value measured by the same width "
-                "sweep that set GS_MAX_BLOCK_WIDTH.",
+                f"{prefix}GS_MAX_BLOCK_WIDTH is set but gs_num_wanted was not supplied (GS_NUM_WANTED): the "
+                f"ground-state Krylov term assumes {_GS_COUPLED_NUM_WANTED_RATIO}*block_width eigenstates, which "
+                "under-counts the manifold at production scale.",
                 flush=True,
             )
-    # Ungated: an OOM prediction is a warning about a real problem, not detail. The
-    # informational budget lines above stay behind `verbose`.
-    if not uncapped and not fits and rank == 0:
-        suggestion = _suggest_for_budget(
-            DEFAULT_MEMORY_SAFETY * available,
-            n_spin_orbitals,
-            block_width,
-            reort,
-            n_parallel_units,
-            nnz_per_state,
-            ranks,
-            krylov_dtype,
-            method,
-            gs_num_wanted,
-        )
+    if warn_if_over and not uncapped and not fits and rank == 0:
         print(
-            f"{prefix}WARNING: predicted peak exceeds available memory; consider "
-            f"truncation_threshold<={suggestion:,} or more ranks.",
+            f"{prefix}WARNING determinant cap: the ground-state cap {int(truncation_threshold):,} is predicted to "
+            f"need {format_bytes(gs)}/rank against {format_bytes(available)} available; it is kept as set. "
+            "(The model can be far off at scale; the memory guard reports what is actually used.)",
             flush=True,
         )
-    return {"available_per_rank": available, "gs_peak": gs, "gf_peak": gf, "fits": fits}
+    return {"available_per_rank": available, "gs_peak": gs, "fits": fits}
 
 
 def _largest_fitting(fits):
@@ -1506,15 +1396,7 @@ def reset_memory_warnings():
 
 
 def resolve_cap_policy(
-    requested,
-    n_spin_orbitals,
-    comm=None,
-    *,
-    verbose=True,
-    label="",
-    log="always",
-    safety=DEFAULT_MEMORY_SAFETY,
-    **log_extra,
+    requested, n_spin_orbitals, comm=None, *, verbose=True, label="", log="always", safety=DEFAULT_MEMORY_SAFETY
 ):
     """Resolve a driver's ``truncation_threshold`` into a :class:`CapPolicy`, and log it.
 
@@ -1543,9 +1425,6 @@ def resolve_cap_policy(
         never.
     safety : float
         Fraction of available RAM an auto cap is sized to.
-    **log_extra
-        Extra arguments for :func:`log_memory_budget`'s report only (``block_width``, ``reort``,
-        ``method`` of the Green's-function stage); they do not size the cap.
 
     Returns
     -------
@@ -1564,9 +1443,9 @@ def resolve_cap_policy(
         gs = suggest_gs_truncation_threshold(n_spin_orbitals, comm=comm, safety=safety)
     budget = None
     if log == "always" or (log == "derived" and unresolved):
-        log_args = {"block_width": resolve_gs_block_width(), "gs_num_wanted": resolve_gs_num_wanted()}
-        log_args.update(log_extra)
-        budget = log_memory_budget(gs, n_spin_orbitals, comm=comm, verbose=verbose, label=label, **log_args)
+        budget = log_memory_budget(
+            gs, n_spin_orbitals, comm=comm, verbose=verbose, label=label, warn_if_over=not from_memory
+        )
     # An auto policy leaves the GF cap unset: the Green's-function stage sizes it from its own
     # path's memory at GF entry (gf_units), independently of the ground state's.
     resolved = CapPolicy(gs=gs, gf=policy.gf, from_memory=from_memory)
@@ -1694,11 +1573,8 @@ def log_peak_vs_predicted(memory_budget, comm=None, verbose=True, label=""):
         measured = comm.allreduce(measured, op=MPI.MAX)
     if verbose and (comm is None or comm.rank == 0):
         prefix = f"{label}: " if label else ""
-        gs, gf = memory_budget.get("gs_peak"), memory_budget.get("gf_peak")
-        if gs is None:
-            predicted = "uncapped"
-        else:
-            predicted = f"{format_bytes(gs)} (ground state) / {format_bytes(gf)} (Green's function)"
+        gs = (memory_budget or {}).get("gs_peak")
+        predicted = "uncapped" if gs is None else f"{format_bytes(gs)} (ground state)"
         print(
             f"{prefix}measured per-rank peak RSS {format_bytes(measured)} (includes the Python/import floor); "
             f"predicted {predicted}.",
@@ -1721,48 +1597,18 @@ def _main():
     """Interactive sizing probe: ``[mpiexec -n R] python -m impurityModel.ed.memory_estimate``."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Probe per-rank memory and suggest a truncation_threshold.")
+    parser = argparse.ArgumentParser(description="Probe per-rank memory and suggest an auto ground-state cap.")
     parser.add_argument("--n-spin-orbitals", type=int, default=120, help="determinant bit width (default 120)")
-    parser.add_argument("--block-width", type=int, default=4, help="Lanczos block width (default 4)")
-    parser.add_argument("--reort", default="none", help="GF reorthogonalization mode (default none)")
-    parser.add_argument("--n-parallel-units", type=int, default=1, help="simultaneous unit colors (default 1)")
-    parser.add_argument("--nnz-per-state", type=int, default=100, help="stored H elements per state (default 100)")
-    parser.add_argument("--safety", type=float, default=0.5, help="fraction of available RAM to budget (default 0.5)")
-    parser.add_argument(
-        "--gs-num-wanted",
-        type=int,
-        default=None,
-        help="measured ground-state num_wanted (from the same width sweep as --block-width when "
-        "GS_MAX_BLOCK_WIDTH is set); default None assumes num_wanted ~= 2*block_width",
-    )
+    parser.add_argument("--safety", type=float, default=DEFAULT_MEMORY_SAFETY, help="fraction of available RAM")
     args = parser.parse_args()
 
     comm = MPI.COMM_WORLD if MPI.COMM_WORLD.size > 1 else None
-    suggestion = suggest_truncation_threshold(
-        args.n_spin_orbitals,
-        comm=comm,
-        block_width=args.block_width,
-        reort=args.reort,
-        n_parallel_units=args.n_parallel_units,
-        nnz_per_state=args.nnz_per_state,
-        safety=args.safety,
-        gs_num_wanted=args.gs_num_wanted,
-    )
+    suggestion = suggest_gs_truncation_threshold(args.n_spin_orbitals, comm=comm, safety=args.safety)
     if comm is None or comm.rank == 0:
         cgroup = _cgroup_available_bytes()
         print(f"node available (min of MemAvailable and cgroup headroom): {format_bytes(_node_available_bytes())}")
         print(f"cgroup memory headroom: {format_bytes(cgroup) if cgroup is not None else 'unlimited'}")
-    log_memory_budget(
-        suggestion,
-        args.n_spin_orbitals,
-        comm=comm,
-        block_width=args.block_width,
-        reort=args.reort,
-        n_parallel_units=args.n_parallel_units,
-        nnz_per_state=args.nnz_per_state,
-        label=f"suggested (safety {args.safety})",
-        gs_num_wanted=args.gs_num_wanted,
-    )
+    log_memory_budget(suggestion, args.n_spin_orbitals, comm=comm, label=f"auto (safety {args.safety})")
 
 
 if __name__ == "__main__":

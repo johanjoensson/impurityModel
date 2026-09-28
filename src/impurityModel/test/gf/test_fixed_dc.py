@@ -43,6 +43,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+import impurityModel.ed.memory_estimate as _memory_estimate
 from impurityModel.ed import dc_criteria
 from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.average import thermal_average_scale_indep
@@ -1347,7 +1348,6 @@ def _capture_prepared_bases(monkeypatch):
 
 
 def test_fixed_occupation_dc_derives_cap_when_threshold_is_none(monkeypatch):
-    import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
 
@@ -1355,8 +1355,8 @@ def test_fixed_occupation_dc_derives_cap_when_threshold_is_none(monkeypatch):
         calls.append(kwargs)
         return 50
 
-    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", fake_suggest)
-    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+    monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", fake_suggest)
+    monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
     captured = _capture_prepared_bases(monkeypatch)
 
     kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2)
@@ -1378,7 +1378,6 @@ def test_fixed_peak_dc_derives_cap_when_threshold_is_none(monkeypatch):
     counting on half the determinant budget the self-energy run would use at that same dc: a
     DC<->GS parity break, in the module whose whole purpose is closing those.
     """
-    import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
 
@@ -1386,8 +1385,8 @@ def test_fixed_peak_dc_derives_cap_when_threshold_is_none(monkeypatch):
         calls.append(kwargs)
         return 50
 
-    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", fake_suggest)
-    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+    monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", fake_suggest)
+    monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
     captured = _capture_prepared_bases(monkeypatch)
 
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
@@ -1398,13 +1397,12 @@ def test_fixed_peak_dc_derives_cap_when_threshold_is_none(monkeypatch):
     # explicitly into every find_ground_state_basis/calc_energy call the walk makes), and every
     # trial basis carries its cap.
     assert len(calls) == 1
-    assert calls[0]["safety"] == pytest.approx(dc_module.DEFAULT_MEMORY_SAFETY)
+    assert calls[0]["safety"] == pytest.approx(_memory_estimate.DEFAULT_MEMORY_SAFETY)
     assert captured
     assert all(b.truncation_threshold == 50 for b in captured)
 
 
 def test_explicit_threshold_skips_memory_probe(monkeypatch):
-    import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
 
@@ -1412,8 +1410,8 @@ def test_explicit_threshold_skips_memory_probe(monkeypatch):
         calls.append(1)
         return 50
 
-    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", fake_suggest)
-    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+    monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", fake_suggest)
+    monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
     # Positive control first. Every assertion below is `not calls`, which a monkeypatch that
     # missed its call site satisfies vacuously -- exactly the failure mode a re-export shim
@@ -1421,7 +1419,7 @@ def test_explicit_threshold_skips_memory_probe(monkeypatch):
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
     fixed_occupation_dc(occupation=1.0, **kwargs)
-    assert calls, "the suggest_truncation_threshold stub never ran; the rest of this test is vacuous"
+    assert calls, "the suggest_gs_truncation_threshold stub never ran; the rest of this test is vacuous"
     calls.clear()
 
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
@@ -1452,8 +1450,8 @@ def test_fixed_occupation_dc_calibrates_and_records_the_cap_when_threshold_is_no
         return memory_cap, 0.0, [(memory_cap, value)], "settled"
 
     monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", fake_ladder)
-    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 50)
-    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+    monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 50)
+    monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
@@ -1496,8 +1494,8 @@ def test_fixed_gap_dc_calibrates_and_records_the_cap_when_threshold_is_none(monk
         return memory_cap, 0.0, [(memory_cap, value)], "settled"
 
     monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", fake_ladder)
-    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 50)
-    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+    monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 50)
+    monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
     kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
@@ -1549,8 +1547,8 @@ def _run_gap_dc_with_a_fake_ladder(monkeypatch, accepted_cap, ladder_cap=700):
         return accepted_cap, 0.0, [(ladder_cap, value)], "settled"
 
     monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", fake_ladder)
-    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 10**6)
-    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+    monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 10**6)
+    monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
     kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
@@ -2322,8 +2320,8 @@ def test_fixed_gap_dc_runs_at_the_ceiling_and_records_whether_the_cap_bound(monk
         raise AssertionError("the ascending ladder ran under DC_CAP_STRATEGY='max'")
 
     monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", exploding_ladder)
-    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 100_000)
-    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+    monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 100_000)
+    monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
@@ -2338,11 +2336,10 @@ def test_fixed_gap_dc_runs_at_the_ceiling_and_records_whether_the_cap_bound(monk
 def test_an_unknown_cap_strategy_is_rejected(monkeypatch):
     """A misspelled strategy must fail loudly rather than silently taking a default -- the
     misnamed-knob failure mode this stack has already shipped once."""
-    import impurityModel.ed.dc_criteria as dc_module
 
     monkeypatch.setenv("DC_CAP_STRATEGY", "laddder")
-    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 100_000)
-    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+    monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 100_000)
+    monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
@@ -2359,10 +2356,9 @@ def test_fixed_occupation_dc_probes_whether_the_cap_bound_it(monkeypatch):
     ``mu`` on the context. Before this was wired, every occupation search reported
     ``dc_cap_bound = "unknown"`` and paid an extra half-cap rung it did not need.
     """
-    import impurityModel.ed.dc_criteria as dc_module
 
-    monkeypatch.setattr(dc_module, "suggest_truncation_threshold", lambda n, **kw: 100_000)
-    monkeypatch.setattr(dc_module, "log_memory_budget", lambda *a, **kw: None)
+    monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 100_000)
+    monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
     kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
