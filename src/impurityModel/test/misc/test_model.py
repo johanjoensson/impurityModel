@@ -393,7 +393,7 @@ def test_from_hdf5_with_dc_dataset_recovers_dc(tmp_path):
     np.testing.assert_allclose(recovered, dc)
 
 
-@pytest.mark.parametrize("retired", ["sliced"])
+@pytest.mark.parametrize("retired", ["sliced", "cipsi"])
 def test_archive_with_a_retired_gf_method_replays_with_lanczos_and_warns(tmp_path, retired):
     """An archive records a finished run: replaying it must not fail on a kernel retired since,
     but it must not pass silently either (config.RETIRED_GF_METHODS)."""

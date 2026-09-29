@@ -13,7 +13,7 @@ configurations (restrictions, caps) are judged by their own tests, which need a 
 
 Factors
 -------
-``method``   lanczos / bicgstab / cipsi (``gf_method``)
+``method``   lanczos / bicgstab (``gf_method``)
 ``sparse``   ManyBodyState kernel vs CSR/dense array kernel (lanczos only)
 ``group``    ``GF_EIGENSTATE_GROUP`` 1 or 2 (stack thermal states into one recurrence)
 ``split``    ``GF_OPERATOR_SPLIT`` (pairwise scalar fractions; lanczos only)
@@ -46,7 +46,7 @@ IW = 1j * np.pi * TAU * (2 * np.arange(10) + 1)
 W = np.linspace(-6.0, 6.0, 17)
 
 FACTORS = {
-    "method": ["lanczos", "bicgstab", "cipsi"],
+    "method": ["lanczos", "bicgstab"],
     "sparse": [True, False],
     "group": [1, 2],
     "split": [False, True],

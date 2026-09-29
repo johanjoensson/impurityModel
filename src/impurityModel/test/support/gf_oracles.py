@@ -1,9 +1,9 @@
 """Shared Green's-function test oracles: a small SIAM-6 model, its seeds/basis, and dense
 resolvent/capped-basis references.
 
-Promoted out of test_gf_bicgstab_driver.py once test_gmres.py and test_gf_cipsi_driver.py
-started importing its helpers cross-file -- this is the canonical home for them now, with
-test_gf_bicgstab_driver.py itself importing back like any other consumer.
+Promoted out of test_gf_bicgstab_driver.py once test_gmres.py (and the since-retired CIPSI
+driver's tests) started importing its helpers cross-file -- this is the canonical home for them
+now, with test_gf_bicgstab_driver.py itself importing back like any other consumer.
 """
 
 import itertools

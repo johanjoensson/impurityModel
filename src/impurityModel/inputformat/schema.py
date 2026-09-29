@@ -1028,7 +1028,7 @@ _TABLE_LIST += [
                 "Green's-function kernel.",
                 # Mirrors config.GF_METHODS (this module is a leaf and cannot import it);
                 # test_gf_method_choices_match_the_registry pins the two together.
-                choices=("lanczos", "bicgstab", "cipsi"),
+                choices=("lanczos", "bicgstab"),
             ),
             Key(
                 "reort",

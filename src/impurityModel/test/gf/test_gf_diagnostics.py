@@ -3,8 +3,8 @@ r"""Unit tests for the Green's-function convergence/consistency diagnostics.
 These pin the behaviour of each check in :mod:`impurityModel.ed.gf_diagnostics` on small,
 exactly-controlled inputs: the anticommutator sum rule, zeroth-moment (mesh-coverage) weight
 conservation, the truncated-thermal-ensemble detector, the Lanczos-convergence surface, the
-causality check, the per-frequency BiCGSTAB/GMRES-fallback and CIPSI boundary-residual
-surfaces, plus the report aggregation and the deferred peak-check placeholder.
+causality check, the per-frequency BiCGSTAB/GMRES-fallback surface, plus the report aggregation
+and the deferred peak-check placeholder.
 """
 
 import numpy as np
@@ -285,19 +285,3 @@ def test_bicgstab_convergence_check():
     )
     assert overflow.severity == gd.Severity.WARN  # converged, but the seed itself overflowed the cap
     assert "truncation_threshold" in overflow.message
-
-
-def test_cipsi_boundary_check():
-    """check_cipsi_boundary has no direct test elsewhere -- only exercised indirectly
-    through the CIPSI driver's own boundary-residual bookkeeping tests."""
-    ok = gd.check_cipsi_boundary(max_boundary_rel=1e-9, boundary_tol=1e-8)
-    assert ok.severity == gd.Severity.OK
-    assert ok.value == 1e-9 and ok.threshold == 1e-8
-
-    at_tol = gd.check_cipsi_boundary(max_boundary_rel=1e-8, boundary_tol=1e-8)
-    assert at_tol.severity == gd.Severity.OK  # <=, not strictly less than
-
-    warn = gd.check_cipsi_boundary(max_boundary_rel=5e-6, boundary_tol=1e-8)
-    assert warn.severity == gd.Severity.WARN
-    assert "GF_CIPSI_BUDGET" in warn.suggestion
-    assert "5.0e-06" in warn.message

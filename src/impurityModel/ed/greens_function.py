@@ -47,7 +47,6 @@ from impurityModel.ed.gf_shift_recycling import (  # noqa: F401  -- re-exported 
 from impurityModel.ed.gf_solvers import (
     block_Green,
     block_Green_bicgstab,
-    block_Green_cipsi,
     block_Green_sparse,
 )
 from impurityModel.ed.gf_units import (
@@ -376,10 +375,8 @@ def get_Greens_function(
 
     ``gf_method`` selects the resolvent kernel: ``"lanczos"`` (default) runs one block-Lanczos
     recurrence per work unit serving the whole mesh; ``"bicgstab"`` solves one linear system
-    per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`);
-    ``"cipsi"`` is the experimental importance-truncated variant of the same per-point solve
-    (:func:`block_Green_cipsi`: resolvent-targeted CIPSI selection grows the basis, frozen
-    solves in between). On the non-Lanczos paths ``sparse`` is ignored (the solvers work on the ManyBodyState
+    per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`).
+    On the per-frequency path ``sparse`` is ignored (the solvers work on the ManyBodyState
     representation only) and the operator-split (pairwise) decomposition is never used (the
     linear solve yields the full ``G_ij`` block directly).
     """
@@ -442,7 +439,7 @@ def get_Greens_function(
     )
     unit_weights = unit_cost_weights(unit_seeds, basis.comm)
 
-    if gf_method in ("bicgstab", "cipsi"):
+    if gf_method == "bicgstab":
         return _get_greens_function_bicgstab(
             matsubara_mesh,
             omega_mesh,
@@ -462,7 +459,6 @@ def get_Greens_function(
             verbose,
             verbose_extra,
             num_wanted,
-            gf_method=gf_method,
         )
 
     def kernel(split_basis, u, seeds):
@@ -687,24 +683,21 @@ def _get_greens_function_bicgstab(
     verbose,
     verbose_extra,
     num_wanted,
-    gf_method="bicgstab",
 ):
-    r"""Distribution + assembly of the per-frequency (BiCGSTAB or CIPSI) Green's function.
+    r"""Distribution + assembly of the per-frequency BiCGSTAB Green's function.
 
     The unit decomposition (and the excited windows) are exactly the Lanczos driver's --
     :func:`get_Greens_function` hands them over after :func:`enumerate_gf_units` -- only the
     per-unit kernel and the result contract differ: each unit returns ``G`` already evaluated
-    on the caller's meshes (:func:`block_Green_bicgstab`, or :func:`block_Green_cipsi` for
-    ``gf_method="cipsi"``); the shared assembler :func:`_run_evaluated_gf_units` does the
+    on the caller's meshes (:func:`block_Green_bicgstab`); the shared assembler :func:`_run_evaluated_gf_units` does the
     rest.
     """
-    point_kernel = block_Green_cipsi if gf_method == "cipsi" else block_Green_bicgstab
 
     def kernel(split_basis, u, seeds):
         unit = units[u]
         _block_i, side_i = group_meta[unit.group_i]
         z_axes = _gf_signed_axes(matsubara_mesh, omega_mesh, side_i, delta)
-        return point_kernel(
+        return block_Green_bicgstab(
             hOp,
             seeds,
             split_basis,
@@ -732,7 +725,6 @@ def _get_greens_function_bicgstab(
         kernel,
         verbose,
         num_wanted,
-        gf_method=gf_method,
     )
 
 
@@ -750,7 +742,6 @@ def _run_evaluated_gf_units(
     kernel,
     verbose,
     num_wanted,
-    gf_method="bicgstab",
 ):
     r"""Distribute, accumulate and assemble Green's-function units that return evaluated ``G``.
 
@@ -822,12 +813,6 @@ def _run_evaluated_gf_units(
             agg[key] += stats[key]
         for key in ("max_rel_residual", "max_solve_basis", "max_rebuild_basis"):
             agg[key] = max(agg[key], stats[key])
-        # CIPSI-kernel extras (absent from plain bicgstab stats).
-        if "rounds" in stats:
-            agg["rounds"] = agg.get("rounds", 0) + stats["rounds"]
-            agg["boundary_tol"] = stats["boundary_tol"]
-            for key in ("max_boundary_rel", "pt2_max_correction"):
-                agg[key] = max(agg.get(key, 0.0), stats[key])
         agg["cap_hit"] = agg["cap_hit"] or stats["cap_hit"]
         agg["seed_overflow"] = agg["seed_overflow"] or stats["seed_overflow"]
         if stats["retained_size"] is not None:
@@ -838,7 +823,7 @@ def _run_evaluated_gf_units(
             )
 
     got = run_units_distributed(
-        basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=reduce_fn, gf_method=gf_method
+        basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=reduce_fn, gf_method="bicgstab"
     )
     if got is None:
         return None, None, None
@@ -868,17 +853,12 @@ def _run_evaluated_gf_units(
 
         agg = stats_acc[block_i]
         if verbose:
-            cipsi_extra = (
-                f", {agg['rounds']} selection rounds, max boundary residual {agg['max_boundary_rel']:.1e}"
-                if "max_boundary_rel" in agg
-                else ""
-            )
             print(
                 f"block {block}: {agg['n_points']} bicgstab solves, {agg['iterations']} iterations "
                 f"({agg['gmres_points']} GMRES-fallback points, {agg['gmres_iterations']} of the iterations), "
                 f"max per-point basis {agg['max_solve_basis']:,} "
                 f"(rebuild floor {agg['max_rebuild_basis']:,}), "
-                f"max residual {agg['max_rel_residual']:.1e}{cipsi_extra}",
+                f"max residual {agg['max_rel_residual']:.1e}",
                 flush=True,
             )
         diags = [
@@ -894,8 +874,6 @@ def _run_evaluated_gf_units(
         ]
         if np.isfinite(agg["cap"]):
             diags.append(_gfd.check_basis_truncation(agg["cap_hit"], agg["retained_size"], agg["cap"]))
-        if "max_boundary_rel" in agg:
-            diags.append(_gfd.check_cipsi_boundary(agg["max_boundary_rel"], agg["boundary_tol"]))
         if combined_real is not None:
             diags.append(_gfd.check_mesh_density(omega_mesh, delta))
             diags.append(_gfd.check_causality(combined_real, "G"))

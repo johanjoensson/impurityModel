@@ -403,7 +403,7 @@ Green's-function kernel and eigensolver settings.
 
 | Key | Kind | Default | Description |
 | --- | --- | --- | --- |
-| `gf_method` | enum | `'lanczos'` | Green's-function kernel. Choices: `lanczos`, `bicgstab`, `cipsi`. |
+| `gf_method` | enum | `'lanczos'` | Green's-function kernel. Choices: `lanczos`, `bicgstab` (`sliced` and `cipsi` are retired). |
 | `reort` | auto/enum | `'auto'` | Block-Lanczos reorthogonalization. 'auto' is the solver's own default, which is NOT one mode: it means NONE on the Green's-function path and PARTIAL on the eigensolver path. Writing a mode also moves the derived determinant budget, since retention switches the memory model to its worst case. Choices: `auto`, `none`, `partial`, `periodic`, `selective`, `full`. |
 | `dense_cutoff` | count | `500` | Use a dense eigensolver below this matrix size. |
 | `sparse_green` | bool | `True` | Use the sparse block-Lanczos Green's-function path. |

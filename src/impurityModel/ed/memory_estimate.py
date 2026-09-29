@@ -570,9 +570,7 @@ def estimate_gf_peak_bytes(
     key_heap = _key_heap_bytes(n_spin_orbitals)
     basis_bytes = local_rows * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
-    # "cipsi" shares the bicgstab live-vector model: same per-point solver, and the
-    # selection loop's basis is bounded by the same cap (GF_CIPSI_BUDGET defaults to it).
-    if method in ("bicgstab", "cipsi"):
+    if method == "bicgstab":
         if gmres_restart is None:
             gmres_restart = config.GF_GMRES_RESTART.get()
         live = 12 + gmres_restart + 3
@@ -593,7 +591,7 @@ def estimate_gf_peak_bytes(
     # `truncation_threshold` (a `_CappedBasisProxy` sets `caps_growth`, serial or not), and a
     # finite cap is exactly the case this function is called to size.
     #
-    # Scoped to the Lanczos recurrence only (not the bicgstab/cipsi branch above, which
+    # Scoped to the Lanczos recurrence only (not the bicgstab branch above, which
     # returned already): that branch runs a different per-point solver whose own live-block model
     # is separate, and its transient has not been measured.
     fanout_bytes = (

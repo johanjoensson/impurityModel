@@ -1,6 +1,9 @@
 # Frequency-targeted CIPSI truncation of the per-frequency Green's function
 
-**Status: experimental — `gf_method="cipsi"` shipped; NiO accuracy-vs-budget verdict below.**
+**Status: retired 2026-09** (GF review, `doc/reviews/gf_review.md`, row S2). `gf_method="cipsi"` shipped as an
+experiment; the NiO accuracy-vs-budget verdict below is why it was removed. Its one unique asset -- the
+*measured* boundary residual (verdict item 4) -- is carried forward as a requirement for the GF
+truncation diagnostics, not as this kernel.
 
 ## The question
 

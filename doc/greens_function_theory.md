@@ -643,7 +643,8 @@ solve per $\omega_{\mathrm{in}}$ regardless of how many polarization pairs are r
 
 **Method choice** — the table of section 4.4, plus: spectra drivers (`get_spectra`) currently
 run Method I internally (their result contract is continued-fraction coefficients); the
-self-energy path accepts `--gf-method {lanczos,bicgstab,cipsi}` (`sliced` is retired, §5).
+self-energy path accepts `--gf-method {lanczos,bicgstab}` (`sliced` and `cipsi` are retired: §5,
+`doc/plans/gf_cipsi_frequency_truncation.md`).
 
 **Start with `lanczos`.** It is the default for a reason: one recurrence serves the whole mesh,
 it retains no Krylov store at `reort=none`, and on every workload measured on this branch it is
