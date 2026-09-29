@@ -85,6 +85,18 @@ def build_full_greens_function(block_gf, block_structure: BlockStructure):
         particle_hole_transposed_blocks,
         inequivalent_blocks,
     ) = block_structure
+    if any(particle_hole_blocks) or any(particle_hole_transposed_blocks):
+        # A particle-hole image is not an elementwise map of sampled values: G_B(i w) =
+        # -conj(G_A(i w)) holds on the Matsubara axis, but on the retarded axis the image is
+        # -conj(G_A(-w)), and moments map with order-dependent signs (Sigma_1 keeps its sign).
+        # This function sees neither the axis nor the moment order, and the -conj it used to
+        # apply put negative spectral weight on the real axis (review ledger C1). The block
+        # structures the solver builds never carry particle-hole relations; those blocks are
+        # computed directly.
+        raise ValueError(
+            "build_full_greens_function cannot reconstruct particle-hole related blocks; "
+            "compute them directly (impurity_block_structure never emits particle-hole relations)"
+        )
     n_orb = sum(len(block) for block in block_structure.blocks)
     if len(block_gf[0].shape) == 2:
         res = np.zeros((n_orb, n_orb), dtype=block_gf[0].dtype)
@@ -110,19 +122,6 @@ def build_full_greens_function(block_gf, block_structure: BlockStructure):
                 elif len(gf_i.shape) == 3:
                     block_idx = np.ix_(range(gf_i.shape[0]), blocks[block_i], blocks[block_i])
                     res[block_idx] = np.transpose(gf_i, (0, 2, 1))
-            for block_i in particle_hole_blocks[inequivalent_blocks[inequiv_i]]:
-                if len(gf_i.shape) == 2:
-                    block_idx = np.ix_(blocks[block_i], blocks[block_i])
-                elif len(gf_i.shape) == 3:
-                    block_idx = np.ix_(range(gf_i.shape[0]), blocks[block_i], blocks[block_i])
-                res[block_idx] = -np.conj(gf_i)
-            for block_i in particle_hole_transposed_blocks[inequivalent_blocks[inequiv_i]]:
-                if len(gf_i.shape) == 2:
-                    block_idx = np.ix_(blocks[block_i], blocks[block_i])
-                    res[block_idx] = -np.transpose(np.conj(gf_i), (1, 0))
-                elif len(gf_i.shape) == 3:
-                    block_idx = np.ix_(range(gf_i.shape[0]), blocks[block_i], blocks[block_i])
-                    res[block_idx] = -np.transpose(np.conj(gf_i), (0, 2, 1))
     elif len(block_gf) == len(blocks):
         # block_gf contains all blocks
         for block_i, gf_i in enumerate(block_gf):

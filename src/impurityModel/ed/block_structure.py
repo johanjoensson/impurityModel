@@ -524,10 +524,10 @@ def _particle_hole_blocks_matrix(blocks, mat, tol):
             continue
         particle_hole = []
         idx_i = np.ix_(block_i, block_i)
-        for jp, block_j in enumerate(blocks[i:]):
+        for jp, block_j in enumerate(blocks[i + 1 :]):
             if len(block_i) != len(block_j):
                 continue
-            j = i + jp
+            j = i + jp + 1  # never i itself: a block is not its own image (ledger C1)
             if any(j in b for b in particle_hole_blocks):
                 continue
             idx_j = np.ix_(block_j, block_j)
@@ -564,10 +564,10 @@ def _particle_hole_blocks(blocks, G, mat, tol):
             continue
         particle_hole = []
         idx_i = np.ix_(range(G.shape[0]), block_i, block_i)
-        for jp, block_j in enumerate(blocks[i:]):
+        for jp, block_j in enumerate(blocks[i + 1 :]):
             if len(block_i) != len(block_j):
                 continue
-            j = i + jp
+            j = i + jp + 1  # never i itself: a block is not its own image (ledger C1)
             if any(j in b for b in particle_hole_blocks):
                 continue
             idx_j = np.ix_(range(G.shape[0]), block_j, block_j)
@@ -634,10 +634,10 @@ def _particle_hole_transpose_blocks_matrix(blocks, mat, tol):
             continue
         patricle_hole_and_transpose = []
         idx_i = np.ix_(block_i, block_i)
-        for jp, block_j in enumerate(blocks[i:]):
+        for jp, block_j in enumerate(blocks[i + 1 :]):
             if len(block_i) != len(block_j):
                 continue
-            j = i + jp
+            j = i + jp + 1  # never i itself: a block is not its own image (ledger C1)
             if any(j in b for b in patricle_hole_and_transpose_blocks):
                 continue
             idx_j = np.ix_(block_j, block_j)
@@ -674,10 +674,10 @@ def _particle_hole_transpose_blocks(blocks, G, mat, tol):
             continue
         patricle_hole_and_transpose = []
         idx_i = np.ix_(range(G.shape[0]), block_i, block_i)
-        for jp, block_j in enumerate(blocks[i:]):
+        for jp, block_j in enumerate(blocks[i + 1 :]):
             if len(block_i) != len(block_j):
                 continue
-            j = i + jp
+            j = i + jp + 1  # never i itself: a block is not its own image (ledger C1)
             if any(j in b for b in patricle_hole_and_transpose_blocks):
                 continue
             idx_j = np.ix_(range(G.shape[0]), block_j, block_j)

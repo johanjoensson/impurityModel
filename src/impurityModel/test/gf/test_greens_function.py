@@ -42,22 +42,23 @@ def test_build_full_greens_function_2d():
 
 
 def test_build_full_greens_function_3d():
+    # Particle-hole relations are rejected by the reconstruction (review ledger C1; see
+    # test_block_structure_particle_hole.py), so this covers identical and transposed images.
     bs = BlockStructure(
-        blocks=[[0, 1], [2, 3], [4, 5], [6, 7]],
-        identical_blocks=[[0], [], [], []],
-        transposed_blocks=[[1], [], [], []],
-        particle_hole_blocks=[[2], [], [], []],
-        particle_hole_transposed_blocks=[[3], [], [], []],
+        blocks=[[0, 1], [2, 3], [4, 5]],
+        identical_blocks=[[0, 2], [], []],
+        transposed_blocks=[[1], [], []],
+        particle_hole_blocks=[[], [], []],
+        particle_hole_transposed_blocks=[[], [], []],
         inequivalent_blocks=[0],
     )
     b1 = np.array([[[1.0, 0.5j], [-0.5j, 2.0]], [[2.0, 1j], [-1j, 3.0]]])
 
     gf = build_full_greens_function([b1], bs)
-    assert gf.shape == (2, 8, 8)
+    assert gf.shape == (2, 6, 6)
     assert np.allclose(gf[:, 0:2, 0:2], b1)
     assert np.allclose(gf[:, 2:4, 2:4], np.transpose(b1, (0, 2, 1)))
-    assert np.allclose(gf[:, 4:6, 4:6], -np.conj(b1))
-    assert np.allclose(gf[:, 6:8, 6:8], -np.transpose(np.conj(b1), (0, 2, 1)))
+    assert np.allclose(gf[:, 4:6, 4:6], b1)
 
 
 def test_build_full_greens_function_all_blocks():

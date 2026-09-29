@@ -810,9 +810,37 @@ def _reconciled(block_structure, op, imp, m):
     Green's function (review ledger C10). :func:`reconcile_block_structure_with_interaction`
     merges and prunes accordingly, and returns the input unchanged when the interaction
     respects it. ``O(n_imp^4)``.
+
+    Particle-hole relations are dropped here, and those blocks are computed directly: the
+    detector only compares first moments, never checks that the interaction is particle-hole
+    invariant, and the image cannot be applied to sampled values without knowing the axis
+    (``greens_function.build_full_greens_function`` rejects them; review ledger C1). Measured
+    on every production archive in ``impmod_tests``, no particle-hole pair ever occurred, so
+    this costs nothing there and at most one extra Green's function per pair elsewhere.
     """
+    from impurityModel.ed.block_structure import BlockStructure, get_inequivalent_blocks
+
     two_body = impurity_two_body_tensor(op, imp)
     block_structure, _changed = reconcile_block_structure_with_interaction(block_structure, two_body, m)
+    if any(block_structure.particle_hole_blocks) or any(block_structure.particle_hole_transposed_blocks):
+        none = [[] for _ in block_structure.blocks]
+        identical = [list(members) for members in block_structure.identical_blocks]
+        # A block that was only reachable as someone's particle-hole image becomes its own
+        # (identical-to-itself) representative.
+        covered = {j for members in identical for j in members} | {
+            j for members in block_structure.transposed_blocks for j in members
+        }
+        for b in range(len(block_structure.blocks)):
+            if b not in covered:
+                identical[b] = [b]
+        block_structure = BlockStructure(
+            block_structure.blocks,
+            identical,
+            block_structure.transposed_blocks,
+            none,
+            [list(x) for x in none],
+            get_inequivalent_blocks(identical, block_structure.transposed_blocks, none, none),
+        )
     return block_structure
 
 
