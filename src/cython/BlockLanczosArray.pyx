@@ -995,7 +995,13 @@ def block_lanczos_array_cy(
                 float(robust_svd(beta_i, compute_uv=False)[0]) if _reort_acted else beta_norm
             )
 
-        if converged(alphas_buf[: it + 1], betas_buf[: it + 1], verbose=verbose, block_widths=block_widths + [n_curr]):
+        _converged = converged(alphas_buf[: it + 1], betas_buf[: it + 1], verbose=verbose, block_widths=block_widths + [n_curr])
+        if mpi:
+            # Rank-local verdict on an Allreduce'd alpha, which MPI does not promise is bitwise
+            # identical on every rank: root decides for everyone, or a verdict flipping on one
+            # rank near the threshold deadlocks the next step's collectives (review ledger M2).
+            _converged = comm.bcast(bool(_converged), root=0)
+        if _converged:
             termination = "converged"
             block_widths.append(n_curr)
             it += 1

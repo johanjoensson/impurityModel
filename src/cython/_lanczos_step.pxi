@@ -862,6 +862,13 @@ def block_lanczos_cy(
         betas_np = betas_buf[:it_abs+1]
         _t0m = _time.perf_counter()
         _converged = converged_fn(alphas_np, betas_np, verbose=verbose, block_widths=block_widths + [n_curr])
+        if mpi:
+            # The verdict is computed rank-locally from alpha, which comes out of an Allreduce --
+            # and MPI does not promise a bitwise-identical Allreduce result on every rank (a
+            # recursive-doubling reduction sums in a rank-dependent order). A verdict that flips
+            # on one rank near the threshold sends it out of the loop while the others enter the
+            # next step's collectives. Root decides for everyone (review ledger M2).
+            _converged = comm.bcast(bool(_converged), root=0)
         _prof_acc("monitor", _t0m)
         if _converged:
             termination = "converged"
