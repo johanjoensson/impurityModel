@@ -100,7 +100,11 @@ def test_calc_spectra(mock_therm_G, mock_run, mock_weights, mock_enum, mock_buil
     mock_weights.return_value = np.array([1.0])
     # (alphas, betas, r_slices, cap_stats) -- the kernel reports its unit's basis size
     # alongside the Lanczos coefficients (see calc_spectra's per-unit basis report).
-    mock_run.return_value = [(None, None, [np.zeros((1, 1), dtype=complex)], {"retained_size": 7, "cap_hit": False})]
+    # (alphas, betas, r per stacked state, cap record, convergence record) -- gf_engine's contract.
+    coeffs = np.zeros((1, 1, 1), dtype=complex)
+    mock_run.return_value = [
+        (coeffs, coeffs, [np.zeros((1, 1), dtype=complex)], {"retained_size": 7, "cap_hit": False}, {})
+    ]
     mock_therm_G.return_value = np.zeros((10, 1, 1), dtype=complex)
 
     basis = MagicMock()

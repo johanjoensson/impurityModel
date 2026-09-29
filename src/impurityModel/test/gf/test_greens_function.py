@@ -596,7 +596,7 @@ def test_get_Greens_function_reports_solver_own_verdict(monkeypatch):
     silently falling back to the aggregation's default), this forced value would never reach the
     report and this test would not catch it.
     """
-    import impurityModel.ed.greens_function as gf_mod
+    import impurityModel.ed.gf_engine as gf_engine_mod
     from impurityModel.ed.gf_solvers import block_Green_sparse as real_block_Green_sparse
 
     forced = {"converged": False, "d_g": 0.0234, "n_blocks": 17, "tol": 1e-9}
@@ -607,7 +607,8 @@ def test_get_Greens_function_reports_solver_own_verdict(monkeypatch):
             info.update(forced)
         return result
 
-    monkeypatch.setattr(gf_mod, "block_Green_sparse", fake_block_Green_sparse)
+    # _block_green_group (gf_engine) resolves block_Green_sparse from its own module.
+    monkeypatch.setattr(gf_engine_mod, "block_Green_sparse", fake_block_Green_sparse)
 
     omega_mesh = np.linspace(-1.0, 1.0, 5)
     hOp = ManyBodyOperator({((0, "c"), (0, "a")): 0.5})

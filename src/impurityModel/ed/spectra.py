@@ -12,6 +12,7 @@ from mpi4py import MPI
 import impurityModel.ed.greens_function as gf
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.basis_restrictions import intersect_windows
+from impurityModel.ed.gf_engine import lanczos_unit_kernel, states_by_group
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp
@@ -754,51 +755,32 @@ def calc_spectra(
             unit_seeds[u] = [seed_transform(ei, unit.group_i, seed) for ei, seed in zip(unit.chunk, unit_seeds[u])]
     unit_weights = gf.unit_cost_weights(unit_seeds, comm)
 
-    def kernel(split_basis, u, seeds):
-        unit = units[u]
-        alphas, betas, r, _cap_stats = gf._block_green_group(
-            split_basis,
-            hOp,
-            seeds,
-            None,
-            unit.delta,
-            slaterWeightMin,
-            True,
-            verbose,
-            unit_restrictions[u],
-            weighted_restrictions,
-        )
-        if verbose and (split_basis.comm is None or split_basis.comm.rank == 0):
-            print(f"Expanded excited state basis contains {_cap_stats['retained_size']} elements.")
-        # `retained_size` rides back with the coefficients rather than through a closure: only
-        # the ranks of the colour that ran this unit ever see it locally, and the gather of the
-        # kernel's return value is the one path that carries every unit's result to rank 0.
-        return (
-            alphas,
-            betas,
-            [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))],
-            _cap_stats,
-        )
+    # Spectra always run the sparse kernel without reorthogonalization.
+    kernel = lanczos_unit_kernel(
+        units,
+        hOp,
+        unit_restrictions,
+        weighted_restrictions,
+        reort=None,
+        sparse=True,
+        slaterWeightMin=slaterWeightMin,
+        solver_verbose=verbose,
+        print_size=verbose,
+    )
 
     results = gf.run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose)
     if results is None:  # non-root rank of a distributed run
         empty = np.empty((0, 0), dtype=complex)
         return [empty] * (1 + len(extra_meshes)) if extra_meshes is not None else empty
 
-    # Reassemble per-(tOp, eigenstate) coefficients (unit.group_i indexes tOps), then evaluate the thermal average on the frequency mesh -- on the root rank only, matching
-    # the self-energy path and shrinking the gather payload to the Lanczos coefficients.
-    acc_alphas = [[None] * len(psis) for _ in tOps]
-    acc_betas = [[None] * len(psis) for _ in tOps]
-    acc_r = [[None] * len(psis) for _ in tOps]
+    # Reassemble per-(tOp, eigenstate) coefficients (unit.group_i indexes tOps), then evaluate the
+    # thermal average on the frequency mesh -- on the root rank only, matching the self-energy
+    # path and shrinking the gather payload to the Lanczos coefficients.
+    by_op = states_by_group(units, results, len(tOps), len(psis))
     # Largest excited basis per transition operator, over the eigenstate chunks feeding it;
-    # within one unit the basis only grows, so its final size is
-    # that unit's maximum.
+    # within one unit the basis only grows, so its final size is that unit's maximum.
     max_basis: dict[int, tuple[Optional[int], bool]] = {}
-    for unit, (alphas, betas, r_slices, cap_stats) in zip(units, results):
-        for p, ei in enumerate(unit.chunk):
-            acc_alphas[unit.group_i][ei] = alphas
-            acc_betas[unit.group_i][ei] = betas
-            acc_r[unit.group_i][ei] = r_slices[p]
+    for unit, (_alphas, _betas, _r_slices, cap_stats, _conv) in zip(units, results):
         gf._merge_unit_basis(max_basis, unit.group_i, cap_stats["retained_size"], cap_stats["cap_hit"])
     if unit_report_label is not None:
         # One row per transition operator, named by the CALLER's operator index: under
@@ -819,7 +801,7 @@ def calc_spectra(
     for mesh, mesh_delta in meshes:
         gs_mesh = np.empty((len(mesh), len(tOps)), dtype=complex)
         for i in range(len(tOps)):
-            G_tOp = gf.calc_thermally_averaged_G(acc_alphas[i], acc_betas[i], acc_r[i], mesh, es, e0, tau, mesh_delta)
+            G_tOp = gf.calc_thermally_averaged_G(*by_op[i], mesh, es, e0, tau, mesh_delta)
             gs_mesh[:, i] = G_tOp[:, 0, 0] / Z
         gs_per_mesh.append(gs_mesh)
     return gs_per_mesh if extra_meshes is not None else gs_per_mesh[0]
