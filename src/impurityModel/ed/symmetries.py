@@ -14,6 +14,7 @@ here for backward compatibility.
 from collections import namedtuple
 
 import numpy as np
+from mpi4py import MPI
 
 import impurityModel.ed.product_state_representation as psr
 from impurityModel.ed.block_structure import build_block_structure, get_equivalent_orbs
@@ -1216,3 +1217,48 @@ def measure_conserved_charges(psi, charges, n_orb, comm=None, round_to_int=True)
     if round_to_int:
         return [int(round(x)) for x in averages]  # noqa: RUF046  (np.float64 round() returns float, cast is needed)
     return list(averages)
+
+
+#: Largest charge variance ``<N_S^2> - <N_S>^2`` a state may carry and still count as having a
+#: definite charge: roundoff on a normalized state, far below any genuine sector mixing (an
+#: admixture of weight ``w`` from a neighbouring sector contributes ``~w``).
+DEFINITE_CHARGE_VARIANCE_TOL = 1e-8
+
+
+def definite_conserved_charges(psi, charges, n_orb, comm=None, tol=DEFINITE_CHARGE_VARIANCE_TOL):
+    r"""The conserved subset charges of ``psi`` if every one is definite, else ``None``.
+
+    :func:`measure_conserved_charges` rounds ``<N_S>`` to an integer, which names *a* sector
+    even for a state that has none: an eigensolver may return any rotation inside a degenerate
+    multiplet whose members sit in different ``(N_up, N_down)`` sectors, and an equal mix of
+    two sectors averages to a half-integer that rounds to a sector the state does not occupy.
+    Confining a Krylov space to that sector then prunes every seed component outside it --
+    measured (review ledger C7): the whole seed, and a spectrum of 0.
+
+    This checks the variance ``<N_S^2> - <N_S>^2`` of each charge and returns the integer
+    charges only when all of them vanish to ``tol``; otherwise ``None``, and the caller must
+    not confine by sector.
+
+    .. warning:: **Collective on** ``comm`` (one ``Allreduce``): call it on every rank. The
+       verdict is derived from the reduced moments, so it is identical on every rank.
+    """
+    moments = np.zeros((2, len(charges)))  # sum w N_S, sum w N_S^2
+    norm2 = 0.0
+    for det, amp in psi.items():
+        weight = abs(amp[0]) ** 2
+        norm2 += weight
+        occupied = {k for k, bit in enumerate(psr.bytes2bitarray(bytes(det.to_bytearray()), n_orb)) if bit}
+        for i, subset in enumerate(charges):
+            n_s = len(subset & occupied)
+            moments[0, i] += weight * n_s
+            moments[1, i] += weight * n_s * n_s
+    buf = np.concatenate([moments.ravel(), [norm2]])
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, buf, op=MPI.SUM)
+    norm2 = buf[-1]
+    if norm2 == 0:
+        return None
+    mean, mean_sq = buf[:-1].reshape(2, len(charges)) / norm2
+    if np.any(mean_sq - mean**2 > tol):
+        return None
+    return [int(round(x)) for x in mean]  # noqa: RUF046  (np.float64 round() returns float, cast is needed)

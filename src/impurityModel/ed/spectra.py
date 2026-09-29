@@ -17,8 +17,8 @@ from impurityModel.ed.symmetries import (
     ComponentReduction,
     component_symmetry_reduction,
     conserved_subset_charges,
+    definite_conserved_charges,
     extract_tensors,
-    measure_conserved_charges,
     rotate_hamiltonian,
     transition_sector_restrictions,
 )
@@ -549,14 +549,20 @@ def _sector_restrictions_per_top(hOp, tOps, psis, basis):
     Returns a list aligned with ``tOps``; an entry is ``None`` when the operator has no
     definite sector (its terms disagree) so the caller falls back to the occupation window.
     Returns ``None`` (whole list) when the ground states do not share a single charge
-    signature -- then no per-operator sector is well defined.
+    signature, or when any of them has no definite charge (a vector mixing sectors, as a
+    degenerate multiplet may be returned) -- then no per-operator sector is well defined, and
+    confining the seeds to a rounded one would prune everything outside it (review ledger C7).
     """
     n_orb = basis.num_spin_orbitals
     comm = basis.comm
     charges = conserved_subset_charges(hOp, n_orb=n_orb)
     gs_occ = None
     for psi in psis:
-        occ = measure_conserved_charges(psi, charges, n_orb, comm=comm)
+        # Collective; every rank reaches every call (no early exit before the loop ends would be
+        # rank-safe either, but the verdicts are identical on every rank, so this one is).
+        occ = definite_conserved_charges(psi, charges, n_orb, comm=comm)
+        if occ is None:
+            return None
         if gs_occ is None:
             gs_occ = occ
         elif occ != gs_occ:

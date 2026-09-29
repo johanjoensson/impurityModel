@@ -29,7 +29,7 @@ from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
 from impurityModel.ed.symmetries import (
     conserved_subset_charges,
-    measure_conserved_charges,
+    definite_conserved_charges,
     transition_sector_restrictions,
     widen_weighted_restrictions,
 )
@@ -539,17 +539,22 @@ def _rixs_map_flat(
     comm = basis.comm
     n_win = len(wIns)
 
-    # Conserved-charge sector of the core-excited intermediate state (all in-components share
-    # the same charge shift): confines the resolvent solve (R1). Computed per eigenstate on the
-    # full communicator (collective, lock-step) before the split.
+    # Conserved-charge sector of the core-excited intermediate state: confines the resolvent solve
+    # (R1). Computed per eigenstate on the full communicator (collective, lock-step) before the
+    # split. Only when the eigenstate has a definite charge, and only when every in-component
+    # leads to the same sector -- the components share one intermediate basis per unit, so a
+    # sector read off in_ops[0] alone would prune the others' seeds (review ledger C7).
     charges = conserved_subset_charges(hOp, n_orb=basis.num_spin_orbitals)
     psi1_per_e = [[applyOp_test(tin, psi_e) for tin in in_ops] for psi_e in psis]
     tmp_restrictions_per_e = []
     for psi_e in psis:
         tmp = excited_restrictions
         if charges:
-            gs_occ = measure_conserved_charges(psi_e, charges, basis.num_spin_orbitals, comm=comm)
-            sector_in = transition_sector_restrictions(charges, gs_occ, in_ops[0])
+            gs_occ = definite_conserved_charges(psi_e, charges, basis.num_spin_orbitals, comm=comm)
+            sectors = [None]
+            if gs_occ is not None:
+                sectors = [transition_sector_restrictions(charges, gs_occ, tin) for tin in in_ops]
+            sector_in = sectors[0] if all(sec == sectors[0] for sec in sectors) else None
             if sector_in:
                 tmp = gf._intersect_restrictions(excited_restrictions, sector_in)
         tmp_restrictions_per_e.append(tmp)
