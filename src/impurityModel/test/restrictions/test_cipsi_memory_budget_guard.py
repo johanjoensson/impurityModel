@@ -352,5 +352,8 @@ def test_an_auto_tightening_is_visible_at_default_verbosity_once_per_calculation
         assert solver.truncation_report["memory_bound"]
     out, _err = capfd.readouterr()
     # Each kind of event once: the guard tightening, and the basis stopping short of convergence.
-    assert out.count("mid-expansion; tightening") == 1, out
+    # Which guard tightens first -- the look-ahead ("... Tightening ...") or the trip-wire ("...
+    # mid-expansion; tightening ...") -- depends on the process's own footprint (under ASan the
+    # look-ahead wins), and both are the same latched kind, so exactly one of them prints.
+    assert out.lower().count("tightening") == 1, out
     assert out.count("WARNING determinant cap: GS basis stopped at") == 1, out
