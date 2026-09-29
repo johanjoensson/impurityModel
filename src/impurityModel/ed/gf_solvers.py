@@ -210,33 +210,13 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             [],
         )
 
-    converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
-
     # The continued fraction only consumes alphas/betas plus the final residual block
     # (q_last below), so with reort NONE skip the full Krylov-basis retention.
     resolved_reort = resolve_reort(reort if reort is not None else Reort.NONE)
 
     if dense:
         H = build_dense_matrix(basis, hOp)
-        alphas, betas, Q_list, widths, status = block_lanczos_array(
-            psi0=psi_dense_local,
-            h_op=H,
-            converged=converged,
-            verbose=False and verbose,  # noqa: SIM223  (force-off toggle; keep verbose wiring)
-            reort=resolved_reort,
-            build_krylov_basis=resolved_reort != Reort.NONE,
-            return_widths=True,
-            return_status=True,
-            # ceil (not floor): spanning an N-dim (possibly closed) sector with a width-w block
-            # needs ceil(N/w) blocks; floor truncates the final, deflating block and leaves up to
-            # w-1 dimensions of the sector unresolved -- a systematic resolvent error that grows
-            # with the block width (the RIXS tensor floor). The final block simply deflates.
-            max_iter=-(-H.shape[0] // psi_dense_local.shape[1]),
-            # The seed block is the stacked transition operators of this unit; its
-            # symmetry-dependent components are what deflation has to remove, and they are
-            # zero only to their construction rounding. See DEFLATE_TOL_SEEDS in TSQR.pyx.
-            deflate_tol=DEFLATE_TOL_SEEDS,
-        )
+        kernel_comm = None
     else:
         h_local = build_sparse_matrix(basis, hOp)[:, basis.local_indices]
 
@@ -271,7 +251,24 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             dtype=complex,
         )
 
-        # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
+        kernel_comm = comm
+
+    # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0 until the continued fraction converges or
+    # the Krylov space closes. ceil(N/p) blocks span an N-dim sector only while every block keeps
+    # its full width p; a deflating block (stacked eigenstates, rank-deficient seeds) is narrower,
+    # so ceil(N/p) can stop at "max_iter" with the sector unspanned and the fraction silently
+    # truncated (review ledger C11: widths [4,4,2,2,2,2,2] span 20 of 28 dims, G off by 0.07).
+    # The kernel cannot resume without a stored Krylov basis (reort NONE keeps none) and it
+    # preallocates its coefficient buffers at max_iter, so the bound is not simply raised to N:
+    # the budget doubles, capped at N (at width >= 1, N blocks always close the sector), and the
+    # recurrence reruns. That happens only when blocks deflated, and costs at most ~2x the final
+    # run. The convergence monitor is stateful, so every attempt gets a fresh one.
+    n_dim = H.shape[0]
+    max_iter = -(-n_dim // psi_dense_local.shape[1])
+    while True:
+        converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
+            delta, slaterWeightMin, eval_meshes
+        )
         alphas, betas, Q_list, widths, status = block_lanczos_array(
             psi0=psi_dense_local,
             h_op=H,
@@ -279,19 +276,18 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             reort=resolved_reort,
             build_krylov_basis=resolved_reort != Reort.NONE,
             verbose=False and verbose,  # noqa: SIM223  (force-off toggle; keep verbose wiring)
-            comm=comm,
+            comm=kernel_comm,
             return_widths=True,
             return_status=True,
-            # ceil (not floor): spanning an N-dim (possibly closed) sector with a width-w block
-            # needs ceil(N/w) blocks; floor truncates the final, deflating block and leaves up to
-            # w-1 dimensions of the sector unresolved -- a systematic resolvent error that grows
-            # with the block width (the RIXS tensor floor). The final block simply deflates.
-            max_iter=-(-H.shape[0] // psi_dense_local.shape[1]),
+            max_iter=max_iter,
             # The seed block is the stacked transition operators of this unit; its
             # symmetry-dependent components are what deflation has to remove, and they are
             # zero only to their construction rounding. See DEFLATE_TOL_SEEDS in TSQR.pyx.
             deflate_tol=DEFLATE_TOL_SEEDS,
         )
+        if status != "max_iter" or max_iter >= n_dim:
+            break
+        max_iter = min(2 * max_iter, n_dim)
     # An invariant subspace closes the Krylov space under H, so the continued fraction is
     # exact: treat it as converged (same semantics as the sparse path) so it does not trip
     # the non-convergence warning below.

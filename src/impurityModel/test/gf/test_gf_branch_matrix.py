@@ -137,9 +137,6 @@ def _known_failure(cell):
     lanczos_array = cell["method"] == "lanczos" and not cell["sparse"]
     if lanczos_array and cell["model"] == 2 and cell["comm"] == "world" and MPI.COMM_WORLD.size > 1:
         return "M1: array operator branch on a >1-rank color (test_block_green_array_multirank)"
-    if lanczos_array and cell["model"] == 1 and cell["group"] == 2 and cell["mesh"] != "iw":
-        # The Matsubara-only cells truncate too, but below the cell tolerance.
-        return "C11: dense array kernel max_iter=ceil(N/p) ignores deflation -> truncated fraction"
     return None
 
 
@@ -260,7 +257,6 @@ def test_calc_spectra_matches_oracle(side, comm_kind):
     _root_verdict(comm, check)
 
 
-@pytest.mark.xfail(strict=True, reason="C11: default sparse=False runs the dense array kernel, truncated by deflation")
 @pytest.mark.parametrize("comm_kind", ["self", pytest.param("world", marks=pytest.mark.mpi)])
 def test_calc_greens_function_with_offdiag_matches_oracle(comm_kind):
     """The tensor path's engine entry: one width-m block over mixed transition operators."""
