@@ -649,3 +649,16 @@ def test_get_Greens_function_reports_solver_own_verdict(monkeypatch):
     band_names = [d.name for d in report.diagnostics]
     assert "lanczos_band" in band_names
     assert "max_iter" not in report.render()
+
+
+def test_the_gf_reort_argument_is_validated():
+    """resolve_reort passes any non-string through, so a float reached the kernels untranslated,
+    where no reort branch matched it (review ledger C8)."""
+    from impurityModel.ed.BlockLanczosArray import Reort
+    from impurityModel.ed.gf_solvers import _gf_reort
+
+    assert _gf_reort(None) is Reort.NONE
+    assert _gf_reort("full") is Reort.FULL
+    assert _gf_reort(Reort.PARTIAL) is Reort.PARTIAL
+    with pytest.raises(TypeError, match="reort"):
+        _gf_reort(0.5)

@@ -1379,8 +1379,9 @@ class SolverOptions:
 
     Attributes
     ----------
-    reort : str, float or None
-        Reorthogonalization mode of the block-Lanczos Green's function.
+    reort : str or None
+        Reorthogonalization mode of the block-Lanczos Green's function: ``"none"`` (``None``),
+        ``"partial"``, ``"selective"``, ``"full"`` or ``"periodic"``.
     dense_cutoff : int
         Use a dense eigensolver below this matrix size.
     sparse_green : bool

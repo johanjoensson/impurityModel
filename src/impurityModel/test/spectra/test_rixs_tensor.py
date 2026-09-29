@@ -846,3 +846,89 @@ def test_rixs_tensor_with_in_components_in_different_charge_sectors_matches_dens
     ref = _dense_rixs_pol(op, tin, tout, EPS_IN, EPS_OUT, es, vecs, states)
     assert np.abs(ref).max() > 0
     np.testing.assert_allclose(got, ref, atol=1e-8)
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs a color of more than one rank")
+def test_rixs_solver_counts_are_not_multiplied_by_the_ranks_per_color(monkeypatch):
+    """One RIXS unit (the ground state, one incoming energy) runs on one color holding every rank.
+    Each rank increments the solver counters, and the report SUM-reduces them over the whole
+    communicator, so a solve used to be counted once per rank of its color (review ledger M5).
+    """
+    comm = MPI.COMM_WORLD
+    captured = {}
+    original = rixs._report_rixs_solver_stats
+
+    def capture(stats, comm_, verbose):
+        counts = {k: v for k, v in stats.items() if k != "r2_worst_d_g"}
+        captured.update({k: comm_.allreduce(v, op=MPI.SUM) for k, v in counts.items()})
+        return original(stats, comm_, verbose)
+
+    monkeypatch.setattr(rixs, "_report_rixs_solver_stats", capture)
+    monkeypatch.setenv("GF_RIXS_WIN_CHUNK", "1")
+    op = _model()
+    psis, es, dets, _states, _vecs = _thermal_states(op, 2)
+    basis = Basis(
+        impurity_orbitals={2: [[0, 1]], 1: [[2]]},
+        bath_states=({2: [[]], 1: [[]]}, {2: [[]], 1: [[]]}),
+        initial_basis=list(dets),
+        verbose=False,
+        comm=comm,
+    )
+    ground = ManyBodyState.from_states([psis[0]]) if comm.rank == 0 else ManyBodyState(width=1)
+    (ground,) = basis.redistribute_psis(ground)
+    tin, tout = _tin_tout()
+    spectra.calc_map(
+        op,
+        tin,
+        tout,
+        [ground.to_states()[0]],
+        [es[0]],
+        tau=TAU,
+        wIns=WIN[:1],
+        wLoss=WLOSS,
+        delta1=D1,
+        delta2=D2,
+        basis=basis,
+        verbose=False,
+        slaterWeightMin=0.0,
+        l_core=1,
+        l_valence=2,
+    )
+    r1_solves = captured["r1_spectral"] + captured["r1_recycled"] + captured["r1_bicgstab"]
+    assert r1_solves == 1, captured
+
+
+def test_rixs_windows_use_the_callers_occupation_cutoff(monkeypatch):
+    """RIXS classified bath orbitals as filled/empty with the builder's default cutoff (1e-6),
+    every other GF window with the model's occ_cutoff (1e-12 by default) -- review ledger C8."""
+    seen = []
+    original = rixs.build_excited_restrictions
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("cutoff"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rixs, "build_excited_restrictions", spy)
+    op = _model()
+    psis, es, dets, _states, _vecs = _thermal_states(op, 2)
+    tin, tout = _tin_tout()
+    spectra.calc_map(
+        op,
+        tin,
+        tout,
+        psis[:1],
+        es[:1],
+        tau=TAU,
+        wIns=WIN[:1],
+        wLoss=WLOSS,
+        delta1=D1,
+        delta2=D2,
+        basis=_basis(dets),
+        verbose=False,
+        slaterWeightMin=0.0,
+        l_core=1,
+        l_valence=2,
+        occ_cutoff=1e-12,
+    )
+    assert seen == [1e-12], seen

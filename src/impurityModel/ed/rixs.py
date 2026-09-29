@@ -481,6 +481,7 @@ def _rixs_map_flat(
     *,
     l_core,
     l_valence,
+    occ_cutoff=None,
 ):
     r"""Shared flat-unit RIXS driver behind :func:`calc_map` and :func:`calc_tensor_map`.
 
@@ -527,6 +528,11 @@ def _rixs_map_flat(
         val_change={l_core: (0, 0), l_valence: (1, 0)},
         con_change={l_core: (0, 0), l_valence: (0, 1)},
         slater_weight_min=slaterWeightMin,
+        # The caller's filled/empty bath classification cutoff (simulate_spectra passes the
+        # model's occ_cutoff, the one every other GF window uses); None keeps the builder's
+        # default. RIXS used to always take that default, 1e-6 against 1e-12 elsewhere, so its
+        # windows classified the same bath differently (review ledger C8).
+        **({} if occ_cutoff is None else {"cutoff": occ_cutoff}),
     )
     # Weighted restrictions (e.g. the excitation budget) for the core-excited / final bases:
     # widen the ground-state bounds by one orbital weight so a single transition operator stays
@@ -616,6 +622,11 @@ def _rixs_map_flat(
             if r1_caches is not None
             else None
         )
+        # Every rank of a color runs this unit and increments the counters; they are SUM-reduced
+        # over the whole communicator at the end, so only one rank per color may keep them, or
+        # each solve counts ranks-per-color times (review ledger M5). Non-root ranks roll back
+        # at the end of the unit.
+        stats_before = dict(solver_stats) if sub_comm is not None and sub_comm.rank != 0 else None
         chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats)
         out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
         wins = wIns[w_chunk]
@@ -640,6 +651,9 @@ def _rixs_map_flat(
         # (per-color cache) and is freed after run_units_distributed.
         if sub_comm is not None:
             tmp_basis.free_comm()
+        if stats_before is not None:
+            solver_stats.clear()
+            solver_stats.update(stats_before)
         # green_basis is cleared at the top of the NEXT unit on this colour, so its size is
         # read here, while it still holds this unit's accumulated final-state support. Both
         # eval_out variants either grow it through add_states + the array block_Green (which
@@ -698,6 +712,7 @@ def calc_map(
     *,
     l_core,
     l_valence,
+    occ_cutoff=None,
 ):
     r"""
     Return RIXS Green's function for states.
@@ -840,6 +855,7 @@ def calc_map(
         basis_acc=basis_acc,
         l_core=l_core,
         l_valence=l_valence,
+        occ_cutoff=occ_cutoff,
     )
     _report_rixs_solver_stats(solver_stats, basis.comm, verbose)
     if gs is not None:
@@ -865,6 +881,7 @@ def calc_tensor_map(
     *,
     l_core,
     l_valence,
+    occ_cutoff=None,
 ):
     r"""Full rank-4 Kramers-Heisenberg tensor over Cartesian in/out transition components.
 
@@ -1004,6 +1021,7 @@ def calc_tensor_map(
             basis_acc=basis_acc,
             l_core=l_core,
             l_valence=l_valence,
+            occ_cutoff=occ_cutoff,
         )
 
     tol = adaptive_wIn_tol if adaptive_wIn_tol is not None else _rixs_adaptive_tol()

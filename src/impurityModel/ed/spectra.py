@@ -135,14 +135,12 @@ def simulate_spectra(
     deltaRIXS,
     epsilonsRIXSin,
     epsilonsRIXSout,
-    restrictions,
     h5f,
     nBaths,
     XAS_projectors,
     RIXS_projectors,
     basis,
     occ_cutoff,
-    dN,
     slaterWeightMin,
     verbose,
     rotation=None,
@@ -212,9 +210,6 @@ def simulate_spectra(
         contraction is a post-processing step (see ``impurityModel.ed.polarization``).
     epsilonsRIXSout : list
         Polarization vectors of out-going photon. Same caveat as ``epsilonsRIXSin``.
-    restrictions : dict
-        Restriction the occupation of generated
-        product states.
     h5f : h5py file-handle
         Will be used to write data to disk. This is the single output of a spectra run --
         each spectrum/tensor is written under its own group (``PS/spectra``, ``XPS/spectra``,
@@ -486,6 +481,7 @@ def simulate_spectra(
                 slaterWeightMin=slaterWeightMin,
                 l_core=l_core,
                 l_valence=l_valence,
+                occ_cutoff=occ_cutoff,
             )
             if rank == 0:
                 print("RIXS projectors = {}".format(RIXS_projectors.keys()))
@@ -518,6 +514,7 @@ def simulate_spectra(
                 slaterWeightMin=slaterWeightMin,
                 l_core=l_core,
                 l_valence=l_valence,
+                occ_cutoff=occ_cutoff,
             )
             if rank == 0:
                 print(f"shape(C) = {np.shape(C)}")

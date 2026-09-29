@@ -135,6 +135,27 @@ def block_Green(
 _GF_BICGSTAB_WARM_HISTORY = 3
 
 
+#: The array Green's-function kernel builds the dense sector matrix below this many
+#: determinants and a CSR operator from here up. Deliberately *not* ``SolverOptions.dense_cutoff``:
+#: that one picks the ground-state eigensolver (dense ``eigh`` vs Lanczos), a different trade --
+#: a dense matvec is cheaper than CSR only for small sectors, while a dense eigensolve pays off
+#: much later. Named here so it is no longer an unexplained literal (review ledger C8).
+_GF_ARRAY_DENSE_MAX = 500
+
+
+def _gf_reort(reort):
+    """Resolve the GF ``reort`` argument; ``None`` is ``Reort.NONE``.
+
+    ``resolve_reort`` returns any non-string unchanged, so a float (which ``SolverOptions`` used
+    to document as allowed) reached the kernels untranslated, where no ``reort_mode ==`` branch
+    matches it (review ledger C8). Reject it here instead.
+    """
+    resolved = resolve_reort(reort if reort is not None else Reort.NONE)
+    if not isinstance(resolved, Reort):
+        raise TypeError(f"reort must be None, a Reort member or one of its names, got {reort!r}")
+    return resolved
+
+
 # A restart must shrink the reported residual by at least this factor to earn the next one, so
 # a genuinely stuck point stops early and is reported rather than looping.
 _GF_BICGSTAB_RESTART_PROGRESS = 0.5
@@ -180,7 +201,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
 
-    dense = len(basis) < 500
+    dense = len(basis) < _GF_ARRAY_DENSE_MAX
     if dense:
         psi_dense = build_vector(basis, psi_arr, slaterWeightMin=0).T
         psi_dense_local, r = build_qr(psi_dense)
@@ -212,7 +233,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
 
     # The continued fraction only consumes alphas/betas plus the final residual block
     # (q_last below), so with reort NONE skip the full Krylov-basis retention.
-    resolved_reort = resolve_reort(reort if reort is not None else Reort.NONE)
+    resolved_reort = _gf_reort(reort)
 
     if dense:
         H = build_dense_matrix(basis, hOp)
@@ -432,7 +453,7 @@ def block_Green_sparse(
         )
     # With reort NONE the kernel never projects against the accumulated Krylov basis and
     # the resume protocol reads only the two-block tail, so skip the full retention.
-    resolved_reort = resolve_reort(reort if reort is not None else Reort.NONE)
+    resolved_reort = _gf_reort(reort)
     while True:
         alphas, betas, Q, W, widths, status = block_lanczos_cy(
             psi_arr,
