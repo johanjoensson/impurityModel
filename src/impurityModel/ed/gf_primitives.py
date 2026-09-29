@@ -178,67 +178,6 @@ def _distributed_seed_qr(basis, psi_arr, slaterWeightMin=0):
     return psi_dense_local, r
 
 
-class PairwiseGF:
-    r"""Per-eigenstate Green's-function block assembled from scalar (width-1) continued fractions.
-
-    Holds the scalar block-Lanczos coefficients for the operator-split decomposition of one
-    ``n x n`` block (one thermal state, one spectral side): the ``n`` diagonal seeds and, per
-    off-diagonal pair, the two polarization seeds. :func:`calc_G_pairwise` evaluates these on a
-    frequency mesh and reassembles the full matrix via the polarization identity.
-
-    Attributes
-    ----------
-    n : int
-        Block dimension (number of transition operators).
-    diag : list[tuple]
-        Length-``n`` list of ``(alphas, betas, r)`` scalar continued fractions for ``v_i``.
-    pairs : dict[tuple[int, int], tuple[tuple, tuple]]
-        ``{(i, j): (cf_sum, cf_imag)}`` for ``i < j`` -- the scalar continued fractions for the
-        seeds ``v_i + v_j`` and ``v_i + i v_j``.
-    """
-
-    __slots__ = ("diag", "n", "pairs")
-
-    def __init__(self, n, diag, pairs):
-        self.n = n
-        self.diag = diag
-        self.pairs = pairs
-
-
-def calc_G_pairwise(pgf: "PairwiseGF", mesh, e, delta):
-    r"""Assemble an ``n x n`` Green's-function block from its scalar continued fractions.
-
-    Each scalar seed ``w`` gives the resolvent
-    ``S(w) = w^\dagger (\omega + i\delta + e - H)^{-1} w`` via the width-1 continued fraction
-    (:func:`calc_G`). The diagonal elements are ``G_ii = S(v_i)``; each off-diagonal pair is
-    recovered from the polarization identity
-
-    .. math::
-
-        S(v_i + v_j)   &= M_{ii} + M_{jj} + M_{ij} + M_{ji}, \\
-        S(v_i + i v_j) &= M_{ii} + M_{jj} + i M_{ij} - i M_{ji},
-
-    so ``M_ij = ½[S(v_i+v_j) - i S(v_i+i v_j) - (1-i)(M_ii+M_jj)]`` and ``M_ji`` is its mirror.
-    Exact (no approximation) given converged scalar continued fractions.
-    """
-    n = pgf.n
-    G = np.zeros((len(mesh), n, n), dtype=complex)
-
-    def S(cf):
-        alphas, betas, r = cf
-        return calc_G(alphas, betas, r, mesh, e, delta)[:, 0, 0]
-
-    diag_S = [S(cf) for cf in pgf.diag]
-    for i in range(n):
-        G[:, i, i] = diag_S[i]
-    for (i, j), (cf_sum, cf_imag) in pgf.pairs.items():
-        Mii, Mjj = diag_S[i], diag_S[j]
-        S_sum, S_imag = S(cf_sum), S(cf_imag)
-        G[:, i, j] = 0.5 * (S_sum - 1j * S_imag - (1 - 1j) * (Mii + Mjj))
-        G[:, j, i] = 0.5 * (S_sum + 1j * S_imag - (1 + 1j) * (Mii + Mjj))
-    return G
-
-
 def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
     """
     Calculate the thermally averaged Green's function over multiple initial states.
@@ -258,18 +197,6 @@ def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
     -------
     G_avg : ndarray
     """
-    # Operator-split (pairwise) path: r holds a per-eigenstate PairwiseGF; each carries its own
-    # scalar continued fractions, so (alphas, betas) are unused and calc_G_pairwise assembles the
-    # block from the polarization identity.
-    if any(isinstance(r_e, PairwiseGF) for r_e in r):
-        n_ops = next(r_e.n for r_e in r if isinstance(r_e, PairwiseGF))
-        G_avg = np.zeros((len(mesh), n_ops, n_ops), dtype=complex)
-        for e, r_e in zip(es, r):
-            if r_e is None:
-                continue
-            G_avg += calc_G_pairwise(r_e, mesh, e, delta) * np.exp(-(e - e0) / tau)
-        return G_avg
-
     if len(alphas) == 0:
         return np.zeros((len(mesh), 0, 0), dtype=complex)
 

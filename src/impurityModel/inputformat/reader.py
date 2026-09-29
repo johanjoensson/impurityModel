@@ -515,6 +515,9 @@ def _resolve_environment(raw_env, warnings):
     knobs = dict(config.KNOBS)
     resolved = {}
     for name, value in raw_env.items():
+        if name in config.RETIRED_KNOBS:
+            reason = config.RETIRED_KNOBS[name]
+            raise InputError(f"[environment]: {name!r} is no longer a tuning knob: {reason}.")
         if name not in knobs:
             hint = _suggest(name, knobs)
             if not hint and name.isupper():

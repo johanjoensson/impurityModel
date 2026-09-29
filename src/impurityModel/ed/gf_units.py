@@ -231,8 +231,7 @@ class GFUnit:
     """One distributable Green's-function work unit: a (possibly wide) block-Lanczos recurrence.
 
     A unit stacks the transition-operator seeds of ``chunk`` thermal eigenstates from one
-    operator group into a single recurrence of width ``len(chunk) * n_ops`` (or a single scalar
-    seed in operator-split mode, identified by ``pw_tag``). Units are the atoms of the MPI
+    operator group into a single recurrence of width ``len(chunk) * n_ops``. Units are the atoms of the MPI
     distribution: :func:`run_units_distributed` never splits one across colors.
 
     Attributes
@@ -243,19 +242,15 @@ class GFUnit:
     chunk : tuple of int
         Thermal-eigenstate indices whose seeds this unit stacks.
     n_ops : int
-        Seed columns per eigenstate (1 in operator-split mode).
+        Seed columns per eigenstate.
     delta : float
         Signed broadening of this unit's recurrence (sign selects addition/removal).
-    pw_tag : tuple, optional
-        ``("diag"|"sum"|"imag", i, j)`` identifying the scalar seed in operator-split mode;
-        ``None`` for grouped (wide-block) units.
     """
 
     group_i: int
     chunk: tuple[int, ...]
     n_ops: int
     delta: float
-    pw_tag: Optional[tuple] = None
 
 
 def unit_cost_weights(unit_seeds: list[list[ManyBodyState]], comm) -> np.ndarray:
@@ -289,7 +284,6 @@ def enumerate_gf_units(
     weighted_restrictions,
     slaterWeightMin: float,
     per_state_restrictions: Optional[list] = None,
-    pairwise: Optional[bool] = None,
 ) -> tuple[list[GFUnit], list[list[ManyBodyState]], list]:
     """Enumerate the flat work units of a Green's-function calculation.
 
@@ -299,11 +293,6 @@ def enumerate_gf_units(
     single global decomposition that is load-balanced across the full
     (operator group x eigenstate) cross-product -- important when there are many small symmetry
     blocks (the typical production case).
-
-    In operator-split mode (``GF_OPERATOR_SPLIT``) every unit is a width-1 scalar recurrence:
-    one per diagonal seed ``v_i``, plus per off-diagonal pair (i<j) the two polarization seeds
-    ``v_i + v_j`` and ``v_i + i v_j``. This is the narrow end of the granularity spectrum:
-    maximal communication-free units, no shared Krylov space.
 
     Parameters
     ----------
@@ -323,10 +312,6 @@ def enumerate_gf_units(
         Per-eigenstate excited windows; when given, each unit's window is the union
         (:func:`_union_restrictions`) over the eigenstates it stacks instead of the group
         fallback.
-    pairwise : bool, optional
-        Override the ``GF_OPERATOR_SPLIT`` environment default. Callers whose result
-        contract cannot represent scalar pairwise fractions (per-eigenstate ``r``
-        matrices) pass ``False``.
 
     Returns
     -------
@@ -335,34 +320,20 @@ def enumerate_gf_units(
         seed-column list per unit in (eigenstate, operator) order, and the excited window per
         unit.
     """
-    if pairwise is None:
-        pairwise = _gf_operator_split()
-    group = 1 if pairwise else _gf_eigenstate_group()
+    group = _gf_eigenstate_group()
     n_psis = len(psis)
     units: list[GFUnit] = []
     unit_seeds: list[list[ManyBodyState]] = []
     for g, (tOps, delta_signed) in enumerate(op_groups):
         block_v = _apply_transition_ops(tOps, psis, group_restrictions[g], weighted_restrictions, slaterWeightMin)
         n_ops = len(tOps)
-        if pairwise:
-            for ei in range(n_psis):
-                for i in range(n_ops):
-                    units.append(GFUnit(g, (ei,), 1, delta_signed, ("diag", i, i)))
-                    unit_seeds.append([block_v[ei][i]])
-                for i in range(n_ops):
-                    for j in range(i + 1, n_ops):
-                        units.append(GFUnit(g, (ei,), 1, delta_signed, ("sum", i, j)))
-                        unit_seeds.append([block_v[ei][i] + block_v[ei][j]])
-                        units.append(GFUnit(g, (ei,), 1, delta_signed, ("imag", i, j)))
-                        unit_seeds.append([block_v[ei][i] + 1j * block_v[ei][j]])
-        else:
-            for chunk_start in range(0, n_psis, group):
-                chunk = tuple(range(chunk_start, min(chunk_start + group, n_psis)))
-                units.append(GFUnit(g, chunk, n_ops, delta_signed, None))
-                unit_seeds.append([block_v[j][i] for j in chunk for i in range(n_ops)])
+        for chunk_start in range(0, n_psis, group):
+            chunk = tuple(range(chunk_start, min(chunk_start + group, n_psis)))
+            units.append(GFUnit(g, chunk, n_ops, delta_signed))
+            unit_seeds.append([block_v[j][i] for j in chunk for i in range(n_ops)])
 
     # Per-unit excited window: the union of the per-state windows over the eigenstates the unit
-    # stacks (exactly that state's window for a single-state / operator-split unit). Falls back
+    # stacks (exactly that state's window for a single-state unit). Falls back
     # to the group window when per-state restrictions are disabled or state-independent.
     if per_state_restrictions is not None:
         unit_restrictions = [_union_restrictions([per_state_restrictions[ei] for ei in u.chunk]) for u in units]
@@ -664,23 +635,6 @@ def _gf_eigenstate_group():
     return config.GF_EIGENSTATE_GROUP.get()
 
 
-def _gf_operator_split():
-    r"""Whether to use the pairwise / scalar operator-split decomposition (the *narrow* end of
-    the block-width granularity spectrum). Default off (:data:`config.GF_OPERATOR_SPLIT`).
-
-    When on, a block of ``n`` transition operators is computed not as one width-``n`` block-Lanczos
-    recurrence but as ``n`` width-1 (scalar) recurrences for the diagonal seeds ``v_i = c_i|psi>``
-    plus, for each off-diagonal pair ``i < j``, two more scalar recurrences for the polarization
-    seeds ``v_i + v_j`` and ``v_i + i v_j``. The off-diagonal ``G_ij`` is recovered exactly from the
-    four scalar resolvents (:func:`calc_G_pairwise`). This maximizes the number of independent
-    (communication-free) work units -- useful when ranks greatly outnumber the
-    ``block x eigenstate`` units -- at the cost of redundant Krylov building (no shared subspace
-    across columns). Mutually exclusive with eigenstate grouping; the operator split takes
-    precedence when both are requested.
-    """
-    return config.GF_OPERATOR_SPLIT.get()
-
-
 def _union_restrictions(rests):
     r"""Loosest single restriction dict admitting every input window's feasible set.
 
@@ -692,8 +646,7 @@ def _union_restrictions(rests):
     loosens each shared key to ``(min of mins, max of maxs)``. The result is a superset of each
     input window, so it never truncates a stacked state's Krylov space. ``None`` means "no
     restriction"; if any input is ``None`` (unconstrained) the union is ``None``. For a single-state
-    group (operator-split, or ``g = 1``) the union is exactly that state's window -- maximal
-    tightening.
+    group (``g = 1``) the union is exactly that state's window -- maximal tightening.
     """
     rests = list(rests)
     if not rests or any(r is None for r in rests):

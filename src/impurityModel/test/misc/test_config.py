@@ -50,8 +50,8 @@ def test_parsers_and_clamps(monkeypatch):
 @pytest.mark.parametrize("raw,expected", [("1", True), ("yes", True), ("0", False), ("false", False), ("", False)])
 def test_bool_truthiness(monkeypatch, raw, expected):
     """Only the explicit falsehoods (and unset/empty) are false -- the historical convention."""
-    monkeypatch.setenv("GF_OPERATOR_SPLIT", raw)
-    assert config.GF_OPERATOR_SPLIT.get() is expected
+    monkeypatch.setenv("DC_ALLOW_MEMORY_BOUND", raw)
+    assert config.DC_ALLOW_MEMORY_BOUND.get() is expected
 
 
 def test_derived_knobs_return_none_when_unset(monkeypatch):
@@ -132,3 +132,21 @@ def test_gf_method_choices_match_the_registry():
     key = next(k for k in TABLES["solver"].keys if k.name == "gf_method")
     assert tuple(key.choices) == config.GF_METHODS
     assert not set(key.choices) & set(config.RETIRED_GF_METHODS)
+
+
+@pytest.mark.parametrize("name", sorted(config.RETIRED_KNOBS))
+def test_a_retired_knob_is_no_longer_registered(name):
+    assert name not in config.KNOBS
+
+
+def test_a_retired_knob_still_set_in_the_environment_warns(monkeypatch):
+    """An exported variable nobody reads any more must not be ignored silently."""
+    monkeypatch.setenv("GF_OPERATOR_SPLIT", "1")
+    with pytest.warns(UserWarning, match="GF_OPERATOR_SPLIT is set but no longer read"):
+        config.warn_retired_knobs()
+    monkeypatch.delenv("GF_OPERATOR_SPLIT")
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        config.warn_retired_knobs()

@@ -57,13 +57,9 @@ Orthogonal switches on the default Lanczos path:
   `block_green_impl` which forms a CSR/dense sector and runs the BLAS-3 array kernel
   (`BlockLanczosArray.pyx`). Rule of thumb: array kernel for small/dense sectors, sparse when
   the matrix cannot be formed. See `architecture_overview.md` ("which one to use").
-- **Operator split** (`config.GF_OPERATOR_SPLIT`) — compute a block of `n` transition
-  operators as scalar (pairwise) continued fractions instead of one width-`n` block
-  recurrence. Multiplies the independent-unit count (better balance for few large blocks) at
-  the cost of redundant Krylov building. Assembled by `PairwiseGF` / `calc_G_pairwise`.
 - **Eigenstate grouping** (`config.GF_EIGENSTATE_GROUP`) — stack several thermal eigenstates
-  into one wide block recurrence sharing a Krylov space. Mutually exclusive with the operator
-  split.
+  into one wide block recurrence sharing a Krylov space. (The former operator split,
+  `GF_OPERATOR_SPLIT`, is retired: `doc/reviews/gf_review.md`, row S3.)
 - **Truncation capping** (`truncation_threshold`) — `_CappedBasisProxy` freezes basis growth
   at a global determinant cap; the post-freeze recurrence is exact Lanczos of the projected
   `PHP` (see `doc/plans/truncation_reliability.md`).

@@ -151,14 +151,11 @@ def test_driver_matches_partial_lanczos():
     assert all(d.severity.name != "FAIL" for d in report.diagnostics)
 
 
-def test_driver_grouping_and_operator_split_invariance():
-    """Eigenstate grouping is a unit-shape knob only, and the operator-split env (a Lanczos
-    decomposition) is ignored on the bicgstab path -- all give the identical G."""
+def test_driver_grouping_invariance():
+    """Eigenstate grouping is a unit-shape knob only -- it gives the identical G."""
     _, r_ref, _ = _run_driver("bicgstab", None)
     _, r_grouped, _ = _run_driver("bicgstab", None, monkeypatch_env={"GF_EIGENSTATE_GROUP": "2"})
-    _, r_split, _ = _run_driver("bicgstab", None, monkeypatch_env={"GF_OPERATOR_SPLIT": "1"})
     np.testing.assert_allclose(r_grouped[0], r_ref[0], atol=1e-9)
-    np.testing.assert_allclose(r_split[0], r_ref[0], atol=1e-9)
 
 
 def test_driver_rejects_unknown_method():

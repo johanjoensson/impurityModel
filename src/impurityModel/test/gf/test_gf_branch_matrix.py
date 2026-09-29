@@ -16,7 +16,6 @@ Factors
 ``method``   lanczos / bicgstab (``gf_method``)
 ``sparse``   ManyBodyState kernel vs CSR/dense array kernel (lanczos only)
 ``group``    ``GF_EIGENSTATE_GROUP`` 1 or 2 (stack thermal states into one recurrence)
-``split``    ``GF_OPERATOR_SPLIT`` (pairwise scalar fractions; lanczos only)
 ``reort``    none / partial / full (lanczos only)
 ``mesh``     Matsubara only / real axis only / both
 ``model``    ``nb1`` (small sectors: the dense <500 array branch) / ``nb2`` (792-det
@@ -49,7 +48,6 @@ FACTORS = {
     "method": ["lanczos", "bicgstab"],
     "sparse": [True, False],
     "group": [1, 2],
-    "split": [False, True],
     "reort": [None, "partial", "full"],
     "mesh": ["iw", "w", "both"],
     "model": [1, 2],
@@ -59,12 +57,9 @@ FACTORS = {
 
 def _valid(cell):
     """Exclude combinations the code rejects or silently ignores (they would be duplicates)."""
-    # sparse / split / reort are documented as ignored off the Lanczos path.
-    lanczos_only = cell.get("sparse") is False or cell.get("split") or cell.get("reort") is not None
-    if cell.get("method", "lanczos") != "lanczos" and lanczos_only:
-        return False
-    # Split and grouping are mutually exclusive; the split takes precedence (a duplicate cell).
-    return not (cell.get("split") and cell.get("group") == 2)
+    # sparse / reort are documented as ignored off the Lanczos path.
+    lanczos_only = cell.get("sparse") is False or cell.get("reort") is not None
+    return not (cell.get("method", "lanczos") != "lanczos" and lanczos_only)
 
 
 def _pairwise_cells(factors, valid):
@@ -154,7 +149,7 @@ def _run_cell(cell):
     iw = IW if cell["mesh"] in ("iw", "both") else None
     w = W if cell["mesh"] in ("w", "both") else None
     with (
-        _env(GF_EIGENSTATE_GROUP=cell["group"], GF_OPERATOR_SPLIT=int(cell["split"])),
+        _env(GF_EIGENSTATE_GROUP=cell["group"]),
         contextlib.redirect_stdout(io.StringIO()),
     ):
         gs_iw, gs_w, report = get_Greens_function(

@@ -640,8 +640,7 @@ def calc_spectra(
         susceptibility driver's projection of the seed out of the degenerate ground
         manifold). Must be linear in ``seed`` and collective-safe: it is invoked in the
         identical order on every rank, so it may perform collectives on ``basis.comm``.
-        Incompatible with ``equivalence_groups``; forces the non-pairwise unit
-        decomposition.
+        Incompatible with ``equivalence_groups``.
     unit_report_label : str, optional
         When given, the completed calculation prints the maximum excited basis size each
         work unit reached -- one line per transition operator -- under a heading naming this
@@ -742,9 +741,6 @@ def calc_spectra(
         group_restrictions,
         weighted_restrictions,
         slaterWeightMin,
-        # The pairwise decomposition combines seed columns, which would hide the
-        # (eigenstate, operator) identity the transform needs.
-        pairwise=False if seed_transform is not None else None,
     )
     if seed_transform is not None:
         # One operator per group here, so group_i identifies the transition operator and
@@ -784,15 +780,13 @@ def calc_spectra(
         empty = np.empty((0, 0), dtype=complex)
         return [empty] * (1 + len(extra_meshes)) if extra_meshes is not None else empty
 
-    # Reassemble per-(tOp, eigenstate) coefficients (unit.group_i indexes tOps; at width 1 the
-    # operator-split mode emits only diagonal units, so the same reassembly covers both modes),
-    # then evaluate the thermal average on the frequency mesh -- on the root rank only, matching
+    # Reassemble per-(tOp, eigenstate) coefficients (unit.group_i indexes tOps), then evaluate the thermal average on the frequency mesh -- on the root rank only, matching
     # the self-energy path and shrinking the gather payload to the Lanczos coefficients.
     acc_alphas = [[None] * len(psis) for _ in tOps]
     acc_betas = [[None] * len(psis) for _ in tOps]
     acc_r = [[None] * len(psis) for _ in tOps]
-    # Largest excited basis per transition operator, over the eigenstate chunks / pairwise
-    # scalar sub-units feeding it; within one unit the basis only grows, so its final size is
+    # Largest excited basis per transition operator, over the eigenstate chunks feeding it;
+    # within one unit the basis only grows, so its final size is
     # that unit's maximum.
     max_basis: dict[int, tuple[Optional[int], bool]] = {}
     for unit, (alphas, betas, r_slices, cap_stats) in zip(units, results):

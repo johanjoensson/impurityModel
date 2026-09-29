@@ -565,9 +565,8 @@ def check_basis_truncation(
                 "weight are missing)"
             ),
             suggestion=(
-                "with a truncation_threshold you set, raise it well above the ground-state basis size; with 'auto', give "
-                "each rank more memory (fewer ranks per node) or add nodes; or set GF_OPERATOR_SPLIT=1 so "
-                "a unit's seeds are one column each"
+                "with a truncation_threshold you set, raise it well above the ground-state basis size; "
+                "with 'auto', give each rank more memory (fewer ranks per node) or add nodes"
             ),
         )
     return Diagnostic(

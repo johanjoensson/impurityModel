@@ -273,37 +273,6 @@ def test_get_Greens_function_matsubara_none():
         assert True
 
 
-def test_calc_G_pairwise_polarization_identity():
-    """calc_G_pairwise reconstructs the full G matrix from scalar continued fractions.
-
-    Single-pole synthetic case: seeds v_i = c_i |x> all proportional to one excited state |x>
-    of energy Ex, so M_ij(w) = conj(c_i) c_j / (w + i delta + e - Ex) is analytic. The scalar
-    continued fraction for a seed w = c|x> is one block (alphas=[[Ex]], betas=[[0]], r=[[|c|]]),
-    giving S(w) = |c|^2 / (w'-Ex). calc_G_pairwise must reproduce M exactly via polarization.
-    """
-    from impurityModel.ed.greens_function import PairwiseGF, calc_G_pairwise
-
-    c = np.array([0.7 + 0.2j, -0.4 + 0.9j])  # seed coefficients c_0, c_1
-    Ex, e, delta = 1.3, 0.25, 0.1
-    mesh = np.linspace(-2.0, 2.0, 11)
-
-    def scalar_cf(coeff):
-        norm = abs(coeff)
-        return (
-            [np.array([[Ex]], dtype=complex)],
-            [np.array([[0.0]], dtype=complex)],
-            np.array([[norm]], dtype=complex),
-        )
-
-    diag = [scalar_cf(c[0]), scalar_cf(c[1])]
-    pairs = {(0, 1): (scalar_cf(c[0] + c[1]), scalar_cf(c[0] + 1j * c[1]))}
-    G = calc_G_pairwise(PairwiseGF(2, diag, pairs), mesh, e, delta)
-
-    wp = mesh + 1j * delta + e - Ex
-    M = (np.conj(c)[None, :, None] * c[None, None, :]) / wp[:, None, None]
-    np.testing.assert_allclose(G, M, atol=1e-12)
-
-
 def test_get_Greens_function_eigenstate_grouping():
     """The eigenstate-grouping knob (``GF_EIGENSTATE_GROUP``) is a mathematical
     reorganization, not an approximation: stacking ``g`` thermal states into one wide
@@ -450,80 +419,6 @@ def test_get_Greens_function_eigenstate_grouping_with_bath():
     assert np.allclose(g1, g2, atol=1e-5, rtol=1e-4), (
         f"grouped (g=2) GF differs from per-eigenstate (g=1) on the bath system: "
         f"max|diff|={np.max(np.abs(g1 - g2)):.2e}"
-    )
-
-
-def test_get_Greens_function_operator_split_matches_block():
-    """The operator-split (pairwise) path (``GF_OPERATOR_SPLIT``) is an exact reorganization,
-    not an approximation: computing each ``n x n`` block as ``n`` scalar (width-1) recurrences for
-    the diagonal seeds plus two polarization recurrences per off-diagonal pair, then reassembling
-    via the polarization identity, must reproduce the shared-Krylov width-``n`` block Green's
-    function to the convergence tolerance. Run on the hybridizing-bath system (excited basis grows
-    under H) on the sparse path the self-energy driver uses; the two thermal states occupy
-    different orbitals, so a wrong seed pairing or column assignment would change G by O(1).
-    """
-    omega_mesh = np.linspace(-2.0, 2.0, 25)
-    blocks = [[0, 1]]
-
-    def _hop():
-        return ManyBodyOperator(
-            {
-                ((0, "c"), (0, "a")): 0.3,
-                ((1, "c"), (1, "a")): 0.7,
-                ((2, "c"), (2, "a")): -0.5,
-                ((3, "c"), (3, "a")): 0.4,
-                ((0, "c"), (2, "a")): 0.25,
-                ((2, "c"), (0, "a")): 0.25,
-                ((1, "c"), (3, "a")): 0.25,
-                ((3, "c"), (1, "a")): 0.25,
-            }
-        )
-
-    state_bytes = [b"\xa0", b"\x50"]  # {0,2}, {1,3}
-    es = [-0.2, 0.3]
-
-    def run(op_split):
-        basis = Basis(
-            impurity_orbitals={0: [[0, 1]]},
-            bath_states=({0: [[2, 3]]}, {0: [[]]}),
-            initial_basis=state_bytes,
-            comm=MPI.COMM_SELF,
-        )
-        psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in state_bytes]
-        old = os.environ.get("GF_OPERATOR_SPLIT")
-        os.environ["GF_OPERATOR_SPLIT"] = "1" if op_split else "0"
-        try:
-            _, gs_real, _ = get_Greens_function(
-                matsubara_mesh=None,
-                omega_mesh=omega_mesh,
-                psis=psis,
-                es=list(es),
-                tau=1.0,
-                basis=basis,
-                hOp=_hop(),
-                delta=0.1,
-                blocks=blocks,
-                verbose=False,
-                verbose_extra=False,
-                reort=None,
-                dN=1,
-                occ_cutoff=1e-6,
-                slaterWeightMin=0.0,
-                sparse=True,
-            )
-        finally:
-            if old is None:
-                del os.environ["GF_OPERATOR_SPLIT"]
-            else:
-                os.environ["GF_OPERATOR_SPLIT"] = old
-        return gs_real[0]
-
-    block = run(False)
-    split = run(True)
-    assert block.shape == (len(omega_mesh), 2, 2)
-    assert np.allclose(block, split, atol=1e-5, rtol=1e-4), (
-        f"operator-split GF differs from the block GF on the bath system: "
-        f"max|diff|={np.max(np.abs(block - split)):.2e}"
     )
 
 

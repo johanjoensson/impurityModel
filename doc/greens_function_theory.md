@@ -329,18 +329,17 @@ subspace, not a different solver.
 All Green's-function drivers share one distribution engine: the flat work units are
 (block $\times$ spectral side $\times$ eigenstate-chunk), load-balanced by a seed-mass cost
 model and executed after a **single** communicator split (`enumerate_gf_units`,
-`unit_cost_weights`, `run_units_distributed`). Two granularity knobs move work between shared
+`unit_cost_weights`, `run_units_distributed`). One granularity knob moves work between shared
 Krylov spaces and independent units:
 
 * **eigenstate grouping** (`GF_EIGENSTATE_GROUP`): stack $g$ eigenstates' seeds into one
   width-$g p$ recurrence — the shared $T_k$ serves every stacked state (each keeps its own
   columns of $r$ and its own $E_m$ shift), trading matvec sharing against wider-block
-  reorthogonalization;
-* **operator splitting** (`GF_OPERATOR_SPLIT`): compute an $n{\times}n$ block from scalar
-  recurrences only, using the polarization identity
-  $G_{ij} = \tfrac12\big[S(v_i{+}v_j) - i\,S(v_i{+}iv_j) - (1{-}i)(G_{ii}{+}G_{jj})\big]$
-  with $S(w) = \langle w|(z-H)^{-1}|w\rangle$ (`calc_G_pairwise`) — maximal communication-free
-  parallelism at the price of redundant Krylov building.
+  reorthogonalization.
+
+(An *operator split* into scalar recurrences recombined by the polarization identity,
+`GF_OPERATOR_SPLIT`, existed until 2026-09; it was retired because it multiplied the Krylov work
+and cannot serve estimators that need whole-block recurrences — `doc/reviews/gf_review.md`, S3.)
 
 ---
 
@@ -673,7 +672,7 @@ shrink it: the occupation restrictions (§1.4) and the determinant cap (§3.4).
 | `delta` | broadening: resolution on the real axis, core-hole lifetime in spectra | smaller δ = harder solves near poles (§4.2); mesh must resolve it (`check_mesh_density`) |
 | `GF_BICGSTAB_ATOL` / `MAX_ITER` / `RESTARTS` | per-point solve contract (§4.2) | default `1e-8`; tighten to `1e-10` for real-axis Σ at small δ |
 | `GF_GMRES_RESTART` / `MAX_RESTARTS` | fallback Arnoldi depth (§4.3) | 40 default; bounds the fallback's memory transient |
-| `GF_EIGENSTATE_GROUP` / `GF_OPERATOR_SPLIT` | unit granularity (§3.5) | grouping shares matvecs; splitting maximizes independent units |
+| `GF_EIGENSTATE_GROUP` | unit granularity (§3.5) | grouping shares matvecs |
 | `num_wanted`, `tau` | thermal ensemble (§2.4) | auto-retry doubles `num_wanted` on the truncation diagnostic |
 
 ## 9. References

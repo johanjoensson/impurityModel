@@ -111,6 +111,41 @@ RETIRED_GF_METHODS = {
     ),
 }
 
+#: Knobs that no longer exist, each with the reason. ``[environment]`` rejects them with this
+#: message, and a GF run warns when one is still set in the process environment
+#: (:func:`warn_retired_knobs`) -- an exported variable nobody reads any more would otherwise
+#: be silently ignored.
+RETIRED_KNOBS = {
+    **dict.fromkeys(("GF_SLICES", "GF_SLICE_DEGREE", "GF_SLICE_TOL"), "retired with gf_method='sliced'"),
+    **dict.fromkeys(
+        (
+            "GF_CIPSI_BUDGET",
+            "GF_CIPSI_MAX_NEW",
+            "GF_CIPSI_DE2_MIN",
+            "GF_CIPSI_MAX_ROUNDS",
+            "GF_CIPSI_BOUNDARY_TOL",
+            "GF_CIPSI_SCORER",
+            "GF_CIPSI_PT2",
+        ),
+        "retired with gf_method='cipsi'",
+    ),
+    "GF_OPERATOR_SPLIT": (
+        "retired: the pairwise operator split (scalar continued fractions per operator pair) was an "
+        "opt-in load-balancing mode that multiplied the Krylov work, and the improved-estimator "
+        "self-energy needs whole-block recurrences (doc/reviews/gf_review.md, S3)"
+    ),
+}
+
+
+def warn_retired_knobs():
+    """Warn once per call for every retired knob still set in ``os.environ``."""
+    import warnings
+
+    for name, reason in RETIRED_KNOBS.items():
+        if os.environ.get(name, "") != "":
+            warnings.warn(f"environment variable {name} is set but no longer read: {reason}.", stacklevel=2)
+
+
 # --- Green's function: per-frequency BiCGSTAB solver (gf_method="bicgstab") -----------------
 
 GF_BICGSTAB_ATOL = Knob(
@@ -240,18 +275,6 @@ GF_APPLY_ROW_CHUNKS = Knob(
     ``truncation_threshold``), each chunk runs ``_CappedBasisProxy``'s freeze/admit decision on
     its own candidate rows rather than once for the whole step -- see its docstring
     (``gf_primitives.py``) -- but the cap itself binds identically either way.""",
-)
-
-GF_OPERATOR_SPLIT = Knob(
-    name="GF_OPERATOR_SPLIT",
-    kind="bool",
-    default=False,
-    group="units",
-    doc="""Split each orbital block's Green's function into scalar (pairwise) continued
-    fractions, one per operator column, instead of one block recurrence. Multiplies the number
-    of independent work units -- better load balance for few large blocks -- at the cost of
-    redundant Krylov building (no subspace shared across columns). Mutually exclusive with
-    eigenstate grouping; the operator split wins when both are requested.""",
 )
 
 GF_PER_STATE_RESTRICT = Knob(
@@ -865,7 +888,6 @@ KNOBS: dict[str, Knob] = _register(
     GF_GMRES_MAX_RESTARTS,
     GF_EIGENSTATE_GROUP,
     GF_APPLY_ROW_CHUNKS,
-    GF_OPERATOR_SPLIT,
     GF_PER_STATE_RESTRICT,
     GF_CHECK_EVERY,
     GF_NEAR_FACTOR,

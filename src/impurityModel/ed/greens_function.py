@@ -1,6 +1,5 @@
 import os
 import sys
-from collections import defaultdict
 from typing import Optional
 
 import numpy as np
@@ -29,7 +28,6 @@ from impurityModel.ed.gf_convergence import (  # noqa: F401  -- re-exported for 
     _make_gf_convergence_monitor,
 )
 from impurityModel.ed.gf_primitives import (  # noqa: F401  -- re-exported for backward compat
-    PairwiseGF,
     _CappedBasisProxy,
     _distributed_seed_qr,
     _sanitize_continued_fraction,
@@ -37,7 +35,6 @@ from impurityModel.ed.gf_primitives import (  # noqa: F401  -- re-exported for b
     build_qr,
     calc_continuants,
     calc_G,
-    calc_G_pairwise,
     calc_thermally_averaged_G,
 )
 from impurityModel.ed.gf_shift_recycling import (  # noqa: F401  -- re-exported for backward compat
@@ -50,7 +47,6 @@ from impurityModel.ed.gf_solvers import (
     block_Green_sparse,
 )
 from impurityModel.ed.gf_units import (
-    _gf_operator_split,
     enumerate_gf_units,
     run_units_distributed,
     unit_cost_weights,
@@ -329,8 +325,7 @@ def _unit_basis_rows(blocks, max_basis):
 def _merge_unit_basis(acc, key, size, cap_hit):
     """Fold one work unit's basis size into the per-unit maximum ``acc[key]``.
 
-    Several units feed one ``(block, side)`` pair -- the eigenstate chunks, the pairwise
-    scalar sub-units -- and within one unit the
+    Several units feed one ``(block, side)`` pair -- the eigenstate chunks -- and within one unit the
     basis only grows, so its final size is that unit's own maximum. Tracking is a property of
     the phase's cap, uniform across the units of a pair, so a ``None`` size never competes
     with a real one here; it is carried through so the row can say so.
@@ -377,9 +372,9 @@ def get_Greens_function(
     recurrence per work unit serving the whole mesh; ``"bicgstab"`` solves one linear system
     per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`).
     On the per-frequency path ``sparse`` is ignored (the solvers work on the ManyBodyState
-    representation only) and the operator-split (pairwise) decomposition is never used (the
-    linear solve yields the full ``G_ij`` block directly).
+    representation only).
     """
+    config.warn_retired_knobs()
     if gf_method in config.RETIRED_GF_METHODS:
         raise ValueError(f"gf_method {gf_method!r} {config.RETIRED_GF_METHODS[gf_method]}")
     if gf_method not in config.GF_METHODS:
@@ -398,7 +393,6 @@ def get_Greens_function(
             print(f"Excited restrictions: none{reason}", flush=True)
         if excited_weighted_restrictions is None:
             print("Weight restrictions: none", flush=True)
-    pairwise = _gf_operator_split() if gf_method == "lanczos" else False
     n_psis = len(psis)
 
     # Per-state excited windows (see _gf_per_state_restrict). Built on the full basis before the
@@ -435,7 +429,6 @@ def get_Greens_function(
         excited_weighted_restrictions,
         slaterWeightMin,
         per_state_restrictions,
-        pairwise=pairwise,
     )
     unit_weights = unit_cost_weights(unit_seeds, basis.comm)
 
@@ -521,9 +514,7 @@ def get_Greens_function(
         # Reassemble the per-unit results (global unit order) into per-(block, side)
         # eigenstate-indexed coefficient lists, then build each block's Green's function exactly
         # as before. acc[(block_i, side_i)] = (alphas_list, betas_list, r_list) indexed by
-        # eigenstate. In grouped mode r_list[ei] is the seed-projection matrix; in pairwise mode
-        # it is a PairwiseGF assembled from the eigenstate's scalar continued fractions
-        # (a_list/b_list stay None -- each PairwiseGF carries its own scalar coefficients).
+        # eigenstate; r_list[ei] is that eigenstate's seed-projection matrix.
         acc: dict[tuple[int, int], tuple[list, list, list]] = {
             (bi, si): ([None] * n_psis, [None] * n_psis, [None] * n_psis) for bi in range(len(blocks)) for si in (0, 1)
         }
@@ -536,7 +527,7 @@ def get_Greens_function(
         # and d_g/n_blocks take the worst (max) over those units.
         conv_acc: dict[int, dict] = {}
         # Largest excited basis per (block, spectral side) work unit, over the eigenstate
-        # chunks / pairwise scalar sub-units feeding it. Separate from `cap_acc`, which takes
+        # chunks feeding it. Separate from `cap_acc`, which takes
         # the *smallest* frozen size and only of the units that actually hit the cap.
         max_basis: dict[tuple[int, int], tuple[Optional[int], bool]] = {}
         for unit, (_alphas, _betas, _r_slices, cap_stats, conv_stats) in zip(units, results):
@@ -564,27 +555,11 @@ def get_Greens_function(
             if unit_d_g is not None and not np.isnan(unit_d_g):
                 cstats["d_g"] = max(cstats["d_g"], unit_d_g)
             cstats["n_blocks"] = max(cstats["n_blocks"], conv_stats.get("n_blocks", 0))
-        if pairwise:
-            # pw_cf[(block_i, side_i, ei)] = {"diag": {i: cf}, "sum": {(i,j): cf}, "imag": {(i,j): cf}}
-            pw_cf: defaultdict = defaultdict(lambda: {"diag": {}, "sum": {}, "imag": {}})
-            for unit, (alphas, betas, r_slices, _cap_stats, _conv_stats) in zip(units, results):
-                block_i, side_i = group_meta[unit.group_i]
-                cf = (alphas, betas, r_slices[0])
-                assert unit.pw_tag is not None  # always set on the pairwise path
-                role, a, b = unit.pw_tag
-                key = a if role == "diag" else (a, b)
-                pw_cf[(block_i, side_i, unit.chunk[0])][role][key] = cf
-            for (block_i, side_i, ei), roles in pw_cf.items():
-                n = len(blocks[block_i])
-                diag = [roles["diag"][i] for i in range(n)]
-                pairs = {ij: (roles["sum"][ij], roles["imag"][ij]) for ij in roles["sum"]}
-                acc[(block_i, side_i)][2][ei] = PairwiseGF(n, diag, pairs)
-        else:
-            for unit, (alphas, betas, r_slices, _cap_stats, _conv_stats) in zip(units, results):
-                block_i, side_i = group_meta[unit.group_i]
-                a_list, b_list, r_list = acc[(block_i, side_i)]
-                for p, ei in enumerate(unit.chunk):
-                    a_list[ei], b_list[ei], r_list[ei] = alphas, betas, r_slices[p]
+        for unit, (alphas, betas, r_slices, _cap_stats, _conv_stats) in zip(units, results):
+            block_i, side_i = group_meta[unit.group_i]
+            a_list, b_list, r_list = acc[(block_i, side_i)]
+            for p, ei in enumerate(unit.chunk):
+                a_list[ei], b_list[ei], r_list[ei] = alphas, betas, r_slices[p]
 
         e0 = np.min(es)
         Z = np.sum(np.exp(-(np.asarray(es) - e0) / tau))
@@ -614,10 +589,6 @@ def get_Greens_function(
                 gs_realaxis[block_i][:] = combined_real
 
             # --- per-block convergence / consistency diagnostics ---------------------------
-            # The pairwise path stores per-eigenstate PairwiseGF objects rather than the seed
-            # projection matrices and scalar-tridiagonal coefficients the r-/(alphas,betas)-based
-            # checks consume, so in that mode only the G-derived checks (thermal cutoff, mesh
-            # density, causality) apply.
             diags = [_gfd.check_thermal_weight_cutoff(es, e0, tau, n_returned=len(es), num_wanted=num_wanted)]
             block_cap = cap_acc.get(block_i)
             if block_cap is not None:
@@ -630,32 +601,30 @@ def get_Greens_function(
                         memory_frozen=block_cap.get("memory_frozen", False),
                     )
                 )
-            if not pairwise:
-                diags.insert(0, _gfd.check_spectral_sum_rule(r_add, r_rem, es, e0, tau, len(block)))
-                lanczos_tol = _gf_rel_tol(slaterWeightMin)
-                # The solver's own runtime verdict (block_Green_sparse/block_green_impl's
-                # `converged_fn`, tested on the caller's actual eval_meshes) -- not a recompute.
-                conv_stats = conv_acc.get(block_i, {"converged": True, "d_g": 0.0, "n_blocks": 0, "tol": lanczos_tol})
-                diags.append(
-                    _gfd.check_lanczos_convergence(
-                        conv_stats["converged"], conv_stats["d_g"], conv_stats["n_blocks"], conv_stats["tol"]
-                    )
+            diags.insert(0, _gfd.check_spectral_sum_rule(r_add, r_rem, es, e0, tau, len(block)))
+            lanczos_tol = _gf_rel_tol(slaterWeightMin)
+            # The solver's own runtime verdict (block_Green_sparse/block_green_impl's
+            # `converged_fn`, tested on the caller's actual eval_meshes) -- not a recompute.
+            conv_stats = conv_acc.get(block_i, {"converged": True, "d_g": 0.0, "n_blocks": 0, "tol": lanczos_tol})
+            diags.append(
+                _gfd.check_lanczos_convergence(
+                    conv_stats["converged"], conv_stats["d_g"], conv_stats["n_blocks"], conv_stats["tol"]
                 )
-                # Complementary, band-wide measure: convergence of the *whole* resolved Ritz
-                # band, not just the caller's evaluation mesh -- signals spectral weight the
-                # solver never had to (and didn't) resolve, e.g. outside the omega window.
-                conv_add = _lanczos_convergence_summary(a_add, b_add, delta, tol=lanczos_tol)
-                conv_rem = _lanczos_convergence_summary(a_rem, b_rem, -delta, tol=lanczos_tol)
-                diags.append(_gfd.check_lanczos_band_resolution(max(conv_add[1], conv_rem[1]), lanczos_tol))
+            )
+            # Complementary, band-wide measure: convergence of the *whole* resolved Ritz
+            # band, not just the caller's evaluation mesh -- signals spectral weight the
+            # solver never had to (and didn't) resolve, e.g. outside the omega window.
+            conv_add = _lanczos_convergence_summary(a_add, b_add, delta, tol=lanczos_tol)
+            conv_rem = _lanczos_convergence_summary(a_rem, b_rem, -delta, tol=lanczos_tol)
+            diags.append(_gfd.check_lanczos_band_resolution(max(conv_add[1], conv_rem[1]), lanczos_tol))
             if G_IPS_real is not None:
                 diags.append(_gfd.check_mesh_density(omega_mesh, delta))
-                if not pairwise:
-                    diags.append(
-                        _gfd.check_integrated_weight(G_IPS_real, r_add, es, e0, tau, omega_mesh, "add", delta=delta)
-                    )
-                    diags.append(
-                        _gfd.check_integrated_weight(G_PS_real, r_rem, es, e0, tau, -omega_mesh, "rem", delta=delta)
-                    )
+                diags.append(
+                    _gfd.check_integrated_weight(G_IPS_real, r_add, es, e0, tau, omega_mesh, "add", delta=delta)
+                )
+                diags.append(
+                    _gfd.check_integrated_weight(G_PS_real, r_rem, es, e0, tau, -omega_mesh, "rem", delta=delta)
+                )
                 diags.append(_gfd.check_causality(combined_real, "G"))
             report.extend(str(block), diags)
 
@@ -1208,15 +1177,13 @@ def calc_Greens_function_with_offdiag(
         for indices, occupations in excited_restrictions.items():
             print(f"---> {sorted(indices)} : {occupations}")
 
-    # One operator group holding the whole tOps block; pairwise=False because this function's
-    # return contract (per-eigenstate r matrices) cannot represent scalar pairwise fractions.
+    # One operator group holding the whole tOps block.
     units, unit_seeds, unit_restrictions = enumerate_gf_units(
         [(tOps, delta)],
         psis,
         [excited_restrictions],
         excited_weighted_restrictions,
         slaterWeightMin,
-        pairwise=False,
     )
     unit_weights = unit_cost_weights(unit_seeds, block_basis.comm)
 
@@ -1294,8 +1261,8 @@ def _gf_per_state_restrict(chain_restrict):
     so its own window carries more restriction subsets -> a smaller excited basis and cheaper
     Lanczos. Each work unit uses the *union* of the per-state windows over the eigenstates it stacks
     (:func:`_union_restrictions`) so the shared block Krylov space still contains every seed's
-    dynamics; in operator-split mode every unit is a single state, giving the full per-state
-    tightening. The seed ``c_i|psi_e>`` is unchanged (an impurity operator preserves bath
+    dynamics; at the default ``GF_EIGENSTATE_GROUP=1`` every unit is a single state, giving the full
+    per-state tightening. The seed ``c_i|psi_e>`` is unchanged (an impurity operator preserves bath
     occupation, so the seed lies inside ``psi_e``'s own window), so only the excited-basis span
     tightens -- no seed is truncated.
 
