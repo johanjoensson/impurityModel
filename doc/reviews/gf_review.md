@@ -1,0 +1,71 @@
+# Green's-function execution paths: review ledger
+
+This file is the running record of the 2026-09 review of the GF execution paths. The paths covered are:
+
+- `selfenergy` → `greens_function` → `gf_units` / `gf_solvers` / `gf_primitives` / `gf_convergence` / `gf_shift_recycling` → the Cython Lanczos, BiCGSTAB and GMRES kernels;
+- `spectra`, `rixs` and `susceptibility`;
+- the supporting layers `basis_split`, `basis_restrictions` and `block_structure`.
+
+Every row starts as a hypothesis found by reading the code, and only a test settles it.
+
+**Verdicts:**
+- `open`: not yet tested.
+- `confirmed`: a test reproduces it.
+- `refuted`: a test shows the claim is wrong. It is kept here so nobody re-derives it.
+- `fixed`: a commit resolves it, and the test is now a regression guard.
+
+**Severity:**
+- `!!`: a silent wrong result in production is plausible.
+- `!`: a crash, hang or leak.
+- `·`: quality or performance only.
+
+## Safety net
+
+`src/impurityModel/test/gf/test_gf_branch_matrix.py` runs a pairwise covering array over every path-selecting switch of the GF engine and compares each cell against an exact oracle. The full cartesian product is opt-in with `-m branch_matrix_full` and takes about 10 min serially.
+
+- **Switches covered:** `gf_method`, `sparse`, `GF_EIGENSTATE_GROUP`, `GF_OPERATOR_SPLIT`, `reort`, the mesh axes, the dense and operator array branches, and serial versus split execution.
+- **Oracle:** `support/gf_branch_oracle.py`, a sector-wise dense Lehmann sum that shares no code with the pipeline. It is validated against the sum rule `zG → 1` and the analytic single-level limit.
+- **Model:** its intra-block hopping is complex, so `G_ab ≠ G_ba` and a transpose error is visible. With real hopping, an injected dropped transpose went undetected.
+
+The discrimination check (Phase 0) injects six bugs into `greens_function.py`: a dropped transpose (iw and w), a flipped removal δ, a 0.1% error in Z, the wrong eigenstate's seed slice, and a wrong Boltzmann weight on the bicgstab path. Each one turns cells red, or hangs (R1).
+
+Known failures are pinned as xfails that name their ledger row. They are strict wherever the failure is a property of the cell, so a fix flips them and forces the pin to be removed. The M1 pins are non-strict: M1 needs a color with more than one rank, and the packing, not the cell, decides that.
+
+## Ledger
+
+| id | sev | claim | where | test | verdict |
+|---|---|---|---|---|---|
+| C11 | !! | Array Lanczos kernel caps `max_iter=ceil(N/p)`, which assumes a constant block width. Deflation shrinks it (widths `[4,4,2,2,2,2,2]` span 20 of 28 dims), so the recurrence stops at `max_iter` with a truncated continued fraction and only a warning. Measured G error up to 0.07 (real axis, δ=0.2) with stacked eigenstates, and 3.6e-5 on a 3-operator tensor. Hits RIXS R2 (always the array `block_Green`) and `sparse_green=False`. | `gf_solvers.py:237,292` | branch matrix `lanczos/sparse=False/group=2/model=1`; `test_calc_greens_function_with_offdiag_matches_oracle` | **confirmed** |
+| C1 | !! | Particle-hole equivalence: `_particle_hole_blocks_matrix` scans `blocks[i:]`, so a block with Re M≈0 is its own particle-hole partner and gets overwritten with `-conj(G)` after the causality check. Correct pairs are also wrong on the real axis (no ω reversal). The detector never checks that U is particle-hole invariant. The moment round-trip flips the sign of Σ₁. | `block_structure.py:526`, `greens_function.py:122-134`, `selfenergy.py:393` | | open |
+| C10 | !! | Identical-block detection uses only `h_imp + V†V` and ignores `h_bath`. `reconcile_block_structure_with_interaction` is never wired in. | `symmetries.py:776`, `solver_basis.py:197` | | open |
+| C2 | !! | The near-conduction upper bound subtracts the counts of far-empty and far-filled orbitals, which can pin it to (0,0) when `con_change` is set (spectra, RIXS, self-energy with `dN`). | `basis_restrictions.py:476` | | open |
+| C3 | !! | Masks set on the shared `hOp` are sticky and are set only when non-None, so the later moments (M2, M3 → Σ₁, Σ₂) run as P·H. The retry `calc_gs` inherits a stale weighted mask. | `greens_function.py:1229`, `cipsi_solver.py:1306`, `selfenergy.py:389` | | open |
+| C4 | · | `None` means unrestricted, inherit, or empty depending on the helper, and nothing checks for `lo > hi`. | `gf_units.py:710`, `manybody_basis.py:373`, `greens_function.py:1144` | | open |
+| C5 | ! | Seeds are cut by the ensemble window while the recurrence runs under the per-state window; P·H is non-Hermitian on seed rows outside it. RIXS seeds are unrestricted. | `greens_function.py:442`, `gf_units.py:394`, `rixs.py:546` | | open |
+| C6 | ! | Excited chain caps are not widened by dN, and the budget grows only +1; neither was validated for N±1. | `basis_restrictions.py:292-322,500-508` | | open |
+| C7 | ! | Sector restrictions come from rounded averages without a definite-charge check. RIXS uses the `in_ops[0]` sector for every component. | `symmetries.py:1202`, `rixs.py:552` | | open |
+| C8 | · | `simulate_spectra` ignores `restrictions` and `dN`. RIXS uses occ cutoff 1e-6 vs 1e-12. `dense_cutoff` is ignored (literal 500). A float `reort` passes untranslated. | `spectra.py:138,145`, `rixs.py:518`, `gf_solvers.py:186`, `BlockLanczosCore.pyx:180` | | open |
+| C9 | · | `calc_thermally_averaged_G` returns shape `(n_w,0,0)` on the empty path. | `gf_primitives.py:273` | | open |
+| M1 | !! | The array operator branch has a `LinearOperator (N, N_local)` plus `Reduce` to root, and fails on colors with more than one rank (RIXS R3). | `gf_solvers.py:244-275` | `test_block_green_array_multirank.py` (strict xfail); branch matrix `model=2/comm=world` | **confirmed** (pre-existing) |
+| M2 | ! | Rank-local break decisions (converged, invariant subspace, deflation width) come from replicated floats with no consensus. | `_lanczos_step.pxi:864`, `BlockLanczosArray.pyx:980-998` | | open |
+| M3 | ! | `_graph_comm_cache` is keyed by `id(parent)` and never evicted, leaking dist-graph comms per Clone. | `mpi_comm.py:48-101` | | open |
+| M4 | ! | The split-comm free sits outside the `finally`, and Clone frees happen only on the normal path. | `gf_units.py:648`, `gf_solvers.py:852`, `rixs.py:636` | | open |
+| M5 | · | RIXS `solver_stats` are overcounted by ranks-per-color. | `rixs.py:246` | | open |
+| R1 | ! | A causality-violating recurrence (injected: removal side run with +δ) never satisfies the convergence monitor, and the sparse resume loop doubles its budget with no upper bound, so the unit runs until the Krylov space closes (>150 s on a 792-det sector) instead of failing fast. | `gf_solvers.py:443-480` | bug-injection run (Phase 0) | observed; decide in Phase 3 (bounded budget + diagnostic) |
+| S1 | · | `gf_method="sliced"` misses the exact G by about 1e-5 relative on the real axis (above the 2e-6 cell tolerance). The path is being retired. | `greens_function.py:930` | branch matrix `method=sliced/model=1` | confirmed; retired in Phase 1 |
+
+## Performance and parallelism
+
+Each of these is adopted only with a measurement against the Phase 0 baseline.
+
+| id | claim | verdict |
+|---|---|---|
+| N1 | Pole representation of T via `eig_banded`, for evaluation and the future DSR tier. | open |
+| N2 | The convergence monitor rebuilds the continued fraction, O(k²) in total. | open |
+| N3 | `hyb` solves an n_bath system per frequency. | open |
+| N4 | The array expansion restarts Lanczos from scratch. | open |
+| N5 | Spectra run the band-wide monitor (`eval_meshes=None`). | open |
+| N6 | The thermal retry recomputes the whole GF. | open |
+| P1 | The GS basis is replicated into every color although kernels clone only the seed support. | open |
+| P2 | Static LPT packing on seed-mass estimates; ranks ∝ mass. | open |
+| P3 | Serial rank-0 work (mesh evaluation, diagnostics, Dyson); `simulate_spectra` re-splits per spectrum. | open |
