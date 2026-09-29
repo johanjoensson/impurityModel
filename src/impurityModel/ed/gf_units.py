@@ -582,16 +582,16 @@ def run_units_distributed(
             basis.comm.send(local_results, dest=0)
             local_results = None
     finally:
-        # Rank-local attribute write, executed identically on every rank (no collective here),
-        # so an exception on one rank cannot desynchronize the others through this path.
         basis.truncation_threshold = caller_cap
         _restore_gf_memory_guard(split_basis, guard)
-
-    # Free the split communicator collectively before returning. MPI_Comm_free is collective --
-    # it must be called by all ranks in the comm at the same time. Leaving it for Python gc risks
-    # non-collective freeing.
-    if split_basis is not None and split_basis.comm != basis.comm:
-        split_basis.free_comm()
+        # Free the split communicator collectively, on the error path too: a kernel that raised on
+        # every rank (a recoverable failure the caller may retry, e.g. the self-energy's thermal
+        # retry or the double-counting search) otherwise leaks one communicator per failure
+        # (review ledger M4). MPI_Comm_free is collective; an exception raised on only *some*
+        # ranks already leaves the others blocked in the kernel's own collectives, so this adds no
+        # new way to hang. Leaving it to Python's gc would free it non-collectively.
+        if split_basis is not None and split_basis.comm != basis.comm:
+            split_basis.free_comm()
     return results
 
 

@@ -101,6 +101,24 @@ def _cached_dist_graph(comm, sources, destinations):
     return graph_comm
 
 
+def forget_comm(comm):
+    """Free and drop every cached dist-graph communicator built on ``comm``.
+
+    The cache pins its parent communicator and caps the graphs *per parent*, but nothing else
+    removes a parent: every cloned communicator that ever redistributed states -- one per RIXS
+    unit, bicgstab unit and split color -- kept its entry and up to ``_MAX_CACHED_GRAPHS``
+    graph communicators for the rest of the process (review ledger M3). Call this before
+    freeing ``comm``. **Collective on** ``comm``: the cached graphs span the same group, and
+    their creation order -- hence this loop's order -- is identical on every rank.
+    """
+    entry = _graph_comm_cache.pop(id(comm), None)
+    if entry is None:
+        return
+    _pinned_comm, graphs = entry
+    for graph in graphs.values():
+        graph.Free()
+
+
 def dict_chunks_from_one_MPI_rank(data, chunk_maxsize=1 * 10**6, root=0):
     """
     Divide up data in chunks for one MPI rank.

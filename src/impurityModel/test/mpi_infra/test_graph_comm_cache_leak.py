@@ -32,7 +32,6 @@ def _cycle(comm):
 
 @pytest.mark.mpi
 @pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="dist-graph communicators are only built on >1 rank")
-@pytest.mark.xfail(strict=True, reason=M3)
 def test_freed_communicators_leave_no_cached_graphs():
     comm = MPI.COMM_WORLD
     _cycle(comm)  # warm: anything the first call caches for good (e.g. on COMM_WORLD) is not a leak

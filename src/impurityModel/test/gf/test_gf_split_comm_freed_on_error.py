@@ -25,7 +25,6 @@ class _KernelFailure(RuntimeError):
 
 @pytest.mark.mpi
 @pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the unit split only runs on more than one rank")
-@pytest.mark.xfail(strict=True, reason=M4)
 def test_the_split_communicator_is_freed_when_a_kernel_raises(monkeypatch):
     comm = MPI.COMM_WORLD
     states = [b"\x80", b"\x40", b"\x20", b"\x10"]

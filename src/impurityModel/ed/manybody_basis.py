@@ -17,6 +17,7 @@ from impurityModel.ed.ManyBodyUtils import (
 )
 from impurityModel.ed.mpi_comm import (
     distribute_determinants,
+    forget_comm,
     graph_alltoall,
     graph_alltoall_block,
     routed_index_lookup,
@@ -402,6 +403,9 @@ class Basis:
         This must be called collectively by all ranks sharing the communicator.
         """
         if self.comm is not None and self.comm != MPI.COMM_NULL:
+            # The dist-graph communicators cached for this one would otherwise outlive it,
+            # pinned by the cache for the rest of the process (review ledger M3).
+            forget_comm(self.comm)
             self.comm.Free()
             self.comm = None
 
