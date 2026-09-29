@@ -8,7 +8,7 @@ from mpi4py import MPI
 from impurityModel.ed import config
 from impurityModel.ed import gf_diagnostics as _gfd
 from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.basis_restrictions import build_excited_restrictions
+from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.BlockLanczosArray import Reort
 
@@ -908,25 +908,6 @@ def _build_excited_restrictions(
     return excited_restrictions, excited_weighted_restrictions
 
 
-def _intersect_restrictions(base, extra):
-    """Conjunctively merge two ``{frozenset: (min, max)}`` restriction dicts.
-
-    Shared keys are intersected (``max`` of the mins, ``min`` of the maxs); keys unique to
-    either side are kept. Every ``Basis`` restriction entry is enforced, so the result confines
-    a determinant iff it satisfies *both* inputs. ``base`` is treated as empty when ``None``.
-    """
-    if not base:
-        return dict(extra)
-    merged = dict(base)
-    for key, (lo, hi) in extra.items():
-        if key in merged:
-            blo, bhi = merged[key]
-            merged[key] = (max(blo, lo), min(bhi, hi))
-        else:
-            merged[key] = (lo, hi)
-    return merged
-
-
 def _block_green_group(
     split_basis,
     hOp,
@@ -1178,7 +1159,7 @@ def calc_Greens_function_with_offdiag(
     # sector-violating determinants the window alone would admit. Intersected key-by-key so it
     # can only tighten the excited basis, never loosen it.
     if extra_restrictions:
-        excited_restrictions = _intersect_restrictions(excited_restrictions, extra_restrictions)
+        excited_restrictions = intersect_windows(excited_restrictions, extra_restrictions)
     if verbose and excited_restrictions is not None and (block_basis.comm is None or block_basis.comm.rank == 0):
         print("Excited state restrictions:")
         for indices, occupations in excited_restrictions.items():
@@ -1267,7 +1248,7 @@ def _gf_per_state_restrict(chain_restrict):
     (its own occupations are 0/1 to machine precision where the ensemble average is merely close),
     so its own window carries more restriction subsets -> a smaller excited basis and cheaper
     Lanczos. Each work unit uses the *union* of the per-state windows over the eigenstates it stacks
-    (:func:`_union_restrictions`) so the shared block Krylov space still contains every seed's
+    (:func:`basis_restrictions.union_windows`) so the shared block Krylov space still contains every seed's
     dynamics; at the default ``GF_EIGENSTATE_GROUP=1`` every unit is a single state, giving the full
     per-state tightening. The seed ``c_i|psi_e>`` is unchanged (an impurity operator preserves bath
     occupation, so the seed lies inside ``psi_e``'s own window), so only the excited-basis span

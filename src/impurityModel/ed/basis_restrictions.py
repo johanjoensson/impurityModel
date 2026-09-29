@@ -82,6 +82,61 @@ CHAIN_FREEZE_WEIGHT_EXPONENT = 0.5
 _USE_DEFAULT = object()
 
 
+def union_windows(windows):
+    r"""Loosest single occupation window admitting every input window's feasible set.
+
+    Windows are ``{frozenset(orbitals): (n_min, n_max)}`` conjunctions; ``None`` means
+    **unrestricted** (the convention of every window helper, and of :meth:`Basis.clone` since
+    review ledger C4). A work unit that stacks several eigenstates shares one Krylov space, which
+    must contain every stacked seed's dynamics, so the unit window admits a determinant feasible
+    for **any** input: only the keys common to all inputs survive (a key absent from one input
+    bounds nothing there), each loosened to ``(min of mins, max of maxs)``. The result is a
+    superset of every input. Any ``None`` input, or no common key, gives ``None``; a single
+    input is returned as is.
+    """
+    windows = list(windows)
+    if not windows or any(w is None for w in windows):
+        return None
+    if len(windows) == 1:
+        return windows[0]
+    common = set(windows[0])
+    for w in windows[1:]:
+        common &= set(w)
+    if not common:
+        return None
+    out = {}
+    for key in common:
+        bounds = [w[key] for w in windows]
+        out[key] = (min(lo for lo, _ in bounds), max(hi for _, hi in bounds))
+    return out
+
+
+def intersect_windows(base, extra):
+    """Conjunction of two occupation windows: a determinant passes iff it passes both.
+
+    Shared keys are intersected (``max`` of the mins, ``min`` of the maxs); keys unique to either
+    side are kept. ``None`` (or an empty window) means unrestricted, so the other window is
+    returned. An intersection that admits nothing -- ``lo > hi`` on some key -- raises: it would
+    otherwise yield an excited basis with no determinants and a Green's function of silent zeros
+    (review ledger C4).
+    """
+    if not extra:
+        return None if not base else dict(base)
+    if not base:
+        return dict(extra)
+    merged = dict(base)
+    for key, (lo, hi) in extra.items():
+        if key in merged:
+            blo, bhi = merged[key]
+            merged[key] = (max(blo, lo), min(bhi, hi))
+        else:
+            merged[key] = (lo, hi)
+    empty = {tuple(sorted(key)): bounds for key, bounds in merged.items() if bounds[0] > bounds[1]}
+    if empty:
+        raise ValueError(f"the occupation windows admit no determinant: infeasible bounds {empty}")
+    return merged
+
+
 def get_effective_restrictions(basis) -> dict[frozenset[int], tuple[int, int]]:
     """Calculate the actual min/max occupations observed across the current basis.
 

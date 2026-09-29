@@ -10,6 +10,7 @@ from mpi4py import MPI
 
 # Local imports
 import impurityModel.ed.greens_function as gf
+from impurityModel.ed.basis_restrictions import intersect_windows
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp
@@ -730,7 +731,7 @@ def calc_spectra(
         group_restrictions = [base_restrictions] * len(tOps)
     else:
         group_restrictions = [
-            base_restrictions if sec is None else gf._intersect_restrictions(base_restrictions, sec)
+            base_restrictions if sec is None else intersect_windows(base_restrictions, sec)
             for sec in sector_restrictions
         ]
 

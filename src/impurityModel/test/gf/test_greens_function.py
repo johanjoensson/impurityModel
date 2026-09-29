@@ -424,12 +424,12 @@ def test_get_Greens_function_eigenstate_grouping_with_bath():
 
 
 def test_union_restrictions_semantics():
-    """``_union_restrictions`` returns the loosest single window admitting every input's feasible
+    """``basis_restrictions.union_windows`` returns the loosest single window admitting every input's feasible
     set: keep only subset keys common to all states, loosen each shared bound to (min lo, max hi),
     and yield ``None`` (unconstrained) if any input is ``None`` or no key is common. This is the
     superset that lets a grouped unit's shared Krylov space contain every stacked state's dynamics.
     """
-    from impurityModel.ed.gf_units import _union_restrictions
+    from impurityModel.ed.basis_restrictions import union_windows as _union_restrictions
 
     a = frozenset({0, 1, 2})
     b = frozenset({3, 4})

@@ -16,6 +16,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
+from impurityModel.ed.basis_restrictions import union_windows
 from impurityModel.ed.basis_split import _pack_units, split_basis_and_redistribute_psi
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
@@ -310,7 +311,7 @@ def enumerate_gf_units(
         Determinant-weight cutoff for the seed application.
     per_state_restrictions : list, optional
         Per-eigenstate excited windows; when given, each unit's window is the union
-        (:func:`_union_restrictions`) over the eigenstates it stacks instead of the group
+        (:func:`basis_restrictions.union_windows`) over the eigenstates it stacks instead of the group
         fallback.
 
     Returns
@@ -336,7 +337,7 @@ def enumerate_gf_units(
     # stacks (exactly that state's window for a single-state unit). Falls back
     # to the group window when per-state restrictions are disabled or state-independent.
     if per_state_restrictions is not None:
-        unit_restrictions = [_union_restrictions([per_state_restrictions[ei] for ei in u.chunk]) for u in units]
+        unit_restrictions = [union_windows([per_state_restrictions[ei] for ei in u.chunk]) for u in units]
     else:
         unit_restrictions = [group_restrictions[u.group_i] for u in units]
     return units, unit_seeds, unit_restrictions
@@ -633,33 +634,3 @@ def _gf_eigenstate_group():
     :data:`config.GF_EIGENSTATE_GROUP`.
     """
     return config.GF_EIGENSTATE_GROUP.get()
-
-
-def _union_restrictions(rests):
-    r"""Loosest single restriction dict admitting every input window's feasible set.
-
-    A work unit that stacks several eigenstates shares one block Krylov space, which must contain
-    *every* stacked seed's dynamics; so the unit window must admit a determinant that is feasible
-    for **any** state in the group. Restriction dicts are conjunctions of per-subset ``(min, max)``
-    occupation bounds, so the group window keeps only the subset keys **common to all** states (a
-    key absent from some state imposes no bound there, hence cannot be enforced for the group) and
-    loosens each shared key to ``(min of mins, max of maxs)``. The result is a superset of each
-    input window, so it never truncates a stacked state's Krylov space. ``None`` means "no
-    restriction"; if any input is ``None`` (unconstrained) the union is ``None``. For a single-state
-    group (``g = 1``) the union is exactly that state's window -- maximal tightening.
-    """
-    rests = list(rests)
-    if not rests or any(r is None for r in rests):
-        return None
-    if len(rests) == 1:
-        return rests[0]
-    common = set(rests[0])
-    for r in rests[1:]:
-        common &= set(r)
-    if not common:
-        return None
-    out = {}
-    for key in common:
-        bounds = [r[key] for r in rests]
-        out[key] = (min(lo for lo, _ in bounds), max(hi for _, hi in bounds))
-    return out

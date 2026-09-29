@@ -206,6 +206,18 @@ class _LocalBasisView:
         return f"<local basis of {len(self._keys)} determinants>"
 
 
+class _Inherit:
+    """Sentinel type of :data:`INHERIT`."""
+
+    def __repr__(self) -> str:
+        return "INHERIT"
+
+
+#: :meth:`Basis.clone` default for ``restrictions`` / ``weighted_restrictions``: keep the parent's
+#: window. Distinct from ``None``, which means unrestricted.
+INHERIT = _Inherit()
+
+
 class Basis:
     """Many-body basis of Slater determinants.
 
@@ -358,12 +370,15 @@ class Basis:
         self.state_bounds = [None] * comm.size if self.is_distributed else [None]
         self.add_states(initial_basis)
 
-    def clone(self, initial_basis=None, restrictions=None, weighted_restrictions=None, verbose=None, comm=None):
+    def clone(self, initial_basis=None, restrictions=INHERIT, weighted_restrictions=INHERIT, verbose=None, comm=None):
         """Create a new Basis instance, optionally overriding initial_basis and restrictions.
 
         If initial_basis is None, the new basis will start with self.local_basis.
-        If restrictions is None, the new basis will inherit self.restrictions.
-        If weighted_restrictions is None, the new basis inherits self.weighted_restrictions.
+        ``restrictions`` / ``weighted_restrictions``: :data:`INHERIT` (the default) keeps this
+        basis's window; ``None`` means **unrestricted** -- the meaning every window helper
+        (:func:`basis_restrictions.union_windows` and friends) gives it. ``None`` used to mean
+        "inherit", so a Green's-function unit whose excited window had nothing to confine ran
+        under the (unwidened) ground-state window instead (review ledger C4).
         If comm is None, the new basis will inherit self.comm.
         """
         return self._carry_cap_settings(
@@ -371,9 +386,9 @@ class Basis:
                 impurity_orbitals=self.impurity_orbitals,
                 bath_states=self.bath_states,
                 initial_basis=initial_basis if initial_basis is not None else list(self.local_basis),
-                restrictions=restrictions if restrictions is not None else self.restrictions,
+                restrictions=self.restrictions if restrictions is INHERIT else restrictions,
                 weighted_restrictions=(
-                    weighted_restrictions if weighted_restrictions is not None else self.weighted_restrictions
+                    self.weighted_restrictions if weighted_restrictions is INHERIT else weighted_restrictions
                 ),
                 split_threshold=self.split_threshold,
                 truncation_threshold=self.truncation_threshold,
