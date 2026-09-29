@@ -48,6 +48,7 @@ The results are written to a ``chi.h5`` file (one group per operator with ``real
 import numpy as np
 
 from impurityModel.ed import spectra
+from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.observables import make_impurity_casimir_operators, make_spin_operators
 from impurityModel.ed.spin_pairs import resolve_spin_pairs
@@ -208,9 +209,7 @@ def calc_susceptibility(
         operators, skipped = build_susceptibility_operators(hOp, basis, rot_to_spherical)
 
     es = np.asarray(es, dtype=float)
-    e0 = float(np.min(es))
-    boltzmann = np.exp(-(es - e0) / tau)
-    boltzmann /= np.sum(boltzmann)
+    boltzmann = ThermalEnsemble(es, tau).probabilities
     manifolds = _group_manifolds(es, degeneracy_tol)
     redistribute = basis.redistribute_psis if basis.is_distributed else (lambda state: (state,))
 

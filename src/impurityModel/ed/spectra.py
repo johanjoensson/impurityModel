@@ -10,6 +10,7 @@ from mpi4py import MPI
 
 # Local imports
 import impurityModel.ed.greens_function as gf
+from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.basis_restrictions import intersect_windows
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
@@ -811,8 +812,8 @@ def calc_spectra(
             [(names[i].ljust(width), *max_basis[i]) for i in sorted(max_basis)],
         )
 
-    e0 = np.min(es)
-    Z = np.sum(np.exp(-(es - e0) / tau))
+    thermal = ThermalEnsemble(es, tau)
+    e0, Z = thermal.e0, thermal.Z
     meshes = [(w, delta)] + list(extra_meshes or [])
     gs_per_mesh = []
     for mesh, mesh_delta in meshes:
@@ -843,7 +844,7 @@ def _component_seed_moments(hOp, comp_ops, psis, es, e0, tau, basis, slaterWeigh
     """
     m = len(comp_ops)
     comm = basis.comm
-    weights = np.exp(-(np.asarray(es) - e0) / tau)
+    weights = ThermalEnsemble(es, tau).weights
     m0 = np.zeros(m)
     m1 = np.zeros(m)
     work = basis.clone(initial_basis=[], verbose=False, comm=comm)
@@ -955,7 +956,7 @@ def calc_spectra_tensor(
     # each group (the ensemble is a complete symmetry multiplet). Otherwise fall back to full.
     if diagonalizable and len(rep_ops) < m:
         all_rot_ops = [_combine_component_ops(component_ops, Q[:, a]) for a in range(m)]
-        e0 = np.min(es)
+        e0 = ThermalEnsemble(es, tau).e0
         m0, m1 = _component_seed_moments(hOp, all_rot_ops, psis, es, e0, tau, basis, slaterWeightMin)
         if not _moments_consistent(m0, m1, reduction.group_of_column):
             diagonalizable = False
@@ -978,8 +979,8 @@ def calc_spectra_tensor(
     extra = sectors[0] if shared else None
 
     comm = basis.comm
-    e0 = np.min(es)
-    Z = np.sum(np.exp(-(es - e0) / tau))
+    thermal = ThermalEnsemble(es, tau)
+    e0, Z = thermal.e0, thermal.Z
     alphas, betas, r = gf.calc_Greens_function_with_offdiag(
         hOp,
         rep_ops,

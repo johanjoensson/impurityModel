@@ -7,7 +7,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import config
 from impurityModel.ed import gf_diagnostics as _gfd
-from impurityModel.ed.average import thermal_average_scale_indep
+from impurityModel.ed.average import ThermalEnsemble, thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.BlockLanczosArray import Reort
@@ -567,8 +567,8 @@ def get_Greens_function(
             for p, ei in enumerate(unit.chunk):
                 a_list[ei], b_list[ei], r_list[ei] = alphas, betas, r_slices[p]
 
-        e0 = np.min(es)
-        Z = np.sum(np.exp(-(np.asarray(es) - e0) / tau))
+        thermal = ThermalEnsemble(es, tau)
+        e0, Z = thermal.e0, thermal.Z
         gs_matsubara = (
             [np.empty((len(matsubara_mesh), len(b), len(b)), dtype=complex) for b in blocks]
             if matsubara_mesh is not None
@@ -734,9 +734,8 @@ def _run_evaluated_gf_units(
     and integrated-weight checks are expressed in seed-projection/continued-fraction terms
     these paths do not produce.
     """
-    e0 = np.min(es)
-    boltzmann = np.exp(-(np.asarray(es) - e0) / tau)
-    Z = float(np.sum(boltzmann))
+    thermal = ThermalEnsemble(es, tau)
+    e0, boltzmann, Z = thermal.e0, thermal.weights, thermal.Z
     axis_lens = [len(m) for m in (matsubara_mesh, omega_mesh) if m is not None]
 
     # Streaming accumulators, populated on global rank 0 only (reduce_fn's contract).

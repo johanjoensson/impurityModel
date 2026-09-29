@@ -21,6 +21,7 @@ from mpi4py import MPI
 
 import impurityModel.ed.greens_function as gf
 from impurityModel.ed import config
+from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
 from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.gf_solvers import solve_shifted_block
@@ -540,8 +541,8 @@ def _rixs_map_flat(
     # carries none, so the clones below then inherit split_basis.weighted_restrictions unchanged.
     excited_weighted_restrictions = widen_weighted_restrictions(basis.weighted_restrictions)
 
-    E0 = min(Es)
-    Z = np.sum(np.exp(-(Es - E0) / tau))
+    thermal = ThermalEnsemble(Es, tau)
+    Z = thermal.Z
     comm = basis.comm
     n_win = len(wIns)
 
@@ -589,7 +590,7 @@ def _rixs_map_flat(
     def kernel(split_basis, u, seeds):
         e, w_chunk = unit_infos[u]
         E_e = Es[e]
-        thermal_weight = np.exp(-(E_e - E0) / tau)
+        thermal_weight = thermal.weights[e]
         sub_comm = split_basis.comm
         # green_basis hosts the out-transition block-Green solves and accumulates states over
         # the chunk; tmp_basis hosts the intermediate resolvent and is rebuilt per wIn point.

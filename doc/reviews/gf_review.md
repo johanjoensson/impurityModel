@@ -67,6 +67,14 @@ Lanczos path is unchanged from `aba6908`. Harness: `test/gf/test_gf_real_workloa
 |---|---|---|---|---|
 | NiO 8 bath/orbital (`impmod_tests/NiO/impmod/8_BathStates_peeledGeometry_noneReorthonormalization_3_processors_`, 88 spin-orbitals) | 3 | 273.3 s | 734 / 373 / 374 MiB | 12 units on 3 one-rank colors (5/3/4); removal units 22-24k dets, ~948 Lanczos blocks; addition units 0-20 dets |
 
+**Golden after Phases 3 and 4a** (commit `97a730a`; files in the gitignored `debug/gf_review/`):
+the same NiO 8-bath run gives `sigma`, `sigma_real` and `sigma_static` **bitwise identical** to the
+baseline, in 250.1 s (M2's per-step broadcast and C11's rerun loop cost nothing measurable). The
+harness does not store `sigma_moment_1`/`_2`, the quantities C3 changes. Spectra golden:
+`examples/NiO_CF_spectra.toml` at `-n 3`, 52.6 s, `debug/gf_review/golden/nio_cf/spectra.h5`.
+Phase 5 commits are gated on these goldens: bitwise for pure moves, about 1e-13 relative where
+sums are reordered.
+
 The 15-bath NiO replay is too heavy for a per-phase loop: its ground state alone took more than
 10 min at `-n 1`, dominated by X1 below.
 
