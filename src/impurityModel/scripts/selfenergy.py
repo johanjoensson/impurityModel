@@ -13,6 +13,7 @@ from dataclasses import replace
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed import config
 from impurityModel.ed.model import (
     EXCITATION_BUDGET_DEFAULT,
     BasisOptions,
@@ -129,7 +130,7 @@ def add_arguments(parser):
         "--gf-method",
         type=str,
         default="lanczos",
-        choices=["lanczos", "bicgstab", "sliced", "cipsi"],
+        choices=list(config.GF_METHODS),
         help="Green's-function kernel.",
     )
     parser.add_argument("--dense-cutoff", type=int, default=500, help="Use a dense eigensolver below this size.")

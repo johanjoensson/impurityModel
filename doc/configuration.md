@@ -44,14 +44,6 @@ persist across a shell session the way a memory budget or a solver tolerance doe
 | `GF_CIPSI_SCORER` | str | `'de2'` | Candidate importance: ``de2`` is the resolvent weight ``sum_i |<Dj|H|X_i>|^2 / |z - E_Dj|^2`` (frequency-targeted); ``amplitude`` drops the energy denominator (the bare-coupling baseline the frequency targeting must beat). |
 | `GF_CIPSI_PT2` | bool | `False` | Add the second-order (Loewdin downfolding) correction of the discarded boundary to G: ``dG_ij = sum_D <D|H|X_i> <D|H|X_j> / (z - E_D)`` over the final round's unadmitted candidates (complex-symmetric approximation, exact for a real Hamiltonian matrix). Its magnitude is recorded in the stats either way -- it doubles as a truncation-error bar. |
 
-## Spectrum slicing (``gf_method="sliced"``)
-
-| Variable | Type | Default | Description |
-| --- | --- | --- | --- |
-| `GF_SLICES` | int | `8` | Number of Chebyshev windows tiling the real-axis evaluation band. |
-| `GF_SLICE_DEGREE` | int | `0` | Chebyshev filter degree; 0 = auto (derived from the bandwidth / slice-width ratio). |
-| `GF_SLICE_TOL` | float | `0.0` | Amplitude truncation applied to the filtered slice seeds; 0 = no truncation. |
-
 ## Green's-function work-unit decomposition
 
 | Variable | Type | Default | Description |

@@ -643,7 +643,6 @@ def block_Green_bicgstab(
     verbose=False,
     excited_restrictions=None,
     excited_weighted_restrictions=None,
-    bra_seeds=None,
 ):
     r"""Per-frequency BiCGSTAB Green's function for one work unit (memory-first path).
 
@@ -688,12 +687,6 @@ def block_Green_bicgstab(
         :data:`config.GF_BICGSTAB_ATOL`.
     max_iter : int, optional
         Per-point iteration bound; defaults to :data:`config.GF_BICGSTAB_MAX_ITER`.
-    bra_seeds : list of ManyBodyState, optional
-        Cross-element mode (the spectrum-slicing driver): a second flat block in the same
-        ``(eigenstate, operator)`` order whose columns form the *bra* of the Gram,
-        ``G_e[i, j] = <bra_i | X_j>`` -- e.g. the unfiltered seeds against a filtered
-        right-hand side, computing ``<v| (z-H)^{-1} p_s(H) |v>``. ``None`` (default) uses
-        the seeds themselves (the symmetric element).
 
     Returns
     -------
@@ -741,9 +734,6 @@ def block_Green_bicgstab(
 
     for p in range(n_e):
         seeds = list(psi_arr[p * n_ops : (p + 1) * n_ops])
-        # Cross-element mode (spectrum slicing): the bra of the Gram is a separate block
-        # (the unfiltered seeds) riding along through every per-point redistribution.
-        bras = list(bra_seeds[p * n_ops : (p + 1) * n_ops]) if bra_seeds is not None else None
         for ax, z_axis in enumerate(z_axes):
             z_shifted = z_axis + es[p]
             # Fresh warm-start chain per (eigenstate, axis): extrapolating across axes (or
@@ -759,23 +749,12 @@ def block_Green_bicgstab(
                 # Rebuild-and-discard: the basis holds only this point's seed + warm-start
                 # support; redistribute_psis aligns the amplitudes to the fresh ownership
                 # layout (the solver assumes its states are distributed per `basis`).
-                #
-                # The bras are redistributed but deliberately NOT added to the basis. They
-                # enter only the closing Gram, and block_inner_cy merge-joins the two key
-                # vectors, so a determinant in supp(bra)\supp(X) contributes nothing;
-                # ownership is by determinant hash, which is basis-independent, so the
-                # merge-join stays MPI-consistent. Admitting them would pin every basis to
-                # the *unfiltered* seed support -- exactly the quantity spectrum slicing
-                # exists to avoid paying (on FCC Ni the unfiltered seeds saturate the cap,
-                # so it would have silently capped every slice at the union support).
-                carried = seeds + x0 + (bras if bras is not None else [])
+                carried = seeds + x0
                 tmp_basis.clear()
                 tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
                 redistributed = tmp_basis.redistribute_psis(*carried)
                 seeds = list(redistributed[:n_ops])
                 x0 = list(redistributed[n_ops : 2 * n_ops])
-                if bras is not None:
-                    bras = list(redistributed[2 * n_ops :])
                 stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], int(tmp_basis.size))
 
                 if np.isfinite(cap) and tmp_basis.size > cap:
@@ -825,13 +804,9 @@ def block_Green_bicgstab(
                     if stats["retained_size"] is None or retained < stats["retained_size"]:
                         stats["retained_size"] = retained
 
-                # G_e[i, j] = <bra_i | X_j> (bra = seeds unless the caller supplied a
-                # separate bra block); both blocks live on tmp_basis's layout, so the
+                # G_e[i, j] = <seed_i | X_j>; both blocks live on tmp_basis's layout, so the
                 # local Gram + Allreduce is the whole inner product (no state-vector gather).
-                gram = block_inner_cy(
-                    ManyBodyState.from_states(bras if bras is not None else seeds),
-                    X,
-                )
+                gram = block_inner_cy(ManyBodyState.from_states(seeds), X)
                 if sub_comm is not None:
                     sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
                 G_axes[ax][p, k] = gram
@@ -922,8 +897,7 @@ def block_Green_cipsi(
 
     Every ``GF_CIPSI_*`` knob is read from :mod:`~impurityModel.ed.config`; the solver
     tolerances reuse the bicgstab knobs (``GF_BICGSTAB_ATOL`` etc.). Parameters and the
-    ``(G_axes, stats)`` return follow :func:`block_Green_bicgstab` exactly (no ``bra_seeds``
-    mode); ``stats`` adds ``rounds``, ``max_boundary_rel``, ``boundary_tol`` and
+    ``(G_axes, stats)`` return follow :func:`block_Green_bicgstab` exactly; ``stats`` adds ``rounds``, ``max_boundary_rel``, ``boundary_tol`` and
     ``pt2_max_correction``.
     """
     atol = config.GF_BICGSTAB_ATOL.get() if atol is None else atol

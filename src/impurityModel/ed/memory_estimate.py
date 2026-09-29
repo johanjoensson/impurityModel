@@ -572,18 +572,10 @@ def estimate_gf_peak_bytes(
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
     # "cipsi" shares the bicgstab live-vector model: same per-point solver, and the
     # selection loop's basis is bounded by the same cap (GF_CIPSI_BUDGET defaults to it).
-    if method in ("bicgstab", "sliced", "cipsi"):
+    if method in ("bicgstab", "cipsi"):
         if gmres_restart is None:
             gmres_restart = config.GF_GMRES_RESTART.get()
         live = 12 + gmres_restart + 3
-        if method == "sliced":
-            # The filter stage's transient (3 recurrence blocks + one accumulator per
-            # window) runs before the solves; the peak is whichever transient is larger.
-            # At most 2 rest windows complete the partition -- one collapses whenever the
-            # evaluation band reaches a spectral bound, so this is an upper bound, which is
-            # what a peak model wants.
-            n_windows = config.GF_SLICES.get() + 2
-            live = max(live, 3 + n_windows)
         return basis_bytes + live * local_rows * row_bytes
     live_bytes = 3 * local_rows * row_bytes
     # The recurrence's transient matvec fanout: `wp_raw = h_op.apply_block(q_curr, ...)` inside
@@ -601,7 +593,7 @@ def estimate_gf_peak_bytes(
     # `truncation_threshold` (a `_CappedBasisProxy` sets `caps_growth`, serial or not), and a
     # finite cap is exactly the case this function is called to size.
     #
-    # Scoped to the Lanczos recurrence only (not the bicgstab/sliced/cipsi branch above, which
+    # Scoped to the Lanczos recurrence only (not the bicgstab/cipsi branch above, which
     # returned already): that branch runs a different per-point solver whose own live-block model
     # is separate, and its transient has not been measured.
     fanout_bytes = (

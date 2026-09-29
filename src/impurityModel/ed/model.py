@@ -22,7 +22,7 @@ from typing import Any, Optional, Union
 
 import numpy as np
 
-from impurityModel.ed import atomic_physics, h0_format
+from impurityModel.ed import atomic_physics, config, h0_format
 from impurityModel.ed.hamiltonian_io import get_hamiltonian_operator, get_noninteracting_hamiltonian_operator
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.operator_algebra import addOps, c2i, matrixToIOp
@@ -1080,6 +1080,23 @@ def _optional_float(value):
     return None if value is None else float(value)
 
 
+def _replayable_gf_method(gf_method):
+    """Map a ``gf_method`` recorded by an older run onto one this version still runs.
+
+    An archive is a record of a finished calculation, so replaying it must not fail on a kernel
+    that has since been retired (:data:`config.RETIRED_GF_METHODS`): it is replayed with the
+    default Lanczos kernel instead, loudly. Every other front end rejects a retired value.
+    """
+    if gf_method in config.RETIRED_GF_METHODS:
+        warnings.warn(
+            f"archive records gf_method={gf_method!r}, which {config.RETIRED_GF_METHODS[gf_method]}; "
+            "replaying it with gf_method='lanczos'.",
+            stacklevel=2,
+        )
+        return "lanczos"
+    return gf_method
+
+
 def _archive_attr(attrs, key, default=None):
     """Group attribute with the interface's ``None``-stored-as-the-string-``"None"`` undone."""
     value = attrs.get(key, default)
@@ -1194,7 +1211,7 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         # Absent from archives written before it was recorded: those runs used the default.
         "e_pt2_tol": _optional_float(_archive_attr(attrs, "e_pt2_tol")),
         "sparse_green": bool(_archive_attr(attrs, "sparse_green", True)),
-        "gf_method": str(_archive_attr(attrs, "gf_method", "lanczos")),
+        "gf_method": _replayable_gf_method(str(_archive_attr(attrs, "gf_method", "lanczos"))),
     }
 
 
@@ -1368,7 +1385,7 @@ class SolverOptions:
         Use a dense eigensolver below this matrix size.
     sparse_green : bool
         Whether the Green's function uses the sparse block-Lanczos path.
-    gf_method : {"lanczos", "bicgstab", "sliced", "cipsi"}
+    gf_method : {"lanczos", "bicgstab", "cipsi"}
         Green's-function kernel. See :func:`impurityModel.ed.greens_function.get_Greens_function`.
     """
 

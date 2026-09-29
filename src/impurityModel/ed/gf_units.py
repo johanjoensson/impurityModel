@@ -53,32 +53,6 @@ def gf_cap(basis):
     return getattr(basis, "truncation_threshold", np.inf)
 
 
-def gf_cap_on_full_comm(basis, width, reort=None, gf_method="lanczos"):
-    """The GF cap for work done on ``basis.comm`` as a whole, before any unit split (the sliced
-    driver's filter stage). An auto cap is the calculation's pinned cap for this kernel
-    (:func:`_pinned_auto_gf_cap`) -- the same number the units then run under, so filtered seeds
-    are never wider than the units' cap; otherwise :func:`gf_cap`. Collective on ``basis.comm``
-    when auto (memory probe + resident MAX)."""
-    if not _is_auto_gf(basis):
-        return gf_cap(basis)
-    resident = current_rss_bytes()
-    if basis.comm is not None and basis.comm.size > 1:
-        resident = basis.comm.allreduce(resident, op=MPI.MAX)
-    ranks = basis.comm.size if basis.comm is not None else 1
-    return _pinned_auto_gf_cap(basis, [ranks], width, reort, gf_method, resident)
-
-
-def gf_guard_on_full_comm(basis):
-    """``(budget, policy)`` of the GF memory guard for work on ``basis.comm`` before any split (the
-    sliced driver's filter stage), sized the way ``run_units_distributed`` sizes it for the units.
-    Collective on ``basis.comm`` (resident MAX, memory probe): call it on every rank."""
-    resident = current_rss_bytes()
-    if basis.comm is not None and basis.comm.size > 1:
-        resident = basis.comm.allreduce(resident, op=MPI.MAX)
-    budget = _gf_memory_budget(available_bytes_per_rank(basis.comm), resident)
-    return budget, ("tighten" if _may_lower_gf_cap(basis) else "warn")
-
-
 def _describe_gf_cap(basis, cap, layout):
     """The ``determinant cap:`` line for a GF stage, or ``None`` for a basis without a policy."""
     policy = getattr(basis, "cap_policy", None)

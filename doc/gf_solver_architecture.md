@@ -49,7 +49,6 @@ self-energy run, an XAS spectrum, and a RIXS map — only the `kernel` differs.
 | --- | --- | --- | --- |
 | `"lanczos"` *(default)* | `get_Greens_function` | `_block_green_group` → `block_green_impl` (array) / `block_Green_sparse` (state) | One block-Lanczos recurrence per unit builds a continued fraction serving the **whole frequency mesh** at once. The workhorse. |
 | `"bicgstab"` | `_get_greens_function_bicgstab` | `block_Green_bicgstab` | One linear solve **per frequency point**, basis rebuilt-and-discarded each point. Wins on memory (the live basis never exceeds one point's support) at a time cost. |
-| `"sliced"` | `_get_greens_function_sliced` | Chebyshev spectral-window terms | Decomposes `G` into energy-window terms with per-slice bases. **Documented failure** (`doc/plans/spectrum_slicing.md`): the live basis is the H-connectivity closure of the seed support, invariant under filtering, so the projected win never materialized. Retained; needs a real-axis mesh, else falls back to `bicgstab`. |
 
 Orthogonal switches on the default Lanczos path:
 

@@ -52,7 +52,7 @@ Known failures are pinned as xfails that name their ledger row. They are strict 
 | M4 | ! | The split-comm free sits outside the `finally`, and Clone frees happen only on the normal path. | `gf_units.py:648`, `gf_solvers.py:852`, `rixs.py:636` | | open |
 | M5 | · | RIXS `solver_stats` are overcounted by ranks-per-color. | `rixs.py:246` | | open |
 | R1 | ! | A causality-violating recurrence (injected: removal side run with +δ) never satisfies the convergence monitor, and the sparse resume loop doubles its budget with no upper bound, so the unit runs until the Krylov space closes (>150 s on a 792-det sector) instead of failing fast. | `gf_solvers.py:443-480` | bug-injection run (Phase 0) | observed; decide in Phase 3 (bounded budget + diagnostic) |
-| S1 | · | `gf_method="sliced"` misses the exact G by about 1e-5 relative on the real axis (above the 2e-6 cell tolerance). The path is being retired. | `greens_function.py:930` | branch matrix `method=sliced/model=1` | confirmed; retired in Phase 1 |
+| S1 | · | `gf_method="sliced"` misses the exact G by about 1e-5 relative on the real axis (above the 2e-6 cell tolerance). The path is being retired. | `greens_function.py:930` | branch matrix `method=sliced/model=1` | **retired** (Phase 1a): driver, `GF_SLICE_*`, `bra_seeds`, the slicing diagnostic and memory branch removed; the Chebyshev filter module stays |
 
 ## Performance and parallelism
 
@@ -69,3 +69,9 @@ Each of these is adopted only with a measurement against the Phase 0 baseline.
 | P1 | The GS basis is replicated into every color although kernels clone only the seed support. | open |
 | P2 | Static LPT packing on seed-mass estimates; ranks ∝ mass. | open |
 | P3 | Serial rank-0 work (mesh evaluation, diagnostics, Dyson); `simulate_spectra` re-splits per spectrum. | open |
+
+## Out of scope, found along the way
+
+| id | claim | evidence | verdict |
+|---|---|---|---|
+| X1 | The ground-state TRLM continuation loop is dominated by bookkeeping, not the matvec. About 53% of samples go to full CGS2 against the whole retained basis (`trlm.py:528,535-536`, unconditional whatever `reort` says). About 22% go to re-copying the growing Krylov basis on every block (`concat_cols` → `np.concatenate`, `trlm.py:585`), which is quadratic in the Krylov dimension. The sparse matvec is about 2%. | py-spy, 30 s / 1484 samples, NiO 15-bath replay, cap 50k, `-n 1` | observed; preallocating `Q_basis` is a candidate follow-up (ground state, not GF) |

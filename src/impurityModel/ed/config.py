@@ -46,7 +46,7 @@ class Knob:
     Parameters
     ----------
     name : str
-        The environment variable, e.g. ``"GF_SLICES"``.
+        The environment variable, e.g. ``"GF_EIGENSTATE_GROUP"``.
     kind : {"int", "float", "bool", "str"}
         How the raw string is parsed.
     default : Any
@@ -86,6 +86,24 @@ class Knob:
 def _register(*knobs: Knob) -> dict[str, Knob]:
     return {knob.name: knob for knob in knobs}
 
+
+# --- Green's-function kernels (the ``gf_method`` solver option) ----------------------------
+# Not knobs -- ``gf_method`` is a solver option -- but every front end (the driver, the TOML
+# schema, the CLI, archive replay) must accept the same set, and this leaf module is the one
+# they all import.
+
+#: Accepted ``gf_method`` values.
+GF_METHODS = ("lanczos", "bicgstab", "cipsi")
+
+#: Retired ``gf_method`` values, each with the reason and the replacement. Archive replay maps
+#: them to ``"lanczos"`` with a warning; every other front end rejects them with this message.
+RETIRED_GF_METHODS = {
+    "sliced": (
+        "was retired: spectrum slicing never delivered its projected memory win (the live basis "
+        "is the H-connectivity closure of the seed support, doc/plans/spectrum_slicing.md) and "
+        "missed the exact G by ~1e-5 (doc/reviews/gf_review.md, S1); use 'lanczos' or 'bicgstab'"
+    ),
+}
 
 # --- Green's function: per-frequency BiCGSTAB solver (gf_method="bicgstab") -----------------
 
@@ -229,38 +247,6 @@ GF_CIPSI_PT2 = Knob(
     G: ``dG_ij = sum_D <D|H|X_i> <D|H|X_j> / (z - E_D)`` over the final round's unadmitted
     candidates (complex-symmetric approximation, exact for a real Hamiltonian matrix). Its
     magnitude is recorded in the stats either way -- it doubles as a truncation-error bar.""",
-)
-
-# --- Green's function: spectrum slicing (gf_method="sliced") --------------------------------
-# Retained as a documented failure: doc/plans/spectrum_slicing.md records why the projected
-# 2-8x win never materialized (the live basis is the H-connectivity closure of the seed
-# support, invariant under filtering).
-
-GF_SLICES = Knob(
-    name="GF_SLICES",
-    kind="int",
-    default=8,
-    minimum=1,
-    group="sliced",
-    doc="Number of Chebyshev windows tiling the real-axis evaluation band.",
-)
-
-GF_SLICE_DEGREE = Knob(
-    name="GF_SLICE_DEGREE",
-    kind="int",
-    default=0,
-    minimum=0,
-    group="sliced",
-    doc="Chebyshev filter degree; 0 = auto (derived from the bandwidth / slice-width ratio).",
-)
-
-GF_SLICE_TOL = Knob(
-    name="GF_SLICE_TOL",
-    kind="float",
-    default=0.0,
-    minimum=0.0,
-    group="sliced",
-    doc="Amplitude truncation applied to the filtered slice seeds; 0 = no truncation.",
 )
 
 # --- Green's function: work-unit decomposition ---------------------------------------------
@@ -962,9 +948,6 @@ KNOBS: dict[str, Knob] = _register(
     GF_CIPSI_BOUNDARY_TOL,
     GF_CIPSI_SCORER,
     GF_CIPSI_PT2,
-    GF_SLICES,
-    GF_SLICE_DEGREE,
-    GF_SLICE_TOL,
     GF_EIGENSTATE_GROUP,
     GF_APPLY_ROW_CHUNKS,
     GF_OPERATOR_SPLIT,
@@ -998,7 +981,6 @@ KNOBS: dict[str, Knob] = _register(
 GROUP_TITLES = {
     "bicgstab": 'Per-frequency BiCGSTAB solver (``gf_method="bicgstab"``)',
     "cipsi": 'Per-frequency CIPSI-selected solver (``gf_method="cipsi"``)',
-    "sliced": 'Spectrum slicing (``gf_method="sliced"``)',
     "units": "Green's-function work-unit decomposition",
     "convergence": "Block-Lanczos convergence monitor",
     "rixs-solvers": "RIXS shift-recycling solver tiers",

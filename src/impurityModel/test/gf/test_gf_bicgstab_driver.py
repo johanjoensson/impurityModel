@@ -15,7 +15,6 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.basis_transcription import build_dense_matrix
 from impurityModel.ed.gf_solvers import block_Green_bicgstab
 from impurityModel.ed.greens_function import _gf_signed_axes
 from impurityModel.ed.manybody_basis import Basis
@@ -169,79 +168,10 @@ def test_driver_rejects_unknown_method():
         _run_driver("haydock", None)
 
 
-def test_sliced_driver_matches_partial_lanczos():
-    """gf_method='sliced': the Chebyshev window terms sum back to the exact G (partition of
-    unity is exact by construction), so the sliced driver must reproduce the PARTIAL-reort
-    Lanczos G on both meshes -- and its report must carry the slicing record."""
-    m_l, r_l, _ = _run_driver("lanczos", "partial")
-    m_s, r_s, report = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "3"})
-    np.testing.assert_allclose(m_s[0], m_l[0], atol=1e-6)
-    np.testing.assert_allclose(r_s[0], r_l[0], atol=1e-6)
-    names = {d.name for d in report.diagnostics}
-    assert "slicing" in names and "bicgstab" in names
-    assert all(d.severity.name != "FAIL" for d in report.diagnostics)
-
-
-def _reported_windows(report):
-    """Window count the slicing diagnostic recorded (guards this file's GF_SLICES tests against
-    silently testing the default: the knob is read at call time, so a regression to an
-    import-time constant would make the slice-count legs identical and the assertions vacuous)."""
-    (slicing,) = [d for d in report.diagnostics if d.name == "slicing"]
-    return int(slicing.message.split()[0])
-
-
-def test_sliced_driver_slice_count_invariance():
-    """1 slice vs several: the partition identity makes the result slice-count independent
-    (up to the per-solve atol)."""
-    _, r_1, rep_1 = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "1"})
-    _, r_4, rep_4 = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "4"})
-    assert _reported_windows(rep_1) < _reported_windows(rep_4)
-    np.testing.assert_allclose(r_4[0], r_1[0], atol=1e-6)
-
-
-def test_sliced_driver_slice_tol_is_a_reported_accuracy_trade():
-    """GF_SLICE_TOL prunes the filtered slice seeds -- the memory-for-accuracy knob. It must
-    stay accurate to the discarded tail (<= sqrt(n_tail)*tol, i.e. far above the atol floor but
-    nowhere near an unusable G) and it must never pass silently: the diagnostic warns."""
-    _, r_exact, _ = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "2"})
-    _, r_pruned, report = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "2", "GF_SLICE_TOL": "1e-6"})
-    np.testing.assert_allclose(r_pruned[0], r_exact[0], atol=1e-3)
-    (slicing,) = [d for d in report.diagnostics if d.name == "slicing"]
-    assert slicing.severity.name == "WARN" and slicing.value == 1e-6
-
-
-def test_kernel_bra_seeds_cross_element():
-    """block_Green_bicgstab(bra_seeds=...) computes <bra|(z-H)^{-1}|ket> -- checked against
-    the dense resolvent with distinct bra and ket blocks."""
-    e_shift = 0.3
-    z_axes = _gf_signed_axes(MATSUBARA, None, 0, DELTA)
-    kets = _seeds()
-    bras = [_seeds()[1], _seeds()[0]]  # swapped, so the cross element is genuinely asymmetric
-    G_axes, stats = block_Green_bicgstab(
-        _siam_6(),
-        list(kets),
-        _seed_basis(),
-        [e_shift],
-        2,
-        z_axes,
-        atol=1e-10,
-        bra_seeds=list(bras),
-    )
-    assert stats["n_unconverged"] == 0
-    sector = _n3_sector_dets()
-    basis = Basis(_IMP, _BATHS, initial_basis=sorted(sector), verbose=False)
-    H_mat = np.asarray(build_dense_matrix(basis, _siam_6()))
-    index = {det: i for i, det in enumerate(sorted(sector))}
-    K = np.zeros((len(index), 2), dtype=complex)
-    B = np.zeros((len(index), 2), dtype=complex)
-    for j, (k_state, b_state) in enumerate(zip(kets, bras)):
-        for det, amp in k_state.items():
-            K[index[det], j] = amp[0]
-        for det, amp in b_state.items():
-            B[index[det], j] = amp[0]
-    for k, z in enumerate(z_axes[0] + e_shift):
-        ref = B.conj().T @ np.linalg.solve(z * np.eye(len(index)) - H_mat, K)
-        np.testing.assert_allclose(G_axes[0][0, k], ref, atol=1e-7 * max(np.max(np.abs(ref)), 1.0))
+def test_driver_rejects_a_retired_method_with_its_reason():
+    """A retired kernel is not merely unknown: the error says it was retired, and why."""
+    with pytest.raises(ValueError, match="'sliced' was retired"):
+        _run_driver("sliced", None)
 
 
 # --------------------------------------------------------------------------- #
@@ -261,23 +191,6 @@ def test_driver_mpi_matches_partial_lanczos():
         np.testing.assert_allclose(r_b[0], r_l[0], atol=1e-7)
     else:
         assert m_b is None and r_b is None
-
-
-@pytest.mark.mpi
-def test_sliced_driver_mpi_matches_partial_lanczos():
-    """Distributed sliced run. The bras live *outside* the per-point basis (they enter only
-    the closing Gram), so their amplitudes are placed by determinant hash while X is placed
-    by the basis partition. This test is what keeps those two orderings honest: if the bra
-    ownership and the basis ownership ever disagree, the merge-joined Gram silently drops
-    (or double-counts) the determinants they disagree on, and G walks away from Lanczos."""
-    comm = MPI.COMM_WORLD
-    m_l, r_l, _ = _run_driver("lanczos", "partial", comm=comm)
-    m_s, r_s, _ = _run_driver("sliced", None, comm=comm, monkeypatch_env={"GF_SLICES": "3"})
-    if comm.rank == 0:
-        np.testing.assert_allclose(m_s[0], m_l[0], atol=1e-6)
-        np.testing.assert_allclose(r_s[0], r_l[0], atol=1e-6)
-    else:
-        assert m_s is None and r_s is None
 
 
 @pytest.mark.mpi

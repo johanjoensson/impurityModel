@@ -1026,7 +1026,9 @@ _TABLE_LIST += [
                 Kind.ENUM,
                 "lanczos",
                 "Green's-function kernel.",
-                choices=("lanczos", "bicgstab", "sliced", "cipsi"),
+                # Mirrors config.GF_METHODS (this module is a leaf and cannot import it);
+                # test_gf_method_choices_match_the_registry pins the two together.
+                choices=("lanczos", "bicgstab", "cipsi"),
             ),
             Key(
                 "reort",

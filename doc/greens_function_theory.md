@@ -4,7 +4,7 @@ This document explains the physics and the algorithms behind every way this code
 an interacting Green's function, written for computational physicists rather than specialists
 in numerical linear algebra. It covers the objects (the impurity model, the finite-temperature
 Green's function, the variational many-body basis), the three resolvent engines
-(`gf_method="lanczos"`, `"bicgstab"`, and the experimental spectrum slicing), and the two
+(`gf_method="lanczos"`, `"bicgstab"`, and the retired spectrum slicing, kept here as a record), and the two
 production use cases — the self-energy for self-consistent DFT+DMFT and core-level
 spectroscopy. Every performance or accuracy claim quoted here was *measured* on this code; the
 raw tables live in the engineering logs under `doc/plans/` and are cited where relevant.
@@ -433,12 +433,14 @@ frequency* — which is exactly the RIXS intermediate-state problem
 
 ---
 
-## 5. Method III — spectrum slicing with Chebyshev filters (`gf_method="sliced"`, not recommended)
+## 5. Method III — spectrum slicing with Chebyshev filters (retired; formerly `gf_method="sliced"`)
 
-*Status (measured 2026-07-13): correct, tested, and **it does not work** — it buys no memory
-and costs accuracy. Read §5.1 for why; the short version is that the premise is false. The
-mode is kept because the machinery is sound and reusable, but do not reach for it in
-production. Full campaign: `doc/plans/spectrum_slicing.md`.*
+*Status: **retired 2026-09** (GF review, `doc/reviews/gf_review.md`, row S1). Measured
+2026-07-13: correct, tested, and **it does not work** — it buys no memory and costs accuracy.
+Read §5.1 for why; the short version is that the premise is false. The driver, its knobs and
+its `bra_seeds` cross-element solve are gone; the Chebyshev filter itself
+(`impurityModel.ed.chebyshev_filter`) is sound and stays for reuse (e.g. KPM densities). This
+section is kept as the record of why. Full campaign: `doc/plans/spectrum_slicing.md`.*
 
 All methods above pay the full **live determinant support** of the seed's Krylov space — the
 term that actually exhausts memory (section 3.4). The one idea that attacks it directly is
@@ -641,7 +643,7 @@ solve per $\omega_{\mathrm{in}}$ regardless of how many polarization pairs are r
 
 **Method choice** — the table of section 4.4, plus: spectra drivers (`get_spectra`) currently
 run Method I internally (their result contract is continued-fraction coefficients); the
-self-energy path accepts `--gf_method {lanczos,bicgstab,sliced}`.
+self-energy path accepts `--gf-method {lanczos,bicgstab,cipsi}` (`sliced` is retired, §5).
 
 **Start with `lanczos`.** It is the default for a reason: one recurrence serves the whole mesh,
 it retains no Krylov store at `reort=none`, and on every workload measured on this branch it is
@@ -652,7 +654,6 @@ specific reasons, both narrow:
 |---|---|---|
 | `lanczos` | always, first | baseline |
 | `bicgstab` | the capped recurrence's monitor cannot converge on a frozen subspace but per-point solves can (FCC Ni), or you want embarrassing frequency parallelism / RIXS intermediate states | ~5x wall end-to-end (~12x in the GF phase); **more** memory than `reort=none`, not less |
-| `sliced` | **do not** — kept for its reusable Chebyshev machinery, not as a production mode (§5.1) | 2x the memory of `lanczos` on FCC Ni; 27x worse `sigma_real` on NiO |
 
 The memory hope that motivated both non-default methods — that a per-point or per-slice basis
 is smaller than the mesh-union basis — is **false on both production workloads**, for the same
@@ -672,7 +673,6 @@ shrink it: the occupation restrictions (§1.4) and the determinant cap (§3.4).
 | `GF_BICGSTAB_ATOL` / `MAX_ITER` / `RESTARTS` | per-point solve contract (§4.2) | default `1e-8`; tighten to `1e-10` for real-axis Σ at small δ |
 | `GF_GMRES_RESTART` / `MAX_RESTARTS` | fallback Arnoldi depth (§4.3) | 40 default; bounds the fallback's memory transient |
 | `GF_EIGENSTATE_GROUP` / `GF_OPERATOR_SPLIT` | unit granularity (§3.5) | grouping shares matvecs; splitting maximizes independent units |
-| `GF_SLICES` / `GF_SLICE_DEGREE` / `GF_SLICE_TOL` | Chebyshev windows, filter degree, slice-seed pruning (§5) | only for `gf_method="sliced"`, which is not recommended; `GF_SLICE_TOL>0` is reported as a `WARN` because it trades accuracy for a memory saving that **does not materialize** (§5.1) |
 | `num_wanted`, `tau` | thermal ensemble (§2.4) | auto-retry doubles `num_wanted` on the truncation diagnostic |
 
 ## 9. References

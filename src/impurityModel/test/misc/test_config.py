@@ -26,10 +26,10 @@ def test_env_override_is_read_lazily(monkeypatch):
     The whole point of the registry: import-time constants silently voided a slicing test
     once, because a caller that had already imported the module could not change them.
     """
-    monkeypatch.delenv("GF_SLICES", raising=False)
-    assert config.GF_SLICES.get() == 8
-    monkeypatch.setenv("GF_SLICES", "3")
-    assert config.GF_SLICES.get() == 3
+    monkeypatch.delenv("GF_EIGENSTATE_GROUP", raising=False)
+    assert config.GF_EIGENSTATE_GROUP.get() == 1
+    monkeypatch.setenv("GF_EIGENSTATE_GROUP", "3")
+    assert config.GF_EIGENSTATE_GROUP.get() == 3
 
 
 def test_parsers_and_clamps(monkeypatch):
@@ -37,11 +37,11 @@ def test_parsers_and_clamps(monkeypatch):
     monkeypatch.setenv("GF_BICGSTAB_ATOL", "1e-6")
     assert config.GF_BICGSTAB_ATOL.get() == pytest.approx(1e-6)
 
-    monkeypatch.setenv("GF_SLICES", "0")  # minimum=1
-    assert config.GF_SLICES.get() == 1
+    monkeypatch.setenv("GF_EIGENSTATE_GROUP", "0")  # minimum=1
+    assert config.GF_EIGENSTATE_GROUP.get() == 1
 
-    monkeypatch.setenv("GF_SLICE_TOL", "-1.0")  # minimum=0.0
-    assert config.GF_SLICE_TOL.get() == 0.0
+    monkeypatch.setenv("SIGMA_CAUSALITY_TOL", "-1.0")  # minimum=0.0
+    assert config.SIGMA_CAUSALITY_TOL.get() == 0.0
 
     monkeypatch.setenv("GF_SECTOR_CACHE_DIR", "/tmp/sectors")
     assert config.GF_SECTOR_CACHE_DIR.get() == "/tmp/sectors"
@@ -122,3 +122,13 @@ def test_the_generated_configuration_doc_is_in_sync_with_the_registry():
         "doc/configuration.md no longer matches config.dump(); regenerate the tables from the "
         "registry rather than editing the document."
     )
+
+
+def test_gf_method_choices_match_the_registry():
+    """The TOML schema (a stdlib-only leaf that cannot import ``config``) and the CLI must accept
+    exactly :data:`config.GF_METHODS` -- a retired kernel must not stay selectable anywhere."""
+    from impurityModel.inputformat.schema import TABLES
+
+    key = next(k for k in TABLES["solver"].keys if k.name == "gf_method")
+    assert tuple(key.choices) == config.GF_METHODS
+    assert not set(key.choices) & set(config.RETIRED_GF_METHODS)

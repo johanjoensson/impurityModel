@@ -13,7 +13,7 @@ configurations (restrictions, caps) are judged by their own tests, which need a 
 
 Factors
 -------
-``method``   lanczos / bicgstab / sliced / cipsi (``gf_method``)
+``method``   lanczos / bicgstab / cipsi (``gf_method``)
 ``sparse``   ManyBodyState kernel vs CSR/dense array kernel (lanczos only)
 ``group``    ``GF_EIGENSTATE_GROUP`` 1 or 2 (stack thermal states into one recurrence)
 ``split``    ``GF_OPERATOR_SPLIT`` (pairwise scalar fractions; lanczos only)
@@ -46,7 +46,7 @@ IW = 1j * np.pi * TAU * (2 * np.arange(10) + 1)
 W = np.linspace(-6.0, 6.0, 17)
 
 FACTORS = {
-    "method": ["lanczos", "bicgstab", "sliced", "cipsi"],
+    "method": ["lanczos", "bicgstab", "cipsi"],
     "sparse": [True, False],
     "group": [1, 2],
     "split": [False, True],
@@ -145,8 +145,6 @@ def _known_failure(cell):
     if lanczos_array and cell["model"] == 1 and cell["group"] == 2 and cell["mesh"] != "iw":
         # The Matsubara-only cells truncate too, but below the cell tolerance.
         return "C11: dense array kernel max_iter=ceil(N/p) ignores deflation -> truncated fraction"
-    if cell["method"] == "sliced" and cell["model"] == 1 and cell["mesh"] != "iw":
-        return "sliced: slice-seed/partition error above tolerance (path retired in Phase 1)"
     return None
 
 
