@@ -472,8 +472,15 @@ def build_excited_restrictions(
                     for orb in np.nonzero(conduction_occupations < cutoff)[0]
                     if np.min(dist_matrix[np.ix_(imp_orb_block, [con_orb_block[orb]])]) > dist_cutoff
                 ]
+                # The far orbitals leave the group for their own chain windows; bound what remains.
+                # Lower bound (valence): the near orbitals hold at least min_val minus whatever the
+                # removed ones can hold, at most their count -- loose but valid. Upper bound
+                # (conduction): the near orbitals are a subset of the group, so n_near <= max_con
+                # always. Subtracting the removed orbitals' *count* here (as a lower bound does)
+                # pinned the near conduction bath to (0, 0) whenever the far tail was long, which
+                # excluded determinants of the very ground state the window was widened from
+                # (review ledger C2).
                 min_val = max(min_val - len(filled_valence_states) - len(empty_valence_states), 0)
-                max_con = max(max_con - len(empty_conduction_states) - len(filled_conduction_states), 0)
                 empty_states = frozenset(sorted(empty_valence_states + empty_conduction_states))
                 filled_bath_states.append(filled_states)
                 empty_bath_states.append(empty_states)

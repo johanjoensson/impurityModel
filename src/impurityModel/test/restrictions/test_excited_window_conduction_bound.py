@@ -4,15 +4,13 @@
 valence/conduction groups into their own chain windows, then bounds the remaining *near* group.
 For the conduction group that bound is an upper bound, ``n_near <= max_con``. The removed far
 orbitals are (nominally) empty, so they contribute ~0 to the group occupation and the near-group
-bound should stay ``max_con``. The code subtracts their *count* instead
-(``basis_restrictions.py:476``), which can drive the bound to 0 and pin the near conduction bath
-empty -- excluding determinants of the very ground-state basis the window was widened from.
-It fires whenever ``con_change`` is set: every spectra path, RIXS, and the self-energy with ``dN``.
+bound should stay ``max_con``. The code used to subtract their *count* instead, which could
+drive the bound to 0 and pin the near conduction bath empty -- excluding determinants of the
+very ground-state basis the window was widened from. It fired whenever ``con_change`` is set:
+every spectra path, RIXS, and the self-energy with ``dN``.
 """
 
 import itertools
-
-import pytest
 
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.manybody_basis import Basis
@@ -46,7 +44,6 @@ def _satisfies(occupied, restrictions):
     return all(lo <= len(occupied & set(key)) <= hi for key, (lo, hi) in restrictions.items())
 
 
-@pytest.mark.xfail(strict=True, reason=C2)
 def test_the_excited_window_admits_the_ground_state_basis():
     basis = Basis(
         impurity_orbitals={0: [[0]]},
