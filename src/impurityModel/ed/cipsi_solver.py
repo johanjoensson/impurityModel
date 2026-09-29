@@ -1217,15 +1217,14 @@ class CIPSISolver:
         if memory_policy not in ("tighten", "warn"):
             raise ValueError(f"memory_policy must be 'tighten' or 'warn', got {memory_policy!r}")
         tighten = memory_policy == "tighten"
-        if self.basis.restrictions is not None:
-            H.set_restrictions(self.basis.restrictions)
-        if self.basis.weighted_restrictions is not None:
-            H.set_weighted_restrictions(self.basis.weighted_restrictions)
-        de0_max = energy_cut(self.basis.tau)
-        psi_refs = getattr(self, "psi_refs", None)
-
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
+        # Unconditional (None clears): a mask left on H by an earlier Green's-function stage must
+        # not survive into this solve (review ledger C3).
+        H.set_restrictions(self.basis.restrictions)
+        H.set_weighted_restrictions(self.basis.weighted_restrictions)
+        de0_max = energy_cut(self.basis.tau)
+        psi_refs = getattr(self, "psi_refs", None)
 
         if symmetry_generators is None:
             symmetry_generators = (
@@ -1255,10 +1254,8 @@ class CIPSISolver:
             op = g if isinstance(g, ManyBodyOperator) else tensors_to_operator(g, tol=1e-12)
             if not _commutes_with(H, op):
                 continue
-            if self.basis.restrictions is not None:
-                op.set_restrictions(self.basis.restrictions)
-            if self.basis.weighted_restrictions is not None:
-                op.set_weighted_restrictions(self.basis.weighted_restrictions)
+            op.set_restrictions(self.basis.restrictions)
+            op.set_weighted_restrictions(self.basis.weighted_restrictions)
             gen_ops.append(op)
 
         threshold = self.basis.truncation_threshold
@@ -1887,10 +1884,12 @@ class CIPSISolver:
         basis's restrictions were set, from this basis, at this size -- the shape assertion
         catches a stale one, nothing catches stale restrictions.
         """
-        if self.basis.restrictions is not None:
-            H.set_restrictions(self.basis.restrictions)
-        if self.basis.weighted_restrictions is not None:
-            H.set_weighted_restrictions(self.basis.weighted_restrictions)
+        if isinstance(H, dict):
+            H = ManyBodyOperator(H)
+        # Unconditional (None clears): a mask left on H by an earlier Green's-function stage must
+        # not survive into this solve (review ledger C3).
+        H.set_restrictions(self.basis.restrictions)
+        H.set_weighted_restrictions(self.basis.weighted_restrictions)
         if h_matrix is not None and h_matrix.shape[0] != len(self.basis):
             raise ValueError(
                 f"h_matrix was built for a basis of {h_matrix.shape[0]} determinants but this one "

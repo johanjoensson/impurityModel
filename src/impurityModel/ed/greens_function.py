@@ -188,6 +188,13 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
     es = np.asarray(es, dtype=float)
     n_corr = len(impurity_indices)
     n_states = len(psis)
+    # The moments are exact, so they need the full H. ``hOp`` is usually the solver Hamiltonian
+    # the ground state and the Green's function just ran on, and both leave their occupation
+    # windows on it (masks are sticky and cannot be read back). Clear them: with a window in
+    # force, (H - E) applied to the seeds drops every out-of-window row and M_2, M_3 -- and so
+    # sigma_moment_1/_2 -- are truncated (review ledger C3: up to 18%).
+    hOp.set_restrictions(None)
+    hOp.set_weighted_restrictions(None)
     # Per-state moments, indexed [state, order, a, b]. M[., 0] is the identity because
     # {c_a, c_b^dag} = delta_ab, so the greater/lesser contributions sum to I on every state.
     # Set it on exactly one rank (root): every other slot below is a genuine per-rank partial
@@ -987,10 +994,11 @@ def _block_green_group(
         weighted_restrictions=excited_weighted_restrictions,
         verbose=False,
     )
-    if excited_basis.restrictions is not None:
-        hOp.set_restrictions(excited_basis.restrictions)
-    if excited_basis.weighted_restrictions is not None:
-        hOp.set_weighted_restrictions(excited_basis.weighted_restrictions)
+    # Unconditional: masks are sticky on the operator object and cannot be read back, so every
+    # consumer states the mask it needs (None clears). A conditional set left the previous
+    # unit's -- or the ground state's -- window in force (review ledger C3).
+    hOp.set_restrictions(excited_basis.restrictions)
+    hOp.set_weighted_restrictions(excited_basis.weighted_restrictions)
     cap = getattr(excited_basis, "truncation_threshold", np.inf)
     # The seed support: the union of the unit's seed columns, before any recurrence step. When it
     # alone reaches the cap the solve is frozen at its seeds (gf_diagnostics.check_basis_truncation).

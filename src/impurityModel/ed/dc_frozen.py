@@ -122,10 +122,8 @@ class FrozenSpaceSweep:
         # which does nothing for a matrix that already exists, so a matrix built first is the
         # unrestricted PHP. The docstring above states this as a precondition; doing it here is
         # what makes the precondition true rather than merely asserted.
-        if basis.restrictions is not None:
-            h_op.set_restrictions(basis.restrictions)
-        if basis.weighted_restrictions is not None:
-            h_op.set_weighted_restrictions(basis.weighted_restrictions)
+        h_op.set_restrictions(basis.restrictions)
+        h_op.set_weighted_restrictions(basis.weighted_restrictions)
         # The two builds that make the sweep cheap. `h0` carries dc_guess already; `n` is the
         # impurity number operator, which is diagonal in the determinant basis -- what makes
         # H(mu) a diagonal shift rather than a rebuild.

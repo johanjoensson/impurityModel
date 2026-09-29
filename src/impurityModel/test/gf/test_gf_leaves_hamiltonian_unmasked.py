@@ -13,7 +13,6 @@ import contextlib
 import io
 
 import numpy as np
-import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.greens_function import get_Greens_function, get_greens_function_moments
@@ -42,7 +41,6 @@ def _moments(hOp, basis, psis):
     return get_greens_function_moments(psis, [0.0], 1.0, basis, hOp, [0, 1, 2, 3], max_order=3)
 
 
-@pytest.mark.xfail(strict=True, reason=C3)
 def test_moments_after_a_windowed_gf_equal_moments_before_it():
     hOp, basis, psis, blocks = _setup()
     before = _moments(hOp, basis, psis)
