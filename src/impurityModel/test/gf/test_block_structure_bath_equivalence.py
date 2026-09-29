@@ -9,7 +9,6 @@ moment. A spin-polarized bath (antiferromagnetic NiO) is the production shape of
 """
 
 import numpy as np
-import pytest
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.symmetries import impurity_block_structure
@@ -39,7 +38,6 @@ def test_equal_baths_are_identical_blocks():
     assert len(bs.inequivalent_blocks) == 1, bs
 
 
-@pytest.mark.xfail(strict=True, reason=C10)
 def test_different_bath_energies_are_not_identical_blocks():
     z = np.array([0.2 + 0.1j])
     assert not np.allclose(_noninteracting_g(-1.0, z), _noninteracting_g(1.5, z)), "premise: the Gs differ"

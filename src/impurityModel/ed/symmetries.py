@@ -783,10 +783,37 @@ def impurity_block_structure(op, impurity_orbitals, n_orb=None, h0_matrix=None):
     bath = [o for o in range(n) if o not in imp_set]
 
     m = h[np.ix_(imp, imp)]
-    if bath:
-        v = h[np.ix_(bath, imp)]  # (n_bath, n_imp) impurity-bath hopping
-        m = m + v.conj().T @ v  # add the bath-mediated (first-moment) coupling
-    return build_block_structure(None, mat=m)
+    if not bath:
+        return _reconciled(build_block_structure(None, mat=m), op, imp, m)
+    v = h[np.ix_(bath, imp)]  # (n_bath, n_imp) impurity-bath hopping
+    m = m + v.conj().T @ v  # add the bath-mediated (first-moment) coupling
+    # M alone cannot tell two orbitals apart whose levels and total hybridization agree but whose
+    # baths sit at different energies: their hybridization functions -- and Green's functions --
+    # differ from the second moment on (review ledger C10). The higher bath moments
+    # V^dag h_bath^k V (the 1/z^(k+2) coefficients of Delta(z)) must agree too, and couplings they
+    # carry (bath-bath hopping between different orbitals' baths) merge the blocks they connect.
+    h_bath = h[np.ix_(bath, bath)]
+    probes = [m]
+    w = v
+    for _k in (1, 2):
+        w = h_bath @ w
+        probes.append(v.conj().T @ w)
+    return _reconciled(build_block_structure(np.stack(probes), mat=m), op, imp, m)
+
+
+def _reconciled(block_structure, op, imp, m):
+    """Correct a one-body-derived block structure for ``op``'s two-body interaction.
+
+    The blocks above are read off one-body quantities, on the premise that the interaction has at
+    least their symmetry. A Slater-Condon interaction does; a user-supplied one need not, and
+    then a coupling between blocks is dropped, or blocks the interaction distinguishes share one
+    Green's function (review ledger C10). :func:`reconcile_block_structure_with_interaction`
+    merges and prunes accordingly, and returns the input unchanged when the interaction
+    respects it. ``O(n_imp^4)``.
+    """
+    two_body = impurity_two_body_tensor(op, imp)
+    block_structure, _changed = reconcile_block_structure_with_interaction(block_structure, two_body, m)
+    return block_structure
 
 
 def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None, h0_matrix=None):
