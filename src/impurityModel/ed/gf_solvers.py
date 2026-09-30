@@ -334,8 +334,31 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     keep = len(_sanitize_continued_fraction(list(alphas), list(betas), rank=rank)[0])
     if keep < len(alphas):
         alphas, betas, widths = alphas[:keep], betas[:keep], widths[:keep]
-    q_last = Q_list[:, -1:]
-    return alphas, betas, r, build_state(basis, q_last.T, slaterWeightMin=slaterWeightMin), widths
+    probe = _expansion_probe_columns(Q_list, widths, tail_only=resolved_reort == Reort.NONE)
+    return alphas, betas, r, build_state(basis, probe.T, slaterWeightMin=slaterWeightMin), widths
+
+
+def _expansion_probe_columns(Q, widths, *, tail_only):
+    """The Lanczos vectors :func:`block_Green` grows its basis from.
+
+    The recurrence runs on H restricted to the current basis, so a column's chain can close
+    only because the basis truncates H: it deflates, and the determinants that chain was
+    missing lie next to its last vectors -- the block just before the width drop -- not next to
+    the final block. Probing from the final block alone (it used to be its last column only)
+    stopped the growth early and returned a silently wrong G (review ledger C12). So probe from
+    the final block and from every block that preceded a narrowing.
+
+    With the Krylov basis retained, ``Q`` holds the blocks in order (widths ``widths``, plus
+    possibly one trailing residual block) and they are sliced out. In tail-only mode the kernel
+    returns exactly those blocks already, pre-narrowing ones first.
+    """
+    if tail_only:
+        return Q
+    offsets = np.concatenate(([0], np.cumsum(widths, dtype=int)))
+    columns = [np.arange(offsets[i], offsets[i + 1]) for i in range(len(widths) - 1) if widths[i + 1] < widths[i]]
+    last = offsets[len(widths) - 1] if len(widths) > 0 else 0
+    columns.append(np.arange(last, Q.shape[1]))
+    return Q[:, np.concatenate(columns)]
 
 
 def block_Green_sparse(

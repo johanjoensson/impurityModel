@@ -108,29 +108,13 @@ def test_an_explicit_plain_family_is_bitwise_the_default(comm_kind):
     root_verdict(comm, check)
 
 
-#: Ledger C12 (doc/reviews/gf_review.md): the array path's basis-expansion probe starts from the
-#: last Lanczos vector only, so a column whose chain closes inside the still-incomplete basis
-#: deflates and its missing determinants are never added. The bath column of block [2, 3] is such
-#: a column. Strict serially; on a world communicator M1 can pre-empt it, which depends on packing.
-C12 = "C12: array-path expansion probe misses the determinants of a deflated column"
 KERNELS = [("lanczos", True), ("lanczos", False), ("bicgstab", True)]
 
 
-def _kernel_params(comm_kind):
-    params = []
-    for gf_method, sparse in KERNELS:
-        marks = []
-        if gf_method == "lanczos" and not sparse:
-            marks.append(pytest.mark.xfail(strict=comm_kind == "self", reason=C12))
-        params.append(pytest.param(gf_method, sparse, comm_kind, marks=marks, id=f"{comm_kind}-{gf_method}-{sparse}"))
-    return params
-
-
-@pytest.mark.parametrize(
-    "gf_method, sparse, comm_kind",
-    _kernel_params("self")
-    + [pytest.param(*p.values, marks=[*p.marks, pytest.mark.mpi], id=p.id) for p in _kernel_params("world")],
-)
+# The array cells also guard ledger C12: block [2, 3]'s bath column deflates inside the growing
+# basis, which the expansion probe used to miss.
+@pytest.mark.parametrize("gf_method, sparse", KERNELS)
+@pytest.mark.parametrize("comm_kind", ["self", pytest.param("world", marks=pytest.mark.mpi)])
 def test_a_wider_family_resolves_its_full_greens_function(gf_method, sparse, comm_kind):
     comm = MPI.COMM_SELF if comm_kind == "self" else MPI.COMM_WORLD
     oracle, idx, blocks, gs_iw, gs_w, report = run_gf(comm, _with_bath, gf_method=gf_method, sparse=sparse)

@@ -451,6 +451,12 @@ def block_lanczos_array_cy(
             Q_list = [Q_buf]
         else:
             Q_list = None
+    # Tail-only mode keeps, besides the final block, every block whose successor came out
+    # narrower: the last vectors of the columns that deflated there. A basis-growing caller
+    # (gf_solvers.block_Green) must probe from them too -- a column whose chain closes only
+    # because the still-incomplete basis truncates H deflates, and probing from the final block
+    # alone never reaches the determinants that chain was missing (review ledger C12).
+    cdef list deflated_tail = []
 
     cdef int period = reort_period
     if max_iter is None:
@@ -1007,6 +1013,8 @@ def block_lanczos_array_cy(
             it += 1
             break
 
+        if not keep_krylov and q_next.shape[1] < q[1].shape[1]:
+            deflated_tail.append(q[1].copy())
         q[0] = q[1]
         q[1] = q_next
         if keep_krylov:
@@ -1026,11 +1034,15 @@ def block_lanczos_array_cy(
 
     # Tail-only mode: q[1] is the last block ever appended in stored mode (the roll
     # q[0]=q[1]; q[1]=q_next runs before the append, and every break happens before the
-    # append), so callers slicing the final residual columns see identical data.
+    # append), so callers slicing the final residual columns see identical data. The blocks
+    # recorded before each narrowing (deflated_tail) come first, so those trailing columns
+    # are unchanged.
     if keep_krylov:
         # Trim: returning a view of the over-allocated growth buffer would pin its spare
         # capacity for as long as the caller (e.g. TRLM restart) holds Q.
         res_Q = Q_buf if Q_buf.shape[1] == q_cols else np.ascontiguousarray(Q_buf[:, :q_cols])
+    elif deflated_tail:
+        res_Q = np.ascontiguousarray(np.hstack(deflated_tail + [q[1]]))
     else:
         res_Q = q[1]
     res_alphas = alphas_buf[:it]
