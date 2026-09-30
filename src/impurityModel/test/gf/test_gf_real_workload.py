@@ -58,7 +58,7 @@ def _phase_timers(phases):
     them on exit, so production code is untouched.
     """
     from impurityModel.ed import gf_engine, gf_units, selfenergy, sigma_estimators, solver_trace
-    from impurityModel.ed.memory_estimate import current_rss_bytes
+    from impurityModel.ed.memory_estimate import current_rss_bytes, release_freed_heap
 
     unit_seconds = phases.setdefault("unit_seconds", [])
     peaks_after = phases.setdefault("peak_after", {})
@@ -89,6 +89,9 @@ def _phase_timers(phases):
     def recorded_split(basis, *args, **kwargs):
         # What the split itself costs this rank: every color receives the whole parent basis
         # (review ledger P1), so the RSS step across the call is that replica plus the seeds.
+        # Trim first: glibc would otherwise place the replica in heap the CIPSI rounds already freed,
+        # and the step would read about zero while the replica really occupies memory.
+        release_freed_heap()
         before = current_rss_bytes()
         out = real_split(basis, *args, **kwargs)
         split_basis = out[4]
