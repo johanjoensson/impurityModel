@@ -37,7 +37,6 @@ from impurityModel.ed.gf_primitives import (  # noqa: F401  -- re-exported for b
     _sanitize_continued_fraction,
     _trim_blocks,
     build_qr,
-    calc_continuants,
     calc_G,
     calc_thermally_averaged_G,
 )
@@ -124,14 +123,6 @@ def build_full_greens_function(block_gf, block_structure: BlockStructure):
                 elif len(gf_i.shape) == 3:
                     block_idx = np.ix_(range(gf_i.shape[0]), blocks[block_i], blocks[block_i])
                     res[block_idx] = np.transpose(gf_i, (0, 2, 1))
-    elif len(block_gf) == len(blocks):
-        # block_gf contains all blocks
-        for block_i, gf_i in enumerate(block_gf):
-            if len(gf_i.shape) == 2:
-                block_idx = np.ix_(blocks[block_i], blocks[block_i])
-            elif len(gf_i.shape) == 3:
-                block_idx = np.ix_(range(gf_i.shape[0]), blocks[block_i], blocks[block_i])
-            res[block_idx] = gf_i
     else:
         raise RuntimeError(f"Block structure does not match block_gf.\n{block_structure=} {len(block_gf)=}")
     return res
@@ -1042,36 +1033,6 @@ def _gf_per_state_restrict(chain_restrict):
     if override is None:
         return bool(chain_restrict)
     return override
-
-
-def rotate_Greens_function(G, T):
-    r"""
-    Rotate the Greens function, G, using the matrix T.
-    Returns G'(\omega) = T^\dagger G(\omega) T
-    Parameters
-    ==========
-    G : NDArray - Greens function to rotate
-    T : NDArray - Rotation matrix to use
-    Returns
-    =======
-    G' : NDArray - The rotated Greens function
-    """
-    return np.conj(T.T)[np.newaxis, :, :] @ G @ T[np.newaxis, :, :]
-
-
-def rotate_4index_U(U4, T):
-    r"""
-    Rotate the four index tensor, U4, using the matrix T.
-    Returns U4' = T^\daggerT^\dagger U4 TT
-    Parameters
-    ==========
-    U4 : NDArray - Tensor function to rotate
-    T : NDArray - Rotation matrix to use
-    Returns
-    =======
-    U4' : NDArray - The rotated tensor function
-    """
-    return np.einsum("ij,kl, jlmo, mn, op", np.conj(T.T), np.conj(T.T), U4, T, T)
 
 
 def save_Greens_function(gs, omega_mesh, label, cluster_label, e_scale=1, tol=1e-8, directory=None):

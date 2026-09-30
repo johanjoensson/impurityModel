@@ -8,12 +8,9 @@ from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.greens_function import (
     build_full_greens_function,
     build_qr,
-    calc_continuants,
     calc_G,
     calc_thermally_averaged_G,
     get_Greens_function,
-    rotate_4index_U,
-    rotate_Greens_function,
     save_Greens_function,
 )
 from impurityModel.ed.manybody_basis import Basis
@@ -61,22 +58,6 @@ def test_build_full_greens_function_3d():
     assert np.allclose(gf[:, 4:6, 4:6], b1)
 
 
-def test_build_full_greens_function_all_blocks():
-    bs = BlockStructure(
-        blocks=[[0, 1], [2, 3]],
-        identical_blocks=[[0, 1], []],
-        transposed_blocks=[[], []],
-        particle_hole_blocks=[[], []],
-        particle_hole_transposed_blocks=[[], []],
-        inequivalent_blocks=[0],
-    )
-    b1 = np.array([[1.0, 0.5], [0.5, 2.0]])
-    b2 = np.array([[2.0, 1.0], [1.0, 3.0]])
-    gf = build_full_greens_function([b1, b2], bs)
-    assert np.allclose(gf[0:2, 0:2], b1)
-    assert np.allclose(gf[2:4, 2:4], b2)
-
-
 def test_build_full_greens_function_exceptions():
     bs = BlockStructure(
         blocks=[[0, 1]],
@@ -105,33 +86,6 @@ def test_build_qr():
     assert np.allclose(q.T @ q, np.eye(2))
 
 
-def test_calc_continuants():
-    diag = np.array([np.eye(2) * 1, np.eye(2) * 2, np.eye(2) * 3])
-    offdiag = np.array([np.zeros((2, 2)), np.eye(2) * 0.5, np.eye(2) * 0.1])
-    A, B = calc_continuants(diag, offdiag)
-    assert A.shape == (3, 2, 2)
-    assert B.shape == (3, 2, 2)
-    assert np.allclose(A[0], diag[0])
-    assert np.allclose(B[0], np.ones((2, 2)))
-
-
-def test_rotate_Greens_function():
-    G = np.array([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
-    T = np.array([[0, 1], [1, 0]])
-    rot = rotate_Greens_function(G, T)
-    expected0 = T.T.conj() @ G[0] @ T
-    expected1 = T.T.conj() @ G[1] @ T
-    assert np.allclose(rot[0], expected0)
-    assert np.allclose(rot[1], expected1)
-
-
-def test_rotate_4index_U():
-    U4 = np.ones((2, 2, 2, 2))
-    T = np.eye(2)
-    rot = rotate_4index_U(U4, T)
-    assert np.allclose(rot, U4)
-
-
 def test_calc_G():
     alphas = np.array([np.eye(2) * 1.0, np.eye(2) * 2.0])
     betas = np.array([np.eye(2) * 0.0, np.eye(2) * 0.5])
@@ -157,9 +111,6 @@ def test_calc_thermally_averaged_G():
     delta = 0.1
     G_avg = calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta)
     assert G_avg.shape == (3, 2, 2)
-
-    G_empty = calc_thermally_averaged_G([], [], [], mesh, [], e0, tau, delta)
-    assert G_empty.shape == (3, 0, 0)
 
 
 def test_save_Greens_function(tmp_path):

@@ -40,24 +40,6 @@ def build_qr(psi):
     return np.ascontiguousarray(psi), r
 
 
-def calc_continuants(diagonal, offdiagonal):
-    """
-    Calculate continued fraction continuants.
-
-    """
-
-    An = np.empty_like(diagonal)
-    Bn = np.empty_like(An)
-    An[-1] = np.eye(diagonal.shape[1])
-    Bn[-1] = 0
-    An[0] = diagonal[0]
-    Bn[0] = 1
-    for n in range(1, diagonal.shape[0]):
-        An[n] = diagonal[n] * An[n - 1] - np.conj(offdiagonal[n]) * An[n - 2] * offdiagonal[n]
-        Bn[n] = diagonal[n] * Bn[n - 1] - np.conj(offdiagonal[n]) * Bn[n - 2] * offdiagonal[n]
-    return An, Bn
-
-
 def _scatter_qr_columns(comm, psi_dense, r, local_size):
     """Scatter the row-distributed QR factor ``Q`` (held on rank 0) across MPI ranks.
 
@@ -197,9 +179,6 @@ def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
     -------
     G_avg : ndarray
     """
-    if len(alphas) == 0:
-        return np.zeros((len(mesh), 0, 0), dtype=complex)
-
     n_ops = r[0].shape[-1]
     G_avg = np.zeros((len(mesh), n_ops, n_ops), dtype=complex)
 

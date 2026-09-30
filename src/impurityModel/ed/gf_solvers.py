@@ -296,7 +296,8 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             converged=converged,
             reort=resolved_reort,
             build_krylov_basis=resolved_reort != Reort.NONE,
-            verbose=False and verbose,  # noqa: SIM223  (force-off toggle; keep verbose wiring)
+            # The kernel's per-iteration print is off; the unit memory line reports instead.
+            verbose=False,
             comm=kernel_comm,
             return_widths=True,
             return_status=True,
