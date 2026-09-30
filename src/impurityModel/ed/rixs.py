@@ -613,45 +613,48 @@ def _rixs_map_flat(
             verbose=False,
             comm=sub_comm.Clone() if sub_comm is not None else None,
         )
-        psi1_all = list(seeds)
-        # width=1: this cold-start placeholder can reach redistribute_psis/from_states
-        # alongside genuinely-populated psi1_all (see _R1SolverChain.solve's fallback
-        # tier), so it must not be the width-0 polymorphic zero.
-        psi2_all = [ManyBodyState(width=1) for _ in in_ops]
-        r1_cache = (
-            r1_caches.setdefault(e, gf.SectorResolventCache(n_live_caches=_n_live_sector_caches(psis)))
-            if r1_caches is not None
-            else None
-        )
-        # Every rank of a color runs this unit and increments the counters; they are SUM-reduced
-        # over the whole communicator at the end, so only one rank per color may keep them, or
-        # each solve counts ranks-per-color times (review ledger M5). Non-root ranks roll back
-        # at the end of the unit.
-        stats_before = dict(solver_stats) if sub_comm is not None and sub_comm.rank != 0 else None
-        chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats)
-        out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
-        wins = wIns[w_chunk]
-        # `eval_out` reports the final-state basis it actually ran on rather than leaving the
-        # caller to read `green_basis.size`: the tensor variant's out-resolvent cache serves a
-        # hit WITHOUT regrowing that basis, so reading it back gives the cleared size (measured:
-        # 0 where the solve really ran on the cached sector), the same seed-vs-support trap as
-        # the intermediate resolvent's recycler tier.
-        final_support, final_untracked = None, False
-        for k, win in enumerate(wins):
-            psi2 = chain.solve(
-                tmp_basis, hOp, psi1_all, psi2_all, k, win, wins[k:], delta1, E_e, slaterWeightMin, verbose
+        try:
+            psi1_all = list(seeds)
+            # width=1: this cold-start placeholder can reach redistribute_psis/from_states
+            # alongside genuinely-populated psi1_all (see _R1SolverChain.solve's fallback
+            # tier), so it must not be the width-0 polymorphic zero.
+            psi2_all = [ManyBodyState(width=1) for _ in in_ops]
+            r1_cache = (
+                r1_caches.setdefault(e, gf.SectorResolventCache(n_live_caches=_n_live_sector_caches(psis)))
+                if r1_caches is not None
+                else None
             )
-            value, support = eval_out(green_basis, psi2, E_e)
-            out[k] = value * thermal_weight
-            if support is None:
-                final_untracked = True
-            elif final_support is None or support > final_support:
-                final_support = int(support)
-        # Free the per-unit cloned sub-communicator collectively -- every rank of this color
-        # runs the same unit list in the same order. green_basis's clone outlives the unit
-        # (per-color cache) and is freed after run_units_distributed.
-        if sub_comm is not None:
-            tmp_basis.free_comm()
+            # Every rank of a color runs this unit and increments the counters; they are SUM-reduced
+            # over the whole communicator at the end, so only one rank per color may keep them, or
+            # each solve counts ranks-per-color times (review ledger M5). Non-root ranks roll back
+            # at the end of the unit.
+            stats_before = dict(solver_stats) if sub_comm is not None and sub_comm.rank != 0 else None
+            chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats)
+            out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
+            wins = wIns[w_chunk]
+            # `eval_out` reports the final-state basis it actually ran on rather than leaving the
+            # caller to read `green_basis.size`: the tensor variant's out-resolvent cache serves a
+            # hit WITHOUT regrowing that basis, so reading it back gives the cleared size (measured:
+            # 0 where the solve really ran on the cached sector), the same seed-vs-support trap as
+            # the intermediate resolvent's recycler tier.
+            final_support, final_untracked = None, False
+            for k, win in enumerate(wins):
+                psi2 = chain.solve(
+                    tmp_basis, hOp, psi1_all, psi2_all, k, win, wins[k:], delta1, E_e, slaterWeightMin, verbose
+                )
+                value, support = eval_out(green_basis, psi2, E_e)
+                out[k] = value * thermal_weight
+                if support is None:
+                    final_untracked = True
+                elif final_support is None or support > final_support:
+                    final_support = int(support)
+        finally:
+            # Free the per-unit cloned sub-communicator collectively -- every rank of this color
+            # runs the same unit list in the same order -- on the error path too (review ledger
+            # M4). green_basis's clone outlives the unit (per-color cache) and is freed after
+            # run_units_distributed.
+            if sub_comm is not None:
+                tmp_basis.free_comm()
         if stats_before is not None:
             solver_stats.clear()
             solver_stats.update(stats_before)

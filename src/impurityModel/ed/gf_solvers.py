@@ -747,98 +747,101 @@ def block_Green_bicgstab(
         "max_rebuild_basis": 0,
     }
 
-    for p in range(n_e):
-        seeds = list(psi_arr[p * n_ops : (p + 1) * n_ops])
-        for ax, z_axis in enumerate(z_axes):
-            z_shifted = z_axis + es[p]
-            # Fresh warm-start chain per (eigenstate, axis): extrapolating across axes (or
-            # across eigenstates) would extrapolate through a discontinuous z-path.
-            hist_z: list[complex] = []
-            hist_x: list[list[ManyBodyState]] = []
-            for k in _bicgstab_sweep_order(z_shifted):
-                z = complex(z_shifted[k])
-                x0 = _warm_start_extrapolation(hist_z, hist_x, z, n_ops)
-                if slaterWeightMin > 0:
-                    for x in x0:
-                        x.prune(slaterWeightMin)
-                # Rebuild-and-discard: the basis holds only this point's seed + warm-start
-                # support; redistribute_psis aligns the amplitudes to the fresh ownership
-                # layout (the solver assumes its states are distributed per `basis`).
-                carried = seeds + x0
-                tmp_basis.clear()
-                tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
-                redistributed = tmp_basis.redistribute_psis(*carried)
-                seeds = list(redistributed[:n_ops])
-                x0 = list(redistributed[n_ops : 2 * n_ops])
-                stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], int(tmp_basis.size))
+    # Freed in `finally` so a solve that raises on every rank does not leak the cloned
+    # communicator (review ledger M4); collective, every rank of the color runs this unit.
+    try:
+        for p in range(n_e):
+            seeds = list(psi_arr[p * n_ops : (p + 1) * n_ops])
+            for ax, z_axis in enumerate(z_axes):
+                z_shifted = z_axis + es[p]
+                # Fresh warm-start chain per (eigenstate, axis): extrapolating across axes (or
+                # across eigenstates) would extrapolate through a discontinuous z-path.
+                hist_z: list[complex] = []
+                hist_x: list[list[ManyBodyState]] = []
+                for k in _bicgstab_sweep_order(z_shifted):
+                    z = complex(z_shifted[k])
+                    x0 = _warm_start_extrapolation(hist_z, hist_x, z, n_ops)
+                    if slaterWeightMin > 0:
+                        for x in x0:
+                            x.prune(slaterWeightMin)
+                    # Rebuild-and-discard: the basis holds only this point's seed + warm-start
+                    # support; redistribute_psis aligns the amplitudes to the fresh ownership
+                    # layout (the solver assumes its states are distributed per `basis`).
+                    carried = seeds + x0
+                    tmp_basis.clear()
+                    tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
+                    redistributed = tmp_basis.redistribute_psis(*carried)
+                    seeds = list(redistributed[:n_ops])
+                    x0 = list(redistributed[n_ops : 2 * n_ops])
+                    stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], int(tmp_basis.size))
 
-                if np.isfinite(cap) and tmp_basis.size > cap:
-                    # The seed/warm-start support alone exceeds the cap. Never truncate the
-                    # right-hand side silently: solve on it frozen (exact on that subspace) and
-                    # flag it for the diagnostics.
-                    stats["seed_overflow"] = True
-                solve_basis = guarded_proxy(tmp_basis, cap)
+                    if np.isfinite(cap) and tmp_basis.size > cap:
+                        # The seed/warm-start support alone exceeds the cap. Never truncate the
+                        # right-hand side silently: solve on it frozen (exact on that subspace) and
+                        # flag it for the diagnostics.
+                        stats["seed_overflow"] = True
+                    solve_basis = guarded_proxy(tmp_basis, cap)
 
-                # A fresh operator per point: block_bicgstab sets its occupation
-                # restrictions from the basis; the weighted restrictions are set here
-                # (unconditionally, so a None clears any stale mask -- the Basis.expand
-                # convention).
-                A_op = z - hOp
-                A_op.set_weighted_restrictions(excited_weighted_restrictions)
+                    # A fresh operator per point: block_bicgstab sets its occupation
+                    # restrictions from the basis; the weighted restrictions are set here
+                    # (unconditionally, so a None clears any stale mask -- the Basis.expand
+                    # convention).
+                    A_op = z - hOp
+                    A_op.set_weighted_restrictions(excited_weighted_restrictions)
 
-                # Solve, restarting while unconverged and still making progress and
-                # escalating to GMRES on stagnation (block_Green_bicgstab's own warm-start
-                # chain is separate from the RIXS one but shares the same solver policy).
-                # seeds/x0 are wrapped into blocks once here, at the solver boundary; the
-                # restart loop inside solve_shifted_block then carries X as a block with no
-                # further round trip.
-                info = {}
-                X = solve_shifted_block(
-                    A_op,
-                    ManyBodyState.from_states(list(x0)),
-                    ManyBodyState.from_states(list(seeds)),
-                    solve_basis,
-                    slaterWeightMin,
-                    atol,
-                    max_iter=max_iter,
-                    info=info,
-                )
+                    # Solve, restarting while unconverged and still making progress and
+                    # escalating to GMRES on stagnation (block_Green_bicgstab's own warm-start
+                    # chain is separate from the RIXS one but shares the same solver policy).
+                    # seeds/x0 are wrapped into blocks once here, at the solver boundary; the
+                    # restart loop inside solve_shifted_block then carries X as a block with no
+                    # further round trip.
+                    info = {}
+                    X = solve_shifted_block(
+                        A_op,
+                        ManyBodyState.from_states(list(x0)),
+                        ManyBodyState.from_states(list(seeds)),
+                        solve_basis,
+                        slaterWeightMin,
+                        atol,
+                        max_iter=max_iter,
+                        info=info,
+                    )
 
-                stats["n_points"] += 1
-                stats["iterations"] += info["iterations"]
-                stats["max_rel_residual"] = max(stats["max_rel_residual"], info["rel_residual"])
-                if info["gmres_used"]:
-                    stats["gmres_points"] += 1
-                    stats["gmres_iterations"] += info["gmres_iterations"]
-                if not info["converged"]:
-                    stats["n_unconverged"] += 1
-                stats["max_solve_basis"] = max(stats["max_solve_basis"], int(tmp_basis.size))
-                if isinstance(solve_basis, _CappedBasisProxy) and solve_basis.cap_hit:
-                    stats["cap_hit"] = True
-                    retained = solve_basis.retained_size
-                    if stats["retained_size"] is None or retained < stats["retained_size"]:
-                        stats["retained_size"] = retained
+                    stats["n_points"] += 1
+                    stats["iterations"] += info["iterations"]
+                    stats["max_rel_residual"] = max(stats["max_rel_residual"], info["rel_residual"])
+                    if info["gmres_used"]:
+                        stats["gmres_points"] += 1
+                        stats["gmres_iterations"] += info["gmres_iterations"]
+                    if not info["converged"]:
+                        stats["n_unconverged"] += 1
+                    stats["max_solve_basis"] = max(stats["max_solve_basis"], int(tmp_basis.size))
+                    if isinstance(solve_basis, _CappedBasisProxy) and solve_basis.cap_hit:
+                        stats["cap_hit"] = True
+                        retained = solve_basis.retained_size
+                        if stats["retained_size"] is None or retained < stats["retained_size"]:
+                            stats["retained_size"] = retained
 
-                # G_e[i, j] = <seed_i | X_j>; both blocks live on tmp_basis's layout, so the
-                # local Gram + Allreduce is the whole inner product (no state-vector gather).
-                gram = block_inner_cy(ManyBodyState.from_states(seeds), X)
-                if sub_comm is not None:
-                    sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
-                G_axes[ax][p, k] = gram
+                    # G_e[i, j] = <seed_i | X_j>; both blocks live on tmp_basis's layout, so the
+                    # local Gram + Allreduce is the whole inner product (no state-vector gather).
+                    gram = block_inner_cy(ManyBodyState.from_states(seeds), X)
+                    if sub_comm is not None:
+                        sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
+                    G_axes[ax][p, k] = gram
 
-                hist_z.append(z)
-                hist_x.append(X.to_states())
-                if len(hist_z) > _GF_BICGSTAB_WARM_HISTORY:
-                    hist_z.pop(0)
-                    hist_x.pop(0)
-            if verbose and (sub_comm is None or sub_comm.rank == 0):
-                print(
-                    f"    axis {ax}, eigenstate {p}: {len(z_shifted)} solves, "
-                    f"{stats['iterations']} cumulative iterations, "
-                    f"max per-point basis {stats['max_solve_basis']}",
-                    flush=True,
-                )
-
-    if sub_comm is not None:
-        tmp_basis.free_comm()
+                    hist_z.append(z)
+                    hist_x.append(X.to_states())
+                    if len(hist_z) > _GF_BICGSTAB_WARM_HISTORY:
+                        hist_z.pop(0)
+                        hist_x.pop(0)
+                if verbose and (sub_comm is None or sub_comm.rank == 0):
+                    print(
+                        f"    axis {ax}, eigenstate {p}: {len(z_shifted)} solves, "
+                        f"{stats['iterations']} cumulative iterations, "
+                        f"max per-point basis {stats['max_solve_basis']}",
+                        flush=True,
+                    )
+    finally:
+        if sub_comm is not None:
+            tmp_basis.free_comm()
     return G_axes, stats
