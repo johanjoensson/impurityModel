@@ -178,3 +178,76 @@ def test_irlm_mbs_empty_rank_partial_locked_reort():
 
     assert len(eigs) == 2
     np.testing.assert_allclose(eigs, eigvals[:2], atol=1e-8)
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="an empty rank needs comm.size >= 2")
+def test_trlm_mbs_empty_rank_through_the_restart_continuation():
+    """TRLM's restart continuation, not just its initial sweep, with an empty rank.
+
+    ``test_trlm_mbs_empty_rank`` above has a 6-state space, which the solve can close
+    without restarting. Here a 40-state one-particle Hamiltonian (hopping only among
+    orbitals the last rank does not own, so it stays empty) with ``p=2`` and ``m=6`` must
+    restart, and every continuation block goes through ``KrylovColumnStore``'s
+    ``SparseKrylovDense`` arm: ``project`` issues an Allreduce per pass, and the empty
+    rank's zero-row blocks must keep their width through ``reort`` and ``slice_block`` or
+    ``k_ret`` desynchronizes across ranks.
+    """
+    import contextlib
+    import io
+    import re
+
+    from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
+    from impurityModel.ed.trlm import _TRLM_EXIT
+
+    comm = MPI.COMM_WORLD
+    n_orb, n_states = 128, 40
+    empty_rank = comm.size - 1
+    chosen = [
+        o
+        for o in range(n_orb)
+        if SlaterDeterminant.from_bytes(_singlet_bytes(o, n_orb)).routing_hash() % comm.size != empty_rank
+    ][:n_states]
+    assert len(chosen) == n_states
+    rng = np.random.default_rng(7)
+    t = rng.standard_normal((n_states, n_states)) + 1j * rng.standard_normal((n_states, n_states))
+    t = 0.5 * (t + t.conj().T)
+    h_op = ManyBodyOperator(
+        {((chosen[i], "c"), (chosen[j], "a")): complex(t[i, j]) for i in range(n_states) for j in range(n_states)}
+    )
+    states = [_singlet_bytes(o, n_orb) for o in chosen]
+    basis = Basis(
+        impurity_orbitals={0: [list(range(n_orb))]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        verbose=False,
+        comm=comm,
+    )
+    assert comm.allgather(len(basis.local_basis))[empty_rank] == 0
+
+    psi0 = []
+    for c in range(2):
+        st = ManyBodyState()
+        for k, s in enumerate(states):
+            st[basis.type.from_bytes(s)] = complex(np.cos(k + c), np.sin(0.3 * k * (c + 1)))
+        psi0.append(st)
+    psi0, _ = block_normalize(basis.redistribute_psis(*psi0), mpi=True, comm=comm)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        eigs, _ = thick_restart_block_lanczos_cy(
+            psi0=psi0,
+            h_op=h_op,
+            basis=basis,
+            num_wanted=4,
+            max_subspace_blocks=6,
+            tol=1e-10,
+            max_restarts=200,
+            verbose=True,
+            comm=comm,
+        )
+
+    if comm.rank == 0:
+        assert re.search(r"retained block", buf.getvalue()), "TRLM never restarted: the continuation went untested"
+        assert _TRLM_EXIT[0].startswith("restart_loop_end") or _TRLM_EXIT[0] == "continuation_converged", _TRLM_EXIT
+    np.testing.assert_allclose(np.sort(np.real(eigs)), np.linalg.eigvalsh(t)[:4], atol=1e-9)
