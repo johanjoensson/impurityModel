@@ -150,3 +150,15 @@ def test_a_retired_knob_still_set_in_the_environment_warns(monkeypatch):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         config.warn_retired_knobs()
+
+
+def test_sigma_method_choices_match_the_estimator_registry():
+    """``config.SIGMA_METHODS`` names exactly the estimators ``sigma_estimators`` can build, and an
+    unknown name is rejected rather than silently falling back to Dyson."""
+    from impurityModel.ed import sigma_estimators
+
+    assert tuple(sigma_estimators.ESTIMATORS) == config.SIGMA_METHODS
+    for name in config.SIGMA_METHODS:
+        assert sigma_estimators.make_estimator(name).name == name
+    with pytest.raises(ValueError, match="sigma_method"):
+        sigma_estimators.make_estimator("improved")

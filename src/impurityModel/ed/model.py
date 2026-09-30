@@ -1388,12 +1388,17 @@ class SolverOptions:
         Whether the Green's function uses the sparse block-Lanczos path.
     gf_method : {"lanczos", "bicgstab"}
         Green's-function kernel. See :func:`impurityModel.ed.greens_function.get_Greens_function`.
+    sigma_method : {"dyson"}
+        Self-energy estimator (:mod:`impurityModel.ed.sigma_estimators`): which operator family
+        the Green's-function engine resolves and how the self-energy is read off it. Only the
+        Dyson estimator exists today; the field is the extension point, not yet a user knob.
     """
 
     reort: Any = None
     dense_cutoff: int = 500
     sparse_green: bool = True
     gf_method: str = "lanczos"
+    sigma_method: str = "dyson"
 
 
 @dataclass(frozen=True)

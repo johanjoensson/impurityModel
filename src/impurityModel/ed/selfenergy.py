@@ -39,6 +39,7 @@ from impurityModel.ed.sigma import (  # noqa: F401
     get_Sigma_static,
     hyb,
 )
+from impurityModel.ed.sigma_estimators import make_estimator
 from impurityModel.ed.solver_basis import (  # noqa: F401
     _MAX_ROTATION_FILL,
     _ROTATION_TRIM_TOL,
@@ -96,16 +97,16 @@ def _check_gf_physical(comm, gss, label):
     _raise_together(comm, message)
 
 
-def _self_energy_on_mesh(
-    mesh, gss, *, delta, total_impurity_orbitals, sum_bath_states, h0_solve, cluster_label, blocks, comm, label
-):
+def _self_energy_on_mesh(mesh, gss, *, delta, estimator, solver_basis, cluster_label, blocks, comm, label):
     """Compute (and collectively physicality-check) the self-energy on one frequency mesh.
 
-    Returns the per-inequivalent-block self-energy list, or ``None`` when ``gss`` is ``None``
+    ``gss`` are the Green's functions of ``estimator``'s operator families, and ``estimator``
+    reads the self-energy off them. Returns the per-inequivalent-block self-energy list, or
+    ``None`` when ``gss`` is ``None``
     (``get_Greens_function`` gathers to rank 0, so the non-root ranks hold ``None``). On an
     unphysical result the offending blocks are saved to disk before the collective raise.
 
-    .. warning:: **Collective on** ``comm`` (:func:`_raise_together`). ``get_sigma`` and the
+    .. warning:: **Collective on** ``comm`` (:func:`_raise_together`). The estimator and the
        check run on rank 0 only, but ``_raise_together`` must run on *every* rank -- it is
        therefore called outside the ``gss is not None`` guard, never short-circuited by an
        early return.
@@ -113,15 +114,13 @@ def _self_energy_on_mesh(
     sigma = None
     message = None
     if gss is not None:
-        sigma, components = get_sigma(
-            omega_mesh=mesh,
-            impurity_orbitals=total_impurity_orbitals,
-            nBaths=sum_bath_states,
-            gs=gss,
-            h0op=h0_solve,
+        sigma, components = estimator.sigma(
+            mesh,
+            gss,
             delta=delta,
-            clustername=cluster_label,
+            solver_basis=solver_basis,
             blocks=blocks,
+            cluster_label=cluster_label,
             return_components=True,
         )
         tol = config.SIGMA_CAUSALITY_TOL.get()
@@ -197,6 +196,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     dense_cutoff = solver.dense_cutoff
     sparse_green = solver.sparse_green
     gf_method = solver.gf_method
+    estimator = make_estimator(solver.sigma_method)
 
     # MPI variables
     rank = comm.rank if comm is not None else 0
@@ -297,6 +297,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             sparse=sparse_green,
             num_wanted=num_wanted,
             gf_method=gf_method,
+            operator_families=lambda block: estimator.operator_families(block, sb),
         )
 
         # Root rank renders the diagnostics report and decides whether to retry; the decision
@@ -316,6 +317,19 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             break
         num_wanted *= 2
         report(f"\nThermal ensemble appears truncated; retrying with num_wanted = {num_wanted}.\n", flush=True)
+    # get_Greens_function resolved the estimator's operator families; the impurity Green's
+    # function is the leading block of each (the whole of it for the Dyson estimator).
+    inequivalent_blocks = [block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks]
+    family_matsubara, family_realaxis = gs_matsubara, gs_realaxis
+
+    def _impurity_gf(families):
+        if families is None:
+            return None
+        return [estimator.impurity_gf(g, block) for g, block in zip(families, inequivalent_blocks)]
+
+    gs_matsubara = _impurity_gf(family_matsubara)
+    gs_realaxis = _impurity_gf(family_realaxis)
+
     # Physicality checks run on rank 0 (where the gathered results live); _check_gf_physical
     # broadcasts each verdict so every rank raises (or continues) as one.
     _check_gf_physical(comm, gs_matsubara, "Matsubara")
@@ -323,14 +337,12 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
 
     report.banner("Self-energy")
     report("Calculating self-energy ...")
-    inequivalent_blocks = [block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks]
     sigma_real = _self_energy_on_mesh(
         w,
-        gs_realaxis,
+        family_realaxis,
         delta=delta,
-        total_impurity_orbitals=total_impurity_orbitals,
-        sum_bath_states=sum_bath_states,
-        h0_solve=h0_solve,
+        estimator=estimator,
+        solver_basis=sb,
         cluster_label=cluster_label,
         blocks=inequivalent_blocks,
         comm=comm,
@@ -338,11 +350,10 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     )
     sigma = _self_energy_on_mesh(
         iw,
-        gs_matsubara,
+        family_matsubara,
         delta=0,
-        total_impurity_orbitals=total_impurity_orbitals,
-        sum_bath_states=sum_bath_states,
-        h0_solve=h0_solve,
+        estimator=estimator,
+        solver_basis=sb,
         cluster_label=cluster_label,
         blocks=inequivalent_blocks,
         comm=comm,

@@ -1,3 +1,4 @@
+import functools
 from dataclasses import dataclass
 
 import numpy as np
@@ -45,6 +46,18 @@ class SolverBasis:
     rot_to_spherical: "np.ndarray"
     total_impurity_orbitals: dict
     sum_bath_states: dict
+
+    @functools.cached_property
+    def h_int(self) -> ManyBodyOperator:
+        """The interaction ``h - h0_solve``, built on first use.
+
+        Defined against ``h0_solve``, the operator the Dyson estimator extracts the self-energy
+        against, so an estimator resolving ``[c, h_int]`` measures the same self-energy. Lazy
+        because only such an estimator needs it: on a production d shell it is a full copy of the
+        Coulomb operator, which the Dyson path never pays for.
+        """
+        h = self.h if isinstance(self.h, ManyBodyOperator) else ManyBodyOperator(dict(self.h))
+        return h - self.h0_solve
 
 
 def _per_group_occupation(nominal_occ, impurity_orbitals, h=None):

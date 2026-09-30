@@ -59,6 +59,28 @@ enumerates its own units, (eigenstate x chunk of incoming energies), and uses it
 default. Every consumer states the mask it needs on the shared Hamiltonian (`None` clears), and
 the moments clear it: masks are sticky on the operator object and cannot be read back.
 
+## Self-energy estimators (`sigma_estimators.py`)
+
+`calc_selfenergy` asks a `SelfEnergyEstimator` (picked by `SolverOptions.sigma_method`) three
+things:
+
+- **`operator_families(block, solver_basis)`** returns `(X^dag, X)`, the operators the
+  pipeline resolves for one block. `get_Greens_function(operator_families=...)` builds one
+  operator group per family side, so each block's `G` is the Green's function of `X`, as wide
+  as the family. By contract the family's leading `len(block)` operators are the block's own
+  `c`, and the anticommutator sum rule is checked on those columns.
+- **`impurity_gf(g_family, block)`** returns the impurity `G` inside the family's `G`: the
+  leading block.
+- **`sigma(mesh, g_families, ...)`** returns the self-energy read off the family's `G`.
+
+`DysonEstimator` is the production estimator: `X = c` and `Σ = G0^-1 - G^-1` (`sigma.get_sigma`).
+The symmetric improved estimator plugs in here. It resolves `X = [c, q]` with
+`q = [c, H_int]`, a `2n`-wide family, taking `H_int` from `SolverBasis.h_int` (`h - h0_solve`,
+built lazily, so the Dyson path never pays for a copy of the Coulomb operator). The
+test-only stub in `test/gf/test_gf_operator_families.py` checks two things:
+- the stub family's full `2n x 2n` `G` against the exact Lehmann oracle, on every kernel;
+- its seed-Gram cross block `<{q_a, c_b^dag}>` against production's `sigma_static`.
+
 ## Resolvent kernel: the `gf_method` switch
 
 `get_Greens_function(...)` in `greens_function.py` picks the resolvent kernel with the
@@ -168,5 +190,7 @@ the solve it is judging.
   (`gf_shift_recycling.py`).
 - A new distribution/parallelism concern → `gf_units.run_units_distributed` and
   `basis_split.py`; read [`mpi_model.md`](mpi_model.md) first.
-- A new estimator or unit kind → `gf_engine.py` (the unit kernel and reassembly) and
+- A new self-energy estimator → `sigma_estimators.py` (the protocol, `DysonEstimator`, the
+  registry); the family reaches the engine through `get_Greens_function(operator_families=...)`.
+- A new unit kind → `gf_engine.py` (the unit kernel and reassembly) and
   `gf_units.enumerate_gf_units` (operator groups of any width).

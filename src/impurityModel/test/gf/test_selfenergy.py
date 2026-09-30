@@ -498,7 +498,7 @@ def test_calc_selfenergy_exceptions(mock_get_gf, mock_calc_gs):
 @patch("impurityModel.ed.selfenergy.save_Greens_function")
 @patch("impurityModel.ed.selfenergy.calc_gs")
 @patch("impurityModel.ed.selfenergy.get_Greens_function")
-@patch("impurityModel.ed.selfenergy.get_sigma")
+@patch("impurityModel.ed.sigma_estimators.get_sigma")
 def test_calc_selfenergy_sigma_exceptions(mock_get_sigma, mock_get_gf, mock_calc_gs, mock_save_gf):
     mock_calc_gs.return_value = (
         [np.array([1.0])],

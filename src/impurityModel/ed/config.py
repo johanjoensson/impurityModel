@@ -95,6 +95,10 @@ def _register(*knobs: Knob) -> dict[str, Knob]:
 #: Accepted ``gf_method`` values.
 GF_METHODS = ("lanczos", "bicgstab")
 
+#: Accepted ``SolverOptions.sigma_method`` values: the self-energy estimators of
+#: :mod:`impurityModel.ed.sigma_estimators` (its ``ESTIMATORS`` registry has exactly these keys).
+SIGMA_METHODS = ("dyson",)
+
 #: Retired ``gf_method`` values, each with the reason and the replacement. Archive replay maps
 #: them to ``"lanczos"`` with a warning; every other front end rejects them with this message.
 RETIRED_GF_METHODS = {
