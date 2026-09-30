@@ -1,5 +1,7 @@
 import functools
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 
@@ -56,7 +58,7 @@ class SolverBasis:
         because only such an estimator needs it: on a production d shell it is a full copy of the
         Coulomb operator, which the Dyson path never pays for.
         """
-        h = self.h if isinstance(self.h, ManyBodyOperator) else ManyBodyOperator(dict(self.h))
+        h = self.h if isinstance(self.h, ManyBodyOperator) else ManyBodyOperator(dict(cast(Mapping, self.h)))
         return h - self.h0_solve
 
 
