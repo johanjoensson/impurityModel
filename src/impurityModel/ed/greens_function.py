@@ -358,6 +358,7 @@ def get_Greens_function(
     sparse: bool,
     num_wanted: int | None = None,
     gf_method: str = "lanczos",
+    operator_families=None,
 ):
     """
     Calculate interacting Greens function.
@@ -372,6 +373,16 @@ def get_Greens_function(
     per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`).
     On the per-frequency path ``sparse`` is ignored (the solvers work on the ManyBodyState
     representation only).
+
+    ``operator_families`` is the self-energy estimator seam
+    (:mod:`impurityModel.ed.sigma_estimators`): ``operator_families(block)`` returns
+    ``(addition_ops, removal_ops)``, two equally long operator lists. With ``removal_ops = X``
+    and ``addition_ops = X^dag``, each returned block is the Green's function of the family X,
+    ``G_ab(z) = <X_a (z - H + E)^-1 X_b^dag> + <X_b^dag (z + H - E)^-1 X_a>``. The contract: a
+    family's leading ``len(block)`` operators are the block's own ``c^dag`` / ``c`` in block
+    order, so the leading sub-block is the impurity Green's function and the anticommutator sum
+    rule is checked on it. ``None`` is exactly that plain family, so each block is
+    ``len(block)`` wide.
     """
     config.warn_retired_knobs()
     if gf_method in config.RETIRED_GF_METHODS:
@@ -414,12 +425,22 @@ def get_Greens_function(
     # run_units_distributed), load-balanced across the full (block x side x eigenstate)
     # cross-product -- important when there are many small symmetry blocks (the typical
     # production case).
-    SIDES = (("c", delta), ("a", -delta))  # 0 = addition (IPS), 1 = removal (PS)
+    if operator_families is None:
+        operator_families = impurity_operator_family
+    SIDE_DELTAS = (delta, -delta)  # 0 = addition (IPS), 1 = removal (PS)
     op_groups = []
     group_meta = []  # (block_i, side_i) per operator group
+    widths = []  # G width per block: the family's operator count
     for block_i, block in enumerate(blocks):
-        for side_i, (op_char, delta_signed) in enumerate(SIDES):
-            op_groups.append(([ManyBodyOperator({((orb, op_char),): 1}) for orb in block], delta_signed))
+        families = operator_families(block)
+        if len(families[0]) != len(families[1]) or len(families[0]) < len(block):
+            raise ValueError(
+                f"operator family for block {block} has {len(families[0])} addition and {len(families[1])} "
+                f"removal operators; both must be equal and at least len(block) = {len(block)}"
+            )
+        widths.append(len(families[0]))
+        for side_i, ops in enumerate(families):
+            op_groups.append((ops, SIDE_DELTAS[side_i]))
             group_meta.append((block_i, side_i))
     units, unit_seeds, unit_restrictions = enumerate_gf_units(
         op_groups,
@@ -441,6 +462,7 @@ def get_Greens_function(
             hOp,
             delta,
             blocks,
+            widths,
             units,
             unit_seeds,
             unit_weights,
@@ -528,14 +550,12 @@ def get_Greens_function(
         thermal = ThermalEnsemble(es, tau)
         e0, Z = thermal.e0, thermal.Z
         gs_matsubara = (
-            [np.empty((len(matsubara_mesh), len(b), len(b)), dtype=complex) for b in blocks]
+            [np.empty((len(matsubara_mesh), n, n), dtype=complex) for n in widths]
             if matsubara_mesh is not None
             else None
         )
         gs_realaxis = (
-            [np.empty((len(omega_mesh), len(b), len(b)), dtype=complex) for b in blocks]
-            if omega_mesh is not None
-            else None
+            [np.empty((len(omega_mesh), n, n), dtype=complex) for n in widths] if omega_mesh is not None else None
         )
         report = _gfd.DiagnosticReport()
         for block_i, block in enumerate(blocks):
@@ -565,7 +585,11 @@ def get_Greens_function(
                         memory_frozen=block_cap.get("memory_frozen", False),
                     )
                 )
-            diags.insert(0, _gfd.check_spectral_sum_rule(r_add, r_rem, es, e0, tau, len(block)))
+            # The sum rule holds for the plain c/c^dag part of a family: its leading len(block) columns.
+            n_c = len(block)
+            if widths[block_i] != n_c:
+                r_add, r_rem = ([r[:, :n_c] for r in rs] for rs in (r_add, r_rem))
+            diags.insert(0, _gfd.check_spectral_sum_rule(r_add, r_rem, es, e0, tau, n_c))
             lanczos_tol = _gf_rel_tol(slaterWeightMin)
             # The solver's own runtime verdict (block_Green_sparse/block_green_impl's
             # `converged_fn`, tested on the caller's actual eval_meshes) -- not a recompute.
@@ -597,6 +621,11 @@ def get_Greens_function(
     return (gs_matsubara, gs_realaxis, report)
 
 
+def impurity_operator_family(block):
+    """The impurity Green's-function family of ``block``: ``([c_i^dag], [c_i])`` in block order."""
+    return tuple([ManyBodyOperator({((orb, op_char),): 1}) for orb in block] for op_char in ("c", "a"))
+
+
 def _get_greens_function_bicgstab(
     matsubara_mesh,
     omega_mesh,
@@ -606,6 +635,7 @@ def _get_greens_function_bicgstab(
     hOp,
     delta,
     blocks,
+    widths,
     units,
     unit_seeds,
     unit_weights,
@@ -652,6 +682,7 @@ def _get_greens_function_bicgstab(
         basis,
         delta,
         blocks,
+        widths,
         units_meta,
         unit_seeds,
         unit_weights,
@@ -669,6 +700,7 @@ def _run_evaluated_gf_units(
     basis,
     delta,
     blocks,
+    widths,
     units_meta,
     unit_seeds,
     unit_weights,
@@ -700,7 +732,7 @@ def _run_evaluated_gf_units(
     is_root = basis.comm is None or basis.comm.rank == 0
     G_acc = (
         {
-            (bi, si): [np.zeros((L, len(blocks[bi]), len(blocks[bi])), dtype=complex) for L in axis_lens]
+            (bi, si): [np.zeros((L, widths[bi], widths[bi]), dtype=complex) for L in axis_lens]
             for bi in range(len(blocks))
             for si in (0, 1)
         }
@@ -761,13 +793,9 @@ def _run_evaluated_gf_units(
         return None, None, None
 
     gs_matsubara = (
-        [np.empty((len(matsubara_mesh), len(b), len(b)), dtype=complex) for b in blocks]
-        if matsubara_mesh is not None
-        else None
+        [np.empty((len(matsubara_mesh), n, n), dtype=complex) for n in widths] if matsubara_mesh is not None else None
     )
-    gs_realaxis = (
-        [np.empty((len(omega_mesh), len(b), len(b)), dtype=complex) for b in blocks] if omega_mesh is not None else None
-    )
+    gs_realaxis = [np.empty((len(omega_mesh), n, n), dtype=complex) for n in widths] if omega_mesh is not None else None
     report = _gfd.DiagnosticReport()
     for block_i, block in enumerate(blocks):
         ax = 0
