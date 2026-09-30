@@ -39,11 +39,11 @@ A *restriction* bounds the occupation of a subset of orbitals: `{frozenset(orbit
 `basis_restrictions.py` builds them (it contains collectives — call from all ranks):
 
 - `get_effective_restrictions(basis)` — the observed restrictions of the current basis.
-- `build_initial_restrictions(...)` — the ground-state restrictions, including the
-  connectivity/coupling-distance logic (`_impurity_coupling_distance`) that decides which bath
-  sites can hybridize.
 - `build_excited_restrictions(...)` — the widened windows for a spectral sector (electron
-  addition/removal shifts the occupation by one).
+  addition/removal shifts the occupation by one), including the chain windows on bath sites
+  that couple only weakly to the impurity. Which sites those are is decided by the
+  coupling-distance metric (`_impurity_coupling_distance`) and the one freeze-eligibility test
+  on it (`_far_orbitals`).
 
 Two orthogonal flavors layer on top, from `symmetries.py`:
 

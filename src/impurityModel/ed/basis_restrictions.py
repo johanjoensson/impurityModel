@@ -1,7 +1,7 @@
 """
 Occupation-restriction construction for a :class:`~impurityModel.ed.manybody_basis.Basis`:
-effective (observed) restrictions of the current determinant set, connectivity-derived
-ground-state restrictions, and widened restrictions for excited/spectral sectors.
+effective (observed) restrictions of the current determinant set, and widened restrictions
+for excited/spectral sectors (with the coupling-distance chain windows).
 
 The functions take the basis as their first argument; the ones that reduce over the
 distributed determinant set (`get_effective_restrictions`, and through it
@@ -274,74 +274,13 @@ def _rows_by_orbital(dist, tot_orb, all_impurity_orbitals):
     return full
 
 
-def build_initial_restrictions(
-    basis, op: ManyBodyOperator, min_dist=_USE_DEFAULT, coupling_cutoff=_USE_DEFAULT
-) -> Optional[dict[frozenset[int], tuple[int, int]]]:
-    """Construct the initial occupation restrictions based on Hamiltonian connectivity.
+def _far_orbitals(dist_matrix, imp_orb_block, orbitals, dist_cutoff):
+    """The ``orbitals`` whose coupling distance from every orbital of ``imp_orb_block`` exceeds ``dist_cutoff``.
 
-    Parameters
-    ----------
-    op : ManyBodyOperator
-        The Hamiltonian operator.
-    min_dist : int, default 4
-        Minimum shortest-path distance from the impurity to consider a bath state.
-
-    Returns
-    -------
-    restrictions : dict of frozenset of int to (int, int), optional
-        The initial ground state restrictions, or None if no restrictions were built.
+    The one freeze-eligibility test: an orbital is far (a chain-window candidate) when even its
+    closest impurity orbital in the block reaches it only past the cutoff.
     """
-    if coupling_cutoff is _USE_DEFAULT:
-        coupling_cutoff = COUPLING_CUTOFF_DEFAULT
-    if min_dist is _USE_DEFAULT:
-        min_dist = MIN_DIST_DEFAULT
-    ground_state_restrictions = {}
-    valence_baths, conduction_baths = basis.bath_states
-
-    filled_bath_states = []
-    empty_bath_states = []
-
-    all_impurity_orbitals = [
-        orb for orb_blocks in basis.impurity_orbitals.values() for orb_block in orb_blocks for orb in orb_block
-    ]
-    all_valence_orbitals = [
-        orb for orb_blocks in valence_baths.values() for orb_block in orb_blocks for orb in orb_block
-    ]
-    all_conduction_orbitals = [
-        orb for orb_blocks in conduction_baths.values() for orb_block in orb_blocks for orb in orb_block
-    ]
-    tot_orb = len(all_impurity_orbitals) + len(all_valence_orbitals) + len(all_conduction_orbitals)
-    dist_matrix, dist_cutoff = _impurity_coupling_distance(
-        op, tot_orb, all_impurity_orbitals, coupling_cutoff, min_dist
-    )
-    for i, impurity_orbitals in basis.impurity_orbitals.items():
-        for imp_orb_block, val_orb_block, con_orb_block in zip(
-            impurity_orbitals, valence_baths[i], conduction_baths[i]
-        ):
-            # Identify filled and empty bath states
-            # Only restrict states that couple weakly to the impurity (dist above cutoff).
-            filled_valence_states = [
-                orb for orb in val_orb_block if np.min(dist_matrix[np.ix_(imp_orb_block, [orb])]) > dist_cutoff
-            ]
-            filled_states = frozenset(sorted(filled_valence_states))
-            empty_conduction_states = [
-                orb for orb in con_orb_block if np.min(dist_matrix[np.ix_(imp_orb_block, [orb])]) > dist_cutoff
-            ]
-            empty_states = frozenset(sorted(empty_conduction_states))
-            filled_bath_states.append(filled_states)
-            empty_bath_states.append(empty_states)
-    for filled_orbitals, empty_orbitals in zip(filled_bath_states, empty_bath_states):
-        if len(filled_orbitals) > 1:
-            ground_state_restrictions[filled_orbitals] = (len(filled_orbitals) - 1, len(filled_orbitals))
-        if len(empty_orbitals) > 1:
-            ground_state_restrictions[empty_orbitals] = (0, 1)
-    if sum(len(rest) for rest in ground_state_restrictions.keys()) == 0:
-        return None
-    if basis.verbose and (basis.comm is None or basis.comm.rank == 0):
-        print("Ground state restrictions:")
-        for indices, occupations in ground_state_restrictions.items():
-            print(f"---> {sorted(indices)} : {occupations}")
-    return ground_state_restrictions
+    return {orb for orb in orbitals if np.min(dist_matrix[np.ix_(imp_orb_block, [orb])]) > dist_cutoff}
 
 
 def _emit_graded_chain_window(excited_restrictions, orbitals, dist_matrix, dist_freeze, filled):
@@ -506,26 +445,28 @@ def build_excited_restrictions(
 
                 # Identify filled and empty bath states
                 # Ignore states that are too close to the impurity
+                far_val = _far_orbitals(dist_matrix, imp_orb_block, val_orb_block, dist_cutoff)
+                far_con = _far_orbitals(dist_matrix, imp_orb_block, con_orb_block, dist_cutoff)
                 filled_valence_states = [
                     val_orb_block[orb]
                     for orb in np.nonzero(valence_occupations > 1 - cutoff)[0]
-                    if np.min(dist_matrix[np.ix_(imp_orb_block, [val_orb_block[orb]])]) > dist_cutoff
+                    if val_orb_block[orb] in far_val
                 ]
                 filled_conduction_states = [
                     con_orb_block[orb]
                     for orb in np.nonzero(conduction_occupations > 1 - cutoff)[0]
-                    if np.min(dist_matrix[np.ix_(imp_orb_block, [con_orb_block[orb]])]) > dist_cutoff
+                    if con_orb_block[orb] in far_con
                 ]
                 filled_states = frozenset(sorted(filled_valence_states + filled_conduction_states))
                 empty_valence_states = [
                     val_orb_block[orb]
                     for orb in np.nonzero(valence_occupations < cutoff)[0]
-                    if np.min(dist_matrix[np.ix_(imp_orb_block, [val_orb_block[orb]])]) > dist_cutoff
+                    if val_orb_block[orb] in far_val
                 ]
                 empty_conduction_states = [
                     con_orb_block[orb]
                     for orb in np.nonzero(conduction_occupations < cutoff)[0]
-                    if np.min(dist_matrix[np.ix_(imp_orb_block, [con_orb_block[orb]])]) > dist_cutoff
+                    if con_orb_block[orb] in far_con
                 ]
                 # The far orbitals leave the group for their own chain windows; bound what remains.
                 # Lower bound (valence): the near orbitals hold at least min_val minus whatever the

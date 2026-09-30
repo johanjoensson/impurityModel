@@ -1,9 +1,10 @@
 """P3: physics-derived (coupling-strength) occupation restrictions.
 
-The ground-state restrictions freeze bath orbitals that couple *weakly* to the impurity,
-using the coupling-strength-weighted distance rather than graph hop-count. So a strongly
-hybridised long chain stays free, while an orbital past a weak link is frozen regardless of
-how few hops away it is.
+The chain windows freeze bath orbitals that couple *weakly* to the impurity, using the
+coupling-strength-weighted distance rather than graph hop-count. So a strongly hybridised
+long chain stays free, while an orbital past a weak link is frozen regardless of how few
+hops away it is. The classification is :func:`_impurity_coupling_distance`'s
+``dist > threshold``, which :func:`build_excited_restrictions` applies per chain.
 """
 
 import numpy as np
@@ -12,7 +13,6 @@ from mpi4py import MPI
 from impurityModel.ed.basis_restrictions import (
     _impurity_coupling_distance,
     build_excited_restrictions,
-    build_initial_restrictions,
 )
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
@@ -28,14 +28,12 @@ def _chain_op(hoppings, onsite):
     return ManyBodyOperator(terms)
 
 
-def _basis(valence_block):
-    return Basis(
-        impurity_orbitals={0: [[0]]},
-        bath_states=({0: [valence_block]}, {0: [[]]}),
-        nominal_impurity_occ={0: 1},
-        comm=MPI.COMM_WORLD,
-        verbose=False,
+def _frozen(op, n_orb, coupling_cutoff, min_dist=4):
+    """Orbitals past the freeze threshold, seen from impurity orbital 0."""
+    dist, threshold = _impurity_coupling_distance(
+        op, tot_orb=n_orb, all_impurity_orbitals=[0], coupling_cutoff=coupling_cutoff, min_dist=min_dist
     )
+    return {o for o in range(1, n_orb) if dist[0, o] > threshold}
 
 
 def test_strongly_coupled_long_chain_is_not_frozen():
@@ -43,12 +41,10 @@ def test_strongly_coupled_long_chain_is_not_frozen():
     orbs = [1, 2, 3, 4, 5, 6]
     hop = {(i, i + 1): 1.0 for i in range(0, 6)}  # 0-1-2-...-6, all t = 1
     op = _chain_op(hop, dict.fromkeys(orbs, -1.0))
-    basis = _basis(orbs)
 
     # Legacy hop-count (min_dist=4) freezes orbitals 5,6; coupling-based keeps everything free.
-    assert build_initial_restrictions(basis, op, coupling_cutoff=1e-3) is None
-    legacy = build_initial_restrictions(basis, op, coupling_cutoff=None, min_dist=4)
-    assert legacy is not None and any(5 in k or 6 in k for k in legacy)
+    assert _frozen(op, 7, coupling_cutoff=1e-3) == set()
+    assert _frozen(op, 7, coupling_cutoff=None, min_dist=4) == {5, 6}
 
 
 def test_orbitals_past_a_weak_link_are_frozen():
@@ -56,13 +52,9 @@ def test_orbitals_past_a_weak_link_are_frozen():
     orbs = [1, 2, 3]
     hop = {(0, 1): 1.0, (1, 2): 1e-4, (2, 3): 1.0}  # weak link between 1 and 2
     op = _chain_op(hop, dict.fromkeys(orbs, -1.0))
-    basis = _basis(orbs)
 
-    restr = build_initial_restrictions(basis, op, coupling_cutoff=1e-3)
-    assert restr is not None
-    frozen = set().union(*restr.keys())
-    assert {2, 3} <= frozen  # beyond the weak link
-    assert 1 not in frozen  # strongly coupled, stays free
+    # {2, 3} lie beyond the weak link; 1 is strongly coupled and stays free.
+    assert _frozen(op, 4, coupling_cutoff=1e-3) == {2, 3}
 
 
 def test_near_but_weakly_coupled_orbital_is_frozen():
@@ -121,14 +113,13 @@ def test_coupling_distance_rows_are_indexed_by_orbital():
 
 
 def test_star_with_interleaved_groups_gets_no_chain_window():
-    """A star has no chain, so neither the initial nor the ground-state window may restrict a bath.
+    """A star has no chain, so no excited-sector chain window may restrict a bath.
 
     Regression: an SrMnO3 star (eg group [0,1,5,6], t2g group [2,3,4,7,8,9]) had the baths of
     impurity orbitals 3-6 windowed as if they were far chain sites, because the distance-matrix
     rows were looked up by orbital number but ordered group by group.
     """
     op, basis = _grouped_star()
-    assert build_initial_restrictions(basis, op, coupling_cutoff=1e-3) is None
     bath = set(range(4, 16))
     # Plain (binary) windows, then the graded three-zone path (_emit_graded_chain_window).
     for slater_weight_min in (None, 1e-6):
