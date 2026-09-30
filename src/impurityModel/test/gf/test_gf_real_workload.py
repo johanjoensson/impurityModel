@@ -57,9 +57,10 @@ def _phase_timers(phases):
     packing work (review ledger P2) is gated on. Patches module attributes only and restores
     them on exit, so production code is untouched.
     """
-    from impurityModel.ed import gf_engine, selfenergy, sigma_estimators
+    from impurityModel.ed import gf_engine, selfenergy, sigma_estimators, solver_trace
 
     unit_seconds = phases.setdefault("unit_seconds", [])
+    trace = None
 
     def timed(name, fn):
         def wrapper(*args, **kwargs):
@@ -70,7 +71,11 @@ def _phase_timers(phases):
                 seconds = time.perf_counter() - t0
                 phases[name] = phases.get(name, 0.0) + seconds
                 if name == "gf_units":
-                    unit_seconds.append(seconds)
+                    # _block_green_group records one gf_unit_memory note per unit (collective, so
+                    # it is there on every rank of the color); pair it with the unit's time.
+                    notes = trace.of_kind("gf_unit_memory") if trace is not None else []
+                    last = notes[-1] if notes else {}
+                    unit_seconds.append((seconds, last.get("n_blocks"), last.get("retained_size")))
 
         return wrapper
 
@@ -85,7 +90,8 @@ def _phase_timers(phases):
     try:
         for (module, attr, label), (_, _, fn) in zip(targets, originals):
             setattr(module, attr, timed(label, fn))
-        yield
+        with solver_trace.tracing() as trace:
+            yield
     finally:
         for module, attr, fn in originals:
             setattr(module, attr, fn)
@@ -134,14 +140,16 @@ def test_real_workload_selfenergy():
         print(f"[real-workload] wall {wall:.1f} s, peak RSS per rank: {[format_bytes(p) for p in peaks]}")
         if phases:
             names = ["calc_gs", "get_Greens_function", "gf_units", "moments", "dyson"]
-            print("[real-workload] phase seconds per rank (gf_units = busy inside GF units):")
+            # Non-root ranks leave get_Greens_function as soon as their units are gathered, so
+            # their own GF time understates the phase; the phase wall is the slowest rank's.
+            gf_wall = max(ph.get("get_Greens_function", 0.0) for ph in all_phases)
+            print(f"[real-workload] phase seconds per rank (GF phase wall {gf_wall:.1f} s; busy = in GF units / wall):")
             for rank, ph in enumerate(all_phases):
-                gf = ph.get("get_Greens_function", 0.0)
-                busy = ph.get("gf_units", 0.0) / gf if gf > 0 else float("nan")
+                busy = ph.get("gf_units", 0.0) / gf_wall if gf_wall > 0 else float("nan")
                 cells = "  ".join(f"{n}={ph.get(n, 0.0):7.1f}" for n in names)
-                units = sorted(ph.get("unit_seconds", []), reverse=True)
                 print(f"  rank {rank}: {cells}  gf_busy={busy:.1%}")
-                print(f"    {len(units)} units, longest: {', '.join(f'{u:.1f}' for u in units[:8])}")
+                for seconds, n_blocks, size in sorted(ph.get("unit_seconds", []), key=lambda u: -u[0])[:8]:
+                    print(f"    unit {seconds:7.1f} s  n_blocks={n_blocks}  retained_size={size}")
         out = os.environ.get("BENCH_OUT")
         if out:
             np.savez(
