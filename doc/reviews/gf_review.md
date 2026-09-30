@@ -87,6 +87,7 @@ The 15-bath NiO replay is too heavy for a per-phase loop: its ground state alone
 | Six enumerate → distribute → assemble drivers become one engine (`gf_engine`: `lanczos_unit_kernel`, `states_by_group`, `combine_sides`); five Z computations become `average.ThermalEnsemble` | Phase 5.1–5.2 |
 | Dead code removed: `rotate_Greens_function`, `rotate_4index_U`, `calc_continuants`, the pairwise helpers, `build_greens_function`, the empty-ensemble branch | Phase 5.3 |
 | `build_initial_restrictions` removed: it had no production caller (the last two, in `selfenergy.py`, were already commented out before `007fc74`). Its tests now assert the coupling-distance classification it shared with `build_excited_restrictions`, and that classification is one helper, `_far_orbitals`, instead of six inline copies. RIXS has no hand-rolled windows left: it calls `build_excited_restrictions` with its core-excited changes and narrows with `intersect_windows` | Phase 5b |
+| Estimator seam: `get_Greens_function(operator_families=...)` resolves any operator family, and `sigma_estimators` (`SelfEnergyEstimator`, `DysonEstimator`, `SolverOptions.sigma_method`) reads Σ off it. `SolverBasis.h_int` is lazy. A test-only `[c, [c, H_int]]` stub is checked against the oracle on every kernel and, through its seed Gram, against `sigma_static`. The Dyson path stays bitwise identical | Phase 6 |
 
 ## Performance and parallelism
 
