@@ -489,7 +489,13 @@ def block_Green_sparse(
             memory_policy if memory_budget is not None else (getattr(basis, "gf_memory_policy", None) or "tighten")
         )
         budget_kwargs = {"memory_budget": guard_budget, "memory_policy": guard_policy}
-        lanczos_basis = _PrunedBasisProxy(basis, cap if np.isfinite(cap) else 2**62, prune_tol, **budget_kwargs)
+        lanczos_basis = _PrunedBasisProxy(
+            basis,
+            cap if np.isfinite(cap) else 2**62,
+            prune_tol,
+            first_shell_tol=config.GF_ADMIT_FIRST_SHELL_TOL.get(),
+            **budget_kwargs,
+        )
     elif memory_budget is None:
         # Not handed one explicitly: the guard the GF stage configured on this basis, if any
         # (clones carry it), exactly as every other capped GF kernel reads it.

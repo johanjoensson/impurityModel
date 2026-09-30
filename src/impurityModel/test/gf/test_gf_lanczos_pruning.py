@@ -35,6 +35,7 @@ CLOSURE = 18
 def _knobs(monkeypatch):
     monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
     monkeypatch.delenv("GF_LANCZOS_ADMIT_TOL", raising=False)
+    monkeypatch.delenv("GF_ADMIT_FIRST_SHELL_TOL", raising=False)
 
 
 def _run(monkeypatch, eta, cap=np.inf, reort=None, comm=None, slater=0.0):
@@ -110,6 +111,15 @@ def test_the_seeds_and_their_first_shell_are_never_pruned(monkeypatch):
     seeds = _seeds()
     shell = set(_siam_6().apply_block(ManyBodyState.from_states(seeds), 0.0).keys())
     assert {k for s in seeds for k in s.keys()} <= retained and shell <= retained
+
+
+@pytest.mark.parametrize("shell_tol", [0.3, 0.6])
+def test_a_relaxed_first_shell_prunes_it_and_stays_exact(monkeypatch, shell_tol):
+    _G, strict, _z = _run(monkeypatch, 1e6)
+    monkeypatch.setenv("GF_ADMIT_FIRST_SHELL_TOL", str(shell_tol))
+    G, info, z = _run(monkeypatch, 1e6)
+    assert len(_retained(info)) < len(_retained(strict))
+    np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
 
 
 def test_the_ban_mask_is_recorded(monkeypatch):

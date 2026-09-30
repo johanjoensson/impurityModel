@@ -80,12 +80,20 @@ def _frozen_proxy(tmp_basis):
     return proxy
 
 
-def start_set(A_op, seeds_block, seeds, x0, carry_tol, comm, n_ops):
+def start_set(A_op, seeds_block, seeds, x0, carry_tol, comm, n_ops, shell_tol=0.0):
     """Determinants of the point's starting basis: the seeds, their first H-shell, and the warm-start
     determinants with ``|x0_D| / ||x0|| >= carry_tol`` (scored at this point's own ``x0``, so a
-    determinant that mattered at the previous frequency but not this one is dropped)."""
+    determinant that mattered at the previous frequency but not this one is dropped).
+
+    The first shell is kept whole unless ``shell_tol`` > 0, which drops its rows with amplitude below
+    ``shell_tol * ||seed_j||`` (``GF_ADMIT_FIRST_SHELL_TOL``)."""
     keys = {key for psi in seeds for key in psi.keys()}
-    keys.update(A_op.apply_block(seeds_block, 0.0).keys())
+    shell = A_op.apply_block(seeds_block, 0.0)
+    if shell_tol > 0.0:
+        inv_seed = _inverse_norms(_allreduced_col_norms2(seeds_block, n_ops, comm))
+        scaled_shell = shell.combine_columns(np.diag(inv_seed).astype(complex))
+        shell = scaled_shell.keys_new_above(ManyBodyState.from_keys([]), shell_tol * shell_tol)
+    keys.update(shell.keys())
     carried = ManyBodyState.from_states(list(x0))
     inv = _inverse_norms(_allreduced_col_norms2(carried, n_ops, comm))
     if np.any(inv):
@@ -158,7 +166,16 @@ def solve_point_outer(
 
     # --- start set -------------------------------------------------------------------------
     A_op.set_restrictions(tmp_basis.restrictions)
-    keys = start_set(A_op, ManyBodyState.from_states(list(seeds)), seeds, x0, carry_tol, comm, n_ops)
+    keys = start_set(
+        A_op,
+        ManyBodyState.from_states(list(seeds)),
+        seeds,
+        x0,
+        carry_tol,
+        comm,
+        n_ops,
+        config.GF_ADMIT_FIRST_SHELL_TOL.get(),
+    )
     tmp_basis.clear()
     tmp_basis.add_states(sorted(keys))
     redistributed = tmp_basis.redistribute_psis(*(list(seeds) + list(x0)))

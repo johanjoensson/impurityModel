@@ -544,15 +544,18 @@ class _PrunedBasisProxy(_CappedBasisProxy):
       chunk's partial sum could clear the threshold on the full sum;
     * the first matvec that reaches new determinants admits all of them (``eta`` is not applied
       to ``H q_0``): the seeds' first H-shell is what keeps the moments of G through ``H^2``,
-      hence the ``Sigma`` tail, exact. (Not simply "the first call": the kernel also routes the
-      seed block itself through here, which reaches nothing new.)
+      hence the ``Sigma`` tail, exact. ``first_shell_tol`` > 0 relaxes this to an amplitude cut of
+      its own, for models whose tiny couplings put a whole hole-space in the first shell. (Not
+      simply "the first call": the kernel also routes the seed block itself through here, which
+      reaches nothing new.)
 
     The ban mask grows like the frontier; :attr:`ban_bytes` reports what it holds.
     """
 
-    def __init__(self, basis, cap, eta, **kwargs):
+    def __init__(self, basis, cap, eta, first_shell_tol=0.0, **kwargs):
         super().__init__(basis, cap, **kwargs)
         self._eta2 = float(eta) ** 2
+        self._shell_tol2 = float(first_shell_tol) ** 2
         self._ban = ManyBodyState.from_keys([])
         self._shell_admitted = False
 
@@ -568,7 +571,7 @@ class _PrunedBasisProxy(_CappedBasisProxy):
         # Global, so every rank agrees on whether this is the first-shell step.
         first_shell = not self._shell_admitted and self._allreduce_sum(len(new)) > 0
         self._shell_admitted = self._shell_admitted or first_shell
-        candidates = block.keys_new_above(self._mask, 0.0 if first_shell else self._eta2)
+        candidates = block.keys_new_above(self._mask, self._shell_tol2 if first_shell else self._eta2)
         allowed = [key for key in candidates.keys() if key not in self._ban]
         self._ban.merge_keys(new)  # rows admitted below are in the mask, which takes priority
         # One collective count per call on every rank, whatever this rank's own candidates.

@@ -49,6 +49,7 @@ def _hermetic_knobs(monkeypatch):
         "GF_BICGSTAB_ADMIT_SHELLS",
         "GF_BICGSTAB_ADMIT_CARRY_TOL",
         "GF_BICGSTAB_ADMIT_EN_TOL",
+        "GF_ADMIT_FIRST_SHELL_TOL",
         "GF_BICGSTAB_WARM_HISTORY",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -125,6 +126,17 @@ def test_the_cap_is_never_exceeded_and_reports_budget(monkeypatch, cap):
     assert record["exit_reason"] == "budget" and record["cap_hit"]
     retained = _retained(proxy)
     np.testing.assert_allclose(G, _dense_G_on(retained, [Z])[0], atol=1e-9)
+
+
+@pytest.mark.parametrize("shell_tol", [0.3, 0.6])
+def test_a_relaxed_first_shell_shrinks_the_start_set_and_stays_exact(monkeypatch, shell_tol):
+    """``GF_ADMIT_FIRST_SHELL_TOL`` prunes weak first-shell rows; the answer is still the exact PHP
+    resolvent on whatever was kept."""
+    _G, strict, *_ = _outer_point(monkeypatch, eta=1e6)
+    monkeypatch.setenv("GF_ADMIT_FIRST_SHELL_TOL", str(shell_tol))
+    G, record, proxy, *_ = _outer_point(monkeypatch, eta=1e6)
+    assert record["start_size"] < strict["start_size"]
+    np.testing.assert_allclose(G, _dense_G_on(_retained(proxy), [Z])[0], atol=1e-9)
 
 
 def test_the_jacobi_scorer_gives_the_same_contract(monkeypatch):

@@ -319,6 +319,21 @@ GF_LANCZOS_ADMIT_TOL = Knob(
     if either is violated rather than silently mis-ranking.""",
 )
 
+GF_ADMIT_FIRST_SHELL_TOL = Knob(
+    name="GF_ADMIT_FIRST_SHELL_TOL",
+    kind="float",
+    default=0.0,
+    minimum=0.0,
+    group="bicgstab",
+    doc="""Importance-pruned admission (``GF_BICGSTAB_ADMISSION=outer``, ``GF_LANCZOS_ADMIT_TOL``) keeps
+    the seeds' first H-shell whole by default (0): that is what keeps the moments of G through
+    ``H^2``, hence the ``Sigma`` tail, exact. A determinant reached from the seeds by a coupling
+    ``V`` still enters that shell, however small ``V`` is, so a bath level hybridized at 1e-5 puts
+    its whole hole-space in the start set. Above 0, first-shell rows with amplitude below this
+    (relative to the seed norm) are pruned like any other: the ``H^2`` moment then errs by at most
+    the summed squared amplitudes of what was dropped.""",
+)
+
 GF_GMRES_RESTART = Knob(
     name="GF_GMRES_RESTART",
     kind="int",
@@ -1029,6 +1044,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_ADMIT_CARRY_TOL,
     GF_BICGSTAB_ADMIT_EN_TOL,
     GF_LANCZOS_ADMIT_TOL,
+    GF_ADMIT_FIRST_SHELL_TOL,
     GF_GMRES_RESTART,
     GF_GMRES_MAX_RESTARTS,
     GF_EIGENSTATE_GROUP,
