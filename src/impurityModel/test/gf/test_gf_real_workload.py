@@ -18,11 +18,13 @@ Usage::
 Environment knobs: ``WORKLOAD_H5`` (required), ``GF_METHOD`` (default lanczos),
 ``REORT`` / ``CAP`` (default: the archive's production settings; ``CAP`` accepts a
 number or ``none``), ``N_IW`` / ``N_W`` (mesh subsampling; ``0`` drops the axis,
-unset keeps the full mesh), ``BENCH_OUT`` (``.npz`` dump path), ``VERBOSITY``.
+unset keeps the full mesh), ``BENCH_OUT`` (``.npz`` dump path), ``VERBOSITY``, and
+``PHASES=1``, which prints where the wall clock went (see :func:`_phase_timers`).
 """
 
 import os
 import time
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -43,6 +45,52 @@ def _env_int(name):
     return None if value in (None, "") else int(value)
 
 
+@contextmanager
+def _phase_timers(phases):
+    """Time the self-energy phases at their call sites, and each rank's busy time in GF units.
+
+    ``phases[name]`` accumulates rank-local seconds for the ground state (``calc_gs``), the
+    Green's function (``get_Greens_function``), the exact moments and the Dyson step, plus
+    ``gf_units``: the time this rank spent inside unit kernels. ``gf_units`` over
+    ``get_Greens_function`` is the rank's busy fraction of the GF phase; the rest is split
+    overhead, assembly and waiting for the slowest color -- the idle fraction the Phase 8
+    packing work (review ledger P2) is gated on. Patches module attributes only and restores
+    them on exit, so production code is untouched.
+    """
+    from impurityModel.ed import gf_engine, selfenergy, sigma_estimators
+
+    unit_seconds = phases.setdefault("unit_seconds", [])
+
+    def timed(name, fn):
+        def wrapper(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                seconds = time.perf_counter() - t0
+                phases[name] = phases.get(name, 0.0) + seconds
+                if name == "gf_units":
+                    unit_seconds.append(seconds)
+
+        return wrapper
+
+    targets = [
+        (selfenergy, "calc_gs", "calc_gs"),
+        (selfenergy, "get_Greens_function", "get_Greens_function"),
+        (selfenergy, "get_greens_function_moments", "moments"),
+        (sigma_estimators, "get_sigma", "dyson"),
+        (gf_engine, "_block_green_group", "gf_units"),
+    ]
+    originals = [(module, attr, getattr(module, attr)) for module, attr, _ in targets]
+    try:
+        for (module, attr, label), (_, _, fn) in zip(targets, originals):
+            setattr(module, attr, timed(label, fn))
+        yield
+    finally:
+        for module, attr, fn in originals:
+            setattr(module, attr, fn)
+
+
 @pytest.mark.mpi
 def test_real_workload_selfenergy():
     from impurityModel.test.support.real_workload import load_workload, run_selfenergy
@@ -59,18 +107,22 @@ def test_real_workload_selfenergy():
     verbosity = int(os.environ.get("VERBOSITY", "1"))
 
     workload = load_workload(h5_path)
+    phases = {}
+    timers = _phase_timers(phases) if os.environ.get("PHASES", "0") not in ("0", "") else _no_timers()
     t0 = time.perf_counter()
-    result = run_selfenergy(
-        workload,
-        comm=comm,
-        gf_method=gf_method,
-        reort=reort,
-        truncation_threshold=cap,
-        n_iw=_env_int("N_IW"),
-        n_w=_env_int("N_W"),
-        verbosity=verbosity,
-    )
+    with timers:
+        result = run_selfenergy(
+            workload,
+            comm=comm,
+            gf_method=gf_method,
+            reort=reort,
+            truncation_threshold=cap,
+            n_iw=_env_int("N_IW"),
+            n_w=_env_int("N_W"),
+            verbosity=verbosity,
+        )
     wall = time.perf_counter() - t0
+    all_phases = comm.gather(phases, root=0)
 
     peaks = comm.gather(peak_rss_bytes(), root=0)
     if comm.rank == 0:
@@ -80,6 +132,16 @@ def test_real_workload_selfenergy():
             f"N_IW={os.environ.get('N_IW', 'full')} N_W={os.environ.get('N_W', 'full')}"
         )
         print(f"[real-workload] wall {wall:.1f} s, peak RSS per rank: {[format_bytes(p) for p in peaks]}")
+        if phases:
+            names = ["calc_gs", "get_Greens_function", "gf_units", "moments", "dyson"]
+            print("[real-workload] phase seconds per rank (gf_units = busy inside GF units):")
+            for rank, ph in enumerate(all_phases):
+                gf = ph.get("get_Greens_function", 0.0)
+                busy = ph.get("gf_units", 0.0) / gf if gf > 0 else float("nan")
+                cells = "  ".join(f"{n}={ph.get(n, 0.0):7.1f}" for n in names)
+                units = sorted(ph.get("unit_seconds", []), reverse=True)
+                print(f"  rank {rank}: {cells}  gf_busy={busy:.1%}")
+                print(f"    {len(units)} units, longest: {', '.join(f'{u:.1f}' for u in units[:8])}")
         out = os.environ.get("BENCH_OUT")
         if out:
             np.savez(
@@ -91,3 +153,8 @@ def test_real_workload_selfenergy():
                 peaks=np.array(peaks, dtype=float),
             )
             print(f"[real-workload] results written to {out}")
+
+
+@contextmanager
+def _no_timers():
+    yield

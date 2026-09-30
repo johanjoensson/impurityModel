@@ -96,14 +96,16 @@ Each of these is adopted only with a measurement against the Phase 0 baseline.
 | id | claim | verdict |
 |---|---|---|
 | N1 | Pole representation of T via `eig_banded`, for evaluation and the future DSR tier. | open |
-| N2 | The convergence monitor rebuilds the continued fraction, O(k²) in total. | open |
-| N3 | `hyb` solves an n_bath system per frequency. | open |
+| N2 | The convergence monitor rebuilds the continued fraction, O(k²) in total. | **measured**: 8.2% of in-unit time on NiO 8-bath (`_greens_function_change` → `_block_cf_inverse`, py-spy on the busiest rank). A bounded lever |
+| N3 | `hyb` solves an n_bath system per frequency. | **refuted as a lever**: the whole Dyson step is 0.7-0.9 s of a 246 s NiO 8-bath run. Not worth changing |
 | N4 | The array expansion restarts Lanczos from scratch. | open |
 | N5 | Spectra run the band-wide monitor (`eval_meshes=None`). | open |
 | N6 | The thermal retry recomputes the whole GF. | open |
 | P1 | The GS basis is replicated into every color although kernels clone only the seed support. | open |
-| P2 | Static LPT packing on seed-mass estimates; ranks ∝ mass. | open |
-| P3 | Serial rank-0 work (mesh evaluation, diagnostics, Dyson); `simulate_spectra` re-splits per spectrum. | open |
+| P2 | Static LPT packing on seed-mass estimates; ranks ∝ mass. | **measured, repacking refuted**: NiO 8-bath at `-n 3` has 12 units, six of them trivial. The heavy six take 161, 98, 88, 86, 84 and 82 s, and ranks are busy 71%, 95% and 99.8% of the GF phase (about 20% idle). But the best possible static packing of those six on 3 ranks is 242 s against 249 s actual, a 3% gain. The idle time is granularity (one 161 s unit), not the packing algorithm. Giving the big unit two ranks is worse (the other five units then share one rank: 437 s). The levers are faster units (N2, the matvec) or finer units |
+| P3 | Serial rank-0 work (mesh evaluation, diagnostics, Dyson); `simulate_spectra` re-splits per spectrum. | **self-energy half refuted**: rank 0's non-unit GF time is 71 s, of which 69 s is waiting in `gather_distributed_results` for the slowest color, and about 2 s is assembly, diagnostics and mesh evaluation (<1% of the run). The spectra half is not yet measured |
+
+**Where the time goes** (NiO 8-bath, `-n 3`, `PHASES=1` in `test_gf_real_workload.py`, 246 s wall, output bitwise equal to the golden): ground state 18 s, GF phase 226 s (92%), moments 0.6 s, Dyson 0.9 s. Inside the GF units (py-spy, busiest rank): `ManyBodyOperator::apply` 83% inclusive, of which `state_is_within_restrictions` is 10 points; the convergence monitor 8%; everything else a few percent.
 
 ## Out of scope, found along the way
 
