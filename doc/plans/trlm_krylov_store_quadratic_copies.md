@@ -33,6 +33,19 @@ py-spy over 30 s in the next sectors, after the fix (1499 samples):
 | 2.3% | scipy CSR matmul | the sparse matvec |
 | 2.2% | `block_view.py:181` (`KrylovColumnStore.append`) | the one-block copy into the store |
 
+**The SrMnO3 gap double-counting search** (`python -m impurityModel.test.support.dc_diagnostics smo
+2000 8000`, `DC_DIAG_CRITERION=gap`, serial) is also a controlled A/B against master:
+
+| cap | master | fixed | speedup | mu (master → fixed) |
+|---|---|---|---|---|
+| 2000 | 85.9 s | 63.1 s | 1.36x | 0.132629 → 0.132627 |
+| 8000 | 344.6 s | 241.1 s | 1.43x | 0.129693 → 0.129679 |
+
+- mu moves by 1.4e-5, against a search resolution of 6.4e-3.
+- The projected search at this machine's production cap goes from 5.4 h to 3.3 h.
+- Most of the gain shows up in the trace's `expand_s` (321 → 226 s), not in `eigen_s` (22.5 → 14.2 s).
+  The eigensolves inside the CIPSI expansion cycles are booked under `expand`.
+
 `concat_cols` and `column_stack` are gone from the leaves. What remains is the reorthogonalization
 itself; see "twice is enough" below.
 
