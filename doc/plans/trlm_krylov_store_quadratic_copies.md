@@ -68,7 +68,9 @@ m=30, 3 restarts) went from 5.72 s to 1.27 s.
   `accepted` take at most `num_wanted` single columns per solve; `:455` concatenates once per restart.
   There is nothing quadratic to remove. The review also warned against handing the ManyBodyState kernel
   a store it would keep appending into (`Q_init` is adopted as-is at `_lanczos_step.pxi:628`).
-- **The "twice is enough" CGS criterion** (below) is still unmeasured.
+  Decided 2026-09-30: IRLM stays as it is.
+- **The "twice is enough" CGS criterion** (below): decided against (2026-09-30). The continuation keeps
+  its unconditional second pass.
 - **The memory model.** `memory_estimate` never budgeted the concatenation's old+new transient, so it
   needs no change. The fix makes it more accurate.
 
