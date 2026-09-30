@@ -44,7 +44,7 @@ DELTA = 0.2
 IW = 1j * np.pi * TAU * (2 * np.arange(10) + 1)
 W = np.linspace(-6.0, 6.0, 17)
 
-FACTORS = {
+FACTORS: dict[str, list] = {
     "method": ["lanczos", "bicgstab"],
     "sparse": [True, False],
     "group": [1, 2],
@@ -132,11 +132,9 @@ def _known_failure(cell):
     """Reason string for a cell pinned to a ledger item (``doc/reviews/gf_review.md``), else None.
 
     Each is a strict xfail so the fix that resolves it flips the cell to XPASS -> failure,
-    forcing the pin to be removed in the same commit.
+    forcing the pin to be removed in the same commit. None are pinned today: the last one, M1
+    (the array kernel on a color with more than one rank), is routed to the sparse kernel.
     """
-    lanczos_array = cell["method"] == "lanczos" and not cell["sparse"]
-    if lanczos_array and cell["model"] == 2 and cell["comm"] == "world" and MPI.COMM_WORLD.size > 1:
-        return "M1: array operator branch on a >1-rank color (test_block_green_array_multirank)"
     return None
 
 
@@ -204,9 +202,7 @@ def _cell_param(cell, extra_marks=()):
     marks = list(extra_marks)
     reason = _known_failure(cell)
     if reason is not None:
-        # M1 fires only when the packing gives some color >1 rank, which depends on the unit
-        # weights and the rank count -- not a property of the cell -- so it cannot be strict.
-        marks.append(pytest.mark.xfail(strict=not reason.startswith("M1"), reason=reason))
+        marks.append(pytest.mark.xfail(strict=True, reason=reason))
     if cell["comm"] == "world":
         marks.append(pytest.mark.mpi)
     return pytest.param(cell, id=_cell_id(cell), marks=marks)

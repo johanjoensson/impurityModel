@@ -102,6 +102,12 @@ def _block_green_group(
     # `conv_stats` stays None to the caller that didn't ask for it; this function still wants
     # `n_blocks` for its own report, so it reads back through its own dict either way.
     info = {} if conv_stats is None else conv_stats
+    # The array kernel's operator branch is single-rank only: on a color with more than one rank
+    # its LinearOperator is (N, N_local) and fails (review ledger M1). Such a color runs the
+    # distributed sparse kernel instead. Rank-invariant: every rank of the color sees the same
+    # communicator size.
+    if not sparse and split_basis.comm is not None and split_basis.comm.size > 1:
+        sparse = True
     if sparse:
         cap_info = {}
         alphas, betas, r = block_Green_sparse(
