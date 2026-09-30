@@ -88,3 +88,34 @@ def test_the_lowest_k_states_include_every_copy_of_a_degenerate_level(system):
     e_ref, _ = _solve(basis, h, U, num_wanted=N_WINDOW, max_energy=None)
     e = np.sort(np.real(e_ref))[:N_WINDOW]
     np.testing.assert_allclose(e, evals[:N_WINDOW], atol=1e-9)
+
+
+def test_trlm_with_a_locked_set_solves_in_its_complement():
+    """``locked`` restricts TRLM to the orthogonal complement: it returns the next states up.
+
+    Locks the ground level and part of the degenerate one; the solve must return the remaining
+    copies first, then the rest of the spectrum, all exact, and none of it may overlap the locked
+    set. The start block is as wide as the remaining multiplicity (7), since a block of width p
+    reaches at most p copies of a degenerate level -- the limit the completeness probe works around
+    by locking and probing again. ``m`` is small so the answer has to come through the restart
+    continuation; the locked set used to leak back in there (the ground level reappeared as the
+    "lowest" state) when the continuation projected against it before the CGS against its own basis.
+    """
+    from impurityModel.ed.trlm import _TRLM_EXIT, thick_restart_block_lanczos
+
+    rng = np.random.default_rng(5)
+    n = 120
+    evals = np.concatenate([np.zeros(GROUND), np.full(EXCITED, E_EXCITED), np.linspace(0.12, 3.0, n - N_WINDOW)])
+    U = np.linalg.qr(rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n)))[0]
+    h = sps.csr_matrix(0.5 * ((U * evals) @ U.conj().T + ((U * evals) @ U.conj().T).conj().T))
+    n_locked = GROUND + 3
+    locked = U[:, :n_locked]
+    psi0 = rng.standard_normal((n, 7)) + 1j * rng.standard_normal((n, 7))
+
+    vals, vecs = thick_restart_block_lanczos(
+        psi0, h, None, num_wanted=9, max_subspace_blocks=4, tol=1e-10, max_restarts=200, reort="full", locked=locked
+    )
+
+    assert _TRLM_EXIT[0].startswith("restart_loop_end") or _TRLM_EXIT[0] == "continuation_converged", _TRLM_EXIT
+    np.testing.assert_allclose(np.sort(vals.real), evals[n_locked : n_locked + 9], atol=1e-9)
+    np.testing.assert_allclose(locked.conj().T @ vecs, 0, atol=1e-10)
