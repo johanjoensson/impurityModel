@@ -205,7 +205,13 @@ def check_spectral_sum_rule(r_IPS_list, r_PS_list, es, e0, tau, block_dim, rtol:
         value=worst,
         threshold=threshold,
         message=("addition+removal seed weight = #orbitals" if ok else "anticommutator sum rule violated"),
-        suggestion="" if ok else "a thermal seed state is not a normalized eigenstate; check the eigensolver/basis",
+        suggestion=(
+            ""
+            if ok
+            else "the seeds lost weight: a thermal state is not a normalized eigenstate (check the "
+            "eigensolver/basis), or the excited occupation window cut part of a seed c|psi>, c^dag|psi> "
+            "(check the window: dN, occ_cutoff, chain restrictions)"
+        ),
     )
 
 

@@ -100,3 +100,35 @@ def test_enumerate_gf_units_would_catch_a_swapped_operator_bug():
 
     assert _states_equal(seeds[0], ref[0][0])
     assert not _states_equal(seeds[0], ref[0][1])  # swapped operator must disagree
+
+
+def _occupied(det, n_orb=4):
+    raw = det.to_bytearray()
+    return {o for o in range(n_orb) if raw[o // 8] >> (7 - o % 8) & 1}
+
+
+def test_each_unit_seed_lies_in_the_window_its_recurrence_runs_under():
+    """With per-state windows the unit's recurrence runs under its own window, so its seeds must
+    be cut by that window -- not by the looser group window -- or the masked H is not Hermitian
+    on the seed (review ledger C5). State 0's window forbids orbital 3; state 2 is unrestricted."""
+    psis = _thermal_states()
+    tOps = [ManyBodyOperator({((0, "c"),): 1.0}), ManyBodyOperator({((1, "c"),): 1.0})]
+    no_3 = {frozenset({3}): (0, 0)}
+    per_state = [no_3, no_3, None]
+    units, unit_seeds, windows = enumerate_gf_units(
+        [(tOps, 0.1)], psis, [None], None, slaterWeightMin=0.0, per_state_restrictions=per_state
+    )
+    assert list(windows) == [no_3, no_3, None]
+    for unit, seeds, window in zip(units, unit_seeds, windows):
+        for seed in seeds:
+            for det in seed.keys():
+                occ = _occupied(det)
+                for key, (lo, hi) in (window or {}).items():
+                    assert lo <= len(occ & set(key)) <= hi, (unit, sorted(occ), window)
+    # State 1 = {0,3}/{1,3}: every c^dag seed keeps orbital 3 occupied, so its window cuts it all.
+    assert all(seed.norm2() == 0 for seed in unit_seeds[1])
+    # State 2 is unrestricted: its seeds are the plain application. Fresh operators: masks are
+    # sticky on the operator objects, and enumerate_gf_units just set one on these.
+    fresh = [ManyBodyOperator({((0, "c"),): 1.0}), ManyBodyOperator({((1, "c"),): 1.0})]
+    ref = _direct_apply(fresh, psis[2:])
+    assert all(_states_equal(got, exp) for got, exp in zip(unit_seeds[2], ref[0]))

@@ -338,6 +338,19 @@ def enumerate_gf_units(
     # to the group window when per-state restrictions are disabled or state-independent.
     if per_state_restrictions is not None:
         unit_restrictions = [union_windows([per_state_restrictions[ei] for ei in u.chunk]) for u in units]
+        # The seeds above were cut by the group window, but the unit's recurrence runs under its
+        # own (per-state) window. A seed row outside the recurrence window sees P H, which has no
+        # diagonal and a one-way coupling there -- the Lanczos operator is no longer Hermitian on
+        # the seed (review ledger C5). Re-cut each such unit's seeds by the window it runs under.
+        # Rank-local (the apply is local), so no collective is added.
+        for u, unit in enumerate(units):
+            if unit_restrictions[u] == group_restrictions[unit.group_i]:
+                continue
+            tOps, _delta = op_groups[unit.group_i]
+            block_v = _apply_transition_ops(
+                tOps, [psis[ei] for ei in unit.chunk], unit_restrictions[u], weighted_restrictions, slaterWeightMin
+            )
+            unit_seeds[u] = [block_v[p][i] for p in range(len(unit.chunk)) for i in range(unit.n_ops)]
     else:
         unit_restrictions = [group_restrictions[u.group_i] for u in units]
     return units, unit_seeds, unit_restrictions
