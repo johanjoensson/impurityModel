@@ -1,44 +1,63 @@
 # Green's-function & spectra solver architecture
 
 The interacting Green's function is the computational heart of the package, and it is where
-the execution paths are hardest to follow: there are three resolvent kernels, two
-Lanczos-kernel backends, several work-unit decompositions, a four-tier RIXS solver chain, and
-a shared MPI distribution engine underneath all of it. This document is the map. It names the
-entry points and traces the dispatch so you can find the code that actually runs for a given
-call.
+the execution paths are hardest to follow: two resolvent kernels, two Lanczos-kernel backends,
+a work-unit decomposition, a four-tier RIXS solver chain, and a shared MPI distribution engine
+underneath all of it. This document is the map. It names the entry points and traces the
+dispatch so you can find the code that actually runs for a given call.
 
 For the physics (why a block-tridiagonal continued fraction gives `G`), see
 [`greens_function_theory.md`](greens_function_theory.md). For the module layering, see
-[`architecture_overview.md`](architecture_overview.md).
+[`architecture_overview.md`](architecture_overview.md). The 2026-09 review that shaped the
+current structure, including every defect it found and fixed, is
+[`reviews/gf_review.md`](reviews/gf_review.md).
 
-## The one distribution engine
+## The one pipeline
 
-Every Green's-function, spectra, and RIXS driver funnels through the same three-step engine
-in `greens_function.py` (the units layer):
+Every Green's-function, spectra and RIXS driver runs the same pipeline:
 
 ```
-enumerate_gf_units(...)          # flatten the work into independent units
-        │                        #   unit = (orbital block × spectral side × eigenstate group)
-        ▼
-unit_cost_weights(unit_seeds)    # estimate each unit's cost for load balancing
-        │
-        ▼
-run_units_distributed(basis, unit_seeds, unit_weights, kernel, ...)
-        │                        # split the communicator into colors (basis_split),
-        ▼                        # redistribute seeds, run kernel(split_basis, u, seeds)
-   per-unit kernel               #   per color, reduce results back to global rank 0
+enumerate_gf_units(...)            gf_units    flatten the work into independent units
+        |                                      unit = (operator group x eigenstate chunk);
+        v                                      an operator group is a block of transition
+unit_cost_weights(unit_seeds)      gf_units    operators on one spectral side
+        |                                      (estimated cost, for load balancing)
+        v
+run_units_distributed(...)         gf_units    split basis.comm into colors (basis_split),
+        |                                      redistribute seeds, run kernel(split_basis, u,
+        v                                      seeds) per color, gather to global rank 0
+lanczos_unit_kernel(...)           gf_engine   _block_green_group: one block-Lanczos
+        |                                      recurrence per unit; r split per stacked state
+        v
+states_by_group(...)               gf_engine   per operator group, per eigenstate:
+        |                                      (alphas, betas, r)
+        v
+calc_thermally_averaged_G + ThermalEnsemble + combine_sides (G+ - G-^T)/Z
 ```
 
-A **unit** is the atom of parallel work: one orbital block, one spectral side (electron
-addition / removal), and one group of thermal eigenstates. `run_units_distributed` splits
-`MPI.COMM_WORLD` into colors sized to fit the memory budget (`basis_split.py`), gives each
-color its own sub-communicator and its own clone of the basis, redistributes the seed states
-onto the rebuilt basis, and calls the caller's `kernel`. The distribution is identical for a
-self-energy run, an XAS spectrum, and a RIXS map — only the `kernel` differs.
+The modules split the work cleanly. `gf_units` owns distribution: units, weights, the
+determinant caps and memory guard, and the split. `gf_engine` owns what a unit computes and
+how results are put back together. `average.ThermalEnsemble` holds the Boltzmann weights and
+`Z`.
+
+A **unit** is the atom of parallel work. `run_units_distributed` splits the basis's
+communicator into colors sized to fit the memory budget (`basis_split.py`), gives each color
+its own sub-communicator and its own clone of the basis, redistributes the seed states onto
+the rebuilt basis, and calls the caller's `kernel`. The distribution is identical for a
+self-energy run, an XAS spectrum and a RIXS map; only the kernel and the assembly differ. RIXS
+enumerates its own units, (eigenstate x chunk of incoming energies), and uses its own kernel
+(the R1 chain below), but runs through the same `run_units_distributed`.
 
 > **Why this matters:** determinants are hash-distributed (`hash(sd) % size`, one owner per
 > determinant), so no rank ever holds a full state vector. The engine is where that invariant
 > is maintained across the split/redistribute boundary. See [`mpi_model.md`](mpi_model.md).
+
+**Occupation windows.** Each unit runs under an excited-sector occupation window, built by
+`basis_restrictions.build_excited_restrictions` and combined with
+`union_windows`/`intersect_windows`. `None` means unrestricted everywhere, and
+`Basis.clone(restrictions=...)` inherits the parent's window only on its explicit `INHERIT`
+default. Every consumer states the mask it needs on the shared Hamiltonian (`None` clears), and
+the moments clear it: masks are sticky on the operator object and cannot be read back.
 
 ## Resolvent kernel: the `gf_method` switch
 
@@ -49,6 +68,9 @@ self-energy run, an XAS spectrum, and a RIXS map — only the `kernel` differs.
 | --- | --- | --- | --- |
 | `"lanczos"` *(default)* | `get_Greens_function` | `_block_green_group` → `block_green_impl` (array) / `block_Green_sparse` (state) | One block-Lanczos recurrence per unit builds a continued fraction serving the **whole frequency mesh** at once. The workhorse. |
 | `"bicgstab"` | `_get_greens_function_bicgstab` | `block_Green_bicgstab` | One linear solve **per frequency point**, basis rebuilt-and-discarded each point. Wins on memory (the live basis never exceeds one point's support) at a time cost. |
+
+`"sliced"` and `"cipsi"` are retired (`config.RETIRED_GF_METHODS`: rejected with the reason,
+replayed as `"lanczos"` from an old archive).
 
 Orthogonal switches on the default Lanczos path:
 
@@ -144,5 +166,7 @@ the solve it is judging.
 - Tuning GF performance/memory → `config.py` (every knob), then `get_Greens_function`.
 - A RIXS map is slow or wrong → `rixs._R1SolverChain.solve` and the tier modules
   (`gf_shift_recycling.py`).
-- A new distribution/parallelism concern → `greens_function.run_units_distributed` and
+- A new distribution/parallelism concern → `gf_units.run_units_distributed` and
   `basis_split.py`; read [`mpi_model.md`](mpi_model.md) first.
+- A new estimator or unit kind → `gf_engine.py` (the unit kernel and reassembly) and
+  `gf_units.enumerate_gf_units` (operator groups of any width).

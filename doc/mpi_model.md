@@ -35,9 +35,9 @@ both sides double it equally — check against an independent reference.
 
 Large runs split the communicator so several independent work units run concurrently, each on
 a subset of ranks. `basis_split.split_basis_and_redistribute_psi` partitions
-`MPI.COMM_WORLD` into **colors** sized to fit the per-rank memory budget, gives each color its
+the basis's communicator into **colors** sized to fit the per-rank memory budget, gives each color its
 own sub-communicator and its own clone of the `Basis`, and redistributes the seeds onto the
-rebuilt per-color basis. `greens_function.run_units_distributed` drives this for every GF /
+rebuilt per-color basis. `gf_units.run_units_distributed` drives this for every GF /
 spectra / RIXS run (see [`gf_solver_architecture.md`](gf_solver_architecture.md)).
 
 The pure packing math (which units go in which color) is `basis_split._pack_units`; it is unit

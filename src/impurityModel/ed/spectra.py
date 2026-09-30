@@ -16,6 +16,9 @@ from impurityModel.ed.gf_engine import lanczos_unit_kernel, states_by_group
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp
+
+# The RIXS drivers live in their own module; re-exported here for simulate_spectra and callers.
+from impurityModel.ed.rixs import calc_map, calc_tensor_map
 from impurityModel.ed.symmetries import (
     ComponentReduction,
     component_symmetry_reduction,
@@ -993,8 +996,3 @@ def calc_spectra_tensor(
         chi_full = chi_red  # full m x m tensor in the Cartesian basis (Q = I)
 
     return chi_full
-
-
-# The RIXS drivers live in their own module; re-export them so simulate_spectra's calls and
-# existing spectra.getRIXSmap_* callers resolve unchanged.
-from impurityModel.ed.rixs import calc_map, calc_tensor_map  # noqa: E402
