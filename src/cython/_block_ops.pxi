@@ -60,7 +60,7 @@ cpdef object block_inner(object V, object W, bint mpi=False, object comm=None):
             V = np.column_stack(V)
         if isinstance(W, list):
             W = np.column_stack(W)
-        res = np.ascontiguousarray(np.conj(V.T) @ W)
+        res = adjoint_product(V, W)
         if mpi and comm is not None:
             comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
         return res
