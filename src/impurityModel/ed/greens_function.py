@@ -794,12 +794,17 @@ def _run_evaluated_gf_units(
                 "seed_overflow": False,
                 "max_solve_basis": 0,
                 "max_rebuild_basis": 0,
+                "max_dG_bound": None,
+                "max_boundary": None,
             },
         )
         for key in ("n_points", "n_unconverged", "iterations", "gmres_points", "gmres_iterations"):
             agg[key] += stats[key]
         for key in ("max_rel_residual", "max_solve_basis", "max_rebuild_basis"):
             agg[key] = max(agg[key], stats[key])
+        for key in ("max_dG_bound", "max_boundary"):
+            if stats[key] is not None:
+                agg[key] = max(agg[key] or 0.0, stats[key])
         agg["cap_hit"] = agg["cap_hit"] or stats["cap_hit"]
         agg["seed_overflow"] = agg["seed_overflow"] or stats["seed_overflow"]
         if stats["retained_size"] is not None:
@@ -857,6 +862,8 @@ def _run_evaluated_gf_units(
         ]
         if np.isfinite(agg["cap"]):
             diags.append(_gfd.check_basis_truncation(agg["cap_hit"], agg["retained_size"], agg["cap"]))
+        if agg["max_dG_bound"] is not None:
+            diags.append(_gfd.check_truncation_error_bound(agg["max_dG_bound"], agg["max_boundary"]))
         if combined_real is not None:
             diags.append(_gfd.check_mesh_density(omega_mesh, delta))
             diags.append(_gfd.check_causality(combined_real, "G"))

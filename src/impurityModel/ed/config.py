@@ -203,6 +203,19 @@ GF_BICGSTAB_WARM_HISTORY = Knob(
     neighbours; measure per-point support cold (0).""",
 )
 
+GF_BICGSTAB_RESIDUAL_CHECK = Knob(
+    name="GF_BICGSTAB_RESIDUAL_CHECK",
+    kind="bool",
+    default=False,
+    group="bicgstab",
+    doc="""After every per-frequency solve, apply the operator once more at cutoff 0 and record the
+    true residual split at the solve basis: the in-basis part (the solver's residual, recomputed)
+    and the boundary residual (1-P) H X that a truncated basis leaves unseen, with a rigorous
+    bound on the error of G built from them (``gf_primitives.resolvent_error_bound``). Costs one
+    unchunked matvec per point -- its peak is the full cutoff-0 image of the iterate, larger than
+    a solve iteration's. Off by default; the basis-size benchmarks turn it on.""",
+)
+
 GF_GMRES_RESTART = Knob(
     name="GF_GMRES_RESTART",
     kind="int",
@@ -903,6 +916,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_MAX_ITER,
     GF_BICGSTAB_RESTARTS,
     GF_BICGSTAB_WARM_HISTORY,
+    GF_BICGSTAB_RESIDUAL_CHECK,
     GF_GMRES_RESTART,
     GF_GMRES_MAX_RESTARTS,
     GF_EIGENSTATE_GROUP,

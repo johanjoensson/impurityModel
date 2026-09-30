@@ -14,7 +14,7 @@ from mpi4py import MPI
 from impurityModel.ed.basis_transcription import build_distributed_vector, build_vector
 from impurityModel.ed.BlockLanczosArray import BETA_BLOWUP_FACTOR
 from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
-from impurityModel.ed.ManyBodyUtils import ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_add_scaled_cy
 from impurityModel.ed.memory_estimate import current_rss_bytes, emit_memory_warning, format_bytes
 
 
@@ -315,6 +315,11 @@ class _CappedBasisProxy:
         """Global number of determinants currently admitted to the recurrence."""
         return self._global_count
 
+    @property
+    def retained_mask(self):
+        """Width-0 key-only block of this rank's retained determinants (read-only by contract)."""
+        return self._mask
+
     def retained_keys(self):
         """Rank-local retained determinants as ``SlaterDeterminant`` wrappers (sorted).
 
@@ -410,6 +415,97 @@ class _CappedBasisProxy:
             f"GF basis frozen at {self._global_count:,} determinants by {why}; the Green's "
             "function is exact on the retained subspace."
         )
+
+
+def _allreduced_col_norms2(block, n_cols, comm):
+    """Per-column ``|.|^2`` of a distributed block, summed over ``comm``, always length ``n_cols``.
+
+    A rank owning none of the block's rows can hold the width-0 polymorphic zero, whose
+    ``col_norm2`` is empty; sizing the buffer by the known column count keeps the Allreduce
+    symmetric (the width-0 deadlock class)."""
+    out = np.zeros(n_cols, dtype=float)
+    local = np.asarray(block.col_norm2(), dtype=float)
+    if local.size == n_cols:
+        out[:] = local
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, out, op=MPI.SUM)
+    return out
+
+
+def residual_split(A_op, X, Y, basis, mask, n_cols, comm):
+    r"""The true residual ``R = Y - A X`` of a projected solve, split at the solve basis ``P``.
+
+    ``X`` solved ``P A P X = Y`` (``supp Y`` inside ``P``) on a basis that may have frozen, so
+    the solver's own residual measures only the in-``P`` part. One full matvec at cutoff 0
+    recovers both parts:
+
+    * ``r_P`` -- the rows of ``R`` inside ``P``: the solver residual, recomputed rather than
+      trusted (``block_bicgstab``'s is a recursively-updated estimate);
+    * ``b`` -- the rows outside ``P``, which equal ``(1-P) H X`` because ``Y`` and ``z X`` both
+      live inside ``P``: the *boundary residual*, zero exactly when nothing was truncated.
+
+    ``A_op`` must be the operator the solve ran with, restrictions included (the solver set
+    them from the basis), so that ``b`` holds only determinants the restricted model can
+    reach. ``basis`` must be the **raw** ``Basis``: its ``redistribute_block`` sums every
+    rank's contribution to a determinant onto its owner, which a capped proxy would follow by
+    ``keep_rows``-ing the boundary away. ``mask`` is the width-0 block of this rank's retained
+    determinants. Collective over ``comm``; the norms come back as length-``n_cols`` arrays of
+    ``||r_P,j||`` and ``||b_j||``.
+    """
+    AX = basis.redistribute_block(A_op.apply_block(X, 0.0))
+    R = block_add_scaled_cy(Y, AX, -np.eye(n_cols, dtype=complex))
+    inside = R.copy()
+    inside.keep_rows(mask)
+    outside = R.copy()
+    outside.keep_rows(R.keys_new_above(mask, 0.0))
+    r_p2 = _allreduced_col_norms2(inside, n_cols, comm)
+    b2 = _allreduced_col_norms2(outside, n_cols, comm)
+    return np.sqrt(r_p2), np.sqrt(b2)
+
+
+def real_up_to_phase(block, n_cols, comm, rtol=1e-12):
+    r"""Per column: is it a real vector times one global phase?
+
+    ``|sum_D s_D^2| <= sum_D |s_D|^2`` with equality exactly when every amplitude shares one
+    phase up to sign, so the test is two allreduced column sums -- no gather, no pivot row.
+    """
+    sums = np.zeros((2, n_cols), dtype=complex)
+    amps = np.asarray(block)
+    if amps.ndim == 2 and amps.shape[1] == n_cols and amps.shape[0] > 0:
+        sums[0] = np.sum(amps * amps, axis=0)
+        sums[1] = np.sum(np.abs(amps) ** 2, axis=0)
+    del amps  # release the buffer view before anything mutates the block
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, sums, op=MPI.SUM)
+    n2 = np.real(sums[1])
+    return np.abs(sums[0]) >= (1.0 - rtol) * n2
+
+
+def resolvent_error_bound(s_norm, r_p, b, imag_z, symmetric):
+    r"""Elementwise bound on ``|G_exact - G|`` for ``G_ij = <s_i|X_j>``.
+
+    With ``A = z - H`` (``H`` Hermitian), the full residual ``R_j = s_j - A X_j = r_P,j + b_j``
+    (``r_P`` inside the solve basis ``P``, ``b`` outside) and ``||A^{-1}|| <= 1/|Im z|``:
+
+    * always, first order: ``dG_ij = <s_i|A^{-1} R_j>``, so
+      ``|dG_ij| <= ||s_i|| ||R_j|| / |Im z|``, with ``||R_j||^2 = ||r_P,j||^2 + ||b_j||^2``;
+    * second order, for a column ``i`` whose adjoint solve on ``P`` is known. Let
+      ``Y_i = (P A^dagger P)^{-1} s_i`` and ``b~_i = (1-P) A^dagger Y_i``; then
+      ``dG_ij = <Y_i|r_P,j> - <b~_i|A^{-1} R_j>``, so
+      ``|dG_ij| <= ||s_i|| ||r_P,j|| / |Im z| + ||b~_i|| ||R_j|| / |Im z|``. When ``H`` is real
+      and ``s_i`` is real up to a phase (``symmetric[i]``), ``Y_i`` is the conjugate of the
+      forward solution on ``P`` and ``||b~_i|| = ||b_i||``, which is what is used. That equality
+      is exact for the exact ``P`` solve; with the solver's own ``r_P`` it carries a correction of
+      order ``||(1-P) H P|| ||r_P|| / |Im z|``, negligible for a converged solve and the reason
+      this bound is stated for converged solves.
+
+    Returns the elementwise minimum of the applicable bounds. ``symmetric`` is a per-column
+    boolean array (only the bra column ``i`` matters).
+    """
+    R = np.sqrt(r_p**2 + b**2)
+    first = np.outer(s_norm, R) / imag_z
+    second = (np.outer(s_norm, r_p) + np.outer(b, R)) / imag_z
+    return np.where(np.asarray(symmetric, dtype=bool)[:, None], np.minimum(first, second), first)
 
 
 def guarded_proxy(basis, cap):

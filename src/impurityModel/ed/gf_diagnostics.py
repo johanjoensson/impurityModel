@@ -508,6 +508,33 @@ def check_bicgstab_convergence(
     )
 
 
+def check_truncation_error_bound(max_bound: float, max_boundary: float) -> Diagnostic:
+    r"""Report the measured truncation error bar of a per-frequency Green's-function block.
+
+    Where :func:`check_basis_truncation` only says that a cap *bound*, this reports how much it
+    cost: ``max_bound`` is the largest elementwise bound on ``|G_exact - G|`` over the block's
+    per-frequency solves (``gf_primitives.resolvent_error_bound``, from the residual measured
+    outside the solve basis) and ``max_boundary`` the largest boundary residual norm
+    :math:`\lVert(1-P)HX\rVert` behind it. Purely informational -- a bound in ``G`` units has no
+    scale-free threshold of its own (it is compared with the ``G`` the caller cares about, or
+    propagated to ``Sigma``), so it never raises the report's severity.
+
+    Args:
+        max_bound: Worst elementwise ``G`` error bound over the block's solves.
+        max_boundary: Worst boundary-residual column norm over the block's solves.
+
+    Returns:
+        Diagnostic: always ``OK``; the bound is in ``value``.
+    """
+    return Diagnostic(
+        name="truncation_error_bound",
+        severity=Severity.OK,
+        value=float(max_bound),
+        threshold=float("nan"),
+        message=f"|G - G_exact| <= {max_bound:.2e} (boundary residual {max_boundary:.2e})",
+    )
+
+
 def check_basis_truncation(
     cap_hit: bool, retained, cap, seed_frozen: bool = False, memory_frozen: bool = False
 ) -> Diagnostic:

@@ -24,12 +24,16 @@ from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.gf_convergence import _gf_rel_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
     _CappedBasisProxy,
+    _allreduced_col_norms2,
     _distributed_seed_qr,
     _sanitize_continued_fraction,
     _trim_blocks,
     build_qr,
     calc_G,
     guarded_proxy,
+    real_up_to_phase,
+    residual_split,
+    resolvent_error_bound,
 )
 from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
@@ -735,12 +739,19 @@ def block_Green_bicgstab(
         ``eigenstate``, ``axis``, ``k`` (mesh index), ``z``, ``seed_size`` (global seed
         support), ``rebuild_size`` (seed + warm-start support, before the solve grows it),
         ``solve_size`` (after), ``cap_hit``, ``converged``, ``rel_residual``, ``iterations``,
-        ``gmres_used``. ``rebuild_size - seed_size`` is what the warm start carried in: set
+        ``gmres_used`` (and, under :data:`config.GF_BICGSTAB_RESIDUAL_CHECK`, ``r_inside``,
+        ``boundary``, ``second_order`` and ``dG_bound`` -- the measured residual split and the
+        elementwise bound on ``|G - G_exact|``, with ``max_dG_bound``/``max_boundary`` their
+        maxima over the unit). ``rebuild_size - seed_size`` is what the warm start carried in: set
         :data:`config.GF_BICGSTAB_WARM_HISTORY` to 0 to measure per-point support cold.
     """
     atol = config.GF_BICGSTAB_ATOL.get() if atol is None else atol
     max_iter = config.GF_BICGSTAB_MAX_ITER.get() if max_iter is None else max_iter
     warm_history = config.GF_BICGSTAB_WARM_HISTORY.get()
+    check_residual = config.GF_BICGSTAB_RESIDUAL_CHECK.get()
+    # The second-order bound needs real H (then the adjoint solve is the conjugate of the forward
+    # one); a property of the operator alone, so decided once per unit.
+    h_is_real = check_residual and all(np.imag(amp) == 0 for _term, amp in hOp.items())
     n_e = len(es)
     sub_comm = basis.comm
     cap = getattr(basis, "truncation_threshold", np.inf)
@@ -770,6 +781,9 @@ def block_Green_bicgstab(
         "seed_overflow": False,
         "max_solve_basis": 0,
         "max_rebuild_basis": 0,
+        # Measured truncation error bar (GF_BICGSTAB_RESIDUAL_CHECK); None = not measured.
+        "max_dG_bound": None,
+        "max_boundary": None,
         "points": [],
     }
 
@@ -862,6 +876,31 @@ def block_Green_bicgstab(
                         retained = solve_basis.retained_size
                         if stats["retained_size"] is None or retained < stats["retained_size"]:
                             stats["retained_size"] = retained
+                    record = {}
+                    if check_residual:
+                        # Y and the solve's own A_op, on the RAW basis (the proxy would keep_rows the
+                        # boundary away); the retained set is the proxy's mask when there is one,
+                        # else the basis itself (nothing was excluded).
+                        mask = (
+                            solve_basis.retained_mask
+                            if isinstance(solve_basis, _CappedBasisProxy)
+                            else ManyBodyState.from_keys(tmp_basis.local_basis)
+                        )
+                        seed_block = ManyBodyState.from_states(seeds)
+                        r_p, b = residual_split(A_op, X, seed_block, tmp_basis, mask, n_ops, sub_comm)
+                        s_norm = np.sqrt(_allreduced_col_norms2(seed_block, n_ops, sub_comm))
+                        symmetric = (
+                            real_up_to_phase(seed_block, n_ops, sub_comm) if h_is_real else np.zeros(n_ops, dtype=bool)
+                        )
+                        dG_bound = resolvent_error_bound(s_norm, r_p, b, abs(z.imag), symmetric)
+                        stats["max_dG_bound"] = max(stats["max_dG_bound"] or 0.0, float(np.max(dG_bound)))
+                        stats["max_boundary"] = max(stats["max_boundary"] or 0.0, float(np.max(b)))
+                        record = {
+                            "r_inside": r_p,
+                            "boundary": b,
+                            "second_order": symmetric,
+                            "dG_bound": dG_bound,
+                        }
                     stats["points"].append(
                         {
                             "eigenstate": p,
@@ -876,6 +915,7 @@ def block_Green_bicgstab(
                             "rel_residual": float(info["rel_residual"]),
                             "iterations": int(info["iterations"]),
                             "gmres_used": bool(info["gmres_used"]),
+                            **record,
                         }
                     )
 
