@@ -31,11 +31,11 @@ from impurityModel.ed.BlockLanczosCore import (
     resolve_reort,
 )
 from impurityModel.ed.block_view import (
+    KrylovColumnStore,
     StagnationMonitor,
     as_state_list,
     block_cols,
     check_width_sync,
-    concat_cols,
     copy_block,
     slice_cols,
     trim_trailing_beta,
@@ -373,6 +373,9 @@ def _trlm_core(
     n_converge = num_wanted if num_converge is None else max(1, min(int(num_converge), num_wanted))
     monitor = StagnationMonitor()
     stagnated = False
+    # The continuation's Krylov basis. One store for the whole solve: each restart refills it
+    # in place, so appending a block copies that block and nothing else.
+    store = KrylovColumnStore()
 
     for restart in range(max_restarts):
         # Q_basis carries exactly the columns T_full[:D, :D] is expressed in: the trailing
@@ -508,7 +511,14 @@ def _trlm_core(
         T_full = np.zeros((dim, dim), dtype=complex)
         T_full[:k_ret, :k_ret] = T_lead
 
-        Q_basis = concat_cols(Q_ret, copy_block(q_m))
+        # The old basis is dead (X and Q_ret are fresh arrays), and it may be a view of the
+        # store's buffer, which reset overwrites. Drop it first so a growing reallocation does
+        # not keep the old buffer alive next to the new one.
+        Q_basis = None
+        store.reset(Q_ret, dim)
+        store.append(Q_ret)
+        store.append(q_m)
+        Q_basis = store.basis
         T_full[k_ret : k_ret + p_resid, :k_ret] = cross
         T_full[:k_ret, k_ret : k_ret + p_resid] = np.conj(cross.T)
 
@@ -582,7 +592,8 @@ def _trlm_core(
             if i < m - 1:
                 T_full[off + w1 : off + w1 + w_next, off : off + w1] = beta_i
                 T_full[off : off + w1, off + w1 : off + w1 + w_next] = np.conj(beta_i.T)
-                Q_basis = concat_cols(Q_basis, copy_block(q_next))
+                store.append(q_next)
+                Q_basis = store.basis
                 cur_widths.append(w_next)
                 off += w1
                 w1 = w_next

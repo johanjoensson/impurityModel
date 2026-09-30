@@ -13,7 +13,7 @@ and per-restart helpers.
 
 import numpy as np
 
-from impurityModel.ed.BlockLanczosCore import block_cols, is_array  # noqa: F401
+from impurityModel.ed.BlockLanczosCore import block_cols, is_array
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SparseKrylovDense
 
 
@@ -107,6 +107,63 @@ def copy_block(V):
     if rep in ("array", "manybody"):
         return V.copy()
     return [s.copy() for s in V]
+
+
+class KrylovColumnStore:
+    """Append-only column store for the Krylov basis of one TRLM restart.
+
+    The restart continuation grows its basis one block at a time. Rebuilding it with
+    ``concat_cols`` on every block copied all ``D`` stored columns each time, an
+    O(N D^2 / p) cost per restart against the O(N D) the basis needs
+    (``doc/plans/trlm_krylov_store_quadratic_copies.md``). The array arm instead writes each
+    block into a preallocated C-ordered buffer and hands out the filled prefix as a view.
+    numpy passes that strided view to BLAS through its leading dimension, so every product
+    against it is bit-identical to one against the concatenated copy. The buffer is kept
+    across restarts and reallocated only when a restart asks for more columns than it holds.
+
+    Other representations fall back to ``concat_cols``.
+
+    The store owns its buffer: a :attr:`basis` taken before :meth:`reset` is overwritten by
+    the next restart's columns, so callers must be done with it (and should drop it, so a
+    growing reallocation does not keep the old buffer alive alongside the new one).
+    """
+
+    def __init__(self):
+        self._buf = None
+        self._filled = 0
+        self._other = None
+
+    def reset(self, like, capacity):
+        """Empty the store, with room for ``capacity`` columns shaped like the block ``like``."""
+        self._filled = 0
+        self._other = None
+        if not is_array(like):
+            self._buf = None
+            return
+        n_rows = like.shape[0]
+        if self._buf is None or self._buf.shape[0] != n_rows or self._buf.shape[1] < capacity:
+            self._buf = None  # free the old buffer before allocating the new one
+            self._buf = np.empty((n_rows, capacity), dtype=complex)
+
+    def append(self, block):
+        """Copy the columns of ``block`` in after the ones already stored."""
+        if self._buf is None:
+            self._other = copy_block(block) if self._other is None else concat_cols(self._other, copy_block(block))
+            return
+        w = block.shape[1]
+        if self._filled + w > self._buf.shape[1]:
+            grown = np.empty((self._buf.shape[0], max(2 * self._buf.shape[1], self._filled + w)), dtype=complex)
+            grown[:, : self._filled] = self._buf[:, : self._filled]
+            self._buf = grown
+        self._buf[:, self._filled : self._filled + w] = block
+        self._filled += w
+
+    @property
+    def basis(self):
+        """The stored columns: a view of the filled prefix on the array arm."""
+        if self._buf is None:
+            return self._other
+        return self._buf[:, : self._filled]
 
 
 def width_synced_total(Q_basis, widths, m_act, p, where, exact=False):
