@@ -208,31 +208,41 @@ def get_hcorr_v_hbath(h0op, impurity_orbitals, sum_bath_states):
     return hcorr, v, v_dagger, h_bath
 
 
-def hyb(ws, v, hbath, delta):
+def hyb(ws, v, hbath, delta, *, bath_eig=None):
     """Calculate hybridization function from hopping parameters and bath energies.
 
-    Δ(w) = V^dag [(w + i*delta)I - hbath]^-1 V
+    Δ(w) = V^dag [(w + i*delta)I - hbath]^-1 V, evaluated in the bath eigenbasis:
+    with hbath = U diag(eps) U^dag and W = U^dag V,
+    Δ(w) = W^dag diag(1 / (w + i*delta - eps)) W.
+
+    The resolvent form used to build and solve a dense ``(n_w, n_bath, n_bath)`` system. On
+    NiO 8-bath (80 bath orbitals, a 2048-point Matsubara mesh) each such array is 210 MB, and
+    the solve held several, which was the whole of rank 0's extra peak (734 vs 373 MiB, review
+    ledger N3). At 500 bath orbitals one array is 8 GB. The eigenbasis form needs
+    ``O(n_w * n_bath)`` and is exact up to rounding.
 
     Parameters
     ----------
     ws : np.ndarray
         Frequency mesh.
     v : np.ndarray
-        Hopping matrix V.
+        Hopping matrix V, shape ``(n_bath, n_imp)``.
     hbath : np.ndarray
-        Bath Hamiltonian matrix.
+        Bath Hamiltonian matrix (Hermitian).
     delta : float
         Smearing parameter.
+    bath_eig : tuple of np.ndarray, optional
+        ``np.linalg.eigh(hbath)``, when the caller evaluates several blocks against one bath.
 
     Returns
     -------
     np.ndarray
-        The hybridization function.
+        The hybridization function, shape ``(len(ws), n_imp, n_imp)``.
     """
-    return np.conj(v.T) @ np.linalg.solve(
-        (ws + 1j * delta)[:, None, None] * np.identity(hbath.shape[0], dtype=complex)[None, :, :] - hbath[None, :, :],
-        v[None, :, :],
-    )
+    eps, U = np.linalg.eigh(hbath) if bath_eig is None else bath_eig
+    W = U.conj().T @ v
+    inv = 1.0 / ((np.asarray(ws) + 1j * delta)[:, np.newaxis] - eps[np.newaxis, :])
+    return np.einsum("kb,wk,kc->wbc", W.conj(), inv, W, optimize=True)
 
 
 def get_sigma(
@@ -280,13 +290,14 @@ def get_sigma(
         corresponding self-energy matrix.
     """
     hcorr, v_full, _, h_bath = get_hcorr_v_hbath(h0op, impurity_orbitals, nBaths)
+    bath_eig = np.linalg.eigh(h_bath)  # once, shared by every block
 
     res = []
     components = []
     for block, g in zip(blocks, gs):
         block_ix = np.ix_(block, block)
         wIs = (omega_mesh + 1j * delta)[:, np.newaxis, np.newaxis] * np.eye(len(block))[np.newaxis, :, :]
-        g0_inv = wIs - hcorr[block_ix] - hyb(omega_mesh, v_full[:, block], h_bath, delta)
+        g0_inv = wIs - hcorr[block_ix] - hyb(omega_mesh, v_full[:, block], h_bath, delta, bath_eig=bath_eig)
         ginv = np.linalg.inv(g)
         res.append(g0_inv - ginv)
         if return_components:

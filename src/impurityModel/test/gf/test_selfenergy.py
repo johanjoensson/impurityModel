@@ -202,6 +202,22 @@ def test_hyb():
     assert res.shape == (1, 1, 1)
 
 
+@pytest.mark.parametrize("delta", [0.0, 0.07])
+def test_hyb_matches_the_resolvent_form(delta):
+    """The eigenbasis evaluation equals V^dag [(w + i delta) - h_bath]^-1 V, for a non-diagonal
+    Hermitian bath and a rectangular V -- and an empty bath gives zero, not an error."""
+    rng = np.random.default_rng(7)
+    n_bath, n_imp = 9, 3
+    a = rng.normal(size=(n_bath, n_bath)) + 1j * rng.normal(size=(n_bath, n_bath))
+    hbath = a + a.conj().T
+    v = rng.normal(size=(n_bath, n_imp)) + 1j * rng.normal(size=(n_bath, n_imp))
+    ws = np.concatenate([np.linspace(-4, 4, 41) + 0.013, 1j * np.pi * 0.2 * (2 * np.arange(20) + 1)])
+    ref = np.array([v.conj().T @ np.linalg.solve((w + 1j * delta) * np.eye(n_bath) - hbath, v) for w in ws])
+    np.testing.assert_allclose(selfenergy.hyb(ws, v, hbath, delta), ref, rtol=1e-11, atol=1e-13)
+    empty = selfenergy.hyb(ws, np.zeros((0, n_imp)), np.zeros((0, 0)), delta)
+    assert empty.shape == (len(ws), n_imp, n_imp) and not np.any(empty)
+
+
 def test_get_Sigma_static():
     """Hartree-Fock values for a two-orbital U/J model in RSPt's u4 convention.
 
