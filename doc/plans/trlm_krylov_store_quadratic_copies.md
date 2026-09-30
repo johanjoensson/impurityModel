@@ -18,10 +18,13 @@ Four commits, plus the benchmark that measures them (`test_trlm_continuation_cos
 | C: `KrylovColumnStore`, ManyBodyState arm | array path bit-identical | — | — |
 | D: `adjoint_product` conjugates the small operand | equal to rounding | **7.9 s (7.7)** | **56.5 ms (8.7)** |
 
-**The NiO replay** (the protocol below: 15-bath archive, `CAP=50000`, `N_IW=N_W=128`, `-n 1`) now
-prints its first occupation sector (N_imp = 5, the HF seed) 155 s after start, including the basis
-build. The diagnosis run was still inside that sector after more than 10 minutes. py-spy over 30 s in
-the next sectors (1499 samples):
+**The NiO replay** (the protocol below: 15-bath archive, `CAP=50000`, `N_IW=N_W=128`, `-n 1`,
+`OPENBLAS_NUM_THREADS=1`) prints its first occupation sector (N_imp = 5, the HF seed, E = -63.664293
+in both runs) after **282 s on the pre-fix code** (`src/` at `3d7277ce`, i.e. master) and **155 s
+after the fix**, a 1.8x speedup. The time includes the basis build. This is a controlled A/B, same
+machine and environment, with the build verified live each time. The diagnosis run's "more than 10
+minutes" was on `gf-review`, a different code base and cap policy, and is not a comparable baseline.
+py-spy over 30 s in the next sectors, after the fix (1499 samples):
 
 | share | leaf | what it is |
 |---|---|---|
