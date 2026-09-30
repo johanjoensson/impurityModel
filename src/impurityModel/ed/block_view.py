@@ -13,7 +13,7 @@ and per-restart helpers.
 
 import numpy as np
 
-from impurityModel.ed.BlockLanczosCore import block_cols, is_array
+from impurityModel.ed.BlockLanczosCore import block_cols, block_inner, block_orthogonalize, is_array
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SparseKrylovDense
 
 
@@ -115,15 +115,25 @@ class KrylovColumnStore:
     The restart continuation grows its basis one block at a time. Rebuilding it with
     ``concat_cols`` on every block copied all ``D`` stored columns each time, an
     O(N D^2 / p) cost per restart against the O(N D) the basis needs
-    (``doc/plans/trlm_krylov_store_quadratic_copies.md``). The array arm instead writes each
-    block into a preallocated C-ordered buffer and hands out the filled prefix as a view.
-    numpy passes that strided view to BLAS through its leading dimension, so every product
-    against it is bit-identical to one against the concatenated copy. The buffer is kept
-    across restarts and reallocated only when a restart asks for more columns than it holds.
+    (``doc/plans/trlm_krylov_store_quadratic_copies.md``). Each arm appends without that copy:
 
-    Other representations fall back to ``concat_cols``.
+    * arrays: a preallocated C-ordered buffer whose filled prefix is handed out as a view.
+      numpy passes the strided view to BLAS through its leading dimension, so every product
+      against it is bit-identical to one against the concatenated copy. The buffer is kept
+      across restarts and reallocated only when a restart asks for more columns than it holds.
+    * ``ManyBodyState``: a ``SparseKrylovDense``, the column-chunked store the ManyBodyState
+      Lanczos kernel already keeps its Krylov basis in. ``concat_cols`` here was a
+      ``to_states``/``from_states`` round trip of the whole basis per block. Always
+      complex128: these columns rebuild the returned eigenvectors, which the store's
+      complex64 option is documented as unfit for.
+    * anything else: ``concat_cols``.
 
-    The store owns its buffer: a :attr:`basis` taken before :meth:`reset` is overwritten by
+    :attr:`columns` is the store's own representation, which on the ``ManyBodyState`` arm is
+    not a block. Read it through ``slice_cols``/``block_cols`` only, and project against it
+    with :meth:`project`, never by handing it to ``block_inner``/``block_orthogonalize``/
+    ``block_combine`` directly.
+
+    The store owns its buffer: :attr:`columns` taken before :meth:`reset` is overwritten by
     the next restart's columns, so callers must be done with it (and should drop it, so a
     growing reallocation does not keep the old buffer alive alongside the new one).
     """
@@ -131,14 +141,24 @@ class KrylovColumnStore:
     def __init__(self):
         self._buf = None
         self._filled = 0
+        self._krylov = None
         self._other = None
 
-    def reset(self, like, capacity):
-        """Empty the store, with room for ``capacity`` columns shaped like the block ``like``."""
+    def reset(self, like, capacity, row_hint=None):
+        """Empty the store, with room for ``capacity`` columns shaped like the block ``like``.
+
+        ``row_hint`` (``ManyBodyState`` arm) sizes the store's row chunks, e.g. the local basis
+        size. It is a hint, not a bound: a support that outgrows it gets a larger chunk.
+        """
         self._filled = 0
         self._other = None
+        self._krylov = None
         if not is_array(like):
             self._buf = None
+            if isinstance(like, ManyBodyState):
+                self._krylov = SparseKrylovDense(np.complex128)
+                if row_hint is not None:
+                    self._krylov.reserve_rows(int(row_hint))
             return
         n_rows = like.shape[0]
         if self._buf is None or self._buf.shape[0] != n_rows or self._buf.shape[1] < capacity:
@@ -147,6 +167,9 @@ class KrylovColumnStore:
 
     def append(self, block):
         """Copy the columns of ``block`` in after the ones already stored."""
+        if self._krylov is not None:
+            self._krylov.append_block(block)
+            return
         if self._buf is None:
             self._other = copy_block(block) if self._other is None else concat_cols(self._other, copy_block(block))
             return
@@ -159,11 +182,38 @@ class KrylovColumnStore:
         self._filled += w
 
     @property
-    def basis(self):
-        """The stored columns: a view of the filled prefix on the array arm."""
+    def columns(self):
+        """The stored columns: a view of the filled prefix (arrays), the ``SparseKrylovDense``
+        (``ManyBodyState``), or the concatenated block."""
+        if self._krylov is not None:
+            return self._krylov
         if self._buf is None:
             return self._other
         return self._buf[:, : self._filled]
+
+    def project(self, wp, mpi=False, comm=None):
+        """One classical Gram-Schmidt pass of ``wp`` against the stored columns.
+
+        Returns ``(wp - Q O, O)`` with ``O = Q^H wp`` taken *before* the pass and summed over
+        ranks, so the first of two passes also yields the Lanczos ``alpha`` (its last rows).
+        On arrays it is ``block_inner`` + ``block_orthogonalize(overlaps=...)``, the same
+        products the continuation formed before the store existed.
+
+        Collective on ``comm``: one ``Allreduce`` of the ``(n_cols, p)`` overlaps, on every rank.
+        """
+        if self._krylov is not None:
+            wp, overlaps = self._krylov.reort(wp, None, 1, comm if mpi else None)
+            if overlaps is None:
+                # reort returns early (before its Allreduce) only on a width-0 wp or an empty
+                # store, both rank-invariant here; a silent None would crash one line later.
+                raise RuntimeError(
+                    f"KrylovColumnStore.project: no overlaps (wp width {wp.width}, {len(self._krylov)} stored columns)"
+                )
+            return wp, overlaps
+        Q = self.columns
+        overlaps = block_inner(Q, wp, mpi, comm)
+        wp, _ = block_orthogonalize(wp, Q, overlaps=overlaps, mpi=mpi, comm=comm)
+        return wp, overlaps
 
 
 def width_synced_total(Q_basis, widths, m_act, p, where, exact=False):

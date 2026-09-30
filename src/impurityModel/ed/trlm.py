@@ -376,6 +376,8 @@ def _trlm_core(
     # The continuation's Krylov basis. One store for the whole solve: each restart refills it
     # in place, so appending a block copies that block and nothing else.
     store = KrylovColumnStore()
+    _local_basis = getattr(basis, "local_basis", None)
+    row_hint = len(_local_basis) if _local_basis is not None else None
 
     for restart in range(max_restarts):
         # Q_basis carries exactly the columns T_full[:D, :D] is expressed in: the trailing
@@ -515,10 +517,10 @@ def _trlm_core(
         # store's buffer, which reset overwrites. Drop it first so a growing reallocation does
         # not keep the old buffer alive next to the new one.
         Q_basis = None
-        store.reset(Q_ret, dim)
+        store.reset(Q_ret, dim, row_hint=row_hint)
         store.append(Q_ret)
         store.append(q_m)
-        Q_basis = store.basis
+        Q_basis = store.columns
         T_full[k_ret : k_ret + p_resid, :k_ret] = cross
         T_full[:k_ret, k_ret : k_ret + p_resid] = np.conj(cross.T)
 
@@ -535,15 +537,14 @@ def _trlm_core(
             with _trace_timed("block_apply", site="continuation", w=block_cols(q1)):
                 wp = block_apply(h_op, q1, basis, mpi, slater)
 
-            overlaps = block_inner(Q_basis, wp, mpi, comm)
+            # CGS2 against the stored basis. The first pass's overlaps, taken before it projects,
+            # are Q^H H q1, so their last w1 rows are alpha_i; the second pass recomputes
+            # against the now-cleaned wp. Both passes go through the store (never block_inner
+            # on Q_basis directly): on the ManyBodyState arm Q_basis is a SparseKrylovDense.
+            wp, overlaps = store.project(wp, mpi, comm)
             alpha_i = overlaps[overlaps.shape[0] - w1 :, :]  # q1^H H q1  (w1, w1)
             T_full[off : off + w1, off : off + w1] = alpha_i
-
-            # First pass reuses the overlaps already formed for alpha_i (wp is unchanged), so
-            # this is the same projection the per-pass recompute would give; the second pass
-            # recomputes against the now-cleaned wp.
-            wp, _ = block_orthogonalize(wp, Q_basis, overlaps=overlaps, mpi=mpi, comm=comm)
-            wp, _ = block_orthogonalize(wp, Q_basis, mpi=mpi, comm=comm)
+            wp, _ = store.project(wp, mpi, comm)
 
             try:
                 q_next, beta_i = block_normalize(wp, mpi, comm, 0.0)
@@ -593,7 +594,7 @@ def _trlm_core(
                 T_full[off + w1 : off + w1 + w_next, off : off + w1] = beta_i
                 T_full[off : off + w1, off + w1 : off + w1 + w_next] = np.conj(beta_i.T)
                 store.append(q_next)
-                Q_basis = store.basis
+                Q_basis = store.columns
                 cur_widths.append(w_next)
                 off += w1
                 w1 = w_next
