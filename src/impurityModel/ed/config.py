@@ -216,6 +216,94 @@ GF_BICGSTAB_RESIDUAL_CHECK = Knob(
     a solve iteration's. Off by default; the basis-size benchmarks turn it on.""",
 )
 
+GF_BICGSTAB_ADMISSION = Knob(
+    name="GF_BICGSTAB_ADMISSION",
+    kind="str",
+    default="all",
+    group="bicgstab",
+    doc="""How a per-frequency point's basis grows. ``all`` (default): every determinant the solver
+    produces is admitted (``slaterWeightMin`` aside), up to the cap. ``outer``: solve on a frozen
+    basis, measure the residual outside it, admit only the determinants that score above
+    ``GF_BICGSTAB_ADMIT_TOL_*`` (at most the cap allows), and re-solve -- importance-ranked
+    admission between frozen solves, never inside the BiCGSTAB recurrence (dropping rows between
+    steps breaks its recursive residual).""",
+)
+
+GF_BICGSTAB_ADMIT_SCORER = Knob(
+    name="GF_BICGSTAB_ADMIT_SCORER",
+    kind="str",
+    default="amplitude",
+    group="bicgstab",
+    doc="""Importance score of an outside determinant D under ``outer`` admission, per column j and
+    maximised over the block: ``amplitude`` is ``|b_Dj| / ||Y_j||`` (boundary residual over seed
+    norm); ``jacobi`` is ``|b_Dj| / (||X_j|| |z - H_DD|)`` (the first-order correction it would
+    receive, so near-resonant determinants rank first). ``jacobi`` only means something where
+    ``H_DD`` is a configuration energy, i.e. a star bath.""",
+)
+
+GF_BICGSTAB_ADMIT_TOL_AMP = Knob(
+    name="GF_BICGSTAB_ADMIT_TOL_AMP",
+    kind="float",
+    default=1e-4,
+    minimum=0.0,
+    group="bicgstab",
+    doc="Admission threshold of the ``amplitude`` scorer (dimensionless: relative to the seed norm).",
+)
+
+GF_BICGSTAB_ADMIT_TOL_JACOBI = Knob(
+    name="GF_BICGSTAB_ADMIT_TOL_JACOBI",
+    kind="float",
+    default=1e-4,
+    minimum=0.0,
+    group="bicgstab",
+    doc="Admission threshold of the ``jacobi`` scorer (dimensionless: relative to the iterate norm).",
+)
+
+GF_BICGSTAB_ADMIT_ROUNDS = Knob(
+    name="GF_BICGSTAB_ADMIT_ROUNDS",
+    kind="int",
+    default=20,
+    minimum=0,
+    group="bicgstab",
+    doc="""Solve-measure-admit rounds per point before the final solve. Each round reaches
+    ``GF_BICGSTAB_ADMIT_SHELLS`` H-shells beyond the current basis, so this bounds the depth the
+    admission can reach; the retired per-frequency CIPSI was round-limited at 8 shells.""",
+)
+
+GF_BICGSTAB_ADMIT_SHELLS = Knob(
+    name="GF_BICGSTAB_ADMIT_SHELLS",
+    kind="int",
+    default=2,
+    minimum=1,
+    group="bicgstab",
+    doc="""H-shells admitted per round. The first is scored on the measured boundary residual; each
+    further one on the residual of the Jacobi-extended correction of the shell before it, so a
+    round reaches the boundary of the boundary without a solve in between.""",
+)
+
+GF_BICGSTAB_ADMIT_CARRY_TOL = Knob(
+    name="GF_BICGSTAB_ADMIT_CARRY_TOL",
+    kind="float",
+    default=1e-3,
+    minimum=0.0,
+    group="bicgstab",
+    doc="""Under ``outer`` admission a point starts from its seeds, their first H-shell and the
+    determinants of the warm-start guess with ``|x0_D| / ||x0|| >= this``, re-scored at the new z so
+    the set can shrink -- not from the whole extrapolation support, which only ever grows along the
+    sweep.""",
+)
+
+GF_BICGSTAB_ADMIT_EN_TOL = Knob(
+    name="GF_BICGSTAB_ADMIT_EN_TOL",
+    kind="float",
+    default=0.0,
+    minimum=0.0,
+    group="bicgstab",
+    doc="""Stop admitting when the Epstein-Nesbet estimate of the remaining G error,
+    ``sum_D b_Di* b_Dj / (z - H_DD)``, is below this fraction of ``max_j |G_jj|``. 0 (default)
+    disables it. An estimate, not a bound: it is reported and never added to G.""",
+)
+
 GF_GMRES_RESTART = Knob(
     name="GF_GMRES_RESTART",
     kind="int",
@@ -917,6 +1005,14 @@ KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_RESTARTS,
     GF_BICGSTAB_WARM_HISTORY,
     GF_BICGSTAB_RESIDUAL_CHECK,
+    GF_BICGSTAB_ADMISSION,
+    GF_BICGSTAB_ADMIT_SCORER,
+    GF_BICGSTAB_ADMIT_TOL_AMP,
+    GF_BICGSTAB_ADMIT_TOL_JACOBI,
+    GF_BICGSTAB_ADMIT_ROUNDS,
+    GF_BICGSTAB_ADMIT_SHELLS,
+    GF_BICGSTAB_ADMIT_CARRY_TOL,
+    GF_BICGSTAB_ADMIT_EN_TOL,
     GF_GMRES_RESTART,
     GF_GMRES_MAX_RESTARTS,
     GF_EIGENSTATE_GROUP,

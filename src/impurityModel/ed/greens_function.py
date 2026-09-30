@@ -55,8 +55,8 @@ from impurityModel.ed.gf_units import (
     unit_cost_weights,
 )
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
+from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.symmetries import widen_weighted_restrictions
 
 comm = MPI.COMM_WORLD

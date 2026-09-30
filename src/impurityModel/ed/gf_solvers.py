@@ -21,10 +21,11 @@ from impurityModel.ed.basis_transcription import build_dense_matrix, build_spars
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
 from impurityModel.ed.cg import block_bicgstab
+from impurityModel.ed.gf_admission import solve_point_outer
 from impurityModel.ed.gf_convergence import _gf_rel_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
-    _CappedBasisProxy,
     _allreduced_col_norms2,
+    _CappedBasisProxy,
     _distributed_seed_qr,
     _sanitize_continued_fraction,
     _trim_blocks,
@@ -573,6 +574,19 @@ def _warm_start_extrapolation(zs, sols, z_new, n_cols):
     return [sum((sol[col] * c for c, sol in zip(coeffs, sols)), ManyBodyState()) for col in range(n_cols)]
 
 
+def _global_seed_support(seeds, comm):
+    """Distinct determinants over the seed columns, summed over the communicator.
+
+    Every determinant has one owner once the seeds are redistributed, so the local key sets are
+    disjoint. A key set rather than a block row count: a rank owning none of the seeds may hold a
+    width-0 state, which ``from_states`` rejects. Collective; call from the same point on every rank.
+    """
+    n_local = np.array([len({key for psi in seeds for key in psi.keys()})], dtype=np.int64)
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, n_local, op=MPI.SUM)
+    return int(n_local[0])
+
+
 def _bicgstab_sweep_order(z_shifted):
     r"""Sweep indices from the easiest frequency toward the hardest.
 
@@ -749,6 +763,9 @@ def block_Green_bicgstab(
     max_iter = config.GF_BICGSTAB_MAX_ITER.get() if max_iter is None else max_iter
     warm_history = config.GF_BICGSTAB_WARM_HISTORY.get()
     check_residual = config.GF_BICGSTAB_RESIDUAL_CHECK.get()
+    admission = config.GF_BICGSTAB_ADMISSION.get()
+    if admission not in ("all", "outer"):
+        raise ValueError(f"GF_BICGSTAB_ADMISSION={admission!r}: expected 'all' or 'outer'")
     # The second-order bound needs real H (then the adjoint solve is the conjugate of the forward
     # one); a property of the operator alone, so decided once per unit.
     h_is_real = check_residual and all(np.imag(amp) == 0 for _term, amp in hOp.items())
@@ -811,30 +828,6 @@ def block_Green_bicgstab(
                     # Rebuild-and-discard: the basis holds only this point's seed + warm-start
                     # support; redistribute_psis aligns the amplitudes to the fresh ownership
                     # layout (the solver assumes its states are distributed per `basis`).
-                    carried = seeds + x0
-                    tmp_basis.clear()
-                    tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
-                    redistributed = tmp_basis.redistribute_psis(*carried)
-                    seeds = list(redistributed[:n_ops])
-                    x0 = list(redistributed[n_ops : 2 * n_ops])
-                    if seed_size is None:
-                        # Same point on every rank of the color, so the Allreduce is lock-step. A key
-                        # set, not a block row count: a rank owning none of the seeds may hold a
-                        # width-0 state, which from_states rejects.
-                        n_local = np.array([len({key for psi in seeds for key in psi.keys()})], dtype=np.int64)
-                        if sub_comm is not None:
-                            sub_comm.Allreduce(MPI.IN_PLACE, n_local, op=MPI.SUM)
-                        seed_size = int(n_local[0])
-                    rebuild_size = int(tmp_basis.size)
-                    stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], rebuild_size)
-
-                    if np.isfinite(cap) and tmp_basis.size > cap:
-                        # The seed/warm-start support alone exceeds the cap. Never truncate the
-                        # right-hand side silently: solve on it frozen (exact on that subspace) and
-                        # flag it for the diagnostics.
-                        stats["seed_overflow"] = True
-                    solve_basis = guarded_proxy(tmp_basis, cap)
-
                     # A fresh operator per point: block_bicgstab sets its occupation
                     # restrictions from the basis; the weighted restrictions are set here
                     # (unconditionally, so a None clears any stale mask -- the Basis.expand
@@ -842,23 +835,70 @@ def block_Green_bicgstab(
                     A_op = z - hOp
                     A_op.set_weighted_restrictions(excited_weighted_restrictions)
 
-                    # Solve, restarting while unconverged and still making progress and
-                    # escalating to GMRES on stagnation (block_Green_bicgstab's own warm-start
-                    # chain is separate from the RIXS one but shares the same solver policy).
-                    # seeds/x0 are wrapped into blocks once here, at the solver boundary; the
-                    # restart loop inside solve_shifted_block then carries X as a block with no
-                    # further round trip.
-                    info = {}
-                    X = solve_shifted_block(
-                        A_op,
-                        ManyBodyState.from_states(list(x0)),
-                        ManyBodyState.from_states(list(seeds)),
-                        solve_basis,
-                        slaterWeightMin,
-                        atol,
-                        max_iter=max_iter,
-                        info=info,
-                    )
+                    admission_record = None
+                    if admission == "outer":
+                        # Importance-admitted basis: rebuilds and solves inside (gf_admission).
+                        X, seeds, info, admission_record, solve_basis = solve_point_outer(
+                            A_op,
+                            hOp,
+                            z,
+                            seeds,
+                            x0,
+                            tmp_basis,
+                            cap,
+                            slaterWeightMin,
+                            atol,
+                            max_iter,
+                            sub_comm,
+                            n_ops,
+                            solve_shifted_block,
+                        )
+                        solve_basis.cap_hit = admission_record["cap_hit"]
+                        rebuild_size = admission_record["start_size"]
+                        if seed_size is None:
+                            seed_size = _global_seed_support(seeds, sub_comm)
+                        stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], rebuild_size)
+                        if np.isfinite(cap) and rebuild_size > cap:
+                            stats["seed_overflow"] = True
+                    else:
+                        # Rebuild-and-discard: the basis holds only this point's seed + warm-start
+                        # support; redistribute_psis aligns the amplitudes to the fresh ownership
+                        # layout (the solver assumes its states are distributed per `basis`).
+                        carried = seeds + x0
+                        tmp_basis.clear()
+                        tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
+                        redistributed = tmp_basis.redistribute_psis(*carried)
+                        seeds = list(redistributed[:n_ops])
+                        x0 = list(redistributed[n_ops : 2 * n_ops])
+                        if seed_size is None:
+                            seed_size = _global_seed_support(seeds, sub_comm)
+                        rebuild_size = int(tmp_basis.size)
+                        stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], rebuild_size)
+
+                        if np.isfinite(cap) and tmp_basis.size > cap:
+                            # The seed/warm-start support alone exceeds the cap. Never truncate the
+                            # right-hand side silently: solve on it frozen (exact on that subspace) and
+                            # flag it for the diagnostics.
+                            stats["seed_overflow"] = True
+                        solve_basis = guarded_proxy(tmp_basis, cap)
+
+                        # Solve, restarting while unconverged and still making progress and
+                        # escalating to GMRES on stagnation (block_Green_bicgstab's own warm-start
+                        # chain is separate from the RIXS one but shares the same solver policy).
+                        # seeds/x0 are wrapped into blocks once here, at the solver boundary; the
+                        # restart loop inside solve_shifted_block then carries X as a block with no
+                        # further round trip.
+                        info = {}
+                        X = solve_shifted_block(
+                            A_op,
+                            ManyBodyState.from_states(list(x0)),
+                            ManyBodyState.from_states(list(seeds)),
+                            solve_basis,
+                            slaterWeightMin,
+                            atol,
+                            max_iter=max_iter,
+                            info=info,
+                        )
 
                     stats["n_points"] += 1
                     stats["iterations"] += info["iterations"]
@@ -915,6 +955,7 @@ def block_Green_bicgstab(
                             "rel_residual": float(info["rel_residual"]),
                             "iterations": int(info["iterations"]),
                             "gmres_used": bool(info["gmres_used"]),
+                            **({"admission": admission_record} if admission_record is not None else {}),
                             **record,
                         }
                     )

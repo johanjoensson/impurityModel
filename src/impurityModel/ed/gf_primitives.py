@@ -432,35 +432,44 @@ def _allreduced_col_norms2(block, n_cols, comm):
     return out
 
 
-def residual_split(A_op, X, Y, basis, mask, n_cols, comm):
-    r"""The true residual ``R = Y - A X`` of a projected solve, split at the solve basis ``P``.
+def residual_blocks(A_op, X, Y, basis, mask, n_cols):
+    r"""The true residual ``R = Y - A X`` of a projected solve, as two blocks split at ``P``.
 
     ``X`` solved ``P A P X = Y`` (``supp Y`` inside ``P``) on a basis that may have frozen, so
     the solver's own residual measures only the in-``P`` part. One full matvec at cutoff 0
     recovers both parts:
 
-    * ``r_P`` -- the rows of ``R`` inside ``P``: the solver residual, recomputed rather than
+    * ``inside`` -- the rows of ``R`` inside ``P``: the solver residual, recomputed rather than
       trusted (``block_bicgstab``'s is a recursively-updated estimate);
-    * ``b`` -- the rows outside ``P``, which equal ``(1-P) H X`` because ``Y`` and ``z X`` both
-      live inside ``P``: the *boundary residual*, zero exactly when nothing was truncated.
+    * ``outside`` -- the rows outside ``P``, which equal ``(1-P) H X`` because ``Y`` and ``z X``
+      both live inside ``P``: the *boundary residual*, zero exactly when nothing was truncated.
 
     ``A_op`` must be the operator the solve ran with, restrictions included (the solver set
-    them from the basis), so that ``b`` holds only determinants the restricted model can
+    them from the basis), so that ``outside`` holds only determinants the restricted model can
     reach. ``basis`` must be the **raw** ``Basis``: its ``redistribute_block`` sums every
     rank's contribution to a determinant onto its owner, which a capped proxy would follow by
     ``keep_rows``-ing the boundary away. ``mask`` is the width-0 block of this rank's retained
-    determinants. Collective over ``comm``; the norms come back as length-``n_cols`` arrays of
-    ``||r_P,j||`` and ``||b_j||``.
+    determinants. Both blocks are distributed per ``basis``.
     """
     AX = basis.redistribute_block(A_op.apply_block(X, 0.0))
     R = block_add_scaled_cy(Y, AX, -np.eye(n_cols, dtype=complex))
-    inside = R.copy()
-    inside.keep_rows(mask)
     outside = R.copy()
     outside.keep_rows(R.keys_new_above(mask, 0.0))
-    r_p2 = _allreduced_col_norms2(inside, n_cols, comm)
-    b2 = _allreduced_col_norms2(outside, n_cols, comm)
-    return np.sqrt(r_p2), np.sqrt(b2)
+    inside = R
+    inside.keep_rows(mask)
+    return inside, outside
+
+
+def residual_split(A_op, X, Y, basis, mask, n_cols, comm):
+    r"""Column norms ``(||r_P,j||, ||b_j||)`` of :func:`residual_blocks`, summed over ``comm``.
+
+    Collective over ``comm``; always length-``n_cols`` arrays.
+    """
+    inside, outside = residual_blocks(A_op, X, Y, basis, mask, n_cols)
+    return (
+        np.sqrt(_allreduced_col_norms2(inside, n_cols, comm)),
+        np.sqrt(_allreduced_col_norms2(outside, n_cols, comm)),
+    )
 
 
 def real_up_to_phase(block, n_cols, comm, rtol=1e-12):
