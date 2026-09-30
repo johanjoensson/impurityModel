@@ -22,6 +22,7 @@ import scipy.sparse as sps
 from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_state
+from impurityModel.ed.BlockLanczosCore import block_inner
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
@@ -59,35 +60,109 @@ def system():
     return basis, sps.csr_matrix(h), U, evals
 
 
-def _solve(basis, h, U, **kwargs):
-    local = np.asarray(list(basis.local_indices), dtype=int)
-    warm = build_state(basis, U[local, :GROUND].T)
+def _solve(basis, h, U, warm=True, **kwargs):
+    """``get_eigenvectors`` on ``h``, warm-started from the exact ground manifold (as a converged CIPSI
+    cycle hands over) or, with ``warm=False``, cold: the width-1 hash vector, as ``dc_frozen`` solves."""
+    psi_refs = None
+    if warm:
+        local = np.asarray(list(basis.local_indices), dtype=int)
+        psi_refs = build_state(basis, U[local, :GROUND].T)
     solver = CIPSISolver(basis)
     dummy = ManyBodyOperator({((0, "c"), (0, "a")): 0.0})
-    return solver.get_eigenvectors(dummy, psi_refs=warm, h_matrix=h, dense_cutoff=10, slaterWeightMin=1e-12, **kwargs)
+    return solver.get_eigenvectors(
+        dummy, psi_refs=psi_refs, h_matrix=h, dense_cutoff=10, slaterWeightMin=1e-12, **kwargs
+    )
+
+
+def _assert_orthonormal_and_ascending(basis, e_ref, psis):
+    """No eigenstate returned twice, and the order callers take columns by position in."""
+    e = np.real(np.asarray(e_ref))
+    assert np.all(np.diff(e) >= 0), f"eigenvalues not ascending: {e}"
+    gram = block_inner(psis, psis, basis.is_distributed, basis.comm)
+    np.testing.assert_allclose(gram, np.eye(len(e)), atol=1e-8)
 
 
 @pytest.mark.mpi
-@pytest.mark.xfail(strict=True, reason="block Krylov reaches at most rank(P Q0) copies of a degenerate level")
-def test_a_degenerate_level_wider_than_the_block_comes_back_whole(system):
+@pytest.mark.parametrize("warm", [True, False], ids=["warm", "cold"])
+@pytest.mark.parametrize("solver", ["trlm", "irlm"])
+def test_a_degenerate_level_wider_than_the_block_comes_back_whole(system, solver, warm):
+    """Cold is the width-1 start of every ``dc_frozen`` solve: the probe must not inherit that width."""
     basis, h, U, evals = system
-    e_ref, _ = _solve(basis, h, U, num_wanted=10, max_energy=CUT)
-    e = np.sort(np.real(e_ref))
+    e_ref, psis = _solve(basis, h, U, warm=warm, num_wanted=10, max_energy=CUT, solver=solver)
+    e = np.real(e_ref)
     assert len(e) == N_WINDOW, (
         f"the thermal window holds {N_WINDOW} states ({GROUND} ground + {EXCITED} at {E_EXCITED}); "
         f"got {len(e)}: {np.round(e, 5)}"
     )
     np.testing.assert_allclose(e, evals[:N_WINDOW], atol=1e-9)
+    _assert_orthonormal_and_ascending(basis, e_ref, psis)
 
 
 @pytest.mark.mpi
-@pytest.mark.xfail(strict=True, reason="block Krylov reaches at most rank(P Q0) copies of a degenerate level")
-def test_the_lowest_k_states_include_every_copy_of_a_degenerate_level(system):
-    """No cut: the ``num_wanted`` lowest states. A missing copy lets a higher state in instead."""
+@pytest.mark.parametrize("solver", ["trlm", "irlm"])
+def test_a_count_cut_inside_a_degenerate_level_does_not_return_copies_twice(system, solver):
+    """No cut, ``num_wanted=1`` -- ``calc_energy``'s occupation walk. The one state asked for belongs to
+    a 5-fold level. The completeness probe once ran here, locked only that one, "found" the other
+    computed copies in the complement and returned them next to their originals: 9 ground states for
+    a 5-fold level, Gram error 0.76. No-cut solves are no longer probed; this pins that the path
+    returns each state once."""
+    basis, h, U, _evals = system
+    e_ref, psis = _solve(basis, h, U, num_wanted=1, max_energy=None, solver=solver)
+    e = np.real(e_ref)
+    # At most the true multiplicity: complete is not promised without a cut (see get_eigenvectors).
+    assert np.sum(np.abs(e) < 1e-6) <= GROUND, np.round(e, 5)
+    _assert_orthonormal_and_ascending(basis, e_ref, psis)
+
+
+@pytest.mark.mpi
+def test_a_level_just_above_the_cut_is_not_returned_twice():
+    """A level within the degeneracy tolerance above the cut: outside the window, inside the probe's
+    boundary. Left out of the locked set it was re-found, the found copies' energies landed at or
+    below the cut, and the final cut kept both them and their originals -- a thermal level counted
+    twice."""
+    comm = MPI.COMM_WORLD
+    basis = Basis(
+        impurity_orbitals={0: [list(range(N_ORB))]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=[_singlet(o) for o in range(N_ORB)],
+        verbose=False,
+        comm=comm,
+    )
+    n = len(basis)
+    rng = np.random.default_rng(12)
+    edge = CUT + 5e-10  # the degeneracy tolerance here is 1e-9
+    evals = np.concatenate([np.zeros(GROUND), np.full(3, edge), np.linspace(0.12, 3.0, n - GROUND - 3)])
+    U = np.linalg.qr(rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n)))[0]
+    h = (U * evals) @ U.conj().T
+    h = sps.csr_matrix(0.5 * (h + h.conj().T))
+    e_ref, psis = _solve(basis, h, U, num_wanted=10, max_energy=CUT)
+    _assert_orthonormal_and_ascending(basis, e_ref, psis)
+    assert np.sum(np.abs(np.real(e_ref) - edge) < 1e-6) <= 3
+
+
+@pytest.mark.mpi
+def test_a_complete_window_is_certified_without_a_probe_solve(system, monkeypatch):
+    """The common case -- nothing missing -- must cost the locked sweep and no probe solve.
+
+    What this cannot catch: a sweep run without its locked set. The kept vectors here are exact
+    eigenvectors, so ``H`` maps their complement into itself and an unlocked sweep stays in it anyway;
+    in production the kept vectors are converged only to ``tol``, their components leak back in, and
+    the probe would "find" them every time and pay for a solve to learn nothing."""
+    import impurityModel.ed.cipsi_solver as cipsi_module
+
     basis, h, U, evals = system
-    e_ref, _ = _solve(basis, h, U, num_wanted=N_WINDOW, max_energy=None)
-    e = np.sort(np.real(e_ref))[:N_WINDOW]
-    np.testing.assert_allclose(e, evals[:N_WINDOW], atol=1e-9)
+    calls = []
+    real = cipsi_module.thick_restart_block_lanczos
+
+    def counting(**kwargs):
+        if kwargs.get("locked") is not None:
+            calls.append(kwargs["locked"].shape[1])
+        return real(**kwargs)
+
+    monkeypatch.setattr(cipsi_module, "thick_restart_block_lanczos", counting)
+    e_ref, _ = _solve(basis, h, U, num_wanted=4, max_energy=E_EXCITED / 2)
+    np.testing.assert_allclose(np.real(e_ref), evals[:GROUND], atol=1e-9)
+    assert calls == []
 
 
 def test_trlm_with_a_locked_set_solves_in_its_complement():
@@ -119,3 +194,15 @@ def test_trlm_with_a_locked_set_solves_in_its_complement():
     assert _TRLM_EXIT[0].startswith("restart_loop_end") or _TRLM_EXIT[0] == "continuation_converged", _TRLM_EXIT
     np.testing.assert_allclose(np.sort(vals.real), evals[n_locked : n_locked + 9], atol=1e-9)
     np.testing.assert_allclose(locked.conj().T @ vecs, 0, atol=1e-10)
+
+
+def test_the_vectorized_probe_hash_matches_the_scalar_one():
+    """The probe's start block must be the same pseudo-random numbers at any rank count and on any
+    platform, so its vectorized splitmix64 has to agree with the scalar one bit for bit."""
+    from impurityModel.ed.cipsi_solver import _splitmix64, _splitmix64_array
+
+    x = np.random.default_rng(0).integers(0, 2**63, 1000, dtype=np.int64).astype(np.uint64) * np.uint64(
+        2
+    ) + np.uint64(1)
+    x = np.concatenate([x, np.array([0, 1, 2**64 - 1], dtype=np.uint64)])
+    np.testing.assert_array_equal(_splitmix64_array(x), np.array([_splitmix64(int(v)) for v in x], dtype=np.uint64))
