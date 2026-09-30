@@ -369,7 +369,13 @@ class _CappedBasisProxy:
         return False
 
     def redistribute_block(self, block):
-        block = self._basis.redistribute_block(block)
+        return self._admit(self._basis.redistribute_block(block))
+
+    def _admit(self, block):
+        """Project one redistributed matvec output onto the retained set, growing it while it may.
+
+        Split out of :meth:`redistribute_block` so a subclass can change *which* new rows are
+        admitted without re-running the (collective) redistribution."""
         if self._frozen:
             block.keep_rows(self._mask)
             return block
@@ -515,6 +521,70 @@ def resolvent_error_bound(s_norm, r_p, b, imag_z, symmetric):
     first = np.outer(s_norm, R) / imag_z
     second = (np.outer(s_norm, r_p) + np.outer(b, R)) / imag_z
     return np.where(np.asarray(symmetric, dtype=bool)[:, None], np.minimum(first, second), first)
+
+
+class _PrunedBasisProxy(_CappedBasisProxy):
+    r"""Importance-pruned growth for the Lanczos recurrence: the comparator of ``outer`` admission.
+
+    Every step's new rows are admitted only if their largest column amplitude exceeds ``eta``;
+    the rest are **banned for good**. The ban is what keeps the recurrence exact: a row that is
+    outside ``P_k`` when ``H q_k`` is formed and is not admitted then must never enter later, or
+    ``q_{k+1}`` was built with ``P_{k+1} H q_k`` while the final retained set ``P_m`` would
+    contain the row -- and the recurrence would be the Lanczos of no single operator. With the
+    ban, ``P_m H q_k = P_{k+1} H q_k`` for every ``k``, so the recurrence is the exact Lanczos of
+    ``P_m H P_m`` under every reorthogonalization mode (the same argument as the freeze, applied
+    row by row rather than all at once).
+
+    Three conditions make that argument hold, and the first two are checked by the caller
+    (``block_Green_sparse``) because they are properties of the apply, not of the proxy:
+
+    * the apply runs at cutoff 0 -- a row dropped inside the apply is invisible here and cannot
+      be banned;
+    * the matvec is not row-chunked -- chunks carry *partial* amplitudes, so a row banned on one
+      chunk's partial sum could clear the threshold on the full sum;
+    * the first matvec that reaches new determinants admits all of them (``eta`` is not applied
+      to ``H q_0``): the seeds' first H-shell is what keeps the moments of G through ``H^2``,
+      hence the ``Sigma`` tail, exact. (Not simply "the first call": the kernel also routes the
+      seed block itself through here, which reaches nothing new.)
+
+    The ban mask grows like the frontier; :attr:`ban_bytes` reports what it holds.
+    """
+
+    def __init__(self, basis, cap, eta, **kwargs):
+        super().__init__(basis, cap, **kwargs)
+        self._eta2 = float(eta) ** 2
+        self._ban = ManyBodyState.from_keys([])
+        self._shell_admitted = False
+
+    @property
+    def ban_bytes(self):
+        """Rank-local bytes held by the ban mask."""
+        return int(self._ban.memory_bytes())
+
+    def _admit(self, block):
+        if self._frozen or self._over_memory_budget():
+            return super()._admit(block)
+        new = block.keys_new_above(self._mask, 0.0)
+        # Global, so every rank agrees on whether this is the first-shell step.
+        first_shell = not self._shell_admitted and self._allreduce_sum(len(new)) > 0
+        self._shell_admitted = self._shell_admitted or first_shell
+        candidates = block.keys_new_above(self._mask, 0.0 if first_shell else self._eta2)
+        allowed = [key for key in candidates.keys() if key not in self._ban]
+        self._ban.merge_keys(new)  # rows admitted below are in the mask, which takes priority
+        # One collective count per call on every rank, whatever this rank's own candidates.
+        n_new = self._allreduce_sum(len(allowed))
+        allowed_block = ManyBodyState.from_keys(allowed)
+        if self._global_count + n_new <= self.cap:
+            self._mask.merge_keys(allowed_block)
+            self._global_count += n_new
+            block.keep_rows(self._mask)
+            return block
+        # Over the cap: the surviving candidates compete for the remaining slots, then freeze.
+        restricted = block.copy()
+        restricted.keep_rows(allowed_block)
+        self._admit_top_and_freeze(restricted)
+        block.keep_rows(self._mask)
+        return block
 
 
 def guarded_proxy(basis, cap):

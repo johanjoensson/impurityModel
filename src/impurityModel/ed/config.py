@@ -304,6 +304,21 @@ GF_BICGSTAB_ADMIT_EN_TOL = Knob(
     disables it. An estimate, not a bound: it is reported and never added to G.""",
 )
 
+GF_LANCZOS_ADMIT_TOL = Knob(
+    name="GF_LANCZOS_ADMIT_TOL",
+    kind="float",
+    default=0.0,
+    minimum=0.0,
+    group="bicgstab",
+    doc="""Importance pruning of the block-Lanczos recurrence's growth -- the comparator for
+    ``GF_BICGSTAB_ADMISSION=outer``. A step's new determinants are admitted only if their largest
+    amplitude exceeds this; the rest are banned for good, which keeps the recurrence the exact
+    Lanczos of the final retained set under every reorthogonalization mode. 0 (default) is off.
+    Requires ``GF_APPLY_ROW_CHUNKS=1`` (chunks carry partial amplitudes a row would be ranked on)
+    and ``slaterWeightMin=0`` (a row dropped inside the apply cannot be banned); the solver raises
+    if either is violated rather than silently mis-ranking.""",
+)
+
 GF_GMRES_RESTART = Knob(
     name="GF_GMRES_RESTART",
     kind="int",
@@ -1013,6 +1028,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_ADMIT_SHELLS,
     GF_BICGSTAB_ADMIT_CARRY_TOL,
     GF_BICGSTAB_ADMIT_EN_TOL,
+    GF_LANCZOS_ADMIT_TOL,
     GF_GMRES_RESTART,
     GF_GMRES_MAX_RESTARTS,
     GF_EIGENSTATE_GROUP,
