@@ -55,6 +55,7 @@ from impurityModel.ed.gf_units import (
     unit_cost_weights,
 )
 from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 from impurityModel.ed.symmetries import widen_weighted_restrictions
 
@@ -524,6 +525,18 @@ def get_Greens_function(
         for unit, (_alphas, _betas, _r_slices, cap_stats, conv_stats) in zip(units, results):
             block_i, unit_side_i = group_meta[unit.group_i]
             _merge_unit_basis(max_basis, (block_i, unit_side_i), cap_stats.get("retained_size"), cap_stats["cap_hit"])
+            # Root-side record of every unit (the kernel's own `gf_unit_memory` note is emitted per
+            # color, so a traced rank 0 sees only its own color's units there).
+            _trace_note(
+                "gf_unit_basis",
+                method="lanczos",
+                block=int(block_i),
+                side=int(unit_side_i),
+                retained_size=cap_stats.get("retained_size"),
+                seed_size=cap_stats.get("seed_size"),
+                cap_hit=bool(cap_stats["cap_hit"]),
+                n_blocks=conv_stats.get("n_blocks"),
+            )
             stats = cap_acc.setdefault(block_i, {"cap_hit": False, "retained_size": None, "cap": cap_stats["cap"]})
             seed_size = cap_stats.get("seed_size")
             if seed_size is not None and np.isfinite(cap_stats["cap"]) and seed_size >= cap_stats["cap"]:
@@ -752,6 +765,16 @@ def _run_evaluated_gf_units(
         G_axes, stats = result
         block_i, side_i, chunk = units_meta[u]
         _merge_unit_basis(max_basis_acc, (block_i, side_i), stats["max_solve_basis"], stats["cap_hit"])
+        _trace_note(
+            "gf_unit_basis",
+            method="bicgstab",
+            block=int(block_i),
+            side=int(side_i),
+            retained_size=stats["max_solve_basis"],
+            max_rebuild_basis=stats["max_rebuild_basis"],
+            cap_hit=bool(stats["cap_hit"]),
+            points=stats["points"],
+        )
         for p, ei in enumerate(chunk):
             for ax in range(len(axis_lens)):
                 G_acc[(block_i, side_i)][ax] += boltzmann[ei] * G_axes[ax][p]

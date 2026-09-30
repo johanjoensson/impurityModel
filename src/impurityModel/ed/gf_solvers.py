@@ -128,11 +128,7 @@ def block_Green(
 # lengths) are declared in `ed/config.py` and read at call time -- an import-time constant
 # cannot be set by a caller that has already imported this module (which silently voided a
 # slicing test once).
-#
-# Solutions retained for the warm start: quadratic extrapolation in z through the last three
-# is the measured optimum (doc/plans/bicgstab_per_frequency_gf.md Phase 3a; cubic amplifies the
-# atol-level noise it extrapolates through, and each retained block costs live memory).
-_GF_BICGSTAB_WARM_HISTORY = 3
+
 
 
 #: The array Green's-function kernel builds the dense sector matrix below this many
@@ -552,7 +548,7 @@ def block_Green_sparse(
 def _warm_start_extrapolation(zs, sols, z_new, n_cols):
     r"""Warm-start guess at ``z_new``: Lagrange extrapolation through the retained solutions.
 
-    ``zs``/``sols`` hold the last (up to :data:`_GF_BICGSTAB_WARM_HISTORY`) frequencies and
+    ``zs``/``sols`` hold the last (up to :data:`config.GF_BICGSTAB_WARM_HISTORY`) frequencies and
     solution blocks of the sweep, oldest first. Zero, one and two retained solutions give the
     cold start, the previous solution and linear extrapolation respectively; three gives the
     quadratic optimum. The coefficients sum to 1 (an extrapolation, not a fit), so a solution
@@ -735,10 +731,17 @@ def block_Green_bicgstab(
         (``n_points``, ``n_unconverged``, ``max_rel_residual``, ``iterations``), the cap state
         (``cap``, ``cap_hit``, ``retained_size``, ``seed_overflow``) and the measured
         per-point support (``max_solve_basis``, ``max_rebuild_basis`` -- the numbers that
-        decide whether this path's memory promise holds on a given workload).
+        decide whether this path's memory promise holds on a given workload). ``points`` is
+        the per-point record behind those maxima, one dict per solve in sweep order:
+        ``eigenstate``, ``axis``, ``k`` (mesh index), ``z``, ``seed_size`` (global seed
+        support), ``rebuild_size`` (seed + warm-start support, before the solve grows it),
+        ``solve_size`` (after), ``cap_hit``, ``converged``, ``rel_residual``, ``iterations``,
+        ``gmres_used``. ``rebuild_size - seed_size`` is what the warm start carried in: set
+        :data:`config.GF_BICGSTAB_WARM_HISTORY` to 0 to measure per-point support cold.
     """
     atol = config.GF_BICGSTAB_ATOL.get() if atol is None else atol
     max_iter = config.GF_BICGSTAB_MAX_ITER.get() if max_iter is None else max_iter
+    warm_history = config.GF_BICGSTAB_WARM_HISTORY.get()
     n_e = len(es)
     sub_comm = basis.comm
     cap = getattr(basis, "truncation_threshold", np.inf)
@@ -768,6 +771,7 @@ def block_Green_bicgstab(
         "seed_overflow": False,
         "max_solve_basis": 0,
         "max_rebuild_basis": 0,
+        "points": [],
     }
 
     # Freed in `finally` so a solve that raises on every rank does not leak the cloned
@@ -775,6 +779,10 @@ def block_Green_bicgstab(
     try:
         for p in range(n_e):
             seeds = list(psi_arr[p * n_ops : (p + 1) * n_ops])
+            # Global seed support (distinct determinants over the eigenstate's columns): the floor
+            # below which no per-point basis can go. Counted at this eigenstate's first point,
+            # after the rebuild's redistribute_psis has given every determinant exactly one owner.
+            seed_size = None
             for ax, z_axis in enumerate(z_axes):
                 z_shifted = z_axis + es[p]
                 # Fresh warm-start chain per (eigenstate, axis): extrapolating across axes (or
@@ -796,7 +804,16 @@ def block_Green_bicgstab(
                     redistributed = tmp_basis.redistribute_psis(*carried)
                     seeds = list(redistributed[:n_ops])
                     x0 = list(redistributed[n_ops : 2 * n_ops])
-                    stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], int(tmp_basis.size))
+                    if seed_size is None:
+                        # Same point on every rank of the color, so the Allreduce is lock-step. A key
+                        # set, not a block row count: a rank owning none of the seeds may hold a
+                        # width-0 state, which from_states rejects.
+                        n_local = np.array([len({key for psi in seeds for key in psi.keys()})], dtype=np.int64)
+                        if sub_comm is not None:
+                            sub_comm.Allreduce(MPI.IN_PLACE, n_local, op=MPI.SUM)
+                        seed_size = int(n_local[0])
+                    rebuild_size = int(tmp_basis.size)
+                    stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], rebuild_size)
 
                     if np.isfinite(cap) and tmp_basis.size > cap:
                         # The seed/warm-start support alone exceeds the cap. Never truncate the
@@ -838,12 +855,30 @@ def block_Green_bicgstab(
                         stats["gmres_iterations"] += info["gmres_iterations"]
                     if not info["converged"]:
                         stats["n_unconverged"] += 1
-                    stats["max_solve_basis"] = max(stats["max_solve_basis"], int(tmp_basis.size))
-                    if isinstance(solve_basis, _CappedBasisProxy) and solve_basis.cap_hit:
+                    solve_size = int(tmp_basis.size)
+                    stats["max_solve_basis"] = max(stats["max_solve_basis"], solve_size)
+                    point_cap_hit = isinstance(solve_basis, _CappedBasisProxy) and solve_basis.cap_hit
+                    if point_cap_hit:
                         stats["cap_hit"] = True
                         retained = solve_basis.retained_size
                         if stats["retained_size"] is None or retained < stats["retained_size"]:
                             stats["retained_size"] = retained
+                    stats["points"].append(
+                        {
+                            "eigenstate": p,
+                            "axis": ax,
+                            "k": int(k),
+                            "z": z,
+                            "seed_size": seed_size,
+                            "rebuild_size": rebuild_size,
+                            "solve_size": solve_size,
+                            "cap_hit": bool(point_cap_hit),
+                            "converged": bool(info["converged"]),
+                            "rel_residual": float(info["rel_residual"]),
+                            "iterations": int(info["iterations"]),
+                            "gmres_used": bool(info["gmres_used"]),
+                        }
+                    )
 
                     # G_e[i, j] = <seed_i | X_j>; both blocks live on tmp_basis's layout, so the
                     # local Gram + Allreduce is the whole inner product (no state-vector gather).
@@ -852,11 +887,12 @@ def block_Green_bicgstab(
                         sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
                     G_axes[ax][p, k] = gram
 
-                    hist_z.append(z)
-                    hist_x.append(X.to_states())
-                    if len(hist_z) > _GF_BICGSTAB_WARM_HISTORY:
-                        hist_z.pop(0)
-                        hist_x.pop(0)
+                    if warm_history > 0:
+                        hist_z.append(z)
+                        hist_x.append(X.to_states())
+                        if len(hist_z) > warm_history:
+                            hist_z.pop(0)
+                            hist_x.pop(0)
                 if verbose and (sub_comm is None or sub_comm.rank == 0):
                     print(
                         f"    axis {ax}, eigenstate {p}: {len(z_shifted)} solves, "

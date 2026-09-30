@@ -189,6 +189,20 @@ GF_BICGSTAB_RESTARTS = Knob(
     half to earn the next one, so a genuinely stuck point stops early and is reported.""",
 )
 
+GF_BICGSTAB_WARM_HISTORY = Knob(
+    name="GF_BICGSTAB_WARM_HISTORY",
+    kind="int",
+    default=3,
+    minimum=0,
+    group="bicgstab",
+    doc="""Solutions retained for a point's warm start: Lagrange extrapolation in z through the
+    last this-many solves of the sweep. 3 (quadratic) is the measured optimum -- cubic amplifies
+    the atol-level noise it extrapolates through (doc/plans/bicgstab_per_frequency_gf.md,
+    Phase 3a). 0 cold-starts every point. The warm start's support is carried into the point's
+    rebuilt basis, so a warm-started point's basis is a sliding-window union over its
+    neighbours; measure per-point support cold (0).""",
+)
+
 GF_GMRES_RESTART = Knob(
     name="GF_GMRES_RESTART",
     kind="int",
@@ -888,6 +902,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_ATOL,
     GF_BICGSTAB_MAX_ITER,
     GF_BICGSTAB_RESTARTS,
+    GF_BICGSTAB_WARM_HISTORY,
     GF_GMRES_RESTART,
     GF_GMRES_MAX_RESTARTS,
     GF_EIGENSTATE_GROUP,
