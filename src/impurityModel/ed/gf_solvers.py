@@ -130,7 +130,6 @@ def block_Green(
 # slicing test once).
 
 
-
 #: The array Green's-function kernel builds the dense sector matrix below this many
 #: determinants and a CSR operator from here up. Deliberately *not* ``SolverOptions.dense_cutoff``:
 #: that one picks the ground-state eigensolver (dense ``eigh`` vs Lanczos), a different trade --
