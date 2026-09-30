@@ -57,9 +57,11 @@ def _phase_timers(phases):
     packing work (review ledger P2) is gated on. Patches module attributes only and restores
     them on exit, so production code is untouched.
     """
-    from impurityModel.ed import gf_engine, selfenergy, sigma_estimators, solver_trace
+    from impurityModel.ed import gf_engine, gf_units, selfenergy, sigma_estimators, solver_trace
+    from impurityModel.ed.memory_estimate import current_rss_bytes
 
     unit_seconds = phases.setdefault("unit_seconds", [])
+    peaks_after = phases.setdefault("peak_after", {})
     trace = None
 
     def timed(name, fn):
@@ -70,6 +72,8 @@ def _phase_timers(phases):
             finally:
                 seconds = time.perf_counter() - t0
                 phases[name] = phases.get(name, 0.0) + seconds
+                # The high-water mark as each phase ends attributes a rank's peak to a phase.
+                peaks_after.setdefault(name, peak_rss_bytes())
                 if name == "gf_units":
                     # _block_green_group records one gf_unit_memory note per unit (collective, so
                     # it is there on every rank of the color); pair it with the unit's time.
@@ -79,6 +83,26 @@ def _phase_timers(phases):
 
         return wrapper
 
+    splits = phases.setdefault("splits", [])
+    real_split = gf_units.split_basis_and_redistribute_psi
+
+    def recorded_split(basis, *args, **kwargs):
+        # What the split itself costs this rank: every color receives the whole parent basis
+        # (review ledger P1), so the RSS step across the call is that replica plus the seeds.
+        before = current_rss_bytes()
+        out = real_split(basis, *args, **kwargs)
+        split_basis = out[4]
+        splits.append(
+            {
+                "parent_size": int(basis.size),
+                "color_size": int(split_basis.size),
+                "color_ranks": 1 if split_basis.comm is None else int(split_basis.comm.size),
+                "n_colors": len(out[3]),
+                "rss_step": current_rss_bytes() - before,
+            }
+        )
+        return out
+
     targets = [
         (selfenergy, "calc_gs", "calc_gs"),
         (selfenergy, "get_Greens_function", "get_Greens_function"),
@@ -87,9 +111,11 @@ def _phase_timers(phases):
         (gf_engine, "_block_green_group", "gf_units"),
     ]
     originals = [(module, attr, getattr(module, attr)) for module, attr, _ in targets]
+    originals.append((gf_units, "split_basis_and_redistribute_psi", real_split))
     try:
         for (module, attr, label), (_, _, fn) in zip(targets, originals):
             setattr(module, attr, timed(label, fn))
+        gf_units.split_basis_and_redistribute_psi = recorded_split
         with solver_trace.tracing() as trace:
             yield
     finally:
@@ -148,6 +174,14 @@ def test_real_workload_selfenergy():
                 busy = ph.get("gf_units", 0.0) / gf_wall if gf_wall > 0 else float("nan")
                 cells = "  ".join(f"{n}={ph.get(n, 0.0):7.1f}" for n in names)
                 print(f"  rank {rank}: {cells}  gf_busy={busy:.1%}")
+                for split in ph.get("splits", []):
+                    print(
+                        f"    split: {split['n_colors']} colors, this color {split['color_ranks']} ranks, "
+                        f"basis {split['parent_size']:,} -> {split['color_size']:,} dets per color, "
+                        f"RSS step {format_bytes(split['rss_step'])}"
+                    )
+                peak_after = ph.get("peak_after", {})
+                print("    peak RSS after first " + ", ".join(f"{k}: {format_bytes(v)}" for k, v in peak_after.items()))
                 for seconds, n_blocks, size in sorted(ph.get("unit_seconds", []), key=lambda u: -u[0])[:8]:
                     print(f"    unit {seconds:7.1f} s  n_blocks={n_blocks}  retained_size={size}")
         out = os.environ.get("BENCH_OUT")
