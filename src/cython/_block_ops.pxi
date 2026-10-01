@@ -60,7 +60,7 @@ cpdef object block_inner(object V, object W, bint mpi=False, object comm=None):
             V = np.column_stack(V)
         if isinstance(W, list):
             W = np.column_stack(W)
-        res = np.ascontiguousarray(np.conj(V.T) @ W)
+        res = adjoint_product(V, W)
         if mpi and comm is not None:
             comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
         return res
@@ -521,8 +521,14 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
 
     if reort == Reort.FULL or reort == Reort.PERIODIC:
         if is_array(wp):
+            # The array kernel hands in its growth buffer wrapped as ``[Q_buf[:, :q_cols]]``,
+            # a view. block_orthogonalize column-stacks a list, which would copy the whole
+            # stored basis on each of the two passes; project against the view instead.
+            Q_mat = Q_list
+            if isinstance(Q_list, list) and len(Q_list) == 1 and Q_list[0].ndim == 2:
+                Q_mat = Q_list[0]
             for _ in range(2):
-                wp, _ = block_orthogonalize(wp, Q_list, mpi=mpi, comm=comm)
+                wp, _ = block_orthogonalize(wp, Q_mat, mpi=mpi, comm=comm)
         elif krylov is not None:
             # Sparse path with a maintained dense Krylov basis: slice all columns, no gather.
             # krylov.reort is block-native end to end (no round trip through ManyBodyState);

@@ -26,6 +26,7 @@ below ``dense_cutoff``.
 import itertools
 
 import numpy as np
+import pytest
 from mpi4py import MPI
 
 import impurityModel.ed.cipsi_solver as cipsi_module
@@ -71,14 +72,27 @@ def _warm_refs(basis):
     return [out]
 
 
+@pytest.fixture(autouse=True)
+def _no_completeness_probe(monkeypatch):
+    """The fakes return unit vectors with made-up energies; the completeness probe would lock those
+    non-eigenvectors and search the real ``H`` below a fake boundary. It is tested on real solves in
+    ``test_degenerate_manifold_completeness.py``; here it is the identity."""
+    monkeypatch.setattr(
+        CIPSISolver, "_complete_low_spectrum", lambda self, H_mat, e_ref, psi, *args, **kwargs: (e_ref, psi)
+    )
+
+
 def _h_op():
     return ManyBodyOperator({((i, "c"), (i, "a")): float(i + 1) for i in range(N_SPIN_ORBITALS)})
 
 
 def _fake_lanczos(exhaust_first_calls, calls):
     """Fake restarted_lanczos: the first ``exhaust_first_calls`` calls return 3 states inside the
-    cut (a short, exhausted solve); later calls return the full request with the last state far
-    beyond the cut (a certified boundary manifold)."""
+    cut (a short, exhausted solve); later calls return the full request with only the converged
+    ``num_wanted - _EIGENSTATE_PAD`` states inside the cut and the pad far beyond it (a certified
+    boundary manifold). A pad inside the cut would be kept without having been converged, which
+    ``get_eigenvectors`` answers with one more solve -- a different control flow from the one these
+    tests count."""
 
     # **kwargs: this stub stands in for a real solver whose keyword set grows over time
     # (`num_converge` was added when the residual gate stopped covering the eigenstate pad).
@@ -100,7 +114,8 @@ def _fake_lanczos(exhaust_first_calls, calls):
         if len(calls) <= exhaust_first_calls:
             e = np.array([0.0, 1e-4, 2e-4])
         else:
-            e = np.concatenate([np.linspace(0.0, 2e-4, num_wanted - 1), [10.0]])
+            n_in = max(1, num_wanted - cipsi_module._EIGENSTATE_PAD)
+            e = np.concatenate([np.linspace(0.0, 2e-4, n_in), np.linspace(10.0, 11.0, num_wanted - n_in)])
         vecs = np.zeros((psi0.shape[0], len(e)), dtype=complex)
         for j in range(min(len(e), psi0.shape[0])):
             vecs[j, j] = 1.0
@@ -125,8 +140,9 @@ def test_warm_start_exhaustion_triggers_one_cold_retry(monkeypatch, capsys):
     assert calls[1].shape[1] == 1
     if calls[1].shape[0] > 0:
         assert np.all(calls[1] != 0)
-    # The certified manifold: the beyond-cut state is trimmed, the rest is returned.
-    assert len(e_ref) == psi_refs.width > 3
+    # The certified manifold from the retry, not the exhausted first solve's 3 states: the pad
+    # beyond the cut is trimmed and the one converged state asked for is returned.
+    assert len(e_ref) == psi_refs.width == 1
     assert np.max(e_ref) < CUT
     assert "cannot be shown to be complete" not in capsys.readouterr().out
 
@@ -306,3 +322,32 @@ def test_a_zero_warm_block_needs_no_fallback_because_the_cold_column_carries_it(
     # Deflated to the one direction the cold column spans, and never routed through the fallback.
     assert calls[0].shape[1] == 1
     assert len(e_ref) > 0
+
+
+@pytest.mark.parametrize("solver", ["trlm", "irlm"])
+def test_a_window_reaching_into_the_pad_is_resolved_once_with_the_gate_widened(monkeypatch, solver):
+    """The cut keeps states past ``num_converge`` (the solve gates only ``num_wanted - _EIGENSTATE_PAD``
+    of them): TRLM re-solves once with the gate over the whole window. IRLM does not apply
+    ``num_converge`` at all, so re-solving it would repeat the same work -- no second call."""
+    _basis, solver_obj = _make_solver()
+    gates = []
+
+    def fake(
+        psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, slaterWeightMin, reort, **kw
+    ):
+        gates.append(kw.get("num_converge"))
+        e = np.concatenate([np.linspace(0.0, 2e-4, num_wanted - 1), [10.0]])  # the pad inside the cut
+        vecs = np.zeros((psi0.shape[0], len(e)), dtype=complex)
+        for j in range(min(len(e), psi0.shape[0])):
+            vecs[j, j] = 1.0
+        return e, vecs
+
+    monkeypatch.setitem(cipsi_module.SOLVERS, solver, fake)
+    e_ref, _ = solver_obj.get_eigenvectors(_h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, solver=solver)
+
+    n_keep = len(e_ref)
+    if solver == "trlm":
+        assert len(gates) == 2, gates
+        assert gates[0] < n_keep and gates[1] == n_keep
+    else:
+        assert len(gates) == 1, gates

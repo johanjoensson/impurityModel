@@ -470,3 +470,67 @@ def test_apply_block_width_scaling(nio_workload):
             for p, med, bmed, nnz in rows
         ],
     )
+
+
+SWEEP_N = int(os.environ.get("BLBENCH_SWEEP_N", "20000"))
+SWEEP_P = 4
+SWEEP_RESTARTS = 2
+
+
+def _sweep_solve(h, psi0, max_blocks, max_restarts):
+    """One array-path TRLM solve that cannot converge, so it runs every restart it is given."""
+    from impurityModel.ed.trlm import _thick_restart_block_lanczos_array
+
+    class _Basis:
+        size = h.shape[0]
+
+    t0 = time.perf_counter()
+    vals, _ = _thick_restart_block_lanczos_array(
+        psi0.copy(), h, _Basis(), 2 * SWEEP_P, max_blocks, 1e-300, max_restarts, False, Reort.FULL, None
+    )
+    return time.perf_counter() - t0, vals
+
+
+@pytest.mark.skipif(MPI.COMM_WORLD.size > 1, reason="serial by construction: one rank's continuation cost")
+def test_trlm_continuation_cost_vs_subspace_size():
+    """Per-block cost of the TRLM restart continuation as the subspace grows.
+
+    Every continuation block pays O(N D) for the CGS2 projections against the D stored
+    columns, which is inherent to ``reort="full"``. A copy of the whole basis is the same order
+    per block, which is why a single operating point cannot tell the two apart: re-concatenating
+    ``Q_basis`` per block and materializing ``conj(Q^T)`` per inner product each add to the
+    constant in front of that O(N D). The report divides the continuation's per-block time by
+    ``N * D_mean``, so a copy that is removed shows up as a lower constant at every size
+    (``doc/plans/trlm_krylov_store_quadratic_copies.md``).
+
+    The initial sweep is normalized the same way, by ``N p m^2 / 2``: its FULL reort projects
+    step ``i`` against ``i p`` columns. The continuation is isolated by subtracting a
+    zero-restart solve (initial sweep + extraction) from one of ``SWEEP_RESTARTS`` restarts,
+    each of ``m - k_blocks`` blocks.
+    """
+    import scipy.sparse as sps
+
+    n = SWEEP_N
+    rng = np.random.default_rng(5)
+    a = sps.random(n, n, density=8.0 / n, random_state=5) + 1j * sps.random(n, n, density=8.0 / n, random_state=6)
+    h = sps.csr_matrix(a + a.conj().T + sps.diags(rng.standard_normal(n)))
+    psi0 = np.linalg.qr(rng.standard_normal((n, SWEEP_P)) + 1j * rng.standard_normal((n, SWEEP_P)))[0]
+    k_blocks = 2
+
+    rows = []
+    for m in (20, 40, 80, 160):
+        t_sweep, _ = _sweep_solve(h, psi0, m, 0)
+        t_full, vals = _sweep_solve(h, psi0, m, SWEEP_RESTARTS)
+        assert np.all(np.isfinite(vals))
+        n_blocks = SWEEP_RESTARTS * (m - k_blocks)
+        per_block = (t_full - t_sweep) / n_blocks
+        d_mean = k_blocks * SWEEP_P + 0.5 * (m - k_blocks) * SWEEP_P
+        sweep_rc = n * SWEEP_P * m * m / 2
+        rows.append(
+            (
+                f"m={m:4d} (D<={m * SWEEP_P})",
+                f"sweep {t_sweep:7.2f} s ({t_sweep / sweep_rc * 1e9:6.3f} ns/(row*col))   "
+                f"continuation {per_block * 1e3:8.2f} ms/block ({per_block / (n * d_mean) * 1e9:6.3f} ns/(row*col))",
+            )
+        )
+    _report(None, f"TRLM continuation cost vs subspace size (N={n}, p={SWEEP_P}, FULL, serial)", rows)

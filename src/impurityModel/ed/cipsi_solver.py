@@ -11,6 +11,8 @@ from impurityModel.ed.basis_transcription import (
     build_state,
 )
 from impurityModel.ed.BlockLanczosArray import BlockBreakdown, Reort, block_normalize
+from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+from impurityModel.ed.BlockLanczosCore import _build_full_T, block_apply, block_inner
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff, collective_mass_cutoff
@@ -28,7 +30,7 @@ from impurityModel.ed.memory_estimate import (
 from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
-from impurityModel.ed.trlm import thick_restart_block_lanczos
+from impurityModel.ed.trlm import _deflate, thick_restart_block_lanczos
 
 SOLVERS = {
     "trlm": thick_restart_block_lanczos,
@@ -521,6 +523,11 @@ def _size_subspace(num_wanted, width, cap):
     return blocks, min(num_wanted, (blocks - 1) * width)
 
 
+#: Salt separating the imaginary part's hash stream from the real part's (the splitmix64
+#: "golden gamma" of a second stream), shared by every hash-seeded start block.
+_IMAG_STREAM_SALT = 0xD1B54A32D192ED03
+
+
 def _amplitude_from_hash(det_hash: int) -> complex:
     """A deterministic pseudo-random start amplitude for one determinant.
 
@@ -530,8 +537,110 @@ def _amplitude_from_hash(det_hash: int) -> complex:
     come from independently mixed streams so the real and imaginary parts are uncorrelated.
     """
     re = _splitmix64(det_hash) / 2.0**64
-    im = _splitmix64(det_hash ^ 0xD1B54A32D192ED03) / 2.0**64
+    im = _splitmix64(det_hash ^ _IMAG_STREAM_SALT) / 2.0**64
     return complex(re, im)
+
+
+#: Completeness probe rounds per solve before giving up. Each round adds up to one probe block of
+#: missing states, so this covers ``16 * _PROBE_MIN_WIDTH`` missing copies even from a cold width-1
+#: solve -- past anything a d- or f-shell multiplet produces.
+_MAX_COMPLETENESS_PROBES = 16
+
+#: Floor on the completeness probe's block width. The probe inherits the solve's width, which is 1 on
+#: every cold start (``dc_frozen``, ``truncate_initial``, the exhaustion retry); a width-1 probe adds
+#: one copy of a degenerate level per round, and measured on a 5 + 10-fold window it needed 11 rounds
+#: and 92% of the solve's time.
+_PROBE_MIN_WIDTH = 4
+
+#: Krylov blocks a probe sweep must build before it may certify the complement clear. After one block
+#: the "lowest Ritz pair" is only the random block's Rayleigh quotient: with a narrow bulk far above the
+#: boundary and one low state carrying ~sqrt(p/N) of the start weight, it passed the convergence test
+#: at block 1 while never having seen that state (N = 2000 to 50000). Two blocks already found it.
+_PROBE_MIN_BLOCKS = 3
+
+#: A probe certifies the complement clear once its lowest Ritz pair has converged to this fraction of
+#: its distance above the boundary.
+_PROBE_CERTIFY_FRACTION = 0.1
+
+#: Restart budget of the restarted Lanczos solves here, the main one and the probe's.
+_MAX_RESTARTS = 100
+
+#: Multiplier deriving a probe column's salt from (round, column): the 64-bit PCG LCG multiplier, used
+#: only as a well-spread odd constant.
+_PROBE_SALT_MULTIPLIER = 0x5851F42D4C957F2D
+
+
+def _splitmix64_array(x):
+    """:func:`_splitmix64` over a ``uint64`` array, bit for bit.
+
+    numpy's unsigned arithmetic wraps mod 2**64 exactly as the scalar version's ``& _U64`` masks do.
+    """
+    x = x + np.uint64(0x9E3779B97F4A7C15)
+    x = (x ^ (x >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+    x = (x ^ (x >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+    return x ^ (x >> np.uint64(31))
+
+
+def _probe_start_block(basis, width, round_):
+    """A ``(n_local, width)`` rank-independent pseudo-random start block for a completeness probe.
+
+    Built like the cold start vector (:func:`_amplitude_from_hash`: one value per determinant from its
+    hash, never from the rank or iteration order), with a different salt per column and per probe
+    round so successive probes explore new directions, and centred on zero so no column is biased
+    toward the uniform vector.
+    """
+    hashes = np.fromiter((state.get_hash() for state in basis.local_basis), dtype=np.uint64)
+    out = np.empty((len(hashes), width), dtype=complex)
+    scale = 1.0 / 2.0**64
+    with np.errstate(over="ignore"):
+        for k in range(width):
+            salted = hashes ^ np.uint64(_splitmix64((_PROBE_SALT_MULTIPLIER * (round_ + 1) + k) & _U64))
+            re = _splitmix64_array(salted).astype(float) * scale
+            im = _splitmix64_array(salted ^ np.uint64(_IMAG_STREAM_SALT)).astype(float) * scale
+            out[:, k] = (re - 0.5) + 1j * (im - 0.5)
+    return out
+
+
+def _lowest_ritz_bound(alphas, betas, block_widths):
+    """``(theta_0, r_0)``: the lowest Ritz value of a block-Lanczos recurrence and its residual norm.
+
+    ``betas`` holds one entry per block, the last being the trailing residual coupling (the kernel's
+    convention, in its ``converged`` hook and in what it returns), so
+    ``r_0 = ||beta_last s_0[last block]||``; a closed Krylov space shows up as a zero trailing beta.
+    """
+    alphas, betas = np.asarray(alphas), np.asarray(betas)
+    k = len(alphas)
+    widths = list(block_widths)[:k]
+    T = _build_full_T(alphas, betas[: k - 1], block_widths=widths)
+    theta, s = np.linalg.eigh(T)
+    w_last = int(widths[len(widths) - 1])
+    beta_last = betas[k - 1][:, :w_last]
+    r0 = float(np.linalg.norm(beta_last @ s[T.shape[0] - w_last :, 0]))
+    return float(theta[0]), r0
+
+
+def _complement_verdict(theta0, r0, boundary, n_blocks):
+    """``"found"``, ``"clear"`` or ``None`` (undecided) for a probe of the complement of the kept set.
+
+    ``"found"``: ``theta0 <= boundary``. ``theta0`` is a Rayleigh quotient of the deflated operator
+    ``P H P``, so some eigenvalue of it lies at or below the boundary. That is a state the solve
+    missed, up to the accuracy of the locked vectors (they are converged Ritz vectors, not exact
+    eigenvectors).
+
+    ``"clear"``: the lowest Ritz pair has converged above the boundary,
+    ``r0 <= _PROBE_CERTIFY_FRACTION * (theta0 - boundary)``, after at least ``_PROBE_MIN_BLOCKS``
+    blocks. This is a probabilistic certificate, not a bound: it rests on the random start block
+    having weight on every eigenvector, so that the lowest Ritz value converges to the lowest
+    eigenvalue rather than to one above it. ``theta0 - r0 > boundary`` alone would not do: the
+    residual bound places *some* eigenvalue within ``r0`` of ``theta0``, not the lowest one (one block
+    into a probe, a Ritz value of 1.04 with ``r0 = 0.79`` passed it while two copies of a degenerate
+    level sat at 0.0176).
+    """
+    if theta0 <= boundary:
+        return "found"
+    if n_blocks >= _PROBE_MIN_BLOCKS and r0 <= _PROBE_CERTIFY_FRACTION * (theta0 - boundary):
+        return "clear"
+    return None
 
 
 #: Whether ``expand`` completes symmetry orbits when the caller passes no generators.
@@ -1837,6 +1946,170 @@ class CIPSISolver:
             psi0, _ = block_normalize(cold_start_block(), self.basis.is_distributed, self.basis.comm, slaterWeightMin)
             return psi0, False
 
+    def _complete_low_spectrum(
+        self, H_mat, e_ref, psi_refs_arr, max_energy, width, max_subspace_blocks, slaterWeightMin, reort
+    ):
+        """Find the eigenstates a block Krylov solve missed inside the thermal window, and add them.
+
+        Block Lanczos started from ``p`` vectors reaches at most ``rank(P Q0)`` copies of an exactly
+        degenerate level, ``P`` its eigenprojector. A warm start from the previous cycle's
+        eigenvectors typically reaches an excited level through one direction, so a level wider than
+        that comes back with copies missing -- each returned one converged, and a state beyond the
+        thermal cut present, so :func:`_energy_cut_indices` certifies the manifold. Measured on the
+        SrMnO3 gap double-counting search: a 10-fold level inside the 23 meV window came back with 4
+        to 9 of its copies (``test_degenerate_manifold_completeness.py``).
+
+        The boundary is the top of the thermal window (``max_energy``, widened to any computed state
+        :func:`_energy_cut_indices` absorbs into the last kept manifold) plus the degeneracy tolerance.
+        *Every* computed state at or below it is locked, not only the ones the cut keeps: a computed
+        state left out of the locked set would be "found" again and returned twice. Each probe round then
+        looks in the orthogonal complement of the locked set from a fresh rank-independent random block
+        of at least ``_PROBE_MIN_WIDTH`` columns:
+
+        1. One locked block-Lanczos sweep (the kernel's locking deflation), stopped by its
+           ``converged`` hook as soon as :func:`_complement_verdict` decides. ``"clear"`` ends the
+           probing -- the common case, and the only cost it adds to a complete solve.
+        2. Otherwise a locked TRLM converges the complement's lowest states; those at or below the
+           boundary are re-orthogonalized against the locked set, their energies taken as Rayleigh
+           quotients, and locked in turn for the next round.
+
+        Returns ``(e_ref, psi_refs_arr)``, ascending, with the computed states beyond the boundary
+        still in it -- a state beyond the cut is what certifies it downstream -- so the caller's cut
+        runs unchanged.
+
+        Collective: every sweep, solve and decision runs on every rank, and each decision (the locked
+        set and the boundary included) is taken on rank 0 and broadcast.
+        """
+        mpi = self.basis.is_distributed
+        comm = self.basis.comm
+        rank0 = comm is None or comm.rank == 0
+
+        def decide(value):
+            return comm.bcast(value, root=0) if mpi else value
+
+        e = np.asarray(e_ref).real
+        deg_tol = _degeneracy_tol(e, slaterWeightMin)
+        locked_idx, boundary = None, None
+        if rank0:
+            order = np.argsort(e, kind="stable")
+            cut_idx, _ = _energy_cut_indices(e, max_energy, tol=deg_tol)
+            boundary = max(float(e[order[0]]) + float(max_energy), float(e[cut_idx].max())) + deg_tol
+            locked_idx = [int(i) for i in order if e[i] <= boundary]
+        locked_idx, boundary = decide((locked_idx, boundary))
+        locked_set = set(locked_idx)
+        rest_idx = [i for i in range(len(e)) if i not in locked_set]
+
+        locked = np.ascontiguousarray(psi_refs_arr[:, locked_idx])
+        e_locked = [float(e[i]) for i in locked_idx]
+        n_found = 0
+        tol = _eigen_tol(slaterWeightMin)
+        probe_width = max(width, _PROBE_MIN_WIDTH)
+        # Found states are accepted as eigenstates only this well converged: any looser and their
+        # energies could land outside the degeneracy tolerance of the copies already kept.
+        found_res_tol = deg_tol
+
+        rounds, verdict = 0, None
+        while rounds < _MAX_COMPLETENESS_PROBES:
+            n_complement = len(self.basis) - locked.shape[1]
+            if n_complement <= 0:
+                verdict = "clear"
+                break
+            rounds += 1
+            w = min(probe_width, n_complement)
+            R = _probe_start_block(self.basis, w, rounds)
+            R = _deflate(R, locked, mpi, comm)
+            R, _ = block_normalize(R, mpi, comm, 0.0)
+
+            def hook(alphas, betas, verbose=False, block_widths=None, **kwargs):
+                v = None
+                if rank0:
+                    v = _complement_verdict(*_lowest_ritz_bound(alphas, betas, block_widths), boundary, len(alphas))
+                return decide(v) is not None
+
+            alphas, betas, _, block_widths, status = block_lanczos_array(
+                psi0=R,
+                h_op=H_mat,
+                converged=hook,
+                max_iter=max_subspace_blocks,
+                verbose=False,
+                reort="full",
+                return_W=False,
+                return_widths=True,
+                return_status=True,
+                comm=comm,
+                locked=locked,
+            )
+            v = None
+            if rank0 and status != "diverged" and len(alphas) > 0:
+                theta0, r0 = _lowest_ritz_bound(alphas, betas, block_widths)
+                # A closed Krylov space from a generic start is the whole reachable complement: its
+                # Ritz values are exact, so no minimum depth is needed to trust them.
+                depth = _PROBE_MIN_BLOCKS if status == "invariant_subspace" else len(alphas)
+                v = _complement_verdict(theta0, r0, boundary, depth)
+            verdict = decide(v)
+            if verdict == "clear":
+                break
+            # Found, or undecided within the sweep's budget: converge the complement's lowest states.
+            vals, vecs = thick_restart_block_lanczos(
+                psi0=R,
+                h_op=H_mat,
+                basis=self.basis,
+                num_wanted=w,
+                max_subspace_blocks=max_subspace_blocks,
+                tol=tol,
+                max_restarts=_MAX_RESTARTS,
+                verbose=False,
+                slaterWeightMin=slaterWeightMin,
+                reort=reort,
+                num_converge=w,
+                locked=locked,
+            )
+            vals = decide(np.asarray(vals).real if rank0 else None)
+            new = decide([j for j in range(len(vals)) if vals[j] <= boundary] if rank0 else None)
+            if not new:
+                verdict = decide(("clear" if len(vals) and vals.min() - tol > boundary else None) if rank0 else None)
+                break
+            F = _deflate(np.ascontiguousarray(np.asarray(vecs)[:, new]), locked, mpi, comm)
+            F, _ = block_normalize(F, mpi, comm, 0.0)
+            HF = block_apply(H_mat, F, self.basis, mpi, 0.0)
+            theta = np.real(np.diag(block_inner(F, HF, mpi, comm)))
+            residual = HF - F * theta[None, :]
+            res = np.sqrt(np.real(np.diag(block_inner(residual, residual, mpi, comm))))
+            if rank0 and np.max(res) > found_res_tol:
+                print(
+                    f"warning: completeness probe added {len(new)} eigenstate(s) with residual up to "
+                    f"{np.max(res):.1e}, above the degeneracy tolerance {found_res_tol:.1e}; their energies "
+                    "may not group with the degenerate copies already kept.",
+                    flush=True,
+                )
+            theta = decide(theta)
+            locked = np.ascontiguousarray(np.hstack([locked, F]))
+            e_locked.extend(float(t) for t in theta)
+            n_found += len(new)
+            verdict = None
+
+        _trace_note(
+            "completeness_probe",
+            rounds=rounds,
+            found=n_found,
+            locked=len(locked_idx),
+            verdict=str(verdict),
+        )
+        if verdict != "clear" and rank0:
+            print(
+                f"warning: after {rounds} completeness probe(s) the eigenstates below {boundary:.8g} could not "
+                f"be certified complete ({n_found} added). A degenerate manifold may be missing copies.",
+                flush=True,
+            )
+        if n_found and rank0 and self.basis.verbose:
+            print(f"Completeness probe: added {n_found} eigenstate(s) the Krylov solve missed.", flush=True)
+        if not n_found:
+            return e_ref, psi_refs_arr
+        e_out = np.concatenate([np.asarray(e_locked), e[rest_idx]])
+        psi_out = np.hstack([locked, psi_refs_arr[:, rest_idx]])
+        order_out = np.argsort(e_out, kind="stable")
+        return e_out[order_out], np.ascontiguousarray(psi_out[:, order_out])
+
     def get_eigenvectors(
         self,
         H,
@@ -1859,9 +2132,11 @@ class CIPSISolver:
         slice is by count alone for the same reason, which does mean the boundary can fall
         inside a degenerate group. Both are sound only for a caller whose answer does not depend
         on which basis a manifold came back in: :func:`groundstate.calc_energy`, which keeps
-        ``min(es)``, is the only one, and no other caller should pass ``None``. The warm-start
-        cold retry is a different question (reachability, not completeness) and still applies;
-        see it below.
+        ``min(es)``, is the only one, and no other caller should pass ``None``. For the same reason
+        the completeness probe (:meth:`_complete_low_spectrum`) does not run without a cut: the
+        "lowest ``num_wanted``" can be missing copies of a degenerate level wider than the Krylov
+        block, and a higher state can take their place. The warm-start cold retry is a different
+        question (reachability, not completeness) and still applies; see it below.
 
         ``psi_refs``, if given, warm-starts the Krylov solve from a previously converged
         eigenvector block (e.g. the caller's own ``solver.psi_refs`` from a prior ``expand``/
@@ -2009,6 +2284,9 @@ class CIPSISolver:
             cap = len(self.basis)
 
             cold_retry_available = warm_started
+            # IRLM accepts `num_converge` without applying it -- it converges everything it returns --
+            # so re-solving it with a wider gate would repeat the same work for the same answer.
+            tail_resolve_available = solver != "irlm"
             for _ in range(_MAX_EIGENSTATE_DOUBLINGS):
                 e_ref, psi_refs_arr = restarted_lanczos(
                     psi0=psi0_arr,
@@ -2017,7 +2295,7 @@ class CIPSISolver:
                     num_wanted=num_wanted,
                     max_subspace_blocks=max_subspace_blocks,
                     tol=_eigen_tol(slaterWeightMin),
-                    max_restarts=100,
+                    max_restarts=_MAX_RESTARTS,
                     # The TRLM/IRLM drivers already rank-gate every print internally
                     # (`rank0 = (not mpi) or comm.rank == 0` in ed/trlm.py and ed/irlm.py);
                     # no need to pre-AND rank 0 into the bool here too.
@@ -2033,8 +2311,12 @@ class CIPSISolver:
                 # certify and it stays False. The *exhaustion* test below is a different
                 # question and is asked either way; see the retry block.
                 need_more = False
+                n_keep = 0
                 if max_energy is not None:
-                    _, need_more = _energy_cut_indices(e_ref, max_energy, tol=_degeneracy_tol(e_ref, slaterWeightMin))
+                    kept_idx, need_more = _energy_cut_indices(
+                        e_ref, max_energy, tol=_degeneracy_tol(e_ref, slaterWeightMin)
+                    )
+                    n_keep = len(kept_idx)
                 # A short return means the eigensolver exhausted the Krylov space reachable from
                 # `psi0` -- it hit an invariant subspace, which a block warm-started from converged
                 # eigenvectors does immediately. Doubling `num_wanted` then re-solves the *same*
@@ -2044,7 +2326,7 @@ class CIPSISolver:
                 # so a state sitting on the cut could make ranks disagree about re-solving and
                 # deadlock. Decide on rank 0 and broadcast, per the MPI rule in CLAUDE.md.
                 if self.basis.is_distributed:
-                    need_more, exhausted = self.basis.comm.bcast((need_more, exhausted), root=0)
+                    need_more, exhausted, n_keep = self.basis.comm.bcast((need_more, exhausted, n_keep), root=0)
                 if exhausted:
                     # The warm block spans a (near-)invariant subspace, so the missing states --
                     # typically the other charge sector of a near-degenerate crossing, e.g. the
@@ -2074,6 +2356,17 @@ class CIPSISolver:
                         num_required = max(1, num_wanted - _EIGENSTATE_PAD)
                         continue
                     break
+                if max_energy is not None and not need_more and n_keep > num_required and tail_resolve_available:
+                    # The window kept states the solve was never asked to converge: `num_converge`
+                    # covered `num_wanted - _EIGENSTATE_PAD` of them, and the cut reached past that
+                    # into the pad. Measured on SrMnO3: a 15-state window under a 10-state gate came
+                    # back with residuals up to 1e-4 on the kept tail, enough to split a degenerate
+                    # level. Re-solve once with the gate over the whole window. Once only: the tighter
+                    # solve can move tail energies into the window and grow `n_keep` again, and
+                    # chasing that is the doubling loop's job, not this one's.
+                    tail_resolve_available = False
+                    num_required = n_keep
+                    continue
                 if max_energy is None or not need_more or num_wanted >= cap:
                     break
                 num_wanted = min(2 * num_wanted, cap)
@@ -2086,6 +2379,23 @@ class CIPSISolver:
                     num_wanted=int(num_wanted),
                 )
                 num_required = max(1, num_wanted - _EIGENSTATE_PAD)
+
+            if max_energy is not None and len(e_ref) > 0:
+                # Certify that the thermal window lost no state -- see the method. Only with a cut: the
+                # one no-cut caller, `groundstate.calc_energy`, keeps `min(es)`, which a missing copy of
+                # a degenerate level cannot change (and a whole missed sector is the cold retry's job,
+                # above). Probing it anyway cost 40 of the probe's 77 s on the SrMnO3 gap-DC search: its
+                # boundary sits at E0, so certifying meant resolving near-degenerate partners 1e-6 eV up.
+                e_ref, psi_refs_arr = self._complete_low_spectrum(
+                    H_mat,
+                    e_ref,
+                    psi_refs_arr,
+                    max_energy,
+                    psi0_arr.shape[1],
+                    max_subspace_blocks,
+                    slaterWeightMin,
+                    reort,
+                )
 
             valid_idx = None
             if max_energy is not None and len(e_ref) > 0:

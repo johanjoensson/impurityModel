@@ -31,11 +31,11 @@ from impurityModel.ed.BlockLanczosCore import (
     resolve_reort,
 )
 from impurityModel.ed.block_view import (
+    KrylovColumnStore,
     StagnationMonitor,
     as_state_list,
     block_cols,
     check_width_sync,
-    concat_cols,
     copy_block,
     slice_cols,
     trim_trailing_beta,
@@ -150,6 +150,25 @@ def _extract_invariant_subspace(
     return eigvals_T[wanted], as_state_list(block_combine(Q_basis, eigvecs_T[:, wanted], slater))
 
 
+def _deflate(wp, locked, mpi, comm):
+    """Project ``wp`` out of ``span(locked)``; the identity when no locked set is given.
+
+    The restart loop's matvecs see ``P H P`` with ``P = I - L L^H`` this way. It must run *last*,
+    after the CGS passes against the stored basis and right before the block is normalized: the
+    stored columns carry an O(eps) locked component of their own, which those passes put back into
+    ``wp``, and normalization amplifies it. Projected first, the locked component grew ~1.5x per
+    continuation block (1e-16 to 6e-15 over nine blocks), and over the 200-restart budget the locked
+    ground level, lower than everything in the complement, came back as the "lowest" state.
+
+    Two classical Gram-Schmidt passes. Collective on ``comm`` whenever ``locked`` is given, which is a
+    rank-invariant argument.
+    """
+    if locked is not None:
+        for _ in range(2):
+            wp, _ = block_orthogonalize(wp, locked, mpi=mpi, comm=comm)
+    return wp
+
+
 def _restart_coefficients(
     D,
     eigvals_T,
@@ -172,6 +191,7 @@ def _restart_coefficients(
     restart,
     verbose,
     rank0,
+    locked=None,
 ):
     """Choose the thick-restart coefficients for the arrowhead ``T_full`` spike,
     via one of two arms decided by whether the retained Ritz block
@@ -225,6 +245,7 @@ def _restart_coefficients(
     # formed for T_lead.
     wp, _ = block_orthogonalize(HQ, Q_ret, overlaps=ovl, mpi=mpi, comm=comm)
     wp, _ = block_orthogonalize(wp, Q_ret, mpi=mpi, comm=comm)
+    wp = _deflate(wp, locked, mpi, comm)
     try:
         q_m, beta_res = block_normalize(wp, mpi, comm, 0.0)
     except (sp.LinAlgError, ValueError):
@@ -251,6 +272,7 @@ def _trlm_core(
     comm,
     sweep,
     num_converge=None,
+    locked=None,
 ):
     """Path-agnostic thick-restart block Lanczos (TRLM).
 
@@ -373,6 +395,11 @@ def _trlm_core(
     n_converge = num_wanted if num_converge is None else max(1, min(int(num_converge), num_wanted))
     monitor = StagnationMonitor()
     stagnated = False
+    # The continuation's Krylov basis. One store for the whole solve: each restart refills it
+    # in place, so appending a block copies that block and nothing else.
+    store = KrylovColumnStore()
+    _local_basis = getattr(basis, "local_basis", None)
+    row_hint = len(_local_basis) if _local_basis is not None else None
 
     for restart in range(max_restarts):
         # Q_basis carries exactly the columns T_full[:D, :D] is expressed in: the trailing
@@ -473,6 +500,7 @@ def _trlm_core(
             restart,
             verbose,
             rank0,
+            locked=locked,
         )
         if early_result is not None:
             _TRLM_EXIT[0] = "restart_coefficients"
@@ -508,7 +536,14 @@ def _trlm_core(
         T_full = np.zeros((dim, dim), dtype=complex)
         T_full[:k_ret, :k_ret] = T_lead
 
-        Q_basis = concat_cols(Q_ret, copy_block(q_m))
+        # The old basis is dead (X and Q_ret are fresh arrays), and it may be a view of the
+        # store's buffer, which reset overwrites. Drop it first so a growing reallocation does
+        # not keep the old buffer alive next to the new one.
+        Q_basis = None
+        store.reset(Q_ret, dim, row_hint=row_hint)
+        store.append(Q_ret)
+        store.append(q_m)
+        Q_basis = store.columns
         T_full[k_ret : k_ret + p_resid, :k_ret] = cross
         T_full[:k_ret, k_ret : k_ret + p_resid] = np.conj(cross.T)
 
@@ -525,15 +560,15 @@ def _trlm_core(
             with _trace_timed("block_apply", site="continuation", w=block_cols(q1)):
                 wp = block_apply(h_op, q1, basis, mpi, slater)
 
-            overlaps = block_inner(Q_basis, wp, mpi, comm)
+            # CGS2 against the stored basis. The first pass's overlaps, taken before it projects,
+            # are Q^H H q1, so their last w1 rows are alpha_i; the second pass recomputes
+            # against the now-cleaned wp. Both passes go through the store (never block_inner
+            # on Q_basis directly): on the ManyBodyState arm Q_basis is a SparseKrylovDense.
+            wp, overlaps = store.project(wp, mpi, comm)
             alpha_i = overlaps[overlaps.shape[0] - w1 :, :]  # q1^H H q1  (w1, w1)
             T_full[off : off + w1, off : off + w1] = alpha_i
-
-            # First pass reuses the overlaps already formed for alpha_i (wp is unchanged), so
-            # this is the same projection the per-pass recompute would give; the second pass
-            # recomputes against the now-cleaned wp.
-            wp, _ = block_orthogonalize(wp, Q_basis, overlaps=overlaps, mpi=mpi, comm=comm)
-            wp, _ = block_orthogonalize(wp, Q_basis, mpi=mpi, comm=comm)
+            wp, _ = store.project(wp, mpi, comm)
+            wp = _deflate(wp, locked, mpi, comm)
 
             try:
                 q_next, beta_i = block_normalize(wp, mpi, comm, 0.0)
@@ -582,7 +617,8 @@ def _trlm_core(
             if i < m - 1:
                 T_full[off + w1 : off + w1 + w_next, off : off + w1] = beta_i
                 T_full[off : off + w1, off + w1 : off + w1 + w_next] = np.conj(beta_i.T)
-                Q_basis = concat_cols(Q_basis, copy_block(q_next))
+                store.append(q_next)
+                Q_basis = store.columns
                 cur_widths.append(w_next)
                 off += w1
                 w1 = w_next
@@ -604,16 +640,37 @@ def _trlm_core(
 
 
 def _thick_restart_block_lanczos_array(
-    psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, reort_mode, comm, num_converge=None
+    psi0,
+    h_op,
+    basis,
+    num_wanted,
+    max_subspace_blocks,
+    tol,
+    max_restarts,
+    verbose,
+    reort_mode,
+    comm,
+    num_converge=None,
+    locked=None,
 ):
     """Array-path entry point: prepares the ``(N, p)`` start block and the
-    ``block_lanczos_array`` sweep, then delegates to the shared :func:`_trlm_core`."""
+    ``block_lanczos_array`` sweep, then delegates to the shared :func:`_trlm_core`.
+
+    ``locked`` (orthonormal columns, rows distributed like ``psi0``) restricts the solve to the
+    complement of their span: the sweep keeps every Lanczos block orthogonal to them (the kernel's
+    locking deflation) and the restart loop projects every matvec out of their span, so the solver
+    sees ``P H P`` with ``P = I - L L^H``. The start block is projected too. This is how a caller
+    looks for eigenstates it does not have yet without re-finding the ones it does."""
     from impurityModel.ed.BlockLanczosArray import block_lanczos_array
 
     mpi = comm is not None and getattr(comm, "size", 1) > 1
     # block_lanczos_array assumes an orthonormal start block (it does not normalize
     # internally); normalize here so the betas do not grow geometrically and overflow T.
     psi0 = np.ascontiguousarray(psi0 if psi0.ndim == 2 else np.reshape(psi0, (-1, 1)), dtype=complex)
+    if locked is not None:
+        locked = np.ascontiguousarray(locked, dtype=complex)
+        for _ in range(2):
+            psi0, _ = block_orthogonalize(psi0, locked, mpi=mpi, comm=comm)
     psi0, _ = block_normalize(psi0, mpi, comm, 0.0)
 
     # `h_op` is column-sliced CSC (cipsi_solver.py builds it from `build_sparse_matrix`, which
@@ -638,6 +695,7 @@ def _thick_restart_block_lanczos_array(
             return_W=False,
             return_widths=True,
             comm=comm,
+            locked=locked,
         )
         # (alphas, betas, Q, block_widths)
         return res[0], res[1], res[2], res[3]
@@ -655,6 +713,7 @@ def _thick_restart_block_lanczos_array(
         comm,
         sweep,
         num_converge=num_converge,
+        locked=locked,
     )
 
 
@@ -765,6 +824,7 @@ def thick_restart_block_lanczos(
     slaterWeightMin: float = 0,
     reort=Reort.PARTIAL,
     num_converge=None,
+    locked=None,
 ):
     """Thick-restart block Lanczos (TRLM), dispatching on the operator type.
 
@@ -774,6 +834,9 @@ def thick_restart_block_lanczos(
     ``num_converge`` is how many of the lowest states must reach ``tol``; the rest are still
     computed and returned, just not gated on. ``None`` means all ``num_wanted`` of them.
 
+    ``locked`` (array path only) restricts the solve to the orthogonal complement of those
+    columns; see :func:`_thick_restart_block_lanczos_array`.
+
     Returns:
         tuple[numpy.ndarray, list | numpy.ndarray]: ``(eigvals, eigvecs)``.
     """
@@ -782,6 +845,8 @@ def thick_restart_block_lanczos(
     reort_mode = resolve_reort(reort)
 
     if not is_array(h_op):
+        if locked is not None:
+            raise NotImplementedError("thick_restart_block_lanczos: `locked` is supported on the array path only")
         return thick_restart_block_lanczos_cy(
             psi0=psi0,
             h_op=h_op,
@@ -809,4 +874,5 @@ def thick_restart_block_lanczos(
         reort_mode,
         comm,
         num_converge=num_converge,
+        locked=locked,
     )

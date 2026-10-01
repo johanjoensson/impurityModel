@@ -1,8 +1,91 @@
 # TRLM / array Lanczos: quadratic Krylov-basis copies in the ground-state eigensolver
 
-Status: **diagnosed, not fixed** (2026-09-29). Found while profiling the GF-review baseline
-(`doc/reviews/gf_review.md`, row X1). This is a ground-state issue, outside the GF campaign, and it is
-written up so that a later session can fix it without re-deriving anything.
+Status: **fixed** (2026-09-30, branch `trlm-fix`); diagnosed 2026-09-29. Found while profiling the
+GF-review baseline (`doc/reviews/gf_review.md`, row X1). This is a ground-state issue, outside the GF
+campaign. The sections from "Symptom" on are the original diagnosis; the outcome comes first.
+
+## Outcome
+
+Four commits, plus the benchmark that measures them (`test_trlm_continuation_cost_vs_subspace_size` in
+`test/lanczos/test_block_lanczos_perf.py`, `-m benchmark`). Serial, N=20000 sparse Hermitian, p=4,
+`reort="full"`, `OPENBLAS_NUM_THREADS=1`, at `max_subspace_blocks=160` (D up to 640):
+
+| step | numerics | initial sweep | continuation, per block |
+|---|---|---|---|
+| before | | 20.4 s (20.0 ns/(row·col)) | 110.8 ms (17.1 ns/(row·col)) |
+| A: FULL reort unwraps the one-element list | bit-identical | 14.9 s | 112.8 ms |
+| B: `KrylovColumnStore`, array arm | bit-identical | 15.1 s | 99.4 ms |
+| C: `KrylovColumnStore`, ManyBodyState arm | array path bit-identical | — | — |
+| D: `adjoint_product` conjugates the small operand | equal to rounding | **7.9 s (7.7)** | **56.5 ms (8.7)** |
+
+**The NiO replay** (the protocol below: 15-bath archive, `CAP=50000`, `N_IW=N_W=128`, `-n 1`,
+`OPENBLAS_NUM_THREADS=1`) prints its first occupation sector (N_imp = 5, the HF seed, E = -63.664293
+in both runs) after **282 s on the pre-fix code** (`src/` at `3d7277ce`, i.e. master) and **155 s
+after the fix**, a 1.8x speedup. The time includes the basis build. This is a controlled A/B, same
+machine and environment, with the build verified live each time. The diagnosis run's "more than 10
+minutes" was on `gf-review`, a different code base and cap policy, and is not a comparable baseline.
+py-spy over 30 s in the next sectors, after the fix (1499 samples):
+
+| share | leaf | what it is |
+|---|---|---|
+| 61.6% | `block_view.py:214-215` (`KrylovColumnStore.project`) | the CGS2 passes against the basis, `adjoint_product` inside |
+| 12.3% | `trlm.py` `sweep` | the initial sweep (was 14.0%) |
+| 2.3% | scipy CSR matmul | the sparse matvec |
+| 2.2% | `block_view.py:181` (`KrylovColumnStore.append`) | the one-block copy into the store |
+
+**The SrMnO3 gap double-counting search** (`python -m impurityModel.test.support.dc_diagnostics smo
+2000 8000`, `DC_DIAG_CRITERION=gap`, serial) is also a controlled A/B against master:
+
+| cap | master | fixed | speedup | mu (master → fixed) |
+|---|---|---|---|---|
+| 2000 | 85.9 s | 63.1 s | 1.36x | 0.132629 → 0.132627 |
+| 8000 | 344.6 s | 241.1 s | 1.43x | 0.129693 → 0.129679 |
+
+- mu moves by 1.4e-5, against a search resolution of 6.4e-3.
+- The projected search at this machine's production cap goes from 5.4 h to 3.3 h.
+- Most of the gain shows up in the trace's `expand_s` (321 → 226 s), not in `eigen_s` (22.5 → 14.2 s).
+  The eigensolves inside the CIPSI expansion cycles are booked under `expand`.
+
+`concat_cols` and `column_stack` are gone from the leaves. What remains is the reorthogonalization
+itself; see "twice is enough" below.
+
+Overall: 2.6x on the sweep, 2.0x on the continuation. The normalized constant was flat across
+m = 20…160 before and after, as it must be: every term here is O(N D) per block, so the size sweep shows
+what a fix removes as a lower constant, not as a change of slope.
+
+**Mechanism 3, found while fixing the other two: the conjugated copy.** `np.conj(Q.T) @ wp`, in
+`block_inner` and in `block_orthogonalize_array` whenever `overlaps` is not passed in, materializes a
+conjugated copy of the whole basis before the GEMM, on every inner product. That is two per continuation
+block and two per sweep step. The diagnosis profile (Symptom) books it as "CGS2". Measured at N=50000, D=200, p=4:
+`np.conj(Q.T)` alone takes 37 ms of a 51 ms inner product, while `conj(conj(wp)^T Q)^T` takes 17 ms. It
+cost more than the concatenation did. `adjoint_product` (`BlockLanczosCore.pyx`) conjugates whichever
+operand has fewer columns, the form `SparseKrylovDense.reort` already used. The GEMM runs with its
+operands swapped, so it is not bitwise: fixture eigenvalues agree to 2.4e-14, and eigenvectors differ
+only by phase (|<old|new>| = 1).
+
+**C (ManyBodyState).** The arm is backed by `SparseKrylovDense`, with `project()` running the
+continuation's CGS passes through `reort(n_passes=1)`. The overlaps come back pre-projection, so their
+last rows are alpha. An adversarial review of the design before implementation changed four things:
+- the store is exposed as `columns` and read only through `slice_cols`/`block_cols`, because
+  `block_combine` on a `SparseKrylovDense` silently switches to per-row pruning;
+- it is always complex128, since these columns rebuild the eigenvectors;
+- `project()` raises when `reort` returns no overlaps;
+- the row reservation is a hint, not a bound.
+
+The results equal the old path to rounding: eigenvalues to 1.5e-14, eigenvectors differ by phase plus
+~1e-6 mixing inside a 1e-9-spaced cluster. End to end, ManyBodyState TRLM on 4560 determinants (p=4,
+m=30, 3 restarts) went from 5.72 s to 1.27 s.
+
+**Not done:**
+- **IRLM (`irlm.py` :284, :455, :843).** None of these appends grows with D per block. `Xl` and
+  `accepted` take at most `num_wanted` single columns per solve; `:455` concatenates once per restart.
+  There is nothing quadratic to remove. The review also warned against handing the ManyBodyState kernel
+  a store it would keep appending into (`Q_init` is adopted as-is at `_lanczos_step.pxi:628`).
+  Decided 2026-09-30: IRLM stays as it is.
+- **The "twice is enough" CGS criterion** (below): decided against (2026-09-30). The continuation keeps
+  its unconditional second pass.
+- **The memory model.** `memory_estimate` never budgeted the concatenation's old+new transient, so it
+  needs no change. The fix makes it more accurate.
 
 ## Symptom
 

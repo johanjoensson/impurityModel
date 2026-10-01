@@ -609,9 +609,24 @@ cpdef np.ndarray block_combine_array(np.ndarray Q, np.ndarray Y):
     return Q @ np.ascontiguousarray(Y, dtype=complex)
 
 
+cpdef np.ndarray adjoint_product(np.ndarray V, np.ndarray W):
+    """``V^H W`` as a C-contiguous array, conjugating whichever operand has fewer columns.
+
+    ``np.conj(V.T) @ W`` materializes a conjugated copy of all of ``V`` before the GEMM. With
+    ``V`` a stored Krylov basis (N x D) and ``W`` a block (N x p), that copy is the same
+    O(N D) as the product itself and measured at ~70% of it (N=50000, D=200, p=4: 37 of
+    51 ms), paid on every inner product. ``conj(W^H V)^T`` conjugates only ``W`` and the
+    small (p x D) result instead -- the form ``SparseKrylovDense.reort`` already uses. The
+    two agree to rounding, not bitwise: the GEMM runs with the operands swapped.
+    """
+    if V.ndim == 2 and W.ndim == 2 and V.shape[1] > W.shape[1]:
+        return np.ascontiguousarray(np.conj(np.conj(W).T @ V).T)
+    return np.ascontiguousarray(np.conj(V.T) @ W)
+
+
 cpdef tuple block_orthogonalize_array(np.ndarray wp, np.ndarray Q, object overlaps=None, object comm=None):
     if overlaps is None:
-        overlaps = np.conj(Q.T) @ wp
+        overlaps = adjoint_product(Q, wp)
         if comm is not None:
             comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
     wp -= Q @ overlaps
