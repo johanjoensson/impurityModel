@@ -473,6 +473,15 @@ floors are much larger for the compact bases (Matsubara: 6e-5 natural, 5e-4 star
   same basis.
 * The method ranking depends on the basis: the outer admission wins on the Matsubara axis in the compact bases, freeze-growth
   Lanczos wins the F-NiO chain on the real axis at delta = 0.4, and in the F-NiO star basis the per-frequency cap wins.
+* **Natural chains vs linked chain are close, not different in kind.** On the metal's 7-site spin-up bath both are two
+  chains with nearly the same energies and hoppings (filled chain -0.25/-0.30/-0.39 vs -0.26/-0.31/-0.39, hoppings
+  0.112/0.079 vs 0.109/0.077). The linked chain joins the halves by a single 0.13 hop and couples the impurity to three
+  sites; the natural chains couple the impurity to the two heads and keep a link from the filled head to the empty chain
+  that decays as 0.116, 0.030, 0.005, 0.001. Counting bath hoppings above 1e-2 gives 7 against 6; the larger counts at
+  1e-9 (17) are numerical leftovers. The mixed results between them are therefore not explained by sparsity, and the
+  locality hypothesis below should not be read as accounting for their difference. The natural-orbital construction
+  also has a fragile point at particle-hole symmetry: the orbital with occupation exactly 0.5 falls on either side of
+  the filled/empty split by round-off.
 * **Hypothesis, not tested:** a chain orders the bath by distance from the impurity, so determinants with excitations far
   along the chain carry little weight and a cap or threshold can cut them; a star treats every level symmetrically, so the
   closure grows in all directions at once.
