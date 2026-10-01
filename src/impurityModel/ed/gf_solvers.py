@@ -723,6 +723,8 @@ def block_Green_bicgstab(
     verbose=False,
     excited_restrictions=None,
     excited_weighted_restrictions=None,
+    admission=None,
+    admit_tol=None,
 ):
     r"""Per-frequency BiCGSTAB Green's function for one work unit (memory-first path).
 
@@ -767,6 +769,12 @@ def block_Green_bicgstab(
         :data:`config.GF_BICGSTAB_ATOL`.
     max_iter : int, optional
         Per-point iteration bound; defaults to :data:`config.GF_BICGSTAB_MAX_ITER`.
+    admission : {"all", "outer"}, optional
+        Basis-growth policy; ``None`` takes :data:`config.GF_BICGSTAB_ADMISSION`. An explicit value
+        wins over the environment knob. ``"outer"`` also switches the measured error bound on
+        unless :data:`config.GF_BICGSTAB_RESIDUAL_CHECK` forces it off.
+    admit_tol : float, optional
+        Admission threshold of ``"outer"``; ``None`` takes the knob of the selected scorer.
 
     Returns
     -------
@@ -791,10 +799,16 @@ def block_Green_bicgstab(
     atol = config.GF_BICGSTAB_ATOL.get() if atol is None else atol
     max_iter = config.GF_BICGSTAB_MAX_ITER.get() if max_iter is None else max_iter
     warm_history = config.GF_BICGSTAB_WARM_HISTORY.get()
-    check_residual = config.GF_BICGSTAB_RESIDUAL_CHECK.get()
-    admission = config.GF_BICGSTAB_ADMISSION.get()
-    if admission not in ("all", "outer"):
-        raise ValueError(f"GF_BICGSTAB_ADMISSION={admission!r}: expected 'all' or 'outer'")
+    if admission is None:
+        admission = config.GF_BICGSTAB_ADMISSION.get()
+        if admission not in config.GF_ADMISSIONS:
+            raise ValueError(f"GF_BICGSTAB_ADMISSION={admission!r}: expected one of {config.GF_ADMISSIONS}")
+    elif admission not in config.GF_ADMISSIONS:
+        raise ValueError(f"admission={admission!r}: expected one of {config.GF_ADMISSIONS}")
+    # Unset, the measured error bound follows the policy: outer admission trades basis size for an
+    # error, and an error nobody can read is not a trade. 1/0 in the environment force it.
+    forced = config.GF_BICGSTAB_RESIDUAL_CHECK.get()
+    check_residual = (admission == "outer") if forced is None else forced
     # The second-order bound needs real H (then the adjoint solve is the conjugate of the forward
     # one); a property of the operator alone, so decided once per unit.
     h_is_real = check_residual and all(np.imag(amp) == 0 for _term, amp in hOp.items())
@@ -881,6 +895,7 @@ def block_Green_bicgstab(
                             sub_comm,
                             n_ops,
                             solve_shifted_block,
+                            eta_override=admit_tol,
                         )
                         solve_basis.cap_hit = admission_record["cap_hit"]
                         rebuild_size = admission_record["start_size"]

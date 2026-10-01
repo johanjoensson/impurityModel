@@ -1080,6 +1080,13 @@ def _optional_float(value):
     return None if value is None else float(value)
 
 
+def _optional_str(value):
+    """An archive string attribute, ``None`` when absent (h5py may hand back ``bytes``)."""
+    if value is None:
+        return None
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
 def _replayable_gf_method(gf_method):
     """Map a ``gf_method`` recorded by an older run onto one this version still runs.
 
@@ -1212,6 +1219,9 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         "e_pt2_tol": _optional_float(_archive_attr(attrs, "e_pt2_tol")),
         "sparse_green": bool(_archive_attr(attrs, "sparse_green", True)),
         "gf_method": _replayable_gf_method(str(_archive_attr(attrs, "gf_method", "lanczos"))),
+        # Absent from archives written before the policy was an option: those runs did not set it.
+        "gf_admission": _optional_str(_archive_attr(attrs, "gf_admission")),
+        "gf_admit_tol": _optional_float(_archive_attr(attrs, "gf_admit_tol")),
     }
 
 
@@ -1267,6 +1277,8 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         dense_cutoff=raw["dense_cutoff"],
         sparse_green=raw["sparse_green"],
         gf_method=raw["gf_method"],
+        gf_admission=raw["gf_admission"],
+        gf_admit_tol=raw["gf_admit_tol"],
     )
     return model, meshes, basis, solver, raw["label"]
 
@@ -1388,6 +1400,18 @@ class SolverOptions:
         Whether the Green's function uses the sparse block-Lanczos path.
     gf_method : {"lanczos", "bicgstab"}
         Green's-function kernel. See :func:`impurityModel.ed.greens_function.get_Greens_function`.
+    gf_admission : {"all", "outer"} or None
+        Basis-growth policy of the per-frequency ``"bicgstab"`` kernel: ``"all"`` admits everything
+        the solver produces, ``"outer"`` admits only determinants whose residual scores above
+        ``gf_admit_tol`` (:mod:`impurityModel.ed.gf_admission`), solving on a frozen basis between
+        rounds, and records a measured error bound. ``None`` (default) is "not specified": the
+        ``GF_BICGSTAB_ADMISSION`` environment knob decides, else ``"all"`` -- so an existing run and
+        a run that selects the policy by environment behave as before. ``"outer"`` needs
+        ``gf_method="bicgstab"``.
+    gf_admit_tol : float or None
+        Admission threshold of ``gf_admission="outer"``, relative to the seed norm (amplitude
+        scorer). ``None`` takes ``GF_BICGSTAB_ADMIT_TOL_AMP`` (1e-4); tighter admits more and is
+        more accurate, and the error bound reports what was left out.
     sigma_method : {"dyson"}
         Self-energy estimator (:mod:`impurityModel.ed.sigma_estimators`): which operator family
         the Green's-function engine resolves and how the self-energy is read off it. Only the
@@ -1399,6 +1423,25 @@ class SolverOptions:
     sparse_green: bool = True
     gf_method: str = "lanczos"
     sigma_method: str = "dyson"
+    gf_admission: Optional[str] = None
+    gf_admit_tol: Optional[float] = None
+
+    def __post_init__(self):
+        # One place for every front-end (RSPt solver line, TOML, CLI, archive replay): a bad
+        # combination is refused here rather than silently ignored two layers down.
+        if self.gf_admission is not None and self.gf_admission not in config.GF_ADMISSIONS:
+            raise ValueError(
+                f"gf_admission {self.gf_admission!r}: expected one of {', '.join(map(repr, config.GF_ADMISSIONS))}"
+            )
+        if self.gf_admit_tol is not None and not self.gf_admit_tol > 0.0:
+            raise ValueError(f"gf_admit_tol must be positive (got {self.gf_admit_tol!r}); omit it for the default")
+        if self.gf_admission == "outer" and self.gf_method != "bicgstab":
+            raise ValueError(
+                f"gf_admission='outer' is the basis-growth policy of the per-frequency kernel and needs "
+                f"gf_method='bicgstab' (got {self.gf_method!r})"
+            )
+        if self.gf_admit_tol is not None and self.gf_admission != "outer":
+            raise ValueError("gf_admit_tol only applies to gf_admission='outer' (it is set, but the policy is not)")
 
 
 @dataclass(frozen=True)

@@ -155,7 +155,7 @@ def _hyb_hop():
     )
 
 
-def _run_driver(gf_method, reort, comm=None, monkeypatch_env=None):
+def _run_driver(gf_method, reort, comm=None, monkeypatch_env=None, extra=None):
     state_bytes = [b"\xa0", b"\x50"]  # {0, 2} and {1, 3}
     basis = Basis(
         impurity_orbitals={0: [[0, 1]]},
@@ -197,6 +197,7 @@ def _run_driver(gf_method, reort, comm=None, monkeypatch_env=None):
             slaterWeightMin=0.0,
             sparse=True,
             gf_method=gf_method,
+            **(extra or {}),
         )
     finally:
         for key, value in old_env.items():

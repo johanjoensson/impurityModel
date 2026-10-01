@@ -546,3 +546,42 @@ def test_the_occupation_criterion_takes_no_convergence_override(tmp_path, key):
     table = f"[double_counting.fixed_occupation]\noccupation = 1.0\n{key} = 1e-5\n"
     with pytest.raises(InputError, match=f"unknown key '{key}'"):
         load_input(_dc_input(tmp_path, table))
+
+
+# ------------------------------------------------- Green's-function admission policy
+
+
+def test_the_admission_policy_is_unspecified_when_the_file_does_not_name_it(written):
+    solver = build(load_input(written(SELFENERGY))).solver
+    assert solver.gf_method == "lanczos" and solver.gf_admission is None and solver.gf_admit_tol is None
+
+
+def test_the_admission_keys_reach_the_solver_options(written):
+    text = SELFENERGY + '\n[solver]\ngf_method = "bicgstab"\ngf_admission = "outer"\ngf_admit_tol = 1e-5\n'
+    solver = build(load_input(written(text))).solver
+    assert (solver.gf_method, solver.gf_admission) == ("bicgstab", "outer")
+    assert solver.gf_admit_tol == pytest.approx(1e-5)
+
+
+def test_auto_is_the_same_as_not_naming_the_policy(written):
+    text = SELFENERGY + '\n[solver]\ngf_method = "bicgstab"\ngf_admission = "auto"\n'
+    assert build(load_input(written(text))).solver.gf_admission is None
+
+
+@pytest.mark.parametrize(
+    "table,match",
+    [
+        ('gf_admission = "outer"\n', "needs gf_method='bicgstab'"),
+        ('gf_method = "bicgstab"\ngf_admit_tol = 1e-4\n', "only applies to gf_admission='outer'"),
+    ],
+    ids=["outer on the Lanczos kernel", "a threshold without the policy"],
+)
+def test_a_contradictory_solver_table_is_refused_with_its_location(written, table, match):
+    with pytest.raises(InputError, match=r"\[solver\].*" + match):
+        build(load_input(written(SELFENERGY + "\n[solver]\n" + table)))
+
+
+def test_a_zero_admission_threshold_is_refused(written):
+    text = SELFENERGY + '\n[solver]\ngf_method = "bicgstab"\ngf_admission = "outer"\ngf_admit_tol = 0\n'
+    with pytest.raises(InputError, match="gf_admit_tol"):
+        build(load_input(written(text)))

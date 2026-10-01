@@ -134,6 +134,14 @@ def test_gf_method_choices_match_the_registry():
     assert not set(key.choices) & set(config.RETIRED_GF_METHODS)
 
 
+def test_gf_admission_choices_match_the_registry():
+    """The TOML schema's ``auto`` plus exactly :data:`config.GF_ADMISSIONS` (the CLI reads the registry itself)."""
+    from impurityModel.inputformat.schema import TABLES
+
+    key = next(k for k in TABLES["solver"].keys if k.name == "gf_admission")
+    assert tuple(key.choices) == ("auto",) + config.GF_ADMISSIONS
+
+
 @pytest.mark.parametrize("name", sorted(config.RETIRED_KNOBS))
 def test_a_retired_knob_is_no_longer_registered(name):
     assert name not in config.KNOBS

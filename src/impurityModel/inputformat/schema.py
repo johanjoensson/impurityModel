@@ -1031,6 +1031,29 @@ _TABLE_LIST += [
                 choices=("lanczos", "bicgstab"),
             ),
             Key(
+                "gf_admission",
+                Kind.AUTO_ENUM,
+                "auto",
+                "Basis-growth policy of the per-frequency kernel (gf_method = 'bicgstab'). 'all' admits "
+                "every determinant the solver produces; 'outer' solves on a frozen basis, scores the "
+                "residual outside it and admits only what clears gf_admit_tol, and records a measured "
+                "error bound in the diagnostics. 'auto' leaves it to the GF_BICGSTAB_ADMISSION "
+                "environment knob, else 'all'. 'outer' needs gf_method = 'bicgstab'.",
+                # Mirrors config.GF_ADMISSIONS (this module is a leaf and cannot import it);
+                # test_gf_admission_choices_match_the_registry pins the two together.
+                choices=("auto", "all", "outer"),
+            ),
+            Key(
+                "gf_admit_tol",
+                Kind.DIMENSIONLESS,
+                None,
+                "Admission threshold of gf_admission = 'outer', relative to the seed norm. Absent takes "
+                "GF_BICGSTAB_ADMIT_TOL_AMP (1e-4). Smaller admits more and is more accurate; the error "
+                "bound in the diagnostics reports what was left out. Only valid with gf_admission = "
+                "'outer'.",
+                minimum=0.0,
+            ),
+            Key(
                 "reort",
                 Kind.AUTO_ENUM,
                 "auto",

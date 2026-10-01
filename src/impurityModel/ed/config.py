@@ -95,6 +95,12 @@ def _register(*knobs: Knob) -> dict[str, Knob]:
 #: Accepted ``gf_method`` values.
 GF_METHODS = ("lanczos", "bicgstab")
 
+#: Accepted ``SolverOptions.gf_admission`` values, the basis-growth policy of the per-frequency
+#: ``"bicgstab"`` kernel: ``"all"`` admits every determinant the solver produces, ``"outer"`` solves on a
+#: frozen basis, measures the residual outside it and admits only what scores above a threshold
+#: (:mod:`impurityModel.ed.gf_admission`). ``"outer"`` needs ``gf_method="bicgstab"``.
+GF_ADMISSIONS = ("all", "outer")
+
 #: Accepted ``SolverOptions.sigma_method`` values: the self-energy estimators of
 #: :mod:`impurityModel.ed.sigma_estimators` (its ``ESTIMATORS`` registry has exactly these keys).
 SIGMA_METHODS = ("dyson",)
@@ -206,14 +212,16 @@ GF_BICGSTAB_WARM_HISTORY = Knob(
 GF_BICGSTAB_RESIDUAL_CHECK = Knob(
     name="GF_BICGSTAB_RESIDUAL_CHECK",
     kind="bool",
-    default=False,
+    default=None,
     group="bicgstab",
     doc="""After every per-frequency solve, apply the operator once more at cutoff 0 and record the
     true residual split at the solve basis: the in-basis part (the solver's residual, recomputed)
-    and the boundary residual (1-P) H X that a truncated basis leaves unseen, with a rigorous
-    bound on the error of G built from them (``gf_primitives.resolvent_error_bound``). Costs one
-    unchunked matvec per point -- its peak is the full cutoff-0 image of the iterate, larger than
-    a solve iteration's. Off by default; the basis-size benchmarks turn it on.""",
+    and the boundary residual (1-P) H X that a truncated basis leaves unseen, with a bound on the
+    error of G built from them (``gf_primitives.resolvent_error_bound``). Costs one unchunked
+    matvec per point -- its peak is the full cutoff-0 image of the iterate, larger than a solve
+    iteration's. Unset (derived), it follows the admission policy: on for ``outer`` admission,
+    whose point is to trade basis size for a measured error, off for ``all``. ``1``/``0`` force it
+    either way.""",
 )
 
 GF_BICGSTAB_ADMISSION = Knob(

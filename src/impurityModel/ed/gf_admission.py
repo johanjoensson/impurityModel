@@ -117,6 +117,7 @@ def solve_point_outer(
     n_ops,
     solver,
     excited_weighted_restrictions=None,
+    eta_override=None,
 ):
     r"""Solve ``(z - H) X = seeds`` at one frequency on an importance-admitted basis.
 
@@ -137,6 +138,9 @@ def solve_point_outer(
         default path does, and reported as ``"budget"``.
     solver : callable
         ``gf_solvers.solve_shifted_block`` (passed in: this module sits below it).
+    eta_override : float, optional
+        Admission threshold of the selected scorer; ``None`` reads its ``GF_BICGSTAB_ADMIT_TOL_*``
+        knob. An explicit value wins over the environment.
 
     Returns
     -------
@@ -156,7 +160,9 @@ def solve_point_outer(
     scorer = config.GF_BICGSTAB_ADMIT_SCORER.get()
     if scorer not in SCORERS:
         raise ValueError(f"GF_BICGSTAB_ADMIT_SCORER={scorer!r}: expected one of {SCORERS}")
-    eta = (config.GF_BICGSTAB_ADMIT_TOL_AMP if scorer == "amplitude" else config.GF_BICGSTAB_ADMIT_TOL_JACOBI).get()
+    eta = eta_override
+    if eta is None:
+        eta = (config.GF_BICGSTAB_ADMIT_TOL_AMP if scorer == "amplitude" else config.GF_BICGSTAB_ADMIT_TOL_JACOBI).get()
     rounds = config.GF_BICGSTAB_ADMIT_ROUNDS.get()
     shells = config.GF_BICGSTAB_ADMIT_SHELLS.get()
     carry_tol = config.GF_BICGSTAB_ADMIT_CARRY_TOL.get()

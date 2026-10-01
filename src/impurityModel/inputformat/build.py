@@ -715,6 +715,15 @@ def _build_solver(resolved):
     from impurityModel.ed.model import SolverOptions
 
     table = resolved.tables["solver"]
+    try:
+        return _solver_options_from(SolverOptions, table)
+    except ValueError as error:
+        # A combination the options refuse (outer admission on the Lanczos kernel, a threshold
+        # without the policy it belongs to) is a mistake in the file: say where, not a traceback.
+        raise InputError(f"[solver]: {error}") from error
+
+
+def _solver_options_from(SolverOptions, table):
     return SolverOptions(
         # "auto" -> None, which is NOT one mode: it means NONE on the Green's-function path
         # and PARTIAL on the eigensolver path, and it also selects the memory model used to
@@ -723,6 +732,9 @@ def _build_solver(resolved):
         dense_cutoff=table["dense_cutoff"],
         sparse_green=table["sparse_green"],
         gf_method=table["gf_method"],
+        # "auto" -> None: not specified, so the GF_BICGSTAB_ADMISSION knob decides (else "all").
+        gf_admission=None if table["gf_admission"] == "auto" else table["gf_admission"],
+        gf_admit_tol=table["gf_admit_tol"],
     )
 
 

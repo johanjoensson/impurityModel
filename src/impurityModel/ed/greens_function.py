@@ -360,6 +360,8 @@ def get_Greens_function(
     num_wanted: int | None = None,
     gf_method: str = "lanczos",
     operator_families=None,
+    gf_admission: Optional[str] = None,
+    gf_admit_tol: Optional[float] = None,
 ):
     """
     Calculate interacting Greens function.
@@ -374,6 +376,13 @@ def get_Greens_function(
     per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`).
     On the per-frequency path ``sparse`` is ignored (the solvers work on the ManyBodyState
     representation only).
+
+    ``gf_admission`` is the per-frequency kernel's basis-growth policy: ``"all"`` or ``"outer"``
+    (``None``, the default: ``GF_BICGSTAB_ADMISSION``, else ``"all"``). ``"outer"`` solves on a
+    frozen basis, scores the residual outside it and admits only what clears
+    ``gf_admit_tol`` (``None``: ``GF_BICGSTAB_ADMIT_TOL_AMP``), and repeats; see
+    :mod:`impurityModel.ed.gf_admission`. ``"outer"`` also records a measured error bound in the
+    diagnostics report. An explicit argument wins over the matching environment knob.
 
     ``operator_families`` is the self-energy estimator seam
     (:mod:`impurityModel.ed.sigma_estimators`): ``operator_families(block)`` returns
@@ -390,6 +399,12 @@ def get_Greens_function(
         raise ValueError(f"gf_method {gf_method!r} {config.RETIRED_GF_METHODS[gf_method]}")
     if gf_method not in config.GF_METHODS:
         raise ValueError(f"Unknown gf_method {gf_method!r}; expected one of {', '.join(map(repr, config.GF_METHODS))}")
+    if gf_admission is not None and gf_admission not in config.GF_ADMISSIONS:
+        raise ValueError(
+            f"Unknown gf_admission {gf_admission!r}; expected one of {', '.join(map(repr, config.GF_ADMISSIONS))}"
+        )
+    if gf_admission == "outer" and gf_method != "bicgstab":
+        raise ValueError(f"gf_admission='outer' needs gf_method='bicgstab' (got {gf_method!r})")
     # Excited-sector restrictions are independent of the orbital block and of the spectral side
     # (the dN occupation window is symmetric and spans all impurity orbitals), so build them once
     # on the full basis instead of per block.
@@ -474,6 +489,8 @@ def get_Greens_function(
             verbose,
             verbose_extra,
             num_wanted,
+            gf_admission=gf_admission,
+            gf_admit_tol=gf_admit_tol,
         )
 
     def eval_meshes_for(unit):
@@ -659,6 +676,8 @@ def _get_greens_function_bicgstab(
     verbose,
     verbose_extra,
     num_wanted,
+    gf_admission=None,
+    gf_admit_tol=None,
 ):
     r"""Distribution + assembly of the per-frequency BiCGSTAB Green's function.
 
@@ -684,6 +703,8 @@ def _get_greens_function_bicgstab(
             verbose=verbose_extra,
             excited_restrictions=unit_restrictions[u],
             excited_weighted_restrictions=excited_weighted_restrictions,
+            admission=gf_admission,
+            admit_tol=gf_admit_tol,
         )
 
     units_meta = [(group_meta[unit.group_i][0], group_meta[unit.group_i][1], unit.chunk) for unit in units]

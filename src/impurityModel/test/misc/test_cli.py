@@ -164,7 +164,9 @@ def test_selfenergy_mesh_and_solver_flags():
     args = _parse(selfenergy.add_arguments, ["h0.pickle"])
     assert args.realaxis is True
     assert args.n_matsubara == 0
-    assert args.gf_method == "lanczos"
+    # Unspecified, not "lanczos": with --from-archive a flag that was not passed must leave the
+    # recorded kernel alone (see test_selfenergy_replay_keeps_what_the_archive_recorded).
+    assert args.gf_method is None and args.gf_admission is None and args.gf_admit_tol is None
     assert args.sparse_green is True
 
     args = _parse(
@@ -242,3 +244,31 @@ def test_cli_requires_a_subcommand():
 def test_cli_rejects_unknown_subcommand():
     with pytest.raises(SystemExit):
         cli.main(["does-not-exist"])
+
+
+def test_selfenergy_admission_flags():
+    args = _parse(
+        selfenergy.add_arguments,
+        ["h0.pickle", "--gf-method", "bicgstab", "--gf-admission", "outer", "--gf-admit-tol", "1e-5"],
+    )
+    assert (args.gf_method, args.gf_admission, args.gf_admit_tol) == ("bicgstab", "outer", 1e-5)
+    with pytest.raises(SystemExit):
+        _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-admission", "sometimes"])
+
+
+def test_selfenergy_replay_keeps_what_the_archive_recorded():
+    """The replay branch used to overwrite the recorded kernel with the CLI default. A flag that was not
+    passed keeps the record; one that was passed overrides it; a contradiction is refused."""
+    from impurityModel.ed.model import SolverOptions
+
+    recorded = SolverOptions(gf_method="bicgstab", gf_admission="outer", gf_admit_tol=1e-5)
+    untouched = selfenergy.apply_solver_overrides(recorded, _parse(selfenergy.add_arguments, ["h0.pickle"]))
+    assert untouched == recorded
+    looser = selfenergy.apply_solver_overrides(
+        recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-admit-tol", "1e-3"])
+    )
+    assert (looser.gf_method, looser.gf_admission, looser.gf_admit_tol) == ("bicgstab", "outer", 1e-3)
+    with pytest.raises(ValueError, match="needs gf_method='bicgstab'"):
+        selfenergy.apply_solver_overrides(
+            recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "lanczos"])
+        )
