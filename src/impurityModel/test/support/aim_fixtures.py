@@ -72,6 +72,11 @@ class AIM:
     levels: np.ndarray = None  # one impurity spin-orbital's bath levels
     couplings: np.ndarray = None  # ... and their hybridization amplitudes
     exact_e0: float = None  # the exact sector minimum when the ground state was truncated
+    h1: np.ndarray = None  # the one-body matrix (real symmetric): impurity block, coupling, bath block
+    interaction: dict = None  # the two-body terms, which live on the impurity only
+    basis_name: str = "star"
+    keep: int = None  # determinants kept in the ground state (None = exact)
+    fermi: float = 0.0  # the chemical potential: bath levels below it are filled (used by the linked chain)
 
     @property
     def n_orb(self):
@@ -117,6 +122,14 @@ class AIM:
         if not np.iscomplexobj(H) or np.max(np.abs(H.imag)) == 0.0:
             H = np.ascontiguousarray(H.real)
         return H, {bytes(d.to_bytearray()): i for i, d in enumerate(dets)}
+
+
+def operator_from(h1, interaction):
+    """``ManyBodyOperator`` of a one-body matrix ``h1`` (``sum_ij h1[i, j] c^+_i c_j``) plus two-body terms."""
+    terms = dict(interaction)
+    for i, j in zip(*np.nonzero(h1)):
+        terms[((int(i), "c"), (int(j), "a"))] = float(h1[i, j])
+    return ManyBodyOperator(terms)
 
 
 def kanamori_terms(U, J, n_b):
@@ -199,19 +212,23 @@ def impurity_level(U, J, delta_ct, bath_center):
     return delta_ct + bath_center - interaction_increment(U, J)
 
 
-def nio_like_operator(n_b, U=8.0, J=1.0, delta_ct=4.0, bath_center=0.0, width=3.0, v_eff=1.0, n_spectator=0):
-    """Hamiltonian of the F-NiO fixture: Kanamori impurity plus one filled star bath per spin-orbital."""
+def nio_like_h1(n_b, U=8.0, J=1.0, delta_ct=4.0, bath_center=0.0, width=3.0, v_eff=1.0, n_spectator=0):
+    """``(h1, interaction)`` of the F-NiO fixture: Kanamori impurity plus one filled star bath per spin-orbital."""
     eps_d = impurity_level(U, J, delta_ct, bath_center)
-    terms = kanamori_terms(U, J, n_b)
     levels, couplings = bath_star(n_b, bath_center, width, v_eff, n_spectator)
+    h1 = np.zeros((N_IMP * (1 + n_b),) * 2)
     for m in range(N_IMP):
-        terms[((m, "c"), (m, "a"))] = eps_d
+        h1[m, m] = eps_d
         for k, (eps, v) in enumerate(zip(levels, couplings)):
             b = N_IMP + m * n_b + k
-            terms[((b, "c"), (b, "a"))] = float(eps)
-            terms[((m, "c"), (b, "a"))] = float(v)
-            terms[((b, "c"), (m, "a"))] = float(v)
-    return ManyBodyOperator(terms)
+            h1[b, b] = eps
+            h1[m, b] = h1[b, m] = v
+    return h1, kanamori_terms(U, J, n_b)
+
+
+def nio_like_operator(n_b, **kwargs):
+    """Hamiltonian of the F-NiO fixture."""
+    return operator_from(*nio_like_h1(n_b, **kwargs))
 
 
 def _n_imp_weights(aim, vec, dets):
@@ -224,7 +241,7 @@ def _n_imp_weights(aim, vec, dets):
     return counts
 
 
-def ground_state(aim, keep=None):
+def ground_state(aim, keep=None, lost_weight=None):
     """Fill ``aim.gs``, ``aim.e0`` and ``aim.weights`` from the ground-state sector ``aim.sector0``.
 
     With ``keep`` set the state is **truncated**, the way a CIPSI ground state is: the lowest eigenstate
@@ -233,6 +250,10 @@ def ground_state(aim, keep=None):
     energy, so the exact reference stays exact -- and the seed support stays small next to the
     closure, which is the regime of the production calculations (an exact ground state in a metal
     spreads over the whole sector, and the seeds alone then fill it).
+
+    ``lost_weight`` sizes the truncation by accuracy instead: the smallest ``keep`` whose discarded
+    weight is at most this, which is how a CIPSI state is sized and which depends strongly on the
+    orbital basis.
     """
     n_up, n_dn = aim.sector0
     dets = aim.sector(n_up, n_dn)
@@ -241,6 +262,9 @@ def ground_state(aim, keep=None):
     vec = evecs[:, 0]
     aim.exact_e0 = float(evals[0])
     aim.e0 = float(evals[0])
+    if lost_weight is not None:
+        keep = _keep_for_weight(vec, lost_weight)
+    aim.keep = keep
     if keep is not None and keep < len(dets):
         top = np.sort(np.argsort(-np.abs(vec))[:keep])
         sub_evals, sub_evecs = np.linalg.eigh(H[np.ix_(top, top)])
@@ -268,8 +292,9 @@ def build_nio_like(n_b=9, target_d9L=None, v_eff=1.0, **kwargs):
         levels, couplings = bath_star(n_b, center, p.get("width", 3.0), v, p.get("n_spectator", 0))
         n_up0 = 2 + 2 * n_b  # both impurity electrons up: the up shell is full
         n_electrons = N_IMP // 2 + N_IMP * n_b  # d8 nominal: two impurity electrons, filled bath
+        h1, interaction = nio_like_h1(n_b, v_eff=v, **params)
         aim = AIM(
-            nio_like_operator(n_b, v_eff=v, **params),
+            operator_from(h1, interaction),
             n_b,
             p,
             n_electrons=n_electrons,
@@ -277,6 +302,10 @@ def build_nio_like(n_b=9, target_d9L=None, v_eff=1.0, **kwargs):
             eps_d=impurity_level(p.get("U", 8.0), p.get("J", 1.0), p.get("delta_ct", 4.0), center),
             levels=levels,
             couplings=couplings,
+            h1=h1,
+            interaction=interaction,
+            # the bath is filled to its top by construction, so the Fermi level sits just above it
+            fermi=center + p.get("width", 3.0) / 2 + 0.5,
         )
         return ground_state(aim)
 
@@ -310,8 +339,9 @@ def hubbard_terms(U):
     return {((0, "c"), (1, "c"), (1, "a"), (0, "a")): U}
 
 
-def semicircle_operator(n_b, U, D, v):
-    """Single-impurity Anderson model with a semicircular star bath, at its particle-hole symmetric point.
+def semicircle_h1(n_b, U, D, v):
+    """``(h1, interaction)`` of the single-impurity Anderson model on a semicircular star, at its
+    particle-hole symmetric point.
 
     The impurity level sits at ``-U/2`` (the ``[double_counting.nominal]`` shift of
     ``examples/semicircular_siam``), so the half-filled ground state has ``<n_imp> = 1`` and
@@ -319,15 +349,18 @@ def semicircle_operator(n_b, U, D, v):
     """
     n_imp = 2
     levels, couplings = semicircle_star(n_b, D, v)
-    terms = hubbard_terms(U)
+    h1 = np.zeros((n_imp * (1 + n_b),) * 2)
     for m in range(n_imp):
-        terms[((m, "c"), (m, "a"))] = -U / 2
+        h1[m, m] = -U / 2
         for k, (eps, w) in enumerate(zip(levels, couplings)):
             b = n_imp + m * n_b + k
-            terms[((b, "c"), (b, "a"))] = float(eps)
-            terms[((m, "c"), (b, "a"))] = float(w)
-            terms[((b, "c"), (m, "a"))] = float(w)
-    return ManyBodyOperator(terms)
+            h1[b, b] = eps
+            h1[m, b] = h1[b, m] = w
+    return h1, hubbard_terms(U)
+
+
+def semicircle_operator(n_b, U, D, v):
+    return operator_from(*semicircle_h1(n_b, U, D, v))
 
 
 def build_semicircle_siam(n_b=7, U=0.5, D=0.5, v=0.5, gs_keep=None):
@@ -341,10 +374,13 @@ def build_semicircle_siam(n_b=7, U=0.5, D=0.5, v=0.5, gs_keep=None):
         raise ValueError("n_b must be odd: the half-filled sector needs (1 + n_b) / 2 electrons per spin")
     levels, couplings = semicircle_star(n_b, D, v)
     n_up0 = (1 + n_b) // 2
+    h1, interaction = semicircle_h1(n_b, U, D, v)
     aim = AIM(
-        semicircle_operator(n_b, U, D, v),
+        operator_from(h1, interaction),
         n_b,
         {"U": U, "D": D, "v_eff": v},
+        h1=h1,
+        interaction=interaction,
         n_imp=2,
         n_electrons=1 + n_b,
         sector0=(n_up0, n_up0),
@@ -353,6 +389,269 @@ def build_semicircle_siam(n_b=7, U=0.5, D=0.5, v=0.5, gs_keep=None):
         couplings=couplings,
     )
     return ground_state(aim, keep=gs_keep)
+
+
+# --- exact changes of the bath basis -------------------------------------------------------------------
+#
+# A unitary change of the bath orbitals (impurity fixed, spin preserved) leaves H unitarily equivalent and
+# the impurity Green's function untouched, so with an exact ground state every basis has the SAME G. What
+# changes is the determinant structure -- the support of the ground state, the seeds, the closure -- and
+# that is what the basis-size comparison needs to vary. The interaction lives on the impurity, so it is
+# not rotated.
+
+from impurityModel.ed.ManyBodyUtils import block_inner_cy  # noqa: E402
+
+
+def block_krylov_basis(h, start, tol=1e-10):
+    """Orthogonal ``Q`` (``n x n``) whose first columns are the block-Lanczos chain of ``h`` from ``start``.
+
+    ``Q^T h Q`` is block tridiagonal with the first block coupled to ``start`` (one chain per column of
+    ``start``). Full reorthogonalization, so degeneracies and tiny couplings do not lose orthogonality; a
+    Krylov space that closes early (a disconnected part of the bath) is completed with the remaining
+    unit vectors, deterministically.
+    """
+    n = h.shape[0]
+    cols = []
+
+    def accept(block):
+        new = []
+        for v in np.atleast_2d(block.T):
+            w = np.array(v, dtype=float)
+            for _ in range(2):
+                for q in cols + new:
+                    w = w - q * (q @ w)
+            norm = np.linalg.norm(w)
+            if norm > tol:
+                new.append(w / norm)
+        return new
+
+    current = accept(np.asarray(start, dtype=float).reshape(n, -1))
+    cols += current
+    while current and len(cols) < n:
+        current = accept(h @ np.array(current).T)
+        cols += current
+    unit = 0
+    while len(cols) < n:
+        e = np.zeros(n)
+        e[unit] = 1.0
+        unit += 1
+        cols += accept(e[:, None])
+    return np.array(cols).T
+
+
+def _bath_by_spin(aim):
+    """``{spin: [positions within the bath block]}`` -- the bath orbitals of each spin, in index order."""
+    out = {0: [], 1: []}
+    for position, orbital in enumerate(aim.bath):
+        out[spin_of(orbital, aim.n_b, aim.n_imp)].append(position)
+    return out
+
+
+def _impurity_by_spin(aim):
+    return {s: [m for m in aim.imp if spin_of(m, aim.n_b, aim.n_imp) == s] for s in (0, 1)}
+
+
+def chain_rotation(aim):
+    """Per-channel chains: each impurity spin-orbital's star becomes a chain with the impurity at its end.
+
+    The bath orbitals are rotated within each channel (``n_b`` consecutive bath orbitals) by the Lanczos
+    tridiagonalization of that channel's levels from its coupling vector, so the impurity couples to the
+    first chain site alone and the bath block is tridiagonal.
+    """
+    n = aim.n_imp
+    U = np.eye(aim.n_orb - n)
+    for m in aim.imp:
+        sites = np.arange(m * aim.n_b, (m + 1) * aim.n_b)
+        h = aim.h1[n:, n:][np.ix_(sites, sites)]
+        v = aim.h1[m, n:][sites]
+        if np.linalg.norm(v) > 0:
+            U[np.ix_(sites, sites)] = block_krylov_basis(h, v[:, None])
+    return U
+
+
+def one_body_density(aim):
+    """``rho_ij = <psi|c^+_i c_j|psi>`` over the bath orbitals of the EXACT ground state (shape ``n_bath^2``).
+
+    Taken from the cached sector eigenvector, never from a truncated state: natural orbitals are the
+    physical object, and a CIPSI run would get them from a first approximate density anyway.
+    """
+    _H, _index, _evals, evecs, dets = aim._sector_cache[aim.sector0]
+    psi = ManyBodyState.from_states(
+        [ManyBodyState({d: complex(evecs[k, 0]) for k, d in enumerate(dets) if abs(evecs[k, 0]) > 0})]
+    )
+    n_bath = len(aim.bath)
+    rho = np.zeros((n_bath, n_bath))
+    by_spin = _bath_by_spin(aim)
+    for positions in by_spin.values():
+        for i in positions:
+            for j in positions:
+                op = ManyBodyOperator({((aim.n_imp + i, "c"), (aim.n_imp + j, "a")): 1.0})
+                rho[i, j] = float(np.real(block_inner_cy(psi, op.apply_block(psi, 0.0))[0, 0]))
+    return rho
+
+
+def natural_orbital_rotation(aim, chains=False):
+    """Rotate each spin's bath to its natural orbitals (eigenvectors of the bath density matrix).
+
+    Orbitals are ordered by occupation, filled first. With ``chains`` the filled (occupation > 1/2) and the
+    empty natural orbitals are each re-tridiagonalized from the impurity coupling -- the valence and
+    conduction chains of the Haverkort construction -- so the impurity couples only to the head of each.
+    Returns ``(U, occupations)``.
+    """
+    n = aim.n_imp
+    rho = one_body_density(aim)
+    h_bath = aim.h1[n:, n:]
+    U = np.eye(len(aim.bath))
+    occupations = np.zeros(len(aim.bath))
+    for spin, positions in _bath_by_spin(aim).items():
+        sub = rho[np.ix_(positions, positions)]
+        occ, vecs = np.linalg.eigh(sub)
+        order = np.argsort(-occ)
+        occ, vecs = occ[order], vecs[:, order]
+        occupations[positions] = occ
+        if not chains:
+            U[np.ix_(positions, positions)] = vecs
+            continue
+        imp = _impurity_by_spin(aim)[spin]
+        coupling = aim.h1[np.ix_(imp, [n + p for p in positions])]  # (n_imp_spin, n_spin_bath)
+        h_spin = h_bath[np.ix_(positions, positions)]
+        blocks = []
+        for group in (occ > 0.5, occ <= 0.5):
+            if not np.any(group):
+                continue
+            Ug = vecs[:, group]
+            Q = block_krylov_basis(Ug.T @ h_spin @ Ug, (coupling @ Ug).T)
+            blocks.append(Ug @ Q)
+        U[np.ix_(positions, positions)] = np.hstack(blocks)
+    return U, occupations
+
+
+def rotate_bath(aim, U, name, keep=None, lost_weight=None):
+    """The same model in the bath basis given by the columns of ``U`` (orthogonal, spin-preserving).
+
+    ``keep`` truncates the new ground state as in :func:`ground_state`: determinants are then the ones
+    of the new basis, so a basis in which the ground state is compact loses less to the same ``keep``.
+    """
+    n = aim.n_imp
+    spins = [spin_of(o, aim.n_b, aim.n_imp) for o in aim.bath]
+    for i, si in enumerate(spins):
+        for j, sj in enumerate(spins):
+            if si != sj and abs(U[i, j]) > 1e-12:
+                raise ValueError("a bath rotation must not mix spins: the sector structure would be lost")
+    if not np.allclose(U.T @ U, np.eye(U.shape[0]), atol=1e-10):
+        raise ValueError("U must be orthogonal")
+    R = np.eye(aim.n_orb)
+    R[n:, n:] = U
+    h1 = R.T @ aim.h1 @ R
+    return _aim_with_h1(aim, h1, name, keep, lost_weight)
+
+
+def _aim_with_h1(aim, h1, name, keep=None, lost_weight=None):
+    """The same model with a different one-body matrix (interaction, electrons and sector unchanged)."""
+    h1 = np.array(h1)
+    h1[np.abs(h1) < 1e-14] = 0.0
+    new = AIM(
+        operator_from(h1, aim.interaction),
+        aim.n_b,
+        dict(aim.params),
+        n_imp=aim.n_imp,
+        n_electrons=aim.n_electrons,
+        sector0=aim.sector0,
+        eps_d=aim.eps_d,
+        h1=h1,
+        interaction=aim.interaction,
+        basis_name=name,
+        fermi=aim.fermi,
+    )
+    return ground_state(new, keep=keep, lost_weight=lost_weight)
+
+
+def linked_chain_h1(aim):
+    """The one-body matrix of ``aim`` with each spin's star replaced by its linked double chain.
+
+    Uses ``rspt2spectra.edchain.linked_double_chain`` (an optional dependency, imported here): the one-body
+    eigenstates of the non-interacting impurity + star are split by the sign of their energy relative to
+    ``aim.fermi`` into an occupied and an unoccupied part, each made a chain, and the impurity character
+    is restored by an SVD -- no many-body input, unlike natural orbitals. The algorithm assumes the Fermi
+    level at zero, so energies are measured from ``aim.fermi`` and put back afterwards (a constant shift
+    commutes with the construction). Requires a star bath; keeps the impurity block as it was.
+    """
+    from rspt2spectra.edchain import linked_double_chain
+
+    n = aim.n_imp
+    h1 = aim.h1.copy()
+    for spin, positions in _bath_by_spin(aim).items():
+        cols = [n + p for p in positions]
+        imp = _impurity_by_spin(aim)[spin]
+        h_bath = aim.h1[np.ix_(cols, cols)]
+        if np.max(np.abs(h_bath - np.diag(np.diag(h_bath)))) > 1e-12:
+            raise ValueError("the linked chain is built from a star bath; this bath is not diagonal")
+        eye_imp = np.eye(len(imp))
+        v, hb = linked_double_chain(
+            aim.h1[np.ix_(imp, imp)] - aim.fermi * eye_imp,
+            aim.h1[np.ix_(cols, imp)],
+            np.diag(h_bath) - aim.fermi,
+            verbose=False,
+        )
+        hb = hb + aim.fermi * np.eye(len(cols))
+        if np.iscomplexobj(hb) or np.iscomplexobj(v):
+            if np.max(np.abs(np.imag(hb))) > 1e-10 or np.max(np.abs(np.imag(v))) > 1e-10:
+                raise ValueError("the linked chain came out complex for a real model")
+            hb, v = np.real(hb), np.real(v)
+        h1[np.ix_(cols, cols)] = hb
+        h1[np.ix_(cols, imp)] = v
+        h1[np.ix_(imp, cols)] = v.T
+    return h1
+
+
+def _keep_for_weight(vec, lost_weight):
+    weight = np.sort(vec**2)[::-1]
+    tail = 1.0 - np.cumsum(weight)  # weight lost keeping the first k+1
+    return int(np.argmax(tail <= lost_weight)) + 1 if np.any(tail <= lost_weight) else len(weight)
+
+
+def keep_for_weight(aim, lost_weight):
+    """The smallest ``keep`` whose top-``keep`` determinants of the exact ground state lose at most ``lost_weight``.
+
+    This is how a CIPSI ground state is sized: by the accuracy wanted, not by a fixed count -- and the
+    count it needs depends strongly on the orbital basis (see :func:`geometry_variants`).
+    """
+    return _keep_for_weight(aim._sector_cache[aim.sector0][3][:, 0], lost_weight)
+
+
+BASES = ("star", "chain", "natural", "natural-chains")  # the self-contained bath bases
+ALL_BASES = BASES + ("linked-chain",)  # + the one that needs rspt2spectra
+
+
+def geometry_variants(aim, keep=None, lost_weight=None, names=BASES):
+    """``{name: AIM}`` -- the model in the requested bath bases (default: star, chain, natural orbitals,
+    natural orbitals re-chained; ``"linked-chain"`` additionally needs ``rspt2spectra``).
+
+    ``aim`` must carry its exact ground state (built with ``keep=None``). Each variant is rebuilt with
+    the truncation given by ``keep`` (a fixed count) or ``lost_weight`` (the count each basis needs for
+    that accuracy), so the truncation acts on that basis's own determinants: a basis in which the ground
+    state is compact needs far fewer of them.
+    """
+    n_bath = len(aim.bath)
+    wanted = list(names)
+    unknown = set(wanted) - set(ALL_BASES)
+    if unknown:
+        raise ValueError(f"unknown bath basis {sorted(unknown)}; expected a subset of {ALL_BASES}")
+    out = {}
+    for name in wanted:
+        if name == "linked-chain":
+            out[name] = _aim_with_h1(aim, linked_chain_h1(aim), name, keep=keep, lost_weight=lost_weight)
+            continue
+        if name == "star":
+            U = np.eye(n_bath)
+        elif name == "chain":
+            U = chain_rotation(aim)
+        elif name == "natural":
+            U = natural_orbital_rotation(aim)[0]
+        else:
+            U = natural_orbital_rotation(aim, chains=True)[0]
+        out[name] = rotate_bath(aim, U, name, keep=keep, lost_weight=lost_weight)
+    return out
 
 
 def _seeds_for(aim, side):
@@ -407,14 +706,18 @@ def reference_G(aim, z):
 
 
 def free_G_inverse(aim, z):
-    """``G0^-1(z) = z - eps_d - Delta(z)`` of the non-interacting impurity, shape ``(len(z), n_imp, n_imp)``.
+    """``G0^-1(z) = z - h_imp - V (z - h_bath)^-1 V^T`` of the non-interacting impurity.
 
-    Diagonal: every impurity spin-orbital has its own star, identical for all of them."""
+    Written from the one-body matrix, so it is the same for every basis of the bath: a unitary change
+    of the bath leaves ``V (z - h_bath)^-1 V^T`` -- the hybridization function -- untouched.
+    """
     z = np.atleast_1d(np.asarray(z, dtype=complex))
-    delta = np.sum(aim.couplings[None, :] ** 2 / (z[:, None] - aim.levels[None, :]), axis=1)
-    out = np.zeros((len(z), aim.n_imp, aim.n_imp), dtype=complex)
-    for m in range(aim.n_imp):
-        out[:, m, m] = z - aim.eps_d - delta
+    n = aim.n_imp
+    h_imp, V, h_bath = aim.h1[:n, :n], aim.h1[:n, n:], aim.h1[n:, n:]
+    eye_b = np.eye(h_bath.shape[0])
+    out = np.empty((len(z), n, n), dtype=complex)
+    for k, zk in enumerate(z):
+        out[k] = zk * np.eye(n) - h_imp - V @ np.linalg.solve(zk * eye_b - h_bath, V.T)
     return out
 
 

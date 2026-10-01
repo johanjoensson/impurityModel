@@ -19,7 +19,7 @@ import os
 import numpy as np
 import pytest
 
-from impurityModel.test.support.aim_fixtures import build_nio_like, build_semicircle_siam
+from impurityModel.test.support.aim_fixtures import build_nio_like, build_semicircle_siam, geometry_variants
 from impurityModel.test.support.basis_size_harness import (
     METHODS,
     Mesh,
@@ -187,6 +187,47 @@ def test_a_single_axis_mesh_scores_only_that_axis(metal):
     assert "dSigma_real" not in format_report("x", result)
 
 
+# --- the bath basis (F-geom) --------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def geometries():
+    """The small metal in four bath bases, each truncated to the same ground-state accuracy."""
+    exact = build_semicircle_siam(5, v=0.5)
+    return exact, geometry_variants(exact, lost_weight=1e-4)
+
+
+def test_the_natural_basis_needs_far_fewer_ground_state_determinants_than_the_star_and_chain(geometries):
+    _exact, variants = geometries
+    kept = {name: v.keep for name, v in variants.items()}
+    assert kept["natural"] < kept["star"] < kept["chain"], kept
+
+
+@pytest.mark.parametrize("name", ["star", "chain", "natural", "natural-chains"])
+def test_each_basis_reproduces_its_own_reference_and_stays_near_the_physical_answer(geometries, name):
+    """Solver error against the cell's own seeds is round-off in every basis; the end-to-end error against
+    the exact-ground-state truth is the truncation's, at the accuracy the weight cut allows."""
+    exact, variants = geometries
+    aim = variants[name]
+    omega = np.arange(-1.5, 1.5, 0.1)
+    mesh = Mesh(aim, omega, 1j * np.pi * 0.05 * (2 * np.arange(8) + 1), 0.1, n_real=6, n_mats=4, truth=exact)
+    cell = run_cell(aim, mesh, "lanczos-cap")
+    assert cell["dSigma"] < 1e-6
+    assert cell["dSigma_truth_mats"] is not None and cell["dSigma_truth_mats"] < 0.5
+
+
+def test_a_compact_ground_state_means_a_small_seed_support(geometries):
+    """The lever: the same model, the same ground-state accuracy, a much smaller seed support."""
+    _exact, variants = geometries
+    omega = np.arange(-1.5, 1.5, 0.1)
+    mats = 1j * np.pi * 0.05 * (2 * np.arange(8) + 1)
+    seeds = {
+        name: run_cell(v, Mesh(v, omega, mats, 0.1, n_real=0, n_mats=4), "lanczos-cap")["seed_size"]
+        for name, v in variants.items()
+    }
+    assert seeds["natural"] < seeds["star"] < seeds["chain"], seeds
+
+
 # --- the benchmark -------------------------------------------------------------------------------
 
 RUN = os.environ.get("RUN_BASIS_SIZE_BENCH", "0") not in ("0", "", "false", "False")
@@ -258,6 +299,59 @@ def test_full_size_metal():
             runs.append((f"real delta={delta}", Mesh(aim, omega, matsubara, delta, n_real=8, n_mats=0)))
         for axis, mesh in runs:
             title = f"{label} {axis}"
+            result = run_grid(aim, mesh, swm_etas=(1e-4, 1e-5), progress=progress)
+            print("\n" + format_report(title, result), flush=True)
+            dump[title] = result
+            if out:
+                with open(out, "w") as f:
+                    json.dump(dump, f, indent=1, default=lambda o: o.tolist() if hasattr(o, "tolist") else float(o))
+
+
+@pytest.mark.benchmark
+@pytest.mark.skipif(not RUN, reason="Set RUN_BASIS_SIZE_BENCH=1 to run the full-size comparison.")
+@pytest.mark.parametrize("fixture", ["F-NiO", "F-metal"])
+def test_full_size_geometry(fixture):
+    """The same model in four bath bases (star, chain, natural orbitals, natural orbitals re-chained).
+
+    Each basis keeps the ground-state determinants *its own* basis needs for ``BENCH_LOST`` (default 1e-6) of
+    discarded weight, so the ground-state accuracy is held fixed and the seed support is what the basis
+    changes. ``dSigma`` is the solver's error against that truncated state; ``dSigma_truth`` the end-to-end
+    error against the exact ground state (``G`` does not depend on the basis). Env: ``BENCH_LOST``,
+    ``BENCH_GEOM_N_B`` (default 9 for F-NiO, 7 for F-metal), ``BENCH_METAL_V`` (default 0.5),
+    ``BENCH_DELTAS`` (F-NiO ``0.06,0.4``, F-metal ``0.02,0.13``), ``BENCH_BASES`` (default
+    ``star,chain,natural,natural-chains``; add ``linked-chain``, which needs ``rspt2spectra``), ``BENCH_OUT``."""
+    lost = float(os.environ.get("BENCH_LOST", "1e-6"))
+    wanted = os.environ.get("BENCH_BASES", "star,chain,natural,natural-chains").split(",")
+    if fixture == "F-NiO":
+        n_b = int(os.environ.get("BENCH_GEOM_N_B", "9"))
+        exact = build_nio_like(n_b, target_d9L=0.15)
+        deltas = [float(d) for d in os.environ.get("BENCH_DELTAS", "0.06,0.4").split(",")]
+        matsubara, lo, hi, label = MATSUBARA, -40.0, 10.0, f"F-NiO n_b={n_b} d9L=0.15"
+    else:
+        n_b = int(os.environ.get("BENCH_GEOM_N_B", "7"))
+        v = float(os.environ.get("BENCH_METAL_V", "0.5"))
+        exact = build_semicircle_siam(n_b, v=v)
+        deltas = [float(d) for d in os.environ.get("BENCH_DELTAS", "0.02,0.13").split(",")]
+        matsubara, lo, hi, label = 1j * np.pi * 0.005 * (2 * np.arange(12) + 1), -1.5, 1.5, f"F-metal n_b={n_b} V={v}"
+    out, dump = os.environ.get("BENCH_OUT"), {}
+
+    def progress(c):
+        fmt = lambda x: "-" if x is None else f"{x:.1e}"  # noqa: E731
+        print(
+            f"   {c['method']:15s} cap={c['cap']:>10} eta={c['eta']:<8} size={c['size']} "
+            f"own={fmt(c['dSigma'])} truth_m={fmt(c['dSigma_truth_mats'])} truth_r={fmt(c['dSigma_truth_real'])} "
+            f"{c['wall']:.0f}s",
+            flush=True,
+        )
+
+    for name, aim in geometry_variants(exact, lost_weight=lost, names=wanted).items():
+        head = f"{label} basis={name} lost<={lost:.0e} K={aim.keep} (of {len(aim._sector_cache[aim.sector0][4])})"
+        runs = [("Matsubara", Mesh(aim, np.array([0.0]), matsubara, deltas[0], n_real=0, n_mats=6, truth=exact))]
+        for delta in deltas:
+            omega = np.arange(lo, hi, delta / 2)
+            runs.append((f"real delta={delta}", Mesh(aim, omega, matsubara, delta, n_real=8, n_mats=0, truth=exact)))
+        for axis, mesh in runs:
+            title = f"{head} {axis}"
             result = run_grid(aim, mesh, swm_etas=(1e-4, 1e-5), progress=progress)
             print("\n" + format_report(title, result), flush=True)
             dump[title] = result

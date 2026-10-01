@@ -13,12 +13,17 @@ from mpi4py import MPI
 from impurityModel.ed.greens_function import get_Greens_function
 from impurityModel.test.support.aim_fixtures import (
     N_IMP,
+    block_krylov_basis,
     build_nio_like,
     build_semicircle_siam,
     charge_transfer_weight,
     free_G_inverse,
+    geometry_variants,
     interaction_increment,
+    linked_chain_h1,
+    one_body_density,
     reference_G,
+    rotate_bath,
     self_energy,
     semicircle_star,
     spin_of,
@@ -197,3 +202,141 @@ def test_a_truncated_ground_state_is_variational_and_has_a_smaller_support():
     assert len(list(cut.gs.keys())) <= 40 < len(list(exact.gs.keys()))
     assert cut.e0 >= exact.e0 - 1e-12 and cut.exact_e0 == pytest.approx(exact.e0)
     assert sum(abs(a[0]) ** 2 for _d, a in cut.gs.items()) == pytest.approx(1.0)
+
+
+# --- exact changes of the bath basis -------------------------------------------------------------------
+
+
+def test_block_krylov_basis_is_orthogonal_tridiagonalizes_and_completes_a_closed_space():
+    rng = np.random.default_rng(7)
+    levels = np.sort(rng.normal(size=6))
+    h = np.diag(levels)
+    v = rng.normal(size=6)
+    Q = block_krylov_basis(h, v[:, None])
+    np.testing.assert_allclose(Q.T @ Q, np.eye(6), atol=1e-12)
+    T = Q.T @ h @ Q
+    assert np.max(np.abs(np.triu(T, 2))) < 1e-10 and np.max(np.abs(np.tril(T, -2))) < 1e-10
+    np.testing.assert_allclose(Q.T @ v, [np.linalg.norm(v), 0, 0, 0, 0, 0], atol=1e-12)
+    # a coupling that misses a level closes the Krylov space early; the rest is completed orthonormally
+    v2 = v.copy()
+    v2[3] = 0.0
+    Q2 = block_krylov_basis(np.diag(np.where(np.arange(6) == 3, levels[3], levels)), v2[:, None])
+    np.testing.assert_allclose(Q2.T @ Q2, np.eye(6), atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "build",
+    [lambda: build_nio_like(2, target_d9L=0.15), lambda: build_semicircle_siam(5, v=0.5)],
+    ids=["F-NiO", "F-metal"],
+)
+def test_every_bath_basis_gives_the_same_ground_state_energy_G_and_Sigma(build):
+    """The decisive check of the rotations: a unitary change of the bath cannot move any impurity
+    observable, so the dense reference must agree in all four bases to round-off."""
+    aim = build()
+    z = np.linspace(-1.0, 1.0, 5) + 0.15j
+    mats = 1j * np.pi * 0.1 * (2 * np.arange(4) + 1)
+    ref_G, ref_S = reference_G(aim, z), self_energy(reference_G(aim, mats), free_G_inverse(aim, mats))
+    for name, v in geometry_variants(aim).items():
+        assert v.basis_name == name and v.hOp.is_hermitian()
+        assert v.e0 == pytest.approx(aim.e0, abs=1e-10)
+        np.testing.assert_allclose(reference_G(v, z), ref_G, atol=1e-9, err_msg=name)
+        np.testing.assert_allclose(
+            self_energy(reference_G(v, mats), free_G_inverse(v, mats)), ref_S, atol=1e-9, err_msg=name
+        )
+
+
+def test_the_chain_basis_is_tridiagonal_with_the_impurity_at_one_end():
+    aim = build_nio_like(3, target_d9L=0.15)
+    chain = geometry_variants(aim)["chain"]
+    n, nb = aim.n_imp, aim.n_b
+    for m in aim.imp:
+        sites = slice(n + m * nb, n + (m + 1) * nb)
+        block = chain.h1[sites, sites]
+        assert np.max(np.abs(np.triu(block, 2))) < 1e-10
+        coupling = chain.h1[m, sites]
+        assert abs(coupling[0]) > 1e-3 and np.max(np.abs(coupling[1:])) < 1e-10
+
+
+def test_the_natural_basis_diagonalizes_the_bath_density_matrix_and_orders_it_by_occupation():
+    aim = build_semicircle_siam(5, v=0.5)
+    natural = geometry_variants(aim)["natural"]
+    rho = one_body_density(natural)
+    assert np.max(np.abs(rho - np.diag(np.diag(rho)))) < 1e-9
+    n = aim.n_imp
+    for positions in ([p for p in range(len(aim.bath)) if spin_of(n + p, aim.n_b, n) == s] for s in (0, 1)):
+        occ = np.diag(rho)[positions]
+        assert np.all(np.diff(occ) <= 1e-12)  # filled first
+
+
+def test_in_the_natural_chain_basis_the_impurity_couples_only_to_the_head_of_each_chain():
+    aim = build_semicircle_siam(5, v=0.5)
+    nc = geometry_variants(aim)["natural-chains"]
+    n = aim.n_imp
+    rho = one_body_density(aim)
+    for spin in (0, 1):
+        positions = [p for p in range(len(aim.bath)) if spin_of(n + p, aim.n_b, n) == spin]
+        n_filled = int(np.sum(np.linalg.eigvalsh(rho[np.ix_(positions, positions)]) > 0.5))
+        imp = [m for m in aim.imp if spin_of(m, aim.n_b, n) == spin]
+        coupling = nc.h1[np.ix_(imp, [n + p for p in positions])]
+        heads = {0, n_filled} & set(range(len(positions)))
+        away = [k for k in range(len(positions)) if k not in heads]
+        assert np.max(np.abs(coupling[:, away])) < 1e-10
+
+
+def test_a_bath_rotation_refuses_to_mix_spins_or_to_be_non_orthogonal():
+    aim = build_semicircle_siam(3, v=0.5)
+    n_bath = len(aim.bath)
+    mix = np.eye(n_bath)
+    mix[0, n_bath - 1] = mix[n_bath - 1, 0] = 0.5
+    with pytest.raises(ValueError):
+        rotate_bath(aim, mix, "bad")
+    with pytest.raises(ValueError, match="orthogonal"):
+        rotate_bath(aim, 2.0 * np.eye(n_bath), "bad")
+
+
+# --- the linked double chain (rspt2spectra) -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "build",
+    [lambda: build_nio_like(2, target_d9L=0.15), lambda: build_semicircle_siam(5, v=0.5)],
+    ids=["F-NiO", "F-metal"],
+)
+def test_the_linked_chain_is_an_exact_change_of_the_bath(build):
+    """Same impurity block, same hybridization function, same ground-state energy, G and Sigma: the linked
+    chain of ``rspt2spectra`` is a unitary rotation of the star bath, so it can be compared with the others."""
+    pytest.importorskip("rspt2spectra.edchain")
+    aim = build()
+    linked = geometry_variants(aim, names=("linked-chain",))["linked-chain"]
+    n = aim.n_imp
+    np.testing.assert_array_equal(linked.h1[:n, :n], aim.h1[:n, :n])
+    z = np.linspace(-1.0, 1.0, 5) + 0.15j
+    mats = 1j * np.pi * 0.1 * (2 * np.arange(4) + 1)
+    np.testing.assert_allclose(free_G_inverse(linked, z), free_G_inverse(aim, z), atol=1e-10)  # Delta(z)
+    assert linked.e0 == pytest.approx(aim.e0, abs=1e-10) and linked.hOp.is_hermitian()
+    np.testing.assert_allclose(reference_G(linked, z), reference_G(aim, z), atol=1e-9)
+    np.testing.assert_allclose(
+        self_energy(reference_G(linked, mats), free_G_inverse(linked, mats)),
+        self_energy(reference_G(aim, mats), free_G_inverse(aim, mats)),
+        atol=1e-9,
+    )
+    # a rotation of the bath alone keeps its spectrum
+    n_b_total = len(aim.bath)
+    np.testing.assert_allclose(
+        np.sort(np.linalg.eigvalsh(linked.h1[n:, n:])), np.sort(np.linalg.eigvalsh(aim.h1[n:, n:])), atol=1e-10
+    )
+    assert linked.h1.shape == aim.h1.shape and n_b_total > 0
+
+
+def test_the_linked_chain_is_built_from_a_star_and_refuses_anything_else():
+    pytest.importorskip("rspt2spectra.edchain")
+    aim = build_semicircle_siam(5, v=0.5)
+    chain = geometry_variants(aim, names=("chain",))["chain"]
+    with pytest.raises(ValueError, match="star"):
+        linked_chain_h1(chain)
+
+
+def test_an_unknown_bath_basis_is_refused():
+    aim = build_semicircle_siam(3, v=0.5)
+    with pytest.raises(ValueError, match="unknown bath basis"):
+        geometry_variants(aim, names=("star", "banana"))

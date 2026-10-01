@@ -1,7 +1,7 @@
 # How large a basis does the self-energy need? Per-frequency vs Lanczos, and importance-ranked admission
 
-**Status: measured on three fixtures (F-NiO, F-pos, F-metal); the geometry (F-geom) and real-workload tiers are
-not done.** Branch `gf-basis-size`. Plan: `~/.claude/plans/swirling-cooking-spark.md`.
+**Status: measured on three fixtures (F-NiO, F-pos, F-metal) and, on two of them, in five bath bases (F-geom); the
+real-workload tier is not done.** Branch `gf-basis-size`. Plan: `~/.claude/plans/swirling-cooking-spark.md`.
 
 ## The questions
 
@@ -271,6 +271,217 @@ real-axis mesh would cost roughly 40 times more, where Lanczos solves it in one 
 (1.9 % vs 14 %), the model is a single orbital with a delocalized bath, and the ground state is truncated; any of
 these could account for the outer admission winning on the Matsubara axis. No experiment separated them.
 
+### F-geom: the same model in five bath bases (measured)
+
+A unitary change of the bath orbitals (impurity fixed, spin preserved) leaves H unitarily equivalent and every impurity
+observable unchanged, so with an exact ground state all bases give the *same* `G` and `Sigma` (checked to ~1e-14, with
+the same ground-state energy). What changes is the determinant structure: the support of the ground state, hence the
+seeds, and how the resolvent's weight is distributed over the closure. The closure itself is unchanged (no
+restrictions are applied; see the limits). The bases:
+
+* **star** -- the original: every bath level coupled directly to its impurity spin-orbital.
+* **chain** -- one chain **per impurity spin-orbital** (2 chains in the metal, 4 in F-NiO), by Lanczos
+  tridiagonalization of each star from its coupling vector, the impurity at one end. Not one chain for the whole
+  bath, and no occupied/unoccupied split.
+* **natural** -- the eigenvectors of the bath density matrix of the exact many-body ground state, per spin, ordered
+  by occupation. Needs a ground state first.
+* **natural-chains** -- the filled (occupation > 1/2) and empty natural orbitals each re-chained by block Lanczos from the
+  impurity coupling. On F-NiO the bath is entirely filled, so there is one group and this equals the plain chain exactly.
+* **linked-chain** -- `rspt2spectra.edchain.linked_double_chain`: one-body eigenstates of the non-interacting
+  impurity + star split by the sign of their energy relative to a Fermi level, each half made a chain, the impurity
+  character restored by an SVD. No many-body input. It treats the orbitals of one spin as a block, so on F-NiO the two
+  orbitals of a spin are *coupled*, unlike the plain chain. Its hybridization function matches the star's to 2e-15.
+  The Fermi level is 0 for the metal and just above the filled bath for F-NiO (a choice: F-NiO's bath straddles zero
+  but is filled by construction).
+
+**Ground-state accuracy is held fixed, not its size.** Each basis keeps the ground-state determinants *its own* basis
+needs for 1e-6 of discarded weight (the lowest eigenstate of H restricted to them, as a CIPSI state is). That count
+varies by orders of magnitude, and with it the seed support, which is the floor under every method:
+
+| model | basis | ground-state determinants K (of sector) | seed support |
+|---|---|---|---|
+| F-NiO | star | 100 (of 190) | 380 |
+| F-NiO | chain | 15 (of 190) | 50 |
+| F-NiO | natural | 6 (of 190) | 20 |
+| F-NiO | natural-chains | 15 (of 190) | 50 |
+| F-NiO | linked-chain | 24 (of 190) | 80 |
+| F-metal | star | 935 (of 4900) | 936 |
+| F-metal | chain | 4587 (of 4900) | 4588 |
+| F-metal | natural | 33 (of 4900) | 33 |
+| F-metal | natural-chains | 85 (of 4900) | 90 |
+| F-metal | linked-chain | 111 (of 4900) | 118 |
+
+Two error views are reported. **Own-seed error** (`dSigma`) is the solver's error against the exact resolvent of *that
+cell's* truncated seeds: it isolates what the basis does to the solver. **End-to-end error** (`dSigma_truth`) is the
+error against the exact ground state's `Sigma` (the same in every basis): what the truncated ground state and the
+solver lose together.
+
+#### F-NiO (d9L 15 %, exact ground state in a 190-determinant sector, closure 4,940)
+
+Smallest basis (determinants), own-seed error, closure 4,940; K (seeds) per basis as above:
+
+
+**Matsubara**
+
+| basis | K (seeds) | tol | Lanczos cap | BiCGSTAB cap | outer admission | best |
+|---|---|---|---|---|---|---|
+| star | 100 (380) | 1e-03 | 3,288 | 1,870 | 4,154 | **1,870** |
+| star | 100 (380) | 1e-04 | 3,980 | 3,980 | 4,154 | **3,980** |
+| chain | 15 (50) | 1e-03 | 468 | 470 | 216 | **216** |
+| chain | 15 (50) | 1e-04 | 468 | 470 | 490 | **468** |
+| natural | 6 (20) | 1e-03 | 740 | 738 | 364 | **364** |
+| natural | 6 (20) | 1e-04 | 1,968 | 3,442 | 856 | **856** |
+| natural-chains | 15 (50) | 1e-03 | 470 | 470 | 216 | **216** |
+| natural-chains | 15 (50) | 1e-04 | 470 | 470 | 490 | **470** |
+| linked-chain | 24 (80) | 1e-03 | 739 | 740 | 334 | **334** |
+| linked-chain | 24 (80) | 1e-04 | 988 | 988 | 708 | **708** |
+
+**real δ=0.06**
+
+| basis | K (seeds) | tol | Lanczos cap | BiCGSTAB cap | outer admission | best |
+|---|---|---|---|---|---|---|
+| star | 100 (380) | 1e-03 | 4,700 | 4,700 | 4,554 | **4,554** |
+| star | 100 (380) | 1e-04 | 4,700 | 4,700 | 4,554 | **4,554** |
+| chain | 15 (50) | 1e-03 | 3,287 | 3,290 | 3,262 | **3,262** |
+| chain | 15 (50) | 1e-04 | 3,994 | 3,995 | 3,262 | **3,262** |
+| natural | 6 (20) | 1e-03 | 4,940 | 4,940 | 4,490 | **4,490** |
+| natural | 6 (20) | 1e-04 | 4,940 | 4,940 | 4,490 | **4,490** |
+| natural-chains | 15 (50) | 1e-03 | 3,290 | 3,290 | 2,410 | **2,410** |
+| natural-chains | 15 (50) | 1e-04 | 3,994 | 3,995 | 3,214 | **3,214** |
+| linked-chain | 24 (80) | 1e-03 | 4,199 | 4,199 | 2,907 | **2,907** |
+| linked-chain | 24 (80) | 1e-04 | 4,940 | 4,940 | 4,136 | **4,136** |
+
+**real δ=0.4**
+
+| basis | K (seeds) | tol | Lanczos cap | BiCGSTAB cap | outer admission | best |
+|---|---|---|---|---|---|---|
+| star | 100 (380) | 1e-03 | 3,288 | 3,288 | 4,422 | **3,288** |
+| star | 100 (380) | 1e-04 | 4,700 | 4,700 | 4,422 | **4,422** |
+| chain | 15 (50) | 1e-03 | 704 | 1,410 | 1,177 | **704** |
+| chain | 15 (50) | 1e-04 | 2,584 | 2,584 | 2,336 | **2,336** |
+| natural | 6 (20) | 1e-03 | 2,717 | 3,442 | 2,007 | **2,007** |
+| natural | 6 (20) | 1e-04 | 4,198 | 4,184 | 4,103 | **4,103** |
+| natural-chains | 15 (50) | 1e-03 | 704 | 1,408 | 1,179 | **704** |
+| natural-chains | 15 (50) | 1e-04 | 2,584 | 2,584 | 2,336 | **2,336** |
+| linked-chain | 24 (80) | 1e-03 | 2,712 | 2,716 | 1,384 | **1,384** |
+| linked-chain | 24 (80) | 1e-04 | 3,455 | 3,458 | 2,878 | **2,878** |
+**The bath basis changes the required basis by 3-9x.** Best method per basis at `1e-3`: on the Matsubara axis 1,870
+(star), 334 (linked chain), 216 (chain and natural chains), 364 (natural); on the real axis at delta = 0.4, 3,288 (star),
+704 (chain), 1,384 (linked), 2,007 (natural). At the NiO-like delta = 0.06 nothing helps much: every basis needs at least
+59 % of the closure, the best being the linked chain with outer admission (2,907) against 4,554 for the star. In the
+chain-like bases the outer admission is the best method on the Matsubara axis (216 against 468 for capped Lanczos in the
+chain); on the real axis at delta = 0.4 freeze-growth Lanczos is best in the chain (704 against 1,177).
+
+#### F-metal (V = 0.5 Ry, ground state in a 4,900-determinant sector, closure 7,840)
+
+Smallest basis (determinants), own-seed error:
+
+
+**Matsubara**
+
+| basis | K (seeds) | tol | Lanczos cap | BiCGSTAB cap | outer admission | best |
+|---|---|---|---|---|---|---|
+| star | 935 (936) | 1e-03 | 3,136 | 2,352 | 1,456 | **1,456** |
+| star | 935 (936) | 1e-05 | 5,488 | 3,136 | 2,400 | **2,400** |
+| chain | 4587 (4588) | 1e-03 | 7,840 | 7,840 | 7,494 | **7,494** |
+| chain | 4587 (4588) | 1e-05 | 7,840 | 7,840 | 7,806 | **7,806** |
+| natural | 33 (33) | 1e-03 | 392 | 392 | 102 | **102** |
+| natural | 33 (33) | 1e-05 | 2,352 | 784 | 255 | **255** |
+| natural-chains | 85 (90) | 1e-03 | 4,312 | 1,568 | 220 | **220** |
+| natural-chains | 85 (90) | 1e-05 | 4,312 | 1,568 | 1,104 | **1,104** |
+| linked-chain | 111 (118) | 1e-03 | 784 | 784 | 298 | **298** |
+| linked-chain | 111 (118) | 1e-05 | 1,568 | 1,176 | 574 | **574** |
+
+**real δ=0.02**
+
+| basis | K (seeds) | tol | Lanczos cap | BiCGSTAB cap | outer admission | best |
+|---|---|---|---|---|---|---|
+| star | 935 (936) | 1e-03 | 5,488 | 5,488 | 5,383 | **5,383** |
+| star | 935 (936) | 1e-05 | 7,840 | 7,840 | 6,957 | **6,957** |
+| chain | 4587 (4588) | 1e-03 | 7,840 | 7,840 | 7,828 | **7,828** |
+| chain | 4587 (4588) | 1e-05 | 7,840 | 7,840 | 7,840 | **7,840** |
+| natural | 33 (33) | 1e-03 | 7,840 | 6,664 | 4,230 | **4,230** |
+| natural | 33 (33) | 1e-05 | 7,840 | 7,840 | 5,768 | **5,768** |
+| natural-chains | 85 (90) | 1e-03 | 7,840 | 7,840 | 5,210 | **5,210** |
+| natural-chains | 85 (90) | 1e-05 | 7,840 | 7,840 | 6,650 | **6,650** |
+| linked-chain | 111 (118) | 1e-03 | 5,488 | 5,488 | 4,714 | **4,714** |
+| linked-chain | 111 (118) | 1e-05 | 7,840 | 7,840 | 6,252 | **6,252** |
+
+**real δ=0.13**
+
+| basis | K (seeds) | tol | Lanczos cap | BiCGSTAB cap | outer admission | best |
+|---|---|---|---|---|---|---|
+| star | 935 (936) | 1e-03 | 3,136 | 2,352 | 2,836 | **2,352** |
+| star | 935 (936) | 1e-05 | 5,488 | 5,488 | 5,129 | **5,129** |
+| chain | 4587 (4588) | 1e-03 | 7,840 | 7,840 | 7,618 | **7,618** |
+| chain | 4587 (4588) | 1e-05 | 7,840 | 7,840 | 7,834 | **7,834** |
+| natural | 33 (33) | 1e-03 | 5,488 | 2,352 | 1,024 | **1,024** |
+| natural | 33 (33) | 1e-05 | 7,840 | 5,488 | 2,768 | **2,768** |
+| natural-chains | 85 (90) | 1e-03 | 4,312 | 2,352 | 1,210 | **1,210** |
+| natural-chains | 85 (90) | 1e-05 | 6,664 | 5,488 | 3,558 | **3,558** |
+| linked-chain | 111 (118) | 1e-03 | 1,176 | 784 | 1,134 | **784** |
+| linked-chain | 111 (118) | 1e-05 | 3,136 | 2,352 | 2,936 | **2,352** |
+
+**The linked chain, and the natural bases, need far smaller bases than the star; the plain chain is the worst basis.**
+(The natural basis keeps only 33 ground-state determinants here, and its real-axis runs were the slowest of the five.)
+Against the star (best method per basis): linked chain 298 vs 1,456 on the Matsubara axis at `1e-3` (4.9x) and 574 vs 2,400
+at `1e-5` (4.2x); at delta = 0.13, 784 vs 2,352 at `1e-3` (3.0x) and 2,352 vs 5,129 at `1e-5` (2.2x); at the narrow
+delta = 0.02 only 1.1x (4,714 vs 5,383; 6,252 vs 6,957). The natural basis reaches 102 (`1e-3`) and 255 (`1e-5`) on the
+Matsubara axis, 14x and 9x below the star, and 1,024 and 2,768 at delta = 0.13 (2.3x and 1.9x below the star, but above the linked
+chain's 784 and 2,352). The plain chain needs 7,494-7,840 everywhere: a half-filled metal's ground
+state is not compact in a chain basis (4,587 determinants for 1e-6, seeds 4,588 of a 7,840 closure), so the seeds leave
+no room. The narrow-delta real axis stays hard in every basis (54-100 % of the closure).
+
+#### The end-to-end error changes what these numbers mean
+
+Smallest error reached against the exact ground state over all runs of a basis (the floor the truncated ground state
+sets, whatever the solver does):
+
+| model | basis | Matsubara | real, narrow δ | real, wide δ |
+|---|---|---|---|---|
+| F-NiO | star | 3e-13 | 3e-14 | 1e-13 |
+| F-NiO | chain | 5e-06 | 7e-05 | 4e-05 |
+| F-NiO | natural | 1e-04 | 8e-05 | 8e-05 |
+| F-NiO | natural-chains | 5e-06 | 7e-05 | 4e-05 |
+| F-NiO | linked-chain | 2e-05 | 4e-05 | 2e-05 |
+| F-metal | star | 5e-04 | 9e-04 | 6e-05 |
+| F-metal | chain | 2e-03 | 2e-03 | 2e-04 |
+| F-metal | natural | 6e-05 | 2e-03 | 4e-04 |
+| F-metal | natural-chains | 9e-03 | 1e-03 | 1e-04 |
+| F-metal | linked-chain | 2e-02 | 1e-03 | 1e-04 |
+
+A fixed discarded weight of 1e-6 is **not** a fixed end-to-end accuracy. The star basis on F-NiO is exact (its ground
+state has exactly 100 nonzero determinants), the compact bases leave floors of 5e-6 to 1e-4 in Sigma. On the metal the
+floors are much larger for the compact bases (Matsubara: 6e-5 natural, 5e-4 star, 2e-3 chain, **9e-3 natural chains,
+2e-2 linked chain**). Consequences:
+
+* On F-NiO every basis reaches `1e-3` end to end, so the table above holds for that tolerance; the natural basis cannot
+  reach `1e-4` (floor 1e-4).
+* On the metal the linked chain and the natural chains **cannot reach `1e-3` end to end on the Matsubara axis at this
+  cut**, so their 4-5x advantage over the star there is a statement about the solver on a ground state that is
+  itself too inaccurate. At delta = 0.13 their floors are 1e-4, so the real-axis advantage (3.0x at `1e-3`) does stand.
+  The natural basis (Matsubara floor 6e-5, wide-delta floor 4e-4) keeps its advantage at `1e-3` on both axes.
+* The fair comparison at fixed *end-to-end* accuracy needs the discarded weight tuned per basis. At 1e-8 of discarded
+  weight the metal needs 296 (natural chains) and 126 (natural) determinants against the star's 1,611 (measured when
+  sizing the ground states; the linked chain was not measured at 1e-8). **The benchmark itself was not run at that
+  cut**; the tables above are at a common 1e-6 weight.
+
+#### What this does and does not show
+
+* The bath basis is a larger lever than the choice of solver: it moves the required basis by 3-9x on F-NiO (1.6x at the
+  narrow broadening) and up to 14x on the metal's Matsubara axis, against the 1.3-3x differences between methods in the
+  same basis.
+* The method ranking depends on the basis: the outer admission wins on the Matsubara axis in the compact bases, freeze-growth
+  Lanczos wins the F-NiO chain on the real axis at delta = 0.4, and in the F-NiO star basis the per-frequency cap wins.
+* **Hypothesis, not tested:** a chain orders the bath by distance from the impurity, so determinants with excitations far
+  along the chain carry little weight and a cap or threshold can cut them; a star treats every level symmetrically, so the
+  closure grows in all directions at once.
+* Natural-orbital bases need the many-body ground state first. A CIPSI run would get a first density from an
+  approximate state, which was not simulated (the exact density was used).
+* **The comparison is unrestricted.** Production runs apply basis-dependent restrictions (dN windows, chain_restrict,
+  an excitation budget counted per bath orbital), which act differently in each basis; their effect was not measured.
+* Wall times were measured while other jobs shared the machine and are not reported.
+
 ## Answers
 
 1. **Does per-frequency need a smaller maximum basis than Lanczos?** *Sometimes, and it depends on the axis.* Uncapped:
@@ -305,7 +516,7 @@ these could account for the outer admission winning on the Matsubara axis. No ex
 
 ## Not done
 
-F-geom (the same model in star, chain and natural-orbital bases), the real-workload tier (FCC Ni is the metal there) (NiO archives,
+the tuned-per-basis ground-state accuracy (so the bases are compared at equal end-to-end error), the peeled linked chain (it gives back the star on these uniform stars), the real-workload tier (FCC Ni is the metal there) (NiO archives,
 geometries regenerated from the star archive with `rspt2spectra.edchain`), the `memory_estimate` term for
 `outer`, and Matsubara/real-axis tolerances propagated from a physical requirement.
 

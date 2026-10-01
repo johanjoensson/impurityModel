@@ -61,21 +61,29 @@ class Mesh:
     and is scored on the same points, so every method is compared where the others are.
     """
 
-    def __init__(self, aim, omega, matsubara, delta, n_real=16, n_mats=8):
+    def __init__(self, aim, omega, matsubara, delta, n_real=16, n_mats=8, truth=None):
         """``n_real = 0`` or ``n_mats = 0`` drops that axis: the Matsubara axis does not depend on the
-        broadening, so a sweep over ``delta`` runs it once and the real axis per ``delta``."""
+        broadening, so a sweep over ``delta`` runs it once and the real axis per ``delta``.
+
+        ``truth`` is an AIM whose reference is the *physical* answer -- the exact ground state in any
+        basis, since ``G`` is basis-invariant. With a truncated ground state the cell then also reports
+        ``dSigma_truth_*``, the end-to-end error: what the truncated ground state *and* the solver lose
+        together. ``dSigma_*`` stays the error against the cell's own seeds, the solver's error alone."""
+        self.truth = truth
         self.omega, self.delta = np.asarray(omega, dtype=float), float(delta)
         self.matsubara = np.asarray(matsubara, dtype=complex)
         self.z_real = self.omega + 1j * self.delta
         self.has_real, self.has_mats = n_real > 0, n_mats > 0
         if self.has_real:
             self.ref_real = reference_G(aim, self.z_real)
+            self.truth_real = reference_G(truth, self.z_real) if truth is not None else None
             weight = np.linalg.norm(self.ref_real, axis=(1, 2))
             top = np.argsort(-weight)[: n_real // 2]
             spread = np.linspace(0, len(self.omega) - 1, n_real - len(top)).astype(int)
             self.sel_real = np.unique(np.concatenate([top, spread]))
         if self.has_mats:
             self.ref_mats = reference_G(aim, self.matsubara)
+            self.truth_mats = reference_G(truth, self.matsubara) if truth is not None else None
             self.sel_mats = np.unique(
                 np.linspace(0, len(self.matsubara) - 1, min(n_mats, len(self.matsubara))).astype(int)
             )
@@ -136,13 +144,21 @@ def _fro(a):
 
 def _errors(aim, mesh, G_mats, G_real, U):
     """``G`` and ``Sigma`` errors on the selected points, and the worst acausality of the real-axis ``Sigma``."""
-    out = {"dG_mats": None, "dSigma_mats": None, "dG_real": None, "dSigma_real": None, "acausal_real": None}
+    out = {
+        "dG_mats": None,
+        "dSigma_mats": None,
+        "dG_real": None,
+        "dSigma_real": None,
+        "acausal_real": None,
+        "dSigma_truth_mats": None,
+        "dSigma_truth_real": None,
+    }
     axes = []
     if mesh.has_mats:
-        axes.append(("mats", G_mats, mesh.ref_mats, mesh.matsubara, mesh.sel_mats))
+        axes.append(("mats", G_mats, mesh.ref_mats, mesh.matsubara, mesh.sel_mats, mesh.truth_mats))
     if mesh.has_real:
-        axes.append(("real", G_real, mesh.ref_real, mesh.z_real, mesh.sel_real))
-    for name, G, ref, z, sel in axes:
+        axes.append(("real", G_real, mesh.ref_real, mesh.z_real, mesh.sel_real, mesh.truth_real))
+    for name, G, ref, z, sel, truth in axes:
         Gs, Rs, zs = G[sel], ref[sel], z[sel]
         out[f"dG_{name}"] = float(np.max(_fro(Gs - Rs)) / np.max(_fro(Rs)))
         G0_inv = free_G_inverse(aim, zs)
@@ -153,10 +169,15 @@ def _errors(aim, mesh, G_mats, G_real, U):
             # A method that loses a seed column (an over-aggressive amplitude cutoff) returns a
             # singular G: that is a failed cell, not a crash, and it must not read as a small error.
             out[f"dSigma_{name}"] = np.inf
+            if truth is not None:
+                out[f"dSigma_truth_{name}"] = np.inf
             if name == "real":
                 out["acausal_real"] = np.inf
             continue
         out[f"dSigma_{name}"] = float(np.max(_fro(Ss - SR) / np.maximum(_fro(SR), 0.1 * U)))
+        if truth is not None:
+            ST = self_energy(truth[sel], G0_inv)
+            out[f"dSigma_truth_{name}"] = float(np.max(_fro(Ss - ST) / np.maximum(_fro(ST), 0.1 * U)))
         if name == "real":
             anti = (Ss - np.conj(np.transpose(Ss, (0, 2, 1)))) / 2j
             out["acausal_real"] = float(max(0.0, np.max(np.linalg.eigvalsh(anti))))
