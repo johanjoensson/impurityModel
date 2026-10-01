@@ -1104,9 +1104,15 @@ def _solve_in_interval(
         # a nearly-flat pair gives a secant slope near zero, and chasing it cost 6 -> 14
         # evaluations. `slope` is exactly the caller saying "this residual has a knowable slope",
         # so it gates both the Newton seed and this. Growth is capped at 4x regardless.
+        #
+        # A secant whose slope has the wrong sign is not a slope at all: the two points straddle a
+        # discontinuity (a charge-sector jump), and following it steps back across the jump, where
+        # the next same-sector secant points over it again. Measured on AFM NiO: a ping-pong across
+        # the N_imp 8 -> 9 boundary that never bracketed, spending `max_walk` ground-state solves.
         if slope and g_prev is not None and g != g_prev and mu != mu_prev:
             secant_slope = (g - g_prev) / (mu - mu_prev)
-            estimate = mu - g / secant_slope if secant_slope != 0 else None
+            wrong_sign = secant_slope == 0 or (secant_slope > 0) != (slope_sign > 0)
+            estimate = None if wrong_sign else mu - g / secant_slope
             if estimate is not None and math.isfinite(estimate) and estimate != mu:
                 proposed = min(abs(estimate - mu), 4 * max(step, initial_step))
                 step = max(proposed, width_tol)
@@ -1116,6 +1122,9 @@ def _solve_in_interval(
                 if walked >= max_walk:
                     break
                 continue
+            # Rejected: double from here in the direction the residual's own sign asks for. A
+            # previous secant may have left `direction` pointing the other way.
+            direction = -1 if (g > 0) == (slope_sign > 0) else 1
         mu_prev, g_prev = mu, g
         step *= 2
         walked += 1
