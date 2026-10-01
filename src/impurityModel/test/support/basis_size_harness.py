@@ -62,16 +62,23 @@ class Mesh:
     """
 
     def __init__(self, aim, omega, matsubara, delta, n_real=16, n_mats=8):
+        """``n_real = 0`` or ``n_mats = 0`` drops that axis: the Matsubara axis does not depend on the
+        broadening, so a sweep over ``delta`` runs it once and the real axis per ``delta``."""
         self.omega, self.delta = np.asarray(omega, dtype=float), float(delta)
         self.matsubara = np.asarray(matsubara, dtype=complex)
         self.z_real = self.omega + 1j * self.delta
-        weight = np.linalg.norm(reference_G(aim, self.z_real), axis=(1, 2))
-        top = np.argsort(-weight)[: n_real // 2]
-        spread = np.linspace(0, len(self.omega) - 1, n_real - len(top)).astype(int)
-        self.sel_real = np.unique(np.concatenate([top, spread]))
-        self.sel_mats = np.unique(np.linspace(0, len(self.matsubara) - 1, min(n_mats, len(self.matsubara))).astype(int))
-        self.ref_real = reference_G(aim, self.z_real)
-        self.ref_mats = reference_G(aim, self.matsubara)
+        self.has_real, self.has_mats = n_real > 0, n_mats > 0
+        if self.has_real:
+            self.ref_real = reference_G(aim, self.z_real)
+            weight = np.linalg.norm(self.ref_real, axis=(1, 2))
+            top = np.argsort(-weight)[: n_real // 2]
+            spread = np.linspace(0, len(self.omega) - 1, n_real - len(top)).astype(int)
+            self.sel_real = np.unique(np.concatenate([top, spread]))
+        if self.has_mats:
+            self.ref_mats = reference_G(aim, self.matsubara)
+            self.sel_mats = np.unique(
+                np.linspace(0, len(self.matsubara) - 1, min(n_mats, len(self.matsubara))).astype(int)
+            )
 
 
 def _knobs(method, cap, eta, shell_tol=0.0):
@@ -129,11 +136,13 @@ def _fro(a):
 
 def _errors(aim, mesh, G_mats, G_real, U):
     """``G`` and ``Sigma`` errors on the selected points, and the worst acausality of the real-axis ``Sigma``."""
-    out = {}
-    for name, G, ref, z, sel in (
-        ("mats", G_mats, mesh.ref_mats, mesh.matsubara, mesh.sel_mats),
-        ("real", G_real, mesh.ref_real, mesh.z_real, mesh.sel_real),
-    ):
+    out = {"dG_mats": None, "dSigma_mats": None, "dG_real": None, "dSigma_real": None, "acausal_real": None}
+    axes = []
+    if mesh.has_mats:
+        axes.append(("mats", G_mats, mesh.ref_mats, mesh.matsubara, mesh.sel_mats))
+    if mesh.has_real:
+        axes.append(("real", G_real, mesh.ref_real, mesh.z_real, mesh.sel_real))
+    for name, G, ref, z, sel in axes:
         Gs, Rs, zs = G[sel], ref[sel], z[sel]
         out[f"dG_{name}"] = float(np.max(_fro(Gs - Rs)) / np.max(_fro(Rs)))
         G0_inv = free_G_inverse(aim, zs)
@@ -164,8 +173,8 @@ def run_cell(aim, mesh, method, cap=NON_BINDING, eta=0.0, shell_tol=0.0, comm=No
     """
     spec = _knobs(method, cap, eta, shell_tol)
     per_point = spec["gf_method"] == "bicgstab"
-    omega = mesh.omega[mesh.sel_real] if per_point else mesh.omega
-    mats = mesh.matsubara[mesh.sel_mats] if per_point else mesh.matsubara
+    omega = (mesh.omega[mesh.sel_real] if per_point else mesh.omega) if mesh.has_real else None
+    mats = (mesh.matsubara[mesh.sel_mats] if per_point else mesh.matsubara) if mesh.has_mats else None
     basis = aim.basis(sorted(aim.gs.keys()), truncation_threshold=cap, comm=comm if comm is not None else MPI.COMM_SELF)
     t0 = time.perf_counter()
     with env(**spec["env"]), solver_trace.tracing() as trace, contextlib.redirect_stdout(io.StringIO()):
@@ -192,16 +201,24 @@ def run_cell(aim, mesh, method, cap=NON_BINDING, eta=0.0, shell_tol=0.0, comm=No
     notes = trace.of_kind("gf_unit_basis")
     # The per-frequency result is on the selected points already; the Lanczos family's is on the full
     # mesh. Put both on the full mesh's indexing so one scorer serves them.
-    if per_point:
-        full_m = np.full((len(mesh.matsubara),) + G_mats[0].shape[1:], np.nan, dtype=complex)
-        full_r = np.full((len(mesh.omega),) + G_real[0].shape[1:], np.nan, dtype=complex)
-        full_m[mesh.sel_mats], full_r[mesh.sel_real] = G_mats[0], G_real[0]
-    else:
-        full_m, full_r = G_mats[0], G_real[0]
+    full_m = full_r = None
+    if mesh.has_mats:
+        if per_point:
+            full_m = np.full((len(mesh.matsubara),) + G_mats[0].shape[1:], np.nan, dtype=complex)
+            full_m[mesh.sel_mats] = G_mats[0]
+        else:
+            full_m = G_mats[0]
+    if mesh.has_real:
+        if per_point:
+            full_r = np.full((len(mesh.omega),) + G_real[0].shape[1:], np.nan, dtype=complex)
+            full_r[mesh.sel_real] = G_real[0]
+        else:
+            full_r = G_real[0]
     cell = {"method": method, "cap": int(cap), "eta": float(eta), "shell_tol": float(shell_tol), "wall": wall}
     cell.update(_units(notes))
     cell.update(_errors(aim, mesh, full_m, full_r, aim.params.get("U", 8.0)))
-    cell["dSigma"] = max(cell["dSigma_mats"], cell["dSigma_real"])
+    present = [cell[k] for k in ("dSigma_mats", "dSigma_real") if cell[k] is not None]
+    cell["dSigma"] = max(present)
     cell["report_severity"] = int(report.worst_severity) if report is not None else None
     return cell
 
@@ -223,7 +240,7 @@ def pareto(cells, metric="dSigma"):
         pts = sorted(
             (c["size"], c[metric])
             for c in cells
-            if c["method"] == method and c["size"] is not None and c["unconverged"] == 0
+            if c["method"] == method and c["size"] is not None and c["unconverged"] == 0 and c[metric] is not None
         )
         best, front = np.inf, []
         for size, err in pts:
@@ -293,7 +310,9 @@ def run_grid(
         "caps": caps,
         "cells": cells,
         "pareto": pareto(cells),
-        "pareto_by": {m: pareto(cells, m) for m in ("dSigma_mats", "dSigma_real")},
+        "pareto_by": {
+            m: pareto(cells, m) for m in ("dSigma_mats", "dSigma_real") if any(c[m] is not None for c in cells)
+        },
     }
 
 
@@ -324,7 +343,8 @@ def format_report(title, result, tolerances=TOLERANCES):
         f"   uncapped basis: {result['closure']}   seed support: {result['seed_size']}",
     ]
     for metric in ("dSigma_mats", "dSigma_real"):
-        lines += _size_table(result, metric, tolerances)
+        if metric in result["pareto_by"]:
+            lines += _size_table(result, metric, tolerances)
     bad = sorted({c["method"] for c in result["cells"] if c["unconverged"]})
     if bad:
         lines.append(f"   (cells with unconverged per-frequency solves, excluded above: {', '.join(bad)})")

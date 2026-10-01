@@ -43,10 +43,13 @@ def _det(occupied, n_orb):
     return SlaterDeterminant.from_bytes(bytes(buf))
 
 
-def spin_of(orbital, n_b):
-    """0 = up, 1 = down, for an impurity or bath spin-orbital of the layout below."""
-    m = orbital if orbital < N_IMP else (orbital - N_IMP) // n_b
-    return 0 if m < 2 else 1
+def spin_of(orbital, n_b, n_imp=N_IMP):
+    """0 = up, 1 = down, for an impurity or bath spin-orbital of the layout below.
+
+    Impurity spin-orbital ``m`` is up for ``m < n_imp / 2`` and down after; its bath star follows the
+    impurity block, ``n_b`` levels per impurity spin-orbital, and carries its spin."""
+    m = orbital if orbital < n_imp else (orbital - n_imp) // n_b
+    return 0 if m < n_imp // 2 else 1
 
 
 @dataclass
@@ -60,22 +63,27 @@ class AIM:
     e0: float = 0.0
     weights: dict = field(default_factory=dict)
     _sector_cache: dict = field(default_factory=dict)
+    # Layout and bath data: what the reference and the free Green's function need, so that they work
+    # for any model built on this layout rather than only the one that was written first.
+    n_imp: int = N_IMP
+    n_electrons: int = 0
+    sector0: tuple = None  # (n_up, n_dn) of the ground-state sector
+    eps_d: float = 0.0
+    levels: np.ndarray = None  # one impurity spin-orbital's bath levels
+    couplings: np.ndarray = None  # ... and their hybridization amplitudes
+    exact_e0: float = None  # the exact sector minimum when the ground state was truncated
 
     @property
     def n_orb(self):
-        return N_IMP * (1 + self.n_b)
+        return self.n_imp * (1 + self.n_b)
 
     @property
     def imp(self):
-        return list(range(N_IMP))
+        return list(range(self.n_imp))
 
     @property
     def bath(self):
-        return list(range(N_IMP, self.n_orb))
-
-    @property
-    def n_electrons(self):
-        return N_IMP // 2 + N_IMP * self.n_b  # d8 nominal: two impurity electrons, filled bath
+        return list(range(self.n_imp, self.n_orb))
 
     def basis(self, initial, truncation_threshold=np.inf, comm=None):
         """A ``Basis`` over this model's orbital layout (impurity block, filled valence bath)."""
@@ -90,8 +98,8 @@ class AIM:
 
     def sector(self, n_up, n_dn):
         """All determinants with the given spin populations, sorted."""
-        up = [i for i in range(self.n_orb) if spin_of(i, self.n_b) == 0]
-        dn = [i for i in range(self.n_orb) if spin_of(i, self.n_b) == 1]
+        up = [i for i in range(self.n_orb) if spin_of(i, self.n_b, self.n_imp) == 0]
+        dn = [i for i in range(self.n_orb) if spin_of(i, self.n_b, self.n_imp) == 1]
         dets = [
             _det(tuple(a) + tuple(b), self.n_orb)
             for a in itertools.combinations(up, n_up)
@@ -100,9 +108,14 @@ class AIM:
         return sorted(dets)
 
     def dense(self, dets):
-        """``(H, index)``: the dense Hamiltonian on ``dets`` and its determinant -> row map."""
+        """``(H, index)``: the dense Hamiltonian on ``dets`` and its determinant -> row map.
+
+        Returned real when it is: a real symmetric ``eigh`` is several times faster than a complex
+        Hermitian one at these sizes, and the diagonalizations are the cost of the whole fixture."""
         basis = self.basis(dets)
         H = np.asarray(build_dense_matrix(basis, self.hOp))
+        if not np.iscomplexobj(H) or np.max(np.abs(H.imag)) == 0.0:
+            H = np.ascontiguousarray(H.real)
         return H, {bytes(d.to_bytearray()): i for i, d in enumerate(dets)}
 
 
@@ -211,19 +224,29 @@ def _n_imp_weights(aim, vec, dets):
     return counts
 
 
-def ground_state(aim):
-    """Fill ``aim.gs``, ``aim.e0`` and ``aim.weights`` with the high-spin (``S_z = 1``) ground state.
+def ground_state(aim, keep=None):
+    """Fill ``aim.gs``, ``aim.e0`` and ``aim.weights`` from the ground-state sector ``aim.sector0``.
 
-    Both impurity electrons sit spin-up, so the up shell is completely full and the down shell
-    holds all but two of its orbitals: a sector of ``C(n_b*2 + 2, 2)`` determinants.
+    With ``keep`` set the state is **truncated**, the way a CIPSI ground state is: the lowest eigenstate
+    of ``H`` restricted to the ``keep`` determinants of largest amplitude in the exact one. It is not an
+    eigenstate of ``H``, but ``G_ij(z) = <s_i|(z - H + E)^-1|s_j>`` is well defined for any seeds and
+    energy, so the exact reference stays exact -- and the seed support stays small next to the
+    closure, which is the regime of the production calculations (an exact ground state in a metal
+    spreads over the whole sector, and the seeds alone then fill it).
     """
-    n_up = 2 + 2 * aim.n_b
-    n_dn = aim.n_electrons - n_up
+    n_up, n_dn = aim.sector0
     dets = aim.sector(n_up, n_dn)
     H, index = aim.dense(dets)
     evals, evecs = np.linalg.eigh(H)
     vec = evecs[:, 0]
+    aim.exact_e0 = float(evals[0])
     aim.e0 = float(evals[0])
+    if keep is not None and keep < len(dets):
+        top = np.sort(np.argsort(-np.abs(vec))[:keep])
+        sub_evals, sub_evecs = np.linalg.eigh(H[np.ix_(top, top)])
+        vec = np.zeros(len(dets))
+        vec[top] = sub_evecs[:, 0]
+        aim.e0 = float(sub_evals[0])
     aim.gs = ManyBodyState({det: complex(vec[i]) for i, det in enumerate(dets) if abs(vec[i]) > 0.0})
     aim.weights = _n_imp_weights(aim, vec, dets)
     aim._sector_cache[(n_up, n_dn)] = (H, index, evals, evecs, dets)
@@ -240,7 +263,21 @@ def build_nio_like(n_b=9, target_d9L=None, v_eff=1.0, **kwargs):
     params = dict(kwargs)
 
     def make(v):
-        aim = AIM(nio_like_operator(n_b, v_eff=v, **params), n_b, dict(params, v_eff=v))
+        p = dict(params, v_eff=v)
+        center = p.get("bath_center", 0.0)
+        levels, couplings = bath_star(n_b, center, p.get("width", 3.0), v, p.get("n_spectator", 0))
+        n_up0 = 2 + 2 * n_b  # both impurity electrons up: the up shell is full
+        n_electrons = N_IMP // 2 + N_IMP * n_b  # d8 nominal: two impurity electrons, filled bath
+        aim = AIM(
+            nio_like_operator(n_b, v_eff=v, **params),
+            n_b,
+            p,
+            n_electrons=n_electrons,
+            sector0=(n_up0, n_electrons - n_up0),
+            eps_d=impurity_level(p.get("U", 8.0), p.get("J", 1.0), p.get("delta_ct", 4.0), center),
+            levels=levels,
+            couplings=couplings,
+        )
         return ground_state(aim)
 
     if target_d9L is None:
@@ -255,6 +292,69 @@ def build_nio_like(n_b=9, target_d9L=None, v_eff=1.0, **kwargs):
     return make(0.5 * (lo + hi))
 
 
+def semicircle_star(n_b, D, v):
+    """``(levels, couplings)`` of a ``n_b``-level star discretizing a semicircular hybridization.
+
+    Gauss-Chebyshev quadrature of the second kind: nodes ``D cos(k pi / (n_b + 1))`` and weights
+    ``2 sin^2(k pi / (n_b + 1)) / (n_b + 1)``, which sum to one, so ``sum_k V_k^2 = v^2`` and
+    ``Delta(w) -> v^2 / w`` at large ``w`` like the continuum ``2 v^2 / D^2 (w - sqrt(w^2 - D^2))``.
+    The levels are symmetric about zero (with one at zero for odd ``n_b``), as a particle-hole
+    symmetric model needs.
+    """
+    theta = np.arange(1, n_b + 1) * np.pi / (n_b + 1)
+    return D * np.cos(theta), v * np.sqrt(2.0 * np.sin(theta) ** 2 / (n_b + 1))
+
+
+def hubbard_terms(U):
+    """Single-orbital Hubbard interaction ``U n_up n_dn`` on impurity spin-orbitals 0 (up) and 1 (down)."""
+    return {((0, "c"), (1, "c"), (1, "a"), (0, "a")): U}
+
+
+def semicircle_operator(n_b, U, D, v):
+    """Single-impurity Anderson model with a semicircular star bath, at its particle-hole symmetric point.
+
+    The impurity level sits at ``-U/2`` (the ``[double_counting.nominal]`` shift of
+    ``examples/semicircular_siam``), so the half-filled ground state has ``<n_imp> = 1`` and
+    ``Re Sigma(i w_n) = U / 2`` exactly.
+    """
+    n_imp = 2
+    levels, couplings = semicircle_star(n_b, D, v)
+    terms = hubbard_terms(U)
+    for m in range(n_imp):
+        terms[((m, "c"), (m, "a"))] = -U / 2
+        for k, (eps, w) in enumerate(zip(levels, couplings)):
+            b = n_imp + m * n_b + k
+            terms[((b, "c"), (b, "a"))] = float(eps)
+            terms[((m, "c"), (b, "a"))] = float(w)
+            terms[((b, "c"), (m, "a"))] = float(w)
+    return ManyBodyOperator(terms)
+
+
+def build_semicircle_siam(n_b=7, U=0.5, D=0.5, v=0.5, gs_keep=None):
+    """The F-metal fixture: a half-filled SIAM on a semicircular star, a scaled-down ``semicircular_siam``.
+
+    ``n_b`` (odd) levels per spin, so ``2 (1 + n_b)`` spin-orbitals and ``1 + n_b`` electrons in the
+    ``(n_up, n_dn) = ((1 + n_b) / 2, (1 + n_b) / 2)`` singlet sector. ``gs_keep`` truncates the ground
+    state to that many determinants (see :func:`ground_state`).
+    """
+    if n_b % 2 == 0:
+        raise ValueError("n_b must be odd: the half-filled sector needs (1 + n_b) / 2 electrons per spin")
+    levels, couplings = semicircle_star(n_b, D, v)
+    n_up0 = (1 + n_b) // 2
+    aim = AIM(
+        semicircle_operator(n_b, U, D, v),
+        n_b,
+        {"U": U, "D": D, "v_eff": v},
+        n_imp=2,
+        n_electrons=1 + n_b,
+        sector0=(n_up0, n_up0),
+        eps_d=-U / 2,
+        levels=levels,
+        couplings=couplings,
+    )
+    return ground_state(aim, keep=gs_keep)
+
+
 def _seeds_for(aim, side):
     """Seed columns ``c^+_i|gs>`` (``side = 0``) or ``c_i|gs>`` (``side = 1``) for the impurity block."""
     kind = "c" if side == 0 else "a"
@@ -266,14 +366,14 @@ def _seeds_for(aim, side):
 
 
 def reference_G(aim, z):
-    """Exact ``G(z)`` of the impurity block, shape ``(len(z), 4, 4)``, by dense diagonalization.
+    """Exact ``G(z)`` of the impurity block, shape ``(len(z), n_imp, n_imp)``, by dense diagonalization.
 
     One ``eigh`` per reachable sector (cached on ``aim``), then ``O(N nz)`` per frequency.
     """
     z = np.atleast_1d(np.asarray(z, dtype=complex))
-    n_up0 = 2 + 2 * aim.n_b
-    n_dn0 = aim.n_electrons - n_up0
-    out = np.zeros((len(z), N_IMP, N_IMP), dtype=complex)
+    n_up0, n_dn0 = aim.sector0
+    n_imp = aim.n_imp
+    out = np.zeros((len(z), n_imp, n_imp), dtype=complex)
     for side, sectors in ((0, [(n_up0 + 1, n_dn0), (n_up0, n_dn0 + 1)]), (1, [(n_up0 - 1, n_dn0), (n_up0, n_dn0 - 1)])):
         seeds = _seeds_for(aim, side)
         for sector in sectors:
@@ -288,13 +388,13 @@ def reference_G(aim, z):
                 evals, evecs = np.linalg.eigh(H)
                 aim._sector_cache[sector] = (H, index, evals, evecs, dets)
             _H, index, evals, evecs, dets = aim._sector_cache[sector]
-            V = np.zeros((len(dets), N_IMP), dtype=complex)
+            V = np.zeros((len(dets), n_imp), dtype=complex)
             for j, s in enumerate(seeds):
                 for det, amp in s.items():
                     key = bytes(det.to_bytearray())
                     if key in index:
                         V[index[key], j] = amp[0]
-            W = evecs.conj().T @ V  # (n, 4): <n| seed_j>
+            W = evecs.conj().T @ V  # (n, n_imp): <n| seed_j>
             if side == 0:
                 # G_add[i, j] = sum_n conj(W_in) W_jn / (z - lam_n + E0)
                 denom = z[:, None] - evals[None, :] + aim.e0
@@ -307,16 +407,14 @@ def reference_G(aim, z):
 
 
 def free_G_inverse(aim, z):
-    """``G0^-1(z) = z - eps_d - Delta(z)`` of the non-interacting impurity, shape ``(len(z), 4, 4)`` (diagonal)."""
+    """``G0^-1(z) = z - eps_d - Delta(z)`` of the non-interacting impurity, shape ``(len(z), n_imp, n_imp)``.
+
+    Diagonal: every impurity spin-orbital has its own star, identical for all of them."""
     z = np.atleast_1d(np.asarray(z, dtype=complex))
-    p = aim.params
-    center = p.get("bath_center", 0.0)
-    eps_d = impurity_level(p.get("U", 8.0), p.get("J", 1.0), p.get("delta_ct", 4.0), center)
-    levels, couplings = bath_star(aim.n_b, center, p.get("width", 3.0), p["v_eff"], p.get("n_spectator", 0))
-    delta = np.sum(couplings[None, :] ** 2 / (z[:, None] - levels[None, :]), axis=1)
-    out = np.zeros((len(z), N_IMP, N_IMP), dtype=complex)
-    for m in range(N_IMP):
-        out[:, m, m] = z - eps_d - delta
+    delta = np.sum(aim.couplings[None, :] ** 2 / (z[:, None] - aim.levels[None, :]), axis=1)
+    out = np.zeros((len(z), aim.n_imp, aim.n_imp), dtype=complex)
+    for m in range(aim.n_imp):
+        out[:, m, m] = z - aim.eps_d - delta
     return out
 
 

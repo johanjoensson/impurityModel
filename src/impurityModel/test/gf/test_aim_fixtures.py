@@ -14,11 +14,13 @@ from impurityModel.ed.greens_function import get_Greens_function
 from impurityModel.test.support.aim_fixtures import (
     N_IMP,
     build_nio_like,
+    build_semicircle_siam,
     charge_transfer_weight,
     free_G_inverse,
     interaction_increment,
     reference_G,
     self_energy,
+    semicircle_star,
     spin_of,
 )
 
@@ -132,3 +134,66 @@ def test_the_non_interacting_limit_gives_zero_self_energy():
     z = np.linspace(-6, 6, 7) + 0.4j
     sigma = self_energy(reference_G(aim, z), free_G_inverse(aim, z))
     np.testing.assert_allclose(sigma, 0.0, atol=1e-9)
+
+
+# --- F-metal: the semicircular-bath SIAM -------------------------------------------------------------
+
+
+def test_the_semicircle_star_has_unit_weight_symmetric_levels_and_the_continuum_tail():
+    D, v = 0.5, 0.7
+    levels, couplings = semicircle_star(7, D, v)
+    assert np.sum(couplings**2) == pytest.approx(v**2)
+    np.testing.assert_allclose(np.sort(levels), -np.sort(levels)[::-1], atol=1e-14)
+    assert np.min(np.abs(levels)) < 1e-14  # odd n_b: a level at the Fermi energy
+    # Delta(w) -> v^2 / w, and approaches the continuum 2 v^2/D^2 (w - sqrt(w^2 - D^2)) away from the band
+    w = 6.0
+    delta = np.sum(couplings**2 / (w - levels))
+    assert delta == pytest.approx(2 * v**2 / D**2 * (w - np.sqrt(w**2 - D**2)), rel=2e-3)
+
+
+@pytest.mark.parametrize("n_b", [3, 5])
+def test_particle_hole_symmetry_pins_re_sigma_to_half_U_on_the_matsubara_axis(n_b):
+    """At the symmetric point Re Sigma(i w_n) = U/2 exactly, for every n: a sign, factor or reference
+    error anywhere in the Hubbard term, the impurity level or G breaks it."""
+    U = 0.5
+    aim = build_semicircle_siam(n_b, U=U, v=0.4)
+    mats = 1j * np.pi * 0.05 * (2 * np.arange(6) + 1)
+    sigma = self_energy(reference_G(aim, mats), free_G_inverse(aim, mats))
+    np.testing.assert_allclose(sigma[:, 0, 0].real, U / 2, atol=1e-9)
+    np.testing.assert_allclose(sigma[:, 1, 1].real, U / 2, atol=1e-9)
+
+
+def test_the_metal_ground_state_is_a_half_filled_singlet_with_a_symmetric_occupation():
+    aim = build_semicircle_siam(5, v=0.5)
+    w = aim.weights
+    assert sum(w.values()) == pytest.approx(1.0)
+    assert w[0] == pytest.approx(w[2], abs=1e-9)  # particle-hole symmetric: empty and doubly occupied match
+    assert w[1] > 0.3  # a metal still has a local moment, but the weight is spread over all occupations
+
+
+def test_the_metal_without_interaction_has_zero_self_energy():
+    aim = build_semicircle_siam(5, U=0.0, v=0.5)
+    z = np.linspace(-0.6, 0.6, 7) + 0.1j
+    np.testing.assert_allclose(self_energy(reference_G(aim, z), free_G_inverse(aim, z)), 0.0, atol=1e-9)
+
+
+@pytest.mark.parametrize("keep", [None, 40])
+@pytest.mark.parametrize("method", ["bicgstab", "lanczos"])
+def test_the_metal_reference_matches_the_driver_for_the_exact_and_a_truncated_ground_state(method, keep, monkeypatch):
+    """A truncated ground state is not an eigenstate of H, but G for fixed seeds and energy is a
+    well-defined resolvent, so the dense reference must still match the production driver on it."""
+    monkeypatch.setenv("GF_BICGSTAB_ATOL", "1e-12")
+    aim = build_semicircle_siam(5, v=0.5, gs_keep=keep)
+    matsubara = 1j * np.pi * 0.1 * (2 * np.arange(5) + 1)
+    omega = np.linspace(-1.2, 1.2, 9)
+    mat, real = _driver_G(aim, method, matsubara, omega, 0.05)
+    np.testing.assert_allclose(mat[0], reference_G(aim, matsubara), atol=1e-7)
+    np.testing.assert_allclose(real[0], reference_G(aim, omega + 0.05j), atol=1e-7)
+
+
+def test_a_truncated_ground_state_is_variational_and_has_a_smaller_support():
+    exact = build_semicircle_siam(5, v=0.5)
+    cut = build_semicircle_siam(5, v=0.5, gs_keep=40)
+    assert len(list(cut.gs.keys())) <= 40 < len(list(exact.gs.keys()))
+    assert cut.e0 >= exact.e0 - 1e-12 and cut.exact_e0 == pytest.approx(exact.e0)
+    assert sum(abs(a[0]) ** 2 for _d, a in cut.gs.items()) == pytest.approx(1.0)

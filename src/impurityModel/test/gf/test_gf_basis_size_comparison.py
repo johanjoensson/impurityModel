@@ -19,7 +19,7 @@ import os
 import numpy as np
 import pytest
 
-from impurityModel.test.support.aim_fixtures import build_nio_like
+from impurityModel.test.support.aim_fixtures import build_nio_like, build_semicircle_siam
 from impurityModel.test.support.basis_size_harness import (
     METHODS,
     Mesh,
@@ -149,6 +149,44 @@ def test_an_equal_cap_tells_the_two_methods_apart_or_the_prior_is_recorded(small
     assert np.isfinite(lan["dSigma"]) and np.isfinite(bic["dSigma"])
 
 
+# --- F-metal: the semicircular-bath SIAM with a truncated ground state ---------------------------------
+
+
+@pytest.fixture(scope="module")
+def metal():
+    """A strongly hybridized half-filled SIAM, ground state cut to 40 of its 400 determinants (the way a
+    CIPSI ground state is), so the seeds are a small part of a closure the exact state would fill."""
+    aim = build_semicircle_siam(5, v=0.5, gs_keep=40)
+    omega = np.arange(-1.5, 1.5, 0.05)
+    mats = 1j * np.pi * 0.05 * (2 * np.arange(8) + 1)
+    return aim, Mesh(aim, omega, mats, 0.1, n_real=6, n_mats=4)
+
+
+@pytest.mark.parametrize("method", METHODS)
+def test_metal_uncapped_every_method_reproduces_the_exact_reference(metal, method):
+    aim, mesh = metal
+    cell = run_cell(aim, mesh, method)
+    assert cell["unconverged"] == 0 and cell["dSigma"] < 1e-6
+
+
+def test_metal_seeds_are_a_small_fraction_of_the_closure(metal):
+    """The regime the truncated ground state exists for: caps and thresholds have room below the closure."""
+    aim, mesh = metal
+    cell = run_cell(aim, mesh, "lanczos-cap")
+    assert cell["seed_size"] <= 3 * 40 and cell["size"] > 4 * cell["seed_size"]
+
+
+def test_a_single_axis_mesh_scores_only_that_axis(metal):
+    aim, _ = metal
+    mats_only = Mesh(aim, np.array([0.0]), 1j * np.pi * 0.05 * (2 * np.arange(8) + 1), 0.1, n_real=0, n_mats=4)
+    cell = run_cell(aim, mats_only, "bicgstab-cap")
+    assert cell["dSigma_mats"] is not None and cell["dSigma_real"] is None
+    assert cell["dSigma"] == cell["dSigma_mats"] and cell["dSigma"] < 1e-6
+    result = run_grid(aim, mats_only, cap_fractions=(0.3,), etas=(1e-2,), swm_etas=(), methods=("lanczos-cap",))
+    assert list(result["pareto_by"]) == ["dSigma_mats"]
+    assert "dSigma_real" not in format_report("x", result)
+
+
 # --- the benchmark -------------------------------------------------------------------------------
 
 RUN = os.environ.get("RUN_BASIS_SIZE_BENCH", "0") not in ("0", "", "false", "False")
@@ -184,3 +222,45 @@ def test_full_size_comparison(fixture):
     if os.environ.get("BENCH_OUT"):
         with open(os.environ["BENCH_OUT"], "w") as f:
             json.dump(dump, f, indent=1, default=lambda o: o.tolist() if hasattr(o, "tolist") else float(o))
+
+
+@pytest.mark.benchmark
+@pytest.mark.skipif(not RUN, reason="Set RUN_BASIS_SIZE_BENCH=1 to run the full-size comparison.")
+def test_full_size_metal():
+    """The scaled-down ``examples/semicircular_siam`` (V = 2 D there; D = U = 0.5 Ry).
+
+    Env: ``BENCH_METAL_N_B`` (odd bath levels per spin, default 7: a 7,840-determinant closure),
+    ``BENCH_METAL_K`` (ground-state determinants kept, default 150), ``BENCH_METAL_V`` (hybridizations,
+    default ``0.5,1.0,0.25``), ``BENCH_DELTAS`` (default ``0.02,0.13``: delta/W of 0.02 and 0.13 for the
+    bandwidth W = 2 D = 1 Ry), ``BENCH_OUT``. The Matsubara axis does not depend on delta, so it is run
+    once per V and the real axis once per delta; the JSON is rewritten after each configuration."""
+    n_b = int(os.environ.get("BENCH_METAL_N_B", "7"))
+    keep = int(os.environ.get("BENCH_METAL_K", "150"))
+    couplings = [float(v) for v in os.environ.get("BENCH_METAL_V", "0.5,1.0,0.25").split(",")]
+    deltas = [float(d) for d in os.environ.get("BENCH_DELTAS", "0.02,0.13").split(",")]
+    matsubara = 1j * np.pi * 0.005 * (2 * np.arange(12) + 1)
+    out, dump = os.environ.get("BENCH_OUT"), {}
+
+    def progress(c):
+        fmt = lambda x: "-" if x is None else f"{x:.1e}"  # noqa: E731
+        print(
+            f"   {c['method']:15s} cap={c['cap']:>10} eta={c['eta']:<8} size={c['size']} "
+            f"mats={fmt(c['dSigma_mats'])} real={fmt(c['dSigma_real'])} {c['wall']:.0f}s",
+            flush=True,
+        )
+
+    for v in couplings:
+        aim = build_semicircle_siam(n_b, v=v, gs_keep=keep)
+        label = f"F-metal n_b={n_b} V={v} K={keep} (e0 error {aim.e0 - aim.exact_e0:.1e})"
+        runs = [("Matsubara", Mesh(aim, np.array([0.0]), matsubara, deltas[0], n_real=0, n_mats=6))]
+        for delta in deltas:
+            omega = np.arange(-1.5, 1.5, delta / 2)
+            runs.append((f"real delta={delta}", Mesh(aim, omega, matsubara, delta, n_real=8, n_mats=0)))
+        for axis, mesh in runs:
+            title = f"{label} {axis}"
+            result = run_grid(aim, mesh, swm_etas=(1e-4, 1e-5), progress=progress)
+            print("\n" + format_report(title, result), flush=True)
+            dump[title] = result
+            if out:
+                with open(out, "w") as f:
+                    json.dump(dump, f, indent=1, default=lambda o: o.tolist() if hasattr(o, "tolist") else float(o))

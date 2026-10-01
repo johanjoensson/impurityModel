@@ -1,7 +1,7 @@
 # How large a basis does the self-energy need? Per-frequency vs Lanczos, and importance-ranked admission
 
-**Status: measured on one fixture family (F-NiO, F-pos); the geometry (F-geom), metal (F-metal) and real-workload
-tiers are not done.** Branch `gf-basis-size`. Plan: `~/.claude/plans/swirling-cooking-spark.md`.
+**Status: measured on three fixtures (F-NiO, F-pos, F-metal); the geometry (F-geom) and real-workload tiers are
+not done.** Branch `gf-basis-size`. Plan: `~/.claude/plans/swirling-cooking-spark.md`.
 
 ## The questions
 
@@ -167,25 +167,131 @@ against a 4,940 closure, where freeze-growth Lanczos needs 2,715. On the real ax
 admission reaches `1e-2` with 1,558 determinants against 3,457 for freeze-growth Lanczos, while plain
 per-frequency BiCGSTAB has no converged cell that reaches it.
 
+
+### F-metal: a strongly hybridized metal with a truncated ground state (measured)
+
+A scaled-down `examples/semicircular_siam`: a half-filled single-orbital Anderson model on a 7-level semicircular
+star per spin (Gauss-Chebyshev discretization, half-bandwidth D = 0.5 Ry, U = 0.5 Ry, impurity level at -U/2, the
+particle-hole symmetric point), 16 spin-orbitals, removal closure 7,840 determinants. V = 1.0 Ry is the
+example's value (twice D); V = 0.5 and 0.25 weaken it. The fixture is pinned by particle-hole symmetry:
+`Re Sigma(i w_n) = U/2` exactly on the exact ground state, and the check fails if the impurity level is moved off
+-U/2.
+
+**The ground state is truncated** to its 150 determinants of largest weight (the lowest eigenstate of H projected
+onto them, as a CIPSI ground state is). With the exact ground state the seeds alone cover almost the whole
+sector, and no method can go below the seed support; with 150 determinants the seeds are 1.9 % of the closure
+(14 % in F-NiO), which is the regime of the production calculations. The state is not an eigenstate, but `G` for
+fixed seeds and energy is a well-defined resolvent, so the dense reference stays exact (and matches the
+production driver on it). Its energy error against the exact ground state grows with V (4.5e-4, 3.7e-3, 1.7e-2 Ry
+at V = 0.25, 0.5, 1.0) because K is held fixed.
+
+The Matsubara axis does not depend on the broadening and is run once per V (6 points); the real axis once per
+delta (8 points, 46-300 mesh points for the Lanczos methods). delta = 0.02 and 0.13 Ry are delta/W = 0.02 and 0.13
+for the bandwidth W = 2D = 1 Ry; 0.02 is the broadening of the example.
+
+Smallest basis (determinants) reaching a Sigma tolerance, closure 7,840:
+
+| V (Ry) | axis | tol | lanczos-cap | bicgstab-cap | lanczos-pruned | bicgstab-outer |
+|---|---|---|---|---|---|---|
+| 0.5 | Matsubara | 1e-02 | 2,352 | 2,352 | 3,716 | 1,362 |
+| 0.5 | Matsubara | 1e-03 | 4,312 | 4,312 | — | 1,362 |
+| 0.5 | Matsubara | 1e-05 | 5,488 | 4,312 | — | 2,608 |
+| 0.5 | real δ=0.02 | 1e-02 | 5,488 | 5,488 | — | 5,487 |
+| 0.5 | real δ=0.02 | 1e-03 | 6,664 | 6,664 | — | 5,487 |
+| 0.5 | real δ=0.02 | 1e-05 | 7,840 | 7,840 | — | 6,977 |
+| 0.5 | real δ=0.13 | 1e-02 | 2,352 | 1,176 | 3,716 | 1,081 |
+| 0.5 | real δ=0.13 | 1e-03 | 4,312 | 2,352 | 4,905 | 2,979 |
+| 0.5 | real δ=0.13 | 1e-05 | 5,488 | 5,488 | — | 5,378 |
+| 1.0 | Matsubara | 1e-02 | 2,352 | 2,352 | 5,786 | 1,854 |
+| 1.0 | Matsubara | 1e-03 | 4,312 | 4,312 | — | 1,854 |
+| 1.0 | Matsubara | 1e-05 | 5,488 | 5,488 | — | 3,302 |
+| 1.0 | real δ=0.02 | 1e-02 | 4,312 | 4,312 | — | 5,246 |
+| 1.0 | real δ=0.02 | 1e-03 | 5,488 | 4,312 | — | 5,246 |
+| 1.0 | real δ=0.02 | 1e-05 | 6,664 | 6,664 | — | 6,731 |
+| 1.0 | real δ=0.13 | 1e-02 | 2,352 | 2,352 | 5,786 | 3,217 |
+| 1.0 | real δ=0.13 | 1e-03 | 4,312 | 4,312 | — | 3,217 |
+| 1.0 | real δ=0.13 | 1e-05 | 5,488 | 5,488 | — | 5,708 |
+| 0.25 | Matsubara | 1e-02 | 784 | 784 | 2,157 | 358 |
+| 0.25 | Matsubara | 1e-03 | 2,351 | 1,176 | 2,157 | 910 |
+| 0.25 | Matsubara | 1e-05 | 2,351 | 2,350 | — | 1,792 |
+| 0.25 | real δ=0.02 | 1e-02 | 2,351 | 1,568 | 2,157 | 1,170 |
+| 0.25 | real δ=0.02 | 1e-03 | 2,351 | 2,350 | — | 2,475 |
+| 0.25 | real δ=0.02 | 1e-05 | 6,664 | 6,664 | — | 5,232 |
+| 0.25 | real δ=0.13 | 1e-02 | 784 | 392 | 424 | 516 |
+| 0.25 | real δ=0.13 | 1e-03 | 2,351 | 784 | 2,157 | 1,556 |
+| 0.25 | real δ=0.13 | 1e-05 | 4,312 | 4,312 | — | 3,454 |
+
+**Matsubara axis: the outer admission is the best method at every V and every tolerance down to 1e-5**, which it
+was not on F-NiO. Against the best plain cap it needs 1.3x (V = 0.25), 3.2x (0.5) and 2.3x (1.0) fewer determinants
+at `1e-3`, and 1.3x, 1.7x and 1.7x fewer at `1e-5` (1,792 / 2,608 / 3,302 against 2,350 / 4,312 / 5,488). Freeze-growth
+Lanczos and capped BiCGSTAB need the same basis for the same Matsubara accuracy here in most cells; they differ
+at `1e-3` for V = 0.25 (2,351 vs 1,176) and at `1e-5` for V = 0.5 (5,488 vs 4,312), by at most 2x, so the
+equal-cap prior P1 roughly holds in the metal. Pruned Lanczos is again the weakest: it reaches `1e-3` only at
+V = 0.25 (2,157) and, on the real axis at delta = 0.13, at V = 0.5 (4,905), and never at V = 1.0.
+
+**Real axis: no method is consistently better.** At delta = 0.13 per-frequency BiCGSTAB needs about half the basis of
+Lanczos at moderate tolerance (V = 0.25: 392 vs 784 at `1e-2`; V = 0.5: 1,176 vs 2,352), ties it at `1e-5`, and the
+outer admission is about equal to the plain cap (sometimes worse: V = 0.5 at `1e-3`, 2,979 vs 2,352). At the
+narrow delta = 0.02 and V = 0.5 or 1.0 every method needs 55-100 % of the closure for `1e-3` and tighter; at
+V = 0.25 it is 30 % at `1e-3` and 67-85 % at `1e-5`. The outer admission saves at most 18-21 % there (V = 0.5 at `1e-3`: 5,487 vs 6,664; V = 0.25 at `1e-5`: 5,232 vs 6,664) and is
+worse at V = 1.0.
+
+**Cost.** Wall time of the cheapest cell that reaches the tolerance (per-frequency methods solve 6 Matsubara or
+8 real points; the Lanczos methods solve the whole mesh):
+
+| V | axis | tol | Lanczos cap | BiCGSTAB cap | outer admission |
+|---|---|---|---|---|---|
+| 0.5 | Matsubara | 1e-03 | 4,312 dets, 0 s | 4,312 dets, 41 s | 1,362 dets, 1 s |
+| 0.5 | Matsubara | 1e-05 | 5,488 dets, 1 s | 4,312 dets, 41 s | 2,608 dets, 2 s |
+| 0.5 | real δ=0.02 | 1e-03 | 6,664 dets, 35 s | 6,664 dets, 88 s | 5,487 dets, 58 s |
+| 0.5 | real δ=0.02 | 1e-05 | 7,840 dets, 48 s | 7,840 dets, 105 s | 6,977 dets, 72 s |
+| 0.5 | real δ=0.13 | 1e-03 | 5,488 dets, 3 s | 2,352 dets, 24 s | 2,979 dets, 9 s |
+| 0.5 | real δ=0.13 | 1e-05 | 5,488 dets, 3 s | 5,488 dets, 49 s | 5,378 dets, 13 s |
+| 1.0 | Matsubara | 1e-03 | 4,312 dets, 0 s | 4,312 dets, 43 s | 1,854 dets, 2 s |
+| 1.0 | Matsubara | 1e-05 | 5,488 dets, 1 s | 5,488 dets, 53 s | 3,302 dets, 4 s |
+| 1.0 | real δ=0.02 | 1e-03 | 5,488 dets, 12 s | 4,312 dets, 81 s | 6,731 dets, 130 s |
+| 1.0 | real δ=0.02 | 1e-05 | 7,840 dets, 17 s | 6,664 dets, 103 s | 6,731 dets, 130 s |
+| 1.0 | real δ=0.13 | 1e-03 | 4,312 dets, 2 s | 4,312 dets, 39 s | 3,217 dets, 19 s |
+| 1.0 | real δ=0.13 | 1e-05 | 5,488 dets, 3 s | 5,488 dets, 48 s | 5,708 dets, 25 s |
+| 0.25 | Matsubara | 1e-03 | 2,351 dets, 0 s | 1,176 dets, 4 s | 910 dets, 1 s |
+| 0.25 | Matsubara | 1e-05 | 2,351 dets, 0 s | 2,350 dets, 5 s | 1,792 dets, 1 s |
+| 0.25 | real δ=0.02 | 1e-03 | 2,351 dets, 5 s | 2,350 dets, 25 s | 2,475 dets, 23 s |
+| 0.25 | real δ=0.02 | 1e-05 | 6,664 dets, 24 s | 6,664 dets, 65 s | 5,232 dets, 36 s |
+| 0.25 | real δ=0.13 | 1e-03 | 2,351 dets, 1 s | 784 dets, 6 s | 1,556 dets, 2 s |
+| 0.25 | real δ=0.13 | 1e-05 | 4,312 dets, 2 s | 4,312 dets, 28 s | 3,454 dets, 6 s |
+
+The outer admission is not slow next to the other per-frequency method: on the Matsubara axis it takes 1-4 s against
+4-53 s for capped BiCGSTAB, because it stops at a small basis, and on the real axis 2-130 s against 6-105 s
+(Lanczos: 1-48 s). It is
+slower than Lanczos (1-4 s against 0-1 s on the Matsubara axis; up to 8x on the real axis at V = 1.0, delta = 0.02),
+and **per-frequency cost scales with the number of points**: these times are for 6-8 points, so a 300-point
+real-axis mesh would cost roughly 40 times more, where Lanczos solves it in one recurrence.
+
+**Why F-NiO and F-metal differ is not established.** The seeds are a much smaller part of the closure here
+(1.9 % vs 14 %), the model is a single orbital with a delocalized bath, and the ground state is truncated; any of
+these could account for the outer admission winning on the Matsubara axis. No experiment separated them.
+
 ## Answers
 
 1. **Does per-frequency need a smaller maximum basis than Lanczos?** *Sometimes, and it depends on the axis.* Uncapped:
    no, both need the full closure. At a cap, on the Matsubara axis and at moderate accuracy: yes, 1.4-2.8x on this
    fixture. On the real axis: only at large broadening; at the NiO-like broadening no. At tight accuracy or strong
    hybridization the advantage is gone.
-2. **Does importance ranking help the per-frequency expansion?** *Rarely.* It beats the plain cap in one corner
-   (real axis, small delta) and is worse on the Matsubara axis. It helps the Lanczos recurrence at weak
-   hybridization. It helps greatly where the closure contains determinants G does not need (F-pos), but only with
-   the first shell relaxed.
+2. **Does importance ranking help the per-frequency expansion?** *It depends on the model.* On the NiO-like fixture
+   rarely: it beats the plain cap in one corner (real axis, small delta) and is worse on the Matsubara axis. On the
+   metal it is the best method on the Matsubara axis at every V and tolerance down to 1e-5 (1.3-3.2x fewer
+   determinants than the best cap) and only ties on the real axis. It helps greatly where the closure contains
+   determinants G does not need (F-pos), but only with the first shell relaxed. It helps the Lanczos recurrence at
+   weak hybridization only.
 3. **A per-frequency CIPSI-like build of G and the basis?** This work's `outer` admission is that idea in its
    principled form (residual-driven, between exact solves). It did not beat freeze-growth at equal budget on the
    Matsubara axis, consistent with the retired kernel's verdict.
 
 ## Limits of these conclusions
 
-* One model family (two e_g orbitals, star bath, 9 levels, one triplet member), one size. The closure (4,940) is
-  the whole few-hole space; real workloads have much larger ones. **NiO-like few-hole problems** are what this
-  represents, not metals (F-metal is not done).
+* Two model families (two e_g orbitals with a 9-level star; a single-orbital SIAM with a 7-level semicircular
+  star), one size each, closures of 4,940 and 7,840. Real workloads have far larger ones, and the metal's bath
+  is half the 14 levels of the example it is scaled from.
 * The seeds are 14 % of the closure here. Where the seed support saturates the cap (FCC Ni) no admission rule
   can act (prior P3, not re-measured here).
 * Sigma errors are measured against the exact reference; the recorded G error bound of C2 is not used in the
@@ -199,7 +305,7 @@ per-frequency BiCGSTAB has no converged cell that reaches it.
 
 ## Not done
 
-F-geom (the same model in star, chain and natural-orbital bases), F-metal, the real-workload tier (NiO archives,
+F-geom (the same model in star, chain and natural-orbital bases), the real-workload tier (FCC Ni is the metal there) (NiO archives,
 geometries regenerated from the star archive with `rspt2spectra.edchain`), the `memory_estimate` term for
 `outer`, and Matsubara/real-axis tolerances propagated from a physical requirement.
 
@@ -210,4 +316,12 @@ RUN_BASIS_SIZE_BENCH=1 BENCH_N_B=9 BENCH_OUT=out.json \
   python -m pytest -s -m benchmark src/impurityModel/test/gf/test_gf_basis_size_comparison.py -k "full_size and F-NiO"
 ```
 
-About 50 minutes for F-NiO (three weights x two broadenings) and 30 for F-pos, at 4 BLAS threads.
+About 50 minutes for F-NiO (three weights x two broadenings) and 30 for F-pos, at 4 BLAS threads. The metal:
+
+```bash
+RUN_BASIS_SIZE_BENCH=1 BENCH_OUT=metal.json \\
+  python -m pytest -s -m benchmark src/impurityModel/test/gf/test_gf_basis_size_comparison.py -k full_size_metal
+```
+
+(`BENCH_METAL_N_B`, `BENCH_METAL_K`, `BENCH_METAL_V`, `BENCH_DELTAS`; 1 hour 42 minutes for the three V and two
+broadenings at n_b = 7, K = 150. The JSON is rewritten after each configuration.)
