@@ -70,6 +70,14 @@ def test_a_combination_that_would_be_ignored_is_refused(kwargs, match):
         SolverOptions(**kwargs)
 
 
+def test_an_unknown_or_retired_kernel_is_refused_when_the_options_are_built_not_mid_run():
+    """A typo on the RSPt solver line must fail before the ground state is computed, not minutes into it."""
+    with pytest.raises(ValueError, match="Unknown gf_method 'nope'"):
+        SolverOptions(gf_method="nope")
+    with pytest.raises(ValueError, match="retired"):
+        SolverOptions(gf_method="cipsi")
+
+
 # --- the argument reaches the kernel, and beats the environment -------------------------------------
 
 

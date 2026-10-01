@@ -94,6 +94,42 @@ test-only stub in `test/gf/test_gf_operator_families.py` checks two things:
 `"sliced"` and `"cipsi"` are retired (`config.RETIRED_GF_METHODS`: rejected with the reason,
 replayed as `"lanczos"` from an old archive).
 
+### Basis growth of the per-frequency kernel: `gf_admission`
+
+Each per-frequency solve grows its basis from the seeds. `gf_admission` chooses how:
+
+| `gf_admission` | Behaviour |
+| --- | --- |
+| `all` | Every determinant the solver produces is admitted, up to the cap (`truncation_threshold`). |
+| `outer` | Solve on a **frozen** basis, measure the residual outside it, admit only the determinants whose score clears `gf_admit_tol`, re-solve (`gf_admission.py`). Admission happens only *between* solves, so every solve is the exact resolvent of the projected `P H P`. Switches on a measured bound on the error of `G` (`GF_BICGSTAB_RESIDUAL_CHECK`, derived), reported in the diagnostics as `truncation_error_bound`. |
+| unset | The `GF_BICGSTAB_ADMISSION` environment knob decides, else `all`. |
+
+It needs `gf_method = "bicgstab"`; any other combination is refused where the options are built
+(`SolverOptions`), not ignored. The same three settings -- `gf_method`, `gf_admission`,
+`gf_admit_tol` -- are accepted by every front-end, in one vocabulary:
+
+| Front-end | Where |
+| --- | --- |
+| RSPt solver line | `gf_method bicgstab gf_admission outer gf_admit_tol 1e-5` |
+| TOML | `[solver]` keys of the same names (`gf_admission = "auto"` is "unset") |
+| CLI | `--gf-method bicgstab --gf-admission outer --gf-admit-tol 1e-5` |
+| Python | `SolverOptions(gf_method="bicgstab", gf_admission="outer", gf_admit_tol=1e-5)` |
+
+They are recorded in the HDF5 archive and replayed by `--from-archive`; a flag that is not passed
+leaves the recorded value alone.
+
+**What the measurements support** (`doc/plans/gf_basis_size_comparison.md`; model problems with an
+exact reference, unrestricted, not yet a real archive). `outer` needed 1.3-3.2x fewer
+determinants than the best plain cap on the Matsubara axis of a strongly hybridized metal, and
+tighter thresholds converge steadily (the error bound says what was left out). It did **not**
+beat the plain cap on the Matsubara axis of the NiO-like model in the star basis (it did in the chain-like
+bases), and no method shrinks the basis
+much on the real axis at narrow broadening. The per-frequency kernel costs one solve per point,
+so a long mesh multiplies the cost; `lanczos` solves the whole mesh in one recurrence and is the
+cheaper kernel whenever the closure fits in memory. The bath basis matters more than the
+solver: a chain-like geometry (e.g. the linked chain) shrinks the required basis by several
+times, but the closure of an unrestricted calculation does not change with it.
+
 Orthogonal switches on the default Lanczos path:
 
 - **`sparse`** — `block_Green_sparse` operates on the `ManyBodyState` representation (the

@@ -1429,6 +1429,12 @@ class SolverOptions:
     def __post_init__(self):
         # One place for every front-end (RSPt solver line, TOML, CLI, archive replay): a bad
         # combination is refused here rather than silently ignored two layers down.
+        if self.gf_method in config.RETIRED_GF_METHODS:
+            raise ValueError(f"gf_method {self.gf_method!r} {config.RETIRED_GF_METHODS[self.gf_method]}")
+        if self.gf_method not in config.GF_METHODS:
+            raise ValueError(
+                f"Unknown gf_method {self.gf_method!r}; expected one of {', '.join(map(repr, config.GF_METHODS))}"
+            )
         if self.gf_admission is not None and self.gf_admission not in config.GF_ADMISSIONS:
             raise ValueError(
                 f"gf_admission {self.gf_admission!r}: expected one of {', '.join(map(repr, config.GF_ADMISSIONS))}"
