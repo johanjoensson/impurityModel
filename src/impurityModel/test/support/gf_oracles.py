@@ -1,9 +1,9 @@
 """Shared Green's-function test oracles: a small SIAM-6 model, its seeds/basis, and dense
 resolvent/capped-basis references.
 
-Promoted out of test_gf_bicgstab_driver.py once test_gmres.py and test_gf_cipsi_driver.py
-started importing its helpers cross-file -- this is the canonical home for them now, with
-test_gf_bicgstab_driver.py itself importing back like any other consumer.
+Promoted out of test_gf_bicgstab_driver.py once test_gmres.py (and the since-retired CIPSI
+driver's tests) started importing its helpers cross-file -- this is the canonical home for them
+now, with test_gf_bicgstab_driver.py itself importing back like any other consumer.
 """
 
 import itertools
@@ -155,7 +155,7 @@ def _hyb_hop():
     )
 
 
-def _run_driver(gf_method, reort, comm=None, monkeypatch_env=None):
+def _run_driver(gf_method, reort, comm=None, monkeypatch_env=None, extra=None):
     state_bytes = [b"\xa0", b"\x50"]  # {0, 2} and {1, 3}
     basis = Basis(
         impurity_orbitals={0: [[0, 1]]},
@@ -197,6 +197,7 @@ def _run_driver(gf_method, reort, comm=None, monkeypatch_env=None):
             slaterWeightMin=0.0,
             sparse=True,
             gf_method=gf_method,
+            **(extra or {}),
         )
     finally:
         for key, value in old_env.items():

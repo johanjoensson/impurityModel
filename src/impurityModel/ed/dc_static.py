@@ -64,9 +64,8 @@ def _model_uj(model):
     r"""Average Coulomb repulsion and exchange (:func:`uj_from_u4`) derived from ``model.u4``.
 
     Rotates the dense impurity Coulomb tensor (:func:`_model_u4_dense`) into the spherical
-    basis with :func:`impurityModel.ed.lie_algebra.rotate_two_body` (the same transformation as
-    :func:`impurityModel.ed.greens_function.rotate_4index_U`, avoiding an import of the
-    heavyweight solver module) using ``model.rot_to_spherical``, then reads off ``(U, J)``.
+    basis with :func:`impurityModel.ed.lie_algebra.rotate_two_body` using
+    ``model.rot_to_spherical``, then reads off ``(U, J)``.
 
     Parameters
     ----------

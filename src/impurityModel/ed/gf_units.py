@@ -16,6 +16,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
+from impurityModel.ed.basis_restrictions import union_windows
 from impurityModel.ed.basis_split import _pack_units, split_basis_and_redistribute_psi
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
@@ -51,32 +52,6 @@ def gf_cap(basis):
         # `gf is None` is an auto GF cap, sized at GF entry (`_auto_gf_cap`); until then, none.
         return np.inf if policy.gf is None else policy.gf
     return getattr(basis, "truncation_threshold", np.inf)
-
-
-def gf_cap_on_full_comm(basis, width, reort=None, gf_method="lanczos"):
-    """The GF cap for work done on ``basis.comm`` as a whole, before any unit split (the sliced
-    driver's filter stage). An auto cap is the calculation's pinned cap for this kernel
-    (:func:`_pinned_auto_gf_cap`) -- the same number the units then run under, so filtered seeds
-    are never wider than the units' cap; otherwise :func:`gf_cap`. Collective on ``basis.comm``
-    when auto (memory probe + resident MAX)."""
-    if not _is_auto_gf(basis):
-        return gf_cap(basis)
-    resident = current_rss_bytes()
-    if basis.comm is not None and basis.comm.size > 1:
-        resident = basis.comm.allreduce(resident, op=MPI.MAX)
-    ranks = basis.comm.size if basis.comm is not None else 1
-    return _pinned_auto_gf_cap(basis, [ranks], width, reort, gf_method, resident)
-
-
-def gf_guard_on_full_comm(basis):
-    """``(budget, policy)`` of the GF memory guard for work on ``basis.comm`` before any split (the
-    sliced driver's filter stage), sized the way ``run_units_distributed`` sizes it for the units.
-    Collective on ``basis.comm`` (resident MAX, memory probe): call it on every rank."""
-    resident = current_rss_bytes()
-    if basis.comm is not None and basis.comm.size > 1:
-        resident = basis.comm.allreduce(resident, op=MPI.MAX)
-    budget = _gf_memory_budget(available_bytes_per_rank(basis.comm), resident)
-    return budget, ("tighten" if _may_lower_gf_cap(basis) else "warn")
 
 
 def _describe_gf_cap(basis, cap, layout):
@@ -257,8 +232,7 @@ class GFUnit:
     """One distributable Green's-function work unit: a (possibly wide) block-Lanczos recurrence.
 
     A unit stacks the transition-operator seeds of ``chunk`` thermal eigenstates from one
-    operator group into a single recurrence of width ``len(chunk) * n_ops`` (or a single scalar
-    seed in operator-split mode, identified by ``pw_tag``). Units are the atoms of the MPI
+    operator group into a single recurrence of width ``len(chunk) * n_ops``. Units are the atoms of the MPI
     distribution: :func:`run_units_distributed` never splits one across colors.
 
     Attributes
@@ -269,19 +243,15 @@ class GFUnit:
     chunk : tuple of int
         Thermal-eigenstate indices whose seeds this unit stacks.
     n_ops : int
-        Seed columns per eigenstate (1 in operator-split mode).
+        Seed columns per eigenstate.
     delta : float
         Signed broadening of this unit's recurrence (sign selects addition/removal).
-    pw_tag : tuple, optional
-        ``("diag"|"sum"|"imag", i, j)`` identifying the scalar seed in operator-split mode;
-        ``None`` for grouped (wide-block) units.
     """
 
     group_i: int
     chunk: tuple[int, ...]
     n_ops: int
     delta: float
-    pw_tag: Optional[tuple] = None
 
 
 def unit_cost_weights(unit_seeds: list[list[ManyBodyState]], comm) -> np.ndarray:
@@ -315,7 +285,6 @@ def enumerate_gf_units(
     weighted_restrictions,
     slaterWeightMin: float,
     per_state_restrictions: Optional[list] = None,
-    pairwise: Optional[bool] = None,
 ) -> tuple[list[GFUnit], list[list[ManyBodyState]], list]:
     """Enumerate the flat work units of a Green's-function calculation.
 
@@ -325,11 +294,6 @@ def enumerate_gf_units(
     single global decomposition that is load-balanced across the full
     (operator group x eigenstate) cross-product -- important when there are many small symmetry
     blocks (the typical production case).
-
-    In operator-split mode (``GF_OPERATOR_SPLIT``) every unit is a width-1 scalar recurrence:
-    one per diagonal seed ``v_i``, plus per off-diagonal pair (i<j) the two polarization seeds
-    ``v_i + v_j`` and ``v_i + i v_j``. This is the narrow end of the granularity spectrum:
-    maximal communication-free units, no shared Krylov space.
 
     Parameters
     ----------
@@ -347,12 +311,8 @@ def enumerate_gf_units(
         Determinant-weight cutoff for the seed application.
     per_state_restrictions : list, optional
         Per-eigenstate excited windows; when given, each unit's window is the union
-        (:func:`_union_restrictions`) over the eigenstates it stacks instead of the group
+        (:func:`basis_restrictions.union_windows`) over the eigenstates it stacks instead of the group
         fallback.
-    pairwise : bool, optional
-        Override the ``GF_OPERATOR_SPLIT`` environment default. Callers whose result
-        contract cannot represent scalar pairwise fractions (per-eigenstate ``r``
-        matrices) pass ``False``.
 
     Returns
     -------
@@ -361,37 +321,36 @@ def enumerate_gf_units(
         seed-column list per unit in (eigenstate, operator) order, and the excited window per
         unit.
     """
-    if pairwise is None:
-        pairwise = _gf_operator_split()
-    group = 1 if pairwise else _gf_eigenstate_group()
+    group = _gf_eigenstate_group()
     n_psis = len(psis)
     units: list[GFUnit] = []
     unit_seeds: list[list[ManyBodyState]] = []
     for g, (tOps, delta_signed) in enumerate(op_groups):
         block_v = _apply_transition_ops(tOps, psis, group_restrictions[g], weighted_restrictions, slaterWeightMin)
         n_ops = len(tOps)
-        if pairwise:
-            for ei in range(n_psis):
-                for i in range(n_ops):
-                    units.append(GFUnit(g, (ei,), 1, delta_signed, ("diag", i, i)))
-                    unit_seeds.append([block_v[ei][i]])
-                for i in range(n_ops):
-                    for j in range(i + 1, n_ops):
-                        units.append(GFUnit(g, (ei,), 1, delta_signed, ("sum", i, j)))
-                        unit_seeds.append([block_v[ei][i] + block_v[ei][j]])
-                        units.append(GFUnit(g, (ei,), 1, delta_signed, ("imag", i, j)))
-                        unit_seeds.append([block_v[ei][i] + 1j * block_v[ei][j]])
-        else:
-            for chunk_start in range(0, n_psis, group):
-                chunk = tuple(range(chunk_start, min(chunk_start + group, n_psis)))
-                units.append(GFUnit(g, chunk, n_ops, delta_signed, None))
-                unit_seeds.append([block_v[j][i] for j in chunk for i in range(n_ops)])
+        for chunk_start in range(0, n_psis, group):
+            chunk = tuple(range(chunk_start, min(chunk_start + group, n_psis)))
+            units.append(GFUnit(g, chunk, n_ops, delta_signed))
+            unit_seeds.append([block_v[j][i] for j in chunk for i in range(n_ops)])
 
     # Per-unit excited window: the union of the per-state windows over the eigenstates the unit
-    # stacks (exactly that state's window for a single-state / operator-split unit). Falls back
+    # stacks (exactly that state's window for a single-state unit). Falls back
     # to the group window when per-state restrictions are disabled or state-independent.
     if per_state_restrictions is not None:
-        unit_restrictions = [_union_restrictions([per_state_restrictions[ei] for ei in u.chunk]) for u in units]
+        unit_restrictions = [union_windows([per_state_restrictions[ei] for ei in u.chunk]) for u in units]
+        # The seeds above were cut by the group window, but the unit's recurrence runs under its
+        # own (per-state) window. A seed row outside the recurrence window sees P H, which has no
+        # diagonal and a one-way coupling there -- the Lanczos operator is no longer Hermitian on
+        # the seed (review ledger C5). Re-cut each such unit's seeds by the window it runs under.
+        # Rank-local (the apply is local), so no collective is added.
+        for u, unit in enumerate(units):
+            if unit_restrictions[u] == group_restrictions[unit.group_i]:
+                continue
+            tOps, _delta = op_groups[unit.group_i]
+            block_v = _apply_transition_ops(
+                tOps, [psis[ei] for ei in unit.chunk], unit_restrictions[u], weighted_restrictions, slaterWeightMin
+            )
+            unit_seeds[u] = [block_v[p][i] for p in range(len(unit.chunk)) for i in range(unit.n_ops)]
     else:
         unit_restrictions = [group_restrictions[u.group_i] for u in units]
     return units, unit_seeds, unit_restrictions
@@ -637,16 +596,16 @@ def run_units_distributed(
             basis.comm.send(local_results, dest=0)
             local_results = None
     finally:
-        # Rank-local attribute write, executed identically on every rank (no collective here),
-        # so an exception on one rank cannot desynchronize the others through this path.
         basis.truncation_threshold = caller_cap
         _restore_gf_memory_guard(split_basis, guard)
-
-    # Free the split communicator collectively before returning. MPI_Comm_free is collective --
-    # it must be called by all ranks in the comm at the same time. Leaving it for Python gc risks
-    # non-collective freeing.
-    if split_basis is not None and split_basis.comm != basis.comm:
-        split_basis.free_comm()
+        # Free the split communicator collectively, on the error path too: a kernel that raised on
+        # every rank (a recoverable failure the caller may retry, e.g. the self-energy's thermal
+        # retry or the double-counting search) otherwise leaks one communicator per failure
+        # (review ledger M4). MPI_Comm_free is collective; an exception raised on only *some*
+        # ranks already leaves the others blocked in the kernel's own collectives, so this adds no
+        # new way to hang. Leaving it to Python's gc would free it non-collectively.
+        if split_basis is not None and split_basis.comm != basis.comm:
+            split_basis.free_comm()
     return results
 
 
@@ -688,51 +647,3 @@ def _gf_eigenstate_group():
     :data:`config.GF_EIGENSTATE_GROUP`.
     """
     return config.GF_EIGENSTATE_GROUP.get()
-
-
-def _gf_operator_split():
-    r"""Whether to use the pairwise / scalar operator-split decomposition (the *narrow* end of
-    the block-width granularity spectrum). Default off (:data:`config.GF_OPERATOR_SPLIT`).
-
-    When on, a block of ``n`` transition operators is computed not as one width-``n`` block-Lanczos
-    recurrence but as ``n`` width-1 (scalar) recurrences for the diagonal seeds ``v_i = c_i|psi>``
-    plus, for each off-diagonal pair ``i < j``, two more scalar recurrences for the polarization
-    seeds ``v_i + v_j`` and ``v_i + i v_j``. The off-diagonal ``G_ij`` is recovered exactly from the
-    four scalar resolvents (:func:`calc_G_pairwise`). This maximizes the number of independent
-    (communication-free) work units -- useful when ranks greatly outnumber the
-    ``block x eigenstate`` units -- at the cost of redundant Krylov building (no shared subspace
-    across columns). Mutually exclusive with eigenstate grouping; the operator split takes
-    precedence when both are requested.
-    """
-    return config.GF_OPERATOR_SPLIT.get()
-
-
-def _union_restrictions(rests):
-    r"""Loosest single restriction dict admitting every input window's feasible set.
-
-    A work unit that stacks several eigenstates shares one block Krylov space, which must contain
-    *every* stacked seed's dynamics; so the unit window must admit a determinant that is feasible
-    for **any** state in the group. Restriction dicts are conjunctions of per-subset ``(min, max)``
-    occupation bounds, so the group window keeps only the subset keys **common to all** states (a
-    key absent from some state imposes no bound there, hence cannot be enforced for the group) and
-    loosens each shared key to ``(min of mins, max of maxs)``. The result is a superset of each
-    input window, so it never truncates a stacked state's Krylov space. ``None`` means "no
-    restriction"; if any input is ``None`` (unconstrained) the union is ``None``. For a single-state
-    group (operator-split, or ``g = 1``) the union is exactly that state's window -- maximal
-    tightening.
-    """
-    rests = list(rests)
-    if not rests or any(r is None for r in rests):
-        return None
-    if len(rests) == 1:
-        return rests[0]
-    common = set(rests[0])
-    for r in rests[1:]:
-        common &= set(r)
-    if not common:
-        return None
-    out = {}
-    for key in common:
-        bounds = [r[key] for r in rests]
-        out[key] = (min(lo for lo, _ in bounds), max(hi for _, hi in bounds))
-    return out

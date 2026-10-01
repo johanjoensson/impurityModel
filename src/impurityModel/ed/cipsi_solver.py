@@ -811,9 +811,8 @@ class CIPSISolver:
     def _candidate_overlaps_and_energies(self, H, Hpsi_ref, slaterWeightMin: float = 0):
         """Enumerate the out-of-basis candidates of ``Hpsi_ref`` with couplings and energies.
 
-        The machinery every CIPSI-style selection shares (the ground-state
-        :meth:`_calc_de2` and the resolvent-targeted :meth:`select_at` differ only in the
-        importance denominator applied on top): this rank's hash-owned candidate
+        The candidate machinery under :meth:`_calc_de2`'s Epstein-Nesbet score (the
+        importance denominator is applied on top): this rank's hash-owned candidate
         determinants ``local_Djs`` (sorted, so rank-independent given ``Hpsi_ref`` is
         redistributed), the coupling matrix ``overlaps[i, j] = <Dj | H | psi_i>`` read off
         ``Hpsi_ref``, and the candidate diagonal energies ``e_Dj[j] = <Dj|H|Dj>``.
@@ -941,90 +940,6 @@ class CIPSISolver:
             "residual_pt2": self._allreduce_sum(float(scores[~mask].sum())),
         }
         return mask, stats
-
-    def select_at(self, z, psi_ref, H, de2_min=0.0, max_new=None, scorer="de2", slater_cutoff=0):
-        r"""One resolvent-targeted selection round around the complex frequency ``z``.
-
-        The Green's-function analogue of :meth:`determine_new_Dj` (the revived
-        ``expand_at``): for the linear system :math:`(z - H) X = s` solved on the current
-        basis :math:`P`, the residual at an out-of-basis determinant :math:`D_j` is exactly
-        :math:`-\langle D_j | H | X \rangle` (the seed lives inside :math:`P`), so with
-        ``psi_ref`` = the current iterate block the selection is residual-driven greedy
-        expansion, and the leading-order weight of :math:`D_j` in the exact solution is
-
-        .. math:: w_j = \sum_i |\langle D_j|H|X_i\rangle|^2 \, / \, |z - E_{D_j}|^2 .
-
-        The column sum makes the score invariant under rotations within the reference
-        block (the manifold-sum rationale of :meth:`determine_new_Dj`); the complex ``z``
-        (carrying :math:`i\delta` or the Matsubara distance) regularizes near-resonant
-        candidates, so no clamp is needed -- near-resonant *is* important here, that is
-        the point of frequency targeting.
-
-        Parameters
-        ----------
-        z : complex
-            The resolvent frequency, already shifted by the eigenstate energy
-            (``omega + i*delta + E_e`` in the Green's-function drivers).
-        psi_ref : list of ManyBodyState
-            Reference block, distributed per ``self.basis`` -- the current solution
-            iterate (or the seeds, for a cold start).
-        H : ManyBodyOperator or dict
-            The (unshifted) Hamiltonian.
-        de2_min : float, optional
-            Importance floor on :math:`w_j`; 0 keeps every coupled candidate and leaves
-            the capping entirely to ``max_new``.
-        max_new : int, optional
-            Global cap on the number of admitted candidates (collective bisection, ties
-            under-admitted -- see :meth:`_admit_top`).
-        scorer : {"de2", "amplitude"}, optional
-            ``"de2"`` is the resolvent importance above; ``"amplitude"`` drops the energy
-            denominator (:math:`w_j = \sum_i |\langle D_j|H|X_i\rangle|^2`), the
-            bare-coupling baseline the frequency targeting must beat.
-        slater_cutoff : float, optional
-            Amplitude cutoff forwarded to the ``H`` applications.
-
-        Returns
-        -------
-        new_Dj : set
-            This rank's admitted candidates (hash-owned).
-        stats : dict
-            ``boundary_norms2``: global per-reference-column boundary residual norms
-            :math:`\sum_{D \notin P} |\langle D|H|X_i\rangle|^2` (the true-residual
-            contribution outside the basis -- the outer loop's convergence measure),
-            the :meth:`_admit_top` selection counts, and the rank-local PT2 ingredients
-            ``overlaps`` (couplings, reference x candidate), ``e_Dj`` (diagonal-probe
-            energies) and ``admitted`` (mask) for the downfolding correction of the
-            discarded boundary.
-
-        Collective on ``basis.comm`` (every branch, including empty candidate sets).
-        """
-        if isinstance(H, dict):
-            H = ManyBodyOperator(H)
-        Hpsi_ref = self._apply_block_and_redistribute(H, psi_ref, slater_cutoff)
-        local_Djs, overlaps, e_Dj = self._candidate_overlaps_and_energies(H, Hpsi_ref, slater_cutoff)
-
-        coupling2 = np.square(np.abs(overlaps))
-        boundary_norms2 = np.ascontiguousarray(coupling2.sum(axis=1), dtype=float)
-        if self.basis.is_distributed:
-            self.basis.comm.Allreduce(MPI.IN_PLACE, boundary_norms2, op=MPI.SUM)
-
-        if scorer == "de2":
-            scores = coupling2.sum(axis=0) / np.square(np.abs(complex(z) - e_Dj))
-        elif scorer == "amplitude":
-            scores = coupling2.sum(axis=0)
-        else:
-            raise ValueError(f"Unknown scorer {scorer!r}; expected 'de2' or 'amplitude'")
-
-        admitted, selection_stats = self._admit_top(scores, scores >= de2_min, max_new)
-        new_Dj = set(itertools.compress(local_Djs, admitted))
-        stats = {
-            "boundary_norms2": boundary_norms2,
-            "overlaps": overlaps,
-            "e_Dj": e_Dj,
-            "admitted": admitted,
-            **selection_stats,
-        }
-        return new_Dj, stats
 
     def determine_new_Dj(
         self,
@@ -1302,15 +1217,14 @@ class CIPSISolver:
         if memory_policy not in ("tighten", "warn"):
             raise ValueError(f"memory_policy must be 'tighten' or 'warn', got {memory_policy!r}")
         tighten = memory_policy == "tighten"
-        if self.basis.restrictions is not None:
-            H.set_restrictions(self.basis.restrictions)
-        if self.basis.weighted_restrictions is not None:
-            H.set_weighted_restrictions(self.basis.weighted_restrictions)
-        de0_max = energy_cut(self.basis.tau)
-        psi_refs = getattr(self, "psi_refs", None)
-
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
+        # Unconditional (None clears): a mask left on H by an earlier Green's-function stage must
+        # not survive into this solve (review ledger C3).
+        H.set_restrictions(self.basis.restrictions)
+        H.set_weighted_restrictions(self.basis.weighted_restrictions)
+        de0_max = energy_cut(self.basis.tau)
+        psi_refs = getattr(self, "psi_refs", None)
 
         if symmetry_generators is None:
             symmetry_generators = (
@@ -1340,10 +1254,8 @@ class CIPSISolver:
             op = g if isinstance(g, ManyBodyOperator) else tensors_to_operator(g, tol=1e-12)
             if not _commutes_with(H, op):
                 continue
-            if self.basis.restrictions is not None:
-                op.set_restrictions(self.basis.restrictions)
-            if self.basis.weighted_restrictions is not None:
-                op.set_weighted_restrictions(self.basis.weighted_restrictions)
+            op.set_restrictions(self.basis.restrictions)
+            op.set_weighted_restrictions(self.basis.weighted_restrictions)
             gen_ops.append(op)
 
         threshold = self.basis.truncation_threshold
@@ -1972,10 +1884,12 @@ class CIPSISolver:
         basis's restrictions were set, from this basis, at this size -- the shape assertion
         catches a stale one, nothing catches stale restrictions.
         """
-        if self.basis.restrictions is not None:
-            H.set_restrictions(self.basis.restrictions)
-        if self.basis.weighted_restrictions is not None:
-            H.set_weighted_restrictions(self.basis.weighted_restrictions)
+        if isinstance(H, dict):
+            H = ManyBodyOperator(H)
+        # Unconditional (None clears): a mask left on H by an earlier Green's-function stage must
+        # not survive into this solve (review ledger C3).
+        H.set_restrictions(self.basis.restrictions)
+        H.set_weighted_restrictions(self.basis.weighted_restrictions)
         if h_matrix is not None and h_matrix.shape[0] != len(self.basis):
             raise ValueError(
                 f"h_matrix was built for a basis of {h_matrix.shape[0]} determinants but this one "

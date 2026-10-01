@@ -14,6 +14,7 @@ here for backward compatibility.
 from collections import namedtuple
 
 import numpy as np
+from mpi4py import MPI
 
 import impurityModel.ed.product_state_representation as psr
 from impurityModel.ed.block_structure import build_block_structure, get_equivalent_orbs
@@ -782,10 +783,65 @@ def impurity_block_structure(op, impurity_orbitals, n_orb=None, h0_matrix=None):
     bath = [o for o in range(n) if o not in imp_set]
 
     m = h[np.ix_(imp, imp)]
-    if bath:
-        v = h[np.ix_(bath, imp)]  # (n_bath, n_imp) impurity-bath hopping
-        m = m + v.conj().T @ v  # add the bath-mediated (first-moment) coupling
-    return build_block_structure(None, mat=m)
+    if not bath:
+        return _reconciled(build_block_structure(None, mat=m), op, imp, m)
+    v = h[np.ix_(bath, imp)]  # (n_bath, n_imp) impurity-bath hopping
+    m = m + v.conj().T @ v  # add the bath-mediated (first-moment) coupling
+    # M alone cannot tell two orbitals apart whose levels and total hybridization agree but whose
+    # baths sit at different energies: their hybridization functions -- and Green's functions --
+    # differ from the second moment on (review ledger C10). The higher bath moments
+    # V^dag h_bath^k V (the 1/z^(k+2) coefficients of Delta(z)) must agree too, and couplings they
+    # carry (bath-bath hopping between different orbitals' baths) merge the blocks they connect.
+    h_bath = h[np.ix_(bath, bath)]
+    probes = [m]
+    w = v
+    for _k in (1, 2):
+        w = h_bath @ w
+        probes.append(v.conj().T @ w)
+    return _reconciled(build_block_structure(np.stack(probes), mat=m), op, imp, m)
+
+
+def _reconciled(block_structure, op, imp, m):
+    """Correct a one-body-derived block structure for ``op``'s two-body interaction.
+
+    The blocks above are read off one-body quantities, on the premise that the interaction has at
+    least their symmetry. A Slater-Condon interaction does; a user-supplied one need not, and
+    then a coupling between blocks is dropped, or blocks the interaction distinguishes share one
+    Green's function (review ledger C10). :func:`reconcile_block_structure_with_interaction`
+    merges and prunes accordingly, and returns the input unchanged when the interaction
+    respects it. ``O(n_imp^4)``.
+
+    Particle-hole relations are dropped here, and those blocks are computed directly: the
+    detector only compares first moments, never checks that the interaction is particle-hole
+    invariant, and the image cannot be applied to sampled values without knowing the axis
+    (``greens_function.build_full_greens_function`` rejects them; review ledger C1). Measured
+    on every production archive in ``impmod_tests``, no particle-hole pair ever occurred, so
+    this costs nothing there and at most one extra Green's function per pair elsewhere.
+    """
+    from impurityModel.ed.block_structure import BlockStructure, get_inequivalent_blocks
+
+    two_body = impurity_two_body_tensor(op, imp)
+    block_structure, _changed = reconcile_block_structure_with_interaction(block_structure, two_body, m)
+    if any(block_structure.particle_hole_blocks) or any(block_structure.particle_hole_transposed_blocks):
+        none = [[] for _ in block_structure.blocks]
+        identical = [list(members) for members in block_structure.identical_blocks]
+        # A block that was only reachable as someone's particle-hole image becomes its own
+        # (identical-to-itself) representative.
+        covered = {j for members in identical for j in members} | {
+            j for members in block_structure.transposed_blocks for j in members
+        }
+        for b in range(len(block_structure.blocks)):
+            if b not in covered:
+                identical[b] = [b]
+        block_structure = BlockStructure(
+            block_structure.blocks,
+            identical,
+            block_structure.transposed_blocks,
+            none,
+            [list(x) for x in none],
+            get_inequivalent_blocks(identical, block_structure.transposed_blocks, none, none),
+        )
+    return block_structure
 
 
 def impurity_symmetry_rotation(op, impurity_orbitals, n_orb=None, h0_matrix=None):
@@ -1216,3 +1272,48 @@ def measure_conserved_charges(psi, charges, n_orb, comm=None, round_to_int=True)
     if round_to_int:
         return [int(round(x)) for x in averages]  # noqa: RUF046  (np.float64 round() returns float, cast is needed)
     return list(averages)
+
+
+#: Largest charge variance ``<N_S^2> - <N_S>^2`` a state may carry and still count as having a
+#: definite charge: roundoff on a normalized state, far below any genuine sector mixing (an
+#: admixture of weight ``w`` from a neighbouring sector contributes ``~w``).
+DEFINITE_CHARGE_VARIANCE_TOL = 1e-8
+
+
+def definite_conserved_charges(psi, charges, n_orb, comm=None, tol=DEFINITE_CHARGE_VARIANCE_TOL):
+    r"""The conserved subset charges of ``psi`` if every one is definite, else ``None``.
+
+    :func:`measure_conserved_charges` rounds ``<N_S>`` to an integer, which names *a* sector
+    even for a state that has none: an eigensolver may return any rotation inside a degenerate
+    multiplet whose members sit in different ``(N_up, N_down)`` sectors, and an equal mix of
+    two sectors averages to a half-integer that rounds to a sector the state does not occupy.
+    Confining a Krylov space to that sector then prunes every seed component outside it --
+    measured (review ledger C7): the whole seed, and a spectrum of 0.
+
+    This checks the variance ``<N_S^2> - <N_S>^2`` of each charge and returns the integer
+    charges only when all of them vanish to ``tol``; otherwise ``None``, and the caller must
+    not confine by sector.
+
+    .. warning:: **Collective on** ``comm`` (one ``Allreduce``): call it on every rank. The
+       verdict is derived from the reduced moments, so it is identical on every rank.
+    """
+    moments = np.zeros((2, len(charges)))  # sum w N_S, sum w N_S^2
+    norm2 = 0.0
+    for det, amp in psi.items():
+        weight = abs(amp[0]) ** 2
+        norm2 += weight
+        occupied = {k for k, bit in enumerate(psr.bytes2bitarray(bytes(det.to_bytearray()), n_orb)) if bit}
+        for i, subset in enumerate(charges):
+            n_s = len(subset & occupied)
+            moments[0, i] += weight * n_s
+            moments[1, i] += weight * n_s * n_s
+    buf = np.concatenate([moments.ravel(), [norm2]])
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, buf, op=MPI.SUM)
+    norm2 = buf[-1]
+    if norm2 == 0:
+        return None
+    mean, mean_sq = buf[:-1].reshape(2, len(charges)) / norm2
+    if np.any(mean_sq - mean**2 > tol):
+        return None
+    return [int(round(x)) for x in mean]  # noqa: RUF046  (np.float64 round() returns float, cast is needed)

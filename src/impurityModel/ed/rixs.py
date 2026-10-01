@@ -21,7 +21,8 @@ from mpi4py import MPI
 
 import impurityModel.ed.greens_function as gf
 from impurityModel.ed import config
-from impurityModel.ed.basis_restrictions import build_excited_restrictions
+from impurityModel.ed.average import ThermalEnsemble
+from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
 from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.gf_solvers import solve_shifted_block
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
@@ -29,7 +30,7 @@ from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
 from impurityModel.ed.symmetries import (
     conserved_subset_charges,
-    measure_conserved_charges,
+    definite_conserved_charges,
     transition_sector_restrictions,
     widen_weighted_restrictions,
 )
@@ -481,6 +482,7 @@ def _rixs_map_flat(
     *,
     l_core,
     l_valence,
+    occ_cutoff=None,
 ):
     r"""Shared flat-unit RIXS driver behind :func:`calc_map` and :func:`calc_tensor_map`.
 
@@ -527,6 +529,11 @@ def _rixs_map_flat(
         val_change={l_core: (0, 0), l_valence: (1, 0)},
         con_change={l_core: (0, 0), l_valence: (0, 1)},
         slater_weight_min=slaterWeightMin,
+        # The caller's filled/empty bath classification cutoff (simulate_spectra passes the
+        # model's occ_cutoff, the one every other GF window uses); None keeps the builder's
+        # default. RIXS used to always take that default, 1e-6 against 1e-12 elsewhere, so its
+        # windows classified the same bath differently (review ledger C8).
+        **({} if occ_cutoff is None else {"cutoff": occ_cutoff}),
     )
     # Weighted restrictions (e.g. the excitation budget) for the core-excited / final bases:
     # widen the ground-state bounds by one orbital weight so a single transition operator stays
@@ -534,24 +541,29 @@ def _rixs_map_flat(
     # carries none, so the clones below then inherit split_basis.weighted_restrictions unchanged.
     excited_weighted_restrictions = widen_weighted_restrictions(basis.weighted_restrictions)
 
-    E0 = min(Es)
-    Z = np.sum(np.exp(-(Es - E0) / tau))
+    thermal = ThermalEnsemble(Es, tau)
+    Z = thermal.Z
     comm = basis.comm
     n_win = len(wIns)
 
-    # Conserved-charge sector of the core-excited intermediate state (all in-components share
-    # the same charge shift): confines the resolvent solve (R1). Computed per eigenstate on the
-    # full communicator (collective, lock-step) before the split.
+    # Conserved-charge sector of the core-excited intermediate state: confines the resolvent solve
+    # (R1). Computed per eigenstate on the full communicator (collective, lock-step) before the
+    # split. Only when the eigenstate has a definite charge, and only when every in-component
+    # leads to the same sector -- the components share one intermediate basis per unit, so a
+    # sector read off in_ops[0] alone would prune the others' seeds (review ledger C7).
     charges = conserved_subset_charges(hOp, n_orb=basis.num_spin_orbitals)
     psi1_per_e = [[applyOp_test(tin, psi_e) for tin in in_ops] for psi_e in psis]
     tmp_restrictions_per_e = []
     for psi_e in psis:
         tmp = excited_restrictions
         if charges:
-            gs_occ = measure_conserved_charges(psi_e, charges, basis.num_spin_orbitals, comm=comm)
-            sector_in = transition_sector_restrictions(charges, gs_occ, in_ops[0])
+            gs_occ = definite_conserved_charges(psi_e, charges, basis.num_spin_orbitals, comm=comm)
+            sectors = [None]
+            if gs_occ is not None:
+                sectors = [transition_sector_restrictions(charges, gs_occ, tin) for tin in in_ops]
+            sector_in = sectors[0] if all(sec == sectors[0] for sec in sectors) else None
             if sector_in:
-                tmp = gf._intersect_restrictions(excited_restrictions, sector_in)
+                tmp = intersect_windows(excited_restrictions, sector_in)
         tmp_restrictions_per_e.append(tmp)
 
     # Flat work units. Unit seeds are the eigenstate's in-component excitations (duplicated
@@ -578,7 +590,7 @@ def _rixs_map_flat(
     def kernel(split_basis, u, seeds):
         e, w_chunk = unit_infos[u]
         E_e = Es[e]
-        thermal_weight = np.exp(-(E_e - E0) / tau)
+        thermal_weight = thermal.weights[e]
         sub_comm = split_basis.comm
         # green_basis hosts the out-transition block-Green solves and accumulates states over
         # the chunk; tmp_basis hosts the intermediate resolvent and is rebuilt per wIn point.
@@ -601,40 +613,51 @@ def _rixs_map_flat(
             verbose=False,
             comm=sub_comm.Clone() if sub_comm is not None else None,
         )
-        psi1_all = list(seeds)
-        # width=1: this cold-start placeholder can reach redistribute_psis/from_states
-        # alongside genuinely-populated psi1_all (see _R1SolverChain.solve's fallback
-        # tier), so it must not be the width-0 polymorphic zero.
-        psi2_all = [ManyBodyState(width=1) for _ in in_ops]
-        r1_cache = (
-            r1_caches.setdefault(e, gf.SectorResolventCache(n_live_caches=_n_live_sector_caches(psis)))
-            if r1_caches is not None
-            else None
-        )
-        chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats)
-        out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
-        wins = wIns[w_chunk]
-        # `eval_out` reports the final-state basis it actually ran on rather than leaving the
-        # caller to read `green_basis.size`: the tensor variant's out-resolvent cache serves a
-        # hit WITHOUT regrowing that basis, so reading it back gives the cleared size (measured:
-        # 0 where the solve really ran on the cached sector), the same seed-vs-support trap as
-        # the intermediate resolvent's recycler tier.
-        final_support, final_untracked = None, False
-        for k, win in enumerate(wins):
-            psi2 = chain.solve(
-                tmp_basis, hOp, psi1_all, psi2_all, k, win, wins[k:], delta1, E_e, slaterWeightMin, verbose
+        try:
+            psi1_all = list(seeds)
+            # width=1: this cold-start placeholder can reach redistribute_psis/from_states
+            # alongside genuinely-populated psi1_all (see _R1SolverChain.solve's fallback
+            # tier), so it must not be the width-0 polymorphic zero.
+            psi2_all = [ManyBodyState(width=1) for _ in in_ops]
+            r1_cache = (
+                r1_caches.setdefault(e, gf.SectorResolventCache(n_live_caches=_n_live_sector_caches(psis)))
+                if r1_caches is not None
+                else None
             )
-            value, support = eval_out(green_basis, psi2, E_e)
-            out[k] = value * thermal_weight
-            if support is None:
-                final_untracked = True
-            elif final_support is None or support > final_support:
-                final_support = int(support)
-        # Free the per-unit cloned sub-communicator collectively -- every rank of this color
-        # runs the same unit list in the same order. green_basis's clone outlives the unit
-        # (per-color cache) and is freed after run_units_distributed.
-        if sub_comm is not None:
-            tmp_basis.free_comm()
+            # Every rank of a color runs this unit and increments the counters; they are SUM-reduced
+            # over the whole communicator at the end, so only one rank per color may keep them, or
+            # each solve counts ranks-per-color times (review ledger M5). Non-root ranks roll back
+            # at the end of the unit.
+            stats_before = dict(solver_stats) if sub_comm is not None and sub_comm.rank != 0 else None
+            chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats)
+            out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
+            wins = wIns[w_chunk]
+            # `eval_out` reports the final-state basis it actually ran on rather than leaving the
+            # caller to read `green_basis.size`: the tensor variant's out-resolvent cache serves a
+            # hit WITHOUT regrowing that basis, so reading it back gives the cleared size (measured:
+            # 0 where the solve really ran on the cached sector), the same seed-vs-support trap as
+            # the intermediate resolvent's recycler tier.
+            final_support, final_untracked = None, False
+            for k, win in enumerate(wins):
+                psi2 = chain.solve(
+                    tmp_basis, hOp, psi1_all, psi2_all, k, win, wins[k:], delta1, E_e, slaterWeightMin, verbose
+                )
+                value, support = eval_out(green_basis, psi2, E_e)
+                out[k] = value * thermal_weight
+                if support is None:
+                    final_untracked = True
+                elif final_support is None or support > final_support:
+                    final_support = int(support)
+        finally:
+            # Free the per-unit cloned sub-communicator collectively -- every rank of this color
+            # runs the same unit list in the same order -- on the error path too (review ledger
+            # M4). green_basis's clone outlives the unit (per-color cache) and is freed after
+            # run_units_distributed.
+            if sub_comm is not None:
+                tmp_basis.free_comm()
+        if stats_before is not None:
+            solver_stats.clear()
+            solver_stats.update(stats_before)
         # green_basis is cleared at the top of the NEXT unit on this colour, so its size is
         # read here, while it still holds this unit's accumulated final-state support. Both
         # eval_out variants either grow it through add_states + the array block_Green (which
@@ -693,6 +716,7 @@ def calc_map(
     *,
     l_core,
     l_valence,
+    occ_cutoff=None,
 ):
     r"""
     Return RIXS Green's function for states.
@@ -835,6 +859,7 @@ def calc_map(
         basis_acc=basis_acc,
         l_core=l_core,
         l_valence=l_valence,
+        occ_cutoff=occ_cutoff,
     )
     _report_rixs_solver_stats(solver_stats, basis.comm, verbose)
     if gs is not None:
@@ -860,6 +885,7 @@ def calc_tensor_map(
     *,
     l_core,
     l_valence,
+    occ_cutoff=None,
 ):
     r"""Full rank-4 Kramers-Heisenberg tensor over Cartesian in/out transition components.
 
@@ -999,6 +1025,7 @@ def calc_tensor_map(
             basis_acc=basis_acc,
             l_core=l_core,
             l_valence=l_valence,
+            occ_cutoff=occ_cutoff,
         )
 
     tol = adaptive_wIn_tol if adaptive_wIn_tol is not None else _rixs_adaptive_tol()

@@ -280,9 +280,8 @@ failure window [−0.35, −0.25] the new Σ sits at −6.1e-2. The single-parti
 experiment quantifies the mechanism: deleting the deep zone from the chain distorts Im Δ at the
 peak by 46% (hard pin ≈ deletion), while the graded cap-1 zone keeps the exact chain.
 
-Shipped **off by default** (`CHAIN_GRADED_RESTRICT=False` reproduces the §3d binary behavior
-exactly). Recommended for the long-chain / small-gap GF regime; validate on the target system's
-Σ / eigenvector overlap before enabling as a default.
+Shipped **off by default** at first (`CHAIN_GRADED_RESTRICT=False` reproduces the §3d binary
+behavior exactly); **on by default since 2026-07-18** (see "Defaults flipped" below).
 
 ## Recommendations
 

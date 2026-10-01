@@ -117,7 +117,15 @@ def test_from_h0_file_matches_nio_workload_inputs():
     assert model.impurity_orbitals == inputs["impurity_orbitals"]
 
 
-def _write_synthetic_archive(path, solver_line="1 1 6 chain", excitation_budget=None, e_pt2_tol=None):
+def _write_synthetic_archive(
+    path,
+    solver_line="1 1 6 chain",
+    excitation_budget=None,
+    e_pt2_tol=None,
+    gf_method=None,
+    gf_admission=None,
+    gf_admit_tol=None,
+):
     """Write a minimal impurityModel_data.h5 (one 2-orbital impurity + 1 bath) like the interface does.
 
     ``solver_line=None`` omits the provenance line; ``excitation_budget`` (when given) writes the
@@ -154,6 +162,12 @@ def _write_synthetic_archive(path, solver_line="1 1 6 chain", excitation_budget=
         g.attrs["slater_min"] = 0.0
         g.attrs["dN"] = "None"
         g.attrs["sparse_green"] = True
+        if gf_method is not None:
+            g.attrs["gf_method"] = gf_method
+        if gf_admission is not None:
+            g.attrs["gf_admission"] = gf_admission
+        if gf_admit_tol is not None:
+            g.attrs["gf_admit_tol"] = gf_admit_tol
         if solver_line is not None:
             g.attrs["solver line"] = solver_line
         if excitation_budget is not None:
@@ -389,3 +403,37 @@ def test_from_hdf5_with_dc_dataset_recovers_dc(tmp_path):
     assert isinstance(model.dc, dict)
     recovered = extract_tensors(model.dc, n_orb=2, two_body=False)[0]
     np.testing.assert_allclose(recovered, dc)
+
+
+@pytest.mark.parametrize("retired", ["sliced", "cipsi"])
+def test_archive_with_a_retired_gf_method_replays_with_lanczos_and_warns(tmp_path, retired):
+    """An archive records a finished run: replaying it must not fail on a kernel retired since,
+    but it must not pass silently either (config.RETIRED_GF_METHODS)."""
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), gf_method=retired)
+    with pytest.warns(UserWarning, match=f"gf_method='{retired}'.*replaying it with gf_method='lanczos'"):
+        _, _, _, solver, _ = load_selfenergy_archive(str(archive))
+    assert solver.gf_method == "lanczos"
+
+
+def test_archive_records_and_replays_the_admission_policy(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), gf_method="bicgstab", gf_admission="outer", gf_admit_tol=1e-5)
+    _, _, _, solver, _ = load_selfenergy_archive(str(archive))
+    assert (solver.gf_method, solver.gf_admission) == ("bicgstab", "outer")
+    assert solver.gf_admit_tol == pytest.approx(1e-5)
+
+
+def test_an_archive_from_before_the_policy_existed_replays_as_unspecified(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), gf_method="bicgstab")
+    _, _, _, solver, _ = load_selfenergy_archive(str(archive))
+    assert solver.gf_method == "bicgstab" and solver.gf_admission is None and solver.gf_admit_tol is None
+
+
+def test_an_archive_that_stored_none_as_a_string_is_read_as_unspecified(tmp_path):
+    """The interface writes ``None`` attributes as the string ``"None"``."""
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), gf_method="lanczos", gf_admission="None", gf_admit_tol="None")
+    _, _, _, solver, _ = load_selfenergy_archive(str(archive))
+    assert solver.gf_admission is None and solver.gf_admit_tol is None

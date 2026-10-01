@@ -8,12 +8,9 @@ from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.greens_function import (
     build_full_greens_function,
     build_qr,
-    calc_continuants,
     calc_G,
     calc_thermally_averaged_G,
     get_Greens_function,
-    rotate_4index_U,
-    rotate_Greens_function,
     save_Greens_function,
 )
 from impurityModel.ed.manybody_basis import Basis
@@ -42,38 +39,23 @@ def test_build_full_greens_function_2d():
 
 
 def test_build_full_greens_function_3d():
+    # Particle-hole relations are rejected by the reconstruction (review ledger C1; see
+    # test_block_structure_particle_hole.py), so this covers identical and transposed images.
     bs = BlockStructure(
-        blocks=[[0, 1], [2, 3], [4, 5], [6, 7]],
-        identical_blocks=[[0], [], [], []],
-        transposed_blocks=[[1], [], [], []],
-        particle_hole_blocks=[[2], [], [], []],
-        particle_hole_transposed_blocks=[[3], [], [], []],
+        blocks=[[0, 1], [2, 3], [4, 5]],
+        identical_blocks=[[0, 2], [], []],
+        transposed_blocks=[[1], [], []],
+        particle_hole_blocks=[[], [], []],
+        particle_hole_transposed_blocks=[[], [], []],
         inequivalent_blocks=[0],
     )
     b1 = np.array([[[1.0, 0.5j], [-0.5j, 2.0]], [[2.0, 1j], [-1j, 3.0]]])
 
     gf = build_full_greens_function([b1], bs)
-    assert gf.shape == (2, 8, 8)
+    assert gf.shape == (2, 6, 6)
     assert np.allclose(gf[:, 0:2, 0:2], b1)
     assert np.allclose(gf[:, 2:4, 2:4], np.transpose(b1, (0, 2, 1)))
-    assert np.allclose(gf[:, 4:6, 4:6], -np.conj(b1))
-    assert np.allclose(gf[:, 6:8, 6:8], -np.transpose(np.conj(b1), (0, 2, 1)))
-
-
-def test_build_full_greens_function_all_blocks():
-    bs = BlockStructure(
-        blocks=[[0, 1], [2, 3]],
-        identical_blocks=[[0, 1], []],
-        transposed_blocks=[[], []],
-        particle_hole_blocks=[[], []],
-        particle_hole_transposed_blocks=[[], []],
-        inequivalent_blocks=[0],
-    )
-    b1 = np.array([[1.0, 0.5], [0.5, 2.0]])
-    b2 = np.array([[2.0, 1.0], [1.0, 3.0]])
-    gf = build_full_greens_function([b1, b2], bs)
-    assert np.allclose(gf[0:2, 0:2], b1)
-    assert np.allclose(gf[2:4, 2:4], b2)
+    assert np.allclose(gf[:, 4:6, 4:6], b1)
 
 
 def test_build_full_greens_function_exceptions():
@@ -104,33 +86,6 @@ def test_build_qr():
     assert np.allclose(q.T @ q, np.eye(2))
 
 
-def test_calc_continuants():
-    diag = np.array([np.eye(2) * 1, np.eye(2) * 2, np.eye(2) * 3])
-    offdiag = np.array([np.zeros((2, 2)), np.eye(2) * 0.5, np.eye(2) * 0.1])
-    A, B = calc_continuants(diag, offdiag)
-    assert A.shape == (3, 2, 2)
-    assert B.shape == (3, 2, 2)
-    assert np.allclose(A[0], diag[0])
-    assert np.allclose(B[0], np.ones((2, 2)))
-
-
-def test_rotate_Greens_function():
-    G = np.array([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
-    T = np.array([[0, 1], [1, 0]])
-    rot = rotate_Greens_function(G, T)
-    expected0 = T.T.conj() @ G[0] @ T
-    expected1 = T.T.conj() @ G[1] @ T
-    assert np.allclose(rot[0], expected0)
-    assert np.allclose(rot[1], expected1)
-
-
-def test_rotate_4index_U():
-    U4 = np.ones((2, 2, 2, 2))
-    T = np.eye(2)
-    rot = rotate_4index_U(U4, T)
-    assert np.allclose(rot, U4)
-
-
 def test_calc_G():
     alphas = np.array([np.eye(2) * 1.0, np.eye(2) * 2.0])
     betas = np.array([np.eye(2) * 0.0, np.eye(2) * 0.5])
@@ -156,9 +111,6 @@ def test_calc_thermally_averaged_G():
     delta = 0.1
     G_avg = calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta)
     assert G_avg.shape == (3, 2, 2)
-
-    G_empty = calc_thermally_averaged_G([], [], [], mesh, [], e0, tau, delta)
-    assert G_empty.shape == (3, 0, 0)
 
 
 def test_save_Greens_function(tmp_path):
@@ -271,37 +223,6 @@ def test_get_Greens_function_matsubara_none():
 
     if gs_mat is not None and len(gs_mat) > 0:
         assert True
-
-
-def test_calc_G_pairwise_polarization_identity():
-    """calc_G_pairwise reconstructs the full G matrix from scalar continued fractions.
-
-    Single-pole synthetic case: seeds v_i = c_i |x> all proportional to one excited state |x>
-    of energy Ex, so M_ij(w) = conj(c_i) c_j / (w + i delta + e - Ex) is analytic. The scalar
-    continued fraction for a seed w = c|x> is one block (alphas=[[Ex]], betas=[[0]], r=[[|c|]]),
-    giving S(w) = |c|^2 / (w'-Ex). calc_G_pairwise must reproduce M exactly via polarization.
-    """
-    from impurityModel.ed.greens_function import PairwiseGF, calc_G_pairwise
-
-    c = np.array([0.7 + 0.2j, -0.4 + 0.9j])  # seed coefficients c_0, c_1
-    Ex, e, delta = 1.3, 0.25, 0.1
-    mesh = np.linspace(-2.0, 2.0, 11)
-
-    def scalar_cf(coeff):
-        norm = abs(coeff)
-        return (
-            [np.array([[Ex]], dtype=complex)],
-            [np.array([[0.0]], dtype=complex)],
-            np.array([[norm]], dtype=complex),
-        )
-
-    diag = [scalar_cf(c[0]), scalar_cf(c[1])]
-    pairs = {(0, 1): (scalar_cf(c[0] + c[1]), scalar_cf(c[0] + 1j * c[1]))}
-    G = calc_G_pairwise(PairwiseGF(2, diag, pairs), mesh, e, delta)
-
-    wp = mesh + 1j * delta + e - Ex
-    M = (np.conj(c)[None, :, None] * c[None, None, :]) / wp[:, None, None]
-    np.testing.assert_allclose(G, M, atol=1e-12)
 
 
 def test_get_Greens_function_eigenstate_grouping():
@@ -453,87 +374,13 @@ def test_get_Greens_function_eigenstate_grouping_with_bath():
     )
 
 
-def test_get_Greens_function_operator_split_matches_block():
-    """The operator-split (pairwise) path (``GF_OPERATOR_SPLIT``) is an exact reorganization,
-    not an approximation: computing each ``n x n`` block as ``n`` scalar (width-1) recurrences for
-    the diagonal seeds plus two polarization recurrences per off-diagonal pair, then reassembling
-    via the polarization identity, must reproduce the shared-Krylov width-``n`` block Green's
-    function to the convergence tolerance. Run on the hybridizing-bath system (excited basis grows
-    under H) on the sparse path the self-energy driver uses; the two thermal states occupy
-    different orbitals, so a wrong seed pairing or column assignment would change G by O(1).
-    """
-    omega_mesh = np.linspace(-2.0, 2.0, 25)
-    blocks = [[0, 1]]
-
-    def _hop():
-        return ManyBodyOperator(
-            {
-                ((0, "c"), (0, "a")): 0.3,
-                ((1, "c"), (1, "a")): 0.7,
-                ((2, "c"), (2, "a")): -0.5,
-                ((3, "c"), (3, "a")): 0.4,
-                ((0, "c"), (2, "a")): 0.25,
-                ((2, "c"), (0, "a")): 0.25,
-                ((1, "c"), (3, "a")): 0.25,
-                ((3, "c"), (1, "a")): 0.25,
-            }
-        )
-
-    state_bytes = [b"\xa0", b"\x50"]  # {0,2}, {1,3}
-    es = [-0.2, 0.3]
-
-    def run(op_split):
-        basis = Basis(
-            impurity_orbitals={0: [[0, 1]]},
-            bath_states=({0: [[2, 3]]}, {0: [[]]}),
-            initial_basis=state_bytes,
-            comm=MPI.COMM_SELF,
-        )
-        psis = [ManyBodyState({SlaterDeterminant.from_bytes(b): 1.0}) for b in state_bytes]
-        old = os.environ.get("GF_OPERATOR_SPLIT")
-        os.environ["GF_OPERATOR_SPLIT"] = "1" if op_split else "0"
-        try:
-            _, gs_real, _ = get_Greens_function(
-                matsubara_mesh=None,
-                omega_mesh=omega_mesh,
-                psis=psis,
-                es=list(es),
-                tau=1.0,
-                basis=basis,
-                hOp=_hop(),
-                delta=0.1,
-                blocks=blocks,
-                verbose=False,
-                verbose_extra=False,
-                reort=None,
-                dN=1,
-                occ_cutoff=1e-6,
-                slaterWeightMin=0.0,
-                sparse=True,
-            )
-        finally:
-            if old is None:
-                del os.environ["GF_OPERATOR_SPLIT"]
-            else:
-                os.environ["GF_OPERATOR_SPLIT"] = old
-        return gs_real[0]
-
-    block = run(False)
-    split = run(True)
-    assert block.shape == (len(omega_mesh), 2, 2)
-    assert np.allclose(block, split, atol=1e-5, rtol=1e-4), (
-        f"operator-split GF differs from the block GF on the bath system: "
-        f"max|diff|={np.max(np.abs(block - split)):.2e}"
-    )
-
-
 def test_union_restrictions_semantics():
-    """``_union_restrictions`` returns the loosest single window admitting every input's feasible
+    """``basis_restrictions.union_windows`` returns the loosest single window admitting every input's feasible
     set: keep only subset keys common to all states, loosen each shared bound to (min lo, max hi),
     and yield ``None`` (unconstrained) if any input is ``None`` or no key is common. This is the
     superset that lets a grouped unit's shared Krylov space contain every stacked state's dynamics.
     """
-    from impurityModel.ed.gf_units import _union_restrictions
+    from impurityModel.ed.basis_restrictions import union_windows as _union_restrictions
 
     a = frozenset({0, 1, 2})
     b = frozenset({3, 4})
@@ -700,7 +547,7 @@ def test_get_Greens_function_reports_solver_own_verdict(monkeypatch):
     silently falling back to the aggregation's default), this forced value would never reach the
     report and this test would not catch it.
     """
-    import impurityModel.ed.greens_function as gf_mod
+    import impurityModel.ed.gf_engine as gf_engine_mod
     from impurityModel.ed.gf_solvers import block_Green_sparse as real_block_Green_sparse
 
     forced = {"converged": False, "d_g": 0.0234, "n_blocks": 17, "tol": 1e-9}
@@ -711,7 +558,8 @@ def test_get_Greens_function_reports_solver_own_verdict(monkeypatch):
             info.update(forced)
         return result
 
-    monkeypatch.setattr(gf_mod, "block_Green_sparse", fake_block_Green_sparse)
+    # _block_green_group (gf_engine) resolves block_Green_sparse from its own module.
+    monkeypatch.setattr(gf_engine_mod, "block_Green_sparse", fake_block_Green_sparse)
 
     omega_mesh = np.linspace(-1.0, 1.0, 5)
     hOp = ManyBodyOperator({((0, "c"), (0, "a")): 0.5})
@@ -753,3 +601,16 @@ def test_get_Greens_function_reports_solver_own_verdict(monkeypatch):
     band_names = [d.name for d in report.diagnostics]
     assert "lanczos_band" in band_names
     assert "max_iter" not in report.render()
+
+
+def test_the_gf_reort_argument_is_validated():
+    """resolve_reort passes any non-string through, so a float reached the kernels untranslated,
+    where no reort branch matched it (review ledger C8)."""
+    from impurityModel.ed.BlockLanczosArray import Reort
+    from impurityModel.ed.gf_solvers import _gf_reort
+
+    assert _gf_reort(None) is Reort.NONE
+    assert _gf_reort("full") is Reort.FULL
+    assert _gf_reort(Reort.PARTIAL) is Reort.PARTIAL
+    with pytest.raises(TypeError, match="reort"):
+        _gf_reort(0.5)

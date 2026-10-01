@@ -46,7 +46,7 @@ class Knob:
     Parameters
     ----------
     name : str
-        The environment variable, e.g. ``"GF_SLICES"``.
+        The environment variable, e.g. ``"GF_EIGENSTATE_GROUP"``.
     kind : {"int", "float", "bool", "str"}
         How the raw string is parsed.
     default : Any
@@ -85,6 +85,75 @@ class Knob:
 
 def _register(*knobs: Knob) -> dict[str, Knob]:
     return {knob.name: knob for knob in knobs}
+
+
+# --- Green's-function kernels (the ``gf_method`` solver option) ----------------------------
+# Not knobs -- ``gf_method`` is a solver option -- but every front end (the driver, the TOML
+# schema, the CLI, archive replay) must accept the same set, and this leaf module is the one
+# they all import.
+
+#: Accepted ``gf_method`` values.
+GF_METHODS = ("lanczos", "bicgstab")
+
+#: Accepted ``SolverOptions.gf_admission`` values, the basis-growth policy of the per-frequency
+#: ``"bicgstab"`` kernel: ``"all"`` admits every determinant the solver produces, ``"outer"`` solves on a
+#: frozen basis, measures the residual outside it and admits only what scores above a threshold
+#: (:mod:`impurityModel.ed.gf_admission`). ``"outer"`` needs ``gf_method="bicgstab"``.
+GF_ADMISSIONS = ("all", "outer")
+
+#: Accepted ``SolverOptions.sigma_method`` values: the self-energy estimators of
+#: :mod:`impurityModel.ed.sigma_estimators` (its ``ESTIMATORS`` registry has exactly these keys).
+SIGMA_METHODS = ("dyson",)
+
+#: Retired ``gf_method`` values, each with the reason and the replacement. Archive replay maps
+#: them to ``"lanczos"`` with a warning; every other front end rejects them with this message.
+RETIRED_GF_METHODS = {
+    "sliced": (
+        "was retired: spectrum slicing never delivered its projected memory win (the live basis "
+        "is the H-connectivity closure of the seed support, doc/plans/spectrum_slicing.md) and "
+        "missed the exact G by ~1e-5 (doc/reviews/gf_review.md, S1); use 'lanczos' or 'bicgstab'"
+    ),
+    "cipsi": (
+        "was retired: resolvent-targeted CIPSI selection matched, but did not beat, the plain "
+        "freeze-growth cap at equal determinant budget, at 1.5-2x the wall cost "
+        "(doc/plans/gf_cipsi_frequency_truncation.md; doc/reviews/gf_review.md, S2); use "
+        "'bicgstab' with a truncation_threshold, or 'lanczos'"
+    ),
+}
+
+#: Knobs that no longer exist, each with the reason. ``[environment]`` rejects them with this
+#: message, and a GF run warns when one is still set in the process environment
+#: (:func:`warn_retired_knobs`) -- an exported variable nobody reads any more would otherwise
+#: be silently ignored.
+RETIRED_KNOBS = {
+    **dict.fromkeys(("GF_SLICES", "GF_SLICE_DEGREE", "GF_SLICE_TOL"), "retired with gf_method='sliced'"),
+    **dict.fromkeys(
+        (
+            "GF_CIPSI_BUDGET",
+            "GF_CIPSI_MAX_NEW",
+            "GF_CIPSI_DE2_MIN",
+            "GF_CIPSI_MAX_ROUNDS",
+            "GF_CIPSI_BOUNDARY_TOL",
+            "GF_CIPSI_SCORER",
+            "GF_CIPSI_PT2",
+        ),
+        "retired with gf_method='cipsi'",
+    ),
+    "GF_OPERATOR_SPLIT": (
+        "retired: the pairwise operator split (scalar continued fractions per operator pair) was an "
+        "opt-in load-balancing mode that multiplied the Krylov work, and the improved-estimator "
+        "self-energy needs whole-block recurrences (doc/reviews/gf_review.md, S3)"
+    ),
+}
+
+
+def warn_retired_knobs():
+    """Warn once per call for every retired knob still set in ``os.environ``."""
+    import warnings
+
+    for name, reason in RETIRED_KNOBS.items():
+        if os.environ.get(name, "") != "":
+            warnings.warn(f"environment variable {name} is set but no longer read: {reason}.", stacklevel=2)
 
 
 # --- Green's function: per-frequency BiCGSTAB solver (gf_method="bicgstab") -----------------
@@ -126,6 +195,153 @@ GF_BICGSTAB_RESTARTS = Knob(
     half to earn the next one, so a genuinely stuck point stops early and is reported.""",
 )
 
+GF_BICGSTAB_WARM_HISTORY = Knob(
+    name="GF_BICGSTAB_WARM_HISTORY",
+    kind="int",
+    default=3,
+    minimum=0,
+    group="bicgstab",
+    doc="""Solutions retained for a point's warm start: Lagrange extrapolation in z through the
+    last this-many solves of the sweep. 3 (quadratic) is the measured optimum -- cubic amplifies
+    the atol-level noise it extrapolates through (doc/plans/bicgstab_per_frequency_gf.md,
+    Phase 3a). 0 cold-starts every point. The warm start's support is carried into the point's
+    rebuilt basis, so a warm-started point's basis is a sliding-window union over its
+    neighbours; measure per-point support cold (0).""",
+)
+
+GF_BICGSTAB_RESIDUAL_CHECK = Knob(
+    name="GF_BICGSTAB_RESIDUAL_CHECK",
+    kind="bool",
+    default=None,
+    group="bicgstab",
+    doc="""After every per-frequency solve, apply the operator once more at cutoff 0 and record the
+    true residual split at the solve basis: the in-basis part (the solver's residual, recomputed)
+    and the boundary residual (1-P) H X that a truncated basis leaves unseen, with a bound on the
+    error of G built from them (``gf_primitives.resolvent_error_bound``). Costs one unchunked
+    matvec per point -- its peak is the full cutoff-0 image of the iterate, larger than a solve
+    iteration's. Unset (derived), it follows the admission policy: on for ``outer`` admission,
+    whose point is to trade basis size for a measured error, off for ``all``. ``1``/``0`` force it
+    either way.""",
+)
+
+GF_BICGSTAB_ADMISSION = Knob(
+    name="GF_BICGSTAB_ADMISSION",
+    kind="str",
+    default="all",
+    group="bicgstab",
+    doc="""How a per-frequency point's basis grows. ``all`` (default): every determinant the solver
+    produces is admitted (``slaterWeightMin`` aside), up to the cap. ``outer``: solve on a frozen
+    basis, measure the residual outside it, admit only the determinants that score above
+    ``GF_BICGSTAB_ADMIT_TOL_*`` (at most the cap allows), and re-solve -- importance-ranked
+    admission between frozen solves, never inside the BiCGSTAB recurrence (dropping rows between
+    steps breaks its recursive residual).""",
+)
+
+GF_BICGSTAB_ADMIT_SCORER = Knob(
+    name="GF_BICGSTAB_ADMIT_SCORER",
+    kind="str",
+    default="amplitude",
+    group="bicgstab",
+    doc="""Importance score of an outside determinant D under ``outer`` admission, per column j and
+    maximised over the block: ``amplitude`` is ``|b_Dj| / ||Y_j||`` (boundary residual over seed
+    norm); ``jacobi`` is ``|b_Dj| / (||X_j|| |z - H_DD|)`` (the first-order correction it would
+    receive, so near-resonant determinants rank first). ``jacobi`` only means something where
+    ``H_DD`` is a configuration energy, i.e. a star bath.""",
+)
+
+GF_BICGSTAB_ADMIT_TOL_AMP = Knob(
+    name="GF_BICGSTAB_ADMIT_TOL_AMP",
+    kind="float",
+    default=1e-4,
+    minimum=0.0,
+    group="bicgstab",
+    doc="Admission threshold of the ``amplitude`` scorer (dimensionless: relative to the seed norm).",
+)
+
+GF_BICGSTAB_ADMIT_TOL_JACOBI = Knob(
+    name="GF_BICGSTAB_ADMIT_TOL_JACOBI",
+    kind="float",
+    default=1e-4,
+    minimum=0.0,
+    group="bicgstab",
+    doc="Admission threshold of the ``jacobi`` scorer (dimensionless: relative to the iterate norm).",
+)
+
+GF_BICGSTAB_ADMIT_ROUNDS = Knob(
+    name="GF_BICGSTAB_ADMIT_ROUNDS",
+    kind="int",
+    default=20,
+    minimum=0,
+    group="bicgstab",
+    doc="""Solve-measure-admit rounds per point before the final solve. Each round reaches
+    ``GF_BICGSTAB_ADMIT_SHELLS`` H-shells beyond the current basis, so this bounds the depth the
+    admission can reach; the retired per-frequency CIPSI was round-limited at 8 shells.""",
+)
+
+GF_BICGSTAB_ADMIT_SHELLS = Knob(
+    name="GF_BICGSTAB_ADMIT_SHELLS",
+    kind="int",
+    default=2,
+    minimum=1,
+    group="bicgstab",
+    doc="""H-shells admitted per round. The first is scored on the measured boundary residual; each
+    further one on the residual of the Jacobi-extended correction of the shell before it, so a
+    round reaches the boundary of the boundary without a solve in between.""",
+)
+
+GF_BICGSTAB_ADMIT_CARRY_TOL = Knob(
+    name="GF_BICGSTAB_ADMIT_CARRY_TOL",
+    kind="float",
+    default=1e-3,
+    minimum=0.0,
+    group="bicgstab",
+    doc="""Under ``outer`` admission a point starts from its seeds, their first H-shell and the
+    determinants of the warm-start guess with ``|x0_D| / ||x0|| >= this``, re-scored at the new z so
+    the set can shrink -- not from the whole extrapolation support, which only ever grows along the
+    sweep.""",
+)
+
+GF_BICGSTAB_ADMIT_EN_TOL = Knob(
+    name="GF_BICGSTAB_ADMIT_EN_TOL",
+    kind="float",
+    default=0.0,
+    minimum=0.0,
+    group="bicgstab",
+    doc="""Stop admitting when the Epstein-Nesbet estimate of the remaining G error,
+    ``sum_D b_Di* b_Dj / (z - H_DD)``, is below this fraction of ``max_j |G_jj|``. 0 (default)
+    disables it. An estimate, not a bound: it is reported and never added to G.""",
+)
+
+GF_LANCZOS_ADMIT_TOL = Knob(
+    name="GF_LANCZOS_ADMIT_TOL",
+    kind="float",
+    default=0.0,
+    minimum=0.0,
+    group="bicgstab",
+    doc="""Importance pruning of the block-Lanczos recurrence's growth -- the comparator for
+    ``GF_BICGSTAB_ADMISSION=outer``. A step's new determinants are admitted only if their largest
+    amplitude exceeds this; the rest are banned for good, which keeps the recurrence the exact
+    Lanczos of the final retained set under every reorthogonalization mode. 0 (default) is off.
+    Requires ``GF_APPLY_ROW_CHUNKS=1`` (chunks carry partial amplitudes a row would be ranked on)
+    and ``slaterWeightMin=0`` (a row dropped inside the apply cannot be banned); the solver raises
+    if either is violated rather than silently mis-ranking.""",
+)
+
+GF_ADMIT_FIRST_SHELL_TOL = Knob(
+    name="GF_ADMIT_FIRST_SHELL_TOL",
+    kind="float",
+    default=0.0,
+    minimum=0.0,
+    group="bicgstab",
+    doc="""Importance-pruned admission (``GF_BICGSTAB_ADMISSION=outer``, ``GF_LANCZOS_ADMIT_TOL``) keeps
+    the seeds' first H-shell whole by default (0): that is what keeps the moments of G through
+    ``H^2``, hence the ``Sigma`` tail, exact. A determinant reached from the seeds by a coupling
+    ``V`` still enters that shell, however small ``V`` is, so a bath level hybridized at 1e-5 puts
+    its whole hole-space in the start set. Above 0, first-shell rows with amplitude below this
+    (relative to the seed norm) are pruned like any other: the ``H^2`` moment then errs by at most
+    the summed squared amplitudes of what was dropped.""",
+)
+
 GF_GMRES_RESTART = Knob(
     name="GF_GMRES_RESTART",
     kind="int",
@@ -145,122 +361,6 @@ GF_GMRES_MAX_RESTARTS = Knob(
     minimum=1,
     group="bicgstab",
     doc="Maximum GMRES restart cycles before the point is reported as unconverged.",
-)
-
-# --- Green's function: per-frequency CIPSI-selected solver (gf_method="cipsi") --------------
-# Experimental (doc/plans/gf_cipsi_frequency_truncation.md): the per-point basis is grown by
-# resolvent-targeted CIPSI selection (CIPSISolver.select_at) instead of the H-connectivity
-# closure, so the retained determinants are the *important* ones at each frequency rather
-# than the first-discovered ones the freeze-growth cap keeps.
-
-GF_CIPSI_BUDGET = Knob(
-    name="GF_CIPSI_BUDGET",
-    kind="int",
-    default=None,  # unset = inherit the basis truncation_threshold
-    minimum=1,
-    group="cipsi",
-    doc="""Per-point determinant budget of a CIPSI-selected solve: selection rounds stop
-    admitting candidates once the basis reaches this size. Unset inherits the basis
-    ``truncation_threshold`` (possibly unbounded).""",
-)
-
-GF_CIPSI_MAX_NEW = Knob(
-    name="GF_CIPSI_MAX_NEW",
-    kind="int",
-    default=None,  # unset = only the remaining budget caps a round
-    minimum=1,
-    group="cipsi",
-    doc="""Global cap on the candidates admitted per selection round (collective bisection on
-    the importance scores). Unset admits every candidate passing ``GF_CIPSI_DE2_MIN`` up to
-    the remaining budget; a finite value staggers the growth so later rounds select with a
-    better-converged iterate.""",
-)
-
-GF_CIPSI_DE2_MIN = Knob(
-    name="GF_CIPSI_DE2_MIN",
-    kind="float",
-    default=0.0,
-    minimum=0.0,
-    group="cipsi",
-    doc="""Importance floor of the resolvent CIPSI selection: candidates below it are never
-    admitted regardless of budget. 0 (default) leaves the truncation entirely to the budget
-    and the boundary-residual stop.""",
-)
-
-GF_CIPSI_MAX_ROUNDS = Knob(
-    name="GF_CIPSI_MAX_ROUNDS",
-    kind="int",
-    default=8,
-    minimum=1,
-    group="cipsi",
-    doc="""Solve->select->re-solve rounds per frequency point. Each round solves exactly on
-    the frozen basis, then admits the highest-importance boundary determinants; the loop
-    also stops on the boundary-residual tolerance or an exhausted budget.""",
-)
-
-GF_CIPSI_BOUNDARY_TOL = Knob(
-    name="GF_CIPSI_BOUNDARY_TOL",
-    kind="float",
-    default=None,  # unset = the solver atol (GF_BICGSTAB_ATOL)
-    minimum=0.0,
-    group="cipsi",
-    doc="""Stop tolerance on the boundary residual (the true-residual norm outside the basis,
-    relative to the seed norm) -- the selection loop's convergence measure, and the honest
-    truncation-error estimate of the returned G. Unset uses the in-basis solver tolerance
-    (``GF_BICGSTAB_ATOL``), so in-basis and out-of-basis errors are balanced by default.""",
-)
-
-GF_CIPSI_SCORER = Knob(
-    name="GF_CIPSI_SCORER",
-    kind="str",
-    default="de2",
-    group="cipsi",
-    doc="""Candidate importance: ``de2`` is the resolvent weight
-    ``sum_i |<Dj|H|X_i>|^2 / |z - E_Dj|^2`` (frequency-targeted); ``amplitude`` drops the
-    energy denominator (the bare-coupling baseline the frequency targeting must beat).""",
-)
-
-GF_CIPSI_PT2 = Knob(
-    name="GF_CIPSI_PT2",
-    kind="bool",
-    default=False,
-    group="cipsi",
-    doc="""Add the second-order (Loewdin downfolding) correction of the discarded boundary to
-    G: ``dG_ij = sum_D <D|H|X_i> <D|H|X_j> / (z - E_D)`` over the final round's unadmitted
-    candidates (complex-symmetric approximation, exact for a real Hamiltonian matrix). Its
-    magnitude is recorded in the stats either way -- it doubles as a truncation-error bar.""",
-)
-
-# --- Green's function: spectrum slicing (gf_method="sliced") --------------------------------
-# Retained as a documented failure: doc/plans/spectrum_slicing.md records why the projected
-# 2-8x win never materialized (the live basis is the H-connectivity closure of the seed
-# support, invariant under filtering).
-
-GF_SLICES = Knob(
-    name="GF_SLICES",
-    kind="int",
-    default=8,
-    minimum=1,
-    group="sliced",
-    doc="Number of Chebyshev windows tiling the real-axis evaluation band.",
-)
-
-GF_SLICE_DEGREE = Knob(
-    name="GF_SLICE_DEGREE",
-    kind="int",
-    default=0,
-    minimum=0,
-    group="sliced",
-    doc="Chebyshev filter degree; 0 = auto (derived from the bandwidth / slice-width ratio).",
-)
-
-GF_SLICE_TOL = Knob(
-    name="GF_SLICE_TOL",
-    kind="float",
-    default=0.0,
-    minimum=0.0,
-    group="sliced",
-    doc="Amplitude truncation applied to the filtered slice seeds; 0 = no truncation.",
 )
 
 # --- Green's function: work-unit decomposition ---------------------------------------------
@@ -332,18 +432,6 @@ GF_APPLY_ROW_CHUNKS = Knob(
     ``truncation_threshold``), each chunk runs ``_CappedBasisProxy``'s freeze/admit decision on
     its own candidate rows rather than once for the whole step -- see its docstring
     (``gf_primitives.py``) -- but the cap itself binds identically either way.""",
-)
-
-GF_OPERATOR_SPLIT = Knob(
-    name="GF_OPERATOR_SPLIT",
-    kind="bool",
-    default=False,
-    group="units",
-    doc="""Split each orbital block's Green's function into scalar (pairwise) continued
-    fractions, one per operator column, instead of one block recurrence. Multiplies the number
-    of independent work units -- better load balance for few large blocks -- at the cost of
-    redundant Krylov building (no subspace shared across columns). Mutually exclusive with
-    eigenstate grouping; the operator split wins when both are requested.""",
 )
 
 GF_PER_STATE_RESTRICT = Knob(
@@ -953,21 +1041,22 @@ KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_ATOL,
     GF_BICGSTAB_MAX_ITER,
     GF_BICGSTAB_RESTARTS,
+    GF_BICGSTAB_WARM_HISTORY,
+    GF_BICGSTAB_RESIDUAL_CHECK,
+    GF_BICGSTAB_ADMISSION,
+    GF_BICGSTAB_ADMIT_SCORER,
+    GF_BICGSTAB_ADMIT_TOL_AMP,
+    GF_BICGSTAB_ADMIT_TOL_JACOBI,
+    GF_BICGSTAB_ADMIT_ROUNDS,
+    GF_BICGSTAB_ADMIT_SHELLS,
+    GF_BICGSTAB_ADMIT_CARRY_TOL,
+    GF_BICGSTAB_ADMIT_EN_TOL,
+    GF_LANCZOS_ADMIT_TOL,
+    GF_ADMIT_FIRST_SHELL_TOL,
     GF_GMRES_RESTART,
     GF_GMRES_MAX_RESTARTS,
-    GF_CIPSI_BUDGET,
-    GF_CIPSI_MAX_NEW,
-    GF_CIPSI_DE2_MIN,
-    GF_CIPSI_MAX_ROUNDS,
-    GF_CIPSI_BOUNDARY_TOL,
-    GF_CIPSI_SCORER,
-    GF_CIPSI_PT2,
-    GF_SLICES,
-    GF_SLICE_DEGREE,
-    GF_SLICE_TOL,
     GF_EIGENSTATE_GROUP,
     GF_APPLY_ROW_CHUNKS,
-    GF_OPERATOR_SPLIT,
     GF_PER_STATE_RESTRICT,
     GF_CHECK_EVERY,
     GF_NEAR_FACTOR,
@@ -997,8 +1086,6 @@ KNOBS: dict[str, Knob] = _register(
 
 GROUP_TITLES = {
     "bicgstab": 'Per-frequency BiCGSTAB solver (``gf_method="bicgstab"``)',
-    "cipsi": 'Per-frequency CIPSI-selected solver (``gf_method="cipsi"``)',
-    "sliced": 'Spectrum slicing (``gf_method="sliced"``)',
     "units": "Green's-function work-unit decomposition",
     "convergence": "Block-Lanczos convergence monitor",
     "rixs-solvers": "RIXS shift-recycling solver tiers",

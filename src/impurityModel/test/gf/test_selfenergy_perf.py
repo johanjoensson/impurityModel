@@ -101,21 +101,28 @@ def _timed(name, func):
 def _phase_timers():
     """Monkeypatch the phase entry points in the ``selfenergy`` namespace with timers.
 
-    Restores the originals on exit. Patches the *names as looked up inside*
-    ``calc_selfenergy`` (module-level attributes of ``selfenergy``), so the real call
-    sites are timed without touching production code.
+    Restores the originals on exit. Patches the *names as looked up at the call sites*
+    (module-level attributes of ``selfenergy``, and of ``sigma_estimators`` for ``get_sigma``),
+    so the real call sites are timed without touching production code.
     """
     from impurityModel.ed import selfenergy as se
+    from impurityModel.ed import sigma_estimators
 
-    targets = ["calc_gs", "get_Greens_function", "get_sigma", "get_Sigma_static"]
-    originals = {name: getattr(se, name) for name in targets}
+    # get_sigma is looked up by the Dyson estimator, not by calc_selfenergy itself.
+    targets = [
+        (se, "calc_gs"),
+        (se, "get_Greens_function"),
+        (sigma_estimators, "get_sigma"),
+        (se, "get_Sigma_static"),
+    ]
+    originals = {(module, name): getattr(module, name) for module, name in targets}
     try:
-        for name in targets:
-            setattr(se, name, _timed(name, originals[name]))
+        for module, name in targets:
+            setattr(module, name, _timed(name, originals[(module, name)]))
         yield
     finally:
-        for name, orig in originals.items():
-            setattr(se, name, orig)
+        for (module, name), orig in originals.items():
+            setattr(module, name, orig)
 
 
 def _resolve_reort():

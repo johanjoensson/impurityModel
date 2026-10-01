@@ -28,8 +28,10 @@ import numpy as np
 import pytest
 
 from impurityModel.ed import atomic_physics
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
 from impurityModel.ed.selfenergy import calc_selfenergy
+from impurityModel.ed.solver_basis import prepare_solver_basis
 
 EPS_D, EPS_B, V, U = -0.7, 1.5, 0.3, 3.0
 
@@ -127,3 +129,25 @@ def test_sigma_static_carries_no_double_counting():
         f"{np.diagonal(offset, axis1=-2, axis2=-1)} when the double counting changed by {c}; "
         "the high-frequency self-energy must be the pure Hartree-Fock interaction term."
     )
+
+
+def test_solver_basis_h_int_is_the_interaction_alone_and_built_lazily():
+    """``SolverBasis.h_int`` is ``h - h0_solve``: the Coulomb operator, with no one-body part.
+
+    ``h0_solve`` already carries the double counting, so a one-body remainder here would be the
+    double counting leaking into the interaction an improved estimator resolves. The operator is
+    built on first use only; the Dyson path never asks for it.
+    """
+    model = _model(imp_shift=0.8, dc_shift=0.8)
+    sb = prepare_solver_basis(
+        model.h0, model.dc, model.u4, model.impurity_orbitals, {0: 1}, False, model.rot_to_spherical, 0
+    )
+    assert "h_int" not in vars(sb)
+    h_int = sb.h_int
+    assert "h_int" in vars(sb)
+    live = {key: value for key, value in h_int.items() if abs(value) > 1e-12}
+    assert live, "the interaction is on, so h_int cannot be empty"
+    assert all(len(key) == 4 for key in live), [key for key in live if len(key) != 4]
+    h = sb.h if isinstance(sb.h, ManyBodyOperator) else ManyBodyOperator(dict(sb.h))
+    residual = (sb.h0_solve + h_int) - h
+    assert max((abs(v) for v in residual.values()), default=0.0) < 1e-12

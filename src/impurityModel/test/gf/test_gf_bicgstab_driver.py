@@ -15,14 +15,11 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.basis_transcription import build_dense_matrix
+from impurityModel.ed import config
 from impurityModel.ed.gf_solvers import block_Green_bicgstab
 from impurityModel.ed.greens_function import _gf_signed_axes
-from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.test.support.gf_oracles import (
-    _BATHS,
-    _IMP,
     DELTA,
     MATSUBARA,
     OMEGA,
@@ -154,14 +151,11 @@ def test_driver_matches_partial_lanczos():
     assert all(d.severity.name != "FAIL" for d in report.diagnostics)
 
 
-def test_driver_grouping_and_operator_split_invariance():
-    """Eigenstate grouping is a unit-shape knob only, and the operator-split env (a Lanczos
-    decomposition) is ignored on the bicgstab path -- all give the identical G."""
+def test_driver_grouping_invariance():
+    """Eigenstate grouping is a unit-shape knob only -- it gives the identical G."""
     _, r_ref, _ = _run_driver("bicgstab", None)
     _, r_grouped, _ = _run_driver("bicgstab", None, monkeypatch_env={"GF_EIGENSTATE_GROUP": "2"})
-    _, r_split, _ = _run_driver("bicgstab", None, monkeypatch_env={"GF_OPERATOR_SPLIT": "1"})
     np.testing.assert_allclose(r_grouped[0], r_ref[0], atol=1e-9)
-    np.testing.assert_allclose(r_split[0], r_ref[0], atol=1e-9)
 
 
 def test_driver_rejects_unknown_method():
@@ -169,79 +163,11 @@ def test_driver_rejects_unknown_method():
         _run_driver("haydock", None)
 
 
-def test_sliced_driver_matches_partial_lanczos():
-    """gf_method='sliced': the Chebyshev window terms sum back to the exact G (partition of
-    unity is exact by construction), so the sliced driver must reproduce the PARTIAL-reort
-    Lanczos G on both meshes -- and its report must carry the slicing record."""
-    m_l, r_l, _ = _run_driver("lanczos", "partial")
-    m_s, r_s, report = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "3"})
-    np.testing.assert_allclose(m_s[0], m_l[0], atol=1e-6)
-    np.testing.assert_allclose(r_s[0], r_l[0], atol=1e-6)
-    names = {d.name for d in report.diagnostics}
-    assert "slicing" in names and "bicgstab" in names
-    assert all(d.severity.name != "FAIL" for d in report.diagnostics)
-
-
-def _reported_windows(report):
-    """Window count the slicing diagnostic recorded (guards this file's GF_SLICES tests against
-    silently testing the default: the knob is read at call time, so a regression to an
-    import-time constant would make the slice-count legs identical and the assertions vacuous)."""
-    (slicing,) = [d for d in report.diagnostics if d.name == "slicing"]
-    return int(slicing.message.split()[0])
-
-
-def test_sliced_driver_slice_count_invariance():
-    """1 slice vs several: the partition identity makes the result slice-count independent
-    (up to the per-solve atol)."""
-    _, r_1, rep_1 = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "1"})
-    _, r_4, rep_4 = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "4"})
-    assert _reported_windows(rep_1) < _reported_windows(rep_4)
-    np.testing.assert_allclose(r_4[0], r_1[0], atol=1e-6)
-
-
-def test_sliced_driver_slice_tol_is_a_reported_accuracy_trade():
-    """GF_SLICE_TOL prunes the filtered slice seeds -- the memory-for-accuracy knob. It must
-    stay accurate to the discarded tail (<= sqrt(n_tail)*tol, i.e. far above the atol floor but
-    nowhere near an unusable G) and it must never pass silently: the diagnostic warns."""
-    _, r_exact, _ = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "2"})
-    _, r_pruned, report = _run_driver("sliced", None, monkeypatch_env={"GF_SLICES": "2", "GF_SLICE_TOL": "1e-6"})
-    np.testing.assert_allclose(r_pruned[0], r_exact[0], atol=1e-3)
-    (slicing,) = [d for d in report.diagnostics if d.name == "slicing"]
-    assert slicing.severity.name == "WARN" and slicing.value == 1e-6
-
-
-def test_kernel_bra_seeds_cross_element():
-    """block_Green_bicgstab(bra_seeds=...) computes <bra|(z-H)^{-1}|ket> -- checked against
-    the dense resolvent with distinct bra and ket blocks."""
-    e_shift = 0.3
-    z_axes = _gf_signed_axes(MATSUBARA, None, 0, DELTA)
-    kets = _seeds()
-    bras = [_seeds()[1], _seeds()[0]]  # swapped, so the cross element is genuinely asymmetric
-    G_axes, stats = block_Green_bicgstab(
-        _siam_6(),
-        list(kets),
-        _seed_basis(),
-        [e_shift],
-        2,
-        z_axes,
-        atol=1e-10,
-        bra_seeds=list(bras),
-    )
-    assert stats["n_unconverged"] == 0
-    sector = _n3_sector_dets()
-    basis = Basis(_IMP, _BATHS, initial_basis=sorted(sector), verbose=False)
-    H_mat = np.asarray(build_dense_matrix(basis, _siam_6()))
-    index = {det: i for i, det in enumerate(sorted(sector))}
-    K = np.zeros((len(index), 2), dtype=complex)
-    B = np.zeros((len(index), 2), dtype=complex)
-    for j, (k_state, b_state) in enumerate(zip(kets, bras)):
-        for det, amp in k_state.items():
-            K[index[det], j] = amp[0]
-        for det, amp in b_state.items():
-            B[index[det], j] = amp[0]
-    for k, z in enumerate(z_axes[0] + e_shift):
-        ref = B.conj().T @ np.linalg.solve(z * np.eye(len(index)) - H_mat, K)
-        np.testing.assert_allclose(G_axes[0][0, k], ref, atol=1e-7 * max(np.max(np.abs(ref)), 1.0))
+@pytest.mark.parametrize("retired", sorted(config.RETIRED_GF_METHODS))
+def test_driver_rejects_a_retired_method_with_its_reason(retired):
+    """A retired kernel is not merely unknown: the error says it was retired, and why."""
+    with pytest.raises(ValueError, match=f"'{retired}' was retired"):
+        _run_driver(retired, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -261,23 +187,6 @@ def test_driver_mpi_matches_partial_lanczos():
         np.testing.assert_allclose(r_b[0], r_l[0], atol=1e-7)
     else:
         assert m_b is None and r_b is None
-
-
-@pytest.mark.mpi
-def test_sliced_driver_mpi_matches_partial_lanczos():
-    """Distributed sliced run. The bras live *outside* the per-point basis (they enter only
-    the closing Gram), so their amplitudes are placed by determinant hash while X is placed
-    by the basis partition. This test is what keeps those two orderings honest: if the bra
-    ownership and the basis ownership ever disagree, the merge-joined Gram silently drops
-    (or double-counts) the determinants they disagree on, and G walks away from Lanczos."""
-    comm = MPI.COMM_WORLD
-    m_l, r_l, _ = _run_driver("lanczos", "partial", comm=comm)
-    m_s, r_s, _ = _run_driver("sliced", None, comm=comm, monkeypatch_env={"GF_SLICES": "3"})
-    if comm.rank == 0:
-        np.testing.assert_allclose(m_s[0], m_l[0], atol=1e-6)
-        np.testing.assert_allclose(r_s[0], r_l[0], atol=1e-6)
-    else:
-        assert m_s is None and r_s is None
 
 
 @pytest.mark.mpi
@@ -313,37 +222,3 @@ def test_a_cap_below_the_seed_support_solves_frozen_on_it_and_says_so():
     # Frozen on the seed support: the exact resolvent of P H P there, at every point.
     ref = _dense_G_on(seed_support, z_axes[0] + e_shift)
     np.testing.assert_allclose(G_axes[0][0], ref, atol=1e-8 * np.max(np.abs(ref)))
-
-
-def _warm_start_case():
-    from impurityModel.ed.gf_solvers import _fit_warm_start_to_budget
-
-    seeds = _seeds()
-    seed_keys = {state for s in seeds for state in s}
-    extras = [d for d in _n3_sector_dets() if d not in seed_keys][:4]
-    amplitudes = dict(zip(extras, [0.9, 0.5, 0.1, 0.01]))
-    x0 = [
-        ManyBodyState({**dict.fromkeys(seed_keys, 0.2 + 0j), **{d: a + 0j for d, a in amplitudes.items()}}, width=1),
-        ManyBodyState({extras[1]: 0.05 + 0j}, width=1),
-    ]
-    basis = Basis(_IMP, _BATHS, initial_basis=sorted(seed_keys | set(extras)), verbose=False)
-    return _fit_warm_start_to_budget, seeds, seed_keys, extras, x0, basis
-
-
-def test_warm_start_support_is_cut_top_k_and_the_seeds_are_kept():
-    fit, seeds, seed_keys, extras, x0, basis = _warm_start_case()
-    x0_fit, overflowed = fit(basis, seeds, x0, budget=len(seed_keys) + 2)
-    assert not overflowed
-    kept = seed_keys | {extras[0], extras[1]}  # the two largest warm-start-only amplitudes
-    assert set(basis) == kept
-    for column in x0_fit:
-        assert set(column.keys()) <= kept
-    assert set(x0_fit[0].keys()) == kept
-
-
-def test_a_budget_at_the_seed_support_leaves_everything_and_flags_overflow():
-    fit, seeds, seed_keys, _extras, x0, basis = _warm_start_case()
-    before = set(basis)
-    x0_fit, overflowed = fit(basis, seeds, x0, budget=len(seed_keys))
-    assert overflowed
-    assert x0_fit is x0 and set(basis) == before

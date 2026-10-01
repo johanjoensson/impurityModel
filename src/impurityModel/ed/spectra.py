@@ -10,15 +10,21 @@ from mpi4py import MPI
 
 # Local imports
 import impurityModel.ed.greens_function as gf
+from impurityModel.ed.average import ThermalEnsemble
+from impurityModel.ed.basis_restrictions import intersect_windows
+from impurityModel.ed.gf_engine import lanczos_unit_kernel, states_by_group
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.operator_algebra import arrayOp2Dict, c2i, combineOp
+
+# The RIXS drivers live in their own module; re-exported here for simulate_spectra and callers.
+from impurityModel.ed.rixs import calc_map, calc_tensor_map
 from impurityModel.ed.symmetries import (
     ComponentReduction,
     component_symmetry_reduction,
     conserved_subset_charges,
+    definite_conserved_charges,
     extract_tensors,
-    measure_conserved_charges,
     rotate_hamiltonian,
     transition_sector_restrictions,
 )
@@ -135,14 +141,12 @@ def simulate_spectra(
     deltaRIXS,
     epsilonsRIXSin,
     epsilonsRIXSout,
-    restrictions,
     h5f,
     nBaths,
     XAS_projectors,
     RIXS_projectors,
     basis,
     occ_cutoff,
-    dN,
     slaterWeightMin,
     verbose,
     rotation=None,
@@ -212,9 +216,6 @@ def simulate_spectra(
         contraction is a post-processing step (see ``impurityModel.ed.polarization``).
     epsilonsRIXSout : list
         Polarization vectors of out-going photon. Same caveat as ``epsilonsRIXSin``.
-    restrictions : dict
-        Restriction the occupation of generated
-        product states.
     h5f : h5py file-handle
         Will be used to write data to disk. This is the single output of a spectra run --
         each spectrum/tensor is written under its own group (``PS/spectra``, ``XPS/spectra``,
@@ -486,6 +487,7 @@ def simulate_spectra(
                 slaterWeightMin=slaterWeightMin,
                 l_core=l_core,
                 l_valence=l_valence,
+                occ_cutoff=occ_cutoff,
             )
             if rank == 0:
                 print("RIXS projectors = {}".format(RIXS_projectors.keys()))
@@ -518,6 +520,7 @@ def simulate_spectra(
                 slaterWeightMin=slaterWeightMin,
                 l_core=l_core,
                 l_valence=l_valence,
+                occ_cutoff=occ_cutoff,
             )
             if rank == 0:
                 print(f"shape(C) = {np.shape(C)}")
@@ -549,14 +552,20 @@ def _sector_restrictions_per_top(hOp, tOps, psis, basis):
     Returns a list aligned with ``tOps``; an entry is ``None`` when the operator has no
     definite sector (its terms disagree) so the caller falls back to the occupation window.
     Returns ``None`` (whole list) when the ground states do not share a single charge
-    signature -- then no per-operator sector is well defined.
+    signature, or when any of them has no definite charge (a vector mixing sectors, as a
+    degenerate multiplet may be returned) -- then no per-operator sector is well defined, and
+    confining the seeds to a rounded one would prune everything outside it (review ledger C7).
     """
     n_orb = basis.num_spin_orbitals
     comm = basis.comm
     charges = conserved_subset_charges(hOp, n_orb=n_orb)
     gs_occ = None
     for psi in psis:
-        occ = measure_conserved_charges(psi, charges, n_orb, comm=comm)
+        # Collective; every rank reaches every call (no early exit before the loop ends would be
+        # rank-safe either, but the verdicts are identical on every rank, so this one is).
+        occ = definite_conserved_charges(psi, charges, n_orb, comm=comm)
+        if occ is None:
+            return None
         if gs_occ is None:
             gs_occ = occ
         elif occ != gs_occ:
@@ -640,8 +649,7 @@ def calc_spectra(
         susceptibility driver's projection of the seed out of the degenerate ground
         manifold). Must be linear in ``seed`` and collective-safe: it is invoked in the
         identical order on every rank, so it may perform collectives on ``basis.comm``.
-        Incompatible with ``equivalence_groups``; forces the non-pairwise unit
-        decomposition.
+        Incompatible with ``equivalence_groups``.
     unit_report_label : str, optional
         When given, the completed calculation prints the maximum excited basis size each
         work unit reached -- one line per transition operator -- under a heading naming this
@@ -728,7 +736,7 @@ def calc_spectra(
         group_restrictions = [base_restrictions] * len(tOps)
     else:
         group_restrictions = [
-            base_restrictions if sec is None else gf._intersect_restrictions(base_restrictions, sec)
+            base_restrictions if sec is None else intersect_windows(base_restrictions, sec)
             for sec in sector_restrictions
         ]
 
@@ -742,9 +750,6 @@ def calc_spectra(
         group_restrictions,
         weighted_restrictions,
         slaterWeightMin,
-        # The pairwise decomposition combines seed columns, which would hide the
-        # (eigenstate, operator) identity the transform needs.
-        pairwise=False if seed_transform is not None else None,
     )
     if seed_transform is not None:
         # One operator per group here, so group_i identifies the transition operator and
@@ -753,53 +758,32 @@ def calc_spectra(
             unit_seeds[u] = [seed_transform(ei, unit.group_i, seed) for ei, seed in zip(unit.chunk, unit_seeds[u])]
     unit_weights = gf.unit_cost_weights(unit_seeds, comm)
 
-    def kernel(split_basis, u, seeds):
-        unit = units[u]
-        alphas, betas, r, _cap_stats = gf._block_green_group(
-            split_basis,
-            hOp,
-            seeds,
-            None,
-            unit.delta,
-            slaterWeightMin,
-            True,
-            verbose,
-            unit_restrictions[u],
-            weighted_restrictions,
-        )
-        if verbose and (split_basis.comm is None or split_basis.comm.rank == 0):
-            print(f"Expanded excited state basis contains {_cap_stats['retained_size']} elements.")
-        # `retained_size` rides back with the coefficients rather than through a closure: only
-        # the ranks of the colour that ran this unit ever see it locally, and the gather of the
-        # kernel's return value is the one path that carries every unit's result to rank 0.
-        return (
-            alphas,
-            betas,
-            [r[:, p * unit.n_ops : (p + 1) * unit.n_ops] for p in range(len(unit.chunk))],
-            _cap_stats,
-        )
+    # Spectra always run the sparse kernel without reorthogonalization.
+    kernel = lanczos_unit_kernel(
+        units,
+        hOp,
+        unit_restrictions,
+        weighted_restrictions,
+        reort=None,
+        sparse=True,
+        slaterWeightMin=slaterWeightMin,
+        solver_verbose=verbose,
+        print_size=verbose,
+    )
 
     results = gf.run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose)
     if results is None:  # non-root rank of a distributed run
         empty = np.empty((0, 0), dtype=complex)
         return [empty] * (1 + len(extra_meshes)) if extra_meshes is not None else empty
 
-    # Reassemble per-(tOp, eigenstate) coefficients (unit.group_i indexes tOps; at width 1 the
-    # operator-split mode emits only diagonal units, so the same reassembly covers both modes),
-    # then evaluate the thermal average on the frequency mesh -- on the root rank only, matching
-    # the self-energy path and shrinking the gather payload to the Lanczos coefficients.
-    acc_alphas = [[None] * len(psis) for _ in tOps]
-    acc_betas = [[None] * len(psis) for _ in tOps]
-    acc_r = [[None] * len(psis) for _ in tOps]
-    # Largest excited basis per transition operator, over the eigenstate chunks / pairwise
-    # scalar sub-units feeding it; within one unit the basis only grows, so its final size is
-    # that unit's maximum.
+    # Reassemble per-(tOp, eigenstate) coefficients (unit.group_i indexes tOps), then evaluate the
+    # thermal average on the frequency mesh -- on the root rank only, matching the self-energy
+    # path and shrinking the gather payload to the Lanczos coefficients.
+    by_op = states_by_group(units, results, len(tOps), len(psis))
+    # Largest excited basis per transition operator, over the eigenstate chunks feeding it;
+    # within one unit the basis only grows, so its final size is that unit's maximum.
     max_basis: dict[int, tuple[Optional[int], bool]] = {}
-    for unit, (alphas, betas, r_slices, cap_stats) in zip(units, results):
-        for p, ei in enumerate(unit.chunk):
-            acc_alphas[unit.group_i][ei] = alphas
-            acc_betas[unit.group_i][ei] = betas
-            acc_r[unit.group_i][ei] = r_slices[p]
+    for unit, (_alphas, _betas, _r_slices, cap_stats, _conv) in zip(units, results):
         gf._merge_unit_basis(max_basis, unit.group_i, cap_stats["retained_size"], cap_stats["cap_hit"])
     if unit_report_label is not None:
         # One row per transition operator, named by the CALLER's operator index: under
@@ -813,14 +797,14 @@ def calc_spectra(
             [(names[i].ljust(width), *max_basis[i]) for i in sorted(max_basis)],
         )
 
-    e0 = np.min(es)
-    Z = np.sum(np.exp(-(es - e0) / tau))
+    thermal = ThermalEnsemble(es, tau)
+    e0, Z = thermal.e0, thermal.Z
     meshes = [(w, delta)] + list(extra_meshes or [])
     gs_per_mesh = []
     for mesh, mesh_delta in meshes:
         gs_mesh = np.empty((len(mesh), len(tOps)), dtype=complex)
         for i in range(len(tOps)):
-            G_tOp = gf.calc_thermally_averaged_G(acc_alphas[i], acc_betas[i], acc_r[i], mesh, es, e0, tau, mesh_delta)
+            G_tOp = gf.calc_thermally_averaged_G(*by_op[i], mesh, es, e0, tau, mesh_delta)
             gs_mesh[:, i] = G_tOp[:, 0, 0] / Z
         gs_per_mesh.append(gs_mesh)
     return gs_per_mesh if extra_meshes is not None else gs_per_mesh[0]
@@ -845,7 +829,7 @@ def _component_seed_moments(hOp, comp_ops, psis, es, e0, tau, basis, slaterWeigh
     """
     m = len(comp_ops)
     comm = basis.comm
-    weights = np.exp(-(np.asarray(es) - e0) / tau)
+    weights = ThermalEnsemble(es, tau).weights
     m0 = np.zeros(m)
     m1 = np.zeros(m)
     work = basis.clone(initial_basis=[], verbose=False, comm=comm)
@@ -957,7 +941,7 @@ def calc_spectra_tensor(
     # each group (the ensemble is a complete symmetry multiplet). Otherwise fall back to full.
     if diagonalizable and len(rep_ops) < m:
         all_rot_ops = [_combine_component_ops(component_ops, Q[:, a]) for a in range(m)]
-        e0 = np.min(es)
+        e0 = ThermalEnsemble(es, tau).e0
         m0, m1 = _component_seed_moments(hOp, all_rot_ops, psis, es, e0, tau, basis, slaterWeightMin)
         if not _moments_consistent(m0, m1, reduction.group_of_column):
             diagonalizable = False
@@ -980,8 +964,8 @@ def calc_spectra_tensor(
     extra = sectors[0] if shared else None
 
     comm = basis.comm
-    e0 = np.min(es)
-    Z = np.sum(np.exp(-(es - e0) / tau))
+    thermal = ThermalEnsemble(es, tau)
+    e0, Z = thermal.e0, thermal.Z
     alphas, betas, r = gf.calc_Greens_function_with_offdiag(
         hOp,
         rep_ops,
@@ -1012,8 +996,3 @@ def calc_spectra_tensor(
         chi_full = chi_red  # full m x m tensor in the Cartesian basis (Q = I)
 
     return chi_full
-
-
-# The RIXS drivers live in their own module; re-export them so simulate_spectra's calls and
-# existing spectra.getRIXSmap_* callers resolve unchanged.
-from impurityModel.ed.rixs import calc_map, calc_tensor_map  # noqa: E402

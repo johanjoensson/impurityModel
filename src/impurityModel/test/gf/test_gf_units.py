@@ -2,9 +2,9 @@
 
 test_spectra.py's orchestration test mocks enumerate_gf_units entirely
 (``mock_enum.return_value = ([GFUnit(0, (0,), 1, 0.1)], [[MagicMock()]], [None])``), so its
-real logic -- applying transition operators to real thermal states, then either splitting
-into pairwise scalar recurrences or chunking eigenstates into groups -- has never run against
-a real ManyBodyOperator/ManyBodyState. This exercises both decomposition modes directly, checking the
+real logic -- applying transition operators to real thermal states, then chunking eigenstates
+into groups -- has never run against a real ManyBodyOperator/ManyBodyState. This exercises the
+decomposition directly, checking the
 returned unit_seeds against an independent, by-hand application of the same transition
 operators (not calling _apply_transition_ops, so a bug shared between the two would still
 surface as a mismatch), plus a sensitivity check that a corrupted state or swapped operator
@@ -57,30 +57,6 @@ def _states_equal(a, b, atol=1e-12):
     )
 
 
-def test_enumerate_gf_units_pairwise_mode_matches_direct_application():
-    psis = _thermal_states()[:2]
-    tOps = _transition_ops()
-    ref = _direct_apply(tOps, psis)
-
-    units, unit_seeds, unit_restrictions = enumerate_gf_units(
-        [(tOps, 0.1)], psis, [None], None, slaterWeightMin=0.0, pairwise=True
-    )
-
-    # n_psis=2, n_ops=2: per eigenstate, 2 diag + 1 sum + 1 imag = 4 units -> 8 total.
-    assert len(units) == 8
-    assert len(unit_seeds) == 8
-    assert all(r is None for r in unit_restrictions)
-
-    by_tag = {(u.chunk, u.pw_tag): seeds[0] for u, seeds in zip(units, unit_seeds)}
-    for ei in range(2):
-        assert _states_equal(by_tag[((ei,), ("diag", 0, 0))], ref[ei][0])
-        assert _states_equal(by_tag[((ei,), ("diag", 1, 1))], ref[ei][1])
-        assert _states_equal(by_tag[((ei,), ("sum", 0, 1))], ref[ei][0] + ref[ei][1])
-        assert _states_equal(by_tag[((ei,), ("imag", 0, 1))], ref[ei][0] + 1j * ref[ei][1])
-        assert all(u.group_i == 0 for u in units)
-        assert all(u.n_ops == 1 for u in units)
-
-
 def test_enumerate_gf_units_grouped_mode_stacks_eigenstates_in_chunks():
     psis = _thermal_states()  # 3 states
     tOps = _transition_ops()
@@ -89,9 +65,7 @@ def test_enumerate_gf_units_grouped_mode_stacks_eigenstates_in_chunks():
     old = os.environ.get("GF_EIGENSTATE_GROUP")
     os.environ["GF_EIGENSTATE_GROUP"] = "2"
     try:
-        units, unit_seeds, _ = enumerate_gf_units(
-            [(tOps, -0.1)], psis, [None], None, slaterWeightMin=0.0, pairwise=False
-        )
+        units, unit_seeds, _ = enumerate_gf_units([(tOps, -0.1)], psis, [None], None, slaterWeightMin=0.0)
     finally:
         if old is None:
             os.environ.pop("GF_EIGENSTATE_GROUP", None)
@@ -113,16 +87,48 @@ def test_enumerate_gf_units_grouped_mode_stacks_eigenstates_in_chunks():
 
 
 def test_enumerate_gf_units_would_catch_a_swapped_operator_bug():
-    """Sanity check that the pairwise comparison above is actually sensitive to which
-    operator seeded which unit -- guards against a vacuously-passing test (e.g. if the two
+    """Sanity check that the seed comparison above is actually sensitive to which
+    operator seeded which column -- guards against a vacuously-passing test (e.g. if the two
     transition operators happened to give numerically similar results)."""
     psis = _thermal_states()[:1]
     tOps = _transition_ops()
     ref = _direct_apply(tOps, psis)
     assert not _states_equal(ref[0][0], ref[0][1]), "the two reference operators must differ for this check to work"
 
-    units, unit_seeds, _ = enumerate_gf_units([(tOps, 0.1)], psis, [None], None, slaterWeightMin=0.0, pairwise=True)
-    by_tag = {u.pw_tag: seeds[0] for u, seeds in zip(units, unit_seeds)}
+    _units, unit_seeds, _ = enumerate_gf_units([(tOps, 0.1)], psis, [None], None, slaterWeightMin=0.0)
+    (seeds,) = unit_seeds  # one eigenstate, one unit: the columns are the operators, in order
 
-    assert _states_equal(by_tag[("diag", 0, 0)], ref[0][0])
-    assert not _states_equal(by_tag[("diag", 0, 0)], ref[0][1])  # swapped operator must disagree
+    assert _states_equal(seeds[0], ref[0][0])
+    assert not _states_equal(seeds[0], ref[0][1])  # swapped operator must disagree
+
+
+def _occupied(det, n_orb=4):
+    raw = det.to_bytearray()
+    return {o for o in range(n_orb) if raw[o // 8] >> (7 - o % 8) & 1}
+
+
+def test_each_unit_seed_lies_in_the_window_its_recurrence_runs_under():
+    """With per-state windows the unit's recurrence runs under its own window, so its seeds must
+    be cut by that window -- not by the looser group window -- or the masked H is not Hermitian
+    on the seed (review ledger C5). State 0's window forbids orbital 3; state 2 is unrestricted."""
+    psis = _thermal_states()
+    tOps = [ManyBodyOperator({((0, "c"),): 1.0}), ManyBodyOperator({((1, "c"),): 1.0})]
+    no_3 = {frozenset({3}): (0, 0)}
+    per_state = [no_3, no_3, None]
+    units, unit_seeds, windows = enumerate_gf_units(
+        [(tOps, 0.1)], psis, [None], None, slaterWeightMin=0.0, per_state_restrictions=per_state
+    )
+    assert list(windows) == [no_3, no_3, None]
+    for unit, seeds, window in zip(units, unit_seeds, windows):
+        for seed in seeds:
+            for det in seed.keys():
+                occ = _occupied(det)
+                for key, (lo, hi) in (window or {}).items():
+                    assert lo <= len(occ & set(key)) <= hi, (unit, sorted(occ), window)
+    # State 1 = {0,3}/{1,3}: every c^dag seed keeps orbital 3 occupied, so its window cuts it all.
+    assert all(seed.norm2() == 0 for seed in unit_seeds[1])
+    # State 2 is unrestricted: its seeds are the plain application. Fresh operators: masks are
+    # sticky on the operator objects, and enumerate_gf_units just set one on these.
+    fresh = [ManyBodyOperator({((0, "c"),): 1.0}), ManyBodyOperator({((1, "c"),): 1.0})]
+    ref = _direct_apply(fresh, psis[2:])
+    assert all(_states_equal(got, exp) for got, exp in zip(unit_seeds[2], ref[0]))

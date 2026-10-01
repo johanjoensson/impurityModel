@@ -26,10 +26,10 @@ def test_env_override_is_read_lazily(monkeypatch):
     The whole point of the registry: import-time constants silently voided a slicing test
     once, because a caller that had already imported the module could not change them.
     """
-    monkeypatch.delenv("GF_SLICES", raising=False)
-    assert config.GF_SLICES.get() == 8
-    monkeypatch.setenv("GF_SLICES", "3")
-    assert config.GF_SLICES.get() == 3
+    monkeypatch.delenv("GF_EIGENSTATE_GROUP", raising=False)
+    assert config.GF_EIGENSTATE_GROUP.get() == 1
+    monkeypatch.setenv("GF_EIGENSTATE_GROUP", "3")
+    assert config.GF_EIGENSTATE_GROUP.get() == 3
 
 
 def test_parsers_and_clamps(monkeypatch):
@@ -37,11 +37,11 @@ def test_parsers_and_clamps(monkeypatch):
     monkeypatch.setenv("GF_BICGSTAB_ATOL", "1e-6")
     assert config.GF_BICGSTAB_ATOL.get() == pytest.approx(1e-6)
 
-    monkeypatch.setenv("GF_SLICES", "0")  # minimum=1
-    assert config.GF_SLICES.get() == 1
+    monkeypatch.setenv("GF_EIGENSTATE_GROUP", "0")  # minimum=1
+    assert config.GF_EIGENSTATE_GROUP.get() == 1
 
-    monkeypatch.setenv("GF_SLICE_TOL", "-1.0")  # minimum=0.0
-    assert config.GF_SLICE_TOL.get() == 0.0
+    monkeypatch.setenv("SIGMA_CAUSALITY_TOL", "-1.0")  # minimum=0.0
+    assert config.SIGMA_CAUSALITY_TOL.get() == 0.0
 
     monkeypatch.setenv("GF_SECTOR_CACHE_DIR", "/tmp/sectors")
     assert config.GF_SECTOR_CACHE_DIR.get() == "/tmp/sectors"
@@ -50,8 +50,8 @@ def test_parsers_and_clamps(monkeypatch):
 @pytest.mark.parametrize("raw,expected", [("1", True), ("yes", True), ("0", False), ("false", False), ("", False)])
 def test_bool_truthiness(monkeypatch, raw, expected):
     """Only the explicit falsehoods (and unset/empty) are false -- the historical convention."""
-    monkeypatch.setenv("GF_OPERATOR_SPLIT", raw)
-    assert config.GF_OPERATOR_SPLIT.get() is expected
+    monkeypatch.setenv("DC_ALLOW_MEMORY_BOUND", raw)
+    assert config.DC_ALLOW_MEMORY_BOUND.get() is expected
 
 
 def test_derived_knobs_return_none_when_unset(monkeypatch):
@@ -122,3 +122,51 @@ def test_the_generated_configuration_doc_is_in_sync_with_the_registry():
         "doc/configuration.md no longer matches config.dump(); regenerate the tables from the "
         "registry rather than editing the document."
     )
+
+
+def test_gf_method_choices_match_the_registry():
+    """The TOML schema (a stdlib-only leaf that cannot import ``config``) and the CLI must accept
+    exactly :data:`config.GF_METHODS` -- a retired kernel must not stay selectable anywhere."""
+    from impurityModel.inputformat.schema import TABLES
+
+    key = next(k for k in TABLES["solver"].keys if k.name == "gf_method")
+    assert tuple(key.choices) == config.GF_METHODS
+    assert not set(key.choices) & set(config.RETIRED_GF_METHODS)
+
+
+def test_gf_admission_choices_match_the_registry():
+    """The TOML schema's ``auto`` plus exactly :data:`config.GF_ADMISSIONS` (the CLI reads the registry itself)."""
+    from impurityModel.inputformat.schema import TABLES
+
+    key = next(k for k in TABLES["solver"].keys if k.name == "gf_admission")
+    assert tuple(key.choices) == ("auto",) + config.GF_ADMISSIONS
+
+
+@pytest.mark.parametrize("name", sorted(config.RETIRED_KNOBS))
+def test_a_retired_knob_is_no_longer_registered(name):
+    assert name not in config.KNOBS
+
+
+def test_a_retired_knob_still_set_in_the_environment_warns(monkeypatch):
+    """An exported variable nobody reads any more must not be ignored silently."""
+    monkeypatch.setenv("GF_OPERATOR_SPLIT", "1")
+    with pytest.warns(UserWarning, match="GF_OPERATOR_SPLIT is set but no longer read"):
+        config.warn_retired_knobs()
+    monkeypatch.delenv("GF_OPERATOR_SPLIT")
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        config.warn_retired_knobs()
+
+
+def test_sigma_method_choices_match_the_estimator_registry():
+    """``config.SIGMA_METHODS`` names exactly the estimators ``sigma_estimators`` can build, and an
+    unknown name is rejected rather than silently falling back to Dyson."""
+    from impurityModel.ed import sigma_estimators
+
+    assert tuple(sigma_estimators.ESTIMATORS) == config.SIGMA_METHODS
+    for name in config.SIGMA_METHODS:
+        assert sigma_estimators.make_estimator(name).name == name
+    with pytest.raises(ValueError, match="sigma_method"):
+        sigma_estimators.make_estimator("improved")

@@ -21,7 +21,7 @@ version = [1, 0]
 
 [environment]
 GF_BICGSTAB_ATOL = 1e-9
-GF_CIPSI_MAX_ROUNDS = 12
+GF_BICGSTAB_RESTARTS = 12
 """
 
 
@@ -30,10 +30,10 @@ def test_load_environment_reads_only_that_table(tmp_path):
     path = tmp_path / "impurityModel.toml"
     path.write_text(ENVIRONMENT_ONLY + '\n[hamiltonian.file]\npath = "nowhere.h0"\n')
     resolved = load_environment(path)
-    assert set(resolved) == {"GF_BICGSTAB_ATOL", "GF_CIPSI_MAX_ROUNDS"}
+    assert set(resolved) == {"GF_BICGSTAB_ATOL", "GF_BICGSTAB_RESTARTS"}
     # Stored as strings, since that is what os.environ takes; compare by value, not spelling.
     assert float(resolved["GF_BICGSTAB_ATOL"]) == pytest.approx(1e-9)
-    assert int(resolved["GF_CIPSI_MAX_ROUNDS"]) == 12
+    assert int(resolved["GF_BICGSTAB_RESTARTS"]) == 12
 
 
 def test_an_unknown_knob_name_gets_an_exact_suggestion(tmp_path):
@@ -143,3 +143,11 @@ def test_the_reader_is_a_leaf_importable_without_the_solver():
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "", f"reader pulled in {out.stdout.strip()}"
+
+
+def test_a_retired_knob_is_rejected_with_its_reason(tmp_path):
+    """Retired knobs get the reason they were removed, not a typo suggestion."""
+    path = tmp_path / "impurityModel.toml"
+    path.write_text("[format]\nversion = [1, 0]\n\n[environment]\nGF_OPERATOR_SPLIT = true\n")
+    with pytest.raises(InputError, match="no longer a tuning knob: retired"):
+        load_environment(path)

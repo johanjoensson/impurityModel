@@ -14,7 +14,7 @@ from mpi4py import MPI
 from impurityModel.ed.basis_transcription import build_distributed_vector, build_vector
 from impurityModel.ed.BlockLanczosArray import BETA_BLOWUP_FACTOR
 from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
-from impurityModel.ed.ManyBodyUtils import ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_add_scaled_cy
 from impurityModel.ed.memory_estimate import current_rss_bytes, emit_memory_warning, format_bytes
 
 
@@ -38,24 +38,6 @@ def build_qr(psi):
     # Later on, use r to restore the psi block
     psi, r = sp.linalg.qr(psi.copy(), mode="economic", overwrite_a=True, check_finite=False, pivoting=False)
     return np.ascontiguousarray(psi), r
-
-
-def calc_continuants(diagonal, offdiagonal):
-    """
-    Calculate continued fraction continuants.
-
-    """
-
-    An = np.empty_like(diagonal)
-    Bn = np.empty_like(An)
-    An[-1] = np.eye(diagonal.shape[1])
-    Bn[-1] = 0
-    An[0] = diagonal[0]
-    Bn[0] = 1
-    for n in range(1, diagonal.shape[0]):
-        An[n] = diagonal[n] * An[n - 1] - np.conj(offdiagonal[n]) * An[n - 2] * offdiagonal[n]
-        Bn[n] = diagonal[n] * Bn[n - 1] - np.conj(offdiagonal[n]) * Bn[n - 2] * offdiagonal[n]
-    return An, Bn
 
 
 def _scatter_qr_columns(comm, psi_dense, r, local_size):
@@ -178,67 +160,6 @@ def _distributed_seed_qr(basis, psi_arr, slaterWeightMin=0):
     return psi_dense_local, r
 
 
-class PairwiseGF:
-    r"""Per-eigenstate Green's-function block assembled from scalar (width-1) continued fractions.
-
-    Holds the scalar block-Lanczos coefficients for the operator-split decomposition of one
-    ``n x n`` block (one thermal state, one spectral side): the ``n`` diagonal seeds and, per
-    off-diagonal pair, the two polarization seeds. :func:`calc_G_pairwise` evaluates these on a
-    frequency mesh and reassembles the full matrix via the polarization identity.
-
-    Attributes
-    ----------
-    n : int
-        Block dimension (number of transition operators).
-    diag : list[tuple]
-        Length-``n`` list of ``(alphas, betas, r)`` scalar continued fractions for ``v_i``.
-    pairs : dict[tuple[int, int], tuple[tuple, tuple]]
-        ``{(i, j): (cf_sum, cf_imag)}`` for ``i < j`` -- the scalar continued fractions for the
-        seeds ``v_i + v_j`` and ``v_i + i v_j``.
-    """
-
-    __slots__ = ("diag", "n", "pairs")
-
-    def __init__(self, n, diag, pairs):
-        self.n = n
-        self.diag = diag
-        self.pairs = pairs
-
-
-def calc_G_pairwise(pgf: "PairwiseGF", mesh, e, delta):
-    r"""Assemble an ``n x n`` Green's-function block from its scalar continued fractions.
-
-    Each scalar seed ``w`` gives the resolvent
-    ``S(w) = w^\dagger (\omega + i\delta + e - H)^{-1} w`` via the width-1 continued fraction
-    (:func:`calc_G`). The diagonal elements are ``G_ii = S(v_i)``; each off-diagonal pair is
-    recovered from the polarization identity
-
-    .. math::
-
-        S(v_i + v_j)   &= M_{ii} + M_{jj} + M_{ij} + M_{ji}, \\
-        S(v_i + i v_j) &= M_{ii} + M_{jj} + i M_{ij} - i M_{ji},
-
-    so ``M_ij = ½[S(v_i+v_j) - i S(v_i+i v_j) - (1-i)(M_ii+M_jj)]`` and ``M_ji`` is its mirror.
-    Exact (no approximation) given converged scalar continued fractions.
-    """
-    n = pgf.n
-    G = np.zeros((len(mesh), n, n), dtype=complex)
-
-    def S(cf):
-        alphas, betas, r = cf
-        return calc_G(alphas, betas, r, mesh, e, delta)[:, 0, 0]
-
-    diag_S = [S(cf) for cf in pgf.diag]
-    for i in range(n):
-        G[:, i, i] = diag_S[i]
-    for (i, j), (cf_sum, cf_imag) in pgf.pairs.items():
-        Mii, Mjj = diag_S[i], diag_S[j]
-        S_sum, S_imag = S(cf_sum), S(cf_imag)
-        G[:, i, j] = 0.5 * (S_sum - 1j * S_imag - (1 - 1j) * (Mii + Mjj))
-        G[:, j, i] = 0.5 * (S_sum + 1j * S_imag - (1 + 1j) * (Mii + Mjj))
-    return G
-
-
 def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
     """
     Calculate the thermally averaged Green's function over multiple initial states.
@@ -258,21 +179,6 @@ def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
     -------
     G_avg : ndarray
     """
-    # Operator-split (pairwise) path: r holds a per-eigenstate PairwiseGF; each carries its own
-    # scalar continued fractions, so (alphas, betas) are unused and calc_G_pairwise assembles the
-    # block from the polarization identity.
-    if any(isinstance(r_e, PairwiseGF) for r_e in r):
-        n_ops = next(r_e.n for r_e in r if isinstance(r_e, PairwiseGF))
-        G_avg = np.zeros((len(mesh), n_ops, n_ops), dtype=complex)
-        for e, r_e in zip(es, r):
-            if r_e is None:
-                continue
-            G_avg += calc_G_pairwise(r_e, mesh, e, delta) * np.exp(-(e - e0) / tau)
-        return G_avg
-
-    if len(alphas) == 0:
-        return np.zeros((len(mesh), 0, 0), dtype=complex)
-
     n_ops = r[0].shape[-1]
     G_avg = np.zeros((len(mesh), n_ops, n_ops), dtype=complex)
 
@@ -409,6 +315,11 @@ class _CappedBasisProxy:
         """Global number of determinants currently admitted to the recurrence."""
         return self._global_count
 
+    @property
+    def retained_mask(self):
+        """Width-0 key-only block of this rank's retained determinants (read-only by contract)."""
+        return self._mask
+
     def retained_keys(self):
         """Rank-local retained determinants as ``SlaterDeterminant`` wrappers (sorted).
 
@@ -458,7 +369,13 @@ class _CappedBasisProxy:
         return False
 
     def redistribute_block(self, block):
-        block = self._basis.redistribute_block(block)
+        return self._admit(self._basis.redistribute_block(block))
+
+    def _admit(self, block):
+        """Project one redistributed matvec output onto the retained set, growing it while it may.
+
+        Split out of :meth:`redistribute_block` so a subclass can change *which* new rows are
+        admitted without re-running the (collective) redistribution."""
         if self._frozen:
             block.keep_rows(self._mask)
             return block
@@ -504,6 +421,173 @@ class _CappedBasisProxy:
             f"GF basis frozen at {self._global_count:,} determinants by {why}; the Green's "
             "function is exact on the retained subspace."
         )
+
+
+def _allreduced_col_norms2(block, n_cols, comm):
+    """Per-column ``|.|^2`` of a distributed block, summed over ``comm``, always length ``n_cols``.
+
+    A rank owning none of the block's rows can hold the width-0 polymorphic zero, whose
+    ``col_norm2`` is empty; sizing the buffer by the known column count keeps the Allreduce
+    symmetric (the width-0 deadlock class)."""
+    out = np.zeros(n_cols, dtype=float)
+    local = np.asarray(block.col_norm2(), dtype=float)
+    if local.size == n_cols:
+        out[:] = local
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, out, op=MPI.SUM)
+    return out
+
+
+def residual_blocks(A_op, X, Y, basis, mask, n_cols):
+    r"""The true residual ``R = Y - A X`` of a projected solve, as two blocks split at ``P``.
+
+    ``X`` solved ``P A P X = Y`` (``supp Y`` inside ``P``) on a basis that may have frozen, so
+    the solver's own residual measures only the in-``P`` part. One full matvec at cutoff 0
+    recovers both parts:
+
+    * ``inside`` -- the rows of ``R`` inside ``P``: the solver residual, recomputed rather than
+      trusted (``block_bicgstab``'s is a recursively-updated estimate);
+    * ``outside`` -- the rows outside ``P``, which equal ``(1-P) H X`` because ``Y`` and ``z X``
+      both live inside ``P``: the *boundary residual*, zero exactly when nothing was truncated.
+
+    ``A_op`` must be the operator the solve ran with, restrictions included (the solver set
+    them from the basis), so that ``outside`` holds only determinants the restricted model can
+    reach. ``basis`` must be the **raw** ``Basis``: its ``redistribute_block`` sums every
+    rank's contribution to a determinant onto its owner, which a capped proxy would follow by
+    ``keep_rows``-ing the boundary away. ``mask`` is the width-0 block of this rank's retained
+    determinants. Both blocks are distributed per ``basis``.
+    """
+    AX = basis.redistribute_block(A_op.apply_block(X, 0.0))
+    R = block_add_scaled_cy(Y, AX, -np.eye(n_cols, dtype=complex))
+    outside = R.copy()
+    outside.keep_rows(R.keys_new_above(mask, 0.0))
+    inside = R
+    inside.keep_rows(mask)
+    return inside, outside
+
+
+def residual_split(A_op, X, Y, basis, mask, n_cols, comm):
+    r"""Column norms ``(||r_P,j||, ||b_j||)`` of :func:`residual_blocks`, summed over ``comm``.
+
+    Collective over ``comm``; always length-``n_cols`` arrays.
+    """
+    inside, outside = residual_blocks(A_op, X, Y, basis, mask, n_cols)
+    return (
+        np.sqrt(_allreduced_col_norms2(inside, n_cols, comm)),
+        np.sqrt(_allreduced_col_norms2(outside, n_cols, comm)),
+    )
+
+
+def real_up_to_phase(block, n_cols, comm, rtol=1e-12):
+    r"""Per column: is it a real vector times one global phase?
+
+    ``|sum_D s_D^2| <= sum_D |s_D|^2`` with equality exactly when every amplitude shares one
+    phase up to sign, so the test is two allreduced column sums -- no gather, no pivot row.
+    """
+    sums = np.zeros((2, n_cols), dtype=complex)
+    amps = np.asarray(block)
+    if amps.ndim == 2 and amps.shape[1] == n_cols and amps.shape[0] > 0:
+        sums[0] = np.sum(amps * amps, axis=0)
+        sums[1] = np.sum(np.abs(amps) ** 2, axis=0)
+    del amps  # release the buffer view before anything mutates the block
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, sums, op=MPI.SUM)
+    n2 = np.real(sums[1])
+    return np.abs(sums[0]) >= (1.0 - rtol) * n2
+
+
+def resolvent_error_bound(s_norm, r_p, b, imag_z, symmetric):
+    r"""Elementwise bound on ``|G_exact - G|`` for ``G_ij = <s_i|X_j>``.
+
+    With ``A = z - H`` (``H`` Hermitian), the full residual ``R_j = s_j - A X_j = r_P,j + b_j``
+    (``r_P`` inside the solve basis ``P``, ``b`` outside) and ``||A^{-1}|| <= 1/|Im z|``:
+
+    * always, first order: ``dG_ij = <s_i|A^{-1} R_j>``, so
+      ``|dG_ij| <= ||s_i|| ||R_j|| / |Im z|``, with ``||R_j||^2 = ||r_P,j||^2 + ||b_j||^2``;
+    * second order, for a column ``i`` whose adjoint solve on ``P`` is known. Let
+      ``Y_i = (P A^dagger P)^{-1} s_i`` and ``b~_i = (1-P) A^dagger Y_i``; then
+      ``dG_ij = <Y_i|r_P,j> - <b~_i|A^{-1} R_j>``, so
+      ``|dG_ij| <= ||s_i|| ||r_P,j|| / |Im z| + ||b~_i|| ||R_j|| / |Im z|``. When ``H`` is real
+      and ``s_i`` is real up to a phase (``symmetric[i]``), ``Y_i`` is the conjugate of the
+      forward solution on ``P`` and ``||b~_i|| = ||b_i||``, which is what is used. That equality
+      is exact for the exact ``P`` solve; with the solver's own ``r_P`` it carries a correction of
+      order ``||(1-P) H P|| ||r_P|| / |Im z|``, negligible for a converged solve and the reason
+      this bound is stated for converged solves.
+
+    Returns the elementwise minimum of the applicable bounds. ``symmetric`` is a per-column
+    boolean array (only the bra column ``i`` matters).
+    """
+    R = np.sqrt(r_p**2 + b**2)
+    first = np.outer(s_norm, R) / imag_z
+    second = (np.outer(s_norm, r_p) + np.outer(b, R)) / imag_z
+    return np.where(np.asarray(symmetric, dtype=bool)[:, None], np.minimum(first, second), first)
+
+
+class _PrunedBasisProxy(_CappedBasisProxy):
+    r"""Importance-pruned growth for the Lanczos recurrence: the comparator of ``outer`` admission.
+
+    Every step's new rows are admitted only if their largest column amplitude exceeds ``eta``;
+    the rest are **banned for good**. The ban is what keeps the recurrence exact: a row that is
+    outside ``P_k`` when ``H q_k`` is formed and is not admitted then must never enter later, or
+    ``q_{k+1}`` was built with ``P_{k+1} H q_k`` while the final retained set ``P_m`` would
+    contain the row -- and the recurrence would be the Lanczos of no single operator. With the
+    ban, ``P_m H q_k = P_{k+1} H q_k`` for every ``k``, so the recurrence is the exact Lanczos of
+    ``P_m H P_m`` under every reorthogonalization mode (the same argument as the freeze, applied
+    row by row rather than all at once).
+
+    Three conditions make that argument hold, and the first two are checked by the caller
+    (``block_Green_sparse``) because they are properties of the apply, not of the proxy:
+
+    * the apply runs at cutoff 0 -- a row dropped inside the apply is invisible here and cannot
+      be banned;
+    * the matvec is not row-chunked -- chunks carry *partial* amplitudes, so a row banned on one
+      chunk's partial sum could clear the threshold on the full sum;
+    * the first matvec that reaches new determinants admits all of them (``eta`` is not applied
+      to ``H q_0``): the seeds' first H-shell is what keeps the moments of G through ``H^2``,
+      hence the ``Sigma`` tail, exact. ``first_shell_tol`` > 0 relaxes this to an amplitude cut of
+      its own, for models whose tiny couplings put a whole hole-space in the first shell. (Not
+      simply "the first call": the kernel also routes the seed block itself through here, which
+      reaches nothing new.)
+
+    The ban mask grows like the frontier; :attr:`ban_bytes` reports what it holds.
+    """
+
+    def __init__(self, basis, cap, eta, first_shell_tol=0.0, **kwargs):
+        super().__init__(basis, cap, **kwargs)
+        self._eta2 = float(eta) ** 2
+        self._shell_tol2 = float(first_shell_tol) ** 2
+        self._ban = ManyBodyState.from_keys([])
+        self._shell_admitted = False
+
+    @property
+    def ban_bytes(self):
+        """Rank-local bytes held by the ban mask."""
+        return int(self._ban.memory_bytes())
+
+    def _admit(self, block):
+        if self._frozen or self._over_memory_budget():
+            return super()._admit(block)
+        new = block.keys_new_above(self._mask, 0.0)
+        # Global, so every rank agrees on whether this is the first-shell step.
+        first_shell = not self._shell_admitted and self._allreduce_sum(len(new)) > 0
+        self._shell_admitted = self._shell_admitted or first_shell
+        candidates = block.keys_new_above(self._mask, self._shell_tol2 if first_shell else self._eta2)
+        allowed = [key for key in candidates.keys() if key not in self._ban]
+        self._ban.merge_keys(new)  # rows admitted below are in the mask, which takes priority
+        # One collective count per call on every rank, whatever this rank's own candidates.
+        n_new = self._allreduce_sum(len(allowed))
+        allowed_block = ManyBodyState.from_keys(allowed)
+        if self._global_count + n_new <= self.cap:
+            self._mask.merge_keys(allowed_block)
+            self._global_count += n_new
+            block.keep_rows(self._mask)
+            return block
+        # Over the cap: the surviving candidates compete for the remaining slots, then freeze.
+        restricted = block.copy()
+        restricted.keep_rows(allowed_block)
+        self._admit_top_and_freeze(restricted)
+        block.keep_rows(self._mask)
+        return block
 
 
 def guarded_proxy(basis, cap):
@@ -631,6 +715,8 @@ def _block_cf_inverse(alphas, betas, omegaP):
         numpy.ndarray: ``(n_w, n_0, n_0)`` inverse resolvent at the first block.
     """
     nw = omegaP.shape[0]
+    if all(np.shape(alpha) == (1, 1) for alpha in alphas):
+        return _scalar_cf_inverse(alphas, betas, omegaP)
 
     def wI(n):
         return omegaP[:, np.newaxis, np.newaxis] * np.identity(n, dtype=complex)[np.newaxis]
@@ -644,6 +730,24 @@ def _block_cf_inverse(alphas, betas, omegaP):
         beta_b = np.broadcast_to(beta, (nw,) + beta.shape)
         G_inv = wI(n_i) - alpha[np.newaxis] - np.conj(beta.T)[np.newaxis] @ np.linalg.solve(G_inv, beta_b)
     return G_inv
+
+
+def _scalar_cf_inverse(alphas, betas, omegaP):
+    """:func:`_block_cf_inverse` when every block is 1 x 1: the same recursion on scalars.
+
+    A width-1 recurrence (every spectra unit, and most rotated self-energy blocks) otherwise
+    pays a batched ``(n_w, 1, 1)`` LAPACK solve per level, whose call overhead dwarfs the
+    arithmetic: measured 8x (64-point monitor mesh) to 24x (3001-point output mesh) faster at 400
+    levels. It evaluates ``w - a - conj(b) * (b / g)`` level by level, as the block form does,
+    but agrees with it only to the last ulp, not bitwise: LAPACK's complex division rounds
+    differently.
+    """
+    a = np.fromiter((alpha[0][0] for alpha in alphas), dtype=complex, count=len(alphas))
+    b = np.fromiter((beta[0][0] for beta in betas), dtype=complex, count=len(betas))
+    g = omegaP - a[-1]
+    for a_i, b_i in zip(a[-2::-1], b[-2::-1]):
+        g = omegaP - a_i - np.conj(b_i) * (b_i / g)
+    return g[:, np.newaxis, np.newaxis]
 
 
 def calc_G(alphas, betas, r, omega, e, delta):

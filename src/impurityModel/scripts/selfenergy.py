@@ -13,6 +13,7 @@ from dataclasses import replace
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed import config
 from impurityModel.ed.model import (
     EXCITATION_BUDGET_DEFAULT,
     BasisOptions,
@@ -128,9 +129,27 @@ def add_arguments(parser):
     parser.add_argument(
         "--gf-method",
         type=str,
-        default="lanczos",
-        choices=["lanczos", "bicgstab", "sliced", "cipsi"],
-        help="Green's-function kernel.",
+        default=None,
+        choices=list(config.GF_METHODS),
+        help="Green's-function kernel (default: lanczos, or the one recorded in the archive with --from-archive).",
+    )
+    parser.add_argument(
+        "--gf-admission",
+        type=str,
+        default=None,
+        choices=list(config.GF_ADMISSIONS),
+        help=(
+            "Basis-growth policy of the per-frequency kernel (needs --gf-method bicgstab): 'all' admits "
+            "everything the solver produces, 'outer' admits only what scores above --gf-admit-tol and "
+            "reports a measured error bound. Default: the GF_BICGSTAB_ADMISSION knob, else 'all' (or the "
+            "archive's, with --from-archive)."
+        ),
+    )
+    parser.add_argument(
+        "--gf-admit-tol",
+        type=float,
+        default=None,
+        help="Admission threshold of --gf-admission outer, relative to the seed norm (default 1e-4).",
     )
     parser.add_argument("--dense-cutoff", type=int, default=500, help="Use a dense eigensolver below this size.")
     parser.add_argument(
@@ -208,6 +227,25 @@ def _save_results(result, meshes, cluster_label, output, directory=None):
     print(f"Wrote self-energy archive to {output} (cluster '{cluster_label}').")
 
 
+def apply_solver_overrides(solver, args):
+    """``solver`` (an archive's recorded options) with the Green's-function flags that were passed.
+
+    A flag left at its ``None`` default keeps the recorded value. The result is validated as a
+    whole, so a flag that contradicts the record (``--gf-method lanczos`` on a run recorded with
+    outer admission) is refused rather than half applied.
+    """
+    overrides = {
+        name: value
+        for name, value in (
+            ("gf_method", args.gf_method),
+            ("gf_admission", args.gf_admission),
+            ("gf_admit_tol", args.gf_admit_tol),
+        )
+        if value is not None
+    }
+    return replace(solver, **overrides) if overrides else solver
+
+
 def run(args):
     """Build the model and option groups from ``args``, solve, and save the results on rank 0."""
     # A no-op on --from-archive: the archive supplies its own model/meshes, none of these CLI
@@ -225,12 +263,14 @@ def run(args):
     verbosity = resolve_verbosity(args)
 
     if args.from_archive:
-        # The archive carries the model, both meshes and every recorded basis/solver option;
-        # --gf-method still overrides the kernel (it is not part of the recorded run).
+        # The archive carries the model, both meshes and every recorded basis/solver option,
+        # the Green's-function kernel and its admission policy included. A flag that is passed
+        # overrides the recorded value; one that is not leaves it alone -- so replaying a run
+        # reproduces it, instead of silently falling back to the CLI's default kernel.
         model, meshes, basis, solver, cluster_label = load_selfenergy_archive(
             args.from_archive, cluster=args.cluster, iteration=args.iteration
         )
-        solver = replace(solver, gf_method=args.gf_method)
+        solver = apply_solver_overrides(solver, args)
         if args.excitation_budget is not None:
             # An explicitly passed flag overrides the archived budget (negative disables).
             basis = replace(basis, excitation_budget=resolve_excitation_budget(args.excitation_budget))
@@ -272,7 +312,9 @@ def run(args):
             reort=args.reort,
             dense_cutoff=args.dense_cutoff,
             sparse_green=args.sparse_green,
-            gf_method=args.gf_method,
+            gf_method=args.gf_method or "lanczos",
+            gf_admission=args.gf_admission,
+            gf_admit_tol=args.gf_admit_tol,
         )
         cluster_label = args.clustername
 

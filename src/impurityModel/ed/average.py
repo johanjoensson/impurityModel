@@ -32,6 +32,43 @@ def energy_cut(tau, design_weight=BOLTZMANN_DESIGN_WEIGHT):
     return -tau * np.log(design_weight)
 
 
+class ThermalEnsemble:
+    r"""The Boltzmann weights of a retained set of eigenstates at energy scale ``tau``.
+
+    The single place ``e0 = min(E)``, ``w_e = exp(-(E_e - e0)/tau)`` and ``Z = sum_e w_e`` are
+    computed: the Green's-function, spectra, RIXS and susceptibility drivers each used to
+    rebuild them (five copies, with differing spellings), so a change of convention had five
+    places to go wrong.
+
+    Attributes
+    ----------
+    energies : numpy.ndarray
+        The eigenstate energies.
+    tau : float
+        The thermal energy scale ``k_B T``.
+    e0 : float
+        The lowest energy (the weights are relative to it).
+    weights : numpy.ndarray
+        ``exp(-(energies - e0) / tau)``; ``weights[i] == 1`` for the ground state.
+    Z : float
+        ``sum(weights)``, the partition function relative to ``e0``.
+    """
+
+    __slots__ = ("Z", "e0", "energies", "tau", "weights")
+
+    def __init__(self, energies, tau):
+        self.energies = np.asarray(energies, dtype=float)
+        self.tau = float(tau)
+        self.e0 = float(np.min(self.energies))
+        self.weights = np.exp(-(self.energies - self.e0) / self.tau)
+        self.Z = float(np.sum(self.weights))
+
+    @property
+    def probabilities(self):
+        """``weights / Z``: the thermal occupation of each state."""
+        return self.weights / self.Z
+
+
 def thermal_average(energies, observable, T=300):
     """
     Returns thermally averaged observables.

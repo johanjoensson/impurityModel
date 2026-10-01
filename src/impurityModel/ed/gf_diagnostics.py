@@ -205,7 +205,13 @@ def check_spectral_sum_rule(r_IPS_list, r_PS_list, es, e0, tau, block_dim, rtol:
         value=worst,
         threshold=threshold,
         message=("addition+removal seed weight = #orbitals" if ok else "anticommutator sum rule violated"),
-        suggestion="" if ok else "a thermal seed state is not a normalized eigenstate; check the eigensolver/basis",
+        suggestion=(
+            ""
+            if ok
+            else "the seeds lost weight: a thermal state is not a normalized eigenstate (check the "
+            "eigensolver/basis), or the excited occupation window cut part of a seed c|psi>, c^dag|psi> "
+            "(check the window: dN, occ_cutoff, chain restrictions)"
+        ),
     )
 
 
@@ -502,79 +508,30 @@ def check_bicgstab_convergence(
     )
 
 
-def check_cipsi_boundary(max_boundary_rel: float, boundary_tol: float) -> Diagnostic:
-    r"""Surface the CIPSI-selected solver's boundary-residual record.
+def check_truncation_error_bound(max_bound: float, max_boundary: float) -> Diagnostic:
+    r"""Report the measured truncation error bar of a per-frequency Green's-function block.
 
-    The CIPSI kernel (``gf_solvers.block_Green_cipsi``) solves each frequency point exactly
-    on a frozen basis and grows it by importance selection; the boundary residual -- the
-    norm of the true residual *outside* the retained basis, relative to the seed norm -- is
-    the part of the error the in-basis solver tolerance cannot see, and hence the honest
-    truncation-error estimate of the returned ``G``. A worst point above the tolerance means
-    the selection loop ran out of budget or rounds before the basis captured the solution's
-    support at that frequency.
-
-    Args:
-        max_boundary_rel: Worst per-point boundary residual, relative to the seed norm.
-        boundary_tol: The stop tolerance the selection loop was asked for
-            (``GF_CIPSI_BOUNDARY_TOL``, defaulting to the solver atol).
-
-    Returns:
-        Diagnostic: ``OK`` if every point's boundary residual reached the tolerance,
-        else ``WARN``.
-    """
-    ok = max_boundary_rel <= boundary_tol
-    return Diagnostic(
-        name="cipsi_boundary",
-        severity=Severity.OK if ok else Severity.WARN,
-        value=float(max_boundary_rel),
-        threshold=float(boundary_tol),
-        message=(
-            f"all per-point boundary residuals within {boundary_tol:.1e}"
-            if ok
-            else f"worst boundary residual {max_boundary_rel:.1e} above {boundary_tol:.1e}: "
-            "the retained basis does not capture the solution support at every frequency"
-        ),
-        suggestion=("" if ok else "raise GF_CIPSI_BUDGET / GF_CIPSI_MAX_ROUNDS, or loosen GF_CIPSI_BOUNDARY_TOL"),
-    )
-
-
-def check_slice_partition(n_windows: int, degree: int, edge_width: float, slice_tol: float) -> Diagnostic:
-    r"""Record the spectrum-slicing configuration and its accuracy trade.
-
-    The Chebyshev partition of unity is exact by construction (tiling windows telescope,
-    Jackson damping included), so the slicing itself adds **no** partition error; the two
-    quantities that do affect accuracy are the kernel edge broadening (weight within
-    ``edge_width`` of a window boundary is shared between the adjacent slice terms -- summed
-    exactly, but each term individually is smeared) and, when ``slice_tol > 0``, the explicit
-    amplitude truncation of the filtered seeds (discarded tail
-    :math:`\lesssim \sqrt{n_{\mathrm{tail}}}\cdot` ``slice_tol`` per slice — the deliberate
-    memory-for-accuracy knob, hence ``WARN`` so it can never pass silently).
+    Where :func:`check_basis_truncation` only says that a cap *bound*, this reports how much it
+    cost: ``max_bound`` is the largest elementwise bound on ``|G_exact - G|`` over the block's
+    per-frequency solves (``gf_primitives.resolvent_error_bound``, from the residual measured
+    outside the solve basis) and ``max_boundary`` the largest boundary residual norm
+    :math:`\lVert(1-P)HX\rVert` behind it. Purely informational -- a bound in ``G`` units has no
+    scale-free threshold of its own (it is compared with the ``G`` the caller cares about, or
+    propagated to ``Sigma``), so it never raises the report's severity.
 
     Args:
-        n_windows: Chebyshev windows per unit (evaluation-band slices + rest windows).
-        degree: filter polynomial degree.
-        edge_width: kernel edge broadening in energy units.
-        slice_tol: amplitude truncation applied to the filtered slice seeds (0 = none).
+        max_bound: Worst elementwise ``G`` error bound over the block's solves.
+        max_boundary: Worst boundary-residual column norm over the block's solves.
 
     Returns:
-        Diagnostic: ``OK`` at ``slice_tol == 0``, else ``WARN``.
+        Diagnostic: always ``OK``; the bound is in ``value``.
     """
-    relaxed = slice_tol > 0
     return Diagnostic(
-        name="slicing",
-        severity=Severity.WARN if relaxed else Severity.OK,
-        value=float(slice_tol),
-        threshold=0.0,
-        message=(
-            f"{n_windows} windows, degree {degree}, edge width {edge_width:.3g}"
-            + (f"; slice seeds truncated at {slice_tol:g}" if relaxed else "")
-        ),
-        suggestion=(
-            "slice-seed truncation trades accuracy for memory (tail ~ sqrt(n)*tol); "
-            "set GF_SLICE_TOL=0 for the exact partition"
-            if relaxed
-            else ""
-        ),
+        name="truncation_error_bound",
+        severity=Severity.OK,
+        value=float(max_bound),
+        threshold=float("nan"),
+        message=f"|G - G_exact| <= {max_bound:.2e} (boundary residual {max_boundary:.2e})",
     )
 
 
@@ -641,9 +598,8 @@ def check_basis_truncation(
                 "weight are missing)"
             ),
             suggestion=(
-                "with a truncation_threshold you set, raise it well above the ground-state basis size; with 'auto', give "
-                "each rank more memory (fewer ranks per node) or add nodes; or set GF_OPERATOR_SPLIT=1 so "
-                "a unit's seeds are one column each"
+                "with a truncation_threshold you set, raise it well above the ground-state basis size; "
+                "with 'auto', give each rank more memory (fewer ranks per node) or add nodes"
             ),
         )
     return Diagnostic(

@@ -34,6 +34,7 @@ self-energies for DMFT-style workflows.
 
    configuration
    known_issues
+   reviews/gf_review
    sphinx/_doc_build/impurityModel
 
 

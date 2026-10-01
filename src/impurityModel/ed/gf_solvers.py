@@ -10,7 +10,6 @@ these kernels lives in :mod:`impurityModel.ed.gf_units`; the top-level assembly 
 in :mod:`impurityModel.ed.greens_function`.
 """
 
-import itertools
 from typing import Optional
 
 import numpy as np
@@ -22,19 +21,23 @@ from impurityModel.ed.basis_transcription import build_dense_matrix, build_spars
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
 from impurityModel.ed.cg import block_bicgstab
-from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.gf_admission import solve_point_outer
 from impurityModel.ed.gf_convergence import _gf_rel_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
+    _allreduced_col_norms2,
     _CappedBasisProxy,
     _distributed_seed_qr,
+    _PrunedBasisProxy,
     _sanitize_continued_fraction,
     _trim_blocks,
     build_qr,
     calc_G,
     guarded_proxy,
+    real_up_to_phase,
+    residual_split,
+    resolvent_error_bound,
 )
 from impurityModel.ed.gmres import block_gmres
-from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 
@@ -131,11 +134,27 @@ def block_Green(
 # lengths) are declared in `ed/config.py` and read at call time -- an import-time constant
 # cannot be set by a caller that has already imported this module (which silently voided a
 # slicing test once).
-#
-# Solutions retained for the warm start: quadratic extrapolation in z through the last three
-# is the measured optimum (doc/plans/bicgstab_per_frequency_gf.md Phase 3a; cubic amplifies the
-# atol-level noise it extrapolates through, and each retained block costs live memory).
-_GF_BICGSTAB_WARM_HISTORY = 3
+
+
+#: The array Green's-function kernel builds the dense sector matrix below this many
+#: determinants and a CSR operator from here up. Deliberately *not* ``SolverOptions.dense_cutoff``:
+#: that one picks the ground-state eigensolver (dense ``eigh`` vs Lanczos), a different trade --
+#: a dense matvec is cheaper than CSR only for small sectors, while a dense eigensolve pays off
+#: much later. Named here so it is no longer an unexplained literal (review ledger C8).
+_GF_ARRAY_DENSE_MAX = 500
+
+
+def _gf_reort(reort):
+    """Resolve the GF ``reort`` argument; ``None`` is ``Reort.NONE``.
+
+    ``resolve_reort`` returns any non-string unchanged, so a float (which ``SolverOptions`` used
+    to document as allowed) reached the kernels untranslated, where no ``reort_mode ==`` branch
+    matches it (review ledger C8). Reject it here instead.
+    """
+    resolved = resolve_reort(reort if reort is not None else Reort.NONE)
+    if not isinstance(resolved, Reort):
+        raise TypeError(f"reort must be None, a Reort member or one of its names, got {reort!r}")
+    return resolved
 
 
 # A restart must shrink the reported residual by at least this factor to earn the next one, so
@@ -183,7 +202,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
 
-    dense = len(basis) < 500
+    dense = len(basis) < _GF_ARRAY_DENSE_MAX
     if dense:
         psi_dense = build_vector(basis, psi_arr, slaterWeightMin=0).T
         psi_dense_local, r = build_qr(psi_dense)
@@ -213,33 +232,13 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             [],
         )
 
-    converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes)
-
     # The continued fraction only consumes alphas/betas plus the final residual block
     # (q_last below), so with reort NONE skip the full Krylov-basis retention.
-    resolved_reort = resolve_reort(reort if reort is not None else Reort.NONE)
+    resolved_reort = _gf_reort(reort)
 
     if dense:
         H = build_dense_matrix(basis, hOp)
-        alphas, betas, Q_list, widths, status = block_lanczos_array(
-            psi0=psi_dense_local,
-            h_op=H,
-            converged=converged,
-            verbose=False and verbose,  # noqa: SIM223  (force-off toggle; keep verbose wiring)
-            reort=resolved_reort,
-            build_krylov_basis=resolved_reort != Reort.NONE,
-            return_widths=True,
-            return_status=True,
-            # ceil (not floor): spanning an N-dim (possibly closed) sector with a width-w block
-            # needs ceil(N/w) blocks; floor truncates the final, deflating block and leaves up to
-            # w-1 dimensions of the sector unresolved -- a systematic resolvent error that grows
-            # with the block width (the RIXS tensor floor). The final block simply deflates.
-            max_iter=-(-H.shape[0] // psi_dense_local.shape[1]),
-            # The seed block is the stacked transition operators of this unit; its
-            # symmetry-dependent components are what deflation has to remove, and they are
-            # zero only to their construction rounding. See DEFLATE_TOL_SEEDS in TSQR.pyx.
-            deflate_tol=DEFLATE_TOL_SEEDS,
-        )
+        kernel_comm = None
     else:
         h_local = build_sparse_matrix(basis, hOp)[:, basis.local_indices]
 
@@ -274,27 +273,44 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             dtype=complex,
         )
 
-        # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0
+        kernel_comm = comm
+
+    # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0 until the continued fraction converges or
+    # the Krylov space closes. ceil(N/p) blocks span an N-dim sector only while every block keeps
+    # its full width p; a deflating block (stacked eigenstates, rank-deficient seeds) is narrower,
+    # so ceil(N/p) can stop at "max_iter" with the sector unspanned and the fraction silently
+    # truncated (review ledger C11: widths [4,4,2,2,2,2,2] span 20 of 28 dims, G off by 0.07).
+    # The kernel cannot resume without a stored Krylov basis (reort NONE keeps none) and it
+    # preallocates its coefficient buffers at max_iter, so the bound is not simply raised to N:
+    # the budget doubles, capped at N (at width >= 1, N blocks always close the sector), and the
+    # recurrence reruns. That happens only when blocks deflated, and costs at most ~2x the final
+    # run. The convergence monitor is stateful, so every attempt gets a fresh one.
+    n_dim = H.shape[0]
+    max_iter = -(-n_dim // psi_dense_local.shape[1])
+    while True:
+        converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
+            delta, slaterWeightMin, eval_meshes
+        )
         alphas, betas, Q_list, widths, status = block_lanczos_array(
             psi0=psi_dense_local,
             h_op=H,
             converged=converged,
             reort=resolved_reort,
             build_krylov_basis=resolved_reort != Reort.NONE,
-            verbose=False and verbose,  # noqa: SIM223  (force-off toggle; keep verbose wiring)
-            comm=comm,
+            # The kernel's per-iteration print is off; the unit memory line reports instead.
+            verbose=False,
+            comm=kernel_comm,
             return_widths=True,
             return_status=True,
-            # ceil (not floor): spanning an N-dim (possibly closed) sector with a width-w block
-            # needs ceil(N/w) blocks; floor truncates the final, deflating block and leaves up to
-            # w-1 dimensions of the sector unresolved -- a systematic resolvent error that grows
-            # with the block width (the RIXS tensor floor). The final block simply deflates.
-            max_iter=-(-H.shape[0] // psi_dense_local.shape[1]),
+            max_iter=max_iter,
             # The seed block is the stacked transition operators of this unit; its
             # symmetry-dependent components are what deflation has to remove, and they are
             # zero only to their construction rounding. See DEFLATE_TOL_SEEDS in TSQR.pyx.
             deflate_tol=DEFLATE_TOL_SEEDS,
         )
+        if status != "max_iter" or max_iter >= n_dim:
+            break
+        max_iter = min(2 * max_iter, n_dim)
     # An invariant subspace closes the Krylov space under H, so the continued fraction is
     # exact: treat it as converged (same semantics as the sparse path) so it does not trip
     # the non-convergence warning below.
@@ -319,8 +335,31 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     keep = len(_sanitize_continued_fraction(list(alphas), list(betas), rank=rank)[0])
     if keep < len(alphas):
         alphas, betas, widths = alphas[:keep], betas[:keep], widths[:keep]
-    q_last = Q_list[:, -1:]
-    return alphas, betas, r, build_state(basis, q_last.T, slaterWeightMin=slaterWeightMin), widths
+    probe = _expansion_probe_columns(Q_list, widths, tail_only=resolved_reort == Reort.NONE)
+    return alphas, betas, r, build_state(basis, probe.T, slaterWeightMin=slaterWeightMin), widths
+
+
+def _expansion_probe_columns(Q, widths, *, tail_only):
+    """The Lanczos vectors :func:`block_Green` grows its basis from.
+
+    The recurrence runs on H restricted to the current basis, so a column's chain can close
+    only because the basis truncates H: it deflates, and the determinants that chain was
+    missing lie next to its last vectors -- the block just before the width drop -- not next to
+    the final block. Probing from the final block alone (it used to be its last column only)
+    stopped the growth early and returned a silently wrong G (review ledger C12). So probe from
+    the final block and from every block that preceded a narrowing.
+
+    With the Krylov basis retained, ``Q`` holds the blocks in order (widths ``widths``, plus
+    possibly one trailing residual block) and they are sliced out. In tail-only mode the kernel
+    returns exactly those blocks already, pre-narrowing ones first.
+    """
+    if tail_only:
+        return Q
+    offsets = np.concatenate(([0], np.cumsum(widths, dtype=int)))
+    columns = [np.arange(offsets[i], offsets[i + 1]) for i in range(len(widths) - 1) if widths[i + 1] < widths[i]]
+    last = offsets[len(widths) - 1] if len(widths) > 0 else 0
+    columns.append(np.arange(last, Q.shape[1]))
+    return Q[:, np.concatenate(columns)]
 
 
 def block_Green_sparse(
@@ -429,7 +468,35 @@ def block_Green_sparse(
     # measured guard is the only thing standing between an uncapped recurrence and an OOM kill.
     # The count cap is then effectively infinite. (This routes an unlimited serial run through
     # the capped, row-chunked path, which is not bit-identical to the unproxied one.)
-    if memory_budget is None:
+    prune_tol = config.GF_LANCZOS_ADMIT_TOL.get()
+    if prune_tol > 0.0:
+        # The ban argument needs the full, cutoff-0 step output on one rank-consistent block.
+        chunks = config.GF_APPLY_ROW_CHUNKS.get()
+        if chunks is not None and chunks > 1:
+            raise ValueError(
+                f"GF_LANCZOS_ADMIT_TOL needs GF_APPLY_ROW_CHUNKS=1 (got {chunks}): a chunked matvec hands "
+                "the proxy partial sums, so a row would be ranked -- and banned -- on incomplete amplitudes"
+            )
+        if slaterWeightMin > 0.0:
+            raise ValueError(
+                f"GF_LANCZOS_ADMIT_TOL needs slaterWeightMin=0 (got {slaterWeightMin}): a row dropped inside "
+                "the apply is invisible to the proxy and cannot be banned"
+            )
+        # The memory guard composes with pruning exactly as with the plain cap: an explicit budget
+        # wins, else the one the GF stage put on this basis.
+        guard_budget = memory_budget if memory_budget is not None else getattr(basis, "gf_memory_budget", None)
+        guard_policy = (
+            memory_policy if memory_budget is not None else (getattr(basis, "gf_memory_policy", None) or "tighten")
+        )
+        budget_kwargs = {"memory_budget": guard_budget, "memory_policy": guard_policy}
+        lanczos_basis = _PrunedBasisProxy(
+            basis,
+            cap if np.isfinite(cap) else 2**62,
+            prune_tol,
+            first_shell_tol=config.GF_ADMIT_FIRST_SHELL_TOL.get(),
+            **budget_kwargs,
+        )
+    elif memory_budget is None:
         # Not handed one explicitly: the guard the GF stage configured on this basis, if any
         # (clones carry it), exactly as every other capped GF kernel reads it.
         lanczos_basis = guarded_proxy(basis, cap)
@@ -439,7 +506,7 @@ def block_Green_sparse(
         )
     # With reort NONE the kernel never projects against the accumulated Krylov basis and
     # the resume protocol reads only the two-block tail, so skip the full retention.
-    resolved_reort = resolve_reort(reort if reort is not None else Reort.NONE)
+    resolved_reort = _gf_reort(reort)
     while True:
         alphas, betas, Q, W, widths, status = block_lanczos_cy(
             psi_arr,
@@ -514,7 +581,7 @@ def block_Green_sparse(
 def _warm_start_extrapolation(zs, sols, z_new, n_cols):
     r"""Warm-start guess at ``z_new``: Lagrange extrapolation through the retained solutions.
 
-    ``zs``/``sols`` hold the last (up to :data:`_GF_BICGSTAB_WARM_HISTORY`) frequencies and
+    ``zs``/``sols`` hold the last (up to :data:`config.GF_BICGSTAB_WARM_HISTORY`) frequencies and
     solution blocks of the sweep, oldest first. Zero, one and two retained solutions give the
     cold start, the previous solution and linear extrapolation respectively; three gives the
     quadratic optimum. The coefficients sum to 1 (an extrapolation, not a fit), so a solution
@@ -534,6 +601,19 @@ def _warm_start_extrapolation(zs, sols, z_new, n_cols):
                 c *= (z_new - zj) / (zk - zj)
         coeffs.append(c)
     return [sum((sol[col] * c for c, sol in zip(coeffs, sols)), ManyBodyState()) for col in range(n_cols)]
+
+
+def _global_seed_support(seeds, comm):
+    """Distinct determinants over the seed columns, summed over the communicator.
+
+    Every determinant has one owner once the seeds are redistributed, so the local key sets are
+    disjoint. A key set rather than a block row count: a rank owning none of the seeds may hold a
+    width-0 state, which ``from_states`` rejects. Collective; call from the same point on every rank.
+    """
+    n_local = np.array([len({key for psi in seeds for key in psi.keys()})], dtype=np.int64)
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, n_local, op=MPI.SUM)
+    return int(n_local[0])
 
 
 def _bicgstab_sweep_order(z_shifted):
@@ -643,7 +723,8 @@ def block_Green_bicgstab(
     verbose=False,
     excited_restrictions=None,
     excited_weighted_restrictions=None,
-    bra_seeds=None,
+    admission=None,
+    admit_tol=None,
 ):
     r"""Per-frequency BiCGSTAB Green's function for one work unit (memory-first path).
 
@@ -688,12 +769,12 @@ def block_Green_bicgstab(
         :data:`config.GF_BICGSTAB_ATOL`.
     max_iter : int, optional
         Per-point iteration bound; defaults to :data:`config.GF_BICGSTAB_MAX_ITER`.
-    bra_seeds : list of ManyBodyState, optional
-        Cross-element mode (the spectrum-slicing driver): a second flat block in the same
-        ``(eigenstate, operator)`` order whose columns form the *bra* of the Gram,
-        ``G_e[i, j] = <bra_i | X_j>`` -- e.g. the unfiltered seeds against a filtered
-        right-hand side, computing ``<v| (z-H)^{-1} p_s(H) |v>``. ``None`` (default) uses
-        the seeds themselves (the symmetric element).
+    admission : {"all", "outer"}, optional
+        Basis-growth policy; ``None`` takes :data:`config.GF_BICGSTAB_ADMISSION`. An explicit value
+        wins over the environment knob. ``"outer"`` also switches the measured error bound on
+        unless :data:`config.GF_BICGSTAB_RESIDUAL_CHECK` forces it off.
+    admit_tol : float, optional
+        Admission threshold of ``"outer"``; ``None`` takes the knob of the selected scorer.
 
     Returns
     -------
@@ -704,10 +785,33 @@ def block_Green_bicgstab(
         (``n_points``, ``n_unconverged``, ``max_rel_residual``, ``iterations``), the cap state
         (``cap``, ``cap_hit``, ``retained_size``, ``seed_overflow``) and the measured
         per-point support (``max_solve_basis``, ``max_rebuild_basis`` -- the numbers that
-        decide whether this path's memory promise holds on a given workload).
+        decide whether this path's memory promise holds on a given workload). ``points`` is
+        the per-point record behind those maxima, one dict per solve in sweep order:
+        ``eigenstate``, ``axis``, ``k`` (mesh index), ``z``, ``seed_size`` (global seed
+        support), ``rebuild_size`` (seed + warm-start support, before the solve grows it),
+        ``solve_size`` (after), ``cap_hit``, ``converged``, ``rel_residual``, ``iterations``,
+        ``gmres_used`` (and, under :data:`config.GF_BICGSTAB_RESIDUAL_CHECK`, ``r_inside``,
+        ``boundary``, ``second_order`` and ``dG_bound`` -- the measured residual split and the
+        elementwise bound on ``|G - G_exact|``, with ``max_dG_bound``/``max_boundary`` their
+        maxima over the unit). ``rebuild_size - seed_size`` is what the warm start carried in: set
+        :data:`config.GF_BICGSTAB_WARM_HISTORY` to 0 to measure per-point support cold.
     """
     atol = config.GF_BICGSTAB_ATOL.get() if atol is None else atol
     max_iter = config.GF_BICGSTAB_MAX_ITER.get() if max_iter is None else max_iter
+    warm_history = config.GF_BICGSTAB_WARM_HISTORY.get()
+    if admission is None:
+        admission = config.GF_BICGSTAB_ADMISSION.get()
+        if admission not in config.GF_ADMISSIONS:
+            raise ValueError(f"GF_BICGSTAB_ADMISSION={admission!r}: expected one of {config.GF_ADMISSIONS}")
+    elif admission not in config.GF_ADMISSIONS:
+        raise ValueError(f"admission={admission!r}: expected one of {config.GF_ADMISSIONS}")
+    # Unset, the measured error bound follows the policy: outer admission trades basis size for an
+    # error, and an error nobody can read is not a trade. 1/0 in the environment force it.
+    forced = config.GF_BICGSTAB_RESIDUAL_CHECK.get()
+    check_residual = (admission == "outer") if forced is None else forced
+    # The second-order bound needs real H (then the adjoint solve is the conjugate of the forward
+    # one); a property of the operator alone, so decided once per unit.
+    h_is_real = check_residual and all(np.imag(amp) == 0 for _term, amp in hOp.items())
     n_e = len(es)
     sub_comm = basis.comm
     cap = getattr(basis, "truncation_threshold", np.inf)
@@ -737,381 +841,190 @@ def block_Green_bicgstab(
         "seed_overflow": False,
         "max_solve_basis": 0,
         "max_rebuild_basis": 0,
+        # Measured truncation error bar (GF_BICGSTAB_RESIDUAL_CHECK); None = not measured.
+        "max_dG_bound": None,
+        "max_boundary": None,
+        "points": [],
     }
 
-    for p in range(n_e):
-        seeds = list(psi_arr[p * n_ops : (p + 1) * n_ops])
-        # Cross-element mode (spectrum slicing): the bra of the Gram is a separate block
-        # (the unfiltered seeds) riding along through every per-point redistribution.
-        bras = list(bra_seeds[p * n_ops : (p + 1) * n_ops]) if bra_seeds is not None else None
-        for ax, z_axis in enumerate(z_axes):
-            z_shifted = z_axis + es[p]
-            # Fresh warm-start chain per (eigenstate, axis): extrapolating across axes (or
-            # across eigenstates) would extrapolate through a discontinuous z-path.
-            hist_z: list[complex] = []
-            hist_x: list[list[ManyBodyState]] = []
-            for k in _bicgstab_sweep_order(z_shifted):
-                z = complex(z_shifted[k])
-                x0 = _warm_start_extrapolation(hist_z, hist_x, z, n_ops)
-                if slaterWeightMin > 0:
-                    for x in x0:
-                        x.prune(slaterWeightMin)
-                # Rebuild-and-discard: the basis holds only this point's seed + warm-start
-                # support; redistribute_psis aligns the amplitudes to the fresh ownership
-                # layout (the solver assumes its states are distributed per `basis`).
-                #
-                # The bras are redistributed but deliberately NOT added to the basis. They
-                # enter only the closing Gram, and block_inner_cy merge-joins the two key
-                # vectors, so a determinant in supp(bra)\supp(X) contributes nothing;
-                # ownership is by determinant hash, which is basis-independent, so the
-                # merge-join stays MPI-consistent. Admitting them would pin every basis to
-                # the *unfiltered* seed support -- exactly the quantity spectrum slicing
-                # exists to avoid paying (on FCC Ni the unfiltered seeds saturate the cap,
-                # so it would have silently capped every slice at the union support).
-                carried = seeds + x0 + (bras if bras is not None else [])
-                tmp_basis.clear()
-                tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
-                redistributed = tmp_basis.redistribute_psis(*carried)
-                seeds = list(redistributed[:n_ops])
-                x0 = list(redistributed[n_ops : 2 * n_ops])
-                if bras is not None:
-                    bras = list(redistributed[2 * n_ops :])
-                stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], int(tmp_basis.size))
-
-                if np.isfinite(cap) and tmp_basis.size > cap:
-                    # The seed/warm-start support alone exceeds the cap. Never truncate the
-                    # right-hand side silently: solve on it frozen (exact on that subspace) and
-                    # flag it for the diagnostics.
-                    stats["seed_overflow"] = True
-                solve_basis = guarded_proxy(tmp_basis, cap)
-
-                # A fresh operator per point: block_bicgstab sets its occupation
-                # restrictions from the basis; the weighted restrictions are set here
-                # (unconditionally, so a None clears any stale mask -- the Basis.expand
-                # convention).
-                A_op = z - hOp
-                A_op.set_weighted_restrictions(excited_weighted_restrictions)
-
-                # Solve, restarting while unconverged and still making progress and
-                # escalating to GMRES on stagnation (block_Green_bicgstab's own warm-start
-                # chain is separate from the RIXS one but shares the same solver policy).
-                # seeds/x0 are wrapped into blocks once here, at the solver boundary; the
-                # restart loop inside solve_shifted_block then carries X as a block with no
-                # further round trip.
-                info = {}
-                X = solve_shifted_block(
-                    A_op,
-                    ManyBodyState.from_states(list(x0)),
-                    ManyBodyState.from_states(list(seeds)),
-                    solve_basis,
-                    slaterWeightMin,
-                    atol,
-                    max_iter=max_iter,
-                    info=info,
-                )
-
-                stats["n_points"] += 1
-                stats["iterations"] += info["iterations"]
-                stats["max_rel_residual"] = max(stats["max_rel_residual"], info["rel_residual"])
-                if info["gmres_used"]:
-                    stats["gmres_points"] += 1
-                    stats["gmres_iterations"] += info["gmres_iterations"]
-                if not info["converged"]:
-                    stats["n_unconverged"] += 1
-                stats["max_solve_basis"] = max(stats["max_solve_basis"], int(tmp_basis.size))
-                if isinstance(solve_basis, _CappedBasisProxy) and solve_basis.cap_hit:
-                    stats["cap_hit"] = True
-                    retained = solve_basis.retained_size
-                    if stats["retained_size"] is None or retained < stats["retained_size"]:
-                        stats["retained_size"] = retained
-
-                # G_e[i, j] = <bra_i | X_j> (bra = seeds unless the caller supplied a
-                # separate bra block); both blocks live on tmp_basis's layout, so the
-                # local Gram + Allreduce is the whole inner product (no state-vector gather).
-                gram = block_inner_cy(
-                    ManyBodyState.from_states(bras if bras is not None else seeds),
-                    X,
-                )
-                if sub_comm is not None:
-                    sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
-                G_axes[ax][p, k] = gram
-
-                hist_z.append(z)
-                hist_x.append(X.to_states())
-                if len(hist_z) > _GF_BICGSTAB_WARM_HISTORY:
-                    hist_z.pop(0)
-                    hist_x.pop(0)
-            if verbose and (sub_comm is None or sub_comm.rank == 0):
-                print(
-                    f"    axis {ax}, eigenstate {p}: {len(z_shifted)} solves, "
-                    f"{stats['iterations']} cumulative iterations, "
-                    f"max per-point basis {stats['max_solve_basis']}",
-                    flush=True,
-                )
-
-    if sub_comm is not None:
-        tmp_basis.free_comm()
-    return G_axes, stats
-
-
-def _fit_warm_start_to_budget(tmp_basis, seeds, x0, budget):
-    r"""Shrink a rebuilt per-point basis to ``budget`` by discarding warm-start-only support.
-
-    The seeds are the right-hand side and are never truncated (the bicgstab driver's
-    seed-overflow contract): every determinant carrying seed amplitude is retained, and when
-    the seed support alone reaches the budget the caller solves frozen on the full rebuilt
-    support with ``seed_overflow`` flagged. Otherwise the warm-start-only remainder is kept
-    top-K by max column :math:`|amp|^2` through the collective amplitude bisection (ties
-    under-admitted), the basis is rebuilt in place from the retained set and the warm-start
-    columns are pruned to it. ``seeds``/``x0`` must be redistributed per ``tmp_basis``, so
-    each determinant is counted once on its hash-owner rank. Collective on ``tmp_basis.comm``.
-
-    Returns ``(x0, seed_overflow)``; the seeds are not touched.
-    """
-    seed_keys = {state for s in seeds for state in s.keys()}
-    n_seed = len(seed_keys)
-    if tmp_basis.is_distributed:
-        n_seed = tmp_basis.comm.allreduce(n_seed, op=MPI.SUM)
-    if n_seed >= budget:
-        return x0, True
-
-    keys, norms2 = ManyBodyState.from_states(list(x0)).row_max_norms2()
-    extra_mask = np.array([key not in seed_keys for key in keys], dtype=bool)
-    comm = tmp_basis.comm if tmp_basis.is_distributed else None
-    cutoff2 = collective_amplitude_cutoff(norms2[extra_mask], int(budget) - n_seed, comm)
-    kept = seed_keys | set(itertools.compress(keys, extra_mask & (norms2 > cutoff2)))
-    tmp_basis.clear()
-    tmp_basis.add_states(sorted(kept))
-    # width=1: a column whose entire kept-support was filtered away (a real occurrence
-    # when a warm-start column's support falls entirely outside the retained set) must
-    # not become the width-0 polymorphic zero -- x0's elements are all expected width 1.
-    x0 = [ManyBodyState({state: amp for state, amp in x.items() if state in kept}, width=1) for x in x0]
-    return x0, False
-
-
-def block_Green_cipsi(
-    hOp,
-    psi_arr,
-    basis,
-    es,
-    n_ops,
-    z_axes,
-    slaterWeightMin=0,
-    atol=None,
-    max_iter=None,
-    verbose=False,
-    excited_restrictions=None,
-    excited_weighted_restrictions=None,
-):
-    r"""Per-frequency Green's function with resolvent-targeted CIPSI basis selection.
-
-    Same resolvent systems and unit contract as :func:`block_Green_bicgstab` -- for every
-    stacked eigenstate and frequency solve :math:`(z + E_e - H) X = \text{seeds}_e` and close
-    the Gram -- but the per-point basis is grown by *importance* instead of connectivity:
-    every solve runs **frozen** on the current basis :math:`P` (exact BiCGSTAB/GMRES of
-    :math:`PHP`, the :class:`_CappedBasisProxy` contract), then
-    :meth:`~impurityModel.ed.cipsi_solver.CIPSISolver.select_at` scores the out-of-basis
-    boundary of the iterate -- :math:`\sum_i |\langle D|H|X_i\rangle|^2 / |z - E_D|^2`, the
-    leading-order weight of :math:`D` in the exact solution -- and only the top candidates
-    are admitted before the next round. The loop stops when the boundary residual (the true
-    residual outside :math:`P`, *the* measure freeze-growth never sees) drops below
-    ``GF_CIPSI_BOUNDARY_TOL``, no candidates remain, or the ``GF_CIPSI_BUDGET`` /
-    ``GF_CIPSI_MAX_ROUNDS`` budgets are exhausted. Optionally the discarded boundary is
-    folded back at second order (``GF_CIPSI_PT2``); its magnitude is recorded either way as
-    the per-point truncation-error bar.
-
-    Every ``GF_CIPSI_*`` knob is read from :mod:`~impurityModel.ed.config`; the solver
-    tolerances reuse the bicgstab knobs (``GF_BICGSTAB_ATOL`` etc.). Parameters and the
-    ``(G_axes, stats)`` return follow :func:`block_Green_bicgstab` exactly (no ``bra_seeds``
-    mode); ``stats`` adds ``rounds``, ``max_boundary_rel``, ``boundary_tol`` and
-    ``pt2_max_correction``.
-    """
-    atol = config.GF_BICGSTAB_ATOL.get() if atol is None else atol
-    max_iter = config.GF_BICGSTAB_MAX_ITER.get() if max_iter is None else max_iter
-    budget = config.GF_CIPSI_BUDGET.get()
-    if budget is None:
-        budget = getattr(basis, "truncation_threshold", np.inf)
-    max_new_cfg = config.GF_CIPSI_MAX_NEW.get()
-    de2_min = config.GF_CIPSI_DE2_MIN.get()
-    max_rounds = config.GF_CIPSI_MAX_ROUNDS.get()
-    boundary_tol = config.GF_CIPSI_BOUNDARY_TOL.get()
-    if boundary_tol is None:
-        boundary_tol = atol
-    scorer = config.GF_CIPSI_SCORER.get()
-    use_pt2 = config.GF_CIPSI_PT2.get()
-
-    n_e = len(es)
-    sub_comm = basis.comm
-    tmp_basis = basis.clone(
-        initial_basis=[],
-        restrictions=excited_restrictions,
-        weighted_restrictions=excited_weighted_restrictions,
-        verbose=False,
-        comm=sub_comm.Clone() if sub_comm is not None else None,
-    )
-    selector = CIPSISolver(tmp_basis)
-    # Candidate generation must respect the excited windows: determinants outside them are
-    # never admitted. Set on the Hamiltonian unconditionally (Basis.expand's convention --
-    # a None clears any stale mask left on the shared operator object).
-    hOp.set_restrictions(tmp_basis.restrictions)
-    hOp.set_weighted_restrictions(excited_weighted_restrictions)
-
-    G_axes = [np.zeros((n_e, len(z_axis), n_ops, n_ops), dtype=complex) for z_axis in z_axes]
-    stats = {
-        "n_points": 0,
-        "n_unconverged": 0,
-        "max_rel_residual": 0.0,
-        "iterations": 0,
-        "gmres_points": 0,
-        "gmres_iterations": 0,
-        "atol": atol,
-        "cap": float(budget),
-        "cap_hit": False,
-        "retained_size": None,
-        "seed_overflow": False,
-        "max_solve_basis": 0,
-        "max_rebuild_basis": 0,
-        "rounds": 0,
-        "max_boundary_rel": 0.0,
-        "boundary_tol": boundary_tol,
-        "pt2_max_correction": 0.0,
-    }
-
-    for p in range(n_e):
-        seeds = list(psi_arr[p * n_ops : (p + 1) * n_ops])
-        for ax, z_axis in enumerate(z_axes):
-            z_shifted = z_axis + es[p]
-            # Fresh warm-start chain per (eigenstate, axis), as in block_Green_bicgstab.
-            hist_z: list[complex] = []
-            hist_x: list[list[ManyBodyState]] = []
-            for k in _bicgstab_sweep_order(z_shifted):
-                z = complex(z_shifted[k])
-                x0 = _warm_start_extrapolation(hist_z, hist_x, z, n_ops)
-                if slaterWeightMin > 0:
-                    for x in x0:
-                        x.prune(slaterWeightMin)
-                # Rebuild-and-discard from the seed + warm-start support; redistribute_psis
-                # aligns the amplitudes to the fresh ownership layout.
-                tmp_basis.clear()
-                tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
-                redistributed = tmp_basis.redistribute_psis(*seeds, *x0)
-                seeds = list(redistributed[:n_ops])
-                x0 = list(redistributed[n_ops:])
-                stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], int(tmp_basis.size))
-                if tmp_basis.size > budget:
-                    x0, overflowed = _fit_warm_start_to_budget(tmp_basis, seeds, x0, budget)
-                    stats["seed_overflow"] = stats["seed_overflow"] or overflowed
-
-                # Per-column seed norms close the *relative* boundary residual; global, so
-                # every rank takes the same stop decision.
-                seed_norms2 = np.array([s.norm2() for s in seeds], dtype=float)
-                if sub_comm is not None:
-                    sub_comm.Allreduce(MPI.IN_PLACE, seed_norms2, op=MPI.SUM)
-                nonzero = seed_norms2 > 0.0
-
-                # seeds are fixed for every round of this point; the selector between
-                # rounds (selector.select_at) needs X as a list, so only the solve call
-                # itself is wrapped into a block, at each round's boundary.
-                seeds_blk = ManyBodyState.from_states(seeds)
-                X = x0
-                sel = None
-                for _round in range(max_rounds):
-                    stats["rounds"] += 1
-                    # Solve exactly on the frozen current basis: a cap at the current size
-                    # makes _CappedBasisProxy freeze immediately, so the solve is an exact
-                    # BiCGSTAB/GMRES of P H P -- growth belongs to the selection, not the
-                    # solver's connectivity closure.
-                    frozen = _CappedBasisProxy(tmp_basis, max(int(tmp_basis.size), 1))
+    # Freed in `finally` so a solve that raises on every rank does not leak the cloned
+    # communicator (review ledger M4); collective, every rank of the color runs this unit.
+    try:
+        for p in range(n_e):
+            seeds = list(psi_arr[p * n_ops : (p + 1) * n_ops])
+            # Global seed support (distinct determinants over the eigenstate's columns): the floor
+            # below which no per-point basis can go. Counted at this eigenstate's first point,
+            # after the rebuild's redistribute_psis has given every determinant exactly one owner.
+            seed_size = None
+            for ax, z_axis in enumerate(z_axes):
+                z_shifted = z_axis + es[p]
+                # Fresh warm-start chain per (eigenstate, axis): extrapolating across axes (or
+                # across eigenstates) would extrapolate through a discontinuous z-path.
+                hist_z: list[complex] = []
+                hist_x: list[list[ManyBodyState]] = []
+                for k in _bicgstab_sweep_order(z_shifted):
+                    z = complex(z_shifted[k])
+                    x0 = _warm_start_extrapolation(hist_z, hist_x, z, n_ops)
+                    if slaterWeightMin > 0:
+                        for x in x0:
+                            x.prune(slaterWeightMin)
+                    # Rebuild-and-discard: the basis holds only this point's seed + warm-start
+                    # support; redistribute_psis aligns the amplitudes to the fresh ownership
+                    # layout (the solver assumes its states are distributed per `basis`).
+                    # A fresh operator per point: block_bicgstab sets its occupation
+                    # restrictions from the basis; the weighted restrictions are set here
+                    # (unconditionally, so a None clears any stale mask -- the Basis.expand
+                    # convention).
                     A_op = z - hOp
                     A_op.set_weighted_restrictions(excited_weighted_restrictions)
-                    info = {}
-                    X = solve_shifted_block(
-                        A_op,
-                        ManyBodyState.from_states(X),
-                        seeds_blk,
-                        frozen,
-                        slaterWeightMin,
-                        atol,
-                        max_iter=max_iter,
-                        info=info,
-                    ).to_states()
+
+                    admission_record = None
+                    if admission == "outer":
+                        # Importance-admitted basis: rebuilds and solves inside (gf_admission).
+                        X, seeds, info, admission_record, solve_basis = solve_point_outer(
+                            A_op,
+                            hOp,
+                            z,
+                            seeds,
+                            x0,
+                            tmp_basis,
+                            cap,
+                            slaterWeightMin,
+                            atol,
+                            max_iter,
+                            sub_comm,
+                            n_ops,
+                            solve_shifted_block,
+                            eta_override=admit_tol,
+                        )
+                        solve_basis.cap_hit = admission_record["cap_hit"]
+                        rebuild_size = admission_record["start_size"]
+                        if seed_size is None:
+                            seed_size = _global_seed_support(seeds, sub_comm)
+                        stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], rebuild_size)
+                        if np.isfinite(cap) and rebuild_size > cap:
+                            stats["seed_overflow"] = True
+                    else:
+                        # Rebuild-and-discard: the basis holds only this point's seed + warm-start
+                        # support; redistribute_psis aligns the amplitudes to the fresh ownership
+                        # layout (the solver assumes its states are distributed per `basis`).
+                        carried = seeds + x0
+                        tmp_basis.clear()
+                        tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
+                        redistributed = tmp_basis.redistribute_psis(*carried)
+                        seeds = list(redistributed[:n_ops])
+                        x0 = list(redistributed[n_ops : 2 * n_ops])
+                        if seed_size is None:
+                            seed_size = _global_seed_support(seeds, sub_comm)
+                        rebuild_size = int(tmp_basis.size)
+                        stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], rebuild_size)
+
+                        if np.isfinite(cap) and tmp_basis.size > cap:
+                            # The seed/warm-start support alone exceeds the cap. Never truncate the
+                            # right-hand side silently: solve on it frozen (exact on that subspace) and
+                            # flag it for the diagnostics.
+                            stats["seed_overflow"] = True
+                        solve_basis = guarded_proxy(tmp_basis, cap)
+
+                        # Solve, restarting while unconverged and still making progress and
+                        # escalating to GMRES on stagnation (block_Green_bicgstab's own warm-start
+                        # chain is separate from the RIXS one but shares the same solver policy).
+                        # seeds/x0 are wrapped into blocks once here, at the solver boundary; the
+                        # restart loop inside solve_shifted_block then carries X as a block with no
+                        # further round trip.
+                        info = {}
+                        X = solve_shifted_block(
+                            A_op,
+                            ManyBodyState.from_states(list(x0)),
+                            ManyBodyState.from_states(list(seeds)),
+                            solve_basis,
+                            slaterWeightMin,
+                            atol,
+                            max_iter=max_iter,
+                            info=info,
+                        )
+
+                    stats["n_points"] += 1
                     stats["iterations"] += info["iterations"]
                     stats["max_rel_residual"] = max(stats["max_rel_residual"], info["rel_residual"])
                     if info["gmres_used"]:
                         stats["gmres_points"] += 1
                         stats["gmres_iterations"] += info["gmres_iterations"]
-
-                    # Selection round (collective): score the out-of-basis boundary of the
-                    # iterate. Runs even with an exhausted budget (max_new=0) -- the boundary
-                    # residual and the PT2 ingredients come from the same pass.
-                    remaining = budget - tmp_basis.size
-                    if max_new_cfg is not None:
-                        remaining = min(remaining, max_new_cfg)
-                    max_new = None if np.isinf(remaining) else max(int(remaining), 0)
-                    new_Dj, sel = selector.select_at(
-                        z, list(X), hOp, de2_min=de2_min, max_new=max_new, scorer=scorer, slater_cutoff=slaterWeightMin
+                    if not info["converged"]:
+                        stats["n_unconverged"] += 1
+                    solve_size = int(tmp_basis.size)
+                    stats["max_solve_basis"] = max(stats["max_solve_basis"], solve_size)
+                    point_cap_hit = isinstance(solve_basis, _CappedBasisProxy) and solve_basis.cap_hit
+                    if point_cap_hit:
+                        stats["cap_hit"] = True
+                        retained = solve_basis.retained_size
+                        if stats["retained_size"] is None or retained < stats["retained_size"]:
+                            stats["retained_size"] = retained
+                    record = {}
+                    if check_residual:
+                        # Y and the solve's own A_op, on the RAW basis (the proxy would keep_rows the
+                        # boundary away); the retained set is the proxy's mask when there is one,
+                        # else the basis itself (nothing was excluded).
+                        mask = (
+                            solve_basis.retained_mask
+                            if isinstance(solve_basis, _CappedBasisProxy)
+                            else ManyBodyState.from_keys(tmp_basis.local_basis)
+                        )
+                        seed_block = ManyBodyState.from_states(seeds)
+                        r_p, b = residual_split(A_op, X, seed_block, tmp_basis, mask, n_ops, sub_comm)
+                        s_norm = np.sqrt(_allreduced_col_norms2(seed_block, n_ops, sub_comm))
+                        symmetric = (
+                            real_up_to_phase(seed_block, n_ops, sub_comm) if h_is_real else np.zeros(n_ops, dtype=bool)
+                        )
+                        dG_bound = resolvent_error_bound(s_norm, r_p, b, abs(z.imag), symmetric)
+                        stats["max_dG_bound"] = max(stats["max_dG_bound"] or 0.0, float(np.max(dG_bound)))
+                        stats["max_boundary"] = max(stats["max_boundary"] or 0.0, float(np.max(b)))
+                        record = {
+                            "r_inside": r_p,
+                            "boundary": b,
+                            "second_order": symmetric,
+                            "dG_bound": dG_bound,
+                        }
+                    stats["points"].append(
+                        {
+                            "eigenstate": p,
+                            "axis": ax,
+                            "k": int(k),
+                            "z": z,
+                            "seed_size": seed_size,
+                            "rebuild_size": rebuild_size,
+                            "solve_size": solve_size,
+                            "cap_hit": bool(point_cap_hit),
+                            "converged": bool(info["converged"]),
+                            "rel_residual": float(info["rel_residual"]),
+                            "iterations": int(info["iterations"]),
+                            "gmres_used": bool(info["gmres_used"]),
+                            **({"admission": admission_record} if admission_record is not None else {}),
+                            **record,
+                        }
                     )
-                    boundary_rel = (
-                        float(np.max(np.sqrt(sel["boundary_norms2"][nonzero] / seed_norms2[nonzero])))
-                        if np.any(nonzero)
-                        else 0.0
+
+                    # G_e[i, j] = <seed_i | X_j>; both blocks live on tmp_basis's layout, so the
+                    # local Gram + Allreduce is the whole inner product (no state-vector gather).
+                    gram = block_inner_cy(ManyBodyState.from_states(seeds), X)
+                    if sub_comm is not None:
+                        sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
+                    G_axes[ax][p, k] = gram
+
+                    if warm_history > 0:
+                        hist_z.append(z)
+                        hist_x.append(X.to_states())
+                        if len(hist_z) > warm_history:
+                            hist_z.pop(0)
+                            hist_x.pop(0)
+                if verbose and (sub_comm is None or sub_comm.rank == 0):
+                    print(
+                        f"    axis {ax}, eigenstate {p}: {len(z_shifted)} solves, "
+                        f"{stats['iterations']} cumulative iterations, "
+                        f"max per-point basis {stats['max_solve_basis']}",
+                        flush=True,
                     )
-                    # Stop without admitting on the last allowed round too: states added
-                    # here would never be re-solved, and the PT2 closure below assumes
-                    # every remaining candidate is still boundary.
-                    if boundary_rel <= boundary_tol or sel["n_admitted"] == 0 or _round == max_rounds - 1:
-                        break
-                    tmp_basis.add_states(sorted(new_Dj))
-                    # Determinant ownership is hash-based and basis-independent, so the
-                    # grown basis needs no re-redistribution of seeds/X; the admitted
-                    # candidates simply become in-basis rows on their owner ranks.
-
-                stats["n_points"] += 1
-                if not (info["converged"] and boundary_rel <= boundary_tol):
-                    stats["n_unconverged"] += 1
-                stats["max_boundary_rel"] = max(stats["max_boundary_rel"], boundary_rel)
-                stats["max_solve_basis"] = max(stats["max_solve_basis"], int(tmp_basis.size))
-                if np.isfinite(budget) and boundary_rel > boundary_tol and tmp_basis.size >= budget:
-                    stats["cap_hit"] = True
-                    retained = int(tmp_basis.size)
-                    if stats["retained_size"] is None or retained < stats["retained_size"]:
-                        stats["retained_size"] = retained
-
-                gram = block_inner_cy(seeds_blk, ManyBodyState.from_states(X))
-                if sub_comm is not None:
-                    sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
-
-                # Second-order (Loewdin downfolding) closure of the discarded boundary,
-                # dG_ij = sum_D <D|H|X_i> (z - E_D)^{-1} <D|H|X_j> (complex-symmetric
-                # approximation: the bra solve at conj(z) is taken as conj(X), exact for a
-                # real Hamiltonian matrix). Computed always -- it is the per-point
-                # truncation-error bar -- added to G only when GF_CIPSI_PT2 is set. The
-                # final round admitted nothing, so every remaining candidate is boundary.
-                ov = sel["overlaps"]
-                dG = (ov / (z - sel["e_Dj"])[None, :]) @ ov.T if ov.shape[1] else np.zeros((n_ops, n_ops), complex)
-                dG = np.ascontiguousarray(dG, dtype=complex)
-                if sub_comm is not None:
-                    sub_comm.Allreduce(MPI.IN_PLACE, dG, op=MPI.SUM)
-                stats["pt2_max_correction"] = max(stats["pt2_max_correction"], float(np.max(np.abs(dG))))
-                if use_pt2:
-                    gram = gram + dG
-
-                G_axes[ax][p, k] = gram
-
-                hist_z.append(z)
-                hist_x.append(list(X))
-                if len(hist_z) > _GF_BICGSTAB_WARM_HISTORY:
-                    hist_z.pop(0)
-                    hist_x.pop(0)
-            if verbose and (sub_comm is None or sub_comm.rank == 0):
-                print(
-                    f"    axis {ax}, eigenstate {p}: {len(z_shifted)} points, "
-                    f"{stats['rounds']} cumulative selection rounds, "
-                    f"max per-point basis {stats['max_solve_basis']}, "
-                    f"max boundary residual {stats['max_boundary_rel']:.1e}",
-                    flush=True,
-                )
-
-    if sub_comm is not None:
-        tmp_basis.free_comm()
+    finally:
+        if sub_comm is not None:
+            tmp_basis.free_comm()
     return G_axes, stats

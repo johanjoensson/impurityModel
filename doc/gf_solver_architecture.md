@@ -1,44 +1,85 @@
 # Green's-function & spectra solver architecture
 
 The interacting Green's function is the computational heart of the package, and it is where
-the execution paths are hardest to follow: there are three resolvent kernels, two
-Lanczos-kernel backends, several work-unit decompositions, a four-tier RIXS solver chain, and
-a shared MPI distribution engine underneath all of it. This document is the map. It names the
-entry points and traces the dispatch so you can find the code that actually runs for a given
-call.
+the execution paths are hardest to follow: two resolvent kernels, two Lanczos-kernel backends,
+a work-unit decomposition, a four-tier RIXS solver chain, and a shared MPI distribution engine
+underneath all of it. This document is the map. It names the entry points and traces the
+dispatch so you can find the code that actually runs for a given call.
 
 For the physics (why a block-tridiagonal continued fraction gives `G`), see
 [`greens_function_theory.md`](greens_function_theory.md). For the module layering, see
-[`architecture_overview.md`](architecture_overview.md).
+[`architecture_overview.md`](architecture_overview.md). The 2026-09 review that shaped the
+current structure, including every defect it found and fixed, is
+[`reviews/gf_review.md`](reviews/gf_review.md).
 
-## The one distribution engine
+## The one pipeline
 
-Every Green's-function, spectra, and RIXS driver funnels through the same three-step engine
-in `greens_function.py` (the units layer):
+Every Green's-function, spectra and RIXS driver runs the same pipeline:
 
 ```
-enumerate_gf_units(...)          # flatten the work into independent units
-        │                        #   unit = (orbital block × spectral side × eigenstate group)
-        ▼
-unit_cost_weights(unit_seeds)    # estimate each unit's cost for load balancing
-        │
-        ▼
-run_units_distributed(basis, unit_seeds, unit_weights, kernel, ...)
-        │                        # split the communicator into colors (basis_split),
-        ▼                        # redistribute seeds, run kernel(split_basis, u, seeds)
-   per-unit kernel               #   per color, reduce results back to global rank 0
+enumerate_gf_units(...)            gf_units    flatten the work into independent units
+        |                                      unit = (operator group x eigenstate chunk);
+        v                                      an operator group is a block of transition
+unit_cost_weights(unit_seeds)      gf_units    operators on one spectral side
+        |                                      (estimated cost, for load balancing)
+        v
+run_units_distributed(...)         gf_units    split basis.comm into colors (basis_split),
+        |                                      redistribute seeds, run kernel(split_basis, u,
+        v                                      seeds) per color, gather to global rank 0
+lanczos_unit_kernel(...)           gf_engine   _block_green_group: one block-Lanczos
+        |                                      recurrence per unit; r split per stacked state
+        v
+states_by_group(...)               gf_engine   per operator group, per eigenstate:
+        |                                      (alphas, betas, r)
+        v
+calc_thermally_averaged_G + ThermalEnsemble + combine_sides (G+ - G-^T)/Z
 ```
 
-A **unit** is the atom of parallel work: one orbital block, one spectral side (electron
-addition / removal), and one group of thermal eigenstates. `run_units_distributed` splits
-`MPI.COMM_WORLD` into colors sized to fit the memory budget (`basis_split.py`), gives each
-color its own sub-communicator and its own clone of the basis, redistributes the seed states
-onto the rebuilt basis, and calls the caller's `kernel`. The distribution is identical for a
-self-energy run, an XAS spectrum, and a RIXS map — only the `kernel` differs.
+The modules split the work cleanly. `gf_units` owns distribution: units, weights, the
+determinant caps and memory guard, and the split. `gf_engine` owns what a unit computes and
+how results are put back together. `average.ThermalEnsemble` holds the Boltzmann weights and
+`Z`.
+
+A **unit** is the atom of parallel work. `run_units_distributed` splits the basis's
+communicator into colors sized to fit the memory budget (`basis_split.py`), gives each color
+its own sub-communicator and its own clone of the basis, redistributes the seed states onto
+the rebuilt basis, and calls the caller's `kernel`. The distribution is identical for a
+self-energy run, an XAS spectrum and a RIXS map; only the kernel and the assembly differ. RIXS
+enumerates its own units, (eigenstate x chunk of incoming energies), and uses its own kernel
+(the R1 chain below), but runs through the same `run_units_distributed`.
 
 > **Why this matters:** determinants are hash-distributed (`hash(sd) % size`, one owner per
 > determinant), so no rank ever holds a full state vector. The engine is where that invariant
 > is maintained across the split/redistribute boundary. See [`mpi_model.md`](mpi_model.md).
+
+**Occupation windows.** Each unit runs under an excited-sector occupation window, built by
+`basis_restrictions.build_excited_restrictions` and combined with
+`union_windows`/`intersect_windows`. `None` means unrestricted everywhere, and
+`Basis.clone(restrictions=...)` inherits the parent's window only on its explicit `INHERIT`
+default. Every consumer states the mask it needs on the shared Hamiltonian (`None` clears), and
+the moments clear it: masks are sticky on the operator object and cannot be read back.
+
+## Self-energy estimators (`sigma_estimators.py`)
+
+`calc_selfenergy` asks a `SelfEnergyEstimator` (picked by `SolverOptions.sigma_method`) three
+things:
+
+- **`operator_families(block, solver_basis)`** returns `(X^dag, X)`, the operators the
+  pipeline resolves for one block. `get_Greens_function(operator_families=...)` builds one
+  operator group per family side, so each block's `G` is the Green's function of `X`, as wide
+  as the family. By contract the family's leading `len(block)` operators are the block's own
+  `c`, and the anticommutator sum rule is checked on those columns.
+- **`impurity_gf(g_family, block)`** returns the impurity `G` inside the family's `G`: the
+  leading block.
+- **`sigma(mesh, g_families, ...)`** returns the self-energy read off the family's `G`.
+
+`DysonEstimator` is the production estimator: `X = c` and `Σ = G0^-1 - G^-1` (`sigma.get_sigma`).
+The symmetric improved estimator plugs in here. It resolves `X = [c, q]` with
+`q = [c, H_int]`, a `2n`-wide family, taking `H_int` from `SolverBasis.h_int` (`h - h0_solve`,
+built lazily, so the Dyson path never pays for a copy of the Coulomb operator). The
+test-only stub in `test/gf/test_gf_operator_families.py` checks two things:
+- the stub family's full `2n x 2n` `G` against the exact Lehmann oracle, on every kernel;
+- its seed-Gram cross block `<{q_a, c_b^dag}>` against production's `sigma_static`.
 
 ## Resolvent kernel: the `gf_method` switch
 
@@ -49,7 +90,45 @@ self-energy run, an XAS spectrum, and a RIXS map — only the `kernel` differs.
 | --- | --- | --- | --- |
 | `"lanczos"` *(default)* | `get_Greens_function` | `_block_green_group` → `block_green_impl` (array) / `block_Green_sparse` (state) | One block-Lanczos recurrence per unit builds a continued fraction serving the **whole frequency mesh** at once. The workhorse. |
 | `"bicgstab"` | `_get_greens_function_bicgstab` | `block_Green_bicgstab` | One linear solve **per frequency point**, basis rebuilt-and-discarded each point. Wins on memory (the live basis never exceeds one point's support) at a time cost. |
-| `"sliced"` | `_get_greens_function_sliced` | Chebyshev spectral-window terms | Decomposes `G` into energy-window terms with per-slice bases. **Documented failure** (`doc/plans/spectrum_slicing.md`): the live basis is the H-connectivity closure of the seed support, invariant under filtering, so the projected win never materialized. Retained; needs a real-axis mesh, else falls back to `bicgstab`. |
+
+`"sliced"` and `"cipsi"` are retired (`config.RETIRED_GF_METHODS`: rejected with the reason,
+replayed as `"lanczos"` from an old archive).
+
+### Basis growth of the per-frequency kernel: `gf_admission`
+
+Each per-frequency solve grows its basis from the seeds. `gf_admission` chooses how:
+
+| `gf_admission` | Behaviour |
+| --- | --- |
+| `all` | Every determinant the solver produces is admitted, up to the cap (`truncation_threshold`). |
+| `outer` | Solve on a **frozen** basis, measure the residual outside it, admit only the determinants whose score clears `gf_admit_tol`, re-solve (`gf_admission.py`). Admission happens only *between* solves, so every solve is the exact resolvent of the projected `P H P`. Switches on a measured bound on the error of `G` (`GF_BICGSTAB_RESIDUAL_CHECK`, derived), reported in the diagnostics as `truncation_error_bound`. |
+| unset | The `GF_BICGSTAB_ADMISSION` environment knob decides, else `all`. |
+
+It needs `gf_method = "bicgstab"`; any other combination is refused where the options are built
+(`SolverOptions`), not ignored. The same three settings -- `gf_method`, `gf_admission`,
+`gf_admit_tol` -- are accepted by every front-end, in one vocabulary:
+
+| Front-end | Where |
+| --- | --- |
+| RSPt solver line | `gf_method bicgstab gf_admission outer gf_admit_tol 1e-5` |
+| TOML | `[solver]` keys of the same names (`gf_admission = "auto"` is "unset") |
+| CLI | `--gf-method bicgstab --gf-admission outer --gf-admit-tol 1e-5` |
+| Python | `SolverOptions(gf_method="bicgstab", gf_admission="outer", gf_admit_tol=1e-5)` |
+
+They are recorded in the HDF5 archive and replayed by `--from-archive`; a flag that is not passed
+leaves the recorded value alone.
+
+**What the measurements support** (`doc/plans/gf_basis_size_comparison.md`; model problems with an
+exact reference, unrestricted, not yet a real archive). `outer` needed 1.3-3.2x fewer
+determinants than the best plain cap on the Matsubara axis of a strongly hybridized metal, and
+tighter thresholds converge steadily (the error bound says what was left out). It did **not**
+beat the plain cap on the Matsubara axis of the NiO-like model in the star basis (it did in the chain-like
+bases), and no method shrinks the basis
+much on the real axis at narrow broadening. The per-frequency kernel costs one solve per point,
+so a long mesh multiplies the cost; `lanczos` solves the whole mesh in one recurrence and is the
+cheaper kernel whenever the closure fits in memory. The bath basis matters more than the
+solver: a chain-like geometry (e.g. the linked chain) shrinks the required basis by several
+times, but the closure of an unrestricted calculation does not change with it.
 
 Orthogonal switches on the default Lanczos path:
 
@@ -58,13 +137,9 @@ Orthogonal switches on the default Lanczos path:
   `block_green_impl` which forms a CSR/dense sector and runs the BLAS-3 array kernel
   (`BlockLanczosArray.pyx`). Rule of thumb: array kernel for small/dense sectors, sparse when
   the matrix cannot be formed. See `architecture_overview.md` ("which one to use").
-- **Operator split** (`config.GF_OPERATOR_SPLIT`) — compute a block of `n` transition
-  operators as scalar (pairwise) continued fractions instead of one width-`n` block
-  recurrence. Multiplies the independent-unit count (better balance for few large blocks) at
-  the cost of redundant Krylov building. Assembled by `PairwiseGF` / `calc_G_pairwise`.
 - **Eigenstate grouping** (`config.GF_EIGENSTATE_GROUP`) — stack several thermal eigenstates
-  into one wide block recurrence sharing a Krylov space. Mutually exclusive with the operator
-  split.
+  into one wide block recurrence sharing a Krylov space. (The former operator split,
+  `GF_OPERATOR_SPLIT`, is retired: `doc/reviews/gf_review.md`, row S3.)
 - **Truncation capping** (`truncation_threshold`) — `_CappedBasisProxy` freezes basis growth
   at a global determinant cap; the post-freeze recurrence is exact Lanczos of the projected
   `PHP` (see `doc/plans/truncation_reliability.md`).
@@ -149,5 +224,9 @@ the solve it is judging.
 - Tuning GF performance/memory → `config.py` (every knob), then `get_Greens_function`.
 - A RIXS map is slow or wrong → `rixs._R1SolverChain.solve` and the tier modules
   (`gf_shift_recycling.py`).
-- A new distribution/parallelism concern → `greens_function.run_units_distributed` and
+- A new distribution/parallelism concern → `gf_units.run_units_distributed` and
   `basis_split.py`; read [`mpi_model.md`](mpi_model.md) first.
+- A new self-energy estimator → `sigma_estimators.py` (the protocol, `DysonEstimator`, the
+  registry); the family reaches the engine through `get_Greens_function(operator_families=...)`.
+- A new unit kind → `gf_engine.py` (the unit kernel and reassembly) and
+  `gf_units.enumerate_gf_units` (operator groups of any width).
