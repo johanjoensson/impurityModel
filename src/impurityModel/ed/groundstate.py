@@ -393,7 +393,7 @@ def calc_energy(
         bath_states,
         N0,
         mixed_valence,
-        tau,
+        0,  # tau,
         chain_restrict,
         dense_cutoff,
         comm=comm,
@@ -408,7 +408,8 @@ def calc_energy(
         sector_cache=sector_cache,
         de2_min=de2_min,
         e_pt2_tol=e_pt2_tol,
-        max_energy=None,
+        max_energy=0,  # None,
+        num_wanted=1,
     )
     # Broadcast, not merely returned. A Lanczos eigenvalue is replicated across ranks only to
     # roundoff, and every caller compares it against something: the occupation walk against the

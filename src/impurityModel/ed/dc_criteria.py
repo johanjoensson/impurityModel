@@ -690,7 +690,7 @@ class _SectorContext:
             self.bath_states,
             occ_trial,
             self.mixed_valence,
-            self.tau,
+            (0 if self.ground_state_manifold else self.tau),
             self.chain_restrict,
             self.dense_cutoff,
             comm=MPI.COMM_WORLD,
@@ -723,6 +723,7 @@ class _SectorContext:
             # converge to `tol`, not how many get reported, and touching it doubles the number of
             # things this change could be blamed for against one measurement.
             max_energy=(0.0 if self.ground_state_manifold else None),
+            num_wanted=(1 if self.ground_state_manifold else 10),
         )
         # Broadcast the verdict *before* branching on it, not the answer afterwards. `es` and
         # `psis` come back rank-local from `solve_sector` (its docstring says so), and the next
