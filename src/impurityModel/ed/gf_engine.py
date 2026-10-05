@@ -15,10 +15,12 @@ Layering: below ``greens_function``, ``spectra``, ``rixs`` and ``susceptibility`
 """
 
 import sys
+import time
 
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed.BlockLanczos import get_block_lanczos_profile
 from impurityModel.ed.gf_solvers import block_Green, block_Green_sparse
 from impurityModel.ed.memory_estimate import format_bytes, peak_rss_bytes, reset_peak_rss
 from impurityModel.ed.solver_trace import note as _trace_note
@@ -84,6 +86,12 @@ def _block_green_group(
     # run-wide cumulative mark, not this unit's transient, and reporting it as the latter is
     # exactly the staleness that misled an earlier debugging session (round 6).
     peak_is_own = reset_peak_rss()
+    # Per-unit wall time and (under BLOCKLANCZOS_PROFILE=1) the per-sub-operation split, so a
+    # production log attributes the GF wall clock to units and to apply/redistribute/monitor
+    # without a rerun. The profile accumulators are module-global and other readers aggregate a
+    # whole run, so this unit's share is a difference against a snapshot, never a reset.
+    t_start = time.perf_counter()
+    profile_start = get_block_lanczos_profile()
     excited_basis = split_basis.clone(
         initial_basis={state for p in group_seed_states for state in p},
         restrictions=excited_restrictions,
@@ -164,8 +172,10 @@ def _block_green_group(
         }
     comm = split_basis.comm
     peak = peak_rss_bytes()
+    seconds = time.perf_counter() - t_start
     if comm is not None:
         peak = comm.allreduce(peak, op=MPI.MAX)
+        seconds = comm.allreduce(seconds, op=MPI.MAX)
     # A cumulative mark is not this unit's peak; say so rather than quietly overstating it.
     peak_kind = "unit" if peak_is_own else "cumulative"
     retained_size = cap_stats["retained_size"]
@@ -179,6 +189,7 @@ def _block_green_group(
         n_blocks=int(n_blocks) if n_blocks is not None else None,
         peak_rss_bytes=int(peak),
         peak_is_unit_transient=bool(peak_is_own),
+        wall_seconds=float(seconds),
     )
     if verbose and (comm is None or comm.rank == 0):
         label = f"unit {unit_label}" if unit_label is not None else "unit"
@@ -186,10 +197,19 @@ def _block_green_group(
         print(
             f"  {label}: excited basis {retained_display} determinants "
             f"(cap={cap:,.0f}, cap_hit={cap_stats['cap_hit']}) n_blocks={n_blocks} "
-            f"color MAX VmHWM={format_bytes(peak)} ({peak_kind})",
+            f"color MAX VmHWM={format_bytes(peak)} ({peak_kind}) wall={seconds:.1f} s",
             flush=True,
         )
+        profile = {k: v - profile_start.get(k, 0.0) for k, v in get_block_lanczos_profile().items()}
+        if any(profile.values()):
+            print(f"  {label} profile (color root): {_format_profile(profile)}", flush=True)
     return alphas, betas, r, cap_stats
+
+
+def _format_profile(profile):
+    """``name=seconds/calls`` per sub-operation of a ``get_block_lanczos_profile()`` dict, slowest first."""
+    names = sorted((k for k in profile if not k.endswith("#n")), key=lambda k: -profile[k])
+    return " ".join(f"{k}={profile[k]:.1f}s/{int(profile.get(k + '#n', 0))}" for k in names)
 
 
 def lanczos_unit_kernel(
