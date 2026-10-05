@@ -13,7 +13,6 @@ in :mod:`impurityModel.ed.greens_function`.
 from typing import Optional
 
 import numpy as np
-import scipy as sp
 from mpi4py import MPI
 
 from impurityModel.ed import config
@@ -240,39 +239,16 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         H = build_dense_matrix(basis, hOp)
         kernel_comm = None
     else:
-        h_local = build_sparse_matrix(basis, hOp)[:, basis.local_indices]
-
-        def matmat(v):
-            """
-            Perform matrix-matrix multiplication with the local Hamiltonian.
-
-            Applies the local Hamiltonian to a set of state vectors and performs
-            an MPI reduction across MPI processes to accumulate the results.
-
-            Parameters
-            ----------
-            v : ndarray
-                Input vectors to multiply.
-
-            Returns
-            -------
-            res : ndarray
-                The resulting matrix product after MPI reduction.
-            """
-            res = h_local @ v
-            if comm is not None:
-                comm.Reduce(MPI.IN_PLACE if rank == 0 else res, res, op=MPI.SUM, root=0)
-            return res.reshape(h_local.shape[0], v.shape[1])
-
-        H = sp.sparse.linalg.LinearOperator(
-            (len(basis), len(basis.local_indices)),
-            matvec=matmat,
-            rmatvec=matmat,
-            matmat=matmat,
-            rmatmat=matmat,
-            dtype=complex,
-        )
-
+        # The (global_N, N_local) CSR goes to the kernel as-is, like the CIPSI ground state's:
+        # `local_indices` is the rank-contiguous range `offset + arange(N_local)`, which is the
+        # row layout the kernel's distributed matvec reduce-scatters into each rank's own rows.
+        # It used to be wrapped in a LinearOperator whose matmat returned all global_N rows
+        # (reduced to rank 0), which the kernel cannot store in its N_local-row buffer --
+        # "could not broadcast (970,9) into (273,9)" on every colour spanning two or more ranks
+        # (review ledger M1; RIXS R3 at 128 ranks on the cluster).
+        H = build_sparse_matrix(basis, hOp)
+        if comm is not None:
+            H = H[:, basis.local_indices]
         kernel_comm = comm
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0 until the continued fraction converges or

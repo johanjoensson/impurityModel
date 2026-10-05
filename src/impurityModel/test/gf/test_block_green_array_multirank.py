@@ -1,12 +1,11 @@
 """``gf_solvers.block_Green``'s operator branch (>= 500 determinants) on a multi-rank communicator.
 
-Pinned as a **strict xfail**: the branch wraps the ``(global_N, N_local)`` CSR in a
-``LinearOperator`` whose ``matmat`` returns the full ``global_N``-row product (reduced to rank 0),
+Regression guard for review ledger M1. The branch used to wrap the ``(global_N, N_local)`` CSR in a
+``LinearOperator`` whose ``matmat`` returned the full ``global_N``-row product (reduced to rank 0),
 which the array kernel cannot store in its ``N_local``-row buffer -- ``ValueError: could not
-broadcast`` on every rank. Serially the same call is fine and agrees with ``block_Green_sparse``
-to 1e-9. RIXS's R3 stage reaches this branch on any colour spanning two or more ranks
-(``doc/plans/rixs_mbs_migration.md``); when R3 moves to the MBS driver, or the branch hands the
-kernel the CSR directly, delete the marker and this test becomes the regression guard.
+broadcast`` on every rank. RIXS's R3 stage reaches this branch on any colour spanning two or more
+ranks; it crashed the CoO RIXS map at 128 ranks on the cluster. The branch now hands the kernel the
+CSR directly, whose distributed matvec writes each rank's own rows.
 """
 
 import itertools
@@ -83,9 +82,6 @@ def test_mbs_driver_matches_serial_on_many_ranks():
 
 
 @pytest.mark.mpi
-@pytest.mark.xfail(
-    strict=True, raises=ValueError, reason="block_Green's operator branch returns global rows into a local buffer"
-)
 def test_array_driver_operator_branch_on_many_ranks():
     comm = MPI.COMM_WORLD
     if comm.size < 2:

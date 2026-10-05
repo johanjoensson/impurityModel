@@ -827,6 +827,60 @@ def test_rixs_tensor_distributed_krylov_recycler_matches_dense(monkeypatch):
         assert C is None
 
 
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs a color of more than one rank")
+def test_rixs_tensor_r3_csr_branch_on_a_multirank_color_matches_dense(monkeypatch):
+    """R3's array ``block_Green`` on its CSR branch, on one color spanning every rank.
+
+    That branch (taken from 500 determinants up, forced here on a model far too small to reach
+    it) crashed on every color of more than one rank -- ``could not broadcast (970,9) into
+    (273,9)`` -- because it handed the kernel a global-row product (review ledger M1; the CoO
+    RIXS map at 128 ranks). One state at one incoming energy is a single unit, so the color is
+    the whole communicator; with more units each rank would get its own color and the branch
+    would run serially.
+    """
+    from impurityModel.ed import gf_solvers
+
+    monkeypatch.setattr(gf_solvers, "_GF_ARRAY_DENSE_MAX", 0)
+    monkeypatch.setenv("GF_SECTOR_DENSE_MAX", "0")
+    monkeypatch.setenv("GF_RIXS_WIN_CHUNK", "1")
+    comm = MPI.COMM_WORLD
+    op = _model()
+    psis, es, dets, states, vecs = _thermal_states(op, 2)
+    basis = Basis(
+        impurity_orbitals={2: [[0, 1]], 1: [[2]]},
+        bath_states=({2: [[]], 1: [[]]}, {2: [[]], 1: [[]]}),
+        initial_basis=list(dets),
+        verbose=False,
+        comm=comm,
+    )
+    ground = ManyBodyState.from_states([psis[0]]) if comm.rank == 0 else ManyBodyState(width=1)
+    (ground,) = basis.redistribute_psis(ground)
+    tin, tout = _tin_tout()
+    C = spectra.calc_tensor_map(
+        op,
+        tin,
+        tout,
+        [ground.to_states()[0]],
+        [es[0]],
+        tau=TAU,
+        wIns=WIN[:1],
+        wLoss=WLOSS,
+        delta1=D1,
+        delta2=D2,
+        basis=basis,
+        verbose=False,
+        slaterWeightMin=0.0,
+        l_core=1,
+        l_valence=2,
+    )
+    if comm.rank == 0:
+        got = polarization.contract_rixs_tensor(C, EPS_IN, EPS_OUT)
+        ref = _dense_rixs_pol(op, tin, tout, EPS_IN, EPS_OUT, [es[0]], vecs[:, :1], states)[:, :, :1, :]
+        assert np.abs(ref).max() > 0
+        np.testing.assert_allclose(got, ref, atol=1e-8)
+
+
 @pytest.mark.parametrize("sector_cache", ["available", "declined"])
 def test_rixs_tensor_with_in_components_in_different_charge_sectors_matches_dense(monkeypatch, sector_cache):
     """Every test above hybridizes the two valence orbitals, so both in-components shift the same
