@@ -7,13 +7,11 @@ the *same* ``calc_selfenergy`` inputs from the ``h0/h0_NiO_<n>bath.pickle`` file
 Not a test module (leading underscore): it exposes helpers only.
 """
 
-import os
 from collections import OrderedDict
 
 import numpy as np
 
-# Repo root: this file is src/impurityModel/test/support/<this>; the h0 pickles live in <root>/h0.
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+from impurityModel.test.support.repo_data import repo_h0_dir
 
 
 def build_selfenergy_inputs(
@@ -103,7 +101,7 @@ def build_selfenergy_inputs(
     if rot_to_spherical is None:
         rot_to_spherical = np.eye(n_imp, dtype=complex)
 
-    h0_filename = os.path.join(REPO_ROOT, "h0", f"h0_NiO_{nBaths}bath.pickle")
+    h0_filename = str(repo_h0_dir() / f"h0_NiO_{nBaths}bath.pickle")
     hOp = get_noninteracting_hamiltonian_operator(
         nBaths=sum_baths,
         nValBaths=nValBaths_d,

@@ -3,15 +3,13 @@ from glob import glob
 
 from impurityModel.ed.hamiltonian_io import read_pickled_file
 from impurityModel.ed.operator_algebra import assert_hermitian
-
-# Repo root: this file is src/impurityModel/test/operators/<this>; the h0 pickles live
-# in <root>/h0.
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+from impurityModel.test.support.repo_data import repo_h0_dir
 
 
 def test_read_all_h0_pickle_files():
-    h0_filenames = glob(os.path.join(REPO_ROOT, "h0", "h0*.pickle"))
-    assert h0_filenames, f"no h0*.pickle files found under {os.path.join(REPO_ROOT, 'h0')}"
+    h0_dir = repo_h0_dir()
+    h0_filenames = glob(os.path.join(h0_dir, "h0*.pickle"))
+    assert h0_filenames, f"no h0*.pickle files found under {h0_dir}"
     for h0_filename in h0_filenames:
         h0 = read_pickled_file(h0_filename)
 
