@@ -40,6 +40,10 @@ pytestmark = [
 ]
 
 
+#: The phases :func:`_phase_timers` records, in the order they are printed.
+_PHASE_NAMES = ["calc_gs", "get_Greens_function", "gf_units", "moments", "dyson"]
+
+
 def _env_int(name):
     value = os.environ.get(name)
     return None if value in (None, "") else int(value)
@@ -143,7 +147,8 @@ def test_real_workload_selfenergy():
 
     workload = load_workload(h5_path)
     phases = {}
-    timers = _phase_timers(phases) if os.environ.get("PHASES", "0") not in ("0", "") else _no_timers()
+    timers_on = os.environ.get("PHASES", "0") not in ("0", "")
+    timers = _phase_timers(phases) if timers_on else _no_timers()
     t0 = time.perf_counter()
     with timers:
         result = run_selfenergy(
@@ -168,7 +173,7 @@ def test_real_workload_selfenergy():
         )
         print(f"[real-workload] wall {wall:.1f} s, peak RSS per rank: {[format_bytes(p) for p in peaks]}")
         if phases:
-            names = ["calc_gs", "get_Greens_function", "gf_units", "moments", "dyson"]
+            names = _PHASE_NAMES
             # Non-root ranks leave get_Greens_function as soon as their units are gathered, so
             # their own GF time understates the phase; the phase wall is the slowest rank's.
             gf_wall = max(ph.get("get_Greens_function", 0.0) for ph in all_phases)
@@ -198,6 +203,14 @@ def test_real_workload_selfenergy():
                 peaks=np.array(peaks, dtype=float),
             )
             print(f"[real-workload] results written to {out}")
+        if timers_on:
+            # A patch target that production no longer reaches through its module attribute (a
+            # rename, or a `from ... import` at the call site) records nothing and the run looks
+            # clean. Fail instead: the cluster kit's first round ran an install whose harness
+            # had no PHASES support and spent ~6 h of 32-128 ranks producing none of these lines.
+            recorded = {name for ph in all_phases for name, seconds in ph.items() if isinstance(seconds, float)}
+            missing = [n for n in _PHASE_NAMES if n not in recorded]
+            assert not missing, f"PHASES=1 recorded no phase timing for {missing}; the timer patches missed"
 
 
 @contextmanager
