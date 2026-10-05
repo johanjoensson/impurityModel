@@ -144,17 +144,19 @@ def test_the_flat_and_labelled_paths_agree_on_what_omission_means(written, tmp_p
     assert built.model is not None
 
 
+@pytest.mark.skipif(not NIO_PICKLE.exists(), reason="needs the shipped NiO Hamiltonian")
 def test_the_switches_reach_the_spectra_options(written):
     text = SPECTROSCOPY + "\n[spectroscopy.rixs]\nenabled = true\n[spectroscopy.xps]\nenabled = false\n"
-    built = build(load_input(written(text, h0=NIO_PICKLE if NIO_PICKLE.exists() else GOLDEN_H0)))
+    built = build(load_input(written(text, h0=NIO_PICKLE)))
     assert built.spectra.rixs is True
     assert built.spectra.xps is False
     assert built.spectra.nixs is False
     assert len(built.spectra.wIn) == 50
 
 
+@pytest.mark.skipif(not NIO_PICKLE.exists(), reason="needs the shipped NiO Hamiltonian")
 def test_rixs_off_leaves_an_empty_incoming_mesh(written):
-    built = build(load_input(written(SPECTROSCOPY, h0=NIO_PICKLE if NIO_PICKLE.exists() else GOLDEN_H0)))
+    built = build(load_input(written(SPECTROSCOPY, h0=NIO_PICKLE)))
     assert built.spectra.rixs is False
     assert len(built.spectra.wIn) == 0
 
@@ -181,10 +183,11 @@ def test_a_written_count_that_contradicts_the_header_is_an_error(written):
         build(load_input(written(text)))
 
 
+@pytest.mark.skipif(not NIO_PICKLE.exists(), reason="needs the shipped NiO Hamiltonian")
 def test_a_core_shell_defaults_to_no_bath_states(written):
     """Directive: no core Hamiltonian read means no core bath states."""
     text = SPECTROSCOPY.replace("n_bath = 60\nn_valence_bath = 10\n", "n_bath = 60\nn_valence_bath = 10\n")
-    built = build(load_input(written(text, h0=NIO_PICKLE if NIO_PICKLE.exists() else GOLDEN_H0)))
+    built = build(load_input(written(text, h0=NIO_PICKLE)))
     core = next(shell for shell in built.model.impurity_orbitals)
     del core
     assert any("no bath states" in note for note in built.notes)
