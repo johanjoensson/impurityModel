@@ -350,10 +350,13 @@ def test_an_auto_tightening_is_visible_at_default_verbosity_once_per_calculation
         solver.basis.verbose = False
         solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1)
         assert solver.truncation_report["memory_bound"]
-    out, _err = capfd.readouterr()
+    out, err = capfd.readouterr()
     # Each kind of event once: the guard tightening, and the basis stopping short of convergence.
     # Which guard tightens first -- the look-ahead ("... Tightening ...") or the trip-wire ("...
     # mid-expansion; tightening ...") -- depends on the process's own footprint (under ASan the
     # look-ahead wins), and both are the same latched kind, so exactly one of them prints.
-    assert out.lower().count("tightening") == 1, out
-    assert out.count("WARNING determinant cap: GS basis stopped at") == 1, out
+    # On stderr as well as stdout: under RSPt rank 0's stdout is a per-cluster file, and round
+    # 11's slurm logs carried none of these lines while they were print()-only.
+    for stream in (out, err):
+        assert stream.lower().count("tightening") == 1, stream
+        assert stream.count("WARNING determinant cap: GS basis stopped at") == 1, stream

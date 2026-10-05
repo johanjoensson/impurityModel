@@ -22,7 +22,6 @@ from impurityModel.ed.memory_estimate import (
     current_rss_bytes,
     format_bytes,
     emit_memory_warning,
-    note_memory_warning,
     peak_rss_bytes,
     reset_peak_rss,
     rss_breakdown,
@@ -1572,42 +1571,42 @@ class CIPSISolver:
                     capped = True
                     self.basis.truncation_threshold = threshold
                     # Once per calculation at any verbosity (every event at -vv): this is the line
-                    # that says why a default run's basis stopped growing.
-                    say = note_memory_warning("gs-memory") or self.basis.verbose
-                    if say and (self.basis.comm is None or self.basis.comm.rank == 0):
-                        was = (
-                            "no cap (unlimited)" if not np.isfinite(previous) else f"the auto cap of {int(previous):,}"
+                    # that says why a default run's basis stopped growing. stdout and stderr, via
+                    # emit_memory_warning: under RSPt rank 0's stdout is a per-cluster file, and
+                    # round 11's slurm logs carried none of these lines.
+                    was = "no cap (unlimited)" if not np.isfinite(previous) else f"the auto cap of {int(previous):,}"
+                    streak_note = (
+                        "no growth at all is affordable" if memory_cap == 0 else "for the second round running"
+                    )
+                    # Which side bound, and by how much. Without this the two cases are
+                    # indistinguishable in a log -- and telling them apart is what took the
+                    # round-9 diagnosis from "the basis is mysteriously frozen" to a named
+                    # defect: a 4-68 KiB round refused all growth is a budget verdict, not a
+                    # transient one, and reads absurd the moment both numbers are on the line.
+                    rss_now = sel.get("round_rss_bytes", 0)
+                    if sel.get("memory_cap_reason") == "budget":
+                        why = (
+                            f"the resident set alone is over the {format_bytes(memory_budget_bytes)} "
+                            f"budget by {format_bytes(rss_now - memory_budget_bytes)}, so the round's "
+                            "own cost did not enter into it"
                         )
-                        streak_note = (
-                            "no growth at all is affordable" if memory_cap == 0 else "for the second round running"
+                    else:
+                        why = (
+                            f"that leaves {format_bytes(memory_budget_bytes - rss_now)} under the "
+                            f"{format_bytes(memory_budget_bytes)} budget, which this round's cost "
+                            "does not fit a larger basis into"
                         )
-                        # Which side bound, and by how much. Without this the two cases are
-                        # indistinguishable in a log -- and telling them apart is what took the
-                        # round-9 diagnosis from "the basis is mysteriously frozen" to a named
-                        # defect: a 4-68 KiB round refused all growth is a budget verdict, not a
-                        # transient one, and reads absurd the moment both numbers are on the line.
-                        rss_now = sel.get("round_rss_bytes", 0)
-                        if sel.get("memory_cap_reason") == "budget":
-                            why = (
-                                f"the resident set alone is over the {format_bytes(memory_budget_bytes)} "
-                                f"budget by {format_bytes(rss_now - memory_budget_bytes)}, so the round's "
-                                "own cost did not enter into it"
-                            )
-                        else:
-                            why = (
-                                f"that leaves {format_bytes(memory_budget_bytes - rss_now)} under the "
-                                f"{format_bytes(memory_budget_bytes)} budget, which this round's cost "
-                                "does not fit a larger basis into"
-                            )
-                        print(
-                            f"WARNING determinant cap: the selection round on {old_size:,} determinants peaked "
-                            f"{format_bytes(sel.get('round_transient_bytes', 0))} above its "
-                            f"{format_bytes(rss_now)} resident set ({streak_note}); {why}. "
-                            f"The next round can afford {memory_cap:,} of the "
-                            f"{sel.get('n_candidates', 0):,} candidates. Tightening {was} to "
-                            f"{int(threshold):,}.",
-                            flush=True,
-                        )
+                    emit_memory_warning(
+                        f"WARNING determinant cap: the selection round on {old_size:,} determinants peaked "
+                        f"{format_bytes(sel.get('round_transient_bytes', 0))} above its "
+                        f"{format_bytes(rss_now)} resident set ({streak_note}); {why}. "
+                        f"The next round can afford {memory_cap:,} of the "
+                        f"{sel.get('n_candidates', 0):,} candidates. Tightening {was} to "
+                        f"{int(threshold):,}.",
+                        root=self.basis.comm is None or self.basis.comm.rank == 0,
+                        kind="gs-memory",
+                        force=self.basis.verbose,
+                    )
                 _sel_event.update(
                     basis_size=int(old_size),
                     p=_psi_ref_width(psi_refs),
@@ -1721,16 +1720,16 @@ class CIPSISolver:
                 # `basis.truncation_threshold` after `expand()` returns must see the cap that
                 # actually governed the rest of this run, not the one it was constructed with.
                 self.basis.truncation_threshold = threshold
-                say = note_memory_warning("gs-memory") or self.basis.verbose
-                if say and (self.basis.comm is None or self.basis.comm.rank == 0):
-                    was = "no cap (unlimited)" if not np.isfinite(previous) else f"the auto cap of {int(previous):,}"
-                    print(
-                        f"WARNING determinant cap: measured per-rank RSS {format_bytes(peak_rss)} reached the "
-                        f"{format_bytes(memory_budget_bytes)} memory budget mid-expansion; tightening "
-                        f"{was} to a fixed-budget cap at the current basis "
-                        f"({self.basis.size:,} determinants) rather than risk an uncatchable OOM kill.",
-                        flush=True,
-                    )
+                was = "no cap (unlimited)" if not np.isfinite(previous) else f"the auto cap of {int(previous):,}"
+                emit_memory_warning(
+                    f"WARNING determinant cap: measured per-rank RSS {format_bytes(peak_rss)} reached the "
+                    f"{format_bytes(memory_budget_bytes)} memory budget mid-expansion; tightening "
+                    f"{was} to a fixed-budget cap at the current basis "
+                    f"({self.basis.size:,} determinants) rather than risk an uncatchable OOM kill.",
+                    root=self.basis.comm is None or self.basis.comm.rank == 0,
+                    kind="gs-memory",
+                    force=self.basis.verbose,
+                )
             truncated = False
             if capped and self.basis.size + n_new > threshold:
                 # Fixed-budget CIPSI cycle: make room by dropping the currently least
@@ -1813,14 +1812,14 @@ class CIPSISolver:
             # of the retained subspace), so this is said at any verbosity -- once per calculation
             # (a double-counting search runs dozens of expansions), every time at -vv.
             why = "the memory guard" if rep["memory_bound"] else f"the cap of {rep['threshold']:,}"
-            if note_memory_warning("gs-cap") or self.basis.verbose:
-                if rank == 0:
-                    print(
-                        f"WARNING determinant cap: GS basis stopped at {rep['retained']:,} determinants "
-                        f"({why}); discarded candidates carry {rep['discarded_de2_mass']:.3e} of PT2 "
-                        "importance.",
-                        flush=True,
-                    )
+            emit_memory_warning(
+                f"WARNING determinant cap: GS basis stopped at {rep['retained']:,} determinants "
+                f"({why}); discarded candidates carry {rep['discarded_de2_mass']:.3e} of PT2 "
+                "importance.",
+                root=rank == 0,
+                kind="gs-cap",
+                force=self.basis.verbose,
+            )
             if rank == 0:
                 if self.basis.verbose:
                     print(
