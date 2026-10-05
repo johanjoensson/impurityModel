@@ -1253,6 +1253,12 @@ def test_block_merge_primitives_do_not_allocate_per_merge_step(capsys):
 
     Measured at 200k rows, width 4: **4.3x** with views, and ~13x when the join
     materialized keys. The bound below sits between them with margin on both sides.
+
+    The bound is calibrated for the **release** build. Without its ``-march=native
+    -ffast-math`` the multiply-accumulate gets dearer and the ratio rises with no regression:
+    ``IMPURITYMODEL_BUILD=safe`` measured 6.6-7.2x on the same machine (release: 4.1x),
+    and a cluster install reported 10.5x. Read a failure outside a release build as
+    "re-measure on release", not as a regression.
     """
     import time
 
