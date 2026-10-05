@@ -735,6 +735,8 @@ def _solver_options_from(SolverOptions, table):
         # "auto" -> None: not specified, so the GF_BICGSTAB_ADMISSION knob decides (else "all").
         gf_admission=None if table["gf_admission"] == "auto" else table["gf_admission"],
         gf_admit_tol=table["gf_admit_tol"],
+        gf_tol=table["gf_tol"],
+        gf_real_tol=table["gf_real_tol"],
     )
 
 

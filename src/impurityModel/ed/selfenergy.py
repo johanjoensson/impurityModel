@@ -198,6 +198,8 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     gf_method = solver.gf_method
     gf_admission = solver.gf_admission
     gf_admit_tol = solver.gf_admit_tol
+    gf_tol = solver.gf_tol
+    gf_real_tol = solver.gf_real_tol
     estimator = make_estimator(solver.sigma_method)
 
     # MPI variables
@@ -301,6 +303,8 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             gf_method=gf_method,
             gf_admission=gf_admission,
             gf_admit_tol=gf_admit_tol,
+            gf_tol=gf_tol,
+            gf_real_tol=gf_real_tol,
             operator_families=lambda block: estimator.operator_families(block, sb),
         )
 

@@ -272,3 +272,15 @@ def test_selfenergy_replay_keeps_what_the_archive_recorded():
         selfenergy.apply_solver_overrides(
             recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "lanczos"])
         )
+
+
+def test_selfenergy_gf_tolerance_flags_reach_the_options_and_override_an_archive():
+    from impurityModel.ed.model import SolverOptions
+
+    args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-tol", "1e-8", "--gf-real-tol", "1e-5"])
+    assert (args.gf_tol, args.gf_real_tol) == (1e-8, 1e-5)
+    recorded = SolverOptions(gf_tol=1e-9)
+    looser = selfenergy.apply_solver_overrides(
+        recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-real-tol", "1e-4"])
+    )
+    assert (looser.gf_tol, looser.gf_real_tol) == (1e-9, 1e-4)

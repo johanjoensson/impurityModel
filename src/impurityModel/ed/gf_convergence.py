@@ -108,7 +108,7 @@ def _gf_signed_axes(matsubara_mesh, omega_mesh, side_i, delta):
     return axes
 
 
-def _gf_eval_meshes(matsubara_mesh, omega_mesh, side_i, delta, es, n_points=_GF_MONITOR_POINTS):
+def _gf_eval_meshes(matsubara_mesh, omega_mesh, side_i, delta, es, n_points=_GF_MONITOR_POINTS, axis_tols=None):
     r"""The frequencies the caller will actually evaluate ``G`` at, in the ``alphas`` frame.
 
     ``calc_G`` forms :math:`\omega_P = \omega + i\delta + e`, and ``get_Greens_function`` calls it
@@ -125,6 +125,10 @@ def _gf_eval_meshes(matsubara_mesh, omega_mesh, side_i, delta, es, n_points=_GF_
 
     Returns ``None`` when the caller asked for no mesh at all, which sends the monitor back to its
     spectral-edge fallback.
+
+    ``axis_tols`` (``(matsubara_tol, real_tol)``, from :func:`_gf_axis_tols`) gives each requested
+    axis its own convergence tolerance; the result then carries them as ``.tols`` (one per returned
+    array, see :class:`EvalMeshes`). ``None`` leaves every axis on the monitor's single tolerance.
     """
     axes = _gf_signed_axes(matsubara_mesh, omega_mesh, side_i, delta)
     if not axes:
@@ -142,7 +146,50 @@ def _gf_eval_meshes(matsubara_mesh, omega_mesh, side_i, delta, es, n_points=_GF_
             else axis_mesh[np.linspace(0, len(axis_mesh) - 1, per_axis).astype(int)]
         )
         meshes.append(np.concatenate([sub + e for e in es]))
-    return meshes
+    tols = None
+    if axis_tols is not None:
+        # Same order as _gf_signed_axes: Matsubara first, then the real axis.
+        tols = [t for t, mesh in zip(axis_tols, (matsubara_mesh, omega_mesh)) if mesh is not None]
+    return EvalMeshes(meshes, tols)
+
+
+class EvalMeshes(list):
+    """The per-axis evaluation meshes of :func:`_gf_eval_meshes` -- a plain ``list`` of arrays --
+    plus ``tols``: each axis's own convergence tolerance, or ``None`` for one shared tolerance.
+
+    Carrying the tolerances on the meshes they apply to keeps them in step through every kernel
+    that forwards ``eval_meshes`` to :func:`_make_gf_convergence_monitor`, without a parallel
+    argument threaded through each signature.
+    """
+
+    def __init__(self, meshes, tols=None):
+        super().__init__(meshes)
+        if tols is not None and len(tols) != len(meshes):
+            raise ValueError(f"{len(tols)} axis tolerances for {len(meshes)} evaluation meshes")
+        self.tols = None if tols is None else [float(t) for t in tols]
+
+
+def _gf_axis_tols(slaterWeightMin, gf_tol=None, gf_real_tol=None):
+    """``(matsubara_tol, real_tol)``: the per-axis relative-change tolerances of the GF monitor.
+
+    ``gf_tol`` sets every axis (``None``: :func:`_gf_rel_tol`, the historical single tolerance);
+    ``gf_real_tol`` overrides the real axis only (``None``: the same as the Matsubara axis). With
+    both ``None`` the two are equal to :func:`_gf_rel_tol`, so the monitor's per-axis scaling is
+    exactly 1 and a default run is bit-identical to one without per-axis tolerances.
+    """
+    for name, value in (("gf_tol", gf_tol), ("gf_real_tol", gf_real_tol)):
+        if value is not None and not (0.0 < value < 1.0):
+            raise ValueError(f"{name} must lie in (0, 1) (got {value!r})")
+    matsubara_tol = _gf_rel_tol(slaterWeightMin) if gf_tol is None else float(gf_tol)
+    real_tol = matsubara_tol if gf_real_tol is None else float(gf_real_tol)
+    return matsubara_tol, real_tol
+
+
+def _gf_monitor_tol(slaterWeightMin, eval_meshes=None):
+    """The reference tolerance the monitor reports and gates on: the strictest axis tolerance
+    carried by ``eval_meshes`` (:class:`EvalMeshes`), else :func:`_gf_rel_tol`."""
+    tols = getattr(eval_meshes, "tols", None)
+    return min(tols) if tols else _gf_rel_tol(slaterWeightMin)
 
 
 def _gf_rel_tol(slaterWeightMin):
@@ -171,7 +218,10 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
     ``eval_meshes`` (from :func:`_gf_eval_meshes`) is the list of frequency arrays the caller will
     actually evaluate ``G`` on -- one per requested axis, already shifted into the ``alphas`` frame.
     Given it, the monitor tests convergence *there*, and takes the **max** of the per-axis relative
-    changes so neither axis can mask the other.
+    changes so neither axis can mask the other. When ``eval_meshes`` carries per-axis tolerances
+    (:class:`EvalMeshes` ``.tols``), each axis's change is first rescaled by
+    ``delta_min / axis_tol``, ``delta_min`` being the strictest of them, so each axis converges
+    to its own tolerance and the reported ``delta_min`` / logged change are in that reference unit.
 
     Without it the monitor falls back to an *adaptively* frozen mesh spanning the resolved Ritz
     band on the line :math:`\omega + i\delta` (:func:`_gf_converged_mesh`) -- frozen once the
@@ -183,7 +233,13 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
     evaluates: measured 3.6-4.1x more blocks than it needs, against 1.2-1.4x when the real axis is
     also requested. It remains the right behaviour for a caller that supplies no mesh.
     """
-    delta_min = _gf_rel_tol(slaterWeightMin)
+    delta_min = _gf_monitor_tol(slaterWeightMin, eval_meshes)
+    # Per-axis tolerances (EvalMeshes.tols): each axis's relative change is rescaled to the
+    # reference tolerance `delta_min` (the strictest axis), so one number still drives the gate,
+    # the sparse/dense sampling switch and the log line. Every factor is exactly 1.0 when the axes
+    # share a tolerance, which leaves a default run bit-identical.
+    axis_tols = getattr(eval_meshes, "tols", None)
+    axis_scales = [delta_min / t for t in axis_tols] if axis_tols else [1.0] * len(eval_meshes or ())
     converged_flag = [False]
     mesh_cache = [None, -1]  # [mesh, frozen_block_count]; frozen_block_count detects (re)freezes
     gs_cache = [None, 0]
@@ -196,11 +252,11 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
 
     def converged_on_eval_meshes(alphas, betas, verbose, block_widths):
         d_g = 0.0
-        for mesh, cache in zip(eval_meshes, axis_caches):
+        for mesh, cache, scale in zip(eval_meshes, axis_caches, axis_scales):
             d = _greens_function_change(alphas, betas, block_widths, delta, omegaP=mesh, cache=cache)
             if d is None:  # spurious (wrong-sign) imaginary part on this axis -> not converged
                 return None
-            d_g = max(d_g, d)
+            d_g = max(d_g, d * scale)
         return d_g
 
     def converged(alphas, betas, verbose=False, block_widths=None, **kwargs):

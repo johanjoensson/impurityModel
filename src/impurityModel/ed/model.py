@@ -1222,6 +1222,9 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         # Absent from archives written before the policy was an option: those runs did not set it.
         "gf_admission": _optional_str(_archive_attr(attrs, "gf_admission")),
         "gf_admit_tol": _optional_float(_archive_attr(attrs, "gf_admit_tol")),
+        # Absent from archives written before the tolerances were options: those runs used the default.
+        "gf_tol": _optional_float(_archive_attr(attrs, "gf_tol")),
+        "gf_real_tol": _optional_float(_archive_attr(attrs, "gf_real_tol")),
     }
 
 
@@ -1279,6 +1282,8 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         gf_method=raw["gf_method"],
         gf_admission=raw["gf_admission"],
         gf_admit_tol=raw["gf_admit_tol"],
+        gf_tol=raw["gf_tol"],
+        gf_real_tol=raw["gf_real_tol"],
     )
     return model, meshes, basis, solver, raw["label"]
 
@@ -1412,6 +1417,15 @@ class SolverOptions:
         Admission threshold of ``gf_admission="outer"``, relative to the seed norm (amplitude
         scorer). ``None`` takes ``GF_BICGSTAB_ADMIT_TOL_AMP`` (1e-4); tighter admits more and is
         more accurate, and the error bound reports what was left out.
+    gf_tol : float or None
+        Convergence tolerance of the block-Lanczos Green's function (relative change of ``G``
+        between checks) on every evaluation axis. ``None`` (default): the ``GF_TOL`` knob, else
+        ``max(slaterWeightMin**2, 1e-9)``. ``gf_method="lanczos"`` only.
+    gf_real_tol : float or None
+        The same tolerance on the real-frequency axis only; ``None`` (default): ``GF_REAL_TOL``,
+        else the ``gf_tol`` value. When only the Matsubara self-energy feeds a DMFT loop, a looser
+        real-axis tolerance shortens the recurrence without touching the Matsubara accuracy.
+        ``gf_method="lanczos"`` only.
     sigma_method : {"dyson"}
         Self-energy estimator (:mod:`impurityModel.ed.sigma_estimators`): which operator family
         the Green's-function engine resolves and how the self-energy is read off it. Only the
@@ -1425,6 +1439,8 @@ class SolverOptions:
     sigma_method: str = "dyson"
     gf_admission: Optional[str] = None
     gf_admit_tol: Optional[float] = None
+    gf_tol: Optional[float] = None
+    gf_real_tol: Optional[float] = None
 
     def __post_init__(self):
         # One place for every front-end (RSPt solver line, TOML, CLI, archive replay): a bad
@@ -1448,6 +1464,16 @@ class SolverOptions:
             )
         if self.gf_admit_tol is not None and self.gf_admission != "outer":
             raise ValueError("gf_admit_tol only applies to gf_admission='outer' (it is set, but the policy is not)")
+        for name in ("gf_tol", "gf_real_tol"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not 0.0 < value < 1.0:
+                raise ValueError(f"{name} must lie in (0, 1) (got {value!r}); omit it for the default")
+            if self.gf_method != "lanczos":
+                raise ValueError(
+                    f"{name} is the block-Lanczos convergence tolerance; gf_method={self.gf_method!r} ignores it"
+                )
 
 
 @dataclass(frozen=True)

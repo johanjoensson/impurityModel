@@ -151,6 +151,21 @@ def add_arguments(parser):
         default=None,
         help="Admission threshold of --gf-admission outer, relative to the seed norm (default 1e-4).",
     )
+    parser.add_argument(
+        "--gf-tol",
+        type=float,
+        default=None,
+        help=(
+            "Block-Lanczos Green's-function convergence tolerance (relative change of G) on every axis "
+            "(default: the GF_TOL knob, else max(slater_weight_min^2, 1e-9), or the archive's)."
+        ),
+    )
+    parser.add_argument(
+        "--gf-real-tol",
+        type=float,
+        default=None,
+        help="The same tolerance on the real-frequency axis only (default: GF_REAL_TOL, else --gf-tol's value).",
+    )
     parser.add_argument("--dense-cutoff", type=int, default=500, help="Use a dense eigensolver below this size.")
     parser.add_argument(
         "--no-sparse-green", dest="sparse_green", action="store_false", help="Disable the sparse block-Lanczos path."
@@ -240,6 +255,8 @@ def apply_solver_overrides(solver, args):
             ("gf_method", args.gf_method),
             ("gf_admission", args.gf_admission),
             ("gf_admit_tol", args.gf_admit_tol),
+            ("gf_tol", args.gf_tol),
+            ("gf_real_tol", args.gf_real_tol),
         )
         if value is not None
     }
@@ -315,6 +332,8 @@ def run(args):
             gf_method=args.gf_method or "lanczos",
             gf_admission=args.gf_admission,
             gf_admit_tol=args.gf_admit_tol,
+            gf_tol=args.gf_tol,
+            gf_real_tol=args.gf_real_tol,
         )
         cluster_label = args.clustername
 

@@ -474,6 +474,29 @@ GF_NEAR_FACTOR = Knob(
     plateau must stay in the sparse regime for the sampling to pay off.""",
 )
 
+GF_TOL = Knob(
+    name="GF_TOL",
+    kind="float",
+    default=None,  # unset: max(slaterWeightMin**2, 1e-9) -- gf_convergence._gf_rel_tol
+    group="convergence",
+    doc="""Relative-change tolerance of the block-Lanczos Green's function on every evaluation
+    axis (``SolverOptions.gf_tol``; an explicit option wins). Unset keeps the default
+    ``max(slaterWeightMin**2, 1e-9)``. The monitor stops a work unit once two consecutive checks
+    move ``G`` by less than this, relative to ``max|G|`` on the axis.""",
+)
+
+GF_REAL_TOL = Knob(
+    name="GF_REAL_TOL",
+    kind="float",
+    default=None,  # unset: the same tolerance as the Matsubara axis (GF_TOL / its default)
+    group="convergence",
+    doc="""Relative-change tolerance on the **real-frequency** axis only
+    (``SolverOptions.gf_real_tol``; an explicit option wins). Unset uses the ``GF_TOL`` value.
+    The real axis at broadening ``delta`` sets the Lanczos depth of a production self-energy
+    run, so when only the Matsubara self-energy feeds the DMFT self-consistency (RSPt), a
+    looser real-axis tolerance shortens every unit without touching the Matsubara accuracy.""",
+)
+
 # --- RIXS: shift-recycling solver tiers -----------------------------------------------------
 
 GF_SECTOR_DENSE_MAX = Knob(
@@ -1060,6 +1083,8 @@ KNOBS: dict[str, Knob] = _register(
     GF_PER_STATE_RESTRICT,
     GF_CHECK_EVERY,
     GF_NEAR_FACTOR,
+    GF_TOL,
+    GF_REAL_TOL,
     GF_SECTOR_DENSE_MAX,
     GF_SECTOR_CACHE_DIR,
     GF_KRYLOV_RECYCLE_MAX_BYTES,

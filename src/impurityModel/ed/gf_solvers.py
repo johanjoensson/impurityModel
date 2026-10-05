@@ -21,7 +21,7 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.gf_admission import solve_point_outer
-from impurityModel.ed.gf_convergence import _gf_rel_tol, _make_gf_convergence_monitor
+from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
     _allreduced_col_norms2,
     _CappedBasisProxy,
@@ -219,7 +219,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
             info["converged"] = True
             info["d_g"] = float("nan")
             info["n_blocks"] = 0
-            info["tol"] = _gf_rel_tol(slaterWeightMin)
+            info["tol"] = _gf_monitor_tol(slaterWeightMin, eval_meshes)
         # `last_q` must be a block on EVERY return: `block_Green` feeds it straight into
         # `apply_block`. `psi_arr` here is `redistribute_psis(*psi_arr)`, i.e. a list, so it
         # needs wrapping -- only the other return was migrated.
@@ -400,7 +400,7 @@ def block_Green_sparse(
         info["converged"] = True
         info["d_g"] = float("nan")
         info["n_blocks"] = 0
-        info["tol"] = _gf_rel_tol(slaterWeightMin)
+        info["tol"] = _gf_monitor_tol(slaterWeightMin, eval_meshes)
     if cap_info is not None:
         # Same "set every key on entry" discipline as `info` above, for the same reason: both
         # early returns below leave a caller reading `cap_info` with a fully-populated dict.

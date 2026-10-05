@@ -588,3 +588,15 @@ def test_a_zero_admission_threshold_is_refused(written):
     text = SELFENERGY + '\n[solver]\ngf_method = "bicgstab"\ngf_admission = "outer"\ngf_admit_tol = 0\n'
     with pytest.raises(InputError, match="gf_admit_tol"):
         build(load_input(written(text)))
+
+
+def test_the_gf_tolerance_keys_reach_the_solver_options(written):
+    solver = build(load_input(written(SELFENERGY + "\n[solver]\ngf_tol = 1e-8\ngf_real_tol = 1e-5\n"))).solver
+    assert (solver.gf_tol, solver.gf_real_tol) == (1e-8, 1e-5)
+    assert build(load_input(written(SELFENERGY))).solver.gf_real_tol is None
+
+
+def test_a_gf_tolerance_on_the_per_frequency_kernel_is_refused(written):
+    text = SELFENERGY + '\n[solver]\ngf_method = "bicgstab"\ngf_real_tol = 1e-5\n'
+    with pytest.raises(InputError, match="gf_real_tol"):
+        build(load_input(written(text)))

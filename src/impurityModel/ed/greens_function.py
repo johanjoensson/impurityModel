@@ -18,6 +18,7 @@ from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.gf_convergence import (  # noqa: F401  -- re-exported for backward compat
     _GF_MONITOR_POINTS,
     _GF_REL_TOL_FLOOR,
+    _gf_axis_tols,
     _gf_eval_meshes,
     _gf_rel_tol,
     _gf_sample_mesh,
@@ -362,6 +363,8 @@ def get_Greens_function(
     operator_families=None,
     gf_admission: Optional[str] = None,
     gf_admit_tol: Optional[float] = None,
+    gf_tol: Optional[float] = None,
+    gf_real_tol: Optional[float] = None,
 ):
     """
     Calculate interacting Greens function.
@@ -384,6 +387,11 @@ def get_Greens_function(
     :mod:`impurityModel.ed.gf_admission`. ``"outer"`` also records a measured error bound in the
     diagnostics report. An explicit argument wins over the matching environment knob.
 
+    ``gf_tol`` / ``gf_real_tol`` are the block-Lanczos convergence tolerances (relative change of
+    ``G``) on every axis / on the real axis only (``None``: ``GF_TOL`` / ``GF_REAL_TOL``, else
+    ``max(slaterWeightMin**2, 1e-9)`` on both axes; see :func:`gf_convergence._gf_axis_tols`).
+    They govern the ``"lanczos"`` kernel only; passing either with ``"bicgstab"`` is an error.
+
     ``operator_families`` is the self-energy estimator seam
     (:mod:`impurityModel.ed.sigma_estimators`): ``operator_families(block)`` returns
     ``(addition_ops, removal_ops)``, two equally long operator lists. With ``removal_ops = X``
@@ -405,6 +413,15 @@ def get_Greens_function(
         )
     if gf_admission == "outer" and gf_method != "bicgstab":
         raise ValueError(f"gf_admission='outer' needs gf_method='bicgstab' (got {gf_method!r})")
+    if gf_method != "lanczos" and (gf_tol is not None or gf_real_tol is not None):
+        raise ValueError(f"gf_tol/gf_real_tol are block-Lanczos tolerances; gf_method={gf_method!r} ignores them")
+    # Explicit arguments win over the knobs. Resolved (and validated) here, before any collective,
+    # so a bad value fails on every rank at once.
+    axis_tols = _gf_axis_tols(
+        slaterWeightMin,
+        config.GF_TOL.get() if gf_tol is None else gf_tol,
+        config.GF_REAL_TOL.get() if gf_real_tol is None else gf_real_tol,
+    )
     # Excited-sector restrictions are independent of the orbital block and of the spectral side
     # (the dN occupation window is symmetric and spans all impurity orbitals), so build them once
     # on the full basis instead of per block.
@@ -499,7 +516,12 @@ def get_Greens_function(
         # monitor resolves the real-axis resolvent at broadening `delta` even for a Matsubara-only
         # self-energy, which costs 3.6-4.1x the blocks such a run needs.
         return _gf_eval_meshes(
-            matsubara_mesh, omega_mesh, group_meta[unit.group_i][1], delta, [es[ei] for ei in unit.chunk]
+            matsubara_mesh,
+            omega_mesh,
+            group_meta[unit.group_i][1],
+            delta,
+            [es[ei] for ei in unit.chunk],
+            axis_tols=axis_tols,
         )
 
     kernel = lanczos_unit_kernel(
@@ -620,7 +642,7 @@ def get_Greens_function(
             if widths[block_i] != n_c:
                 r_add, r_rem = ([r[:, :n_c] for r in rs] for rs in (r_add, r_rem))
             diags.insert(0, _gfd.check_spectral_sum_rule(r_add, r_rem, es, e0, tau, n_c))
-            lanczos_tol = _gf_rel_tol(slaterWeightMin)
+            lanczos_tol = min(axis_tols)
             # The solver's own runtime verdict (block_Green_sparse/block_green_impl's
             # `converged_fn`, tested on the caller's actual eval_meshes) -- not a recompute.
             conv_stats = conv_acc.get(block_i, {"converged": True, "d_g": 0.0, "n_blocks": 0, "tol": lanczos_tol})
@@ -632,9 +654,11 @@ def get_Greens_function(
             # Complementary, band-wide measure: convergence of the *whole* resolved Ritz
             # band, not just the caller's evaluation mesh -- signals spectral weight the
             # solver never had to (and didn't) resolve, e.g. outside the omega window.
-            conv_add = _lanczos_convergence_summary(a_add, b_add, delta, tol=lanczos_tol)
-            conv_rem = _lanczos_convergence_summary(a_rem, b_rem, -delta, tol=lanczos_tol)
-            diags.append(_gfd.check_lanczos_band_resolution(max(conv_add[1], conv_rem[1]), lanczos_tol))
+            # A real-axis band measure, so it is judged at the real-axis tolerance.
+            band_tol = axis_tols[1]
+            conv_add = _lanczos_convergence_summary(a_add, b_add, delta, tol=band_tol)
+            conv_rem = _lanczos_convergence_summary(a_rem, b_rem, -delta, tol=band_tol)
+            diags.append(_gfd.check_lanczos_band_resolution(max(conv_add[1], conv_rem[1]), band_tol))
             if G_IPS_real is not None:
                 diags.append(_gfd.check_mesh_density(omega_mesh, delta))
                 diags.append(
