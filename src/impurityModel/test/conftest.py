@@ -13,8 +13,33 @@ except ImportError:
     _has_mpi = False
 
 
+_DEFAULT_MARK_EXPRESSION = "not benchmark and not branch_matrix_full"
+_MARKERS = (
+    "mpi: marker for MPI tests",
+    "benchmark: performance/timing benchmark; skipped by default, run with -m benchmark",
+    "branch_matrix_full: full cartesian GF branch matrix (test_gf_branch_matrix.py); skipped by default, "
+    "run with -m branch_matrix_full",
+)
+
+
+def _apply_ini_defaults_without_an_ini(config):
+    """Give a run of the *installed* tests the marker defaults that ``pytest.ini`` gives a checkout.
+
+    ``pytest.ini`` sits at the repository root and is not installed, so ``pytest --pyargs
+    impurityModel`` from site-packages found no ini file: the markers were unknown and every
+    opt-in benchmark ran with them. Keep these in step with ``pytest.ini``.
+    """
+    if config.inipath is not None:
+        return
+    for line in _MARKERS:
+        config.addinivalue_line("markers", line)
+    if not config.option.markexpr:
+        config.option.markexpr = _DEFAULT_MARK_EXPRESSION
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config):
+    _apply_ini_defaults_without_an_ini(config)
     # Under ``mpiexec -n N`` every rank runs the full pytest session and writes its
     # own progress dots, ``MPI Information`` header and summary line to the shared
     # terminal, interleaving into unreadable output. Keep the real report on rank 0
