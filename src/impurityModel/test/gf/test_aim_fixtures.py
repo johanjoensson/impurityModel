@@ -20,7 +20,9 @@ from impurityModel.test.support.aim_fixtures import (
     free_G_inverse,
     geometry_variants,
     interaction_increment,
+    is_filled,
     linked_chain_h1,
+    natural_orbital_rotation,
     one_body_density,
     reference_G,
     rotate_bath,
@@ -272,10 +274,10 @@ def test_in_the_natural_chain_basis_the_impurity_couples_only_to_the_head_of_eac
     aim = build_semicircle_siam(5, v=0.5)
     nc = geometry_variants(aim)["natural-chains"]
     n = aim.n_imp
-    rho = one_body_density(aim)
+    occupations = natural_orbital_rotation(aim)[1]
     for spin in (0, 1):
         positions = [p for p in range(len(aim.bath)) if spin_of(n + p, aim.n_b, n) == spin]
-        n_filled = int(np.sum(np.linalg.eigvalsh(rho[np.ix_(positions, positions)]) > 0.5))
+        n_filled = int(np.sum(is_filled(occupations[positions])))
         imp = [m for m in aim.imp if spin_of(m, aim.n_b, n) == spin]
         coupling = nc.h1[np.ix_(imp, [n + p for p in positions])]
         heads = {0, n_filled} & set(range(len(positions)))

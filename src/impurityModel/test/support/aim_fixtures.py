@@ -490,10 +490,24 @@ def one_body_density(aim):
     return rho
 
 
+HALF_FILLED_TOL = 1e-8
+
+
+def is_filled(occupations):
+    """Which natural orbitals belong to the valence (filled) chain: occupation above 1/2.
+
+    A particle-hole symmetric bath with an odd number of levels per spin has one natural orbital at
+    exactly 1/2, which roundoff puts at ``0.5 +- 1e-16`` with a compiler-dependent sign. The band makes
+    that tie go to the empty chain on every build, and the fixture and its tests share this one rule
+    instead of each breaking the tie on its own.
+    """
+    return np.asarray(occupations) > 0.5 + HALF_FILLED_TOL
+
+
 def natural_orbital_rotation(aim, chains=False):
     """Rotate each spin's bath to its natural orbitals (eigenvectors of the bath density matrix).
 
-    Orbitals are ordered by occupation, filled first. With ``chains`` the filled (occupation > 1/2) and the
+    Orbitals are ordered by occupation, filled first. With ``chains`` the filled (:func:`is_filled`) and the
     empty natural orbitals are each re-tridiagonalized from the impurity coupling -- the valence and
     conduction chains of the Haverkort construction -- so the impurity couples only to the head of each.
     Returns ``(U, occupations)``.
@@ -516,7 +530,8 @@ def natural_orbital_rotation(aim, chains=False):
         coupling = aim.h1[np.ix_(imp, [n + p for p in positions])]  # (n_imp_spin, n_spin_bath)
         h_spin = h_bath[np.ix_(positions, positions)]
         blocks = []
-        for group in (occ > 0.5, occ <= 0.5):
+        filled = is_filled(occ)
+        for group in (filled, ~filled):
             if not np.any(group):
                 continue
             Ug = vecs[:, group]
