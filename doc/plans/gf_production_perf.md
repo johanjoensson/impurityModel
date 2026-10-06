@@ -85,10 +85,21 @@ set the run's RSS peak (3.6 GiB vs 0.5 GiB for the GF). At cap 2e4 it took 22-54
 
 ## Next levers (not yet implemented), in expected order of payoff
 
-1. **Frozen-basis CSR for capped units.** Once `_CappedBasisProxy` freezes, every step still applies H to all retained
-   rows and discards the out-of-basis fan-out (95% of the time). Building `P H P` once on the frozen set and running
-   the remaining recurrence as SpMV should cut the per-block cost by an order of magnitude. `block_Green_sparse`'s
-   resume rounds give a natural switch point. CrI3's removal units (all frozen at 10M) are the target.
+1. **Frozen-basis CSR for capped units -- SHIPPED (`GF_FROZEN_CSR`, default on).** Once `_CappedBasisProxy`
+   freezes, every step still applied H to all retained rows and dropped the image outside P (the apply is 95% of a
+   unit's time; the dropped share of the image is only ~40% -- in-P nnz 11-12/row against a total fan-out of 16-28 --
+   so the cost is the apply's per-row overhead, not the discarded rows). The whole capped recurrence is the exact
+   Lanczos of `P H P` from the seeds, so `block_Green_sparse` now stops at the freeze (kernel status `"frozen"`),
+   adopts the retained mask as a `Basis` (`Basis.clone_from_keys`) and *restarts* the recurrence on the distributed
+   CSR with the array kernel -- no sparse-kernel state is carried over. Not taken for a memory-guard freeze, a CSR
+   that does not fit the budget, or a `krylov_dtype` store. The distributed `build_sparse_matrix` now resolves its
+   bras in batches, so its transient is bounded at multi-million determinants.
+
+   Measured (SrMnO3 archive, cap 2e4, `-n 3`, `gf_real_tol 1e-4`, `gf_min_weight 1e-3`, `SIGMA_CAUSALITY_TOL=2`):
+   GF phase **167.2 -> 9.0 s** (18.6x), units 21-70 s -> 0.8-2.6 s (build included), peak RSS unchanged (1.2 GiB).
+   Matsubara Sigma agrees to 3.1e-11; real-axis Sigma to 1.1e-3, which is the `gf_real_tol 1e-4` stopping noise
+   (block counts differ by a few per unit; that tolerance alone moves real Sigma by 8.7e-4, see above). CSR memory
+   ~290 B per retained determinant. CrI3's removal units (frozen at 10M) are the cluster read-out still to do.
 2. **Moments.** Cheap: evaluate only what is needed (`<s1|(H-e)|s1>` needs `H s1` restricted to `supp(s1)`, not the
    full fan-out), and fewer states via `gf_min_weight`. Measure at production GS size first.
 3. **Scheduling (plan Step 4).** History-based unit costs (previous DMFT iteration's n_blocks x size per
