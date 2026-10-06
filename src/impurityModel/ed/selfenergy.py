@@ -2,6 +2,7 @@ import numpy as np
 
 from impurityModel.ed import config
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
+from impurityModel.ed.cipsi_solver import _degeneracy_tol, _degenerate_groups
 
 # The double-counting criteria live in their own modules; re-export their public entry points so
 # calc_selfenergy's calls and existing selfenergy.<name> callers (and their test patches) resolve
@@ -140,6 +141,47 @@ def _self_energy_on_mesh(mesh, gss, *, delta, estimator, solver_basis, cluster_l
     return sigma
 
 
+def _drop_low_weight_manifolds(psis, es, tau, min_weight, slaterWeightMin, comm=None):
+    """Drop whole degenerate manifolds whose Boltzmann weight per state is below ``min_weight``.
+
+    The eigensolver keeps every state inside the energy window ``-tau*ln(1e-4)``
+    (:func:`average.energy_cut`), which the ground state and the double-counting search also use.
+    For the Green's function each retained state costs a full set of work units, whatever its
+    weight; ``gf_min_weight`` lets a run spend them only on the states that matter. A manifold is
+    kept or dropped whole -- splitting one would make the result depend on which members the
+    eigensolver happened to return -- and the ground manifold is always kept. The thermal
+    average over what remains is renormalised by the Green's-function accumulators themselves.
+
+    The decision is taken on the root rank and broadcast, so every rank keeps the same states
+    (``comm`` collective; ``None`` for a serial call).
+
+    Returns
+    -------
+    (psis, es, dropped)
+        The kept states and energies, in their original order (``es`` keeps its type), and one
+        ``(E - E0, normalised weight)`` pair per dropped state.
+    """
+    e = np.real(np.asarray(es, dtype=complex))
+    order = np.argsort(e, kind="stable")
+    e0 = e[order[0]]
+    weights = np.exp(-(e - e0) / tau)
+    weights /= weights.sum()
+    e_sorted = e[order]
+    groups = _degenerate_groups(e_sorted, tol=_degeneracy_tol(e_sorted, slaterWeightMin))
+    keep = sorted(
+        int(order[j])
+        for g_i, group in enumerate(groups)
+        if g_i == 0 or max(weights[order[j]] for j in group) >= min_weight
+        for j in group
+    )
+    if comm is not None:
+        keep = comm.bcast(keep, root=0)
+    kept = set(keep)
+    dropped = [(float(e[i] - e0), float(weights[i])) for i in range(len(e)) if i not in kept]
+    kept_es = es[keep] if isinstance(es, np.ndarray) else [es[i] for i in keep]
+    return [psis[i] for i in keep], kept_es, dropped
+
+
 def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_label="cluster"):
     """Calculate the self energy of the impurity.
 
@@ -200,6 +242,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     gf_admit_tol = solver.gf_admit_tol
     gf_tol = solver.gf_tol
     gf_real_tol = solver.gf_real_tol
+    gf_min_weight = solver.gf_min_weight
     estimator = make_estimator(solver.sigma_method)
 
     # MPI variables
@@ -278,6 +321,17 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             for indices, limits in restrictions.items():
                 report(f"  {sorted(indices)} : {limits}", level=V_DETAIL)
 
+        ensemble_es = es
+        if gf_min_weight is not None:
+            psis, es, dropped = _drop_low_weight_manifolds(psis, es, tau, gf_min_weight, slaterWeightMin, comm)
+            if dropped:
+                report(
+                    f"gf_min_weight {gf_min_weight:g}: dropped {len(dropped)} of {len(ensemble_es)} thermal state(s) "
+                    f"(E-E0 = {', '.join(f'{de:.4g}' for de, _w in dropped)}; total Boltzmann weight "
+                    f"{sum(w for _de, w in dropped):.3e}) from the Green's function and self-energy.",
+                    level=V_RESULT,  # it changes the result, so it is never hidden
+                )
+
         report.banner("Interacting Green's function")
         report(f"Considering {len(es)} eigenstate(s) for the spectra.")
         report("Calculating interacting Green's function ...", flush=True)
@@ -305,6 +359,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             gf_admit_tol=gf_admit_tol,
             gf_tol=gf_tol,
             gf_real_tol=gf_real_tol,
+            ensemble_es=ensemble_es,
             operator_families=lambda block: estimator.operator_families(block, sb),
         )
 

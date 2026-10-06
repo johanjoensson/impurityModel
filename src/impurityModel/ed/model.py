@@ -1225,6 +1225,7 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         # Absent from archives written before the tolerances were options: those runs used the default.
         "gf_tol": _optional_float(_archive_attr(attrs, "gf_tol")),
         "gf_real_tol": _optional_float(_archive_attr(attrs, "gf_real_tol")),
+        "gf_min_weight": _optional_float(_archive_attr(attrs, "gf_min_weight")),
     }
 
 
@@ -1284,6 +1285,7 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         gf_admit_tol=raw["gf_admit_tol"],
         gf_tol=raw["gf_tol"],
         gf_real_tol=raw["gf_real_tol"],
+        gf_min_weight=raw["gf_min_weight"],
     )
     return model, meshes, basis, solver, raw["label"]
 
@@ -1426,6 +1428,12 @@ class SolverOptions:
         else the ``gf_tol`` value. When only the Matsubara self-energy feeds a DMFT loop, a looser
         real-axis tolerance shortens the recurrence without touching the Matsubara accuracy.
         ``gf_method="lanczos"`` only.
+    gf_min_weight : float or None
+        Drop thermal states whose normalised Boltzmann weight is below this from the Green's
+        function, the self-energy and its moments (whole degenerate manifolds only; the ground
+        manifold is always kept, and the remaining weights are renormalised). ``None`` (default)
+        keeps every state of the eigensolver's energy window ``-tau*ln(1e-4)``, each of which costs
+        a full set of Green's-function work units whatever its weight.
     sigma_method : {"dyson"}
         Self-energy estimator (:mod:`impurityModel.ed.sigma_estimators`): which operator family
         the Green's-function engine resolves and how the self-energy is read off it. Only the
@@ -1441,6 +1449,7 @@ class SolverOptions:
     gf_admit_tol: Optional[float] = None
     gf_tol: Optional[float] = None
     gf_real_tol: Optional[float] = None
+    gf_min_weight: Optional[float] = None
 
     def __post_init__(self):
         # One place for every front-end (RSPt solver line, TOML, CLI, archive replay): a bad
@@ -1474,6 +1483,10 @@ class SolverOptions:
                 raise ValueError(
                     f"{name} is the block-Lanczos convergence tolerance; gf_method={self.gf_method!r} ignores it"
                 )
+        if self.gf_min_weight is not None and not 0.0 < self.gf_min_weight < 1.0:
+            raise ValueError(
+                f"gf_min_weight must lie in (0, 1) (got {self.gf_min_weight!r}); omit it to keep every state"
+            )
 
 
 @dataclass(frozen=True)

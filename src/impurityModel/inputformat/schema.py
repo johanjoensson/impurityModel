@@ -1073,6 +1073,16 @@ _TABLE_LIST += [
                 minimum=0.0,
             ),
             Key(
+                "gf_min_weight",
+                Kind.DIMENSIONLESS,
+                None,
+                "Drop thermal states whose normalised Boltzmann weight is below this from the "
+                "Green's function and self-energy (whole degenerate manifolds; the ground manifold "
+                "is always kept; the rest is renormalised). Absent keeps every state of the "
+                "eigensolver's energy window, each of which costs a full set of Green's-function units.",
+                minimum=0.0,
+            ),
+            Key(
                 "reort",
                 Kind.AUTO_ENUM,
                 "auto",

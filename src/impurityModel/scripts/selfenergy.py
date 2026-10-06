@@ -166,6 +166,15 @@ def add_arguments(parser):
         default=None,
         help="The same tolerance on the real-frequency axis only (default: GF_REAL_TOL, else --gf-tol's value).",
     )
+    parser.add_argument(
+        "--gf-min-weight",
+        type=float,
+        default=None,
+        help=(
+            "Drop thermal states (whole degenerate manifolds, never the ground one) whose normalised "
+            "Boltzmann weight is below this from the Green's function and self-energy (default: keep all)."
+        ),
+    )
     parser.add_argument("--dense-cutoff", type=int, default=500, help="Use a dense eigensolver below this size.")
     parser.add_argument(
         "--no-sparse-green", dest="sparse_green", action="store_false", help="Disable the sparse block-Lanczos path."
@@ -257,6 +266,7 @@ def apply_solver_overrides(solver, args):
             ("gf_admit_tol", args.gf_admit_tol),
             ("gf_tol", args.gf_tol),
             ("gf_real_tol", args.gf_real_tol),
+            ("gf_min_weight", args.gf_min_weight),
         )
         if value is not None
     }
@@ -334,6 +344,7 @@ def run(args):
             gf_admit_tol=args.gf_admit_tol,
             gf_tol=args.gf_tol,
             gf_real_tol=args.gf_real_tol,
+            gf_min_weight=args.gf_min_weight,
         )
         cluster_label = args.clustername
 

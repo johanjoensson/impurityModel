@@ -737,6 +737,7 @@ def _solver_options_from(SolverOptions, table):
         gf_admit_tol=table["gf_admit_tol"],
         gf_tol=table["gf_tol"],
         gf_real_tol=table["gf_real_tol"],
+        gf_min_weight=table["gf_min_weight"],
     )
 
 

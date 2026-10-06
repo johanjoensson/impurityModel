@@ -365,6 +365,7 @@ def get_Greens_function(
     gf_admit_tol: Optional[float] = None,
     gf_tol: Optional[float] = None,
     gf_real_tol: Optional[float] = None,
+    ensemble_es=None,
 ):
     """
     Calculate interacting Greens function.
@@ -391,6 +392,10 @@ def get_Greens_function(
     ``G``) on every axis / on the real axis only (``None``: ``GF_TOL`` / ``GF_REAL_TOL``, else
     ``max(slaterWeightMin**2, 1e-9)`` on both axes; see :func:`gf_convergence._gf_axis_tols`).
     They govern the ``"lanczos"`` kernel only; passing either with ``"bicgstab"`` is an error.
+
+    ``ensemble_es`` is the whole thermal ensemble the eigensolver returned, when the caller passes
+    only part of it in ``es`` (``SolverOptions.gf_min_weight``); the ensemble-truncation check
+    judges the eigensolver's output, not the subset. ``None``: ``es``.
 
     ``operator_families`` is the self-energy estimator seam
     (:mod:`impurityModel.ed.sigma_estimators`): ``operator_families(block)`` returns
@@ -625,7 +630,10 @@ def get_Greens_function(
                 gs_realaxis[block_i][:] = combined_real
 
             # --- per-block convergence / consistency diagnostics ---------------------------
-            diags = [_gfd.check_thermal_weight_cutoff(es, e0, tau, n_returned=len(es), num_wanted=num_wanted)]
+            ensemble = es if ensemble_es is None else ensemble_es
+            diags = [
+                _gfd.check_thermal_weight_cutoff(ensemble, e0, tau, n_returned=len(ensemble), num_wanted=num_wanted)
+            ]
             block_cap = cap_acc.get(block_i)
             if block_cap is not None:
                 diags.append(

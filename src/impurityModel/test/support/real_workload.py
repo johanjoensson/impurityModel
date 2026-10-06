@@ -138,6 +138,7 @@ def run_selfenergy(
     n_iw=None,
     n_w=None,
     verbosity=0,
+    gf_min_weight=None,
 ):
     """Re-run ``calc_selfenergy`` on a loaded workload, with benchmark-friendly overrides.
 
@@ -156,6 +157,9 @@ def run_selfenergy(
         entirely, ``None`` keeps the full mesh). Point counts scale the per-frequency
         method's wall time ~linearly, so benchmarks usually subsample; the per-point
         *memory* is mesh-size independent.
+    gf_min_weight : float, optional
+        ``SolverOptions.gf_min_weight``: drop thermal manifolds below this Boltzmann weight
+        (``None`` keeps every state, as the archived runs did).
 
     Returns
     -------
@@ -194,6 +198,7 @@ def run_selfenergy(
         dense_cutoff=workload["dense_cutoff"],
         sparse_green=workload["sparse_green"],
         gf_method=gf_method,
+        gf_min_weight=gf_min_weight,
     )
     return calc_selfenergy(
         model,
