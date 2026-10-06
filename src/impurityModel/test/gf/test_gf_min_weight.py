@@ -2,7 +2,7 @@
 
 The eigensolver keeps every state inside the energy window ``-tau*ln(1e-4)``, and every kept state
 costs a full set of Green's-function work units whatever its weight. On the SrMnO3 production run
-eight of ten states carried 1e-4 each -- 32 of 40 units for 8e-4 of the ensemble. These tests pin
+eight of ten states carried 5.7-6.8e-5 each -- 32 of 40 units for 5.0e-4 of the ensemble. These tests pin
 the contract of the cutoff:
 
 * unset, or set below every weight, the result is bit-identical;

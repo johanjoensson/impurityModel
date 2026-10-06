@@ -1433,7 +1433,9 @@ class SolverOptions:
         function, the self-energy and its moments (whole degenerate manifolds only; the ground
         manifold is always kept, and the remaining weights are renormalised). ``None`` (default)
         keeps every state of the eigensolver's energy window ``-tau*ln(1e-4)``, each of which costs
-        a full set of Green's-function work units whatever its weight.
+        a full set of Green's-function work units whatever its weight. The ground-state report and
+        the returned ``thermal_rho`` / ``rhos`` keep the whole ensemble: they describe the thermal
+        state itself, not the subset the Green's function was built from.
     sigma_method : {"dyson"}
         Self-energy estimator (:mod:`impurityModel.ed.sigma_estimators`): which operator family
         the Green's-function engine resolves and how the self-energy is read off it. Only the

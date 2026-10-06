@@ -13,7 +13,7 @@ DC is cheap; the interacting Green's function dominates.
 | DC / GS | 2 min / 7 min (277,966 dets) | 32 min / 3 min (613,751 dets) |
 | GF | killed by the 24 h wall clock after 14 h | 13.8 h |
 | units | 40 on 32 colours (3-6 ranks) | 12 on 10 colours (20-40 ranks) |
-| retained states | 10: 0.4998, 0.4998, then 8 x 1.4e-4 | 2: Sz = +-1.65, split 1e-4 eV |
+| retained states | 10: 0.4998, 0.4998, then 8 x 5.7-6.8e-5 (5.0e-4 in total) | 2: Sz = +-1.65, split 1e-4 eV |
 | expensive units | all 20 removal units (~42 s/block on 6 ranks) | removal units, frozen at the 10M cap |
 
 Units are group-major (block0-add, block0-rem, block1-add, ...) x eigenstates. Every unit still running when SrMnO3
@@ -74,8 +74,12 @@ set the run's RSS peak (3.6 GiB vs 0.5 GiB for the GF). At cap 2e4 it took 22-54
 * Both systems: `gf_real_tol 1e-4` on the solver line. The Matsubara self-energy that drives the loop is unchanged;
   the real-axis one moves by ~1e-3 relative, well inside the DOS plot resolution. Use `1e-6` for a final,
   publication-quality spectrum iteration.
-* SrMnO3: `gf_min_weight 1e-3`. It drops the eight 1.4e-4 states (40 -> 8 units, 20 -> 4 removal units).
+* SrMnO3: `gf_min_weight 1e-3`. It drops the eight excited states (normalised weight 5.7-6.8e-5 each, 5.0e-4 in
+  total; commit 0e92e7b8's message quotes the unnormalised 1.4e-4) -- 40 -> 8 units, 20 -> 4 removal units.
   Matsubara Sigma moves by ~1e-5 relative per 1e-4 of dropped weight, far below `sigma_acc = 1e-2`.
+* SrMnO3 cap: production ran `truncation_threshold auto`, which sized the GF cap (17.9M) for the smallest colour
+  (3 ranks). With 8 units each colour gets ~16 ranks and `auto` would raise the cap several-fold. Pin
+  `truncation_threshold 1.8e7` for a like-for-like comparison; raising it is a separate, deliberate decision.
 * CrI3: `gf_min_weight` does not apply (both states weigh ~0.5). The near-degenerate +-Sz pair is a physics issue to
   look at separately (the FM moment is averaged out of the impurity).
 
