@@ -99,7 +99,13 @@ set the run's RSS peak (3.6 GiB vs 0.5 GiB for the GF). At cap 2e4 it took 22-54
    GF phase **167.2 -> 9.0 s** (18.6x), units 21-70 s -> 0.8-2.6 s (build included), peak RSS unchanged (1.2 GiB).
    Matsubara Sigma agrees to 3.1e-11; real-axis Sigma to 1.1e-3, which is the `gf_real_tol 1e-4` stopping noise
    (block counts differ by a few per unit; that tolerance alone moves real Sigma by 8.7e-4, see above). CSR memory
-   ~290 B per retained determinant. CrI3's removal units (frozen at 10M) are the cluster read-out still to do.
+   ~290 B per retained determinant. On one 3-rank colour for all units (distributed build + graph-exchange SpMV):
+   GF phase 278.3 -> 14.1 s, Matsubara Sigma to 5.3e-11. The real-axis gap comes from the archive's `reort none`
+   (orthogonality loss amplifies the two paths' different summation order), its `slaterWeightMin 1.5e-8` (pruned
+   inside the sparse apply, absent from the exact CSR) and a 1e-4 monitor stopping a few blocks apart. The fallback's
+   first block budget is bounded (`_CSR_INITIAL_BLOCKS`, or 4x the blocks reached at the freeze): the array kernel
+   preallocates its coefficient buffers at the budget, and `ceil(N/p)` is GiBs at 10M. CrI3's removal units (frozen
+   at 10M) are the cluster read-out still to do.
 2. **Moments.** Cheap: evaluate only what is needed (`<s1|(H-e)|s1>` needs `H s1` restricted to `supp(s1)`, not the
    full fan-out), and fewer states via `gf_min_weight`. Measure at production GS size first.
 3. **Scheduling (plan Step 4).** History-based unit costs (previous DMFT iteration's n_blocks x size per

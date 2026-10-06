@@ -249,7 +249,16 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
 
 
 def _array_block_lanczos(
-    basis, hOp, psi_dense_local, dense, delta, resolved_reort, slaterWeightMin, eval_meshes=None, info=None
+    basis,
+    hOp,
+    psi_dense_local,
+    dense,
+    delta,
+    resolved_reort,
+    slaterWeightMin,
+    eval_meshes=None,
+    info=None,
+    initial_blocks=None,
 ):
     """The array-kernel block-Lanczos recurrence of ``hOp`` on ``basis`` from ``psi_dense_local``.
 
@@ -258,6 +267,11 @@ def _array_block_lanczos(
     ``(alphas, betas, Q_list, widths)`` with a corrupted tail dropped, and fills ``info`` like
     :func:`block_green_impl`. Shared by :func:`block_green_impl` and the frozen-basis fallback
     of :func:`block_Green_sparse`.
+
+    ``initial_blocks`` (default: enough to span the sector, ``ceil(N/p)``) is the first attempt's
+    block budget. The kernel preallocates its coefficient buffers at the budget, ``~32 N p`` bytes
+    at ``ceil(N/p)`` -- GiBs on a multi-million determinant frozen basis that converges in a few
+    hundred blocks -- so the fallback starts small and lets the doubling below raise it.
     """
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
@@ -290,6 +304,8 @@ def _array_block_lanczos(
     # run. The convergence monitor is stateful, so every attempt gets a fresh one.
     n_dim = H.shape[0]
     max_iter = -(-n_dim // psi_dense_local.shape[1])
+    if initial_blocks is not None:
+        max_iter = min(max_iter, max(1, int(initial_blocks)))
     while True:
         converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
             delta, slaterWeightMin, eval_meshes
@@ -372,6 +388,9 @@ _CSR_BYTES_PER_ELEMENT = 80
 #: Upper bound on the bytes one element of a build batch holds before its lookup: the bra's key
 #: object plus its column and value.
 _CSR_BATCH_BYTES_PER_ELEMENT = 160
+#: Floor of the frozen-basis recurrence's first block budget (the measured SrMnO3 units converged
+#: in 174-429 blocks); the array kernel's doubling raises it when a unit needs more.
+_CSR_INITIAL_BLOCKS = 256
 
 
 def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm):
@@ -398,38 +417,56 @@ def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm):
     return not over
 
 
-def _frozen_csr_green(proxy, basis, hOp, seeds, delta, reort, slaterWeightMin, eval_meshes, info, verbose):
-    """The capped GF as an array-kernel recurrence on the frozen ``P H P`` CSR, or ``None``.
+def _frozen_csr_basis(proxy, basis, hOp, verbose):
+    """Collective: the frozen retained set as a ``Basis`` if the ``P H P`` fallback should run, else ``None``.
 
-    Once ``proxy`` has frozen, the whole capped recurrence -- pre-freeze steps included -- is the
+    Declines when the freeze came from the memory guard -- RSS is already at budget then -- or when
+    the CSR would not fit the budget; the caller then resumes the sparse recurrence.
+    """
+    if proxy.memory_frozen:
+        return None
+    comm = basis.comm
+    frozen_basis = basis.clone_from_keys(proxy.retained_mask)
+    if _frozen_csr_fits(frozen_basis, hOp, proxy.memory_budget, comm):
+        return frozen_basis
+    if verbose and (comm is None or comm.rank == 0):
+        print(
+            f"GF basis frozen at {frozen_basis.size:,} determinants: the P H P matrix would not fit the "
+            "memory budget, so the recurrence continues on the sparse kernel.",
+            flush=True,
+        )
+    return None
+
+
+def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, eval_meshes, info, verbose, blocks_hint):
+    """The capped GF as an array-kernel recurrence on the frozen ``P H P`` CSR.
+
+    Once the proxy has frozen, the whole capped recurrence -- pre-freeze steps included -- is the
     exact block Lanczos of ``P H P`` from the seeds (see :class:`_CappedBasisProxy`), so restarting
     it here on the retained set ``P`` reproduces the sparse kernel's continued fraction to
     rounding, while every step costs one SpMV instead of an apply whose out-of-``P`` image is
-    discarded. Declines (returns ``None``, collectively) when the freeze came from the memory
-    guard -- RSS is already at budget then -- or when the CSR would not fit the budget; the caller
-    then resumes the sparse recurrence. Returns ``(alphas, betas, r, build_seconds)`` otherwise,
-    with ``info`` filled by the array kernel's own monitor.
+    discarded. ``blocks_hint`` is how many blocks the sparse kernel had built when it stopped; the
+    first attempt's budget is a few times that (at least :data:`_CSR_INITIAL_BLOCKS`), never the
+    ``ceil(N/p)`` the kernel would preallocate for. Returns ``(alphas, betas, r, seconds)``, with
+    ``info`` filled by the array kernel's own monitor.
     """
-    comm = basis.comm
-    root = comm is None or comm.rank == 0
-    if proxy.memory_frozen:
-        return None
-    frozen_basis = basis.clone_from_keys(proxy.retained_mask)
-    if not _frozen_csr_fits(frozen_basis, hOp, proxy.memory_budget, comm):
-        if verbose and root:
-            print(
-                f"GF basis frozen at {frozen_basis.size:,} determinants: the P H P matrix would not fit the "
-                "memory budget, so the recurrence continues on the sparse kernel.",
-                flush=True,
-            )
-        return None
+    comm = frozen_basis.comm
     t0 = time.perf_counter()
     psi_dense_local, r = _distributed_seed_qr(frozen_basis, seeds, slaterWeightMin)
     alphas, betas, _, widths = _array_block_lanczos(
-        frozen_basis, hOp, psi_dense_local, False, delta, reort, slaterWeightMin, eval_meshes, info
+        frozen_basis,
+        hOp,
+        psi_dense_local,
+        False,
+        delta,
+        reort,
+        slaterWeightMin,
+        eval_meshes,
+        info,
+        initial_blocks=max(_CSR_INITIAL_BLOCKS, 4 * blocks_hint),
     )
     seconds = time.perf_counter() - t0
-    if verbose and root:
+    if verbose and (comm is None or comm.rank == 0):
         print(
             f"GF basis frozen at {frozen_basis.size:,} determinants: recurrence restarted on the P H P matrix "
             f"({len(alphas)} block(s), {seconds:.1f} s).",
@@ -601,19 +638,30 @@ def block_Green_sparse(
     csr_candidate = config.GF_FROZEN_CSR.get() and krylov_dtype is None and isinstance(lanczos_basis, _CappedBasisProxy)
     csr = None
 
-    def _try_csr():
+    def _csr_green(frozen_basis, blocks_hint):
         return _frozen_csr_green(
-            lanczos_basis, basis, hOp, seeds, delta, resolved_reort, slaterWeightMin, eval_meshes, info, verbose
+            frozen_basis,
+            hOp,
+            seeds,
+            delta,
+            resolved_reort,
+            slaterWeightMin,
+            eval_meshes,
+            info,
+            verbose,
+            blocks_hint,
         )
 
     if csr_candidate:
         lanczos_basis.stop_on_freeze = True
         if lanczos_basis.frozen:
             # The seed support alone reached the cap: nothing for the sparse kernel to discover.
-            # Declined: the sparse kernel runs it frozen, and must not stop again on a freeze
+            # If declined, the sparse kernel runs it frozen, and must not stop again on a freeze
             # it starts in.
             lanczos_basis.stop_on_freeze = False
-            csr = _try_csr()
+            frozen_basis = _frozen_csr_basis(lanczos_basis, basis, hOp, verbose)
+            if frozen_basis is not None:
+                csr = _csr_green(frozen_basis, 0)
     while csr is None:
         alphas, betas, Q, W, widths, status = block_lanczos_cy(
             psi_arr,
@@ -649,7 +697,12 @@ def block_Green_sparse(
         #                             the P H P CSR, or, if that declines, resume right here.
         if status == "frozen":
             lanczos_basis.stop_on_freeze = False
-            csr = _try_csr()
+            frozen_basis = _frozen_csr_basis(lanczos_basis, basis, hOp, verbose)
+            if frozen_basis is not None:
+                # The stopped sparse state is only needed to resume a declined switch: release its
+                # Krylov store (reort != NONE) before the restart builds its own.
+                Q = W = None
+                csr = _csr_green(frozen_basis, len(alphas))
             continue
         if status in ("converged", "invariant_subspace"):
             converged_flag[0] = True

@@ -445,3 +445,26 @@ def test_frozen_csr_mpi_matches_the_sparse_kernel(chunks, monkeypatch):
     assert info["csr_fallback"]
     np.testing.assert_allclose(g_csr, g_sparse, atol=1e-9)
     _assert_php_oracle(g_csr, info, comm)
+
+
+def test_frozen_csr_starts_from_a_bounded_block_budget(monkeypatch):
+    """The array kernel preallocates its coefficient buffers at its block budget, and ``ceil(N/p)``
+    at a 10M-determinant frozen basis is GiBs. The fallback starts small and doubles: a 1-block
+    floor on a seed-frozen unit (no sparse blocks to scale from) still ends exact on P."""
+    from impurityModel.ed import gf_solvers
+
+    budgets = []
+    real_kernel = gf_solvers.block_lanczos_array
+
+    def recording_kernel(*args, **kwargs):
+        budgets.append(kwargs["max_iter"])
+        return real_kernel(*args, **kwargs)
+
+    monkeypatch.setattr(gf_solvers, "_CSR_INITIAL_BLOCKS", 1)
+    monkeypatch.setattr(gf_solvers, "block_lanczos_array", recording_kernel)
+    seed_size = _excited_basis(np.inf).size
+    g, info = _run_capped(seed_size, reort="full")
+    assert info["csr_fallback"]
+    assert budgets[0] == 1 and len(budgets) > 1
+    assert budgets == sorted(budgets)
+    _assert_php_oracle(g, info)
