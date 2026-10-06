@@ -265,3 +265,82 @@ def test_array_path_probe_respects_cap():
     assert basis.size <= len(one_fanout)  # ...but by at most one apply batch
     g = calc_G(alphas, betas, r, OMEGA, 0.0, DELTA)
     assert np.all(np.diagonal(g.imag, axis1=1, axis2=2) <= 1e-12)
+
+
+def _kernel_on_proxy(cap, stop_on_freeze, comm=None, max_iter=50):
+    """Run the bare sparse kernel on a capped proxy; returns (alphas, betas, status, proxy, resume state)."""
+    from impurityModel.ed.basis_transcription import build_state
+    from impurityModel.ed.BlockLanczos import block_lanczos_cy
+    from impurityModel.ed.BlockLanczosArray import Reort
+    from impurityModel.ed.gf_primitives import _distributed_seed_qr
+
+    basis = _excited_basis(np.inf, comm=comm)
+    seeds_full = _seeds()
+    seeds = _redistribute_as_width1(basis, seeds_full if comm is None or comm.rank == 0 else None, len(seeds_full))
+    psi_local, _ = _distributed_seed_qr(basis, seeds, 0)
+    psi = build_state(basis, psi_local.T, slaterWeightMin=0)
+    proxy = _CappedBasisProxy(basis, cap)
+    proxy.stop_on_freeze = stop_on_freeze
+    alphas, betas, Q, W, widths, status = block_lanczos_cy(
+        psi,
+        _siam_6(),
+        proxy,
+        lambda *a, **k: False,
+        verbose=False,
+        max_iter=max_iter,
+        return_widths=True,
+        return_status=True,
+        store_krylov=False,
+        reort=Reort.NONE,
+    )
+    return alphas, betas, status, proxy, (psi, Q, W, widths)
+
+
+def test_kernel_stops_at_the_freeze_and_resumes_bit_identically(monkeypatch):
+    """``stop_on_freeze`` ends the recurrence on the step that froze the support, with a state the
+    usual resume protocol continues from: stop + resume == one uninterrupted run, bit for bit."""
+    from impurityModel.ed.BlockLanczos import block_lanczos_cy
+    from impurityModel.ed.BlockLanczosArray import Reort
+
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
+    n_total = 8
+    a_full, b_full, status_full, proxy_full, _ = _kernel_on_proxy(12, stop_on_freeze=False, max_iter=n_total)
+    assert proxy_full.cap_hit and status_full == "max_iter" and len(a_full) == n_total
+
+    a_stop, b_stop, status, proxy, (psi, Q, W, widths) = _kernel_on_proxy(12, stop_on_freeze=True, max_iter=n_total)
+    assert status == "frozen" and proxy.frozen
+    assert 0 < len(a_stop) < n_total
+    proxy.stop_on_freeze = False
+    a_res, b_res, *_rest, status_res = block_lanczos_cy(
+        psi,
+        _siam_6(),
+        proxy,
+        lambda *a, **k: False,
+        verbose=False,
+        max_iter=n_total - len(a_stop),
+        return_widths=True,
+        return_status=True,
+        alphas_init=a_stop,
+        betas_init=b_stop,
+        Q_init=Q,
+        W_init=W,
+        block_widths_init=widths,
+        store_krylov=False,
+        reort=Reort.NONE,
+    )
+    assert status_res == "max_iter"
+    np.testing.assert_array_equal(np.asarray(a_res), np.asarray(a_full))
+    np.testing.assert_array_equal(np.asarray(b_res), np.asarray(b_full))
+
+
+def test_kernel_without_stop_on_freeze_runs_through_the_freeze():
+    _, _, status, proxy, _ = _kernel_on_proxy(12, stop_on_freeze=False)
+    assert proxy.frozen and status != "frozen"
+
+
+@pytest.mark.mpi
+def test_kernel_stops_at_the_freeze_on_the_same_step_on_every_rank():
+    comm = MPI.COMM_WORLD
+    alphas, _, status, proxy, _ = _kernel_on_proxy(6, stop_on_freeze=True, comm=comm)
+    assert status == "frozen"
+    assert len(set(comm.allgather(len(alphas)))) == 1

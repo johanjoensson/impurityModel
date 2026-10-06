@@ -548,8 +548,10 @@ def block_lanczos_cy(
         ``"converged"`` (``converged_fn`` satisfied), ``"invariant_subspace"`` (the
         block-Krylov space is closed under H within the active restrictions, so the
         result is *exact*), ``"diverged"`` (the divergence guard truncated a corrupted
-        tail; NOT exact) or ``"max_iter"`` (the ``max_iter`` budget was exhausted before
-        the recurrence terminated naturally). Both flags are independent and opt-in, so
+        tail; NOT exact), ``"max_iter"`` (the ``max_iter`` budget was exhausted before
+        the recurrence terminated naturally) or ``"frozen"`` (``basis`` is a growth-capping
+        proxy with ``stop_on_freeze`` set and froze during the last step; the state is a
+        ``"max_iter"`` stop's, so the recurrence can be resumed). Both flags are independent and opt-in, so
         existing call sites that pass neither keep the 4-tuple return.
     """
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
@@ -760,6 +762,10 @@ def block_lanczos_cy(
     # bypasses the REORT_TOL gate (see apply_reort force=) so q_curr's remaining overlap
     # cannot silently re-contaminate the recurrence through the three-term coupling.
     _force_reort = False
+    # A growth-capping proxy whose caller asked to be handed control at the freeze (the GF
+    # frozen-basis CSR fallback, gf_solvers.block_Green_sparse). Its `frozen` flag derives only
+    # from allreduced data, so every rank of the communicator stops on the same step.
+    _stop_on_freeze = basis is not None and bool(getattr(basis, "stop_on_freeze", False))
 
     while it < _buf_size:
         it_abs = start_it + it
@@ -880,6 +886,12 @@ def block_lanczos_cy(
         q_curr = q_next
         block_widths.append(n_curr)
         it += 1
+
+        # After the roll, so the returned state is exactly a "max_iter" stop's: a caller that
+        # declines the hand-off resumes from it with the usual *_init protocol.
+        if _stop_on_freeze and basis.frozen:
+            termination = "frozen"
+            break
 
     return _pack_result(
         alphas_buf, betas_buf, start_it, it, store_krylov, termination,

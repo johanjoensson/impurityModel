@@ -241,6 +241,10 @@ class _CappedBasisProxy:
     """
 
     caps_growth = True
+    #: Ask ``block_lanczos_cy`` to stop with status ``"frozen"`` at the end of the step that
+    #: froze the support (see :func:`gf_solvers.block_Green_sparse`'s frozen-basis CSR
+    #: fallback). Off by default: every other user of the proxy runs on through the freeze.
+    stop_on_freeze = False
 
     def __init__(self, basis, cap, memory_budget=None, memory_policy="tighten"):
         """``memory_budget`` (absolute per-rank bytes, ``None`` = off, the default) adds a measured
@@ -309,6 +313,11 @@ class _CappedBasisProxy:
 
     def contains_local(self, state):
         return self._basis.contains_local(state)
+
+    @property
+    def frozen(self):
+        """Whether the retained set is final. Derived only from allreduced data, so replicated."""
+        return self._frozen
 
     @property
     def retained_size(self):
