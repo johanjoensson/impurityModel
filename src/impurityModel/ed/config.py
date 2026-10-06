@@ -101,6 +101,9 @@ GF_METHODS = ("lanczos", "bicgstab")
 #: (:mod:`impurityModel.ed.gf_admission`). ``"outer"`` needs ``gf_method="bicgstab"``.
 GF_ADMISSIONS = ("all", "outer")
 
+#: Accepted ``GF_SCHEDULER`` values (see that knob).
+GF_SCHEDULERS = ("static", "queue")
+
 #: Accepted ``SolverOptions.sigma_method`` values: the self-energy estimators of
 #: :mod:`impurityModel.ed.sigma_estimators` (its ``ESTIMATORS`` registry has exactly these keys).
 SIGMA_METHODS = ("dyson",)
@@ -432,6 +435,20 @@ GF_APPLY_ROW_CHUNKS = Knob(
     ``truncation_threshold``), each chunk runs ``_CappedBasisProxy``'s freeze/admit decision on
     its own candidate rows rather than once for the whole step -- see its docstring
     (``gf_primitives.py``) -- but the cap itself binds identically either way.""",
+)
+
+GF_SCHEDULER = Knob(
+    name="GF_SCHEDULER",
+    kind="str",
+    default="static",
+    group="units",
+    doc="""How Green's-function units are handed to the MPI colors. ``static`` (default): packed
+    up front by predicted cost (LPT on ``unit_cost_weights``), each color's rank count proportional
+    to its packed cost. ``queue``: equal-width colors take the next unit, heaviest predicted first,
+    from a shared counter as they go idle (:mod:`impurityModel.ed.work_queue`), so a wrong cost
+    prediction costs at most the tail instead of a whole color's backlog. Replayed on the measured
+    SrMnO3 unit walls, a queue even in random order beat ``static`` 1.36x at 32 ranks and 1.65x at
+    64 (doc/plans/gf_load_balancing.md). Read on rank 0 and broadcast.""",
 )
 
 GF_FROZEN_CSR = Knob(
@@ -1101,6 +1118,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_EIGENSTATE_GROUP,
     GF_APPLY_ROW_CHUNKS,
     GF_FROZEN_CSR,
+    GF_SCHEDULER,
     GF_PER_STATE_RESTRICT,
     GF_CHECK_EVERY,
     GF_NEAR_FACTOR,
