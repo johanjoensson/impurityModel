@@ -198,9 +198,6 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     """
     n = len(psi_arr)
 
-    comm = basis.comm
-    rank = comm.rank if comm is not None else 0
-
     dense = len(basis) < _GF_ARRAY_DENSE_MAX
     if dense:
         psi_dense = build_vector(basis, psi_arr, slaterWeightMin=0).T
@@ -234,6 +231,26 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     # The continued fraction only consumes alphas/betas plus the final residual block
     # (q_last below), so with reort NONE skip the full Krylov-basis retention.
     resolved_reort = _gf_reort(reort)
+    alphas, betas, Q_list, widths = _array_block_lanczos(
+        basis, hOp, psi_dense_local, dense, delta, resolved_reort, slaterWeightMin, eval_meshes, info
+    )
+    probe = _expansion_probe_columns(Q_list, widths, tail_only=resolved_reort == Reort.NONE)
+    return alphas, betas, r, build_state(basis, probe.T, slaterWeightMin=slaterWeightMin), widths
+
+
+def _array_block_lanczos(
+    basis, hOp, psi_dense_local, dense, delta, resolved_reort, slaterWeightMin, eval_meshes=None, info=None
+):
+    """The array-kernel block-Lanczos recurrence of ``hOp`` on ``basis`` from ``psi_dense_local``.
+
+    ``psi_dense_local`` is the orthonormal seed block's rows on this rank (``basis`` order);
+    ``dense`` picks the dense sector matrix over the distributed CSR. Returns the padded
+    ``(alphas, betas, Q_list, widths)`` with a corrupted tail dropped, and fills ``info`` like
+    :func:`block_green_impl`. Shared by :func:`block_green_impl` and the frozen-basis fallback
+    of :func:`block_Green_sparse`.
+    """
+    comm = basis.comm
+    rank = comm.rank if comm is not None else 0
 
     if dense:
         H = build_dense_matrix(basis, hOp)
@@ -311,8 +328,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     keep = len(_sanitize_continued_fraction(list(alphas), list(betas), rank=rank)[0])
     if keep < len(alphas):
         alphas, betas, widths = alphas[:keep], betas[:keep], widths[:keep]
-    probe = _expansion_probe_columns(Q_list, widths, tail_only=resolved_reort == Reort.NONE)
-    return alphas, betas, r, build_state(basis, probe.T, slaterWeightMin=slaterWeightMin), widths
+    return alphas, betas, Q_list, widths
 
 
 def _expansion_probe_columns(Q, widths, *, tail_only):
