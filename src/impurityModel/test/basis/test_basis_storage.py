@@ -136,6 +136,39 @@ def test_distributed_global_size_and_lookup():
         assert s in b
 
 
+@pytest.mark.mpi
+@pytest.mark.parametrize("n_states", [1, 2, 24])
+def test_clone_from_keys_matches_a_clone_built_from_determinants(n_states):
+    """Adopting an owner-distributed key block equals building the same basis from determinants.
+
+    ``clone_from_keys`` skips the redistribution, so it is only right if the keys already sit
+    on their ``routing_hash`` owners -- which is what the GF frozen-basis fallback hands it
+    (a ``redistribute_block``-grown mask). 1 and 2 states leave ranks empty at ``-n 3``.
+    """
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState
+
+    comm = MPI.COMM_WORLD
+    states = [
+        SlaterDeterminant.from_bytes(bytes([0x80 >> (i % 8), i]) + b"\x00" * (N_BYTES - 2)) for i in range(n_states)
+    ]
+    reference = _make_basis(states, comm=comm)
+    owned = ManyBodyState.from_keys(list(reference.local_basis))
+    template = _make_basis(states[:1], comm=comm)
+
+    adopted = template.clone_from_keys(owned)
+
+    assert adopted.size == reference.size == n_states
+    assert list(adopted.local_basis) == list(reference.local_basis)
+    assert adopted.offset == reference.offset
+    assert adopted.local_indices == reference.local_indices
+    assert adopted.index_bounds == reference.index_bounds
+    assert adopted.state_bounds == reference.state_bounds
+    assert list(adopted.index(states)) == list(reference.index(states))
+    # A copy, not an alias: growing the source mask must not grow the adopted basis.
+    owned.merge_keys(ManyBodyState.from_keys([SlaterDeterminant.from_bytes(b"\xff" * N_BYTES)]))
+    assert len(adopted.local_basis) == len(reference.local_basis)
+
+
 def test_chunk_count_is_ceil_of_n_bytes_not_a_floor_division():
     """``n_bytes`` counts BYTES, so the chunk count is ``ceil(n_bytes / 8)``.
 

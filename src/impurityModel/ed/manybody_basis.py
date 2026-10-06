@@ -401,6 +401,20 @@ class Basis:
             )
         )
 
+    def clone_from_keys(self, keys):
+        """A clone of this basis (window, settings, communicator) holding exactly ``keys``.
+
+        ``keys`` is a sorted ``ManyBodyState`` key block holding the determinants **this rank
+        owns** (``routing_hash() % comm.size``), e.g. a :class:`_CappedBasisProxy` retained mask,
+        which is grown only from ``redistribute_block`` output. It is copied in as the key
+        store with no per-determinant Python objects and no redistribution, which is what
+        makes adopting a multi-million determinant set cheap. Collective on a distributed basis.
+        """
+        new = self.clone(initial_basis=[])
+        new._keys = keys.copy()
+        new._refresh_partition()
+        return new
+
     #: Attributes a solve hangs on a basis that describe *who may cap it and how memory is
     #: guarded* (the resolved ``CapPolicy``; the Green's-function guard's budget and policy),
     #: carried to every clone and copy so a kernel sees them whichever basis it was handed.
@@ -482,9 +496,7 @@ class Basis:
             unique_new = [s for s in sorted(set(new_states)) if not self._contains_local(s)]
             if unique_new:
                 self._keys.merge_keys(ManyBodyState.from_keys(unique_new))
-                self.size = len(self._keys)
-                self.offset = 0
-                self.local_indices = range(0, len(self._keys))
+                self._refresh_partition()
             return
 
         unique_new_states = list(set(new_states))
@@ -505,7 +517,19 @@ class Basis:
 
         if unique_new:
             self._keys.merge_keys(ManyBodyState.from_keys(unique_new))
+        self._refresh_partition()
 
+    def _refresh_partition(self) -> None:
+        """Recompute the global size and this rank's index range from the local key store.
+
+        Collective on a distributed basis (one ``allgather`` plus the boundary lookup); every
+        rank must call it together, whatever its own key count.
+        """
+        if not self.is_distributed:
+            self.size = len(self._keys)
+            self.offset = 0
+            self.local_indices = range(0, len(self._keys))
+            return
         local_length = len(self._keys)
         size_arr = np.array(self.comm.allgather(local_length), dtype=int)
         self.size = np.sum(size_arr)
