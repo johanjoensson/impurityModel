@@ -11,6 +11,7 @@ import numpy as np
 
 from impurityModel.ed import config
 from impurityModel.ed.gf_primitives import _block_cf_inverse, _trim_blocks
+from impurityModel.ed.work_queue import queue_progress
 
 # Relative-change convergence floor for the block-Lanczos Green's function, shared by the
 # runtime monitor (_make_gf_convergence_monitor) and the post-hoc band-wide diagnostic summary
@@ -260,6 +261,10 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
         return d_g
 
     def converged(alphas, betas, verbose=False, block_widths=None, **kwargs):
+        # Called once per block by both Lanczos kernels: the rank hosting the GF unit queue's
+        # counter lets pending fetches through here, or a 1-rank color would hold every other
+        # color's next unit for the length of its own (work_queue).
+        queue_progress()
         if len(alphas) <= 1:
             return False
         # B6 adaptive sampling. The resolvent-change test rebuilds an O(k)-level block continued
