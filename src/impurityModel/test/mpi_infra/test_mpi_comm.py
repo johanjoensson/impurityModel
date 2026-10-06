@@ -463,6 +463,42 @@ def test_add_states_distributed():
 
 
 @pytest.mark.mpi
+@pytest.mark.parametrize("n_occupied", [1, 4])
+def test_batched_sparse_build_matches_one_batch(monkeypatch, n_occupied):
+    """The distributed build resolves its bras in batches; the matrix must not depend on the size.
+
+    A batch of 3 elements puts every rank through many lookups, a different number on each rank
+    (uneven local images), so this also pins the replicated loop count: a rank that runs out
+    early has to keep entering the collective lookup or the others hang. ``n_occupied=1`` on 8
+    orbitals is 8 determinants, which leaves ranks with very different counts at ``-n 3``.
+    """
+    from itertools import combinations
+
+    from impurityModel.ed import basis_transcription
+
+    comm = MPI.COMM_WORLD
+    n_orb = 8
+    states = []
+    for occ in combinations(range(n_orb), n_occupied):
+        data = 0
+        for o in occ:
+            data |= 1 << (7 - o)
+        states.append(bytes([data]))
+    terms = {((i, "c"), (j, "a")): 0.1 * (1 + i + 2 * j) for i in range(n_orb) for j in range(n_orb) if i != j}
+    terms |= {((i, "c"), (i, "a")): 0.3 * i for i in range(n_orb)}
+    hop = ManyBodyOperator(terms)
+    basis = _make_basis(states, comm=comm)
+
+    one_batch = build_sparse_matrix(basis, hop)
+    monkeypatch.setattr(basis_transcription, "_SPARSE_BUILD_BATCH", 3)
+    batched = build_sparse_matrix(basis, hop)
+
+    assert comm.allreduce(one_batch.nnz) > 0  # rank-local nnz is 0 on an empty rank
+    assert (one_batch != batched).nnz == 0
+    np.testing.assert_array_equal(one_batch.toarray(), batched.toarray())
+
+
+@pytest.mark.mpi
 def test_sparse_matrix_consistent_with_serial():
     """
     Build a 4-state basis with a simple hopping Hamiltonian in both

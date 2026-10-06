@@ -224,6 +224,13 @@ def build_dense_matrix(basis, op, distribute=True):
     return h
 
 
+#: Matrix elements per collective index lookup in the distributed :func:`build_sparse_matrix`.
+#: Bounds the build's transient (one key object, column and value per element) to a batch
+#: instead of the whole local image of ``op``; the lookup's own per-call cost is a few
+#: collectives, negligible at this size.
+_SPARSE_BUILD_BATCH = 1 << 21
+
+
 def build_sparse_matrix(basis, op: ManyBodyOperator):
     """
     Get the operator as a sparse matrix in the current basis.
@@ -268,27 +275,45 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
             col_chunks.append(np.full(int(keep.sum()), _offset + i, dtype=np.int64))
             val_chunks.append(np.asarray(ket_state)[:, 0][keep])
     else:
-        # The routed lookup is collective and must run exactly once on every rank, so the bras
-        # cannot be resolved image by image -- they are accumulated, resolved together, and
-        # masked afterwards.
-        bras = []
-        for i, ket_state in enumerate(iter_local_operator_images(basis, op, 0)):
-            ks = ket_state.keys()
-            if not ks:
-                continue
-            bras.extend(ks)
-            col_chunks.append(np.full(len(ks), _offset + i, dtype=np.int64))
-            val_chunks.append(np.asarray(ket_state)[:, 0].copy())
-        columns = np.concatenate(col_chunks) if col_chunks else np.empty(0, dtype=np.int64)
-        values = np.concatenate(val_chunks) if val_chunks else np.empty(0, dtype=complex)
-        del col_chunks, val_chunks
-        global_rows = np.fromiter(basis._index_sequence(bras), dtype=np.int64, count=len(bras))
-        del bras
-        keep = global_rows != _size
-        row_chunks = [global_rows[keep]]
-        col_chunks = [columns[keep]]
-        val_chunks = [values[keep]]
-        del global_rows, columns, values, keep
+        # The routed lookup is collective, so the bras cannot be resolved image by image. They
+        # are accumulated and resolved in batches of about `_SPARSE_BUILD_BATCH` matrix elements:
+        # resolving the whole local image at once held one key object per element of it -- the
+        # full `O(N_local * fan-out)` image, most of which is then masked away -- which at a
+        # multi-million determinant basis is what limits the build, not the matrix. Every rank
+        # runs the same number of lookups: the loop continues while ANY rank has images left,
+        # and a rank that has run out enters each further lookup with an empty batch.
+        images = iter_local_operator_images(basis, op, 0)
+        position = 0
+        exhausted = False
+        while True:
+            bras = []
+            batch_cols = []
+            batch_vals = []
+            while not exhausted and len(bras) < _SPARSE_BUILD_BATCH:
+                ket_state = next(images, None)
+                if ket_state is None:
+                    exhausted = True
+                    break
+                column = _offset + position
+                position += 1
+                ks = ket_state.keys()
+                if not ks:
+                    continue
+                bras.extend(ks)
+                batch_cols.append(np.full(len(ks), column, dtype=np.int64))
+                batch_vals.append(np.asarray(ket_state)[:, 0].copy())
+            columns = np.concatenate(batch_cols) if batch_cols else np.empty(0, dtype=np.int64)
+            values = np.concatenate(batch_vals) if batch_vals else np.empty(0, dtype=complex)
+            del batch_cols, batch_vals
+            global_rows = np.fromiter(basis._index_sequence(bras), dtype=np.int64, count=len(bras))
+            del bras
+            keep = global_rows != _size
+            row_chunks.append(global_rows[keep])
+            col_chunks.append(columns[keep])
+            val_chunks.append(values[keep])
+            del global_rows, columns, values, keep
+            if not basis.comm.allreduce(not exhausted, op=MPI.LOR):
+                break
 
     rows = np.concatenate(row_chunks) if row_chunks else np.empty(0, dtype=np.int64)
     cols = np.concatenate(col_chunks) if col_chunks else np.empty(0, dtype=np.int64)
