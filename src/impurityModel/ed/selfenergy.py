@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 
 from impurityModel.ed import config
@@ -139,6 +141,15 @@ def _self_energy_on_mesh(mesh, gss, *, delta, estimator, solver_basis, cluster_l
             message = f"{label} self-energy:\n" + str(err)
     _raise_together(comm, message)
     return sigma
+
+
+def _report_phase_time(report, phase, t_start):
+    """One ``Wall time:`` line per solver phase at ``-v``, measured on the reporting rank.
+
+    Every phase ends in collectives, so the root rank's elapsed time is the phase's wall time to
+    within the last collective's skew. No collective here: a timing line must not add one.
+    """
+    report(f"Wall time: {phase} {time.perf_counter() - t_start:.1f} s", level=V_SUMMARY, flush=True)
 
 
 def _drop_low_weight_manifolds(psis, es, tau, min_weight, slaterWeightMin, comm=None):
@@ -305,6 +316,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     num_wanted = 10
     max_retries = 2
     for _attempt in range(max_retries + 1):
+        t_phase = time.perf_counter()
         psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
             h,
             basis_information,
@@ -314,6 +326,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             slaterWeightMin=slaterWeightMin,
             num_wanted=num_wanted,
         )
+        _report_phase_time(report, "ground state", t_phase)
         restrictions = ground_state_basis.restrictions
 
         if restrictions is not None:
@@ -336,6 +349,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         report(f"Considering {len(es)} eigenstate(s) for the spectra.")
         report("Calculating interacting Green's function ...", flush=True)
 
+        t_phase = time.perf_counter()
         gs_matsubara, gs_realaxis, gf_report = get_Greens_function(
             matsubara_mesh=iw,
             omega_mesh=w,
@@ -363,6 +377,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             operator_families=lambda block: estimator.operator_families(block, sb),
         )
 
+        _report_phase_time(report, "Green's function", t_phase)
         # Root rank renders the diagnostics report and decides whether to retry; the decision
         # is broadcast so every rank re-enters calc_gs collectively (or all break).
         retry = False
@@ -460,7 +475,9 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     # after the reduction, so the conversion and block-symmetrisation below are identical on all
     # ranks (pure numpy on replicated data).
     report("Calculating self-energy moments ...")
+    t_phase = time.perf_counter()
     M = get_greens_function_moments(psis, es, tau, ground_state_basis, h, impurity_indices)
+    _report_phase_time(report, "self-energy moments", t_phase)
     hcorr, v_full, _, h_bath = get_hcorr_v_hbath(h0_solve, total_impurity_orbitals, sum_bath_states)
     sigma_inf_s, sigma_1_s, sigma_2_s = get_Sigma_moments(M, hcorr, v_full, h_bath)
 
