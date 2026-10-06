@@ -511,8 +511,10 @@ GF_REAL_TOL = Knob(
     doc="""Relative-change tolerance on the **real-frequency** axis only
     (``SolverOptions.gf_real_tol``; an explicit option wins). Unset uses the ``GF_TOL`` value.
     The real axis at broadening ``delta`` sets the Lanczos depth of a production self-energy
-    run, so when only the Matsubara self-energy feeds the DMFT self-consistency (RSPt), a
-    looser real-axis tolerance shortens every unit without touching the Matsubara accuracy.""",
+    run, and a looser real-axis tolerance shortens every unit without touching the Matsubara
+    accuracy. Loosen it, never drop it: RSPt builds the next bath fit's hybridization from the
+    real-axis self-energy (``G0^-1 = G^-1 + sig_real``), so its error enters the DMFT loop.
+    ``1e-6`` measured ~7e-6 relative error at 1.6-1.8x fewer blocks.""",
 )
 
 # --- RIXS: shift-recycling solver tiers -----------------------------------------------------

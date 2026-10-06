@@ -23,7 +23,11 @@ was killed was a removal unit.
 
 1. **One tolerance for both axes.** The monitor drives every unit to a relative change of `G` below
    `max(slaterWeightMin**2, 1e-9)` on every requested axis. The real axis at broadening `eim` sets the Lanczos depth.
-   RSPt's self-consistency uses only the Matsubara self-energy; the real-axis one is DOS/spectra output.
+   Both axes feed RSPt's self-consistency. The Matsubara self-energy drives the density and the chemical potential.
+   The impurityModel ED solver is an `ed_realaxis_solver`, and RSPt builds its bath function on the real axis from
+   the lattice `G` with the real-axis self-energy (`green_spectrum.F90`, the `solverflag` block:
+   `G0^-1 = G^-1 + sig_real`, then `hybridization_function` and the next bath fit). So the real axis can be
+   loosened, not dropped. A Matsubara-only mode was considered and rejected for that reason.
 2. **Low-weight thermal states.** The energy window `-tau*ln(1e-4)` keeps states down to weight ~1e-4, and each
    costs a full set of units.
 3. **Static, side-blind scheduling.** `unit_cost_weights = seed_mass x width` cannot tell a removal unit from an
@@ -71,9 +75,11 @@ set the run's RSS peak (3.6 GiB vs 0.5 GiB for the GF). At cap 2e4 it took 22-54
 
 ## Recommendation for the production inputs
 
-* Both systems: `gf_real_tol 1e-4` on the solver line. The Matsubara self-energy that drives the loop is unchanged;
-  the real-axis one moves by ~1e-3 relative, well inside the DOS plot resolution. Use `1e-6` for a final,
-  publication-quality spectrum iteration.
+* Both systems: `gf_real_tol 1e-6` on the solver line. The Matsubara self-energy is unchanged (bit-identical), and
+  the real-axis one moves by ~7e-6 relative, for 1.6-1.8x fewer blocks. The real-axis self-energy sets the next
+  iteration's hybridization (see root cause 1), so its error enters the bath fit. `1e-4` (~9e-4 relative, 2.5-3.3x
+  fewer blocks) is acceptable only while the real-axis self-energy changes by much more than that between
+  iterations. Its effect on the converged DMFT solution has not been measured.
 * SrMnO3: `gf_min_weight 1e-3`. It drops the eight excited states (normalised weight 5.7-6.8e-5 each, 5.0e-4 in
   total; commit 0e92e7b8's message quotes the unnormalised 1.4e-4) -- 40 -> 8 units, 20 -> 4 removal units.
   Matsubara Sigma moves by ~1e-5 relative per 1e-4 of dropped weight, far below `sigma_acc = 1e-2`.
