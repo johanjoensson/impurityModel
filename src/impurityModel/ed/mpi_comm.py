@@ -589,7 +589,8 @@ def gather_distributed_results(
     roots : list of int
         The global rank of the root process for each sub-communicator color.
     items_per_color : list of int
-        The number of items (e.g. frequencies) handled by each color.
+        The number of items (e.g. frequencies) handled by each color. A color may have zero;
+        its root then sends nothing, so ``len(local_res)`` on a color root must equal its count.
     local_res : ndarray or list
         The local result to be sent.
     is_array : bool, optional
@@ -639,7 +640,9 @@ def gather_distributed_results(
                     all_res.extend(res)
         return all_res
     else:
-        if sub_comm_rank == 0:
+        # A color with nothing to report sends nothing: the root skips `count == 0` colors, so an
+        # empty send here would stay unmatched and be taken by the next receive from this rank.
+        if sub_comm_rank == 0 and len(local_res) > 0:
             if is_array:
                 comm.Send(np.asarray(local_res), dest=0)
             else:

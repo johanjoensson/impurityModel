@@ -592,7 +592,8 @@ def run_units_distributed(
                 offset += count
             local_results = None
             results = True
-        elif sub_rank == 0:
+        elif sub_rank == 0 and local_results:
+            # Root skips `count == 0` colors; an empty send would be taken by a later receive.
             basis.comm.send(local_results, dest=0)
             local_results = None
     finally:
