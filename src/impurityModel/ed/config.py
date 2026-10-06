@@ -434,6 +434,24 @@ GF_APPLY_ROW_CHUNKS = Knob(
     (``gf_primitives.py``) -- but the cap itself binds identically either way.""",
 )
 
+GF_FROZEN_CSR = Knob(
+    name="GF_FROZEN_CSR",
+    kind="bool",
+    default=True,
+    group="units",
+    doc="""When a capped Green's-function unit's support freezes at its determinant cap, restart the
+    block-Lanczos recurrence from the seeds as an array-kernel SpMV on the ``P H P`` CSR of the
+    retained set instead of continuing the sparse kernel, which applies ``H`` to every retained row
+    and discards the image outside ``P`` on every step (``gf_solvers.block_Green_sparse``). Both are
+    the exact block Lanczos of ``P H P``, so the result agrees to rounding; the CSR costs one build
+    (about one apply per determinant) and then one SpMV per block. Measured on the SrMnO3 archive at
+    cap 2e4: build 0.3-0.9 s, an SpMV ~250x cheaper than the sparse step it replaces.
+
+    Not taken when the freeze came from the measured-memory guard (RSS is already at budget), when
+    the CSR's estimated size does not fit the budget, or with a ``krylov_dtype`` store; the sparse
+    kernel then continues as before. ``0`` disables it.""",
+)
+
 GF_PER_STATE_RESTRICT = Knob(
     name="GF_PER_STATE_RESTRICT",
     kind="bool",
@@ -1080,6 +1098,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_GMRES_MAX_RESTARTS,
     GF_EIGENSTATE_GROUP,
     GF_APPLY_ROW_CHUNKS,
+    GF_FROZEN_CSR,
     GF_PER_STATE_RESTRICT,
     GF_CHECK_EVERY,
     GF_NEAR_FACTOR,

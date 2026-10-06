@@ -19,6 +19,14 @@ DELTA = 0.1
 OMEGA = np.linspace(-8.0, 8.0, 41)
 
 
+@pytest.fixture(autouse=True)
+def _shipped_defaults(monkeypatch):
+    """The knobs these tests set per case are read lazily from the environment: start each test
+    from the shipped defaults, whatever the shell exports."""
+    for knob in ("GF_FROZEN_CSR", "GF_APPLY_ROW_CHUNKS", "GF_LANCZOS_ADMIT_TOL"):
+        monkeypatch.delenv(knob, raising=False)
+
+
 def _det(occupied):
     """Determinant with the given orbitals occupied (MSB-first: orbital i = bit 7-i)."""
     b = 0
@@ -83,7 +91,7 @@ def _redistribute_as_width1(basis, states, n):
     return [blk.to_states()[0] for blk in basis.redistribute_psis(*blocks)]
 
 
-def _run_capped(cap, reort=None, comm=None):
+def _run_capped(cap, reort=None, comm=None, **kwargs):
     basis = _excited_basis(cap, comm=comm)
     # redistribute_psis SUMS per-rank contributions (production seeds are partial per
     # rank), so only rank 0 may provide the full amplitudes here.
@@ -98,6 +106,7 @@ def _run_capped(cap, reort=None, comm=None):
         reort=reort,
         verbose=False,
         cap_info=info,
+        **kwargs,
     )
     return calc_G(alphas, betas, r, OMEGA, 0.0, DELTA), info
 
@@ -146,12 +155,19 @@ def test_uncapped_matches_dense_full_sector():
     np.testing.assert_allclose(g, _dense_reference_on(retained), atol=1e-10)
 
 
+@pytest.mark.parametrize("chunks", ["1", "4"])
+@pytest.mark.parametrize("frozen_csr", ["1", "0"])
 @pytest.mark.parametrize("reort", [None, "full", "partial"])
 @pytest.mark.parametrize("cap", [6, 12, 17])
-def test_capped_gf_equals_dense_php_resolvent(cap, reort):
-    """The oracle: the capped GF is the exact GF of H projected on the retained set."""
+def test_capped_gf_equals_dense_php_resolvent(cap, reort, frozen_csr, chunks, monkeypatch):
+    """The oracle: the capped GF is the exact GF of H projected on the retained set -- on the
+    sparse kernel throughout (``GF_FROZEN_CSR=0``) and restarted on the ``P H P`` CSR at the
+    freeze (the default)."""
+    monkeypatch.setenv("GF_FROZEN_CSR", frozen_csr)
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", chunks)
     g, info = _run_capped(cap, reort=reort)
     assert info["cap_hit"]
+    assert info["csr_fallback"] == (frozen_csr == "1")
     assert info["retained_size"] <= cap
     retained = info["proxy"].retained_keys()
     assert len(retained) == info["retained_size"]
@@ -160,12 +176,16 @@ def test_capped_gf_equals_dense_php_resolvent(cap, reort):
     assert np.all(np.diagonal(g.imag, axis1=1, axis2=2) <= 1e-12)
 
 
-def test_cap_at_seed_size_freezes_immediately():
-    """cap == initial basis size: nothing new is ever admitted; still exact on P."""
+@pytest.mark.parametrize("frozen_csr", ["1", "0"])
+def test_cap_at_seed_size_freezes_immediately(frozen_csr, monkeypatch):
+    """cap == initial basis size: nothing new is ever admitted; still exact on P. With the CSR
+    fallback the sparse kernel never runs at all."""
+    monkeypatch.setenv("GF_FROZEN_CSR", frozen_csr)
     basis = _excited_basis(np.inf)
     seed_size = basis.size
     g, info = _run_capped(seed_size)
     assert info["cap_hit"] and info["retained_size"] <= seed_size
+    assert info["csr_fallback"] == (frozen_csr == "1")
     np.testing.assert_allclose(g, _dense_reference_on(info["proxy"].retained_keys()), atol=1e-9)
 
 
@@ -215,15 +235,18 @@ def test_admission_prefers_large_amplitude_rows():
 
 
 @pytest.mark.mpi
-def test_capped_gf_mpi_matches_dense_php():
+@pytest.mark.parametrize("frozen_csr", ["1", "0"])
+def test_capped_gf_mpi_matches_dense_php(frozen_csr, monkeypatch):
     """Distributed run: cap respected, collective decisions consistent, oracle holds.
 
     With 2+ ranks and a small cap, some rank will own few or zero retained rows —
     the empty-rank edge case must not deadlock or diverge."""
+    monkeypatch.setenv("GF_FROZEN_CSR", frozen_csr)
     comm = MPI.COMM_WORLD
     for cap in (6, 12):
         g, info = _run_capped(cap, comm=comm)
         assert info["cap_hit"]
+        assert info["csr_fallback"] == (frozen_csr == "1")
         assert info["retained_size"] <= cap
         # retained keys are rank-local; gather for the dense reference
         local = info["proxy"].retained_keys()
@@ -344,3 +367,81 @@ def test_kernel_stops_at_the_freeze_on_the_same_step_on_every_rank():
     alphas, _, status, proxy, _ = _kernel_on_proxy(6, stop_on_freeze=True, comm=comm)
     assert status == "frozen"
     assert len(set(comm.allgather(len(alphas)))) == 1
+
+
+def _assert_php_oracle(g, info, comm=None):
+    local = info["proxy"].retained_keys()
+    retained = sorted({k for part in (comm.allgather(local) if comm is not None else [local]) for k in part})
+    np.testing.assert_allclose(g, _dense_reference_on(retained), atol=1e-9)
+
+
+def test_frozen_csr_matches_the_sparse_kernel_to_rounding(monkeypatch):
+    """Same model, same cap, same retained set: the CSR restart and the sparse kernel agree."""
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
+    monkeypatch.setenv("GF_FROZEN_CSR", "0")
+    g_sparse, info_sparse = _run_capped(12, reort="full")
+    monkeypatch.setenv("GF_FROZEN_CSR", "1")
+    g_csr, info_csr = _run_capped(12, reort="full")
+    assert info_csr["csr_fallback"] and not info_sparse["csr_fallback"]
+    assert set(info_csr["proxy"].retained_keys()) == set(info_sparse["proxy"].retained_keys())
+    np.testing.assert_allclose(g_csr, g_sparse, atol=1e-10)
+
+
+def test_frozen_csr_under_importance_pruning(monkeypatch):
+    """``GF_LANCZOS_ADMIT_TOL``'s ban keeps the whole recurrence the Lanczos of ``P_m H P_m``, so
+    the restart on the pruned proxy's retained set is exact too."""
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
+    monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", "0.05")
+    g, info = _run_capped(12)
+    assert info["cap_hit"] and info["csr_fallback"]
+    _assert_php_oracle(g, info)
+
+
+def test_a_memory_guard_freeze_stays_on_the_sparse_kernel():
+    """RSS is at budget when the guard freezes: building a matrix then is how a rank is killed."""
+    g, info = _run_capped(1000, memory_budget=1)
+    assert info["cap_hit"] and info["memory_frozen"]
+    assert not info["csr_fallback"]
+    _assert_php_oracle(g, info)
+
+
+def test_a_complex64_krylov_store_stays_on_the_sparse_kernel():
+    g, info = _run_capped(12, reort="full", krylov_dtype=np.complex64)
+    assert info["cap_hit"] and not info["csr_fallback"]
+
+
+@pytest.mark.parametrize("cap", [6, 12])
+def test_a_declined_csr_resumes_the_sparse_kernel(cap, monkeypatch):
+    """When the matrix would not fit, the sparse recurrence resumes from where it stopped and the
+    result is still exact on P."""
+    from impurityModel.ed import gf_solvers
+
+    monkeypatch.setattr(gf_solvers, "_frozen_csr_fits", lambda *a, **k: False)
+    g, info = _run_capped(cap, reort="full")
+    assert info["cap_hit"] and not info["csr_fallback"]
+    _assert_php_oracle(g, info)
+
+
+def test_the_csr_fit_check_compares_the_estimate_with_the_budget(monkeypatch):
+    from impurityModel.ed import gf_solvers
+
+    basis = _excited_basis(np.inf)
+    assert gf_solvers._frozen_csr_fits(basis, _siam_6(), None, None)
+    monkeypatch.setattr(gf_solvers, "current_rss_bytes", lambda: 10**9)
+    assert gf_solvers._frozen_csr_fits(basis, _siam_6(), 2 * 10**9, None)
+    assert not gf_solvers._frozen_csr_fits(basis, _siam_6(), 10**9 + 1, None)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("chunks", ["1", "4"])
+def test_frozen_csr_mpi_matches_the_sparse_kernel(chunks, monkeypatch):
+    """Multi-rank: the restart on a distributed CSR (empty ranks at -n 3) equals the sparse kernel."""
+    comm = MPI.COMM_WORLD
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", chunks)
+    monkeypatch.setenv("GF_FROZEN_CSR", "0")
+    g_sparse, _ = _run_capped(6, reort="partial", comm=comm)
+    monkeypatch.setenv("GF_FROZEN_CSR", "1")
+    g_csr, info = _run_capped(6, reort="partial", comm=comm)
+    assert info["csr_fallback"]
+    np.testing.assert_allclose(g_csr, g_sparse, atol=1e-9)
+    _assert_php_oracle(g_csr, info, comm)

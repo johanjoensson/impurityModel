@@ -10,13 +10,22 @@ these kernels lives in :mod:`impurityModel.ed.gf_units`; the top-level assembly 
 in :mod:`impurityModel.ed.greens_function`.
 """
 
+import itertools
+import time
 from typing import Optional
 
 import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
-from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix, build_state, build_vector
+from impurityModel.ed import basis_transcription
+from impurityModel.ed.basis_transcription import (
+    build_dense_matrix,
+    build_sparse_matrix,
+    build_state,
+    build_vector,
+    iter_local_operator_images,
+)
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
 from impurityModel.ed.cg import block_bicgstab
@@ -38,6 +47,7 @@ from impurityModel.ed.gf_primitives import (
 )
 from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
+from impurityModel.ed.memory_estimate import current_rss_bytes
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 
 comm = MPI.COMM_WORLD
@@ -354,6 +364,82 @@ def _expansion_probe_columns(Q, widths, *, tail_only):
     return Q[:, np.concatenate(columns)]
 
 
+#: Local determinants whose ``H`` images estimate the frozen CSR's fan-out for the memory check.
+_CSR_FANOUT_SAMPLE = 256
+#: Upper bound on the bytes one matrix element costs during and after the CSR build: the COO
+#: triplet (8 + 8 + 16), the CSC it becomes (8 + 16) and the rank's column slice of it (8 + 16).
+_CSR_BYTES_PER_ELEMENT = 80
+#: Upper bound on the bytes one element of a build batch holds before its lookup: the bra's key
+#: object plus its column and value.
+_CSR_BATCH_BYTES_PER_ELEMENT = 160
+
+
+def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm):
+    """Collective: does the frozen ``P H P`` CSR fit the GF memory budget on every rank?
+
+    No budget (the guard is off) always fits. Otherwise the per-rank cost is estimated from the
+    mean ``H`` image size of a sample of local determinants -- an upper bound on the in-``P``
+    nonzeros -- and compared with the budget left above the current RSS. Every rank enters the
+    one reduction whatever its own count (an empty rank estimates 0).
+    """
+    if memory_budget is None:
+        return True
+    n_local = len(frozen_basis.local_basis)
+    sampled = elements = 0
+    for image in itertools.islice(iter_local_operator_images(frozen_basis, hOp, 0), _CSR_FANOUT_SAMPLE):
+        sampled += 1
+        elements += len(image)
+    fanout = elements / sampled if sampled else 0.0
+    batch = min(basis_transcription._SPARSE_BUILD_BATCH, n_local * fanout)
+    need = n_local * fanout * _CSR_BYTES_PER_ELEMENT + batch * _CSR_BATCH_BYTES_PER_ELEMENT
+    over = current_rss_bytes() + need > memory_budget
+    if comm is not None and comm.size > 1:
+        over = comm.allreduce(bool(over), op=MPI.LOR)
+    return not over
+
+
+def _frozen_csr_green(proxy, basis, hOp, seeds, delta, reort, slaterWeightMin, eval_meshes, info, verbose):
+    """The capped GF as an array-kernel recurrence on the frozen ``P H P`` CSR, or ``None``.
+
+    Once ``proxy`` has frozen, the whole capped recurrence -- pre-freeze steps included -- is the
+    exact block Lanczos of ``P H P`` from the seeds (see :class:`_CappedBasisProxy`), so restarting
+    it here on the retained set ``P`` reproduces the sparse kernel's continued fraction to
+    rounding, while every step costs one SpMV instead of an apply whose out-of-``P`` image is
+    discarded. Declines (returns ``None``, collectively) when the freeze came from the memory
+    guard -- RSS is already at budget then -- or when the CSR would not fit the budget; the caller
+    then resumes the sparse recurrence. Returns ``(alphas, betas, r, build_seconds)`` otherwise,
+    with ``info`` filled by the array kernel's own monitor.
+    """
+    comm = basis.comm
+    root = comm is None or comm.rank == 0
+    if proxy.memory_frozen:
+        return None
+    frozen_basis = basis.clone_from_keys(proxy.retained_mask)
+    if not _frozen_csr_fits(frozen_basis, hOp, proxy.memory_budget, comm):
+        if verbose and root:
+            print(
+                f"GF basis frozen at {frozen_basis.size:,} determinants: the P H P matrix would not fit the "
+                "memory budget, so the recurrence continues on the sparse kernel.",
+                flush=True,
+            )
+        return None
+    t0 = time.perf_counter()
+    psi_dense_local, r = _distributed_seed_qr(frozen_basis, seeds, slaterWeightMin)
+    alphas, betas, _, widths = _array_block_lanczos(
+        frozen_basis, hOp, psi_dense_local, False, delta, reort, slaterWeightMin, eval_meshes, info
+    )
+    seconds = time.perf_counter() - t0
+    if verbose and root:
+        print(
+            f"GF basis frozen at {frozen_basis.size:,} determinants: recurrence restarted on the P H P matrix "
+            f"({len(alphas)} block(s), {seconds:.1f} s).",
+            flush=True,
+        )
+    alphas, betas = _trim_blocks(alphas, betas, widths)
+    alphas, betas = _sanitize_continued_fraction(alphas, betas, rank=comm.rank if comm is not None else 0)
+    return alphas, betas, r, seconds
+
+
 def block_Green_sparse(
     hOp,
     psi_arr,
@@ -375,6 +461,14 @@ def block_Green_sparse(
 
     ``memory_budget``/``memory_policy`` switch on :class:`_CappedBasisProxy`'s measured memory
     guard (off by default; only meaningful with a finite cap).
+
+    **Frozen-basis CSR fallback** (``GF_FROZEN_CSR``, on by default): when the cap freezes the
+    support, the sparse recurrence stops at that step and the whole recurrence restarts from the
+    seeds as an array-kernel SpMV on the ``P H P`` CSR of the retained set (see
+    :func:`_frozen_csr_green`) -- exact on ``P`` like the sparse kernel, without applying ``H`` to
+    every retained row and discarding the image outside ``P``. Not taken for a freeze by the
+    memory guard, a CSR that would not fit the budget, or a ``krylov_dtype`` store.
+    ``cap_info["csr_fallback"]`` says whether it ran.
 
     ``basis.truncation_threshold`` caps the number of Slater determinants the
     recurrence may touch (see :class:`_CappedBasisProxy`); ``np.inf`` (the ``Basis``
@@ -426,11 +520,14 @@ def block_Green_sparse(
         cap_info["cap_hit"] = False
         cap_info["retained_size"] = None
         cap_info["proxy"] = None
+        cap_info["csr_fallback"] = False
+        cap_info["csr_seconds"] = 0.0
 
     if N == 0 or n == 0:
         if cap_info is not None:
             cap_info["retained_size"] = 0
         return np.empty((0, n, n), dtype=complex), np.empty((0, n, n), dtype=complex), np.zeros((n, n), dtype=complex)
+    seeds = psi_arr
     psi_dense_local, r = _distributed_seed_qr(basis, psi_arr, slaterWeightMin)
     psi_arr = build_state(basis, psi_dense_local.T, slaterWeightMin=0)
     # `.width`, not `len()`: len() is the rank-local row count, so an empty-rank early
@@ -499,7 +596,25 @@ def block_Green_sparse(
     # With reort NONE the kernel never projects against the accumulated Krylov basis and
     # the resume protocol reads only the two-block tail, so skip the full retention.
     resolved_reort = _gf_reort(reort)
-    while True:
+    # The frozen-basis CSR fallback: hand control back at the freeze. A krylov_dtype store stays
+    # on the sparse kernel (the array kernel keeps its Krylov basis in complex128).
+    csr_candidate = config.GF_FROZEN_CSR.get() and krylov_dtype is None and isinstance(lanczos_basis, _CappedBasisProxy)
+    csr = None
+
+    def _try_csr():
+        return _frozen_csr_green(
+            lanczos_basis, basis, hOp, seeds, delta, resolved_reort, slaterWeightMin, eval_meshes, info, verbose
+        )
+
+    if csr_candidate:
+        lanczos_basis.stop_on_freeze = True
+        if lanczos_basis.frozen:
+            # The seed support alone reached the cap: nothing for the sparse kernel to discover.
+            # Declined: the sparse kernel runs it frozen, and must not stop again on a freeze
+            # it starts in.
+            lanczos_basis.stop_on_freeze = False
+            csr = _try_csr()
+    while csr is None:
         alphas, betas, Q, W, widths, status = block_lanczos_cy(
             psi_arr,
             hOp,
@@ -530,6 +645,12 @@ def block_Green_sparse(
         #                             converged, and no further blocks can be built.
         #   * "max_iter"           -- the budget was exhausted while the matvec was still
         #                             reaching new determinants; grow the budget and resume.
+        #   * "frozen"             -- the support froze this step (stop_on_freeze): restart on
+        #                             the P H P CSR, or, if that declines, resume right here.
+        if status == "frozen":
+            lanczos_basis.stop_on_freeze = False
+            csr = _try_csr()
+            continue
         if status in ("converged", "invariant_subspace"):
             converged_flag[0] = True
             break
@@ -546,6 +667,12 @@ def block_Green_sparse(
             cap_info["retained_size"] = lanczos_basis.retained_size
             cap_info["memory_frozen"] = lanczos_basis.memory_frozen
             cap_info["proxy"] = lanczos_basis
+            cap_info["csr_fallback"] = csr is not None
+            if csr is not None:
+                cap_info["csr_seconds"] = csr[3]
+        if csr is not None:
+            # The array kernel's monitor filled `info` and warned about non-convergence itself.
+            return csr[0], csr[1], csr[2]
     elif cap_info is not None:
         cap_info["cap_hit"] = False
         cap_info["retained_size"] = None
