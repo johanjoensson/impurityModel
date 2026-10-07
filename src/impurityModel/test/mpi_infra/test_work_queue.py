@@ -72,3 +72,8 @@ def test_a_busy_host_that_calls_queue_progress_does_not_stall_fetches():
         queue.free()
     if comm.rank == 0:
         assert max(waits) < busy / 3, f"a fetch waited {max(waits):.2f} s on a host that pokes progress"
+
+
+def test_queue_order_breaks_ties_on_the_secondary_key():
+    # Units 0 and 2 share the largest primary key; the secondary key puts 2 first.
+    assert queue_order([5.0, 1.0, 5.0], tiebreak=[1.0, 9.0, 3.0]).tolist() == [2, 0, 1]

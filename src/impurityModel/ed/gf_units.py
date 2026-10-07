@@ -16,7 +16,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
-from impurityModel.ed.basis_restrictions import union_windows
+from impurityModel.ed.basis_restrictions import union_windows, window_dimension
 from impurityModel.ed.basis_split import _pack_units, split_basis_and_redistribute_psi
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
@@ -286,6 +286,38 @@ def unit_cost_weights(unit_seeds: list[list[ManyBodyState]], comm) -> np.ndarray
     return lengths * widths + 1.0
 
 
+def unit_sector_dimensions(unit_seeds, unit_windows, basis) -> np.ndarray:
+    """Determinant count of each unit's excited sector: its window at its seeds' electron number.
+
+    The queue's dispatch order. A unit's cost follows the sector its Krylov space can explore, not
+    its seed: on the SrMnO3 archive the seeds of removal and addition units are alike, but their
+    sectors hold 2,760,681 and 73,815 determinants, and they ran ~3,350 s and 20-450 s. Ranked by
+    this count, every removal unit came before every addition unit (the current seed-mass weight
+    misranked some, and a heavy unit dispatched last is the queue's one bad case).
+
+    The electron number is read from one seed determinant per unit (a seed is ``c^(dagger) psi`` of
+    a fixed-N state) and taken as the MAX over ``basis.comm``, since a rank may hold none of a
+    unit's seed. Collective on ``basis.comm`` (one Allreduce); the result is replicated. A unit with
+    an empty seed everywhere gets 0.
+    """
+    n_electrons = np.full(len(unit_seeds), -1, dtype=np.int64)
+    n_bytes = basis.n_bytes
+    for u, seeds in enumerate(unit_seeds):
+        for seed in seeds:
+            det = next(iter(seed.keys()), None)
+            if det is not None:
+                n_electrons[u] = int.from_bytes(bytes(det.to_bytearray()[:n_bytes]), "big").bit_count()
+                break
+    if basis.comm is not None:
+        basis.comm.Allreduce(MPI.IN_PLACE, n_electrons, op=MPI.MAX)
+    return np.array(
+        [
+            float(window_dimension(unit_windows[u], int(n), basis.num_spin_orbitals)) if n >= 0 else 0.0
+            for u, n in enumerate(n_electrons)
+        ]
+    )
+
+
 def enumerate_gf_units(
     op_groups: list[tuple[list[ManyBodyOperator], float]],
     psis: list[ManyBodyState],
@@ -373,6 +405,7 @@ def run_units_distributed(
     reduce_fn: Optional[Callable] = None,
     reort=None,
     gf_method: str = "lanczos",
+    unit_windows: Optional[list] = None,
 ) -> list | bool | None:
     """Distribute work units over MPI colors, run ``kernel`` per unit, gather to global rank 0.
 
@@ -393,7 +426,8 @@ def run_units_distributed(
     ``unit_weights``) from a shared counter as they go idle (:mod:`~impurityModel.ed.work_queue`)
     instead of running a static LPT assignment, so ``unit_weights`` only has to rank the units.
     Which color runs a unit then varies from run to run; with unequal color widths that can move a
-    result by rounding.
+    result by rounding. Given ``unit_windows`` (the excited window per unit), the order is by
+    :func:`unit_sector_dimensions` first and ``unit_weights`` among equal sectors.
 
     ``reort`` is the GF reorthogonalization mode the kernel will run with, and ``gf_method``
     names the kernel family (``"lanczos"`` / ``"bicgstab"``); both only feed the memory model
@@ -599,7 +633,11 @@ def run_units_distributed(
             # the heaviest-first order and broadcasts it, so every rank of a color runs the same
             # units and leaves the loop together. Rank 0 hosts the counter; its kernels call
             # work_queue.queue_progress once per block so other colors are not held up.
-            order = queue_order(unit_weights)
+            order = (
+                queue_order(unit_sector_dimensions(unit_seeds, unit_windows, basis), tiebreak=unit_weights)
+                if unit_windows is not None
+                else queue_order(unit_weights)
+            )
             unit_queue = UnitQueue(basis.comm)
             unit_indices = []
             position = np.zeros(1, dtype=np.int64)

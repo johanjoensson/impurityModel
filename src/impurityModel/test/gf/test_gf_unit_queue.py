@@ -97,3 +97,23 @@ def test_an_unknown_scheduler_is_rejected_on_every_rank(monkeypatch):
     basis, psi = _basis_and_seed()
     with pytest.raises(ValueError, match="GF_SCHEDULER"):
         run_units_distributed(basis, [[psi]] * 2, np.ones(2), lambda b, u, s: u)
+
+
+def test_unit_sector_dimensions_reads_the_electron_count_from_any_rank():
+    """Each unit's seed lives on one rank only; the count must still be the same on every rank."""
+    from math import comb
+
+    from impurityModel.ed.gf_units import unit_sector_dimensions
+
+    comm = MPI.COMM_WORLD
+    basis, _psi = _basis_and_seed()  # 4 spin-orbitals
+    one = ManyBodyState({SlaterDeterminant.from_bytes(b"\x80"): 1.0}, width=1)  # 1 electron
+    two = ManyBodyState({SlaterDeterminant.from_bytes(b"\xc0"): 1.0}, width=1)  # 2 electrons
+    empty = ManyBodyState(width=1)
+    last = comm.size - 1
+    seeds = [[one if comm.rank == 0 else empty], [two if comm.rank == last else empty], [empty]]
+    windows = [None, {frozenset({0, 1}): (1, 1)}, None]
+    dims = unit_sector_dimensions(seeds, windows, basis)
+    # Unit 1: two electrons with exactly one in {0, 1} -> 2 * 2 determinants.
+    assert dims.tolist() == [float(comb(4, 1)), 4.0, 0.0]
+    assert comm.allgather(dims.tolist()) == [dims.tolist()] * comm.size

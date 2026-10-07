@@ -10,7 +10,7 @@ of ``basis.comm``.
 """
 
 import itertools
-from math import ceil
+from math import ceil, comb
 from typing import Optional
 
 import numpy as np
@@ -80,6 +80,54 @@ CHAIN_FREEZE_WEIGHT_EXPONENT = 0.5
 # metric in :func:`_impurity_coupling_distance`). A caller that omits the argument gets the
 # module default; one that passes ``None`` still gets the legacy path.
 _USE_DEFAULT = object()
+
+
+def window_dimension(window, n_electrons: int, n_orbitals: int) -> int:
+    """Exact number of ``n_electrons``-electron determinants on ``n_orbitals`` that pass ``window``.
+
+    ``window`` is the usual ``{frozenset(orbitals): (n_min, n_max)}`` conjunction (``None`` or
+    empty: unrestricted); its sets may overlap. Orbitals are grouped into atoms by which window
+    sets contain them, and a dynamic program over the atoms tracks each set's running occupation
+    and the total, weighting each choice by a binomial -- exact, and linear in the number of atoms.
+    Weighted restrictions are not seen, so for a window that also carries them this is an upper
+    bound.
+
+    This is the size of the sector a Green's-function unit's Krylov space can explore: on the
+    SrMnO3 archive it is 2,760,681 for a removal unit and 73,815 for an addition unit, the same
+    order as their measured cost ratio, where the seeds alone are indistinguishable
+    (doc/plans/gf_load_balancing.md).
+    """
+    if n_electrons < 0 or n_electrons > n_orbitals:
+        return 0
+    if not window:
+        return comb(n_orbitals, n_electrons)
+    keys = list(window)
+    atoms: dict[tuple[int, ...], int] = {}
+    for orbital in range(n_orbitals):
+        members = tuple(i for i, key in enumerate(keys) if orbital in key)
+        atoms[members] = atoms.get(members, 0) + 1
+    upper = [window[key][1] for key in keys]
+    # State: (occupation of each window set, total occupation) -> number of ways.
+    states = {(0,) * (len(keys) + 1): 1}
+    for members, size in atoms.items():
+        grown: dict[tuple[int, ...], int] = {}
+        for state, ways in states.items():
+            for n in range(size + 1):
+                if state[-1] + n > n_electrons or any(state[i] + n > upper[i] for i in members):
+                    break  # both bounds only tighten as n grows
+                nxt = list(state)
+                for i in members:
+                    nxt[i] += n
+                nxt[-1] += n
+                key = tuple(nxt)
+                grown[key] = grown.get(key, 0) + ways * comb(size, n)
+        states = grown
+    lower = [window[key][0] for key in keys]
+    return sum(
+        ways
+        for state, ways in states.items()
+        if state[-1] == n_electrons and all(state[i] >= lower[i] for i in range(len(keys)))
+    )
 
 
 def union_windows(windows):

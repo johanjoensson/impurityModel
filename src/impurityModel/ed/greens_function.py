@@ -545,7 +545,9 @@ def get_Greens_function(
 
     # This unit-level dump belongs at -vv (verbose_extra): the roots/per-color summary is
     # detail beyond the -v per-block roll-up the caller already prints.
-    results = run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose_extra, reort=reort)
+    results = run_units_distributed(
+        basis, unit_seeds, unit_weights, kernel, verbose=verbose_extra, reort=reort, unit_windows=unit_restrictions
+    )
 
     gs_matsubara = gs_realaxis = report = None
     if results is not None:
@@ -755,6 +757,7 @@ def _get_greens_function_bicgstab(
         kernel,
         verbose,
         num_wanted,
+        unit_windows=unit_restrictions,
     )
 
 
@@ -773,6 +776,7 @@ def _run_evaluated_gf_units(
     kernel,
     verbose,
     num_wanted,
+    unit_windows=None,
 ):
     r"""Distribute, accumulate and assemble Green's-function units that return evaluated ``G``.
 
@@ -868,7 +872,14 @@ def _run_evaluated_gf_units(
             )
 
     got = run_units_distributed(
-        basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=reduce_fn, gf_method="bicgstab"
+        basis,
+        unit_seeds,
+        unit_weights,
+        kernel,
+        verbose=verbose,
+        reduce_fn=reduce_fn,
+        gf_method="bicgstab",
+        unit_windows=unit_windows,
     )
     if got is None:
         return None, None, None
@@ -1092,7 +1103,9 @@ def calc_Greens_function_with_offdiag(
         solver_verbose=verbose,
         print_size=verbose,
     )
-    results = run_units_distributed(block_basis, unit_seeds, unit_weights, kernel, verbose=verbose, reort=reort)
+    results = run_units_distributed(
+        block_basis, unit_seeds, unit_weights, kernel, verbose=verbose, reort=reort, unit_windows=unit_restrictions
+    )
 
     excited_alphas = excited_betas = excited_r = None
     if results is not None:

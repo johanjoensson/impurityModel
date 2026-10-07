@@ -42,12 +42,16 @@ def queue_progress() -> None:
         _hosted[-1].Iprobe(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG)
 
 
-def queue_order(weights) -> np.ndarray:
-    """Dispatch order for a queue: heaviest predicted unit first, ties in index order.
+def queue_order(weights, tiebreak=None) -> np.ndarray:
+    """Dispatch order for a queue: heaviest predicted unit first.
 
-    Only the ranking of ``weights`` matters. Replicated input gives a replicated order.
+    Ties in ``weights`` go to the larger ``tiebreak`` (when given), then to the lower index. Only
+    the ranking matters. Replicated inputs give a replicated order.
     """
-    return np.argsort(-np.asarray(weights, dtype=float), kind="stable")
+    primary = -np.asarray(weights, dtype=float)
+    if tiebreak is None:
+        return np.argsort(primary, kind="stable")
+    return np.lexsort((-np.asarray(tiebreak, dtype=float), primary))
 
 
 def queue_makespan(walls, order, n_colors: int) -> float:
