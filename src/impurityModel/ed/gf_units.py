@@ -553,6 +553,11 @@ def run_units_distributed(
     # over-estimate the per-rank budget) -- only the `ranks` argument fed to the pure bisection
     # after that probe varies per color.
     ranks_per_color = split_basis.comm.size if split_basis.comm is not None else 1
+    if use_queue:
+        # Under the queue any color may run any unit, and widths differ by up to one rank, so a
+        # per-color cap would truncate the same unit differently depending on where it landed. Every
+        # color sizes for the narrowest one instead (replicated: unit_roots is rank-invariant).
+        ranks_per_color = int(min(np.diff(unit_roots + [basis.comm.size])))
     caller_cap = basis.truncation_threshold
     # What this rank already holds entering the GF phase (ground-state basis, eigenvectors,
     # stored Hamiltonian, the RSPt/Python floor). MAX over the communicator, because the cap

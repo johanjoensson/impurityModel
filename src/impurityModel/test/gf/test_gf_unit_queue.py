@@ -117,3 +117,37 @@ def test_unit_sector_dimensions_reads_the_electron_count_from_any_rank():
     # Unit 1: two electrons with exactly one in {0, 1} -> 2 * 2 determinants.
     assert dims.tolist() == [float(comb(4, 1)), 4.0, 0.0]
     assert comm.allgather(dims.tolist()) == [dims.tolist()] * comm.size
+
+
+@pytest.mark.skipif(MPI.COMM_WORLD.size < 3, reason="needs two colors of different widths")
+@pytest.mark.parametrize("scheduler, same_cap", [("queue", True), ("static", False)])
+def test_queued_units_get_one_cap_whatever_color_ran_them(monkeypatch, scheduler, same_cap):
+    """Under the queue, colors differ in width by up to one rank and a unit lands on any of them; a
+    user cap lowered per color width would truncate the same unit differently from run to run.
+    Two units at -n 3 give colors of 2 and 1 ranks. The per-color memory bound is made to depend on
+    the width (500 determinants per rank); static keeps the per-color bound (the premise), the
+    queue sizes every color for the narrowest."""
+    from impurityModel.ed import gf_units
+
+    monkeypatch.setenv("GF_SCHEDULER", scheduler)
+
+    def budget(n_orb, width, reort, ranks, comm, safety=None, **kwargs):
+        return 10**9 if safety is not None else 500 * int(ranks)  # color count unbounded; unit cap per width
+
+    monkeypatch.setattr(gf_units, "max_unit_dets_within_budget", budget)
+    basis, psi = _basis_and_seed()
+    basis.truncation_threshold = 10**6
+
+    def kernel(split_basis, u, seeds):
+        return (split_basis.comm.size, float(split_basis.truncation_threshold))
+
+    results = run_units_distributed(basis, [[psi], [psi]], np.ones(2), kernel)
+    if MPI.COMM_WORLD.rank == 0:
+        if MPI.COMM_WORLD.size == 3:
+            assert sorted(size for size, _ in results) in ([1, 2], [1, 1], [2, 2]), results
+        caps = {cap for _, cap in results}
+        widths = {size for size, _ in results}
+        if same_cap:
+            assert caps == {500.0}, results
+        elif len(widths) > 1:
+            assert len(caps) > 1, f"premise: static caps each color by its own width, got {results}"
