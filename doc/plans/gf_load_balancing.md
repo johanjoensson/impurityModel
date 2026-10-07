@@ -107,22 +107,58 @@ without a poke.
   - A per-iteration hook would go inside the Cython `block_bicgstab` loop, which needs a rebuild.
   - Measure on the cluster before adding it.
 
+## Cluster A/B (2026-10-07)
+
+`debug/gf_queue_kit/` on tree 89686a00 with Intel MPI 2021.16 (`FI_PROVIDER=cxi`), a `safe` build,
+the SrMnO3 production archive and the Lanczos self-energy. Each job ran static then queue on the same
+node.
+
+| ranks | static GF | queue GF | gain | longest wait for a unit | queue colours |
+|---|---|---|---|---|---|
+| 32 | – | – | – | – | (pending) |
+| 64 | 7,350 s | 5,560 s | 1.32x | 7.79 s | 64 x 1 rank |
+| 128 | 3,710 s | 3,661 s | 1.3% faster | 0.40 s | 98, 30 of them with 2 ranks |
+
+- **64 ranks.** The queue finished below the replayed 5,805 s. Static ran faster than the ~9,800 s
+  of the earlier kit round, so the gain is 1.32x rather than the replayed 1.65x.
+- **128 ranks.** The predicted 2.5% slowdown did not happen. The memory-sized colour count was 98,
+  not 128, so 30 colours got a second rank. Which unit landed on those is not controlled (Step 5).
+- **Dimension ordering without a window.** This archive has no occupation window. The count over all
+  orbitals still separates the sides by electron number (2,760,681 against 73,815), and the measured
+  bases agree (about 590k removal, 18k addition).
+- **The 7.79 s wait at 64 ranks.** Its source is unknown. It is 0.14% of the phase and below the
+  10 s flag.
+- **Σ was not compared between schedulers on the cluster.** The kit does not save Σ. Σ is
+  bit-identical only in the local A/B.
+
+**Counter probe.** Rank 0 was busy for 20 s while every other rank fetched. All ranks were on one
+node at every size, so the cross-node case is still unmeasured.
+
+| ranks | no poke | `Iprobe` poke |
+|---|---|---|
+| 32 | 19.0 s | 0.001 s |
+| 64 | 19.0 s | 0.002 s |
+| 128 | 19.0 s | 0.006 s |
+
+Intel MPI stalls the counter even within a node, so the poke is required in production.
+
 ## Status
 
-`GF_SCHEDULER=queue` is opt-in, and the default stays `static` until the cluster A/B
-(`debug/gf_queue_kit/`) confirms the replay. Still open:
+`GF_SCHEDULER=queue` is the default after the 64- and 128-rank A/B, and `static` remains as an
+opt-out. Still open:
 
-- **Flip the default.** Do it if the A/B lands near the replayed makespans at 32 and 64 ranks, and
-  stays within about 3% of static at 128.
+- **The 32-rank row.**
+- **One queue run each of BiCGSTAB, spectra and RIXS.** The A/B covered only the Lanczos
+  self-energy.
+- **A cross-node counter probe.**
 - **Wider colours for the head of the queue.** At 128 ranks there are fewer heavy units (76) than
-  ranks, so the run is bound by the slowest heavy unit on one rank. Giving the units at the head of the queue
-  2-rank colours (measured 1.84x) is what static packing got by accident.
+  ranks, so the run is bound by the slowest heavy unit. In the A/B, 30 colours had 2 ranks only
+  because of the memory-sized colour count. Handing the head of the queue 2-rank colours on purpose
+  (measured 1.84x per unit) would make that deliberate.
 - **More hook sites, only if the A/B asks for them.** `queue_progress` is called from the GF
   convergence monitor (once per block, both Lanczos kernels) and from BiCGSTAB (once per frequency
   point). The frozen-CSR build is not hooked. Every queue stage prints `GF unit queue: ... longest
   wait for a unit`, flagged when over 10 s.
-- **What the A/B covers.** The kit runs only the Lanczos self-energy. Before flipping the default for
-  BiCGSTAB, spectra and RIXS, check their queue wait lines on one run each.
 - **The dimension count is bounded.** `window_dimension` gives up past 20,000 dynamic-program states
   (six random overlapping sets ran over a minute), and the queue then orders by seed mass. The
   solver's windows (disjoint or nested sets) count in milliseconds.
