@@ -51,3 +51,55 @@ unit.
 - **The stall test only discriminates on MPICH.**
   `test_a_busy_host_that_calls_queue_progress_does_not_stall_fetches`, with its poke removed, fails
   under MPICH (1.40 s wait) and passes under Open MPI over shared memory.
+
+## Dispatch order: the excited-sector dimension (measured 2026-10-07)
+
+**Candidates.** All were scored on the production SrMnO3 archive, which is the same archive as the
+cluster runs (md5 `79548b1c`, 152 units). The local proxies were matched to the cluster walls by
+spectral side, because the cluster lines carry no unit index. A removal unit retains more than 100k
+determinants, an addition unit about 17k.
+
+- `dim`: `window_dimension` of the unit's excited window at its seeds' electron number.
+- `h1`: the global support of `H` applied once to the seeds.
+- `mass`: today's `seed_mass * width` weight.
+
+Each makespan below is the median over 200 random assignments of each side's measured walls.
+
+| proxy | AUC (removal ranked above addition) | queue makespan @32 | @64 |
+|---|---|---|---|
+| seed mass x width (current) | 0.959 | 10,267 s | 6,171 s |
+| random | – | 9,860 s | 5,905 s |
+| sector dimension | **1.000** | 9,312 s | 5,805 s |
+| `H` probe (`h1`, `h1_new`, `h1/seed`) | 1.000 | 9,288–9,294 s | 5,791–5,817 s |
+
+**What the dimensions look like.** Removal sectors hold 2,760,681 determinants (32 electrons) and
+addition sectors 73,815 (34 electrons). That is a ratio of 37, close to the measured cost ratio.
+
+**Why the current weight orders badly.** It ranks the sides almost correctly. The few heavy units it
+misranks are dispatched last and become the stragglers, which is why it does worse than random.
+
+**Why the dimension.** It ranks as well as the probe and costs nothing: no communication beyond one
+small Allreduce, and no apply. The probe costs one `H` apply per unit on the full communicator, 28 s
+in total here, and its memory grows with the ground state.
+
+**NiO 10-bath star archive, cap 3e4 (local):** every unit hit the cap and took the frozen-CSR path,
+so the walls (2–8 s) cannot rank anything.
+- In this archive the *removal* window is the larger one (2.4e10 against 1.0e8 for addition).
+- Removal units also ran more blocks (785–986 against 498–623), so the ordering is consistent there.
+- Above the cap, the dimension says nothing about depth, so ties within a side are broken by seed mass.
+- At the archive's auto cap (376k), and at 1e5, the run was OOM-killed on a 15 GB box after the
+  ground state and before the GF units. This is unrelated to the scheduler and not investigated.
+
+## Status
+
+`GF_SCHEDULER=queue` is opt-in, and the default stays `static` until the cluster A/B
+(`debug/gf_queue_kit/`) confirms the replay. Still open:
+
+- **Flip the default.** Do it if the A/B lands near the replayed makespans at 32 and 64 ranks, and
+  stays within about 3% of static at 128.
+- **Wider colours for the head of the queue.** At 128 ranks there are fewer heavy units (76) than
+  ranks, so the run is bound by the slowest heavy unit on one rank. Giving the units at the head of the queue
+  2-rank colours (measured 1.84x) is what static packing got by accident.
+- **More hook sites, only if the A/B asks for them.** `queue_progress` is called only from the GF
+  convergence monitor. BiCGSTAB per frequency, the frozen-CSR build and RIXS are not hooked. A
+  missing site shows up as `GF unit queue: ... longest wait for a unit` over 10 s.
