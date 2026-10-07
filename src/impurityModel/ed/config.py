@@ -440,15 +440,15 @@ GF_APPLY_ROW_CHUNKS = Knob(
 GF_SCHEDULER = Knob(
     name="GF_SCHEDULER",
     kind="str",
-    default="static",
+    default="queue",
     group="units",
-    doc="""How Green's-function units are handed to the MPI colors. ``static`` (default): packed
-    up front by predicted cost (LPT on ``unit_cost_weights``), each color's rank count proportional
-    to its packed cost. ``queue``: equal-width colors take the next unit, heaviest predicted first,
-    from a shared counter as they go idle (:mod:`impurityModel.ed.work_queue`), so a wrong cost
-    prediction costs at most the tail instead of a whole color's backlog. Replayed on the measured
-    SrMnO3 unit walls, a queue even in random order beat ``static`` 1.36x at 32 ranks and 1.65x at
-    64 (doc/plans/gf_load_balancing.md). Read on rank 0 and broadcast.""",
+    doc="""How Green's-function units are handed to the MPI colors. ``queue`` (default): equal-width
+    colors take the next unit, largest excited sector first, from a shared counter as they go idle
+    (:mod:`impurityModel.ed.work_queue`), so a wrong cost prediction costs at most the tail instead
+    of a whole color's backlog. ``static``: packed up front by predicted cost (LPT on
+    ``unit_cost_weights``), each color's rank count proportional to its packed cost. Measured on the
+    SrMnO3 self-energy, the queue cut the GF phase 1.32x at 64 ranks and matched ``static`` at 128
+    (doc/plans/gf_load_balancing.md). Read on rank 0 and broadcast.""",
 )
 
 GF_FROZEN_CSR = Knob(

@@ -436,9 +436,9 @@ def run_units_distributed(
     rank 0 then never holds more than one color's results at a time instead of all units
     simultaneously (e.g. the caller accumulates into a preallocated output tensor).
 
-    Under ``GF_SCHEDULER=queue`` the colors are equal-width and take units heaviest-first (by
+    Under ``GF_SCHEDULER=queue`` (the default) the colors are equal-width and take units heaviest-first (by
     ``unit_weights``) from a shared counter as they go idle (:mod:`~impurityModel.ed.work_queue`)
-    instead of running a static LPT assignment, so ``unit_weights`` only has to rank the units.
+    instead of running the ``static`` LPT assignment, so ``unit_weights`` only has to rank the units.
     Which color runs a unit then varies from run to run; with unequal color widths that can move a
     result by rounding. Given ``unit_windows`` (the excited window per unit), the order is by
     :func:`unit_sector_dimensions` first and ``unit_weights`` among equal sectors.
