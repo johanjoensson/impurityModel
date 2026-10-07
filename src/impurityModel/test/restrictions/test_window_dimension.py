@@ -43,3 +43,14 @@ def test_impurity_and_bath_window():
     imp, bath = frozenset(range(10)), frozenset(range(10, 20))
     expected = sum(comb(10, k) * comb(10, 18 - k) for k in (8, 9) if 18 - k >= 8)
     assert window_dimension({imp: (8, 9), bath: (8, 10)}, 18, 20) == expected
+
+
+def test_an_entangled_window_gives_up_at_the_state_bound():
+    rng = random.Random(0)
+    window = {}
+    for _ in range(6):  # six random overlapping sets: the unbounded count ran over a minute
+        key = frozenset(rng.sample(range(124), rng.randint(8, 30)))
+        window[key] = (0, min(len(key), rng.randint(4, 20)))
+    assert window_dimension(window, 60, 124, max_states=10_000) is None
+    small = {frozenset(range(10)): (8, 9), frozenset(range(10, 20)): (8, 10)}
+    assert window_dimension(small, 18, 20, max_states=10_000) == window_dimension(small, 18, 20)

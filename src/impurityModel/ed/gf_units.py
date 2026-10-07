@@ -257,7 +257,7 @@ class GFUnit:
     delta: float
 
 
-#: A queue wait longer than this is printed even without ``verbose``: rank 0 then computed that
+#: A queue wait longer than this is flagged in the queue's summary line: rank 0 then computed that
 #: long without reaching :func:`work_queue.queue_progress`, so a hook site is missing.
 _QUEUE_WAIT_REPORT_SECONDS = 10.0
 
@@ -286,7 +286,12 @@ def unit_cost_weights(unit_seeds: list[list[ManyBodyState]], comm) -> np.ndarray
     return lengths * widths + 1.0
 
 
-def unit_sector_dimensions(unit_seeds, unit_windows, basis) -> np.ndarray:
+#: State bound for :func:`unit_sector_dimensions`' count (see ``window_dimension``): beyond it the
+#: queue falls back to the seed-mass weights rather than stall every rank at GF entry.
+_DIMENSION_MAX_STATES = 20_000
+
+
+def unit_sector_dimensions(unit_seeds, unit_windows, basis) -> Optional[np.ndarray]:
     """Determinant count of each unit's excited sector: its window at its seeds' electron number.
 
     The queue's dispatch order. A unit's cost follows the sector its Krylov space can explore, not
@@ -298,7 +303,8 @@ def unit_sector_dimensions(unit_seeds, unit_windows, basis) -> np.ndarray:
     The electron number is read from one seed determinant per unit (a seed is ``c^(dagger) psi`` of
     a fixed-N state) and taken as the MAX over ``basis.comm``, since a rank may hold none of a
     unit's seed. Collective on ``basis.comm`` (one Allreduce); the result is replicated. A unit with
-    an empty seed everywhere gets 0.
+    an empty seed everywhere gets 0. ``None`` when some window is too entangled to count within
+    :data:`_DIMENSION_MAX_STATES` (the windows are replicated, so every rank agrees).
     """
     n_electrons = np.full(len(unit_seeds), -1, dtype=np.int64)
     n_bytes = basis.n_bytes
@@ -310,12 +316,20 @@ def unit_sector_dimensions(unit_seeds, unit_windows, basis) -> np.ndarray:
                 break
     if basis.comm is not None:
         basis.comm.Allreduce(MPI.IN_PLACE, n_electrons, op=MPI.MAX)
-    return np.array(
-        [
-            float(window_dimension(unit_windows[u], int(n), basis.num_spin_orbitals)) if n >= 0 else 0.0
-            for u, n in enumerate(n_electrons)
-        ]
-    )
+    dims = []
+    counted: dict = {}  # units share windows (every removal unit of a block, typically)
+    for u, n in enumerate(n_electrons):
+        if n < 0:
+            dims.append(0.0)
+            continue
+        window = unit_windows[u]
+        key = (frozenset((k, tuple(v)) for k, v in window.items()) if window else None, int(n))
+        if key not in counted:
+            counted[key] = window_dimension(window, int(n), basis.num_spin_orbitals, max_states=_DIMENSION_MAX_STATES)
+        if counted[key] is None:
+            return None
+        dims.append(float(counted[key]))
+    return np.array(dims)
 
 
 def enumerate_gf_units(
@@ -633,11 +647,8 @@ def run_units_distributed(
             # the heaviest-first order and broadcasts it, so every rank of a color runs the same
             # units and leaves the loop together. Rank 0 hosts the counter; its kernels call
             # work_queue.queue_progress once per block so other colors are not held up.
-            order = (
-                queue_order(unit_sector_dimensions(unit_seeds, unit_windows, basis), tiebreak=unit_weights)
-                if unit_windows is not None
-                else queue_order(unit_weights)
-            )
+            dims = unit_sector_dimensions(unit_seeds, unit_windows, basis) if unit_windows is not None else None
+            order = queue_order(unit_weights) if dims is None else queue_order(dims, tiebreak=unit_weights)
             unit_queue = UnitQueue(basis.comm)
             unit_indices = []
             position = np.zeros(1, dtype=np.int64)
@@ -657,11 +668,17 @@ def run_units_distributed(
             basis.comm.Allreduce(MPI.IN_PLACE, counts, op=MPI.SUM)
             units_per_color = [int(c) for c in counts]
             # A long wait means rank 0 computed without calling queue_progress: a hook site is missing.
+            # Printed every time, so a clean run is told apart from one that never measured.
             longest_wait = basis.comm.allreduce(unit_queue.max_wait, op=MPI.MAX)
-            if basis.comm.rank == 0 and (verbose or longest_wait > _QUEUE_WAIT_REPORT_SECONDS):
+            if basis.comm.rank == 0:
                 print(
                     f"GF unit queue: units per color {units_per_color}; longest wait for a unit "
-                    f"{longest_wait:.2f} s",
+                    f"{longest_wait:.2f} s"
+                    + (
+                        " -- rank 0 ran that long without queue_progress"
+                        if longest_wait > _QUEUE_WAIT_REPORT_SECONDS
+                        else ""
+                    ),
                     flush=True,
                 )
         else:

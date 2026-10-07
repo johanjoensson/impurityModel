@@ -90,6 +90,23 @@ so the walls (2–8 s) cannot rank anything.
 - At the archive's auto cap (376k), and at 1e5, the run was OOM-killed on a 15 GB box after the
   ground state and before the GF units. This is unrelated to the scheduler and not investigated.
 
+## Local A/B on a real workload (2026-10-07)
+
+SrMnO3 `smo_causality_check` archive, -n 3 (three 1-rank colours), `GF_REAL_TOL=1e-6`. The TCP leg
+runs over `--mca osc rdma --mca btl self,tcp --mca pml ob1`, the transport where the counter stalls
+without a poke.
+
+| kernel | case | static GF | queue GF | queue over TCP | Σ (both axes) | longest wait |
+|---|---|---|---|---|---|---|
+| Lanczos | cap 2e4, 8 units | 14.8 s | 11.1 s | 9.3 s | bit-identical | 0.12 s, 0.03 s (TCP) |
+| BiCGSTAB | cap 3e3, 4 units, 8+20 points | 878.8 s | – | 543.2 s | bit-identical | **12.40 s** (TCP), flagged |
+
+- **Lanczos.** The monitor hook keeps the waits at block length.
+- **BiCGSTAB.** It pokes once per frequency point, and one point's solve took up to 12 s without
+  returning to Python. That is about 2% of this run.
+  - A per-iteration hook would go inside the Cython `block_bicgstab` loop, which needs a rebuild.
+  - Measure on the cluster before adding it.
+
 ## Status
 
 `GF_SCHEDULER=queue` is opt-in, and the default stays `static` until the cluster A/B
@@ -100,6 +117,12 @@ so the walls (2–8 s) cannot rank anything.
 - **Wider colours for the head of the queue.** At 128 ranks there are fewer heavy units (76) than
   ranks, so the run is bound by the slowest heavy unit on one rank. Giving the units at the head of the queue
   2-rank colours (measured 1.84x) is what static packing got by accident.
-- **More hook sites, only if the A/B asks for them.** `queue_progress` is called only from the GF
-  convergence monitor. BiCGSTAB per frequency, the frozen-CSR build and RIXS are not hooked. A
-  missing site shows up as `GF unit queue: ... longest wait for a unit` over 10 s.
+- **More hook sites, only if the A/B asks for them.** `queue_progress` is called from the GF
+  convergence monitor (once per block, both Lanczos kernels) and from BiCGSTAB (once per frequency
+  point). The frozen-CSR build is not hooked. Every queue stage prints `GF unit queue: ... longest
+  wait for a unit`, flagged when over 10 s.
+- **What the A/B covers.** The kit runs only the Lanczos self-energy. Before flipping the default for
+  BiCGSTAB, spectra and RIXS, check their queue wait lines on one run each.
+- **The dimension count is bounded.** `window_dimension` gives up past 20,000 dynamic-program states
+  (six random overlapping sets ran over a minute), and the queue then orders by seed mass. The
+  solver's windows (disjoint or nested sets) count in milliseconds.

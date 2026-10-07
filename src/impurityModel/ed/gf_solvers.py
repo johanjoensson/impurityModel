@@ -30,6 +30,7 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.gf_admission import solve_point_outer
+from impurityModel.ed.work_queue import queue_progress
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
     _allreduced_col_norms2,
@@ -1035,6 +1036,9 @@ def block_Green_bicgstab(
                 hist_z: list[complex] = []
                 hist_x: list[list[ManyBodyState]] = []
                 for k in _bicgstab_sweep_order(z_shifted):
+                    # Once per frequency point: a GF unit-queue host lets pending fetches through
+                    # (work_queue; the Lanczos kernels do it once per block in the monitor).
+                    queue_progress()
                     z = complex(z_shifted[k])
                     x0 = _warm_start_extrapolation(hist_z, hist_x, z, n_ops)
                     if slaterWeightMin > 0:

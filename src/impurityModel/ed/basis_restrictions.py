@@ -82,7 +82,7 @@ CHAIN_FREEZE_WEIGHT_EXPONENT = 0.5
 _USE_DEFAULT = object()
 
 
-def window_dimension(window, n_electrons: int, n_orbitals: int) -> int:
+def window_dimension(window, n_electrons: int, n_orbitals: int, max_states: Optional[int] = None) -> Optional[int]:
     """Exact number of ``n_electrons``-electron determinants on ``n_orbitals`` that pass ``window``.
 
     ``window`` is the usual ``{frozenset(orbitals): (n_min, n_max)}`` conjunction (``None`` or
@@ -96,6 +96,11 @@ def window_dimension(window, n_electrons: int, n_orbitals: int) -> int:
     SrMnO3 archive it is 2,760,681 for a removal unit and 73,815 for an addition unit, the same
     order as their measured cost ratio, where the seeds alone are indistinguishable
     (doc/plans/gf_load_balancing.md).
+
+    The program's state count is the product of the sets' reachable occupations, which stays small
+    for the disjoint or nested sets the solver builds but explodes for many overlapping ones (six
+    random overlapping sets on 124 orbitals ran over a minute). With ``max_states``, the count gives
+    up and returns ``None`` once the states exceed it.
     """
     if n_electrons < 0 or n_electrons > n_orbitals:
         return 0
@@ -122,6 +127,8 @@ def window_dimension(window, n_electrons: int, n_orbitals: int) -> int:
                 key = tuple(nxt)
                 grown[key] = grown.get(key, 0) + ways * comb(size, n)
         states = grown
+        if max_states is not None and len(states) > max_states:
+            return None
     lower = [window[key][0] for key in keys]
     return sum(
         ways
