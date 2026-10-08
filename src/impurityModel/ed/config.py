@@ -532,6 +532,12 @@ GF_WEIGHTED_TOL = Knob(
     becomes ``max(tol, min(tol * w_max / w_n, GF_WEIGHTED_TOL_CEILING))`` (an axis already looser
     than the ceiling is not tightened). A truncated Lanczos ``G_n`` stays causal and moment-exact.
     Lanczos kernel only. Not ``gf_min_weight``, which drops states. Read on rank 0 and broadcast.
+
+    **It also changes the colour layout.** The unit cost weights follow the tolerances, so the packer
+    sees a few dominant units and many cheap ones: fewer, wider colours, the dominant units on the
+    most ranks. Under an *auto* determinant cap that moves the cap too, because the auto cap is what
+    the narrowest colour affords: on 40 units at 128 ranks the colours fall from ~37 to ~12 and the
+    cap rises ~3.5x (12-19M to 43-62M). Pin ``truncation_threshold`` to compare runs on the knob alone.
     Measured on SrMnO3 (iteration 1): 16 of 20 capped removal units are such low-weight states and
     ran ~700 blocks past the point where their weighted error was below tolerance.""",
 )

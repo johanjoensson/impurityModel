@@ -190,8 +190,14 @@ recomputes everything below from them.
 | change | effect | state |
 |---|---|---|
 | `GF_WEIGHTED_TOL` (+ `GF_WEIGHTED_TOL_CEILING`) | each unit converges to `tol * w_max / w_n`, per axis, clamped; cost weights follow | opt-in |
-| direct CSC assembly, `local_columns`, early CSR | peak per stored element 83 -> ~49 B; `_CSR_BYTES_PER_ELEMENT` 80 -> 60 (held by a test) | always on; same matrix |
+| direct CSC assembly, `local_columns`, early CSR | peak per stored element 83 -> ~49 B; `_CSR_BYTES_PER_ELEMENT` 80 -> 60 (held by a test). The fit *decision* moves less than the peak: 3 ranks at 60 B asks for what 4 ranks at 80 B did, so a 3-rank colour can still be declined | always on; same matrix |
 | CSR decision line, strided fan-out sample | the accept/decline line prints determinants, fan-out, need, RSS, budget | always on |
+
+`GF_WEIGHTED_TOL` also changes the colour layout: the cost weights give ~12 wide colours instead of ~37, and
+an auto cap (the narrowest colour's affordance) rises ~3.5x, 12-19M to 43-62M at 128 ranks. That cap is sized
+for the sparse path (~6.2M determinants per rank) and exceeds what the CSR holds per rank (~3-5M), so a unit
+reaching it can be declined. A CSR-aware auto cap was considered and refuted as the first fix (it lowers the
+cap for every unit); it is the open item that this layout change makes pressing.
 
 `GF_WEIGHTED_TOL` does not shorten the wall by itself: the dominant units keep their tolerance. The remaining
 critical path is a dominant unit that converges *below* the cap (unit 10: 11.4M determinants, 509 blocks,
