@@ -84,3 +84,12 @@ def test_the_bath_fit_provenance_is_not_flagged(tmp_path):
         **{"solver line": "3 4 8 linked_chain", "impurityModel version": "1.0"},
     )
     assert load_workload(path)["ignored_attrs"] == []
+
+
+def test_the_kernel_the_archive_recorded_is_the_one_replayed(tmp_path):
+    """An archive written by a bicgstab run was once replayed as Lanczos, and its attribute counted as consumed."""
+    recorded = load_workload(_archive(tmp_path / "b.h5", gf_method="bicgstab"))
+    assert recorded["gf_method"] == "bicgstab"
+    assert build_options(recorded)[3].gf_method == "bicgstab"
+    assert build_options(recorded, gf_method="lanczos")[3].gf_method == "lanczos", "an explicit choice still wins"
+    assert build_options(load_workload(_archive(tmp_path / "u.h5")))[3].gf_method == "lanczos", "unrecorded: Lanczos"

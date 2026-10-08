@@ -203,7 +203,7 @@ def _subsample(mesh, n):
 
 def build_options(
     workload,
-    gf_method="lanczos",
+    gf_method=None,
     reort="archive",
     truncation_threshold="archive",
     dN="archive",
@@ -219,8 +219,11 @@ def build_options(
     starts (and diff that against the production run's option table). Every solver-relevant attribute the
     archive recorded is passed on, the excitation budget included; an attribute the archive does not record
     is left to the library default. Arguments as in :func:`run_selfenergy`; ``gf_min_weight=None`` takes the
-    archive's value (``None`` when unrecorded).
+    archive's value (``None`` when unrecorded), and so does ``gf_method=None`` (``"lanczos"`` when unrecorded):
+    an archive written by a ``bicgstab`` run is not silently replayed as Lanczos.
     """
+    if gf_method is None:
+        gf_method = workload.get("gf_method") or "lanczos"
     from impurityModel.ed import atomic_physics
     from impurityModel.ed.lie_algebra import tensors_to_operator
     from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
@@ -272,7 +275,7 @@ def build_options(
 def run_selfenergy(
     workload,
     comm=None,
-    gf_method="lanczos",
+    gf_method=None,
     reort="archive",
     truncation_threshold="archive",
     dN="archive",
@@ -289,8 +292,8 @@ def run_selfenergy(
     ----------
     workload : dict
         From :func:`load_workload`.
-    gf_method : str
-        ``"lanczos"`` or ``"bicgstab"``.
+    gf_method : str, optional
+        ``"lanczos"`` or ``"bicgstab"``; ``None`` (default) takes the archive's recorded kernel.
     reort, truncation_threshold, dN
         ``"archive"`` keeps the recorded production setting; anything else overrides it
         (``dN`` bounds the excited-sector occupation window -- FCC Ni production runs
