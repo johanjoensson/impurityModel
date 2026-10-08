@@ -10,7 +10,6 @@ these kernels lives in :mod:`impurityModel.ed.gf_units`; the top-level assembly 
 in :mod:`impurityModel.ed.greens_function`.
 """
 
-import itertools
 import time
 from typing import Optional
 
@@ -48,7 +47,7 @@ from impurityModel.ed.gf_primitives import (
 )
 from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
-from impurityModel.ed.memory_estimate import current_rss_bytes
+from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 
 comm = MPI.COMM_WORLD
@@ -288,9 +287,10 @@ def _array_block_lanczos(
         # (reduced to rank 0), which the kernel cannot store in its N_local-row buffer --
         # "could not broadcast (970,9) into (273,9)" on every colour spanning two or more ranks
         # (review ledger M1; RIXS R3 at 128 ranks on the cluster).
-        H = build_sparse_matrix(basis, hOp)
-        if comm is not None:
-            H = H[:, basis.local_indices]
+        # Only this rank's columns are ever built (`local_columns`), and the CSR the kernel wants is
+        # made here so the CSC is freed before the recurrence: the kernel's own `tocsr()` would
+        # otherwise run beside it, and this frame would keep both alive for the whole run.
+        H = build_sparse_matrix(basis, hOp, local_columns=True).tocsr()
         kernel_comm = comm
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0 until the continued fraction converges or
@@ -383,9 +383,11 @@ def _expansion_probe_columns(Q, widths, *, tail_only):
 
 #: Local determinants whose ``H`` images estimate the frozen CSR's fan-out for the memory check.
 _CSR_FANOUT_SAMPLE = 256
-#: Upper bound on the bytes one matrix element costs during and after the CSR build: the COO
-#: triplet (8 + 8 + 16), the CSC it becomes (8 + 16) and the rank's column slice of it (8 + 16).
-_CSR_BYTES_PER_ELEMENT = 80
+#: Upper bound on the bytes one stored matrix element costs at the build's peak, which is the
+#: conversion of the assembled CSC (8 + 16) to the CSR (8 + 16) the kernel runs on. Measured by
+#: ``test_the_peak_stays_below_the_budgeted_bytes_per_element`` (about 50 B/element, 83 before the
+#: CSC was assembled directly), so the test keeps this an upper bound.
+_CSR_BYTES_PER_ELEMENT = 60
 #: Upper bound on the bytes one element of a build batch holds before its lookup: the bra's key
 #: object plus its column and value.
 _CSR_BATCH_BYTES_PER_ELEMENT = 160
@@ -394,27 +396,43 @@ _CSR_BATCH_BYTES_PER_ELEMENT = 160
 _CSR_INITIAL_BLOCKS = 256
 
 
-def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm):
+def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None):
     """Collective: does the frozen ``P H P`` CSR fit the GF memory budget on every rank?
 
     No budget (the guard is off) always fits. Otherwise the per-rank cost is estimated from the
-    mean ``H`` image size of a sample of local determinants -- an upper bound on the in-``P``
+    mean ``H`` image size of a strided sample of local determinants -- an upper bound on the in-``P``
     nonzeros -- and compared with the budget left above the current RSS. Every rank enters the
-    one reduction whatever its own count (an empty rank estimates 0).
+    reductions whatever its own count (an empty rank estimates 0).
+
+    ``report``, if a dict, is filled with the numbers the decision used, reduced over ``comm`` (the
+    maxima: the decision is taken on the worst rank): ``n_local``, ``fanout``, ``need``, ``rss``
+    and ``budget``. It adds one reduction, so it is passed or not identically on every rank.
     """
     if memory_budget is None:
         return True
     n_local = len(frozen_basis.local_basis)
+    # A stride over the sorted local basis, not its first states: those share their leading-orbital
+    # occupation, so their fan-out is not the basis's.
+    positions = ()
+    if n_local:
+        positions = np.unique(np.linspace(0, n_local - 1, min(_CSR_FANOUT_SAMPLE, n_local)).astype(np.int64))
     sampled = elements = 0
-    for image in itertools.islice(iter_local_operator_images(frozen_basis, hOp, 0), _CSR_FANOUT_SAMPLE):
+    for image in iter_local_operator_images(frozen_basis, hOp, 0, indices=positions):
         sampled += 1
         elements += len(image)
     fanout = elements / sampled if sampled else 0.0
     batch = min(basis_transcription._SPARSE_BUILD_BATCH, n_local * fanout)
     need = n_local * fanout * _CSR_BYTES_PER_ELEMENT + batch * _CSR_BATCH_BYTES_PER_ELEMENT
-    over = current_rss_bytes() + need > memory_budget
+    rss = current_rss_bytes()
+    over = rss + need > memory_budget
     if comm is not None and comm.size > 1:
         over = comm.allreduce(bool(over), op=MPI.LOR)
+        if report is not None:
+            worst = np.array([n_local, fanout, need, rss], dtype=np.float64)
+            comm.Allreduce(MPI.IN_PLACE, worst, op=MPI.MAX)
+            n_local, fanout, need, rss = int(worst[0]), float(worst[1]), float(worst[2]), float(worst[3])
+    if report is not None:
+        report.update(n_local=n_local, fanout=fanout, need=need, rss=rss, budget=memory_budget)
     return not over
 
 
@@ -428,15 +446,27 @@ def _frozen_csr_basis(proxy, basis, hOp, verbose):
         return None
     comm = basis.comm
     frozen_basis = basis.clone_from_keys(proxy.retained_mask)
-    if _frozen_csr_fits(frozen_basis, hOp, proxy.memory_budget, comm):
-        return frozen_basis
+    report: dict = {}
+    fits = _frozen_csr_fits(frozen_basis, hOp, proxy.memory_budget, comm, report=report)
     if verbose and (comm is None or comm.rank == 0):
-        print(
-            f"GF basis frozen at {frozen_basis.size:,} determinants: the P H P matrix would not fit the "
-            "memory budget, so the recurrence continues on the sparse kernel.",
-            flush=True,
+        # What the decision used, so a decline can be checked against the measured peak instead of
+        # backed out of VmHWM afterwards (the iteration-2 declines at 6-7 ranks could not be).
+        used = (
+            f" [worst rank: {report['n_local']:,} local determinants x fan-out {report['fanout']:.1f} -> "
+            f"need {format_bytes(report['need'])} on top of RSS {format_bytes(report['rss'])}; "
+            f"budget {format_bytes(report['budget'])}]"
+            if report
+            else ""
         )
-    return None
+        if fits:
+            print(f"GF basis frozen at {frozen_basis.size:,} determinants: the P H P matrix fits{used}.", flush=True)
+        else:
+            print(
+                f"GF basis frozen at {frozen_basis.size:,} determinants: the P H P matrix would not fit the "
+                f"memory budget, so the recurrence continues on the sparse kernel{used}.",
+                flush=True,
+            )
+    return frozen_basis if fits else None
 
 
 def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, eval_meshes, info, verbose, blocks_hint):

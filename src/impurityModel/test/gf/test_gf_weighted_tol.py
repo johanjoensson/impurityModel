@@ -14,6 +14,7 @@ weighted error was below tolerance. These tests pin the contract:
 import contextlib
 import dataclasses
 import io
+import itertools
 
 import numpy as np
 import pytest
@@ -60,7 +61,7 @@ def test_a_degenerate_weight_leaves_the_tolerances_alone(bad):
 def test_the_helper_is_monotone_in_the_weight():
     weights = [1.0, 0.5, 1e-2, 1e-4, 1e-8]
     tols = [_weighted_axis_tols((1e-9, 1e-9), w, 1.0, 1e-4)[0] for w in weights]
-    assert all(a <= b for a, b in zip(tols, tols[1:]))
+    assert all(a <= b for a, b in itertools.pairwise(tols))
 
 
 # --- get_Greens_function -------------------------------------------------------------------------

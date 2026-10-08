@@ -432,6 +432,70 @@ def test_the_csr_fit_check_compares_the_estimate_with_the_budget(monkeypatch):
     assert not gf_solvers._frozen_csr_fits(basis, _siam_6(), 10**9 + 1, None)
 
 
+def test_the_csr_fit_check_reports_what_it_decided_on(monkeypatch):
+    from impurityModel.ed import gf_solvers
+
+    basis = _excited_basis(np.inf)
+    monkeypatch.setattr(gf_solvers, "current_rss_bytes", lambda: 10**9)
+    report = {}
+    assert gf_solvers._frozen_csr_fits(basis, _siam_6(), 10**10, None, report=report)
+    assert report["n_local"] == len(basis.local_basis)
+    assert report["rss"] == 10**9 and report["budget"] == 10**10
+    assert report["fanout"] > 0.0
+    batch = min(gf_solvers.basis_transcription._SPARSE_BUILD_BATCH, report["n_local"] * report["fanout"])
+    expected = (
+        report["n_local"] * report["fanout"] * gf_solvers._CSR_BYTES_PER_ELEMENT
+        + batch * gf_solvers._CSR_BATCH_BYTES_PER_ELEMENT
+    )
+    assert report["need"] == pytest.approx(expected)
+    # The guard off decides nothing, so there is nothing to report.
+    empty = {}
+    assert gf_solvers._frozen_csr_fits(basis, _siam_6(), None, None, report=empty)
+    assert empty == {}
+
+
+@pytest.mark.mpi
+def test_the_csr_fit_check_runs_on_every_rank_including_empty_ones(monkeypatch):
+    """A rank that owns no determinant still enters both reductions, and all ranks agree."""
+    from impurityModel.ed import gf_solvers
+
+    comm = MPI.COMM_WORLD
+    basis = _excited_basis(np.inf, comm=comm)
+    monkeypatch.setattr(gf_solvers, "current_rss_bytes", lambda: 10**9)
+    for budget in (10**10, 10**9 + 1):
+        report = {}
+        fits = gf_solvers._frozen_csr_fits(basis, _siam_6(), budget, comm, report=report)
+        assert len(set(comm.allgather(fits))) == 1, "the decision must be the same on every rank"
+        reports = comm.allgather(report)
+        assert all(r == reports[0] for r in reports), "the report is the reduced worst case, identical everywhere"
+        assert reports[0]["n_local"] == max(comm.allgather(len(basis.local_basis)))
+    assert fits is False and reports[0]["need"] > 1
+
+
+@pytest.mark.mpi
+def test_a_decision_line_is_printed_on_accept_and_decline(monkeypatch, capsys):
+    from impurityModel.ed import gf_solvers
+
+    comm = MPI.COMM_WORLD
+    basis = _excited_basis(np.inf, comm=comm)
+    monkeypatch.setattr(gf_solvers, "current_rss_bytes", lambda: 10**9)
+
+    class _Proxy:
+        memory_frozen = False
+        retained_mask = None
+
+    monkeypatch.setattr(type(basis), "clone_from_keys", lambda self, mask: self, raising=False)
+    for budget, phrase in ((10**10, "matrix fits"), (10**9 + 1, "would not fit")):
+        proxy = _Proxy()
+        proxy.memory_budget = budget
+        capsys.readouterr()
+        result = gf_solvers._frozen_csr_basis(proxy, basis, _siam_6(), True)
+        out = capsys.readouterr().out
+        assert (result is not None) == (phrase == "matrix fits")
+        if comm.rank == 0:
+            assert phrase in out and "worst rank" in out and "fan-out" in out
+
+
 @pytest.mark.mpi
 @pytest.mark.parametrize("chunks", ["1", "4"])
 def test_frozen_csr_mpi_matches_the_sparse_kernel(chunks, monkeypatch):
