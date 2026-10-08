@@ -26,6 +26,7 @@ from impurityModel.ed.gf_convergence import (  # noqa: F401  -- re-exported for 
     _greens_function_change,
     _lanczos_convergence_summary,
     _make_gf_convergence_monitor,
+    _weighted_axis_tols,
 )
 from impurityModel.ed.gf_engine import (
     combine_sides,
@@ -427,6 +428,17 @@ def get_Greens_function(
         config.GF_TOL.get() if gf_tol is None else gf_tol,
         config.GF_REAL_TOL.get() if gf_real_tol is None else gf_real_tol,
     )
+    # GF_WEIGHTED_TOL: loosen the tolerance of low-weight eigenstates' units (their error enters G
+    # multiplied by the weight). Rank 0's environment decides and is broadcast, so every rank of a
+    # color derives identical tolerances -- a per-rank difference would desynchronise the monitor's
+    # collectives. The bcast is unconditional on a communicator.
+    weighted_tol = (config.GF_WEIGHTED_TOL.get(), config.GF_WEIGHTED_TOL_CEILING.get())
+    if basis.comm is not None:
+        weighted_tol = basis.comm.bcast(weighted_tol, root=0)
+    use_weighted_tol = bool(weighted_tol[0]) and gf_method == "lanczos"
+    if use_weighted_tol:
+        thermal_weights = ThermalEnsemble(es, tau).weights
+        max_thermal_weight = float(np.max(thermal_weights))
     # Excited-sector restrictions are independent of the orbital block and of the spectral side
     # (the dN occupation window is symmetric and spans all impurity orbitals), so build them once
     # on the full basis instead of per block.
@@ -515,6 +527,17 @@ def get_Greens_function(
             gf_admit_tol=gf_admit_tol,
         )
 
+    def unit_axis_tols(unit):
+        """This unit's per-axis tolerances: ``axis_tols``, loosened by its thermal weight if enabled."""
+        if not use_weighted_tol:
+            return axis_tols
+        return _weighted_axis_tols(
+            axis_tols,
+            float(max(thermal_weights[ei] for ei in unit.chunk)),
+            max_thermal_weight,
+            weighted_tol[1],
+        )
+
     def eval_meshes_for(unit):
         # Converge G where this unit's G will actually be evaluated: the caller's meshes, shifted
         # by each thermal energy the unit stacks and signed by its spectral side. Without this the
@@ -526,7 +549,7 @@ def get_Greens_function(
             group_meta[unit.group_i][1],
             delta,
             [es[ei] for ei in unit.chunk],
-            axis_tols=axis_tols,
+            axis_tols=unit_axis_tols(unit),
         )
 
     kernel = lanczos_unit_kernel(
@@ -596,13 +619,25 @@ def get_Greens_function(
                 if retained is not None and (stats["retained_size"] is None or retained < stats["retained_size"]):
                     stats["retained_size"] = retained
             cstats = conv_acc.setdefault(
-                block_i, {"converged": True, "d_g": 0.0, "n_blocks": 0, "tol": conv_stats.get("tol", np.nan)}
+                block_i,
+                {
+                    "converged": True,
+                    "d_g": 0.0,
+                    "n_blocks": 0,
+                    # Under GF_WEIGHTED_TOL the units' own tolerances differ, so the block reports
+                    # against the base (strictest) one and each unit's d_g is rescaled to it below.
+                    "tol": min(axis_tols) if use_weighted_tol else conv_stats.get("tol", np.nan),
+                },
             )
             cstats["converged"] = cstats["converged"] and bool(conv_stats.get("converged", True))
             # A trivially-converged (empty seed) unit reports d_g=nan -- it made no measurement,
             # so it must not poison the block's worst-case max with a NaN.
             unit_d_g = conv_stats.get("d_g")
             if unit_d_g is not None and not np.isnan(unit_d_g):
+                if use_weighted_tol and conv_stats.get("tol"):
+                    # d_g / (this unit's tol / base tol): 1.0 for a dominant unit, so a unit that
+                    # met its loosened tolerance does not read as unconverged against the base.
+                    unit_d_g = unit_d_g * (cstats["tol"] / conv_stats["tol"])
                 cstats["d_g"] = max(cstats["d_g"], unit_d_g)
             cstats["n_blocks"] = max(cstats["n_blocks"], conv_stats.get("n_blocks", 0))
 
@@ -666,9 +701,22 @@ def get_Greens_function(
             # solver never had to (and didn't) resolve, e.g. outside the omega window.
             # A real-axis band measure, so it is judged at the real-axis tolerance.
             band_tol = axis_tols[1]
-            conv_add = _lanczos_convergence_summary(a_add, b_add, delta, tol=band_tol)
-            conv_rem = _lanczos_convergence_summary(a_rem, b_rem, -delta, tol=band_tol)
-            diags.append(_gfd.check_lanczos_band_resolution(max(conv_add[1], conv_rem[1]), band_tol))
+            if use_weighted_tol:
+                # Per eigenstate, in units of that state's loosened real-axis tolerance, so the
+                # light states (stopped early by design) do not WARN against the dominant state's.
+                band_value = 0.0
+                for ei in range(len(es)):
+                    state_tol = _weighted_axis_tols(
+                        axis_tols, float(thermal_weights[ei]), max_thermal_weight, weighted_tol[1]
+                    )[1]
+                    for a_s, b_s, sgn in ((a_add, b_add, delta), (a_rem, b_rem, -delta)):
+                        d_band = _lanczos_convergence_summary([a_s[ei]], [b_s[ei]], sgn, tol=band_tol)[1]
+                        band_value = max(band_value, d_band * (band_tol / state_tol))
+            else:
+                conv_add = _lanczos_convergence_summary(a_add, b_add, delta, tol=band_tol)
+                conv_rem = _lanczos_convergence_summary(a_rem, b_rem, -delta, tol=band_tol)
+                band_value = max(conv_add[1], conv_rem[1])
+            diags.append(_gfd.check_lanczos_band_resolution(band_value, band_tol))
             if G_IPS_real is not None:
                 diags.append(_gfd.check_mesh_density(omega_mesh, delta))
                 diags.append(

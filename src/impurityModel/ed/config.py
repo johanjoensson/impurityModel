@@ -520,6 +520,33 @@ GF_TOL = Knob(
     move ``G`` by less than this, relative to ``max|G|`` on the axis.""",
 )
 
+GF_WEIGHTED_TOL = Knob(
+    name="GF_WEIGHTED_TOL",
+    kind="bool",
+    default=False,
+    group="convergence",
+    doc="""Scale each Green's-function unit's convergence tolerance by the thermal weight of the
+    eigenstate it solves. ``G = sum_n w_n G_n``, so an error in ``G_n`` enters ``G`` multiplied by
+    ``w_n``; a state at ``w_n = 5e-5`` converged to the dominant state's ``1e-9`` carries a weighted
+    error 20000x below anything that reaches ``G``. With this on, a unit's tolerance on each axis
+    becomes ``max(tol, min(tol * w_max / w_n, GF_WEIGHTED_TOL_CEILING))`` (an axis already looser
+    than the ceiling is not tightened). A truncated Lanczos ``G_n`` stays causal and moment-exact.
+    Lanczos kernel only. Not ``gf_min_weight``, which drops states. Read on rank 0 and broadcast.
+    Measured on SrMnO3 (iteration 1): 16 of 20 capped removal units are such low-weight states and
+    ran ~700 blocks past the point where their weighted error was below tolerance.""",
+)
+
+GF_WEIGHTED_TOL_CEILING = Knob(
+    name="GF_WEIGHTED_TOL_CEILING",
+    kind="float",
+    default=1e-4,
+    group="convergence",
+    doc="""Upper bound on a unit's loosened tolerance under ``GF_WEIGHTED_TOL``. The scaling
+    ``tol * w_max / w_n`` is unbounded for a state with a vanishing weight; this keeps it from
+    stopping a unit before its spectrum has any shape. Never tightens an axis whose own tolerance
+    is already above it.""",
+)
+
 GF_REAL_TOL = Knob(
     name="GF_REAL_TOL",
     kind="float",
@@ -1124,6 +1151,8 @@ KNOBS: dict[str, Knob] = _register(
     GF_NEAR_FACTOR,
     GF_TOL,
     GF_REAL_TOL,
+    GF_WEIGHTED_TOL,
+    GF_WEIGHTED_TOL_CEILING,
     GF_SECTOR_DENSE_MAX,
     GF_SECTOR_CACHE_DIR,
     GF_KRYLOV_RECYCLE_MAX_BYTES,
