@@ -619,6 +619,18 @@ def get_Greens_function(
                 stats["seed_frozen"] = True
             if cap_stats.get("memory_frozen"):
                 stats["memory_frozen"] = True
+            if cap_stats.get("stagnation_frozen"):
+                # Kept apart from the cap's retained_size: a block can hold both kinds of unit, and the
+                # stagnation diagnostic reports its own smallest support and largest boundary weight.
+                retained = cap_stats.get("retained_size")
+                if not stats.get("stagnation_frozen") or (
+                    retained is not None and retained < stats["stagnation_retained"]
+                ):
+                    stats["stagnation_retained"] = retained
+                stats["stagnation_frozen"] = True
+                leak = cap_stats.get("stagnation_leakage")
+                if leak is not None:
+                    stats["stagnation_leakage"] = max(stats.get("stagnation_leakage", 0.0), leak)
             if cap_stats["cap_hit"]:
                 stats["cap_hit"] = True
                 stats["cap"] = cap_stats["cap"]
@@ -689,6 +701,14 @@ def get_Greens_function(
                         memory_frozen=block_cap.get("memory_frozen", False),
                     )
                 )
+                if block_cap.get("stagnation_frozen"):
+                    diags.append(
+                        _gfd.check_stagnation_freeze(
+                            block_cap.get("stagnation_retained"),
+                            block_cap.get("stagnation_leakage"),
+                            config.GF_STAGNATION_FREEZE.get(),
+                        )
+                    )
             # The sum rule holds for the plain c/c^dag part of a family: its leading len(block) columns.
             n_c = len(block)
             if widths[block_i] != n_c:

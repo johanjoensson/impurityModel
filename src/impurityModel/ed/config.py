@@ -469,6 +469,56 @@ GF_FROZEN_CSR = Knob(
     kernel then continues as before. ``0`` disables it.""",
 )
 
+GF_STAGNATION_FREEZE = Knob(
+    name="GF_STAGNATION_FREEZE",
+    kind="float",
+    default=None,
+    group="units",
+    doc="""Switch a Green's-function unit to the frozen ``P H P`` CSR once the weight reaching new
+    determinants has died away, not only when it reaches the determinant cap. The sparse kernel applies ``H``
+    to every retained row on every block (89-123 rank-s per block on the SrMnO3 cubic run) where the CSR
+    costs one SpMV (7-9); a unit that converges *below* the cap never froze, so it ran sparse to the end
+    (unit 10: 11.4M determinants, 509 blocks, 14 ks on 3 ranks). Unset (default) keeps today's behaviour.
+
+    Set to a fraction ``f``: each matvec's squared norm is split into the part on rows
+    already in the retained set ``P`` and the part on rows outside it, which is what the support would have
+    grown by and what a freeze drops. When that outside fraction, averaged over a window of
+    ``GF_STAGNATION_WINDOW`` blocks, stays below ``f`` for two consecutive windows, the unit freezes at the
+    current support and restarts from the seeds as the exact block Lanczos of ``P H P`` -- the same
+    mathematics as the cap freeze, with ``P`` the support reached so far. It counts the weight, not the
+    number of determinants: a support can keep growing by thousands of rows that carry a vanishing share of
+    the amplitude, and can stall with a few rows that carry O(1).
+
+    **Choosing ``f``: it has a floor.** Every row the apply returns has ``|amp| >= slaterWeightMin``, so the
+    weight on new rows is either exactly 0 (the support is saturated) or at least ``slaterWeightMin**2`` times
+    the number of new rows, over the matvec's norm. With the production 1.5e-8 that is ~1e-15 per row; on the
+    SMO units it plateaus at 1e-13 to 1e-14 while the support still grows 8-28 % per window. ``f`` must sit
+    above that plateau to freeze before saturation and below the weight that matters to ``G``; there is no
+    canonical value, so read it off the ``f = 0`` log and compare ``Sigma`` with and without the freeze.
+
+    **This is a truncation.** What later blocks would have admitted is dropped, so ``G`` is exact on ``P``
+    only; the report's ``stagnation_freeze`` line says so and carries the measured fraction. It applies to
+    every unit, the dominant (heavily weighted) states included, so compare ``Sigma`` with and without it
+    before trusting the saving. It is taken only if the CSR fits the memory budget, and not once the unit is
+    within two decades of its own tolerance (the restart recomputes every block, so a late freeze loses).
+    Lanczos with ``reort='none'`` only, and it needs ``GF_FROZEN_CSR`` and a finite cap or a memory budget;
+    a unit it cannot apply to logs why at ``-vv``. Seen chunk by chunk (``GF_APPLY_ROW_CHUNKS``), the weight
+    is an indicator: a row split across chunks is counted from its partial sums. ``0`` measures and logs the
+    weight each window without ever freezing, which is how to choose ``f``.""",
+)
+
+GF_STAGNATION_WINDOW = Knob(
+    name="GF_STAGNATION_WINDOW",
+    kind="int",
+    default=32,
+    minimum=4,
+    group="units",
+    doc="""Blocks per window of ``GF_STAGNATION_FREEZE``. The recurrence is resumed every window (bit-identical
+    at ``reort='none'``: the resume protocol carries the two-block tail), and the boundary weight is averaged
+    over one window; two quiet windows in a row are needed, so the earliest freeze is at ``2 x window``
+    blocks. Each resume round-trips the two live blocks through states, so keep it at 16 or more.""",
+)
+
 GF_PER_STATE_RESTRICT = Knob(
     name="GF_PER_STATE_RESTRICT",
     kind="bool",
@@ -1152,6 +1202,8 @@ KNOBS: dict[str, Knob] = _register(
     GF_APPLY_ROW_CHUNKS,
     GF_FROZEN_CSR,
     GF_SCHEDULER,
+    GF_STAGNATION_FREEZE,
+    GF_STAGNATION_WINDOW,
     GF_PER_STATE_RESTRICT,
     GF_CHECK_EVERY,
     GF_NEAR_FACTOR,

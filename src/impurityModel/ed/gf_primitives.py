@@ -245,6 +245,12 @@ class _CappedBasisProxy:
     #: froze the support (see :func:`gf_solvers.block_Green_sparse`'s frozen-basis CSR
     #: fallback). Off by default: every other user of the proxy runs on through the freeze.
     stop_on_freeze = False
+    #: Set by :meth:`freeze_for_stagnation`: the support was frozen below its cap because the weight reaching
+    #: new rows had died away (``GF_STAGNATION_FREEZE``), not because the cap bound.
+    stagnation_frozen = False
+    #: Measure the weight of the rows each matvec would add (see :meth:`track_leakage`). Off by default:
+    #: the hot path then pays nothing and is bit-identical to a proxy that never had the option.
+    _track_leakage = False
 
     def __init__(self, basis, cap, memory_budget=None, memory_policy="tighten"):
         """``memory_budget`` (absolute per-rank bytes, ``None`` = off, the default) adds a measured
@@ -275,6 +281,8 @@ class _CappedBasisProxy:
         self._frozen = self._global_count >= self.cap
         self.cap_hit = self._frozen
         self._verbose_freeze_logged = False
+        self._leak_new = 0.0
+        self._leak_total = 0.0
 
     # --- attributes block_lanczos_cy reads off its basis ---------------------
     @property
@@ -342,6 +350,29 @@ class _CappedBasisProxy:
             return value
         return self.comm.allreduce(value, op=MPI.SUM)
 
+    def _allreduce_array(self, values, op):
+        """Elementwise reduction of a short float vector over the colour. Uppercase ``Allreduce`` on an
+        array: the lowercase one raises on one rank only for ndarray payloads (mpi4py), which deadlocks."""
+        out = np.array(values, dtype=np.float64)
+        if self.comm is not None and self.comm.size > 1:
+            self.comm.Allreduce(MPI.IN_PLACE, out, op=op)
+        return out
+
+    def track_leakage(self):
+        """Start measuring, on every matvec output, the weight that lands on rows outside the retained set.
+
+        ``leakage`` is then the fraction of the matvec's squared norm that the support would have grown
+        by: exactly the amplitude a freeze drops. Counted chunk by chunk (``GF_APPLY_ROW_CHUNKS``), so a
+        row split across chunks is seen as its partial sums -- an indicator, not an exact norm. Replicated:
+        every rank must call this, and read :meth:`pop_leakage`, at the same points."""
+        self._track_leakage = True
+
+    def pop_leakage(self):
+        """``(new_weight, total_weight)`` accumulated since the last call; resets both. Replicated."""
+        out = (self._leak_new, self._leak_total)
+        self._leak_new = self._leak_total = 0.0
+        return out
+
     def _over_memory_budget(self):
         """Collective (on the color's comm) when the guard is on: is the color's MAX RSS at budget?
 
@@ -396,7 +427,20 @@ class _CappedBasisProxy:
             self.memory_frozen = True
             block.keep_rows(self._mask)
             return block
-        n_new = self._allreduce_sum(len(block) - block.count_rows_in(self._mask))
+        n_new = len(block) - block.count_rows_in(self._mask)
+        if self._track_leakage:
+            # The new rows' weight (max column |amp|^2 per row, exact for the width-1 blocks a GF unit
+            # runs) against the whole output's, in the same collective as the count. The widest block on
+            # any rank sets the column count, as a rank with no rows may hold a width-0 zero.
+            new_weight = float(np.sum(block.new_row_max_norms2(self._mask))) if n_new else 0.0
+            total = float(np.sum(block.col_norm2()))
+            summed = self._allreduce_array([n_new, new_weight, total], MPI.SUM)
+            width = max(float(self._allreduce_array([block.width], MPI.MAX)[0]), 1.0)
+            n_new = round(summed[0])
+            self._leak_new += float(summed[1])
+            self._leak_total += float(summed[2]) / width
+        else:
+            n_new = self._allreduce_sum(n_new)
         if self._global_count + n_new <= self.cap:
             self._mask.merge_keys(block)
             self._global_count += n_new
@@ -423,9 +467,22 @@ class _CappedBasisProxy:
         self._frozen = True
         self.cap_hit = True
 
+    def freeze_for_stagnation(self):
+        """Freeze the retained set where it stands, because the weight reaching new rows has died away.
+
+        The same state a cap hit leaves -- nothing new is admitted from here on, so the recurrence is the
+        exact block Lanczos of ``P H P`` -- except ``cap_hit`` stays as it was: the cap did not bind.
+        Not collective, but every rank must call it on the same step, which its caller guarantees by
+        deciding from the replicated leakage."""
+        self._frozen = True
+        self.stagnation_frozen = True
+
     def freeze_message(self):
         """One-line description of the cap state (rank-0 logging)."""
-        why = "the measured-memory guard" if self.memory_frozen else f"the cap of {self.cap:,}"
+        if self.stagnation_frozen:
+            why = "the weight reaching new determinants having died away (GF_STAGNATION_FREEZE)"
+        else:
+            why = "the measured-memory guard" if self.memory_frozen else f"the cap of {self.cap:,}"
         return (
             f"GF basis frozen at {self._global_count:,} determinants by {why}; the Green's "
             "function is exact on the retained subspace."

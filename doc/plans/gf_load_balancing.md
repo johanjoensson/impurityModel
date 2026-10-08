@@ -203,12 +203,46 @@ cap for every unit); it is the open item that this layout change makes pressing.
 critical path is a dominant unit that converges *below* the cap (unit 10: 11.4M determinants, 509 blocks,
 sparse throughout), which no placement or CSR change reaches.
 
+### Stagnation freeze (`GF_STAGNATION_FREEZE`, opt-in)
+
+Unit 10 converged at 11.4M determinants, below the 12.4M cap, so it never froze and ran the sparse kernel for
+509 blocks. The knob freezes a unit at its current support, and restarts it on the CSR, once the weight
+reaching new rows has died away.
+
+- **The criterion is the weight, not the determinant count.** Each matvec's squared norm is split into the
+  part on rows already in the support and the part outside it (`_CappedBasisProxy.track_leakage`, from
+  `new_row_max_norms2` and `col_norm2`, in the same collective as the existing count). The outside fraction,
+  averaged over a window of `GF_STAGNATION_WINDOW` blocks, must stay below `f` for two windows in a row.
+  A first version used the relative growth of the count; three adversarial reviews (physics, numerics, code)
+  showed it measures how far the support reaches, not how much arrives: on the weakly-coupled test model
+  (`slaterWeightMin = 0`) the count grows +124 %, +71 %, +39 % per window while the weight on new rows falls
+  3e-13, 7e-21, 3e-23.
+- **The weight has a floor in production.** Every row the apply returns has |amp| >= `slaterWeightMin`
+  (1.5e-8), so it carries >= 2.2e-16: the weight is exactly 0 or ~(rows passing the cutoff) x 2.2e-16 over the
+  matvec's norm. The same model with the production cutoff plateaus at 1e-15 to 1e-14 and never reaches 1e-23;
+  the SMO units (local run, cap 300k) sit at 1e-13 to 1e-14 while the support grows 8-28 % per window. There is
+  therefore no canonical `f`: it must clear the plateau and stay below what matters to Sigma, so it is read
+  off the `f = 0` log. The cutoff already drops rows below it from every apply, so the freeze adds truncation
+  of the same kind, not a new kind.
+- **What it costs.** A truncation: what later blocks would have admitted is dropped; `G` is exact on the
+  support reached (causal, moments exact to the freeze depth). The report's `stagnation_freeze` line carries
+  the measured fraction. It applies to the dominant states too, so Sigma is graded with and without it.
+- **Guards.** The CSR must fit (asked once; a decline leaves the unit sparse and unfrozen); not within two
+  decades of the unit's tolerance (the restart recomputes every block from the seeds, ~1000 s of CSR at 12M
+  determinants, so with fewer than ~40 sparse blocks left it loses); `reort='none'` only (PARTIAL/SELECTIVE
+  windowing is not bit-identical: the forced-reort flag is per call); a plain capped proxy only. A unit it
+  cannot apply to says why at `-vv`.
+- **Cost.** The recurrence is resumed every window (bit-identical at `reort='none'`, tested); each resume
+  round-trips the two live blocks through states. Estimated 3 % of unit 10's wall at 32-block windows.
+- **Reading the curve first.** `GF_STAGNATION_FREEZE=0` logs the support and the weight each window and
+  never freezes: the kit's `growth` leg.
+
 ### Not done
 
-- **A stagnation freeze** for units like unit 10: switch to the CSR once the support has stopped growing.
-  It is an accuracy change, and the logs do not carry the support's growth per block.
-- **A cap stable across DMFT iterations** (12.4M, then 18.7M, moves Sigma for non-physical reasons).
-  Nothing persists it; `_auto_gf_caps` lives for one calculation.
+- **A cap stable across DMFT iterations** (12.4M, then 18.7M, moves Sigma for non-physical reasons):
+  deliberately not built. Nothing persists the cap; `_auto_gf_caps` lives for one calculation.
+- **A weight-aware stagnation threshold.** `f` applies to every unit alike; the low-weight states are already
+  stopped early by `GF_WEIGHTED_TOL`, and the dominant ones are the ones validation must watch.
 - **Heavy units on wider colours by design.** The cost weights now give the dominant units more ranks under
   `static`; the queue still uses equal widths.
 - **Sparse-kernel scaling beyond 4 ranks** is unmeasured (one data point).
