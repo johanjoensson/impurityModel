@@ -162,3 +162,47 @@ opt-out. Still open:
 - **The dimension count is bounded.** `window_dimension` gives up past 20,000 dynamic-program states
   (six random overlapping sets ran over a minute), and the queue then orders by seed mass. The
   solver's windows (disjoint or nested sets) count in milliseconds.
+
+## SMO cubic DFT+DMFT run, iteration 1 (2026-10-08, static scheduler, 128 ranks)
+
+A production run on the cluster commit 59a3fb1c, which predates the queue, so this is a static baseline.
+Per-rank logs: `~/Dokument/arrhenius/SMO/cubic/impmod/solver-it-1/`. `debug/gf_weighted_wide_kit/parse_utilisation.py`
+recomputes everything below from them.
+
+- **Utilisation was 13.0 %** (sum of colour width x busy time over ranks x the 29,114 s GF wall). 27 of 32
+  colours finished in 1-2 ks and waited ~27 ks.
+- **Five units set the wall,** all on 3-4-rank colours: the dominant doublet's removal units (w = 0.4998 each)
+  at 28.9, 19.9, 17.9 and 14.0 ks, plus one excited state at 19.0 ks. The 15 other capped units took the
+  frozen `P H P` CSR on 4-6 ranks in 1.2-2.0 ks. Sparse costs 89-123 rank-s per block; the CSR 7-9.
+- **The CSR was declined correctly.** The guard budget is `resident + 0.5 (avail - resident)`, 5.75 GiB per
+  rank here, and the one accepted 4-rank unit peaked at 5.5 GiB. A 3-rank colour at 12.4M needed ~6.9 GiB.
+  The fit estimate was accurate; the build's peak was the cost (about 88 B per stored element).
+- **Why those units were on 3 ranks.** The static packer weighs by seed mass x width, which ranks the dominant
+  states low. (Under the queue, equal-width colours of ~4 ranks sit at the same boundary.)
+- **16 of the 20 capped removal units were excited states** at w ~ 6e-5 (4e-4 of the ensemble in total),
+  converged to the same 1e-9 as the dominant states: ~700 blocks each, where ~40 carry their share of G.
+  15 of 17 froze at block 18-31 with delta between 1e-5 and 1e-3.
+- **Iteration 2 got worse:** the auto cap rose from 12.4M to 18.7M because the narrowest colour went from 2 to
+  3 ranks, and the CSR was declined on every colour of 6-7 ranks but four.
+
+### What changed (branch `gf-queue-scheduler`)
+
+| change | effect | state |
+|---|---|---|
+| `GF_WEIGHTED_TOL` (+ `GF_WEIGHTED_TOL_CEILING`) | each unit converges to `tol * w_max / w_n`, per axis, clamped; cost weights follow | opt-in |
+| direct CSC assembly, `local_columns`, early CSR | peak per stored element 83 -> ~49 B; `_CSR_BYTES_PER_ELEMENT` 80 -> 60 (held by a test) | always on; same matrix |
+| CSR decision line, strided fan-out sample | the accept/decline line prints determinants, fan-out, need, RSS, budget | always on |
+
+`GF_WEIGHTED_TOL` does not shorten the wall by itself: the dominant units keep their tolerance. The remaining
+critical path is a dominant unit that converges *below* the cap (unit 10: 11.4M determinants, 509 blocks,
+sparse throughout), which no placement or CSR change reaches.
+
+### Not done
+
+- **A stagnation freeze** for units like unit 10: switch to the CSR once the support has stopped growing.
+  It is an accuracy change, and the logs do not carry the support's growth per block.
+- **A cap stable across DMFT iterations** (12.4M, then 18.7M, moves Sigma for non-physical reasons).
+  Nothing persists it; `_auto_gf_caps` lives for one calculation.
+- **Heavy units on wider colours by design.** The cost weights now give the dominant units more ranks under
+  `static`; the queue still uses equal widths.
+- **Sparse-kernel scaling beyond 4 ranks** is unmeasured (one data point).

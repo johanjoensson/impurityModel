@@ -126,3 +126,57 @@ def test_on_moves_sigma_by_far_less_than_the_loosened_tolerance(monkeypatch):
             change = np.max(np.abs(on[key] - off[key])) / np.max(np.abs(off[key]))
             # Excited weight 3.3e-3 of the ensemble times a <=1e-4 relative error.
             assert change < 1e-6, f"{key}: {change:.3e}"
+
+
+# --- the cost weights the tolerances imply -------------------------------------------------------
+
+
+def test_expected_blocks_is_monotone_and_the_base_ratio_is_one():
+    from impurityModel.ed.gf_units import expected_blocks, tolerance_cost_ratios
+
+    tols = [1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4]
+    blocks = [expected_blocks(t) for t in tols]
+    assert all(a >= b for a, b in itertools.pairwise(blocks))
+    ratios = tolerance_cost_ratios(tols, 1e-9)
+    assert ratios[0] == 1.0 and np.all(ratios <= 1.0)
+
+
+def test_a_loosened_unit_weighs_what_the_srmno3_run_measured():
+    """~40 blocks at the loosened 8e-6 against ~700 at 1e-9 (SrMnO3 cubic, 2026-10-08)."""
+    from impurityModel.ed.gf_units import tolerance_cost_ratios
+
+    ratio = float(tolerance_cost_ratios([8e-6], 1e-9)[0])
+    assert 0.04 < ratio < 0.08
+
+
+def test_the_packer_gives_the_dominant_units_the_ranks():
+    """Equal seed mass would split 8 ranks evenly; the cost ratios send most to the two dominant units."""
+    from impurityModel.ed.basis_split import _pack_units
+    from impurityModel.ed.gf_units import tolerance_cost_ratios
+
+    seed_mass = np.ones(10)
+    tols = [1e-9, 1e-9] + [8e-6] * 8
+    equal_subgroups, equal_procs = _pack_units(seed_mass, 16, 1.0)
+    weighted_subgroups, weighted_procs = _pack_units(seed_mass * tolerance_cost_ratios(tols, 1e-9), 16, 1.0)
+    dominant = lambda subgroups, procs: max(int(p) for g, p in zip(subgroups, procs) if 0 in g or 1 in g)  # noqa: E731
+    assert dominant(weighted_subgroups, weighted_procs) > dominant(equal_subgroups, equal_procs)
+
+
+@pytest.mark.mpi
+def test_on_scales_the_dispatch_weights_of_the_low_weight_units_only(monkeypatch):
+    seen = {}
+    real = gf.run_units_distributed
+
+    def recording(basis, unit_seeds, unit_weights, *args, **kwargs):
+        seen["weights"] = np.array(unit_weights, dtype=float)
+        return real(basis, unit_seeds, unit_weights, *args, **kwargs)
+
+    monkeypatch.setattr(gf, "run_units_distributed", recording)
+    _run(monkeypatch, weighted=False)
+    off = seen["weights"]
+    _run(monkeypatch, weighted=True)
+    on = seen["weights"]
+    ratio = on / off
+    assert np.all(ratio <= 1.0 + 1e-12)
+    assert np.isclose(ratio.max(), 1.0), "the dominant units keep their weight exactly"
+    assert ratio.min() < 0.5, "an excited-state unit must weigh less"

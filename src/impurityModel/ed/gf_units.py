@@ -286,6 +286,30 @@ def unit_cost_weights(unit_seeds: list[list[ManyBodyState]], comm) -> np.ndarray
     return lengths * widths + 1.0
 
 
+#: Blocks a unit runs after it has frozen, or converged outright, at a tolerance of about 10**-5.1,
+#: and the further blocks each extra decade costs. Fitted to the SrMnO3 cubic run (128 ranks, 2026-10-08):
+#: states at w ~ 6e-5 reached a loosened ~8e-6 in ~40 blocks, and the dominant states needed ~700 to
+#: reach 1e-9. Only the *ratio* between units is used, to rank and weigh them.
+_BLOCKS_AT_FLOOR = 40.0
+_BLOCKS_PER_DECADE = 170.0
+_DECADES_AT_FLOOR = 5.1
+
+
+def expected_blocks(tol: float) -> float:
+    """Blocks a unit needs to converge to ``tol``, by the fit above. Monotone in ``tol``."""
+    decades = -np.log10(float(tol))
+    return _BLOCKS_AT_FLOOR + _BLOCKS_PER_DECADE * max(0.0, decades - _DECADES_AT_FLOOR)
+
+
+def tolerance_cost_ratios(unit_tols, base_tol: float) -> np.ndarray:
+    """Per-unit cost relative to a unit converged to ``base_tol``: ``expected_blocks`` ratios.
+
+    Exactly 1.0 for a unit at ``base_tol`` and at most 1.0 for the looser ones, so multiplying the
+    seed-mass weights by it leaves the dominant units' weights untouched.
+    """
+    return np.array([expected_blocks(t) for t in unit_tols]) / expected_blocks(base_tol)
+
+
 #: State bound for :func:`unit_sector_dimensions`' count (see ``window_dimension``): beyond it the
 #: queue falls back to the seed-mass weights rather than stall every rank at GF entry.
 _DIMENSION_MAX_STATES = 20_000

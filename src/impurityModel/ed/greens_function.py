@@ -54,6 +54,7 @@ from impurityModel.ed.gf_solvers import (  # noqa: F401  -- block_Green(_sparse)
 from impurityModel.ed.gf_units import (
     enumerate_gf_units,
     run_units_distributed,
+    tolerance_cost_ratios,
     unit_cost_weights,
 )
 from impurityModel.ed.manybody_basis import Basis
@@ -502,6 +503,23 @@ def get_Greens_function(
     )
     unit_weights = unit_cost_weights(unit_seeds, basis.comm)
 
+    def unit_axis_tols(unit):
+        """This unit's per-axis tolerances: ``axis_tols``, loosened by its thermal weight if enabled."""
+        if not use_weighted_tol:
+            return axis_tols
+        return _weighted_axis_tols(
+            axis_tols,
+            float(max(thermal_weights[ei] for ei in unit.chunk)),
+            max_thermal_weight,
+            weighted_tol[1],
+        )
+
+    if use_weighted_tol:
+        # A unit converged to a looser tolerance stops after a fraction of the blocks, so it must not
+        # weigh the same as a dominant one: the packer would give it a colour's worth of ranks, and the
+        # queue would hold the units that set the wall behind it.
+        unit_weights = unit_weights * tolerance_cost_ratios([min(unit_axis_tols(u)) for u in units], min(axis_tols))
+
     if gf_method == "bicgstab":
         return _get_greens_function_bicgstab(
             matsubara_mesh,
@@ -525,17 +543,6 @@ def get_Greens_function(
             num_wanted,
             gf_admission=gf_admission,
             gf_admit_tol=gf_admit_tol,
-        )
-
-    def unit_axis_tols(unit):
-        """This unit's per-axis tolerances: ``axis_tols``, loosened by its thermal weight if enabled."""
-        if not use_weighted_tol:
-            return axis_tols
-        return _weighted_axis_tols(
-            axis_tols,
-            float(max(thermal_weights[ei] for ei in unit.chunk)),
-            max_thermal_weight,
-            weighted_tol[1],
         )
 
     def eval_meshes_for(unit):

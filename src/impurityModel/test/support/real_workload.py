@@ -94,6 +94,8 @@ def load_workload(h5_path, cluster=None, iteration=None):
     dN = _attr(attrs, "dN")
     if dN is not None:
         dN = int(dN)
+    gf_tol = _attr(attrs, "gf_tol")
+    gf_real_tol = _attr(attrs, "gf_real_tol")
 
     return {
         "label": name,
@@ -116,6 +118,8 @@ def load_workload(h5_path, cluster=None, iteration=None):
         "slaterWeightMin": float(_attr(attrs, "slater_min", 0.0)),
         "dN": dN,
         "sparse_green": bool(_attr(attrs, "sparse_green", True)),
+        "gf_tol": None if gf_tol is None else float(gf_tol),
+        "gf_real_tol": None if gf_real_tol is None else float(gf_real_tol),
     }
 
 
@@ -139,6 +143,8 @@ def run_selfenergy(
     n_w=None,
     verbosity=0,
     gf_min_weight=None,
+    gf_tol=None,
+    gf_real_tol=None,
 ):
     """Re-run ``calc_selfenergy`` on a loaded workload, with benchmark-friendly overrides.
 
@@ -160,6 +166,11 @@ def run_selfenergy(
     gf_min_weight : float, optional
         ``SolverOptions.gf_min_weight``: drop thermal manifolds below this Boltzmann weight
         (``None`` keeps every state, as the archived runs did).
+    gf_tol, gf_real_tol : float or ``"archive"``, optional
+        The Lanczos convergence tolerances (``SolverOptions.gf_tol`` / ``gf_real_tol``). ``None``
+        (default) leaves them to the knobs and defaults, as every earlier caller got;
+        ``"archive"`` takes the recorded production value (the real-axis tolerance sets the Lanczos
+        depth of a production run, so a faithful replay needs it).
 
     Returns
     -------
@@ -199,6 +210,8 @@ def run_selfenergy(
         sparse_green=workload["sparse_green"],
         gf_method=gf_method,
         gf_min_weight=gf_min_weight,
+        gf_tol=workload["gf_tol"] if gf_tol == "archive" else gf_tol,
+        gf_real_tol=workload["gf_real_tol"] if gf_real_tol == "archive" else gf_real_tol,
     )
     return calc_selfenergy(
         model,
