@@ -32,6 +32,65 @@ def _attr(attrs, key, default=None):
     return value
 
 
+#: Archive attributes this module reads and passes to the solver. Anything the archive records that is in
+#: neither this set nor ``_BATH_FIT_ONLY`` is reported as ``ignored_attrs``: a replay that silently drops an
+#: option solves a different problem (the excitation budget, 8 in the archive and 4 by library default, once
+#: restricted a whole replay's ground state to 169k instead of 277k determinants).
+_CONSUMED_ATTRS = frozenset(
+    {
+        "nominal occupation",
+        "mv",
+        "tau",
+        "delta",
+        "reort",
+        "dense_cutoff",
+        "chain_restrict",
+        "occ_cutoff",
+        "truncation_threshold",
+        "slater_min",
+        "dN",
+        "sparse_green",
+        "gf_tol",
+        "gf_real_tol",
+        "gf_method",
+        "gf_admission",
+        "gf_admit_tol",
+        "gf_min_weight",
+        "excitation_budget",
+        "e_pt2_tol",
+        "de2_min",
+    }
+)
+#: Attributes that describe the bath fit that produced ``H solver`` (or the run's provenance), not the solver
+#: call: the fitted result is the dataset, so a replay does not need them.
+_BATH_FIT_ONLY = frozenset(
+    {
+        "bath_geometry",
+        "collapse_chains",
+        "fit_unocc",
+        "freeze_bath_energies",
+        "gamma",
+        "n_baths",
+        "weight",
+        "weight_function",
+        "weight_w0",
+        "solver line",
+        "DC damping alpha",
+        "DC ground state sector",
+        "DC guess fingerprint",
+        "impurityModel version",
+        "impurityModel_interface version",
+        "rspt2spectra version",
+    }
+)
+
+
+def _optional(attrs, key, cast):
+    """``attrs[key]`` cast, or ``None`` when absent or recorded as the string ``"None"``."""
+    value = _attr(attrs, key)
+    return None if value is None else cast(value)
+
+
 def load_workload(h5_path, cluster=None, iteration=None):
     """Load one (cluster, iteration) group of an ``impurityModel_data.h5`` archive.
 
@@ -98,6 +157,16 @@ def load_workload(h5_path, cluster=None, iteration=None):
     gf_real_tol = _attr(attrs, "gf_real_tol")
 
     return {
+        # What the archive recorded and this module does not consume (see _CONSUMED_ATTRS): empty for a
+        # faithful replay. Callers that must not solve a different problem should refuse a non-empty list.
+        "ignored_attrs": sorted(set(attrs) - _CONSUMED_ATTRS - _BATH_FIT_ONLY),
+        "excitation_budget": _optional(attrs, "excitation_budget", int),
+        "e_pt2_tol": _optional(attrs, "e_pt2_tol", float),
+        "de2_min": _optional(attrs, "de2_min", float),
+        "gf_admission": _optional(attrs, "gf_admission", str),
+        "gf_admit_tol": _optional(attrs, "gf_admit_tol", float),
+        "gf_min_weight": _optional(attrs, "gf_min_weight", float),
+        "gf_method": _optional(attrs, "gf_method", str),
         "label": name,
         "h0": h0,
         "dc": dc,
@@ -132,6 +201,74 @@ def _subsample(mesh, n):
     return mesh[np.linspace(0, len(mesh) - 1, n).astype(int)]
 
 
+def build_options(
+    workload,
+    gf_method="lanczos",
+    reort="archive",
+    truncation_threshold="archive",
+    dN="archive",
+    n_iw=None,
+    n_w=None,
+    gf_min_weight=None,
+    gf_tol=None,
+    gf_real_tol=None,
+):
+    """The ``(model, meshes, basis_options, solver_options)`` a replay of ``workload`` hands to ``calc_selfenergy``.
+
+    Split out of :func:`run_selfenergy` so a driver can print exactly what it is about to solve before it
+    starts (and diff that against the production run's option table). Every solver-relevant attribute the
+    archive recorded is passed on, the excitation budget included; an attribute the archive does not record
+    is left to the library default. Arguments as in :func:`run_selfenergy`; ``gf_min_weight=None`` takes the
+    archive's value (``None`` when unrecorded).
+    """
+    from impurityModel.ed import atomic_physics
+    from impurityModel.ed.lie_algebra import tensors_to_operator
+    from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
+
+    iw = _subsample(workload["iw_mesh"], n_iw)
+    w = _subsample(workload["w_mesh"], n_w)
+    dc = workload["dc"]
+    model = ImpurityModel(
+        h0=workload["h0"],
+        dc=tensors_to_operator(np.asarray(dc, dtype=complex)).to_dict() if dc is not None else None,
+        u4=atomic_physics.getUop_from_rspt_u4(workload["u4"]),
+        impurity_orbitals=workload["impurity_orbitals"],
+        rot_to_spherical=workload["rot_to_spherical"],
+    )
+    meshes = Meshes(iw=1j * iw if iw is not None else None, w=w, delta=workload["delta"])
+    basis_kwargs = dict(
+        nominal_occ=workload["nominal_occ"],
+        mixed_valence=workload["mixed_valence"],
+        dN=workload["dN"] if dN == "archive" else dN,
+        truncation_threshold=(
+            workload["truncation_threshold"] if truncation_threshold == "archive" else truncation_threshold
+        ),
+        chain_restrict=workload["chain_restrict"],
+        occ_cutoff=workload["occ_cutoff"],
+        slater_weight_min=workload["slaterWeightMin"],
+        tau=workload["tau"],
+    )
+    # Only what the archive recorded: BasisOptions' own defaults (excitation budget 4, residual-PT2 tolerance)
+    # apply to a field it does not carry, exactly as for a run that never set it.
+    for key in ("excitation_budget", "e_pt2_tol", "de2_min"):
+        if workload.get(key) is not None:
+            basis_kwargs[key] = workload[key]
+    basis = BasisOptions(**basis_kwargs)
+    solver_kwargs = dict(
+        reort=workload["reort"] if reort == "archive" else reort,
+        dense_cutoff=workload["dense_cutoff"],
+        sparse_green=workload["sparse_green"],
+        gf_method=gf_method,
+        gf_min_weight=workload.get("gf_min_weight") if gf_min_weight is None else gf_min_weight,
+        gf_tol=workload["gf_tol"] if gf_tol == "archive" else gf_tol,
+        gf_real_tol=workload["gf_real_tol"] if gf_real_tol == "archive" else gf_real_tol,
+    )
+    for key in ("gf_admission", "gf_admit_tol"):
+        if workload.get(key) is not None:
+            solver_kwargs[key] = workload[key]
+    return model, meshes, basis, SolverOptions(**solver_kwargs)
+
+
 def run_selfenergy(
     workload,
     comm=None,
@@ -164,8 +301,8 @@ def run_selfenergy(
         method's wall time ~linearly, so benchmarks usually subsample; the per-point
         *memory* is mesh-size independent.
     gf_min_weight : float, optional
-        ``SolverOptions.gf_min_weight``: drop thermal manifolds below this Boltzmann weight
-        (``None`` keeps every state, as the archived runs did).
+        ``SolverOptions.gf_min_weight``: drop thermal manifolds below this Boltzmann weight.
+        ``None`` takes the archive's recorded value (``None``, keep every state, when unrecorded).
     gf_tol, gf_real_tol : float or ``"archive"``, optional
         The Lanczos convergence tolerances (``SolverOptions.gf_tol`` / ``gf_real_tol``). ``None``
         (default) leaves them to the knobs and defaults, as every earlier caller got;
@@ -176,42 +313,24 @@ def run_selfenergy(
     -------
     dict
         The ``calc_selfenergy`` result dict (rank 0; empty-ish on other ranks).
-    """
-    from impurityModel.ed import atomic_physics
-    from impurityModel.ed.lie_algebra import tensors_to_operator
-    from impurityModel.ed.model import BasisOptions, ImpurityModel, Meshes, SolverOptions
 
-    iw = _subsample(workload["iw_mesh"], n_iw)
-    w = _subsample(workload["w_mesh"], n_w)
-    dc = workload["dc"]
-    model = ImpurityModel(
-        h0=workload["h0"],
-        dc=tensors_to_operator(np.asarray(dc, dtype=complex)).to_dict() if dc is not None else None,
-        u4=atomic_physics.getUop_from_rspt_u4(workload["u4"]),
-        impurity_orbitals=workload["impurity_orbitals"],
-        rot_to_spherical=workload["rot_to_spherical"],
-    )
-    meshes = Meshes(iw=1j * iw if iw is not None else None, w=w, delta=workload["delta"])
-    basis = BasisOptions(
-        nominal_occ=workload["nominal_occ"],
-        mixed_valence=workload["mixed_valence"],
-        dN=workload["dN"] if dN == "archive" else dN,
-        truncation_threshold=(
-            workload["truncation_threshold"] if truncation_threshold == "archive" else truncation_threshold
-        ),
-        chain_restrict=workload["chain_restrict"],
-        occ_cutoff=workload["occ_cutoff"],
-        slater_weight_min=workload["slaterWeightMin"],
-        tau=workload["tau"],
-    )
-    solver = SolverOptions(
-        reort=workload["reort"] if reort == "archive" else reort,
-        dense_cutoff=workload["dense_cutoff"],
-        sparse_green=workload["sparse_green"],
+    Notes
+    -----
+    The excitation budget, residual-PT2 tolerances and GF admission options the archive recorded are passed
+    on (see :func:`build_options`); before this was done a replay used the library default budget of 4 where
+    a production run had used 8, and solved a ground state 0.61x the size with an E0 1.2 meV too high.
+    """
+    model, meshes, basis, solver = build_options(
+        workload,
         gf_method=gf_method,
+        reort=reort,
+        truncation_threshold=truncation_threshold,
+        dN=dN,
+        n_iw=n_iw,
+        n_w=n_w,
         gf_min_weight=gf_min_weight,
-        gf_tol=workload["gf_tol"] if gf_tol == "archive" else gf_tol,
-        gf_real_tol=workload["gf_real_tol"] if gf_real_tol == "archive" else gf_real_tol,
+        gf_tol=gf_tol,
+        gf_real_tol=gf_real_tol,
     )
     return calc_selfenergy(
         model,
