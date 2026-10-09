@@ -437,6 +437,34 @@ GF_APPLY_ROW_CHUNKS = Knob(
     (``gf_primitives.py``) -- but the cap itself binds identically either way.""",
 )
 
+GF_MATVEC_PRUNE = Knob(
+    name="GF_MATVEC_PRUNE",
+    kind="str",
+    default="after_sum",
+    group="units",
+    doc="""Where the sparse block-Lanczos matvec (``_lanczos_step.pxi``) applies the
+    ``slaterWeightMin`` cutoff to ``H q``, when the step redistributes (a distributed basis, or a
+    capping proxy): ``after_sum`` (default) cuts each row once its amplitude is summed over every
+    rank and ``GF_APPLY_ROW_CHUNKS`` chunk; ``before_sum`` cuts each rank's and chunk's partial
+    amplitude before the redistribution, as before 2026-10. The GF counterpart of
+    ``GS_SELECTION_PRUNE``, and the same cut the serial one-shot ``apply_block(q, slaterWeightMin)``
+    makes.
+
+    ``before_sum`` makes the recurrence depend on the colour's rank count and the chunk count: a
+    determinant reached from rows on several ranks or chunks loses the partials that are
+    individually below the cutoff, and a capping proxy admits on what is left. Measured on the CrI3
+    archive, uncapped, slaterWeightMin raised to 1e-5: one 4-rank colour against four 1-rank colours
+    gave real-axis G 2.9e-4 apart (relative to max|G|) and different block counts in every unit;
+    with ``after_sum``, 1.8e-9 and the same block counts. At the archive's own slaterWeightMin
+    (1.5e-8) the two orders differ by 1.9e-5.
+
+    **Memory.** ``after_sum`` sends the sub-cutoff partials too, so each chunk's raw output and the
+    summed block before its cut are larger. ``memory_estimate``'s matvec fanout was measured on the
+    uncut output (``apply_block(q, 0)``), so the GF peak model already prices this. Measured on CrI3
+    (4 ranks, slaterWeightMin 1.5e-8): the same peak (368.2 vs 367.8 MiB) and wall per block (0.414
+    vs 0.416 s). Not yet measured at SrMnO3's 128-rank scale; ``before_sum`` is the fallback.""",
+)
+
 GF_SCHEDULER = Knob(
     name="GF_SCHEDULER",
     kind="str",
@@ -1230,6 +1258,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_GMRES_MAX_RESTARTS,
     GF_EIGENSTATE_GROUP,
     GF_APPLY_ROW_CHUNKS,
+    GF_MATVEC_PRUNE,
     GF_FROZEN_CSR,
     GF_SCHEDULER,
     GF_STAGNATION_FREEZE,

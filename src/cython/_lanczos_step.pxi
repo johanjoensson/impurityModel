@@ -96,7 +96,8 @@ def block_lanczos_step_cy(
             serially.
         slaterWeightMin: Amplitude cutoff passed to ``ManyBodyState.prune``;
             SD coefficients below this value are dropped.  Default ``0.0``
-            (no pruning).
+            (no pruning).  On ``H q`` the cut is made on each row's summed amplitude
+            when the step redistributes (``config.GF_MATVEC_PRUNE``).
         reort_period: Number of steps between full reorthogonalization sweeps
             for ``Reort.PERIODIC`` mode.  Full reorthogonalization is applied at
             step ``it`` when ``it > 0`` and ``it % reort_period == 0``.
@@ -140,10 +141,21 @@ def block_lanczos_step_cy(
     # A capping proxy decides admission on the step's whole output, not chunk by chunk
     # (gf_primitives._CappedBasisProxy.begin_step): replicated, so every rank calls both.
     _begin_step = getattr(basis, "begin_step", None) if _needs_redistribute else None
+    # GF_MATVEC_PRUNE=after_sum: send every partial and cut the summed row instead, so what
+    # survives does not depend on the colour's rank count or the chunk count. Without a
+    # redistribute the one apply below already sees whole sums. Replicated, so every rank
+    # takes the same branch.
+    _prune_after_sum = False
+    if _needs_redistribute and slaterWeightMin > 0.0:
+        _prune_mode = config.GF_MATVEC_PRUNE.get()
+        if _prune_mode not in ("after_sum", "before_sum"):
+            raise ValueError(f"GF_MATVEC_PRUNE={_prune_mode!r}: expected 'after_sum' or 'before_sum'")
+        _prune_after_sum = _prune_mode == "after_sum"
+    _apply_cutoff = 0.0 if _prune_after_sum else slaterWeightMin
     if _begin_step is not None:
         _begin_step()
     if _n_chunks is None or _n_chunks <= 1:
-        wp = h_op.apply_block(q_curr, slaterWeightMin)
+        wp = h_op.apply_block(q_curr, _apply_cutoff)
         _prof_acc("matvec_apply", _t0)
         _t1 = _time.perf_counter()
         if _needs_redistribute:
@@ -191,7 +203,7 @@ def block_lanczos_step_cy(
             # than the one-shot path. It also built one Python key object per row of
             # q_curr on every step just to form the mask.
             _part = q_curr.row_slice(_lo, _hi)
-            _raw = h_op.apply_block(_part, slaterWeightMin)
+            _raw = h_op.apply_block(_part, _apply_cutoff)
             del _part
             if hasattr(basis, "redistribute_block"):
                 _piece = basis.redistribute_block(_raw)
@@ -206,6 +218,9 @@ def block_lanczos_step_cy(
                 wp += _piece
             del _piece
         _prof_acc("matvec_apply", _t0)
+    if _prune_after_sum:
+        # Before finish_step: a capping proxy must admit on the cut sums, not on rows the cut drops.
+        wp.prune_rows(slaterWeightMin)
     if _begin_step is not None:
         wp = basis.finish_step(wp)
     _prof_acc("matvec", _t0)
