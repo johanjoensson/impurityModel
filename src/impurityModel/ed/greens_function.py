@@ -209,23 +209,31 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
         s0 = seeds
         s1 = [hOp(s, 0) - complex(e) * s for s in s0]
         if basis.is_distributed:
-            # Redistribute before the second application. Each rank's s1 is the image of its own
-            # slice of psi, duplicated across ranks; applying H to that expands it by the full
-            # fan-out *again* on every rank, so s2 stops shrinking with the rank count (CrI3 at
-            # 128 ranks: ~15M rows per seed per rank, an OOM at 4 GiB). Owned rows only, each
-            # rank holds ~1/size of s1 and the sum over ranks is unchanged (H is linear).
+            # Each rank's s0/s1 are partial sums (the images of the psi rows it owns); the
+            # redistribution sums them into the owned rows of the global vectors.
             s0 = basis.redistribute_psis(*s0)
             s1 = basis.redistribute_psis(*s1)
-        s2 = [hOp(s, 0) - complex(e) * s for s in s1] if max_order >= 3 else None
-        if basis.is_distributed and s2 is not None:
-            s2 = basis.redistribute_psis(*s2)
         k = {}
         if max_order >= 1:
             k[1] = inner_multi(s0, s1)  # <s0_a | (H-e) s0_b>
         if max_order >= 2:
             k[2] = inner_multi(s1, s1)  # <s0_a | (H-e)^2 s0_b>
         if max_order >= 3:
-            k[3] = inner_multi(s1, s2)  # <s0_a | (H-e)^3 s0_b>
+            # <s0_a | (H-e)^3 s0_b> = <s1_a | (H-e) s1_b>, one column at a time. s2 = (H-e) s1 is
+            # the largest object of the step (one more fan-out than s1, and it does not shrink
+            # much with the rank count). Building all seeds' s2 at once and redistributing them
+            # together held every seed's rows, plus one dense block over their *union* support
+            # (redistribute_psis fuses its inputs), at the same time -- the suspected cause of
+            # the CrI3 OOM at 128 ranks; on that archive locally, the step's own peak fell 5-13x
+            # at 1-8 ranks. Only one seed's s2 is alive here. One collective per seed, the same
+            # count on every rank.
+            k[3] = np.zeros((len(s1), len(s1)), dtype=complex)
+            for b, s1_b in enumerate(s1):
+                s2_b = hOp(s1_b, 0) - complex(e) * s1_b
+                if basis.is_distributed:
+                    (s2_b,) = basis.redistribute_psis(s2_b)
+                k[3][:, b] = inner_multi(s1, [s2_b])[:, 0]
+                del s2_b
         return k
 
     for n, (psi_n, e_n) in enumerate(zip(psis, es)):

@@ -254,3 +254,46 @@ def test_gf_moments_mpi_rank_invariant():
     for other in all_M[1:]:
         np.testing.assert_allclose(other, all_M[0], atol=1e-12)
     np.testing.assert_allclose(M, M_ref, atol=1e-9)
+
+
+
+@pytest.mark.mpi
+def test_gf_moments_redistributes_one_seed_of_the_third_order_at_a_time():
+    """(H - e)^2 |seed> is built, redistributed and consumed one seed at a time.
+
+    s2 is the largest object of the moments step and does not shrink much with the rank count.
+    Building every seed's s2 and redistributing them in one fused call held all of them plus one
+    dense block over their union support at once, which OOM-killed a 128-rank CrI3 run (10 seeds,
+    ~4 GiB per rank). Per side: one fused call for s0, one for s1, then one single-block call
+    per seed -- and the moments still match the serial oracle.
+    """
+    comm = MPI.COMM_WORLD
+    if comm.size == 1:
+        pytest.skip("a serial basis does not redistribute")
+    impurity_indices = [0, 1]
+    dets, eigvals, eigvecs, n_of_eig, C, Cdag = _dense_lehmann_setup(
+        _siam_6(), _IMP, _BATHS, 6, impurity_indices, comm=MPI.COMM_SELF
+    )
+    ie = _ground_index_in_sector(n_of_eig, eigvals, 3)
+    M_ref = _lehmann_moments([ie], 1.0, 3, impurity_indices, eigvals, C, Cdag)
+    psi = _psis_from_eigvecs(dets, eigvecs, [ie])[0]
+    basis = Basis(_IMP, _BATHS, initial_basis=sorted(psi.keys()), comm=comm, verbose=False)
+    psi_block = ManyBodyState.from_states([psi]) if comm.rank == 0 else ManyBodyState(width=1)
+    (redistributed,) = basis.redistribute_psis(psi_block)
+
+    widths = []
+    real = basis.redistribute_psis
+
+    def spy(*blocks):
+        widths.append(sum(b.width for b in blocks))
+        return real(*blocks)
+
+    basis.redistribute_psis = spy
+    M = get_greens_function_moments(
+        [redistributed.to_states()[0]], [eigvals[ie]], tau=1.0, basis=basis, hOp=_siam_6(), impurity_indices=impurity_indices
+    )
+
+    n_corr = len(impurity_indices)
+    per_side = [n_corr, n_corr] + [1] * n_corr
+    assert widths == per_side * 2
+    np.testing.assert_allclose(M, M_ref, atol=1e-9)
