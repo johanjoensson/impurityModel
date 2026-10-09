@@ -676,6 +676,39 @@ def _commutes_with(h_op, op, tol: float = 1e-10) -> bool:
     return not residual or max((abs(v) for v in residual.values()), default=0.0) <= tol
 
 
+#: Rows per slice of :func:`_zero_entries_at_most`'s in-place pass: bounds its temporaries to
+#: ``_PRUNE_SLICE_ROWS * p`` entries instead of three full ``(rows, p)`` float arrays.
+_PRUNE_SLICE_ROWS = 65536
+
+
+def _zero_entries_at_most(view, cutoff):
+    """Zero, in place, every entry of the ``(rows, p)`` complex ``view`` with ``|v| <= cutoff``.
+
+    ``std::norm(v) <= cutoff**2`` (no sqrt), matching ``ManyBodyBlockState::prune_rows``' C++
+    criterion exactly -- not ``np.abs(view) <= cutoff``, which takes a sqrt first and so is not
+    guaranteed bit-identical at the boundary. Slice by slice with reused buffers: a whole-block
+    ``view.real**2 + view.imag**2`` allocated ~24 B per entry on top of the 16 B block, and on the
+    summed selection block (``GS_SELECTION_PRUNE=after_sum``) that is not bounded by
+    ``GS_APPLY_ROW_CHUNKS``. The caller must drop its own reference to ``view`` before
+    ``prune_rows``/redistribute (they refuse to run while a buffer export is alive); this function
+    keeps none.
+    """
+    rows = view.shape[0]
+    if rows == 0:
+        return
+    step = min(rows, _PRUNE_SLICE_ROWS)
+    norm2 = np.empty((step,) + view.shape[1:], dtype=float)
+    imag2 = np.empty_like(norm2)
+    c2 = cutoff * cutoff
+    for lo in range(0, rows, step):
+        part = view[lo : lo + step]
+        n = len(part)
+        np.multiply(part.real, part.real, out=norm2[:n])
+        np.multiply(part.imag, part.imag, out=imag2[:n])
+        norm2[:n] += imag2[:n]
+        part[norm2[:n] <= c2] = 0.0
+
+
 class CIPSISolver:
     def __init__(self, basis: Basis):
         self.basis = basis
@@ -825,11 +858,14 @@ class CIPSISolver:
         ``len(psi_ref)`` columns in a single :meth:`ManyBodyOperator.apply_block` call,
         instead of ``len(psi_ref)`` separate per-state applies. ``apply_block`` keeps a
         row if ANY column exceeds ``cutoff`` -- a safe superset per column, but not the
-        same as pruning each column to its own threshold -- so every column still needs
-        pruning to ``cutoff`` before the cross-rank sum. This reproduces the old
-        per-state ``applyOp(H, psi_i, cutoff)`` bit-for-bit, including pruning locally
-        *before* redistributing (the same order every other probe in this module uses,
-        e.g. ``psi_all_Dj`` above), rather than pruning the already-summed total.
+        same as pruning each column to its own threshold. By default
+        (``GS_SELECTION_PRUNE=after_sum``) nothing is cut before the cross-rank sum: every
+        partial is sent, and each column of the summed block is cut to ``cutoff``
+        (:meth:`_prune_summed`), so the candidate set is the same whatever the rank count and
+        ``GS_APPLY_ROW_CHUNKS`` (CrI3 at a binding cap: a different basis at 1, 2 and 3 ranks
+        before, identical after). ``before_sum`` restores the old order -- every column of each
+        rank's partial pruned to ``cutoff`` before redistributing, bit-for-bit the old
+        per-state ``applyOp(H, psi_i, cutoff)`` -- which the paragraphs below describe.
 
         The per-column prune runs as one vectorized pass over the block's own buffer-
         protocol view (zero-copy, in place) rather than -- as it did before -- splitting
@@ -857,18 +893,24 @@ class CIPSISolver:
         """
         block = psi_ref if isinstance(psi_ref, ManyBodyState) else ManyBodyState.from_states(psi_ref)
         n_chunks = config.GS_APPLY_ROW_CHUNKS.get()
+        prune = config.GS_SELECTION_PRUNE.get()
+        if prune not in ("after_sum", "before_sum"):
+            raise ValueError(f"GS_SELECTION_PRUNE={prune!r}: expected 'after_sum' or 'before_sum'")
+        # after_sum: send every partial and cut the summed amplitude, so the candidate set does not
+        # depend on how the reference rows are split over ranks and chunks (see GS_SELECTION_PRUNE).
+        local_cutoff = cutoff if prune == "before_sum" else 0.0
         if n_chunks is None or n_chunks <= 1:
-            raw = self._apply_and_prune_columns(H, block, cutoff)
+            raw = self._apply_and_prune_columns(H, block, local_cutoff)
             merged = self.basis.redistribute_block(raw)
-            merged.prune_rows(0.0)
-            return merged
+            return self._prune_summed(merged, cutoff if prune == "after_sum" else 0.0)
 
         # Row-chunked: the round's peak is the raw apply output, its packed send buffer, the
         # receive buffer and the merged block all alive at once (~6x the owned block, measured;
         # see doc/plans/dc_smo_memory.md round 6). Applying one chunk of the reference rows at
         # a time bounds the first three to chunk size; only the accumulating merged block stays.
         # Exact up to summation order (a candidate reached from rows in different chunks has its
-        # partial sums added chunk by chunk, and the per-column prune sees those partials), which
+        # partial sums added chunk by chunk; under GS_SELECTION_PRUNE=before_sum the per-column prune
+        # also sees those partials, which changes the selected set), which
         # is the same class of difference a change of rank count makes.
         #
         # The chunk COUNT is the knob, replicated on every rank, so every rank makes exactly
@@ -885,7 +927,7 @@ class CIPSISolver:
             # vector's capacity -- so every chunk's "bounded" apply ran alongside a full-size
             # copy, and the mask cost one Python key object per row of the whole block.
             part = block.row_slice(int(lo), int(hi))
-            raw = self._apply_and_prune_columns(H, part, cutoff)
+            raw = self._apply_and_prune_columns(H, part, local_cutoff)
             del part
             piece = self.basis.redistribute_block(raw)
             del raw
@@ -896,6 +938,16 @@ class CIPSISolver:
                 # empty piece on one rank cannot desynchronize the others.
                 merged += piece
             del piece
+        return self._prune_summed(merged, cutoff if prune == "after_sum" else 0.0)
+
+    @staticmethod
+    def _prune_summed(merged, cutoff):
+        """Zero every summed entry with ``|v| <= cutoff`` in place, then drop the all-zero rows.
+
+        ``cutoff = 0`` is the bare ``prune_rows(0.0)``: a row that cancels exactly across ranks on
+        every column is a real selection-rule cancellation, not a truncation artifact."""
+        if cutoff > 0.0 and len(merged):
+            _zero_entries_at_most(np.asarray(merged), cutoff)
         merged.prune_rows(0.0)
         return merged
 
@@ -904,13 +956,8 @@ class CIPSISolver:
         """``H`` applied to ``block`` with every column pruned to ``cutoff`` in place (the
         one-shot body of :meth:`_apply_block_and_redistribute`, shared with its chunked path)."""
         raw = H.apply_block(block, cutoff)
-        view = np.asarray(raw)  # zero-copy (rows, p) view; buffer.readonly=0, so this writes through
-        # `std::norm(v) <= cutoff**2` (no sqrt), matching ManyBodyBlockState::prune_rows'
-        # C++ criterion exactly -- not `np.abs(view) <= cutoff`, which takes a sqrt first and so
-        # is not guaranteed bit-identical to the C++ comparison at the cutoff boundary.
-        norm2 = view.real**2 + view.imag**2
-        view[norm2 <= cutoff * cutoff] = 0.0
-        del view, norm2  # release the buffer export -- prune_rows/redistribute refuse to run while it's alive
+        if cutoff > 0.0 and len(raw):  # cutoff 0: apply_block already dropped only exact zeros
+            _zero_entries_at_most(np.asarray(raw), cutoff)
         return raw
 
     def _candidate_overlaps_and_energies(self, H, Hpsi_ref, slaterWeightMin: float = 0):

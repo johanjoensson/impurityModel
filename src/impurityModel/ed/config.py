@@ -502,8 +502,8 @@ GF_STAGNATION_FREEZE = Knob(
     before trusting the saving. It is taken only if the CSR fits the memory budget, and not once the unit is
     within two decades of its own tolerance (the restart recomputes every block, so a late freeze loses).
     Lanczos with ``reort='none'`` only, and it needs ``GF_FROZEN_CSR`` and a finite cap or a memory budget;
-    a unit it cannot apply to logs why at ``-vv``. Seen chunk by chunk (``GF_APPLY_ROW_CHUNKS``), the weight
-    is an indicator: a row split across chunks is counted from its partial sums. ``0`` measures and logs the
+    a unit it cannot apply to logs why at ``-vv``. Measured on each step's whole summed output, so a row reached
+    by several ``GF_APPLY_ROW_CHUNKS`` chunks counts with its full amplitude. ``0`` measures and logs the
     weight each window without ever freezing, which is how to choose ``f``.""",
 )
 
@@ -841,6 +841,34 @@ GS_MEMORY_BUDGET_INCLUDE_RESIDENT = Knob(
 )
 
 
+GS_SELECTION_PRUNE = Knob(
+    name="GS_SELECTION_PRUNE",
+    kind="str",
+    default="after_sum",
+    group="groundstate",
+    doc="""Where the CIPSI selection round (`CIPSISolver._apply_block_and_redistribute`) applies the
+    `slater_weight_min` cutoff to `H|psi_ref>`: `after_sum` (default) cuts each candidate's amplitude
+    once it is summed over every rank and row chunk; `before_sum` cuts each rank's (and chunk's)
+    partial amplitude before the redistribution, as before 2026-10.
+
+    `before_sum` makes the selected basis depend on the rank count and on `GS_APPLY_ROW_CHUNKS`: a
+    candidate reached from rows on several ranks loses the partials that are individually below the
+    cutoff. Measured on the CrI3 archive under a binding cap: a different basis at 1, 2, 3 and 4 ranks
+    (E0 up to 3.7e-5 apart at cap 5,000); with `after_sum` the same basis at every rank count and
+    chunk count (caps 5,000, 20,000, 60,000; 1-4 ranks; 4, 7 and 12 chunks).
+
+    **Memory.** `after_sum` sends every partial, so each chunk's raw output and the merged block
+    *before* its cut are larger: on CrI3 (3 ranks, cap 20,000, 4 chunks) the largest redistributed
+    piece had 1.44x the rows, the largest raw chunk 1.3x. After the cut the summed block is smaller.
+    The selection step's measured transient was no larger (25.8 vs 26.6 MiB, 3 ranks, cap 60,000) and
+    the ground state took +5-8%. Those are small-scale numbers: the gap should grow with the rank
+    count (more ranks, smaller partials, more of them cut under `before_sum`), and on the SrMnO3
+    128-rank job this step set the peak. `GS_APPLY_ROW_CHUNKS` bounds the raw chunk and its buffers
+    but not the merged block, so if a selection round runs out of memory, `before_sum` is the lever
+    (at the price of a rank-dependent basis).""",
+)
+
+
 GS_APPLY_ROW_CHUNKS = Knob(
     name="GS_APPLY_ROW_CHUNKS",
     kind="int",
@@ -850,15 +878,17 @@ GS_APPLY_ROW_CHUNKS = Knob(
     doc="""How many row chunks `CIPSISolver._apply_block_and_redistribute` splits the reference
     block into before applying `H` and redistributing. `1` applies to the whole block at once (the
     pre-2026-09 one-shot path). With `n` chunks, each chunk of the local reference rows is applied,
-    pruned, redistributed and accumulated into the owned candidate block in turn, so only one
+    redistributed and accumulated into the owned candidate block in turn (and, under
+    `GS_SELECTION_PRUNE=before_sum`, pruned before it is sent), so only one
     chunk's raw output, packed send buffer and receive buffer are alive at a time. Those three, plus
     the merged block, are the selection round's peak: measured on the SrMnO3 double-counting
     workload at 4 ranks the one-shot step holds **6x** the owned candidate block, and on the
     256-rank job that was OOM-killed the same step accounted for the 2.4 -> 5.8 GiB jump in one
     cycle (`doc/plans/dc_smo_memory.md`, round 6). Exact up to floating-point summation order: a
     candidate reached from reference rows in different chunks has its partial sums added in a
-    different order than the one-shot apply, and the per-column `slater_weight_min` prune acts on
-    those partial sums -- the same class of difference a change of MPI rank count already makes.
+    different order than the one-shot apply. Under `GS_SELECTION_PRUNE=before_sum` the per-column
+    `slater_weight_min` prune also acts on those partial sums, so the chunk count changes the basis;
+    under the default `after_sum` it does not.
     Costs `n` operator walks over the reference rows in total (each row is walked once), not `n`
     times the work. The default of 4 is the measured plateau on that workload (cap 20,000, growth
     cycle: step peak 673 MiB one-shot, 243 at 4 chunks, 248 at 8; `e0` bit-identical; about +1 s
@@ -1220,6 +1250,7 @@ KNOBS: dict[str, Knob] = _register(
     GS_MAX_BLOCK_WIDTH,
     GS_SELECTION_CHUNK,
     GS_APPLY_ROW_CHUNKS,
+    GS_SELECTION_PRUNE,
     GS_MATVEC_EXCHANGE,
     GS_MATVEC_EXCHANGE_BYTES,
     GS_NUM_WANTED,

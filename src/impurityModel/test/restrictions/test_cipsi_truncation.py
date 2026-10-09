@@ -700,3 +700,89 @@ def test_calc_gs_no_truncation_report_when_uncapped():
     )
     assert gs_info["truncation"] is None
     assert gs_info["statistics"]["truncation"] is None
+
+
+# ---------------------------------------------------------------------------
+# GS_SELECTION_PRUNE: the slater_weight_min cut acts on summed amplitudes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("prune, kept", [("after_sum", True), ("before_sum", False)])
+def test_selection_cuts_the_summed_amplitude_not_each_chunks_partial(prune, kept, monkeypatch):
+    """A candidate fed by reference rows in different chunks keeps the amplitude they add up to.
+
+    Rows a and b each send 0.6 x cutoff to D. Cut per chunk (``before_sum``, the old order), D vanishes
+    from both partials; how rows split into chunks (and over ranks) then decides which candidates exist,
+    which made the CIPSI basis differ at 1, 2 and 3 ranks on CrI3. Cut after the sum, D survives at 1.2 x
+    cutoff whatever the split.
+    """
+    cutoff = 1e-3
+    a, b, d = _det([0]), _det([1]), _det([2])
+    hop = ManyBodyOperator({((2, "c"), (0, "a")): 0.6 * cutoff, ((2, "c"), (1, "a")): 0.6 * cutoff})
+    psi = ManyBodyState.from_states([ManyBodyState({a: 1.0 + 0j, b: 1.0 + 0j})])
+
+    class _Serial:
+        def redistribute_block(self, block):
+            return block
+
+    solver = CIPSISolver.__new__(CIPSISolver)
+    solver.basis = _Serial()
+    monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", "2")  # one reference row per chunk
+    monkeypatch.setenv("GS_SELECTION_PRUNE", prune)
+    out = solver._apply_block_and_redistribute(hop, psi, cutoff)
+    state = out.to_states()[0]
+    assert (d in state) == kept
+    if kept:
+        assert abs(complex(state[d][0]) - 1.2 * cutoff) < 1e-15
+
+
+def test_selection_prune_rejects_an_unknown_value(monkeypatch):
+    monkeypatch.setenv("GS_SELECTION_PRUNE", "sometimes")
+    solver = CIPSISolver.__new__(CIPSISolver)
+    psi = ManyBodyState.from_states([ManyBodyState({_det([0]): 1.0 + 0j})])
+    with pytest.raises(ValueError, match="GS_SELECTION_PRUNE"):
+        solver._apply_block_and_redistribute(ManyBodyOperator({}), psi, 1e-3)
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs reference rows on two different ranks")
+@pytest.mark.parametrize("prune", ["after_sum", "before_sum"])
+def test_selection_candidates_do_not_depend_on_which_rank_owns_the_reference_rows(prune, monkeypatch):
+    """Two reference rows owned by different ranks each send 0.6 x cutoff to the same candidate.
+
+    Summed, the candidate carries 1.2 x cutoff and must be selected, as it is on one rank. Cut per
+    rank before the sum (``before_sum``) it vanished: the selected basis then changed with the rank
+    count (CrI3 at a binding cap: a different basis at 1, 2, 3 and 4 ranks, E0 up to 3.7e-5 apart).
+    """
+    comm = MPI.COMM_WORLD
+    basis = _make_basis(comm)
+    cutoff = 1e-3
+    # Two 4-electron rows on different owners, both one hop from the same candidate.
+    pair = None
+    for base in itertools.combinations(range(N_SPIN_ORBITALS), 3):
+        free = [o for o in range(N_SPIN_ORBITALS) if o not in base]
+        for i, j, k in itertools.permutations(free, 3):
+            a, b = _det(base + (i,)), _det(base + (j,))
+            if a.routing_hash() % comm.size != b.routing_hash() % comm.size:
+                pair = (a, b, _det(base + (k,)), i, j, k)
+                break
+        if pair:
+            break
+    assert pair is not None
+    a, b, d, i, j, k = pair
+    hop = ManyBodyOperator({((k, "c"), (i, "a")): 0.6 * cutoff, ((k, "c"), (j, "a")): 0.6 * cutoff})
+    seed = ManyBodyState({a: 1.0 + 0j, b: 1.0 + 0j}) if comm.rank == 0 else ManyBodyState({}, width=1)
+    (psi,) = basis.redistribute_psis(ManyBodyState.from_states([seed]))
+    solver = CIPSISolver.__new__(CIPSISolver)
+    solver.basis = basis
+    monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", "1")
+    monkeypatch.setenv("GS_SELECTION_PRUNE", prune)
+    out = solver._apply_block_and_redistribute(hop, psi, cutoff)
+    local = {key: complex(row[0]) for key, row in out.to_states()[0].items()} if len(out) else {}
+    merged = {}
+    for part in comm.allgather(local):
+        merged.update(part)
+    if prune == "after_sum":
+        assert abs(abs(merged[d]) - 1.2 * cutoff) < 1e-15
+    else:
+        assert d not in merged  # the old order: each rank's 0.6 x cutoff was cut before the sum
