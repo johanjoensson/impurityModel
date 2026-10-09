@@ -256,7 +256,6 @@ def test_gf_moments_mpi_rank_invariant():
     np.testing.assert_allclose(M, M_ref, atol=1e-9)
 
 
-
 @pytest.mark.mpi
 def test_gf_moments_redistributes_one_seed_of_the_third_order_at_a_time():
     """(H - e)^2 |seed> is built, redistributed and consumed one seed at a time.
@@ -290,7 +289,12 @@ def test_gf_moments_redistributes_one_seed_of_the_third_order_at_a_time():
 
     basis.redistribute_psis = spy
     M = get_greens_function_moments(
-        [redistributed.to_states()[0]], [eigvals[ie]], tau=1.0, basis=basis, hOp=_siam_6(), impurity_indices=impurity_indices
+        [redistributed.to_states()[0]],
+        [eigvals[ie]],
+        tau=1.0,
+        basis=basis,
+        hOp=_siam_6(),
+        impurity_indices=impurity_indices,
     )
 
     n_corr = len(impurity_indices)
