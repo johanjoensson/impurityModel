@@ -79,6 +79,7 @@ cpdef object block_inner(object V, object W, bint mpi=False, object comm=None):
             comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
         return res
 
+
 def matvec_cut_after_sum(bint redistributes, double cutoff):
     """Whether a sparse matvec cuts ``cutoff`` on its summed rows (``config.MATVEC_PRUNE``).
 
@@ -101,13 +102,22 @@ def apply_and_redistribute(object H, object V, object basis, double cutoff, bint
     The ``cutoff`` row prune is made on each row's summed amplitude (:func:`matvec_cut_after_sum`),
     so the result does not depend on how ``V``'s rows are spread over the ranks. Collective when
     ``redistribute`` is set.
+
+    A capping proxy admits in its ``redistribute_block``; with the cut after the sum it must admit on
+    the cut rows, not on the sub-cutoff ones the cut is about to drop (which counted toward the cap and
+    froze it early). So, as in the block-Lanczos step, admission is deferred to ``finish_step``.
     """
     cdef bint after = matvec_cut_after_sum(redistribute, cutoff)
+    begin_step = getattr(basis, "begin_step", None) if after else None
     W = H.apply_block(V, 0.0 if after else cutoff)
+    if begin_step is not None:
+        begin_step()
     if redistribute:
         W = basis.redistribute_block(W)
     if after:
         W.prune_rows(cutoff)
+    if begin_step is not None:
+        W = basis.finish_step(W)
     return W
 
 
