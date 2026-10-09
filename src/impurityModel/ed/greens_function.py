@@ -208,11 +208,17 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
         """K[n][a,b] = <seed_a | (H - e)^n | seed_b> for n = 1..max_order (Hermitian H - e)."""
         s0 = seeds
         s1 = [hOp(s, 0) - complex(e) * s for s in s0]
-        s2 = [hOp(s, 0) - complex(e) * s for s in s1] if max_order >= 3 else None
         if basis.is_distributed:
+            # Redistribute before the second application. Each rank's s1 is the image of its own
+            # slice of psi, duplicated across ranks; applying H to that expands it by the full
+            # fan-out *again* on every rank, so s2 stops shrinking with the rank count (CrI3 at
+            # 128 ranks: ~15M rows per seed per rank, an OOM at 4 GiB). Owned rows only, each
+            # rank holds ~1/size of s1 and the sum over ranks is unchanged (H is linear).
             s0 = basis.redistribute_psis(*s0)
             s1 = basis.redistribute_psis(*s1)
-            s2 = basis.redistribute_psis(*s2) if s2 is not None else None
+        s2 = [hOp(s, 0) - complex(e) * s for s in s1] if max_order >= 3 else None
+        if basis.is_distributed and s2 is not None:
+            s2 = basis.redistribute_psis(*s2)
         k = {}
         if max_order >= 1:
             k[1] = inner_multi(s0, s1)  # <s0_a | (H-e) s0_b>
