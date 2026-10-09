@@ -1,3 +1,4 @@
+import heapq
 import itertools
 from collections.abc import Iterable, Iterator, Sequence
 from math import ceil
@@ -25,63 +26,71 @@ from impurityModel.ed.mpi_comm import (
 
 
 def collective_amplitude_cutoff(scores, k, comm):
-    """Smallest cutoff with at most ``k`` scores above it, across all ranks.
+    """The raw cutoff above which the whole near-tie groups of the global top ``k`` lie.
 
-    Ranks candidates by their (nonnegative) importance ``scores`` and returns the
-    cutoff such that the global number of entries with ``score > cutoff`` is <= ``k``:
-    keeping everything strictly above the cutoff admits the top-``k`` candidates,
-    under-admitting ties at the cutoff (the cap is never exceeded).
+    ``score > cutoff`` admits at most ``k`` entries: every near-tie group (:func:`_tie_bins`) that
+    fits, none of the group that would overflow ``k``. Selection code should use
+    :func:`collective_top_k_bounds` instead, which also fills the remaining slots from that group
+    in a rank-invariant key order; this is its first return value, kept for callers that only need
+    an under-filling cut. **Collective on** ``comm``: call unconditionally on all ranks.
+    """
+    return collective_top_k_bounds(scores, k, comm)[0]
 
-    Ties are decided on scores rounded to :data:`_TIE_BITS` mantissa bits
-    (:func:`_tie_bins`), and the returned cutoff separates whole bins, so scores
-    that differ only by summation-order rounding -- which changes with the rank count and
-    with the colour layout -- fall in one bin and are admitted or left out together.
-    Without this, the members of a near-tie group (common: symmetry makes many
-    amplitudes exactly equal) were chosen by rounding, and a capped GF unit froze on a
-    different set of determinants in every layout (CrI3, cap 20,000: the same sizes,
-    different sets, G apart by 5e-3 against a 1e-4 tolerance). The price is that a whole
-    near-tie group at the boundary is left out, so the cap can be under-filled by up to one
-    group's size (a large share of a tiny cap on a symmetric toy model, negligible at
-    production caps).
 
-    The bisection runs a fixed iteration count on allreduce'd counts, so every rank
-    computes the identical cutoff. It bisects geometrically over the nonzero score
-    range, so the full floating-point dynamic range is resolved (a linear bisection
-    from the maximum cannot reach scores below ``max / 2^45``). **Collective on**
-    ``comm``: call unconditionally on all ranks (a rank may hold zero scores).
+def collective_top_k_bounds(scores, k, comm):
+    """The global top ``k`` of ``scores``, as two raw cutoffs and a fill count.
 
-    Parameters
-    ----------
-    scores : np.ndarray
-        Rank-local nonnegative importance scores (e.g. ``|amplitude|^2``).
-    k : int
-        Maximum global number of scores allowed above the returned cutoff.
-    comm : MPI.Comm or None
-        Communicator; ``None`` (or size 1) means serial.
+    Returns ``(above, boundary, n_fill)``: every entry with ``score > above`` is admitted, and
+    ``n_fill`` more are taken from the *boundary* entries, ``boundary < score <= above`` -- one
+    near-tie group (scores equal to :data:`_TIE_BITS` bits, :func:`_tie_bins`). The caller picks
+    those ``n_fill`` by a rank-invariant key order (:func:`collective_first_keys`), so the admitted
+    set has exactly ``min(k, #positive scores)`` entries and does not depend on the rank count,
+    the layout, or rounding: leaving the boundary group out instead under-filled the cap by up to
+    a group's size (a 2-determinant cap on the symmetric toy SIAM kept 1, E0 -4.0 against -4.5),
+    and choosing among its members by raw score let summation order decide.
 
-    Returns
-    -------
-    float
-        The cutoff; retain entries with ``score > cutoff``.
+    The boundary group always holds at least ``n_fill`` entries: the bisection admits the most
+    whole bins that fit, so the next bin down is the one that would overflow ``k``. Zero scores
+    are never admitted. **Collective on** ``comm``: call unconditionally on all ranks.
     """
     mpi = comm is not None and comm.size > 1
     raw = np.asarray(scores, dtype=float)
     binned = _tie_bins(raw)
     hi = _bisect_count_cutoff(binned, k, comm)
-    # The admitted set is {bin > hi}. Callers compare the *raw* scores, so return the largest raw
-    # score whose bin is *not* admitted: binning is monotone, so a raw score is above that value
-    # exactly when its bin is admitted. Nothing below -> 0.0 (every nonzero score is admitted).
-    n_above = int(np.count_nonzero(binned > hi))
-    below = raw[binned <= hi]
-    largest_below = float(below.max()) if below.size else 0.0
-    raw_max = float(raw.max()) if raw.size else 0.0
-    if mpi:
-        n_above = comm.allreduce(n_above, op=MPI.SUM)
-        largest_below = comm.allreduce(largest_below, op=MPI.MAX)
-        raw_max = comm.allreduce(raw_max, op=MPI.MAX)
-    if n_above == 0:
-        return raw_max  # nothing admitted: no raw score is above the largest one
-    return largest_below
+
+    def gmax(x):
+        return comm.allreduce(x, op=MPI.MAX) if mpi else x
+
+    def gsum(x):
+        return comm.allreduce(x, op=MPI.SUM) if mpi else x
+
+    n_above = gsum(int(np.count_nonzero(binned > hi)))
+    rest = (binned <= hi) & (binned > 0.0)
+    # The largest raw score not admitted wholesale: a raw score is above it exactly when its bin is.
+    above = gmax(float(raw[binned <= hi].max()) if np.any(binned <= hi) else 0.0)
+    group = gmax(float(binned[rest].max()) if np.any(rest) else 0.0)
+    if group == 0.0 or n_above >= k:
+        return above, above, 0
+    lower = binned < group
+    boundary = gmax(float(raw[lower].max()) if np.any(lower) else 0.0)
+    in_group = gsum(int(np.count_nonzero(binned == group)))
+    return above, boundary, int(min(k - n_above, in_group))
+
+
+def collective_first_keys(local_keys, n, comm):
+    """This rank's share of the ``n`` smallest keys over every rank's ``local_keys``.
+
+    ``local_keys`` are ``bytes`` (e.g. ``bytes(det.to_bytearray())``), unique across ranks (each
+    determinant has one owner). The order is the keys' own, so every layout picks the same set.
+    Gathers the keys of one boundary group, which is small. **Collective on** ``comm`` whenever
+    ``n > 0`` (``n`` must be replicated).
+    """
+    if n <= 0:
+        return set()
+    mine = sorted(local_keys)
+    every = comm.allgather(mine) if comm is not None and comm.size > 1 else [mine]
+    chosen = set(heapq.nsmallest(int(n), (key for keys in every for key in keys)))
+    return chosen.intersection(mine)
 
 
 def _bisect_count_cutoff(scores, k, comm):

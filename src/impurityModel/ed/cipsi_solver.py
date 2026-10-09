@@ -15,7 +15,12 @@ from impurityModel.ed.BlockLanczosArray import block_lanczos_array
 from impurityModel.ed.BlockLanczosCore import _build_full_T, block_apply, block_inner
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
-from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff, collective_mass_cutoff
+from impurityModel.ed.manybody_basis import (
+    Basis,
+    collective_first_keys,
+    collective_mass_cutoff,
+    collective_top_k_bounds,
+)
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.memory_estimate import (
@@ -770,15 +775,7 @@ class CIPSISolver:
                     norms2 = np.maximum(norms2, group_norms2)
         else:
             keys, norms2 = blk.row_max_norms2()
-        cutoff2 = collective_amplitude_cutoff(norms2, int(target), self.basis.comm)
-        keep_mask = norms2 > cutoff2
-        if self._allreduce_sum(int(np.count_nonzero(keep_mask))) == 0:
-            # The bisection under-admits ties: if every candidate ties at the maximum
-            # score the strict cutoff retains nothing. Keep the max-score tie class
-            # (possibly exceeding target) rather than emptying the basis.
-            global_max = self._allreduce_max(float(norms2.max()) if norms2.size else 0.0)
-            if global_max > 0.0:
-                keep_mask = norms2 >= global_max
+        keep_mask = self._top_k_mask(norms2, keys, int(target))
         retained = set(itertools.compress(keys, keep_mask))
         kept_weight = self._allreduce_sum(float(norms2[keep_mask].sum()))
         total_weight = self._allreduce_sum(float(norms2.sum()))
@@ -994,14 +991,35 @@ class CIPSISolver:
         de2[mask] = np.square(np.abs(overlaps[mask])) / de[mask]
         return local_Djs, de2
 
-    def _admit_top(self, scores, mask, max_new):
+    def _top_k_mask(self, scores, keys, k):
+        """Local mask of the global top ``k`` of ``scores`` (``keys``: this rank's determinants, aligned).
+
+        Whole near-tie groups by score, then the boundary group in determinant-key order
+        (:func:`~impurityModel.ed.manybody_basis.collective_top_k_bounds`,
+        :func:`~impurityModel.ed.manybody_basis.collective_first_keys`): exactly ``k`` admitted (fewer
+        only when fewer scores are positive), the same set whatever the rank count. This replaced a
+        bisection that left near-tie groups out (under-filling the cap) with an all-tied fallback that
+        picked group members by exact raw equality, i.e. by rounding. Collective on ``basis.comm``."""
+        comm = self.basis.comm if self.basis.is_distributed else None
+        scores = np.asarray(scores, dtype=float)
+        above, boundary, n_fill = collective_top_k_bounds(scores, k, comm)
+        out = scores > above
+        group = np.nonzero((scores > boundary) & (scores <= above))[0]
+        chosen = collective_first_keys(
+            [bytes(keys[i].to_bytearray()) for i in group] if n_fill > 0 else [], n_fill, comm
+        )
+        for i in group:
+            if bytes(keys[i].to_bytearray()) in chosen:
+                out[i] = True
+        return out
+
+    def _admit_top(self, scores, mask, max_new, keys):
         """Cap an importance-masked candidate set at the globally top ``max_new`` scores.
 
         ``mask`` is the rank-local boolean pre-selection (e.g. ``scores >= de2_min``);
-        ``max_new=None`` admits it unchanged. Otherwise the cutoff comes from the
-        collective amplitude bisection so every rank admits the identical set (ties at
-        the cutoff under-admitted, with the all-tied fallback admitting the max-score
-        tie class rather than nothing). Collective on ``basis.comm``; returns
+        ``max_new=None`` admits it unchanged. Otherwise the global top ``max_new`` are admitted
+        by :meth:`_top_k_mask` (``keys``: the candidates, aligned with ``scores``), so every rank
+        admits its share of the identical set. Collective on ``basis.comm``; returns
         ``(admitted_mask, stats)`` with the ``last_selection``-shaped stats dict.
 
         ``stats["residual_pt2"]`` is the importance of every candidate *not* admitted, for any
@@ -1025,15 +1043,8 @@ class CIPSISolver:
                 discarded_de2_mass = self._allreduce_sum(float(scores[mask].sum()))
                 mask = np.zeros_like(mask)
             else:
-                comm = self.basis.comm if self.basis.is_distributed else None
-                cutoff = collective_amplitude_cutoff(scores[mask], int(max_new), comm)
-                admitted = mask & (scores > cutoff)
-                if self._allreduce_sum(int(np.count_nonzero(admitted))) == 0:
-                    # All candidates tie at the maximum importance (the bisection
-                    # under-admits ties): admit the max-score tie class instead of nothing.
-                    global_max = self._allreduce_max(float(scores[mask].max()) if np.any(mask) else 0.0)
-                    if global_max > 0.0:
-                        admitted = mask & (scores >= global_max)
+                admitted = np.zeros_like(mask)
+                admitted[mask] = self._top_k_mask(scores[mask], list(itertools.compress(keys, mask)), int(max_new))
                 discarded_de2_mass = self._allreduce_sum(float(scores[mask & ~admitted].sum()))
                 mask = admitted
         stats = {
@@ -1165,7 +1176,7 @@ class CIPSISolver:
             # Collective, and reached on every rank: `e_pt2_tol` is a replicated argument.
             comm = self.basis.comm if self.basis.is_distributed else None
             preselect &= scores > collective_mass_cutoff(scores, float(e_pt2_tol), comm)
-        de2_mask, selection_stats = self._admit_top(scores, preselect, max_new)
+        de2_mask, selection_stats = self._admit_top(scores, preselect, max_new, local_Djs)
         selection_stats["hpsi_rows"] = hpsi_rows
         # The reference states this round scored, i.e. the states `residual_pt2` covers. Not
         # `psi_refs` after `expand` returns: a capped run exits at the loop head, after an

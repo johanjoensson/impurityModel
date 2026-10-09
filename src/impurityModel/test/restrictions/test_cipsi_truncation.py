@@ -9,7 +9,13 @@ from mpi4py import MPI
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import calc_gs
-from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff, collective_mass_cutoff
+from impurityModel.ed.manybody_basis import (
+    Basis,
+    collective_amplitude_cutoff,
+    collective_first_keys,
+    collective_mass_cutoff,
+    collective_top_k_bounds,
+)
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 
@@ -139,6 +145,41 @@ def test_collective_cutoff_same_set_whatever_the_rank_split():
     cutoff = collective_amplitude_cutoff(mine, 2, comm)
     admitted = sorted(x for part in comm.allgather(mine[mine > cutoff].tolist()) for x in part)
     assert admitted == [0.9]
+
+
+def _top_k(scores, keys, k, comm):
+    """Admitted keys of collective_top_k_bounds + collective_first_keys, gathered on every rank."""
+    above, boundary, n_fill = collective_top_k_bounds(scores, k, comm)
+    group = [key for key, s in zip(keys, scores) if boundary < s <= above]
+    chosen = collective_first_keys(group, n_fill, comm)
+    mine = sorted([key for key, s in zip(keys, scores) if s > above] + sorted(chosen))
+    every = comm.allgather(mine) if comm is not None else [mine]
+    return sorted(key for part in every for key in part)
+
+
+def test_top_k_fills_a_near_tie_group_by_key_whatever_the_rounding():
+    """The cap is filled exactly, and the members taken from the straddling near-tie group are the
+    smallest keys -- not the ones rounding happened to make largest (the old fallback's choice), and
+    not none of them (the binned cutoff alone under-filled a 2-determinant cap on the toy SIAM)."""
+    keys = [bytes([i]) for i in range(6)]
+    base = np.array([0.9, 0.5, 0.5, 0.5, 0.25, 0.0])
+    rng = np.random.default_rng(3)
+    for _ in range(6):
+        noisy = base * (1.0 + rng.integers(-4, 5, size=base.size) * np.finfo(float).eps)
+        assert _top_k(noisy, keys, 2, None) == [keys[0], keys[1]]
+        assert _top_k(noisy, keys, 3, None) == [keys[0], keys[1], keys[2]]
+    assert _top_k(base, keys, 10, None) == keys[:5]  # every positive score, never a zero
+
+
+@pytest.mark.mpi
+def test_top_k_admits_the_same_keys_whatever_the_rank_split():
+    comm = MPI.COMM_WORLD
+    eps = np.finfo(float).eps
+    base = np.array([0.9, 0.5, 0.5 * (1 + 2 * eps), 0.5 * (1 - eps), 0.5 * (1 + eps), 0.3])
+    keys = [bytes([i]) for i in range(base.size)]
+    mine = slice(comm.rank, None, comm.size)
+    got = _top_k(base[mine], keys[mine], 3, comm)
+    assert got == [keys[0], keys[1], keys[2]]
 
 
 # ---------------------------------------------------------------------------
@@ -379,13 +420,11 @@ def test_capped_expand_monotone_and_variational():
     prev_e0 = np.inf
     for threshold in thresholds:
         e0, size, report = _expanded_e0(threshold)
-        # The capped solve is variational and the cap is a hard bound, filled up to one tie group:
-        # a near-tie group straddling the cap is left out whole (collective_amplitude_cutoff), so
-        # the basis does not depend on rounding. Here the groups are symmetric pairs (threshold 2
-        # keeps 1 determinant), so at most one slot stays empty.
+        # The capped solve is variational and the cap is a hard bound that is filled (a near-tie
+        # group straddling it is filled in determinant-key order, collective_top_k_bounds).
         assert e0 >= e0_ref - 1e-9
         assert size <= threshold
-        assert min(threshold, natural_size) - 1 <= size
+        assert size == min(threshold, natural_size)
         # Growing the budget never hurts (fixed-budget refinement keeps the best basis).
         assert e0 <= prev_e0 + 1e-9
         assert report is not None and report["cap_hit"]

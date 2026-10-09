@@ -234,6 +234,37 @@ def test_admission_prefers_large_amplitude_rows():
     assert proxy.retained_size == 3
 
 
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_a_tied_slot_at_the_cap_goes_to_the_smaller_key(order):
+    """One slot left, two candidates with the same amplitude: the freeze admits the smaller key,
+    whatever the row order or rounding -- not neither (under-filling the cap), not whichever rounding
+    made larger."""
+
+    class _FakeBasis:
+        comm = None
+        is_distributed = False
+
+        def __init__(self, local):
+            self.local_basis = local
+            self.size = len(local)
+            self.n_bytes = 1
+
+        def redistribute_block(self, block):
+            return block
+
+    seed = _det([0, 1, 2])
+    tied = [_det([0, 1, 3]), _det([0, 1, 4])]
+    eps = np.finfo(float).eps
+    amps = [0.5 * (1 + eps), 0.5 * (1 - eps)]
+    proxy = _CappedBasisProxy(_FakeBasis([seed]), cap=2)
+    rows = {tied[i]: complex(amps[j]) for i, j in zip((0, 1), order)}
+    rows[_det([0, 2, 3])] = 0.1 + 0j
+    proxy.redistribute_block(ManyBodyState.from_states([ManyBodyState(rows)]))
+    smaller = min(tied, key=lambda k: bytes(k.to_bytearray()))
+    assert proxy.cap_hit and proxy.retained_size == 2
+    assert set(proxy.retained_keys()) == {seed, smaller}
+
+
 @pytest.mark.parametrize(
     "chunks",
     [

@@ -26,7 +26,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import config
 from impurityModel.ed.gf_primitives import _allreduced_col_norms2, _CappedBasisProxy, residual_blocks
-from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
+from impurityModel.ed.manybody_basis import collective_first_keys, collective_top_k_bounds
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
 
 SCORERS = ("amplitude", "jacobi")
@@ -53,17 +53,24 @@ def _row_scores2(block, col_weights, denominators):
     return scores2
 
 
-def _select_rows(scores2, eta, slots, comm):
+def _select_rows(scores2, eta, slots, comm, key_of):
     """Local indices of the rows to admit: score above ``eta``, and among the global top ``slots``.
 
-    ``slots=None`` means no budget. The budget cutoff is a collective bisection on allreduced
-    counts, so every rank applies the identical threshold (ties at it are under-admitted)."""
-    threshold2 = eta * eta
-    above = scores2 > threshold2
-    if slots is not None:
-        cutoff2 = collective_amplitude_cutoff(scores2[above], max(int(slots), 0), comm)
-        threshold2 = max(threshold2, cutoff2)
-    return np.nonzero(scores2 > threshold2)[0]
+    ``slots=None`` means no budget. Under a budget the top ``slots`` are taken by
+    :func:`~impurityModel.ed.manybody_basis.collective_top_k_bounds` -- whole near-tie groups, then the
+    boundary group in determinant-key order (``key_of(i)``: row ``i``'s key as ``bytes``) -- so every
+    rank admits its share of the same set whatever the layout, and the budget is filled exactly."""
+    above_eta = scores2 > eta * eta
+    if slots is None:
+        return np.nonzero(above_eta)[0]
+    candidates = np.nonzero(above_eta)[0]
+    above, boundary, n_fill = collective_top_k_bounds(scores2[candidates], max(int(slots), 0), comm)
+    picked = candidates[scores2[candidates] > above]
+    group = candidates[(scores2[candidates] > boundary) & (scores2[candidates] <= above)]
+    chosen = collective_first_keys([key_of(int(i)) for i in group] if n_fill > 0 else [], n_fill, comm)
+    if chosen:
+        picked = np.concatenate([picked, np.array([i for i in group if key_of(int(i)) in chosen], dtype=int)])
+    return np.sort(picked)
 
 
 def _global_sum(value, comm):
@@ -232,7 +239,7 @@ def solve_point_outer(
         for shell in range(shells):
             denominators = (z - hOp.diagonal(b)) if scorer == "jacobi" and len(b) else None
             scores2 = _row_scores2(b, y_inv if scorer == "amplitude" else x_inv, denominators)
-            rows = _select_rows(scores2, eta, slots, comm)
+            rows = _select_rows(scores2, eta, slots, comm, lambda i, b=b: bytes(b.key_at(i).to_bytearray()))
             n_admit = _global_sum(len(rows), comm)
             chosen = [b.key_at(int(i)) for i in rows]
             tmp_basis.add_states(chosen)  # collective; empty on a rank with nothing to add

@@ -13,7 +13,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_distributed_vector, build_vector
 from impurityModel.ed.BlockLanczosArray import BETA_BLOWUP_FACTOR
-from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
+from impurityModel.ed.manybody_basis import collective_first_keys, collective_top_k_bounds
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_add_scaled_cy
 from impurityModel.ed.memory_estimate import current_rss_bytes, emit_memory_warning, format_bytes
 
@@ -197,23 +197,22 @@ class _CappedBasisProxy:
     wraps that basis and caps the growth at the point where every residual row sits on
     its hash-owner rank: the ``redistribute_block`` call. At ``GF_APPLY_ROW_CHUNKS`` > 1
     (the default, 4; ``_lanczos_step.pxi``'s row-chunked matvec) that is ``n_chunks``
-    calls per step, one per chunk of ``q_curr``'s rows, instead of one call on the
-    whole matvec residual at once (``GF_APPLY_ROW_CHUNKS=1``) -- each chunk runs the
-    freeze/admit decision below on its own candidate rows rather than once on the
-    whole step's new rows. The cap itself is unaffected (a chunked step still ends at
-    ``retained <= cap``, exactly as an unchunked one does -- see
-    ``test_gf_apply_row_chunking.py``), but which specific rows land on the admitted
-    side of a freeze that happens to fall mid-step can differ: the importance ranking
-    below is collective over one chunk's candidates, not the whole step's, so the
-    boundary tie-break is finer-grained than the unchunked path's.
+    calls per step, one per chunk of ``q_curr``'s rows. The block-Lanczos step brackets
+    them with :meth:`begin_step` / :meth:`finish_step`, so the chunks pass through and the
+    freeze/admit decision below runs once, on the step's whole summed output: a chunk
+    holds partial amplitudes, and deciding per chunk made the frozen set depend on the
+    colour layout. The cap-crossing step therefore holds its whole unprojected output
+    (``retained`` plus that step's new rows) until :meth:`finish_step` trims it -- one
+    step per unit, not priced by ``memory_estimate.estimate_gf_peak_bytes``; the memory
+    guard still checks every chunk.
 
     Policy (freeze-growth + importance-ranked boundary admission):
 
     * while ``retained + n_new <= cap``: admit every newly discovered determinant;
     * on the single overflow step: rank that step's candidate rows by max column
-      ``|amp|^2`` of the residual and admit the top ``cap - retained`` via a
-      fixed-iteration distributed amplitude bisection (allreduce'd counts, so the
-      cutoff is collective and deterministic), then freeze;
+      ``|amp|^2`` of the residual and admit exactly the top ``cap - retained``
+      (``collective_top_k_bounds``: whole near-tie groups, then the boundary group in
+      determinant-key order -- collective and layout-invariant), then freeze;
     * after the freeze: drop non-retained rows of every residual (rank-local
       ``keep_rows`` merge; ownership routing makes membership checks local).
 
@@ -484,15 +483,24 @@ class _CappedBasisProxy:
     def _admit_top_and_freeze(self, block):
         """Admit the ``cap - retained`` most important candidate rows, then freeze.
 
-        The amplitude-cutoff bisection runs a fixed iteration count on allreduce'd
-        counts, so all ranks compute the identical cutoff. Near-ties are decided on binned
-        scores (:func:`~impurityModel.ed.manybody_basis.collective_amplitude_cutoff`), so the retained set is the same whatever the colour
-        width; a near-tie group at the cutoff is left out whole (the cap is never exceeded).
+        Ranked on the rows' max column ``|amp|^2`` by
+        :func:`~impurityModel.ed.manybody_basis.collective_top_k_bounds`: whole near-tie groups
+        above the boundary, then the boundary group filled in determinant-key order
+        (:func:`~impurityModel.ed.manybody_basis.collective_first_keys`). The cap is filled exactly
+        and the retained set does not depend on the rank count, colour width or rounding.
         """
         slots = self.cap - self._global_count
         norms2 = block.new_row_max_norms2(self._mask)
-        cutoff2 = collective_amplitude_cutoff(norms2, slots, self.comm)
-        admitted = block.keys_new_above(self._mask, cutoff2)
+        above, boundary, n_fill = collective_top_k_bounds(norms2, slots, self.comm)
+        admitted = block.keys_new_above(self._mask, above)
+        if n_fill > 0:
+            # The boundary group: new rows above `boundary` that are not already admitted (a key-only
+            # block has max |amp|^2 = 0 per row, so `> -1` keeps every row not in the mask).
+            group = block.keys_new_above(self._mask, boundary).keys_new_above(admitted, -1.0)
+            group_keys, _ = group.row_max_norms2()
+            chosen = collective_first_keys([bytes(k.to_bytearray()) for k in group_keys], n_fill, self.comm)
+            picked = [k for k in group_keys if bytes(k.to_bytearray()) in chosen]
+            admitted = admitted.key_union(ManyBodyState.from_keys(picked))
         self._global_count += self._allreduce_sum(len(admitted))
         self._mask.merge_keys(admitted)
         self._frozen = True
