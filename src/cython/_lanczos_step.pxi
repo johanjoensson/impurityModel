@@ -137,6 +137,11 @@ def block_lanczos_step_cy(
     # Python overhead for nothing. `GF_APPLY_ROW_CHUNKS` defaults to 4 (on); `1`
     # recovers the pre-2026-09 one-shot path.
     _n_chunks = config.GF_APPLY_ROW_CHUNKS.get() if _needs_redistribute else 1
+    # A capping proxy decides admission on the step's whole output, not chunk by chunk
+    # (gf_primitives._CappedBasisProxy.begin_step): replicated, so every rank calls both.
+    _begin_step = getattr(basis, "begin_step", None) if _needs_redistribute else None
+    if _begin_step is not None:
+        _begin_step()
     if _n_chunks is None or _n_chunks <= 1:
         wp = h_op.apply_block(q_curr, slaterWeightMin)
         _prof_acc("matvec_apply", _t0)
@@ -201,6 +206,8 @@ def block_lanczos_step_cy(
                 wp += _piece
             del _piece
         _prof_acc("matvec_apply", _t0)
+    if _begin_step is not None:
+        wp = basis.finish_step(wp)
     _prof_acc("matvec", _t0)
 
     # --- 2. alpha_i = <q_curr | wp> -------------------------------------

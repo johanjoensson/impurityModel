@@ -283,6 +283,7 @@ class _CappedBasisProxy:
         self._verbose_freeze_logged = False
         self._leak_new = 0.0
         self._leak_total = 0.0
+        self._deferred = False
 
     # --- attributes block_lanczos_cy reads off its basis ---------------------
     @property
@@ -362,8 +363,8 @@ class _CappedBasisProxy:
         """Start measuring, on every matvec output, the weight that lands on rows outside the retained set.
 
         ``leakage`` is then the fraction of the matvec's squared norm that the support would have grown
-        by: exactly the amplitude a freeze drops. Counted chunk by chunk (``GF_APPLY_ROW_CHUNKS``), so a
-        row split across chunks is seen as its partial sums -- an indicator, not an exact norm. Replicated:
+        by: exactly the amplitude a freeze drops. Counted on the step's whole output (:meth:`finish_step`),
+        so a row reached by several ``GF_APPLY_ROW_CHUNKS`` chunks is measured on its full amplitude. Replicated:
         every rank must call this, and read :meth:`pop_leakage`, at the same points."""
         self._track_leakage = True
 
@@ -411,11 +412,36 @@ class _CappedBasisProxy:
     def redistribute_block(self, block):
         return self._admit(self._basis.redistribute_block(block))
 
+    def begin_step(self):
+        """A recurrence step starts: its matvec arrives in chunks, admission waits for the whole.
+
+        With ``GF_APPLY_ROW_CHUNKS`` > 1 the step's output reaches :meth:`redistribute_block` one
+        chunk at a time, and each chunk holds *partial* amplitudes of rows that other chunks also
+        reach. Deciding admission per chunk ranked rows on those partials, in an order set by how
+        the rows were split over ranks -- so a capped unit froze on a different set in every colour
+        layout (CrI3, cap 20,000: same size, different determinants, G apart by 5e-3 against a 1e-4
+        tolerance; one chunk: identical sets, 6e-5). Between ``begin_step`` and :meth:`finish_step`
+        the chunks pass through unprojected and the decision is taken once, on the summed output.
+        Called by the block-Lanczos step on every rank of the colour (replicated)."""
+        self._deferred = not self._frozen
+
+    def finish_step(self, wp):
+        """The step's whole matvec output: admit on full amplitudes (or project, if frozen). Collective."""
+        if not self._deferred:
+            return wp
+        self._deferred = False
+        if self._frozen:
+            # The memory guard froze mid-step: what earlier chunks brought in was never admitted.
+            wp.keep_rows(self._mask)
+            return wp
+        return self._admit_counted(wp)
+
     def _admit(self, block):
         """Project one redistributed matvec output onto the retained set, growing it while it may.
 
         Split out of :meth:`redistribute_block` so a subclass can change *which* new rows are
-        admitted without re-running the (collective) redistribution."""
+        admitted without re-running the (collective) redistribution. Inside a step
+        (:meth:`begin_step`) a chunk is only checked against the memory guard and passed on."""
         if self._frozen:
             block.keep_rows(self._mask)
             return block
@@ -427,6 +453,12 @@ class _CappedBasisProxy:
             self.memory_frozen = True
             block.keep_rows(self._mask)
             return block
+        if self._deferred:
+            return block
+        return self._admit_counted(block)
+
+    def _admit_counted(self, block):
+        """Admit ``block``'s new rows if they fit under the cap, else its top rows, and freeze. Collective."""
         n_new = len(block) - block.count_rows_in(self._mask)
         if self._track_leakage:
             # The new rows' weight (max column |amp|^2 per row, exact for the width-1 blocks a GF unit
@@ -453,10 +485,9 @@ class _CappedBasisProxy:
         """Admit the ``cap - retained`` most important candidate rows, then freeze.
 
         The amplitude-cutoff bisection runs a fixed iteration count on allreduce'd
-        counts, so all ranks compute the identical cutoff. Ties at the cutoff are
-        under-admitted (the cap is never exceeded); near-tie retained sets may differ
-        across rank counts through summation-order rounding, like the CIPSI basis
-        trajectory.
+        counts, so all ranks compute the identical cutoff. Near-ties are decided on binned
+        scores (:func:`~impurityModel.ed.manybody_basis.collective_amplitude_cutoff`), so the retained set is the same whatever the colour
+        width; a near-tie group at the cutoff is left out whole (the cap is never exceeded).
         """
         slots = self.cap - self._global_count
         norms2 = block.new_row_max_norms2(self._mask)
@@ -629,6 +660,11 @@ class _PrunedBasisProxy(_CappedBasisProxy):
     def ban_bytes(self):
         """Rank-local bytes held by the ban mask."""
         return int(self._ban.memory_bytes())
+
+    def begin_step(self):
+        """No deferral: this admission already requires ``GF_APPLY_ROW_CHUNKS=1``, so each step's
+        output arrives whole, and :meth:`_admit` must not run a second time in :meth:`finish_step`."""
+        self._deferred = False
 
     def _admit(self, block):
         if self._frozen or self._over_memory_budget():

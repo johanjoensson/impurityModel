@@ -234,6 +234,52 @@ def test_admission_prefers_large_amplitude_rows():
     assert proxy.retained_size == 3
 
 
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        # A row's amplitude summed over the chunks that reach it: A gets 0.3 + 0.3.
+        [{"A": 0.3, "B": 0.5}, {"A": 0.3, "C": 0.4}],
+        [{"A": 0.6}, {"B": 0.5, "C": 0.4}],
+        [{"A": 0.6, "B": 0.5, "C": 0.4}],
+    ],
+)
+def test_the_cap_crossing_step_is_decided_on_full_amplitudes_whatever_the_chunking(chunks):
+    """Admission at the cap ranks a row on its amplitude summed over the step's chunks.
+
+    Decided chunk by chunk (``GF_APPLY_ROW_CHUNKS`` > 1), the first chunking above froze on B (0.5 beats A's
+    partial 0.3), the others on A -- and since how rows split into chunks follows how they are spread over
+    ranks, a capped unit froze on a different set in every colour layout. Between ``begin_step`` and
+    ``finish_step`` the proxy sees the summed output, so all three keep A.
+    """
+
+    class _FakeBasis:
+        comm = None
+        is_distributed = False
+
+        def __init__(self, local):
+            self.local_basis = local
+            self.size = len(local)
+            self.n_bytes = 1
+
+        def redistribute_block(self, block):
+            return block
+
+    names = {"A": _det([0, 1, 3]), "B": _det([0, 1, 4]), "C": _det([0, 1, 5])}
+    seed = _det([0, 1, 2])
+    proxy = _CappedBasisProxy(_FakeBasis([seed]), cap=2)
+    proxy.begin_step()
+    wp = None
+    for chunk in chunks:
+        piece = proxy.redistribute_block(
+            ManyBodyState.from_states([ManyBodyState({names[k]: complex(v) for k, v in chunk.items()})])
+        )
+        wp = piece if wp is None else wp + piece
+    wp = proxy.finish_step(wp)
+    assert proxy.cap_hit and proxy.retained_size == 2
+    assert set(proxy.retained_keys()) == {seed, names["A"]}
+    assert len(wp) == 1  # the step's output was projected onto the retained set (A; the seed row is absent)
+
+
 @pytest.mark.mpi
 @pytest.mark.parametrize("frozen_csr", ["1", "0"])
 def test_capped_gf_mpi_matches_dense_php(frozen_csr, monkeypatch):
