@@ -437,20 +437,22 @@ GF_APPLY_ROW_CHUNKS = Knob(
     (``gf_primitives.py``) -- but the cap itself binds identically either way.""",
 )
 
-GF_MATVEC_PRUNE = Knob(
-    name="GF_MATVEC_PRUNE",
+MATVEC_PRUNE = Knob(
+    name="MATVEC_PRUNE",
     kind="str",
     default="after_sum",
     group="units",
-    doc="""Where the sparse block-Lanczos matvec (``_lanczos_step.pxi``) applies the
-    ``slaterWeightMin`` cutoff to ``H q``, when the step redistributes (a distributed basis, or a
-    capping proxy): ``after_sum`` (default) cuts each row once its amplitude is summed over every
-    rank and ``GF_APPLY_ROW_CHUNKS`` chunk; ``before_sum`` cuts each rank's and chunk's partial
-    amplitude before the redistribution, as before 2026-10. The GF counterpart of
-    ``GS_SELECTION_PRUNE``, and the same cut the serial one-shot ``apply_block(q, slaterWeightMin)``
-    makes.
+    doc="""Where a sparse matvec whose output is redistributed (a distributed basis, or a capping
+    proxy) applies the ``slaterWeightMin`` cutoff to ``H v``: ``after_sum`` (default) cuts each row
+    once its amplitude is summed over every rank (and ``GF_APPLY_ROW_CHUNKS`` chunk); ``before_sum``
+    cuts each rank's and chunk's partial amplitude before the redistribution, as before 2026-10.
+    Covers every such matvec: the block-Lanczos step (``_lanczos_step.pxi``), ``block_apply`` (the TRLM
+    eigensolver on a sparse operator), the BiCGSTAB/GMRES matvec, the Chebyshev filter,
+    and ``block_Green``'s basis-expansion probe. The CIPSI
+    selection round has its own knob, ``GS_SELECTION_PRUNE``. ``after_sum`` makes the same cut as a
+    serial one-shot ``apply_block(v, slaterWeightMin)``.
 
-    ``before_sum`` makes the recurrence depend on the colour's rank count and the chunk count: a
+    ``before_sum`` makes the result depend on the rank count (a GF colour's width) and the chunk count: a
     determinant reached from rows on several ranks or chunks loses the partials that are
     individually below the cutoff, and a capping proxy admits on what is left. Measured on the CrI3
     archive, uncapped, slaterWeightMin raised to 1e-5: one 4-rank colour against four 1-rank colours
@@ -1258,7 +1260,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_GMRES_MAX_RESTARTS,
     GF_EIGENSTATE_GROUP,
     GF_APPLY_ROW_CHUNKS,
-    GF_MATVEC_PRUNE,
+    MATVEC_PRUNE,
     GF_FROZEN_CSR,
     GF_SCHEDULER,
     GF_STAGNATION_FREEZE,

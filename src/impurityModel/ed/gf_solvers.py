@@ -16,8 +16,7 @@ from typing import Optional
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import config
-from impurityModel.ed import basis_transcription
+from impurityModel.ed import basis_transcription, config
 from impurityModel.ed.basis_transcription import (
     build_dense_matrix,
     build_sparse_matrix,
@@ -27,9 +26,9 @@ from impurityModel.ed.basis_transcription import (
 )
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
+from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.gf_admission import solve_point_outer
-from impurityModel.ed.work_queue import queue_progress
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
     _allreduced_col_norms2,
@@ -49,6 +48,7 @@ from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
 from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
+from impurityModel.ed.work_queue import queue_progress
 
 comm = MPI.COMM_WORLD
 rank = comm.rank
@@ -100,7 +100,8 @@ def block_Green(
         probe = last_q
         capped = False
         for _i in range(5):
-            probe = hOp.apply_block(probe, slaterWeightMin)
+            # Cut on the summed rows (MATVEC_PRUNE), so the discovered set does not depend on the rank count.
+            probe = apply_and_redistribute(hOp, probe, basis, slaterWeightMin, basis.is_distributed)
             basis.add_states(
                 {state for state in probe.support_keys(0.0) if not basis.contains_local(state)},
             )

@@ -79,6 +79,38 @@ cpdef object block_inner(object V, object W, bint mpi=False, object comm=None):
             comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
         return res
 
+def matvec_cut_after_sum(bint redistributes, double cutoff):
+    """Whether a sparse matvec cuts ``cutoff`` on its summed rows (``config.MATVEC_PRUNE``).
+
+    True only when the output is redistributed (so each rank holds partial sums until then), the
+    cutoff is positive, and the knob is ``after_sum``: the caller then applies with no cutoff and
+    prunes after the redistribute. Without a redistribute the one apply already sees whole sums.
+    Depends only on replicated values, so every rank takes the same branch.
+    """
+    if not redistributes or cutoff <= 0.0:
+        return False
+    mode = config.MATVEC_PRUNE.get()
+    if mode not in ("after_sum", "before_sum"):
+        raise ValueError(f"MATVEC_PRUNE={mode!r}: expected 'after_sum' or 'before_sum'")
+    return mode == "after_sum"
+
+
+def apply_and_redistribute(object H, object V, object basis, double cutoff, bint redistribute):
+    """``H V`` for a shared-support block, routed onto ``basis``'s owners when ``redistribute``.
+
+    The ``cutoff`` row prune is made on each row's summed amplitude (:func:`matvec_cut_after_sum`),
+    so the result does not depend on how ``V``'s rows are spread over the ranks. Collective when
+    ``redistribute`` is set.
+    """
+    cdef bint after = matvec_cut_after_sum(redistribute, cutoff)
+    W = H.apply_block(V, 0.0 if after else cutoff)
+    if redistribute:
+        W = basis.redistribute_block(W)
+    if after:
+        W.prune_rows(cutoff)
+    return W
+
+
 cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, double slaterWeightMin=0.0):
     if is_array(V) or getattr(H, "is_array_operator", False) or isinstance(H, np.ndarray) or isinstance(H, sps.spmatrix):
         V_arr = np.column_stack(V) if isinstance(V, list) and isinstance(V[0], np.ndarray) else V
@@ -170,14 +202,18 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
         # apply_multi is list-typed (a plain ManyBodyState would raise TypeError
         # there); apply_block is the block-native counterpart, near-flat cost in
         # width vs. apply_multi's linear scaling.
-        wp = H.apply_block(V, cutoff=slaterWeightMin)
-        if mpi and basis is not None and getattr(basis, "comm", None) is not None:
-            wp = basis.redistribute_block(wp)
-        return wp
+        return apply_and_redistribute(
+            H, V, basis, slaterWeightMin, mpi and basis is not None and getattr(basis, "comm", None) is not None
+        )
     else:
-        wp = H.apply_multi(V, cutoff=slaterWeightMin)
-        if mpi and basis is not None and basis.comm is not None:
+        redistribute = mpi and basis is not None and basis.comm is not None
+        after = matvec_cut_after_sum(redistribute, slaterWeightMin)
+        wp = H.apply_multi(V, cutoff=0.0 if after else slaterWeightMin)
+        if redistribute:
             wp = basis.redistribute_psis(*wp)
+        if after:
+            for psi in wp:
+                psi.prune(slaterWeightMin)
         return wp
 
 cpdef object block_add_scaled(object V, object W, object alpha, double slaterWeightMin=0.0):

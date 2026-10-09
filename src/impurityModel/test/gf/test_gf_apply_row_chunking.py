@@ -42,7 +42,7 @@ _BATHS = ({0: [[2, 3]]}, {0: [[4, 5]]})
 @pytest.fixture(autouse=True)
 def _knob_unset(monkeypatch):
     monkeypatch.delenv("GF_APPLY_ROW_CHUNKS", raising=False)
-    monkeypatch.delenv("GF_MATVEC_PRUNE", raising=False)
+    monkeypatch.delenv("MATVEC_PRUNE", raising=False)
 
 
 def _det(occupied):
@@ -161,7 +161,7 @@ def test_more_chunks_than_rows_does_not_crash(monkeypatch):
 
 
 # A slaterWeightMin at which this model's matvec output has rows whose partial amplitudes (per
-# chunk, per rank) fall below the cutoff while their sums do not: GF_MATVEC_PRUNE=before_sum
+# chunk, per rank) fall below the cutoff while their sums do not: MATVEC_PRUNE=before_sum
 # moves G by up to 1.5 here, depending on the chunk count.
 _SWM = (0.03, 0.1)
 
@@ -197,7 +197,7 @@ def test_the_matvec_cut_is_made_on_the_summed_row_whatever_the_chunking(swm, n_c
 def test_before_sum_cuts_each_chunks_partial(swm, monkeypatch):
     """The fallback keeps the old order, and the model above is one where that order matters --
     so the after_sum test discriminates."""
-    monkeypatch.setenv("GF_MATVEC_PRUNE", "before_sum")
+    monkeypatch.setenv("MATVEC_PRUNE", "before_sum")
     ref = _serial_reference(swm)
     worst = 0.0
     for n_chunks in (2, 3, 4, 8):
@@ -207,8 +207,8 @@ def test_before_sum_cuts_each_chunks_partial(swm, monkeypatch):
 
 
 def test_matvec_prune_rejects_an_unknown_value(monkeypatch):
-    monkeypatch.setenv("GF_MATVEC_PRUNE", "sometimes")
-    with pytest.raises(ValueError, match="GF_MATVEC_PRUNE"):
+    monkeypatch.setenv("MATVEC_PRUNE", "sometimes")
+    with pytest.raises(ValueError, match="MATVEC_PRUNE"):
         _g_with_cutoff(_excited_basis(1000), 0.1)
 
 
