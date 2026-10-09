@@ -750,6 +750,7 @@ def calc_spectra(
         group_restrictions,
         weighted_restrictions,
         slaterWeightMin,
+        basis=basis,
     )
     if seed_transform is not None:
         # One operator per group here, so group_i identifies the transition operator and

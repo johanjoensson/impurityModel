@@ -514,6 +514,7 @@ def get_Greens_function(
         excited_weighted_restrictions,
         slaterWeightMin,
         per_state_restrictions,
+        basis=basis,
     )
     unit_weights = unit_cost_weights(unit_seeds, basis.comm)
 
@@ -1178,6 +1179,7 @@ def calc_Greens_function_with_offdiag(
         [excited_restrictions],
         excited_weighted_restrictions,
         slaterWeightMin,
+        basis=block_basis,
     )
     unit_weights = unit_cost_weights(unit_seeds, block_basis.comm)
 

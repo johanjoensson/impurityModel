@@ -18,6 +18,7 @@ from mpi4py import MPI
 from impurityModel.ed import config
 from impurityModel.ed.basis_restrictions import union_windows, window_dimension
 from impurityModel.ed.basis_split import _pack_units, split_basis_and_redistribute_psi
+from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, matvec_cut_after_sum
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
@@ -363,6 +364,7 @@ def enumerate_gf_units(
     weighted_restrictions,
     slaterWeightMin: float,
     per_state_restrictions: Optional[list] = None,
+    basis: Optional[Basis] = None,
 ) -> tuple[list[GFUnit], list[list[ManyBodyState]], list]:
     """Enumerate the flat work units of a Green's-function calculation.
 
@@ -391,6 +393,10 @@ def enumerate_gf_units(
         Per-eigenstate excited windows; when given, each unit's window is the union
         (:func:`basis_restrictions.union_windows`) over the eigenstates it stacks instead of the group
         fallback.
+    basis : Basis, optional
+        The basis ``psis`` are distributed on. With a distributed one, a seed row reached from
+        determinants on several ranks is cut on its summed amplitude (``config.MATVEC_PRUNE``), and
+        the seeds come back owner-distributed (collective). ``None``: the states are not distributed.
 
     Returns
     -------
@@ -404,7 +410,9 @@ def enumerate_gf_units(
     units: list[GFUnit] = []
     unit_seeds: list[list[ManyBodyState]] = []
     for g, (tOps, delta_signed) in enumerate(op_groups):
-        block_v = _apply_transition_ops(tOps, psis, group_restrictions[g], weighted_restrictions, slaterWeightMin)
+        block_v = _apply_transition_ops(
+            tOps, psis, group_restrictions[g], weighted_restrictions, slaterWeightMin, basis
+        )
         n_ops = len(tOps)
         for chunk_start in range(0, n_psis, group):
             chunk = tuple(range(chunk_start, min(chunk_start + group, n_psis)))
@@ -426,7 +434,12 @@ def enumerate_gf_units(
                 continue
             tOps, _delta = op_groups[unit.group_i]
             block_v = _apply_transition_ops(
-                tOps, [psis[ei] for ei in unit.chunk], unit_restrictions[u], weighted_restrictions, slaterWeightMin
+                tOps,
+                [psis[ei] for ei in unit.chunk],
+                unit_restrictions[u],
+                weighted_restrictions,
+                slaterWeightMin,
+                basis,
             )
             unit_seeds[u] = [block_v[p][i] for p in range(len(unit.chunk)) for i in range(unit.n_ops)]
     else:
@@ -762,21 +775,28 @@ def run_units_distributed(
     return results
 
 
-def _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_restrictions, slaterWeightMin):
+def _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_restrictions, slaterWeightMin, basis=None):
     """Apply each transition operator to every thermal state, returning the seed blocks.
 
     Returns ``block_v`` indexed ``[j_psi][i_tOp]`` -- the excited state ``tOps[i] |psi_j>`` confined
     to the excited sector. These are the columns of each eigenstate's block-Lanczos seed.
+
+    A many-term operator (an XAS dipole, a NIXS or rotated-orbital operator) sends determinants on
+    different ranks to the same seed row, so on a distributed ``basis`` each rank holds partial
+    amplitudes: the ``slaterWeightMin`` cut is then made on the summed rows
+    (:func:`apply_and_redistribute`, ``config.MATVEC_PRUNE``), and the seeds come back
+    owner-distributed. Replicated decision; collective when it redistributes.
     """
     # The thermal states share their support, so each transition operator is applied to
     # the whole block at once (term/sign/accumulator work once per determinant, near-flat
     # in the number of eigenstates — Phase 2 block-state matvec).
     psi_blk = ManyBodyState.from_states(list(psis))
+    redistribute = basis is not None and matvec_cut_after_sum(basis.is_distributed, slaterWeightMin)
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
     for i_tOp, tOp in enumerate(tOps):
         tOp.set_restrictions(excited_restrictions)
         tOp.set_weighted_restrictions(excited_weighted_restrictions)
-        res_psis = tOp.apply_block(psi_blk, slaterWeightMin).to_states()
+        res_psis = apply_and_redistribute(tOp, psi_blk, basis, slaterWeightMin, redistribute).to_states()
         for j_psi, res_psi in enumerate(res_psis):
             block_v[j_psi][i_tOp] += res_psi
     return block_v

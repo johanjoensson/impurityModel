@@ -19,6 +19,7 @@ from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, block_appl
 from impurityModel.ed.chebyshev_filter import chebyshev_apply, partition_of_unity
 from impurityModel.ed.gf_primitives import _CappedBasisProxy
 from impurityModel.ed.gf_solvers import block_Green
+from impurityModel.ed.gf_units import enumerate_gf_units
 from impurityModel.ed.greens_function import calc_G
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
@@ -323,3 +324,46 @@ def test_the_block_green_probe_does_not_depend_on_the_rank_count(cutoff):
     g_serial, size_serial = _block_green(None, cutoff)
     assert size == size_serial
     np.testing.assert_allclose(g, g_serial, rtol=1e-10, atol=1e-12)
+
+
+# --- GF/spectra seeds: a many-term transition operator (an XAS dipole, a NIXS or rotated-orbital
+# operator) sends determinants on different ranks to the same seed row. ---------------------------
+
+
+def _many_term_op():
+    return ManyBodyOperator({((o, "a"),): a for o, a in ((0, 0.9), (1, 0.6), (2, 0.5), (3, 0.4), (4, 0.3), (5, 0.2))})
+
+
+def _seed_columns(comm, cutoff):
+    """Every unit's seed columns, summed over the ranks (so a before_sum run's partials add up too)."""
+    psis, basis = (_states(), None) if comm is None else (_my_share(_states(), comm), _distributed(comm))
+    _units, unit_seeds, _windows = enumerate_gf_units(
+        [([_many_term_op()], 0.1)], psis, [None], None, cutoff, basis=basis
+    )
+    cols = [{k: complex(a[0]) for k, a in col.items()} for seeds in unit_seeds for col in seeds]
+    if comm is None:
+        return cols
+    summed = []
+    for col in cols:
+        total = {}
+        for part in comm.allgather(col):
+            for k, v in part.items():
+                total[k] = total.get(k, 0) + v
+        summed.append(total)
+    return summed
+
+
+@pytest.mark.mpi
+@_multirank
+@pytest.mark.parametrize("cutoff", _CUTOFFS)
+def test_transition_operator_seeds_are_cut_on_the_summed_row(cutoff):
+    _assert_columns_match(_seed_columns(MPI.COMM_WORLD, cutoff), _seed_columns(None, cutoff), 1e-13)
+
+
+@pytest.mark.mpi
+@_multirank
+@pytest.mark.parametrize("cutoff", _CUTOFFS)
+def test_before_sum_cuts_each_ranks_seed_partials(cutoff, monkeypatch):
+    monkeypatch.setenv("MATVEC_PRUNE", "before_sum")
+    with pytest.raises(AssertionError):
+        _assert_columns_match(_seed_columns(MPI.COMM_WORLD, cutoff), _seed_columns(None, cutoff), 1e-13)

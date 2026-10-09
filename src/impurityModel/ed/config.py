@@ -448,7 +448,8 @@ MATVEC_PRUNE = Knob(
     cuts each rank's and chunk's partial amplitude before the redistribution, as before 2026-10.
     Covers every such matvec: the block-Lanczos step (``_lanczos_step.pxi``), ``block_apply`` (the TRLM
     eigensolver on a sparse operator), the BiCGSTAB/GMRES matvec, the Chebyshev filter,
-    and ``block_Green``'s basis-expansion probe. The CIPSI
+    ``block_Green``'s basis-expansion probe, and the transition-operator seeds of every GF and spectrum
+    unit (``gf_units.enumerate_gf_units``: XAS, NIXS, PES/IPS, susceptibility). The CIPSI
     selection round has its own knob, ``GS_SELECTION_PRUNE``. ``after_sum`` makes the same cut as a
     serial one-shot ``apply_block(v, slaterWeightMin)``.
 
