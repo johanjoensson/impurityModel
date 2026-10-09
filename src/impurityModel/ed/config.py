@@ -460,11 +460,17 @@ MATVEC_PRUNE = Knob(
     with ``after_sum``, 1.8e-9 and the same block counts. At the archive's own slaterWeightMin
     (1.5e-8) the two orders differ by 1.9e-5.
 
-    **Memory.** ``after_sum`` sends the sub-cutoff partials too, so each chunk's raw output and the
-    summed block before its cut are larger. ``memory_estimate``'s matvec fanout was measured on the
-    uncut output (``apply_block(q, 0)``), so the GF peak model already prices this. Measured on CrI3
-    (4 ranks, slaterWeightMin 1.5e-8): the same peak (368.2 vs 367.8 MiB) and wall per block (0.414
-    vs 0.416 s). Not yet measured at SrMnO3's 128-rank scale; ``before_sum`` is the fallback.""",
+    **Memory.** ``after_sum`` sends the sub-cutoff partials too, and the block-Lanczos step holds its
+    summed output whole until the cut. In a capped GF unit that output is not projected on the step
+    that crosses the cap (admission waits for the summed output), and it is the term that grows:
+    on an SrMnO3 replay at GF cap 20,000 (serial, 4 chunks) 55% of ``H q``'s rows were sub-cutoff,
+    and the summed output before its cut held 2.1x the rows after it at the peak step (median step
+    1.14x); at a cap that nearly closes the sector, 1.1x. CrI3 (uncapped, sector-full units, 4 ranks):
+    the same peak (368.2 vs 367.8 MiB) and wall per block. ``estimate_gf_peak_bytes`` does not price
+    the cap-crossing step, and its matvec fanout, measured on a unit-amplitude block, cannot tell the
+    two orders apart. A larger step output also raises the RSS the capped unit's memory guard reads,
+    so with an automatic cap a unit may freeze at fewer determinants. Not yet measured at 128 ranks;
+    ``before_sum`` is the fallback.""",
 )
 
 GF_SCHEDULER = Knob(
