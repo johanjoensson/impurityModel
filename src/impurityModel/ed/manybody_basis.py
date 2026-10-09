@@ -30,8 +30,19 @@ def collective_amplitude_cutoff(scores, k, comm):
     Ranks candidates by their (nonnegative) importance ``scores`` and returns the
     cutoff such that the global number of entries with ``score > cutoff`` is <= ``k``:
     keeping everything strictly above the cutoff admits the top-``k`` candidates,
-    under-admitting ties at the cutoff (the cap is never exceeded). Near-tie retained
-    sets may differ across rank counts through summation-order rounding.
+    under-admitting ties at the cutoff (the cap is never exceeded).
+
+    Ties are decided on scores rounded to :data:`_TIE_BITS` mantissa bits
+    (:func:`_tie_bins`), and the returned cutoff separates whole bins, so scores
+    that differ only by summation-order rounding -- which changes with the rank count and
+    with the colour layout -- fall in one bin and are admitted or left out together.
+    Without this, the members of a near-tie group (common: symmetry makes many
+    amplitudes exactly equal) were chosen by rounding, and a capped GF unit froze on a
+    different set of determinants in every layout (CrI3, cap 20,000: the same sizes,
+    different sets, G apart by 5e-3 against a 1e-4 tolerance). The price is that a whole
+    near-tie group at the boundary is left out, so the cap can be under-filled by up to one
+    group's size (a large share of a tiny cap on a symmetric toy model, negligible at
+    production caps).
 
     The bisection runs a fixed iteration count on allreduce'd counts, so every rank
     computes the identical cutoff. It bisects geometrically over the nonzero score
@@ -54,6 +65,28 @@ def collective_amplitude_cutoff(scores, k, comm):
         The cutoff; retain entries with ``score > cutoff``.
     """
     mpi = comm is not None and comm.size > 1
+    raw = np.asarray(scores, dtype=float)
+    binned = _tie_bins(raw)
+    hi = _bisect_count_cutoff(binned, k, comm)
+    # The admitted set is {bin > hi}. Callers compare the *raw* scores, so return the largest raw
+    # score whose bin is *not* admitted: binning is monotone, so a raw score is above that value
+    # exactly when its bin is admitted. Nothing below -> 0.0 (every nonzero score is admitted).
+    n_above = int(np.count_nonzero(binned > hi))
+    below = raw[binned <= hi]
+    largest_below = float(below.max()) if below.size else 0.0
+    raw_max = float(raw.max()) if raw.size else 0.0
+    if mpi:
+        n_above = comm.allreduce(n_above, op=MPI.SUM)
+        largest_below = comm.allreduce(largest_below, op=MPI.MAX)
+        raw_max = comm.allreduce(raw_max, op=MPI.MAX)
+    if n_above == 0:
+        return raw_max  # nothing admitted: no raw score is above the largest one
+    return largest_below
+
+
+def _bisect_count_cutoff(scores, k, comm):
+    """Fixed-count geometric bisection: the cutoff with at most ``k`` of ``scores`` above it."""
+    mpi = comm is not None and comm.size > 1
     positive = scores[scores > 0.0] if scores.size else scores
     local_max = float(positive.max()) if positive.size else 0.0
     hi = comm.allreduce(local_max, op=MPI.MAX) if mpi else local_max
@@ -61,7 +94,6 @@ def collective_amplitude_cutoff(scores, k, comm):
         return 0.0
     local_min = float(positive.min()) if positive.size else np.inf
     lo = comm.allreduce(local_min, op=MPI.MIN) if mpi else local_min
-    # Floor just below the smallest nonzero score, so "retain everything" is reachable.
     lo *= 0.5
     for _ in range(45):
         mid = np.sqrt(lo * hi)
@@ -73,6 +105,25 @@ def collective_amplitude_cutoff(scores, k, comm):
         else:
             lo = mid
     return hi
+
+
+#: Mantissa bits a score keeps when ties are decided (:func:`collective_amplitude_cutoff`). Bins
+#: are 2**-32 ~ 2.3e-10 relative: far wider than summation-order rounding (~1e-16), so near-ties
+#: share a bin unless they straddle an edge (odds ~1e-16 * 2**32 ~ 5e-7 per group), and far
+#: narrower than any importance difference a truncation should act on.
+_TIE_BITS = 32
+
+
+def _tie_bins(scores):
+    """``scores`` rounded to :data:`_TIE_BITS` mantissa bits (exact in float64; zeros stay zero).
+
+    Rounded to nearest, not floored: exact dyadic scores (1/2, 1/4, ... -- symmetric amplitudes
+    produce them) then sit at a bin *centre*, where rounding noise of either sign keeps them in
+    their bin; floored, they would sit on an edge and split by the sign of the noise. Monotone
+    non-decreasing in the score, which the cutoff's raw-score comparison relies on."""
+    scores = np.asarray(scores, dtype=float)
+    mantissa, exponent = np.frexp(scores)
+    return np.ldexp(np.floor(mantissa * 2.0**_TIE_BITS + 0.5) / 2.0**_TIE_BITS, exponent)
 
 
 def collective_mass_cutoff(scores, budget, comm):

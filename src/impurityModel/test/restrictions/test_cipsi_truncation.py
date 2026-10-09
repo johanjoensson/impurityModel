@@ -101,6 +101,46 @@ def test_collective_cutoff_mpi_agrees_and_caps():
     assert n_above == 3
 
 
+def test_collective_cutoff_rounding_noise_does_not_pick_members_of_a_near_tie():
+    """Scores that differ only by summation-order rounding are admitted or left out together.
+
+    A capped GF unit freezes on the top scores; when rounding chose among near-equal ones, the
+    retained set changed with the colour layout (CrI3 at cap 20,000: same size, different
+    determinants, G apart by 5e-3). Here three "layouts" carry the same scores perturbed by a few
+    ulps: the admitted positions must be the same in every one, and still at most k.
+    """
+    base = np.array([0.9, 0.5, 0.5, 0.5, 0.25, 0.1])
+    rng = np.random.default_rng(1)
+    chosen = []
+    for _ in range(3):
+        noisy = base * (1.0 + rng.integers(-4, 5, size=base.size) * np.finfo(float).eps)
+        cutoff = collective_amplitude_cutoff(noisy, 2, None)
+        admitted = np.flatnonzero(noisy > cutoff)
+        assert len(admitted) <= 2
+        chosen.append(tuple(admitted))
+    assert len(set(chosen)) == 1
+    assert chosen[0] == (0,)  # the tied 0.5 group does not fit in the remaining slot: all left out
+
+
+def test_collective_cutoff_separates_scores_a_bin_apart():
+    """The tie bins are far narrower than any real importance difference: 1e-8 apart is not a tie."""
+    scores = np.array([1.0, 1.0 - 1e-8, 0.5])
+    cutoff = collective_amplitude_cutoff(scores, 1, None)
+    assert np.flatnonzero(scores > cutoff).tolist() == [0]
+
+
+@pytest.mark.mpi
+def test_collective_cutoff_same_set_whatever_the_rank_split():
+    """The admitted *values* do not depend on how the near-tie copies are spread over ranks."""
+    comm = MPI.COMM_WORLD
+    base = np.array([0.9, 0.5, 0.5 * (1 + 2 * np.finfo(float).eps), 0.5 * (1 - np.finfo(float).eps), 0.3])
+    # Every rank holds a strided share; rank 0 holds the whole list on a one-rank run.
+    mine = base[comm.rank :: comm.size]
+    cutoff = collective_amplitude_cutoff(mine, 2, comm)
+    admitted = sorted(x for part in comm.allgather(mine[mine > cutoff].tolist()) for x in part)
+    assert admitted == [0.9]
+
+
 # ---------------------------------------------------------------------------
 # collective_mass_cutoff
 # ---------------------------------------------------------------------------
@@ -339,10 +379,13 @@ def test_capped_expand_monotone_and_variational():
     prev_e0 = np.inf
     for threshold in thresholds:
         e0, size, report = _expanded_e0(threshold)
-        # The capped solve is variational and the cap is a hard bound that is filled.
+        # The capped solve is variational and the cap is a hard bound, filled up to one tie group:
+        # a near-tie group straddling the cap is left out whole (collective_amplitude_cutoff), so
+        # the basis does not depend on rounding. Here the groups are symmetric pairs (threshold 2
+        # keeps 1 determinant), so at most one slot stays empty.
         assert e0 >= e0_ref - 1e-9
         assert size <= threshold
-        assert size == min(threshold, natural_size)
+        assert min(threshold, natural_size) - 1 <= size
         # Growing the budget never hurts (fixed-budget refinement keeps the best basis).
         assert e0 <= prev_e0 + 1e-9
         assert report is not None and report["cap_hit"]
