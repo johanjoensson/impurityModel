@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed import spectra
 from impurityModel.ed.BiCGSTAB import _make_matmat, block_bicgstab
 from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, block_apply, matvec_cut_after_sum
@@ -23,7 +24,9 @@ from impurityModel.ed.gf_solvers import block_Green
 from impurityModel.ed.gf_units import enumerate_gf_units
 from impurityModel.ed.greens_function import calc_G
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
+
+_multirank = pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs input rows on more than one rank")
 
 _IMP = {0: [[0, 1]]}
 _BATHS = ({0: [[2, 3]]}, {0: [[4, 5]]})
@@ -170,33 +173,61 @@ def test_before_sum_cuts_each_ranks_partial(result, reference, cutoff, monkeypat
         _assert_rows_match(result(cutoff, MPI.COMM_WORLD), reference(cutoff))
 
 
-def _capped_matvec(cutoff, cap):
-    """One serial matvec through a capping proxy (redistribute=True, as BiCGSTAB/GMRES and the
-    Chebyshev filter call it on a capped unit). Serially there are no partial sums, so the cut order
-    must change nothing -- including what the proxy admits."""
-    keys = sorted({k for s in _states() for k in s.keys()})
-    proxy = _CappedBasisProxy(Basis(_IMP, _BATHS, initial_basis=keys[:3], verbose=False), cap=cap)
-    out = apply_and_redistribute(_siam_6(), ManyBodyState.from_states(_states()), proxy, cutoff, True)
-    return _rows(out), proxy.frozen, proxy.cap_hit, proxy.retained_size
+def _initial_keys():
+    return sorted({k for s in _states() for k in s.keys()})[:3]
+
+
+def _capped_matvec(cutoff, cap, comm=None):
+    """One matvec through a capping proxy (redistribute=True, as BiCGSTAB/GMRES and the Chebyshev
+    filter call it on a capped unit), the input rows split over ``comm``'s ranks by position."""
+    proxy = _CappedBasisProxy(Basis(_IMP, _BATHS, initial_basis=_initial_keys(), verbose=False, comm=comm), cap=cap)
+    states = _states() if comm is None else _my_share(_states(), comm)
+    out = apply_and_redistribute(_siam_6(), ManyBodyState.from_states(states), proxy, cutoff, True)
+    rows = _rows(out) if comm is None else _gathered(_rows(out), comm)
+    return rows, proxy.frozen, proxy.cap_hit, proxy.retained_size
+
+
+def _capped_oracle(cutoff, cap):
+    """What the proxy must return and keep: the cut H v (whole sums); under the cap, every new row is
+    admitted; over it, the cap is filled with the new rows of largest max-column |amp| (ties by key)
+    and the output projected on what is retained."""
+    reference = _block_reference(cutoff)
+    held = {bytes(k.to_bytearray()) for k in _initial_keys()}
+    new = [k for k in reference if bytes(k.to_bytearray()) not in held]
+    if len(held) + len(new) <= cap:
+        return reference, (False, False, len(held) + len(new))
+    ranked = sorted(new, key=lambda k: (-max(abs(a) ** 2 for a in reference[k]), bytes(k.to_bytearray())))
+    kept = held | {bytes(k.to_bytearray()) for k in ranked[: cap - len(held)]}
+    return {k: v for k, v in reference.items() if bytes(k.to_bytearray()) in kept}, (True, True, cap)
 
 
 @pytest.mark.parametrize("cutoff", _CUTOFFS)
-@pytest.mark.parametrize("cap", [10, 1000])
-def test_a_capping_proxy_admits_on_the_cut_rows(cutoff, cap, monkeypatch):
+@pytest.mark.parametrize("cap", [5, 10, 1000])
+def test_a_capping_proxy_admits_on_the_cut_rows(cutoff, cap):
     """The proxy admits inside redistribute_block; admitting before the cut counted rows the cut then
-    dropped toward the cap (cap 10, cutoff 0.7: frozen at 10 retained from 7 surviving rows)."""
-    monkeypatch.setenv("MATVEC_PRUNE", "before_sum")
+    dropped toward the cap (cap 10, cutoff 0.7: frozen at 10 retained from 7 surviving rows). Cap 5
+    binds: the cap is then filled with the largest cut rows."""
     rows, *state = _capped_matvec(cutoff, cap)
-    monkeypatch.setenv("MATVEC_PRUNE", "after_sum")
-    rows_after, *state_after = _capped_matvec(cutoff, cap)
-    _assert_rows_match(rows_after, rows)
-    assert state_after == state
+    expected_rows, expected_state = _capped_oracle(cutoff, cap)
+    _assert_rows_match(rows, expected_rows)
+    assert tuple(state) == expected_state
+
+
+@pytest.mark.mpi
+@_multirank
+@pytest.mark.parametrize("cutoff", _CUTOFFS)
+@pytest.mark.parametrize("cap", [5, 10, 1000])
+def test_a_capping_proxy_admits_the_same_rows_on_any_layout(cutoff, cap):
+    """The deferred admission (begin_step/finish_step) is collective: every rank runs it, and the
+    proxy keeps the serial run's rows."""
+    rows, *state = _capped_matvec(cutoff, cap, MPI.COMM_WORLD)
+    expected_rows, expected_state = _capped_oracle(cutoff, cap)
+    _assert_rows_match(rows, expected_rows)
+    assert tuple(state) == expected_state
 
 
 # --- The other call sites, end to end or at the site (each goes red with that site reverted to the
 # before-sum cut at -n 2, 3 and 4; the cutoffs are ones that discriminate there). ---------------
-
-_multirank = pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs input rows on more than one rank")
 
 
 @pytest.mark.mpi
@@ -440,3 +471,78 @@ def test_the_admission_start_set_drops_a_cancelled_row():
     serial = _start_keys(None, _split_seed(None), 0.0)
     assert not set(cancelled) & serial
     assert _start_keys(comm, _split_seed(comm), 0.0) == serial
+
+
+# --- End to end: a spectrum with a many-term transition operator (an XAS/NIXS-like seed). ------------
+
+
+def _dense_ground_state():
+    dets = [_det(c) for c in itertools.combinations(range(6), 3)]
+    h = _siam_6()
+    mat = np.array([[inner(ManyBodyState({a: 1.0}), applyOp(h, ManyBodyState({b: 1.0}))) for b in dets] for a in dets])
+    energies, vectors = np.linalg.eigh(mat)
+    return dets, {d: complex(vectors[i, 0]) for i, d in enumerate(dets) if abs(vectors[i, 0]) > 1e-14}, energies[0]
+
+
+def _spectrum(comm, cutoff):
+    dets, ground, e0 = _dense_ground_state()
+    basis = Basis(_IMP, _BATHS, initial_basis=dets, comm=comm, verbose=False)
+    psi = ManyBodyState(dict(ground) if comm.rank == 0 else {}, width=1)
+    if comm.size > 1:
+        (psi,) = basis.redistribute_psis(psi)
+    window = {0: (2, 2)}
+    return spectra.calc_spectra(
+        _siam_6(),
+        [_many_term_op()],
+        [psi],
+        [e0],
+        tau=0.01,
+        w=np.linspace(-8, 8, 81),
+        delta=0.3,
+        basis=basis,
+        slaterWeightMin=cutoff,
+        verbose=False,
+        occ_cutoff=1e-12,
+        dN_imp=window,
+        dN_val=window,
+        dN_con=window,
+    )
+
+
+@pytest.mark.mpi
+@_multirank
+@pytest.mark.parametrize("cutoff", (0.05, 0.5))
+def test_a_many_term_spectrum_does_not_depend_on_the_rank_count(cutoff):
+    """calc_spectra on a distributed basis (owner-routed ground state) against COMM_SELF: the seeds,
+    the recurrence and the cut all see whole sums (a revert of the seed cut moves G by ~0.2 of 2.5)."""
+    # calc_spectra returns the spectrum on rank 0; every rank checks rank 0's against its own serial run.
+    distributed = MPI.COMM_WORLD.bcast(_spectrum(MPI.COMM_WORLD, cutoff), root=0)
+    np.testing.assert_allclose(distributed, _spectrum(MPI.COMM_SELF, cutoff), atol=1e-10)
+
+
+@pytest.mark.mpi
+@_multirank
+@pytest.mark.parametrize("cutoff", (0.0, 0.4))
+def test_per_state_windows_recut_the_seeds_collectively(cutoff):
+    """enumerate_gf_units' per-state re-cut redistributes on a distributed basis; it is reached for the
+    units whose window differs from the group's, the same ones on every rank."""
+    comm = MPI.COMM_WORLD
+    windows = [None, {frozenset({3}): (0, 0)}]
+    psis = [_states()[0], _states()[1]]
+
+    def seeds(comm_, states):
+        basis = _distributed(comm_) if comm_ is not None else None
+        _u, unit_seeds, _w = enumerate_gf_units(
+            [([_many_term_op()], 0.1)], states, [None], None, cutoff, per_state_restrictions=windows, basis=basis
+        )
+        return [{k: complex(a[0]) for k, a in col.items()} for unit in unit_seeds for col in unit]
+
+    got = seeds(comm, [_my_share([p], comm)[0] for p in psis])
+    summed = []
+    for col in got:
+        total = {}
+        for part in comm.allgather(col):
+            for k, v in part.items():
+                total[k] = total.get(k, 0) + v
+        summed.append({k: v for k, v in total.items() if v != 0})
+    _assert_columns_match(summed, seeds(None, psis), 1e-13)
