@@ -34,6 +34,7 @@ from impurityModel.ed.BlockLanczosArray import (
 )
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
+from impurityModel.ed.work_queue import queue_progress
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     block_add_scaled_cy,
@@ -59,16 +60,22 @@ def _make_matmat(A, basis, double slaterWeightMin, bint is_arr, bint mpi):
     determinant cap (``caps_growth`` -- the per-frequency Green's function's
     ``_CappedBasisProxy`` binds inside ``redistribute_block``, so it must see every
     matvec output even in a serial run, where redistribution itself is a no-op).
+
+    Every matvec also answers the GF unit queue (:func:`work_queue.queue_progress`): a
+    frequency point's solve, or a RIXS intermediate solve, can run for minutes, and the queue's
+    host answers the other colors' fetches only when it pokes. One list check on other ranks.
     """
     if is_arr:
 
         def matmat(v):
+            queue_progress()
             return block_apply(A, v, basis=basis, mpi=mpi, slaterWeightMin=slaterWeightMin)
 
     else:
         caps = getattr(basis, "caps_growth", False)
 
         def matmat(v):
+            queue_progress()
             return apply_and_redistribute(A, v, basis, slaterWeightMin, mpi or caps)
 
     return matmat

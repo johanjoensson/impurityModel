@@ -26,6 +26,7 @@ from impurityModel.ed.gf_primitives import _CappedBasisProxy, _distributed_seed_
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import available_bytes_per_rank, format_bytes
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
+from impurityModel.ed.work_queue import queue_progress
 
 
 def _sector_dense_max(n_live_caches=1):
@@ -150,6 +151,10 @@ class SectorResolventCache:
         if how is None:
             h = build_sparse_matrix(basis, hOp).toarray()
             h = 0.5 * (h + h.conj().T)
+            # One LAPACK call (~450 s at 5565 determinants) that cannot answer the GF unit queue
+            # inside it: answer what is pending now. On the queue host every other color that
+            # goes idle meanwhile waits for it; GF_SECTOR_CACHE_DIR makes it a one-time cost.
+            queue_progress()
             self._evals, self._evecs = np.linalg.eigh(h)
             self._save_to_disk(basis, hOp)
             how = "eigendecomposed"
@@ -204,6 +209,7 @@ class SectorResolventCache:
         basis.add_states(sorted({state for psi in seeds for state in psi.keys()}))
         probe = ManyBodyState.from_states(list(seeds))
         while True:
+            queue_progress()  # see work_queue: a closure walk can take minutes on rank 0
             old_size = basis.size
             probe = hOp.apply_block(probe, slaterWeightMin)
             basis.add_states(
@@ -354,7 +360,12 @@ def _no_convergence_check(alphas, betas, verbose=False, block_widths=None, **kwa
     ``TypeError`` the first time a real workload's sector outlived the seed block's
     invariant-subspace closure (no unit test's tiny model reached the callback before
     then) -- see the regression test ``test_krylov_shifted_resolvent_long_recurrence``.
+
+    It is also the recurrence's one per-block hook, so it answers the GF unit queue
+    (:func:`work_queue.queue_progress`), as the Green's-function monitor does for the other
+    Lanczos paths.
     """
+    queue_progress()
     return False
 
 
