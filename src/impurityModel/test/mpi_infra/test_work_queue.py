@@ -133,10 +133,12 @@ def test_free_answers_a_client_still_fetching_when_every_rank_raises():
     try:
         if comm.rank != work_queue.HOST:
             time.sleep(0.2)  # the host is already in free
-        queue.fetch()
+        got = queue.fetch()
         raise RuntimeError("the unit failed")
     except RuntimeError:
         pass
     finally:
         queue.free()
     assert not work_queue._hosted
+    if comm.rank != work_queue.HOST:
+        assert got == UnitQueue.ABORTED, "a failing host handed out a real unit"

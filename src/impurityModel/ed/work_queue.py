@@ -92,9 +92,17 @@ class UnitQueue:
     ``limit``, and a host waiting for that would hang.) Free at a synchronized point -- a
     ``finally`` that every rank reaches -- never from the garbage collector.
 
+    A host that reaches :meth:`free` without :meth:`finish` is failing: it answers every fetch still
+    to come with :attr:`ABORTED` instead of a real index, so the other colors stop (and raise) at
+    their next fetch rather than start units whose results nobody will collect.
+
     ``max_wait`` is the longest single :meth:`fetch` on this rank, in seconds: a long wait means the
     host computed without calling :func:`queue_progress`.
     """
+
+    #: Returned by :meth:`fetch` after the host failed. Negative, so callers must test for it
+    #: before using the value as an index (``order[-1]`` would silently run the last unit).
+    ABORTED = -1
 
     def __init__(self, comm, limit: int, is_client: bool = True):
         self._comm = comm.Dup()
@@ -109,6 +117,8 @@ class UnitQueue:
         # Clients already handed an index past `limit`: a client that asked again (an API misuse)
         # must not be counted out twice, or finish() would return while another still waits.
         self._done_clients: set = set()
+        self._aborting = False
+        self._finished = False
         self._next = 0
         self._request = np.zeros(1, dtype=np.int64)
         self._reply = np.zeros(1, dtype=np.int64)
@@ -126,7 +136,7 @@ class UnitQueue:
         """Receive the request already probed into ``self._status`` and send it the next index."""
         source = self._status.Get_source()
         self._comm.Recv(self._request, source=source, tag=_REQUEST)
-        self._reply[0] = self._take()
+        self._reply[0] = self.ABORTED if self._aborting else self._take()
         if self._reply[0] >= self._limit and source not in self._done_clients:
             self._done_clients.add(source)
             self._open_clients -= 1
@@ -156,6 +166,7 @@ class UnitQueue:
         """
         if not self._is_host:
             return
+        self._finished = True
         while self._open_clients > 0:
             self._comm.Probe(source=MPI.ANY_SOURCE, tag=_REQUEST, status=self._status)
             self._answer()
@@ -164,9 +175,9 @@ class UnitQueue:
         """Release the communicator. Collective.
 
         The host keeps answering requests until every rank has arrived. On the success path
-        :meth:`finish` already answered them all; on a path where every rank raised, a client may
-        still be waiting on its fetch when the host's own kernel raised, and needs an answer to
-        reach its own kernel, raise there, and get here. (That is why the arrival is a
+        :meth:`finish` already answered them all. Without it the host is failing, and a client may
+        still be waiting on its fetch (or start one later): it is answered :attr:`ABORTED`, so it
+        raises and gets here. (That is why the arrival is a
         non-blocking barrier: a blocking ``Free`` on the host would wait for that client forever.)
         """
         if self._comm is None:
@@ -174,6 +185,7 @@ class UnitQueue:
         try:
             arrived = self._comm.Ibarrier()
             if self._is_host:
+                self._aborting = not self._finished
                 while not arrived.Test():
                     self._serve_pending()
             else:

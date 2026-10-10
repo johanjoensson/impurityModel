@@ -186,3 +186,24 @@ def test_only_color_roots_are_counted_as_queue_clients():
     if MPI.COMM_WORLD.rank == 0:
         assert [u for u, _ in results] == [0, 1]
         assert max(size for _, size in results) > 1, f"premise: a color wider than one rank, got {results}"
+
+
+def test_a_failing_host_color_stops_every_other_color():
+    """Rank 0's color raises on its first unit while the others run. The others must be told to
+    stop at their next fetch and raise too, not take further units and then wait in the
+    collectives after the loop for a rank 0 that has left."""
+    basis, psi = _basis_and_seed()
+    n_units = 3 * MPI.COMM_WORLD.size
+    started = []
+
+    def kernel(split_basis, u, seeds):
+        if split_basis.comm.bcast(MPI.COMM_WORLD.rank, root=0) == 0:
+            raise ValueError("the host's unit failed")
+        started.append(u)
+        time.sleep(0.1)  # still mid-unit when the host fails
+        return u
+
+    with pytest.raises((ValueError, RuntimeError)):
+        run_units_distributed(basis, [[psi]] * n_units, np.ones(n_units), kernel)
+    assert len(started) <= 1, f"a color kept taking units after the host failed: {started}"
+    assert not work_queue._hosted

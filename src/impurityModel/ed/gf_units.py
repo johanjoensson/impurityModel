@@ -705,6 +705,8 @@ def run_units_distributed(
                 if sub_rank == 0:
                     position[0] = unit_queue.fetch()
                 split_basis.comm.Bcast(position, root=0)
+                if position[0] == UnitQueue.ABORTED:
+                    raise RuntimeError("GF unit queue: rank 0's color failed, so this color stops too")
                 if position[0] >= n_units:
                     break
                 u = int(order[position[0]])
