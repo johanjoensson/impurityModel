@@ -6,6 +6,24 @@
 # reorthogonalization mode (NONE/PARTIAL/FULL/PERIODIC/SELECTIVE) and the EA16
 # shrinking-block deflation policy are dispatched from here.
 
+def _keep_global_top(st, max_size, comm):
+    """Keep the ``max_size`` largest-amplitude rows of the distributed width-1 state ``st``, in place.
+
+    Exact and layout-independent (:func:`manybody_basis.collective_top_k_mask`: whole near-tie groups,
+    then the boundary group in key order), so the kept rows are the same at every rank count. It
+    replaced a serial ``truncate`` (ties kept) against a multi-rank bisection to an absolute 1e-8 on
+    ``|amp|^2``, which kept different rows by rank count. Collective on ``comm``.
+    """
+    rows = list(st.items())
+    n_total = comm.allreduce(len(rows), op=MPI.SUM) if comm is not None else len(rows)
+    if n_total <= max_size:
+        return
+    keys = [key for key, _amp in rows]
+    scores = np.array([abs(complex(amp[0])) ** 2 for _key, amp in rows], dtype=float)
+    mask = collective_top_k_mask(scores, keys, int(max_size), comm)
+    st.keep_rows(ManyBodyState.from_keys([keys[i] for i in np.flatnonzero(mask)]))
+
+
 def block_lanczos_step_cy(
     h_op,
     q_prev,
@@ -96,7 +114,8 @@ def block_lanczos_step_cy(
             serially.
         slaterWeightMin: Amplitude cutoff passed to ``ManyBodyState.prune``;
             SD coefficients below this value are dropped.  Default ``0.0``
-            (no pruning).
+            (no pruning).  On ``H q`` the cut is made on each row's summed amplitude
+            when the step redistributes (``config.MATVEC_PRUNE``).
         reort_period: Number of steps between full reorthogonalization sweeps
             for ``Reort.PERIODIC`` mode.  Full reorthogonalization is applied at
             step ``it`` when ``it > 0`` and ``it % reort_period == 0``.
@@ -137,8 +156,17 @@ def block_lanczos_step_cy(
     # Python overhead for nothing. `GF_APPLY_ROW_CHUNKS` defaults to 4 (on); `1`
     # recovers the pre-2026-09 one-shot path.
     _n_chunks = config.GF_APPLY_ROW_CHUNKS.get() if _needs_redistribute else 1
+    # A capping proxy decides admission on the step's whole output, not chunk by chunk
+    # (gf_primitives._CappedBasisProxy.begin_step): replicated, so every rank calls both.
+    _begin_step = getattr(basis, "begin_step", None) if _needs_redistribute else None
+    # MATVEC_PRUNE=after_sum: send every partial and cut the summed row instead, so what
+    # survives does not depend on the colour's rank count or the chunk count.
+    _prune_after_sum = matvec_cut_after_sum(_needs_redistribute, slaterWeightMin)
+    _apply_cutoff = 0.0 if _prune_after_sum else slaterWeightMin
+    if _begin_step is not None:
+        _begin_step()
     if _n_chunks is None or _n_chunks <= 1:
-        wp = h_op.apply_block(q_curr, slaterWeightMin)
+        wp = h_op.apply_block(q_curr, _apply_cutoff)
         _prof_acc("matvec_apply", _t0)
         _t1 = _time.perf_counter()
         if _needs_redistribute:
@@ -186,7 +214,7 @@ def block_lanczos_step_cy(
             # than the one-shot path. It also built one Python key object per row of
             # q_curr on every step just to form the mask.
             _part = q_curr.row_slice(_lo, _hi)
-            _raw = h_op.apply_block(_part, slaterWeightMin)
+            _raw = h_op.apply_block(_part, _apply_cutoff)
             del _part
             if hasattr(basis, "redistribute_block"):
                 _piece = basis.redistribute_block(_raw)
@@ -201,6 +229,11 @@ def block_lanczos_step_cy(
                 wp += _piece
             del _piece
         _prof_acc("matvec_apply", _t0)
+    if _prune_after_sum:
+        # Before finish_step: a capping proxy must admit on the cut sums, not on rows the cut drops.
+        wp.prune_rows(slaterWeightMin)
+    if _begin_step is not None:
+        wp = basis.finish_step(wp)
     _prof_acc("matvec", _t0)
 
     # --- 2. alpha_i = <q_curr | wp> -------------------------------------
@@ -286,7 +319,7 @@ def block_lanczos_step_cy(
     if truncation_threshold > 0:
         _q_states = q_next.to_states()
         for st in _q_states:
-            apply_global_truncation(st, truncation_threshold, comm if mpi else None)
+            _keep_global_top(st, truncation_threshold, comm if mpi else None)
         q_next = ManyBodyState.from_states(_q_states)
         did_truncate = True
 

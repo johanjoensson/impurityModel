@@ -362,12 +362,14 @@ class _R1SolverChain:
         for psi2 in psi2_all:
             psi2.prune(slaterWeightMin)
         tmp_basis.clear()
-        tmp_basis.add_states(sorted({state for p in psi1_all + psi2_all for state in p.keys()}))
         # Align seeds and warm starts to tmp_basis's ownership layout -- the solver assumes
         # its states are distributed per `basis`, and the layout of the freshly rebuilt
-        # tmp_basis need not match where the amplitudes currently live.
+        # tmp_basis need not match where the amplitudes currently live. Before the keys enter
+        # the basis (routing is by owner, not by membership): the first call's psi1 still holds
+        # each rank's partial T_in|psi>, and a row whose partials cancel must not be kept.
         n1 = len(psi1_all)
         redistributed = tmp_basis.redistribute_psis(*psi1_all, *psi2_all)
+        tmp_basis.add_states(sorted({state for p in redistributed for state in p.keys()}))
         psi1_all[:] = redistributed[:n1]
         psi2_all[:] = redistributed[n1:]
         A_op = z - hOp
@@ -807,10 +809,11 @@ def calc_map(
         for i in range(n_in):
             # R3: build the final states for every out-component and run one block-Green over
             # them; the diagonal (out-component j vs itself) reproduces the per-operator result.
-            psi3_all = [applyOp_test(tout, psi2_all[i]) for tout in tOpsOut]
+            # Summed over the ranks before their keys enter the basis (routing is by owner, not by
+            # membership): a row whose per-rank partials cancel is dropped, as a serial apply drops it.
+            psi3_all = green_basis.redistribute_psis(*[applyOp_test(tout, psi2_all[i]) for tout in tOpsOut])
             for psi3 in psi3_all:
                 green_basis.add_states(psi3.keys())
-            psi3_all = green_basis.redistribute_psis(*psi3_all)
             r2_info = {}
             # verbose=False regardless of the caller's own verbose flag: this runs once per
             # (eigenstate, wIn, in-component) -- hundreds of times on a real map -- and its
@@ -967,9 +970,10 @@ def calc_tensor_map(
             green_basis, hOp, seeds, wLoss + 1j * delta2 + E_e, slaterWeightMin=slaterWeightMin, verbose=verbose
         )
         if g_flat is None:  # distributed or over the dense-size bound: per-seed block-Lanczos
+            # Summed before their keys enter the basis (see calc_map's eval_out).
+            seeds = green_basis.redistribute_psis(*seeds)
             for s in seeds:
                 green_basis.add_states(s.keys())
-            seeds = green_basis.redistribute_psis(*seeds)
             r2_info = {}
             # verbose=False regardless of the caller's own verbose flag -- see the matching
             # comment in calc_map's eval_out: solver_stats aggregates this instead.

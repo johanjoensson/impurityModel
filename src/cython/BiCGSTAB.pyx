@@ -32,6 +32,7 @@ from impurityModel.ed.BlockLanczosArray import (
     block_tsqr,
     is_array,
 )
+from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
@@ -68,10 +69,7 @@ def _make_matmat(A, basis, double slaterWeightMin, bint is_arr, bint mpi):
         caps = getattr(basis, "caps_growth", False)
 
         def matmat(v):
-            out = A.apply_block(v, slaterWeightMin)
-            if mpi or caps:
-                out = basis.redistribute_block(out)
-            return out
+            return apply_and_redistribute(A, v, basis, slaterWeightMin, mpi or caps)
 
     return matmat
 

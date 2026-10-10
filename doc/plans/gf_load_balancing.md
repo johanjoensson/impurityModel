@@ -1,0 +1,248 @@
+# GF unit load balancing: a pull queue
+
+## Problem
+
+`run_units_distributed` packs Green's-function units statically. `_pack_units` runs LPT on
+`unit_cost_weights = seed_mass * width` and then gives each colour ranks in proportion to its packed
+mass, so it needs correct *absolute* weights twice. Seed mass cannot see the cost asymmetry between
+the two spectral sides:
+
+- **SrMnO3:** 76 removal units took about 3,350 s each and 76 addition units 20–450 s.
+- **NiO:** electron addition pushes the impurity to d9 and above.
+- **Empty conduction orbitals:** these make addition expensive in other systems too.
+
+These cases are hard to predict in general, so the scheduler has to tolerate a wrong prediction.
+
+## Evidence: replaying measured unit walls
+
+These are the per-unit walls from the round-2 cluster kit (SrMnO3 archive, 152 units, one rank per
+colour). Each run replays its own walls through list scheduling (`work_queue.queue_makespan`).
+
+| ranks | measured GF wall | lower bound | static LPT, perfect weights | queue, ranked by actual size | queue, random order |
+|---|---|---|---|---|---|
+| 32 | 13,200 s | 7,656 s | 8,534 s | 8,745 s | 9,727 s |
+| 64 | ~9,800 s | 5,260 s (one 5,260 s unit) | 5,260 s | 5,260 s | 5,933 s |
+| 128 | 3,692 s | 3,784 s at 1 rank/colour | – | – | – |
+
+- **No prediction needed for the main win.** A queue with no prediction at all beats the static
+  packing 1.36x at 32 ranks and 1.65x at 64.
+- **A good order gets close to the oracle.** The "actual size" column ranks by the measured retained
+  size, which is only known after the fact. It is within 3% of the oracle.
+- **128 ranks is bound by unit size, not scheduling.** There the static packer gave some heavy units
+  2-rank colours (1.84x faster), so a queue on one-rank colours is about 2.5% slower until the head
+  of the queue gets wider colours.
+
+## Counter progress (measured 2026-10-07)
+
+The counter is an int64 in an RMA window on rank 0, taken with `Fetch_and_op`. In the measurement
+below, the host computed for 3.8 s without making any MPI call, as a 1-rank colour does for a whole
+unit.
+
+| transport | no poke | `Testall([])` | `Iprobe` on the window's comm | size-1 `Allreduce` |
+|---|---|---|---|---|
+| Open MPI 5.0.9, shared memory | 0.15 s | – | – | – |
+| Open MPI 5.0.9, `osc rdma` + `btl tcp` | 3.80 s | 3.80 s | 0.001 s | 3.60 s |
+| MPICH 4.2.2, default (one node) | 3.81 s | 3.80 s | 0.017 s (also with 4 VCIs) | 3.60 s |
+
+- **The host has to poke.** `work_queue.queue_progress` is an `Iprobe` on the queue's own `Dup`,
+  and it is a no-op on every rank that does not host a counter.
+- **A progress thread would have worked but is ruled out.** It measured 0.1–0.3 s when the host
+  released the GIL. However, RSPt initialises MPI with a plain `MPI_Init`, which gives THREAD_SINGLE.
+- **The stall test only discriminates on MPICH.**
+  `test_a_busy_host_that_calls_queue_progress_does_not_stall_fetches`, with its poke removed, fails
+  under MPICH (1.40 s wait) and passes under Open MPI over shared memory.
+
+## Dispatch order: the excited-sector dimension (measured 2026-10-07)
+
+**Candidates.** All were scored on the production SrMnO3 archive, which is the same archive as the
+cluster runs (md5 `79548b1c`, 152 units). The local proxies were matched to the cluster walls by
+spectral side, because the cluster lines carry no unit index. A removal unit retains more than 100k
+determinants, an addition unit about 17k.
+
+- `dim`: `window_dimension` of the unit's excited window at its seeds' electron number.
+- `h1`: the global support of `H` applied once to the seeds.
+- `mass`: today's `seed_mass * width` weight.
+
+Each makespan below is the median over 200 random assignments of each side's measured walls.
+
+| proxy | AUC (removal ranked above addition) | queue makespan @32 | @64 |
+|---|---|---|---|
+| seed mass x width (current) | 0.959 | 10,267 s | 6,171 s |
+| random | – | 9,860 s | 5,905 s |
+| sector dimension | **1.000** | 9,312 s | 5,805 s |
+| `H` probe (`h1`, `h1_new`, `h1/seed`) | 1.000 | 9,288–9,294 s | 5,791–5,817 s |
+
+**What the dimensions look like.** Removal sectors hold 2,760,681 determinants (32 electrons) and
+addition sectors 73,815 (34 electrons). That is a ratio of 37, close to the measured cost ratio.
+
+**Why the current weight orders badly.** It ranks the sides almost correctly. The few heavy units it
+misranks are dispatched last and become the stragglers, which is why it does worse than random.
+
+**Why the dimension.** It ranks as well as the probe and costs nothing: no communication beyond one
+small Allreduce, and no apply. The probe costs one `H` apply per unit on the full communicator, 28 s
+in total here, and its memory grows with the ground state.
+
+**NiO 10-bath star archive, cap 3e4 (local):** every unit hit the cap and took the frozen-CSR path,
+so the walls (2–8 s) cannot rank anything.
+- In this archive the *removal* window is the larger one (2.4e10 against 1.0e8 for addition).
+- Removal units also ran more blocks (785–986 against 498–623), so the ordering is consistent there.
+- Above the cap, the dimension says nothing about depth, so ties within a side are broken by seed mass.
+- At the archive's auto cap (376k), and at 1e5, the run was OOM-killed on a 15 GB box after the
+  ground state and before the GF units. This is unrelated to the scheduler and not investigated.
+
+## Local A/B on a real workload (2026-10-07)
+
+SrMnO3 `smo_causality_check` archive, -n 3 (three 1-rank colours), `GF_REAL_TOL=1e-6`. The TCP leg
+runs over `--mca osc rdma --mca btl self,tcp --mca pml ob1`, the transport where the counter stalls
+without a poke.
+
+| kernel | case | static GF | queue GF | queue over TCP | Σ (both axes) | longest wait |
+|---|---|---|---|---|---|---|
+| Lanczos | cap 2e4, 8 units | 14.8 s | 11.1 s | 9.3 s | bit-identical | 0.12 s, 0.03 s (TCP) |
+| BiCGSTAB | cap 3e3, 4 units, 8+20 points | 878.8 s | – | 543.2 s | bit-identical | **12.40 s** (TCP), flagged |
+
+- **Lanczos.** The monitor hook keeps the waits at block length.
+- **BiCGSTAB.** It pokes once per frequency point, and one point's solve took up to 12 s without
+  returning to Python. That is about 2% of this run.
+  - A per-iteration hook would go inside the Cython `block_bicgstab` loop, which needs a rebuild.
+  - Measure on the cluster before adding it.
+
+## Cluster A/B (2026-10-07)
+
+`debug/gf_queue_kit/` on tree 89686a00 with Intel MPI 2021.16 (`FI_PROVIDER=cxi`), a `safe` build,
+the SrMnO3 production archive and the Lanczos self-energy. Each job ran static then queue on the same
+node.
+
+| ranks | static GF | queue GF | gain | longest wait for a unit | queue colours |
+|---|---|---|---|---|---|
+| 32 | – | – | – | – | (pending) |
+| 64 | 7,350 s | 5,560 s | 1.32x | 7.79 s | 64 x 1 rank |
+| 128 | 3,710 s | 3,661 s | 1.3% faster | 0.40 s | 98, 30 of them with 2 ranks |
+
+- **64 ranks.** The queue finished below the replayed 5,805 s. Static ran faster than the ~9,800 s
+  of the earlier kit round, so the gain is 1.32x rather than the replayed 1.65x.
+- **128 ranks.** The predicted 2.5% slowdown did not happen. The memory-sized colour count was 98,
+  not 128, so 30 colours got a second rank. Which unit landed on those is not controlled (Step 5).
+- **Dimension ordering without a window.** This archive has no occupation window. The count over all
+  orbitals still separates the sides by electron number (2,760,681 against 73,815), and the measured
+  bases agree (about 590k removal, 18k addition).
+- **The 7.79 s wait at 64 ranks.** Its source is unknown. It is 0.14% of the phase and below the
+  10 s flag.
+- **Σ was not compared between schedulers on the cluster.** The kit does not save Σ. Σ is
+  bit-identical only in the local A/B.
+
+**Counter probe.** Rank 0 was busy for 20 s while every other rank fetched. All ranks were on one
+node at every size, so the cross-node case is still unmeasured.
+
+| ranks | no poke | `Iprobe` poke |
+|---|---|---|
+| 32 | 19.0 s | 0.001 s |
+| 64 | 19.0 s | 0.002 s |
+| 128 | 19.0 s | 0.006 s |
+
+Intel MPI stalls the counter even within a node, so the poke is required in production.
+
+## Status
+
+`GF_SCHEDULER=queue` is the default after the 64- and 128-rank A/B, and `static` remains as an
+opt-out. Still open:
+
+- **The 32-rank row.**
+- **One queue run each of BiCGSTAB, spectra and RIXS.** The A/B covered only the Lanczos
+  self-energy.
+- **A cross-node counter probe.**
+- **Wider colours for the head of the queue.** At 128 ranks there are fewer heavy units (76) than
+  ranks, so the run is bound by the slowest heavy unit. In the A/B, 30 colours had 2 ranks only
+  because of the memory-sized colour count. Handing the head of the queue 2-rank colours on purpose
+  (measured 1.84x per unit) would make that deliberate.
+- **More hook sites, only if the A/B asks for them.** `queue_progress` is called from the GF
+  convergence monitor (once per block, both Lanczos kernels) and from BiCGSTAB (once per frequency
+  point). The frozen-CSR build is not hooked. Every queue stage prints `GF unit queue: ... longest
+  wait for a unit`, flagged when over 10 s.
+- **The dimension count is bounded.** `window_dimension` gives up past 20,000 dynamic-program states
+  (six random overlapping sets ran over a minute), and the queue then orders by seed mass. The
+  solver's windows (disjoint or nested sets) count in milliseconds.
+
+## SMO cubic DFT+DMFT run, iteration 1 (2026-10-08, static scheduler, 128 ranks)
+
+A production run on the cluster commit 59a3fb1c, which predates the queue, so this is a static baseline.
+Per-rank logs: `~/Dokument/arrhenius/SMO/cubic/impmod/solver-it-1/`. `debug/gf_weighted_wide_kit/parse_utilisation.py`
+recomputes everything below from them.
+
+- **Utilisation was 13.0 %** (sum of colour width x busy time over ranks x the 29,114 s GF wall). 27 of 32
+  colours finished in 1-2 ks and waited ~27 ks.
+- **Five units set the wall,** all on 3-4-rank colours: the dominant doublet's removal units (w = 0.4998 each)
+  at 28.9, 19.9, 17.9 and 14.0 ks, plus one excited state at 19.0 ks. The 15 other capped units took the
+  frozen `P H P` CSR on 4-6 ranks in 1.2-2.0 ks. Sparse costs 89-123 rank-s per block; the CSR 7-9.
+- **The CSR was declined correctly.** The guard budget is `resident + 0.5 (avail - resident)`, 5.75 GiB per
+  rank here, and the one accepted 4-rank unit peaked at 5.5 GiB. A 3-rank colour at 12.4M needed ~6.9 GiB.
+  The fit estimate was accurate; the build's peak was the cost (about 88 B per stored element).
+- **Why those units were on 3 ranks.** The static packer weighs by seed mass x width, which ranks the dominant
+  states low. (Under the queue, equal-width colours of ~4 ranks sit at the same boundary.)
+- **16 of the 20 capped removal units were excited states** at w ~ 6e-5 (4e-4 of the ensemble in total),
+  converged to the same 1e-9 as the dominant states: ~700 blocks each, where ~40 carry their share of G.
+  15 of 17 froze at block 18-31 with delta between 1e-5 and 1e-3.
+- **Iteration 2 got worse:** the auto cap rose from 12.4M to 18.7M because the narrowest colour went from 2 to
+  3 ranks, and the CSR was declined on every colour of 6-7 ranks but four.
+
+### What changed (branch `gf-queue-scheduler`)
+
+| change | effect | state |
+|---|---|---|
+| `GF_WEIGHTED_TOL` (+ `GF_WEIGHTED_TOL_CEILING`) | each unit converges to `tol * w_max / w_n`, per axis, clamped; cost weights follow | opt-in |
+| direct CSC assembly, `local_columns`, early CSR | peak per stored element 83 -> ~49 B; `_CSR_BYTES_PER_ELEMENT` 80 -> 60 (held by a test). The fit *decision* moves less than the peak: 3 ranks at 60 B asks for what 4 ranks at 80 B did, so a 3-rank colour can still be declined | always on; same matrix |
+| CSR decision line, strided fan-out sample | the accept/decline line prints determinants, fan-out, need, RSS, budget | always on |
+
+`GF_WEIGHTED_TOL` also changes the colour layout: the cost weights give ~12 wide colours instead of ~37, and
+an auto cap (the narrowest colour's affordance) rises ~3.5x, 12-19M to 43-62M at 128 ranks. That cap is sized
+for the sparse path (~6.2M determinants per rank) and exceeds what the CSR holds per rank (~3-5M), so a unit
+reaching it can be declined. A CSR-aware auto cap was considered and refuted as the first fix (it lowers the
+cap for every unit); it is the open item that this layout change makes pressing.
+
+`GF_WEIGHTED_TOL` does not shorten the wall by itself: the dominant units keep their tolerance. The remaining
+critical path is a dominant unit that converges *below* the cap (unit 10: 11.4M determinants, 509 blocks,
+sparse throughout), which no placement or CSR change reaches.
+
+### Stagnation freeze (`GF_STAGNATION_FREEZE`, opt-in)
+
+Unit 10 converged at 11.4M determinants, below the 12.4M cap, so it never froze and ran the sparse kernel for
+509 blocks. The knob freezes a unit at its current support, and restarts it on the CSR, once the weight
+reaching new rows has died away.
+
+- **The criterion is the weight, not the determinant count.** Each matvec's squared norm is split into the
+  part on rows already in the support and the part outside it (`_CappedBasisProxy.track_leakage`, from
+  `new_row_max_norms2` and `col_norm2`, in the same collective as the existing count). The outside fraction,
+  averaged over a window of `GF_STAGNATION_WINDOW` blocks, must stay below `f` for two windows in a row.
+  A first version used the relative growth of the count; three adversarial reviews (physics, numerics, code)
+  showed it measures how far the support reaches, not how much arrives: on the weakly-coupled test model
+  (`slaterWeightMin = 0`) the count grows +124 %, +71 %, +39 % per window while the weight on new rows falls
+  3e-13, 7e-21, 3e-23.
+- **The weight has a floor in production.** Every row the apply returns has |amp| >= `slaterWeightMin`
+  (1.5e-8), so it carries >= 2.2e-16: the weight is exactly 0 or ~(rows passing the cutoff) x 2.2e-16 over the
+  matvec's norm. The same model with the production cutoff plateaus at 1e-15 to 1e-14 and never reaches 1e-23;
+  the SMO units (local run, cap 300k) sit at 1e-13 to 1e-14 while the support grows 8-28 % per window. There is
+  therefore no canonical `f`: it must clear the plateau and stay below what matters to Sigma, so it is read
+  off the `f = 0` log. The cutoff already drops rows below it from every apply, so the freeze adds truncation
+  of the same kind, not a new kind.
+- **What it costs.** A truncation: what later blocks would have admitted is dropped; `G` is exact on the
+  support reached (causal, moments exact to the freeze depth). The report's `stagnation_freeze` line carries
+  the measured fraction. It applies to the dominant states too, so Sigma is graded with and without it.
+- **Guards.** The CSR must fit (asked once; a decline leaves the unit sparse and unfrozen); not within two
+  decades of the unit's tolerance (the restart recomputes every block from the seeds, ~1000 s of CSR at 12M
+  determinants, so with fewer than ~40 sparse blocks left it loses); `reort='none'` only (PARTIAL/SELECTIVE
+  windowing is not bit-identical: the forced-reort flag is per call); a plain capped proxy only. A unit it
+  cannot apply to says why at `-vv`.
+- **Cost.** The recurrence is resumed every window (bit-identical at `reort='none'`, tested); each resume
+  round-trips the two live blocks through states. Estimated 3 % of unit 10's wall at 32-block windows.
+- **Reading the curve first.** `GF_STAGNATION_FREEZE=0` logs the support and the weight each window and
+  never freezes: the kit's `growth` leg.
+
+### Not done
+
+- **A cap stable across DMFT iterations** (12.4M, then 18.7M, moves Sigma for non-physical reasons):
+  deliberately not built. Nothing persists the cap; `_auto_gf_caps` lives for one calculation.
+- **A weight-aware stagnation threshold.** `f` applies to every unit alike; the low-weight states are already
+  stopped early by `GF_WEIGHTED_TOL`, and the dominant ones are the ones validation must watch.
+- **Heavy units on wider colours by design.** The cost weights now give the dominant units more ranks under
+  `static`; the queue still uses equal widths.
+- **Sparse-kernel scaling beyond 4 ranks** is unmeasured (one data point).

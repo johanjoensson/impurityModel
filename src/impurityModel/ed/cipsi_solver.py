@@ -15,7 +15,11 @@ from impurityModel.ed.BlockLanczosArray import block_lanczos_array
 from impurityModel.ed.BlockLanczosCore import _build_full_T, block_apply, block_inner
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
-from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff, collective_mass_cutoff
+from impurityModel.ed.manybody_basis import (
+    Basis,
+    collective_mass_cutoff,
+    collective_top_k_mask,
+)
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.memory_estimate import (
@@ -671,6 +675,39 @@ def _commutes_with(h_op, op, tol: float = 1e-10) -> bool:
     return not residual or max((abs(v) for v in residual.values()), default=0.0) <= tol
 
 
+#: Rows per slice of :func:`_zero_entries_at_most`'s in-place pass: bounds its temporaries to
+#: ``_PRUNE_SLICE_ROWS * p`` entries instead of three full ``(rows, p)`` float arrays.
+_PRUNE_SLICE_ROWS = 65536
+
+
+def _zero_entries_at_most(view, cutoff):
+    """Zero, in place, every entry of the ``(rows, p)`` complex ``view`` with ``|v| <= cutoff``.
+
+    ``std::norm(v) <= cutoff**2`` (no sqrt), matching ``ManyBodyBlockState::prune_rows``' C++
+    criterion exactly -- not ``np.abs(view) <= cutoff``, which takes a sqrt first and so is not
+    guaranteed bit-identical at the boundary. Slice by slice with reused buffers: a whole-block
+    ``view.real**2 + view.imag**2`` allocated ~24 B per entry on top of the 16 B block, and on the
+    summed selection block (``GS_SELECTION_PRUNE=after_sum``) that is not bounded by
+    ``GS_APPLY_ROW_CHUNKS``. The caller must drop its own reference to ``view`` before
+    ``prune_rows``/redistribute (they refuse to run while a buffer export is alive); this function
+    keeps none.
+    """
+    rows = view.shape[0]
+    if rows == 0:
+        return
+    step = min(rows, _PRUNE_SLICE_ROWS)
+    norm2 = np.empty((step,) + view.shape[1:], dtype=float)
+    imag2 = np.empty_like(norm2)
+    c2 = cutoff * cutoff
+    for lo in range(0, rows, step):
+        part = view[lo : lo + step]
+        n = len(part)
+        np.multiply(part.real, part.real, out=norm2[:n])
+        np.multiply(part.imag, part.imag, out=imag2[:n])
+        norm2[:n] += imag2[:n]
+        part[norm2[:n] <= c2] = 0.0
+
+
 class CIPSISolver:
     def __init__(self, basis: Basis):
         self.basis = basis
@@ -770,15 +807,7 @@ class CIPSISolver:
                     norms2 = np.maximum(norms2, group_norms2)
         else:
             keys, norms2 = blk.row_max_norms2()
-        cutoff2 = collective_amplitude_cutoff(norms2, int(target), self.basis.comm)
-        keep_mask = norms2 > cutoff2
-        if self._allreduce_sum(int(np.count_nonzero(keep_mask))) == 0:
-            # The bisection under-admits ties: if every candidate ties at the maximum
-            # score the strict cutoff retains nothing. Keep the max-score tie class
-            # (possibly exceeding target) rather than emptying the basis.
-            global_max = self._allreduce_max(float(norms2.max()) if norms2.size else 0.0)
-            if global_max > 0.0:
-                keep_mask = norms2 >= global_max
+        keep_mask = self._top_k_mask(norms2, keys, int(target))
         retained = set(itertools.compress(keys, keep_mask))
         kept_weight = self._allreduce_sum(float(norms2[keep_mask].sum()))
         total_weight = self._allreduce_sum(float(norms2.sum()))
@@ -828,11 +857,14 @@ class CIPSISolver:
         ``len(psi_ref)`` columns in a single :meth:`ManyBodyOperator.apply_block` call,
         instead of ``len(psi_ref)`` separate per-state applies. ``apply_block`` keeps a
         row if ANY column exceeds ``cutoff`` -- a safe superset per column, but not the
-        same as pruning each column to its own threshold -- so every column still needs
-        pruning to ``cutoff`` before the cross-rank sum. This reproduces the old
-        per-state ``applyOp(H, psi_i, cutoff)`` bit-for-bit, including pruning locally
-        *before* redistributing (the same order every other probe in this module uses,
-        e.g. ``psi_all_Dj`` above), rather than pruning the already-summed total.
+        same as pruning each column to its own threshold. By default
+        (``GS_SELECTION_PRUNE=after_sum``) nothing is cut before the cross-rank sum: every
+        partial is sent, and each column of the summed block is cut to ``cutoff``
+        (:meth:`_prune_summed`), so the candidate set is the same whatever the rank count and
+        ``GS_APPLY_ROW_CHUNKS`` (CrI3 at a binding cap: a different basis at 1, 2 and 3 ranks
+        before, identical after). ``before_sum`` restores the old order -- every column of each
+        rank's partial pruned to ``cutoff`` before redistributing, bit-for-bit the old
+        per-state ``applyOp(H, psi_i, cutoff)`` -- which the paragraphs below describe.
 
         The per-column prune runs as one vectorized pass over the block's own buffer-
         protocol view (zero-copy, in place) rather than -- as it did before -- splitting
@@ -860,18 +892,24 @@ class CIPSISolver:
         """
         block = psi_ref if isinstance(psi_ref, ManyBodyState) else ManyBodyState.from_states(psi_ref)
         n_chunks = config.GS_APPLY_ROW_CHUNKS.get()
+        prune = config.GS_SELECTION_PRUNE.get()
+        if prune not in ("after_sum", "before_sum"):
+            raise ValueError(f"GS_SELECTION_PRUNE={prune!r}: expected 'after_sum' or 'before_sum'")
+        # after_sum: send every partial and cut the summed amplitude, so the candidate set does not
+        # depend on how the reference rows are split over ranks and chunks (see GS_SELECTION_PRUNE).
+        local_cutoff = cutoff if prune == "before_sum" else 0.0
         if n_chunks is None or n_chunks <= 1:
-            raw = self._apply_and_prune_columns(H, block, cutoff)
+            raw = self._apply_and_prune_columns(H, block, local_cutoff)
             merged = self.basis.redistribute_block(raw)
-            merged.prune_rows(0.0)
-            return merged
+            return self._prune_summed(merged, cutoff if prune == "after_sum" else 0.0)
 
         # Row-chunked: the round's peak is the raw apply output, its packed send buffer, the
         # receive buffer and the merged block all alive at once (~6x the owned block, measured;
         # see doc/plans/dc_smo_memory.md round 6). Applying one chunk of the reference rows at
         # a time bounds the first three to chunk size; only the accumulating merged block stays.
         # Exact up to summation order (a candidate reached from rows in different chunks has its
-        # partial sums added chunk by chunk, and the per-column prune sees those partials), which
+        # partial sums added chunk by chunk; under GS_SELECTION_PRUNE=before_sum the per-column prune
+        # also sees those partials, which changes the selected set), which
         # is the same class of difference a change of rank count makes.
         #
         # The chunk COUNT is the knob, replicated on every rank, so every rank makes exactly
@@ -888,7 +926,7 @@ class CIPSISolver:
             # vector's capacity -- so every chunk's "bounded" apply ran alongside a full-size
             # copy, and the mask cost one Python key object per row of the whole block.
             part = block.row_slice(int(lo), int(hi))
-            raw = self._apply_and_prune_columns(H, part, cutoff)
+            raw = self._apply_and_prune_columns(H, part, local_cutoff)
             del part
             piece = self.basis.redistribute_block(raw)
             del raw
@@ -899,6 +937,16 @@ class CIPSISolver:
                 # empty piece on one rank cannot desynchronize the others.
                 merged += piece
             del piece
+        return self._prune_summed(merged, cutoff if prune == "after_sum" else 0.0)
+
+    @staticmethod
+    def _prune_summed(merged, cutoff):
+        """Zero every summed entry with ``|v| <= cutoff`` in place, then drop the all-zero rows.
+
+        ``cutoff = 0`` is the bare ``prune_rows(0.0)``: a row that cancels exactly across ranks on
+        every column is a real selection-rule cancellation, not a truncation artifact."""
+        if cutoff > 0.0 and len(merged):
+            _zero_entries_at_most(np.asarray(merged), cutoff)
         merged.prune_rows(0.0)
         return merged
 
@@ -907,13 +955,8 @@ class CIPSISolver:
         """``H`` applied to ``block`` with every column pruned to ``cutoff`` in place (the
         one-shot body of :meth:`_apply_block_and_redistribute`, shared with its chunked path)."""
         raw = H.apply_block(block, cutoff)
-        view = np.asarray(raw)  # zero-copy (rows, p) view; buffer.readonly=0, so this writes through
-        # `std::norm(v) <= cutoff**2` (no sqrt), matching ManyBodyBlockState::prune_rows'
-        # C++ criterion exactly -- not `np.abs(view) <= cutoff`, which takes a sqrt first and so
-        # is not guaranteed bit-identical to the C++ comparison at the cutoff boundary.
-        norm2 = view.real**2 + view.imag**2
-        view[norm2 <= cutoff * cutoff] = 0.0
-        del view, norm2  # release the buffer export -- prune_rows/redistribute refuse to run while it's alive
+        if cutoff > 0.0 and len(raw):  # cutoff 0: apply_block already dropped only exact zeros
+            _zero_entries_at_most(np.asarray(raw), cutoff)
         return raw
 
     def _candidate_overlaps_and_energies(self, H, Hpsi_ref, slaterWeightMin: float = 0):
@@ -994,14 +1037,23 @@ class CIPSISolver:
         de2[mask] = np.square(np.abs(overlaps[mask])) / de[mask]
         return local_Djs, de2
 
-    def _admit_top(self, scores, mask, max_new):
+    def _top_k_mask(self, scores, keys, k):
+        """Local mask of the global top ``k`` of ``scores`` (``keys``: this rank's determinants, aligned).
+
+        :func:`~impurityModel.ed.manybody_basis.collective_top_k_mask` on the basis's communicator:
+        exactly ``k`` admitted (fewer only when fewer scores are positive), the same set whatever the
+        rank count. This replaced a bisection that left near-tie groups out (under-filling the cap)
+        with an all-tied fallback that picked group members by exact raw equality, i.e. by rounding.
+        Collective on ``basis.comm``."""
+        return collective_top_k_mask(scores, keys, k, self.basis.comm if self.basis.is_distributed else None)
+
+    def _admit_top(self, scores, mask, max_new, keys):
         """Cap an importance-masked candidate set at the globally top ``max_new`` scores.
 
         ``mask`` is the rank-local boolean pre-selection (e.g. ``scores >= de2_min``);
-        ``max_new=None`` admits it unchanged. Otherwise the cutoff comes from the
-        collective amplitude bisection so every rank admits the identical set (ties at
-        the cutoff under-admitted, with the all-tied fallback admitting the max-score
-        tie class rather than nothing). Collective on ``basis.comm``; returns
+        ``max_new=None`` admits it unchanged. Otherwise the global top ``max_new`` are admitted
+        by :meth:`_top_k_mask` (``keys``: the candidates, aligned with ``scores``), so every rank
+        admits its share of the identical set. Collective on ``basis.comm``; returns
         ``(admitted_mask, stats)`` with the ``last_selection``-shaped stats dict.
 
         ``stats["residual_pt2"]`` is the importance of every candidate *not* admitted, for any
@@ -1025,15 +1077,8 @@ class CIPSISolver:
                 discarded_de2_mass = self._allreduce_sum(float(scores[mask].sum()))
                 mask = np.zeros_like(mask)
             else:
-                comm = self.basis.comm if self.basis.is_distributed else None
-                cutoff = collective_amplitude_cutoff(scores[mask], int(max_new), comm)
-                admitted = mask & (scores > cutoff)
-                if self._allreduce_sum(int(np.count_nonzero(admitted))) == 0:
-                    # All candidates tie at the maximum importance (the bisection
-                    # under-admits ties): admit the max-score tie class instead of nothing.
-                    global_max = self._allreduce_max(float(scores[mask].max()) if np.any(mask) else 0.0)
-                    if global_max > 0.0:
-                        admitted = mask & (scores >= global_max)
+                admitted = np.zeros_like(mask)
+                admitted[mask] = self._top_k_mask(scores[mask], list(itertools.compress(keys, mask)), int(max_new))
                 discarded_de2_mass = self._allreduce_sum(float(scores[mask & ~admitted].sum()))
                 mask = admitted
         stats = {
@@ -1165,7 +1210,7 @@ class CIPSISolver:
             # Collective, and reached on every rank: `e_pt2_tol` is a replicated argument.
             comm = self.basis.comm if self.basis.is_distributed else None
             preselect &= scores > collective_mass_cutoff(scores, float(e_pt2_tol), comm)
-        de2_mask, selection_stats = self._admit_top(scores, preselect, max_new)
+        de2_mask, selection_stats = self._admit_top(scores, preselect, max_new, local_Djs)
         selection_stats["hpsi_rows"] = hpsi_rows
         # The reference states this round scored, i.e. the states `residual_pt2` covers. Not
         # `psi_refs` after `expand` returns: a capped run exits at the loop head, after an
@@ -1176,67 +1221,35 @@ class CIPSISolver:
         new_Dj = set(itertools.compress(local_Djs, de2_mask))
 
         if gen_ops:
-            unexplored_list = sorted(new_Dj)
+            # Breadth-first over the generators, one wave at a time on every rank. Each wave's images
+            # are routed to their owners (Basis.new_owned_keys), which keep the ones neither in the
+            # basis nor found before; the next wave starts from those. A rank-local membership test
+            # (contains_local) treated a determinant another rank owns as new: the walk went on through
+            # it, so a multi-rank closure was a superset of the serial one, and ranks reaching the same
+            # image counted it once each toward n_new. Collective: the wave count is global, so every
+            # rank runs the same number of waves, and new_Dj stays owner-local (each determinant once).
+            # The 1000-row superpositions use hash-derived amplitudes (see _amplitude_from_hash) so
+            # images do not interfere; which rows share a chunk depends on the layout, but an image
+            # lost to cancellation below the 1e-12 noise cut would need a measure-zero coincidence.
             chunk_size = 1000
-
-            while unexplored_list:
-                chunk = unexplored_list[:chunk_size]
-                unexplored_list = unexplored_list[chunk_size:]
-
-                # Pseudo-random superpositions (derived from each determinant's hash, not
-                # Python's global `random` stream) avoid destructive interference the same
-                # way the diagonal probe above does, but deterministically: an unseeded
-                # `random.random()` here made which determinants this closure discovers --
-                # and hence the basis grown from them -- depend on run-to-run RNG state and
-                # on `new_Dj`'s (rank-local, insertion-order-dependent) set iteration order,
-                # the same reproducibility failure `_amplitude_from_hash` was introduced to
-                # close off elsewhere in this class.
-                # No MPI collective anywhere in this closure (each rank explores its own
-                # local_Djs independently), so ManyBodyState's width-0 polymorphic
-                # zero on an empty next_amps below is just a local falsy value, not the
-                # cross-rank deadlock hazard it is at a collective boundary.
-                chunk_state = ManyBodyState({state: _amplitude_from_hash(state.get_hash()) for state in chunk})
-
-                while chunk_state:
-                    # Collect into a plain dict and build the next ManyBodyState in
-                    # one bulk range-insert (its dict constructor's flat_map insert(begin,
-                    # end)) instead of `p` repeated single-key inserts: `operator[]` on a
-                    # missing key is a sorted-vector insert, so accumulating one
-                    # determinant at a time here was O(n^2) in the size of the closure
-                    # wave. Every determinant can only be discovered once across the
-                    # whole pass (the `state not in new_Dj` guard below), so no key here
-                    # is ever written twice -- batching changes nothing about which
-                    # (state, amp) pairs end up in the next wave, only how they're
-                    # assembled into it.
-                    next_amps = {}
+            frontier = sorted(new_Dj)
+            while True:
+                images = set()
+                for lo in range(0, len(frontier), chunk_size):
+                    chunk_state = ManyBodyState(
+                        {state: _amplitude_from_hash(state.get_hash()) for state in frontier[lo : lo + chunk_size]}
+                    )
                     for op in gen_ops:
-                        # Apply generator (cutoff=1e-12 to prune float noise)
-                        psi_op = applyOp_test(op, chunk_state, cutoff=1e-12)
-
-                        for state, _row in psi_op.items():
-                            # Skip determinants already IN THE BASIS as well as ones already
-                            # discovered in this pass. `_candidate_overlaps_and_energies` only
-                            # ever returns out-of-basis candidates, and `Basis.add_states` dedupes
-                            # against the same index, so an in-basis image admits nothing -- but
-                            # it still inflated `n_new` in `expand`, which is compared against the
-                            # `truncation_threshold`. That spuriously triggered a fixed-budget
-                            # cycle and made room by pruning genuinely important determinants for
-                            # candidates that were already there. Measured on a 12-orbital toy at
-                            # cap 120: E0 worse by 30x, and the final basis 94 determinants -- a
-                            # cap the run never actually reached.
-                            #
-                            # `contains_local`, never `in self.basis`: the latter runs a routed
-                            # global index query when the basis is distributed, and this closure
-                            # is rank-local (each rank walks its own `local_Djs`, so ranks reach
-                            # here a different number of times). A collective in here is the
-                            # deadlock CLAUDE.md's MPI rules describe. Distributed runs therefore
-                            # still over-count images owned by another rank -- an upper bound on
-                            # `n_new`, never an under-count, so the cap stays conservative.
-                            if state not in new_Dj and not self.basis.contains_local(state):
-                                new_Dj.add(state)
-                                next_amps[state] = _amplitude_from_hash(state.get_hash())
-
-                    chunk_state = ManyBodyState(next_amps)
+                        # cutoff=1e-12 prunes float noise
+                        images.update(applyOp_test(op, chunk_state, cutoff=1e-12).keys())
+                # Excluding the basis matters beyond the walk: an in-basis image admits nothing, but
+                # it inflated `n_new` in `expand`, which is compared against the `truncation_threshold`
+                # (a 12-orbital toy at cap 120: E0 worse by 30x, the final basis 94 determinants).
+                fresh = self.basis.new_owned_keys(images, exclude=new_Dj)
+                if self._allreduce_sum(len(fresh)) == 0:
+                    break
+                new_Dj |= fresh
+                frontier = sorted(fresh)
 
         if return_Hpsi_ref:
             return new_Dj, Hpsi_ref

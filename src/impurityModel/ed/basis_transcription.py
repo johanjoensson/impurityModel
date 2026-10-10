@@ -184,16 +184,21 @@ def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin:
     return ManyBodyState.from_keys_and_amps(support, amps)
 
 
-def iter_local_operator_images(basis, op, slaterWeightMin):
+def iter_local_operator_images(basis, op, slaterWeightMin, indices=None):
     """Yield ``op`` applied to each (MPI local) basis state, in basis order.
 
     The streaming counterpart of :func:`build_local_operator_list`. A caller that consumes
     one image at a time should use this: the list form keeps every image alive at once, so
     the whole ``H|D>`` image of the local basis -- ``O(N_local * fan-out)`` rows -- is
     resident before the first one is read, and stays resident until the consumer finishes.
+
+    ``indices`` (local positions) restricts the walk to those states, in the order given; a
+    caller sampling the image size passes a stride, because ``local_basis`` is sorted and its
+    first states share their leading-orbital occupation.
     """
     unit_state = ManyBodyState()
-    for state in basis.local_basis:
+    local_basis = basis.local_basis
+    for state in local_basis if indices is None else (local_basis[int(i)] for i in indices):
         unit_state[state] = 1.0
         yield applyOp(op, unit_state, cutoff=slaterWeightMin)
         unit_state.erase(state)
@@ -231,10 +236,37 @@ def build_dense_matrix(basis, op, distribute=True):
 _SPARSE_BUILD_BATCH = 1 << 21
 
 
-def build_sparse_matrix(basis, op: ManyBodyOperator):
+def _concat_consuming(chunks, dtype):
+    """``np.concatenate(chunks)`` that releases each chunk as soon as it is copied.
+
+    ``np.concatenate`` holds the list and the result at once (2x the data). Copying chunk by chunk
+    and dropping each reference as it goes keeps the peak at the result plus the largest chunk.
+    ``chunks`` is emptied.
+    """
+    out = np.empty(sum(len(c) for c in chunks), dtype=dtype)
+    pos = 0
+    for k, chunk in enumerate(chunks):
+        out[pos : pos + len(chunk)] = chunk
+        pos += len(chunk)
+        chunks[k] = None
+    chunks.clear()
+    return out
+
+
+def build_sparse_matrix(basis, op: ManyBodyOperator, local_columns=False):
     """
     Get the operator as a sparse matrix in the current basis.
     The sparse matrix is distributed over all ranks.
+
+    Returns a canonical CSC array whose stored columns are the ones this rank owns. By default it
+    has shape ``(N, N)`` with every other column empty; ``local_columns=True`` returns just the
+    ``(N, N_local)`` slice, which is what ``H[:, basis.local_indices]`` would give, without ever
+    forming the ``(N, N)`` column pointer or the slice's second copy.
+
+    The CSC is assembled directly: images arrive one ket at a time, so the entries are already
+    grouped by column and only the per-column counts are needed -- no COO triplet, and no
+    coordinate-to-compressed conversion holding both. Peak memory is the stored entries (index +
+    value) plus the chunks not yet consumed, instead of ~4x that.
     """
     if isinstance(op, dict):
         op = ManyBodyOperator(op)
@@ -244,6 +276,7 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
     # the old `_index_dict[ket]` was looking up an answer the enumerate already had.
     _offset = basis.offset
     _size = basis.size
+    n_local = len(basis.local_basis)
 
     # Images are streamed, not listed: the list form holds the whole `H|D>` image of the
     # local basis (`O(N_local * fan-out)` rows) resident for the entire build. Amplitudes are
@@ -253,8 +286,8 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
     # `_candidate_overlaps_and_energies`). `keys()` is in row order, so the buffer's rows and
     # the key list line up.
     row_chunks = []
-    col_chunks = []
     val_chunks = []
+    col_counts = np.zeros(n_local, dtype=np.int64)  # stored entries per local column
     if not basis.is_distributed:
         # Filter as we go. Only a minority of the image survives -- every bra outside the
         # basis is dropped -- so accumulating the whole image first and masking at the end
@@ -269,11 +302,12 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
                 continue
             local_rows = keys_block.find_rows(ks)
             keep = local_rows != n_local_keys
-            if not keep.any():
+            n_keep = int(keep.sum())
+            if not n_keep:
                 continue
             row_chunks.append(local_rows[keep].astype(np.int64, copy=False) + _offset)
-            col_chunks.append(np.full(int(keep.sum()), _offset + i, dtype=np.int64))
             val_chunks.append(np.asarray(ket_state)[:, 0][keep])
+            col_counts[i] = n_keep
     else:
         # The routed lookup is collective, so the bras cannot be resolved image by image. They
         # are accumulated and resolved in batches of about `_SPARSE_BUILD_BATCH` matrix elements:
@@ -294,7 +328,7 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
                 if ket_state is None:
                     exhausted = True
                     break
-                column = _offset + position
+                column = position
                 position += 1
                 ks = ket_state.keys()
                 if not ks:
@@ -309,22 +343,30 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
             del bras
             keep = global_rows != _size
             row_chunks.append(global_rows[keep])
-            col_chunks.append(columns[keep])
             val_chunks.append(values[keep])
+            if columns.size:
+                col_counts += np.bincount(columns[keep], minlength=n_local)
             del global_rows, columns, values, keep
             if not basis.comm.allreduce(not exhausted, op=MPI.LOR):
                 break
 
-    rows = np.concatenate(row_chunks) if row_chunks else np.empty(0, dtype=np.int64)
-    cols = np.concatenate(col_chunks) if col_chunks else np.empty(0, dtype=np.int64)
-    vals = np.concatenate(val_chunks) if val_chunks else np.empty(0, dtype=complex)
-    del row_chunks, col_chunks, val_chunks
-
     n = len(basis)
-    if len(rows):
-        res = sp.sparse.csc_array((vals, (rows, cols)), shape=(n, n), dtype=complex)
+    nnz = int(col_counts.sum())
+    indices = _concat_consuming(row_chunks, np.int64)
+    data = _concat_consuming(val_chunks, complex)
+    if local_columns:
+        indptr = np.zeros(n_local + 1, dtype=np.int64)
+        np.cumsum(col_counts, out=indptr[1:])
+        shape = (n, n_local)
     else:
-        res = sp.sparse.csc_array((n, n), dtype=complex)
+        indptr = np.zeros(n + 1, dtype=np.int64)
+        np.cumsum(col_counts, out=indptr[_offset + 1 : _offset + n_local + 1])
+        indptr[_offset + n_local + 1 :] = nnz
+        shape = (n, n)
+    res = sp.sparse.csc_array((data, indices, indptr), shape=shape)
+    # The images were ordered by the operator, not by row: sort each column in place and mark the
+    # result canonical (no duplicates -- a ManyBodyState holds each determinant once per image).
+    res.sort_indices()
     return res
 
 

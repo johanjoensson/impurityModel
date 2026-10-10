@@ -13,7 +13,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_distributed_vector, build_vector
 from impurityModel.ed.BlockLanczosArray import BETA_BLOWUP_FACTOR
-from impurityModel.ed.manybody_basis import collective_amplitude_cutoff
+from impurityModel.ed.manybody_basis import collective_first_keys, collective_top_k_bounds
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_add_scaled_cy
 from impurityModel.ed.memory_estimate import current_rss_bytes, emit_memory_warning, format_bytes
 
@@ -197,23 +197,22 @@ class _CappedBasisProxy:
     wraps that basis and caps the growth at the point where every residual row sits on
     its hash-owner rank: the ``redistribute_block`` call. At ``GF_APPLY_ROW_CHUNKS`` > 1
     (the default, 4; ``_lanczos_step.pxi``'s row-chunked matvec) that is ``n_chunks``
-    calls per step, one per chunk of ``q_curr``'s rows, instead of one call on the
-    whole matvec residual at once (``GF_APPLY_ROW_CHUNKS=1``) -- each chunk runs the
-    freeze/admit decision below on its own candidate rows rather than once on the
-    whole step's new rows. The cap itself is unaffected (a chunked step still ends at
-    ``retained <= cap``, exactly as an unchunked one does -- see
-    ``test_gf_apply_row_chunking.py``), but which specific rows land on the admitted
-    side of a freeze that happens to fall mid-step can differ: the importance ranking
-    below is collective over one chunk's candidates, not the whole step's, so the
-    boundary tie-break is finer-grained than the unchunked path's.
+    calls per step, one per chunk of ``q_curr``'s rows. The block-Lanczos step brackets
+    them with :meth:`begin_step` / :meth:`finish_step`, so the chunks pass through and the
+    freeze/admit decision below runs once, on the step's whole summed output: a chunk
+    holds partial amplitudes, and deciding per chunk made the frozen set depend on the
+    colour layout. The cap-crossing step therefore holds its whole unprojected output
+    (``retained`` plus that step's new rows) until :meth:`finish_step` trims it -- one
+    step per unit, not priced by ``memory_estimate.estimate_gf_peak_bytes``; the memory
+    guard still checks every chunk.
 
     Policy (freeze-growth + importance-ranked boundary admission):
 
     * while ``retained + n_new <= cap``: admit every newly discovered determinant;
     * on the single overflow step: rank that step's candidate rows by max column
-      ``|amp|^2`` of the residual and admit the top ``cap - retained`` via a
-      fixed-iteration distributed amplitude bisection (allreduce'd counts, so the
-      cutoff is collective and deterministic), then freeze;
+      ``|amp|^2`` of the residual and admit exactly the top ``cap - retained``
+      (``collective_top_k_bounds``: whole near-tie groups, then the boundary group in
+      determinant-key order -- collective and layout-invariant), then freeze;
     * after the freeze: drop non-retained rows of every residual (rank-local
       ``keep_rows`` merge; ownership routing makes membership checks local).
 
@@ -245,6 +244,12 @@ class _CappedBasisProxy:
     #: froze the support (see :func:`gf_solvers.block_Green_sparse`'s frozen-basis CSR
     #: fallback). Off by default: every other user of the proxy runs on through the freeze.
     stop_on_freeze = False
+    #: Set by :meth:`freeze_for_stagnation`: the support was frozen below its cap because the weight reaching
+    #: new rows had died away (``GF_STAGNATION_FREEZE``), not because the cap bound.
+    stagnation_frozen = False
+    #: Measure the weight of the rows each matvec would add (see :meth:`track_leakage`). Off by default:
+    #: the hot path then pays nothing and is bit-identical to a proxy that never had the option.
+    _track_leakage = False
 
     def __init__(self, basis, cap, memory_budget=None, memory_policy="tighten"):
         """``memory_budget`` (absolute per-rank bytes, ``None`` = off, the default) adds a measured
@@ -275,6 +280,9 @@ class _CappedBasisProxy:
         self._frozen = self._global_count >= self.cap
         self.cap_hit = self._frozen
         self._verbose_freeze_logged = False
+        self._leak_new = 0.0
+        self._leak_total = 0.0
+        self._deferred = False
 
     # --- attributes block_lanczos_cy reads off its basis ---------------------
     @property
@@ -342,6 +350,29 @@ class _CappedBasisProxy:
             return value
         return self.comm.allreduce(value, op=MPI.SUM)
 
+    def _allreduce_array(self, values, op):
+        """Elementwise reduction of a short float vector over the colour. Uppercase ``Allreduce`` on an
+        array: the lowercase one raises on one rank only for ndarray payloads (mpi4py), which deadlocks."""
+        out = np.array(values, dtype=np.float64)
+        if self.comm is not None and self.comm.size > 1:
+            self.comm.Allreduce(MPI.IN_PLACE, out, op=op)
+        return out
+
+    def track_leakage(self):
+        """Start measuring, on every matvec output, the weight that lands on rows outside the retained set.
+
+        ``leakage`` is then the fraction of the matvec's squared norm that the support would have grown
+        by: exactly the amplitude a freeze drops. Counted on the step's whole output (:meth:`finish_step`),
+        so a row reached by several ``GF_APPLY_ROW_CHUNKS`` chunks is measured on its full amplitude. Replicated:
+        every rank must call this, and read :meth:`pop_leakage`, at the same points."""
+        self._track_leakage = True
+
+    def pop_leakage(self):
+        """``(new_weight, total_weight)`` accumulated since the last call; resets both. Replicated."""
+        out = (self._leak_new, self._leak_total)
+        self._leak_new = self._leak_total = 0.0
+        return out
+
     def _over_memory_budget(self):
         """Collective (on the color's comm) when the guard is on: is the color's MAX RSS at budget?
 
@@ -380,11 +411,36 @@ class _CappedBasisProxy:
     def redistribute_block(self, block):
         return self._admit(self._basis.redistribute_block(block))
 
+    def begin_step(self):
+        """A recurrence step starts: its matvec arrives in chunks, admission waits for the whole.
+
+        With ``GF_APPLY_ROW_CHUNKS`` > 1 the step's output reaches :meth:`redistribute_block` one
+        chunk at a time, and each chunk holds *partial* amplitudes of rows that other chunks also
+        reach. Deciding admission per chunk ranked rows on those partials, in an order set by how
+        the rows were split over ranks -- so a capped unit froze on a different set in every colour
+        layout (CrI3, cap 20,000: same size, different determinants, G apart by 5e-3 against a 1e-4
+        tolerance; one chunk: identical sets, 6e-5). Between ``begin_step`` and :meth:`finish_step`
+        the chunks pass through unprojected and the decision is taken once, on the summed output.
+        Called by the block-Lanczos step on every rank of the colour (replicated)."""
+        self._deferred = not self._frozen
+
+    def finish_step(self, wp):
+        """The step's whole matvec output: admit on full amplitudes (or project, if frozen). Collective."""
+        if not self._deferred:
+            return wp
+        self._deferred = False
+        if self._frozen:
+            # The memory guard froze mid-step: what earlier chunks brought in was never admitted.
+            wp.keep_rows(self._mask)
+            return wp
+        return self._admit_counted(wp)
+
     def _admit(self, block):
         """Project one redistributed matvec output onto the retained set, growing it while it may.
 
         Split out of :meth:`redistribute_block` so a subclass can change *which* new rows are
-        admitted without re-running the (collective) redistribution."""
+        admitted without re-running the (collective) redistribution. Inside a step
+        (:meth:`begin_step`) a chunk is only checked against the memory guard and passed on."""
         if self._frozen:
             block.keep_rows(self._mask)
             return block
@@ -396,7 +452,26 @@ class _CappedBasisProxy:
             self.memory_frozen = True
             block.keep_rows(self._mask)
             return block
-        n_new = self._allreduce_sum(len(block) - block.count_rows_in(self._mask))
+        if self._deferred:
+            return block
+        return self._admit_counted(block)
+
+    def _admit_counted(self, block):
+        """Admit ``block``'s new rows if they fit under the cap, else its top rows, and freeze. Collective."""
+        n_new = len(block) - block.count_rows_in(self._mask)
+        if self._track_leakage:
+            # The new rows' weight (max column |amp|^2 per row, exact for the width-1 blocks a GF unit
+            # runs) against the whole output's, in the same collective as the count. The widest block on
+            # any rank sets the column count, as a rank with no rows may hold a width-0 zero.
+            new_weight = float(np.sum(block.new_row_max_norms2(self._mask))) if n_new else 0.0
+            total = float(np.sum(block.col_norm2()))
+            summed = self._allreduce_array([n_new, new_weight, total], MPI.SUM)
+            width = max(float(self._allreduce_array([block.width], MPI.MAX)[0]), 1.0)
+            n_new = round(summed[0])
+            self._leak_new += float(summed[1])
+            self._leak_total += float(summed[2]) / width
+        else:
+            n_new = self._allreduce_sum(n_new)
         if self._global_count + n_new <= self.cap:
             self._mask.merge_keys(block)
             self._global_count += n_new
@@ -408,24 +483,45 @@ class _CappedBasisProxy:
     def _admit_top_and_freeze(self, block):
         """Admit the ``cap - retained`` most important candidate rows, then freeze.
 
-        The amplitude-cutoff bisection runs a fixed iteration count on allreduce'd
-        counts, so all ranks compute the identical cutoff. Ties at the cutoff are
-        under-admitted (the cap is never exceeded); near-tie retained sets may differ
-        across rank counts through summation-order rounding, like the CIPSI basis
-        trajectory.
+        Ranked on the rows' max column ``|amp|^2`` by
+        :func:`~impurityModel.ed.manybody_basis.collective_top_k_bounds`: whole near-tie groups
+        above the boundary, then the boundary group filled in determinant-key order
+        (:func:`~impurityModel.ed.manybody_basis.collective_first_keys`). The cap is filled exactly
+        and the retained set does not depend on the rank count, colour width or rounding.
         """
         slots = self.cap - self._global_count
         norms2 = block.new_row_max_norms2(self._mask)
-        cutoff2 = collective_amplitude_cutoff(norms2, slots, self.comm)
-        admitted = block.keys_new_above(self._mask, cutoff2)
+        above, boundary, n_fill = collective_top_k_bounds(norms2, slots, self.comm)
+        admitted = block.keys_new_above(self._mask, above)
+        if n_fill > 0:
+            # The boundary group: new rows above `boundary` that are not already admitted (a key-only
+            # block has max |amp|^2 = 0 per row, so `> -1` keeps every row not in the mask).
+            group = block.keys_new_above(self._mask, boundary).keys_new_above(admitted, -1.0)
+            group_keys, _ = group.row_max_norms2()
+            chosen = collective_first_keys([bytes(k.to_bytearray()) for k in group_keys], n_fill, self.comm)
+            picked = [k for k in group_keys if bytes(k.to_bytearray()) in chosen]
+            admitted = admitted.key_union(ManyBodyState.from_keys(picked))
         self._global_count += self._allreduce_sum(len(admitted))
         self._mask.merge_keys(admitted)
         self._frozen = True
         self.cap_hit = True
 
+    def freeze_for_stagnation(self):
+        """Freeze the retained set where it stands, because the weight reaching new rows has died away.
+
+        The same state a cap hit leaves -- nothing new is admitted from here on, so the recurrence is the
+        exact block Lanczos of ``P H P`` -- except ``cap_hit`` stays as it was: the cap did not bind.
+        Not collective, but every rank must call it on the same step, which its caller guarantees by
+        deciding from the replicated leakage."""
+        self._frozen = True
+        self.stagnation_frozen = True
+
     def freeze_message(self):
         """One-line description of the cap state (rank-0 logging)."""
-        why = "the measured-memory guard" if self.memory_frozen else f"the cap of {self.cap:,}"
+        if self.stagnation_frozen:
+            why = "the weight reaching new determinants having died away (GF_STAGNATION_FREEZE)"
+        else:
+            why = "the measured-memory guard" if self.memory_frozen else f"the cap of {self.cap:,}"
         return (
             f"GF basis frozen at {self._global_count:,} determinants by {why}; the Green's "
             "function is exact on the retained subspace."
@@ -572,6 +668,11 @@ class _PrunedBasisProxy(_CappedBasisProxy):
     def ban_bytes(self):
         """Rank-local bytes held by the ban mask."""
         return int(self._ban.memory_bytes())
+
+    def begin_step(self):
+        """No deferral: this admission already requires ``GF_APPLY_ROW_CHUNKS=1``, so each step's
+        output arrives whole, and :meth:`_admit` must not run a second time in :meth:`finish_step`."""
+        self._deferred = False
 
     def _admit(self, block):
         if self._frozen or self._over_memory_budget():

@@ -23,6 +23,7 @@ one-shot path) as the baseline throughout rather than relying on "unset" to mean
 
 import numpy as np
 import pytest
+from mpi4py import MPI
 
 from impurityModel.ed import config
 from impurityModel.ed.basis_transcription import build_dense_matrix
@@ -41,6 +42,7 @@ _BATHS = ({0: [[2, 3]]}, {0: [[4, 5]]})
 @pytest.fixture(autouse=True)
 def _knob_unset(monkeypatch):
     monkeypatch.delenv("GF_APPLY_ROW_CHUNKS", raising=False)
+    monkeypatch.delenv("MATVEC_PRUNE", raising=False)
 
 
 def _det(occupied):
@@ -77,9 +79,9 @@ def _seeds():
     ]
 
 
-def _excited_basis(cap):
+def _excited_basis(cap, comm=None):
     seed_support = sorted({state for s in _seeds() for state in s})
-    return Basis(_IMP, _BATHS, initial_basis=seed_support, truncation_threshold=cap, verbose=False)
+    return Basis(_IMP, _BATHS, initial_basis=seed_support, truncation_threshold=cap, comm=comm, verbose=False)
 
 
 def _run(cap, n_chunks, monkeypatch):
@@ -156,3 +158,65 @@ def test_more_chunks_than_rows_does_not_crash(monkeypatch):
     g_one_shot, _ = _run(1000, 1, monkeypatch)
     g_many_chunks, _ = _run(1000, 64, monkeypatch)
     np.testing.assert_allclose(g_many_chunks, g_one_shot, rtol=1e-10, atol=1e-12)
+
+
+# A slaterWeightMin at which this model's matvec output has rows whose partial amplitudes (per
+# chunk, per rank) fall below the cutoff while their sums do not: MATVEC_PRUNE=before_sum
+# moves G by up to 1.5 here, depending on the chunk count.
+_SWM = (0.03, 0.1)
+
+
+def _g_with_cutoff(basis, swm, comm=None):
+    """G of the toy model on ``basis`` with the matvec cut at ``swm``; seeds owned by rank 0 only
+    (``redistribute_psis`` sums the ranks' copies), explicit width-1 blocks elsewhere."""
+    seeds = _seeds() if comm is None or comm.rank == 0 else [ManyBodyState(width=1) for _ in _seeds()]
+    seeds = [ManyBodyState.from_states([s]).to_states()[0] if len(s) else s for s in seeds]
+    alphas, betas, r = block_Green_sparse(_siam_6(), seeds, basis, DELTA, slaterWeightMin=swm, verbose=False)
+    return calc_G(alphas, betas, r, OMEGA, 0.0, DELTA)
+
+
+def _serial_reference(swm):
+    """No proxy, no redistribute: one apply_block(q, swm) over the whole block, so every row is cut
+    on its whole sum -- what after_sum must reproduce whatever the layout."""
+    basis = _excited_basis(None)
+    assert not getattr(basis, "caps_growth", False)
+    return _g_with_cutoff(basis, swm)
+
+
+@pytest.mark.parametrize("swm", _SWM)
+@pytest.mark.parametrize("n_chunks", [1, 2, 3, 4, 8])
+def test_the_matvec_cut_is_made_on_the_summed_row_whatever_the_chunking(swm, n_chunks, monkeypatch):
+    """A capping proxy (cap never reached) makes the step chunk and redistribute even serially;
+    the cut must then still act on each row's whole amplitude."""
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", str(n_chunks))
+    g = _g_with_cutoff(_excited_basis(1000), swm)
+    np.testing.assert_allclose(g, _serial_reference(swm), rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.parametrize("swm", _SWM)
+def test_before_sum_cuts_each_chunks_partial(swm, monkeypatch):
+    """The fallback keeps the old order, and the model above is one where that order matters --
+    so the after_sum test discriminates."""
+    monkeypatch.setenv("MATVEC_PRUNE", "before_sum")
+    ref = _serial_reference(swm)
+    worst = 0.0
+    for n_chunks in (2, 3, 4, 8):
+        monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", str(n_chunks))
+        worst = max(worst, np.abs(_g_with_cutoff(_excited_basis(1000), swm) - ref).max())
+    assert worst > 1e-3
+
+
+def test_matvec_prune_rejects_an_unknown_value(monkeypatch):
+    monkeypatch.setenv("MATVEC_PRUNE", "sometimes")
+    with pytest.raises(ValueError, match="MATVEC_PRUNE"):
+        _g_with_cutoff(_excited_basis(1000), 0.1)
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs determinants owned by more than one rank")
+@pytest.mark.parametrize("swm", _SWM)
+@pytest.mark.parametrize("n_chunks", [1, 4])
+def test_the_matvec_cut_does_not_depend_on_the_rank_count(swm, n_chunks, monkeypatch):
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", str(n_chunks))
+    g = _g_with_cutoff(_excited_basis(None, comm=MPI.COMM_WORLD), swm, comm=MPI.COMM_WORLD)
+    np.testing.assert_allclose(g, _serial_reference(swm), rtol=1e-10, atol=1e-12)

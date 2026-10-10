@@ -101,6 +101,9 @@ GF_METHODS = ("lanczos", "bicgstab")
 #: (:mod:`impurityModel.ed.gf_admission`). ``"outer"`` needs ``gf_method="bicgstab"``.
 GF_ADMISSIONS = ("all", "outer")
 
+#: Accepted ``GF_SCHEDULER`` values (see that knob).
+GF_SCHEDULERS = ("static", "queue")
+
 #: Accepted ``SolverOptions.sigma_method`` values: the self-energy estimators of
 #: :mod:`impurityModel.ed.sigma_estimators` (its ``ESTIMATORS`` registry has exactly these keys).
 SIGMA_METHODS = ("dyson",)
@@ -434,6 +437,60 @@ GF_APPLY_ROW_CHUNKS = Knob(
     (``gf_primitives.py``) -- but the cap itself binds identically either way.""",
 )
 
+MATVEC_PRUNE = Knob(
+    name="MATVEC_PRUNE",
+    kind="str",
+    default="after_sum",
+    group="units",
+    doc="""Where a sparse matvec whose output is redistributed (a distributed basis, or a capping
+    proxy) applies the ``slaterWeightMin`` cutoff to ``H v``: ``after_sum`` (default) cuts each row
+    once its amplitude is summed over every rank (and ``GF_APPLY_ROW_CHUNKS`` chunk); ``before_sum``
+    cuts each rank's and chunk's partial amplitude before the redistribution, as before 2026-10.
+    Covers every such matvec: the block-Lanczos step (``_lanczos_step.pxi``), ``block_apply`` (the TRLM
+    eigensolver on a sparse operator), the BiCGSTAB/GMRES matvec, the Chebyshev filter,
+    ``block_Green``'s basis-expansion probe, and the transition-operator seeds of every GF and spectrum
+    unit (``gf_units.enumerate_gf_units``: XAS, NIXS, PES/IPS, susceptibility), and the first shell
+    of the BiCGSTAB admission start set. ``after_sum`` also applies at ``slaterWeightMin`` 0: a row whose
+    partials cancel exactly is dropped after the sum, as a serial apply drops it, so the determinants
+    a result holds -- and what they count toward a cap -- do not depend on the layout. The CIPSI
+    selection round has its own knob, ``GS_SELECTION_PRUNE``. ``after_sum`` makes the same cut as a
+    serial one-shot ``apply_block(v, slaterWeightMin)``.
+
+    ``before_sum`` makes the result depend on the rank count (a GF colour's width) and the chunk count: a
+    determinant reached from rows on several ranks or chunks loses the partials that are
+    individually below the cutoff, and a capping proxy admits on what is left. Measured on the CrI3
+    archive, uncapped, slaterWeightMin raised to 1e-5: one 4-rank colour against four 1-rank colours
+    gave real-axis G 2.9e-4 apart (relative to max|G|) and different block counts in every unit;
+    with ``after_sum``, 1.8e-9 and the same block counts. At the archive's own slaterWeightMin
+    (1.5e-8) the two orders differ by 1.9e-5.
+
+    **Memory.** ``after_sum`` sends the sub-cutoff partials too, and the block-Lanczos step holds its
+    summed output whole until the cut. In a capped GF unit that output is not projected on the step
+    that crosses the cap (admission waits for the summed output), and it is the term that grows:
+    on an SrMnO3 replay at GF cap 20,000 (serial, 4 chunks) 55% of ``H q``'s rows were sub-cutoff,
+    and the summed output before its cut held 2.1x the rows after it at the peak step (median step
+    1.14x); at a cap that nearly closes the sector, 1.1x. CrI3 (uncapped, sector-full units, 4 ranks):
+    the same peak (368.2 vs 367.8 MiB) and wall per block. ``estimate_gf_peak_bytes`` does not price
+    the cap-crossing step, and its matvec fanout, measured on a unit-amplitude block, cannot tell the
+    two orders apart. A larger step output also raises the RSS the capped unit's memory guard reads,
+    so with an automatic cap a unit may freeze at fewer determinants. Not yet measured at 128 ranks;
+    ``before_sum`` is the fallback.""",
+)
+
+GF_SCHEDULER = Knob(
+    name="GF_SCHEDULER",
+    kind="str",
+    default="queue",
+    group="units",
+    doc="""How Green's-function units are handed to the MPI colors. ``queue`` (default): equal-width
+    colors take the next unit, largest excited sector first, from a shared counter as they go idle
+    (:mod:`impurityModel.ed.work_queue`), so a wrong cost prediction costs at most the tail instead
+    of a whole color's backlog. ``static``: packed up front by predicted cost (LPT on
+    ``unit_cost_weights``), each color's rank count proportional to its packed cost. Measured on the
+    SrMnO3 self-energy, the queue cut the GF phase 1.32x at 64 ranks and matched ``static`` at 128
+    (doc/plans/gf_load_balancing.md). Read on rank 0 and broadcast.""",
+)
+
 GF_FROZEN_CSR = Knob(
     name="GF_FROZEN_CSR",
     kind="bool",
@@ -450,6 +507,56 @@ GF_FROZEN_CSR = Knob(
     Not taken when the freeze came from the measured-memory guard (RSS is already at budget), when
     the CSR's estimated size does not fit the budget, or with a ``krylov_dtype`` store; the sparse
     kernel then continues as before. ``0`` disables it.""",
+)
+
+GF_STAGNATION_FREEZE = Knob(
+    name="GF_STAGNATION_FREEZE",
+    kind="float",
+    default=None,
+    group="units",
+    doc="""Switch a Green's-function unit to the frozen ``P H P`` CSR once the weight reaching new
+    determinants has died away, not only when it reaches the determinant cap. The sparse kernel applies ``H``
+    to every retained row on every block (89-123 rank-s per block on the SrMnO3 cubic run) where the CSR
+    costs one SpMV (7-9); a unit that converges *below* the cap never froze, so it ran sparse to the end
+    (unit 10: 11.4M determinants, 509 blocks, 14 ks on 3 ranks). Unset (default) keeps today's behaviour.
+
+    Set to a fraction ``f``: each matvec's squared norm is split into the part on rows
+    already in the retained set ``P`` and the part on rows outside it, which is what the support would have
+    grown by and what a freeze drops. When that outside fraction, averaged over a window of
+    ``GF_STAGNATION_WINDOW`` blocks, stays below ``f`` for two consecutive windows, the unit freezes at the
+    current support and restarts from the seeds as the exact block Lanczos of ``P H P`` -- the same
+    mathematics as the cap freeze, with ``P`` the support reached so far. It counts the weight, not the
+    number of determinants: a support can keep growing by thousands of rows that carry a vanishing share of
+    the amplitude, and can stall with a few rows that carry O(1).
+
+    **Choosing ``f``: it has a floor.** Every row the apply returns has ``|amp| >= slaterWeightMin``, so the
+    weight on new rows is either exactly 0 (the support is saturated) or at least ``slaterWeightMin**2`` times
+    the number of new rows, over the matvec's norm. With the production 1.5e-8 that is ~1e-15 per row; on the
+    SMO units it plateaus at 1e-13 to 1e-14 while the support still grows 8-28 % per window. ``f`` must sit
+    above that plateau to freeze before saturation and below the weight that matters to ``G``; there is no
+    canonical value, so read it off the ``f = 0`` log and compare ``Sigma`` with and without the freeze.
+
+    **This is a truncation.** What later blocks would have admitted is dropped, so ``G`` is exact on ``P``
+    only; the report's ``stagnation_freeze`` line says so and carries the measured fraction. It applies to
+    every unit, the dominant (heavily weighted) states included, so compare ``Sigma`` with and without it
+    before trusting the saving. It is taken only if the CSR fits the memory budget, and not once the unit is
+    within two decades of its own tolerance (the restart recomputes every block, so a late freeze loses).
+    Lanczos with ``reort='none'`` only, and it needs ``GF_FROZEN_CSR`` and a finite cap or a memory budget;
+    a unit it cannot apply to logs why at ``-vv``. Measured on each step's whole summed output, so a row reached
+    by several ``GF_APPLY_ROW_CHUNKS`` chunks counts with its full amplitude. ``0`` measures and logs the
+    weight each window without ever freezing, which is how to choose ``f``.""",
+)
+
+GF_STAGNATION_WINDOW = Knob(
+    name="GF_STAGNATION_WINDOW",
+    kind="int",
+    default=32,
+    minimum=4,
+    group="units",
+    doc="""Blocks per window of ``GF_STAGNATION_FREEZE``. The recurrence is resumed every window (bit-identical
+    at ``reort='none'``: the resume protocol carries the two-block tail), and the boundary weight is averaged
+    over one window; two quiet windows in a row are needed, so the earliest freeze is at ``2 x window``
+    blocks. Each resume round-trips the two live blocks through states, so keep it at 16 or more.""",
 )
 
 GF_PER_STATE_RESTRICT = Knob(
@@ -503,6 +610,39 @@ GF_TOL = Knob(
     move ``G`` by less than this, relative to ``max|G|`` on the axis.""",
 )
 
+GF_WEIGHTED_TOL = Knob(
+    name="GF_WEIGHTED_TOL",
+    kind="bool",
+    default=False,
+    group="convergence",
+    doc="""Scale each Green's-function unit's convergence tolerance by the thermal weight of the
+    eigenstate it solves. ``G = sum_n w_n G_n``, so an error in ``G_n`` enters ``G`` multiplied by
+    ``w_n``; a state at ``w_n = 5e-5`` converged to the dominant state's ``1e-9`` carries a weighted
+    error 20000x below anything that reaches ``G``. With this on, a unit's tolerance on each axis
+    becomes ``max(tol, min(tol * w_max / w_n, GF_WEIGHTED_TOL_CEILING))`` (an axis already looser
+    than the ceiling is not tightened). A truncated Lanczos ``G_n`` stays causal and moment-exact.
+    Lanczos kernel only. Not ``gf_min_weight``, which drops states. Read on rank 0 and broadcast.
+
+    **It also changes the colour layout.** The unit cost weights follow the tolerances, so the packer
+    sees a few dominant units and many cheap ones: fewer, wider colours, the dominant units on the
+    most ranks. Under an *auto* determinant cap that moves the cap too, because the auto cap is what
+    the narrowest colour affords: on 40 units at 128 ranks the colours fall from ~37 to ~12 and the
+    cap rises ~3.5x (12-19M to 43-62M). Pin ``truncation_threshold`` to compare runs on the knob alone.
+    Measured on SrMnO3 (iteration 1): 16 of 20 capped removal units are such low-weight states and
+    ran ~700 blocks past the point where their weighted error was below tolerance.""",
+)
+
+GF_WEIGHTED_TOL_CEILING = Knob(
+    name="GF_WEIGHTED_TOL_CEILING",
+    kind="float",
+    default=1e-4,
+    group="convergence",
+    doc="""Upper bound on a unit's loosened tolerance under ``GF_WEIGHTED_TOL``. The scaling
+    ``tol * w_max / w_n`` is unbounded for a state with a vanishing weight; this keeps it from
+    stopping a unit before its spectrum has any shape. Never tightens an axis whose own tolerance
+    is already above it.""",
+)
+
 GF_REAL_TOL = Knob(
     name="GF_REAL_TOL",
     kind="float",
@@ -511,8 +651,10 @@ GF_REAL_TOL = Knob(
     doc="""Relative-change tolerance on the **real-frequency** axis only
     (``SolverOptions.gf_real_tol``; an explicit option wins). Unset uses the ``GF_TOL`` value.
     The real axis at broadening ``delta`` sets the Lanczos depth of a production self-energy
-    run, so when only the Matsubara self-energy feeds the DMFT self-consistency (RSPt), a
-    looser real-axis tolerance shortens every unit without touching the Matsubara accuracy.""",
+    run, and a looser real-axis tolerance shortens every unit without touching the Matsubara
+    accuracy. Loosen it, never drop it: RSPt builds the next bath fit's hybridization from the
+    real-axis self-energy (``G0^-1 = G^-1 + sig_real``), so its error enters the DMFT loop.
+    ``1e-6`` measured ~7e-6 relative error at 1.6-1.8x fewer blocks.""",
 )
 
 # --- RIXS: shift-recycling solver tiers -----------------------------------------------------
@@ -739,6 +881,34 @@ GS_MEMORY_BUDGET_INCLUDE_RESIDENT = Knob(
 )
 
 
+GS_SELECTION_PRUNE = Knob(
+    name="GS_SELECTION_PRUNE",
+    kind="str",
+    default="after_sum",
+    group="groundstate",
+    doc="""Where the CIPSI selection round (`CIPSISolver._apply_block_and_redistribute`) applies the
+    `slater_weight_min` cutoff to `H|psi_ref>`: `after_sum` (default) cuts each candidate's amplitude
+    once it is summed over every rank and row chunk; `before_sum` cuts each rank's (and chunk's)
+    partial amplitude before the redistribution, as before 2026-10.
+
+    `before_sum` makes the selected basis depend on the rank count and on `GS_APPLY_ROW_CHUNKS`: a
+    candidate reached from rows on several ranks loses the partials that are individually below the
+    cutoff. Measured on the CrI3 archive under a binding cap: a different basis at 1, 2, 3 and 4 ranks
+    (E0 up to 3.7e-5 apart at cap 5,000); with `after_sum` the same basis at every rank count and
+    chunk count (caps 5,000, 20,000, 60,000; 1-4 ranks; 4, 7 and 12 chunks).
+
+    **Memory.** `after_sum` sends every partial, so each chunk's raw output and the merged block
+    *before* its cut are larger: on CrI3 (3 ranks, cap 20,000, 4 chunks) the largest redistributed
+    piece had 1.44x the rows, the largest raw chunk 1.3x. After the cut the summed block is smaller.
+    The selection step's measured transient was no larger (25.8 vs 26.6 MiB, 3 ranks, cap 60,000) and
+    the ground state took +5-8%. Those are small-scale numbers: the gap should grow with the rank
+    count (more ranks, smaller partials, more of them cut under `before_sum`), and on the SrMnO3
+    128-rank job this step set the peak. `GS_APPLY_ROW_CHUNKS` bounds the raw chunk and its buffers
+    but not the merged block, so if a selection round runs out of memory, `before_sum` is the lever
+    (at the price of a rank-dependent basis).""",
+)
+
+
 GS_APPLY_ROW_CHUNKS = Knob(
     name="GS_APPLY_ROW_CHUNKS",
     kind="int",
@@ -748,15 +918,17 @@ GS_APPLY_ROW_CHUNKS = Knob(
     doc="""How many row chunks `CIPSISolver._apply_block_and_redistribute` splits the reference
     block into before applying `H` and redistributing. `1` applies to the whole block at once (the
     pre-2026-09 one-shot path). With `n` chunks, each chunk of the local reference rows is applied,
-    pruned, redistributed and accumulated into the owned candidate block in turn, so only one
+    redistributed and accumulated into the owned candidate block in turn (and, under
+    `GS_SELECTION_PRUNE=before_sum`, pruned before it is sent), so only one
     chunk's raw output, packed send buffer and receive buffer are alive at a time. Those three, plus
     the merged block, are the selection round's peak: measured on the SrMnO3 double-counting
     workload at 4 ranks the one-shot step holds **6x** the owned candidate block, and on the
     256-rank job that was OOM-killed the same step accounted for the 2.4 -> 5.8 GiB jump in one
     cycle (`doc/plans/dc_smo_memory.md`, round 6). Exact up to floating-point summation order: a
     candidate reached from reference rows in different chunks has its partial sums added in a
-    different order than the one-shot apply, and the per-column `slater_weight_min` prune acts on
-    those partial sums -- the same class of difference a change of MPI rank count already makes.
+    different order than the one-shot apply. Under `GS_SELECTION_PRUNE=before_sum` the per-column
+    `slater_weight_min` prune also acts on those partial sums, so the chunk count changes the basis;
+    under the default `after_sum` it does not.
     Costs `n` operator walks over the reference rows in total (each row is walked once), not `n`
     times the work. The default of 4 is the measured plateau on that workload (cap 20,000, growth
     cycle: step peak 673 MiB one-shot, 243 at 4 chunks, 248 at 8; `e0` bit-identical; about +1 s
@@ -1098,12 +1270,18 @@ KNOBS: dict[str, Knob] = _register(
     GF_GMRES_MAX_RESTARTS,
     GF_EIGENSTATE_GROUP,
     GF_APPLY_ROW_CHUNKS,
+    MATVEC_PRUNE,
     GF_FROZEN_CSR,
+    GF_SCHEDULER,
+    GF_STAGNATION_FREEZE,
+    GF_STAGNATION_WINDOW,
     GF_PER_STATE_RESTRICT,
     GF_CHECK_EVERY,
     GF_NEAR_FACTOR,
     GF_TOL,
     GF_REAL_TOL,
+    GF_WEIGHTED_TOL,
+    GF_WEIGHTED_TOL_CEILING,
     GF_SECTOR_DENSE_MAX,
     GF_SECTOR_CACHE_DIR,
     GF_KRYLOV_RECYCLE_MAX_BYTES,
@@ -1113,6 +1291,7 @@ KNOBS: dict[str, Knob] = _register(
     GS_MAX_BLOCK_WIDTH,
     GS_SELECTION_CHUNK,
     GS_APPLY_ROW_CHUNKS,
+    GS_SELECTION_PRUNE,
     GS_MATVEC_EXCHANGE,
     GS_MATVEC_EXCHANGE_BYTES,
     GS_NUM_WANTED,

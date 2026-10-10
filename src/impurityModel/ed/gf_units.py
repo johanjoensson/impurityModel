@@ -16,8 +16,9 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
-from impurityModel.ed.basis_restrictions import union_windows
+from impurityModel.ed.basis_restrictions import union_windows, window_dimension
 from impurityModel.ed.basis_split import _pack_units, split_basis_and_redistribute_psi
+from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, matvec_cut_after_sum
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
@@ -31,6 +32,7 @@ from impurityModel.ed.memory_estimate import (
     release_freed_heap,
 )
 from impurityModel.ed.mpi_comm import gather_distributed_results
+from impurityModel.ed.work_queue import UnitQueue, queue_order
 
 comm = MPI.COMM_WORLD
 rank = comm.rank
@@ -69,7 +71,7 @@ def _describe_gf_cap(basis, cap, layout):
     return f"determinant cap: GF {size} per unit ({how}); {layout}"
 
 
-def _colors_affording(basis, unit_weights, width, reort, gf_method, floor=None):
+def _colors_affording(basis, unit_weights, width, reort, gf_method, floor=None, equal_widths=False):
     """How many colors a GF stage may run so that every unit can afford ``floor`` determinants.
 
     ``floor`` is the unit cap for a cap the user set (or a basis without a policy); for an auto
@@ -113,7 +115,9 @@ def _colors_affording(basis, unit_weights, width, reort, gf_method, floor=None):
         return affordable[ranks]
 
     for n_colors in range(candidates, 1, -1):
-        _subgroups, procs = _pack_units(unit_weights, basis.comm.size, basis.split_threshold, n_colors)
+        _subgroups, procs = _pack_units(
+            unit_weights, basis.comm.size, basis.split_threshold, n_colors, equal_widths=equal_widths
+        )
         if procs is None:
             return 1
         if min(afford(int(p)) for p in procs) >= floor:
@@ -254,6 +258,11 @@ class GFUnit:
     delta: float
 
 
+#: A queue wait longer than this is flagged in the queue's summary line: rank 0 then computed that
+#: long without reaching :func:`work_queue.queue_progress`, so a hook site is missing.
+_QUEUE_WAIT_REPORT_SECONDS = 10.0
+
+
 def unit_cost_weights(unit_seeds: list[list[ManyBodyState]], comm) -> np.ndarray:
     """Predicted block-Lanczos cost per work unit -- the single source of truth for split weights.
 
@@ -278,6 +287,76 @@ def unit_cost_weights(unit_seeds: list[list[ManyBodyState]], comm) -> np.ndarray
     return lengths * widths + 1.0
 
 
+#: Blocks a unit runs after it has frozen, or converged outright, at a tolerance of about 10**-5.1,
+#: and the further blocks each extra decade costs. Fitted to the SrMnO3 cubic run (128 ranks, 2026-10-08):
+#: states at w ~ 6e-5 reached a loosened ~8e-6 in ~40 blocks, and the dominant states needed ~700 to
+#: reach 1e-9. Only the *ratio* between units is used, to rank and weigh them.
+_BLOCKS_AT_FLOOR = 40.0
+_BLOCKS_PER_DECADE = 170.0
+_DECADES_AT_FLOOR = 5.1
+
+
+def expected_blocks(tol: float) -> float:
+    """Blocks a unit needs to converge to ``tol``, by the fit above. Monotone in ``tol``."""
+    decades = -np.log10(float(tol))
+    return _BLOCKS_AT_FLOOR + _BLOCKS_PER_DECADE * max(0.0, decades - _DECADES_AT_FLOOR)
+
+
+def tolerance_cost_ratios(unit_tols, base_tol: float) -> np.ndarray:
+    """Per-unit cost relative to a unit converged to ``base_tol``: ``expected_blocks`` ratios.
+
+    Exactly 1.0 for a unit at ``base_tol`` and at most 1.0 for the looser ones, so multiplying the
+    seed-mass weights by it leaves the dominant units' weights untouched.
+    """
+    return np.array([expected_blocks(t) for t in unit_tols]) / expected_blocks(base_tol)
+
+
+#: State bound for :func:`unit_sector_dimensions`' count (see ``window_dimension``): beyond it the
+#: queue falls back to the seed-mass weights rather than stall every rank at GF entry.
+_DIMENSION_MAX_STATES = 20_000
+
+
+def unit_sector_dimensions(unit_seeds, unit_windows, basis) -> Optional[np.ndarray]:
+    """Determinant count of each unit's excited sector: its window at its seeds' electron number.
+
+    The queue's dispatch order. A unit's cost follows the sector its Krylov space can explore, not
+    its seed: on the SrMnO3 archive the seeds of removal and addition units are alike, but their
+    sectors hold 2,760,681 and 73,815 determinants, and they ran ~3,350 s and 20-450 s. Ranked by
+    this count, every removal unit came before every addition unit (the current seed-mass weight
+    misranked some, and a heavy unit dispatched last is the queue's one bad case).
+
+    The electron number is read from one seed determinant per unit (a seed is ``c^(dagger) psi`` of
+    a fixed-N state) and taken as the MAX over ``basis.comm``, since a rank may hold none of a
+    unit's seed. Collective on ``basis.comm`` (one Allreduce); the result is replicated. A unit with
+    an empty seed everywhere gets 0. ``None`` when some window is too entangled to count within
+    :data:`_DIMENSION_MAX_STATES` (the windows are replicated, so every rank agrees).
+    """
+    n_electrons = np.full(len(unit_seeds), -1, dtype=np.int64)
+    n_bytes = basis.n_bytes
+    for u, seeds in enumerate(unit_seeds):
+        for seed in seeds:
+            det = next(iter(seed.keys()), None)
+            if det is not None:
+                n_electrons[u] = int.from_bytes(bytes(det.to_bytearray()[:n_bytes]), "big").bit_count()
+                break
+    if basis.comm is not None:
+        basis.comm.Allreduce(MPI.IN_PLACE, n_electrons, op=MPI.MAX)
+    dims = []
+    counted: dict = {}  # units share windows (every removal unit of a block, typically)
+    for u, n in enumerate(n_electrons):
+        if n < 0:
+            dims.append(0.0)
+            continue
+        window = unit_windows[u]
+        key = (frozenset((k, tuple(v)) for k, v in window.items()) if window else None, int(n))
+        if key not in counted:
+            counted[key] = window_dimension(window, int(n), basis.num_spin_orbitals, max_states=_DIMENSION_MAX_STATES)
+        if counted[key] is None:
+            return None
+        dims.append(float(counted[key]))
+    return np.array(dims)
+
+
 def enumerate_gf_units(
     op_groups: list[tuple[list[ManyBodyOperator], float]],
     psis: list[ManyBodyState],
@@ -285,6 +364,7 @@ def enumerate_gf_units(
     weighted_restrictions,
     slaterWeightMin: float,
     per_state_restrictions: Optional[list] = None,
+    basis: Optional[Basis] = None,
 ) -> tuple[list[GFUnit], list[list[ManyBodyState]], list]:
     """Enumerate the flat work units of a Green's-function calculation.
 
@@ -313,6 +393,11 @@ def enumerate_gf_units(
         Per-eigenstate excited windows; when given, each unit's window is the union
         (:func:`basis_restrictions.union_windows`) over the eigenstates it stacks instead of the group
         fallback.
+    basis : Basis, optional
+        The basis ``psis`` are distributed on. With a distributed one (``config.MATVEC_PRUNE=after_sum``)
+        the seeds are summed over the ranks and cut on whole amplitudes -- a many-term operator sends
+        determinants on several ranks to one seed row -- and come back owner-distributed (collective).
+        ``None``: the states are not distributed.
 
     Returns
     -------
@@ -326,7 +411,9 @@ def enumerate_gf_units(
     units: list[GFUnit] = []
     unit_seeds: list[list[ManyBodyState]] = []
     for g, (tOps, delta_signed) in enumerate(op_groups):
-        block_v = _apply_transition_ops(tOps, psis, group_restrictions[g], weighted_restrictions, slaterWeightMin)
+        block_v = _apply_transition_ops(
+            tOps, psis, group_restrictions[g], weighted_restrictions, slaterWeightMin, basis
+        )
         n_ops = len(tOps)
         for chunk_start in range(0, n_psis, group):
             chunk = tuple(range(chunk_start, min(chunk_start + group, n_psis)))
@@ -342,13 +429,20 @@ def enumerate_gf_units(
         # own (per-state) window. A seed row outside the recurrence window sees P H, which has no
         # diagonal and a one-way coupling there -- the Lanczos operator is no longer Hermitian on
         # the seed (review ledger C5). Re-cut each such unit's seeds by the window it runs under.
-        # Rank-local (the apply is local), so no collective is added.
+        # Collective on a distributed basis (_apply_transition_ops redistributes): safe because
+        # the per-state windows are built from globally reduced data, so every rank skips the
+        # same units.
         for u, unit in enumerate(units):
             if unit_restrictions[u] == group_restrictions[unit.group_i]:
                 continue
             tOps, _delta = op_groups[unit.group_i]
             block_v = _apply_transition_ops(
-                tOps, [psis[ei] for ei in unit.chunk], unit_restrictions[u], weighted_restrictions, slaterWeightMin
+                tOps,
+                [psis[ei] for ei in unit.chunk],
+                unit_restrictions[u],
+                weighted_restrictions,
+                slaterWeightMin,
+                basis,
             )
             unit_seeds[u] = [block_v[p][i] for p in range(len(unit.chunk)) for i in range(unit.n_ops)]
     else:
@@ -365,6 +459,7 @@ def run_units_distributed(
     reduce_fn: Optional[Callable] = None,
     reort=None,
     gf_method: str = "lanczos",
+    unit_windows: Optional[list] = None,
 ) -> list | bool | None:
     """Distribute work units over MPI colors, run ``kernel`` per unit, gather to global rank 0.
 
@@ -380,6 +475,13 @@ def run_units_distributed(
     serial path) as each color's payload arrives, and the payload is dropped afterwards --
     rank 0 then never holds more than one color's results at a time instead of all units
     simultaneously (e.g. the caller accumulates into a preallocated output tensor).
+
+    Under ``GF_SCHEDULER=queue`` (the default) the colors are equal-width and take units heaviest-first (by
+    ``unit_weights``) from a shared counter as they go idle (:mod:`~impurityModel.ed.work_queue`)
+    instead of running the ``static`` LPT assignment, so ``unit_weights`` only has to rank the units.
+    Which color runs a unit then varies from run to run; with unequal color widths that can move a
+    result by rounding. Given ``unit_windows`` (the excited window per unit), the order is by
+    :func:`unit_sector_dimensions` first and ``unit_weights`` among equal sectors.
 
     ``reort`` is the GF reorthogonalization mode the kernel will run with, and ``gf_method``
     names the kernel family (``"lanczos"`` / ``"bicgstab"``); both only feed the memory model
@@ -425,6 +527,11 @@ def run_units_distributed(
             _restore_gf_memory_guard(basis, saved_guard)
 
     seed_offsets = np.concatenate(([0], np.cumsum([len(s) for s in unit_seeds]))).astype(int)
+    # Rank 0's environment decides, so every rank takes the same branch (collective, unconditional).
+    scheduler = basis.comm.bcast(config.GF_SCHEDULER.get(), root=0)
+    if scheduler not in config.GF_SCHEDULERS:
+        raise ValueError(f"GF_SCHEDULER={scheduler!r}; expected one of {config.GF_SCHEDULERS}")
+    equal_widths = scheduler == "queue"
     # Every color's unit basis inherits the same truncation_threshold, so colors multiply
     # per-rank memory: each rank's share of a capped unit basis is threshold/(ranks/n_colors).
     # Cap the concurrency so a cap-filling unit basis still fits the per-rank budget. The
@@ -436,17 +543,21 @@ def run_units_distributed(
     # (the user's cap exactly; for auto, the GS basis size or this kernel's pinned cap).
     max_colors = None
     if _is_auto_gf(basis):
-        max_colors = _colors_affording(basis, unit_weights, width, reort, gf_method)
+        max_colors = _colors_affording(basis, unit_weights, width, reort, gf_method, equal_widths=equal_widths)
     elif np.isfinite(cap):
-        max_colors = _colors_affording(basis, unit_weights, width, reort, gf_method, floor=int(cap))
+        max_colors = _colors_affording(
+            basis, unit_weights, width, reort, gf_method, floor=int(cap), equal_widths=equal_widths
+        )
     (
         unit_indices,
         unit_roots,
-        _unit_color,
+        unit_color,
         units_per_color,
         split_basis,
         split_seeds,
-    ) = split_basis_and_redistribute_psi(basis, unit_weights, [s for seeds in unit_seeds for s in seeds], max_colors)
+    ) = split_basis_and_redistribute_psi(
+        basis, unit_weights, [s for seeds in unit_seeds for s in seeds], max_colors, equal_widths=equal_widths
+    )
     # `split_basis` inherited the job-wide `cap` verbatim (sized for basis.comm.size ranks),
     # but this color runs on only its own share of them -- the mismatch that let a unit basis
     # grow ~n_colors x too large before the previous round's fix (doc/plans/dc_smo_memory.md,
@@ -465,6 +576,10 @@ def run_units_distributed(
     # no opt-out. The cap is scoped to this GF phase instead: set below, restored in the
     # `finally` at the end of the function, on every path including an exception.
     n_colors = len(units_per_color)
+    # Replicated (n_colors comes from the verified-rank-invariant packing): one color has nothing to
+    # balance, so it keeps the static loop and needs no counter.
+    use_queue = equal_widths and n_colors > 1
+    unit_queue = None
     # `_pack_units` apportions ranks to colors proportionally to bin mass with a floor of 1
     # (basis_split.py's largest-remainder step), NOT evenly -- colors genuinely differ in rank
     # count. `split_basis.comm.size` is THIS color's real count (identical across every rank of
@@ -478,6 +593,11 @@ def run_units_distributed(
     # over-estimate the per-rank budget) -- only the `ranks` argument fed to the pure bisection
     # after that probe varies per color.
     ranks_per_color = split_basis.comm.size if split_basis.comm is not None else 1
+    if use_queue:
+        # Under the queue any color may run any unit, and widths differ by up to one rank, so a
+        # per-color cap would truncate the same unit differently depending on where it landed. Every
+        # color sizes for the narrowest one instead (replicated: unit_roots is rank-invariant).
+        ranks_per_color = int(min(np.diff(unit_roots + [basis.comm.size])))
     caller_cap = basis.truncation_threshold
     # What this rank already holds entering the GF phase (ground-state basis, eigenvectors,
     # stored Hamiltonian, the RSPt/Python floor). MAX over the communicator, because the cap
@@ -502,7 +622,7 @@ def run_units_distributed(
         # crash's rank apportionment from the log alone.
         color_rank_counts = [int(d) for d in np.diff(unit_roots + [basis.comm.size])]
         print(f"New unit roots: {unit_roots}")
-        print(f"Units per color: {units_per_color}")
+        print(f"Units per color: {'taken from a shared queue' if use_queue else units_per_color}")
         print(
             f"Ranks per color: {color_rank_counts} (block width={width}, "
             f"resident={format_bytes(resident_bytes)}, available={format_bytes(available_bytes)}/rank).",
@@ -550,8 +670,12 @@ def run_units_distributed(
         if basis.comm.rank == 0:
             color_sizes = [int(d) for d in np.diff(unit_roots + [basis.comm.size])]
             layout = f"{n_units} units on {n_colors} color(s) of {color_sizes} ranks"
+            if use_queue:
+                layout += ", taken heaviest-first from a shared queue"
             if max_colors is not None:
-                _unconstrained, procs = _pack_units(unit_weights, basis.comm.size, basis.split_threshold, None)
+                _unconstrained, procs = _pack_units(
+                    unit_weights, basis.comm.size, basis.split_threshold, None, equal_widths=equal_widths
+                )
                 n_free = 1 if procs is None else len(procs)
                 if n_colors < n_free:
                     layout += f" (memory cut this from {n_free} colors, so each unit can afford its cap)"
@@ -559,15 +683,56 @@ def run_units_distributed(
             if line is not None:
                 print(line, flush=True)
         sub_rank = split_basis.comm.rank if split_basis.comm is not None else 0
-        unit_indices_per_color = gather_distributed_results(
-            basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices), is_array=True
-        )
 
         assert split_seeds is not None  # seeds passed in are a (possibly empty) list, never None
         local_results = []
-        for u in unit_indices:
-            local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
-            release_freed_heap()  # see release_freed_heap: the next unit starts from a clean RSS
+        if use_queue:
+            # Every color already holds every unit's seeds (the split routes all of them to all
+            # colors), so any color can run any unit. The color root takes the next position in
+            # the heaviest-first order and broadcasts it, so every rank of a color runs the same
+            # units and leaves the loop together. Rank 0 hosts the counter; its kernels call
+            # work_queue.queue_progress once per block so other colors are not held up.
+            dims = unit_sector_dimensions(unit_seeds, unit_windows, basis) if unit_windows is not None else None
+            order = queue_order(unit_weights) if dims is None else queue_order(dims, tiebreak=unit_weights)
+            unit_queue = UnitQueue(basis.comm)
+            unit_indices = []
+            position = np.zeros(1, dtype=np.int64)
+            while True:
+                if sub_rank == 0:
+                    position[0] = unit_queue.fetch()
+                split_basis.comm.Bcast(position, root=0)
+                if position[0] >= n_units:
+                    break
+                u = int(order[position[0]])
+                unit_indices.append(u)
+                local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
+                release_freed_heap()
+            counts = np.zeros(n_colors, dtype=np.int64)
+            if sub_rank == 0:
+                counts[unit_color] = len(unit_indices)
+            basis.comm.Allreduce(MPI.IN_PLACE, counts, op=MPI.SUM)
+            units_per_color = [int(c) for c in counts]
+            # A long wait means rank 0 computed without calling queue_progress: a hook site is missing.
+            # Printed every time, so a clean run is told apart from one that never measured.
+            longest_wait = basis.comm.allreduce(unit_queue.max_wait, op=MPI.MAX)
+            if basis.comm.rank == 0:
+                print(
+                    f"GF unit queue: units per color {units_per_color}; longest wait for a unit "
+                    f"{longest_wait:.2f} s"
+                    + (
+                        " -- rank 0 ran that long without queue_progress"
+                        if longest_wait > _QUEUE_WAIT_REPORT_SECONDS
+                        else ""
+                    ),
+                    flush=True,
+                )
+        else:
+            for u in unit_indices:
+                local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
+                release_freed_heap()  # see release_freed_heap: the next unit starts from a clean RSS
+        unit_indices_per_color = gather_distributed_results(
+            basis.comm, sub_rank, unit_roots, units_per_color, np.array(unit_indices, dtype=np.int64), is_array=True
+        )
 
         results = None
         if reduce_fn is None:
@@ -592,12 +757,16 @@ def run_units_distributed(
                 offset += count
             local_results = None
             results = True
-        elif sub_rank == 0:
+        elif sub_rank == 0 and local_results:
+            # Root skips `count == 0` colors; an empty send would be taken by a later receive.
             basis.comm.send(local_results, dest=0)
             local_results = None
     finally:
         basis.truncation_threshold = caller_cap
         _restore_gf_memory_guard(split_basis, guard)
+        # Collective on basis.comm, like the communicator free below: freed here, on every path.
+        if unit_queue is not None:
+            unit_queue.free()
         # Free the split communicator collectively, on the error path too: a kernel that raised on
         # every rank (a recoverable failure the caller may retry, e.g. the self-energy's thermal
         # retry or the double-counting search) otherwise leaks one communicator per failure
@@ -609,21 +778,29 @@ def run_units_distributed(
     return results
 
 
-def _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_restrictions, slaterWeightMin):
+def _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_restrictions, slaterWeightMin, basis=None):
     """Apply each transition operator to every thermal state, returning the seed blocks.
 
     Returns ``block_v`` indexed ``[j_psi][i_tOp]`` -- the excited state ``tOps[i] |psi_j>`` confined
     to the excited sector. These are the columns of each eigenstate's block-Lanczos seed.
+
+    A many-term operator (an XAS dipole, a NIXS or rotated-orbital operator) sends determinants on
+    different ranks to the same seed row, so on a distributed ``basis`` each rank holds partial
+    amplitudes: the ``slaterWeightMin`` cut is then made on the summed rows
+    (:func:`apply_and_redistribute`, ``config.MATVEC_PRUNE``; at cutoff 0 that drops the rows whose
+    partials cancel), and the seeds come back owner-distributed. Replicated decision; collective
+    when it redistributes.
     """
     # The thermal states share their support, so each transition operator is applied to
     # the whole block at once (term/sign/accumulator work once per determinant, near-flat
     # in the number of eigenstates — Phase 2 block-state matvec).
     psi_blk = ManyBodyState.from_states(list(psis))
+    redistribute = basis is not None and matvec_cut_after_sum(basis.is_distributed, slaterWeightMin)
     block_v = [[ManyBodyState({}) for _ in tOps] for _ in psis]
     for i_tOp, tOp in enumerate(tOps):
         tOp.set_restrictions(excited_restrictions)
         tOp.set_weighted_restrictions(excited_weighted_restrictions)
-        res_psis = tOp.apply_block(psi_blk, slaterWeightMin).to_states()
+        res_psis = apply_and_redistribute(tOp, psi_blk, basis, slaterWeightMin, redistribute).to_states()
         for j_psi, res_psi in enumerate(res_psis):
             block_v[j_psi][i_tOp] += res_psi
     return block_v

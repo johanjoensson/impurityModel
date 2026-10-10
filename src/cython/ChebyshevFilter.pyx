@@ -30,6 +30,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, resolve_reort
+from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     block_add_scaled_cy,
@@ -238,9 +239,7 @@ def chebyshev_apply(hOp, basis, seeds, coefficient_sets, double slaterWeightMin,
         for c in coefficient_sets
     ]
     for it in range(1, degree + 1):
-        w = hOp.apply_block(t_cur, slaterWeightMin)
-        if mpi or caps:
-            w = basis.redistribute_block(w)
+        w = apply_and_redistribute(hOp, t_cur, basis, slaterWeightMin, mpi or caps)
         w = block_add_scaled_cy(w, t_cur, (-c_mid) * eye_p)  # (H - c_mid) t_n
         if t_prev is not None:
             t_next = block_add_scaled_cy(t_prev.combine_columns(-eye_p), w, (2.0 / e_half) * eye_p)

@@ -11,6 +11,7 @@ import numpy as np
 
 from impurityModel.ed import config
 from impurityModel.ed.gf_primitives import _block_cf_inverse, _trim_blocks
+from impurityModel.ed.work_queue import queue_progress
 
 # Relative-change convergence floor for the block-Lanczos Green's function, shared by the
 # runtime monitor (_make_gf_convergence_monitor) and the post-hoc band-wide diagnostic summary
@@ -185,6 +186,24 @@ def _gf_axis_tols(slaterWeightMin, gf_tol=None, gf_real_tol=None):
     return matsubara_tol, real_tol
 
 
+def _weighted_axis_tols(axis_tols, unit_weight, max_weight, ceiling):
+    r"""``axis_tols`` loosened for a unit whose thermal weight is below the dominant state's.
+
+    The thermal Green's function is :math:`G = \sum_n w_n G_n`, so an error :math:`\epsilon_n` in
+    :math:`G_n` enters :math:`G` as :math:`w_n \epsilon_n`. Holding every unit's *weighted* error
+    at the dominant state's gives :math:`\epsilon_n = \epsilon\, w_{max} / w_n`. Each axis is
+    scaled separately and clamped to ``[axis_tol, max(axis_tol, ceiling)]``: an axis already looser
+    than ``ceiling`` (the real axis under ``gf_real_tol``) is left alone, never tightened.
+
+    A unit that stacks several eigenstates passes its largest weight, which is the conservative
+    choice. Pure in replicated inputs, so every rank of a colour derives the same tolerances.
+    """
+    if not unit_weight > 0.0 or not max_weight > 0.0:
+        return tuple(axis_tols)
+    ratio = max_weight / unit_weight
+    return tuple(max(t, min(t * ratio, ceiling)) for t in axis_tols)
+
+
 def _gf_monitor_tol(slaterWeightMin, eval_meshes=None):
     """The reference tolerance the monitor reports and gates on: the strictest axis tolerance
     carried by ``eval_meshes`` (:class:`EvalMeshes`), else :func:`_gf_rel_tol`."""
@@ -260,6 +279,10 @@ def _make_gf_convergence_monitor(delta, slaterWeightMin, eval_meshes=None):
         return d_g
 
     def converged(alphas, betas, verbose=False, block_widths=None, **kwargs):
+        # Called once per block by both Lanczos kernels: the rank hosting the GF unit queue's
+        # counter lets pending fetches through here, or a 1-rank color would hold every other
+        # color's next unit for the length of its own (work_queue).
+        queue_progress()
         if len(alphas) <= 1:
             return False
         # B6 adaptive sampling. The resolvent-change test rebuilds an O(k)-level block continued

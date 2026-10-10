@@ -9,7 +9,13 @@ from mpi4py import MPI
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import calc_gs
-from impurityModel.ed.manybody_basis import Basis, collective_amplitude_cutoff, collective_mass_cutoff
+from impurityModel.ed.manybody_basis import (
+    Basis,
+    collective_amplitude_cutoff,
+    collective_first_keys,
+    collective_mass_cutoff,
+    collective_top_k_bounds,
+)
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 
@@ -99,6 +105,81 @@ def test_collective_cutoff_mpi_agrees_and_caps():
     assert all(c == cutoff for c in comm.allgather(cutoff))
     n_above = comm.allreduce(int(np.count_nonzero(scores > cutoff)), op=MPI.SUM)
     assert n_above == 3
+
+
+def test_collective_cutoff_rounding_noise_does_not_pick_members_of_a_near_tie():
+    """Scores that differ only by summation-order rounding are admitted or left out together.
+
+    A capped GF unit freezes on the top scores; when rounding chose among near-equal ones, the
+    retained set changed with the colour layout (CrI3 at cap 20,000: same size, different
+    determinants, G apart by 5e-3). Here three "layouts" carry the same scores perturbed by a few
+    ulps: the admitted positions must be the same in every one, and still at most k.
+    """
+    base = np.array([0.9, 0.5, 0.5, 0.5, 0.25, 0.1])
+    rng = np.random.default_rng(1)
+    chosen = []
+    for _ in range(3):
+        noisy = base * (1.0 + rng.integers(-4, 5, size=base.size) * np.finfo(float).eps)
+        cutoff = collective_amplitude_cutoff(noisy, 2, None)
+        admitted = np.flatnonzero(noisy > cutoff)
+        assert len(admitted) <= 2
+        chosen.append(tuple(admitted))
+    assert len(set(chosen)) == 1
+    assert chosen[0] == (0,)  # the tied 0.5 group does not fit in the remaining slot: all left out
+
+
+def test_collective_cutoff_separates_scores_a_bin_apart():
+    """The tie bins are far narrower than any real importance difference: 1e-8 apart is not a tie."""
+    scores = np.array([1.0, 1.0 - 1e-8, 0.5])
+    cutoff = collective_amplitude_cutoff(scores, 1, None)
+    assert np.flatnonzero(scores > cutoff).tolist() == [0]
+
+
+@pytest.mark.mpi
+def test_collective_cutoff_same_set_whatever_the_rank_split():
+    """The admitted *values* do not depend on how the near-tie copies are spread over ranks."""
+    comm = MPI.COMM_WORLD
+    base = np.array([0.9, 0.5, 0.5 * (1 + 2 * np.finfo(float).eps), 0.5 * (1 - np.finfo(float).eps), 0.3])
+    # Every rank holds a strided share; rank 0 holds the whole list on a one-rank run.
+    mine = base[comm.rank :: comm.size]
+    cutoff = collective_amplitude_cutoff(mine, 2, comm)
+    admitted = sorted(x for part in comm.allgather(mine[mine > cutoff].tolist()) for x in part)
+    assert admitted == [0.9]
+
+
+def _top_k(scores, keys, k, comm):
+    """Admitted keys of collective_top_k_bounds + collective_first_keys, gathered on every rank."""
+    above, boundary, n_fill = collective_top_k_bounds(scores, k, comm)
+    group = [key for key, s in zip(keys, scores) if boundary < s <= above]
+    chosen = collective_first_keys(group, n_fill, comm)
+    mine = sorted([key for key, s in zip(keys, scores) if s > above] + sorted(chosen))
+    every = comm.allgather(mine) if comm is not None else [mine]
+    return sorted(key for part in every for key in part)
+
+
+def test_top_k_fills_a_near_tie_group_by_key_whatever_the_rounding():
+    """The cap is filled exactly, and the members taken from the straddling near-tie group are the
+    smallest keys -- not the ones rounding happened to make largest (the old fallback's choice), and
+    not none of them (the binned cutoff alone under-filled a 2-determinant cap on the toy SIAM)."""
+    keys = [bytes([i]) for i in range(6)]
+    base = np.array([0.9, 0.5, 0.5, 0.5, 0.25, 0.0])
+    rng = np.random.default_rng(3)
+    for _ in range(6):
+        noisy = base * (1.0 + rng.integers(-4, 5, size=base.size) * np.finfo(float).eps)
+        assert _top_k(noisy, keys, 2, None) == [keys[0], keys[1]]
+        assert _top_k(noisy, keys, 3, None) == [keys[0], keys[1], keys[2]]
+    assert _top_k(base, keys, 10, None) == keys[:5]  # every positive score, never a zero
+
+
+@pytest.mark.mpi
+def test_top_k_admits_the_same_keys_whatever_the_rank_split():
+    comm = MPI.COMM_WORLD
+    eps = np.finfo(float).eps
+    base = np.array([0.9, 0.5, 0.5 * (1 + 2 * eps), 0.5 * (1 - eps), 0.5 * (1 + eps), 0.3])
+    keys = [bytes([i]) for i in range(base.size)]
+    mine = slice(comm.rank, None, comm.size)
+    got = _top_k(base[mine], keys[mine], 3, comm)
+    assert got == [keys[0], keys[1], keys[2]]
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +420,8 @@ def test_capped_expand_monotone_and_variational():
     prev_e0 = np.inf
     for threshold in thresholds:
         e0, size, report = _expanded_e0(threshold)
-        # The capped solve is variational and the cap is a hard bound that is filled.
+        # The capped solve is variational and the cap is a hard bound that is filled (a near-tie
+        # group straddling it is filled in determinant-key order, collective_top_k_bounds).
         assert e0 >= e0_ref - 1e-9
         assert size <= threshold
         assert size == min(threshold, natural_size)
@@ -618,3 +700,89 @@ def test_calc_gs_no_truncation_report_when_uncapped():
     )
     assert gs_info["truncation"] is None
     assert gs_info["statistics"]["truncation"] is None
+
+
+# ---------------------------------------------------------------------------
+# GS_SELECTION_PRUNE: the slater_weight_min cut acts on summed amplitudes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("prune, kept", [("after_sum", True), ("before_sum", False)])
+def test_selection_cuts_the_summed_amplitude_not_each_chunks_partial(prune, kept, monkeypatch):
+    """A candidate fed by reference rows in different chunks keeps the amplitude they add up to.
+
+    Rows a and b each send 0.6 x cutoff to D. Cut per chunk (``before_sum``, the old order), D vanishes
+    from both partials; how rows split into chunks (and over ranks) then decides which candidates exist,
+    which made the CIPSI basis differ at 1, 2 and 3 ranks on CrI3. Cut after the sum, D survives at 1.2 x
+    cutoff whatever the split.
+    """
+    cutoff = 1e-3
+    a, b, d = _det([0]), _det([1]), _det([2])
+    hop = ManyBodyOperator({((2, "c"), (0, "a")): 0.6 * cutoff, ((2, "c"), (1, "a")): 0.6 * cutoff})
+    psi = ManyBodyState.from_states([ManyBodyState({a: 1.0 + 0j, b: 1.0 + 0j})])
+
+    class _Serial:
+        def redistribute_block(self, block):
+            return block
+
+    solver = CIPSISolver.__new__(CIPSISolver)
+    solver.basis = _Serial()
+    monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", "2")  # one reference row per chunk
+    monkeypatch.setenv("GS_SELECTION_PRUNE", prune)
+    out = solver._apply_block_and_redistribute(hop, psi, cutoff)
+    state = out.to_states()[0]
+    assert (d in state) == kept
+    if kept:
+        assert abs(complex(state[d][0]) - 1.2 * cutoff) < 1e-15
+
+
+def test_selection_prune_rejects_an_unknown_value(monkeypatch):
+    monkeypatch.setenv("GS_SELECTION_PRUNE", "sometimes")
+    solver = CIPSISolver.__new__(CIPSISolver)
+    psi = ManyBodyState.from_states([ManyBodyState({_det([0]): 1.0 + 0j})])
+    with pytest.raises(ValueError, match="GS_SELECTION_PRUNE"):
+        solver._apply_block_and_redistribute(ManyBodyOperator({}), psi, 1e-3)
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs reference rows on two different ranks")
+@pytest.mark.parametrize("prune", ["after_sum", "before_sum"])
+def test_selection_candidates_do_not_depend_on_which_rank_owns_the_reference_rows(prune, monkeypatch):
+    """Two reference rows owned by different ranks each send 0.6 x cutoff to the same candidate.
+
+    Summed, the candidate carries 1.2 x cutoff and must be selected, as it is on one rank. Cut per
+    rank before the sum (``before_sum``) it vanished: the selected basis then changed with the rank
+    count (CrI3 at a binding cap: a different basis at 1, 2, 3 and 4 ranks, E0 up to 3.7e-5 apart).
+    """
+    comm = MPI.COMM_WORLD
+    basis = _make_basis(comm)
+    cutoff = 1e-3
+    # Two 4-electron rows on different owners, both one hop from the same candidate.
+    pair = None
+    for base in itertools.combinations(range(N_SPIN_ORBITALS), 3):
+        free = [o for o in range(N_SPIN_ORBITALS) if o not in base]
+        for i, j, k in itertools.permutations(free, 3):
+            a, b = _det(base + (i,)), _det(base + (j,))
+            if a.routing_hash() % comm.size != b.routing_hash() % comm.size:
+                pair = (a, b, _det(base + (k,)), i, j, k)
+                break
+        if pair:
+            break
+    assert pair is not None
+    a, b, d, i, j, k = pair
+    hop = ManyBodyOperator({((k, "c"), (i, "a")): 0.6 * cutoff, ((k, "c"), (j, "a")): 0.6 * cutoff})
+    seed = ManyBodyState({a: 1.0 + 0j, b: 1.0 + 0j}) if comm.rank == 0 else ManyBodyState({}, width=1)
+    (psi,) = basis.redistribute_psis(ManyBodyState.from_states([seed]))
+    solver = CIPSISolver.__new__(CIPSISolver)
+    solver.basis = basis
+    monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", "1")
+    monkeypatch.setenv("GS_SELECTION_PRUNE", prune)
+    out = solver._apply_block_and_redistribute(hop, psi, cutoff)
+    local = {key: complex(row[0]) for key, row in out.to_states()[0].items()} if len(out) else {}
+    merged = {}
+    for part in comm.allgather(local):
+        merged.update(part)
+    if prune == "after_sum":
+        assert abs(abs(merged[d]) - 1.2 * cutoff) < 1e-15
+    else:
+        assert d not in merged  # the old order: each rank's 0.6 x cutoff was cut before the sum

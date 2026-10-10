@@ -26,6 +26,7 @@ from impurityModel.ed.gf_convergence import (  # noqa: F401  -- re-exported for 
     _greens_function_change,
     _lanczos_convergence_summary,
     _make_gf_convergence_monitor,
+    _weighted_axis_tols,
 )
 from impurityModel.ed.gf_engine import (
     combine_sides,
@@ -53,6 +54,7 @@ from impurityModel.ed.gf_solvers import (  # noqa: F401  -- block_Green(_sparse)
 from impurityModel.ed.gf_units import (
     enumerate_gf_units,
     run_units_distributed,
+    tolerance_cost_ratios,
     unit_cost_weights,
 )
 from impurityModel.ed.manybody_basis import Basis
@@ -206,18 +208,32 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
         """K[n][a,b] = <seed_a | (H - e)^n | seed_b> for n = 1..max_order (Hermitian H - e)."""
         s0 = seeds
         s1 = [hOp(s, 0) - complex(e) * s for s in s0]
-        s2 = [hOp(s, 0) - complex(e) * s for s in s1] if max_order >= 3 else None
         if basis.is_distributed:
+            # Each rank's s0/s1 are partial sums (the images of the psi rows it owns); the
+            # redistribution sums them into the owned rows of the global vectors.
             s0 = basis.redistribute_psis(*s0)
             s1 = basis.redistribute_psis(*s1)
-            s2 = basis.redistribute_psis(*s2) if s2 is not None else None
         k = {}
         if max_order >= 1:
             k[1] = inner_multi(s0, s1)  # <s0_a | (H-e) s0_b>
         if max_order >= 2:
             k[2] = inner_multi(s1, s1)  # <s0_a | (H-e)^2 s0_b>
         if max_order >= 3:
-            k[3] = inner_multi(s1, s2)  # <s0_a | (H-e)^3 s0_b>
+            # <s0_a | (H-e)^3 s0_b> = <s1_a | (H-e) s1_b>, one column at a time. s2 = (H-e) s1 is
+            # the largest object of the step (one more fan-out than s1, and it does not shrink
+            # much with the rank count). Building all seeds' s2 at once and redistributing them
+            # together held every seed's rows, plus one dense block over their *union* support
+            # (redistribute_psis fuses its inputs), at the same time -- the suspected cause of
+            # the CrI3 OOM at 128 ranks; on that archive locally, the step's own peak fell 5-13x
+            # at 1-8 ranks. Only one seed's s2 is alive here. One collective per seed, the same
+            # count on every rank.
+            k[3] = np.zeros((len(s1), len(s1)), dtype=complex)
+            for b, s1_b in enumerate(s1):
+                s2_b = hOp(s1_b, 0) - complex(e) * s1_b
+                if basis.is_distributed:
+                    (s2_b,) = basis.redistribute_psis(s2_b)
+                k[3][:, b] = inner_multi(s1, [s2_b])[:, 0]
+                del s2_b
         return k
 
     for n, (psi_n, e_n) in enumerate(zip(psis, es)):
@@ -427,6 +443,17 @@ def get_Greens_function(
         config.GF_TOL.get() if gf_tol is None else gf_tol,
         config.GF_REAL_TOL.get() if gf_real_tol is None else gf_real_tol,
     )
+    # GF_WEIGHTED_TOL: loosen the tolerance of low-weight eigenstates' units (their error enters G
+    # multiplied by the weight). Rank 0's environment decides and is broadcast, so every rank of a
+    # color derives identical tolerances -- a per-rank difference would desynchronise the monitor's
+    # collectives. The bcast is unconditional on a communicator.
+    weighted_tol = (config.GF_WEIGHTED_TOL.get(), config.GF_WEIGHTED_TOL_CEILING.get())
+    if basis.comm is not None:
+        weighted_tol = basis.comm.bcast(weighted_tol, root=0)
+    use_weighted_tol = bool(weighted_tol[0]) and gf_method == "lanczos"
+    if use_weighted_tol:
+        thermal_weights = ThermalEnsemble(es, tau).weights
+        max_thermal_weight = float(np.max(thermal_weights))
     # Excited-sector restrictions are independent of the orbital block and of the spectral side
     # (the dN occupation window is symmetric and spans all impurity orbitals), so build them once
     # on the full basis instead of per block.
@@ -487,8 +514,26 @@ def get_Greens_function(
         excited_weighted_restrictions,
         slaterWeightMin,
         per_state_restrictions,
+        basis=basis,
     )
     unit_weights = unit_cost_weights(unit_seeds, basis.comm)
+
+    def unit_axis_tols(unit):
+        """This unit's per-axis tolerances: ``axis_tols``, loosened by its thermal weight if enabled."""
+        if not use_weighted_tol:
+            return axis_tols
+        return _weighted_axis_tols(
+            axis_tols,
+            float(max(thermal_weights[ei] for ei in unit.chunk)),
+            max_thermal_weight,
+            weighted_tol[1],
+        )
+
+    if use_weighted_tol:
+        # A unit converged to a looser tolerance stops after a fraction of the blocks, so it must not
+        # weigh the same as a dominant one: the packer would give it a colour's worth of ranks, and the
+        # queue would hold the units that set the wall behind it.
+        unit_weights = unit_weights * tolerance_cost_ratios([min(unit_axis_tols(u)) for u in units], min(axis_tols))
 
     if gf_method == "bicgstab":
         return _get_greens_function_bicgstab(
@@ -526,7 +571,7 @@ def get_Greens_function(
             group_meta[unit.group_i][1],
             delta,
             [es[ei] for ei in unit.chunk],
-            axis_tols=axis_tols,
+            axis_tols=unit_axis_tols(unit),
         )
 
     kernel = lanczos_unit_kernel(
@@ -545,7 +590,9 @@ def get_Greens_function(
 
     # This unit-level dump belongs at -vv (verbose_extra): the roots/per-color summary is
     # detail beyond the -v per-block roll-up the caller already prints.
-    results = run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose_extra, reort=reort)
+    results = run_units_distributed(
+        basis, unit_seeds, unit_weights, kernel, verbose=verbose_extra, reort=reort, unit_windows=unit_restrictions
+    )
 
     gs_matsubara = gs_realaxis = report = None
     if results is not None:
@@ -587,6 +634,18 @@ def get_Greens_function(
                 stats["seed_frozen"] = True
             if cap_stats.get("memory_frozen"):
                 stats["memory_frozen"] = True
+            if cap_stats.get("stagnation_frozen"):
+                # Kept apart from the cap's retained_size: a block can hold both kinds of unit, and the
+                # stagnation diagnostic reports its own smallest support and largest boundary weight.
+                retained = cap_stats.get("retained_size")
+                if not stats.get("stagnation_frozen") or (
+                    retained is not None and retained < stats["stagnation_retained"]
+                ):
+                    stats["stagnation_retained"] = retained
+                stats["stagnation_frozen"] = True
+                leak = cap_stats.get("stagnation_leakage")
+                if leak is not None:
+                    stats["stagnation_leakage"] = max(stats.get("stagnation_leakage", 0.0), leak)
             if cap_stats["cap_hit"]:
                 stats["cap_hit"] = True
                 stats["cap"] = cap_stats["cap"]
@@ -594,13 +653,25 @@ def get_Greens_function(
                 if retained is not None and (stats["retained_size"] is None or retained < stats["retained_size"]):
                     stats["retained_size"] = retained
             cstats = conv_acc.setdefault(
-                block_i, {"converged": True, "d_g": 0.0, "n_blocks": 0, "tol": conv_stats.get("tol", np.nan)}
+                block_i,
+                {
+                    "converged": True,
+                    "d_g": 0.0,
+                    "n_blocks": 0,
+                    # Under GF_WEIGHTED_TOL the units' own tolerances differ, so the block reports
+                    # against the base (strictest) one and each unit's d_g is rescaled to it below.
+                    "tol": min(axis_tols) if use_weighted_tol else conv_stats.get("tol", np.nan),
+                },
             )
             cstats["converged"] = cstats["converged"] and bool(conv_stats.get("converged", True))
             # A trivially-converged (empty seed) unit reports d_g=nan -- it made no measurement,
             # so it must not poison the block's worst-case max with a NaN.
             unit_d_g = conv_stats.get("d_g")
             if unit_d_g is not None and not np.isnan(unit_d_g):
+                if use_weighted_tol and conv_stats.get("tol"):
+                    # d_g / (this unit's tol / base tol): 1.0 for a dominant unit, so a unit that
+                    # met its loosened tolerance does not read as unconverged against the base.
+                    unit_d_g = unit_d_g * (cstats["tol"] / conv_stats["tol"])
                 cstats["d_g"] = max(cstats["d_g"], unit_d_g)
             cstats["n_blocks"] = max(cstats["n_blocks"], conv_stats.get("n_blocks", 0))
 
@@ -645,6 +716,14 @@ def get_Greens_function(
                         memory_frozen=block_cap.get("memory_frozen", False),
                     )
                 )
+                if block_cap.get("stagnation_frozen"):
+                    diags.append(
+                        _gfd.check_stagnation_freeze(
+                            block_cap.get("stagnation_retained"),
+                            block_cap.get("stagnation_leakage"),
+                            config.GF_STAGNATION_FREEZE.get(),
+                        )
+                    )
             # The sum rule holds for the plain c/c^dag part of a family: its leading len(block) columns.
             n_c = len(block)
             if widths[block_i] != n_c:
@@ -664,9 +743,22 @@ def get_Greens_function(
             # solver never had to (and didn't) resolve, e.g. outside the omega window.
             # A real-axis band measure, so it is judged at the real-axis tolerance.
             band_tol = axis_tols[1]
-            conv_add = _lanczos_convergence_summary(a_add, b_add, delta, tol=band_tol)
-            conv_rem = _lanczos_convergence_summary(a_rem, b_rem, -delta, tol=band_tol)
-            diags.append(_gfd.check_lanczos_band_resolution(max(conv_add[1], conv_rem[1]), band_tol))
+            if use_weighted_tol:
+                # Per eigenstate, in units of that state's loosened real-axis tolerance, so the
+                # light states (stopped early by design) do not WARN against the dominant state's.
+                band_value = 0.0
+                for ei in range(len(es)):
+                    state_tol = _weighted_axis_tols(
+                        axis_tols, float(thermal_weights[ei]), max_thermal_weight, weighted_tol[1]
+                    )[1]
+                    for a_s, b_s, sgn in ((a_add, b_add, delta), (a_rem, b_rem, -delta)):
+                        d_band = _lanczos_convergence_summary([a_s[ei]], [b_s[ei]], sgn, tol=band_tol)[1]
+                        band_value = max(band_value, d_band * (band_tol / state_tol))
+            else:
+                conv_add = _lanczos_convergence_summary(a_add, b_add, delta, tol=band_tol)
+                conv_rem = _lanczos_convergence_summary(a_rem, b_rem, -delta, tol=band_tol)
+                band_value = max(conv_add[1], conv_rem[1])
+            diags.append(_gfd.check_lanczos_band_resolution(band_value, band_tol))
             if G_IPS_real is not None:
                 diags.append(_gfd.check_mesh_density(omega_mesh, delta))
                 diags.append(
@@ -755,6 +847,7 @@ def _get_greens_function_bicgstab(
         kernel,
         verbose,
         num_wanted,
+        unit_windows=unit_restrictions,
     )
 
 
@@ -773,6 +866,7 @@ def _run_evaluated_gf_units(
     kernel,
     verbose,
     num_wanted,
+    unit_windows=None,
 ):
     r"""Distribute, accumulate and assemble Green's-function units that return evaluated ``G``.
 
@@ -868,7 +962,14 @@ def _run_evaluated_gf_units(
             )
 
     got = run_units_distributed(
-        basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=reduce_fn, gf_method="bicgstab"
+        basis,
+        unit_seeds,
+        unit_weights,
+        kernel,
+        verbose=verbose,
+        reduce_fn=reduce_fn,
+        gf_method="bicgstab",
+        unit_windows=unit_windows,
     )
     if got is None:
         return None, None, None
@@ -1078,6 +1179,7 @@ def calc_Greens_function_with_offdiag(
         [excited_restrictions],
         excited_weighted_restrictions,
         slaterWeightMin,
+        basis=block_basis,
     )
     unit_weights = unit_cost_weights(unit_seeds, block_basis.comm)
 
@@ -1092,7 +1194,9 @@ def calc_Greens_function_with_offdiag(
         solver_verbose=verbose,
         print_size=verbose,
     )
-    results = run_units_distributed(block_basis, unit_seeds, unit_weights, kernel, verbose=verbose, reort=reort)
+    results = run_units_distributed(
+        block_basis, unit_seeds, unit_weights, kernel, verbose=verbose, reort=reort, unit_windows=unit_restrictions
+    )
 
     excited_alphas = excited_betas = excited_r = None
     if results is not None:

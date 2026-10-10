@@ -1,3 +1,4 @@
+import heapq
 import itertools
 from collections.abc import Iterable, Iterator, Sequence
 from math import ceil
@@ -25,34 +26,94 @@ from impurityModel.ed.mpi_comm import (
 
 
 def collective_amplitude_cutoff(scores, k, comm):
-    """Smallest cutoff with at most ``k`` scores above it, across all ranks.
+    """The raw cutoff above which the whole near-tie groups of the global top ``k`` lie.
 
-    Ranks candidates by their (nonnegative) importance ``scores`` and returns the
-    cutoff such that the global number of entries with ``score > cutoff`` is <= ``k``:
-    keeping everything strictly above the cutoff admits the top-``k`` candidates,
-    under-admitting ties at the cutoff (the cap is never exceeded). Near-tie retained
-    sets may differ across rank counts through summation-order rounding.
-
-    The bisection runs a fixed iteration count on allreduce'd counts, so every rank
-    computes the identical cutoff. It bisects geometrically over the nonzero score
-    range, so the full floating-point dynamic range is resolved (a linear bisection
-    from the maximum cannot reach scores below ``max / 2^45``). **Collective on**
-    ``comm``: call unconditionally on all ranks (a rank may hold zero scores).
-
-    Parameters
-    ----------
-    scores : np.ndarray
-        Rank-local nonnegative importance scores (e.g. ``|amplitude|^2``).
-    k : int
-        Maximum global number of scores allowed above the returned cutoff.
-    comm : MPI.Comm or None
-        Communicator; ``None`` (or size 1) means serial.
-
-    Returns
-    -------
-    float
-        The cutoff; retain entries with ``score > cutoff``.
+    ``score > cutoff`` admits at most ``k`` entries: every near-tie group (:func:`_tie_bins`) that
+    fits, none of the group that would overflow ``k``. Selection code should use
+    :func:`collective_top_k_bounds` instead, which also fills the remaining slots from that group
+    in a rank-invariant key order; this is its first return value, kept for callers that only need
+    an under-filling cut. **Collective on** ``comm``: call unconditionally on all ranks.
     """
+    return collective_top_k_bounds(scores, k, comm)[0]
+
+
+def collective_top_k_bounds(scores, k, comm):
+    """The global top ``k`` of ``scores``, as two raw cutoffs and a fill count.
+
+    Returns ``(above, boundary, n_fill)``: every entry with ``score > above`` is admitted, and
+    ``n_fill`` more are taken from the *boundary* entries, ``boundary < score <= above`` -- one
+    near-tie group (scores equal to :data:`_TIE_BITS` bits, :func:`_tie_bins`). The caller picks
+    those ``n_fill`` by a rank-invariant key order (:func:`collective_first_keys`), so the admitted
+    set has exactly ``min(k, #positive scores)`` entries and does not depend on the rank count,
+    the layout, or rounding: leaving the boundary group out instead under-filled the cap by up to
+    a group's size (a 2-determinant cap on the symmetric toy SIAM kept 1, E0 -4.0 against -4.5),
+    and choosing among its members by raw score let summation order decide.
+
+    The boundary group always holds at least ``n_fill`` entries: the bisection admits the most
+    whole bins that fit, so the next bin down is the one that would overflow ``k``. Zero scores
+    are never admitted. **Collective on** ``comm``: call unconditionally on all ranks.
+    """
+    mpi = comm is not None and comm.size > 1
+    raw = np.asarray(scores, dtype=float)
+    binned = _tie_bins(raw)
+    hi = _bisect_count_cutoff(binned, k, comm)
+
+    def gmax(x):
+        return comm.allreduce(x, op=MPI.MAX) if mpi else x
+
+    def gsum(x):
+        return comm.allreduce(x, op=MPI.SUM) if mpi else x
+
+    n_above = gsum(int(np.count_nonzero(binned > hi)))
+    rest = (binned <= hi) & (binned > 0.0)
+    # The largest raw score not admitted wholesale: a raw score is above it exactly when its bin is.
+    above = gmax(float(raw[binned <= hi].max()) if np.any(binned <= hi) else 0.0)
+    group = gmax(float(binned[rest].max()) if np.any(rest) else 0.0)
+    if group == 0.0 or n_above >= k:
+        return above, above, 0
+    lower = binned < group
+    boundary = gmax(float(raw[lower].max()) if np.any(lower) else 0.0)
+    in_group = gsum(int(np.count_nonzero(binned == group)))
+    return above, boundary, int(min(k - n_above, in_group))
+
+
+def collective_first_keys(local_keys, n, comm):
+    """This rank's share of the ``n`` smallest keys over every rank's ``local_keys``.
+
+    ``local_keys`` are ``bytes`` (e.g. ``bytes(det.to_bytearray())``), unique across ranks (each
+    determinant has one owner). The order is the keys' own, so every layout picks the same set.
+    Gathers the keys of one boundary group, which is small. **Collective on** ``comm`` whenever
+    ``n > 0`` (``n`` must be replicated).
+    """
+    if n <= 0:
+        return set()
+    mine = sorted(local_keys)
+    every = comm.allgather(mine) if comm is not None and comm.size > 1 else [mine]
+    chosen = set(heapq.nsmallest(int(n), (key for keys in every for key in keys)))
+    return chosen.intersection(mine)
+
+
+def collective_top_k_mask(scores, keys, k, comm):
+    """Local mask of the global top ``k`` of ``scores`` (``keys``: this rank's determinants, aligned).
+
+    Whole near-tie groups by score, then the boundary group in determinant-key order
+    (:func:`collective_top_k_bounds`, :func:`collective_first_keys`): exactly ``k`` admitted (fewer
+    only when fewer scores are positive), the same set whatever the rank count. Each determinant must
+    have one owner. **Collective on** ``comm``: call unconditionally on all ranks.
+    """
+    scores = np.asarray(scores, dtype=float)
+    above, boundary, n_fill = collective_top_k_bounds(scores, k, comm)
+    out = scores > above
+    group = np.nonzero((scores > boundary) & (scores <= above))[0]
+    chosen = collective_first_keys([bytes(keys[i].to_bytearray()) for i in group] if n_fill > 0 else [], n_fill, comm)
+    for i in group:
+        if bytes(keys[i].to_bytearray()) in chosen:
+            out[i] = True
+    return out
+
+
+def _bisect_count_cutoff(scores, k, comm):
+    """Fixed-count geometric bisection: the cutoff with at most ``k`` of ``scores`` above it."""
     mpi = comm is not None and comm.size > 1
     positive = scores[scores > 0.0] if scores.size else scores
     local_max = float(positive.max()) if positive.size else 0.0
@@ -61,7 +122,6 @@ def collective_amplitude_cutoff(scores, k, comm):
         return 0.0
     local_min = float(positive.min()) if positive.size else np.inf
     lo = comm.allreduce(local_min, op=MPI.MIN) if mpi else local_min
-    # Floor just below the smallest nonzero score, so "retain everything" is reachable.
     lo *= 0.5
     for _ in range(45):
         mid = np.sqrt(lo * hi)
@@ -73,6 +133,25 @@ def collective_amplitude_cutoff(scores, k, comm):
         else:
             lo = mid
     return hi
+
+
+#: Mantissa bits a score keeps when ties are decided (:func:`collective_amplitude_cutoff`). Bins
+#: are 2**-32 ~ 2.3e-10 relative: far wider than summation-order rounding (~1e-16), so near-ties
+#: share a bin unless they straddle an edge (odds ~1e-16 * 2**32 ~ 5e-7 per group), and far
+#: narrower than any importance difference a truncation should act on.
+_TIE_BITS = 32
+
+
+def _tie_bins(scores):
+    """``scores`` rounded to :data:`_TIE_BITS` mantissa bits (exact in float64; zeros stay zero).
+
+    Rounded to nearest, not floored: exact dyadic scores (1/2, 1/4, ... -- symmetric amplitudes
+    produce them) then sit at a bin *centre*, where rounding noise of either sign keeps them in
+    their bin; floored, they would sit on an edge and split by the sign of the noise. Monotone
+    non-decreasing in the score, which the cutoff's raw-score comparison relies on."""
+    scores = np.asarray(scores, dtype=float)
+    mantissa, exponent = np.frexp(scores)
+    return np.ldexp(np.floor(mantissa * 2.0**_TIE_BITS + 0.5) / 2.0**_TIE_BITS, exponent)
 
 
 def collective_mass_cutoff(scores, budget, comm):
@@ -609,10 +688,28 @@ class Basis:
             return block
         return graph_alltoall_block(block, self.n_bytes, self.comm)
 
+    def new_owned_keys(self, keys, exclude=frozenset()):
+        """The determinants of ``keys`` that this rank owns and the basis does not hold yet.
+
+        ``keys`` may come from any rank, in any number of copies (e.g. the images a rank-local walk
+        reached). They are routed to their owners first, so the membership test is the global one
+        and every determinant is reported once, by its owner -- a rank-local ``contains_local`` test
+        treats a determinant another rank owns as new. ``exclude`` (owner-local) drops more, e.g. the
+        ones a walk has already found. **Collective** on a distributed basis.
+        """
+        if self.is_distributed:
+            routed = self.redistribute_block(ManyBodyState(dict.fromkeys(keys, 1.0), width=1))
+            keys = routed.keys()
+        return {key for key in keys if key not in exclude and not self.contains_local(key)}
+
     def expand(self, op, slaterWeightMin=0, max_it=5):
         """
         Expand the basis in place by repeatedly applying an operator to the
         basis states, thus generating new basis states.
+
+        Each wave's images are routed to their owners (:meth:`new_owned_keys`), so the walk, the new
+        determinants and their count against ``truncation_threshold`` are those of a serial run
+        whatever the rank count. Collective on a distributed basis.
 
         Parameters
         ----------
@@ -629,38 +726,29 @@ class Basis:
         # Unconditional (like set_restrictions): passing None clears any stale weighted
         # mask left on a reused operator object.
         op.set_weighted_restrictions(self.weighted_restrictions)
-        old_size = self.size - 1
 
-        it = 0
+        def global_count(n):
+            return self.comm.allreduce(n, op=MPI.SUM) if self.is_distributed else n
+
         max_inner_loops = 2
-
-        local_states = set(self.local_basis)
-        apply_h_to_these = local_states
-        while old_size < self.size and it < max(max_it // max_inner_loops, 1):
+        # Owner-local throughout: the frontier and each wave's new determinants live on their owners,
+        # so every count below is global by a plain sum and every break is taken on all ranks.
+        frontier = set(self.local_basis)
+        for _ in range(max(max_it // max_inner_loops, 1)):
+            pending = set()
             for _ in range(max_inner_loops):
-                new_local_states = set()
-                for state in apply_h_to_these:
-                    res = applyOp_test(
-                        op,
-                        ManyBodyState({state: 1}),
-                        cutoff=slaterWeightMin,
-                    )
-                    new_local_states |= set(res.keys()) - local_states
-                if len(new_local_states) == 0:
+                images = set()
+                for state in frontier:
+                    images.update(applyOp_test(op, ManyBodyState({state: 1}), cutoff=slaterWeightMin).keys())
+                fresh = self.new_owned_keys(images, exclude=pending)
+                if global_count(len(fresh)) == 0:
                     break
-                apply_h_to_these = new_local_states
-                local_states |= new_local_states
-            new_states = local_states - set(self.local_basis)
-            old_size = self.size
-
-            n_new_states = len(new_states)
-            if self.is_distributed:
-                n_new_states = self.comm.allreduce(n_new_states, op=MPI.SUM)
-            if self.size + n_new_states > self.truncation_threshold:
+                pending |= fresh
+                frontier = fresh
+            n_new_states = global_count(len(pending))
+            if n_new_states == 0 or self.size + n_new_states > self.truncation_threshold:
                 break
-            self.add_states(new_states)
-            apply_h_to_these = apply_h_to_these ^ (set(self.local_basis) - local_states)
-            it += 1
+            self.add_states(pending)
         if self.verbose and (self.comm is None or self.comm.rank == 0):
             print(f"After expansion, the basis contains {self.size} elements.")
 

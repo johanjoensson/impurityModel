@@ -433,8 +433,11 @@ class KrylovShiftedResolvent:
             return [[ManyBodyState(width=1) for _ in range(n_rhs)] for _ in zs]
 
         basis.clear()
-        basis.add_states(sorted({state for psi in rhs for state in psi.keys()}))
+        # Summed over the ranks before their keys enter the basis (routing is by owner, not by
+        # membership): a caller's rhs may hold each rank's partial T|psi>, and a row whose partials
+        # cancel must not be kept.
         rhs = basis.redistribute_psis(*rhs)
+        basis.add_states(sorted({state for psi in rhs for state in psi.keys()}))
 
         # Orthonormal seed block + projection B0 (the same preamble as block_green_impl).
         psi_dense_local, r = _distributed_seed_qr(basis, rhs, slaterWeightMin)

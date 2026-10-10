@@ -1425,8 +1425,9 @@ class SolverOptions:
         ``max(slaterWeightMin**2, 1e-9)``. ``gf_method="lanczos"`` only.
     gf_real_tol : float or None
         The same tolerance on the real-frequency axis only; ``None`` (default): ``GF_REAL_TOL``,
-        else the ``gf_tol`` value. When only the Matsubara self-energy feeds a DMFT loop, a looser
-        real-axis tolerance shortens the recurrence without touching the Matsubara accuracy.
+        else the ``gf_tol`` value. A looser real-axis tolerance shortens the recurrence without
+        touching the Matsubara accuracy. In RSPt the real-axis self-energy still feeds the next
+        bath fit, so loosen it moderately (e.g. ``1e-6``) rather than drop it.
         ``gf_method="lanczos"`` only.
     gf_min_weight : float or None
         Drop thermal states whose normalised Boltzmann weight is below this from the Green's
