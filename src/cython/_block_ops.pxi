@@ -83,12 +83,14 @@ cpdef object block_inner(object V, object W, bint mpi=False, object comm=None):
 def matvec_cut_after_sum(bint redistributes, double cutoff):
     """Whether a sparse matvec cuts ``cutoff`` on its summed rows (``config.MATVEC_PRUNE``).
 
-    True only when the output is redistributed (so each rank holds partial sums until then), the
-    cutoff is positive, and the knob is ``after_sum``: the caller then applies with no cutoff and
-    prunes after the redistribute. Without a redistribute the one apply already sees whole sums.
-    Depends only on replicated values, so every rank takes the same branch.
+    True when the output is redistributed (so each rank holds partial sums until then) and the knob
+    is ``after_sum``: the caller then applies with no cutoff and prunes after the redistribute. That
+    includes ``cutoff == 0``, where the prune drops the rows whose partials cancel exactly -- what a
+    serial apply, which never emits an exact-zero row, already does -- so the determinants a result
+    holds do not depend on the layout either. Without a redistribute the one apply already sees
+    whole sums. Depends only on replicated values, so every rank takes the same branch.
     """
-    if not redistributes or cutoff <= 0.0:
+    if not redistributes:
         return False
     mode = config.MATVEC_PRUNE.get()
     if mode not in ("after_sum", "before_sum"):

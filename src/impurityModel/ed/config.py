@@ -449,7 +449,10 @@ MATVEC_PRUNE = Knob(
     Covers every such matvec: the block-Lanczos step (``_lanczos_step.pxi``), ``block_apply`` (the TRLM
     eigensolver on a sparse operator), the BiCGSTAB/GMRES matvec, the Chebyshev filter,
     ``block_Green``'s basis-expansion probe, and the transition-operator seeds of every GF and spectrum
-    unit (``gf_units.enumerate_gf_units``: XAS, NIXS, PES/IPS, susceptibility). The CIPSI
+    unit (``gf_units.enumerate_gf_units``: XAS, NIXS, PES/IPS, susceptibility), and the first shell
+    of the BiCGSTAB admission start set. ``after_sum`` also applies at ``slaterWeightMin`` 0: a row whose
+    partials cancel exactly is dropped after the sum, as a serial apply drops it, so the determinants
+    a result holds -- and what they count toward a cap -- do not depend on the layout. The CIPSI
     selection round has its own knob, ``GS_SELECTION_PRUNE``. ``after_sum`` makes the same cut as a
     serial one-shot ``apply_block(v, slaterWeightMin)``.
 

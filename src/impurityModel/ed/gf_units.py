@@ -394,9 +394,10 @@ def enumerate_gf_units(
         (:func:`basis_restrictions.union_windows`) over the eigenstates it stacks instead of the group
         fallback.
     basis : Basis, optional
-        The basis ``psis`` are distributed on. With a distributed one, a seed row reached from
-        determinants on several ranks is cut on its summed amplitude (``config.MATVEC_PRUNE``), and
-        the seeds come back owner-distributed (collective). ``None``: the states are not distributed.
+        The basis ``psis`` are distributed on. With a distributed one (``config.MATVEC_PRUNE=after_sum``)
+        the seeds are summed over the ranks and cut on whole amplitudes -- a many-term operator sends
+        determinants on several ranks to one seed row -- and come back owner-distributed (collective).
+        ``None``: the states are not distributed.
 
     Returns
     -------
@@ -428,7 +429,9 @@ def enumerate_gf_units(
         # own (per-state) window. A seed row outside the recurrence window sees P H, which has no
         # diagonal and a one-way coupling there -- the Lanczos operator is no longer Hermitian on
         # the seed (review ledger C5). Re-cut each such unit's seeds by the window it runs under.
-        # Rank-local (the apply is local), so no collective is added.
+        # Collective on a distributed basis (_apply_transition_ops redistributes): safe because
+        # the per-state windows are built from globally reduced data, so every rank skips the
+        # same units.
         for u, unit in enumerate(units):
             if unit_restrictions[u] == group_restrictions[unit.group_i]:
                 continue
@@ -784,8 +787,9 @@ def _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_res
     A many-term operator (an XAS dipole, a NIXS or rotated-orbital operator) sends determinants on
     different ranks to the same seed row, so on a distributed ``basis`` each rank holds partial
     amplitudes: the ``slaterWeightMin`` cut is then made on the summed rows
-    (:func:`apply_and_redistribute`, ``config.MATVEC_PRUNE``), and the seeds come back
-    owner-distributed. Replicated decision; collective when it redistributes.
+    (:func:`apply_and_redistribute`, ``config.MATVEC_PRUNE``; at cutoff 0 that drops the rows whose
+    partials cancel), and the seeds come back owner-distributed. Replicated decision; collective
+    when it redistributes.
     """
     # The thermal states share their support, so each transition operator is applied to
     # the whole block at once (term/sign/accumulator work once per determinant, near-flat

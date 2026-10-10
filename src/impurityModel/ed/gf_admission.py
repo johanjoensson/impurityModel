@@ -25,6 +25,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
+from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, matvec_cut_after_sum
 from impurityModel.ed.gf_primitives import _allreduced_col_norms2, _CappedBasisProxy, residual_blocks
 from impurityModel.ed.manybody_basis import collective_first_keys, collective_top_k_bounds
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
@@ -87,15 +88,26 @@ def _frozen_proxy(tmp_basis):
     return proxy
 
 
-def start_set(A_op, seeds_block, seeds, x0, carry_tol, comm, n_ops, shell_tol=0.0):
+def start_set(A_op, seeds_block, seeds, x0, carry_tol, comm, n_ops, shell_tol=0.0, basis=None):
     """Determinants of the point's starting basis: the seeds, their first H-shell, and the warm-start
     determinants with ``|x0_D| / ||x0|| >= carry_tol`` (scored at this point's own ``x0``, so a
     determinant that mattered at the previous frequency but not this one is dropped).
 
     The first shell is kept whole unless ``shell_tol`` > 0, which drops its rows with amplitude below
-    ``shell_tol * ||seed_j||`` (``GF_ADMIT_FIRST_SHELL_TOL``)."""
-    keys = {key for psi in seeds for key in psi.keys()}
-    shell = A_op.apply_block(seeds_block, 0.0)
+    ``shell_tol * ||seed_j||`` (``GF_ADMIT_FIRST_SHELL_TOL``).
+
+    With ``basis`` distributed (``config.MATVEC_PRUNE=after_sum``), the seeds and the shell are summed
+    over the ranks first (routed by owner on ``basis``, whose content is irrelevant), so the keys, the
+    seed norms and the shell cut see whole amplitudes, and a row whose partials cancel is not kept.
+    Collective then."""
+    after = basis is not None and matvec_cut_after_sum(basis.is_distributed, 0.0)
+    if after:
+        seeds_block = basis.redistribute_block(seeds_block)
+        seeds_block.prune_rows(0.0)
+        keys = set(seeds_block.keys())
+    else:
+        keys = {key for psi in seeds for key in psi.keys()}
+    shell = apply_and_redistribute(A_op, seeds_block, basis, 0.0, after)
     if shell_tol > 0.0:
         inv_seed = _inverse_norms(_allreduced_col_norms2(seeds_block, n_ops, comm))
         scaled_shell = shell.combine_columns(np.diag(inv_seed).astype(complex))
@@ -188,6 +200,7 @@ def solve_point_outer(
         comm,
         n_ops,
         config.GF_ADMIT_FIRST_SHELL_TOL.get(),
+        basis=tmp_basis,
     )
     tmp_basis.clear()
     tmp_basis.add_states(sorted(keys))

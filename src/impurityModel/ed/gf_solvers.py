@@ -1204,10 +1204,11 @@ def block_Green_bicgstab(
                         # Rebuild-and-discard: the basis holds only this point's seed + warm-start
                         # support; redistribute_psis aligns the amplitudes to the fresh ownership
                         # layout (the solver assumes its states are distributed per `basis`).
-                        carried = seeds + x0
+                        # Summed over the ranks before their keys enter the basis (routing is by
+                        # owner, not by membership), so a row whose partials cancel is not kept.
                         tmp_basis.clear()
-                        tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
-                        redistributed = tmp_basis.redistribute_psis(*carried)
+                        redistributed = tmp_basis.redistribute_psis(*(seeds + x0))
+                        tmp_basis.add_states(sorted({state for psi in redistributed for state in psi.keys()}))
                         seeds = list(redistributed[:n_ops])
                         x0 = list(redistributed[n_ops : 2 * n_ops])
                         if seed_size is None:

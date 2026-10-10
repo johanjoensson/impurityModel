@@ -17,6 +17,7 @@ from impurityModel.ed.BiCGSTAB import _make_matmat, block_bicgstab
 from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, block_apply, matvec_cut_after_sum
 from impurityModel.ed.chebyshev_filter import chebyshev_apply, partition_of_unity
+from impurityModel.ed.gf_admission import start_set
 from impurityModel.ed.gf_primitives import _CappedBasisProxy
 from impurityModel.ed.gf_solvers import block_Green
 from impurityModel.ed.gf_units import enumerate_gf_units
@@ -65,10 +66,9 @@ def _states():
 
 
 def _rows(block):
-    """{determinant: (amplitude per column)} of a shared-support block."""
-    cols = [{k: complex(a[0]) for k, a in c.items()} for c in block.to_states()]
-    keys = sorted({k for c in cols for k in c})
-    return {k: tuple(c.get(k, 0j) for c in cols) for k in keys}
+    """{determinant: (amplitude per column)} of a shared-support block, every row it holds -- an
+    all-zero row included, which a to_states() round trip would hide."""
+    return {k: tuple(complex(a) for a in row) for k, row in block.items()}
 
 
 def _gathered(rows, comm):
@@ -92,10 +92,10 @@ def _assert_rows_match(got, want):
         np.testing.assert_allclose(got[k], want[k], rtol=1e-12, atol=1e-14)
 
 
-def test_the_cut_is_after_the_sum_only_when_something_is_summed(monkeypatch):
+def test_the_cut_is_after_the_sum_whenever_something_is_summed(monkeypatch):
     assert matvec_cut_after_sum(True, 0.1)
+    assert matvec_cut_after_sum(True, 0.0)  # the exact-zero cut: rows whose partials cancel
     assert not matvec_cut_after_sum(False, 0.1)  # no redistribute: the apply sees whole sums
-    assert not matvec_cut_after_sum(True, 0.0)  # nothing to cut
     monkeypatch.setenv("MATVEC_PRUNE", "before_sum")
     assert not matvec_cut_after_sum(True, 0.1)
 
@@ -367,3 +367,76 @@ def test_before_sum_cuts_each_ranks_seed_partials(cutoff, monkeypatch):
     monkeypatch.setenv("MATVEC_PRUNE", "before_sum")
     with pytest.raises(AssertionError):
         _assert_columns_match(_seed_columns(MPI.COMM_WORLD, cutoff), _seed_columns(None, cutoff), 1e-13)
+
+
+# --- Exact cancellation: a determinant reached from rows on two ranks whose partials cancel. A serial
+# apply never emits it; after the sum it is dropped too, at any cutoff including 0. ----------------
+
+
+def _cancelling_seed():
+    """``|A> - |B>`` with ``<D|H|A> == <D|H|B>`` for some ``D``: H takes the seed's rows to ``D`` with
+    amplitudes that cancel exactly. Returns the two rows and the cancelled determinants."""
+    h, dets = _siam_6(), [_det(c) for c in itertools.combinations(range(6), 3)]
+    for a, b in itertools.combinations(dets, 2):
+        ha = {k: complex(v[0]) for k, v in h.apply_block(ManyBodyState.from_states([ManyBodyState({a: 1.0})])).items()}
+        hb = {k: complex(v[0]) for k, v in h.apply_block(ManyBodyState.from_states([ManyBodyState({b: 1.0})])).items()}
+        cancelled = [k for k in ha if k in hb and k not in (a, b) and ha[k] == hb[k]]
+        if cancelled:
+            return (a, 1.0 + 0j), (b, -1.0 + 0j), cancelled
+    raise AssertionError("the model has no exactly cancelling pair")
+
+
+def _split_seed(comm, sign=-1.0):
+    """``|A> + sign |B>`` (the cancelling pair) with its two rows on ranks 0 and 1 (serial: both rows).
+    At ``sign = -1`` the shared images cancel; at ``+1`` they add up."""
+    row_a, (b, amp_b), _ = _cancelling_seed()
+    row_b = (b, -sign * amp_b)
+    rows = [row for owner, row in ((0, row_a), (1, row_b)) if comm is None or owner == comm.rank]
+    return ManyBodyState.from_states([ManyBodyState(dict(rows), width=1)])
+
+
+@pytest.mark.mpi
+@_multirank
+def test_a_row_whose_partials_cancel_is_dropped_after_the_sum():
+    comm = MPI.COMM_WORLD
+    *_, cancelled = _cancelling_seed()
+    reference = _rows(_siam_6().apply_block(_split_seed(None), 0.0))
+    assert not set(cancelled) & set(reference)
+    got = _gathered(_rows(apply_and_redistribute(_siam_6(), _split_seed(comm), _sector(comm), 0.0, True)), comm)
+    _assert_rows_match(got, reference)
+
+
+def _start_keys(comm, seeds_block, shell_tol):
+    basis = _sector(comm) if comm is not None else None
+    seeds = seeds_block.to_states()
+    x0 = [ManyBodyState(width=1) for _ in seeds]
+    keys = start_set(_siam_6(), seeds_block, seeds, x0, 1e-3, comm, len(seeds), shell_tol, basis=basis)
+    if comm is None:
+        return set(keys)
+    out = set()
+    for part in comm.allgather(set(keys)):
+        out |= part
+    return out
+
+
+@pytest.mark.mpi
+@_multirank
+def test_the_admission_start_set_cuts_the_summed_shell():
+    """GF_BICGSTAB_ADMISSION=outer with GF_ADMIT_FIRST_SHELL_TOL: the shared image of ``|A> + |B>``
+    gets 0.5 / sqrt(2) = 0.35 of the seed norm from each rank and 0.71 in total, so a 0.5 cut keeps
+    it only on the sum."""
+    comm = MPI.COMM_WORLD
+    *_, shared = _cancelling_seed()
+    serial = _start_keys(None, _split_seed(None, sign=+1.0), 0.5)
+    assert set(shared) <= serial
+    assert _start_keys(comm, _split_seed(comm, sign=+1.0), 0.5) == serial
+
+
+@pytest.mark.mpi
+@_multirank
+def test_the_admission_start_set_drops_a_cancelled_row():
+    comm = MPI.COMM_WORLD
+    *_, cancelled = _cancelling_seed()
+    serial = _start_keys(None, _split_seed(None), 0.0)
+    assert not set(cancelled) & serial
+    assert _start_keys(comm, _split_seed(comm), 0.0) == serial
