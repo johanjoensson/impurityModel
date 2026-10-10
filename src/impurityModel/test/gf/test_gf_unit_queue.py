@@ -148,7 +148,8 @@ def test_queued_units_get_one_cap_whatever_color_ran_them(monkeypatch, scheduler
         caps = {cap for _, cap in results}
         widths = {size for size, _ in results}
         if same_cap:
-            assert caps == {500.0}, results
+            # Every color is sized for the narrowest: two equal-width colors share the ranks.
+            assert caps == {500.0 * (MPI.COMM_WORLD.size // 2)}, results
         elif len(widths) > 1:
             assert len(caps) > 1, f"premise: static caps each color by its own width, got {results}"
 
