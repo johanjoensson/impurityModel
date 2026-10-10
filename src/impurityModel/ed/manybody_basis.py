@@ -93,6 +93,25 @@ def collective_first_keys(local_keys, n, comm):
     return chosen.intersection(mine)
 
 
+def collective_top_k_mask(scores, keys, k, comm):
+    """Local mask of the global top ``k`` of ``scores`` (``keys``: this rank's determinants, aligned).
+
+    Whole near-tie groups by score, then the boundary group in determinant-key order
+    (:func:`collective_top_k_bounds`, :func:`collective_first_keys`): exactly ``k`` admitted (fewer
+    only when fewer scores are positive), the same set whatever the rank count. Each determinant must
+    have one owner. **Collective on** ``comm``: call unconditionally on all ranks.
+    """
+    scores = np.asarray(scores, dtype=float)
+    above, boundary, n_fill = collective_top_k_bounds(scores, k, comm)
+    out = scores > above
+    group = np.nonzero((scores > boundary) & (scores <= above))[0]
+    chosen = collective_first_keys([bytes(keys[i].to_bytearray()) for i in group] if n_fill > 0 else [], n_fill, comm)
+    for i in group:
+        if bytes(keys[i].to_bytearray()) in chosen:
+            out[i] = True
+    return out
+
+
 def _bisect_count_cutoff(scores, k, comm):
     """Fixed-count geometric bisection: the cutoff with at most ``k`` of ``scores`` above it."""
     mpi = comm is not None and comm.size > 1

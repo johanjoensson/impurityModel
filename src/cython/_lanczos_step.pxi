@@ -6,6 +6,24 @@
 # reorthogonalization mode (NONE/PARTIAL/FULL/PERIODIC/SELECTIVE) and the EA16
 # shrinking-block deflation policy are dispatched from here.
 
+def _keep_global_top(st, max_size, comm):
+    """Keep the ``max_size`` largest-amplitude rows of the distributed width-1 state ``st``, in place.
+
+    Exact and layout-independent (:func:`manybody_basis.collective_top_k_mask`: whole near-tie groups,
+    then the boundary group in key order), so the kept rows are the same at every rank count. It
+    replaced a serial ``truncate`` (ties kept) against a multi-rank bisection to an absolute 1e-8 on
+    ``|amp|^2``, which kept different rows by rank count. Collective on ``comm``.
+    """
+    rows = list(st.items())
+    n_total = comm.allreduce(len(rows), op=MPI.SUM) if comm is not None else len(rows)
+    if n_total <= max_size:
+        return
+    keys = [key for key, _amp in rows]
+    scores = np.array([abs(complex(amp[0])) ** 2 for _key, amp in rows], dtype=float)
+    mask = collective_top_k_mask(scores, keys, int(max_size), comm)
+    st.keep_rows(ManyBodyState.from_keys([keys[i] for i in np.flatnonzero(mask)]))
+
+
 def block_lanczos_step_cy(
     h_op,
     q_prev,
@@ -301,7 +319,7 @@ def block_lanczos_step_cy(
     if truncation_threshold > 0:
         _q_states = q_next.to_states()
         for st in _q_states:
-            apply_global_truncation(st, truncation_threshold, comm if mpi else None)
+            _keep_global_top(st, truncation_threshold, comm if mpi else None)
         q_next = ManyBodyState.from_states(_q_states)
         did_truncate = True
 

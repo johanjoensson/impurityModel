@@ -1,4 +1,5 @@
-"""Walks that grow a basis from images must not depend on how the determinants are spread over ranks.
+"""Walks that grow a basis from images, and the Lanczos step's global truncation, must not depend on how
+the determinants are spread over ranks.
 
 ``Basis.expand`` and the CIPSI symmetry closure discover determinants wave by wave. With a rank-local
 membership test (``contains_local``) a rank treated a determinant another rank owns as new: it walked
@@ -8,13 +9,15 @@ to their owners first. The oracle is the serial run.
 """
 
 import hashlib
+import itertools
 
 import numpy as np
 import pytest
 from mpi4py import MPI
 
+from impurityModel.ed.BlockLanczos import _keep_global_top
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
 _multirank = pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs determinants owned by more than one rank")
 
@@ -97,3 +100,37 @@ def test_new_owned_keys_reports_each_new_determinant_once_by_its_owner():
 
     excluded = basis.new_owned_keys(candidates, exclude=mine)
     assert comm.allreduce(len(excluded), op=MPI.SUM) == 0
+
+
+def _tied_state():
+    """30 determinants of the 12-orbital model in groups of 5 equal amplitudes."""
+    dets = [_det(o) for o in itertools.islice(itertools.combinations(range(12), 6), 30)]
+    return {d: complex(1.0 + i // 5) for i, d in enumerate(dets)}
+
+
+def _top_by_oracle(amps, k):
+    """Largest |amp| first, equal ones in determinant-key order."""
+    ranked = sorted(amps, key=lambda d: (-abs(amps[d]), bytes(d.to_bytearray())))
+    return {bytes(d.to_bytearray()) for d in ranked[:k]}
+
+
+@pytest.mark.parametrize("k", [3, 5, 12, 29])
+def test_keep_global_top_is_the_exact_top_k_with_ties_in_key_order(k):
+    amps = _tied_state()
+    st = ManyBodyState(dict(amps), width=1)
+    _keep_global_top(st, k, None)
+    assert {bytes(d.to_bytearray()) for d in st.keys()} == _top_by_oracle(amps, k)
+
+
+@pytest.mark.mpi
+@_multirank
+@pytest.mark.parametrize("k", [3, 5, 12, 29])
+def test_keep_global_top_does_not_depend_on_the_rank_count(k):
+    """The Lanczos step's truncation_threshold: the same rows kept on any layout (owner-distributed)."""
+    comm = MPI.COMM_WORLD
+    amps = _tied_state()
+    basis = _basis("two", comm)
+    (st,) = basis.redistribute_psis(ManyBodyState(dict(amps) if comm.rank == 0 else {}, width=1))
+    _keep_global_top(st, k, comm)
+    kept = {bytes(d.to_bytearray()) for part in comm.allgather(list(st.keys())) for d in part}
+    assert kept == _top_by_oracle(amps, k)

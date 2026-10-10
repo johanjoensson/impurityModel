@@ -51,9 +51,9 @@ Reorthogonalization modes (``Reort`` enum from ``lanczos.py``):
 
 import numpy as np
 from impurityModel.ed import config
+from impurityModel.ed.manybody_basis import collective_top_k_mask
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
-    apply_global_truncation,
     block_add_scaled_cy,
     block_inner_cy,
     SparseKrylovDense,

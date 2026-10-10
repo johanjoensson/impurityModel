@@ -17,9 +17,8 @@ from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.manybody_basis import (
     Basis,
-    collective_first_keys,
     collective_mass_cutoff,
-    collective_top_k_bounds,
+    collective_top_k_mask,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
@@ -1041,24 +1040,12 @@ class CIPSISolver:
     def _top_k_mask(self, scores, keys, k):
         """Local mask of the global top ``k`` of ``scores`` (``keys``: this rank's determinants, aligned).
 
-        Whole near-tie groups by score, then the boundary group in determinant-key order
-        (:func:`~impurityModel.ed.manybody_basis.collective_top_k_bounds`,
-        :func:`~impurityModel.ed.manybody_basis.collective_first_keys`): exactly ``k`` admitted (fewer
-        only when fewer scores are positive), the same set whatever the rank count. This replaced a
-        bisection that left near-tie groups out (under-filling the cap) with an all-tied fallback that
-        picked group members by exact raw equality, i.e. by rounding. Collective on ``basis.comm``."""
-        comm = self.basis.comm if self.basis.is_distributed else None
-        scores = np.asarray(scores, dtype=float)
-        above, boundary, n_fill = collective_top_k_bounds(scores, k, comm)
-        out = scores > above
-        group = np.nonzero((scores > boundary) & (scores <= above))[0]
-        chosen = collective_first_keys(
-            [bytes(keys[i].to_bytearray()) for i in group] if n_fill > 0 else [], n_fill, comm
-        )
-        for i in group:
-            if bytes(keys[i].to_bytearray()) in chosen:
-                out[i] = True
-        return out
+        :func:`~impurityModel.ed.manybody_basis.collective_top_k_mask` on the basis's communicator:
+        exactly ``k`` admitted (fewer only when fewer scores are positive), the same set whatever the
+        rank count. This replaced a bisection that left near-tie groups out (under-filling the cap)
+        with an all-tied fallback that picked group members by exact raw equality, i.e. by rounding.
+        Collective on ``basis.comm``."""
+        return collective_top_k_mask(scores, keys, k, self.basis.comm if self.basis.is_distributed else None)
 
     def _admit_top(self, scores, mask, max_new, keys):
         """Cap an importance-masked candidate set at the globally top ``max_new`` scores.
