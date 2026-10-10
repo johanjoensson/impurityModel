@@ -1234,67 +1234,35 @@ class CIPSISolver:
         new_Dj = set(itertools.compress(local_Djs, de2_mask))
 
         if gen_ops:
-            unexplored_list = sorted(new_Dj)
+            # Breadth-first over the generators, one wave at a time on every rank. Each wave's images
+            # are routed to their owners (Basis.new_owned_keys), which keep the ones neither in the
+            # basis nor found before; the next wave starts from those. A rank-local membership test
+            # (contains_local) treated a determinant another rank owns as new: the walk went on through
+            # it, so a multi-rank closure was a superset of the serial one, and ranks reaching the same
+            # image counted it once each toward n_new. Collective: the wave count is global, so every
+            # rank runs the same number of waves, and new_Dj stays owner-local (each determinant once).
+            # The 1000-row superpositions use hash-derived amplitudes (see _amplitude_from_hash) so
+            # images do not interfere; which rows share a chunk depends on the layout, but an image
+            # lost to cancellation below the 1e-12 noise cut would need a measure-zero coincidence.
             chunk_size = 1000
-
-            while unexplored_list:
-                chunk = unexplored_list[:chunk_size]
-                unexplored_list = unexplored_list[chunk_size:]
-
-                # Pseudo-random superpositions (derived from each determinant's hash, not
-                # Python's global `random` stream) avoid destructive interference the same
-                # way the diagonal probe above does, but deterministically: an unseeded
-                # `random.random()` here made which determinants this closure discovers --
-                # and hence the basis grown from them -- depend on run-to-run RNG state and
-                # on `new_Dj`'s (rank-local, insertion-order-dependent) set iteration order,
-                # the same reproducibility failure `_amplitude_from_hash` was introduced to
-                # close off elsewhere in this class.
-                # No MPI collective anywhere in this closure (each rank explores its own
-                # local_Djs independently), so ManyBodyState's width-0 polymorphic
-                # zero on an empty next_amps below is just a local falsy value, not the
-                # cross-rank deadlock hazard it is at a collective boundary.
-                chunk_state = ManyBodyState({state: _amplitude_from_hash(state.get_hash()) for state in chunk})
-
-                while chunk_state:
-                    # Collect into a plain dict and build the next ManyBodyState in
-                    # one bulk range-insert (its dict constructor's flat_map insert(begin,
-                    # end)) instead of `p` repeated single-key inserts: `operator[]` on a
-                    # missing key is a sorted-vector insert, so accumulating one
-                    # determinant at a time here was O(n^2) in the size of the closure
-                    # wave. Every determinant can only be discovered once across the
-                    # whole pass (the `state not in new_Dj` guard below), so no key here
-                    # is ever written twice -- batching changes nothing about which
-                    # (state, amp) pairs end up in the next wave, only how they're
-                    # assembled into it.
-                    next_amps = {}
+            frontier = sorted(new_Dj)
+            while True:
+                images = set()
+                for lo in range(0, len(frontier), chunk_size):
+                    chunk_state = ManyBodyState(
+                        {state: _amplitude_from_hash(state.get_hash()) for state in frontier[lo : lo + chunk_size]}
+                    )
                     for op in gen_ops:
-                        # Apply generator (cutoff=1e-12 to prune float noise)
-                        psi_op = applyOp_test(op, chunk_state, cutoff=1e-12)
-
-                        for state, _row in psi_op.items():
-                            # Skip determinants already IN THE BASIS as well as ones already
-                            # discovered in this pass. `_candidate_overlaps_and_energies` only
-                            # ever returns out-of-basis candidates, and `Basis.add_states` dedupes
-                            # against the same index, so an in-basis image admits nothing -- but
-                            # it still inflated `n_new` in `expand`, which is compared against the
-                            # `truncation_threshold`. That spuriously triggered a fixed-budget
-                            # cycle and made room by pruning genuinely important determinants for
-                            # candidates that were already there. Measured on a 12-orbital toy at
-                            # cap 120: E0 worse by 30x, and the final basis 94 determinants -- a
-                            # cap the run never actually reached.
-                            #
-                            # `contains_local`, never `in self.basis`: the latter runs a routed
-                            # global index query when the basis is distributed, and this closure
-                            # is rank-local (each rank walks its own `local_Djs`, so ranks reach
-                            # here a different number of times). A collective in here is the
-                            # deadlock CLAUDE.md's MPI rules describe. Distributed runs therefore
-                            # still over-count images owned by another rank -- an upper bound on
-                            # `n_new`, never an under-count, so the cap stays conservative.
-                            if state not in new_Dj and not self.basis.contains_local(state):
-                                new_Dj.add(state)
-                                next_amps[state] = _amplitude_from_hash(state.get_hash())
-
-                    chunk_state = ManyBodyState(next_amps)
+                        # cutoff=1e-12 prunes float noise
+                        images.update(applyOp_test(op, chunk_state, cutoff=1e-12).keys())
+                # Excluding the basis matters beyond the walk: an in-basis image admits nothing, but
+                # it inflated `n_new` in `expand`, which is compared against the `truncation_threshold`
+                # (a 12-orbital toy at cap 120: E0 worse by 30x, the final basis 94 determinants).
+                fresh = self.basis.new_owned_keys(images, exclude=new_Dj)
+                if self._allreduce_sum(len(fresh)) == 0:
+                    break
+                new_Dj |= fresh
+                frontier = sorted(fresh)
 
         if return_Hpsi_ref:
             return new_Dj, Hpsi_ref

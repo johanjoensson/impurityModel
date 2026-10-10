@@ -669,10 +669,28 @@ class Basis:
             return block
         return graph_alltoall_block(block, self.n_bytes, self.comm)
 
+    def new_owned_keys(self, keys, exclude=frozenset()):
+        """The determinants of ``keys`` that this rank owns and the basis does not hold yet.
+
+        ``keys`` may come from any rank, in any number of copies (e.g. the images a rank-local walk
+        reached). They are routed to their owners first, so the membership test is the global one
+        and every determinant is reported once, by its owner -- a rank-local ``contains_local`` test
+        treats a determinant another rank owns as new. ``exclude`` (owner-local) drops more, e.g. the
+        ones a walk has already found. **Collective** on a distributed basis.
+        """
+        if self.is_distributed:
+            routed = self.redistribute_block(ManyBodyState(dict.fromkeys(keys, 1.0), width=1))
+            keys = routed.keys()
+        return {key for key in keys if key not in exclude and not self.contains_local(key)}
+
     def expand(self, op, slaterWeightMin=0, max_it=5):
         """
         Expand the basis in place by repeatedly applying an operator to the
         basis states, thus generating new basis states.
+
+        Each wave's images are routed to their owners (:meth:`new_owned_keys`), so the walk, the new
+        determinants and their count against ``truncation_threshold`` are those of a serial run
+        whatever the rank count. Collective on a distributed basis.
 
         Parameters
         ----------
@@ -689,38 +707,29 @@ class Basis:
         # Unconditional (like set_restrictions): passing None clears any stale weighted
         # mask left on a reused operator object.
         op.set_weighted_restrictions(self.weighted_restrictions)
-        old_size = self.size - 1
 
-        it = 0
+        def global_count(n):
+            return self.comm.allreduce(n, op=MPI.SUM) if self.is_distributed else n
+
         max_inner_loops = 2
-
-        local_states = set(self.local_basis)
-        apply_h_to_these = local_states
-        while old_size < self.size and it < max(max_it // max_inner_loops, 1):
+        # Owner-local throughout: the frontier and each wave's new determinants live on their owners,
+        # so every count below is global by a plain sum and every break is taken on all ranks.
+        frontier = set(self.local_basis)
+        for _ in range(max(max_it // max_inner_loops, 1)):
+            pending = set()
             for _ in range(max_inner_loops):
-                new_local_states = set()
-                for state in apply_h_to_these:
-                    res = applyOp_test(
-                        op,
-                        ManyBodyState({state: 1}),
-                        cutoff=slaterWeightMin,
-                    )
-                    new_local_states |= set(res.keys()) - local_states
-                if len(new_local_states) == 0:
+                images = set()
+                for state in frontier:
+                    images.update(applyOp_test(op, ManyBodyState({state: 1}), cutoff=slaterWeightMin).keys())
+                fresh = self.new_owned_keys(images, exclude=pending)
+                if global_count(len(fresh)) == 0:
                     break
-                apply_h_to_these = new_local_states
-                local_states |= new_local_states
-            new_states = local_states - set(self.local_basis)
-            old_size = self.size
-
-            n_new_states = len(new_states)
-            if self.is_distributed:
-                n_new_states = self.comm.allreduce(n_new_states, op=MPI.SUM)
-            if self.size + n_new_states > self.truncation_threshold:
+                pending |= fresh
+                frontier = fresh
+            n_new_states = global_count(len(pending))
+            if n_new_states == 0 or self.size + n_new_states > self.truncation_threshold:
                 break
-            self.add_states(new_states)
-            apply_h_to_these = apply_h_to_these ^ (set(self.local_basis) - local_states)
-            it += 1
+            self.add_states(pending)
         if self.verbose and (self.comm is None or self.comm.rank == 0):
             print(f"After expansion, the basis contains {self.size} elements.")
 
