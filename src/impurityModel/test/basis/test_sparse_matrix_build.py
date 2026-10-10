@@ -159,3 +159,18 @@ def test_a_strided_walk_visits_exactly_the_requested_local_states():
         assert list(image.keys()) == list(full[i].keys())
         np.testing.assert_array_equal(np.asarray(image), np.asarray(full[i]))
     assert list(basis_transcription.iter_local_operator_images(basis, op, 0, indices=())) == []
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("serial", [True, False])
+def test_the_build_answers_the_gf_unit_queue_as_it_goes(monkeypatch, serial):
+    """The build of a frozen-basis CSR runs for minutes with no Lanczos block in it; on the rank
+    hosting the GF unit queue it must still answer the other colors' fetches. With one poke per
+    ket every local ket is a poke."""
+    monkeypatch.setattr(basis_transcription, "_QUEUE_POKE_KETS", 1)
+    pokes = []
+    monkeypatch.setattr(basis_transcription, "queue_progress", lambda: pokes.append(1))
+    comm = MPI.COMM_SELF if serial else MPI.COMM_WORLD
+    basis = _basis(_all_dets(), comm)
+    build_sparse_matrix(basis, _operator())
+    assert len(pokes) == len(basis.local_basis)

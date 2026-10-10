@@ -16,6 +16,7 @@ import scipy as sp
 from mpi4py import MPI
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, Row, applyOp, inner_multi
+from impurityModel.ed.work_queue import queue_progress
 
 
 def build_vector(
@@ -253,6 +254,13 @@ def _concat_consuming(chunks, dtype):
     return out
 
 
+#: Kets between two answers to the GF unit queue during the build (work_queue.queue_progress).
+#: A frozen-CSR build is one stretch of 4-12 minutes per capped SrMnO3 unit with no Lanczos
+#: block in it, and the per-block poke is the only other time rank 0 answers the other colors'
+#: fetches. On every other rank the poke is one list check.
+_QUEUE_POKE_KETS = 4096
+
+
 def build_sparse_matrix(basis, op: ManyBodyOperator, local_columns=False):
     """
     Get the operator as a sparse matrix in the current basis.
@@ -297,6 +305,8 @@ def build_sparse_matrix(basis, op: ManyBodyOperator, local_columns=False):
         keys_block = basis._keys
         n_local_keys = len(keys_block)
         for i, ket_state in enumerate(iter_local_operator_images(basis, op, 0)):
+            if i % _QUEUE_POKE_KETS == 0:
+                queue_progress()  # see _QUEUE_POKE_KETS
             ks = ket_state.keys()
             if not ks:
                 continue
@@ -330,6 +340,8 @@ def build_sparse_matrix(basis, op: ManyBodyOperator, local_columns=False):
                     break
                 column = position
                 position += 1
+                if column % _QUEUE_POKE_KETS == 0:
+                    queue_progress()  # see _QUEUE_POKE_KETS
                 ks = ket_state.keys()
                 if not ks:
                     continue
