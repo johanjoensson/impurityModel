@@ -694,7 +694,11 @@ def run_units_distributed(
             # work_queue.queue_progress once per block so other colors are not held up.
             dims = unit_sector_dimensions(unit_seeds, unit_windows, basis) if unit_windows is not None else None
             order = queue_order(unit_weights) if dims is None else queue_order(dims, tiebreak=unit_weights)
-            unit_queue = UnitQueue(basis.comm)
+            # The counter's host must be a color root: as a non-root it would wait in its color's
+            # Bcast for a root that waits for its answer. basis_split assigns colors by cumulative
+            # rank count and splits with key=rank, so rank 0 is the root of color 0.
+            assert basis.comm.rank != 0 or sub_rank == 0, "the queue host (rank 0) is not its color's root"
+            unit_queue = UnitQueue(basis.comm, n_units, is_client=sub_rank == 0)
             unit_indices = []
             position = np.zeros(1, dtype=np.int64)
             while True:
@@ -707,6 +711,9 @@ def run_units_distributed(
                 unit_indices.append(u)
                 local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
                 release_freed_heap()
+            # Rank 0 may run out of units while other colors are still mid-unit: it answers their
+            # remaining fetches here, before the collectives below, or they would wait forever.
+            unit_queue.finish()
             counts = np.zeros(n_colors, dtype=np.int64)
             if sub_rank == 0:
                 counts[unit_color] = len(unit_indices)

@@ -151,3 +151,37 @@ def test_queued_units_get_one_cap_whatever_color_ran_them(monkeypatch, scheduler
             assert caps == {500.0}, results
         elif len(widths) > 1:
             assert len(caps) > 1, f"premise: static caps each color by its own width, got {results}"
+
+
+def test_a_host_color_that_runs_out_first_still_answers_the_other_colors():
+    """Rank 0's color finishes its units at once while the others are still computing. Rank 0 must
+    keep answering their fetches before it enters the collectives that follow the loop; otherwise
+    they wait for a reply and rank 0 waits for them."""
+    basis, psi = _basis_and_seed()
+    n_units = 3 * MPI.COMM_WORLD.size
+
+    def kernel(split_basis, u, seeds):
+        if MPI.COMM_WORLD.rank != 0 and split_basis.comm.rank == 0:
+            time.sleep(0.05)
+        split_basis.comm.Barrier()  # the whole color waits for its root, as a real kernel does
+        return u
+
+    results = run_units_distributed(basis, [[psi]] * n_units, np.ones(n_units), kernel)
+    if MPI.COMM_WORLD.rank == 0:
+        assert results == list(range(n_units))
+
+
+@pytest.mark.skipif(MPI.COMM_WORLD.size < 3, reason="needs a color wider than one rank")
+def test_only_color_roots_are_counted_as_queue_clients():
+    """With two units on three or more ranks a color is wider than one rank, and only its root
+    fetches. Counting its other ranks as clients would leave rank 0 waiting for fetches that never
+    come."""
+    basis, psi = _basis_and_seed()
+
+    def kernel(split_basis, u, seeds):
+        return (u, split_basis.comm.size)
+
+    results = run_units_distributed(basis, [[psi], [psi]], np.ones(2), kernel)
+    if MPI.COMM_WORLD.rank == 0:
+        assert [u for u, _ in results] == [0, 1]
+        assert max(size for _, size in results) > 1, f"premise: a color wider than one rank, got {results}"

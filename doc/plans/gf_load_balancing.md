@@ -34,9 +34,17 @@ colour). Each run replays its own walls through list scheduling (`work_queue.que
 
 ## Counter progress (measured 2026-10-07)
 
-The counter is an int64 in an RMA window on rank 0, taken with `Fetch_and_op`. In the measurement
+The counter was an int64 in an RMA window on rank 0, taken with `Fetch_and_op`. In the measurement
 below, the host computed for 3.8 s without making any MPI call, as a 1-rank colour does for a whole
 unit.
+
+**2026-10-10: the RMA counter failed across nodes.** On arrhenius (Intel MPI over Slingshot, `cxi`,
+2 nodes x 64 ranks), every colour root on the second node failed its first `Fetch_and_op` with
+"Other MPI error" in `MPIDI_OFI_do_am_isend`. All the measurements here were taken on one node. The
+counter is now two-sided: a client sends a request to rank 0 and waits for the reply, and rank 0
+answers in `queue_progress`, in its own `fetch`, in `finish` (after its last unit, until every
+client has had its stop index) and in `free` (behind an `Ibarrier`, for the path where every rank
+raised). The progress rule below is unchanged: the host still has to poke.
 
 | transport | no poke | `Testall([])` | `Iprobe` on the window's comm | size-1 `Allreduce` |
 |---|---|---|---|---|
