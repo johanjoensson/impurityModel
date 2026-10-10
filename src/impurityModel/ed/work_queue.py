@@ -96,8 +96,8 @@ class UnitQueue:
     to come with :attr:`ABORTED` instead of a real index, so the other colors stop (and raise) at
     their next fetch rather than start units whose results nobody will collect.
 
-    ``max_wait`` is the longest single :meth:`fetch` on this rank, in seconds: a long wait means the
-    host computed without calling :func:`queue_progress`.
+    ``max_wait`` is the longest single :meth:`fetch` that returned a real index on this rank, in
+    seconds: a long wait means the host computed without calling :func:`queue_progress`.
     """
 
     #: Returned by :meth:`fetch` after the host failed. Negative, so callers must test for it
@@ -156,7 +156,10 @@ class UnitQueue:
             self._comm.Send(self._request, dest=HOST, tag=_REQUEST)
             self._comm.Recv(self._reply, source=HOST, tag=_REPLY)
             got = int(self._reply[0])
-        self.max_wait = max(self.max_wait, time.perf_counter() - start)
+        if 0 <= got < self._limit:
+            # Only a wait for real work costs anything: a color told to stop has nothing to do,
+            # and counting its wait would flag a missing poke where there is none.
+            self.max_wait = max(self.max_wait, time.perf_counter() - start)
         return got
 
     def finish(self) -> None:

@@ -142,3 +142,21 @@ def test_free_answers_a_client_still_fetching_when_every_rank_raises():
     assert not work_queue._hosted
     if comm.rank != work_queue.HOST:
         assert got == UnitQueue.ABORTED, "a failing host handed out a real unit"
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs a client other than the counter host")
+def test_a_wait_for_the_stop_index_is_not_reported_as_a_missing_poke():
+    """The queue is empty and the host is busy without poking: the clients wait, but for nothing
+    to do, so ``max_wait`` (read as "rank 0 ran this long without queue_progress") stays 0."""
+    comm = MPI.COMM_WORLD
+    queue = UnitQueue(comm, 0)
+    try:
+        if comm.rank == work_queue.HOST:
+            time.sleep(0.5)  # no poke
+        while queue.fetch() < 0:
+            pass
+        queue.finish()
+    finally:
+        queue.free()
+    assert queue.max_wait == 0.0
