@@ -81,7 +81,8 @@ class UnitQueue:
 
     ``limit`` is the number of real indices: a client stops fetching once it is handed an index
     ``>= limit``, and that is how the host knows a client is done. ``is_client`` says whether this
-    rank calls :meth:`fetch` (in the GF engine only the color roots do).
+    rank calls :meth:`fetch` (in the GF engine only the color roots do). ``start`` is the first
+    index handed out: the indices below it are the caller's to assign without messages.
 
     Construction and :meth:`free` are collective on ``comm`` (a ``Dup`` is created and freed);
     :meth:`fetch` and :meth:`finish` are not. Every rank calls :meth:`finish` after its last fetch
@@ -104,7 +105,7 @@ class UnitQueue:
     #: before using the value as an index (``order[-1]`` would silently run the last unit).
     ABORTED = -1
 
-    def __init__(self, comm, limit: int, is_client: bool = True):
+    def __init__(self, comm, limit: int, is_client: bool = True, start: int = 0):
         self._comm = comm.Dup()
         # A transport error on the counter must end the job with MPI's message. Returned as a
         # Python exception it would raise on one client only, and the host would then wait in
@@ -119,7 +120,7 @@ class UnitQueue:
         self._done_clients: set = set()
         self._aborting = False
         self._finished = False
-        self._next = 0
+        self._next = int(start)
         self._request = np.zeros(1, dtype=np.int64)
         self._reply = np.zeros(1, dtype=np.int64)
         self._status = MPI.Status()

@@ -698,11 +698,20 @@ def run_units_distributed(
             # Bcast for a root that waits for its answer. basis_split assigns colors by cumulative
             # rank count and splits with key=rank, so rank 0 is the root of color 0.
             assert basis.comm.rank != 0 or sub_rank == 0, "the queue host (rank 0) is not its color's root"
-            unit_queue = UnitQueue(basis.comm, n_units, is_client=sub_rank == 0)
+            # First round without messages: color c takes position c, and the counter starts after
+            # them. Fetched, every color's first request waited for rank 0's first poke (rank 0
+            # starts its own unit first), and which color got the head of the queue -- the
+            # heaviest units -- depended on arrival order.
+            n_first = min(n_colors, n_units)
+            unit_queue = UnitQueue(basis.comm, n_units, is_client=sub_rank == 0, start=n_first)
             unit_indices = []
             position = np.zeros(1, dtype=np.int64)
+            first_round = unit_color < n_first
             while True:
-                if sub_rank == 0:
+                if first_round:
+                    position[0] = unit_color  # replicated on the color: no Bcast needed, but harmless
+                    first_round = False
+                elif sub_rank == 0:
                     position[0] = unit_queue.fetch()
                 split_basis.comm.Bcast(position, root=0)
                 if position[0] == UnitQueue.ABORTED:

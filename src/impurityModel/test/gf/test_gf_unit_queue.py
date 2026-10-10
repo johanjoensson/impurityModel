@@ -207,3 +207,32 @@ def test_a_failing_host_color_stops_every_other_color():
         run_units_distributed(basis, [[psi]] * n_units, np.ones(n_units), kernel)
     assert len(started) <= 1, f"a color kept taking units after the host failed: {started}"
     assert not work_queue._hosted
+
+
+def test_the_first_round_gives_color_c_the_cth_unit_of_the_order():
+    """The head of the queue (the heaviest units) lands on the same colors in every run, and no
+    color waits for rank 0's first poke to start: color c runs position c of the dispatch order,
+    at once, while rank 0 computes its own first unit without poking."""
+    comm = MPI.COMM_WORLD
+    basis, psi = _basis_and_seed()
+    n_units = 3 * comm.size
+    weights = np.arange(n_units, dtype=float)  # dispatch order: n_units-1, n_units-2, ...
+    firsts = {}
+    entered = []
+    start = time.perf_counter()
+
+    def kernel(split_basis, u, seeds):
+        root = split_basis.comm.bcast(comm.rank, root=0)
+        if root not in firsts:
+            firsts[root] = u
+            entered.append(time.perf_counter() - start)
+        if root == 0:
+            time.sleep(1.0)  # no poke: a fetched first unit elsewhere would wait for this
+        return u
+
+    run_units_distributed(basis, [[psi]] * n_units, weights, kernel)
+    first_units = dict(kv for got in comm.allgather(list(firsts.items())) for kv in got)
+    roots = sorted(first_units)
+    assert [first_units[r] for r in roots] == [n_units - 1 - c for c in range(len(roots))]
+    if comm.rank != 0 and entered:
+        assert entered[0] < 0.5, f"this color started its first unit only after {entered[0]:.2f} s"
