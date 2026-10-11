@@ -150,6 +150,8 @@ def _block_green_group(
             "cap": cap,
             "seed_size": seed_size,
             "memory_frozen": bool(cap_info.get("memory_frozen", False)),
+            "stagnation_frozen": bool(cap_info.get("stagnation_frozen", False)),
+            "stagnation_leakage": cap_info.get("stagnation_leakage"),
             "csr_fallback": bool(cap_info.get("csr_fallback", False)),
             "csr_seconds": float(cap_info.get("csr_seconds", 0.0)),
         }
@@ -199,9 +201,10 @@ def _block_green_group(
         retained_display = f"{retained_size:,}" if retained_size is not None else "n/a"
         # n_blocks is then the restarted CSR recurrence's count, and csr= its wall time.
         csr = f", csr={cap_stats['csr_seconds']:.1f} s" if cap_stats.get("csr_fallback") else ""
+        stagnated = ", stagnation_frozen=True" if cap_stats.get("stagnation_frozen") else ""
         print(
             f"  {label}: excited basis {retained_display} determinants "
-            f"(cap={cap:,.0f}, cap_hit={cap_stats['cap_hit']}{csr}) n_blocks={n_blocks} "
+            f"(cap={cap:,.0f}, cap_hit={cap_stats['cap_hit']}{stagnated}{csr}) n_blocks={n_blocks} "
             f"color MAX VmHWM={format_bytes(peak)} ({peak_kind}) wall={seconds:.1f} s",
             flush=True,
         )

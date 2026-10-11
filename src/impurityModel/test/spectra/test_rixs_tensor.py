@@ -986,3 +986,22 @@ def test_rixs_windows_use_the_callers_occupation_cutoff(monkeypatch):
         occ_cutoff=1e-12,
     )
     assert seen == [1e-12], seen
+
+
+def test_the_rixs_intermediate_solves_answer_the_gf_unit_queue(monkeypatch):
+    """RIXS units go through the GF unit queue, and their intermediate solves bypass the
+    Green's-function monitor that pokes it once per block: the sector cache's closure walk and the
+    shifted-resolvent recurrence's per-block callback must poke instead."""
+    from impurityModel.ed import gf_shift_recycling
+    from impurityModel.ed import greens_function as gf
+
+    pokes = []
+    monkeypatch.setattr(gf_shift_recycling, "queue_progress", lambda: pokes.append(1))
+    gf_shift_recycling._no_convergence_check([], [], block_widths=[])
+    assert len(pokes) == 1, "the recurrence's per-block callback did not poke"
+
+    pokes.clear()
+    op = _model()
+    psis, _es, _dets, _states, _vecs = _thermal_states(op, 2)
+    gf.SectorResolventCache().try_eval(_basis([]), op, list(psis), WLOSS + 0.7 + 0.3j)
+    assert len(pokes) >= 2, "the closure walk and the eigendecomposition did not poke"

@@ -709,7 +709,7 @@ def test_split_basis_rejects_rank_divergent_packing_mpi(monkeypatch):
     ]
 
     # Rank 0 sees 2 colors, everyone else sees 1 -- a divergence in the color count.
-    def diverging_pack(weights, comm_size, split_threshold, max_colors=None):
+    def diverging_pack(weights, comm_size, split_threshold, max_colors=None, equal_widths=False):
         if comm.rank == 0:
             return [(0,), (1,)], np.array([1, comm_size - 1])
         return None, None
@@ -719,7 +719,7 @@ def test_split_basis_rejects_rank_divergent_packing_mpi(monkeypatch):
         bs.split_basis_and_redistribute_psi(basis, [1.0, 1.0], psi0)
 
     # And a same-length-but-different-values divergence.
-    def diverging_pack2(weights, comm_size, split_threshold, max_colors=None):
+    def diverging_pack2(weights, comm_size, split_threshold, max_colors=None, equal_widths=False):
         a = 1 if comm.rank == 0 else 2
         return [(0,), (1,)], np.array([a, comm_size - a])
 

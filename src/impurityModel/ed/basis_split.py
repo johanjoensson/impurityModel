@@ -20,7 +20,7 @@ from impurityModel.ed.mpi_comm import graph_alltoall
 
 
 def _pack_units(
-    weights, comm_size: int, split_threshold: float, max_colors: Optional[int] = None
+    weights, comm_size: int, split_threshold: float, max_colors: Optional[int] = None, equal_widths: bool = False
 ) -> tuple[Optional[list[tuple[int, ...]]], Optional[np.ndarray]]:
     """Pack work units into per-color bins and allocate ranks to each color.
 
@@ -53,6 +53,12 @@ def _pack_units(
         ``gf_units._colors_affording`` — every
         simultaneous color may fill the same ``truncation_threshold``, so memory can
         bound the concurrency below what the participation ratio allows).
+    equal_widths : bool, optional
+        Give every color ``comm_size // n_colors`` ranks (the first ``comm_size % n_colors``
+        colors one more) instead of apportioning by bin mass. For a pull queue
+        (:mod:`~impurityModel.ed.work_queue`), where any color may run any unit and a
+        mass-proportional width would bake the predicted costs back in. The color count and
+        the LPT subgroups are the same either way.
 
     Returns
     -------
@@ -89,6 +95,11 @@ def _pack_units(
         subgroups[c] += (int(u),)
         bin_mass[c] += normalized[u]
 
+    if equal_widths:
+        procs_per_color = np.full(n_colors, comm_size // n_colors, dtype=int)
+        procs_per_color[: comm_size % n_colors] += 1
+        return subgroups, procs_per_color
+
     # Largest-remainder rank apportionment on the bin masses (they sum to 1).
     raw = comm_size * bin_mass
     floors = np.floor(raw).astype(int)
@@ -118,7 +129,11 @@ def _pack_units(
 
 
 def split_basis_and_redistribute_psi(
-    basis, priorities: list[float] | np.ndarray, psis: Optional[list[ManyBodyState]], max_colors: Optional[int] = None
+    basis,
+    priorities: list[float] | np.ndarray,
+    psis: Optional[list[ManyBodyState]],
+    max_colors: Optional[int] = None,
+    equal_widths: bool = False,
 ) -> tuple[list[int], list[int], int, list[int], Basis, Optional[list[ManyBodyState]]]:
     """Split the basis and redistribute wavefunctions over a split communicator.
 
@@ -131,6 +146,8 @@ def split_basis_and_redistribute_psi(
     max_colors : int, optional
         Hard cap on the number of colors (see :func:`_pack_units`); must be identical
         on every rank of ``basis.comm``.
+    equal_widths : bool, optional
+        Equal rank counts per color (see :func:`_pack_units`); must be identical on every rank.
 
     Returns
     -------
@@ -155,7 +172,7 @@ def split_basis_and_redistribute_psi(
     # All packing math (participation-ratio color cap, LPT unit packing,
     # largest-remainder rank apportionment) lives in _pack_units; it is pure and
     # deterministic, so every rank computes the identical packing.
-    subgroups, procs_per_color = _pack_units(priorities, comm.size, basis.split_threshold, max_colors)
+    subgroups, procs_per_color = _pack_units(priorities, comm.size, basis.split_threshold, max_colors, equal_widths)
 
     # Every send/receive target below is derived from `procs_per_color`, so the packing
     # MUST be bit-identical on every rank. It is a pure function of (already Allreduced)

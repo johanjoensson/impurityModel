@@ -75,3 +75,32 @@ def test_gather_distributed_results_mpi():
             assert res[i] == float(i)
     else:
         assert res is None
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs a non-root color to report zero items")
+@pytest.mark.parametrize("is_array", [True, False])
+def test_a_color_with_zero_items_sends_nothing(is_array):
+    """A zero-count color must not leave a send behind for the next gather to receive.
+
+    Rank 0 skips receiving from a color with ``count == 0``; if that color's root sent its empty
+    result anyway, the message stayed queued and the *next* receive from that rank took it. A
+    pull-queue colour can legitimately finish with no units.
+    """
+    comm = MPI.COMM_WORLD
+    roots = list(range(comm.size))
+    empty_rank = comm.size - 1
+
+    def local(value):
+        if is_array:
+            return np.array([value], dtype=float) if value is not None else np.empty(0, dtype=float)
+        return [value] if value is not None else []
+
+    first = [0 if r == empty_rank else 1 for r in roots]
+    gather_distributed_results(
+        comm, 0, roots, first, local(None if comm.rank == empty_rank else 1.0), is_array=is_array
+    )
+    second = [1] * comm.size
+    res = gather_distributed_results(comm, 0, roots, second, local(42.0 + comm.rank), is_array=is_array)
+    if comm.rank == 0:
+        assert list(res) == [42.0 + r for r in roots]

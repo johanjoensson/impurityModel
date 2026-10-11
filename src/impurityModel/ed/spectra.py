@@ -750,6 +750,7 @@ def calc_spectra(
         group_restrictions,
         weighted_restrictions,
         slaterWeightMin,
+        basis=basis,
     )
     if seed_transform is not None:
         # One operator per group here, so group_i identifies the transition operator and
@@ -771,7 +772,9 @@ def calc_spectra(
         print_size=verbose,
     )
 
-    results = gf.run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose)
+    results = gf.run_units_distributed(
+        basis, unit_seeds, unit_weights, kernel, verbose=verbose, unit_windows=unit_restrictions
+    )
     if results is None:  # non-root rank of a distributed run
         empty = np.empty((0, 0), dtype=complex)
         return [empty] * (1 + len(extra_meshes)) if extra_meshes is not None else empty

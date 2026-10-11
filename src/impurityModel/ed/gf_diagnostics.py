@@ -535,6 +535,41 @@ def check_truncation_error_bound(max_bound: float, max_boundary: float) -> Diagn
     )
 
 
+def check_stagnation_freeze(retained, leakage, tol) -> Diagnostic:
+    r"""Report a unit frozen because the weight reaching new determinants had died away.
+
+    ``GF_STAGNATION_FREEZE`` switches a unit to the frozen :math:`PHP` CSR once the fraction of each
+    matvec's squared norm that lands outside the retained set ``P`` stays below ``tol`` for two windows.
+    The result is exact on ``P`` (causal, moments exact up to the freeze depth); what later blocks would
+    have admitted is missing, and the measured ``leakage`` is how much weight was arriving there when the
+    freeze was taken. It is a truncation the user asked for, so it is a ``WARN`` that carries its number
+    rather than an ``OK`` that hides it. It does not set ``needs_more_iterations`` or
+    ``needs_more_states``: neither more blocks nor more eigenstates widens ``P``.
+
+    Args:
+        retained: Global determinant count the unit was frozen at (the smallest over the block's units).
+        leakage: Fraction of the matvec weight on rows outside ``P`` in the last window (the largest over
+            the block's frozen units).
+        tol: ``GF_STAGNATION_FREEZE``.
+    """
+    return Diagnostic(
+        name="stagnation_freeze",
+        severity=Severity.WARN,
+        value=float(leakage) if leakage is not None else float("nan"),
+        threshold=float(tol) if tol is not None else float("nan"),
+        message=(
+            f"GF unit frozen at {int(retained or 0):,} determinants because the weight reaching new rows had "
+            f"fallen to {float(leakage) if leakage is not None else float('nan'):.1e} of each matvec "
+            "(GF_STAGNATION_FREEZE); G is exact on the retained subspace, and what later blocks would have "
+            "admitted is missing"
+        ),
+        suggestion=(
+            "lower GF_STAGNATION_FREEZE or unset it to recover the missing weight; compare Sigma with and "
+            "without it before trusting the saving"
+        ),
+    )
+
+
 def check_basis_truncation(
     cap_hit: bool, retained, cap, seed_frozen: bool = False, memory_frozen: bool = False
 ) -> Diagnostic:

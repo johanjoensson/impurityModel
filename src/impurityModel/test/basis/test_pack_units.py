@@ -135,3 +135,25 @@ def test_lpt_no_worse_than_round_robin():
         for i, u in enumerate(order):
             rr_mass[i % n_colors] += normalized[u]
         assert lpt_max <= np.max(rr_mass) + 1e-12
+
+
+@pytest.mark.parametrize("comm_size", [7, 10, 16])
+def test_equal_widths_ignore_bin_mass(comm_size):
+    # A dominant unit would take most ranks under mass apportionment; a pull queue's colors
+    # must not carry the predicted cost, so every color gets the same width (+1 for the first
+    # comm_size % n_colors).
+    weights = [1000.0, 1.0, 1.0, 1.0, 1.0]
+    mass_groups, mass_procs = _pack_units(weights, comm_size, 5.0)
+    groups, procs = _pack_units(weights, comm_size, 5.0, equal_widths=True)
+    _check_valid_packing(groups, procs, len(weights), comm_size)
+    assert groups == mass_groups, "the color count and LPT subgroups must not depend on the width rule"
+    n_colors = len(groups)
+    expected = [comm_size // n_colors + (1 if c < comm_size % n_colors else 0) for c in range(n_colors)]
+    assert procs.tolist() == expected
+    heavy = next(c for c, g in enumerate(groups) if 0 in g)
+    assert mass_procs[heavy] > procs[heavy], "premise: mass apportionment favours the dominant unit's color"
+
+
+def test_equal_widths_keep_the_unified_collapse():
+    assert _pack_units([1.0, 2.0], 4, 0.0, equal_widths=True) == (None, None)
+    assert _pack_units([5.0], 4, 1.0, equal_widths=True) == (None, None)

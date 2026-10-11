@@ -118,46 +118,6 @@ cdef class SlaterDeterminant:
         return copy(self)
 
 
-def apply_global_truncation(ManyBodyState st, int max_size, object comm):
-    """
-    Truncate the ManyBodyState across all MPI ranks such that the global total
-    number of Slater Determinants is at most max_size.
-    Uses a distributed binary search to find the exact amplitude threshold.
-    """
-    import math
-    from mpi4py import MPI
-
-    if comm is None or comm.Get_size() == 1 or max_size <= 0:
-        if max_size > 0:
-            st.truncate(max_size)
-        return
-
-    cdef int local_size = len(st)
-    cdef int global_size = comm.allreduce(local_size, op=MPI.SUM)
-    if global_size <= max_size:
-        return
-
-    # Distributed binary search for the threshold cutoff2
-    cdef double high = comm.allreduce(st.max_norm2(), op=MPI.MAX)
-    cdef double low = 0.0
-    cdef double mid
-    cdef int global_count
-
-    # Keep iterating until the range of possible values is small enough
-    while abs(high - low) > 1e-8:
-        mid = (low + high) * 0.5
-        global_count = comm.allreduce(st.count_above(mid), op=MPI.SUM)
-        # Keep too many, mid is lower than the required value
-        if global_count > max_size:
-            low = mid
-        # Keep too few, mid is higher than the required value
-        # If you keep just the right amount, keep increasing the lower bound until the range converges.
-        else:
-            high = mid
-
-    st.prune(math.sqrt(high))
-
-
 def inner(a, b):
     """
     Compute the inner product of many-body states: <a|b>.

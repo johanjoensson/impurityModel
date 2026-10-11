@@ -361,3 +361,24 @@ def test_block_gmres_mpi_matches_dense():
     if comm.rank == 0:
         X_ref = np.linalg.solve(H_mat, Y_dist)
         np.testing.assert_allclose(X_dist, X_ref, atol=1e-6)
+
+
+@pytest.mark.parametrize("solver", [block_bicgstab, block_gmres])
+@pytest.mark.parametrize("dense", [True, False])
+def test_every_matvec_answers_the_gf_unit_queue(monkeypatch, solver, dense):
+    """One frequency point's solve can run for minutes on the GF unit queue's host, which answers
+    the other colors' fetches only when it pokes the queue (work_queue.queue_progress)."""
+    from impurityModel.ed import BiCGSTAB
+
+    pokes = []
+    monkeypatch.setattr(BiCGSTAB, "queue_progress", lambda: pokes.append(1))
+    info = {}
+    if dense:
+        A, Y, _ = _resolvent_system()
+        solver(A, np.zeros_like(Y), Y, basis=None, slaterWeightMin=0.0, info=info)
+    else:
+        H, basis = _sparse_system()
+        ys = ManyBodyState.from_states(_rand_states(basis, np.random.default_rng(3), 2))
+        solver(H, ManyBodyState(width=2), ys, basis=basis, slaterWeightMin=0.0, info=info)
+    assert info["iterations"] > 0, "premise: the solve iterated"
+    assert len(pokes) >= info["iterations"], f"{len(pokes)} pokes for {info['iterations']} iterations"

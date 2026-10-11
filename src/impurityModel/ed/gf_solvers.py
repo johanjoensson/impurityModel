@@ -10,15 +10,13 @@ these kernels lives in :mod:`impurityModel.ed.gf_units`; the top-level assembly 
 in :mod:`impurityModel.ed.greens_function`.
 """
 
-import itertools
 import time
 from typing import Optional
 
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import config
-from impurityModel.ed import basis_transcription
+from impurityModel.ed import basis_transcription, config
 from impurityModel.ed.basis_transcription import (
     build_dense_matrix,
     build_sparse_matrix,
@@ -28,6 +26,7 @@ from impurityModel.ed.basis_transcription import (
 )
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
+from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
 from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.gf_admission import solve_point_outer
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
@@ -47,8 +46,9 @@ from impurityModel.ed.gf_primitives import (
 )
 from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
-from impurityModel.ed.memory_estimate import current_rss_bytes
+from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
+from impurityModel.ed.work_queue import queue_progress
 
 comm = MPI.COMM_WORLD
 rank = comm.rank
@@ -100,7 +100,8 @@ def block_Green(
         probe = last_q
         capped = False
         for _i in range(5):
-            probe = hOp.apply_block(probe, slaterWeightMin)
+            # Cut on the summed rows (MATVEC_PRUNE), so the discovered set does not depend on the rank count.
+            probe = apply_and_redistribute(hOp, probe, basis, slaterWeightMin, basis.is_distributed)
             basis.add_states(
                 {state for state in probe.support_keys(0.0) if not basis.contains_local(state)},
             )
@@ -287,9 +288,10 @@ def _array_block_lanczos(
         # (reduced to rank 0), which the kernel cannot store in its N_local-row buffer --
         # "could not broadcast (970,9) into (273,9)" on every colour spanning two or more ranks
         # (review ledger M1; RIXS R3 at 128 ranks on the cluster).
-        H = build_sparse_matrix(basis, hOp)
-        if comm is not None:
-            H = H[:, basis.local_indices]
+        # Only this rank's columns are ever built (`local_columns`), and the CSR the kernel wants is
+        # made here so the CSC is freed before the recurrence: the kernel's own `tocsr()` would
+        # otherwise run beside it, and this frame would keep both alive for the whole run.
+        H = build_sparse_matrix(basis, hOp, local_columns=True).tocsr()
         kernel_comm = comm
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0 until the continued fraction converges or
@@ -382,60 +384,102 @@ def _expansion_probe_columns(Q, widths, *, tail_only):
 
 #: Local determinants whose ``H`` images estimate the frozen CSR's fan-out for the memory check.
 _CSR_FANOUT_SAMPLE = 256
-#: Upper bound on the bytes one matrix element costs during and after the CSR build: the COO
-#: triplet (8 + 8 + 16), the CSC it becomes (8 + 16) and the rank's column slice of it (8 + 16).
-_CSR_BYTES_PER_ELEMENT = 80
+#: Upper bound on the bytes one stored matrix element costs at the build's peak, which is the
+#: conversion of the assembled CSC (8 + 16) to the CSR (8 + 16) the kernel runs on. Measured by
+#: ``test_the_peak_stays_below_the_budgeted_bytes_per_element`` (about 50 B/element, 83 before the
+#: CSC was assembled directly), so the test keeps this an upper bound.
+_CSR_BYTES_PER_ELEMENT = 60
 #: Upper bound on the bytes one element of a build batch holds before its lookup: the bra's key
 #: object plus its column and value.
 _CSR_BATCH_BYTES_PER_ELEMENT = 160
+#: GF_STAGNATION_FREEZE needs this many consecutive windows below its threshold: the weight reaching new
+#: rows is layered (a shell, then a gap, then the next shell), and one quiet window is not a stable fact.
+_STAGNATION_QUIET_WINDOWS = 2
+#: ...and is not taken once the unit's convergence measure is within this factor of its tolerance. The CSR
+#: restart recomputes every block from the seeds (build ~1000 s at 12M determinants), so past the point
+#: where fewer than ~40 sparse blocks remain (1e-9 -> ~1.6e-9 on the SMO dominant units) it loses.
+_STAGNATION_NEAR_END = 100.0
 #: Floor of the frozen-basis recurrence's first block budget (the measured SrMnO3 units converged
 #: in 174-429 blocks); the array kernel's doubling raises it when a unit needs more.
 _CSR_INITIAL_BLOCKS = 256
 
 
-def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm):
+def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None):
     """Collective: does the frozen ``P H P`` CSR fit the GF memory budget on every rank?
 
     No budget (the guard is off) always fits. Otherwise the per-rank cost is estimated from the
-    mean ``H`` image size of a sample of local determinants -- an upper bound on the in-``P``
+    mean ``H`` image size of a strided sample of local determinants -- an upper bound on the in-``P``
     nonzeros -- and compared with the budget left above the current RSS. Every rank enters the
-    one reduction whatever its own count (an empty rank estimates 0).
+    reductions whatever its own count (an empty rank estimates 0).
+
+    ``report``, if a dict, is filled with the numbers the decision used, reduced over ``comm`` (the
+    maxima: the decision is taken on the worst rank): ``n_local``, ``fanout``, ``need``, ``rss``
+    and ``budget``. It adds one reduction, so it is passed or not identically on every rank.
     """
     if memory_budget is None:
         return True
     n_local = len(frozen_basis.local_basis)
+    # A stride over the sorted local basis, not its first states: those share their leading-orbital
+    # occupation, so their fan-out is not the basis's.
+    positions = ()
+    if n_local:
+        positions = np.unique(np.linspace(0, n_local - 1, min(_CSR_FANOUT_SAMPLE, n_local)).astype(np.int64))
     sampled = elements = 0
-    for image in itertools.islice(iter_local_operator_images(frozen_basis, hOp, 0), _CSR_FANOUT_SAMPLE):
+    for image in iter_local_operator_images(frozen_basis, hOp, 0, indices=positions):
         sampled += 1
         elements += len(image)
     fanout = elements / sampled if sampled else 0.0
     batch = min(basis_transcription._SPARSE_BUILD_BATCH, n_local * fanout)
     need = n_local * fanout * _CSR_BYTES_PER_ELEMENT + batch * _CSR_BATCH_BYTES_PER_ELEMENT
-    over = current_rss_bytes() + need > memory_budget
+    rss = current_rss_bytes()
+    over = rss + need > memory_budget
     if comm is not None and comm.size > 1:
         over = comm.allreduce(bool(over), op=MPI.LOR)
+        if report is not None:
+            worst = np.array([n_local, fanout, need, rss], dtype=np.float64)
+            comm.Allreduce(MPI.IN_PLACE, worst, op=MPI.MAX)
+            n_local, fanout, need, rss = int(worst[0]), float(worst[1]), float(worst[2]), float(worst[3])
+    if report is not None:
+        report.update(n_local=n_local, fanout=fanout, need=need, rss=rss, budget=memory_budget)
     return not over
 
 
-def _frozen_csr_basis(proxy, basis, hOp, verbose):
+def _frozen_csr_basis(proxy, basis, hOp, verbose, reason=""):
     """Collective: the frozen retained set as a ``Basis`` if the ``P H P`` fallback should run, else ``None``.
 
     Declines when the freeze came from the memory guard -- RSS is already at budget then -- or when
-    the CSR would not fit the budget; the caller then resumes the sparse recurrence.
+    the CSR would not fit the budget; the caller then resumes the sparse recurrence. ``reason`` is
+    appended to the decision line (``" by stagnation"``): the proxy need not have frozen for this to
+    run, it only reads the retained mask.
     """
     if proxy.memory_frozen:
         return None
     comm = basis.comm
     frozen_basis = basis.clone_from_keys(proxy.retained_mask)
-    if _frozen_csr_fits(frozen_basis, hOp, proxy.memory_budget, comm):
-        return frozen_basis
+    report: dict = {}
+    fits = _frozen_csr_fits(frozen_basis, hOp, proxy.memory_budget, comm, report=report)
     if verbose and (comm is None or comm.rank == 0):
-        print(
-            f"GF basis frozen at {frozen_basis.size:,} determinants: the P H P matrix would not fit the "
-            "memory budget, so the recurrence continues on the sparse kernel.",
-            flush=True,
+        # What the decision used, so a decline can be checked against the measured peak instead of
+        # backed out of VmHWM afterwards (the iteration-2 declines at 6-7 ranks could not be).
+        used = (
+            f" [worst rank: {report['n_local']:,} local determinants x fan-out {report['fanout']:.1f} -> "
+            f"need {format_bytes(report['need'])} on top of RSS {format_bytes(report['rss'])}; "
+            f"budget {format_bytes(report['budget'])}]"
+            if report
+            else ""
         )
-    return None
+        if fits:
+            print(
+                f"GF basis frozen at {frozen_basis.size:,} determinants{reason}: the P H P matrix fits{used}.",
+                flush=True,
+            )
+        else:
+            print(
+                f"GF basis frozen at {frozen_basis.size:,} determinants{reason}: the P H P matrix would not fit "
+                f"the memory budget, so the recurrence continues on the sparse kernel{used}.",
+                flush=True,
+            )
+    return frozen_basis if fits else None
 
 
 def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, eval_meshes, info, verbose, blocks_hint):
@@ -559,6 +603,8 @@ def block_Green_sparse(
         cap_info["proxy"] = None
         cap_info["csr_fallback"] = False
         cap_info["csr_seconds"] = 0.0
+        cap_info["stagnation_frozen"] = False
+        cap_info["stagnation_leakage"] = None
 
     if N == 0 or n == 0:
         if cap_info is not None:
@@ -635,7 +681,17 @@ def block_Green_sparse(
     resolved_reort = _gf_reort(reort)
     # The frozen-basis CSR fallback: hand control back at the freeze. A krylov_dtype store stays
     # on the sparse kernel (the array kernel keeps its Krylov basis in complex128).
-    csr_candidate = config.GF_FROZEN_CSR.get() and krylov_dtype is None and isinstance(lanczos_basis, _CappedBasisProxy)
+    # Rank 0 reads the knobs and broadcasts them, so a malformed value fails on rank 0 alone and every rank
+    # takes the same branch below (this bcast is unconditional, after every rank-invariant early return).
+    knobs = (
+        (config.GF_FROZEN_CSR.get(), config.GF_STAGNATION_FREEZE.get(), config.GF_STAGNATION_WINDOW.get())
+        if rank == 0
+        else None
+    )
+    if comm is not None:
+        knobs = comm.bcast(knobs, root=0)
+    frozen_csr, stagnation_tol, stagnation_window = knobs
+    csr_candidate = frozen_csr and krylov_dtype is None and isinstance(lanczos_basis, _CappedBasisProxy)
     csr = None
 
     def _csr_green(frozen_basis, blocks_hint):
@@ -652,6 +708,25 @@ def block_Green_sparse(
             blocks_hint,
         )
 
+    # GF_STAGNATION_FREEZE: also switch to the CSR when the weight reaching new rows has died away.
+    if stagnation_tol is not None:
+        reason = None
+        if not csr_candidate:
+            reason = "it needs GF_FROZEN_CSR, a finite determinant cap (or a memory budget) and no krylov_dtype"
+        elif resolved_reort != Reort.NONE:
+            reason = f"it supports reort='none' only (this unit runs {resolved_reort.name.lower()})"
+        elif type(lanczos_basis) is not _CappedBasisProxy:
+            reason = "it needs the plain capped proxy (not GF_LANCZOS_ADMIT_TOL's pruned one)"
+        if reason is not None:
+            if verbose and rank == 0:
+                print(f"GF_STAGNATION_FREEZE is ignored for this unit: {reason}.", flush=True)
+            stagnation_tol = None
+        else:
+            lanczos_basis.track_leakage()
+    stagnation_leakage = None
+    quiet_windows = 0  # consecutive windows whose boundary weight stayed below the threshold
+    # Only a capped proxy tracks its support; with no cap and no budget `lanczos_basis` is the bare basis.
+    last_support = lanczos_basis.retained_size if stagnation_tol is not None else 0
     if csr_candidate:
         lanczos_basis.stop_on_freeze = True
         if lanczos_basis.frozen:
@@ -663,6 +738,10 @@ def block_Green_sparse(
             if frozen_basis is not None:
                 csr = _csr_green(frozen_basis, 0)
     while csr is None:
+        # Under GF_STAGNATION_FREEZE the recurrence runs a window at a time so the support can be read
+        # between rounds; a window shorter than the budget is not an exhausted budget (see below).
+        windowed = stagnation_tol is not None and not lanczos_basis.frozen
+        round_iters = min(budget, stagnation_window) if windowed else budget
         alphas, betas, Q, W, widths, status = block_lanczos_cy(
             psi_arr,
             hOp,
@@ -671,7 +750,7 @@ def block_Green_sparse(
             verbose=verbose,
             reort=resolved_reort,
             slaterWeightMin=slaterWeightMin,
-            max_iter=budget,
+            max_iter=round_iters,
             return_widths=True,
             return_status=True,
             alphas_init=alphas,
@@ -710,10 +789,50 @@ def block_Green_sparse(
         if status == "diverged":
             converged_flag[0] = False
             break
+        if windowed and round_iters < budget:
+            # A window ended; the budget is not exhausted. Has the weight reaching new rows died away?
+            new_weight, total_weight = lanczos_basis.pop_leakage()
+            leakage = new_weight / total_weight if total_weight > 0.0 else 0.0
+            retained = lanczos_basis.retained_size
+            if verbose and rank == 0:
+                print(
+                    f"GF support: {retained:,} determinants after {len(alphas)} blocks "
+                    f"(+{100.0 * (retained - last_support) / max(last_support, 1):.3f}%; weight on new rows "
+                    f"{leakage:.2e} over the last {stagnation_window})",
+                    flush=True,
+                )
+            last_support = retained
+            quiet_windows = quiet_windows + 1 if leakage < stagnation_tol else 0
+            if quiet_windows >= _STAGNATION_QUIET_WINDOWS and not lanczos_basis.frozen:
+                near_end = last_dg[0] is not None and last_dg[0] < _STAGNATION_NEAR_END * delta_min
+                if near_end:
+                    # Converged to within a couple of decades: the restart re-runs every block from the
+                    # seeds, so freezing now costs more than the sparse blocks still to come.
+                    if verbose and rank == 0:
+                        print(
+                            f"GF support stopped growing at {retained:,} determinants, but the unit is within "
+                            f"{_STAGNATION_NEAR_END:g}x of its tolerance: not freezing.",
+                            flush=True,
+                        )
+                    stagnation_tol = None
+                else:
+                    frozen_basis = _frozen_csr_basis(
+                        lanczos_basis, basis, hOp, verbose, reason=f" by stagnation (boundary weight {leakage:.1e})"
+                    )
+                    if frozen_basis is not None:
+                        lanczos_basis.freeze_for_stagnation()
+                        stagnation_leakage = leakage
+                        Q = W = None
+                        csr = _csr_green(frozen_basis, len(alphas))
+                    else:
+                        # Declined: the CSR does not fit, and a truncation that buys nothing is not taken.
+                        # Carry on sparse and unfrozen, and do not ask again.
+                        stagnation_tol = None
+            continue
         budget *= 2
 
     if isinstance(lanczos_basis, _CappedBasisProxy):
-        if lanczos_basis.cap_hit and verbose and rank == 0:
+        if (lanczos_basis.cap_hit or lanczos_basis.stagnation_frozen) and verbose and rank == 0:
             print(lanczos_basis.freeze_message(), flush=True)
         if cap_info is not None:
             cap_info["cap_hit"] = lanczos_basis.cap_hit
@@ -721,6 +840,8 @@ def block_Green_sparse(
             cap_info["memory_frozen"] = lanczos_basis.memory_frozen
             cap_info["proxy"] = lanczos_basis
             cap_info["csr_fallback"] = csr is not None
+            cap_info["stagnation_frozen"] = lanczos_basis.stagnation_frozen
+            cap_info["stagnation_leakage"] = stagnation_leakage
             if csr is not None:
                 cap_info["csr_seconds"] = csr[3]
         if csr is not None:
@@ -1035,6 +1156,9 @@ def block_Green_bicgstab(
                 hist_z: list[complex] = []
                 hist_x: list[list[ManyBodyState]] = []
                 for k in _bicgstab_sweep_order(z_shifted):
+                    # Once per frequency point: a GF unit-queue host lets pending fetches through
+                    # (work_queue; the Lanczos kernels do it once per block in the monitor).
+                    queue_progress()
                     z = complex(z_shifted[k])
                     x0 = _warm_start_extrapolation(hist_z, hist_x, z, n_ops)
                     if slaterWeightMin > 0:
@@ -1080,10 +1204,11 @@ def block_Green_bicgstab(
                         # Rebuild-and-discard: the basis holds only this point's seed + warm-start
                         # support; redistribute_psis aligns the amplitudes to the fresh ownership
                         # layout (the solver assumes its states are distributed per `basis`).
-                        carried = seeds + x0
+                        # Summed over the ranks before their keys enter the basis (routing is by
+                        # owner, not by membership), so a row whose partials cancel is not kept.
                         tmp_basis.clear()
-                        tmp_basis.add_states(sorted({state for psi in seeds + x0 for state in psi.keys()}))
-                        redistributed = tmp_basis.redistribute_psis(*carried)
+                        redistributed = tmp_basis.redistribute_psis(*(seeds + x0))
+                        tmp_basis.add_states(sorted({state for psi in redistributed for state in psi.keys()}))
                         seeds = list(redistributed[:n_ops])
                         x0 = list(redistributed[n_ops : 2 * n_ops])
                         if seed_size is None:

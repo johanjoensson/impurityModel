@@ -234,6 +234,83 @@ def test_admission_prefers_large_amplitude_rows():
     assert proxy.retained_size == 3
 
 
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_a_tied_slot_at_the_cap_goes_to_the_smaller_key(order):
+    """One slot left, two candidates with the same amplitude: the freeze admits the smaller key,
+    whatever the row order or rounding -- not neither (under-filling the cap), not whichever rounding
+    made larger."""
+
+    class _FakeBasis:
+        comm = None
+        is_distributed = False
+
+        def __init__(self, local):
+            self.local_basis = local
+            self.size = len(local)
+            self.n_bytes = 1
+
+        def redistribute_block(self, block):
+            return block
+
+    seed = _det([0, 1, 2])
+    tied = [_det([0, 1, 3]), _det([0, 1, 4])]
+    eps = np.finfo(float).eps
+    amps = [0.5 * (1 + eps), 0.5 * (1 - eps)]
+    proxy = _CappedBasisProxy(_FakeBasis([seed]), cap=2)
+    rows = {tied[i]: complex(amps[j]) for i, j in zip((0, 1), order)}
+    rows[_det([0, 2, 3])] = 0.1 + 0j
+    proxy.redistribute_block(ManyBodyState.from_states([ManyBodyState(rows)]))
+    smaller = min(tied, key=lambda k: bytes(k.to_bytearray()))
+    assert proxy.cap_hit and proxy.retained_size == 2
+    assert set(proxy.retained_keys()) == {seed, smaller}
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        # A row's amplitude summed over the chunks that reach it: A gets 0.3 + 0.3.
+        [{"A": 0.3, "B": 0.5}, {"A": 0.3, "C": 0.4}],
+        [{"A": 0.6}, {"B": 0.5, "C": 0.4}],
+        [{"A": 0.6, "B": 0.5, "C": 0.4}],
+    ],
+)
+def test_the_cap_crossing_step_is_decided_on_full_amplitudes_whatever_the_chunking(chunks):
+    """Admission at the cap ranks a row on its amplitude summed over the step's chunks.
+
+    Decided chunk by chunk (``GF_APPLY_ROW_CHUNKS`` > 1), the first chunking above froze on B (0.5 beats A's
+    partial 0.3), the others on A -- and since how rows split into chunks follows how they are spread over
+    ranks, a capped unit froze on a different set in every colour layout. Between ``begin_step`` and
+    ``finish_step`` the proxy sees the summed output, so all three keep A.
+    """
+
+    class _FakeBasis:
+        comm = None
+        is_distributed = False
+
+        def __init__(self, local):
+            self.local_basis = local
+            self.size = len(local)
+            self.n_bytes = 1
+
+        def redistribute_block(self, block):
+            return block
+
+    names = {"A": _det([0, 1, 3]), "B": _det([0, 1, 4]), "C": _det([0, 1, 5])}
+    seed = _det([0, 1, 2])
+    proxy = _CappedBasisProxy(_FakeBasis([seed]), cap=2)
+    proxy.begin_step()
+    wp = None
+    for chunk in chunks:
+        piece = proxy.redistribute_block(
+            ManyBodyState.from_states([ManyBodyState({names[k]: complex(v) for k, v in chunk.items()})])
+        )
+        wp = piece if wp is None else wp + piece
+    wp = proxy.finish_step(wp)
+    assert proxy.cap_hit and proxy.retained_size == 2
+    assert set(proxy.retained_keys()) == {seed, names["A"]}
+    assert len(wp) == 1  # the step's output was projected onto the retained set (A; the seed row is absent)
+
+
 @pytest.mark.mpi
 @pytest.mark.parametrize("frozen_csr", ["1", "0"])
 def test_capped_gf_mpi_matches_dense_php(frozen_csr, monkeypatch):
@@ -430,6 +507,70 @@ def test_the_csr_fit_check_compares_the_estimate_with_the_budget(monkeypatch):
     monkeypatch.setattr(gf_solvers, "current_rss_bytes", lambda: 10**9)
     assert gf_solvers._frozen_csr_fits(basis, _siam_6(), 2 * 10**9, None)
     assert not gf_solvers._frozen_csr_fits(basis, _siam_6(), 10**9 + 1, None)
+
+
+def test_the_csr_fit_check_reports_what_it_decided_on(monkeypatch):
+    from impurityModel.ed import gf_solvers
+
+    basis = _excited_basis(np.inf)
+    monkeypatch.setattr(gf_solvers, "current_rss_bytes", lambda: 10**9)
+    report = {}
+    assert gf_solvers._frozen_csr_fits(basis, _siam_6(), 10**10, None, report=report)
+    assert report["n_local"] == len(basis.local_basis)
+    assert report["rss"] == 10**9 and report["budget"] == 10**10
+    assert report["fanout"] > 0.0
+    batch = min(gf_solvers.basis_transcription._SPARSE_BUILD_BATCH, report["n_local"] * report["fanout"])
+    expected = (
+        report["n_local"] * report["fanout"] * gf_solvers._CSR_BYTES_PER_ELEMENT
+        + batch * gf_solvers._CSR_BATCH_BYTES_PER_ELEMENT
+    )
+    assert report["need"] == pytest.approx(expected)
+    # The guard off decides nothing, so there is nothing to report.
+    empty = {}
+    assert gf_solvers._frozen_csr_fits(basis, _siam_6(), None, None, report=empty)
+    assert empty == {}
+
+
+@pytest.mark.mpi
+def test_the_csr_fit_check_runs_on_every_rank_including_empty_ones(monkeypatch):
+    """A rank that owns no determinant still enters both reductions, and all ranks agree."""
+    from impurityModel.ed import gf_solvers
+
+    comm = MPI.COMM_WORLD
+    basis = _excited_basis(np.inf, comm=comm)
+    monkeypatch.setattr(gf_solvers, "current_rss_bytes", lambda: 10**9)
+    for budget in (10**10, 10**9 + 1):
+        report = {}
+        fits = gf_solvers._frozen_csr_fits(basis, _siam_6(), budget, comm, report=report)
+        assert len(set(comm.allgather(fits))) == 1, "the decision must be the same on every rank"
+        reports = comm.allgather(report)
+        assert all(r == reports[0] for r in reports), "the report is the reduced worst case, identical everywhere"
+        assert reports[0]["n_local"] == max(comm.allgather(len(basis.local_basis)))
+    assert fits is False and reports[0]["need"] > 1
+
+
+@pytest.mark.mpi
+def test_a_decision_line_is_printed_on_accept_and_decline(monkeypatch, capsys):
+    from impurityModel.ed import gf_solvers
+
+    comm = MPI.COMM_WORLD
+    basis = _excited_basis(np.inf, comm=comm)
+    monkeypatch.setattr(gf_solvers, "current_rss_bytes", lambda: 10**9)
+
+    class _Proxy:
+        memory_frozen = False
+        retained_mask = None
+
+    monkeypatch.setattr(type(basis), "clone_from_keys", lambda self, mask: self, raising=False)
+    for budget, phrase in ((10**10, "matrix fits"), (10**9 + 1, "would not fit")):
+        proxy = _Proxy()
+        proxy.memory_budget = budget
+        capsys.readouterr()
+        result = gf_solvers._frozen_csr_basis(proxy, basis, _siam_6(), True)
+        out = capsys.readouterr().out
+        assert (result is not None) == (phrase == "matrix fits")
+        if comm.rank == 0:
+            assert phrase in out and "worst rank" in out and "fan-out" in out
 
 
 @pytest.mark.mpi
