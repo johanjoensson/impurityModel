@@ -390,6 +390,7 @@ class LocalColumnOperator:
         self.shape = (int(shape[0]), int(shape[1]))
         self.segments = segments
         self._binding = None
+        self._flags = None
 
     @property
     def nnz(self):
@@ -401,16 +402,24 @@ class LocalColumnOperator:
 
     def owner_flags(self, counts, offsets):
         """Bool array over ranks: does any stored row belong to rank ``d`` (rows ``offsets[d]`` to
-        ``offsets[d] + counts[d]``)? Rank-local; used to build the matvec's exchange graph."""
-        if self._binding is not None:
-            raise RuntimeError("owner_flags needs global row indices; this operator is already bound to slots")
+        ``offsets[d] + counts[d]``)? Rank-local; used to build the matvec's exchange graph.
+
+        Cached per layout, so it can still be answered after :meth:`bind_slots` has replaced the
+        global rows (the kernel is re-run on the same operator when it doubles its block budget)."""
         counts = np.asarray(counts, dtype=np.int64)
         offsets = np.asarray(offsets, dtype=np.int64)
+        key = (tuple(counts.tolist()), tuple(offsets.tolist()))
+        if self._flags is not None and self._flags[0] == key:
+            return self._flags[1].copy()
+        if self._binding is not None:
+            raise RuntimeError("owner_flags needs global row indices; this operator is already bound to slots")
         present = np.zeros(len(counts), dtype=bool)
         for _, _, rows, _ in self.segments:
             if len(rows):
                 present[np.unique(np.searchsorted(offsets, rows, side="right") - 1)] = True
-        return present & (counts > 0)
+        flags = present & (counts > 0)
+        self._flags = (key, flags)
+        return flags.copy()
 
     def bind_slots(self, rank, offsets, destinations, send_row_offsets, total_send_rows):
         """Rewrite every row index, in place, as its row in the matvec's buffers.
