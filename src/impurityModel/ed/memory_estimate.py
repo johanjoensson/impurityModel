@@ -930,6 +930,19 @@ def available_bytes_per_rank(comm=None):
     node_bytes = _node_available_bytes()
     if comm is None or comm.size == 1:
         return node_bytes
+    return comm.allreduce(node_bytes // max(1, ranks_per_node(comm)), op=MPI.MIN)
+
+
+def ranks_per_node(comm):
+    """Ranks of ``comm`` sharing this rank's node (1 for ``None``), cached on the communicator.
+
+    .. warning:: **Collective on** ``comm`` the first time (a ``COMM_TYPE_SHARED`` split, freed at
+       once); afterwards it reads the cached attribute. A sub-communicator counts only its own
+       ranks on the node -- a GF colour's count is not the node's -- so callers that divide the
+       node's memory take it from the full communicator.
+    """
+    if comm is None or comm.size == 1:
+        return 1
     ranks_on_node = None if _RANKS_PER_NODE_KEYVAL is None else comm.Get_attr(_RANKS_PER_NODE_KEYVAL)
     if ranks_on_node is None:
         shared = comm.Split_type(MPI.COMM_TYPE_SHARED)
@@ -937,7 +950,7 @@ def available_bytes_per_rank(comm=None):
         shared.Free()
         if _RANKS_PER_NODE_KEYVAL is not None:
             comm.Set_attr(_RANKS_PER_NODE_KEYVAL, ranks_on_node)
-    return comm.allreduce(node_bytes // max(1, ranks_on_node), op=MPI.MIN)
+    return int(ranks_on_node)
 
 
 def absolute_rss_budget(safety, available, resident_bytes):

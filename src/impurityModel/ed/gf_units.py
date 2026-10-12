@@ -23,12 +23,14 @@ from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
+    _node_available_bytes,
     _resident_adjusted_budget,
     available_bytes_per_rank,
     current_rss_bytes,
     estimate_gf_peak_bytes,
     format_bytes,
     max_unit_dets_within_budget,
+    ranks_per_node,
     release_freed_heap,
 )
 from impurityModel.ed.mpi_comm import gather_distributed_results
@@ -295,6 +297,31 @@ def _set_gf_memory_guard(target, basis, budget, csr_budget=None):
     target.gf_memory_policy = "tighten" if _may_lower_gf_cap(basis) else "warn"
     target.gf_csr_memory_budget = csr_budget
     return saved
+
+
+def _refresh_unit_budgets(target, color_comm, node_ranks):
+    """Re-derive the guard's and the frozen-CSR decision's budgets on ``target`` from memory as it
+    is now, before the next unit.
+
+    The stage sizes both once, at GF entry. Between units the resident set ratchets (measured
+    +0.3-0.7 GiB per frozen-matrix unit on one SrMnO3 colour, heap ``release_freed_heap`` cannot
+    return), and under the queue a colour runs any number of units; the node's free memory moves with
+    every other colour on it too. The budgets are absolute shares, ``safety * (available +
+    resident)``, so re-sampled they follow the node: a colour whose neighbours grew gets less.
+
+    ``node_ranks`` is the ranks-per-node count of the *full* communicator (a colour counts only its
+    own ranks on the node). Collective on ``color_comm`` (one reduction); the cap is untouched.
+    Returns ``(available, resident)`` as used.
+    """
+    available = _node_available_bytes() // max(1, node_ranks)
+    resident = current_rss_bytes()
+    if color_comm is not None and color_comm.size > 1:
+        both = np.array([available, -resident], dtype=np.int64)
+        color_comm.Allreduce(MPI.IN_PLACE, both, op=MPI.MIN)
+        available, resident = int(both[0]), int(-both[1])
+    target.gf_memory_budget = _gf_memory_budget(available, resident)
+    target.gf_csr_memory_budget = _gf_csr_memory_budget(available, resident)
+    return available, resident
 
 
 def _restore_gf_memory_guard(target, saved):
@@ -609,6 +636,7 @@ def run_units_distributed(
                 print(line, flush=True)
             results = []
             for u in range(n_units):
+                _refresh_unit_budgets(basis, None, 1)
                 result = kernel(basis, u, unit_seeds[u])
                 release_freed_heap()  # see release_freed_heap: the next unit starts from a clean RSS
                 if reduce_fn is not None:
@@ -709,6 +737,7 @@ def run_units_distributed(
     # the split print recorded before this round, and round 7's own per-unit reporting never
     # fires when the kill lands inside the first unit.
     available_bytes = available_bytes_per_rank(basis.comm)
+    node_ranks = ranks_per_node(basis.comm)  # cached by the call above; per-unit budgets divide by it
     if verbose and basis.comm.rank == 0:
         # Derived from `unit_roots` (already rank-invariant, verified in
         # split_basis_and_redistribute_psi) rather than a fresh collective -- the same
@@ -821,6 +850,7 @@ def run_units_distributed(
                     break
                 u = int(order[position[0]])
                 unit_indices.append(u)
+                _refresh_unit_budgets(split_basis, split_basis.comm, node_ranks)
                 local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
                 release_freed_heap()
             # Rank 0 may run out of units while other colors are still mid-unit: it answers their
@@ -847,6 +877,7 @@ def run_units_distributed(
                 )
         else:
             for u in unit_indices:
+                _refresh_unit_budgets(split_basis, split_basis.comm, node_ranks)
                 local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
                 release_freed_heap()  # see release_freed_heap: the next unit starts from a clean RSS
         unit_indices_per_color = gather_distributed_results(

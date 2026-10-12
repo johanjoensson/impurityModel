@@ -58,3 +58,54 @@ def test_clones_and_copies_carry_the_csr_budget():
     basis.gf_csr_memory_budget = 12345
     assert basis.clone().gf_csr_memory_budget == 12345
     assert basis.copy().gf_csr_memory_budget == 12345
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("scheduler", ["static", "queue"])
+def test_the_budgets_are_re_derived_before_every_unit(monkeypatch, scheduler):
+    """The node's free memory shrinks from one unit to the next (as other colours grow); each unit
+    must see budgets derived from it then, not the ones the stage sized at entry."""
+    from mpi4py import MPI
+
+    from impurityModel.ed import memory_estimate as me
+    from impurityModel.ed.gf_units import run_units_distributed
+    from impurityModel.test.gf.test_gf_unit_queue import _basis_and_seed
+
+    monkeypatch.setenv("GF_SCHEDULER", scheduler)
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2**60)  # memory never cuts colours
+    free = {"bytes": 64 * 2**30}
+
+    def shrinking():
+        free["bytes"] -= 2**30
+        return free["bytes"]
+
+    monkeypatch.setattr(gf_units, "_node_available_bytes", shrinking)
+    basis, psi = _basis_and_seed()
+    n_units = 3 * MPI.COMM_WORLD.size
+
+    def kernel(split_basis, u, seeds):
+        return (split_basis.gf_memory_budget, split_basis.gf_csr_memory_budget)
+
+    results = run_units_distributed(basis, [[psi]] * n_units, np.ones(n_units), kernel)
+    if MPI.COMM_WORLD.rank == 0:
+        guards = [g for g, _ in results]
+        assert len(set(guards)) > 1, f"every unit saw the same guard budget: {guards}"
+        assert all(c >= g for g, c in results), "the frozen-CSR budget is never below the guard's"
+
+
+def test_the_serial_path_re_derives_them_too(monkeypatch):
+    from impurityModel.ed.gf_units import run_units_distributed
+    from impurityModel.test.basis.test_sparse_matrix_build import _all_dets, _basis
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState
+
+    free = {"bytes": 64 * 2**30}
+
+    def shrinking():
+        free["bytes"] -= 2**30
+        return free["bytes"]
+
+    monkeypatch.setattr(gf_units, "_node_available_bytes", shrinking)
+    basis = _basis(_all_dets(), None)
+    psi = ManyBodyState({basis.local_basis[0]: 1.0})
+    results = run_units_distributed(basis, [[psi]] * 3, np.ones(3), lambda b, u, s: b.gf_memory_budget)
+    assert results[0] > results[1] > results[2]
