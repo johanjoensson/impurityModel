@@ -174,3 +174,53 @@ def test_the_build_answers_the_gf_unit_queue_as_it_goes(monkeypatch, serial):
     basis = _basis(_all_dets(), comm)
     build_sparse_matrix(basis, _operator())
     assert len(pokes) == len(basis.local_basis)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("batch", [None, 7])
+@pytest.mark.parametrize("n_dets", [None, 2])
+def test_the_column_operator_holds_the_same_matrix(monkeypatch, batch, n_dets):
+    """``build_local_column_operator`` keeps the build's column blocks instead of one CSC: the same
+    entries, int32 rows, one segment per batch. A 7-element batch splits the columns into many
+    segments; two determinants leave ranks empty at -n 3."""
+    if batch is not None:
+        monkeypatch.setattr(basis_transcription, "_SPARSE_BUILD_BATCH", batch)
+    comm = MPI.COMM_WORLD
+    dets = _all_dets() if n_dets is None else _all_dets()[:n_dets]
+    basis = _basis(dets, comm)
+    op = _operator()
+    column_op = basis_transcription.build_local_column_operator(basis, op)
+    assert column_op.shape == (basis.size, len(basis.local_basis))
+    assert all(rows.dtype == np.int32 for _, _, rows, _ in column_op.segments)
+    if batch is not None and len(basis.local_basis) > 1:
+        assert len(column_op.segments) > 1, "premise: a small batch splits the columns"
+    np.testing.assert_allclose(column_op.tocsc().toarray(), _oracle_columns(basis, op, comm), atol=1e-13)
+
+
+@pytest.mark.mpi
+def test_bound_rows_are_the_exchange_buffer_rows():
+    """``bind_slots`` maps a row owned by ``destinations[i]`` into the send buffer at
+    ``send_row_offsets[i]`` and a row this rank owns into the self buffer after the send rows."""
+    comm = MPI.COMM_WORLD
+    basis = _basis(_all_dets(), comm)
+    column_op = basis_transcription.build_local_column_operator(basis, _operator())
+    counts = np.array(comm.allgather(len(basis.local_basis)), dtype=np.int64)
+    offsets = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    flags = column_op.owner_flags(counts, offsets)
+    flags[comm.rank] = False
+    destinations = [int(d) for d in np.flatnonzero(flags)]
+    send_row_offsets = np.concatenate(([0], np.cumsum(counts[destinations]))).astype(np.int64)
+    total_send = int(send_row_offsets[-1])
+    before = [rows.astype(np.int64) for _, _, rows, _ in column_op.segments]
+    column_op.bind_slots(comm.rank, offsets, destinations, send_row_offsets, total_send)
+    for rows_before, (_, _, rows, _) in zip(before, column_op.segments):
+        owner = np.searchsorted(offsets, rows_before, side="right") - 1
+        expected = np.where(
+            owner == comm.rank,
+            total_send + rows_before - offsets[comm.rank],
+            send_row_offsets[np.searchsorted(destinations, owner)] + rows_before - offsets[owner],
+        )
+        assert np.array_equal(rows, expected)
+    column_op.bind_slots(comm.rank, offsets, destinations, send_row_offsets, total_send)  # same layout: no-op
+    with pytest.raises(RuntimeError, match="different exchange layout"):
+        column_op.bind_slots(comm.rank, offsets, destinations, send_row_offsets, total_send + 1)
