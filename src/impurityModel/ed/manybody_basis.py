@@ -495,9 +495,10 @@ class Basis:
         return new
 
     #: Attributes a solve hangs on a basis that describe *who may cap it and how memory is
-    #: guarded* (the resolved ``CapPolicy``; the Green's-function guard's budget and policy),
+    #: guarded* (the resolved ``CapPolicy``; the Green's-function guard's budget and policy, and the
+    #: frozen-CSR decision's budget),
     #: carried to every clone and copy so a kernel sees them whichever basis it was handed.
-    _CAP_SETTINGS = ("cap_policy", "gf_memory_budget", "gf_memory_policy")
+    _CAP_SETTINGS = ("cap_policy", "gf_memory_budget", "gf_memory_policy", "gf_csr_memory_budget")
 
     def _carry_cap_settings(self, new):
         for name in self._CAP_SETTINGS:

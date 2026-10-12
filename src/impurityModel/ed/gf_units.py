@@ -197,7 +197,7 @@ def _gf_sizing_safety():
     return safety if safety > 0.0 else DEFAULT_MEMORY_SAFETY
 
 
-def _gf_memory_budget(available, resident):
+def _gf_memory_budget(available, resident, safety=None):
     """Absolute per-rank RSS budget for the GF units' measured guard, or ``None`` when disabled.
 
     ``resident + _resident_adjusted_budget(safety, available, resident)``: the very headroom the
@@ -205,24 +205,41 @@ def _gf_memory_budget(available, resident):
     guard budget of ``safety * (available + resident)`` instead has no floor, so after a heavy
     ground state (``resident >= available`` at the default safety) it would sit at or below the
     resident set and freeze every auto unit at its seeds -- the round-9 failure, on the GF side.
-    Pure; the caller samples ``available``/``resident`` collectively.
+    Pure; the caller samples ``available``/``resident`` collectively. ``safety`` overrides the
+    guard's fraction (the frozen-CSR decision's :func:`_gf_csr_memory_budget`); the guard switched
+    off returns ``None`` whatever it is.
     """
-    safety = _guard_safety()
-    if safety <= 0.0:
+    guard = _guard_safety()
+    if guard <= 0.0:
         return None
-    return int(resident + _resident_adjusted_budget(safety, available, resident))
+    return int(resident + _resident_adjusted_budget(guard if safety is None else safety, available, resident))
 
 
-def _set_gf_memory_guard(target, basis, budget):
-    """Put the guard's budget and policy on ``target`` for the kernels; returns what to restore."""
-    saved = (getattr(target, "gf_memory_budget", None), getattr(target, "gf_memory_policy", None))
+def _gf_csr_memory_budget(available, resident):
+    """Absolute per-rank RSS budget for the frozen-CSR decision (``GF_CSR_MEMORY_SAFETY``), or
+    ``None`` with the guard off. Never below the guard's own budget."""
+    guard = _gf_memory_budget(available, resident)
+    if guard is None:
+        return None
+    return max(guard, _gf_memory_budget(available, resident, safety=config.GF_CSR_MEMORY_SAFETY.get()))
+
+
+def _set_gf_memory_guard(target, basis, budget, csr_budget=None):
+    """Put the guard's budget and policy, and the frozen-CSR decision's budget, on ``target`` for
+    the kernels; returns what to restore."""
+    saved = (
+        getattr(target, "gf_memory_budget", None),
+        getattr(target, "gf_memory_policy", None),
+        getattr(target, "gf_csr_memory_budget", None),
+    )
     target.gf_memory_budget = budget
     target.gf_memory_policy = "tighten" if _may_lower_gf_cap(basis) else "warn"
+    target.gf_csr_memory_budget = csr_budget
     return saved
 
 
 def _restore_gf_memory_guard(target, saved):
-    target.gf_memory_budget, target.gf_memory_policy = saved
+    target.gf_memory_budget, target.gf_memory_policy, target.gf_csr_memory_budget = saved
 
 
 def _may_lower_gf_cap(basis):
@@ -500,7 +517,11 @@ def run_units_distributed(
         # The kernels clone `basis`, so the GF cap has to be on it for the duration; restored in
         # the `finally`, so the caller's (ground-state) cap survives this call on every path.
         caller_cap = basis.truncation_threshold
-        saved_guard = (getattr(basis, "gf_memory_budget", None), getattr(basis, "gf_memory_policy", None))
+        saved_guard = (
+            getattr(basis, "gf_memory_budget", None),
+            getattr(basis, "gf_memory_policy", None),
+            getattr(basis, "gf_csr_memory_budget", None),
+        )
         resident = current_rss_bytes()
         width = max((len(s) for s in unit_seeds), default=1)
         try:
@@ -509,7 +530,13 @@ def run_units_distributed(
                 if _is_auto_gf(basis)
                 else gf_cap(basis)
             )
-            _set_gf_memory_guard(basis, basis, _gf_memory_budget(available_bytes_per_rank(basis.comm), resident))
+            available = available_bytes_per_rank(basis.comm)
+            _set_gf_memory_guard(
+                basis,
+                basis,
+                _gf_memory_budget(available, resident),
+                _gf_csr_memory_budget(available, resident),
+            )
             line = _describe_gf_cap(basis, basis.truncation_threshold, f"{n_units} units, serial")
             if line is not None:
                 print(line, flush=True)
@@ -629,7 +656,12 @@ def run_units_distributed(
             flush=True,
         )
         print("=" * 80, flush=True)
-    guard = _set_gf_memory_guard(split_basis, basis, _gf_memory_budget(available_bytes, resident_bytes))
+    guard = _set_gf_memory_guard(
+        split_basis,
+        basis,
+        _gf_memory_budget(available_bytes, resident_bytes),
+        _gf_csr_memory_budget(available_bytes, resident_bytes),
+    )
     try:
         # Every color starts from the GF cap, not from the cap `split_basis` inherited from the
         # ground-state basis (which the memory guard may have lowered for the ground state).

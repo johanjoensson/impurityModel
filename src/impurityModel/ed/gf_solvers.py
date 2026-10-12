@@ -483,13 +483,19 @@ def _frozen_csr_basis(proxy, basis, hOp, verbose, reason="", width=1):
     the CSR would not fit the budget; the caller then resumes the sparse recurrence. ``reason`` is
     appended to the decision line (``" by stagnation"``): the proxy need not have frozen for this to
     run, it only reads the retained mask.
+
+    The budget is the GF stage's frozen-CSR budget on ``basis`` (``GF_CSR_MEMORY_SAFETY``, looser
+    than the guard's), else -- for a basis that did not come through the GF stage -- the guard's.
     """
     if proxy.memory_frozen:
         return None
     comm = basis.comm
     frozen_basis = basis.clone_from_keys(proxy.retained_mask)
     report: dict = {}
-    fits = _frozen_csr_fits(frozen_basis, hOp, proxy.memory_budget, comm, report=report, width=width)
+    budget = proxy.memory_budget
+    if budget is not None and getattr(basis, "gf_csr_memory_budget", None) is not None:
+        budget = max(budget, basis.gf_csr_memory_budget)
+    fits = _frozen_csr_fits(frozen_basis, hOp, budget, comm, report=report, width=width)
     if verbose and (comm is None or comm.rank == 0):
         # What the decision used, so a decline can be checked against the measured peak instead of
         # backed out of VmHWM afterwards (the iteration-2 declines at 6-7 ranks could not be).

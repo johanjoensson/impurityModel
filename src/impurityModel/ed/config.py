@@ -509,6 +509,23 @@ GF_FROZEN_CSR = Knob(
     kernel then continues as before. ``0`` disables it.""",
 )
 
+GF_CSR_MEMORY_SAFETY = Knob(
+    name="GF_CSR_MEMORY_SAFETY",
+    kind="float",
+    default=0.75,
+    minimum=0.0,
+    group="units",
+    doc="""Fraction of the rank's whole share of node RAM (``safety * (available + resident)``, the
+    form ``GS_MEMORY_BUDGET_SAFETY`` uses) the frozen ``P H P`` recurrence (``GF_FROZEN_CSR``) may
+    reach. Separate from, and looser than, the guard's fraction that sizes the auto cap: the auto cap
+    fills memory on the sparse path, and the frozen matrix then needs more than that path's half
+    of the share, so at the guard's 0.5 every capped unit was declined (SrMnO3, auto cap 18.6M: 20
+    of 20, GF 39 ks instead of ~1.4 ks). The fit check's estimate over-predicted the measured peak in
+    all 76 frozen units of the 2026-10 cluster runs (measured/predicted 0.71-0.91), and a decline
+    costs only speed -- the sparse kernel continues -- so the decision may use more of the share
+    than the cap does. Ignored when the guard is off (``GS_MEMORY_BUDGET_SAFETY=0``).""",
+)
+
 GF_STAGNATION_FREEZE = Knob(
     name="GF_STAGNATION_FREEZE",
     kind="float",
@@ -1273,6 +1290,7 @@ KNOBS: dict[str, Knob] = _register(
     MATVEC_PRUNE,
     GF_FROZEN_CSR,
     GF_SCHEDULER,
+    GF_CSR_MEMORY_SAFETY,
     GF_STAGNATION_FREEZE,
     GF_STAGNATION_WINDOW,
     GF_PER_STATE_RESTRICT,
