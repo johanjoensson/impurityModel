@@ -119,3 +119,14 @@ def test_the_bicgstab_driver_has_its_operator_measured(monkeypatch):
     seen = _recording_measurement(monkeypatch)
     _run_driver("bicgstab", None)
     assert seen and all(op is not None for op in seen), "the BiCGSTAB driver did not hand hOp to the engine"
+
+
+def test_the_rixs_driver_has_its_operator_measured(monkeypatch):
+    from impurityModel.test.spectra.test_rixs_tensor import _model, _run_rixs, _thermal_states, _tin_tout
+
+    seen = _recording_measurement(monkeypatch)
+    op = _model()
+    psis, es, dets, _states, _vecs = _thermal_states(op, 2)
+    tin, tout = _tin_tout()
+    _run_rixs(op, psis, es, tin, tout, dets)
+    assert seen and all(o is op for o in seen), "the RIXS driver did not hand its Hamiltonian to the engine"

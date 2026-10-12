@@ -689,7 +689,9 @@ def _rixs_map_flat(
         gf._merge_unit_basis(max_intermediate, e, intermediate, False)
         gf._merge_unit_basis(max_final, e, final, False)
 
-    got = gf.run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=accumulate)
+    got = gf.run_units_distributed(
+        basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=accumulate, hOp=hOp
+    )
     # Collective on each color's clone: every rank of a color created (at most) one cached
     # green_basis and reaches this point after its unit loop.
     for cached in green_basis_cache.values():
