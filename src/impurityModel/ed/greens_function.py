@@ -855,6 +855,7 @@ def _get_greens_function_bicgstab(
         verbose,
         num_wanted,
         unit_windows=unit_restrictions,
+        hOp=hOp,
     )
 
 
@@ -874,6 +875,7 @@ def _run_evaluated_gf_units(
     verbose,
     num_wanted,
     unit_windows=None,
+    hOp=None,
 ):
     r"""Distribute, accumulate and assemble Green's-function units that return evaluated ``G``.
 
@@ -890,6 +892,9 @@ def _run_evaluated_gf_units(
     (:func:`gf_diagnostics.check_bicgstab_convergence`). The spectral sum rule
     and integrated-weight checks are expressed in seed-projection/continued-fraction terms
     these paths do not produce.
+
+    ``hOp`` is passed to :func:`run_units_distributed`, which prices an auto GF cap at its
+    measured matvec fan-out.
     """
     thermal = ThermalEnsemble(es, tau)
     e0, boltzmann, Z = thermal.e0, thermal.weights, thermal.Z
@@ -977,6 +982,7 @@ def _run_evaluated_gf_units(
         reduce_fn=reduce_fn,
         gf_method="bicgstab",
         unit_windows=unit_windows,
+        hOp=hOp,
     )
     if got is None:
         return None, None, None

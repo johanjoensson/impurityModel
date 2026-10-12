@@ -555,7 +555,8 @@ def estimate_gf_peak_bytes(
         of ``gmres_restart + 3`` block-rows. That transient is what a worst-case point
         peaks at, and peaks are what OOM-kill, so it is modeled rather than footnoted.
         The basis term is the *per-point* rebuilt support, still bounded by the same
-        ``n_dets`` cap.
+        ``n_dets`` cap. Its matvec's raw image (``row_fanout`` rows per local row, applied in
+        one piece, so without the row-chunk credit) is priced too.
     row_fanout : float, optional
         The workload's whole-step de-duplicated row fan-out of one matvec, measured at GF entry
         (``gf_units.measure_gf_row_fanout``, the same measurement that produced the default).
@@ -576,11 +577,16 @@ def estimate_gf_peak_bytes(
     key_heap = _key_heap_bytes(n_spin_orbitals)
     basis_bytes = local_rows * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
+    fanout = _GF_MATVEC_ROW_FANOUT_DEFAULT if row_fanout is None else float(row_fanout)
     if method == "bicgstab":
         if gmres_restart is None:
             gmres_restart = config.GF_GMRES_RESTART.get()
         live = 12 + gmres_restart + 3
-        return basis_bytes + live * local_rows * row_bytes
+        # The solvers' matvec (`_make_matmat` -> `apply_and_redistribute`) applies H to the whole
+        # block in one `apply_block`, before routing and pruning: the same raw-image transient as
+        # the recurrence's below, and with no row chunking, so no chunk credit. It was missing.
+        matvec_bytes = ceil(local_rows * fanout) * row_bytes
+        return basis_bytes + live * local_rows * row_bytes + matvec_bytes
     live_bytes = 3 * local_rows * row_bytes
     # The recurrence's transient matvec fanout: `wp_raw = h_op.apply_block(q_curr, ...)` inside
     # `block_lanczos_step_cy` is NOT hash-partitioned -- it is everything this rank's rows reach
@@ -597,10 +603,7 @@ def estimate_gf_peak_bytes(
     # `truncation_threshold` (a `_CappedBasisProxy` sets `caps_growth`, serial or not), and a
     # finite cap is exactly the case this function is called to size.
     #
-    # Scoped to the Lanczos recurrence only (not the bicgstab branch above, which
-    # returned already): that branch runs a different per-point solver whose own live-block model
-    # is separate, and its transient has not been measured.
-    fanout = _GF_MATVEC_ROW_FANOUT_DEFAULT if row_fanout is None else float(row_fanout)
+    # The bicgstab branch above prices the same transient for its own (unchunked) matvec.
     fanout_bytes = ceil(local_rows * fanout / _gf_chunk_divisor(config.GF_APPLY_ROW_CHUNKS.get())) * row_bytes
     store_bytes = 0
     if _retains_krylov(reort):

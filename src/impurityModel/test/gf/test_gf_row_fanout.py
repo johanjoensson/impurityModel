@@ -92,3 +92,30 @@ def test_run_units_distributed_measures_it_once_for_an_auto_cap(monkeypatch):
         gf_units.run_units_distributed(basis, [[psi]], np.ones(1), lambda b, u, s: u, hOp=_operator())
     assert basis.gf_row_fanout == 11.0
     assert calls == [1], "measured once per calculation, then reused like the pinned cap"
+
+
+def test_the_bicgstab_estimate_prices_its_unchunked_matvec_at_the_fanout():
+    """BiCGSTAB's matvec applies H to the whole block at once: its raw image is priced at the
+    fan-out with no row-chunk credit, so the estimate moves by exactly that term."""
+    args = (1_000_000, 48, 4, "none")
+    low = me.estimate_gf_peak_bytes(*args, ranks=1, method="bicgstab", row_fanout=4.0)
+    high = me.estimate_gf_peak_bytes(*args, ranks=1, method="bicgstab", row_fanout=12.0)
+    row_bytes = me._COMPLEX_BYTES * 4 + me._key_heap_bytes(48) + me._SD_STRUCT_BYTES
+    rows = int(np.ceil(1_000_000 * me._routing_skew_factor(1)))
+    assert high - low == pytest.approx(8.0 * rows * row_bytes, rel=1e-6)
+
+
+def _recording_measurement(monkeypatch):
+    """Treat the cap as automatic and record which operator the engine measures the fan-out of."""
+    seen = []
+    monkeypatch.setattr(gf_units, "_is_auto_gf", lambda basis: True)
+    monkeypatch.setattr(gf_units, "measure_gf_row_fanout", lambda basis, hOp: seen.append(hOp) or 8.1)
+    return seen
+
+
+def test_the_bicgstab_driver_has_its_operator_measured(monkeypatch):
+    from impurityModel.test.gf.test_gf_bicgstab_driver import _run_driver
+
+    seen = _recording_measurement(monkeypatch)
+    _run_driver("bicgstab", None)
+    assert seen and all(op is not None for op in seen), "the BiCGSTAB driver did not hand hOp to the engine"
