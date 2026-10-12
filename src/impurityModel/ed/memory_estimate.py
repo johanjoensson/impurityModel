@@ -475,6 +475,7 @@ def estimate_gf_peak_bytes(
     krylov_dtype=None,
     method="lanczos",
     gmres_restart=None,
+    row_fanout=None,
 ):
     """Predicted per-rank peak bytes of the sparse (MBS-kernel) Green's-function path.
 
@@ -555,6 +556,11 @@ def estimate_gf_peak_bytes(
         peaks at, and peaks are what OOM-kill, so it is modeled rather than footnoted.
         The basis term is the *per-point* rebuilt support, still bounded by the same
         ``n_dets`` cap.
+    row_fanout : float, optional
+        The workload's whole-step de-duplicated row fan-out of one matvec, measured at GF entry
+        (``gf_units.measure_gf_row_fanout``, the same measurement that produced the default).
+        ``None`` uses :data:`_GF_MATVEC_ROW_FANOUT_DEFAULT`, measured on SrMnO3: on CrI3 (spin-orbit,
+        raw image 51-87 against SrMnO3's 19) that default under-predicted the sparse path ~2x.
     gmres_restart : int, optional
         The fallback's block-Arnoldi restart length; only read for ``method="bicgstab"``.
         ``None`` (default) reads :data:`config.GF_GMRES_RESTART` -- the same knob
@@ -594,10 +600,8 @@ def estimate_gf_peak_bytes(
     # Scoped to the Lanczos recurrence only (not the bicgstab branch above, which
     # returned already): that branch runs a different per-point solver whose own live-block model
     # is separate, and its transient has not been measured.
-    fanout_bytes = (
-        ceil(local_rows * _GF_MATVEC_ROW_FANOUT_DEFAULT / _gf_chunk_divisor(config.GF_APPLY_ROW_CHUNKS.get()))
-        * row_bytes
-    )
+    fanout = _GF_MATVEC_ROW_FANOUT_DEFAULT if row_fanout is None else float(row_fanout)
+    fanout_bytes = ceil(local_rows * fanout / _gf_chunk_divisor(config.GF_APPLY_ROW_CHUNKS.get())) * row_bytes
     store_bytes = 0
     if _retains_krylov(reort):
         if n_blocks is None:
@@ -1019,6 +1023,7 @@ def max_unit_dets_within_budget(
     krylov_dtype=None,
     method="lanczos",
     resident_bytes=None,
+    row_fanout=None,
 ):
     """Largest per-unit ``truncation_threshold`` whose predicted GF peak fits ``ranks`` ranks.
 
@@ -1057,6 +1062,8 @@ def max_unit_dets_within_budget(
         Krylov store dtype; ``complex64`` halves the store and so raises the cap.
     method : str
         See :func:`estimate_gf_peak_bytes`.
+    row_fanout : float, optional
+        See :func:`estimate_gf_peak_bytes`.
     resident_bytes : int, optional
         What this rank already holds when the GF phase starts (``current_rss_bytes()``,
         MAX-reduced over the communicator by the caller). ``None`` (default) reproduces the
@@ -1089,7 +1096,14 @@ def max_unit_dets_within_budget(
     def fits(n):
         return (
             estimate_gf_peak_bytes(
-                n, n_spin_orbitals, block_width, reort, ranks=ranks, krylov_dtype=krylov_dtype, method=method
+                n,
+                n_spin_orbitals,
+                block_width,
+                reort,
+                ranks=ranks,
+                krylov_dtype=krylov_dtype,
+                method=method,
+                row_fanout=row_fanout,
             )
             <= budget
         )

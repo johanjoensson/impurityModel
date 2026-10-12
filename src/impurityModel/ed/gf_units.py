@@ -67,6 +67,8 @@ def _describe_gf_cap(basis, cap, layout):
         how = "set by you; final"
     else:
         how = "auto, sized for the Green's-function path; the GF memory guard may hold a unit lower"
+        fanout = _row_fanout(basis)
+        how += f"; matvec fan-out {fanout:.2f} measured" if fanout is not None else "; matvec fan-out assumed"
     size = "unlimited" if not np.isfinite(cap) else f"{int(cap):,}"
     return f"determinant cap: GF {size} per unit ({how}); {layout}"
 
@@ -111,6 +113,7 @@ def _colors_affording(basis, unit_weights, width, reort, gf_method, floor=None, 
                 safety=_gf_sizing_safety(),
                 method=gf_method,
                 resident_bytes=resident,
+                row_fanout=_row_fanout(basis),
             )
         return affordable[ranks]
 
@@ -123,6 +126,61 @@ def _colors_affording(basis, unit_weights, width, reort, gf_method, floor=None, 
         if min(afford(int(p)) for p in procs) >= floor:
             return n_colors
     return 1
+
+
+#: Ground-state determinants :func:`measure_gf_row_fanout` applies ``H`` to: the size of the
+#: largest basis ``memory_estimate._GF_MATVEC_ROW_FANOUT_DEFAULT`` was measured on. The fan-out
+#: falls as the block grows (its images overlap more), so a smaller sample over-states it -- the
+#: safe direction -- and a larger one would be extrapolating past what was measured.
+_ROW_FANOUT_SAMPLE_DETS = 100_000
+#: Rows the measurement's apply may reach on rank 0 (~100 B each): CrI3's raw image is ~87 rows per
+#: determinant, so a full sample would hold ~9M rows, about 1 GB, on a rank with 2.8 GiB in all.
+#: A first apply on :data:`_ROW_FANOUT_PILOT_DETS` of the sample sizes the full one under this.
+_ROW_FANOUT_MAX_ROWS = 1 << 21
+_ROW_FANOUT_PILOT_DETS = 5_000
+
+
+def measure_gf_row_fanout(basis, hOp):
+    """The workload's whole-step de-duplicated row fan-out of one Green's-function matvec.
+
+    The measurement behind ``memory_estimate._GF_MATVEC_ROW_FANOUT_DEFAULT`` (rows reached by
+    ``hOp.apply_block`` on a unit-amplitude width-1 block over the ground-state basis, divided by
+    the block's rows), repeated for this workload instead of borrowed from SrMnO3: a strided sample
+    of up to :data:`_ROW_FANOUT_SAMPLE_DETS` determinants, each rank contributing its share, applied
+    on rank 0 (thinned so the image stays under :data:`_ROW_FANOUT_MAX_ROWS` rows). Not each rank's own local block -- at 128 ranks that is ~2k determinants, whose
+    images barely overlap, and would read ~2x high. Collective on ``basis.comm``; the result is
+    broadcast, so it is replicated.
+    """
+    comm = basis.comm
+    n_local = len(basis.local_basis)
+    n_total = comm.allreduce(n_local, op=MPI.SUM) if comm is not None else n_local
+    take = min(n_local, -(-_ROW_FANOUT_SAMPLE_DETS * n_local // max(n_total, 1)))
+    positions = np.unique(np.linspace(0, n_local - 1, take).astype(np.int64)) if take > 0 else []
+    local_basis = basis.local_basis
+    sample = [local_basis[int(i)] for i in positions]
+    gathered = comm.gather(sample, root=0) if comm is not None else [sample]
+    fanout = None
+    if comm is None or comm.rank == 0:
+        dets = [d for part in gathered for d in part]
+
+        def fanout_of(subset):
+            return len(hOp.apply_block(ManyBodyState({d: 1.0 for d in subset}), 0.0)) / len(subset)
+
+        if dets:
+            # Strided subsets of the (already strided) sample. A smaller block over-states the
+            # fan-out, so bounding the sample errs on the safe side.
+            pilot = dets[:: max(1, len(dets) // _ROW_FANOUT_PILOT_DETS)]
+            fanout = fanout_of(pilot)
+            affordable = max(len(pilot), int(_ROW_FANOUT_MAX_ROWS / max(fanout, 1.0)))
+            if len(dets) > len(pilot):
+                fanout = fanout_of(dets[:: max(1, -(-len(dets) // affordable))])
+    return comm.bcast(fanout, root=0) if comm is not None else fanout
+
+
+def _row_fanout(basis):
+    """The measured row fan-out on ``basis`` (:func:`measure_gf_row_fanout`), or ``None`` to use the
+    SrMnO3-measured default."""
+    return getattr(basis, "gf_row_fanout", None)
 
 
 def _is_auto_gf(basis):
@@ -179,6 +237,7 @@ def _auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes):
             safety=_gf_sizing_safety(),
             method=gf_method,
             resident_bytes=resident_bytes,
+            row_fanout=_row_fanout(basis),
         )
         for ranks in sorted(set(int(r) for r in rank_counts))
     )
@@ -477,6 +536,7 @@ def run_units_distributed(
     reort=None,
     gf_method: str = "lanczos",
     unit_windows: Optional[list] = None,
+    hOp: Optional[ManyBodyOperator] = None,
 ) -> list | bool | None:
     """Distribute work units over MPI colors, run ``kernel`` per unit, gather to global rank 0.
 
@@ -503,7 +563,9 @@ def run_units_distributed(
     ``reort`` is the GF reorthogonalization mode the kernel will run with, and ``gf_method``
     names the kernel family (``"lanczos"`` / ``"bicgstab"``); both only feed the memory model
     that caps the number of simultaneous colors (each color's unit basis may fill the same
-    ``truncation_threshold`` on fewer ranks, so memory bounds the concurrency).
+    ``truncation_threshold`` on fewer ranks, so memory bounds the concurrency). ``hOp``, given with
+    an auto GF cap, has the memory model priced at this workload's own matvec fan-out
+    (:func:`measure_gf_row_fanout`) instead of SrMnO3's.
 
     Returns
     -------
@@ -513,6 +575,11 @@ def run_units_distributed(
         ranks. The split communicator is freed collectively before returning.
     """
     n_units = len(unit_seeds)
+    if hOp is not None and _is_auto_gf(basis) and _row_fanout(basis) is None:
+        # The auto cap is sized below from the sparse path's per-determinant cost, whose largest
+        # workload-dependent term is the matvec's fan-out: measured once per calculation, here,
+        # on the ground-state basis (which lives as long as the calculation, like the pinned cap).
+        basis.gf_row_fanout = measure_gf_row_fanout(basis, hOp)
     if basis.comm is None or basis.comm.size <= 1:
         # The kernels clone `basis`, so the GF cap has to be on it for the duration; restored in
         # the `finally`, so the caller's (ground-state) cap survives this call on every path.
@@ -680,6 +747,7 @@ def run_units_distributed(
                 basis.comm,
                 method=gf_method,
                 resident_bytes=resident_bytes,
+                row_fanout=_row_fanout(basis),
             )
             split_basis.truncation_threshold = min(float(cap), float(unit_cap))
             if verbose and basis.comm.rank == 0:
@@ -690,6 +758,7 @@ def run_units_distributed(
                     reort,
                     ranks=ranks_per_color,
                     method=gf_method,
+                    row_fanout=_row_fanout(basis),
                 )
                 print(
                     f"{n_colors} simultaneous unit bases (rank 0's own color has "

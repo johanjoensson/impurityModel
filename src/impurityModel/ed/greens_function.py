@@ -591,7 +591,14 @@ def get_Greens_function(
     # This unit-level dump belongs at -vv (verbose_extra): the roots/per-color summary is
     # detail beyond the -v per-block roll-up the caller already prints.
     results = run_units_distributed(
-        basis, unit_seeds, unit_weights, kernel, verbose=verbose_extra, reort=reort, unit_windows=unit_restrictions
+        basis,
+        unit_seeds,
+        unit_weights,
+        kernel,
+        verbose=verbose_extra,
+        reort=reort,
+        unit_windows=unit_restrictions,
+        hOp=hOp,
     )
 
     gs_matsubara = gs_realaxis = report = None
@@ -1195,7 +1202,14 @@ def calc_Greens_function_with_offdiag(
         print_size=verbose,
     )
     results = run_units_distributed(
-        block_basis, unit_seeds, unit_weights, kernel, verbose=verbose, reort=reort, unit_windows=unit_restrictions
+        block_basis,
+        unit_seeds,
+        unit_weights,
+        kernel,
+        verbose=verbose,
+        reort=reort,
+        unit_windows=unit_restrictions,
+        hOp=hOp,
     )
 
     excited_alphas = excited_betas = excited_r = None
