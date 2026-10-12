@@ -231,10 +231,12 @@ def build_dense_matrix(basis, op, distribute=True):
 
 
 #: Matrix elements per collective index lookup in the distributed :func:`build_sparse_matrix`.
-#: Bounds the build's transient (one key object, column and value per element) to a batch
-#: instead of the whole local image of ``op``; the lookup's own per-call cost is a few
-#: collectives, negligible at this size.
-_SPARSE_BUILD_BATCH = 1 << 21
+#: Bounds the build's transient (one key object, column and value per element, ~104-160 B) to a
+#: batch instead of the whole local image of ``op``; the lookup's own per-call cost is a few
+#: collectives. 2**19 (80 MiB budgeted) rather than 2**21 (320 MiB): the batch is part of the
+#: frozen-basis matrix's memory need, and it decided several of the CrI3 units the 2026-10 runs
+#: declined; an SrMnO3 auto-cap unit (~87M raw elements per rank) then does ~166 lookups, not ~41.
+_SPARSE_BUILD_BATCH = 1 << 19
 
 
 def _concat_consuming(chunks, dtype):
