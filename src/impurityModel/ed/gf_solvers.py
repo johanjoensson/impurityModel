@@ -479,16 +479,17 @@ def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None, width=
 def _frozen_csr_basis(proxy, basis, hOp, verbose, reason="", width=1):
     """Collective: the frozen retained set as a ``Basis`` if the ``P H P`` fallback should run, else ``None``.
 
-    Declines when the freeze came from the memory guard -- RSS is already at budget then -- or when
-    the CSR would not fit the budget; the caller then resumes the sparse recurrence. ``reason`` is
+    Declines when the matrix would not fit the budget on top of the current RSS; the caller then
+    resumes the sparse recurrence. A freeze by the measured-memory guard is offered too: RSS is at
+    the guard's budget then, but the decision has its own, looser one and counts that RSS, so it
+    accepts only what still fits. (It used to decline every guard freeze outright, and on CrI3,
+    whose sparse estimate under-predicts, that is where capped units end up.) ``reason`` is
     appended to the decision line (``" by stagnation"``): the proxy need not have frozen for this to
     run, it only reads the retained mask.
 
     The budget is the GF stage's frozen-CSR budget on ``basis`` (``GF_CSR_MEMORY_SAFETY``, looser
     than the guard's), else -- for a basis that did not come through the GF stage -- the guard's.
     """
-    if proxy.memory_frozen:
-        return None
     comm = basis.comm
     frozen_basis = basis.clone_from_keys(proxy.retained_mask)
     report: dict = {}

@@ -91,8 +91,10 @@ def _redistribute_as_width1(basis, states, n):
     return [blk.to_states()[0] for blk in basis.redistribute_psis(*blocks)]
 
 
-def _run_capped(cap, reort=None, comm=None, **kwargs):
+def _run_capped(cap, reort=None, comm=None, basis_attrs=None, **kwargs):
     basis = _excited_basis(cap, comm=comm)
+    for name, value in (basis_attrs or {}).items():
+        setattr(basis, name, value)
     # redistribute_psis SUMS per-rank contributions (production seeds are partial per
     # rank), so only rank 0 may provide the full amplitudes here.
     seeds_full = _seeds()
@@ -474,11 +476,21 @@ def test_frozen_csr_under_importance_pruning(monkeypatch):
     _assert_php_oracle(g, info)
 
 
-def test_a_memory_guard_freeze_stays_on_the_sparse_kernel():
-    """RSS is at budget when the guard freezes: building a matrix then is how a rank is killed."""
+def test_a_memory_guard_freeze_without_room_for_the_matrix_stays_on_the_sparse_kernel():
+    """RSS is at budget when the guard freezes; with no looser frozen-CSR budget the matrix does
+    not fit on top of it, and the sparse kernel continues."""
     g, info = _run_capped(1000, memory_budget=1)
     assert info["cap_hit"] and info["memory_frozen"]
     assert not info["csr_fallback"]
+    _assert_php_oracle(g, info)
+
+
+def test_a_memory_guard_freeze_runs_the_frozen_matrix_when_it_fits():
+    """The guard froze the unit, but the frozen-CSR budget has room for the matrix on top of the
+    current RSS: the restart runs, and is exact on the retained set."""
+    g, info = _run_capped(1000, memory_budget=1, basis_attrs={"gf_csr_memory_budget": 2**62})
+    assert info["cap_hit"] and info["memory_frozen"]
+    assert info["csr_fallback"]
     _assert_php_oracle(g, info)
 
 

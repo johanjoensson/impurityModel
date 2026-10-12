@@ -504,9 +504,9 @@ GF_FROZEN_CSR = Knob(
     (about one apply per determinant) and then one SpMV per block. Measured on the SrMnO3 archive at
     cap 2e4: build 0.3-0.9 s, an SpMV ~250x cheaper than the sparse step it replaces.
 
-    Not taken when the freeze came from the measured-memory guard (RSS is already at budget), when
-    the CSR's estimated size does not fit the budget, or with a ``krylov_dtype`` store; the sparse
-    kernel then continues as before. ``0`` disables it.""",
+    Not taken when the matrix's estimated size does not fit ``GF_CSR_MEMORY_SAFETY``'s budget on
+    top of the current RSS (a freeze by the measured-memory guard included), or with a
+    ``krylov_dtype`` store; the sparse kernel then continues as before. ``0`` disables it.""",
 )
 
 GF_CSR_MEMORY_SAFETY = Knob(
