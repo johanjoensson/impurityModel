@@ -130,3 +130,19 @@ def test_the_rixs_driver_has_its_operator_measured(monkeypatch):
     tin, tout = _tin_tout()
     _run_rixs(op, psis, es, tin, tout, dets)
     assert seen and all(o is op for o in seen), "the RIXS driver did not hand its Hamiltonian to the engine"
+
+
+def test_the_spectra_driver_has_its_operator_measured(monkeypatch):
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+    from impurityModel.test.spectra.test_spectra_sector_confinement import (
+        _anderson_4,
+        _fresh_basis,
+        _ground_state_half_filled,
+        _run,
+    )
+
+    seen = _recording_measurement(monkeypatch)
+    op = _anderson_4()
+    gs, e0, dets = _ground_state_half_filled(op)
+    _run(op, [ManyBodyOperator({((0, "a"),): 1.0})], gs, e0, _fresh_basis(dets), True, monkeypatch)
+    assert seen and all(o is op for o in seen), "the spectra driver did not hand its Hamiltonian to the engine"

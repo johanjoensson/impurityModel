@@ -773,7 +773,7 @@ def calc_spectra(
     )
 
     results = gf.run_units_distributed(
-        basis, unit_seeds, unit_weights, kernel, verbose=verbose, unit_windows=unit_restrictions
+        basis, unit_seeds, unit_weights, kernel, verbose=verbose, unit_windows=unit_restrictions, hOp=hOp
     )
     if results is None:  # non-root rank of a distributed run
         empty = np.empty((0, 0), dtype=complex)
