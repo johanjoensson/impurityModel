@@ -3,13 +3,13 @@ r"""``basis_transcription.build_sparse_matrix``: the matrix, its layout, and its
 The build assembles the CSC directly (images arrive one ket at a time, so the entries are already
 grouped by column). These tests pin that against an oracle that shares no code with it -- the full
 operator applied to every determinant in Python and indexed by position -- and pin the memory
-the frozen-basis CSR fit check (``gf_solvers._CSR_BYTES_PER_ELEMENT``) relies on:
+the frozen-basis fit check (``gf_solvers._CSR_BYTES_PER_ELEMENT``) relies on:
 
 * every rank's stored columns equal the oracle's, whatever the rank count, including ranks that own
   no determinant;
 * ``local_columns=True`` is exactly the ``(N, N_local)`` slice of the default ``(N, N)`` result;
 * the result is canonical (sorted, duplicate-free), as the old COO route made it;
-* the peak, ``tocsr()`` included, stays below the per-element constant the fit check budgets.
+* the frozen-basis column operator's build peak stays below what the fit check budgets.
 """
 
 import itertools
@@ -124,28 +124,35 @@ def test_the_result_is_canonical():
         assert m.has_canonical_format
 
 
-def test_the_peak_stays_below_the_budgeted_bytes_per_element(monkeypatch):
-    """Build plus the CSR conversion the kernel needs, against ``_CSR_BYTES_PER_ELEMENT``.
+@pytest.mark.mpi
+def test_the_column_operator_peak_stays_below_its_budget(monkeypatch):
+    """The build of the frozen-basis operator against what the fit check budgets for it.
 
-    The fit check budgets this constant per stored element, so a build that exceeds it makes the
-    check admit a matrix that does not fit. Batches are small, as in production, where a batch is
-    a constant next to the matrix; one batch holding the whole image would measure the batch.
+    ``gf_solvers._CSR_BYTES_PER_ELEMENT`` per stored element plus the column pointers, and
+    ``_CSR_BATCH_BYTES_PER_ELEMENT`` per element of one build batch: a build that exceeds them
+    makes the check admit a matrix that does not fit. Batches are small, as in production, where
+    a batch is a constant next to the matrix. Serial and distributed: the distributed build holds
+    the batch's key objects until its collective lookup.
     """
     monkeypatch.setattr(basis_transcription, "_SPARSE_BUILD_BATCH", 5000)
-    basis = _basis(_all_dets(14), None, n_orb=14)
+    comm = MPI.COMM_WORLD
+    basis = _basis(_all_dets(14), comm if comm.size > 1 else None, n_orb=14)
     op = _operator(14)
-    build_sparse_matrix(basis, op, local_columns=True)  # lazy lookup structures are built once
+    basis_transcription.build_local_column_operator(basis, op)  # lazy lookup structures are built once
     tracemalloc.start()
     try:
-        m = build_sparse_matrix(basis, op, local_columns=True).tocsr()
+        m = basis_transcription.build_local_column_operator(basis, op)
         _current, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
-    per_element = peak / m.nnz
-    assert m.nnz > 20_000, "the fixture must be large enough for a per-element figure to mean anything"
-    assert (
-        per_element <= gf_solvers._CSR_BYTES_PER_ELEMENT
-    ), f"{per_element:.1f} B/element peak exceeds the {gf_solvers._CSR_BYTES_PER_ELEMENT} B the CSR fit check budgets"
+    n_local = len(basis.local_basis)
+    budget = (
+        m.nnz * gf_solvers._CSR_BYTES_PER_ELEMENT
+        + 8 * (n_local + 1)
+        + basis_transcription._SPARSE_BUILD_BATCH * gf_solvers._CSR_BATCH_BYTES_PER_ELEMENT
+    )
+    assert m.nnz > 20_000 / comm.size, "the fixture must be large enough for a per-element figure to mean anything"
+    assert peak <= budget, f"{peak / m.nnz:.1f} B/element peak exceeds the {budget / m.nnz:.1f} the fit check budgets"
 
 
 def test_a_strided_walk_visits_exactly_the_requested_local_states():

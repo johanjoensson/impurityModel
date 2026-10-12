@@ -19,6 +19,7 @@ from mpi4py import MPI
 from impurityModel.ed import basis_transcription, config
 from impurityModel.ed.basis_transcription import (
     build_dense_matrix,
+    build_local_column_operator,
     build_sparse_matrix,
     build_state,
     build_vector,
@@ -47,6 +48,7 @@ from impurityModel.ed.gf_primitives import (
 from impurityModel.ed.gmres import block_gmres
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
 from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes
+from impurityModel.ed.mpi_comm import matvec_column_chunk_width
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.work_queue import queue_progress
 
@@ -288,10 +290,11 @@ def _array_block_lanczos(
         # (reduced to rank 0), which the kernel cannot store in its N_local-row buffer --
         # "could not broadcast (970,9) into (273,9)" on every colour spanning two or more ranks
         # (review ledger M1; RIXS R3 at 128 ranks on the cluster).
-        # Only this rank's columns are ever built (`local_columns`), and the CSR the kernel wants is
-        # made here so the CSC is freed before the recurrence: the kernel's own `tocsr()` would
-        # otherwise run beside it, and this frame would keep both alive for the whole run.
-        H = build_sparse_matrix(basis, hOp, local_columns=True).tocsr()
+        # Only this rank's columns are ever built, and kept as the build's column blocks
+        # (LocalColumnOperator): ~20 B per element instead of a CSR's ~50 at its peak, and no N + 1
+        # row pointer on every rank. The kernel multiplies by scattering columns (see
+        # BlockLanczosArray.pyx); _frozen_csr_fits budgets exactly this.
+        H = build_local_column_operator(basis, hOp)
         kernel_comm = comm
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0 until the continued fraction converges or
@@ -384,14 +387,17 @@ def _expansion_probe_columns(Q, widths, *, tail_only):
 
 #: Local determinants whose ``H`` images estimate the frozen CSR's fan-out for the memory check.
 _CSR_FANOUT_SAMPLE = 256
-#: Upper bound on the bytes one stored matrix element costs at the build's peak, which is the
-#: conversion of the assembled CSC (8 + 16) to the CSR (8 + 16) the kernel runs on. Measured by
-#: ``test_the_peak_stays_below_the_budgeted_bytes_per_element`` (about 50 B/element, 83 before the
-#: CSC was assembled directly), so the test keeps this an upper bound.
-_CSR_BYTES_PER_ELEMENT = 60
+#: Upper bound on the bytes one stored matrix element of the frozen ``P H P`` costs, held as the
+#: build's column blocks (``LocalColumnOperator``: a 16 B value and a 4 B row). Measured by
+#: ``test_the_column_operator_peak_stays_below_its_budget`` (20.5 B resident, 22.3 at the serial
+#: build's peak); a CSR cost ~50 at its peak.
+_CSR_BYTES_PER_ELEMENT = 24
 #: Upper bound on the bytes one element of a build batch holds before its lookup: the bra's key
-#: object plus its column and value.
+#: object plus its column and value. Measured ~104 on the distributed build.
 _CSR_BATCH_BYTES_PER_ELEMENT = 160
+#: Lanczos blocks of ``N_local x width`` the array kernel holds at once at reort 'none' (the
+#: current and previous block, the product, the next block).
+_CSR_KERNEL_VECTORS = 4
 #: GF_STAGNATION_FREEZE needs this many consecutive windows below its threshold: the weight reaching new
 #: rows is layered (a shell, then a gap, then the next shell), and one quiet window is not a stable fact.
 _STAGNATION_QUIET_WINDOWS = 2
@@ -404,11 +410,37 @@ _STAGNATION_NEAR_END = 100.0
 _CSR_INITIAL_BLOCKS = 256
 
 
-def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None):
+def _frozen_matrix_need(n_local, fanout, n_global, n_ranks, width):
+    """Upper bound on the bytes this rank needs for the frozen ``P H P`` recurrence.
+
+    The matrix (:data:`_CSR_BYTES_PER_ELEMENT` per element, ``n_local * fanout`` elements, plus its
+    int64 column pointers), and on top of it the larger of the two phases that follow each other:
+    the build's batch transient, or the recurrence's working set -- :data:`_CSR_KERNEL_VECTORS`
+    Lanczos blocks and, on more than one rank, the graph exchange's send, receive and self buffers.
+    Those are row-sized, not element-sized: up to every other rank's rows go out (``n_global -
+    n_local``) and ``n_local`` rows come back from each other rank, ``w_c`` columns at a time, and
+    ``w_c`` is at least one column whatever ``GS_MATVEC_EXCHANGE_BYTES`` says
+    (``mpi_comm.matvec_column_chunk_width``). On SrMnO3's 4-rank colours that is ~0.45 GiB, more
+    than the matrix's row pointer the column blocks removed.
+    """
+    elements = n_local * fanout
+    matrix = elements * _CSR_BYTES_PER_ELEMENT + 8 * (n_local + 1)
+    batch = min(basis_transcription._SPARSE_BUILD_BATCH, elements) * _CSR_BATCH_BYTES_PER_ELEMENT
+    working = _CSR_KERNEL_VECTORS * 16 * n_local * width
+    if n_ranks > 1:
+        send_rows = max(n_global - n_local, 0)
+        recv_rows = n_local * (n_ranks - 1)
+        w_c = matvec_column_chunk_width(max(send_rows, recv_rows), width, config.GS_MATVEC_EXCHANGE_BYTES.get())
+        working += 16 * w_c * (send_rows + recv_rows + n_local)
+    return matrix + max(batch, working)
+
+
+def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None, width=1):
     """Collective: does the frozen ``P H P`` CSR fit the GF memory budget on every rank?
 
-    No budget (the guard is off) always fits. Otherwise the per-rank cost is estimated from the
-    mean ``H`` image size of a strided sample of local determinants -- an upper bound on the in-``P``
+    No budget (the guard is off) always fits. Otherwise the per-rank cost
+    (:func:`_frozen_matrix_need`, for a seed block ``width`` wide) is estimated from the mean ``H``
+    image size of a strided sample of local determinants -- an upper bound on the in-``P``
     nonzeros -- and compared with the budget left above the current RSS. Every rank enters the
     reductions whatever its own count (an empty rank estimates 0).
 
@@ -429,8 +461,8 @@ def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None):
         sampled += 1
         elements += len(image)
     fanout = elements / sampled if sampled else 0.0
-    batch = min(basis_transcription._SPARSE_BUILD_BATCH, n_local * fanout)
-    need = n_local * fanout * _CSR_BYTES_PER_ELEMENT + batch * _CSR_BATCH_BYTES_PER_ELEMENT
+    n_ranks = comm.size if comm is not None else 1
+    need = _frozen_matrix_need(n_local, fanout, frozen_basis.size, n_ranks, width)
     rss = current_rss_bytes()
     over = rss + need > memory_budget
     if comm is not None and comm.size > 1:
@@ -444,7 +476,7 @@ def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None):
     return not over
 
 
-def _frozen_csr_basis(proxy, basis, hOp, verbose, reason=""):
+def _frozen_csr_basis(proxy, basis, hOp, verbose, reason="", width=1):
     """Collective: the frozen retained set as a ``Basis`` if the ``P H P`` fallback should run, else ``None``.
 
     Declines when the freeze came from the memory guard -- RSS is already at budget then -- or when
@@ -457,7 +489,7 @@ def _frozen_csr_basis(proxy, basis, hOp, verbose, reason=""):
     comm = basis.comm
     frozen_basis = basis.clone_from_keys(proxy.retained_mask)
     report: dict = {}
-    fits = _frozen_csr_fits(frozen_basis, hOp, proxy.memory_budget, comm, report=report)
+    fits = _frozen_csr_fits(frozen_basis, hOp, proxy.memory_budget, comm, report=report, width=width)
     if verbose and (comm is None or comm.rank == 0):
         # What the decision used, so a decline can be checked against the measured peak instead of
         # backed out of VmHWM afterwards (the iteration-2 declines at 6-7 ranks could not be).
@@ -734,7 +766,7 @@ def block_Green_sparse(
             # If declined, the sparse kernel runs it frozen, and must not stop again on a freeze
             # it starts in.
             lanczos_basis.stop_on_freeze = False
-            frozen_basis = _frozen_csr_basis(lanczos_basis, basis, hOp, verbose)
+            frozen_basis = _frozen_csr_basis(lanczos_basis, basis, hOp, verbose, width=psi_arr.width)
             if frozen_basis is not None:
                 csr = _csr_green(frozen_basis, 0)
     while csr is None:
@@ -776,7 +808,7 @@ def block_Green_sparse(
         #                             the P H P CSR, or, if that declines, resume right here.
         if status == "frozen":
             lanczos_basis.stop_on_freeze = False
-            frozen_basis = _frozen_csr_basis(lanczos_basis, basis, hOp, verbose)
+            frozen_basis = _frozen_csr_basis(lanczos_basis, basis, hOp, verbose, width=psi_arr.width)
             if frozen_basis is not None:
                 # The stopped sparse state is only needed to resume a declined switch: release its
                 # Krylov store (reort != NONE) before the restart builds its own.
@@ -817,7 +849,12 @@ def block_Green_sparse(
                     stagnation_tol = None
                 else:
                     frozen_basis = _frozen_csr_basis(
-                        lanczos_basis, basis, hOp, verbose, reason=f" by stagnation (boundary weight {leakage:.1e})"
+                        lanczos_basis,
+                        basis,
+                        hOp,
+                        verbose,
+                        reason=f" by stagnation (boundary weight {leakage:.1e})",
+                        width=psi_arr.width,
                     )
                     if frozen_basis is not None:
                         lanczos_basis.freeze_for_stagnation()
