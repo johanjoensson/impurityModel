@@ -42,7 +42,8 @@ def _force_budget(monkeypatch, budget_bytes):
     heap trimmed between units can leave the current RSS *below* that entry figure."""
     from impurityModel.ed import gf_units as gu
 
-    monkeypatch.setattr(gu, "_gf_memory_budget", lambda available, resident: budget_bytes)
+    # Every budget the GF stage derives from it (the guard's and the frozen-CSR decision's).
+    monkeypatch.setattr(gu, "_gf_memory_budget", lambda available, resident, safety=None: budget_bytes)
 
 
 def _basis(comm, policy, split_threshold=None):
