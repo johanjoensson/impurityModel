@@ -526,6 +526,40 @@ GF_CSR_MEMORY_SAFETY = Knob(
     than the cap does. Ignored when the guard is off (``GS_MEMORY_BUDGET_SAFETY=0``).""",
 )
 
+GF_CLOSURE_FREEZE = Knob(
+    name="GF_CLOSURE_FREEZE",
+    kind="bool",
+    default=True,
+    group="units",
+    doc="""Switch a sparse Green's-function unit to the frozen ``P H P`` CSR once its support has stalled: a
+    whole window of blocks admitted no new determinant. Without it, only a unit that hits its cap (or the
+    memory guard) switches; one whose support stops growing *below* the cap pays the sparse kernel on every
+    block to the end (CrI3 at ``GS_MEMORY_BUDGET_SAFETY=0.75``: six units stalled at ~5.14M under a 6.69M
+    cap and ran ~115 sparse blocks in 2.0-2.7 ks each, against 230-300 s on the CSR when a smaller cap
+    froze them).
+
+    **A stalled support is not a closed one.** Rows below ``slaterWeightMin`` are cut on every step, and a
+    later vector can lift one above it: on small chains a support stood still for up to 50 blocks and then
+    grew again, so a 16-block window froze 1-6 determinants short of the 3432-determinant sector. What is
+    lost is bounded by the cutoff the sparse kernel applies anyway, and the frozen recurrence is the
+    *more* exact of the two on ``P``: the CSR keeps every element of ``P H P``, where the sparse kernel cuts
+    sub-cutoff amplitudes on rows inside ``P`` too. Measured against the dense resolvent on the whole
+    sector, the frozen ``G`` was never farther from it than the unfrozen one (1.2e-4 against 4.5e-3 at a
+    cutoff of 1e-2), so turning this on changes results relative to the sparse kernel by up to that
+    cutoff's error, toward the exact answer.
+
+    The window is ``gf_solvers._CLOSURE_WINDOW`` (16) blocks, or ``GF_STAGNATION_WINDOW`` for a unit that
+    ``GF_STAGNATION_FREEZE`` applies to; running in windows costs one resume (~1% of sparse time) per
+    window on a unit that never stalls. There is no near-end veto: the restart recomputes every block on the
+    CSR, at ~1/10-1/19 of a sparse block, so it can lose at most ~one window's worth of a unit.
+
+    It applies to every unit on the capped proxy -- which the GF memory guard installs by default, so
+    uncapped units too -- with ``reort='none'``, ``GF_FROZEN_CSR`` on, no ``krylov_dtype`` and no
+    ``GF_LANCZOS_ADMIT_TOL``; it is taken only if the CSR fits its memory budget. Reported as
+    ``closure_frozen`` on the unit line and in the ``gf_unit_memory`` / ``gf_unit_basis`` traces; it is not
+    a cap hit. ``0`` disables it.""",
+)
+
 GF_STAGNATION_FREEZE = Knob(
     name="GF_STAGNATION_FREEZE",
     kind="float",
@@ -1291,6 +1325,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_FROZEN_CSR,
     GF_SCHEDULER,
     GF_CSR_MEMORY_SAFETY,
+    GF_CLOSURE_FREEZE,
     GF_STAGNATION_FREEZE,
     GF_STAGNATION_WINDOW,
     GF_PER_STATE_RESTRICT,

@@ -40,6 +40,9 @@ CAP = 10**9  # finite, so the capped proxy is installed; far above anything thes
 def _hermetic_knobs(monkeypatch):
     for name in ("GF_STAGNATION_FREEZE", "GF_STAGNATION_WINDOW", "GF_FROZEN_CSR", "GF_APPLY_ROW_CHUNKS"):
         monkeypatch.delenv(name, raising=False)
+    # These pin GF_STAGNATION_FREEZE's own contract; GF_CLOSURE_FREEZE (test_gf_closure_freeze.py) would also
+    # fire on these fixtures, whose sectors saturate.
+    monkeypatch.setenv("GF_CLOSURE_FREEZE", "0")
 
 
 def _operator(n_orb=N_ORB, seed=3, strong=None, weak=1e-5):

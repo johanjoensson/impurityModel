@@ -247,6 +247,9 @@ class _CappedBasisProxy:
     #: Set by :meth:`freeze_for_stagnation`: the support was frozen below its cap because the weight reaching
     #: new rows had died away (``GF_STAGNATION_FREEZE``), not because the cap bound.
     stagnation_frozen = False
+    #: Set by :meth:`freeze_for_closure`: the support was frozen below its cap because a whole window of
+    #: blocks admitted no new determinant (``GF_CLOSURE_FREEZE``).
+    closure_frozen = False
     #: Measure the weight of the rows each matvec would add (see :meth:`track_leakage`). Off by default:
     #: the hot path then pays nothing and is bit-identical to a proxy that never had the option.
     _track_leakage = False
@@ -516,9 +519,19 @@ class _CappedBasisProxy:
         self._frozen = True
         self.stagnation_frozen = True
 
+    def freeze_for_closure(self):
+        """Freeze the retained set where it stands, because a whole window of blocks admitted no new row.
+
+        As :meth:`freeze_for_stagnation`, with nothing dropped that the window would have admitted. Not
+        collective; every rank calls it on the same step (the caller decides from the replicated count)."""
+        self._frozen = True
+        self.closure_frozen = True
+
     def freeze_message(self):
         """One-line description of the cap state (rank-0 logging)."""
-        if self.stagnation_frozen:
+        if self.closure_frozen:
+            why = "closure (no new determinant in a whole window of blocks, GF_CLOSURE_FREEZE)"
+        elif self.stagnation_frozen:
             why = "the weight reaching new determinants having died away (GF_STAGNATION_FREEZE)"
         else:
             why = "the measured-memory guard" if self.memory_frozen else f"the cap of {self.cap:,}"

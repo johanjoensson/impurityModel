@@ -633,6 +633,7 @@ def get_Greens_function(
                 retained_size=cap_stats.get("retained_size"),
                 seed_size=cap_stats.get("seed_size"),
                 cap_hit=bool(cap_stats["cap_hit"]),
+                closure_frozen=bool(cap_stats.get("closure_frozen", False)),
                 n_blocks=conv_stats.get("n_blocks"),
             )
             stats = cap_acc.setdefault(block_i, {"cap_hit": False, "retained_size": None, "cap": cap_stats["cap"]})

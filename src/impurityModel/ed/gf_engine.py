@@ -152,6 +152,7 @@ def _block_green_group(
             "memory_frozen": bool(cap_info.get("memory_frozen", False)),
             "stagnation_frozen": bool(cap_info.get("stagnation_frozen", False)),
             "stagnation_leakage": cap_info.get("stagnation_leakage"),
+            "closure_frozen": bool(cap_info.get("closure_frozen", False)),
             "csr_fallback": bool(cap_info.get("csr_fallback", False)),
             "csr_seconds": float(cap_info.get("csr_seconds", 0.0)),
         }
@@ -191,6 +192,7 @@ def _block_green_group(
         cap=float(cap) if np.isfinite(cap) else None,
         cap_hit=bool(cap_stats["cap_hit"]),
         csr_fallback=bool(cap_stats.get("csr_fallback", False)),
+        closure_frozen=bool(cap_stats.get("closure_frozen", False)),
         n_blocks=int(n_blocks) if n_blocks is not None else None,
         peak_rss_bytes=int(peak),
         peak_is_unit_transient=bool(peak_is_own),
@@ -202,6 +204,7 @@ def _block_green_group(
         # n_blocks is then the restarted CSR recurrence's count, and csr= its wall time.
         csr = f", csr={cap_stats['csr_seconds']:.1f} s" if cap_stats.get("csr_fallback") else ""
         stagnated = ", stagnation_frozen=True" if cap_stats.get("stagnation_frozen") else ""
+        stagnated += ", closure_frozen=True" if cap_stats.get("closure_frozen") else ""
         print(
             f"  {label}: excited basis {retained_display} determinants "
             f"(cap={cap:,.0f}, cap_hit={cap_stats['cap_hit']}{stagnated}{csr}) n_blocks={n_blocks} "
