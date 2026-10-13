@@ -167,9 +167,10 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
         xi = x0
         y_blk = y
         y_cols2 = y_blk.col_norm2()
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, y_cols2, op=MPI.SUM)
         tracker.seed(y_blk)
+    # Summed for either representation (a distributed array block holds only this rank's rows).
+    if mpi:
+        comm.Allreduce(MPI.IN_PLACE, y_cols2, op=MPI.SUM)
     y_scale = np.sqrt(np.max(y_cols2))
 
     R = residual(xi)
