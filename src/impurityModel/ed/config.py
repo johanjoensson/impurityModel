@@ -557,7 +557,26 @@ GF_CLOSURE_FREEZE = Knob(
     uncapped units too -- with ``reort='none'``, ``GF_FROZEN_CSR`` on, no ``krylov_dtype`` and no
     ``GF_LANCZOS_ADMIT_TOL``; it is taken only if the CSR fits its memory budget. Reported as
     ``closure_frozen`` on the unit line and in the ``gf_unit_memory`` / ``gf_unit_basis`` traces; it is not
-    a cap hit. ``0`` disables it.""",
+    a cap hit.
+
+    **The BiCGSTAB solves** (``gf_method="bicgstab"`` and the RIXS intermediate resolvent's per-point
+    fallback) take the same freeze in their own form: their right-hand side is the same for every
+    frequency of a unit, so once one point's solve admits nothing beyond its starting support, the
+    unit's remaining points solve on the frozen ``P H P`` (``gf_solvers._FrozenShiftedSystem``), built
+    once. Every frozen solution is checked against the full ``H``: when the part of ``(z - H) X`` outside
+    ``P`` and above ``slaterWeightMin`` exceeds the solve's tolerance, that point and the rest of the
+    eigenstate go back to the sparse solve, warm-started. Measured serially on a 3432-determinant chain whose
+    support saturates (``slaterWeightMin`` 0): 29 of 31 points frozen, 6.2x faster on the real axis and 6.6x
+    on the Matsubara axis, ``G`` equal to 3.8e-11. With a cutoff that keeps the support short of its sector
+    the freeze rarely fires (the cutoff keeps admitting rows); where it does, the frozen solve keeps
+    sub-cutoff amplitudes inside ``P`` and comes out closer to the exact ``G`` than the sparse one (5e-7
+    against 4e-2 at a 1e-6 cutoff), so results move toward it. Not after a cap hit (a capped support always leaks against the full ``H``, so every point
+    would come back), not on a unit's last point, not under ``GF_BICGSTAB_ADMISSION=outer`` (whose
+    support is chosen by policy), nor with ``GS_MATVEC_EXCHANGE=reduce`` (no column-scatter matvec).
+    The fit check budgets BiCGSTAB's and a GMRES escalation's dense blocks (``GF_GMRES_RESTART`` + 10)
+    on top of the matrix; with no memory budget (``GS_MEMORY_BUDGET_SAFETY=0``) it is not checked, as
+    for the Lanczos freeze. The RIXS shift-recycled resolvent does not take it: its cost is the full
+    reorthogonalization (85% of it on the same chain), not the matvec. ``0`` disables all of it.""",
 )
 
 GF_STAGNATION_FREEZE = Knob(

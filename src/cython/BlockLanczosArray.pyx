@@ -369,6 +369,13 @@ cdef void _scatter_segments(segments, int p, int c0, double complex[:, ::1] X, l
                 scatter_columns_nogil(col_begin, indptr, slots64, data, p, c0, X, send_rows, S, Y)
 
 
+def scatter_column_operator(segments, int p, int c0, double complex[:, ::1] X, long send_rows,
+                            double complex[:, ::1] S, double complex[:, ::1] Y):
+    """Python entry to :func:`_scatter_segments`, for a matvec outside this kernel (the frozen-basis
+    BiCGSTAB operator, ``gf_primitives.FrozenColumnMatvec``). ``S`` and ``Y`` must be zeroed first."""
+    _scatter_segments(segments, p, c0, X, send_rows, S, Y)
+
+
 cdef void apply_dense_nogil(
     int M, int K, int p,
     double complex[:, ::1] H,

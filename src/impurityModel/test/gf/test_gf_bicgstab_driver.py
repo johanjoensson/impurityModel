@@ -32,6 +32,14 @@ from impurityModel.test.support.gf_oracles import (
     _siam_6,
 )
 
+
+@pytest.fixture(autouse=True)
+def _sparse_solves(monkeypatch):
+    """The sparse per-point solve this file covers (GMRES escalation, caps, seed overflow); the frozen
+    P H P path, which would otherwise take most points, has test_gf_bicgstab_frozen.py."""
+    monkeypatch.setenv("GF_CLOSURE_FREEZE", "0")
+
+
 # --------------------------------------------------------------------------- #
 # Kernel: dense-resolvent oracle, both sides and axes
 # --------------------------------------------------------------------------- #

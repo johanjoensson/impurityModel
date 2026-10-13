@@ -32,15 +32,19 @@ from impurityModel.ed.cg import block_bicgstab
 from impurityModel.ed.gf_admission import solve_point_outer
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
+    FrozenColumnMatvec,
     _allreduced_col_norms2,
     _CappedBasisProxy,
     _distributed_seed_qr,
     _PrunedBasisProxy,
     _sanitize_continued_fraction,
     _trim_blocks,
+    block_to_local_dense,
+    boundary_residual,
     build_qr,
     calc_G,
     guarded_proxy,
+    local_dense_to_block,
     real_up_to_phase,
     residual_split,
     resolvent_error_bound,
@@ -417,13 +421,14 @@ _CLOSURE_WINDOW = 16
 _CSR_INITIAL_BLOCKS = 256
 
 
-def _frozen_matrix_need(n_local, fanout, n_global, n_ranks, width):
+def _frozen_matrix_need(n_local, fanout, n_global, n_ranks, width, work_blocks=_CSR_KERNEL_VECTORS):
     """Upper bound on the bytes this rank needs for the frozen ``P H P`` recurrence.
 
     The matrix (:data:`_CSR_BYTES_PER_ELEMENT` per element, ``n_local * fanout`` elements, plus its
     int64 column pointers), and on top of it the larger of the two phases that follow each other:
-    the build's batch transient, or the recurrence's working set -- :data:`_CSR_KERNEL_VECTORS`
-    Lanczos blocks and, on more than one rank, the graph exchange's send, receive and self buffers.
+    the build's batch transient, or the solver's working set -- ``work_blocks`` dense blocks
+    (:data:`_CSR_KERNEL_VECTORS` for the Lanczos recurrence; :func:`_bicgstab_work_blocks` for the
+    frozen BiCGSTAB/GMRES solves) and, on more than one rank, the graph exchange's send, receive and self buffers.
     Those are row-sized, not element-sized: up to every other rank's rows go out (``n_global -
     n_local``) and ``n_local`` rows come back from each other rank, ``w_c`` columns at a time, and
     ``w_c`` is at least one column whatever ``GS_MATVEC_EXCHANGE_BYTES`` says
@@ -433,7 +438,7 @@ def _frozen_matrix_need(n_local, fanout, n_global, n_ranks, width):
     elements = n_local * fanout
     matrix = elements * _CSR_BYTES_PER_ELEMENT + 8 * (n_local + 1)
     batch = min(basis_transcription._SPARSE_BUILD_BATCH, elements) * _CSR_BATCH_BYTES_PER_ELEMENT
-    working = _CSR_KERNEL_VECTORS * 16 * n_local * width
+    working = work_blocks * 16 * n_local * width
     if n_ranks > 1:
         send_rows = max(n_global - n_local, 0)
         recv_rows = n_local * (n_ranks - 1)
@@ -442,7 +447,7 @@ def _frozen_matrix_need(n_local, fanout, n_global, n_ranks, width):
     return matrix + max(batch, working)
 
 
-def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None, width=1):
+def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None, width=1, work_blocks=_CSR_KERNEL_VECTORS):
     """Collective: does the frozen ``P H P`` CSR fit the GF memory budget on every rank?
 
     No budget (the guard is off) always fits. Otherwise the per-rank cost
@@ -469,7 +474,7 @@ def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None, width=
         elements += len(image)
     fanout = elements / sampled if sampled else 0.0
     n_ranks = comm.size if comm is not None else 1
-    need = _frozen_matrix_need(n_local, fanout, frozen_basis.size, n_ranks, width)
+    need = _frozen_matrix_need(n_local, fanout, frozen_basis.size, n_ranks, width, work_blocks)
     rss = current_rss_bytes()
     over = rss + need > memory_budget
     if comm is not None and comm.size > 1:
@@ -1098,6 +1103,128 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
     return X
 
 
+class _ShiftedFrozenOperator:
+    """``z - P H P`` on a frozen basis's local rows: what ``block_bicgstab``/``block_gmres`` take as an
+    array operator with its own distributed matvec (``BiCGSTAB._make_matmat``)."""
+
+    def __init__(self, z, matvec):
+        self.z = complex(z)
+        self._matvec = matvec
+
+    def matmat(self, V):
+        V = np.asarray(V)
+        return self.z * V - self._matvec.apply(V)
+
+
+class _FrozenShiftedSystem:
+    r"""The per-frequency resolvent ``(z - P H P) X = Y`` on a frozen support ``P``, for every remaining
+    shift of one right-hand side.
+
+    The BiCGSTAB drivers (:func:`block_Green_bicgstab`, the RIXS R1 fallback) solve one point at a time
+    on a sparse basis rebuilt per point, so every BiCGSTAB matvec applies ``H`` to every row of the
+    support. Their right-hand side is the same for every shift of a unit, so once a point's solve
+    admits no new determinant (or the cap freezes it), the support is the one the next points will
+    reach too, and the frozen ``P H P`` -- built once, the CSR the Lanczos fallback uses -- serves them
+    at one SpMV per matvec. Each solution is checked against the full ``H`` by :meth:`boundary`, the
+    rows the sparse solve would have admitted; the caller falls back to the sparse solve when that is
+    not below its tolerance, so a support the next shift outgrows is caught, not assumed away.
+
+    Collective on ``frozen_basis.comm`` (construction, :meth:`solve`, :meth:`gram`, :meth:`boundary`).
+    """
+
+    def __init__(self, frozen_basis, hOp, seeds, n_cols):
+        self.basis = frozen_basis
+        self.n_cols = int(n_cols)
+        self.size = int(frozen_basis.size)
+        self.comm = frozen_basis.comm
+        self.matvec = FrozenColumnMatvec(build_local_column_operator(frozen_basis, hOp), self.comm, self.n_cols)
+        self.seeds = block_to_local_dense(frozen_basis, ManyBodyState.from_states(list(seeds)), self.n_cols)
+        norms2 = np.sum(np.abs(self.seeds) ** 2, axis=0)
+        if self.comm is not None:
+            self.comm.Allreduce(MPI.IN_PLACE, norms2, op=MPI.SUM)
+        self.seed_norms = np.sqrt(norms2)
+
+    def to_dense(self, states):
+        return block_to_local_dense(self.basis, ManyBodyState.from_states(list(states)), self.n_cols)
+
+    def to_block(self, dense):
+        return local_dense_to_block(self.basis, dense)
+
+    def solve(self, z, x0, atol, max_iter, info, rtol=0.0):
+        """``X`` (local dense rows) with ``(z - P H P) X = Y``; ``info`` as :func:`solve_shifted_block`'s.
+        Bounded like the sparse path, which stops at ``iterations * rank >= |support|`` with ``rank`` the
+        deflated rank of the initial residual -- at least 1, so ``|P|`` iterations at most."""
+        bound = self.size + 1
+        bound = bound if max_iter is None else min(bound, int(max_iter))
+        with self.matvec.session():
+            return solve_shifted_block(
+                _ShiftedFrozenOperator(z, self.matvec),
+                x0,
+                self.seeds,
+                self.basis,
+                0.0,
+                atol,
+                rtol=rtol,
+                max_iter=bound,
+                info=info,
+            )
+
+    def gram(self, X):
+        """``G[i, j] = <seed_i | X_j>``, summed over the ranks."""
+        gram = np.ascontiguousarray(self.seeds.conj().T @ X)
+        if self.comm is not None:
+            self.comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
+        return gram
+
+    def boundary(self, A_op, X_block, slaterWeightMin):
+        """Per column, ``||(1 - P) A X||`` relative to ``||Y||``, over the rows the sparse solve would have
+        admitted. That solve runs on the normalized system (unit right-hand-side columns), so its
+        ``slaterWeightMin`` is relative to ``||Y||``, and so is the cut here: an absolute cut is lax for
+        small seeds and strict for large ones (measured: seeds scaled by 1e-3 and 1e3 froze 0 and 9 of
+        the same points)."""
+        if hasattr(A_op, "set_restrictions"):
+            A_op.set_restrictions(self.basis.restrictions)
+        cutoff = slaterWeightMin * float(np.max(self.seed_norms)) if len(self.seed_norms) else 0.0
+        b = boundary_residual(A_op, X_block, self.basis, self.n_cols, cutoff, self.comm)
+        return b / np.maximum(self.seed_norms, np.finfo(float).tiny)
+
+
+def _bicgstab_work_blocks():
+    """Dense ``(n_local, width)`` blocks a frozen solve holds: BiCGSTAB's iterates and the restart
+    loop's copies (measured 14.1), or, on a GMRES escalation, its Krylov basis of ``GF_GMRES_RESTART``
+    blocks plus its own (measured 49.3 at the default 40)."""
+    return max(15, config.GF_GMRES_RESTART.get() + 10)
+
+
+def _freeze_bicgstab_support(tmp_basis, hOp, seeds, n_cols, verbose):
+    """Collective: a :class:`_FrozenShiftedSystem` on ``tmp_basis``'s current support, or ``None`` when the
+    frozen matrix would not fit its budget or the exchange cannot run it.
+
+    ``tmp_basis`` is cleared either way: the next point either solves frozen or rebuilds it, so its
+    copy of the support is dropped before the matrix is sized (and is not held next to the frozen
+    basis's)."""
+    comm = tmp_basis.comm
+    if not FrozenColumnMatvec.available(comm):
+        return None
+    frozen_basis = tmp_basis.clone_from_keys(tmp_basis._keys)
+    tmp_basis.clear()
+    budget = getattr(tmp_basis, "gf_csr_memory_budget", None)
+    if budget is None:
+        budget = getattr(tmp_basis, "gf_memory_budget", None)
+    report = {}
+    fits = _frozen_csr_fits(
+        frozen_basis, hOp, budget, comm, report=report, width=n_cols, work_blocks=_bicgstab_work_blocks()
+    )
+    if verbose and (comm is None or comm.rank == 0):
+        verdict = "fits" if fits else "would not fit; the solves stay sparse"
+        print(
+            f"BiCGSTAB support stalled at {frozen_basis.size:,} determinants: the P H P matrix {verdict}.", flush=True
+        )
+    if not fits:
+        return None
+    return _FrozenShiftedSystem(frozen_basis, hOp, seeds, n_cols)
+
+
 def block_Green_bicgstab(
     hOp,
     psi_arr,
@@ -1237,9 +1364,23 @@ def block_Green_bicgstab(
 
     # Freed in `finally` so a solve that raises on every rank does not leak the cloned
     # communicator (review ledger M4); collective, every rank of the color runs this unit.
+    # GF_CLOSURE_FREEZE: once a point's solve admits no new determinant (or the cap freezes it), the
+    # remaining points of the eigenstate solve on the frozen P H P (_FrozenShiftedSystem). Rank 0 reads
+    # the knob and broadcasts it, so every rank takes the same branch.
+    closure = config.GF_CLOSURE_FREEZE.get() if sub_comm is None or sub_comm.rank == 0 else None
+    if sub_comm is not None:
+        closure = sub_comm.bcast(closure, root=0)
+    closure = bool(closure) and admission != "outer"
+    stats["frozen_points"] = 0
+    stats["frozen_fallbacks"] = 0
+    stats["frozen_size"] = None
     try:
         for p in range(n_e):
             seeds = list(psi_arr[p * n_ops : (p + 1) * n_ops])
+            # The frozen system serves every axis of this eigenstate (same seeds); a fallback ends it.
+            frozen = None
+            freeze_ok = closure
+            points_left = sum(len(z_axis) for z_axis in z_axes)  # this eigenstate's points still to solve
             # Global seed support (distinct determinants over the eigenstate's columns): the floor
             # below which no per-point basis can go. Counted at this eigenstate's first point,
             # after the rebuild's redistribute_psis has given every determinant exactly one owner.
@@ -1270,6 +1411,31 @@ def block_Green_bicgstab(
                     A_op.set_weighted_restrictions(excited_weighted_restrictions)
 
                     admission_record = None
+                    frozen_used = False
+                    if frozen is not None:
+                        info = {}
+                        X_dense = frozen.solve(z, frozen.to_dense(x0), atol, max_iter, info)
+                        X = frozen.to_block(X_dense)
+                        leak = frozen.boundary(A_op, X, slaterWeightMin)
+                        if np.all(leak <= atol):
+                            frozen_used = True
+                            solve_basis = frozen.basis
+                            rebuild_size = frozen.size
+                            stats["frozen_points"] += 1
+                        else:
+                            # The support this shift needs is larger than the frozen one: solve it
+                            # sparse from here on, warm-started from the frozen solution.
+                            if verbose and (sub_comm is None or sub_comm.rank == 0):
+                                print(
+                                    f"BiCGSTAB frozen support left {float(np.max(leak)):.1e} of the right-hand "
+                                    f"side outside it at z = {z:.4g} (tolerance {atol:.1e}): back to the sparse "
+                                    "solve for this eigenstate.",
+                                    flush=True,
+                                )
+                            stats["frozen_fallbacks"] += 1
+                            x0 = X.to_states()
+                            frozen = None
+                            freeze_ok = False
                     if admission == "outer":
                         # Importance-admitted basis: rebuilds and solves inside (gf_admission).
                         X, seeds, info, admission_record, solve_basis = solve_point_outer(
@@ -1295,7 +1461,7 @@ def block_Green_bicgstab(
                         stats["max_rebuild_basis"] = max(stats["max_rebuild_basis"], rebuild_size)
                         if np.isfinite(cap) and rebuild_size > cap:
                             stats["seed_overflow"] = True
-                    else:
+                    elif not frozen_used:
                         # Rebuild-and-discard: the basis holds only this point's seed + warm-start
                         # support; redistribute_psis aligns the amplitudes to the fresh ownership
                         # layout (the solver assumes its states are distributed per `basis`).
@@ -1344,9 +1510,22 @@ def block_Green_bicgstab(
                         stats["gmres_iterations"] += info["gmres_iterations"]
                     if not info["converged"]:
                         stats["n_unconverged"] += 1
-                    solve_size = int(tmp_basis.size)
+                    solve_size = frozen.size if frozen_used else int(tmp_basis.size)
                     stats["max_solve_basis"] = max(stats["max_solve_basis"], solve_size)
                     point_cap_hit = isinstance(solve_basis, _CappedBasisProxy) and solve_basis.cap_hit
+                    points_left -= 1
+                    # This point's solve admitted nothing beyond its starting support: freeze it for
+                    # the eigenstate's remaining points (at the end of this point; the residual check
+                    # below still reads tmp_basis). All replicated. Not after a cap hit: the capped
+                    # support always leaks against the full H, so the frozen check would send every
+                    # point back (measured: 0 frozen, 1 fallback per eigenstate).
+                    freeze_now = (
+                        freeze_ok
+                        and frozen is None
+                        and points_left > 0
+                        and not point_cap_hit
+                        and solve_size <= rebuild_size
+                    )
                     if point_cap_hit:
                         stats["cap_hit"] = True
                         retained = solve_basis.retained_size
@@ -1357,13 +1536,17 @@ def block_Green_bicgstab(
                         # Y and the solve's own A_op, on the RAW basis (the proxy would keep_rows the
                         # boundary away); the retained set is the proxy's mask when there is one,
                         # else the basis itself (nothing was excluded).
-                        mask = (
-                            solve_basis.retained_mask
-                            if isinstance(solve_basis, _CappedBasisProxy)
-                            else ManyBodyState.from_keys(tmp_basis.local_basis)
-                        )
+                        if frozen_used:
+                            res_basis, mask = solve_basis, solve_basis._keys
+                        else:
+                            res_basis = tmp_basis
+                            mask = (
+                                solve_basis.retained_mask
+                                if isinstance(solve_basis, _CappedBasisProxy)
+                                else ManyBodyState.from_keys(tmp_basis.local_basis)
+                            )
                         seed_block = ManyBodyState.from_states(seeds)
-                        r_p, b = residual_split(A_op, X, seed_block, tmp_basis, mask, n_ops, sub_comm)
+                        r_p, b = residual_split(A_op, X, seed_block, res_basis, mask, n_ops, sub_comm)
                         s_norm = np.sqrt(_allreduced_col_norms2(seed_block, n_ops, sub_comm))
                         symmetric = (
                             real_up_to_phase(seed_block, n_ops, sub_comm) if h_is_real else np.zeros(n_ops, dtype=bool)
@@ -1387,6 +1570,7 @@ def block_Green_bicgstab(
                             "rebuild_size": rebuild_size,
                             "solve_size": solve_size,
                             "cap_hit": bool(point_cap_hit),
+                            "frozen": bool(frozen_used),
                             "converged": bool(info["converged"]),
                             "rel_residual": float(info["rel_residual"]),
                             "iterations": int(info["iterations"]),
@@ -1398,9 +1582,12 @@ def block_Green_bicgstab(
 
                     # G_e[i, j] = <seed_i | X_j>; both blocks live on tmp_basis's layout, so the
                     # local Gram + Allreduce is the whole inner product (no state-vector gather).
-                    gram = block_inner_cy(ManyBodyState.from_states(seeds), X)
-                    if sub_comm is not None:
-                        sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
+                    if frozen_used:
+                        gram = frozen.gram(X_dense)
+                    else:
+                        gram = block_inner_cy(ManyBodyState.from_states(seeds), X)
+                        if sub_comm is not None:
+                            sub_comm.Allreduce(MPI.IN_PLACE, gram, op=MPI.SUM)
                     G_axes[ax][p, k] = gram
 
                     if warm_history > 0:
@@ -1409,6 +1596,11 @@ def block_Green_bicgstab(
                         if len(hist_z) > warm_history:
                             hist_z.pop(0)
                             hist_x.pop(0)
+                    if freeze_now:
+                        frozen = _freeze_bicgstab_support(tmp_basis, hOp, seeds, n_ops, verbose)
+                        freeze_ok = frozen is not None
+                        if frozen is not None:
+                            stats["frozen_size"] = frozen.size
                 if verbose and (sub_comm is None or sub_comm.rank == 0):
                     print(
                         f"    axis {ax}, eigenstate {p}: {len(z_shifted)} solves, "

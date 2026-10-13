@@ -7,6 +7,8 @@ compatibility) so the solver-policy code in that module and in :mod:`gf_converge
 either of those two, or from :mod:`greens_function` itself.
 """
 
+from contextlib import contextmanager
+
 import numpy as np
 import scipy as sp
 from mpi4py import MPI
@@ -915,3 +917,120 @@ def calc_G(alphas, betas, r, omega, e, delta):
     G_inv = _block_cf_inverse(alphas, betas, omegaP)
     r_b = np.broadcast_to(r, (omegaP.shape[0],) + r.shape)
     return np.conj(r.T)[np.newaxis] @ np.linalg.solve(G_inv, r_b)
+
+
+class FrozenColumnMatvec:
+    """``Y = H X`` on a frozen basis's local rows, through the frozen ``P H P`` the array Lanczos kernel
+    uses (``basis_transcription.LocalColumnOperator``) and the same graph exchange.
+
+    The kernel keeps this matvec inline; this is it on its own, for solvers that are not the kernel
+    (the frozen-basis BiCGSTAB of ``gf_solvers._FrozenShiftedSystem``). The exchange plan is held only
+    inside :meth:`session` -- one solve -- never across calls: its graph communicator lives in
+    ``mpi_comm``'s FIFO cache, which other redistributions on the same communicator (the solve's leak
+    check) can evict and ``Free()`` (``MatvecExchangePlan``'s own rule). Re-planning is three small
+    collectives; the operator's slots are bound once, as the plan's layout is the same every time.
+
+    The ``reduce`` exchange mode has no column-scatter matvec (the kernel converts to a CSR there),
+    so :func:`available` says whether this can be used at all.
+    """
+
+    def __init__(self, op, comm, width):
+        self.op = op
+        self.n_local = int(op.shape[1])
+        self.comm = comm
+        self.width = int(width)
+        self.plan = None
+        self._counts = self._offsets = self._flags = None
+        if comm is not None and comm.size > 1:
+            counts = np.empty(comm.size, dtype=np.int64)
+            comm.Allgather(np.array([self.n_local], dtype=np.int64), counts)
+            self._counts = counts
+            self._offsets = np.concatenate(([0], np.cumsum(counts)[:-1])).astype(np.int64)
+            self._flags = op.owner_flags(counts, self._offsets)
+        else:
+            op.bind_slots(0, np.zeros(1, dtype=np.int64), [], np.zeros(1, dtype=np.int64), 0)
+
+    @staticmethod
+    def available(comm):
+        from impurityModel.ed.mpi_comm import matvec_exchange_mode
+
+        return comm is None or comm.size == 1 or matvec_exchange_mode() == "graph"
+
+    @contextmanager
+    def session(self):
+        """Collective: hold an exchange plan for the matvecs of one solve."""
+        if self._counts is None:
+            yield self
+            return
+        from impurityModel.ed import config
+        from impurityModel.ed.mpi_comm import MatvecExchangePlan
+
+        plan = MatvecExchangePlan(
+            self.comm, self._counts, self._offsets, self._flags, self.width, config.GS_MATVEC_EXCHANGE_BYTES.get()
+        )
+        self.op.bind_slots(
+            self.comm.rank, self._offsets, plan.destinations, plan.send_row_offsets, plan.total_send_rows
+        )
+        self.plan = plan
+        try:
+            yield self
+        finally:
+            self.plan = None
+
+    def apply(self, X):
+        """``H X`` for this rank's ``(n_local, w)`` rows of ``X``; collective (inside :meth:`session`)."""
+        from impurityModel.ed.BlockLanczosArray import scatter_column_operator
+
+        X = np.ascontiguousarray(X, dtype=complex)
+        w = X.shape[1]
+        Y = np.zeros((self.n_local, w), dtype=complex)
+        if self._counts is None:
+            scatter_column_operator(self.op.segments, w, 0, X, 0, np.empty((0, w), dtype=complex), Y)
+            return Y
+        if self.plan is None:
+            raise RuntimeError("FrozenColumnMatvec.apply outside a session(): no exchange plan")
+        for c0, c1 in self.plan.column_rounds(w):
+            wc = c1 - c0
+            send = self.plan.send_buffer(wc)
+            own = self.plan.self_slot(wc)
+            send[...] = 0.0
+            own[...] = 0.0
+            scatter_column_operator(self.op.segments, wc, c0, X, self.plan.total_send_rows, send, own)
+            self.plan.exchange(wc)
+            self.plan.accumulate(Y[:, c0:c1], wc)
+        return Y
+
+
+def block_to_local_dense(basis, block, width):
+    """This rank's ``(n_local, width)`` rows of ``block`` in ``basis``'s local order; rows outside the
+    basis are dropped. Key merges in C++ (no Python object per determinant): the zero block over the
+    basis's sorted keys plus ``block`` restricted to them has exactly the basis's rows, in its order.
+    ``block`` must be distributed by ``basis``'s ownership. Rank-local."""
+    keys = basis._keys
+    n_local = len(keys)
+    dense = ManyBodyState.from_keys_and_amps(keys, np.zeros((n_local, width), dtype=complex))
+    if block.width == width and len(block):
+        inside = block.copy()
+        inside.keep_rows(keys)
+        dense += inside
+    out = np.array(np.asarray(dense), dtype=complex, order="C").reshape(n_local, width)
+    return out
+
+
+def local_dense_to_block(basis, dense):
+    """The inverse of :func:`block_to_local_dense`: a ``ManyBodyState`` over ``basis``'s local keys."""
+    return ManyBodyState.from_keys_and_amps(basis._keys, np.ascontiguousarray(dense, dtype=complex))
+
+
+def boundary_residual(A_op, X, basis, n_cols, slaterWeightMin, comm):
+    r"""Column norms of ``(1 - P) A X`` above ``slaterWeightMin``: what a frozen solve left out that the
+    sparse solver, which admits every row at or above the cutoff, would have taken in.
+
+    ``X`` lives on ``basis`` (= ``P``); one full sparse matvec, summed on the owners before the cut,
+    the order every other redistributed matvec cuts in. Collective over ``comm``."""
+    AX = basis.redistribute_block(A_op.apply_block(X, 0.0))
+    outside = AX.copy()
+    outside.keep_rows(AX.keys_new_above(basis._keys, 0.0))
+    if slaterWeightMin > 0:
+        outside.prune_rows(slaterWeightMin)
+    return np.sqrt(_allreduced_col_norms2(outside, n_cols, comm))

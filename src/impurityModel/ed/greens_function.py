@@ -956,10 +956,20 @@ def _run_evaluated_gf_units(
                 "max_rebuild_basis": 0,
                 "max_dG_bound": None,
                 "max_boundary": None,
+                "frozen_points": 0,
+                "frozen_fallbacks": 0,
             },
         )
-        for key in ("n_points", "n_unconverged", "iterations", "gmres_points", "gmres_iterations"):
-            agg[key] += stats[key]
+        for key in (
+            "n_points",
+            "n_unconverged",
+            "iterations",
+            "gmres_points",
+            "gmres_iterations",
+            "frozen_points",
+            "frozen_fallbacks",
+        ):
+            agg[key] += stats.get(key, 0)
         for key in ("max_rel_residual", "max_solve_basis", "max_rebuild_basis"):
             agg[key] = max(agg[key], stats[key])
         for key in ("max_dG_bound", "max_boundary"):
@@ -1011,7 +1021,8 @@ def _run_evaluated_gf_units(
         if verbose:
             print(
                 f"block {block}: {agg['n_points']} bicgstab solves, {agg['iterations']} iterations "
-                f"({agg['gmres_points']} GMRES-fallback points, {agg['gmres_iterations']} of the iterations), "
+                f"({agg['gmres_points']} GMRES-fallback points, {agg['gmres_iterations']} of the iterations; "
+                f"{agg['frozen_points']} on a frozen P H P, {agg['frozen_fallbacks']} back to sparse), "
                 f"max per-point basis {agg['max_solve_basis']:,} "
                 f"(rebuild floor {agg['max_rebuild_basis']:,}), "
                 f"max residual {agg['max_rel_residual']:.1e}",
