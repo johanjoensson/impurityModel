@@ -129,6 +129,61 @@ def test_prune_rows_any_column_survives():
     assert len(blk3) == 0
 
 
+def test_prune_rows_returns_the_weight_of_the_dropped_rows():
+    """Whole dropped rows count with every column; a kept row counts nothing, even its sub-cutoff column."""
+    kept = ManyBodyState({_det(1): 1e-9 + 0j, _det(2): 1e-8 + 0j})
+    rescue = ManyBodyState({_det(1): 1.0 + 0j, _det(2): 2e-8 + 3e-8j})
+    blk = ManyBodyState.from_states([kept, rescue])
+    # det(1) is rescued by column 1; det(2) is below the cut in both columns and dropped.
+    dropped = blk.prune_rows(1e-6)
+    assert len(blk) == 1
+    assert dropped == pytest.approx(1e-16 + 4e-16 + 9e-16, rel=1e-12)
+    assert blk.prune_rows(1e-6) == 0.0, "nothing left to drop"
+
+
+def test_prune_rows_weighs_the_dropped_rows_through_a_gram_matrix():
+    """With G = B B^H the dropped weight is the dropped rows' |row @ B|^2 -- against numpy."""
+    rng = np.random.default_rng(7)
+    states = _random_states(rng, 3, 12)
+    blk = ManyBodyState.from_states(states)
+    keys, _ = blk.row_max_norms2()
+    dense = np.array([[s[k][0] if k in s else 0j for s in states] for k in keys])
+    cut = float(np.sqrt(np.median(np.max(np.abs(dense) ** 2, axis=1))))
+    gone = np.max(np.abs(dense) ** 2, axis=1) <= cut**2
+    assert 0 < gone.sum() < len(keys), "premise: the cut drops some rows and keeps others"
+    B = rng.normal(size=(3, 3)) + 1j * rng.normal(size=(3, 3))
+    want = float(np.sum(np.abs(dense[gone] @ B) ** 2))
+    got = blk.copy().prune_rows(cut, B @ B.conj().T)
+    assert got == pytest.approx(want, rel=1e-12)
+    plain = blk.copy().prune_rows(cut)
+    assert plain == pytest.approx(float(np.sum(np.abs(dense[gone]) ** 2)), rel=1e-12)
+    with pytest.raises(ValueError):
+        blk.copy().prune_rows(cut, np.eye(2))
+
+
+def test_prune_rows_on_an_empty_block_drops_nothing():
+    assert ManyBodyState.from_states([ManyBodyState(width=1)]).prune_rows(1e-3) == 0.0
+    assert ManyBodyState(width=2).prune_rows(1e-3, np.eye(2)) == 0.0
+
+
+def test_new_rows_stats_counts_and_weighs_the_rows_outside_the_mask():
+    rng = np.random.default_rng(11)
+    states = _random_states(rng, 2, 16)
+    blk = ManyBodyState.from_states(states)
+    keys, _ = blk.row_max_norms2()
+    inside = keys[::2]
+    mask = ManyBodyState.from_keys(inside)
+    outside = [k for k in keys if k not in set(inside)]
+    want = sum(abs(s[k][0]) ** 2 for s in states for k in outside if k in s)
+    n, weight = blk.new_rows_stats(mask)
+    assert n == len(outside) and n == len(blk) - blk.count_rows_in(mask)
+    assert weight == pytest.approx(want, rel=1e-12)
+    # Frobenius, not the max column: the two differ on this block.
+    assert weight > float(np.sum(blk.new_row_max_norms2(mask)))
+    assert ManyBodyState(width=2).new_rows_stats(mask) == (0, 0.0)
+    assert blk.new_rows_stats(ManyBodyState.from_keys(keys)) == (0, 0.0)
+
+
 def test_buffer_view_zero_copy_write_through():
     rng = np.random.default_rng(4)
     states = _random_states(rng, 3, 20, sparsity=1.0)

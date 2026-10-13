@@ -699,15 +699,31 @@ cdef class ManyBodyState:
             self.b.scale_inv(s)
         return self
 
-    def prune_rows(self, double cutoff):
+    def prune_rows(self, double cutoff, gram=None):
         """Drop rows where ALL columns satisfy the ``ManyBodyState.prune`` test
         (``|amp|^2 <= cutoff^2``); a row survives if ANY column survives. This keeps
         the support shared across the block — the deliberate semantic difference vs
-        pruning p independent states."""
+        pruning p independent states.
+
+        Returns the weight the cut dropped: ``sum |row|^2`` over the dropped rows, or, with
+        ``gram`` (a ``width x width`` Hermitian ``G = B B^H``), ``sum Re(row G row^H)`` -- the
+        weight those rows carry in ``block @ B``."""
         if self._n_exports > 0:
             raise RuntimeError("cannot prune_rows while a buffer view is exported (np.asarray view alive)")
-        self.b.prune_rows(cutoff)
+        cdef double dropped
+        cdef double complex[:, ::1] g
+        if gram is None:
+            dropped = self.b.prune_rows(cutoff)
+        else:
+            g = np.ascontiguousarray(gram, dtype=complex)
+            if g.shape[0] != self.b.width() or g.shape[1] != self.b.width():
+                raise ValueError(f"gram must be {self.b.width()} x {self.b.width()}, got {g.shape[0]} x {g.shape[1]}")
+            if self.b.width() == 0:
+                dropped = self.b.prune_rows(cutoff)
+            else:
+                dropped = self.b.prune_rows(cutoff, <ManyBodyBlockState_cpp.Value*> &g[0, 0])
         self._bump_generation()
+        return dropped
 
     def prune(self, double cutoff):
         """Alias for :meth:`prune_rows` -- parity with the flat_map class's
@@ -716,8 +732,8 @@ cdef class ManyBodyState:
         :meth:`prune_rows`, not a per-entry one; kept under this name so call sites
         written against the flat_map class's ``psi.prune(cutoff)`` (``gf_solvers.py``,
         ``greens_function.py``, ``rixs.py``) keep working once their producer is a
-        width-1 block."""
-        self.prune_rows(cutoff)
+        width-1 block. Returns the dropped weight, as :meth:`prune_rows`."""
+        return self.prune_rows(cutoff)
 
     def keep_rows(self, ManyBodyState mask):
         """Keep only rows whose determinant appears in ``mask``'s support (the
@@ -806,6 +822,15 @@ cdef class ManyBodyState:
         for i in range(<Py_ssize_t>out.size()):
             rv[i] = out[i]
         return res
+
+    def new_rows_stats(self, ManyBodyState mask):
+        """``(n, weight)``: the number of rows NOT in ``mask``'s support and their summed
+        ``|amp|^2`` over every column (one merge pass; ``(0, 0.0)`` for an empty or width-0
+        block)."""
+        cdef pair[size_t, double] out
+        with nogil:
+            out = self.b.new_rows_stats(mask.b.key_store())
+        return int(out.first), float(out.second)
 
     def keys_new_above(self, ManyBodyState mask, double cutoff2):
         """Width-0 key-only block of the rows NOT in ``mask`` whose max column

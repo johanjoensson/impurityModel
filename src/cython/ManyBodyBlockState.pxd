@@ -2,6 +2,7 @@
 
 from SlaterDeterminant cimport SlaterDeterminant
 from libcpp.vector cimport vector
+from libcpp.pair cimport pair
 from libcpp.complex cimport complex
 from libc.stdint cimport uint64_t
 
@@ -91,7 +92,8 @@ cdef extern from "ManyBodyBlockState.h" nogil:
         ManyBodyBlockState operator*(Value, const ManyBodyBlockState&) except +
         ManyBodyBlockState operator/(const ManyBodyBlockState&, Value) except +
 
-        void prune_rows(double)
+        double prune_rows(double)
+        double prune_rows(double, const Value*)
         void keep_rows(const vector[Key]&) except +
         void keep_rows(const FlatKeyStore&) except +
         ManyBodyBlockState row_slice(size_t, size_t) except +
@@ -100,6 +102,7 @@ cdef extern from "ManyBodyBlockState.h" nogil:
         size_t count_rows_in(const FlatKeyStore&)
         void new_row_max_norm2(const vector[Key]&, vector[double]&) except +
         void new_row_max_norm2(const FlatKeyStore&, vector[double]&) except +
+        pair[size_t, double] new_rows_stats(const FlatKeyStore&)
         ManyBodyBlockState keys_new_above(const vector[Key]&, double) except +
         ManyBodyBlockState keys_new_above(const FlatKeyStore&, double) except +
         ManyBodyBlockState key_union(const ManyBodyBlockState&) except +
