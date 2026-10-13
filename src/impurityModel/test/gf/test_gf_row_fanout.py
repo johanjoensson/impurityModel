@@ -146,3 +146,14 @@ def test_the_spectra_driver_has_its_operator_measured(monkeypatch):
     gs, e0, dets = _ground_state_half_filled(op)
     _run(op, [ManyBodyOperator({((0, "a"),): 1.0})], gs, e0, _fresh_basis(dets), True, monkeypatch)
     assert seen and all(o is op for o in seen), "the spectra driver did not hand its Hamiltonian to the engine"
+
+
+def test_a_pinned_gf_cap_under_an_auto_ground_state_cap_is_not_described_as_auto():
+    """``CapPolicy(gs=None, gf=N, from_memory=True)``: the GF cap is the user's, and no fan-out is measured."""
+    from types import SimpleNamespace
+
+    from impurityModel.ed.memory_estimate import CapPolicy
+
+    basis = SimpleNamespace(cap_policy=CapPolicy(gs=None, gf=12_421_614, from_memory=True))
+    line = gf_units._describe_gf_cap(basis, 12_421_614, "layout")
+    assert "set by you" in line and "auto" not in line and "fan-out" not in line, line

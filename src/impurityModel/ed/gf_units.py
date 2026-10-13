@@ -67,6 +67,8 @@ def _describe_gf_cap(basis, cap, layout):
         how = "no cap; the GF memory guard may hold a unit lower"
     elif not policy.from_memory:
         how = "set by you; final"
+    elif not _is_auto_gf(basis):
+        how = "set by you; the GF memory guard may hold a unit lower"
     else:
         how = "auto, sized for the Green's-function path; the GF memory guard may hold a unit lower"
         fanout = _row_fanout(basis)
