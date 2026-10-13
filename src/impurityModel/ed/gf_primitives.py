@@ -1027,10 +1027,17 @@ def boundary_residual(A_op, X, basis, n_cols, slaterWeightMin, comm):
     sparse solver, which admits every row at or above the cutoff, would have taken in.
 
     ``X`` lives on ``basis`` (= ``P``); one full sparse matvec, summed on the owners before the cut,
-    the order every other redistributed matvec cuts in. Collective over ``comm``."""
+    the order every other redistributed matvec cuts in. Collective over ``comm``.
+
+    The norms are broadcast from rank 0, so they are bitwise identical on every rank: callers compare them
+    with a tolerance and pick different collectives on the answer (the frozen solve's accept or the sparse
+    fallback), and MPI does not promise an Allreduce returns the same bits everywhere."""
     AX = basis.redistribute_block(A_op.apply_block(X, 0.0))
     outside = AX.copy()
     outside.keep_rows(AX.keys_new_above(basis._keys, 0.0))
     if slaterWeightMin > 0:
         outside.prune_rows(slaterWeightMin)
-    return np.sqrt(_allreduced_col_norms2(outside, n_cols, comm))
+    norms = np.sqrt(_allreduced_col_norms2(outside, n_cols, comm))
+    if comm is not None and comm.size > 1:
+        comm.Bcast(norms, root=0)
+    return norms

@@ -310,6 +310,30 @@ def test_every_rank_takes_the_same_decisions_and_bicgstab_converges(monkeypatch)
 
 
 @pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the replication is between ranks")
+def test_the_leak_norms_are_the_same_bits_on_every_rank(monkeypatch):
+    """The accept/fallback verdict picks different collectives, so the norms it compares must not differ by a
+    rank's Allreduce rounding. Simulated here by a reduction that returns rank-dependent last bits."""
+    from impurityModel.ed import gf_primitives
+
+    comm = MPI.COMM_WORLD
+    reduce = gf_primitives._allreduced_col_norms2
+    monkeypatch.setattr(
+        gf_primitives,
+        "_allreduced_col_norms2",
+        lambda block, n_cols, c: reduce(block, n_cols, c) * (1.0 + 1e-15 * comm.rank),
+    )
+    basis, op = _p_short_of_the_sector(comm=comm)
+    rng = np.random.default_rng(5)
+    X = rng.normal(size=(len(basis.local_basis), 2)) + 1j * rng.normal(size=(len(basis.local_basis), 2))
+    got = gf_primitives.boundary_residual(
+        (0.7 + 1j * DELTA) - op, ManyBodyState.from_keys_and_amps(basis._keys, X), basis, 2, 0.0, comm
+    )
+    assert np.all(got > 0), "premise: X leaks out of P"
+    assert len({g.tobytes() for g in comm.allgather(got)}) == 1
+
+
+@pytest.mark.mpi
 def test_the_rixs_r1_chain_on_every_rank():
     comm = MPI.COMM_WORLD
     frozen, counters = _rixs_chain_run(True, comm=comm)
