@@ -413,23 +413,9 @@ _CSR_BATCH_BYTES_PER_ELEMENT = 160
 #: Lanczos blocks of ``N_local x width`` the array kernel holds at once at reort 'none' (the
 #: current and previous block, the product, the next block).
 _CSR_KERNEL_VECTORS = 4
-#: GF_STAGNATION_FREEZE needs this many consecutive windows below its threshold: the weight reaching new
-#: rows is layered (a shell, then a gap, then the next shell), and one quiet window is not a stable fact.
-_STAGNATION_QUIET_WINDOWS = 2
-#: ...and is not taken once the unit's convergence measure is within this factor of its tolerance. The CSR
-#: restart recomputes every block from the seeds (build ~1000 s at 12M determinants), so past the point
-#: where fewer than ~40 sparse blocks remain (1e-9 -> ~1.6e-9 on the SMO dominant units) it loses.
-_STAGNATION_NEAR_END = 100.0
 #: GF_SUPPORT_FREEZE's window: the blocks over which the weight reaching new rows is weighed against what the
 #: slaterWeightMin prunes dropped. Long enough to span a gap between the layered shells a support grows in.
 _SUPPORT_WINDOW = 16
-#: GF_CLOSURE_FREEZE's window: blocks without a new determinant before a unit freezes on a stalled support.
-#: One window, not GF_STAGNATION_FREEZE's two, and no near-end veto: the CrI3 light units sat in their
-#: 1-3e-9 tail for ~60 sparse blocks (~19 s each) where the whole CSR restart, build included, took
-#: 107-178 s, so a freeze can lose at most about one window. Each window costs one resume (~1% of sparse
-#: time on a unit that never stalls); a stall is not closure (see the knob), but what it drops is bounded
-#: by the slaterWeightMin cut the sparse kernel makes anyway.
-_CLOSURE_WINDOW = 16
 #: Floor of the frozen-basis recurrence's first block budget (the measured SrMnO3 units converged
 #: in 174-429 blocks); the array kernel's doubling raises it when a unit needs more.
 _CSR_INITIAL_BLOCKS = 256
@@ -510,8 +496,7 @@ def _frozen_csr_basis(proxy, basis, hOp, verbose, reason="", width=1):
     the guard's budget then, but the decision has its own, looser one and counts that RSS, so it
     accepts only what still fits. (It used to decline every guard freeze outright, and on CrI3,
     whose sparse estimate under-predicts, that is where capped units end up.) ``reason`` is
-    appended to the decision line (``" by stagnation"``): the proxy need not have frozen for this to
-    run, it only reads the retained mask.
+    appended to the decision line (``" by the support freeze"``); it only reads the retained mask.
 
     The budget is the GF stage's frozen-CSR budget on ``basis`` (``GF_CSR_MEMORY_SAFETY``, looser
     than the guard's), else -- for a basis that did not come through the GF stage -- the guard's.
@@ -711,10 +696,10 @@ def block_Green_sparse(
     (:func:`_frozen_csr_continue`), else restarted from the seeds (:func:`_frozen_csr_green`) -- exact
     on ``P`` like the sparse kernel, without applying ``H`` to every retained row and discarding the
     image outside ``P``. Not taken for a CSR that would not fit the budget, or a ``krylov_dtype`` store.
-    ``cap_info["csr_fallback"]`` says whether it ran. The same switch is taken when the support
-    stalls below the cap (``GF_CLOSURE_FREEZE``, on by default: a whole window of blocks admits no
-    new determinant; ``cap_info["closure_frozen"]``) or, opt-in, when the weight reaching new rows
-    dies away (``GF_STAGNATION_FREEZE``; ``cap_info["stagnation_frozen"]``).
+    ``cap_info["csr_fallback"]`` says whether it ran. The same switch is taken when growing the
+    support below the cap no longer buys more than the ``slaterWeightMin`` cut costs
+    (``GF_SUPPORT_FREEZE``, on by default; ``cap_info["support_frozen"]``, with the per-step weights
+    it decided on in ``cap_info["support_history"]``).
 
     ``basis.truncation_threshold`` caps the number of Slater determinants the
     recurrence may touch (see :class:`_CappedBasisProxy`); ``np.inf`` (the ``Basis``
@@ -768,9 +753,6 @@ def block_Green_sparse(
         cap_info["proxy"] = None
         cap_info["csr_fallback"] = False
         cap_info["csr_seconds"] = 0.0
-        cap_info["stagnation_frozen"] = False
-        cap_info["stagnation_leakage"] = None
-        cap_info["closure_frozen"] = False
         cap_info["support_frozen"] = False
         cap_info["support_history"] = []
 
@@ -854,9 +836,6 @@ def block_Green_sparse(
     knobs = (
         (
             config.GF_FROZEN_CSR.get(),
-            config.GF_STAGNATION_FREEZE.get(),
-            config.GF_STAGNATION_WINDOW.get(),
-            config.GF_CLOSURE_FREEZE.get(),
             config.GF_SUPPORT_FREEZE.get(),
         )
         if rank == 0
@@ -864,7 +843,7 @@ def block_Green_sparse(
     )
     if comm is not None:
         knobs = comm.bcast(knobs, root=0)
-    frozen_csr, stagnation_tol, stagnation_window, closure, support = knobs
+    frozen_csr, support = knobs
     csr_candidate = frozen_csr and krylov_dtype is None and isinstance(lanczos_basis, _CappedBasisProxy)
     csr = None
 
@@ -900,35 +879,11 @@ def block_Green_sparse(
             blocks_hint,
         )
 
-    # GF_STAGNATION_FREEZE: also switch to the CSR when the weight reaching new rows has died away.
-    if stagnation_tol is not None:
-        reason = None
-        if not csr_candidate:
-            reason = "it needs GF_FROZEN_CSR, a finite determinant cap (or a memory budget) and no krylov_dtype"
-        elif resolved_reort != Reort.NONE:
-            reason = f"it supports reort='none' only (this unit runs {resolved_reort.name.lower()})"
-        elif type(lanczos_basis) is not _CappedBasisProxy:
-            reason = "it needs the plain capped proxy (not GF_LANCZOS_ADMIT_TOL's pruned one)"
-        if reason is not None:
-            if verbose and rank == 0:
-                print(f"GF_STAGNATION_FREEZE is ignored for this unit: {reason}.", flush=True)
-            stagnation_tol = None
-        else:
-            lanczos_basis.track_leakage()
-    # GF_CLOSURE_FREEZE: switch when a whole window admitted no new row. Same preconditions, silently skipped
-    # (it is on by default); it reads only the replicated retained count, so it costs nothing per step.
-    closure = bool(
-        closure and csr_candidate and resolved_reort == Reort.NONE and type(lanczos_basis) is _CappedBasisProxy
-    )
     # GF_SUPPORT_FREEZE: the proxy freezes the support itself, on the step its window decides, and the kernel
-    # hands control back there (stop_on_freeze), so it needs no windowed rounds of its own.
+    # hands control back there (stop_on_freeze). reort 'none' only: that is where the frozen recurrence
+    # carries on from its tail, and a reorthogonalized one would recompute every block to drop weight.
     if support and csr_candidate and resolved_reort == Reort.NONE and type(lanczos_basis) is _CappedBasisProxy:
         lanczos_basis.enable_support_freeze(_SUPPORT_WINDOW, log=verbose and rank == 0)
-    window = stagnation_window if stagnation_tol is not None else _CLOSURE_WINDOW
-    stagnation_leakage = None
-    quiet_windows = 0  # consecutive windows whose boundary weight stayed below the threshold
-    # Only a capped proxy tracks its support; with no cap and no budget `lanczos_basis` is the bare basis.
-    last_support = lanczos_basis.retained_size if stagnation_tol is not None or closure else 0
     if csr_candidate:
         lanczos_basis.stop_on_freeze = True
         if lanczos_basis.frozen:
@@ -940,10 +895,6 @@ def block_Green_sparse(
             if frozen_basis is not None:
                 csr = _csr_green(frozen_basis)
     while csr is None:
-        # Under GF_STAGNATION_FREEZE the recurrence runs a window at a time so the support can be read
-        # between rounds; a window shorter than the budget is not an exhausted budget (see below).
-        windowed = (stagnation_tol is not None or closure) and not lanczos_basis.frozen
-        round_iters = min(budget, window) if windowed else budget
         alphas, betas, Q, W, widths, status = block_lanczos_cy(
             psi_arr,
             hOp,
@@ -952,7 +903,7 @@ def block_Green_sparse(
             verbose=verbose,
             reort=resolved_reort,
             slaterWeightMin=slaterWeightMin,
-            max_iter=round_iters,
+            max_iter=budget,
             return_widths=True,
             return_status=True,
             alphas_init=alphas,
@@ -978,7 +929,14 @@ def block_Green_sparse(
         #                             the P H P CSR, or, if that declines, resume right here.
         if status == "frozen":
             lanczos_basis.stop_on_freeze = False
-            frozen_basis = _frozen_csr_basis(lanczos_basis, basis, hOp, verbose, width=psi_arr.width)
+            frozen_basis = _frozen_csr_basis(
+                lanczos_basis,
+                basis,
+                hOp,
+                verbose,
+                reason=" by the support freeze" if lanczos_basis.support_frozen else "",
+                width=psi_arr.width,
+            )
             if frozen_basis is not None:
                 # At reort 'none' the stopped state (its two-block tail) is where the CSR carries on from;
                 # otherwise it is only needed to resume a declined switch: release its Krylov store before
@@ -996,84 +954,10 @@ def block_Green_sparse(
         if status == "diverged":
             converged_flag[0] = False
             break
-        if windowed and round_iters < budget:
-            # A window ended; the budget is not exhausted. Did it admit any new row?
-            retained = lanczos_basis.retained_size
-            grown = retained - last_support
-            if stagnation_tol is None:
-                if verbose and rank == 0:
-                    print(
-                        f"GF support: {retained:,} determinants after {len(alphas)} blocks "
-                        f"(+{100.0 * grown / max(last_support, 1):.3f}% over the last {window})",
-                        flush=True,
-                    )
-            last_support = retained
-            if closure and grown == 0 and not lanczos_basis.frozen:
-                frozen_basis = _frozen_csr_basis(
-                    lanczos_basis,
-                    basis,
-                    hOp,
-                    verbose,
-                    reason=f" on closure (no new determinant in {window} blocks)",
-                    width=psi_arr.width,
-                )
-                if frozen_basis is not None:
-                    lanczos_basis.freeze_for_closure()
-                    stopped = (alphas, betas, widths, Q)
-                    Q = W = None
-                    csr = _csr_green(frozen_basis, len(alphas), stopped)
-                    continue
-                # Declined: the CSR does not fit. Carry on sparse and do not ask again.
-                closure = False
-            if stagnation_tol is None:
-                continue
-            # Has the weight reaching new rows died away?
-            new_weight, total_weight = lanczos_basis.pop_leakage()
-            leakage = new_weight / total_weight if total_weight > 0.0 else 0.0
-            if verbose and rank == 0:
-                print(
-                    f"GF support: {retained:,} determinants after {len(alphas)} blocks "
-                    f"(+{100.0 * grown / max(retained - grown, 1):.3f}%; weight on new rows "
-                    f"{leakage:.2e} over the last {stagnation_window})",
-                    flush=True,
-                )
-            quiet_windows = quiet_windows + 1 if leakage < stagnation_tol else 0
-            if quiet_windows >= _STAGNATION_QUIET_WINDOWS and not lanczos_basis.frozen:
-                near_end = last_dg[0] is not None and last_dg[0] < _STAGNATION_NEAR_END * delta_min
-                if near_end:
-                    # Converged to within a couple of decades: the restart re-runs every block from the
-                    # seeds, so freezing now costs more than the sparse blocks still to come.
-                    if verbose and rank == 0:
-                        print(
-                            f"GF support stopped growing at {retained:,} determinants, but the unit is within "
-                            f"{_STAGNATION_NEAR_END:g}x of its tolerance: not freezing.",
-                            flush=True,
-                        )
-                    stagnation_tol = None
-                else:
-                    frozen_basis = _frozen_csr_basis(
-                        lanczos_basis,
-                        basis,
-                        hOp,
-                        verbose,
-                        reason=f" by stagnation (boundary weight {leakage:.1e})",
-                        width=psi_arr.width,
-                    )
-                    if frozen_basis is not None:
-                        lanczos_basis.freeze_for_stagnation()
-                        stagnation_leakage = leakage
-                        stopped = (alphas, betas, widths, Q)
-                        Q = W = None
-                        csr = _csr_green(frozen_basis, len(alphas), stopped)
-                    else:
-                        # Declined: the CSR does not fit, and a truncation that buys nothing is not taken.
-                        # Carry on sparse and unfrozen, and do not ask again.
-                        stagnation_tol = None
-            continue
         budget *= 2
 
     if isinstance(lanczos_basis, _CappedBasisProxy):
-        frozen_early = lanczos_basis.stagnation_frozen or lanczos_basis.closure_frozen or lanczos_basis.support_frozen
+        frozen_early = lanczos_basis.support_frozen
         if (lanczos_basis.cap_hit or frozen_early) and verbose and rank == 0:
             print(lanczos_basis.freeze_message(), flush=True)
         if cap_info is not None:
@@ -1082,9 +966,6 @@ def block_Green_sparse(
             cap_info["memory_frozen"] = lanczos_basis.memory_frozen
             cap_info["proxy"] = lanczos_basis
             cap_info["csr_fallback"] = csr is not None
-            cap_info["stagnation_frozen"] = lanczos_basis.stagnation_frozen
-            cap_info["stagnation_leakage"] = stagnation_leakage
-            cap_info["closure_frozen"] = lanczos_basis.closure_frozen
             cap_info["support_frozen"] = lanczos_basis.support_frozen
             cap_info["support_history"] = list(lanczos_basis.support_history)
             if csr is not None:
@@ -1509,10 +1390,10 @@ def block_Green_bicgstab(
 
     # Freed in `finally` so a solve that raises on every rank does not leak the cloned
     # communicator (review ledger M4); collective, every rank of the color runs this unit.
-    # GF_CLOSURE_FREEZE: once a point's solve admits no new determinant (or the cap freezes it), the
-    # remaining points of the eigenstate solve on the frozen P H P (_FrozenShiftedSystem). Rank 0 reads
-    # the knob and broadcasts it, so every rank takes the same branch.
-    closure = config.GF_CLOSURE_FREEZE.get() if sub_comm is None or sub_comm.rank == 0 else None
+    # GF_SUPPORT_FREEZE: once a point's solve admits no new determinant, the remaining points of the
+    # eigenstate solve on the frozen P H P (_FrozenShiftedSystem). Rank 0 reads the knob and broadcasts it,
+    # so every rank takes the same branch.
+    closure = config.GF_SUPPORT_FREEZE.get() if sub_comm is None or sub_comm.rank == 0 else None
     if sub_comm is not None:
         closure = sub_comm.bcast(closure, root=0)
     closure = bool(closure) and admission != "outer"

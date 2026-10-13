@@ -41,7 +41,7 @@ CLOSURE = 18  # two 9-determinant sectors: what the two seed columns reach
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
     # The sparse per-point solve, which this file covers; the frozen path has test_gf_bicgstab_frozen.py.
-    monkeypatch.setenv("GF_CLOSURE_FREEZE", "0")
+    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
     for name in (
         "GF_BICGSTAB_ADMISSION",
         "GF_BICGSTAB_ADMIT_SCORER",

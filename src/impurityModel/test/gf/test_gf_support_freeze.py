@@ -13,39 +13,46 @@ The contract these tests pin:
 * with no cutoff it freezes only on exact closure;
 * reort other than 'none' and the off switch leave the unit alone; a matrix that does not fit undoes the
   freeze and leaves the result as if it had never fired;
-* every rank holds the same history bits and decides alike (``-n 2``/``-n 3``).
+* every rank holds the same history bits and decides alike (``-n 2``/``-n 3``);
+* it is on by default, and the freezes it replaces (``GF_CLOSURE_FREEZE``, ``GF_STAGNATION_FREEZE``,
+  ``GF_STAGNATION_WINDOW``) warn that they are no longer read.
 """
 
 import itertools
+import warnings
 from collections import deque
 
 import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import gf_primitives, gf_solvers
-from impurityModel.ed.basis_transcription import build_dense_matrix
+from impurityModel.ed import config, gf_primitives, gf_solvers
 from impurityModel.ed.gf_primitives import support_window_freezes
 from impurityModel.ed.greens_function import calc_G
-from impurityModel.test.basis.test_sparse_matrix_build import _basis, _det
-from impurityModel.test.gf.test_gf_stagnation_freeze import DELTA, N_ORB, OMEGA, _operator, _run, _seeds
+from impurityModel.test.basis.test_sparse_matrix_build import _det
+from impurityModel.test.support.gf_chain_fixtures import (
+    DELTA,
+    N_ORB,
+    OMEGA,
+    SECTOR,
+    chain_operator,
+    exact_chain_g,
+    run_chain,
+)
 
-SECTOR = 3432  # 7 electrons in 14 orbitals
 WINDOW = gf_solvers._SUPPORT_WINDOW
 
 
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
-    for name in ("GF_STAGNATION_FREEZE", "GF_STAGNATION_WINDOW", "GF_FROZEN_CSR", "GF_APPLY_ROW_CHUNKS"):
+    for name in ("GF_SUPPORT_FREEZE", "GF_FROZEN_CSR", "GF_APPLY_ROW_CHUNKS", *config.RETIRED_KNOBS):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("GF_CLOSURE_FREEZE", "0")
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "1")
 
 
 def _trickle(comm=None, **kw):
     """A chain whose support trickles: it reaches ~2,700 of the sector's 3432 determinants in ~45 blocks, then
-    adds a few per block for hundreds of blocks without ever closing (cutoff 1e-4)."""
-    return _run(comm=comm, op=_operator(N_ORB, seed=5), slater_min=1e-4, **kw)
+    adds a few per block for hundreds of blocks (cutoff 1e-4)."""
+    return run_chain(comm=comm, op=chain_operator(seed=5), slater_min=1e-4, **kw)
 
 
 def _g(result):
@@ -54,17 +61,7 @@ def _g(result):
 
 
 def _exact_sector_g(seed=5):
-    keys = [_det(list(c)) for c in itertools.combinations(range(N_ORB), 7)]
-    basis = _basis(sorted(keys), None, n_orb=N_ORB)
-    h = np.asarray(build_dense_matrix(basis, _operator(N_ORB, seed=seed)))
-    index = {bytes(d.to_bytearray()[:2]): i for i, d in enumerate(basis.local_basis)}
-    v = np.zeros((h.shape[0], len(_seeds())), dtype=complex)
-    for j, s in enumerate(_seeds()):
-        for det, amp in s.items():
-            v[index[bytes(det.to_bytearray()[:2])], j] = amp[0]
-    e, u = np.linalg.eigh(h.real)
-    uv = u.conj().T @ v
-    return np.einsum("ki,wk,kj->wij", uv.conj(), 1.0 / ((OMEGA[:, None] + 1j * DELTA) - e[None, :]), uv)
+    return exact_chain_g([_det(list(c)) for c in itertools.combinations(range(N_ORB), 7)], seed=seed)
 
 
 def _first_firing(history):
@@ -126,8 +123,13 @@ def test_the_frozen_g_is_no_farther_from_the_exact_one_than_the_sparse_one(monke
     assert err_frozen <= err_plain, (err_frozen, err_plain)
 
 
+def test_it_is_on_by_default():
+    assert config.GF_SUPPORT_FREEZE.default is True
+    assert _trickle()[3]["support_frozen"]
+
+
 def test_with_no_cutoff_it_freezes_only_on_closure():
-    info = _run()[3]
+    info = run_chain()[3]
     assert info["support_frozen"] and info["retained_size"] == SECTOR
     window = info["support_history"][len(info["support_history"]) - WINDOW :]
     assert all(leak == 0.0 and cut == 0.0 for leak, cut in window)
@@ -166,3 +168,12 @@ def test_every_rank_holds_the_same_history_and_decides_alike():
     assert len(set(comm.allgather(mine))) == 1
     assert _first_firing(info["support_history"]) == len(info["support_history"])
     np.testing.assert_allclose(_g(result), _g(_trickle()), atol=1e-6)
+
+
+@pytest.mark.parametrize("name", ["GF_CLOSURE_FREEZE", "GF_STAGNATION_FREEZE", "GF_STAGNATION_WINDOW"])
+def test_the_retired_freezes_warn_that_they_are_no_longer_read(name, monkeypatch):
+    monkeypatch.setenv(name, "1")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        config.warn_retired_knobs()
+    assert any(name in str(w.message) and "GF_SUPPORT_FREEZE" in str(w.message) for w in caught)

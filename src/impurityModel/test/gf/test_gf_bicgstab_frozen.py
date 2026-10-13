@@ -1,4 +1,4 @@
-r"""The BiCGSTAB solves on a frozen ``P H P`` (``gf_solvers._FrozenShiftedSystem``, ``GF_CLOSURE_FREEZE``).
+r"""The BiCGSTAB solves on a frozen ``P H P`` (``gf_solvers._FrozenShiftedSystem``, ``GF_SUPPORT_FREEZE``).
 
 Both BiCGSTAB drivers -- ``gf_method="bicgstab"`` (:func:`block_Green_bicgstab`) and the RIXS R1 fallback
 (``rixs._R1SolverChain``) -- solve one shift at a time on a sparse basis rebuilt per point, with a
@@ -13,7 +13,7 @@ The contract these tests pin:
   relative to ``||Y||``, against a dense oracle on a ``P`` that is not closed;
 * a solution that leaks goes back to the sparse solve, warm-started, and stays there;
 * no freeze after a cap hit, nor on a unit's last point; a matrix that does not fit is not built;
-  ``GF_CLOSURE_FREEZE=0`` keeps every point sparse;
+  ``GF_SUPPORT_FREEZE=0`` keeps every point sparse;
 * several eigenstates with complex seeds, and the residual check, on frozen points;
 * RIXS: the R1 chain and the full map take the frozen path and give the sparse result; its fallback;
 * every rank takes the same decisions (``-n 2``/``-n 3``).
@@ -39,7 +39,7 @@ ATOL = 1e-10
 
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
-    for name in ("GF_CLOSURE_FREEZE", "GF_APPLY_ROW_CHUNKS", "GF_BICGSTAB_RESIDUAL_CHECK"):
+    for name in ("GF_SUPPORT_FREEZE", "GF_APPLY_ROW_CHUNKS", "GF_BICGSTAB_RESIDUAL_CHECK"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -66,11 +66,11 @@ def _assert_same_g(G, G_ref, rel=1e-8):
 
 
 def _sparse(monkeypatch, fn, *args, **kwargs):
-    monkeypatch.setenv("GF_CLOSURE_FREEZE", "0")
+    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
     try:
         return fn(*args, **kwargs)
     finally:
-        monkeypatch.delenv("GF_CLOSURE_FREEZE")
+        monkeypatch.delenv("GF_SUPPORT_FREEZE")
 
 
 def test_the_frozen_solves_give_the_sparse_g_and_converge_in_bicgstab(monkeypatch):
@@ -207,7 +207,7 @@ def test_the_residual_check_runs_on_frozen_points(monkeypatch):
 
 
 def test_off_switch(monkeypatch):
-    monkeypatch.setenv("GF_CLOSURE_FREEZE", "0")
+    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
     _, stats = _gf()
     assert stats["frozen_points"] == 0 and stats["frozen_size"] is None
 

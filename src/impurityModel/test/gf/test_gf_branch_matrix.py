@@ -15,7 +15,7 @@ Factors
 -------
 ``method``   lanczos / bicgstab (``gf_method``)
 ``sparse``   ManyBodyState kernel vs CSR/dense array kernel (lanczos only). The sparse cells pin
-             ``GF_CLOSURE_FREEZE=0``: their sectors close, and the freeze would hand them to the
+             ``GF_SUPPORT_FREEZE=0``: their sectors close, and the freeze would hand them to the
              array kernel the other value of this factor already covers
 ``group``    ``GF_EIGENSTATE_GROUP`` 1 or 2 (stack thermal states into one recurrence)
 ``reort``    none / partial / full (lanczos only)
@@ -146,7 +146,7 @@ def _run_cell(cell):
     iw = IW if cell["mesh"] in ("iw", "both") else None
     w = W if cell["mesh"] in ("w", "both") else None
     with (
-        _env(GF_EIGENSTATE_GROUP=cell["group"], GF_CLOSURE_FREEZE=0 if cell.get("sparse") else 1),
+        _env(GF_EIGENSTATE_GROUP=cell["group"], GF_SUPPORT_FREEZE=0 if cell.get("sparse") else 1),
         contextlib.redirect_stdout(io.StringIO()),
     ):
         gs_iw, gs_w, report = get_Greens_function(

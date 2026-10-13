@@ -296,7 +296,7 @@ class _R1SolverChain:
 
     def __init__(self, r1_cache, eigenstate, counters=None, freeze=False):
         self.r1_cache = r1_cache
-        # GF_CLOSURE_FREEZE for the bicgstab tier: psi1_all is the same for every wIn of the chunk, so
+        # GF_SUPPORT_FREEZE for the bicgstab tier: psi1_all is the same for every wIn of the chunk, so
         # once a solve admits nothing beyond its starting support the remaining points solve on the
         # frozen P H P (gf_solvers._FrozenShiftedSystem), each checked against the full H.
         self._freeze_ok = bool(freeze)
@@ -678,7 +678,7 @@ def _rixs_map_flat(
             # each solve counts ranks-per-color times (review ledger M5). Non-root ranks roll back
             # at the end of the unit.
             stats_before = dict(solver_stats) if sub_comm is not None and sub_comm.rank != 0 else None
-            freeze = config.GF_CLOSURE_FREEZE.get() if sub_comm is None or sub_comm.rank == 0 else None
+            freeze = config.GF_SUPPORT_FREEZE.get() if sub_comm is None or sub_comm.rank == 0 else None
             if sub_comm is not None:
                 freeze = sub_comm.bcast(freeze, root=0)
             chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats, freeze=freeze)

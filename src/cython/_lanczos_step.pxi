@@ -799,10 +799,10 @@ def block_lanczos_cy(
     # Spectral-scale estimate (seeded from beta_0 ~ ||H||, grown only by ||alpha_i||, which is
     # bounded by ||H|| and never runs away) — catches gradual beta growth the relative check misses.
     h_norm_est = 0.0
-    # A resumed call (a doubled budget, a GF window) replays the guard over the blocks it was
+    # A resumed call (a doubled budget, a declined freeze) replays the guard over the blocks it was
     # handed, so it keeps the scale the earlier calls built: starting both trackers from 0 left
     # every resumed call's first step unguarded and let that step re-seed the scale -- every 16
-    # blocks once GF_CLOSURE_FREEZE ran capped GF units a window at a time.
+    # blocks while capped GF units ran a window at a time.
     guard_seeded = False
     if resuming:
         for _k in range(min(len(alphas_init), len(betas_init))):

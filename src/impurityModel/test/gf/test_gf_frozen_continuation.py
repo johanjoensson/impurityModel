@@ -20,7 +20,7 @@ from impurityModel.test.gf.test_gf_truncation import _assert_php_oracle, _det, _
 
 @pytest.fixture(autouse=True)
 def _shipped_defaults(monkeypatch):
-    for knob in ("GF_FROZEN_CSR", "GF_APPLY_ROW_CHUNKS", "GF_LANCZOS_ADMIT_TOL", "GF_CLOSURE_FREEZE"):
+    for knob in ("GF_FROZEN_CSR", "GF_APPLY_ROW_CHUNKS", "GF_LANCZOS_ADMIT_TOL", "GF_SUPPORT_FREEZE"):
         monkeypatch.delenv(knob, raising=False)
 
 

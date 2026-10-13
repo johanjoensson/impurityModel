@@ -142,6 +142,11 @@ RETIRED_KNOBS = {
         ),
         "retired with gf_method='cipsi'",
     ),
+    **dict.fromkeys(
+        ("GF_CLOSURE_FREEZE", "GF_STAGNATION_FREEZE", "GF_STAGNATION_WINDOW"),
+        "retired with the zero-growth and absolute-threshold freezes; GF_SUPPORT_FREEZE replaces both, "
+        "weighing the weight reaching new determinants against what slaterWeightMin already cuts",
+    ),
     "GF_OPERATOR_SPLIT": (
         "retired: the pairwise operator split (scalar continued fractions per operator pair) was an "
         "opt-in load-balancing mode that multiplied the Krylov work, and the improved-estimator "
@@ -529,7 +534,7 @@ GF_CSR_MEMORY_SAFETY = Knob(
 GF_SUPPORT_FREEZE = Knob(
     name="GF_SUPPORT_FREEZE",
     kind="bool",
-    default=False,
+    default=True,
     group="units",
     doc="""Freeze a sparse Green's-function unit's support once growing it no longer buys more than the
     ``slaterWeightMin`` cut costs, and carry the recurrence on on the frozen ``P H P`` CSR.
@@ -539,50 +544,20 @@ GF_SUPPORT_FREEZE = Knob(
     outside the support (what the support grows by, and what a freeze drops) and the weight those prunes
     dropped (the matvec's, and the normalized next block's weighed back through ``beta beta^H``). Once the
     first, summed over the last 16 blocks, is no larger than the second, the support freezes: from then on
-    the recurrence drops no more per step than the cutoff already did. It does not wait for the support to
-    stop growing, which a cutoff-limited support never does (CrI3: 1,000-5,000 new determinants per 16
-    blocks at ~5.14M, never 0, so ``GF_CLOSURE_FREEZE`` never fired and six units ran sparse for 2-2.6 ks).
-    A support that closes exactly freezes after one window whatever the cutoff.
+    the recurrence drops no more per step than the cutoff already did, and it continues from where it
+    stopped on the CSR (one SpMV per block, 1/10-1/19 of a sparse block). It does not wait for the support
+    to stop growing, which a cutoff-limited support never does (CrI3: 1,000-5,000 new determinants per 16
+    blocks at ~5.14M, never 0, so the zero-growth freeze this replaces never fired and six units ran sparse
+    for 2-2.6 ks). A support that closes exactly freezes after one window whatever the cutoff. On a
+    14-orbital chain at a 1e-4 cutoff it froze after 32 blocks on 2,401 of 3,432 determinants, and the
+    frozen ``G`` was closer to the exact one than the unfrozen sparse ``G`` (1.17e-5 against 1.30e-5).
 
     Lanczos with ``reort='none'`` on the capped proxy (which the GF memory guard installs on every unit by
     default), ``GF_FROZEN_CSR`` on, no ``krylov_dtype``, no ``GF_LANCZOS_ADMIT_TOL``. If the frozen matrix
     does not fit its memory budget the freeze is undone and the unit continues sparse and unfrozen. Reported
-    as ``support_frozen`` on the unit line; with ``-v`` every 16 blocks print the two window sums.
-    ``0``/unset: off.""",
-)
-
-GF_CLOSURE_FREEZE = Knob(
-    name="GF_CLOSURE_FREEZE",
-    kind="bool",
-    default=True,
-    group="units",
-    doc="""Switch a sparse Green's-function unit to the frozen ``P H P`` CSR once its support has stalled: a
-    whole window of blocks admitted no new determinant. Without it, only a unit that hits its cap (or the
-    memory guard) switches; one whose support stops growing *below* the cap pays the sparse kernel on every
-    block to the end (CrI3 at ``GS_MEMORY_BUDGET_SAFETY=0.75``: six units stalled at ~5.14M under a 6.69M
-    cap and ran ~115 sparse blocks in 2.0-2.7 ks each, against 230-300 s on the CSR when a smaller cap
-    froze them).
-
-    **A stalled support is not a closed one.** Rows below ``slaterWeightMin`` are cut on every step, and a
-    later vector can lift one above it: on small chains a support stood still for up to 50 blocks and then
-    grew again, so a 16-block window froze 1-6 determinants short of the 3432-determinant sector. What is
-    lost is bounded by the cutoff the sparse kernel applies anyway, and the frozen recurrence is the
-    *more* exact of the two on ``P``: the CSR keeps every element of ``P H P``, where the sparse kernel cuts
-    sub-cutoff amplitudes on rows inside ``P`` too. Measured against the dense resolvent on the whole
-    sector, the frozen ``G`` was never farther from it than the unfrozen one (1.2e-4 against 4.5e-3 at a
-    cutoff of 1e-2), so turning this on changes results relative to the sparse kernel by up to that
-    cutoff's error, toward the exact answer.
-
-    The window is ``gf_solvers._CLOSURE_WINDOW`` (16) blocks, or ``GF_STAGNATION_WINDOW`` for a unit that
-    ``GF_STAGNATION_FREEZE`` applies to; running in windows costs one resume (~1% of sparse time) per
-    window on a unit that never stalls. There is no near-end veto: the restart recomputes every block on the
-    CSR, at ~1/10-1/19 of a sparse block, so it can lose at most ~one window's worth of a unit.
-
-    It applies to every unit on the capped proxy -- which the GF memory guard installs by default, so
-    uncapped units too -- with ``reort='none'``, ``GF_FROZEN_CSR`` on, no ``krylov_dtype`` and no
-    ``GF_LANCZOS_ADMIT_TOL``; it is taken only if the CSR fits its memory budget. Reported as
-    ``closure_frozen`` on the unit line and in the ``gf_unit_memory`` / ``gf_unit_basis`` traces; it is not
-    a cap hit.
+    as ``support_frozen`` on the unit line and in the ``gf_unit_memory`` / ``gf_unit_basis`` traces, with a
+    ``support_freeze`` diagnostic carrying the freezing window's two weights; with ``-v`` every 16 blocks print
+    them as they go.
 
     **The BiCGSTAB solves** (``gf_method="bicgstab"`` and the RIXS intermediate resolvent's per-point
     fallback) take the same freeze in their own form: their right-hand side is the same for every
@@ -600,58 +575,13 @@ GF_CLOSURE_FREEZE = Knob(
     support is chosen by policy), nor with ``GS_MATVEC_EXCHANGE=reduce`` (no column-scatter matvec).
     The fit check budgets BiCGSTAB's and a GMRES escalation's dense blocks (``GF_GMRES_RESTART`` + 10)
     on top of the matrix; with no memory budget (``GS_MEMORY_BUDGET_SAFETY=0``) it is not checked, as
-    for the Lanczos freeze. The RIXS shift-recycled resolvent does not take it: its cost is the full
-    reorthogonalization (85% of it on the same chain), not the matvec. ``0`` disables all of it.""",
-)
+    for the Lanczos freeze. Their trigger is still the zero-growth one (a point that admitted nothing): a
+    test of a converged point's own leak is vacuous (its residual is below the tolerance by construction), so
+    a cutoff-anchored trigger for them needs a trial frozen solve and is not here yet. The RIXS
+    shift-recycled resolvent does not take any of it: it reorthogonalizes fully, and the adaptive wIn path
+    feeds it one point at a time; what a freeze would save there is unmeasured.
 
-GF_STAGNATION_FREEZE = Knob(
-    name="GF_STAGNATION_FREEZE",
-    kind="float",
-    default=None,
-    group="units",
-    doc="""Switch a Green's-function unit to the frozen ``P H P`` CSR once the weight reaching new
-    determinants has died away, not only when it reaches the determinant cap. The sparse kernel applies ``H``
-    to every retained row on every block (89-123 rank-s per block on the SrMnO3 cubic run) where the CSR
-    costs one SpMV (7-9); a unit that converges *below* the cap never froze, so it ran sparse to the end
-    (unit 10: 11.4M determinants, 509 blocks, 14 ks on 3 ranks). Unset (default) keeps today's behaviour.
-
-    Set to a fraction ``f``: each matvec's squared norm is split into the part on rows
-    already in the retained set ``P`` and the part on rows outside it, which is what the support would have
-    grown by and what a freeze drops. When that outside fraction, averaged over a window of
-    ``GF_STAGNATION_WINDOW`` blocks, stays below ``f`` for two consecutive windows, the unit freezes at the
-    current support and restarts from the seeds as the exact block Lanczos of ``P H P`` -- the same
-    mathematics as the cap freeze, with ``P`` the support reached so far. It counts the weight, not the
-    number of determinants: a support can keep growing by thousands of rows that carry a vanishing share of
-    the amplitude, and can stall with a few rows that carry O(1).
-
-    **Choosing ``f``: it has a floor.** Every row the apply returns has ``|amp| >= slaterWeightMin``, so the
-    weight on new rows is either exactly 0 (the support is saturated) or at least ``slaterWeightMin**2`` times
-    the number of new rows, over the matvec's norm. With the production 1.5e-8 that is ~1e-15 per row; on the
-    SMO units it plateaus at 1e-13 to 1e-14 while the support still grows 8-28 % per window. ``f`` must sit
-    above that plateau to freeze before saturation and below the weight that matters to ``G``; there is no
-    canonical value, so read it off the ``f = 0`` log and compare ``Sigma`` with and without the freeze.
-
-    **This is a truncation.** What later blocks would have admitted is dropped, so ``G`` is exact on ``P``
-    only; the report's ``stagnation_freeze`` line says so and carries the measured fraction. It applies to
-    every unit, the dominant (heavily weighted) states included, so compare ``Sigma`` with and without it
-    before trusting the saving. It is taken only if the CSR fits the memory budget, and not once the unit is
-    within two decades of its own tolerance (the restart recomputes every block, so a late freeze loses).
-    Lanczos with ``reort='none'`` only, and it needs ``GF_FROZEN_CSR`` and a finite cap or a memory budget;
-    a unit it cannot apply to logs why at ``-vv``. Measured on each step's whole summed output, so a row reached
-    by several ``GF_APPLY_ROW_CHUNKS`` chunks counts with its full amplitude. ``0`` measures and logs the
-    weight each window without ever freezing, which is how to choose ``f``.""",
-)
-
-GF_STAGNATION_WINDOW = Knob(
-    name="GF_STAGNATION_WINDOW",
-    kind="int",
-    default=32,
-    minimum=4,
-    group="units",
-    doc="""Blocks per window of ``GF_STAGNATION_FREEZE``. The recurrence is resumed every window (bit-identical
-    at ``reort='none'``: the resume protocol carries the two-block tail), and the boundary weight is averaged
-    over one window; two quiet windows in a row are needed, so the earliest freeze is at ``2 x window``
-    blocks. Each resume round-trips the two live blocks through states, so keep it at 16 or more.""",
+    ``0`` disables both.""",
 )
 
 GF_PER_STATE_RESTRICT = Knob(
@@ -1370,9 +1300,6 @@ KNOBS: dict[str, Knob] = _register(
     GF_SCHEDULER,
     GF_CSR_MEMORY_SAFETY,
     GF_SUPPORT_FREEZE,
-    GF_CLOSURE_FREEZE,
-    GF_STAGNATION_FREEZE,
-    GF_STAGNATION_WINDOW,
     GF_PER_STATE_RESTRICT,
     GF_CHECK_EVERY,
     GF_NEAR_FACTOR,
