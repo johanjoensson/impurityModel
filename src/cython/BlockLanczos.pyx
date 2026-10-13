@@ -76,6 +76,7 @@ from impurityModel.ed.BlockLanczosCore import (
     block_combine,
     block_tsqr,
     check_divergence,
+    divergence_guard,
     factor_residual,
     finish_reort,
     seed_w_estimator,

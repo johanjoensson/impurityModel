@@ -790,6 +790,17 @@ def block_lanczos_cy(
     # Spectral-scale estimate (seeded from beta_0 ~ ||H||, grown only by ||alpha_i||, which is
     # bounded by ||H|| and never runs away) — catches gradual beta growth the relative check misses.
     h_norm_est = 0.0
+    # A resumed call (a doubled budget, a GF window) replays the guard over the blocks it was
+    # handed, so it keeps the scale the earlier calls built: starting both trackers from 0 left
+    # every resumed call's first step unguarded and let that step re-seed the scale -- every 16
+    # blocks once GF_CLOSURE_FREEZE ran capped GF units a window at a time.
+    guard_seeded = False
+    if resuming:
+        for _k in range(min(len(alphas_init), len(betas_init))):
+            _, t_norm_max, h_norm_est = divergence_guard(
+                spectral_norm(betas_init[_k]), spectral_norm(alphas_init[_k]), _k == 0, t_norm_max, h_norm_est
+            )
+            guard_seeded = True
 
     # Two-consecutive-steps reort rule (Simon/PROPACK): when a step acts, the next step
     # bypasses the REORT_TOL gate (see apply_reort force=) so q_curr's remaining overlap
@@ -861,10 +872,10 @@ def block_lanczos_cy(
             beta_norm_hist.append(beta_norm)
         alpha_norm = spectral_norm(alpha_i)
         # first_step = it == 0: this driver's own loop-local counter, always 0 on the
-        # first step executed by THIS call (including a resumed call) -- see
-        # check_divergence's docstring for why this must not be "it_abs == 0".
+        # first step executed by THIS call -- see check_divergence's docstring for why this
+        # must not be "it_abs == 0" -- unless a resume already replayed the guard above.
         diverged, t_norm_max, h_norm_est = check_divergence(
-            beta_norm, alpha_norm, it == 0, t_norm_max, h_norm_est, it_abs, comm
+            beta_norm, alpha_norm, it == 0 and not guard_seeded, t_norm_max, h_norm_est, it_abs, comm
         )
         if diverged:
             termination = "diverged"
