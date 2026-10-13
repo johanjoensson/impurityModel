@@ -255,6 +255,55 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     return alphas, betas, r, build_state(basis, probe.T, slaterWeightMin=slaterWeightMin), widths
 
 
+def _array_operator(basis, hOp, dense):
+    """``(H, kernel_comm)`` for the array kernel on ``basis``: the dense sector matrix (serial), or this rank's
+    columns of the distributed ``P H P``."""
+    if dense:
+        return build_dense_matrix(basis, hOp), None
+    # The (global_N, N_local) CSR goes to the kernel as-is, like the CIPSI ground state's:
+    # `local_indices` is the rank-contiguous range `offset + arange(N_local)`, which is the
+    # row layout the kernel's distributed matvec reduce-scatters into each rank's own rows.
+    # It used to be wrapped in a LinearOperator whose matmat returned all global_N rows
+    # (reduced to rank 0), which the kernel cannot store in its N_local-row buffer --
+    # "could not broadcast (970,9) into (273,9)" on every colour spanning two or more ranks
+    # (review ledger M1; RIXS R3 at 128 ranks on the cluster).
+    # Only this rank's columns are ever built, and kept as the build's column blocks
+    # (LocalColumnOperator): ~20 B per element instead of a CSR's ~50 at its peak, and no N + 1
+    # row pointer on every rank. The kernel multiplies by scattering columns (see
+    # BlockLanczosArray.pyx); _frozen_csr_fits budgets exactly this.
+    return build_local_column_operator(basis, hOp), basis.comm
+
+
+def _finish_array_run(alphas, betas, widths, status, converged_flag, delta_min, last_dg, info, rank):
+    """Close an array-kernel run: its verdict, the non-convergence warning, ``info``, and the corrupted tail
+    dropped. Returns the padded ``(alphas, betas, widths)``."""
+    # An invariant subspace closes the Krylov space under H, so the continued fraction is
+    # exact: treat it as converged (same semantics as the sparse path) so it does not trip
+    # the non-convergence warning below.
+    if status == "invariant_subspace":
+        converged_flag[0] = True
+    if not converged_flag[0] and rank == 0:
+        print(
+            f"warning: block Green's function did not reach the convergence tolerance "
+            f"{delta_min:.1e} in {len(alphas)} block(s). The continued fraction uses the "
+            f"subspace built so far.",
+            flush=True,
+        )
+    if info is not None:
+        info["converged"] = converged_flag[0]
+        info["d_g"] = last_dg[0]
+        info["n_blocks"] = len(alphas)
+        info["tol"] = delta_min
+    # Keep alphas/betas padded (k, P, P) for the caller's elementwise cross-expansion diff;
+    # only drop a corrupted trailing tail (whole blocks + widths) so it never reaches the
+    # continued fraction. Norms of padded blocks equal those of the true blocks (zeros add
+    # nothing), so the scan is valid on the padded arrays.
+    keep = len(_sanitize_continued_fraction(list(alphas), list(betas), rank=rank)[0])
+    if keep < len(alphas):
+        alphas, betas, widths = alphas[:keep], betas[:keep], widths[:keep]
+    return alphas, betas, widths
+
+
 def _array_block_lanczos(
     basis,
     hOp,
@@ -282,24 +331,7 @@ def _array_block_lanczos(
     """
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
-
-    if dense:
-        H = build_dense_matrix(basis, hOp)
-        kernel_comm = None
-    else:
-        # The (global_N, N_local) CSR goes to the kernel as-is, like the CIPSI ground state's:
-        # `local_indices` is the rank-contiguous range `offset + arange(N_local)`, which is the
-        # row layout the kernel's distributed matvec reduce-scatters into each rank's own rows.
-        # It used to be wrapped in a LinearOperator whose matmat returned all global_N rows
-        # (reduced to rank 0), which the kernel cannot store in its N_local-row buffer --
-        # "could not broadcast (970,9) into (273,9)" on every colour spanning two or more ranks
-        # (review ledger M1; RIXS R3 at 128 ranks on the cluster).
-        # Only this rank's columns are ever built, and kept as the build's column blocks
-        # (LocalColumnOperator): ~20 B per element instead of a CSR's ~50 at its peak, and no N + 1
-        # row pointer on every rank. The kernel multiplies by scattering columns (see
-        # BlockLanczosArray.pyx); _frozen_csr_fits budgets exactly this.
-        H = build_local_column_operator(basis, hOp)
-        kernel_comm = comm
+    H, kernel_comm = _array_operator(basis, hOp, dense)
 
     # Run Lanczos on psi0^T* [wI - j*delta - H]^-1 psi0 until the continued fraction converges or
     # the Krylov space closes. ceil(N/p) blocks span an N-dim sector only while every block keeps
@@ -339,30 +371,9 @@ def _array_block_lanczos(
         if status != "max_iter" or max_iter >= n_dim:
             break
         max_iter = min(2 * max_iter, n_dim)
-    # An invariant subspace closes the Krylov space under H, so the continued fraction is
-    # exact: treat it as converged (same semantics as the sparse path) so it does not trip
-    # the non-convergence warning below.
-    if status == "invariant_subspace":
-        converged_flag[0] = True
-    if not converged_flag[0] and rank == 0:
-        print(
-            f"warning: block Green's function did not reach the convergence tolerance "
-            f"{delta_min:.1e} in {len(alphas)} block(s). The continued fraction uses the "
-            f"subspace built so far.",
-            flush=True,
-        )
-    if info is not None:
-        info["converged"] = converged_flag[0]
-        info["d_g"] = last_dg[0]
-        info["n_blocks"] = len(alphas)
-        info["tol"] = delta_min
-    # Keep alphas/betas padded (k, P, P) for the caller's elementwise cross-expansion diff;
-    # only drop a corrupted trailing tail (whole blocks + widths) so it never reaches the
-    # continued fraction. Norms of padded blocks equal those of the true blocks (zeros add
-    # nothing), so the scan is valid on the padded arrays.
-    keep = len(_sanitize_continued_fraction(list(alphas), list(betas), rank=rank)[0])
-    if keep < len(alphas):
-        alphas, betas, widths = alphas[:keep], betas[:keep], widths[:keep]
+    alphas, betas, widths = _finish_array_run(
+        alphas, betas, widths, status, converged_flag, delta_min, last_dg, info, rank
+    )
     return alphas, betas, Q_list, widths
 
 
@@ -572,6 +583,103 @@ def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, e
     return alphas, betas, r, seconds
 
 
+def _csr_continue_budget(start):
+    """First block budget of a continuation after ``start`` sparse blocks: the kernel preallocates its
+    coefficient buffers at it, and a run that spends it continues from its tail at twice the budget."""
+    return max(_CSR_INITIAL_BLOCKS, 2 * start)
+
+
+def _sparse_tail_to_local_dense(frozen_basis, mask, tail, widths):
+    """The sparse kernel's two-block tail as this rank's dense rows on ``frozen_basis``. Collective.
+
+    ``tail`` is the flat list of width-1 states a tail-only run returns (``_pack_result``): the previous
+    block's columns, then the current block's. It is split at the replicated width ``widths[-1]`` of the
+    previous block and the replicated column count, never at a rank-local width (a rank holding none of a
+    block's rows still holds its columns). Every row must lie in the retained set ``mask``: a frozen
+    proxy projected the freezing step, and every earlier step was admitted whole. One unconditional
+    reduction checks that, and the widths, on every rank, and every rank raises together if either fails.
+    """
+    comm = frozen_basis.comm
+    w_prev = int(widths[len(widths) - 1])
+    blocks = (ManyBodyState.from_states(tail[:w_prev]), ManyBodyState.from_states(tail[w_prev:]))
+    w_curr = len(tail) - w_prev
+    outside = sum(len(b) - b.count_rows_in(mask) for b in blocks)
+    bad_width = any(len(b) and b.width != w for b, w in zip(blocks, (w_prev, w_curr)))
+    check = np.array([outside > 0, bad_width, len(tail), -len(tail)], dtype=np.int64)
+    if comm is not None and comm.size > 1:
+        comm.Allreduce(MPI.IN_PLACE, check, op=MPI.MAX)
+    if check[0] or check[1] or check[2] != -check[3] or w_curr < 1:
+        raise RuntimeError(
+            f"the frozen recurrence's tail cannot continue on the P H P matrix: rows outside P {bool(check[0])}, "
+            f"width mismatch {bool(check[1])}, columns {-check[3]}..{check[2]} (previous block {w_prev} wide)"
+        )
+    return tuple(block_to_local_dense(frozen_basis, b, w) for b, w in zip(blocks, (w_prev, w_curr)))
+
+
+def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor, r, info, verbose):
+    """The frozen sparse recurrence carried on as the array-kernel recurrence of ``P H P``, from where it stopped.
+
+    Every block the sparse kernel built before the freeze had its whole ``H`` image admitted (so inside the
+    final ``P``) and the freezing step was projected onto ``P``: up to the ``slaterWeightMin`` cut the sparse
+    recurrence so far IS the block Lanczos of ``P H P``, and its next block is ``P H P`` applied to the tail.
+    So it continues here instead of restarting from the seeds (:func:`_frozen_csr_green`, which recomputes
+    every pre-freeze block -- 573 of them on one SrMnO3 unit). At ``slaterWeightMin = 0`` the two agree to
+    rounding; above it the pre-freeze coefficients carry the sparse kernel's cut, which the restart would
+    not. reort 'none' only: a two-block tail cannot continue a reorthogonalized recurrence.
+
+    ``tail`` is the pair of dense blocks from :func:`_sparse_tail_to_local_dense`; ``monitor`` the sparse
+    run's ``(converged, converged_flag, delta_min, last_dg)``, which goes on judging the same continued
+    fraction (a fresh one would restart its own history); ``r`` the sparse run's seed factor. A run whose
+    first budget is spent continues from its own tail, so no block is ever computed twice. Returns
+    ``(alphas, betas, r, seconds)``, with ``info`` filled.
+    """
+    comm = frozen_basis.comm
+    rank = comm.rank if comm is not None else 0
+    t0 = time.perf_counter()
+    converged, converged_flag, delta_min, last_dg = monitor
+    start = len(alphas)
+    alphas, betas, widths = np.array(alphas), np.array(betas), list(widths)
+    H, kernel_comm = _array_operator(frozen_basis, hOp, False)
+    n_dim = H.shape[0]
+    budget = min(_csr_continue_budget(start), n_dim)
+    while True:
+        alphas, betas, _, widths, status, tail = block_lanczos_array(
+            psi0=None,
+            h_op=H,
+            converged=converged,
+            reort=Reort.NONE,
+            build_krylov_basis=False,
+            verbose=False,
+            comm=kernel_comm,
+            alphas=alphas,
+            betas=betas,
+            tail=tail,
+            block_widths_init=widths,
+            max_iter=budget,
+            return_widths=True,
+            return_status=True,
+            return_tail=True,
+            deflate_tol=DEFLATE_TOL_SEEDS,
+        )
+        # The kernel's buffers are sized to this attempt; the next one copies what it continues from.
+        if status != "max_iter" or len(alphas) - start >= n_dim:
+            break
+        budget = min(2 * budget, n_dim - (len(alphas) - start))
+    alphas, betas, widths = _finish_array_run(
+        alphas, betas, widths, status, converged_flag, delta_min, last_dg, info, rank
+    )
+    seconds = time.perf_counter() - t0
+    if verbose and rank == 0:
+        print(
+            f"GF basis frozen at {frozen_basis.size:,} determinants: recurrence continued on the P H P matrix "
+            f"({len(alphas) - start} block(s) after {start} sparse, {seconds:.1f} s).",
+            flush=True,
+        )
+    alphas, betas = _trim_blocks(alphas, betas, widths)
+    alphas, betas = _sanitize_continued_fraction(alphas, betas, rank=rank)
+    return alphas, betas, r, seconds
+
+
 def block_Green_sparse(
     hOp,
     psi_arr,
@@ -595,12 +703,12 @@ def block_Green_sparse(
     guard (off by default; only meaningful with a finite cap).
 
     **Frozen-basis CSR fallback** (``GF_FROZEN_CSR``, on by default): when the cap freezes the
-    support, the sparse recurrence stops at that step and the whole recurrence restarts from the
-    seeds as an array-kernel SpMV on the ``P H P`` CSR of the retained set (see
-    :func:`_frozen_csr_green`) -- exact on ``P`` like the sparse kernel, without applying ``H`` to
-    every retained row and discarding the image outside ``P``. Not taken for a freeze by the
-    memory guard, a CSR that would not fit the budget, or a ``krylov_dtype`` store.
-    ``cap_info["csr_fallback"]`` says whether it ran. The same restart is taken when the support
+    support, the sparse recurrence stops at that step and carries on as an array-kernel SpMV on the
+    ``P H P`` CSR of the retained set -- from its last two blocks at reort 'none'
+    (:func:`_frozen_csr_continue`), else restarted from the seeds (:func:`_frozen_csr_green`) -- exact
+    on ``P`` like the sparse kernel, without applying ``H`` to every retained row and discarding the
+    image outside ``P``. Not taken for a CSR that would not fit the budget, or a ``krylov_dtype`` store.
+    ``cap_info["csr_fallback"]`` says whether it ran. The same switch is taken when the support
     stalls below the cap (``GF_CLOSURE_FREEZE``, on by default: a whole window of blocks admits no
     new determinant; ``cap_info["closure_frozen"]``) or, opt-in, when the weight reaching new rows
     dies away (``GF_STAGNATION_FREEZE``; ``cap_info["stagnation_frozen"]``).
@@ -754,7 +862,25 @@ def block_Green_sparse(
     csr_candidate = frozen_csr and krylov_dtype is None and isinstance(lanczos_basis, _CappedBasisProxy)
     csr = None
 
-    def _csr_green(frozen_basis, blocks_hint):
+    def _csr_green(frozen_basis, blocks_hint=0, stopped=None):
+        # `stopped` = the sparse run's (alphas, betas, widths, tail) at the freeze, passed at reort 'none'
+        # only: the recurrence carries on from it. Otherwise (or with nothing built yet) it restarts from
+        # the seeds, with a first budget of a few times `blocks_hint`.
+        if stopped is not None and len(stopped[0]) > 0:
+            s_alphas, s_betas, s_widths, s_tail = stopped
+            dense_tail = _sparse_tail_to_local_dense(frozen_basis, lanczos_basis.retained_mask, s_tail, s_widths)
+            return _frozen_csr_continue(
+                frozen_basis,
+                hOp,
+                s_alphas,
+                s_betas,
+                s_widths,
+                dense_tail,
+                (converged, converged_flag, delta_min, last_dg),
+                r,
+                info,
+                verbose,
+            )
         return _frozen_csr_green(
             frozen_basis,
             hOp,
@@ -802,7 +928,7 @@ def block_Green_sparse(
             lanczos_basis.stop_on_freeze = False
             frozen_basis = _frozen_csr_basis(lanczos_basis, basis, hOp, verbose, width=psi_arr.width)
             if frozen_basis is not None:
-                csr = _csr_green(frozen_basis, 0)
+                csr = _csr_green(frozen_basis)
     while csr is None:
         # Under GF_STAGNATION_FREEZE the recurrence runs a window at a time so the support can be read
         # between rounds; a window shorter than the budget is not an exhausted budget (see below).
@@ -838,16 +964,18 @@ def block_Green_sparse(
         #                             converged, and no further blocks can be built.
         #   * "max_iter"           -- the budget was exhausted while the matvec was still
         #                             reaching new determinants; grow the budget and resume.
-        #   * "frozen"             -- the support froze this step (stop_on_freeze): restart on
+        #   * "frozen"             -- the support froze this step (stop_on_freeze): carry on on
         #                             the P H P CSR, or, if that declines, resume right here.
         if status == "frozen":
             lanczos_basis.stop_on_freeze = False
             frozen_basis = _frozen_csr_basis(lanczos_basis, basis, hOp, verbose, width=psi_arr.width)
             if frozen_basis is not None:
-                # The stopped sparse state is only needed to resume a declined switch: release its
-                # Krylov store (reort != NONE) before the restart builds its own.
+                # At reort 'none' the stopped state (its two-block tail) is where the CSR carries on from;
+                # otherwise it is only needed to resume a declined switch: release its Krylov store before
+                # the restart builds its own.
+                stopped = (alphas, betas, widths, Q) if resolved_reort == Reort.NONE else None
                 Q = W = None
-                csr = _csr_green(frozen_basis, len(alphas))
+                csr = _csr_green(frozen_basis, len(alphas), stopped)
             continue
         if status in ("converged", "invariant_subspace"):
             converged_flag[0] = True
@@ -878,8 +1006,9 @@ def block_Green_sparse(
                 )
                 if frozen_basis is not None:
                     lanczos_basis.freeze_for_closure()
+                    stopped = (alphas, betas, widths, Q)
                     Q = W = None
-                    csr = _csr_green(frozen_basis, len(alphas))
+                    csr = _csr_green(frozen_basis, len(alphas), stopped)
                     continue
                 # Declined: the CSR does not fit. Carry on sparse and do not ask again.
                 closure = False
@@ -920,8 +1049,9 @@ def block_Green_sparse(
                     if frozen_basis is not None:
                         lanczos_basis.freeze_for_stagnation()
                         stagnation_leakage = leakage
+                        stopped = (alphas, betas, widths, Q)
                         Q = W = None
-                        csr = _csr_green(frozen_basis, len(alphas))
+                        csr = _csr_green(frozen_basis, len(alphas), stopped)
                     else:
                         # Declined: the CSR does not fit, and a truncation that buys nothing is not taken.
                         # Carry on sparse and unfrozen, and do not ask again.
