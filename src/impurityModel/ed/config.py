@@ -526,6 +526,31 @@ GF_CSR_MEMORY_SAFETY = Knob(
     than the cap does. Ignored when the guard is off (``GS_MEMORY_BUDGET_SAFETY=0``).""",
 )
 
+GF_SUPPORT_FREEZE = Knob(
+    name="GF_SUPPORT_FREEZE",
+    kind="bool",
+    default=False,
+    group="units",
+    doc="""Freeze a sparse Green's-function unit's support once growing it no longer buys more than the
+    ``slaterWeightMin`` cut costs, and carry the recurrence on on the frozen ``P H P`` CSR.
+
+    The sparse kernel drops every amplitude below ``slaterWeightMin`` on every step, an error the run has
+    already accepted. Each step measures, in the units of its matvec ``H q``, the weight landing on rows
+    outside the support (what the support grows by, and what a freeze drops) and the weight those prunes
+    dropped (the matvec's, and the normalized next block's weighed back through ``beta beta^H``). Once the
+    first, summed over the last 16 blocks, is no larger than the second, the support freezes: from then on
+    the recurrence drops no more per step than the cutoff already did. It does not wait for the support to
+    stop growing, which a cutoff-limited support never does (CrI3: 1,000-5,000 new determinants per 16
+    blocks at ~5.14M, never 0, so ``GF_CLOSURE_FREEZE`` never fired and six units ran sparse for 2-2.6 ks).
+    A support that closes exactly freezes after one window whatever the cutoff.
+
+    Lanczos with ``reort='none'`` on the capped proxy (which the GF memory guard installs on every unit by
+    default), ``GF_FROZEN_CSR`` on, no ``krylov_dtype``, no ``GF_LANCZOS_ADMIT_TOL``. If the frozen matrix
+    does not fit its memory budget the freeze is undone and the unit continues sparse and unfrozen. Reported
+    as ``support_frozen`` on the unit line; with ``-v`` every 16 blocks print the two window sums.
+    ``0``/unset: off.""",
+)
+
 GF_CLOSURE_FREEZE = Knob(
     name="GF_CLOSURE_FREEZE",
     kind="bool",
@@ -1344,6 +1369,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_FROZEN_CSR,
     GF_SCHEDULER,
     GF_CSR_MEMORY_SAFETY,
+    GF_SUPPORT_FREEZE,
     GF_CLOSURE_FREEZE,
     GF_STAGNATION_FREEZE,
     GF_STAGNATION_WINDOW,

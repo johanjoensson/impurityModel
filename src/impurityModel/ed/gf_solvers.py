@@ -420,6 +420,9 @@ _STAGNATION_QUIET_WINDOWS = 2
 #: restart recomputes every block from the seeds (build ~1000 s at 12M determinants), so past the point
 #: where fewer than ~40 sparse blocks remain (1e-9 -> ~1.6e-9 on the SMO dominant units) it loses.
 _STAGNATION_NEAR_END = 100.0
+#: GF_SUPPORT_FREEZE's window: the blocks over which the weight reaching new rows is weighed against what the
+#: slaterWeightMin prunes dropped. Long enough to span a gap between the layered shells a support grows in.
+_SUPPORT_WINDOW = 16
 #: GF_CLOSURE_FREEZE's window: blocks without a new determinant before a unit freezes on a stalled support.
 #: One window, not GF_STAGNATION_FREEZE's two, and no near-end veto: the CrI3 light units sat in their
 #: 1-3e-9 tail for ~60 sparse blocks (~19 s each) where the whole CSR restart, build included, took
@@ -768,6 +771,8 @@ def block_Green_sparse(
         cap_info["stagnation_frozen"] = False
         cap_info["stagnation_leakage"] = None
         cap_info["closure_frozen"] = False
+        cap_info["support_frozen"] = False
+        cap_info["support_history"] = []
 
     if N == 0 or n == 0:
         if cap_info is not None:
@@ -852,13 +857,14 @@ def block_Green_sparse(
             config.GF_STAGNATION_FREEZE.get(),
             config.GF_STAGNATION_WINDOW.get(),
             config.GF_CLOSURE_FREEZE.get(),
+            config.GF_SUPPORT_FREEZE.get(),
         )
         if rank == 0
         else None
     )
     if comm is not None:
         knobs = comm.bcast(knobs, root=0)
-    frozen_csr, stagnation_tol, stagnation_window, closure = knobs
+    frozen_csr, stagnation_tol, stagnation_window, closure, support = knobs
     csr_candidate = frozen_csr and krylov_dtype is None and isinstance(lanczos_basis, _CappedBasisProxy)
     csr = None
 
@@ -914,6 +920,10 @@ def block_Green_sparse(
     closure = bool(
         closure and csr_candidate and resolved_reort == Reort.NONE and type(lanczos_basis) is _CappedBasisProxy
     )
+    # GF_SUPPORT_FREEZE: the proxy freezes the support itself, on the step its window decides, and the kernel
+    # hands control back there (stop_on_freeze), so it needs no windowed rounds of its own.
+    if support and csr_candidate and resolved_reort == Reort.NONE and type(lanczos_basis) is _CappedBasisProxy:
+        lanczos_basis.enable_support_freeze(_SUPPORT_WINDOW, log=verbose and rank == 0)
     window = stagnation_window if stagnation_tol is not None else _CLOSURE_WINDOW
     stagnation_leakage = None
     quiet_windows = 0  # consecutive windows whose boundary weight stayed below the threshold
@@ -976,6 +986,9 @@ def block_Green_sparse(
                 stopped = (alphas, betas, widths, Q) if resolved_reort == Reort.NONE else None
                 Q = W = None
                 csr = _csr_green(frozen_basis, len(alphas), stopped)
+            elif lanczos_basis.support_frozen:
+                # A support freeze that buys no speed is not kept: carry on sparse and unfrozen.
+                lanczos_basis.unfreeze_support()
             continue
         if status in ("converged", "invariant_subspace"):
             converged_flag[0] = True
@@ -1060,7 +1073,7 @@ def block_Green_sparse(
         budget *= 2
 
     if isinstance(lanczos_basis, _CappedBasisProxy):
-        frozen_early = lanczos_basis.stagnation_frozen or lanczos_basis.closure_frozen
+        frozen_early = lanczos_basis.stagnation_frozen or lanczos_basis.closure_frozen or lanczos_basis.support_frozen
         if (lanczos_basis.cap_hit or frozen_early) and verbose and rank == 0:
             print(lanczos_basis.freeze_message(), flush=True)
         if cap_info is not None:
@@ -1072,6 +1085,8 @@ def block_Green_sparse(
             cap_info["stagnation_frozen"] = lanczos_basis.stagnation_frozen
             cap_info["stagnation_leakage"] = stagnation_leakage
             cap_info["closure_frozen"] = lanczos_basis.closure_frozen
+            cap_info["support_frozen"] = lanczos_basis.support_frozen
+            cap_info["support_history"] = list(lanczos_basis.support_history)
             if csr is not None:
                 cap_info["csr_seconds"] = csr[3]
         if csr is not None:

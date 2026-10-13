@@ -7,6 +7,8 @@ compatibility) so the solver-policy code in that module and in :mod:`gf_converge
 either of those two, or from :mod:`greens_function` itself.
 """
 
+import math
+from collections import deque
 from contextlib import contextmanager
 
 import numpy as np
@@ -190,6 +192,16 @@ def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
     return G_avg
 
 
+def support_window_freezes(window):
+    """``(freeze, leak, cut)`` for a full window of per-step ``(leak, cut)`` weights: freeze when the weight that
+    reached new rows over the window is no larger than what the ``slaterWeightMin`` prunes dropped over it
+    (``math.fsum``, so the verdict depends only on the values, not on how they were added). A window that is
+    not full yet never freezes."""
+    leak = math.fsum(w[0] for w in window)
+    cut = math.fsum(w[1] for w in window)
+    return len(window) == window.maxlen and leak <= cut, leak, cut
+
+
 class _CappedBasisProxy:
     """Enforce ``truncation_threshold`` on the sparse-kernel GF recurrence.
 
@@ -255,6 +267,9 @@ class _CappedBasisProxy:
     #: Measure the weight of the rows each matvec would add (see :meth:`track_leakage`). Off by default:
     #: the hot path then pays nothing and is bit-identical to a proxy that never had the option.
     _track_leakage = False
+    #: The support freeze (:meth:`enable_support_freeze`): on, and whether it has frozen the support.
+    support_freeze = False
+    support_frozen = False
 
     def __init__(self, basis, cap, memory_budget=None, memory_policy="tighten"):
         """``memory_budget`` (absolute per-rank bytes, ``None`` = off, the default) adds a measured
@@ -288,6 +303,10 @@ class _CappedBasisProxy:
         self._leak_new = 0.0
         self._leak_total = 0.0
         self._deferred = False
+        self._pending_cut = 0.0
+        self._window = None
+        self.support_history = []
+        self._support_log = False
 
     # --- attributes block_lanczos_cy reads off its basis ---------------------
     @property
@@ -378,6 +397,43 @@ class _CappedBasisProxy:
         self._leak_new = self._leak_total = 0.0
         return out
 
+    def enable_support_freeze(self, window, log=False):
+        """Freeze the support once growing it no longer buys more than the ``slaterWeightMin`` cut costs.
+
+        Every recurrence step then measures two weights in the units of its matvec ``H q``: the *leak*, the
+        squared norm of the step's output on rows outside the retained set (what the support grows by, and
+        what a freeze would drop), and the *cut*, what the sparse kernel's own ``slaterWeightMin`` prunes
+        dropped on that step (:meth:`note_step_cut`). Once the leak summed over the last ``window`` steps is
+        no larger than the cut summed over them, the support freezes where it stands: from then on the
+        recurrence drops no more per step than the cutoff the run has already accepted. A support that closes
+        exactly has a leak of 0 and freezes after one window whatever the cut.
+
+        Each step's three numbers (new rows, leak, cut) are gathered from every rank and summed in rank order,
+        so every rank holds the same bits and takes the same decision; Allreduce gives no such promise, and a
+        verdict at the boundary picks the next step's collectives. Opt-in, set identically on every rank by
+        the caller that hands the frozen recurrence on (``gf_solvers.block_Green_sparse``): every other user of
+        the proxy (BiCGSTAB's per-point solves, the shift-recycled resolvent) never freezes this way. ``log``
+        prints the window sums every ``window`` steps (rank 0 only)."""
+        self.support_freeze = True
+        self._window = deque(maxlen=int(window))
+        self._support_log = bool(log)
+
+    def unfreeze_support(self):
+        """Undo a support freeze whose frozen matrix did not fit, and do not freeze this way again: a truncation
+        that buys no speed is not kept. Exact, since the freezing step had admitted all of its rows. Not
+        collective; every rank calls it on the same step (the caller decides from a collective answer)."""
+        self._frozen = False
+        self.support_frozen = False
+        self.support_freeze = False
+
+    def note_step_cut(self, weight):
+        """Add weight the step's ``slaterWeightMin`` prunes dropped (rank-local; reduced with the step's admission).
+
+        Called by the recurrence step for the after-sum matvec prune, before :meth:`finish_step`, and for the
+        prune of the normalized next block, after it -- that one is weighed back into matvec units by the
+        step's ``beta beta^H`` and so rides into the next step's reduction."""
+        self._pending_cut += weight
+
     def _over_memory_budget(self):
         """Collective (on the color's comm) when the guard is on: is the color's MAX RSS at budget?
 
@@ -438,7 +494,7 @@ class _CappedBasisProxy:
             # The memory guard froze mid-step: what earlier chunks brought in was never admitted.
             wp.keep_rows(self._mask)
             return wp
-        return self._admit_counted(wp)
+        return self._admit_counted(wp, step=True)
 
     def _admit(self, block):
         """Project one redistributed matvec output onto the retained set, growing it while it may.
@@ -461,8 +517,13 @@ class _CappedBasisProxy:
             return block
         return self._admit_counted(block)
 
-    def _admit_counted(self, block):
-        """Admit ``block``'s new rows if they fit under the cap, else its top rows, and freeze. Collective."""
+    def _admit_counted(self, block, step=False):
+        """Admit ``block``'s new rows if they fit under the cap, else its top rows, and freeze. Collective.
+
+        ``step``: ``block`` is a recurrence step's whole output (:meth:`finish_step`), which the support freeze
+        counts; the seed block's redistribution is not a step."""
+        if self.support_freeze:
+            return self._admit_counted_support(block, step)
         n_new = len(block) - block.count_rows_in(self._mask)
         if self._track_leakage:
             # The new rows' weight (max column |amp|^2 per row, exact for the width-1 blocks a GF unit
@@ -483,6 +544,42 @@ class _CappedBasisProxy:
             return block
         self._admit_top_and_freeze(block)
         block.keep_rows(self._mask)
+        return block
+
+    def _admit_counted_support(self, block, step):
+        """:meth:`_admit_counted` under the support freeze: the count, leak and cut in one gather, then the
+        freeze decision on the step's window (see :meth:`enable_support_freeze`). Collective."""
+        n_new, leak = block.new_rows_stats(self._mask)
+        local = np.array([n_new, leak, self._pending_cut], dtype=np.float64)
+        self._pending_cut = 0.0
+        if self.comm is not None and self.comm.size > 1:
+            gathered = np.empty((self.comm.size, 3), dtype=np.float64)
+            self.comm.Allgather(local, gathered)
+        else:
+            gathered = local[None, :]
+        n_new = round(math.fsum(gathered[:, 0]))
+        leak = math.fsum(gathered[:, 1])
+        cut = math.fsum(gathered[:, 2])
+        if self._global_count + n_new > self.cap:
+            self._admit_top_and_freeze(block)
+            block.keep_rows(self._mask)
+            return block
+        self._mask.merge_keys(block)
+        self._global_count += n_new
+        if step:
+            self.support_history.append((leak, cut))
+            self._window.append((leak, cut))
+            freeze, leak_w, cut_w = support_window_freezes(self._window)
+            if self._support_log and len(self.support_history) % self._window.maxlen == 0:
+                print(
+                    f"GF support: {self._global_count:,} determinants after {len(self.support_history)} blocks; "
+                    f"over the last {len(self._window)}: weight on new rows {leak_w:.3e}, cut by slaterWeightMin "
+                    f"{cut_w:.3e}",
+                    flush=True,
+                )
+            if freeze:
+                self._frozen = True
+                self.support_frozen = True
         return block
 
     def _admit_top_and_freeze(self, block):
@@ -531,6 +628,12 @@ class _CappedBasisProxy:
 
     def freeze_message(self):
         """One-line description of the cap state (rank-0 logging)."""
+        if self.support_frozen:
+            return (
+                f"GF basis frozen at {self._global_count:,} determinants: over the last {self._window.maxlen} blocks "
+                "the weight reaching new determinants was no more than what slaterWeightMin cuts (GF_SUPPORT_FREEZE); "
+                "the Green's function is exact on the retained subspace from here on, and drops at most that much."
+            )
         if self.closure_frozen:
             why = "closure (no new determinant in a whole window of blocks, GF_CLOSURE_FREEZE)"
         elif self.stagnation_frozen:

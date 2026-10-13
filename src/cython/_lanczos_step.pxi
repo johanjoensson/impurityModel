@@ -163,6 +163,8 @@ def block_lanczos_step_cy(
     # survives does not depend on the colour's rank count or the chunk count.
     _prune_after_sum = matvec_cut_after_sum(_needs_redistribute, slaterWeightMin)
     _apply_cutoff = 0.0 if _prune_after_sum else slaterWeightMin
+    # A proxy running the support freeze weighs what this step's slaterWeightMin prunes drop (replicated flag).
+    _note_cut = basis.note_step_cut if _begin_step is not None and getattr(basis, "support_freeze", False) else None
     if _begin_step is not None:
         _begin_step()
     if _n_chunks is None or _n_chunks <= 1:
@@ -231,7 +233,9 @@ def block_lanczos_step_cy(
         _prof_acc("matvec_apply", _t0)
     if _prune_after_sum:
         # Before finish_step: a capping proxy must admit on the cut sums, not on rows the cut drops.
-        wp.prune_rows(slaterWeightMin)
+        _dropped = wp.prune_rows(slaterWeightMin)
+        if _note_cut is not None:
+            _note_cut(_dropped)
     if _begin_step is not None:
         wp = basis.finish_step(wp)
     _prof_acc("matvec", _t0)
@@ -314,7 +318,12 @@ def block_lanczos_step_cy(
     if slaterWeightMin > 0.0:
         # Whole-row prune: a row survives when ANY column survives (keeps the block's
         # shared support; the per-column prune of independent states would desync it).
-        q_next.prune_rows(slaterWeightMin)
+        if _note_cut is not None:
+            # In the matvec's units: the residual is q_next @ beta_i, so a dropped row of q_next carried
+            # row beta_i beta_i^H row^H of it. Reaches the proxy with the next step's admission.
+            _note_cut(q_next.prune_rows(slaterWeightMin, beta_i @ np.conj(beta_i.T)))
+        else:
+            q_next.prune_rows(slaterWeightMin)
         did_truncate = True
     if truncation_threshold > 0:
         _q_states = q_next.to_states()
