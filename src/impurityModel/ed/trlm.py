@@ -728,7 +728,7 @@ def thick_restart_block_lanczos_cy(
     verbose: bool = False,
     slaterWeightMin: float = 0.0,
     truncation_threshold: int = 0,
-    reort="partial",
+    reort="full",
     comm=None,
     num_converge=None,
 ):
@@ -822,7 +822,7 @@ def thick_restart_block_lanczos(
     max_restarts: int = 100,
     verbose: bool = False,
     slaterWeightMin: float = 0,
-    reort=Reort.PARTIAL,
+    reort=Reort.FULL,
     num_converge=None,
     locked=None,
 ):

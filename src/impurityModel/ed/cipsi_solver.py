@@ -1257,7 +1257,7 @@ class CIPSISolver:
         dense_cutoff=1e3,
         slaterWeightMin=0,
         solver="trlm",
-        reort=Reort.PARTIAL,
+        reort=Reort.FULL,
         symmetry_generators=None,
         cap_e_tol=1e-8,
         max_cap_cycles=10,
@@ -2125,7 +2125,7 @@ class CIPSISolver:
         dense_cutoff=1e3,
         slaterWeightMin=0,
         solver="trlm",
-        reort=Reort.PARTIAL,
+        reort=Reort.FULL,
         psi_refs=None,
         h_matrix=None,
     ):
