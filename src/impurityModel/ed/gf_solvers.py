@@ -1168,6 +1168,10 @@ class _FrozenShiftedSystem:
         norms2 = np.sum(np.abs(self.seeds) ** 2, axis=0)
         if self.comm is not None:
             self.comm.Allreduce(MPI.IN_PLACE, norms2, op=MPI.SUM)
+            # Rank 0's bits everywhere: :meth:`boundary` divides the (broadcast) leak by these, and the verdict
+            # on the ratio picks the next collectives, which an Allreduce does not promise to keep identical.
+            if self.comm.size > 1:
+                self.comm.Bcast(norms2, root=0)
         self.seed_norms = np.sqrt(norms2)
 
     def to_dense(self, states):

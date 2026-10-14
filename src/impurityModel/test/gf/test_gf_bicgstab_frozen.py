@@ -333,6 +333,43 @@ def test_the_leak_norms_are_the_same_bits_on_every_rank(monkeypatch):
     assert len({g.tobytes() for g in comm.allgather(got)}) == 1
 
 
+class _SkewedComm:
+    """A communicator whose float Allreduce returns rank-dependent last bits (which MPI permits); everything else
+    goes to the real one."""
+
+    def __init__(self, comm):
+        self._comm = comm
+
+    def Allreduce(self, sendbuf, recvbuf, op=MPI.SUM):
+        self._comm.Allreduce(sendbuf, recvbuf, op=op)
+        out = recvbuf if sendbuf is MPI.IN_PLACE else recvbuf
+        if isinstance(out, np.ndarray) and out.dtype.kind == "f":
+            out *= 1.0 + 1e-15 * self._comm.rank
+
+    def __getattr__(self, name):
+        return getattr(self._comm, name)
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="the replication is between ranks")
+def test_the_frozen_systems_leak_is_the_same_bits_on_every_rank():
+    """What the accept/fallback verdict compares is the leak over the seed norms, both reduced over the colour:
+    neither may carry a rank's own rounding. Simulated by a communicator whose reductions differ per rank."""
+    comm = MPI.COMM_WORLD
+    basis, op = _p_short_of_the_sector(comm=comm)
+    real_comm = basis.comm
+    basis.comm = _SkewedComm(real_comm)
+    try:
+        system = gf_solvers._FrozenShiftedSystem(basis, op, _seeds(), 2)
+        rng = np.random.default_rng(5)
+        X = rng.normal(size=(len(basis.local_basis), 2)) + 1j * rng.normal(size=(len(basis.local_basis), 2))
+        got = system.boundary((0.7 + 1j * DELTA) - op, ManyBodyState.from_keys_and_amps(basis._keys, X), 0.0)
+    finally:
+        basis.comm = real_comm
+    assert np.all(got > 0), "premise: X leaks out of P"
+    assert len({g.tobytes() for g in comm.allgather(got)}) == 1
+
+
 @pytest.mark.mpi
 def test_the_rixs_r1_chain_on_every_rank():
     comm = MPI.COMM_WORLD
