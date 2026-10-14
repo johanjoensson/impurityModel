@@ -164,6 +164,8 @@ def test_prune_rows_weighs_the_dropped_rows_through_a_gram_matrix():
 def test_prune_rows_on_an_empty_block_drops_nothing():
     assert ManyBodyState.from_states([ManyBodyState(width=1)]).prune_rows(1e-3) == 0.0
     assert ManyBodyState(width=2).prune_rows(1e-3, np.eye(2)) == 0.0
+    # The width-0 polymorphic zero an empty rank can hold: whatever gram the step built, never a raise there.
+    assert ManyBodyState.from_states([]).prune_rows(1e-3, np.eye(2)) == 0.0
 
 
 def test_new_rows_stats_counts_and_weighs_the_rows_outside_the_mask():

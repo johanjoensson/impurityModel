@@ -1018,7 +1018,7 @@ public:
    * @brief Number of rows whose key is NOT in `keep` (sorted, unique) and
    * their summed |amp|^2 over every column: the rows a capped recurrence would
    * admit and the weight they carry, in one merge pass. 0 and 0.0 for an empty
-   * or width-0 block.
+   * block; a key-only (width-0) block's rows count with weight 0.
    */
   template <typename KeepT>
   std::pair<std::size_t, double> new_rows_stats(const KeepT &keep) const noexcept {

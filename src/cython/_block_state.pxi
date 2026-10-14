@@ -712,16 +712,15 @@ cdef class ManyBodyState:
             raise RuntimeError("cannot prune_rows while a buffer view is exported (np.asarray view alive)")
         cdef double dropped
         cdef double complex[:, ::1] g
-        if gram is None:
+        if gram is None or self.b.width() == 0:
+            # A width-0 block (the polymorphic zero an empty rank can hold) carries no weight to weigh: never
+            # raise on it, or one rank would leave the collectives the others enter.
             dropped = self.b.prune_rows(cutoff)
         else:
             g = np.ascontiguousarray(gram, dtype=complex)
             if g.shape[0] != self.b.width() or g.shape[1] != self.b.width():
                 raise ValueError(f"gram must be {self.b.width()} x {self.b.width()}, got {g.shape[0]} x {g.shape[1]}")
-            if self.b.width() == 0:
-                dropped = self.b.prune_rows(cutoff)
-            else:
-                dropped = self.b.prune_rows(cutoff, <ManyBodyBlockState_cpp.Value*> &g[0, 0])
+            dropped = self.b.prune_rows(cutoff, <ManyBodyBlockState_cpp.Value*> &g[0, 0])
         self._bump_generation()
         return dropped
 
@@ -825,8 +824,8 @@ cdef class ManyBodyState:
 
     def new_rows_stats(self, ManyBodyState mask):
         """``(n, weight)``: the number of rows NOT in ``mask``'s support and their summed
-        ``|amp|^2`` over every column (one merge pass; ``(0, 0.0)`` for an empty or width-0
-        block)."""
+        ``|amp|^2`` over every column (one merge pass; ``(0, 0.0)`` for an empty block, ``(n, 0.0)``
+        for a key-only width-0 one)."""
         cdef pair[size_t, double] out
         with nogil:
             out = self.b.new_rows_stats(mask.b.key_store())
