@@ -945,8 +945,10 @@ def block_Green_sparse(
                 Q = W = None
                 csr = _csr_green(frozen_basis, len(alphas), stopped)
             elif lanczos_basis.support_frozen:
-                # A support freeze that buys no speed is not kept: carry on sparse and unfrozen.
+                # A support freeze that buys no speed is not kept: carry on sparse and unfrozen, and still hand
+                # a later cap or memory-guard freeze to the CSR.
                 lanczos_basis.unfreeze_support()
+                lanczos_basis.stop_on_freeze = True
             continue
         if status in ("converged", "invariant_subspace"):
             converged_flag[0] = True
@@ -957,6 +959,10 @@ def block_Green_sparse(
         budget *= 2
 
     if isinstance(lanczos_basis, _CappedBasisProxy):
+        if lanczos_basis.support_frozen and csr is None:
+            # The support froze on the step the recurrence ended on anyway (converged, closed or diverged): the
+            # freeze dropped nothing, so it is not reported as one.
+            lanczos_basis.unfreeze_support()
         frozen_early = lanczos_basis.support_frozen
         if (lanczos_basis.cap_hit or frozen_early) and verbose and rank == 0:
             print(lanczos_basis.freeze_message(), flush=True)

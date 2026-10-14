@@ -177,3 +177,19 @@ def test_the_retired_freezes_warn_that_they_are_no_longer_read(name, monkeypatch
         warnings.simplefilter("always")
         config.warn_retired_knobs()
     assert any(name in str(w.message) and "GF_SUPPORT_FREEZE" in str(w.message) for w in caught)
+
+
+def test_a_declined_freeze_is_asked_once_and_a_later_cap_still_takes_the_csr(monkeypatch):
+    """The support freeze declines (the matrix does not fit); the unit carries on unfrozen, and when its cap binds
+    later that freeze is offered the CSR again -- and fits."""
+    asked = []
+    real_fits = gf_solvers._frozen_csr_fits
+
+    def first_declines(*args, **kwargs):
+        asked.append(1)
+        return len(asked) > 1 and real_fits(*args, **kwargs)
+
+    monkeypatch.setattr(gf_solvers, "_frozen_csr_fits", first_declines)
+    info = _trickle(cap=2600)[3]
+    assert not info["support_frozen"] and info["cap_hit"] and info["csr_fallback"]
+    assert len(asked) == 2, "the support freeze once, the cap freeze once"
