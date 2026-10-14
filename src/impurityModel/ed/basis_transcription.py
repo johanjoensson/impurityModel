@@ -333,7 +333,7 @@ def _column_batches(basis, op: ManyBodyOperator):
     exhausted = False
     while True:
         col_begin = position
-        bras = []
+        bras: list = []
         batch_cols = []
         batch_vals = []
         while not exhausted and len(bras) < _SPARSE_BUILD_BATCH:

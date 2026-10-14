@@ -843,6 +843,7 @@ def block_Green_sparse(
     )
     if comm is not None:
         knobs = comm.bcast(knobs, root=0)
+    assert knobs is not None  # rank 0 read them; every other rank has them from the broadcast
     frozen_csr, support = knobs
     csr_candidate = frozen_csr and krylov_dtype is None and isinstance(lanczos_basis, _CappedBasisProxy)
     csr = None

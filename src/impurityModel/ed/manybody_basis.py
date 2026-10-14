@@ -304,6 +304,10 @@ class Basis:
     supporting distributed states over MPI, restrictions, and basis extensions.
     """
 
+    #: The matvec's measured row fan-out on this (ground-state) basis, set once per calculation by
+    #: ``gf_units.run_units_distributed`` for the automatic GF cap; ``None`` until then.
+    gf_row_fanout: float | None = None
+
     def __init__(
         self,
         impurity_orbitals,
