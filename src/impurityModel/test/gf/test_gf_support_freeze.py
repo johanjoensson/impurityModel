@@ -27,15 +27,17 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import config, gf_primitives, gf_solvers
+from impurityModel.ed.basis_transcription import build_dense_matrix
 from impurityModel.ed.gf_primitives import support_window_freezes
 from impurityModel.ed.greens_function import calc_G
-from impurityModel.test.basis.test_sparse_matrix_build import _det
+from impurityModel.test.basis.test_sparse_matrix_build import _basis, _det
 from impurityModel.test.support.gf_chain_fixtures import (
     DELTA,
     N_ORB,
     OMEGA,
     SECTOR,
     chain_operator,
+    chain_seeds,
     exact_chain_g,
     run_chain,
 )
@@ -45,7 +47,7 @@ WINDOW = gf_solvers._SUPPORT_WINDOW
 
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
-    for name in ("GF_SUPPORT_FREEZE", "GF_FROZEN_CSR", "GF_APPLY_ROW_CHUNKS", *config.RETIRED_KNOBS):
+    for name in ("GF_SUPPORT_FREEZE", "GF_FROZEN_CSR", "GF_APPLY_ROW_CHUNKS", "MATVEC_PRUNE", *config.RETIRED_KNOBS):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -177,6 +179,73 @@ def test_the_retired_freezes_warn_that_they_are_no_longer_read(name, monkeypatch
         warnings.simplefilter("always")
         config.warn_retired_knobs()
     assert any(name in str(w.message) and "GF_SUPPORT_FREEZE" in str(w.message) for w in caught)
+
+
+def _dense_chain(seed):
+    """The chain's H on its whole 7-electron sector, the seed columns there, and the seed rows."""
+    keys = sorted(_det(list(c)) for c in itertools.combinations(range(N_ORB), 7))
+    basis = _basis(keys, None, n_orb=N_ORB)
+    h = np.asarray(build_dense_matrix(basis, chain_operator(seed=seed)))
+    index = {bytes(d.to_bytearray()[:2]): i for i, d in enumerate(basis.local_basis)}
+    v = np.zeros((h.shape[0], len(chain_seeds())), dtype=complex)
+    for j, s in enumerate(chain_seeds()):
+        for det, amp in s.items():
+            v[index[bytes(det.to_bytearray()[:2])], j] = amp[0]
+    return h, v, np.flatnonzero(np.any(v != 0, axis=1))
+
+
+def test_every_steps_weights_are_the_dense_ones(monkeypatch):
+    """The leak and both cuts, step by step, against the same recurrence replayed in numpy on the whole sector:
+    the matvec's cut is the summed H q rows below the cutoff, the leak the kept rows outside the support so far
+    (every column), the next block's cut its dropped rows weighed through beta (= the residual's rows there),
+    and the block is re-factored after its prune. Pins the quantities, the Frobenius norm, the gram's
+    orientation and the one-step lag of the next block's cut -- not only the bookkeeping. Every weight is
+    invariant under the column phases a QR may choose. Compared from step 10 on, where the cuts are real
+    weights rather than cancellation round-off."""
+    notes = []
+    real = gf_primitives._CappedBasisProxy.note_step_cut
+
+    def recording(self, weight):
+        notes.append(weight)
+        return real(self, weight)
+
+    monkeypatch.setattr(gf_primitives._CappedBasisProxy, "note_step_cut", recording)
+    cutoff = 1e-4
+    history = _trickle()[3]["support_history"]
+
+    h, v, seed_rows = _dense_chain(seed=5)
+    support = np.zeros(h.shape[0], dtype=bool)
+    support[seed_rows] = True
+    q, _ = np.linalg.qr(v)
+    q_prev, beta_prev, cut_next_prev = np.zeros_like(q), None, 0.0
+    compared = 0
+    for step in range(30):
+        wp = h @ q
+        kept = np.any(np.abs(wp) > cutoff, axis=1)
+        cut_matvec = float(np.sum(np.abs(wp[~kept]) ** 2))
+        leak = float(np.sum(np.abs(wp[kept & ~support]) ** 2))
+        support |= kept
+        wp[~kept] = 0.0
+        wp -= q @ (q.conj().T @ wp)
+        if beta_prev is not None:
+            wp -= q_prev @ beta_prev.conj().T
+        q_next, beta = np.linalg.qr(wp)
+        dropped = ~np.any(np.abs(q_next) > cutoff, axis=1)
+        cut_next = float(np.sum(np.abs(wp[dropped]) ** 2))
+        q_next[dropped] = 0.0
+        q_next, r2 = np.linalg.qr(q_next)
+        if step >= 10:
+            assert history[step][0] == pytest.approx(leak, rel=1e-9), step
+            assert history[step][1] == pytest.approx(cut_matvec + cut_next_prev, rel=1e-9), step
+            assert notes[2 * step] == pytest.approx(cut_matvec, rel=1e-9), step
+            assert notes[2 * step + 1] == pytest.approx(cut_next, rel=1e-9), step
+            compared += cut_matvec > 0 and cut_next > 0
+        q_prev, q, beta_prev, cut_next_prev = q, q_next, r2 @ beta, cut_next
+    assert compared >= 15, "premise: both cuts are real weights on most compared steps"
+
+
+def test_with_no_cutoff_the_closed_support_gives_the_exact_g():
+    np.testing.assert_allclose(_g(run_chain()), _exact_sector_g(seed=3), atol=1e-8)
 
 
 def test_a_declined_freeze_is_asked_once_and_a_later_cap_still_takes_the_csr(monkeypatch):

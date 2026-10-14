@@ -130,3 +130,21 @@ def test_a_resumed_recurrence_on_ranks_one_of_which_is_empty(k):
     np.testing.assert_allclose(resumed[0], whole[0], atol=1e-12)
     np.testing.assert_allclose(resumed[1], whole[1], atol=1e-12)
     assert resumed[3] == whole[3]
+
+
+def test_a_resumed_recurrence_keeps_the_divergence_guards_scale():
+    """The guard is replayed over the coefficients handed in: a resumed step whose blocks are 1000x the scale
+    the earlier ones established is caught as a divergence, not taken as the first step of a new scale."""
+    h_local, psi0 = _pieces()
+    alphas, betas, _, widths, _, tail = _run(h_local, None, 3, psi0=psi0)
+    resumed = _run(
+        h_local * 1e3,
+        None,
+        STEPS - 3,
+        psi0=None,
+        alphas=alphas.copy(),
+        betas=betas.copy(),
+        tail=tail,
+        block_widths_init=widths,
+    )
+    assert resumed[4] == "diverged", resumed[4]
