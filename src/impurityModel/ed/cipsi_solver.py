@@ -730,12 +730,9 @@ class CIPSISolver:
         """Perform an initial truncation if the basis exceeds the truncation threshold.
 
         Routed through :meth:`get_eigenvectors` (TRLM above ``dense_cutoff``, dense below)
-        rather than calling ``eigensystem``/ARPACK directly: multi-rank ARPACK
-        (``scipy_eigensystem``) lets each rank's own ARPACK convergence bookkeeping decide how
-        many collectives it posts, which under multithreaded BLAS diverges between ranks and
-        deadlocks (measured -n3 hang, see the memory note
-        n3-arpack-truncate-initial-deadlock). TRLM's collective count depends only on
-        `basis`/`H_mat`, which are already rank-uniform, so it cannot desync this way.
+        rather than calling ``eigensystem`` directly: TRLM's collective count
+        depends only on `basis`/`H_mat`, which are already rank-uniform, so it cannot desync
+        (the retired multi-rank ARPACK fallback could, under multithreaded BLAS: measured -n3 hang).
         """
         if self.basis.size > self.basis.truncation_threshold and H is not None:
             if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
@@ -2182,7 +2179,9 @@ class CIPSISolver:
                 "of the wrong operator rather than an error, so this is checked."
             )
 
-        if solver in SOLVERS and self.basis.size >= dense_cutoff:
+        if solver not in SOLVERS and self.basis.size >= dense_cutoff:
+            raise ValueError(f"unknown eigensolver {solver!r}; expected one of {sorted(SOLVERS)}")
+        if self.basis.size >= dense_cutoff:
             restarted_lanczos = SOLVERS[solver]
 
             # Same rank-independent start vector as `expand` (see `_amplitude_from_hash`): a
@@ -2478,12 +2477,7 @@ class CIPSISolver:
             e_ref, psi_ref_dense = eigensystem(
                 H_mat,
                 e_max=max_energy,
-                k=num_wanted,
-                e0=None,
-                v0=None,
-                eigenValueTol=0,
                 comm=self.basis.comm,
-                dense=self.basis.size < dense_cutoff,
                 return_eigvecs=True,
             )
             if max_energy is None:
