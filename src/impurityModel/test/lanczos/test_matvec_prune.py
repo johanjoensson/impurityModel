@@ -17,7 +17,6 @@ from impurityModel.ed import spectra
 from impurityModel.ed.BiCGSTAB import _make_matmat, block_bicgstab
 from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, block_apply, matvec_cut_after_sum
-from impurityModel.ed.chebyshev_filter import chebyshev_apply, partition_of_unity
 from impurityModel.ed.gf_admission import start_set
 from impurityModel.ed.gf_primitives import _CappedBasisProxy
 from impurityModel.ed.gf_solvers import block_Green
@@ -164,8 +163,8 @@ def _initial_keys():
 
 
 def _capped_matvec(cutoff, cap, comm=None):
-    """One matvec through a capping proxy (redistribute=True, as BiCGSTAB/GMRES and the Chebyshev
-    filter call it on a capped unit), the input rows split over ``comm``'s ranks by position."""
+    """One matvec through a capping proxy (redistribute=True, as BiCGSTAB/GMRES
+    call it on a capped unit), the input rows split over ``comm``'s ranks by position."""
     proxy = _CappedBasisProxy(Basis(_IMP, _BATHS, initial_basis=_initial_keys(), verbose=False, comm=comm), cap=cap)
     states = _states() if comm is None else _my_share(_states(), comm)
     out = apply_and_redistribute(_siam_6(), ManyBodyState.from_states(states), proxy, cutoff, True)
@@ -275,21 +274,6 @@ def _bicgstab(comm, cutoff):
 @_multirank
 def test_bicgstab_does_not_depend_on_the_rank_count():
     _assert_columns_match(_bicgstab(MPI.COMM_WORLD, 0.05), _bicgstab(None, 0.05), 1e-9)
-
-
-def _chebyshev(comm, cutoff):
-    basis = _sector(comm)
-    bounds = (-12.0, 12.0)
-    coefficients, _, _ = partition_of_unity(bounds, np.array([-3.0, 0.0, 3.0]), degree=6)
-    out = chebyshev_apply(_siam_6(), basis, _owned_seeds(basis, comm), coefficients, cutoff, bounds)
-    return _columns([col for window in out for col in window], comm)
-
-
-@pytest.mark.mpi
-@_multirank
-@pytest.mark.parametrize("cutoff", (0.2, 0.4))
-def test_the_chebyshev_filter_does_not_depend_on_the_rank_count(cutoff):
-    _assert_columns_match(_chebyshev(MPI.COMM_WORLD, cutoff), _chebyshev(None, cutoff), 1e-12)
 
 
 def _det12(occupied):

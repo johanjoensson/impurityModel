@@ -97,8 +97,8 @@ def apply_and_redistribute(
 ):
     """``H V`` for a shared-support block, routed onto ``basis``'s owners when ``redistribute``.
 
-    The one recurrence matvec: the block-Lanczos step, the BiCGSTAB/GMRES matvec and the Chebyshev filter
-    all go through here. The ``cutoff`` row prune is made on each row's summed amplitude, so the result does
+    The one recurrence matvec: the block-Lanczos step, and the BiCGSTAB/GMRES matvec
+    go through here. The ``cutoff`` row prune is made on each row's summed amplitude, so the result does
     not depend on how ``V``'s rows are spread over the ranks or chunks. Collective when ``redistribute`` is set.
 
     ``basis`` is either a plain basis (the null policy: redistribute, then cut) or a support policy
@@ -335,8 +335,7 @@ cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
     else:
         # Defensive only: TRLM/IRLM's psi0 seed is converted to a ManyBodyState at the
         # entry point before ever reaching this dispatcher, and the store_krylov=False
-        # Q_basis shape (list[ManyBodyState]) never reaches block_combine either -- its
-        # one caller (ChebyshevFilter.pyx) discards Q_basis outright.
+        # Q_basis shape (list[ManyBodyState]) never reaches block_combine either.
         raise TypeError(f"block_combine: unsupported Q type {type(Q)!r}")
 
 cpdef tuple block_orthogonalize(object wp, object Q, object overlaps=None, bint mpi=False, object comm=None):

@@ -258,16 +258,6 @@ ext_modules = [
         extra_compile_args=extra_compile_args,
         extra_link_args=extra_link_args,
     ),
-    Extension(
-        name="impurityModel.ed.ChebyshevFilter",
-        sources=[
-            os.path.join(_cython_src_dir, "ChebyshevFilter.pyx"),
-        ],
-        language="c++",
-        include_dirs=include_dirs,
-        extra_compile_args=extra_compile_args,
-        extra_link_args=extra_link_args,
-    ),
 ]
 
 # cythonize decides staleness from source timestamps and does **not** notice that the
