@@ -439,6 +439,27 @@ class _CappedBasisProxy:
     def redistribute_block(self, block):
         return self._admit(self._basis.redistribute_block(block))
 
+    # --- the policy's three entry points (doc/gf_support_pipeline.md) ---------------------------------
+    def admit_seed(self, block):
+        """A seed block, outside any step: redistribute and admit it (no cut, and it is not a step of the
+        support-freeze window). Collective."""
+        return self.redistribute_block(block)
+
+    def transport(self, raw):
+        """One chunk of a step's matvec output: redistribute it, with only the work that commutes with the
+        sum over chunks (a frozen support's projection, the memory guard's check). Between :meth:`begin_step`
+        and :meth:`decide` the admission itself is deferred. Collective."""
+        return self.redistribute_block(raw)
+
+    def decide(self, wp, cutoff):
+        """The step's whole matvec output, summed over ranks and chunks: cut ``cutoff`` on the summed rows,
+        weigh what the cut dropped for the support freeze, then admit (or project, if frozen). The one
+        decision point of a recurrence step. Collective."""
+        dropped = wp.prune_rows(cutoff)
+        if self.support_freeze:
+            self.note_step_cut(dropped)
+        return self.finish_step(wp)
+
     def begin_step(self):
         """A recurrence step starts: its matvec arrives in chunks, admission waits for the whole.
 

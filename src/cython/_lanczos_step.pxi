@@ -156,7 +156,7 @@ def block_lanczos_step_cy(
     _n_chunks = config.GF_APPLY_ROW_CHUNKS.get() if _needs_redistribute else 1
     wp = apply_and_redistribute(
         h_op, q_curr, basis, slaterWeightMin, _needs_redistribute, 1 if _n_chunks is None else int(_n_chunks),
-        _prof_acc, True,
+        _prof_acc,
     )
     # A proxy running the support freeze also weighs what the next block's prune below drops (replicated flag).
     _note_cut = (
@@ -632,7 +632,7 @@ def block_lanczos_cy(
         # representation for the live recurrence blocks.
         if isinstance(psi0, ManyBodyState):
             p = psi0.width
-            q_curr = basis.redistribute_block(psi0)
+            q_curr = (basis.admit_seed if hasattr(basis, "admit_seed") else basis.redistribute_block)(psi0)
         else:
             p = len(psi0)
             q_curr = ManyBodyState.from_states(basis.redistribute_psis(*psi0))

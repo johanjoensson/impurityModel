@@ -94,7 +94,6 @@ def matvec_cut_after_sum(bint redistributes, double cutoff):
 
 def apply_and_redistribute(
     object H, object V, object basis, double cutoff, bint redistribute, int n_chunks=1, object prof=None,
-    bint note_cut=False,
 ):
     """``H V`` for a shared-support block, routed onto ``basis``'s owners when ``redistribute``.
 
@@ -102,9 +101,12 @@ def apply_and_redistribute(
     all go through here. The ``cutoff`` row prune is made on each row's summed amplitude, so the result does
     not depend on how ``V``'s rows are spread over the ranks or chunks. Collective when ``redistribute`` is set.
 
-    A capping proxy admits in its ``redistribute_block``; with the cut after the sum it must admit on
-    the cut rows, not on the sub-cutoff ones the cut is about to drop (which counted toward the cap and
-    froze it early). So admission is deferred to ``finish_step``.
+    ``basis`` is either a plain basis (the null policy: redistribute, then cut) or a support policy
+    (``gf_primitives._CappedBasisProxy``, recognised by ``decide``), which owns every decision on which rows
+    may carry amplitude: it is armed with ``begin_step``, each chunk goes through ``transport``, and the cut
+    and the admission both happen in ``decide``, once, on the summed output
+    (``doc/gf_support_pipeline.md``). A capping policy must admit on the cut rows, not on the sub-cutoff ones
+    the cut is about to drop (which counted toward the cap and froze it early).
 
     With ``redistribute`` and ``n_chunks > 1``, ``H`` is applied to one chunk of ``V``'s rows at a time and
     redistributed and accumulated before the next, so the raw apply output and its send and receive buffers are
@@ -113,20 +115,19 @@ def apply_and_redistribute(
     calls whatever its own row count: a rank with fewer rows than chunks sends explicit width-p empty
     chunks, never the width-0 polymorphic zero (``doc/lanczos_invariants.md``).
 
-    ``prof(name, t0)``, when given, accumulates the apply, redistribute and total times. ``note_cut`` passes
-    the weight the cut drops to a proxy running the support freeze (``note_step_cut``).
+    ``prof(name, t0)``, when given, accumulates the apply, redistribute and total times.
     """
     cdef bint after = matvec_cut_after_sum(redistribute, cutoff)
-    cdef object begin_step = getattr(basis, "begin_step", None) if after else None
-    cdef object note = (
-        basis.note_step_cut if note_cut and begin_step is not None and getattr(basis, "support_freeze", False) else None
+    cdef object policy = basis if after and hasattr(basis, "decide") else None
+    cdef object move = (
+        policy.transport if policy is not None else (basis.redistribute_block if redistribute else None)
     )
     cdef double t0 = _time.perf_counter(), t1
     cdef double apply_cutoff = 0.0 if after else cutoff
     cdef object W, part, raw, piece, bounds
     cdef Py_ssize_t idx, lo, hi
-    if begin_step is not None:
-        begin_step()
+    if policy is not None:
+        policy.begin_step()
     if not redistribute or n_chunks <= 1:
         W = H.apply_block(V, apply_cutoff)
         if prof is not None:
@@ -134,7 +135,7 @@ def apply_and_redistribute(
         t1 = _time.perf_counter()
         if redistribute:
             if hasattr(basis, "redistribute_block"):
-                W = basis.redistribute_block(W)
+                W = move(W)
             else:
                 # Duck-typed basis without the block method (e.g. a test mock): fall back to the scalar
                 # redistribute through a boundary conversion.
@@ -155,7 +156,7 @@ def apply_and_redistribute(
             raw = H.apply_block(part, apply_cutoff)
             del part
             if hasattr(basis, "redistribute_block"):
-                piece = basis.redistribute_block(raw)
+                piece = move(raw)
             else:
                 piece = ManyBodyState.from_states(basis.redistribute_psis(*raw.to_states()))
             del raw
@@ -168,13 +169,10 @@ def apply_and_redistribute(
             del piece
         if prof is not None:
             prof("matvec_apply", t0)
-    if after:
-        # Before finish_step: a capping proxy must admit on the cut sums, not on rows the cut drops.
-        dropped = W.prune_rows(cutoff)
-        if note is not None:
-            note(dropped)
-    if begin_step is not None:
-        W = basis.finish_step(W)
+    if policy is not None:
+        W = policy.decide(W, cutoff)
+    elif after:
+        W.prune_rows(cutoff)
     if prof is not None:
         prof("matvec", t0)
     return W
