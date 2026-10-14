@@ -195,8 +195,9 @@ def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
 def support_window_freezes(window):
     """``(freeze, leak, cut)`` for a full window of per-step ``(leak, cut)`` weights: freeze when the weight that
     reached new rows over the window is no larger than what the ``slaterWeightMin`` prunes dropped over it
-    (``math.fsum``, so the verdict depends only on the values, not on how they were added). A window that is
-    not full yet never freezes."""
+    (``math.fsum``, so the verdict depends only on the per-step values, not on the order they are added in;
+    each value is itself a sum over ranks, so its last bits -- and a verdict right at the boundary -- can
+    depend on the rank count). A window that is not full yet never freezes."""
     leak = math.fsum(w[0] for w in window)
     cut = math.fsum(w[1] for w in window)
     return len(window) == window.maxlen and leak <= cut, leak, cut

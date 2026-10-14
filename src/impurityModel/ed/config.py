@@ -501,12 +501,14 @@ GF_FROZEN_CSR = Knob(
     kind="bool",
     default=True,
     group="units",
-    doc="""When a capped Green's-function unit's support freezes at its determinant cap, restart the
-    block-Lanczos recurrence from the seeds as an array-kernel SpMV on the ``P H P`` CSR of the
-    retained set instead of continuing the sparse kernel, which applies ``H`` to every retained row
-    and discards the image outside ``P`` on every step (``gf_solvers.block_Green_sparse``). Both are
-    the exact block Lanczos of ``P H P``, so the result agrees to rounding; the CSR costs one build
-    (about one apply per determinant) and then one SpMV per block. Measured on the SrMnO3 archive at
+    doc="""When a Green's-function unit's support freezes (at its determinant cap, by the memory guard, or by
+    ``GF_SUPPORT_FREEZE``), carry the block-Lanczos recurrence on as an array-kernel SpMV on the ``P H P``
+    CSR of the retained set instead of continuing the sparse kernel, which applies ``H`` to every retained
+    row and discards the image outside ``P`` on every step (``gf_solvers.block_Green_sparse``). At
+    ``reort='none'`` it continues from the recurrence's last two blocks; a reorthogonalized one restarts
+    from the seeds. Both are the block Lanczos of ``P H P``: they agree to rounding at
+    ``slaterWeightMin = 0``, and above it the continuation keeps the pre-freeze blocks' cut. The CSR costs
+    one build (about one apply per determinant) and then one SpMV per block. Measured on the SrMnO3 archive at
     cap 2e4: build 0.3-0.9 s, an SpMV ~250x cheaper than the sparse step it replaces.
 
     Not taken when the matrix's estimated size does not fit ``GF_CSR_MEMORY_SAFETY``'s budget on
@@ -557,7 +559,8 @@ GF_SUPPORT_FREEZE = Knob(
     does not fit its memory budget the freeze is undone and the unit continues sparse and unfrozen. Reported
     as ``support_frozen`` on the unit line and in the ``gf_unit_memory`` / ``gf_unit_basis`` traces, with a
     ``support_freeze`` diagnostic carrying the freezing window's two weights; with ``-v`` every 16 blocks print
-    them as they go.
+    them as they go. Under ``MATVEC_PRUNE=before_sum`` the matvec's own prune happens inside the apply and is
+    not measured, so only the next block's counts: the freeze then comes later, never earlier.
 
     **The BiCGSTAB solves** (``gf_method="bicgstab"`` and the RIXS intermediate resolvent's per-point
     fallback) take the same freeze in their own form: their right-hand side is the same for every
