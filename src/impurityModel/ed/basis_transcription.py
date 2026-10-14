@@ -311,9 +311,9 @@ def _column_batches(basis, op: ManyBodyOperator):
             counts.append(n_keep)
             pending += len(ks)
             if pending >= _SPARSE_BUILD_BATCH:
-                yield col_begin, np.array(counts, dtype=np.int64), _concat_consuming(
-                    rows, np.int64
-                ), _concat_consuming(values, complex)
+                yield col_begin, np.array(counts, dtype=np.int64), _concat_consuming(rows, np.int64), _concat_consuming(
+                    values, complex
+                )
                 col_begin = i + 1
                 counts, pending = [], 0
         if counts:
