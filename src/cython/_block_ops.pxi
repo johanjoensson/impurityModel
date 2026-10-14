@@ -572,12 +572,6 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
             if mpi and comm is not None:
                 bad_block_idx = comm.bcast(bad_block_idx, root=0)
 
-            if _REORT_PROF_ON:
-                _REORT_PROF["calls"] = _REORT_PROF.get("calls", 0.0) + 1.0
-                _REORT_PROF["n_blocks_total"] = _REORT_PROF.get("n_blocks_total", 0.0) + float(n_blks)
-                if bad_block_idx:
-                    _REORT_PROF["acted"] = _REORT_PROF.get("acted", 0.0) + 1.0
-                    _REORT_PROF["bad_blocks"] = _REORT_PROF.get("bad_blocks", 0.0) + float(len(bad_block_idx))
             if bad_block_idx:
                 acted = True
                 bad_cols = []
@@ -585,8 +579,6 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                     col_start = sum(block_widths[:j])
                     col_end = col_start + block_widths[j]
                     bad_cols.extend(range(col_start, col_end))
-                if _REORT_PROF_ON:
-                    _REORT_PROF["bad_cols"] = _REORT_PROF.get("bad_cols", 0.0) + float(len(bad_cols))
 
                 # Every path keeps the FINAL CGS pass's measured (Allreduced) overlap
                 # O_last (rows ordered as bad_cols): it upper-bounds the overlap left

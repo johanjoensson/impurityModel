@@ -145,7 +145,6 @@ def block_lanczos_step_cy(
     _n_chunks = config.GF_APPLY_ROW_CHUNKS.get() if _needs_redistribute else 1
     wp = apply_and_redistribute(
         h_op, q_curr, basis, slaterWeightMin, _needs_redistribute, 1 if _n_chunks is None else int(_n_chunks),
-        _prof_acc,
     )
     # A proxy running the support freeze also weighs what the next block's prune below drops (replicated flag).
     _note_cut = (
@@ -155,7 +154,6 @@ def block_lanczos_step_cy(
     )
 
     # --- 2. alpha_i = <q_curr | wp> -------------------------------------
-    _t0 = _time.perf_counter()
     alpha_i = block_inner_cy(q_curr, wp)
     if mpi and comm is not None:
         comm.Allreduce(MPI.IN_PLACE, alpha_i, op=MPI.SUM)
@@ -223,10 +221,8 @@ def block_lanczos_step_cy(
         return None, alpha_i, None, W, -1, True, False
     if active_k == 0:
         return None, alpha_i, None, W, 0, True, False
-    _prof_acc("recurrence", _t0)
 
     # --- 5a. Forceful / Amplitude Truncation ----------------------------
-    _t0 = _time.perf_counter()
     cdef bint did_truncate = False
     if slaterWeightMin > 0.0:
         # Whole-row prune: a row survives when ANY column survives (keeps the block's
@@ -254,14 +250,12 @@ def block_lanczos_step_cy(
         if active_k <= 0:
             return None, alpha_i, None, W, 0, True, False
         beta_i = R2 @ beta_i
-    _prof_acc("tsqr", _t0)
 
     betas[it, :active_k, :p] = beta_i
 
     # --- 6. W estimator (Paige-Simon PRO) -------------------------------
     _reort_acted = False
     if reort_mode == Reort.PARTIAL:
-        _t0 = _time.perf_counter()
         if W is None:
             # Unreachable from block_lanczos_cy: the driver seeds W (Exact Overlap
             # Restart, seed_w_estimator) before entering the loop whenever reort is
@@ -288,8 +282,6 @@ def block_lanczos_step_cy(
             out=w_out,
             beta_norms=beta_norm_hist,
         )
-        _prof_acc("w_estimate", _t0)
-        _t0 = _time.perf_counter()
 
         # --- 8. Bad-block reort + renormalize ----------------------------
         if reort_mode == Reort.PARTIAL:
@@ -303,17 +295,12 @@ def block_lanczos_step_cy(
                 q_next, Q_basis, W, beta_i, active_k, reort_mode, mpi, comm, block_widths + [p],
                 krylov, force_reort, deflate_tol,
             )
-            if _PROF_ON:
-                _PROF["reort_total#n"] = _PROF.get("reort_total#n", 0.0) + 1.0
-                if _reort_acted:
-                    _PROF["reort_acted#n"] = _PROF.get("reort_acted#n", 0.0) + 1.0
             if _reort_acted and not _ok:
                 # Absolutely tiny residual after projection => block contained in the existing
                 # span (invariant subspace); renormalizing it would amplify rounding.
                 return None, alpha_i, None, W, 0, True, False
             if _reort_acted:
                 betas[it, :active_k, :p] = beta_i
-        _prof_acc("reort", _t0)
 
     return q_next, alpha_i, beta_i, W, active_k, False, _reort_acted
 
@@ -805,7 +792,6 @@ def block_lanczos_cy(
         # Convergence check
         alphas_np = alphas_buf[:it_abs+1]
         betas_np = betas_buf[:it_abs+1]
-        _t0m = _time.perf_counter()
         _converged = converged_fn(alphas_np, betas_np, verbose=verbose, block_widths=block_widths + [n_curr])
         if mpi:
             # The verdict is computed rank-locally from alpha, which comes out of an Allreduce --
@@ -814,7 +800,6 @@ def block_lanczos_cy(
             # on one rank near the threshold sends it out of the loop while the others enter the
             # next step's collectives. Root decides for everyone (review ledger M2).
             _converged = comm.bcast(bool(_converged), root=0)
-        _prof_acc("monitor", _t0m)
         if _converged:
             termination = "converged"
             block_widths.append(n_curr)

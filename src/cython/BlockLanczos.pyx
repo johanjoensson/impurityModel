@@ -85,38 +85,6 @@ from impurityModel.ed.BlockLanczosCore import (
 )
 from impurityModel.ed.TSQR import robust_svd, spectral_norm
 
-# --- Optional per-step profiling (env-gated, ~zero cost when off) -------------------
-# Set BLOCKLANCZOS_PROFILE=1 to accumulate wall time per sub-operation of the sparse
-# block-Lanczos step (matvec / recurrence-LA / W-estimator / triggered reort / TSQR /
-# convergence monitor). Read with get_block_lanczos_profile().
-import os as _os
-import time as _time
-_PROF = {}
-_PROF_ON = _os.environ.get("BLOCKLANCZOS_PROFILE") == "1"
-
-
-def get_block_lanczos_profile():
-    """Return a copy of the accumulated per-operation timings (seconds) and call counts."""
-    return dict(_PROF)
-
-
-def reset_block_lanczos_profile():
-    _PROF.clear()
-
-
-def enable_block_lanczos_profile(on=True):
-    """Toggle the per-step profiling accumulators at runtime (equivalent to setting
-    BLOCKLANCZOS_PROFILE=1 in the environment before import)."""
-    global _PROF_ON
-    _PROF_ON = bool(on)
-
-
-cdef inline void _prof_acc(str key, double t0):
-    if _PROF_ON:
-        _PROF[key] = _PROF.get(key, 0.0) + (_time.perf_counter() - t0)
-        _PROF[key + "#n"] = _PROF.get(key + "#n", 0.0) + 1.0
-
-
 # block_normalize_sparse used to live here as a thin block_tsqr wrapper for the
 # ManyBodyState/list representations; it and its array-kernel counterpart
 # (block_normalize_array) were the same 5-line body twice, now absorbed into Core's

@@ -199,14 +199,6 @@ def reorth_cgs2_dense(list wp, list Q, int n_passes, object comm):
     support.erase(unique(support.begin(), support.end()), support.end())
     cdef Py_ssize_t ns = <Py_ssize_t>support.size()
 
-    if _MBU_PROF_ON:
-        # Transient dense footprint of this call: the (ns x p) W block + (ns x nq) Q block
-        # materialized below (16 B/coeff). Track the peak across calls plus totals.
-        _bytes = 16 * ns * (p + nq)
-        _MBU_PROF["cgs2_dense_peak_bytes"] = max(_MBU_PROF.get("cgs2_dense_peak_bytes", 0), _bytes)
-        _MBU_PROF["cgs2_dense_calls"] = _MBU_PROF.get("cgs2_dense_calls", 0) + 1
-        _MBU_PROF["cgs2_dense_total_bytes"] = _MBU_PROF.get("cgs2_dense_total_bytes", 0) + _bytes
-
     # --- materialize dense (|S| x p) and (|S| x nq) over the local support ---
     Wd = np.zeros((ns, p), dtype=complex)
     Qd = np.zeros((ns, nq), dtype=complex)

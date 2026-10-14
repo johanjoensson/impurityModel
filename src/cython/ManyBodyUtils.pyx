@@ -39,31 +39,6 @@ ctypedef fused krylov_t:
     float complex
     double complex
 
-# --- Optional transient-allocation profiling (env-gated, ~zero cost when off) -------
-# Shares the BLOCKLANCZOS_PROFILE=1 switch with BlockLanczos.pyx: accumulates the peak
-# transient dense-materialization footprint of reorth_cgs2_dense (the PARTIAL bad-block
-# projection path). Read with get_manybody_profile().
-import os as _os
-_MBU_PROF = {}
-_MBU_PROF_ON = _os.environ.get("BLOCKLANCZOS_PROFILE") == "1"
-
-
-def get_manybody_profile():
-    """Return a copy of the accumulated transient-allocation counters (bytes / counts)."""
-    return dict(_MBU_PROF)
-
-
-def reset_manybody_profile():
-    _MBU_PROF.clear()
-
-
-def enable_manybody_profile(on=True):
-    """Toggle the transient-allocation counters at runtime (equivalent to setting
-    BLOCKLANCZOS_PROFILE=1 in the environment before import)."""
-    global _MBU_PROF_ON
-    _MBU_PROF_ON = bool(on)
-
-
 cdef extern from "<utility>" namespace "std" nogil:
     SlaterDeterminant_cpp& move(SlaterDeterminant_cpp)
     vector[SlaterDeterminant_cpp[uint64_t]]& move(vector[SlaterDeterminant_cpp[uint64_t]])

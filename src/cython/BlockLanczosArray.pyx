@@ -75,13 +75,6 @@ from impurityModel.ed.mpi_comm import (
 )
 from impurityModel.ed.solver_trace import note as _trace_note
 
-import os as _os
-
-# Set IMPURITYMODEL_MATVEC_DEBUG=1 to dump the exact arguments of the matvec's
-# row-chunked Reduce from every rank. Off by default and read once at import, so it
-# costs one already-loaded global per iteration when unset.
-_MATVEC_DEBUG = bool(_os.environ.get('IMPURITYMODEL_MATVEC_DEBUG'))
-
 # Shared numerical layer: Reort, every tolerance constant, the Paige-Simon estimator,
 # the block-tridiagonal eigensolvers, and the representation-dispatching block
 # primitives all now live in BlockLanczosCore.pyx -- re-exported here so every existing
@@ -98,14 +91,6 @@ from impurityModel.ed.BlockLanczosCore import (  # noqa: F401
     RESTART_ORTH_TOL,
     DEFAULT_EIGEN_TOL,
     THERMAL_GS_RESIDUAL_TOL,
-    get_reort_profile,
-    reset_reort_profile,
-    enable_reort_profile,
-    get_reort_trace,
-    reset_reort_trace,
-    enable_reort_trace,
-    reort_trace_enabled,
-    record_reort_trace,
     resolve_reort,
     divergence_guard,
     estimate_orthonormality,
@@ -730,8 +715,6 @@ def block_lanczos_array_cy(
                     slot_view = plan.self_slot(wc)
                     with nogil:
                         apply_sparse_csr_nogil(dest_off, N, N, wc, c0, h_data, h_indices, h_indptr, q1, slot_view)
-                    if _MATVEC_DEBUG:
-                        print(f"[matvec rank={rank}] it={it} graph round=({c0},{c1}) {plan.describe()}", flush=True)
                     plan.exchange(wc)
                     plan.accumulate(wp_arr[:, c0:c1], wc)
             elif mpi:
@@ -748,16 +731,6 @@ def block_lanczos_array_cy(
                         apply_sparse_csr_nogil(
                             dest_off, dest_count, N, n_curr, 0,
                             h_data, h_indices, h_indptr, q1, chunk_view[:dest_count, :],
-                        )
-                    if _MATVEC_DEBUG:
-                        _v = chunk_buf[:dest_count, :]
-                        print(
-                            f"[matvec rank={rank}] it={it} dest={dest} counts={list(counts)} "
-                            f"dest_count={dest_count} n_curr={n_curr} "
-                            f"chunk=({chunk_buf.shape[0]},{chunk_buf.shape[1]}) "
-                            f"wp=({wp_arr.shape[0]},{wp_arr.shape[1]}) "
-                            f"nbytes={_v.nbytes} contig={_v.flags['C_CONTIGUOUS']}",
-                            flush=True,
                         )
                     if rank == dest:
                         # MPICH 4.0 (ubuntu-24.04's) segfaults inside MPI_Reduce when sendbuf is
@@ -814,16 +787,6 @@ def block_lanczos_array_cy(
                         apply_dense_nogil(
                             dest_count, N, n_curr, h_dense[dest_off : dest_off + dest_count, :], q1,
                             chunk_view[:dest_count, :],
-                        )
-                    if _MATVEC_DEBUG:
-                        _v = chunk_buf[:dest_count, :]
-                        print(
-                            f"[matvec rank={rank}] it={it} dest={dest} counts={list(counts)} "
-                            f"dest_count={dest_count} n_curr={n_curr} "
-                            f"chunk=({chunk_buf.shape[0]},{chunk_buf.shape[1]}) "
-                            f"wp=({wp_arr.shape[0]},{wp_arr.shape[1]}) "
-                            f"nbytes={_v.nbytes} contig={_v.flags['C_CONTIGUOUS']}",
-                            flush=True,
                         )
                     if rank == dest:
                         # MPICH 4.0 (ubuntu-24.04's) segfaults inside MPI_Reduce when sendbuf is
@@ -973,57 +936,12 @@ def block_lanczos_array_cy(
 
             block_widths.append(n_curr)
             block_widths.append(active_k)
-            _trace_parts = {} if reort_trace_enabled() else None
             W = estimate_orthonormality(
                 W, alphas_buf[: it + 1], betas_buf[: it + 1], block_widths=block_widths, eps=EPS, N=global_N,
                 out=_w_bufs[it % 2] if _w_bufs is not None else None, beta_norms=beta_norm_hist,
-                parts_out=_trace_parts,
             )
             block_widths.pop()
             block_widths.pop()
-
-            if _trace_parts is not None:
-                # R8a: predicted (from W) vs MEASURED (Q_j^H q_next, the pre-reort
-                # candidate) overlap per historical block j, plus the three-term
-                # decomposition of the predicted value. is_array-only: the probe this
-                # instrumentation was built for (.lanczos_golden/lanczos_partial_probe.py)
-                # exercises only this (array) kernel; the O(total columns) inner product
-                # below is the real new cost the plan calls out, so it stays opt-in and
-                # array-only rather than also threading through the MBS/krylov paths no
-                # current diagnostic run needs.
-                _n_blks = W.shape[1] - 1
-                _widths_trace = block_widths + [n_curr]
-                _predicted_max = [float(np.max(np.abs(W[W.shape[0] - 1, j]))) for j in range(_n_blks)]
-                _bad_idx_predicted = [j for j in range(_n_blks) if _predicted_max[j] > BAD_BLOCK_TOL]
-                _triggered = bool(_force_reort) or (max(_predicted_max) > REORT_TOL if _predicted_max else False)
-                _Q_mat = Q_list[0]
-                _total_cols = sum(_widths_trace[:_n_blks])
-                _overlap = np.ascontiguousarray(np.conj(_Q_mat[:, :_total_cols].T) @ q_next)
-                _measured_max = []
-                _col0 = 0
-                for j in range(_n_blks):
-                    _w_j = _widths_trace[j]
-                    _measured_max.append(float(np.max(np.abs(_overlap[_col0 : _col0 + _w_j, :]))) if _w_j > 0 else 0.0)
-                    _col0 += _w_j
-                _decomp = {}
-                for _key in ("rounding_injection", "signed_propagation", "noise_floor"):
-                    _arr = _trace_parts[_key]
-                    _decomp[_key] = [float(np.max(np.abs(_arr[j, :n_curr, : _widths_trace[j]]))) for j in range(_n_blks)]
-                record_reort_trace({
-                    "it": it,
-                    "n_blks": _n_blks,
-                    "triggered": _triggered,
-                    "bad_idx_predicted": _bad_idx_predicted,
-                    "predicted_max": _predicted_max,
-                    "measured_max": _measured_max,
-                    "ratio": [
-                        (_predicted_max[j] / _measured_max[j]) if _measured_max[j] > 0.0 else float("inf")
-                        for j in range(_n_blks)
-                    ],
-                    "rounding_injection_max": _decomp["rounding_injection"],
-                    "signed_propagation_max": _decomp["signed_propagation"],
-                    "noise_floor_max": _decomp["noise_floor"],
-                })
 
             # --- 7.5 R8c audit fallback (periodic, ground-truth) ----------
             if it > 0 and it % AUDIT_PERIOD == 0:

@@ -45,27 +45,18 @@ from impurityModel.ed import atomic_physics
 from impurityModel.ed.basis_transcription import build_distributed_vector, build_sparse_matrix
 from impurityModel.ed.BlockLanczos import (
     block_lanczos_cy,
-    enable_block_lanczos_profile,
-    get_block_lanczos_profile,
-    reset_block_lanczos_profile,
 )
 from impurityModel.ed.BlockLanczosArray import (
     Reort,
     block_normalize,
     eigh_block_tridiagonal,
-    enable_reort_profile,
-    get_reort_profile,
-    reset_reort_profile,
 )
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.groundstate import find_ground_state_basis
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
     ManyBodyState,
-    enable_manybody_profile,
-    get_manybody_profile,
     inner_multi,
-    reset_manybody_profile,
     support_stats,
 )
 from impurityModel.ed.selfenergy import _MAX_ROTATION_FILL, _ROTATION_TRIM_TOL, _per_group_occupation, _per_group_scalar
@@ -305,13 +296,6 @@ def test_partial_sparse_kernel_bench(nio_workload):
     """Sparse ManyBodyState kernel: block_lanczos_cy PARTIAL, fixed iteration budget."""
     h, basis, comm = nio_workload["h"], nio_workload["basis"], nio_workload["comm"]
 
-    enable_block_lanczos_profile(True)
-    enable_reort_profile(True)
-    enable_manybody_profile(True)
-    reset_block_lanczos_profile()
-    reset_reort_profile()
-    reset_manybody_profile()
-
     psi0 = _random_block(basis, comm, BLOCK)
 
     sampler = RssSampler()
@@ -330,10 +314,6 @@ def test_partial_sparse_kernel_bench(nio_workload):
     )
     wall = time.perf_counter() - t0
     sampler.stop()
-
-    enable_block_lanczos_profile(False)
-    enable_reort_profile(False)
-    enable_manybody_profile(False)
 
     n_it = len(alphas)
 
@@ -384,14 +364,6 @@ def test_partial_sparse_kernel_bench(nio_workload):
     w_bytes = W.nbytes if W is not None else 0
     del q_states
 
-    prof = get_block_lanczos_profile()
-    reort_prof = get_reort_profile()
-    mbu_prof = get_manybody_profile()
-
-    def per_it(key):
-        n = prof.get(key + "#n", 0.0)
-        return f"{1e3 * prof.get(key, 0.0) / n:8.2f} ms/call x {int(n):3d}" if n else "       - "
-
     local_n = len(basis.local_basis)
     gathered = (
         [(local_n, q_bytes, sampler.peak_delta_bytes)]
@@ -412,16 +384,6 @@ def test_partial_sparse_kernel_bench(nio_workload):
                 + (f"  [array kernel, basis projection: {e0_trlm:.6f}]" if e0_trlm is not None else ""),
             ),
             ("|Q^H Q - I|", f"{orth_err:.3e}"),
-            ("matvec_apply", per_it("matvec_apply")),
-            ("matvec_redistribute", per_it("matvec_redistribute")),
-            ("recurrence (LA)", per_it("recurrence")),
-            ("tsqr", per_it("tsqr")),
-            ("w_estimate", per_it("w_estimate")),
-            ("reort", per_it("reort")),
-            ("monitor", per_it("monitor")),
-            ("reort acted/total", f"{int(prof.get('reort_acted#n', 0))}/{int(prof.get('reort_total#n', 0))}"),
-            ("apply_reort stats", str(reort_prof)),
-            ("cgs2_dense transients", str(mbu_prof)),
             ("Q_basis store (local)", f"{q_bytes / MB:.1f} MiB, {len(Q_basis)} columns"),
             ("union support / fill", f"{union_size} determinants, fill {fill:.2f}"),
             ("legacy list equivalent", f"{legacy_bytes / MB:.1f} MiB ({legacy_bytes / max(q_bytes, 1):.1f}x larger)"),
