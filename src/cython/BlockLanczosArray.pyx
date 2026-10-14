@@ -16,13 +16,13 @@ ManyBodyState kernel in ``BlockLanczos.pyx`` imports the same names directly fro
 ``BlockLanczosCore``, not from here -- both kernels import downward from the shared
 layer, never from each other. Both build a block-tridiagonal ``T`` (diagonal blocks
 ``alpha``, off-diagonal blocks ``beta``) whose eigenpairs approximate those of the
-operator; the TRLM/IRLM drivers restart it.
+operator; the TRLM drivers restart it.
 
 Reorthogonalization modes (``Reort``), what each guarantees:
 
 * ``NONE``      — no reorthogonalization. Cheapest; orthogonality is allowed to
   decay and ghost (spurious duplicate) eigenvalues may appear. Eigenvalues still
-  converge for well-separated spectra. The restart machinery in TRLM/IRLM
+  converge for well-separated spectra. The restart machinery in TRLM
   re-orthogonalizes regardless, so NONE only relaxes the *inner* recurrence.
 * ``FULL``      — double-pass Gram–Schmidt against the whole basis every step.
   Most robust; ``‖QᴴQ − I‖`` stays at ~machine precision.
@@ -483,7 +483,7 @@ def block_lanczos_array_cy(
     reort = resolve_reort(reort)
 
     # Whether to retain the accumulated Krylov basis. The historical default (True) stands:
-    # restart machinery (TRLM/IRLM) and direct callers consume the returned Q regardless of
+    # restart machinery (TRLM) and direct callers consume the returned Q regardless of
     # the reort mode. Callers that only need the final residual block (the GF continued
     # fraction with reort NONE) opt out explicitly, dropping the O(N * n * k) growth; any
     # reort mode projects against the basis and the warm-start protocol slices its blocks,

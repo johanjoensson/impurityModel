@@ -18,7 +18,7 @@ intermediate-state resolvent (``spectra._rixs_driver``).
 
 ``impurityModel.ed.cg`` re-exports the public entry point, so the historical import path
 keeps working; this module is where the logic lives (the same arrangement as
-``irlm.py`` / ``trlm.py`` over ``BlockLanczos.pyx``).
+``trlm.py`` over ``BlockLanczos.pyx``).
 """
 
 import numpy as np

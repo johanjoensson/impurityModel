@@ -321,7 +321,7 @@ cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
         # test_combine_columns_matches_dense_reference).
         out = Q.combine_columns(Y)
         if slaterWeightMin > 0:
-            # slaterWeightMin reaches this path from live TRLM/IRLM callers (unlike
+            # slaterWeightMin reaches this path from live TRLM callers (unlike
             # combine_block's caller, which always passes 0.0), so the pruning semantics
             # must be per-column, not per-row. prune_rows is row-granularity (a row
             # survives if ANY column is above cutoff) -- not the same thing, see
@@ -333,7 +333,7 @@ cpdef object block_combine(object Q, object Y, double slaterWeightMin=0.0):
             out = ManyBodyState.from_states(pruned)
         return out
     else:
-        # Defensive only: TRLM/IRLM's psi0 seed is converted to a ManyBodyState at the
+        # Defensive only: TRLM's psi0 seed is converted to a ManyBodyState at the
         # entry point before ever reaching this dispatcher, and the store_krylov=False
         # Q_basis shape (list[ManyBodyState]) never reaches block_combine either.
         raise TypeError(f"block_combine: unsupported Q type {type(Q)!r}")
@@ -354,7 +354,7 @@ cpdef tuple block_orthogonalize(object wp, object Q, object overlaps=None, bint 
         wp = block_add_scaled(wp, Q, -overlaps)
         return wp, overlaps
     else:
-        # Defensive only: see the matching branch in block_combine -- TRLM/IRLM's psi0
+        # Defensive only: see the matching branch in block_combine -- TRLM's psi0
         # is converted to a block at the entry point before reaching this dispatcher.
         raise TypeError(f"block_orthogonalize: unsupported wp type {type(wp)!r}")
 

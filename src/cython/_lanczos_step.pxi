@@ -625,7 +625,7 @@ def block_lanczos_cy(
         W = None
 
         # psi0 may already be a ManyBodyState (a caller with its own block-native
-        # seed, e.g. the TRLM/IRLM entry points) or a legacy flat list of ManyBodyState --
+        # seed, e.g. the TRLM entry points) or a legacy flat list of ManyBodyState --
         # len()/list() on a block would read its ROW count / iterate its determinant KEYS,
         # not its width/states, so the two must be told apart explicitly rather than
         # funneled through one call. Either way, adopt the shared-support block

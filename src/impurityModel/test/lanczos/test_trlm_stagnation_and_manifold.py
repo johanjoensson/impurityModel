@@ -141,8 +141,7 @@ def test_stagnation_does_not_fire_on_a_solve_that_converges(monkeypatch):
 def test_every_registered_solver_accepts_num_converge(name):
     """``get_eigenvectors`` passes ``num_converge`` to whichever solver is selected.
 
-    IRLM accepts and ignores it (its stopping rule is per-pair locking to ``num_wanted``, and
-    lowering that target would shorten the returned block), but it must not raise.
+    A solver may accept and ignore it, but it must not raise.
     """
     import inspect
 
@@ -167,7 +166,7 @@ def test_monitor_never_stops_a_converging_run():
 
 
 def test_monitor_counts_locking_as_progress():
-    """IRLM's case: the residual is flat, yet a pair locks every restart.
+    """A restart loop that locks a pair every restart: the residual is flat, yet it progresses.
 
     Once a pair locks, ``wanted`` re-aims at the next unconverged pairs, so the
     max-over-wanted residual can sit still (or rise) on a restart that did real work.

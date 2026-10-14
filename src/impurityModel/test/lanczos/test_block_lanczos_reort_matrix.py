@@ -13,7 +13,6 @@ except ImportError:
     _has_mpi = False
 
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, inner_multi
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.support.lanczos_fixtures import (
@@ -73,13 +72,9 @@ def assert_orthonormal(eigvecs, path, comm=None):
     np.testing.assert_allclose(overlaps, expected, atol=sqrt_eps)
 
 
-# Both solvers now converge on both paths: IRLM gained EA16 locking + explicit purging
-# (Meerbergen & Scott, RAL-TR-2000-011), so it reaches 1e-8 on this tight-binding system
-# within the small subspace where it previously stalled. No cells are expected to fail.
 @pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
-@pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
-def test_reort_matrix(mode, path, solver):
+def test_reort_matrix(mode, path):
     h_op_mb, N, eigvals_exact, basis_states = get_test_system()
     num_wanted = 4
     max_subspace_blocks = 6
@@ -104,32 +99,17 @@ def test_reort_matrix(mode, path, solver):
         h_op = h_op_mb
         basis = MockBasis(N)
 
-    if solver == "TRLM":
-        eigvals, eigvecs = thick_restart_block_lanczos(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-        )
-    else:
-        # IRLM
-        eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-            comm=None,
-        )
+    eigvals, eigvecs = thick_restart_block_lanczos(
+        psi0=psi0,
+        h_op=h_op,
+        basis=basis,
+        num_wanted=num_wanted,
+        max_subspace_blocks=max_subspace_blocks,
+        tol=1e-8,
+        max_restarts=50,
+        verbose=False,
+        reort=mode,
+    )
 
     # Check eigenvalues
     np.testing.assert_allclose(eigvals, eigvals_exact[:num_wanted], atol=1e-8)
@@ -142,8 +122,7 @@ def test_reort_matrix(mode, path, solver):
 @pytest.mark.mpi
 @pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
-@pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
-def test_reort_matrix_mpi(mode, path, solver):
+def test_reort_matrix_mpi(mode, path):
     comm = MPI.COMM_WORLD
     h_op_mb, N, eigvals_exact, basis_states = get_test_system()
     num_wanted = 4
@@ -167,7 +146,7 @@ def test_reort_matrix_mpi(mode, path, solver):
         psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
         psi0, _ = block_normalize(psi0_local, mpi=True, comm=comm)
 
-        # Create a mock basis with communicator for the TRLM/IRLM driver
+        # Create a mock basis with communicator for the TRLM driver
         class ArrayMockBasis:
             def __init__(self, comm):
                 self.comm = comm
@@ -193,32 +172,17 @@ def test_reort_matrix_mpi(mode, path, solver):
         psi0 = _redistribute_as_width1(basis, psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
-    if solver == "TRLM":
-        eigvals, eigvecs = thick_restart_block_lanczos(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-        )
-    else:
-        # IRLM
-        eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-            comm=comm,
-        )
+    eigvals, eigvecs = thick_restart_block_lanczos(
+        psi0=psi0,
+        h_op=h_op,
+        basis=basis,
+        num_wanted=num_wanted,
+        max_subspace_blocks=max_subspace_blocks,
+        tol=1e-8,
+        max_restarts=50,
+        verbose=False,
+        reort=mode,
+    )
 
     # Check eigenvalues on all ranks
     np.testing.assert_allclose(eigvals, eigvals_exact[:num_wanted], atol=1e-8)

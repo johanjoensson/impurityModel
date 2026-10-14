@@ -97,7 +97,7 @@ AUDIT_PERIOD = 3
 # derived from Q^H Q = I; above this level that premise is too inaccurate to use them and the
 # restart is rebuilt from actual matvecs instead. See _trlm_core.
 RESTART_ORTH_TOL = REORT_TOL       # ~1.49e-8
-# Default convergence tolerance for TRLM/IRLM's public entry points (the max wanted
+# Default convergence tolerance for TRLM's public entry points (the max wanted
 # Ritz residual at which a restart loop stops); single-sourced so every dispatcher's
 # `tol` default moves together.
 DEFAULT_EIGEN_TOL = 1e-8

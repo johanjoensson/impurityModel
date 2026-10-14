@@ -14,7 +14,6 @@ from impurityModel.ed.BlockLanczosArray import BlockBreakdown, Reort, block_norm
 from impurityModel.ed.BlockLanczosArray import block_lanczos_array
 from impurityModel.ed.BlockLanczosCore import _build_full_T, block_apply, block_inner
 from impurityModel.ed.eigensolvers import eigensystem
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.manybody_basis import (
     Basis,
     collective_mass_cutoff,
@@ -37,7 +36,6 @@ from impurityModel.ed.trlm import _deflate, thick_restart_block_lanczos
 
 SOLVERS = {
     "trlm": thick_restart_block_lanczos,
-    "irlm": implicitly_restarted_block_lanczos_cy,
 }
 
 #: Extra eigenstates requested beyond what the caller wants, so that a state landing outside the
@@ -2296,9 +2294,7 @@ class CIPSISolver:
             cap = len(self.basis)
 
             cold_retry_available = warm_started
-            # IRLM accepts `num_converge` without applying it -- it converges everything it returns --
-            # so re-solving it with a wider gate would repeat the same work for the same answer.
-            tail_resolve_available = solver != "irlm"
+            tail_resolve_available = True
             for _ in range(_MAX_EIGENSTATE_DOUBLINGS):
                 e_ref, psi_refs_arr = restarted_lanczos(
                     psi0=psi0_arr,
@@ -2308,8 +2304,8 @@ class CIPSISolver:
                     max_subspace_blocks=max_subspace_blocks,
                     tol=_eigen_tol(slaterWeightMin),
                     max_restarts=_MAX_RESTARTS,
-                    # The TRLM/IRLM drivers already rank-gate every print internally
-                    # (`rank0 = (not mpi) or comm.rank == 0` in ed/trlm.py and ed/irlm.py);
+                    # The TRLM drivers already rank-gate every print internally
+                    # (`rank0 = (not mpi) or comm.rank == 0` in ed/trlm.py);
                     # no need to pre-AND rank 0 into the bool here too.
                     verbose=self.basis.verbose,
                     slaterWeightMin=slaterWeightMin,

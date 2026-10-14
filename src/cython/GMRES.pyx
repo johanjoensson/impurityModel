@@ -22,7 +22,7 @@ BiCGSTAB (7 live blocks) stays the workhorse; GMRES buys robustness on the few f
 points.
 
 ``impurityModel.ed.gmres`` re-exports the public entry point, mirroring the
-``cg.py`` / ``irlm.py`` / ``trlm.py`` thin-wrapper arrangement.
+``cg.py`` / ``trlm.py`` thin-wrapper arrangement.
 """
 
 import numpy as np

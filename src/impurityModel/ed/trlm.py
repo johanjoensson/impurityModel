@@ -6,7 +6,7 @@ width-aware thick-restart loop. Path-agnostic through the ``is_array``-dispatchi
 ``impurityModel.ed.BlockLanczos`` (the compiled ManyBodyState step kernel) re-exports this
 module's public names (``thick_restart_block_lanczos_cy``, ``thick_restart_block_lanczos``,
 and the internal entry points) so existing ``from impurityModel.ed.BlockLanczos import
-...`` sites keep resolving. Unlike ``ed/irlm.py``, no name here collides between this
+...`` sites keep resolving. No name here collides between this
 module's own top-level meaning and ``ed.BlockLanczos``'s re-export -- both point at the
 same functions.
 """

@@ -84,11 +84,10 @@ def _assert_orthonormal_and_ascending(basis, e_ref, psis):
 
 @pytest.mark.mpi
 @pytest.mark.parametrize("warm", [True, False], ids=["warm", "cold"])
-@pytest.mark.parametrize("solver", ["trlm", "irlm"])
-def test_a_degenerate_level_wider_than_the_block_comes_back_whole(system, solver, warm):
+def test_a_degenerate_level_wider_than_the_block_comes_back_whole(system, warm):
     """Cold is the width-1 start of every cold-start solve: the probe must not inherit that width."""
     basis, h, U, evals = system
-    e_ref, psis = _solve(basis, h, U, warm=warm, num_wanted=10, max_energy=CUT, solver=solver)
+    e_ref, psis = _solve(basis, h, U, warm=warm, num_wanted=10, max_energy=CUT, solver="trlm")
     e = np.real(e_ref)
     assert len(e) == N_WINDOW, (
         f"the thermal window holds {N_WINDOW} states ({GROUND} ground + {EXCITED} at {E_EXCITED}); "
@@ -99,15 +98,14 @@ def test_a_degenerate_level_wider_than_the_block_comes_back_whole(system, solver
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("solver", ["trlm", "irlm"])
-def test_a_count_cut_inside_a_degenerate_level_does_not_return_copies_twice(system, solver):
+def test_a_count_cut_inside_a_degenerate_level_does_not_return_copies_twice(system):
     """No cut, ``num_wanted=1`` -- ``calc_energy``'s occupation walk. The one state asked for belongs to
     a 5-fold level. The completeness probe once ran here, locked only that one, "found" the other
     computed copies in the complement and returned them next to their originals: 9 ground states for
     a 5-fold level, Gram error 0.76. No-cut solves are no longer probed; this pins that the path
     returns each state once."""
     basis, h, U, _evals = system
-    e_ref, psis = _solve(basis, h, U, num_wanted=1, max_energy=None, solver=solver)
+    e_ref, psis = _solve(basis, h, U, num_wanted=1, max_energy=None, solver="trlm")
     e = np.real(e_ref)
     # At most the true multiplicity: complete is not promised without a cut (see get_eigenvectors).
     assert np.sum(np.abs(e) < 1e-6) <= GROUND, np.round(e, 5)

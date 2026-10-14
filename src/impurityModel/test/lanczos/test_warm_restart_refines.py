@@ -17,8 +17,7 @@ The two questions have different scales and are now asked separately (``e3ad8c9`
 So the floor became *relative*: a warm start is refined until its residual reaches
 ``BREAKDOWN_TOL * ||H||``, i.e. a fixed relative accuracy, rather than a fixed absolute one.
 
-These tests pin that for **both** restarted solvers on **both** paths, since ``_trlm_core`` and
-``_irlm_core`` are path-agnostic and share the sweep. The operator is scaled to ``||H|| ~ 3.8e5``
+These tests pin that on **both** paths, since ``_trlm_core`` is path-agnostic and shares the sweep. The operator is scaled to ``||H|| ~ 3.8e5``
 so the warm start's residual sits well inside the *live* refinable window:
 
     BREAKDOWN_TOL * ||H|| = 3.8e-7  <  ||R0|| = 1.2e-6  <  sqrt(EPS) * ||H|| = 5.7e-3
@@ -43,9 +42,7 @@ except ImportError:  # pragma: no cover - mpi4py is a hard dependency in practic
     _has_mpi = False
 
 from impurityModel.ed.BlockLanczos import (
-    _implicitly_restarted_block_lanczos_array,
     _thick_restart_block_lanczos_array,
-    implicitly_restarted_block_lanczos_cy,
     thick_restart_block_lanczos_cy,
 )
 from impurityModel.ed.BlockLanczosArray import BREAKDOWN_TOL, Reort, block_normalize
@@ -147,8 +144,7 @@ def _assert_refinable(h, q0):
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("solver", ["trlm", "irlm"])
-def test_array_warm_start_is_refined_not_returned(solver):
+def test_array_warm_start_is_refined_not_returned():
     """Pre-fix both returned ``q0`` at ``||r|| = 1.16e-06``; TRLM at a looser start diverged."""
     h, d, u, rng = _designer_hermitian(_N)
     q0 = _warm_start(u, d, rng, _N)
@@ -158,44 +154,35 @@ def test_array_warm_start_is_refined_not_returned(solver):
         size = _N
         comm = None
 
-    if solver == "trlm":
-        vals, vecs = _thick_restart_block_lanczos_array(
-            q0.copy(), h, _Basis(), _P, 12, _TOL, 60, False, Reort.PARTIAL, None
-        )
-    else:
-        vals, vecs = _implicitly_restarted_block_lanczos_array(
-            q0.copy(), h, _Basis(), _P, 12, _TOL, 60, False, Reort.PARTIAL, None
-        )
+    vals, vecs = _thick_restart_block_lanczos_array(q0.copy(), h, _Basis(), _P, 12, _TOL, 60, False, Reort.PARTIAL, None)
 
     vals = np.asarray(vals).real
     r = float(np.max(_residuals(h, vals, np.asarray(vecs))))
 
     # A solver that returns its input passes "r <= r0" trivially. Demand real improvement.
-    assert r < r0 / 100, f"{solver} did not refine the warm start: {r:.3e} vs {r0:.3e}"
+    assert r < r0 / 100, f"TRLM did not refine the warm start: {r:.3e} vs {r0:.3e}"
     np.testing.assert_allclose(np.sort(vals)[:_P], np.sort(d)[:_P], rtol=1e-9)
 
 
 # --------------------------------------------------------------------------------------
-# ManyBodyState path -- the same _trlm_core / _irlm_core, driven with list[ManyBodyState]
+# ManyBodyState path -- the same _trlm_core, driven with list[ManyBodyState]
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("solver", ["trlm", "irlm"])
-def test_manybodystate_warm_start_is_refined_not_returned(solver):
+def test_manybodystate_warm_start_is_refined_not_returned():
     t, d, u, rng = _designer_hermitian(_N_ORB, seed=1)
     q0 = _warm_start(u, d, rng, _N_ORB)
     r0 = _assert_refinable(t, q0)
 
     h_op, basis_states = _one_particle_operator(t)
     psi0 = _states_from_columns(basis_states, q0)
-    kernel = thick_restart_block_lanczos_cy if solver == "trlm" else implicitly_restarted_block_lanczos_cy
 
-    vals, vecs = kernel(psi0, h_op, MockBasis(_N_ORB), _P, 12, _TOL, 60, False, 0.0, 0, "partial", None)
+    vals, vecs = thick_restart_block_lanczos_cy(psi0, h_op, MockBasis(_N_ORB), _P, 12, _TOL, 60, False, 0.0, 0, "partial", None)
 
     vals = np.asarray(vals).real
     r = max(_mbs_residual(h_op, psi, theta) for psi, theta in zip(vecs, vals))
 
-    assert r < r0 / 100, f"{solver} did not refine the warm start: {r:.3e} vs {r0:.3e}"
+    assert r < r0 / 100, f"TRLM did not refine the warm start: {r:.3e} vs {r0:.3e}"
     np.testing.assert_allclose(np.sort(vals)[:_P], np.sort(d)[:_P], rtol=1e-9)
 
 
@@ -206,8 +193,7 @@ def test_manybodystate_warm_start_is_refined_not_returned(solver):
 
 @pytest.mark.mpi
 @pytest.mark.skipif(not _has_mpi, reason="mpi4py not available")
-@pytest.mark.parametrize("solver", ["trlm", "irlm"])
-def test_warm_start_refinement_is_collective(solver):
+def test_warm_start_refinement_is_collective():
     """The factorization runs on a globally reduced factor, so ``active_k`` agrees on every rank.
 
     If the deflation decision ever became rank-local, one rank would break out of the sweep while
@@ -238,8 +224,7 @@ def test_warm_start_refinement_is_collective(solver):
             self.comm = comm
             self.size = n
 
-    entry = _thick_restart_block_lanczos_array if solver == "trlm" else _implicitly_restarted_block_lanczos_array
-    vals, vecs = entry(q0_local, h_local, _Basis(comm), _P, 12, _TOL, 60, False, Reort.PARTIAL, comm)
+    vals, vecs = _thick_restart_block_lanczos_array(q0_local, h_local, _Basis(comm), _P, 12, _TOL, 60, False, Reort.PARTIAL, comm)
 
     vals = np.asarray(vals).real
     k = len(vals)
@@ -251,7 +236,7 @@ def test_warm_start_refinement_is_collective(solver):
     hv = comm.allreduce(h_local @ np.asarray(vecs), op=MPI.SUM)
     r = float(np.max(np.linalg.norm(hv - v_full * vals[None, :], axis=0)))
 
-    assert r < r0 / 100, f"{solver} did not refine the warm start: {r:.3e} vs {r0:.3e}"
+    assert r < r0 / 100, f"TRLM did not refine the warm start: {r:.3e} vs {r0:.3e}"
     np.testing.assert_allclose(np.sort(vals)[:_P], np.sort(d)[:_P], rtol=1e-9)
 
     # Every rank agrees on the answer (the Ritz values are broadcast from rank 0).

@@ -12,7 +12,6 @@ except ImportError:
     _has_mpi = False
 
 from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
@@ -150,9 +149,8 @@ def _run_solver(solver, h_op, basis, psi0, mode, comm):
         verbose=False,
         reort=mode,
     )
-    if solver == "TRLM":
-        return thick_restart_block_lanczos(**kwargs)
-    return implicitly_restarted_block_lanczos_cy(**kwargs, comm=comm)
+    assert solver == "TRLM"
+    return thick_restart_block_lanczos(**kwargs)
 
 
 @functools.cache
@@ -174,7 +172,7 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     # recurrence can resolve one block at a time, so it returns the six lowest cleanly.
     # Those cells run for real (and guard against regressions).
     #
-    # IRLM used to be excluded from that: it was xfail on near_degenerate too, because the
+    # The IRLM solver (since deleted) was excluded from that: it was xfail on near_degenerate too, because the
     # rank floor sat *above* this spectrum's splitting. The eigenvalues here are 1e-9 apart
     # in relative terms and DEFLATE_TOL was EPS**(1/3) ~ 6.06e-6, so the second copy of each
     # near-degenerate pair looked rank-deficient and was deflated away -- leaving T_full
@@ -218,7 +216,7 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
 
 @pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
-@pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
+@pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
 def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
     marker = get_xfail_marker(mode, path, solver, spectrum_type, mpi=False)
@@ -242,7 +240,7 @@ def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
 
 @pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
 @pytest.mark.parametrize("path", ["array"])
-@pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
+@pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
 def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
     """The hard invariant behind this module's name, asserted WITHOUT the xfail that
@@ -253,7 +251,7 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
     suite) -- but "the restart subspace was too tight to resolve every degenerate copy"
     and "a spurious (e.g. zero) Ritz value appeared below the true ground state" are two
     different failure modes, and only the second is the actual bug this module is named
-    after (see test_irlm_locking_deflation.py's identical invariant). This node is never
+    after . This node is never
     xfail-marked, so a regression here always fails the suite even when the multiplicity
     assertion is (legitimately) letting a partial resolution through.
 
@@ -262,7 +260,7 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
     floor invariant does NOT hold cleanly:
 
     * with ``create_diagonal_system``'s all-positive ``np.random.rand()`` MBS seed (the
-      two p=2 seed columns have cosine ~0.75, condition ~2.6), IRLM/NONE on
+      two p=2 seed columns have cosine ~0.75, condition ~2.6), TRLM/NONE on
       ``exact_degenerate`` diverges outright: ``|beta|=4.5e4`` at iteration 4, Ritz value
       -1775 (far below the true minimum 1.0) -- a bad-seed artifact, not a reort or
       restart-logic bug: swapping to a signed ``randn`` seed (matching the array path
@@ -288,7 +286,7 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
 @pytest.mark.mpi
 @pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
-@pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
+@pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
 def test_no_ghost_bands_mpi(mode, path, solver, spectrum_type, request):
     comm = MPI.COMM_WORLD

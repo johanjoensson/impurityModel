@@ -3,7 +3,6 @@ import numpy as np
 from impurityModel.ed.BlockLanczos import (
     block_lanczos_cy,
     block_lanczos_step_cy,
-    implicitly_restarted_block_lanczos_cy,
     thick_restart_block_lanczos_cy,
 )
 from impurityModel.ed.BlockLanczosArray import block_normalize
@@ -30,7 +29,6 @@ def create_diagonal_h_and_basis(n_states):
 def test_block_lanczos_cy_imports():
     assert callable(block_lanczos_cy)
     assert callable(thick_restart_block_lanczos_cy)
-    assert callable(implicitly_restarted_block_lanczos_cy)
     assert callable(block_lanczos_step_cy)
 
 
@@ -99,29 +97,6 @@ def test_trlm_cy_diagonal():
     psi0 = [st]
 
     eigs, _evecs = thick_restart_block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        num_wanted=2,
-        max_subspace_blocks=4,
-        tol=1e-8,
-        max_restarts=10,
-        verbose=False,
-    )
-
-    assert len(eigs) == 2
-    np.testing.assert_allclose(eigs, eigvals[:2], atol=1e-8)
-
-
-def test_irlm_cy_diagonal():
-    h_op, basis, states, eigvals = create_diagonal_h_and_basis(6)
-
-    st = ManyBodyState()
-    for i in range(6):
-        st[basis.type.from_bytes(states[i])] = 1.0 / np.sqrt(6)
-    psi0 = [st]
-
-    eigs, _evecs = implicitly_restarted_block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -406,35 +381,6 @@ def test_block_lanczos_cy_eigenvalues_block2():
     np.testing.assert_allclose(eigs_T, np.sort(eigvals), atol=1e-10)
 
 
-def test_irlm_cy_tight_binding():
-    h_op, basis = create_tight_binding_h_and_basis()
-
-    np.random.seed(42)
-    psi0 = []
-    for _ in range(2):
-        st = ManyBodyState()
-        for b in basis.local_basis:
-            st[b] = np.random.randn()
-        psi0.append(st)
-
-    psi0, _ = block_normalize(psi0, False, None)
-
-    eigs, _evecs = implicitly_restarted_block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        num_wanted=4,
-        max_subspace_blocks=10,
-        tol=1e-6,
-        max_restarts=20,
-        verbose=False,
-    )
-
-    assert len(eigs) == 4
-    # Eigenvalues should be sorted (lowest first)
-    np.testing.assert_array_less(eigs[:-1], eigs[1:] + 1e-12)
-
-
 def test_trlm_cy_tight_binding_eigenvalue_accuracy():
     from impurityModel.ed.BlockLanczos import thick_restart_block_lanczos_cy
 
@@ -466,44 +412,6 @@ def test_trlm_cy_tight_binding_eigenvalue_accuracy():
 
     assert len(eigs) == 4
     np.testing.assert_allclose(eigs, exact_eigs[:4], atol=1e-6)
-
-
-def test_irlm_cy_partial_reort_convergence():
-    n_states = 12
-    states = [(1 << i).to_bytes(8, "little") for i in range(n_states)]
-    np.random.seed(42)
-    H_mat = np.random.randn(n_states, n_states)
-    H_mat = H_mat + H_mat.T
-    hop = {}
-    for i in range(n_states):
-        for j in range(n_states):
-            if abs(H_mat[i, j]) > 1e-10:
-                hop[((i, "c"), (j, "a"))] = float(H_mat[i, j])
-    basis = Basis(
-        impurity_orbitals={0: [list(range(n_states))]},
-        bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=states,
-        verbose=False,
-    )
-    h_op = ManyBodyOperator(hop)
-    psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis})]
-    psi0, _ = block_normalize(psi0, False, None)
-
-    # Run IRLM with partial reortho and verify it converges without blowing up beta to 10^39
-    eigvals, _ = implicitly_restarted_block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        num_wanted=4,
-        max_subspace_blocks=8,
-        tol=1e-8,
-        max_restarts=10,
-        verbose=False,
-        reort="partial",
-    )
-    # verify against exact diagonalization
-    exact_eigvals = np.sort(np.linalg.eigvalsh(H_mat))[:4]
-    np.testing.assert_allclose(eigvals, exact_eigvals, atol=1e-7)
 
 
 def test_trlm_cy_partial_reort_convergence():
@@ -542,45 +450,6 @@ def test_trlm_cy_partial_reort_convergence():
     # verify against exact diagonalization
     exact_eigvals = np.sort(np.linalg.eigvalsh(H_mat))[:4]
     np.testing.assert_allclose(eigvals, exact_eigvals, atol=1e-7)
-
-
-def test_irlm_cy_selective_reort_orthogonality():
-    n_states = 12
-    states = [(1 << i).to_bytes(8, "little") for i in range(n_states)]
-    np.random.seed(42)
-    H_mat = np.random.randn(n_states, n_states)
-    H_mat = H_mat + H_mat.T
-    hop = {}
-    for i in range(n_states):
-        for j in range(n_states):
-            if abs(H_mat[i, j]) > 1e-10:
-                hop[((i, "c"), (j, "a"))] = float(H_mat[i, j])
-    basis = Basis(
-        impurity_orbitals={0: [list(range(n_states))]},
-        bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=states,
-        verbose=False,
-    )
-    h_op = ManyBodyOperator(hop)
-    psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis})]
-    psi0, _ = block_normalize(psi0, False, None)
-
-    _eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        num_wanted=6,
-        max_subspace_blocks=10,
-        tol=1e-8,
-        max_restarts=15,
-        verbose=False,
-        reort="selective",
-    )
-
-    # Assert eigenvectors are orthogonal
-    ov = inner_multi(eigvecs, eigvecs)
-    err = np.linalg.norm(ov - np.eye(len(eigvecs)))
-    assert err < 1e-10
 
 
 def test_trlm_cy_selective_reort_orthogonality():

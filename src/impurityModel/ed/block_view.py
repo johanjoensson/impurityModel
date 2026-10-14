@@ -1,7 +1,6 @@
 """block_view.py
 ================
-Per-restart block-view helpers for the TRLM/IRLM restart layer (``ed/trlm.py``,
-``ed/irlm.py``). Path-agnostic: a block is an ``(N, k)`` ndarray, a single
+Per-restart block-view helpers for the TRLM restart layer (``ed/trlm.py``). Path-agnostic: a block is an ``(N, k)`` ndarray, a single
 ``ManyBodyState``, a ``list[ManyBodyState]``, or (``slice_cols`` only) a
 ``SparseKrylovDense`` store.
 
@@ -79,7 +78,7 @@ def slice_cols(Q, a, b):
     if isinstance(Q, SparseKrylovDense):
         # The store is never itself sliced again below this point (the assigned
         # result -- not Q -- is what every caller keeps rebinding to): this is the one
-        # place a TRLM/IRLM run converts its raw Krylov store into the persistent block
+        # place a TRLM run converts its raw Krylov store into the persistent block
         # representation the rest of the restart bookkeeping stays in. slice_block reads
         # the requested columns directly off the store's dense chunks; no more
         # per-column ManyBodyState materialization (__getitem__) followed by a
@@ -219,7 +218,7 @@ class KrylovColumnStore:
 def width_synced_total(Q_basis, widths, m_act, p, where, exact=False):
     """Assert width/basis sync (``check_width_sync``) and return the true, possibly
     deflation-shrunk subspace dimension ``sum(widths)`` -- falling back to the padded
-    ``m_act * p`` when no width table is tracked. Repeated verbatim at every TRLM/IRLM
+    ``m_act * p`` when no width table is tracked. Repeated verbatim at every TRLM
     site that builds ``T`` (or slices ``Q_basis``) off the block widths."""
     check_width_sync(Q_basis, widths, where, exact=exact)
     return int(sum(widths)) if widths is not None else m_act * p
@@ -234,7 +233,7 @@ def trim_trailing_beta(betas, m_act):
 
 
 def as_state_list(V):
-    """Boundary conversion for TRLM/IRLM's returned Ritz vectors: the documented
+    """Boundary conversion for TRLM's returned Ritz vectors: the documented
     ``eigvecs: list[ManyBodyState]`` contract (relied on by every downstream caller,
     e.g. ``cipsi_solver.py``/``groundstate.py``) predates the block-native restart
     bookkeeping, so a ``ManyBodyState`` result is materialized once here, at the
@@ -256,7 +255,7 @@ STAGNATION_FACTOR = 10.0
 
 
 class StagnationMonitor:
-    """Windowed no-progress detector for the TRLM/IRLM restart loops.
+    """Windowed no-progress detector for the TRLM restart loops.
 
     Both loops could previously run to ``max_restarts`` on a tolerance they were never going
     to reach. Measured on a real SrMnO3 gap-DC run: one TRLM solve spent all 100 restarts

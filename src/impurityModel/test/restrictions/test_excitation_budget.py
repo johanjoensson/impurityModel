@@ -227,7 +227,7 @@ def _nio_selfenergy(excitation_budget):
     inheritance), not exactness against a stored reference, so the dense/iterative choice is
     free to move. Measured: 500 reproduces the dense_cutoff=100000 answer to ~1e-13 (gs_energies,
     sigma_real) while cutting this test from ~278s to ~20s per call -- 100000 forced the O(N^3)
-    dense `eigh` branch on the full (~13k-determinant) excited-state basis; TRLM/IRLM converge
+    dense `eigh` branch on the full (~13k-determinant) excited-state basis; TRLM converge
     to the same eigenpairs iteratively for a fraction of the cost.
     """
     import dataclasses

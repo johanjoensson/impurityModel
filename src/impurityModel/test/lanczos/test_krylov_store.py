@@ -266,7 +266,7 @@ def test_store_slice_block_across_chunk_boundary():
 
 
 def test_store_slice_block_used_by_q_slice():
-    """``slice_cols`` (shared by TRLM/IRLM) dispatches a ``SparseKrylovDense`` operand
+    """``slice_cols`` (shared by TRLM) dispatches a ``SparseKrylovDense`` operand
     through ``slice_block`` -- exercise that dispatch directly, not just the primitive."""
     from impurityModel.ed.block_view import slice_cols as _q_slice
 
