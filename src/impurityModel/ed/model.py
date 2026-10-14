@@ -1400,7 +1400,7 @@ class SolverOptions:
     ----------
     reort : str or None
         Reorthogonalization mode of the block-Lanczos Green's function: ``"none"`` (``None``),
-        ``"partial"``, ``"selective"``, ``"full"`` or ``"periodic"``.
+        ``"partial"`` or ``"full"``.
     dense_cutoff : int
         Use a dense eigensolver below this matrix size.
     sparse_green : bool

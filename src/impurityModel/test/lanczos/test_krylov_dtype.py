@@ -7,11 +7,11 @@ basis narrows: the recurrence blocks, the overlaps and the residual stay complex
 
 The catch this module pins down: a complex64 basis can only be projected against to
 ``u32 ~ 6e-8``, which is *above* the ``REORT_TOL = sqrt(EPS) ~ 1.5e-8`` semi-orthogonality
-target that ``PARTIAL``/``SELECTIVE`` steer to. The target is unreachable, and their block
+target that ``PARTIAL`` steers to. The target is unreachable, and their block
 selection threshold ``BAD_BLOCK_TOL = EPS**0.75 ~ 1.8e-12`` sits five orders below the fp32
 noise floor, so every block would be flagged: PARTIAL degenerates into FULL while delivering
 worse orthogonality than FULL at complex128. Those modes reject the combination outright.
-``FULL``/``PERIODIC`` hold no estimator and simply settle at ~6e-8.
+``FULL`` holds no estimator and simply settle at ~6e-8.
 
 Measured on the fixture below (4 bath levels, 200-determinant sector, 82 blocks):
 
@@ -167,7 +167,7 @@ def test_bad_dtype_rejected():
         SparseKrylovDense(np.float64)
 
 
-@pytest.mark.parametrize("reort", [Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort", [Reort.PARTIAL])
 def test_complex64_rejected_by_estimator_modes(siam, reort):
     """A basis known to ~6e-8 cannot support a sqrt(EPS) semi-orthogonality target."""
     with pytest.raises(ValueError, match="incompatible with reort"):

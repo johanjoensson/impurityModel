@@ -39,11 +39,8 @@ Reorthogonalization modes (``Reort`` enum from ``lanczos.py``):
 * ``NONE``      – no reorthogonalization.
 * ``PARTIAL``   – Paige-Simon W-matrix estimator; reorthogonalize only
   when the estimated overlap exceeds :math:`\\sqrt{\\varepsilon}`.
-* ``SELECTIVE`` – as PARTIAL but additionally projects against converged
-  Ritz vectors.
 * ``FULL``      – full Gram-Schmidt against all previous blocks (2
   passes).
-* ``PERIODIC``  – full reorthogonalization every ``reort_period`` steps.
 """
 
 import numpy as np
@@ -68,7 +65,6 @@ from impurityModel.ed.BlockLanczosCore import (
     estimate_orthonormality,
     apply_reort,
     resolve_reort,
-    selective_orthogonalize,
     block_cols,
     block_combine,
     block_tsqr,
@@ -85,7 +81,6 @@ from impurityModel.ed.BlockLanczosCore import (
     Reort,
     EPS,
     REORT_TOL,
-    REORT_PERIOD,
     BAD_BLOCK_TOL,
 )
 from impurityModel.ed.TSQR import robust_svd, spectral_norm

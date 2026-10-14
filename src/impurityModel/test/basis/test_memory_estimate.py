@@ -424,7 +424,7 @@ def test_krylov_dtype_halves_the_store_term_and_raises_the_cap():
     assert hi > lo
 
 
-@pytest.mark.parametrize("reort", ["partial", "selective"])
+@pytest.mark.parametrize("reort", ["partial"])
 def test_krylov_dtype_complex64_rejected_for_estimator_modes(reort):
     """The model must refuse a combination the kernel refuses to run."""
     with pytest.raises(ValueError, match="incompatible with reort"):

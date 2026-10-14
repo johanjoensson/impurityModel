@@ -36,8 +36,6 @@ class Reort(Enum):
     NONE = 0
     PARTIAL = 1
     FULL = 2
-    PERIODIC = 3
-    SELECTIVE = 4
 
 
 # The machine constant and the deflation floors are defined once, in the TSQR leaf that
@@ -64,11 +62,6 @@ from impurityModel.ed.TSQR import (
 cdef double EPS_VAL = EPS
 REORT_TOL = np.sqrt(EPS_VAL)        # ~1.49e-8  : trigger — reorth when max|W| exceeds this
 BAD_BLOCK_TOL = EPS_VAL ** 0.75        # ~1.83e-12 : selection — reorth against blocks above this
-# Ritz vectors projected out per pass in selective_orthogonalize. Each pass costs one sweep
-# of the Krylov store, so batching turns k sweeps into ceil(k/RITZ_BATCH) BLAS-3 sweeps; the
-# batch bounds the transient Ritz block at (n_rows x RITZ_BATCH) instead of (n_rows x k),
-# which matters because k grows with the number of converged Ritz pairs.
-RITZ_BATCH = 8
 # DEFLATE_TOL (~3.67e-11, the rank floor on the block's singular values), its squared
 # counterpart DEFLATE_EVAL_TOL for tests on a Gram matrix, and BREAKDOWN_TOL are imported
 # from TSQR above, which is where the reasoning for their values lives. Short version: the
@@ -77,9 +70,8 @@ RITZ_BATCH = 8
 # splittings (it deflated away the near-copies of a 1e-9-split degeneracy and produced the
 # spurious Ritz values test_no_ghost_bands is named after).
 BETA_BLOWUP_FACTOR = 1e3           # ||beta_i|| above this * max(||beta||, ||alpha||) ⇒ divergence
-REORT_PERIOD = 5                   # PERIODIC cadence, and SELECTIVE Ritz-check cadence
 # R8c fallback cadence (audit_bad_blocks in _block_ops.pxi): every AUDIT_PERIOD steps,
-# PARTIAL/SELECTIVE measure the TRUE overlap against every historical block instead of
+# PARTIAL measures the TRUE overlap against every historical block instead of
 # trusting the PRO estimate for that one step. Sized from a period sweep on the R8
 # clustered/gf_style probes (doc/lanczos_invariants.md, 320-iteration horizon): period 3
 # holds ||Q^HQ-I|| <= 1.1e-9 on clustered_near_deg (>10x below REORT_TOL) at every horizon
@@ -183,9 +175,7 @@ def resolve_reort(reort):
     _map = {
         "none": Reort.NONE,
         "partial": Reort.PARTIAL,
-        "selective": Reort.SELECTIVE,
         "full": Reort.FULL,
-        "periodic": Reort.PERIODIC,
     }
     resolved = _map.get(reort.lower())
     if resolved is None:

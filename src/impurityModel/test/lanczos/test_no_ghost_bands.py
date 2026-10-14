@@ -190,19 +190,19 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     # this is tracked as future work. strict=False so that if a solver later resolves a
     # cell it surfaces as XPASS rather than failing the suite.
     if path == "array" and spectrum_type == "near_degenerate":
-        # Reort.NONE and Reort.PERIODIC do no (or only intermittent) reorthogonalization,
+        # Reort.NONE does no reorthogonalization,
         # so nothing guarantees they resolve a 1e-9-relative splitting once BLAS-kernel
         # rounding is comparable to that splitting: a different runner's OpenBLAS build
         # (measured locally via OPENBLAS_CORETYPE=Nehalem, and observed on real CI across
         # clang/gcc/intel -- see the numerics-campaign writeup) pushes the second copy of a
         # near-degenerate pair a few ulp past the assertion below, producing a duplicate
-        # ("ghost") Ritz value instead of the true split pair. PARTIAL/FULL/SELECTIVE keep
+        # ("ghost") Ritz value instead of the true split pair. PARTIAL/FULL keep
         # the Krylov basis orthogonal and are not excluded here -- they have not been
         # observed to fail this cell on any measured kernel/compiler.
-        if mode in (Reort.NONE, Reort.PERIODIC):
+        if mode == Reort.NONE:
             return pytest.mark.xfail(
                 strict=False,
-                reason="Reort.NONE/PERIODIC give no reorthogonalization guarantee at a "
+                reason="Reort.NONE gives no reorthogonalization guarantee at a "
                 "1e-9-relative splitting; a different BLAS reduction order can merge the "
                 "near-degenerate pair into a ghost Ritz value (see comment above)",
             )
@@ -214,7 +214,7 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     )
 
 
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
+@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 @pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
@@ -228,7 +228,7 @@ def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
     # Check eigenvalues match exact ones with multiplicity (sorted). Solver was asked for
     # tol=1e-8; c=100 gives real headroom above that (not the literal 1e-6 this used to be
     # tightened to before it was tied back to the solver's own criterion) -- see
-    # get_xfail_marker for why NONE/PERIODIC on the near-degenerate array path are excused
+    # get_xfail_marker for why NONE on the near-degenerate array path are excused
     # from this instead of margin-widened further.
     np.testing.assert_allclose(
         np.sort(eigvals), _exact_spectrum(spectrum_type)[:NUM_WANTED], atol=solver_atol(1e-8, c=100)
@@ -238,7 +238,7 @@ def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
         assert_orthonormal(eigvecs, path, comm=None)
 
 
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
+@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL])
 @pytest.mark.parametrize("path", ["array"])
 @pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
@@ -265,9 +265,9 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
       -1775 (far below the true minimum 1.0) -- a bad-seed artifact, not a reort or
       restart-logic bug: swapping to a signed ``randn`` seed (matching the array path
       and ``lanczos_golden.py``'s ``_mbs_psi0``) removes the divergence.
-    * even with that signed seed, ``near_degenerate`` under ``Reort.NONE``/``PERIODIC``
+    * even with that signed seed, ``near_degenerate`` under ``Reort.NONE``
       still lands Ritz values at -72.4 and -0.21 (below the true minimum 1.0); PARTIAL/
-      FULL/SELECTIVE settle to benign near-machine-zero artifacts (~1e-15) instead,
+      FULL settle to benign near-machine-zero artifacts (~1e-15) instead,
       consistent with this module's documented "spurious zero Ritz value from a
       partially-filled T_full" limitation, not a new divergence.
 
@@ -284,7 +284,7 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
+@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 @pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])

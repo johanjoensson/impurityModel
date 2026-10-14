@@ -714,7 +714,7 @@ def block_Green_sparse(
     determinant, ~30x everything else at the FCC-Ni operating point). ``complex64`` halves
     it, at the cost of an orthogonality (and Green's function) floor at fp32 roundoff,
     ~6e-8. It is **opt-in**, not the default, for two reasons: it is rejected outright by
-    ``PARTIAL``/``SELECTIVE``, whose Paige-Simon estimator steers to ``sqrt(EPS) ~ 1.5e-8``
+    ``PARTIAL``, whose Paige-Simon estimator steers to ``sqrt(EPS) ~ 1.5e-8``
     and cannot be fed a basis known only to ~6e-8; and it would silently break the exactness
     guarantee that a capped recurrence reproduces the dense ``P H P`` resolvent (see
     ``test_gf_truncation``). Only the *stored* basis narrows -- the recurrence, the overlaps

@@ -452,45 +452,6 @@ def test_trlm_cy_partial_reort_convergence():
     np.testing.assert_allclose(eigvals, exact_eigvals, atol=1e-7)
 
 
-def test_trlm_cy_selective_reort_orthogonality():
-    n_states = 12
-    states = [(1 << i).to_bytes(8, "little") for i in range(n_states)]
-    np.random.seed(42)
-    H_mat = np.random.randn(n_states, n_states)
-    H_mat = H_mat + H_mat.T
-    hop = {}
-    for i in range(n_states):
-        for j in range(n_states):
-            if abs(H_mat[i, j]) > 1e-10:
-                hop[((i, "c"), (j, "a"))] = float(H_mat[i, j])
-    basis = Basis(
-        impurity_orbitals={0: [list(range(n_states))]},
-        bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=states,
-        verbose=False,
-    )
-    h_op = ManyBodyOperator(hop)
-    psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis})]
-    psi0, _ = block_normalize(psi0, False, None)
-
-    _eigvals, eigvecs = thick_restart_block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        num_wanted=6,
-        max_subspace_blocks=10,
-        tol=1e-8,
-        max_restarts=15,
-        verbose=False,
-        reort="selective",
-    )
-
-    # Assert eigenvectors are orthogonal
-    ov = inner_multi(eigvecs, eigvecs)
-    err = np.linalg.norm(ov - np.eye(len(eigvecs)))
-    assert err < 1e-10
-
-
 def test_converged_views_equivalence():
     """block_lanczos_cy passes buffer *views* (alphas_buf[:it+1]) to converged_fn
     instead of rebuilding lists->arrays each step. This pins that the data seen by

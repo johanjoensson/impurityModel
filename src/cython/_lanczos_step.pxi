@@ -3,7 +3,7 @@
 # ===========================================================================
 # One three-term block step (block_lanczos_step_cy) and the full recurrence driver
 # (block_lanczos_cy) that serves the whole frequency mesh from a single recurrence. The
-# reorthogonalization mode (NONE/PARTIAL/FULL/PERIODIC/SELECTIVE) and the EA16
+# reorthogonalization mode (NONE/PARTIAL/FULL) and the EA16
 # shrinking-block deflation policy are dispatched from here.
 
 def _keep_global_top(st, max_size, comm):
@@ -39,7 +39,6 @@ def block_lanczos_step_cy(
     basis,
     slaterWeightMin: float = 0.0,
     truncation_threshold: float = 0.0,
-    reort_period: int = REORT_PERIOD,
     start_it: int = 0,
     block_widths=None,
     locked=None,
@@ -74,17 +73,11 @@ def block_lanczos_step_cy(
        (:math:`p(p+1)/2` complex) inside the TSQR; every rank merges them in rank order,
        so the resulting :math:`\\beta_i`, the retained rank and the breakdown decision are
        identical on all ranks.
-    3. For ``FULL`` / ``PERIODIC`` modes, an additional ``MPI_Allreduce`` per
+    3. For ``FULL`` mode, an additional ``MPI_Allreduce`` per
        reorthogonalization pass on the :math:`(it \\cdot p) \\times p` overlap matrix.
     4. For ``PARTIAL``, standard Paige-Simon tracking operates against all Lanczos vectors,
        triggering ``MPI_Allreduce`` calls over potentially large swaths of the Krylov
        basis when orthogonality loss exceeds :math:`\\sqrt{\\varepsilon_{\\text{mach}}}`.
-    5. For ``SELECTIVE`` (EA16), tracking operates exclusively against converged Ritz vectors.
-       The Ritz overlap is calculated as $w_{ritz, k} = s_k^\\dagger W[:, \\text{curr}]$, and
-       the W-matrix geometric projection update is
-       $W[:, \\text{curr}] \\leftarrow W[:, \\text{curr}] - (W \\cdot s_k) \\langle y_k \\mid w_p \\rangle$.
-       Because ``SELECTIVE`` exclusively projects against a small subset of Ritz vectors rather
-       than the entire basis, the ``MPI_Allreduce`` footprint is drastically lower.
 
     Note:
         ``h_op.apply_multi`` releases the GIL internally; all other operations in
@@ -108,7 +101,7 @@ def block_lanczos_step_cy(
             ``Reort.NONE`` skips all reorthogonalization entirely.
         W: Paige-Simon W-matrix estimator state array of shape
             ``(2, it+1, p, p)``, or ``None`` when not used.  Required for
-            ``PARTIAL`` / ``SELECTIVE`` modes; ignored otherwise.
+            ``PARTIAL`` mode; ignored otherwise.
         mpi: ``True`` when running under MPI with more than one rank.
         comm: Active ``mpi4py.MPI.Comm`` communicator, or ``None`` when running
             serially.
@@ -116,14 +109,10 @@ def block_lanczos_step_cy(
             SD coefficients below this value are dropped.  Default ``0.0``
             (no pruning).  On ``H q`` the cut is made on each row's summed amplitude
             when the step redistributes.
-        reort_period: Number of steps between full reorthogonalization sweeps
-            for ``Reort.PERIODIC`` mode.  Full reorthogonalization is applied at
-            step ``it`` when ``it > 0`` and ``it % reort_period == 0``.
-            Default ``REORT_PERIOD``.
 
     Returns:
         tuple: A 7-tuple ``(q_next, alpha_i, beta_i, W_updated, active_k, breakdown,
-        reort_acted)``; ``reort_acted`` is True iff the PARTIAL/SELECTIVE bad-block
+        reort_acted)``; ``reort_acted`` is True iff the PARTIAL bad-block
         projection actually fired this step (the driver then forces a re-check on the
         next step — the two-consecutive-steps rule):
 
@@ -209,11 +198,10 @@ def block_lanczos_step_cy(
                 comm.Allreduce(MPI.IN_PLACE, _ovl, op=MPI.SUM)
             wp = block_add_scaled_cy(wp, locked_blk, -_ovl)
 
-    # --- 4. Full / Periodic reorthogonalization -------------------------
-    # The PERIODIC cadence gate stays in the caller; the reort action itself goes
-    # through the shared apply_reort (classical 2-pass block Gram-Schmidt, one
-    # implementation for both kernels).
-    if reort_mode == Reort.FULL or (reort_mode == Reort.PERIODIC and it > 0 and it % reort_period == 0):
+    # --- 4. Full reorthogonalization ------------------------------------
+    # The reort action goes through the shared apply_reort (classical 2-pass block
+    # Gram-Schmidt, one implementation for both kernels).
+    if reort_mode == Reort.FULL:
         wp, _, _ = apply_reort(wp, Q_basis, None, Reort.FULL, mpi, comm, block_widths or [], krylov)
 
     # --- 5. TSQR of the residual block ----------------------------------
@@ -272,12 +260,12 @@ def block_lanczos_step_cy(
 
     # --- 6. W estimator (Paige-Simon PRO) -------------------------------
     _reort_acted = False
-    if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
+    if reort_mode == Reort.PARTIAL:
         _t0 = _time.perf_counter()
         if W is None:
             # Unreachable from block_lanczos_cy: the driver seeds W (Exact Overlap
             # Restart, seed_w_estimator) before entering the loop whenever reort is
-            # PARTIAL/SELECTIVE, so W is never None here. This branch used to carry a
+            # PARTIAL, so W is never None here. This branch used to carry a
             # *third* inline copy of the EOR loop that no production path could reach,
             # and which seeded from a different block (the pre-TSQR residual) than the
             # driver's copy (q_curr) -- an asymmetry that never mattered precisely
@@ -285,7 +273,7 @@ def block_lanczos_step_cy(
             # divergent convention: a direct caller of this step function owes it a
             # seeded W.
             raise ValueError(
-                "block_lanczos_step_cy requires a seeded W for reort='partial'/'selective'; "
+                "block_lanczos_step_cy requires a seeded W for reort='partial'; "
                 "callers other than block_lanczos_cy must seed it via "
                 "BlockLanczosCore.seed_w_estimator first."
             )
@@ -303,29 +291,8 @@ def block_lanczos_step_cy(
         _prof_acc("w_estimate", _t0)
         _t0 = _time.perf_counter()
 
-        reort_eps = REORT_TOL
-
-        # --- 7. EA16 Selective Orthogonalization ------------------------
-        if reort_mode == Reort.SELECTIVE:
-            # EA16 §2.6.2 selective orthogonalization (shared with block_lanczos_array_cy).
-            # Cadence (it > 0 and it % reort_period == 0) lives solely inside
-            # selective_orthogonalize now, not duplicated here (R9: this outer check was
-            # a leftover double-gate -- the array kernel already dropped its matching
-            # copy in R7 with the identical reasoning: byte-equivalent to the inner gate
-            # since both receive the same `it`/`period`, so removing it changes nothing).
-            # beta_i's 2-norm is the Ritz residual scale; the driver has not computed it yet at
-            # this point, so pass it explicitly. Q_basis is always a SparseKrylovDense here
-            # (block_lanczos_cy requires store_krylov=True whenever reort != 'none'), so
-            # q_next passes straight through as a block -- no to_states()/from_states()
-            # round trip (block_combine's SparseKrylovDense arm now returns a block too, see
-            # SparseKrylovDense.combine_block).
-            q_next = selective_orthogonalize(
-                q_next, Q_basis, alphas, betas, W, block_widths,
-                it, p, spectral_norm(beta_i), reort_eps, reort_period, mpi, comm,
-            )
-
         # --- 8. Bad-block reort + renormalize ----------------------------
-        if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
+        if reort_mode == Reort.PARTIAL:
             # Bad-block partial reorthogonalization + renormalize via the shared
             # finish_reort (single implementation for both kernels). Pass
             # block_widths + [p] so the current block (index it) is included in the
@@ -385,7 +352,6 @@ def block_lanczos_cy(
     slaterWeightMin: float = 0.0,
     truncation_threshold: int = 0,
     comm=None,
-    reort_period: int = REORT_PERIOD,
     alphas_init=None,
     betas_init=None,
     Q_init=None,
@@ -460,8 +426,7 @@ def block_lanczos_cy(
         verbose: Print per-iteration diagnostics including ``|beta|`` norms and
             diagonal alpha values.  Default ``False``.
         reort: Reorthogonalization mode.  Accepts ``Reort`` enum members or the
-            equivalent strings ``'none'``, ``'partial'``, ``'selective'``,
-            ``'full'``, ``'periodic'``.  ``Reort.NONE`` disables all
+            equivalent strings ``'none'``, ``'partial'``, ``'full'``.  ``Reort.NONE`` disables all
             reorthogonalization.  Default ``'full'``.
         max_iter: Maximum number of Lanczos steps before returning.  Defaults to
             ``basis.size // p`` when ``basis.size`` is available, otherwise
@@ -471,9 +436,6 @@ def block_lanczos_cy(
             dropped after each matvec.  Default ``0.0`` (no pruning).
         comm: ``mpi4py`` communicator.  If ``None``, falls back to ``basis.comm``
             and then to serial mode (``mpi=False``).
-        reort_period: Period for ``Reort.PERIODIC`` mode.  Full
-            reorthogonalization is applied at steps that satisfy
-            ``it > 0 and it % reort_period == 0``.  Default ``5``.
         alphas_init: Warm-start diagonal block array of shape ``(k0, p, p)``.
             If provided together with ``betas_init`` and ``Q_init``, iteration
             resumes from block ``k0``.  Default ``None``.
@@ -547,18 +509,18 @@ def block_lanczos_cy(
     if not store_krylov and (reort_mode != Reort.NONE or nlock > 0):
         raise ValueError("store_krylov=False requires reort='none' and no locked vectors")
 
-    # complex64 storage (~6e-8 rounding) can never reach PARTIAL/SELECTIVE's REORT_TOL
+    # complex64 storage (~6e-8 rounding) can never reach PARTIAL's REORT_TOL
     # target (~1.5e-8, sqrt(EPS)): the trigger is unreachable, and on the rare step it
     # does fire, BAD_BLOCK_TOL flags every block, degenerating to FULL at
     # worse-than-complex128 orthogonality. Reject rather than warn; see
     # doc/lanczos_invariants.md ("complex64 measurements") for the full measurement
     # table and the estimator under-prediction risk this guard also avoids.
     if krylov_dtype is not None and np.dtype(krylov_dtype) == np.dtype(np.complex64):
-        if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
+        if reort_mode == Reort.PARTIAL:
             raise ValueError(
-                "krylov_dtype='complex64' is incompatible with reort='partial'/'selective': "
+                "krylov_dtype='complex64' is incompatible with reort='partial': "
                 "the stored basis is only accurate to ~6e-8, above the sqrt(EPS) ~ 1.5e-8 "
-                "semi-orthogonality target these modes maintain. Use reort='full'/'periodic' "
+                "semi-orthogonality target these modes maintain. Use reort='full' "
                 "(no Paige-Simon estimator) or keep complex128."
             )
 
@@ -672,9 +634,9 @@ def block_lanczos_cy(
     # case_mbs_partial_eor_resume in the golden harness (added alongside this hoist:
     # the pre-existing warm-resume cases all pass W_init non-None and so never reach
     # this branch) plus test_block_lanczos_cy_resume_partial_reort_without_w_init.
-    if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE) and W is None:
+    if reort_mode == Reort.PARTIAL and W is None:
         W = seed_w_estimator(Q_basis, q_curr, q_prev, block_widths, start_it, p, mpi, comm)
-    elif reort_mode in (Reort.PARTIAL, Reort.SELECTIVE) and W is not None:
+    elif reort_mode == Reort.PARTIAL and W is not None:
         pass  # W expands dynamically in estimate_orthonormality
 
     # Bounded-W ping-pong buffers + the beta-norm history: the estimator
@@ -684,7 +646,7 @@ def block_lanczos_cy(
     # aligned); the estimator falls back to computing those on demand.
     _w_bufs = None
     beta_norm_hist = None
-    if reort_mode in (Reort.PARTIAL, Reort.SELECTIVE):
+    if reort_mode == Reort.PARTIAL:
         _w_bufs = (
             np.empty((2, start_it + _buf_size + 2, p, p), dtype=complex),
             np.empty((2, start_it + _buf_size + 2, p, p), dtype=complex),
@@ -763,7 +725,6 @@ def block_lanczos_cy(
             basis=basis,
             slaterWeightMin=slaterWeightMin,
             truncation_threshold=truncation_threshold,
-            reort_period=reort_period,
             start_it=start_it,
             block_widths=block_widths,
             locked=locked,

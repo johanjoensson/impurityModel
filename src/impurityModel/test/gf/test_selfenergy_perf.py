@@ -126,7 +126,7 @@ def _phase_timers():
 
 
 def _resolve_reort():
-    """Optional GF reort override via SELFENERGY_BENCH_REORT (none/partial/selective/full)."""
+    """Optional GF reort override via SELFENERGY_BENCH_REORT (none/partial/full)."""
     name = os.environ.get("SELFENERGY_BENCH_REORT")
     if not name:
         return None
@@ -135,9 +135,7 @@ def _resolve_reort():
     return {
         "none": Reort.NONE,
         "partial": Reort.PARTIAL,
-        "selective": Reort.SELECTIVE,
         "full": Reort.FULL,
-        "periodic": Reort.PERIODIC,
     }[name.lower()]
 
 

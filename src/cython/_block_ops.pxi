@@ -498,105 +498,13 @@ cpdef tuple block_tsqr(object wp, bint mpi=False, object comm=None, double scale
     return Q_block, beta, k, sv
 
 
-def selective_orthogonalize(q_next, Q_basis, alphas, betas, W, block_widths,
-                            it, n_curr, double beta_norm, double reort_eps,
-                            int period, bint mpi, object comm):
-    r"""EA16 §2.6.2 selective orthogonalization of the new Krylov block.
-
-    Shared by both kernels: the eigensolve, the convergence/overlap gate and the
-    rank-0/bcast decision are all representation-independent (pure numpy on the
-    replicated ``alphas``/``betas``/``W``), and the projection itself dispatches on
-    ``is_array`` through ``block_combine`` / ``block_inner`` / ``block_add_scaled``, so
-    the same code drives the dense-array (``block_lanczos_array_cy``) and
-    ``ManyBodyState`` (``block_lanczos_step_cy``) kernels.
-
-    Gated to the ``period`` cadence (the per-step PARTIAL bad-block reorth keeps
-    orthogonality between locks, so the O(m^3) Ritz check can run less often). For each
-    Ritz pair that has **converged** (``err_bnd = beta_norm·|s_k[-1]| < reort_eps``) AND
-    whose running W-estimate shows ``q_next`` has actually lost orthogonality to it
-    (``max|w_ritz_k| > reort_eps``), the Ritz vector is projected out of ``q_next``
-    (twice). The decision data is replicated, so it is computed on rank 0 and the index
-    list broadcast to keep every rank's projection collectives in lock-step.
-
-    Parameters
-    ----------
-    q_next : ndarray or ManyBodyState
-        The freshly QR'd block to be cleaned; returned (possibly modified).
-    Q_basis : ndarray or SparseKrylovDense
-        The accumulated Krylov basis (all ``it+1`` blocks), indexed by ``s_k``.
-    alphas, betas : ndarray
-        Block-tridiagonal coefficients built so far (views ``[: it+1]`` are used).
-    W : ndarray
-        Paige-Simon estimator state (``W[-1]`` is the current-level overlap table).
-    block_widths : list of int
-        True width of every *completed* block (length ``it``); the current block
-        width ``n_curr`` is appended internally.
-    it : int
-        Absolute iteration index.
-    n_curr : int
-        Width of the current block.
-    beta_norm : float
-        ``||beta_i||_2`` (the Ritz residual scale).
-    reort_eps : float
-        Trigger tolerance (``REORT_TOL``).
-    period : int
-        Cadence for the Ritz-convergence check.
-    mpi : bool
-    comm : mpi4py communicator or None
-
-    Returns
-    -------
-    q_next : ndarray or ManyBodyState
-        ``q_next`` with the flagged converged Ritz directions removed.
-    """
-    if not (it > 0 and it % period == 0):
-        return q_next
-    # Banded eigensolve of the pure block-tridiagonal T (no dense matrix).
-    eigvals_T, conv_evec = eigh_block_tridiagonal(
-        alphas[: it + 1], betas[: it + 1], block_widths=block_widths + [n_curr]
-    )
-    ritz_to_project = []
-    if not mpi or comm is None or comm.rank == 0:
-        widths_list = list(block_widths) + [n_curr]
-        offsets_w = [0]
-        off = 0
-        for w_val in widths_list:
-            off += int(w_val)
-            offsets_w.append(off)
-        for k_idx in range(len(eigvals_T)):
-            err_bnd = beta_norm * np.abs(conv_evec[-1, k_idx])
-            if err_bnd < reort_eps:
-                w_ritz_k = np.zeros(n_curr, dtype=complex)
-                for j in range(it + 1):
-                    s_k_j = conv_evec[offsets_w[j] : offsets_w[j + 1], k_idx]
-                    w_j = widths_list[j]
-                    w_ritz_k += np.conj(s_k_j) @ np.conj(W[-1, j, :n_curr, :w_j].T)
-                if np.max(np.abs(w_ritz_k)) > reort_eps:
-                    ritz_to_project.append(k_idx)
-    if mpi and comm is not None:
-        ritz_to_project = comm.bcast(ritz_to_project, root=0)
-
-    # Batched projection: the flagged Ritz vectors are mutually orthonormal (eigenvectors of
-    # the Hermitian banded T over an orthonormal Q), so projecting them out as one block via
-    # CGS2 is equivalent to the old one-at-a-time loop up to rounding — but it costs one
-    # store sweep per RITZ_BATCH instead of one per Ritz vector. The batch keeps the
-    # materialized Ritz block bounded at (n_rows x RITZ_BATCH).
-    for batch_start in range(0, len(ritz_to_project), RITZ_BATCH):
-        idx = ritz_to_project[batch_start : batch_start + RITZ_BATCH]
-        ritz_blk = block_combine(Q_basis, np.ascontiguousarray(conv_evec[:, idx]))
-        for _ in range(2):
-            overlap = block_inner(ritz_blk, q_next, mpi, comm)
-            q_next = block_add_scaled(q_next, ritz_blk, -overlap)
-    return q_next
-
-
 cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint mpi, object comm, list block_widths, object krylov=None, bint force=False):
     """Reorthogonalize ``wp`` per the reort mode. Returns ``(wp, W, acted)``; ``acted`` is True
-    iff a projection was actually applied (always for FULL/PERIODIC; for PARTIAL/SELECTIVE only
+    iff a projection was actually applied (always for FULL; for PARTIAL only
     when a bad block exceeded the trigger), so the caller can skip the follow-up renormalize
     when nothing changed.
 
-    ``force=True`` (PARTIAL/SELECTIVE) skips the ``REORT_TOL`` trigger gate and projects
+    ``force=True`` (PARTIAL) skips the ``REORT_TOL`` trigger gate and projects
     against every block whose estimate exceeds ``BAD_BLOCK_TOL``. Drivers pass it on the
     step immediately after an acted step (the classic two-consecutive-steps rule, Simon
     1984 / PROPACK): the projection cleans only ``wp`` = q_{i+1}, so q_i's remaining
@@ -609,7 +517,7 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
     cdef int active_k
     cdef bint acted = False
     # A shared-support block goes through the same list-based projection machinery via
-    # a boundary conversion: on every call for FULL/PERIODIC, but for PARTIAL/SELECTIVE
+    # a boundary conversion: on every call for FULL, but for PARTIAL
     # only when a bad block actually triggers — the common no-op case never
     # materializes the block.
     cdef bint was_block = isinstance(wp, ManyBodyState)
@@ -621,7 +529,7 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
     else:
         active_k = len(wp)
 
-    if reort == Reort.FULL or reort == Reort.PERIODIC:
+    if reort == Reort.FULL:
         if is_array(wp):
             # The array kernel hands in its growth buffer wrapped as ``[Q_buf[:, :q_cols]]``,
             # a view. block_orthogonalize column-stacks a list, which would copy the whole
@@ -655,7 +563,7 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                 wp = ManyBodyState.from_states(wp)
         acted = True
 
-    elif reort in (Reort.PARTIAL, Reort.SELECTIVE):
+    elif reort == Reort.PARTIAL:
         if W is not None:
             n_blks = W.shape[1] - 1  # W[-1, :n_blks]
             if not mpi or comm is None or comm.rank == 0:
@@ -696,7 +604,7 @@ cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint m
                     if was_block:
                         wp, O_last = krylov.reort(wp, bad_cols, 2, comm if mpi else None)
                     else:
-                        # Defensive only: see the matching branch in the FULL/PERIODIC case
+                        # Defensive only: see the matching branch in the FULL case
                         # above -- not exercised by any current caller.
                         wp_blk = ManyBodyState.from_states(wp)
                         wp_blk, O_last = krylov.reort(wp_blk, bad_cols, 2, comm if mpi else None)

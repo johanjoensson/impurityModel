@@ -144,7 +144,7 @@ def test_lancos_mpi():
     print(f"{alphas=}\n{betas=}")
 
 
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PARTIAL])
 def test_block_eigsh(reort_mode):
     eigvals = np.array(np.arange(6))
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -172,7 +172,7 @@ def test_block_eigsh(reort_mode):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PARTIAL])
 def test_block_eigsh_mpi(reort_mode):
     eigvals = np.array(np.arange(6))
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -212,7 +212,7 @@ def test_block_eigsh_mpi(reort_mode):
     assert np.allclose(ev, eigvals[: len(ev)])
 
 
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PARTIAL])
 def test_block_lanczos_cy(reort_mode):
     eigvals = np.array(np.arange(6))
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -235,7 +235,7 @@ def test_block_lanczos_cy(reort_mode):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PARTIAL])
 def test_block_lanczos_cy_mpi(reort_mode):
     eigvals = np.array(np.arange(6))
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -257,7 +257,7 @@ def test_block_lanczos_cy_mpi(reort_mode):
     assert np.allclose(ev, eigvals[: len(ev)])
 
 
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PARTIAL])
 def test_get_block_Lanczos_matrices_and_GS(reort_mode):
     from impurityModel.ed.BlockLanczosArray import block_lanczos_array, calculate_thermal_gs
 
@@ -289,7 +289,7 @@ def test_get_block_Lanczos_matrices_and_GS(reort_mode):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PARTIAL])
 def test_get_block_Lanczos_matrices_and_GS_mpi(reort_mode):
     from impurityModel.ed.BlockLanczosArray import block_lanczos_array, calculate_thermal_gs
 

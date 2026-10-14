@@ -1090,7 +1090,7 @@ _TABLE_LIST += [
                 "is NOT one mode: it means NONE on the Green's-function path and PARTIAL on "
                 "the eigensolver path. Writing a mode also moves the derived determinant "
                 "budget, since retention switches the memory model to its worst case.",
-                choices=("auto", "none", "partial", "periodic", "selective", "full"),
+                choices=("auto", "none", "partial", "full"),
             ),
             Key("dense_cutoff", Kind.COUNT, 500, "Use a dense eigensolver below this matrix size.", minimum=1),
             Key("sparse_green", Kind.BOOL, True, "Use the sparse block-Lanczos Green's-function path."),

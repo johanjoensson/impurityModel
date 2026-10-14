@@ -26,13 +26,10 @@ Reorthogonalization modes (``Reort``), what each guarantees:
   re-orthogonalizes regardless, so NONE only relaxes the *inner* recurrence.
 * ``FULL``      — double-pass Gram–Schmidt against the whole basis every step.
   Most robust; ``‖QᴴQ − I‖`` stays at ~machine precision.
-* ``PERIODIC``  — FULL, but only every ``REORT_PERIOD`` iterations.
 * ``PARTIAL``   — partial reorthogonalization (PRO, Simon): the W-recurrence
   ``estimate_orthonormality`` cheaply *estimates* loss of orthogonality; a full
   reorth against the offending blocks fires only when an estimate exceeds
   ``REORT_TOL``. Matches FULL accuracy at lower cost; the default.
-* ``SELECTIVE`` — PARTIAL plus periodic locking of converged Ritz vectors
-  (gated to a ``REORT_PERIOD`` cadence; see ``block_lanczos_array_cy``).
 
 Every mode retains all ``p * m`` Krylov columns. That is the dominant allocation of a
 long Green's-function run, and it cannot be compressed away: reorthogonalization needs
@@ -44,7 +41,7 @@ retained basis therefore needs secondary storage, not a smaller basis — see th
 Module thresholds (all derived from machine ``eps``; see definitions below):
 ``REORT_TOL`` (loss-of-orthogonality trigger), ``BAD_BLOCK_TOL`` (which blocks to
 reorth against), ``DEFLATE_TOL`` (relative rank floor on the block's singular values),
-``BREAKDOWN_TOL`` (invariant-subspace detection), ``REORT_PERIOD`` (cadence). The
+``BREAKDOWN_TOL`` (invariant-subspace detection). The
 deflation floors are defined in the ``TSQR`` module that applies them.
 
 Orthonormalization goes through ``TSQR`` via ``block_tsqr`` (``BlockLanczosCore.pyx``'s
@@ -95,9 +92,7 @@ from impurityModel.ed.BlockLanczosCore import (  # noqa: F401
     Reort,
     REORT_TOL,
     BAD_BLOCK_TOL,
-    RITZ_BATCH,
     BETA_BLOWUP_FACTOR,
-    REORT_PERIOD,
     AUDIT_PERIOD,
     audit_bad_blocks,
     RESTART_ORTH_TOL,
@@ -127,7 +122,6 @@ from impurityModel.ed.BlockLanczosCore import (  # noqa: F401
     block_normalize,
     BlockBreakdown,
     block_tsqr,
-    selective_orthogonalize,
     apply_reort,
     block_combine_array,
     block_orthogonalize_array,
@@ -385,65 +379,6 @@ cdef void apply_dense_nogil(
     matmul_nogil(M, p, K, 1.0, H, b'N', X, b'N', 0.0, Y)
 
 
-def _cholesky_or_deflate(M, p_in, double scale=1.0):
-    """Superseded by TSQR.tsqr, which factors the block directly and is stable at
-    conditioning this Gram-based QR cannot survive; no production path calls this any
-    more. Kept as the reference implementation the CholeskyQR2-era regression tests are
-    written against (test_block_lanczos_blowup.py, test_tsqr.py). The
-    deflation-vs-breakdown derivation this docstring used to carry moves to
-    doc/lanczos_invariants.md (R2).
-    """
-    cdef double breakdown_lam = (BREAKDOWN_TOL * scale) ** 2
-    # Try Cholesky first (fast path). diag(L)**2 are the (real, positive) Cholesky
-    # pivots, an O(EPS)-faithful surrogate for the eigenvalues of the Hermitian-PD M.
-    try:
-        L = la.cholesky(M, lower=True)
-        d2 = np.square(np.diag(L).real)
-        d2_max = float(np.max(d2)) if d2.size else 0.0
-        if d2_max <= breakdown_lam:                        # ||beta||_2 <= BREAKDOWN_TOL * scale
-            return None, None, 0
-        if np.any(d2 < DEFLATE_EVAL_TOL * d2_max):
-            raise la.LinAlgError("Numeric singularity in Cholesky diagonal")
-        beta_j = np.conj(L.T)
-        beta_inv = la.inv(beta_j)
-        p_next = p_in
-        return beta_j, beta_inv, p_next
-    except (la.LinAlgError, ValueError):
-        # Fall back to eigh, using the same two tests as the fast path.
-        evals, evecs = la.eigh(M)              # ascending
-        lam_max = float(evals[evals.size - 1]) if evals.size else 0.0
-        if lam_max <= breakdown_lam:                      # the whole block is numerically zero
-            return None, None, 0
-        keep = evals > DEFLATE_EVAL_TOL * lam_max         # boolean mask over p_in
-        p_next = int(keep.sum())
-        if p_next == 0:                                   # unreachable: lam_max always survives
-            return None, None, 0
-        V = evecs[:, keep]                                # (p_in, p_next)
-        s = np.sqrt(evals[keep])                          # (p_next,)
-        beta_j = (s[:, None] * np.conj(V.T))             # (p_next, p_in)   off-diag block
-        beta_inv = V / s[None, :]                         # (p_in,  p_next)
-        return beta_j, beta_inv, p_next
-
-
-def _cholesky_qr2(M2, beta_j, active_k):
-    r"""Second pass of CholeskyQR2 on the recomputed Gram of the once-QR'd block.
-
-    Superseded together with :func:`_cholesky_or_deflate`, kept for the same regression
-    tests. Re-orthonormalizes ``Q1 = Wp @ beta_inv`` (whose error can be :math:`O(1)`
-    when ``M`` was ill-conditioned) back to :math:`O(\texttt{EPS})` using the Gram of
-    the actual vectors; see doc/lanczos_invariants.md ("deflation vs breakdown scales")
-    for the derivation.
-
-    Given ``M2`` and the first-pass factor ``beta_j`` (so ``Wp = Q1 @ beta_j``), returns
-    ``(beta2_inv, beta_j_new, k2)`` such that ``Q2 = Q1 @ beta2_inv`` is orthonormal and
-    ``Wp = Q2 @ beta_j_new``.  Returns ``(None, None, 0)`` on full collapse.
-    """
-    beta2, beta2_inv, k2 = _cholesky_or_deflate(M2, active_k)
-    if k2 == 0:
-        return None, None, 0
-    return beta2_inv, beta2 @ beta_j, k2
-
-
 def block_lanczos_array_cy(
     np.ndarray psi0,
     h_op,
@@ -460,7 +395,6 @@ def block_lanczos_array_cy(
     return_status=False,
     build_krylov_basis=None,
     deflate_tol=-1.0,
-    reort_period: int = REORT_PERIOD,
     max_iter=None,
     block_widths_init=None,
     locked=None,
@@ -560,7 +494,6 @@ def block_lanczos_array_cy(
     # alone never reaches the determinants that chain was missing (review ledger C12).
     cdef list deflated_tail = []
 
-    cdef int period = reort_period
     if max_iter is None:
         max_iter = int(
             np.ceil(
@@ -581,7 +514,7 @@ def block_lanczos_array_cy(
     # re-factorizing them.
     _w_bufs = None
     beta_norm_hist = None
-    if reort in (Reort.PARTIAL, Reort.SELECTIVE):
+    if reort == Reort.PARTIAL:
         _w_bufs = (
             np.empty((2, _buf_size + 2, n, n), dtype=complex),
             np.empty((2, _buf_size + 2, n, n), dtype=complex),
@@ -614,7 +547,6 @@ def block_lanczos_array_cy(
             guard_seeded = True
     cdef double _h_scale = 0.0
     cdef double beta_norm, alpha_norm
-    cdef double reort_eps  # always assigned (from REORT_TOL) before its one read, below
 
     cdef bint mpi = comm is not None
     cdef int rank = comm.rank if mpi else 0
@@ -955,8 +887,8 @@ def block_lanczos_array_cy(
                 wp_arr -= locked_arr @ locked_ovl
             wp = wp_arr
 
-        # --- 4. Full / Periodic reorthogonalization ---------------------
-        if reort == Reort.FULL or (reort == Reort.PERIODIC and it > 0 and it % period == 0):
+        # --- 4. Full reorthogonalization --------------------------------
+        if reort == Reort.FULL:
             if not keep_krylov:
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
             wp_arr, _, _ = apply_reort(wp_arr, Q_list, None, Reort.FULL, mpi, comm, block_widths)
@@ -1000,7 +932,7 @@ def block_lanczos_array_cy(
         # corrupted past repair. Truncate *before* this block (exclude alpha_i/beta_i at
         # index it) so the diverged tail never reaches the Green's function.
         # ||beta_i||_2 comes out of the factorization: beta_i and the block share their
-        # singular values, so sv_i[0] is the 2-norm (reused by the SELECTIVE Ritz-error check
+        # singular values, so sv_i[0] is the 2-norm (reused by the Ritz-error check
         # below) with no SVD of its own.
         beta_norm = float(sv_i[0])
         _reort_acted = False
@@ -1028,7 +960,7 @@ def block_lanczos_array_cy(
             )
 
         # --- 6. W estimator (Paige-Simon PRO) ----------------------------
-        if reort in (Reort.PARTIAL, Reort.SELECTIVE):
+        if reort == Reort.PARTIAL:
             if not keep_krylov:
                 raise RuntimeError("Krylov basis must be built for reorthogonalization")
             if W is None:
@@ -1093,25 +1025,6 @@ def block_lanczos_array_cy(
                     "noise_floor_max": _decomp["noise_floor"],
                 })
 
-            reort_eps = REORT_TOL
-
-            # --- 7. EA16 Selective Orthogonalization -------------------
-            if reort == Reort.SELECTIVE:
-                # EA16 §2.6.2 selective orthogonalization (shared with block_lanczos_step_cy).
-                # Q_list[0] holds all it+1 completed blocks (the current block q1 is already its
-                # last block), spanning the full subspace the Ritz vectors index. beta_norm is the
-                # already-computed ||beta_i||_2.
-                # period (this call's own reort_period kwarg, defaulting to REORT_PERIOD)
-                # -- was previously hardcoded to the module constant here regardless of
-                # the caller's setting, unlike the MBS kernel which always honored its
-                # own reort_period parameter. No existing caller passes a non-default
-                # reort_period on this path, so this is neutral against every current
-                # caller (verified: no reort_period= call site anywhere on the array path).
-                q_next = selective_orthogonalize(
-                    q_next, Q_list[0], alphas_buf, betas_buf, W, block_widths,
-                    it, n_curr, beta_norm, reort_eps, period, mpi, comm,
-                )
-
             # --- 7.5 R8c audit fallback (periodic, ground-truth) ----------
             if it > 0 and it % AUDIT_PERIOD == 0:
                 # Measures the real overlap instead of trusting the PRO estimate for this
@@ -1124,7 +1037,7 @@ def block_lanczos_array_cy(
                 _force_reort = _force_reort or _audited
 
             # --- 8. Bad-block reort + renormalize ------------------------
-            if reort in (Reort.PARTIAL, Reort.SELECTIVE):
+            if reort == Reort.PARTIAL:
                 # Pass block_widths + [n_curr] so the current block (index it, already
                 # appended to Q_list) is in the width table apply_reort indexes — matching
                 # block_lanczos_cy. Without it the W-recurrence's bad-block columns are

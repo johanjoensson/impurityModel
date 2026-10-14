@@ -72,7 +72,7 @@ def assert_orthonormal(eigvecs, path, comm=None):
     np.testing.assert_allclose(overlaps, expected, atol=sqrt_eps)
 
 
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
+@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 def test_reort_matrix(mode, path):
     h_op_mb, N, eigvals_exact, basis_states = get_test_system()
@@ -120,7 +120,7 @@ def test_reort_matrix(mode, path):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
+@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 def test_reort_matrix_mpi(mode, path):
     comm = MPI.COMM_WORLD
@@ -193,7 +193,7 @@ def test_reort_matrix_mpi(mode, path):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("mode", [Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("mode", [Reort.PARTIAL])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 def test_W_identical_across_ranks(mode, path):
     comm = MPI.COMM_WORLD
