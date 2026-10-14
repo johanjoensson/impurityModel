@@ -7,17 +7,15 @@
 =====================
 Shared numerical layer for the array (``BlockLanczosArray.pyx``) and ManyBodyState
 (``BlockLanczos.pyx``) block-Lanczos kernels: the ``Reort`` modes, every tolerance
-constant, the Paige-Simon partial-reorthogonalization estimator
-(``estimate_orthonormality``), the block-tridiagonal eigensolvers (``eigh_block_tridiagonal``,
+constant, the block-tridiagonal eigensolvers (``eigh_block_tridiagonal``,
 ``eigsh``), and the representation-dispatching block primitives (``block_inner``/``apply``/
-``add_scaled``/``combine``/``orthogonalize``/``normalize``/``tsqr``, ``apply_reort``,
-``selective_orthogonalize``) both kernels drive through.
+``add_scaled``/``combine``/``orthogonalize``/``normalize``/``tsqr``, ``apply_full_reort``) both kernels drive through.
 
 Both kernels import from here, never from each other -- this module exists so that is
 true. It used to compile inside ``BlockLanczosArray.pyx``, which forced
 ``BlockLanczos.pyx`` to import from it and forced the representation-dispatch
 primitives (``_reort.pxi``) to close the resulting cycle with two **per-call** Python
-imports on the hot path (inside ``block_normalize`` and ``apply_reort``). Neither is
+imports on the hot path (inside ``block_normalize`` and ``apply_full_reort``). Neither is
 true any more: both kernels import downward from here, and the two dispatch functions
 reference these module-level names directly.
 """
@@ -34,7 +32,6 @@ from enum import Enum
 
 class Reort(Enum):
     NONE = 0
-    PARTIAL = 1
     FULL = 2
 
 
@@ -60,35 +57,16 @@ from impurityModel.ed.TSQR import (
 )
 
 cdef double EPS_VAL = EPS
-REORT_TOL = np.sqrt(EPS_VAL)        # ~1.49e-8  : trigger — reorth when max|W| exceeds this
-BAD_BLOCK_TOL = EPS_VAL ** 0.75        # ~1.83e-12 : selection — reorth against blocks above this
 # DEFLATE_TOL (~3.67e-11, the rank floor on the block's singular values), its squared
 # counterpart DEFLATE_EVAL_TOL for tests on a Gram matrix, and BREAKDOWN_TOL are imported
-# from TSQR above, which is where the reasoning for their values lives. Short version: the
-# floor used to be EPS**(1/3) to keep the retained block inside CholeskyQR2's recovery
-# regime, and TSQR needs no such protection -- at EPS**(1/3) the floor sat *above* physical
-# splittings (it deflated away the near-copies of a 1e-9-split degeneracy and produced the
-# spurious Ritz values test_no_ghost_bands is named after).
+# from TSQR above, which is where the reasoning for their values lives.
 BETA_BLOWUP_FACTOR = 1e3           # ||beta_i|| above this * max(||beta||, ||alpha||) ⇒ divergence
-# R8c fallback cadence (audit_bad_blocks in _block_ops.pxi): every AUDIT_PERIOD steps,
-# PARTIAL measures the TRUE overlap against every historical block instead of
-# trusting the PRO estimate for that one step. Sized from a period sweep on the R8
-# clustered/gf_style probes (doc/lanczos_invariants.md, 320-iteration horizon): period 3
-# holds ||Q^HQ-I|| <= 1.1e-9 on clustered_near_deg (>10x below REORT_TOL) at every horizon
-# in {80,160,240,320}, vs. period 4 already failing the 320 horizon (8.9e-8, above
-# REORT_TOL) -- the margin between "holds" and "fails" is a narrow few steps, not a wide
-# plateau, so this is deliberately not tuned to the cheapest passing value. Cost is
-# real (~80% trigger rate on clustered_near_deg at this period, vs. FULL's 100%) but
-# stays essentially free on the healthy probe regardless of period (13-15/320 acted at
-# every period tested 2-20, matching the 13/320 no-audit baseline) -- the audit measures a
-# true overlap that simply never exceeds BAD_BLOCK_TOL there.
-AUDIT_PERIOD = 3
 # Semi-orthogonality threshold (Simon's classical sqrt(EPS) criterion — the very level the
-# PARTIAL estimator maintains, hence the shared constant). TRLM's thick-restart coefficient
+# old PRO estimator maintained). TRLM's thick-restart coefficient
 # shortcuts (diag(theta) for the retained block, beta_res @ Y_last for the spike) are both
 # derived from Q^H Q = I; above this level that premise is too inaccurate to use them and the
 # restart is rebuilt from actual matvecs instead. See _trlm_core.
-RESTART_ORTH_TOL = REORT_TOL       # ~1.49e-8
+RESTART_ORTH_TOL = np.sqrt(EPS_VAL)       # ~1.49e-8
 # Default convergence tolerance for TRLM's public entry points (the max wanted
 # Ritz residual at which a restart loop stops); single-sourced so every dispatcher's
 # `tol` default moves together.
@@ -107,7 +85,6 @@ def resolve_reort(reort):
         return reort
     _map = {
         "none": Reort.NONE,
-        "partial": Reort.PARTIAL,
         "full": Reort.FULL,
     }
     resolved = _map.get(reort.lower())
@@ -159,191 +136,6 @@ def divergence_guard(double beta_norm, double alpha_norm, bint first_step,
     if not diverged:
         t_norm_max = max(t_norm_max, beta_norm, alpha_norm)
     return diverged, t_norm_max, h_norm_est
-
-
-cpdef np.ndarray estimate_orthonormality(
-    np.ndarray[double complex, ndim=4] W,
-    np.ndarray[double complex, ndim=3] alphas,
-    np.ndarray[double complex, ndim=3] betas,
-    object block_widths=None,
-    double eps=0.0,
-    double N=1.0,
-    object out=None,
-    object beta_norms=None,
-    object parts_out=None,
-):
-    """... (see module docstring for the algorithm). ``parts_out``, if given a dict, is
-    populated (R8a instrumentation only -- None by default, zero extra cost when unused)
-    with the three additive contributions kept separate instead of summed into ``w_bar``:
-    ``"rounding_injection"`` (nonzero only at row ``i``, the diagonal/self entry),
-    ``"signed_propagation"`` (the three-term recurrence result BEFORE the noise floor is
-    added, rows ``0..i-1``), and ``"noise_floor"`` (the magnitude added on top of it, rows
-    ``0..i-1``) -- each shape ``(i+2, n, n)``, matching ``w_bar``, so
-    ``rounding_injection + signed_propagation + noise_floor == w_bar`` row-wise (row
-    ``i+1``, the seeded identity, is not decomposed -- it carries no estimate)."""
-    cdef int i = alphas.shape[0] - 1
-    cdef int n = alphas.shape[1]
-    if eps == 0.0:
-        eps = EPS
-
-    # Rounding-accumulation scale: a matvec/orthogonalization over an N-dimensional
-    # state accumulates ~N rounding errors whose sum grows like sqrt(N) (random-walk;
-    # the same convention as the locked-reort floor eps*p*sqrt(N) in the drivers).
-    # Callers pass N = the global problem dimension; the historical default N=1
-    # under-scaled the floor by sqrt(N) (measured ~10x at N=670).
-    cdef double n_scale = np.sqrt(N) if N > 1.0 else 1.0
-
-    cdef list widths
-    if block_widths is None:
-        widths = [n] * (i + 2)
-    else:
-        widths = list(block_widths)
-
-    cdef int w_curr = widths[i]
-    cdef int w_i = w_curr
-    cdef int w_next = widths[i+1]
-    cdef int w_0 = widths[0]
-
-    # R8a instrumentation only: three fresh (i+2, n, n) buffers, allocated only when the
-    # caller asks. Each additive term below writes into its own buffer in addition to (not
-    # instead of) w_bar, so the summed estimate is unchanged bit-for-bit.
-    if parts_out is not None:
-        parts_out["rounding_injection"] = np.zeros((i + 2, n, n), dtype=complex)
-        parts_out["signed_propagation"] = np.zeros((i + 2, n, n), dtype=complex)
-        parts_out["noise_floor"] = np.zeros((i + 2, n, n), dtype=complex)
-
-    # Bounded-W: the caller may provide a persistent buffer (`out`, shape
-    # (2, >=i+2, n, n)); the estimate is built into its zeroed leading view instead of a
-    # fresh allocation every step. The caller must ping-pong two buffers (the previous
-    # estimate `W` is read while the new one is written, so they must not alias).
-    cdef np.ndarray[double complex, ndim=4] W_out
-    if out is None:
-        W_out = np.zeros((2, i + 2, n, n), dtype=complex)
-    else:
-        W_out = out[:, : i + 2]
-        W_out[...] = 0
-    # Build the new estimate directly into W_out[1] (a zero-initialized view) instead of a
-    # separate w_bar buffer that is then copied — saves one (i+2, n, n) allocation + copy/step.
-    cdef np.ndarray[double complex, ndim=3] w_bar = W_out[1]
-
-    w_bar[i + 1, :w_next, :w_next] = np.identity(w_next)
-
-    cdef np.ndarray beta_i_dag_inv = np.conj(la.pinv(betas[i, :w_next, :w_curr]).T)  # shape (w_next, w_curr)
-
-    # omega_{i+1,i}: forming q_{i+1} = wp @ beta_i^-1 injects rounding of size eps*sqrt(N)*||H||
-    # (the scale of the matvec that produced wp) and the normalization amplifies it by
-    # ||beta_i^-1||. Simon (1984) writes this as eps*||A||/beta_i.
-    #
-    # The scale factor must bound ||H||, NOT ||beta_0||. Those coincide for a *cold* start --
-    # a random q_0 has ||H q_0|| ~ ||H|| -- and the old code exploited that, writing the term as
-    # ``eps * n_scale * beta_i^-H @ betas[0]``. Warm-started they do not: from converged
-    # eigenvectors ||beta_0|| is the eigenpair residual (measured 2.2e-9 on the NiO ground state
-    # against ||H|| ~ 1.1e2), and at i = 0 the expression collapses to ``beta_0^-H @ beta_0 ~ I``
-    # -- an estimate of eps, where the true overlap is eps*||H||/||beta_0|| ~ 1e-5. The trigger
-    # never fired, PARTIAL silently did no reorthogonalization at all, and the recurrence
-    # diverged ~30 steps later (measured ||Q^H Q - I|| = 11.3, ||beta|| 8x FULL's).
-    #
-    # So take the operator scale directly: max(||alpha_0||, ||beta_0||), the same seed
-    # divergence_guard uses for h_norm_est. alpha_0 is a Rayleigh quotient, hence bounded by
-    # ||H|| and O(||H||) for a warm start; beta_0 covers a cold start whose spectrum straddles
-    # zero. On a cold start the two forms agree in magnitude and the reort trigger rate is
-    # unchanged (measured identical: 38/120, 8/60, 9/60 blocks acted).
-    # spectral_norm, not np.linalg.norm(ord=2): both are an SVD of a tiny block, but numpy's
-    # goes straight to LAPACK gesdd with no fallback, and a core dump from CI run 33817368575
-    # put the intermittent exit-139 inside exactly this statement -- anorm still unassigned
-    # (reading as a subnormal), on a block deflated from width 2 to 1. gesdd is why robust_svd
-    # exists twenty lines below; these two calls were the ones that never used it.
-    cdef double anorm = max(
-        spectral_norm(alphas[0, :w_0, :w_0]),
-        spectral_norm(betas[0, :widths[1], :w_0]),
-    )
-    # A magnitude, like the noise floor below and unlike the signed three-term propagation:
-    # this term models a rounding *injection*, which has no sign structure to cancel.
-    w_bar[i, :w_next, :w_curr] = eps * n_scale * anorm * np.abs(beta_i_dag_inv)
-    if parts_out is not None:
-        parts_out["rounding_injection"][i, :w_next, :w_curr] = w_bar[i, :w_next, :w_curr]
-
-    if i == 0:
-        W_out[0, : i + 1] = W[1]  # w_bar is already W_out[1] (built in place)
-        return W_out
-
-    # j = 0
-    cdef int w_j = widths[0]
-    cdef int w_j_next = widths[1]
-    cdef int w_i_prev = widths[i-1]
-    # Propagate the estimate through the SIGNED three-term recurrence (Paige/Simon; EA16
-    # eq. 14). The signs matter: the O(||beta||) structural terms (e.g. W[1,j+1] beta_j vs
-    # beta_{i-1} W[0,j] around the identity entries) cancel to O(eps ||beta||) exactly as
-    # the true overlaps do — that cancellation IS the physics of the recurrence. A
-    # magnitude version (sum of |terms|, tried 2026-06 as an "upper bound") destroys it:
-    # the estimate jumps to O(||beta||/sigma_min) ~ O(1) after a single step and then
-    # compounds exponentially (measured 1e15–1e62 x over-prediction on the NiO ground
-    # state), so every block is flagged on every iteration and PARTIAL silently does FULL
-    # work. The rounding injection the magnitudes were meant to capture is modeled
-    # explicitly by the sqrt(N)-scaled noise floor below instead.
-    cdef np.ndarray term1 = W[1, 1, :w_i, :w_j_next] @ betas[0, :w_j_next, :w_j]
-    cdef np.ndarray term2 = W[1, 0, :w_i, :w_j] @ alphas[0, :w_j, :w_j]
-    cdef np.ndarray term3 = alphas[i, :w_i, :w_i] @ W[1, 0, :w_i, :w_j]
-    cdef np.ndarray term5 = betas[i-1, :w_i, :w_i_prev] @ W[0, 0, :w_i_prev, :w_j]
-    cdef np.ndarray RHS_0 = term1 + term2 - term3 - term5
-    w_bar[0, :w_next, :w_j] = beta_i_dag_inv @ RHS_0
-    if parts_out is not None:
-        parts_out["signed_propagation"][0, :w_next, :w_j] = w_bar[0, :w_next, :w_j]
-
-    cdef int j, w_j_prev
-    cdef np.ndarray term4
-    cdef np.ndarray RHS
-    for j in range(1, i):
-        w_j = widths[j]
-        w_j_prev = widths[j-1]
-        w_j_next = widths[j+1]
-
-        term1 = W[1, j+1, :w_i, :w_j_next] @ betas[j, :w_j_next, :w_j]
-        term2 = W[1, j, :w_i, :w_j] @ alphas[j, :w_j, :w_j]
-        term3 = alphas[i, :w_i, :w_i] @ W[1, j, :w_i, :w_j]
-        term4 = W[1, j-1, :w_i, :w_j_prev] @ np.conj(betas[j-1, :w_j, :w_j_prev].T)
-        term5 = betas[i-1, :w_i, :w_i_prev] @ W[0, j, :w_i_prev, :w_j]
-
-        RHS = term1 + term2 - term3 + term4 - term5
-        w_bar[j, :w_next, :w_j] = beta_i_dag_inv @ RHS
-        if parts_out is not None:
-            parts_out["signed_propagation"][j, :w_next, :w_j] = w_bar[j, :w_next, :w_j]
-
-    # Local-rounding noise floor (Simon 1984 / Larsen PROPACK). Forming q_{i+1} = w_p beta_i^{-1}
-    # injects rounding ~eps*sqrt(N)*(||beta_i||+||beta_j||) that the normalization amplifies by
-    # ||beta_i^{-1}|| = 1/sigma_min(beta_i): when beta_i is small (a near-invariant block) the new
-    # vector is rounding-dominated and orthogonality is lost fastest, so the floor must *grow* as
-    # beta_i shrinks. An earlier version `eps*(beta_i + beta_j)` omitted the 1/sigma_min factor (and
-    # shrank with beta_i), so the estimate vanished exactly when the true loss was worst -> the
-    # bad-block trigger never fired and PARTIAL degenerated to no reorthogonalization. The floor is
-    # added as a positive magnitude (no sign cancellation): it, not the signed propagation above,
-    # carries the per-step rounding injection, and with the sqrt(N) scale it upper-bounds the
-    # measured true loss by a stable ~2-10x on the NiO ground-state workload.
-    # One SVD of the current beta gives both the 2-norm (largest singular value) and
-    # sigma_min, dropping a redundant factorization per step. (This comment used to claim the
-    # result was bit-identical to np.linalg.norm(ord=2). Measured over 2000 random small
-    # blocks, 251 differ -- by at most 8.5e-16 relative, i.e. last-bit rounding between two
-    # LAPACK front ends. Harmless for a heuristic scale, but not bit-identity.)
-    _sv_bi = robust_svd(betas[i, :w_next, :w_curr], compute_uv=False)
-    _sig_min_bi = float(_sv_bi[len(_sv_bi) - 1])
-    _binv_norm = 1.0 / max(_sig_min_bi, eps)
-    _bnorm_i = float(_sv_bi[0])
-    for j in range(i):
-        # The past ||beta_j||_2 never change; the caller may pass its running history
-        # (`beta_norms`, one entry per completed block) instead of re-factorizing every
-        # previous beta on every step (O(k^2) SVDs over a run without it).
-        if beta_norms is not None and j < len(beta_norms) and beta_norms[j] is not None:
-            _bnorm_j = float(beta_norms[j])
-        else:
-            _bnorm_j = spectral_norm(betas[j, :widths[j+1], :widths[j]])
-        _floor_j = eps * n_scale * (_bnorm_i + _bnorm_j) * _binv_norm
-        w_bar[j, :w_next, :widths[j]] += _floor_j
-        if parts_out is not None:
-            parts_out["noise_floor"][j, :w_next, :widths[j]] = _floor_j
-
-    W_out[0, : i + 1] = W[1]  # w_bar is already W_out[1] (built in place)
-
-    return W_out
 
 
 cpdef np.ndarray _build_full_T(np.ndarray[double complex, ndim=3] alphas, np.ndarray[double complex, ndim=3] betas, object block_widths=None):

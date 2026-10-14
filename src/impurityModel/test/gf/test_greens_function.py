@@ -611,6 +611,6 @@ def test_the_gf_reort_argument_is_validated():
 
     assert _gf_reort(None) is Reort.NONE
     assert _gf_reort("full") is Reort.FULL
-    assert _gf_reort(Reort.PARTIAL) is Reort.PARTIAL
+    assert _gf_reort(Reort.FULL) is Reort.FULL
     with pytest.raises(TypeError, match="reort"):
         _gf_reort(0.5)

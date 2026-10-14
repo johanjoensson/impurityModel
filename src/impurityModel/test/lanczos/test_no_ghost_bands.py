@@ -214,7 +214,7 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     )
 
 
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL])
+@pytest.mark.parametrize("mode", [Reort.NONE, Reort.FULL])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 @pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
@@ -238,7 +238,7 @@ def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
         assert_orthonormal(eigvecs, path, comm=None)
 
 
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL])
+@pytest.mark.parametrize("mode", [Reort.NONE, Reort.FULL])
 @pytest.mark.parametrize("path", ["array"])
 @pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
@@ -284,7 +284,7 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL])
+@pytest.mark.parametrize("mode", [Reort.NONE, Reort.FULL])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 @pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])

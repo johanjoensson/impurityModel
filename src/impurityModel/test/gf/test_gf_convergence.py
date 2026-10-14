@@ -67,7 +67,7 @@ def test_monitor_stops_resolvable_spectrum_early():
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=converged,
-        reort=Reort.PARTIAL,
+        reort=Reort.FULL,
         return_widths=True,
         max_iter=120,
     )
@@ -99,7 +99,7 @@ def test_partial_matches_full_gf_on_dense_spectrum():
         at, bt = _sanitize_continued_fraction(*_trim_blocks(a, b, w))
         return calc_G(at, bt, r, omega, 0.0, DELTA)
 
-    err_partial = np.max(np.abs(gf(Reort.PARTIAL) - G_dense))
+    err_partial = np.max(np.abs(gf(Reort.FULL) - G_dense))
     err_full = np.max(np.abs(gf(Reort.FULL) - G_dense))
 
     assert err_partial < 1e-8  # PARTIAL is accurate
@@ -131,7 +131,7 @@ def test_absolute_safeguard_bounds_gradual_beta_growth():
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=lambda *x, **k: False,
-        reort=Reort.PARTIAL,
+        reort=Reort.FULL,
         return_widths=True,
         max_iter=120,
     )
@@ -147,7 +147,7 @@ def test_safeguard_does_not_false_trigger_on_large_norm_H():
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=lambda *x, **k: False,
-        reort=Reort.PARTIAL,
+        reort=Reort.FULL,
         return_widths=True,
         max_iter=60,
     )

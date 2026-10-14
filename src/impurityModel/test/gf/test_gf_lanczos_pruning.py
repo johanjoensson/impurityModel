@@ -59,7 +59,7 @@ def _retained(info, comm=None):
     return sorted(set(keys))
 
 
-@pytest.mark.parametrize("reort", [None, "full", "partial"])
+@pytest.mark.parametrize("reort", [None, "full"])
 # 0.225 and 0.253 are thresholds at which a row rejected on one step clears the threshold on a later
 # one -- the case the ban exists for (see the negative control below).
 @pytest.mark.parametrize("eta", [0.05, 0.2, 0.225, 0.253, 0.5])

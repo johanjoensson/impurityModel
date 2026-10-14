@@ -35,7 +35,7 @@ from impurityModel.test.support.lanczos_fixtures import MockBasis
 EPS = np.array([0.3, 0.9, 1.5, 2.2, 3.1])  # 5 distinct energies; block size 2 -> interior deflation
 N_ORB = len(EPS)
 P = 2
-_MODES = [Reort.NONE, Reort.PARTIAL, Reort.FULL]
+_MODES = [Reort.NONE, Reort.FULL]
 
 
 def _exact_G(S, omega, delta):
@@ -98,7 +98,7 @@ def _mbs_states():
     return [SlaterDeterminant.from_bytes((1 << (7 - i)).to_bytes(8, "little")) for i in range(N_ORB)]
 
 
-@pytest.mark.parametrize("mode", ["none", "partial", "full"])
+@pytest.mark.parametrize("mode", ["none", "full"])
 def test_mbs_gf_under_deflation(mode):
     """ManyBodyState kernel: interior deflation -> trimmed calc_G matches exact G, every mode."""
     h_op = ManyBodyOperator({((i, "c"), (i, "a")): EPS[i] for i in range(N_ORB)})

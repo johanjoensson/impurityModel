@@ -713,9 +713,7 @@ def block_Green_sparse(
     dominant allocation of a reorthogonalized run (``16 * p * n_blocks`` bytes per retained
     determinant, ~30x everything else at the FCC-Ni operating point). ``complex64`` halves
     it, at the cost of an orthogonality (and Green's function) floor at fp32 roundoff,
-    ~6e-8. It is **opt-in**, not the default, for two reasons: it is rejected outright by
-    ``PARTIAL``, whose Paige-Simon estimator steers to ``sqrt(EPS) ~ 1.5e-8``
-    and cannot be fed a basis known only to ~6e-8; and it would silently break the exactness
+    ~6e-8. It is **opt-in**, not the default, for two reasons: it would silently break the exactness
     guarantee that a capped recurrence reproduces the dense ``P H P`` resolvent (see
     ``test_gf_truncation``). Only the *stored* basis narrows -- the recurrence, the overlaps
     and the residual stay complex128. See ``doc/plans/blocklanczos_reort_memory.md``.
@@ -780,7 +778,7 @@ def block_Green_sparse(
     # which point the continued fraction is already exact on the space built so far. A round
     # returns fewer than `budget` new blocks exactly when the kernel stopped early; otherwise
     # it used the whole budget and there may be more spectrum to resolve, so we extend it.
-    alphas = betas = Q = W = widths = None
+    alphas = betas = Q = widths = None
     budget = max(int(getattr(basis, "size", 0)) // max(n, 1), 1)
     # Enforce the determinant cap on the recurrence: the proxy persists across the
     # resume rounds below, so the retained set (and a freeze) carries over.
@@ -889,7 +887,7 @@ def block_Green_sparse(
             if frozen_basis is not None:
                 csr = _csr_green(frozen_basis)
     while csr is None:
-        alphas, betas, Q, W, widths, status = block_lanczos_cy(
+        alphas, betas, Q, _, widths, status = block_lanczos_cy(
             psi_arr,
             hOp,
             lanczos_basis,
@@ -903,7 +901,6 @@ def block_Green_sparse(
             alphas_init=alphas,
             betas_init=betas,
             Q_init=Q,
-            W_init=W,
             block_widths_init=widths,
             store_krylov=resolved_reort != Reort.NONE,
             krylov_dtype=krylov_dtype,
@@ -936,7 +933,7 @@ def block_Green_sparse(
                 # otherwise it is only needed to resume a declined switch: release its Krylov store before
                 # the restart builds its own.
                 stopped = (alphas, betas, widths, Q) if resolved_reort == Reort.NONE else None
-                Q = W = None
+                Q = None
                 csr = _csr_green(frozen_basis, len(alphas), stopped)
             elif lanczos_basis.support_frozen:
                 # A support freeze that buys no speed is not kept: carry on sparse and unfrozen, and still hand

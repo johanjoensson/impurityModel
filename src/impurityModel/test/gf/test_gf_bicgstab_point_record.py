@@ -74,7 +74,7 @@ def test_cold_start_rebuilds_on_the_seed_support_alone(monkeypatch):
 
 def _unit_notes(gf_method, comm):
     with solver_trace.tracing() as trace:
-        _run_driver(gf_method, "partial", comm=comm)
+        _run_driver(gf_method, "full", comm=comm)
     return trace.of_kind("gf_unit_basis")
 
 

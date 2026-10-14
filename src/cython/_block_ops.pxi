@@ -3,19 +3,16 @@
 # ===========================================================================
 # The is_array-dispatching block primitives (block_inner/apply/add_scaled/combine/
 # orthogonalize/normalize) shared by the array and ManyBodyState Lanczos kernels, and
-# the reorthogonalization machinery (selective_orthogonalize, apply_reort). Reort-estimator
-# honesty: resets use measured overlaps, never an EPS post-act reset (which blinds it).
+# the full reorthogonalization (apply_full_reort).
 
 import scipy.sparse as sps
 from impurityModel.ed.ManyBodyUtils import (
     inner_multi,
-    reorth_cgs2_dense,
     SparseKrylovDense,
     ManyBodyState,
     block_inner_cy,
     block_add_scaled_cy,
 )
-from impurityModel.ed import ea16
 
 cpdef bint is_array(object V):
     if isinstance(V, (np.ndarray, sps.spmatrix, sps.sparray)):
@@ -498,200 +495,28 @@ cpdef tuple block_tsqr(object wp, bint mpi=False, object comm=None, double scale
     return Q_block, beta, k, sv
 
 
-cpdef tuple apply_reort(object wp, object Q_list, object W, object reort, bint mpi, object comm, list block_widths, object krylov=None, bint force=False):
-    """Reorthogonalize ``wp`` per the reort mode. Returns ``(wp, W, acted)``; ``acted`` is True
-    iff a projection was actually applied (always for FULL; for PARTIAL only
-    when a bad block exceeded the trigger), so the caller can skip the follow-up renormalize
-    when nothing changed.
+cpdef object apply_full_reort(object wp, object Q_list, bint mpi, object comm, object krylov=None):
+    """Two-pass classical block Gram-Schmidt of ``wp`` against every stored Krylov column.
 
-    ``force=True`` (PARTIAL) skips the ``REORT_TOL`` trigger gate and projects
-    against every block whose estimate exceeds ``BAD_BLOCK_TOL``. Drivers pass it on the
-    step immediately after an acted step (the classic two-consecutive-steps rule, Simon
-    1984 / PROPACK): the projection cleans only ``wp`` = q_{i+1}, so q_i's remaining
-    overlap re-contaminates q_{i+2} through the three-term recurrence one step later —
-    deterministically re-projecting there closes that channel."""
-    cdef list bad_block_idx = []
-    cdef int j, col_start, col_end, w_j
-    cdef list bad_cols
-    cdef object Q_bad
-    cdef int active_k
-    cdef bint acted = False
-    # A shared-support block goes through the same list-based projection machinery via
-    # a boundary conversion: on every call for FULL, but for PARTIAL
-    # only when a bad block actually triggers — the common no-op case never
-    # materializes the block.
-    cdef bint was_block = isinstance(wp, ManyBodyState)
-
-    if is_array(wp):
-        active_k = wp.shape[1]
-    elif was_block:
-        active_k = wp.width
-    else:
-        active_k = len(wp)
-
-    if reort == Reort.FULL:
-        if is_array(wp):
-            # The array kernel hands in its growth buffer wrapped as ``[Q_buf[:, :q_cols]]``,
-            # a view. block_orthogonalize column-stacks a list, which would copy the whole
-            # stored basis on each of the two passes; project against the view instead.
-            Q_mat = Q_list
-            if isinstance(Q_list, list) and len(Q_list) == 1 and Q_list[0].ndim == 2:
-                Q_mat = Q_list[0]
-            for _ in range(2):
-                wp, _ = block_orthogonalize(wp, Q_mat, mpi=mpi, comm=comm)
-        elif krylov is not None:
-            # Sparse path with a maintained dense Krylov basis: slice all columns, no gather.
-            # krylov.reort is block-native end to end (no round trip through ManyBodyState);
-            # convert only if wp itself arrived as a plain list rather than a block.
-            if was_block:
-                wp, _ = krylov.reort(wp, None, 2, comm if mpi else None)
-            else:
-                # Defensive only: every current caller with krylov set (the MBS kernel)
-                # already hands wp in as a block, so this branch is not exercised today.
-                # `from_unsorted`'s stable sort means the states would come back key-sorted
-                # rather than in wp's original row order -- harmless (ManyBodyState is
-                # itself a sorted map), but worth knowing if this path is ever revived.
-                wp_blk = ManyBodyState.from_states(wp)
-                wp_blk, _ = krylov.reort(wp_blk, None, 2, comm if mpi else None)
-                wp = wp_blk.to_states()
-        else:
-            if was_block:
-                wp = wp.to_states()
-            # Sparse path fallback: 2-pass CGS2 in dense BLAS (materialize Q from width-1 blocks).
-            wp, _ = reorth_cgs2_dense(wp, Q_list, 2, comm if mpi else None)
-            if was_block:
-                wp = ManyBodyState.from_states(wp)
-        acted = True
-
-    elif reort == Reort.PARTIAL:
-        if W is not None:
-            n_blks = W.shape[1] - 1  # W[-1, :n_blks]
-            if not mpi or comm is None or comm.rank == 0:
-                if force or np.max(np.abs(W[-1, :n_blks])) > REORT_TOL:
-                    bad_block_idx = [j for j in range(n_blks) if np.max(np.abs(W[-1, j])) > BAD_BLOCK_TOL]
-            if mpi and comm is not None:
-                bad_block_idx = comm.bcast(bad_block_idx, root=0)
-
-            if bad_block_idx:
-                acted = True
-                bad_cols = []
-                for j in bad_block_idx:
-                    col_start = sum(block_widths[:j])
-                    col_end = col_start + block_widths[j]
-                    bad_cols.extend(range(col_start, col_end))
-
-                # Every path keeps the FINAL CGS pass's measured (Allreduced) overlap
-                # O_last (rows ordered as bad_cols): it upper-bounds the overlap left
-                # after the projection and becomes the post-reort W-estimate below.
-                O_last = None
-                if is_array(Q_list):
-                    Q_mat = Q_list if not isinstance(Q_list, list) else Q_list[0]
-                    Q_bad = Q_mat[:, bad_cols]
-                    for _ in range(2):
-                        wp, O_last = block_orthogonalize(wp, Q_bad, mpi=mpi, comm=comm)
-                elif krylov is not None:
-                    # Sparse path with a maintained dense Krylov basis: slice the flagged
-                    # columns. krylov.reort is block-native end to end; convert only if wp
-                    # itself arrived as a plain list rather than a block.
-                    if was_block:
-                        wp, O_last = krylov.reort(wp, bad_cols, 2, comm if mpi else None)
-                    else:
-                        # Defensive only: see the matching branch in the FULL case
-                        # above -- not exercised by any current caller.
-                        wp_blk = ManyBodyState.from_states(wp)
-                        wp_blk, O_last = krylov.reort(wp_blk, bad_cols, 2, comm if mpi else None)
-                        wp = wp_blk.to_states()
-                else:
-                    if was_block:
-                        wp = wp.to_states()
-                    Q_bad = [Q_list[col] for col in bad_cols]
-                    # Sparse path fallback: 2-pass CGS2 in dense BLAS over the flagged bad blocks.
-                    wp, O_last = reorth_cgs2_dense(wp, Q_bad, 2, comm if mpi else None)
-                    if was_block:
-                        wp = ManyBodyState.from_states(wp)
-
-                # HONEST reset (the old ``W = EPS`` was a lie that lost production runs):
-                # against a Krylov set whose own mutual orthogonality has degraded to
-                # delta, CGS2 leaves a residual ~ delta * |overlap| >> EPS. Writing EPS
-                # made the estimator blind right when it mattered (both live W rows get
-                # chopped on consecutive acted steps), and the true loss then regrew
-                # geometrically from the un-modeled residual until the recurrence
-                # diverged (measured: estimate 1e-9 while the true overlap was 1e-2).
-                # The final-pass overlap O_last is a measured, conservative bound on
-                # that residual — in the healthy regime it is ~EPS-scale, so the
-                # trigger cadence there is unchanged.
-                row0 = 0
-                for j in bad_block_idx:
-                    w_j = block_widths[j]
-                    if O_last is not None:
-                        W[-1, j, :w_j, :active_k] = O_last[row0 : row0 + w_j, :active_k]
-                    else:
-                        W[-1, j, :w_j, :active_k] = EPS * np.eye(w_j, active_k, dtype=complex)
-                    row0 += w_j
-
-    return wp, W, acted
-
-
-def audit_bad_blocks(object wp, object Q_list, object W, bint mpi, object comm, list block_widths):
-    """R8c fallback: a periodic (``AUDIT_PERIOD``) ground-truth check, run INSTEAD of
-    trusting the PRO estimate for that one step. R8b's measurement (see
-    doc/lanczos_invariants.md, "PRO estimator honesty" / known open issues) found the
-    estimate under-predicts the true overlap on a clustered/near-degenerate spectrum by up
-    to ~1e-7x at late iterations -- both a corrected diagonal (self) term and a bounded
-    multiplicative safety factor on the propagated rows (sized within the healthy probe's
-    ~26x headroom) were measured to plateau well short of ``REORT_TOL`` even at
-    near-full-reort cost, so no *local* correction to the estimate closes this gap.
-
-    Deliberately does NOT project ``wp`` itself: it measures the true overlap and, for any
-    block that exceeds ``BAD_BLOCK_TOL``, overwrites that block's row of the ESTIMATE
-    (``W[-1, j]``) with the measurement. The caller's own subsequent
-    ``apply_reort``/``finish_reort`` call (passed ``force=True`` when this returns
-    ``audited=True``) then does the actual projection + renormalize + beta-fold, against
-    the now-corrected estimate -- reusing that already-tested path instead of duplicating
-    it here.
-
-    Array representation only: the probe spectra this exists for (both in
-    ``.lanczos_golden/lanczos_partial_probe.py``) run the array kernel, and slicing an
-    arbitrary historical column range has no established API on the MBS/krylov paths yet.
-    Callers on those paths get ``audited=False`` unconditionally -- the ordinary
-    estimator-driven trigger still runs every step regardless, so this is strictly
-    additive, never a regression.
-
-    Returns ``(W, audited)``.
+    ``Q_list`` is the dense growth buffer (array kernel, possibly wrapped in a one-element
+    list) or ignored when ``krylov`` -- the ``SparseKrylovDense`` store -- is given, whose
+    columns are sliced without a gather. Collective on ``comm`` when ``mpi``.
     """
-    if not is_array(wp) or not is_array(Q_list):
-        return W, False
-    cdef int n_blks = W.shape[1] - 1
-    if n_blks <= 0:
-        return W, False
-    Q_mat = Q_list if not isinstance(Q_list, list) else Q_list[0]
-    cdef int total_cols = int(sum(block_widths[:n_blks]))
-    if total_cols == 0:
-        return W, False
-    cdef int active_k = wp.shape[1]
-    measured = block_inner(Q_mat[:, :total_cols], wp, mpi, comm)
-    cdef bint audited = False
-    cdef int j, col0 = 0, w_j
-    cdef object block_measured
-    for j in range(n_blks):
-        w_j = block_widths[j]
-        block_measured = measured[col0 : col0 + w_j, :]
-        if np.max(np.abs(block_measured)) > BAD_BLOCK_TOL:
-            W[-1, j, :w_j, :active_k] = block_measured
-            audited = True
-        col0 += w_j
-    return W, audited
+    if is_array(wp):
+        # The array kernel hands in its growth buffer wrapped as ``[Q_buf[:, :q_cols]]``,
+        # a view. block_orthogonalize column-stacks a list, which would copy the whole
+        # stored basis on each of the two passes; project against the view instead.
+        Q_mat = Q_list
+        if isinstance(Q_list, list) and len(Q_list) == 1 and Q_list[0].ndim == 2:
+            Q_mat = Q_list[0]
+        for _ in range(2):
+            wp, _ = block_orthogonalize(wp, Q_mat, mpi=mpi, comm=comm)
+        return wp
+    if krylov is None:
+        raise ValueError("full reorthogonalization of a ManyBodyState block needs the Krylov store")
+    wp, _ = krylov.reort(wp, None, 2, comm if mpi else None)
+    return wp
 
-
-# ===========================================================================
-# R7: shared step policy (hoisted from block_lanczos_step_cy / block_lanczos_cy /
-# block_lanczos_array_cy, which had these near-line-for-line in both kernels)
-# ===========================================================================
-# Deliberately NOT here: the matvec, alpha formation and three-term subtract (raw
-# matmul_nogil/CSR-nogil on the array side vs block_inner_cy/block_add_scaled_cy on the
-# MBS side), redistribution, amplitude truncation and Krylov storage. Routing the hot
-# loop through generic dispatch is how a refactor like this costs performance -- see
-# doc/lanczos_invariants.md.
 
 def check_divergence(double beta_norm, double alpha_norm, bint first_step,
                      double t_norm_max, double h_norm_est, int it_abs, object comm):
@@ -724,156 +549,6 @@ def factor_residual(object wp, bint mpi, object comm, double h_scale, double def
     breakdown, the array kernel breaks its own driver loop -- two different idioms for
     the same three outcomes, not unified here."""
     return block_tsqr(wp, mpi, comm, h_scale, deflate_tol=deflate_tol)
-
-
-def finish_reort(object q_next, object Q_basis, object W, object beta_i, int active_k,
-                 object reort_mode, bint mpi, object comm, list block_widths_plus_current,
-                 object krylov=None, bint force=False, double deflate_tol=-1.0):
-    """Phase 8: bad-block reort + renormalize, shared by both kernels (identical
-    including comment wording in the pre-hoist code). Applies ``apply_reort``'s
-    bad-block projection; if it acted, re-factors the projected block and folds the
-    correction into ``beta_i``, propagating the renormalization bound
-    (``1/sigma_min``) into the just-written W row. An absolutely tiny post-projection
-    residual is a genuine invariant subspace, not noise to renormalize -- signaled via
-    ``ok=False`` for the caller's own early-exit (function return vs loop break).
-
-    ``active_k`` is the rank the residual factorization already established for this
-    block; it is passed IN and returned unchanged when the projection does not act, so
-    the caller's ``active_k`` stays the true block rank on every step. Returning a
-    sentinel here instead would silently corrupt it on the (common) non-acting step --
-    ``block_lanczos_step_cy`` propagates ``active_k`` straight into its public return
-    tuple, whose contract is "``q_next`` has width ``active_k``".
-
-    Returns
-    -------
-    tuple
-        ``(q_next, W, beta_i, active_k, reort_acted, ok)`` -- ``ok=False`` means the
-        caller must treat this the same as breakdown (invariant subspace).
-    """
-    q_next, W, reort_acted = apply_reort(
-        q_next, Q_basis, W, reort_mode, mpi, comm, block_widths_plus_current, krylov, force=force
-    )
-    if not reort_acted:
-        return q_next, W, beta_i, active_k, reort_acted, True
-    q_next_2, R2, active_k, sv2 = block_tsqr(q_next, mpi, comm, 1.0, deflate_tol=deflate_tol)
-    if active_k <= 0 or float(sv2[0]) < REORT_TOL:
-        return q_next, W, beta_i, active_k, reort_acted, False
-    beta_i = R2 @ beta_i
-    q_next = q_next_2
-    W[1, : W.shape[1] - 1] *= 1.0 / float(sv2[active_k - 1])
-    return q_next, W, beta_i, active_k, reort_acted, True
-
-
-def seed_w_estimator(object Q_basis, object curr_block, object prev_block, list block_widths,
-                     int start_it, int width, bint mpi, object comm):
-    """Exact Overlap Restart (EOR): initialize the Paige-Simon W estimator from scratch
-    against every already-completed block, on a resume without a warm-started W. Shared
-    by all three pre-hoist call sites (both kernels' inline step copy and the MBS
-    driver's separate pre-loop copy): the same formula on whatever representation the
-    Krylov basis and blocks come in (``block_inner`` dispatches on ``is_array``).
-
-    ``curr_block``/``prev_block`` must be the same pre-TSQR-residual / previous-block
-    values each existing call site already used -- this only deduplicates the
-    computation, it does not change which variable feeds it (both kernels seed the
-    estimator's "current" row from the pre-TSQR residual, not the post-TSQR q_next).
-
-    ``block_inner`` dispatches on its *first* argument's type; ``Q_j`` here is a
-    ``SparseKrylovDense``/``ManyBodyState``-list slice on the MBS path (not an array),
-    so it always falls to ``block_inner``'s ``inner_multi`` branch, which coerces a
-    non-list second argument via ``list(...)``. Iterating a bare ``ManyBodyState``
-    yields its determinant KEYS, not its columns -- the exact historical bug
-    ``test_block_lanczos_cy_resume_partial_reort_without_w_init`` exists to catch -- so
-    a ``ManyBodyState`` target must be materialized via ``to_states()`` first.
-
-    On the array path ``Q_basis`` is a plain 2D ``ndarray`` (the caller's dense Krylov
-    buffer): a bare ``Q_basis[a:b]`` there slices ROWS, not the intended column range,
-    so that representation needs its own ``Q_basis[:, a:b]`` slice (cloud-review
-    adversarial finding, R9 -- latent because no in-tree caller reaches this array-path
-    EOR combination today: IRLM always builds ``W_init`` explicitly for
-    PARTIAL/SELECTIVE and forces FULL otherwise, TRLM has no warm-restarted W, and
-    ``gf_solvers.py``'s array calls never pass a warm ``(alphas, betas, Q)`` triple)."""
-    cdef bint q_is_array = is_array(Q_basis)
-    if start_it > 0:
-        W = np.zeros((2, start_it + 1, width, width), dtype=complex)
-        curr_w = block_cols(curr_block)
-        prev_w = block_cols(prev_block)
-        curr_target = curr_block.to_states() if isinstance(curr_block, ManyBodyState) else curr_block
-        prev_target = prev_block.to_states() if isinstance(prev_block, ManyBodyState) else prev_block
-        for j in range(start_it):
-            w_j = block_widths[j]
-            col_a, col_b = sum(block_widths[:j]), sum(block_widths[: j + 1])
-            Q_j = Q_basis[:, col_a:col_b] if q_is_array else Q_basis[col_a:col_b]
-            W[1, j, :w_j, :curr_w] = block_inner(Q_j, curr_target)
-            if j < start_it - 1:
-                W[0, j, :w_j, :prev_w] = block_inner(Q_j, prev_target)
-        if mpi and comm is not None:
-            comm.Allreduce(MPI.IN_PLACE, W, op=MPI.SUM)
-        W[1, start_it, :curr_w, :curr_w] = np.eye(curr_w)
-        W[0, start_it - 1, :prev_w, :prev_w] = np.eye(prev_w)
-    else:
-        W = np.zeros((2, 1, width, width), dtype=complex)
-        curr_w = block_cols(curr_block)
-        W[1, 0, :curr_w, :curr_w] = np.eye(curr_w)
-    return W
-
-
-cpdef double omega_floor(double width, double n_global):
-    """Locking-reort omega_min floor: ``EPS * width * sqrt(n_global)``. Previously
-    computed twice with the same formula (``EPS * p * sqrt(basis.size)`` in the MBS
-    driver, ``EPS * n * sqrt(global_N)`` in the array kernel) -- verified identical for
-    every real ``Basis`` object: ``basis.size`` and ``global_N`` are both the
-    Allreduce/Allgather-summed global determinant count."""
-    return EPS * width * np.sqrt(n_global)
-
-
-def locked_reort_step(xi_l, xi_prev_l, locked_evals_arr, alpha_i, double sv_min, double bjm1_norm,
-                      double locked_rho, object locked, object q_next, bint mpi, object comm,
-                      double omega_min_l):
-    """EA16 §2.6.2 estimate-driven locking reorthogonalization (``locked_reort='partial'``),
-    shared by both kernels. Propagates the cheap per-pair overlap estimate and
-    reorthogonalizes ``q_next`` only against the locked vectors whose estimate now
-    exceeds omega_TOL, resetting those to ``omega_min``.
-
-    ``sv_min`` is the smallest surviving singular value of the just-factored residual
-    block (``sv_i[active_k - 1]``); ``1/sv_min`` is EPS-guarded here uniformly for both
-    kernels -- found while hoisting this that the MBS driver guarded it
-    (``max(sv, EPS)``) and the array kernel did not.
-
-    This IS a behavior change on the array path, not a no-op: TSQR's ``deflate_tol``
-    floor is *relative* to the operator scale, so on a badly-scaled operator a retained
-    singular value can land below EPS, where the old array code produced an unbounded
-    ``1/sv`` and this produces ``1/EPS``. It changes ``xi`` evolution and hence trigger
-    decisions there. Verified by ``case_irlm_array_locked_partial`` in the golden
-    harness (added alongside this hoist precisely because no bit-for-bit case reached
-    ``locked_reort='partial'`` before) plus the tolerance-based
-    ``test_irlm_locking_deflation.py`` sweep over ``locked_reort=['full','partial']``.
-
-    Returns
-    -------
-    tuple
-        ``(q_next, xi_prev_l_new, xi_l_new)`` -- the caller's xi rotation is
-        unconditional (whether or not the trigger fired), matching both kernels'
-        existing control flow.
-    """
-    bj_inv_norm = 1.0 / max(sv_min, EPS)
-    xi_new_l, xi_trigger, xi_mask = ea16.locked_overlap_step(
-        xi_l, xi_prev_l, locked_evals_arr, alpha_i,
-        bj_inv_norm, bjm1_norm, locked_rho, REORT_TOL, BAD_BLOCK_TOL, EPS,
-    )
-    if xi_trigger:
-        idx_l = np.nonzero(xi_mask)[0]
-        if is_array(locked):
-            Lm_blk = np.ascontiguousarray(locked[:, idx_l])
-        elif isinstance(locked, ManyBodyState):
-            Lm_blk = locked.select([int(t) for t in idx_l])
-        else:
-            Lm_blk = ManyBodyState.from_states([locked[int(t)] for t in idx_l])
-        for _ in range(2):
-            _lovl = block_inner(Lm_blk, q_next, mpi, comm)
-            q_next = block_add_scaled(q_next, Lm_blk, -_lovl)
-        xi_new_l[idx_l] = omega_min_l
-        xi_l[idx_l] = omega_min_l
-    return q_next, xi_l, xi_new_l
 
 
 def pack_lanczos_result(alphas_out, betas_out, Q_basis, W, block_widths, termination,

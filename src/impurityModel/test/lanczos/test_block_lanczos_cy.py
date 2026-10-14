@@ -192,136 +192,6 @@ def get_exact_tight_binding_eigenvalues(h_op, basis):
     return np.sort(np.linalg.eigvalsh(H_mat).real)
 
 
-def test_block_lanczos_cy_orthogonality_partial():
-    h_op, basis, states, _ = create_diagonal_h_and_basis(6)
-
-    np.random.seed(42)
-    psi0 = []
-    for _i in range(2):
-        st = ManyBodyState()
-        for j in range(6):
-            st[basis.type.from_bytes(states[j])] = np.random.randn()
-        psi0.append(st)
-
-    psi0, _ = block_normalize(psi0, mpi=False, comm=None)
-
-    alphas, _betas, Q_basis, _W = block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        converged_fn=lambda a, b, **kw: len(a) >= 3,
-        reort="partial",
-        max_iter=3,
-        verbose=False,
-    )
-
-    assert len(alphas) == 3
-    # Partial reort should still maintain reasonable orthogonality
-    ov = inner_multi(Q_basis, Q_basis)
-    err = np.linalg.norm(ov - np.eye(len(Q_basis)))
-    assert err < 1e-8
-
-
-def test_block_lanczos_cy_resume_partial_reort_without_w_init():
-    """Warm-start resume with ``reort='partial'`` and ``W_init=None`` (the documented
-    Exact-Overlap-Restart path): q_curr/q_prev are ``ManyBodyState``s by the time
-    the EOR seed runs, and `inner_multi(Q_j, q_curr)` used to pass a bare block where a
-    list was expected -- `list(q_curr)` iterates its determinant KEYS, not its columns,
-    raising ``TypeError`` (fixed by materializing q_curr/q_prev via ``to_states()``
-    first).
-
-    Uses the bigger (70-determinant) tight-binding system, not the 6-determinant
-    diagonal one used elsewhere in this file: resuming for only a block or two leaves
-    too little room for PARTIAL's Paige-Simon tracking to ever actually trigger a
-    reorthogonalization, which would let a subtly WRONG (but non-crashing, right-shaped)
-    EOR reconstruction of W pass unnoticed -- this run continues for many further blocks
-    after the resume specifically so that semi-orthogonality loss accumulates and PARTIAL
-    has to act on the EOR-seeded W for real, not just avoid the TypeError.
-    """
-    from impurityModel.test.support.lanczos_fixtures import MockBasis, get_test_system
-
-    h_op, n, _eigvals_exact, basis_states = get_test_system()
-    basis = MockBasis(n)
-
-    np.random.seed(11)
-    psi0 = []
-    for _ in range(2):
-        st = ManyBodyState()
-        for b in basis_states:
-            st += b * (np.random.rand() + 1j * np.random.rand())
-        psi0.append(st)
-    psi0, _ = block_normalize(psi0, mpi=False, comm=None)
-
-    alphas1, betas1, Q1, _W1, widths1 = block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        converged_fn=lambda a, b, **kw: False,
-        reort="partial",
-        max_iter=2,
-        store_krylov=True,
-        return_widths=True,
-    )
-    assert len(alphas1) == 2
-
-    # Resume dropping W entirely -- forces the EOR reseed path this fix targets -- then
-    # keep going for many more blocks so PARTIAL's tracking has real work to do against
-    # the reconstructed W, not just the two compared blocks immediately at the seam.
-    alphas2, betas2, Q2, _W2, widths2 = block_lanczos_cy(
-        psi0=None,
-        h_op=h_op,
-        basis=basis,
-        converged_fn=lambda a, b, **kw: False,
-        reort="partial",
-        max_iter=10,
-        alphas_init=alphas1,
-        betas_init=betas1,
-        Q_init=Q1,
-        W_init=None,
-        block_widths_init=widths1,
-        store_krylov=True,
-        return_widths=True,
-    )
-    assert len(alphas2) == 12
-
-    ov = inner_multi(Q2, Q2)
-    assert np.linalg.norm(ov - np.eye(len(Q2))) < 1e-8
-
-    # A one-shot run of the same total length (12 blocks) must give the same
-    # block-tridiagonal spectrum, near machine precision -- not compared against the
-    # exact many-body spectrum directly, since 12 blocks isn't enough Lanczos iterations
-    # to fully resolve this system's near-degenerate levels (confirmed: both this
-    # resumed run and an equivalent one-shot run land on the SAME ~1e-2-off eigenvalues
-    # relative to the exact spectrum, so under-convergence is not what this assertion is
-    # checking). What it verifies instead: this run's orthogonality error above
-    # (~1e-12, not just "under an ad hoc threshold") shows PARTIAL's tracking DID engage
-    # and reorthogonalize repeatedly over these 10 post-resume blocks -- a subtly wrong
-    # EOR seed would leave a visible trace here (either a failed/ineffective
-    # reorthogonalization trigger, drifting this error toward unreorthogonalized
-    # floating-point accumulation ~1e-8-1e-6, or a divergent Ritz trajectory against the
-    # one-shot reference below), even though it might not move the lowest few Ritz
-    # values enough to fail a loose comparison against the exact spectrum.
-    from impurityModel.ed.BlockLanczosArray import _build_full_T
-
-    alphas_full, betas_full, _Q_full, _W_full, _widths_full = block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        converged_fn=lambda a, b, **kw: False,
-        reort="partial",
-        max_iter=len(widths2),
-        store_krylov=True,
-        return_widths=True,
-    )
-    T_resumed = _build_full_T(alphas2, betas2[: len(alphas2) - 1])
-    T_full = _build_full_T(alphas_full, betas_full[: len(alphas_full) - 1])
-    np.testing.assert_allclose(
-        np.sort(np.linalg.eigvalsh(T_resumed)),
-        np.sort(np.linalg.eigvalsh(T_full)),
-        atol=1e-10,
-    )
-
-
 def test_block_lanczos_cy_orthogonality_none():
     h_op, basis, states, _ = create_diagonal_h_and_basis(6)
 
@@ -414,44 +284,6 @@ def test_trlm_cy_tight_binding_eigenvalue_accuracy():
     np.testing.assert_allclose(eigs, exact_eigs[:4], atol=1e-6)
 
 
-def test_trlm_cy_partial_reort_convergence():
-    n_states = 12
-    states = [(1 << i).to_bytes(8, "little") for i in range(n_states)]
-    np.random.seed(42)
-    H_mat = np.random.randn(n_states, n_states)
-    H_mat = H_mat + H_mat.T
-    hop = {}
-    for i in range(n_states):
-        for j in range(n_states):
-            if abs(H_mat[i, j]) > 1e-10:
-                hop[((i, "c"), (j, "a"))] = float(H_mat[i, j])
-    basis = Basis(
-        impurity_orbitals={0: [list(range(n_states))]},
-        bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=states,
-        verbose=False,
-    )
-    h_op = ManyBodyOperator(hop)
-    psi0 = [ManyBodyState({b: np.random.randn() for b in basis.local_basis})]
-    psi0, _ = block_normalize(psi0, False, None)
-
-    # Run TRLM with partial reortho and verify it converges
-    eigvals, _ = thick_restart_block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        num_wanted=4,
-        max_subspace_blocks=8,
-        tol=1e-8,
-        max_restarts=10,
-        verbose=False,
-        reort="partial",
-    )
-    # verify against exact diagonalization
-    exact_eigvals = np.sort(np.linalg.eigvalsh(H_mat))[:4]
-    np.testing.assert_allclose(eigvals, exact_eigvals, atol=1e-7)
-
-
 def test_converged_views_equivalence():
     """block_lanczos_cy passes buffer *views* (alphas_buf[:it+1]) to converged_fn
     instead of rebuilding lists->arrays each step. This pins that the data seen by
@@ -496,62 +328,6 @@ def test_converged_views_equivalence():
     # Convergence/eigenvalues unchanged: T's spectrum matches the dense reference.
     T = _build_full_T(alphas, betas[: len(alphas) - 1])
     np.testing.assert_allclose(np.sort(np.linalg.eigvalsh(T)), np.sort(eigvals), atol=1e-10)
-
-
-def test_estimate_orthonormality_bounded_buffer_bit_identical():
-    """Phase 1: the caller-provided ping-pong buffer (`out`) and the beta-norm history
-    (`beta_norms`) must reproduce the allocating/no-history path bit-for-bit."""
-    from impurityModel.ed.BlockLanczosArray import estimate_orthonormality
-    from impurityModel.ed.TSQR import spectral_norm
-
-    rng = np.random.default_rng(77)
-    p, k = 3, 12
-    alphas = rng.standard_normal((k, p, p)) + 1j * rng.standard_normal((k, p, p))
-    alphas = 0.5 * (alphas + np.conj(alphas.transpose(0, 2, 1)))
-    betas = rng.standard_normal((k, p, p)) + 1j * rng.standard_normal((k, p, p))
-
-    W_ref = np.zeros((2, 1, p, p), dtype=complex)
-    W_ref[1, 0] = np.eye(p)
-    W_buf = W_ref.copy()
-    bufs = (np.empty((2, k + 2, p, p), dtype=complex), np.empty((2, k + 2, p, p), dtype=complex))
-    hist = []
-    for it in range(k):
-        widths = [p] * (it + 2)
-        W_ref = estimate_orthonormality(W_ref, alphas[: it + 1], betas[: it + 1], block_widths=widths, N=1000.0)
-        W_buf = estimate_orthonormality(
-            W_buf,
-            alphas[: it + 1],
-            betas[: it + 1],
-            block_widths=widths,
-            N=1000.0,
-            out=bufs[it % 2],
-            beta_norms=hist,
-        )
-        np.testing.assert_array_equal(W_buf, W_ref)  # bit-for-bit
-        # Fill the history the way production does -- BlockLanczosArray and _lanczos_step both
-        # append `robust_svd(beta_i, compute_uv=False)[0]`. Building it with numpy's SVD instead
-        # made this test pass for the wrong reason: it matched the estimator's *on-demand*
-        # fallback, which used np.linalg.norm(ord=2), rather than what the callers actually
-        # store. The two LAPACK front ends agree only to ~4 eps, so production was already
-        # bit-inconsistent depending on whether a block's norm was cached or recomputed. Both
-        # sides now go through spectral_norm, and this line has to follow.
-        hist.append(spectral_norm(betas[it, :p, :p]))
-    # resume-style None placeholders fall back to on-demand norms, still bit-identical
-    hist_holes = [None] * len(hist)
-    W_h = np.zeros((2, 1, p, p), dtype=complex)
-    W_h[1, 0] = np.eye(p)
-    for it in range(k):
-        widths = [p] * (it + 2)
-        W_h = estimate_orthonormality(
-            W_h,
-            alphas[: it + 1],
-            betas[: it + 1],
-            block_widths=widths,
-            N=1000.0,
-            out=bufs[it % 2],
-            beta_norms=hist_holes,
-        )
-    np.testing.assert_array_equal(W_h, W_ref)
 
 
 def test_block_lanczos_cy_store_krylov_false_matches_tail_of_stored_run():
@@ -636,7 +412,7 @@ def test_a_resumed_call_keeps_the_divergence_guards_scale(monkeypatch):
     whole = list(calls)
     calls.clear()
     block_lanczos_cy(
-        psi0=None, alphas_init=a1, betas_init=b1, Q_init=q1, W_init=w1, block_widths_init=wid1, max_iter=2, **kw
+        psi0=None, alphas_init=a1, betas_init=b1, Q_init=q1, block_widths_init=wid1, max_iter=2, **kw
     )
     first_resumed = calls[0]
     assert not first_resumed[1], "the resumed call's first step is not a scale-establishing step"

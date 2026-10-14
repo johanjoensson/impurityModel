@@ -159,7 +159,7 @@ def test_uncapped_matches_dense_full_sector():
 
 @pytest.mark.parametrize("chunks", ["1", "4"])
 @pytest.mark.parametrize("frozen_csr", ["1", "0"])
-@pytest.mark.parametrize("reort", [None, "full", "partial"])
+@pytest.mark.parametrize("reort", [None, "full"])
 @pytest.mark.parametrize("cap", [6, 12, 17])
 def test_capped_gf_equals_dense_php_resolvent(cap, reort, frozen_csr, chunks, monkeypatch):
     """The oracle: the capped GF is the exact GF of H projected on the retained set -- on the
@@ -425,7 +425,6 @@ def test_kernel_stops_at_the_freeze_and_resumes_bit_identically(monkeypatch):
         alphas_init=a_stop,
         betas_init=b_stop,
         Q_init=Q,
-        W_init=W,
         block_widths_init=widths,
         store_krylov=False,
         reort=Reort.NONE,
@@ -601,9 +600,9 @@ def test_frozen_csr_mpi_matches_the_sparse_kernel(chunks, monkeypatch):
     comm = MPI.COMM_WORLD
     monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", chunks)
     monkeypatch.setenv("GF_FROZEN_CSR", "0")
-    g_sparse, _ = _run_capped(6, reort="partial", comm=comm)
+    g_sparse, _ = _run_capped(6, reort="full", comm=comm)
     monkeypatch.setenv("GF_FROZEN_CSR", "1")
-    g_csr, info = _run_capped(6, reort="partial", comm=comm)
+    g_csr, info = _run_capped(6, reort="full", comm=comm)
     assert info["csr_fallback"]
     np.testing.assert_allclose(g_csr, g_sparse, atol=1e-9)
     _assert_php_oracle(g_csr, info, comm)

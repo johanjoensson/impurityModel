@@ -64,7 +64,7 @@ def test_a_spent_budget_continues_from_its_own_tail(monkeypatch):
     _assert_php_oracle(g, info)
 
 
-@pytest.mark.parametrize("reort", ["full", "partial"])
+@pytest.mark.parametrize("reort", ["full"])
 def test_a_reorthogonalized_unit_still_restarts_from_the_seeds(reort, monkeypatch):
     calls = _spy(monkeypatch)
     g, info = _run_capped(12, reort=reort)

@@ -77,7 +77,7 @@ MIXED_VALENCE = int(os.environ.get("BLBENCH_MV", "1"))
 TRUNC = int(os.environ.get("BLBENCH_TRUNC", "30000"))
 MAXITER = int(os.environ.get("BLBENCH_MAXITER", "40"))
 BLOCK = int(os.environ.get("BLBENCH_BLOCK", "2"))
-TRLM_REORT = Reort[os.environ.get("BLBENCH_REORT", "PARTIAL").upper()]
+TRLM_REORT = Reort[os.environ.get("BLBENCH_REORT", "FULL").upper()]
 REPS = int(os.environ.get("BLBENCH_REPS", "3"))
 # Force the restarted-Lanczos path in the CIPSI expansion regardless of basis size
 # (production hits it once the basis outgrows dense_cutoff; the bench always should).
@@ -202,7 +202,7 @@ def nio_workload():
         de2_min=1e-6,
         slaterWeightMin=SLATER_WEIGHT_MIN,
         solver="trlm",
-        reort=Reort.PARTIAL,
+        reort=Reort.FULL,
     )
     if basis.restrictions is not None:
         h.set_restrictions(basis.restrictions)
@@ -236,7 +236,7 @@ def _random_block(basis, comm, width):
 
 
 def test_partial_trlm_array_bench(nio_workload):
-    """Production path: TRLM (PARTIAL) on the column-sliced CSR matrix (array kernel)."""
+    """Production path: TRLM (FULL) on the column-sliced CSR matrix (array kernel)."""
     h, basis, comm = nio_workload["h"], nio_workload["basis"], nio_workload["comm"]
 
     n_global = len(basis)
@@ -294,7 +294,7 @@ def test_partial_trlm_array_bench(nio_workload):
 
 
 def test_partial_sparse_kernel_bench(nio_workload):
-    """Sparse ManyBodyState kernel: block_lanczos_cy PARTIAL, fixed iteration budget."""
+    """Sparse ManyBodyState kernel: block_lanczos_cy FULL, fixed iteration budget."""
     h, basis, comm = nio_workload["h"], nio_workload["basis"], nio_workload["comm"]
 
     psi0 = _random_block(basis, comm, BLOCK)
@@ -307,7 +307,7 @@ def test_partial_sparse_kernel_bench(nio_workload):
         h_op=h,
         basis=basis,
         converged_fn=lambda *a, **k: False,
-        reort="partial",
+        reort="full",
         max_iter=MAXITER,
         slaterWeightMin=SLATER_WEIGHT_MIN,
         comm=comm,
@@ -323,7 +323,7 @@ def test_partial_sparse_kernel_bench(nio_workload):
     if comm is not None:
         comm.Allreduce(MPI.IN_PLACE, ov, op=MPI.SUM)
     orth_err = np.linalg.norm(ov - np.eye(len(Q_basis)))
-    assert orth_err < 1e-6, f"PARTIAL lost semi-orthogonality: |Q^H Q - I| = {orth_err:.3e}"
+    assert orth_err < 1e-6, f"FULL lost semi-orthogonality: |Q^H Q - I| = {orth_err:.3e}"
 
     eigvals, Z = eigh_block_tridiagonal(alphas, betas, block_widths=block_widths)
     k0 = int(np.argmin(eigvals))
@@ -373,7 +373,7 @@ def test_partial_sparse_kernel_bench(nio_workload):
     )
     _report(
         comm,
-        f"sparse-kernel PARTIAL (NiO {NBATHS} bath, basis {len(basis)}, p={BLOCK}, "
+        f"sparse-kernel FULL (NiO {NBATHS} bath, basis {len(basis)}, p={BLOCK}, "
         f"{n_it} its, {'serial' if comm is None else f'{comm.size} ranks'})",
         [
             ("wall time", f"{wall:.3f} s  ({1e3 * wall / max(n_it, 1):.1f} ms/iter)"),

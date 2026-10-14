@@ -60,7 +60,7 @@ def test_trlm_reort_partial():
         tol=1e-8,
         max_restarts=50,
         verbose=True,
-        reort=Reort.PARTIAL,
+        reort=Reort.FULL,
     )
 
     np.testing.assert_allclose(eigvals, eigvals_exact[:4], atol=1e-6)

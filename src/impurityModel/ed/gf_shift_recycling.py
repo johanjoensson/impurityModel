@@ -399,11 +399,8 @@ class KrylovShiftedResolvent:
     faithful while ``Q`` is orthonormal, i.e. while ``T`` really is ``Q^H H Q``. FULL
     reorthogonalizes each new block against the whole store, which this recycler keeps in
     memory anyway (``store_krylov=True``), so it costs no extra storage and keeps the
-    residual estimate honest. PARTIAL's approximate ``sqrt(eps)`` estimator is mismatched
-    with a full store: on a long single-seed recurrence it was observed to leave the
-    reconstruction near ``1e-6`` while the projected residual still reported convergence
-    at ``atol`` (worse than doing no reorthogonalization at all) -- see the regression test
-    ``test_krylov_shifted_resolvent_long_recurrence``.
+    residual estimate honest (see the regression test
+    ``test_krylov_shifted_resolvent_long_recurrence``).
     """
 
     def __init__(self, reort="full"):
@@ -470,11 +467,11 @@ class KrylovShiftedResolvent:
 
         # Resume in growing budget rounds (the block_Green_sparse pattern): convergence
         # is judged between rounds on the exact shifted residuals, not by the kernel.
-        alphas = betas = Q = W = widths = None
+        alphas = betas = Q = widths = None
         Y = None
         budget = max(int(getattr(basis, "size", 0)) // max(psi_arr.width, 1), 8)
         while True:
-            alphas, betas, Q, W, widths, status = block_lanczos_cy(
+            alphas, betas, Q, _, widths, status = block_lanczos_cy(
                 psi_arr,
                 hOp,
                 lanczos_basis,
@@ -488,7 +485,6 @@ class KrylovShiftedResolvent:
                 alphas_init=alphas,
                 betas_init=betas,
                 Q_init=Q,
-                W_init=W,
                 block_widths_init=widths,
                 store_krylov=True,
                 # The recycled right-hand side is the RIXS Cartesian polarization block;

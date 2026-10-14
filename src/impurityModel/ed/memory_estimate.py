@@ -336,11 +336,8 @@ def _retains_krylov(reort):
 def _krylov_itemsize(reort, krylov_dtype):
     """Bytes per stored Krylov coefficient for a (reort mode, dtype) pair.
 
-    ``complex64`` halves the store but only ``FULL`` may use it: the
-    Paige-Simon estimator behind ``PARTIAL`` steers to
-    ``REORT_TOL = sqrt(EPS)``, which a basis stored to ~6e-8 cannot support (the kernel
-    raises on that combination). Mirroring that rule here keeps the predicted peak from
-    promising a cap the solver will refuse to run.
+    ``complex64`` halves the store (``reort`` is kept for the call signature; every mode that
+    stores a Krylov basis may use it).
     """
     if krylov_dtype is None:
         return _COMPLEX_BYTES
@@ -348,9 +345,6 @@ def _krylov_itemsize(reort, krylov_dtype):
 
     if _np.dtype(krylov_dtype) != _np.dtype(_np.complex64):
         return _COMPLEX_BYTES
-    name = str(getattr(reort, "name", reort)).lower()
-    if name == "partial":
-        raise ValueError(f"krylov_dtype='complex64' is incompatible with reort='{name}'")
     return _COMPLEX_BYTES // 2
 
 

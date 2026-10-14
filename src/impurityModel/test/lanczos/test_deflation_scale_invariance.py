@@ -120,7 +120,7 @@ def _hermitian(n, spread, seed=7):
     return 0.5 * (h + np.conj(h.T)), d, u
 
 
-def _sweep(h, psi0, max_iter, reort=Reort.PARTIAL):
+def _sweep(h, psi0, max_iter, reort=Reort.FULL):
     return block_lanczos_array(
         psi0=psi0.copy(),
         h_op=h.astype(complex),

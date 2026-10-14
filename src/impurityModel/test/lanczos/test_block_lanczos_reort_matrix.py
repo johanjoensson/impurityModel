@@ -72,7 +72,7 @@ def assert_orthonormal(eigvecs, path, comm=None):
     np.testing.assert_allclose(overlaps, expected, atol=sqrt_eps)
 
 
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL])
+@pytest.mark.parametrize("mode", [Reort.NONE, Reort.FULL])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 def test_reort_matrix(mode, path):
     h_op_mb, N, eigvals_exact, basis_states = get_test_system()
@@ -120,7 +120,7 @@ def test_reort_matrix(mode, path):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL])
+@pytest.mark.parametrize("mode", [Reort.NONE, Reort.FULL])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 def test_reort_matrix_mpi(mode, path):
     comm = MPI.COMM_WORLD
@@ -190,77 +190,6 @@ def test_reort_matrix_mpi(mode, path):
     # Check orthonormality (except for NONE mode)
     if mode != Reort.NONE:
         assert_orthonormal(eigvecs, path, comm=comm)
-
-
-@pytest.mark.mpi
-@pytest.mark.parametrize("mode", [Reort.PARTIAL])
-@pytest.mark.parametrize("path", ["array", "ManyBodyState"])
-def test_W_identical_across_ranks(mode, path):
-    comm = MPI.COMM_WORLD
-    h_op_mb, N, _eigvals_exact, basis_states = get_test_system()
-    n_blocks = 2
-    max_iter = 5
-
-    if path == "array":
-        H_dense = build_dense_matrix_from_manybody(h_op_mb, basis_states)
-        counts = _contiguous_counts_with_empty_last(N, comm.size)
-        offsets = np.array([sum(counts[:r]) for r in range(comm.size)], dtype=int)
-        c0 = offsets[comm.rank]
-        c1 = c0 + counts[comm.rank]
-        h_op = sps.csr_matrix(H_dense[:, c0:c1])
-
-        rng = np.random.default_rng(42)
-        psi0_full = rng.standard_normal((N, n_blocks)) + 1j * rng.standard_normal((N, n_blocks))
-        psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
-        psi0, _ = block_normalize(psi0_local, mpi=True, comm=comm)
-
-        from impurityModel.ed.BlockLanczosArray import block_lanczos_array
-
-        _alphas, _betas, _Q_list, *W_res = block_lanczos_array(
-            psi0=psi0,
-            h_op=h_op,
-            converged=lambda a, b, **kw: False,
-            max_iter=max_iter,
-            verbose=False,
-            reort=mode,
-            return_W=True,
-            comm=comm,
-        )
-        W = W_res[0] if W_res else None
-    else:
-        basis = get_mpi_basis(comm)
-        h_op = h_op_mb
-
-        if comm.rank == 0:
-            np.random.seed(42)
-            psi0_full = []
-            for _ in range(n_blocks):
-                state = ManyBodyState()
-                for b in basis_states:
-                    state += b * (np.random.rand() + 1j * np.random.rand())
-                psi0_full.append(state)
-        else:
-            psi0_full = [ManyBodyState(width=1) for _ in range(n_blocks)]
-
-        psi0 = _redistribute_as_width1(basis, psi0_full)
-        psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
-
-        from impurityModel.ed.BlockLanczos import block_lanczos_cy
-
-        _alphas, _betas, _Q_list, W = block_lanczos_cy(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            converged_fn=lambda a, b, **kw: False,
-            verbose=False,
-            reort=mode.name.lower(),
-            max_iter=max_iter,
-            comm=comm,
-        )
-
-    # comm.bcast rank-0's W and assert every rank's W equals it to 1e-12
-    W_root = comm.bcast(W, root=0)
-    np.testing.assert_allclose(W, W_root, atol=1e-12)
 
 
 @pytest.mark.parametrize("p", [1, 2, 4])

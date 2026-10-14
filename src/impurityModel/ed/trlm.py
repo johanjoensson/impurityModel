@@ -461,8 +461,7 @@ def _trlm_core(
 
         # The retained Ritz block X = Q_basis[:D] @ Y_k inherits Q_basis's orthonormality.
         # Both thick-restart coefficient shortcuts below are derived from Q^H Q = I, so they
-        # are only usable while that holds; under reort=NONE (and, at its design tolerance,
-        # PARTIAL) the recurrence loses orthogonality, spawns ghost copies of converged Ritz
+        # are only usable while that holds; under reort=NONE the recurrence loses orthogonality, spawns ghost copies of converged Ritz
         # values, and X can even become rank deficient -- block_normalize then deflates it to
         # k_ret < nkeep columns. cur_widths, T_full's leading block, the spike and the residual
         # must all follow the *actual* width k_ret, or T's dimension desynchronizes from
@@ -748,7 +747,7 @@ def thick_restart_block_lanczos_cy(
         max_restarts: Maximum number of thick restarts. Default ``100``.
         verbose: Print restart diagnostics. Default ``False``.
         slaterWeightMin: Amplitude cutoff for ``ManyBodyState.prune``. Default ``0.0``.
-        reort: Reorthogonalization mode (``Reort`` enum or string). Default ``'partial'``.
+        reort: Reorthogonalization mode (``Reort`` enum or string). Default ``'full'``.
         comm: ``mpi4py`` communicator. Falls back to ``basis.comm`` or serial.
 
     Returns:

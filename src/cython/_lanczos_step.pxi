@@ -3,7 +3,7 @@
 # ===========================================================================
 # One three-term block step (block_lanczos_step_cy) and the full recurrence driver
 # (block_lanczos_cy) that serves the whole frequency mesh from a single recurrence. The
-# reorthogonalization mode (NONE/PARTIAL/FULL) and the EA16
+# reorthogonalization mode (NONE/FULL) and the EA16
 # shrinking-block deflation policy are dispatched from here.
 
 def _keep_global_top(st, max_size, comm):
@@ -33,7 +33,6 @@ def block_lanczos_step_cy(
     betas,
     it: int,
     reort_mode,
-    W,
     mpi: bool,
     comm,
     basis,
@@ -42,11 +41,7 @@ def block_lanczos_step_cy(
     start_it: int = 0,
     block_widths=None,
     locked=None,
-    locked_reort="full",
     krylov=None,
-    w_out=None,
-    beta_norm_hist=None,
-    force_reort: bool = False,
     h_norm_est: float = 0.0,
     deflate_tol: float = -1.0,
 ):
@@ -75,9 +70,6 @@ def block_lanczos_step_cy(
        identical on all ranks.
     3. For ``FULL`` mode, an additional ``MPI_Allreduce`` per
        reorthogonalization pass on the :math:`(it \\cdot p) \\times p` overlap matrix.
-    4. For ``PARTIAL``, standard Paige-Simon tracking operates against all Lanczos vectors,
-       triggering ``MPI_Allreduce`` calls over potentially large swaths of the Krylov
-       basis when orthogonality loss exceeds :math:`\\sqrt{\\varepsilon_{\\text{mach}}}`.
 
     Note:
         ``h_op.apply_multi`` releases the GIL internally; all other operations in
@@ -99,9 +91,6 @@ def block_lanczos_step_cy(
             (0-based, reset to 0 at the start of each fresh run).
         reort_mode: ``Reort`` enum value controlling reorthogonalization strategy.
             ``Reort.NONE`` skips all reorthogonalization entirely.
-        W: Paige-Simon W-matrix estimator state array of shape
-            ``(2, it+1, p, p)``, or ``None`` when not used.  Required for
-            ``PARTIAL`` mode; ignored otherwise.
         mpi: ``True`` when running under MPI with more than one rank.
         comm: Active ``mpi4py.MPI.Comm`` communicator, or ``None`` when running
             serially.
@@ -111,10 +100,7 @@ def block_lanczos_step_cy(
             when the step redistributes.
 
     Returns:
-        tuple: A 7-tuple ``(q_next, alpha_i, beta_i, W_updated, active_k, breakdown,
-        reort_acted)``; ``reort_acted`` is True iff the PARTIAL bad-block
-        projection actually fired this step (the driver then forces a re-check on the
-        next step — the two-consecutive-steps rule):
+        tuple: A 5-tuple ``(q_next, alpha_i, beta_i, active_k, breakdown)``:
 
         * ``q_next`` – ``ManyBodyState`` (width ``active_k``) forming the next
           Krylov block :math:`Q_{i+1}`, or ``None`` if breakdown occurred.
@@ -122,8 +108,6 @@ def block_lanczos_step_cy(
           diagonal block.
         * ``beta_i`` – numpy complex array of shape ``(p, p)`` for the current
           off-diagonal block, or ``None`` if breakdown occurred.
-        * ``W_updated`` – updated Paige-Simon estimator array, or ``None`` if
-          not applicable.
         * ``breakdown`` – ``True`` if the residual block was numerically zero against the
           operator scale (an invariant subspace, ``active_k == 0``) or its factor came out
           non-finite (a corrupted recurrence, ``active_k == -1``).
@@ -180,13 +164,12 @@ def block_lanczos_step_cy(
     # a small component along them that is otherwise amplified across iterations,
     # reintroducing locked eigenvalues (and their 2*theta harmonics) as spurious
     # Ritz values below the true spectral minimum on restarted sweeps. Twice for
-    # numerical robustness. Skipped in the "partial" mode, where the estimate-driven
-    # EA16 §2.6.2 reorth is applied to q_next in block_lanczos_cy instead.
+    # numerical robustness.
     #
     # Gate on block_cols(locked), never truthiness: ManyBodyState.__len__ is the rank-local
     # row count, so an empty rank diverges and the Allreduce below deadlocks. See
     # doc/lanczos_invariants.md ("MPI collective gating") for the full incident.
-    if locked is not None and block_cols(locked) > 0 and locked_reort != "partial":
+    if locked is not None and block_cols(locked) > 0:
         locked_blk = (
             locked if isinstance(locked, ManyBodyState) else ManyBodyState.from_states(list(locked))
         )
@@ -197,10 +180,10 @@ def block_lanczos_step_cy(
             wp = block_add_scaled_cy(wp, locked_blk, -_ovl)
 
     # --- 4. Full reorthogonalization ------------------------------------
-    # The reort action goes through the shared apply_reort (classical 2-pass block
+    # The reort action goes through the shared apply_full_reort (classical 2-pass block
     # Gram-Schmidt, one implementation for both kernels).
     if reort_mode == Reort.FULL:
-        wp, _, _ = apply_reort(wp, Q_basis, None, Reort.FULL, mpi, comm, block_widths or [], krylov)
+        wp = apply_full_reort(wp, Q_basis, mpi, comm, krylov)
 
     # --- 5. TSQR of the residual block ----------------------------------
     # The triangular factor is built from the block's own rows (panel Householder + Givens
@@ -218,9 +201,9 @@ def block_lanczos_step_cy(
         # subspace. Signal it with active_k = -1 so the caller can report "diverged" (and
         # warn) instead of treating the truncated result as exact. active_k == 0 is a
         # real rank-deficient residual (the Krylov space is closed) => invariant subspace.
-        return None, alpha_i, None, W, -1, True, False
+        return None, alpha_i, None, -1, True
     if active_k == 0:
-        return None, alpha_i, None, W, 0, True, False
+        return None, alpha_i, None, 0, True
 
     # --- 5a. Forceful / Amplitude Truncation ----------------------------
     cdef bint did_truncate = False
@@ -248,61 +231,12 @@ def block_lanczos_step_cy(
     if did_truncate:
         q_next, R2, active_k, _sv2 = block_tsqr(q_next, mpi, comm, 1.0, deflate_tol=deflate_tol)
         if active_k <= 0:
-            return None, alpha_i, None, W, 0, True, False
+            return None, alpha_i, None, 0, True
         beta_i = R2 @ beta_i
 
     betas[it, :active_k, :p] = beta_i
 
-    # --- 6. W estimator (Paige-Simon PRO) -------------------------------
-    _reort_acted = False
-    if reort_mode == Reort.PARTIAL:
-        if W is None:
-            # Unreachable from block_lanczos_cy: the driver seeds W (Exact Overlap
-            # Restart, seed_w_estimator) before entering the loop whenever reort is
-            # PARTIAL, so W is never None here. This branch used to carry a
-            # *third* inline copy of the EOR loop that no production path could reach,
-            # and which seeded from a different block (the pre-TSQR residual) than the
-            # driver's copy (q_curr) -- an asymmetry that never mattered precisely
-            # because it was dead. Raise rather than silently seed under a second,
-            # divergent convention: a direct caller of this step function owes it a
-            # seeded W.
-            raise ValueError(
-                "block_lanczos_step_cy requires a seeded W for reort='partial'; "
-                "callers other than block_lanczos_cy must seed it via "
-                "BlockLanczosCore.seed_w_estimator first."
-            )
-
-        W = estimate_orthonormality(
-            W,
-            alphas[: it + 1],
-            betas[: it + 1],
-            block_widths=block_widths + [p, active_k],
-            eps=EPS,
-            N=float(getattr(basis, "size", 0) or 1),
-            out=w_out,
-            beta_norms=beta_norm_hist,
-        )
-
-        # --- 8. Bad-block reort + renormalize ----------------------------
-        if reort_mode == Reort.PARTIAL:
-            # Bad-block partial reorthogonalization + renormalize via the shared
-            # finish_reort (single implementation for both kernels). Pass
-            # block_widths + [p] so the current block (index it) is included in the
-            # width table apply_reort indexes. force_reort (set by the driver on the
-            # step after an acted one) bypasses the trigger gate — the
-            # two-consecutive-steps rule, see apply_reort.
-            q_next, W, beta_i, active_k, _reort_acted, _ok = finish_reort(
-                q_next, Q_basis, W, beta_i, active_k, reort_mode, mpi, comm, block_widths + [p],
-                krylov, force_reort, deflate_tol,
-            )
-            if _reort_acted and not _ok:
-                # Absolutely tiny residual after projection => block contained in the existing
-                # span (invariant subspace); renormalizing it would amplify rounding.
-                return None, alpha_i, None, W, 0, True, False
-            if _reort_acted:
-                betas[it, :active_k, :p] = beta_i
-
-    return q_next, alpha_i, beta_i, W, active_k, False, _reort_acted
+    return q_next, alpha_i, beta_i, active_k, False
 
 
 def _pack_result(
@@ -342,14 +276,10 @@ def block_lanczos_cy(
     alphas_init=None,
     betas_init=None,
     Q_init=None,
-    W_init=None,
     return_widths=False,
     return_status=False,
     block_widths_init=None,
     locked=None,
-    locked_evals=None,
-    locked_res=REORT_TOL,
-    locked_reort="full",
     store_krylov=True,
     krylov_dtype=None,
     deflate_tol=-1.0,
@@ -377,8 +307,7 @@ def block_lanczos_cy(
     *views* into them, not copies. Resumes from block ``len(alphas_init)`` when
     ``alphas_init``, ``betas_init`` and ``Q_init`` are all given (``None`` for all
     three starts fresh) — see "Warm-start / resume protocol" in
-    doc/lanczos_invariants.md for the full protocol including the W-estimator's
-    Exact Overlap Restart.
+    doc/lanczos_invariants.md for the full protocol.
 
     **MPI collective operations** (called every iteration, all ranks must participate):
 
@@ -432,22 +361,17 @@ def block_lanczos_cy(
             by a previous run (adopted as-is, zero-copy resume) or a legacy flat
             list of ``ManyBodyState`` (length ``>= k0 * p``, ingested into a fresh
             store).  Default ``None``.
-        W_init: Warm-start Paige-Simon W-estimator array.  Passed through to
-            the step function; ``None`` causes exact initialisation via EOR
-            when resuming with partial/selective reorthogonalization.  Default
-            ``None``.
         store_krylov: When ``False`` (requires ``reort == 'none'`` and no
             ``locked`` set) the accumulated Krylov basis is *not* retained; see
             "Krylov store" in doc/lanczos_invariants.md.  Default ``True``.
         krylov_dtype: Storage dtype of the retained Krylov basis --
-            ``complex128`` (default) or ``complex64``.  Rejected outright (not
-            just warned) when combined with ``reort='partial'/'selective'`` --
-            see "complex64 measurements" in doc/lanczos_invariants.md.  Default
+            ``complex128`` (default) or ``complex64``.  Default
             ``None`` (complex128).
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray, list, numpy.ndarray]: A 4-tuple
-        ``(alphas, betas, Q_basis, W)`` where
+        ``(alphas, betas, Q_basis, W)`` where ``W`` is always ``None`` (the retired partial-reorthogonalization
+        estimator's slot, kept so the arity does not change) and
 
         * ``alphas`` – complex array of shape ``(k, p, p)`` holding the
           diagonal blocks :math:`\\alpha_0, \\dots, \\alpha_{k-1}`.
@@ -489,27 +413,12 @@ def block_lanczos_cy(
     # pure dead memory (the dominant avoidable allocation in a Green's-function run).
     #
     # `locked` gates this the same way as the width test below (nlock, hoisted here so
-    # both this check and the partial_locked/xi setup share one rank-invariant value):
+    # both this check and the width test share one rank-invariant value):
     # `if locked` on a ManyBodyState reads its LOCAL ROW count, which can disagree
     # across ranks and turn this `raise` into a rank-divergent collective itself.
     nlock = 0 if locked is None else block_cols(locked)
     if not store_krylov and (reort_mode != Reort.NONE or nlock > 0):
         raise ValueError("store_krylov=False requires reort='none' and no locked vectors")
-
-    # complex64 storage (~6e-8 rounding) can never reach PARTIAL's REORT_TOL
-    # target (~1.5e-8, sqrt(EPS)): the trigger is unreachable, and on the rare step it
-    # does fire, BAD_BLOCK_TOL flags every block, degenerating to FULL at
-    # worse-than-complex128 orthogonality. Reject rather than warn; see
-    # doc/lanczos_invariants.md ("complex64 measurements") for the full measurement
-    # table and the estimator under-prediction risk this guard also avoids.
-    if krylov_dtype is not None and np.dtype(krylov_dtype) == np.dtype(np.complex64):
-        if reort_mode == Reort.PARTIAL:
-            raise ValueError(
-                "krylov_dtype='complex64' is incompatible with reort='partial': "
-                "the stored basis is only accurate to ~6e-8, above the sqrt(EPS) ~ 1.5e-8 "
-                "semi-orthogonality target these modes maintain. Use reort='full' "
-                "(no Paige-Simon estimator) or keep complex128."
-            )
 
     # --- Resume or start fresh? -----------------------------------------
     resuming = alphas_init is not None and betas_init is not None and Q_init is not None
@@ -520,7 +429,6 @@ def block_lanczos_cy(
         p = alphas_init[0].shape[0] if len(alphas_init) > 0 else len(Q_init[0] if Q_init else psi0)
         if len(block_widths) == 0:
             block_widths = [p] * start_it
-        W = W_init
 
         if not store_krylov:
             # Q_init is the two-block tail [prev block, residual block] returned by the
@@ -571,7 +479,6 @@ def block_lanczos_cy(
                 q_curr = Q_basis.slice_block(q_curr_start, len(Q_basis))
     else:
         start_it = 0
-        W = None
 
         # psi0 may already be a ManyBodyState (a caller with its own block-native
         # seed, e.g. the TRLM entry points) or a legacy flat list of ManyBodyState --
@@ -595,9 +502,8 @@ def block_lanczos_cy(
         else:
             Q_basis = []
 
-    # The store doubles as the dense reort mirror for every mode (apply_reort slices its
-    # columns via store.reort); the old FULL/PERIODIC-only mirror and the PARTIAL-mode
-    # transient reorth_cgs2_dense materialization are both subsumed by it.
+    # The store doubles as the dense reort mirror (apply_full_reort slices its columns via
+    # store.reort).
     krylov = Q_basis if store_krylov else None
 
     # --- Determine max_iter ---------------------------------------------
@@ -614,49 +520,7 @@ def block_lanczos_cy(
     else:
         alphas_buf = np.zeros((_buf_size, p, p), dtype=complex)
         betas_buf = np.zeros((_buf_size, p, p), dtype=complex)
-    # Seed W-estimator state (Exact Overlap Restart, see seed_w_estimator). Unifies
-    # this copy's previous per-j Allreduce pattern onto the one-bulk-Allreduce pattern
-    # the array kernel already used -- Allreduce(SUM) reduces each element
-    # independently, so batching cannot change a per-element result. Verified by
-    # case_mbs_partial_eor_resume in the golden harness (added alongside this hoist:
-    # the pre-existing warm-resume cases all pass W_init non-None and so never reach
-    # this branch) plus test_block_lanczos_cy_resume_partial_reort_without_w_init.
-    if reort_mode == Reort.PARTIAL and W is None:
-        W = seed_w_estimator(Q_basis, q_curr, q_prev, block_widths, start_it, p, mpi, comm)
-    elif reort_mode == Reort.PARTIAL and W is not None:
-        pass  # W expands dynamically in estimate_orthonormality
-
-    # Bounded-W ping-pong buffers + the beta-norm history: the estimator
-    # writes each step's W into the spare persistent buffer instead of allocating,
-    # and reuses ||beta_j||_2 of completed blocks instead of re-factorizing them
-    # every step. Resume prefixes the history with None placeholders (block index
-    # aligned); the estimator falls back to computing those on demand.
-    _w_bufs = None
-    beta_norm_hist = None
-    if reort_mode == Reort.PARTIAL:
-        _w_bufs = (
-            np.empty((2, start_it + _buf_size + 2, p, p), dtype=complex),
-            np.empty((2, start_it + _buf_size + 2, p, p), dtype=complex),
-        )
-        beta_norm_hist = [None] * start_it
-
-    # Estimate-driven locking reorthogonalization (EA16 §2.6.2) state. Only active when a
-    # locked set is supplied and locked_reort == "partial"; otherwise the step does the
-    # unconditional "full" projection (block_lanczos_step_cy). See ea16.locked_overlap_step
-    # for the recurrence. `nlock` (the rank-invariant column count) was hoisted above the
-    # store_krylov guard; gate on it rather than `bool(locked)` -- a ManyBodyState defines
-    # no __bool__, so `bool()`/`if locked` fall back to len(), its LOCAL ROW count, which
-    # can be 0 on an empty rank (owns no determinants) while width > 0 elsewhere. That
-    # mismatch let an empty rank skip the `_lovl` Allreduce below while other ranks
-    # executed it -> deadlock at mpiexec -n 3 (test_block_lanczos_mbs_empty_rank.py).
-    partial_locked = nlock > 0 and locked_reort == "partial"
-    if partial_locked:
-        locked_evals_arr = np.ascontiguousarray(np.real(np.asarray(locked_evals)), dtype=float)
-        _Ntot = getattr(basis, "size", 0) or 1
-        omega_min_l = omega_floor(p, _Ntot)
-        xi_l = np.full(nlock, omega_min_l)
-        xi_prev_l = np.full(nlock, omega_min_l)
-        locked_rho = float(locked_res)
+    W = None  # the retired PRO estimator's slot in the return tuple
 
     # --- Main Lanczos loop ----------------------------------------------
     it = 0
@@ -685,10 +549,6 @@ def block_lanczos_cy(
             )
             guard_seeded = True
 
-    # Two-consecutive-steps reort rule (Simon/PROPACK): when a step acts, the next step
-    # bypasses the REORT_TOL gate (see apply_reort force=) so q_curr's remaining overlap
-    # cannot silently re-contaminate the recurrence through the three-term coupling.
-    _force_reort = False
     # A growth-capping proxy whose caller asked to be handed control at the freeze (the GF
     # frozen-basis CSR fallback, gf_solvers.block_Green_sparse). Its `frozen` flag derives only
     # from allreduced data, so every rank of the communicator stops on the same step.
@@ -697,7 +557,7 @@ def block_lanczos_cy(
     while it < _buf_size:
         it_abs = start_it + it
         n_curr = q_curr.width
-        q_next, alpha_i, beta_i, W, active_k, breakdown, _step_acted = block_lanczos_step_cy(
+        q_next, alpha_i, beta_i, active_k, breakdown = block_lanczos_step_cy(
             h_op=h_op,
             q_prev=q_prev,
             q_curr=q_curr,
@@ -706,7 +566,6 @@ def block_lanczos_cy(
             betas=betas_buf,
             it=it_abs,
             reort_mode=reort_mode,
-            W=W,
             mpi=mpi,
             comm=comm,
             basis=basis,
@@ -715,15 +574,10 @@ def block_lanczos_cy(
             start_it=start_it,
             block_widths=block_widths,
             locked=locked,
-            locked_reort=locked_reort,
             krylov=krylov,
-            w_out=_w_bufs[it % 2] if _w_bufs is not None else None,
-            beta_norm_hist=beta_norm_hist,
-            force_reort=_force_reort,
             h_norm_est=max(h_norm_est, t_norm_max),
             deflate_tol=deflate_tol,
         )
-        _force_reort = _step_acted
 
         if breakdown:
             # active_k < 0 marks a non-finite (corrupted) factor -> truncated, NOT exact;
@@ -747,11 +601,9 @@ def block_lanczos_cy(
         # numerically trustworthy subspace and the diverged tail never reaches the Green's
         # function. The trailing beta then plays the role of the (ignored) residual coupling.
         # One SVD of beta_i per step: its largest singular value is the 2-norm (guard/verbose)
-        # and its smallest gives ||beta_i^-1|| for the locked-reort estimate below.
+        #
         _svb = robust_svd(beta_i, compute_uv=False)
         beta_norm = float(_svb[0])
-        if beta_norm_hist is not None:
-            beta_norm_hist.append(beta_norm)
         alpha_norm = spectral_norm(alpha_i)
         # first_step = it == 0: this driver's own loop-local counter, always 0 on the
         # first step executed by THIS call -- see check_divergence's docstring for why this
@@ -764,19 +616,9 @@ def block_lanczos_cy(
             breakdown = True
             break
 
-        # EA16 §2.6.2 estimate-driven locking reorth: propagate the per-pair overlap
-        # estimate (cheap, no O(N) work) and reorthogonalize q_next only against the
-        # locked vectors whose estimate now exceeds omega_TOL.
-        if partial_locked:
-            bjm1_norm = float(np.linalg.norm(betas_buf[it_abs - 1], 2)) if it_abs > 0 else 0.0
-            q_next, xi_prev_l, xi_l = locked_reort_step(
-                xi_l, xi_prev_l, locked_evals_arr, alpha_i, float(_svb[len(_svb) - 1]), bjm1_norm,
-                locked_rho, locked, q_next, mpi, comm, omega_min_l,
-            )
-
         # Append q_next to the basis (last block = residual direction). The locking
-        # deflation is applied inside block_lanczos_step_cy (before M/beta) in "full"
-        # mode, or just above in "partial" mode, so q_next is orthogonal to the locked set.
+        # deflation is applied inside block_lanczos_step_cy (before M/beta), so q_next is
+        # orthogonal to the locked set.
         # Tail-only mode keeps nothing here: q_prev/q_curr roll below and the two-block
         # tail is assembled at return.
         if store_krylov:

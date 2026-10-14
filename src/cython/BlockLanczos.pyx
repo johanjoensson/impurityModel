@@ -37,8 +37,6 @@ Pre-allocation:
 Reorthogonalization modes (``Reort`` enum from ``lanczos.py``):
 
 * ``NONE``      – no reorthogonalization.
-* ``PARTIAL``   – Paige-Simon W-matrix estimator; reorthogonalize only
-  when the estimated overlap exceeds :math:`\\sqrt{\\varepsilon}`.
 * ``FULL``      – full Gram-Schmidt against all previous blocks (2
   passes).
 """
@@ -56,14 +54,13 @@ from mpi4py import MPI
 
 cimport numpy as np
 
-# The shared numerical layer (Reort, tolerances, estimate_orthonormality, the
+# The shared numerical layer (Reort, tolerances, the
 # block-tridiagonal eigensolvers, and the representation-dispatching block
-# primitives / apply_reort) lives in BlockLanczosCore.pyx -- imported directly here,
+# primitives / apply_full_reort) lives in BlockLanczosCore.pyx -- imported directly here,
 # not transitively through BlockLanczosArray, so both kernels import downward from
 # the shared layer and neither depends on the other.
 from impurityModel.ed.BlockLanczosCore import (
-    estimate_orthonormality,
-    apply_reort,
+    apply_full_reort,
     resolve_reort,
     block_cols,
     block_combine,
@@ -71,17 +68,11 @@ from impurityModel.ed.BlockLanczosCore import (
     check_divergence,
     divergence_guard,
     factor_residual,
-    finish_reort,
-    seed_w_estimator,
-    omega_floor,
-    locked_reort_step,
     apply_and_redistribute,
     matvec_cut_after_sum,
     pack_lanczos_result,
     Reort,
     EPS,
-    REORT_TOL,
-    BAD_BLOCK_TOL,
 )
 from impurityModel.ed.TSQR import robust_svd, spectral_norm
 

@@ -137,7 +137,7 @@ def test_with_no_cutoff_it_freezes_only_on_closure():
     assert all(leak == 0.0 and cut == 0.0 for leak, cut in window)
 
 
-@pytest.mark.parametrize("reort", ["full", "partial"])
+@pytest.mark.parametrize("reort", ["full"])
 def test_it_needs_reort_none(reort):
     info = _trickle(reort=reort)[3]
     assert not info["support_frozen"] and info["support_history"] == []
