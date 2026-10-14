@@ -845,7 +845,7 @@ def block_Green_sparse(
         knobs = comm.bcast(knobs, root=0)
     assert knobs is not None  # rank 0 read them; every other rank has them from the broadcast
     frozen_csr, support = knobs
-    csr_candidate = frozen_csr and krylov_dtype is None and isinstance(lanczos_basis, _CappedBasisProxy)
+    csr_candidate = frozen_csr and krylov_dtype is None and getattr(lanczos_basis, "tracks_support", False)
     csr = None
 
     def _csr_green(frozen_basis, blocks_hint=0, stopped=None):
@@ -883,7 +883,13 @@ def block_Green_sparse(
     # GF_SUPPORT_FREEZE: the proxy freezes the support itself, on the step its window decides, and the kernel
     # hands control back there (stop_on_freeze). reort 'none' only: that is where the frozen recurrence
     # carries on from its tail, and a reorthogonalized one would recompute every block to drop weight.
-    if support and csr_candidate and resolved_reort == Reort.NONE and type(lanczos_basis) is _CappedBasisProxy:
+    if (
+        support
+        and csr_candidate
+        and resolved_reort == Reort.NONE
+        and getattr(lanczos_basis, "tracks_support", False)
+        and not lanczos_basis.prunes
+    ):
         lanczos_basis.enable_support_freeze(_SUPPORT_WINDOW, log=verbose and rank == 0)
     if csr_candidate:
         lanczos_basis.stop_on_freeze = True
@@ -959,7 +965,7 @@ def block_Green_sparse(
             break
         budget *= 2
 
-    if isinstance(lanczos_basis, _CappedBasisProxy):
+    if getattr(lanczos_basis, "tracks_support", False):
         if lanczos_basis.support_frozen and csr is None:
             # The support froze on the step the recurrence ended on anyway (converged, closed or diverged): the
             # freeze dropped nothing, so it is not reported as one.
@@ -1549,7 +1555,7 @@ def block_Green_bicgstab(
                         stats["n_unconverged"] += 1
                     solve_size = frozen.size if frozen_used else int(tmp_basis.size)
                     stats["max_solve_basis"] = max(stats["max_solve_basis"], solve_size)
-                    point_cap_hit = isinstance(solve_basis, _CappedBasisProxy) and solve_basis.cap_hit
+                    point_cap_hit = getattr(solve_basis, "tracks_support", False) and solve_basis.cap_hit
                     points_left -= 1
                     # This point's solve admitted nothing beyond its starting support: freeze it for
                     # the eigenstate's remaining points (at the end of this point; the residual check
@@ -1579,7 +1585,7 @@ def block_Green_bicgstab(
                             res_basis = tmp_basis
                             mask = (
                                 solve_basis.retained_mask
-                                if isinstance(solve_basis, _CappedBasisProxy)
+                                if getattr(solve_basis, "tracks_support", False)
                                 else ManyBodyState.from_keys(tmp_basis.local_basis)
                             )
                         seed_block = ManyBodyState.from_states(seeds)

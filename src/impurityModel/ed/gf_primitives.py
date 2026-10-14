@@ -255,6 +255,10 @@ class _CappedBasisProxy:
     """
 
     caps_growth = True
+    #: Capability flags, read instead of the class (``doc/gf_support_pipeline.md``): this basis counts the
+    #: support (``retained_size``, ``cap_hit``), and whether it admits by importance and bans the rest.
+    tracks_support = True
+    prunes = False
     #: Ask ``block_lanczos_cy`` to stop with status ``"frozen"`` at the end of the step that
     #: froze the support (see :func:`gf_solvers.block_Green_sparse`'s frozen-basis CSR
     #: fallback). Off by default: every other user of the proxy runs on through the freeze.
@@ -730,6 +734,8 @@ class _PrunedBasisProxy(_CappedBasisProxy):
 
     The ban mask grows like the frontier; :attr:`ban_bytes` reports what it holds.
     """
+
+    prunes = True
 
     def __init__(self, basis, cap, eta, first_shell_tol=0.0, **kwargs):
         super().__init__(basis, cap, **kwargs)
