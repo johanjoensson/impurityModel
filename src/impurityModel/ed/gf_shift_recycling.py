@@ -247,7 +247,7 @@ class SectorResolventCache:
         The spectral counterpart of an iterative shifted solve (e.g. the RIXS
         intermediate resolvent's ``block_bicgstab``): on a cached sector it is direct
         -- no iteration, no near-pole stagnation -- and exact on the sector.
-        Amplitudes with ``|amp|^2 <= slaterWeightMin`` are pruned from the returned
+        Amplitudes with ``|amp| <= slaterWeightMin`` are pruned from the returned
         states, mirroring the iterative solvers' support pruning.
         """
         if not self._ensure(basis, hOp, rhs, slaterWeightMin, verbose):
@@ -258,7 +258,7 @@ class SectorResolventCache:
         states = list(self._index)
         out = []
         for k in range(x.shape[1]):
-            keep = np.abs(x[:, k]) ** 2 > slaterWeightMin
+            keep = np.abs(x[:, k]) ** 2 > slaterWeightMin**2
             # width=1: a column whose projected solution is (numerically) exactly zero
             # everywhere kept must not become the width-0 polymorphic zero -- every
             # element of the returned list is expected width 1.
