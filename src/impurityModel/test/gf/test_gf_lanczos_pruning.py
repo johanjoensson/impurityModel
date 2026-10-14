@@ -6,8 +6,9 @@ freeze-growth cap satisfies (``test_gf_truncation``): the returned continued fra
 the dense resolvent of ``H`` projected onto the retained set -- for every threshold and every
 reorthogonalization mode, not just the full one.
 
-Also pinned: the conditions the ban argument needs are refused rather than silently violated
-(row-chunked matvec, a nonzero ``slaterWeightMin``), and the seeds' first H-shell is never pruned.
+Also pinned: the decision is taken once, on the step's summed output, so row chunking and a
+nonzero ``slaterWeightMin`` are allowed (the rows the cut drops are banned too), and the seeds' first
+H-shell is never pruned.
 """
 
 import numpy as np
@@ -76,16 +77,16 @@ def test_without_the_ban_the_recurrence_is_not_exact_which_is_why_it_exists(monk
     whole closure, yet G is off by ~1e-2: the error is in the recurrence, not in what was kept."""
     from impurityModel.ed import gf_primitives
 
-    original = gf_primitives.SupportPolicy._admit
+    original = gf_primitives.SupportPolicy._admit_pruned
 
-    def forgetting(self, block):
+    def forgetting(self, block, reached=None):
         ban, self._ban = self._ban, ManyBodyState.from_keys([])
         try:
-            return original(self, block)
+            return original(self, block, reached)
         finally:
             self._ban = ban
 
-    monkeypatch.setattr(gf_primitives.SupportPolicy, "_admit", forgetting)
+    monkeypatch.setattr(gf_primitives.SupportPolicy, "_admit_pruned", forgetting)
     G, info, z = _run(monkeypatch, 0.225, reort=reort)
     assert np.max(np.abs(G - _dense_G_on(_retained(info), z))) > 1e-4
 
@@ -138,15 +139,54 @@ def test_off_by_default_leaves_the_unpruned_path_alone(monkeypatch):
     assert info["proxy"] is None
 
 
-def test_a_chunked_matvec_is_refused(monkeypatch):
+@pytest.mark.parametrize("reort", [None, "full"])
+@pytest.mark.parametrize("eta", [0.05, 0.225, 0.5])
+def test_a_row_chunked_matvec_is_the_same_exact_PHP_resolvent(monkeypatch, eta, reort):
+    """The decision is taken once, on the summed output, so chunking the apply cannot move it."""
     monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
-    with pytest.raises(ValueError, match="GF_APPLY_ROW_CHUNKS=1"):
-        _run(monkeypatch, 0.1)
+    G, info, z = _run(monkeypatch, eta, reort=reort)
+    np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
+    G1, info1, _ = _run(monkeypatch, eta, reort=reort)
+    assert _retained(info1) == _retained(info)
 
 
-def test_a_nonzero_slater_weight_min_is_refused(monkeypatch):
-    with pytest.raises(ValueError, match="slaterWeightMin=0"):
-        _run(monkeypatch, 0.1, slater=1e-9)
+# swm 0.3 / 0.4 are cutoffs at which this model's matvec output has new rows below the cut: the rows the ban must
+# cover without the proxy ever seeing them. (At smaller cutoffs nothing is cut, and the tests below are vacuous.)
+_CUTS = [0.3, 0.4]
+
+
+@pytest.mark.parametrize("swm", _CUTS)
+@pytest.mark.parametrize("chunks", ["1", "4"])
+def test_a_nonzero_slater_weight_min_runs_and_does_not_depend_on_the_chunking(monkeypatch, swm, chunks):
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
+    G1, info1, _ = _run(monkeypatch, 0.1, slater=swm)
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", chunks)
+    G, info, _ = _run(monkeypatch, 0.1, slater=swm)
+    assert _retained(info) == _retained(info1)
+    np.testing.assert_allclose(G, G1, atol=1e-12)
+
+
+@pytest.mark.parametrize("swm", _CUTS)
+def test_rows_the_cut_drops_are_banned_too(monkeypatch, swm):
+    """Negative control: without the ban on the rows the after-sum cut drops, a row cut from ``H q_k`` can clear
+    the threshold on a later step and enter ``P_m`` -- the retained set grows."""
+    from impurityModel.ed import gf_primitives
+
+    _G, info, _z = _run(monkeypatch, 0.1, slater=swm)
+    banned = _retained(info)
+    original = gf_primitives.SupportPolicy.finish_step
+    monkeypatch.setattr(
+        gf_primitives.SupportPolicy, "finish_step", lambda self, wp, reached=None: original(self, wp, None)
+    )
+    _G, info, _z = _run(monkeypatch, 0.1, slater=swm)
+    assert len(_retained(info)) > len(banned)
+
+
+def test_pruning_and_the_support_freeze_are_exclusive():
+    from impurityModel.ed.gf_primitives import SupportPolicy
+
+    with pytest.raises(ValueError, match="exclusive"):
+        SupportPolicy(_seed_basis(), 10**9, eta=0.1).enable_support_freeze(16)
 
 
 @pytest.mark.mpi
@@ -184,3 +224,13 @@ def test_a_tripped_memory_guard_is_checked_once_per_admission_and_freezes(monkey
     assert len(calls) == 1
     assert proxy.frozen and proxy.memory_frozen
     assert len(out) == len(proxy.retained_mask)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("swm", _CUTS)
+def test_the_pruned_retained_set_does_not_depend_on_the_rank_count(monkeypatch, swm):
+    comm = MPI.COMM_WORLD
+    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
+    _G, serial, _z = _run(monkeypatch, 0.1, slater=swm)
+    _G, info, _z = _run(monkeypatch, 0.1, slater=swm, comm=comm)
+    assert _retained(info, comm) == _retained(serial)

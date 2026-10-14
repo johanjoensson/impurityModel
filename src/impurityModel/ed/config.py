@@ -333,11 +333,12 @@ GF_LANCZOS_ADMIT_TOL = Knob(
     group="bicgstab",
     doc="""Importance pruning of the block-Lanczos recurrence's growth -- the comparator for
     ``GF_BICGSTAB_ADMISSION=outer``. A step's new determinants are admitted only if their largest
-    amplitude exceeds this; the rest are banned for good, which keeps the recurrence the exact
-    Lanczos of the final retained set under every reorthogonalization mode. 0 (default) is off.
-    Requires ``GF_APPLY_ROW_CHUNKS=1`` (chunks carry partial amplitudes a row would be ranked on)
-    and ``slaterWeightMin=0`` (a row dropped inside the apply cannot be banned); the solver raises
-    if either is violated rather than silently mis-ranking.""",
+    amplitude exceeds this; every other row the step reached is banned for good -- including the rows
+    the ``slaterWeightMin`` cut dropped -- so no rejected row ever enters the retained set. At
+    ``slaterWeightMin=0`` that keeps the recurrence the exact Lanczos of the final retained set under
+    every reorthogonalization mode; at ``slaterWeightMin>0`` the cuts inside the support still perturb it,
+    as in every capped run. The decision is taken once, on the step's summed output, so it works with
+    ``GF_APPLY_ROW_CHUNKS`` > 1. Exclusive with ``GF_SUPPORT_FREEZE``. 0 (default) is off.""",
 )
 
 GF_ADMIT_FIRST_SHELL_TOL = Knob(

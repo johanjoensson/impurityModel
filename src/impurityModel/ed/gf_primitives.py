@@ -240,32 +240,29 @@ class SupportPolicy:
     (already treated as exact-on-subspace). All reort modes remain valid, and the
     Krylov store's row set is bounded by the retained set (it never needs removal).
 
-    **Importance pruning** (``eta`` given, ``GF_LANCZOS_ADMIT_TOL``; :attr:`prunes`): The comparator of ``outer`` admission.
+    **Importance pruning** (``eta`` given, ``GF_LANCZOS_ADMIT_TOL``; :attr:`prunes`), the comparator of
+    ``outer`` admission. Every step's new rows are admitted only if their largest column amplitude exceeds
+    ``eta``; every other row the step reached is **banned for good**, including the rows the step's
+    ``slaterWeightMin`` cut dropped (:meth:`decide` takes them before the cut). The decision is taken once, on
+    the step's summed output, so row chunking does not move it.
 
-        Every step's new rows are admitted only if their largest column amplitude exceeds ``eta``;
-        the rest are **banned for good**. The ban is what keeps the recurrence exact: a row that is
-        outside ``P_k`` when ``H q_k`` is formed and is not admitted then must never enter later, or
-        ``q_{k+1}`` was built with ``P_{k+1} H q_k`` while the final retained set ``P_m`` would
-        contain the row -- and the recurrence would be the Lanczos of no single operator. With the
-        ban, ``P_m H q_k = P_{k+1} H q_k`` for every ``k``, so the recurrence is the exact Lanczos of
-        ``P_m H P_m`` under every reorthogonalization mode (the same argument as the freeze, applied
-        row by row rather than all at once).
+    *No banned key ever enters P.* At ``slaterWeightMin = 0`` that makes the recurrence the exact Lanczos of
+    ``P_m H P_m`` under every reorthogonalization mode: a row outside ``P_k`` when ``H q_k`` is formed and not
+    admitted then must never enter later, or ``q_{k+1}`` was built with ``P_{k+1} H q_k`` while the final
+    ``P_m`` would contain the row, and the recurrence would be the Lanczos of no single operator (the same
+    argument as the freeze, row by row). At ``slaterWeightMin > 0`` the cuts inside the support (a row already
+    in ``P`` cut after the sum, the next block's prune, the TSQR prune) still perturb the recurrence, as they do
+    for every capped run; the ban only guarantees that the retained set is never entered by a row that was
+    rejected.
 
-        Three conditions make that argument hold, and the first two are checked by the caller
-        (``block_Green_sparse``) because they are properties of the apply, not of the proxy:
+    The first matvec that reaches new determinants admits all of those *above* ``slaterWeightMin`` (``eta`` is
+    not applied to ``H q_0``): the seeds' first H-shell is what keeps the moments of G through ``H^2``, hence
+    the ``Sigma`` tail, exact. ``first_shell_tol`` > 0 relaxes this to an amplitude cut of its own, for models
+    whose tiny couplings put a whole hole-space in the first shell. (Not simply "the first call": the kernel
+    also routes the seed block itself through here, which reaches nothing new.)
 
-        * the apply runs at cutoff 0 -- a row dropped inside the apply is invisible here and cannot
-          be banned;
-        * the matvec is not row-chunked -- chunks carry *partial* amplitudes, so a row banned on one
-          chunk's partial sum could clear the threshold on the full sum;
-        * the first matvec that reaches new determinants admits all of them (``eta`` is not applied
-          to ``H q_0``): the seeds' first H-shell is what keeps the moments of G through ``H^2``,
-          hence the ``Sigma`` tail, exact. ``first_shell_tol`` > 0 relaxes this to an amplitude cut of
-          its own, for models whose tiny couplings put a whole hole-space in the first shell. (Not
-          simply "the first call": the kernel also routes the seed block itself through here, which
-          reaches nothing new.)
-
-        The ban mask grows like the frontier; :attr:`ban_bytes` reports what it holds.
+    The ban mask grows like the frontier; :attr:`ban_bytes` reports what it holds. Pruning and the support
+    freeze are exclusive (:meth:`enable_support_freeze` raises).
 
     MPI: one scalar allreduce per pre-freeze step; the freeze decision and the
     bisection derive only from allreduce'd data, so ranks cannot disagree, and every
@@ -416,6 +413,8 @@ class SupportPolicy:
         the caller that hands the frozen recurrence on (``gf_solvers.block_Green_sparse``): every other user of
         the proxy (BiCGSTAB's per-point solves, the shift-recycled resolvent) never freezes this way. ``log``
         prints the window sums every ``window`` steps (rank 0 only)."""
+        if self.prunes:
+            raise ValueError("the support freeze and importance pruning (GF_LANCZOS_ADMIT_TOL) are exclusive")
         self.support_freeze = True
         self._window = deque(maxlen=int(window))
         self._support_log = bool(log)
@@ -490,10 +489,13 @@ class SupportPolicy:
         """The step's whole matvec output, summed over ranks and chunks: cut ``cutoff`` on the summed rows,
         weigh what the cut dropped for the support freeze, then admit (or project, if frozen). The one
         decision point of a recurrence step. Collective."""
+        # The new rows BEFORE the cut: importance pruning bans the ones the cut is about to drop too, or they
+        # could clear the threshold on a later step and enter P_m although H q_k was formed without them.
+        reached = wp.keys_new_above(self._mask, 0.0) if self.prunes and self._deferred else None
         dropped = wp.prune_rows(cutoff)
         if self.support_freeze:
             self.note_step_cut(dropped)
-        return self.finish_step(wp)
+        return self.finish_step(wp, reached)
 
     def begin_step(self):
         """A recurrence step starts: its matvec arrives in chunks, admission waits for the whole.
@@ -506,12 +508,12 @@ class SupportPolicy:
         tolerance; one chunk: identical sets, 6e-5). Between ``begin_step`` and :meth:`finish_step`
         the chunks pass through unprojected and the decision is taken once, on the summed output.
         Called by the block-Lanczos step on every rank of the colour (replicated)."""
-        # Importance pruning decides per call: it requires GF_APPLY_ROW_CHUNKS=1 (each step's output arrives
-        # whole), and its _admit must not run a second time in finish_step.
-        self._deferred = not self._frozen and not self.prunes
+        self._deferred = not self._frozen
 
-    def finish_step(self, wp):
-        """The step's whole matvec output: admit on full amplitudes (or project, if frozen). Collective."""
+    def finish_step(self, wp, reached=None):
+        """The step's whole matvec output: admit on full amplitudes (or project, if frozen). Collective.
+
+        ``reached``: the step's new rows before the ``slaterWeightMin`` cut (importance pruning only)."""
         if not self._deferred:
             return wp
         self._deferred = False
@@ -519,6 +521,8 @@ class SupportPolicy:
             # The memory guard froze mid-step: what earlier chunks brought in was never admitted.
             wp.keep_rows(self._mask)
             return wp
+        if self.prunes:
+            return self._admit_pruned(wp, reached)
         return self._admit_counted(wp, step=True)
 
     def _admit(self, block):
@@ -548,7 +552,7 @@ class SupportPolicy:
         block.keep_rows(self._mask)
         return block
 
-    def _admit_pruned(self, block):
+    def _admit_pruned(self, block, reached=None):
         """:meth:`_admit` under importance pruning: admit the new rows above ``eta``, ban every other new row."""
         new = block.keys_new_above(self._mask, 0.0)
         # Global, so every rank agrees on whether this is the first-shell step.
@@ -556,7 +560,9 @@ class SupportPolicy:
         self._shell_admitted = self._shell_admitted or first_shell
         candidates = block.keys_new_above(self._mask, self._shell_tol2 if first_shell else self._eta2)
         allowed = [key for key in candidates.keys() if key not in self._ban]
-        self._ban.merge_keys(new)  # rows admitted below are in the mask, which takes priority
+        # Every row the step reached is banned, cut or not; the ones admitted below are in the mask, which takes
+        # priority.
+        self._ban.merge_keys(new if reached is None else reached)
         # One collective count per call on every rank, whatever this rank's own candidates.
         n_new = self._allreduce_sum(len(allowed))
         allowed_block = ManyBodyState.from_keys(allowed)

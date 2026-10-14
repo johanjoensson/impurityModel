@@ -791,18 +791,6 @@ def block_Green_sparse(
     # the capped, row-chunked path, which is not bit-identical to the unproxied one.)
     prune_tol = config.GF_LANCZOS_ADMIT_TOL.get()
     if prune_tol > 0.0:
-        # The ban argument needs the full, cutoff-0 step output on one rank-consistent block.
-        chunks = config.GF_APPLY_ROW_CHUNKS.get()
-        if chunks is not None and chunks > 1:
-            raise ValueError(
-                f"GF_LANCZOS_ADMIT_TOL needs GF_APPLY_ROW_CHUNKS=1 (got {chunks}): a chunked matvec hands "
-                "the proxy partial sums, so a row would be ranked -- and banned -- on incomplete amplitudes"
-            )
-        if slaterWeightMin > 0.0:
-            raise ValueError(
-                f"GF_LANCZOS_ADMIT_TOL needs slaterWeightMin=0 (got {slaterWeightMin}): a row dropped inside "
-                "the apply is invisible to the proxy and cannot be banned"
-            )
         # The memory guard composes with pruning exactly as with the plain cap: an explicit budget
         # wins, else the one the GF stage put on this basis.
         guard_budget = memory_budget if memory_budget is not None else getattr(basis, "gf_memory_budget", None)
