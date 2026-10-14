@@ -92,28 +92,91 @@ def matvec_cut_after_sum(bint redistributes, double cutoff):
     return redistributes
 
 
-def apply_and_redistribute(object H, object V, object basis, double cutoff, bint redistribute):
+def apply_and_redistribute(
+    object H, object V, object basis, double cutoff, bint redistribute, int n_chunks=1, object prof=None,
+    bint note_cut=False,
+):
     """``H V`` for a shared-support block, routed onto ``basis``'s owners when ``redistribute``.
 
-    The ``cutoff`` row prune is made on each row's summed amplitude ,
-    so the result does not depend on how ``V``'s rows are spread over the ranks. Collective when
-    ``redistribute`` is set.
+    The one recurrence matvec: the block-Lanczos step, the BiCGSTAB/GMRES matvec and the Chebyshev filter
+    all go through here. The ``cutoff`` row prune is made on each row's summed amplitude, so the result does
+    not depend on how ``V``'s rows are spread over the ranks or chunks. Collective when ``redistribute`` is set.
 
     A capping proxy admits in its ``redistribute_block``; with the cut after the sum it must admit on
     the cut rows, not on the sub-cutoff ones the cut is about to drop (which counted toward the cap and
-    froze it early). So, as in the block-Lanczos step, admission is deferred to ``finish_step``.
+    froze it early). So admission is deferred to ``finish_step``.
+
+    With ``redistribute`` and ``n_chunks > 1``, ``H`` is applied to one chunk of ``V``'s rows at a time and
+    redistributed and accumulated before the next, so the raw apply output and its send and receive buffers are
+    bounded to chunk size (``GF_APPLY_ROW_CHUNKS``). Exact up to floating-point summation order. ``n_chunks``
+    is replicated on every rank, so every rank makes the same number of collective ``redistribute_block``
+    calls whatever its own row count: a rank with fewer rows than chunks sends explicit width-p empty
+    chunks, never the width-0 polymorphic zero (``doc/lanczos_invariants.md``).
+
+    ``prof(name, t0)``, when given, accumulates the apply, redistribute and total times. ``note_cut`` passes
+    the weight the cut drops to a proxy running the support freeze (``note_step_cut``).
     """
     cdef bint after = matvec_cut_after_sum(redistribute, cutoff)
-    begin_step = getattr(basis, "begin_step", None) if after else None
-    W = H.apply_block(V, 0.0 if after else cutoff)
+    cdef object begin_step = getattr(basis, "begin_step", None) if after else None
+    cdef object note = (
+        basis.note_step_cut if note_cut and begin_step is not None and getattr(basis, "support_freeze", False) else None
+    )
+    cdef double t0 = _time.perf_counter(), t1
+    cdef double apply_cutoff = 0.0 if after else cutoff
+    cdef object W, part, raw, piece, bounds
+    cdef Py_ssize_t idx, lo, hi
     if begin_step is not None:
         begin_step()
-    if redistribute:
-        W = basis.redistribute_block(W)
+    if not redistribute or n_chunks <= 1:
+        W = H.apply_block(V, apply_cutoff)
+        if prof is not None:
+            prof("matvec_apply", t0)
+        t1 = _time.perf_counter()
+        if redistribute:
+            if hasattr(basis, "redistribute_block"):
+                W = basis.redistribute_block(W)
+            else:
+                # Duck-typed basis without the block method (e.g. a test mock): fall back to the scalar
+                # redistribute through a boundary conversion.
+                W = ManyBodyState.from_states(basis.redistribute_psis(*W.to_states()))
+        if prof is not None:
+            prof("matvec_redistribute", t1)
+    else:
+        # `bounds[idx], bounds[idx + 1]` rather than the `[:-1]`/`[1:]` slice pair: this module carries
+        # `wraparound=False` (CLAUDE.md), which the `x[-1]` idiom trips even on a slice boundary.
+        bounds = np.linspace(0, len(V), n_chunks + 1).astype(int)
+        W = None
+        for idx in range(bounds.shape[0] - 1):
+            lo = bounds[idx]
+            hi = bounds[idx + 1]
+            # `row_slice` allocates exactly this chunk's rows (a `copy()` then `keep_rows` would hold a
+            # full-size duplicate of V per chunk, which is why chunking once measured slower with a HIGHER peak).
+            part = V.row_slice(lo, hi)
+            raw = H.apply_block(part, apply_cutoff)
+            del part
+            if hasattr(basis, "redistribute_block"):
+                piece = basis.redistribute_block(raw)
+            else:
+                piece = ManyBodyState.from_states(basis.redistribute_psis(*raw.to_states()))
+            del raw
+            if W is None:
+                W = piece
+            elif len(piece):
+                # Rank-local decision on a rank-local quantity (no collective inside), so an empty piece
+                # on one rank cannot desynchronize the others.
+                W += piece
+            del piece
+        if prof is not None:
+            prof("matvec_apply", t0)
     if after:
-        W.prune_rows(cutoff)
+        # Before finish_step: a capping proxy must admit on the cut sums, not on rows the cut drops.
+        dropped = W.prune_rows(cutoff)
+        if note is not None:
+            note(dropped)
     if begin_step is not None:
         W = basis.finish_step(W)
+    if prof is not None:
+        prof("matvec", t0)
     return W
 
 

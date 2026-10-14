@@ -146,99 +146,24 @@ def block_lanczos_step_cy(
     p = q_curr.width
 
     # --- 1. Block matvec: wp = H q_curr ---------------------------------
-    _t0 = _time.perf_counter()
     # A growth-capping basis proxy (caps_growth=True) must see every step's residual
     # even serially: its redistribute_block enforces the truncation_threshold there
     # (the inner Basis redistribute no-ops without MPI).
     _needs_redistribute = basis is not None and ((mpi and comm is not None) or getattr(basis, "caps_growth", False))
-    # Chunking only where a redistribute actually follows -- with none, there is no
-    # pack/send/receive transient to bound and chunking would just add per-chunk
-    # Python overhead for nothing. `GF_APPLY_ROW_CHUNKS` defaults to 4 (on); `1`
-    # recovers the pre-2026-09 one-shot path.
+    # Chunking only where a redistribute actually follows. `GF_APPLY_ROW_CHUNKS` defaults to 4;
+    # `1` is the one-shot path. The matvec itself (chunking, the cut on summed rows, a capping
+    # proxy's deferred admission) is `apply_and_redistribute`.
     _n_chunks = config.GF_APPLY_ROW_CHUNKS.get() if _needs_redistribute else 1
-    # A capping proxy decides admission on the step's whole output, not chunk by chunk
-    # (gf_primitives._CappedBasisProxy.begin_step): replicated, so every rank calls both.
-    _begin_step = getattr(basis, "begin_step", None) if _needs_redistribute else None
-    # Send every partial and cut the summed row instead, so what
-    # survives does not depend on the colour's rank count or the chunk count.
-    _prune_after_sum = matvec_cut_after_sum(_needs_redistribute, slaterWeightMin)
-    _apply_cutoff = 0.0 if _prune_after_sum else slaterWeightMin
-    # A proxy running the support freeze weighs what this step's slaterWeightMin prunes drop (replicated flag).
-    _note_cut = basis.note_step_cut if _begin_step is not None and getattr(basis, "support_freeze", False) else None
-    if _begin_step is not None:
-        _begin_step()
-    if _n_chunks is None or _n_chunks <= 1:
-        wp = h_op.apply_block(q_curr, _apply_cutoff)
-        _prof_acc("matvec_apply", _t0)
-        _t1 = _time.perf_counter()
-        if _needs_redistribute:
-            if hasattr(basis, "redistribute_block"):
-                wp = basis.redistribute_block(wp)
-            else:
-                # Duck-typed basis without the block method (e.g. a test mock): fall back
-                # to the scalar redistribute through a boundary conversion.
-                wp = ManyBodyState.from_states(basis.redistribute_psis(*wp.to_states()))
-        _prof_acc("matvec_redistribute", _t1)
-    else:
-        # Row-chunked matvec: apply H to one chunk of q_curr's rows at a time and
-        # redistribute+accumulate before moving to the next, so the raw apply output,
-        # its packed send buffer and the receive buffer are bounded to chunk size
-        # instead of the whole block -- mirroring
-        # CIPSISolver._apply_block_and_redistribute's GS_APPLY_ROW_CHUNKS
-        # (doc/plans/dc_smo_memory.md, "GF unit memory"). Exact up to floating-point
-        # summation order: a candidate reached through different chunks accumulates
-        # its partial sums in a different order, the same class of difference a
-        # change of MPI rank count already makes. Unlike the CIPSI selection round,
-        # this sum feeds a Lanczos recurrence (alpha_i below, the q_prev/q_curr
-        # subtraction, reorthogonalization, TSQR) rather than a slater_weight_min
-        # prune and a candidate ranking -- a summation-order change can in principle
-        # move a deflation or iteration-count decision, not just the last digit of
-        # G. On by default since 2026-09-14 (see config.GF_APPLY_ROW_CHUNKS); set to 1
-        # to recover bit-identical agreement with a pre-2026-09 run.
-        # The chunk COUNT is the knob, replicated on every rank, so every rank makes
-        # the same number of collective redistribute_block calls whatever its own
-        # row count (a rank with fewer rows than chunks sends explicit width-p empty
-        # chunks, never the width-0 polymorphic zero -- see doc/lanczos_invariants.md).
-        _n_rows = len(q_curr)
-        _bounds = np.linspace(0, _n_rows, int(_n_chunks) + 1).astype(int)
-        wp = None
-        # `_bounds[i], _bounds[i + 1]` rather than the `[:-1]`/`[1:]` slice pair: this
-        # module carries `wraparound=False` (CLAUDE.md), which the `x[-1]` idiom trips
-        # even on a slice boundary -- spelled with explicit non-negative bounds instead.
-        for _idx in range(_bounds.shape[0] - 1):
-            _lo = _bounds[_idx]
-            _hi = _bounds[_idx + 1]
-            # `row_slice` allocates exactly this chunk's rows. The earlier spelling
-            # (`q_curr.copy()` then `keep_rows(mask)`) allocated a FULL-SIZE duplicate of
-            # q_curr per chunk -- `keep_rows` shrinks the logical length but not the
-            # vector's capacity -- so the chunk's "bounded" apply ran alongside a
-            # full-size copy, which is why chunking measured slower with a HIGHER peak
-            # than the one-shot path. It also built one Python key object per row of
-            # q_curr on every step just to form the mask.
-            _part = q_curr.row_slice(_lo, _hi)
-            _raw = h_op.apply_block(_part, _apply_cutoff)
-            del _part
-            if hasattr(basis, "redistribute_block"):
-                _piece = basis.redistribute_block(_raw)
-            else:
-                _piece = ManyBodyState.from_states(basis.redistribute_psis(*_raw.to_states()))
-            del _raw
-            if wp is None:
-                wp = _piece
-            elif len(_piece):
-                # Rank-local decision on a rank-local quantity (no collective inside),
-                # so an empty piece on one rank cannot desynchronize the others.
-                wp += _piece
-            del _piece
-        _prof_acc("matvec_apply", _t0)
-    if _prune_after_sum:
-        # Before finish_step: a capping proxy must admit on the cut sums, not on rows the cut drops.
-        _dropped = wp.prune_rows(slaterWeightMin)
-        if _note_cut is not None:
-            _note_cut(_dropped)
-    if _begin_step is not None:
-        wp = basis.finish_step(wp)
-    _prof_acc("matvec", _t0)
+    wp = apply_and_redistribute(
+        h_op, q_curr, basis, slaterWeightMin, _needs_redistribute, 1 if _n_chunks is None else int(_n_chunks),
+        _prof_acc, True,
+    )
+    # A proxy running the support freeze also weighs what the next block's prune below drops (replicated flag).
+    _note_cut = (
+        basis.note_step_cut
+        if _needs_redistribute and hasattr(basis, "begin_step") and getattr(basis, "support_freeze", False)
+        else None
+    )
 
     # --- 2. alpha_i = <q_curr | wp> -------------------------------------
     _t0 = _time.perf_counter()

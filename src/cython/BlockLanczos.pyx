@@ -82,6 +82,7 @@ from impurityModel.ed.BlockLanczosCore import (
     seed_w_estimator,
     omega_floor,
     locked_reort_step,
+    apply_and_redistribute,
     matvec_cut_after_sum,
     pack_lanczos_result,
     Reort,
