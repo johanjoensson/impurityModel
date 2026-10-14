@@ -203,7 +203,7 @@ def support_window_freezes(window):
     return len(window) == window.maxlen and leak <= cut, leak, cut
 
 
-class _CappedBasisProxy:
+class SupportPolicy:
     """Enforce ``truncation_threshold`` on the sparse-kernel GF recurrence.
 
     ``block_lanczos_cy``'s matvec discovers new Slater determinants every step, so the
@@ -240,6 +240,33 @@ class _CappedBasisProxy:
     (already treated as exact-on-subspace). All reort modes remain valid, and the
     Krylov store's row set is bounded by the retained set (it never needs removal).
 
+    **Importance pruning** (``eta`` given, ``GF_LANCZOS_ADMIT_TOL``; :attr:`prunes`): The comparator of ``outer`` admission.
+
+        Every step's new rows are admitted only if their largest column amplitude exceeds ``eta``;
+        the rest are **banned for good**. The ban is what keeps the recurrence exact: a row that is
+        outside ``P_k`` when ``H q_k`` is formed and is not admitted then must never enter later, or
+        ``q_{k+1}`` was built with ``P_{k+1} H q_k`` while the final retained set ``P_m`` would
+        contain the row -- and the recurrence would be the Lanczos of no single operator. With the
+        ban, ``P_m H q_k = P_{k+1} H q_k`` for every ``k``, so the recurrence is the exact Lanczos of
+        ``P_m H P_m`` under every reorthogonalization mode (the same argument as the freeze, applied
+        row by row rather than all at once).
+
+        Three conditions make that argument hold, and the first two are checked by the caller
+        (``block_Green_sparse``) because they are properties of the apply, not of the proxy:
+
+        * the apply runs at cutoff 0 -- a row dropped inside the apply is invisible here and cannot
+          be banned;
+        * the matvec is not row-chunked -- chunks carry *partial* amplitudes, so a row banned on one
+          chunk's partial sum could clear the threshold on the full sum;
+        * the first matvec that reaches new determinants admits all of them (``eta`` is not applied
+          to ``H q_0``): the seeds' first H-shell is what keeps the moments of G through ``H^2``,
+          hence the ``Sigma`` tail, exact. ``first_shell_tol`` > 0 relaxes this to an amplitude cut of
+          its own, for models whose tiny couplings put a whole hole-space in the first shell. (Not
+          simply "the first call": the kernel also routes the seed block itself through here, which
+          reaches nothing new.)
+
+        The ban mask grows like the frontier; :attr:`ban_bytes` reports what it holds.
+
     MPI: one scalar allreduce per pre-freeze step; the freeze decision and the
     bisection derive only from allreduce'd data, so ranks cannot disagree, and every
     collective runs unconditionally (a rank may retain zero rows).
@@ -258,7 +285,6 @@ class _CappedBasisProxy:
     #: Capability flags, read instead of the class (``doc/gf_support_pipeline.md``): this basis counts the
     #: support (``retained_size``, ``cap_hit``), and whether it admits by importance and bans the rest.
     tracks_support = True
-    prunes = False
     #: Ask ``block_lanczos_cy`` to stop with status ``"frozen"`` at the end of the step that
     #: froze the support (see :func:`gf_solvers.block_Green_sparse`'s frozen-basis CSR
     #: fallback). Off by default: every other user of the proxy runs on through the freeze.
@@ -267,7 +293,7 @@ class _CappedBasisProxy:
     support_freeze = False
     support_frozen = False
 
-    def __init__(self, basis, cap, memory_budget=None, memory_policy="tighten"):
+    def __init__(self, basis, cap, memory_budget=None, memory_policy="tighten", eta=None, first_shell_tol=0.0):
         """``memory_budget`` (absolute per-rank bytes, ``None`` = off, the default) adds a measured
         guard: before admitting a step's new rows, the color's MAX resident set is compared with
         it, and at or over it the support freezes where it stands (``memory_policy="tighten"``,
@@ -276,6 +302,11 @@ class _CappedBasisProxy:
         communicator; it is computed once per color by ``gf_units.run_units_distributed``,
         never probed here."""
         self._basis = basis
+        self.prunes = eta is not None
+        self._eta2 = float(eta) ** 2 if self.prunes else 0.0
+        self._shell_tol2 = float(first_shell_tol) ** 2
+        self._ban = ManyBodyState.from_keys([])
+        self._shell_admitted = False
         self.cap = int(cap)
         self.memory_budget = memory_budget
         self.memory_policy = memory_policy
@@ -475,7 +506,9 @@ class _CappedBasisProxy:
         tolerance; one chunk: identical sets, 6e-5). Between ``begin_step`` and :meth:`finish_step`
         the chunks pass through unprojected and the decision is taken once, on the summed output.
         Called by the block-Lanczos step on every rank of the colour (replicated)."""
-        self._deferred = not self._frozen
+        # Importance pruning decides per call: it requires GF_APPLY_ROW_CHUNKS=1 (each step's output arrives
+        # whole), and its _admit must not run a second time in finish_step.
+        self._deferred = not self._frozen and not self.prunes
 
     def finish_step(self, wp):
         """The step's whole matvec output: admit on full amplitudes (or project, if frozen). Collective."""
@@ -501,6 +534,8 @@ class _CappedBasisProxy:
             return self._freeze_on_memory(block)
         if self._deferred:
             return block
+        if self.prunes:
+            return self._admit_pruned(block)
         return self._admit_counted(block)
 
     def _freeze_on_memory(self, block):
@@ -510,6 +545,30 @@ class _CappedBasisProxy:
         self._frozen = True
         self.cap_hit = True
         self.memory_frozen = True
+        block.keep_rows(self._mask)
+        return block
+
+    def _admit_pruned(self, block):
+        """:meth:`_admit` under importance pruning: admit the new rows above ``eta``, ban every other new row."""
+        new = block.keys_new_above(self._mask, 0.0)
+        # Global, so every rank agrees on whether this is the first-shell step.
+        first_shell = not self._shell_admitted and self._allreduce_sum(len(new)) > 0
+        self._shell_admitted = self._shell_admitted or first_shell
+        candidates = block.keys_new_above(self._mask, self._shell_tol2 if first_shell else self._eta2)
+        allowed = [key for key in candidates.keys() if key not in self._ban]
+        self._ban.merge_keys(new)  # rows admitted below are in the mask, which takes priority
+        # One collective count per call on every rank, whatever this rank's own candidates.
+        n_new = self._allreduce_sum(len(allowed))
+        allowed_block = ManyBodyState.from_keys(allowed)
+        if self._global_count + n_new <= self.cap:
+            self._mask.merge_keys(allowed_block)
+            self._global_count += n_new
+            block.keep_rows(self._mask)
+            return block
+        # Over the cap: the surviving candidates compete for the remaining slots, then freeze.
+        restricted = block.copy()
+        restricted.keep_rows(allowed_block)
+        self._admit_top_and_freeze(restricted)
         block.keep_rows(self._mask)
         return block
 
@@ -590,6 +649,11 @@ class _CappedBasisProxy:
         self._mask.merge_keys(admitted)
         self._frozen = True
         self.cap_hit = True
+
+    @property
+    def ban_bytes(self):
+        """Rank-local bytes held by the ban mask."""
+        return int(self._ban.memory_bytes())
 
     def freeze_message(self):
         """One-line description of the cap state (rank-0 logging)."""
@@ -706,82 +770,8 @@ def resolvent_error_bound(s_norm, r_p, b, imag_z, symmetric):
     return np.where(np.asarray(symmetric, dtype=bool)[:, None], np.minimum(first, second), first)
 
 
-class _PrunedBasisProxy(_CappedBasisProxy):
-    r"""Importance-pruned growth for the Lanczos recurrence: the comparator of ``outer`` admission.
-
-    Every step's new rows are admitted only if their largest column amplitude exceeds ``eta``;
-    the rest are **banned for good**. The ban is what keeps the recurrence exact: a row that is
-    outside ``P_k`` when ``H q_k`` is formed and is not admitted then must never enter later, or
-    ``q_{k+1}`` was built with ``P_{k+1} H q_k`` while the final retained set ``P_m`` would
-    contain the row -- and the recurrence would be the Lanczos of no single operator. With the
-    ban, ``P_m H q_k = P_{k+1} H q_k`` for every ``k``, so the recurrence is the exact Lanczos of
-    ``P_m H P_m`` under every reorthogonalization mode (the same argument as the freeze, applied
-    row by row rather than all at once).
-
-    Three conditions make that argument hold, and the first two are checked by the caller
-    (``block_Green_sparse``) because they are properties of the apply, not of the proxy:
-
-    * the apply runs at cutoff 0 -- a row dropped inside the apply is invisible here and cannot
-      be banned;
-    * the matvec is not row-chunked -- chunks carry *partial* amplitudes, so a row banned on one
-      chunk's partial sum could clear the threshold on the full sum;
-    * the first matvec that reaches new determinants admits all of them (``eta`` is not applied
-      to ``H q_0``): the seeds' first H-shell is what keeps the moments of G through ``H^2``,
-      hence the ``Sigma`` tail, exact. ``first_shell_tol`` > 0 relaxes this to an amplitude cut of
-      its own, for models whose tiny couplings put a whole hole-space in the first shell. (Not
-      simply "the first call": the kernel also routes the seed block itself through here, which
-      reaches nothing new.)
-
-    The ban mask grows like the frontier; :attr:`ban_bytes` reports what it holds.
-    """
-
-    prunes = True
-
-    def __init__(self, basis, cap, eta, first_shell_tol=0.0, **kwargs):
-        super().__init__(basis, cap, **kwargs)
-        self._eta2 = float(eta) ** 2
-        self._shell_tol2 = float(first_shell_tol) ** 2
-        self._ban = ManyBodyState.from_keys([])
-        self._shell_admitted = False
-
-    @property
-    def ban_bytes(self):
-        """Rank-local bytes held by the ban mask."""
-        return int(self._ban.memory_bytes())
-
-    def begin_step(self):
-        """No deferral: this admission already requires ``GF_APPLY_ROW_CHUNKS=1``, so each step's
-        output arrives whole, and :meth:`_admit` must not run a second time in :meth:`finish_step`."""
-        self._deferred = False
-
-    def _admit(self, block):
-        if self._frozen:
-            return super()._admit(block)
-        # One guard check per call, as the base class makes: a second one (via super()._admit) would warn twice
-        # and, if the RSS had dropped in between, fall through to plain cap admission with no ban.
-        if self._over_memory_budget():
-            return self._freeze_on_memory(block)
-        new = block.keys_new_above(self._mask, 0.0)
-        # Global, so every rank agrees on whether this is the first-shell step.
-        first_shell = not self._shell_admitted and self._allreduce_sum(len(new)) > 0
-        self._shell_admitted = self._shell_admitted or first_shell
-        candidates = block.keys_new_above(self._mask, self._shell_tol2 if first_shell else self._eta2)
-        allowed = [key for key in candidates.keys() if key not in self._ban]
-        self._ban.merge_keys(new)  # rows admitted below are in the mask, which takes priority
-        # One collective count per call on every rank, whatever this rank's own candidates.
-        n_new = self._allreduce_sum(len(allowed))
-        allowed_block = ManyBodyState.from_keys(allowed)
-        if self._global_count + n_new <= self.cap:
-            self._mask.merge_keys(allowed_block)
-            self._global_count += n_new
-            block.keep_rows(self._mask)
-            return block
-        # Over the cap: the surviving candidates compete for the remaining slots, then freeze.
-        restricted = block.copy()
-        restricted.keep_rows(allowed_block)
-        self._admit_top_and_freeze(restricted)
-        block.keep_rows(self._mask)
-        return block
+#: The pre-merge name; every capped or pruned GF support is one :class:`SupportPolicy`.
+_CappedBasisProxy = SupportPolicy
 
 
 def guarded_proxy(basis, cap):

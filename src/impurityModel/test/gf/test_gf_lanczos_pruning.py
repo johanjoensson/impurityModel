@@ -76,7 +76,7 @@ def test_without_the_ban_the_recurrence_is_not_exact_which_is_why_it_exists(monk
     whole closure, yet G is off by ~1e-2: the error is in the recurrence, not in what was kept."""
     from impurityModel.ed import gf_primitives
 
-    original = gf_primitives._PrunedBasisProxy._admit
+    original = gf_primitives.SupportPolicy._admit
 
     def forgetting(self, block):
         ban, self._ban = self._ban, ManyBodyState.from_keys([])
@@ -85,7 +85,7 @@ def test_without_the_ban_the_recurrence_is_not_exact_which_is_why_it_exists(monk
         finally:
             self._ban = ban
 
-    monkeypatch.setattr(gf_primitives._PrunedBasisProxy, "_admit", forgetting)
+    monkeypatch.setattr(gf_primitives.SupportPolicy, "_admit", forgetting)
     G, info, z = _run(monkeypatch, 0.225, reort=reort)
     assert np.max(np.abs(G - _dense_G_on(_retained(info), z))) > 1e-4
 
@@ -169,9 +169,9 @@ def test_a_tripped_memory_guard_is_checked_once_per_admission_and_freezes(monkey
     """The guard is collective and warns: the pruned proxy must ask it once per call, not once itself and once
     again through the base class (which warned twice, and could fall through to plain cap admission with no ban
     if the second answer differed)."""
-    from impurityModel.ed.gf_primitives import _PrunedBasisProxy
+    from impurityModel.ed.gf_primitives import SupportPolicy
 
-    proxy = _PrunedBasisProxy(_seed_basis(), 10**9, 0.2)
+    proxy = SupportPolicy(_seed_basis(), 10**9, eta=0.2)
     calls = []
 
     def tripped(self=proxy):

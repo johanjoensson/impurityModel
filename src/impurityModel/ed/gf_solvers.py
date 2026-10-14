@@ -36,7 +36,6 @@ from impurityModel.ed.gf_primitives import (
     _allreduced_col_norms2,
     _CappedBasisProxy,
     _distributed_seed_qr,
-    _PrunedBasisProxy,
     _sanitize_continued_fraction,
     _trim_blocks,
     block_to_local_dense,
@@ -811,10 +810,10 @@ def block_Green_sparse(
             memory_policy if memory_budget is not None else (getattr(basis, "gf_memory_policy", None) or "tighten")
         )
         budget_kwargs = {"memory_budget": guard_budget, "memory_policy": guard_policy}
-        lanczos_basis = _PrunedBasisProxy(
+        lanczos_basis = _CappedBasisProxy(
             basis,
             cap if np.isfinite(cap) else 2**62,
-            prune_tol,
+            eta=prune_tol,
             first_shell_tol=config.GF_ADMIT_FIRST_SHELL_TOL.get(),
             **budget_kwargs,
         )
