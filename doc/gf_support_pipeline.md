@@ -59,3 +59,25 @@ sum agree.
 
 Importance pruning (`GF_LANCZOS_ADMIT_TOL`) and the support freeze (`GF_SUPPORT_FREEZE`) cannot both be on: under
 pruning, banned rows always land outside the support, so the leak no longer measures growth.
+
+## Where it lives
+
+`gf_primitives.SupportPolicy` (the old `_CappedBasisProxy` name is an alias) holds the three entry points; the one
+recurrence matvec is `apply_and_redistribute` (`src/cython/_block_ops.pxi`), which the block-Lanczos step, the
+BiCGSTAB/GMRES matvec and the Chebyshev filter all call. A plain basis is the null policy: redistribute, then cut.
+The policy advertises `tracks_support` and `prunes` for callers to read; nothing tests its class.
+
+| site | category | when | notes |
+|---|---|---|---|
+| `apply_and_redistribute` -> `SupportPolicy.decide` | S | every recurrence matvec | cut, ban filter, admission, cap, support freeze |
+| `SupportPolicy.admit_seed` | S | seed block | no cut, not a window step |
+| `SupportPolicy.transport` | S (memory only) | per chunk | frozen projection, RSS guard |
+| `_lanczos_step` 5a `q_next.prune_rows` | A | after the step | weight reaches the next window (`note_step_cut`) |
+| TSQR `Q` prune, BiCGSTAB/GMRES `axpy`/residual/solution prunes, Chebyshev `t_next` prune | A | inside a step | never add rows |
+| `KrylovShiftedResolvent` `combine` | A | per column | deliberate |
+| BiCGSTAB `_SupportTracker.add_states`, RIXS `add_states`/`psi2.prune` | growth outside the policy | between solves | |
+| `residual_blocks`, `boundary_residual`, `_next_shell` | probes on the raw basis | | read, never register |
+| `gf_shift_recycling._expand_to_closure` | direct `apply_block` | serial only | cut before and after the sum agree |
+
+Importance pruning (`GF_LANCZOS_ADMIT_TOL`) decides inside `decide` like the cap does, from the new rows taken
+*before* the `slaterWeightMin` cut, so the cut rows are banned too and row chunking cannot move the decision.
