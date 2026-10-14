@@ -19,7 +19,7 @@ zero. This module measures ``w_n`` so the two can be told apart, and told apart 
 possibility: that the model has no impurity gap at all.
 
 **No common basis is needed, and that is the design.** An earlier attempt built one determinant
-space spanning ``N-1, N, N+1`` (``dc_criteria.build_union_space``) so the overlaps would share an
+space spanning ``N-1, N, N+1`` so the overlaps would share an
 index space. It does not work: ``H`` conserves the electron number and CIPSI expands from the
 centre sector's reference, so the ``N +- 1`` blocks never grow past whatever
 ``generate_initial_basis`` seeded -- measured on the charge-transfer fixture, **one determinant

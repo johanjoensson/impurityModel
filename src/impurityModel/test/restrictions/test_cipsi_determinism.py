@@ -77,9 +77,9 @@ def test_degeneracy_tol_was_ten_times_too_tight_on_the_loose_paths():
     """The bug this function fixes, stated as a test.
 
     ``_eigen_tol`` returns ``_EIGEN_TOL_MAX`` (1e-8) whenever ``slaterWeightMin`` is 0 or above
-    1e-8 -- ten times *looser* than the old fixed ``DEGENERACY_TOL`` -- and three
-    manifold-consuming paths run exactly there: ``dc_frozen.FrozenSpaceSweep`` and
-    ``dc_criteria`` both default ``slater_weight_min=0``, and the occupation walk runs at
+    1e-8 -- ten times *looser* than the old fixed ``DEGENERACY_TOL`` -- and two
+    manifold-consuming paths run exactly there: ``dc_criteria``
+    defaults ``slater_weight_min=0``, and the occupation walk runs at
     ``sqrt(slaterWeightMin)``, i.e. 1e-6 for the usual 1e-12.
     """
     e = np.array([-111.17, -111.17, -110.0])

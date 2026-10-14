@@ -92,7 +92,6 @@ from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
 from impurityModel.ed.basis_transcription import build_density_matrices
-from impurityModel.ed.dc_frozen import FrozenSpaceSweep
 from impurityModel.ed.dc_reference import (
     _SATURATION_ADVICE,
     _noninteracting_impurity_occupation,
@@ -354,98 +353,6 @@ def _mu_tol_effective(tol, per_mu):
     function at all.
     """
     return abs(tol / per_mu) if per_mu else float("inf")
-
-
-def build_union_space(
-    h_op,
-    impurity_orbitals,
-    bath_states,
-    nominal_occ,
-    *,
-    mu_samples=(0.0,),
-    sector_radius=1,
-    tau=0.002,
-    chain_restrict=False,
-    truncation_threshold=np.inf,
-    comm=None,
-    verbose=False,
-    frozen_occupations=None,
-    weighted_restrictions=None,
-    slater_weight_min=0,
-    de2_min=0.0,
-    dense_cutoff=1000,
-):
-    """A frozen space spanning the *candidate* charge sectors, grown across a ``mu`` bracket.
-
-    A space seeded from one solve spans whatever sectors its expansion happened to reach --
-    measured on NiO, ``n_imp = 8, 9, 10`` against a nominal 8: three sectors, but only upward, so
-    a search that has to cross downward is scored on a space that cannot represent the answer and
-    reports the nearest sector it can as though converged. This builds the span deliberately
-    instead.
-
-    The span is requested explicitly, through ``generate_initial_basis``'s
-    ``total_charge_slack``: it widens the *total charge* window to ``nominal ± sector_radius``.
-    Verified on a toy: radius 0 gives span ``(2,)``, radius 1 gives ``(1, 2, 3)``, radius 2
-    gives ``(0..4)``. This is the one caller that wants a multi-sector space; every energy
-    comparison needs the opposite (``H`` conserves ``N``, so a multi-sector basis makes
-    ``calc_energy(N0)`` report the minimum over the window), which is why it is a separate knob
-    from ``mixed_valence`` -- the latter fluctuates the impurity charge against the bath at
-    *fixed* total.
-
-    **Growth-only, and state-averaged over the bracket.** The space is expanded once at each
-    ``mu`` in ``mu_samples`` -- the ends of the search bracket, not just its centre -- and
-    ``expand`` only *adds* determinants, so the result accumulates: ``S_{k+1} = S_k ∪ new``. That
-    is what makes the construction terminate rather than limit-cycle, which re-freezing on drift
-    does not (selection under a cap is discontinuous in ``mu``). The one exception is a binding
-    ``truncation_threshold``: fixed-budget CIPSI prunes to stay under the cap, so growth-only
-    holds up to the cap and no further. Pass ``truncation_threshold=np.inf`` when the guarantee
-    matters more than the memory.
-
-    Returns
-    -------
-    (FrozenSpaceSweep, Basis)
-    """
-    from impurityModel.ed.groundstate import build_basis_and_solver
-
-    impurity_indices = [orb for blocks in impurity_orbitals.values() for block in blocks for orb in block]
-    mixed_valence = dict.fromkeys(nominal_occ, 0)
-    basis, solver = build_basis_and_solver(
-        h_op,
-        impurity_orbitals,
-        bath_states,
-        nominal_occ,
-        mixed_valence,
-        tau,
-        chain_restrict,
-        truncation_threshold,
-        comm,
-        verbose,
-        frozen_occupations,
-        weighted_restrictions,
-        slater_weight_min,
-        None,
-        total_charge_slack=sector_radius,
-    )
-    identity = np.identity(len(impurity_indices))
-    for mu in mu_samples:
-        # Expand at this end of the bracket. `expand` reads solver.psi_refs, so successive calls
-        # are warm-started from the previous end's converged manifold -- which is the
-        # state-averaging: the space ends up adequate across the sweep rather than at one point.
-        solver.expand(
-            h_op - tensors_to_operator(np.asarray(mu * identity, dtype=complex)),
-            dense_cutoff=dense_cutoff,
-            de2_min=de2_min,
-            slaterWeightMin=slater_weight_min,
-        )
-    sweep = FrozenSpaceSweep(
-        basis,
-        h_op,
-        impurity_indices,
-        tau,
-        dense_cutoff=dense_cutoff,
-        slater_weight_min=slater_weight_min,
-    )
-    return sweep, basis
 
 
 @dataclass(frozen=True)

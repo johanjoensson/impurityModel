@@ -62,7 +62,7 @@ def system():
 
 def _solve(basis, h, U, warm=True, **kwargs):
     """``get_eigenvectors`` on ``h``, warm-started from the exact ground manifold (as a converged CIPSI
-    cycle hands over) or, with ``warm=False``, cold: the width-1 hash vector, as ``dc_frozen`` solves."""
+    cycle hands over) or, with ``warm=False``, cold: the width-1 hash vector, as the cold-start solves."""
     psi_refs = None
     if warm:
         local = np.asarray(list(basis.local_indices), dtype=int)
@@ -86,7 +86,7 @@ def _assert_orthonormal_and_ascending(basis, e_ref, psis):
 @pytest.mark.parametrize("warm", [True, False], ids=["warm", "cold"])
 @pytest.mark.parametrize("solver", ["trlm", "irlm"])
 def test_a_degenerate_level_wider_than_the_block_comes_back_whole(system, solver, warm):
-    """Cold is the width-1 start of every ``dc_frozen`` solve: the probe must not inherit that width."""
+    """Cold is the width-1 start of every cold-start solve: the probe must not inherit that width."""
     basis, h, U, evals = system
     e_ref, psis = _solve(basis, h, U, warm=warm, num_wanted=10, max_energy=CUT, solver=solver)
     e = np.real(e_ref)

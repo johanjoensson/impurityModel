@@ -128,8 +128,8 @@ def _degeneracy_tol(e_ref, slaterWeightMin):
 
     That was the case in production, not in principle: ``_eigen_tol`` returns ``_EIGEN_TOL_MAX``
     (1e-8, ten times *looser* than ``DEGENERACY_TOL``) whenever ``slaterWeightMin`` is 0 or above
-    1e-8, and three manifold-consuming paths run exactly there -- ``dc_frozen.FrozenSpaceSweep``
-    and ``dc_criteria`` both default ``slater_weight_min=0``, and the occupation walk runs at
+    1e-8, and two manifold-consuming paths run exactly there -- ``dc_criteria``
+    defaults ``slater_weight_min=0``, and the occupation walk runs at
     ``sqrt(slaterWeightMin)`` (1e-6 for the usual 1e-12). The production ground-state path
     (``slaterWeightMin = 1e-12``) is unaffected: 10 * 1e-12 is far under the 1e-9 floor.
 
@@ -550,7 +550,7 @@ def _amplitude_from_hash(det_hash: int) -> complex:
 _MAX_COMPLETENESS_PROBES = 16
 
 #: Floor on the completeness probe's block width. The probe inherits the solve's width, which is 1 on
-#: every cold start (``dc_frozen``, ``truncate_initial``, the exhaustion retry); a width-1 probe adds
+#: every cold start (``truncate_initial``, the exhaustion retry); a width-1 probe adds
 #: one copy of a degenerate level per round, and measured on a 5 + 10-fold window it needed 11 rounds
 #: and 92% of the solve's time.
 _PROBE_MIN_WIDTH = 4
