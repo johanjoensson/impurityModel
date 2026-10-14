@@ -81,27 +81,21 @@ cpdef object block_inner(object V, object W, bint mpi=False, object comm=None):
 
 
 def matvec_cut_after_sum(bint redistributes, double cutoff):
-    """Whether a sparse matvec cuts ``cutoff`` on its summed rows (``config.MATVEC_PRUNE``).
+    """Whether a sparse matvec cuts ``cutoff`` on its summed rows: exactly when its output is redistributed.
 
-    True when the output is redistributed (so each rank holds partial sums until then) and the knob
-    is ``after_sum``: the caller then applies with no cutoff and prunes after the redistribute. That
-    includes ``cutoff == 0``, where the prune drops the rows whose partials cancel exactly -- what a
-    serial apply, which never emits an exact-zero row, already does -- so the determinants a result
-    holds do not depend on the layout either. Without a redistribute the one apply already sees
-    whole sums. Depends only on replicated values, so every rank takes the same branch.
+    The output is then summed over the ranks (and row chunks) before the cut, so what survives does not depend
+    on the layout; that includes ``cutoff == 0``, where the cut drops the rows whose partials cancel exactly,
+    as a serial apply (which never emits an exact-zero row) already does. Without a redistribute the one apply
+    already sees whole sums. Depends only on replicated values, so every rank takes the same branch. (The
+    ``MATVEC_PRUNE=before_sum`` alternative was retired; see ``doc/gf_support_pipeline.md``.)
     """
-    if not redistributes:
-        return False
-    mode = config.MATVEC_PRUNE.get()
-    if mode not in ("after_sum", "before_sum"):
-        raise ValueError(f"MATVEC_PRUNE={mode!r}: expected 'after_sum' or 'before_sum'")
-    return mode == "after_sum"
+    return redistributes
 
 
 def apply_and_redistribute(object H, object V, object basis, double cutoff, bint redistribute):
     """``H V`` for a shared-support block, routed onto ``basis``'s owners when ``redistribute``.
 
-    The ``cutoff`` row prune is made on each row's summed amplitude (:func:`matvec_cut_after_sum`),
+    The ``cutoff`` row prune is made on each row's summed amplitude ,
     so the result does not depend on how ``V``'s rows are spread over the ranks. Collective when
     ``redistribute`` is set.
 

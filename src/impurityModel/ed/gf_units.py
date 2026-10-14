@@ -499,7 +499,7 @@ def enumerate_gf_units(
         (:func:`basis_restrictions.union_windows`) over the eigenstates it stacks instead of the group
         fallback.
     basis : Basis, optional
-        The basis ``psis`` are distributed on. With a distributed one (``config.MATVEC_PRUNE=after_sum``)
+        The basis ``psis`` are distributed on. With a distributed one 
         the seeds are summed over the ranks and cut on whole amplitudes -- a many-term operator sends
         determinants on several ranks to one seed row -- and come back owner-distributed (collective).
         ``None``: the states are not distributed.
@@ -939,7 +939,7 @@ def _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_res
     A many-term operator (an XAS dipole, a NIXS or rotated-orbital operator) sends determinants on
     different ranks to the same seed row, so on a distributed ``basis`` each rank holds partial
     amplitudes: the ``slaterWeightMin`` cut is then made on the summed rows
-    (:func:`apply_and_redistribute`, ``config.MATVEC_PRUNE``; at cutoff 0 that drops the rows whose
+    (:func:`apply_and_redistribute`, the cut on summed rows; at cutoff 0 that drops the rows whose
     partials cancel), and the seeds come back owner-distributed. Replicated decision; collective
     when it redistributes.
     """

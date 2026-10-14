@@ -106,7 +106,7 @@ def block_Green(
         probe = last_q
         capped = False
         for _i in range(5):
-            # Cut on the summed rows (MATVEC_PRUNE), so the discovered set does not depend on the rank count.
+            # Cut on the summed rows, so the discovered set does not depend on the rank count.
             probe = apply_and_redistribute(hOp, probe, basis, slaterWeightMin, basis.is_distributed)
             basis.add_states(
                 {state for state in probe.support_keys(0.0) if not basis.contains_local(state)},

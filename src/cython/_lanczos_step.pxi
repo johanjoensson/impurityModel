@@ -115,7 +115,7 @@ def block_lanczos_step_cy(
         slaterWeightMin: Amplitude cutoff passed to ``ManyBodyState.prune``;
             SD coefficients below this value are dropped.  Default ``0.0``
             (no pruning).  On ``H q`` the cut is made on each row's summed amplitude
-            when the step redistributes (``config.MATVEC_PRUNE``).
+            when the step redistributes.
         reort_period: Number of steps between full reorthogonalization sweeps
             for ``Reort.PERIODIC`` mode.  Full reorthogonalization is applied at
             step ``it`` when ``it > 0`` and ``it % reort_period == 0``.
@@ -159,7 +159,7 @@ def block_lanczos_step_cy(
     # A capping proxy decides admission on the step's whole output, not chunk by chunk
     # (gf_primitives._CappedBasisProxy.begin_step): replicated, so every rank calls both.
     _begin_step = getattr(basis, "begin_step", None) if _needs_redistribute else None
-    # MATVEC_PRUNE=after_sum: send every partial and cut the summed row instead, so what
+    # Send every partial and cut the summed row instead, so what
     # survives does not depend on the colour's rank count or the chunk count.
     _prune_after_sum = matvec_cut_after_sum(_needs_redistribute, slaterWeightMin)
     _apply_cutoff = 0.0 if _prune_after_sum else slaterWeightMin

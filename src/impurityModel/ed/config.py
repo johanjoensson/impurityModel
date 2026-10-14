@@ -147,6 +147,11 @@ RETIRED_KNOBS = {
         "retired with the zero-growth and absolute-threshold freezes; GF_SUPPORT_FREEZE replaces both, "
         "weighing the weight reaching new determinants against what slaterWeightMin already cuts",
     ),
+    "MATVEC_PRUNE": (
+        "retired: the slaterWeightMin cut of a redistributed sparse matvec is always made on the summed rows "
+        "('after_sum'); 'before_sum' made the result depend on the rank and chunk count "
+        "(doc/gf_support_pipeline.md)"
+    ),
     "GF_OPERATOR_SPLIT": (
         "retired: the pairwise operator split (scalar continued fractions per operator pair) was an "
         "opt-in load-balancing mode that multiplied the Krylov work, and the improved-estimator "
@@ -442,46 +447,6 @@ GF_APPLY_ROW_CHUNKS = Knob(
     (``gf_primitives.py``) -- but the cap itself binds identically either way.""",
 )
 
-MATVEC_PRUNE = Knob(
-    name="MATVEC_PRUNE",
-    kind="str",
-    default="after_sum",
-    group="units",
-    doc="""Where a sparse matvec whose output is redistributed (a distributed basis, or a capping
-    proxy) applies the ``slaterWeightMin`` cutoff to ``H v``: ``after_sum`` (default) cuts each row
-    once its amplitude is summed over every rank (and ``GF_APPLY_ROW_CHUNKS`` chunk); ``before_sum``
-    cuts each rank's and chunk's partial amplitude before the redistribution, as before 2026-10.
-    Covers every such matvec: the block-Lanczos step (``_lanczos_step.pxi``), ``block_apply`` (the TRLM
-    eigensolver on a sparse operator), the BiCGSTAB/GMRES matvec, the Chebyshev filter,
-    ``block_Green``'s basis-expansion probe, and the transition-operator seeds of every GF and spectrum
-    unit (``gf_units.enumerate_gf_units``: XAS, NIXS, PES/IPS, susceptibility), and the first shell
-    of the BiCGSTAB admission start set. ``after_sum`` also applies at ``slaterWeightMin`` 0: a row whose
-    partials cancel exactly is dropped after the sum, as a serial apply drops it, so the determinants
-    a result holds -- and what they count toward a cap -- do not depend on the layout. The CIPSI
-    selection round has its own knob, ``GS_SELECTION_PRUNE``. ``after_sum`` makes the same cut as a
-    serial one-shot ``apply_block(v, slaterWeightMin)``.
-
-    ``before_sum`` makes the result depend on the rank count (a GF colour's width) and the chunk count: a
-    determinant reached from rows on several ranks or chunks loses the partials that are
-    individually below the cutoff, and a capping proxy admits on what is left. Measured on the CrI3
-    archive, uncapped, slaterWeightMin raised to 1e-5: one 4-rank colour against four 1-rank colours
-    gave real-axis G 2.9e-4 apart (relative to max|G|) and different block counts in every unit;
-    with ``after_sum``, 1.8e-9 and the same block counts. At the archive's own slaterWeightMin
-    (1.5e-8) the two orders differ by 1.9e-5.
-
-    **Memory.** ``after_sum`` sends the sub-cutoff partials too, and the block-Lanczos step holds its
-    summed output whole until the cut. In a capped GF unit that output is not projected on the step
-    that crosses the cap (admission waits for the summed output), and it is the term that grows:
-    on an SrMnO3 replay at GF cap 20,000 (serial, 4 chunks) 55% of ``H q``'s rows were sub-cutoff,
-    and the summed output before its cut held 2.1x the rows after it at the peak step (median step
-    1.14x); at a cap that nearly closes the sector, 1.1x. CrI3 (uncapped, sector-full units, 4 ranks):
-    the same peak (368.2 vs 367.8 MiB) and wall per block. ``estimate_gf_peak_bytes`` does not price
-    the cap-crossing step, and its matvec fanout, measured on a unit-amplitude block, cannot tell the
-    two orders apart. A larger step output also raises the RSS the capped unit's memory guard reads,
-    so with an automatic cap a unit may freeze at fewer determinants. Not yet measured at 128 ranks;
-    ``before_sum`` is the fallback.""",
-)
-
 GF_SCHEDULER = Knob(
     name="GF_SCHEDULER",
     kind="str",
@@ -559,8 +524,7 @@ GF_SUPPORT_FREEZE = Knob(
     does not fit its memory budget the freeze is undone and the unit continues sparse and unfrozen. Reported
     as ``support_frozen`` on the unit line and in the ``gf_unit_memory`` / ``gf_unit_basis`` traces, with a
     ``support_freeze`` diagnostic carrying the freezing window's two weights; with ``-v`` every 16 blocks print
-    them as they go. Under ``MATVEC_PRUNE=before_sum`` the matvec's own prune happens inside the apply and is
-    not measured, so only the next block's counts: the freeze then comes later, never earlier.
+    them as they go.
 
     **The BiCGSTAB solves** (``gf_method="bicgstab"`` and the RIXS intermediate resolvent's per-point
     fallback) take the same freeze in their own form: their right-hand side is the same for every
@@ -1298,7 +1262,6 @@ KNOBS: dict[str, Knob] = _register(
     GF_GMRES_MAX_RESTARTS,
     GF_EIGENSTATE_GROUP,
     GF_APPLY_ROW_CHUNKS,
-    MATVEC_PRUNE,
     GF_FROZEN_CSR,
     GF_SCHEDULER,
     GF_CSR_MEMORY_SAFETY,
