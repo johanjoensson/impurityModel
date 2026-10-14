@@ -84,7 +84,7 @@ def _run(model):
         slater_weight_min=1e-10,
         tau=0.05,
     )
-    solver = SolverOptions(reort=None, dense_cutoff=500, sparse_green=True, gf_method="lanczos")
+    solver = SolverOptions(dense_cutoff=500, sparse_green=True, gf_method="lanczos")
     with contextlib.redirect_stdout(io.StringIO()):
         return calc_selfenergy(model, _meshes(), basis, solver, comm=None, verbosity=0)
 

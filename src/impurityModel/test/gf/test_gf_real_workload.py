@@ -2,7 +2,7 @@
 
 The measurement rig for the per-frequency BiCGSTAB memory question
 (``doc/plans/bicgstab_per_frequency_gf.md``, Phase 3b): one run = one
-(workload, gf_method, reort, cap, mesh subset) point, reporting wall time, peak RSS
+(workload, gf_method, cap, mesh subset) point, reporting wall time, peak RSS
 (``VmHWM``) and, when asked, dumping ``sigma`` / ``sigma_real`` / ``sigma_static`` to an
 ``.npz`` so separate processes can be compared at fixed accuracy. Runs are separate
 processes on purpose -- VmHWM is a process-lifetime high-water mark, so a second method
@@ -141,7 +141,6 @@ def test_real_workload_selfenergy():
     assert h5_path, "WORKLOAD_H5 must point to an impurityModel_data.h5 archive"
 
     gf_method = os.environ.get("GF_METHOD", "lanczos")
-    reort = os.environ.get("REORT", "archive")
     cap = os.environ.get("CAP", "archive")
     if cap != "archive":
         cap = None if cap.lower() == "none" else float(cap)
@@ -157,7 +156,6 @@ def test_real_workload_selfenergy():
             workload,
             comm=comm,
             gf_method=gf_method,
-            reort=reort,
             truncation_threshold=cap,
             n_iw=_env_int("N_IW"),
             n_w=_env_int("N_W"),
@@ -171,7 +169,7 @@ def test_real_workload_selfenergy():
     if comm.rank == 0:
         print(
             f"\n[real-workload] {workload['label']} ({os.path.basename(os.path.dirname(h5_path))}) "
-            f"gf_method={gf_method} reort={reort} cap={cap} "
+            f"gf_method={gf_method} cap={cap} "
             f"N_IW={os.environ.get('N_IW', 'full')} N_W={os.environ.get('N_W', 'full')} "
             f"GF_TOL={os.environ.get('GF_TOL', 'default')} GF_REAL_TOL={os.environ.get('GF_REAL_TOL', 'default')} "
             f"GF_MIN_WEIGHT={os.environ.get('GF_MIN_WEIGHT', 'off')}"

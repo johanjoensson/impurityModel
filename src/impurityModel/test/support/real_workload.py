@@ -110,7 +110,7 @@ def load_workload(h5_path, cluster=None, iteration=None):
         :func:`impurityModel.ed.selfenergy.calc_selfenergy`: the solver Hamiltonian as an
         operator dict (``h0``), ``u4``, the raw meshes (``iw_mesh`` real-valued as stored,
         ``w_mesh``), ``rot_to_spherical``, ``impurity_orbitals``, and every solver option
-        the interface recorded (``tau``, ``delta``, ``nominal_occ``, ``reort``, ``dN``,
+        the interface recorded (``tau``, ``delta``, ``nominal_occ``, ``dN``,
         ``chain_restrict``, ...). ``label`` names the group it came from.
     """
     import h5py
@@ -179,7 +179,6 @@ def load_workload(h5_path, cluster=None, iteration=None):
         "mixed_valence": _attr(attrs, "mv"),
         "tau": float(attrs["tau"]),
         "delta": float(attrs["delta"]),
-        "reort": _attr(attrs, "reort"),
         "dense_cutoff": int(_attr(attrs, "dense_cutoff", 1000)),
         "chain_restrict": bool(_attr(attrs, "chain_restrict", False)),
         "occ_cutoff": float(_attr(attrs, "occ_cutoff", 1e-6)),
@@ -204,7 +203,6 @@ def _subsample(mesh, n):
 def build_options(
     workload,
     gf_method=None,
-    reort="archive",
     truncation_threshold="archive",
     dN="archive",
     n_iw=None,
@@ -258,7 +256,6 @@ def build_options(
             basis_kwargs[key] = workload[key]
     basis = BasisOptions(**basis_kwargs)
     solver_kwargs = dict(
-        reort=workload["reort"] if reort == "archive" else reort,
         dense_cutoff=workload["dense_cutoff"],
         sparse_green=workload["sparse_green"],
         gf_method=gf_method,
@@ -276,7 +273,6 @@ def run_selfenergy(
     workload,
     comm=None,
     gf_method=None,
-    reort="archive",
     truncation_threshold="archive",
     dN="archive",
     n_iw=None,
@@ -294,7 +290,7 @@ def run_selfenergy(
         From :func:`load_workload`.
     gf_method : str, optional
         ``"lanczos"`` or ``"bicgstab"``; ``None`` (default) takes the archive's recorded kernel.
-    reort, truncation_threshold, dN
+    truncation_threshold, dN
         ``"archive"`` keeps the recorded production setting; anything else overrides it
         (``dN`` bounds the excited-sector occupation window -- FCC Ni production runs
         record ``dN=None``, i.e. no window at all).
@@ -326,7 +322,6 @@ def run_selfenergy(
     model, meshes, basis, solver = build_options(
         workload,
         gf_method=gf_method,
-        reort=reort,
         truncation_threshold=truncation_threshold,
         dN=dN,
         n_iw=n_iw,

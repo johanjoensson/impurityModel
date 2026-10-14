@@ -125,25 +125,11 @@ def _phase_timers():
             setattr(module, name, orig)
 
 
-def _resolve_reort():
-    """Optional GF reort override via SELFENERGY_BENCH_REORT (none/partial/full)."""
-    name = os.environ.get("SELFENERGY_BENCH_REORT")
-    if not name:
-        return None
-    from impurityModel.ed.BlockLanczosArray import Reort
-
-    return {
-        "none": Reort.NONE,
-        "partial": Reort.PARTIAL,
-        "full": Reort.FULL,
-    }[name.lower()]
-
-
 def _build_inputs(ls, nBaths, nValBaths, n0imp, n_omega, dense_cutoff, truncation_threshold, *, rank, verbose):
     """Construct the calc_selfenergy arguments for the NiO d-shell anchor workload.
 
     Thin wrapper over the shared :func:`_nio_workload.build_selfenergy_inputs`, applying
-    the benchmark-specific env-var knobs (reort / occ / weight / dN).
+    the benchmark-specific env-var knobs (occ / weight / dN).
     """
     from impurityModel.test.support._nio_workload import build_selfenergy_inputs
 
@@ -157,7 +143,6 @@ def _build_inputs(ls, nBaths, nValBaths, n0imp, n_omega, dense_cutoff, truncatio
         truncation_threshold=truncation_threshold,
         rank=rank,
         verbose=verbose,
-        reort=_resolve_reort(),
         occ_cutoff=float(os.environ.get("SELFENERGY_BENCH_OCC_CUTOFF", "1e-12")),
         slaterWeightMin=float(os.environ.get("SELFENERGY_BENCH_SWMIN", "1e-12")),
         dN=(int(os.environ["SELFENERGY_BENCH_DN"]) if os.environ.get("SELFENERGY_BENCH_DN") else None),

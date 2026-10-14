@@ -58,7 +58,7 @@ def _selfenergy_args(**overrides):
         slater_weight_min=v["slaterWeightMin"],
         tau=v["tau"],
     )
-    solver = SolverOptions(reort=v["reort"], dense_cutoff=v["dense_cutoff"], sparse_green=v["sparse_green"])
+    solver = SolverOptions(dense_cutoff=v["dense_cutoff"], sparse_green=v["sparse_green"])
     return dict(
         model=model,
         meshes=meshes,

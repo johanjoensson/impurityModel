@@ -245,7 +245,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     slaterWeightMin = basis.slater_weight_min
     dN = basis.dN
     excitation_budget = basis.excitation_budget
-    reort = solver.reort
     dense_cutoff = solver.dense_cutoff
     sparse_green = solver.sparse_green
     gf_method = solver.gf_method
@@ -362,7 +361,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
             blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
             verbose=verbosity >= 1,
             verbose_extra=verbosity >= 2,
-            reort=reort,
+            reort=None,  # the Green's-function recurrence never reorthogonalizes
             dN=dN,
             occ_cutoff=occ_cutoff,
             slaterWeightMin=slaterWeightMin,

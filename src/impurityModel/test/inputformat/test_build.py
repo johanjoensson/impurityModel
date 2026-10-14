@@ -293,7 +293,6 @@ def test_auto_sentinels_stay_sentinels(written):
     """N2/R7: "auto" must not be materialised into a number by the reader."""
     built = build(load_input(written(SELFENERGY)))
     assert built.basis.truncation_threshold is None, "the RAM-derived cap stays at its call site"
-    assert built.solver.reort is None
 
 
 def test_none_disables_the_cap_rather_than_deriving_one(written):

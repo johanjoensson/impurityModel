@@ -725,10 +725,6 @@ def _build_solver(resolved):
 
 def _solver_options_from(SolverOptions, table):
     return SolverOptions(
-        # "auto" -> None, which is NOT one mode: it means NONE on the Green's-function path
-        # and PARTIAL on the eigensolver path, and it also selects the memory model used to
-        # derive the determinant budget.
-        reort=None if table["reort"] == "auto" else table["reort"],
         dense_cutoff=table["dense_cutoff"],
         sparse_green=table["sparse_green"],
         gf_method=table["gf_method"],

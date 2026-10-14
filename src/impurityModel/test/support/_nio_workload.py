@@ -31,7 +31,6 @@ def build_selfenergy_inputs(
     hField=(0.0, 0.0, 0.0001),
     delta=0.2,
     tau=0.002,
-    reort=None,
     occ_cutoff=1e-12,
     slaterWeightMin=1e-12,
     dN=None,
@@ -157,7 +156,6 @@ def build_selfenergy_inputs(
         verbosity=2 if verbose else 0,
         rot_to_spherical=rot_to_spherical,
         cluster_label="bench",
-        reort=reort,
         dense_cutoff=dense_cutoff,
         chain_restrict=False,
         occ_cutoff=occ_cutoff,
@@ -199,7 +197,6 @@ def as_calc_selfenergy_args(inputs):
         tau=inputs["tau"],
     )
     solver = SolverOptions(
-        reort=inputs["reort"],
         dense_cutoff=inputs["dense_cutoff"],
         sparse_green=inputs["sparse_green"],
         gf_method=inputs.get("gf_method", "lanczos"),

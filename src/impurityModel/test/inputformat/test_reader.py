@@ -392,6 +392,14 @@ def test_a_removed_key_says_it_was_removed_not_that_it_is_a_typo(write_input):
         load_input(write_input(text))
 
 
+def test_a_retired_key_is_ignored_with_a_warning(write_input):
+    """`[solver] reort` named a choice the solver now makes itself: an input written for an older
+    version still runs, and says why the line did nothing."""
+    text = MINIMAL_SELFENERGY.replace("[selfenergy]", '[solver]\nreort = "partial"\n[selfenergy]')
+    resolved = load_input(write_input(text))
+    assert any("'reort' is retired" in w for w in resolved.warnings)
+
+
 # ---- every refusal has a message that names the problem --------------------------------------
 #
 # Each case is one small edit of MINIMAL_SELFENERGY. Before this table most of these raises had

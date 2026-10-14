@@ -170,7 +170,7 @@ def _sigma(solver, comm):
 
 def test_calc_selfenergy_with_outer_admission_matches_the_lanczos_run(monkeypatch):
     reference = _sigma(
-        SolverOptions(reort=None, dense_cutoff=500, sparse_green=True, gf_method="lanczos"), MPI.COMM_SELF
+        SolverOptions(dense_cutoff=500, sparse_green=True, gf_method="lanczos"), MPI.COMM_SELF
     )
     outer = _sigma(
         SolverOptions(gf_method="bicgstab", gf_admission="outer", gf_admit_tol=1e-9, dense_cutoff=500),

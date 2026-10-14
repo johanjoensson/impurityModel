@@ -50,6 +50,16 @@ REMOVED_KEYS = {
     ),
 }
 
+#: Keys that were once meaningful and are now ignored with a warning, so an input written for an
+#: older version still runs. Unlike :data:`REMOVED_KEYS` (a hard error: the line would have done
+#: something that no longer happens), these name a choice the solver now makes itself.
+RETIRED_KEYS = {
+    ("solver", "reort"): (
+        "the Green's-function path always runs without reorthogonalization and the ground-state "
+        "eigensolver always reorthogonalizes fully; the key is ignored"
+    ),
+}
+
 
 class _Unset:
     """Sentinel for "no default"; distinct from ``None``, which is a meaningful default."""
@@ -1081,16 +1091,6 @@ _TABLE_LIST += [
                 "is always kept; the rest is renormalised). Absent keeps every state of the "
                 "eigensolver's energy window, each of which costs a full set of Green's-function units.",
                 minimum=0.0,
-            ),
-            Key(
-                "reort",
-                Kind.AUTO_ENUM,
-                "auto",
-                "Block-Lanczos reorthogonalization. 'auto' is the solver's own default, which "
-                "is NOT one mode: it means NONE on the Green's-function path and PARTIAL on "
-                "the eigensolver path. Writing a mode also moves the derived determinant "
-                "budget, since retention switches the memory model to its worst case.",
-                choices=("auto", "none", "partial", "full"),
             ),
             Key("dense_cutoff", Kind.COUNT, 500, "Use a dense eigensolver below this matrix size.", minimum=1),
             Key("sparse_green", Kind.BOOL, True, "Use the sparse block-Lanczos Green's-function path."),
