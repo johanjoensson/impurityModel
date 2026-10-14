@@ -163,3 +163,24 @@ def test_distributed_vanishing_threshold_reaches_the_serial_closure(monkeypatch)
     _G, serial, _z = _run(monkeypatch, 1e-12)
     _G, info, _z = _run(monkeypatch, 1e-12, comm=comm)
     assert _retained(info, comm) == _retained(serial)
+
+
+def test_a_tripped_memory_guard_is_checked_once_per_admission_and_freezes(monkeypatch):
+    """The guard is collective and warns: the pruned proxy must ask it once per call, not once itself and once
+    again through the base class (which warned twice, and could fall through to plain cap admission with no ban
+    if the second answer differed)."""
+    from impurityModel.ed.gf_primitives import _PrunedBasisProxy
+
+    proxy = _PrunedBasisProxy(_seed_basis(), 10**9, 0.2)
+    calls = []
+
+    def tripped(self=proxy):
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(proxy, "_over_memory_budget", tripped)
+    block = ManyBodyState.from_states(_seeds())
+    out = proxy._admit(block)
+    assert len(calls) == 1
+    assert proxy.frozen and proxy.memory_frozen
+    assert len(out) == len(proxy.retained_mask)

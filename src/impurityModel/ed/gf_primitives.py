@@ -494,16 +494,20 @@ class _CappedBasisProxy:
             block.keep_rows(self._mask)
             return block
         if self._over_memory_budget():
-            # Freeze where it stands: nothing new is admitted from here on, exactly as a cap hit
-            # at the current size (the recurrence continues as the exact PHP on what is retained).
-            self._frozen = True
-            self.cap_hit = True
-            self.memory_frozen = True
-            block.keep_rows(self._mask)
-            return block
+            return self._freeze_on_memory(block)
         if self._deferred:
             return block
         return self._admit_counted(block)
+
+    def _freeze_on_memory(self, block):
+        """The memory guard tripped: freeze where the support stands. Nothing new is admitted from here on,
+        exactly as a cap hit at the current size (the recurrence continues as the exact PHP on what is
+        retained)."""
+        self._frozen = True
+        self.cap_hit = True
+        self.memory_frozen = True
+        block.keep_rows(self._mask)
+        return block
 
     def _admit_counted(self, block, step=False):
         """Admit ``block``'s new rows if they fit under the cap, else its top rows, and freeze. Collective.
@@ -745,8 +749,12 @@ class _PrunedBasisProxy(_CappedBasisProxy):
         self._deferred = False
 
     def _admit(self, block):
-        if self._frozen or self._over_memory_budget():
+        if self._frozen:
             return super()._admit(block)
+        # One guard check per call, as the base class makes: a second one (via super()._admit) would warn twice
+        # and, if the RSS had dropped in between, fall through to plain cap admission with no ban.
+        if self._over_memory_budget():
+            return self._freeze_on_memory(block)
         new = block.keys_new_above(self._mask, 0.0)
         # Global, so every rank agrees on whether this is the first-shell step.
         first_shell = not self._shell_admitted and self._allreduce_sum(len(new)) > 0
