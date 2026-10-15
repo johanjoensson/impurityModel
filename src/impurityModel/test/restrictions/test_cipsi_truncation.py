@@ -487,8 +487,11 @@ def test_de2_denominator_uses_energy_gap_for_candidates_above_ref():
     solver = CIPSISolver(basis)
 
     hpsi = ManyBodyState({d1: v, d2: v})  # H|psi_ref> projected onto the candidates
-    local_Djs, de2 = solver._calc_de2(H, [hpsi], np.array([e0]))
-    score = {det: float(np.abs(de2[0, j])) for j, det in enumerate(local_Djs)}
+    from impurityModel.ed.cipsi_solver import _score_candidates
+
+    local_Djs, overlaps, e_Dj = solver._candidate_overlaps_and_energies(H, ManyBodyState.from_states([hpsi]))
+    scores = _score_candidates(overlaps, np.array([e0]), e_Dj, [[0]])
+    score = {det: float(scores[j]) for j, det in enumerate(local_Djs)}
 
     # Finite and set by the gap: closer candidate (|dE|=1) scores twice the farther (|dE|=2).
     assert score[d1] == pytest.approx(v**2 / abs(e0 - e1), rel=1e-9)

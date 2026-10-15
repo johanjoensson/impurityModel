@@ -851,14 +851,9 @@ class CIPSISolver:
         real selection-rule cancellation, not a truncation artifact.
         """
         block = psi_ref if isinstance(psi_ref, ManyBodyState) else ManyBodyState.from_states(psi_ref)
-        n_chunks = config.APPLY_ROW_CHUNKS.get()
+        n_chunks = max(config.APPLY_ROW_CHUNKS.get() or 1, 1)
         # Send every partial and cut the summed amplitude, so the candidate set does not depend on how
         # the reference rows are split over ranks and chunks.
-        if n_chunks is None or n_chunks <= 1:
-            raw = self._apply_and_prune_columns(H, block, 0.0)
-            merged = self.basis.redistribute_block(raw)
-            return self._prune_summed(merged, cutoff)
-
         # Row-chunked: the round's peak is the raw apply output, its packed send buffer, the
         # receive buffer and the merged block all alive at once (~6x the owned block, measured;
         # see doc/plans/dc_smo_memory.md round 6). Applying one chunk of the reference rows at
@@ -881,7 +876,7 @@ class CIPSISolver:
             # vector's capacity -- so every chunk's "bounded" apply ran alongside a full-size
             # copy, and the mask cost one Python key object per row of the whole block.
             part = block.row_slice(int(lo), int(hi))
-            raw = self._apply_and_prune_columns(H, part, 0.0)
+            raw = H.apply_block(part, 0.0)
             del part
             piece = self.basis.redistribute_block(raw)
             del raw
@@ -905,19 +900,10 @@ class CIPSISolver:
         merged.prune_rows(0.0)
         return merged
 
-    @staticmethod
-    def _apply_and_prune_columns(H, block, cutoff):
-        """``H`` applied to ``block`` with every column pruned to ``cutoff`` in place (the
-        one-shot body of :meth:`_apply_block_and_redistribute`, shared with its chunked path)."""
-        raw = H.apply_block(block, cutoff)
-        if cutoff > 0.0 and len(raw):  # cutoff 0: apply_block already dropped only exact zeros
-            _zero_entries_at_most(np.asarray(raw), cutoff)
-        return raw
-
     def _candidate_overlaps_and_energies(self, H, Hpsi_ref, slaterWeightMin: float = 0):
         """Enumerate the out-of-basis candidates of ``Hpsi_ref`` with couplings and energies.
 
-        The candidate machinery under :meth:`_calc_de2`'s Epstein-Nesbet score (the
+        The candidate machinery under :func:`_score_candidates`'s Epstein-Nesbet score (the
         importance denominator is applied on top): this rank's hash-owned candidate
         determinants ``local_Djs`` (sorted, so rank-independent given ``Hpsi_ref`` is
         redistributed), the coupling matrix ``overlaps[i, j] = <Dj | H | psi_i>`` read off
@@ -971,26 +957,6 @@ class CIPSISolver:
         # element depends on nothing but the determinant.
         e_Dj = np.real(H.diagonal(blk))[new_mask]
         return local_Djs, overlaps, e_Dj
-
-    def _calc_de2(self, H, Hpsi_ref, e_ref: np.ndarray, slaterWeightMin: float = 0):
-        local_Djs, overlaps, e_Dj = self._candidate_overlaps_and_energies(H, Hpsi_ref, slaterWeightMin)
-        if not local_Djs:
-            return local_Djs, overlaps
-
-        # Epstein-Nesbet importance |<Dj|H|psi>|^2 / |E_ref - E_Dj| (the magnitude of
-        # the second-order energy contribution). The denominator must not be a signed
-        # clamp: candidates sit *above* E_ref for a ground-state search, so
-        # max(E_ref - E_Dj, eps) would collapse to eps and turn the selection into a
-        # bare coupling filter.
-        de = np.maximum(np.abs(e_ref[:, None] - e_Dj[None, :]), 1e-12)
-        # Real-valued by construction (a ratio of two non-negative magnitudes) -- `zeros_like`
-        # used to inherit `overlaps`' complex128 dtype, doubling this array's footprint for no
-        # reason (every value assigned into it is already real; found while sizing the CIPSI
-        # selection round's memory peak, doc/plans/dc_smo_memory.md).
-        de2 = np.zeros(overlaps.shape, dtype=float)
-        mask = np.abs(overlaps) > 1e-12
-        de2[mask] = np.square(np.abs(overlaps[mask])) / de[mask]
-        return local_Djs, de2
 
     def _top_k_mask(self, scores, keys, k):
         """Local mask of the global top ``k`` of ``scores`` (``keys``: this rank's determinants, aligned).
@@ -1056,7 +1022,6 @@ class CIPSISolver:
         H,
         de2_min,
         slater_cutoff=0,
-        return_Hpsi_ref=False,
         max_new=None,
         affordable_growth=None,
         e_pt2_tol=None,
@@ -1104,17 +1069,10 @@ class CIPSISolver:
             peak_is_own = reset_peak_rss()
         Hpsi_ref = self._apply_block_and_redistribute(H, psi_ref, slater_cutoff)
         # Global row count of the shared support H|psi_ref> spans (before the not-in-basis
-        # filter): the quantity `_apply_block_and_redistribute`'s and `_calc_de2`'s per-round
+        # filter): the quantity `_apply_block_and_redistribute`'s per-round
         # transient scale with (see doc/plans/dc_smo_memory.md) -- recorded here, once, rather
         # than re-derived by every caller that wants the per-cycle memory/timing picture.
         hpsi_rows = self._allreduce_sum(len(Hpsi_ref))
-        # `_candidate_overlaps_and_energies` directly, not `_calc_de2`: the latter materializes
-        # the whole (p, n_Dj) de2 array in one shot, which is exactly the per-cycle memory peak
-        # `_score_candidates` below exists to bound (doc/plans/dc_smo_memory.md). `0`, not
-        # `slater_cutoff`, matches `_calc_de2`'s own default -- this call site never passed
-        # `slater_cutoff` through `_calc_de2` either, so this preserves that behaviour exactly
-        # rather than changing what the diagonal probe prunes to as a side effect of this
-        # refactor.
         local_Djs, overlaps, e_Dj = self._candidate_overlaps_and_energies(H, Hpsi_ref, 0)
         # Importance = max over reference *manifolds* of the manifold-summed de2, not max over
         # individual reference states. Within a degenerate manifold the eigensolver returns an
@@ -1174,8 +1132,6 @@ class CIPSISolver:
         self.last_selection = selection_stats
         new_Dj = set(itertools.compress(local_Djs, de2_mask))
 
-        if return_Hpsi_ref:
-            return new_Dj, Hpsi_ref
         return new_Dj
 
     def expand(

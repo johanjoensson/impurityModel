@@ -112,13 +112,13 @@ def test_apply_count_follows_the_knob(n_chunks, expected_applies, monkeypatch):
     chunks apply exactly `n` times, empty chunks included -- that count is what keeps the collective redistributions in
     step across ranks, so it must not depend on how many rows a rank happens to own."""
     calls = []
-    original = CIPSISolver._apply_and_prune_columns
+    original = Basis.redistribute_block
 
-    def counting(H, block, cutoff):
+    def counting(self, block, *args, **kwargs):
         calls.append(len(block))
-        return original(H, block, cutoff)
+        return original(self, block, *args, **kwargs)
 
-    monkeypatch.setattr(CIPSISolver, "_apply_and_prune_columns", staticmethod(counting))
+    monkeypatch.setattr(Basis, "redistribute_block", counting)
     _run(None, n_chunks, 0.0, monkeypatch)
     assert len(calls) == expected_applies
 

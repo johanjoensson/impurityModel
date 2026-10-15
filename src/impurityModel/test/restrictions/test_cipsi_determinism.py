@@ -5,7 +5,7 @@ with -- the ground-state *energy* was reproducible (which is what the other test
 the selected determinants were not, and every excited basis and Green's function built on them
 inherited the difference. Three independent causes, one test each:
 
-1. ``_calc_de2``'s diagonal probe applied ``H`` to each rank's *local* candidate slice, so the
+1. The candidate-diagonal probe applied ``H`` to each rank's *local* candidate slice, so the
    candidate-candidate couplings ``<Dj|H|Dk>`` with ``Dk`` on another rank were missing -- and
    which ones were missing depended on ``comm.size``.
 2. The Lanczos start vector came from ``random.seed(42 + rank)``, i.e. from the partition.
