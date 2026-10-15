@@ -201,7 +201,7 @@ def test_addition_removal_peak_check_is_deferred():
 
 def test_basis_truncation_check():
     """Cap not reached -> OK; frozen -> WARN that must NOT trigger the thermal retry
-    (needs_more_states drives an eigensolver re-run, which cannot widen the basis)."""
+    (needs_more_states flags a truncated ensemble, which a re-run cannot widen the basis for)."""
     ok = gd.check_basis_truncation(False, 1234, float("inf"))
     assert ok.severity == gd.Severity.OK
     warn = gd.check_basis_truncation(True, 5000, 5000)

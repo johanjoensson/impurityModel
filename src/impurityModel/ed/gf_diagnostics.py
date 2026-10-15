@@ -16,8 +16,7 @@ that no longer go unnoticed thanks to this module:
 Each check returns a :class:`Diagnostic` (``OK`` / ``WARN`` / ``FAIL`` plus a measured value,
 threshold, human-readable message, and a concrete suggestion).  A :class:`DiagnosticReport`
 collects them per Green's-function block and renders one compact table, and exposes the
-aggregate ``needs_more_states`` / ``needs_more_iterations`` flags that drive the single
-auto-retry in ``calc_selfenergy``.
+aggregate ``needs_more_states`` / ``needs_more_iterations`` flags.
 
 Severity policy: checks are advisory (``WARN``) by default; ``FAIL`` is reserved for results
 that are outright unphysical (a violated exact sum rule, a non-causal Green's function).

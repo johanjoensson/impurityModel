@@ -308,92 +308,78 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         # ...and its optional per-determinant floor.
         "de2_min": GS_DE2_MIN if basis.de2_min is None else basis.de2_min,
     }
-    # Compute the thermal ground state and the interacting Green's function, with a single
-    # auto-retry: the diagnostics report (gf_diagnostics) can detect that the thermal
-    # ensemble was truncated (the highest retained state still carries Boltzmann weight); if
-    # so we re-run the eigensolver with more requested states (num_wanted) once.
+    # The thermal ground state and the interacting Green's function. The ground-state solve returns
+    # every eigenstate inside the thermal window, certified complete (or says it could not), so the
+    # ensemble is never re-requested with a larger count.
     num_wanted = 10
-    max_retries = 2
-    for _attempt in range(max_retries + 1):
-        t_phase = time.perf_counter()
-        psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
-            h,
-            basis_information,
-            block_structure,
-            rot_to_spherical,
-            verbosity,
-            slaterWeightMin=slaterWeightMin,
-            num_wanted=num_wanted,
-        )
-        _report_phase_time(report, "ground state", t_phase)
-        restrictions = ground_state_basis.restrictions
+    t_phase = time.perf_counter()
+    psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
+        h,
+        basis_information,
+        block_structure,
+        rot_to_spherical,
+        verbosity,
+        slaterWeightMin=slaterWeightMin,
+        num_wanted=num_wanted,
+    )
+    _report_phase_time(report, "ground state", t_phase)
+    restrictions = ground_state_basis.restrictions
 
-        if restrictions is not None:
-            report("Restrictions on ground-state occupation:", level=V_DETAIL)
-            for indices, limits in restrictions.items():
-                report(f"  {sorted(indices)} : {limits}", level=V_DETAIL)
+    if restrictions is not None:
+        report("Restrictions on ground-state occupation:", level=V_DETAIL)
+        for indices, limits in restrictions.items():
+            report(f"  {sorted(indices)} : {limits}", level=V_DETAIL)
 
-        ensemble_es = es
-        if gf_min_weight is not None:
-            psis, es, dropped = _drop_low_weight_manifolds(psis, es, tau, gf_min_weight, slaterWeightMin, comm)
-            if dropped:
-                report(
-                    f"gf_min_weight {gf_min_weight:g}: dropped {len(dropped)} of {len(ensemble_es)} thermal state(s) "
-                    f"(E-E0 = {', '.join(f'{de:.4g}' for de, _w in dropped)}; total Boltzmann weight "
-                    f"{sum(w for _de, w in dropped):.3e}) from the Green's function and self-energy.",
-                    level=V_RESULT,  # it changes the result, so it is never hidden
-                )
-
-        report.banner("Interacting Green's function")
-        report(f"Considering {len(es)} eigenstate(s) for the spectra.")
-        report("Calculating interacting Green's function ...", flush=True)
-
-        t_phase = time.perf_counter()
-        gs_matsubara, gs_realaxis, gf_report = get_Greens_function(
-            matsubara_mesh=iw,
-            omega_mesh=w,
-            psis=psis,
-            es=es,
-            tau=tau,
-            basis=ground_state_basis,
-            hOp=h,
-            delta=delta,
-            blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
-            verbose=verbosity >= 1,
-            verbose_extra=verbosity >= 2,
-            reort=None,  # the Green's-function recurrence never reorthogonalizes
-            dN=dN,
-            occ_cutoff=occ_cutoff,
-            slaterWeightMin=slaterWeightMin,
-            sparse=sparse_green,
-            num_wanted=num_wanted,
-            gf_method=gf_method,
-            gf_admission=gf_admission,
-            gf_admit_tol=gf_admit_tol,
-            gf_tol=gf_tol,
-            gf_real_tol=gf_real_tol,
-            ensemble_es=ensemble_es,
-            operator_families=lambda block: estimator.operator_families(block, sb),
-        )
-
-        _report_phase_time(report, "Green's function", t_phase)
-        # Root rank renders the diagnostics report and decides whether to retry; the decision
-        # is broadcast so every rank re-enters calc_gs collectively (or all break).
-        retry = False
-        if rank == 0 and gf_report is not None:
-            gf_report.add(
-                "ground state", check_ground_state_truncation(gs_info.get("truncation"), gs_info.get("convergence"))
+    ensemble_es = es
+    if gf_min_weight is not None:
+        psis, es, dropped = _drop_low_weight_manifolds(psis, es, tau, gf_min_weight, slaterWeightMin, comm)
+        if dropped:
+            report(
+                f"gf_min_weight {gf_min_weight:g}: dropped {len(dropped)} of {len(ensemble_es)} thermal state(s) "
+                f"(E-E0 = {', '.join(f'{de:.4g}' for de, _w in dropped)}; total Boltzmann weight "
+                f"{sum(w for _de, w in dropped):.3e}) from the Green's function and self-energy.",
+                level=V_RESULT,  # it changes the result, so it is never hidden
             )
-            # Always shown (this is the diagnostics report itself, not detail): only
-            # problem rows at the terse default, the full table from -v.
-            report(gf_report.render(only_problems=not report.enabled(V_SUMMARY)), level=V_RESULT)
-            retry = gf_report.needs_more_states and _attempt < max_retries
-        if comm is not None:
-            retry = comm.bcast(retry, root=0)
-        if not retry:
-            break
-        num_wanted *= 2
-        report(f"\nThermal ensemble appears truncated; retrying with num_wanted = {num_wanted}.\n", flush=True)
+
+    report.banner("Interacting Green's function")
+    report(f"Considering {len(es)} eigenstate(s) for the spectra.")
+    report("Calculating interacting Green's function ...", flush=True)
+
+    t_phase = time.perf_counter()
+    gs_matsubara, gs_realaxis, gf_report = get_Greens_function(
+        matsubara_mesh=iw,
+        omega_mesh=w,
+        psis=psis,
+        es=es,
+        tau=tau,
+        basis=ground_state_basis,
+        hOp=h,
+        delta=delta,
+        blocks=[block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks],
+        verbose=verbosity >= 1,
+        verbose_extra=verbosity >= 2,
+        reort=None,  # the Green's-function recurrence never reorthogonalizes
+        dN=dN,
+        occ_cutoff=occ_cutoff,
+        slaterWeightMin=slaterWeightMin,
+        sparse=sparse_green,
+        gf_method=gf_method,
+        gf_admission=gf_admission,
+        gf_admit_tol=gf_admit_tol,
+        gf_tol=gf_tol,
+        gf_real_tol=gf_real_tol,
+        ensemble_es=ensemble_es,
+        operator_families=lambda block: estimator.operator_families(block, sb),
+    )
+
+    _report_phase_time(report, "Green's function", t_phase)
+    if rank == 0 and gf_report is not None:
+        gf_report.add(
+            "ground state", check_ground_state_truncation(gs_info.get("truncation"), gs_info.get("convergence"))
+        )
+        # Always shown (this is the diagnostics report itself, not detail): only
+        # problem rows at the terse default, the full table from -v.
+        report(gf_report.render(only_problems=not report.enabled(V_SUMMARY)), level=V_RESULT)
     # get_Greens_function resolved the estimator's operator families; the impurity Green's
     # function is the leading block of each (the whole of it for the Dyson estimator).
     inequivalent_blocks = [block_structure.blocks[block_i] for block_i in block_structure.inequivalent_blocks]
