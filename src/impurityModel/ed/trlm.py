@@ -29,19 +29,12 @@ from impurityModel.ed.BlockLanczosCore import (
     DEFAULT_EIGEN_TOL,
     _build_full_T,
     block_apply,
+    block_cols,
     block_combine,
+    block_inner,
     block_normalize,
     block_orthogonalize,
     eigh_block_tridiagonal,
-)
-from impurityModel.ed.block_view import (
-    KrylovColumnStore,
-    block_cols,
-    check_width_sync,
-    copy_block,
-    slice_cols,
-    trim_trailing_beta,
-    width_synced_total,
 )
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.solver_trace import note as _trace_note
@@ -69,6 +62,97 @@ STATUS_CONVERGED = (
     "invariant_subspace_sweep",
     "invariant_subspace_continuation",
 )
+
+
+def check_width_sync(Q, widths, where, exact=False):
+    """Assert the block-width table and the stored Krylov basis agree.
+
+    The restart loop indexes ``T`` (sized from ``widths``) and ``Q`` by the *same* cumulative offsets, so
+    ``sum(widths)`` must never exceed ``Q``'s column count. A sweep ends either with a trailing residual
+    block appended but not counted (``sum(widths) == cols - w_last``) or with the last block counted and
+    no residual stored (``sum(widths) == cols``) -- never with a counted block whose vectors were never
+    stored. ``exact=True`` where the residual block has already been split off.
+
+    Raises
+    ------
+    RuntimeError
+        If the invariant is violated.
+    """
+    cols = block_cols(Q)
+    total = int(sum(widths)) if widths is not None else 0
+    if total > cols:
+        raise RuntimeError(
+            f"{where}: block widths sum to {total} but the Krylov basis holds only {cols} "
+            f"columns ({widths!r}). The recurrence counted a block whose vectors were never stored."
+        )
+    if exact and total != cols:
+        raise RuntimeError(
+            f"{where}: block widths sum to {total} but the Krylov basis holds {cols} columns ({widths!r}). "
+            "The residual block has already been split off here, so the stored columns must be exactly "
+            "the ones T is expressed in."
+        )
+
+
+def width_synced_total(Q_basis, widths, m_act, p, where, exact=False):
+    """:func:`check_width_sync`, then the true (possibly deflation-shrunk) subspace dimension ``sum(widths)``."""
+    check_width_sync(Q_basis, widths, where, exact=exact)
+    return int(sum(widths)) if widths is not None else m_act * p
+
+
+def trim_trailing_beta(betas, m_act):
+    """Drop the trailing residual-block coupling from ``betas`` (a running sweep has one entry per step,
+    including the not-yet-accepted residual); a sweep that already split it off is returned unchanged."""
+    return betas[: m_act - 1] if len(betas) == m_act else betas
+
+
+class KrylovColumnStore:
+    """Append-only column store for the Krylov basis of one TRLM restart.
+
+    A preallocated C-ordered buffer whose filled prefix is handed out as a view: numpy passes the strided
+    view to BLAS through its leading dimension, so products against it are bit-identical to ones against a
+    concatenated copy, and appending a block copies that block and nothing else. The buffer is kept across
+    restarts and reallocated only when a restart asks for more columns than it holds. :attr:`columns` taken
+    before :meth:`reset` is overwritten by the next restart's columns, so callers drop it first.
+    """
+
+    def __init__(self):
+        self._buf = None
+        self._filled = 0
+
+    def reset(self, like, capacity, row_hint=None):
+        """Empty the store, with room for ``capacity`` columns shaped like the block ``like``."""
+        self._filled = 0
+        n_rows = like.shape[0]
+        if self._buf is None or self._buf.shape[0] != n_rows or self._buf.shape[1] < capacity:
+            self._buf = None  # free the old buffer before allocating the new one
+            self._buf = np.empty((n_rows, capacity), dtype=complex)
+
+    def append(self, block):
+        """Copy the columns of ``block`` in after the ones already stored."""
+        w = block.shape[1]
+        if self._filled + w > self._buf.shape[1]:
+            grown = np.empty((self._buf.shape[0], max(2 * self._buf.shape[1], self._filled + w)), dtype=complex)
+            grown[:, : self._filled] = self._buf[:, : self._filled]
+            self._buf = grown
+        self._buf[:, self._filled : self._filled + w] = block
+        self._filled += w
+
+    @property
+    def columns(self):
+        """A view of the filled prefix."""
+        return self._buf[:, : self._filled]
+
+    def project(self, wp, mpi=False, comm=None):
+        """One classical Gram-Schmidt pass of ``wp`` against the stored columns.
+
+        Returns ``(wp - Q O, O)`` with ``O = Q^H wp`` taken *before* the pass and summed over ranks, so the
+        first of two passes also yields the Lanczos ``alpha`` (its last rows). Collective on ``comm``: one
+        ``Allreduce`` of the ``(n_cols, p)`` overlaps, on every rank.
+        """
+        Q = self.columns
+        overlaps = block_inner(Q, wp, mpi, comm)
+        wp, _ = block_orthogonalize(wp, Q, overlaps=overlaps, mpi=mpi, comm=comm)
+        return wp, overlaps
 
 
 class StagnationMonitor:
@@ -177,7 +261,7 @@ def _extract(T, Q, dim, num_wanted, comm, window):
         n_in, _ = window.split(theta)
         n_ret = min(len(theta), n_in + 1)
     wanted = np.argsort(theta)[:n_ret]
-    return theta[wanted], block_combine(slice_cols(Q, 0, dim), S[:, wanted], 0.0), n_in
+    return theta[wanted], block_combine(Q[:, 0:dim], S[:, wanted], 0.0), n_in
 
 
 def _extract_invariant_subspace(alphas, betas_off, widths, Q_basis, num_wanted, comm, window, m_actual, m, q_m):
@@ -312,8 +396,8 @@ def trlm(
     total = width_synced_total(Q_basis, widths, m_actual, p, "TRLM initial sweep")
     if verbose and rank0 and total < m_actual * p:
         print(f"[TRLM] Sweep deflated to dim {total} (< {m_actual * p}); continuing to the restart loop.")
-    q_m = copy_block(slice_cols(Q_basis, total, block_cols(Q_basis))) if block_cols(Q_basis) > total else None
-    Q_basis = slice_cols(Q_basis, 0, total)
+    q_m = Q_basis[:, total:].copy() if block_cols(Q_basis) > total else None
+    Q_basis = Q_basis[:, 0:total]
     betas_off = trim_trailing_beta(betas, m_actual)
 
     closed = _extract_invariant_subspace(alphas, betas_off, widths, Q_basis, num_wanted, comm, window, m_actual, m, q_m)
@@ -388,7 +472,7 @@ def trlm(
         Y_last = Y_k[D - p_last : D, :]
         # The retained block X = Q Y inherits Q's orthonormality; normalizing it only removes the
         # O(eps) drift. It cannot lose rank (Q is orthonormal, Y has orthonormal columns).
-        Q_ret, _ = block_normalize(block_combine(slice_cols(Q_basis, 0, D), Y_k, 0.0), mpi, comm, 0.0)
+        Q_ret, _ = block_normalize(block_combine(Q_basis[:, 0:D], Y_k, 0.0), mpi, comm, 0.0)
         k_ret = block_cols(Q_ret)
         if k_ret != len(keep):
             raise RuntimeError(f"TRLM: retained Ritz block lost rank ({k_ret} of {len(keep)}) at restart {restart}.")

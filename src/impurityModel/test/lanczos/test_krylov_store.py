@@ -264,22 +264,6 @@ def test_store_slice_block_across_chunk_boundary():
     assert out.to_states() == ref.to_states()
 
 
-def test_store_slice_block_used_by_q_slice():
-    """``slice_cols`` (shared by TRLM) dispatches a ``SparseKrylovDense`` operand
-    through ``slice_block`` -- exercise that dispatch directly, not just the primitive."""
-    from impurityModel.ed.block_view import slice_cols as _q_slice
-
-    rng = np.random.default_rng(33)
-    states = _random_states(rng, 6, 25)
-    store = SparseKrylovDense()
-    store.append(states)
-
-    ref = ManyBodyState.from_states(store[1:4])
-    out = _q_slice(store, 1, 4)
-    assert isinstance(out, ManyBodyState)
-    assert out.to_states() == ref.to_states()
-
-
 def test_store_gram_matches_states():
     """Materialized store columns give the same Gram matrix as the original states."""
     rng = np.random.default_rng(13)
