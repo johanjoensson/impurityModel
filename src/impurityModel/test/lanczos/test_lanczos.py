@@ -259,7 +259,7 @@ def test_block_lanczos_cy_mpi(reort_mode):
 
 @pytest.mark.parametrize("reort_mode", [False, True])
 def test_get_block_Lanczos_matrices_and_GS(reort_mode):
-    from impurityModel.ed.BlockLanczosArray import block_lanczos, calculate_thermal_gs
+    from impurityModel.ed.BlockLanczosArray import block_lanczos
 
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -283,15 +283,11 @@ def test_get_block_Lanczos_matrices_and_GS(reort_mode):
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
-    # test calculate_thermal_gs
-    ev_gs, _ = calculate_thermal_gs(H_mat[:, basis.local_indices], block_size=1, e_max=0.1, comm=MPI.COMM_SELF)
-    np.testing.assert_allclose(np.min(ev_gs), 0.5, atol=1e-5)
-
 
 @pytest.mark.mpi
 @pytest.mark.parametrize("reort_mode", [False, True])
 def test_get_block_Lanczos_matrices_and_GS_mpi(reort_mode):
-    from impurityModel.ed.BlockLanczosArray import block_lanczos, calculate_thermal_gs
+    from impurityModel.ed.BlockLanczosArray import block_lanczos
 
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -316,10 +312,6 @@ def test_get_block_Lanczos_matrices_and_GS_mpi(reort_mode):
     )[:3]
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
-
-    # test calculate_thermal_gs
-    ev_gs, _ = calculate_thermal_gs(H_mat[:, basis.local_indices], block_size=1, e_max=0.1, comm=MPI.COMM_WORLD)
-    np.testing.assert_allclose(np.min(ev_gs), 0.5, atol=1e-5)
 
 
 @pytest.mark.mpi

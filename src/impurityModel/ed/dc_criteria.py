@@ -948,7 +948,7 @@ def fixed_peak_dc(
         derives the cap from available per-rank memory (collective on ``MPI.COMM_WORLD``,
         :func:`impurityModel.ed.memory_estimate.resolve_cap_policy`) at the same safety
         fraction ``calc_gs`` uses -- the three sector solves are sequential, so the live peak is
-        the centre walk's own ``SectorCache``, which is the peak ``calc_gs`` has too; ``numpy.inf``
+        the centre walk's own retained sector, which is the peak ``calc_gs`` has too; ``numpy.inf``
         disables capping.
     solver : impurityModel.ed.model.SolverOptions
         Provides the dense-eigensolver cutoff.

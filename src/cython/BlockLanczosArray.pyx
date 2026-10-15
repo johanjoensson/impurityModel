@@ -72,9 +72,7 @@ from impurityModel.ed.solver_trace import note as _trace_note
 # block; put anything that belongs to the shared layer in BlockLanczosCore.pyx instead.
 from impurityModel.ed.BlockLanczosCore import (  # noqa: F401
     BETA_BLOWUP_FACTOR,
-    RESTART_ORTH_TOL,
     DEFAULT_EIGEN_TOL,
-    THERMAL_GS_RESIDUAL_TOL,
     divergence_guard,
     _build_full_T,
     _build_banded_lower,
@@ -110,64 +108,4 @@ from impurityModel.ed.TSQR import (
     robust_svd,
     spectral_norm,
 )
-
-
-def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=True, comm=None, verbose=False):
-    h = DistributedSparseMatrix.coerce(h, comm)
-    mpi = comm is not None
-    rank = comm.rank if mpi else 0
-    size = comm.size if mpi else 1
-
-    def converged(alphas, betas, *args, **kwargs):
-        e, s = eigsh(alphas, betas, de=e_max, select="m")
-        sorted_indices = np.argsort(e)
-        e = e[sorted_indices]
-        s = s[:, sorted_indices]
-        mask = e - np.min(e) <= e_max
-        # Positive indices only: this module is compiled with `wraparound=False`, under which
-        # `betas[-1]` reaches numpy as `-1 - len(betas)` and raises IndexError.
-        beta_last = betas[len(betas) - 1]
-        s_last = s[s.shape[0] - block_size:, mask]
-        return spectral_norm(beta_last @ s_last) < THERMAL_GS_RESIDUAL_TOL
-
-    if v0 is None:
-        v0 = np.random.rand(h.shape[1], block_size) + 1j * np.random.rand(h.shape[1], block_size)
-        if mpi:
-            counts = np.empty((size), dtype=int)
-            comm.Allgather(np.array([v0.size], dtype=int), counts)
-            offsets = np.array([np.sum(counts[:r]) for r in range(size)], dtype=int)
-            v0_full = np.empty((h.shape[0], block_size), dtype=complex, order="C") if rank == 0 else None
-            comm.Gatherv(v0, (v0_full, counts, offsets, MPI.C_DOUBLE_COMPLEX), root=0)
-            if rank == 0:
-                v0_full, _ = la.qr(v0_full, mode="economic", overwrite_a=True, check_finite=False)
-            comm.Scatterv((v0_full, counts, offsets, MPI.C_DOUBLE_COMPLEX), v0, root=0)
-        else:
-            v0, _ = la.qr(v0, mode="economic", overwrite_a=True, check_finite=False)
-    elif v0.shape[1] < block_size:
-        new_v0 = np.random.rand(v0.shape[0], block_size - v0.shape[1]) + 1j * np.random.rand(
-            v0.shape[0], block_size - v0.shape[1]
-        )
-        new_v0 -= v0 @ np.conj(v0.T) @ new_v0
-        new_v0, _ = la.qr(new_v0, mode="economic", overwrite_a=True, check_finite=False)
-        v0 = np.append(v0, new_v0, axis=1)
-    elif v0.shape[1] > block_size:
-        v0 = v0[:, :block_size]
-
-    alphas, betas, Q, *_ = block_lanczos(
-        psi0=v0,
-        h_op=h,
-        converged=converged,
-        verbose=verbose,
-        reort=reort,
-        comm=comm,
-    )
-    if rank == 0:
-        eigvals, eigvecs = eigsh(alphas, betas, de=e_max, Q=Q[:, : alphas.shape[0] * alphas.shape[1]], select="m")
-    else:
-        eigvals = None
-        eigvecs = None
-    if mpi:
-        eigvals = comm.bcast(eigvals, root=0)
-        eigvecs = comm.bcast(eigvecs, root=0)
-    return eigvals, eigvecs
 

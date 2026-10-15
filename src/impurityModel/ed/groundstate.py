@@ -114,45 +114,6 @@ SECTOR_WALK_DE2_MIN = 1e-6
 SECTOR_WALK_E_PT2_TOL = None
 
 
-class SectorCache:
-    def __init__(self, max_size=3):
-        self.cache = {}
-        self.max_size = max_size
-        self.keys_ordered = []
-
-    def get(self, key):
-        if key in self.cache:
-            self.keys_ordered.remove(key)
-            self.keys_ordered.append(key)
-            return self.cache[key]
-        return None
-
-    def put(self, key, value):
-        if key in self.cache:
-            self.keys_ordered.remove(key)
-        elif len(self.cache) >= self.max_size:
-            oldest = self.keys_ordered.pop(0)
-            del self.cache[oldest]
-        self.cache[key] = value
-        self.keys_ordered.append(key)
-
-    def clear(self, keep=None):
-        """Null the MPI communicator on every cached basis except ``keep``, then drop them all.
-
-        A closure holding this cache (e.g. ``find_ground_state_basis.get_energy``) forms a
-        reference cycle with every ``Basis`` it caches; a split MPI communicator caught in that
-        cycle would only be freed by the cyclic GC, whose collection can run after
-        ``MPI_Finalize`` at interpreter shutdown and crash. Breaking the cycle here, at a point we
-        know we are done with the losing sectors, avoids relying on GC timing. ``keep`` (normally
-        the winning basis the caller is about to return) is left untouched.
-        """
-        for basis, _solver in self.cache.values():
-            if basis is not None and basis is not keep:
-                basis.comm = None
-        self.cache.clear()
-        self.keys_ordered.clear()
-
-
 def sector_key(trial_N0, frozen_occupations=None):
     """The sector a trial impurity occupation actually selects.
 
@@ -241,27 +202,9 @@ def build_basis_and_solver(
     frozen_occupations,
     weighted_restrictions,
     slaterWeightMin,
-    sector_cache=None,
     total_charge_slack=0,
     dense_cutoff=1e3,
 ):
-    # Deliberately keyed on the exact per-group occupation, NOT on sector_key's (total, frozen):
-    # this cache stores the Basis *object*, which the solve then expands in place, so a hit
-    # resumes from the previous trial's CIPSI-expanded basis rather than from a freshly generated
-    # seed. Widening the key to the total would make far more trials resume from an unrelated
-    # split's expanded basis, changing the sector comparison the walk exists to get right.
-    # (This used to be argued from `calc_energy` collapsing the basis onto its eigenvector
-    # support at its tail. It no longer does -- see the tail of `_solve_sector_core`, which
-    # records why the basis is returned whole -- but the resumption, and so the argument, is the
-    # same either way.) There is also nothing to win: basis construction is 3.4 s of a 2814.6 s
-    # NiO search (0.12 %). The dedupe that pays lives in find_ground_state_basis's energy_cache,
-    # which skips the whole solve.
-    key = frozenset(N0.items())
-    if sector_cache is not None:
-        cached = sector_cache.get(key)
-        if cached is not None:
-            return cached
-
     basis = Basis(
         impurity_indices,
         bath_states,
@@ -283,8 +226,6 @@ def build_basis_and_solver(
     solver.truncate_initial(h_op, dense_cutoff=dense_cutoff)
 
     basis.restrictions = build_excited_restrictions(basis, h_op, psis=None, es=None, slater_weight_min=slaterWeightMin)
-    if sector_cache is not None:
-        sector_cache.put(key, (basis, solver))
     return basis, solver
 
 
@@ -303,7 +244,6 @@ def calc_energy(
     slaterWeightMin=1e-12,
     weighted_restrictions=None,
     frozen_occupations=None,
-    sector_cache=None,
     de2_min=SECTOR_WALK_DE2_MIN,
     e_pt2_tol=SECTOR_WALK_E_PT2_TOL,
     return_solver=False,
@@ -398,7 +338,6 @@ def calc_energy(
         slaterWeightMin=slaterWeightMin,
         weighted_restrictions=weighted_restrictions,
         frozen_occupations=frozen_occupations,
-        sector_cache=sector_cache,
         de2_min=de2_min,
         e_pt2_tol=e_pt2_tol,
         max_energy=0,  # None,
@@ -434,7 +373,6 @@ def _solve_sector_core(
     slaterWeightMin=1e-12,
     weighted_restrictions=None,
     frozen_occupations=None,
-    sector_cache=None,
     num_wanted=10,
     max_energy=None,
     de2_min=SECTOR_WALK_DE2_MIN,
@@ -492,7 +430,6 @@ def _solve_sector_core(
                 frozen_occupations,
                 weighted_restrictions,
                 slaterWeightMin,
-                sector_cache,
                 dense_cutoff=dense_cutoff,
             )
 
@@ -563,7 +500,6 @@ def solve_sector(
     slaterWeightMin=1e-12,
     weighted_restrictions=None,
     frozen_occupations=None,
-    sector_cache=None,
     num_wanted=10,
     max_energy=None,
     de2_min=SECTOR_WALK_DE2_MIN,
@@ -604,7 +540,6 @@ def solve_sector(
         slaterWeightMin=slaterWeightMin,
         weighted_restrictions=weighted_restrictions,
         frozen_occupations=frozen_occupations,
-        sector_cache=sector_cache,
         num_wanted=num_wanted,
         max_energy=boltzmann_energy_cut(tau) if max_energy is None else max_energy,
         de2_min=de2_min,
@@ -756,7 +691,6 @@ def find_ground_state_basis(
     # ground-state determination is auditable even when the final basis fits under the cap.
     occ_search_reports = {}
 
-    sector_cache = SectorCache(max_size=3)
     # Whole-impurity capacity: the groups redistribute charge freely at fixed total, so this --
     # not any per-group size -- is the bound a trial total has to satisfy to be attainable.
     max_total_impurity_occupation = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
@@ -827,7 +761,6 @@ def find_ground_state_basis(
             slaterWeightMin=slaterWeightMin,
             weighted_restrictions=weighted_restrictions,
             frozen_occupations=frozen_occupations,
-            sector_cache=sector_cache,
             return_solver=True,
         )
         if basis.is_distributed:
@@ -1048,7 +981,6 @@ def find_ground_state_basis(
     else:
         # The walk settled on a sector other than its best entry (every trial out of bounds, or a
         # collapsed search): solve the winner from scratch.
-        sector_cache.clear()
         e_gs, basis_gs, solver_gs = calc_energy(
             h_op,
             impurity_orbitals,
@@ -1064,16 +996,11 @@ def find_ground_state_basis(
             slaterWeightMin=slaterWeightMin,
             weighted_restrictions=weighted_restrictions,
             frozen_occupations=frozen_occupations,
-            sector_cache=sector_cache,
             return_solver=True,
         )
         if basis_gs.is_distributed:
             e_gs = basis_gs.comm.bcast(e_gs)
     best_entry[:] = [None, None]
-
-    # Break the closure -> sector_cache -> Basis reference cycle now (see SectorCache.clear),
-    # keeping only the winning basis's communicator alive.
-    sector_cache.clear(keep=basis_gs)
 
     if basis_gs is not None:
         # Whether the winning occupation's expansion was memory-capped (None if not), for

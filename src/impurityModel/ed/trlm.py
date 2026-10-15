@@ -30,7 +30,6 @@ from impurityModel.ed.BlockLanczosCore import (
     _build_full_T,
     block_apply,
     block_combine,
-    block_inner,
     block_normalize,
     block_orthogonalize,
     eigh_block_tridiagonal,

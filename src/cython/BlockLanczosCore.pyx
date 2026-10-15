@@ -50,19 +50,10 @@ cdef double EPS_VAL = EPS
 # counterpart DEFLATE_EVAL_TOL for tests on a Gram matrix, and BREAKDOWN_TOL are imported
 # from TSQR above, which is where the reasoning for their values lives.
 BETA_BLOWUP_FACTOR = 1e3           # ||beta_i|| above this * max(||beta||, ||alpha||) ⇒ divergence
-# Semi-orthogonality threshold (Simon's classical sqrt(EPS) criterion — the very level the
-# old PRO estimator maintained). TRLM's thick-restart coefficient
-# shortcuts (diag(theta) for the retained block, beta_res @ Y_last for the spike) are both
-# derived from Q^H Q = I; above this level that premise is too inaccurate to use them and the
-# restart is rebuilt from actual matvecs instead. See _trlm_core.
-RESTART_ORTH_TOL = np.sqrt(EPS_VAL)       # ~1.49e-8
 # Default convergence tolerance for TRLM's public entry points (the max wanted
 # Ritz residual at which a restart loop stops); single-sourced so every dispatcher's
 # `tol` default moves together.
 DEFAULT_EIGEN_TOL = 1e-8
-# calculate_thermal_gs's own (looser) Ritz-residual stopping tolerance -- distinct value
-# from DEFAULT_EIGEN_TOL, so it gets its own name rather than sharing one.
-THERMAL_GS_RESIDUAL_TOL = 1e-6
 
 def divergence_guard(double beta_norm, double alpha_norm, bint first_step,
                      double t_norm_max, double h_norm_est):

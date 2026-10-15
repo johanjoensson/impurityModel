@@ -15,7 +15,7 @@ from typing import Any, Optional
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosCore import block_apply, block_inner, block_normalize
+from impurityModel.ed.BlockLanczosCore import block_inner, block_normalize
 from impurityModel.ed.trlm import STATUS_CONVERGED, Window, trlm
 
 _U64 = (1 << 64) - 1
