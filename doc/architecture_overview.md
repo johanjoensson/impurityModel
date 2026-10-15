@@ -34,44 +34,40 @@ operators.
    - **Role:** Efficient parallelization across ranks.
    - **Details:** Functions like `pack_determinants_cy` and `pack_block_fused_cy`/`unpack_block_fused_cy` serialize `ManyBodyState` blocks into contiguous byte buffers for a single-round `Neighbor_alltoallv` via `mpi4py`. Determinants are hash-distributed: each Slater determinant is owned by rank `hash(sd) % size`, and no rank ever holds a full state vector.
 
-### Block Lanczos kernels: which one to use
+### Block Lanczos: one step, two front ends
 
-There are two Block Lanczos kernels with identical reorthogonalization semantics: they
-share the deflation, W-recurrence, FULL/PARTIAL/SELECTIVE reort, and threshold logic
-because it lives in one place, `BlockLanczosCore.pyx` (`Reort`, every tolerance
-constant, `estimate_orthonormality`, the block-tridiagonal eigensolvers, and the
-representation-dispatching block primitives / `apply_reort`), which both kernels
-import downward from — neither kernel imports from the other:
+There is ONE block-Lanczos recurrence. `lanczos_step` and `_lanczos_loop`
+(`_lanczos_step.pxi`, compiled into `BlockLanczosCore.pyx`) touch their blocks only through
+the representation-dispatching primitives of `_block_ops.pxi` (`block_apply`, `block_inner`,
+`block_add_scaled`, `block_tsqr`, ...), so the same code runs on `ManyBodyState` blocks and on
+`ndarray` blocks. The two public front ends differ only in how they build the starting blocks,
+the matvec and the Krylov store:
 
-- **`BlockLanczos.pyx` — sparse / hash-distributed** (`block_lanczos_cy`,
-  `thick_restart_block_lanczos_cy`, `implicitly_restarted_block_lanczos_cy`). Operates
-  directly on `ManyBodyState`/`ManyBodyOperator`; the Hamiltonian matrix is **never
-  formed**; MPI parallelism distributes Slater determinants by `hash(sd) % size`. Use
-  this for a **large Hilbert space** where the dense/CSR matrix would not fit.
+- **`block_lanczos_cy`** (re-exported by `BlockLanczos.pyx`) — sparse / hash-distributed.
+  Operates on `ManyBodyState`/`ManyBodyOperator`; the Hamiltonian matrix is **never formed**;
+  determinants are distributed by `hash(sd) % size`. Krylov store: `SparseKrylovDense`.
+  Use for a large Hilbert space.
+- **`block_lanczos_array_cy`** (re-exported by `BlockLanczosArray.pyx`) — array. Operates on
+  ndarrays and a `DistributedSparseMatrix` (or a dense matrix, coerced at the entry);
+  parallelism is by row block. Krylov store: `DenseKrylovStore`. BLAS-3 throughout, so it is
+  fastest for small/dense sectors and for block size `p > 1`.
 
-- **`BlockLanczosArray.pyx` — array / dense-or-CSR** (`block_lanczos_array_cy`).
-  Operates on NumPy arrays / SciPy sparse operators; MPI parallelism is by row-block.
-  The hot path uses BLAS-3 (`zgemm`), so it is fastest for **small/dense sectors** and
-  for **block size `p > 1`** (the BLAS-3 speedup grows with `p`). Use this when the
-  sector matrix is small enough to form, e.g. the Green's-function continued fraction
-  and CIPSI reference solves.
+Reorthogonalization is `Reort.NONE` (Green's functions) or `Reort.FULL` (ground state, TRLM,
+`KrylovShiftedResolvent`). The partial/selective/periodic modes, IRLM, the scipy ARPACK
+fallback and the Chebyshev filter were deleted; `doc/lanczos_invariants.md` keeps the
+invariants that survive and marks the historical sections.
 
-Rule of thumb: **array kernel for small/dense, BLAS-friendly sectors; sparse kernel
-when the matrix cannot be formed.** Both are driven through the same `Reort` modes and
-the same TRLM/IRLM drivers, so switching is a matter of the input type.
+**`DistributedSparseMatrix.pyx`** is the one sparse-matrix type (`apply`, `exchange_plan`,
+`from_scipy`/`from_dense`/`coerce`, `toarray`, `to_scipy`): column-distributed CSC segments
+with a graph (`Neighbor_alltoallv`) exchange. `comm.size == 1` is the self slot of the same code.
 
-The IRLM/TRLM restart logic lives in the Python modules `ed/trlm.py` and
-`ed/irlm.py` (`_trlm_core`, `_irlm_core`, locking, purging, result assembly);
-`BlockLanczos.pyx` re-exports them, not the other way round. The shared EA16
-numerics (residual norms, acceptance tolerances, restart compression,
-locked-overlap recurrence) live in `ed/ea16.py`, which the Cython kernels also
-import at runtime. What stays compiled is the per-step recurrence itself
-(`_lanczos_step.pxi`) and the block primitives.
+The restart logic (thick restart, locking, result assembly) lives in `ed/trlm.py`
+(`_trlm_core`); `BlockLanczos.pyx` re-exports it.
 
 ### Block orthonormalization: `TSQR.pyx`
 
 Every block-Krylov routine — both Lanczos kernels, the starting/restart block
-normalizations, the IRLM restart block, `block_bicgstab` and `block_gmres` — factors its
+normalizations, the TRLM restart block, `block_bicgstab` and `block_gmres` — factors its
 tall-skinny block through one leaf module, `TSQR.pyx` (`impurityModel.ed.TSQR`). It computes
 the triangular factor from the block itself (LAPACK `zgeqrf` over local row panels, a Givens
 sweep over flat packed triangles to merge them, one `Allgather` to combine the ranks) and
@@ -86,40 +82,24 @@ then forms `Q = A R^{-1}` by back substitution, instead of going through the Gra
   invariant subspace), `k == -1` (non-finite factor — a *corrupted* recurrence, not a closed
   one).
 - `TSQR.pyx` owns `EPS`, `DEFLATE_TOL`, `DEFLATE_EVAL_TOL` and `BREAKDOWN_TOL`;
-  `BlockLanczosCore` imports them directly (so does `BlockLanczosArray`, independently —
-  both are leaf-importers of `TSQR`, no cycle either way), and `BlockLanczosArray` /
-  `BlockLanczos` re-export the ones their callers read from them.
+  `BlockLanczosCore` imports them directly and `BlockLanczosArray` / `BlockLanczos` re-export the ones their callers read from them.
 - `block_tsqr` (in `BlockLanczosCore.pyx`'s `_block_ops.pxi`) is the
   representation-dispatching entry point, so array, single-`ManyBodyState` and
   `list[ManyBodyState]` callers all run the same factorization.
 
-`_cholesky_or_deflate` / `_cholesky_qr2` remain in `BlockLanczosArray.pyx` (next to the array
-kernel's other private helpers) as the reference implementation the CholeskyQR2-era regression
-tests are written against; no production path calls them. See `doc/lanczos_invariants.md`
-("deflation vs breakdown scales") for the derivation their docstrings used to carry.
 
 ### File organization (`.pxi` includes)
 
-The three large kernels are split into `.pxi` textual includes for readability (same
-compiled modules; `setup.py` lists them in each Extension's `depends=` so edits trigger a
-recompile). Each `.pxi` opens with a reading-map header:
+The large kernels are split into `.pxi` textual includes for readability (same compiled
+modules; `setup.py` lists them in each Extension's `depends=` so edits trigger a recompile):
 
-- `BlockLanczos.pyx` = `_lanczos_step.pxi` (core recurrence) plus re-exports of the
-  restart layer, which is Python: `ed/trlm.py` (thick-restart) and `ed/irlm.py`
-  (implicitly-restarted / EA16). Imports the shared layer from
-  `BlockLanczosCore.pyx`; no local block-primitive `.pxi`.
-- `BlockLanczosCore.pyx` = the shared layer (`Reort`, tolerances, `estimate_orthonormality`,
-  the block-tridiagonal eigensolvers) + `_block_ops.pxi` (the representation-dispatching
-  block primitives + `selective_orthogonalize`/`apply_reort`; renamed from `_reort.pxi`
-  when it moved out of `BlockLanczosArray.pyx`). `TSQR` is its only upstream dependency;
-  it never imports from `BlockLanczosArray` or `BlockLanczos`.
-- `ManyBodyUtils.pyx` = `_slater_state.pxi` (`SlaterDeterminant`) + `_operator.pxi`
-  (`ManyBodyOperator`) + `_mpi_pack.pxi` + `_krylov_store.pxi` (`SparseKrylovDense`) +
-  `_block_state.pxi` (`ManyBodyState`).
-- `BlockLanczosArray.pyx` keeps the array kernel (`block_lanczos_array_cy` and its private
-  BLAS-3 helpers) plus `_cholesky_or_deflate`/`_cholesky_qr2` (the superseded reference
-  implementation); imports the shared layer from `BlockLanczosCore.pyx`, no local
-  block-primitive `.pxi` of its own any more.
+- `BlockLanczosCore.pyx` = tolerances, `Reort`, the block-tridiagonal eigensolvers +
+  `_block_ops.pxi` (representation-dispatching block primitives, `DenseKrylovStore`) +
+  `_lanczos_step.pxi` (`lanczos_step`, `_lanczos_loop`, the two front ends). `TSQR` is its only
+  upstream dependency.
+- `BlockLanczos.pyx` / `BlockLanczosArray.pyx` = thin re-export modules.
+- `ManyBodyUtils.pyx` = `_slater_state.pxi` + `_operator.pxi` + `_mpi_pack.pxi` +
+  `_krylov_store.pxi` (`SparseKrylovDense`) + `_block_state.pxi` (`ManyBodyState`).
 
 ## Python Codebase (`src/impurityModel/ed/`)
 
@@ -161,7 +141,7 @@ and is what both the CLIs and embedded callers (the RSPt interface) build to pas
 - **`polarization.py`** — numpy-only polarization vectors and tensor contractions (`contract_spectra_tensor`, `contract_rixs_tensor`, dichroism/isotropic helpers) that turn the tensor quantities `spectra.py` computes into polarization-resolved intensities; used both by `spectra.py`'s projector code paths and by the `plot_spectra`/`plot_RIXS` CLIs as a post-processing step, so no MPI or solver imports.
 - **`operator_algebra.py`** — algebra on second-quantized operator dicts (`addOps`, `daggerOp`, `combineOp`, …) and the `(l, s, m)` label ↔ flat-index conversions (`c2i`, `i2c`). These serve the *pre-conversion* path only: operators keyed by `(l, s, m)` labels cannot be `ManyBodyOperator`s, which need integer orbital indices. Once an operator is integer-indexed, use the `ManyBodyOperator` algebra instead. Note `combineOp` is a single-particle *matrix* product, not `ManyBodyOperator.__mul__`.
 - **`atomic_physics.py`** — single-shell atomic physics: Slater–Condon Coulomb integrals (`getU*`), spin-orbit coupling (`getSOCop`), Zeeman field (`gethHfieldop`), spherical↔cubic transforms, the MLFT double-counting correction (`dc_MLFT`), and the average Coulomb repulsion/exchange extractor (`uj_from_u4`) the `dc_static` FLL/AMF schemes derive `U`/`J` from.
-- **`eigensolvers.py`** — eigensolver drivers for the low-energy spectrum: dense (`numpy.linalg.eigh`) and ARPACK (`scipy.sparse.linalg.eigsh`), behind the `eigensystem` driver and the MPI-aware `HermitianOperator` wrapper. No connection to the Block Lanczos stack.
+- **`eigensolvers.py`** — eigensolver drivers for the low-energy spectrum: dense (`numpy.linalg.eigh`) only, behind the `eigensystem` driver. No connection to the Block Lanczos stack.
 - **`lie_algebra.py`** — the *algebraic half* of the symmetry machinery: tensor extraction/rotation (`extract_tensors`, `rotate_hamiltonian`), one-body symmetry discovery (the single-particle commutant null space), the Cartan reduction and joint diagonalization, and the reconstructed-Casimir observables. Depends only on `ManyBodyUtils`; `symmetries.py` builds its conserved charges and rotations on top of it.
 - **`symmetries.py`** — the consumer half built on `lie_algebra`: conserved-charge classification, occupation-window restrictions (`S_z`-weighted and frozen-shell flavors), impurity/bath occupation classification, and the impurity/Green's-function block structures used to deduplicate and sectorize GF/RIXS solves. Re-exports the `lie_algebra` primitives for backward compatibility.
 - **`block_structure.py`** — the `BlockStructure` type: detection of identical/transposed/particle-hole-related orbital blocks and matrix↔block conversions.
@@ -194,7 +174,6 @@ and is what both the CLIs and embedded callers (the RSPt interface) build to pas
 - **`greens_function.py`** — interacting Green's functions via block Lanczos continued fractions: the top-level drivers (`get_Greens_function`, `calc_Greens_function_with_offdiag`, the bicgstab/sliced routers) and assembly (`build_full_greens_function`, `save_Greens_function`), built on the `gf_units` distribution engine and the `gf_solvers` kernels. Still re-exports the `gf_primitives`/`gf_convergence`/`gf_shift_recycling` symbols that other modules/tests reach via `greens_function.X` / `gf.X`.
 - **`spectra.py`** — the `simulate_spectra` orchestrator and the XAS/XPS/PS/NIXS drivers on top of `greens_function`. PS/XPS/NIXS and the projector-driven XAS path return per-operator spectra directly; the default (unprojected) XAS path returns the polarization *tensor* (`calc_spectra_tensor`) rather than a polarization-contracted spectrum -- `simulate_spectra` stores the tensor as-is (`spectra.h5`: `XAS/tensor`), and `polarization.py` contracts it with concrete polarizations as a cheap post-processing step. Re-exports `rixs.calc_map`/`calc_tensor_map` so `simulate_spectra` and existing `spectra.getRIXSmap_*` callers reach them unchanged.
 - **`rixs.py`** — the RIXS (resonant inelastic x-ray scattering) map half, split out of `spectra.py`: incoming-energy work-unit sizing, the greedy adaptive incoming-energy sampler, the per-tier R1 solver chain (`_R1SolverChain`), the flat-unit distribution driver `_rixs_map_flat`, and the two public drivers `calc_map` (per-polarization) / `calc_tensor_map` (Kramers-Heisenberg tensor stored under `spectra.h5:RIXS/tensor`). Sits on `greens_function` like `spectra.py`.
-- **`cg.py`** — block BiCGSTAB solver (used by the RIXS tensor path).
 - **`gf_diagnostics.py`** — convergence/consistency diagnostics for computed Green's functions.
 - **`gs_statistics.py`** — ground-state statistics computation, printing, and saving.
 - **`hamiltonian_io.py`** — construction and file I/O of the **labelled** `(l,s,m)`/`(l,b)` impurity Hamiltonian: readers for the pickled operator dict, the `.dat` operator-*term list* (via `op_parser`; it is not a dense matrix) and the `.json` crystal-field parameters, plus the builders combining h0 with SOC, magnetic field, Coulomb, and double counting. The flat single-index `.h0` interchange format is read by `h0_format.py` and relabelled into `(l,s,m)`/`(l,b)` here (`flat_h0_to_labelled`) -- valid only when the header guarantees `basis: "spherical"` and `spin_ordering: "down_first"` (each checked, each raises otherwise), because `i2c` on a single-shell `nBaths` dict is the exact inverse of the flat layout precisely under those two guarantees.
@@ -225,7 +204,7 @@ callers) invoke with an `ImpurityModel` + option groups.
 - **MPI tests** are marked `@pytest.mark.mpi`; `conftest.py` redirects non-root-rank output to `.pytest_mpi_rank*.out`, adds a per-test watchdog, and synchronizes teardown. Never name a test subdirectory `mpi` (or any other registered marker name) — pytest folds every path component into `item.keywords`, and pytest-mpi's skip check (`MPIMarkerEnum.mpi in item.keywords`) then matches unmarked tests too; the MPI-comm-plumbing group lives in `mpi_infra/` for this reason.
 - **Benchmarks** are marked `benchmark` and skipped by default; run with `pytest -m benchmark`.
 - **Layout:** grouped by topic under subpackages, each with `__init__.py`: `lanczos/`
-  (block-Lanczos recurrence, TRLM/IRLM restart+locking, TSQR, reorthogonalization,
+  (block-Lanczos recurrence, TRLM restart+locking, TSQR, reorthogonalization,
   Krylov storage, deflation), `linear_solvers/` (CG/BiCGSTAB/GMRES), `gf/` (Green's
   functions, self-energy, susceptibility), `spectra/` (XAS/RIXS/polarization),
   `basis/` (ManyBodyState/basis representation), `operators/` (operator algebra,

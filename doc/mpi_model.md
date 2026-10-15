@@ -20,7 +20,7 @@ Consequences:
   (`manybody_basis.Basis.redistribute_psis`, and the pattern throughout `observables.py` /
   `gs_statistics.py`.)
 - **A determinant produced on the wrong rank is silently misplaced.** Any recurrence that
-  moves `H·t` between ranks must also move `t` (see the "Chebyshev recurrence seed ownership"
+  moves `H·t` between ranks must also move `t` (see the former Chebyshev filter's "seed ownership"
   war story) or seeds diverge.
 
 ## `redistribute_psis` sums, it does not deduplicate

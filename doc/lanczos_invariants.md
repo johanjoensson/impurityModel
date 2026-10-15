@@ -1,5 +1,11 @@
 # Block Lanczos / TRLM / IRLM invariants
 
+> **Status (2026-10 core redesign):** IRLM, PARTIAL/SELECTIVE/PERIODIC reorthogonalization, the
+> PRO machinery, `ea16.py`, `_reort.pxi` and the separate array kernel were deleted; there is one
+> `lanczos_step` (`_lanczos_step.pxi`) and `Reort` is NONE/FULL. Sections below about those
+> pieces are kept as historical record of *why* the surviving code looks as it does.
+
+
 Landing place for the incident knowledge stripped out of inline comments during the
 R2 comment-triage pass of the Lanczos/IRLM/TRLM redesign (see the plan at
 `i-want-a-thorough-agile-fern.md`). The source still carries a one-line pointer at each

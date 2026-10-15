@@ -96,8 +96,8 @@ physics/operator-algebra (`operator_algebra`, `atomic_physics`) never imports so
 the basis layer (`manybody_basis` + `basis_generation`/`basis_restrictions`/
 `basis_transcription`/`basis_split`) sits below the solvers (`groundstate`,
 `greens_function`, `spectra`, `selfenergy`); the CLIs (`get_spectra`, `selfenergy`)
-sit strictly on top. `ea16.py` looks like a leaf but is load-bearing: both Cython
-Lanczos kernels import it at runtime.
+sit strictly on top. Dead-code greps must include `.pyx`/`.pxi`: the Cython kernels
+import Python modules at runtime.
 
 ## MPI rules (violations have caused real deadlocks)
 
@@ -115,7 +115,7 @@ Lanczos kernels import it at runtime.
   to 2048 B and dies from 2064 B up, and the non-`IN_PLACE` form passes everywhere.
   MPICH 4.2.2 passes every cell, so this reproduces on CI and on no local machine.
   Reduce into the destination buffer instead — it is both safe and one copy cheaper
-  (`BlockLanczosArray.pyx`'s matvec, `_block_ops.pxi`'s `block_apply`).
+  (`DistributedSparseMatrix.pyx`'s `apply`, `_block_ops.pxi`'s `block_apply`).
 - Empty-rank edge cases (a rank owning zero determinants) have bitten before — keep
   collective calls unconditional and buffer dtypes fixed.
 
