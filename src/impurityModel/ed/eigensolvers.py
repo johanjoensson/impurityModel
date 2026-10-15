@@ -345,7 +345,14 @@ def solve_window(
         r_new = max(4, 2 * k_max)
         fresh = random_block(hashes, r_new, rounds)
         win = Window(top - e0, deg_tol, e0=e0)
-        res2 = run(fresh, max(r_new, 1), locked=locked, window=win)
+        if locked.shape[1] >= n_global:
+            saturated = []  # the window is the whole space: nothing left to miss
+            break
+        try:
+            res2 = run(fresh, max(r_new, 1), locked=locked, window=win)
+        except ValueError:  # BlockBreakdown, rank-symmetric: the complement of the locked set is empty
+            saturated = []
+            break
         certified = res2.status in STATUS_CONVERGED
         status = res2.status
         e_new, v_new, n_new = res2.eigvals[: res2.n_in], res2.eigvecs[:, : res2.n_in], res2.n_in

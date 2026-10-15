@@ -448,6 +448,8 @@ class Basis:
         self._keys = ManyBodyState(width=0)
         self.offset = 0
         self.size = 0
+        #: Bumped on every change to the determinant set; an eigensolve result is valid for one generation.
+        self.generation = 0
         self.local_indices = range(0, 0)
         self.index_bounds = [None] * comm.size if self.is_distributed else [None]
         self.state_bounds = [None] * comm.size if self.is_distributed else [None]
@@ -609,6 +611,7 @@ class Basis:
         Collective on a distributed basis (one ``allgather`` plus the boundary lookup); every
         rank must call it together, whatever its own key count.
         """
+        self.generation += 1
         if not self.is_distributed:
             self.size = len(self._keys)
             self.offset = 0
@@ -1076,6 +1079,7 @@ class Basis:
 
     def clear(self) -> None:
         """Clear all states from the basis."""
+        self.generation += 1
         self._keys = ManyBodyState(width=0)
         self.offset = 0
         self.size = 0

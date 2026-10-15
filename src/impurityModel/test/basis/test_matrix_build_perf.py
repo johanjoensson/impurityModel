@@ -306,12 +306,14 @@ def _stop_after_gs():
 
 def _hash_block(basis, width):
     """A block with the whole local basis as support -- what a Krylov vector looks like here."""
-    from impurityModel.ed.cipsi_solver import _amplitude_from_hash
+    from impurityModel.ed.eigensolvers import cold_vector
     from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
+    states = list(basis.local_basis)
+    hashes = np.fromiter((state.get_hash() for state in states), dtype=np.uint64)
     columns = []
     for k in range(width):
-        amps = {state: _amplitude_from_hash(state.get_hash() + k) for state in basis.local_basis}
+        amps = dict(zip(states, cold_vector(hashes + np.uint64(k))[:, 0]))
         columns.append(ManyBodyState(amps, width=1))
     return ManyBodyState.from_states(columns)
 

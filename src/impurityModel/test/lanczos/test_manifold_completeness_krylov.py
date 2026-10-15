@@ -93,7 +93,7 @@ def test_the_krylov_branch_returns_the_whole_ground_manifold_and_stops_at_the_cu
     uncut, _ = solver.get_eigenvectors(
         h_full,
         num_wanted=6,
-        max_energy=None,
+        max_energy=50 * CUT,
         dense_cutoff=DENSE_CUTOFF,
         slaterWeightMin=SLATER_WEIGHT_MIN,
         psi_refs=solver.psi_refs,
@@ -126,12 +126,12 @@ def test_the_krylov_branch_returns_the_whole_ground_manifold_and_stops_at_the_cu
 def test_the_krylov_and_dense_branches_agree_on_the_manifold(expanded):
     """A free exact oracle for the test above: the same basis, diagonalised.
 
-    Compared at ``max_energy=None``. The dense branch has no manifold-absorbing step, so at the
+    Compared at a window ``50 * CUT`` wide. The dense branch has no manifold-absorbing step, so at the
     tiny ``CUT`` above it would return however many states happen to sit below a hard threshold
     and the comparison would fail for a reason that has nothing to do with the Krylov path.
     """
     solver, h_full = expanded
-    kwargs = dict(num_wanted=6, max_energy=None, slaterWeightMin=SLATER_WEIGHT_MIN, psi_refs=solver.psi_refs)
+    kwargs = dict(num_wanted=6, max_energy=50 * CUT, slaterWeightMin=SLATER_WEIGHT_MIN, psi_refs=solver.psi_refs)
 
     krylov, _ = solver.get_eigenvectors(h_full, dense_cutoff=DENSE_CUTOFF, **kwargs)
     dense, _ = solver.get_eigenvectors(h_full, dense_cutoff=10 * len(solver.basis), **kwargs)

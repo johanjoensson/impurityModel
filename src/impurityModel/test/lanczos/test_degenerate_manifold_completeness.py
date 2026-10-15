@@ -143,28 +143,93 @@ def test_a_level_just_above_the_cut_is_not_returned_twice():
 
 
 @pytest.mark.mpi
-def test_a_complete_window_is_certified_without_a_probe_solve(system, monkeypatch):
-    """The common case -- nothing missing -- must cost the locked sweep and no probe solve.
+def test_a_complete_window_is_certified_without_a_fallback_solve(system, monkeypatch):
+    """The common case -- nothing missing -- costs the one window solve and no fallback.
 
-    What this cannot catch: a sweep run without its locked set. The kept vectors here are exact
-    eigenvectors, so ``H`` maps their complement into itself and an unlocked sweep stays in it anyway;
-    in production the kept vectors are converged only to ``tol``, their components leak back in, and
-    the probe would "find" them every time and pay for a solve to learn nothing."""
-    import impurityModel.ed.cipsi_solver as cipsi_module
+    Warm columns span the ground level, so ``k = 5 < rank(F^H W) + R`` and the certificate holds
+    from the first solve."""
+    import impurityModel.ed.eigensolvers as eigensolvers
 
     basis, h, U, evals = system
     calls = []
-    real = cipsi_module.thick_restart_block_lanczos
+    real = eigensolvers.trlm
 
-    def counting(**kwargs):
-        if kwargs.get("locked") is not None:
-            calls.append(kwargs["locked"].shape[1])
-        return real(**kwargs)
+    def counting(*args, **kwargs):
+        calls.append(kwargs.get("locked") is not None)
+        return real(*args, **kwargs)
 
-    monkeypatch.setattr(cipsi_module, "thick_restart_block_lanczos", counting)
-    e_ref, _ = _solve(basis, h, U, num_wanted=4, max_energy=E_EXCITED / 2)
-    np.testing.assert_allclose(np.real(e_ref), evals[:GROUND], atol=1e-9)
-    assert calls == []
+    monkeypatch.setattr(eigensolvers, "trlm", counting)
+    solver_eig = _solve(basis, h, U, num_wanted=4, max_energy=E_EXCITED / 2)
+    np.testing.assert_allclose(np.real(solver_eig[0]), evals[:GROUND], atol=1e-9)
+    assert calls == [False]
+
+
+def _window_solve(system, *, n_random, warm, max_energy=CUT):
+    import impurityModel.ed.eigensolvers as eigensolvers
+
+    basis, h, U, evals = system
+    comm = basis.comm if basis.is_distributed else None
+    h_dist = DistributedSparseMatrix.from_scipy(sps.csc_array(h)[:, list(basis.local_indices)], comm, basis.offset)
+    hashes = np.fromiter((state.get_hash() for state in basis.local_basis), dtype=np.uint64)
+    local = np.asarray(list(basis.local_indices), dtype=int)
+    return eigensolvers.solve_window(
+        h_dist,
+        comm,
+        hashes,
+        warm=np.ascontiguousarray(U[local, :GROUND]) if warm else None,
+        max_energy=max_energy,
+        deg_tol=1e-8,
+        tol=1e-11,
+        num_wanted=4,
+        n_global=len(basis),
+        n_random=n_random,
+    )
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("warm", [True, False], ids=["warm", "cold"])
+def test_a_level_wider_than_the_random_block_is_completed_by_the_fallback(system, warm):
+    """10 copies against ``R = 2`` generic columns: the first solve saturates, the fallback finishes."""
+    eig = _window_solve(system, n_random=2, warm=warm)
+    evals = system[3]
+    assert eig.certified
+    assert eig.n_in == N_WINDOW
+    np.testing.assert_allclose(eig.e[:N_WINDOW], evals[:N_WINDOW], atol=1e-9)
+    assert eig.max_multiplicity == EXCITED
+
+
+@pytest.mark.mpi
+def test_without_the_certificate_the_wide_level_loses_copies(system, monkeypatch):
+    """Injected bug: a certificate that always passes must lose copies here, or the test above proves nothing."""
+    import impurityModel.ed.eigensolvers as eigensolvers
+
+    monkeypatch.setattr(
+        eigensolvers, "_level_overlap_ranks", lambda F, groups, W, mpi, comm, floor: [10**6] * len(groups)
+    )
+    eig = _window_solve(system, n_random=2, warm=False)
+    assert eig.n_in < N_WINDOW
+
+
+@pytest.mark.mpi
+def test_the_multiplicity_found_sizes_the_next_solves_random_block(system):
+    """A second solve with ``R = max_multiplicity + 1`` certifies without any fallback."""
+    import impurityModel.ed.eigensolvers as eigensolvers
+
+    first = _window_solve(system, n_random=2, warm=False)
+    real = eigensolvers.trlm
+    locked_calls = []
+
+    def counting(*args, **kwargs):
+        locked_calls.append(kwargs.get("locked") is not None)
+        return real(*args, **kwargs)
+
+    eigensolvers.trlm = counting
+    try:
+        second = _window_solve(system, n_random=first.max_multiplicity + 1, warm=False)
+    finally:
+        eigensolvers.trlm = real
+    assert second.certified and second.n_in == N_WINDOW
+    assert locked_calls == [False]
 
 
 def test_trlm_with_a_locked_set_solves_in_its_complement():
@@ -201,7 +266,7 @@ def test_trlm_with_a_locked_set_solves_in_its_complement():
 def test_the_vectorized_probe_hash_matches_the_scalar_one():
     """The probe's start block must be the same pseudo-random numbers at any rank count and on any
     platform, so its vectorized splitmix64 has to agree with the scalar one bit for bit."""
-    from impurityModel.ed.cipsi_solver import _splitmix64, _splitmix64_array
+    from impurityModel.ed.eigensolvers import _splitmix64, _splitmix64_array
 
     x = np.random.default_rng(0).integers(0, 2**63, 1000, dtype=np.int64).astype(np.uint64) * np.uint64(
         2

@@ -490,7 +490,7 @@ def test_warm_started_eigensolver_delivers_more_than_its_start_block():
     e_ref, _ = solver.get_eigenvectors(
         workload["h"],
         num_wanted=10,
-        max_energy=None,
+        max_energy=10.0,
         dense_cutoff=_DENSE_CUTOFF,
         slaterWeightMin=1e-12,
         psi_refs=solver.psi_refs,

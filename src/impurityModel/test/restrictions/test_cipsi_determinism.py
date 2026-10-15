@@ -24,13 +24,13 @@ from impurityModel.ed.cipsi_solver import (
     _EIGEN_TOL_MAX,
     DEGENERACY_TOL,
     DEGENERACY_TOL_MARGIN,
-    _amplitude_from_hash,
     _degeneracy_tol,
     _degenerate_groups,
     _eigen_tol,
     _energy_cut_indices,
-    _splitmix64,
 )
+
+from impurityModel.ed.eigensolvers import _splitmix64, cold_vector
 
 
 def test_eigen_tol_follows_slater_weight_min():
@@ -111,12 +111,12 @@ def test_degeneracy_tol_stays_above_roundoff_on_a_large_spectrum():
     assert _degeneracy_tol([], 1e-12) == DEGENERACY_TOL
 
 
-def test_amplitude_from_hash_is_deterministic_and_rank_independent():
+def test_cold_vector_is_deterministic_and_rank_independent():
     """The start amplitude must depend only on the determinant, never on the process."""
-    assert _amplitude_from_hash(12345) == _amplitude_from_hash(12345)
-    vals = [_amplitude_from_hash(h) for h in range(5000)]
-    assert len(set(vals)) == len(vals), "amplitudes collide"
-    a = np.array(vals)
+    hashes = np.arange(5000, dtype=np.uint64)
+    assert np.array_equal(cold_vector(hashes[12345 % 5000 :][:1]), cold_vector(hashes[12345 % 5000 :][:1]))
+    a = cold_vector(hashes)[:, 0]
+    assert len(set(a.tolist())) == len(a), "amplitudes collide"
     # Uniform on [0,1) in both components, with uncorrelated real/imaginary streams.
     assert a.real.min() >= 0.0 and a.real.max() < 1.0
     assert a.imag.min() >= 0.0 and a.imag.max() < 1.0
