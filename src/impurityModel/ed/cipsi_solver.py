@@ -1252,7 +1252,6 @@ class CIPSISolver:
         dense_cutoff=1e3,
         slaterWeightMin=0,
         solver="trlm",
-        reort=True,
         symmetry_generators=None,
         cap_e_tol=1e-8,
         max_cap_cycles=10,
@@ -1448,7 +1447,6 @@ class CIPSISolver:
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
                 solver=solver,
-                reort=reort,
                 psi_refs=psi_refs,
             )
 
@@ -1949,7 +1947,7 @@ class CIPSISolver:
             return psi0, False
 
     def _complete_low_spectrum(
-        self, H_mat, e_ref, psi_refs_arr, max_energy, width, max_subspace_blocks, slaterWeightMin, reort
+        self, H_mat, e_ref, psi_refs_arr, max_energy, width, max_subspace_blocks, slaterWeightMin
     ):
         """Find the eigenstates a block Krylov solve missed inside the thermal window, and add them.
 
@@ -2061,7 +2059,6 @@ class CIPSISolver:
                 max_restarts=_MAX_RESTARTS,
                 verbose=False,
                 slaterWeightMin=slaterWeightMin,
-                reort=reort,
                 num_converge=w,
                 locked=locked,
             )
@@ -2119,7 +2116,6 @@ class CIPSISolver:
         dense_cutoff=1e3,
         slaterWeightMin=0,
         solver="trlm",
-        reort=True,
         psi_refs=None,
         h_matrix=None,
     ):
@@ -2300,7 +2296,6 @@ class CIPSISolver:
                     # no need to pre-AND rank 0 into the bool here too.
                     verbose=self.basis.verbose,
                     slaterWeightMin=slaterWeightMin,
-                    reort=reort,
                     num_converge=num_required,
                 )
                 if len(e_ref) == 0:
@@ -2393,7 +2388,6 @@ class CIPSISolver:
                     psi0_arr.shape[1],
                     max_subspace_blocks,
                     slaterWeightMin,
-                    reort,
                 )
 
             valid_idx = None

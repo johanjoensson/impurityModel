@@ -65,7 +65,6 @@ def _run(h, num_wanted, tol, num_converge=None, max_restarts=100, seed=0):
         tol=tol,
         max_restarts=max_restarts,
         verbose=False,
-        reort_mode=True,
         comm=None,
         num_converge=num_converge,
     )

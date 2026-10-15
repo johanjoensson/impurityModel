@@ -32,7 +32,7 @@ def lanczos_step(
     alphas,
     betas,
     int it,
-    reort_mode,
+    reort,
     bint mpi,
     comm,
     double slaterWeightMin=0.0,
@@ -110,7 +110,7 @@ def lanczos_step(
             wp = block_add_scaled(wp, locked, -block_inner(locked, wp, mpi, comm))
 
     # --- 4. Full reorthogonalization against the stored basis ------------
-    if reort_mode:
+    if reort:
         wp = apply_full_reort(wp, store, mpi, comm)
 
     # --- 5. X_{i+1}, beta_i = TSQR(W) --------------------------------------
@@ -387,7 +387,7 @@ def _block_lanczos_array(
 
 def _lanczos_loop(
     matvec, q_prev, q_curr, store, alphas_buf, betas_buf, int start_it, int budget, list block_widths,
-    converged_fn, reort_mode, bint mpi, comm, basis, double slaterWeightMin, truncation_threshold, locked,
+    converged_fn, reort, bint mpi, comm, basis, double slaterWeightMin, truncation_threshold, locked,
     double deflate_tol, bint verbose, double t_norm_max, double h_norm_est, bint guard_seeded, note_cut,
     bint append_before_check, bint keep_deflated,
 ):
@@ -447,7 +447,7 @@ def _lanczos_loop(
                 )
 
         q_next, alpha_i, beta_i, beta_norm, active_k, breakdown = lanczos_step(
-            matvec, q_prev, q_curr, store, alphas_buf, betas_buf, it_abs, reort_mode, mpi, comm,
+            matvec, q_prev, q_curr, store, alphas_buf, betas_buf, it_abs, reort, mpi, comm,
             slaterWeightMin=slaterWeightMin,
             truncation_threshold=truncation_threshold,
             locked=locked,
@@ -702,8 +702,7 @@ def _block_lanczos_mbs(
         comm = getattr(basis, "comm", None)
     mpi = comm is not None and comm.Get_size() > 1
 
-    # --- Resolve reort mode ---------------------------------------------
-    reort_mode = bool(reort)
+    reort = bool(reort)
 
     # Tail-only mode: with reort off (and no locked set) nothing in the recurrence
     # ever projects against the accumulated Krylov basis, and the warm-start protocol
@@ -715,7 +714,7 @@ def _block_lanczos_mbs(
     # `if locked` on a ManyBodyState reads its LOCAL ROW count, which can disagree
     # across ranks and turn this `raise` into a rank-divergent collective itself.
     nlock = 0 if locked is None else block_cols(locked)
-    if not store_krylov and (reort_mode or nlock > 0):
+    if not store_krylov and (reort or nlock > 0):
         raise ValueError("store_krylov=False requires reort=False and no locked vectors")
 
     # --- Resume or start fresh? -----------------------------------------
@@ -853,7 +852,7 @@ def _block_lanczos_mbs(
 
     it, termination, q_prev, q_curr, q_next, _ = _lanczos_loop(
         matvec, q_prev, q_curr, Q_basis if store_krylov else None, alphas_buf, betas_buf, start_it, _buf_size,
-        block_widths, converged_fn, reort_mode, mpi, comm, basis, slaterWeightMin, truncation_threshold, locked,
+        block_widths, converged_fn, reort, mpi, comm, basis, slaterWeightMin, truncation_threshold, locked,
         deflate_tol, verbose, t_norm_max, h_norm_est, guard_seeded, _note_cut,
         append_before_check=True, keep_deflated=False,
     )

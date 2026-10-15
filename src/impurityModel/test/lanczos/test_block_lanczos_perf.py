@@ -446,7 +446,7 @@ def _sweep_solve(h, psi0, max_blocks, max_restarts):
 
     t0 = time.perf_counter()
     vals, _ = _thick_restart_block_lanczos_array(
-        psi0.copy(), h, _Basis(), 2 * SWEEP_P, max_blocks, 1e-300, max_restarts, False, True, None
+        psi0.copy(), h, _Basis(), 2 * SWEEP_P, max_blocks, 1e-300, max_restarts, False, None
     )
     return time.perf_counter() - t0, vals
 

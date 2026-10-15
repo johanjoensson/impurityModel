@@ -4,7 +4,7 @@
 addresses ``T_full`` and ``Q_basis`` by cumulative block offsets. Both thick-restart
 coefficient shortcuts -- ``diag(theta_keep)`` for the retained block and
 ``beta_res @ Y_last`` for the arrowhead spike -- are derived from ``Q^H Q = I``. Under
-``reort=NONE`` the recurrence loses orthogonality, spawns ghost copies of converged Ritz
+a recurrence without reorthogonalization loses orthogonality, spawns ghost copies of converged Ritz
 values, and the retained block ``X = Q_basis[:D] @ Y_k`` can be rank deficient, so
 ``block_normalize`` deflates it to ``k_ret < nkeep`` columns.
 
@@ -18,8 +18,10 @@ The kernel used to record ``nkeep`` regardless. Two failures followed:
   on a spectrum bounded by ``|E| <= 5``.
 
 These tests pin the invariant (widths track the stored columns) and the accuracy that
-falls out of restoring it. ``test_trlm_partial_reort_never_rebuilds_the_restart`` guards
-the other direction: the semi-orthogonal modes must keep the free coefficient path.
+falls out of restoring it. ``test_trlm_never_rebuilds_the_restart`` guards the other
+direction: TRLM always reorthogonalizes fully, so it must keep the free coefficient path.
+(The no-reorthogonalization setting that originally triggered the rank deficiency no longer
+exists, so these tests now pin the width bookkeeping on the full-reort path.)
 """
 
 import contextlib
@@ -152,7 +154,7 @@ def test_array_trlm_survives_a_rank_deficient_retained_ritz_block():
         size = n
 
     psi0 = np.linalg.qr(rng.standard_normal((n, _BLOCK_WIDTH)) + 0j)[0]
-    got, vecs = _thick_restart_block_lanczos_array(psi0, h, _Basis(), _NUM_WANTED, 40, 1e-13, 30, False, False, None)
+    got, vecs = _thick_restart_block_lanczos_array(psi0, h, _Basis(), _NUM_WANTED, 40, 1e-13, 30, False, None)
 
     assert len(got) == _NUM_WANTED
     np.testing.assert_allclose(np.sort(got.real), evals[:_NUM_WANTED], atol=1e-9)
@@ -162,31 +164,11 @@ def test_array_trlm_survives_a_rank_deficient_retained_ritz_block():
     np.testing.assert_allclose(np.conj(vecs.T) @ vecs, np.eye(_NUM_WANTED), atol=1e-10)
 
 
-def test_trlm_rebuilds_the_restart_when_orthogonality_is_lost():
-    """reort=NONE loses the ``Q^H Q = I`` premise the coefficient shortcuts rest on."""
-    n = 200
-    h, evals, rng = _clustered_hermitian(n)
+def test_trlm_never_rebuilds_the_restart():
+    """TRLM reorthogonalizes fully, so it keeps the free (matvec-less) coefficient path.
 
-    class _Basis:
-        size = n
-
-    psi0 = np.linalg.qr(rng.standard_normal((n, _BLOCK_WIDTH)) + 0j)[0]
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        got, _ = _thick_restart_block_lanczos_array(psi0, h, _Basis(), _NUM_WANTED, 40, 1e-13, 30, True, False, None)
-
-    reports = _restart_reports(buf.getvalue())
-    assert reports, "TRLM never restarted; the test system stopped exercising the branch"
-    assert any(err > RESTART_ORTH_TOL for err, _, _ in reports), reports
-    np.testing.assert_allclose(np.sort(got.real), evals[:_NUM_WANTED], atol=1e-9)
-
-
-@pytest.mark.parametrize("mode", [True])
-def test_trlm_partial_reort_never_rebuilds_the_restart(mode):
-    """The semi-orthogonal modes must keep the free (matvec-less) coefficient path.
-
-    PARTIAL maintains ``||Q^H Q - I|| ~ sqrt(EPS)`` by construction, so it must stay under
-    ``RESTART_ORTH_TOL`` and never pay for the Rayleigh-Ritz rebuild.
+    Full reorthogonalization holds ``||Q^H Q - I||`` under ``RESTART_ORTH_TOL``, so the
+    Rayleigh-Ritz rebuild is never paid for.
     """
     n = 200
     h, evals, rng = _clustered_hermitian(n)
@@ -197,10 +179,10 @@ def test_trlm_partial_reort_never_rebuilds_the_restart(mode):
     psi0 = np.linalg.qr(rng.standard_normal((n, _BLOCK_WIDTH)) + 0j)[0]
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        got, _ = _thick_restart_block_lanczos_array(psi0, h, _Basis(), _NUM_WANTED, 40, 1e-13, 30, True, mode, None)
+        got, _ = _thick_restart_block_lanczos_array(psi0, h, _Basis(), _NUM_WANTED, 40, 1e-13, 30, True, None)
 
     for err, k_ret, nkeep in _restart_reports(buf.getvalue()):
-        assert err <= RESTART_ORTH_TOL, f"{mode} lost semi-orthogonality: {err:.2e}"
+        assert err <= RESTART_ORTH_TOL, f"lost orthogonality: {err:.2e}"
         assert k_ret == nkeep
     np.testing.assert_allclose(np.sort(got.real), evals[:_NUM_WANTED], atol=1e-9)
 
@@ -218,7 +200,7 @@ def test_manybodystate_trlm_survives_a_rank_deficient_retained_ritz_block():
     psi0 = _random_block(basis_states, rng, _BLOCK_WIDTH)
 
     got, vecs = thick_restart_block_lanczos_cy(
-        psi0, h_op, MockBasis(n_orb), _NUM_WANTED, 30, 1e-13, 30, False, 0.0, 0, False, None
+        psi0, h_op, MockBasis(n_orb), _NUM_WANTED, 30, 1e-13, 30, False, 0.0, 0, None
     )
 
     assert len(got) == _NUM_WANTED
@@ -266,7 +248,7 @@ def test_trlm_rank_deficient_restart_is_collective(exchange, monkeypatch):
     psi0, _ = block_normalize(np.ascontiguousarray(psi0_full[c0:c1, :]), mpi=True, comm=comm)
 
     got, _ = _thick_restart_block_lanczos_array(
-        psi0, h_local, _Basis(comm), _NUM_WANTED, 40, 1e-13, 30, False, False, comm
+        psi0, h_local, _Basis(comm), _NUM_WANTED, 40, 1e-13, 30, False, comm
     )
 
     np.testing.assert_allclose(np.sort(got.real), evals[:_NUM_WANTED], atol=1e-8)
@@ -308,7 +290,6 @@ def test_sweep_deflation_does_not_short_circuit_the_restart_loop(num_wanted, max
         tol=1e-10,
         max_restarts=100,
         verbose=False,
-        reort=True,
     )
 
     assert len(got) == num_wanted
@@ -337,7 +318,6 @@ def test_the_deflating_fixture_really_deflates():
             tol=1e-10,
             max_restarts=100,
             verbose=True,
-            reort=True,
         )
 
     out = buf.getvalue()

@@ -72,9 +72,8 @@ def assert_orthonormal(eigvecs, path, comm=None):
     np.testing.assert_allclose(overlaps, expected, atol=sqrt_eps)
 
 
-@pytest.mark.parametrize("mode", [False, True])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
-def test_reort_matrix(mode, path):
+def test_reort_matrix(path):
     h_op_mb, N, eigvals_exact, basis_states = get_test_system()
     num_wanted = 4
     max_subspace_blocks = 6
@@ -108,21 +107,18 @@ def test_reort_matrix(mode, path):
         tol=1e-8,
         max_restarts=50,
         verbose=False,
-        reort=mode,
     )
 
     # Check eigenvalues
     np.testing.assert_allclose(eigvals, eigvals_exact[:num_wanted], atol=1e-8)
 
-    # Check orthonormality (except for NONE mode, which loses it)
-    if mode != False:
-        assert_orthonormal(eigvecs, path, comm=None)
+    # Check orthonormality
+    assert_orthonormal(eigvecs, path, comm=None)
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("mode", [False, True])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
-def test_reort_matrix_mpi(mode, path):
+def test_reort_matrix_mpi(path):
     comm = MPI.COMM_WORLD
     h_op_mb, N, eigvals_exact, basis_states = get_test_system()
     num_wanted = 4
@@ -181,15 +177,13 @@ def test_reort_matrix_mpi(mode, path):
         tol=1e-8,
         max_restarts=50,
         verbose=False,
-        reort=mode,
     )
 
     # Check eigenvalues on all ranks
     np.testing.assert_allclose(eigvals, eigvals_exact[:num_wanted], atol=1e-8)
 
-    # Check orthonormality (except for NONE mode)
-    if mode != False:
-        assert_orthonormal(eigvecs, path, comm=comm)
+    # Check orthonormality
+    assert_orthonormal(eigvecs, path, comm=comm)
 
 
 @pytest.mark.parametrize("p", [1, 2, 4])

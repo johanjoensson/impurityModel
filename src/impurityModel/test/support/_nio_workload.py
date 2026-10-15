@@ -321,7 +321,6 @@ def build_ground_state_workload(
         de2_min=de2_min,
         slaterWeightMin=slater_weight_min,
         solver="trlm",
-        reort=True,
     )
     if basis.restrictions is not None:
         h.set_restrictions(basis.restrictions)

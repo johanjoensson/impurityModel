@@ -645,7 +645,6 @@ def _thick_restart_block_lanczos_array(
     tol,
     max_restarts,
     verbose,
-    reort_mode,
     comm,
     num_converge=None,
     locked=None,
@@ -678,7 +677,7 @@ def _thick_restart_block_lanczos_array(
             converged=lambda a, b, **kw: False,
             max_iter=max_iter,
             verbose=verbose,
-            reort=reort_mode,
+            reort=True,
             return_widths=True,
             comm=comm,
             locked=locked,
@@ -714,7 +713,6 @@ def thick_restart_block_lanczos_cy(
     verbose: bool = False,
     slaterWeightMin: float = 0.0,
     truncation_threshold: int = 0,
-    reort=True,
     comm=None,
     num_converge=None,
 ):
@@ -734,7 +732,6 @@ def thick_restart_block_lanczos_cy(
         max_restarts: Maximum number of thick restarts. Default ``100``.
         verbose: Print restart diagnostics. Default ``False``.
         slaterWeightMin: Amplitude cutoff for ``ManyBodyState.prune``. Default ``0.0``.
-        reort: ``True`` fully reorthogonalizes the inner recurrence. Default ``True``.
         comm: ``mpi4py`` communicator. Falls back to ``basis.comm`` or serial.
 
     Returns:
@@ -753,7 +750,6 @@ def thick_restart_block_lanczos_cy(
     if comm is None:
         comm = getattr(basis, "comm", None)
     mpi = comm is not None and comm.Get_size() > 1
-    reort_mode = bool(reort)
 
     # Adopt the block-native seed representation up front (matching what the sweep's
     # fresh-start ingestion and every restart-loop primitive already work in) instead of
@@ -771,7 +767,7 @@ def thick_restart_block_lanczos_cy(
             basis=basis,
             converged=lambda a, b, **kw: False,
             verbose=verbose,
-            reort=reort_mode,
+            reort=True,
             max_iter=max_iter,
             slaterWeightMin=slaterWeightMin,
             truncation_threshold=truncation_threshold,
@@ -806,7 +802,6 @@ def thick_restart_block_lanczos(
     max_restarts: int = 100,
     verbose: bool = False,
     slaterWeightMin: float = 0,
-    reort=True,
     num_converge=None,
     locked=None,
 ):
@@ -826,7 +821,6 @@ def thick_restart_block_lanczos(
     """
     mpi = basis is not None and getattr(basis, "comm", None) is not None
     comm = basis.comm if mpi else None
-    reort_mode = bool(reort)
 
     if not (isinstance(h_op, DistributedSparseMatrix) or is_array(h_op)):
         if locked is not None:
@@ -841,7 +835,6 @@ def thick_restart_block_lanczos(
             max_restarts=max_restarts,
             verbose=verbose,
             slaterWeightMin=slaterWeightMin,
-            reort=reort_mode,
             comm=comm,
             num_converge=num_converge,
         )
@@ -855,7 +848,6 @@ def thick_restart_block_lanczos(
         tol,
         max_restarts,
         verbose,
-        reort_mode,
         comm,
         num_converge=num_converge,
         locked=locked,

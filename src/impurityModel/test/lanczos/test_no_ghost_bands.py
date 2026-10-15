@@ -137,7 +137,7 @@ def _exact_spectrum(spectrum_type):
     return EXACT_DEGENERATE if spectrum_type == "exact_degenerate" else NEAR_DEGENERATE
 
 
-def _run_solver(solver, h_op, basis, psi0, mode, comm):
+def _run_solver(solver, h_op, basis, psi0, comm):
     kwargs = dict(
         psi0=psi0,
         h_op=h_op,
@@ -147,14 +147,13 @@ def _run_solver(solver, h_op, basis, psi0, mode, comm):
         tol=1e-8,
         max_restarts=50,
         verbose=False,
-        reort=mode,
     )
     assert solver == "TRLM"
     return thick_restart_block_lanczos(**kwargs)
 
 
 @functools.cache
-def _serial_solve(mode, path, solver, spectrum_type):
+def _serial_solve(path, solver, spectrum_type):
     """One serial solve per cell, shared by ``test_no_ghost_bands`` and its Ritz-floor twin.
 
     The two assert different invariants of the same run -- the multiplicity match (xfail on the
@@ -162,10 +161,10 @@ def _serial_solve(mode, path, solver, spectrum_type):
     restarted Lanczos twice. Neither mutates the result.
     """
     h_op, basis, psi0, _ = create_diagonal_system(_exact_spectrum(spectrum_type), path, comm=None)
-    return _run_solver(solver, h_op, basis, psi0, mode, comm=None)
+    return _run_solver(solver, h_op, basis, psi0, comm=None)
 
 
-def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
+def get_xfail_marker(path, solver, spectrum_type, mpi):
     # On this 12-state spectrum with block size 2 and a tight restart subspace
     # (max_subspace_blocks=5), the array path converges whenever the degeneracies are
     # *split* (near_degenerate): each near-copy is then a distinct Ritz value the block
@@ -190,22 +189,8 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     # this is tracked as future work. strict=False so that if a solver later resolves a
     # cell it surfaces as XPASS rather than failing the suite.
     if path == "array" and spectrum_type == "near_degenerate":
-        # False does no reorthogonalization,
-        # so nothing guarantees they resolve a 1e-9-relative splitting once BLAS-kernel
-        # rounding is comparable to that splitting: a different runner's OpenBLAS build
-        # (measured locally via OPENBLAS_CORETYPE=Nehalem, and observed on real CI across
-        # clang/gcc/intel -- see the numerics-campaign writeup) pushes the second copy of a
-        # near-degenerate pair a few ulp past the assertion below, producing a duplicate
-        # ("ghost") Ritz value instead of the true split pair. PARTIAL/FULL keep
-        # the Krylov basis orthogonal and are not excluded here -- they have not been
-        # observed to fail this cell on any measured kernel/compiler.
-        if not mode:
-            return pytest.mark.xfail(
-                strict=False,
-                reason="False gives no reorthogonalization guarantee at a "
-                "1e-9-relative splitting; a different BLAS reduction order can merge the "
-                "near-degenerate pair into a ghost Ritz value (see comment above)",
-            )
+        # TRLM always reorthogonalizes fully, so the Krylov basis stays orthogonal and this cell
+        # is not excluded -- it has not been observed to fail on any measured kernel/compiler.
         return None
     return pytest.mark.xfail(
         strict=False,
@@ -214,16 +199,15 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     )
 
 
-@pytest.mark.parametrize("mode", [False, True])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 @pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
-def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
-    marker = get_xfail_marker(mode, path, solver, spectrum_type, mpi=False)
+def test_no_ghost_bands(path, solver, spectrum_type, request):
+    marker = get_xfail_marker(path, solver, spectrum_type, mpi=False)
     if marker is not None:
         request.node.add_marker(marker)
 
-    eigvals, eigvecs = _serial_solve(mode, path, solver, spectrum_type)
+    eigvals, eigvecs = _serial_solve(path, solver, spectrum_type)
 
     # Check eigenvalues match exact ones with multiplicity (sorted). Solver was asked for
     # tol=1e-8; c=100 gives real headroom above that (not the literal 1e-6 this used to be
@@ -234,15 +218,13 @@ def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
         np.sort(eigvals), _exact_spectrum(spectrum_type)[:NUM_WANTED], atol=solver_atol(1e-8, c=100)
     )
 
-    if mode != False:
-        assert_orthonormal(eigvecs, path, comm=None)
+    assert_orthonormal(eigvecs, path, comm=None)
 
 
-@pytest.mark.parametrize("mode", [False, True])
 @pytest.mark.parametrize("path", ["array"])
 @pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
-def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
+def test_no_ghost_bands_ritz_floor(path, solver, spectrum_type):
     """The hard invariant behind this module's name, asserted WITHOUT the xfail that
     covers the exact-multiplicity-match assertion in ``test_no_ghost_bands``.
 
@@ -272,11 +254,11 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
       partially-filled T_full" limitation, not a new divergence.
 
     Net: the array path carries this invariant cleanly (20/20); the MBS path's story is
-    seed-condition-dependent and reort-mode-dependent enough to need its own
+    seed-condition-dependent enough to need its own
     characterization, not a blanket floor assertion. Tracked for
     ``doc/lanczos_invariants.md``'s "known open issues" section (R2).
     """
-    eigvals, _eigvecs = _serial_solve(mode, path, solver, spectrum_type)
+    eigvals, _eigvecs = _serial_solve(path, solver, spectrum_type)
 
     lambda_min = _exact_spectrum(spectrum_type).min()
     ev_min = np.min(np.asarray(eigvals).real)
@@ -284,23 +266,21 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("mode", [False, True])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 @pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
-def test_no_ghost_bands_mpi(mode, path, solver, spectrum_type, request):
+def test_no_ghost_bands_mpi(path, solver, spectrum_type, request):
     comm = MPI.COMM_WORLD
-    marker = get_xfail_marker(mode, path, solver, spectrum_type, mpi=True)
+    marker = get_xfail_marker(path, solver, spectrum_type, mpi=True)
     if marker is not None:
         request.node.add_marker(marker)
 
     eigvals_exact = _exact_spectrum(spectrum_type)
     h_op, basis, psi0, _ = create_diagonal_system(eigvals_exact, path, comm=comm)
-    eigvals, eigvecs = _run_solver(solver, h_op, basis, psi0, mode, comm=comm)
+    eigvals, eigvecs = _run_solver(solver, h_op, basis, psi0, comm=comm)
 
     # Check eigenvalues match exact ones with multiplicity (sorted); see the serial
     # variant above for why this margin is solver_atol(1e-8, c=100).
     np.testing.assert_allclose(np.sort(eigvals), eigvals_exact[:NUM_WANTED], atol=solver_atol(1e-8, c=100))
 
-    if mode != False:
-        assert_orthonormal(eigvecs, path, comm=comm)
+    assert_orthonormal(eigvecs, path, comm=comm)

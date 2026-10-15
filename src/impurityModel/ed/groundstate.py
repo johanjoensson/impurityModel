@@ -308,7 +308,6 @@ def calc_energy(
     truncation_threshold=None,
     slaterWeightMin=1e-12,
     cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
-    reort=True,
     weighted_restrictions=None,
     frozen_occupations=None,
     symmetry_generators=None,
@@ -399,7 +398,6 @@ def calc_energy(
         truncation_threshold=truncation_threshold,
         slaterWeightMin=slaterWeightMin,
         cipsi_solver_method=cipsi_solver_method,
-        reort=reort,
         weighted_restrictions=weighted_restrictions,
         frozen_occupations=frozen_occupations,
         symmetry_generators=symmetry_generators,
@@ -437,7 +435,6 @@ def _solve_sector_core(
     truncation_threshold=None,
     slaterWeightMin=1e-12,
     cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
-    reort=True,
     weighted_restrictions=None,
     frozen_occupations=None,
     symmetry_generators=None,
@@ -519,7 +516,6 @@ def _solve_sector_core(
                 e_pt2_tol=e_pt2_tol,
                 slaterWeightMin=slaterWeightMin,
                 solver=cipsi_solver_method,
-                reort=reort,
                 # Measured-RSS guards (see `expand_memory_budget`). They may hold the basis below
                 # a cap derived from memory, or below no cap at all; a cap the user set is final,
                 # so for it they only warn. A run that stays under budget is unaffected either way.
@@ -540,7 +536,6 @@ def _solve_sector_core(
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
                 solver=cipsi_solver_method,
-                reort=reort,
                 psi_refs=solver.psi_refs,
             )
         sector_fields["n_dets"] = len(basis)
@@ -574,7 +569,6 @@ def solve_sector(
     truncation_threshold=None,
     slaterWeightMin=1e-12,
     cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
-    reort=True,
     weighted_restrictions=None,
     frozen_occupations=None,
     symmetry_generators=None,
@@ -618,7 +612,6 @@ def solve_sector(
         truncation_threshold=truncation_threshold,
         slaterWeightMin=slaterWeightMin,
         cipsi_solver_method=cipsi_solver_method,
-        reort=reort,
         weighted_restrictions=weighted_restrictions,
         frozen_occupations=frozen_occupations,
         symmetry_generators=symmetry_generators,

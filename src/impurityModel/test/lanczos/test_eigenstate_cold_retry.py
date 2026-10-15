@@ -107,7 +107,6 @@ def _fake_lanczos(exhaust_first_calls, calls):
         max_restarts,
         verbose,
         slaterWeightMin,
-        reort,
         **kwargs,
     ):
         calls.append(np.array(psi0, copy=True))
@@ -331,7 +330,7 @@ def test_a_window_reaching_into_the_pad_is_resolved_once_with_the_gate_widened(m
     gates = []
 
     def fake(
-        psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, slaterWeightMin, reort, **kw
+        psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, slaterWeightMin, **kw
     ):
         gates.append(kw.get("num_converge"))
         e = np.concatenate([np.linspace(0.0, 2e-4, num_wanted - 1), [10.0]])  # the pad inside the cut
