@@ -411,9 +411,7 @@ def test_a_resumed_call_keeps_the_divergence_guards_scale(monkeypatch):
     a1, b1, q1, w1, wid1 = block_lanczos_cy(psi0=psi0, max_iter=4, **kw)
     whole = list(calls)
     calls.clear()
-    block_lanczos_cy(
-        psi0=None, alphas_init=a1, betas_init=b1, Q_init=q1, block_widths_init=wid1, max_iter=2, **kw
-    )
+    block_lanczos_cy(psi0=None, alphas_init=a1, betas_init=b1, Q_init=q1, block_widths_init=wid1, max_iter=2, **kw)
     first_resumed = calls[0]
     assert not first_resumed[1], "the resumed call's first step is not a scale-establishing step"
     assert first_resumed[2] >= max(t for _, _, t, _ in whole), "it carries the earlier call's scale"

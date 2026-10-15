@@ -197,4 +197,3 @@ def test_trlm_cy_tight_binding_mpi():
     )
 
     assert len(eigs) == 4
-

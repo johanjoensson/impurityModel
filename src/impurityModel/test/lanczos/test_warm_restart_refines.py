@@ -177,7 +177,9 @@ def test_manybodystate_warm_start_is_refined_not_returned():
     h_op, basis_states = _one_particle_operator(t)
     psi0 = _states_from_columns(basis_states, q0)
 
-    vals, vecs = thick_restart_block_lanczos_cy(psi0, h_op, MockBasis(_N_ORB), _P, 12, _TOL, 60, False, 0.0, 0, "full", None)
+    vals, vecs = thick_restart_block_lanczos_cy(
+        psi0, h_op, MockBasis(_N_ORB), _P, 12, _TOL, 60, False, 0.0, 0, "full", None
+    )
 
     vals = np.asarray(vals).real
     r = max(_mbs_residual(h_op, psi, theta) for psi, theta in zip(vecs, vals))
@@ -224,7 +226,9 @@ def test_warm_start_refinement_is_collective():
             self.comm = comm
             self.size = n
 
-    vals, vecs = _thick_restart_block_lanczos_array(q0_local, h_local, _Basis(comm), _P, 12, _TOL, 60, False, Reort.FULL, comm)
+    vals, vecs = _thick_restart_block_lanczos_array(
+        q0_local, h_local, _Basis(comm), _P, 12, _TOL, 60, False, Reort.FULL, comm
+    )
 
     vals = np.asarray(vals).real
     k = len(vals)

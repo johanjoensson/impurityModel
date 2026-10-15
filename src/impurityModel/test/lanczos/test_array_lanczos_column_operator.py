@@ -44,7 +44,9 @@ def _column_operator(h_local_csc, columns_per_segment, row_dtype=np.int32, comm=
         c1 = min(c0 + columns_per_segment, n_cols)
         block = h_local_csc[:, c0:c1].tocsc()
         segments.append((c0, block.indptr.astype(np.int64), block.indices.astype(row_dtype), block.data.copy()))
-    return DistributedSparseMatrix(h_local_csc.shape, segments, comm if comm is not None and comm.size > 1 else None, col_offset)
+    return DistributedSparseMatrix(
+        h_local_csc.shape, segments, comm if comm is not None and comm.size > 1 else None, col_offset
+    )
 
 
 def _local(comm, partition, width):
@@ -86,7 +88,9 @@ def test_the_column_block_layout_does_not_change_the_recurrence(monkeypatch, row
         monkeypatch.setenv("GS_MATVEC_EXCHANGE_BYTES", "16")
     h_csc, psi0_local, _, c0 = _local(comm, partition, width)
     max_iter = 5
-    want_a, want_b = _run(DistributedSparseMatrix.from_scipy(h_csc, comm if comm.size > 1 else None, c0), psi0_local, comm, max_iter)
+    want_a, want_b = _run(
+        DistributedSparseMatrix.from_scipy(h_csc, comm if comm.size > 1 else None, c0), psi0_local, comm, max_iter
+    )
     got_a, got_b = _run(_column_operator(h_csc, 2, row_dtype, comm, c0), psi0_local, comm, max_iter)
     np.testing.assert_allclose(got_a, want_a, rtol=1e-13, atol=1e-13)
     np.testing.assert_allclose(got_b, want_b, rtol=1e-13, atol=1e-13)

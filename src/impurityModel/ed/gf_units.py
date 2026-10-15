@@ -475,7 +475,7 @@ def enumerate_gf_units(
         (:func:`basis_restrictions.union_windows`) over the eigenstates it stacks instead of the group
         fallback.
     basis : Basis, optional
-        The basis ``psis`` are distributed on. With a distributed one 
+        The basis ``psis`` are distributed on. With a distributed one
         the seeds are summed over the ranks and cut on whole amplitudes -- a many-term operator sends
         determinants on several ranks to one seed row -- and come back owner-distributed (collective).
         ``None``: the states are not distributed.

@@ -68,4 +68,3 @@ def test_trlm_reort_partial():
     # Assert Ritz vectors are orthogonal
     overlaps = inner_multi(eigvecs, eigvecs)
     np.testing.assert_allclose(np.abs(overlaps), np.eye(4), atol=1e-5)
-

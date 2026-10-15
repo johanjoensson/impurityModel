@@ -96,7 +96,16 @@ def test_one_step_gives_the_same_alpha_for_an_array_block_and_its_manybodystate_
     alphas = np.zeros((1, P, P), dtype=complex)
     betas = np.zeros((1, P, P), dtype=complex)
     _qn, alpha_arr, _beta, norm_arr, k_arr, broke = lanczos_step(
-        lambda q: h_dense @ q, np.zeros((n, P), dtype=complex), seed.copy(), None, alphas, betas, 0, Reort.NONE, False, None
+        lambda q: h_dense @ q,
+        np.zeros((n, P), dtype=complex),
+        seed.copy(),
+        None,
+        alphas,
+        betas,
+        0,
+        Reort.NONE,
+        False,
+        None,
     )
     assert not broke and k_arr == P
 
@@ -137,8 +146,17 @@ def test_the_locked_vectors_are_projected_out_in_both_representations(representa
     betas = np.zeros((1, P, P), dtype=complex)
     if representation == "array":
         q_next, *_ = lanczos_step(
-            lambda q: h_dense @ q, np.zeros((n, P), dtype=complex), start.copy(), None, alphas, betas, 0,
-            Reort.NONE, False, None, locked=locked,
+            lambda q: h_dense @ q,
+            np.zeros((n, P), dtype=complex),
+            start.copy(),
+            None,
+            alphas,
+            betas,
+            0,
+            Reort.NONE,
+            False,
+            None,
+            locked=locked,
         )
         dense_next = q_next
     else:
@@ -149,7 +167,13 @@ def test_the_locked_vectors_are_projected_out_in_both_representations(representa
             lambda q: apply_and_redistribute(h_op, q, basis, 0.0, False, 1),
             ManyBodyState(width=P),
             ManyBodyState.from_states(_seed_states(basis_states, start)),
-            None, alphas, betas, 0, Reort.NONE, False, None,
+            None,
+            alphas,
+            betas,
+            0,
+            Reort.NONE,
+            False,
+            None,
             locked=ManyBodyState.from_states(_seed_states(basis_states, locked)),
         )
         keys = [next(iter(b.keys())) for b in basis_states]
@@ -181,7 +205,9 @@ def test_add_scaled_in_place_matches_numpy_on_awkward_inputs():
     # V += V @ alpha: the output overlaps an input, which numpy built a temporary for.
     square = rng.standard_normal((n, p)) + 1j * rng.standard_normal((n, p))
     sq_alpha = rng.standard_normal((p, p)) + 1j * rng.standard_normal((p, p))
-    np.testing.assert_allclose(block_add_scaled(square.copy(), square, sq_alpha), square + square @ sq_alpha, atol=1e-12)
+    np.testing.assert_allclose(
+        block_add_scaled(square.copy(), square, sq_alpha), square + square @ sq_alpha, atol=1e-12
+    )
     # The BLAS call cannot check shapes, so the dispatcher must.
     with pytest.raises(ValueError):
         block_add_scaled(base.copy(), W, alpha[:1])

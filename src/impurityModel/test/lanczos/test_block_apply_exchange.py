@@ -58,7 +58,9 @@ def _matrix(h_local, comm, complete_graph=False):
     in every row, so every rank is a destination of every other."""
     if complete_graph:
         h_local = h_local + 0.0
-        return DistributedSparseMatrix.from_dense(np.where(h_local == 0, 1e-300, h_local), comm if comm.size > 1 else None)
+        return DistributedSparseMatrix.from_dense(
+            np.where(h_local == 0, 1e-300, h_local), comm if comm.size > 1 else None
+        )
     return DistributedSparseMatrix.from_scipy(sps.csc_array(h_local), comm if comm.size > 1 else None)
 
 

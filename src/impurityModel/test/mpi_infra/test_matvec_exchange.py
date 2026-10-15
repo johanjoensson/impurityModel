@@ -39,6 +39,7 @@ def dest_flags_all(counts):
     """Every non-empty rank is a destination."""
     return np.asarray(counts, dtype=np.int64) > 0
 
+
 GLOBAL_N = 11
 WIDTH = 3
 

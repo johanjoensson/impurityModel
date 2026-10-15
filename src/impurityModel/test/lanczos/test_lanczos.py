@@ -434,4 +434,3 @@ def test_block_apply_sparse_matches_dense_reference_with_an_empty_rank():
     result = block_apply(H_local, v_local, basis=fake_basis, mpi=True)
     expected_local = expected[local_cols, :] if local_cols else np.zeros((0, 1), dtype=complex)
     np.testing.assert_allclose(result, expected_local, atol=1e-12)
-

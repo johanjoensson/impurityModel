@@ -104,4 +104,3 @@ def test_array_lanczos_orthonormality_mpi():
     total = np.zeros_like(gram_local)
     comm.Allreduce(np.ascontiguousarray(gram_local), total, op=MPI.SUM)
     assert np.linalg.norm(total - np.eye(total.shape[0])) < _SQRT_EPS
-

@@ -501,9 +501,7 @@ def check_bicgstab_convergence(
         value=float(max_rel_residual),
         threshold=float(atol),
         message=message,
-        suggestion=(
-            "" if ok else "raise GF_GMRES_RESTART, loosen delta, or raise truncation_threshold"
-        ),
+        suggestion=("" if ok else "raise GF_GMRES_RESTART, loosen delta, or raise truncation_threshold"),
         needs_more_iterations=n_unconverged > 0,
     )
 
