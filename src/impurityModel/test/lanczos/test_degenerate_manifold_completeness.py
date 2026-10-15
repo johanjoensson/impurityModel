@@ -24,6 +24,7 @@ from mpi4py import MPI
 from impurityModel.ed.basis_transcription import build_state
 from impurityModel.ed.BlockLanczosCore import block_inner
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -69,6 +70,9 @@ def _solve(basis, h, U, warm=True, **kwargs):
         psi_refs = build_state(basis, U[local, :GROUND].T)
     solver = CIPSISolver(basis)
     dummy = ManyBodyOperator({((0, "c"), (0, "a")): 0.0})
+    h = DistributedSparseMatrix.from_scipy(
+        sps.csc_array(h)[:, list(basis.local_indices)], basis.comm if basis.is_distributed else None, basis.offset
+    )
     return solver.get_eigenvectors(
         dummy, psi_refs=psi_refs, h_matrix=h, dense_cutoff=10, slaterWeightMin=1e-12, **kwargs
     )

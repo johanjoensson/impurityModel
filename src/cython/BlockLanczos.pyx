@@ -41,48 +41,13 @@ Reorthogonalization modes (``Reort`` enum from ``lanczos.py``):
   passes).
 """
 
-import numpy as np
-from impurityModel.ed import config
-from impurityModel.ed.manybody_basis import collective_top_k_mask
-from impurityModel.ed.ManyBodyUtils import (
-    ManyBodyState,
-    block_add_scaled_cy,
-    block_inner_cy,
-    SparseKrylovDense,
+# The recurrence itself -- ``lanczos_step`` and the ManyBodyState driver ``block_lanczos_cy`` -- lives in
+# BlockLanczosCore.pyx next to the representation-dispatching primitives it is written against; this
+# module re-exports it so the existing `from impurityModel.ed.BlockLanczos import ...` paths keep working.
+from impurityModel.ed.BlockLanczosCore import (  # noqa: F401
+    block_lanczos_cy,
+    lanczos_step,
 )
-from mpi4py import MPI
-
-cimport numpy as np
-
-# The shared numerical layer (Reort, tolerances, the
-# block-tridiagonal eigensolvers, and the representation-dispatching block
-# primitives / apply_full_reort) lives in BlockLanczosCore.pyx -- imported directly here,
-# not transitively through BlockLanczosArray, so both kernels import downward from
-# the shared layer and neither depends on the other.
-from impurityModel.ed.BlockLanczosCore import (
-    apply_full_reort,
-    resolve_reort,
-    block_cols,
-    block_combine,
-    block_tsqr,
-    check_divergence,
-    divergence_guard,
-    factor_residual,
-    apply_and_redistribute,
-    matvec_cut_after_sum,
-    pack_lanczos_result,
-    Reort,
-    EPS,
-)
-from impurityModel.ed.TSQR import robust_svd, spectral_norm
-
-# block_normalize_sparse used to live here as a thin block_tsqr wrapper for the
-# ManyBodyState/list representations; it and its array-kernel counterpart
-# (block_normalize_array) were the same 5-line body twice, now absorbed into Core's
-# single block_normalize (imported above), which dispatches on representation itself.
-
-
-include "_lanczos_step.pxi"
 
 # TRLM's restart-layer business logic (the path-agnostic `_trlm_core`, locking and
 # result assembly) is plain Python in ed/trlm.py -- it has no Cython constructs and

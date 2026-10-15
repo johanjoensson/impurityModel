@@ -97,25 +97,21 @@ def test_gs_array_kernel_replication_shrinks_with_ranks():
 
 
 def test_gs_graph_exchange_term_is_bounded_by_the_byte_budget(monkeypatch):
-    """Under ``graph`` the exchange buffers are sized by the neighbour count and capped by
-    ``GS_MATVEC_EXCHANGE_BYTES`` (both alive at once, so 2x); ``reduce`` keeps the single
-    chunk buffer. A tiny budget must therefore remove the difference between the two modes."""
+    """The exchange buffers are sized by the neighbour count and capped by ``GS_MATVEC_EXCHANGE_BYTES``
+    (both alive at once, so 2x)."""
     monkeypatch.delenv("GS_MATVEC_EXCHANGE_BYTES", raising=False)
-    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "reduce")
-    loop = me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256)
-    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "graph")
-    graph = me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256)
-    local = -(-1_000_000 // 256)
-    # 37 neighbours x local x 110 x 16 B ~ 254 MiB per buffer, well over the 64 MiB default cap.
-    assert graph - loop == 2 * me.config.GS_MATVEC_EXCHANGE_BYTES.default - local * 110 * 16
+    big = me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256)
     monkeypatch.setenv("GS_MATVEC_EXCHANGE_BYTES", "16")
-    assert me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256) < loop
+    # 37 neighbours x local x 110 x 16 B ~ 254 MiB per buffer, well over the 64 MiB default cap: a
+    # tiny budget removes the whole exchange term but the 16-byte floor.
+    capped = me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256)
+    assert big - capped == 2 * me.config.GS_MATVEC_EXCHANGE_BYTES.default - 2 * 16
     # Below the cap the term is degree-proportional: two ranks have one neighbour each.
     monkeypatch.delenv("GS_MATVEC_EXCHANGE_BYTES", raising=False)
-    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "reduce")
-    loop2 = me.estimate_gs_peak_bytes(1000, 100, block_width=4, ranks=2)
-    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "graph")
-    assert me.estimate_gs_peak_bytes(1000, 100, block_width=4, ranks=2) - loop2 == 500 * 4 * 16
+    monkeypatch.setenv("GS_MATVEC_EXCHANGE_BYTES", "16")
+    tiny = me.estimate_gs_peak_bytes(1000, 100, block_width=4, ranks=2)
+    monkeypatch.delenv("GS_MATVEC_EXCHANGE_BYTES", raising=False)
+    assert me.estimate_gs_peak_bytes(1000, 100, block_width=4, ranks=2) - tiny == 2 * (500 * 4 * 16 - 16)
 
 
 def test_suggest_threshold_monotone_in_safety(monkeypatch):

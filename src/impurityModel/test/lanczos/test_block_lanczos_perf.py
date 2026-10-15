@@ -249,9 +249,7 @@ def test_partial_trlm_array_bench(nio_workload):
     sampler = RssSampler()
     sampler.start()
     H_mat = build_sparse_matrix(basis, h)
-    if basis.is_distributed:
-        H_mat = H_mat[:, basis.local_indices]
-    h_mat_bytes = H_mat.data.nbytes + H_mat.indices.nbytes + H_mat.indptr.nbytes
+    h_mat_bytes = H_mat.nbytes
     psi0_arr = build_distributed_vector(basis, psi0).T
 
     times = []

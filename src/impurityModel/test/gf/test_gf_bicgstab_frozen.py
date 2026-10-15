@@ -24,7 +24,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import gf_solvers
-from impurityModel.ed.basis_transcription import build_dense_matrix, build_local_column_operator
+from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix
 from impurityModel.ed.gf_primitives import FrozenColumnMatvec, block_to_local_dense
 from impurityModel.ed.gf_solvers import block_Green_bicgstab
 from impurityModel.ed.greens_function import _gf_signed_axes
@@ -104,7 +104,7 @@ def _p_short_of_the_sector(comm=None):
 
 def test_the_frozen_matvec_is_h_on_p():
     basis, op = _p_short_of_the_sector()
-    matvec = FrozenColumnMatvec(build_local_column_operator(basis, op), basis.comm, 2)
+    matvec = FrozenColumnMatvec(build_sparse_matrix(basis, op), basis.comm, 2)
     rng = np.random.default_rng(1)
     X = rng.normal(size=(len(basis.local_basis), 2)) + 1j * rng.normal(size=(len(basis.local_basis), 2))
     X_block = ManyBodyState.from_keys_and_amps(basis._keys, X)

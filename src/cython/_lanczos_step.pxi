@@ -1,7 +1,7 @@
 # ===========================================================================
 # Core block-Lanczos recurrence
 # ===========================================================================
-# One three-term block step (block_lanczos_step_cy) and the full recurrence driver
+# One three-term block step (lanczos_step) and the full recurrence driver
 # (block_lanczos_cy) that serves the whole frequency mesh from a single recurrence. The
 # reorthogonalization mode (NONE/FULL) and the EA16
 # shrinking-block deflation policy are dispatched from here.
@@ -24,219 +24,523 @@ def _keep_global_top(st, max_size, comm):
     st.keep_rows(ManyBodyState.from_keys([keys[i] for i in np.flatnonzero(mask)]))
 
 
-def block_lanczos_step_cy(
-    h_op,
+def lanczos_step(
+    matvec,
     q_prev,
     q_curr,
-    Q_basis,
+    store,
     alphas,
     betas,
-    it: int,
+    int it,
     reort_mode,
-    mpi: bool,
+    bint mpi,
     comm,
-    basis,
-    slaterWeightMin: float = 0.0,
-    truncation_threshold: float = 0.0,
-    start_it: int = 0,
-    block_widths=None,
+    double slaterWeightMin=0.0,
+    truncation_threshold=0.0,
     locked=None,
-    krylov=None,
-    h_norm_est: float = 0.0,
-    deflate_tol: float = -1.0,
+    note_cut=None,
+    double h_norm_est=0.0,
+    double deflate_tol=-1.0,
 ):
-    """Perform one step of the distributed block Lanczos iteration.
-
-    Executes the three-term block recurrence
+    r"""One step of the block-Lanczos three-term recurrence -- the only one, for every block representation.
 
     .. math::
 
-        W_p = H Q_i - Q_i \\alpha_i - Q_{i-1} \\beta_{i-1}^\\dagger
+        W = A X_i, \qquad \alpha_i = X_i^\dagger W, \qquad
+        W \leftarrow W - X_i \alpha_i - X_{i-1} \beta_{i-1}^\dagger, \qquad
+        X_{i+1}, \beta_i = \mathrm{TSQR}(W)
 
-    where :math:`\\alpha_i = Q_i^\\dagger H Q_i` is the diagonal block and
-    :math:`\\beta_{i-1}` is the off-diagonal block from the previous step.
-    The residual block :math:`W_p = Q_{i+1}\\beta_i` is then QR-factorised by TSQR
-    (``block_tsqr``), which builds :math:`\\beta_i` from :math:`W_p` itself and obtains
-    :math:`Q_{i+1} = W_p\\beta_i^{-1}` by back substitution — the Gram matrix
-    :math:`W_p^\\dagger W_p` is never formed.
+    ``q_prev`` / ``q_curr`` are tall-skinny blocks in either representation -- ``ndarray`` or
+    shared-support ``ManyBodyState`` -- and the step touches them only through the dispatching
+    primitives of ``_block_ops.pxi`` (``block_inner``, ``block_add_scaled``, ``apply_full_reort``,
+    ``factor_residual``); ``store`` is the Krylov store (``Reort.FULL`` projects against it); ``matvec`` is the representation's ``A X`` (the driver builds it: a
+    ``DistributedSparseMatrix`` exchange, or ``ManyBodyOperator`` apply + redistribute + the cut on the
+    summed rows). Between the recurrence and the TSQR it projects out the ``locked`` columns and, in
+    ``Reort.FULL`` mode, the stored Krylov basis; after it, a ``ManyBodyState`` block is truncated
+    (``slaterWeightMin``, ``truncation_threshold``) and re-factored.
 
-    **MPI collective operations** (all ranks must call simultaneously):
+    **Collective** when ``mpi``: the ``p x p`` overlap ``Allreduce``\ s, the TSQR's ``Allgather`` and
+    the reorthogonalization's passes -- every rank takes the same branches because every decision is
+    read off replicated data (``alpha``, the TSQR's ``R``).
 
-    1. ``MPI_Allreduce`` (``MPI.SUM``) on :math:`\\alpha_i` – :math:`p \\times p`
-       complex matrix; result is replicated on every rank.
-    2. ``MPI_Allgather`` of the rank-local packed triangular factor
-       (:math:`p(p+1)/2` complex) inside the TSQR; every rank merges them in rank order,
-       so the resulting :math:`\\beta_i`, the retained rank and the breakdown decision are
-       identical on all ranks.
-    3. For ``FULL`` mode, an additional ``MPI_Allreduce`` per
-       reorthogonalization pass on the :math:`(it \\cdot p) \\times p` overlap matrix.
+    Writes ``alphas[it]`` and, unless the step breaks down, ``betas[it]``.
 
-    Note:
-        ``h_op.apply_multi`` releases the GIL internally; all other operations in
-        this function hold the GIL.
-
-    Args:
-        h_op: ``ManyBodyOperator`` Hamiltonian; must implement
-            ``apply_multi(psis, cutoff)``.
-        q_prev: ``ManyBodyState`` of width ``p`` from iteration ``i-1``
-            (a zero-row block of width ``p`` at ``it=0``).
-        q_curr: ``ManyBodyState`` of width ``p`` from iteration ``i``.
-        Q_basis: Accumulated Krylov basis as a flat list of ``ManyBodyState``
-            (length ``p * (it + 1)`` on entry, grows by ``p`` each step).
-        alphas: Pre-allocated numpy array of shape ``(max_iter, p, p)`` that
-            receives the diagonal block :math:`\\alpha_i` at index ``it``.
-        betas: Pre-allocated numpy array of shape ``(max_iter, p, p)`` that
-            receives the off-diagonal block :math:`\\beta_i` at index ``it``.
-        it: Current iteration index into ``alphas`` / ``betas`` buffers
-            (0-based, reset to 0 at the start of each fresh run).
-        reort_mode: ``Reort`` enum value controlling reorthogonalization strategy.
-            ``Reort.NONE`` skips all reorthogonalization entirely.
-        mpi: ``True`` when running under MPI with more than one rank.
-        comm: Active ``mpi4py.MPI.Comm`` communicator, or ``None`` when running
-            serially.
-        slaterWeightMin: Amplitude cutoff passed to ``ManyBodyState.prune``;
-            SD coefficients below this value are dropped.  Default ``0.0``
-            (no pruning).  On ``H q`` the cut is made on each row's summed amplitude
-            when the step redistributes.
-
-    Returns:
-        tuple: A 5-tuple ``(q_next, alpha_i, beta_i, active_k, breakdown)``:
-
-        * ``q_next`` – ``ManyBodyState`` (width ``active_k``) forming the next
-          Krylov block :math:`Q_{i+1}`, or ``None`` if breakdown occurred.
-        * ``alpha_i`` – numpy complex array of shape ``(p, p)`` for the current
-          diagonal block.
-        * ``beta_i`` – numpy complex array of shape ``(p, p)`` for the current
-          off-diagonal block, or ``None`` if breakdown occurred.
-        * ``breakdown`` – ``True`` if the residual block was numerically zero against the
-          operator scale (an invariant subspace, ``active_k == 0``) or its factor came out
-          non-finite (a corrupted recurrence, ``active_k == -1``).
+    Returns
+    -------
+    tuple
+        ``(q_next, alpha_i, beta_i, beta_norm, active_k, breakdown)``. ``active_k`` is the retained
+        width of ``q_next``; ``breakdown`` is True when the residual vanished against the operator
+        scale (``active_k == 0``, an invariant subspace) or its factor came out non-finite
+        (``active_k == -1``, a corrupted recurrence); ``q_next``, ``beta_i`` are then ``None``.
+        ``beta_norm`` is :math:`\|\beta_i\|_2`.
     """
-    # q_prev / q_curr are shared-support ManyBodyStates: the matvec, Gram products and
-    # axpy updates below run once per determinant ROW instead of once per (determinant,
-    # vector) pair; pruning keeps whole rows (any-column-survives) instead of
-    # per-column entries.
-    p = q_curr.width
+    cdef int p = block_cols(q_curr)
+    cdef int n_prev, active_k
+    cdef bint did_truncate = False
 
-    # --- 1. Block matvec: wp = H q_curr ---------------------------------
-    # A growth-capping basis proxy (caps_growth=True) must see every step's residual
-    # even serially: its redistribute_block enforces the truncation_threshold there
-    # (the inner Basis redistribute no-ops without MPI).
-    _needs_redistribute = basis is not None and ((mpi and comm is not None) or getattr(basis, "caps_growth", False))
-    # Chunking only where a redistribute actually follows. `GF_APPLY_ROW_CHUNKS` defaults to 4;
-    # `1` is the one-shot path. The matvec itself (chunking, the cut on summed rows, a capping
-    # proxy's deferred admission) is `apply_and_redistribute`.
-    _n_chunks = config.GF_APPLY_ROW_CHUNKS.get() if _needs_redistribute else 1
-    wp = apply_and_redistribute(
-        h_op, q_curr, basis, slaterWeightMin, _needs_redistribute, 1 if _n_chunks is None else int(_n_chunks),
-    )
-    # A proxy running the support freeze also weighs what the next block's prune below drops (replicated flag).
-    _note_cut = (
-        basis.note_step_cut
-        if _needs_redistribute and hasattr(basis, "begin_step") and getattr(basis, "support_freeze", False)
-        else None
-    )
+    # --- 1. W = A X_i ----------------------------------------------------
+    wp = matvec(q_curr)
 
-    # --- 2. alpha_i = <q_curr | wp> -------------------------------------
-    alpha_i = block_inner_cy(q_curr, wp)
-    if mpi and comm is not None:
-        comm.Allreduce(MPI.IN_PLACE, alpha_i, op=MPI.SUM)
+    # --- 2. alpha_i = <X_i | W> ------------------------------------------
+    alpha_i = block_inner(q_curr, wp, mpi, comm)
     alphas[it, :p, :p] = alpha_i
 
-    # --- 3. Subtract: wp = wp - q_curr * alpha_i - q_prev * beta_{i-1}^† -
-    wp = block_add_scaled_cy(wp, q_curr, -alpha_i)
-    # Bound unconditionally: q_prev is always a valid width-p block (a zero placeholder
-    # on the very first step of a fresh start), so this is well-defined at every call.
-    # Binding it only under "if it > 0" relied on that guard coinciding with the read
-    # site's own "if start_it > 0" below -- true today only because both trace back to
-    # the same resume/fresh-start decision, not because the two conditions are the same
-    # test. See doc/lanczos_invariants.md.
-    n_prev = q_prev.width
+    # --- 3. W -= X_i alpha_i + X_{i-1} beta_{i-1}^dagger -----------------
+    wp = block_add_scaled(wp, q_curr, -alpha_i)
+    # q_prev is always a valid block (a zero placeholder on the very first step of a fresh start),
+    # so its width is well-defined at every call; it only contributes from the second step on.
+    n_prev = block_cols(q_prev)
     if it > 0:
-        beta_prev_dag = np.conj(betas[it - 1, :p, :n_prev].T)
-        wp = block_add_scaled_cy(wp, q_prev, -beta_prev_dag)
+        wp = block_add_scaled(wp, q_prev, -np.conj(betas[it - 1, :p, :n_prev].T))
 
-    # --- 3b. EA16 §2.6.2 locking deflation ------------------------------
-    # Keep the residual block orthogonal to the already-converged ("locked") Ritz
-    # vectors *before* forming M and beta, so the stored beta and the resulting
-    # q_next are consistent with the deflated vector (matching the array kernel).
-    # The locked Ritz vectors are only approximate eigenvectors, so H q_curr leaks
-    # a small component along them that is otherwise amplified across iterations,
-    # reintroducing locked eigenvalues (and their 2*theta harmonics) as spurious
-    # Ritz values below the true spectral minimum on restarted sweeps. Twice for
-    # numerical robustness.
+    # --- 3b. Locking deflation -------------------------------------------
+    # Keep the residual orthogonal to the already-converged ("locked") Ritz vectors *before* forming
+    # beta, so the stored beta and q_next are consistent with the deflated vector. The locked vectors
+    # are only approximate eigenvectors, so A X_i leaks a small component along them that is
+    # otherwise amplified across iterations, reintroducing locked eigenvalues (and their 2*theta
+    # harmonics) as spurious Ritz values below the true spectral minimum. Twice, for robustness.
     #
-    # Gate on block_cols(locked), never truthiness: ManyBodyState.__len__ is the rank-local
-    # row count, so an empty rank diverges and the Allreduce below deadlocks. See
-    # doc/lanczos_invariants.md ("MPI collective gating") for the full incident.
+    # Gate on block_cols(locked), never truthiness: ManyBodyState.__len__ is the rank-local row
+    # count, so an empty rank diverges and the Allreduce below deadlocks (doc/lanczos_invariants.md,
+    # "MPI collective gating").
     if locked is not None and block_cols(locked) > 0:
-        locked_blk = (
-            locked if isinstance(locked, ManyBodyState) else ManyBodyState.from_states(list(locked))
-        )
+        if not is_array(wp) and not isinstance(locked, ManyBodyState):
+            locked = ManyBodyState.from_states(list(locked))
         for _ in range(2):
-            _ovl = block_inner_cy(locked_blk, wp)
-            if mpi and comm is not None:
-                comm.Allreduce(MPI.IN_PLACE, _ovl, op=MPI.SUM)
-            wp = block_add_scaled_cy(wp, locked_blk, -_ovl)
+            wp = block_add_scaled(wp, locked, -block_inner(locked, wp, mpi, comm))
 
-    # --- 4. Full reorthogonalization ------------------------------------
-    # The reort action goes through the shared apply_full_reort (classical 2-pass block
-    # Gram-Schmidt, one implementation for both kernels).
+    # --- 4. Full reorthogonalization against the stored basis ------------
     if reort_mode == Reort.FULL:
-        wp = apply_full_reort(wp, Q_basis, mpi, comm, krylov)
+        wp = apply_full_reort(wp, store, mpi, comm)
 
-    # --- 5. TSQR of the residual block ----------------------------------
-    # The triangular factor is built from the block's own rows (panel Householder + Givens
-    # merges + one Allgather), never from <wp|wp>, so it is backward stable at any
-    # conditioning and the rank decision is made on the block's true singular values.
-    # Breakdown is measured against the operator scale, not against 1: a residual block is
-    # negligible when it is small compared to H. `h_norm_est` is the driver's running estimate
-    # (0 on the first step of a cold start, where alpha_i carries the scale).
+    # --- 5. X_{i+1}, beta_i = TSQR(W) --------------------------------------
+    # The triangular factor is built from the block's own rows (panel Householder + Givens merges +
+    # one Allgather), never from <W|W>, so it is backward stable at any conditioning and the rank
+    # decision is made on the block's true singular values. Breakdown is measured against the
+    # operator scale, not against 1: a residual block is negligible when it is small compared to A.
+    # `h_norm_est` is the driver's running estimate (0 on the first step of a cold start, where
+    # alpha_i carries the scale).
     q_next, beta_i, active_k, sv_i = factor_residual(
-        wp, mpi, comm, max(float(h_norm_est), spectral_norm(alpha_i)),
-        deflate_tol=deflate_tol,
+        wp, mpi, comm, max(float(h_norm_est), spectral_norm(alpha_i)), deflate_tol=deflate_tol,
     )
     if active_k < 0:
-        # Non-finite factor => the recurrence is *corrupted*, not a genuine invariant
-        # subspace. Signal it with active_k = -1 so the caller can report "diverged" (and
-        # warn) instead of treating the truncated result as exact. active_k == 0 is a
-        # real rank-deficient residual (the Krylov space is closed) => invariant subspace.
-        return None, alpha_i, None, -1, True
+        # Non-finite factor => the recurrence is *corrupted*, not a genuine invariant subspace.
+        # active_k == -1 lets the caller report "diverged" (and warn) instead of treating the
+        # truncated result as exact; active_k == 0 is a real rank-deficient residual (the Krylov
+        # space is closed) => invariant subspace.
+        return None, alpha_i, None, 0.0, -1, True
     if active_k == 0:
-        return None, alpha_i, None, 0, True
+        return None, alpha_i, None, 0.0, 0, True
+    cdef double beta_norm = float(sv_i[0])
 
-    # --- 5a. Forceful / Amplitude Truncation ----------------------------
-    cdef bint did_truncate = False
-    if slaterWeightMin > 0.0:
-        # Whole-row prune: a row survives when ANY column survives (keeps the block's
-        # shared support; the per-column prune of independent states would desync it).
-        if _note_cut is not None:
-            # In the matvec's units: the residual is q_next @ beta_i, so a dropped row of q_next carried
-            # row beta_i beta_i^H row^H of it. Reaches the proxy with the next step's admission.
-            _note_cut(q_next.prune_rows(slaterWeightMin, beta_i @ np.conj(beta_i.T)))
-        else:
-            q_next.prune_rows(slaterWeightMin)
-        did_truncate = True
-    if truncation_threshold > 0:
-        _q_states = q_next.to_states()
-        for st in _q_states:
-            _keep_global_top(st, truncation_threshold, comm if mpi else None)
-        q_next = ManyBodyState.from_states(_q_states)
-        did_truncate = True
+    # --- 5a. Truncation (ManyBodyState blocks) ---------------------------
+    # A dense block has no per-determinant structure to prune: these cuts are absent there, not
+    # unmirrored.
+    if isinstance(q_next, ManyBodyState):
+        if slaterWeightMin > 0.0:
+            # Whole-row prune: a row survives when ANY column survives (keeps the block's shared
+            # support; the per-column prune of independent states would desync it).
+            if note_cut is not None:
+                # In the matvec's units: the residual is q_next @ beta_i, so a dropped row of q_next
+                # carried row beta_i beta_i^H row^H of it. Reaches the proxy with the next step's
+                # admission.
+                note_cut(q_next.prune_rows(slaterWeightMin, beta_i @ np.conj(beta_i.T)))
+            else:
+                q_next.prune_rows(slaterWeightMin)
+            did_truncate = True
+        if truncation_threshold > 0:
+            _q_states = q_next.to_states()
+            for st in _q_states:
+                _keep_global_top(st, truncation_threshold, comm if mpi else None)
+            q_next = ManyBodyState.from_states(_q_states)
+            did_truncate = True
 
-    # Dropping amplitudes breaks the orthonormality the factorization just established, so
-    # the truncated block has to be re-factored and the correction folded into beta_i:
-    # wp = (q_next @ R2) @ beta_i. Unlike the CholeskyQR2 pass this replaces, no second pass
-    # is needed for well-conditioned blocks — TSQR delivers orthonormality directly.
+    # Dropping amplitudes breaks the orthonormality the factorization just established, so the
+    # truncated block has to be re-factored and the correction folded into beta_i:
+    # W = (q_next @ R2) @ beta_i. TSQR delivers orthonormality directly, so no second pass is
+    # needed for well-conditioned blocks.
     if did_truncate:
         q_next, R2, active_k, _sv2 = block_tsqr(q_next, mpi, comm, 1.0, deflate_tol=deflate_tol)
         if active_k <= 0:
-            return None, alpha_i, None, 0, True
+            return None, alpha_i, None, 0.0, 0, True
         beta_i = R2 @ beta_i
+        beta_norm = spectral_norm(beta_i)
 
     betas[it, :active_k, :p] = beta_i
+    return q_next, alpha_i, beta_i, beta_norm, active_k, False
 
-    return q_next, alpha_i, beta_i, active_k, False
+
+cdef class DenseKrylovStore:
+    """The retained Krylov basis of an array (``ndarray``-block) run: ``(N_local, columns)`` in one
+    over-allocated buffer grown geometrically (amortized O(1) copies instead of one full
+    ``np.concatenate`` per step) -- the dense counterpart of :class:`SparseKrylovDense`, with the same
+    ``append_block`` / ``reort`` / ``__len__`` surface, so one driver loop serves both.
+
+    ``from_array`` adopts a caller's basis with zero spare capacity: the first append reallocates, so
+    the caller's array is never written to.
+    """
+    cdef np.ndarray _buf
+    cdef Py_ssize_t _cols
+
+    def __cinit__(self, Py_ssize_t rows=0, np.ndarray initial=None):
+        if initial is not None:
+            self._buf = initial
+            self._cols = initial.shape[1]
+        else:
+            self._buf = np.empty((rows, 0), dtype=complex, order='C')
+            self._cols = 0
+
+    @staticmethod
+    def from_array(np.ndarray Q):
+        return DenseKrylovStore(Q.shape[0], Q)
+
+    def __len__(self):
+        return self._cols
+
+    def append_block(self, block):
+        cdef Py_ssize_t n_new = block.shape[1]
+        cdef Py_ssize_t cap = self._buf.shape[1]
+        if self._cols + n_new > cap:
+            grown = np.empty((self._buf.shape[0], max(2 * cap, self._cols + n_new)), dtype=complex, order='C')
+            grown[:, : self._cols] = self._buf[:, : self._cols]
+            self._buf = grown
+        self._buf[:, self._cols : self._cols + n_new] = block
+        self._cols += n_new
+
+    def reort(self, wp, cols, int n_passes, comm):
+        """``n_passes`` of classical Gram-Schmidt of ``wp`` against the stored columns (``cols``: a
+        subset); returns ``(wp, last overlap)``. ``wp`` is updated in place."""
+        Qv = self._buf[:, : self._cols] if cols is None else self._buf[:, cols]
+        overlap = None
+        for _ in range(n_passes):
+            wp, overlap = block_orthogonalize_array(wp, Qv, None, comm)
+        return wp, overlap
+
+    def array(self):
+        """The basis as an ``(N_local, columns)`` C-contiguous array. A trimmed copy when the buffer has
+        spare capacity: a view would pin it for as long as the caller (e.g. a TRLM restart) holds it."""
+        if self._buf.shape[1] == self._cols:
+            return self._buf
+        return np.ascontiguousarray(self._buf[:, : self._cols])
+
+
+def block_lanczos_array_cy(
+    np.ndarray psi0,
+    h_op,
+    converged,
+    verbose=False,
+    reort=Reort.NONE,
+    alphas=None,
+    betas=None,
+    Q=None,
+    return_W=False,
+    comm=None,
+    return_widths=False,
+    return_status=False,
+    build_krylov_basis=None,
+    deflate_tol=-1.0,
+    max_iter=None,
+    block_widths_init=None,
+    locked=None,
+    tail=None,
+    return_tail=False,
+):
+    """Block Lanczos on an array operator: ``h_op`` (a :class:`DistributedSparseMatrix`) applied to
+    ``(N_local, p)`` blocks. The array front end of :func:`_lanczos_loop`: this function only builds
+    the starting blocks and the dense Krylov store and packs the result.
+
+    ``tail=(q_prev, q_curr)`` resumes a ``Reort.NONE`` recurrence from its last two blocks -- the local
+    rows of the block before the current one and of the current one, each at its own width -- with
+    ``alphas``/``betas`` the coefficients so far (padded to the seed width) and ``block_widths_init``
+    their widths. It is how a sparse recurrence whose support froze carries on as the CSR recurrence of
+    ``P H P`` (gf_solvers.block_Green_sparse), and how a tail-only run continues after its budget ran
+    out. ``return_tail=True`` appends the ``(q_prev, q_curr)`` a ``"max_iter"`` stop can be resumed
+    from (``None`` after any other stop).
+    """
+    # Resolve a string reort (e.g. "full") to the Reort enum, mirroring block_lanczos_cy; otherwise
+    # the `reort == Reort.FULL` comparisons never match a string and the run silently has no
+    # reorthogonalization.
+    reort = resolve_reort(reort)
+
+    # Whether to retain the accumulated Krylov basis. The historical default (True) stands:
+    # restart machinery (TRLM) and direct callers consume the returned Q regardless of
+    # the reort mode. Callers that only need the final residual block (the GF continued
+    # fraction with reort NONE) opt out explicitly, dropping the O(N * n * k) growth; any
+    # reort mode projects against the basis and the warm-start protocol slices its blocks,
+    # so opting out requires reort='none' and a fresh start.
+    cdef bint keep_krylov
+    if tail is not None:
+        if reort != Reort.NONE or Q is not None or psi0 is not None or build_krylov_basis:
+            raise ValueError("a tail resume needs reort='none', no psi0, no Q and no Krylov basis")
+        if alphas is None or betas is None or np.ndim(alphas) != 3:
+            raise ValueError("a tail resume needs the (n_blocks, p, p) alphas and betas so far")
+        if len(alphas) > 0 and (block_widths_init is None or len(block_widths_init) != len(alphas)):
+            raise ValueError("a tail resume needs block_widths_init, one width per block so far")
+        build_krylov_basis = False
+    if build_krylov_basis is None:
+        keep_krylov = True
+    else:
+        keep_krylov = bool(build_krylov_basis)
+        if not keep_krylov and (reort != Reort.NONE or Q is not None):
+            raise ValueError("build_krylov_basis=False requires reort='none' and no warm-start Q")
+    cdef int N
+    cdef int n
+    if tail is not None:
+        N = tail[1].shape[0]
+        n = alphas.shape[1]
+    else:
+        N = psi0.shape[0] if psi0 is not None else Q.shape[0]
+        n = (psi0.shape[1] if psi0.ndim == 2 else 1) if psi0 is not None else alphas[0].shape[0]
+
+    cdef int start_it = 0
+    store = None
+    resuming = alphas is not None and betas is not None
+    if tail is not None:
+        start_it = len(alphas)
+        q_prev = np.ascontiguousarray(tail[0], dtype=complex)
+        q_curr = np.ascontiguousarray(tail[1], dtype=complex)
+    elif resuming and Q is not None:
+        start_it = len(alphas)
+        q0_fallback = psi0.copy() if psi0 is not None else Q[:, :n]
+        q_prev = Q[:, (start_it - 1) * n : start_it * n] if start_it > 0 else q0_fallback
+        q_curr = Q[:, start_it * n : (start_it + 1) * n] if start_it > 0 else q0_fallback
+        store = DenseKrylovStore.from_array(Q)
+    else:
+        q_prev = np.zeros((N, n), dtype=complex, order='C')
+        q_curr = np.ascontiguousarray(psi0 if psi0.ndim == 2 else psi0.reshape(-1, 1))
+        if keep_krylov:
+            store = DenseKrylovStore(N)
+            store.append_block(q_curr)
+
+    if max_iter is None:
+        max_iter = int(np.ceil(h_op.shape[0] / n))
+    cdef int budget = int(max_iter)
+    cdef int buf_size = start_it + budget
+    alphas_buf = np.zeros((buf_size, n, n), dtype=complex)
+    betas_buf = np.zeros((buf_size, n, n), dtype=complex)
+    if start_it > 0:
+        alphas_buf[:start_it] = alphas
+        betas_buf[:start_it] = betas
+
+    if not isinstance(h_op, DistributedSparseMatrix):
+        raise TypeError(f"h_op must be a DistributedSparseMatrix, got {type(h_op).__name__}")
+    if h_op.shape[1] != N:
+        raise ValueError(f"h_op owns {h_op.shape[1]} columns but the block has {N} local rows")
+    cdef bint mpi = comm is not None
+    if (comm is not None and comm.size > 1) != h_op.is_distributed:
+        raise ValueError("h_op is distributed over a different communicator than the one the kernel reduces over")
+
+    # The divergence guard of a resumed call keeps the scale the earlier steps established (and the
+    # TSQR breakdown reference built from it), exactly as the ManyBodyState driver's resume does;
+    # otherwise its first step would re-seed the scale unguarded.
+    cdef double t_norm_max = 0.0
+    cdef double h_norm_est = 0.0
+    cdef bint guard_seeded = False
+    cdef int k
+    if tail is not None:
+        for k in range(start_it):
+            _, t_norm_max, h_norm_est = divergence_guard(
+                spectral_norm(betas[k]), spectral_norm(alphas[k]), k == 0, t_norm_max, h_norm_est
+            )
+            guard_seeded = True
+
+    # One exchange plan per call (three tiny collectives; `n` is the widest block this call will see
+    # -- the active width only ever shrinks, so every round fits the plan's buffers). None on one rank.
+    plan = h_op.exchange_plan(n, "block_lanczos_array")
+    # The product buffer is reallocated when the active width shrinks; the matvec writes into it.
+    out_holder = [np.empty((N, n), dtype=complex, order='C')]
+
+    def matvec(x):
+        if out_holder[0].shape[1] != x.shape[1]:
+            out_holder[0] = np.empty((N, x.shape[1]), dtype=complex, order='C')
+        return h_op.apply(x, plan, out=out_holder[0])
+
+    # `locked` is column-distributed exactly like the Krylov vectors (local rows).
+    locked_arr = None if locked is None else np.ascontiguousarray(locked, dtype=complex)
+
+    cdef list block_widths = list(block_widths_init) if block_widths_init is not None else [n] * start_it
+    it, termination, q_prev, q_curr, q_next, deflated_tail = _lanczos_loop(
+        matvec, q_prev, q_curr, store, alphas_buf, betas_buf, start_it, budget, block_widths, converged, reort,
+        mpi, comm, None, 0.0, 0.0, locked_arr, deflate_tol, verbose, t_norm_max, h_norm_est, guard_seeded, None,
+        append_before_check=False, keep_deflated=not keep_krylov,
+    )
+    # The loop's step counter is relative to start_it.
+    it += start_it
+
+    if verbose and (not mpi or comm.rank == 0):
+        print(f"Block Lanczos terminated ({termination}) at iteration {it}")
+
+    # Tail-only mode: q_curr is the last block ever appended in stored mode (the roll runs before
+    # the append, and every break happens before the append), so callers slicing the final residual
+    # columns see identical data. The blocks recorded before each narrowing (deflated_tail) come
+    # first, so those trailing columns are unchanged.
+    if keep_krylov:
+        res_Q = store.array()
+    elif deflated_tail:
+        res_Q = np.ascontiguousarray(np.hstack(deflated_tail + [q_curr]))
+    else:
+        res_Q = q_curr
+    res = pack_lanczos_result(alphas_buf[:it], betas_buf[:it], res_Q, None, block_widths, termination,
+                              return_widths, return_status, return_W)
+    if return_tail:
+        # Only a budget stop has rolled q onto the next step's (previous, current) pair; every other stop
+        # ends the recurrence (or, "converged", breaks before the roll).
+        res = tuple(res) + (((q_prev, q_curr) if termination == "max_iter" else None),)
+    return res
+
+
+def _lanczos_loop(
+    matvec, q_prev, q_curr, store, alphas_buf, betas_buf, int start_it, int budget, list block_widths,
+    converged_fn, reort_mode, bint mpi, comm, basis, double slaterWeightMin, truncation_threshold, locked,
+    double deflate_tol, bint verbose, double t_norm_max, double h_norm_est, bint guard_seeded, note_cut,
+    bint append_before_check, bint keep_deflated,
+):
+    """The recurrence loop -- the one driver of :func:`lanczos_step`, for every block representation.
+
+    Runs at most ``budget`` further steps from blocks ``q_prev``/``q_curr`` (steps ``start_it``
+    onward), appending each accepted block to ``store`` (``None``: nothing is retained, the tail-only
+    mode of a ``Reort.NONE`` run), guarding divergence and asking ``converged_fn(alphas, betas,
+    verbose=, block_widths=)`` after each step. ``block_widths`` is extended in place with the width of
+    every block a step was taken from. ``append_before_check`` orders the append of the new block
+    against the convergence test (the ManyBodyState driver retains the residual block of a converged
+    stop, the array driver does not); ``keep_deflated`` collects, in ``deflated_tail``, each block whose
+    successor came out narrower (tail-only array runs).
+
+    Returns ``(steps_taken, termination, q_prev, q_curr, q_next, deflated_tail)`` with the blocks as
+    the loop left them: after a ``"max_iter"`` or ``"frozen"`` stop the ``q_prev``/``q_curr`` roll has
+    run (the state a resume continues from), after ``"converged"`` it has not (``q_next`` is the
+    residual), after a breakdown ``q_next`` is ``None``.
+
+    ``termination`` is one of ``"converged"``, ``"invariant_subspace"`` (the block-Krylov space is
+    closed under the operator within the active restrictions: the result is *exact*), ``"diverged"``
+    (the divergence guard truncated a corrupted tail: NOT exact), ``"max_iter"`` or ``"frozen"`` (the
+    basis proxy froze during the last step).
+    """
+    cdef int it = 0
+    cdef int it_abs, n_curr, active_k
+    cdef double beta_norm, alpha_norm
+    cdef bint breakdown, diverged
+    cdef list deflated_tail = []
+    termination = "max_iter"
+    q_next = None
+    # A growth-capping proxy whose caller asked to be handed control at the freeze (the GF
+    # frozen-basis CSR fallback, gf_solvers.block_Green_sparse). Its `frozen` flag derives only
+    # from allreduced data, so every rank of the communicator stops on the same step.
+    stop_on_freeze = basis is not None and bool(getattr(basis, "stop_on_freeze", False))
+
+    while it < budget:
+        it_abs = start_it + it
+        n_curr = block_cols(q_curr)
+
+        # The matvec exchanges `rows x n_curr` blocks: if the ranks ever disagree about the width,
+        # they post the same collective with different counts and MPICH memcpys past the receive
+        # buffer -- a SIGSEGV inside MPI_Reduce, with no Python traceback, no core dump (the MPI
+        # runtime's own SIGSEGV handler exits 1 instead of re-raising) and every rank dying mute.
+        # Unconditional and collective on every rank, so it cannot itself desynchronize; one
+        # 2-element Allreduce against a matvec is not measurable.
+        if mpi:
+            width_probe = np.array([n_curr, -n_curr], dtype=np.int64)
+            comm.Allreduce(MPI.IN_PLACE, width_probe, op=MPI.MAX)
+            if width_probe[0] != -width_probe[1]:
+                raise RuntimeError(
+                    f"block width disagrees across ranks at iteration {it_abs}: this rank has "
+                    f"n_curr={n_curr}, the communicator spans [{-width_probe[1]}, {width_probe[0]}]. "
+                    "The width is set by block_tsqr's retained rank, which is computed from a "
+                    "replicated R and must therefore be rank-invariant; a disagreement means that "
+                    "invariant has broken."
+                )
+
+        q_next, alpha_i, beta_i, beta_norm, active_k, breakdown = lanczos_step(
+            matvec, q_prev, q_curr, store, alphas_buf, betas_buf, it_abs, reort_mode, mpi, comm,
+            slaterWeightMin=slaterWeightMin,
+            truncation_threshold=truncation_threshold,
+            locked=locked,
+            note_cut=note_cut,
+            h_norm_est=max(h_norm_est, t_norm_max),
+            deflate_tol=deflate_tol,
+        )
+
+        if breakdown:
+            # active_k < 0 marks a non-finite (corrupted) factor -> truncated, NOT exact;
+            # active_k == 0 is a genuine rank-deficient residual -> the block-Krylov space is
+            # closed under H -> the continued fraction is exact on it.
+            termination = "diverged" if active_k < 0 else "invariant_subspace"
+            # "diverged" is a problem the caller must see regardless of verbosity;
+            # "invariant_subspace" is a legitimate exact-termination case, stays at -vv.
+            if (termination == "diverged" or verbose) and (comm is None or comm.Get_rank() == 0):
+                print(f"[BlockLanczos] {termination} detected at iteration {it_abs}.")
+            block_widths.append(n_curr)
+            it += 1
+            break
+
+        # --- Divergence safeguard ---------------------------------------
+        # For a Hermitian operator every block norm is bounded by ||A||, so ||alpha_i||/||beta_i||
+        # can never exceed the largest healthy block norm by more than rounding. A jump of
+        # several orders of magnitude means the recurrence has been corrupted (lost
+        # orthogonality the QR/deflation did not repair). Truncate *before* the offending
+        # block -- exclude alpha_i/beta_i at it_abs -- so the returned T-matrix is the last
+        # numerically trustworthy subspace and the diverged tail never reaches the Green's
+        # function. The trailing beta then plays the role of the (ignored) residual coupling.
+        alpha_norm = spectral_norm(alpha_i)
+        # first_step = it == 0: this loop's own counter, always 0 on the first step executed by THIS
+        # call -- see check_divergence's docstring for why this must not be "it_abs == 0" -- unless a
+        # resume already replayed the guard.
+        diverged, t_norm_max, h_norm_est = check_divergence(
+            beta_norm, alpha_norm, it == 0 and not guard_seeded, t_norm_max, h_norm_est, it_abs, comm
+        )
+        if diverged:
+            termination = "diverged"
+            break
+
+        # Retain q_next (last block = residual direction). The locking deflation is applied inside
+        # lanczos_step (before beta), so q_next is orthogonal to the locked set.
+        if append_before_check and store is not None:
+            # append_block copies the coefficients into the store straight from the block rows -- no
+            # per-state materialization, no defensive copies.
+            store.append_block(q_next)
+
+        if verbose and (comm is None or comm.Get_rank() == 0):
+            print(
+                f"[BlockLanczos] it={it_abs:4d}  " f"|beta|={beta_norm:.3e}  " f"alpha_diag={np.real(np.diag(alpha_i))}"
+            )
+
+        # Convergence check
+        _converged = converged_fn(
+            alphas_buf[: it_abs + 1], betas_buf[: it_abs + 1], verbose=verbose, block_widths=block_widths + [n_curr]
+        )
+        if mpi:
+            # The verdict is computed rank-locally from alpha, which comes out of an Allreduce --
+            # and MPI does not promise a bitwise-identical Allreduce result on every rank (a
+            # recursive-doubling reduction sums in a rank-dependent order). A verdict that flips
+            # on one rank near the threshold sends it out of the loop while the others enter the
+            # next step's collectives. Root decides for everyone (review ledger M2).
+            _converged = comm.bcast(bool(_converged), root=0)
+        if _converged:
+            termination = "converged"
+            block_widths.append(n_curr)
+            it += 1
+            break
+
+        if not append_before_check and store is not None:
+            store.append_block(q_next)
+        if keep_deflated and block_cols(q_next) < n_curr:
+            # The last vectors of the columns that deflated here: a basis-growing caller
+            # (gf_solvers.block_Green) must probe from them too -- a column whose chain closes only
+            # because the still-incomplete basis truncates H deflates, and probing from the final
+            # block alone never reaches the determinants that chain was missing (review ledger C12).
+            deflated_tail.append(q_curr.copy())
+        q_prev = q_curr
+        q_curr = q_next
+        block_widths.append(n_curr)
+        it += 1
+
+        # After the roll, so the returned state is exactly a "max_iter" stop's: a caller that
+        # declines the hand-off resumes from it with the usual *_init protocol.
+        if stop_on_freeze and basis.frozen:
+            termination = "frozen"
+            break
+
+    return it, termination, q_prev, q_curr, q_next, deflated_tail
 
 
 def _pack_result(
@@ -316,7 +620,7 @@ def block_lanczos_cy(
     * One ``MPI_Allgather`` of the packed triangular factor – ``p(p+1)/2``
       complex per rank; the TSQR of the residual block.
     * Additional ``MPI_Allreduce`` calls inside reorthogonalization (see
-      ``block_lanczos_step_cy`` for details).
+      ``lanczos_step`` for details).
 
     Note:
         ``converged_fn`` is called on **all ranks** with *replicated* data
@@ -502,10 +806,6 @@ def block_lanczos_cy(
         else:
             Q_basis = []
 
-    # The store doubles as the dense reort mirror (apply_full_reort slices its columns via
-    # store.reort).
-    krylov = Q_basis if store_krylov else None
-
     # --- Determine max_iter ---------------------------------------------
     if max_iter is None:
         max_iter = getattr(basis, "size", 10 * p) // p
@@ -523,24 +823,14 @@ def block_lanczos_cy(
     W = None  # the retired PRO estimator's slot in the return tuple
 
     # --- Main Lanczos loop ----------------------------------------------
-    it = 0
-    breakdown = False
-    # Why the recurrence stops (returned when return_status=True). Default assumes the loop
-    # runs out the max_iter budget without terminating naturally; the branches below overwrite
-    # it. "invariant_subspace" => the block-Krylov space is closed under H (within the active
-    # restrictions) and the result is *exact*; "diverged" => the divergence guard truncated a
-    # corrupted tail (NOT exact); "converged" => converged_fn was satisfied.
-    termination = "max_iter"
-    # Largest healthy block-norm seen so far (proxy for ||H|| on the subspace); used to
-    # detect a runaway recurrence that the deflation/QR safeguards did not catch.
+    # Largest healthy block-norm seen so far (proxy for ||H|| on the subspace), and the spectral-scale
+    # estimate (seeded from beta_0 ~ ||H||, grown only by ||alpha_i||, which is bounded by ||H|| and
+    # never runs away): the divergence guard's state. A resumed call (a doubled budget, a declined
+    # freeze) replays the guard over the blocks it was handed, so it keeps the scale the earlier calls
+    # built: starting both trackers from 0 left every resumed call's first step unguarded and let that
+    # step re-seed the scale -- every 16 blocks while capped GF units ran a window at a time.
     t_norm_max = 0.0
-    # Spectral-scale estimate (seeded from beta_0 ~ ||H||, grown only by ||alpha_i||, which is
-    # bounded by ||H|| and never runs away) — catches gradual beta growth the relative check misses.
     h_norm_est = 0.0
-    # A resumed call (a doubled budget, a declined freeze) replays the guard over the blocks it was
-    # handed, so it keeps the scale the earlier calls built: starting both trackers from 0 left
-    # every resumed call's first step unguarded and let that step re-seed the scale -- every 16
-    # blocks while capped GF units ran a window at a time.
     guard_seeded = False
     if resuming:
         for _k in range(min(len(alphas_init), len(betas_init))):
@@ -549,115 +839,31 @@ def block_lanczos_cy(
             )
             guard_seeded = True
 
-    # A growth-capping proxy whose caller asked to be handed control at the freeze (the GF
-    # frozen-basis CSR fallback, gf_solvers.block_Green_sparse). Its `frozen` flag derives only
-    # from allreduced data, so every rank of the communicator stops on the same step.
-    _stop_on_freeze = basis is not None and bool(getattr(basis, "stop_on_freeze", False))
+    # The matvec: a growth-capping basis proxy (caps_growth=True) must see every step's residual even
+    # serially -- its redistribute_block enforces the truncation_threshold there (the inner Basis
+    # redistribute no-ops without MPI). Chunking only where a redistribute actually follows;
+    # `GF_APPLY_ROW_CHUNKS` defaults to 4 and `1` is the one-shot path. The matvec itself (chunking,
+    # the cut on summed rows, a capping proxy's deferred admission) is `apply_and_redistribute`.
+    _needs_redistribute = basis is not None and ((mpi and comm is not None) or getattr(basis, "caps_growth", False))
+    _n_chunks = config.GF_APPLY_ROW_CHUNKS.get() if _needs_redistribute else 1
+    _n_chunks = 1 if _n_chunks is None else int(_n_chunks)
 
-    while it < _buf_size:
-        it_abs = start_it + it
-        n_curr = q_curr.width
-        q_next, alpha_i, beta_i, active_k, breakdown = block_lanczos_step_cy(
-            h_op=h_op,
-            q_prev=q_prev,
-            q_curr=q_curr,
-            Q_basis=Q_basis,
-            alphas=alphas_buf,
-            betas=betas_buf,
-            it=it_abs,
-            reort_mode=reort_mode,
-            mpi=mpi,
-            comm=comm,
-            basis=basis,
-            slaterWeightMin=slaterWeightMin,
-            truncation_threshold=truncation_threshold,
-            start_it=start_it,
-            block_widths=block_widths,
-            locked=locked,
-            krylov=krylov,
-            h_norm_est=max(h_norm_est, t_norm_max),
-            deflate_tol=deflate_tol,
-        )
+    def matvec(q):
+        return apply_and_redistribute(h_op, q, basis, slaterWeightMin, _needs_redistribute, _n_chunks)
 
-        if breakdown:
-            # active_k < 0 marks a non-finite (corrupted) factor -> truncated, NOT exact;
-            # active_k == 0 is a genuine rank-deficient residual -> the block-Krylov space is
-            # closed under H -> the continued fraction is exact on it.
-            termination = "diverged" if active_k < 0 else "invariant_subspace"
-            # "diverged" is a problem the caller must see regardless of verbosity;
-            # "invariant_subspace" is a legitimate exact-termination case, stays at -vv.
-            if (termination == "diverged" or verbose) and (comm is None or comm.Get_rank() == 0):
-                print(f"[BlockLanczos] {termination} detected at iteration {it_abs}.")
-            block_widths.append(n_curr)
-            it += 1
-            break
+    # A proxy running the support freeze also weighs what the next block's prune drops (replicated flag).
+    _note_cut = (
+        basis.note_step_cut
+        if _needs_redistribute and hasattr(basis, "begin_step") and getattr(basis, "support_freeze", False)
+        else None
+    )
 
-        # --- Divergence safeguard ---------------------------------------
-        # For a Hermitian H every block norm is bounded by ||H||, so ||alpha_i||/||beta_i||
-        # can never exceed the largest healthy block norm by more than rounding. A jump of
-        # several orders of magnitude means the recurrence has been corrupted (lost
-        # orthogonality the QR/deflation did not repair). Truncate *before* the offending
-        # block — exclude alpha_i/beta_i at it_abs — so the returned T-matrix is the last
-        # numerically trustworthy subspace and the diverged tail never reaches the Green's
-        # function. The trailing beta then plays the role of the (ignored) residual coupling.
-        # One SVD of beta_i per step: its largest singular value is the 2-norm (guard/verbose)
-        #
-        _svb = robust_svd(beta_i, compute_uv=False)
-        beta_norm = float(_svb[0])
-        alpha_norm = spectral_norm(alpha_i)
-        # first_step = it == 0: this driver's own loop-local counter, always 0 on the
-        # first step executed by THIS call -- see check_divergence's docstring for why this
-        # must not be "it_abs == 0" -- unless a resume already replayed the guard above.
-        diverged, t_norm_max, h_norm_est = check_divergence(
-            beta_norm, alpha_norm, it == 0 and not guard_seeded, t_norm_max, h_norm_est, it_abs, comm
-        )
-        if diverged:
-            termination = "diverged"
-            breakdown = True
-            break
-
-        # Append q_next to the basis (last block = residual direction). The locking
-        # deflation is applied inside block_lanczos_step_cy (before M/beta), so q_next is
-        # orthogonal to the locked set.
-        # Tail-only mode keeps nothing here: q_prev/q_curr roll below and the two-block
-        # tail is assembled at return.
-        if store_krylov:
-            # append_block copies the coefficients into the dense buffer straight from
-            # the block rows — no per-state materialization, no defensive copies.
-            Q_basis.append_block(q_next)
-
-        if verbose and (comm is None or comm.Get_rank() == 0):
-            print(
-                f"[BlockLanczos] it={it_abs:4d}  " f"|beta|={beta_norm:.3e}  " f"alpha_diag={np.real(np.diag(alpha_i))}"
-            )
-
-        # Convergence check
-        alphas_np = alphas_buf[:it_abs+1]
-        betas_np = betas_buf[:it_abs+1]
-        _converged = converged_fn(alphas_np, betas_np, verbose=verbose, block_widths=block_widths + [n_curr])
-        if mpi:
-            # The verdict is computed rank-locally from alpha, which comes out of an Allreduce --
-            # and MPI does not promise a bitwise-identical Allreduce result on every rank (a
-            # recursive-doubling reduction sums in a rank-dependent order). A verdict that flips
-            # on one rank near the threshold sends it out of the loop while the others enter the
-            # next step's collectives. Root decides for everyone (review ledger M2).
-            _converged = comm.bcast(bool(_converged), root=0)
-        if _converged:
-            termination = "converged"
-            block_widths.append(n_curr)
-            it += 1
-            break
-
-        q_prev = q_curr
-        q_curr = q_next
-        block_widths.append(n_curr)
-        it += 1
-
-        # After the roll, so the returned state is exactly a "max_iter" stop's: a caller that
-        # declines the hand-off resumes from it with the usual *_init protocol.
-        if _stop_on_freeze and basis.frozen:
-            termination = "frozen"
-            break
+    it, termination, q_prev, q_curr, q_next, _ = _lanczos_loop(
+        matvec, q_prev, q_curr, Q_basis if store_krylov else None, alphas_buf, betas_buf, start_it, _buf_size,
+        block_widths, converged_fn, reort_mode, mpi, comm, basis, slaterWeightMin, truncation_threshold, locked,
+        deflate_tol, verbose, t_norm_max, h_norm_est, guard_seeded, _note_cut,
+        append_before_check=True, keep_deflated=False,
+    )
 
     return _pack_result(
         alphas_buf, betas_buf, start_it, it, store_krylov, termination,

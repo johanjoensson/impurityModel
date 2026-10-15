@@ -45,10 +45,10 @@ def dense_eigensystem(
         if rank == 0:
             es, vecs = np.linalg.eigh(h, UPLO="L")
         else:
-            es = np.empty((h_local.shape[0]), dtype=float, order="C")
-            vecs = np.empty(h_local.shape, dtype=h_local.dtype, order="C")
+            es = np.empty((h.shape[0]), dtype=float, order="C")
+            vecs = np.empty(h.shape, dtype=h.dtype, order="C")
     else:
-        es = np.linalg.eigvalsh(h, UPLO="L") if rank == 0 else np.empty(h_local.shape[0], dtype=float)
+        es = np.linalg.eigvalsh(h, UPLO="L") if rank == 0 else np.empty(h.shape[0], dtype=float)
     if comm is not None:
         comm.Bcast(es, root=0)
         if return_eigvecs:

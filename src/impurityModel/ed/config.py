@@ -152,6 +152,10 @@ RETIRED_KNOBS = {
         "('after_sum'); 'before_sum' made the result depend on the rank and chunk count "
         "(doc/gf_support_pipeline.md)"
     ),
+    "GS_MATVEC_EXCHANGE": (
+        "retired: the distributed array matvec always uses the sparse graph exchange; the per-root 'reduce' "
+        "spelling was the A/B arm it replaced (mpi_comm.MatvecExchangePlan)"
+    ),
     "GF_OPERATOR_SPLIT": (
         "retired: the pairwise operator split (scalar continued fractions per operator pair) was an "
         "opt-in load-balancing mode that multiplied the Krylov work, and the improved-estimator "
@@ -540,7 +544,7 @@ GF_SUPPORT_FREEZE = Knob(
     sub-cutoff amplitudes inside ``P`` and comes out closer to the exact ``G`` than the sparse one (5e-7
     against 4e-2 at a 1e-6 cutoff), so results move toward it. Not after a cap hit (a capped support always leaks against the full ``H``, so every point
     would come back), not on a unit's last point, not under ``GF_BICGSTAB_ADMISSION=outer`` (whose
-    support is chosen by policy), nor with ``GS_MATVEC_EXCHANGE=reduce`` (no column-scatter matvec).
+    support is chosen by policy).
     The fit check budgets BiCGSTAB's and a GMRES escalation's dense blocks (``GF_GMRES_RESTART`` + 10)
     on top of the matrix; with no memory budget (``GS_MEMORY_BUDGET_SAFETY=0``) it is not checked, as
     for the Lanczos freeze. Their trigger is still the zero-growth one (a point that admitted nothing): a
@@ -947,40 +951,13 @@ GS_APPLY_ROW_CHUNKS = Knob(
     like `GS_NUM_WANTED`. Set `1` to recover the one-shot path.""",
 )
 
-GS_MATVEC_EXCHANGE = Knob(
-    name="GS_MATVEC_EXCHANGE",
-    kind="str",
-    default="graph",
-    group="groundstate",
-    doc="""How the distributed *array-path* block matvec (`block_lanczos_array_cy`'s sweep and
-    `block_apply`'s array branch, the TRLM restart-loop matvec) combines the per-rank partial products
-    into each destination rank's rows. Each rank holds every global row of `H` for its own columns, so
-    a matvec is a reduce-scatter: rank `s` contributes `H[rows of d, cols of s] @ V_s` to every `d`.
-
-    `graph` (the default) sends only the structurally nonzero contributions, over one
-    `Neighbor_alltoallv` on a cached distributed-graph communicator whose edges are read from the CSR
-    row pointers (`mpi_comm.MatvecExchangePlan`), and sums the received pieces in a fixed source
-    order. `routing_hash` is linear in the occupied orbitals, so an operator term shifts a
-    determinant's owner by a constant and the graph is a property of `H`'s term set, not of the basis
-    size: measured 11% dense at 256 ranks on SrMnO3 (~28 sources per rank). `reduce` is the previous
-    spelling -- `comm.size` full-communicator `Reduce`s per matvec, one per root, every rank
-    contributing a chunk that is zero for every non-neighbour. Measured at 256 ranks on
-    production-sized messages (`from_arrhenius/shmpattern-2331617.out`, 10000x110 complex per pair):
-    the `Reduce` loop 7.0 s, the sparse exchange 1.7 s, and that matvec is 62% of a cap-300,000
-    solve's wall-clock (`doc/plans/dc_smo_memory.md`, round 6). The two differ in floating-point
-    summation order (fixed source order vs MPI's per-root reduction tree) -- the same class of
-    difference a change of rank count already makes; neither is bit-identical to the other. Keep
-    `reduce` as the A/B arm and the escape hatch; at a handful of ranks the loop is latency-cheap and
-    the two are within noise of each other.""",
-)
-
 GS_MATVEC_EXCHANGE_BYTES = Knob(
     name="GS_MATVEC_EXCHANGE_BYTES",
     kind="int",
     default=64 * 2**20,
     minimum=16,
     group="groundstate",
-    doc="""Per-buffer byte bound on one round of the `graph` matvec exchange (`GS_MATVEC_EXCHANGE`).
+    doc="""Per-buffer byte bound on one round of the sparse graph matvec exchange.
     The send buffer holds one row block per destination neighbour and the receive buffer one
     `(local rows x columns)` block per source neighbour, so both scale with the graph *degree*; the
     exchange is chunked over the block's columns so that neither exceeds this bound (peak 2x, both
@@ -1284,7 +1261,6 @@ KNOBS: dict[str, Knob] = _register(
     GS_SELECTION_CHUNK,
     GS_APPLY_ROW_CHUNKS,
     GS_SELECTION_PRUNE,
-    GS_MATVEC_EXCHANGE,
     GS_MATVEC_EXCHANGE_BYTES,
     GS_NUM_WANTED,
     GS_MEMORY_BUDGET_SAFETY,

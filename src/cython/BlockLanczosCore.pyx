@@ -23,6 +23,7 @@ reference these module-level names directly.
 import time as _time
 import numpy as np
 cimport numpy as np
+from scipy.linalg.cython_blas cimport zgemm
 import scipy.linalg as la
 import scipy.sparse as sps
 
@@ -40,18 +41,12 @@ class Reort(Enum):
 # itself is only read by callers, who import it straight from ``TSQR`` (cython-lint has no
 # noqa escape for a pure re-export).
 from impurityModel.ed import config
-from impurityModel.ed.mpi_comm import (
-    MatvecExchangePlan,
-    dest_flags_all,
-    dest_flags_from_csr_indptr,
-    matvec_exchange_mode,
-)
-from impurityModel.ed.solver_trace import note as _trace_note
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
+from impurityModel.ed.manybody_basis import collective_top_k_mask
 from impurityModel.ed.TSQR import (
     EPS,
     DEFLATE_EVAL_TOL,
     BREAKDOWN_TOL,
-    robust_svd,
     spectral_norm,
     tsqr,
 )
@@ -325,6 +320,15 @@ cpdef np.ndarray block_combine_array(np.ndarray Q, np.ndarray Y):
     return Q @ np.ascontiguousarray(Y, dtype=complex)
 
 
+cdef void _adjoint_gemm_nogil(double complex[:, ::1] V, double complex[:, ::1] W, double complex[:, ::1] out) noexcept nogil:
+    matmul_nogil(V.shape[1], W.shape[1], V.shape[0], 1.0, V, b'C', W, b'N', 0.0, out)
+
+
+def _adjoint_gemm(double complex[:, ::1] V, double complex[:, ::1] W, double complex[:, ::1] out):
+    with nogil:
+        _adjoint_gemm_nogil(V, W, out)
+
+
 cpdef np.ndarray adjoint_product(np.ndarray V, np.ndarray W):
     """``V^H W`` as a C-contiguous array, conjugating whichever operand has fewer columns.
 
@@ -337,6 +341,15 @@ cpdef np.ndarray adjoint_product(np.ndarray V, np.ndarray W):
     """
     if V.ndim == 2 and W.ndim == 2 and V.shape[1] > W.shape[1]:
         return np.ascontiguousarray(np.conj(np.conj(W).T @ V).T)
+    if (
+        V.ndim == 2 and W.ndim == 2 and V.dtype == np.complex128 and W.dtype == np.complex128
+        and V.flags.c_contiguous and W.flags.c_contiguous and V.shape[0] == W.shape[0] and V.shape[0] > 0
+    ):
+        # The Lanczos overlaps (a block against the product): one zgemm with the conjugate-transpose
+        # flag, no N x p conjugated copy.
+        out = np.empty((V.shape[1], W.shape[1]), dtype=complex)
+        _adjoint_gemm(V, W, out)
+        return out
     return np.ascontiguousarray(np.conj(V.T) @ W)
 
 
@@ -349,4 +362,55 @@ cpdef tuple block_orthogonalize_array(np.ndarray wp, np.ndarray Q, object overla
     return wp, overlaps
 
 
+cdef void matmul_nogil(
+    int m, int n, int k,
+    double complex alpha,
+    double complex[:, ::1] A, char transA,
+    double complex[:, ::1] B, char transB,
+    double complex beta,
+    double complex[:, ::1] C
+) noexcept nogil:
+    # C (m x n, row-major) = beta*C + alpha * opA(A) (m x k) @ opB(B) (k x n),
+    # where op = conjugate-transpose when the trans flag is b'C'.
+    # Implemented with BLAS-3 zgemm. BLAS is column-major; our arrays are C-contiguous
+    # (row-major), so the row-major product C = opA(A) @ opB(B) is obtained by asking
+    # BLAS for the column-major Cᵀ = opB(B)ᵀ @ opA(A)ᵀ: swap the operands (B then A),
+    # swap (m, n) -> (n, m), keep the same trans flags, and use the physical row
+    # lengths (A.shape[1], B.shape[1], n) as the leading dimensions. Validated against
+    # numpy @ for all four trans combinations in test_zgemm_matmul (1e-13).
+    cdef int i, j
+    cdef int lda, ldb, ldc
+    if m <= 0 or n <= 0:
+        return
+    if k <= 0:
+        # No contraction: C = beta * C (zgemm with K=0 would still need valid A/B ptrs).
+        if beta == 0.0:
+            for i in range(m):
+                for j in range(n):
+                    C[i, j] = 0.0
+        elif beta != 1.0:
+            for i in range(m):
+                for j in range(n):
+                    C[i, j] = C[i, j] * beta
+        return
+    lda = A.shape[1]
+    ldb = B.shape[1]
+    ldc = n
+    zgemm(&transB, &transA, &n, &m, &k, &alpha, &B[0, 0], &ldb, &A[0, 0], &lda, &beta, &C[0, 0], &ldc)
+
+
+def _matmul_nogil_test(A, int transA, B, int transB, alpha, beta, C, int m, int n, int k):
+    """Test-only Python wrapper around matmul_nogil (pass transA/transB as ord('N'/'C'))."""
+    cdef double complex[:, ::1] Av = np.ascontiguousarray(A, dtype=complex)
+    cdef double complex[:, ::1] Bv = np.ascontiguousarray(B, dtype=complex)
+    cdef double complex[:, ::1] Cv = np.ascontiguousarray(C, dtype=complex)
+    cdef char ta = transA
+    cdef char tb = transB
+    cdef double complex al = alpha
+    cdef double complex be = beta
+    matmul_nogil(m, n, k, al, Av, ta, Bv, tb, be, Cv)
+    return np.asarray(Cv)
+
+
 include "_block_ops.pxi"
+include "_lanczos_step.pxi"

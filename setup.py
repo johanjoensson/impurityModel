@@ -197,9 +197,6 @@ ext_modules = [
         sources=[
             os.path.join(_cython_src_dir, "BlockLanczos.pyx"),
         ],
-        depends=[
-            os.path.join(_cython_src_dir, "_lanczos_step.pxi"),
-        ],
         language="c++",
         include_dirs=include_dirs,
         extra_compile_args=extra_compile_args,
@@ -212,6 +209,7 @@ ext_modules = [
         ],
         depends=[
             os.path.join(_cython_src_dir, "_block_ops.pxi"),
+            os.path.join(_cython_src_dir, "_lanczos_step.pxi"),
         ],
         language="c++",
         include_dirs=include_dirs,
@@ -232,6 +230,16 @@ ext_modules = [
         name="impurityModel.ed.TSQR",
         sources=[
             os.path.join(_cython_src_dir, "TSQR.pyx"),
+        ],
+        language="c++",
+        include_dirs=include_dirs,
+        extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
+    ),
+    Extension(
+        name="impurityModel.ed.DistributedSparseMatrix",
+        sources=[
+            os.path.join(_cython_src_dir, "DistributedSparseMatrix.pyx"),
         ],
         language="c++",
         include_dirs=include_dirs,

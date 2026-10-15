@@ -80,7 +80,7 @@ _CSR_BYTES_PER_NNZ = 24
 # repeat that in the opposite corner case.
 _SELECTION_FANOUT_DEFAULT = 40
 # WHOLE-STEP dedup'd ROW fanout of one GF block-Lanczos matvec (`h_op.apply_block(q_curr, ...)`
-# inside `_lanczos_step.pxi`'s `block_lanczos_step_cy`) before `redistribute_block` routes rows to
+# inside `_lanczos_step.pxi`'s `lanczos_step`) before `redistribute_block` routes rows to
 # their owners and the truncation cap prunes. `ManyBodyOperator::apply` returns a fully
 # materialized `ManyBodyBlockState` BY VALUE, keyed one row per REACHED determinant -- a
 # different, SMALLER quantity than `_SELECTION_FANOUT_DEFAULT` above, which counts
@@ -118,7 +118,7 @@ _GF_MATVEC_ROW_FANOUT_DEFAULT = 8.1
 
 #: Measured saving from the row-chunked apply (`config.GF_APPLY_ROW_CHUNKS`), as
 #: ``whole_step_rows / max_over_chunks(chunk_rows)``. The chunked branch of
-#: `block_lanczos_step_cy` applies H to one `row_slice` at a time and frees each raw result before
+#: `lanczos_step` applies H to one `row_slice` at a time and frees each raw result before
 #: the next (`del _raw`), so the PEAK unpartitioned transient over a step is the largest single
 #: chunk's, not the whole step's -- chunking genuinely bounds the term this module models.
 #:
@@ -583,7 +583,7 @@ def estimate_gf_peak_bytes(
         return basis_bytes + live * local_rows * row_bytes + matvec_bytes
     live_bytes = 3 * local_rows * row_bytes
     # The recurrence's transient matvec fanout: `wp_raw = h_op.apply_block(q_curr, ...)` inside
-    # `block_lanczos_step_cy` is NOT hash-partitioned -- it is everything this rank's rows reach
+    # `lanczos_step` is NOT hash-partitioned -- it is everything this rank's rows reach
     # under H, before `redistribute_block` routes rows to their eventual owners and the cap
     # prunes admissions (see `_GF_MATVEC_ROW_FANOUT_DEFAULT`'s derivation). Priced at the same
     # `row_bytes` per row as the other live blocks, and divided by the measured saving the
@@ -803,18 +803,13 @@ def estimate_gs_peak_bytes(
     local = ceil(n_dets / max(1, ranks))
     basis_bytes = local * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     csr_bytes = local * nnz_per_state * _CSR_BYTES_PER_NNZ
-    # The matvec's reduce-scatter transient, plus the (local, w) result. Under
-    # GS_MATVEC_EXCHANGE=graph (the default) the send and receive buffers each hold one row
-    # block per neighbour -- degree x local x w complex, both alive at once -- chunked over
-    # columns so neither exceeds GS_MATVEC_EXCHANGE_BYTES (mpi_comm.MatvecExchangePlan). Under
-    # `reduce` it is the one (max(counts), w) chunk buffer of the per-root Reduce loop
-    # (Phase 1); max(counts) ~ local under a balanced hash partition either way.
-    if config.GS_MATVEC_EXCHANGE.get() == "graph":
-        degree = min(max(ranks - 1, 0), _MATVEC_EXCHANGE_DEGREE_DEFAULT)
-        per_buffer = min(config.GS_MATVEC_EXCHANGE_BYTES.get(), degree * local * block_width * _COMPLEX_BYTES)
-        exchange_bytes = 2 * per_buffer
-    else:
-        exchange_bytes = local * block_width * _COMPLEX_BYTES
+    # The matvec's reduce-scatter transient, plus the (local, w) result. The send and receive
+    # buffers each hold one row block per neighbour -- degree x local x w complex, both alive at
+    # once -- chunked over columns so neither exceeds GS_MATVEC_EXCHANGE_BYTES
+    # (mpi_comm.MatvecExchangePlan).
+    degree = min(max(ranks - 1, 0), _MATVEC_EXCHANGE_DEGREE_DEFAULT)
+    per_buffer = min(config.GS_MATVEC_EXCHANGE_BYTES.get(), degree * local * block_width * _COMPLEX_BYTES)
+    exchange_bytes = 2 * per_buffer
     replicated_bytes = local * block_width * _COMPLEX_BYTES + exchange_bytes
     krylov_bytes = local * _gs_krylov_columns(n_dets, block_width, num_wanted) * _COMPLEX_BYTES
     # CIPSI selection round transient (doc/plans/dc_smo_memory.md): `local * selection_fanout`

@@ -2,7 +2,7 @@ import numpy as np
 
 from impurityModel.ed.BlockLanczos import (
     block_lanczos_cy,
-    block_lanczos_step_cy,
+    lanczos_step,
     thick_restart_block_lanczos_cy,
 )
 from impurityModel.ed.BlockLanczosArray import block_normalize
@@ -29,7 +29,7 @@ def create_diagonal_h_and_basis(n_states):
 def test_block_lanczos_cy_imports():
     assert callable(block_lanczos_cy)
     assert callable(thick_restart_block_lanczos_cy)
-    assert callable(block_lanczos_step_cy)
+    assert callable(lanczos_step)
 
 
 def test_block_lanczos_cy_orthogonality_full():
@@ -386,7 +386,7 @@ def test_a_resumed_call_keeps_the_divergence_guards_scale(monkeypatch):
     """A resume replays the guard over the blocks it is handed: its first step is guarded against the
     scale the earlier call built, not treated as a fresh run's scale-establishing step (which went
     unchecked and re-seeded the scale on every resume -- every GF window once units ran in windows)."""
-    from impurityModel.ed import BlockLanczos
+    from impurityModel.ed import BlockLanczosCore as BlockLanczos
     from impurityModel.test.support.lanczos_fixtures import MockBasis, get_test_system
 
     h_op, n, _eigvals_exact, basis_states = get_test_system()

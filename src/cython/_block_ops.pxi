@@ -176,92 +176,13 @@ def apply_and_redistribute(
 
 
 cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, double slaterWeightMin=0.0):
-    if is_array(V) or getattr(H, "is_array_operator", False) or isinstance(H, np.ndarray) or isinstance(H, sps.spmatrix):
+    if is_array(V) or isinstance(H, DistributedSparseMatrix):
         V_arr = np.column_stack(V) if isinstance(V, list) and isinstance(V[0], np.ndarray) else V
-
-        if mpi and basis is not None and getattr(basis, 'comm', None) is not None:
-            comm = basis.comm
-            rank = comm.rank
-            size = comm.size
-            local_N = V_arr.shape[0]
-            counts = np.empty(size, dtype=int)
-            comm.Allgather(np.array([local_N], dtype=int), counts)
-            offsets = np.array([np.sum(counts[:r]) for r in range(size)], dtype=int)
-            # Row-chunked reduce-scatter, one chunk per destination rank's own row range (the
-            # same partition `offsets`/`counts` already describe) -- never materialize the full
-            # (global_N, w) product on any rank. The previous version formed it, Allreduced it,
-            # then threw away every row but this rank's own 1/size share; on SrMnO3 at 128 ranks
-            # a single call from inside the TRLM restart loop (trlm.py, every continuation block
-            # of every restart) peaked at several GiB/rank from exactly that discarded majority.
-            # This keeps the peak at max(counts) * w, which shrinks with rank count instead of
-            # growing with global_N -- see doc/plans/dc_smo_performance.md.
-            #
-            # Bit-identity caveat: each destination rank's `Reduce` is a separate collective, so
-            # MPI does not guarantee its summation order matches another root's -- unlike the
-            # single shared `Allreduce` this replaced, which handed every rank the same bytes by
-            # construction. (The graph exchange below sums in ascending source order instead, which
-            # is deterministic but differs from the Reduce tree in the last bits -- the two modes
-            # are not bit-identical to each other.) Downstream code (cipsi_solver.get_eigenvectors's energy cut) assumes
-            # `e_ref` is bit-identical across ranks; verified unaffected by the `e_ref.tobytes()`
-            # allgather probe (zero divergence, `-n 2`/`-n 3`, `IMPURITYMODEL_BUILD=safe`) because
-            # each row range is summed by a fixed, deterministic set of per-rank partial products
-            # (the CSR row slice times V_arr), not by an order that varies with which rank asked.
-            #
-            # `H` needs an efficient ROW axis for the slice below to pay off (CSR, not CSC);
-            # callers are responsible for that -- trlm.py converts once, before entering the
-            # restart loop this runs in, so the many calls here never each pay for it. A CSC `H`
-            # still produces the correct answer, just slower.
-            w = V_arr.shape[1]
-            # Match what `H @ V_arr` would produce (the non-mpi branch below, and this
-            # branch's own pre-chunking behaviour): a real H against a real V_arr must stay
-            # real, not silently upcast to complex128 and double this buffer's footprint.
-            # `H` need not be an ndarray/sparse matrix here -- this branch is also entered by
-            # any object carrying `is_array_operator=True` -- so a missing `.dtype` falls back
-            # to `V_arr`'s rather than raising (`/code-review` caught this as a latent
-            # regression; currently no such operator exists in the tree, but the pre-fix code
-            # never touched `H.dtype` at all).
-            result_dtype = np.result_type(getattr(H, "dtype", V_arr.dtype), V_arr.dtype)
-            result = np.empty((local_N, w), dtype=result_dtype, order='C')
-            # GS_MATVEC_EXCHANGE=graph (the default): send only the structurally nonzero row
-            # blocks, over one Neighbor_alltoallv per column round on the cached dist-graph, and
-            # sum in fixed source order (mpi_comm.MatvecExchangePlan). The wire format is
-            # complex128, so a real-valued product (no production caller) keeps the Reduce loop
-            # rather than being upcast; `result_dtype` is replicated, so the branch is rank-invariant.
-            # `H.format` rather than `isspmatrix_csr`: build_sparse_matrix returns the sparse-*array*
-            # API, which the spmatrix predicate does not recognise.
-            if matvec_exchange_mode() == "graph" and np.dtype(result_dtype) == np.complex128:
-                if sps.issparse(H) and H.format == "csr":
-                    dest_flags = dest_flags_from_csr_indptr(np.asarray(H.indptr, dtype=np.int64), counts, offsets)
-                else:
-                    dest_flags = dest_flags_all(counts)
-                plan = MatvecExchangePlan(comm, counts, offsets, dest_flags, w, config.GS_MATVEC_EXCHANGE_BYTES.get())
-                _trace_note("matvec_exchange", site="block_apply", **plan.describe())
-                own_lo = offsets[rank]
-                for c0, c1 in plan.column_rounds(w):
-                    wc = c1 - c0
-                    V_cols = V_arr[:, c0:c1]
-                    for i, dest in enumerate(plan.destinations):
-                        row_lo = offsets[dest]
-                        plan.send_slot(i, wc)[...] = H[row_lo:row_lo + counts[dest], :] @ V_cols
-                    plan.self_slot(wc)[...] = H[own_lo:own_lo + local_N, :] @ V_cols
-                    plan.exchange(wc)
-                    plan.accumulate(result[:, c0:c1], wc)
-                return result
-            # GS_MATVEC_EXCHANGE=reduce: one full-communicator Reduce per destination rank.
-            for dest in range(size):
-                row_lo = offsets[dest]
-                row_hi = row_lo + counts[dest]
-                chunk = np.ascontiguousarray(H[row_lo:row_hi, :] @ V_arr, dtype=result_dtype)
-                if rank == dest:
-                    # Same MPICH 4.0 IN_PLACE-at-non-zero-root crash the array kernel's
-                    # matvec avoids (see BlockLanczosArray.pyx): reduce into the destination
-                    # buffer instead. chunk is (counts[dest], w) and on the destination rank
-                    # that is exactly result's shape, so this also drops a copy.
-                    comm.Reduce(chunk, result, op=MPI.SUM, root=dest)
-                else:
-                    comm.Reduce(chunk, None, op=MPI.SUM, root=dest)
-            return result
-        return H @ V_arr
+        if not isinstance(H, DistributedSparseMatrix):
+            raise TypeError(f"an array block needs a DistributedSparseMatrix operator, got {type(H).__name__}")
+        # One exchange plan per call (collective on a distributed matrix); a kernel that applies H
+        # every step holds its own plan instead.
+        return H.apply(V_arr)
     elif isinstance(V, ManyBodyState):
         # apply_multi is list-typed (a plain ManyBodyState would raise TypeError
         # there); apply_block is the block-native counterpart, near-flat cost in
@@ -280,9 +201,37 @@ cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, 
                 psi.prune(slaterWeightMin)
         return wp
 
+cdef void _gemm_accumulate(double complex[:, ::1] V, double complex[:, ::1] W, double complex[:, ::1] A) noexcept nogil:
+    """``V += W @ A`` in place (zgemm with beta = 1): no ``N x p`` temporary."""
+    matmul_nogil(V.shape[0], V.shape[1], W.shape[1], 1.0, W, b'N', A, b'N', 1.0, V)
+
+
 cpdef object block_add_scaled(object V, object W, object alpha, double slaterWeightMin=0.0):
+    cdef double complex[:, ::1] Vv, Wv, Av
     if is_array(V):
-        V += W @ alpha
+        if (
+            isinstance(V, np.ndarray) and isinstance(W, np.ndarray)
+            and V.dtype == np.complex128 and W.dtype == np.complex128
+            and V.flags.c_contiguous and V.flags.writeable and V.ndim == 2 and W.ndim == 2
+        ):
+            Wc = np.ascontiguousarray(W)
+            Ac = np.ascontiguousarray(alpha, dtype=complex)
+            # The BLAS call reads `alpha` with W's width and V's width and cannot check them; and its
+            # output must not overlap its inputs (numpy built the `W @ alpha` temporary first).
+            if Ac.ndim != 2 or Ac.shape[0] != Wc.shape[1] or Ac.shape[1] != V.shape[1] or Wc.shape[0] != V.shape[0]:
+                raise ValueError(
+                    f"block_add_scaled: cannot add ({Wc.shape}) @ ({Ac.shape}) to a block of shape {V.shape}"
+                )
+            if np.may_share_memory(V, Wc):
+                V += Wc @ Ac
+                return V
+            Vv = V
+            Wv = Wc
+            Av = Ac
+            with nogil:
+                _gemm_accumulate(Vv, Wv, Av)
+        else:
+            V += W @ alpha
     elif isinstance(V, ManyBodyState):
         # A shared-support block is never mutated in place (its union support can outgrow
         # V's own storage, same as every other block_add_scaled_cy caller) -- rebind V to
@@ -495,26 +444,13 @@ cpdef tuple block_tsqr(object wp, bint mpi=False, object comm=None, double scale
     return Q_block, beta, k, sv
 
 
-cpdef object apply_full_reort(object wp, object Q_list, bint mpi, object comm, object krylov=None):
-    """Two-pass classical block Gram-Schmidt of ``wp`` against every stored Krylov column.
-
-    ``Q_list`` is the dense growth buffer (array kernel, possibly wrapped in a one-element
-    list) or ignored when ``krylov`` -- the ``SparseKrylovDense`` store -- is given, whose
-    columns are sliced without a gather. Collective on ``comm`` when ``mpi``.
-    """
-    if is_array(wp):
-        # The array kernel hands in its growth buffer wrapped as ``[Q_buf[:, :q_cols]]``,
-        # a view. block_orthogonalize column-stacks a list, which would copy the whole
-        # stored basis on each of the two passes; project against the view instead.
-        Q_mat = Q_list
-        if isinstance(Q_list, list) and len(Q_list) == 1 and Q_list[0].ndim == 2:
-            Q_mat = Q_list[0]
-        for _ in range(2):
-            wp, _ = block_orthogonalize(wp, Q_mat, mpi=mpi, comm=comm)
-        return wp
-    if krylov is None:
-        raise ValueError("full reorthogonalization of a ManyBodyState block needs the Krylov store")
-    wp, _ = krylov.reort(wp, None, 2, comm if mpi else None)
+cpdef object apply_full_reort(object wp, object store, bint mpi, object comm):
+    """Two-pass classical block Gram-Schmidt of ``wp`` against every column of the Krylov ``store``
+    (:class:`SparseKrylovDense` for a ``ManyBodyState`` block, :class:`DenseKrylovStore` for an array).
+    Collective on ``comm`` when ``mpi``."""
+    if store is None:
+        raise ValueError("full reorthogonalization needs the Krylov store")
+    wp, _ = store.reort(wp, None, 2, comm if mpi else None)
     return wp
 
 

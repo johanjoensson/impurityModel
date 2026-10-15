@@ -19,7 +19,6 @@ from mpi4py import MPI
 from impurityModel.ed import basis_transcription, config
 from impurityModel.ed.basis_transcription import (
     build_dense_matrix,
-    build_local_column_operator,
     build_sparse_matrix,
     build_state,
     build_vector,
@@ -29,6 +28,7 @@ from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
 from impurityModel.ed.cg import block_bicgstab
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.gf_admission import solve_point_outer
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
@@ -255,10 +255,10 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
 
 
 def _array_operator(basis, hOp, dense):
-    """``(H, kernel_comm)`` for the array kernel on ``basis``: the dense sector matrix (serial), or this rank's
-    columns of the distributed ``P H P``."""
+    """``(H, kernel_comm)`` for the array kernel on ``basis``: the small sector's matrix gathered onto every
+    rank and held undistributed, or this rank's columns of the distributed ``P H P``."""
     if dense:
-        return build_dense_matrix(basis, hOp), None
+        return DistributedSparseMatrix.from_dense(build_dense_matrix(basis, hOp)), None
     # The (global_N, N_local) CSR goes to the kernel as-is, like the CIPSI ground state's:
     # `local_indices` is the rank-contiguous range `offset + arange(N_local)`, which is the
     # row layout the kernel's distributed matvec reduce-scatters into each rank's own rows.
@@ -267,10 +267,10 @@ def _array_operator(basis, hOp, dense):
     # "could not broadcast (970,9) into (273,9)" on every colour spanning two or more ranks
     # (review ledger M1; RIXS R3 at 128 ranks on the cluster).
     # Only this rank's columns are ever built, and kept as the build's column blocks
-    # (LocalColumnOperator): ~20 B per element instead of a CSR's ~50 at its peak, and no N + 1
+    # (DistributedSparseMatrix): ~20 B per element instead of a CSR's ~50 at its peak, and no N + 1
     # row pointer on every rank. The kernel multiplies by scattering columns (see
-    # BlockLanczosArray.pyx); _frozen_csr_fits budgets exactly this.
-    return build_local_column_operator(basis, hOp), basis.comm
+    # DistributedSparseMatrix.pyx); _frozen_csr_fits budgets exactly this.
+    return build_sparse_matrix(basis, hOp), basis.comm
 
 
 def _finish_array_run(alphas, betas, widths, status, converged_flag, delta_min, last_dg, info, rank):
@@ -402,7 +402,7 @@ def _expansion_probe_columns(Q, widths, *, tail_only):
 #: Local determinants whose ``H`` images estimate the frozen CSR's fan-out for the memory check.
 _CSR_FANOUT_SAMPLE = 256
 #: Upper bound on the bytes one stored matrix element of the frozen ``P H P`` costs, held as the
-#: build's column blocks (``LocalColumnOperator``: a 16 B value and a 4 B row). Measured by
+#: build's column blocks (``DistributedSparseMatrix``: a 16 B value and a 4 B row). Measured by
 #: ``test_the_column_operator_peak_stays_below_its_budget`` (20.5 B resident, 22.3 at the serial
 #: build's peak); a CSR cost ~50 at its peak.
 _CSR_BYTES_PER_ELEMENT = 24
@@ -1160,7 +1160,7 @@ class _FrozenShiftedSystem:
         self.n_cols = int(n_cols)
         self.size = int(frozen_basis.size)
         self.comm = frozen_basis.comm
-        self.matvec = FrozenColumnMatvec(build_local_column_operator(frozen_basis, hOp), self.comm, self.n_cols)
+        self.matvec = FrozenColumnMatvec(build_sparse_matrix(frozen_basis, hOp), self.comm, self.n_cols)
         self.seeds = block_to_local_dense(frozen_basis, ManyBodyState.from_states(list(seeds)), self.n_cols)
         norms2 = np.sum(np.abs(self.seeds) ** 2, axis=0)
         if self.comm is not None:
@@ -1231,8 +1231,6 @@ def _freeze_bicgstab_support(tmp_basis, hOp, seeds, n_cols, verbose):
     copy of the support is dropped before the matrix is sized (and is not held next to the frozen
     basis's)."""
     comm = tmp_basis.comm
-    if not FrozenColumnMatvec.available(comm):
-        return None
     frozen_basis = tmp_basis.clone_from_keys(tmp_basis._keys)
     tmp_basis.clear()
     budget = getattr(tmp_basis, "gf_csr_memory_budget", None)

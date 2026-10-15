@@ -32,6 +32,7 @@ from impurityModel.ed.BlockLanczosArray import (
     block_tsqr,
     is_array,
 )
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.work_queue import queue_progress
@@ -74,6 +75,9 @@ def _make_matmat(A, basis, double slaterWeightMin, bint is_arr, bint mpi):
             return A.matmat(v)
 
     elif is_arr:
+        # A local array operator (a small dense or scipy matrix) is converted once; the solvers
+        # proper pass a DistributedSparseMatrix or an operator with its own `matmat`.
+        A = DistributedSparseMatrix.coerce(A, basis.comm if mpi and basis is not None else None)
 
         def matmat(v):
             queue_progress()

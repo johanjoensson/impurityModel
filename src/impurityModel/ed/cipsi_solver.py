@@ -2270,8 +2270,6 @@ class CIPSISolver:
                 _trace_note("h_matrix_nnz", nnz=int(H_mat.nnz), n=int(H_mat.shape[0]))
             else:
                 H_mat = h_matrix
-            if self.basis.is_distributed:
-                H_mat = H_mat[:, self.basis.local_indices]
 
             psi0_arr = (
                 build_distributed_vector(self.basis, psi0).T

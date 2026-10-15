@@ -13,7 +13,6 @@ same functions.
 
 import numpy as np
 import scipy.linalg as sp
-import scipy.sparse as sps
 
 from impurityModel.ed.BlockLanczosCore import (
     BREAKDOWN_TOL,
@@ -41,6 +40,7 @@ from impurityModel.ed.block_view import (
     trim_trailing_beta,
     width_synced_total,
 )
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
@@ -662,6 +662,7 @@ def _thick_restart_block_lanczos_array(
     looks for eigenstates it does not have yet without re-finding the ones it does."""
     from impurityModel.ed.BlockLanczosArray import block_lanczos_array
 
+    h_op = DistributedSparseMatrix.coerce(h_op, comm)
     mpi = comm is not None and getattr(comm, "size", 1) > 1
     # block_lanczos_array assumes an orthonormal start block (it does not normalize
     # internally); normalize here so the betas do not grow geometrically and overflow T.
@@ -671,17 +672,6 @@ def _thick_restart_block_lanczos_array(
         for _ in range(2):
             psi0, _ = block_orthogonalize(psi0, locked, mpi=mpi, comm=comm)
     psi0, _ = block_normalize(psi0, mpi, comm, 0.0)
-
-    # `h_op` is column-sliced CSC (cipsi_solver.py builds it from `build_sparse_matrix`, which
-    # returns CSC; column-slicing to `local_indices` is CSC's cheap axis). block_apply's chunked
-    # matvec (see _block_ops.pxi) row-slices it once per restart-continuation block -- expensive
-    # on CSC, which has no efficient row axis. Converting here, ONCE per get_eigenvectors call,
-    # means every later block_apply call in this restart loop (there can be dozens) row-slices a
-    # matrix that already has the right axis, instead of re-converting (or, worse, silently
-    # paying O(nnz) per row-slice) on every one of them. block_lanczos_array's own sweep already
-    # does the same conversion internally, so this makes it a no-op there.
-    if sps.issparse(h_op) and not sps.isspmatrix_csr(h_op):
-        h_op = h_op.tocsr()
 
     def sweep(v0, max_iter):
         res = block_lanczos_array(
@@ -843,7 +833,7 @@ def thick_restart_block_lanczos(
     comm = basis.comm if mpi else None
     reort_mode = resolve_reort(reort)
 
-    if not is_array(h_op):
+    if not (isinstance(h_op, DistributedSparseMatrix) or is_array(h_op)):
         if locked is not None:
             raise NotImplementedError("thick_restart_block_lanczos: `locked` is supported on the array path only")
         return thick_restart_block_lanczos_cy(

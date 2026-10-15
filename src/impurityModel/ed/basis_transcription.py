@@ -12,9 +12,9 @@ ranks of ``basis.comm``.
 from typing import Any, Optional, Union
 
 import numpy as np
-import scipy as sp
 from mpi4py import MPI
 
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, Row, applyOp, inner_multi
 from impurityModel.ed.work_queue import queue_progress
 
@@ -221,13 +221,12 @@ def build_dense_matrix(basis, op, distribute=True):
     Get the operator as a dense matrix in the current basis.
     by default the dense matrix is distributed to all ranks.
     """
-    h_local = build_sparse_matrix(basis, op)
+    h_local = build_sparse_matrix(basis, op).toarray()
     if basis.is_distributed:
         h = np.empty(h_local.shape, dtype=h_local.dtype)
-        basis.comm.Allreduce(h_local.todense(), h, op=MPI.SUM)
-    else:
-        h = h_local.todense(order="C")
-    return h
+        basis.comm.Allreduce(h_local, h, op=MPI.SUM)
+        return h
+    return h_local
 
 
 #: Matrix elements per collective index lookup in the distributed :func:`build_sparse_matrix`.
@@ -368,112 +367,15 @@ def _column_batches(basis, op: ManyBodyOperator):
             break
 
 
-class LocalColumnOperator:
-    """This rank's columns of an operator, ``(N, N_local)``, as the column blocks the build made.
+def build_sparse_matrix(basis, op: ManyBodyOperator):
+    """``op`` as this rank's columns of the sparse operator on ``basis``: a
+    :class:`~impurityModel.ed.DistributedSparseMatrix.DistributedSparseMatrix` of shape
+    ``(N, N_local)``, kept in the build's per-batch column blocks.
 
-    The frozen-basis Green's function runs the array Lanczos kernel on ``H[:, local columns]``.
-    As a scipy CSR -- the form the kernel takes for every other caller -- that matrix costs, at
-    its peak, the concatenation of the build's per-batch pieces (~40 B per stored element), the
-    CSC-to-CSR conversion on top (~50 B), and a row pointer of ``N + 1`` int64 entries on every
-    rank (149 MB per rank at N = 18.6M, more than the local matrix itself on SrMnO3). This keeps
-    the pieces as they come: ``segments`` is a list of ``(col_begin, indptr, rows, data)``, local
-    columns ``col_begin`` to ``col_begin + len(indptr) - 1`` in compressed-column form, about 20 B
-    per element (16 for the value, 4 for an int32 row index) plus 8 B per local column.
-
-    The kernel multiplies by scattering each column into the rows it reaches (``Y[row] += v X[col]``),
-    walking the columns in ascending order, so every output row is summed in the same order as a
-    CSR row loop. It first calls :meth:`bind_slots`, which replaces each global row index, in
-    place, by the row it lands in in the matvec's exchange buffers -- no owner search per element.
-
-    Rows are int32 when ``N < 2**31``, decided from the replicated ``N``, so every rank agrees.
-    """
-
-    def __init__(self, shape, segments):
-        self.shape = (int(shape[0]), int(shape[1]))
-        self.segments = segments
-        self._binding = None
-        self._flags = None
-
-    @property
-    def nnz(self):
-        return int(sum(len(rows) for _, _, rows, _ in self.segments))
-
-    @property
-    def nbytes(self):
-        return int(sum(indptr.nbytes + rows.nbytes + data.nbytes for _, indptr, rows, data in self.segments))
-
-    def owner_flags(self, counts, offsets):
-        """Bool array over ranks: does any stored row belong to rank ``d`` (rows ``offsets[d]`` to
-        ``offsets[d] + counts[d]``)? Rank-local; used to build the matvec's exchange graph.
-
-        Cached per layout, so it can still be answered after :meth:`bind_slots` has replaced the
-        global rows (the kernel is re-run on the same operator when it doubles its block budget)."""
-        counts = np.asarray(counts, dtype=np.int64)
-        offsets = np.asarray(offsets, dtype=np.int64)
-        key = (tuple(counts.tolist()), tuple(offsets.tolist()))
-        if self._flags is not None and self._flags[0] == key:
-            return self._flags[1].copy()
-        if self._binding is not None:
-            raise RuntimeError("owner_flags needs global row indices; this operator is already bound to slots")
-        present = np.zeros(len(counts), dtype=bool)
-        for _, _, rows, _ in self.segments:
-            if len(rows):
-                present[np.unique(np.searchsorted(offsets, rows, side="right") - 1)] = True
-        flags = present & (counts > 0)
-        self._flags = (key, flags)
-        return flags.copy()
-
-    def bind_slots(self, rank, offsets, destinations, send_row_offsets, total_send_rows):
-        """Rewrite every row index, in place, as its row in the matvec's buffers.
-
-        A row owned by ``destinations[i]`` goes to ``send_row_offsets[i] + (row - offsets[dest])``
-        of the send buffer; a row this rank owns goes to ``total_send_rows + (row - offsets[rank])``
-        (the self buffer, offset by the send rows). These are the layout of
-        ``mpi_comm.MatvecExchangePlan``. Binding again with the same layout is a no-op (the kernel
-        is re-run on the same operator when it doubles its block budget); a different layout raises.
-        """
-        offsets = np.asarray(offsets, dtype=np.int64)
-        key = (int(rank), tuple(offsets.tolist()), tuple(int(d) for d in destinations), int(total_send_rows))
-        if self._binding is not None:
-            if self._binding != key:
-                raise RuntimeError("LocalColumnOperator is already bound to a different exchange layout")
-            return
-        base = np.full(len(offsets), np.iinfo(np.int64).min, dtype=np.int64)
-        for i, dest in enumerate(destinations):
-            base[dest] = int(send_row_offsets[i]) - offsets[dest]
-        base[rank] = int(total_send_rows) - offsets[rank]
-        for _, _, rows, _ in self.segments:
-            if not len(rows):
-                continue
-            shift = base[np.searchsorted(offsets, rows, side="right") - 1]
-            if (shift == np.iinfo(np.int64).min).any():
-                raise RuntimeError("a stored row belongs to a rank that is not a matvec destination")
-            rows += shift.astype(rows.dtype, copy=False)
-        self._binding = key
-
-    def tocsc(self):
-        """The same matrix as a scipy CSC (``build_sparse_matrix(..., local_columns=True)``, unsorted
-        columns). Only before :meth:`bind_slots`."""
-        if self._binding is not None:
-            raise RuntimeError("tocsc needs global row indices; this operator is already bound to slots")
-        n_cols = self.shape[1]
-        counts = np.zeros(n_cols, dtype=np.int64)
-        for col_begin, indptr, _, _ in self.segments:
-            counts[col_begin : col_begin + len(indptr) - 1] = np.diff(indptr)
-        indptr = np.zeros(n_cols + 1, dtype=np.int64)
-        np.cumsum(counts, out=indptr[1:])
-        rows = np.concatenate([r for _, _, r, _ in self.segments]) if self.segments else np.empty(0, np.int64)
-        data = np.concatenate([d for _, _, _, d in self.segments]) if self.segments else np.empty(0, complex)
-        return sp.sparse.csc_array((data, rows.astype(np.int64, copy=False), indptr), shape=self.shape)
-
-
-def build_local_column_operator(basis, op: ManyBodyOperator):
-    """``op``'s columns for this rank's determinants as a :class:`LocalColumnOperator`.
-
-    The same entries as ``build_sparse_matrix(basis, op, local_columns=True)``, kept in the build's
-    per-batch column blocks: the peak is the stored matrix (~20 B per element) plus one batch, with
-    no concatenation, no CSR conversion and no global-length row pointer. Collective on a
-    distributed basis, like :func:`build_sparse_matrix`.
+    Images arrive one ket at a time, so the entries are already grouped by column and only the
+    per-column counts are needed: the peak is the stored matrix (~20 B per element) plus one
+    batch -- no COO triplet, no concatenation, no CSR conversion and no global-length row pointer.
+    Collective on a distributed basis.
     """
     if isinstance(op, dict):
         op = ManyBodyOperator(op)
@@ -487,56 +389,8 @@ def build_local_column_operator(basis, op: ManyBodyOperator):
         np.cumsum(counts, out=indptr[1:])
         segments.append((col_begin, indptr, rows.astype(row_dtype), values))
         del rows
-    return LocalColumnOperator((n, len(basis.local_basis)), segments)
-
-
-def build_sparse_matrix(basis, op: ManyBodyOperator, local_columns=False):
-    """
-    Get the operator as a sparse matrix in the current basis.
-    The sparse matrix is distributed over all ranks.
-
-    Returns a canonical CSC array whose stored columns are the ones this rank owns. By default it
-    has shape ``(N, N)`` with every other column empty; ``local_columns=True`` returns just the
-    ``(N, N_local)`` slice, which is what ``H[:, basis.local_indices]`` would give, without ever
-    forming the ``(N, N)`` column pointer or the slice's second copy.
-
-    The CSC is assembled directly: images arrive one ket at a time, so the entries are already
-    grouped by column and only the per-column counts are needed -- no COO triplet, and no
-    coordinate-to-compressed conversion holding both. Peak memory is the stored entries (index +
-    value) plus the chunks not yet consumed, instead of ~4x that.
-    """
-    if isinstance(op, dict):
-        op = ManyBodyOperator(op)
-
-    _offset = basis.offset
-    n_local = len(basis.local_basis)
-
-    row_chunks = []
-    val_chunks = []
-    col_counts = np.zeros(n_local, dtype=np.int64)  # stored entries per local column
-    for col_begin, batch_counts, rows, values in _column_batches(basis, op):
-        row_chunks.append(rows)
-        val_chunks.append(values)
-        col_counts[col_begin : col_begin + len(batch_counts)] += batch_counts
-
-    n = len(basis)
-    nnz = int(col_counts.sum())
-    indices = _concat_consuming(row_chunks, np.int64)
-    data = _concat_consuming(val_chunks, complex)
-    if local_columns:
-        indptr = np.zeros(n_local + 1, dtype=np.int64)
-        np.cumsum(col_counts, out=indptr[1:])
-        shape = (n, n_local)
-    else:
-        indptr = np.zeros(n + 1, dtype=np.int64)
-        np.cumsum(col_counts, out=indptr[_offset + 1 : _offset + n_local + 1])
-        indptr[_offset + n_local + 1 :] = nnz
-        shape = (n, n)
-    res = sp.sparse.csc_array((data, indices, indptr), shape=shape)
-    # The images were ordered by the operator, not by row: sort each column in place and mark the
-    # result canonical (no duplicates -- a ManyBodyState holds each determinant once per image).
-    res.sort_indices()
-    return res
+    comm = basis.comm if basis.is_distributed else None
+    return DistributedSparseMatrix((n, len(basis.local_basis)), segments, comm, basis.offset)
 
 
 def build_density_matrices(basis, psis, orbital_indices_left=None, orbital_indices_right=None):
