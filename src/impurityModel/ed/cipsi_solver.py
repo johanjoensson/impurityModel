@@ -11,7 +11,7 @@ from impurityModel.ed.basis_transcription import (
     build_state,
 )
 from impurityModel.ed.cipsi_budget import CapRefiner, MemoryGuard
-from impurityModel.ed.eigensolvers import eigensystem, solve_window
+from impurityModel.ed.eigensolvers import EigenResult, eigensystem, solve_window
 from impurityModel.ed.manybody_basis import (
     Basis,
     collective_mass_cutoff,
@@ -252,34 +252,16 @@ def _psi_ref_width(psi_refs):
 
 
 def _manifold_request(n_kept, prev_kept):
-    """How many eigenstates one CIPSI cycle should ask for, given what the last one kept.
+    """How many eigenstates one CIPSI cycle should ask the eigensolver to retain initially.
 
-    ``expand`` used to ask for ``2 * n_kept``. The *request*, not the kept count, is what sizes
-    the eigensolver -- :func:`_size_subspace` turns it into roughly ``4 * num_wanted`` retained
-    Krylov columns, and :meth:`CIPSISolver.get_eigenvectors` holds that many residuals to ``tol``
-    -- so the doubling was a permanent tax. What it bought was keeping
-    ``get_eigenvectors``' ``need_more`` re-solve loop from ever firing, and that loop was measured
-    dead on every real workload precisely *because* of the doubling: a permanent 2x against an
-    occasional re-solve is the wrong side of the trade.
+    The *request*, not the kept count, sizes the eigensolver (:func:`~impurityModel.ed.memory_estimate.gs_krylov_blocks`
+    turns it into roughly ``4 * num_wanted`` Krylov columns), so it is what the last cycle kept plus room to
+    grow at twice the rate it last grew at, floored at :data:`_EIGENSTATE_PAD`. An undershoot costs nothing
+    but a restart: the window solve grows its retention on demand.
 
-    So: ask for what the last cycle actually kept, plus room to grow at twice the rate it last
-    grew at, floored at :data:`_EIGENSTATE_PAD`. An undershoot is not a wrong answer, it is one
-    extra solve -- ``need_more`` fires and ``get_eigenvectors`` re-solves, the mechanism that has
-    always been there for it.
-
-    Two conventions that are load-bearing rather than cosmetic:
-
-    * ``prev_kept is None`` means *no history*, and is **not** the same as ``0``. A first cycle has
-      no predecessor to extrapolate from. On the SrMnO3 double-counting reproduction cycle 0 runs
-      the *dense* branch, which ignores ``num_wanted`` entirely when given a cut and returns every
-      state inside it -- 86 of the 120-determinant seed basis, a property of a basis too small to
-      resolve the 0.23 eV window rather than of the physics. Scoring that as growth from zero
-      would size the next cycle at 258, larger than the 182 this function exists to cut.
-    * ``max(0, ...)`` on the growth: a *shrinking* manifold gets the flat pad, never a negative
-      margin. Shrinking is the common case once the seed basis is left behind (86 -> 78 -> 10 on
-      that same run), and it does mean a cycle following a large one still requests off the large
-      count. Deliberate: the request has to cover the manifold that is actually there, and only
-      the next cycle can know it shrank.
+    ``prev_kept is None`` means *no history* and is not the same as ``0``: a first cycle has no predecessor
+    to extrapolate from. The growth term is ``max(0, ...)``: a shrinking manifold gets the flat pad, never a
+    negative margin.
 
     Parameters
     ----------
@@ -291,8 +273,7 @@ def _manifold_request(n_kept, prev_kept):
     Returns
     -------
     int
-        The unpadded request. ``get_eigenvectors`` adds its own ``_EIGENSTATE_PAD`` on top, for a
-        different purpose (certifying the boundary manifold is whole, not covering growth).
+        The request: ``n_kept`` plus the larger of the flat pad and twice the last growth.
     """
     growth = 0 if prev_kept is None else max(0, n_kept - prev_kept)
     return n_kept + max(_EIGENSTATE_PAD, 2 * growth)
@@ -425,7 +406,7 @@ class CIPSISolver:
         self.psi_refs = None
         #: Latest :class:`~impurityModel.ed.eigensolvers.EigenResult`, and the random-column width the next solve uses
         #: (adapted to the largest multiplicity seen).
-        self.eig = None
+        self.eig: EigenResult | None = None
         self.n_random = _MIN_RANDOM_COLUMNS
         # Diagnostics of the latest candidate selection / basis truncation (see
         # determine_new_Dj / truncate); None until the corresponding event happens.
@@ -1319,10 +1300,12 @@ class CIPSISolver:
                 and self.eig.window is not None
                 and self.eig.window >= max_energy
             )
-            if reusable:
-                eig = self.eig
-            else:
-                eig = self._solve_window(H, h_matrix, max_energy, num_wanted, slaterWeightMin, psi_refs)
+            eig = (
+                self.eig
+                if reusable
+                else self._solve_window(H, h_matrix, max_energy, num_wanted, slaterWeightMin, psi_refs)
+            )
+            assert eig is not None
             e_ref, psi_refs_arr = eig.e, eig.vecs
             valid_idx = None
             if len(e_ref) > 0:
@@ -1369,7 +1352,7 @@ class CIPSISolver:
 
         return e_ref, psi_refs
 
-    def _solve_window(self, H, h_matrix, max_energy, num_wanted, slaterWeightMin, psi_refs):
+    def _solve_window(self, H, h_matrix, max_energy, num_wanted, slaterWeightMin, psi_refs) -> EigenResult:
         """One certified window solve on the current basis; records it as ``self.eig``."""
         H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
         hashes = np.fromiter((state.get_hash() for state in self.basis.local_basis), dtype=np.uint64)

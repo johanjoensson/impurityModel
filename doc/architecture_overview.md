@@ -64,8 +64,8 @@ invariants that survive and marks the historical sections.
 `from_scipy`/`from_dense`/`coerce`, `toarray`, `to_scipy`): column-distributed CSC segments
 with a graph (`Neighbor_alltoallv`) exchange. `comm.size == 1` is the self slot of the same code.
 
-The restart logic (thick restart, locking, result assembly) lives in `ed/trlm.py`
-(`_trlm_core`); `BlockLanczos.pyx` re-exports it.
+The restart logic (thick restart, locking, energy-window mode, result assembly) lives in `ed/trlm.py`
+(`trlm`), on distributed dense blocks only.
 
 ### Block orthonormalization: `TSQR.pyx`
 
@@ -113,14 +113,14 @@ CLIs sit strictly on top. **Physics/operator-algebra modules never import solver
 Layer 0: average, utils, config, polarization, product_state_representation, op_parser,
          h0_format, mpi_comm, solver_trace, dc_record, ManyBodyUtils (Cython)
 Layer 1: operator_algebra, dc_search
-Layer 2: atomic_physics, eigensolvers, lie_algebra, symmetries, block_structure,
+Layer 2: atomic_physics, lie_algebra, symmetries, block_structure,
          transition_operators
 Layer 3: observables, spin_pairs, dc_reference
 Layer 4: manybody_basis (+ basis_generation, basis_restrictions,
          basis_transcription, basis_split), solver_basis
 Layer 5: gf_primitives, gf_convergence, gf_shift_recycling, gf_units, gf_solvers,
          greens_function, spectra, rixs,
-         cg, cipsi_solver, groundstate, hartree_fock, hamiltonian_io, gf_diagnostics,
+         cg, trlm, eigensolvers, cipsi_budget, cipsi_solver, gs_report, groundstate, hartree_fock, hamiltonian_io, gf_diagnostics,
          gs_statistics, dc_static, dc_criteria, sigma, model
 Layer 6: drivers: get_spectra, selfenergy, susceptibility
 Layer 7: CLIs: scripts/cli (umbrella), scripts/{spectra,selfenergy,susceptibility},
@@ -144,7 +144,7 @@ and is what both the CLIs and embedded callers (the RSPt interface) build to pas
 - **`polarization.py`** — numpy-only polarization vectors and tensor contractions (`contract_spectra_tensor`, `contract_rixs_tensor`, dichroism/isotropic helpers) that turn the tensor quantities `spectra.py` computes into polarization-resolved intensities; used both by `spectra.py`'s projector code paths and by the `plot_spectra`/`plot_RIXS` CLIs as a post-processing step, so no MPI or solver imports.
 - **`operator_algebra.py`** — algebra on second-quantized operator dicts (`addOps`, `daggerOp`, `combineOp`, …) and the `(l, s, m)` label ↔ flat-index conversions (`c2i`, `i2c`). These serve the *pre-conversion* path only: operators keyed by `(l, s, m)` labels cannot be `ManyBodyOperator`s, which need integer orbital indices. Once an operator is integer-indexed, use the `ManyBodyOperator` algebra instead. Note `combineOp` is a single-particle *matrix* product, not `ManyBodyOperator.__mul__`.
 - **`atomic_physics.py`** — single-shell atomic physics: Slater–Condon Coulomb integrals (`getU*`), spin-orbit coupling (`getSOCop`), Zeeman field (`gethHfieldop`), spherical↔cubic transforms, the MLFT double-counting correction (`dc_MLFT`), and the average Coulomb repulsion/exchange extractor (`uj_from_u4`) the `dc_static` FLL/AMF schemes derive `U`/`J` from.
-- **`eigensolvers.py`** — eigensolver drivers for the low-energy spectrum: dense (`numpy.linalg.eigh`) only, behind the `eigensystem` driver. No connection to the Block Lanczos stack.
+- **`eigensolvers.py`** — the low-energy spectrum: `solve_window` (every eigenstate within an energy window, certified complete, from window-mode TRLM; the degeneracy need not be known beforehand) above `dense_cutoff`, and the dense `eigensystem` driver below it.
 - **`lie_algebra.py`** — the *algebraic half* of the symmetry machinery: tensor extraction/rotation (`extract_tensors`, `rotate_hamiltonian`), one-body symmetry discovery (the single-particle commutant null space), the Cartan reduction and joint diagonalization, and the reconstructed-Casimir observables. Depends only on `ManyBodyUtils`; `symmetries.py` builds its conserved charges and rotations on top of it.
 - **`symmetries.py`** — the consumer half built on `lie_algebra`: conserved-charge classification, occupation-window restrictions (`S_z`-weighted and frozen-shell flavors), impurity/bath occupation classification, and the impurity/Green's-function block structures used to deduplicate and sectorize GF/RIXS solves. Re-exports the `lie_algebra` primitives for backward compatibility.
 - **`block_structure.py`** — the `BlockStructure` type: detection of identical/transposed/particle-hole-related orbital blocks and matrix↔block conversions.
@@ -166,8 +166,8 @@ and is what both the CLIs and embedded callers (the RSPt interface) build to pas
 - **`solver_basis.py`** — `prepare_solver_basis`: assembles the interacting Hamiltonian `h0 - dc + U(u4)`, adaptively rotates into the impurity-diagonalising basis when that does not densify the Coulomb tensor, and derives the bath valence/conduction split, GF block structure, and per-group impurity orbital grouping/occupation from it (`SolverBasis`). Also `get_symmetry_generators`, the one-body symmetry discovery `cipsi_solver.expand` falls back to when not given generators explicitly. Imports only `symmetries` + `ManyBodyUtils`, so it sits below every one of its callers (`groundstate`, `cipsi_solver`, `dc_criteria` in Layer 5; `selfenergy`, `susceptibility` in Layer 6) rather than being reached through any of them. Split out of `selfenergy.py` (which keeps a re-export shim for its old private names).
 
 ### Solvers and spectra (Layer 5)
-- **`groundstate.py`** — the ground-state driver `calc_gs`: builds the variational basis (CIPSI + Hartree-Fock occupation seeding), solves for the low-energy states, and reports observables.
-- **`cipsi_solver.py`** — selected-CI (CIPSI) iterative basis expansion.
+- **`groundstate.py`** — the ground-state driver `calc_gs`/`solve_ground_state`: the occupation walk (Hartree-Fock seeding; it returns its winning basis and solver), one refinement that continues that solver warm, and the thermal manifold read off the last certified solve. Observables and the printed report live in **`gs_report.py`**.
+- **`cipsi_solver.py`** — selected-CI (CIPSI) iterative basis expansion; **`cipsi_budget.py`** holds its memory guard and fixed-budget refinement (`MemoryGuard`, `CapRefiner`).
 - **`hartree_fock.py`** — mean-field occupation seeding for the basis generation.
 - **`gf_primitives.py`** — the GF building blocks the kernels share (it imports no GF sibling): QR/state-vector plumbing (`build_qr`, `_distributed_seed_qr`), the block-tridiagonal continued fraction (`calc_G`, `_block_cf_inverse`, `calc_thermally_averaged_G`), the `SupportPolicy` (formerly `_CappedBasisProxy`/`_PrunedBasisProxy`; the one place that decides which determinants may carry amplitude, via `admit_seed`/`transport`/`decide`, see `doc/gf_support_pipeline.md`; it caps at `truncation_threshold`, optionally prunes by importance, and runs the support freeze it runs for `block_Green_sparse`, the support freeze: per step it weighs the weight reaching new determinants against what `slaterWeightMin` cut, gathered and summed in rank order so every rank decides alike), and the frozen-support pieces: `FrozenColumnMatvec` (the `P H P` column operator's matvec, its exchange plan held only inside `session()`), `block_to_local_dense`/`local_dense_to_block` (a block's rows on a frozen basis and back) and `boundary_residual` (what a frozen solve left outside `P` above the cutoff, broadcast so every rank compares the same bits). Imports nothing from the other two below or from `greens_function`.
 - **`gf_convergence.py`** — the runtime block-Lanczos convergence monitor (`_make_gf_convergence_monitor`) and its post-hoc counterpart (`_lanczos_convergence_summary`), plus the shared frequency-mesh helpers. Depends only on `gf_primitives`.

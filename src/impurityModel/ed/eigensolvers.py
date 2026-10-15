@@ -215,7 +215,7 @@ def _global_gram_rank(W, mpi, comm, floor=1e-10):
 
 
 def _level_overlap_ranks(F, groups, W, mpi, comm, floor):
-    """``rank(F_G^H W)`` for every group ``G`` of columns of ``F``: how many of the level's copies the warm block reaches."""
+    """``rank(F_G^H W)`` for every group ``G`` of columns of ``F``: how many copies the warm block reaches."""
     if W.shape[1] == 0 or not groups:
         return [0] * len(groups)
     M = block_inner(F, W, mpi, comm)  # (n_in, w), Allreduced: replicated

@@ -61,6 +61,21 @@ the tree at bc49879d with the same compiled kernels:
 | 20 baths, cap 20,000 | 45.7 s | 13.0 s | -130.34757357 (identical) |
 | 50 baths, cap 30,000 | 186.4 s | 56.4 s | -208.69918153 (identical) |
 
+SMO cubic archive (`impmod_tests/SMO/cubic`, cluster `Mn 1`), `calc_gs` alone (`calc_selfenergy` aborted after
+it), 1 rank, cap 20,000 (the basis converges at 7,969 determinants, so a larger cap changes nothing):
+
+| | old | new |
+|---|---|---|
+| `calc_gs` wall | 51.8 s | 21.4 s |
+| time in `get_eigenvectors` | 48.9 s | 18.5 s |
+| `get_eigenvectors` calls | 76 | 69 (7 of them reads of a previous solve) |
+| E0 | -10.00697056 | -10.00697056 |
+| thermal states / basis | 6 / 7,969 | 6 / 7,969 |
+
+What is left in the new run: 53 real eigensolves (11.7 s), CIPSI selection 1.8 s, the remainder outside the
+solver. The remaining eigensolve time is spread over the cycles (0.05-0.7 s each, the last refinement cycles
+on ~8,000 determinants costing most); no single dominant probe is left.
+
 `CONTINUATION_CHECK_EVERY = 8`: NiO 7-bath, production settings, one rank, time inside the eigensolver
 (block matvecs / TRLM seconds): cadence 1: 2677 / 40.7, 2: 2682 / 37.2, 4: 2698 / 36.8, 8: 2721 / 35.1,
 12: 2744 / 35.1, 16: 2769 / 35.7, 24: 2804 / 36.3, off: 2945 / 39.5. Checking every block is slower than
@@ -69,7 +84,8 @@ never checking (the `eigh` outweighs the block it saves); the minimum is a plate
 
 ## Not done / open
 
-* The SMO archive tail cycle was not benchmarked, and the pad-state mechanism above was not confirmed
-  with a trace.
+* The pad-state mechanism of the old probe was never confirmed with a trace (the probe was deleted first).
+* Goldens (E0 / sigma_static / DC mu across the example tests) were not recorded as JSON; equivalence was
+  checked on the NiO and SMO benchmarks above and by the existing test suite.
 * Walk semantics (3^k diagonal probe, legacy `dN_gs` fallback) are untouched: changing them changes which
   sector is found and needs its own oracle.

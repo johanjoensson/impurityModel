@@ -34,7 +34,7 @@ bookkeeping) a bare `list[ManyBodyState]`.
 **Rule: get the block branch right BEFORE the list branch, in every dispatcher.** A
 `ManyBodyState`'s own `len()` is its row count (dict-like, matching `len(dict)`), not
 its column/width count — silently wrong for "how many Krylov columns are here", not a
-raise. `block_cols` (`ed/block_view.py`) is the canonical column-count helper that gets this
+raise. `block_cols` (`BlockLanczosCore`) is the canonical column-count helper that gets this
 right for array / `ManyBodyState` / plain list uniformly; every restart-loop width
 computation goes through it rather than a bare `len()`.
 
@@ -282,28 +282,22 @@ warm-start protocol above needs to resume. `alphas`/`betas` are bit-identical to
 is dropped. On resume with `store_krylov=False`, `Q_init` is interpreted as that
 two-block tail, split by `block_widths_init[-1]`.
 
-## Thick-restart coefficient validity
+## Thick-restart coefficients
 
-Both TRLM restart-coefficient shortcuts (`_trlm_core`, `BlockLanczosArray.pyx`) require
-`Q^H Q = I` on the retained Ritz block, and cost nothing when it holds:
+TRLM (`ed/trlm.py`, array blocks only) fully reorthogonalizes every new vector against the stored basis
+(two CGS passes), so `Q^H Q = I` holds to working precision on the retained Ritz block and the textbook
+thick-restart coefficients are exact up to roundoff and cost nothing: the retained block's projected
+operator is `diag(theta_keep)`, the spike is `β_res @ Y_last`, and the carried-over residual block `q_m` is
+already the whole residual (rank `≤ p`) by the recurrence identity `H Q = Q T + q_m β_res E_last^H`. There is
+no Rayleigh-Ritz rebuild arm; a retained block that lost rank raises. `T_full` is still sized off `p_resid`
+(the actual residual width), never off the constant `p`, so a deflating residual cannot overrun it.
 
-- **Healthy case** (`‖Q^H Q - I‖ ≤ RESTART_ORTH_TOL` at full rank): the textbook
-  coefficients follow from the recurrence identity
-  `H Q = Q T + q_m β_res E_last^H` *together with* `Q^H Q = I` — the retained block's
-  projected operator is `diag(theta_keep)`, the spike is `β_res @ Y_last`, and the
-  carried-over residual block `q_m` is already the whole residual (rank `≤ p`).
-- **Otherwise**: the retained block lost semi-orthogonality (and possibly rank).
-  `Q^H Q ≠ I`, so *neither* textbook coefficient is valid — both derive from it — and
-  rescaling them by the orthonormalizing factor only amplifies the error by
-  `1/σmin`. The fallback is an explicit Rayleigh-Ritz step on the orthonormalized
-  retained basis (`T_lead = Q_ret^H H Q_ret`, `q_m` the orthonormalized residual,
-  `cross = q_m^H H Q_ret`), which assumes nothing about `Q_basis`, at the cost of
-  `k_ret` matvecs. `reort=NONE` needs this routinely (measured `‖Q^H Q - I‖ = 1.0` on a
-  spectrum with a 1e-9 cluster); the semi-orthogonal modes rarely take it.
+The `locked` projection (restricting a solve to the complement of converged vectors) runs *after* the
+full reorthogonalization in `lanczos_step` and last before normalization in the restart loop: the stored
+basis carries an O(eps) locked component, and any projection done before the CGS passes is undone by them.
 
-Without `Q^H Q = I`, the residual is no longer rank `≤ p`, so `q_m` can be up to
-`k_ret` wide — `T_full` is sized off `p_resid` (the actual residual width), never off
-the constant `p`, or the deflating branch overruns `T_full`.
+**Window mode** (`trlm.Window`) retains as many Ritz vectors as an energy window needs and converges the
+in-window pairs plus one bracket pair above the edge; see `doc/plans/gs_redesign.md`.
 
 ## complex64 measurements
 
@@ -338,9 +332,7 @@ incident above, so the combination is unusable regardless.
   `lst[len(lst) - 1]` instead of `lst[-1]` on its cdef-typed lists — `wraparound=False`
   segfaults on negative indexing into a typed buffer rather than raising, so that pattern
   is load-bearing for the file it's compiled in.
-- `BlockLanczosArray.pyx` has exactly one `[-1]` site (`calculate_thermal_gs`, indexing a
-  plain Python/numpy array via `__getitem__`, unaffected by either directive) and no
-  negative indexing into any `cdef`-typed memoryview or C array.
+- `BlockLanczosArray.pyx` has no negative indexing into any `cdef`-typed memoryview or C array.
 
 Unifying either direction has a cost with no offsetting benefit: turning `wraparound`/
 `boundscheck` off on the array kernel buys nothing today (no negative-index site exists
