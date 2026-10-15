@@ -246,7 +246,7 @@ revisited, the measurement to beat is the table above.
 
 ## Warm-start / resume protocol
 
-`block_lanczos_cy` resumes from block `k0 = len(alphas_init)` when `alphas_init`,
+`block_lanczos` resumes from block `k0 = len(alphas_init)` when `alphas_init`,
 `betas_init` and `Q_init` are all given together (`None` for all three starts fresh —
 partial combinations are a caller error). The warm-start `Q` blocks are sliced out of
 `Q_init` and the existing W-estimator (`W_init`) is reused as-is. If `W_init` is `None`

@@ -43,16 +43,19 @@ the representation-dispatching primitives of `_block_ops.pxi` (`block_apply`, `b
 `ndarray` blocks. The two public front ends differ only in how they build the starting blocks,
 the matvec and the Krylov store:
 
-- **`block_lanczos_cy`** (re-exported by `BlockLanczos.pyx`) — sparse / hash-distributed.
+`block_lanczos()` (`BlockLanczosCore.pyx`, re-exported by `BlockLanczos.pyx` and `BlockLanczosArray.pyx`) is the one
+entry point: it picks the setup from the start block and runs the same `lanczos_step` loop.
+
+- **`ManyBodyState` blocks** — sparse / hash-distributed.
   Operates on `ManyBodyState`/`ManyBodyOperator`; the Hamiltonian matrix is **never formed**;
   determinants are distributed by `hash(sd) % size`. Krylov store: `SparseKrylovDense`.
   Use for a large Hilbert space.
-- **`block_lanczos_array_cy`** (re-exported by `BlockLanczosArray.pyx`) — array. Operates on
+- **`ndarray` blocks** — array. Operates on
   ndarrays and a `DistributedSparseMatrix` (or a dense matrix, coerced at the entry);
   parallelism is by row block. Krylov store: `DenseKrylovStore`. BLAS-3 throughout, so it is
   fastest for small/dense sectors and for block size `p > 1`.
 
-Reorthogonalization is `Reort.NONE` (Green's functions) or `Reort.FULL` (ground state, TRLM,
+Reorthogonalization is the boolean `reort`: `False` (Green's functions) or `True` (ground state, TRLM,
 `KrylovShiftedResolvent`). The partial/selective/periodic modes, IRLM, the scipy ARPACK
 fallback and the Chebyshev filter were deleted; `doc/lanczos_invariants.md` keeps the
 invariants that survive and marks the historical sections.
