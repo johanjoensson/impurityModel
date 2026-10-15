@@ -639,7 +639,7 @@ def test_de2_min_selects_by_pt2_contribution():
     solver = CIPSISolver(basis)
 
     psi_ref = [ManyBodyState({d0: 1.0})]
-    new = solver.determine_new_Dj(np.array([0.0]), psi_ref, H, de2_min=1e-3, gen_ops=None)
+    new = solver.determine_new_Dj(np.array([0.0]), psi_ref, H, de2_min=1e-3)
     assert d1 in new  # score ~ 0.5^2 / 1 = 0.25 >= 1e-3
     assert d2 not in new  # score ~ (1e-4)^2 / 100 = 1e-12 < 1e-3
 

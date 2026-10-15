@@ -126,10 +126,10 @@ def _fake_lanczos(exhaust_first_calls, calls):
 def test_warm_start_exhaustion_triggers_one_cold_retry(monkeypatch, capsys):
     basis, solver = _make_solver()
     calls = []
-    monkeypatch.setitem(cipsi_module.SOLVERS, "trlm", _fake_lanczos(1, calls))
+    monkeypatch.setattr(cipsi_module, "thick_restart_block_lanczos", _fake_lanczos(1, calls))
 
     e_ref, psi_refs = solver.get_eigenvectors(
-        _h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, solver="trlm", psi_refs=_warm_refs(basis)
+        _h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, psi_refs=_warm_refs(basis)
     )
 
     # First call: the warm block augmented with the cold full-support column (2 columns).
@@ -149,11 +149,9 @@ def test_warm_start_exhaustion_triggers_one_cold_retry(monkeypatch, capsys):
 def test_certified_first_solve_does_not_retry(monkeypatch):
     basis, solver = _make_solver()
     calls = []
-    monkeypatch.setitem(cipsi_module.SOLVERS, "trlm", _fake_lanczos(0, calls))
+    monkeypatch.setattr(cipsi_module, "thick_restart_block_lanczos", _fake_lanczos(0, calls))
 
-    solver.get_eigenvectors(
-        _h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, solver="trlm", psi_refs=_warm_refs(basis)
-    )
+    solver.get_eigenvectors(_h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, psi_refs=_warm_refs(basis))
 
     assert len(calls) == 1  # no extra solves on the common (certified) path
     assert calls[0].shape[1] == 2  # but the warm block still carries the cold guard column
@@ -163,9 +161,9 @@ def test_cold_start_exhaustion_does_not_loop(monkeypatch, capsys):
     basis, solver = _make_solver()
     # psi_refs=None (the default): cold from the start, nothing fresh to retry with
     calls = []
-    monkeypatch.setitem(cipsi_module.SOLVERS, "trlm", _fake_lanczos(10**9, calls))
+    monkeypatch.setattr(cipsi_module, "thick_restart_block_lanczos", _fake_lanczos(10**9, calls))
 
-    e_ref, _ = solver.get_eigenvectors(_h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, solver="trlm")
+    e_ref, _ = solver.get_eigenvectors(_h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1)
 
     assert len(calls) == 1
     assert len(e_ref) == 3
@@ -184,10 +182,10 @@ def test_warm_start_exhaustion_retries_once_without_a_thermal_cut(monkeypatch):
     """
     basis, solver = _make_solver()
     calls = []
-    monkeypatch.setitem(cipsi_module.SOLVERS, "trlm", _fake_lanczos(1, calls))
+    monkeypatch.setattr(cipsi_module, "thick_restart_block_lanczos", _fake_lanczos(1, calls))
 
     e_ref, psi_refs = solver.get_eigenvectors(
-        _h_op(), num_wanted=1, max_energy=None, dense_cutoff=1, solver="trlm", psi_refs=_warm_refs(basis)
+        _h_op(), num_wanted=1, max_energy=None, dense_cutoff=1, psi_refs=_warm_refs(basis)
     )
 
     assert len(calls) == 2
@@ -201,11 +199,9 @@ def test_warm_start_exhaustion_retries_once_without_a_thermal_cut(monkeypatch):
 def test_full_return_without_a_thermal_cut_does_not_retry(monkeypatch):
     basis, solver = _make_solver()
     calls = []
-    monkeypatch.setitem(cipsi_module.SOLVERS, "trlm", _fake_lanczos(0, calls))
+    monkeypatch.setattr(cipsi_module, "thick_restart_block_lanczos", _fake_lanczos(0, calls))
 
-    solver.get_eigenvectors(
-        _h_op(), num_wanted=1, max_energy=None, dense_cutoff=1, solver="trlm", psi_refs=_warm_refs(basis)
-    )
+    solver.get_eigenvectors(_h_op(), num_wanted=1, max_energy=None, dense_cutoff=1, psi_refs=_warm_refs(basis))
 
     assert len(calls) == 1
 
@@ -266,14 +262,13 @@ def test_a_non_finite_warm_block_falls_back_to_the_cold_start(monkeypatch, capsy
     """
     basis, solver = _make_solver()
     calls = []
-    monkeypatch.setitem(cipsi_module.SOLVERS, "trlm", _fake_lanczos(0, calls))
+    monkeypatch.setattr(cipsi_module, "thick_restart_block_lanczos", _fake_lanczos(0, calls))
 
     e_ref, psi_refs = solver.get_eigenvectors(
         _h_op(),
         num_wanted=1,
         max_energy=CUT,
         dense_cutoff=1,
-        solver="trlm",
         psi_refs=_uniform_refs(basis, complex(np.nan, 0.0)),
     )
 
@@ -306,14 +301,13 @@ def test_a_zero_warm_block_needs_no_fallback_because_the_cold_column_carries_it(
     """
     basis, solver = _make_solver()
     calls = []
-    monkeypatch.setitem(cipsi_module.SOLVERS, "trlm", _fake_lanczos(0, calls))
+    monkeypatch.setattr(cipsi_module, "thick_restart_block_lanczos", _fake_lanczos(0, calls))
 
     e_ref, _psi_refs = solver.get_eigenvectors(
         _h_op(),
         num_wanted=1,
         max_energy=CUT,
         dense_cutoff=1,
-        solver="trlm",
         psi_refs=_uniform_refs(basis, 0.0),
     )
 
@@ -337,8 +331,8 @@ def test_a_window_reaching_into_the_pad_is_resolved_once_with_the_gate_widened(m
             vecs[j, j] = 1.0
         return e, vecs
 
-    monkeypatch.setitem(cipsi_module.SOLVERS, "trlm", fake)
-    e_ref, _ = solver_obj.get_eigenvectors(_h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, solver="trlm")
+    monkeypatch.setattr(cipsi_module, "thick_restart_block_lanczos", fake)
+    e_ref, _ = solver_obj.get_eigenvectors(_h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1)
 
     n_keep = len(e_ref)
     assert len(gates) == 2, gates

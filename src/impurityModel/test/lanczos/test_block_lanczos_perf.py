@@ -191,7 +191,6 @@ def nio_workload():
         truncation_threshold=TRUNC,
         verbose=False,
         slaterWeightMin=np.sqrt(SLATER_WEIGHT_MIN),
-        cipsi_solver_method="trlm",
     )
     basis.tau = tau
     solver = CIPSISolver(basis)
@@ -200,7 +199,6 @@ def nio_workload():
         dense_cutoff=DENSE_CUTOFF,
         de2_min=1e-6,
         slaterWeightMin=SLATER_WEIGHT_MIN,
-        solver="trlm",
         reort=True,
     )
     if basis.restrictions is not None:

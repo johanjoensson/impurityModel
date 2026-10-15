@@ -197,7 +197,6 @@ def gf_workload():
         num_wanted=1,
         dense_cutoff=DENSE_CUTOFF,
         slaterWeightMin=SLATER_WEIGHT_MIN,
-        solver="trlm",
         psi_refs=solver.psi_refs,
     )
     e0 = float(np.min(es))

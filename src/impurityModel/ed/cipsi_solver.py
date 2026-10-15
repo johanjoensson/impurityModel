@@ -32,10 +32,6 @@ from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
 from impurityModel.ed.trlm import _deflate, thick_restart_block_lanczos
 
-SOLVERS = {
-    "trlm": thick_restart_block_lanczos,
-}
-
 #: Extra eigenstates requested beyond what the caller wants, so that a state landing outside the
 #: thermal cut can certify the kept manifold is complete. Bought for their energies, not their
 #: eigenvectors -- see `num_required` in `get_eigenvectors`.
@@ -1188,7 +1184,6 @@ class CIPSISolver:
         de2_min=0.0,
         dense_cutoff=1e3,
         slaterWeightMin=0,
-        solver="trlm",
         cap_e_tol=1e-8,
         max_cap_cycles=10,
         memory_budget_bytes=None,
@@ -1350,7 +1345,6 @@ class CIPSISolver:
                 max_energy=de0_max,
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
-                solver=solver,
                 psi_refs=psi_refs,
             )
 
@@ -2018,7 +2012,6 @@ class CIPSISolver:
         max_energy=None,
         dense_cutoff=1e3,
         slaterWeightMin=0,
-        solver="trlm",
         psi_refs=None,
         h_matrix=None,
     ):
@@ -2072,10 +2065,8 @@ class CIPSISolver:
                 "of the wrong operator rather than an error, so this is checked."
             )
 
-        if solver not in SOLVERS and self.basis.size >= dense_cutoff:
-            raise ValueError(f"unknown eigensolver {solver!r}; expected one of {sorted(SOLVERS)}")
         if self.basis.size >= dense_cutoff:
-            restarted_lanczos = SOLVERS[solver]
+            restarted_lanczos = thick_restart_block_lanczos
 
             # Same rank-independent start vector as `expand` (see `_amplitude_from_hash`): a
             # `random.seed(42 + rank)` stream made the start vector depend on the rank count

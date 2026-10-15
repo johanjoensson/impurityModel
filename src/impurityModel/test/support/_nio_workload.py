@@ -311,7 +311,6 @@ def build_ground_state_workload(
         truncation_threshold=truncation_threshold,
         verbose=verbose,
         slaterWeightMin=np.sqrt(slater_weight_min),
-        cipsi_solver_method="trlm",
     )
     basis.tau = tau
     solver = CIPSISolver(basis)
@@ -320,7 +319,6 @@ def build_ground_state_workload(
         dense_cutoff=dense_cutoff,
         de2_min=de2_min,
         slaterWeightMin=slater_weight_min,
-        solver="trlm",
     )
     if basis.restrictions is not None:
         h.set_restrictions(basis.restrictions)

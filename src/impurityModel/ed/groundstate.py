@@ -65,12 +65,6 @@ from impurityModel.ed.utils import (
     report_rule,
 )
 
-#: Restarted-Lanczos kernel used for every ground-state solve. One name, one place: the DC search
-#: and ``calc_gs`` have to run the *same* solver or they converge to the same eigenpairs with
-#: different truncation errors, and a charge-sector comparison decided at 1e-8 does not survive
-#: that. ``dc_criteria`` imports this rather than repeating the string.
-GS_CIPSI_SOLVER_METHOD = "trlm"
-
 #: Residual Epstein-Nesbet PT2 energy a *converged* solve is expanded to: the production ground
 #: state, and every sector energy a double-counting criterion differences.
 #:
@@ -307,7 +301,6 @@ def calc_energy(
     verbose=True,
     truncation_threshold=None,
     slaterWeightMin=1e-12,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     weighted_restrictions=None,
     frozen_occupations=None,
     sector_cache=None,
@@ -396,7 +389,6 @@ def calc_energy(
         verbose=verbose,
         truncation_threshold=truncation_threshold,
         slaterWeightMin=slaterWeightMin,
-        cipsi_solver_method=cipsi_solver_method,
         weighted_restrictions=weighted_restrictions,
         frozen_occupations=frozen_occupations,
         sector_cache=sector_cache,
@@ -432,7 +424,6 @@ def _solve_sector_core(
     verbose=True,
     truncation_threshold=None,
     slaterWeightMin=1e-12,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     weighted_restrictions=None,
     frozen_occupations=None,
     sector_cache=None,
@@ -512,7 +503,6 @@ def _solve_sector_core(
                 de2_min=de2_min,
                 e_pt2_tol=e_pt2_tol,
                 slaterWeightMin=slaterWeightMin,
-                solver=cipsi_solver_method,
                 # Measured-RSS guards (see `expand_memory_budget`). They may hold the basis below
                 # a cap derived from memory, or below no cap at all; a cap the user set is final,
                 # so for it they only warn. A run that stays under budget is unaffected either way.
@@ -527,7 +517,6 @@ def _solve_sector_core(
                 max_energy=max_energy,
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
-                solver=cipsi_solver_method,
                 psi_refs=solver.psi_refs,
             )
         sector_fields["n_dets"] = len(basis)
@@ -560,7 +549,6 @@ def solve_sector(
     verbose=True,
     truncation_threshold=None,
     slaterWeightMin=1e-12,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     weighted_restrictions=None,
     frozen_occupations=None,
     sector_cache=None,
@@ -602,7 +590,6 @@ def solve_sector(
         verbose=verbose,
         truncation_threshold=truncation_threshold,
         slaterWeightMin=slaterWeightMin,
-        cipsi_solver_method=cipsi_solver_method,
         weighted_restrictions=weighted_restrictions,
         frozen_occupations=frozen_occupations,
         sector_cache=sector_cache,
@@ -685,7 +672,6 @@ def find_ground_state_basis(
     truncation_threshold=None,
     verbose=0,
     slaterWeightMin=1e-12,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     use_hf_seed=True,
     weighted_restrictions=None,
 ):
@@ -823,7 +809,6 @@ def find_ground_state_basis(
             verbose=verbose >= V_DETAIL,
             truncation_threshold=truncation_threshold,
             slaterWeightMin=slaterWeightMin,
-            cipsi_solver_method=cipsi_solver_method,
             weighted_restrictions=weighted_restrictions,
             frozen_occupations=frozen_occupations,
             sector_cache=sector_cache,
@@ -1065,7 +1050,6 @@ def find_ground_state_basis(
         verbose=verbose >= V_DETAIL,
         truncation_threshold=truncation_threshold,
         slaterWeightMin=slaterWeightMin,
-        cipsi_solver_method=cipsi_solver_method,
         weighted_restrictions=weighted_restrictions,
         frozen_occupations=frozen_occupations,
         sector_cache=sector_cache,
@@ -1115,7 +1099,6 @@ def walk_to_ground_state_sector(
     verbose=False,
     truncation_threshold=None,
     weighted_restrictions=None,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     use_hf_seed=True,
 ):
     """Step 1 of :func:`solve_ground_state`: the charge-sector walk, at its conventions.
@@ -1145,7 +1128,6 @@ def walk_to_ground_state_sector(
         verbose=verbose,
         truncation_threshold=truncation_threshold,
         slaterWeightMin=np.sqrt(slaterWeightMin),
-        cipsi_solver_method=cipsi_solver_method,
         use_hf_seed=use_hf_seed,
         weighted_restrictions=weighted_restrictions,
     )
@@ -1168,7 +1150,6 @@ def solve_ground_state(
     verbose=False,
     truncation_threshold=None,
     weighted_restrictions=None,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     use_hf_seed=True,
     num_wanted=10,
     de2_min=GS_DE2_MIN,
@@ -1223,7 +1204,6 @@ def solve_ground_state(
         verbose=verbose,
         truncation_threshold=truncation_threshold,
         weighted_restrictions=weighted_restrictions,
-        cipsi_solver_method=cipsi_solver_method,
         use_hf_seed=use_hf_seed,
     )
     basis.tau = tau
@@ -1243,7 +1223,6 @@ def solve_ground_state(
             de2_min=de2_min,
             e_pt2_tol=e_pt2_tol,
             slaterWeightMin=slaterWeightMin,
-            solver=cipsi_solver_method,
             memory_budget_bytes=expand_memory_budget(comm),
             memory_policy=_memory_policy(truncation_threshold),
         )
@@ -1263,7 +1242,6 @@ def solve_ground_state(
                 max_energy=energy_cut,
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
-                solver=cipsi_solver_method,
                 psi_refs=solver.psi_refs,
             )
         # The manifold is complete once the solver ran out of states, or the highest one found
@@ -1319,7 +1297,6 @@ def calc_gs(
     rot_to_spherical: np.ndarray,
     verbose,
     slaterWeightMin=0,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     num_wanted: int = 10,
     stats_path: str = "ground_state_statistics.json",
     **kwargs,
@@ -1385,7 +1362,6 @@ def calc_gs(
         Hop,
         verbose=verbose,
         slaterWeightMin=slaterWeightMin,
-        cipsi_solver_method=cipsi_solver_method,
         num_wanted=num_wanted,
         **basis_setup,
     )

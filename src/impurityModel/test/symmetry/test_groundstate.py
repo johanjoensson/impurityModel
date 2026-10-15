@@ -345,7 +345,6 @@ def test_calc_gs_options_serial():
         rot_to_spherical,
         verbose=True,
         slaterWeightMin=1e-12,
-        cipsi_solver_method="trlm",
     )
     assert len(es) > 0
     assert len(psis) > 0

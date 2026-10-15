@@ -41,8 +41,7 @@ wrong charge state, which is worse than not fixing anything at all.
    * The refinement runs on a basis whose ``tau`` has been restored to the full value, matching
      ``calc_gs``; leaving the walk's ``tau/100`` in place made ``expand``'s
      ``de0_max = energy_cut(basis.tau)`` a hundred times narrower than the window ``calc_gs``
-     expands into. The thermal solve uses ``groundstate.GS_CIPSI_SOLVER_METHOD``, not a
-     hardcoded second kernel.
+     expands into.
    * ``find_ground_state_basis`` accepts ``frozen_occupations``, and the CLI populates it for
      bath-less core shells (``get_spectra.py``: ``{i for i in nBaths if nBaths[i] == 0}``); both
      criteria now derive the same set from :attr:`solver_basis.SolverBasis.sum_bath_states` and
@@ -1943,11 +1942,6 @@ class _OccupationContext:
     identity: np.ndarray
     total_impurity_orbitals: int
     n0: float
-    # Decides *which* ground state is found, so it has to carry the same value calc_gs will use
-    # -- the DC is only meaningful if calc_selfenergy lands on the same state. Populated from
-    # groundstate.GS_CIPSI_SOLVER_METHOD (imported lazily; groundstate imports back into this
-    # module), never spelled out as a literal here.
-    cipsi_solver_method: str
     #: Residual PT2 energy the ground-state determinations converge to: the solver's own
     #: ``BasisOptions.e_pt2_tol`` (else :data:`groundstate.GS_E_PT2_TOL`) and nothing else. This
     #: criterion solves on the production ground-state path, so it takes the self-energy run's
@@ -2054,7 +2048,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     n0 = _noninteracting_impurity_occupation(h0_op, impurity_indices, model.n_spin_orbitals, tau)
 
     # Imported here, not at module scope: groundstate imports back into this module.
-    from impurityModel.ed.groundstate import GS_CIPSI_SOLVER_METHOD, GS_DE2_MIN, GS_E_PT2_TOL
+    from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL
 
     return _OccupationContext(
         h0_op=h0_op,
@@ -2079,7 +2073,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
         n0=n0,
         e_pt2_tol=GS_E_PT2_TOL if basis.e_pt2_tol is None else float(basis.e_pt2_tol),
         de2_min=GS_DE2_MIN if basis.de2_min is None else float(basis.de2_min),
-        cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     )
 
 
@@ -2126,7 +2119,6 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             verbose=verbose,
             truncation_threshold=_ctx_cap_policy(ctx),
             weighted_restrictions=ctx.weighted_restrictions,
-            cipsi_solver_method=ctx.cipsi_solver_method,
             e_pt2_tol=ctx.e_pt2_tol,
             de2_min=ctx.de2_min,
         )

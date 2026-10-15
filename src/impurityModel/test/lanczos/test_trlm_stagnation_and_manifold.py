@@ -32,7 +32,6 @@ import numpy as np
 import pytest
 
 from impurityModel.ed import block_view as block_view_mod
-from impurityModel.ed.cipsi_solver import SOLVERS
 from impurityModel.ed.trlm import _thick_restart_block_lanczos_array, _TRLM_EXIT
 from impurityModel.test.support.lanczos_fixtures import MockBasis
 
@@ -133,17 +132,6 @@ def test_stagnation_does_not_fire_on_a_solve_that_converges(monkeypatch):
 
     assert _TRLM_EXIT[0] == "restart_loop_end_converged"
     assert np.allclose(np.sort(eigvals.real)[:3], exact[:3], atol=1e-8)
-
-
-@pytest.mark.parametrize("name", sorted(SOLVERS))
-def test_every_registered_solver_accepts_num_converge(name):
-    """``get_eigenvectors`` passes ``num_converge`` to whichever solver is selected.
-
-    A solver may accept and ignore it, but it must not raise.
-    """
-    import inspect
-
-    assert "num_converge" in inspect.signature(SOLVERS[name]).parameters
 
 
 def test_monitor_stops_on_a_plateau():
