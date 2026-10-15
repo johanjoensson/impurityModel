@@ -306,6 +306,7 @@ def calc_energy(
     sector_cache=None,
     de2_min=SECTOR_WALK_DE2_MIN,
     e_pt2_tol=SECTOR_WALK_E_PT2_TOL,
+    return_solver=False,
 ):
     """
     Calculate the ground-state energy of the system for a given charge sector.
@@ -361,12 +362,18 @@ def calc_energy(
         :data:`GS_DE2_MIN` and :data:`GS_E_PT2_TOL` instead: the truncation error does not cancel
         in a difference, and those criteria then amplify it by ``1 / |chi|``.
 
+    return_solver : bool
+        Also return the :class:`CIPSISolver` that expanded the basis (it holds the converged
+        eigenvectors), so a caller that continues on this sector starts warm.
+
     Returns
     -------
     energy : float
         The lowest eigenvalue (ground state energy) found for this charge sector.
     basis : Basis
         The optimized many-body basis.
+    solver : CIPSISolver
+        Only with ``return_solver``.
     """
 
     # `_solve_sector_core`, not `solve_sector`, and `max_energy=None` meaning *no cut*: this
@@ -376,7 +383,7 @@ def calc_energy(
     # solely to certify that a *kept manifold* is whole -- work whose entire product this function
     # throws away one line below. Nothing else changes: the same expansion, the same `num_wanted`,
     # the same warm start; only the post-solve trim and the widening it drives are skipped.
-    es, _eigen_psis, basis = _solve_sector_core(
+    es, _eigen_psis, basis, solver = _solve_sector_core(
         h_op,
         impurity_indices,
         bath_states,
@@ -408,7 +415,8 @@ def calc_energy(
     # call-site broadcasts become redundant but harmless. One float against a whole CIPSI
     # expansion.
     e0 = np.min(es)
-    return (e0 if comm is None else comm.bcast(e0, root=0)), basis
+    e0 = e0 if comm is None else comm.bcast(e0, root=0)
+    return (e0, basis, solver) if return_solver else (e0, basis)
 
 
 def _solve_sector_core(
@@ -460,8 +468,8 @@ def _solve_sector_core(
 
     Returns
     -------
-    (es, psis, basis) : (ndarray, list of ManyBodyState, Basis)
-        ``([inf], [], basis)`` when the sector admits no determinants, matching
+    (es, psis, basis, solver) : (ndarray, ManyBodyState, Basis, CIPSISolver)
+        ``([inf], [], basis, solver)`` when the sector admits no determinants, matching
         :func:`calc_energy`'s ``inf``.
     """
     # One `calc_energy` call is one *sector solve* -- the unit the occupation walk and the
@@ -490,7 +498,7 @@ def _solve_sector_core(
 
         if len(basis) == 0:
             sector_fields["n_dets"] = 0
-            return np.array([np.inf]), [], basis
+            return np.array([np.inf]), [], basis, solver
         with solver_trace.timed("expand"):
             solver.expand(
                 h_op,
@@ -518,6 +526,10 @@ def _solve_sector_core(
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
                 psi_refs=solver.psi_refs,
+                # `expand` ended on a certified solve of this very determinant set whenever it did not
+                # truncate afterwards; the generation check inside decides, and a narrower window than
+                # the one it solved is read off that result.
+                reuse_last=True,
             )
         sector_fields["n_dets"] = len(basis)
         # Remember whether the truncation_threshold bound this occupation's expansion, so the
@@ -533,7 +545,7 @@ def _solve_sector_core(
         # eigenvectors; `find_ground_state_basis` reports the winning sector through
         # `ground_state_occupation`, which the support could never encode anyway (the expansion
         # widens the impurity occupation window, so it spans several occupations).
-        return es, eigen_psis, basis
+        return es, eigen_psis, basis, solver
 
 
 def solve_sector(
@@ -577,7 +589,7 @@ def solve_sector(
     Every other parameter is :func:`_solve_sector_core`'s; see it for the contract, and
     :func:`calc_energy` for the same solve reduced to its lowest eigenvalue.
     """
-    return _solve_sector_core(
+    es, psis, basis, _solver = _solve_sector_core(
         h_op,
         impurity_indices,
         bath_states,
@@ -598,6 +610,7 @@ def solve_sector(
         de2_min=de2_min,
         e_pt2_tol=e_pt2_tol,
     )
+    return es, psis, basis
 
 
 def hartree_fock_seed_occupation(
@@ -735,6 +748,9 @@ def find_ground_state_basis(
     # winning occupation the walk settles on must match it, or every trial was out of bounds.
     # The actual ground-state Basis is rebuilt once, at the winning occupation, after the walk.
     best_cached_key = None
+    # The best sector's expanded basis and the solver that holds its eigenvectors: the walk's product,
+    # returned as the ground-state basis instead of solving the winning sector a second time.
+    best_entry = [None, None]
     # Per-trial truncation report of the (memory-capped) occupation-search expansion, keyed
     # by trial occupation. The winning occupation's report is attached to basis_gs so a capped
     # ground-state determination is auditable even when the final basis fits under the cap.
@@ -794,7 +810,7 @@ def find_ground_state_basis(
             solver_trace.note("sector_cache_hit", n0=key)
             return e_trial
 
-        e_trial, basis = calc_energy(
+        e_trial, basis, solver = calc_energy(
             h_op,
             impurity_orbitals,
             bath_states,
@@ -812,6 +828,7 @@ def find_ground_state_basis(
             weighted_restrictions=weighted_restrictions,
             frozen_occupations=frozen_occupations,
             sector_cache=sector_cache,
+            return_solver=True,
         )
         if basis.is_distributed:
             e_trial = basis.comm.bcast(e_trial)
@@ -819,6 +836,7 @@ def find_ground_state_basis(
         energy_cache[key] = e_trial
         if best_cached_key is None or e_trial < energy_cache[best_cached_key]:
             best_cached_key = key
+            best_entry[:] = [basis, solver]
         return e_trial
 
     keys = list(N0.keys())
@@ -1023,39 +1041,35 @@ def find_ground_state_basis(
         print(f"Ground state: impurity occupation {total}{frozen_note}, E_GS = {e_gs:.4f}")
         print("  per-group filling is not determined here -- see the impurity density matrix below")
         print("=" * 80)
+    winning_key = sector_key(winning_impurity_occ, frozen_occupations)
     energy_cache.clear()
-    # G4: clear the *basis* cache too, not just the energies. The call below is a deliberate
-    # rebuild at the winning occupation, but with the cache still populated it was a cache hit
-    # instead -- returning the walk's basis, already collapsed to the eigenvector support by
-    # calc_energy's tail, together with the stale `solver.psi_refs` built on the pre-collapse
-    # space (whose out-of-basis amplitudes `build_distributed_vector` then drops silently,
-    # leaving a truncated and possibly rank-deficient warm block). Whether the hit happened at
-    # all depended on how many distinct trial occupations the walk visited in between, since the
-    # cache is an LRU of size 3: same sector, two different starting spaces, decided by walk
-    # order. Collective on every rank -- `clear` nulls communicators, and both the walk above and
-    # `clear(keep=...)` below already run unconditionally here.
-    sector_cache.clear()
-    e_gs, basis_gs = calc_energy(
-        h_op,
-        impurity_orbitals,
-        bath_states,
-        winning_impurity_occ,
-        mixed_valence,
-        tau,
-        chain_restrict,
-        dense_cutoff,
-        comm=comm,
-        # This basis is returned to the caller (solve_ground_state refines it further via
-        # solver.expand), so its .verbose governs that CIPSI chatter too -- -vv territory.
-        verbose=verbose >= V_DETAIL,
-        truncation_threshold=truncation_threshold,
-        slaterWeightMin=slaterWeightMin,
-        weighted_restrictions=weighted_restrictions,
-        frozen_occupations=frozen_occupations,
-        sector_cache=sector_cache,
-    )
-    if basis_gs.is_distributed:
-        e_gs = basis_gs.comm.bcast(e_gs)
+    if best_cached_key == winning_key and best_entry[0] is not None:
+        basis_gs, solver_gs = best_entry
+    else:
+        # The walk settled on a sector other than its best entry (every trial out of bounds, or a
+        # collapsed search): solve the winner from scratch.
+        sector_cache.clear()
+        e_gs, basis_gs, solver_gs = calc_energy(
+            h_op,
+            impurity_orbitals,
+            bath_states,
+            winning_impurity_occ,
+            mixed_valence,
+            tau,
+            chain_restrict,
+            dense_cutoff,
+            comm=comm,
+            verbose=verbose >= V_DETAIL,
+            truncation_threshold=truncation_threshold,
+            slaterWeightMin=slaterWeightMin,
+            weighted_restrictions=weighted_restrictions,
+            frozen_occupations=frozen_occupations,
+            sector_cache=sector_cache,
+            return_solver=True,
+        )
+        if basis_gs.is_distributed:
+            e_gs = basis_gs.comm.bcast(e_gs)
+    best_entry[:] = [None, None]
 
     # Break the closure -> sector_cache -> Basis reference cycle now (see SectorCache.clear),
     # keeping only the winning basis's communicator alive.
@@ -1079,6 +1093,9 @@ def find_ground_state_basis(
         # `basis_gs.truncation_threshold`: the memory guard may lower that one for the ground
         # state, and a GF unit must not inherit it.
         basis_gs.cap_policy = CapPolicy.coerce(truncation_threshold)
+        # The solver that expanded the winning sector, holding its eigenvectors: the refinement
+        # continues it instead of starting a cold one.
+        basis_gs.walk_solver = solver_gs
     return basis_gs
 
 
@@ -1153,7 +1170,6 @@ def solve_ground_state(
     use_hf_seed=True,
     num_wanted=10,
     de2_min=GS_DE2_MIN,
-    max_num_wanted=100,
     e_pt2_tol=GS_E_PT2_TOL,
 ):
     """Find the thermal ground state: sector walk, refinement, low-energy manifold.
@@ -1215,7 +1231,10 @@ def solve_ground_state(
     if policy is not None and policy.from_memory and policy.gs is not None:
         basis.truncation_threshold = policy.gs
     energy_cut = boltzmann_energy_cut(tau)
-    solver = CIPSISolver(basis)
+    # Continue the walk's solver: it holds the winning sector's converged eigenvectors, so the
+    # refinement's first eigensolve starts warm instead of from a cold hash vector.
+    solver = getattr(basis, "walk_solver", None) or CIPSISolver(basis)
+    basis.walk_solver = None
     with solver_trace.timed("expand", stage="gs_refine"):
         solver.expand(
             h_op,
@@ -1227,33 +1246,22 @@ def solve_ground_state(
             memory_policy=_memory_policy(truncation_threshold),
         )
 
-    # The residual in `solver.convergence_report` covers the reference states `expand` carried.
-    # Its own eigensolve already widens to the same Boltzmann cut, so the loop below should not
-    # find more; if it does, those states have no residual and the report must not claim them.
-    # The states the last selection round scored, not `solver.psi_refs`: a capped expansion
-    # returns the block of an eigensolve that ran after that round and may be wider.
+    # The residual in `solver.convergence_report` covers the reference states `expand` carried: the
+    # states the last selection round scored, not `solver.psi_refs` -- a capped expansion returns the
+    # block of an eigensolve that ran after that round and may be wider.
     n_references = int((solver.last_selection or {}).get("n_references", 0))
-    wanted = num_wanted
-    while True:
-        with solver_trace.timed("eigensolve", stage="gs_thermal", num_wanted=wanted):
-            es, psis = solver.get_eigenvectors(
-                h_op,
-                num_wanted=wanted,
-                max_energy=energy_cut,
-                dense_cutoff=dense_cutoff,
-                slaterWeightMin=slaterWeightMin,
-                psi_refs=solver.psi_refs,
-            )
-        # The manifold is complete once the solver ran out of states, or the highest one found
-        # sits outside the Boltzmann window. Lanczos energies are only replicated to roundoff, so
-        # broadcast rank 0's verdict -- ranks disagreeing here issue different sequences of
-        # collective get_eigenvectors calls and deadlock (CLAUDE.md's MPI rule).
-        done = len(es) < wanted or (len(es) >= 1 and es[-1] - es[0] >= energy_cut) or wanted >= max_num_wanted
-        if basis.is_distributed:
-            done = basis.comm.bcast(done, root=0)
-        if done:
-            break
-        wanted += num_wanted
+    with solver_trace.timed("eigensolve", stage="gs_thermal"):
+        # One window solve covers the whole thermal manifold whatever its degeneracy; when `expand`
+        # ended on a certified solve of this determinant set, that result is read instead.
+        es, psis = solver.get_eigenvectors(
+            h_op,
+            num_wanted=num_wanted,
+            max_energy=energy_cut,
+            dense_cutoff=dense_cutoff,
+            slaterWeightMin=slaterWeightMin,
+            psi_refs=solver.psi_refs,
+            reuse_last=True,
+        )
     widened = len(es) > n_references
     if basis.is_distributed:
         widened = basis.comm.bcast(widened, root=0)

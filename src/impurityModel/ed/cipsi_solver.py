@@ -1522,43 +1522,30 @@ class CIPSISolver:
         slaterWeightMin=0,
         psi_refs=None,
         h_matrix=None,
+        reuse_last=False,
     ):
-        """Solve for the ``num_wanted`` lowest eigenstates below ``max_energy``.
+        """Every eigenstate within ``max_energy`` of the lowest, certified complete: ``(e_ref, psi_refs)``.
 
-        ``max_energy=None`` means **no cut**: the lowest ``num_wanted`` states are returned as
-        computed, with no trim and no widening. The widening loop below exists only to certify
-        that a *kept manifold* is whole -- a degenerate manifold has no preferred basis, so
-        keeping part of one makes the result depend on the rotation the solver returned -- and
-        without a cut nothing is dropped, so there is nothing to certify. The dense branch's
-        slice is by count alone for the same reason, which does mean the boundary can fall
-        inside a degenerate group. Both are sound only for a caller whose answer does not depend
-        on which basis a manifold came back in: :func:`groundstate.calc_energy`, which keeps
-        ``min(es)``, is the only one, and no other caller should pass ``None``. For the same reason
-        the completeness probe (:meth:`_complete_low_spectrum`) does not run without a cut: the
-        "lowest ``num_wanted``" can be missing copies of a degenerate level wider than the Krylov
-        block, and a higher state can take their place. The warm-start cold retry is a different
-        question (reachability, not completeness) and still applies; see it below.
+        Above ``dense_cutoff`` one window solve (:func:`~impurityModel.ed.eigensolvers.solve_window`),
+        below it a dense diagonalization. A degenerate manifold is never cut: the window absorbs a
+        group straddling its edge, and its degeneracy need not be known beforehand.
+        ``max_energy=None`` asks for the ground level only (the caller keeps ``min(es)``); on the dense
+        branch it instead returns the lowest ``num_wanted`` states. ``num_wanted`` is the initial
+        number of Ritz vectors the solver retains -- the solve grows it as the window demands.
 
-        ``psi_refs``, if given, warm-starts the Krylov solve from a previously converged
-        eigenvector block (e.g. the caller's own ``solver.psi_refs`` from a prior ``expand``/
-        ``get_eigenvectors`` call); ``None`` is a cold start from the rank-independent hash
-        vector. Callers own this choice explicitly -- this method never reads or writes
-        ``self.psi_refs``.
+        ``psi_refs``, if given, warm-starts the solve (its lowest ``GS_MAX_BLOCK_WIDTH`` columns);
+        generic hash-seeded columns are always added, so every charge sector stays reachable from
+        the start block. This method never reads or writes ``self.psi_refs``.
 
-        ``h_matrix``, if given, is used in place of ``build_sparse_matrix(self.basis, H)``. It
-        exists for a caller sweeping a *family* of Hamiltonians over one frozen determinant
-        space -- the double-counting search's ``H(mu) = H(0) - mu * N_imp``, where ``N_imp`` is
-        diagonal, so the whole family is one build plus a diagonal shift. Keeping the seam here
-        rather than solving outside this method is deliberate: the warm-start cold-retry guard
-        below (a warm block spans a near-invariant subspace and silently returns an excited state
-        as "lowest" when the ground state has moved charge sector, which is exactly what a DC
-        search does) has no equivalent outside, and its own comment records that the miss is
-        undetectable downstream.
+        ``reuse_last=True`` returns the states of the previous solve instead of solving again when
+        that solve was certified, ran on the current determinant set (``Basis.generation``) and
+        covered at least this window. The caller asserts it is the same operator: ``expand``'s last
+        solve followed by a read of its result is the use case.
 
-        The caller owns the matrix's consistency. ``H.set_restrictions`` below still runs on the
-        *operator* and cannot retro-fit a matrix, so ``h_matrix`` must have been built after the
-        basis's restrictions were set, from this basis, at this size -- the shape assertion
-        catches a stale one, nothing catches stale restrictions.
+        ``h_matrix``, if given, replaces ``build_sparse_matrix(self.basis, H)``: a caller sweeping a
+        family ``H(mu) = H(0) - mu N_imp`` over one frozen determinant space builds once and shifts
+        the diagonal. It must have been built from this basis, at this size, after the basis's
+        restrictions were set; only the shape is checked.
         """
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
@@ -1574,37 +1561,23 @@ class CIPSISolver:
             )
 
         if self.basis.size >= dense_cutoff:
-            H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
             if max_energy is None:
                 # No cut asked for: the caller keeps only the lowest state (``calc_energy``), so certify the
                 # ground level and nothing more.
                 max_energy = 0.0
-            hashes = np.fromiter((state.get_hash() for state in self.basis.local_basis), dtype=np.uint64)
-            warm = self._warm_columns(psi_refs)
-            tol = _eigen_tol(slaterWeightMin)
-            # The degeneracy tolerance is a function of the eigenvalues, which the solve is about to find:
-            # use the previous result's scale when there is one, else the floor, and re-derive from the
-            # converged energies below.
-            deg_tol = _degeneracy_tol(self._eig_scale(), slaterWeightMin)
-            _trace_note("eigensolve_block_width", p=int(warm.shape[1] + self.n_random), num_wanted=int(num_wanted))
-            with _trace_timed("eigensolve", n=int(len(self.basis)), window=float(max_energy)):
-                eig = solve_window(
-                    H_mat,
-                    self.basis.comm if self.basis.is_distributed else None,
-                    hashes,
-                    warm=warm,
-                    max_energy=max_energy,
-                    deg_tol=deg_tol,
-                    tol=tol,
-                    num_wanted=num_wanted,
-                    n_global=len(self.basis),
-                    n_random=self.n_random,
-                    max_restarts=100,
-                    verbose=self.basis.verbose,
-                )
-            eig.generation = self.basis.generation
-            self.eig = eig
-            self.n_random = max(_MIN_RANDOM_COLUMNS, eig.max_multiplicity + 1)
+            reusable = (
+                reuse_last
+                and h_matrix is None
+                and self.eig is not None
+                and self.eig.certified
+                and self.eig.generation == self.basis.generation
+                and self.eig.window is not None
+                and self.eig.window >= max_energy
+            )
+            if reusable:
+                eig = self.eig
+            else:
+                eig = self._solve_window(H, h_matrix, max_energy, num_wanted, slaterWeightMin, psi_refs)
             e_ref, psi_refs_arr = eig.e, eig.vecs
             valid_idx = None
             if len(e_ref) > 0:
@@ -1628,6 +1601,7 @@ class CIPSISolver:
                     n_dets=len(self.basis),
                     certified=bool(eig.certified),
                     max_multiplicity=int(eig.max_multiplicity),
+                    reused=bool(reusable),
                 )
                 e_ref = e_ref[valid_idx]
             if len(e_ref) > 0:
@@ -1642,15 +1616,42 @@ class CIPSISolver:
                 return_eigvecs=True,
             )
             if max_energy is None:
-                # `eigensystem` reads `e_max=None` as "no cut" and returns the *whole* dense
-                # spectrum, so without a bound here a cut-less caller would materialise one
-                # ManyBodyState per determinant -- a cost set by the basis size rather than by
-                # the request, and not what asking for `num_wanted` states means. With the cut
-                # gone `num_wanted` is the only bound left, and it is the same one the Krylov
-                # branch above obeys: that branch never returns more than it asked for either.
-                # `es` comes back ascending, so this is the lowest `num_wanted`.
+                # `eigensystem` reads `e_max=None` as "no cut" and returns the *whole* dense spectrum; the
+                # lowest `num_wanted` are kept so the cost is set by the request, not the basis size.
                 e_ref = e_ref[:num_wanted]
                 psi_ref_dense = psi_ref_dense[:, :num_wanted]
             psi_refs = build_state(self.basis, psi_ref_dense.T, slaterWeightMin=slaterWeightMin)
 
         return e_ref, psi_refs
+
+    def _solve_window(self, H, h_matrix, max_energy, num_wanted, slaterWeightMin, psi_refs):
+        """One certified window solve on the current basis; records it as ``self.eig``."""
+        H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
+        hashes = np.fromiter((state.get_hash() for state in self.basis.local_basis), dtype=np.uint64)
+        warm = self._warm_columns(psi_refs)
+        tol = _eigen_tol(slaterWeightMin)
+        # The degeneracy tolerance is a function of the eigenvalues, which the solve is about to find:
+        # use the previous result's scale when there is one, else the floor, and re-derive from the
+        # converged energies below.
+        deg_tol = _degeneracy_tol(self._eig_scale(), slaterWeightMin)
+        _trace_note("eigensolve_block_width", p=int(warm.shape[1] + self.n_random), num_wanted=int(num_wanted))
+        with _trace_timed("eigensolve", n=int(len(self.basis)), window=float(max_energy)):
+            eig = solve_window(
+                H_mat,
+                self.basis.comm if self.basis.is_distributed else None,
+                hashes,
+                warm=warm,
+                max_energy=max_energy,
+                deg_tol=deg_tol,
+                tol=tol,
+                num_wanted=num_wanted,
+                n_global=len(self.basis),
+                n_random=self.n_random,
+                max_restarts=100,
+                verbose=self.basis.verbose,
+            )
+        eig.generation = self.basis.generation
+        eig.window = float(max_energy)
+        self.eig = eig
+        self.n_random = max(_MIN_RANDOM_COLUMNS, eig.max_multiplicity + 1)
+        return eig
