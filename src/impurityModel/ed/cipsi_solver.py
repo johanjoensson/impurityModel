@@ -20,7 +20,6 @@ from impurityModel.ed.manybody_basis import (
     collective_top_k_mask,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.memory_estimate import (
     current_rss_bytes,
     format_bytes,
@@ -29,7 +28,6 @@ from impurityModel.ed.memory_estimate import (
     reset_peak_rss,
     rss_breakdown,
 )
-from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
 from impurityModel.ed.trlm import _deflate, thick_restart_block_lanczos
@@ -644,35 +642,6 @@ def _complement_verdict(theta0, r0, boundary, n_blocks):
     return None
 
 
-#: Whether ``expand`` completes symmetry orbits when the caller passes no generators.
-#:
-#: **Off**, on measurement rather than principle. With correct generators (the total spin ladder
-#: operators, gated on ``[H, g] = 0`` against the full Hamiltonian) the closure does what it
-#: promises -- on a cubic d-shell with a Slater interaction it drives the ground triplet's
-#: ``|S^2 - 2|`` from 1.3e-11 to 5.1e-15 -- but only in the *uncapped* limit, and at 3589
-#: determinants against 1771. Under a binding ``truncation_threshold`` it is a net loss: at a cap
-#: of 400 the closure run returned ``E0 = -13.26573223`` against ``-13.26573295`` without it,
-#: because symmetry partners are not generally the highest-de2 candidates and displace ones that
-#: are. Two legitimate goals -- variational energy and symmetry purity -- that conflict under a
-#: budget, so the caller has to choose. Pass ``symmetry_generators`` explicitly to opt in.
-SYMMETRY_CLOSURE_DEFAULT = False
-
-
-def _commutes_with(h_op, op, tol: float = 1e-10) -> bool:
-    """Is ``op`` a symmetry of ``h_op``, i.e. ``[h_op, op] = 0``?
-
-    Checked against the operator as a whole, two-body terms included -- the point being that
-    the one-body block's commutant is generally much larger than the full Hamiltonian's, so a
-    generator discovered from ``h`` alone is not a symmetry of ``h + U``.
-
-    Pure operator algebra: no basis, no communication, and
-    :meth:`ManyBodyOperator.commutator` skips term pairs on disjoint orbitals without forming
-    them, so this costs a pass over the terms the generator actually touches.
-    """
-    residual = h_op.commutator(op)
-    return not residual or max((abs(v) for v in residual.values()), default=0.0) <= tol
-
-
 #: Rows per slice of :func:`_zero_entries_at_most`'s in-place pass: bounds its temporaries to
 #: ``_PRUNE_SLICE_ROWS * p`` entries instead of three full ``(rows, p)`` float arrays.
 _PRUNE_SLICE_ROWS = 65536
@@ -1092,7 +1061,6 @@ class CIPSISolver:
         de2_min,
         slater_cutoff=0,
         return_Hpsi_ref=False,
-        gen_ops=None,
         max_new=None,
         affordable_growth=None,
         e_pt2_tol=None,
@@ -1107,7 +1075,7 @@ class CIPSISolver:
         term, ``e_pt2_tol`` their sum -- which is what bounds the energy error. ``max_new``
         optionally caps the *global* number of selected candidates: the top ``max_new``
         by de2 importance are kept (collective bisection cutoff, ties under-admitted)
-        before the symmetry closure, and ``self.last_selection`` records
+        and ``self.last_selection`` records
         ``{"n_candidates", "n_admitted", "discarded_de2_mass", "subthreshold_de2_mass",
         "residual_pt2", "n_references", "hpsi_rows"}``. Collective on ``basis.comm``.
 
@@ -1210,37 +1178,6 @@ class CIPSISolver:
         self.last_selection = selection_stats
         new_Dj = set(itertools.compress(local_Djs, de2_mask))
 
-        if gen_ops:
-            # Breadth-first over the generators, one wave at a time on every rank. Each wave's images
-            # are routed to their owners (Basis.new_owned_keys), which keep the ones neither in the
-            # basis nor found before; the next wave starts from those. A rank-local membership test
-            # (contains_local) treated a determinant another rank owns as new: the walk went on through
-            # it, so a multi-rank closure was a superset of the serial one, and ranks reaching the same
-            # image counted it once each toward n_new. Collective: the wave count is global, so every
-            # rank runs the same number of waves, and new_Dj stays owner-local (each determinant once).
-            # The 1000-row superpositions use hash-derived amplitudes (see _amplitude_from_hash) so
-            # images do not interfere; which rows share a chunk depends on the layout, but an image
-            # lost to cancellation below the 1e-12 noise cut would need a measure-zero coincidence.
-            chunk_size = 1000
-            frontier = sorted(new_Dj)
-            while True:
-                images = set()
-                for lo in range(0, len(frontier), chunk_size):
-                    chunk_state = ManyBodyState(
-                        {state: _amplitude_from_hash(state.get_hash()) for state in frontier[lo : lo + chunk_size]}
-                    )
-                    for op in gen_ops:
-                        # cutoff=1e-12 prunes float noise
-                        images.update(applyOp_test(op, chunk_state, cutoff=1e-12).keys())
-                # Excluding the basis matters beyond the walk: an in-basis image admits nothing, but
-                # it inflated `n_new` in `expand`, which is compared against the `truncation_threshold`
-                # (a 12-orbital toy at cap 120: E0 worse by 30x, the final basis 94 determinants).
-                fresh = self.basis.new_owned_keys(images, exclude=new_Dj)
-                if self._allreduce_sum(len(fresh)) == 0:
-                    break
-                new_Dj |= fresh
-                frontier = sorted(fresh)
-
         if return_Hpsi_ref:
             return new_Dj, Hpsi_ref
         return new_Dj
@@ -1252,7 +1189,6 @@ class CIPSISolver:
         dense_cutoff=1e3,
         slaterWeightMin=0,
         solver="trlm",
-        symmetry_generators=None,
         cap_e_tol=1e-8,
         max_cap_cycles=10,
         memory_budget_bytes=None,
@@ -1335,38 +1271,6 @@ class CIPSISolver:
         H.set_weighted_restrictions(self.basis.weighted_restrictions)
         de0_max = energy_cut(self.basis.tau)
         psi_refs = getattr(self, "psi_refs", None)
-
-        if symmetry_generators is None:
-            symmetry_generators = (
-                get_symmetry_generators(H, self.basis.impurity_orbitals, self.basis.bath_states)
-                if SYMMETRY_CLOSURE_DEFAULT
-                else []
-            )
-
-        from impurityModel.ed.symmetries import tensors_to_operator
-
-        # Keep only generators that actually commute with the FULL H, two-body included.
-        # `get_symmetry_generators` discovers them from the one-body block alone
-        # (`extract_tensors(h_op, two_body=False)`) and gates them against that same one-body
-        # matrix, so a degenerate impurity block hands over the whole commutant of `h_imp` --
-        # far more than the Coulomb tensor preserves. Measured on a degenerate 4-orbital block
-        # with an orbital-dependent U: 8 of 16 discovered generators have `[H, g] != 0`.
-        #
-        # A non-symmetry does not corrupt the scoring (the closure only enlarges the candidate
-        # set, never the de2 ranking), and with no cap it merely wastes determinants. Under a
-        # binding `truncation_threshold` it is not benign: the junk images compete for the same
-        # budget and displace determinants that carry real weight, so the "symmetry-adapted"
-        # run comes back with a *higher* variational energy than the plain one.
-        gen_ops = []
-        for g in symmetry_generators:
-            # `get_symmetry_generators` returns operators (the total spin ladder operators);
-            # callers may still hand over plain one-body matrices.
-            op = g if isinstance(g, ManyBodyOperator) else tensors_to_operator(g, tol=1e-12)
-            if not _commutes_with(H, op):
-                continue
-            op.set_restrictions(self.basis.restrictions)
-            op.set_weighted_restrictions(self.basis.weighted_restrictions)
-            gen_ops.append(op)
 
         threshold = self.basis.truncation_threshold
         capped = np.isfinite(threshold)
@@ -1510,7 +1414,6 @@ class CIPSISolver:
                     H,
                     de2_min,
                     slater_cutoff=slaterWeightMin,
-                    gen_ops=gen_ops,
                     max_new=admit_target,
                     affordable_growth=affordable_growth,
                     e_pt2_tol=e_pt2_tol,
@@ -1779,7 +1682,7 @@ class CIPSISolver:
             residual_current = False
         self.psi_refs = psi_refs
         if capped and self.basis.size > threshold and self.psi_refs is not None:
-            # The symmetry closure can push an admission slightly past the cap; enforce
+            # Enforce
             # the hard threshold on exit (downstream get_eigenvectors re-solves). e_ref
             # must describe the *current* psi_refs -- after a best_basis restore above,
             # that is best_e_ref, not the last cycle's (possibly length-mismatched) e_ref.

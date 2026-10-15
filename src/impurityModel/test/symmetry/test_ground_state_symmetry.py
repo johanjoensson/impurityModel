@@ -1,7 +1,7 @@
-"""G5: the generators handed to the closure are symmetries, and the ground state has them.
+"""G5: the discovered generators are symmetries, and the ground state has them.
 
-Two things were asserted nowhere before. First, that the operators the CIPSI closure completes
-orbits with actually commute with the Hamiltonian -- the discovery routine works from the
+Two things were asserted nowhere before. First, that the operators the discovery routine offers
+actually commute with the Hamiltonian -- the discovery routine works from the
 *one-body* block, whose commutant is far larger than the interacting Hamiltonian's, so it
 over-produces by construction. Second, that a ground state which comes back from ``calc_gs``
 carries the quantum numbers it should: the existing symmetry tests either check ``[h, g] = 0``
@@ -17,7 +17,7 @@ beyond spin is broken by ``U``.
 
 import numpy as np
 
-from impurityModel.ed.cipsi_solver import CIPSISolver, _commutes_with
+from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
@@ -32,12 +32,17 @@ from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs
 from impurityModel.test.support.cubic_d_shell import cubic_d_shell
 
 
+def _commutes_with(h_op, op, tol: float = 1e-10) -> bool:
+    residual = h_op.commutator(op)
+    return not residual or max((abs(v) for v in residual.values()), default=0.0) <= tol
+
+
 def _as_operator(generator):
     return generator if isinstance(generator, ManyBodyOperator) else tensors_to_operator(generator, tol=1e-12)
 
 
 def test_every_generator_offered_is_a_symmetry_of_the_full_hamiltonian():
-    """The property the closure's correctness rests on.
+    """Every discovered generator commutes with the full Hamiltonian.
 
     A generator that does not commute with ``H`` still enlarges the candidate set, and under a
     binding ``truncation_threshold`` its images displace determinants that carry real weight --
@@ -114,41 +119,3 @@ def test_the_ground_state_is_a_spin_eigenstate():
         spin = casimir_to_quantum_number(value)
         assert abs(2 * spin - round(2 * spin)) < 1e-6, f"<S^2> = {value} does not correspond to a half-integer S"
         assert abs(spin - 1.0) < 1e-6, f"expected an S = 1 ground triplet, got S = {spin}"
-
-
-def test_the_closure_trades_energy_for_spin_purity_under_a_cap():
-    """Why ``SYMMETRY_CLOSURE_DEFAULT`` is off, pinned to numbers rather than an opinion.
-
-    With correct generators the closure does what it promises -- uncapped it drives the ground
-    triplet's ``|S^2 - 2|`` from ~1e-11 to ~1e-15 -- but at roughly double the determinants. Under
-    a binding budget it is a net loss on the variational energy, because symmetry partners are not
-    generally the highest-de2 candidates and displace ones that are. Both goals are legitimate;
-    they conflict, so the caller chooses.
-    """
-    h_op, h_full, impurity_orbitals, bath_states = cubic_d_shell(n_bath_sets=1)
-
-    def run(generators, threshold):
-        basis = Basis(
-            impurity_orbitals,
-            bath_states,
-            nominal_impurity_occ={0: 2},
-            mixed_valence={0: 0},
-            tau=1e-3,
-            truncation_threshold=threshold,
-            verbose=False,
-            comm=None,
-        )
-        solver = CIPSISolver(basis)
-        solver.expand(h_full, dense_cutoff=2000, de2_min=1e-10, slaterWeightMin=1e-12, symmetry_generators=generators)
-        es, _psis = solver.get_eigenvectors(h_full, num_wanted=6, dense_cutoff=2000, slaterWeightMin=1e-12)
-        return float(es[0]), basis.size
-
-    auto = get_symmetry_generators(h_op, impurity_orbitals, bath_states)
-    e_on, size_on = run(auto, 400)
-    e_off, size_off = run([], 400)
-
-    assert size_on == size_off == 400, (size_on, size_off)
-    assert e_off <= e_on + 1e-12, (
-        f"the closure improved the capped energy ({e_on:.10f} vs {e_off:.10f}); if that is now "
-        "reproducible, revisit SYMMETRY_CLOSURE_DEFAULT -- the measurement it encodes has changed"
-    )

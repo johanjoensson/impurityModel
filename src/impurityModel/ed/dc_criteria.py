@@ -38,12 +38,6 @@ wrong charge state, which is worse than not fixing anything at all.
      cutoff only for the refinement; both criteria now do the same. Running the walk four orders
      of magnitude tighter than the one ``calc_selfenergy`` will run is a different search, and can
      settle on a different sector.
-   * Neither criterion threads ``symmetry_generators`` down any more, and neither does
-     ``calc_gs``. :meth:`cipsi_solver.CIPSISolver.expand` re-derives them from the ``H`` it is
-     actually expanding whenever the argument is ``None``, which is the only operator they can
-     correctly come from; a set computed once at ``mu = 0`` and passed everywhere is how the two
-     paths drifted apart. ``expand`` additionally re-gates every generator on ``[H, g] = 0``
-     against the *full* Hamiltonian, two-body terms included.
    * The refinement runs on a basis whose ``tau`` has been restored to the full value, matching
      ``calc_gs``; leaving the walk's ``tau/100`` in place made ``expand``'s
      ``de0_max = energy_cut(basis.tau)`` a hundred times narrower than the window ``calc_gs``
@@ -110,7 +104,7 @@ from impurityModel.ed.dc_search import (
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import CapPolicy, resolve_cap_policy
-from impurityModel.ed.solver_basis import _per_group_occupation, get_symmetry_generators, prepare_solver_basis
+from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
 
 
@@ -1944,7 +1938,6 @@ class _OccupationContext:
     memory_cap: object
     cap_from_memory: bool
     weighted_restrictions: object
-    symmetry_generators: object
     impurity_indices: list
     energy_cut: float
     identity: np.ndarray
@@ -2029,12 +2022,10 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
     impurity_indices = [orb for orb_blocks in impurity_orbitals.values() for block in orb_blocks for orb in block]
 
     # The three inputs that make this the same call calc_gs makes (see the module warning):
-    # a bath-less group pinned exactly as get_spectra.py pins it, the same one-body symmetry
-    # generators (valid at every trial mu -- a uniform impurity shift commutes with them), and
+    # a bath-less group pinned exactly as get_spectra.py pins it, and
     # the walk's tau divided by 100, restored to the full tau for everything solved at the sector
     # the walk finds.
     frozen_occupations = {i for i in impurity_orbitals if sb.sum_bath_states[i] == 0}
-    symmetry_generators = get_symmetry_generators(h_op_i, impurity_orbitals, bath_states)
 
     truncation_threshold = basis.truncation_threshold
     # As `_prepare_sector_context`: provenance decides whether the cap may be recalibrated.
@@ -2081,7 +2072,6 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
         memory_cap=memory_cap,
         cap_from_memory=cap_from_memory,
         weighted_restrictions=build_weighted_restrictions(bath_states, excitation_budget),
-        symmetry_generators=symmetry_generators,
         impurity_indices=impurity_indices,
         energy_cut=boltzmann_energy_cut(tau),
         identity=np.identity(n_imp),

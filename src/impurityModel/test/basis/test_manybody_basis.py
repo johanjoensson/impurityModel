@@ -13,7 +13,6 @@ from impurityModel.ed.basis_transcription import (
 )
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.test.support.comms import COMMS
 
 
@@ -1188,51 +1187,6 @@ def test_eg_t2g_basis_expand(comm):
     expected = build_states([b"\x80\x00", b"\x40\x00", b"\x08\x00"])  # , b"\x04\x00", b"\x02\x00", b"\x00\x40"]
     assert all(state in expected for state in basis), f"{expected=} {list(basis)=}"
     assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
-
-
-@pytest.mark.parametrize("comm", COMMS)
-def test_eg_t2g_CIPSI_basis_expand(comm):
-    Hop = {
-        ((0, "c"), (0, "a")): 1,
-        ((0, "c"), (4, "a")): 1 / 2,
-        ((4, "c"), (0, "a")): 1 / 2,
-        ((4, "c"), (4, "a")): 1,
-        ((2, "c"), (2, "a")): 3 / 2,
-        ((1, "c"), (1, "a")): 1,
-        ((3, "c"), (3, "a")): 1,
-        ((5, "c"), (5, "a")): 1,
-        ((5, "c"), (9, "a")): 1 / 2,
-        ((9, "c"), (5, "a")): 1 / 2,
-        ((9, "c"), (9, "a")): 1,
-        ((7, "c"), (7, "a")): 3 / 2,
-        ((6, "c"), (6, "a")): 1,
-        ((8, "c"), (8, "a")): 1,
-    }
-    # Start with 10000
-    #            00000
-    states = build_states([b"\x80\x00"])
-    from impurityModel.ed.cipsi_solver import CIPSISolver
-
-    basis = Basis(
-        impurity_orbitals={2: [list(range(10))]},
-        bath_states=(
-            {2: [[]]},
-            {2: [[]]},
-        ),
-        initial_basis=states,
-        verbose=True,
-        comm=comm,
-    )
-    solver = CIPSISolver(basis)
-    solver.truncate_initial(Hop)
-
-    # The symmetry closure is opt-in (cipsi_solver.SYMMETRY_CLOSURE_DEFAULT): under a budget it
-    # costs variational energy, so callers ask for it. This test is about the closure, so it asks.
-    solver.expand(Hop, symmetry_generators=get_symmetry_generators(Hop, basis.impurity_orbitals, basis.bath_states))
-
-    expected = build_states([b"\x80\x00", b"\x08\x00"])
-    assert all(state in basis for state in expected), f"{expected=} {list(basis)=}"
-    assert len(basis) == 6, f"Expected full multiplet of 6 states, got {len(basis)}: {list(basis)}"
 
 
 @pytest.mark.mpi

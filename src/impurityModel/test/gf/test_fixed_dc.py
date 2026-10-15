@@ -1957,7 +1957,7 @@ def _bath_total(group, valence_baths, conduction_baths):
         ("fixed-gap", lambda kw: fixed_gap_dc(offset=0.0, allow_charge_state_change=True, **kw)),
     ],
 )
-def test_dc_criteria_pass_frozen_occupations_tau_and_symmetry_generators(monkeypatch, criterion, call):
+def test_dc_criteria_pass_frozen_occupations_and_tau(monkeypatch, criterion, call):
     """R1: the call-counter proof, not an outcome proof (the shim lesson).
 
     Asserting on the returned ``dc`` cannot distinguish "the three inputs reached
@@ -2008,11 +2008,6 @@ def test_dc_criteria_pass_frozen_occupations_tau_and_symmetry_generators(monkeyp
             criterion,
             call_kwargs["slaterWeightMin"],
         )
-        # Stale symmetry generators must NOT be threaded down. CIPSISolver.expand re-derives them
-        # from the H it is actually expanding whenever the argument is None (cipsi_solver.py),
-        # which is the only operator they can correctly come from; calc_gs does not forward them
-        # either. Passing a set computed elsewhere is how the two paths drifted apart.
-        assert "symmetry_generators" not in call_kwargs, criterion
 
 
 def test_fixed_peak_dc_targets_the_nominal_charge_state_by_default():

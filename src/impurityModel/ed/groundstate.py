@@ -310,7 +310,6 @@ def calc_energy(
     cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     weighted_restrictions=None,
     frozen_occupations=None,
-    symmetry_generators=None,
     sector_cache=None,
     de2_min=SECTOR_WALK_DE2_MIN,
     e_pt2_tol=SECTOR_WALK_E_PT2_TOL,
@@ -400,7 +399,6 @@ def calc_energy(
         cipsi_solver_method=cipsi_solver_method,
         weighted_restrictions=weighted_restrictions,
         frozen_occupations=frozen_occupations,
-        symmetry_generators=symmetry_generators,
         sector_cache=sector_cache,
         de2_min=de2_min,
         e_pt2_tol=e_pt2_tol,
@@ -437,7 +435,6 @@ def _solve_sector_core(
     cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     weighted_restrictions=None,
     frozen_occupations=None,
-    symmetry_generators=None,
     sector_cache=None,
     num_wanted=10,
     max_energy=None,
@@ -521,11 +518,6 @@ def _solve_sector_core(
                 # so for it they only warn. A run that stays under budget is unaffected either way.
                 memory_budget_bytes=expand_memory_budget(comm),
                 memory_policy=_memory_policy(truncation_threshold),
-                # `symmetry_generators` deliberately not forwarded: CIPSISolver.expand re-derives
-                # them from the H it is actually expanding when the argument is None, which is
-                # always the right operator. Passing a set derived elsewhere risks handing it
-                # generators of a different Hamiltonian. The parameter is kept on the signature
-                # only until the plumbing is removed.
             )
 
         with solver_trace.timed("eigensolve"):
@@ -571,7 +563,6 @@ def solve_sector(
     cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     weighted_restrictions=None,
     frozen_occupations=None,
-    symmetry_generators=None,
     sector_cache=None,
     num_wanted=10,
     max_energy=None,
@@ -614,7 +605,6 @@ def solve_sector(
         cipsi_solver_method=cipsi_solver_method,
         weighted_restrictions=weighted_restrictions,
         frozen_occupations=frozen_occupations,
-        symmetry_generators=symmetry_generators,
         sector_cache=sector_cache,
         num_wanted=num_wanted,
         max_energy=boltzmann_energy_cut(tau) if max_energy is None else max_energy,
@@ -698,7 +688,6 @@ def find_ground_state_basis(
     cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     use_hf_seed=True,
     weighted_restrictions=None,
-    symmetry_generators=None,
 ):
     """
     Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
@@ -837,7 +826,6 @@ def find_ground_state_basis(
             cipsi_solver_method=cipsi_solver_method,
             weighted_restrictions=weighted_restrictions,
             frozen_occupations=frozen_occupations,
-            symmetry_generators=symmetry_generators,
             sector_cache=sector_cache,
         )
         if basis.is_distributed:
@@ -1080,7 +1068,6 @@ def find_ground_state_basis(
         cipsi_solver_method=cipsi_solver_method,
         weighted_restrictions=weighted_restrictions,
         frozen_occupations=frozen_occupations,
-        symmetry_generators=symmetry_generators,
         sector_cache=sector_cache,
     )
     if basis_gs.is_distributed:
@@ -1259,8 +1246,6 @@ def solve_ground_state(
             solver=cipsi_solver_method,
             memory_budget_bytes=expand_memory_budget(comm),
             memory_policy=_memory_policy(truncation_threshold),
-            # `symmetry_generators` deliberately not passed: expand re-derives them from the H it
-            # is expanding (and the closure is opt-in, cipsi_solver.SYMMETRY_CLOSURE_DEFAULT).
         )
 
     # The residual in `solver.convergence_report` covers the reference states `expand` carried.
