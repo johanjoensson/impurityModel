@@ -487,6 +487,12 @@ def check_divergence(double beta_norm, double alpha_norm, bint first_step,
     already mean "the first step executed by this call", not literally the same
     comparison, so do not copy one kernel's comparison into the other."""
     diverged, t_norm_max, h_norm_est = divergence_guard(beta_norm, alpha_norm, first_step, t_norm_max, h_norm_est)
+    # The verdict decides whether every rank leaves the loop. alpha and beta are replicated, so the
+    # ranks agree by construction -- unless their builds differ in floating point (a per-node
+    # ``-march=native`` cluster build) -- so root's verdict is broadcast rather than trusted to match.
+    # One bool per step, unconditional on every rank of a multi-rank communicator.
+    if comm is not None and comm.Get_size() > 1:
+        diverged = bool(comm.bcast(bool(diverged), root=0))
     if diverged:
         if comm is None or comm.Get_rank() == 0:
             # flush=True (from the array kernel's copy): this diagnostic exists to be
