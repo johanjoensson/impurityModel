@@ -261,7 +261,7 @@ def test_mbs_kernel_no_blowup_near_degenerate():
         for i, sd in enumerate(states):
             psi0[c] += ManyBodyState({sd: Q0[i, c]})
 
-    alphas, betas, _, _, widths = block_lanczos_cy(
+    alphas, betas, _, widths = block_lanczos_cy(
         psi0,
         h_op,
         MockBasis(_MBS_NORB),

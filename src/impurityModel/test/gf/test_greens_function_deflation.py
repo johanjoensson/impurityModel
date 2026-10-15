@@ -88,7 +88,7 @@ def test_interior_deflation_mbs_path():
         for i, sd in enumerate(states):
             psi0[c] += ManyBodyState({sd: Q0[i, c]})
 
-    alphas, betas, _, _, widths = block_lanczos_cy(
+    alphas, betas, _, widths = block_lanczos_cy(
         psi0,
         h_op,
         MockBasis(N_ORB),

@@ -384,7 +384,7 @@ def _kernel_on_proxy(cap, stop_on_freeze, comm=None, max_iter=50):
     psi = build_state(basis, psi_local.T, slaterWeightMin=0)
     proxy = _CappedBasisProxy(basis, cap)
     proxy.stop_on_freeze = stop_on_freeze
-    alphas, betas, Q, W, widths, status = block_lanczos_cy(
+    alphas, betas, Q, widths, status = block_lanczos_cy(
         psi,
         _siam_6(),
         proxy,
@@ -396,7 +396,7 @@ def _kernel_on_proxy(cap, stop_on_freeze, comm=None, max_iter=50):
         store_krylov=False,
         reort=Reort.NONE,
     )
-    return alphas, betas, status, proxy, (psi, Q, W, widths)
+    return alphas, betas, status, proxy, (psi, Q, widths)
 
 
 def test_kernel_stops_at_the_freeze_and_resumes_bit_identically(monkeypatch):
@@ -410,7 +410,7 @@ def test_kernel_stops_at_the_freeze_and_resumes_bit_identically(monkeypatch):
     a_full, b_full, status_full, proxy_full, _ = _kernel_on_proxy(12, stop_on_freeze=False, max_iter=n_total)
     assert proxy_full.cap_hit and status_full == "max_iter" and len(a_full) == n_total
 
-    a_stop, b_stop, status, proxy, (psi, Q, W, widths) = _kernel_on_proxy(12, stop_on_freeze=True, max_iter=n_total)
+    a_stop, b_stop, status, proxy, (psi, Q, widths) = _kernel_on_proxy(12, stop_on_freeze=True, max_iter=n_total)
     assert status == "frozen" and proxy.frozen
     assert 0 < len(a_stop) < n_total
     proxy.stop_on_freeze = False

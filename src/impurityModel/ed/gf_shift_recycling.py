@@ -471,7 +471,7 @@ class KrylovShiftedResolvent:
         Y = None
         budget = max(int(getattr(basis, "size", 0)) // max(psi_arr.width, 1), 8)
         while True:
-            alphas, betas, Q, _, widths, status = block_lanczos_cy(
+            alphas, betas, Q, widths, status = block_lanczos_cy(
                 psi_arr,
                 hOp,
                 lanczos_basis,

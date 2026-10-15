@@ -300,7 +300,7 @@ def test_partial_sparse_kernel_bench(nio_workload):
     sampler = RssSampler()
     sampler.start()
     t0 = time.perf_counter()
-    alphas, betas, Q_basis, W, block_widths = block_lanczos_cy(
+    alphas, betas, Q_basis, block_widths = block_lanczos_cy(
         psi0=psi0,
         h_op=h,
         basis=basis,

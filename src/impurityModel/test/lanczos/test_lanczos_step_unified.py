@@ -68,10 +68,9 @@ def test_array_and_manybodystate_front_ends_build_the_same_block_tridiagonal(reo
         converged=lambda *a, **k: False,
         reort=reort,
         max_iter=STEPS,
-        return_W=False,
         return_widths=True,
     )[:4]
-    a_mbs, b_mbs, _qs, _w, w_mbs = block_lanczos_cy(
+    a_mbs, b_mbs, _qs, w_mbs = block_lanczos_cy(
         _seed_states(basis_states, seed),
         h_op,
         MockBasis(len(basis_states)),

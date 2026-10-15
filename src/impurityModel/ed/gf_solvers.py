@@ -885,7 +885,7 @@ def block_Green_sparse(
             if frozen_basis is not None:
                 csr = _csr_green(frozen_basis)
     while csr is None:
-        alphas, betas, Q, _, widths, status = block_lanczos_cy(
+        alphas, betas, Q, widths, status = block_lanczos_cy(
             psi_arr,
             hOp,
             lanczos_basis,

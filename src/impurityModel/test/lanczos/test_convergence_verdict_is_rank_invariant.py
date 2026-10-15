@@ -44,7 +44,7 @@ def test_every_rank_stops_where_root_stops():
     (seed,) = basis.redistribute_psis(ManyBodyState.from_states([seed]) if comm.rank == 0 else seed)
     psi0, _ = block_normalize(seed, mpi=True, comm=comm)
 
-    alphas, _betas, _q, _w = block_lanczos_cy(
+    alphas, _betas, _q = block_lanczos_cy(
         psi0=psi0,
         h_op=hOp,
         basis=basis,

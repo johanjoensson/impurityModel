@@ -681,7 +681,6 @@ def _thick_restart_block_lanczos_array(
             max_iter=max_iter,
             verbose=verbose,
             reort=reort_mode,
-            return_W=False,
             return_widths=True,
             comm=comm,
             locked=locked,
@@ -782,8 +781,7 @@ def thick_restart_block_lanczos_cy(
             comm=comm,
             return_widths=True,
         )
-        # (alphas, betas, Q_basis, W, block_widths) -> drop W
-        return res[0], res[1], res[2], res[4]
+        return res
 
     return _trlm_core(
         psi0,

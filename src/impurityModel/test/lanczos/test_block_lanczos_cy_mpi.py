@@ -44,7 +44,7 @@ def test_block_lanczos_cy_mpi_orthogonality_full():
     psi0 = basis.redistribute_psis(*psi0)
     psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
-    alphas, _betas, Q_basis, _W = block_lanczos_cy(
+    alphas, _betas, Q_basis = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -86,7 +86,7 @@ def test_block_lanczos_cy_mpi_choleskyqr2_near_degenerate():
     psi0 = basis.redistribute_psis(*psi0)
     psi0, _ = block_normalize(psi0, mpi=True, comm=comm)  # orthonormal start (as the GF path provides)
 
-    _alphas, betas, Q_basis, _ = block_lanczos_cy(
+    _alphas, betas, Q_basis = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,

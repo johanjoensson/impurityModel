@@ -111,7 +111,7 @@ def test_mbs_gf_under_deflation(mode):
         for i, sd in enumerate(states):
             psi0[c] += ManyBodyState({sd: Q0[i, c]})
 
-    a, b, _, _, widths = block_lanczos_cy(
+    a, b, _, widths = block_lanczos_cy(
         psi0,
         h_op,
         MockBasis(N_ORB),

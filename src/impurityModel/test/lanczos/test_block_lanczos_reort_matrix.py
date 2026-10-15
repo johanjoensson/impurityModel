@@ -235,7 +235,7 @@ def test_deflation_shrinking_block(p, path):
 
         from impurityModel.ed.BlockLanczos import block_lanczos_cy
 
-        alphas, betas, _Q_basis, _W, block_widths = block_lanczos_cy(
+        alphas, betas, _Q_basis, block_widths = block_lanczos_cy(
             psi0=psi0,
             h_op=h_op_mb,
             basis=MockBasis(N),
@@ -315,7 +315,7 @@ def test_deflation_shrinking_block_mpi(p, path):
 
         from impurityModel.ed.BlockLanczos import block_lanczos_cy
 
-        alphas, betas, _Q_basis, _W, block_widths = block_lanczos_cy(
+        alphas, betas, _Q_basis, block_widths = block_lanczos_cy(
             psi0=psi0,
             h_op=h_op,
             basis=basis,

@@ -2035,7 +2035,6 @@ class CIPSISolver:
                 max_iter=max_subspace_blocks,
                 verbose=False,
                 reort="full",
-                return_W=False,
                 return_widths=True,
                 return_status=True,
                 comm=comm,

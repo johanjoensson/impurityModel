@@ -71,7 +71,6 @@ def _run(h_op, psi0_local, comm, max_iter):
         max_iter=max_iter,
         verbose=False,
         reort=Reort.FULL,
-        return_W=False,
         comm=comm,
     )
     return np.asarray(alphas), np.asarray(betas)

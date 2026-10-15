@@ -52,7 +52,7 @@ def test_lancos():
                     initial_basis=list(psi.keys()),
                     verbose=True,
                 )
-                alpha, beta, _, _ = block_lanczos_cy([psi], ManyBodyOperator(Hop), excited_basis, converged, max_iter=1)
+                alpha, beta, _ = block_lanczos_cy([psi], ManyBodyOperator(Hop), excited_basis, converged, max_iter=1)
                 alphas[irrep].append(alpha)
                 betas[irrep].append(beta)
 
@@ -124,7 +124,7 @@ def test_lancos_mpi():
                     verbose=True,
                     comm=MPI.COMM_WORLD,
                 )
-                alpha, beta, _, _ = block_lanczos_cy([psi], ManyBodyOperator(Hop), excited_basis, converged, max_iter=1)
+                alpha, beta, _ = block_lanczos_cy([psi], ManyBodyOperator(Hop), excited_basis, converged, max_iter=1)
                 alphas[irrep].append(alpha)
                 betas[irrep].append(beta)
 
@@ -166,7 +166,7 @@ def test_block_eigsh(reort_mode):
         ManyBodyState({state: 1 / np.sqrt(len(lb) / 2) for state in lb[:3]}),
         ManyBodyState({state: 1 / np.sqrt(len(lb) / 2) for state in lb[3:]}),
     ]
-    alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
+    alphas, betas, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
@@ -207,7 +207,7 @@ def test_block_eigsh_mpi(reort_mode):
     psi0_blocks = [ManyBodyState.from_states([psi]) for psi in psi0]
     psi0 = [blk.to_states()[0] for blk in basis.redistribute_psis(*psi0_blocks)]
     print(f"RANK {basis.comm.rank} psi0: {psi0}", flush=True)
-    alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
+    alphas, betas, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
@@ -229,7 +229,7 @@ def test_block_lanczos_cy(reort_mode):
         return alphas.shape[0] > 5
 
     psi0 = [ManyBodyState({state: 1 / np.sqrt(len(basis.local_basis)) for state in basis.local_basis})]
-    alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
+    alphas, betas, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
@@ -252,7 +252,7 @@ def test_block_lanczos_cy_mpi(reort_mode):
         return alphas.shape[0] > 5
 
     psi0 = [ManyBodyState({state: 1 / np.sqrt(len(states)) for state in basis.local_basis}, width=1)]
-    alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
+    alphas, betas, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 

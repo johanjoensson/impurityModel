@@ -42,7 +42,6 @@ def test_array_lanczos_matches_dense(p):
         max_iter=n_blocks,
         verbose=False,
         reort=Reort.FULL,
-        return_W=False,
         comm=None,
     )
     eig = np.sort(np.linalg.eigvalsh(_build_full_T(alphas, betas)))
@@ -66,7 +65,6 @@ def test_array_lanczos_orthonormality(p):
         max_iter=-(-n // p),
         verbose=False,
         reort=Reort.FULL,
-        return_W=False,
         comm=None,
     )
     q_mat = np.asarray(q)  # (n, n_vectors)
@@ -95,7 +93,6 @@ def test_array_lanczos_orthonormality_mpi():
         max_iter=-(-n // p),
         verbose=False,
         reort=Reort.FULL,
-        return_W=False,
         comm=comm,
     )
     q_local = np.asarray(q)  # (local_N, n_vectors); each column a vector's local rows

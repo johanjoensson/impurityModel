@@ -511,30 +511,16 @@ def factor_residual(object wp, bint mpi, object comm, double h_scale, double def
     return block_tsqr(wp, mpi, comm, h_scale, deflate_tol=deflate_tol)
 
 
-def pack_lanczos_result(alphas_out, betas_out, Q_basis, W, block_widths, termination,
-                        bint return_widths, bint return_status, bint return_W=True):
-    """The return_widths/return_status(/return_W) opt-in arity ladder, shared by both
-    kernels' return-tuple assembly. Each caller finishes its own basis representation
-    first (MBS substitutes the store_krylov=False two-block tail; the array kernel
-    trims its growth buffer) before calling this.
-
-    ``return_W`` defaults to True, matching the MBS kernel's ladder (``W`` is always
-    in its base return). The array kernel additionally makes ``W``'s presence itself
-    opt-in -- a third independent flag its own pre-hoist ladder already branched on
-    -- so it passes ``return_W`` explicitly."""
+def pack_lanczos_result(alphas_out, betas_out, Q_basis, block_widths, termination,
+                        bint return_widths, bint return_status):
+    """The return_widths/return_status opt-in arity ladder, shared by both kernels'
+    return-tuple assembly. Each caller finishes its own basis representation first (MBS
+    substitutes the store_krylov=False two-block tail; the array kernel trims its growth
+    buffer) before calling this."""
     if return_widths:
-        if return_W:
-            if return_status:
-                return alphas_out, betas_out, Q_basis, W, block_widths, termination
-            return alphas_out, betas_out, Q_basis, W, block_widths
         if return_status:
             return alphas_out, betas_out, Q_basis, block_widths, termination
         return alphas_out, betas_out, Q_basis, block_widths
-    else:
-        if return_W:
-            if return_status:
-                return alphas_out, betas_out, Q_basis, W, termination
-            return alphas_out, betas_out, Q_basis, W
-        if return_status:
-            return alphas_out, betas_out, Q_basis, termination
-        return alphas_out, betas_out, Q_basis
+    if return_status:
+        return alphas_out, betas_out, Q_basis, termination
+    return alphas_out, betas_out, Q_basis

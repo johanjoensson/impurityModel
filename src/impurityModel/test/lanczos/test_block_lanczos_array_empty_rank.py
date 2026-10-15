@@ -74,7 +74,6 @@ def _run_distributed_array_lanczos(H_global, comm, form="csr", width=1):
         max_iter=global_N,
         verbose=False,
         reort=Reort.FULL,
-        return_W=False,
         comm=comm,
     )
 

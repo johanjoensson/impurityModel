@@ -46,7 +46,7 @@ def test_block_lanczos_cy_orthogonality_full():
 
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-    alphas, _betas, Q_basis, _W = block_lanczos_cy(
+    alphas, _betas, Q_basis = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -71,7 +71,7 @@ def test_block_lanczos_cy_eigenvalues_block1():
         st[basis.type.from_bytes(states[i])] = 1.0 / np.sqrt(6)
     psi0 = [st]
 
-    alphas, betas, _Q_basis, _W = block_lanczos_cy(
+    alphas, betas, _Q_basis = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -206,7 +206,7 @@ def test_block_lanczos_cy_orthogonality_none():
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
     # With reort='none', just verify no crash
-    alphas, _betas, Q_basis, _W = block_lanczos_cy(
+    alphas, _betas, Q_basis = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -234,7 +234,7 @@ def test_block_lanczos_cy_eigenvalues_block2():
 
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-    alphas, betas, _Q_basis, _W = block_lanczos_cy(
+    alphas, betas, _Q_basis = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -305,7 +305,7 @@ def test_converged_views_equivalence():
         snapshots.append((np.array(alphas, copy=True), np.array(betas, copy=True)))
         return False
 
-    alphas, betas, _Q_basis, _W = block_lanczos_cy(
+    alphas, betas, _Q_basis = block_lanczos_cy(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
@@ -351,7 +351,7 @@ def test_block_lanczos_cy_store_krylov_false_matches_tail_of_stored_run():
         psi0.append(st)
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-    stored_alphas, stored_betas, stored_Q, _W = block_lanczos_cy(
+    stored_alphas, stored_betas, stored_Q = block_lanczos_cy(
         [p for p in psi0],
         h_op,
         basis,
@@ -362,7 +362,7 @@ def test_block_lanczos_cy_store_krylov_false_matches_tail_of_stored_run():
     )
     assert len(stored_Q) == 2 * n_iter  # p=2, n_iter blocks, flat width-1 list
 
-    tail_alphas, tail_betas, tail_Q, _W2 = block_lanczos_cy(
+    tail_alphas, tail_betas, tail_Q = block_lanczos_cy(
         [p for p in psi0],
         h_op,
         basis,
@@ -408,7 +408,7 @@ def test_a_resumed_call_keeps_the_divergence_guards_scale(monkeypatch):
 
     monkeypatch.setattr(BlockLanczos, "check_divergence", recording)
     kw = dict(h_op=h_op, basis=basis, converged_fn=lambda a, b, **k: False, reort="none", return_widths=True)
-    a1, b1, q1, w1, wid1 = block_lanczos_cy(psi0=psi0, max_iter=4, **kw)
+    a1, b1, q1, wid1 = block_lanczos_cy(psi0=psi0, max_iter=4, **kw)
     whole = list(calls)
     calls.clear()
     block_lanczos_cy(psi0=None, alphas_init=a1, betas_init=b1, Q_init=q1, block_widths_init=wid1, max_iter=2, **kw)

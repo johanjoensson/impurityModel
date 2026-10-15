@@ -233,7 +233,6 @@ def block_lanczos_array_cy(
     alphas=None,
     betas=None,
     Q=None,
-    return_W=False,
     comm=None,
     return_widths=False,
     return_status=False,
@@ -380,8 +379,8 @@ def block_lanczos_array_cy(
         res_Q = np.ascontiguousarray(np.hstack(deflated_tail + [q_curr]))
     else:
         res_Q = q_curr
-    res = pack_lanczos_result(alphas_buf[:it], betas_buf[:it], res_Q, None, block_widths, termination,
-                              return_widths, return_status, return_W)
+    res = pack_lanczos_result(alphas_buf[:it], betas_buf[:it], res_Q, block_widths, termination,
+                              return_widths, return_status)
     if return_tail:
         # Only a budget stop has rolled q onto the next step's (previous, current) pair; every other stop
         # ends the recurrence (or, "converged", breaks before the roll).
@@ -545,7 +544,7 @@ def _lanczos_loop(
 
 def _pack_result(
     alphas_buf, betas_buf, start_it, it, store_krylov, termination,
-    q_prev, q_curr, q_next, Q_basis, W, block_widths, return_widths, return_status,
+    q_prev, q_curr, q_next, Q_basis, block_widths, return_widths, return_status,
 ):
     """Build block_lanczos_cy's return tuple: the finished alphas/betas views, the
     Krylov basis (or, with store_krylov=False, its two-block tail), and the
@@ -563,7 +562,7 @@ def _pack_result(
             Q_basis = q_curr.to_states() + q_next.to_states()
         else:
             Q_basis = q_prev.to_states() + q_curr.to_states()
-    return pack_lanczos_result(alphas_out, betas_out, Q_basis, W, block_widths, termination, return_widths, return_status)
+    return pack_lanczos_result(alphas_out, betas_out, Q_basis, block_widths, termination, return_widths, return_status)
 
 
 def block_lanczos_cy(
@@ -673,9 +672,8 @@ def block_lanczos_cy(
             ``None`` (complex128).
 
     Returns:
-        tuple[numpy.ndarray, numpy.ndarray, list, numpy.ndarray]: A 4-tuple
-        ``(alphas, betas, Q_basis, W)`` where ``W`` is always ``None`` (the retired partial-reorthogonalization
-        estimator's slot, kept so the arity does not change) and
+        tuple[numpy.ndarray, numpy.ndarray, list]: A 3-tuple
+        ``(alphas, betas, Q_basis)`` where
 
         * ``alphas`` – complex array of shape ``(k, p, p)`` holding the
           diagonal blocks :math:`\\alpha_0, \\dots, \\alpha_{k-1}`.
@@ -696,7 +694,7 @@ def block_lanczos_cy(
         the recurrence terminated naturally) or ``"frozen"`` (``basis`` is a growth-capping
         proxy with ``stop_on_freeze`` set and froze during the last step; the state is a
         ``"max_iter"`` stop's, so the recurrence can be resumed). Both flags are independent and opt-in, so
-        existing call sites that pass neither keep the 4-tuple return.
+        call sites that pass neither get the 3-tuple.
     """
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -820,7 +818,6 @@ def block_lanczos_cy(
     else:
         alphas_buf = np.zeros((_buf_size, p, p), dtype=complex)
         betas_buf = np.zeros((_buf_size, p, p), dtype=complex)
-    W = None  # the retired PRO estimator's slot in the return tuple
 
     # --- Main Lanczos loop ----------------------------------------------
     # Largest healthy block-norm seen so far (proxy for ||H|| on the subspace), and the spectral-scale
@@ -867,5 +864,5 @@ def block_lanczos_cy(
 
     return _pack_result(
         alphas_buf, betas_buf, start_it, it, store_krylov, termination,
-        q_prev, q_curr, q_next, Q_basis, W, block_widths, return_widths, return_status,
+        q_prev, q_curr, q_next, Q_basis, block_widths, return_widths, return_status,
     )

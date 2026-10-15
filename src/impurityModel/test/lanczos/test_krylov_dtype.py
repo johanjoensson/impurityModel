@@ -103,7 +103,7 @@ def _run(siam, reort, dtype):
     hOp, imp, baths, psi, support, sector, _ = siam
     basis = Basis(imp, baths, initial_basis=support, verbose=False)
     converged, _flag, _tol, _dg = _make_gf_convergence_monitor(DELTA, 0.0)
-    alphas, betas, q, _w, _widths, status = block_lanczos_cy(
+    alphas, betas, q, _widths, status = block_lanczos_cy(
         [s.copy() for s in psi],
         hOp,
         basis,
