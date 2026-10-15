@@ -41,10 +41,7 @@ try:
 except ImportError:  # pragma: no cover - mpi4py is a hard dependency in practice
     _has_mpi = False
 
-from impurityModel.ed.BlockLanczos import (
-    _thick_restart_block_lanczos_array,
-    thick_restart_block_lanczos_cy,
-)
+from impurityModel.ed.trlm import _thick_restart_block_lanczos_array
 from impurityModel.ed.BlockLanczosArray import BREAKDOWN_TOL, block_normalize
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.TSQR import EPS
@@ -167,23 +164,6 @@ def test_array_warm_start_is_refined_not_returned():
 # --------------------------------------------------------------------------------------
 # ManyBodyState path -- the same _trlm_core, driven with list[ManyBodyState]
 # --------------------------------------------------------------------------------------
-
-
-def test_manybodystate_warm_start_is_refined_not_returned():
-    t, d, u, rng = _designer_hermitian(_N_ORB, seed=1)
-    q0 = _warm_start(u, d, rng, _N_ORB)
-    r0 = _assert_refinable(t, q0)
-
-    h_op, basis_states = _one_particle_operator(t)
-    psi0 = _states_from_columns(basis_states, q0)
-
-    vals, vecs = thick_restart_block_lanczos_cy(psi0, h_op, MockBasis(_N_ORB), _P, 12, _TOL, 60, False, 0.0, 0, None)
-
-    vals = np.asarray(vals).real
-    r = max(_mbs_residual(h_op, psi, theta) for psi, theta in zip(vecs, vals))
-
-    assert r < r0 / 100, f"TRLM did not refine the warm start: {r:.3e} vs {r0:.3e}"
-    np.testing.assert_allclose(np.sort(vals)[:_P], np.sort(d)[:_P], rtol=1e-9)
 
 
 # --------------------------------------------------------------------------------------

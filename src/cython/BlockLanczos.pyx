@@ -14,8 +14,6 @@ This module provides:
 
 * ``block_lanczos`` – core iteration loop producing the block-tridiagonal
   Lanczos representation :math:`T = Q^\\dagger H Q` of the Hamiltonian.
-* ``thick_restart_block_lanczos_cy`` – thick-restart (TRLM) wrapper that
-  restarts the Krylov subspace while retaining the best Ritz pairs.
 
 All distributed inner products use ``mpi4py``'s Python API
 (``comm.Allreduce``) over small :math:`p \\times p` matrices.  Heavy
@@ -47,19 +45,4 @@ Reorthogonalization (the boolean ``reort``):
 from impurityModel.ed.BlockLanczosCore import (  # noqa: F401
     block_lanczos,
     lanczos_step,
-)
-
-# TRLM's restart-layer business logic (the path-agnostic `_trlm_core`, locking and
-# result assembly) is plain Python in ed/trlm.py -- it has no Cython constructs and
-# profiling showed ~97.7% of runtime inside `block_lanczos` above, ~2.3% in this
-# restart glue. The module imports `block_lanczos` back from here, function-locally
-# (inside its MBS entry point, not at module level): the two-way name dependency
-# below would otherwise cycle at the first `pip install -e .`. Re-exported here so the existing
-# `from impurityModel.ed.BlockLanczos import ...` import paths keep working.
-from impurityModel.ed.trlm import (  # noqa: F401
-    _thick_restart_block_lanczos_array,
-    _trlm_core,
-    _trlm_extract,
-    thick_restart_block_lanczos,
-    thick_restart_block_lanczos_cy,
 )

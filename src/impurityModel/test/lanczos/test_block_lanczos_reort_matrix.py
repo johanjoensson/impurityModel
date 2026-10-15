@@ -72,7 +72,7 @@ def assert_orthonormal(eigvecs, path, comm=None):
     np.testing.assert_allclose(overlaps, expected, atol=sqrt_eps)
 
 
-@pytest.mark.parametrize("path", ["array", "ManyBodyState"])
+@pytest.mark.parametrize("path", ["array"])
 def test_reort_matrix(path):
     h_op_mb, N, eigvals_exact, basis_states = get_test_system()
     num_wanted = 4
@@ -117,7 +117,7 @@ def test_reort_matrix(path):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("path", ["array", "ManyBodyState"])
+@pytest.mark.parametrize("path", ["array"])
 def test_reort_matrix_mpi(path):
     comm = MPI.COMM_WORLD
     h_op_mb, N, eigvals_exact, basis_states = get_test_system()

@@ -3,7 +3,6 @@ import numpy as np
 from impurityModel.ed.BlockLanczos import (
     block_lanczos,
     lanczos_step,
-    thick_restart_block_lanczos_cy,
 )
 from impurityModel.ed.BlockLanczosArray import block_normalize
 from impurityModel.ed.manybody_basis import Basis
@@ -24,12 +23,6 @@ def create_diagonal_h_and_basis(n_states):
     )
     h_op = ManyBodyOperator(hop)
     return h_op, basis, states, eigvals
-
-
-def test_block_lanczos_cy_imports():
-    assert callable(block_lanczos)
-    assert callable(thick_restart_block_lanczos_cy)
-    assert callable(lanczos_step)
 
 
 def test_block_lanczos_cy_orthogonality_full():
@@ -88,29 +81,6 @@ def test_block_lanczos_cy_eigenvalues_block1():
     np.testing.assert_allclose(np.sort(eigs_T), np.sort(eigvals), atol=1e-10)
 
 
-def test_trlm_cy_diagonal():
-    h_op, basis, states, eigvals = create_diagonal_h_and_basis(6)
-
-    st = ManyBodyState()
-    for i in range(6):
-        st[basis.type.from_bytes(states[i])] = 1.0 / np.sqrt(6)
-    psi0 = [st]
-
-    eigs, _evecs = thick_restart_block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        num_wanted=2,
-        max_subspace_blocks=4,
-        tol=1e-8,
-        max_restarts=10,
-        verbose=False,
-    )
-
-    assert len(eigs) == 2
-    np.testing.assert_allclose(eigs, eigvals[:2], atol=1e-8)
-
-
 def create_tight_binding_h_and_basis():
     import itertools
 
@@ -139,42 +109,6 @@ def create_tight_binding_h_and_basis():
     h_op = ManyBodyOperator(hop)
 
     return h_op, basis
-
-
-def test_trlm_cy_tight_binding():
-    import numpy as np
-
-    from impurityModel.ed.BlockLanczos import thick_restart_block_lanczos_cy
-    from impurityModel.ed.BlockLanczosArray import block_normalize
-
-    h_op, basis = create_tight_binding_h_and_basis()
-
-    np.random.seed(42)
-    psi0 = []
-    for _ in range(2):
-        st = ManyBodyState()
-        for b in basis.local_basis:
-            st[b] = np.random.randn()
-        psi0.append(st)
-
-    psi0, _ = block_normalize(psi0, False, None)
-
-    eigs, _evecs = thick_restart_block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        num_wanted=4,
-        max_subspace_blocks=10,
-        tol=1e-6,
-        max_restarts=20,
-        verbose=False,
-    )
-
-    assert len(eigs) == 4
-    # The ground state of 8-site tight-binding with 4 particles
-    # Energies: -2cos(k) for k = pi/9, 2pi/9 ...
-    # Known exact energies can be found via numpy
-    # We just test it converged
 
 
 def get_exact_tight_binding_eigenvalues(h_op, basis):
@@ -249,39 +183,6 @@ def test_block_lanczos_cy_eigenvalues_block2():
     T = _build_full_T(alphas, betas[: len(alphas) - 1])
     eigs_T = np.sort(np.linalg.eigvalsh(T))
     np.testing.assert_allclose(eigs_T, np.sort(eigvals), atol=1e-10)
-
-
-def test_trlm_cy_tight_binding_eigenvalue_accuracy():
-    from impurityModel.ed.BlockLanczos import thick_restart_block_lanczos_cy
-
-    h_op, basis = create_tight_binding_h_and_basis()
-
-    # Compute exact eigenvalues via full diagonalization
-    exact_eigs = get_exact_tight_binding_eigenvalues(h_op, basis)
-
-    np.random.seed(42)
-    psi0 = []
-    for _ in range(2):
-        st = ManyBodyState()
-        for b in basis.local_basis:
-            st[b] = np.random.randn()
-        psi0.append(st)
-
-    psi0, _ = block_normalize(psi0, False, None)
-
-    eigs, _evecs = thick_restart_block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        num_wanted=4,
-        max_subspace_blocks=10,
-        tol=1e-8,
-        max_restarts=20,
-        verbose=False,
-    )
-
-    assert len(eigs) == 4
-    np.testing.assert_allclose(eigs, exact_eigs[:4], atol=1e-6)
 
 
 def test_converged_views_equivalence():

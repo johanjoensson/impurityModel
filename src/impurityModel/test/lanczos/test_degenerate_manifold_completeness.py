@@ -178,7 +178,7 @@ def test_trlm_with_a_locked_set_solves_in_its_complement():
     continuation; the locked set used to leak back in there (the ground level reappeared as the
     "lowest" state) when the continuation projected against it before the CGS against its own basis.
     """
-    from impurityModel.ed.trlm import _TRLM_EXIT, thick_restart_block_lanczos
+    from impurityModel.ed.trlm import trlm
 
     rng = np.random.default_rng(5)
     n = 120
@@ -189,11 +189,11 @@ def test_trlm_with_a_locked_set_solves_in_its_complement():
     locked = U[:, :n_locked]
     psi0 = rng.standard_normal((n, 7)) + 1j * rng.standard_normal((n, 7))
 
-    vals, vecs = thick_restart_block_lanczos(
+    vals, vecs, status, _ = trlm(
         psi0, h, None, num_wanted=9, max_subspace_blocks=4, tol=1e-10, max_restarts=200, locked=locked
     )
 
-    assert _TRLM_EXIT[0].startswith("restart_loop_end") or _TRLM_EXIT[0] == "continuation_converged", _TRLM_EXIT
+    assert status == "converged" or status.endswith("converged"), status
     np.testing.assert_allclose(np.sort(vals.real), evals[n_locked : n_locked + 9], atol=1e-9)
     np.testing.assert_allclose(locked.conj().T @ vecs, 0, atol=1e-10)
 

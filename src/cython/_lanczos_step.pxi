@@ -93,12 +93,18 @@ def lanczos_step(
     if it > 0:
         wp = block_add_scaled(wp, q_prev, -np.conj(betas[it - 1, :p, :n_prev].T))
 
-    # --- 3b. Locking deflation -------------------------------------------
+    # --- 3b. Full reorthogonalization against the stored basis ------------
+    if reort:
+        wp = apply_full_reort(wp, store, mpi, comm)
+
+    # --- 4b. Locking deflation -------------------------------------------
     # Keep the residual orthogonal to the already-converged ("locked") Ritz vectors *before* forming
     # beta, so the stored beta and q_next are consistent with the deflated vector. The locked vectors
     # are only approximate eigenvectors, so A X_i leaks a small component along them that is
     # otherwise amplified across iterations, reintroducing locked eigenvalues (and their 2*theta
     # harmonics) as spurious Ritz values below the true spectral minimum. Twice, for robustness.
+    # Runs *after* the full reorthogonalization: the stored basis carries an O(eps) locked component
+    # of its own, which that projection puts back into ``wp``.
     #
     # Gate on block_cols(locked), never truthiness: ManyBodyState.__len__ is the rank-local row
     # count, so an empty rank diverges and the Allreduce below deadlocks (doc/lanczos_invariants.md,
@@ -108,10 +114,6 @@ def lanczos_step(
             locked = ManyBodyState.from_states(list(locked))
         for _ in range(2):
             wp = block_add_scaled(wp, locked, -block_inner(locked, wp, mpi, comm))
-
-    # --- 4. Full reorthogonalization against the stored basis ------------
-    if reort:
-        wp = apply_full_reort(wp, store, mpi, comm)
 
     # --- 5. X_{i+1}, beta_i = TSQR(W) --------------------------------------
     # The triangular factor is built from the block's own rows (panel Householder + Givens merges +

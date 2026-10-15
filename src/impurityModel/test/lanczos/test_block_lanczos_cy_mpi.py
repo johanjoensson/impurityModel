@@ -4,7 +4,6 @@ from mpi4py import MPI
 
 from impurityModel.ed.BlockLanczos import (
     block_lanczos,
-    thick_restart_block_lanczos_cy,
 )
 from impurityModel.ed.BlockLanczosArray import block_normalize
 from impurityModel.ed.manybody_basis import Basis
@@ -104,33 +103,6 @@ def test_block_lanczos_cy_mpi_choleskyqr2_near_degenerate():
     assert np.linalg.norm(ov - np.eye(len(Q_basis))) < 1e-9
 
 
-@pytest.mark.mpi
-def test_trlm_cy_diagonal_mpi():
-    comm = MPI.COMM_WORLD
-    h_op, basis, states, eigvals = create_diagonal_h_and_basis_mpi(6, comm)
-
-    st = ManyBodyState()
-    for i in range(6):
-        st[basis.type.from_bytes(states[i])] = 1.0 / np.sqrt(6)
-    psi0 = basis.redistribute_psis(st)
-    psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
-
-    eigs, _evecs = thick_restart_block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        num_wanted=2,
-        max_subspace_blocks=4,
-        tol=1e-8,
-        max_restarts=10,
-        verbose=False,
-        comm=comm,
-    )
-
-    assert len(eigs) == 2
-    np.testing.assert_allclose(eigs, eigvals[:2], atol=1e-8)
-
-
 def create_tight_binding_h_and_basis_mpi(comm):
     import itertools
 
@@ -160,40 +132,3 @@ def create_tight_binding_h_and_basis_mpi(comm):
     h_op = ManyBodyOperator(hop)
 
     return h_op, basis
-
-
-@pytest.mark.mpi
-def test_trlm_cy_tight_binding_mpi():
-    import numpy as np
-    from mpi4py import MPI
-
-    from impurityModel.ed.BlockLanczos import thick_restart_block_lanczos_cy
-    from impurityModel.ed.BlockLanczosArray import block_normalize
-
-    comm = MPI.COMM_WORLD
-    h_op, basis = create_tight_binding_h_and_basis_mpi(comm)
-
-    np.random.seed(42 + comm.Get_rank())
-    psi0 = []
-    for _ in range(2):
-        st = ManyBodyState()
-        for b in basis.local_basis:
-            st[b] = np.random.randn()
-        psi0.append(st)
-
-    psi0 = basis.redistribute_psis(*psi0)
-    psi0, _ = block_normalize(psi0, True, comm)
-
-    eigs, _evecs = thick_restart_block_lanczos_cy(
-        psi0=psi0,
-        h_op=h_op,
-        basis=basis,
-        num_wanted=4,
-        max_subspace_blocks=10,
-        tol=1e-6,
-        max_restarts=20,
-        verbose=False,
-        comm=comm,
-    )
-
-    assert len(eigs) == 4

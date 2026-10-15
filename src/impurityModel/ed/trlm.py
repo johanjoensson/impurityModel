@@ -1,15 +1,25 @@
-"""Thick-Restart Block Lanczos (TRLM). All TRLM business logic lives here, as plain
-Python: the path-agnostic ``_trlm_core``, the array / ManyBodyState entry points, and the
-width-aware thick-restart loop. Path-agnostic through the ``is_array``-dispatching
-``block_*`` primitives from :mod:`impurityModel.ed.BlockLanczosCore`.
+"""Thick-restart block Lanczos (TRLM) on distributed dense blocks.
 
-``impurityModel.ed.BlockLanczos`` (the compiled ManyBodyState step kernel) re-exports this
-module's public names (``thick_restart_block_lanczos_cy``, ``thick_restart_block_lanczos``,
-and the internal entry points) so existing ``from impurityModel.ed.BlockLanczos import
-...`` sites keep resolving. No name here collides between this
-module's own top-level meaning and ``ed.BlockLanczos``'s re-export -- both point at the
-same functions.
+One implementation, written against the ``block_*`` primitives of
+:mod:`impurityModel.ed.BlockLanczosCore`. A block is an ``(n_local, k)`` complex array whose rows are
+distributed over ``comm``; the operator is a ``DistributedSparseMatrix`` (or anything
+:meth:`DistributedSparseMatrix.coerce` accepts).
+
+Two stopping rules share one restart loop:
+
+* **count mode** (``window=None``): the ``num_wanted`` lowest Ritz pairs, ``num_converge`` of which
+  must reach ``tol``;
+* **window mode** (``window=Window(...)``): *every* Ritz pair inside an energy window, plus one
+  bracket pair just above it. The number of retained vectors follows the window -- it grows when
+  the window turns out to hold more states than were being kept -- so the caller never has to
+  guess a multiplicity beforehand.
+
+Collective on ``comm``. Every branch is decided from replicated data (the Allreduced ``T`` and a
+root-broadcast ``eigh``), so all ranks leave the loop together.
 """
+
+from dataclasses import dataclass
+from typing import NamedTuple
 
 import numpy as np
 import scipy.linalg as sp
@@ -17,7 +27,6 @@ import scipy.linalg as sp
 from impurityModel.ed.BlockLanczosCore import (
     BREAKDOWN_TOL,
     DEFAULT_EIGEN_TOL,
-    RESTART_ORTH_TOL,
     _build_full_T,
     block_apply,
     block_combine,
@@ -25,12 +34,9 @@ from impurityModel.ed.BlockLanczosCore import (
     block_normalize,
     block_orthogonalize,
     eigh_block_tridiagonal,
-    is_array,
 )
 from impurityModel.ed.block_view import (
     KrylovColumnStore,
-    StagnationMonitor,
-    as_state_list,
     block_cols,
     check_width_sync,
     copy_block,
@@ -39,126 +45,172 @@ from impurityModel.ed.block_view import (
     width_synced_total,
 )
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
-from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
 
-__all__ = [
-    "_thick_restart_block_lanczos_array",
-    "_trlm_core",
-    "_trlm_extract",
-    "thick_restart_block_lanczos",
-    "thick_restart_block_lanczos_cy",
-]
+__all__ = ["TRLMResult", "Window", "thick_restart_block_lanczos", "trlm"]
 
-
-#: How many continuation blocks to add between mid-restart convergence checks.
-#:
-#: The thick-restart continuation (see :func:`_trlm_core`) rebuilds ``m - k_blocks`` blocks on
-#: every restart, and used to test convergence only *after* all of them -- so a solve whose wanted
-#: Ritz pairs stopped moving early still paid for the rest. Checking costs one dense ``eigh`` of
-#: the current ``T``; a continuation block costs a matvec plus the two unconditional CGS2 passes
-#: against the whole ``Q_basis``. Neither reliably dominates, so the check is amortized.
-#:
-#: Measured, not chosen: NiO 7-bath from ``impmod_tests``, production settings, single rank,
-#: ``OPENBLAS_NUM_THREADS=1``, timing spent *inside* the eigensolver (total wall is dominated by
-#: the Green's function and hides the effect), two repetitions per point.
-#:
-#: ===========  ======  ======  ======  ======  ======  ======  ======  =====
-#: cadence           1       2       4       8      12      16      24    off
-#: block matvecs  2677    2682    2698    2721    2744    2769    2804   2945
-#: TRLM seconds   40.7    37.2    36.8    35.1    35.1    35.7    36.3   39.5
-#: ===========  ======  ======  ======  ======  ======  ======  ======  =====
-#:
-#: Two things that table settles. Fewest matvecs is **not** fastest -- checking every block
-#: (cadence 1) is slower than never checking, because the ``eigh`` outweighs the block it saves.
-#: And the minimum is a broad plateau at 8-12 rather than a cliff: every cadence from 2 to 24
-#: beats ``off``, so this is not tuned to one workload's edge. 8 is the matvec-conservative end
-#: of the plateau. ``sigma_static`` is bit-identical to the un-checked run at every cadence.
-#:
-#: **TRLM only, deliberately.** The same check was written for IRLM (whose continuation is a
-#: ``sweep`` call, so the hook is its ``converged_fn``) and measured: it fired **zero** times
-#: across three problem shapes while adding 9-24 banded eigendecompositions, costing ~13% at
-#: ``p=21, m=24`` (four reps, no overlap between the distributions). IRLM does not need it -- it
-#: **locks** converged Ritz pairs and deflates them out of the active subspace between sweeps
-#: (EA16 §2.2.2), so it has no equivalent of the thick restart's unconditional
-#: ``m - k_blocks``-block rebuild for a mid-sweep test to catch.
+#: Continuation blocks between mid-restart convergence checks. One check is a dense ``eigh`` of the
+#: current ``T``; one block is a matvec plus two CGS passes against the whole basis. Checking every
+#: block costs more than it saves, never checking wastes the tail of every restart; the minimum is a
+#: broad plateau around 8-12 (``doc/plans/gs_redesign.md``).
 CONTINUATION_CHECK_EVERY = 8
 
-_TRLM_EXIT = ["?"]
+#: Restarts of no real progress before the loop gives up. The residual is not monotone across
+#: restarts, so progress is judged on the best value seen so far.
+STAGNATION_PATIENCE = 20
+#: Factor the best-so-far residual must improve by within one patience window to count as progress.
+STAGNATION_FACTOR = 10.0
+
+#: Exit statuses of :func:`trlm`. ``"ceiling"``, ``"stagnated"`` and ``"restart_cap"`` mean the
+#: requested accuracy (and, in window mode, the completeness of the window) was *not* reached.
+STATUS_CONVERGED = (
+    "converged",
+    "continuation_converged",
+    "invariant_subspace_sweep",
+    "invariant_subspace_continuation",
+)
 
 
-def _trlm_extract(T_full, Q, dim, num_wanted, comm, slater):
-    """Diagonalize the leading ``dim`` x ``dim`` block of the (possibly arrowhead)
-    ``T_full`` and form the ``num_wanted`` lowest Ritz vectors as combinations of
-    ``Q[:dim]``. Path-agnostic (array ndarray, ManyBodyState list, or ManyBodyState)
-    via ``block_combine``. Shared by the TRLM early-exit / breakdown / final-extraction
-    paths so they all honor the true (possibly deflated) subspace dimension ``dim``
-    instead of a padded ``m_actual * p``.
+class StagnationMonitor:
+    """Windowed no-progress detector for the restart loop.
 
-    Materializes a block result to ``list[ManyBodyState]`` here, at the actual return
-    boundary: the documented ``eigvecs`` contract predates the block-native restart
-    bookkeeping (see ``as_state_list``)."""
-    eigvals_T, eigvecs_T = sp.eigh(T_full[:dim, :dim])
+    The residual is not monotone across restarts, so the test is on the best value seen so far,
+    compared across a window of ``patience`` restarts.
+    """
+
+    def __init__(self, patience=None, factor=None):
+        # Read at construction, not as default arguments, so a test can monkeypatch the module-level
+        # calibration.
+        self.patience = STAGNATION_PATIENCE if patience is None else int(patience)
+        self.factor = STAGNATION_FACTOR if factor is None else float(factor)
+        self.best = float("inf")
+        self._window_ref = float("inf")
+        self._window_start = None
+
+    def update(self, restart, residual):
+        """Record one restart; return True when the loop has stopped making progress."""
+        residual = float(residual)
+        self.best = min(self.best, residual)
+        if self._window_start is None:
+            self._window_ref = residual
+            self._window_start = restart
+            return False
+        if restart - self._window_start < self.patience:
+            return False
+        advanced = self.best <= self._window_ref / self.factor
+        self._window_ref = self.best
+        self._window_start = restart
+        return not advanced
+
+
+@dataclass(frozen=True)
+class Window:
+    """Energy window ``[ref, ref + max_energy]`` of Ritz values that must be returned whole.
+
+    ``ref`` is the lowest Ritz value, or ``e0`` when the caller knows the absolute origin (a solve
+    in the complement of locked vectors, whose own lowest Ritz value is not the spectrum's).
+    A degenerate group (gaps ``<= deg_tol``) straddling the upper edge is absorbed whole, never
+    bisected. ``bracket_fraction``: the first Ritz pair above the window counts as converged once
+    its residual is below this fraction of its distance to the window edge.
+    """
+
+    max_energy: float
+    deg_tol: float
+    e0: float | None = None
+    bracket_fraction: float = 0.1
+
+    def split(self, theta):
+        """``(n_in, top)`` for ascending ``theta``: the number of Ritz values inside the window and its upper edge."""
+        ref = theta[0] if self.e0 is None else self.e0
+        edge = ref + self.max_energy
+        n_in = int(np.count_nonzero(theta <= edge))
+        while 0 < n_in < len(theta) and theta[n_in] - theta[n_in - 1] <= self.deg_tol:
+            n_in += 1
+        return n_in, (max(edge, float(theta[n_in - 1])) if n_in else edge)
+
+
+class TRLMResult(NamedTuple):
+    """``eigvals`` ascending, ``eigvecs`` ``(n_local, len(eigvals))``, exit ``status``, and ``n_in``.
+
+    ``n_in`` is the number of returned pairs inside the window (``None`` in count mode); the one
+    pair after them is the bracket. In window mode ``status in STATUS_CONVERGED`` certifies that the
+    in-window pairs reached ``tol`` and the bracket sits above them.
+    """
+
+    eigvals: np.ndarray
+    eigvecs: np.ndarray
+    status: str
+    n_in: int | None
+
+
+def _assess(theta, res, tol, window, n_converge):
+    """``(metric, n_ret, n_in)``: the quantity the loop drives below ``tol``, and what to return.
+
+    Count mode: the largest residual of the ``n_converge`` lowest pairs. Window mode: the largest
+    in-window residual, and the bracket pair's residual rescaled so that "bracket converged" is
+    ``metric < tol`` too (infinite when no pair lies above the window yet).
+    """
+    if window is None:
+        return float(np.max(res[:n_converge])), None, None
+    n_in, top = window.split(theta)
+    if n_in >= len(theta):
+        return float("inf"), n_in, n_in
+    r_in = float(np.max(res[:n_in])) if n_in else 0.0
+    gap = float(theta[n_in]) - top
+    threshold = max(tol, window.bracket_fraction * gap)
+    return max(r_in, float(res[n_in]) * tol / threshold), n_in + 1, n_in
+
+
+def _extract(T, Q, dim, num_wanted, comm, window):
+    """Ritz pairs of the leading ``dim`` x ``dim`` block of ``T`` formed from ``Q[:, :dim]``.
+
+    ``num_wanted`` lowest pairs (count mode), or the window plus its bracket. The ``eigh`` runs on
+    rank 0 and is broadcast so every rank forms identical Ritz vectors.
+    """
+    theta, S = sp.eigh(T[:dim, :dim])
     if comm is not None:
-        eigvals_T = comm.bcast(eigvals_T, root=0)
-        eigvecs_T = comm.bcast(eigvecs_T, root=0)
-    wanted = np.argsort(eigvals_T)[:num_wanted]
-    eigvecs = block_combine(slice_cols(Q, 0, dim), eigvecs_T[:, wanted], slater)
-    return eigvals_T[wanted], as_state_list(eigvecs)
+        theta = comm.bcast(theta, root=0)
+        S = comm.bcast(S, root=0)
+    if window is None:
+        n_ret, n_in = num_wanted, None
+    else:
+        n_in, _ = window.split(theta)
+        n_ret = min(len(theta), n_in + 1)
+    wanted = np.argsort(theta)[:n_ret]
+    return theta[wanted], block_combine(slice_cols(Q, 0, dim), S[:, wanted], 0.0), n_in
 
 
-def _extract_invariant_subspace(
-    alphas, betas_off, widths, Q_basis, num_wanted, comm, slater, verbose, rank0, total, m_actual, m, q_m
-):
-    """Terminal early-exit for ``_trlm_core``'s initial sweep, for the two ways the
-    block-Krylov space can be **closed**: a sweep that returned fewer blocks than
-    asked (``m_actual < m``), and one that stored no trailing residual block at all
-    (``q_m is None``, i.e. it broke out before appending ``q_next``, which it only
-    does on breakdown). In both the spanned space is (near-)invariant, so its Ritz
-    pairs are accurate eigenpairs and we extract directly. T here is a pure
-    block-tridiagonal, so the banded solver suffices (no dense T); this also avoids
-    the restart loop, which needs a residual block to hang the thick-restart spike on.
+def _extract_invariant_subspace(alphas, betas_off, widths, Q_basis, num_wanted, comm, window, m_actual, m, q_m):
+    """Terminal early exit for the initial sweep when the block-Krylov space is **closed**.
 
-    **Block deflation is deliberately not one of them.** A rank-deficient residual at
-    some step narrows the block; it does not close the space. A sweep that deflates at
-    step 1 and then runs all ``m`` blocks at the reduced width ends with a perfectly
-    good residual block, and routing it here skips the restart loop -- which is what
-    actually converges the Ritz pairs. Measured on NiO 7-bath: one such solve (widths
-    ``[3, 2, 2, ...]``, ``m_actual == m == 48``, ``q_m`` present) returned 20 states of
-    which only the lowest 2 were converged, the rest carrying true residuals from
-    3.6e-5 up to 4.0e-2 against a requested ``tol`` of 1e-8 -- and two of the
-    unconverged ones sat inside the thermal cut, i.e. in the returned manifold. The
-    restart loop handles narrowed blocks by design (it tracks ``cur_widths`` and sizes
-    the continuation off ``p_resid``, not the nominal ``p``), so deflation with a live
-    residual block belongs there.
-
-    Returns the ``(eigvals, eigvecs)`` result, or ``None`` if the restart loop
-    should run instead.
+    Closed means the sweep returned fewer blocks than asked (``m_actual < m``) or stored no trailing
+    residual block (``q_m is None``). Its Ritz pairs are then exact, ``T`` is block-tridiagonal and
+    the banded solver suffices. **Block deflation is not closure**: a rank-deficient residual
+    narrows the block but leaves a live residual block, and the restart loop is what converges the
+    pairs then. Returns the result, or ``None`` when the restart loop should run.
     """
     if not (m_actual < m or q_m is None):
         return None
-    if verbose and rank0:
-        print(f"[TRLM] Invariant subspace (dim {total}). Extracting directly.")
-    eigvals_T, eigvecs_T = eigh_block_tridiagonal(alphas, betas_off, block_widths=widths)
+    theta, S = eigh_block_tridiagonal(alphas, betas_off, block_widths=widths)
     if comm is not None:
-        eigvals_T = comm.bcast(eigvals_T, root=0)
-        eigvecs_T = comm.bcast(eigvecs_T, root=0)
-    wanted = np.argsort(eigvals_T)[:num_wanted]
-    return eigvals_T[wanted], as_state_list(block_combine(Q_basis, eigvecs_T[:, wanted], slater))
+        theta = comm.bcast(theta, root=0)
+        S = comm.bcast(S, root=0)
+    if window is None:
+        n_ret, n_in = num_wanted, None
+    else:
+        n_in, _ = window.split(theta)
+        n_ret = min(len(theta), n_in + 1)
+    wanted = np.argsort(theta)[:n_ret]
+    return TRLMResult(theta[wanted], block_combine(Q_basis, S[:, wanted], 0.0), "invariant_subspace_sweep", n_in)
 
 
 def _deflate(wp, locked, mpi, comm):
-    """Project ``wp`` out of ``span(locked)``; the identity when no locked set is given.
+    """Project ``wp`` out of ``span(locked)`` (two CGS passes); the identity when ``locked`` is None.
 
-    The restart loop's matvecs see ``P H P`` with ``P = I - L L^H`` this way. It must run *last*,
-    after the CGS passes against the stored basis and right before the block is normalized: the
-    stored columns carry an O(eps) locked component of their own, which those passes put back into
-    ``wp``, and normalization amplifies it. Projected first, the locked component grew ~1.5x per
-    continuation block (1e-16 to 6e-15 over nine blocks), and over the 200-restart budget the locked
-    ground level, lower than everything in the complement, came back as the "lowest" state.
-
-    Two classical Gram-Schmidt passes. Collective on ``comm`` whenever ``locked`` is given, which is a
+    Runs *last*, after the passes against the stored basis and right before normalization: the
+    stored columns carry an O(eps) locked component that those passes put back into ``wp``, and
+    normalization amplifies it. Collective on ``comm`` whenever ``locked`` is given, which is a
     rank-invariant argument.
     """
     if locked is not None:
@@ -167,375 +219,194 @@ def _deflate(wp, locked, mpi, comm):
     return wp
 
 
-def _restart_coefficients(
-    D,
-    eigvals_T,
-    keep,
-    Y_last,
-    beta_res,
-    q_m,
-    p_resid,
-    nkeep,
-    k_ret,
-    orth_err,
-    Q_ret,
-    h_op,
-    basis,
-    mpi,
-    comm,
-    slater,
-    stop_beta,
-    num_wanted,
-    restart,
-    verbose,
-    rank0,
-    locked=None,
-):
-    """Choose the thick-restart coefficients for the arrowhead ``T_full`` spike,
-    via one of two arms decided by whether the retained Ritz block
-    ``Q_ret ~ Q_basis[:D] @ Y_k`` stayed semi-orthogonal.
-
-    Returns ``(early_result, T_lead, cross, q_m, p_resid, beta_res)``.
-    ``early_result`` is ``None`` to continue the restart with the returned
-    coefficients, or the ``(eigvals, eigvecs)`` tuple the caller should return
-    immediately when the Rayleigh-Ritz residual itself collapses to an invariant
-    subspace.
-    """
-    if k_ret == nkeep and orth_err <= RESTART_ORTH_TOL:
-        # Healthy case. The textbook thick-restart coefficients follow from the recurrence
-        # identity H Q = Q T + q_m beta_res E_last^H together with Q^H Q = I, and cost
-        # nothing: the retained block's projected operator is diag(theta_keep), the spike
-        # is beta_res @ Y_last, and the carried-over residual block q_m is already the
-        # whole residual -- (I - P) H Q_ret = q_m beta_res Y_last has rank <= p.
-        T_lead = np.asarray(np.diag(eigvals_T[keep]), dtype=complex)
-        cross = beta_res @ Y_last  # (p_resid, nkeep)
-        return None, T_lead, cross, q_m, p_resid, beta_res
-
-    # The retained block lost semi-orthogonality (and possibly rank). Q^H Q != I, so
-    # *neither* textbook coefficient is valid -- both derive from it -- and rescaling
-    # them by the orthonormalizing factor only amplifies the error by 1/sigma_min.
-    # Rebuild the restart from actual matvecs instead: a plain Rayleigh-Ritz step on
-    # the orthonormalized retained basis, which needs no premise about Q_basis at all.
-    #   T_lead = Q_ret^H H Q_ret
-    #   q_m    = orthonormalized (I - Q_ret Q_ret^H) H Q_ret
-    #   cross  = q_m^H H Q_ret = beta_res  (q_m _|_ Q_ret, so the projection drops out)
-    # Costs k_ret matvecs, on the restarts that need it. Without Q^H Q = I the residual
-    # is no longer rank <= p, so q_m can be up to k_ret wide -- hence T_full is sized
-    # off p_resid below, not off p. Keeping the *whole* residual matters: the inner loop
-    # stores only the sub-diagonal coupling, so a dropped piece of (I - P) H Q_ret would
-    # leave H q_next with an uncaptured component on Q_ret.
-    # Phase 0 measurement (doc/plans/dc_smo_performance.md): `block_apply`'s array branch
-    # peaks at max(counts) * block_cols(Q_ret) per rank since the Phase 1 row-chunked
-    # reduce-scatter fix (see _block_ops.pxi) -- previously global_N * block_cols(Q_ret),
-    # the bug that fix removed. This is the rebuild arm, so this width can reach `nkeep`
-    # (up to 3p), wider than the sweep width.
-    # Timed, not just noted: reading this call's cost off a synthetic benchmark and folding it
-    # through the recorded widths gave a share with unbounded bias in both directions (the
-    # benchmark sizes every call at the cap, while the real calls run over bases still growing
-    # toward it), which is no basis for a keep-or-drop decision on the code it measures.
-    with _trace_timed("block_apply", site="restart_rebuild", w=block_cols(Q_ret)):
-        HQ = block_apply(h_op, Q_ret, basis, mpi, slater)
-    ovl = block_inner(Q_ret, HQ, mpi, comm)
-    T_lead = 0.5 * (ovl + np.conj(ovl.T))
-    # Thick restart always full-reorthogonalizes the residual against the retained
-    # basis (all modes): the arrowhead T_full requires it, and the PRO W-recurrence
-    # is not maintained across a restart. The first pass reuses the overlaps already
-    # formed for T_lead.
-    wp, _ = block_orthogonalize(HQ, Q_ret, overlaps=ovl, mpi=mpi, comm=comm)
-    wp, _ = block_orthogonalize(wp, Q_ret, mpi=mpi, comm=comm)
-    wp = _deflate(wp, locked, mpi, comm)
-    try:
-        q_m, beta_res = block_normalize(wp, mpi, comm, 0.0)
-    except (sp.LinAlgError, ValueError):
-        q_m = None
-    if q_m is None or np.linalg.norm(beta_res, ord=2) <= stop_beta:
-        if verbose and rank0:
-            print(f"[TRLM] Invariant subspace found at restart {restart}. Stopping early.")
-        return _trlm_extract(T_lead, Q_ret, k_ret, num_wanted, comm, slater), T_lead, None, q_m, p_resid, beta_res
-    p_resid = block_cols(q_m)
-    cross = beta_res  # (p_resid, k_ret)
-    return None, T_lead, cross, q_m, p_resid, beta_res
-
-
-def _trlm_core(
+def trlm(
     psi0,
     h_op,
-    basis,
+    comm,
+    *,
     num_wanted,
     max_subspace_blocks,
-    tol,
-    max_restarts,
-    verbose,
-    slater,
-    comm,
-    sweep,
+    tol=DEFAULT_EIGEN_TOL,
+    max_restarts=100,
+    verbose=False,
     num_converge=None,
     locked=None,
+    window=None,
+    max_keep=None,
 ):
-    """Path-agnostic thick-restart block Lanczos (TRLM).
+    """Thick-restart block Lanczos for the lowest eigenpairs of ``h_op``.
 
-    Implements the thick-restart strategy of Knyazev (2001) and Wu & Simon (2000) to find
-    the ``num_wanted`` algebraically smallest eigenvalues (and Ritz vectors) of ``H``.
-    Drives both the dense-array and ``ManyBodyState`` paths through the path-agnostic
-    ``block_*`` helpers (``block_apply`` / ``block_combine`` / ``block_inner`` /
-    ``block_orthogonalize`` / ``block_normalize``) and a path-specific ``sweep`` callable
-    (``block_lanczos``, for either block representation).
+    Runs one block-Lanczos sweep of ``m`` blocks, diagonalizes the block-tridiagonal ``T``, keeps
+    the lowest ``nkeep = k_blocks * p`` Ritz pairs as one retained super-block, hangs the residual
+    block on it as a thick-restart spike, and continues the recurrence from block ``k_blocks``
+    until the stopping rule is met or ``max_restarts`` is exhausted. Every new vector is fully
+    reorthogonalized against the stored basis (two CGS passes), so the textbook thick-restart
+    coefficients ``diag(theta_keep)`` and ``beta_res @ Y_last`` are exact up to roundoff.
 
-    Algorithm: run one block-Lanczos sweep of ``m`` blocks; diagonalise the
-    block-tridiagonal ``T``; keep the ``k = ceil(n_w/p)`` lowest Ritz pairs as one retained
-    super-block; reattach the residual block as a thick-restart spike; and continue the
-    recurrence from block ``k`` until the maximum wanted residual ``||beta_res s_i||`` drops
-    below ``tol`` or ``max_restarts`` is exhausted. A genuine invariant subspace (fewer
-    blocks than requested) or a block deflation (rank-deficient residual) terminates early
-    with a direct banded extraction.
+    Parameters
+    ----------
+    psi0 : ndarray (n_local, p)
+        Start block; projected out of ``locked`` and orthonormalized here.
+    h_op
+        The operator, ``DistributedSparseMatrix`` or coercible.
+    comm
+        ``mpi4py`` communicator or ``None``.
+    num_wanted : int
+        Count mode: pairs returned. Window mode: the initial number of retained Ritz vectors
+        (``nkeep`` grows from it as the window demands).
+    max_subspace_blocks : int
+        Krylov depth ``m`` in blocks; must exceed ``ceil(num_wanted / p)``.
+    num_converge : int, optional
+        Count mode: how many of the lowest pairs must reach ``tol`` (default all).
+    locked : ndarray (n_local, L), optional
+        Orthonormal columns; the solve is restricted to their orthogonal complement.
+    window : Window, optional
+        Window mode, see the module docstring.
+    max_keep : int, optional
+        Window mode: ceiling on retained vectors. Reaching it ends the solve with status
+        ``"ceiling"`` -- the window is then *not* certified whole.
 
-    The loop is width-aware: blocks can shrink mid-restart (rank-deficient residual ->
-    rectangular beta + narrower ``q_next``), so it tracks each block's actual width
-    (``cur_widths``) and addresses ``T_full`` / ``Q_basis`` by cumulative offsets instead of
-    a constant block width ``p``. ``nkeep = k_blocks * p`` is the *requested* number of
-    retained Ritz vectors (one diagonal super-block coupled to the residual by the
-    thick-restart spike), not a block width -- and not necessarily the number actually
-    retained; see below.
-
-    Two ways to restart, chosen per restart by the retained block's orthogonality:
-
-    * ``||Q^H Q - I|| <= RESTART_ORTH_TOL`` at full rank -- use the textbook coefficients
-      (``diag(theta_keep)`` for the retained block, ``beta_res @ Y_last`` for the spike).
-      They follow from the recurrence identity ``H Q = Q T + q_m beta_res E_last^H``
-      *together with* ``Q^H Q = I``, and cost nothing.
-    * otherwise -- an explicit Rayleigh-Ritz step on the orthonormalized retained basis,
-      which assumes nothing about ``Q_basis``, at the price of ``k_ret`` matvecs.
-      ``reort=NONE`` needs this (measured ``||Q^H Q - I|| = 1.0`` on a spectrum with a 1e-9
-      cluster, where the retained block is also rank deficient); the semi-orthogonal modes
-      never take it.
-
-    MPI: the dense ``sp.eigh`` results (replicated across ranks because ``T_full`` is built
-    from Allreduced coefficients) are broadcast from rank 0 so every rank uses identical Ritz
-    vectors and the restart bases stay in lock-step. The branch above is decided from an
-    Allreduced Gram matrix, so it too is identical on every rank -- it must be, because the
-    Rayleigh-Ritz arm issues four collectives.
-
-    Returns:
-        tuple[numpy.ndarray, list | numpy.ndarray]: ``(eigvals, eigvecs)`` — the smallest
-        eigenvalues (ascending) and matching Ritz vectors in the path's basis
-        representation. **May be fewer than ``num_wanted``** when the retained Ritz block
-        deflates below that and the continuation then closes on an invariant subspace: only
-        ``k_ret`` independent directions were ever there. Callers must use ``len(eigvals)``.
+    Returns
+    -------
+    TRLMResult
+        May hold fewer pairs than requested when the space closes on an invariant subspace.
+        Callers must use ``len(eigvals)``.
     """
-    _TRLM_EXIT[0] = "?"
-    done = False
+    from impurityModel.ed.BlockLanczosCore import block_lanczos
+
     mpi = comm is not None and getattr(comm, "size", 1) > 1
     rank0 = (not mpi) or comm.rank == 0
+    h_op = DistributedSparseMatrix.coerce(h_op, comm)
 
-    is_arr = is_array(psi0)
-    p = (psi0.shape[1] if (is_arr and psi0.ndim == 2) else 1) if is_arr else block_cols(psi0)
+    psi0 = np.ascontiguousarray(psi0 if psi0.ndim == 2 else np.reshape(psi0, (-1, 1)), dtype=complex)
+    if locked is not None:
+        locked = np.ascontiguousarray(locked, dtype=complex)
+        psi0 = _deflate(psi0, locked, mpi, comm)
+    psi0, _ = block_normalize(psi0, mpi, comm, 0.0)
+
+    p = psi0.shape[1]
     k_blocks = int(np.ceil(num_wanted / p))
     m = max_subspace_blocks
     if m <= k_blocks:
         raise ValueError("max_subspace_blocks must be strictly greater than ceil(num_wanted / p).")
+    continuation = m - k_blocks
+    n_converge = num_wanted if num_converge is None else max(1, min(int(num_converge), num_wanted))
 
-    # --- Initial Lanczos run --------------------------------------------
-    alphas, betas, Q_basis, widths = sweep(psi0, m)
+    # --- Initial sweep ---------------------------------------------------
+    alphas, betas, Q_basis, widths, _status = block_lanczos(
+        psi0=psi0,
+        h_op=h_op,
+        converged=lambda a, b, **kw: False,
+        max_iter=m,
+        verbose=verbose,
+        reort=True,
+        return_widths=True,
+        return_status=True,
+        comm=comm,
+        locked=locked,
+    )
     m_actual = len(alphas)
     if m_actual == 0:
         raise RuntimeError("Block Lanczos produced zero iterations.")
-
-    # The sweep can shrink blocks (rank-deficient beta -> deflation), so the true subspace
-    # dimension is sum(widths), not the padded m_actual * p. All slicing / T construction
-    # must use the real widths or they desynchronize from Q_basis.
+    # The sweep can shrink blocks (rank-deficient beta -> deflation), so the subspace dimension is
+    # sum(widths), not m_actual * p.
     total = width_synced_total(Q_basis, widths, m_actual, p, "TRLM initial sweep")
     if verbose and rank0 and total < m_actual * p:
-        # Narrowed blocks, not a closed space: the restart loop below is width-aware and
-        # takes it from here.
         print(f"[TRLM] Sweep deflated to dim {total} (< {m_actual * p}); continuing to the restart loop.")
-
-    # Split the trailing residual block off the basis.
     q_m = copy_block(slice_cols(Q_basis, total, block_cols(Q_basis))) if block_cols(Q_basis) > total else None
     Q_basis = slice_cols(Q_basis, 0, total)
+    betas_off = trim_trailing_beta(betas, m_actual)
 
-    _betas_off = trim_trailing_beta(betas, m_actual)
+    closed = _extract_invariant_subspace(alphas, betas_off, widths, Q_basis, num_wanted, comm, window, m_actual, m, q_m)
+    if closed is not None:
+        return closed
 
-    # A closed block-Krylov space -- fewer blocks than asked for, or no trailing residual
-    # block at all. Deflation alone is NOT closure; see _extract_invariant_subspace's docstring.
-    early_result = _extract_invariant_subspace(
-        alphas, _betas_off, widths, Q_basis, num_wanted, comm, slater, verbose, rank0, total, m_actual, m, q_m
-    )
-    if early_result is not None:
-        _TRLM_EXIT[0] = "invariant_subspace_sweep"
-        return early_result
-
-    # The thick restart below builds an *arrowhead* T (a spike couples the retained Ritz
-    # block to the residual), which is not banded; this path keeps the dense T_full.
-    T_full = _build_full_T(alphas, _betas_off, block_widths=widths)
-
-    # --- Width-aware thick restart -------------------------------------------------
+    # The thick restart builds an arrowhead T (a spike couples the retained block to the residual),
+    # which is not banded, so this path keeps the dense T_full.
+    T_full = _build_full_T(alphas, betas_off, block_widths=widths)
     nkeep = k_blocks * p
-    p_resid = block_cols(q_m)  # q_m is not None here: the closed-space case extracted above
-    # betas[-1] is the trailing coupling, padded to (p, p) by the kernel, and by the
-    # convention _build_full_T uses its real shape is (width of the block it couples *to*,
-    # width of the block it couples *from*) -- here (p_resid, widths[-1]). Both can be below
-    # the nominal p: the residual block deflates on its own, and a sweep that narrowed its
-    # diagonal blocks leaves widths[-1] < p as well. Slicing only the rows was enough while
-    # block deflation short-circuited into _extract_invariant_subspace and never got here;
-    # it raised a shape ValueError in `beta_res @ eigvecs_T[...]` the moment that stopped.
+    p_resid = block_cols(q_m)
+    # betas[-1] is the trailing coupling, padded to (p, p) by the kernel; its real shape is
+    # (width of the block it couples to, width of the block it couples from).
     beta_res = betas[len(betas) - 1][:p_resid, : widths[len(widths) - 1]]
     cur_widths = list(widths)
 
-    # Converge the states the caller actually needs, not the padding. `get_eigenvectors`
-    # asks for `num_wanted + 10` so it can certify that a kept manifold is whole (a state
-    # landing outside the thermal cut proves the boundary is complete), but those extra
-    # states are dropped by the energy cut and only their *energies* are ever read. Holding
-    # the whole solve to `tol` on their residuals lets one slow padding state stall a solve
-    # whose wanted states converged long ago: measured on an SrMnO3 ground state, a single
-    # such solve burned all 100 restarts moving the max residual from 6.9e-5 to 6.4e-5 while
-    # the eigenvalue sat bit-identical for the last 61 of them -- 10% of every Lanczos restart
-    # in that run, for nothing.
-    n_converge = num_wanted if num_converge is None else max(1, min(int(num_converge), num_wanted))
     monitor = StagnationMonitor()
     stagnated = False
-    # The continuation's Krylov basis. One store for the whole solve: each restart refills it
-    # in place, so appending a block copies that block and nothing else.
+    done = False
+    status = "restart_cap"
+    n_in = None
     store = KrylovColumnStore()
-    _local_basis = getattr(basis, "local_basis", None)
-    row_hint = len(_local_basis) if _local_basis is not None else None
+    row_hint = psi0.shape[0]
 
     for restart in range(max_restarts):
-        # Q_basis carries exactly the columns T_full[:D, :D] is expressed in: the trailing
-        # residual block lives in q_m, not in Q_basis.
         check_width_sync(Q_basis, cur_widths, f"TRLM restart {restart}", exact=True)
         D = int(sum(cur_widths))
         p_last = cur_widths[len(cur_widths) - 1]
-        eigvals_T, eigvecs_T = sp.eigh(T_full[:D, :D])
+        theta, S = sp.eigh(T_full[:D, :D])
         if comm is not None:
-            eigvals_T = comm.bcast(eigvals_T, root=0)
-            eigvecs_T = comm.bcast(eigvecs_T, root=0)
-        res_norms = np.linalg.norm(beta_res @ eigvecs_T[D - p_last : D, :], axis=0)
-        wanted = np.argsort(eigvals_T)[:n_converge]
-        max_res = float(np.max(res_norms[wanted]))
+            theta = comm.bcast(theta, root=0)
+            S = comm.bcast(S, root=0)
+        res = np.linalg.norm(beta_res @ S[D - p_last : D, :], axis=0)
+        metric, _n_ret, n_in = _assess(theta, res, tol, window, n_converge)
 
-        # Threshold below which a residual block means "stop here". Two reasons to stop,
-        # and neither is a flat absolute tolerance (which would cap TRLM's residual at a
-        # fixed value for any O(1)-norm operator, whatever `tol` asks):
-        #   * ||beta|| < tol       -- every Ritz residual ||beta s_i|| is then already under tol;
-        #   * ||beta|| <= BREAKDOWN_TOL * ||T||  -- the block is numerically zero against the
-        #     operator scale, i.e. a genuine invariant subspace.
-        t_scale = float(np.max(np.abs(eigvals_T))) if eigvals_T.size else 1.0
+        # Stop threshold for a residual block: ||beta|| < tol (every Ritz residual is then under tol)
+        # or numerically zero against the operator scale (a genuine invariant subspace).
+        t_scale = float(np.max(np.abs(theta))) if theta.size else 1.0
         stop_beta = max(float(tol), BREAKDOWN_TOL * t_scale)
 
         if verbose and rank0:
-            print(f"[TRLM] Restart {restart:3d} | MinEigval={eigvals_T[0]:.6f} | MaxWantedRes={max_res:.2e}")
+            print(f"[TRLM] Restart {restart:3d} | MinEigval={theta[0]:.6f} | Metric={metric:.2e} | n_in={n_in}")
 
-        done = max_res < tol
-
-        # Give up on a solve that has stopped making progress. The residual oscillates across
-        # thick restarts, so this tracks the best value seen and asks whether *that* improved
-        # by `STAGNATION_FACTOR` over the last `STAGNATION_PATIENCE` restarts. Reaching the
-        # `max_restarts` cap already returns under-converged Ritz pairs; stopping here reaches
-        # the same outcome sooner rather than a worse one, and `_TRLM_EXIT` distinguishes the
-        # two so a caller (or a test) can tell why the loop ended.
-        stagnated = monitor.update(restart, max_res)
+        done = metric < tol
+        stagnated = monitor.update(restart, metric)
         if mpi:
-            # One collective for both decisions, unconditionally on every rank. `max_res` is
-            # derived from a root-broadcast eigendecomposition and should already agree, but a
-            # rank-local disagreement here would be two ranks taking different `break`s out of
-            # a loop whose body is collective -- the deadlock this file's MPI rule exists for.
+            # One collective for both decisions on every rank: a rank-local disagreement would send
+            # two ranks out of a collective loop body through different breaks.
             done, stagnated = comm.bcast((done, stagnated), root=0)
         if done:
-            if verbose and rank0:
-                print("[TRLM] Converged!")
+            status = "converged"
             break
         if stagnated:
-            if verbose and rank0:
-                print(
-                    f"[TRLM] Stagnated: best residual {monitor.best:.2e} improved by less than "
-                    f"{monitor.factor:g}x over {monitor.patience} restarts (tol {tol:.2e}); "
-                    f"stopping at restart {restart} with under-converged Ritz pairs."
-                )
+            status = "stagnated"
             break
 
-        keep = np.argsort(eigvals_T)[:nkeep]
-        Y_k = eigvecs_T[:, keep]
-        Y_last = Y_k[D - p_last : D, :]  # last-block rows -> thick-restart spike
+        if window is not None:
+            # The window holds more states than are being retained: retain more. T_full and the
+            # store are reallocated every restart, so growing costs nothing already built.
+            want = n_in + 1 + p
+            if want > nkeep:
+                new_blocks = int(np.ceil(want / p))
+                if max_keep is not None and new_blocks * p > max_keep:
+                    status = "ceiling"
+                    break
+                k_blocks, nkeep = new_blocks, new_blocks * p
+                m = max(m, k_blocks + continuation)
+                monitor = StagnationMonitor()
 
-        # The retained Ritz block X = Q_basis[:D] @ Y_k inherits Q_basis's orthonormality.
-        # Both thick-restart coefficient shortcuts below are derived from Q^H Q = I, so they
-        # are only usable while that holds; under reort=NONE the recurrence loses orthogonality, spawns ghost copies of converged Ritz
-        # values, and X can even become rank deficient -- block_normalize then deflates it to
-        # k_ret < nkeep columns. cur_widths, T_full's leading block, the spike and the residual
-        # must all follow the *actual* width k_ret, or T's dimension desynchronizes from
-        # Q_basis and the next restart's block_combine raises (or, worse, silently pairs Ritz
-        # values with the wrong vectors).
-        X = block_combine(slice_cols(Q_basis, 0, D), Y_k, 0.0)
-        gram = block_inner(X, X, mpi, comm)
-        orth_err = float(np.linalg.norm(gram - np.eye(gram.shape[0]), ord=2))
-        Q_ret, _ = block_normalize(X, mpi, comm, 0.0)
+        keep = np.argsort(theta)[:nkeep]
+        Y_k = S[:, keep]
+        Y_last = Y_k[D - p_last : D, :]
+        # The retained block X = Q Y inherits Q's orthonormality; normalizing it only removes the
+        # O(eps) drift. It cannot lose rank (Q is orthonormal, Y has orthonormal columns).
+        Q_ret, _ = block_normalize(block_combine(slice_cols(Q_basis, 0, D), Y_k, 0.0), mpi, comm, 0.0)
         k_ret = block_cols(Q_ret)
-        if verbose and rank0:
-            print(f"[TRLM] Restart {restart}: retained block ||Q^H Q - I|| = {orth_err:.2e}, rank {k_ret}/{nkeep}")
+        if k_ret != len(keep):
+            raise RuntimeError(f"TRLM: retained Ritz block lost rank ({k_ret} of {len(keep)}) at restart {restart}.")
+        T_lead = np.asarray(np.diag(theta[keep]), dtype=complex)
+        cross = beta_res @ Y_last  # (p_resid, k_ret)
+        # The carried-over residual block q_m is already the whole residual: (I - P) H Q_ret =
+        # q_m beta_res Y_last has rank <= p_resid.
 
-        # Two arms (textbook coefficients vs. an explicit Rayleigh-Ritz rebuild) --
-        # see _restart_coefficients's docstring for when each applies.
-        early_result, T_lead, cross, q_m, p_resid, beta_res = _restart_coefficients(
-            D,
-            eigvals_T,
-            keep,
-            Y_last,
-            beta_res,
-            q_m,
-            p_resid,
-            nkeep,
-            k_ret,
-            orth_err,
-            Q_ret,
-            h_op,
-            basis,
-            mpi,
-            comm,
-            slater,
-            stop_beta,
-            num_wanted,
-            restart,
-            verbose,
-            rank0,
-            locked=locked,
-        )
-        if early_result is not None:
-            _TRLM_EXIT[0] = "restart_coefficients"
-            return early_result
-
-        # The continuation adds at most (m - k_blocks) blocks, and block widths are
-        # non-increasing under deflation, so none is wider than the residual block it starts
-        # from. Sizing off p_resid (not the constant p) is what keeps the deflating branch --
-        # whose residual can be wider than p -- inside T_full.
         dim = k_ret + (m - k_blocks) * p_resid
-        # `T_full` is allocated at `dim` *before* a single continuation block is built, and `dim`
-        # multiplies `p_resid` by the whole continuation length. On the textbook arm `p_resid` is
-        # the sweep width `p`; on the Rayleigh-Ritz rebuild arm the residual has rank up to
-        # `k_ret`, which would size this allocation off a width the loop may never reach -- at
-        # SrMnO3's production point, `186 + 111*186 = 20,832`, i.e. a 6.9 GB `np.zeros` on every
-        # rank with nothing bounding it.
-        #
-        # Measured, so the concern can be retired rather than carried: over 115 restarts of the
-        # SrMnO3 double-counting reproduction at three determinant caps, `dim` never once exceeded
-        # `m * p`, `p_resid` never exceeded `p` (6), and `orth_err` sat at ~2e-12 against a
-        # `RESTART_ORTH_TOL` of 1.5e-8 -- the rebuild arm does not fire at the ground state's
-        # `reort=True`. Kept as a trace note, not an assertion: it is the cheap way to notice if
-        # a future caller at a weaker `reort` ever does reach that arm.
         _trace_note(
-            "trlm_restart",
-            restart=int(restart),
-            k_ret=int(k_ret),
-            p_resid=int(p_resid),
-            dim=int(dim),
-            budget=int(m * p),
-            orth_err=float(orth_err),
+            "trlm_restart", restart=int(restart), k_ret=int(k_ret), p_resid=int(p_resid), dim=int(dim), n_in=n_in
         )
         T_full = np.zeros((dim, dim), dtype=complex)
         T_full[:k_ret, :k_ret] = T_lead
 
-        # The old basis is dead (X and Q_ret are fresh arrays), and it may be a view of the
-        # store's buffer, which reset overwrites. Drop it first so a growing reallocation does
-        # not keep the old buffer alive next to the new one.
+        # The old basis is dead (Q_ret is a fresh array) and may be a view of the store's buffer,
+        # which reset overwrites: drop it first so a growing reallocation does not hold two buffers.
         Q_basis = None
         store.reset(Q_ret, dim, row_hint=row_hint)
         store.append(Q_ret)
@@ -545,25 +416,18 @@ def _trlm_core(
         T_full[:k_ret, k_ret : k_ret + p_resid] = np.conj(cross.T)
 
         cur_widths = [k_ret, p_resid]
-        off = k_ret  # column start of the current block q1
+        off = k_ret
         w1 = p_resid
         q1 = q_m
-        q_m = None  # consumed; the new trailing residual is set at the last inner step
+        q_m = None
 
         for i in range(k_blocks, m):
-            # Phase 0 measurement: this fires once per continuation block, every restart --
-            # the dominant call count for `block_apply`'s array-branch peak (see the rebuild
-            # arm's note above and doc/plans/dc_smo_performance.md).
             with _trace_timed("block_apply", site="continuation", w=block_cols(q1)):
-                wp = block_apply(h_op, q1, basis, mpi, slater)
-
+                wp = block_apply(h_op, q1, None, mpi, 0.0)
             # CGS2 against the stored basis. The first pass's overlaps, taken before it projects,
-            # are Q^H H q1, so their last w1 rows are alpha_i; the second pass recomputes
-            # against the now-cleaned wp. Both passes go through the store (never block_inner
-            # on Q_basis directly): on the ManyBodyState arm Q_basis is a SparseKrylovDense.
+            # are Q^H H q1, so their last w1 rows are alpha_i.
             wp, overlaps = store.project(wp, mpi, comm)
-            alpha_i = overlaps[overlaps.shape[0] - w1 :, :]  # q1^H H q1  (w1, w1)
-            T_full[off : off + w1, off : off + w1] = alpha_i
+            T_full[off : off + w1, off : off + w1] = overlaps[overlaps.shape[0] - w1 :, :]
             wp, _ = store.project(wp, mpi, comm)
             wp = _deflate(wp, locked, mpi, comm)
 
@@ -572,44 +436,26 @@ def _trlm_core(
             except (sp.LinAlgError, ValueError):
                 q_next = None
 
-            # Full collapse, or a near-invariant subspace: extract from what we have.
             if q_next is None or np.linalg.norm(beta_i, ord=2) <= stop_beta:
                 if verbose and rank0:
-                    print(f"[TRLM] Invariant subspace found during restart at block {i}. Stopping early.")
-                _TRLM_EXIT[0] = "invariant_subspace_continuation"
-                return _trlm_extract(T_full, Q_basis, off + w1, num_wanted, comm, slater)
+                    print(f"[TRLM] Invariant subspace found during restart at block {i}.")
+                vals, vecs, n_in = _extract(T_full, Q_basis, off + w1, num_wanted, comm, window)
+                return TRLMResult(vals, vecs, "invariant_subspace_continuation", n_in)
 
-            # Converged already? Exactly the test the restart-loop head runs at the top of this
-            # function (`max ||beta s_i|| < tol` over the `num_wanted` lowest Ritz pairs, plain
-            # `tol` and no scale rule), just applied before the subspace has been grown to its
-            # full `m` blocks. Without it the continuation always rebuilds every one of the
-            # `m - k_blocks` blocks, each a matvec plus the two unconditional CGS2 passes above,
-            # even when the wanted pairs stopped moving many blocks ago.
-            #
-            # The estimate is honest here in a way it would not be inside the initial sweep: this
-            # loop fully reorthogonalizes against `Q_basis` whatever `reort` asks for, so the
-            # recurrence identity the residual rests on holds to working precision and a ghost
-            # Ritz value cannot pass the test on lost orthogonality alone.
             D_now = off + w1
-            if i < m - 1 and D_now > num_wanted and (i - k_blocks + 1) % CONTINUATION_CHECK_EVERY == 0:
+            if i < m - 1 and D_now > nkeep and (i - k_blocks + 1) % CONTINUATION_CHECK_EVERY == 0:
                 theta_now, s_now = sp.eigh(T_full[:D_now, :D_now])
                 res_now = np.linalg.norm(beta_i @ s_now[D_now - w1 : D_now, :], axis=0)
-                done_now = float(np.max(res_now[np.argsort(theta_now)[:num_wanted]])) < tol
-                # `sp.eigh` is a rank-local LAPACK call on a replicated `T_full`; a multithreaded
-                # BLAS can make its output differ in the last bits between ranks. Deciding
-                # per-rank would let some ranks return here while the others enter the next
-                # block's collectives -- decide on rank 0 and broadcast, per CLAUDE.md's MPI rule
-                # and matching `done` at the head of the restart loop.
+                metric_now, _, _ = _assess(theta_now, res_now, tol, window, n_converge)
+                done_now = metric_now < tol
+                # `eigh` is a rank-local LAPACK call on a replicated T_full and a threaded BLAS can
+                # make its last bits differ between ranks: decide on rank 0 and broadcast.
                 if mpi:
                     done_now = comm.bcast(done_now, root=0)
                 if done_now:
-                    if verbose and rank0:
-                        print(f"[TRLM] Converged during restart {restart} at block {i} (dim {D_now}).")
-                    _TRLM_EXIT[0] = "continuation_converged"
-                    return _trlm_extract(T_full, Q_basis, D_now, num_wanted, comm, slater)
+                    vals, vecs, n_in = _extract(T_full, Q_basis, D_now, num_wanted, comm, window)
+                    return TRLMResult(vals, vecs, "continuation_converged", n_in)
 
-            # Partial deflation shrinks the block: beta_i is (w_next, w1), q_next has
-            # w_next <= w1 columns; place the arrowhead with those widths.
             w_next = block_cols(q_next)
             if i < m - 1:
                 T_full[off + w1 : off + w1 + w_next, off : off + w1] = beta_i
@@ -625,171 +471,10 @@ def _trlm_core(
                 q_m = q_next
                 p_resid = w_next
 
-    # --- Final extraction -----------------------------------------------
-    if done:
-        _TRLM_EXIT[0] = "restart_loop_end_converged"
-    else:
-        _TRLM_EXIT[0] = "restart_loop_end_stagnated" if stagnated else "restart_loop_end_cap"
-    final_eigvals, final_eigvecs = _trlm_extract(T_full, Q_basis, int(sum(cur_widths)), num_wanted, comm, slater)
+    vals, vecs, n_in = _extract(T_full, Q_basis, int(sum(cur_widths)), num_wanted, comm, window)
     if verbose and rank0:
-        print(f"[TRLM] Final eigvals:\n{final_eigvals}")
-    return final_eigvals, final_eigvecs
-
-
-def _thick_restart_block_lanczos_array(
-    psi0,
-    h_op,
-    basis,
-    num_wanted,
-    max_subspace_blocks,
-    tol,
-    max_restarts,
-    verbose,
-    comm,
-    num_converge=None,
-    locked=None,
-):
-    """Array-path entry point: prepares the ``(N, p)`` start block and the
-    ``block_lanczos`` sweep, then delegates to the shared :func:`_trlm_core`.
-
-    ``locked`` (orthonormal columns, rows distributed like ``psi0``) restricts the solve to the
-    complement of their span: the sweep keeps every Lanczos block orthogonal to them (the kernel's
-    locking deflation) and the restart loop projects every matvec out of their span, so the solver
-    sees ``P H P`` with ``P = I - L L^H``. The start block is projected too. This is how a caller
-    looks for eigenstates it does not have yet without re-finding the ones it does."""
-    from impurityModel.ed.BlockLanczosCore import block_lanczos
-
-    h_op = DistributedSparseMatrix.coerce(h_op, comm)
-    mpi = comm is not None and getattr(comm, "size", 1) > 1
-    # block_lanczos assumes an orthonormal start block (it does not normalize
-    # internally); normalize here so the betas do not grow geometrically and overflow T.
-    psi0 = np.ascontiguousarray(psi0 if psi0.ndim == 2 else np.reshape(psi0, (-1, 1)), dtype=complex)
-    if locked is not None:
-        locked = np.ascontiguousarray(locked, dtype=complex)
-        for _ in range(2):
-            psi0, _ = block_orthogonalize(psi0, locked, mpi=mpi, comm=comm)
-    psi0, _ = block_normalize(psi0, mpi, comm, 0.0)
-
-    def sweep(v0, max_iter):
-        res = block_lanczos(
-            psi0=v0,
-            h_op=h_op,
-            converged=lambda a, b, **kw: False,
-            max_iter=max_iter,
-            verbose=verbose,
-            reort=True,
-            return_widths=True,
-            comm=comm,
-            locked=locked,
-        )
-        # (alphas, betas, Q, block_widths)
-        return res[0], res[1], res[2], res[3]
-
-    return _trlm_core(
-        psi0,
-        h_op,
-        basis,
-        num_wanted,
-        max_subspace_blocks,
-        tol,
-        max_restarts,
-        verbose,
-        0.0,
-        comm,
-        sweep,
-        num_converge=num_converge,
-        locked=locked,
-    )
-
-
-def thick_restart_block_lanczos_cy(
-    psi0,
-    h_op,
-    basis,
-    num_wanted: int,
-    max_subspace_blocks: int,
-    tol: float = DEFAULT_EIGEN_TOL,
-    max_restarts: int = 100,
-    verbose: bool = False,
-    slaterWeightMin: float = 0.0,
-    truncation_threshold: int = 0,
-    comm=None,
-    num_converge=None,
-):
-    """Thick-restart block Lanczos (TRLM) for the ManyBodyState path.
-
-    The MBS-only entry point: prepares the length-``p`` state block and the
-    ``block_lanczos`` sweep, then runs the shared path-agnostic :func:`_trlm_core`.
-
-    Args:
-        psi0: Starting block of ``p`` ``ManyBodyState`` objects.
-        h_op: ``ManyBodyOperator`` Hamiltonian implementing ``apply_multi(psis, cutoff)``.
-        basis: ``Basis`` providing ``redistribute_psis`` and ``basis.comm``.
-        num_wanted: Number of wanted lowest eigenvalues.
-        max_subspace_blocks: Maximum Krylov subspace size in blocks
-            (``> ceil(num_wanted / p)``).
-        tol: Convergence tolerance on the maximum wanted residual. Default ``1e-8``.
-        max_restarts: Maximum number of thick restarts. Default ``100``.
-        verbose: Print restart diagnostics. Default ``False``.
-        slaterWeightMin: Amplitude cutoff for ``ManyBodyState.prune``. Default ``0.0``.
-        comm: ``mpi4py`` communicator. Falls back to ``basis.comm`` or serial.
-
-    Returns:
-        tuple[numpy.ndarray, list]: ``(eigvals, eigvecs)`` — the smallest eigenvalues
-        (ascending) and matching ``ManyBodyState`` Ritz vectors. May be fewer than
-        ``num_wanted``; see :func:`_trlm_core`. Callers must use ``len(eigvals)``.
-    """
-    # Function-local: BlockLanczos.pyx imports this module's dispatcher back out (see
-    # the bottom of this module and the `thick_restart_block_lanczos` re-export), so a
-    # module-level import here would cycle at the first `pip install -e .` depending on
-    # which module happens to import first. One import per outer TRLM call (sweep,
-    # defined below, closes over the name), not per step -- mirrors
-    # _thick_restart_block_lanczos_array's function-local BlockLanczosArray import above.
-    from impurityModel.ed.BlockLanczosCore import block_lanczos
-
-    if comm is None:
-        comm = getattr(basis, "comm", None)
-    mpi = comm is not None and comm.Get_size() > 1
-
-    # Adopt the block-native seed representation up front (matching what the sweep's
-    # fresh-start ingestion and every restart-loop primitive already work in) instead of
-    # coercing to a list: a bare list only ever reaches block_normalize's list-only
-    # fallback from here on out because of this conversion, not because anything downstream
-    # still needs one.
-    if not isinstance(psi0, ManyBodyState):
-        psi0 = ManyBodyState.from_states(list(psi0))
-    psi0, _ = block_normalize(psi0, mpi, comm, slaterWeightMin)
-
-    def sweep(v0, max_iter):
-        res = block_lanczos(
-            psi0=v0,
-            h_op=h_op,
-            basis=basis,
-            converged=lambda a, b, **kw: False,
-            verbose=verbose,
-            reort=True,
-            max_iter=max_iter,
-            slaterWeightMin=slaterWeightMin,
-            truncation_threshold=truncation_threshold,
-            comm=comm,
-            return_widths=True,
-        )
-        return res
-
-    return _trlm_core(
-        psi0,
-        h_op,
-        basis,
-        num_wanted,
-        max_subspace_blocks,
-        tol,
-        max_restarts,
-        verbose,
-        slaterWeightMin,
-        comm,
-        sweep,
-        num_converge=num_converge,
-    )
+        print(f"[TRLM] Final eigvals:\n{vals}")
+    return TRLMResult(vals, vecs, status, n_in)
 
 
 def thick_restart_block_lanczos(
@@ -805,50 +490,37 @@ def thick_restart_block_lanczos(
     num_converge=None,
     locked=None,
 ):
-    """Thick-restart block Lanczos (TRLM), dispatching on the operator type.
-
-    Routes to the array path (dense/sparse ``h_op``) or the ManyBodyState path
-    (``ManyBodyOperator``); both share the path-agnostic :func:`_trlm_core`.
-
-    ``num_converge`` is how many of the lowest states must reach ``tol``; the rest are still
-    computed and returned, just not gated on. ``None`` means all ``num_wanted`` of them.
-
-    ``locked`` (array path only) restricts the solve to the orthogonal complement of those
-    columns; see :func:`_thick_restart_block_lanczos_array`.
-
-    Returns:
-        tuple[numpy.ndarray, list | numpy.ndarray]: ``(eigvals, eigvecs)``.
-    """
-    mpi = basis is not None and getattr(basis, "comm", None) is not None
-    comm = basis.comm if mpi else None
-
-    if not (isinstance(h_op, DistributedSparseMatrix) or is_array(h_op)):
-        if locked is not None:
-            raise NotImplementedError("thick_restart_block_lanczos: `locked` is supported on the array path only")
-        return thick_restart_block_lanczos_cy(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=tol,
-            max_restarts=max_restarts,
-            verbose=verbose,
-            slaterWeightMin=slaterWeightMin,
-            comm=comm,
-            num_converge=num_converge,
-        )
-
-    return _thick_restart_block_lanczos_array(
+    """Count-mode :func:`trlm` returning ``(eigvals, eigvecs)``; ``comm`` is read off ``basis``."""
+    comm = getattr(basis, "comm", None)
+    res = trlm(
         psi0,
         h_op,
-        basis,
-        num_wanted,
-        max_subspace_blocks,
-        tol,
-        max_restarts,
-        verbose,
         comm,
+        num_wanted=num_wanted,
+        max_subspace_blocks=max_subspace_blocks,
+        tol=tol,
+        max_restarts=max_restarts,
+        verbose=verbose,
         num_converge=num_converge,
         locked=locked,
     )
+    return res.eigvals, res.eigvecs
+
+
+def _thick_restart_block_lanczos_array(
+    psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, comm, num_converge=None, locked=None
+):
+    """Count-mode :func:`trlm` with an explicit ``comm``, returning ``(eigvals, eigvecs)``."""
+    res = trlm(
+        psi0,
+        h_op,
+        comm,
+        num_wanted=num_wanted,
+        max_subspace_blocks=max_subspace_blocks,
+        tol=tol,
+        max_restarts=max_restarts,
+        verbose=verbose,
+        num_converge=num_converge,
+        locked=locked,
+    )
+    return res.eigvals, res.eigvecs
