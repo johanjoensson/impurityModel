@@ -542,7 +542,7 @@ def _rixs_map_flat(
     ``Tin_a |psi_e>``, conserved-charge sector windows) is computed on the full communicator
     before the split, so every rank holds the identical unit list.
 
-    Each unit's kernel walks its wIn chunk in order: warm-started :func:`cg.block_bicgstab`
+    Each unit's kernel walks its wIn chunk in order: warm-started :func:`impurityModel.ed.BiCGSTAB.block_bicgstab`
     for the intermediate resolvent (R1 sector confinement, R2 in-component block), then
     ``eval_out(green_basis, psi2_all, E_e) -> (n_i, n_o, len(wLoss))`` evaluates the
     out-transition Green's functions (per-pair diagonal or full tensor contraction).
@@ -782,7 +782,7 @@ def calc_map(
       ``Tin|psi>``, so the resolvent basis is pinned to that sector
       (:func:`symmetries.transition_sector_restrictions`) on top of the occupation window.
     * **In-component block resolvent (R2):** for each ``wIn`` all in-operators' resolvents are
-      solved as one block (:func:`cg.block_bicgstab`), sharing a single Krylov space /
+      solved as one block (:func:`impurityModel.ed.BiCGSTAB.block_bicgstab`), sharing a single Krylov space /
       iteration; the block solver deflates a rank-deficient in-component right-hand side.
     * **Out-component block Green (R3):** for a fixed in-operator all out-operators are run
       through a single block-Lanczos (:func:`gf_solvers.block_Green`); the diagonal
@@ -967,7 +967,7 @@ def calc_tensor_map(
 
     The same efficiency levers as :func:`calc_map` apply -- R1 conserved-charge sector
     confinement of the intermediate resolvent and the R2 block resolvent over the in-components
-    (:func:`cg.block_bicgstab`, which deflates the frequently rank-deficient Cartesian
+    (:func:`impurityModel.ed.BiCGSTAB.block_bicgstab`, which deflates the frequently rank-deficient Cartesian
     in-component right-hand side).
 
     Parameters
