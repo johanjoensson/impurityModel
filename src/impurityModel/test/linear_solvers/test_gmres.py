@@ -1,4 +1,4 @@
-"""Tests for the restarted block-GMRES solver (``impurityModel.ed.gmres.block_gmres``).
+"""Tests for the restarted block-GMRES solver (``impurityModel.ed.GMRES.block_gmres``).
 
 Mirrors ``test_cg.py``'s coverage (the two solvers share their entry contract) plus the
 GMRES-specific cases: restart-cycle behavior, Arnoldi happy breakdown on a closed
@@ -13,8 +13,8 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vector
-from impurityModel.ed.cg import block_bicgstab
-from impurityModel.ed.gmres import block_gmres
+from impurityModel.ed.BiCGSTAB import block_bicgstab
+from impurityModel.ed.GMRES import block_gmres
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.support.gf_oracles import _capped_solve_with, _dense_G_on

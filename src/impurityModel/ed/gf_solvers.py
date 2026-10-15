@@ -27,7 +27,7 @@ from impurityModel.ed.basis_transcription import (
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
-from impurityModel.ed.cg import block_bicgstab
+from impurityModel.ed.BiCGSTAB import block_bicgstab
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.gf_admission import solve_point_outer
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
@@ -48,7 +48,7 @@ from impurityModel.ed.gf_primitives import (
     residual_split,
     resolvent_error_bound,
 )
-from impurityModel.ed.gmres import block_gmres
+from impurityModel.ed.GMRES import block_gmres
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
 from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes
 from impurityModel.ed.mpi_comm import matvec_column_chunk_width
@@ -1050,11 +1050,11 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
 
     Shared by every per-frequency resolvent solve on this branch (:func:`block_Green_bicgstab`,
     the RIXS R1 fallback in ``rixs._rixs_map_flat``): runs up to ``1 + config.GF_BICGSTAB_RESTARTS``
-    :func:`~impurityModel.ed.cg.block_bicgstab` attempts, restarting with the current iterate as
+    :func:`~impurityModel.ed.BiCGSTAB.block_bicgstab` attempts, restarting with the current iterate as
     long as each attempt still makes at least ``_GF_BICGSTAB_RESTART_PROGRESS`` progress over the
     previous residual (each restart re-deflates ``Y - A x0`` and picks a fresh shadow residual,
     which is what cures near-pole stagnation -- a plain re-solve from the same iterate would not).
-    If still unconverged after the restarts, escalates to :func:`~impurityModel.ed.gmres.block_gmres`,
+    If still unconverged after the restarts, escalates to :func:`~impurityModel.ed.GMRES.block_gmres`,
     warm-started from BiCGSTAB's last iterate, before that iterate can poison a warm-start chain
     downstream.
 

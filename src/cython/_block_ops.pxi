@@ -77,6 +77,30 @@ cpdef object block_inner(object V, object W, bint mpi=False, object comm=None):
         return res
 
 
+cpdef object block_col_norms2(object V, bint mpi=False, object comm=None):
+    """Squared 2-norm of every column of a distributed block, summed over the ranks."""
+    if is_array(V):
+        norms = np.linalg.norm(V, axis=0) ** 2
+    else:
+        norms = V.col_norm2()
+    if mpi and comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, norms, op=MPI.SUM)
+    return norms
+
+
+cpdef object block_diag_inner(object A, object B, bint mpi=False, object comm=None):
+    """The diagonal of ``A^H B`` -- ``<A_j|B_j>`` per column -- summed over the ranks.
+
+    O(rows x width), where taking the diagonal of the full Gram matrix is O(rows x width^2)."""
+    if is_array(A):
+        d = np.sum(np.conj(A) * B, axis=0)
+    else:
+        d = np.array(np.diagonal(block_inner_cy(A, B)), dtype=complex)  # a copy: the diagonal view is read-only
+    if mpi and comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, d, op=MPI.SUM)
+    return d
+
+
 def matvec_cut_after_sum(bint redistributes, double cutoff):
     """Whether a sparse matvec cuts ``cutoff`` on its summed rows: exactly when its output is redistributed.
 

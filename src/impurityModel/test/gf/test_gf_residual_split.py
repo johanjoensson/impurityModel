@@ -20,7 +20,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_dense_matrix
-from impurityModel.ed.cg import block_bicgstab
+from impurityModel.ed.BiCGSTAB import block_bicgstab
 from impurityModel.ed.gf_primitives import _CappedBasisProxy, residual_split
 from impurityModel.ed.gf_solvers import block_Green_bicgstab
 from impurityModel.ed.greens_function import _gf_signed_axes

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.basis_transcription import build_sparse_matrix, build_vector
-from impurityModel.ed.cg import block_bicgstab
+from impurityModel.ed.BiCGSTAB import block_bicgstab
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, inner
 

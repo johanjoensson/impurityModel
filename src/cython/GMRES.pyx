@@ -20,28 +20,20 @@ It is **not** memory-flat: each Arnoldi step retains one Krylov block, so a rest
 cycle holds up to ``restart + 3`` live blocks. The fallback role is deliberate --
 BiCGSTAB (7 live blocks) stays the workhorse; GMRES buys robustness on the few flagged
 points.
-
-``impurityModel.ed.gmres`` re-exports the public entry point, mirroring the
-``cg.py`` / ``trlm.py`` thin-wrapper arrangement.
 """
 
 import numpy as np
-from mpi4py import MPI
 
 from impurityModel.ed.BiCGSTAB import _fill_info, _make_matmat, _SupportTracker
-from impurityModel.ed.BlockLanczosArray import (
+from impurityModel.ed.BlockLanczosCore import (
     BREAKDOWN_TOL,
     block_add_scaled,
-    block_combine,
+    block_col_norms2,
     block_inner,
     block_tsqr,
     is_array,
 )
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
-from impurityModel.ed.ManyBodyUtils import (
-    block_add_scaled_cy,
-    block_inner_cy,
-)
 
 # Restarted GMRES on an indefinite spectrum can stall cycle-over-cycle (the restart
 # forgets the subspace), and a stalled fallback should report failure instead of burning
@@ -118,51 +110,20 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
     matmat = _make_matmat(A, basis, slaterWeightMin, is_arr, mpi)
     tracker = None if is_arr else _SupportTracker(basis, slaterWeightMin, mpi, comm)
 
-    # --- small representation-dispatch helpers (the BiCGSTAB core's conventions) -----
-    def b_inner(B1, B2):
-        if is_arr:
-            return block_inner(B1, B2, mpi=mpi, comm=comm)
-        res = block_inner_cy(B1, B2)
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
-        return res
-
-    def axpy(target, source, coeffs):
-        """target + source @ coeffs (dense: in place; sparse: rebound block)."""
-        if is_arr:
-            block_add_scaled(target, source, coeffs, slaterWeightMin=slaterWeightMin)
-            return target
-        out = block_add_scaled_cy(target, source, np.ascontiguousarray(coeffs, dtype=complex))
-        if slaterWeightMin > 0:
-            out.prune_rows(slaterWeightMin)
-        return out
-
     def residual(xi):
-        """R = Y - A X (one matvec) -- the measured true residual."""
+        """R = Y - A X (one matvec) -- the measured true residual. Arrays are updated in place, so they
+        work on a copy; blocks rebind to a fresh support."""
         Ax = matmat(xi)
-        if is_arr:
-            R = y.copy()
-            block_add_scaled(R, Ax, -np.eye(n, dtype=complex), slaterWeightMin=slaterWeightMin)
-            return R
         if tracker is not None:
             tracker.grow(Ax)
-        R = block_add_scaled_cy(y_blk, Ax, -np.eye(n, dtype=complex))
-        if slaterWeightMin > 0:
-            R.prune_rows(slaterWeightMin)
-        return R
+        return block_add_scaled(y.copy() if is_arr else y, Ax, -np.eye(n, dtype=complex), slaterWeightMin)
 
     # --- entry: scales and the warm-start early exit (block_bicgstab's semantics) ----
-    if is_arr:
-        xi = x0.copy()
-        y_cols2 = np.linalg.norm(y, axis=0) ** 2
-    else:
-        xi = x0
-        y_blk = y
-        y_cols2 = y_blk.col_norm2()
-        tracker.seed(y_blk)
+    xi = x0.copy() if is_arr else x0
+    if tracker is not None:
+        tracker.seed(y)
     # Summed for either representation (a distributed array block holds only this rank's rows).
-    if mpi:
-        comm.Allreduce(MPI.IN_PLACE, y_cols2, op=MPI.SUM)
+    y_cols2 = block_col_norms2(y, mpi, comm)
     y_scale = np.sqrt(np.max(y_cols2))
 
     R = residual(xi)
@@ -174,9 +135,7 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
     for cycle in range(max_restarts):
         # The cycle's scale is the largest column norm of R -- an O(n) reduction, where the
         # Gram it used to be read off the diagonal of is O(n^2).
-        r_cols2 = np.linalg.norm(R, axis=0) ** 2 if is_arr else R.col_norm2()
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, r_cols2, op=MPI.SUM)
+        r_cols2 = block_col_norms2(R, mpi, comm)
         r_scale = np.sqrt(max(np.max(r_cols2), 0.0))
         scale = y_scale if y_scale > 0.0 else r_scale
         rel_res = r_scale / scale if scale > 0.0 else 0.0
@@ -229,12 +188,10 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
             total_iters += 1
             # Block modified Gram-Schmidt against every retained block.
             for i in range(j + 1):
-                Hij = b_inner(V[i], W)
+                Hij = block_inner(V[i], W, mpi, comm)
                 Hbar[col_off[i] : col_off[i] + widths[i], col_off[j] : col_off[j] + widths[j]] = Hij
-                W = axpy(W, V[i], -Hij)
-            w_cols2 = np.linalg.norm(W, axis=0) ** 2 if is_arr else W.col_norm2()
-            if mpi:
-                comm.Allreduce(MPI.IN_PLACE, w_cols2, op=MPI.SUM)
+                W = block_add_scaled(W, V[i], -Hij, slaterWeightMin)
+            w_cols2 = block_col_norms2(W, mpi, comm)
             w_scale = np.sqrt(max(np.max(w_cols2), 0.0))
             # Two questions, two scales: the rank of W's *directions* is relative and the
             # factorization judges it on its own singular values, but "is W zero" (the
@@ -278,15 +235,13 @@ def block_gmres(A, x0, y, basis, double slaterWeightMin, atol=1e-8, restart=40, 
                 rows = y_sol[col_off[j] : col_off[j] + widths[j], :]
                 if rows.size == 0 or j >= len(V):
                     continue
-                xi = axpy(xi, V[j], rows @ beta_j)
+                xi = block_add_scaled(xi, V[j], rows @ beta_j, slaterWeightMin)
         V = None
         R = residual(xi)
 
     else:
         # max_restarts exhausted: measure the final residual for the info record.
-        r_cols2 = np.linalg.norm(R, axis=0) ** 2 if is_arr else R.col_norm2()
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, r_cols2, op=MPI.SUM)
+        r_cols2 = block_col_norms2(R, mpi, comm)
         r_scale = np.sqrt(max(np.max(r_cols2), 0.0))
         scale = y_scale if y_scale > 0.0 else r_scale
         rel_res = r_scale / scale if scale > 0.0 else 0.0
