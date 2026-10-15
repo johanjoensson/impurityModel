@@ -1,7 +1,7 @@
 import numpy as np
 
 from impurityModel.ed.BlockLanczos import (
-    block_lanczos_cy,
+    block_lanczos,
     lanczos_step,
     thick_restart_block_lanczos_cy,
 )
@@ -27,7 +27,7 @@ def create_diagonal_h_and_basis(n_states):
 
 
 def test_block_lanczos_cy_imports():
-    assert callable(block_lanczos_cy)
+    assert callable(block_lanczos)
     assert callable(thick_restart_block_lanczos_cy)
     assert callable(lanczos_step)
 
@@ -46,12 +46,12 @@ def test_block_lanczos_cy_orthogonality_full():
 
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-    alphas, _betas, Q_basis = block_lanczos_cy(
+    alphas, _betas, Q_basis = block_lanczos(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
-        converged_fn=lambda a, b, **kw: len(a) >= 3,
-        reort="full",
+        converged=lambda a, b, **kw: len(a) >= 3,
+        reort=True,
         max_iter=3,
         verbose=False,
     )
@@ -71,12 +71,12 @@ def test_block_lanczos_cy_eigenvalues_block1():
         st[basis.type.from_bytes(states[i])] = 1.0 / np.sqrt(6)
     psi0 = [st]
 
-    alphas, betas, _Q_basis = block_lanczos_cy(
+    alphas, betas, _Q_basis = block_lanczos(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
-        converged_fn=lambda a, b, **kw: len(a) >= 6,
-        reort="full",
+        converged=lambda a, b, **kw: len(a) >= 6,
+        reort=True,
         max_iter=6,
         verbose=False,
     )
@@ -205,13 +205,13 @@ def test_block_lanczos_cy_orthogonality_none():
 
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-    # With reort='none', just verify no crash
-    alphas, _betas, Q_basis = block_lanczos_cy(
+    # With reort=False, just verify no crash
+    alphas, _betas, Q_basis = block_lanczos(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
-        converged_fn=lambda a, b, **kw: len(a) >= 3,
-        reort="none",
+        converged=lambda a, b, **kw: len(a) >= 3,
+        reort=False,
         max_iter=3,
         verbose=False,
     )
@@ -234,12 +234,12 @@ def test_block_lanczos_cy_eigenvalues_block2():
 
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-    alphas, betas, _Q_basis = block_lanczos_cy(
+    alphas, betas, _Q_basis = block_lanczos(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
-        converged_fn=lambda a, b, **kw: len(a) >= 3,
-        reort="full",
+        converged=lambda a, b, **kw: len(a) >= 3,
+        reort=True,
         max_iter=3,
         verbose=False,
     )
@@ -285,7 +285,7 @@ def test_trlm_cy_tight_binding_eigenvalue_accuracy():
 
 
 def test_converged_views_equivalence():
-    """block_lanczos_cy passes buffer *views* (alphas_buf[:it+1]) to converged_fn
+    """block_lanczos passes buffer *views* (alphas_buf[:it+1]) to converged_fn
     instead of rebuilding lists->arrays each step. This pins that the data seen by
     converged_fn at step k equals the first k+1 accumulated alpha/beta blocks (exactly
     what the removed np.array(alphas_list) would have produced) and that convergence /
@@ -305,12 +305,12 @@ def test_converged_views_equivalence():
         snapshots.append((np.array(alphas, copy=True), np.array(betas, copy=True)))
         return False
 
-    alphas, betas, _Q_basis = block_lanczos_cy(
+    alphas, betas, _Q_basis = block_lanczos(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
-        converged_fn=recording_converged,
-        reort="full",
+        converged=recording_converged,
+        reort=True,
         max_iter=6,
         verbose=False,
     )
@@ -351,24 +351,24 @@ def test_block_lanczos_cy_store_krylov_false_matches_tail_of_stored_run():
         psi0.append(st)
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-    stored_alphas, stored_betas, stored_Q = block_lanczos_cy(
+    stored_alphas, stored_betas, stored_Q = block_lanczos(
         [p for p in psi0],
         h_op,
         basis,
         lambda *a, **k: False,
         verbose=False,
-        reort="none",
+        reort=False,
         max_iter=n_iter,
     )
     assert len(stored_Q) == 2 * n_iter  # p=2, n_iter blocks, flat width-1 list
 
-    tail_alphas, tail_betas, tail_Q = block_lanczos_cy(
+    tail_alphas, tail_betas, tail_Q = block_lanczos(
         [p for p in psi0],
         h_op,
         basis,
         lambda *a, **k: False,
         verbose=False,
-        reort="none",
+        reort=False,
         max_iter=n_iter,
         store_krylov=False,
     )
@@ -407,11 +407,11 @@ def test_a_resumed_call_keeps_the_divergence_guards_scale(monkeypatch):
         return real(beta_norm, alpha_norm, first_step, t_norm_max, h_norm_est, it_abs, comm)
 
     monkeypatch.setattr(BlockLanczos, "check_divergence", recording)
-    kw = dict(h_op=h_op, basis=basis, converged_fn=lambda a, b, **k: False, reort="none", return_widths=True)
-    a1, b1, q1, wid1 = block_lanczos_cy(psi0=psi0, max_iter=4, **kw)
+    kw = dict(h_op=h_op, basis=basis, converged=lambda a, b, **k: False, reort=False, return_widths=True)
+    a1, b1, q1, wid1 = block_lanczos(psi0=psi0, max_iter=4, **kw)
     whole = list(calls)
     calls.clear()
-    block_lanczos_cy(psi0=None, alphas_init=a1, betas_init=b1, Q_init=q1, block_widths_init=wid1, max_iter=2, **kw)
+    block_lanczos(psi0=None, alphas_init=a1, betas_init=b1, Q_init=q1, block_widths_init=wid1, max_iter=2, **kw)
     first_resumed = calls[0]
     assert not first_resumed[1], "the resumed call's first step is not a scale-establishing step"
     assert first_resumed[2] >= max(t for _, _, t, _ in whole), "it carries the earlier call's scale"

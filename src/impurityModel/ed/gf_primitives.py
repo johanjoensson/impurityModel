@@ -206,7 +206,7 @@ def support_window_freezes(window):
 class SupportPolicy:
     """Enforce ``truncation_threshold`` on the sparse-kernel GF recurrence.
 
-    ``block_lanczos_cy``'s matvec discovers new Slater determinants every step, so the
+    ``block_lanczos``'s matvec discovers new Slater determinants every step, so the
     live block-state support (and, at reort != none, the Krylov store) grows without
     bound — the excited ``Basis`` itself stays frozen and never sees them. This proxy
     wraps that basis and caps the growth at the point where every residual row sits on
@@ -282,7 +282,7 @@ class SupportPolicy:
     #: Capability flags, read instead of the class (``doc/gf_support_pipeline.md``): this basis counts the
     #: support (``retained_size``, ``cap_hit``), and whether it admits by importance and bans the rest.
     tracks_support = True
-    #: Ask ``block_lanczos_cy`` to stop with status ``"frozen"`` at the end of the step that
+    #: Ask ``block_lanczos`` to stop with status ``"frozen"`` at the end of the step that
     #: froze the support (see :func:`gf_solvers.block_Green_sparse`'s frozen-basis CSR
     #: fallback). Off by default: every other user of the proxy runs on through the freeze.
     stop_on_freeze = False

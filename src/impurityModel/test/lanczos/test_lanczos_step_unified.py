@@ -13,8 +13,8 @@ Serial: the multi-rank behaviour of the loop is covered by the existing ``-n 2``
 import numpy as np
 import pytest
 
-from impurityModel.ed.BlockLanczos import block_lanczos_cy
-from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array
+from impurityModel.ed.BlockLanczos import block_lanczos
+from impurityModel.ed.BlockLanczosArray import block_lanczos
 from impurityModel.ed.BlockLanczosCore import (
     DenseKrylovStore,
     block_add_scaled,
@@ -57,12 +57,12 @@ def _gauge_free(alphas, betas, widths):
     return np.asarray(ev), sv, tr
 
 
-@pytest.mark.parametrize("reort", [Reort.NONE, Reort.FULL])
+@pytest.mark.parametrize("reort", [False, True])
 def test_array_and_manybodystate_front_ends_build_the_same_block_tridiagonal(reort):
     h_op, h_dense, basis_states, seed = _system()
     matrix = DistributedSparseMatrix.from_dense(h_dense)
 
-    a_arr, b_arr, _q, w_arr = block_lanczos_array(
+    a_arr, b_arr, _q, w_arr = block_lanczos(
         psi0=seed.copy(),
         h_op=matrix,
         converged=lambda *a, **k: False,
@@ -70,7 +70,7 @@ def test_array_and_manybodystate_front_ends_build_the_same_block_tridiagonal(reo
         max_iter=STEPS,
         return_widths=True,
     )[:4]
-    a_mbs, b_mbs, _qs, w_mbs = block_lanczos_cy(
+    a_mbs, b_mbs, _qs, w_mbs = block_lanczos(
         _seed_states(basis_states, seed),
         h_op,
         MockBasis(len(basis_states)),
@@ -102,7 +102,7 @@ def test_one_step_gives_the_same_alpha_for_an_array_block_and_its_manybodystate_
         alphas,
         betas,
         0,
-        Reort.NONE,
+        False,
         False,
         None,
     )
@@ -122,7 +122,7 @@ def test_one_step_gives_the_same_alpha_for_an_array_block_and_its_manybodystate_
         alphas2,
         betas2,
         0,
-        Reort.NONE,
+        False,
         False,
         None,
     )
@@ -152,7 +152,7 @@ def test_the_locked_vectors_are_projected_out_in_both_representations(representa
             alphas,
             betas,
             0,
-            Reort.NONE,
+            False,
             False,
             None,
             locked=locked,
@@ -170,7 +170,7 @@ def test_the_locked_vectors_are_projected_out_in_both_representations(representa
             alphas,
             betas,
             0,
-            Reort.NONE,
+            False,
             False,
             None,
             locked=ManyBodyState.from_states(_seed_states(basis_states, locked)),
@@ -239,3 +239,18 @@ def test_the_dense_krylov_store_grows_adopts_and_projects():
     np.testing.assert_allclose(Q[:, :6].conj().T @ out, 0.0, atol=1e-12)
     out_sub, _ = store_q.reort(wp.copy(), [1, 3], 2, None)
     np.testing.assert_allclose(Q[:, [1, 3]].conj().T @ out_sub, 0.0, atol=1e-12)
+
+
+def test_block_lanczos_rejects_options_of_the_other_representation():
+    """One entry point must not silently ignore an option its chosen representation cannot honour."""
+    import scipy.sparse as sps
+
+    h = sps.identity(4, dtype=complex, format="csr")
+    psi0 = np.eye(4, 1, dtype=complex)
+    never = lambda *a, **k: False  # noqa: E731
+    with pytest.raises(ValueError, match="ManyBodyState blocks only"):
+        block_lanczos(psi0, h, converged=never, slaterWeightMin=1e-6)
+    with pytest.raises(ValueError, match="array blocks only"):
+        block_lanczos([], {}, converged=never, return_tail=True)
+    with pytest.raises(TypeError, match="converged"):
+        block_lanczos(psi0, h)

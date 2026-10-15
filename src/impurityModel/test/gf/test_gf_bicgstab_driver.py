@@ -8,7 +8,7 @@ Three layers, mirroring the Lanczos-path suites:
   dense ``P H P`` resolvent on the retained set — the same strong oracle as
   ``test_gf_truncation``;
 * driver: ``get_Greens_function(gf_method="bicgstab")`` against the block-Lanczos path at
-  ``reort="full"`` on a hybridizing system with a two-body term, on both meshes.
+  ``reort=True`` on a hybridizing system with a two-body term, on both meshes.
 """
 
 import numpy as np
@@ -150,7 +150,7 @@ def test_uncapped_solve_matches_dense_full_sector():
 
 def test_driver_matches_partial_lanczos():
     """bicgstab G == FULL-reorthogonalized block-Lanczos G, both meshes."""
-    m_l, r_l, _ = _run_driver("lanczos", "full")
+    m_l, r_l, _ = _run_driver("lanczos", True)
     m_b, r_b, report = _run_driver("bicgstab", None)
     np.testing.assert_allclose(m_b[0], m_l[0], atol=1e-7)
     np.testing.assert_allclose(r_b[0], r_l[0], atol=1e-7)
@@ -189,7 +189,7 @@ def test_driver_mpi_matches_partial_lanczos():
     """Distributed run (2+ ranks): the per-point rebuild/redistribute/solve cycle stays in
     MPI lock-step (empty ranks included) and reproduces the FULL Lanczos G."""
     comm = MPI.COMM_WORLD
-    m_l, r_l, _ = _run_driver("lanczos", "full", comm=comm)
+    m_l, r_l, _ = _run_driver("lanczos", True, comm=comm)
     m_b, r_b, _ = _run_driver("bicgstab", None, comm=comm)
     if comm.rank == 0:
         np.testing.assert_allclose(m_b[0], m_l[0], atol=1e-7)

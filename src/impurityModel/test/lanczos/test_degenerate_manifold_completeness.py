@@ -190,7 +190,7 @@ def test_trlm_with_a_locked_set_solves_in_its_complement():
     psi0 = rng.standard_normal((n, 7)) + 1j * rng.standard_normal((n, 7))
 
     vals, vecs = thick_restart_block_lanczos(
-        psi0, h, None, num_wanted=9, max_subspace_blocks=4, tol=1e-10, max_restarts=200, reort="full", locked=locked
+        psi0, h, None, num_wanted=9, max_subspace_blocks=4, tol=1e-10, max_restarts=200, reort=True, locked=locked
     )
 
     assert _TRLM_EXIT[0].startswith("restart_loop_end") or _TRLM_EXIT[0] == "continuation_converged", _TRLM_EXIT

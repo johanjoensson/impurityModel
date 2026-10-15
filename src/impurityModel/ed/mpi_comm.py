@@ -715,7 +715,7 @@ def matvec_column_chunk_width(need_max, width, budget_bytes):
 class MatvecExchangePlan:
     """One matvec's worth of sparse reduce-scatter over the coupling graph of ``H``.
 
-    The distributed array kernels (``block_lanczos_array_cy``, ``block_apply``'s array branch) hold
+    The distributed array kernels (``block_lanczos``, ``block_apply``'s array branch) hold
     ``H`` as a ``DistributedSparseMatrix`` of shape ``(global_N, N_local)`` -- every global row, this rank's columns -- so a block matvec is
     a reduce-scatter: rank ``s`` contributes ``H[rows of d, cols of s] @ V_s`` to every destination
     ``d``. ``routing_hash`` is linear in the occupied orbitals, so an operator term shifts an owner

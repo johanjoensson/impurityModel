@@ -195,7 +195,7 @@ def _is_auto_gf(basis):
 
 def _pin_key(reort, gf_method):
     """What an auto GF cap is pinned per: the kernel, whose per-determinant cost it was sized for."""
-    return (str(getattr(reort, "name", reort)), str(gf_method))
+    return (bool(reort), str(gf_method))
 
 
 def _pinned_auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes):

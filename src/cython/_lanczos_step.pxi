@@ -2,7 +2,7 @@
 # Core block-Lanczos recurrence
 # ===========================================================================
 # One three-term block step (lanczos_step) and the full recurrence driver
-# (block_lanczos_cy) that serves the whole frequency mesh from a single recurrence. The
+# (block_lanczos) that serves the whole frequency mesh from a single recurrence. The
 # reorthogonalization mode (NONE/FULL) and the EA16
 # shrinking-block deflation policy are dispatched from here.
 
@@ -53,10 +53,10 @@ def lanczos_step(
     ``q_prev`` / ``q_curr`` are tall-skinny blocks in either representation -- ``ndarray`` or
     shared-support ``ManyBodyState`` -- and the step touches them only through the dispatching
     primitives of ``_block_ops.pxi`` (``block_inner``, ``block_add_scaled``, ``apply_full_reort``,
-    ``factor_residual``); ``store`` is the Krylov store (``Reort.FULL`` projects against it); ``matvec`` is the representation's ``A X`` (the driver builds it: a
+    ``factor_residual``); ``store`` is the Krylov store (``reort`` projects against it); ``matvec`` is the representation's ``A X`` (the driver builds it: a
     ``DistributedSparseMatrix`` exchange, or ``ManyBodyOperator`` apply + redistribute + the cut on the
     summed rows). Between the recurrence and the TSQR it projects out the ``locked`` columns and, in
-    ``Reort.FULL`` mode, the stored Krylov basis; after it, a ``ManyBodyState`` block is truncated
+    full-reort mode, the stored Krylov basis; after it, a ``ManyBodyState`` block is truncated
     (``slaterWeightMin``, ``truncation_threshold``) and re-factored.
 
     **Collective** when ``mpi``: the ``p x p`` overlap ``Allreduce``\ s, the TSQR's ``Allgather`` and
@@ -110,7 +110,7 @@ def lanczos_step(
             wp = block_add_scaled(wp, locked, -block_inner(locked, wp, mpi, comm))
 
     # --- 4. Full reorthogonalization against the stored basis ------------
-    if reort_mode == Reort.FULL:
+    if reort_mode:
         wp = apply_full_reort(wp, store, mpi, comm)
 
     # --- 5. X_{i+1}, beta_i = TSQR(W) --------------------------------------
@@ -224,12 +224,12 @@ cdef class DenseKrylovStore:
         return np.ascontiguousarray(self._buf[:, : self._cols])
 
 
-def block_lanczos_array_cy(
+def _block_lanczos_array(
     np.ndarray psi0,
     h_op,
     converged,
     verbose=False,
-    reort=Reort.NONE,
+    reort=False,
     alphas=None,
     betas=None,
     Q=None,
@@ -244,11 +244,11 @@ def block_lanczos_array_cy(
     tail=None,
     return_tail=False,
 ):
-    """Block Lanczos on an array operator: ``h_op`` (a :class:`DistributedSparseMatrix`) applied to
+    """The array setup of :func:`block_lanczos`: ``h_op`` (a :class:`DistributedSparseMatrix`) applied to
     ``(N_local, p)`` blocks. The array front end of :func:`_lanczos_loop`: this function only builds
     the starting blocks and the dense Krylov store and packs the result.
 
-    ``tail=(q_prev, q_curr)`` resumes a ``Reort.NONE`` recurrence from its last two blocks -- the local
+    ``tail=(q_prev, q_curr)`` resumes a non-reorthogonalized recurrence from its last two blocks -- the local
     rows of the block before the current one and of the current one, each at its own width -- with
     ``alphas``/``betas`` the coefficients so far (padded to the seed width) and ``block_widths_init``
     their widths. It is how a sparse recurrence whose support froze carries on as the CSR recurrence of
@@ -256,21 +256,18 @@ def block_lanczos_array_cy(
     out. ``return_tail=True`` appends the ``(q_prev, q_curr)`` a ``"max_iter"`` stop can be resumed
     from (``None`` after any other stop).
     """
-    # Resolve a string reort (e.g. "full") to the Reort enum, mirroring block_lanczos_cy; otherwise
-    # the `reort == Reort.FULL` comparisons never match a string and the run silently has no
-    # reorthogonalization.
-    reort = resolve_reort(reort)
+    reort = bool(reort)
 
     # Whether to retain the accumulated Krylov basis. The historical default (True) stands:
     # restart machinery (TRLM) and direct callers consume the returned Q regardless of
     # the reort mode. Callers that only need the final residual block (the GF continued
     # fraction with reort NONE) opt out explicitly, dropping the O(N * n * k) growth; any
     # reort mode projects against the basis and the warm-start protocol slices its blocks,
-    # so opting out requires reort='none' and a fresh start.
+    # so opting out requires reort=False and a fresh start.
     cdef bint keep_krylov
     if tail is not None:
-        if reort != Reort.NONE or Q is not None or psi0 is not None or build_krylov_basis:
-            raise ValueError("a tail resume needs reort='none', no psi0, no Q and no Krylov basis")
+        if reort or Q is not None or psi0 is not None or build_krylov_basis:
+            raise ValueError("a tail resume needs reort=False, no psi0, no Q and no Krylov basis")
         if alphas is None or betas is None or np.ndim(alphas) != 3:
             raise ValueError("a tail resume needs the (n_blocks, p, p) alphas and betas so far")
         if len(alphas) > 0 and (block_widths_init is None or len(block_widths_init) != len(alphas)):
@@ -280,8 +277,8 @@ def block_lanczos_array_cy(
         keep_krylov = True
     else:
         keep_krylov = bool(build_krylov_basis)
-        if not keep_krylov and (reort != Reort.NONE or Q is not None):
-            raise ValueError("build_krylov_basis=False requires reort='none' and no warm-start Q")
+        if not keep_krylov and (reort or Q is not None):
+            raise ValueError("build_krylov_basis=False requires reort=False and no warm-start Q")
     cdef int N
     cdef int n
     if tail is not None:
@@ -345,7 +342,7 @@ def block_lanczos_array_cy(
 
     # One exchange plan per call (three tiny collectives; `n` is the widest block this call will see
     # -- the active width only ever shrinks, so every round fits the plan's buffers). None on one rank.
-    plan = h_op.exchange_plan(n, "block_lanczos_array")
+    plan = h_op.exchange_plan(n, "block_lanczos")
     # The product buffer is reallocated when the active width shrinks; the matvec writes into it.
     out_holder = [np.empty((N, n), dtype=complex, order='C')]
 
@@ -398,7 +395,7 @@ def _lanczos_loop(
 
     Runs at most ``budget`` further steps from blocks ``q_prev``/``q_curr`` (steps ``start_it``
     onward), appending each accepted block to ``store`` (``None``: nothing is retained, the tail-only
-    mode of a ``Reort.NONE`` run), guarding divergence and asking ``converged_fn(alphas, betas,
+    mode of a non-reorthogonalized run), guarding divergence and asking ``converged_fn(alphas, betas,
     verbose=, block_widths=)`` after each step. ``block_widths`` is extended in place with the width of
     every block a step was taken from. ``append_before_check`` orders the append of the new block
     against the convergence test (the ManyBodyState driver retains the residual block of a converged
@@ -546,7 +543,7 @@ def _pack_result(
     alphas_buf, betas_buf, start_it, it, store_krylov, termination,
     q_prev, q_curr, q_next, Q_basis, block_widths, return_widths, return_status,
 ):
-    """Build block_lanczos_cy's return tuple: the finished alphas/betas views, the
+    """Build block_lanczos's return tuple: the finished alphas/betas views, the
     Krylov basis (or, with store_krylov=False, its two-block tail), and the
     return_widths/return_status opt-in appends. Reads only finished loop state --
     nothing here feeds back into the recurrence."""
@@ -565,13 +562,13 @@ def _pack_result(
     return pack_lanczos_result(alphas_out, betas_out, Q_basis, block_widths, termination, return_widths, return_status)
 
 
-def block_lanczos_cy(
+def _block_lanczos_mbs(
     psi0,
     h_op,
     basis,
     converged_fn,
     verbose: bool = False,
-    reort="full",
+    reort=True,
     max_iter=None,
     slaterWeightMin: float = 0.0,
     truncation_threshold: int = 0,
@@ -587,7 +584,7 @@ def block_lanczos_cy(
     krylov_dtype=None,
     deflate_tol=-1.0,
 ):
-    """Run the distributed block Lanczos iteration with ``ManyBodyState``.
+    """The ``ManyBodyState`` setup of :func:`block_lanczos` (distributed block Lanczos iteration).
 
     Implements the block Lanczos three-term recurrence
 
@@ -625,7 +622,7 @@ def block_lanczos_cy(
         ``converged_fn`` is called on **all ranks** with *replicated* data
         (``alphas``, ``betas`` are identical on every rank).  If the callable
         performs rank-dependent logic the caller is responsible for broadcasting
-        the result.  When ``reort == Reort.NONE`` no reorthogonalization of any
+        the result.  When ``reort`` is ``False`` no reorthogonalization of any
         kind is performed; orthogonality degrades at the rate of floating-point
         rounding errors.
 
@@ -644,9 +641,8 @@ def block_lanczos_cy(
             ``TypeError`` (accept ``**kwargs`` if ``block_widths`` is unused).
         verbose: Print per-iteration diagnostics including ``|beta|`` norms and
             diagonal alpha values.  Default ``False``.
-        reort: Reorthogonalization mode.  Accepts ``Reort`` enum members or the
-            equivalent strings ``'none'``, ``'partial'``, ``'full'``.  ``Reort.NONE`` disables all
-            reorthogonalization.  Default ``'full'``.
+        reort: ``True`` projects each new block against the whole stored basis (two Gram-Schmidt
+            passes); ``False`` performs no reorthogonalization.  Default ``True``.
         max_iter: Maximum number of Lanczos steps before returning.  Defaults to
             ``basis.size // p`` when ``basis.size`` is available, otherwise
             ``10 * p``.
@@ -664,7 +660,7 @@ def block_lanczos_cy(
             by a previous run (adopted as-is, zero-copy resume) or a legacy flat
             list of ``ManyBodyState`` (length ``>= k0 * p``, ingested into a fresh
             store).  Default ``None``.
-        store_krylov: When ``False`` (requires ``reort == 'none'`` and no
+        store_krylov: When ``False`` (requires ``reort=False`` and no
             ``locked`` set) the accumulated Krylov basis is *not* retained; see
             "Krylov store" in doc/lanczos_invariants.md.  Default ``True``.
         krylov_dtype: Storage dtype of the retained Krylov basis --
@@ -707,9 +703,9 @@ def block_lanczos_cy(
     mpi = comm is not None and comm.Get_size() > 1
 
     # --- Resolve reort mode ---------------------------------------------
-    reort_mode = resolve_reort(reort)
+    reort_mode = bool(reort)
 
-    # Tail-only mode: with reort == NONE (and no locked set) nothing in the recurrence
+    # Tail-only mode: with reort off (and no locked set) nothing in the recurrence
     # ever projects against the accumulated Krylov basis, and the warm-start protocol
     # reads only the last two blocks -- so retaining the full O(N_det * p * k) basis is
     # pure dead memory (the dominant avoidable allocation in a Green's-function run).
@@ -719,8 +715,8 @@ def block_lanczos_cy(
     # `if locked` on a ManyBodyState reads its LOCAL ROW count, which can disagree
     # across ranks and turn this `raise` into a rank-divergent collective itself.
     nlock = 0 if locked is None else block_cols(locked)
-    if not store_krylov and (reort_mode != Reort.NONE or nlock > 0):
-        raise ValueError("store_krylov=False requires reort='none' and no locked vectors")
+    if not store_krylov and (reort_mode or nlock > 0):
+        raise ValueError("store_krylov=False requires reort=False and no locked vectors")
 
     # --- Resume or start fresh? -----------------------------------------
     resuming = alphas_init is not None and betas_init is not None and Q_init is not None
@@ -865,4 +861,81 @@ def block_lanczos_cy(
     return _pack_result(
         alphas_buf, betas_buf, start_it, it, store_krylov, termination,
         q_prev, q_curr, q_next, Q_basis, block_widths, return_widths, return_status,
+    )
+
+
+def block_lanczos(
+    psi0,
+    h_op,
+    basis=None,
+    converged=None,
+    verbose=False,
+    reort=True,
+    max_iter=None,
+    slaterWeightMin=0.0,
+    truncation_threshold=0,
+    comm=None,
+    alphas_init=None,
+    betas_init=None,
+    Q_init=None,
+    block_widths_init=None,
+    locked=None,
+    store_krylov=None,
+    krylov_dtype=None,
+    deflate_tol=-1.0,
+    tail=None,
+    return_widths=False,
+    return_status=False,
+    return_tail=False,
+):
+    """Block Lanczos: the one entry point, for either block representation.
+
+    The recurrence is :func:`lanczos_step` driven by :func:`_lanczos_loop` whatever the blocks are;
+    this function only picks the representation's setup. An ``ndarray`` start block (or ``Q_init`` /
+    ``tail``) means the array representation, with ``h_op`` a :class:`DistributedSparseMatrix` (a scipy
+    or dense local matrix is converted once). Anything else is a ``ManyBodyState`` block (or a list of
+    them) with ``h_op`` a ``ManyBodyOperator`` and ``basis`` the distributed basis.
+
+    ``converged(alphas, betas, **kw) -> bool`` is called on every rank with replicated data after each
+    accepted step; ``reort=True`` projects each new block against the stored Krylov basis (two
+    passes), ``False`` does not. ``alphas_init``/``betas_init``/``Q_init``/``block_widths_init`` resume
+    a previous run (see "Warm-start / resume protocol" in doc/lanczos_invariants.md);
+    ``store_krylov=False`` (needs ``reort=False``, no ``locked`` set and a fresh start) keeps only the
+    last two blocks. The return is ``(alphas, betas, Q)`` plus ``block_widths`` (``return_widths``),
+    the termination string (``return_status``: ``"converged"``, ``"invariant_subspace"``,
+    ``"diverged"``, ``"max_iter"`` or ``"frozen"``) and, for arrays, the resumable ``(q_prev, q_curr)``
+    tail (``return_tail``).
+
+    Array-only: ``tail`` (resume a non-reorthogonalized recurrence from its last two blocks) and
+    ``return_tail``. ManyBodyState-only: ``basis``, ``slaterWeightMin``, ``truncation_threshold`` and
+    ``krylov_dtype``; passing them with array blocks raises instead of being silently ignored.
+    """
+    is_array_run = (
+        tail is not None
+        or isinstance(psi0, np.ndarray)
+        or (psi0 is None and isinstance(Q_init, np.ndarray))
+    )
+    if converged is None:
+        raise TypeError("block_lanczos needs a `converged` callable")
+    if is_array_run:
+        if slaterWeightMin or truncation_threshold or krylov_dtype is not None:
+            raise ValueError("slaterWeightMin, truncation_threshold and krylov_dtype apply to ManyBodyState blocks only")
+        if comm is None:
+            comm = getattr(basis, "comm", None)
+        h_op = DistributedSparseMatrix.coerce(h_op, comm)
+        return _block_lanczos_array(
+            psi0, h_op, converged, verbose=verbose, reort=reort, alphas=alphas_init, betas=betas_init, Q=Q_init,
+            comm=comm, return_widths=return_widths, return_status=return_status, build_krylov_basis=store_krylov,
+            deflate_tol=deflate_tol, max_iter=max_iter, block_widths_init=block_widths_init, locked=locked,
+            tail=tail, return_tail=return_tail,
+        )
+    if tail is not None or return_tail:
+        raise ValueError("tail / return_tail apply to array blocks only")
+    return _block_lanczos_mbs(
+        psi0, h_op, basis, converged, verbose=verbose, reort=reort, max_iter=max_iter,
+        slaterWeightMin=slaterWeightMin, truncation_threshold=truncation_threshold, comm=comm,
+        alphas_init=alphas_init, betas_init=betas_init, Q_init=Q_init, return_widths=return_widths,
+        return_status=return_status, block_widths_init=block_widths_init, locked=locked,
+        store_krylov=True if store_krylov is None else store_krylov, krylov_dtype=krylov_dtype,
+        deflate_tol=deflate_tol,
     )

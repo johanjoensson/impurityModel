@@ -9,7 +9,6 @@ from impurityModel.ed import gf_diagnostics as _gfd
 from impurityModel.ed.average import ThermalEnsemble, thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
 from impurityModel.ed.block_structure import BlockStructure
-from impurityModel.ed.BlockLanczosArray import Reort
 
 # The module was split for readability (gf_primitives/gf_convergence/gf_shift_recycling hold the
 # solver-primitive, convergence-monitor and shift-recycled-resolvent layers respectively); the
@@ -367,7 +366,7 @@ def get_Greens_function(
     blocks: list[list[int]],
     verbose: bool,
     verbose_extra: bool,
-    reort: Optional[Reort],
+    reort: Optional[bool],
     dN: Optional[int],
     occ_cutoff: float,
     slaterWeightMin: float,
@@ -1057,7 +1056,7 @@ def calc_Greens_function_with_offdiag(
     es,
     block_basis,
     delta,
-    reort: Optional[Reort] = None,
+    reort: Optional[bool] = None,
     dN: Optional[int] = None,
     occ_cutoff: float = 1e-6,
     slaterWeightMin: float = 0,

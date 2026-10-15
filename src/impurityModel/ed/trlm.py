@@ -18,7 +18,6 @@ from impurityModel.ed.BlockLanczosCore import (
     BREAKDOWN_TOL,
     DEFAULT_EIGEN_TOL,
     RESTART_ORTH_TOL,
-    Reort,
     _build_full_T,
     block_apply,
     block_combine,
@@ -27,7 +26,6 @@ from impurityModel.ed.BlockLanczosCore import (
     block_orthogonalize,
     eigh_block_tridiagonal,
     is_array,
-    resolve_reort,
 )
 from impurityModel.ed.block_view import (
     KrylovColumnStore,
@@ -281,7 +279,7 @@ def _trlm_core(
     Drives both the dense-array and ``ManyBodyState`` paths through the path-agnostic
     ``block_*`` helpers (``block_apply`` / ``block_combine`` / ``block_inner`` /
     ``block_orthogonalize`` / ``block_normalize``) and a path-specific ``sweep`` callable
-    (``block_lanczos_array`` for arrays, ``block_lanczos_cy`` for ``ManyBodyState``).
+    (``block_lanczos``, for either block representation).
 
     Algorithm: run one block-Lanczos sweep of ``m`` blocks; diagonalise the
     block-tridiagonal ``T``; keep the ``k = ceil(n_w/p)`` lowest Ritz pairs as one retained
@@ -521,7 +519,7 @@ def _trlm_core(
         # SrMnO3 double-counting reproduction at three determinant caps, `dim` never once exceeded
         # `m * p`, `p_resid` never exceeded `p` (6), and `orth_err` sat at ~2e-12 against a
         # `RESTART_ORTH_TOL` of 1.5e-8 -- the rebuild arm does not fire at the ground state's
-        # `reort="full"`. Kept as a trace note, not an assertion: it is the cheap way to notice if
+        # `reort=True`. Kept as a trace note, not an assertion: it is the cheap way to notice if
         # a future caller at a weaker `reort` ever does reach that arm.
         _trace_note(
             "trlm_restart",
@@ -653,18 +651,18 @@ def _thick_restart_block_lanczos_array(
     locked=None,
 ):
     """Array-path entry point: prepares the ``(N, p)`` start block and the
-    ``block_lanczos_array`` sweep, then delegates to the shared :func:`_trlm_core`.
+    ``block_lanczos`` sweep, then delegates to the shared :func:`_trlm_core`.
 
     ``locked`` (orthonormal columns, rows distributed like ``psi0``) restricts the solve to the
     complement of their span: the sweep keeps every Lanczos block orthogonal to them (the kernel's
     locking deflation) and the restart loop projects every matvec out of their span, so the solver
     sees ``P H P`` with ``P = I - L L^H``. The start block is projected too. This is how a caller
     looks for eigenstates it does not have yet without re-finding the ones it does."""
-    from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+    from impurityModel.ed.BlockLanczosCore import block_lanczos
 
     h_op = DistributedSparseMatrix.coerce(h_op, comm)
     mpi = comm is not None and getattr(comm, "size", 1) > 1
-    # block_lanczos_array assumes an orthonormal start block (it does not normalize
+    # block_lanczos assumes an orthonormal start block (it does not normalize
     # internally); normalize here so the betas do not grow geometrically and overflow T.
     psi0 = np.ascontiguousarray(psi0 if psi0.ndim == 2 else np.reshape(psi0, (-1, 1)), dtype=complex)
     if locked is not None:
@@ -674,7 +672,7 @@ def _thick_restart_block_lanczos_array(
     psi0, _ = block_normalize(psi0, mpi, comm, 0.0)
 
     def sweep(v0, max_iter):
-        res = block_lanczos_array(
+        res = block_lanczos(
             psi0=v0,
             h_op=h_op,
             converged=lambda a, b, **kw: False,
@@ -716,14 +714,14 @@ def thick_restart_block_lanczos_cy(
     verbose: bool = False,
     slaterWeightMin: float = 0.0,
     truncation_threshold: int = 0,
-    reort="full",
+    reort=True,
     comm=None,
     num_converge=None,
 ):
     """Thick-restart block Lanczos (TRLM) for the ManyBodyState path.
 
     The MBS-only entry point: prepares the length-``p`` state block and the
-    ``block_lanczos_cy`` sweep, then runs the shared path-agnostic :func:`_trlm_core`.
+    ``block_lanczos`` sweep, then runs the shared path-agnostic :func:`_trlm_core`.
 
     Args:
         psi0: Starting block of ``p`` ``ManyBodyState`` objects.
@@ -736,7 +734,7 @@ def thick_restart_block_lanczos_cy(
         max_restarts: Maximum number of thick restarts. Default ``100``.
         verbose: Print restart diagnostics. Default ``False``.
         slaterWeightMin: Amplitude cutoff for ``ManyBodyState.prune``. Default ``0.0``.
-        reort: Reorthogonalization mode (``Reort`` enum or string). Default ``'full'``.
+        reort: ``True`` fully reorthogonalizes the inner recurrence. Default ``True``.
         comm: ``mpi4py`` communicator. Falls back to ``basis.comm`` or serial.
 
     Returns:
@@ -750,12 +748,12 @@ def thick_restart_block_lanczos_cy(
     # which module happens to import first. One import per outer TRLM call (sweep,
     # defined below, closes over the name), not per step -- mirrors
     # _thick_restart_block_lanczos_array's function-local BlockLanczosArray import above.
-    from impurityModel.ed.BlockLanczos import block_lanczos_cy
+    from impurityModel.ed.BlockLanczosCore import block_lanczos
 
     if comm is None:
         comm = getattr(basis, "comm", None)
     mpi = comm is not None and comm.Get_size() > 1
-    reort_mode = resolve_reort(reort)
+    reort_mode = bool(reort)
 
     # Adopt the block-native seed representation up front (matching what the sweep's
     # fresh-start ingestion and every restart-loop primitive already work in) instead of
@@ -767,14 +765,13 @@ def thick_restart_block_lanczos_cy(
     psi0, _ = block_normalize(psi0, mpi, comm, slaterWeightMin)
 
     def sweep(v0, max_iter):
-        r = reort_mode.name.lower() if hasattr(reort_mode, "name") else reort_mode
-        res = block_lanczos_cy(
+        res = block_lanczos(
             psi0=v0,
             h_op=h_op,
             basis=basis,
-            converged_fn=lambda a, b, **kw: False,
+            converged=lambda a, b, **kw: False,
             verbose=verbose,
-            reort=r,
+            reort=reort_mode,
             max_iter=max_iter,
             slaterWeightMin=slaterWeightMin,
             truncation_threshold=truncation_threshold,
@@ -809,7 +806,7 @@ def thick_restart_block_lanczos(
     max_restarts: int = 100,
     verbose: bool = False,
     slaterWeightMin: float = 0,
-    reort=Reort.FULL,
+    reort=True,
     num_converge=None,
     locked=None,
 ):
@@ -829,7 +826,7 @@ def thick_restart_block_lanczos(
     """
     mpi = basis is not None and getattr(basis, "comm", None) is not None
     comm = basis.comm if mpi else None
-    reort_mode = resolve_reort(reort)
+    reort_mode = bool(reort)
 
     if not (isinstance(h_op, DistributedSparseMatrix) or is_array(h_op)):
         if locked is not None:

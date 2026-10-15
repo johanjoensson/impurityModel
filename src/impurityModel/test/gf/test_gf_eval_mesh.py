@@ -26,7 +26,7 @@ Two properties these tests exist to protect, both of which a naive implementatio
 import numpy as np
 import scipy.linalg as la
 
-from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array
+from impurityModel.ed.BlockLanczosArray import block_lanczos
 from impurityModel.ed.greens_function import (
     _GF_MONITOR_POINTS,
     _GF_REL_TOL_FLOOR,
@@ -160,8 +160,8 @@ def test_a_matsubara_only_run_stops_far_earlier_and_stays_exact():
     eval_meshes = _gf_eval_meshes(iw, None, side_i=0, delta=_DELTA, es=[0.0])
 
     def run(monitor):
-        a, b, _q, _widths = block_lanczos_array(
-            psi0=q0, h_op=h, converged=monitor, reort=Reort.FULL, verbose=False, return_widths=True
+        a, b, _q, _widths = block_lanczos(
+            psi0=q0, h_op=h, converged=monitor, reort=True, verbose=False, return_widths=True
         )
         return a, b
 

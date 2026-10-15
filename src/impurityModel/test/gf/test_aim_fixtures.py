@@ -101,7 +101,7 @@ def _driver_G(aim, method, matsubara, omega, delta=0.3):
         blocks=[aim.imp],
         verbose=False,
         verbose_extra=False,
-        reort="full" if method == "lanczos" else None,
+        reort=True if method == "lanczos" else None,
         dN=None,
         occ_cutoff=0.0,
         slaterWeightMin=0.0,

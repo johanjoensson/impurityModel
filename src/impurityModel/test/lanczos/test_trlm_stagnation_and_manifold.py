@@ -32,7 +32,6 @@ import numpy as np
 import pytest
 
 from impurityModel.ed import block_view as block_view_mod
-from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.cipsi_solver import SOLVERS
 from impurityModel.ed.trlm import _thick_restart_block_lanczos_array, _TRLM_EXIT
 from impurityModel.test.support.lanczos_fixtures import MockBasis
@@ -66,7 +65,7 @@ def _run(h, num_wanted, tol, num_converge=None, max_restarts=100, seed=0):
         tol=tol,
         max_restarts=max_restarts,
         verbose=False,
-        reort_mode=Reort.FULL,
+        reort_mode=True,
         comm=None,
         num_converge=num_converge,
     )

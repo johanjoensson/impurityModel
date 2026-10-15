@@ -147,7 +147,7 @@ def test_the_environment_can_force_the_error_bound_either_way(monkeypatch):
 
 def test_outer_with_the_lanczos_kernel_is_refused_where_it_would_otherwise_be_ignored(monkeypatch):
     with pytest.raises(ValueError, match="needs gf_method='bicgstab'"):
-        _run_driver("lanczos", "full", extra={"gf_admission": "outer"})
+        _run_driver("lanczos", True, extra={"gf_admission": "outer"})
     with pytest.raises(ValueError, match="Unknown gf_admission"):
         _run_driver("bicgstab", None, extra={"gf_admission": "banana"})
 

@@ -24,8 +24,7 @@ from impurityModel.ed.basis_transcription import (
     build_vector,
     iter_local_operator_images,
 )
-from impurityModel.ed.BlockLanczos import block_lanczos_cy
-from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
+from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
 from impurityModel.ed.BiCGSTAB import block_bicgstab
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
@@ -160,16 +159,16 @@ _GF_ARRAY_DENSE_MAX = 500
 
 
 def _gf_reort(reort):
-    """Resolve the GF ``reort`` argument; ``None`` is ``Reort.NONE``.
+    """Resolve the GF ``reort`` argument to a bool; ``None`` is ``False`` (no reorthogonalization).
 
-    ``resolve_reort`` returns any non-string unchanged, so a float (which ``SolverOptions`` used
-    to document as allowed) reached the kernels untranslated, where no ``reort_mode ==`` branch
-    matches it (review ledger C8). Reject it here instead.
+    A float (which ``SolverOptions`` used to document as allowed) once reached the kernels
+    untranslated and silently matched no branch (review ledger C8): reject anything but a bool here.
     """
-    resolved = resolve_reort(reort if reort is not None else Reort.NONE)
-    if not isinstance(resolved, Reort):
-        raise TypeError(f"reort must be None, a Reort member or one of its names, got {reort!r}")
-    return resolved
+    if reort is None:
+        return False
+    if not isinstance(reort, (bool, np.bool_)):
+        raise TypeError(f"reort must be None or a bool, got {reort!r}")
+    return bool(reort)
 
 
 # A restart must shrink the reported residual by at least this factor to earn the next one, so
@@ -203,8 +202,8 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         Input state vectors.
     delta : float or ndarray
         Imaginary part/mesh info.
-    reort : Reort
-        Reorthogonalization method.
+    reort : bool
+        Full reorthogonalization (the GF path passes ``False``).
     slaterWeightMin : float
         Slater determinant cutoff weight.
     verbose : bool
@@ -262,7 +261,7 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     alphas, betas, Q_list, widths = _array_block_lanczos(
         basis, hOp, psi_dense_local, dense, delta, resolved_reort, slaterWeightMin, eval_meshes, info
     )
-    probe = _expansion_probe_columns(Q_list, widths, tail_only=resolved_reort == Reort.NONE)
+    probe = _expansion_probe_columns(Q_list, widths, tail_only=not resolved_reort)
     return alphas, betas, r, build_state(basis, probe.T, slaterWeightMin=slaterWeightMin), widths
 
 
@@ -362,12 +361,12 @@ def _array_block_lanczos(
         converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
             delta, slaterWeightMin, eval_meshes
         )
-        alphas, betas, Q_list, widths, status = block_lanczos_array(
+        alphas, betas, Q_list, widths, status = block_lanczos(
             psi0=psi_dense_local,
             h_op=H,
             converged=converged,
             reort=resolved_reort,
-            build_krylov_basis=resolved_reort != Reort.NONE,
+            store_krylov=resolved_reort,
             # The kernel's per-iteration print is off; the unit memory line reports instead.
             verbose=False,
             comm=kernel_comm,
@@ -421,7 +420,7 @@ _CSR_BYTES_PER_ELEMENT = 24
 #: Upper bound on the bytes one element of a build batch holds before its lookup: the bra's key
 #: object plus its column and value. Measured ~104 on the distributed build.
 _CSR_BATCH_BYTES_PER_ELEMENT = 160
-#: Lanczos blocks of ``N_local x width`` the array kernel holds at once at reort 'none' (the
+#: Lanczos blocks of ``N_local x width`` the array kernel holds at once at reort off (the
 #: current and previous block, the product, the next block).
 _CSR_KERNEL_VECTORS = 4
 #: The support freeze's window: the blocks over which the weight reaching new rows is weighed against what the
@@ -624,7 +623,7 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
     So it continues here instead of restarting from the seeds (:func:`_frozen_csr_green`, which recomputes
     every pre-freeze block -- 573 of them on one SrMnO3 unit). At ``slaterWeightMin = 0`` the two agree to
     rounding; above it the pre-freeze coefficients carry the sparse kernel's cut, which the restart would
-    not. reort 'none' only: a two-block tail cannot continue a reorthogonalized recurrence.
+    not. reort off only: a two-block tail cannot continue a reorthogonalized recurrence.
 
     ``tail`` is the pair of dense blocks from :func:`_sparse_tail_to_local_dense`; ``monitor`` the sparse
     run's ``(converged, converged_flag, delta_min, last_dg)``, which goes on judging the same continued
@@ -642,16 +641,16 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
     n_dim = H.shape[0]
     budget = min(_csr_continue_budget(start), n_dim)
     while True:
-        alphas, betas, _, widths, status, tail = block_lanczos_array(
+        alphas, betas, _, widths, status, tail = block_lanczos(
             psi0=None,
             h_op=H,
             converged=converged,
-            reort=Reort.NONE,
-            build_krylov_basis=False,
+            reort=False,
+            store_krylov=False,
             verbose=False,
             comm=kernel_comm,
-            alphas=alphas,
-            betas=betas,
+            alphas_init=alphas,
+            betas_init=betas,
             tail=tail,
             block_widths_init=widths,
             max_iter=budget,
@@ -684,7 +683,7 @@ def block_Green_sparse(
     psi_arr,
     basis,
     delta,
-    reort: Optional[Reort] = None,
+    reort: Optional[bool] = None,
     slaterWeightMin=0,
     verbose=True,
     cap_info=None,
@@ -703,7 +702,7 @@ def block_Green_sparse(
 
     **Frozen-basis CSR fallback**: when the cap freezes the
     support, the sparse recurrence stops at that step and carries on as an array-kernel SpMV on the
-    ``P H P`` CSR of the retained set -- from its last two blocks at reort 'none'
+    ``P H P`` CSR of the retained set -- from its last two blocks at reort off
     (:func:`_frozen_csr_continue`), else restarted from the seeds (:func:`_frozen_csr_green`) -- exact
     on ``P`` like the sparse kernel, without applying ``H`` to every retained row and discarding the
     image outside ``P``. Not taken for a CSR that would not fit the budget, or a ``krylov_dtype`` store.
@@ -832,7 +831,7 @@ def block_Green_sparse(
     csr = None
 
     def _csr_green(frozen_basis, blocks_hint=0, stopped=None):
-        # `stopped` = the sparse run's (alphas, betas, widths, tail) at the freeze, passed at reort 'none'
+        # `stopped` = the sparse run's (alphas, betas, widths, tail) at the freeze, passed at reort off
         # only: the recurrence carries on from it. Otherwise (or with nothing built yet) it restarts from
         # the seeds, with a first budget of a few times `blocks_hint`.
         if stopped is not None and len(stopped[0]) > 0:
@@ -864,12 +863,12 @@ def block_Green_sparse(
         )
 
     # The support freeze: the proxy freezes the support itself, on the step its window decides, and the kernel
-    # hands control back there (stop_on_freeze). reort 'none' only: that is where the frozen recurrence
+    # hands control back there (stop_on_freeze). reort off only: that is where the frozen recurrence
     # carries on from its tail, and a reorthogonalized one would recompute every block to drop weight.
     if (
         _SUPPORT_FREEZE
         and csr_candidate
-        and resolved_reort == Reort.NONE
+        and not resolved_reort
         and getattr(lanczos_basis, "tracks_support", False)
         and not lanczos_basis.prunes
     ):
@@ -885,7 +884,7 @@ def block_Green_sparse(
             if frozen_basis is not None:
                 csr = _csr_green(frozen_basis)
     while csr is None:
-        alphas, betas, Q, widths, status = block_lanczos_cy(
+        alphas, betas, Q, widths, status = block_lanczos(
             psi_arr,
             hOp,
             lanczos_basis,
@@ -900,12 +899,12 @@ def block_Green_sparse(
             betas_init=betas,
             Q_init=Q,
             block_widths_init=widths,
-            store_krylov=resolved_reort != Reort.NONE,
+            store_krylov=resolved_reort,
             krylov_dtype=krylov_dtype,
             # Transition-operator seed block: see DEFLATE_TOL_SEEDS in TSQR.pyx.
             deflate_tol=DEFLATE_TOL_SEEDS,
         )
-        # The kernel reports exactly why it stopped (see block_lanczos_cy):
+        # The kernel reports exactly why it stopped (see block_lanczos):
         #   * "converged"          -- the GF convergence monitor was satisfied.
         #   * "invariant_subspace" -- the block-Krylov space is closed under H (within the
         #                             excited-sector restrictions), so the continued fraction
@@ -927,10 +926,10 @@ def block_Green_sparse(
                 width=psi_arr.width,
             )
             if frozen_basis is not None:
-                # At reort 'none' the stopped state (its two-block tail) is where the CSR carries on from;
+                # At reort off the stopped state (its two-block tail) is where the CSR carries on from;
                 # otherwise it is only needed to resume a declined switch: release its Krylov store before
                 # the restart builds its own.
-                stopped = (alphas, betas, widths, Q) if resolved_reort == Reort.NONE else None
+                stopped = (alphas, betas, widths, Q) if not resolved_reort else None
                 Q = None
                 csr = _csr_green(frozen_basis, len(alphas), stopped)
             elif lanczos_basis.support_frozen:

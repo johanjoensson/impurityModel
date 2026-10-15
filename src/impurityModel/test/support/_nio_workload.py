@@ -251,7 +251,6 @@ def build_ground_state_workload(
         pointed at ``basis``.
     """
     from impurityModel.ed import atomic_physics
-    from impurityModel.ed.BlockLanczosArray import Reort
     from impurityModel.ed.cipsi_solver import CIPSISolver
     from impurityModel.ed.groundstate import find_ground_state_basis
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
@@ -322,7 +321,7 @@ def build_ground_state_workload(
         de2_min=de2_min,
         slaterWeightMin=slater_weight_min,
         solver="trlm",
-        reort=Reort.FULL,
+        reort=True,
     )
     if basis.restrictions is not None:
         h.set_restrictions(basis.restrictions)

@@ -13,8 +13,6 @@ import itertools
 import numpy as np
 import pytest
 from mpi4py import MPI
-
-from impurityModel.ed.BlockLanczosCore import Reort
 from impurityModel.ed.gf_solvers import block_Green, block_Green_sparse
 from impurityModel.ed.greens_function import calc_G
 from impurityModel.ed.manybody_basis import Basis
@@ -65,7 +63,7 @@ def _setup(comm):
 def _green(fn, comm):
     basis, seeds = _setup(comm)
     assert basis.size == 924
-    alphas, betas, r = fn(_model(), seeds, basis, DELTA, Reort.NONE, verbose=False)
+    alphas, betas, r = fn(_model(), seeds, basis, DELTA, False, verbose=False)
     return calc_G(alphas, betas, r, OMEGA, 0.0, DELTA)
 
 

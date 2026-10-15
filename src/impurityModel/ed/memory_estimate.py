@@ -328,9 +328,8 @@ except Exception:  # pragma: no cover - an MPI without attribute caching
 
 
 def _retains_krylov(reort):
-    """Whether a reort mode (string, ``Reort`` enum member or None) retains the Krylov store."""
-    name = getattr(reort, "name", reort)
-    return name is not None and str(name).lower() != "none"
+    """Whether a reort setting (``True``/``False``; ``None`` counts as ``False``) retains the Krylov store."""
+    return bool(reort)
 
 
 def _krylov_itemsize(reort, krylov_dtype):
@@ -463,7 +462,7 @@ def estimate_gf_peak_bytes(
     n_dets,
     n_spin_orbitals,
     block_width,
-    reort="none",
+    reort=False,
     ranks=1,
     n_blocks=None,
     krylov_dtype=None,
@@ -477,16 +476,16 @@ def estimate_gf_peak_bytes(
     determinant count. **Both** reort modes pay ``s_live`` — the excited ``Basis`` bookkeeping
     (measured ~330 B/det VmHWM, see :data:`_PY_BASIS_OVERHEAD_BYTES`) plus the ~3 live
     ``ManyBodyState`` blocks of the recurrence (``q_prev``, ``q_curr``, ``wp``, ~216 B/det
-    at block width 1). So ``s_live ~ 450-550 B/det`` and ``reort="none"`` is not free, but it
+    at block width 1). So ``s_live ~ 450-550 B/det`` and ``reort=False`` is not free, but it
     is *bounded* — not the multi-kB/det figure an earlier miscalibration claimed. At
-    ``reort != "none"`` the ``SparseKrylovDense`` store adds ``itemsize * p * n_blocks`` bytes
+    ``reort on`` the ``SparseKrylovDense`` store adds ``itemsize * p * n_blocks`` bytes
     per retained determinant *on top* (rows bounded by the retained set, columns by the Lanczos
     block count) — it cannot be compressed away, see ``doc/plans/blocklanczos_reort_memory.md``.
 
     Which term leads depends on the run: the store scales with ``n_blocks`` (``m``), so at
-    width 1 it overtakes ``s_live`` once ``m`` passes ~30, but at ``reort="none"`` (the
+    width 1 it overtakes ``s_live`` once ``m`` passes ~30, but at ``reort=False`` (the
     production self-energy path) ``s_live`` is the whole cost -- **plus** the recurrence's
-    transient matvec fanout (below), which at ``reort="none"`` is comparable to it. Neither
+    transient matvec fanout (below), which at ``reort=False`` is comparable to it. Neither
     ``s_live`` nor the store universally dominates the *other* -- the earlier "the store
     dominates against ~450 for everything else" framing was only half right (the ~450 is real;
     the store does not always win).
@@ -514,8 +513,8 @@ def estimate_gf_peak_bytes(
         Determinant bit width.
     block_width : int
         Block width ``p`` of the GF block Lanczos (number of seed vectors of the unit).
-    reort : str
-        Reorthogonalization mode; anything but ``"none"`` retains the Krylov store.
+    reort : bool
+        Whether the run fully reorthogonalizes; ``True`` retains the Krylov store.
     ranks : int
         MPI ranks sharing this basis (the unit's sub-communicator size under
         ``run_units_distributed``). Peak bytes scale with the *binding* rank, not the
@@ -534,7 +533,7 @@ def estimate_gf_peak_bytes(
         every DC iteration, a much larger change than this function's docstring should
         decide by itself.
     n_blocks : int, optional
-        Krylov blocks retained at ``reort != "none"``. Defaults to the invariant-subspace
+        Krylov blocks retained at ``reort on``. Defaults to the invariant-subspace
         bound ``ceil(n_dets / block_width)`` (worst case).
     krylov_dtype : optional
         Storage dtype of the Krylov basis. ``complex64`` halves the store and is legal
@@ -624,7 +623,7 @@ _GS_COUPLED_NUM_WANTED_RATIO = 2
 
 def _gs_krylov_columns(n_dets, block_width, num_wanted=None):
     """Peak column count of the retained dense Krylov store, at the ground-state default
-    ``reort="full"``.
+    ``reort=True``.
 
     Mirrors ``cipsi_solver._size_subspace`` **exactly** (re-read from source, not from memory --
     an earlier version of this function got the formula wrong by omitting a factor of 2 and a
@@ -737,7 +736,7 @@ def estimate_gs_peak_bytes(
     partition, approximated here as ``local`` since a materially skewed partition, not
     ``global_N``, is now the risk this term misses -- see :data:`DEFAULT_MEMORY_SAFETY`,
     which is what absorbs it: this function has no way to see another rank's share), the
-    retained dense Krylov blocks at the ground-state default ``reort="full"``, and the
+    retained dense Krylov blocks at the ground-state default ``reort=True``, and the
     CIPSI selection round's own transient (``selection_bytes`` below).
 
     The selection term is what this function was missing until
@@ -1052,7 +1051,7 @@ def max_unit_dets_within_budget(
         Determinant bit width.
     block_width : int
         Widest unit's seed count (GF block width) about to run on this color.
-    reort : str or None
+    reort : bool or None
         GF reorthogonalization mode.
     ranks : int
         Ranks in this unit's color -- the color's own ``split_basis.comm.size`` at the split

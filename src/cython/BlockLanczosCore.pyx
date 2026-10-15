@@ -6,7 +6,7 @@
 """BlockLanczosCore.pyx
 =====================
 Shared numerical layer for the array (``BlockLanczosArray.pyx``) and ManyBodyState
-(``BlockLanczos.pyx``) block-Lanczos kernels: the ``Reort`` modes, every tolerance
+(``BlockLanczos.pyx``) block-Lanczos kernels: every tolerance
 constant, the block-tridiagonal eigensolvers (``eigh_block_tridiagonal``,
 ``eigsh``), and the representation-dispatching block primitives (``block_inner``/``apply``/
 ``add_scaled``/``combine``/``orthogonalize``/``normalize``/``tsqr``, ``apply_full_reort``) both kernels drive through.
@@ -28,12 +28,6 @@ import scipy.linalg as la
 import scipy.sparse as sps
 
 from mpi4py import MPI
-from enum import Enum
-
-
-class Reort(Enum):
-    NONE = 0
-    FULL = 2
 
 
 # The machine constant and the deflation floors are defined once, in the TSQR leaf that
@@ -70,30 +64,11 @@ DEFAULT_EIGEN_TOL = 1e-8
 # from DEFAULT_EIGEN_TOL, so it gets its own name rather than sharing one.
 THERMAL_GS_RESIDUAL_TOL = 1e-6
 
-def resolve_reort(reort):
-    """Resolve a ``reort`` argument (``Reort`` member or string) to a ``Reort`` enum.
-
-    Shared by both kernels so the accepted spellings stay in sync. A non-string is
-    returned unchanged. Raises ``ValueError`` on an unknown string.
-    """
-    if not isinstance(reort, str):
-        return reort
-    _map = {
-        "none": Reort.NONE,
-        "full": Reort.FULL,
-    }
-    resolved = _map.get(reort.lower())
-    if resolved is None:
-        raise ValueError(f"Unknown reort string '{reort}'. Must be one of {list(_map.keys())}.")
-    return resolved
-
-
 def divergence_guard(double beta_norm, double alpha_norm, bint first_step,
                      double t_norm_max, double h_norm_est):
     r"""Spectral-scale divergence safeguard for the block-Lanczos recurrence.
 
-    Shared by both kernels (``block_lanczos_array_cy`` and the ``block_lanczos_cy``
-    driver) so the safeguard logic lives in exactly one place.
+    Shared by both kernels (both setups of ``block_lanczos``) so the safeguard logic lives in exactly one place.
 
     For a Hermitian ``H`` every block norm is bounded by ``||H||``; a jump of several
     orders of magnitude over the largest healthy block norm means the recurrence has

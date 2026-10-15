@@ -11,7 +11,7 @@ try:
 except ImportError:
     _has_mpi = False
 
-from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
+from impurityModel.ed.BlockLanczosArray import block_normalize
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
@@ -190,7 +190,7 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     # this is tracked as future work. strict=False so that if a solver later resolves a
     # cell it surfaces as XPASS rather than failing the suite.
     if path == "array" and spectrum_type == "near_degenerate":
-        # Reort.NONE does no reorthogonalization,
+        # False does no reorthogonalization,
         # so nothing guarantees they resolve a 1e-9-relative splitting once BLAS-kernel
         # rounding is comparable to that splitting: a different runner's OpenBLAS build
         # (measured locally via OPENBLAS_CORETYPE=Nehalem, and observed on real CI across
@@ -199,10 +199,10 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
         # ("ghost") Ritz value instead of the true split pair. PARTIAL/FULL keep
         # the Krylov basis orthogonal and are not excluded here -- they have not been
         # observed to fail this cell on any measured kernel/compiler.
-        if mode == Reort.NONE:
+        if not mode:
             return pytest.mark.xfail(
                 strict=False,
-                reason="Reort.NONE gives no reorthogonalization guarantee at a "
+                reason="False gives no reorthogonalization guarantee at a "
                 "1e-9-relative splitting; a different BLAS reduction order can merge the "
                 "near-degenerate pair into a ghost Ritz value (see comment above)",
             )
@@ -214,7 +214,7 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     )
 
 
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.FULL])
+@pytest.mark.parametrize("mode", [False, True])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 @pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
@@ -234,11 +234,11 @@ def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
         np.sort(eigvals), _exact_spectrum(spectrum_type)[:NUM_WANTED], atol=solver_atol(1e-8, c=100)
     )
 
-    if mode != Reort.NONE:
+    if mode != False:
         assert_orthonormal(eigvecs, path, comm=None)
 
 
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.FULL])
+@pytest.mark.parametrize("mode", [False, True])
 @pytest.mark.parametrize("path", ["array"])
 @pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
@@ -265,7 +265,7 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
       -1775 (far below the true minimum 1.0) -- a bad-seed artifact, not a reort or
       restart-logic bug: swapping to a signed ``randn`` seed (matching the array path
       and ``lanczos_golden.py``'s ``_mbs_psi0``) removes the divergence.
-    * even with that signed seed, ``near_degenerate`` under ``Reort.NONE``
+    * even with that signed seed, ``near_degenerate`` under ``False``
       still lands Ritz values at -72.4 and -0.21 (below the true minimum 1.0); PARTIAL/
       FULL settle to benign near-machine-zero artifacts (~1e-15) instead,
       consistent with this module's documented "spurious zero Ritz value from a
@@ -284,7 +284,7 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.FULL])
+@pytest.mark.parametrize("mode", [False, True])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
 @pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
@@ -302,5 +302,5 @@ def test_no_ghost_bands_mpi(mode, path, solver, spectrum_type, request):
     # variant above for why this margin is solver_atol(1e-8, c=100).
     np.testing.assert_allclose(np.sort(eigvals), eigvals_exact[:NUM_WANTED], atol=solver_atol(1e-8, c=100))
 
-    if mode != Reort.NONE:
+    if mode != False:
         assert_orthonormal(eigvecs, path, comm=comm)

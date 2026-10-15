@@ -42,8 +42,6 @@ def test_trlm_reort_partial():
 
     import scipy.linalg as sp
 
-    from impurityModel.ed.BlockLanczosArray import Reort
-
     M = inner_multi(psi0, psi0)
     L = sp.cholesky(M, lower=True)
     beta_inv = sp.inv(np.conj(L.T))
@@ -60,7 +58,7 @@ def test_trlm_reort_partial():
         tol=1e-8,
         max_restarts=50,
         verbose=True,
-        reort=Reort.FULL,
+        reort=True,
     )
 
     np.testing.assert_allclose(eigvals, eigvals_exact[:4], atol=1e-6)

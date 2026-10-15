@@ -3,7 +3,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.BlockLanczos import (
-    block_lanczos_cy,
+    block_lanczos,
     thick_restart_block_lanczos_cy,
 )
 from impurityModel.ed.BlockLanczosArray import block_normalize
@@ -44,12 +44,12 @@ def test_block_lanczos_cy_mpi_orthogonality_full():
     psi0 = basis.redistribute_psis(*psi0)
     psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
-    alphas, _betas, Q_basis = block_lanczos_cy(
+    alphas, _betas, Q_basis = block_lanczos(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
-        converged_fn=lambda a, b, **kw: len(a) >= 3,
-        reort="full",
+        converged=lambda a, b, **kw: len(a) >= 3,
+        reort=True,
         max_iter=3,
         verbose=False,
         comm=comm,
@@ -86,12 +86,12 @@ def test_block_lanczos_cy_mpi_choleskyqr2_near_degenerate():
     psi0 = basis.redistribute_psis(*psi0)
     psi0, _ = block_normalize(psi0, mpi=True, comm=comm)  # orthonormal start (as the GF path provides)
 
-    _alphas, betas, Q_basis = block_lanczos_cy(
+    _alphas, betas, Q_basis = block_lanczos(
         psi0=psi0,
         h_op=h_op,
         basis=basis,
-        converged_fn=lambda a, b, **kw: False,
-        reort="none",
+        converged=lambda a, b, **kw: False,
+        reort=False,
         max_iter=3,
         verbose=False,
         comm=comm,

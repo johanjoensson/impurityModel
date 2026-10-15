@@ -18,7 +18,7 @@ import scipy.sparse as sps
 from mpi4py import MPI
 
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
-from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array
+from impurityModel.ed.BlockLanczosArray import block_lanczos
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
 
 GLOBAL_N = 23
@@ -64,13 +64,13 @@ def _local(comm, partition, width):
 
 
 def _run(h_op, psi0_local, comm, max_iter):
-    alphas, betas, *_ = block_lanczos_array(
+    alphas, betas, *_ = block_lanczos(
         psi0=psi0_local,
         h_op=h_op,
         converged=lambda a, b, **kw: False,
         max_iter=max_iter,
         verbose=False,
-        reort=Reort.FULL,
+        reort=True,
         comm=comm,
     )
     return np.asarray(alphas), np.asarray(betas)

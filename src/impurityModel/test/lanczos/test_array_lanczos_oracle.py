@@ -11,7 +11,7 @@ import pytest
 import scipy.sparse as sps
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import Reort, _build_full_T, block_lanczos_array
+from impurityModel.ed.BlockLanczosArray import _build_full_T, block_lanczos
 
 _SQRT_EPS = np.sqrt(np.finfo(float).eps)
 
@@ -35,13 +35,13 @@ def test_array_lanczos_matches_dense(p):
     n = 12
     h = _hermitian(n, seed=p)
     n_blocks = -(-n // p)  # ceil: full Krylov
-    alphas, betas, _q = block_lanczos_array(
+    alphas, betas, _q = block_lanczos(
         psi0=_start_block(n, p),
         h_op=sps.csr_matrix(h),
         converged=lambda a, b, **kw: False,
         max_iter=n_blocks,
         verbose=False,
-        reort=Reort.FULL,
+        reort=True,
         comm=None,
     )
     eig = np.sort(np.linalg.eigvalsh(_build_full_T(alphas, betas)))
@@ -58,13 +58,13 @@ def test_array_lanczos_orthonormality(p):
     """
     n = 12
     h = _hermitian(n, seed=10 + p)
-    _alphas, _betas, q = block_lanczos_array(
+    _alphas, _betas, q = block_lanczos(
         psi0=_start_block(n, p),
         h_op=sps.csr_matrix(h),
         converged=lambda a, b, **kw: False,
         max_iter=-(-n // p),
         verbose=False,
-        reort=Reort.FULL,
+        reort=True,
         comm=None,
     )
     q_mat = np.asarray(q)  # (n, n_vectors)
@@ -86,13 +86,13 @@ def test_array_lanczos_orthonormality_mpi():
     h_local = sps.csr_matrix(h[:, c0:c1])
     psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
 
-    _alphas, _betas, q = block_lanczos_array(
+    _alphas, _betas, q = block_lanczos(
         psi0=psi0_local,
         h_op=h_local,
         converged=lambda a, b, **kw: False,
         max_iter=-(-n // p),
         verbose=False,
-        reort=Reort.FULL,
+        reort=True,
         comm=comm,
     )
     q_local = np.asarray(q)  # (local_N, n_vectors); each column a vector's local rows

@@ -7,7 +7,7 @@
 
 """Block Lanczos kernel for numpy arrays / scipy sparse operators (MPI row-block).
 
-The shared numerical layer (``Reort``, every tolerance constant, the Paige-Simon
+The shared numerical layer (every tolerance constant, the Paige-Simon
 ``estimate_orthonormality`` estimator, the block-tridiagonal eigensolvers, and the
 representation-dispatching block primitives / ``apply_reort``) lives in
 ``BlockLanczosCore.pyx``, imported here as a re-export block so every existing
@@ -18,13 +18,13 @@ layer, never from each other. Both build a block-tridiagonal ``T`` (diagonal blo
 ``alpha``, off-diagonal blocks ``beta``) whose eigenpairs approximate those of the
 operator; the TRLM drivers restart it.
 
-Reorthogonalization modes (``Reort``), what each guarantees:
+Reorthogonalization (the boolean ``reort``), what each setting guarantees:
 
-* ``NONE``      — no reorthogonalization. Cheapest; orthogonality is allowed to
+* ``False``     — no reorthogonalization. Cheapest; orthogonality is allowed to
   decay and ghost (spurious duplicate) eigenvalues may appear. Eigenvalues still
   converge for well-separated spectra. The restart machinery in TRLM
   re-orthogonalizes regardless, so NONE only relaxes the *inner* recurrence.
-* ``FULL``      — double-pass Gram–Schmidt against the whole basis every step.
+* ``True``      — double-pass Gram–Schmidt against the whole basis every step.
   Most robust; ``‖QᴴQ − I‖`` stays at ~machine precision.
 
 Every mode retains all ``p * m`` Krylov columns. That is the dominant allocation of a
@@ -64,19 +64,17 @@ from impurityModel.ed import config
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.solver_trace import note as _trace_note
 
-# Shared numerical layer: Reort, every tolerance constant, the Paige-Simon estimator,
+# Shared numerical layer: every tolerance constant, the Paige-Simon estimator,
 # the block-tridiagonal eigensolvers, and the representation-dispatching block
 # primitives all now live in BlockLanczosCore.pyx -- re-exported here so every existing
 # `from impurityModel.ed.BlockLanczosArray import ...` site (production and test) keeps
 # resolving unchanged. Put new imports needed only by THIS module's own code above this
 # block; put anything that belongs to the shared layer in BlockLanczosCore.pyx instead.
 from impurityModel.ed.BlockLanczosCore import (  # noqa: F401
-    Reort,
     BETA_BLOWUP_FACTOR,
     RESTART_ORTH_TOL,
     DEFAULT_EIGEN_TOL,
     THERMAL_GS_RESIDUAL_TOL,
-    resolve_reort,
     divergence_guard,
     _build_full_T,
     _build_banded_lower,
@@ -92,7 +90,7 @@ from impurityModel.ed.BlockLanczosCore import (  # noqa: F401
     BlockBreakdown,
     block_tsqr,
     apply_full_reort,
-    block_lanczos_array_cy,
+    block_lanczos,
     _matmul_nogil_test,
     block_combine_array,
     block_orthogonalize_array,
@@ -114,7 +112,7 @@ from impurityModel.ed.TSQR import (
 )
 
 
-def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=None, verbose=False):
+def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=True, comm=None, verbose=False):
     h = DistributedSparseMatrix.coerce(h, comm)
     mpi = comm is not None
     rank = comm.rank if mpi else 0
@@ -155,7 +153,7 @@ def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=N
     elif v0.shape[1] > block_size:
         v0 = v0[:, :block_size]
 
-    alphas, betas, Q, *_ = block_lanczos_array_cy(
+    alphas, betas, Q, *_ = block_lanczos(
         psi0=v0,
         h_op=h,
         converged=converged,
@@ -173,13 +171,3 @@ def calculate_thermal_gs(h, block_size, e_max, v0=None, reort=Reort.FULL, comm=N
         eigvecs = comm.bcast(eigvecs, root=0)
     return eigvals, eigvecs
 
-
-def block_lanczos_array(*args, **kwargs):
-    """:func:`block_lanczos_array_cy`, converting a scipy / dense local ``h_op`` once
-    (:meth:`DistributedSparseMatrix.coerce`)."""
-    comm = kwargs.get("comm")
-    if "h_op" in kwargs:
-        kwargs["h_op"] = DistributedSparseMatrix.coerce(kwargs["h_op"], comm)
-    elif len(args) > 1:
-        args = (args[0], DistributedSparseMatrix.coerce(args[1], comm)) + tuple(args[2:])
-    return block_lanczos_array_cy(*args, **kwargs)

@@ -161,11 +161,11 @@ def test_error_bar_reaches_the_driver_report(monkeypatch):
     def bound_entries(report):
         return [d for d in report.diagnostics if d.name == "truncation_error_bound"] if report is not None else []
 
-    _mat, _real, report = _run_driver("bicgstab", "none", comm=comm)
+    _mat, _real, report = _run_driver("bicgstab", False, comm=comm)
     if comm is None or comm.rank == 0:
         entries = bound_entries(report)
         assert entries and all(np.isfinite(d.value) and d.value >= 0.0 for d in entries)
 
     monkeypatch.setenv("GF_BICGSTAB_RESIDUAL_CHECK", "0")
-    _mat, _real, report = _run_driver("bicgstab", "none", comm=comm)
+    _mat, _real, report = _run_driver("bicgstab", False, comm=comm)
     assert bound_entries(report) == []

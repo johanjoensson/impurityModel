@@ -27,15 +27,18 @@ def _shipped_defaults(monkeypatch):
 
 def _spy(monkeypatch):
     calls = []
-    real_kernel = gf_solvers.block_lanczos_array
+    real_kernel = gf_solvers.block_lanczos
 
     def recording_kernel(*args, **kwargs):
         out = real_kernel(*args, **kwargs)
-        start = len(kwargs["alphas"]) if kwargs.get("tail") is not None else 0
+        # Only the array (CSR) recurrence is spied on; the sparse prefix goes through the same entry point.
+        if kwargs.get("tail") is None and not isinstance(kwargs.get("psi0"), np.ndarray):
+            return out
+        start = len(kwargs["alphas_init"]) if kwargs.get("tail") is not None else 0
         calls.append({"restart": kwargs.get("psi0") is not None, "start": start, "end": len(out[0])})
         return out
 
-    monkeypatch.setattr(gf_solvers, "block_lanczos_array", recording_kernel)
+    monkeypatch.setattr(gf_solvers, "block_lanczos", recording_kernel)
     return calls
 
 
@@ -65,7 +68,7 @@ def test_a_spent_budget_continues_from_its_own_tail(monkeypatch):
     _assert_php_oracle(g, info)
 
 
-@pytest.mark.parametrize("reort", ["full"])
+@pytest.mark.parametrize("reort", [True])
 def test_a_reorthogonalized_unit_still_restarts_from_the_seeds(reort, monkeypatch):
     calls = _spy(monkeypatch)
     g, info = _run_capped(12, reort=reort)

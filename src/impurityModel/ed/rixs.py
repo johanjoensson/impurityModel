@@ -23,7 +23,6 @@ import impurityModel.ed.greens_function as gf
 from impurityModel.ed import config
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
-from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed import gf_solvers
 from impurityModel.ed.gf_solvers import _freeze_bicgstab_support, solve_shifted_block
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
@@ -874,7 +873,7 @@ def calc_map(
                 psi3_all,
                 green_basis,
                 delta2,
-                Reort.NONE,
+                False,
                 slaterWeightMin=slaterWeightMin,
                 verbose=False,
                 info=r2_info,
@@ -1032,7 +1031,7 @@ def calc_tensor_map(
                 seeds,
                 green_basis,
                 delta2,
-                Reort.NONE,
+                False,
                 slaterWeightMin=slaterWeightMin,
                 verbose=False,
                 info=r2_info,

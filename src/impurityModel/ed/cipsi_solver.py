@@ -10,8 +10,8 @@ from impurityModel.ed.basis_transcription import (
     build_sparse_matrix,
     build_state,
 )
-from impurityModel.ed.BlockLanczosArray import BlockBreakdown, Reort, block_normalize
-from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+from impurityModel.ed.BlockLanczosArray import BlockBreakdown, block_normalize
+from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.BlockLanczosCore import _build_full_T, block_apply, block_inner
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.manybody_basis import (
@@ -1252,7 +1252,7 @@ class CIPSISolver:
         dense_cutoff=1e3,
         slaterWeightMin=0,
         solver="trlm",
-        reort=Reort.FULL,
+        reort=True,
         symmetry_generators=None,
         cap_e_tol=1e-8,
         max_cap_cycles=10,
@@ -2028,13 +2028,13 @@ class CIPSISolver:
                     v = _complement_verdict(*_lowest_ritz_bound(alphas, betas, block_widths), boundary, len(alphas))
                 return decide(v) is not None
 
-            alphas, betas, _, block_widths, status = block_lanczos_array(
+            alphas, betas, _, block_widths, status = block_lanczos(
                 psi0=R,
                 h_op=H_mat,
                 converged=hook,
                 max_iter=max_subspace_blocks,
                 verbose=False,
-                reort="full",
+                reort=True,
                 return_widths=True,
                 return_status=True,
                 comm=comm,
@@ -2119,7 +2119,7 @@ class CIPSISolver:
         dense_cutoff=1e3,
         slaterWeightMin=0,
         solver="trlm",
-        reort=Reort.FULL,
+        reort=True,
         psi_refs=None,
         h_matrix=None,
     ):

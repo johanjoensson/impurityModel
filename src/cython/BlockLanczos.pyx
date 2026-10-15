@@ -12,7 +12,7 @@ Parallel Block Lanczos eigensolver implemented in Cython.
 
 This module provides:
 
-* ``block_lanczos_cy`` – core iteration loop producing the block-tridiagonal
+* ``block_lanczos`` – core iteration loop producing the block-tridiagonal
   Lanczos representation :math:`T = Q^\\dagger H Q` of the Hamiltonian.
 * ``thick_restart_block_lanczos_cy`` – thick-restart (TRLM) wrapper that
   restarts the Krylov subspace while retaining the best Ritz pairs.
@@ -34,25 +34,25 @@ Pre-allocation:
     and sliced at return time; no numpy allocation occurs inside the
     Lanczos iteration body.
 
-Reorthogonalization modes (``Reort`` enum from ``lanczos.py``):
+Reorthogonalization (the boolean ``reort``):
 
-* ``NONE``      – no reorthogonalization.
-* ``FULL``      – full Gram-Schmidt against all previous blocks (2
+* ``False``     – no reorthogonalization.
+* ``True``      – full Gram-Schmidt against all previous blocks (2
   passes).
 """
 
-# The recurrence itself -- ``lanczos_step`` and the ManyBodyState driver ``block_lanczos_cy`` -- lives in
+# The recurrence itself -- ``lanczos_step`` and the ManyBodyState driver ``block_lanczos`` -- lives in
 # BlockLanczosCore.pyx next to the representation-dispatching primitives it is written against; this
 # module re-exports it so the existing `from impurityModel.ed.BlockLanczos import ...` paths keep working.
 from impurityModel.ed.BlockLanczosCore import (  # noqa: F401
-    block_lanczos_cy,
+    block_lanczos,
     lanczos_step,
 )
 
 # TRLM's restart-layer business logic (the path-agnostic `_trlm_core`, locking and
 # result assembly) is plain Python in ed/trlm.py -- it has no Cython constructs and
-# profiling showed ~97.7% of runtime inside `block_lanczos_cy` above, ~2.3% in this
-# restart glue. The module imports `block_lanczos_cy` back from here, function-locally
+# profiling showed ~97.7% of runtime inside `block_lanczos` above, ~2.3% in this
+# restart glue. The module imports `block_lanczos` back from here, function-locally
 # (inside its MBS entry point, not at module level): the two-way name dependency
 # below would otherwise cycle at the first `pip install -e .`. Re-exported here so the existing
 # `from impurityModel.ed.BlockLanczos import ...` import paths keep working.

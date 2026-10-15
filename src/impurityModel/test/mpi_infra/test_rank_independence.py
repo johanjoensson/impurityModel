@@ -99,7 +99,7 @@ from impurityModel.test.support._nio_workload import (
 # For the record, the superseded localization: a core dump put the main thread in
 #
 #   #0 estimate_orthonormality (W=..., alphas=..., betas=...)  BlockLanczosCore.pyx:316-322
-#   #6 block_lanczos_array_cy                                   BlockLanczosArray.pyx
+#   #6 block_lanczos                                   BlockLanczosArray.pyx
 #
 # The other threads are libfabric progress threads parked in epoll_wait. Locals at the crash:
 # i=32, n=2, w_0=2, w_curr=w_next=1 (the block has deflated), N=2977, and **anorm =

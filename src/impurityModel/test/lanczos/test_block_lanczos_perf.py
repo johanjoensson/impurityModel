@@ -7,9 +7,9 @@ workload), both loops that can run it:
 * ``test_partial_trlm_array_bench`` — the path CIPSI actually takes today
   (``cipsi_solver.get_eigenvectors``): sparse CSR ``H_mat`` (column-sliced under
   MPI) through the dispatching ``thick_restart_block_lanczos`` →
-  ``block_lanczos_array_cy``.
+  ``block_lanczos``.
 * ``test_partial_sparse_kernel_bench`` — the hash-distributed ``ManyBodyState``
-  kernel ``block_lanczos_cy`` (the memory-scalable alternative), with the
+  kernel ``block_lanczos`` (the memory-scalable alternative), with the
   per-phase time profile and the memory breakdown (Krylov-basis bytes, W buffer,
   dense fill ratio, transient reort spikes).
 
@@ -44,10 +44,9 @@ from mpi4py import MPI
 from impurityModel.ed import atomic_physics
 from impurityModel.ed.basis_transcription import build_distributed_vector, build_sparse_matrix
 from impurityModel.ed.BlockLanczos import (
-    block_lanczos_cy,
+    block_lanczos,
 )
 from impurityModel.ed.BlockLanczosArray import (
-    Reort,
     block_normalize,
     eigh_block_tridiagonal,
 )
@@ -77,7 +76,7 @@ MIXED_VALENCE = int(os.environ.get("BLBENCH_MV", "1"))
 TRUNC = int(os.environ.get("BLBENCH_TRUNC", "30000"))
 MAXITER = int(os.environ.get("BLBENCH_MAXITER", "40"))
 BLOCK = int(os.environ.get("BLBENCH_BLOCK", "2"))
-TRLM_REORT = Reort[os.environ.get("BLBENCH_REORT", "FULL").upper()]
+TRLM_REORT = os.environ.get("BLBENCH_REORT", "FULL").upper() != "NONE"
 REPS = int(os.environ.get("BLBENCH_REPS", "3"))
 # Force the restarted-Lanczos path in the CIPSI expansion regardless of basis size
 # (production hits it once the basis outgrows dense_cutoff; the bench always should).
@@ -202,7 +201,7 @@ def nio_workload():
         de2_min=1e-6,
         slaterWeightMin=SLATER_WEIGHT_MIN,
         solver="trlm",
-        reort=Reort.FULL,
+        reort=True,
     )
     if basis.restrictions is not None:
         h.set_restrictions(basis.restrictions)
@@ -292,7 +291,7 @@ def test_partial_trlm_array_bench(nio_workload):
 
 
 def test_partial_sparse_kernel_bench(nio_workload):
-    """Sparse ManyBodyState kernel: block_lanczos_cy FULL, fixed iteration budget."""
+    """Sparse ManyBodyState kernel: block_lanczos FULL, fixed iteration budget."""
     h, basis, comm = nio_workload["h"], nio_workload["basis"], nio_workload["comm"]
 
     psi0 = _random_block(basis, comm, BLOCK)
@@ -300,12 +299,12 @@ def test_partial_sparse_kernel_bench(nio_workload):
     sampler = RssSampler()
     sampler.start()
     t0 = time.perf_counter()
-    alphas, betas, Q_basis, block_widths = block_lanczos_cy(
+    alphas, betas, Q_basis, block_widths = block_lanczos(
         psi0=psi0,
         h_op=h,
         basis=basis,
-        converged_fn=lambda *a, **k: False,
-        reort="full",
+        converged=lambda *a, **k: False,
+        reort=True,
         max_iter=MAXITER,
         slaterWeightMin=SLATER_WEIGHT_MIN,
         comm=comm,
@@ -335,7 +334,7 @@ def test_partial_sparse_kernel_bench(nio_workload):
     # default budget.
     #
     # This replaces `abs(e0_sparse - e0_trlm) < 1e-4`, which could not hold and was failing:
-    # the two kernels are not being asked about the same operator. `block_lanczos_cy`'s
+    # the two kernels are not being asked about the same operator. `block_lanczos`'s
     # matvec discovers new determinants every step and the frozen `Basis` never sees them
     # (see `_CappedBasisProxy`, which exists to bound exactly this on the GF path) -- here it
     # reaches 63504 determinants, 62419 of them outside the 1085-determinant basis. The array
@@ -447,7 +446,7 @@ def _sweep_solve(h, psi0, max_blocks, max_restarts):
 
     t0 = time.perf_counter()
     vals, _ = _thick_restart_block_lanczos_array(
-        psi0.copy(), h, _Basis(), 2 * SWEEP_P, max_blocks, 1e-300, max_restarts, False, Reort.FULL, None
+        psi0.copy(), h, _Basis(), 2 * SWEEP_P, max_blocks, 1e-300, max_restarts, False, True, None
     )
     return time.perf_counter() - t0, vals
 
@@ -457,7 +456,7 @@ def test_trlm_continuation_cost_vs_subspace_size():
     """Per-block cost of the TRLM restart continuation as the subspace grows.
 
     Every continuation block pays O(N D) for the CGS2 projections against the D stored
-    columns, which is inherent to ``reort="full"``. A copy of the whole basis is the same order
+    columns, which is inherent to ``reort=True``. A copy of the whole basis is the same order
     per block, which is why a single operating point cannot tell the two apart: re-concatenating
     ``Q_basis`` per block and materializing ``conj(Q^T)`` per inner product each add to the
     constant in front of that O(N D). The report divides the continuation's per-block time by

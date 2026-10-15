@@ -41,7 +41,7 @@ from impurityModel.ed.BlockLanczos import (
     _thick_restart_block_lanczos_array,
     thick_restart_block_lanczos_cy,
 )
-from impurityModel.ed.BlockLanczosArray import RESTART_ORTH_TOL, Reort, block_normalize
+from impurityModel.ed.BlockLanczosArray import RESTART_ORTH_TOL, block_normalize
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.ed.block_view import check_width_sync as _check_width_sync
 from impurityModel.ed.greens_function import _trim_blocks
@@ -152,9 +152,7 @@ def test_array_trlm_survives_a_rank_deficient_retained_ritz_block():
         size = n
 
     psi0 = np.linalg.qr(rng.standard_normal((n, _BLOCK_WIDTH)) + 0j)[0]
-    got, vecs = _thick_restart_block_lanczos_array(
-        psi0, h, _Basis(), _NUM_WANTED, 40, 1e-13, 30, False, Reort.NONE, None
-    )
+    got, vecs = _thick_restart_block_lanczos_array(psi0, h, _Basis(), _NUM_WANTED, 40, 1e-13, 30, False, False, None)
 
     assert len(got) == _NUM_WANTED
     np.testing.assert_allclose(np.sort(got.real), evals[:_NUM_WANTED], atol=1e-9)
@@ -175,9 +173,7 @@ def test_trlm_rebuilds_the_restart_when_orthogonality_is_lost():
     psi0 = np.linalg.qr(rng.standard_normal((n, _BLOCK_WIDTH)) + 0j)[0]
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        got, _ = _thick_restart_block_lanczos_array(
-            psi0, h, _Basis(), _NUM_WANTED, 40, 1e-13, 30, True, Reort.NONE, None
-        )
+        got, _ = _thick_restart_block_lanczos_array(psi0, h, _Basis(), _NUM_WANTED, 40, 1e-13, 30, True, False, None)
 
     reports = _restart_reports(buf.getvalue())
     assert reports, "TRLM never restarted; the test system stopped exercising the branch"
@@ -185,7 +181,7 @@ def test_trlm_rebuilds_the_restart_when_orthogonality_is_lost():
     np.testing.assert_allclose(np.sort(got.real), evals[:_NUM_WANTED], atol=1e-9)
 
 
-@pytest.mark.parametrize("mode", [Reort.FULL])
+@pytest.mark.parametrize("mode", [True])
 def test_trlm_partial_reort_never_rebuilds_the_restart(mode):
     """The semi-orthogonal modes must keep the free (matvec-less) coefficient path.
 
@@ -222,7 +218,7 @@ def test_manybodystate_trlm_survives_a_rank_deficient_retained_ritz_block():
     psi0 = _random_block(basis_states, rng, _BLOCK_WIDTH)
 
     got, vecs = thick_restart_block_lanczos_cy(
-        psi0, h_op, MockBasis(n_orb), _NUM_WANTED, 30, 1e-13, 30, False, 0.0, 0, "none", None
+        psi0, h_op, MockBasis(n_orb), _NUM_WANTED, 30, 1e-13, 30, False, 0.0, 0, False, None
     )
 
     assert len(got) == _NUM_WANTED
@@ -270,7 +266,7 @@ def test_trlm_rank_deficient_restart_is_collective(exchange, monkeypatch):
     psi0, _ = block_normalize(np.ascontiguousarray(psi0_full[c0:c1, :]), mpi=True, comm=comm)
 
     got, _ = _thick_restart_block_lanczos_array(
-        psi0, h_local, _Basis(comm), _NUM_WANTED, 40, 1e-13, 30, False, Reort.NONE, comm
+        psi0, h_local, _Basis(comm), _NUM_WANTED, 40, 1e-13, 30, False, False, comm
     )
 
     np.testing.assert_allclose(np.sort(got.real), evals[:_NUM_WANTED], atol=1e-8)
@@ -312,7 +308,7 @@ def test_sweep_deflation_does_not_short_circuit_the_restart_loop(num_wanted, max
         tol=1e-10,
         max_restarts=100,
         verbose=False,
-        reort="full",
+        reort=True,
     )
 
     assert len(got) == num_wanted
@@ -341,7 +337,7 @@ def test_the_deflating_fixture_really_deflates():
             tol=1e-10,
             max_restarts=100,
             verbose=True,
-            reort="full",
+            reort=True,
         )
 
     out = buf.getvalue()

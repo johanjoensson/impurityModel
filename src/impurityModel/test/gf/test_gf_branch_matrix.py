@@ -51,7 +51,7 @@ FACTORS: dict[str, list] = {
     "method": ["lanczos", "bicgstab"],
     "sparse": [True, False],
     "group": [1, 2],
-    "reort": [None, "full"],
+    "reort": [None, True],
     "mesh": ["iw", "w", "both"],
     "model": [1, 2],
     "comm": ["self", "world"],

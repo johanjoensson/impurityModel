@@ -35,10 +35,9 @@ ill-conditioned / near-degenerate problems that exercise the failure path.
 import numpy as np
 import scipy.linalg as la
 
-from impurityModel.ed.BlockLanczos import block_lanczos_cy
+from impurityModel.ed.BlockLanczos import block_lanczos
 from impurityModel.ed.BlockLanczosArray import (
-    Reort,
-    block_lanczos_array,
+    block_lanczos,
 )
 from impurityModel.ed.greens_function import (
     _gf_sample_mesh,
@@ -93,11 +92,11 @@ def test_array_kernel_no_blowup_near_degenerate():
     S = rng.standard_normal((n, 2)) + 1j * rng.standard_normal((n, 2))
     Q0, r = build_qr(S)
 
-    alphas, betas, Q, widths = block_lanczos_array(
+    alphas, betas, Q, widths = block_lanczos(
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=lambda a, b, **kw: False,
-        reort=Reort.NONE,
+        reort=False,
         return_widths=True,
         verbose=False,
         max_iter=40,
@@ -152,11 +151,11 @@ def test_gf_monitor_moving_mesh_cannot_converge_but_fixed_can():
     H = (U * d) @ U.conj().T
     H = 0.5 * (H + H.conj().T)
     Q0 = la.qr(rng.standard_normal((n, 2)) + 1j * rng.standard_normal((n, 2)), mode="economic")[0]
-    alphas, betas, _, widths = block_lanczos_array(
+    alphas, betas, _, widths = block_lanczos(
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=lambda a, b, **kw: False,
-        reort=Reort.FULL,
+        reort=True,
         return_widths=True,
         max_iter=15,
     )
@@ -213,11 +212,11 @@ def test_divergence_safeguard_does_not_false_trigger_on_large_norm_H():
     H = 0.5 * ((U * d) @ U.conj().T + (U * d) @ U.conj().T).conj().T
     Q0 = la.qr(rng.standard_normal((n, 2)) + 1j * rng.standard_normal((n, 2)), mode="economic")[0]
 
-    alphas, betas, _Q, widths = block_lanczos_array(
+    alphas, betas, _Q, widths = block_lanczos(
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=lambda a, b, **kw: False,
-        reort=Reort.NONE,
+        reort=False,
         return_widths=True,
         verbose=False,
         max_iter=4,
@@ -261,12 +260,12 @@ def test_mbs_kernel_no_blowup_near_degenerate():
         for i, sd in enumerate(states):
             psi0[c] += ManyBodyState({sd: Q0[i, c]})
 
-    alphas, betas, _, widths = block_lanczos_cy(
+    alphas, betas, _, widths = block_lanczos(
         psi0,
         h_op,
         MockBasis(_MBS_NORB),
-        converged_fn=lambda a, b, **kw: False,
-        reort=Reort.NONE,
+        converged=lambda a, b, **kw: False,
+        reort=False,
         max_iter=20,
         return_widths=True,
     )

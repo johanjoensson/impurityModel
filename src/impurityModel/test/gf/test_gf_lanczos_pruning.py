@@ -59,7 +59,7 @@ def _retained(info, comm=None):
     return sorted(set(keys))
 
 
-@pytest.mark.parametrize("reort", [None, "full"])
+@pytest.mark.parametrize("reort", [None, True])
 # 0.225 and 0.253 are thresholds at which a row rejected on one step clears the threshold on a later
 # one -- the case the ban exists for (see the negative control below).
 @pytest.mark.parametrize("eta", [0.05, 0.2, 0.225, 0.253, 0.5])
@@ -69,7 +69,7 @@ def test_the_pruned_recurrence_is_the_exact_resolvent_of_PHP_on_what_it_kept(mon
     np.testing.assert_allclose(G, _dense_G_on(retained, z), atol=1e-9)
 
 
-@pytest.mark.parametrize("reort", [None, "full"])
+@pytest.mark.parametrize("reort", [None, True])
 def test_without_the_ban_the_recurrence_is_not_exact_which_is_why_it_exists(monkeypatch, reort):
     """Negative control: forget every ban before each step and the same oracle must fail -- a row
     rejected when ``H q_k`` was formed is admitted later, so ``P_m H q_k != P_{k+1} H q_k`` and the
@@ -139,7 +139,7 @@ def test_off_by_default_leaves_the_unpruned_path_alone(monkeypatch):
     assert info["proxy"] is None
 
 
-@pytest.mark.parametrize("reort", [None, "full"])
+@pytest.mark.parametrize("reort", [None, True])
 @pytest.mark.parametrize("eta", [0.05, 0.225, 0.5])
 def test_a_row_chunked_matvec_is_the_same_exact_PHP_resolvent(monkeypatch, eta, reort):
     """The decision is taken once, on the summed output, so chunking the apply cannot move it."""
@@ -193,7 +193,7 @@ def test_pruning_and_the_support_freeze_are_exclusive():
 @pytest.mark.parametrize("eta", [0.05, 0.225, 0.5])
 def test_distributed_pruned_recurrence_is_the_exact_PHP_resolvent(monkeypatch, eta):
     comm = MPI.COMM_WORLD
-    G, info, z = _run(monkeypatch, eta, reort="full", comm=comm)
+    G, info, z = _run(monkeypatch, eta, reort=True, comm=comm)
     np.testing.assert_allclose(G, _dense_G_on(_retained(info, comm), z), atol=1e-9)
 
 

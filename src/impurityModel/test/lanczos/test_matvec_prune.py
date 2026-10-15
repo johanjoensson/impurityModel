@@ -15,7 +15,6 @@ from mpi4py import MPI
 
 from impurityModel.ed import spectra
 from impurityModel.ed.BiCGSTAB import _make_matmat, block_bicgstab
-from impurityModel.ed.BlockLanczosArray import Reort
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, block_apply, matvec_cut_after_sum
 from impurityModel.ed.gf_admission import start_set
 from impurityModel.ed.gf_primitives import _CappedBasisProxy
@@ -313,7 +312,7 @@ def _block_green(comm, cutoff):
     if comm is not None:
         seeds = basis.redistribute_psis(*seeds)
     omega = np.linspace(-6.0, 6.0, 25)
-    alphas, betas, r = block_Green(_model12(), seeds, basis, 0.2, Reort.NONE, slaterWeightMin=cutoff, verbose=False)
+    alphas, betas, r = block_Green(_model12(), seeds, basis, 0.2, False, slaterWeightMin=cutoff, verbose=False)
     return calc_G(alphas, betas, r, omega, 0.0, 0.2), basis.size
 
 

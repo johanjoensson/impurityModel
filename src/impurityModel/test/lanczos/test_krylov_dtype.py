@@ -26,8 +26,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.basis_transcription import build_dense_matrix
-from impurityModel.ed.BlockLanczos import block_lanczos_cy
-from impurityModel.ed.BlockLanczosArray import Reort
+from impurityModel.ed.BlockLanczos import block_lanczos
 from impurityModel.ed.greens_function import _make_gf_convergence_monitor, calc_G
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, SparseKrylovDense
@@ -103,7 +102,7 @@ def _run(siam, reort, dtype):
     hOp, imp, baths, psi, support, sector, _ = siam
     basis = Basis(imp, baths, initial_basis=support, verbose=False)
     converged, _flag, _tol, _dg = _make_gf_convergence_monitor(DELTA, 0.0)
-    alphas, betas, q, _widths, status = block_lanczos_cy(
+    alphas, betas, q, _widths, status = block_lanczos(
         [s.copy() for s in psi],
         hOp,
         basis,
@@ -113,7 +112,7 @@ def _run(siam, reort, dtype):
         max_iter=sector // len(psi),
         return_widths=True,
         return_status=True,
-        store_krylov=reort != Reort.NONE,
+        store_krylov=reort != False,
         krylov_dtype=dtype,
     )
     return alphas, betas, q, status
@@ -168,7 +167,7 @@ def test_full_complex64_halves_the_store_and_keeps_the_greens_function(siam):
     r = np.eye(len(psi), dtype=complex)
 
     results = {}
-    for label, reort, dtype in (("c128", Reort.FULL, None), ("c64", Reort.FULL, np.complex64)):
+    for label, reort, dtype in (("c128", True, None), ("c64", True, np.complex64)):
         alphas, betas, store, status = _run(siam, reort, dtype)
         assert status == "converged", f"{label}: {status}"
         results[label] = {
@@ -204,7 +203,7 @@ def test_block_green_sparse_defaults_to_complex128():
     psi = _seeds()
     support = sorted({d for s in psi for d in s})
 
-    for reort in (Reort.FULL,):
+    for reort in (True,):
         basis = Basis(imp, baths, initial_basis=support, verbose=False)
         alphas, _betas, _r = block_Green_sparse(
             hOp, basis.redistribute_psis(*[s.copy() for s in psi]), basis, DELTA, reort=reort, verbose=False
@@ -218,7 +217,7 @@ def test_block_green_sparse_defaults_to_complex128():
         basis.redistribute_psis(*[s.copy() for s in psi]),
         basis,
         DELTA,
-        reort=Reort.FULL,
+        reort=True,
         verbose=False,
         krylov_dtype=np.complex64,
     )

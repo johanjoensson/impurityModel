@@ -144,7 +144,7 @@ def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin:
 
     It is also what every consumer already wanted: ``CIPSISolver.truncate`` and
     ``_apply_block_and_redistribute`` both opened with ``ManyBodyState.from_states(...)`` on
-    this function's output, and ``block_lanczos_cy`` has taken a block seed since the
+    this function's output, and ``block_lanczos`` has taken a block seed since the
     block-native restart work. Those conversions are now gone rather than moved.
 
     Exact by construction (tier 1), because ``from_states`` built precisely this union block

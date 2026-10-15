@@ -45,7 +45,7 @@ from impurityModel.ed.BlockLanczos import (
     _thick_restart_block_lanczos_array,
     thick_restart_block_lanczos_cy,
 )
-from impurityModel.ed.BlockLanczosArray import BREAKDOWN_TOL, Reort, block_normalize
+from impurityModel.ed.BlockLanczosArray import BREAKDOWN_TOL, block_normalize
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.TSQR import EPS
 from impurityModel.test.support.lanczos_fixtures import MockBasis
@@ -154,7 +154,7 @@ def test_array_warm_start_is_refined_not_returned():
         size = _N
         comm = None
 
-    vals, vecs = _thick_restart_block_lanczos_array(q0.copy(), h, _Basis(), _P, 12, _TOL, 60, False, Reort.FULL, None)
+    vals, vecs = _thick_restart_block_lanczos_array(q0.copy(), h, _Basis(), _P, 12, _TOL, 60, False, True, None)
 
     vals = np.asarray(vals).real
     r = float(np.max(_residuals(h, vals, np.asarray(vecs))))
@@ -178,7 +178,7 @@ def test_manybodystate_warm_start_is_refined_not_returned():
     psi0 = _states_from_columns(basis_states, q0)
 
     vals, vecs = thick_restart_block_lanczos_cy(
-        psi0, h_op, MockBasis(_N_ORB), _P, 12, _TOL, 60, False, 0.0, 0, "full", None
+        psi0, h_op, MockBasis(_N_ORB), _P, 12, _TOL, 60, False, 0.0, 0, True, None
     )
 
     vals = np.asarray(vals).real
@@ -227,7 +227,7 @@ def test_warm_start_refinement_is_collective():
             self.size = n
 
     vals, vecs = _thick_restart_block_lanczos_array(
-        q0_local, h_local, _Basis(comm), _P, 12, _TOL, 60, False, Reort.FULL, comm
+        q0_local, h_local, _Basis(comm), _P, 12, _TOL, 60, False, True, comm
     )
 
     vals = np.asarray(vals).real
