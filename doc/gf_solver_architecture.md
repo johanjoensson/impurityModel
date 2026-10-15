@@ -134,8 +134,8 @@ Orthogonal switches on the default Lanczos path:
 
 - **`sparse`** — `block_Green_sparse` operates on the `ManyBodyState` representation (the
   matrix is never formed; the sparse hash-distributed Lanczos kernel `BlockLanczos.pyx`), vs
-  `block_green_impl` which forms a CSR/dense sector and runs the BLAS-3 array kernel
-  (`BlockLanczosArray.pyx`). Rule of thumb: array kernel for small/dense sectors, sparse when
+  `block_green_impl` which forms a CSR sector (`DistributedSparseMatrix`) and runs the same
+  `lanczos_step` on `ndarray` blocks (`block_lanczos_array`). Rule of thumb: array kernel for small/dense sectors, sparse when
   the matrix cannot be formed. See `architecture_overview.md` ("which one to use").
 - **Eigenstate grouping** (`config.GF_EIGENSTATE_GROUP`) — stack several thermal eigenstates
   into one wide block recurrence sharing a Krylov space. (The former operator split,
