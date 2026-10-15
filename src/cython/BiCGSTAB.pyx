@@ -23,7 +23,6 @@ from mpi4py import MPI
 from impurityModel.ed.BlockLanczosCore import (
     apply_and_redistribute,
     block_add_scaled,
-    block_apply,
     block_col_norms2,
     block_combine,
     block_diag_inner,
@@ -52,7 +51,7 @@ def _fill_info(info, iterations, converged, rel_residual):
 def _make_matmat(A, basis, double slaterWeightMin, bint is_arr, bint mpi):
     """The solver matvec, shared by ``block_bicgstab`` and ``block_gmres``.
 
-    Dense path: :func:`BlockLanczosArray.block_apply`. Sparse path: one
+    Dense path: :meth:`DistributedSparseMatrix.apply` with one exchange plan per solve. Sparse path: one
     ``ManyBodyOperator.apply_block`` per call, routed through
     ``basis.redistribute_block`` when distributed **or** when the basis enforces a
     determinant cap (``caps_growth`` -- the per-frequency Green's function's
@@ -76,9 +75,16 @@ def _make_matmat(A, basis, double slaterWeightMin, bint is_arr, bint mpi):
         # proper pass a DistributedSparseMatrix or an operator with its own `matmat`.
         A = DistributedSparseMatrix.coerce(A, basis.comm if mpi and basis is not None else None)
 
+        # One exchange plan per solve (collective on a distributed matrix), built at the first matvec
+        # and rebuilt if a wider block ever arrives: block_apply would build one per matvec.
+        plan_holder = [None, 0]
+
         def matmat(v):
             queue_progress()
-            return block_apply(A, v, basis=basis, mpi=mpi, slaterWeightMin=slaterWeightMin)
+            if plan_holder[1] < v.shape[1]:
+                plan_holder[0] = A.exchange_plan(v.shape[1], "bicgstab")
+                plan_holder[1] = v.shape[1]
+            return A.apply(v, plan_holder[0])
 
     else:
         caps = getattr(basis, "caps_growth", False)
