@@ -16,6 +16,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.BlockLanczosCore import block_inner, block_normalize
+from impurityModel.ed.memory_estimate import gs_krylov_blocks
 from impurityModel.ed.trlm import STATUS_CONVERGED, Window, trlm
 
 _U64 = (1 << 64) - 1
@@ -296,8 +297,7 @@ def solve_window(
         return np.ascontiguousarray(np.hstack(cols))
 
     def krylov_depth(width, wanted):
-        k_blocks = int(np.ceil(wanted / width))
-        return max(k_blocks + 1, min(4 * k_blocks + 20, max(2, n_global // width - 1)))
+        return gs_krylov_blocks(n_global, width, wanted)
 
     def run(psi0, wanted, locked=None, window=None):
         return trlm(

@@ -607,12 +607,6 @@ def estimate_gf_peak_bytes(
     return basis_bytes + live_bytes + fanout_bytes + store_bytes
 
 
-#: Additive eigenstate padding TRLM's initial sizing applies before certifying a manifold
-#: complete (mirrors ``cipsi_solver._EIGENSTATE_PAD``; not imported -- this module sits below
-#: the solver stack, see the module docstring -- so keep the two in sync by hand if that
-#: constant changes; both are 10 as of this writing).
-_GS_EIGENSTATE_PAD = 10
-
 #: The pre-Phase-4 coupled-regime assumption ``num_wanted ~= _GS_COUPLED_NUM_WANTED_RATIO *
 #: block_width`` (``cipsi_solver.expand``'s ``num_wanted = 2 * len(psi_refs)`` against
 #: ``block_width = len(psi_refs) + 1``, true only while ``GS_MAX_BLOCK_WIDTH`` is unset). A
@@ -621,57 +615,31 @@ _GS_EIGENSTATE_PAD = 10
 _GS_COUPLED_NUM_WANTED_RATIO = 2
 
 
-def _gs_krylov_columns(n_dets, block_width, num_wanted=None):
-    """Peak column count of the retained dense Krylov store, at the ground-state default
-    ``reort=True``.
+def gs_krylov_blocks(n_dets, block_width, num_wanted):
+    """Krylov depth, in blocks, of a ground-state window solve that starts by retaining ``num_wanted`` vectors.
 
-    Mirrors ``cipsi_solver._size_subspace`` **exactly** (re-read from source, not from memory --
-    an earlier version of this function got the formula wrong by omitting a factor of 2 and a
-    flat +20 headroom the real one carries, caught by review; see the git history of this file
-    and ``doc/plans/dc_smo_performance.md``'s "Phase resequencing" section):
-
-    .. code-block:: text
-
-        max_subspace = min(max(2*nw, nw+10), n_dets)
-        blocks = min(2*ceil(max_subspace/p) + 20, max(2, n_dets//p - 1))
-
-    where ``nw = num_wanted + _GS_EIGENSTATE_PAD``. Not imported (this module sits below the
-    solver stack, see the module docstring); keep the two in sync by hand if
-    ``_size_subspace`` changes -- there is no automated guard against drift here, only the
-    cross-reference.
-
-    **This replaced a flat ``n_blocks`` constant**, itself replacing a still-earlier guess of
-    30: neither a constant ratio nor (as this function's first version assumed) a ratio-free
-    formula covers the real behaviour, because ``num_wanted`` and ``block_width`` are two
-    different quantities that happen to move together 1:1 only when ``GS_MAX_BLOCK_WIDTH`` is
-    unset. Now that it exists (Phase 4), ``num_wanted`` can stay large while ``block_width`` is
-    capped -- callers pass the real, resolved ``block_width`` (:func:`resolve_gs_block_width`)
-    to keep this honest, and ``num_wanted``'s ``None`` default here still assumes the pre-cap
-    1:1 relationship for any caller that has not measured its own ``num_wanted``.
-
-    Parameters
-    ----------
-    n_dets : int
-        Global determinant count -- ``_size_subspace``'s ``cap`` argument (``len(self.basis)``
-        in production; the same basis-size bound applies here since the Krylov store cannot
-        hold more orthonormal columns than there are determinants).
-    block_width : int
-        The Lanczos block width ``p``.
-    num_wanted : int, optional
-        The *unpadded* eigenstate request (``get_eigenvectors``'s own argument). ``None``
-        (default) assumes ``2 * block_width`` -- the relationship that holds while
-        ``num_wanted`` tracks the block width 1:1, i.e. before ``GS_MAX_BLOCK_WIDTH`` exists.
-
-    Returns
-    -------
-    int
-        Column count (a multiple of ``block_width``).
+    The single definition: :func:`impurityModel.ed.eigensolvers.solve_window` sizes its subspace with it
+    and :func:`_gs_krylov_columns` prices the retained store with it, so the estimate cannot drift from
+    the solve. ``k = ceil(num_wanted / p)`` blocks are retained across a restart and ``3k + 20`` more are
+    built after them, bounded by what the basis can hold (``n_dets // p - 1`` blocks, since the sweep
+    needs room for a trailing residual). A window wider than ``num_wanted`` grows the retained set at a
+    restart head; that growth is not priced here.
     """
     p = max(1, block_width)
-    nw = (_GS_COUPLED_NUM_WANTED_RATIO * p if num_wanted is None else num_wanted) + _GS_EIGENSTATE_PAD
-    max_subspace = min(max(2 * nw, nw + 10), n_dets)
-    blocks = min(2 * ceil(max_subspace / p) + 20, max(2, n_dets // p - 1))
-    return p * blocks
+    k = ceil(max(1, num_wanted) / p)
+    return max(k + 1, min(4 * k + 20, max(2, n_dets // p - 1)))
+
+
+def _gs_krylov_columns(n_dets, block_width, num_wanted=None):
+    """Peak column count of the retained dense Krylov store, at the ground-state default ``reort=True``.
+
+    ``p * gs_krylov_blocks(...)``. ``num_wanted`` is the initial retention the solve is asked for;
+    ``None`` assumes ``2 * block_width``, the relationship that holds while it tracks the block width 1:1
+    (``GS_MAX_BLOCK_WIDTH`` unset).
+    """
+    p = max(1, block_width)
+    nw = _GS_COUPLED_NUM_WANTED_RATIO * p if num_wanted is None else num_wanted
+    return p * gs_krylov_blocks(n_dets, p, nw)
 
 
 def resolve_gs_block_width(default=4):
