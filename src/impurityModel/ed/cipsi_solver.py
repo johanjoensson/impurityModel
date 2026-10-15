@@ -10,6 +10,7 @@ from impurityModel.ed.basis_transcription import (
     build_sparse_matrix,
     build_state,
 )
+from impurityModel.ed.cipsi_budget import CapRefiner, MemoryGuard
 from impurityModel.ed.eigensolvers import eigensystem, solve_window
 from impurityModel.ed.manybody_basis import (
     Basis,
@@ -964,7 +965,6 @@ class CIPSISolver:
         """
         if memory_policy not in ("tighten", "warn"):
             raise ValueError(f"memory_policy must be 'tighten' or 'warn', got {memory_policy!r}")
-        tighten = memory_policy == "tighten"
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
         # Unconditional (None clears): a mask left on H by an earlier Green's-function stage must
@@ -974,77 +974,36 @@ class CIPSISolver:
         de0_max = energy_cut(self.basis.tau)
         psi_refs = getattr(self, "psi_refs", None)
 
-        threshold = self.basis.truncation_threshold
-        capped = np.isfinite(threshold)
-        # The memory trip-wire's own latch. It used to ride on `not capped`, which silently
-        # disabled the guard for exactly the configuration that crashed: a cap that is finite but
-        # far beyond what memory allows. Production ran with `truncation_threshold=119,555,328`
-        # and died at 949,834 determinants -- 0.79% of its own cap -- so the cap never bound, yet
-        # its mere existence made `capped` true and skipped the check. A separate latch also stops
-        # the guard from ratcheting the threshold down every cycle once it has fired, since
-        # `peak_rss` is a high-water mark and stays above the budget forever after.
-        budget_tripped = False
-        memory_bound = False
-        # Whether the look-ahead bound was ever the binding limit, independent of whether it
-        # was tightened into a permanent cap (see the two-strike rule below). This is what
-        # `truncation_report` keys off, so a memory-limited expansion is reported as such
-        # even when the loop ended before a second strike could confirm the first.
-        memory_bound_observed = False
+        guard = MemoryGuard(self.basis, memory_budget_bytes, tighten=memory_policy == "tighten")
+        refiner = CapRefiner(cap_e_tol, max_cap_cycles)
+        measuring = memory_budget_bytes is not None
         cap_cycles = 0
-        no_improve = 0
         e0 = np.inf
-        best_e0 = None
-        best_basis = None
-        best_psis = None
-        best_e_ref = None
         self.truncation_report = None
         self.convergence_report = None
-        # Set (warn mode only) when this expansion's measured peak RSS reached the budget while the
-        # user's cap was kept; never gates anything, it is only reported.
         self.memory_warning = None
-        # Per-call: a `last_selection` left over from an earlier `expand` (or none at all, when
-        # the loop exits before its first round) must not be read as this call's residual.
+        # Per-call: a `last_selection` left over from an earlier `expand` must not be read as this call's.
         self.last_selection = None
-        # Whether `last_selection["residual_pt2"]` describes the basis as it now stands: true only
-        # after a round that neither grew the basis nor was followed by a truncation. A capped
-        # cycle scores candidates, then `truncate` drops determinants, so its residual belongs to
-        # a basis that no longer exists (measured: reported 1.0e-8 "converged" at cap 640, true
-        # residual of the returned basis 1.7e-8).
+        # Whether `last_selection["residual_pt2"]` describes the basis as it now stands: true only after a
+        # round that neither grew the basis nor was followed by a truncation (a capped cycle scores
+        # candidates, then `truncate` drops determinants, so its residual belongs to a basis that is gone).
         residual_current = False
         cycle = 0
-        # The kept manifold two cycles back, for the growth margin below. `None` until there is
-        # one, which is not the same as zero: a first cycle has no growth to extrapolate.
+        # The kept manifold one cycle back, for the request's growth margin; `None` (no history) is not 0.
         prev_kept = None
-        # Consecutive cycles the look-ahead bound has been the binding one (reset to 0 the
-        # moment a cycle is not memory-bound). One binding cycle already caps *that* cycle's
-        # admission (`determine_new_Dj`'s own `min(max_new, cap)`, unconditional -- see
-        # `_memory_growth_bound`); this streak only gates the *permanent* threshold tightening
-        # below, so one round's noisy transient (allocator jitter, a GC pause landing inside the
-        # measured window, a one-off skew to the sampled rank) cannot freeze the basis for the
-        # rest of the run on a single bad reading. Two consecutive rounds agreeing is a real
-        # trend, not noise, and still tightens promptly -- this is not the every-round-forever
-        # staleness the after-the-fact `peak_rss` trip-wire below has (that one never resets,
-        # so an earlier cycle's mark keeps reading as current; see its own comment).
-        memory_bound_streak = 0
         while True:
             if psi_refs is None:
                 num_wanted = 10
-                # Left at `None` deliberately; see `_manifold_request` for why that is not 0.
                 prev_kept = None
             else:
-                # `.width`, not `len()`: len() on a block is its rank-local ROW count, which
-                # would make num_wanted -- and the eigensolver collectives it sizes -- diverge
-                # across ranks.
+                # `.width`, not `len()`: len() on a block is its rank-local ROW count, which would make
+                # num_wanted -- and the eigensolver collectives it sizes -- diverge across ranks.
                 n_kept = _psi_ref_width(psi_refs)
                 num_wanted = _manifold_request(n_kept, prev_kept)
                 prev_kept = n_kept
-            # The eigensolve is part of the cycle the guard must see. `determine_new_Dj` resets the
-            # high-water mark again at the start of the selection round (to measure that round's own
-            # transient), which used to hide the eigensolve's peak from both guards -- and at 256
-            # rank counts the eigensolve's own transient is not negligible. So: reset here, sample right
-            # after the eigensolve, and let the trip-wire below take the larger of the two peaks.
-            # Rank-local, no collective; gated on a replicated argument.
-            if memory_budget_bytes is not None:
+            # The eigensolve belongs to the cycle the guard measures: reset the high-water mark here and
+            # sample right after, since the selection round resets it again for its own transient.
+            if measuring:
                 reset_peak_rss()
             e_ref, psi_refs = self.get_eigenvectors(
                 H,
@@ -1054,56 +1013,19 @@ class CIPSISolver:
                 slaterWeightMin=slaterWeightMin,
                 psi_refs=psi_refs,
             )
-
-            eigensolve_peak = peak_rss_bytes() if memory_budget_bytes is not None else 0
+            eigensolve_peak = peak_rss_bytes() if measuring else 0
             if len(e_ref) == 0:
                 break
             e0 = float(np.min(e_ref))
-            if cap_cycles > 0:
-                # Fixed-budget refinement: keep the best capped basis seen so far and
-                # stop once cycles stop lowering the (variational) ground-state energy.
-                improved = best_e0 is None or e0 < best_e0 - cap_e_tol
-                if best_e0 is None or e0 < best_e0:
-                    best_e0 = e0
-                    # Packed keys, not `list(self.basis.local_basis)`: this snapshot is
-                    # retained across every later refinement cycle, alongside the live basis
-                    # it is a copy of. Measured on a 400k-determinant basis:
-                    #
-                    #     list(local_basis)             80.2 B/det
-                    #     ManyBodyState.from_keys(...) 115.2 B/det
-                    #     packed key array               9.8 B/det
-                    #
-                    # The C++ key block being *worse* than the list is not a mistake: it
-                    # builds a `vector<SlaterDeterminant>` and copies it into the block, and
-                    # glibc does not return the freed transient, so VmHWM -- the metric the
-                    # guard and the OOM killer act on -- keeps both.
-                    best_basis = np.empty((len(self.basis.local_basis), self.basis.n_bytes), dtype=np.uint8)
-                    for row, state in enumerate(self.basis.local_basis):
-                        best_basis[row] = np.frombuffer(
-                            bytes(state.to_bytearray()[: self.basis.n_bytes]), dtype=np.uint8
-                        )
-                    best_psis = psi_refs
-                    best_e_ref = e_ref
-                no_improve = 0 if improved else no_improve + 1
-                if no_improve >= 2 or cap_cycles >= max_cap_cycles:
-                    break
+            if cap_cycles > 0 and refiner.observe(self.basis, e0, psi_refs, e_ref, cap_cycles):
+                break
 
-            admit_target = None
-            if capped:
-                # Cap the selection so one cycle turns over at most ~10% of the basis
-                # (or fills the remaining budget, whichever is larger).
-                budget = int(threshold) - self.basis.size
-                admit_target = max(budget, -(-int(threshold) // 10))
+            admit_target = guard.admission_target()
             old_size = self.basis.size
-            # The look-ahead half of the memory guard (see `_memory_growth_bound`): bound this
-            # cycle's admission by what the *next* selection round can afford, predicted from
-            # this round's own measured transient. `prev_kept` already holds the previous
-            # cycle's kept count here, so this is exactly the request the next loop head makes.
+            # Look-ahead: bound this cycle's admission by what the *next* selection round can afford,
+            # predicted from this round's own measured transient.
             affordable_growth = None
-            if memory_budget_bytes is not None:
-                # `.width`: `len()` is the rank-local ROW count, which would both mis-size
-                # the look-ahead by orders of magnitude and make `cap` -- hence `max_new`, hence
-                # `_admit_top`'s rank-dependent branch over collectives -- differ per rank.
+            if measuring:
                 p_now = _psi_ref_width(psi_refs)
                 affordable_growth = _memory_growth_bound(
                     memory_budget_bytes, old_size, p_now, _manifold_request(p_now, prev_kept)
@@ -1118,100 +1040,11 @@ class CIPSISolver:
                     max_new=admit_target,
                     affordable_growth=affordable_growth,
                     e_pt2_tol=e_pt2_tol,
-                    clamp_admission=tighten,
+                    clamp_admission=guard.tighten,
                 )
                 n_new = self._allreduce_sum(len(new_Dj))
                 sel = self.last_selection or {}
-                memory_cap = sel.get("memory_admit_cap")
-                # The memory bound decided this admission only if it was the tightest of the
-                # three limits (candidates above de2_min, an existing cap's `admit_target`, and
-                # itself). A bound looser than the cap already in force is not a memory event
-                # and must neither warn nor touch the threshold.
-                # Warn mode never binds: the user's cap is final, so a round the look-ahead would
-                # have limited is not a memory event here (the trip-wire below still warns).
-                round_memory_bound = (
-                    tighten
-                    and memory_cap is not None
-                    and memory_cap < sel.get("n_candidates", 0)
-                    and (admit_target is None or memory_cap < admit_target)
-                )
-                memory_bound_streak = memory_bound_streak + 1 if round_memory_bound else 0
-                # Any strike at all, permanent tightening or not: this is what the expansion
-                # *reports*. Without it a first strike followed by a round that admits nothing
-                # leaves `memory_bound` False, the loop exits on
-                # `cap_cycles == 0 and self.basis.size == old_size`, and `truncation_report`
-                # is never written -- so a memory-limited expansion reads as a converged one,
-                # and `dc_search.resolve_cap_at_max` (which tests `truncation_report is None`)
-                # would record the cap as "unbound" and never look lower.
-                memory_bound_observed = memory_bound_observed or round_memory_bound
-                # Two consecutive binding rounds, not one: `determine_new_Dj` already applied
-                # this round's `memory_cap` to its own admission regardless (the guard's safety
-                # property does not depend on what happens here), so a single-round strike costs
-                # nothing to wait out, and waiting is what stops one noisy reading from pinning
-                # the basis at that cycle's size for good.
-                #
-                # `memory_cap == 0` locks in on the first strike: zero affordable growth means
-                # this round admitted nothing, so `self.basis.size == old_size` and the loop's
-                # own termination (`cap_cycles == 0 and self.basis.size == old_size: break`,
-                # below) exits before a second round could ever run to confirm the reading --
-                # unlike a positive-but-tight cap, there is no "wait and see" available, and
-                # zero is a floor, not a noisy estimate that a second sample could revise upward.
-                #
-                # This holds for a `"budget"`-reason zero too, and deliberately so. Such a zero
-                # means `rss_base >= budget`, and the after-the-fact trip-wire below fires on
-                # `peak_rss >= budget` with `peak_rss >= rss_base` by construction (VmHWM was
-                # reset to the round's starting RSS) -- so by the time a budget-side zero is
-                # visible here, the OOM backstop has *already* capped. Giving this branch its own
-                # streak would be unreachable code. It is also unnecessary: the budget is
-                # `safety * (available + resident)`, and `available` is `MemAvailable /
-                # ranks_on_node`, so another rank allocating a whole GiB moves it by ~8 MiB at
-                # 128 ranks/node. The budget does not jitter across the resident set.
-                if not memory_bound and round_memory_bound and (memory_cap == 0 or memory_bound_streak >= 2):
-                    # The affordable size becomes the fixed budget from here on -- the same
-                    # machinery a caller's cap uses -- tightening only (`min`), never loosening
-                    # an existing cap.
-                    memory_bound = True
-                    previous = threshold
-                    threshold = min(float(threshold), float(old_size + memory_cap))
-                    capped = True
-                    self.basis.truncation_threshold = threshold
-                    # Once per calculation at any verbosity (every event at -vv): this is the line
-                    # that says why a default run's basis stopped growing. stdout and stderr, via
-                    # emit_memory_warning: under RSPt rank 0's stdout is a per-cluster file, and
-                    # round 11's slurm logs carried none of these lines.
-                    was = "no cap (unlimited)" if not np.isfinite(previous) else f"the auto cap of {int(previous):,}"
-                    streak_note = (
-                        "no growth at all is affordable" if memory_cap == 0 else "for the second round running"
-                    )
-                    # Which side bound, and by how much. Without this the two cases are
-                    # indistinguishable in a log -- and telling them apart is what took the
-                    # round-9 diagnosis from "the basis is mysteriously frozen" to a named
-                    # defect: a 4-68 KiB round refused all growth is a budget verdict, not a
-                    # transient one, and reads absurd the moment both numbers are on the line.
-                    rss_now = sel.get("round_rss_bytes", 0)
-                    if sel.get("memory_cap_reason") == "budget":
-                        why = (
-                            f"the resident set alone is over the {format_bytes(memory_budget_bytes)} "
-                            f"budget by {format_bytes(rss_now - memory_budget_bytes)}, so the round's "
-                            "own cost did not enter into it"
-                        )
-                    else:
-                        why = (
-                            f"that leaves {format_bytes(memory_budget_bytes - rss_now)} under the "
-                            f"{format_bytes(memory_budget_bytes)} budget, which this round's cost "
-                            "does not fit a larger basis into"
-                        )
-                    emit_memory_warning(
-                        f"WARNING determinant cap: the selection round on {old_size:,} determinants peaked "
-                        f"{format_bytes(sel.get('round_transient_bytes', 0))} above its "
-                        f"{format_bytes(rss_now)} resident set ({streak_note}); {why}. "
-                        f"The next round can afford {memory_cap:,} of the "
-                        f"{sel.get('n_candidates', 0):,} candidates. Tightening {was} to "
-                        f"{int(threshold):,}.",
-                        root=self.basis.comm is None or self.basis.comm.rank == 0,
-                        kind="gs-memory",
-                        force=self.basis.verbose,
-                    )
+                guard.after_selection(sel, old_size, admit_target)
                 _sel_event.update(
                     basis_size=int(old_size),
                     p=_psi_ref_width(psi_refs),
@@ -1222,41 +1055,8 @@ class CIPSISolver:
                     subthreshold_de2_mass=float(sel.get("subthreshold_de2_mass", 0.0)),
                     residual_pt2=float(sel.get("residual_pt2", 0.0)),
                 )
-            # Unconditional collectives (CLAUDE.md: never gate a collective on rank-local
-            # state, and `self.basis.verbose` may differ across ranks) -- only the print
-            # below is gated. Cheap relative to the cycle they describe: single-scalar
-            # reductions against a selection round that costs seconds to minutes.
-            local_count = len(self.basis.local_basis)
-            peak_rss = max(peak_rss_bytes(), eigensolve_peak)
-            # `VmHWM` alone cannot be attributed: it is anon + file + shmem, and under an MPI that
-            # uses shared memory for intra-node transport the shmem part is a node-wide pool every
-            # rank counts, which does not move `MemAvailable` and which no allocator tuning
-            # returns. Reading the ratchet as the solver's own allocations is what round 5 and
-            # round 9 both did (`doc/plans/dc_smo_memory.md`); `anon` is the part a code change
-            # can move, so it is reported beside the total rather than left to be inferred.
-            rss_parts = rss_breakdown()
-            anon_rss, shmem_rss = rss_parts["anon"], rss_parts["shmem"]
-            if self.basis.is_distributed:
-                local_max = self.basis.comm.allreduce(local_count, op=MPI.MAX)
-                local_min = self.basis.comm.allreduce(local_count, op=MPI.MIN)
-                peak_rss = self.basis.comm.allreduce(peak_rss, op=MPI.MAX)
-                anon_rss = self.basis.comm.allreduce(anon_rss, op=MPI.MAX)
-                shmem_rss = self.basis.comm.allreduce(shmem_rss, op=MPI.MAX)
-            else:
-                local_max = local_min = local_count
-            _trace_note(
-                "cipsi_cycle",
-                cycle=cycle,
-                local_max=int(local_max),
-                local_min=int(local_min),
-                vm_hwm_bytes=int(peak_rss),
-                anon_rss_bytes=int(anon_rss),
-                shmem_rss_bytes=int(shmem_rss),
-            )
+            peak_rss, anon_rss, shmem_rss, local_min, local_max = self._cycle_memory(eigensolve_peak, cycle)
             if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
-                # Surfaced every cycle, not only once a cap has bound (see
-                # doc/plans/dc_smo_memory.md) -- `last_selection`'s counts used to be
-                # visible only behind the cap-hit WARNING below.
                 print(
                     f"  cycle {cycle}: basis={old_size:,} p={_psi_ref_width(psi_refs):,} "
                     f"Hpsi_rows={sel.get('hpsi_rows', 0):,} candidates={sel.get('n_candidates', 0):,} "
@@ -1268,82 +1068,16 @@ class CIPSISolver:
                     flush=True,
                 )
             cycle += 1
-            if (
-                memory_budget_bytes is not None
-                and not budget_tripped
-                and peak_rss >= memory_budget_bytes
-                and not tighten
-            ):
-                # Warn mode: the user's cap is final. Same replicated condition as below, so every
-                # rank latches together; only rank 0 prints, and it prints whatever the verbosity
-                # because a run about to be OOM-killed is exactly the one whose log is read.
-                budget_tripped = True
-                self.memory_warning = {
-                    "peak_rss_bytes": int(peak_rss),
-                    "anon_rss_bytes": int(anon_rss),
-                    "shmem_rss_bytes": int(shmem_rss),
-                    "budget_bytes": int(memory_budget_bytes),
-                    "basis_size": int(self.basis.size),
-                    "cap": float(threshold),
-                }
-                cap_text = f"{int(threshold):,}" if np.isfinite(threshold) else "unlimited"
-                emit_memory_warning(
-                    f"WARNING determinant cap: GS basis at {self.basis.size:,} determinants uses "
-                    f"{format_bytes(peak_rss)}/rank (anon {format_bytes(anon_rss)} + shm "
-                    f"{format_bytes(shmem_rss)}, max over ranks) >= the {format_bytes(memory_budget_bytes)} "
-                    f"memory budget. Your truncation_threshold={cap_text} is kept as set; if the job is "
-                    f"killed, set truncation_threshold <= {self.basis.size:,}, use 'auto', or run fewer ranks "
-                    "per node. (Shared memory may be over-counted under MPI.)",
-                    root=self.basis.comm is None or self.basis.comm.rank == 0,
-                    kind="gs-memory",
-                )
-            if memory_budget_bytes is not None and not budget_tripped and peak_rss >= memory_budget_bytes:
-                # `peak_rss` and `self.basis.size` are both already rank-replicated at this point
-                # (VmHWM was just MAX-allreduced above; `Basis.size` is the global count by
-                # construction), so every rank evaluates this condition identically without a
-                # separate collective for the decision itself.
-                budget_tripped = True
-                # Report this as a memory-bound stop, like the look-ahead's own cap. Only
-                # `memory_bound_observed` (a pure reporting flag) is set, never `memory_bound`,
-                # which also gates whether the look-ahead may still adopt a *tighter* cap of its
-                # own later in the expansion -- that decision is unaffected by this backstop
-                # having fired.
-                #
-                # Without this the backstop is invisible downstream: `truncation_report` still
-                # says `cap_hit`, but with `memory_bound` False it is indistinguishable from a
-                # `truncation_threshold` the caller chose, and `dc_criteria._reject_if_memory_bound`
-                # -- which exists to refuse exactly this answer -- lets it through. Caught by
-                # driving a real search at a near-zero budget; the unit tests could not see it
-                # because they exercise the look-ahead half only.
-                memory_bound_observed = True
-                # `min`, never a bare assignment: an existing cap that already binds tighter than
-                # the current basis is an instruction from the caller and must not be loosened.
-                previous = threshold
-                threshold = min(float(threshold), float(self.basis.size))
-                capped = True
-                # Written back, not just held locally: a caller inspecting
-                # `basis.truncation_threshold` after `expand()` returns must see the cap that
-                # actually governed the rest of this run, not the one it was constructed with.
-                self.basis.truncation_threshold = threshold
-                was = "no cap (unlimited)" if not np.isfinite(previous) else f"the auto cap of {int(previous):,}"
-                emit_memory_warning(
-                    f"WARNING determinant cap: measured per-rank RSS {format_bytes(peak_rss)} reached the "
-                    f"{format_bytes(memory_budget_bytes)} memory budget mid-expansion; tightening "
-                    f"{was} to a fixed-budget cap at the current basis "
-                    f"({self.basis.size:,} determinants) rather than risk an uncatchable OOM kill.",
-                    root=self.basis.comm is None or self.basis.comm.rank == 0,
-                    kind="gs-memory",
-                    force=self.basis.verbose,
-                )
+            guard.after_cycle(peak_rss, anon_rss, shmem_rss)
+
             truncated = False
-            if capped and self.basis.size + n_new > threshold:
-                # Fixed-budget CIPSI cycle: make room by dropping the currently least
-                # important determinants (by eigenvector amplitude), then admit the
-                # de2-ranked candidates; the loop head re-diagonalizes and the cycle
-                # repeats until the energy stabilizes.
+            if guard.capped and self.basis.size + n_new > guard.threshold:
+                # Fixed-budget cycle: make room by dropping the currently least important determinants
+                # (by eigenvector amplitude), then admit the de2-ranked candidates; the loop head
+                # re-diagonalizes and the cycle repeats until the energy stabilizes.
                 cap_cycles += 1
                 truncated = True
-                keep = max(int(threshold) - n_new, int(threshold) // 2, 1)
+                keep = max(int(guard.threshold) - n_new, int(guard.threshold) // 2, 1)
                 psi_refs = self.truncate(psi_refs, e_ref, target=keep, slaterWeightMin=slaterWeightMin)
                 if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
                     print(
@@ -1351,94 +1085,105 @@ class CIPSISolver:
                         f"{self.last_truncation['retained']:,} determinants, admitting {n_new:,} candidates)"
                     )
             self.basis.add_states(new_Dj)
-            # `redistribute_block`, not `redistribute_psis(*psi_refs)`: unpacking a block with
-            # `*` iterates its determinant KEYS. At >1 rank that raises; at 1 rank
-            # `redistribute_psis` is a no-op that hands the keys straight back, so the next
-            # cycle silently reads a list of SlaterDeterminants as its reference block.
+            # `redistribute_block`, not `redistribute_psis(*psi_refs)`: unpacking a block with `*` iterates
+            # its determinant KEYS (an error at >1 rank, silently wrong at 1). `prune_rows(0.0)` drops a row
+            # that cancelled exactly across ranks on every column.
             psi_refs = self.basis.redistribute_block(psi_refs)
-            # `redistribute_psis` pruned each column slice to 0.0 and the caller's `from_states`
-            # re-unioned, so a row that came out exactly zero in *every* column disappeared.
-            # `redistribute_block` does neither, so do it here -- otherwise an exact cross-rank
-            # cancellation leaves an all-zero row behind, and only at >1 rank.
             psi_refs.prune_rows(0.0)
             residual_current = not truncated and self.basis.size == old_size
             if cap_cycles == 0 and self.basis.size == old_size:
                 break
             e0 = np.inf  # the basis was mutated; e0 no longer describes it
-        if best_basis is not None and e0 > best_e0:
-            # The last refinement cycle left a worse basis (e.g. score/amplitude
-            # ping-pong): restore the best capped basis seen during the cycles.
-            self.basis.clear()
-            # `add_states` normalizes `bytes` through `_as_determinant`. Note what this does
-            # NOT buy: `add_states`' first statement is a list comprehension over its whole
-            # argument, so the restore peak is the same as it was before this change. The win
-            # here is RETENTION -- the snapshot held across every refinement cycle is 9.8
-            # B/det instead of 80.2 -- not the cost of putting it back.
-            self.basis.add_states(best_basis[row].tobytes() for row in range(best_basis.shape[0]))
-            psi_refs = self.basis.redistribute_block(
-                best_psis if isinstance(best_psis, ManyBodyState) else ManyBodyState.from_states(list(best_psis))
-            )
-            psi_refs.prune_rows(0.0)
-            e_ref = best_e_ref
+
+        restored = refiner.restore_if_worse(self.basis, e0)
+        if restored is not None:
+            psi_refs, e_ref = restored
             residual_current = False
         self.psi_refs = psi_refs
-        if capped and self.basis.size > threshold and self.psi_refs is not None:
-            # Enforce
-            # the hard threshold on exit (downstream get_eigenvectors re-solves). e_ref
-            # must describe the *current* psi_refs -- after a best_basis restore above,
-            # that is best_e_ref, not the last cycle's (possibly length-mismatched) e_ref.
+        self.memory_warning = guard.warning
+        if guard.capped and self.basis.size > guard.threshold and self.psi_refs is not None:
+            # Enforce the hard threshold on exit. `e_ref` must describe the *current* `psi_refs`: after a
+            # restore that is the best cycle's, not the last one's.
             self.psi_refs = self.truncate(self.psi_refs, e_ref, slaterWeightMin=slaterWeightMin)
             residual_current = False
-        if cap_cycles > 0 or memory_bound or memory_bound_observed:
-            # `memory_bound` alone (no refinement cycle ran) is the case where the memory guard
-            # found even a same-size round unaffordable and the expansion stopped where it stood;
-            # that must still be reported as a cap, not pass for a converged expansion.
-            # `memory_bound_observed` covers the same thing one strike earlier: the look-ahead
-            # limited an admission but the loop ended before the second strike that would have
-            # made the cap permanent. The expansion was memory-limited either way, and
-            # `dc_search.resolve_cap_at_max` reads `truncation_report is None` as "unbound".
-            sel = self.last_selection or {}
-            self.truncation_report = {
-                "cap_hit": True,
-                "cycles": cap_cycles,
-                "retained": int(self.basis.size),
-                # Still `inf` when only `memory_bound_observed` fired (the look-ahead bounded a
-                # round's admission without ever adopting a permanent cap), and `int(inf)`
-                # raises -- report the basis it actually stopped at instead.
-                "threshold": int(threshold) if np.isfinite(threshold) else int(self.basis.size),
-                "discarded_de2_mass": float(sel.get("discarded_de2_mass", 0.0)),
-                "n_candidates_last": int(sel.get("n_candidates", 0)),
-                "memory_bound": bool(memory_bound or memory_bound_observed),
-                "residual_pt2": float(sel.get("residual_pt2", 0.0)),
-            }
-            rank = self.basis.comm.rank if self.basis.is_distributed else 0
-            rep = self.truncation_report
-            # discarded_de2_mass is an error bound on the ground state (PT2 importance left out
-            # of the retained subspace), so this is said at any verbosity -- once per calculation
-            # (a double-counting search runs dozens of expansions), every time at -vv.
-            why = "the memory guard" if rep["memory_bound"] else f"the cap of {rep['threshold']:,}"
-            emit_memory_warning(
-                f"WARNING determinant cap: GS basis stopped at {rep['retained']:,} determinants "
-                f"({why}); discarded candidates carry {rep['discarded_de2_mass']:.3e} of PT2 "
-                "importance.",
-                root=rank == 0,
-                kind="gs-cap",
-                force=self.basis.verbose,
-            )
-            if rank == 0:
-                if self.basis.verbose:
-                    print(
-                        f"  ({rep['cycles']} refinement cycle(s); {rep['n_candidates_last']:,} "
-                        "candidates considered in the last cycle)",
-                        flush=True,
-                    )
+        if cap_cycles > 0 or guard.limited:
+            self._record_truncation(cap_cycles, guard)
 
-        self._report_convergence(
-            e_pt2_tol, de2_min, cap_cycles > 0, memory_bound or memory_bound_observed, residual_current
-        )
+        self._report_convergence(e_pt2_tol, de2_min, cap_cycles > 0, guard.limited, residual_current)
 
         if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
             print(f"After expansion, the basis contains {self.basis.size} elements.", flush=True)
+
+    def _cycle_memory(self, eigensolve_peak, cycle):
+        """``(peak_rss, anon_rss, shmem_rss, local_min, local_max)`` for the cycle just run, and its trace note.
+
+        Unconditional collectives (never gated on rank-local state such as ``verbose``): single-scalar
+        reductions against a selection round that costs seconds to minutes. ``VmHWM`` alone cannot be
+        attributed -- under an MPI that uses shared memory the ``shmem`` part is a node-wide pool every rank
+        counts -- so ``anon``, the part a code change can move, is reported beside it.
+        """
+        local_count = len(self.basis.local_basis)
+        peak_rss = max(peak_rss_bytes(), eigensolve_peak)
+        rss_parts = rss_breakdown()
+        anon_rss, shmem_rss = rss_parts["anon"], rss_parts["shmem"]
+        if self.basis.is_distributed:
+            comm = self.basis.comm
+            local_max = comm.allreduce(local_count, op=MPI.MAX)
+            local_min = comm.allreduce(local_count, op=MPI.MIN)
+            peak_rss = comm.allreduce(peak_rss, op=MPI.MAX)
+            anon_rss = comm.allreduce(anon_rss, op=MPI.MAX)
+            shmem_rss = comm.allreduce(shmem_rss, op=MPI.MAX)
+        else:
+            local_max = local_min = local_count
+        _trace_note(
+            "cipsi_cycle",
+            cycle=cycle,
+            local_max=int(local_max),
+            local_min=int(local_min),
+            vm_hwm_bytes=int(peak_rss),
+            anon_rss_bytes=int(anon_rss),
+            shmem_rss_bytes=int(shmem_rss),
+        )
+        return peak_rss, anon_rss, shmem_rss, local_min, local_max
+
+    def _record_truncation(self, cap_cycles, guard):
+        """Write ``truncation_report`` (and warn): a cap or the memory guard limited this expansion.
+
+        Written when a refinement cycle ran or memory limited the expansion even without one, so a
+        memory-limited expansion never reads as converged (``dc_search.resolve_cap_at_max`` takes
+        ``truncation_report is None`` to mean "unbound").
+        """
+        sel = self.last_selection or {}
+        threshold = guard.threshold
+        self.truncation_report = {
+            "cap_hit": True,
+            "cycles": cap_cycles,
+            "retained": int(self.basis.size),
+            # Still `inf` when only an observed round limited the expansion; report where it stopped.
+            "threshold": int(threshold) if np.isfinite(threshold) else int(self.basis.size),
+            "discarded_de2_mass": float(sel.get("discarded_de2_mass", 0.0)),
+            "n_candidates_last": int(sel.get("n_candidates", 0)),
+            "memory_bound": bool(guard.limited),
+            "residual_pt2": float(sel.get("residual_pt2", 0.0)),
+        }
+        rank = self.basis.comm.rank if self.basis.is_distributed else 0
+        rep = self.truncation_report
+        # discarded_de2_mass bounds the ground-state error, so this is said at any verbosity: once per
+        # calculation (a double-counting search runs dozens of expansions), every time at -vv.
+        why = "the memory guard" if rep["memory_bound"] else f"the cap of {rep['threshold']:,}"
+        emit_memory_warning(
+            f"WARNING determinant cap: GS basis stopped at {rep['retained']:,} determinants "
+            f"({why}); discarded candidates carry {rep['discarded_de2_mass']:.3e} of PT2 importance.",
+            root=rank == 0,
+            kind="gs-cap",
+            force=self.basis.verbose,
+        )
+        if rank == 0 and self.basis.verbose:
+            print(
+                f"  ({rep['cycles']} refinement cycle(s); {rep['n_candidates_last']:,} "
+                "candidates considered in the last cycle)",
+                flush=True,
+            )
 
     def _report_convergence(self, e_pt2_tol, de2_min, cap_bound, memory_bound, residual_current):
         """Record (and warn about) how far the expansion is from PT2 convergence.
