@@ -247,9 +247,7 @@ def test_trlm_rank_deficient_restart_is_collective(exchange, monkeypatch):
     psi0_full = np.linalg.qr(rng.standard_normal((n, _BLOCK_WIDTH)) + 0j)[0]
     psi0, _ = block_normalize(np.ascontiguousarray(psi0_full[c0:c1, :]), mpi=True, comm=comm)
 
-    got, _ = _thick_restart_block_lanczos_array(
-        psi0, h_local, _Basis(comm), _NUM_WANTED, 40, 1e-13, 30, False, comm
-    )
+    got, _ = _thick_restart_block_lanczos_array(psi0, h_local, _Basis(comm), _NUM_WANTED, 40, 1e-13, 30, False, comm)
 
     np.testing.assert_allclose(np.sort(got.real), evals[:_NUM_WANTED], atol=1e-8)
     # Every rank agrees on the answer (the Ritz values are broadcast from rank 0).

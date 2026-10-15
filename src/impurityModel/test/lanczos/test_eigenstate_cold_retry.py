@@ -329,9 +329,7 @@ def test_a_window_reaching_into_the_pad_is_resolved_once_with_the_gate_widened(m
     _basis, solver_obj = _make_solver()
     gates = []
 
-    def fake(
-        psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, slaterWeightMin, **kw
-    ):
+    def fake(psi0, h_op, basis, num_wanted, max_subspace_blocks, tol, max_restarts, verbose, slaterWeightMin, **kw):
         gates.append(kw.get("num_converge"))
         e = np.concatenate([np.linspace(0.0, 2e-4, num_wanted - 1), [10.0]])  # the pad inside the cut
         vecs = np.zeros((psi0.shape[0], len(e)), dtype=complex)
