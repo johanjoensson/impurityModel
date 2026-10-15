@@ -33,13 +33,14 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.test.gf.test_gf_truncation import _redistribute_as_width1
 from impurityModel.test.support import gf_oracles
 from impurityModel.test.support.gf_oracles import DELTA, OMEGA, _n3_sector_dets, _seed_basis, _seeds, _siam_6
+from impurityModel.test.support.gf_switches import set_gf_switches
 
 ATOL = 1e-10
 
 
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
-    for name in ("GF_SUPPORT_FREEZE", "GF_APPLY_ROW_CHUNKS", "GF_BICGSTAB_RESIDUAL_CHECK"):
+    for name in ("GF_SUPPORT_FREEZE", "APPLY_ROW_CHUNKS", "GF_BICGSTAB_RESIDUAL_CHECK"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -66,11 +67,11 @@ def _assert_same_g(G, G_ref, rel=1e-8):
 
 
 def _sparse(monkeypatch, fn, *args, **kwargs):
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
+    set_gf_switches(monkeypatch, support_freeze="0")
     try:
         return fn(*args, **kwargs)
     finally:
-        monkeypatch.delenv("GF_SUPPORT_FREEZE")
+        set_gf_switches(monkeypatch, support_freeze="1")
 
 
 def test_the_frozen_solves_give_the_sparse_g_and_converge_in_bicgstab(monkeypatch):
@@ -207,7 +208,7 @@ def test_the_residual_check_runs_on_frozen_points(monkeypatch):
 
 
 def test_off_switch(monkeypatch):
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
+    set_gf_switches(monkeypatch, support_freeze="0")
     _, stats = _gf()
     assert stats["frozen_points"] == 0 and stats["frozen_size"] is None
 

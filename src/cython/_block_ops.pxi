@@ -131,7 +131,7 @@ def apply_and_redistribute(
 
     With ``redistribute`` and ``n_chunks > 1``, ``H`` is applied to one chunk of ``V``'s rows at a time and
     redistributed and accumulated before the next, so the raw apply output and its send and receive buffers are
-    bounded to chunk size (``GF_APPLY_ROW_CHUNKS``). Exact up to floating-point summation order. ``n_chunks``
+    bounded to chunk size (``APPLY_ROW_CHUNKS``). Exact up to floating-point summation order. ``n_chunks``
     is replicated on every rank, so every rank makes the same number of collective ``redistribute_block``
     calls whatever its own row count: a rank with fewer rows than chunks sends explicit width-p empty
     chunks, never the width-0 polymorphic zero (``doc/lanczos_invariants.md``).

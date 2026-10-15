@@ -842,10 +842,10 @@ def block_lanczos_cy(
     # The matvec: a growth-capping basis proxy (caps_growth=True) must see every step's residual even
     # serially -- its redistribute_block enforces the truncation_threshold there (the inner Basis
     # redistribute no-ops without MPI). Chunking only where a redistribute actually follows;
-    # `GF_APPLY_ROW_CHUNKS` defaults to 4 and `1` is the one-shot path. The matvec itself (chunking,
+    # `APPLY_ROW_CHUNKS` defaults to 4 and `1` is the one-shot path. The matvec itself (chunking,
     # the cut on summed rows, a capping proxy's deferred admission) is `apply_and_redistribute`.
     _needs_redistribute = basis is not None and ((mpi and comm is not None) or getattr(basis, "caps_growth", False))
-    _n_chunks = config.GF_APPLY_ROW_CHUNKS.get() if _needs_redistribute else 1
+    _n_chunks = config.APPLY_ROW_CHUNKS.get() if _needs_redistribute else 1
     _n_chunks = 1 if _n_chunks is None else int(_n_chunks)
 
     def matvec(q):

@@ -16,11 +16,12 @@ from mpi4py import MPI
 from impurityModel.ed import gf_solvers
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.test.gf.test_gf_truncation import _assert_php_oracle, _det, _excited_basis, _run_capped
+from impurityModel.test.support.gf_switches import set_gf_switches
 
 
 @pytest.fixture(autouse=True)
 def _shipped_defaults(monkeypatch):
-    for knob in ("GF_FROZEN_CSR", "GF_APPLY_ROW_CHUNKS", "GF_LANCZOS_ADMIT_TOL", "GF_SUPPORT_FREEZE"):
+    for knob in ("GF_FROZEN_CSR", "APPLY_ROW_CHUNKS", "GF_LANCZOS_ADMIT_TOL", "GF_SUPPORT_FREEZE"):
         monkeypatch.delenv(knob, raising=False)
 
 
@@ -41,14 +42,14 @@ def _spy(monkeypatch):
 @pytest.mark.parametrize("chunks", ["1", "4"])
 @pytest.mark.parametrize("cap", [6, 12, 17])
 def test_a_frozen_unit_continues_from_where_it_stopped(cap, chunks, monkeypatch):
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", chunks)
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", chunks)
     calls = _spy(monkeypatch)
     g, info = _run_capped(cap)
     assert info["cap_hit"] and info["csr_fallback"]
     assert calls and not any(c["restart"] for c in calls), calls
     assert calls[0]["start"] > 0, "premise: the sparse kernel built blocks before the freeze"
     _assert_php_oracle(g, info)
-    monkeypatch.setenv("GF_FROZEN_CSR", "0")
+    set_gf_switches(monkeypatch, frozen_csr="0")
     g_sparse, _ = _run_capped(cap)
     np.testing.assert_allclose(g, g_sparse, atol=1e-10)
 
@@ -87,12 +88,12 @@ def test_a_tail_row_outside_p_is_refused():
 def test_the_continuation_on_every_rank(chunks, monkeypatch):
     """Multi-rank (an empty rank at -n 3): the continuation equals the sparse kernel and the P H P oracle."""
     comm = MPI.COMM_WORLD
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", chunks)
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", chunks)
     calls = _spy(monkeypatch)
     g, info = _run_capped(6, comm=comm)
     assert info["csr_fallback"] and not any(c["restart"] for c in calls)
     assert len(set(comm.allgather(tuple((c["start"], c["end"]) for c in calls)))) == 1
     _assert_php_oracle(g, info, comm)
-    monkeypatch.setenv("GF_FROZEN_CSR", "0")
+    set_gf_switches(monkeypatch, frozen_csr="0")
     g_sparse, _ = _run_capped(6, comm=comm)
     np.testing.assert_allclose(g, g_sparse, atol=1e-9)

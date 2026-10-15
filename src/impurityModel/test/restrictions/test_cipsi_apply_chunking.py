@@ -1,4 +1,4 @@
-"""``GS_APPLY_ROW_CHUNKS``: the row-chunked path of ``CIPSISolver._apply_block_and_redistribute``.
+"""``APPLY_ROW_CHUNKS``: the row-chunked path of ``CIPSISolver._apply_block_and_redistribute``.
 
 The one-shot path holds the raw apply output, its packed send buffer, the receive buffer and the
 merged block at once -- ~6x the owned candidate block, the selection round's peak and the step
@@ -33,7 +33,7 @@ _HOP = 0.15 + 0.05j
 
 @pytest.fixture(autouse=True)
 def _knob_unset(monkeypatch):
-    monkeypatch.delenv("GS_APPLY_ROW_CHUNKS", raising=False)
+    monkeypatch.delenv("APPLY_ROW_CHUNKS", raising=False)
 
 
 def _det(occupied):
@@ -74,11 +74,11 @@ def _run(comm, n_chunks, cutoff, monkeypatch):
     H = _hamiltonian()
     psi_ref = _psi_ref_block(solver, basis_dets)
     if n_chunks is None:
-        monkeypatch.delenv("GS_APPLY_ROW_CHUNKS", raising=False)
-        assert config.GS_APPLY_ROW_CHUNKS.get() == 4, "unset must be the measured default of 4 chunks"
+        monkeypatch.delenv("APPLY_ROW_CHUNKS", raising=False)
+        assert config.APPLY_ROW_CHUNKS.get() == 4, "unset must be the measured default of 4 chunks"
     else:
-        monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", str(n_chunks))
-        assert config.GS_APPLY_ROW_CHUNKS.get() == n_chunks
+        monkeypatch.setenv("APPLY_ROW_CHUNKS", str(n_chunks))
+        assert config.APPLY_ROW_CHUNKS.get() == n_chunks
     return solver._apply_block_and_redistribute(H, psi_ref, cutoff)
 
 

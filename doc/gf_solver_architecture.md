@@ -152,8 +152,8 @@ The Lanczos path does not run a fixed number of blocks; it watches the resolvent
 - `_make_gf_convergence_monitor(...)` — the runtime gate. It rebuilds the block continued
   fraction on a subsampled mesh and stops when the relative change falls below
   `slaterWeightMin²` (floored). This rebuild is the single largest cost of the recurrence
-  (~53% at `reort=NONE`), so it is sampled every `config.GF_CHECK_EVERY` blocks during the
-  long approach and every block once within `config.GF_NEAR_FACTOR × tol` of convergence.
+  (~53% at `reort=NONE`), so it is sampled every `gf_convergence._GF_CHECK_EVERY` blocks during the
+  long approach and every block once within `gf_convergence._GF_NEAR_FACTOR × tol` of convergence.
 - `_lanczos_convergence_summary(...)` — the post-hoc counterpart feeding the diagnostics.
 
 The monitor converges `G` **where the caller will evaluate it** (`_gf_eval_meshes`): a
@@ -177,7 +177,7 @@ falling back to the next when it declines:
         │  declines under the memory cap (config.GF_KRYLOV_RECYCLE_MAX_BYTES)
         ▼
 3. cg.block_bicgstab                # per-point solve, restarted while still making progress
-   (via gf.solve_shifted_block)     #   (config.GF_BICGSTAB_RESTARTS / _RESTART_PROGRESS)
+   (via gf.solve_shifted_block)     #   (gf_solvers._GF_BICGSTAB_RESTARTS / _RESTART_PROGRESS)
         │  stagnates near a pole
         ▼
 4. gmres.block_gmres                # minimizes the residual; has no r0-stagnation mode

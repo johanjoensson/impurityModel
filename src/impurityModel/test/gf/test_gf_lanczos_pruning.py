@@ -34,7 +34,7 @@ CLOSURE = 18
 
 @pytest.fixture(autouse=True)
 def _knobs(monkeypatch):
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
     monkeypatch.delenv("GF_LANCZOS_ADMIT_TOL", raising=False)
     monkeypatch.delenv("GF_ADMIT_FIRST_SHELL_TOL", raising=False)
 
@@ -143,7 +143,7 @@ def test_off_by_default_leaves_the_unpruned_path_alone(monkeypatch):
 @pytest.mark.parametrize("eta", [0.05, 0.225, 0.5])
 def test_a_row_chunked_matvec_is_the_same_exact_PHP_resolvent(monkeypatch, eta, reort):
     """The decision is taken once, on the summed output, so chunking the apply cannot move it."""
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "4")
     G, info, z = _run(monkeypatch, eta, reort=reort)
     np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
     G1, info1, _ = _run(monkeypatch, eta, reort=reort)
@@ -158,9 +158,9 @@ _CUTS = [0.3, 0.4]
 @pytest.mark.parametrize("swm", _CUTS)
 @pytest.mark.parametrize("chunks", ["1", "4"])
 def test_a_nonzero_slater_weight_min_runs_and_does_not_depend_on_the_chunking(monkeypatch, swm, chunks):
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
     G1, info1, _ = _run(monkeypatch, 0.1, slater=swm)
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", chunks)
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", chunks)
     G, info, _ = _run(monkeypatch, 0.1, slater=swm)
     assert _retained(info) == _retained(info1)
     np.testing.assert_allclose(G, G1, atol=1e-12)
@@ -230,7 +230,7 @@ def test_a_tripped_memory_guard_is_checked_once_per_admission_and_freezes(monkey
 @pytest.mark.parametrize("swm", _CUTS)
 def test_the_pruned_retained_set_does_not_depend_on_the_rank_count(monkeypatch, swm):
     comm = MPI.COMM_WORLD
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "4")
     _G, serial, _z = _run(monkeypatch, 0.1, slater=swm)
     _G, info, _z = _run(monkeypatch, 0.1, slater=swm, comm=comm)
     assert _retained(info, comm) == _retained(serial)

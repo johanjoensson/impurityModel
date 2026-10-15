@@ -703,15 +703,14 @@ def test_calc_gs_no_truncation_report_when_uncapped():
 
 
 # ---------------------------------------------------------------------------
-# GS_SELECTION_PRUNE: the slater_weight_min cut acts on summed amplitudes
+# The slater_weight_min cut of the selection round acts on summed amplitudes
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("prune, kept", [("after_sum", True), ("before_sum", False)])
-def test_selection_cuts_the_summed_amplitude_not_each_chunks_partial(prune, kept, monkeypatch):
+def test_selection_cuts_the_summed_amplitude_not_each_chunks_partial(monkeypatch):
     """A candidate fed by reference rows in different chunks keeps the amplitude they add up to.
 
-    Rows a and b each send 0.6 x cutoff to D. Cut per chunk (``before_sum``, the old order), D vanishes
+    Rows a and b each send 0.6 x cutoff to D. Cut per chunk (the removed ``before_sum`` order), D vanishes
     from both partials; how rows split into chunks (and over ranks) then decides which candidates exist,
     which made the CIPSI basis differ at 1, 2 and 3 ranks on CrI3. Cut after the sum, D survives at 1.2 x
     cutoff whatever the split.
@@ -727,31 +726,20 @@ def test_selection_cuts_the_summed_amplitude_not_each_chunks_partial(prune, kept
 
     solver = CIPSISolver.__new__(CIPSISolver)
     solver.basis = _Serial()
-    monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", "2")  # one reference row per chunk
-    monkeypatch.setenv("GS_SELECTION_PRUNE", prune)
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "2")  # one reference row per chunk
     out = solver._apply_block_and_redistribute(hop, psi, cutoff)
     state = out.to_states()[0]
-    assert (d in state) == kept
-    if kept:
-        assert abs(complex(state[d][0]) - 1.2 * cutoff) < 1e-15
-
-
-def test_selection_prune_rejects_an_unknown_value(monkeypatch):
-    monkeypatch.setenv("GS_SELECTION_PRUNE", "sometimes")
-    solver = CIPSISolver.__new__(CIPSISolver)
-    psi = ManyBodyState.from_states([ManyBodyState({_det([0]): 1.0 + 0j})])
-    with pytest.raises(ValueError, match="GS_SELECTION_PRUNE"):
-        solver._apply_block_and_redistribute(ManyBodyOperator({}), psi, 1e-3)
+    assert d in state
+    assert abs(complex(state[d][0]) - 1.2 * cutoff) < 1e-15
 
 
 @pytest.mark.mpi
 @pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs reference rows on two different ranks")
-@pytest.mark.parametrize("prune", ["after_sum", "before_sum"])
-def test_selection_candidates_do_not_depend_on_which_rank_owns_the_reference_rows(prune, monkeypatch):
+def test_selection_candidates_do_not_depend_on_which_rank_owns_the_reference_rows(monkeypatch):
     """Two reference rows owned by different ranks each send 0.6 x cutoff to the same candidate.
 
     Summed, the candidate carries 1.2 x cutoff and must be selected, as it is on one rank. Cut per
-    rank before the sum (``before_sum``) it vanished: the selected basis then changed with the rank
+    rank before the sum (the removed ``before_sum``) it vanished: the selected basis then changed with the rank
     count (CrI3 at a binding cap: a different basis at 1, 2, 3 and 4 ranks, E0 up to 3.7e-5 apart).
     """
     comm = MPI.COMM_WORLD
@@ -775,14 +763,10 @@ def test_selection_candidates_do_not_depend_on_which_rank_owns_the_reference_row
     (psi,) = basis.redistribute_psis(ManyBodyState.from_states([seed]))
     solver = CIPSISolver.__new__(CIPSISolver)
     solver.basis = basis
-    monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", "1")
-    monkeypatch.setenv("GS_SELECTION_PRUNE", prune)
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
     out = solver._apply_block_and_redistribute(hop, psi, cutoff)
     local = {key: complex(row[0]) for key, row in out.to_states()[0].items()} if len(out) else {}
     merged = {}
     for part in comm.allgather(local):
         merged.update(part)
-    if prune == "after_sum":
-        assert abs(abs(merged[d]) - 1.2 * cutoff) < 1e-15
-    else:
-        assert d not in merged  # the old order: each rank's 0.6 x cutoff was cut before the sum
+    assert abs(abs(merged[d]) - 1.2 * cutoff) < 1e-15

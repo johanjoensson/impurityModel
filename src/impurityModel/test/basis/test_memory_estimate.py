@@ -65,7 +65,7 @@ def test_gf_reort_none_per_det_matches_measured_slope(monkeypatch):
     predicts the new centre to within a byte, and a 3x miscalibration of ``s_live`` still lands
     far outside.
     """
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "4")
     row_bytes = 16 * 1 + me._key_heap_bytes(124) + me._SD_STRUCT_BYTES
     fanout_per_det = me._GF_MATVEC_ROW_FANOUT_DEFAULT / me._gf_chunk_divisor(4) * row_bytes
     total = me.estimate_gf_peak_bytes(100_000, 124, block_width=1, reort="none")
@@ -459,7 +459,7 @@ def test_estimate_gf_peak_bytes_scales_local_rows_by_the_skew(monkeypatch):
     byte formula, so removing the term, or changing its constant or its chunking credit without
     updating this, fails here. (`test_round8_smo_crash_geometry_is_refused` does NOT pin it --
     that geometry is refused with or without the term.)"""
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "4")
     n, nso, width = 100_000, 100, 4
     for ranks in (2, 5, 16, 64):
         skew = me._routing_skew_factor(ranks)
@@ -493,9 +493,9 @@ def test_gf_chunk_divisor_credits_chunking_but_never_the_full_chunk_count(monkey
     assert me._gf_chunk_divisor(64) == me._gf_chunk_divisor(8)
 
     # The knob is read, so the one-shot escape hatch is priced without the credit.
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
     one_shot = me.estimate_gf_peak_bytes(100_000, 58, 1, "none", ranks=4)
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "4")
     chunked = me.estimate_gf_peak_bytes(100_000, 58, 1, "none", ranks=4)
     assert one_shot > chunked, (one_shot, chunked)
 

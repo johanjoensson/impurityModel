@@ -31,13 +31,14 @@ from impurityModel.test.support.gf_oracles import (
     _seeds,
     _siam_6,
 )
+from impurityModel.test.support.gf_switches import set_gf_switches
 
 
 @pytest.fixture(autouse=True)
 def _sparse_solves(monkeypatch):
     """The sparse per-point solve this file covers (GMRES escalation, caps, seed overflow); the frozen
     P H P path, which would otherwise take most points, has test_gf_bicgstab_frozen.py."""
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
+    set_gf_switches(monkeypatch, support_freeze="0")
 
 
 # --------------------------------------------------------------------------- #

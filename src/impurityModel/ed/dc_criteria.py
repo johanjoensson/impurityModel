@@ -105,7 +105,6 @@ from impurityModel.ed.dc_search import (
     _dc_search_trace,
     _solve_dc_shift,
     bracket_width_tol,
-    calibrate_truncation_threshold,
     resolve_cap_at_max,
 )
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
@@ -216,7 +215,7 @@ def _reject_if_memory_bound(ctx, dc_rec, *, rank):
     spread, i.e. how far the controlled quantity moved between the rungs that certified the cap.
     It is silent in exactly this failure -- a run pinned at its seed basis returns the same frozen
     answer on every rung, so the rungs agree and drift goes to zero -- and it is not populated at
-    all when ``DC_CAP_STRATEGY`` resolves the cap without a ladder. It stays in the record as
+    all when the cap is resolved at the ceiling. It stays in the record as
     context; it is not the gate.
 
     Why not the raw ``discarded_de2_mass``: ``_admit_top`` computes it as an unnormalized
@@ -248,7 +247,7 @@ def _reject_if_memory_bound(ctx, dc_rec, *, rank):
 
 
 def _calibrate_cap(ctx, evaluate_at_guess, clear_caches, tol, dc_rec, *, verbose, rank):
-    """Run :func:`dc_search.calibrate_truncation_threshold` against ``ctx``, and record the
+    """Run :func:`dc_search.resolve_cap_at_max` against ``ctx``, and record the
     result. Shared by :func:`fixed_gap_dc` and :func:`fixed_occupation_dc`, which differ only in
     *what* they evaluate at ``mu = 0`` and in what a cache-reuse guard needs to clear -- the
     ladder call itself, the ``dc_cap``/``dc_cap_drift``/``dc_cap_parity`` bookkeeping, and the
@@ -296,34 +295,23 @@ def _calibrate_cap(ctx, evaluate_at_guess, clear_caches, tol, dc_rec, *, verbose
         cached_cap = cap
         return evaluate_at_guess()
 
-    # Which strategy picks the cap. `max` (the default) runs at the ceiling and asks the
-    # expansion whether the cap bound it -- see `DC_CAP_STRATEGY` for the measurement behind the
-    # default, and `dc_search.resolve_cap_at_max` for why an unbound expansion needs no ladder.
-    strategy = MPI.COMM_WORLD.bcast(config.DC_CAP_STRATEGY.get(), root=0)
-    if strategy not in ("max", "ladder"):
-        raise ValueError(f"DC_CAP_STRATEGY must be 'max' or 'ladder', got {strategy!r}")
-    if strategy == "ladder":
-        cap, cap_drift, _rungs, cap_status = calibrate_truncation_threshold(
-            quantity, tol, memory_cap=ctx.memory_cap, verbose=verbose, rank=rank, comm=MPI.COMM_WORLD
-        )
-    else:
-        cap, cap_drift, _rungs, cap_status = resolve_cap_at_max(
-            quantity,
-            tol,
-            memory_cap=ctx.memory_cap,
-            bound_probe=lambda: _any_cap_bound(ctx),
-            verbose=verbose,
-            rank=rank,
-            comm=MPI.COMM_WORLD,
-        )
+    # The cap is chosen by running at the ceiling and asking the expansion whether the cap bound it
+    # (`dc_search.resolve_cap_at_max` for why an unbound expansion needs no ladder).
+    cap, cap_drift, _rungs, cap_status = resolve_cap_at_max(
+        quantity,
+        tol,
+        memory_cap=ctx.memory_cap,
+        bound_probe=lambda: _any_cap_bound(ctx),
+        verbose=verbose,
+        rank=rank,
+        comm=MPI.COMM_WORLD,
+    )
     ctx.truncation_threshold = cap
     dc_rec["dc_cap"], dc_rec["dc_cap_drift"] = cap, cap_drift
     dc_rec["dc_cap_parity"] = ctx.memory_cap
-    # Which of the ladder's three exits produced `cap`. Taken from the ladder rather than
-    # re-derived from `cap_drift` against `tol` here: a ladder that gave up on its last rung and
-    # one that converged on it return the same cap and the same drift, so without this the record
-    # cannot distinguish a converged answer from a truncation-limited one -- which is exactly what
-    # `DC_CAP_LADDER_MAX_RUNGS`'s own documentation asks a reader to act on.
+    # Which exit produced `cap` (unbound / cap_bound / memory_retreat). Taken from the search rather than
+    # re-derived from `cap_drift` against `tol` here, so the record can tell a converged answer from a
+    # truncation-limited one.
     dc_rec["dc_cap_status"] = cap_status
     # Recorded next to the cap it qualifies. "no" is the strong statement -- no sector was stopped
     # by the cap, so no larger cap can move this answer -- and it is the one a reader acts on.
@@ -446,7 +434,7 @@ class _SectorContext:
     verbose: bool
     #: The cap the memory budget would have allowed, and whether that is where
     #: :attr:`truncation_threshold` came from. Only a memory-derived cap is a candidate for
-    #: recalibration (:func:`dc_search.calibrate_truncation_threshold`, wired into
+    #: recalibration (:func:`dc_search.resolve_cap_at_max`, wired into
     #: :func:`fixed_gap_dc`); a cap the caller passed explicitly is an instruction, not a default
     #: to second-guess.
     memory_cap: object = None
@@ -836,7 +824,7 @@ def _prepare_sector_context(
 
     truncation_threshold = basis.truncation_threshold
     # Provenance, not just value: only a cap that *defaulted* is a candidate for recalibration
-    # against the search's tolerance (:func:`dc_search.calibrate_truncation_threshold`, wired into
+    # against the search's tolerance (:func:`dc_search.resolve_cap_at_max`, wired into
     # :func:`fixed_gap_dc` below). A cap the caller passed explicitly is an instruction.
     #
     # Broadcast, though it is derived from a replicated input (``basis.truncation_threshold`` is
@@ -1767,7 +1755,7 @@ def fixed_gap_dc(
                     rank=rank,
                 )
                 # Keep the ladder's last rung when it *is* the accepted cap (the normal case:
-                # `calibrate_truncation_threshold` returns the rung it last evaluated on every
+                # `resolve_cap_at_max` returns the rung it last evaluated on every
                 # exit path) rather than re-solving mu = 0 for values already in hand. Verified,
                 # not assumed: keeping caches that describe a *different* cap would run the rest
                 # of the search on another cap's energies while the record named the accepted one.

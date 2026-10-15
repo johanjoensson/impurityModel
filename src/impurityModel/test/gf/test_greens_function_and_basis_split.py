@@ -322,10 +322,10 @@ def test_run_units_distributed_never_runs_a_color_that_cannot_afford_the_cap_mpi
     # already run in this process -- enough to move a color's cap across `inherited_cap` and
     # flake this test (observed: 194,431 instead of 200,000 when run deep in the full suite).
     # `gf_units` binds `current_rss_bytes` via `from ... import`, so it must be patched there,
-    # not on the `memory_estimate` module object. `GF_APPLY_ROW_CHUNKS` is pinned because
+    # not on the `memory_estimate` module object. `APPLY_ROW_CHUNKS` is pinned because
     # `estimate_gf_peak_bytes` now reads it (the chunking credit on the fanout term).
     available, resident = 800 * 2**20, 237 * 2**20
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "4")
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: available)
     monkeypatch.setattr(gu, "current_rss_bytes", lambda: resident)
 

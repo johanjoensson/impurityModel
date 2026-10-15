@@ -685,8 +685,8 @@ def _zero_entries_at_most(view, cutoff):
     criterion exactly -- not ``np.abs(view) <= cutoff``, which takes a sqrt first and so is not
     guaranteed bit-identical at the boundary. Slice by slice with reused buffers: a whole-block
     ``view.real**2 + view.imag**2`` allocated ~24 B per entry on top of the 16 B block, and on the
-    summed selection block (``GS_SELECTION_PRUNE=after_sum``) that is not bounded by
-    ``GS_APPLY_ROW_CHUNKS``. The caller must drop its own reference to ``view`` before
+    summed selection block that is not bounded by
+    ``APPLY_ROW_CHUNKS``. The caller must drop its own reference to ``view`` before
     ``prune_rows``/redistribute (they refuse to run while a buffer export is alive); this function
     keeps none.
     """
@@ -853,10 +853,10 @@ class CIPSISolver:
         instead of ``len(psi_ref)`` separate per-state applies. ``apply_block`` keeps a
         row if ANY column exceeds ``cutoff`` -- a safe superset per column, but not the
         same as pruning each column to its own threshold. By default
-        (``GS_SELECTION_PRUNE=after_sum``) nothing is cut before the cross-rank sum: every
+        nothing is cut before the cross-rank sum: every
         partial is sent, and each column of the summed block is cut to ``cutoff``
         (:meth:`_prune_summed`), so the candidate set is the same whatever the rank count and
-        ``GS_APPLY_ROW_CHUNKS`` (CrI3 at a binding cap: a different basis at 1, 2 and 3 ranks
+        ``APPLY_ROW_CHUNKS`` (CrI3 at a binding cap: a different basis at 1, 2 and 3 ranks
         before, identical after). ``before_sum`` restores the old order -- every column of each
         rank's partial pruned to ``cutoff`` before redistributing, bit-for-bit the old
         per-state ``applyOp(H, psi_i, cutoff)`` -- which the paragraphs below describe.
@@ -886,26 +886,21 @@ class CIPSISolver:
         real selection-rule cancellation, not a truncation artifact.
         """
         block = psi_ref if isinstance(psi_ref, ManyBodyState) else ManyBodyState.from_states(psi_ref)
-        n_chunks = config.GS_APPLY_ROW_CHUNKS.get()
-        prune = config.GS_SELECTION_PRUNE.get()
-        if prune not in ("after_sum", "before_sum"):
-            raise ValueError(f"GS_SELECTION_PRUNE={prune!r}: expected 'after_sum' or 'before_sum'")
-        # after_sum: send every partial and cut the summed amplitude, so the candidate set does not
-        # depend on how the reference rows are split over ranks and chunks (see GS_SELECTION_PRUNE).
-        local_cutoff = cutoff if prune == "before_sum" else 0.0
+        n_chunks = config.APPLY_ROW_CHUNKS.get()
+        # Send every partial and cut the summed amplitude, so the candidate set does not depend on how
+        # the reference rows are split over ranks and chunks.
         if n_chunks is None or n_chunks <= 1:
-            raw = self._apply_and_prune_columns(H, block, local_cutoff)
+            raw = self._apply_and_prune_columns(H, block, 0.0)
             merged = self.basis.redistribute_block(raw)
-            return self._prune_summed(merged, cutoff if prune == "after_sum" else 0.0)
+            return self._prune_summed(merged, cutoff)
 
         # Row-chunked: the round's peak is the raw apply output, its packed send buffer, the
         # receive buffer and the merged block all alive at once (~6x the owned block, measured;
         # see doc/plans/dc_smo_memory.md round 6). Applying one chunk of the reference rows at
         # a time bounds the first three to chunk size; only the accumulating merged block stays.
         # Exact up to summation order (a candidate reached from rows in different chunks has its
-        # partial sums added chunk by chunk; under GS_SELECTION_PRUNE=before_sum the per-column prune
-        # also sees those partials, which changes the selected set), which
-        # is the same class of difference a change of rank count makes.
+        # partial sums added chunk by chunk), which is the same class of difference a change of rank
+        # count makes.
         #
         # The chunk COUNT is the knob, replicated on every rank, so every rank makes exactly
         # `n_chunks` collective `redistribute_block` calls whatever its row count -- a rank with
@@ -921,7 +916,7 @@ class CIPSISolver:
             # vector's capacity -- so every chunk's "bounded" apply ran alongside a full-size
             # copy, and the mask cost one Python key object per row of the whole block.
             part = block.row_slice(int(lo), int(hi))
-            raw = self._apply_and_prune_columns(H, part, local_cutoff)
+            raw = self._apply_and_prune_columns(H, part, 0.0)
             del part
             piece = self.basis.redistribute_block(raw)
             del raw
@@ -932,7 +927,7 @@ class CIPSISolver:
                 # empty piece on one rank cannot desynchronize the others.
                 merged += piece
             del piece
-        return self._prune_summed(merged, cutoff if prune == "after_sum" else 0.0)
+        return self._prune_summed(merged, cutoff)
 
     @staticmethod
     def _prune_summed(merged, cutoff):

@@ -210,7 +210,7 @@ class SupportPolicy:
     live block-state support (and, at reort != none, the Krylov store) grows without
     bound — the excited ``Basis`` itself stays frozen and never sees them. This proxy
     wraps that basis and caps the growth at the point where every residual row sits on
-    its hash-owner rank: the ``redistribute_block`` call. At ``GF_APPLY_ROW_CHUNKS`` > 1
+    its hash-owner rank: the ``redistribute_block`` call. At ``APPLY_ROW_CHUNKS`` > 1
     (the default, 4; ``_lanczos_step.pxi``'s row-chunked matvec) that is ``n_chunks``
     calls per step, one per chunk of ``q_curr``'s rows. The block-Lanczos step brackets
     them with :meth:`begin_step` / :meth:`finish_step`, so the chunks pass through and the
@@ -500,7 +500,7 @@ class SupportPolicy:
     def begin_step(self):
         """A recurrence step starts: its matvec arrives in chunks, admission waits for the whole.
 
-        With ``GF_APPLY_ROW_CHUNKS`` > 1 the step's output reaches :meth:`redistribute_block` one
+        With ``APPLY_ROW_CHUNKS`` > 1 the step's output reaches :meth:`redistribute_block` one
         chunk at a time, and each chunk holds *partial* amplitudes of rows that other chunks also
         reach. Deciding admission per chunk ranked rows on those partials, in an order set by how
         the rows were split over ranks -- so a capped unit froze on a different set in every colour
@@ -666,7 +666,7 @@ class SupportPolicy:
         if self.support_frozen:
             return (
                 f"GF basis frozen at {self._global_count:,} determinants: over the last {self._window.maxlen} blocks "
-                "the weight reaching new determinants was no more than what slaterWeightMin cuts (GF_SUPPORT_FREEZE); "
+                "the weight reaching new determinants was no more than what slaterWeightMin cuts (support freeze); "
                 "the Green's function is exact on the retained subspace from here on, and drops at most that much."
             )
         why = "the measured-memory guard" if self.memory_frozen else f"the cap of {self.cap:,}"

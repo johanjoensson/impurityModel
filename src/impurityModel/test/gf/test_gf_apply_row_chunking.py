@@ -1,7 +1,7 @@
-"""``GF_APPLY_ROW_CHUNKS``: the row-chunked matvec of the sparse block-Lanczos GF recurrence
+"""``APPLY_ROW_CHUNKS``: the row-chunked matvec of the sparse block-Lanczos GF recurrence
 (``_lanczos_step.pxi``'s ``wp = h_op.apply_block(q_curr, ...)``).
 
-Mirrors ``GS_APPLY_ROW_CHUNKS`` (``CIPSISolver._apply_block_and_redistribute``,
+Mirrors ``APPLY_ROW_CHUNKS`` (``CIPSISolver._apply_block_and_redistribute``,
 ``test_cipsi_apply_chunking.py``) at the GF unit's own matvec: bound the raw apply output,
 packed send buffer and receive buffer to one chunk of ``q_curr``'s rows at a time instead of
 the whole block (``doc/plans/dc_smo_memory.md``, "GF unit memory").
@@ -41,7 +41,7 @@ _BATHS = ({0: [[2, 3]]}, {0: [[4, 5]]})
 
 @pytest.fixture(autouse=True)
 def _knob_unset(monkeypatch):
-    monkeypatch.delenv("GF_APPLY_ROW_CHUNKS", raising=False)
+    monkeypatch.delenv("APPLY_ROW_CHUNKS", raising=False)
     monkeypatch.delenv("MATVEC_PRUNE", raising=False)
 
 
@@ -88,11 +88,11 @@ def _run(cap, n_chunks, monkeypatch):
     """``n_chunks=None`` leaves the knob unset (today's default, 4 -- chunked); pass ``1``
     explicitly for the one-shot baseline rather than relying on "unset" to mean that."""
     if n_chunks is None:
-        monkeypatch.delenv("GF_APPLY_ROW_CHUNKS", raising=False)
-        assert config.GF_APPLY_ROW_CHUNKS.get() == 4, "unset must be the measured default of 4 chunks"
+        monkeypatch.delenv("APPLY_ROW_CHUNKS", raising=False)
+        assert config.APPLY_ROW_CHUNKS.get() == 4, "unset must be the measured default of 4 chunks"
     else:
-        monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", str(n_chunks))
-        assert config.GF_APPLY_ROW_CHUNKS.get() == n_chunks
+        monkeypatch.setenv("APPLY_ROW_CHUNKS", str(n_chunks))
+        assert config.APPLY_ROW_CHUNKS.get() == n_chunks
     basis = _excited_basis(cap)
     seeds = [ManyBodyState.from_states([s]).to_states()[0] for s in _seeds()]
     info = {}
@@ -188,7 +188,7 @@ def _serial_reference(swm):
 def test_the_matvec_cut_is_made_on_the_summed_row_whatever_the_chunking(swm, n_chunks, monkeypatch):
     """A capping proxy (cap never reached) makes the step chunk and redistribute even serially;
     the cut must then still act on each row's whole amplitude."""
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", str(n_chunks))
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", str(n_chunks))
     g = _g_with_cutoff(_excited_basis(1000), swm)
     np.testing.assert_allclose(g, _serial_reference(swm), rtol=1e-10, atol=1e-12)
 
@@ -198,6 +198,6 @@ def test_the_matvec_cut_is_made_on_the_summed_row_whatever_the_chunking(swm, n_c
 @pytest.mark.parametrize("swm", _SWM)
 @pytest.mark.parametrize("n_chunks", [1, 4])
 def test_the_matvec_cut_does_not_depend_on_the_rank_count(swm, n_chunks, monkeypatch):
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", str(n_chunks))
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", str(n_chunks))
     g = _g_with_cutoff(_excited_basis(None, comm=MPI.COMM_WORLD), swm, comm=MPI.COMM_WORLD)
     np.testing.assert_allclose(g, _serial_reference(swm), rtol=1e-10, atol=1e-12)

@@ -116,7 +116,7 @@ _SELECTION_FANOUT_DEFAULT = 40
 # bound there, not a lower one).
 _GF_MATVEC_ROW_FANOUT_DEFAULT = 8.1
 
-#: Measured saving from the row-chunked apply (`config.GF_APPLY_ROW_CHUNKS`), as
+#: Measured saving from the row-chunked apply (`config.APPLY_ROW_CHUNKS`), as
 #: ``whole_step_rows / max_over_chunks(chunk_rows)``. The chunked branch of
 #: `lanczos_step` applies H to one `row_slice` at a time and frees each raw result before
 #: the next (`del _raw`), so the PEAK unpartitioned transient over a step is the largest single
@@ -132,7 +132,7 @@ _GF_MATVEC_ROW_FANOUT_DEFAULT = 8.1
 #:
 #: Two earlier positions on this were both wrong and both unmeasured: that chunking saves nothing
 #: here (it saves ~2x at the default), and that it saves the full chunk count (it does not, by
-#: roughly half). The knob is a supported escape hatch -- `GF_APPLY_ROW_CHUNKS=1` recovers the
+#: roughly half). The knob is a supported escape hatch -- `APPLY_ROW_CHUNKS=1` recovers the
 #: one-shot path bit-for-bit -- so the model reads it rather than assuming the default.
 _GF_CHUNK_DIVISOR_ANCHORS = ((1, 1.0), (2, 1.3), (4, 1.9), (8, 3.4))
 # Per (determinant, reference-column) pair, the CIPSI selection round's own temporaries
@@ -442,7 +442,7 @@ def _gf_chunk_divisor(n_chunks):
     Same anchor-and-clamp shape as :func:`_routing_skew_factor`, and for the same reason: these
     are measurements at each chunk count, not a fitted curve, so outside the measured ``[1, 8]``
     this clamps to the nearest anchor rather than guess. ``None`` or ``<= 1`` means the one-shot
-    path (``GF_APPLY_ROW_CHUNKS=1``), which bounds nothing, so the divisor is exactly 1.
+    path (``APPLY_ROW_CHUNKS=1``), which bounds nothing, so the divisor is exactly 1.
     """
     if n_chunks is None:
         return 1.0
@@ -589,7 +589,7 @@ def estimate_gf_peak_bytes(
     # `row_bytes` per row as the other live blocks, and divided by the measured saving the
     # row-chunked apply actually delivers at the configured chunk count
     # (`_GF_CHUNK_DIVISOR_ANCHORS` -- ~1.9x at the default of 4, NOT the full chunk count, since
-    # chunks reach overlapping sets). Reading the knob matters: `GF_APPLY_ROW_CHUNKS=1` is the
+    # chunks reach overlapping sets). Reading the knob matters: `APPLY_ROW_CHUNKS=1` is the
     # supported escape hatch for a bit-identical run, and on that path the divisor is 1.
     #
     # Chunking always applies wherever this estimate is used: `_lanczos_step.pxi` chunks whenever
@@ -598,7 +598,7 @@ def estimate_gf_peak_bytes(
     # finite cap is exactly the case this function is called to size.
     #
     # The bicgstab branch above prices the same transient for its own (unchunked) matvec.
-    fanout_bytes = ceil(local_rows * fanout / _gf_chunk_divisor(config.GF_APPLY_ROW_CHUNKS.get())) * row_bytes
+    fanout_bytes = ceil(local_rows * fanout / _gf_chunk_divisor(config.APPLY_ROW_CHUNKS.get())) * row_bytes
     store_bytes = 0
     if _retains_krylov(reort):
         if n_blocks is None:
@@ -818,7 +818,7 @@ def estimate_gs_peak_bytes(
     # before pruning), times `block_width` reference columns, times the per-pair cost that
     # survives Phase 2's rewrite of `_apply_block_and_redistribute` /
     # `_candidate_overlaps_and_energies` / `_score_candidates`.
-    # Calibrated against the one-shot apply; the row-chunked default (GS_APPLY_ROW_CHUNKS=4)
+    # Calibrated against the one-shot apply; the row-chunked default (APPLY_ROW_CHUNKS=4)
     # holds ~1/2.8 of that on the step that set the constant, so this is now an upper bound
     # (deliberately: the model's failure mode was optimism, see GS_MEMORY_BUDGET_SAFETY).
     selection_bytes = local * selection_fanout * block_width * _SELECTION_BYTES_PER_PAIR

@@ -175,6 +175,18 @@ def _gf_reort(reort):
 # A restart must shrink the reported residual by at least this factor to earn the next one, so
 # a genuinely stuck point stops early and is reported rather than looping.
 _GF_BICGSTAB_RESTART_PROGRESS = 0.5
+#: Test seams, not user knobs: the support freeze and the frozen-basis CSR fallback are always on. A test
+#: turns one off here (``test/support/gf_switches.py``) to exercise the plain sparse path they replace.
+_SUPPORT_FREEZE = True
+_FROZEN_CSR = True
+#: Restarts granted to a non-converged BiCGSTAB point (the current iterate warm-starts each) before the GMRES fallback.
+_GF_BICGSTAB_RESTARTS = 10
+#: Restart cycles GMRES gets before the point is reported as unconverged.
+_GF_GMRES_MAX_RESTARTS = 25
+#: Hard per-point BiCGSTAB iteration bound. Warm-started production solves measure ~3 iterations per point.
+_GF_BICGSTAB_MAX_ITER = 500
+#: Solutions retained for a point's warm start (Lagrange extrapolation in z through them).
+_GF_BICGSTAB_WARM_HISTORY = 3
 
 
 def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose, eval_meshes=None, info=None):
@@ -412,7 +424,7 @@ _CSR_BATCH_BYTES_PER_ELEMENT = 160
 #: Lanczos blocks of ``N_local x width`` the array kernel holds at once at reort 'none' (the
 #: current and previous block, the product, the next block).
 _CSR_KERNEL_VECTORS = 4
-#: GF_SUPPORT_FREEZE's window: the blocks over which the weight reaching new rows is weighed against what the
+#: The support freeze's window: the blocks over which the weight reaching new rows is weighed against what the
 #: slaterWeightMin prunes dropped. Long enough to span a gap between the layered shells a support grows in.
 _SUPPORT_WINDOW = 16
 #: Floor of the frozen-basis recurrence's first block budget (the measured SrMnO3 units converged
@@ -689,7 +701,7 @@ def block_Green_sparse(
     ``memory_budget``/``memory_policy`` switch on :class:`_CappedBasisProxy`'s measured memory
     guard (off by default; only meaningful with a finite cap).
 
-    **Frozen-basis CSR fallback** (``GF_FROZEN_CSR``, on by default): when the cap freezes the
+    **Frozen-basis CSR fallback**: when the cap freezes the
     support, the sparse recurrence stops at that step and carries on as an array-kernel SpMV on the
     ``P H P`` CSR of the retained set -- from its last two blocks at reort 'none'
     (:func:`_frozen_csr_continue`), else restarted from the seeds (:func:`_frozen_csr_green`) -- exact
@@ -697,7 +709,7 @@ def block_Green_sparse(
     image outside ``P``. Not taken for a CSR that would not fit the budget, or a ``krylov_dtype`` store.
     ``cap_info["csr_fallback"]`` says whether it ran. The same switch is taken when growing the
     support below the cap no longer buys more than the ``slaterWeightMin`` cut costs
-    (``GF_SUPPORT_FREEZE``, on by default; ``cap_info["support_frozen"]``, with the per-step weights
+    (on by default; ``cap_info["support_frozen"]``, with the per-step weights
     it decided on in ``cap_info["support_history"]``).
 
     ``basis.truncation_threshold`` caps the number of Slater determinants the
@@ -816,21 +828,7 @@ def block_Green_sparse(
     resolved_reort = _gf_reort(reort)
     # The frozen-basis CSR fallback: hand control back at the freeze. A krylov_dtype store stays
     # on the sparse kernel (the array kernel keeps its Krylov basis in complex128).
-    # Rank 0 reads the knobs and broadcasts them, so a malformed value fails on rank 0 alone and every rank
-    # takes the same branch below (this bcast is unconditional, after every rank-invariant early return).
-    knobs = (
-        (
-            config.GF_FROZEN_CSR.get(),
-            config.GF_SUPPORT_FREEZE.get(),
-        )
-        if rank == 0
-        else None
-    )
-    if comm is not None:
-        knobs = comm.bcast(knobs, root=0)
-    assert knobs is not None  # rank 0 read them; every other rank has them from the broadcast
-    frozen_csr, support = knobs
-    csr_candidate = frozen_csr and krylov_dtype is None and getattr(lanczos_basis, "tracks_support", False)
+    csr_candidate = _FROZEN_CSR and krylov_dtype is None and getattr(lanczos_basis, "tracks_support", False)
     csr = None
 
     def _csr_green(frozen_basis, blocks_hint=0, stopped=None):
@@ -865,11 +863,11 @@ def block_Green_sparse(
             blocks_hint,
         )
 
-    # GF_SUPPORT_FREEZE: the proxy freezes the support itself, on the step its window decides, and the kernel
+    # The support freeze: the proxy freezes the support itself, on the step its window decides, and the kernel
     # hands control back there (stop_on_freeze). reort 'none' only: that is where the frozen recurrence
     # carries on from its tail, and a reorthogonalized one would recompute every block to drop weight.
     if (
-        support
+        _SUPPORT_FREEZE
         and csr_candidate
         and resolved_reort == Reort.NONE
         and getattr(lanczos_basis, "tracks_support", False)
@@ -997,7 +995,7 @@ def block_Green_sparse(
 def _warm_start_extrapolation(zs, sols, z_new, n_cols):
     r"""Warm-start guess at ``z_new``: Lagrange extrapolation through the retained solutions.
 
-    ``zs``/``sols`` hold the last (up to :data:`config.GF_BICGSTAB_WARM_HISTORY`) frequencies and
+    ``zs``/``sols`` hold the last (up to :data:`_GF_BICGSTAB_WARM_HISTORY`) frequencies and
     solution blocks of the sweep, oldest first. Zero, one and two retained solutions give the
     cold start, the previous solution and linear extrapolation respectively; three gives the
     quadratic optimum. The coefficients sum to 1 (an extrapolation, not a fit), so a solution
@@ -1049,7 +1047,7 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
     r"""Restart-while-progressing BiCGSTAB, escalated to ``block_gmres`` on stagnation.
 
     Shared by every per-frequency resolvent solve on this branch (:func:`block_Green_bicgstab`,
-    the RIXS R1 fallback in ``rixs._rixs_map_flat``): runs up to ``1 + config.GF_BICGSTAB_RESTARTS``
+    the RIXS R1 fallback in ``rixs._rixs_map_flat``): runs up to ``1 + _GF_BICGSTAB_RESTARTS``
     :func:`~impurityModel.ed.BiCGSTAB.block_bicgstab` attempts, restarting with the current iterate as
     long as each attempt still makes at least ``_GF_BICGSTAB_RESTART_PROGRESS`` progress over the
     previous residual (each restart re-deflates ``Y - A x0`` and picks a fresh shadow residual,
@@ -1095,7 +1093,7 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
     iterations = 0
     X = x0
     prev_residual = np.inf
-    for _attempt in range(1 + config.GF_BICGSTAB_RESTARTS.get()):
+    for _attempt in range(1 + _GF_BICGSTAB_RESTARTS):
         X = block_bicgstab(A_op, X, rhs, basis, slaterWeightMin, **bicgstab_kwargs)
         iterations += info["iterations"]
         if info["converged"] or info["rel_residual"] > _GF_BICGSTAB_RESTART_PROGRESS * prev_residual:
@@ -1113,7 +1111,7 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
             slaterWeightMin,
             atol=atol,
             restart=config.GF_GMRES_RESTART.get(),
-            max_restarts=config.GF_GMRES_MAX_RESTARTS.get(),
+            max_restarts=_GF_GMRES_MAX_RESTARTS,
             info=info,
         )
         iterations += info["iterations"]
@@ -1308,7 +1306,7 @@ def block_Green_bicgstab(
         Per-solve residual tolerance relative to the seed norm; defaults to
         :data:`config.GF_BICGSTAB_ATOL`.
     max_iter : int, optional
-        Per-point iteration bound; defaults to :data:`config.GF_BICGSTAB_MAX_ITER`.
+        Per-point iteration bound; defaults to :data:`_GF_BICGSTAB_MAX_ITER`.
     admission : {"all", "outer"}, optional
         Basis-growth policy; ``None`` takes :data:`config.GF_BICGSTAB_ADMISSION`. An explicit value
         wins over the environment knob. ``"outer"`` also switches the measured error bound on
@@ -1334,11 +1332,11 @@ def block_Green_bicgstab(
         ``boundary``, ``second_order`` and ``dG_bound`` -- the measured residual split and the
         elementwise bound on ``|G - G_exact|``, with ``max_dG_bound``/``max_boundary`` their
         maxima over the unit). ``rebuild_size - seed_size`` is what the warm start carried in: set
-        :data:`config.GF_BICGSTAB_WARM_HISTORY` to 0 to measure per-point support cold.
+        :data:`_GF_BICGSTAB_WARM_HISTORY` to 0 to measure per-point support cold.
     """
     atol = config.GF_BICGSTAB_ATOL.get() if atol is None else atol
-    max_iter = config.GF_BICGSTAB_MAX_ITER.get() if max_iter is None else max_iter
-    warm_history = config.GF_BICGSTAB_WARM_HISTORY.get()
+    max_iter = _GF_BICGSTAB_MAX_ITER if max_iter is None else max_iter
+    warm_history = _GF_BICGSTAB_WARM_HISTORY
     if admission is None:
         admission = config.GF_BICGSTAB_ADMISSION.get()
         if admission not in config.GF_ADMISSIONS:
@@ -1389,13 +1387,9 @@ def block_Green_bicgstab(
 
     # Freed in `finally` so a solve that raises on every rank does not leak the cloned
     # communicator (review ledger M4); collective, every rank of the color runs this unit.
-    # GF_SUPPORT_FREEZE: once a point's solve admits no new determinant, the remaining points of the
-    # eigenstate solve on the frozen P H P (_FrozenShiftedSystem). Rank 0 reads the knob and broadcasts it,
-    # so every rank takes the same branch.
-    closure = config.GF_SUPPORT_FREEZE.get() if sub_comm is None or sub_comm.rank == 0 else None
-    if sub_comm is not None:
-        closure = sub_comm.bcast(closure, root=0)
-    closure = bool(closure) and admission != "outer"
+    # Support freeze: once a point's solve admits no new determinant, the remaining points of the
+    # eigenstate solve on the frozen P H P (_FrozenShiftedSystem).
+    closure = _SUPPORT_FREEZE and admission != "outer"
     stats["frozen_points"] = 0
     stats["frozen_fallbacks"] = 0
     stats["frozen_size"] = None

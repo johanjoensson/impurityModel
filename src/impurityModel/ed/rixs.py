@@ -24,6 +24,7 @@ from impurityModel.ed import config
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
 from impurityModel.ed.BlockLanczosArray import Reort
+from impurityModel.ed import gf_solvers
 from impurityModel.ed.gf_solvers import _freeze_bicgstab_support, solve_shifted_block
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
@@ -64,8 +65,8 @@ def _rixs_adaptive_tol():
 
 
 def _rixs_adaptive_batch():
-    """New wIn solves per adaptive round (:data:`config.GF_RIXS_ADAPTIVE_BATCH`)."""
-    return config.GF_RIXS_ADAPTIVE_BATCH.get()
+    """New wIn solves per adaptive round."""
+    return 1
 
 
 # Below this many requested wIn points the adaptive sampler cannot beat the dense sweep
@@ -296,7 +297,7 @@ class _R1SolverChain:
 
     def __init__(self, r1_cache, eigenstate, counters=None, freeze=False):
         self.r1_cache = r1_cache
-        # GF_SUPPORT_FREEZE for the bicgstab tier: psi1_all is the same for every wIn of the chunk, so
+        # the support freeze for the bicgstab tier: psi1_all is the same for every wIn of the chunk, so
         # once a solve admits nothing beyond its starting support the remaining points solve on the
         # frozen P H P (gf_solvers._FrozenShiftedSystem), each checked against the full H.
         self._freeze_ok = bool(freeze)
@@ -678,10 +679,7 @@ def _rixs_map_flat(
             # each solve counts ranks-per-color times (review ledger M5). Non-root ranks roll back
             # at the end of the unit.
             stats_before = dict(solver_stats) if sub_comm is not None and sub_comm.rank != 0 else None
-            freeze = config.GF_SUPPORT_FREEZE.get() if sub_comm is None or sub_comm.rank == 0 else None
-            if sub_comm is not None:
-                freeze = sub_comm.bcast(freeze, root=0)
-            chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats, freeze=freeze)
+            chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats, freeze=gf_solvers._SUPPORT_FREEZE)
             out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
             wins = wIns[w_chunk]
             # `eval_out` reports the final-state basis it actually ran on rather than leaving the

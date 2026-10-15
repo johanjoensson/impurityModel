@@ -21,7 +21,7 @@ version = [1, 0]
 
 [environment]
 GF_BICGSTAB_ATOL = 1e-9
-GF_BICGSTAB_RESTARTS = 12
+GF_GMRES_RESTART = 12
 """
 
 
@@ -30,10 +30,10 @@ def test_load_environment_reads_only_that_table(tmp_path):
     path = tmp_path / "impurityModel.toml"
     path.write_text(ENVIRONMENT_ONLY + '\n[hamiltonian.file]\npath = "nowhere.h0"\n')
     resolved = load_environment(path)
-    assert set(resolved) == {"GF_BICGSTAB_ATOL", "GF_BICGSTAB_RESTARTS"}
+    assert set(resolved) == {"GF_BICGSTAB_ATOL", "GF_GMRES_RESTART"}
     # Stored as strings, since that is what os.environ takes; compare by value, not spelling.
     assert float(resolved["GF_BICGSTAB_ATOL"]) == pytest.approx(1e-9)
-    assert int(resolved["GF_BICGSTAB_RESTARTS"]) == 12
+    assert int(resolved["GF_GMRES_RESTART"]) == 12
 
 
 def test_an_unknown_knob_name_gets_an_exact_suggestion(tmp_path):

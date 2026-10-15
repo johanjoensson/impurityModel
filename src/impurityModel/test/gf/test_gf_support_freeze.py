@@ -41,13 +41,14 @@ from impurityModel.test.support.gf_chain_fixtures import (
     exact_chain_g,
     run_chain,
 )
+from impurityModel.test.support.gf_switches import set_gf_switches
 
 WINDOW = gf_solvers._SUPPORT_WINDOW
 
 
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
-    for name in ("GF_SUPPORT_FREEZE", "GF_FROZEN_CSR", "GF_APPLY_ROW_CHUNKS", "MATVEC_PRUNE", *config.RETIRED_KNOBS):
+    for name in ("GF_SUPPORT_FREEZE", "GF_FROZEN_CSR", "APPLY_ROW_CHUNKS", "MATVEC_PRUNE", *config.RETIRED_KNOBS):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -116,7 +117,7 @@ def test_both_prunes_are_counted(monkeypatch):
 
 def test_the_frozen_g_is_no_farther_from_the_exact_one_than_the_sparse_one(monkeypatch):
     frozen = _g(_trickle())
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
+    set_gf_switches(monkeypatch, support_freeze="0")
     plain = _g(_trickle())
     exact = _exact_sector_g()
     err_frozen = np.abs(frozen - exact).max()
@@ -126,7 +127,7 @@ def test_the_frozen_g_is_no_farther_from_the_exact_one_than_the_sparse_one(monke
 
 
 def test_it_is_on_by_default():
-    assert config.GF_SUPPORT_FREEZE.default is True
+    assert gf_solvers._SUPPORT_FREEZE is True
     assert _trickle()[3]["support_frozen"]
 
 
@@ -144,15 +145,15 @@ def test_it_needs_reort_none(reort):
 
 
 def test_off_switch(monkeypatch):
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
+    set_gf_switches(monkeypatch, support_freeze="0")
     info = _trickle()[3]
     assert not info["support_frozen"] and info["support_history"] == []
 
 
 def test_a_matrix_that_does_not_fit_undoes_the_freeze(monkeypatch):
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
+    set_gf_switches(monkeypatch, support_freeze="0")
     plain = _trickle()
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "1")
+    set_gf_switches(monkeypatch, support_freeze="1")
     monkeypatch.setattr(gf_solvers, "_frozen_csr_fits", lambda *a, **k: False)
     declined = _trickle()
     assert not declined[3]["support_frozen"] and not declined[3]["csr_fallback"]
@@ -178,7 +179,7 @@ def test_the_retired_freezes_warn_that_they_are_no_longer_read(name, monkeypatch
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         config.warn_retired_knobs()
-    assert any(name in str(w.message) and "GF_SUPPORT_FREEZE" in str(w.message) for w in caught)
+    assert any(name in str(w.message) and "support freeze" in str(w.message) for w in caught)
 
 
 def _dense_chain(seed):

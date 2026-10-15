@@ -55,15 +55,6 @@ from impurityModel.ed.groundstate import find_ground_state_basis
 from impurityModel.ed.lie_algebra import tensors_to_operator
 
 
-@pytest.fixture(autouse=True)
-def _clear_dc_cap_strategy(monkeypatch):
-    """``DC_CAP_STRATEGY`` is read lazily from the environment on every call, so a value set in the
-    developer's shell would silently send these tests down the other cap strategy. Cleared rather
-    than pinned, so the default stays declared only in :mod:`impurityModel.ed.config`; the tests
-    that are *about* a strategy set it themselves and layer over this removal."""
-    monkeypatch.delenv("DC_CAP_STRATEGY", raising=False)
-
-
 from impurityModel.ed.model import BasisOptions, ImpurityModel, SolverOptions
 from impurityModel.ed.selfenergy import (
     DoubleCountingUnreachable,
@@ -1439,17 +1430,16 @@ def test_explicit_threshold_skips_memory_probe(monkeypatch):
 def test_fixed_occupation_dc_calibrates_and_records_the_cap_when_threshold_is_none(monkeypatch):
     """Phase 5 (3/3), doc/plans/dc_smo_performance.md: the cap ladder is wired in, and only when
     the cap defaulted from the memory probe."""
-    monkeypatch.setenv("DC_CAP_STRATEGY", "ladder")
     import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
 
-    def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm):
+    def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm, **kwargs):
         calls.append((tol, memory_cap))
         value = quantity(memory_cap)  # a single rung, at the (stubbed) memory cap itself
         return memory_cap, 0.0, [(memory_cap, value)], "settled"
 
-    monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", fake_ladder)
+    monkeypatch.setattr(dc_module, "resolve_cap_at_max", fake_ladder)
     monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 50)
     monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
@@ -1470,9 +1460,9 @@ def test_fixed_occupation_dc_skips_the_cap_ladder_when_threshold_is_explicit(mon
     import impurityModel.ed.dc_criteria as dc_module
 
     def exploding_ladder(*args, **kwargs):
-        raise AssertionError("calibrate_truncation_threshold ran on an explicit truncation_threshold")
+        raise AssertionError("resolve_cap_at_max ran on an explicit truncation_threshold")
 
-    monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", exploding_ladder)
+    monkeypatch.setattr(dc_module, "resolve_cap_at_max", exploding_ladder)
 
     kwargs, _ = common_kwargs(v=0.3, tau=1e-2)  # truncation_threshold is set by common_kwargs
     report = {}
@@ -1482,18 +1472,16 @@ def test_fixed_occupation_dc_skips_the_cap_ladder_when_threshold_is_explicit(mon
 
 
 def test_fixed_gap_dc_calibrates_and_records_the_cap_when_threshold_is_none(monkeypatch):
-    monkeypatch.setenv("DC_CAP_STRATEGY", "ladder")
-
     import impurityModel.ed.dc_criteria as dc_module
 
     calls = []
 
-    def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm):
+    def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm, **kwargs):
         calls.append((tol, memory_cap))
         value = quantity(memory_cap)
         return memory_cap, 0.0, [(memory_cap, value)], "settled"
 
-    monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", fake_ladder)
+    monkeypatch.setattr(dc_module, "resolve_cap_at_max", fake_ladder)
     monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 50)
     monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
@@ -1512,9 +1500,9 @@ def test_fixed_gap_dc_skips_the_cap_ladder_when_threshold_is_explicit(monkeypatc
     import impurityModel.ed.dc_criteria as dc_module
 
     def exploding_ladder(*args, **kwargs):
-        raise AssertionError("calibrate_truncation_threshold ran on an explicit truncation_threshold")
+        raise AssertionError("resolve_cap_at_max ran on an explicit truncation_threshold")
 
-    monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", exploding_ladder)
+    monkeypatch.setattr(dc_module, "resolve_cap_at_max", exploding_ladder)
 
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3)  # truncation_threshold is set by common_kwargs
     report = {}
@@ -1542,11 +1530,11 @@ def _run_gap_dc_with_a_fake_ladder(monkeypatch, accepted_cap, ladder_cap=700):
 
     monkeypatch.setattr(dc_module._SectorContext, "sector_solve", counting_solve)
 
-    def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm):
+    def fake_ladder(quantity, tol, *, memory_cap, verbose, rank, comm, **kwargs):
         value = quantity(ladder_cap)
         return accepted_cap, 0.0, [(ladder_cap, value)], "settled"
 
-    monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", fake_ladder)
+    monkeypatch.setattr(dc_module, "resolve_cap_at_max", fake_ladder)
     monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 10**6)
     monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
@@ -1560,7 +1548,6 @@ def test_fixed_gap_dc_keeps_the_ladders_last_rung_when_it_is_the_accepted_cap(mo
     """91109b8: when the ladder's last-evaluated rung *is* the accepted cap, the caches it just
     filled must be kept -- the width-at-guess solve and the search's own mu=0 evaluation must
     read the two off-centre sectors from ``ctx.sector_at``, not re-solve them."""
-    monkeypatch.setenv("DC_CAP_STRATEGY", "ladder")
     misses = _run_gap_dc_with_a_fake_ladder(monkeypatch, accepted_cap=700, ladder_cap=700)
 
     assert len(misses) >= 2 and misses[0][2] == 700 and misses[1][2] == 700
@@ -1575,7 +1562,6 @@ def test_fixed_gap_dc_clears_caches_when_the_accepted_cap_differs_from_the_ladde
     real ladder -- see its own contract -- but the guard must not simply trust it), the caches
     must be cleared rather than kept, so the two off-centre sectors are re-solved at the cap the
     context actually ends up with."""
-    monkeypatch.setenv("DC_CAP_STRATEGY", "ladder")
     misses = _run_gap_dc_with_a_fake_ladder(monkeypatch, accepted_cap=1400, ladder_cap=700)
 
     assert len(misses) >= 2 and misses[0][2] == 700 and misses[1][2] == 700
@@ -2307,19 +2293,14 @@ def test_the_sector_is_opt_in_so_existing_callers_keep_a_bare_matrix(criterion, 
 
 
 def test_fixed_gap_dc_runs_at_the_ceiling_and_records_whether_the_cap_bound(monkeypatch):
-    """The default ``DC_CAP_STRATEGY="max"`` end to end: no ladder, and the record says whether the
+    """The cap is resolved at the ceiling end to end: no ladder, and the record says whether the
     cap was the limiting factor.
 
     On this fixture the sectors are tiny and the stubbed memory cap is far above them, so nothing
     binds -- which is the case the strategy exists for: one evaluation, ``dc_cap_bound = "no"``,
     and the strong statement that no larger cap could move the answer.
     """
-    import impurityModel.ed.dc_criteria as dc_module
 
-    def exploding_ladder(*args, **kwargs):
-        raise AssertionError("the ascending ladder ran under DC_CAP_STRATEGY='max'")
-
-    monkeypatch.setattr(dc_module, "calibrate_truncation_threshold", exploding_ladder)
     monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 100_000)
     monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
 
@@ -2331,20 +2312,6 @@ def test_fixed_gap_dc_runs_at_the_ceiling_and_records_whether_the_cap_bound(monk
     assert report["dc_cap"] == 100_000
     assert report["dc_cap_bound"] == "no", "a sector that never hit the cap must say so"
     assert report["dc_cap_status"] == "unbound"
-
-
-def test_an_unknown_cap_strategy_is_rejected(monkeypatch):
-    """A misspelled strategy must fail loudly rather than silently taking a default -- the
-    misnamed-knob failure mode this stack has already shipped once."""
-
-    monkeypatch.setenv("DC_CAP_STRATEGY", "laddder")
-    monkeypatch.setattr(_memory_estimate, "suggest_gs_truncation_threshold", lambda n, **kw: 100_000)
-    monkeypatch.setattr(_memory_estimate, "log_memory_budget", lambda *a, **kw: None)
-
-    kwargs, _ = common_kwargs(v=0.3, tau=1e-2)
-    kwargs["basis"] = replace(kwargs["basis"], truncation_threshold=None)
-    with pytest.raises(ValueError, match="DC_CAP_STRATEGY"):
-        fixed_gap_dc(offset=0.0, **kwargs)
 
 
 def test_fixed_occupation_dc_probes_whether_the_cap_bound_it(monkeypatch):

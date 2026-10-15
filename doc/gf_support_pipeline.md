@@ -11,7 +11,7 @@ BiCGSTAB/GMRES matvec, Chebyshev) there are exactly two entry points on the poli
 - `admit_seed(block)`: the seed block. No cut, and it does not advance the support-freeze window.
 - `decide(wp, cutoff)`: once per matvec, on the **summed** output of that matvec.
 
-Row chunking (`GF_APPLY_ROW_CHUNKS`) only bounds the transient memory of the apply. Per chunk the policy does
+Row chunking (`APPLY_ROW_CHUNKS`) only bounds the transient memory of the apply. Per chunk the policy does
 `transport(raw)`: redistribute, then the work that commutes with the sum (the frozen `keep_rows`, the RSS
 memory-guard check). Nothing that depends on the *total* amplitude of a row is decided per chunk.
 
@@ -57,7 +57,7 @@ sum agree.
 
 ## Mutual exclusions
 
-Importance pruning (`GF_LANCZOS_ADMIT_TOL`) and the support freeze (`GF_SUPPORT_FREEZE`) cannot both be on: under
+Importance pruning (`GF_LANCZOS_ADMIT_TOL`) and the support freeze cannot both be on: under
 pruning, banned rows always land outside the support, so the leak no longer measures growth.
 
 ## Where it lives

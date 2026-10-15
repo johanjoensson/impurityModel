@@ -225,8 +225,6 @@ def expand_memory_budget(comm):
     # the deadlock class CLAUDE.md's MPI rules exist for.
     available = available_bytes_per_rank(comm)
     resident = resident_bytes_per_rank(comm)
-    if not config.GS_MEMORY_BUDGET_INCLUDE_RESIDENT.get():
-        resident = 0  # rollback to the pre-2026-09 free-memory arithmetic; see the knob's doc
     return int(absolute_rss_budget(safety, available, resident))
 
 
