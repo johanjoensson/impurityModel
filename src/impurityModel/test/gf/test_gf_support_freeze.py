@@ -48,7 +48,14 @@ WINDOW = gf_solvers._SUPPORT_WINDOW
 
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
-    for name in ("GF_SUPPORT_TRACE", "GF_SUPPORT_FREEZE", "GF_FROZEN_CSR", "APPLY_ROW_CHUNKS", "MATVEC_PRUNE", *config.RETIRED_KNOBS):
+    for name in (
+        "GF_SUPPORT_TRACE",
+        "GF_SUPPORT_FREEZE",
+        "GF_FROZEN_CSR",
+        "APPLY_ROW_CHUNKS",
+        "MATVEC_PRUNE",
+        *config.RETIRED_KNOBS,
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
