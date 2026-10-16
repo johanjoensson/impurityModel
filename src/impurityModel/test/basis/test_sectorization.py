@@ -299,7 +299,7 @@ def test_unconverged_hf_seed_is_rejected(monkeypatch):
     Measured on the NiO L-edge workload, an unconverged seed returned a 3d10 impurity paid for by
     emptying the (frozen) 2p core. Re-freezing the core then left two electrons from nowhere, the
     shell closed, the basis collapsed to a single determinant and every core-level spectrum came
-    out identically zero -- while PES still looked healthy. find_ground_state_basis must fall back
+    out identically zero -- while PES still looked healthy. find_ground_state_sector must fall back
     to the dN scan instead.
     """
     from impurityModel.ed import groundstate
@@ -310,7 +310,7 @@ def test_unconverged_hf_seed_is_rejected(monkeypatch):
     N0 = {0: 2}
 
     # The oracle: what the dN scan produces, i.e. what "falling back" has to mean.
-    scanned = groundstate.find_ground_state_basis(
+    scanned = groundstate.find_ground_state_sector(
         op,
         impurity_orbitals=impurity_orbitals,
         bath_states=bath_states,
@@ -326,14 +326,14 @@ def test_unconverged_hf_seed_is_rejected(monkeypatch):
         "hartree_fock_seed_occupation",
         lambda *a, **k: (calls.append(1), ({0: 0}, False))[1],
     )
-    fell_back = groundstate.find_ground_state_basis(
+    fell_back = groundstate.find_ground_state_sector(
         op, impurity_orbitals=impurity_orbitals, bath_states=bath_states, N0=N0, verbose=False
     )
 
     assert calls, "the seed should still be consulted"
     # The rejected seed (impurity occupation 0) must not have been taken.
-    assert fell_back.size == scanned.size
-    assert sorted(fell_back.local_basis) == sorted(scanned.local_basis)
+    assert fell_back.occupation == scanned.occupation
+    assert fell_back.energy == scanned.energy
 
 
 def test_hf_seed_that_raids_a_frozen_shell_is_rejected(monkeypatch):
@@ -349,7 +349,7 @@ def test_hf_seed_that_raids_a_frozen_shell_is_rejected(monkeypatch):
     bath_states = ({0: [[2, 3]]}, {0: [[4, 5]]})
     N0 = {0: 2}
 
-    scanned = groundstate.find_ground_state_basis(
+    scanned = groundstate.find_ground_state_sector(
         op,
         impurity_orbitals=impurity_orbitals,
         bath_states=bath_states,
@@ -361,7 +361,7 @@ def test_hf_seed_that_raids_a_frozen_shell_is_rejected(monkeypatch):
     # A *converged* seed that moved charge out of the frozen set 0: re-freezing restores N0[0]=2
     # while keeping HF's answer elsewhere, changing the impurity count 0 -> 2. Reject it.
     monkeypatch.setattr(groundstate, "hartree_fock_seed_occupation", lambda *a, **k: ({0: 0}, True))
-    fell_back = groundstate.find_ground_state_basis(
+    fell_back = groundstate.find_ground_state_sector(
         op,
         impurity_orbitals=impurity_orbitals,
         bath_states=bath_states,
@@ -369,8 +369,8 @@ def test_hf_seed_that_raids_a_frozen_shell_is_rejected(monkeypatch):
         frozen_occupations={0},
         verbose=False,
     )
-    assert fell_back.size == scanned.size
-    assert sorted(fell_back.local_basis) == sorted(scanned.local_basis)
+    assert fell_back.occupation == scanned.occupation
+    assert fell_back.energy == scanned.energy
 
 
 def _bytes6(occ):
@@ -385,8 +385,8 @@ def _occset6(det_bytes):
 
 
 def test_hf_seed_matches_brute_force_loop():
-    """find_ground_state_basis with use_hf_seed=True matches the O(3^k) dN scan."""
-    from impurityModel.ed.groundstate import find_ground_state_basis
+    """find_ground_state_sector with use_hf_seed=True matches the O(3^k) dN scan."""
+    from impurityModel.ed.groundstate import find_ground_state_sector
 
     op = _siam_6()
     kw = dict(
@@ -394,7 +394,6 @@ def test_hf_seed_matches_brute_force_loop():
         bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}),
         N0={0: 2},
         mixed_valence={0: 1},
-        tau=0.01,
         chain_restrict=False,
         dense_cutoff=1000,
         comm=None,
@@ -403,9 +402,6 @@ def test_hf_seed_matches_brute_force_loop():
         slaterWeightMin=1e-12,
     )
 
-    def gs_energy(basis):
-        return np.linalg.eigvalsh(np.asarray(build_dense_matrix(basis, op)))[0]
-
-    e_brute = gs_energy(find_ground_state_basis(op, **kw, use_hf_seed=False))
-    e_hf = gs_energy(find_ground_state_basis(op, **kw, use_hf_seed=True))
+    e_brute = find_ground_state_sector(op, **kw, use_hf_seed=False).energy
+    e_hf = find_ground_state_sector(op, **kw, use_hf_seed=True).energy
     assert np.isclose(e_brute, e_hf, atol=1e-8)

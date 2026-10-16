@@ -1,16 +1,15 @@
-"""The occupation walk hands back the winning sector it already solved.
+"""The occupation walk keeps floats, not bases.
 
-``find_ground_state_basis`` used to end by clearing its caches and calling ``calc_energy`` at the
-winning occupation again -- the whole expansion and eigensolve a second time, from a cold start.
-It now returns the best trial's ``(basis, solver)``: no sector is solved twice, and the solver
-(attached as ``basis.walk_solver``) holds an eigensolve that is valid for the returned basis, so the
-refinement continues warm.
+``find_ground_state_basis`` used to return the best trial's ``(basis, solver)`` and the production
+solve continued it. It now returns a ``SectorSearch`` (occupation, energy, truncation report, cap
+policy): no sector is solved twice by the walk, nothing it built outlives it, and the winning sector is
+solved afresh for the thermal manifold by ``solve_ground_state``.
 """
 
 import numpy as np
 
 from impurityModel.ed import groundstate
-from impurityModel.ed.groundstate import find_ground_state_basis, sector_key
+from impurityModel.ed.groundstate import find_ground_state_sector, sector_key
 from impurityModel.ed.lie_algebra import tensors_to_operator
 
 N_ORB = 12
@@ -35,7 +34,7 @@ def _model():
     return tensors_to_operator(h), impurity_orbitals, (valence, conduction)
 
 
-def test_no_sector_is_solved_twice_and_the_winner_comes_with_a_valid_solve(monkeypatch):
+def test_no_sector_is_solved_twice_and_the_walk_returns_only_its_verdict(monkeypatch):
     solved = []
     real = groundstate.calc_energy
 
@@ -45,12 +44,11 @@ def test_no_sector_is_solved_twice_and_the_winner_comes_with_a_valid_solve(monke
 
     monkeypatch.setattr(groundstate, "calc_energy", recording)
     h_op, impurity_orbitals, bath_states = _model()
-    basis = find_ground_state_basis(
+    search = find_ground_state_sector(
         h_op,
         impurity_orbitals,
         bath_states,
         {0: 1, 1: 1},
-        tau=1e-3,
         dense_cutoff=1,
         comm=None,
         verbose=False,
@@ -59,7 +57,5 @@ def test_no_sector_is_solved_twice_and_the_winner_comes_with_a_valid_solve(monke
     )
 
     assert solved and len(solved) == len(set(solved)), f"a sector was solved twice: {solved}"
-    solver = basis.walk_solver
-    assert solver is not None and solver.basis is basis
-    assert solver.eig is not None and solver.eig.generation == basis.generation
-    assert solver.eig.certified
+    assert sector_key(search.occupation) in solved
+    assert np.isfinite(search.energy)

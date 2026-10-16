@@ -311,7 +311,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     # The thermal ground state and the interacting Green's function. The ground-state solve returns
     # every eigenstate inside the thermal window, certified complete (or says it could not), so the
     # ensemble is never re-requested with a larger count.
-    num_wanted = 10
     t_phase = time.perf_counter()
     psis, es, ground_state_basis, thermal_rho, gs_info = calc_gs(
         h,
@@ -320,7 +319,6 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         rot_to_spherical,
         verbosity,
         slaterWeightMin=slaterWeightMin,
-        num_wanted=num_wanted,
     )
     _report_phase_time(report, "ground state", t_phase)
     restrictions = ground_state_basis.restrictions

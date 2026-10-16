@@ -391,7 +391,7 @@ def run_spectra(model, spectra_options, basis, comm, *, verbosity=None, output_f
         # same inference, and a core shell that does carry bath states would be left unpinned.
         "frozen_occupations": set() if l_core is None else {l_core},
         # None = "as many determinants as fit in RAM", resolved against the per-rank
-        # available memory inside find_ground_state_basis (see memory_estimate).
+        # available memory inside find_ground_state_sector (see memory_estimate).
         "truncation_threshold": basis.truncation_threshold,
         "tau": tau,
         "comm": comm,

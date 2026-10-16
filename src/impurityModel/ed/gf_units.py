@@ -44,7 +44,7 @@ def gf_cap(basis):
     """The determinant cap a Green's-function unit basis built from ``basis`` runs under.
 
     When the ground-state solve attached its :class:`~impurityModel.ed.memory_estimate.CapPolicy`
-    (``basis.cap_policy``, set by ``find_ground_state_basis``), that policy's ``gf`` cap -- the
+    (``basis.cap_policy``, set by ``find_ground_state_sector``), that policy's ``gf`` cap -- the
     cap the driver resolved, *not* whatever ``basis.truncation_threshold`` the ground-state memory
     guard left behind. The guard may hold one ground-state expansion below its cap; that says
     nothing about what a Green's-function unit can afford, and inheriting it is how a 120-determinant

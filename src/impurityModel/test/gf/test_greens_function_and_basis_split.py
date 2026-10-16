@@ -438,7 +438,7 @@ def test_run_units_distributed_does_not_mutate_the_callers_basis_cap_mpi(monkeyp
 
 def _policy_basis(comm, gs_cap, policy):
     """A 4-determinant basis whose own cap was lowered to ``gs_cap`` (as the ground-state memory
-    guard does) and which carries the driver's resolved ``policy`` (as find_ground_state_basis
+    guard does) and which carries the driver's resolved ``policy`` (as find_ground_state_sector
     attaches it), plus two identical width-1 unit seeds."""
     states = [b"\x80", b"\x40", b"\x20", b"\x10"]
     basis = Basis(

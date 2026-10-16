@@ -8,7 +8,7 @@ from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.eigensolvers import Lowest
-from impurityModel.ed.groundstate import calc_energy, calc_gs, find_ground_state_basis
+from impurityModel.ed.groundstate import calc_energy, calc_gs, find_ground_state_sector, solve_sector
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.test.support.comms import COMMS
 
@@ -16,7 +16,7 @@ from impurityModel.test.support.comms import COMMS
 def ground_state_support(basis, h_op, dense_cutoff=10):
     """Occupied-orbital tuples carrying amplitude in the ground state on ``basis``.
 
-    ``find_ground_state_basis`` returns the basis whole; it no longer collapses it onto the
+    A solved sector's basis is returned whole; it is not collapsed onto the
     eigenvector support (that cut determinants at ``sqrt(slaterWeightMin)`` before the final
     expansion could use them, and made a cached basis path-dependent). So a test that means
     "the search found *this* ground state" has to solve for the eigenvector and look at its
@@ -37,6 +37,25 @@ def ground_state_support(basis, h_op, dense_cutoff=10):
     # the support -- a rank owning none of it would read an empty set as "wrong ground state".
     # Allgather (collective, and every rank reaches it) and take the union.
     return set().union(*basis.comm.allgather(local))
+
+
+def _solved_basis(search, h_op, comm):
+    """The basis of the sector a walk settled on, solved for its lowest state."""
+    return solve_sector(
+        h_op,
+        {0: [[0, 1, 2, 3, 4]]},
+        ({0: [[]]}, {0: [[]]}),
+        search.occupation,
+        {0: 0},
+        0.01,
+        False,
+        10,
+        manifold=Lowest(),
+        comm=comm,
+        verbose=False,
+        truncation_threshold=1000,
+        slaterWeightMin=1e-12,
+    ).basis
 
 
 @pytest.mark.mpi
@@ -218,13 +237,12 @@ def test_calc_energy(comm):
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
 
-    energy, basis = calc_energy(
+    energy, report = calc_energy(
         h_op=Hop,
         impurity_indices={0: [[0, 1, 2, 3, 4]]},
         bath_states=({0: [[]]}, {0: [[]]}),
         N0={0: 2},
         mixed_valence={0: 0},
-        tau=0.01,
         chain_restrict=False,
         dense_cutoff=10,
         comm=comm,
@@ -233,29 +251,27 @@ def test_calc_energy(comm):
         slaterWeightMin=1e-12,
     )
     np.testing.assert_allclose(energy, 1.5, rtol=1e-10, atol=1e-10)
-    assert basis is not None
-    assert len(basis) > 0
+    assert report is None  # the cap never bound
 
 
 @pytest.mark.parametrize("comm", COMMS)
-def test_find_ground_state_basis(comm):
+def test_find_ground_state_sector(comm):
     # Two bound (negative) levels below a gap, three unbound (positive) levels above it, so
     # N=2 (filling the two negative levels) is a genuine local -- and here global -- minimum in
     # total particle number, not merely the value nearest the input N0. (An all-positive-spectrum
     # model would make the unconstrained many-body ground state the vacuum N=0 regardless of
-    # N0, which find_ground_state_basis's neighbourhood walk -- HF-seeded or the legacy dN scan
+    # N0, which find_ground_state_sector's neighbourhood walk -- HF-seeded or the legacy dN scan
     # alike -- correctly finds; that is not what this test means to exercise.)
     eigvals = np.array([-1.0, -0.5, 0.5, 1.0, 1.5])
     hop = {((i, "c"), (i, "a")): val for i, val in enumerate(eigvals)}
     Hop = ManyBodyOperator(hop)
 
-    basis = find_ground_state_basis(
+    search = find_ground_state_sector(
         h_op=Hop,
         impurity_orbitals={0: [[0, 1, 2, 3, 4]]},
         bath_states=({0: [[]]}, {0: [[]]}),
         N0={0: 2},
         mixed_valence=None,
-        tau=0.01,
         chain_restrict=False,
         dense_cutoff=10,
         comm=comm,
@@ -263,16 +279,16 @@ def test_find_ground_state_basis(comm):
         truncation_threshold=1000,
         slaterWeightMin=1e-12,
     )
-    assert basis is not None
     # N0={0:2}: the two-electron ground state fills the two lowest (negative-energy) orbitals
     # (-1.0 + -0.5 = -1.5). The Hamiltonian is diagonal, so that single determinant carries the
     # whole ground state.
-    assert ground_state_support(basis, Hop) == {(0, 1)}
-    assert basis.ground_state_occupation == {0: 2}
+    assert search.energy == pytest.approx(-1.5)
+    assert search.occupation == {0: 2}
+    assert ground_state_support(_solved_basis(search, Hop, comm), Hop) == {(0, 1)}
 
 
-def test_find_ground_state_basis_walk_rescues_seed_off_by_two(monkeypatch):
-    # Same model as test_find_ground_state_basis: N=2 (filling the two negative-energy
+def test_find_ground_state_sector_walk_rescues_seed_off_by_two(monkeypatch):
+    # Same model as test_find_ground_state_sector: N=2 (filling the two negative-energy
     # levels) is the true minimum. Force the HF seed to miss by 2 (N0=0, the vacuum) -- the
     # scenario the NiO bug report hit (HF pushed 3 electrons into the wrong sector) -- and assert
     # the post-seed walk still corrects it back to the true minimum, matching what the legacy
@@ -292,7 +308,6 @@ def test_find_ground_state_basis_walk_rescues_seed_off_by_two(monkeypatch):
         bath_states=({0: [[]]}, {0: [[]]}),
         N0={0: 0},
         mixed_valence=None,
-        tau=0.01,
         chain_restrict=False,
         dense_cutoff=10,
         comm=None,
@@ -301,13 +316,12 @@ def test_find_ground_state_basis_walk_rescues_seed_off_by_two(monkeypatch):
         slaterWeightMin=1e-12,
     )
 
-    basis_walked = find_ground_state_basis(use_hf_seed=True, **common_kwargs)
-    basis_scanned = find_ground_state_basis(use_hf_seed=False, **common_kwargs)
+    walked = find_ground_state_sector(use_hf_seed=True, **common_kwargs)
+    scanned = find_ground_state_sector(use_hf_seed=False, **common_kwargs)
 
-    for basis in (basis_walked, basis_scanned):
-        assert basis is not None
-        assert ground_state_support(basis, Hop) == {(0, 1)}
-        assert basis.ground_state_occupation == {0: 2}
+    for search in (walked, scanned):
+        assert search.occupation == {0: 2}
+        assert ground_state_support(_solved_basis(search, Hop, None), Hop) == {(0, 1)}
 
 
 def test_calc_gs_options_serial():

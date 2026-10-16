@@ -16,10 +16,10 @@ electron-removal peak at E[1] - E[0] = eps - dc, and a charge-transfer
 crossing (N_imp: 1 -> 2) at dc > eps + U - eps_b = 6.
 
 Both searches now determine their sector(s) through
-``groundstate.find_ground_state_basis`` -- the identical search
+``groundstate.find_ground_state_sector`` -- the identical search
 ``calc_selfenergy`` uses -- rather than by construction at a fixed N0, so
 that a dc found here means the same thing calc_selfenergy will find at that
-dc (see dc_criteria.py's module docstring). ``find_ground_state_basis``
+dc (see dc_criteria.py's module docstring). ``find_ground_state_sector``
 does not hold total N fixed: with mixed_valence=0 (the default in this
 file), a bath orbital's occupation cannot deviate from nominal at all, so
 "N_imp = 2" as a *trial sector* pairs with the bath still fully occupied
@@ -45,14 +45,11 @@ from mpi4py import MPI
 
 import impurityModel.ed.memory_estimate as _memory_estimate
 from impurityModel.ed import dc_criteria
-from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.dc_criteria import GAP_ENERGY_TOLERANCE_FRACTION
 from impurityModel.ed.dc_search import bracket_width_tol
 from impurityModel.ed.density_matrices import build_density_matrices
-from impurityModel.ed.eigensolvers import Within
-from impurityModel.ed.groundstate import find_ground_state_basis
+from impurityModel.ed.groundstate import solve_ground_state
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.model import BasisOptions, ImpurityModel, SolverOptions
 from impurityModel.ed.selfenergy import (
@@ -483,17 +480,15 @@ def test_fixed_peak_dc_runs_on_split_block_impurity():
 
 
 def test_ground_state_basis_reports_its_sector_because_the_basis_cannot():
-    """``find_ground_state_basis`` returns the eigenvector support, not a pure sector.
+    """``solve_ground_state`` returns a basis that mixes impurity occupations, not a pure sector.
 
     The CIPSI expansion widens the impurity occupation window (``build_excited_restrictions`` is
     called with ``imp_change=None``, which its own docstring defines as unconstrained), and
-    ``calc_energy`` then reduces the basis to the eigenvector support. So the returned basis spans
-    several impurity occupations and *no* determinant identifies the sector -- reading one, as
+    So the returned basis spans several impurity occupations and *no* determinant identifies the sector -- reading one, as
     ``fixed_peak_dc`` used to, centred the peak on whichever came first. The winning occupation
     has to be carried out of the search explicitly, which is what ``ground_state_occupation`` is.
     """
     from impurityModel.ed import product_state_representation as psr
-    from impurityModel.ed.groundstate import find_ground_state_basis
 
     kwargs, _ = _split_block_kwargs()
     model, basis_opts = kwargs["model"], kwargs["basis"]
@@ -508,7 +503,7 @@ def test_ground_state_basis_reports_its_sector_because_the_basis_cannot():
         0,
     )
     imp_idx = [o for blocks in sb.impurity_orbitals.values() for block in blocks for o in block]
-    gs = find_ground_state_basis(
+    gs = solve_ground_state(
         sb.h,
         sb.impurity_orbitals,
         sb.bath_states,
@@ -523,10 +518,11 @@ def test_ground_state_basis_reports_its_sector_because_the_basis_cannot():
     )
     per_det = {
         sum(1 for o in psr.bytes2tuple(bytes(state.to_bytearray()), model.n_spin_orbitals) if o in imp_idx)
-        for state in gs
+        for state in gs.basis
     }
     assert len(per_det) > 1, f"fixture no longer mixes occupations ({per_det}); the test is moot"
-    assert sum(gs.ground_state_occupation.values()) in per_det
+    assert sum(gs.occupation.values()) in per_det
+    assert gs.basis.ground_state_occupation == gs.occupation
 
 
 def test_fixed_peak_dc_accepts_multiple_groups():
@@ -553,7 +549,7 @@ def test_fixed_occupation_dc_already_converged():
 
 
 def test_fixed_occupation_dc_increases_occupation():
-    # Requesting two electrons on the impurity: find_ground_state_basis's sector search hits the
+    # Requesting two electrons on the impurity: find_ground_state_sector's sector search hits the
     # "free bath electron" alternate sector (module docstring) well before the analytic
     # charge-transfer crossing at dc = 6; the achieved dc matches the code, not that formula.
     kwargs, dc_guess = common_kwargs(v=0.3, tau=1e-2, dc_scale=0.5)
@@ -578,7 +574,7 @@ def test_fixed_occupation_dc_decreases_occupation():
 
 
 def test_fixed_occupation_dc_low_target_lands_on_plateau(capsys):
-    # find_ground_state_basis's sector search is not fixed-N: it can land on a smaller-total-N
+    # find_ground_state_sector's sector search is not fixed-N: it can land on a smaller-total-N
     # sector (module docstring) where a low impurity occupation is a genuine plateau -- the
     # observable steps across the target at a charge-sector boundary rather than crossing it.
     # B3: this is "no solution here", not a tolerable miss, so it raises DoubleCountingUnreachable
@@ -906,18 +902,17 @@ def test_the_edge_character_costs_no_sector_solves_of_its_own(monkeypatch):
     from impurityModel.ed import groundstate as gs_module
 
     solves = {"n": 0}
-    # `_solve_sector_core`, not `solve_sector`: the core is the one body both `solve_sector` and
-    # `calc_energy` run, so a counter on it sees every sector solve regardless of which head the
-    # search entered through. `_measure_edge_character` reaches neither today, which is exactly
-    # what makes the assertion below meaningful -- but a counter on one head only would report
-    # zero for a solve that moved to the other.
-    real_solve_sector = gs_module._solve_sector_core
+    # `solve_sector` is the one body every sector solve runs, `calc_energy` included, so a counter on
+    # it sees every solve regardless of which head the search entered through.
+    # `_measure_edge_character` reaches none today, which is exactly what makes the assertion below
+    # meaningful.
+    real_solve_sector = gs_module.solve_sector
 
     def counted(*args, **kwargs):
         solves["n"] += 1
         return real_solve_sector(*args, **kwargs)
 
-    monkeypatch.setattr(gs_module, "_solve_sector_core", counted)
+    monkeypatch.setattr(gs_module, "solve_sector", counted)
 
     spent = {}
     real_measure = dc_module._measure_edge_character
@@ -1186,8 +1181,8 @@ def test_a_rank_dependent_sector_energy_cannot_reach_the_gap_tolerance(monkeypat
     real_solve_sector = gs_module.solve_sector
 
     def perturbed(*args, **kwargs):
-        es, psis, basis = real_solve_sector(*args, **kwargs)
-        return es * (1.0 + comm.rank * 1e-12), psis, basis
+        es, psis, basis, solver = real_solve_sector(*args, **kwargs)
+        return gs_module.SectorSolve(es * (1.0 + comm.rank * 1e-12), psis, basis, solver)
 
     # `solve_sector`, not `calc_energy`: `_SectorContext.sector_solve` produces the energy *and*
     # the impurity occupation from one expansion, so this is the boundary both quantities cross.
@@ -1250,7 +1245,6 @@ def test_calc_energy_returns_a_bitwise_identical_energy_on_every_rank():
         sb.bath_states,
         sb.nominal_occ,
         sb.mixed_valence,
-        kwargs["basis"].tau,
         kwargs["basis"].chain_restrict,
         kwargs["solver"].dense_cutoff,
         comm=comm,
@@ -1315,7 +1309,7 @@ def _capture_prepared_bases(monkeypatch):
     """Monkeypatch the basis-building entry point to record every ``Basis`` built.
 
     Both ``fixed_peak_dc`` and ``fixed_occupation_dc`` now determine their sector(s) through
-    ``groundstate.find_ground_state_basis``/``calc_energy`` (imported function-locally at call
+    ``groundstate.find_ground_state_sector``/``calc_energy`` (imported function-locally at call
     time, so patching the module attribute here is picked up), which builds each trial's basis
     through ``groundstate.build_basis_and_solver``. Since the walk visits multiple trial
     occupations, one call now captures *every* trial basis, not one per sector -- callers that
@@ -1384,7 +1378,7 @@ def test_fixed_peak_dc_derives_cap_when_threshold_is_none(monkeypatch):
     fixed_peak_dc(peak_position=1.2, **kwargs)
 
     # One probe (not one per trial basis: truncation_threshold is resolved once, then passed
-    # explicitly into every find_ground_state_basis/calc_energy call the walk makes), and every
+    # explicitly into every find_ground_state_sector/calc_energy call the walk makes), and every
     # trial basis carries its cap.
     assert len(calls) == 1
     assert calls[0]["safety"] == pytest.approx(_memory_estimate.DEFAULT_MEMORY_SAFETY)
@@ -1694,7 +1688,7 @@ def test_dc_search_excitation_budget_binds():
     # excitation_budget=0 forbids any bath excitation away from the reference (both valence
     # baths filled) *within a sector's CIPSI expansion*: occupation=1 must still converge
     # (trivially, at the guess). occupation=2 is reachable regardless of the budget: the
-    # alternate "free bath electron" sector (module docstring) find_ground_state_basis lands on
+    # alternate "free bath electron" sector (module docstring) find_ground_state_sector lands on
     # is a single, already-complete determinant (both impurity orbitals and both bath orbitals
     # filled) that needs zero admitted excitations to represent, so excitation_budget=0 does not
     # block it -- the search converges to the same dc as the unrestricted budget
@@ -1749,7 +1743,7 @@ def _selfenergy_gs_occupation(model, basis_opts, dc):
     """Independently recompute the selfenergy-path ground-state impurity occupation at ``dc``.
 
     Mirrors what ``calc_selfenergy``/``calc_gs`` do (``prepare_solver_basis`` ->
-    ``find_ground_state_basis`` -> thermal rho over the resulting eigenstates), without going
+    ``find_ground_state_sector`` -> thermal rho over the resulting eigenstates), without going
     through any of ``fixed_occupation_dc``'s own machinery (its sector cache, its per-mu HF
     reseeding), so this is a genuine external check of DC <-> GS parity rather than a
     tautological re-check of the same code path.
@@ -1765,11 +1759,11 @@ def _selfenergy_gs_occupation(model, basis_opts, dc):
         0,
     )
     impurity_indices = [orb for blocks in sb.impurity_orbitals.values() for block in blocks for orb in block]
-    gs_basis = find_ground_state_basis(
-        h_op=sb.h,
-        impurity_orbitals=sb.impurity_orbitals,
-        bath_states=sb.bath_states,
-        N0=sb.nominal_occ,
+    gs = solve_ground_state(
+        sb.h,
+        sb.impurity_orbitals,
+        sb.bath_states,
+        sb.nominal_occ,
         mixed_valence=sb.mixed_valence,
         tau=basis_opts.tau,
         chain_restrict=basis_opts.chain_restrict,
@@ -1778,23 +1772,9 @@ def _selfenergy_gs_occupation(model, basis_opts, dc):
         verbose=False,
         truncation_threshold=basis_opts.truncation_threshold,
         slaterWeightMin=basis_opts.slater_weight_min,
-    )
-    solver = CIPSISolver(gs_basis)
-    solver.expand(
-        sb.h,
-        Within.thermal(solver.basis.tau),
-        dense_cutoff=1000,
         de2_min=1e-8,
-        slaterWeightMin=basis_opts.slater_weight_min,
     )
-    energy_cut = boltzmann_energy_cut(basis_opts.tau)
-    es, psis = solver.get_eigenvectors(
-        sb.h,
-        Within(energy_cut),
-        dense_cutoff=1000,
-        slaterWeightMin=basis_opts.slater_weight_min,
-        psi_refs=solver.psi_refs,
-    )
+    gs_basis, es, psis = gs.basis, gs.es, gs.psis
     rhos = build_density_matrices(gs_basis, psis, impurity_indices, impurity_indices)
     rho = thermal_average_scale_indep(es, rhos, basis_opts.tau)
     return float(np.real(np.trace(rho)))
@@ -1955,7 +1935,7 @@ def _bath_total(group, valence_baths, conduction_baths):
     "criterion, call",
     [
         ("fixed-occupation", lambda kw: fixed_occupation_dc(occupation=4.0, **kw)),
-        # This test is about the three inputs reaching find_ground_state_basis, not about the
+        # This test is about the three inputs reaching find_ground_state_sector, not about the
         # landed charge state -- opt out of R2's charge-state guard.
         ("fixed-peak", lambda kw: fixed_peak_dc(peak_position=0.5, allow_charge_state_change=True, **kw)),
         ("fixed-gap", lambda kw: fixed_gap_dc(offset=0.0, allow_charge_state_change=True, **kw)),
@@ -1965,28 +1945,27 @@ def test_dc_criteria_pass_frozen_occupations_and_tau(monkeypatch, criterion, cal
     """R1: the call-counter proof, not an outcome proof (the shim lesson).
 
     Asserting on the returned ``dc`` cannot distinguish "the three inputs reached
-    ``find_ground_state_basis``" from "they didn't, and it happened not to matter" -- both
+    ``find_ground_state_sector``" from "they didn't, and it happened not to matter" -- both
     criteria' docstrings claimed parity with ``calc_gs`` before this was true (see the module
     warning), and the toy parity test passed the whole time. Spy on
-    ``groundstate.find_ground_state_basis`` itself (re-imported fresh inside each criterion at
+    ``groundstate.find_ground_state_sector`` itself (re-imported fresh inside each criterion at
     call time, so patching the ``groundstate`` module's attribute is what the ``from ... import``
     picks up) and inspect every call's kwargs directly.
     """
     import impurityModel.ed.groundstate as groundstate_module
 
-    real_find_ground_state_basis = groundstate_module.find_ground_state_basis
+    real_find_ground_state_sector = groundstate_module.find_ground_state_sector
     calls = []
 
     def spy(*args, **kwargs):
         calls.append((args, kwargs))
-        return real_find_ground_state_basis(*args, **kwargs)
+        return real_find_ground_state_sector(*args, **kwargs)
 
-    monkeypatch.setattr(groundstate_module, "find_ground_state_basis", spy)
+    monkeypatch.setattr(groundstate_module, "find_ground_state_sector", spy)
 
     kwargs, _ = _frozen_core_kwargs()
-    tau = kwargs["basis"].tau
     # This fixture's fixed-occupation target (4.0, the nominal) happens to sit on a charge-sector
-    # plateau (B3: DoubleCountingUnreachable) -- irrelevant here, since find_ground_state_basis is
+    # plateau (B3: DoubleCountingUnreachable) -- irrelevant here, since find_ground_state_sector is
     # called and spied on before the search ever raises. The call-counter proof this test exists
     # for does not need the search to succeed.
     try:
@@ -1994,7 +1973,7 @@ def test_dc_criteria_pass_frozen_occupations_and_tau(monkeypatch, criterion, cal
     except DoubleCountingUnreachable:
         pass
 
-    assert calls, f"{criterion}: find_ground_state_basis was never called"
+    assert calls, f"{criterion}: find_ground_state_sector was never called"
     for args, call_kwargs in calls:
         impurity_orbitals_arg = args[1]
         valence_baths, conduction_baths = args[2]
@@ -2002,13 +1981,11 @@ def test_dc_criteria_pass_frozen_occupations_and_tau(monkeypatch, criterion, cal
         # The fixture's core group must actually be bath-less, or this test proves nothing.
         assert expected_frozen, f"{criterion}: fixture has no bath-less group to freeze"
         assert call_kwargs["frozen_occupations"] == expected_frozen, (criterion, call_kwargs["frozen_occupations"])
-        # calc_gs's own convention: the walk runs at tau/100, restored to the full tau
-        # everywhere else (see the module warning in dc_criteria.py).
-        assert call_kwargs["tau"] == pytest.approx(tau / 100), (criterion, call_kwargs["tau"])
-        # calc_gs runs the walk at sqrt(slaterWeightMin) and only tightens to the full cutoff
-        # for the refinement; a walk run four orders of magnitude tighter is a different search
-        # and can settle on a different sector.
-        assert call_kwargs["slaterWeightMin"] == pytest.approx(np.sqrt(kwargs["basis"].slater_weight_min)), (
+        # The walk owns its conventions (it runs at sqrt(slaterWeightMin) itself), so every caller
+        # hands it the full cutoff and no tau: a walk run four orders of magnitude tighter is a
+        # different search and can settle on a different sector.
+        assert "tau" not in call_kwargs, (criterion, call_kwargs)
+        assert call_kwargs["slaterWeightMin"] == pytest.approx(kwargs["basis"].slater_weight_min), (
             criterion,
             call_kwargs["slaterWeightMin"],
         )

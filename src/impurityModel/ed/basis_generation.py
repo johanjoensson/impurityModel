@@ -257,7 +257,7 @@ def generate_initial_basis(
             if patterns
         )
         # Indented one level: this is the detail *behind* a row of the occupation-search table
-        # in `groundstate.find_ground_state_basis`, which is re-entered once per trial sector.
+        # in `groundstate.find_ground_state_sector`, which is re-entered once per trial sector.
         print(
             f"    seed basis: {len(basis)} determinants, {n_electrons} electrons, "
             f"impurity occupation {_window_str(lo_tot, hi_tot)}"

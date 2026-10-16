@@ -50,9 +50,7 @@ from impurityModel.ed.BlockLanczosArray import (
     block_normalize,
     eigh_block_tridiagonal,
 )
-from impurityModel.ed.cipsi_solver import CIPSISolver
-from impurityModel.ed.eigensolvers import Within
-from impurityModel.ed.groundstate import find_ground_state_basis
+from impurityModel.ed.groundstate import solve_ground_state
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
     ManyBodyState,
@@ -142,7 +140,7 @@ def nio_workload():
 
     Mirrors the production plumbing: ``_nio_workload.build_selfenergy_inputs`` →
     ``calc_selfenergy``'s symmetry-rotation / bath-classification / orbital-grouping
-    preamble → ``find_ground_state_basis`` + one ``CIPSISolver.expand`` (both running
+    preamble → ``solve_ground_state`` (both running
     the PARTIAL restarted Lanczos, exactly like ``calc_gs``). The returned basis is
     then *frozen*: the benchmarks re-run the Lanczos loops on it under controlled
     settings.
@@ -179,30 +177,22 @@ def nio_workload():
     mixed_valence = _per_group_scalar(dict.fromkeys(impurity_orbitals, MIXED_VALENCE), impurity_orbitals, default=0)
 
     tau = inputs["tau"]
-    basis = find_ground_state_basis(
+    ground_state = solve_ground_state(
         h,
         impurity_orbitals,
         bath_states,
         nominal_occ,
+        tau=tau,
+        slaterWeightMin=SLATER_WEIGHT_MIN,
         mixed_valence=mixed_valence,
-        tau=tau / 100,  # calc_gs runs the occupation search at tau/100
         chain_restrict=False,
         dense_cutoff=DENSE_CUTOFF,
         comm=comm,
         truncation_threshold=TRUNC,
         verbose=False,
-        slaterWeightMin=np.sqrt(SLATER_WEIGHT_MIN),
-    )
-    basis.tau = tau
-    solver = CIPSISolver(basis)
-    solver.expand(
-        h,
-        Within.thermal(solver.basis.tau),
-        dense_cutoff=DENSE_CUTOFF,
         de2_min=1e-6,
-        slaterWeightMin=SLATER_WEIGHT_MIN,
-        reort=True,
     )
+    basis, solver = ground_state.basis, ground_state.solver
     if basis.restrictions is not None:
         h.set_restrictions(basis.restrictions)
     return {"h": h, "basis": basis, "comm": comm, "shared": {}}

@@ -8,7 +8,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import memory_estimate as me
-from impurityModel.ed.groundstate import find_ground_state_basis
+from impurityModel.ed.groundstate import find_ground_state_sector
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
@@ -352,21 +352,20 @@ def test_basis_normalizes_none_threshold_to_inf():
     assert basis.truncation_threshold == np.inf
 
 
-def test_find_ground_state_basis_resolves_none_threshold():
+def test_find_ground_state_sector_resolves_none_threshold():
     """The default truncation_threshold=None must resolve to a finite RAM-derived cap."""
     terms, impurity_orbitals, bath_states = _siam_6_pieces()
-    basis = find_ground_state_basis(
+    search = find_ground_state_sector(
         ManyBodyOperator(terms),
         impurity_orbitals,
         bath_states,
         N0={0: 2},
-        tau=0.01,
         dense_cutoff=1000,
         comm=None,
         verbose=False,
     )
-    assert np.isfinite(basis.truncation_threshold)
-    assert basis.truncation_threshold >= 1
+    assert np.isfinite(search.cap_policy.gs)
+    assert search.cap_policy.gs >= 1
 
 
 @pytest.mark.mpi

@@ -1,7 +1,7 @@
 """Phase-2 double-counting baseline: what does a fixed-XX DC search actually cost?
 
 The fixed-occupation / fixed-peak double counting is the self-consistent way to run wide-window
-p-d models, and today it is too slow to use: one NiO 15-bath ``find_ground_state_basis`` is
+p-d models, and today it is too slow to use: one NiO 15-bath ``find_ground_state_sector`` is
 ~2000 s and a full occupation bracket is hours, per cluster per CSC iteration. Before any of that
 is made faster there has to be a baseline, and it has to be measured at **more than one
 determinant cap**.

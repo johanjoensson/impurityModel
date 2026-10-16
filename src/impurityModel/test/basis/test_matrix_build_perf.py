@@ -41,7 +41,7 @@ What it records
 ---------------
 * the *call histogram*, one row per ``build_sparse_matrix`` call with the basis size at the
   time, grouped by which ``expand`` it belongs to (``solve_ground_state`` runs one expand per
-  trial occupation in ``walk_to_ground_state_sector`` before the final refinement expand, and
+  trial occupation in ``find_ground_state_sector`` before the final refinement expand, and
   ``sum|B_i|/|B_final|`` is only meaningful *within* one expand);
 * the split inside each build: (a) ``iter_local_operator_images`` -- the C++ apply plus the
   per-determinant Python ``ManyBodyState``/``.items()`` walk, (b) ``Basis._index_sequence`` --
@@ -103,7 +103,7 @@ class _Recorder:
         # both levels would double-count leg (b).
         self._index_depth = 0
         # Which `expand` a build belongs to. `solve_ground_state` runs one expand per trial
-        # occupation in `walk_to_ground_state_sector` before the final refinement expand, and
+        # occupation in `find_ground_state_sector` before the final refinement expand, and
         # sum|B_i|/|B_final| is only meaningful *within* one expand -- pooling the walk's small
         # bases with the refinement's large ones would report a ceiling no cache could reach.
         self.expand_index = -1

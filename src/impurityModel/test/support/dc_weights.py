@@ -45,10 +45,11 @@ from mpi4py import MPI
 
 from impurityModel.ed.dc_criteria import _per_group_occupation, _prepare_sector_context
 from impurityModel.ed.density_matrices import build_density_matrices
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.groundstate import solve_sector
 from impurityModel.ed.operator_algebra import ManyBodyOperator
 
-#: Eigenpairs per sector. Ten (``calc_energy``'s number) is a thermal manifold, not a spectrum:
+#: Most eigenpairs kept per sector. A thermal manifold is not a spectrum:
 #: the lowest states of an ``N +- 1`` sector can all be bath excitations, and the whole question
 #: here is how far above the lowest one the first *weighted* state sits.
 DEFAULT_NUM_STATES = 40
@@ -156,7 +157,7 @@ def _sector_states(ctx, h_op, n_trial, num_states, max_energy):
     if not 0 <= n_trial <= ctx.max_occ_total:
         return None, None, None
     occ_trial = _per_group_occupation(n_trial, ctx.impurity_orbitals, ctx.h_solver_matrix)
-    es, psis, basis = solve_sector(
+    es, psis, basis, _solver = solve_sector(
         h_op,
         ctx.impurity_orbitals,
         ctx.bath_states,
@@ -165,17 +166,19 @@ def _sector_states(ctx, h_op, n_trial, num_states, max_energy):
         ctx.tau,
         ctx.chain_restrict,
         ctx.dense_cutoff,
+        manifold=Within(max_energy),
         comm=MPI.COMM_WORLD,
         verbose=ctx.verbose,
         truncation_threshold=ctx.truncation_threshold,
         slaterWeightMin=ctx.slater_weight_min,
         weighted_restrictions=ctx.weighted_restrictions,
         frozen_occupations=ctx.frozen_occupations,
-        num_wanted=num_states,
-        max_energy=max_energy,
     )
     if not np.all(np.isfinite(es)):
         return None, None, None
+    if len(es) > num_states:
+        es = es[:num_states]
+        psis = psis.select(list(range(num_states)))
     return es, psis, basis
 
 

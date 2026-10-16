@@ -222,19 +222,16 @@ def test_the_analytic_edges_move_with_the_double_counting_shift():
 
 
 @serial_only
-def test_solve_sector_and_calc_energy_agree_on_the_ground_state_energy():
-    """The extraction that made this diagnostic possible did not move the number.
+def test_the_lowest_and_the_thermal_manifold_agree_on_the_ground_state_energy():
+    """``calc_energy`` (a ``Lowest`` solve) and a ``Within`` solve of the same sector agree on ``E0``.
 
-    ``solve_sector`` and ``calc_energy`` are two heads on one shared body (``_solve_sector_core``)
-    that differ in one argument: the former applies the Boltzmann cut, the latter none, because it
-    keeps only ``min(es)`` and a minimum does not depend on which states above it were retained.
-    That is the invariant asserted here -- the cut is invisible to the minimum -- and it is what
-    keeps every energy in this module comparable with the criterion's own. Different truncation
-    conventions between the two heads would break both claims at once.
+    The thermal window cannot move the minimum: this is what keeps every energy in this module
+    comparable with the criterion's own, which reads the lowest energy of each sector.
     """
     from mpi4py import MPI
 
     from impurityModel.ed.dc_criteria import _per_group_occupation, _prepare_sector_context
+    from impurityModel.ed.eigensolvers import Within
     from impurityModel.ed.groundstate import calc_energy, solve_sector
 
     kwargs, _dc_guess = common_kwargs(v=0.01, tau=1e-3, dc_scale=DC)
@@ -243,16 +240,6 @@ def test_solve_sector_and_calc_energy_agree_on_the_ground_state_energy():
     )
     h_op = ctx.shifted_h(0.0)
     occ = _per_group_occupation(ctx.nominal_total, ctx.impurity_orbitals, ctx.h_solver_matrix)
-    args = (
-        h_op,
-        ctx.impurity_orbitals,
-        ctx.bath_states,
-        occ,
-        ctx.mixed_valence,
-        ctx.tau,
-        ctx.chain_restrict,
-        ctx.dense_cutoff,
-    )
     common = dict(
         comm=MPI.COMM_WORLD,
         verbose=False,
@@ -261,8 +248,11 @@ def test_solve_sector_and_calc_energy_agree_on_the_ground_state_energy():
         weighted_restrictions=ctx.weighted_restrictions,
         frozen_occupations=ctx.frozen_occupations,
     )
-    energy, _basis = calc_energy(*args, **common)
-    es, _psis, _basis = solve_sector(*args, **common)
+    args = (h_op, ctx.impurity_orbitals, ctx.bath_states, occ, ctx.mixed_valence)
+    energy, _report = calc_energy(*args, ctx.chain_restrict, ctx.dense_cutoff, **common)
+    es, _psis, _basis, _solver = solve_sector(
+        *args, ctx.tau, ctx.chain_restrict, ctx.dense_cutoff, manifold=Within.thermal(ctx.tau), **common
+    )
     assert float(np.min(es)) == pytest.approx(energy, abs=1e-10)
 
 

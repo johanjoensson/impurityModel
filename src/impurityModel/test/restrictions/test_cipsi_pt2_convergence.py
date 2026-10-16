@@ -167,7 +167,8 @@ def _solve_ground_state():
 
 
 def test_solve_ground_state_reports_the_refinement_converged():
-    _, solver, es, _ = _solve_ground_state()
+    gs = _solve_ground_state()
+    solver, es = gs.solver, gs.es
     report = solver.convergence_report
     assert report["converged"] is True and report["e_pt2_tol"] == groundstate.GS_E_PT2_TOL
     assert len(es) <= solver.last_selection["n_references"]
@@ -183,7 +184,8 @@ def test_a_manifold_wider_than_the_references_is_not_reported_converged(monkeypa
         self.last_selection["n_references"] = 1
 
     monkeypatch.setattr(groundstate.CIPSISolver, "expand", expand_that_scored_one_reference)
-    _, solver, es, _ = _solve_ground_state()
+    gs = _solve_ground_state()
+    solver, es = gs.solver, gs.es
     assert len(es) > 1
     report = solver.convergence_report
     assert report["converged"] is False and report["limited_by"] == "manifold_widened"

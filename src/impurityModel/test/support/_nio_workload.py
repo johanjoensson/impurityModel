@@ -11,7 +11,6 @@ from collections import OrderedDict
 
 import numpy as np
 
-from impurityModel.ed.eigensolvers import Within
 from impurityModel.test.support.repo_data import repo_h0_dir
 
 
@@ -226,7 +225,7 @@ def build_ground_state_workload(
 
     Runs the same preamble as ``selfenergy.calc_selfenergy``: symmetry rotation of the
     Hamiltonian, bath valence/conduction classification, orbital grouping by symmetry
-    block, then ``find_ground_state_basis`` plus one ``CIPSISolver.expand``.
+    block, then ``solve_ground_state`` (the occupation walk plus the thermal solve of its winner).
 
     Parameters
     ----------
@@ -252,8 +251,7 @@ def build_ground_state_workload(
         pointed at ``basis``.
     """
     from impurityModel.ed import atomic_physics
-    from impurityModel.ed.cipsi_solver import CIPSISolver
-    from impurityModel.ed.groundstate import find_ground_state_basis
+    from impurityModel.ed.groundstate import solve_ground_state
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
     from impurityModel.ed.selfenergy import (
         _MAX_ROTATION_FILL,
@@ -299,29 +297,22 @@ def build_ground_state_workload(
     mv = _per_group_scalar(dict.fromkeys(impurity_orbitals, mixed_valence), impurity_orbitals, default=0)
 
     tau = inputs["tau"]
-    basis = find_ground_state_basis(
+    ground_state = solve_ground_state(
         h,
         impurity_orbitals,
         bath_states,
         nominal_occ,
+        tau=tau,
+        slaterWeightMin=slater_weight_min,
         mixed_valence=mv,
-        tau=tau / 100,  # calc_gs runs the occupation search at tau/100
         chain_restrict=False,
         dense_cutoff=dense_cutoff,
         comm=comm,
         truncation_threshold=truncation_threshold,
         verbose=verbose,
-        slaterWeightMin=np.sqrt(slater_weight_min),
-    )
-    basis.tau = tau
-    solver = CIPSISolver(basis)
-    solver.expand(
-        h,
-        Within.thermal(solver.basis.tau),
-        dense_cutoff=dense_cutoff,
         de2_min=de2_min,
-        slaterWeightMin=slater_weight_min,
     )
+    basis, solver = ground_state.basis, ground_state.solver
     if basis.restrictions is not None:
         h.set_restrictions(basis.restrictions)
     return {"h": h, "basis": basis, "solver": solver, "tau": tau, "comm": comm}

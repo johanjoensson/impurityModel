@@ -4,7 +4,7 @@
 unfrozen groups, lets every one of them range over its whole ``[0, group_size]`` while filtering
 only the **total** impurity charge. So two trial occupations differing only in how one total is
 split across unfrozen groups build the identical basis and are one sector solve --
-``groundstate.sector_key`` is that equivalence, and ``find_ground_state_basis``'s energy cache
+``groundstate.sector_key`` is that equivalence, and ``find_ground_state_sector``'s energy cache
 keys on it so the walk's diagonal probe stops paying for the same solve several times.
 
 These tests pin the property the key *relies* on (identical determinant sets, before and after
@@ -17,7 +17,8 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.basis_generation import generate_initial_basis
-from impurityModel.ed.groundstate import calc_energy, sector_key
+from impurityModel.ed.eigensolvers import Lowest
+from impurityModel.ed.groundstate import sector_key, solve_sector
 from impurityModel.ed.lie_algebra import tensors_to_operator
 
 # Two impurity groups of two spin-orbitals each, split in energy so the groups are
@@ -67,7 +68,7 @@ def _seed(nominal, frozen=None):
 def _solve(nominal, frozen=None):
     """Energy and post-expansion support of one sector solve, through the production path."""
     h_op, impurity_orbitals, bath_states = _model()
-    energy, basis = calc_energy(
+    es, _psis, basis, _solver = solve_sector(
         h_op,
         impurity_orbitals,
         bath_states,
@@ -76,13 +77,14 @@ def _solve(nominal, frozen=None):
         1e-3,
         False,
         1000,
+        manifold=Lowest(),
         comm=None,
         verbose=False,
         truncation_threshold=np.inf,
         slaterWeightMin=1e-12,
         frozen_occupations=frozen,
     )
-    return energy, {bytes(state.to_bytearray()) for state in basis.local_basis}
+    return float(es[0]), {bytes(state.to_bytearray()) for state in basis.local_basis}
 
 
 @pytest.mark.parametrize("split", [{0: 1, 1: 3}, {0: 3, 1: 1}, {0: 0, 1: 4}, {0: 4, 1: 0}])
@@ -149,17 +151,16 @@ def test_the_key_is_all_integers():
 def _walk(nominal, frozen=None, use_hf_seed=False):
     """One full occupation walk, with its cost accounting."""
     from impurityModel.ed import solver_trace
-    from impurityModel.ed.groundstate import find_ground_state_basis
+    from impurityModel.ed.groundstate import find_ground_state_sector
 
     h_op, impurity_orbitals, bath_states = _model()
     with solver_trace.tracing() as trace:
-        basis = find_ground_state_basis(
+        search = find_ground_state_sector(
             h_op,
             impurity_orbitals,
             bath_states,
             nominal,
             mixed_valence=dict.fromkeys(nominal, 0),
-            tau=1e-3,
             chain_restrict=False,
             dense_cutoff=1000,
             comm=None,
@@ -169,7 +170,7 @@ def _walk(nominal, frozen=None, use_hf_seed=False):
             frozen_occupations=frozen,
             use_hf_seed=use_hf_seed,
         )
-    return basis, trace
+    return search, trace
 
 
 def test_the_walk_reuses_a_solve_across_splits_of_one_total():
@@ -184,13 +185,10 @@ def test_the_walk_reuses_a_solve_across_splits_of_one_total():
     assert trace.count("sector_solve") > 0
     assert trace.count("sector_cache_hit") > 0
 
-    # No sector is solved more than twice: once inside the walk, and -- for the winner only --
-    # once more at the end, where find_ground_state_basis clears the energy cache and re-solves
-    # because it needs the basis, not just the energy.
+    # No sector is solved twice: the walk keeps floats, and the winner is solved afterwards by
+    # `solve_ground_state`, not by the walk.
     solved = [sum(dict(event["n0"]).values()) for event in trace.of_kind("sector_solve")]
-    repeats = {total for total in solved if solved.count(total) > 1}
-    assert all(solved.count(total) == 2 for total in repeats), solved
-    assert len(repeats) <= 1, solved
+    assert len(solved) == len(set(solved)), solved
 
     # Every cache hit refers to a total that really was solved -- the key merges trials, it does
     # not invent them.
@@ -214,17 +212,17 @@ def test_the_walk_finds_the_true_minimum_despite_out_of_bounds_probes():
         reachable[total] = _solve(split)[0]
     best_total = min(reachable, key=reachable.get)
 
-    basis, _trace = _walk({0: 1, 1: 1})
-    assert sum(basis.ground_state_occupation.values()) == best_total, (
-        basis.ground_state_occupation,
+    search, _trace = _walk({0: 1, 1: 1})
+    assert sum(search.occupation.values()) == best_total, (
+        search.occupation,
         reachable,
     )
 
 
 def test_the_walk_reports_the_total_it_settled_on():
-    """`ground_state_occupation` is what fixed_peak_dc sums; the total is the meaningful part."""
-    basis, _trace = _walk({0: 1, 1: 1})
-    occ = basis.ground_state_occupation
+    """`SectorSearch.occupation` is what fixed_peak_dc sums; the total is the meaningful part."""
+    search, _trace = _walk({0: 1, 1: 1})
+    occ = search.occupation
     assert set(occ) == {0, 1}
     assert all(isinstance(v, (int, np.integer)) for v in occ.values()), occ
     assert 0 <= sum(occ.values()) <= 2 * GROUP_SIZE, occ

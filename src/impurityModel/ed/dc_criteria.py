@@ -20,7 +20,7 @@ per call; the dumps now live behind ``DC_DIAGNOSTICS`` (:func:`_dump_dc_matrices
 answer the one question the record's per-orbital level cannot: whether the matrix is uniform.
 
 At every trial shift all three determine the ground-state sector through the same *function*
-:func:`groundstate.calc_gs` uses -- :func:`groundstate.find_ground_state_basis`'s
+:func:`groundstate.calc_gs` uses -- :func:`groundstate.find_ground_state_sector`'s
 HF-seed-then-walk search, not a search pinned at the input occupation. That matters because a
 ``dc`` measured on a different sector than the one ``calc_selfenergy`` later finds does not
 approximate the requested physics, it misdirects it: the downstream calculation is locked onto the
@@ -31,7 +31,7 @@ wrong charge state, which is worse than not fixing anything at all.
    this docstring claimed otherwise. Three differences, all found by review, are now closed:
 
    * ``calc_gs`` divides ``tau`` by 100 before the walk (``groundstate.py``, ``calc_gs``); both
-     criteria now do the same for their own ``find_ground_state_basis`` call, restoring the full
+     criteria now do the same for their own ``find_ground_state_sector`` call, restoring the full
      ``tau`` for everything computed afterward at the found sector (the thermal average, the
      peak's sector-energy solves).
    * ``calc_gs`` runs the occupation walk at ``sqrt(slaterWeightMin)`` and tightens to the full
@@ -42,7 +42,7 @@ wrong charge state, which is worse than not fixing anything at all.
      ``calc_gs``; leaving the walk's ``tau/100`` in place made ``expand``'s
      ``de0_max = energy_cut(basis.tau)`` a hundred times narrower than the window ``calc_gs``
      expands into.
-   * ``find_ground_state_basis`` accepts ``frozen_occupations``, and the CLI populates it for
+   * ``find_ground_state_sector`` accepts ``frozen_occupations``, and the CLI populates it for
      bath-less core shells (``get_spectra.py``: ``{i for i in nBaths if nBaths[i] == 0}``); both
      criteria now derive the same set from :attr:`solver_basis.SolverBasis.sum_bath_states` and
      pass it down, so a core shell can no longer drain in the double-counting search only.
@@ -65,7 +65,7 @@ wrong charge state, which is worse than not fixing anything at all.
 
    No convention is now knowingly unshared between the two paths.
 
-Like :func:`selfenergy.calc_selfenergy` and :func:`groundstate.find_ground_state_basis`, both
+Like :func:`selfenergy.calc_selfenergy` and :func:`groundstate.find_ground_state_sector`, both
 derive their determinant budget from available per-rank memory
 (:func:`impurityModel.ed.memory_estimate.resolve_cap_policy`) when
 ``BasisOptions.truncation_threshold`` is left at ``None``, and honor
@@ -495,19 +495,18 @@ class _SectorContext:
     def centre_sector(self, h_op, mu):
         """The centre charge state at ``mu``, from the same walk ``calc_selfenergy`` will run.
 
-        :func:`groundstate.walk_to_ground_state_sector` owns the ``tau / 100`` and
-        ``sqrt(slaterWeightMin)`` conventions. Only the walk: the refinement and thermal manifold
-        that ``solve_ground_state`` adds do not change ``ground_state_occupation``, and the sector
-        is all a sector-energy criterion needs before solving ``N +- 1``.
+        :func:`groundstate.find_ground_state_sector` owns the ``sqrt(slaterWeightMin)`` convention.
+        Only the walk: the thermal solve that ``solve_ground_state`` adds does not change the
+        winning occupation, and the sector is all a sector-energy criterion needs before solving
+        ``N +- 1``.
         """
-        from impurityModel.ed.groundstate import walk_to_ground_state_sector
+        from impurityModel.ed.groundstate import find_ground_state_sector
 
-        basis_center = walk_to_ground_state_sector(
+        search = find_ground_state_sector(
             h_op,
             self.impurity_orbitals,
             self.bath_states,
             self.N0,
-            tau=self.tau,
             slaterWeightMin=self.slater_weight_min,
             frozen_occupations=self.frozen_occupations,
             mixed_valence=self.mixed_valence,
@@ -528,10 +527,10 @@ class _SectorContext:
         # Broadcast for the same reason sector_energy is: `ground_state_occupation` is a rank-local
         # read off the winning basis, and this integer decides *which sectors each rank solves
         # next* (n_center +- 1) and whether the criterion raises on a non-nominal charge state. It
-        # is currently rank-identical by inheritance -- find_ground_state_basis broadcasts every
+        # is currently rank-identical by inheritance -- find_ground_state_sector broadcasts every
         # energy its sector election compares -- but nothing here enforces that, and an asymmetric
         # raise strands the ranks that did not raise.
-        n_center = MPI.COMM_WORLD.bcast(sum(basis_center.ground_state_occupation.values()), root=0)
+        n_center = MPI.COMM_WORLD.bcast(sum(search.occupation.values()), root=0)
         self.n_center_at[mu] = n_center
         return n_center
 
@@ -565,14 +564,15 @@ class _SectorContext:
 
         Everything returned is broadcast; see the class docstring for why that boundary exists.
         """
-        from impurityModel.ed.groundstate import GS_DE2_MIN, solve_sector
+        from impurityModel.ed.eigensolvers import Within
+        from impurityModel.ed.groundstate import solve_sector
 
         if not 0 <= n_trial <= self.max_occ_total:
             return None
         if (mu, n_trial) in self.sector_at:
             return self.sector_at[(mu, n_trial)]
         occ_trial = _per_group_occupation(n_trial, self.impurity_orbitals, self.h_solver_matrix)
-        es, psis, sector_basis = solve_sector(
+        es, psis, sector_basis, sector_solver = solve_sector(
             h_op,
             self.impurity_orbitals,
             self.bath_states,
@@ -581,6 +581,7 @@ class _SectorContext:
             (0 if self.ground_state_manifold else self.tau),
             self.chain_restrict,
             self.dense_cutoff,
+            manifold=Within(0.0) if self.ground_state_manifold else Within.thermal(self.tau),
             comm=MPI.COMM_WORLD,
             verbose=self.verbose,
             truncation_threshold=_ctx_cap_policy(self),
@@ -600,18 +601,6 @@ class _SectorContext:
             # criterion and the record can report it.
             de2_min=self.de2_min,
             e_pt2_tol=self.e_pt2_tol,
-            # Opt-in (see the field docstring): ask for just the degenerate ground multiplet
-            # rather than the full thermal window. `max_energy=0.0` reuses `solve_sector`'s own
-            # degeneracy tolerance (`_energy_cut_indices`'s `tol` absorbs any state degenerate
-            # with the ground state), so this needs no separate tunable -- and it is `max_energy`
-            # relative to *this solve's own* `min(es)`, not an absolute value, so it is well
-            # defined at every `mu` without knowing the ground energy in advance
-            # (`_energy_cut_indices`: `e_sorted - e_sorted[0] <= max_energy`). `num_wanted` is
-            # deliberately left at `solve_sector`'s own default: it decides how many states must
-            # converge to `tol`, not how many get reported, and touching it doubles the number of
-            # things this change could be blamed for against one measurement.
-            max_energy=(0.0 if self.ground_state_manifold else None),
-            num_wanted=(1 if self.ground_state_manifold else 10),
         )
         # Broadcast the verdict *before* branching on it, not the answer afterwards. `es` and
         # `psis` come back rank-local from `solve_sector` (its docstring says so), and the next
@@ -682,10 +671,8 @@ class _SectorContext:
             # report's contents describe *how* the cap bound, which the cap strategy does not need
             # -- only whether it did. Rank-local until the broadcast below, like everything else
             # in this constructor.
-            cap_bound=bool(getattr(sector_basis, "occupation_search_truncation", None) is not None),
-            memory_bound=bool(
-                (getattr(sector_basis, "occupation_search_truncation", None) or {}).get("memory_bound", False)
-            ),
+            cap_bound=bool(sector_solver.truncation_report is not None),
+            memory_bound=bool((sector_solver.truncation_report or {}).get("memory_bound", False)),
         )
         solution = MPI.COMM_WORLD.bcast(solution, root=0)
         self.sector_at[(mu, n_trial)] = solution
@@ -863,7 +850,7 @@ def _prepare_sector_context(
         frozen_occupations={i for i in impurity_orbitals if sb.sum_bath_states[i] == 0},
         # Bath-only restriction (the reference "valence filled, conduction empty" occupation never
         # references N0), so the identical restriction list is valid for every sector -- the same
-        # restrictions find_ground_state_basis applies to its own occupation-scan trials.
+        # restrictions find_ground_state_sector applies to its own occupation-scan trials.
         weighted_restrictions=build_weighted_restrictions(bath_states, basis.excitation_budget),
         truncation_threshold=truncation_threshold,
         memory_cap=memory_cap,
@@ -918,7 +905,7 @@ def fixed_peak_dc(
     found by the shared secant/bisection search :func:`_solve_dc_shift`.
 
     At every trial ``mu`` the *center* sector ``N`` is not the input ``model.impurity_orbitals``
-    occupation: it is found by :func:`groundstate.find_ground_state_basis`, the identical
+    occupation: it is found by :func:`groundstate.find_ground_state_sector`, the identical
     HF-seed-then-walk search :func:`groundstate.calc_gs` uses for the selfenergy/spectra solve.
     A peak measured relative to a different center than the one calc_selfenergy later finds would
     not approximate the requested peak position, it would misplace it -- the same reasoning that
@@ -2079,7 +2066,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
 
 def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     """Evaluate the true, re-expanding occupation observable at one ``mu``: the identical
-    HF-seed-then-walk :func:`groundstate.find_ground_state_basis` search, refinement, and thermal
+    HF-seed-then-walk :func:`groundstate.find_ground_state_sector` search, refinement, and thermal
     average :func:`fixed_occupation_dc` performs per trial shift -- not a cheaper approximation.
     Returns ``(n, E0, sector)``: the achieved thermal impurity occupation, the lowest eigenvalue
     found, and the *walk's* winning sector total (``sum(mb_basis.ground_state_occupation.values())``
@@ -2105,7 +2092,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     # from the previous mu): feeding the walk its own last answer would make the result
     # path-dependent on the bracket's evaluation order, which breaks parity by another route.
     with solver_trace.timed("expand", stage="dc_refine"):
-        mb_basis, mb_solver, es, psis = solve_ground_state(
+        ground_state = solve_ground_state(
             h_op,
             ctx.impurity_orbitals,
             ctx.bath_states,
@@ -2123,6 +2110,7 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             e_pt2_tol=ctx.e_pt2_tol,
             de2_min=ctx.de2_min,
         )
+    mb_basis, mb_solver, es, psis = ground_state[:4]
 
     # Did the determinant cap bind this ground-state determination? Two places can say so, and
     # both count: the final refinement's own `truncation_report`, and the occupation walk's
@@ -2134,15 +2122,14 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     # strategy branches on this to decide whether to run a second, collective evaluation. A
     # rank-local verdict in front of that decision is the deadlock class this module documents.
     bound_local = bool(
-        getattr(mb_solver, "truncation_report", None) is not None
-        or getattr(mb_basis, "occupation_search_truncation", None) is not None
+        getattr(mb_solver, "truncation_report", None) is not None or ground_state.walk_report is not None
     )
     ctx.cap_bound_at[mu] = MPI.COMM_WORLD.bcast(bound_local, root=0)
     # The memory verdict alongside it, from the same two reports. Broadcast for the same reason:
     # it is rank-local solver state, and the acceptance check that reads it must be rank-invariant.
     from impurityModel.ed.groundstate import refined_truncation_report
 
-    report = refined_truncation_report(mb_solver, mb_basis)
+    report = refined_truncation_report(mb_solver, ground_state.walk_report)
     memory_local = bool((report or {}).get("memory_bound", False))
     ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(memory_local, root=0)
 
@@ -2233,16 +2220,16 @@ def fixed_occupation_dc(
     (:func:`solver_basis.prepare_solver_basis` -- the impurity/bath grouping, the bath valence/
     conduction split from the sign of the bath on-site energy rather than the hybridization fit,
     and any symmetry-adapted rotation), then determines the ground-state sector by calling
-    :func:`groundstate.find_ground_state_basis` itself -- the identical HF-seed-then-walk search
+    :func:`groundstate.find_ground_state_sector` itself -- the identical HF-seed-then-walk search
     :func:`groundstate.calc_gs` uses for the selfenergy/spectra solve, not a cheaper
     approximation of it. A dc measured on a sector different from the one calc_selfenergy later
     finds would not just be imprecise: it would lock the downstream calculation onto the wrong
     charge state, so this search pays the full per-trial cost of walking rather than caching a
     single Hartree-Fock seed across mu. This is what makes the "fixed" occupation the same
-    quantity :func:`groundstate.find_ground_state_basis` finds for the selfenergy/spectra solve
+    quantity :func:`groundstate.find_ground_state_sector` finds for the selfenergy/spectra solve
     at the returned ``dc`` -- the point of this whole search. The search follows wherever that
     walk leads, including across a change in total electron number (matching
-    ``find_ground_state_basis``'s own grand-canonical-style sector search); the reachable
+    ``find_ground_state_sector``'s own grand-canonical-style sector search); the reachable
     occupations are limited by the bath, and a tight
     ``BasisOptions.excitation_budget``/``chain_restrict`` can itself make a requested occupation
     unreachable, or reachable only via a sector the un-walked search could never have found.
@@ -2318,7 +2305,7 @@ def fixed_occupation_dc(
         occupation_at = {}
         # The walk's winning sector at each evaluated mu (M1): the sector at the RETURNED mu is the
         # number this whole branch exists to establish -- DC <-> GS parity is a statement about which
-        # charge state the downstream calc_selfenergy will find. find_ground_state_basis already
+        # charge state the downstream calc_selfenergy will find. find_ground_state_sector already
         # returns it (.ground_state_occupation), previously discarded here.
         sector_at = {}
 
@@ -2328,7 +2315,7 @@ def fixed_occupation_dc(
                 occupation_at[mu] = n_out
                 sector_at[mu] = sector
                 if verbose and rank == 0:
-                    # The sector itself is reported by find_ground_state_basis's own verbose output
+                    # The sector itself is reported by find_ground_state_sector's own verbose output
                     # above ("Ground state occupation"), evaluated fresh at this mu.
                     print(f"mu={mu:.6f} n={n_out:.6f} n0={ctx.n0:.6f}")
                 evaluation_fields["n"] = n_out

@@ -15,7 +15,6 @@ The last two tests pin what ``max_energy=None`` returns on the *dense* branch, w
 import itertools
 
 import numpy as np
-import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.cipsi_solver import CIPSISolver
