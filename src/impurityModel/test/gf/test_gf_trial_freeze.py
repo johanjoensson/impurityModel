@@ -95,7 +95,7 @@ def test_an_accepted_trial_is_the_exact_resolvent_of_php(monkeypatch):
     result = _trickle()
     info = result[3]
     assert info["trial_frozen"]
-    keys = [k for k in info["proxy"].retained_keys()]
+    keys = list(info["proxy"].retained_keys())
     assert len(keys) == info["retained_size"]
     np.testing.assert_allclose(_g(result), exact_chain_g(keys, seed=5), atol=1e-6)
 

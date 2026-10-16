@@ -265,7 +265,7 @@ def test_the_trace_extends_the_history_without_changing_it():
     history, trace = info["support_history"], info["support_trace"]
     assert len(trace) == len(history) > 0
     retained = trace[0][1]
-    for k, (step, before, n_new, leak, cut, hq2, d_g) in enumerate(trace):
+    for k, (step, before, n_new, leak, cut, hq2, _d_g) in enumerate(trace):
         assert step == k + 1 and before == retained
         assert (leak, cut) == history[k]
         assert hq2 >= leak >= 0.0
