@@ -99,7 +99,7 @@ from impurityModel.ed.dc_search import (
     bracket_width_tol,
     resolve_cap_at_max,
 )
-from impurityModel.ed.density_matrices import build_density_matrices
+from impurityModel.ed.density_matrices import occupations as state_occupations
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import CapPolicy, resolve_cap_policy
@@ -631,7 +631,7 @@ class _SectorContext:
             self.sector_at[(mu, n_trial)] = None
             return None
         # The manifold *size* is broadcast too, and the manifold truncated to it.
-        # `build_density_matrices` allocates its reduction buffer as `(len(psis), n_orb, n_orb)`,
+        # `state_occupations` allocates its reduction buffer as `(len(psis), n_imp)`,
         # so ranks disagreeing on the number of retained states do not merely disagree about a
         # number -- they enter the same `Allreduce` with different buffer shapes.
         #
@@ -662,16 +662,17 @@ class _SectorContext:
         else:
             psis = psis[:n_states]
         impurity_indices = [orb for blocks in self.impurity_orbitals.values() for block in blocks for orb in block]
-        rhos = build_density_matrices(sector_basis, psis, impurity_indices, impurity_indices)
+        # Only the diagonal of the impurity density matrix is read (its trace, thermally averaged),
+        # and <n_i> needs no operator applications and no redistribution of c_i|psi>.
         # Per-state impurity occupations, then both conventions off the same array. `occupation`
         # is the thermal average `fixed_occupation_dc` and `calc_gs` use; `occupation_ground` is
         # the single state attaining `energy`, which is the one Hellmann-Feynman actually relates
         # to `d(energy)/dmu`. `spread` says whether the distinction can matter on this model --
         # a manifold whose states share `N_imp` by symmetry makes the two identical.
-        occupations = np.real(np.einsum("nii->n", rhos))
+        occupations = state_occupations(sector_basis, psis, impurity_indices).sum(axis=1)
         solution = _SectorSolution(
             energy=float(np.min(es)),
-            occupation=float(np.real(np.trace(thermal_average_scale_indep(es, rhos, self.tau)))),
+            occupation=float(thermal_average_scale_indep(es, occupations, self.tau)),
             occupation_ground=float(occupations[int(np.argmin(es))]),
             n_states=int(n_states),
             occupation_spread=float(np.max(occupations) - np.min(occupations)),
@@ -2145,9 +2146,9 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
     memory_local = bool((report or {}).get("memory_bound", False))
     ctx.memory_bound_at[mu] = MPI.COMM_WORLD.bcast(memory_local, root=0)
 
-    rhos = build_density_matrices(mb_basis, psis, ctx.impurity_indices, ctx.impurity_indices)
-    rho = thermal_average_scale_indep(es, rhos, ctx.tau)
-    n_out = float(np.real(np.trace(rho)))
+    n_out = float(
+        thermal_average_scale_indep(es, state_occupations(mb_basis, psis, ctx.impurity_indices).sum(axis=1), ctx.tau)
+    )
     e0 = float(es[0])
     sector = sum(mb_basis.ground_state_occupation.values())
     return n_out, e0, sector

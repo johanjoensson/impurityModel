@@ -19,7 +19,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.density_matrices import build_density_matrices
+from impurityModel.ed.density_matrices import occupations
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 
 # Tunable restriction knobs, gathered here as named constants (rather than literals scattered
@@ -486,13 +486,11 @@ def build_excited_restrictions(
                 impurity_orbitals, valence_baths[i], conduction_baths[i]
             ):
                 if psis is not None:
-                    val_rhos = build_density_matrices(basis, psis, val_orb_block, val_orb_block)
-                    con_rhos = build_density_matrices(basis, psis, con_orb_block, con_orb_block)
                     valence_occupations = thermal_average_scale_indep(
-                        es, np.diagonal(val_rhos.real, axis1=1, axis2=2), basis.tau
+                        es, occupations(basis, psis, val_orb_block), basis.tau
                     )
                     conduction_occupations = thermal_average_scale_indep(
-                        es, np.diagonal(con_rhos.real, axis1=1, axis2=2), basis.tau
+                        es, occupations(basis, psis, con_orb_block), basis.tau
                     )
                 else:
                     valence_occupations = np.ones(len(val_orb_block))
