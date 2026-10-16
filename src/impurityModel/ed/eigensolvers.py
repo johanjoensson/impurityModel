@@ -3,10 +3,13 @@ Low-spectrum eigensolvers of the ground-state path.
 
 * :func:`solve_window` -- every eigenstate inside an energy window, certified complete, from the
   thick-restart block Lanczos solver (:mod:`impurityModel.ed.trlm`). Used above ``dense_cutoff``.
-* :func:`eigensystem` -- dense diagonalization, complete by construction, below it.
+* :func:`solve_lowest` -- the lowest eigenpair alone, with no claim about its degeneracy.
+* :func:`eigensystem` -- dense diagonalization, complete by construction, below ``dense_cutoff``.
 
-Both answer the same question, "all states within ``max_energy`` of the lowest", and the
-CIPSI solver cuts the result with one rule (``_energy_cut_indices``).
+A caller says which of two manifolds it needs: :class:`Lowest` (the energy of the ground level, which
+the occupation walk and every double-counting sector solve use) or :class:`Within` (every state inside
+an energy window, certified complete, which the production thermal ground state needs). The CIPSI
+solver cuts a dense or window result with one rule (``_energy_cut_indices``).
 """
 
 from dataclasses import dataclass
@@ -15,6 +18,7 @@ from typing import Any, Optional
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed.average import energy_cut
 from impurityModel.ed.BlockLanczosCore import block_inner, block_normalize
 from impurityModel.ed.memory_estimate import gs_krylov_blocks
 from impurityModel.ed.trlm import STATUS_CONVERGED, Window, trlm
@@ -84,6 +88,23 @@ def random_block(hashes, width, round_):
             im = _splitmix64_array(salted ^ np.uint64(_IMAG_STREAM_SALT)).astype(float) * scale
             out[:, k] = (re - 0.5) + 1j * (im - 0.5)
     return out
+
+
+@dataclass(frozen=True)
+class Lowest:
+    """Request for the lowest eigenpair. Nothing is claimed about the degeneracy of its level."""
+
+
+@dataclass(frozen=True)
+class Within:
+    """Request for every eigenstate within ``max_energy`` of the lowest, certified complete."""
+
+    max_energy: float
+
+    @classmethod
+    def thermal(cls, tau):
+        """The window that holds every state with a Boltzmann weight above the design weight at scale ``tau``."""
+        return cls(energy_cut(tau))
 
 
 @dataclass
@@ -380,4 +401,66 @@ def solve_window(
 
     return EigenResult(
         e, vecs, n_in, bool(certified and not any(saturated)), max((len(g) for g in groups), default=0), status
+    )
+
+
+def solve_lowest(h_op, comm, hashes, *, warm, tol, n_global, max_restarts=100, verbose=False):
+    """The lowest eigenpair of ``h_op``: one converged Ritz pair, no completeness claim.
+
+    Count-mode thick-restart block Lanczos retaining a single pair. The start block is the ``warm``
+    column (the previous lowest state, at most the first column of ``warm``) plus the all-positive
+    :func:`cold_vector`, which has full support, so every charge sector stays reachable whatever the
+    warm column spans. A degenerate ground level needs no special handling: any vector of its eigenspace
+    converges, and the caller keeps the energy.
+
+    Parameters
+    ----------
+    h_op
+        ``DistributedSparseMatrix`` (or coercible) of the operator on the current basis.
+    hashes : ndarray of uint64, ``(n_local,)``
+        The routing hash of every locally owned determinant, in row order.
+    warm : ndarray ``(n_local, w)`` or None
+    tol : float
+        Residual tolerance.
+    n_global : int
+        Dimension of the operator (bounds the Krylov depth).
+
+    Returns
+    -------
+    EigenResult
+        One pair (none if the Krylov space is empty); ``certified`` means the pair reached ``tol``.
+        Collective on ``comm``; ``e`` is replicated and ``vecs`` row-distributed.
+    """
+    mpi = comm is not None and getattr(comm, "size", 1) > 1
+    n_local = len(hashes)
+    warm = np.zeros((n_local, 0), dtype=complex) if warm is None else np.asarray(warm, dtype=complex)
+
+    def start_block(with_warm):
+        cols = [warm[:, :1]] if with_warm else []
+        cols.append(cold_vector(hashes))
+        return np.ascontiguousarray(np.hstack(cols))
+
+    with_warm = warm.shape[1] > 0
+    try:
+        q0, _ = block_normalize(start_block(with_warm), mpi, comm, 0.0)
+    except ValueError:  # BlockBreakdown, rank-symmetric: decided by the replicated TSQR factor
+        q0, _ = block_normalize(start_block(False), mpi, comm, 0.0)
+    res = trlm(
+        q0,
+        h_op,
+        comm,
+        num_wanted=1,
+        max_subspace_blocks=gs_krylov_blocks(n_global, q0.shape[1], 1),
+        tol=tol,
+        max_restarts=max_restarts,
+        verbose=verbose,
+    )
+    n = min(1, len(res.eigvals))
+    return EigenResult(
+        res.eigvals[:n],
+        np.ascontiguousarray(res.eigvecs[:, :n]),
+        n,
+        bool(n and res.status in STATUS_CONVERGED),
+        1,
+        res.status,
     )

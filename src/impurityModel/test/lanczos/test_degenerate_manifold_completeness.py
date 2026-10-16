@@ -273,3 +273,49 @@ def test_the_vectorized_probe_hash_matches_the_scalar_one():
     ) + np.uint64(1)
     x = np.concatenate([x, np.array([0, 1, 2**64 - 1], dtype=np.uint64)])
     np.testing.assert_array_equal(_splitmix64_array(x), np.array([_splitmix64(int(v)) for v in x], dtype=np.uint64))
+
+
+def _lowest_solve(system, *, warm, calls=None, monkeypatch=None):
+    import impurityModel.ed.eigensolvers as eigensolvers
+
+    basis, h, U, evals = system
+    comm = basis.comm if basis.is_distributed else None
+    h_dist = DistributedSparseMatrix.from_scipy(sps.csc_array(h)[:, list(basis.local_indices)], comm, basis.offset)
+    hashes = np.fromiter((state.get_hash() for state in basis.local_basis), dtype=np.uint64)
+    local = np.asarray(list(basis.local_indices), dtype=int)
+    if calls is not None:
+        real = eigensolvers.trlm
+
+        def counting(psi0, *args, **kwargs):
+            calls.append(psi0.shape[1])
+            return real(psi0, *args, **kwargs)
+
+        monkeypatch.setattr(eigensolvers, "trlm", counting)
+    return eigensolvers.solve_lowest(
+        h_dist,
+        comm,
+        hashes,
+        warm=np.ascontiguousarray(U[local, :GROUND]) if warm else None,
+        tol=1e-11,
+        n_global=len(basis),
+    )
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("warm", [True, False], ids=["warm", "cold"])
+def test_lowest_returns_one_pair_of_a_degenerate_level_in_one_narrow_solve(system, warm, monkeypatch):
+    """A 5-fold ground level: the energy is exact, one eigensolve runs, and its block is at most two wide."""
+    calls = []
+    eig = _lowest_solve(system, warm=warm, calls=calls, monkeypatch=monkeypatch)
+    assert eig.certified
+    assert len(eig.e) == 1 and eig.vecs.shape[1] == 1 and eig.n_in == 1
+    np.testing.assert_allclose(eig.e[0], system[3][0], atol=1e-9)
+    assert len(calls) == 1 and calls[0] <= 2
+
+
+def test_within_thermal_is_the_energy_cut():
+    from impurityModel.ed.average import energy_cut
+    from impurityModel.ed.eigensolvers import Lowest, Within
+
+    assert Within.thermal(0.0025).max_energy == energy_cut(0.0025)
+    assert Within(0.1) == Within(0.1) and Within(0.1) != Lowest()
