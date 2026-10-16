@@ -40,7 +40,9 @@ stopping tolerance tightened so only the support matters:
 | delta 0.01, tol 1e-4, swm 1e-6 | 14.9k | 7.5k | 7.5k | 5.3k | 1.7k |
 | delta 0.01, tol 1e-6, swm 1e-8 | 32.4k | 14.4k | (not run) | 14.5k | 5.9k |
 
-Trial: truncation error <= 8e-6 at tol 1e-4 (budget f*tol = 3e-5) in every cell, and <= 3e-7 at tol 1e-6.
+Trial, measured configurations: W4/f0.1/c2 (the knob defaults) and W8/f0.3/c1 stay inside f*tol in every cell run
+(<= 8e-6 at tol 1e-4 against 3e-5, <= 3e-7 at tol 1e-6). W4/f0.3/c1, the most aggressive setting, did not: 3.7e-5 against
+3e-5 at delta 0.01, tol 1e-4, swm 1e-6. Savings and margin trade against each other; the defaults are the safe column.
 Ban and eta: 3e-6 to 3e-4 at tol 1e-6 and narrow delta, up to 1000x the budget. (The narrow-delta reference did not
 converge in 6000 steps; errors below ~1e-7 there include its floor.)
 
@@ -50,10 +52,22 @@ converged to 0.1 x tolerance. Without that tightening two trials never agree.
 ## Verdict so far
 
 - Ban and eta: no-go as a default (unsafe on the metal, over budget at tight tolerance).
-- Trial solve: passes the budget everywhere tested and saves 1.2-6x against the shipped rule on a trickling support.
+- Trial solve (default knobs): inside the budget in every cell run, and saves 1.2-6x against the shipped rule on a
+  trickling support (oracle, G only).
   Whether it saves anything on SMO is open: the production logs show 75-80% of the final support exists at block 16, so
   the ceiling is ~20-40% on heavy units, and W=8 cannot beat the shipped freeze at blocks 22-25 there.
 - Not tested: `Sigma_real` on a non-saturating production model; SMO unit 20; the cost of rejected trials at millions of determinants.
+
+## Dropped from the plan
+
+Phase 0b/0c (tracing and cut-noting on the importance-pruned path, and `_eta2 = eta * eta`) were not done: ban and eta
+are a no-go, so no pruned-path diagnostics are needed.
+
+## Library checks
+
+Rejected trials build and drop a `P H P` matrix and a basis clone each. The matvec exchange creates its graph
+communicators either freed on the spot or held in a bounded cache with deterministic collective eviction
+(`mpi_comm._cached_dist_graph`), so a rejection leaks no communicator and leaves nothing to the garbage collector.
 
 ## Next
 
