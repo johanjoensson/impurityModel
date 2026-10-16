@@ -343,20 +343,14 @@ class _SectorSolution:
     Immutable and picklable, because it is broadcast: every field crosses
     :meth:`_SectorContext.sector_solve`'s boundary as a rank-replicated fact.
 
-    ``occupation`` and ``occupation_ground`` are the same quantity under the two conventions this
-    module has to reconcile. ``energy`` is ``min(es)``, a ``T = 0`` quantity, and Hellmann-Feynman
-    relates ``d(energy)/dmu`` to the impurity occupation *of that one state* --
-    ``occupation_ground``. ``occupation`` is the Boltzmann average over the retained manifold,
-    which is what :func:`fixed_occupation_dc` and :func:`groundstate.calc_gs` report. They differ
-    only when the manifold's states do not share ``N_imp``, which ``occupation_spread`` measures:
-    a degenerate multiplet split only by symmetry has spread zero and the distinction is empty.
+    ``energy`` is the lowest eigenvalue of the sector and ``occupation`` the impurity occupation
+    ``Tr rho_imp`` *of the one state that attains it*: the ``T = 0`` pairing Hellmann-Feynman
+    relates ``d(energy)/dmu`` to. A sector is solved for its lowest state alone, so there is no
+    thermal manifold to average over and no spread to report.
     """
 
     energy: float
     occupation: float
-    occupation_ground: float
-    n_states: int
-    occupation_spread: float
     #: Did ``truncation_threshold`` bind this sector's CIPSI expansion? ``True`` when the
     #: fixed-budget branch engaged (``CIPSISolver.truncation_report is not None``), i.e. the
     #: expansion was stopped by the cap rather than by running out of candidates above
@@ -437,16 +431,6 @@ class _SectorContext:
     #: solves the same sector at the same shift twice. Two floats per entry, not eigenvectors --
     #: see that method for why retaining ``psis`` does not scale.
     sector_at: dict = None
-    #: Opt-in, default off. When set, :meth:`sector_solve` asks for just the degenerate ground
-    #: multiplet (``max_energy=0.0``, not the full thermal window) and :meth:`sector_occupation`
-    #: reports ``occupation_ground`` instead of the thermal ``occupation``. Only correct as a
-    #: default where the two agree -- ``occupation_spread`` (Phase 0,
-    #: ``doc/plans/dc_smo_performance.md``) is machine-zero on every fixture checked so far but
-    #: *not* on SMO (up to 0.065 at cap 2000, growing with cap), so this stays a knob rather than
-    #: shipping as the default. Narrowing the request also shrinks the manifold ``expand`` warm-
-    #: starts the *next* solve from, which is the actual memory/speed lever this exists for --
-    #: see ``doc/plans/dc_smo_performance.md``'s Phase 3 discussion.
-    ground_state_manifold: bool = False
     #: Epstein-Nesbet PT2 admission floor for :meth:`sector_solve`'s CIPSI expansions. Resolved by
     #: :func:`_prepare_sector_context` from, in order, the criterion's own ``de2_min`` argument
     #: (the RSPt double-counting line or the TOML criterion table), the ``DC_DE2_MIN`` environment
@@ -564,7 +548,7 @@ class _SectorContext:
 
         Everything returned is broadcast; see the class docstring for why that boundary exists.
         """
-        from impurityModel.ed.eigensolvers import Within
+        from impurityModel.ed.eigensolvers import Lowest
         from impurityModel.ed.groundstate import solve_sector
 
         if not 0 <= n_trial <= self.max_occ_total:
@@ -578,10 +562,10 @@ class _SectorContext:
             self.bath_states,
             occ_trial,
             self.mixed_valence,
-            (0 if self.ground_state_manifold else self.tau),
+            self.tau,
             self.chain_restrict,
             self.dense_cutoff,
-            manifold=Within(0.0) if self.ground_state_manifold else Within.thermal(self.tau),
+            manifold=Lowest(),
             comm=MPI.COMM_WORLD,
             verbose=self.verbose,
             truncation_threshold=_ctx_cap_policy(self),
@@ -619,52 +603,16 @@ class _SectorContext:
         if not usable:
             self.sector_at[(mu, n_trial)] = None
             return None
-        # The manifold *size* is broadcast too, and the manifold truncated to it.
-        # `state_occupations` allocates its reduction buffer as `(len(psis), n_imp)`,
-        # so ranks disagreeing on the number of retained states do not merely disagree about a
-        # number -- they enter the same `Allreduce` with different buffer shapes.
-        #
-        # This is belt-and-braces rather than a live hazard: the cut inside `get_eigenvectors` is
-        # a pure function of `e_ref`, which is bit-identical across ranks (see the note there, and
-        # the measurement behind it). Kept because it costs one bcast of an int and this class's
-        # whole job is to make solver output a rank-replicated fact rather than a hope.
-        # Now vacuous rather than belt-and-braces: `.width` comes from the replicated dense
-        # array `build_state` was handed, so ranks cannot disagree about it by construction --
-        # where the old `len(psis)` was a genuinely rank-local list length. Kept as an assertion
-        # of that invariant; it costs one bcast of an int.
-        n_states = MPI.COMM_WORLD.bcast(n_kept, root=0)
-        if n_kept < n_states:
-            # Not a `raise`: a rank-local exception here strands the others inside the reduction
-            # below, turning a diagnosable crash into a hang. Abort the job with the reason.
-            print(
-                f"rank {MPI.COMM_WORLD.rank} kept {n_kept} eigenstates where rank 0 kept "
-                f"{n_states}; the thermal manifold has to be rank-identical before its density "
-                "matrices are reduced.",
-                flush=True,
-            )
-            MPI.COMM_WORLD.Abort(1)
-        # `select`, not `psis[:n_states]`: `__getitem__` on a block takes a determinant key.
-        es = es[:n_states]
-        if isinstance(psis, ManyBodyState):
-            if psis.width > n_states:
-                psis = psis.select(list(range(n_states)))
-        else:
-            psis = psis[:n_states]
         impurity_indices = [orb for blocks in self.impurity_orbitals.values() for block in blocks for orb in block]
         # Only the diagonal of the impurity density matrix is read (its trace, thermally averaged),
         # and <n_i> needs no operator applications and no redistribution of c_i|psi>.
-        # Per-state impurity occupations, then both conventions off the same array. `occupation`
-        # is the thermal average `fixed_occupation_dc` and `calc_gs` use; `occupation_ground` is
-        # the single state attaining `energy`, which is the one Hellmann-Feynman actually relates
-        # to `d(energy)/dmu`. `spread` says whether the distinction can matter on this model --
-        # a manifold whose states share `N_imp` by symmetry makes the two identical.
+        # <n_i> needs no operator application: bit counts over the one state's support. `.width` is
+        # replicated (`build_state` takes it from the dense array), so every rank enters the reduction
+        # with the same buffer shape.
         occupations = state_occupations(sector_basis, psis, impurity_indices).sum(axis=1)
         solution = _SectorSolution(
-            energy=float(np.min(es)),
-            occupation=float(thermal_average_scale_indep(es, occupations, self.tau)),
-            occupation_ground=float(occupations[int(np.argmin(es))]),
-            n_states=int(n_states),
-            occupation_spread=float(np.max(occupations) - np.min(occupations)),
+            energy=float(es[0]),
+            occupation=float(occupations[0]),
             # `_solve_sector_core` hangs its solver's `truncation_report` on the basis it returns
             # (`occupation_search_truncation`) precisely so a caller that never sees the solver can
             # still tell a cap-limited expansion from a converged one. Read as a bool here: the
@@ -676,16 +624,6 @@ class _SectorContext:
         )
         solution = MPI.COMM_WORLD.bcast(solution, root=0)
         self.sector_at[(mu, n_trial)] = solution
-        # Phase 0 measurement (doc/plans/dc_smo_performance.md): decides whether Phase 3's
-        # occupation_ground substitution can default on a given workload -- machine-zero here
-        # on every fixture measured so far (gap-criterion-adversarial-review, F4), SMO untested.
-        solver_trace.note(
-            "sector_occupation_spread",
-            mu=mu,
-            n_trial=n_trial,
-            n_states=solution.n_states,
-            spread=solution.occupation_spread,
-        )
         return solution
 
     def sector_energy(self, h_op, mu, n_trial):
@@ -713,13 +651,7 @@ class _SectorContext:
         solution = self.sector_solve(h_op, mu, n_trial)
         if solution is None:
             return None
-        # Opt-in (see the `ground_state_manifold` field docstring): the T=0 occupation of the
-        # state at `min(es)`, the one Hellmann-Feynman actually relates `d(energy)/dmu` to,
-        # instead of the Boltzmann average over the retained manifold. Consistent with
-        # `sector_solve` narrowing the request to that same manifold under this flag -- a
-        # thermal average over a deliberately-narrowed window would no longer be the real
-        # thermal average.
-        return solution.occupation_ground if self.ground_state_manifold else solution.occupation
+        return solution.occupation
 
 
 def _resolve_dc_de2_min(de2_min=None, basis_de2_min=None):
@@ -766,7 +698,6 @@ def _prepare_sector_context(
     comm=None,
     verbosity=0,
     memory_label,
-    ground_state_manifold=False,
     de2_min=None,
     e_pt2_tol=None,
 ):
@@ -862,7 +793,6 @@ def _prepare_sector_context(
         bandwidth=max(float(np.ptp(np.linalg.eigvalsh(h1_for_scale))), 1.0),
         rank=rank,
         verbose=verbose,
-        ground_state_manifold=ground_state_manifold,
         de2_min=_resolve_dc_de2_min(de2_min, basis.de2_min),
         e_pt2_tol=_resolve_dc_e_pt2_tol(e_pt2_tol, basis.e_pt2_tol),
     )
@@ -879,7 +809,6 @@ def fixed_peak_dc(
     allow_charge_state_change=False,
     return_sector=False,
     report=None,
-    ground_state_manifold=False,
     de2_min=None,
     e_pt2_tol=None,
 ):
@@ -971,24 +900,6 @@ def fixed_peak_dc(
         back to the ``DC_E_PT2_TOL`` environment knob, then to ``basis.e_pt2_tol``, then to
         :data:`groundstate.GS_E_PT2_TOL`. Supplied from the RSPt double-counting line as
         ``e_pt2 X``; loosen it (e.g. ``1e-5``) when the search, not its accuracy, is the cost.
-    ground_state_manifold : bool
-        Opt-in, default ``False``. When ``True``, each sector solve asks for just the degenerate
-        ground multiplet instead of the full thermal window, and the impurity occupation used is
-        ``occupation_ground`` (the ``T = 0`` state at ``min(es)``) rather than the thermal
-        Boltzmann average. The two agree exactly where ``occupation_spread`` is zero (every
-        fixture checked so far, per ``doc/plans/dc_smo_performance.md``, except SrMnO3 cubic:
-        up to 0.065 at cap 2000) -- leave this ``False`` unless that spread has been checked to
-        be negligible on the workload at hand. The performance benefit (narrower sector solves,
-        smaller Lanczos block widths on the following DC evaluation) is why this exists.
-
-        **Check the spread with this flag left ``False``, never with it ``True``.** Once
-        enabled, ``sector_solve`` itself narrows the manifold it measures ``occupation_spread``
-        over (``max_energy=0.0``), so ``report``'s spread then describes the already-narrowed
-        multiplet, not the full thermal window this flag trades away -- it will read small (often
-        near-zero, since a tightly degenerate multiplet is the common case) regardless of whether
-        the *real* thermal spread would have been safe. Run once with the default first, read
-        that evaluation's spread, and only then decide whether to enable this.
-
     Returns
     -------
     dc : ndarray
@@ -1015,7 +926,6 @@ def fixed_peak_dc(
             comm=comm,
             verbosity=verbosity,
             memory_label="fixed-peak dc",
-            ground_state_manifold=ground_state_manifold,
             de2_min=de2_min,
             e_pt2_tol=e_pt2_tol,
         )
@@ -1132,12 +1042,6 @@ def fixed_peak_dc(
         )
         dc_rec["dc_trace"], dc_rec["dc_level"] = dc_record.dc_levels(dc)
         dc_rec["dc_spread"] = dc_record.dc_spread(dc)
-        # This criterion measures no manifold spread, but it takes the flag through both
-        # front-ends, so its record still has to say which convention produced the occupations it
-        # reports -- otherwise a peak search run with the flag on is indistinguishable from one
-        # run without it. (This is also why the key is a printed field rather than an annotation
-        # on `manifold_spread`: there is no such line here to hang it off.)
-        dc_rec["ground_state_manifold"] = ctx.ground_state_manifold
         dc_rec["de2_min"] = ctx.de2_min
         dc_rec["e_pt2_tol"] = ctx.e_pt2_tol
         _dump_dc_matrices(ctx.dc_guess, dc, rank)
@@ -1295,40 +1199,6 @@ def _measure_edge_character(ctx, mu, n_center):
     return delta_plus, delta_minus
 
 
-def _measure_manifold_spread(ctx, mu, n_center):
-    """``(spread, sizes)``: does the thermal average this criterion reports hide anything?
-
-    ``delta_+-`` are differences of ``Tr rho_imp`` **Boltzmann-averaged over each sector's retained
-    manifold**, while ``omega_+-`` are the *lowest* eigenvalue of the same manifolds. The
-    Hellmann-Feynman identity that makes ``delta`` the slope of ``omega`` holds state by state, so
-    pairing a ``T = 0`` energy with a thermal occupation is only exact when the manifold's states
-    share ``N_imp``. ``spread = max(N_imp) - min(N_imp)`` over the retained states says whether they
-    do: it is an upper bound on how far the reported ``delta`` can sit from the ``T = 0`` one, and
-    where it is zero the distinction is not a distinction and the thermal convention -- which is
-    what ``fixed_occupation_dc`` and ``calc_gs`` use -- costs nothing.
-
-    Reported rather than resolved. Switching to the ``argmin`` state is a one-line change
-    (:class:`_SectorSolution` already carries ``occupation_ground``), but it would silently change
-    every recorded ``delta`` on every workload, and the evidence for whether that matters is this
-    number. The maximum over the three sectors is what is reported, because the identity has to
-    hold for each edge separately.
-
-    Free: every sector was solved at this ``mu`` already and :meth:`_SectorContext.sector_solve`
-    cached the spread beside the occupation. Sizes come back too -- a spread of zero over a
-    one-state manifold says nothing at all, and the two numbers are only readable together.
-    """
-    h_op = ctx.shifted_h(mu)
-    spreads, sizes = [], []
-    for n_trial in (n_center + 1, n_center, n_center - 1):
-        solution = ctx.sector_solve(h_op, mu, n_trial)
-        if solution is not None:
-            spreads.append(solution.occupation_spread)
-            sizes.append(solution.n_states)
-    if not spreads:
-        return None, None
-    return max(spreads), "/".join(str(size) for size in sizes)
-
-
 def _size_gap_tolerance(width, mu_tol, bandwidth, rank=0):
     """The gap criterion's energy tolerance, and the one word that explains where it came from.
 
@@ -1399,7 +1269,6 @@ def fixed_gap_dc(
     allow_charge_state_change=False,
     return_sector=False,
     report=None,
-    ground_state_manifold=False,
     de2_min=None,
     e_pt2_tol=None,
 ):
@@ -1577,14 +1446,6 @@ def fixed_gap_dc(
         back to the ``DC_E_PT2_TOL`` environment knob, then to ``basis.e_pt2_tol``, then to
         :data:`groundstate.GS_E_PT2_TOL`. Supplied from the RSPt double-counting line as
         ``e_pt2 X``; loosen it (e.g. ``1e-5``) when the search, not its accuracy, is the cost.
-    ground_state_manifold : bool
-        As :func:`fixed_peak_dc`: opt-in, default ``False``. Check ``manifold_spread`` (in
-        ``report``, or ``occupation_spread`` via ``solver_trace``) from a **prior evaluation with
-        this flag left ``False``** -- it is not negligible on SrMnO3 cubic (see
-        ``doc/plans/dc_smo_performance.md``). Reading the spread back from a call that already
-        had this flag ``True`` does not check what it looks like it checks: see the field
-        docstring on :func:`fixed_peak_dc`.
-
     Returns
     -------
     dc : ndarray
@@ -1610,7 +1471,6 @@ def fixed_gap_dc(
             comm=comm,
             verbosity=verbosity,
             memory_label="fixed-gap dc",
-            ground_state_manifold=ground_state_manifold,
             de2_min=de2_min,
             e_pt2_tol=e_pt2_tol,
         )
@@ -1807,22 +1667,14 @@ def fixed_gap_dc(
                 # shift actually evaluated -- the best available stand-in for `mu` when the search
                 # never returned one.
                 mu_seen = mu if mu is not None else (next(reversed(sectors_at)) if sectors_at else None)
-                # Unconditional, unlike the measurements below: this is a property of how the
-                # search *ran*, not of whether a diagnostic could be taken at some `mu`. Written
-                # conditionally it would be absent exactly on the failure paths, where "which
-                # manifold convention produced this" is most worth knowing -- and a record key
-                # written on some paths and not others is how a stale value gets inherited
-                # (`dc_record.recording` does `report.update(record)` and never clears).
-                dc_rec["ground_state_manifold"] = ctx.ground_state_manifold
+                # Unconditional, unlike the measurements below: a property of how the search *ran*, not of
+                # whether a diagnostic could be taken at some `mu`. A record key written on some paths only
+                # inherits stale values (`dc_record.recording` does `report.update(record)` and never clears).
                 dc_rec["de2_min"] = ctx.de2_min
                 dc_rec["e_pt2_tol"] = ctx.e_pt2_tol
                 if mu_seen is not None:
                     delta_plus, delta_minus = _measure_edge_character(ctx, mu_seen, n_center_at[mu_seen])
                     dc_rec["delta_plus"], dc_rec["delta_minus"] = delta_plus, delta_minus
-                    # Under the flag above, these sizes are the ground multiplet by request and the
-                    # spread is over that narrowed window rather than the thermal one.
-                    spread, sizes = _measure_manifold_spread(ctx, mu_seen, n_center_at[mu_seen])
-                    dc_rec["manifold_spread"], dc_rec["manifold_states"] = spread, sizes
                     _warn_if_a_gap_edge_is_not_impurity_like(delta_plus, delta_minus, rank)
 
         # mu is always a point _solve_dc_shift actually evaluated, so sectors_at holds it.

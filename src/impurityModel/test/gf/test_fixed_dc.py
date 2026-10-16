@@ -317,32 +317,23 @@ def test_fixed_gap_dc_honours_an_offset():
     np.testing.assert_allclose(np.diag(dc).real, EPS + U / 2 - offset, atol=5e-3)
 
 
-def test_fixed_gap_dc_ground_state_manifold_matches_default_on_a_spin_degenerate_model():
-    """``ground_state_manifold=True`` (opt-in, default off) must reproduce the default answer
-    exactly where the two occupation conventions agree.
+def test_the_sector_energies_are_lowest_state_solves_and_the_record_carries_no_manifold_fields(monkeypatch):
+    """Every sector energy is a ``Lowest`` solve: window mode never runs, and the record has no
+    ``ground_state_manifold`` / ``manifold_spread`` / ``manifold_states`` (the flag and the spread it
+    guarded are gone -- a sector is solved for its lowest state alone, so the reported occupation is
+    that state's, the one Hellmann-Feynman relates ``d(energy)/dmu`` to)."""
+    import impurityModel.ed.cipsi_solver as cipsi_solver
 
-    This fixture's ``N_imp = 1`` sector is an exact spin doublet (identical up/down hopping,
-    no field breaking the symmetry): both degenerate states share ``N_imp``, so
-    ``occupation_spread`` is zero by symmetry, not by luck -- the module docstring's own
-    example of a distinction that "is empty". A real regression here (the narrower manifold
-    request missing part of the ground multiplet, or the wrong occupation field being read)
-    would move ``dc`` outside the search's own tolerance, not just add noise.
-    """
+    def forbidden(*args, **kwargs):
+        raise AssertionError("a sector solve ran a window solve")
+
+    monkeypatch.setattr(cipsi_solver, "solve_window", forbidden)
     kwargs, dc_guess = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
-    report_default, report_ground = {}, {}
-    dc_default = fixed_gap_dc(offset=0.0, report=report_default, **kwargs)
-    dc_ground = fixed_gap_dc(offset=0.0, ground_state_manifold=True, report=report_ground, **kwargs)
-    assert_uniform_shift(dc_default, dc_guess)
-    assert_uniform_shift(dc_ground, dc_guess)
-    np.testing.assert_allclose(np.diag(dc_default).real, np.diag(dc_ground).real, atol=5e-3)
-    assert report_default["manifold_spread"] < 1e-9
-    assert report_ground["manifold_spread"] < 1e-9
-    # Which convention produced each row, recorded rather than inferred. On this fixture the two
-    # `dc` values agree to the search's tolerance and both manifolds are narrow, so the reports
-    # are otherwise indistinguishable -- and a reader comparing a *real* pair of runs needs to
-    # know that the second one's occupations are the ground state's, not a thermal average.
-    assert report_default["ground_state_manifold"] is False
-    assert report_ground["ground_state_manifold"] is True
+    report = {}
+    dc = fixed_gap_dc(offset=0.0, report=report, **kwargs)
+    assert_uniform_shift(dc, dc_guess)
+    for key in ("ground_state_manifold", "manifold_spread", "manifold_states"):
+        assert key not in report, key
 
 
 def test_the_gap_centre_responds_to_the_shift_with_the_slope_it_claims():
@@ -1023,41 +1014,6 @@ def test_a_weightless_gap_edge_passes_the_impurity_character_check(capsys):
         assert report["delta_plus"] == pytest.approx(1.0, abs=1e-3), report
         assert report["delta_minus"] == pytest.approx(1.0, abs=1e-3), report
         assert "WARNING: the addition" not in out and "WARNING: the removal" not in out, out
-
-
-def test_the_record_says_whether_the_thermal_manifold_hides_anything(capsys):
-    """``manifold_spread``: the evidence for pairing a ``T = 0`` energy with a thermal occupation.
-
-    ``omega_+-`` are the *lowest* eigenvalue of each sector; ``delta_+-`` are differences of
-    Boltzmann-averaged ``Tr rho_imp`` over each sector's whole retained manifold. Hellmann-Feynman
-    relates them **state by state**, so the pairing is exact only where the retained states share
-    ``N_imp``. Nothing said whether they do, and the argument for the thermal convention was made
-    on rank-safety and consistency with ``fixed_occupation_dc`` -- both true, and neither about
-    this.
-
-    So it is measured instead of argued. On every fixture in this suite the spread is machine zero
-    (2e-16, 0.0, 5e-15), which closes the question *for these models*: the two conventions are the
-    same number and switching to ``argmin(es)`` would change nothing. The field exists so that a
-    model where they differ says so in its own record rather than being caught by whoever next
-    re-derives the concern.
-
-    The manifold **sizes** are asserted alongside deliberately. A spread of zero over a one-state
-    manifold is silence, not agreement, and the off-centre sectors here retain exactly one state
-    -- so the centre sector, with two, is carrying the whole result.
-    """
-    kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
-    report = {}
-    fixed_gap_dc(offset=-0.4, report=report, **kwargs)
-
-    if MPI.COMM_WORLD.rank != 0:
-        return
-    assert report.get("manifold_spread") is not None, report
-    assert report["manifold_spread"] < 1e-9, report["manifold_spread"]
-    sizes = [int(n) for n in report["manifold_states"].split("/")]
-    assert len(sizes) == 3 and all(n >= 1 for n in sizes), report["manifold_states"]
-    # Not a vacuous zero: at least one sector retained more than one state, so at least one
-    # comparison was actually made.
-    assert max(sizes) > 1, f"every manifold held one state, so the spread asserts nothing: {sizes}"
 
 
 def test_the_impurity_character_warning_fires_on_the_weaker_edge(capsys):
@@ -2347,9 +2303,6 @@ def _solution(*, cap_bound=False, memory_bound=False):
     return dc_criteria._SectorSolution(
         energy=-1.0,
         occupation=1.0,
-        occupation_ground=1.0,
-        n_states=1,
-        occupation_spread=0.0,
         cap_bound=cap_bound,
         memory_bound=memory_bound,
     )
@@ -2621,7 +2574,7 @@ def test_fixed_gap_dc_de2_min_reaches_the_sector_solves_and_is_recorded():
     """A `de2_min` passed to the criterion (the route the RSPt double-counting line uses) must
     reach the charge-sector solves and be reported, not silently dropped.
 
-    Recorded rather than inferred, for the same reason `ground_state_manifold` is: two runs at
+    Recorded rather than inferred: two runs at
     different PT2 floors are otherwise indistinguishable in the record, and a reader comparing
     them needs to know which variational space produced each answer.
 

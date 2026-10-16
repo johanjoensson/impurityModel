@@ -857,19 +857,12 @@ def apply_double_counting(resolved, model, basis, solver, notes, comm, verbosity
         target.update(occ_tol=table["occ_tol"], initial_step=table["initial_step"], max_shift=table["max_shift"])
     else:
         # fixed_gap and fixed_peak only: their residual is a difference of sector energies, each
-        # `min(es)`, so the thermal window around it is cost without effect on the root.
-        # `fixed_occupation_dc` does not accept the argument -- its observable IS the thermal
-        # average (`_evaluate_occupation_and_energy_at_mu`), so narrowing the manifold there would
-        # change the criterion rather than the cost of evaluating it -- so the key is declared in
-        # `_DC_ENERGY_DIFFERENCE_KEYS`, not `_DC_SEARCH_KEYS`, and `fixed_occupation` rejects it
-        # as unknown. The RSPt double-counting line rejects the same spelling on the same grounds,
-        # which is what keeps the two front-ends on one DC vocabulary.
+        # `min(es)`, solved for the lowest state alone.
         #
-        # e_pt2_tol / de2_min likewise: how the sector solves converge. `fixed_occupation` takes
+        # e_pt2_tol / de2_min: how the sector solves converge. `fixed_occupation` takes
         # [many_body_basis]'s values through `basis` and no override (it solves on the production
         # ground-state path), matching the RSPt double-counting line. None inherits.
         target.update(
-            ground_state_manifold=table["ground_state_manifold"],
             e_pt2_tol=_positive_e_pt2_tol(table["e_pt2_tol"], f"double_counting.{scheme}"),
             de2_min=table["de2_min"],
         )

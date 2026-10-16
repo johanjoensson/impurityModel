@@ -67,8 +67,6 @@ _FIELDS = (
     ("delta_minus", "{:.3f}"),
     ("delta_sum", "{:.3f}"),
     ("delta_sum_vs_chi", "{:.3f}"),
-    ("manifold_spread", "{:.3f}"),
-    ("ground_state_manifold", "{}"),
     ("de2_min", "{:.2e}"),
     ("e_pt2_tol", "{:.2e}"),
     ("peak", "{:.6f}"),
@@ -92,8 +90,6 @@ _FIELDS = (
 #: does. ``nominal_sector`` follows ``sector`` on its line, and ``n_ref_kind`` says which of the
 #: two very different fillings ``n_ref`` is -- a DFT reference read off the bath fit, or the
 #: nominal integer ``nominal_dc`` was handed. Same key, same units, incomparable provenance.
-#: ``manifold_states`` follows ``manifold_spread`` because a spread is unreadable without the
-#: number of states it is a spread over: zero across one state is silence, not agreement.
 #: ``dc_cap_parity`` and ``dc_cap_status`` follow ``dc_cap`` (the memory-derived cap the calibrated
 #: ladder gave up, so the record can say what a run without the ladder would have used; and which
 #: of the ladder's three exits produced the cap, which neither the cap nor the drift determines --
@@ -107,7 +103,6 @@ _ANNOTATIONS = frozenset(
     {
         "nominal_sector",
         "n_ref_kind",
-        "manifold_states",
         "dc_cap_parity",
         "dc_cap_status",
         "dc_cap_mu",
@@ -242,14 +237,6 @@ def _annotate(record, key, text):
         # that neither error shows; large means one of them is not, and `chi_span` says whether to
         # suspect the secant's interval.
         return f"{text}   (delta_sum minus -2*chi; two estimators with opposite error structure)"
-    if key == "manifold_spread":
-        # The one number that says whether `delta_+-` being thermal while `omega_+-` are T=0
-        # matters on this model. Hellmann-Feynman relates them state by state, so the pairing is
-        # exact only when the retained manifold's states share N_imp -- which is what a zero spread
-        # says. Sizes come along because a zero spread over a single retained state is silence.
-        sizes = record.get("manifold_states")
-        over = "" if sizes is None else f" over {sizes} states (N+1/N/N-1)"
-        return f"{text}   (max N_imp spread within a retained manifold{over}; 0 = thermal and T=0 agree)"
     if key == "de2_min":
         # The per-determinant PT2 floor the charge-sector solves ran at (0 = none), recorded
         # because two runs at different floors are otherwise indistinguishable in this record. It
@@ -262,16 +249,6 @@ def _annotate(record, key, text):
         if record.get(key) == GS_DE2_MIN:
             return f"{text}   (PT2 admission floor of the sector solves; the default)"
         return f"{text}   (PT2 admission floor of the sector solves; set on the DC line)"
-    if key == "ground_state_manifold":
-        # Which manifold convention the sector solves ran under, and so which occupation the rest
-        # of this record reports. A field rather than an annotation on `manifold_spread`: only
-        # `fixed_gap_dc` measures a spread, and `fixed_peak_dc` takes the same flag, so hanging it
-        # off that line would leave the peak criterion unable to say what it did. Printed even
-        # when False, because "absent" would otherwise have to mean both "thermal" and "written by
-        # a version that predates the flag".
-        if record.get(key):
-            return f"{text}   (sector solves narrowed to the ground multiplet; occupations are T=0, not thermal)"
-        return f"{text}   (full thermal window at tau; occupations are Boltzmann averages)"
     if key == "dc_cap_bound":
         # The exact, per-sector, single-run answer to "is the cap the limiting factor here" --
         # `CIPSISolver.truncation_report is None` means the expansion ran out of candidates above
