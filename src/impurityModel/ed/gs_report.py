@@ -10,8 +10,8 @@ import numpy as np
 
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import get_effective_restrictions
-from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.block_structure import get_equivalent_blocks, print_block_structure
+from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.gs_statistics import (
     compute_entanglement_entropy,
     compute_gs_statistics,

@@ -176,7 +176,7 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
        determinants outside ``basis`` (the ``N \pm 1`` sectors); inner products stay correct
        because :meth:`Basis.redistribute_psis` routes purely by ``hash(sd) % size``, independent
        of basis membership -- and ``Allreduce``\ s the per-state moments. Call it unconditionally
-       on every rank, exactly like :func:`basis_transcription.build_density_matrices`.
+       on every rank, exactly like :func:`density_matrices.build_density_matrices`.
     """
     es = np.asarray(es, dtype=float)
     n_corr = len(impurity_indices)

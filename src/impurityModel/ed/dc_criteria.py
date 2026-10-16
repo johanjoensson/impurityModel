@@ -84,7 +84,6 @@ from impurityModel.ed import config, dc_record, solver_trace
 from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions
-from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.dc_reference import (
     _SATURATION_ADVICE,
     _noninteracting_impurity_occupation,
@@ -100,6 +99,7 @@ from impurityModel.ed.dc_search import (
     bracket_width_tol,
     resolve_cap_at_max,
 )
+from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import CapPolicy, resolve_cap_policy

@@ -45,7 +45,7 @@ class DoubleCountingUnreachable(RuntimeError):
 
     Distinguishing this from a bare :class:`RuntimeError` is the point (B3): the observable
     itself can also raise a bare ``RuntimeError`` on a genuine failure
-    (:func:`average.thermal_average_scale_indep`, :func:`basis_transcription.build_density_matrices`),
+    (:func:`average.thermal_average_scale_indep`, :func:`density_matrices.build_density_matrices`),
     and a caller that catches ``RuntimeError`` indiscriminately cannot tell "the target is
     unattainable with this bath/truncation" from "the solver itself broke" -- the first should
     keep the old double counting and say so loudly; the second is a bug and should abort. Because

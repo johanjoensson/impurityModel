@@ -43,8 +43,8 @@ from dataclasses import replace
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.dc_criteria import _per_group_occupation, _prepare_sector_context
+from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.groundstate import solve_sector
 from impurityModel.ed.operator_algebra import ManyBodyOperator
 

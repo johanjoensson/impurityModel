@@ -19,7 +19,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.basis_transcription import build_density_matrices
+from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 
 # Tunable restriction knobs, gathered here as named constants (rather than literals scattered

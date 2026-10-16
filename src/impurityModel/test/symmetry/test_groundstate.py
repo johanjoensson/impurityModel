@@ -4,9 +4,9 @@ from mpi4py import MPI
 
 import impurityModel.ed.product_state_representation as psr
 from impurityModel.ed import groundstate
-from impurityModel.ed.basis_transcription import build_density_matrices
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.groundstate import calc_energy, calc_gs, find_ground_state_basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.test.support.comms import COMMS
