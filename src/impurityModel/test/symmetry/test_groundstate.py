@@ -7,6 +7,7 @@ from impurityModel.ed import groundstate
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.density_matrices import build_density_matrices
+from impurityModel.ed.eigensolvers import Lowest
 from impurityModel.ed.groundstate import calc_energy, calc_gs, find_ground_state_basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.test.support.comms import COMMS
@@ -22,7 +23,7 @@ def ground_state_support(basis, h_op, dense_cutoff=10):
     support, rather than read the basis size.
     """
     solver = CIPSISolver(basis)
-    _es, psis = solver.get_eigenvectors(h_op, num_wanted=1, dense_cutoff=dense_cutoff)
+    _es, psis = solver.get_eigenvectors(h_op, Lowest(), dense_cutoff=dense_cutoff)
     # The state is defined on the whole basis, so iterating it yields every determinant
     # including the ones with zero amplitude; the support is the ones actually carrying weight.
     local = {

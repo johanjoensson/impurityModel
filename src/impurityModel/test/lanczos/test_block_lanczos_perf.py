@@ -51,6 +51,7 @@ from impurityModel.ed.BlockLanczosArray import (
     eigh_block_tridiagonal,
 )
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.groundstate import find_ground_state_basis
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
@@ -196,6 +197,7 @@ def nio_workload():
     solver = CIPSISolver(basis)
     solver.expand(
         h,
+        Within.thermal(solver.basis.tau),
         dense_cutoff=DENSE_CUTOFF,
         de2_min=1e-6,
         slaterWeightMin=SLATER_WEIGHT_MIN,

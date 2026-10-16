@@ -115,8 +115,8 @@ class EigenResult:
     one bracket state just above it (``n_in`` counts the former). ``certified`` is True when
     every in-window level is shown complete (see :func:`solve_window`). ``max_multiplicity`` is
     the largest degenerate group in the window. ``generation`` is the ``Basis.generation`` the
-    result belongs to and ``window`` the ``max_energy`` it is complete for; a consumer re-solves
-    when the generation no longer matches or it needs a wider window.
+    result belongs to and ``manifold`` the request it answers (:class:`Lowest` or :class:`Within`);
+    a consumer re-solves when the generation no longer matches or it needs more than the request covered.
     """
 
     e: np.ndarray
@@ -126,7 +126,7 @@ class EigenResult:
     max_multiplicity: int
     status: str
     generation: int | None = None
-    window: float | None = None
+    manifold: Lowest | Within | None = None
 
 
 #: Singular values of ``F_G^H W`` below this are not counted as warm overlap with a level. ``F`` is

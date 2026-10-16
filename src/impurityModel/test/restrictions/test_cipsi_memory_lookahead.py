@@ -22,6 +22,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import cipsi_solver
 from impurityModel.ed.cipsi_solver import CIPSISolver, _memory_growth_bound
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.groundstate import GS_DE2_MIN
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
@@ -131,18 +132,18 @@ def _run(comm, monkeypatch, budget, bytes_per_det):
     H = _hamiltonian()
     solver = _make_solver(comm)
     fake = _FakeMemory(monkeypatch, solver, bytes_per_det)
-    solver.expand(H, de2_min=GS_DE2_MIN, memory_budget_bytes=budget)
+    solver.expand(H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=budget)
     return solver, fake
 
 
 def test_no_budget_never_measures_and_matches_the_unguarded_run(monkeypatch):
     H = _hamiltonian()
     ref = _make_solver(None)
-    ref.expand(H, de2_min=GS_DE2_MIN)
+    ref.expand(H, Within.thermal(ref.basis.tau), de2_min=GS_DE2_MIN)
 
     solver = _make_solver(None)
     fake = _FakeMemory(monkeypatch, solver, bytes_per_det=1)
-    solver.expand(H, de2_min=GS_DE2_MIN, memory_budget_bytes=None)
+    solver.expand(H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=None)
 
     assert fake.resets == 0, "without a budget the guard must not even sample"
     assert set(solver.basis.local_basis) == set(ref.basis.local_basis)
@@ -153,7 +154,7 @@ def test_no_budget_never_measures_and_matches_the_unguarded_run(monkeypatch):
 def test_generous_budget_measures_but_never_binds(monkeypatch):
     H = _hamiltonian()
     ref = _make_solver(None)
-    ref.expand(H, de2_min=GS_DE2_MIN)
+    ref.expand(H, Within.thermal(ref.basis.tau), de2_min=GS_DE2_MIN)
 
     # 1 KiB per determinant on a basis of at most 20: the round never comes near 2^60.
     solver, fake = _run(None, monkeypatch, budget=2**60, bytes_per_det=1024)
@@ -192,7 +193,7 @@ def test_the_look_ahead_never_loosens_a_caller_cap(monkeypatch):
     solver.basis.clear()
     solver.basis.add_states([all_dets[0]])
     _FakeMemory(monkeypatch, solver, bytes_per_det=1024)
-    solver.expand(H, de2_min=GS_DE2_MIN, memory_budget_bytes=2**60)
+    solver.expand(H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=2**60)
     assert solver.basis.truncation_threshold == cap
     assert solver.basis.size <= cap
 
@@ -230,7 +231,7 @@ def test_a_budget_side_zero_is_reported_as_the_budgets_verdict_not_the_rounds(mo
     # Resident set already above the budget, and a transient of 1 byte per determinant: the round
     # costs nothing, and the bound never gets as far as asking what it cost.
     _FakeMemory(monkeypatch, solver, bytes_per_det=1, floor=500 * MiB)
-    solver.expand(H, de2_min=GS_DE2_MIN, memory_budget_bytes=100 * MiB)
+    solver.expand(H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=100 * MiB)
 
     assert solver.last_selection["memory_cap_reason"] == "budget"
     assert solver.last_selection["memory_admit_cap"] == 0
@@ -247,7 +248,7 @@ def test_a_measured_zero_still_caps_immediately(monkeypatch):
     # 400 MiB/determinant above a 100 MiB floor against a 1 GiB budget: headroom is positive, so
     # the bound consults the transient, and the transient overruns it.
     _FakeMemory(monkeypatch, solver, bytes_per_det=400 * MiB)
-    solver.expand(H, de2_min=GS_DE2_MIN, memory_budget_bytes=1024 * MiB)
+    solver.expand(H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=1024 * MiB)
 
     assert solver.last_selection["memory_cap_reason"] == "transient"
     assert np.isfinite(solver.basis.truncation_threshold)

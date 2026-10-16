@@ -39,6 +39,7 @@ except ImportError:  # pragma: no cover - mpi4py is a hard dependency in practic
     _has_mpi = False
 
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
 from impurityModel.ed.selfenergy import calc_selfenergy
@@ -489,8 +490,7 @@ def test_warm_started_eigensolver_delivers_more_than_its_start_block():
 
     e_ref, _ = solver.get_eigenvectors(
         workload["h"],
-        num_wanted=10,
-        max_energy=10.0,
+        Within(10.0),
         dense_cutoff=_DENSE_CUTOFF,
         slaterWeightMin=1e-12,
         psi_refs=solver.psi_refs,
@@ -529,10 +529,10 @@ def test_truncate_initial_basis_is_rank_independent():
         return basis
 
     distributed = _make_basis(world)
-    CIPSISolver(distributed).truncate_initial(_TRUNCATE_INITIAL_HOP, dense_cutoff=30)
+    CIPSISolver(distributed).truncate_initial(_TRUNCATE_INITIAL_HOP, Within.thermal(0), dense_cutoff=30)
 
     serial = _make_basis(MPI.COMM_SELF)
-    CIPSISolver(serial).truncate_initial(_TRUNCATE_INITIAL_HOP, dense_cutoff=30)
+    CIPSISolver(serial).truncate_initial(_TRUNCATE_INITIAL_HOP, Within.thermal(0), dense_cutoff=30)
 
     got = _basis_fingerprint(distributed, world)
     ref = _basis_fingerprint(serial, MPI.COMM_SELF)

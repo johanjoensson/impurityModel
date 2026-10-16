@@ -8,6 +8,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.manybody_basis import (
     Basis,
@@ -406,10 +407,8 @@ def _expanded_e0(threshold, comm=None):
         delta_conduction_occ={0: 2},
     )
     solver = CIPSISolver(basis)
-    solver.expand(_siam_operator(), de2_min=1e-8, dense_cutoff=1000)
-    es, _ = solver.get_eigenvectors(
-        _siam_operator(), num_wanted=2, max_energy=1.0, dense_cutoff=1000, psi_refs=solver.psi_refs
-    )
+    solver.expand(_siam_operator(), Within.thermal(solver.basis.tau), de2_min=1e-8, dense_cutoff=1000)
+    es, _ = solver.get_eigenvectors(_siam_operator(), Within(1.0), dense_cutoff=1000, psi_refs=solver.psi_refs)
     return float(np.min(es)), basis.size, solver.truncation_report
 
 

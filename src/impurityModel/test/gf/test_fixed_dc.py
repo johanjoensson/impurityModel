@@ -51,6 +51,7 @@ from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.dc_criteria import GAP_ENERGY_TOLERANCE_FRACTION
 from impurityModel.ed.dc_search import bracket_width_tol
 from impurityModel.ed.density_matrices import build_density_matrices
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.groundstate import find_ground_state_basis
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.model import BasisOptions, ImpurityModel, SolverOptions
@@ -1779,12 +1780,17 @@ def _selfenergy_gs_occupation(model, basis_opts, dc):
         slaterWeightMin=basis_opts.slater_weight_min,
     )
     solver = CIPSISolver(gs_basis)
-    solver.expand(sb.h, dense_cutoff=1000, de2_min=1e-8, slaterWeightMin=basis_opts.slater_weight_min)
+    solver.expand(
+        sb.h,
+        Within.thermal(solver.basis.tau),
+        dense_cutoff=1000,
+        de2_min=1e-8,
+        slaterWeightMin=basis_opts.slater_weight_min,
+    )
     energy_cut = boltzmann_energy_cut(basis_opts.tau)
     es, psis = solver.get_eigenvectors(
         sb.h,
-        num_wanted=10,
-        max_energy=energy_cut,
+        Within(energy_cut),
         dense_cutoff=1000,
         slaterWeightMin=basis_opts.slater_weight_min,
         psi_refs=solver.psi_refs,

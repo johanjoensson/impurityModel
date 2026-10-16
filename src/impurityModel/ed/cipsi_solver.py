@@ -4,14 +4,13 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
-from impurityModel.ed.average import energy_cut
 from impurityModel.ed.basis_transcription import (
     build_distributed_vector,
     build_sparse_matrix,
     build_state,
 )
 from impurityModel.ed.cipsi_budget import CapRefiner, MemoryGuard
-from impurityModel.ed.eigensolvers import EigenResult, eigensystem, solve_window
+from impurityModel.ed.eigensolvers import EigenResult, Lowest, Within, eigensystem, solve_lowest, solve_window
 from impurityModel.ed.manybody_basis import (
     Basis,
     collective_mass_cutoff,
@@ -20,8 +19,8 @@ from impurityModel.ed.manybody_basis import (
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
     current_rss_bytes,
-    format_bytes,
     emit_memory_warning,
+    format_bytes,
     peak_rss_bytes,
     reset_peak_rss,
     rss_breakdown,
@@ -356,15 +355,19 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
     order = np.argsort(e, kind="stable")
     e_sorted = e[order]
 
-    if max_energy is None:
-        return [int(i) for i in order], False
-
     n_keep = max(int(np.count_nonzero(e_sorted - e_sorted[0] <= max_energy)), 1)
     # Never split a manifold: absorb any state degenerate with the last kept one.
     original_n_keep = n_keep
     while n_keep < len(e_sorted) and abs(e_sorted[n_keep] - e_sorted[original_n_keep - 1]) <= tol:
         n_keep += 1
     return [int(i) for i in order[:n_keep]], n_keep == len(e_sorted)
+
+
+def _covers(have, want):
+    """Whether a solve that answered ``have`` (``Lowest``, ``Within`` or None) also answers ``want``."""
+    if isinstance(have, Within):
+        return isinstance(want, Lowest) or (isinstance(want, Within) and have.max_energy >= want.max_energy)
+    return isinstance(have, Lowest) and isinstance(want, Lowest)
 
 
 #: Rows per slice of :func:`_zero_entries_at_most`'s in-place pass: bounds its temporaries to
@@ -408,6 +411,9 @@ class CIPSISolver:
         #: (adapted to the largest multiplicity seen).
         self.eig: EigenResult | None = None
         self.n_random = _MIN_RANDOM_COLUMNS
+        #: The width of the manifold the previous window solve was warm-started from (``None``: no history),
+        #: for the growth margin of the next request (:func:`_manifold_request`). ``expand`` resets it.
+        self._prev_kept: int | None = None
         # Diagnostics of the latest candidate selection / basis truncation (see
         # determine_new_Dj / truncate); None until the corresponding event happens.
         self.last_selection = None
@@ -424,8 +430,12 @@ class CIPSISolver:
             return self.basis.comm.allreduce(value, op=MPI.MAX)
         return value
 
-    def truncate_initial(self, H: ManyBodyOperator, dense_cutoff=1e3) -> None:
+    def truncate_initial(self, H: ManyBodyOperator, manifold, dense_cutoff=1e3) -> None:
         """Perform an initial truncation if the basis exceeds the truncation threshold.
+
+        ``manifold`` (:class:`~impurityModel.ed.eigensolvers.Lowest` or
+        :class:`~impurityModel.ed.eigensolvers.Within`) is the set of states whose support the
+        truncation keeps.
 
         Routed through :meth:`get_eigenvectors` (TRLM above ``dense_cutoff``, dense below)
         rather than calling ``eigensystem`` directly: TRLM's collective count
@@ -435,20 +445,12 @@ class CIPSISolver:
         if self.basis.size > self.basis.truncation_threshold and H is not None:
             if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
                 print("Truncating basis!")
-            # Rank over the low-energy manifold (up to 10 states within energy_cut, though
-            # get_eigenvectors' TRLM branch pads num_wanted by +10, so this can return up to 20
-            # states), not a single eigenvector: the downstream expansion / get_eigenvectors
-            # keep the whole near-degenerate ground manifold, so truncating to one state's
-            # support would bias the retained determinants toward one member of the multiplet.
-            # Cold start (psi_refs=None): truncate_initial runs before any converged block
+            # Rank over the requested manifold. A `Within` request keeps the whole near-degenerate
+            # ground manifold, so the truncation does not bias the retained determinants toward one
+            # member of a multiplet; a `Lowest` request keeps the support of one state, which is all
+            # its caller needs. Cold start (psi_refs=None): truncate_initial runs before any converged block
             # exists, so get_eigenvectors falls back to its rank-independent hash start vector.
-            _e_ref, psi_ref = self.get_eigenvectors(
-                H,
-                num_wanted=10,
-                max_energy=energy_cut(self.basis.tau),
-                dense_cutoff=dense_cutoff,
-                psi_refs=None,
-            )
+            _e_ref, psi_ref = self.get_eigenvectors(H, manifold, dense_cutoff=dense_cutoff, psi_refs=None)
             self.truncate(psi_ref, _e_ref)
 
     def truncate(self, psis, e_ref=None, target=None, slaterWeightMin=0) -> ManyBodyState:
@@ -870,6 +872,7 @@ class CIPSISolver:
     def expand(
         self,
         H,
+        manifold,
         de2_min=0.0,
         dense_cutoff=1e3,
         slaterWeightMin=0,
@@ -880,6 +883,12 @@ class CIPSISolver:
         memory_policy="tighten",
     ):
         """Expand the basis variationally (CIPSI) until it stops growing.
+
+        ``manifold`` is what the expansion refines the basis for: the reference states of every
+        cycle are :class:`~impurityModel.ed.eigensolvers.Lowest` (one state) or
+        :class:`~impurityModel.ed.eigensolvers.Within` (every state inside the window, whose
+        low-lying members then get their own determinants selected). The window is the request's,
+        never read from ``basis.tau``.
 
         ``e_pt2_tol`` is the convergence criterion: each selection round admits candidates until
         the ones it leaves out carry at most ``e_pt2_tol`` of Epstein-Nesbet PT2 energy
@@ -952,7 +961,6 @@ class CIPSISolver:
         # not survive into this solve (review ledger C3).
         H.set_restrictions(self.basis.restrictions)
         H.set_weighted_restrictions(self.basis.weighted_restrictions)
-        de0_max = energy_cut(self.basis.tau)
         psi_refs = getattr(self, "psi_refs", None)
 
         guard = MemoryGuard(self.basis, memory_budget_bytes, tighten=memory_policy == "tighten")
@@ -971,25 +979,16 @@ class CIPSISolver:
         residual_current = False
         cycle = 0
         # The kept manifold one cycle back, for the request's growth margin; `None` (no history) is not 0.
-        prev_kept = None
+        self._prev_kept = None
+        lowest = isinstance(manifold, Lowest)
         while True:
-            if psi_refs is None:
-                num_wanted = 10
-                prev_kept = None
-            else:
-                # `.width`, not `len()`: len() on a block is its rank-local ROW count, which would make
-                # num_wanted -- and the eigensolver collectives it sizes -- diverge across ranks.
-                n_kept = _psi_ref_width(psi_refs)
-                num_wanted = _manifold_request(n_kept, prev_kept)
-                prev_kept = n_kept
             # The eigensolve belongs to the cycle the guard measures: reset the high-water mark here and
             # sample right after, since the selection round resets it again for its own transient.
             if measuring:
                 reset_peak_rss()
             e_ref, psi_refs = self.get_eigenvectors(
                 H,
-                num_wanted=min(num_wanted, len(self.basis)),
-                max_energy=de0_max,
+                manifold,
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
                 psi_refs=psi_refs,
@@ -1009,7 +1008,7 @@ class CIPSISolver:
             if measuring:
                 p_now = _psi_ref_width(psi_refs)
                 affordable_growth = _memory_growth_bound(
-                    memory_budget_bytes, old_size, p_now, _manifold_request(p_now, prev_kept)
+                    memory_budget_bytes, old_size, p_now, 1 if lowest else _manifold_request(p_now, self._prev_kept)
                 )
             with _trace_timed("cipsi_selection", cycle=cycle) as _sel_event:
                 new_Dj = self.determine_new_Dj(
@@ -1217,15 +1216,15 @@ class CIPSISolver:
         _trace_note("h_matrix_nnz", nnz=int(H_mat.nnz), n=int(H_mat.shape[0]))
         return H_mat
 
-    def _warm_columns(self, psi_refs):
-        """The lowest ``GS_MAX_BLOCK_WIDTH`` columns of ``psi_refs`` as a distributed ``(n_local, w)`` array.
+    def _warm_columns(self, psi_refs, width=None):
+        """The lowest ``GS_MAX_BLOCK_WIDTH`` (or ``width``) columns of ``psi_refs``, distributed ``(n_local, w)``.
 
         ``psi_refs`` is energy-ordered ascending, so the lowest states are kept: the ones a restart is
         most likely to need again. Empty (zero columns) when there is no warm block.
         """
         if psi_refs is None:
             return np.zeros((len(self.basis.local_basis), 0), dtype=complex)
-        cap = config.GS_MAX_BLOCK_WIDTH.get()
+        cap = config.GS_MAX_BLOCK_WIDTH.get() if width is None else width
         if isinstance(psi_refs, ManyBodyState):
             block = psi_refs if cap is None or psi_refs.width <= cap else psi_refs.select(list(range(cap)))
             states = block.to_states()
@@ -1242,37 +1241,46 @@ class CIPSISolver:
     def get_eigenvectors(
         self,
         H,
-        num_wanted: int,
-        max_energy=None,
+        manifold,
         dense_cutoff=1e3,
         slaterWeightMin=0,
         psi_refs=None,
         h_matrix=None,
         reuse_last=False,
     ):
-        """Every eigenstate within ``max_energy`` of the lowest, certified complete: ``(e_ref, psi_refs)``.
+        """The requested manifold of the lowest spectrum: ``(e_ref, psi_refs)``.
 
-        Above ``dense_cutoff`` one window solve (:func:`~impurityModel.ed.eigensolvers.solve_window`),
-        below it a dense diagonalization. A degenerate manifold is never cut: the window absorbs a
-        group straddling its edge, and its degeneracy need not be known beforehand.
-        ``max_energy=None`` asks for the ground level only (the caller keeps ``min(es)``); on the dense
-        branch it instead returns the lowest ``num_wanted`` states. ``num_wanted`` is the initial
-        number of Ritz vectors the solver retains -- the solve grows it as the window demands.
+        ``manifold`` is :class:`~impurityModel.ed.eigensolvers.Lowest` (one state, the ground
+        level's energy; no claim about its degeneracy) or
+        :class:`~impurityModel.ed.eigensolvers.Within` (every state within ``max_energy`` of the
+        lowest, certified complete).
 
-        ``psi_refs``, if given, warm-starts the solve (its lowest ``GS_MAX_BLOCK_WIDTH`` columns);
-        generic hash-seeded columns are always added, so every charge sector stays reachable from
-        the start block. This method never reads or writes ``self.psi_refs``.
+        Above ``dense_cutoff``: one count-mode solve for ``Lowest``
+        (:func:`~impurityModel.ed.eigensolvers.solve_lowest`), one window solve for ``Within``
+        (:func:`~impurityModel.ed.eigensolvers.solve_window`). Below it a dense diagonalization.
+        Both branches cut with :func:`_energy_cut_indices`, which never bisects a degenerate
+        manifold, so a group straddling the window edge is kept whole whichever branch ran. The
+        window solve's initial retention is derived from the warm block and the
+        previous call's (see :func:`_manifold_request`); it grows as the window demands.
+
+        ``psi_refs``, if given, warm-starts the solve (its lowest ``GS_MAX_BLOCK_WIDTH`` columns for
+        ``Within``, its lowest column for ``Lowest``); generic hash-seeded columns are always added,
+        so every charge sector stays reachable from the start block. This method never reads or
+        writes ``self.psi_refs``.
 
         ``reuse_last=True`` returns the states of the previous solve instead of solving again when
         that solve was certified, ran on the current determinant set (``Basis.generation``) and
-        covered at least this window. The caller asserts it is the same operator: ``expand``'s last
-        solve followed by a read of its result is the use case.
+        covered this request (a ``Within`` result covers a narrower window and ``Lowest``; a
+        ``Lowest`` result covers only ``Lowest``). The caller asserts it is the same operator:
+        ``expand``'s last solve followed by a read of its result is the use case.
 
         ``h_matrix``, if given, replaces ``build_sparse_matrix(self.basis, H)``: a caller sweeping a
         family ``H(mu) = H(0) - mu N_imp`` over one frozen determinant space builds once and shifts
         the diagonal. It must have been built from this basis, at this size, after the basis's
         restrictions were set; only the shape is checked.
         """
+        if not isinstance(manifold, (Lowest, Within)):
+            raise TypeError(f"manifold must be Lowest or Within, got {manifold!r}")
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
         # Unconditional (None clears): a mask left on H by an earlier Green's-function stage must
@@ -1285,26 +1293,35 @@ class CIPSISolver:
                 f"holds {len(self.basis)}. A matrix that outlived its basis produces eigenvalues "
                 "of the wrong operator rather than an error, so this is checked."
             )
+        lowest = isinstance(manifold, Lowest)
+        max_energy = 0.0 if lowest else float(manifold.max_energy)
+        if lowest:
+            num_wanted = 1
+        elif psi_refs is None:
+            num_wanted = 10
+            self._prev_kept = None
+        else:
+            # `.width`, not `len()`: len() on a block is its rank-local ROW count, which would make
+            # num_wanted -- and the eigensolver collectives it sizes -- diverge across ranks.
+            n_kept = _psi_ref_width(psi_refs)
+            num_wanted = _manifold_request(n_kept, self._prev_kept)
+            self._prev_kept = n_kept
 
         if self.basis.size >= dense_cutoff:
-            if max_energy is None:
-                # No cut asked for: the caller keeps only the lowest state (``calc_energy``), so certify the
-                # ground level and nothing more.
-                max_energy = 0.0
             reusable = (
                 reuse_last
                 and h_matrix is None
                 and self.eig is not None
                 and self.eig.certified
                 and self.eig.generation == self.basis.generation
-                and self.eig.window is not None
-                and self.eig.window >= max_energy
+                and _covers(self.eig.manifold, manifold)
             )
-            eig = (
-                self.eig
-                if reusable
-                else self._solve_window(H, h_matrix, max_energy, num_wanted, slaterWeightMin, psi_refs)
-            )
+            if reusable:
+                eig = self.eig
+            elif lowest:
+                eig = self._solve_lowest(H, h_matrix, slaterWeightMin, psi_refs)
+            else:
+                eig = self._solve_window(H, h_matrix, manifold, num_wanted, slaterWeightMin, psi_refs)
             assert eig is not None
             e_ref, psi_refs_arr = eig.e, eig.vecs
             valid_idx = None
@@ -1313,12 +1330,23 @@ class CIPSISolver:
                 # into ``build_density_matrices`` turn into an ``Allreduce`` buffer shape. It is safe because
                 # ``e_ref`` is bit-identical across ranks (TSQR returns a bitwise-identical R everywhere and
                 # the Ritz values are a rank-local ``eigh`` on identical bytes).
-                valid_idx, _ = _energy_cut_indices(e_ref, max_energy, tol=_degeneracy_tol(e_ref, slaterWeightMin))
+                if lowest:
+                    valid_idx = [0]
+                elif reusable and eig.manifold != manifold:
+                    # A reused wider result is cut to the narrower request ...
+                    valid_idx, _ = _energy_cut_indices(e_ref, max_energy, tol=_degeneracy_tol(e_ref, slaterWeightMin))
+                else:
+                    # ... a fresh window solve keeps its own in-window set (it absorbed a straddling group whole).
+                    valid_idx = list(range(eig.n_in))
                 if not eig.certified and (self.basis.comm is None or self.basis.comm.rank == 0):
+                    what = (
+                        "the lowest eigenstate"
+                        if lowest
+                        else f"the {len(valid_idx)} eigenstates within {max_energy:.3g} of the lowest"
+                    )
                     print(
-                        f"warning: the {len(valid_idx)} eigenstates within {max_energy:.3g} of the lowest could not "
-                        f"be certified complete (solver status {eig.status!r}). A degenerate manifold may be "
-                        "missing copies.",
+                        f"warning: {what} could not be certified (solver status {eig.status!r})."
+                        + ("" if lowest else " A degenerate manifold may be missing copies."),
                         flush=True,
                     )
                 _trace_note(
@@ -1337,23 +1365,41 @@ class CIPSISolver:
                 psi_refs = build_state(self.basis, cols.T, slaterWeightMin=slaterWeightMin)
         else:
             H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
-            e_ref, psi_ref_dense = eigensystem(
-                H_mat,
-                e_max=max_energy,
-                comm=self.basis.comm,
-                return_eigvecs=True,
-            )
-            if max_energy is None:
-                # `eigensystem` reads `e_max=None` as "no cut" and returns the *whole* dense spectrum; the
-                # lowest `num_wanted` are kept so the cost is set by the request, not the basis size.
-                e_ref = e_ref[:num_wanted]
-                psi_ref_dense = psi_ref_dense[:, :num_wanted]
-            psi_refs = build_state(self.basis, psi_ref_dense.T, slaterWeightMin=slaterWeightMin)
+            e_all, psi_dense = eigensystem(H_mat, e_max=None, comm=self.basis.comm, return_eigvecs=True)
+            if lowest:
+                idx = [0]
+            else:
+                idx, _ = _energy_cut_indices(e_all, max_energy, tol=_degeneracy_tol(e_all, slaterWeightMin))
+            e_ref = e_all[idx]
+            psi_refs = build_state(self.basis, psi_dense[:, idx].T, slaterWeightMin=slaterWeightMin)
 
         return e_ref, psi_refs
 
-    def _solve_window(self, H, h_matrix, max_energy, num_wanted, slaterWeightMin, psi_refs) -> EigenResult:
+    def _solve_lowest(self, H, h_matrix, slaterWeightMin, psi_refs) -> EigenResult:
+        """One count-mode solve for the lowest pair on the current basis; records it as ``self.eig``."""
+        H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
+        hashes = np.fromiter((state.get_hash() for state in self.basis.local_basis), dtype=np.uint64)
+        warm = self._warm_columns(psi_refs, width=1)
+        _trace_note("eigensolve_block_width", p=int(warm.shape[1] + 1), num_wanted=1)
+        with _trace_timed("eigensolve", n=len(self.basis), window=0.0):
+            eig = solve_lowest(
+                H_mat,
+                self.basis.comm if self.basis.is_distributed else None,
+                hashes,
+                warm=warm,
+                tol=_eigen_tol(slaterWeightMin),
+                n_global=len(self.basis),
+                max_restarts=100,
+                verbose=self.basis.verbose,
+            )
+        eig.generation = self.basis.generation
+        eig.manifold = Lowest()
+        self.eig = eig
+        return eig
+
+    def _solve_window(self, H, h_matrix, manifold, num_wanted, slaterWeightMin, psi_refs) -> EigenResult:
         """One certified window solve on the current basis; records it as ``self.eig``."""
+        max_energy = float(manifold.max_energy)
         H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
         hashes = np.fromiter((state.get_hash() for state in self.basis.local_basis), dtype=np.uint64)
         warm = self._warm_columns(psi_refs)
@@ -1379,7 +1425,7 @@ class CIPSISolver:
                 verbose=self.basis.verbose,
             )
         eig.generation = self.basis.generation
-        eig.window = float(max_energy)
+        eig.manifold = Within(max_energy)
         self.eig = eig
         self.n_random = max(_MIN_RANDOM_COLUMNS, eig.max_multiplicity + 1)
         return eig

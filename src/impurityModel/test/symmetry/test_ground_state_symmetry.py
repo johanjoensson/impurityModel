@@ -18,6 +18,7 @@ beyond spin is broken by ``U``.
 import numpy as np
 
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.lie_algebra import tensors_to_operator
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
@@ -93,12 +94,14 @@ def test_the_ground_state_is_a_spin_eigenstate():
         comm=None,
     )
     solver = CIPSISolver(basis)
-    solver.expand(h_full, dense_cutoff=2000, de2_min=1e-10, slaterWeightMin=1e-12)
+    solver.expand(h_full, Within.thermal(solver.basis.tau), dense_cutoff=2000, de2_min=1e-10, slaterWeightMin=1e-12)
     # Six, not four: the ground state is a 3-fold triplet with a second triplet ~1e-5 above it.
     # `manifold_observable_values` diagonalises the observable inside each degenerate group, so a
     # request that cuts a group in half yields the eigenvalues of a *truncated* block -- which is
     # not a quantum number and reads as a spurious failure (measured <Sz> = -0.88).
-    es, psis = solver.get_eigenvectors(h_full, num_wanted=6, dense_cutoff=2000, slaterWeightMin=1e-12)
+    es, psis = solver.get_eigenvectors(
+        h_full, Within.thermal(solver.basis.tau), dense_cutoff=2000, slaterWeightMin=1e-12
+    )
 
     # A degenerate block is only defined up to a rotation inside the manifold, so the physical
     # values come from diagonalising the observable on it -- the same route calc_gs's own

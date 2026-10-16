@@ -25,6 +25,7 @@ from impurityModel.ed.basis_transcription import build_state
 from impurityModel.ed.BlockLanczosCore import block_inner
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
+from impurityModel.ed.eigensolvers import Lowest, Within
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -61,7 +62,7 @@ def system():
     return basis, sps.csr_matrix(h), U, evals
 
 
-def _solve(basis, h, U, warm=True, **kwargs):
+def _solve(basis, h, U, manifold, warm=True, dense_cutoff=10):
     """``get_eigenvectors`` on ``h``, warm-started from the exact ground manifold (as a converged CIPSI
     cycle hands over) or, with ``warm=False``, cold: the width-1 hash vector, as the cold-start solves."""
     psi_refs = None
@@ -74,7 +75,7 @@ def _solve(basis, h, U, warm=True, **kwargs):
         sps.csc_array(h)[:, list(basis.local_indices)], basis.comm if basis.is_distributed else None, basis.offset
     )
     return solver.get_eigenvectors(
-        dummy, psi_refs=psi_refs, h_matrix=h, dense_cutoff=10, slaterWeightMin=1e-12, **kwargs
+        dummy, manifold, psi_refs=psi_refs, h_matrix=h, dense_cutoff=dense_cutoff, slaterWeightMin=1e-12
     )
 
 
@@ -91,7 +92,7 @@ def _assert_orthonormal_and_ascending(basis, e_ref, psis):
 def test_a_degenerate_level_wider_than_the_block_comes_back_whole(system, warm):
     """Cold is the width-1 start of every cold-start solve: the probe must not inherit that width."""
     basis, h, U, evals = system
-    e_ref, psis = _solve(basis, h, U, warm=warm, num_wanted=10, max_energy=CUT)
+    e_ref, psis = _solve(basis, h, U, Within(CUT), warm=warm)
     e = np.real(e_ref)
     assert len(e) == N_WINDOW, (
         f"the thermal window holds {N_WINDOW} states ({GROUND} ground + {EXCITED} at {E_EXCITED}); "
@@ -102,17 +103,16 @@ def test_a_degenerate_level_wider_than_the_block_comes_back_whole(system, warm):
 
 
 @pytest.mark.mpi
-def test_a_count_cut_inside_a_degenerate_level_does_not_return_copies_twice(system):
-    """No cut, ``num_wanted=1`` -- ``calc_energy``'s occupation walk. The one state asked for belongs to
-    a 5-fold level. The completeness probe once ran here, locked only that one, "found" the other
-    computed copies in the complement and returned them next to their originals: 9 ground states for
-    a 5-fold level, Gram error 0.76. No-cut solves are no longer probed; this pins that the path
-    returns each state once."""
+def test_a_lowest_request_on_a_degenerate_level_returns_exactly_one_state(system):
+    """``Lowest`` -- the occupation walk and every double-counting sector solve. The one state asked
+    for belongs to a 5-fold level. The completeness probe once ran here, locked only that one,
+    "found" the other computed copies in the complement and returned them next to their originals:
+    9 ground states for a 5-fold level, Gram error 0.76. A ``Lowest`` request claims nothing about
+    the level's multiplicity and returns one state."""
     basis, h, U, _evals = system
-    e_ref, psis = _solve(basis, h, U, num_wanted=1, max_energy=None)
-    e = np.real(e_ref)
-    # At most the true multiplicity: complete is not promised without a cut (see get_eigenvectors).
-    assert np.sum(np.abs(e) < 1e-6) <= GROUND, np.round(e, 5)
+    e_ref, psis = _solve(basis, h, U, Lowest())
+    assert len(e_ref) == psis.width == 1
+    np.testing.assert_allclose(np.real(e_ref), [0.0], atol=1e-9)
     _assert_orthonormal_and_ascending(basis, e_ref, psis)
 
 
@@ -137,7 +137,7 @@ def test_a_level_just_above_the_cut_is_not_returned_twice():
     U = np.linalg.qr(rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n)))[0]
     h = (U * evals) @ U.conj().T
     h = sps.csr_matrix(0.5 * (h + h.conj().T))
-    e_ref, psis = _solve(basis, h, U, num_wanted=10, max_energy=CUT)
+    e_ref, psis = _solve(basis, h, U, Within(CUT))
     _assert_orthonormal_and_ascending(basis, e_ref, psis)
     assert np.sum(np.abs(np.real(e_ref) - edge) < 1e-6) <= 3
 
@@ -159,7 +159,7 @@ def test_a_complete_window_is_certified_without_a_fallback_solve(system, monkeyp
         return real(*args, **kwargs)
 
     monkeypatch.setattr(eigensolvers, "trlm", counting)
-    solver_eig = _solve(basis, h, U, num_wanted=4, max_energy=E_EXCITED / 2)
+    solver_eig = _solve(basis, h, U, Within(E_EXCITED / 2))
     np.testing.assert_allclose(np.real(solver_eig[0]), evals[:GROUND], atol=1e-9)
     assert calls == [False]
 
@@ -319,3 +319,41 @@ def test_within_thermal_is_the_energy_cut():
 
     assert Within.thermal(0.0025).max_energy == energy_cut(0.0025)
     assert Within(0.1) == Within(0.1) and Within(0.1) != Lowest()
+
+
+@pytest.mark.mpi
+def test_the_dense_branch_keeps_a_degenerate_group_straddling_the_window_edge_whole(system):
+    """The dense branch cuts with the same rule as the Krylov branch: a window edge inside the 10-fold
+    excited level absorbs the whole level instead of bisecting it (``eigensystem``'s own cut did)."""
+    basis, h, U, evals = system
+    ground = _solve(basis, h, U, Within(E_EXCITED / 2), dense_cutoff=10**6)[0]
+    assert len(ground) == GROUND
+    # The edge sits exactly on the excited level, where roundoff scatters its copies to either side of it.
+    inside = _solve(basis, h, U, Within(E_EXCITED), dense_cutoff=10**6)[0]
+    assert len(inside) == N_WINDOW
+    np.testing.assert_allclose(np.real(inside), evals[:N_WINDOW], atol=1e-9)
+
+
+@pytest.mark.mpi
+def test_a_lowest_result_is_read_back_not_solved_again(system, monkeypatch):
+    """``reuse_last`` serves a ``Lowest`` request from the previous ``Lowest`` solve (same generation)."""
+    import impurityModel.ed.cipsi_solver as cs
+
+    basis, h, U, _evals = system
+    solver = CIPSISolver(basis)
+    dummy = ManyBodyOperator({((0, "c"), (0, "a")): 0.0})
+    h_dist = DistributedSparseMatrix.from_scipy(
+        sps.csc_array(h)[:, list(basis.local_indices)], basis.comm if basis.is_distributed else None, basis.offset
+    )
+    calls = []
+    real = cs.solve_lowest
+    monkeypatch.setattr(cs, "solve_lowest", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+    # `reuse_last` refuses a caller-supplied h_matrix (it cannot vouch for the operator), so build it the normal way.
+    monkeypatch.setattr(solver, "_build_h_matrix", lambda H: h_dist)
+    first = solver.get_eigenvectors(dummy, Lowest(), dense_cutoff=10, slaterWeightMin=1e-12)
+    second = solver.get_eigenvectors(dummy, Lowest(), dense_cutoff=10, slaterWeightMin=1e-12, reuse_last=True)
+    assert len(calls) == 1
+    np.testing.assert_allclose(np.real(first[0]), np.real(second[0]))
+    # A `Lowest` result does not cover a window request.
+    solver.get_eigenvectors(dummy, Within(0.0), dense_cutoff=10, slaterWeightMin=1e-12, reuse_last=True)
+    assert solver.eig.manifold == Within(0.0)

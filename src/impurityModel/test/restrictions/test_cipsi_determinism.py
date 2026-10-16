@@ -29,7 +29,6 @@ from impurityModel.ed.cipsi_solver import (
     _eigen_tol,
     _energy_cut_indices,
 )
-
 from impurityModel.ed.eigensolvers import _splitmix64, cold_vector
 
 
@@ -166,8 +165,6 @@ def test_energy_cut_handles_edges():
     # unsorted input is handled
     idx, _ = _energy_cut_indices([5.0, 0.0, 0.1], max_energy=1.0)
     assert idx == [1, 2]
-    # no cut requested -> everything, nothing to certify
-    assert _energy_cut_indices([0.0, 9.0], max_energy=None) == ([0, 1], False)
 
 
 def _score(de2, e_ref):

@@ -19,6 +19,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.eigensolvers import Lowest, Within
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
@@ -64,34 +65,26 @@ def _h_op():
     return ManyBodyOperator({((i, "c"), (i, "a")): float(i + 1) for i in range(N_SPIN_ORBITALS)})
 
 
-def test_no_cut_dense_branch_returns_exactly_num_wanted_states():
-    """The dense branch is bounded by ``num_wanted`` when there is no cut.
+def test_lowest_on_the_dense_branch_returns_exactly_one_state():
+    """``Lowest`` on the dense branch builds one state, however large the basis.
 
-    ``eigensystem`` reads ``e_max=None`` as "no cutoff" and returns the *whole* dense spectrum,
-    so without a bound in ``get_eigenvectors`` a cut-less caller would build one ``ManyBodyState``
-    per determinant -- a cost set by the basis size rather than by the request. This is the branch
-    ``calc_energy`` takes on every sector basis below ``dense_cutoff``, and the tests above run
-    the Krylov branch (``dense_cutoff=1``), so it needs its own.
-
-    The slice is by count alone: with no cut there is no manifold to keep whole, and it can land
-    inside a degenerate group. That is sound here only because ``calc_energy``, the sole caller
-    of the no-cut path, keeps ``min(es)``.
+    ``eigensystem`` diagonalizes the whole space, so without a bound in ``get_eigenvectors`` a
+    ``Lowest`` caller would build one ``ManyBodyState`` per determinant -- a cost set by the basis
+    size rather than by the request. This is the branch every double-counting sector solve and
+    every occupation-walk trial takes on a basis below ``dense_cutoff``.
     """
     basis, solver = _make_solver()
-    h_op = _h_op()
 
-    e_ref, psi_refs = solver.get_eigenvectors(h_op, num_wanted=3, max_energy=None)
+    e_ref, psi_refs = solver.get_eigenvectors(_h_op(), Lowest())
 
-    assert len(e_ref) == psi_refs.width == 3
-    # H is diagonal in this basis, so the exact spectrum is the per-determinant occupation sum.
-    exact = sorted(sum(orb + 1 for orb in occ) for occ in itertools.combinations(range(N_SPIN_ORBITALS), 4))
-    np.testing.assert_allclose(sorted(e_ref.real), exact[:3])
+    assert len(e_ref) == psi_refs.width == 1
+    np.testing.assert_allclose(e_ref.real, _exact_energies()[:1])
 
 
-def test_no_cut_request_above_the_basis_size_is_clamped_not_an_error():
+def test_a_window_wider_than_the_spectrum_is_clamped_not_an_error():
     basis, solver = _make_solver()
 
-    e_ref, psi_refs = solver.get_eigenvectors(_h_op(), num_wanted=10 * len(basis), max_energy=None)
+    e_ref, psi_refs = solver.get_eigenvectors(_h_op(), Within(1e9))
 
     assert len(e_ref) == psi_refs.width == len(basis)
 
@@ -130,16 +123,14 @@ def _high_energy_refs(basis):
 def test_a_warm_block_in_the_wrong_sector_still_finds_the_true_ground_state():
     """The reachability oracle: warm columns are an eigenvector of the *highest* state."""
     basis, solver = _make_solver()
-    e_ref, psi_refs = solver.get_eigenvectors(
-        _h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, psi_refs=_high_energy_refs(basis)
-    )
+    e_ref, psi_refs = solver.get_eigenvectors(_h_op(), Within(CUT), dense_cutoff=1, psi_refs=_high_energy_refs(basis))
     assert abs(float(np.min(e_ref.real)) - _exact_energies()[0]) < 1e-9
     assert psi_refs.width == len(e_ref) > 0
 
 
 def test_a_cold_start_finds_the_true_ground_state():
     basis, solver = _make_solver()
-    e_ref, _ = solver.get_eigenvectors(_h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1)
+    e_ref, _ = solver.get_eigenvectors(_h_op(), Within(CUT), dense_cutoff=1)
     assert abs(float(np.min(e_ref.real)) - _exact_energies()[0]) < 1e-9
 
 
@@ -151,7 +142,7 @@ def test_a_non_finite_warm_block_falls_back_to_the_generic_start():
     """
     basis, solver = _make_solver()
     e_ref, psi_refs = solver.get_eigenvectors(
-        _h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, psi_refs=_uniform_refs(basis, complex(np.nan, 0.0))
+        _h_op(), Within(CUT), dense_cutoff=1, psi_refs=_uniform_refs(basis, complex(np.nan, 0.0))
     )
     assert abs(float(np.min(e_ref.real)) - _exact_energies()[0]) < 1e-9
     assert psi_refs.width == len(e_ref) > 0
@@ -159,7 +150,5 @@ def test_a_non_finite_warm_block_falls_back_to_the_generic_start():
 
 def test_a_zero_warm_block_needs_no_fallback_because_the_generic_columns_carry_it():
     basis, solver = _make_solver()
-    e_ref, _ = solver.get_eigenvectors(
-        _h_op(), num_wanted=1, max_energy=CUT, dense_cutoff=1, psi_refs=_uniform_refs(basis, 0.0)
-    )
+    e_ref, _ = solver.get_eigenvectors(_h_op(), Within(CUT), dense_cutoff=1, psi_refs=_uniform_refs(basis, 0.0))
     assert abs(float(np.min(e_ref.real)) - _exact_energies()[0]) < 1e-9

@@ -26,6 +26,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import cipsi_solver
 from impurityModel.ed.cipsi_solver import _EIGENSTATE_PAD, CIPSISolver, _manifold_request
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
 
@@ -120,13 +121,14 @@ def _run_expand(comm, request_rule, tau):
     cipsi_solver._manifold_request = request_rule
     try:
         # dense_cutoff=1 forces the Krylov/TRLM branch, the only one the request rule reaches.
-        solver.expand(_diagonal_hop(), de2_min=1e-12, dense_cutoff=1, slaterWeightMin=0)
+        solver.expand(
+            _diagonal_hop(), Within.thermal(solver.basis.tau), de2_min=1e-12, dense_cutoff=1, slaterWeightMin=0
+        )
     finally:
         cipsi_solver._manifold_request = saved
     es, _psis = solver.get_eigenvectors(
         _diagonal_hop(),
-        num_wanted=len(solver.psi_refs),
-        max_energy=cipsi_solver.energy_cut(tau),
+        Within.thermal(tau),
         dense_cutoff=1,
         slaterWeightMin=0,
         psi_refs=solver.psi_refs,

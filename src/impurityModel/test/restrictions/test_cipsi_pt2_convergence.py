@@ -11,6 +11,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import groundstate
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
+from impurityModel.ed.eigensolvers import Lowest, Within
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -50,10 +51,8 @@ def _expand(comm=None, **kwargs):
         delta_conduction_occ={0: 1},
     )
     solver = CIPSISolver(basis)
-    solver.expand(_hamiltonian(), dense_cutoff=1000, **kwargs)
-    es, _ = solver.get_eigenvectors(
-        _hamiltonian(), num_wanted=1, max_energy=0.0, dense_cutoff=1000, psi_refs=solver.psi_refs
-    )
+    solver.expand(_hamiltonian(), Within.thermal(solver.basis.tau), dense_cutoff=1000, **kwargs)
+    es, _ = solver.get_eigenvectors(_hamiltonian(), Lowest(), dense_cutoff=1000, psi_refs=solver.psi_refs)
     return float(np.min(es)), basis.size, solver
 
 
@@ -140,7 +139,7 @@ def _capped_solver(cap):
         delta_conduction_occ={0: 1},
     )
     solver = CIPSISolver(basis)
-    solver.expand(_hamiltonian(), dense_cutoff=1000)
+    solver.expand(_hamiltonian(), Within.thermal(solver.basis.tau), dense_cutoff=1000)
     return solver
 
 

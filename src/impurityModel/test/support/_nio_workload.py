@@ -11,6 +11,7 @@ from collections import OrderedDict
 
 import numpy as np
 
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.test.support.repo_data import repo_h0_dir
 
 
@@ -316,6 +317,7 @@ def build_ground_state_workload(
     solver = CIPSISolver(basis)
     solver.expand(
         h,
+        Within.thermal(solver.basis.tau),
         dense_cutoff=dense_cutoff,
         de2_min=de2_min,
         slaterWeightMin=slater_weight_min,

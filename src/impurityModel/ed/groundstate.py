@@ -7,6 +7,7 @@ from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
 from impurityModel.ed.basis_restrictions import build_excited_restrictions
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.gs_report import report_ground_state
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.manybody_basis import Basis
@@ -183,7 +184,7 @@ def build_basis_and_solver(
         weighted_restrictions=weighted_restrictions,
     )
     solver = CIPSISolver(basis)
-    solver.truncate_initial(h_op, dense_cutoff=dense_cutoff)
+    solver.truncate_initial(h_op, Within.thermal(tau), dense_cutoff=dense_cutoff)
 
     basis.restrictions = build_excited_restrictions(basis, h_op, psis=None, es=None, slater_weight_min=slaterWeightMin)
     return basis, solver
@@ -399,6 +400,7 @@ def _solve_sector_core(
         with solver_trace.timed("expand"):
             solver.expand(
                 h_op,
+                Within.thermal(basis.tau),
                 dense_cutoff=dense_cutoff,
                 # The walk defaults to a per-determinant floor (SECTOR_WALK_DE2_MIN) and no
                 # residual criterion, which is right when only the ordering of charge sectors is
@@ -418,8 +420,7 @@ def _solve_sector_core(
         with solver_trace.timed("eigensolve"):
             es, eigen_psis = solver.get_eigenvectors(
                 h_op,
-                num_wanted=num_wanted,
-                max_energy=max_energy,
+                Within(0.0 if max_energy is None else max_energy),
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
                 psi_refs=solver.psi_refs,
@@ -1125,6 +1126,7 @@ def solve_ground_state(
     with solver_trace.timed("expand", stage="gs_refine"):
         solver.expand(
             h_op,
+            Within.thermal(basis.tau),
             dense_cutoff=dense_cutoff,
             de2_min=de2_min,
             e_pt2_tol=e_pt2_tol,
@@ -1142,8 +1144,7 @@ def solve_ground_state(
         # ended on a certified solve of this determinant set, that result is read instead.
         es, psis = solver.get_eigenvectors(
             h_op,
-            num_wanted=num_wanted,
-            max_energy=energy_cut,
+            Within(energy_cut),
             dense_cutoff=dense_cutoff,
             slaterWeightMin=slaterWeightMin,
             psi_refs=solver.psi_refs,

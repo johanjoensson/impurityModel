@@ -63,6 +63,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.BiCGSTAB import block_bicgstab
+from impurityModel.ed.eigensolvers import Lowest
 from impurityModel.ed.greens_function import _build_excited_restrictions
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, applyOp, inner
 
@@ -194,7 +195,7 @@ def gf_workload():
 
     es, psis = solver.get_eigenvectors(
         h,
-        num_wanted=1,
+        Lowest(),
         dense_cutoff=DENSE_CUTOFF,
         slaterWeightMin=SLATER_WEIGHT_MIN,
         psi_refs=solver.psi_refs,

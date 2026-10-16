@@ -29,6 +29,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.test.support.cubic_d_shell import cubic_d_shell
 
@@ -67,7 +68,13 @@ def expanded():
         verbose=False,
     )
     solver = CIPSISolver(basis)
-    solver.expand(h_full, dense_cutoff=DENSE_CUTOFF, de2_min=1e-10, slaterWeightMin=SLATER_WEIGHT_MIN)
+    solver.expand(
+        h_full,
+        Within.thermal(solver.basis.tau),
+        dense_cutoff=DENSE_CUTOFF,
+        de2_min=1e-10,
+        slaterWeightMin=SLATER_WEIGHT_MIN,
+    )
     yield solver, h_full
 
 
@@ -92,8 +99,7 @@ def test_the_krylov_branch_returns_the_whole_ground_manifold_and_stops_at_the_cu
 
     uncut, _ = solver.get_eigenvectors(
         h_full,
-        num_wanted=6,
-        max_energy=50 * CUT,
+        Within(50 * CUT),
         dense_cutoff=DENSE_CUTOFF,
         slaterWeightMin=SLATER_WEIGHT_MIN,
         psi_refs=solver.psi_refs,
@@ -107,8 +113,7 @@ def test_the_krylov_branch_returns_the_whole_ground_manifold_and_stops_at_the_cu
 
     es, psis = solver.get_eigenvectors(
         h_full,
-        num_wanted=6,
-        max_energy=CUT,
+        Within(CUT),
         dense_cutoff=DENSE_CUTOFF,
         slaterWeightMin=SLATER_WEIGHT_MIN,
         psi_refs=solver.psi_refs,
@@ -131,10 +136,10 @@ def test_the_krylov_and_dense_branches_agree_on_the_manifold(expanded):
     and the comparison would fail for a reason that has nothing to do with the Krylov path.
     """
     solver, h_full = expanded
-    kwargs = dict(num_wanted=6, max_energy=50 * CUT, slaterWeightMin=SLATER_WEIGHT_MIN, psi_refs=solver.psi_refs)
+    kwargs = dict(slaterWeightMin=SLATER_WEIGHT_MIN, psi_refs=solver.psi_refs)
 
-    krylov, _ = solver.get_eigenvectors(h_full, dense_cutoff=DENSE_CUTOFF, **kwargs)
-    dense, _ = solver.get_eigenvectors(h_full, dense_cutoff=10 * len(solver.basis), **kwargs)
+    krylov, _ = solver.get_eigenvectors(h_full, Within(50 * CUT), dense_cutoff=DENSE_CUTOFF, **kwargs)
+    dense, _ = solver.get_eigenvectors(h_full, Within(50 * CUT), dense_cutoff=10 * len(solver.basis), **kwargs)
 
     k = np.sort(np.asarray(krylov).real)[:MANIFOLD]
     d = np.sort(np.asarray(dense).real)[:MANIFOLD]
