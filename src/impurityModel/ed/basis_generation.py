@@ -70,8 +70,7 @@ def generate_initial_basis(
         basis a single charge sector, which is what every energy comparison needs: ``H``
         conserves ``N``, so a basis spanning several sectors makes ``calc_energy(N0)`` report
         the minimum over the window rather than the energy of ``N0``. Only a caller that
-        deliberately wants a multi-sector space -- :func:`dc_criteria.build_union_space`, which
-        sweeps ``H(mu) = H(0) - mu*N`` on one fixed space -- should set it non-zero. It is a
+        deliberately wants a multi-sector space should set it non-zero. It is a
         different concept from ``mixed_valence``, which fluctuates the *impurity* charge against
         the bath at fixed total.
 
@@ -258,7 +257,7 @@ def generate_initial_basis(
             if patterns
         )
         # Indented one level: this is the detail *behind* a row of the occupation-search table
-        # in `groundstate.find_ground_state_basis`, which is re-entered once per trial sector.
+        # in `groundstate.find_ground_state_sector`, which is re-entered once per trial sector.
         print(
             f"    seed basis: {len(basis)} determinants, {n_electrons} electrons, "
             f"impurity occupation {_window_str(lo_tot, hi_tot)}"

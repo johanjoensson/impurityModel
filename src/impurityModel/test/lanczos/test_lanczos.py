@@ -3,8 +3,8 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix, build_state
-from impurityModel.ed.BlockLanczos import block_lanczos_cy
-from impurityModel.ed.BlockLanczosArray import Reort, eigsh
+from impurityModel.ed.BlockLanczos import block_lanczos
+from impurityModel.ed.BlockLanczosArray import eigsh
 from impurityModel.ed.eigensolvers import eigensystem
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
@@ -52,7 +52,7 @@ def test_lancos():
                     initial_basis=list(psi.keys()),
                     verbose=True,
                 )
-                alpha, beta, _, _ = block_lanczos_cy([psi], ManyBodyOperator(Hop), excited_basis, converged, max_iter=1)
+                alpha, beta, _ = block_lanczos([psi], ManyBodyOperator(Hop), excited_basis, converged, max_iter=1)
                 alphas[irrep].append(alpha)
                 betas[irrep].append(beta)
 
@@ -94,7 +94,7 @@ def test_lancos_mpi():
     betas = {"t2g": [], "eg": []}
 
     def converged(alphas, betas, *args, **kwargs):
-        # We only want to test the first iteration, because block_lanczos_cy
+        # We only want to test the first iteration, because block_lanczos
         # will otherwise expand the subspace beyond the initial basis,
         # changing the exact eigenvalues from the 1x1 projection.
         return alphas.shape[0] >= 1
@@ -124,7 +124,7 @@ def test_lancos_mpi():
                     verbose=True,
                     comm=MPI.COMM_WORLD,
                 )
-                alpha, beta, _, _ = block_lanczos_cy([psi], ManyBodyOperator(Hop), excited_basis, converged, max_iter=1)
+                alpha, beta, _ = block_lanczos([psi], ManyBodyOperator(Hop), excited_basis, converged, max_iter=1)
                 alphas[irrep].append(alpha)
                 betas[irrep].append(beta)
 
@@ -144,7 +144,7 @@ def test_lancos_mpi():
     print(f"{alphas=}\n{betas=}")
 
 
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort_mode", [False, True])
 def test_block_eigsh(reort_mode):
     eigvals = np.array(np.arange(6))
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -166,13 +166,13 @@ def test_block_eigsh(reort_mode):
         ManyBodyState({state: 1 / np.sqrt(len(lb) / 2) for state in lb[:3]}),
         ManyBodyState({state: 1 / np.sqrt(len(lb) / 2) for state in lb[3:]}),
     ]
-    alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
+    alphas, betas, _ = block_lanczos(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort_mode", [False, True])
 def test_block_eigsh_mpi(reort_mode):
     eigvals = np.array(np.arange(6))
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -207,12 +207,12 @@ def test_block_eigsh_mpi(reort_mode):
     psi0_blocks = [ManyBodyState.from_states([psi]) for psi in psi0]
     psi0 = [blk.to_states()[0] for blk in basis.redistribute_psis(*psi0_blocks)]
     print(f"RANK {basis.comm.rank} psi0: {psi0}", flush=True)
-    alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
+    alphas, betas, _ = block_lanczos(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
 
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort_mode", [False, True])
 def test_block_lanczos_cy(reort_mode):
     eigvals = np.array(np.arange(6))
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -229,13 +229,13 @@ def test_block_lanczos_cy(reort_mode):
         return alphas.shape[0] > 5
 
     psi0 = [ManyBodyState({state: 1 / np.sqrt(len(basis.local_basis)) for state in basis.local_basis})]
-    alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
+    alphas, betas, _ = block_lanczos(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort_mode", [False, True])
 def test_block_lanczos_cy_mpi(reort_mode):
     eigvals = np.array(np.arange(6))
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -252,14 +252,14 @@ def test_block_lanczos_cy_mpi(reort_mode):
         return alphas.shape[0] > 5
 
     psi0 = [ManyBodyState({state: 1 / np.sqrt(len(states)) for state in basis.local_basis}, width=1)]
-    alphas, betas, _, _ = block_lanczos_cy(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
+    alphas, betas, _ = block_lanczos(psi0, ManyBodyOperator(hop), basis, converged, reort=reort_mode)
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
 
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort_mode", [False, True])
 def test_get_block_Lanczos_matrices_and_GS(reort_mode):
-    from impurityModel.ed.BlockLanczosArray import block_lanczos_array, calculate_thermal_gs
+    from impurityModel.ed.BlockLanczosArray import block_lanczos
 
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -279,19 +279,15 @@ def test_get_block_Lanczos_matrices_and_GS(reort_mode):
     def converged(alphas, betas, *args, **kwargs):
         return alphas.shape[0] > 5
 
-    alphas, betas, _Q = block_lanczos_array(psi0, H_mat[:, basis.local_indices], converged, reort=reort_mode)[:3]
+    alphas, betas, _Q = block_lanczos(psi0, H_mat[:, basis.local_indices], converged=converged, reort=reort_mode)[:3]
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
 
-    # test calculate_thermal_gs
-    ev_gs, _ = calculate_thermal_gs(H_mat[:, basis.local_indices], block_size=1, e_max=0.1, comm=MPI.COMM_SELF)
-    np.testing.assert_allclose(np.min(ev_gs), 0.5, atol=1e-5)
-
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("reort_mode", [Reort.NONE, Reort.FULL, Reort.PERIODIC, Reort.PARTIAL, Reort.SELECTIVE])
+@pytest.mark.parametrize("reort_mode", [False, True])
 def test_get_block_Lanczos_matrices_and_GS_mpi(reort_mode):
-    from impurityModel.ed.BlockLanczosArray import block_lanczos_array, calculate_thermal_gs
+    from impurityModel.ed.BlockLanczosArray import block_lanczos
 
     eigvals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
     states = [b"\x80", b"\x40", b"\x20", b"\x10", b"\x08", b"\x04"]
@@ -311,15 +307,11 @@ def test_get_block_Lanczos_matrices_and_GS_mpi(reort_mode):
     def converged(alphas, betas, *args, **kwargs):
         return alphas.shape[0] > 5
 
-    alphas, betas, _Q = block_lanczos_array(
-        psi0, H_mat[:, basis.local_indices], converged, comm=MPI.COMM_WORLD, reort=reort_mode
+    alphas, betas, _Q = block_lanczos(
+        psi0, H_mat[:, basis.local_indices], converged=converged, comm=MPI.COMM_WORLD, reort=reort_mode
     )[:3]
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(ev, eigvals[: len(ev)])
-
-    # test calculate_thermal_gs
-    ev_gs, _ = calculate_thermal_gs(H_mat[:, basis.local_indices], block_size=1, e_max=0.1, comm=MPI.COMM_WORLD)
-    np.testing.assert_allclose(np.min(ev_gs), 0.5, atol=1e-5)
 
 
 @pytest.mark.mpi
@@ -335,7 +327,7 @@ def test_get_block_Lanczos_array_matvec_survives_an_empty_rank():
     comm = MPI.COMM_WORLD
     if comm.size < 3:
         pytest.skip("needs >= 3 ranks to guarantee an empty rank with 2 determinants")
-    from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+    from impurityModel.ed.BlockLanczosArray import block_lanczos
 
     eigvals = np.array([0.5, 1.0])
     states = [b"\x80", b"\x40"]
@@ -356,7 +348,9 @@ def test_get_block_Lanczos_array_matvec_survives_an_empty_rank():
     def converged(alphas, betas, *args, **kwargs):
         return alphas.shape[0] > 1
 
-    alphas, betas, _Q = block_lanczos_array(psi0, H_mat[:, basis.local_indices], converged, comm=comm, reort="full")[:3]
+    alphas, betas, _Q = block_lanczos(psi0, H_mat[:, basis.local_indices], converged=converged, comm=comm, reort=True)[
+        :3
+    ]
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(sorted(ev), sorted(eigvals)[: len(ev)])
 
@@ -366,13 +360,13 @@ def test_get_block_Lanczos_array_sparse_matvec_survives_an_empty_rank():
     """Same as the dense-kernel test above, but through the *sparse* branch
     (``apply_sparse_csr_nogil`` in ``BlockLanczosArray.pyx``) -- the kernel Phase 1 actually
     rewrote (``row_begin``/``row_count`` row-chunked reduce-scatter). The dense test above never
-    reaches this code path: ``block_lanczos_array_cy`` dispatches on ``sps.issparse(h_op)``, and
+    reaches this code path: ``block_lanczos`` takes a ``DistributedSparseMatrix``, and
     it is the sparse/CSR path production runs (``cipsi-partial-runs-array-kernel``).
     """
     comm = MPI.COMM_WORLD
     if comm.size < 3:
         pytest.skip("needs >= 3 ranks to guarantee an empty rank with 2 determinants")
-    from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+    from impurityModel.ed.BlockLanczosArray import block_lanczos
 
     eigvals = np.array([0.5, 1.0])
     states = [b"\x80", b"\x40"]
@@ -384,7 +378,7 @@ def test_get_block_Lanczos_array_sparse_matvec_survives_an_empty_rank():
         verbose=True,
         comm=comm,
     )
-    H_mat = build_sparse_matrix(basis, hop)[:, basis.local_indices]
+    H_mat = build_sparse_matrix(basis, hop)
     local_n = len(basis.local_basis)
     psi0 = np.zeros((local_n, 1), dtype=complex)
     if local_n:
@@ -393,7 +387,7 @@ def test_get_block_Lanczos_array_sparse_matvec_survives_an_empty_rank():
     def converged(alphas, betas, *args, **kwargs):
         return alphas.shape[0] > 1
 
-    alphas, betas, _Q = block_lanczos_array(psi0, H_mat, converged, comm=comm, reort="full")[:3]
+    alphas, betas, _Q = block_lanczos(psi0, H_mat, converged=converged, comm=comm, reort=True)[:3]
     ev, _ = eigsh(alphas, betas, eigvals_only=True, de=10)
     assert np.allclose(sorted(ev), sorted(eigvals)[: len(ev)])
 
@@ -409,6 +403,7 @@ def test_block_apply_sparse_matches_dense_reference_with_an_empty_rank():
     if comm.size < 2:
         pytest.skip("needs >= 2 ranks to exercise a genuinely empty rank")
     from impurityModel.ed.BlockLanczosCore import block_apply
+    from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 
     rank = comm.rank
     H_global = np.array([[2.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 4.0]], dtype=complex)
@@ -420,7 +415,9 @@ def test_block_apply_sparse_matches_dense_reference_with_an_empty_rank():
     local_cols = [0, 1, 2] if rank == 1 else []
     import scipy.sparse as sps
 
-    H_local = sps.csr_matrix(H_global[:, local_cols]) if local_cols else sps.csr_matrix((3, 0), dtype=complex)
+    H_local = DistributedSparseMatrix.from_scipy(
+        sps.csc_array(H_global[:, local_cols]) if local_cols else sps.csc_array((3, 0), dtype=complex), comm
+    )
     v_local = v_global[local_cols, :] if local_cols else np.zeros((0, 1), dtype=complex)
 
     class _FakeBasis:
@@ -430,40 +427,4 @@ def test_block_apply_sparse_matches_dense_reference_with_an_empty_rank():
     fake_basis.comm = comm
     result = block_apply(H_local, v_local, basis=fake_basis, mpi=True)
     expected_local = expected[local_cols, :] if local_cols else np.zeros((0, 1), dtype=complex)
-    np.testing.assert_allclose(result, expected_local, atol=1e-12)
-
-
-def test_block_apply_mpi_preserves_a_real_dtype():
-    """``/code-review`` found the row-chunked reduce-scatter forcing ``dtype=complex``
-    unconditionally, doubling memory for a real-valued ``H``/``V`` where the non-mpi branch
-    (plain ``H @ V_arr``) and the pre-Phase-1 code both preserved the natural result dtype.
-    Runs under any rank count (the ``mpi=True`` chunked branch triggers regardless of
-    ``comm.size``, see ``_block_ops.pxi``'s guard), so no ``@pytest.mark.mpi``/skip needed.
-    """
-    import scipy.sparse as sps
-
-    from impurityModel.ed.BlockLanczosCore import block_apply
-
-    comm = MPI.COMM_WORLD
-    rank = comm.rank
-    H_global = np.array([[2.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 4.0]], dtype=np.float64)
-    v_global = np.array([1.0, 2.0, 3.0], dtype=np.float64).reshape(-1, 1)
-    expected = H_global @ v_global
-
-    # Rank 0 owns every column/row, every other rank owns none -- a valid partition at any
-    # comm.size (including 1, where rank 0 is the only rank), unlike passing the full arrays
-    # unpartitioned on every rank (block_apply's `Allgather` would then see local_N = 3 on
-    # every rank and derive a wrong, oversized global_N).
-    local_cols = [0, 1, 2] if rank == 0 else []
-    H_local = sps.csr_matrix(H_global[:, local_cols]) if local_cols else sps.csr_matrix((3, 0), dtype=np.float64)
-    v_local = v_global[local_cols, :] if local_cols else np.zeros((0, 1), dtype=np.float64)
-
-    class _FakeBasis:
-        pass
-
-    fake_basis = _FakeBasis()
-    fake_basis.comm = comm
-    result = block_apply(H_local, v_local, basis=fake_basis, mpi=True)
-    assert result.dtype == np.float64, result.dtype
-    expected_local = expected[local_cols, :] if local_cols else np.zeros((0, 1), dtype=np.float64)
     np.testing.assert_allclose(result, expected_local, atol=1e-12)

@@ -17,7 +17,6 @@ from impurityModel.ed.ManyBodyUtils import (
     SlaterDeterminant,
     SparseKrylovDense,
     inner_multi,
-    reorth_cgs2_dense,
 )
 from impurityModel.test.support.testtol import inner_atol
 
@@ -265,22 +264,6 @@ def test_store_slice_block_across_chunk_boundary():
     assert out.to_states() == ref.to_states()
 
 
-def test_store_slice_block_used_by_q_slice():
-    """``slice_cols`` (shared by TRLM/IRLM) dispatches a ``SparseKrylovDense`` operand
-    through ``slice_block`` -- exercise that dispatch directly, not just the primitive."""
-    from impurityModel.ed.block_view import slice_cols as _q_slice
-
-    rng = np.random.default_rng(33)
-    states = _random_states(rng, 6, 25)
-    store = SparseKrylovDense()
-    store.append(states)
-
-    ref = ManyBodyState.from_states(store[1:4])
-    out = _q_slice(store, 1, 4)
-    assert isinstance(out, ManyBodyState)
-    assert out.to_states() == ref.to_states()
-
-
 def test_store_gram_matches_states():
     """Materialized store columns give the same Gram matrix as the original states."""
     rng = np.random.default_rng(13)
@@ -306,6 +289,21 @@ def _orthonormal_columns(rng, n_cols, n_dets):
     return _dense_combine(cols, np.linalg.inv(L).conj().T)
 
 
+def _cgs2_reference(wp, selected):
+    """Two classical Gram-Schmidt passes of ``wp`` against ``selected``; returns (out, last overlap)."""
+    out = list(wp)
+    overlap = None
+    for _ in range(2):
+        overlap = inner_multi(selected, out)
+        projected = []
+        for j, w in enumerate(out):
+            for i, q in enumerate(selected):
+                w = w - q * overlap[i, j]
+            projected.append(w)
+        out = projected
+    return out, overlap
+
+
 @pytest.mark.parametrize(
     "cols",
     [
@@ -316,12 +314,12 @@ def _orthonormal_columns(rng, n_cols, n_dets):
     ],
     ids=["all", "contiguous", "gapped", "single"],
 )
-def test_store_reort_matches_reorth_cgs2_dense(cols):
-    """The streaming per-chunk CGS2 must reproduce the independent dense reference.
+def test_store_reort_matches_the_state_arithmetic_reference(cols):
+    """The streaming per-chunk CGS2 must reproduce an independent reference.
 
-    ``reorth_cgs2_dense`` materializes Q on the merged support and runs one zgemm pair;
-    ``store.reort`` streams the same projection chunk by chunk. They may differ only by
-    accumulation order.
+    The reference is two classical Gram-Schmidt passes written with plain ``ManyBodyState``
+    arithmetic; ``store.reort`` streams the same projection chunk by chunk. They may differ
+    only by accumulation order.
     """
     rng = np.random.default_rng(42)
     n_dets, n_cols, p = 120, 37, 3
@@ -338,7 +336,7 @@ def test_store_reort_matches_reorth_cgs2_dense(cols):
     wp_blk = ManyBodyState.from_states([ManyBodyState(dict(s.items())) for s in wp])
     out_new_blk, o_new = store.reort(wp_blk, cols, 2, None)
     out_new = out_new_blk.to_states()
-    out_ref, o_ref = reorth_cgs2_dense([ManyBodyState(dict(s.items())) for s in wp], selected, 2, None)
+    out_ref, o_ref = _cgs2_reference([ManyBodyState(dict(s.items())) for s in wp], selected)
 
     np.testing.assert_allclose(o_new, o_ref, atol=inner_atol(n_dets, np.max(np.abs(o_ref))))
     for a, b in zip(out_new, out_ref):

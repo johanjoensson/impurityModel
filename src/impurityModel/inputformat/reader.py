@@ -436,6 +436,10 @@ def _unknown_key(where, name, declared, version, warnings):
     so the risk here is a typo silently doing nothing for six hours. The minor version tells
     the two apart: at or below ours, an unknown key cannot be a future key, so it is a typo.
     """
+    retired = schema.RETIRED_KEYS.get((where, name))
+    if retired is not None:
+        warnings.append(f"[{where}]: {name!r} is retired: {retired}.")
+        return
     removed = schema.REMOVED_KEYS.get((where, name))
     if removed is not None:
         raise InputError(f"[{where}]: {name!r} is no longer a key: {removed}")

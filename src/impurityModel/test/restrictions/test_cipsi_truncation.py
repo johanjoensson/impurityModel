@@ -8,6 +8,7 @@ from mpi4py import MPI
 
 from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.groundstate import calc_gs
 from impurityModel.ed.manybody_basis import (
     Basis,
@@ -406,10 +407,8 @@ def _expanded_e0(threshold, comm=None):
         delta_conduction_occ={0: 2},
     )
     solver = CIPSISolver(basis)
-    solver.expand(_siam_operator(), de2_min=1e-8, dense_cutoff=1000)
-    es, _ = solver.get_eigenvectors(
-        _siam_operator(), num_wanted=2, max_energy=1.0, dense_cutoff=1000, psi_refs=solver.psi_refs
-    )
+    solver.expand(_siam_operator(), Within.thermal(solver.basis.tau), de2_min=1e-8, dense_cutoff=1000)
+    es, _ = solver.get_eigenvectors(_siam_operator(), Within(1.0), dense_cutoff=1000, psi_refs=solver.psi_refs)
     return float(np.min(es)), basis.size, solver.truncation_report
 
 
@@ -487,8 +486,11 @@ def test_de2_denominator_uses_energy_gap_for_candidates_above_ref():
     solver = CIPSISolver(basis)
 
     hpsi = ManyBodyState({d1: v, d2: v})  # H|psi_ref> projected onto the candidates
-    local_Djs, de2 = solver._calc_de2(H, [hpsi], np.array([e0]))
-    score = {det: float(np.abs(de2[0, j])) for j, det in enumerate(local_Djs)}
+    from impurityModel.ed.cipsi_solver import _score_candidates
+
+    local_Djs, overlaps, e_Dj = solver._candidate_overlaps_and_energies(H, ManyBodyState.from_states([hpsi]))
+    scores = _score_candidates(overlaps, np.array([e0]), e_Dj, [[0]])
+    score = {det: float(scores[j]) for j, det in enumerate(local_Djs)}
 
     # Finite and set by the gap: closer candidate (|dE|=1) scores twice the farther (|dE|=2).
     assert score[d1] == pytest.approx(v**2 / abs(e0 - e1), rel=1e-9)
@@ -639,7 +641,7 @@ def test_de2_min_selects_by_pt2_contribution():
     solver = CIPSISolver(basis)
 
     psi_ref = [ManyBodyState({d0: 1.0})]
-    new = solver.determine_new_Dj(np.array([0.0]), psi_ref, H, de2_min=1e-3, gen_ops=None)
+    new = solver.determine_new_Dj(np.array([0.0]), psi_ref, H, de2_min=1e-3)
     assert d1 in new  # score ~ 0.5^2 / 1 = 0.25 >= 1e-3
     assert d2 not in new  # score ~ (1e-4)^2 / 100 = 1e-12 < 1e-3
 
@@ -703,15 +705,14 @@ def test_calc_gs_no_truncation_report_when_uncapped():
 
 
 # ---------------------------------------------------------------------------
-# GS_SELECTION_PRUNE: the slater_weight_min cut acts on summed amplitudes
+# The slater_weight_min cut of the selection round acts on summed amplitudes
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("prune, kept", [("after_sum", True), ("before_sum", False)])
-def test_selection_cuts_the_summed_amplitude_not_each_chunks_partial(prune, kept, monkeypatch):
+def test_selection_cuts_the_summed_amplitude_not_each_chunks_partial(monkeypatch):
     """A candidate fed by reference rows in different chunks keeps the amplitude they add up to.
 
-    Rows a and b each send 0.6 x cutoff to D. Cut per chunk (``before_sum``, the old order), D vanishes
+    Rows a and b each send 0.6 x cutoff to D. Cut per chunk (the removed ``before_sum`` order), D vanishes
     from both partials; how rows split into chunks (and over ranks) then decides which candidates exist,
     which made the CIPSI basis differ at 1, 2 and 3 ranks on CrI3. Cut after the sum, D survives at 1.2 x
     cutoff whatever the split.
@@ -727,31 +728,20 @@ def test_selection_cuts_the_summed_amplitude_not_each_chunks_partial(prune, kept
 
     solver = CIPSISolver.__new__(CIPSISolver)
     solver.basis = _Serial()
-    monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", "2")  # one reference row per chunk
-    monkeypatch.setenv("GS_SELECTION_PRUNE", prune)
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "2")  # one reference row per chunk
     out = solver._apply_block_and_redistribute(hop, psi, cutoff)
     state = out.to_states()[0]
-    assert (d in state) == kept
-    if kept:
-        assert abs(complex(state[d][0]) - 1.2 * cutoff) < 1e-15
-
-
-def test_selection_prune_rejects_an_unknown_value(monkeypatch):
-    monkeypatch.setenv("GS_SELECTION_PRUNE", "sometimes")
-    solver = CIPSISolver.__new__(CIPSISolver)
-    psi = ManyBodyState.from_states([ManyBodyState({_det([0]): 1.0 + 0j})])
-    with pytest.raises(ValueError, match="GS_SELECTION_PRUNE"):
-        solver._apply_block_and_redistribute(ManyBodyOperator({}), psi, 1e-3)
+    assert d in state
+    assert abs(complex(state[d][0]) - 1.2 * cutoff) < 1e-15
 
 
 @pytest.mark.mpi
 @pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs reference rows on two different ranks")
-@pytest.mark.parametrize("prune", ["after_sum", "before_sum"])
-def test_selection_candidates_do_not_depend_on_which_rank_owns_the_reference_rows(prune, monkeypatch):
+def test_selection_candidates_do_not_depend_on_which_rank_owns_the_reference_rows(monkeypatch):
     """Two reference rows owned by different ranks each send 0.6 x cutoff to the same candidate.
 
     Summed, the candidate carries 1.2 x cutoff and must be selected, as it is on one rank. Cut per
-    rank before the sum (``before_sum``) it vanished: the selected basis then changed with the rank
+    rank before the sum (the removed ``before_sum``) it vanished: the selected basis then changed with the rank
     count (CrI3 at a binding cap: a different basis at 1, 2, 3 and 4 ranks, E0 up to 3.7e-5 apart).
     """
     comm = MPI.COMM_WORLD
@@ -775,14 +765,10 @@ def test_selection_candidates_do_not_depend_on_which_rank_owns_the_reference_row
     (psi,) = basis.redistribute_psis(ManyBodyState.from_states([seed]))
     solver = CIPSISolver.__new__(CIPSISolver)
     solver.basis = basis
-    monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", "1")
-    monkeypatch.setenv("GS_SELECTION_PRUNE", prune)
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
     out = solver._apply_block_and_redistribute(hop, psi, cutoff)
     local = {key: complex(row[0]) for key, row in out.to_states()[0].items()} if len(out) else {}
     merged = {}
     for part in comm.allgather(local):
         merged.update(part)
-    if prune == "after_sum":
-        assert abs(abs(merged[d]) - 1.2 * cutoff) < 1e-15
-    else:
-        assert d not in merged  # the old order: each rank's 0.6 x cutoff was cut before the sum
+    assert abs(abs(merged[d]) - 1.2 * cutoff) < 1e-15

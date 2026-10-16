@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczos import _keep_global_top
+from impurityModel.ed.BlockLanczosCore import _keep_global_top
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 

@@ -20,8 +20,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import config
 from impurityModel.ed.basis_transcription import build_sparse_matrix, build_state
-from impurityModel.ed.BlockLanczos import block_lanczos_cy
-from impurityModel.ed.BlockLanczosArray import resolve_reort
+from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.gf_primitives import _distributed_seed_qr, _trim_blocks, guarded_proxy
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import available_bytes_per_rank, format_bytes
@@ -292,7 +291,7 @@ def _shifted_tridiag_solutions(alphas, betas, block_widths, b0, zs):
     ``O(n_z * n_T * p^2)`` -- negligible next to one Lanczos step.
 
     Args:
-        alphas, betas, block_widths: coefficients as returned by ``block_lanczos_cy``
+        alphas, betas, block_widths: coefficients as returned by ``block_lanczos``
             (padded; trimmed here). ``betas[-1]`` is the residual coupling used for
             the residual norms.
         b0: ``(w_0, n_rhs)`` projection of the right-hand-side block onto the first
@@ -349,7 +348,7 @@ def _shifted_tridiag_solutions(alphas, betas, block_widths, b0, zs):
 def _no_convergence_check(alphas, betas, verbose=False, block_widths=None, **kwargs):
     """Convergence callback that never fires: convergence is judged by the caller instead.
 
-    Matches ``block_lanczos_cy``'s actual convergence-callback contract -- it calls
+    Matches ``block_lanczos``'s actual convergence-callback contract -- it calls
     ``converged_fn(alphas, betas, verbose=verbose, block_widths=block_widths + [n_curr])``
     on *every* iteration (see ``BlockLanczos.pyx``), not just ``(alphas, betas, verbose)``.
     Used by :class:`KrylovShiftedResolvent`, whose ``solve`` judges convergence itself
@@ -393,21 +392,18 @@ class KrylovShiftedResolvent:
     round that would exceed the bound before convergence declines the whole solve
     (``solve`` returns ``None``, the caller falls back to its per-point solver).
 
-    ``reort`` defaults to ``"full"``: the reconstruction multiplies the shifted
+    ``reort`` defaults to ``True`` (full reorthogonalization): the reconstruction multiplies the shifted
     tridiagonal solution back into the retained Krylov store ``Q``, and the per-round
     convergence gate trusts the projected residual ``||beta_m y_m||`` -- both are only
     faithful while ``Q`` is orthonormal, i.e. while ``T`` really is ``Q^H H Q``. FULL
     reorthogonalizes each new block against the whole store, which this recycler keeps in
     memory anyway (``store_krylov=True``), so it costs no extra storage and keeps the
-    residual estimate honest. PARTIAL's approximate ``sqrt(eps)`` estimator is mismatched
-    with a full store: on a long single-seed recurrence it was observed to leave the
-    reconstruction near ``1e-6`` while the projected residual still reported convergence
-    at ``atol`` (worse than doing no reorthogonalization at all) -- see the regression test
-    ``test_krylov_shifted_resolvent_long_recurrence``.
+    residual estimate honest (see the regression test
+    ``test_krylov_shifted_resolvent_long_recurrence``).
     """
 
-    def __init__(self, reort="full"):
-        self._reort = resolve_reort(reort)
+    def __init__(self, reort=True):
+        self._reort = bool(reort)
 
     def solve(self, basis, hOp, rhs, zs, slaterWeightMin=0, atol=1e-6, verbose=False, cap_info=None):
         """Solutions ``[x_k(z) for k] for z in zs`` as ``ManyBodyState`` lists, or ``None``.
@@ -470,11 +466,11 @@ class KrylovShiftedResolvent:
 
         # Resume in growing budget rounds (the block_Green_sparse pattern): convergence
         # is judged between rounds on the exact shifted residuals, not by the kernel.
-        alphas = betas = Q = W = widths = None
+        alphas = betas = Q = widths = None
         Y = None
         budget = max(int(getattr(basis, "size", 0)) // max(psi_arr.width, 1), 8)
         while True:
-            alphas, betas, Q, W, widths, status = block_lanczos_cy(
+            alphas, betas, Q, widths, status = block_lanczos(
                 psi_arr,
                 hOp,
                 lanczos_basis,
@@ -488,7 +484,6 @@ class KrylovShiftedResolvent:
                 alphas_init=alphas,
                 betas_init=betas,
                 Q_init=Q,
-                W_init=W,
                 block_widths_init=widths,
                 store_krylov=True,
                 # The recycled right-hand side is the RIXS Cartesian polarization block;

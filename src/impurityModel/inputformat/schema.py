@@ -50,6 +50,16 @@ REMOVED_KEYS = {
     ),
 }
 
+#: Keys that were once meaningful and are now ignored with a warning, so an input written for an
+#: older version still runs. Unlike :data:`REMOVED_KEYS` (a hard error: the line would have done
+#: something that no longer happens), these name a choice the solver now makes itself.
+RETIRED_KEYS = {
+    ("solver", "reort"): (
+        "the Green's-function path always runs without reorthogonalization and the ground-state "
+        "eigensolver always reorthogonalizes fully; the key is ignored"
+    ),
+}
+
 
 class _Unset:
     """Sentinel for "no default"; distinct from ``None``, which is a meaningful default."""
@@ -274,26 +284,8 @@ _DE2_MIN_DOC = (
 #: taken as that sector's lowest eigenvalue: how those sector solves are run. ``e_pt2_tol`` and
 #: ``de2_min`` belong here for a second reason: ``fixed_occupation`` solves on the production
 #: ground-state path and takes [many_body_basis]'s values, never an override (parity with the
-#: self-energy run). Deliberately NOT in :data:`_DC_SEARCH_KEYS`:
-#: ``fixed_occupation`` pins the thermal impurity occupation itself, so narrowing the manifold
-#: would change its criterion rather than the cost of evaluating it, and
-#: :func:`dc_criteria.fixed_occupation_dc` accordingly does not accept the argument. Declaring it
-#: there anyway would make the key parse and then do nothing -- the RSPt double-counting line
-#: rejects the same spelling on the same grounds, and the two front-ends share one DC vocabulary.
+#: self-energy run). Deliberately NOT in :data:`_DC_SEARCH_KEYS`: ``fixed_occupation`` takes no override.
 _DC_ENERGY_DIFFERENCE_KEYS = (
-    Key(
-        "ground_state_manifold",
-        Kind.BOOL,
-        False,
-        "Ask each charge sector for its degenerate ground multiplet alone instead of the whole "
-        "thermal window at [temperature].tau. This criterion reads only the lowest energy of "
-        "each sector, so on a model whose N +- 1 spectrum is dense inside that window the "
-        "widening is bought and discarded -- SrMnO3 cubic stacks four solves per sector, ending "
-        "at 160 states. Off by default because it also switches the criterion's REPORTED "
-        "impurity occupation from the thermal average to the ground state's; those agree only "
-        "where occupation_spread is negligible, which is not so on SrMnO3. It moves the reported "
-        "mu resolution, not the root. Check the spread from a run with this off first.",
-    ),
     Key(
         "e_pt2_tol",
         Kind.ENERGY,
@@ -1081,16 +1073,6 @@ _TABLE_LIST += [
                 "is always kept; the rest is renormalised). Absent keeps every state of the "
                 "eigensolver's energy window, each of which costs a full set of Green's-function units.",
                 minimum=0.0,
-            ),
-            Key(
-                "reort",
-                Kind.AUTO_ENUM,
-                "auto",
-                "Block-Lanczos reorthogonalization. 'auto' is the solver's own default, which "
-                "is NOT one mode: it means NONE on the Green's-function path and PARTIAL on "
-                "the eigensolver path. Writing a mode also moves the derived determinant "
-                "budget, since retention switches the memory model to its worst case.",
-                choices=("auto", "none", "partial", "periodic", "selective", "full"),
             ),
             Key("dense_cutoff", Kind.COUNT, 500, "Use a dense eigensolver below this matrix size.", minimum=1),
             Key("sparse_green", Kind.BOOL, True, "Use the sparse block-Lanczos Green's-function path."),

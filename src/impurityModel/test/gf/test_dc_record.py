@@ -358,32 +358,19 @@ def _cap_line(record):
     return line
 
 
-def test_the_record_distinguishes_a_converged_cap_from_a_ceiling_limited_one():
-    """A cap the ladder settled on and a cap it merely stopped at must not read the same.
-
-    They carry identical ``dc_cap``/``dc_cap_drift``/``dc_cap_parity``, so before ``dc_cap_status``
-    a run that converged at 512,000 determinants and one that ran out of rungs there produced the
-    same record -- while ``DC_CAP_LADDER_MAX_RUNGS``'s own documentation asks an operator to act on
-    exactly that difference.
-    """
+def test_the_record_distinguishes_an_unbound_cap_from_a_bound_one_and_a_retreat():
+    """The three exits of the cap resolution must not read the same: nothing bound (a larger cap cannot
+    move the answer), a sector bound (the drift is measured against the half-cap run), and a ceiling that
+    could not be evaluated at all (the dc is truncation-limited)."""
     common = {"dc_cap": 512_000, "dc_cap_drift": 6.4e-5, "dc_cap_parity": 1.35e8}
-    settled = _cap_line({**common, "dc_cap_status": "settled"})
-    exhausted = _cap_line({**common, "dc_cap_status": "rung_budget"})
+    unbound = _cap_line({**common, "dc_cap_status": "unbound"})
+    bound = _cap_line({**common, "dc_cap_status": "cap_bound"})
+    retreat = _cap_line({**common, "dc_cap_status": "memory_retreat"})
 
-    assert "calibrated against tol" in settled and "NOT converged" not in settled
-    assert "NOT converged" in exhausted and "DC_CAP_LADDER_MAX_RUNGS" in exhausted
-    assert settled != exhausted
-
-
-def test_the_memory_ceiling_is_not_reported_as_a_rung_shortage():
-    """The two unsettled exits call for opposite responses, so they must not share a message.
-
-    ``rung_budget`` has memory left and only needs a larger rung budget; ``memory_cap`` is already
-    at the largest cap the run can afford, and raising the budget would do nothing.
-    """
-    line = _cap_line({"dc_cap": 512_000, "dc_cap_status": "memory_cap", "dc_cap_parity": 512_000})
-    assert "memory ceiling" in line
-    assert "DC_CAP_LADDER_MAX_RUNGS" not in line
+    assert "no sector was stopped" in unbound and "NOT converged" not in unbound
+    assert "half-cap" in bound and "NOT converged" not in bound
+    assert "NOT converged" in retreat and "halved" in retreat
+    assert len({unbound, bound, retreat}) == 3
 
 
 def test_a_record_without_a_status_still_reads_as_before():

@@ -4,7 +4,7 @@ When more MPI ranks exist than the basis distributes onto, some rank can own
 *zero* local basis states.  In that case ``H[:, local_cols]`` is an empty
 ``(global_N, 0)`` slice and ``scipy.tocsr()`` chooses **int32** index arrays
 (it picks the minimal index dtype for small/empty matrices), whereas non-empty
-ranks get **int64**.  ``block_lanczos_array_cy`` binds the CSR ``indices``/
+ranks get **int64**.  ``block_lanczos`` binds the CSR ``indices``/
 ``indptr`` to ``cdef long[:]`` (int64) memoryviews, so the empty rank used to
 raise a buffer-dtype-mismatch ``ValueError`` and leave the routine -- while the
 other ranks blocked forever on the in-loop collective ``Allreduce`` -> MPI
@@ -26,7 +26,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import Reort, _build_full_T, block_lanczos_array
+from impurityModel.ed.BlockLanczosArray import _build_full_T, block_lanczos
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
 
 
@@ -67,14 +67,13 @@ def _run_distributed_array_lanczos(H_global, comm, form="csr", width=1):
 
     # Full Krylov space (global_N steps) reproduces every eigenvalue; a wider block closes
     # the space in fewer steps and stops on the invariant subspace.
-    alphas, betas, _Q, *_ = block_lanczos_array(
+    alphas, betas, _Q, *_ = block_lanczos(
         psi0=psi0_local,
         h_op=h_local,
         converged=lambda a, b, **kw: False,
         max_iter=global_N,
         verbose=False,
-        reort=Reort.FULL,
-        return_W=False,
+        reort=True,
         comm=comm,
     )
 

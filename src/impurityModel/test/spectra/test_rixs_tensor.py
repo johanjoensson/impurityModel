@@ -25,6 +25,7 @@ from impurityModel.ed import polarization, rixs, spectra
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
 from impurityModel.ed.symmetries import impurity_symmetry_rotation, rotate_hamiltonian
+from impurityModel.test.support.gf_switches import set_gf_switches
 
 # orbitals 0,1 = impurity "3d" (block key 2); orbital 2 = core "2p" (block key 1)
 N_ORB = 3
@@ -756,7 +757,7 @@ def test_rixs_r1_gmres_escalation_rescues_stagnated_bicgstab(monkeypatch):
     psis, es, dets, states, vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
     # Force the per-point fallback path (dense cache and recycler both declined).
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")  # the sparse per-point solve; frozen: test_gf_bicgstab_frozen.py
+    set_gf_switches(monkeypatch, support_freeze="0")  # the sparse per-point solve; frozen: test_gf_bicgstab_frozen.py
     monkeypatch.setenv("GF_SECTOR_DENSE_MAX", "0")
     monkeypatch.setenv("GF_KRYLOV_RECYCLE_MAX_BYTES", "0")
 

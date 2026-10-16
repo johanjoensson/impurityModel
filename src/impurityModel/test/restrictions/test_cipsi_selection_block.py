@@ -37,16 +37,14 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, Slat
 
 @pytest.fixture(autouse=True)
 def _one_shot_apply(monkeypatch):
-    """Pin the one-shot apply. ``GS_APPLY_ROW_CHUNKS`` defaults to 4 (row chunks, each redistributed
+    """Pin the one-shot apply. ``APPLY_ROW_CHUNKS`` defaults to 4 (row chunks, each redistributed
     and accumulated in turn), which changes the floating-point summation order of a candidate
     reached from rows in different chunks -- a last-bit difference that ``test_cipsi_apply_chunking``
     covers to tolerance. The comparison here is bit-for-bit against the unchunked round trip, so
-    it runs on the unchunked path. Its oracle prunes each rank's partial before the sum, so it also
-    pins ``GS_SELECTION_PRUNE=before_sum``: under the default ``after_sum`` the two agree only while
-    no summed magnitude falls between ``cutoff / size`` and ``cutoff`` (true of this fixture by luck,
-    not by design)."""
-    monkeypatch.setenv("GS_APPLY_ROW_CHUNKS", "1")
-    monkeypatch.setenv("GS_SELECTION_PRUNE", "before_sum")
+    it runs on the unchunked path. Its oracle prunes each rank's partial before the sum, which agrees
+    with the cut on the summed amplitude only while no summed magnitude falls between
+    ``cutoff / size`` and ``cutoff`` (true of this fixture by luck, not by design)."""
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
 
 
 IMPURITY_ORBITALS = {0: [[0, 1]]}

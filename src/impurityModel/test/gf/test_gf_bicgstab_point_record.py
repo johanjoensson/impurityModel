@@ -18,10 +18,11 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import solver_trace
+from impurityModel.ed import gf_solvers, solver_trace
 from impurityModel.ed.gf_solvers import block_Green_bicgstab
 from impurityModel.ed.greens_function import _gf_signed_axes
 from impurityModel.test.support.gf_oracles import DELTA, MATSUBARA, OMEGA, _run_driver, _seed_basis, _seeds, _siam_6
+from impurityModel.test.support.gf_switches import set_gf_switches
 
 ATOL = 1e-10
 
@@ -31,7 +32,7 @@ def _default_warm_history(monkeypatch):
     # Knobs are read lazily, so an exported value would silently change what these tests measure.
     monkeypatch.delenv("GF_BICGSTAB_WARM_HISTORY", raising=False)
     # The sparse per-point records; the frozen path has test_gf_bicgstab_frozen.py.
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
+    set_gf_switches(monkeypatch, support_freeze="0")
 
 
 def _solve(z_axes):
@@ -55,7 +56,7 @@ def test_cold_start_rebuilds_on_the_seed_support_alone(monkeypatch):
     """History 0 must rebuild every point on exactly the seed support, and still give the same G."""
     z_axes = _gf_signed_axes(MATSUBARA, OMEGA, 0, DELTA)
     G_warm, warm = _solve(z_axes)
-    monkeypatch.setenv("GF_BICGSTAB_WARM_HISTORY", "0")
+    monkeypatch.setattr(gf_solvers, "_GF_BICGSTAB_WARM_HISTORY", 0)
     G_cold, cold = _solve(z_axes)
 
     assert all(p["rebuild_size"] == p["seed_size"] for p in cold["points"])
@@ -74,7 +75,7 @@ def test_cold_start_rebuilds_on_the_seed_support_alone(monkeypatch):
 
 def _unit_notes(gf_method, comm):
     with solver_trace.tracing() as trace:
-        _run_driver(gf_method, "partial", comm=comm)
+        _run_driver(gf_method, True, comm=comm)
     return trace.of_kind("gf_unit_basis")
 
 

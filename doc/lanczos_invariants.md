@@ -1,4 +1,10 @@
-# Block Lanczos / TRLM / IRLM invariants
+# Block Lanczos / TRLM invariants
+
+> **Status (2026-10 core redesign):** IRLM, PARTIAL/SELECTIVE/PERIODIC reorthogonalization, the
+> PRO machinery, `ea16.py`, `_reort.pxi` and the separate array kernel were deleted; there is one
+> `lanczos_step` (`_lanczos_step.pxi`) and `reort` is a boolean (full reorthogonalization or none).
+> Remaining mentions of the deleted pieces are kept as a record of *why* the surviving code looks as it does.
+
 
 Landing place for the incident knowledge stripped out of inline comments during the
 R2 comment-triage pass of the Lanczos/IRLM/TRLM redesign (see the plan at
@@ -28,7 +34,7 @@ bookkeeping) a bare `list[ManyBodyState]`.
 **Rule: get the block branch right BEFORE the list branch, in every dispatcher.** A
 `ManyBodyState`'s own `len()` is its row count (dict-like, matching `len(dict)`), not
 its column/width count — silently wrong for "how many Krylov columns are here", not a
-raise. `block_cols` (`ed/block_view.py`) is the canonical column-count helper that gets this
+raise. `block_cols` (`BlockLanczosCore`) is the canonical column-count helper that gets this
 right for array / `ManyBodyState` / plain list uniformly; every restart-loop width
 computation goes through it rather than a bare `len()`.
 
@@ -238,50 +244,9 @@ So: the constraint is real and worth respecting when reasoning about a *new* cod
 a floor on `p` is **unmotivated pending evidence**, not merely unmeasured. If it is ever
 revisited, the measurement to beat is the table above.
 
-## PRO estimator honesty
-
-`estimate_orthonormality` (`BlockLanczosArray.pyx`) tracks the Paige-Simon partial
-reorthogonalization (PRO) estimate `W` through the signed three-term recurrence, plus
-two additive terms: a rounding-injection magnitude and a local-rounding noise floor.
-The full derivation, with the exact measured numbers, is kept verbatim in that
-function's comments (`BlockLanczosArray.pyx:266-395`) rather than duplicated here —
-read it there when touching the estimator. Three incidents worth knowing before you do:
-
-1. **The magnitude-over-signed-propagation trap.** The three-term propagation term is
-   *signed* on purpose: the `O(‖β‖)` structural terms cancel to `O(eps‖β‖)` exactly as
-   the true overlaps do, and that cancellation IS the physics. A magnitude version (sum
-   of `|terms|`, tried as an "upper bound") destroys it — the estimate jumps to
-   `O(‖β‖/σmin) ~ O(1)` after one step and compounds exponentially: measured
-   **1e15–1e62x over-prediction** on the NiO ground state, flagging every block on every
-   iteration and silently degrading PARTIAL to FULL's cost.
-2. **The noise-floor sign/scale trap.** An earlier floor `eps*(β_i + β_j)` omitted the
-   `1/σmin(β_i)` factor and *shrank* with `β_i` — exactly backwards, since a small `β_i`
-   (near-invariant block) is where the new vector is most rounding-dominated. The floor
-   vanished exactly when the true loss was worst, the bad-block trigger never fired, and
-   PARTIAL degenerated to no reorthogonalization at all.
-3. **The `omega_{i+1,i}` seed / warm-start trap.** The seed term must bound `‖H‖`, not
-   `‖β_0‖` — they coincide only for a cold start (`‖H q_0‖ ~ ‖H‖` for a random `q_0`).
-   Warm-started from converged eigenvectors, `‖β_0‖` is the eigenpair residual (measured
-   2.2e-9 on the NiO ground state against `‖H‖ ~ 1.1e2`); at `i=0` the old expression
-   collapsed to `β_0^{-H} @ β_0 ~ I`, estimating `eps` where the truth is
-   `eps*‖H‖/‖β_0‖ ~ 1e-5`. The trigger never fired, PARTIAL silently did nothing, and
-   the recurrence diverged ~30 steps later (measured `‖Q^H Q - I‖ = 11.3`, `‖β‖` 8x
-   FULL's). Fixed by seeding from `max(‖α_0‖, ‖β_0‖)` directly.
-
-**The "HONEST reset" fix** (`apply_reort`, `_reort.pxi`): after a bad-block
-reorthogonalization pass, the post-reort `W` entry used to be written as `EPS` — a lie.
-Against a Krylov set whose own mutual orthogonality has degraded to `delta`, CGS2
-leaves a residual `~ delta * |overlap| >> EPS`. Writing `EPS` blinded the estimator
-right when it mattered (both live `W` rows get chopped on consecutive acted steps), and
-the true loss regrew geometrically from the un-modeled residual until the recurrence
-diverged (measured: estimate `1e-9` while the true overlap was `1e-2`). Fixed by
-writing the final CGS pass's measured (Allreduced) overlap `O_last` instead — a
-measured, conservative bound on the residual that is `~EPS`-scale in the healthy
-regime, so the trigger cadence there is unchanged.
-
 ## Warm-start / resume protocol
 
-`block_lanczos_cy` resumes from block `k0 = len(alphas_init)` when `alphas_init`,
+`block_lanczos` resumes from block `k0 = len(alphas_init)` when `alphas_init`,
 `betas_init` and `Q_init` are all given together (`None` for all three starts fresh —
 partial combinations are a caller error). The warm-start `Q` blocks are sliced out of
 `Q_init` and the existing W-estimator (`W_init`) is reused as-is. If `W_init` is `None`
@@ -309,7 +274,7 @@ every rank must still call it. Covered under MPI (`-n 2`/`-n 3`, including the
 empty-rank case) by `test_krylov_store.py::test_store_reort_mpi_matches_serial_and_handles_empty_rank`
 (added in R0c).
 
-**`store_krylov=False`** (requires `reort == 'none'` and no `locked` set) skips this
+**`store_krylov=False`** (requires `reort=False` and no `locked` set) skips this
 store entirely: the accumulated basis is not retained, and the returned `Q_basis` holds
 only the last two blocks (the previous block plus the residual) — exactly the tail the
 warm-start protocol above needs to resume. `alphas`/`betas` are bit-identical to a
@@ -317,28 +282,22 @@ warm-start protocol above needs to resume. `alphas`/`betas` are bit-identical to
 is dropped. On resume with `store_krylov=False`, `Q_init` is interpreted as that
 two-block tail, split by `block_widths_init[-1]`.
 
-## Thick-restart coefficient validity
+## Thick-restart coefficients
 
-Both TRLM restart-coefficient shortcuts (`_trlm_core`, `BlockLanczosArray.pyx`) require
-`Q^H Q = I` on the retained Ritz block, and cost nothing when it holds:
+TRLM (`ed/trlm.py`, array blocks only) fully reorthogonalizes every new vector against the stored basis
+(two CGS passes), so `Q^H Q = I` holds to working precision on the retained Ritz block and the textbook
+thick-restart coefficients are exact up to roundoff and cost nothing: the retained block's projected
+operator is `diag(theta_keep)`, the spike is `β_res @ Y_last`, and the carried-over residual block `q_m` is
+already the whole residual (rank `≤ p`) by the recurrence identity `H Q = Q T + q_m β_res E_last^H`. There is
+no Rayleigh-Ritz rebuild arm; a retained block that lost rank raises. `T_full` is still sized off `p_resid`
+(the actual residual width), never off the constant `p`, so a deflating residual cannot overrun it.
 
-- **Healthy case** (`‖Q^H Q - I‖ ≤ RESTART_ORTH_TOL` at full rank): the textbook
-  coefficients follow from the recurrence identity
-  `H Q = Q T + q_m β_res E_last^H` *together with* `Q^H Q = I` — the retained block's
-  projected operator is `diag(theta_keep)`, the spike is `β_res @ Y_last`, and the
-  carried-over residual block `q_m` is already the whole residual (rank `≤ p`).
-- **Otherwise**: the retained block lost semi-orthogonality (and possibly rank).
-  `Q^H Q ≠ I`, so *neither* textbook coefficient is valid — both derive from it — and
-  rescaling them by the orthonormalizing factor only amplifies the error by
-  `1/σmin`. The fallback is an explicit Rayleigh-Ritz step on the orthonormalized
-  retained basis (`T_lead = Q_ret^H H Q_ret`, `q_m` the orthonormalized residual,
-  `cross = q_m^H H Q_ret`), which assumes nothing about `Q_basis`, at the cost of
-  `k_ret` matvecs. `reort=NONE` needs this routinely (measured `‖Q^H Q - I‖ = 1.0` on a
-  spectrum with a 1e-9 cluster); the semi-orthogonal modes rarely take it.
+The `locked` projection (restricting a solve to the complement of converged vectors) runs *after* the
+full reorthogonalization in `lanczos_step` and last before normalization in the restart loop: the stored
+basis carries an O(eps) locked component, and any projection done before the CGS passes is undone by them.
 
-Without `Q^H Q = I`, the residual is no longer rank `≤ p`, so `q_m` can be up to
-`k_ret` wide — `T_full` is sized off `p_resid` (the actual residual width), never off
-the constant `p`, or the deflating branch overruns `T_full`.
+**Window mode** (`trlm.Window`) retains as many Ritz vectors as an energy window needs and converges the
+in-window pairs plus one bracket pair above the edge; see `doc/plans/gs_redesign.md`.
 
 ## complex64 measurements
 
@@ -373,9 +332,7 @@ incident above, so the combination is unusable regardless.
   `lst[len(lst) - 1]` instead of `lst[-1]` on its cdef-typed lists — `wraparound=False`
   segfaults on negative indexing into a typed buffer rather than raising, so that pattern
   is load-bearing for the file it's compiled in.
-- `BlockLanczosArray.pyx` has exactly one `[-1]` site (`calculate_thermal_gs`, indexing a
-  plain Python/numpy array via `__getitem__`, unaffected by either directive) and no
-  negative indexing into any `cdef`-typed memoryview or C array.
+- `BlockLanczosArray.pyx` has no negative indexing into any `cdef`-typed memoryview or C array.
 
 Unifying either direction has a cost with no offsetting benefit: turning `wraparound`/
 `boundscheck` off on the array kernel buys nothing today (no negative-index site exists
@@ -386,139 +343,7 @@ arithmetic; turning them on for `BlockLanczos.pyx` would require rewriting the
 for the single-step MBS kernel, permissive/safe for the array kernel and the primitives
 both kernels share.
 
-## Known open issues
+## Removed material
 
-**1. [FIXED, R8] PARTIAL orthogonality degraded with horizon length on a
-clustered/near-degenerate spectrum — root cause: no term in the estimate can see it,
-not a calibration error.** R8a instrumented `estimate_orthonormality`'s three additive
-terms (rounding injection, signed three-term propagation, noise floor) with a per-step,
-per-block predicted-vs-*measured* overlap trace
-(`_block_ops.pxi`'s `audit_bad_blocks` neighbor, driven from `BlockLanczosArray.pyx`;
-env-gated `BLOCKLANCZOS_REORT_TRACE=1`, `.lanczos_golden/lanczos_partial_probe.py
---trace`). R8b's finding, on the clustered_near_deg probe (N=2000, 8 clusters, 320
-iterations):
-
-- The **diagonal (self, `j == i`) rounding-injection term** — `w_bar[i,...] =
-  eps*n_scale*anorm*|beta_i_dag_inv|` — stays flat at `~1.5e-14` to `~5e-14` for the
-  *entire* 320-iteration run, because `beta_i`'s conditioning never meaningfully
-  degrades on this spectrum (`sigma_min(beta_i)` measured `0.58`–`2.3` throughout). The
-  true measured self-overlap grows geometrically from `~1e-15` to `~6e-3` over the same
-  run — a gap that reaches **12 orders of magnitude** by iteration ~300. This is not a
-  scale-calibration bug: the diagonal term has *no channel* that depends on accumulated
-  history at all, and the classical Paige/Simon theory treats the adjacent overlap as
-  pure local rounding by construction (the same reason `estimate_orthonormality` special-
-  cases `j == i` rather than running it through the signed recurrence) — so the physical
-  mechanism causing growth on this spectrum (slow correlated leakage between
-  near-degenerate Ritz directions) has no representation in the model at all, not a
-  mis-tuned one.
-- The **off-diagonal (propagated) rows** also under-predict, though less severely and one
-  step later (worst measured ratio `predicted/measured` ≈ `1.1e-7` at late iterations,
-  vs. the diagonal's `~1e-12`) — downstream of the same gap, since the diagonal value one
-  step later becomes an ordinary off-diagonal input to the signed recurrence via `term5`.
-- Two *local* corrections were tried and measured to fail cleanly, which is itself
-  informative: (a) a term modeling self-coupling from already-known contamination
-  (`anorm * max_j |W[0,j,...]|`, or a quadratically-suppressed variant) reproduces
-  *existing* off-diagonal information rather than adding new signal, and at any scaling
-  tested drove both spectra to near-100% trigger without closing the gap (clustered still
-  `~1e-7`, not `≤ REORT_TOL`); (b) a bounded multiplicative safety factor on the
-  propagated rows, sized up to the healthy `gf_style` probe's full measured headroom
-  (`26.4x`, the global minimum off-diagonal ratio over its own 320-iteration run), still
-  only reached `~4e-2` on clustered at `320` iterations — nowhere near `REORT_TOL`, at
-  the cost of ~100% trigger on both spectra. **No local (per-block-norm-derived) term
-  bounds this spectrum's true loss**; the gap the estimator has to close is orders of
-  magnitude larger than any budget a healthy spectrum's headroom can license.
-
-**Fix (R8c): `audit_bad_blocks`, a periodic ground-truth escalation, not an estimator
-term.** Every `AUDIT_PERIOD` (= 3) steps, PARTIAL/SELECTIVE measure the *true* overlap of
-the pending candidate against every historical block (one `block_inner` call, the same
-cost `apply_reort`'s own bad-block cleaning already pays when it acts) instead of trusting
-the estimate for that one step. Any block whose measured overlap exceeds `BAD_BLOCK_TOL`
-has its `W[-1,j]` row **overwritten with the measurement** — the audit does not itself
-project the candidate; it corrects the estimate and forces (`force=True`) the immediately
-following `apply_reort`/`finish_reort` call to see it, reusing that already-tested
-projection + renormalize + beta-fold path rather than duplicating it. Array representation
-only (`is_array(Q_list)`) — arbitrary historical-column slicing has no established API on
-the MBS/`SparseKrylovDense` path yet; MBS callers get `audited=False` unconditionally
-(strictly additive, never a regression there — see the cross-kernel note below).
-
-`AUDIT_PERIOD` was chosen from a period sweep, not the cheapest value that happens to
-pass once: period 3 holds `‖Q^HQ-I‖ ≤ 1.1e-9` (>10x below `REORT_TOL`) at *every* horizon
-in `{80,160,240,320}` on clustered_near_deg, while period 4 already fails the 320 horizon
-(`8.9e-8`, above `REORT_TOL`) — the margin between holding and failing is a handful of
-steps, not a wide plateau. Cost is real (`~80%` trigger rate on clustered_near_deg at this
-period, vs. FULL's 100%) but the healthy `gf_style` probe is essentially unaffected
-regardless of period (13–15/320 acted at every period tested 2–20, matching the no-audit
-baseline of 13/320) — the audit measures a true overlap that simply never exceeds
-`BAD_BLOCK_TOL` there, so it never fires.
-
-Post-fix, both probe spectra hold semi-orthogonality flat across the full horizon sweep:
-
-| max_iter | clustered_near_deg `‖Q^HQ-I‖` | gf_style `‖Q^HQ-I‖` |
-|---|---|---|
-| 80 | 5.5e-11 | 3.0e-13 |
-| 160 | 6.4e-10 | 2.4e-11 |
-| 240 | 8.7e-10 | 3.3e-11 |
-| 320 | 1.1e-9 | 5.1e-11 |
-
-`test_reort_oracle.py::test_partial_reort_holds_semiorthogonality[clustered_near_deg]`
-(R8d) is the regression test this escaped: its spectrum was rescaled from N=400/80
-iterations (below the failure's onset — a 320-iteration run at N=400 saturates the
-problem dimension around iteration ~200, which is a *different*, dimension-ceiling
-failure mode, not this one) to N=2000/320 iterations matching the probe, and its
-assertion tightened from `1e3*SQRT_EPS` to `SQRT_EPS` (`== REORT_TOL`) — confirmed to
-fail (`0.132` vs `1.49e-8`) with the audit disabled and pass with it enabled.
-
-**Known asymmetry left by this fix: the two kernels' PARTIAL numerics now diverge more
-than before, on any workload where both run PARTIAL.** Only the array kernel
-(`BlockLanczosArray.pyx`) got the audit; the MBS kernel (`BlockLanczos.pyx` /
-`_lanczos_step.pxi`) still carries the *same* underlying under-prediction, unaddressed.
-This was already true before R8 (the two kernels' PARTIAL trigger conditions have never
-been guaranteed to produce bit-identical convergence — different algorithms, TRLM
-restarts vs. a single continuous sweep) but confirmed independent of R8:
-`test_block_lanczos_perf.py::test_partial_sparse_kernel_bench`'s cross-kernel `E0`
-comparison (sparse MBS `block_lanczos_cy` PARTIAL vs. array `thick_restart_block_lanczos`
-PARTIAL/TRLM on the NiO 10-bath workload) fails identically (`0.000313` vs. its `1e-4`
-tolerance, to 15 significant figures in both `E0` values) whether the audit is enabled or
-disabled — a pre-existing gap this work did not introduce and does not fix. Extending
-`audit_bad_blocks` to the MBS/`SparseKrylovDense` representation (feasible in principle:
-`SparseKrylovDense.reort(wp, cols=None, n_passes=1, comm)` returns the true Allreduced
-overlap of the *un-mutated* caller's `wp` against every stored column, the same
-measurement the array path uses) is future work, not done here.
-
-**2. MBS `test_no_ghost_bands` floor invariant is seed/mode-dependent, not
-root-caused (found 2026-08-18, R0c).** `test_no_ghost_bands_ritz_floor`
-(`test_no_ghost_bands.py`) asserts "no Ritz value below the true spectral minimum"
-without the module's usual xfail, but is currently restricted to the `path="array"`
-parametrization. On the `ManyBodyState` path, on the same 12-state tight-restart
-fixture:
-
-- With the fixture's own all-positive `np.random.rand()` seed (cosine between the two
-  p=2 seed columns ≈ 0.75, condition ≈ 2.6), IRLM/`Reort.NONE` on `exact_degenerate`
-  diverges outright: `|β|=4.5e4` at iteration 4, Ritz value **-1775** (the true minimum
-  is 1.0).
-- Swapping to a signed `randn` seed (matching the array path and
-  `lanczos_golden.py`'s `_mbs_psi0`) removes that divergence.
-- Even with the signed seed, `near_degenerate` under `Reort.NONE`/`PERIODIC` still
-  lands Ritz values at **-72.4** and **-0.21**; `PARTIAL`/`FULL`/`SELECTIVE` settle to
-  benign near-machine-zero artifacts (`~1e-15`) instead — consistent with this module's
-  documented "spurious zero Ritz value from a partially-filled T_full when an exact
-  degeneracy exceeds the block size" limitation, not a new divergence.
-
-Net: the MBS path's story on this fixture is seed-condition-dependent *and*
-reort-mode-dependent, narrower than a blanket bug but not yet root-caused. Not blocking
-R1-R7 (pure code motion); revisit before or during R7, which touches the shared step
-policy this floor test exercises.
-
-**3. [FIXED, R9] MBS kernel still double-gated SELECTIVE cadence after R7.** R7's item 2
-("SELECTIVE cadence", see the R7 section above) unified the two kernels on a single
-cadence gate living inside `selective_orthogonalize` and dropped the array kernel's
-redundant outer `it % period` check, but left the MBS kernel's own copy
-(`_lanczos_step.pxi`) in place — `if reort_mode == Reort.SELECTIVE and it > 0 and it %
-reort_period == 0:` still wrapped the call, on top of `selective_orthogonalize`'s
-identical internal gate. Functionally inert (both checks receive the same `it` and
-`reort_period`, so they always agreed — this was redundancy, not a bug), but exactly the
-asymmetry the adversarial-review pass was looking for. Dropped the outer cadence clause
-(kept the `reort_mode == Reort.SELECTIVE` mode check), matching the array kernel's
-already-verified reasoning from R7. Bit-for-bit confirmed via
-`.lanczos_golden/lanczos_golden.py --check` (27/27 cases, including every SELECTIVE
-case) and the PARTIAL/SELECTIVE probe (`lanczos_partial_probe.py --check`, unaffected).
+The PRO-estimator honesty notes and the R7-R9 "known open issues" ledger described partial/selective
+reorthogonalization, which no longer exists; they are in git history (`git log -- doc/lanczos_invariants.md`).

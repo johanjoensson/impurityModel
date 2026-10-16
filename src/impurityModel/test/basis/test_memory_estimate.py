@@ -8,7 +8,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import memory_estimate as me
-from impurityModel.ed.groundstate import find_ground_state_basis
+from impurityModel.ed.groundstate import find_ground_state_sector
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 
@@ -33,14 +33,14 @@ def test_bytes_per_determinant_matches_cython(n_spin_orbitals):
 
 
 def test_estimates_scale_linearly_at_reort_none():
-    a = me.estimate_gf_peak_bytes(10_000, 100, block_width=10, reort="none")
-    b = me.estimate_gf_peak_bytes(20_000, 100, block_width=10, reort="none")
+    a = me.estimate_gf_peak_bytes(10_000, 100, block_width=10, reort=False)
+    b = me.estimate_gf_peak_bytes(20_000, 100, block_width=10, reort=False)
     assert b == 2 * a
 
 
 def test_gf_reort_retention_costs_more():
-    none = me.estimate_gf_peak_bytes(10_000, 100, block_width=10, reort="none")
-    full = me.estimate_gf_peak_bytes(10_000, 100, block_width=10, reort="full")
+    none = me.estimate_gf_peak_bytes(10_000, 100, block_width=10, reort=False)
+    full = me.estimate_gf_peak_bytes(10_000, 100, block_width=10, reort=True)
     assert full > none
 
 
@@ -65,17 +65,17 @@ def test_gf_reort_none_per_det_matches_measured_slope(monkeypatch):
     predicts the new centre to within a byte, and a 3x miscalibration of ``s_live`` still lands
     far outside.
     """
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "4")
     row_bytes = 16 * 1 + me._key_heap_bytes(124) + me._SD_STRUCT_BYTES
     fanout_per_det = me._GF_MATVEC_ROW_FANOUT_DEFAULT / me._gf_chunk_divisor(4) * row_bytes
-    total = me.estimate_gf_peak_bytes(100_000, 124, block_width=1, reort="none")
+    total = me.estimate_gf_peak_bytes(100_000, 124, block_width=1, reort=False)
     per_det = total / 100_000 - fanout_per_det
     assert 370 <= per_det <= 570, per_det
 
 
 def test_gf_ranks_reduce_per_rank_cost():
-    one = me.estimate_gf_peak_bytes(10_000, 100, block_width=10, reort="none", ranks=1)
-    four = me.estimate_gf_peak_bytes(10_000, 100, block_width=10, reort="none", ranks=4)
+    one = me.estimate_gf_peak_bytes(10_000, 100, block_width=10, reort=False, ranks=1)
+    four = me.estimate_gf_peak_bytes(10_000, 100, block_width=10, reort=False, ranks=4)
     assert four < one
     assert four >= one // 4
 
@@ -97,25 +97,21 @@ def test_gs_array_kernel_replication_shrinks_with_ranks():
 
 
 def test_gs_graph_exchange_term_is_bounded_by_the_byte_budget(monkeypatch):
-    """Under ``graph`` the exchange buffers are sized by the neighbour count and capped by
-    ``GS_MATVEC_EXCHANGE_BYTES`` (both alive at once, so 2x); ``reduce`` keeps the single
-    chunk buffer. A tiny budget must therefore remove the difference between the two modes."""
+    """The exchange buffers are sized by the neighbour count and capped by ``GS_MATVEC_EXCHANGE_BYTES``
+    (both alive at once, so 2x)."""
     monkeypatch.delenv("GS_MATVEC_EXCHANGE_BYTES", raising=False)
-    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "reduce")
-    loop = me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256)
-    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "graph")
-    graph = me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256)
-    local = -(-1_000_000 // 256)
-    # 37 neighbours x local x 110 x 16 B ~ 254 MiB per buffer, well over the 64 MiB default cap.
-    assert graph - loop == 2 * me.config.GS_MATVEC_EXCHANGE_BYTES.default - local * 110 * 16
+    big = me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256)
     monkeypatch.setenv("GS_MATVEC_EXCHANGE_BYTES", "16")
-    assert me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256) < loop
+    # 37 neighbours x local x 110 x 16 B ~ 254 MiB per buffer, well over the 64 MiB default cap: a
+    # tiny budget removes the whole exchange term but the 16-byte floor.
+    capped = me.estimate_gs_peak_bytes(1_000_000, 100, block_width=110, ranks=256)
+    assert big - capped == 2 * me.config.GS_MATVEC_EXCHANGE_BYTES.default - 2 * 16
     # Below the cap the term is degree-proportional: two ranks have one neighbour each.
     monkeypatch.delenv("GS_MATVEC_EXCHANGE_BYTES", raising=False)
-    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "reduce")
-    loop2 = me.estimate_gs_peak_bytes(1000, 100, block_width=4, ranks=2)
-    monkeypatch.setenv("GS_MATVEC_EXCHANGE", "graph")
-    assert me.estimate_gs_peak_bytes(1000, 100, block_width=4, ranks=2) - loop2 == 500 * 4 * 16
+    monkeypatch.setenv("GS_MATVEC_EXCHANGE_BYTES", "16")
+    tiny = me.estimate_gs_peak_bytes(1000, 100, block_width=4, ranks=2)
+    monkeypatch.delenv("GS_MATVEC_EXCHANGE_BYTES", raising=False)
+    assert me.estimate_gs_peak_bytes(1000, 100, block_width=4, ranks=2) - tiny == 2 * (500 * 4 * 16 - 16)
 
 
 def test_suggest_threshold_monotone_in_safety(monkeypatch):
@@ -356,21 +352,20 @@ def test_basis_normalizes_none_threshold_to_inf():
     assert basis.truncation_threshold == np.inf
 
 
-def test_find_ground_state_basis_resolves_none_threshold():
+def test_find_ground_state_sector_resolves_none_threshold():
     """The default truncation_threshold=None must resolve to a finite RAM-derived cap."""
     terms, impurity_orbitals, bath_states = _siam_6_pieces()
-    basis = find_ground_state_basis(
+    search = find_ground_state_sector(
         ManyBodyOperator(terms),
         impurity_orbitals,
         bath_states,
         N0={0: 2},
-        tau=0.01,
         dense_cutoff=1000,
         comm=None,
         verbose=False,
     )
-    assert np.isfinite(basis.truncation_threshold)
-    assert basis.truncation_threshold >= 1
+    assert np.isfinite(search.cap_policy.gs)
+    assert search.cap_policy.gs >= 1
 
 
 @pytest.mark.mpi
@@ -401,12 +396,12 @@ def test_krylov_dtype_halves_the_store_term_and_raises_the_cap():
     reorthogonalization is on, so halving it must raise the suggested cap
     (see ``doc/plans/blocklanczos_reort_memory.md``).
     """
-    kw = dict(n_dets=100_000, n_spin_orbitals=106, block_width=2, reort="full", ranks=4, n_blocks=400)
+    kw = dict(n_dets=100_000, n_spin_orbitals=106, block_width=2, reort=True, ranks=4, n_blocks=400)
     wide = me.estimate_gf_peak_bytes(**kw)
     narrow = me.estimate_gf_peak_bytes(**kw, krylov_dtype=np.complex64)
     assert narrow < wide
     # Everything but the store is dtype independent, so the saving is exactly half of it.
-    store_only = me.estimate_gf_peak_bytes(**{**kw, "reort": "none"})
+    store_only = me.estimate_gf_peak_bytes(**{**kw, "reort": False})
     assert wide - narrow == pytest.approx((wide - store_only) * 0.5, rel=0.02)
 
     from types import SimpleNamespace
@@ -417,18 +412,11 @@ def test_krylov_dtype_halves_the_store_term_and_raises_the_cap():
     mem.available_bytes_per_rank = lambda c: 16 * 2**30
     try:
         comm = SimpleNamespace(size=4)
-        lo = me.max_unit_dets_within_budget(106, 2, "full", 4, comm)
-        hi = me.max_unit_dets_within_budget(106, 2, "full", 4, comm, krylov_dtype=np.complex64)
+        lo = me.max_unit_dets_within_budget(106, 2, True, 4, comm)
+        hi = me.max_unit_dets_within_budget(106, 2, True, 4, comm, krylov_dtype=np.complex64)
     finally:
         mem.available_bytes_per_rank = orig
     assert hi > lo
-
-
-@pytest.mark.parametrize("reort", ["partial", "selective"])
-def test_krylov_dtype_complex64_rejected_for_estimator_modes(reort):
-    """The model must refuse a combination the kernel refuses to run."""
-    with pytest.raises(ValueError, match="incompatible with reort"):
-        me.estimate_gf_peak_bytes(1000, 106, 2, reort=reort, krylov_dtype=np.complex64)
 
 
 # ---------------------------------------------------------------------------------------
@@ -470,7 +458,7 @@ def test_estimate_gf_peak_bytes_scales_local_rows_by_the_skew(monkeypatch):
     byte formula, so removing the term, or changing its constant or its chunking credit without
     updating this, fails here. (`test_round8_smo_crash_geometry_is_refused` does NOT pin it --
     that geometry is refused with or without the term.)"""
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "4")
     n, nso, width = 100_000, 100, 4
     for ranks in (2, 5, 16, 64):
         skew = me._routing_skew_factor(ranks)
@@ -482,7 +470,7 @@ def test_estimate_gf_peak_bytes_scales_local_rows_by_the_skew(monkeypatch):
         expected += (
             math.ceil(skewed_local_rows * me._GF_MATVEC_ROW_FANOUT_DEFAULT / me._gf_chunk_divisor(4)) * row_bytes
         )
-        got = me.estimate_gf_peak_bytes(n, nso, width, "none", ranks=ranks)
+        got = me.estimate_gf_peak_bytes(n, nso, width, False, ranks=ranks)
         assert got == expected, (ranks, skew, unskewed_local_rows, skewed_local_rows)
 
 
@@ -504,10 +492,10 @@ def test_gf_chunk_divisor_credits_chunking_but_never_the_full_chunk_count(monkey
     assert me._gf_chunk_divisor(64) == me._gf_chunk_divisor(8)
 
     # The knob is read, so the one-shot escape hatch is priced without the credit.
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
-    one_shot = me.estimate_gf_peak_bytes(100_000, 58, 1, "none", ranks=4)
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "4")
-    chunked = me.estimate_gf_peak_bytes(100_000, 58, 1, "none", ranks=4)
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
+    one_shot = me.estimate_gf_peak_bytes(100_000, 58, 1, False, ranks=4)
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "4")
+    chunked = me.estimate_gf_peak_bytes(100_000, 58, 1, False, ranks=4)
     assert one_shot > chunked, (one_shot, chunked)
 
 
@@ -523,12 +511,12 @@ def test_max_unit_dets_within_budget_inverts_estimate_gf_peak_bytes(monkeypatch)
     comm = SimpleNamespace(size=5)
     nso, width, ranks = 100, 4, 5
     target_n = 20_000
-    budget = me.estimate_gf_peak_bytes(target_n, nso, width, "none", ranks=ranks)
+    budget = me.estimate_gf_peak_bytes(target_n, nso, width, False, ranks=ranks)
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: budget / me.DEFAULT_MEMORY_SAFETY)
 
-    cap = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm)
-    assert me.estimate_gf_peak_bytes(cap, nso, width, "none", ranks=ranks) <= budget
-    assert me.estimate_gf_peak_bytes(cap + 1, nso, width, "none", ranks=ranks) > budget
+    cap = me.max_unit_dets_within_budget(nso, width, False, ranks, comm)
+    assert me.estimate_gf_peak_bytes(cap, nso, width, False, ranks=ranks) <= budget
+    assert me.estimate_gf_peak_bytes(cap + 1, nso, width, False, ranks=ranks) > budget
     assert cap == pytest.approx(target_n, rel=0.01)
 
 
@@ -539,8 +527,8 @@ def test_max_unit_dets_within_budget_grows_with_ranks(monkeypatch):
     comm = SimpleNamespace(size=64)
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 1 * 2**30)
     nso, width = 100, 4
-    few = me.max_unit_dets_within_budget(nso, width, "none", 2, comm)
-    many = me.max_unit_dets_within_budget(nso, width, "none", 32, comm)
+    few = me.max_unit_dets_within_budget(nso, width, False, 2, comm)
+    many = me.max_unit_dets_within_budget(nso, width, False, 32, comm)
     assert many > few
 
 
@@ -550,7 +538,7 @@ def test_max_unit_dets_within_budget_floor_is_one(monkeypatch):
 
     comm = SimpleNamespace(size=4)
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 1)
-    assert me.max_unit_dets_within_budget(100, 4, "none", 4, comm) >= 1
+    assert me.max_unit_dets_within_budget(100, 4, False, 4, comm) >= 1
 
 
 def test_resident_bytes_tightens_the_unit_cap(monkeypatch):
@@ -564,21 +552,21 @@ def test_resident_bytes_tightens_the_unit_cap(monkeypatch):
     available = 8 * 2**30
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: available)
 
-    loose = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm)
-    tight = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=3 * 2**30)
+    loose = me.max_unit_dets_within_budget(nso, width, False, ranks, comm)
+    tight = me.max_unit_dets_within_budget(nso, width, False, ranks, comm, resident_bytes=3 * 2**30)
     assert tight < loose
 
     # The budget is `safety * (available + resident) - resident`, so a bigger resident set
     # must tighten monotonically.
     caps = [
-        me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=r * 2**30) for r in (1, 2, 3, 4)
+        me.max_unit_dets_within_budget(nso, width, False, ranks, comm, resident_bytes=r * 2**30) for r in (1, 2, 3, 4)
     ]
     assert all(b <= a for a, b in pairwise(caps)), caps
 
     # And the predicted peak at the derived cap must actually fit that tighter budget.
     resident = 3 * 2**30
     budget = me.DEFAULT_MEMORY_SAFETY * (available + resident) - resident
-    assert me.estimate_gf_peak_bytes(tight, nso, width, "none", ranks=ranks) <= budget
+    assert me.estimate_gf_peak_bytes(tight, nso, width, False, ranks=ranks) <= budget
 
 
 def test_resident_bytes_over_the_safety_share_floors_rather_than_collapsing(monkeypatch):
@@ -596,8 +584,8 @@ def test_resident_bytes_over_the_safety_share_floors_rather_than_collapsing(monk
 
     huge = 100 * 2**30
     assert me.DEFAULT_MEMORY_SAFETY * (available + huge) - huge <= 0
-    floored = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=huge)
-    baseline = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm)
+    floored = me.max_unit_dets_within_budget(nso, width, False, ranks, comm, resident_bytes=huge)
+    baseline = me.max_unit_dets_within_budget(nso, width, False, ranks, comm)
     assert 1 < floored < baseline
 
 
@@ -640,7 +628,7 @@ def test_round8_smo_crash_geometry_is_refused(monkeypatch):
 
     budget = me._resident_adjusted_budget(me.DEFAULT_MEMORY_SAFETY, available, resident)
     for ranks in (4, 5, 6):
-        peak = me.estimate_gf_peak_bytes(cap, nso, width, "none", ranks=ranks)
+        peak = me.estimate_gf_peak_bytes(cap, nso, width, False, ranks=ranks)
         assert peak > budget, (
             ranks,
             peak,
@@ -648,7 +636,7 @@ def test_round8_smo_crash_geometry_is_refused(monkeypatch):
             "the corrected model must predict this configuration does NOT fit -- it is "
             "exactly what killed ranks 16, 25, 32, 33 on the round-8 archive",
         )
-        unit_cap = me.max_unit_dets_within_budget(nso, width, "none", ranks, comm, resident_bytes=resident)
+        unit_cap = me.max_unit_dets_within_budget(nso, width, False, ranks, comm, resident_bytes=resident)
         assert unit_cap < cap, (ranks, unit_cap)
 
 
@@ -785,7 +773,7 @@ def test_a_wide_gf_block_no_longer_shrinks_the_ground_state_cap(monkeypatch):
     coupled = me._largest_fitting(
         lambda n: max(
             me.estimate_gs_peak_bytes(n, 58, 14, 1, 100, num_wanted=105),
-            me.estimate_gf_peak_bytes(n, 58, 14, "none", 1),
+            me.estimate_gf_peak_bytes(n, 58, 14, False, 1),
         )
         <= 0.5 * 5 * 2**30
     )

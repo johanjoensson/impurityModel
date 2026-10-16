@@ -13,9 +13,11 @@ exercise the actual distributed code paths.
 
 import numpy as np
 import pytest
+import scipy.sparse as sps
 from mpi4py import MPI
 
-from impurityModel.ed.basis_transcription import build_density_matrices, build_sparse_matrix
+from impurityModel.ed.basis_transcription import build_sparse_matrix
+from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.ed.mpi_comm import empty_clone, get_job_tasks, graph_alltoall, is_empty
@@ -494,7 +496,7 @@ def test_batched_sparse_build_matches_one_batch(monkeypatch, n_occupied):
     batched = build_sparse_matrix(basis, hop)
 
     assert comm.allreduce(one_batch.nnz) > 0  # rank-local nnz is 0 on an empty rank
-    assert (one_batch != batched).nnz == 0
+    assert one_batch.nnz == batched.nnz
     np.testing.assert_array_equal(one_batch.toarray(), batched.toarray())
 
 
@@ -521,7 +523,7 @@ def test_sparse_matrix_consistent_with_serial():
 
     # MPI basis: collect (bra_bytes, ket_bytes, value) from all ranks
     basis_mpi = _make_basis(states_bytes, comm=comm)
-    H_mpi_local = build_sparse_matrix(basis_mpi, hop).tocoo()
+    H_mpi_local = sps.coo_array(build_sparse_matrix(basis_mpi, hop).toarray())
     local_basis_all = comm.allgather(basis_mpi.local_basis)
     global_basis = {}
     for rank_basis in local_basis_all:
@@ -545,7 +547,7 @@ def test_sparse_matrix_consistent_with_serial():
     # Serial reference
     if comm.rank == 0:
         basis_s = _make_basis(states_bytes, comm=None)
-        H_s = build_sparse_matrix(basis_s, hop).tocoo()
+        H_s = sps.coo_array(build_sparse_matrix(basis_s, hop).toarray())
         serial_basis_map = {
             i: bytes(state.to_bytearray()[: basis_s.n_bytes]) for i, state in enumerate(basis_s.local_basis)
         }

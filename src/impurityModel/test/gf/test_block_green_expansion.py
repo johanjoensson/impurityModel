@@ -27,7 +27,7 @@ STATE = 2
 ORBITALS = (2, 3, 4)
 
 
-@pytest.mark.parametrize("reort", [None, "full"])
+@pytest.mark.parametrize("reort", [None, True])
 def test_a_column_that_deflates_early_still_has_its_basis_grown(reort):
     oracle, (hOp, imp, baths, _n, _n0, _blocks) = cached_oracle(1)
     psi = oracle.psis([STATE])[0]

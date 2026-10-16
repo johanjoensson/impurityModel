@@ -1,23 +1,17 @@
 from itertools import product
+from typing import NamedTuple
 
 import numpy as np
 
 from impurityModel.ed import config, solver_trace
-from impurityModel.ed.average import energy_cut as boltzmann_energy_cut
-from impurityModel.ed.average import thermal_average_scale_indep
-from impurityModel.ed.basis_restrictions import build_excited_restrictions, get_effective_restrictions
-from impurityModel.ed.basis_transcription import build_density_matrices
-from impurityModel.ed.block_structure import BlockStructure, get_equivalent_blocks, print_block_structure
+from impurityModel.ed.basis_restrictions import build_excited_restrictions
+from impurityModel.ed.block_structure import BlockStructure
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
-from impurityModel.ed.gs_statistics import (
-    compute_entanglement_entropy,
-    compute_gs_statistics,
-    print_gs_statistics,
-    save_gs_statistics,
-)
+from impurityModel.ed.eigensolvers import Lowest, Within
+from impurityModel.ed.gs_report import report_ground_state
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
     CapPolicy,
@@ -27,49 +21,10 @@ from impurityModel.ed.memory_estimate import (
     resident_bytes_per_rank,
     resolve_cap_policy,
 )
-from impurityModel.ed.observables import (
-    block_group_labels,
-    casimir_operator,
-    casimir_to_quantum_number,
-    compute_correlation_diagnostics,
-    compute_energy_decomposition,
-    compute_magnetic_summary,
-    compute_screening_diagnostics,
-    compute_state_summary,
-    compute_static_susceptibilities,
-    get_Sz_from_rho_pairs,
-    is_j_sharp,
-    make_impurity_casimir_operators,
-    make_spin_operators,
-    manifold_observable_values,
-    print_correlation_diagnostics,
-    print_expectation_values,
-    print_impurity_orbital_groups,
-    print_screening_diagnostics,
-    print_state_summary,
-    print_thermal_expectation_values,
-    spin_correlation_operator,
-    static_susceptibility_rows,
-    thermal_observable_value,
-)
-from impurityModel.ed.spin_pairs import resolve_spin_pairs
-from impurityModel.ed.symmetries import extract_tensors
 from impurityModel.ed.utils import (
     V_DETAIL,
     V_SUMMARY,
-    Reporter,
-    format_index_ranges,
-    matrix_print,
-    print_density_matrix_summary,
-    report_banner,
-    report_rule,
 )
-
-#: Restarted-Lanczos kernel used for every ground-state solve. One name, one place: the DC search
-#: and ``calc_gs`` have to run the *same* solver or they converge to the same eigenpairs with
-#: different truncation errors, and a charge-sector comparison decided at 1e-8 does not survive
-#: that. ``dc_criteria`` imports this rather than repeating the string.
-GS_CIPSI_SOLVER_METHOD = "trlm"
 
 #: Residual Epstein-Nesbet PT2 energy a *converged* solve is expanded to: the production ground
 #: state, and every sector energy a double-counting criterion differences.
@@ -118,45 +73,6 @@ SECTOR_WALK_DE2_MIN = 1e-6
 
 #: No residual-PT2 criterion for the sector walk; see :data:`SECTOR_WALK_DE2_MIN`.
 SECTOR_WALK_E_PT2_TOL = None
-
-
-class SectorCache:
-    def __init__(self, max_size=3):
-        self.cache = {}
-        self.max_size = max_size
-        self.keys_ordered = []
-
-    def get(self, key):
-        if key in self.cache:
-            self.keys_ordered.remove(key)
-            self.keys_ordered.append(key)
-            return self.cache[key]
-        return None
-
-    def put(self, key, value):
-        if key in self.cache:
-            self.keys_ordered.remove(key)
-        elif len(self.cache) >= self.max_size:
-            oldest = self.keys_ordered.pop(0)
-            del self.cache[oldest]
-        self.cache[key] = value
-        self.keys_ordered.append(key)
-
-    def clear(self, keep=None):
-        """Null the MPI communicator on every cached basis except ``keep``, then drop them all.
-
-        A closure holding this cache (e.g. ``find_ground_state_basis.get_energy``) forms a
-        reference cycle with every ``Basis`` it caches; a split MPI communicator caught in that
-        cycle would only be freed by the cyclic GC, whose collection can run after
-        ``MPI_Finalize`` at interpreter shutdown and crash. Breaking the cycle here, at a point we
-        know we are done with the losing sectors, avoids relying on GC timing. ``keep`` (normally
-        the winning basis the caller is about to return) is left untouched.
-        """
-        for basis, _solver in self.cache.values():
-            if basis is not None and basis is not keep:
-                basis.comm = None
-        self.cache.clear()
-        self.keys_ordered.clear()
 
 
 def sector_key(trial_N0, frozen_occupations=None):
@@ -225,8 +141,6 @@ def expand_memory_budget(comm):
     # the deadlock class CLAUDE.md's MPI rules exist for.
     available = available_bytes_per_rank(comm)
     resident = resident_bytes_per_rank(comm)
-    if not config.GS_MEMORY_BUDGET_INCLUDE_RESIDENT.get():
-        resident = 0  # rollback to the pre-2026-09 free-memory arithmetic; see the knob's doc
     return int(absolute_rss_budget(safety, available, resident))
 
 
@@ -249,27 +163,11 @@ def build_basis_and_solver(
     frozen_occupations,
     weighted_restrictions,
     slaterWeightMin,
-    sector_cache=None,
     total_charge_slack=0,
+    *,
+    manifold,
     dense_cutoff=1e3,
 ):
-    # Deliberately keyed on the exact per-group occupation, NOT on sector_key's (total, frozen):
-    # this cache stores the Basis *object*, which the solve then expands in place, so a hit
-    # resumes from the previous trial's CIPSI-expanded basis rather than from a freshly generated
-    # seed. Widening the key to the total would make far more trials resume from an unrelated
-    # split's expanded basis, changing the sector comparison the walk exists to get right.
-    # (This used to be argued from `calc_energy` collapsing the basis onto its eigenvector
-    # support at its tail. It no longer does -- see the tail of `_solve_sector_core`, which
-    # records why the basis is returned whole -- but the resumption, and so the argument, is the
-    # same either way.) There is also nothing to win: basis construction is 3.4 s of a 2814.6 s
-    # NiO search (0.12 %). The dedupe that pays lives in find_ground_state_basis's energy_cache,
-    # which skips the whole solve.
-    key = frozenset(N0.items())
-    if sector_cache is not None:
-        cached = sector_cache.get(key)
-        if cached is not None:
-            return cached
-
     basis = Basis(
         impurity_indices,
         bath_states,
@@ -288,15 +186,28 @@ def build_basis_and_solver(
         weighted_restrictions=weighted_restrictions,
     )
     solver = CIPSISolver(basis)
-    solver.truncate_initial(h_op, dense_cutoff=dense_cutoff)
+    solver.truncate_initial(h_op, manifold, dense_cutoff=dense_cutoff)
 
     basis.restrictions = build_excited_restrictions(basis, h_op, psis=None, es=None, slater_weight_min=slaterWeightMin)
-    if sector_cache is not None:
-        sector_cache.put(key, (basis, solver))
     return basis, solver
 
 
-def calc_energy(
+class SectorSolve(NamedTuple):
+    """One charge sector, solved: ``(es, psis, basis, solver)``.
+
+    ``es`` and ``psis`` are rank-local solver output (``es`` is replicated only to roundoff);
+    ``([inf], [])`` when the sector admits no determinants. The basis is whole, not collapsed onto
+    the eigenvector support: collapsing it threw away every determinant below ``slaterWeightMin``
+    that the next expansion would have to rediscover by PT2 selection.
+    """
+
+    es: np.ndarray
+    psis: object
+    basis: Basis
+    solver: CIPSISolver
+
+
+def solve_sector(
     h_op,
     impurity_indices,
     bath_states,
@@ -305,186 +216,43 @@ def calc_energy(
     tau,
     chain_restrict,
     dense_cutoff,
+    *,
+    manifold,
     comm=None,
     verbose=True,
     truncation_threshold=None,
     slaterWeightMin=1e-12,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
-    reort="full",
     weighted_restrictions=None,
     frozen_occupations=None,
-    symmetry_generators=None,
-    sector_cache=None,
     de2_min=SECTOR_WALK_DE2_MIN,
     e_pt2_tol=SECTOR_WALK_E_PT2_TOL,
 ):
-    """
-    Calculate the ground-state energy of the system for a given charge sector.
+    """One charge sector, solved for the requested ``manifold``: :class:`SectorSolve`.
 
-    This function initializes a CIPSI basis for a nominal occupation config `N0`,
-    expands the basis variationally using the Hamiltonian `h_op`, constructs the
-    sparse Hamiltonian matrix, solves for the lowest ``num_wanted`` eigen-energies and
-    returns the minimum along with the optimized basis.
-
-    No thermal cut is applied, unlike :func:`solve_sector`: the minimum of a set of eigenvalues
-    is independent of the basis a degenerate manifold came back in, so the completeness the cut
-    certifies buys this function nothing and the eigenvectors are discarded anyway.
+    The one body behind the occupation walk, the double-counting sector energies and the
+    production ground state: build the basis, expand it for ``manifold``, read the manifold off the
+    last eigensolve.
 
     Parameters
     ----------
-    h_op : ManyBodyOperator
-        The Hamiltonian operator of the system.
-    impurity_indices : dict
-        Mapping of orbital set indices to impurity orbital indices.
-    bath_states : tuple of dicts
-        Valence and conduction bath states coupled to the impurity.
-    N0 : dict
-        Nominal impurity orbital occupations.
-    mixed_valence : dict
-        The mixed valence occupation bounds per orbital set.
+    manifold : Lowest or Within
+        What the sector is solved *for*, and so what its expansion refines the basis for.
+        :class:`~impurityModel.ed.eigensolvers.Lowest`: the ground level's energy and one
+        eigenvector, no claim about the level's degeneracy -- what an energy comparison between
+        sectors needs. :class:`~impurityModel.ed.eigensolvers.Within`: every state inside the
+        window, certified complete -- what a thermal average needs (``Within.thermal(tau)``).
     tau : float
-        Characteristic energy scale used for basis selection (temperature scale).
-    chain_restrict : bool
-        If True, restricts the basis to states generated along hopping chains.
-    dense_cutoff : int
-        Dimension threshold below which a dense eigensolver is used.
-    comm : MPI.Comm or None
-        MPI communicator for distributed calculation.
-    verbose : bool
-        If True, prints progress details.
-    frozen_occupations : set, optional
-        Orbital-set keys whose impurity occupation is pinned at exactly ``N0[i]`` during
-        basis generation (a bath-less core shell); see
-        :func:`impurityModel.ed.basis_generation.generate_initial_basis`.
-    truncation_threshold : int or float
-        Global cap on the number of Slater determinants in the basis; on overflow the CIPSI
-        solver keeps only the determinants with the largest eigenvector amplitudes
-        (``np.inf`` disables capping).
-    slaterWeightMin : float
-        Minimum weight (``|amplitude|^2``) below which Slater determinants are pruned.
-    de2_min : float
-        Per-determinant Epstein-Nesbet PT2 floor. Defaults to :data:`SECTOR_WALK_DE2_MIN`, which is
-        right for the occupation walk (only the *ordering* of charge sectors is decided there).
-    e_pt2_tol : float or None
-        Residual PT2 energy the expansion converges to; ``None`` (the walk's
-        :data:`SECTOR_WALK_E_PT2_TOL`) selects on the floor alone. Callers that **difference** two
-        sector energies -- the double-counting peak and gap criteria -- must pass
-        :data:`GS_DE2_MIN` and :data:`GS_E_PT2_TOL` instead: the truncation error does not cancel
-        in a difference, and those criteria then amplify it by ``1 / |chi|``.
-
-    Returns
-    -------
-    energy : float
-        The lowest eigenvalue (ground state energy) found for this charge sector.
-    basis : Basis
-        The optimized many-body basis.
+        Stored on the returned basis (the Green's-function stage reads ``basis.tau``). It does not
+        choose the manifold; ``manifold`` does.
+    de2_min, e_pt2_tol : float, float or None
+        Convergence of the expansion. The defaults are the occupation walk's (a per-determinant
+        floor, no residual criterion: only the *ordering* of sectors is decided). Callers that
+        difference two sector energies, or quote the answer, pass :data:`GS_DE2_MIN` and
+        :data:`GS_E_PT2_TOL`: the truncation error does not cancel in a difference.
     """
-
-    # `_solve_sector_core`, not `solve_sector`, and `max_energy=None` meaning *no cut*: this
-    # function keeps `min(es)`, and the minimum of a set of eigenvalues does not depend on which
-    # basis a degenerate manifold came back in. The Boltzmann cut, and the doubling loop inside
-    # `get_eigenvectors` that widens `num_wanted` until a computed state lands outside it, exist
-    # solely to certify that a *kept manifold* is whole -- work whose entire product this function
-    # throws away one line below. Nothing else changes: the same expansion, the same `num_wanted`,
-    # the same warm start; only the post-solve trim and the widening it drives are skipped.
-    es, _eigen_psis, basis = _solve_sector_core(
-        h_op,
-        impurity_indices,
-        bath_states,
-        N0,
-        mixed_valence,
-        0,  # tau,
-        chain_restrict,
-        dense_cutoff,
-        comm=comm,
-        verbose=verbose,
-        truncation_threshold=truncation_threshold,
-        slaterWeightMin=slaterWeightMin,
-        cipsi_solver_method=cipsi_solver_method,
-        reort=reort,
-        weighted_restrictions=weighted_restrictions,
-        frozen_occupations=frozen_occupations,
-        symmetry_generators=symmetry_generators,
-        sector_cache=sector_cache,
-        de2_min=de2_min,
-        e_pt2_tol=e_pt2_tol,
-        max_energy=0,  # None,
-        num_wanted=1,
-    )
-    # Broadcast, not merely returned. A Lanczos eigenvalue is replicated across ranks only to
-    # roundoff, and every caller compares it against something: the occupation walk against the
-    # running best, `solve_ground_state` against its convergence window, and
-    # `dc_criteria._SectorContext.sector_energy` against a tolerance *derived from it*. The first
-    # two broadcast for themselves; the third did not, which made `fixed_gap_dc`'s `energy_tol` --
-    # one percent of a gap width built from three of these -- rank-local, and `tol` gates every
-    # branch deciding whether the next collective solve happens. Enforcing it here rather than at
-    # each call site is what stops the next caller inheriting the same trap; the two existing
-    # call-site broadcasts become redundant but harmless. One float against a whole CIPSI
-    # expansion.
-    e0 = np.min(es)
-    return (e0 if comm is None else comm.bcast(e0, root=0)), basis
-
-
-def _solve_sector_core(
-    h_op,
-    impurity_indices,
-    bath_states,
-    N0,
-    mixed_valence,
-    tau,
-    chain_restrict,
-    dense_cutoff,
-    comm=None,
-    verbose=True,
-    truncation_threshold=None,
-    slaterWeightMin=1e-12,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
-    reort="full",
-    weighted_restrictions=None,
-    frozen_occupations=None,
-    symmetry_generators=None,
-    sector_cache=None,
-    num_wanted=10,
-    max_energy=None,
-    de2_min=SECTOR_WALK_DE2_MIN,
-    e_pt2_tol=SECTOR_WALK_E_PT2_TOL,
-):
-    """One sector solve, with ``max_energy`` taken **literally**: ``None`` means *no cut*.
-
-    The shared body of :func:`solve_sector` and :func:`calc_energy`; the two differ only in what
-    they ask :meth:`CIPSISolver.get_eigenvectors` to keep, so they are two thin heads on this one
-    body rather than one calling the other. :func:`solve_sector` resolves ``None`` into the
-    Boltzmann cut for its callers, which want the thermal manifold; :func:`calc_energy` passes
-    ``None`` through, because it keeps ``min(es)`` and the minimum of an eigenvalue set is
-    rotation-invariant -- manifold *completeness*, the thing the cut and its doubling loop exist
-    to certify, is irrelevant to it. Two heads instead of one flag because a ``None`` that means
-    "use the default" to one caller and "no cut" to the other is the overload this seam removes.
-
-    ``es`` is **not** broadcast here; :func:`calc_energy` broadcasts the minimum it takes. A
-    caller reading these arrays directly is reading rank-local Lanczos output and must say so.
-
-    Parameters
-    ----------
-    num_wanted : int
-        Eigenpairs to request. The default 10 is what :func:`calc_energy` has always asked for --
-        enough for a thermal manifold, and *not* enough to enumerate a spectrum. A diagnostic
-        looking for the lowest state that carries impurity spectral weight has to raise it: the
-        lowest few states of an ``N +- 1`` sector can all be bath excitations.
-    max_energy : float, optional
-        Cut on ``e - e0``, taken literally. ``None`` means no cut at all -- every computed state
-        is returned, up to ``num_wanted``. :func:`solve_sector` substitutes
-        :func:`average.energy_cut` at ``tau`` before getting here.
-
-    Returns
-    -------
-    (es, psis, basis) : (ndarray, list of ManyBodyState, Basis)
-        ``([inf], [], basis)`` when the sector admits no determinants, matching
-        :func:`calc_energy`'s ``inf``.
-    """
-    # One `calc_energy` call is one *sector solve* -- the unit the occupation walk and the
-    # double-counting search are both counted in. The three nested timers say which of build /
-    # expand / diagonalize the cost actually sits in; all four are no-ops outside a
-    # solver_trace.tracing() block.
+    # One call is one *sector solve* -- the unit the occupation walk and the double-counting search
+    # are both counted in. The nested timers say which of build / expand / diagonalize the cost
+    # sits in; all are no-ops outside a solver_trace.tracing() block.
     with solver_trace.timed("sector_solve", n0=tuple(sorted(N0.items()))) as sector_fields:
         with solver_trace.timed("build"):
             basis, solver = build_basis_and_solver(
@@ -501,135 +269,97 @@ def _solve_sector_core(
                 frozen_occupations,
                 weighted_restrictions,
                 slaterWeightMin,
-                sector_cache,
+                manifold=manifold,
                 dense_cutoff=dense_cutoff,
             )
 
         if len(basis) == 0:
             sector_fields["n_dets"] = 0
-            return np.array([np.inf]), [], basis
+            return SectorSolve(np.array([np.inf]), [], basis, solver)
         with solver_trace.timed("expand"):
             solver.expand(
                 h_op,
+                manifold,
                 dense_cutoff=dense_cutoff,
-                # The walk defaults to a per-determinant floor (SECTOR_WALK_DE2_MIN) and no
-                # residual criterion, which is right when only the ordering of charge sectors is
-                # being decided; the double-counting criteria override both with GS_DE2_MIN /
-                # GS_E_PT2_TOL because they *difference* these energies and the truncation error
-                # does not cancel. See the constants for the argument.
                 de2_min=de2_min,
                 e_pt2_tol=e_pt2_tol,
                 slaterWeightMin=slaterWeightMin,
-                solver=cipsi_solver_method,
-                reort=reort,
                 # Measured-RSS guards (see `expand_memory_budget`). They may hold the basis below
                 # a cap derived from memory, or below no cap at all; a cap the user set is final,
                 # so for it they only warn. A run that stays under budget is unaffected either way.
                 memory_budget_bytes=expand_memory_budget(comm),
                 memory_policy=_memory_policy(truncation_threshold),
-                # `symmetry_generators` deliberately not forwarded: CIPSISolver.expand re-derives
-                # them from the H it is actually expanding when the argument is None, which is
-                # always the right operator. Passing a set derived elsewhere risks handing it
-                # generators of a different Hamiltonian. The parameter is kept on the signature
-                # only until the plumbing is removed.
             )
 
         with solver_trace.timed("eigensolve"):
-            es, eigen_psis = solver.get_eigenvectors(
+            es, psis = solver.get_eigenvectors(
                 h_op,
-                num_wanted=num_wanted,
-                max_energy=max_energy,
+                manifold,
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
-                solver=cipsi_solver_method,
-                reort=reort,
                 psi_refs=solver.psi_refs,
+                # `expand` ended on a certified solve of this very determinant set whenever it did not
+                # truncate afterwards; the generation check inside decides, and a wider request than
+                # the one it solved is solved afresh.
+                reuse_last=True,
             )
         sector_fields["n_dets"] = len(basis)
-        # Remember whether the truncation_threshold bound this occupation's expansion, so the
-        # caller can report a capped ground-state determination even though the final basis may
-        # fit under the cap.
-        basis.occupation_search_truncation = solver.truncation_report
-        # The basis is returned whole, NOT collapsed onto the eigenvector support. Collapsing it
-        # discarded every determinant below `slaterWeightMin` in every thermal eigenvector --
-        # and `calc_gs` runs the occupation walk at `sqrt(slaterWeightMin)` (~1e-6 for the usual
-        # 1e-12), so the cut was four orders of magnitude harder than the one the final
-        # expansion then works to. Whatever the next expansion would have to rediscover by PT2
-        # selection was thrown away first. Callers wanting the support can take it from their own
-        # eigenvectors; `find_ground_state_basis` reports the winning sector through
-        # `ground_state_occupation`, which the support could never encode anyway (the expansion
-        # widens the impurity occupation window, so it spans several occupations).
-        return es, eigen_psis, basis
+        return SectorSolve(es, psis, basis, solver)
 
 
-def solve_sector(
+def calc_energy(
     h_op,
     impurity_indices,
     bath_states,
     N0,
     mixed_valence,
-    tau,
     chain_restrict,
     dense_cutoff,
     comm=None,
     verbose=True,
     truncation_threshold=None,
     slaterWeightMin=1e-12,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
-    reort="full",
     weighted_restrictions=None,
     frozen_occupations=None,
-    symmetry_generators=None,
-    sector_cache=None,
-    num_wanted=10,
-    max_energy=None,
     de2_min=SECTOR_WALK_DE2_MIN,
     e_pt2_tol=SECTOR_WALK_E_PT2_TOL,
 ):
-    """The thermal eigenmanifold of one charge sector: ``(es, psis, basis)``.
+    """The ground-state energy of one charge sector: ``(e0, truncation_report)``.
 
-    :func:`_solve_sector_core` with the Boltzmann cut supplied: ``max_energy=None`` here means
-    "the manifold the rest of the stack uses", ``energy_cut(tau)``, not "no cut". Callers wanting
-    a wider window -- the double-counting weight tables enumerating past the thermal manifold into
-    the upper Hubbard band -- pass an explicit number.
+    :func:`solve_sector` for :class:`~impurityModel.ed.eigensolvers.Lowest`, reduced to its energy:
+    one converged eigenpair, nothing about the level's degeneracy, and no basis or solver retained --
+    the occupation walk holds floats and nothing else. ``truncation_report`` is the expansion's
+    (``None`` when the cap never bound), so a caller can tell a cap-limited energy from a converged
+    one. Parameters are those of :func:`solve_sector`; ``N0`` is the nominal impurity occupation.
 
-    Everything :func:`calc_energy` does except taking the minimum, and it runs the same body, so
-    the two cannot drift. It exists because the eigenvectors are needed by callers that the energy
-    alone cannot serve: an impurity occupation ``Tr rho_imp`` per sector, and the Lehmann weight
-    ``|<n|c_d^dagger|0>|^2`` that says whether a sector's lowest state carries any impurity
-    spectral weight at all. ``calc_energy`` deliberately does *not* return them (the arrays are
-    large and every production caller wants one float), so a diagnostic that needs them would
-    otherwise have to re-implement the conventions -- the ``de2_min``, ``num_wanted``,
-    ``max_energy`` and warm-start choices -- and would then be measuring a different solve from
-    the one the criterion runs.
-
-    Every other parameter is :func:`_solve_sector_core`'s; see it for the contract, and
-    :func:`calc_energy` for the same solve reduced to its lowest eigenvalue.
+    ``e0`` is **broadcast**, not merely returned. A Lanczos eigenvalue is replicated across ranks
+    only to roundoff, and every caller compares it against something: the occupation walk against
+    the running best, and the double-counting criteria against a tolerance *derived from it*, which
+    gates every branch deciding whether the next collective solve happens. Enforcing it here stops
+    the next caller inheriting the trap. One float against a whole CIPSI expansion.
     """
-    return _solve_sector_core(
+    es, _psis, _basis, solver = solve_sector(
         h_op,
         impurity_indices,
         bath_states,
         N0,
         mixed_valence,
-        tau,
+        0,
         chain_restrict,
         dense_cutoff,
+        manifold=Lowest(),
         comm=comm,
         verbose=verbose,
         truncation_threshold=truncation_threshold,
         slaterWeightMin=slaterWeightMin,
-        cipsi_solver_method=cipsi_solver_method,
-        reort=reort,
         weighted_restrictions=weighted_restrictions,
         frozen_occupations=frozen_occupations,
-        symmetry_generators=symmetry_generators,
-        sector_cache=sector_cache,
-        num_wanted=num_wanted,
-        max_energy=boltzmann_energy_cut(tau) if max_energy is None else max_energy,
         de2_min=de2_min,
         e_pt2_tol=e_pt2_tol,
     )
+    e0 = float(np.min(es))
+    e0 = e0 if comm is None else comm.bcast(e0, root=0)
+    return e0, solver.truncation_report
 
 
 def hartree_fock_seed_occupation(
@@ -637,7 +367,7 @@ def hartree_fock_seed_occupation(
 ):
     """Nominal impurity occupation ``N0`` from a cheap unrestricted Hartree-Fock solve.
 
-    This is the default seed for :func:`find_ground_state_basis`. Instead of running an
+    This is the default seed for :func:`find_ground_state_sector`. Instead of running an
     accurate solve for every candidate impurity occupation (the legacy ``O(3^k)`` ``dN``
     scan) — or a rough many-body CIPSI over a *broadened* occupation window, which for long
     bath chains can build a massive basis and exhaust memory — it solves the problem at
@@ -656,7 +386,7 @@ def hartree_fock_seed_occupation(
     Parameters
     ----------
     h_op, impurity_orbitals, bath_states, N0
-        As for :func:`calc_energy` / :func:`find_ground_state_basis`. ``N0`` sets the total
+        As for :func:`calc_energy` / :func:`find_ground_state_sector`. ``N0`` sets the total
         (conserved) particle number: ``sum_i N0[i]`` impurity electrons plus the nominally
         full valence baths.
     comm : MPI.Comm or None
@@ -670,7 +400,7 @@ def hartree_fock_seed_occupation(
     converged : bool
         Whether the HF iteration converged. A non-converged seed is **not** an occupation: it
         is whatever the last iterate happened to be, and callers must not use it (see
-        :func:`find_ground_state_basis`, which falls back to the ``dN`` scan). Measured on the
+        :func:`find_ground_state_sector`, which falls back to the ``dN`` scan). Measured on the
         NiO L-edge workload, a non-converged seed returned ``{1: 4, 2: 10}`` -- a 3d10 impurity
         paid for by emptying the 2p core -- which, once the frozen core is restored, closes the
         shell, collapses the basis to a single determinant and zeroes every core-level spectrum.
@@ -689,28 +419,46 @@ def hartree_fock_seed_occupation(
     return winning_N0, converged
 
 
-def find_ground_state_basis(
+class SectorSearch(NamedTuple):
+    """The result of the charge-sector walk.
+
+    ``occupation`` is the winning nominal impurity occupation (per orbital set; only its total is
+    determined, see :func:`sector_key`), ``energy`` its ground-state energy, ``truncation_report``
+    the winning expansion's report (``None`` if the cap never bound it), ``cap_policy`` the resolved
+    cap the walk ran under. Nothing else is kept: the walk's bases and solvers are discarded.
+    """
+
+    occupation: dict
+    energy: float
+    truncation_report: dict | None
+    cap_policy: CapPolicy
+
+
+def find_ground_state_sector(
     h_op,
     impurity_orbitals,
     bath_states,
     N0,
     frozen_occupations=None,
     mixed_valence=False,
-    tau=0.01,
     chain_restrict=False,
-    rank=0,
     dense_cutoff=1000,
     comm=None,
     truncation_threshold=None,
     verbose=0,
     slaterWeightMin=1e-12,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     use_hf_seed=True,
     weighted_restrictions=None,
-    symmetry_generators=None,
 ):
     """
-    Find the occupation corresponding to the lowest energy, compare N0 - 1, N0 and N0 + 1
+    Find the charge sector with the lowest energy, compare N0 - 1, N0 and N0 + 1: :class:`SectorSearch`.
+
+    Every trial sector is solved for its lowest energy alone (:func:`calc_energy`, a
+    :class:`~impurityModel.ed.eigensolvers.Lowest` solve) at ``sqrt(slaterWeightMin)``: the walk only
+    orders sectors, so a trial claims nothing about its ground level's degeneracy and is not refined
+    to the full cutoff. This is the one walk convention, applied here and nowhere else -- the
+    double-counting search had once drifted on it by four orders of magnitude, a different search.
+    The thermal ground state is then solved from scratch at the winner (:func:`solve_ground_state`).
 
     use_hf_seed (default True): seed the nominal occupation with a cheap, memory-bounded
     unrestricted Hartree-Fock solve (the mean-field lowest-energy determinant), instead of
@@ -729,8 +477,6 @@ def find_ground_state_basis(
     (:func:`impurityModel.ed.memory_estimate.resolve_cap_policy`; collective on
     ``comm``), ``np.inf`` disables capping.
 
-    Returns:
-    basis_gs, ManybodyBasis: Initial basis for the ground state
     """
     # Resolve here only a cap no driver has resolved yet: a bare number or None (calc_gs callers
     # such as get_spectra, library users). A CapPolicy arrives already resolved and announced --
@@ -760,21 +506,17 @@ def find_ground_state_basis(
     ) = bath_states
     if frozen_occupations is None:
         frozen_occupations = set()
-    basis_gs = None
     winning_impurity_occ = N0.copy()
+    walk_weight_min = np.sqrt(slaterWeightMin)
 
+    # Per sector (`sector_key`): the energy and the truncation report of its (memory-capped)
+    # expansion, so a capped ground-state determination is auditable even when the final basis fits
+    # under the cap. Bare floats and dicts -- no Basis is retained -- and `best_cached_key` tracks the
+    # lowest energy seen, for the sanity check below: the winning occupation the walk settles on must
+    # match it, or every trial was out of bounds.
     energy_cache = {}
-    # `energy_cache` holds bare floats, keyed by `sector_key` -- no Basis is retained here. This
-    # only tracks which key has the lowest energy seen so far, for the sanity check below: the
-    # winning occupation the walk settles on must match it, or every trial was out of bounds.
-    # The actual ground-state Basis is rebuilt once, at the winning occupation, after the walk.
     best_cached_key = None
-    # Per-trial truncation report of the (memory-capped) occupation-search expansion, keyed
-    # by trial occupation. The winning occupation's report is attached to basis_gs so a capped
-    # ground-state determination is auditable even when the final basis fits under the cap.
-    occ_search_reports = {}
 
-    sector_cache = SectorCache(max_size=3)
     # Whole-impurity capacity: the groups redistribute charge freely at fixed total, so this --
     # not any per-group size -- is the bound a trial total has to satisfy to be attainable.
     max_total_impurity_occupation = sum(len(block) for blocks in impurity_orbitals.values() for block in blocks)
@@ -824,17 +566,15 @@ def find_ground_state_basis(
         # total -- and a hit here skips the whole solve, not just the basis build.
         key = sector_key(trial_N0, frozen_occupations)
         if key in energy_cache:
-            e_trial = energy_cache[key]
             solver_trace.note("sector_cache_hit", n0=key)
-            return e_trial
+            return energy_cache[key][0]
 
-        e_trial, basis = calc_energy(
+        e_trial, report = calc_energy(
             h_op,
             impurity_orbitals,
             bath_states,
             trial_N0,
             mixed_valence,
-            tau,
             chain_restrict,
             dense_cutoff,
             comm=comm,
@@ -842,18 +582,12 @@ def find_ground_state_basis(
             # walk's own per-trial summary at V_SUMMARY is already printed above by the caller.
             verbose=verbose >= V_DETAIL,
             truncation_threshold=truncation_threshold,
-            slaterWeightMin=slaterWeightMin,
-            cipsi_solver_method=cipsi_solver_method,
+            slaterWeightMin=walk_weight_min,
             weighted_restrictions=weighted_restrictions,
             frozen_occupations=frozen_occupations,
-            symmetry_generators=symmetry_generators,
-            sector_cache=sector_cache,
         )
-        if basis.is_distributed:
-            e_trial = basis.comm.bcast(e_trial)
-        occ_search_reports[key] = getattr(basis, "occupation_search_truncation", None)
-        energy_cache[key] = e_trial
-        if best_cached_key is None or e_trial < energy_cache[best_cached_key]:
+        energy_cache[key] = (e_trial, report)
+        if best_cached_key is None or e_trial < energy_cache[best_cached_key][0]:
             best_cached_key = key
         return e_trial
 
@@ -1059,118 +793,26 @@ def find_ground_state_basis(
         print(f"Ground state: impurity occupation {total}{frozen_note}, E_GS = {e_gs:.4f}")
         print("  per-group filling is not determined here -- see the impurity density matrix below")
         print("=" * 80)
-    energy_cache.clear()
-    # G4: clear the *basis* cache too, not just the energies. The call below is a deliberate
-    # rebuild at the winning occupation, but with the cache still populated it was a cache hit
-    # instead -- returning the walk's basis, already collapsed to the eigenvector support by
-    # calc_energy's tail, together with the stale `solver.psi_refs` built on the pre-collapse
-    # space (whose out-of-basis amplitudes `build_distributed_vector` then drops silently,
-    # leaving a truncated and possibly rank-deficient warm block). Whether the hit happened at
-    # all depended on how many distinct trial occupations the walk visited in between, since the
-    # cache is an LRU of size 3: same sector, two different starting spaces, decided by walk
-    # order. Collective on every rank -- `clear` nulls communicators, and both the walk above and
-    # `clear(keep=...)` below already run unconditionally here.
-    sector_cache.clear()
-    e_gs, basis_gs = calc_energy(
-        h_op,
-        impurity_orbitals,
-        bath_states,
-        winning_impurity_occ,
-        mixed_valence,
-        tau,
-        chain_restrict,
-        dense_cutoff,
-        comm=comm,
-        # This basis is returned to the caller (solve_ground_state refines it further via
-        # solver.expand), so its .verbose governs that CIPSI chatter too -- -vv territory.
-        verbose=verbose >= V_DETAIL,
-        truncation_threshold=truncation_threshold,
-        slaterWeightMin=slaterWeightMin,
-        cipsi_solver_method=cipsi_solver_method,
-        weighted_restrictions=weighted_restrictions,
-        frozen_occupations=frozen_occupations,
-        symmetry_generators=symmetry_generators,
-        sector_cache=sector_cache,
-    )
-    if basis_gs.is_distributed:
-        e_gs = basis_gs.comm.bcast(e_gs)
-
-    # Break the closure -> sector_cache -> Basis reference cycle now (see SectorCache.clear),
-    # keeping only the winning basis's communicator alive.
-    sector_cache.clear(keep=basis_gs)
-
-    if basis_gs is not None:
-        # Whether the winning occupation's expansion was memory-capped (None if not), for
-        # downstream truncation auditing (calc_gs merges this with its own final expand).
-        basis_gs.occupation_search_truncation = occ_search_reports.get(
-            sector_key(winning_impurity_occ, frozen_occupations)
-        )
-        # The sector this search settled on. It cannot be recovered from the returned basis:
-        # calc_energy reduces that to the eigenvector support, and the CIPSI expansion widened
-        # the impurity occupation window (build_excited_restrictions is called with
-        # imp_change=None, i.e. unconstrained), so the support spans several impurity
-        # occupations -- measured {1, 2, 3} on a split-block toy whose winning sector is 2.
-        # Callers that need the sector must read it here rather than inspect a determinant.
-        basis_gs.ground_state_occupation = dict(winning_impurity_occ)
-        # The resolved cap policy, read-only and immutable, for the Green's-function stage to
-        # size its unit bases from (gf_units.gf_cap). Deliberately not
-        # `basis_gs.truncation_threshold`: the memory guard may lower that one for the ground
-        # state, and a GF unit must not inherit it.
-        basis_gs.cap_policy = CapPolicy.coerce(truncation_threshold)
-    return basis_gs
+    winning_key = sector_key(winning_impurity_occ, frozen_occupations)
+    if winning_key not in energy_cache:
+        # The walk settled on a sector it never solved (every trial out of bounds, or a collapsed
+        # search): solve the winner.
+        get_energy(winning_impurity_occ)
+    e_gs, report = energy_cache[winning_key]
+    return SectorSearch(dict(winning_impurity_occ), e_gs, report, CapPolicy.coerce(truncation_threshold))
 
 
-def walk_to_ground_state_sector(
-    h_op,
-    impurity_orbitals,
-    bath_states,
-    N0,
-    *,
-    tau,
-    slaterWeightMin,
-    frozen_occupations=None,
-    mixed_valence=None,
-    chain_restrict=False,
-    rank=0,
-    dense_cutoff=1000,
-    comm=None,
-    verbose=False,
-    truncation_threshold=None,
-    weighted_restrictions=None,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
-    use_hf_seed=True,
-):
-    """Step 1 of :func:`solve_ground_state`: the charge-sector walk, at its conventions.
+class GroundState(NamedTuple):
+    """The thermal ground state: ``basis``, ``solver`` (``truncation_report``, ``convergence_report``,
+    ``psi_refs``), the energies ``es`` and eigenstates ``psis`` within the thermal window,
+    the winning ``occupation`` and ``walk_report`` (the sector walk's truncation report at the winner)."""
 
-    Separated out because :func:`dc_criteria.fixed_peak_dc` needs the *sector* and nothing else --
-    the refinement and thermal manifold do not change ``ground_state_occupation``, so paying for
-    them once per trial shift would be waste. It still has to be the **same walk**, which is the
-    point of this function existing rather than a second copy of the argument mapping.
-
-    Two conventions live here and nowhere else: the walk runs at ``tau / 100`` (it only has to
-    order sectors) and at ``sqrt(slaterWeightMin)`` (the full cutoff is for the refinement). Both
-    used to be open-coded in three places, and the double-counting search had drifted on the
-    second by four orders of magnitude -- a different search, so potentially a different sector.
-    """
-    return find_ground_state_basis(
-        h_op,
-        impurity_orbitals,
-        bath_states,
-        N0,
-        frozen_occupations=frozen_occupations,
-        mixed_valence=mixed_valence,
-        tau=tau / 100,
-        chain_restrict=chain_restrict,
-        rank=rank,
-        dense_cutoff=dense_cutoff,
-        comm=comm,
-        verbose=verbose,
-        truncation_threshold=truncation_threshold,
-        slaterWeightMin=np.sqrt(slaterWeightMin),
-        cipsi_solver_method=cipsi_solver_method,
-        use_hf_seed=use_hf_seed,
-        weighted_restrictions=weighted_restrictions,
-    )
+    basis: Basis
+    solver: CIPSISolver
+    es: np.ndarray
+    psis: object
+    occupation: dict
+    walk_report: dict | None
 
 
 def solve_ground_state(
@@ -1190,116 +832,89 @@ def solve_ground_state(
     verbose=False,
     truncation_threshold=None,
     weighted_restrictions=None,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
     use_hf_seed=True,
-    num_wanted=10,
     de2_min=GS_DE2_MIN,
-    max_num_wanted=100,
     e_pt2_tol=GS_E_PT2_TOL,
 ):
-    """Find the thermal ground state: sector walk, refinement, low-energy manifold.
+    """Find the thermal ground state: a sector walk, then one complete solve of the winning sector.
 
     **The single definition of "the ground state of this model".** ``calc_gs`` and the
     double-counting criteria in :mod:`dc_criteria` both go through here, because a ``dc``
     measured on a different state than the one ``calc_selfenergy`` later finds does not
     approximate the requested physics -- it locks the downstream calculation onto the wrong
-    charge state. Previously the two paths open-coded the same four steps and drifted on
-    ``slaterWeightMin`` (one passed ``sqrt``, the other the raw value -- four orders of
-    magnitude), on whether ``basis.tau`` was restored before the refinement (a hundredfold
-    difference in ``expand``'s ``de0_max``), on the eigensolver, and on how wide the thermal
-    manifold was allowed to grow. Anything that decides *which* state is found belongs in this
-    signature so the two callers cannot disagree about it again.
+    charge state. Anything that decides *which* state is found belongs in this signature so the
+    callers cannot disagree about it.
 
-    The four steps:
+    Two steps, with two different manifolds:
 
-    1. **Sector walk** -- :func:`find_ground_state_basis` at ``tau / 100`` and
-       ``sqrt(slaterWeightMin)``. Loose on purpose: it only has to order charge sectors, and
-       the walk is the expensive part.
-    2. **Restore ``tau``** on the basis, so the refinement's admission window
-       (``energy_cut(basis.tau)``) is the physical one rather than the walk's.
-    3. **Refine** -- one ``expand`` at the full ``slaterWeightMin``, converged to a residual PT2
-       energy of ``e_pt2_tol``.
-    4. **Thermal manifold** -- widen ``num_wanted`` until the states within ``energy_cut`` are
-       all captured. The NiO ground state that motivated this is 3-fold quasi-degenerate, so a
-       fixed request truncates the ensemble and misreports every thermal average taken from it.
+    1. **Which sector** -- :func:`find_ground_state_sector`: every trial sector is solved for its
+       lowest energy only. Cheap, no completeness claim, and nothing from it is kept but the winning
+       occupation (and its truncation report).
+    2. **The thermal manifold** -- :func:`solve_sector` at the winner, built from the seed basis
+       and expanded for ``Within.thermal(tau)``, converged to a residual PT2 energy of
+       ``e_pt2_tol`` at the full ``slaterWeightMin``. Every state within ``energy_cut(tau)`` of the
+       lowest is returned, certified complete (or reported not to be). The walk's own basis is *not*
+       continued: it was refined for the ground level alone, so any low-lying state outside that
+       level sat at seed quality in it -- never a reference, its determinants never selected. Here
+       every symmetry partner and every low-lying state starts at equal quality. The NiO ground
+       state that motivated this is 3-fold quasi-degenerate, so a manifold short of one copy
+       misreports every thermal average taken from it.
 
     Returns
     -------
-    (Basis, CIPSISolver, numpy.ndarray, list of ManyBodyState)
-        The basis (carrying ``ground_state_occupation``, the winning sector), the solver (carrying
-        ``truncation_report`` and ``psi_refs``), the energies and the eigenstates.
+    GroundState
+        ``basis`` carries ``ground_state_occupation`` (the winning sector) and ``cap_policy``.
     """
-    basis = walk_to_ground_state_sector(
+    search = find_ground_state_sector(
         h_op,
         impurity_orbitals,
         bath_states,
         N0,
-        tau=tau,
-        slaterWeightMin=slaterWeightMin,
         frozen_occupations=frozen_occupations,
         mixed_valence=mixed_valence,
         chain_restrict=chain_restrict,
-        rank=rank,
         dense_cutoff=dense_cutoff,
         comm=comm,
         verbose=verbose,
         truncation_threshold=truncation_threshold,
-        weighted_restrictions=weighted_restrictions,
-        cipsi_solver_method=cipsi_solver_method,
+        slaterWeightMin=slaterWeightMin,
         use_hf_seed=use_hf_seed,
+        weighted_restrictions=weighted_restrictions,
     )
-    basis.tau = tau
-    # The refinement solves one sector on one basis, so it starts from the resolved cap, not from
-    # a cap the memory guard lowered while the walk ran (at tau/100 and the walk's own de2 floor,
-    # with the walk's retained heap still counted in its RSS). Its own guard measures afresh. A
-    # cap the user set is never lowered in the first place, so this only concerns auto/unlimited.
-    policy = getattr(basis, "cap_policy", None)
-    if policy is not None and policy.from_memory and policy.gs is not None:
-        basis.truncation_threshold = policy.gs
-    energy_cut = boltzmann_energy_cut(tau)
-    solver = CIPSISolver(basis)
-    with solver_trace.timed("expand", stage="gs_refine"):
-        solver.expand(
-            h_op,
-            dense_cutoff=dense_cutoff,
-            de2_min=de2_min,
-            e_pt2_tol=e_pt2_tol,
-            slaterWeightMin=slaterWeightMin,
-            solver=cipsi_solver_method,
-            memory_budget_bytes=expand_memory_budget(comm),
-            memory_policy=_memory_policy(truncation_threshold),
-            # `symmetry_generators` deliberately not passed: expand re-derives them from the H it
-            # is expanding (and the closure is opt-in, cipsi_solver.SYMMETRY_CLOSURE_DEFAULT).
-        )
+    es, psis, basis, solver = solve_sector(
+        h_op,
+        impurity_orbitals,
+        bath_states,
+        search.occupation,
+        mixed_valence,
+        tau,
+        chain_restrict,
+        dense_cutoff,
+        manifold=Within.thermal(tau),
+        comm=comm,
+        verbose=verbose >= V_DETAIL,
+        # The resolved policy, not what the caller passed: the walk announced it once.
+        truncation_threshold=search.cap_policy,
+        slaterWeightMin=slaterWeightMin,
+        weighted_restrictions=weighted_restrictions,
+        frozen_occupations=frozen_occupations,
+        de2_min=de2_min,
+        e_pt2_tol=e_pt2_tol,
+    )
+    # The sector this search settled on. It cannot be recovered from the basis: the CIPSI expansion
+    # widened the impurity occupation window (build_excited_restrictions is called with
+    # imp_change=None, i.e. unconstrained), so its determinants span several impurity occupations --
+    # measured {1, 2, 3} on a split-block toy whose winning sector is 2.
+    basis.ground_state_occupation = dict(search.occupation)
+    # The resolved cap policy, read-only and immutable, for the Green's-function stage to size its
+    # unit bases from (gf_units.gf_cap). Deliberately not `basis.truncation_threshold`: the memory
+    # guard may lower that one for the ground state, and a GF unit must not inherit it.
+    basis.cap_policy = search.cap_policy
 
-    # The residual in `solver.convergence_report` covers the reference states `expand` carried.
-    # Its own eigensolve already widens to the same Boltzmann cut, so the loop below should not
-    # find more; if it does, those states have no residual and the report must not claim them.
-    # The states the last selection round scored, not `solver.psi_refs`: a capped expansion
-    # returns the block of an eigensolve that ran after that round and may be wider.
+    # The residual in `solver.convergence_report` covers the reference states `expand` carried: the
+    # states the last selection round scored, not `solver.psi_refs` -- a capped expansion returns the
+    # block of an eigensolve that ran after that round and may be wider.
     n_references = int((solver.last_selection or {}).get("n_references", 0))
-    wanted = num_wanted
-    while True:
-        with solver_trace.timed("eigensolve", stage="gs_thermal", num_wanted=wanted):
-            es, psis = solver.get_eigenvectors(
-                h_op,
-                num_wanted=wanted,
-                max_energy=energy_cut,
-                dense_cutoff=dense_cutoff,
-                slaterWeightMin=slaterWeightMin,
-                solver=cipsi_solver_method,
-                psi_refs=solver.psi_refs,
-            )
-        # The manifold is complete once the solver ran out of states, or the highest one found
-        # sits outside the Boltzmann window. Lanczos energies are only replicated to roundoff, so
-        # broadcast rank 0's verdict -- ranks disagreeing here issue different sequences of
-        # collective get_eigenvectors calls and deadlock (CLAUDE.md's MPI rule).
-        done = len(es) < wanted or (len(es) >= 1 and es[-1] - es[0] >= energy_cut) or wanted >= max_num_wanted
-        if basis.is_distributed:
-            done = basis.comm.bcast(done, root=0)
-        if done:
-            break
-        wanted += num_wanted
     widened = len(es) > n_references
     if basis.is_distributed:
         widened = basis.comm.bcast(widened, root=0)
@@ -1314,26 +929,25 @@ def solve_ground_state(
                 "cover the rest.",
                 flush=True,
             )
-    return basis, solver, es, psis
+    return GroundState(basis, solver, es, psis, search.occupation, search.truncation_report)
 
 
-def refined_truncation_report(solver, basis):
-    """The truncation report that describes the ground state after the refinement.
+def refined_truncation_report(solver, walk_report):
+    """The truncation report that describes the ground state.
 
-    The refinement's own report when it has one. Otherwise the occupation walk's, which still
-    says whether the *cap* bound the search -- but not its memory verdict: the refinement restarts
-    from the resolved cap (``solve_ground_state``), so a walk the memory guard held is no longer a
-    memory-bound ground state once the refinement ran unbound. Carrying ``memory_bound`` through
-    would raise a false ``gs_memory`` warning in the self-energy and a spurious refusal in the
-    double-counting search. The walk's verdict is kept as ``walk_memory_bound``, for the record.
+    The production solve's own when it has one. Otherwise the occupation walk's (``walk_report``),
+    which still says whether the *cap* bound the search -- but not its memory verdict: the production
+    solve ran from the resolved cap, so a walk the memory guard held is no longer a memory-bound
+    ground state once the solve ran unbound. Carrying ``memory_bound`` through would raise a false
+    ``gs_memory`` warning in the self-energy and a spurious refusal in the double-counting search.
+    The walk's verdict is kept as ``walk_memory_bound``, for the record.
     """
     report = getattr(solver, "truncation_report", None)
     if report is not None:
         return report
-    walk = getattr(basis, "occupation_search_truncation", None)
-    if walk is None:
+    if walk_report is None:
         return None
-    return {**walk, "memory_bound": False, "walk_memory_bound": bool(walk.get("memory_bound", False))}
+    return {**walk_report, "memory_bound": False, "walk_memory_bound": bool(walk_report.get("memory_bound", False))}
 
 
 def calc_gs(
@@ -1343,8 +957,6 @@ def calc_gs(
     rot_to_spherical: np.ndarray,
     verbose,
     slaterWeightMin=0,
-    cipsi_solver_method=GS_CIPSI_SOLVER_METHOD,
-    num_wanted: int = 10,
     stats_path: str = "ground_state_statistics.json",
     **kwargs,
 ):
@@ -1398,531 +1010,32 @@ def calc_gs(
         basis_setup["N0"] = basis_setup.pop("nominal_impurity_occ")
 
     tau = basis_setup["tau"]
-    basis_setup.get("dense_cutoff", 1000)
-    boltzmann_energy_cut(tau)
     # One definition of "the ground state of this model", shared with the double-counting
-    # criteria (see solve_ground_state): it owns the tau/100 walk, the sqrt(slaterWeightMin)
-    # cutoff, the tau restore before the refinement, the eigensolver choice and the width of the
-    # thermal manifold. `basis_setup` is the caller's dict, so pass it through rather than
-    # re-listing its keys; `tau` is *not* pre-divided here any more -- solve_ground_state does it.
-    ground_state_basis, solver, es, psis = solve_ground_state(
-        Hop,
-        verbose=verbose,
-        slaterWeightMin=slaterWeightMin,
-        cipsi_solver_method=cipsi_solver_method,
-        num_wanted=num_wanted,
-        **basis_setup,
-    )
+    # criteria (see solve_ground_state): it owns the sector walk, its cutoff, the eigensolver choice
+    # and the width of the thermal manifold. `basis_setup` is the caller's dict, so pass it through
+    # rather than re-listing its keys.
+    ground_state = solve_ground_state(Hop, verbose=verbose, slaterWeightMin=slaterWeightMin, **basis_setup)
+    ground_state_basis, solver, es, psis = ground_state[:4]
     # Record whether the truncation_threshold bound the ground-state determination (and how
     # the fixed-budget refinement resolved it), so a capped GS is auditable downstream
     # (returned in gs_info and saved to the statistics JSON). None when the cap never bound.
     # The cap can bind either the final expansion here or the earlier occupation search
     # (whose final basis may then fit under the cap); report either.
-    gs_truncation_report = refined_truncation_report(solver, ground_state_basis)
+    gs_truncation_report = refined_truncation_report(solver, ground_state.walk_report)
     # How far the refinement is from PT2 convergence: `{"residual_pt2", "e_pt2_tol", "converged",
     # "limited_by"}` (see CIPSISolver.expand). Always present, unlike the truncation report --
     # an uncapped expansion can still stop short of its tolerance (a `de2_min` floor).
     gs_convergence_report = getattr(solver, "convergence_report", None)
-    # Redistribute onto the basis as it stands; do not first collapse it onto the support of
-    # `psis`. The basis is also the seed space for the excited/Green's-function expansion
-    # downstream, and shrinking it to the thermal eigenvectors' support throws away exactly the
-    # determinants a transition operator is most likely to reach.
-    # `psis` is the block `get_eigenvectors` returns, so it redistributes as a block --
-    # `*psis` would unpack its determinant KEYS, and at 1 rank `redistribute_psis` no-ops and
-    # hands them straight back rather than raising. `prune_rows(0.0)` matches what
-    # `redistribute_psis` did per column (it pruned each slice, and the caller's `from_states`
-    # re-unioned), so the support is unchanged.
-    psis_blk = ground_state_basis.redistribute_block(
-        psis if isinstance(psis, ManyBodyState) else ManyBodyState.from_states(list(psis))
-    )
-    psis_blk.prune_rows(0.0)
-    # Shared-support block view of the same redistributed states, built once and used
-    # by every observable diagnostic below (Phase 6a of the state-unification refactor,
-    # doc/plans/manybodystate_block_unification.md) instead of `width` independent
-    # per-state calls. `psis` itself stays a list alongside it: `calc_gs`'s own return
-    # contract is `list[ManyBodyState]`, and it is still needed as a list for
-    # `add_states`/`redistribute_psis` above, so keeping both avoids a redundant
-    # to_states() round trip at the return.
-    # `calc_gs`'s documented return contract is `list[ManyBodyState]` (the spectra / GF / RIXS
-    # seed paths consume it as one), so the list is materialized here from the block rather than
-    # the other way round. Migrating that contract outward is a separate, deliberate step.
-    psis = psis_blk.to_states()
-
-    # The effective restrictions are printed in the ground-state-report overview below.
-    effective_restrictions = get_effective_restrictions(ground_state_basis)
-
-    comm = ground_state_basis.comm
-    rank = comm.rank if comm is not None else 0
-    report = Reporter(verbose, rank)
-    # Single-particle density matrices, built distributed (each rank applies c_orb to its
-    # local partition, redistributes, computes local inner products, then Allreduce); the
-    # full rho is returned replicated on every rank. No full-state-vector gather needed.
-    rhos = build_density_matrices(ground_state_basis, psis_blk)
-
-    e_avg = thermal_average_scale_indep(es, es, tau)
-    thermal_rho = thermal_average_scale_indep(es, rhos, tau)
-
-    # Occupation-weight statistics of the thermal ground state, built distributed
-    # (collective call); returns the dict on rank 0 and None elsewhere.
-    gs_stats = compute_gs_statistics(
+    return report_ground_state(
+        Hop,
         ground_state_basis,
-        psis_blk,
         es,
-        tau,
-        thermal_rho,
-        ground_state_basis.impurity_spin_orbital_indices,
-    )
-    if gs_stats is not None:
-        # Record whether the ground-state basis was truncation-capped (None = not capped),
-        # so it lands in the saved statistics JSON alongside the occupation weights.
-        gs_stats["truncation"] = gs_truncation_report
-        gs_stats["convergence"] = gs_convergence_report
-
-    # Many-body impurity-bath entanglement from the impurity RDM (collective call; its
-    # memory guard may skip it, deterministically on every rank). Degrades to None.
-    try:
-        entanglement = compute_entanglement_entropy(ground_state_basis, psis_blk, es, tau)
-    except Exception:
-        entanglement = None
-    if gs_stats is not None:
-        gs_stats["entanglement"] = entanglement
-    # The statistics JSON is saved after the remaining observable diagnostics below, so
-    # they can be bundled into the same file.
-
-    # Sorted (original computational) order, matching the convention of block_structure
-    # (local indices over the sorted impurity orbitals) and rot_to_spherical. The
-    # impurity_orbitals dict is grouped (e.g. eg then t2g), so iterating it would slice the
-    # density matrix into a *reordered* basis that no longer matches rot_to_spherical /
-    # block_structure — corrupting the spherical rotation and the Sz / N(Up) split.
-    impurity_indices = sorted(
-        orb
-        for impurity_orbital_blocks in ground_state_basis.impurity_orbitals.values()
-        for block in impurity_orbital_blocks
-        for orb in block
-    )
-    impurity_ix = np.ix_(impurity_indices, impurity_indices)
-    # Impurity S^2 / L^2 / J^2 and <S_imp.S_bath> are two-body observables, so they
-    # need the actual eigenstates rather than the density matrix. They are evaluated
-    # *distributed*: each rank block-applies the operator to its local partition,
-    # redistribute_block realigns it, and manifold_observable_values Allreduces the
-    # small <m|O|n> matrix (so this is a collective call with an identical result on
-    # every rank — no state-vector gather). The L/S/J operators are built in the
-    # spherical basis and rotated to the computational basis via rot_to_spherical
-    # (symmetry-plan Phase 5).
-    mov_comm = ground_state_basis.comm if ground_state_basis.is_distributed else None
-    mov_redistribute = ground_state_basis.redistribute_block if ground_state_basis.is_distributed else None
-    s_values = l_values = j_values = None
-    s2_thermal = l2_thermal = j2_thermal = None
-    # Whether J is a sharp quantum number across the ground manifold (is_j_sharp); True
-    # (ungated) is the safe default when the Casimirs are unavailable -- there is then no
-    # signal to gate on, and the term/g_J/mu_eff rows already don't print in that case.
-    j_sharp = True
-    # Per-shell S^2/L^2/J^2 (Stage 4 consumes this for the per-shell report table):
-    # partition -> {"l", "s2_thermal", "l2_thermal", "j2_thermal"}. Only populated when
-    # there is more than one shell to distinguish -- a single shell's per-shell values
-    # would just duplicate the totals computed below.
-    shell_casimir = {}
-    try:
-        l_ops, s_ops, j_ops, per_shell_ops = make_impurity_casimir_operators(
-            ground_state_basis.impurity_orbitals, rot_to_spherical, per_shell=True
-        )
-    except ValueError:
-        # The impurity is grouped into orbital-symmetry manifolds (e.g. eg / t2g), none of
-        # which is individually a full spin-doubled l-shell, so the per-partition build raised.
-        # L/S/J are shell-*total* operators, so aggregate the manifolds into the whole shell
-        # (the sorted impurity_indices, which match the single rot_to_spherical matrix) and
-        # retry. Only meaningful for a single shared rotation; a dict rotation is per-shell
-        # (get_spectra's multi-l case) and is already correct per partition.
-        l_ops = None
-        per_shell_ops = None
-        if not isinstance(rot_to_spherical, dict):
-            try:
-                l_ops, s_ops, j_ops, per_shell_ops = make_impurity_casimir_operators(
-                    {0: [impurity_indices]}, rot_to_spherical, per_shell=True
-                )
-            except ValueError:
-                # Genuinely not a spin-doubled l-shell: skip the Casimirs
-                # (the rho-based <L.S>/<Lz>/<Sz> etc. still print).
-                l_ops = None
-                per_shell_ops = None
-    if l_ops is not None:
-        # Evaluation is deterministic and identical on every rank (manifold_observable_values
-        # Allreduces), so a failure raises on all ranks together -> the try/except stays
-        # collective-safe and the report degrades instead of crashing the ground-state solve.
-        try:
-            casimir = {}
-            for name, ops in (("S", s_ops), ("L", l_ops), ("J", j_ops)):
-                op2 = casimir_operator(*ops)
-                vals = manifold_observable_values(
-                    psis_blk,
-                    es,
-                    lambda blk, _op=op2: _op.apply_block(blk, 0),
-                    comm=mov_comm,
-                    redistribute=mov_redistribute,
-                )
-                casimir[name] = (
-                    np.array([casimir_to_quantum_number(v) for v in vals]),
-                    thermal_observable_value(vals, es, tau),
-                )
-            s_values, s2_thermal = casimir["S"]
-            l_values, l2_thermal = casimir["L"]
-            j_values, j2_thermal = casimir["J"]
-            # Without SOC, J is generically not a good quantum number: the ground
-            # manifold can be energy-degenerate while its members' J differ (see
-            # is_j_sharp's docstring). Gate the printed/persisted term/g_J/mu_eff on
-            # this rather than reporting a single J that isn't actually well-defined.
-            j_sharp = is_j_sharp(j_values, es)
-            if per_shell_ops is not None and len(per_shell_ops) > 1:
-                for partition, (shell_l, shell_l_ops, shell_s_ops, shell_j_ops) in per_shell_ops.items():
-                    entry = {"l": shell_l}
-                    for name, ops in (("s2", shell_s_ops), ("l2", shell_l_ops), ("j2", shell_j_ops)):
-                        op2 = casimir_operator(*ops)
-                        vals = manifold_observable_values(
-                            psis_blk,
-                            es,
-                            lambda blk, _op=op2: _op.apply_block(blk, 0),
-                            comm=mov_comm,
-                            redistribute=mov_redistribute,
-                        )
-                        entry[f"{name}_thermal"] = thermal_observable_value(vals, es, tau)
-                    shell_casimir[partition] = entry
-        except Exception as exc:
-            if rank == 0:
-                print(f"S^2/L^2/J^2 not reported: {exc}")
-            s_values = l_values = j_values = None
-            s2_thermal = l2_thermal = j2_thermal = None
-            j_sharp = True
-            shell_casimir = {}
-    # Kondo impurity-bath spin correlation <S_imp . S_bath>. The bath spin pairing
-    # follows the down-then-up convention, but is only trusted if the induced global
-    # spin operators commute with the one-body Hamiltonian (so the spin assignment
-    # is consistent with the model's spin symmetry); otherwise (SOC, non-standard
-    # ordering) it is skipped rather than reported wrong.
-    sisb_values = None
-    sisb_thermal = None
-    sisb_z_values = None
-    sisb_z_thermal = None
-    sisb_z_connected = None
-    sisb_pairing_approx = False
-    sisb_skip_reason = None
-    spin_pairs = None
-    try:
-        n_orb = ground_state_basis.num_spin_orbitals
-        # Validation cascade (down-then-up convention / symmetry-derived / collinear
-        # spin-polarized bath) shared with the susceptibility driver. For the collinear
-        # case (pairing_approx=True) the transverse (S_±) parts are flagged and the exact
-        # longitudinal correlation is reported alongside.
-        resolved = resolve_spin_pairs(
-            Hop, ground_state_basis.impurity_orbitals, ground_state_basis.bath_states, rot_to_spherical, n_orb
-        )
-        if resolved is not None:
-            imp_pairs, bath_pairs, sisb_pairing_approx = resolved
-            spin_pairs = (imp_pairs, bath_pairs)
-        if spin_pairs is None:
-            sisb_skip_reason = (
-                "could not determine a trustworthy (down,up) spin labelling. The down-then-up "
-                "index convention only holds in the spherical-harmonics representation -- a "
-                "symmetry-adapted-basis rotation of the correlated shell (rot_to_spherical set "
-                "to a symmetry-adapted, not spherical, unitary) breaks it -- and the "
-                "symmetry-derived fallback did not yield a consistent pairing, and the collinear "
-                "spin-polarized-bath check also failed (spin-orbit coupling, or a bath "
-                "connectivity/order the derivation cannot resolve, are other possible causes)."
-            )
-        else:
-            imp_pairs, bath_pairs = spin_pairs
-            ops_imp = make_spin_operators(imp_pairs)
-            ops_bath = make_spin_operators(bath_pairs)
-            sisb_op = spin_correlation_operator(ops_imp, ops_bath)
-            sisb_raw = manifold_observable_values(
-                psis_blk,
-                es,
-                lambda blk: sisb_op.apply_block(blk, 0),
-                comm=mov_comm,
-                redistribute=mov_redistribute,
-            )
-            sisb_values = np.real(sisb_raw)
-            sisb_thermal = thermal_observable_value(sisb_raw, es, tau)
-            if sisb_pairing_approx:
-                # Longitudinal part <Sz_imp Sz_bath>: exact under the collinear check (needs only
-                # the verified spin labels), reported next to the pairing-dependent full value,
-                # plus its connected form against the thermal single-particle polarizations.
-                sisb_z_op = spin_correlation_operator(ops_imp, ops_bath, z_only=True)
-                sisb_z_raw = manifold_observable_values(
-                    psis_blk,
-                    es,
-                    lambda blk: sisb_z_op.apply_block(blk, 0),
-                    comm=mov_comm,
-                    redistribute=mov_redistribute,
-                )
-                sisb_z_values = np.real(sisb_z_raw)
-                sisb_z_thermal = np.real(thermal_observable_value(sisb_z_raw, es, tau))
-                sz_imp = get_Sz_from_rho_pairs(thermal_rho, imp_pairs)
-                sz_bath = get_Sz_from_rho_pairs(thermal_rho, bath_pairs)
-                sisb_z_connected = sisb_z_thermal - sz_imp * sz_bath
-    except Exception as exc:
-        # Deterministic + identical on every rank (collective Allreduce inside), so this raises
-        # on all ranks together and stays collective-safe.
-        sisb_values = None
-        sisb_thermal = None
-        sisb_z_values = None
-        sisb_z_thermal = None
-        sisb_z_connected = None
-        sisb_pairing_approx = False
-        spin_pairs = None
-        sisb_skip_reason = f"spin-correlation evaluation failed: {exc}"
-
-    # Static (Curie) susceptibilities of the retained thermal manifold. Charge always
-    # works; spin/orbital need the many-body Sz/Lz from the Casimir build. Collective and
-    # deterministic — separate degrade guard so it survives a spin-pairing failure.
-    static_susceptibilities = None
-    try:
-        static_susceptibilities = compute_static_susceptibilities(
-            psis_blk,
-            es,
-            tau,
-            impurity_indices,
-            s_z_op=s_ops[2] if l_ops is not None else None,
-            l_z_op=l_ops[2] if l_ops is not None else None,
-            comm=mov_comm,
-            redistribute=mov_redistribute,
-        )
-    except Exception:
-        static_susceptibilities = None
-
-    # Correlation-strength, screening and energy-decomposition diagnostics. Collective
-    # (manifold_observable_values Allreduces inside) and deterministic on identical inputs,
-    # so every rank takes the same path — same degrade-to-warning pattern as above.
-    corr_diagnostics = None
-    screening_diagnostics = None
-    energy_decomposition = None
-    diagnostics_skip_reason = None
-    try:
-        h1, _, _ = extract_tensors(Hop, n_orb=ground_state_basis.num_spin_orbitals, two_body=False)
-        energy_decomposition = compute_energy_decomposition(thermal_rho, h1, impurity_indices, e_avg)
-        if spin_pairs is not None:
-            imp_pairs, bath_pairs = spin_pairs
-            corr_diagnostics = compute_correlation_diagnostics(
-                psis_blk, es, tau, thermal_rho, imp_pairs, comm=mov_comm, redistribute=mov_redistribute
-            )
-            # Impurity channels grouped like the N(...) columns (equivalent-block groups),
-            # using the same orbital-group labels (e.g. "group 1") as the printed report, not
-            # the raw block indices (which are positions in block_structure.blocks, not
-            # orbital indices, and name nothing the rest of the run refers to).
-            # Block orbitals are positions into the sorted impurity list (offset like
-            # print_expectation_values); map them back to global spin-orbital indices.
-            orb_offset = min(orb for block in block_structure.blocks for orb in block)
-            equivalent_blocks = get_equivalent_blocks(block_structure)
-            block_labels, _ = block_group_labels(
-                equivalent_blocks, block_structure, ground_state_basis.impurity_orbitals
-            )
-            imp_groups = {}
-            for blocks, label in zip(equivalent_blocks, block_labels):
-                group_orbs = {impurity_indices[orb - orb_offset] for b in blocks for orb in block_structure.blocks[b]}
-                in_group = [p for p in imp_pairs if p[0] in group_orbs and p[1] in group_orbs]
-                if in_group:
-                    imp_groups[label] = in_group
-            if len(imp_groups) < 2:
-                imp_groups = None  # a single channel equals the total <S_imp.S_bath>; skip
-            screening_diagnostics = compute_screening_diagnostics(
-                psis_blk,
-                es,
-                tau,
-                thermal_rho,
-                imp_pairs,
-                bath_pairs,
-                h1,
-                imp_groups=imp_groups,
-                z_only=sisb_pairing_approx,
-                comm=mov_comm,
-                redistribute=mov_redistribute,
-            )
-        else:
-            diagnostics_skip_reason = "no validated spin pairing (see the <S_imp.S_bath> message)"
-    except Exception as exc:
-        corr_diagnostics = None
-        screening_diagnostics = None
-        energy_decomposition = None
-        diagnostics_skip_reason = f"evaluation failed: {exc}"
-
-    # Bundle the observable diagnostics into the statistics dict (rank 0) and save the
-    # JSON only now, so ground_state_statistics.json carries the complete report.
-    full_impurity_ix = np.ix_(np.arange(len(rhos)), impurity_indices, impurity_indices)
-    try:
-        state_summary = compute_state_summary(
-            rhos[full_impurity_ix],
-            es,
-            rot_to_spherical,
-            s_values,
-            l_values,
-            j_values,
-            entanglement,
-            impurity_orbitals=ground_state_basis.impurity_orbitals,
-        )
-    except Exception as exc:
-        state_summary = None
-        if rank == 0:
-            print(f"per-state summary not reported: {exc}")
-    if gs_stats is not None:
-        try:
-            magnetic_summary = compute_magnetic_summary(
-                thermal_rho[impurity_ix],
-                rot_to_spherical,
-                s2_thermal,
-                l2_thermal,
-                j2_thermal,
-                impurity_orbitals=ground_state_basis.impurity_orbitals,
-                j_sharp=j_sharp,
-            )
-        except Exception as exc:
-            magnetic_summary = None
-            if rank == 0:
-                print(f"magnetic summary not reported: {exc}")
-        gs_stats["observables"] = {
-            "magnetic": magnetic_summary,
-            "per_state": state_summary,
-            "sisb": {
-                "thermal": None if sisb_thermal is None else float(np.real(sisb_thermal)),
-                "z_thermal": sisb_z_thermal,
-                "z_connected": sisb_z_connected,
-                "pairing_approx": sisb_pairing_approx,
-            },
-            "correlation": corr_diagnostics,
-            "screening": screening_diagnostics,
-            "energy_decomposition": energy_decomposition,
-            "static_susceptibilities": static_susceptibilities,
-        }
-    if rank == 0 and gs_stats is not None and stats_path is not None:
-        save_gs_statistics(gs_stats, stats_path)
-
-    if rank == 0:
-        # Terse run record: always shown (V_RESULT), independent of the full report below.
-        gs_occ = getattr(ground_state_basis, "ground_state_occupation", None)
-        occ_str = f"; ground-state impurity occupation: {sum(gs_occ.values())}" if gs_occ else ""
-        print(f"E0 = {np.min(es):.6f}   retained states = {len(es)}   tau = {tau:.4g}")
-        print(f"{len(ground_state_basis):,} Slater determinants{occ_str}")
-        if not report.enabled(V_SUMMARY):
-            note = f"; statistics saved to {stats_path}" if (gs_stats is not None and stats_path is not None) else ""
-            print(f"(full report: -v{note})")
-    if report.enabled(V_SUMMARY):
-        # The ground state is fully computed by here; formatting/printing the observable report
-        # must never crash the solve. Any failure degrades to a warning and still returns the GS.
-        # Rank-0-only (report.enabled already checks rank == 0; no collectives inside), so the
-        # guard cannot desync an MPI run.
-        try:
-            report_banner("Ground-state report")
-            print(f"impurity spin-orbitals: {impurity_indices}")
-            # Range-compressed: a bath set spans ~90 spin-orbitals, and spelled out in full the
-            # index list is all one sees of a line whose point is the occupation window at its end.
-            print("Effective GS restrictions (observed electron count per orbital set):")
-            for indices, occupations in effective_restrictions.items():
-                print(f"  {format_index_ranges(indices)} : {occupations[0]}-{occupations[1]}")
-            print("Block structure:")
-            print_block_structure(block_structure)
-            print_impurity_orbital_groups(
-                get_equivalent_blocks(block_structure), block_structure, ground_state_basis.impurity_orbitals
-            )
-
-            report_rule("Thermal expectation values")
-            extra_groups = []
-            if energy_decomposition is not None:
-                extra_groups.append(
-                    (
-                        "Energy decomposition",
-                        [
-                            ("<H_1body>", energy_decomposition["e_one_body"], ""),
-                            ("<H_imp,1b>", energy_decomposition["e_imp_1b"], ""),
-                            ("<H_bath>", energy_decomposition["e_bath"], ""),
-                            ("<E_hyb>", energy_decomposition["e_hyb"], ""),
-                            ("<H_Coulomb>", energy_decomposition["e_coulomb"], "(= <E> - <H_1body>)"),
-                        ],
-                    )
-                )
-            if static_susceptibilities is not None:
-                extra_groups.append(
-                    ("Static susceptibilities (Curie)", static_susceptibility_rows(static_susceptibilities))
-                )
-            print_thermal_expectation_values(
-                thermal_rho[impurity_ix],
-                e_avg,
-                rot_to_spherical,
-                block_structure,
-                s_thermal=s2_thermal,
-                l_thermal=l2_thermal,
-                j_thermal=j2_thermal,
-                sisb_thermal=sisb_thermal,
-                sisb_z_thermal=sisb_z_thermal,
-                sisb_z_connected=sisb_z_connected,
-                sisb_pairing_approx=sisb_pairing_approx,
-                extra_groups=extra_groups or None,
-                impurity_orbitals=ground_state_basis.impurity_orbitals,
-                shell_casimir=shell_casimir,
-                j_sharp=j_sharp,
-            )
-            report_rule("Eigenstates")
-            print_expectation_values(
-                rhos[full_impurity_ix],
-                es,
-                rot_to_spherical,
-                block_structure,
-                s_values=s_values,
-                l_values=l_values,
-                j_values=j_values,
-                sisb_values=sisb_values,
-                sisb_z_values=sisb_z_values,
-                impurity_orbitals=ground_state_basis.impurity_orbitals,
-            )
-            if state_summary is not None:
-                print_state_summary(state_summary)
-                print()
-            if sisb_skip_reason is not None:
-                print(f"<S_imp.S_bath> not reported: {sisb_skip_reason}")
-            if corr_diagnostics is not None:
-                report_rule("Correlation strength")
-                print_correlation_diagnostics(corr_diagnostics)
-            if screening_diagnostics is not None:
-                report_rule("Screening")
-                print_screening_diagnostics(screening_diagnostics)
-            if diagnostics_skip_reason is not None:
-                print(f"correlation/screening diagnostics not reported: {diagnostics_skip_reason}")
-            if gs_stats is not None:
-                report_rule("Configurations & entanglement")
-                print_gs_statistics(gs_stats, verbose=2 if verbose >= V_DETAIL else 1)
-                report_rule("Density matrices")
-                print("Ground state impurity / bath density matrices:")
-                valence_bath_states, conduction_bath_states = ground_state_basis.bath_states
-                for i in ground_state_basis.impurity_orbitals.keys():
-                    print(f"orbital set {i}:")
-                    impurity_orbital_blocks = ground_state_basis.impurity_orbitals[i]
-                    valence_bath_orbital_blocks = valence_bath_states[i]
-                    conduction_bath_orbital_blocks = conduction_bath_states[i]
-                    for block_i, (imp_orbs, val_orbs, con_orbs) in enumerate(
-                        zip(impurity_orbital_blocks, valence_bath_orbital_blocks, conduction_bath_orbital_blocks)
-                    ):
-                        print(f"Block {block_i}: impurity {imp_orbs}, valence {val_orbs}, conduction {con_orbs}")
-                        impurity_ix = np.ix_(imp_orbs, imp_orbs)
-                        bath_ix = np.ix_(val_orbs + con_orbs, val_orbs + con_orbs)
-                        matrix_print(thermal_rho[impurity_ix], "Impurity density matrix:", n_prec=5)
-                        if verbose >= V_DETAIL:
-                            matrix_print(thermal_rho[bath_ix], "Bath density matrix:", n_prec=5)
-                        else:
-                            print_density_matrix_summary(thermal_rho[bath_ix], "Bath density matrix (summary):")
-                    print("", flush=verbose >= V_DETAIL)
-                print()
-        except Exception as exc:
-            print(f"[warning] ground-state observable report incomplete (GS still returned): {exc}")
-    return (
         psis,
-        es,
-        ground_state_basis,
-        thermal_rho,
-        {
-            "rhos": rhos,
-            "statistics": gs_stats,
-            "truncation": gs_truncation_report,
-            "convergence": gs_convergence_report,
-            "correlation_diagnostics": corr_diagnostics,
-            "screening_diagnostics": screening_diagnostics,
-            "energy_decomposition": energy_decomposition,
-            "static_susceptibilities": static_susceptibilities,
-        },
+        tau,
+        block_structure,
+        rot_to_spherical,
+        verbose,
+        stats_path,
+        gs_truncation_report,
+        gs_convergence_report,
     )

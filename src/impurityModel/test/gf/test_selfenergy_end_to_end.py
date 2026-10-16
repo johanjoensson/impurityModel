@@ -62,7 +62,7 @@ def _basis_and_solver():
         slater_weight_min=1e-10,
         tau=0.05,
     )
-    solver = SolverOptions(reort=None, dense_cutoff=500, sparse_green=True, gf_method="lanczos")
+    solver = SolverOptions(dense_cutoff=500, sparse_green=True, gf_method="lanczos")
     return basis, solver
 
 

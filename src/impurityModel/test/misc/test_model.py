@@ -125,6 +125,7 @@ def _write_synthetic_archive(
     gf_method=None,
     gf_admission=None,
     gf_admit_tol=None,
+    reort=None,
 ):
     """Write a minimal impurityModel_data.h5 (one 2-orbital impurity + 1 bath) like the interface does.
 
@@ -153,7 +154,8 @@ def _write_synthetic_archive(
         g.attrs["tau"] = 0.0025
         g.attrs["delta"] = 0.1
         g.attrs["mv"] = "None"
-        g.attrs["reort"] = "partial"
+        if reort is not None:
+            g.attrs["reort"] = reort
         g.attrs["dense_cutoff"] = 500
         g.attrs["spin_flip_dj"] = False
         g.attrs["chain_restrict"] = True
@@ -194,6 +196,14 @@ def test_from_hdf5_reads_archive_group(tmp_path):
     assert model.h0[((0, "c"), (2, "a"))] == 0.3
 
 
+def test_archive_recording_a_reort_replays_with_a_warning(tmp_path):
+    """`reort` is no longer a solver option; an archive that recorded one is replayed, loudly."""
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), reort="partial")
+    with pytest.warns(UserWarning, match="reort='partial', which is retired"):
+        load_selfenergy_archive(str(archive))
+
+
 def test_load_selfenergy_archive_recovers_options(tmp_path):
     """load_selfenergy_archive rebuilds model + meshes + basis + solver from the archive."""
     archive = tmp_path / "impurityModel_data.h5"
@@ -210,7 +220,6 @@ def test_load_selfenergy_archive_recovers_options(tmp_path):
     assert basis.tau == 0.0025
     assert basis.chain_restrict is True
     assert basis.dN is None
-    assert solver.reort == "partial"
     assert solver.dense_cutoff == 500
     assert solver.gf_method == "lanczos"
     assert isinstance(model, ImpurityModel)

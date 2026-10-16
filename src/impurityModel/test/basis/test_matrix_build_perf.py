@@ -41,7 +41,7 @@ What it records
 ---------------
 * the *call histogram*, one row per ``build_sparse_matrix`` call with the basis size at the
   time, grouped by which ``expand`` it belongs to (``solve_ground_state`` runs one expand per
-  trial occupation in ``walk_to_ground_state_sector`` before the final refinement expand, and
+  trial occupation in ``find_ground_state_sector`` before the final refinement expand, and
   ``sum|B_i|/|B_final|`` is only meaningful *within* one expand);
 * the split inside each build: (a) ``iter_local_operator_images`` -- the C++ apply plus the
   per-determinant Python ``ManyBodyState``/``.items()`` walk, (b) ``Basis._index_sequence`` --
@@ -103,7 +103,7 @@ class _Recorder:
         # both levels would double-count leg (b).
         self._index_depth = 0
         # Which `expand` a build belongs to. `solve_ground_state` runs one expand per trial
-        # occupation in `walk_to_ground_state_sector` before the final refinement expand, and
+        # occupation in `find_ground_state_sector` before the final refinement expand, and
         # sum|B_i|/|B_final| is only meaningful *within* one expand -- pooling the walk's small
         # bases with the refinement's large ones would report a ceiling no cache could reach.
         self.expand_index = -1
@@ -306,12 +306,14 @@ def _stop_after_gs():
 
 def _hash_block(basis, width):
     """A block with the whole local basis as support -- what a Krylov vector looks like here."""
-    from impurityModel.ed.cipsi_solver import _amplitude_from_hash
+    from impurityModel.ed.eigensolvers import cold_vector
     from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
+    states = list(basis.local_basis)
+    hashes = np.fromiter((state.get_hash() for state in states), dtype=np.uint64)
     columns = []
     for k in range(width):
-        amps = {state: _amplitude_from_hash(state.get_hash() + k) for state in basis.local_basis}
+        amps = dict(zip(states, cold_vector(hashes + np.uint64(k))[:, 0]))
         columns.append(ManyBodyState(amps, width=1))
     return ManyBodyState.from_states(columns)
 
@@ -337,33 +339,13 @@ def _time_matrix_free_step(basis, H, width, repeats=3):
 
 
 def _time_spmv(basis, h_local, width, repeats=5):
-    """One distributed sparse matvec: ``H[:, local] @ V`` plus the full-length reduction."""
-    v = np.asfortranarray(np.random.default_rng(0).random((len(basis.local_basis), width)) + 0j)
-    h_csr = h_local.tocsr()
-    out = np.empty((len(basis), width), dtype=complex)
+    """One distributed sparse matvec, ``DistributedSparseMatrix.apply`` (scatter plus the graph exchange)."""
+    v = np.ascontiguousarray(np.random.default_rng(0).random((len(basis.local_basis), width)) + 0j)
+    plan = h_local.exchange_plan(width)
     best = np.inf
     for _ in range(repeats):
         t0 = time.perf_counter()
-        partial = h_csr @ v
-        if basis.is_distributed:
-            basis.comm.Allreduce(np.ascontiguousarray(partial), out, op=MPI.SUM)
-        best = min(best, time.perf_counter() - t0)
-    return best
-
-
-def _time_tocsr(h_local, repeats=3):
-    """The CSC -> CSR conversion the array kernel does on every solve.
-
-    ``BlockLanczosArray.pyx:482`` converts inside ``block_lanczos_array_cy``, i.e. once per
-    ``restarted_lanczos`` call -- once per CIPSI cycle, right after each build. It is an
-    O(nnz) full copy that the attribution otherwise hides inside ``solve_seconds``, and it
-    decides what an incremental cache should *store*: caching a CSC that gets re-converted
-    every cycle would leave this cost in place.
-    """
-    best = np.inf
-    for _ in range(repeats):
-        t0 = time.perf_counter()
-        h_local.tocsr()
+        h_local.apply(v, plan)
         best = min(best, time.perf_counter() - t0)
     return best
 
@@ -416,10 +398,6 @@ def _report(recorder, extra, comm):
         if t_free > t_spmv and builds:
             breakeven = builds[len(builds) - 1]["seconds"] / (t_free - t_spmv)
             print(f"matrix pays for itself after {breakeven:.1f} matvecs (ratio {t_free / max(t_spmv, 1e-12):.0f}x)")
-        print(
-            f"per-solve CSC->CSR conversion {extra['tocsr_seconds'] * 1e3:.2f} ms "
-            f"({extra['tocsr_seconds'] / max(builds[len(builds) - 1]['seconds'], 1e-12):.1%} of one build)"
-        )
     return payload
 
 
@@ -454,11 +432,8 @@ def test_matrix_build_attribution():
     basis, H = final.get("basis"), final.get("H")
     if basis is not None:
         h_local = build_sparse_matrix(basis, H)
-        if basis.is_distributed:
-            h_local = h_local[:, basis.local_indices]
         extra["matrix_free_seconds"] = _time_matrix_free_step(basis, H, _WIDTH)
         extra["spmv_seconds"] = _time_spmv(basis, h_local, _WIDTH)
-        extra["tocsr_seconds"] = _time_tocsr(h_local)
 
     payload = _report(recorder, extra, comm)
     out_path = os.environ.get("MATRIX_BENCH_JSON")

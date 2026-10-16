@@ -6,12 +6,12 @@ interactions predictable.
 ## Category S — support decisions
 
 A support decision says which determinants may carry amplitude at all. For the recurrences (block Lanczos,
-BiCGSTAB/GMRES matvec, Chebyshev) there are exactly two entry points on the policy object:
+BiCGSTAB/GMRES matvec) there are exactly two entry points on the policy object:
 
 - `admit_seed(block)`: the seed block. No cut, and it does not advance the support-freeze window.
 - `decide(wp, cutoff)`: once per matvec, on the **summed** output of that matvec.
 
-Row chunking (`GF_APPLY_ROW_CHUNKS`) only bounds the transient memory of the apply. Per chunk the policy does
+Row chunking (`APPLY_ROW_CHUNKS`) only bounds the transient memory of the apply. Per chunk the policy does
 `transport(raw)`: redistribute, then the work that commutes with the sum (the frozen `keep_rows`, the RSS
 memory-guard check). Nothing that depends on the *total* amplitude of a row is decided per chunk.
 
@@ -38,7 +38,6 @@ These never add rows; they are left in place on purpose:
 - the 5a prune of the orthonormalised `q_next`;
 - the TSQR `Q` prune;
 - the BiCGSTAB/GMRES `axpy`/residual/solution prunes;
-- the Chebyshev `t_next` prune;
 - the resolvent's per-column `combine`.
 
 ## What crosses a step boundary, by design
@@ -57,14 +56,14 @@ sum agree.
 
 ## Mutual exclusions
 
-Importance pruning (`GF_LANCZOS_ADMIT_TOL`) and the support freeze (`GF_SUPPORT_FREEZE`) cannot both be on: under
+Importance pruning (`GF_LANCZOS_ADMIT_TOL`) and the support freeze cannot both be on: under
 pruning, banned rows always land outside the support, so the leak no longer measures growth.
 
 ## Where it lives
 
 `gf_primitives.SupportPolicy` (the old `_CappedBasisProxy` name is an alias) holds the three entry points; the one
 recurrence matvec is `apply_and_redistribute` (`src/cython/_block_ops.pxi`), which the block-Lanczos step, the
-BiCGSTAB/GMRES matvec and the Chebyshev filter all call. A plain basis is the null policy: redistribute, then cut.
+BiCGSTAB/GMRES matvec all call. A plain basis is the null policy: redistribute, then cut.
 The policy advertises `tracks_support` and `prunes` for callers to read; nothing tests its class.
 
 | site | category | when | notes |
@@ -73,7 +72,7 @@ The policy advertises `tracks_support` and `prunes` for callers to read; nothing
 | `SupportPolicy.admit_seed` | S | seed block | no cut, not a window step |
 | `SupportPolicy.transport` | S (memory only) | per chunk | frozen projection, RSS guard |
 | `_lanczos_step` 5a `q_next.prune_rows` | A | after the step | weight reaches the next window (`note_step_cut`) |
-| TSQR `Q` prune, BiCGSTAB/GMRES `axpy`/residual/solution prunes, Chebyshev `t_next` prune | A | inside a step | never add rows |
+| TSQR `Q` prune, BiCGSTAB/GMRES `axpy`/residual/solution prunes | A | inside a step | never add rows |
 | `KrylovShiftedResolvent` `combine` | A | per column | deliberate |
 | BiCGSTAB `_SupportTracker.add_states`, RIXS `add_states`/`psi2.prune` | growth outside the policy | between solves | |
 | `residual_blocks`, `boundary_residual`, `_next_shell` | probes on the raw basis | | read, never register |

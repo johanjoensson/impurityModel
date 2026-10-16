@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover - mpi4py is a hard dependency in practic
     _has_mpi = False
 
 from impurityModel.ed.cipsi_solver import CIPSISolver
-from impurityModel.ed.eigensolvers import scipy_eigensystem
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import SlaterDeterminant
 from impurityModel.ed.selfenergy import calc_selfenergy
@@ -100,7 +100,7 @@ from impurityModel.test.support._nio_workload import (
 # For the record, the superseded localization: a core dump put the main thread in
 #
 #   #0 estimate_orthonormality (W=..., alphas=..., betas=...)  BlockLanczosCore.pyx:316-322
-#   #6 block_lanczos_array_cy                                   BlockLanczosArray.pyx
+#   #6 block_lanczos                                   BlockLanczosArray.pyx
 #
 # The other threads are libfabric progress threads parked in epoll_wait. Locals at the crash:
 # i=32, n=2, w_0=2, w_curr=w_next=1 (the block has deflated), N=2977, and **anorm =
@@ -490,8 +490,7 @@ def test_warm_started_eigensolver_delivers_more_than_its_start_block():
 
     e_ref, _ = solver.get_eigenvectors(
         workload["h"],
-        num_wanted=10,
-        max_energy=None,
+        Within(10.0),
         dense_cutoff=_DENSE_CUTOFF,
         slaterWeightMin=1e-12,
         psi_refs=solver.psi_refs,
@@ -530,54 +529,14 @@ def test_truncate_initial_basis_is_rank_independent():
         return basis
 
     distributed = _make_basis(world)
-    CIPSISolver(distributed).truncate_initial(_TRUNCATE_INITIAL_HOP, dense_cutoff=30)
+    CIPSISolver(distributed).truncate_initial(_TRUNCATE_INITIAL_HOP, Within.thermal(0), dense_cutoff=30)
 
     serial = _make_basis(MPI.COMM_SELF)
-    CIPSISolver(serial).truncate_initial(_TRUNCATE_INITIAL_HOP, dense_cutoff=30)
+    CIPSISolver(serial).truncate_initial(_TRUNCATE_INITIAL_HOP, Within.thermal(0), dense_cutoff=30)
 
     got = _basis_fingerprint(distributed, world)
     ref = _basis_fingerprint(serial, MPI.COMM_SELF)
     assert got == ref, (
         f"truncate_initial's surviving basis depends on the rank count: {world.size} ranks kept "
         f"(count, sum, xor) = {got}, serial kept {ref}"
-    )
-
-
-@pytest.mark.mpi
-@pytest.mark.skipif(not _has_mpi, reason="mpi4py not available")
-def test_scipy_eigensystem_root_driven_matches_serial_with_an_empty_rank():
-    """Regression for the root-driven ``scipy_eigensystem`` rewrite (Phase 2 of the -n3 deadlock
-    fix): the hardened ARPACK driver must still return the correct spectrum -- and, above all,
-    must not hang -- when one rank owns no columns at all.
-
-    ``h_local`` is deliberately column-distributed so that the *last* rank owns zero columns
-    whenever ``comm.size > 1``: the empty-rank edge case that has bitten this codebase before
-    (CLAUDE.md; memory note array-lanczos-empty-rank-int32-deadlock). At -n3 this lands exactly
-    on rank 2, mirroring the original failure's rank/size combination.
-    """
-    world = MPI.COMM_WORLD
-    n = 8
-    rng = np.random.default_rng(1234)
-    H_full = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
-    H_full = H_full + H_full.conj().T
-    ref = np.sort(np.linalg.eigvalsh(H_full))
-
-    size = world.size
-    h_local = np.zeros_like(H_full)
-    if size == 1 or world.rank != size - 1:
-        owners = size - 1 if size > 1 else 1
-        owner_id = world.rank if size > 1 else 0
-        my_cols = [c for c in range(n) if c % owners == owner_id]
-        h_local[:, my_cols] = H_full[:, my_cols]
-    # else: the last rank of a size > 1 run deliberately owns no columns.
-
-    n_target = 3
-    e_max = ref[n_target - 1] - ref[0] + 1e-6
-    es, _ = scipy_eigensystem(h_local, e_max=e_max, k=n_target, comm=world, return_eigvecs=True)
-
-    assert len(es) >= n_target
-    got = np.sort(es)[:n_target]
-    assert np.allclose(got, ref[:n_target], atol=1e-6), (
-        f"root-driven scipy_eigensystem at {size} ranks (one empty) disagrees with the serial "
-        f"reference: got {got}, expected {ref[:n_target]}"
     )

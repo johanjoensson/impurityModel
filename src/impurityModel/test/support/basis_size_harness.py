@@ -40,12 +40,20 @@ BICGSTAB_ATOL = "1e-11"
 @contextmanager
 def env(**values):
     """Set environment variables for the duration, restoring what was there (knobs are read lazily)."""
+    from impurityModel.ed import gf_solvers
+
+    # The warm-start history is a module constant now, not a knob: ``GF_BICGSTAB_WARM_HISTORY`` here sets it.
+    warm = values.pop("GF_BICGSTAB_WARM_HISTORY", None)
+    old_warm = gf_solvers._GF_BICGSTAB_WARM_HISTORY
     old = {k: os.environ.get(k) for k in values}
     try:
+        if warm is not None:
+            gf_solvers._GF_BICGSTAB_WARM_HISTORY = int(warm)
         for k, v in values.items():
             os.environ[k] = str(v)
         yield
     finally:
+        gf_solvers._GF_BICGSTAB_WARM_HISTORY = old_warm
         for k, v in old.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -95,13 +103,13 @@ def _knobs(method, cap, eta, shell_tol=0.0):
     if shell_tol:
         base["GF_ADMIT_FIRST_SHELL_TOL"] = repr(float(shell_tol))
     if method == "lanczos-cap":
-        return dict(gf_method="lanczos", reort="full", slater=0.0, env=base)
+        return dict(gf_method="lanczos", reort=True, slater=0.0, env=base)
     if method == "lanczos-pruned":
         return dict(
             gf_method="lanczos",
-            reort="full",
+            reort=True,
             slater=0.0,
-            env={**base, "GF_LANCZOS_ADMIT_TOL": repr(float(eta)), "GF_APPLY_ROW_CHUNKS": 1},
+            env={**base, "GF_LANCZOS_ADMIT_TOL": repr(float(eta)), "APPLY_ROW_CHUNKS": 1},
         )
     cold = {**base, "GF_BICGSTAB_WARM_HISTORY": 0}
     if method == "bicgstab-cap":

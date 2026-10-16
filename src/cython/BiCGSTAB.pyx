@@ -15,30 +15,27 @@ resolvent evaluation -- it carries a fixed handful of vectors instead of a retai
 Krylov basis, and has no orthogonality to lose -- which is what the per-frequency
 Green's-function driver is built on. Today its production caller is the RIXS
 intermediate-state resolvent (``spectra._rixs_driver``).
-
-``impurityModel.ed.cg`` re-exports the public entry point, so the historical import path
-keeps working; this module is where the logic lives (the same arrangement as
-``irlm.py`` / ``trlm.py`` over ``BlockLanczos.pyx``).
 """
 
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import (
+from impurityModel.ed.BlockLanczosCore import (
+    apply_and_redistribute,
     block_add_scaled,
-    block_apply,
+    block_col_norms2,
     block_combine,
+    block_diag_inner,
     block_inner,
     block_tsqr,
     is_array,
 )
-from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.work_queue import queue_progress
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     block_add_scaled_cy,
-    block_inner_cy,
 )
 
 
@@ -54,7 +51,7 @@ def _fill_info(info, iterations, converged, rel_residual):
 def _make_matmat(A, basis, double slaterWeightMin, bint is_arr, bint mpi):
     """The solver matvec, shared by ``block_bicgstab`` and ``block_gmres``.
 
-    Dense path: :func:`BlockLanczosArray.block_apply`. Sparse path: one
+    Dense path: :meth:`DistributedSparseMatrix.apply` with one exchange plan per solve. Sparse path: one
     ``ManyBodyOperator.apply_block`` per call, routed through
     ``basis.redistribute_block`` when distributed **or** when the basis enforces a
     determinant cap (``caps_growth`` -- the per-frequency Green's function's
@@ -74,10 +71,20 @@ def _make_matmat(A, basis, double slaterWeightMin, bint is_arr, bint mpi):
             return A.matmat(v)
 
     elif is_arr:
+        # A local array operator (a small dense or scipy matrix) is converted once; the solvers
+        # proper pass a DistributedSparseMatrix or an operator with its own `matmat`.
+        A = DistributedSparseMatrix.coerce(A, basis.comm if mpi and basis is not None else None)
+
+        # One exchange plan per solve (collective on a distributed matrix), built at the first matvec
+        # and rebuilt if a wider block ever arrives: block_apply would build one per matvec.
+        plan_holder = [None, 0]
 
         def matmat(v):
             queue_progress()
-            return block_apply(A, v, basis=basis, mpi=mpi, slaterWeightMin=slaterWeightMin)
+            if plan_holder[1] < v.shape[1]:
+                plan_holder[0] = A.exchange_plan(v.shape[1], "bicgstab")
+                plan_holder[1] = v.shape[1]
+            return A.apply(v, plan_holder[0])
 
     else:
         caps = getattr(basis, "caps_growth", False)
@@ -230,24 +237,13 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     eye_n = np.eye(n, dtype=complex)
 
     # Initial residual block R0 = Y - A x0.
-    if is_arr:
-        Axi = matmat(x0.copy())
-        ri = y.copy()
-        block_add_scaled(ri, Axi, -eye_n, slaterWeightMin=slaterWeightMin)
-        y_cols2 = np.linalg.norm(y, axis=0) ** 2
-    else:
-        x_blk = x0
-        y_blk = y
-        Axi = matmat(x_blk)
-        ri = block_add_scaled_cy(y_blk, Axi, -eye_n)
-        if slaterWeightMin > 0:
-            ri.prune_rows(slaterWeightMin)
+    # Arrays are updated in place, so they work on copies; blocks rebind to fresh supports.
+    ri = block_add_scaled(y.copy() if is_arr else y, matmat(x0.copy() if is_arr else x0), -eye_n, slaterWeightMin)
+    if not is_arr:
         basis.add_states(state for state in ri.support_keys(slaterWeightMin) if not basis.contains_local(state))
-        y_cols2 = y_blk.col_norm2()
     # Summed for either representation: a distributed array block (the frozen-basis solve,
     # gf_solvers._FrozenShiftedSystem) holds only this rank's rows, as a sparse block does.
-    if mpi:
-        comm.Allreduce(MPI.IN_PLACE, y_cols2, op=MPI.SUM)
+    y_cols2 = block_col_norms2(y, mpi, comm)
     y_scale = np.sqrt(np.max(y_cols2))
 
     # Deflate R0 = Q @ beta_j into rank independent directions (Q orthonormal). Solve the
@@ -258,9 +254,7 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
     #
     # R0's overall scale is the largest of its column norms -- an O(n) reduction, where the
     # Gram this used to read the scale off the diagonal of is O(n^2).
-    r0_cols2 = np.linalg.norm(ri, axis=0) ** 2 if is_arr else ri.col_norm2()
-    if mpi:
-        comm.Allreduce(MPI.IN_PLACE, r0_cols2, op=MPI.SUM)
+    r0_cols2 = block_col_norms2(ri, mpi, comm)
     r0_scale = np.sqrt(max(np.max(r0_cols2), 0.0))
 
     # A zero RHS has no scale of its own to measure the residual against; fall back to
@@ -331,7 +325,7 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
         block_add_scaled(xi, correction, eye_n, slaterWeightMin=slaterWeightMin)
         return xi
     correction = z_block.combine_columns(beta_j)
-    xi = block_add_scaled_cy(x_blk, correction, eye_n)
+    xi = block_add_scaled_cy(x0, correction, eye_n)
     if slaterWeightMin > 0:
         xi.prune_rows(slaterWeightMin)
     return xi
@@ -378,31 +372,6 @@ def _block_bicgstab_core(
     cdef double complex wi
     cdef bint broke = False
 
-    def b_inner(B1, B2):
-        if is_arr:
-            return block_inner(B1, B2, mpi=mpi, comm=comm)
-        res = block_inner_cy(B1, B2)
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, res, op=MPI.SUM)
-        return res
-
-    def col_norms2(v):
-        norms = np.linalg.norm(v, axis=0) ** 2 if is_arr else v.col_norm2()
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, norms, op=MPI.SUM)
-        return norms
-
-    def axpy(target, source, coeffs):
-        """target + source @ coeffs as a new (rebound) block; prunes like the old
-        in-place block_add_scaled dispatcher did."""
-        if is_arr:
-            block_add_scaled(target, source, coeffs, slaterWeightMin=slaterWeightMin)
-            return target
-        out = block_add_scaled_cy(target, source, np.ascontiguousarray(coeffs, dtype=complex))
-        if slaterWeightMin > 0:
-            out.prune_rows(slaterWeightMin)
-        return out
-
     eye_n = np.eye(n, dtype=complex)
     if is_arr:
         xi = np.zeros_like(rhs)
@@ -415,7 +384,7 @@ def _block_bicgstab_core(
         r0_t = rhs
         pi = rhs
 
-    r0_cols = np.sqrt(col_norms2(r0_t))
+    r0_cols = np.sqrt(block_col_norms2(r0_t, mpi, comm))
     r0_norm = np.max(r0_cols)
     last_norms = r0_cols
     if r0_norm < np.finfo(float).eps:
@@ -448,7 +417,7 @@ def _block_bicgstab_core(
     while it * n < global_seen_size[0] and it < max_iter:
         it += 1
 
-        r_norms = np.sqrt(col_norms2(ri))
+        r_norms = np.sqrt(block_col_norms2(ri, mpi, comm))
         last_norms = r_norms
 
         active_mask = (r_norms >= atol) & (r_norms / r0_norm >= rtol)
@@ -460,18 +429,18 @@ def _block_bicgstab_core(
         if not is_arr:
             tracker.grow(vi)
 
-        R0_V = b_inner(r0_t, vi)
-        R0_R = b_inner(r0_t, ri)
+        R0_V = block_inner(r0_t, vi, mpi, comm)
+        R0_R = block_inner(r0_t, ri, mpi, comm)
         R0_R[:, ~active_mask] = 0
         ai = masked_lstsq(R0_V, R0_R, active_mask)
 
         # s_i = r_i - v_i a_i (rebinding; the dense path updates ri's buffer in place).
-        si = axpy(ri, vi, -ai)
+        si = block_add_scaled(ri, vi, -ai, slaterWeightMin)
 
-        s_norms = np.sqrt(col_norms2(si))
+        s_norms = np.sqrt(block_col_norms2(si, mpi, comm))
         active_mask_s = s_norms >= atol
         if not np.any(active_mask_s):
-            xi = axpy(xi, pi, ai)
+            xi = block_add_scaled(xi, pi, ai, slaterWeightMin)
             last_norms = s_norms
             broke = True
             break
@@ -480,55 +449,37 @@ def _block_bicgstab_core(
         if not is_arr:
             tracker.grow(ti)
 
-        if is_arr:
-            ts_tt = np.array(
-                [
-                    np.sum(np.conj(ti[:, active_mask_s]) * si[:, active_mask_s]),
-                    np.sum(np.conj(ti[:, active_mask_s]) * ti[:, active_mask_s]),
-                ],
-                dtype=complex,
-            )
-            # A distributed array block (the frozen-basis solve) holds only this rank's rows: summed
-            # here, or every rank steps with its own omega and the recursive residual stops tracking
-            # the true one (measured: "converged" at 7e-11 with a true residual of 8e-7 on 3 ranks).
-            if mpi:
-                comm.Allreduce(MPI.IN_PLACE, ts_tt, op=MPI.SUM)
-            ts, tt = ts_tt[0], ts_tt[1]
-        else:
-            # Diagonals of the block Gram matrices; summed over the active columns
-            # (the off-diagonal work is negligible at spectra block widths).
-            G_ts = b_inner(ti, si)
-            G_tt = b_inner(ti, ti)
-            ts = complex(np.sum(G_ts.diagonal()[active_mask_s]))
-            tt = complex(np.sum(G_tt.diagonal()[active_mask_s]))
+        # <t|s> and <t|t> over the active columns. A distributed block holds only this rank's rows:
+        # they are summed over the ranks, or every rank steps with its own omega and the recursive
+        # residual stops tracking the true one (measured: "converged" at 7e-11 with a true residual of
+        # 8e-7 on 3 ranks).
+        ts = complex(np.sum(block_diag_inner(ti, si, mpi, comm)[active_mask_s]))
+        tt = complex(np.sum(block_diag_inner(ti, ti, mpi, comm)[active_mask_s]))
 
         wi = 0.0 if abs(tt) < np.finfo(float).eps else ts / tt
 
         # x_{i+1} = x_i + s_i w_i + p_i a_i.
-        xi = axpy(xi, si, wi * eye_n)
-        xi = axpy(xi, pi, ai)
+        xi = block_add_scaled(xi, si, wi * eye_n, slaterWeightMin)
+        xi = block_add_scaled(xi, pi, ai, slaterWeightMin)
 
-        R0_T = b_inner(r0_t, ti)
+        R0_T = block_inner(r0_t, ti, mpi, comm)
         R0_T[:, ~active_mask_s] = 0
         bi = masked_lstsq(R0_V, -R0_T, active_mask)
 
         # r_{i+1} = s_i - t_i w_i.
-        ri = axpy(si, ti, -wi * eye_n)
+        ri = block_add_scaled(si, ti, -wi * eye_n, slaterWeightMin)
 
         # p_{i+1} = r_{i+1} + (p_i - v_i w_i) b_i (the dense path copies here; the
         # block path rebinds fresh blocks anyway).
-        if is_arr:
-            pip = ri.copy()
-            pip = axpy(pip, pi, bi)
-            pi = axpy(pip, vi, -wi * bi)
-        else:
-            pi = axpy(axpy(ri, pi, bi), vi, -wi * bi)
+        # Arrays are updated in place, so p must not alias r; blocks rebind fresh supports anyway.
+        pip = ri.copy() if is_arr else ri
+        pi = block_add_scaled(block_add_scaled(pip, pi, bi, slaterWeightMin), vi, -wi * bi, slaterWeightMin)
 
     # A while-condition exit (max_iter / basis exhaustion) leaves `last_norms` one residual
     # update stale (ri changed at the end of the final iteration). Recompute -- one reduction,
     # no matvec, and collective-consistent: every rank exits the loop the same way because
     # `it`, `max_iter` and `global_seen_size` are replicated.
     if not broke:
-        last_norms = np.sqrt(col_norms2(ri))
+        last_norms = np.sqrt(block_col_norms2(ri, mpi, comm))
 
     return xi, it, last_norms, bool(np.all(last_norms < atol))

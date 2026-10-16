@@ -1,105 +1,141 @@
 """
-Eigensolver drivers for the low-energy spectrum: dense (numpy) and ARPACK
-(scipy.sparse) paths, plus the MPI-aware :class:`HermitianOperator` wrapper used to
-feed them.
+Low-spectrum eigensolvers of the ground-state path.
+
+* :func:`solve_window` -- every eigenstate inside an energy window, certified complete, from the
+  thick-restart block Lanczos solver (:mod:`impurityModel.ed.trlm`). Used above ``dense_cutoff``.
+* :func:`solve_lowest` -- the lowest eigenpair alone, with no claim about its degeneracy.
+* :func:`eigensystem` -- dense diagonalization, complete by construction, below ``dense_cutoff``.
+
+A caller says which of two manifolds it needs: :class:`Lowest` (the energy of the ground level, which
+the occupation walk and every double-counting sector solve use) or :class:`Within` (every state inside
+an energy window, certified complete, which the production thermal ground state needs). The CIPSI
+solver cuts a dense or window result with one rule (``_energy_cut_indices``).
 """
 
-import warnings
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
-import scipy.sparse
 from mpi4py import MPI
-from scipy.sparse.linalg import ArpackError, ArpackNoConvergence, eigsh
+
+from impurityModel.ed.average import energy_cut
+from impurityModel.ed.BlockLanczosCore import block_inner, block_normalize
+from impurityModel.ed.memory_estimate import gs_krylov_blocks
+from impurityModel.ed.trlm import STATUS_CONVERGED, Window, trlm
+
+_U64 = (1 << 64) - 1
+#: Salt separating the imaginary part's hash stream from the real part's (the splitmix64 "golden
+#: gamma" of a second stream), shared by every hash-seeded start block.
+_IMAG_STREAM_SALT = 0xD1B54A32D192ED03
+#: Well-spread odd multiplier deriving a column's salt from (round, column): the 64-bit PCG LCG constant.
+_SALT_MULTIPLIER = 0x5851F42D4C957F2D
 
 
-class HermitianOperator(scipy.sparse.linalg.LinearOperator):
-    """A LinearOperator representing a Hermitian operator defined by its diagonal and lower triangular part.
+def _splitmix64(x: int) -> int:
+    """One splitmix64 round: a well-mixed 64-bit hash of a 64-bit integer."""
+    x = (x + 0x9E3779B97F4A7C15) & _U64
+    x = ((x ^ (x >> 30)) * 0xBF58476D1CE4E5B9) & _U64
+    x = ((x ^ (x >> 27)) * 0x94D049BB133111EB) & _U64
+    return x ^ (x >> 31)
 
-    This class enables efficient matrix-vector products without storing the full dense matrix.
+
+def _splitmix64_array(x):
+    """:func:`_splitmix64` over a ``uint64`` array, bit for bit (numpy's unsigned arithmetic wraps mod 2**64)."""
+    x = x + np.uint64(0x9E3779B97F4A7C15)
+    x = (x ^ (x >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+    x = (x ^ (x >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+    return x ^ (x >> np.uint64(31))
+
+
+def degenerate_groups(e, tol):
+    """Partition ascending energies ``e`` into manifolds: runs whose members lie within ``tol`` of the first."""
+    e = np.asarray(e).real
+    groups, start = [], 0
+    for i in range(1, len(e) + 1):
+        if i == len(e) or abs(e[i] - e[start]) > tol:
+            groups.append(list(range(start, i)))
+            start = i
+    return groups
+
+
+def cold_vector(hashes):
+    """The all-positive hash-seeded start vector, ``(n_local, 1)``.
+
+    One value per determinant from its hash alone -- never from the rank, the iteration order or
+    ``PYTHONHASHSEED`` -- so the Lanczos trajectory is identical at every rank count. Full support:
+    every charge sector is reachable from it.
+    """
+    h = np.asarray(hashes, dtype=np.uint64)
+    with np.errstate(over="ignore"):
+        re = _splitmix64_array(h).astype(float) / 2.0**64
+        im = _splitmix64_array(h ^ np.uint64(_IMAG_STREAM_SALT)).astype(float) / 2.0**64
+    return (re + 1j * im).reshape(-1, 1)
+
+
+def random_block(hashes, width, round_):
+    """``(n_local, width)`` rank-independent pseudo-random block, centred on zero.
+
+    Like :func:`cold_vector`, with a different salt per column and per ``round_`` so successive
+    rounds explore new directions. Zero-centred so no column is biased toward the uniform vector.
+    """
+    h = np.asarray(hashes, dtype=np.uint64)
+    out = np.empty((len(h), width), dtype=complex)
+    scale = 1.0 / 2.0**64
+    with np.errstate(over="ignore"):
+        for k in range(width):
+            salted = h ^ np.uint64(_splitmix64((_SALT_MULTIPLIER * (round_ + 1) + k) & _U64))
+            re = _splitmix64_array(salted).astype(float) * scale
+            im = _splitmix64_array(salted ^ np.uint64(_IMAG_STREAM_SALT)).astype(float) * scale
+            out[:, k] = (re - 0.5) + 1j * (im - 0.5)
+    return out
+
+
+@dataclass(frozen=True)
+class Lowest:
+    """Request for the lowest eigenpair. Nothing is claimed about the degeneracy of its level."""
+
+
+@dataclass(frozen=True)
+class Within:
+    """Request for every eigenstate within ``max_energy`` of the lowest, certified complete."""
+
+    max_energy: float
+
+    @classmethod
+    def thermal(cls, tau):
+        """The window that holds every state with a Boltzmann weight above the design weight at scale ``tau``."""
+        return cls(energy_cut(tau))
+
+
+@dataclass
+class EigenResult:
+    """The low spectrum of one operator on one basis.
+
+    ``e`` ascending and ``vecs`` ``(n_local, len(e))``: the states inside the window followed by
+    one bracket state just above it (``n_in`` counts the former). ``certified`` is True when
+    every in-window level is shown complete (see :func:`solve_window`). ``max_multiplicity`` is
+    the largest degenerate group in the window. ``generation`` is the ``Basis.generation`` the
+    result belongs to and ``manifold`` the request it answers (:class:`Lowest` or :class:`Within`);
+    a consumer re-solves when the generation no longer matches or it needs more than the request covered.
     """
 
-    def __init__(self, diagonal: np.ndarray, diagonal_indices: np.ndarray, triangular_part: scipy.sparse.csr_matrix):
-        self.diagonal = diagonal if len(diagonal.shape) == 1 else diagonal.reshape(-1)
-        self.diagonal_indices = diagonal_indices
-        self.triangular_part = triangular_part
-        # Delegate dtype/shape (and, on scipy>=1.15, the array-namespace ``_xp``
-        # attribute that ``LinearOperator.dot`` now requires) to the base initializer
-        # instead of setting them by hand.
-        super().__init__(dtype=triangular_part.dtype, shape=triangular_part.shape)
-
-    def _matvec(self, v):
-        v = v.reshape(-1)
-        res = np.zeros(v.shape[0], dtype=v.dtype)
-        res[self.diagonal_indices] = self.diagonal * v[self.diagonal_indices]
-        return res + self.triangular_part @ v + self.triangular_part.getH() @ v
-
-    def _matmat(self, m):
-        res = np.zeros((self.shape[0], m.shape[1]), dtype=self.dtype)
-        for col in range(m.shape[1]):
-            res[self.diagonal_indices, col] = self.diagonal * m[self.diagonal_indices, col]
-        return res + self.triangular_part @ m + self.triangular_part.getH() @ m
-
-    def _adjoint(self):
-        """Return the adjoint of the operator (which is itself)."""
-        return self
+    e: np.ndarray
+    vecs: np.ndarray
+    n_in: int
+    certified: bool
+    max_multiplicity: int
+    status: str
+    generation: int | None = None
+    manifold: Lowest | Within | None = None
 
 
-class _RootDrivenApply:
-    """Bcast/Reduce apply loop that confines ARPACK/lobpcg's control flow -- and therefore the
-    number of collectives it decides to post -- to a single driving rank (rank 0).
-
-    ``h_local`` is a column-distributed operator: each rank's copy has nonzero entries only in
-    the columns it owns (see ``build_sparse_matrix``), so ``h_local @ v`` on a full-length ``v``
-    gives this rank's partial contribution to the global product, and summing those partial
-    results across ranks reconstructs it exactly.
-
-    Only the driving rank ever decides *whether* another apply happens (that decision lives
-    inside ARPACK/lobpcg's own convergence logic, called only on that rank via ``root_apply``);
-    every other rank just mirrors it by looping in ``worker_loop`` until ``done()`` sends the
-    sentinel. Previously every rank ran its own ARPACK instance and relied on all of them
-    independently reaching the same number of ``Allreduce`` calls -- which threaded-BLAS FP
-    nondeterminism inside ARPACK's internal convergence bookkeeping does not guarantee, and the
-    resulting desync is exactly the deadlock this class fixes (see the memory note
-    n3-arpack-truncate-initial-deadlock).
-    """
-
-    _APPLY = 0
-    _DONE = 1
-
-    def __init__(self, h_local: Any, comm: MPI.Comm):
-        self.h_local = h_local
-        self.comm = comm
-
-    def _local_apply(self, buf: np.ndarray) -> np.ndarray:
-        res = self.h_local @ buf
-        res_dtype = np.promote_types(self.h_local.dtype, buf.dtype)
-        return np.ascontiguousarray(res, dtype=res_dtype)
-
-    def root_apply(self, v: np.ndarray) -> np.ndarray:
-        """Broadcast one apply to the workers and return the reduced result. Driving rank only."""
-        v = np.asarray(v)
-        buf = np.ascontiguousarray(v)
-        self.comm.bcast((self._APPLY, buf.shape, buf.dtype), root=0)
-        self.comm.Bcast(buf, root=0)
-        res = self._local_apply(buf)
-        self.comm.Reduce(MPI.IN_PLACE, res, op=MPI.SUM, root=0)
-        return res.reshape(v.shape)
-
-    def worker_loop(self) -> None:
-        """Mirror the driving rank's applies until it signals done. Non-driving ranks only."""
-        while True:
-            kind, shape, dtype = self.comm.bcast(None, root=0)
-            if kind == self._DONE:
-                return
-            buf = np.empty(shape, dtype=dtype)
-            self.comm.Bcast(buf, root=0)
-            res = self._local_apply(buf)
-            self.comm.Reduce(res, None, op=MPI.SUM, root=0)
-
-    def done(self) -> None:
-        """Signal workers to stop mirroring. Driving rank only; must always be called."""
-        self.comm.bcast((self._DONE, None, None), root=0)
+#: Singular values of ``F_G^H W`` below this are not counted as warm overlap with a level. ``F`` is
+#: only ``tol``-accurate, so the product carries O(tol) mixing from neighbouring levels; counting
+#: that noise would inflate the reachable-copies estimate and certify a level with missing copies,
+#: while undercounting only triggers the (safe) fallback.
+_OVERLAP_RANK_FLOOR = 1e-6
+#: Fallback rounds before a still-saturating level is reported uncertified.
+_MAX_FALLBACK_ROUNDS = 3
 
 
 def dense_eigensystem(
@@ -128,8 +164,6 @@ def dense_eigensystem(
         h = h_local.toarray()
     elif hasattr(h_local, "todense"):
         h = h_local.todense()
-    elif isinstance(h_local, scipy.sparse.linalg.LinearOperator):
-        h = h_local @ np.eye(h_local.shape[0], dtype=h_local.dtype)
     else:
         h = h_local
     if comm is not None:
@@ -138,10 +172,10 @@ def dense_eigensystem(
         if rank == 0:
             es, vecs = np.linalg.eigh(h, UPLO="L")
         else:
-            es = np.empty((h_local.shape[0]), dtype=float, order="C")
-            vecs = np.empty(h_local.shape, dtype=h_local.dtype, order="C")
+            es = np.empty((h.shape[0]), dtype=float, order="C")
+            vecs = np.empty(h.shape, dtype=h.dtype, order="C")
     else:
-        es = np.linalg.eigvalsh(h, UPLO="L") if rank == 0 else np.empty(h_local.shape[0], dtype=float)
+        es = np.linalg.eigvalsh(h, UPLO="L") if rank == 0 else np.empty(h.shape[0], dtype=float)
     if comm is not None:
         comm.Bcast(es, root=0)
         if return_eigvecs:
@@ -151,224 +185,23 @@ def dense_eigensystem(
     return es
 
 
-#: Fixed seed for scipy_eigensystem's fallback start/restart vectors. These are generated only
-#: on the rank that drives ARPACK (see _RootDrivenApply) and reach every other rank purely
-#: through the broadcast that is already part of each matvec, so a fixed seed is what makes the
-#: whole solve rank-count independent -- an unseeded RNG previously produced a different vector
-#: on COMM_SELF than on COMM_WORLD for what should be the same solve.
-_SCIPY_EIGENSYSTEM_SEED = 0
-
-
-def _scipy_eigensystem_solve(
-    h: scipy.sparse.linalg.LinearOperator,
-    e_max: float,
-    k: int,
-    v0: Optional[np.ndarray],
-    eigenValueTol: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Run the ARPACK/lobpcg control flow against ``h`` and return ``(es, vecs)``.
-
-    Must be called on exactly one rank/process: ``scipy_eigensystem`` calls this directly when
-    unparallelized, and only on the driving rank (via ``h`` wrapping ``_RootDrivenApply.root_apply``)
-    otherwise -- every ``h`` matvec/matmat call this makes is what decides the collectives posted,
-    so if two ranks both ran this independently they could post a different number of them.
+def eigensystem(h_local, e_max, eigenValueTol=0, return_eigvecs=True, comm=None):
     """
-    rng = np.random.default_rng(_SCIPY_EIGENSYSTEM_SEED)
-    if v0 is not None:
-        norm_mask = np.linalg.norm(v0, axis=0) > np.sqrt(np.finfo(float).eps)
-        v0 = v0[:, norm_mask]
-        if v0.shape[1] == 0:
-            v0 = None
-    if v0 is None:
-        v0 = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
-
-    es = np.array([0])
-    vecs = v0 / np.linalg.norm(v0)
-    ncv = None
-    conv_fail = False
-    k = min(k, h.shape[1] - 2)
-
-    def done(energies: np.ndarray) -> bool:
-        """True if the target number of eigenvalues above e_max is resolved."""
-        return len(energies) > 2 + np.sum(energies - np.min(energies) <= e_max)
-
-    while not done(es) and len(es) < h.shape[0] - 2:
-        try:
-            es, vecs = eigsh(
-                h,
-                k=min(k, h.shape[1] - 2),
-                which="SA",
-                v0=vecs[:, 0] if len(vecs.shape) > 1 else vecs,
-                ncv=ncv,
-                tol=eigenValueTol if conv_fail else 0,
-            )
-            # eigsh does not guarantee that the eigenvectors are orthonormal. therefore we do a
-            # QR decomposition on them.
-            vecs, _ = np.linalg.qr(vecs, mode="reduced")
-            k *= 2
-        except ArpackNoConvergence as e:
-            # Reqested accuracy was not reached
-            # increase eigenvalueTol and try again, starting from the already obtained eigenvectors
-            es = e.eigenvalues
-            vecs = e.eigenvectors
-            if vecs.size == 0:
-                vecs = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
-                vecs, _ = np.linalg.qr(vecs, mode="reduced")
-            eigenValueTol = max(eigenValueTol, np.finfo(float).eps) if not conv_fail else eigenValueTol * 10
-            conv_fail = True
-        except ArpackError:
-            # Something went horribly wrong
-            # Increase ncv and generate new random starting vectors
-            ncv = min(h.shape[0], max(2 * k + 3, 20)) if ncv is None else min(ncv * 2, h.shape[0])
-            es = np.array([0])
-            vecs = rng.uniform(size=(h.shape[0], 1)) + 1j * rng.uniform(size=(h.shape[0], 1))
-            vecs, _ = np.linalg.qr(vecs, mode="reduced")
-        if es is None or len(es) == 0:
-            es = np.array([0])
-
-        indices = np.argsort(es)
-        es = es[indices]
-        vecs = vecs[:, indices]
-        if done(es) and 5 * vecs.shape[1] < h.shape[0]:
-            # In principle, lobpcg should be able to correct some errors in the eigenvectors ad
-            # eigenvalues found by eigsh (which uses ARPACK behind the scenes).
-            # eigsh struggles with degenerate or nearly degenerate eigenstates, so do one round of
-            # lobpcg to correct any errors.
-            # lobpcg is robust as long as the preconditioner is very good (is this what robust
-            # means?). We don't have a good preconditioner, so we ignore any warnings from lobpcg
-            # instead.
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                es, vecs = scipy.sparse.linalg.lobpcg(
-                    h,
-                    vecs,
-                    largest=False,
-                    tol=max(eigenValueTol, 1e-12),
-                    maxiter=500,
-                )
-    indices = np.argsort(es)
-    es = es[indices]
-    return es, np.ascontiguousarray(vecs[:, indices])
-
-
-def scipy_eigensystem(
-    h_local: Any,
-    e_max: float,
-    k: int = 10,
-    v0: Optional[np.ndarray] = None,
-    eigenValueTol: float = 0,
-    return_eigvecs: bool = True,
-    comm: Optional[MPI.Comm] = None,
-) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
-    """Solve the eigenvalue problem using SciPy's sparse solver (ARPACK).
+    Return the eigen-energies and eigenstates of a Hamiltonian matrix, densely diagonalized.
 
     Parameters
     ----------
-    h_local : Any
-        The local sparse matrix (column-distributed: nonzero only in this rank's owned columns,
-        see ``build_sparse_matrix``).
-    e_max : float
-        The maximum energy above the ground state to resolve.
-    k : int, default 10
-        Number of eigenvalues to request.
-    v0 : np.ndarray, optional
-        Initial guess eigenvectors.
-    eigenValueTol : float, default 0
-        Tolerance for eigenvalue convergence.
-    return_eigvecs : bool, default True
-        Whether to return eigenvectors.
-    comm : MPI.Comm, optional
-        MPI communicator.
-
-    Returns
-    -------
-    es : np.ndarray
-        Array of eigenvalues.
-    vecs : np.ndarray, optional
-        Array of eigenvectors, returned if return_eigvecs is True.
-    """
-    if comm is None or comm.size == 1:
-
-        def local_apply(v: np.ndarray) -> np.ndarray:
-            return (h_local @ v).reshape(v.shape)
-
-        h = scipy.sparse.linalg.LinearOperator(
-            h_local.shape,
-            matvec=local_apply,
-            rmatvec=local_apply,
-            dtype=h_local.dtype,
-        )
-        es, vecs = _scipy_eigensystem_solve(h, e_max, k, v0, eigenValueTol)
-        return (es, vecs) if return_eigvecs else es
-
-    apply = _RootDrivenApply(h_local, comm)
-    if comm.rank != 0:
-        apply.worker_loop()
-        ok = comm.bcast(None, root=0)
-        if not ok:
-            message = comm.bcast(None, root=0)
-            raise RuntimeError(f"scipy_eigensystem failed on rank 0: {message}")
-        es_shape, es_dtype, vecs_shape, vecs_dtype = comm.bcast(None, root=0)
-        es = np.empty(es_shape, dtype=es_dtype)
-        vecs = np.empty(vecs_shape, dtype=vecs_dtype)
-        comm.Bcast(es, root=0)
-        comm.Bcast(vecs, root=0)
-        return (es, vecs) if return_eigvecs else es
-
-    # Driving rank (rank 0): run the solver against an operator wrapping root_apply, which
-    # broadcasts every matvec/matmat this makes to the workers -- so the number of collectives
-    # posted is decided here, once, and mirrored exactly by worker_loop above, rather than each
-    # rank's own ARPACK deciding independently (see _RootDrivenApply's docstring).
-    h = scipy.sparse.linalg.LinearOperator(
-        h_local.shape,
-        matvec=apply.root_apply,
-        rmatvec=apply.root_apply,
-        dtype=h_local.dtype,
-    )
-    error: Optional[Exception] = None
-    try:
-        es, vecs = _scipy_eigensystem_solve(h, e_max, k, v0, eigenValueTol)
-    except Exception as exc:  # must reach every rank via bcast, not just crash rank 0
-        error = exc
-    finally:
-        # Always signal the workers out of worker_loop, success or failure -- otherwise a rank-0
-        # exception here hangs every other rank forever inside worker_loop's collective wait.
-        apply.done()
-
-    comm.bcast(error is None, root=0)
-    if error is not None:
-        comm.bcast(str(error), root=0)
-        raise error
-
-    comm.bcast((es.shape, es.dtype, vecs.shape, vecs.dtype), root=0)
-    comm.Bcast(es, root=0)
-    comm.Bcast(vecs, root=0)
-    return (es, vecs) if return_eigvecs else es
-
-
-def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_eigvecs=True, comm=None, dense=False):
-    """
-    Return eigen-energies and eigenstates of a Hamiltonian matrix.
-
-    This function automatically chooses between a dense eigensolver, SciPy's sparse solver (ARPACK),
-    and a custom thick-restarted block Lanczos solver based on the matrix size and options.
-
-
-    Parameters
-    ----------
-    h_local : scipy.sparse sparse array (any kind)
-        Contains part of the full many-body Hamiltonian, local to this MPI rank.
-    e_max : float
-        Maximum energy difference for excited states
-    k : int
-        Calculate at least k eigenstates.
+    h_local : scipy.sparse sparse array (any kind) or ndarray
+        Contains part of the full many-body Hamiltonian, local to this MPI rank; the parts are
+        summed onto rank 0 and the result broadcast (see :func:`dense_eigensystem`).
+    e_max : float or None
+        Maximum energy difference for excited states. ``None`` keeps every computed state.
     eigenValueTol : float
-        The precision of the returned eigenvalues.
+        Floor on ``e_max``: the precision of the returned eigenvalues.
     return_eigvecs : bool
         If True, return eigenvalues and eigenvectors for all states with energy within e_max of the lowest energy state.
         If False, return only the calculated eigenvalues.
     comm : MPI communicator to use for any MPI communication
-    dende : Convert h_local to dense form and use standard np.linalg.eigh to calculate the full spectra
     """
 
     # e_max is limited by the accuracy of the calculated eigenvalues and machine precision.
@@ -377,21 +210,11 @@ def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_
     # crash on the dense (basis < dense_cutoff) path, which does not otherwise touch e_max.
     e_max = np.inf if e_max is None else max(e_max, eigenValueTol, np.finfo(float).eps * 100)
 
-    N = h_local.shape[0]
-    # We want to find eigenvalues up to e_max above ground state.
-    # Since we don't know the ground state yet, we just find k eigenvalues.
-    if dense or N <= 20:
-        if return_eigvecs:
-            es, vecs = dense_eigensystem(h_local, return_eigvecs, comm)
-        else:
-            es = dense_eigensystem(h_local, return_eigvecs, comm)
-            vecs = None
+    if return_eigvecs:
+        es, vecs = dense_eigensystem(h_local, return_eigvecs, comm)
     else:
-        if return_eigvecs:
-            es, vecs = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
-        else:
-            es = scipy_eigensystem(h_local, e_max, k, v0, 0, return_eigvecs, comm)
-            vecs = None
+        es = dense_eigensystem(h_local, return_eigvecs, comm)
+        vecs = None
     indices = np.argsort(es)
     es = es[indices]
     if return_eigvecs and vecs is not None:
@@ -401,3 +224,243 @@ def eigensystem(h_local, e_max, k=10, e0=None, v0=None, eigenValueTol=0, return_
     if return_eigvecs:
         return es[mask], vecs[:, mask]
     return es[mask]
+
+
+def _global_gram_rank(W, mpi, comm, floor=1e-10):
+    """Numerical rank of the columns of ``W`` (rows distributed over ``comm``)."""
+    if W.shape[1] == 0:
+        return 0
+    gram = block_inner(W, W, mpi, comm)
+    w = np.linalg.eigvalsh(0.5 * (gram + gram.conj().T))
+    return int(np.count_nonzero(w > floor * max(float(w.max()), 1.0)))
+
+
+def _level_overlap_ranks(F, groups, W, mpi, comm, floor):
+    """``rank(F_G^H W)`` for every group ``G`` of columns of ``F``: how many copies the warm block reaches."""
+    if W.shape[1] == 0 or not groups:
+        return [0] * len(groups)
+    M = block_inner(F, W, mpi, comm)  # (n_in, w), Allreduced: replicated
+    return [int(np.count_nonzero(np.linalg.svd(M[g], compute_uv=False) > floor)) for g in groups]
+
+
+def solve_window(
+    h_op,
+    comm,
+    hashes,
+    *,
+    warm,
+    max_energy,
+    deg_tol,
+    tol,
+    num_wanted,
+    n_global,
+    n_random=4,
+    max_keep=None,
+    max_restarts=100,
+    verbose=False,
+):
+    """All eigenstates within ``max_energy`` of the lowest, with a completeness certificate.
+
+    One thick-restart block-Lanczos solve in window mode (:class:`impurityModel.ed.trlm.Window`):
+    it retains as many Ritz vectors as the window needs, so the multiplicity of the levels inside
+    need not be known beforehand.
+
+    **Start block.** The ``warm`` columns (a previous result's eigenvectors, possibly empty) plus
+    ``n_random`` generic columns: the all-positive hash vector :func:`cold_vector` and zero-centred
+    :func:`random_block` columns. They are rank-independent and have full support, so every charge
+    sector is reachable from them whatever the warm block spans.
+
+    **Certificate.** A block Krylov space started from ``Q0`` meets the eigenspace of a level
+    ``lam`` in ``range(P_lam Q0)``, of dimension ``min(g, rank(P_lam W) + R)`` for ``g`` copies,
+    ``W`` the warm columns and ``R`` generic random ones. Having found ``k`` converged copies, the
+    level is therefore complete when ``k < rank(F^H W) + R``: otherwise the Krylov space was
+    saturated and copies may be missing. Probabilistic (the random columns are generic), and it
+    assumes the copies of an exactly degenerate level converge together. ``rank`` counts singular
+    values above ``max(1e-6, 100 tol)``.
+
+    **Fallback**, only for a saturated level: lock the converged in-window vectors, restart from
+    ``2 k_max`` fresh random columns in their orthogonal complement with the same absolute window,
+    and certify what turns up there with ``k_new < R'``. Bounded rounds.
+
+    Parameters
+    ----------
+    h_op
+        ``DistributedSparseMatrix`` (or coercible) of the operator on the current basis.
+    hashes : ndarray of uint64, ``(n_local,)``
+        The routing hash of every locally owned determinant, in row order.
+    warm : ndarray ``(n_local, w)`` or None
+    max_energy, deg_tol, tol : float
+        Window width above the lowest state, degeneracy tolerance, residual tolerance.
+    num_wanted : int
+        Initial number of retained Ritz vectors; grows with the window.
+    n_global : int
+        Dimension of the operator (bounds the Krylov depth).
+    n_random : int
+        Generic columns ``R`` in the start block.
+    max_keep : int, optional
+        Ceiling on retained vectors; reaching it returns ``certified=False``.
+
+    Returns
+    -------
+    EigenResult
+        Collective on ``comm``; every field is replicated except ``vecs`` (row-distributed).
+    """
+    mpi = comm is not None and getattr(comm, "size", 1) > 1
+    n_local = len(hashes)
+    warm = np.zeros((n_local, 0), dtype=complex) if warm is None else np.ascontiguousarray(warm, dtype=complex)
+    n_random = max(1, int(n_random))
+
+    def start_block(with_warm):
+        cols = [warm] if with_warm else []
+        cols.append(cold_vector(hashes))
+        if n_random > 1:
+            cols.append(random_block(hashes, n_random - 1, 0))
+        return np.ascontiguousarray(np.hstack(cols))
+
+    def krylov_depth(width, wanted):
+        return gs_krylov_blocks(n_global, width, wanted)
+
+    def run(psi0, wanted, locked=None, window=None):
+        return trlm(
+            psi0,
+            h_op,
+            comm,
+            num_wanted=wanted,
+            max_subspace_blocks=krylov_depth(psi0.shape[1], wanted),
+            tol=tol,
+            max_restarts=max_restarts,
+            verbose=verbose,
+            locked=locked,
+            window=window or Window(max_energy, deg_tol),
+            max_keep=max_keep,
+        )
+
+    with_warm = warm.shape[1] > 0
+    psi0 = start_block(with_warm)
+    try:
+        q0, _ = block_normalize(psi0, mpi, comm, 0.0)
+    except ValueError:  # BlockBreakdown, rank-symmetric: decided by the replicated TSQR factor
+        with_warm = False
+        psi0 = start_block(False)
+        q0, _ = block_normalize(psi0, mpi, comm, 0.0)
+    rank_w = _global_gram_rank(warm, mpi, comm) if with_warm else 0
+    r_eff = max(0, q0.shape[1] - rank_w)
+    wanted = max(1, min(int(num_wanted), n_global - 1))
+    res = run(q0, wanted)
+    e, vecs, n_in = res.eigvals, res.eigvecs, res.n_in
+    certified = res.status in STATUS_CONVERGED
+    status = res.status
+    if len(e) == 0:
+        return EigenResult(e, vecs, 0, False, 0, status)
+
+    floor = max(_OVERLAP_RANK_FLOOR, 100.0 * tol)
+    groups = degenerate_groups(e[:n_in], deg_tol)
+    ranks = _level_overlap_ranks(vecs[:, :n_in], groups, warm if with_warm else warm[:, :0], mpi, comm, floor)
+    saturated = [len(g) >= c + r_eff for g, c in zip(groups, ranks)]
+    k_max = max((len(g) for g in groups), default=0)
+
+    rounds = 0
+    while certified and any(saturated) and rounds < _MAX_FALLBACK_ROUNDS:
+        rounds += 1
+        e0 = float(e[0])
+        top = max(e0 + max_energy, float(e[n_in - 1])) + deg_tol
+        locked = np.ascontiguousarray(vecs[:, :n_in])
+        r_new = max(4, 2 * k_max)
+        fresh = random_block(hashes, r_new, rounds)
+        win = Window(top - e0, deg_tol, e0=e0)
+        if locked.shape[1] >= n_global:
+            saturated = []  # the window is the whole space: nothing left to miss
+            break
+        try:
+            res2 = run(fresh, max(r_new, 1), locked=locked, window=win)
+        except ValueError:  # BlockBreakdown, rank-symmetric: the complement of the locked set is empty
+            saturated = []
+            break
+        certified = res2.status in STATUS_CONVERGED
+        status = res2.status
+        e_new, v_new, n_new = res2.eigvals[: res2.n_in], res2.eigvecs[:, : res2.n_in], res2.n_in
+        bracket_e = res2.eigvals[n_new : n_new + 1]
+        bracket_v = res2.eigvecs[:, n_new : n_new + 1]
+        keep_bracket = bracket_e.size and (e.size <= n_in or bracket_e[0] < e[n_in])
+        e_all = np.concatenate([e[:n_in], e_new])
+        v_all = np.hstack([vecs[:, :n_in], v_new])
+        order = np.argsort(e_all, kind="stable")
+        e_all, v_all = e_all[order], np.ascontiguousarray(v_all[:, order])
+        if keep_bracket:
+            e_br, v_br = bracket_e, bracket_v
+        else:
+            e_br, v_br = e[n_in : n_in + 1], vecs[:, n_in : n_in + 1]
+        e = np.concatenate([e_all, e_br])
+        vecs = np.hstack([v_all, v_br])
+        n_in = len(e_all)
+        groups = degenerate_groups(e[:n_in], deg_tol)
+        k_max = max((len(g) for g in groups), default=0)
+        # Copies found in the complement are certified against the fresh columns alone: ``k_new < R'``.
+        new_groups = degenerate_groups(e_new, deg_tol)
+        saturated = [len(g) >= r_new for g in new_groups]
+
+    return EigenResult(
+        e, vecs, n_in, bool(certified and not any(saturated)), max((len(g) for g in groups), default=0), status
+    )
+
+
+def solve_lowest(h_op, comm, hashes, *, warm, tol, n_global, max_restarts=100, verbose=False):
+    """The lowest eigenpair of ``h_op``: one converged Ritz pair, no completeness claim.
+
+    Count-mode thick-restart block Lanczos retaining a single pair. The start block is the ``warm``
+    column (the previous lowest state, at most the first column of ``warm``) plus the all-positive
+    :func:`cold_vector`, which has full support, so every charge sector stays reachable whatever the
+    warm column spans. A degenerate ground level needs no special handling: any vector of its eigenspace
+    converges, and the caller keeps the energy.
+
+    Parameters
+    ----------
+    h_op
+        ``DistributedSparseMatrix`` (or coercible) of the operator on the current basis.
+    hashes : ndarray of uint64, ``(n_local,)``
+        The routing hash of every locally owned determinant, in row order.
+    warm : ndarray ``(n_local, w)`` or None
+    tol : float
+        Residual tolerance.
+    n_global : int
+        Dimension of the operator (bounds the Krylov depth).
+
+    Returns
+    -------
+    EigenResult
+        One pair (none if the Krylov space is empty); ``certified`` means the pair reached ``tol``.
+        Collective on ``comm``; ``e`` is replicated and ``vecs`` row-distributed.
+    """
+    mpi = comm is not None and getattr(comm, "size", 1) > 1
+    n_local = len(hashes)
+    warm = np.zeros((n_local, 0), dtype=complex) if warm is None else np.asarray(warm, dtype=complex)
+
+    def start_block(with_warm):
+        cols = [warm[:, :1]] if with_warm else []
+        cols.append(cold_vector(hashes))
+        return np.ascontiguousarray(np.hstack(cols))
+
+    with_warm = warm.shape[1] > 0
+    try:
+        q0, _ = block_normalize(start_block(with_warm), mpi, comm, 0.0)
+    except ValueError:  # BlockBreakdown, rank-symmetric: decided by the replicated TSQR factor
+        q0, _ = block_normalize(start_block(False), mpi, comm, 0.0)
+    res = trlm(
+        q0,
+        h_op,
+        comm,
+        num_wanted=1,
+        max_subspace_blocks=gs_krylov_blocks(n_global, q0.shape[1], 1),
+        tol=tol,
+        max_restarts=max_restarts,
+        verbose=verbose,
+    )
+    n = min(1, len(res.eigvals))
+    return EigenResult(
+        res.eigvals[:n],
+        np.ascontiguousarray(res.eigvecs[:, :n]),
+        n,
+        bool(n and res.status in STATUS_CONVERGED),
+        1,
+        res.status,
+    )

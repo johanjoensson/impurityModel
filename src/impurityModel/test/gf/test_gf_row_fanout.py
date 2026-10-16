@@ -16,7 +16,7 @@ from impurityModel.test.basis.test_sparse_matrix_build import _all_dets, _basis,
 
 
 def test_the_estimate_prices_the_given_fanout_and_defaults_to_the_srmno3_one():
-    args = (1_000_000, 48, 4, "none")
+    args = (1_000_000, 48, 4, False)
     default = me.estimate_gf_peak_bytes(*args, ranks=4)
     assert me.estimate_gf_peak_bytes(*args, ranks=4, row_fanout=me._GF_MATVEC_ROW_FANOUT_DEFAULT) == default
     assert me.estimate_gf_peak_bytes(*args, ranks=4, row_fanout=20.0) > default
@@ -27,7 +27,7 @@ def test_a_larger_fanout_lowers_the_auto_cap_and_a_smaller_one_raises_it(monkeyp
     monkeypatch.setattr(me, "available_bytes_per_rank", lambda comm: 4 * 2**30)
 
     def cap(fanout):
-        return me.max_unit_dets_within_budget(48, 4, "none", 4, None, resident_bytes=2**30, row_fanout=fanout)
+        return me.max_unit_dets_within_budget(48, 4, False, 4, None, resident_bytes=2**30, row_fanout=fanout)
 
     assert cap(20.0) < cap(None) < cap(4.0)
 
@@ -97,7 +97,7 @@ def test_run_units_distributed_measures_it_once_for_an_auto_cap(monkeypatch):
 def test_the_bicgstab_estimate_prices_its_unchunked_matvec_at_the_fanout():
     """BiCGSTAB's matvec applies H to the whole block at once: its raw image is priced at the
     fan-out with no row-chunk credit, so the estimate moves by exactly that term."""
-    args = (1_000_000, 48, 4, "none")
+    args = (1_000_000, 48, 4, False)
     low = me.estimate_gf_peak_bytes(*args, ranks=1, method="bicgstab", row_fanout=4.0)
     high = me.estimate_gf_peak_bytes(*args, ranks=1, method="bicgstab", row_fanout=12.0)
     row_bytes = me._COMPLEX_BYTES * 4 + me._key_heap_bytes(48) + me._SD_STRUCT_BYTES

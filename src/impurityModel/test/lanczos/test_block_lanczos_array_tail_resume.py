@@ -12,7 +12,7 @@ import pytest
 import scipy.sparse as sps
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array
+from impurityModel.ed.BlockLanczosArray import block_lanczos
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
 
 N_BLOCK_A = 4  # a closed 4-dimensional block: the seed column inside it deflates after 4 steps
@@ -46,12 +46,12 @@ def _partition(comm):
 
 
 def _run(h_local, comm, max_iter, **kw):
-    return block_lanczos_array(
+    return block_lanczos(
         h_op=h_local,
         converged=lambda a, b, **_: False,
         max_iter=max_iter,
-        reort=Reort.NONE,
-        build_krylov_basis=False,
+        reort=False,
+        store_krylov=False,
         return_widths=True,
         return_status=True,
         return_tail=True,
@@ -77,7 +77,9 @@ def _resumed(h_local, psi0, comm, k):
         alphas, betas, _, widths, status, tail = _run(h_local, comm, k, psi0=psi0)
         assert status == "max_iter" and tail is not None
         alphas, betas = alphas.copy(), betas.copy()
-    return _run(h_local, comm, STEPS - k, psi0=None, alphas=alphas, betas=betas, tail=tail, block_widths_init=widths)
+    return _run(
+        h_local, comm, STEPS - k, psi0=None, alphas_init=alphas, betas_init=betas, tail=tail, block_widths_init=widths
+    )
 
 
 @pytest.mark.parametrize("k", [0, 1, 3, 4, 5, 9])
@@ -95,13 +97,13 @@ def test_the_tail_is_returned_only_after_a_budget_stop():
     h_local, psi0 = _pieces()
     *_, status, tail = _run(h_local, None, 3, psi0=psi0)
     assert status == "max_iter" and tail[0].shape == (N, 3) and tail[1].shape == (N, 3)
-    stopped = block_lanczos_array(
+    stopped = block_lanczos(
         psi0=psi0,
         h_op=h_local,
         converged=lambda a, b, **_: len(a) >= 2,
         max_iter=STEPS,
-        reort=Reort.NONE,
-        build_krylov_basis=False,
+        reort=False,
+        store_krylov=False,
         return_widths=True,
         return_status=True,
         return_tail=True,
@@ -112,11 +114,13 @@ def test_the_tail_is_returned_only_after_a_budget_stop():
 def test_a_tail_resume_refuses_what_it_cannot_continue():
     h_local, psi0 = _pieces()
     alphas, betas, _, widths, _, tail = _run(h_local, None, 3, psi0=psi0)
-    common = dict(h_op=h_local, converged=lambda a, b, **_: False, max_iter=2, alphas=alphas, betas=betas, tail=tail)
-    with pytest.raises(ValueError, match="reort='none'"):
-        block_lanczos_array(psi0=None, reort=Reort.FULL, block_widths_init=widths, **common)
+    common = dict(
+        h_op=h_local, converged=lambda a, b, **_: False, max_iter=2, alphas_init=alphas, betas_init=betas, tail=tail
+    )
+    with pytest.raises(ValueError, match="reort=False"):
+        block_lanczos(psi0=None, reort=True, block_widths_init=widths, **common)
     with pytest.raises(ValueError, match="block_widths_init"):
-        block_lanczos_array(psi0=None, reort=Reort.NONE, build_krylov_basis=False, **common)
+        block_lanczos(psi0=None, reort=False, store_krylov=False, **common)
 
 
 @pytest.mark.mpi
@@ -142,8 +146,8 @@ def test_a_resumed_recurrence_keeps_the_divergence_guards_scale():
         None,
         STEPS - 3,
         psi0=None,
-        alphas=alphas.copy(),
-        betas=betas.copy(),
+        alphas_init=alphas.copy(),
+        betas_init=betas.copy(),
         tail=tail,
         block_widths_init=widths,
     )

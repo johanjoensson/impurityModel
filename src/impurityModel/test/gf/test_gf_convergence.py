@@ -15,7 +15,7 @@ Green's function must converge *reliably*:
 import numpy as np
 import scipy.linalg as la
 
-from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array
+from impurityModel.ed.BlockLanczosArray import block_lanczos
 from impurityModel.ed.greens_function import (
     _make_gf_convergence_monitor,
     _sanitize_continued_fraction,
@@ -63,11 +63,11 @@ def test_monitor_stops_resolvable_spectrum_early():
     H, Q0, _, _, _ = _H_and_seed(d, seed=3)
 
     converged, stop_it = _gf_monitor()
-    a, b, Q, _ = block_lanczos_array(
+    a, b, Q, _ = block_lanczos(
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=converged,
-        reort=Reort.PARTIAL,
+        reort=True,
         return_widths=True,
         max_iter=120,
     )
@@ -88,7 +88,7 @@ def test_partial_matches_full_gf_on_dense_spectrum():
     G_dense = np.einsum("wi,ia,ib->wab", 1.0 / (omega[:, None] + 1j * DELTA - d[None, :]), np.conj(Sd), Sd)
 
     def gf(mode):
-        a, b, _, w = block_lanczos_array(
+        a, b, _, w = block_lanczos(
             psi0=Q0.copy(),
             h_op=H.astype(complex),
             converged=_gf_monitor()[0],
@@ -99,8 +99,8 @@ def test_partial_matches_full_gf_on_dense_spectrum():
         at, bt = _sanitize_continued_fraction(*_trim_blocks(a, b, w))
         return calc_G(at, bt, r, omega, 0.0, DELTA)
 
-    err_partial = np.max(np.abs(gf(Reort.PARTIAL) - G_dense))
-    err_full = np.max(np.abs(gf(Reort.FULL) - G_dense))
+    err_partial = np.max(np.abs(gf(True) - G_dense))
+    err_full = np.max(np.abs(gf(True) - G_dense))
 
     assert err_partial < 1e-8  # PARTIAL is accurate
     assert err_partial < 5 * err_full + 1e-12  # ... matching FULL
@@ -127,11 +127,11 @@ def test_absolute_safeguard_bounds_gradual_beta_growth():
     rng = np.random.default_rng(3)
     d = np.concatenate([rng.normal(0.0, 1e-3, 150), rng.normal(10.0, 1e-3, 150)])
     H, Q0, _, _, _ = _H_and_seed(d, seed=3)
-    _a, b, _, _ = block_lanczos_array(
+    _a, b, _, _ = block_lanczos(
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=lambda *x, **k: False,
-        reort=Reort.PARTIAL,
+        reort=True,
         return_widths=True,
         max_iter=120,
     )
@@ -143,11 +143,11 @@ def test_safeguard_does_not_false_trigger_on_large_norm_H():
     (the spectral scale is seeded from beta_0 ~ ||H||, so it never self-triggers)."""
     d = np.linspace(-5000.0, 5000.0, 200)
     H, Q0, _, _, _ = _H_and_seed(d, seed=3)
-    a, b, _, _ = block_lanczos_array(
+    a, b, _, _ = block_lanczos(
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=lambda *x, **k: False,
-        reort=Reort.PARTIAL,
+        reort=True,
         return_widths=True,
         max_iter=60,
     )

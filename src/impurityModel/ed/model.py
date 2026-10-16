@@ -1192,6 +1192,15 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         # A negative value is kept: BasisOptions disables the budget and says so.
         excitation_budget = int(excitation_budget)
 
+    recorded_reort = _archive_attr(attrs, "reort") if with_options else None
+    if recorded_reort is not None:
+        warnings.warn(
+            f"archive records reort={recorded_reort!r}, which is retired: the Green's-function path "
+            "always runs without reorthogonalization and the eigensolver always reorthogonalizes "
+            "fully; replaying it with those.",
+            stacklevel=2,
+        )
+
     return {
         "label": name,
         "h0": h0,
@@ -1207,7 +1216,6 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         "mixed_valence": _archive_attr(attrs, "mv"),
         "tau": float(attrs["tau"]),
         "delta": float(attrs["delta"]),
-        "reort": _archive_attr(attrs, "reort"),
         "dense_cutoff": int(_archive_attr(attrs, "dense_cutoff", 1000)),
         "chain_restrict": bool(_archive_attr(attrs, "chain_restrict", False)),
         "occ_cutoff": float(_archive_attr(attrs, "occ_cutoff", 1e-6)),
@@ -1277,7 +1285,6 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         e_pt2_tol=raw["e_pt2_tol"],
     )
     solver = SolverOptions(
-        reort=raw["reort"],
         dense_cutoff=raw["dense_cutoff"],
         sparse_green=raw["sparse_green"],
         gf_method=raw["gf_method"],
@@ -1398,9 +1405,6 @@ class SolverOptions:
 
     Attributes
     ----------
-    reort : str or None
-        Reorthogonalization mode of the block-Lanczos Green's function: ``"none"`` (``None``),
-        ``"partial"``, ``"selective"``, ``"full"`` or ``"periodic"``.
     dense_cutoff : int
         Use a dense eigensolver below this matrix size.
     sparse_green : bool
@@ -1443,7 +1447,6 @@ class SolverOptions:
         Dyson estimator exists today; the field is the extension point, not yet a user knob.
     """
 
-    reort: Any = None
     dense_cutoff: int = 500
     sparse_green: bool = True
     gf_method: str = "lanczos"

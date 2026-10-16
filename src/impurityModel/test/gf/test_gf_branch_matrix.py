@@ -15,7 +15,7 @@ Factors
 -------
 ``method``   lanczos / bicgstab (``gf_method``)
 ``sparse``   ManyBodyState kernel vs CSR/dense array kernel (lanczos only). The sparse cells pin
-             ``GF_SUPPORT_FREEZE=0``: their sectors close, and the freeze would hand them to the
+             the support freeze off (``gf_switches``): their sectors close, and the freeze would hand them to the
              array kernel the other value of this factor already covers
 ``group``    ``GF_EIGENSTATE_GROUP`` 1 or 2 (stack thermal states into one recurrence)
 ``reort``    none / partial / full (lanczos only)
@@ -39,6 +39,7 @@ from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 from impurityModel.ed.spectra import calc_spectra
 from impurityModel.test.support.gf_branch_oracle import cached_oracle, distribute
+from impurityModel.test.support.gf_switches import gf_switches
 
 TAU = 0.3
 N_STATES = 3
@@ -50,7 +51,7 @@ FACTORS: dict[str, list] = {
     "method": ["lanczos", "bicgstab"],
     "sparse": [True, False],
     "group": [1, 2],
-    "reort": [None, "partial", "full"],
+    "reort": [None, True],
     "mesh": ["iw", "w", "both"],
     "model": [1, 2],
     "comm": ["self", "world"],
@@ -146,7 +147,8 @@ def _run_cell(cell):
     iw = IW if cell["mesh"] in ("iw", "both") else None
     w = W if cell["mesh"] in ("w", "both") else None
     with (
-        _env(GF_EIGENSTATE_GROUP=cell["group"], GF_SUPPORT_FREEZE=0 if cell.get("sparse") else 1),
+        _env(GF_EIGENSTATE_GROUP=cell["group"]),
+        gf_switches(support_freeze=not cell.get("sparse")),
         contextlib.redirect_stdout(io.StringIO()),
     ):
         gs_iw, gs_w, report = get_Greens_function(

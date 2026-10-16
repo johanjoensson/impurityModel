@@ -12,7 +12,6 @@ from itertools import islice
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import config
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     SlaterDeterminant,
@@ -692,27 +691,6 @@ MATVEC_EXCHANGE_MAX_BYTES = 1 << 30
 _COMPLEX_BYTES = 16
 
 
-def dest_flags_from_csr_indptr(indptr, counts, offsets):
-    """Which destination ranks this rank's local columns couple to, read from the CSR row pointers.
-
-    The array-path matvec kernels hold ``H`` as a ``(global_N, N_local)`` CSR -- every global row,
-    this rank's own columns -- so the rows owned by rank ``d`` (``offsets[d]`` to
-    ``offsets[d] + counts[d]``) receive a nonzero contribution from this rank iff that row range
-    holds at least one stored entry. Returns a bool array over ranks; an empty rank (``counts[d] == 0``)
-    is never a destination.
-    """
-    indptr = np.asarray(indptr)
-    counts = np.asarray(counts, dtype=np.int64)
-    offsets = np.asarray(offsets, dtype=np.int64)
-    return (indptr[offsets + counts] - indptr[offsets]) > 0
-
-
-def dest_flags_all(counts):
-    """Every non-empty rank is a destination -- for a dense ``H`` or any operator whose structure is
-    not readable (the graph is then complete, and column chunking alone bounds the buffers)."""
-    return np.asarray(counts, dtype=np.int64) > 0
-
-
 def matvec_column_chunk_width(need_max, width, budget_bytes):
     """Columns per exchange round so that neither the send nor the receive buffer exceeds
     ``budget_bytes``: ``need_max`` is the larger of the two buffers' row counts (rank-invariant by
@@ -737,8 +715,8 @@ def matvec_column_chunk_width(need_max, width, budget_bytes):
 class MatvecExchangePlan:
     """One matvec's worth of sparse reduce-scatter over the coupling graph of ``H``.
 
-    The distributed array kernels (``block_lanczos_array_cy``, ``block_apply``'s array branch) hold
-    ``H`` as ``(global_N, N_local)`` -- every global row, this rank's columns -- so a block matvec is
+    The distributed array kernels (``block_lanczos``, ``block_apply``'s array branch) hold
+    ``H`` as a ``DistributedSparseMatrix`` of shape ``(global_N, N_local)`` -- every global row, this rank's columns -- so a block matvec is
     a reduce-scatter: rank ``s`` contributes ``H[rows of d, cols of s] @ V_s`` to every destination
     ``d``. ``routing_hash`` is linear in the occupied orbitals, so an operator term shifts an owner
     by a constant and most of those contributions are structurally zero (measured 11% dense at 256
@@ -870,12 +848,3 @@ class MatvecExchangePlan:
             "send_bytes": self.total_send_rows * self.w_c * _COMPLEX_BYTES,
             "recv_bytes": self.total_recv_rows * self.w_c * _COMPLEX_BYTES,
         }
-
-
-def matvec_exchange_mode():
-    """The validated ``GS_MATVEC_EXCHANGE`` spelling (``graph`` or ``reduce``). The environment is
-    replicated across ranks, so an invalid value raises on every rank together."""
-    mode = config.GS_MATVEC_EXCHANGE.get()
-    if mode not in ("graph", "reduce"):
-        raise ValueError(f"GS_MATVEC_EXCHANGE must be 'graph' or 'reduce', got {mode!r}")
-    return mode

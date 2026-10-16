@@ -18,7 +18,7 @@ test when it is not, so instrumented code pays nothing on the production path::
 
 Events carry whatever fields the call site passes plus the fields of every enclosing
 :func:`labelled` block, which is how a ``sector_solve`` recorded three frames deep inside
-``find_ground_state_basis`` still knows which trial ``mu`` it belongs to.
+``find_ground_state_sector`` still knows which trial ``mu`` it belongs to.
 
 Traces are **rank-local**: every rank times its own work and no collective is issued from here.
 A caller that wants a cross-rank comparison (the sector-solve count *must* agree, or the ranks

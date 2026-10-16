@@ -12,8 +12,7 @@ try:
 except ImportError:
     _has_mpi = False
 
-from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
+from impurityModel.ed.BlockLanczosArray import block_normalize
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, inner_multi
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.support.lanczos_fixtures import (
@@ -73,13 +72,8 @@ def assert_orthonormal(eigvecs, path, comm=None):
     np.testing.assert_allclose(overlaps, expected, atol=sqrt_eps)
 
 
-# Both solvers now converge on both paths: IRLM gained EA16 locking + explicit purging
-# (Meerbergen & Scott, RAL-TR-2000-011), so it reaches 1e-8 on this tight-binding system
-# within the small subspace where it previously stalled. No cells are expected to fail.
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
-@pytest.mark.parametrize("path", ["array", "ManyBodyState"])
-@pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
-def test_reort_matrix(mode, path, solver):
+@pytest.mark.parametrize("path", ["array"])
+def test_reort_matrix(path):
     h_op_mb, N, eigvals_exact, basis_states = get_test_system()
     num_wanted = 4
     max_subspace_blocks = 6
@@ -104,46 +98,27 @@ def test_reort_matrix(mode, path, solver):
         h_op = h_op_mb
         basis = MockBasis(N)
 
-    if solver == "TRLM":
-        eigvals, eigvecs = thick_restart_block_lanczos(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-        )
-    else:
-        # IRLM
-        eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-            comm=None,
-        )
+    eigvals, eigvecs = thick_restart_block_lanczos(
+        psi0=psi0,
+        h_op=h_op,
+        basis=basis,
+        num_wanted=num_wanted,
+        max_subspace_blocks=max_subspace_blocks,
+        tol=1e-8,
+        max_restarts=50,
+        verbose=False,
+    )
 
     # Check eigenvalues
     np.testing.assert_allclose(eigvals, eigvals_exact[:num_wanted], atol=1e-8)
 
-    # Check orthonormality (except for NONE mode, which loses it)
-    if mode != Reort.NONE:
-        assert_orthonormal(eigvecs, path, comm=None)
+    # Check orthonormality
+    assert_orthonormal(eigvecs, path, comm=None)
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
-@pytest.mark.parametrize("path", ["array", "ManyBodyState"])
-@pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
-def test_reort_matrix_mpi(mode, path, solver):
+@pytest.mark.parametrize("path", ["array"])
+def test_reort_matrix_mpi(path):
     comm = MPI.COMM_WORLD
     h_op_mb, N, eigvals_exact, basis_states = get_test_system()
     num_wanted = 4
@@ -167,7 +142,7 @@ def test_reort_matrix_mpi(mode, path, solver):
         psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
         psi0, _ = block_normalize(psi0_local, mpi=True, comm=comm)
 
-        # Create a mock basis with communicator for the TRLM/IRLM driver
+        # Create a mock basis with communicator for the TRLM driver
         class ArrayMockBasis:
             def __init__(self, comm):
                 self.comm = comm
@@ -193,110 +168,22 @@ def test_reort_matrix_mpi(mode, path, solver):
         psi0 = _redistribute_as_width1(basis, psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
-    if solver == "TRLM":
-        eigvals, eigvecs = thick_restart_block_lanczos(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-        )
-    else:
-        # IRLM
-        eigvals, eigvecs = implicitly_restarted_block_lanczos_cy(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            num_wanted=num_wanted,
-            max_subspace_blocks=max_subspace_blocks,
-            tol=1e-8,
-            max_restarts=50,
-            verbose=False,
-            reort=mode,
-            comm=comm,
-        )
+    eigvals, eigvecs = thick_restart_block_lanczos(
+        psi0=psi0,
+        h_op=h_op,
+        basis=basis,
+        num_wanted=num_wanted,
+        max_subspace_blocks=max_subspace_blocks,
+        tol=1e-8,
+        max_restarts=50,
+        verbose=False,
+    )
 
     # Check eigenvalues on all ranks
     np.testing.assert_allclose(eigvals, eigvals_exact[:num_wanted], atol=1e-8)
 
-    # Check orthonormality (except for NONE mode)
-    if mode != Reort.NONE:
-        assert_orthonormal(eigvecs, path, comm=comm)
-
-
-@pytest.mark.mpi
-@pytest.mark.parametrize("mode", [Reort.PARTIAL, Reort.SELECTIVE])
-@pytest.mark.parametrize("path", ["array", "ManyBodyState"])
-def test_W_identical_across_ranks(mode, path):
-    comm = MPI.COMM_WORLD
-    h_op_mb, N, _eigvals_exact, basis_states = get_test_system()
-    n_blocks = 2
-    max_iter = 5
-
-    if path == "array":
-        H_dense = build_dense_matrix_from_manybody(h_op_mb, basis_states)
-        counts = _contiguous_counts_with_empty_last(N, comm.size)
-        offsets = np.array([sum(counts[:r]) for r in range(comm.size)], dtype=int)
-        c0 = offsets[comm.rank]
-        c1 = c0 + counts[comm.rank]
-        h_op = sps.csr_matrix(H_dense[:, c0:c1])
-
-        rng = np.random.default_rng(42)
-        psi0_full = rng.standard_normal((N, n_blocks)) + 1j * rng.standard_normal((N, n_blocks))
-        psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
-        psi0, _ = block_normalize(psi0_local, mpi=True, comm=comm)
-
-        from impurityModel.ed.BlockLanczosArray import block_lanczos_array
-
-        _alphas, _betas, _Q_list, *W_res = block_lanczos_array(
-            psi0=psi0,
-            h_op=h_op,
-            converged=lambda a, b, **kw: False,
-            max_iter=max_iter,
-            verbose=False,
-            reort=mode,
-            return_W=True,
-            comm=comm,
-        )
-        W = W_res[0] if W_res else None
-    else:
-        basis = get_mpi_basis(comm)
-        h_op = h_op_mb
-
-        if comm.rank == 0:
-            np.random.seed(42)
-            psi0_full = []
-            for _ in range(n_blocks):
-                state = ManyBodyState()
-                for b in basis_states:
-                    state += b * (np.random.rand() + 1j * np.random.rand())
-                psi0_full.append(state)
-        else:
-            psi0_full = [ManyBodyState(width=1) for _ in range(n_blocks)]
-
-        psi0 = _redistribute_as_width1(basis, psi0_full)
-        psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
-
-        from impurityModel.ed.BlockLanczos import block_lanczos_cy
-
-        _alphas, _betas, _Q_list, W = block_lanczos_cy(
-            psi0=psi0,
-            h_op=h_op,
-            basis=basis,
-            converged_fn=lambda a, b, **kw: False,
-            verbose=False,
-            reort=mode.name.lower(),
-            max_iter=max_iter,
-            comm=comm,
-        )
-
-    # comm.bcast rank-0's W and assert every rank's W equals it to 1e-12
-    W_root = comm.bcast(W, root=0)
-    np.testing.assert_allclose(W, W_root, atol=1e-12)
+    # Check orthonormality
+    assert_orthonormal(eigvecs, path, comm=comm)
 
 
 @pytest.mark.parametrize("p", [1, 2, 4])
@@ -316,15 +203,15 @@ def test_deflation_shrinking_block(p, path):
 
         psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
-        from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+        from impurityModel.ed.BlockLanczosArray import block_lanczos
 
-        alphas, betas, _Q_list, block_widths = block_lanczos_array(
+        alphas, betas, _Q_list, block_widths = block_lanczos(
             psi0=psi0,
             h_op=H_dense,
             converged=lambda a, b, **kw: False,
             max_iter=max_iter,
             verbose=False,
-            reort=Reort.FULL,
+            reort=True,
             return_widths=True,
             comm=None,
         )
@@ -340,15 +227,15 @@ def test_deflation_shrinking_block(p, path):
 
         psi0, _ = block_normalize(psi0_list, mpi=False, comm=None)
 
-        from impurityModel.ed.BlockLanczos import block_lanczos_cy
+        from impurityModel.ed.BlockLanczos import block_lanczos
 
-        alphas, betas, _Q_basis, _W, block_widths = block_lanczos_cy(
+        alphas, betas, _Q_basis, block_widths = block_lanczos(
             psi0=psi0,
             h_op=h_op_mb,
             basis=MockBasis(N),
-            converged_fn=lambda a, b, **kw: False,
+            converged=lambda a, b, **kw: False,
             verbose=False,
-            reort="full",
+            reort=True,
             max_iter=max_iter,
             return_widths=True,
             comm=None,
@@ -388,15 +275,15 @@ def test_deflation_shrinking_block_mpi(p, path):
         psi0_local = np.ascontiguousarray(psi0_full[c0:c1, :], dtype=complex)
         psi0, _ = block_normalize(psi0_local, mpi=True, comm=comm)
 
-        from impurityModel.ed.BlockLanczosArray import block_lanczos_array
+        from impurityModel.ed.BlockLanczosArray import block_lanczos
 
-        alphas, betas, _Q_list, block_widths = block_lanczos_array(
+        alphas, betas, _Q_list, block_widths = block_lanczos(
             psi0=psi0,
             h_op=h_op,
             converged=lambda a, b, **kw: False,
             max_iter=max_iter,
             verbose=False,
-            reort=Reort.FULL,
+            reort=True,
             return_widths=True,
             comm=comm,
         )
@@ -420,15 +307,15 @@ def test_deflation_shrinking_block_mpi(p, path):
         psi0 = _redistribute_as_width1(basis, psi0_full)
         psi0, _ = block_normalize(psi0, mpi=True, comm=comm)
 
-        from impurityModel.ed.BlockLanczos import block_lanczos_cy
+        from impurityModel.ed.BlockLanczos import block_lanczos
 
-        alphas, betas, _Q_basis, _W, block_widths = block_lanczos_cy(
+        alphas, betas, _Q_basis, block_widths = block_lanczos(
             psi0=psi0,
             h_op=h_op,
             basis=basis,
-            converged_fn=lambda a, b, **kw: False,
+            converged=lambda a, b, **kw: False,
             verbose=False,
-            reort="full",
+            reort=True,
             max_iter=max_iter,
             return_widths=True,
             comm=comm,

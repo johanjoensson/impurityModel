@@ -13,7 +13,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_dense_matrix
-from impurityModel.ed.cg import block_bicgstab
+from impurityModel.ed.BiCGSTAB import block_bicgstab
 from impurityModel.ed.greens_function import _CappedBasisProxy, get_Greens_function
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, block_inner_cy

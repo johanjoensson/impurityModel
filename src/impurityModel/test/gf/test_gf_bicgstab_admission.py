@@ -32,6 +32,7 @@ from impurityModel.test.support.gf_oracles import (
     _seeds,
     _siam_6,
 )
+from impurityModel.test.support.gf_switches import set_gf_switches
 
 ATOL = 1e-12
 Z = 1.7 + 1j * DELTA
@@ -41,7 +42,7 @@ CLOSURE = 18  # two 9-determinant sectors: what the two seed columns reach
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
     # The sparse per-point solve, which this file covers; the frozen path has test_gf_bicgstab_frozen.py.
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
+    set_gf_switches(monkeypatch, support_freeze="0")
     for name in (
         "GF_BICGSTAB_ADMISSION",
         "GF_BICGSTAB_ADMIT_SCORER",

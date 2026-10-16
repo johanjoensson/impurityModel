@@ -54,7 +54,7 @@ def _hermetic_knobs(monkeypatch):
         "GF_BICGSTAB_WARM_HISTORY",
         "GF_LANCZOS_ADMIT_TOL",
         "GF_ADMIT_FIRST_SHELL_TOL",
-        "GF_APPLY_ROW_CHUNKS",
+        "APPLY_ROW_CHUNKS",
     ):
         monkeypatch.delenv(name, raising=False)
 

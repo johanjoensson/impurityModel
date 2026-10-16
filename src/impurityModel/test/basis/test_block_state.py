@@ -736,9 +736,9 @@ def test_seen_and_offered_masks_track_sub_cutoff_determinants_separately():
 def test_block_combine_dispatcher_accepts_blocks():
     """``BlockLanczosArray.block_combine`` must dispatch a ``ManyBodyState`` Q to
     ``combine_columns`` rather than falling through to the list-only
-    ``block_combine_sparse`` (prerequisite for Phase 5's TRLM/IRLM Q_basis conversion:
+    ``block_combine_sparse`` (prerequisite for Phase 5's TRLM Q_basis conversion:
     once Q_basis stays a block across a restart, every ``block_combine(Q_basis, ...)``
-    call in ``ed/trlm.py``/``ed/irlm.py`` hits this path)."""
+    call in ``ed/trlm.py`` hits this path)."""
     from impurityModel.ed.BlockLanczosArray import block_combine
 
     rng = np.random.default_rng(70)
@@ -759,7 +759,7 @@ def test_block_combine_dispatcher_pruning_matches_sparse_on_mixed_row():
     per-column ``prune`` exactly, including on a "mixed" row (above cutoff in one
     output column, below it in another) -- the case that exposed a false pruning-
     semantics claim in ``SparseKrylovDense.combine_block`` (Phase 5 step 4). Unlike
-    that store, slaterWeightMin genuinely reaches this dispatcher from live TRLM/IRLM
+    that store, slaterWeightMin genuinely reaches this dispatcher from live TRLM
     calls, so the block arm takes the round trip through per-state ``prune`` rather
     than reusing the cheaper but differently-scoped ``prune_rows``."""
     from impurityModel.ed.BlockLanczosArray import block_combine

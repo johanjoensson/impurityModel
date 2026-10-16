@@ -1,15 +1,15 @@
 r"""``basis_transcription.build_sparse_matrix``: the matrix, its layout, and its memory.
 
-The build assembles the CSC directly (images arrive one ket at a time, so the entries are already
-grouped by column). These tests pin that against an oracle that shares no code with it -- the full
+The build assembles the column blocks directly (images arrive one ket at a time, so the entries are
+already grouped by column). These tests pin that against an oracle that shares no code with it -- the full
 operator applied to every determinant in Python and indexed by position -- and pin the memory
 the frozen-basis fit check (``gf_solvers._CSR_BYTES_PER_ELEMENT``) relies on:
 
 * every rank's stored columns equal the oracle's, whatever the rank count, including ranks that own
   no determinant;
-* ``local_columns=True`` is exactly the ``(N, N_local)`` slice of the default ``(N, N)`` result;
-* the result is canonical (sorted, duplicate-free), as the old COO route made it;
-* the frozen-basis column operator's build peak stays below what the fit check budgets.
+* the matrix is ``(N, N_local)``, and ``toarray()`` places those columns in an ``(N, N)`` array;
+* the result is duplicate-free;
+* the build's peak stays below what the fit check budgets.
 """
 
 import itertools
@@ -88,44 +88,33 @@ def test_stored_columns_equal_the_independent_oracle(n_dets):
     basis = _basis(dets, comm)
     op = _operator()
     oracle = _oracle_columns(basis, op, comm)
-    full = build_sparse_matrix(basis, op)
-    local = build_sparse_matrix(basis, op, local_columns=True)
+    matrix = build_sparse_matrix(basis, op)
+    full = matrix.toarray()
 
-    assert full.shape == (basis.size, basis.size)
-    assert local.shape == (basis.size, len(basis.local_basis))
-    np.testing.assert_allclose(local.toarray(), oracle, atol=1e-13)
-    np.testing.assert_allclose(full.toarray()[:, basis.local_indices], oracle, atol=1e-13)
+    assert matrix.shape == (basis.size, len(basis.local_basis))
+    np.testing.assert_allclose(matrix.to_scipy().toarray(), oracle, atol=1e-13)
+    np.testing.assert_allclose(full[:, basis.local_indices], oracle, atol=1e-13)
     # No entry outside this rank's columns.
     outside = np.ones(basis.size, dtype=bool)
     outside[basis.local_indices] = False
-    assert not full.toarray()[:, outside].any()
-
-
-@pytest.mark.mpi
-def test_local_columns_is_the_local_slice_of_the_default_result():
-    comm = MPI.COMM_WORLD
-    basis = _basis(_all_dets(), comm)
-    op = _operator()
-    sliced = build_sparse_matrix(basis, op)[:, basis.local_indices]
-    local = build_sparse_matrix(basis, op, local_columns=True)
-    assert local.format == sliced.format == "csc"
-    assert np.array_equal(local.indptr, sliced.indptr)
-    assert np.array_equal(local.indices, sliced.indices)
-    assert np.array_equal(local.data, sliced.data)
+    assert not full[:, outside].any()
 
 
 @pytest.mark.mpi
 def test_the_result_is_canonical():
     comm = MPI.COMM_WORLD
     basis = _basis(_all_dets(), comm)
-    for local_columns in (False, True):
-        m = build_sparse_matrix(basis, _operator(), local_columns=local_columns)
-        assert m.has_sorted_indices
-        assert m.has_canonical_format
+    m = build_sparse_matrix(basis, _operator()).to_scipy()
+    # The images are ordered by the operator, not by row (the matvec does not care: every output row
+    # is summed in ascending column order whatever the order within a column). Once sorted the matrix
+    # must be duplicate-free.
+    m.sort_indices()
+    assert m.has_sorted_indices
+    assert m.has_canonical_format
 
 
 @pytest.mark.mpi
-def test_the_column_operator_peak_stays_below_its_budget(monkeypatch):
+def test_the_matrix_build_peak_stays_below_its_budget(monkeypatch):
     """The build of the frozen-basis operator against what the fit check budgets for it.
 
     ``gf_solvers._CSR_BYTES_PER_ELEMENT`` per stored element plus the column pointers, and
@@ -138,10 +127,10 @@ def test_the_column_operator_peak_stays_below_its_budget(monkeypatch):
     comm = MPI.COMM_WORLD
     basis = _basis(_all_dets(14), comm if comm.size > 1 else None, n_orb=14)
     op = _operator(14)
-    basis_transcription.build_local_column_operator(basis, op)  # lazy lookup structures are built once
+    build_sparse_matrix(basis, op)  # lazy lookup structures are built once
     tracemalloc.start()
     try:
-        m = basis_transcription.build_local_column_operator(basis, op)
+        m = build_sparse_matrix(basis, op)
         _current, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
@@ -187,7 +176,7 @@ def test_the_build_answers_the_gf_unit_queue_as_it_goes(monkeypatch, serial):
 @pytest.mark.parametrize("batch", [None, 7])
 @pytest.mark.parametrize("n_dets", [None, 2])
 def test_the_column_operator_holds_the_same_matrix(monkeypatch, batch, n_dets):
-    """``build_local_column_operator`` keeps the build's column blocks instead of one CSC: the same
+    """``build_sparse_matrix`` keeps the build's column blocks instead of one CSC: the same
     entries, int32 rows, one segment per batch. A 7-element batch splits the columns into many
     segments; two determinants leave ranks empty at -n 3."""
     if batch is not None:
@@ -196,12 +185,12 @@ def test_the_column_operator_holds_the_same_matrix(monkeypatch, batch, n_dets):
     dets = _all_dets() if n_dets is None else _all_dets()[:n_dets]
     basis = _basis(dets, comm)
     op = _operator()
-    column_op = basis_transcription.build_local_column_operator(basis, op)
+    column_op = build_sparse_matrix(basis, op)
     assert column_op.shape == (basis.size, len(basis.local_basis))
     assert all(rows.dtype == np.int32 for _, _, rows, _ in column_op.segments)
     if batch is not None and len(basis.local_basis) > 1:
         assert len(column_op.segments) > 1, "premise: a small batch splits the columns"
-    np.testing.assert_allclose(column_op.tocsc().toarray(), _oracle_columns(basis, op, comm), atol=1e-13)
+    np.testing.assert_allclose(column_op.to_scipy().toarray(), _oracle_columns(basis, op, comm), atol=1e-13)
 
 
 @pytest.mark.mpi
@@ -210,7 +199,7 @@ def test_bound_rows_are_the_exchange_buffer_rows():
     ``send_row_offsets[i]`` and a row this rank owns into the self buffer after the send rows."""
     comm = MPI.COMM_WORLD
     basis = _basis(_all_dets(), comm)
-    column_op = basis_transcription.build_local_column_operator(basis, _operator())
+    column_op = build_sparse_matrix(basis, _operator())
     counts = np.array(comm.allgather(len(basis.local_basis)), dtype=np.int64)
     offsets = np.concatenate(([0], np.cumsum(counts)[:-1]))
     flags = column_op.owner_flags(counts, offsets)

@@ -20,6 +20,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.cipsi_solver import CIPSISolver
+from impurityModel.ed.eigensolvers import Within
 from impurityModel.ed.groundstate import GS_DE2_MIN
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, SlaterDeterminant
@@ -74,10 +75,10 @@ def test_memory_budget_none_matches_no_argument_at_all_serial():
     """The explicit `None` default must be bit-for-bit identical to omitting the argument."""
     H = _hamiltonian()
     solver_a = _make_solver(None)
-    solver_a.expand(H, de2_min=GS_DE2_MIN, solver="trlm")
+    solver_a.expand(H, Within.thermal(solver_a.basis.tau), de2_min=GS_DE2_MIN)
 
     solver_b = _make_solver(None)
-    solver_b.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=None)
+    solver_b.expand(H, Within.thermal(solver_b.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=None)
 
     assert set(solver_a.basis.local_basis) == set(solver_b.basis.local_basis)
     assert solver_a.truncation_report is None
@@ -90,7 +91,7 @@ def test_impossible_budget_adopts_a_cap_at_the_current_basis_size():
     is always > 1 B), so the guard must fire immediately and the expansion must finish capped."""
     H = _hamiltonian()
     solver = _make_solver(None)
-    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1)
+    solver.expand(H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=1)
 
     assert np.isfinite(solver.basis.truncation_threshold), "the guard must have adopted a cap"
     assert solver.truncation_report is not None, "the adopted cap must actually have bound"
@@ -103,10 +104,10 @@ def test_huge_budget_never_fires_and_matches_the_unguarded_run():
     triggering should."""
     H = _hamiltonian()
     solver_a = _make_solver(None)
-    solver_a.expand(H, de2_min=GS_DE2_MIN, solver="trlm")
+    solver_a.expand(H, Within.thermal(solver_a.basis.tau), de2_min=GS_DE2_MIN)
 
     solver_b = _make_solver(None)
-    solver_b.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=2**60)
+    solver_b.expand(H, Within.thermal(solver_b.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=2**60)
 
     assert set(solver_a.basis.local_basis) == set(solver_b.basis.local_basis)
     assert solver_b.truncation_report is None
@@ -122,12 +123,12 @@ def test_the_guard_never_loosens_a_caller_cap():
     solver_a = _make_solver(None, truncation_threshold=len(all_dets))
     solver_a.basis.clear()
     solver_a.basis.add_states([all_dets[0]])
-    solver_a.expand(H, de2_min=GS_DE2_MIN, solver="trlm")
+    solver_a.expand(H, Within.thermal(solver_a.basis.tau), de2_min=GS_DE2_MIN)
 
     solver_b = _make_solver(None, truncation_threshold=len(all_dets))
     solver_b.basis.clear()
     solver_b.basis.add_states([all_dets[0]])
-    solver_b.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1 << 62)
+    solver_b.expand(H, Within.thermal(solver_b.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=1 << 62)
 
     assert solver_a.basis.truncation_threshold == solver_b.basis.truncation_threshold == len(all_dets)
     assert set(solver_a.basis.local_basis) == set(solver_b.basis.local_basis)
@@ -159,7 +160,7 @@ def test_the_guard_tightens_a_cap_that_memory_cannot_afford():
     solver = _make_solver(None, truncation_threshold=absurd_cap)
     solver.basis.clear()
     solver.basis.add_states([all_dets[0]])
-    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1)
+    solver.expand(H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=1)
 
     assert solver.basis.truncation_threshold < absurd_cap, "an unaffordable cap must be tightened"
     assert solver.basis.size <= solver.basis.truncation_threshold
@@ -197,7 +198,7 @@ def test_the_guard_fires_once_and_does_not_ratchet_the_cap_down(monkeypatch):
     solver = _make_solver(None, truncation_threshold=10**6)
     solver.basis.clear()
     solver.basis.add_states([all_dets[0]])
-    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=budget)
+    solver.expand(H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=budget)
 
     adopted = solver.basis.truncation_threshold
     assert adopted < 10**6, "the unaffordable cap should have been tightened"
@@ -214,7 +215,7 @@ def test_impossible_budget_adopts_a_cap_at_the_current_basis_size_mpi():
     comm = MPI.COMM_WORLD
     H = _hamiltonian()
     solver = _make_solver(comm)
-    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1)
+    solver.expand(H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=1)
 
     assert np.isfinite(solver.basis.truncation_threshold)
     thresholds = comm.allgather(solver.basis.truncation_threshold)
@@ -232,14 +233,14 @@ def test_warn_mode_keeps_a_user_cap_and_only_warns(capfd):
     reference = _make_solver(None, truncation_threshold=user_cap)
     reference.basis.clear()
     reference.basis.add_states([all_dets[0]])
-    reference.expand(H, de2_min=GS_DE2_MIN, solver="trlm")
+    reference.expand(H, Within.thermal(reference.basis.tau), de2_min=GS_DE2_MIN)
 
     solver = _make_solver(None, truncation_threshold=user_cap)
     solver.basis.verbose = False
     solver.basis.clear()
     solver.basis.add_states([all_dets[0]])
     capfd.readouterr()
-    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1, memory_policy="warn")
+    solver.expand(H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=1, memory_policy="warn")
     out, err = capfd.readouterr()
 
     assert solver.basis.truncation_threshold == user_cap
@@ -255,14 +256,16 @@ def test_warn_mode_is_a_no_op_under_budget():
     """No budget exceeded, no warning and nothing recorded."""
     H = _hamiltonian()
     solver = _make_solver(None, truncation_threshold=10**6)
-    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=2**60, memory_policy="warn")
+    solver.expand(
+        H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=2**60, memory_policy="warn"
+    )
     assert solver.memory_warning is None
     assert solver.truncation_report is None
 
 
 def test_unknown_memory_policy_is_rejected():
     with pytest.raises(ValueError, match="memory_policy"):
-        _make_solver(None).expand(_hamiltonian(), memory_policy="shrink")
+        _make_solver(None).expand(_hamiltonian(), Within(0.0), memory_policy="shrink")
 
 
 def test_groundstate_maps_cap_provenance_to_memory_policy():
@@ -284,7 +287,7 @@ def test_warn_mode_keeps_a_user_cap_mpi():
     comm = MPI.COMM_WORLD
     H = _hamiltonian()
     solver = _make_solver(comm, truncation_threshold=10**6)
-    solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1, memory_policy="warn")
+    solver.expand(H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=1, memory_policy="warn")
 
     assert solver.basis.truncation_threshold == 10**6
     flags = comm.allgather(solver.memory_warning is not None)
@@ -316,7 +319,7 @@ def test_the_trip_wire_sees_a_peak_that_happens_during_the_eigensolve(monkeypatc
     monkeypatch.setattr(_cs, "peak_rss_bytes", lambda: budget * 2 if state["spiked"] else 0)
 
     solver = _make_solver(None)
-    solver.expand(_hamiltonian(), de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=budget)
+    solver.expand(_hamiltonian(), Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=budget)
     assert solver.truncation_report is not None and solver.truncation_report["memory_bound"]
 
 
@@ -328,13 +331,13 @@ def test_the_user_cap_warning_prints_once_per_calculation(capfd):
     H = _hamiltonian()
     for _ in range(3):
         _make_solver(None, truncation_threshold=10**6).expand(
-            H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1, memory_policy="warn"
+            H, Within(0.0), de2_min=GS_DE2_MIN, memory_budget_bytes=1, memory_policy="warn"
         )
     _out, err = capfd.readouterr()
     assert err.count("WARNING determinant cap") == 1
     resolve_cap_policy(10**6, N_SPIN_ORBITALS, log="never")  # the next calculation starts
     _make_solver(None, truncation_threshold=10**6).expand(
-        H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1, memory_policy="warn"
+        H, Within(0.0), de2_min=GS_DE2_MIN, memory_budget_bytes=1, memory_policy="warn"
     )
     _out, err = capfd.readouterr()
     assert err.count("WARNING determinant cap") == 1
@@ -348,7 +351,7 @@ def test_an_auto_tightening_is_visible_at_default_verbosity_once_per_calculation
     for _ in range(2):
         solver = _make_solver(None)
         solver.basis.verbose = False
-        solver.expand(H, de2_min=GS_DE2_MIN, solver="trlm", memory_budget_bytes=1)
+        solver.expand(H, Within.thermal(solver.basis.tau), de2_min=GS_DE2_MIN, memory_budget_bytes=1)
         assert solver.truncation_report["memory_bound"]
     out, err = capfd.readouterr()
     # Each kind of event once: the guard tightening, and the basis stopping short of convergence.

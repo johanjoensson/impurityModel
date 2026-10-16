@@ -33,16 +33,11 @@ ill-conditioned / near-degenerate problems that exercise the failure path.
 """
 
 import numpy as np
-import pytest
 import scipy.linalg as la
 
-from impurityModel.ed.BlockLanczos import block_lanczos_cy
+from impurityModel.ed.BlockLanczos import block_lanczos
 from impurityModel.ed.BlockLanczosArray import (
-    DEFLATE_EVAL_TOL,
-    Reort,
-    _cholesky_or_deflate,
-    _cholesky_qr2,
-    block_lanczos_array,
+    block_lanczos,
 )
 from impurityModel.ed.greens_function import (
     _gf_sample_mesh,
@@ -53,8 +48,6 @@ from impurityModel.ed.greens_function import (
     calc_G,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.ed.TSQR import EPS as EPS_LOCAL
-from impurityModel.ed.TSQR import tsqr
 from impurityModel.test.support.lanczos_fixtures import MockBasis
 
 SQRT_EPS = np.sqrt(np.finfo(float).eps)
@@ -74,82 +67,6 @@ def _ill_conditioned_block(n, p, sep, rng):
 # --------------------------------------------------------------------------- #
 # Unit level: the block-QR numerics                                            #
 # --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize("kappa", [1e5, 1e8])
-def test_the_live_factorization_is_orthonormal_where_cholesky_qr_is_not(kappa):
-    """What the production path now does on the block that used to seed the blow-up.
-
-    The *subject* is :func:`TSQR.tsqr` -- the factorization every block-Krylov call site runs
-    -- and the assertion is unconditional: an ill-conditioned but retained block comes back
-    orthonormal to machine precision and reconstructs exactly, with no second pass required
-    of the caller.
-
-    The Cholesky path is kept alongside as the contrast, because it is *why* this changed: a
-    single Cholesky-QR of the same block leaves an orthonormality error above ``sqrt(EPS)``
-    -- the very semi-orthogonality level the reort estimator assumes it maintains -- which is
-    what fed the ``||beta|| -> 1e90`` divergence this module is named after.
-    """
-    rng = np.random.default_rng(0)
-    n, p = 50, 2
-    # sigma_min/sigma_max ~ sep/2, so `sep` sets the conditioning directly.
-    Wp = _ill_conditioned_block(n, p, sep=2.0 / kappa, rng=rng)
-    assert np.linalg.cond(Wp) > 0.1 * kappa
-
-    # --- the live path -------------------------------------------------------------
-    Q, beta, k, _ = tsqr(Wp)
-    assert k == p, "the live rank floor should retain this block"
-    assert np.linalg.norm(Q.conj().T @ Q - np.eye(k)) < 1e-13
-    assert np.linalg.norm(Q @ beta - Wp) < 1e-13 * np.linalg.norm(Wp)
-
-    # --- the historic contrast ------------------------------------------------------
-    M = Wp.conj().T @ Wp
-    beta_j, beta_inv, k_chol = _cholesky_or_deflate(M, p)
-    if k_chol == p:
-        Q1 = Wp @ beta_inv
-        orth1 = np.linalg.norm(Q1.conj().T @ Q1 - np.eye(k_chol))
-        assert orth1 > SQRT_EPS, "the Cholesky path is supposed to be the unstable one here"
-
-        # ... and that a second pass was needed to repair it (the CholeskyQR2 the live path
-        # no longer has to perform).
-        M2 = Q1.conj().T @ Q1
-        M2 = 0.5 * (M2 + M2.conj().T)
-        beta2_inv, beta_j2, k2 = _cholesky_qr2(M2, beta_j, k_chol)
-        assert k2 == k_chol
-        Q2 = Q1 @ beta2_inv
-        assert np.linalg.norm(Q2.conj().T @ Q2 - np.eye(k2)) < SQRT_EPS
-        assert np.linalg.norm(Q2 @ beta_j2 - Wp) < 1e-10
-    else:
-        # Beyond kappa ~ EPS**(-1/2) the Gram is no longer numerically positive definite and
-        # the Cholesky path cannot factor the block at all -- the other half of the argument.
-        assert kappa > 1.0 / np.sqrt(EPS_LOCAL)
-
-
-def test_deflation_threshold_consistent_between_paths():
-    """The Cholesky fast path and the eigh fallback deflate to the same rank."""
-    rng = np.random.default_rng(1)
-    n, p = 40, 3
-    Qb = la.qr(rng.standard_normal((n, p)) + 1j * rng.standard_normal((n, p)), mode="economic")[0]
-    # Eigenvalues of M straddling the floor: one clearly kept, one clearly null.
-    for log10_null in (-6, -9, -14, -18):
-        s = np.array([1.0, 1e-2, 10.0**log10_null])
-        Wp = Qb * s[None, :]
-        M = Wp.conj().T @ Wp
-        _, _, k_chol = _cholesky_or_deflate(M, p)
-        # Force the eigh fallback by passing a copy that fails Cholesky's PD check is hard;
-        # instead compare against the eigenvalue floor directly.
-        evals = la.eigvalsh(M)
-        # Derive the expected rank from the module's eigenvalue floor (single source of
-        # truth) rather than a hardcoded literal, so this tracks DEFLATE_EVAL_TOL.
-        k_expected = int(np.sum(evals > DEFLATE_EVAL_TOL * max(evals[-1], 1.0)))
-        assert k_chol == k_expected, f"log10_null={log10_null}: {k_chol} != {k_expected}"
-
-
-def test_full_collapse_returns_zero_rank():
-    """A genuinely rank-zero block reports active_k == 0 (clean breakdown)."""
-    M = np.zeros((2, 2), dtype=complex)
-    beta_j, beta_inv, k = _cholesky_or_deflate(M, 2)
-    assert k == 0 and beta_j is None and beta_inv is None
 
 
 # --------------------------------------------------------------------------- #
@@ -175,11 +92,11 @@ def test_array_kernel_no_blowup_near_degenerate():
     S = rng.standard_normal((n, 2)) + 1j * rng.standard_normal((n, 2))
     Q0, r = build_qr(S)
 
-    alphas, betas, Q, widths = block_lanczos_array(
+    alphas, betas, Q, widths = block_lanczos(
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=lambda a, b, **kw: False,
-        reort=Reort.NONE,
+        reort=False,
         return_widths=True,
         verbose=False,
         max_iter=40,
@@ -234,11 +151,11 @@ def test_gf_monitor_moving_mesh_cannot_converge_but_fixed_can():
     H = (U * d) @ U.conj().T
     H = 0.5 * (H + H.conj().T)
     Q0 = la.qr(rng.standard_normal((n, 2)) + 1j * rng.standard_normal((n, 2)), mode="economic")[0]
-    alphas, betas, _, widths = block_lanczos_array(
+    alphas, betas, _, widths = block_lanczos(
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=lambda a, b, **kw: False,
-        reort=Reort.FULL,
+        reort=True,
         return_widths=True,
         max_iter=15,
     )
@@ -295,11 +212,11 @@ def test_divergence_safeguard_does_not_false_trigger_on_large_norm_H():
     H = 0.5 * ((U * d) @ U.conj().T + (U * d) @ U.conj().T).conj().T
     Q0 = la.qr(rng.standard_normal((n, 2)) + 1j * rng.standard_normal((n, 2)), mode="economic")[0]
 
-    alphas, betas, _Q, widths = block_lanczos_array(
+    alphas, betas, _Q, widths = block_lanczos(
         psi0=Q0.copy(),
         h_op=H.astype(complex),
         converged=lambda a, b, **kw: False,
-        reort=Reort.NONE,
+        reort=False,
         return_widths=True,
         verbose=False,
         max_iter=4,
@@ -343,12 +260,12 @@ def test_mbs_kernel_no_blowup_near_degenerate():
         for i, sd in enumerate(states):
             psi0[c] += ManyBodyState({sd: Q0[i, c]})
 
-    alphas, betas, _, _, widths = block_lanczos_cy(
+    alphas, betas, _, widths = block_lanczos(
         psi0,
         h_op,
         MockBasis(_MBS_NORB),
-        converged_fn=lambda a, b, **kw: False,
-        reort=Reort.NONE,
+        converged=lambda a, b, **kw: False,
+        reort=False,
         max_iter=20,
         return_widths=True,
     )

@@ -21,8 +21,8 @@ check that the resulting ``calc_G`` reproduces the exact diagonal resolvent
 
 import numpy as np
 
-from impurityModel.ed.BlockLanczos import block_lanczos_cy
-from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array
+from impurityModel.ed.BlockLanczos import block_lanczos
+from impurityModel.ed.BlockLanczosArray import block_lanczos
 from impurityModel.ed.greens_function import _trim_blocks, build_qr, calc_G
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
 from impurityModel.test.support.lanczos_fixtures import MockBasis
@@ -88,12 +88,12 @@ def test_interior_deflation_mbs_path():
         for i, sd in enumerate(states):
             psi0[c] += ManyBodyState({sd: Q0[i, c]})
 
-    alphas, betas, _, _, widths = block_lanczos_cy(
+    alphas, betas, _, widths = block_lanczos(
         psi0,
         h_op,
         MockBasis(N_ORB),
-        converged_fn=lambda a, b, **kw: False,
-        reort=Reort.NONE,
+        converged=lambda a, b, **kw: False,
+        reort=False,
         max_iter=8,
         return_widths=True,
     )
@@ -115,11 +115,11 @@ def test_interior_deflation_array_path():
     H = np.diag(EPS).astype(complex)
     S, Q0, r = _seed_block(rng)
 
-    alphas, betas, _, widths = block_lanczos_array(
+    alphas, betas, _, widths = block_lanczos(
         psi0=Q0.copy(),
         h_op=H,
         converged=lambda a, b, **kw: False,
-        reort=Reort.NONE,
+        reort=False,
         return_widths=True,
     )
 
@@ -139,11 +139,11 @@ def test_calc_G_uniform_still_works():
     S = rng.standard_normal((4, 2)) + 1j * rng.standard_normal((4, 2))
     Q0, r = build_qr(S)
 
-    alphas, betas, _, widths = block_lanczos_array(
+    alphas, betas, _, widths = block_lanczos(
         psi0=Q0.copy(),
         h_op=H,
         converged=lambda a, b, **kw: False,
-        reort=Reort.NONE,
+        reort=False,
         return_widths=True,
     )
     assert min(widths) == P  # genuinely no deflation

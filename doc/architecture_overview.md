@@ -34,44 +34,43 @@ operators.
    - **Role:** Efficient parallelization across ranks.
    - **Details:** Functions like `pack_determinants_cy` and `pack_block_fused_cy`/`unpack_block_fused_cy` serialize `ManyBodyState` blocks into contiguous byte buffers for a single-round `Neighbor_alltoallv` via `mpi4py`. Determinants are hash-distributed: each Slater determinant is owned by rank `hash(sd) % size`, and no rank ever holds a full state vector.
 
-### Block Lanczos kernels: which one to use
+### Block Lanczos: one step, two front ends
 
-There are two Block Lanczos kernels with identical reorthogonalization semantics: they
-share the deflation, W-recurrence, FULL/PARTIAL/SELECTIVE reort, and threshold logic
-because it lives in one place, `BlockLanczosCore.pyx` (`Reort`, every tolerance
-constant, `estimate_orthonormality`, the block-tridiagonal eigensolvers, and the
-representation-dispatching block primitives / `apply_reort`), which both kernels
-import downward from — neither kernel imports from the other:
+There is ONE block-Lanczos recurrence. `lanczos_step` and `_lanczos_loop`
+(`_lanczos_step.pxi`, compiled into `BlockLanczosCore.pyx`) touch their blocks only through
+the representation-dispatching primitives of `_block_ops.pxi` (`block_apply`, `block_inner`,
+`block_add_scaled`, `block_tsqr`, ...), so the same code runs on `ManyBodyState` blocks and on
+`ndarray` blocks. The two public front ends differ only in how they build the starting blocks,
+the matvec and the Krylov store:
 
-- **`BlockLanczos.pyx` — sparse / hash-distributed** (`block_lanczos_cy`,
-  `thick_restart_block_lanczos_cy`, `implicitly_restarted_block_lanczos_cy`). Operates
-  directly on `ManyBodyState`/`ManyBodyOperator`; the Hamiltonian matrix is **never
-  formed**; MPI parallelism distributes Slater determinants by `hash(sd) % size`. Use
-  this for a **large Hilbert space** where the dense/CSR matrix would not fit.
+`block_lanczos()` (`BlockLanczosCore.pyx`, re-exported by `BlockLanczos.pyx` and `BlockLanczosArray.pyx`) is the one
+entry point: it picks the setup from the start block and runs the same `lanczos_step` loop.
 
-- **`BlockLanczosArray.pyx` — array / dense-or-CSR** (`block_lanczos_array_cy`).
-  Operates on NumPy arrays / SciPy sparse operators; MPI parallelism is by row-block.
-  The hot path uses BLAS-3 (`zgemm`), so it is fastest for **small/dense sectors** and
-  for **block size `p > 1`** (the BLAS-3 speedup grows with `p`). Use this when the
-  sector matrix is small enough to form, e.g. the Green's-function continued fraction
-  and CIPSI reference solves.
+- **`ManyBodyState` blocks** — sparse / hash-distributed.
+  Operates on `ManyBodyState`/`ManyBodyOperator`; the Hamiltonian matrix is **never formed**;
+  determinants are distributed by `hash(sd) % size`. Krylov store: `SparseKrylovDense`.
+  Use for a large Hilbert space.
+- **`ndarray` blocks** — array. Operates on
+  ndarrays and a `DistributedSparseMatrix` (or a dense matrix, coerced at the entry);
+  parallelism is by row block. Krylov store: `DenseKrylovStore`. BLAS-3 throughout, so it is
+  fastest for small/dense sectors and for block size `p > 1`.
 
-Rule of thumb: **array kernel for small/dense, BLAS-friendly sectors; sparse kernel
-when the matrix cannot be formed.** Both are driven through the same `Reort` modes and
-the same TRLM/IRLM drivers, so switching is a matter of the input type.
+Reorthogonalization is the boolean `reort`: `False` (Green's functions) or `True` (ground state, TRLM,
+`KrylovShiftedResolvent`). The partial/selective/periodic modes, IRLM, the scipy ARPACK
+fallback and the Chebyshev filter were deleted; `doc/lanczos_invariants.md` keeps the
+invariants that survive and marks the historical sections.
 
-The IRLM/TRLM restart logic lives in the Python modules `ed/trlm.py` and
-`ed/irlm.py` (`_trlm_core`, `_irlm_core`, locking, purging, result assembly);
-`BlockLanczos.pyx` re-exports them, not the other way round. The shared EA16
-numerics (residual norms, acceptance tolerances, restart compression,
-locked-overlap recurrence) live in `ed/ea16.py`, which the Cython kernels also
-import at runtime. What stays compiled is the per-step recurrence itself
-(`_lanczos_step.pxi`) and the block primitives.
+**`DistributedSparseMatrix.pyx`** is the one sparse-matrix type (`apply`, `exchange_plan`,
+`from_scipy`/`from_dense`/`coerce`, `toarray`, `to_scipy`): column-distributed CSC segments
+with a graph (`Neighbor_alltoallv`) exchange. `comm.size == 1` is the self slot of the same code.
+
+The restart logic (thick restart, locking, energy-window mode, result assembly) lives in `ed/trlm.py`
+(`trlm`), on distributed dense blocks only.
 
 ### Block orthonormalization: `TSQR.pyx`
 
 Every block-Krylov routine — both Lanczos kernels, the starting/restart block
-normalizations, the IRLM restart block, `block_bicgstab` and `block_gmres` — factors its
+normalizations, the TRLM restart block, `block_bicgstab` and `block_gmres` — factors its
 tall-skinny block through one leaf module, `TSQR.pyx` (`impurityModel.ed.TSQR`). It computes
 the triangular factor from the block itself (LAPACK `zgeqrf` over local row panels, a Givens
 sweep over flat packed triangles to merge them, one `Allgather` to combine the ranks) and
@@ -86,40 +85,24 @@ then forms `Q = A R^{-1}` by back substitution, instead of going through the Gra
   invariant subspace), `k == -1` (non-finite factor — a *corrupted* recurrence, not a closed
   one).
 - `TSQR.pyx` owns `EPS`, `DEFLATE_TOL`, `DEFLATE_EVAL_TOL` and `BREAKDOWN_TOL`;
-  `BlockLanczosCore` imports them directly (so does `BlockLanczosArray`, independently —
-  both are leaf-importers of `TSQR`, no cycle either way), and `BlockLanczosArray` /
-  `BlockLanczos` re-export the ones their callers read from them.
+  `BlockLanczosCore` imports them directly and `BlockLanczosArray` / `BlockLanczos` re-export the ones their callers read from them.
 - `block_tsqr` (in `BlockLanczosCore.pyx`'s `_block_ops.pxi`) is the
   representation-dispatching entry point, so array, single-`ManyBodyState` and
   `list[ManyBodyState]` callers all run the same factorization.
 
-`_cholesky_or_deflate` / `_cholesky_qr2` remain in `BlockLanczosArray.pyx` (next to the array
-kernel's other private helpers) as the reference implementation the CholeskyQR2-era regression
-tests are written against; no production path calls them. See `doc/lanczos_invariants.md`
-("deflation vs breakdown scales") for the derivation their docstrings used to carry.
 
 ### File organization (`.pxi` includes)
 
-The three large kernels are split into `.pxi` textual includes for readability (same
-compiled modules; `setup.py` lists them in each Extension's `depends=` so edits trigger a
-recompile). Each `.pxi` opens with a reading-map header:
+The large kernels are split into `.pxi` textual includes for readability (same compiled
+modules; `setup.py` lists them in each Extension's `depends=` so edits trigger a recompile):
 
-- `BlockLanczos.pyx` = `_lanczos_step.pxi` (core recurrence) plus re-exports of the
-  restart layer, which is Python: `ed/trlm.py` (thick-restart) and `ed/irlm.py`
-  (implicitly-restarted / EA16). Imports the shared layer from
-  `BlockLanczosCore.pyx`; no local block-primitive `.pxi`.
-- `BlockLanczosCore.pyx` = the shared layer (`Reort`, tolerances, `estimate_orthonormality`,
-  the block-tridiagonal eigensolvers) + `_block_ops.pxi` (the representation-dispatching
-  block primitives + `selective_orthogonalize`/`apply_reort`; renamed from `_reort.pxi`
-  when it moved out of `BlockLanczosArray.pyx`). `TSQR` is its only upstream dependency;
-  it never imports from `BlockLanczosArray` or `BlockLanczos`.
-- `ManyBodyUtils.pyx` = `_slater_state.pxi` (`SlaterDeterminant`) + `_operator.pxi`
-  (`ManyBodyOperator`) + `_mpi_pack.pxi` + `_krylov_store.pxi` (`SparseKrylovDense`) +
-  `_block_state.pxi` (`ManyBodyState`).
-- `BlockLanczosArray.pyx` keeps the array kernel (`block_lanczos_array_cy` and its private
-  BLAS-3 helpers) plus `_cholesky_or_deflate`/`_cholesky_qr2` (the superseded reference
-  implementation); imports the shared layer from `BlockLanczosCore.pyx`, no local
-  block-primitive `.pxi` of its own any more.
+- `BlockLanczosCore.pyx` = tolerances, `Reort`, the block-tridiagonal eigensolvers +
+  `_block_ops.pxi` (representation-dispatching block primitives, `DenseKrylovStore`) +
+  `_lanczos_step.pxi` (`lanczos_step`, `_lanczos_loop`, the two front ends). `TSQR` is its only
+  upstream dependency.
+- `BlockLanczos.pyx` / `BlockLanczosArray.pyx` = thin re-export modules.
+- `ManyBodyUtils.pyx` = `_slater_state.pxi` + `_operator.pxi` + `_mpi_pack.pxi` +
+  `_krylov_store.pxi` (`SparseKrylovDense`) + `_block_state.pxi` (`ManyBodyState`).
 
 ## Python Codebase (`src/impurityModel/ed/`)
 
@@ -130,15 +113,15 @@ CLIs sit strictly on top. **Physics/operator-algebra modules never import solver
 Layer 0: average, utils, config, polarization, product_state_representation, op_parser,
          h0_format, mpi_comm, solver_trace, dc_record, ManyBodyUtils (Cython)
 Layer 1: operator_algebra, dc_search
-Layer 2: atomic_physics, eigensolvers, lie_algebra, symmetries, block_structure,
+Layer 2: atomic_physics, lie_algebra, symmetries, block_structure,
          transition_operators
 Layer 3: observables, spin_pairs, dc_reference
 Layer 4: manybody_basis (+ basis_generation, basis_restrictions,
          basis_transcription, basis_split), solver_basis
 Layer 5: gf_primitives, gf_convergence, gf_shift_recycling, gf_units, gf_solvers,
          greens_function, spectra, rixs,
-         cg, cipsi_solver, groundstate, hartree_fock, hamiltonian_io, gf_diagnostics,
-         gs_statistics, dc_static, dc_criteria, dc_frozen, sigma, model
+         cg, trlm, eigensolvers, cipsi_budget, cipsi_solver, gs_report, groundstate, hartree_fock, hamiltonian_io, gf_diagnostics,
+         gs_statistics, dc_static, dc_criteria, sigma, model
 Layer 6: drivers: get_spectra, selfenergy, susceptibility
 Layer 7: CLIs: scripts/cli (umbrella), scripts/{spectra,selfenergy,susceptibility},
          scripts/{plot_spectra,plot_RIXS}; entry points impurityModel / python -m impurityModel
@@ -157,11 +140,11 @@ and is what both the CLIs and embedded callers (the RSPt interface) build to pas
 - **`product_state_representation.py`** — conversions between bit/bytes/tuple/string encodings of product states.
 - **`op_parser.py`** — parsing of operator files for the CLIs.
 - **`mpi_comm.py`** — the MPI communication primitives: sparse graph-alltoall of determinants and states, chunked broadcast/allgather of dicts, task partitioning (`get_job_tasks`); `MatvecExchangePlan`, the sparse reduce-scatter the array-path matvec kernels run under `GS_MATVEC_EXCHANGE=graph` (neighbourhood read from the CSR row pointers, one `Neighbor_alltoallv` per column round, fixed-order accumulation).
-- **`solver_trace.py`** — opt-in accounting of where a solve spends its wall clock: `tracing()` opens a collection block, `timed(kind)` / `note(kind)` record events, `labelled(**fields)` tags everything recorded underneath (which is how a sector solve three frames deep knows which trial `mu` it belongs to). Imports nothing from the package, so any layer may write into it — `groundstate.calc_energy` records the build/expand/eigensolve split of one sector solve, `dc_criteria` records one `dc_evaluation` per trial shift. Every hook is a single `is None` test when no block is open, so the production path pays nothing. Kinds **nest**, so summing across them double-counts. Traces are rank-local and issue no collective; a caller wanting a cross-rank comparison reduces the count itself, having first broadcast the decision to trace.
+- **`solver_trace.py`** — opt-in accounting of where a solve spends its wall clock: `tracing()` opens a collection block, `timed(kind)` / `note(kind)` record events, `labelled(**fields)` tags everything recorded underneath (which is how a sector solve three frames deep knows which trial `mu` it belongs to). Imports nothing from the package, so any layer may write into it — `groundstate.solve_sector` records the build/expand/eigensolve split of one sector solve, `dc_criteria` records one `dc_evaluation` per trial shift. Every hook is a single `is None` test when no block is open, so the production path pays nothing. Kinds **nest**, so summing across them double-counts. Traces are rank-local and issue no collective; a caller wanting a cross-rank comparison reduces the count itself, having first broadcast the decision to trace.
 - **`polarization.py`** — numpy-only polarization vectors and tensor contractions (`contract_spectra_tensor`, `contract_rixs_tensor`, dichroism/isotropic helpers) that turn the tensor quantities `spectra.py` computes into polarization-resolved intensities; used both by `spectra.py`'s projector code paths and by the `plot_spectra`/`plot_RIXS` CLIs as a post-processing step, so no MPI or solver imports.
 - **`operator_algebra.py`** — algebra on second-quantized operator dicts (`addOps`, `daggerOp`, `combineOp`, …) and the `(l, s, m)` label ↔ flat-index conversions (`c2i`, `i2c`). These serve the *pre-conversion* path only: operators keyed by `(l, s, m)` labels cannot be `ManyBodyOperator`s, which need integer orbital indices. Once an operator is integer-indexed, use the `ManyBodyOperator` algebra instead. Note `combineOp` is a single-particle *matrix* product, not `ManyBodyOperator.__mul__`.
 - **`atomic_physics.py`** — single-shell atomic physics: Slater–Condon Coulomb integrals (`getU*`), spin-orbit coupling (`getSOCop`), Zeeman field (`gethHfieldop`), spherical↔cubic transforms, the MLFT double-counting correction (`dc_MLFT`), and the average Coulomb repulsion/exchange extractor (`uj_from_u4`) the `dc_static` FLL/AMF schemes derive `U`/`J` from.
-- **`eigensolvers.py`** — eigensolver drivers for the low-energy spectrum: dense (`numpy.linalg.eigh`) and ARPACK (`scipy.sparse.linalg.eigsh`), behind the `eigensystem` driver and the MPI-aware `HermitianOperator` wrapper. No connection to the Block Lanczos stack.
+- **`eigensolvers.py`** — the low-energy spectrum, requested as one of two manifolds: `Lowest` (one converged pair, no claim about degeneracy: `solve_lowest`; the occupation walk and every double-counting sector energy) or `Within(max_energy)` (`Within.thermal(tau)`; the production thermal ground state). `solve_window` (every eigenstate within an energy window, certified complete, from window-mode TRLM; the degeneracy need not be known beforehand) above `dense_cutoff`, and the dense `eigensystem` driver below it.
 - **`lie_algebra.py`** — the *algebraic half* of the symmetry machinery: tensor extraction/rotation (`extract_tensors`, `rotate_hamiltonian`), one-body symmetry discovery (the single-particle commutant null space), the Cartan reduction and joint diagonalization, and the reconstructed-Casimir observables. Depends only on `ManyBodyUtils`; `symmetries.py` builds its conserved charges and rotations on top of it.
 - **`symmetries.py`** — the consumer half built on `lie_algebra`: conserved-charge classification, occupation-window restrictions (`S_z`-weighted and frozen-shell flavors), impurity/bath occupation classification, and the impurity/Green's-function block structures used to deduplicate and sectorize GF/RIXS solves. Re-exports the `lie_algebra` primitives for backward compatibility.
 - **`block_structure.py`** — the `BlockStructure` type: detection of identical/transposed/particle-hole-related orbital blocks and matrix↔block conversions.
@@ -178,15 +161,16 @@ and is what both the CLIs and embedded callers (the RSPt interface) build to pas
 - **`manybody_basis.py`** — the `Basis` class: the distributed set of Slater determinants and its MPI bookkeeping. Storage/lookup (rank-local sorted determinant list, state → global-index dict, hash-routed distributed lookups), `redistribute_psis`, operator-driven `expand`, and lifecycle (`clone`, `copy`, `clear`, `free_comm`).
 - **`basis_generation.py`** — pure enumeration of the initial determinant basis from occupation windows. No MPI.
 - **`basis_restrictions.py`** — occupation-restriction construction: effective (observed) restrictions of the current basis, connectivity-derived ground-state restrictions, and widened restrictions for excited/spectral sectors. Contains collectives; call from all ranks.
-- **`basis_transcription.py`** — transcription between the distributed basis and dense/sparse linear algebra: wavefunction vectors (`build_vector`, `build_state`, …), operator matrices (`build_sparse_matrix`, `build_dense_matrix`), density matrices (`build_density_matrices`).
+- **`basis_transcription.py`** — transcription between the distributed basis and dense/sparse linear algebra: wavefunction vectors (`build_vector`, `build_state`, …), operator matrices (`build_sparse_matrix`, `build_dense_matrix`).
+- **`density_matrices.py`** — single-particle density matrices of many-body states. `build_density_matrices` routes `(d-k, k, amplitude)` entries to the owner of the (N-1)-determinant in hash-bucket rounds and forms `rho = A^T conj(A)` from a sparse matrix per state (nothing dense over a union support); `occupations` is the communication-free diagonal `<n_i>`, used by the DC search and the restriction updates.
 - **`basis_split.py`** — adaptive splitting of a `Basis` over MPI colors (`split_basis_and_redistribute_psi`) with the pure packing math in `_pack_units`; the distribution backbone of `gf_units.run_units_distributed`.
 - **`solver_basis.py`** — `prepare_solver_basis`: assembles the interacting Hamiltonian `h0 - dc + U(u4)`, adaptively rotates into the impurity-diagonalising basis when that does not densify the Coulomb tensor, and derives the bath valence/conduction split, GF block structure, and per-group impurity orbital grouping/occupation from it (`SolverBasis`). Also `get_symmetry_generators`, the one-body symmetry discovery `cipsi_solver.expand` falls back to when not given generators explicitly. Imports only `symmetries` + `ManyBodyUtils`, so it sits below every one of its callers (`groundstate`, `cipsi_solver`, `dc_criteria` in Layer 5; `selfenergy`, `susceptibility` in Layer 6) rather than being reached through any of them. Split out of `selfenergy.py` (which keeps a re-export shim for its old private names).
 
 ### Solvers and spectra (Layer 5)
-- **`groundstate.py`** — the ground-state driver `calc_gs`: builds the variational basis (CIPSI + Hartree-Fock occupation seeding), solves for the low-energy states, and reports observables.
-- **`cipsi_solver.py`** — selected-CI (CIPSI) iterative basis expansion.
+- **`groundstate.py`** — the ground-state driver `calc_gs`/`solve_ground_state`: `solve_sector` (the one sector body, for a `Lowest` or `Within` manifold), the occupation walk `find_ground_state_sector` (Hartree-Fock seeding; every trial is a `Lowest` solve through `calc_energy`, and it keeps floats only), then the thermal manifold: the winning sector solved afresh from its seed basis for `Within.thermal(tau)`. Observables and the printed report live in **`gs_report.py`**.
+- **`cipsi_solver.py`** — selected-CI (CIPSI) iterative basis expansion; **`cipsi_budget.py`** holds its memory guard and fixed-budget refinement (`MemoryGuard`, `CapRefiner`).
 - **`hartree_fock.py`** — mean-field occupation seeding for the basis generation.
-- **`gf_primitives.py`** — the GF building blocks the kernels share (it imports no GF sibling): QR/state-vector plumbing (`build_qr`, `_distributed_seed_qr`), the block-tridiagonal continued fraction (`calc_G`, `_block_cf_inverse`, `calc_thermally_averaged_G`), the `SupportPolicy` (formerly `_CappedBasisProxy`/`_PrunedBasisProxy`; the one place that decides which determinants may carry amplitude, via `admit_seed`/`transport`/`decide`, see `doc/gf_support_pipeline.md`; it caps at `truncation_threshold`, optionally prunes by importance, and runs the support freeze it runs for `block_Green_sparse`, `GF_SUPPORT_FREEZE`: per step it weighs the weight reaching new determinants against what `slaterWeightMin` cut, gathered and summed in rank order so every rank decides alike), and the frozen-support pieces: `FrozenColumnMatvec` (the `P H P` column operator's matvec, its exchange plan held only inside `session()`), `block_to_local_dense`/`local_dense_to_block` (a block's rows on a frozen basis and back) and `boundary_residual` (what a frozen solve left outside `P` above the cutoff, broadcast so every rank compares the same bits). Imports nothing from the other two below or from `greens_function`.
+- **`gf_primitives.py`** — the GF building blocks the kernels share (it imports no GF sibling): QR/state-vector plumbing (`build_qr`, `_distributed_seed_qr`), the block-tridiagonal continued fraction (`calc_G`, `_block_cf_inverse`, `calc_thermally_averaged_G`), the `SupportPolicy` (formerly `_CappedBasisProxy`/`_PrunedBasisProxy`; the one place that decides which determinants may carry amplitude, via `admit_seed`/`transport`/`decide`, see `doc/gf_support_pipeline.md`; it caps at `truncation_threshold`, optionally prunes by importance, and runs the support freeze it runs for `block_Green_sparse`, the support freeze: per step it weighs the weight reaching new determinants against what `slaterWeightMin` cut, gathered and summed in rank order so every rank decides alike), and the frozen-support pieces: `FrozenColumnMatvec` (the `P H P` column operator's matvec, its exchange plan held only inside `session()`), `block_to_local_dense`/`local_dense_to_block` (a block's rows on a frozen basis and back) and `boundary_residual` (what a frozen solve left outside `P` above the cutoff, broadcast so every rank compares the same bits). Imports nothing from the other two below or from `greens_function`.
 - **`gf_convergence.py`** — the runtime block-Lanczos convergence monitor (`_make_gf_convergence_monitor`) and its post-hoc counterpart (`_lanczos_convergence_summary`), plus the shared frequency-mesh helpers. Depends only on `gf_primitives`.
 - **`gf_shift_recycling.py`** — `SectorResolventCache` (dense spectral cache over a closed H-sector) and `KrylovShiftedResolvent` (one distributed block-Lanczos recurrence serving every shift of a fixed right-hand side): the two tiers ahead of the per-point BiCGSTAB/GMRES fallback in the RIXS R1 solver chain. Depends only on `gf_primitives`.
 - **`gf_units.py`** — the GF *distribution engine*: enumerate the independent GF work units a spectrum needs (`enumerate_gf_units`, `GFUnit`), weight their relative cost (`unit_cost_weights`), and drive them across a color-split communicator with per-unit basis rebuild + seed redistribution (`run_units_distributed`). Depends on `gf_primitives`, `memory_estimate`, `basis_split`; does not import the resolvent kernels.
@@ -194,14 +178,12 @@ and is what both the CLIs and embedded callers (the RSPt interface) build to pas
 - **`greens_function.py`** — interacting Green's functions via block Lanczos continued fractions: the top-level drivers (`get_Greens_function`, `calc_Greens_function_with_offdiag`, the bicgstab/sliced routers) and assembly (`build_full_greens_function`, `save_Greens_function`), built on the `gf_units` distribution engine and the `gf_solvers` kernels. Still re-exports the `gf_primitives`/`gf_convergence`/`gf_shift_recycling` symbols that other modules/tests reach via `greens_function.X` / `gf.X`.
 - **`spectra.py`** — the `simulate_spectra` orchestrator and the XAS/XPS/PS/NIXS drivers on top of `greens_function`. PS/XPS/NIXS and the projector-driven XAS path return per-operator spectra directly; the default (unprojected) XAS path returns the polarization *tensor* (`calc_spectra_tensor`) rather than a polarization-contracted spectrum -- `simulate_spectra` stores the tensor as-is (`spectra.h5`: `XAS/tensor`), and `polarization.py` contracts it with concrete polarizations as a cheap post-processing step. Re-exports `rixs.calc_map`/`calc_tensor_map` so `simulate_spectra` and existing `spectra.getRIXSmap_*` callers reach them unchanged.
 - **`rixs.py`** — the RIXS (resonant inelastic x-ray scattering) map half, split out of `spectra.py`: incoming-energy work-unit sizing, the greedy adaptive incoming-energy sampler, the per-tier R1 solver chain (`_R1SolverChain`), the flat-unit distribution driver `_rixs_map_flat`, and the two public drivers `calc_map` (per-polarization) / `calc_tensor_map` (Kramers-Heisenberg tensor stored under `spectra.h5:RIXS/tensor`). Sits on `greens_function` like `spectra.py`.
-- **`cg.py`** — block BiCGSTAB solver (used by the RIXS tensor path).
 - **`gf_diagnostics.py`** — convergence/consistency diagnostics for computed Green's functions.
 - **`gs_statistics.py`** — ground-state statistics computation, printing, and saving.
 - **`hamiltonian_io.py`** — construction and file I/O of the **labelled** `(l,s,m)`/`(l,b)` impurity Hamiltonian: readers for the pickled operator dict, the `.dat` operator-*term list* (via `op_parser`; it is not a dense matrix) and the `.json` crystal-field parameters, plus the builders combining h0 with SOC, magnetic field, Coulomb, and double counting. The flat single-index `.h0` interchange format is read by `h0_format.py` and relabelled into `(l,s,m)`/`(l,b)` here (`flat_h0_to_labelled`) -- valid only when the header guarantees `basis: "spherical"` and `spin_ordering: "down_first"` (each checked, each raises otherwise), because `i2c` on a single-shell `nBaths` dict is the exact inverse of the flat layout precisely under those two guarantees.
 - **`h0_format.py`** — reader/writer for the `.h0` format written by `rspt2spectra`'s `build_h0` (spec: `doc/h0_file_format.md`): a JSON header plus flat `i j re im` terms, with the impurity block first. Flat single-particle indices, *not* the `(l,s,m)` labels `hamiltonian_io` reads and `c2i` remaps — the two orderings differ, so reading one as the other is silently wrong rather than an error; `hamiltonian_io.flat_h0_to_labelled` is the one sanctioned crossing, gated on the header. numpy + stdlib only, no MPI, so the reader is rank-invariant by construction. `model.load_model` is the single dispatch point over both families, for all three drivers (`spectra` included, via `ImpurityModel.from_shells`).
 - **`dc_static.py`** — the closed-form schemes, each evaluated at `dc_reference`'s filling unless the caller supplies one: `fll_dc` (Fully Localized Limit), `amf_dc` (Around Mean Field), `sigma_inf_dc` (K. Held's `Sigma(infinity)`, the full static Hartree-Fock self-energy matrix at the actual density matrix, `sigma.get_Sigma_static`) and `nominal_dc` (FLL at the nominal integer occupation, which cannot inherit the reference filling's bath-discretization sensitivity). No ED solve and no MPI collective. Each emits a `dc_record` block of its own, `status = closed_form`; `nominal_dc` reuses FLL's formula through a private helper precisely so it emits *one* record, naming itself. `atomic_physics.uj_from_u4` derives the average Coulomb repulsion/exchange FLL and AMF need from `model.u4`.
-- **`dc_criteria.py`** — the ED-based criteria built on that search: `fixed_peak_dc` pins a spectral peak (the sector-energy difference `E[N+1] - E[N]`, or `E[N] - E[N-1]` for a removal peak), `fixed_gap_dc` pins the midpoint of the two, `(E[N+1] - E[N-1])/2`, after Karolak et al. (arXiv:1004.4569), where the occupation criterion is flat and so determines nothing — note those are *total-cluster* charge sectors with no impurity projection, so the edges can be bath levels; the record's `delta_sum` reports how much of the transferred charge actually reached the impurity and warns when it is small; `fixed_occupation_dc` pins the impurity occupation, and with no explicit target pins it to `dc_reference`'s DFT occupation -- the criterion for CSC DFT+DMFT of wide-window p-d models, where only the d electrons enter the ED solve but the p electrons sit inside the DFT window. The peak and gap criteria share `_SectorContext`, so the setup, the centre-sector walk and the fixed-sector solves have one definition between them. At every trial shift all three determine the ground-state sector the *identical* way `groundstate.calc_gs` does (`find_ground_state_basis`'s HF-seed-then-walk search, not a search pinned at the input occupation): a dc measured on a different sector than the one `calc_selfenergy` later finds locks the downstream calculation onto the wrong charge state, which is worse than not fixing anything. Memory-limited like `calc_selfenergy`/`find_ground_state_basis` -- a `None` `truncation_threshold` derives the determinant cap from available per-rank memory through the same resolver every driver uses (`memory_estimate.resolve_cap_policy`, ground-state-only sizing at the same safety fraction `calc_gs` uses: the three sector solves are sequential, so the live peak is the centre walk's own `SectorCache` — halving it, as the peak and gap criteria once did, measured the double counting on half the budget the self-energy run would use at that same `dc`) -- and both honor `BasisOptions.excitation_budget`/`chain_restrict` via `basis_restrictions.build_weighted_restrictions`, so the double counting is found on the same variational space the production solve uses. Also `build_union_space`: constructs the growth-only, state-averaged `FrozenSpaceSweep` a seeded search brackets on, widening the occupation window to `sector_radius` and expanding once per bracket-end `mu` so the frozen space spans every candidate charge sector rather than whichever one a single solve happened to reach. Its only caller today is `test_dc_frozen.py`; the seeded search itself is not on the default path (`DC_SEEDED_SEARCH`, default off).
-- **`dc_frozen.py`** — `FrozenSpaceSweep`: `energy(mu)` / `occupation(mu)` / `chi(mu)` over a *fixed* determinant space, built from a basis and operator handed to it -- it does not construct one itself (`dc_criteria.build_union_space` does that, and depends on `dc_frozen` rather than the reverse, so this module imports no `dc_*` sibling). Because the double counting is a uniform impurity shift, `H(mu) = H(0) - mu*N_imp` with `N_imp` **diagonal**, so the whole family is one matrix build plus a diagonal shift — the CIPSI expansion, 96.5% of a real DC search, is skipped entirely. Measured on NiO-20 at cap 400: a true re-expanding evaluation 3.41 s, one frozen solve **0.003 s** (0.08%, ~1240x). That is what makes `chi = dn/dmu` affordable, and `chi` is what turns an occupation residual into the error on the answer (`delta_mu = delta_n / chi`; on a plateau `chi -> 0` and `dc` is unbounded). On a frozen space the theory is exact — `E_0(mu)` is a min of affine functions, hence concave, with `n(mu)` non-decreasing, and on a *pure* sector the shift is affine to machine precision — none of which holds for the re-expanding observable, which is why the production search assumes no monotonicity. The frozen space is a cheap *model* of the answer, not the answer: it bounds the reachable occupation by its own charge window (`occupation_is_interior` reports that), so a root located here must be confirmed against the true observable. Solves route through `CIPSISolver.get_eigenvectors(h_matrix=...)` rather than around it, so the warm-start cold-retry guard still applies.
+- **`dc_criteria.py`** — the ED-based criteria built on that search: `fixed_peak_dc` pins a spectral peak (the sector-energy difference `E[N+1] - E[N]`, or `E[N] - E[N-1]` for a removal peak), `fixed_gap_dc` pins the midpoint of the two, `(E[N+1] - E[N-1])/2`, after Karolak et al. (arXiv:1004.4569), where the occupation criterion is flat and so determines nothing — note those are *total-cluster* charge sectors with no impurity projection, so the edges can be bath levels; the record's `delta_sum` reports how much of the transferred charge actually reached the impurity and warns when it is small; `fixed_occupation_dc` pins the impurity occupation, and with no explicit target pins it to `dc_reference`'s DFT occupation -- the criterion for CSC DFT+DMFT of wide-window p-d models, where only the d electrons enter the ED solve but the p electrons sit inside the DFT window. The peak and gap criteria share `_SectorContext`, so the setup, the centre-sector walk and the fixed-sector solves have one definition between them. At every trial shift all three determine the ground-state sector the *identical* way `groundstate.calc_gs` does (`find_ground_state_basis`'s HF-seed-then-walk search, not a search pinned at the input occupation): a dc measured on a different sector than the one `calc_selfenergy` later finds locks the downstream calculation onto the wrong charge state, which is worse than not fixing anything. Memory-limited like `calc_selfenergy`/`find_ground_state_basis` -- a `None` `truncation_threshold` derives the determinant cap from available per-rank memory through the same resolver every driver uses (`memory_estimate.resolve_cap_policy`, ground-state-only sizing at the same safety fraction `calc_gs` uses: the three sector solves are sequential, so the live peak is the centre walk's own `SectorCache` — halving it, as the peak and gap criteria once did, measured the double counting on half the budget the self-energy run would use at that same `dc`) -- and both honor `BasisOptions.excitation_budget`/`chain_restrict` via `basis_restrictions.build_weighted_restrictions`, so the double counting is found on the same variational space the production solve uses.
 - **`sigma.py`** — self-energy extraction downstream of `G`: the static (Hartree-Fock) and dynamic self-energies (`get_sigma`, `get_Sigma_static`), the hybridization function (`hyb`), the correlated/bath splitting (`get_hcorr_v_hbath`), and the physicality check (`check_greens_function`, `UnphysicalGreensFunctionError`). Split out of `selfenergy.py`.
 
 ### Drivers (Layer 6)
@@ -226,7 +208,7 @@ callers) invoke with an `ImpurityModel` + option groups.
 - **MPI tests** are marked `@pytest.mark.mpi`; `conftest.py` redirects non-root-rank output to `.pytest_mpi_rank*.out`, adds a per-test watchdog, and synchronizes teardown. Never name a test subdirectory `mpi` (or any other registered marker name) — pytest folds every path component into `item.keywords`, and pytest-mpi's skip check (`MPIMarkerEnum.mpi in item.keywords`) then matches unmarked tests too; the MPI-comm-plumbing group lives in `mpi_infra/` for this reason.
 - **Benchmarks** are marked `benchmark` and skipped by default; run with `pytest -m benchmark`.
 - **Layout:** grouped by topic under subpackages, each with `__init__.py`: `lanczos/`
-  (block-Lanczos recurrence, TRLM/IRLM restart+locking, TSQR, reorthogonalization,
+  (block-Lanczos recurrence, TRLM restart+locking, TSQR, reorthogonalization,
   Krylov storage, deflation), `linear_solvers/` (CG/BiCGSTAB/GMRES), `gf/` (Green's
   functions, self-energy, susceptibility), `spectra/` (XAS/RIXS/polarization),
   `basis/` (ManyBodyState/basis representation), `operators/` (operator algebra,

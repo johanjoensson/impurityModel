@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.BlockLanczosArray import _cholesky_or_deflate, block_tsqr
+from impurityModel.ed.BlockLanczosArray import block_tsqr
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
 from impurityModel.ed.TSQR import (
     BREAKDOWN_TOL,
@@ -190,13 +190,13 @@ def test_tsqr_does_not_modify_its_input():
 
 
 @pytest.mark.parametrize("kappa", [1e2, 1e4, 1e5])
-def test_tsqr_beats_cholesky_qr_on_ill_conditioned_blocks(kappa):
+def test_tsqr_is_orthonormal_on_ill_conditioned_blocks(kappa):
     """The reason for the change.
 
     ``DEFLATE_TOL`` retains every direction down to ``kappa = DEFLATE_TOL**-1`` (~2.7e10 --
     see the comment next to ``DEFLATE_TOL`` in ``TSQR.pyx``), so these blocks are all *kept*,
     not deflated. A single Cholesky-QR of such a block leaves an orthonormality error of
-    order ``kappa**2 * EPS`` — which is why the second CholeskyQR2 pass had to exist. TSQR's
+    order ``kappa**2 * EPS`` (which is why Cholesky-QR needed a second pass). TSQR's
     back substitution is at machine precision without it.
     """
     A = _conditioned_block(400, 4, kappa, seed=int(np.log10(kappa)))
@@ -205,22 +205,6 @@ def test_tsqr_beats_cholesky_qr_on_ill_conditioned_blocks(kappa):
     np.testing.assert_allclose(A, Q @ beta, atol=1e-13 * np.linalg.norm(A))
     orth_tsqr = np.linalg.norm(Q.conj().T @ Q - np.eye(k))
     assert orth_tsqr < inner_atol(Q.shape[0], 1.0)
-
-    _beta_c, beta_inv, k_c = _cholesky_or_deflate(A.conj().T @ A, 4)
-    assert k_c == k
-    Qc = A @ beta_inv
-    orth_chol = np.linalg.norm(Qc.conj().T @ Qc - np.eye(k_c))
-    # This is the regression this test exists to catch: TSQR must not be *worse* than a
-    # single Cholesky-QR pass on an ill-conditioned block. There used to also be an
-    # "orth_chol > sqrt(EPS)" claim at kappa>=1e5 (Cholesky is already unsafe here) -- but
-    # that asserted a *lower* bound on a rounding error, and kappa**2*EPS (this docstring's
-    # own justification) is only an *upper* bound: an anomalously small realized error is
-    # not a defect, it's what an upper bound permits. On real CI that assertion failed with
-    # an identical orth_chol value (4.7602162465941165e-09) across three different
-    # compilers (clang, gcc, intel) on two separate days -- a value fixed by the runner's
-    # BLAS build, not noise a bigger kappa would dodge. Dropped rather than "fixed" by
-    # raising kappa, since no kappa makes a lower bound on rounding error theoretically sound.
-    assert orth_tsqr <= orth_chol
 
 
 def test_tsqr_of_singular_block_deflates():

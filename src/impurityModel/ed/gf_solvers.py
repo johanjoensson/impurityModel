@@ -19,16 +19,15 @@ from mpi4py import MPI
 from impurityModel.ed import basis_transcription, config
 from impurityModel.ed.basis_transcription import (
     build_dense_matrix,
-    build_local_column_operator,
     build_sparse_matrix,
     build_state,
     build_vector,
     iter_local_operator_images,
 )
-from impurityModel.ed.BlockLanczos import block_lanczos_cy
-from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array, resolve_reort
+from impurityModel.ed.BlockLanczosCore import block_lanczos
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
-from impurityModel.ed.cg import block_bicgstab
+from impurityModel.ed.BiCGSTAB import block_bicgstab
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.gf_admission import solve_point_outer
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
@@ -48,7 +47,7 @@ from impurityModel.ed.gf_primitives import (
     residual_split,
     resolvent_error_bound,
 )
-from impurityModel.ed.gmres import block_gmres
+from impurityModel.ed.GMRES import block_gmres
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_inner_cy
 from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes
 from impurityModel.ed.mpi_comm import matvec_column_chunk_width
@@ -160,21 +159,33 @@ _GF_ARRAY_DENSE_MAX = 500
 
 
 def _gf_reort(reort):
-    """Resolve the GF ``reort`` argument; ``None`` is ``Reort.NONE``.
+    """Resolve the GF ``reort`` argument to a bool; ``None`` is ``False`` (no reorthogonalization).
 
-    ``resolve_reort`` returns any non-string unchanged, so a float (which ``SolverOptions`` used
-    to document as allowed) reached the kernels untranslated, where no ``reort_mode ==`` branch
-    matches it (review ledger C8). Reject it here instead.
+    A float (which ``SolverOptions`` used to document as allowed) once reached the kernels
+    untranslated and silently matched no branch (review ledger C8): reject anything but a bool here.
     """
-    resolved = resolve_reort(reort if reort is not None else Reort.NONE)
-    if not isinstance(resolved, Reort):
-        raise TypeError(f"reort must be None, a Reort member or one of its names, got {reort!r}")
-    return resolved
+    if reort is None:
+        return False
+    if not isinstance(reort, (bool, np.bool_)):
+        raise TypeError(f"reort must be None or a bool, got {reort!r}")
+    return bool(reort)
 
 
 # A restart must shrink the reported residual by at least this factor to earn the next one, so
 # a genuinely stuck point stops early and is reported rather than looping.
 _GF_BICGSTAB_RESTART_PROGRESS = 0.5
+#: Test seams, not user knobs: the support freeze and the frozen-basis CSR fallback are always on. A test
+#: turns one off here (``test/support/gf_switches.py``) to exercise the plain sparse path they replace.
+_SUPPORT_FREEZE = True
+_FROZEN_CSR = True
+#: Restarts granted to a non-converged BiCGSTAB point (the current iterate warm-starts each) before the GMRES fallback.
+_GF_BICGSTAB_RESTARTS = 10
+#: Restart cycles GMRES gets before the point is reported as unconverged.
+_GF_GMRES_MAX_RESTARTS = 25
+#: Hard per-point BiCGSTAB iteration bound. Warm-started production solves measure ~3 iterations per point.
+_GF_BICGSTAB_MAX_ITER = 500
+#: Solutions retained for a point's warm start (Lagrange extrapolation in z through them).
+_GF_BICGSTAB_WARM_HISTORY = 3
 
 
 def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose, eval_meshes=None, info=None):
@@ -191,8 +202,8 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
         Input state vectors.
     delta : float or ndarray
         Imaginary part/mesh info.
-    reort : Reort
-        Reorthogonalization method.
+    reort : bool
+        Full reorthogonalization (the GF path passes ``False``).
     slaterWeightMin : float
         Slater determinant cutoff weight.
     verbose : bool
@@ -250,15 +261,15 @@ def block_green_impl(basis, hOp, psi_arr, delta, reort, slaterWeightMin, verbose
     alphas, betas, Q_list, widths = _array_block_lanczos(
         basis, hOp, psi_dense_local, dense, delta, resolved_reort, slaterWeightMin, eval_meshes, info
     )
-    probe = _expansion_probe_columns(Q_list, widths, tail_only=resolved_reort == Reort.NONE)
+    probe = _expansion_probe_columns(Q_list, widths, tail_only=not resolved_reort)
     return alphas, betas, r, build_state(basis, probe.T, slaterWeightMin=slaterWeightMin), widths
 
 
 def _array_operator(basis, hOp, dense):
-    """``(H, kernel_comm)`` for the array kernel on ``basis``: the dense sector matrix (serial), or this rank's
-    columns of the distributed ``P H P``."""
+    """``(H, kernel_comm)`` for the array kernel on ``basis``: the small sector's matrix gathered onto every
+    rank and held undistributed, or this rank's columns of the distributed ``P H P``."""
     if dense:
-        return build_dense_matrix(basis, hOp), None
+        return DistributedSparseMatrix.from_dense(build_dense_matrix(basis, hOp)), None
     # The (global_N, N_local) CSR goes to the kernel as-is, like the CIPSI ground state's:
     # `local_indices` is the rank-contiguous range `offset + arange(N_local)`, which is the
     # row layout the kernel's distributed matvec reduce-scatters into each rank's own rows.
@@ -267,10 +278,10 @@ def _array_operator(basis, hOp, dense):
     # "could not broadcast (970,9) into (273,9)" on every colour spanning two or more ranks
     # (review ledger M1; RIXS R3 at 128 ranks on the cluster).
     # Only this rank's columns are ever built, and kept as the build's column blocks
-    # (LocalColumnOperator): ~20 B per element instead of a CSR's ~50 at its peak, and no N + 1
+    # (DistributedSparseMatrix): ~20 B per element instead of a CSR's ~50 at its peak, and no N + 1
     # row pointer on every rank. The kernel multiplies by scattering columns (see
-    # BlockLanczosArray.pyx); _frozen_csr_fits budgets exactly this.
-    return build_local_column_operator(basis, hOp), basis.comm
+    # DistributedSparseMatrix.pyx); _frozen_csr_fits budgets exactly this.
+    return build_sparse_matrix(basis, hOp), basis.comm
 
 
 def _finish_array_run(alphas, betas, widths, status, converged_flag, delta_min, last_dg, info, rank):
@@ -350,12 +361,12 @@ def _array_block_lanczos(
         converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
             delta, slaterWeightMin, eval_meshes
         )
-        alphas, betas, Q_list, widths, status = block_lanczos_array(
+        alphas, betas, Q_list, widths, status = block_lanczos(
             psi0=psi_dense_local,
             h_op=H,
             converged=converged,
             reort=resolved_reort,
-            build_krylov_basis=resolved_reort != Reort.NONE,
+            store_krylov=resolved_reort,
             # The kernel's per-iteration print is off; the unit memory line reports instead.
             verbose=False,
             comm=kernel_comm,
@@ -402,17 +413,17 @@ def _expansion_probe_columns(Q, widths, *, tail_only):
 #: Local determinants whose ``H`` images estimate the frozen CSR's fan-out for the memory check.
 _CSR_FANOUT_SAMPLE = 256
 #: Upper bound on the bytes one stored matrix element of the frozen ``P H P`` costs, held as the
-#: build's column blocks (``LocalColumnOperator``: a 16 B value and a 4 B row). Measured by
+#: build's column blocks (``DistributedSparseMatrix``: a 16 B value and a 4 B row). Measured by
 #: ``test_the_column_operator_peak_stays_below_its_budget`` (20.5 B resident, 22.3 at the serial
 #: build's peak); a CSR cost ~50 at its peak.
 _CSR_BYTES_PER_ELEMENT = 24
 #: Upper bound on the bytes one element of a build batch holds before its lookup: the bra's key
 #: object plus its column and value. Measured ~104 on the distributed build.
 _CSR_BATCH_BYTES_PER_ELEMENT = 160
-#: Lanczos blocks of ``N_local x width`` the array kernel holds at once at reort 'none' (the
+#: Lanczos blocks of ``N_local x width`` the array kernel holds at once at reort off (the
 #: current and previous block, the product, the next block).
 _CSR_KERNEL_VECTORS = 4
-#: GF_SUPPORT_FREEZE's window: the blocks over which the weight reaching new rows is weighed against what the
+#: The support freeze's window: the blocks over which the weight reaching new rows is weighed against what the
 #: slaterWeightMin prunes dropped. Long enough to span a gap between the layered shells a support grows in.
 _SUPPORT_WINDOW = 16
 #: Floor of the frozen-basis recurrence's first block budget (the measured SrMnO3 units converged
@@ -612,7 +623,7 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
     So it continues here instead of restarting from the seeds (:func:`_frozen_csr_green`, which recomputes
     every pre-freeze block -- 573 of them on one SrMnO3 unit). At ``slaterWeightMin = 0`` the two agree to
     rounding; above it the pre-freeze coefficients carry the sparse kernel's cut, which the restart would
-    not. reort 'none' only: a two-block tail cannot continue a reorthogonalized recurrence.
+    not. reort off only: a two-block tail cannot continue a reorthogonalized recurrence.
 
     ``tail`` is the pair of dense blocks from :func:`_sparse_tail_to_local_dense`; ``monitor`` the sparse
     run's ``(converged, converged_flag, delta_min, last_dg)``, which goes on judging the same continued
@@ -630,16 +641,16 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
     n_dim = H.shape[0]
     budget = min(_csr_continue_budget(start), n_dim)
     while True:
-        alphas, betas, _, widths, status, tail = block_lanczos_array(
+        alphas, betas, _, widths, status, tail = block_lanczos(
             psi0=None,
             h_op=H,
             converged=converged,
-            reort=Reort.NONE,
-            build_krylov_basis=False,
+            reort=False,
+            store_krylov=False,
             verbose=False,
             comm=kernel_comm,
-            alphas=alphas,
-            betas=betas,
+            alphas_init=alphas,
+            betas_init=betas,
             tail=tail,
             block_widths_init=widths,
             max_iter=budget,
@@ -672,7 +683,7 @@ def block_Green_sparse(
     psi_arr,
     basis,
     delta,
-    reort: Optional[Reort] = None,
+    reort: Optional[bool] = None,
     slaterWeightMin=0,
     verbose=True,
     cap_info=None,
@@ -689,15 +700,15 @@ def block_Green_sparse(
     ``memory_budget``/``memory_policy`` switch on :class:`_CappedBasisProxy`'s measured memory
     guard (off by default; only meaningful with a finite cap).
 
-    **Frozen-basis CSR fallback** (``GF_FROZEN_CSR``, on by default): when the cap freezes the
+    **Frozen-basis CSR fallback**: when the cap freezes the
     support, the sparse recurrence stops at that step and carries on as an array-kernel SpMV on the
-    ``P H P`` CSR of the retained set -- from its last two blocks at reort 'none'
+    ``P H P`` CSR of the retained set -- from its last two blocks at reort off
     (:func:`_frozen_csr_continue`), else restarted from the seeds (:func:`_frozen_csr_green`) -- exact
     on ``P`` like the sparse kernel, without applying ``H`` to every retained row and discarding the
     image outside ``P``. Not taken for a CSR that would not fit the budget, or a ``krylov_dtype`` store.
     ``cap_info["csr_fallback"]`` says whether it ran. The same switch is taken when growing the
     support below the cap no longer buys more than the ``slaterWeightMin`` cut costs
-    (``GF_SUPPORT_FREEZE``, on by default; ``cap_info["support_frozen"]``, with the per-step weights
+    (on by default; ``cap_info["support_frozen"]``, with the per-step weights
     it decided on in ``cap_info["support_history"]``).
 
     ``basis.truncation_threshold`` caps the number of Slater determinants the
@@ -713,9 +724,7 @@ def block_Green_sparse(
     dominant allocation of a reorthogonalized run (``16 * p * n_blocks`` bytes per retained
     determinant, ~30x everything else at the FCC-Ni operating point). ``complex64`` halves
     it, at the cost of an orthogonality (and Green's function) floor at fp32 roundoff,
-    ~6e-8. It is **opt-in**, not the default, for two reasons: it is rejected outright by
-    ``PARTIAL``/``SELECTIVE``, whose Paige-Simon estimator steers to ``sqrt(EPS) ~ 1.5e-8``
-    and cannot be fed a basis known only to ~6e-8; and it would silently break the exactness
+    ~6e-8. It is **opt-in**, not the default, for two reasons: it would silently break the exactness
     guarantee that a capped recurrence reproduces the dense ``P H P`` resolvent (see
     ``test_gf_truncation``). Only the *stored* basis narrows -- the recurrence, the overlaps
     and the residual stay complex128. See ``doc/plans/blocklanczos_reort_memory.md``.
@@ -780,7 +789,7 @@ def block_Green_sparse(
     # which point the continued fraction is already exact on the space built so far. A round
     # returns fewer than `budget` new blocks exactly when the kernel stopped early; otherwise
     # it used the whole budget and there may be more spectrum to resolve, so we extend it.
-    alphas = betas = Q = W = widths = None
+    alphas = betas = Q = widths = None
     budget = max(int(getattr(basis, "size", 0)) // max(n, 1), 1)
     # Enforce the determinant cap on the recurrence: the proxy persists across the
     # resume rounds below, so the retained set (and a freeze) carries over.
@@ -818,25 +827,11 @@ def block_Green_sparse(
     resolved_reort = _gf_reort(reort)
     # The frozen-basis CSR fallback: hand control back at the freeze. A krylov_dtype store stays
     # on the sparse kernel (the array kernel keeps its Krylov basis in complex128).
-    # Rank 0 reads the knobs and broadcasts them, so a malformed value fails on rank 0 alone and every rank
-    # takes the same branch below (this bcast is unconditional, after every rank-invariant early return).
-    knobs = (
-        (
-            config.GF_FROZEN_CSR.get(),
-            config.GF_SUPPORT_FREEZE.get(),
-        )
-        if rank == 0
-        else None
-    )
-    if comm is not None:
-        knobs = comm.bcast(knobs, root=0)
-    assert knobs is not None  # rank 0 read them; every other rank has them from the broadcast
-    frozen_csr, support = knobs
-    csr_candidate = frozen_csr and krylov_dtype is None and getattr(lanczos_basis, "tracks_support", False)
+    csr_candidate = _FROZEN_CSR and krylov_dtype is None and getattr(lanczos_basis, "tracks_support", False)
     csr = None
 
     def _csr_green(frozen_basis, blocks_hint=0, stopped=None):
-        # `stopped` = the sparse run's (alphas, betas, widths, tail) at the freeze, passed at reort 'none'
+        # `stopped` = the sparse run's (alphas, betas, widths, tail) at the freeze, passed at reort off
         # only: the recurrence carries on from it. Otherwise (or with nothing built yet) it restarts from
         # the seeds, with a first budget of a few times `blocks_hint`.
         if stopped is not None and len(stopped[0]) > 0:
@@ -867,13 +862,13 @@ def block_Green_sparse(
             blocks_hint,
         )
 
-    # GF_SUPPORT_FREEZE: the proxy freezes the support itself, on the step its window decides, and the kernel
-    # hands control back there (stop_on_freeze). reort 'none' only: that is where the frozen recurrence
+    # The support freeze: the proxy freezes the support itself, on the step its window decides, and the kernel
+    # hands control back there (stop_on_freeze). reort off only: that is where the frozen recurrence
     # carries on from its tail, and a reorthogonalized one would recompute every block to drop weight.
     if (
-        support
+        _SUPPORT_FREEZE
         and csr_candidate
-        and resolved_reort == Reort.NONE
+        and not resolved_reort
         and getattr(lanczos_basis, "tracks_support", False)
         and not lanczos_basis.prunes
     ):
@@ -889,7 +884,7 @@ def block_Green_sparse(
             if frozen_basis is not None:
                 csr = _csr_green(frozen_basis)
     while csr is None:
-        alphas, betas, Q, W, widths, status = block_lanczos_cy(
+        alphas, betas, Q, widths, status = block_lanczos(
             psi_arr,
             hOp,
             lanczos_basis,
@@ -903,14 +898,13 @@ def block_Green_sparse(
             alphas_init=alphas,
             betas_init=betas,
             Q_init=Q,
-            W_init=W,
             block_widths_init=widths,
-            store_krylov=resolved_reort != Reort.NONE,
+            store_krylov=resolved_reort,
             krylov_dtype=krylov_dtype,
             # Transition-operator seed block: see DEFLATE_TOL_SEEDS in TSQR.pyx.
             deflate_tol=DEFLATE_TOL_SEEDS,
         )
-        # The kernel reports exactly why it stopped (see block_lanczos_cy):
+        # The kernel reports exactly why it stopped (see block_lanczos):
         #   * "converged"          -- the GF convergence monitor was satisfied.
         #   * "invariant_subspace" -- the block-Krylov space is closed under H (within the
         #                             excited-sector restrictions), so the continued fraction
@@ -932,11 +926,11 @@ def block_Green_sparse(
                 width=psi_arr.width,
             )
             if frozen_basis is not None:
-                # At reort 'none' the stopped state (its two-block tail) is where the CSR carries on from;
+                # At reort off the stopped state (its two-block tail) is where the CSR carries on from;
                 # otherwise it is only needed to resume a declined switch: release its Krylov store before
                 # the restart builds its own.
-                stopped = (alphas, betas, widths, Q) if resolved_reort == Reort.NONE else None
-                Q = W = None
+                stopped = (alphas, betas, widths, Q) if not resolved_reort else None
+                Q = None
                 csr = _csr_green(frozen_basis, len(alphas), stopped)
             elif lanczos_basis.support_frozen:
                 # A support freeze that buys no speed is not kept: carry on sparse and unfrozen, and still hand
@@ -1000,7 +994,7 @@ def block_Green_sparse(
 def _warm_start_extrapolation(zs, sols, z_new, n_cols):
     r"""Warm-start guess at ``z_new``: Lagrange extrapolation through the retained solutions.
 
-    ``zs``/``sols`` hold the last (up to :data:`config.GF_BICGSTAB_WARM_HISTORY`) frequencies and
+    ``zs``/``sols`` hold the last (up to :data:`_GF_BICGSTAB_WARM_HISTORY`) frequencies and
     solution blocks of the sweep, oldest first. Zero, one and two retained solutions give the
     cold start, the previous solution and linear extrapolation respectively; three gives the
     quadratic optimum. The coefficients sum to 1 (an extrapolation, not a fit), so a solution
@@ -1052,12 +1046,12 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
     r"""Restart-while-progressing BiCGSTAB, escalated to ``block_gmres`` on stagnation.
 
     Shared by every per-frequency resolvent solve on this branch (:func:`block_Green_bicgstab`,
-    the RIXS R1 fallback in ``rixs._rixs_map_flat``): runs up to ``1 + config.GF_BICGSTAB_RESTARTS``
-    :func:`~impurityModel.ed.cg.block_bicgstab` attempts, restarting with the current iterate as
+    the RIXS R1 fallback in ``rixs._rixs_map_flat``): runs up to ``1 + _GF_BICGSTAB_RESTARTS``
+    :func:`~impurityModel.ed.BiCGSTAB.block_bicgstab` attempts, restarting with the current iterate as
     long as each attempt still makes at least ``_GF_BICGSTAB_RESTART_PROGRESS`` progress over the
     previous residual (each restart re-deflates ``Y - A x0`` and picks a fresh shadow residual,
     which is what cures near-pole stagnation -- a plain re-solve from the same iterate would not).
-    If still unconverged after the restarts, escalates to :func:`~impurityModel.ed.gmres.block_gmres`,
+    If still unconverged after the restarts, escalates to :func:`~impurityModel.ed.GMRES.block_gmres`,
     warm-started from BiCGSTAB's last iterate, before that iterate can poison a warm-start chain
     downstream.
 
@@ -1098,7 +1092,7 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
     iterations = 0
     X = x0
     prev_residual = np.inf
-    for _attempt in range(1 + config.GF_BICGSTAB_RESTARTS.get()):
+    for _attempt in range(1 + _GF_BICGSTAB_RESTARTS):
         X = block_bicgstab(A_op, X, rhs, basis, slaterWeightMin, **bicgstab_kwargs)
         iterations += info["iterations"]
         if info["converged"] or info["rel_residual"] > _GF_BICGSTAB_RESTART_PROGRESS * prev_residual:
@@ -1116,7 +1110,7 @@ def solve_shifted_block(A_op, x0, rhs, basis, slaterWeightMin, atol, rtol=0.0, m
             slaterWeightMin,
             atol=atol,
             restart=config.GF_GMRES_RESTART.get(),
-            max_restarts=config.GF_GMRES_MAX_RESTARTS.get(),
+            max_restarts=_GF_GMRES_MAX_RESTARTS,
             info=info,
         )
         iterations += info["iterations"]
@@ -1163,7 +1157,7 @@ class _FrozenShiftedSystem:
         self.n_cols = int(n_cols)
         self.size = int(frozen_basis.size)
         self.comm = frozen_basis.comm
-        self.matvec = FrozenColumnMatvec(build_local_column_operator(frozen_basis, hOp), self.comm, self.n_cols)
+        self.matvec = FrozenColumnMatvec(build_sparse_matrix(frozen_basis, hOp), self.comm, self.n_cols)
         self.seeds = block_to_local_dense(frozen_basis, ManyBodyState.from_states(list(seeds)), self.n_cols)
         norms2 = np.sum(np.abs(self.seeds) ** 2, axis=0)
         if self.comm is not None:
@@ -1234,8 +1228,6 @@ def _freeze_bicgstab_support(tmp_basis, hOp, seeds, n_cols, verbose):
     copy of the support is dropped before the matrix is sized (and is not held next to the frozen
     basis's)."""
     comm = tmp_basis.comm
-    if not FrozenColumnMatvec.available(comm):
-        return None
     frozen_basis = tmp_basis.clone_from_keys(tmp_basis._keys)
     tmp_basis.clear()
     budget = getattr(tmp_basis, "gf_csr_memory_budget", None)
@@ -1313,7 +1305,7 @@ def block_Green_bicgstab(
         Per-solve residual tolerance relative to the seed norm; defaults to
         :data:`config.GF_BICGSTAB_ATOL`.
     max_iter : int, optional
-        Per-point iteration bound; defaults to :data:`config.GF_BICGSTAB_MAX_ITER`.
+        Per-point iteration bound; defaults to :data:`_GF_BICGSTAB_MAX_ITER`.
     admission : {"all", "outer"}, optional
         Basis-growth policy; ``None`` takes :data:`config.GF_BICGSTAB_ADMISSION`. An explicit value
         wins over the environment knob. ``"outer"`` also switches the measured error bound on
@@ -1339,11 +1331,11 @@ def block_Green_bicgstab(
         ``boundary``, ``second_order`` and ``dG_bound`` -- the measured residual split and the
         elementwise bound on ``|G - G_exact|``, with ``max_dG_bound``/``max_boundary`` their
         maxima over the unit). ``rebuild_size - seed_size`` is what the warm start carried in: set
-        :data:`config.GF_BICGSTAB_WARM_HISTORY` to 0 to measure per-point support cold.
+        :data:`_GF_BICGSTAB_WARM_HISTORY` to 0 to measure per-point support cold.
     """
     atol = config.GF_BICGSTAB_ATOL.get() if atol is None else atol
-    max_iter = config.GF_BICGSTAB_MAX_ITER.get() if max_iter is None else max_iter
-    warm_history = config.GF_BICGSTAB_WARM_HISTORY.get()
+    max_iter = _GF_BICGSTAB_MAX_ITER if max_iter is None else max_iter
+    warm_history = _GF_BICGSTAB_WARM_HISTORY
     if admission is None:
         admission = config.GF_BICGSTAB_ADMISSION.get()
         if admission not in config.GF_ADMISSIONS:
@@ -1394,13 +1386,9 @@ def block_Green_bicgstab(
 
     # Freed in `finally` so a solve that raises on every rank does not leak the cloned
     # communicator (review ledger M4); collective, every rank of the color runs this unit.
-    # GF_SUPPORT_FREEZE: once a point's solve admits no new determinant, the remaining points of the
-    # eigenstate solve on the frozen P H P (_FrozenShiftedSystem). Rank 0 reads the knob and broadcasts it,
-    # so every rank takes the same branch.
-    closure = config.GF_SUPPORT_FREEZE.get() if sub_comm is None or sub_comm.rank == 0 else None
-    if sub_comm is not None:
-        closure = sub_comm.bcast(closure, root=0)
-    closure = bool(closure) and admission != "outer"
+    # Support freeze: once a point's solve admits no new determinant, the remaining points of the
+    # eigenstate solve on the frozen P H P (_FrozenShiftedSystem).
+    closure = _SUPPORT_FREEZE and admission != "outer"
     stats["frozen_points"] = 0
     stats["frozen_fallbacks"] = 0
     stats["frozen_size"] = None

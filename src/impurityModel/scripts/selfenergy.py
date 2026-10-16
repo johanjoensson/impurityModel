@@ -7,7 +7,9 @@ disk: the frequency-dependent self-energy and impurity Green's function in RSPt 
 ``.dat`` file, and everything into a per-cluster HDF5 archive.
 """
 
+import argparse
 import os
+import warnings
 from dataclasses import replace
 
 import numpy as np
@@ -125,7 +127,7 @@ def add_arguments(parser):
         action="store_false",
         help="Disable chain occupation restrictions.",
     )
-    parser.add_argument("--reort", type=str, default=None, help="Block-Lanczos reorthogonalization mode.")
+    parser.add_argument("--reort", type=str, default=None, help=argparse.SUPPRESS)  # retired; warns in main()
     parser.add_argument(
         "--gf-method",
         type=str,
@@ -275,6 +277,12 @@ def apply_solver_overrides(solver, args):
 
 def run(args):
     """Build the model and option groups from ``args``, solve, and save the results on rank 0."""
+    if getattr(args, "reort", None) is not None:
+        warnings.warn(
+            "--reort is retired and ignored: the Green's-function path runs without reorthogonalization "
+            "and the eigensolver reorthogonalizes fully.",
+            stacklevel=2,
+        )
     # A no-op on --from-archive: the archive supplies its own model/meshes, none of these CLI
     # attributes are read on that path, so converting them unconditionally is harmless.
     if getattr(args, "emit_toml", False):
@@ -336,7 +344,6 @@ def run(args):
             excitation_budget=resolve_excitation_budget(args.excitation_budget),
         )
         solver = SolverOptions(
-            reort=args.reort,
             dense_cutoff=args.dense_cutoff,
             sparse_green=args.sparse_green,
             gf_method=args.gf_method or "lanczos",
@@ -355,8 +362,6 @@ def run(args):
 
 def main():
     """Stand-alone entry point (``python -m impurityModel.scripts.selfenergy``)."""
-    import argparse
-
     parser = argparse.ArgumentParser(description="Calculate the impurity self-energy Sigma(w) / Sigma(i nu).")
     add_arguments(parser)
     run(parser.parse_args())

@@ -20,12 +20,11 @@ import numpy as np
 import pytest
 import scipy.linalg as la
 
-from impurityModel.ed.BlockLanczos import block_lanczos_cy
+from impurityModel.ed.BlockLanczos import block_lanczos
 from impurityModel.ed.BlockLanczosArray import (
-    Reort,
     _build_banded_lower,
     _build_full_T,
-    block_lanczos_array,
+    block_lanczos,
     eigsh,
 )
 from impurityModel.ed.greens_function import _trim_blocks, build_qr, calc_G
@@ -35,7 +34,7 @@ from impurityModel.test.support.lanczos_fixtures import MockBasis
 EPS = np.array([0.3, 0.9, 1.5, 2.2, 3.1])  # 5 distinct energies; block size 2 -> interior deflation
 N_ORB = len(EPS)
 P = 2
-_MODES = [Reort.NONE, Reort.PARTIAL, Reort.FULL]
+_MODES = [False, True]
 
 
 def _exact_G(S, omega, delta):
@@ -50,7 +49,7 @@ def test_eigsh_with_widths_no_spurious_zero(mode):
     H = np.diag(EPS).astype(complex)
     rng = np.random.default_rng(1)
     Q0 = la.qr(rng.standard_normal((N_ORB, P)) + 1j * rng.standard_normal((N_ORB, P)), mode="economic")[0]
-    a, b, Q, widths = block_lanczos_array(
+    a, b, Q, widths = block_lanczos(
         psi0=Q0.copy(),
         h_op=H,
         converged=lambda *x, **k: False,
@@ -79,7 +78,7 @@ def test_array_gf_under_deflation(mode):
     rng = np.random.default_rng(7)
     S = rng.standard_normal((N_ORB, P)) + 1j * rng.standard_normal((N_ORB, P))
     Q0, r = build_qr(S)
-    a, b, _, widths = block_lanczos_array(
+    a, b, _, widths = block_lanczos(
         psi0=Q0.copy(),
         h_op=H,
         converged=lambda *x, **k: False,
@@ -98,7 +97,7 @@ def _mbs_states():
     return [SlaterDeterminant.from_bytes((1 << (7 - i)).to_bytes(8, "little")) for i in range(N_ORB)]
 
 
-@pytest.mark.parametrize("mode", ["none", "partial", "full"])
+@pytest.mark.parametrize("mode", [False, True], ids=["none", "full"])
 def test_mbs_gf_under_deflation(mode):
     """ManyBodyState kernel: interior deflation -> trimmed calc_G matches exact G, every mode."""
     h_op = ManyBodyOperator({((i, "c"), (i, "a")): EPS[i] for i in range(N_ORB)})
@@ -111,11 +110,11 @@ def test_mbs_gf_under_deflation(mode):
         for i, sd in enumerate(states):
             psi0[c] += ManyBodyState({sd: Q0[i, c]})
 
-    a, b, _, _, widths = block_lanczos_cy(
+    a, b, _, widths = block_lanczos(
         psi0,
         h_op,
         MockBasis(N_ORB),
-        converged_fn=lambda a, b, **kw: False,
+        converged=lambda a, b, **kw: False,
         reort=mode,
         max_iter=8,
         return_widths=True,
@@ -146,11 +145,11 @@ def test_banded_build_matches_dense_T_and_no_dense_path():
     H = np.diag(eps3).astype(complex)
     rng = np.random.default_rng(2)
     Q0 = la.qr(rng.standard_normal((7, 3)) + 1j * rng.standard_normal((7, 3)), mode="economic")[0]
-    a, b, _, widths = block_lanczos_array(
+    a, b, _, widths = block_lanczos(
         psi0=Q0.copy(),
         h_op=H,
         converged=lambda *x, **k: False,
-        reort=Reort.FULL,
+        reort=True,
         return_widths=True,
         max_iter=8,
     )

@@ -14,6 +14,7 @@ from impurityModel.ed.gf_solvers import block_Green_sparse
 from impurityModel.ed.greens_function import _CappedBasisProxy, calc_G
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.test.support.gf_switches import set_gf_switches
 
 DELTA = 0.1
 OMEGA = np.linspace(-8.0, 8.0, 41)
@@ -23,7 +24,7 @@ OMEGA = np.linspace(-8.0, 8.0, 41)
 def _shipped_defaults(monkeypatch):
     """The knobs these tests set per case are read lazily from the environment: start each test
     from the shipped defaults, whatever the shell exports."""
-    for knob in ("GF_FROZEN_CSR", "GF_APPLY_ROW_CHUNKS", "GF_LANCZOS_ADMIT_TOL"):
+    for knob in ("GF_FROZEN_CSR", "APPLY_ROW_CHUNKS", "GF_LANCZOS_ADMIT_TOL"):
         monkeypatch.delenv(knob, raising=False)
 
 
@@ -130,14 +131,14 @@ def _dense_reference_on(retained_keys, comm=None):
 
 def test_cap_above_reachable_space_is_identity(monkeypatch):
     """A cap the recurrence never reaches must not change the result at all -- bit for bit,
-    which is a property of the one-shot matvec specifically (GF_APPLY_ROW_CHUNKS=1): the
+    which is a property of the one-shot matvec specifically (APPLY_ROW_CHUNKS=1): the
     uncapped run never redistributes at all in serial (no proxy, no caps_growth), while the
     capped-but-never-binding run does one redistribute through _CappedBasisProxy, and
-    GF_APPLY_ROW_CHUNKS's default since 2026-09-14 is 4 chunks, whose accumulate (`+=`)
+    APPLY_ROW_CHUNKS's default since 2026-09-14 is 4 chunks, whose accumulate (`+=`)
     changes floating-point summation order relative to that single one-shot call (see
     test_gf_apply_row_chunking.py's test_chunked_matches_one_shot_above_the_reachable_space,
     which pins that difference to ~1e-15 explicitly instead of asserting it away)."""
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
     g_uncapped, info_u = _run_capped(np.inf)
     g_capped, info_c = _run_capped(1000)
     assert info_u["proxy"] is None
@@ -159,14 +160,14 @@ def test_uncapped_matches_dense_full_sector():
 
 @pytest.mark.parametrize("chunks", ["1", "4"])
 @pytest.mark.parametrize("frozen_csr", ["1", "0"])
-@pytest.mark.parametrize("reort", [None, "full", "partial"])
+@pytest.mark.parametrize("reort", [None, True])
 @pytest.mark.parametrize("cap", [6, 12, 17])
 def test_capped_gf_equals_dense_php_resolvent(cap, reort, frozen_csr, chunks, monkeypatch):
     """The oracle: the capped GF is the exact GF of H projected on the retained set -- on the
     sparse kernel throughout (``GF_FROZEN_CSR=0``) and restarted on the ``P H P`` CSR at the
     freeze (the default)."""
-    monkeypatch.setenv("GF_FROZEN_CSR", frozen_csr)
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", chunks)
+    set_gf_switches(monkeypatch, frozen_csr=frozen_csr)
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", chunks)
     g, info = _run_capped(cap, reort=reort)
     assert info["cap_hit"]
     assert info["csr_fallback"] == (frozen_csr == "1")
@@ -182,7 +183,7 @@ def test_capped_gf_equals_dense_php_resolvent(cap, reort, frozen_csr, chunks, mo
 def test_cap_at_seed_size_freezes_immediately(frozen_csr, monkeypatch):
     """cap == initial basis size: nothing new is ever admitted; still exact on P. With the CSR
     fallback the sparse kernel never runs at all."""
-    monkeypatch.setenv("GF_FROZEN_CSR", frozen_csr)
+    set_gf_switches(monkeypatch, frozen_csr=frozen_csr)
     basis = _excited_basis(np.inf)
     seed_size = basis.size
     g, info = _run_capped(seed_size)
@@ -279,7 +280,7 @@ def test_a_tied_slot_at_the_cap_goes_to_the_smaller_key(order):
 def test_the_cap_crossing_step_is_decided_on_full_amplitudes_whatever_the_chunking(chunks):
     """Admission at the cap ranks a row on its amplitude summed over the step's chunks.
 
-    Decided chunk by chunk (``GF_APPLY_ROW_CHUNKS`` > 1), the first chunking above froze on B (0.5 beats A's
+    Decided chunk by chunk (``APPLY_ROW_CHUNKS`` > 1), the first chunking above froze on B (0.5 beats A's
     partial 0.3), the others on A -- and since how rows split into chunks follows how they are spread over
     ranks, a capped unit froze on a different set in every colour layout. Between ``begin_step`` and
     ``finish_step`` the proxy sees the summed output, so all three keep A.
@@ -320,7 +321,7 @@ def test_capped_gf_mpi_matches_dense_php(frozen_csr, monkeypatch):
 
     With 2+ ranks and a small cap, some rank will own few or zero retained rows —
     the empty-rank edge case must not deadlock or diverge."""
-    monkeypatch.setenv("GF_FROZEN_CSR", frozen_csr)
+    set_gf_switches(monkeypatch, frozen_csr=frozen_csr)
     comm = MPI.COMM_WORLD
     for cap in (6, 12):
         g, info = _run_capped(cap, comm=comm)
@@ -350,7 +351,6 @@ def test_capped_gf_mpi_matches_serial():
 def test_array_path_probe_respects_cap():
     """block_Green (array kernel): the probe loop must stop within ONE H-application
     batch of crossing truncation_threshold, not run all five probe rounds first."""
-    from impurityModel.ed.BlockLanczosArray import Reort
     from impurityModel.ed.gf_solvers import block_Green
 
     cap = 5
@@ -362,7 +362,7 @@ def test_array_path_probe_respects_cap():
     one_fanout = set(basis.local_basis) | set(hOp.apply_block(probe, 0).support_keys(0.0))
     assert cap < len(one_fanout) < 18  # the cap must bind inside the first probe round
 
-    alphas, betas, r = block_Green(hOp, _seeds(), basis, DELTA, Reort.NONE, verbose=False)
+    alphas, betas, r = block_Green(hOp, _seeds(), basis, DELTA, False, verbose=False)
     assert basis.size > cap  # the cap was crossed (expansion did happen)
     assert basis.size <= len(one_fanout)  # ...but by at most one apply batch
     g = calc_G(alphas, betas, r, OMEGA, 0.0, DELTA)
@@ -372,8 +372,7 @@ def test_array_path_probe_respects_cap():
 def _kernel_on_proxy(cap, stop_on_freeze, comm=None, max_iter=50):
     """Run the bare sparse kernel on a capped proxy; returns (alphas, betas, status, proxy, resume state)."""
     from impurityModel.ed.basis_transcription import build_state
-    from impurityModel.ed.BlockLanczos import block_lanczos_cy
-    from impurityModel.ed.BlockLanczosArray import Reort
+    from impurityModel.ed.BlockLanczos import block_lanczos
     from impurityModel.ed.gf_primitives import _distributed_seed_qr
 
     basis = _excited_basis(np.inf, comm=comm)
@@ -383,7 +382,7 @@ def _kernel_on_proxy(cap, stop_on_freeze, comm=None, max_iter=50):
     psi = build_state(basis, psi_local.T, slaterWeightMin=0)
     proxy = _CappedBasisProxy(basis, cap)
     proxy.stop_on_freeze = stop_on_freeze
-    alphas, betas, Q, W, widths, status = block_lanczos_cy(
+    alphas, betas, Q, widths, status = block_lanczos(
         psi,
         _siam_6(),
         proxy,
@@ -393,27 +392,26 @@ def _kernel_on_proxy(cap, stop_on_freeze, comm=None, max_iter=50):
         return_widths=True,
         return_status=True,
         store_krylov=False,
-        reort=Reort.NONE,
+        reort=False,
     )
-    return alphas, betas, status, proxy, (psi, Q, W, widths)
+    return alphas, betas, status, proxy, (psi, Q, widths)
 
 
 def test_kernel_stops_at_the_freeze_and_resumes_bit_identically(monkeypatch):
     """``stop_on_freeze`` ends the recurrence on the step that froze the support, with a state the
     usual resume protocol continues from: stop + resume == one uninterrupted run, bit for bit."""
-    from impurityModel.ed.BlockLanczos import block_lanczos_cy
-    from impurityModel.ed.BlockLanczosArray import Reort
+    from impurityModel.ed.BlockLanczos import block_lanczos
 
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
     n_total = 8
     a_full, b_full, status_full, proxy_full, _ = _kernel_on_proxy(12, stop_on_freeze=False, max_iter=n_total)
     assert proxy_full.cap_hit and status_full == "max_iter" and len(a_full) == n_total
 
-    a_stop, b_stop, status, proxy, (psi, Q, W, widths) = _kernel_on_proxy(12, stop_on_freeze=True, max_iter=n_total)
+    a_stop, b_stop, status, proxy, (psi, Q, widths) = _kernel_on_proxy(12, stop_on_freeze=True, max_iter=n_total)
     assert status == "frozen" and proxy.frozen
     assert 0 < len(a_stop) < n_total
     proxy.stop_on_freeze = False
-    a_res, b_res, *_rest, status_res = block_lanczos_cy(
+    a_res, b_res, *_rest, status_res = block_lanczos(
         psi,
         _siam_6(),
         proxy,
@@ -425,10 +423,9 @@ def test_kernel_stops_at_the_freeze_and_resumes_bit_identically(monkeypatch):
         alphas_init=a_stop,
         betas_init=b_stop,
         Q_init=Q,
-        W_init=W,
         block_widths_init=widths,
         store_krylov=False,
-        reort=Reort.NONE,
+        reort=False,
     )
     assert status_res == "max_iter"
     np.testing.assert_array_equal(np.asarray(a_res), np.asarray(a_full))
@@ -456,11 +453,11 @@ def _assert_php_oracle(g, info, comm=None):
 
 def test_frozen_csr_matches_the_sparse_kernel_to_rounding(monkeypatch):
     """Same model, same cap, same retained set: the CSR restart and the sparse kernel agree."""
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
-    monkeypatch.setenv("GF_FROZEN_CSR", "0")
-    g_sparse, info_sparse = _run_capped(12, reort="full")
-    monkeypatch.setenv("GF_FROZEN_CSR", "1")
-    g_csr, info_csr = _run_capped(12, reort="full")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
+    set_gf_switches(monkeypatch, frozen_csr="0")
+    g_sparse, info_sparse = _run_capped(12, reort=True)
+    set_gf_switches(monkeypatch, frozen_csr="1")
+    g_csr, info_csr = _run_capped(12, reort=True)
     assert info_csr["csr_fallback"] and not info_sparse["csr_fallback"]
     assert set(info_csr["proxy"].retained_keys()) == set(info_sparse["proxy"].retained_keys())
     np.testing.assert_allclose(g_csr, g_sparse, atol=1e-10)
@@ -469,7 +466,7 @@ def test_frozen_csr_matches_the_sparse_kernel_to_rounding(monkeypatch):
 def test_frozen_csr_under_importance_pruning(monkeypatch):
     """``GF_LANCZOS_ADMIT_TOL``'s ban keeps the whole recurrence the Lanczos of ``P_m H P_m``, so
     the restart on the pruned proxy's retained set is exact too."""
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", "1")
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
     monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", "0.05")
     g, info = _run_capped(12)
     assert info["cap_hit"] and info["csr_fallback"]
@@ -495,7 +492,7 @@ def test_a_memory_guard_freeze_runs_the_frozen_matrix_when_it_fits():
 
 
 def test_a_complex64_krylov_store_stays_on_the_sparse_kernel():
-    g, info = _run_capped(12, reort="full", krylov_dtype=np.complex64)
+    g, info = _run_capped(12, reort=True, krylov_dtype=np.complex64)
     assert info["cap_hit"] and not info["csr_fallback"]
 
 
@@ -506,7 +503,7 @@ def test_a_declined_csr_resumes_the_sparse_kernel(cap, monkeypatch):
     from impurityModel.ed import gf_solvers
 
     monkeypatch.setattr(gf_solvers, "_frozen_csr_fits", lambda *a, **k: False)
-    g, info = _run_capped(cap, reort="full")
+    g, info = _run_capped(cap, reort=True)
     assert info["cap_hit"] and not info["csr_fallback"]
     _assert_php_oracle(g, info)
 
@@ -599,11 +596,11 @@ def test_a_decision_line_is_printed_on_accept_and_decline(monkeypatch, capsys):
 def test_frozen_csr_mpi_matches_the_sparse_kernel(chunks, monkeypatch):
     """Multi-rank: the restart on a distributed CSR (empty ranks at -n 3) equals the sparse kernel."""
     comm = MPI.COMM_WORLD
-    monkeypatch.setenv("GF_APPLY_ROW_CHUNKS", chunks)
-    monkeypatch.setenv("GF_FROZEN_CSR", "0")
-    g_sparse, _ = _run_capped(6, reort="partial", comm=comm)
-    monkeypatch.setenv("GF_FROZEN_CSR", "1")
-    g_csr, info = _run_capped(6, reort="partial", comm=comm)
+    monkeypatch.setenv("APPLY_ROW_CHUNKS", chunks)
+    set_gf_switches(monkeypatch, frozen_csr="0")
+    g_sparse, _ = _run_capped(6, reort=True, comm=comm)
+    set_gf_switches(monkeypatch, frozen_csr="1")
+    g_csr, info = _run_capped(6, reort=True, comm=comm)
     assert info["csr_fallback"]
     np.testing.assert_allclose(g_csr, g_sparse, atol=1e-9)
     _assert_php_oracle(g_csr, info, comm)
@@ -616,16 +613,16 @@ def test_frozen_csr_starts_from_a_bounded_block_budget(monkeypatch):
     from impurityModel.ed import gf_solvers
 
     budgets = []
-    real_kernel = gf_solvers.block_lanczos_array
+    real_kernel = gf_solvers.block_lanczos
 
     def recording_kernel(*args, **kwargs):
         budgets.append(kwargs["max_iter"])
         return real_kernel(*args, **kwargs)
 
     monkeypatch.setattr(gf_solvers, "_CSR_INITIAL_BLOCKS", 1)
-    monkeypatch.setattr(gf_solvers, "block_lanczos_array", recording_kernel)
+    monkeypatch.setattr(gf_solvers, "block_lanczos", recording_kernel)
     seed_size = _excited_basis(np.inf).size
-    g, info = _run_capped(seed_size, reort="full")
+    g, info = _run_capped(seed_size, reort=True)
     assert info["csr_fallback"]
     assert budgets[0] == 1 and len(budgets) > 1
     assert budgets == sorted(budgets)

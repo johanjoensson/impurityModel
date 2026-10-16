@@ -39,7 +39,7 @@ $$
 
 - $\tau$ is the `tau` entry of the basis setup, in the same energy units as the
   Hamiltonian (eV in the standard workloads). Physically $\tau = k_B T$.
-- The solver keeps at most `num_wanted` states (default 10) and only those within
+- The solver keeps every state within
   $E - E_0 \le -\tau \ln 10^{-4} \approx 9.2\,\tau$, i.e. states whose relative Boltzmann
   weight would be below $10^{-4}$ are discarded up front.
 - Averaging matters even at $\tau \to 0$: a degenerate ground manifold (e.g. a spin
@@ -110,8 +110,10 @@ Ground state: impurity occupation 8, E_GS = -293.3141
 The impurity occupation sector is chosen either from a cheap unrestricted Hartree–Fock
 seed (`groundstate.hartree_fock_seed_occupation`) or, when the seed is rejected, from an
 explicit scan over occupations, and either way is refined by a walk over neighbouring
-sectors. Each row of the table is one sector actually solved variationally; the lowest
-energy wins. `E_GS` is the winning variational ground-state energy — compare it with
+sectors. Each row of the table is one sector actually solved variationally, for its lowest
+energy alone (the walk claims nothing about a sector's degeneracy); the lowest
+energy wins. The thermal ground state is then solved afresh at the winner, from its seed
+basis, for every state within the thermal window. `E_GS` is the winning variational ground-state energy — compare it with
 `E0` further down (the final, better-converged basis) to see how much the final
 expansion gained.
 

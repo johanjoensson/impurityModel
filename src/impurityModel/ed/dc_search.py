@@ -45,7 +45,7 @@ class DoubleCountingUnreachable(RuntimeError):
 
     Distinguishing this from a bare :class:`RuntimeError` is the point (B3): the observable
     itself can also raise a bare ``RuntimeError`` on a genuine failure
-    (:func:`average.thermal_average_scale_indep`, :func:`basis_transcription.build_density_matrices`),
+    (:func:`average.thermal_average_scale_indep`, :func:`density_matrices.build_density_matrices`),
     and a caller that catches ``RuntimeError`` indiscriminately cannot tell "the target is
     unattainable with this bath/truncation" from "the solver itself broke" -- the first should
     keep the old double counting and say so loudly; the second is a bug and should abort. Because
@@ -119,51 +119,10 @@ def _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol, ma
     return best[0], best[1], step
 
 
-#: Successive rungs of the cap ladder must agree within this fraction of the criterion's own
-#: tolerance before :func:`calibrate_truncation_threshold` accepts a cap. ``0.25`` keeps the
-#: truncation error the ladder leaves in well under the search's own convergence tolerance --
-#: an independent choice, not derived from :func:`bracket_width_tol` or any other tolerance
-#: fraction in this module (coincidentally, `_refine_bracket`'s unrelated bisection margin is
-#: also 0.25; that is not a shared constant, just the same round number twice).
-CAP_CONVERGENCE_FRACTION = 0.25
-
-#: Width (in trailing rungs, beyond the one just evaluated) of the window
-#: :func:`calibrate_truncation_threshold` tests for convergence: the SPAN over the last
-#: ``CAP_CONVERGENCE_RUNS + 1`` values, not one pairwise difference. A pairwise gate bounds
-#: nothing against the limit -- a monotone staircase whose every step is exactly ``target``
-#: passes at every rung, and after eight rungs the quantity has moved ``7 * target``, 1.75x the
-#: whole tolerance. That shape is the *expected* one here (the CIPSI selection does not converge
-#: in size, it saturates the budget every time), not a contrivance, so the span -- which bounds
-#: the actual variation over the window -- is what rejects it at the first rung.
-CAP_CONVERGENCE_RUNS = 2
-
-#: Starting rung, and rung budget, of the geometric cap ladder -- both environment knobs rather
-#: than literals here (:data:`impurityModel.ed.config.DC_CAP_LADDER_START` /
-#: ``DC_CAP_LADDER_MAX_RUNGS`` carry the rationale for the defaults, and
-#: ``doc/configuration.md`` is generated from them). They are read through these two functions,
-#: not captured at import, so a caller or a test may set the variables at any point -- the same
-#: lazy contract every other knob in this stack has.
-#:
-#: The pair fixes the ladder's *reach*: ``start * 2**(rungs - 1)``, 512,000 determinants at the
-#: defaults. That ceiling, not the memory-derived cap, is what binds on a workload whose answer
-#: has not settled -- the rung budget of 8 this module shipped with until 2026-09 stopped SrMnO3
-#: at 64,000 with a memory budget 2000x larger and an answer still moving.
-
-
-def _cap_ladder_start() -> int:
-    """First rung of the cap ladder (:data:`config.DC_CAP_LADDER_START`)."""
-    return config.DC_CAP_LADDER_START.get()
-
-
-def _cap_ladder_max_rungs() -> int:
-    """Rung budget of the cap ladder (:data:`config.DC_CAP_LADDER_MAX_RUNGS`)."""
-    return config.DC_CAP_LADDER_MAX_RUNGS.get()
-
-
 def resolve_cap_at_max(quantity, tol, *, memory_cap, bound_probe=None, verbose=False, rank=0, comm=None, min_cap=1):
     r"""The determinant cap, chosen by *running at the ceiling and asking whether it bound*.
 
-    The alternative to :func:`calibrate_truncation_threshold`'s ascending ladder, and the default
+    The alternative to an ascending cap ladder (removed), and the default
     (``DC_CAP_STRATEGY``). Same return shape, so the caller's bookkeeping is unchanged.
 
     **Why this replaces climbing.** ``CIPSISolver.truncation_report`` is ``None`` exactly when the
@@ -188,7 +147,7 @@ def resolve_cap_at_max(quantity, tol, *, memory_cap, bound_probe=None, verbose=F
 
     The full ladder costs 4299 s to conclude what the 1890 s top rung reports directly, and N+1's
     energy is *bit-identical* at the last three caps. Note this also corrects a claim
-    :func:`calibrate_truncation_threshold`'s docstring still makes -- that the sector expansions
+    the removed cap ladder's docstring made -- that the sector expansions
     "saturate the cap at every cap tried". N+1 does not; only N-1 does.
 
     **What the ladder still had that this does not.** When a sector *does* bind you learn "the cap
@@ -207,7 +166,7 @@ def resolve_cap_at_max(quantity, tol, *, memory_cap, bound_probe=None, verbose=F
     ----------
     quantity : callable
         ``quantity(cap) -> float or None``, the criterion's controlled quantity at that cap.
-        **Collective** -- see :func:`calibrate_truncation_threshold`.
+        **Collective** on ``comm``.
     tol : float
         The criterion's convergence tolerance, in the units of ``quantity``. Not used to *choose*
         the cap here (there is nothing to choose -- the ceiling is the answer); carried so the
@@ -226,7 +185,7 @@ def resolve_cap_at_max(quantity, tol, *, memory_cap, bound_probe=None, verbose=F
     Returns
     -------
     (cap, drift, rungs, status) : tuple
-        As :func:`calibrate_truncation_threshold`. ``status`` is ``"unbound"`` (nothing bound: the
+        ``(cap, drift, rungs, status)``: ``status`` is ``"unbound"`` (nothing bound: the
         answer is converged **in the cap**, and no further cap buys anything), ``"cap_bound"``
         (something bound; ``drift`` is measured against the half-cap rung) or ``"memory_retreat"``
         (the ceiling could not be evaluated and the cap was halved to fit).
@@ -299,186 +258,6 @@ def resolve_cap_at_max(quantity, tol, *, memory_cap, bound_probe=None, verbose=F
             flush=True,
         )
     return cap, drift, rungs, (status or "cap_bound")
-
-
-def calibrate_truncation_threshold(quantity, tol, *, memory_cap, verbose=False, rank=0, comm=None):
-    r"""The determinant cap at which the criterion's answer has stopped moving.
-
-    Returns the *largest* cap in the trailing window that established convergence (see
-    ``Returns``), not the smallest one the same span check already certifies as sufficient --
-    deliberately: it is the rung this function evaluated last, so a caller can keep its cached
-    solves instead of paying for one more at whatever smaller cap would also have qualified.
-
-    **Why this exists.** On the workload this was tuned against, the DC criteria's sector
-    expansions saturated the cap at every cap tried -- the ``GS_DE2_MIN`` selection kept admitting
-    determinants until the budget stopped it -- so cost is linear in the cap while the criterion's
-    answer moves far less: on ``nio_5peeled`` the gap centre moved 6.7e-3 in ``mu`` across a
-    500-to-8000 cap ladder, against an acceptance band of ``tol / |chi| = 8.5e-3`` (see
-    ``doc/plans/dc_performance.md``, the campaign this ported from). Running at the full
-    memory-derived cap regardless spends time on resolution the criterion cannot use.
-
-    So the cap is *measured* rather than maximised: double it until the SPAN over the last
-    ``CAP_CONVERGENCE_RUNS + 1`` rungs is within ``CAP_CONVERGENCE_FRACTION * tol``, and stop.
-    The ladder is geometric, so its whole cost is ~2x the rung it accepts. (Not "until two
-    successive rungs agree" -- that pairwise reading is the bug :data:`CAP_CONVERGENCE_RUNS`'s
-    own docstring exists to reject: a staircase can step under a pairwise gate at every step
-    while drifting without bound.)
-
-    **What this trades away, stated plainly.** The double counting is then determined on a
-    smaller variational space than ``calc_selfenergy`` will use at that ``dc`` -- a DC<->GS parity
-    gap of the same shape this module exists to close elsewhere (a halved memory budget). The
-    difference is that this one is *measured and recorded*: the caller records ``dc_cap``,
-    ``dc_cap_drift`` and the memory-derived ceiling (``dc_cap_parity``) beside it, rather than
-    inheriting it silently.
-
-    **That premise does not hold in general, which is why this is no longer the default**
-    (``DC_CAP_STRATEGY``; see :func:`resolve_cap_at_max`). Measured on SrMnO3 cubic, the ``N+1``
-    sector *self-limits* at 88,164 determinants and returns a bit-identical energy at caps
-    128,000, 256,000 and 512,000 -- it never binds, so no rung above 128,000 could have said
-    anything about it; only ``N-1`` saturates. An expansion that stops on its own terms is
-    detectable directly (``CIPSISolver.truncation_report is None``) without climbing to it, and
-    this ladder cannot distinguish "the cap is the limit" from "PT2 convergence is the limit" at all.
-
-    ``dc_criteria._calibrate_cap`` does that wiring for the gap and
-    occupation criteria (:func:`impurityModel.ed.dc_criteria.fixed_gap_dc`,
-    :func:`impurityModel.ed.dc_criteria.fixed_occupation_dc`). **Not** for
-    :func:`impurityModel.ed.dc_criteria.fixed_peak_dc`, which does not call it: a peak search
-    still inherits whatever cap it was given, with no ``dc_cap`` in its record.
-
-    Parameters
-    ----------
-    quantity : callable
-        ``quantity(cap) -> float or None``. The number the criterion controls (the gap centre, the
-        impurity occupation), evaluated at that cap. **Collective**: it runs the eigensolver, so
-        it must be called the same number of times on every rank -- which is why the loop below
-        broadcasts every value before branching on it.
-    tol : float
-        The criterion's own convergence tolerance, in the units of ``quantity``.
-    memory_cap : int or float
-        The cap the memory budget would have allowed. Reported as the parity reference, and used
-        as the ceiling: the ladder never proposes a cap the machine could not have run.
-    verbose : bool
-        Gate for the informational progress line printed on acceptance (rank 0 only). Not meant to
-        be the durable record of which cap was used -- that is :mod:`dc_record`'s unconditional
-        ``dc_cap``/``dc_cap_drift`` fields, which :mod:`dc_criteria` writes from
-        ``_calibrate_cap``. That is what makes gating this progress line behind ``verbose`` safe
-        rather than hiding the answer.
-        The warning printed when the ladder exhausts its rung budget
-        without settling is unconditional regardless -- matching this module's convention that a
-        result the caller should distrust is never hidden behind a verbosity flag.
-        ``verbose``/``rank`` (rather than :class:`impurityModel.ed.utils.Reporter`, the
-        rank-and-verbosity-gated print helper used elsewhere, e.g. ``groundstate.py``) match
-        this module's own existing convention: every other print in ``dc_search.py`` and its
-        caller ``dc_criteria.py`` already takes a plain ``verbose: bool``/``rank: int`` pair, not
-        a ``Reporter``. Introducing a second convention into this one function, when the module
-        around it uses neither, would be a net increase in how many ways this codebase gates a
-        print -- if this whole call chain moves to ``Reporter``, it should move together, not
-        function by function.
-    rank : int
-        This rank's index, for the rank-0-only prints.
-    comm : MPI communicator, optional
-        Used only to broadcast each rung's ``value`` before branching on it (see ``quantity``).
-        ``None`` (serial) skips the broadcast.
-
-    Returns
-    -------
-    (cap, drift, rungs, status) : tuple
-        The accepted cap, the ``drift`` -- the SPAN (``max - min``) of ``quantity`` over the
-        trailing window of up to ``CAP_CONVERGENCE_RUNS + 1`` rungs, ``None`` when that window
-        holds fewer than two values -- and the list of ``(cap, value)`` pairs evaluated. Note
-        that a ``None`` rung *resets* the window, so ``drift`` can come back ``None`` from a
-        ladder that did evaluate two or more comparable values earlier: on the sequence
-        ``[1.0, 1.0, None, 5.0]`` the window is ``[5.0]`` at the end and the drift is ``None``,
-        not 4.0. Reading
-        ``drift`` as a pairwise change between the last two rungs under-reports the error bar
-        (:mod:`dc_record` records a measured 7x from exactly that confusion).
-
-        ``cap`` is always ``rungs[-1][0]``, the rung this function evaluated **last**, on all
-        three exit paths (the window settled, the memory ceiling was hit, the rung budget ran
-        out). That is part of the contract, not an accident of the loop: a caller may keep the
-        caches ``quantity`` filled on its final call instead of re-solving at the accepted cap,
-        which is only sound while the last rung *is* the accepted one -- a caller doing this
-        must verify that itself (e.g. by having ``quantity`` record which cap its own caches were
-        last built at, and comparing that against the returned ``cap``) rather than assume it.
-        :func:`impurityModel.ed.dc_criteria.fixed_gap_dc` does exactly that, comparing its own
-        ``cached_cap`` against this ``cap`` before deciding to keep or clear its caches.
-
-        ``rungs`` is consumed only by this module's own tests; the single production caller
-        (``dc_criteria._calibrate_cap``) discards it, binding it to ``_rungs``. So no per-rung
-        history reaches :mod:`dc_record`, and no *trend* in the drift is recoverable after the
-        fact -- only the single span ``drift`` reports. Anything that wants to argue "the drift
-        is or is not shrinking with cap" needs this list plumbed through first, or its own
-        ladder run.
-
-        ``status`` names *which* of the three exits produced ``cap`` -- ``"settled"``,
-        ``"memory_cap"`` or ``"rung_budget"``. Returned rather than left to the caller because
-        ``cap`` and ``drift`` do not determine it: a ladder that gave up at its last rung and one
-        that converged on it return the same two numbers, and before this the record could not
-        tell a converged 512,000 from a ceiling-limited one. Reconstructing it downstream would
-        mean re-evaluating ``drift <= CAP_CONVERGENCE_FRACTION * tol`` in a second place, which is
-        the duplicated-acceptance-test shape :func:`dc_criteria._mu_tol_effective`'s docstring
-        records as having produced a real bug in both of its copies.
-    """
-    target = CAP_CONVERGENCE_FRACTION * tol
-    limit = "rung_budget"
-    rungs = []
-    cap = min(_cap_ladder_start(), memory_cap)
-    drift = None
-    window = []
-    for _rung in range(_cap_ladder_max_rungs()):
-        value = quantity(cap)
-        # Broadcast before any branch: `quantity` ends in Lanczos energies replicated only to
-        # roundoff, and the comparison below decides whether the next collective solve happens.
-        # Ranks disagreeing by an ulp would issue different sequences of collectives and hang --
-        # CLAUDE.md's rule, and the deadlock class this module has already shipped once.
-        if comm is not None:
-            value = comm.bcast(value, root=0)
-        rungs.append((cap, value))
-        # The test is the SPAN of the last `CAP_CONVERGENCE_RUNS + 1` values, not a pairwise
-        # difference repeated -- see :data:`CAP_CONVERGENCE_RUNS`'s docstring for why a pairwise
-        # gate bounds nothing against the limit.
-        window = ([] if value is None else (window + [value]))[-(CAP_CONVERGENCE_RUNS + 1) :]
-        # Recomputed from the CURRENT window every rung, not merely updated when there is enough
-        # of it to compute -- an undefined rung resets `window` to `[]` above, and `drift` must
-        # reset with it. A version that only ever overwrote `drift` under `len(window) > 1` left
-        # it holding a stale value from *before* a `None` reset the window: `[1.0, 1.0, None,
-        # 5.0]` would report `drift = 0.0` (the span of the pre-reset window) at the loop's exit,
-        # when the real, unmeasured jump from 1.0 to 5.0 was never bounded at all -- found by
-        # review, reproduced, and pinned by a test below.
-        drift = (max(window) - min(window)) if len(window) > 1 else None
-        if len(window) == CAP_CONVERGENCE_RUNS + 1 and drift <= target:
-            if verbose and rank == 0:
-                print(
-                    f"cap: calibrated to {cap} determinants over {len(rungs)} rungs; the "
-                    f"controlled quantity varies by {drift:.3e} over the last {len(window)} "
-                    f"rungs, within {CAP_CONVERGENCE_FRACTION:g} of the tolerance {tol:.3e}; the "
-                    f"memory budget would have allowed {memory_cap}.",
-                    flush=True,
-                )
-            return cap, drift, rungs, "settled"
-        if cap >= memory_cap:
-            # The memory ceiling, not the rung budget, is what stopped this ladder. Recorded
-            # apart from `rung_budget` because the two call for opposite responses: this one is
-            # already at the largest cap the run can afford, while the other has budget left and
-            # only needs `DC_CAP_LADDER_MAX_RUNGS` raised.
-            limit = "memory_cap"
-            break
-        cap = min(2 * cap, memory_cap)
-    # The LAST EVALUATED rung, never a further-doubled `cap` -- the loop doubles at the end of
-    # its final iteration too, so `cap` is then one doubling past anything that was measured.
-    # Returning it would run the whole search at twice the largest cap whose behaviour is known,
-    # at twice the cost, beside a `drift` describing a different cap.
-    settled = rungs[-1][0]
-    if rank == 0:
-        print(
-            f"WARNING: the determinant cap ladder reached {settled} without the answer settling "
-            f"(it still varies by {drift if drift is None else f'{drift:.3e}'} over the last "
-            f"{len(window)} rungs, against a target of {target:.3e}). The double counting is "
-            "truncation-limited here, not search-limited. The reported dc inherits that drift, "
-            "and a cap ladder (test/support/dc_diagnostics.py) is the only honest error bar.",
-            flush=True,
-        )
-    return settled, drift, rungs, limit
 
 
 def _report_unattainable_target(mu, g, step, target, width_tol):

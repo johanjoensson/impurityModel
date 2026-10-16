@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 import scipy.linalg as la
 
-from impurityModel.ed.BlockLanczosArray import Reort, block_lanczos_array
+from impurityModel.ed.BlockLanczosArray import block_lanczos
 from impurityModel.ed.gf_convergence import (
     EvalMeshes,
     _gf_axis_tols,
@@ -97,9 +97,7 @@ def _model(n=300, seed=4):
 
 
 def _run(h, q0, monitor):
-    a, b, _q, _widths = block_lanczos_array(
-        psi0=q0, h_op=h, converged=monitor, reort=Reort.FULL, verbose=False, return_widths=True
-    )
+    a, b, _q, _widths = block_lanczos(psi0=q0, h_op=h, converged=monitor, reort=True, verbose=False, return_widths=True)
     return a, b
 
 

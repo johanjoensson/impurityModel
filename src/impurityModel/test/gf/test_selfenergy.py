@@ -58,7 +58,7 @@ def _selfenergy_args(**overrides):
         slater_weight_min=v["slaterWeightMin"],
         tau=v["tau"],
     )
-    solver = SolverOptions(reort=v["reort"], dense_cutoff=v["dense_cutoff"], sparse_green=v["sparse_green"])
+    solver = SolverOptions(dense_cutoff=v["dense_cutoff"], sparse_green=v["sparse_green"])
     return dict(
         model=model,
         meshes=meshes,
@@ -436,9 +436,9 @@ def test_calc_selfenergy(mock_get_gf, mock_calc_gs, mock_moments):
 @patch("impurityModel.ed.selfenergy.get_greens_function_moments")
 @patch("impurityModel.ed.selfenergy.calc_gs")
 @patch("impurityModel.ed.selfenergy.get_Greens_function")
-def test_calc_selfenergy_retries_on_truncated_ensemble(mock_get_gf, mock_calc_gs, mock_moments):
-    """A diagnostics report flagging a truncated thermal ensemble triggers exactly one
-    auto-retry of calc_gs with a larger num_wanted; a clean report stops the loop."""
+def test_calc_selfenergy_solves_the_ground_state_once(mock_get_gf, mock_calc_gs, mock_moments):
+    """The ground-state solve returns every state inside the thermal window, certified, so a
+    diagnostics report asking for "more states" must not re-run ``calc_gs`` (the walk included)."""
     mock_calc_gs.return_value = (
         [np.array([1.0])],
         [0.0],
@@ -446,24 +446,17 @@ def test_calc_selfenergy_retries_on_truncated_ensemble(mock_get_gf, mock_calc_gs
         np.array([[1.0]]),
         {"rhos": [np.array([[1.0]])]},
     )
-
     truncated = gd.DiagnosticReport()
     truncated.add("[0]", gd.check_thermal_weight_cutoff([0.0, 0.05], 0.0, 0.1, n_returned=10, num_wanted=10))
-    assert truncated.needs_more_states  # sanity: first report does ask for more states
-    clean = gd.DiagnosticReport()
-    gf = ([np.array([[[-1j]]])], [np.array([[[-1j]]])], None)
-    # First call returns the truncated report, second the clean one.
-    mock_get_gf.side_effect = [gf[:-1] + (truncated,), gf[:-1] + (clean,)]
+    assert truncated.needs_more_states
+    gf = ([np.array([[[-1j]]])], [np.array([[[-1j]]])], truncated)
+    mock_get_gf.return_value = gf
     mock_moments.return_value = _identity_moments()
 
     selfenergy.calc_selfenergy(**_selfenergy_args(verbosity=1), comm=None)
 
-    # Exactly one retry: calc_gs called twice, the second time with a larger num_wanted.
-    assert mock_calc_gs.call_count == 2
-    assert mock_get_gf.call_count == 2
-    first_nw = mock_calc_gs.call_args_list[0].kwargs["num_wanted"]
-    second_nw = mock_calc_gs.call_args_list[1].kwargs["num_wanted"]
-    assert second_nw > first_nw
+    assert mock_calc_gs.call_count == 1
+    assert mock_get_gf.call_count == 1
 
 
 # fixed_peak_dc and fixed_occupation_dc are covered end-to-end in test_fixed_dc.py.

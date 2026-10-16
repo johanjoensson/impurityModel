@@ -16,8 +16,7 @@ that no longer go unnoticed thanks to this module:
 Each check returns a :class:`Diagnostic` (``OK`` / ``WARN`` / ``FAIL`` plus a measured value,
 threshold, human-readable message, and a concrete suggestion).  A :class:`DiagnosticReport`
 collects them per Green's-function block and renders one compact table, and exposes the
-aggregate ``needs_more_states`` / ``needs_more_iterations`` flags that drive the single
-auto-retry in ``calc_selfenergy``.
+aggregate ``needs_more_states`` / ``needs_more_iterations`` flags.
 
 Severity policy: checks are advisory (``WARN``) by default; ``FAIL`` is reserved for results
 that are outright unphysical (a violated exact sum rule, a non-causal Green's function).
@@ -501,9 +500,7 @@ def check_bicgstab_convergence(
         value=float(max_rel_residual),
         threshold=float(atol),
         message=message,
-        suggestion=(
-            "" if ok else "raise GF_GMRES_RESTART / GF_BICGSTAB_MAX_ITER, loosen delta, or raise truncation_threshold"
-        ),
+        suggestion=("" if ok else "raise GF_GMRES_RESTART, loosen delta, or raise truncation_threshold"),
         needs_more_iterations=n_unconverged > 0,
     )
 
@@ -538,7 +535,7 @@ def check_truncation_error_bound(max_bound: float, max_boundary: float) -> Diagn
 def check_support_freeze(retained, leak, cut) -> Diagnostic:
     r"""Report a unit whose support froze because growing it no longer bought more than the cutoff cost.
 
-    ``GF_SUPPORT_FREEZE`` freezes a unit once the weight reaching determinants outside the retained set
+    the support freeze freezes a unit once the weight reaching determinants outside the retained set
     ``P``, summed over the last 16 blocks, is no larger than what the ``slaterWeightMin`` prunes dropped
     over them; the recurrence then carries on as the exact one on ``P``. What later blocks would have
     admitted is missing, at most at the rate the cutoff was already discarding weight, so it is an ``OK``
@@ -558,7 +555,7 @@ def check_support_freeze(retained, leak, cut) -> Diagnostic:
         value=leak,
         threshold=cut,
         message=(
-            f"GF unit support frozen at {int(retained or 0):,} determinants (GF_SUPPORT_FREEZE): the weight "
+            f"GF unit support frozen at {int(retained or 0):,} determinants (support freeze): the weight "
             f"reaching new rows ({leak:.1e} over the last window) was no more than what slaterWeightMin cut "
             f"({cut:.1e})"
         ),

@@ -31,7 +31,6 @@ def build_selfenergy_inputs(
     hField=(0.0, 0.0, 0.0001),
     delta=0.2,
     tau=0.002,
-    reort=None,
     occ_cutoff=1e-12,
     slaterWeightMin=1e-12,
     dN=None,
@@ -157,7 +156,6 @@ def build_selfenergy_inputs(
         verbosity=2 if verbose else 0,
         rot_to_spherical=rot_to_spherical,
         cluster_label="bench",
-        reort=reort,
         dense_cutoff=dense_cutoff,
         chain_restrict=False,
         occ_cutoff=occ_cutoff,
@@ -199,7 +197,6 @@ def as_calc_selfenergy_args(inputs):
         tau=inputs["tau"],
     )
     solver = SolverOptions(
-        reort=inputs["reort"],
         dense_cutoff=inputs["dense_cutoff"],
         sparse_green=inputs["sparse_green"],
         gf_method=inputs.get("gf_method", "lanczos"),
@@ -228,7 +225,7 @@ def build_ground_state_workload(
 
     Runs the same preamble as ``selfenergy.calc_selfenergy``: symmetry rotation of the
     Hamiltonian, bath valence/conduction classification, orbital grouping by symmetry
-    block, then ``find_ground_state_basis`` plus one ``CIPSISolver.expand``.
+    block, then ``solve_ground_state`` (the occupation walk plus the thermal solve of its winner).
 
     Parameters
     ----------
@@ -254,9 +251,7 @@ def build_ground_state_workload(
         pointed at ``basis``.
     """
     from impurityModel.ed import atomic_physics
-    from impurityModel.ed.BlockLanczosArray import Reort
-    from impurityModel.ed.cipsi_solver import CIPSISolver
-    from impurityModel.ed.groundstate import find_ground_state_basis
+    from impurityModel.ed.groundstate import solve_ground_state
     from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
     from impurityModel.ed.selfenergy import (
         _MAX_ROTATION_FILL,
@@ -302,31 +297,22 @@ def build_ground_state_workload(
     mv = _per_group_scalar(dict.fromkeys(impurity_orbitals, mixed_valence), impurity_orbitals, default=0)
 
     tau = inputs["tau"]
-    basis = find_ground_state_basis(
+    ground_state = solve_ground_state(
         h,
         impurity_orbitals,
         bath_states,
         nominal_occ,
+        tau=tau,
+        slaterWeightMin=slater_weight_min,
         mixed_valence=mv,
-        tau=tau / 100,  # calc_gs runs the occupation search at tau/100
         chain_restrict=False,
         dense_cutoff=dense_cutoff,
         comm=comm,
         truncation_threshold=truncation_threshold,
         verbose=verbose,
-        slaterWeightMin=np.sqrt(slater_weight_min),
-        cipsi_solver_method="trlm",
-    )
-    basis.tau = tau
-    solver = CIPSISolver(basis)
-    solver.expand(
-        h,
-        dense_cutoff=dense_cutoff,
         de2_min=de2_min,
-        slaterWeightMin=slater_weight_min,
-        solver="trlm",
-        reort=Reort.PARTIAL,
     )
+    basis, solver = ground_state.basis, ground_state.solver
     if basis.restrictions is not None:
         h.set_restrictions(basis.restrictions)
     return {"h": h, "basis": basis, "solver": solver, "tau": tau, "comm": comm}

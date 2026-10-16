@@ -345,41 +345,13 @@ def test_an_output_path_is_relative_to_the_working_directory_not_the_file(write_
     assert str(tmp_path) in defaulted.tables["hamiltonian.file"]["path"]
 
 
-# ------------------------------------------------- ground_state_manifold, per criterion
+# ------------------------------------------------- ground_state_manifold is gone
 
 
-@pytest.mark.parametrize("scheme", ["fixed_gap", "fixed_peak"])
-def test_ground_state_manifold_is_accepted_by_the_energy_difference_criteria(write_input, scheme):
-    """Both read a *difference of sector energies*, each that sector's lowest eigenvalue, so the
-    thermal window around it is cost the residual never reads."""
+@pytest.mark.parametrize("scheme", ["fixed_gap", "fixed_peak", "fixed_occupation"])
+def test_ground_state_manifold_is_no_longer_a_key(write_input, scheme):
+    """Sector energies are solved for the lowest state alone, always; there is nothing to opt into."""
     text = MINIMAL_SELFENERGY + f"\n[double_counting.{scheme}]\nground_state_manifold = true\n"
-    if scheme == "fixed_peak":
-        text += "peak_position = 1.0\n"
-    resolved = load_input(write_input(text))
-    assert resolved.tables[f"double_counting.{scheme}"]["ground_state_manifold"] is True
-
-
-@pytest.mark.parametrize("scheme", ["fixed_gap", "fixed_peak"])
-def test_ground_state_manifold_defaults_off(write_input, scheme):
-    """Opt-in by design: it also switches the criterion's reported impurity occupation from the
-    thermal average to the ground state's, and those differ on SrMnO3."""
-    text = MINIMAL_SELFENERGY + f"\n[double_counting.{scheme}]\n"
-    if scheme == "fixed_peak":
-        text += "peak_position = 1.0\n"
-    resolved = load_input(write_input(text))
-    assert resolved.tables[f"double_counting.{scheme}"]["ground_state_manifold"] is False
-
-
-def test_the_occupation_criterion_does_not_have_ground_state_manifold(write_input):
-    """Not an oversight, and it must not be "fixed" by moving the key into `_DC_SEARCH_KEYS`.
-
-    ``fixed_occupation``'s observable *is* the thermal impurity occupation, so narrowing the
-    manifold would change the criterion rather than the cost of evaluating it --
-    :func:`dc_criteria.fixed_occupation_dc` accordingly does not accept the argument at all.
-    Declaring the key here anyway would let it parse and then do nothing, which is exactly what
-    the RSPt double-counting line rejects for the same spelling.
-    """
-    text = MINIMAL_SELFENERGY + "\n[double_counting.fixed_occupation]\nground_state_manifold = true\n"
     with pytest.raises(InputError, match="unknown key 'ground_state_manifold'"):
         load_input(write_input(text))
 
@@ -390,6 +362,14 @@ def test_a_removed_key_says_it_was_removed_not_that_it_is_a_typo(write_input):
     text = MINIMAL_SELFENERGY.replace("[selfenergy]", "[many_body_basis]\nspin_flip_dj = true\n[selfenergy]")
     with pytest.raises(InputError, match="'spin_flip_dj' is no longer a key: it never had an effect"):
         load_input(write_input(text))
+
+
+def test_a_retired_key_is_ignored_with_a_warning(write_input):
+    """`[solver] reort` named a choice the solver now makes itself: an input written for an older
+    version still runs, and says why the line did nothing."""
+    text = MINIMAL_SELFENERGY.replace("[selfenergy]", '[solver]\nreort = "partial"\n[selfenergy]')
+    resolved = load_input(write_input(text))
+    assert any("'reort' is retired" in w for w in resolved.warnings)
 
 
 # ---- every refusal has a message that names the problem --------------------------------------

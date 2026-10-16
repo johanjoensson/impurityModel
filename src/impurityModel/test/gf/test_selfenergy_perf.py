@@ -125,27 +125,11 @@ def _phase_timers():
             setattr(module, name, orig)
 
 
-def _resolve_reort():
-    """Optional GF reort override via SELFENERGY_BENCH_REORT (none/partial/selective/full)."""
-    name = os.environ.get("SELFENERGY_BENCH_REORT")
-    if not name:
-        return None
-    from impurityModel.ed.BlockLanczosArray import Reort
-
-    return {
-        "none": Reort.NONE,
-        "partial": Reort.PARTIAL,
-        "selective": Reort.SELECTIVE,
-        "full": Reort.FULL,
-        "periodic": Reort.PERIODIC,
-    }[name.lower()]
-
-
 def _build_inputs(ls, nBaths, nValBaths, n0imp, n_omega, dense_cutoff, truncation_threshold, *, rank, verbose):
     """Construct the calc_selfenergy arguments for the NiO d-shell anchor workload.
 
     Thin wrapper over the shared :func:`_nio_workload.build_selfenergy_inputs`, applying
-    the benchmark-specific env-var knobs (reort / occ / weight / dN).
+    the benchmark-specific env-var knobs (occ / weight / dN).
     """
     from impurityModel.test.support._nio_workload import build_selfenergy_inputs
 
@@ -159,7 +143,6 @@ def _build_inputs(ls, nBaths, nValBaths, n0imp, n_omega, dense_cutoff, truncatio
         truncation_threshold=truncation_threshold,
         rank=rank,
         verbose=verbose,
-        reort=_resolve_reort(),
         occ_cutoff=float(os.environ.get("SELFENERGY_BENCH_OCC_CUTOFF", "1e-12")),
         slaterWeightMin=float(os.environ.get("SELFENERGY_BENCH_SWMIN", "1e-12")),
         dN=(int(os.environ["SELFENERGY_BENCH_DN"]) if os.environ.get("SELFENERGY_BENCH_DN") else None),
@@ -265,41 +248,6 @@ def test_calc_selfenergy_benchmark():
                 t = _PHASE_TIME.get(name, 0.0)
                 print(f"  {name:<22}{t:>10.2f}{100 * t / total:>8.1f}{_PHASE_CALLS.get(name, 0):>8d}")
             print(f"  {'other (build/IO)':<22}{other:>10.2f}{100 * other / total:>8.1f}{'':>8}")
-
-            # Optional per-step block-Lanczos split (BLOCKLANCZOS_PROFILE=1; env-gated in the
-            # Cython kernel). Splits the GF block-Lanczos step into matvec / recurrence-LA /
-            # W-estimator / triggered reort / CholeskyQR2 / convergence monitor.
-            try:
-                from impurityModel.ed.BlockLanczos import get_block_lanczos_profile
-
-                prof = get_block_lanczos_profile()
-            except Exception:
-                prof = {}
-            if prof:
-                ops = ["matvec", "recurrence", "tsqr", "w_estimate", "reort", "monitor"]
-                tot = sum(prof.get(o, 0.0) for o in ops)
-                print("\n[selfenergy-bench] --- block-Lanczos per-op split (GF kernel) ---")
-                print(f"  {'op':<18}{'time(s)':>10}{'%':>8}{'calls':>10}")
-                for o in ops:
-                    t = prof.get(o, 0.0)
-                    print(f"  {o:<18}{t:>10.2f}{100 * t / tot if tot else 0:>8.1f}{int(prof.get(o + '#n', 0)):>10d}")
-                acted = int(prof.get("reort_acted#n", 0))
-                rtot = int(prof.get("reort_total#n", 0))
-                print(f"  reort triggered: {acted}/{rtot} steps ({100 * acted / rtot if rtot else 0:.0f}%)", flush=True)
-                try:
-                    from impurityModel.ed.BlockLanczosArray import get_reort_profile
-
-                    rp = get_reort_profile()
-                except Exception:
-                    rp = {}
-                if rp.get("acted", 0):
-                    a = rp["acted"]
-                    print(
-                        f"  reort fan-out: avg {rp.get('bad_blocks', 0) / a:.1f} bad blocks / "
-                        f"{rp.get('bad_cols', 0) / a:.1f} bad cols per acting call; "
-                        f"avg {rp.get('n_blocks_total', 0) / max(rp.get('calls', 1), 1):.1f} blocks present",
-                        flush=True,
-                    )
 
             # Top cProfile entries by cumulative and by tottime (rank-0 view).
             for sort_key in ("cumulative", "tottime"):

@@ -197,9 +197,6 @@ ext_modules = [
         sources=[
             os.path.join(_cython_src_dir, "BlockLanczos.pyx"),
         ],
-        depends=[
-            os.path.join(_cython_src_dir, "_lanczos_step.pxi"),
-        ],
         language="c++",
         include_dirs=include_dirs,
         extra_compile_args=extra_compile_args,
@@ -212,6 +209,7 @@ ext_modules = [
         ],
         depends=[
             os.path.join(_cython_src_dir, "_block_ops.pxi"),
+            os.path.join(_cython_src_dir, "_lanczos_step.pxi"),
         ],
         language="c++",
         include_dirs=include_dirs,
@@ -239,6 +237,16 @@ ext_modules = [
         extra_link_args=extra_link_args,
     ),
     Extension(
+        name="impurityModel.ed.DistributedSparseMatrix",
+        sources=[
+            os.path.join(_cython_src_dir, "DistributedSparseMatrix.pyx"),
+        ],
+        language="c++",
+        include_dirs=include_dirs,
+        extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
+    ),
+    Extension(
         name="impurityModel.ed.BiCGSTAB",
         sources=[
             os.path.join(_cython_src_dir, "BiCGSTAB.pyx"),
@@ -252,16 +260,6 @@ ext_modules = [
         name="impurityModel.ed.GMRES",
         sources=[
             os.path.join(_cython_src_dir, "GMRES.pyx"),
-        ],
-        language="c++",
-        include_dirs=include_dirs,
-        extra_compile_args=extra_compile_args,
-        extra_link_args=extra_link_args,
-    ),
-    Extension(
-        name="impurityModel.ed.ChebyshevFilter",
-        sources=[
-            os.path.join(_cython_src_dir, "ChebyshevFilter.pyx"),
         ],
         language="c++",
         include_dirs=include_dirs,

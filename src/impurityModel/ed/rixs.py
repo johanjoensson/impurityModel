@@ -23,7 +23,7 @@ import impurityModel.ed.greens_function as gf
 from impurityModel.ed import config
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
-from impurityModel.ed.BlockLanczosArray import Reort
+from impurityModel.ed import gf_solvers
 from impurityModel.ed.gf_solvers import _freeze_bicgstab_support, solve_shifted_block
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
@@ -64,8 +64,8 @@ def _rixs_adaptive_tol():
 
 
 def _rixs_adaptive_batch():
-    """New wIn solves per adaptive round (:data:`config.GF_RIXS_ADAPTIVE_BATCH`)."""
-    return config.GF_RIXS_ADAPTIVE_BATCH.get()
+    """New wIn solves per adaptive round."""
+    return 1
 
 
 # Below this many requested wIn points the adaptive sampler cannot beat the dense sweep
@@ -296,7 +296,7 @@ class _R1SolverChain:
 
     def __init__(self, r1_cache, eigenstate, counters=None, freeze=False):
         self.r1_cache = r1_cache
-        # GF_SUPPORT_FREEZE for the bicgstab tier: psi1_all is the same for every wIn of the chunk, so
+        # the support freeze for the bicgstab tier: psi1_all is the same for every wIn of the chunk, so
         # once a solve admits nothing beyond its starting support the remaining points solve on the
         # frozen P H P (gf_solvers._FrozenShiftedSystem), each checked against the full H.
         self._freeze_ok = bool(freeze)
@@ -541,7 +541,7 @@ def _rixs_map_flat(
     ``Tin_a |psi_e>``, conserved-charge sector windows) is computed on the full communicator
     before the split, so every rank holds the identical unit list.
 
-    Each unit's kernel walks its wIn chunk in order: warm-started :func:`cg.block_bicgstab`
+    Each unit's kernel walks its wIn chunk in order: warm-started :func:`impurityModel.ed.BiCGSTAB.block_bicgstab`
     for the intermediate resolvent (R1 sector confinement, R2 in-component block), then
     ``eval_out(green_basis, psi2_all, E_e) -> (n_i, n_o, len(wLoss))`` evaluates the
     out-transition Green's functions (per-pair diagonal or full tensor contraction).
@@ -678,10 +678,7 @@ def _rixs_map_flat(
             # each solve counts ranks-per-color times (review ledger M5). Non-root ranks roll back
             # at the end of the unit.
             stats_before = dict(solver_stats) if sub_comm is not None and sub_comm.rank != 0 else None
-            freeze = config.GF_SUPPORT_FREEZE.get() if sub_comm is None or sub_comm.rank == 0 else None
-            if sub_comm is not None:
-                freeze = sub_comm.bcast(freeze, root=0)
-            chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats, freeze=freeze)
+            chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats, freeze=gf_solvers._SUPPORT_FREEZE)
             out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
             wins = wIns[w_chunk]
             # `eval_out` reports the final-state basis it actually ran on rather than leaving the
@@ -784,7 +781,7 @@ def calc_map(
       ``Tin|psi>``, so the resolvent basis is pinned to that sector
       (:func:`symmetries.transition_sector_restrictions`) on top of the occupation window.
     * **In-component block resolvent (R2):** for each ``wIn`` all in-operators' resolvents are
-      solved as one block (:func:`cg.block_bicgstab`), sharing a single Krylov space /
+      solved as one block (:func:`impurityModel.ed.BiCGSTAB.block_bicgstab`), sharing a single Krylov space /
       iteration; the block solver deflates a rank-deficient in-component right-hand side.
     * **Out-component block Green (R3):** for a fixed in-operator all out-operators are run
       through a single block-Lanczos (:func:`gf_solvers.block_Green`); the diagonal
@@ -876,7 +873,7 @@ def calc_map(
                 psi3_all,
                 green_basis,
                 delta2,
-                Reort.NONE,
+                False,
                 slaterWeightMin=slaterWeightMin,
                 verbose=False,
                 info=r2_info,
@@ -969,7 +966,7 @@ def calc_tensor_map(
 
     The same efficiency levers as :func:`calc_map` apply -- R1 conserved-charge sector
     confinement of the intermediate resolvent and the R2 block resolvent over the in-components
-    (:func:`cg.block_bicgstab`, which deflates the frequently rank-deficient Cartesian
+    (:func:`impurityModel.ed.BiCGSTAB.block_bicgstab`, which deflates the frequently rank-deficient Cartesian
     in-component right-hand side).
 
     Parameters
@@ -1034,7 +1031,7 @@ def calc_tensor_map(
                 seeds,
                 green_basis,
                 delta2,
-                Reort.NONE,
+                False,
                 slaterWeightMin=slaterWeightMin,
                 verbose=False,
                 info=r2_info,

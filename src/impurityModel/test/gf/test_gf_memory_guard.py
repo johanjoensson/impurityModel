@@ -172,7 +172,7 @@ def test_auto_gf_caps_are_pinned_per_kernel_and_clamped(monkeypatch):
     wide = gu._pinned_auto_gf_cap(basis, [1], 40, None, "lanczos", 0)
     assert wide < narrow, "a wider stage is clamped to what it can afford"
     other = gu._pinned_auto_gf_cap(basis, [1], 1, None, "bicgstab", 0)
-    assert set(basis._auto_gf_caps) == {("None", "lanczos"), ("None", "bicgstab")}
+    assert set(basis._auto_gf_caps) == {(False, "lanczos"), (False, "bicgstab")}
     assert other != narrow
 
 

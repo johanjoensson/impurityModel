@@ -21,11 +21,24 @@ from mpi4py import MPI
 from impurityModel.ed.mpi_comm import (
     MATVEC_EXCHANGE_MAX_BYTES,
     MatvecExchangePlan,
-    dest_flags_all,
-    dest_flags_from_csr_indptr,
     matvec_column_chunk_width,
 )
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
+
+
+def dest_flags_from_csr_indptr(indptr, counts, offsets):
+    """Which destination ranks a ``(global_N, N_local)`` CSR's rows reach, read from its row pointers
+    (a test oracle for the flags ``DistributedSparseMatrix.owner_flags`` reads off the column blocks)."""
+    indptr = np.asarray(indptr)
+    counts = np.asarray(counts, dtype=np.int64)
+    offsets = np.asarray(offsets, dtype=np.int64)
+    return (indptr[offsets + counts] - indptr[offsets]) > 0
+
+
+def dest_flags_all(counts):
+    """Every non-empty rank is a destination."""
+    return np.asarray(counts, dtype=np.int64) > 0
+
 
 GLOBAL_N = 11
 WIDTH = 3

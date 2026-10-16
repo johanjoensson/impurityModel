@@ -24,7 +24,7 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import gf_solvers
-from impurityModel.ed.basis_transcription import build_dense_matrix, build_local_column_operator
+from impurityModel.ed.basis_transcription import build_dense_matrix, build_sparse_matrix
 from impurityModel.ed.gf_primitives import FrozenColumnMatvec, block_to_local_dense
 from impurityModel.ed.gf_solvers import block_Green_bicgstab
 from impurityModel.ed.greens_function import _gf_signed_axes
@@ -33,13 +33,14 @@ from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.test.gf.test_gf_truncation import _redistribute_as_width1
 from impurityModel.test.support import gf_oracles
 from impurityModel.test.support.gf_oracles import DELTA, OMEGA, _n3_sector_dets, _seed_basis, _seeds, _siam_6
+from impurityModel.test.support.gf_switches import set_gf_switches
 
 ATOL = 1e-10
 
 
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
-    for name in ("GF_SUPPORT_FREEZE", "GF_APPLY_ROW_CHUNKS", "GF_BICGSTAB_RESIDUAL_CHECK"):
+    for name in ("GF_SUPPORT_FREEZE", "APPLY_ROW_CHUNKS", "GF_BICGSTAB_RESIDUAL_CHECK"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -66,11 +67,11 @@ def _assert_same_g(G, G_ref, rel=1e-8):
 
 
 def _sparse(monkeypatch, fn, *args, **kwargs):
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
+    set_gf_switches(monkeypatch, support_freeze="0")
     try:
         return fn(*args, **kwargs)
     finally:
-        monkeypatch.delenv("GF_SUPPORT_FREEZE")
+        set_gf_switches(monkeypatch, support_freeze="1")
 
 
 def test_the_frozen_solves_give_the_sparse_g_and_converge_in_bicgstab(monkeypatch):
@@ -104,7 +105,7 @@ def _p_short_of_the_sector(comm=None):
 
 def test_the_frozen_matvec_is_h_on_p():
     basis, op = _p_short_of_the_sector()
-    matvec = FrozenColumnMatvec(build_local_column_operator(basis, op), basis.comm, 2)
+    matvec = FrozenColumnMatvec(build_sparse_matrix(basis, op), basis.comm, 2)
     rng = np.random.default_rng(1)
     X = rng.normal(size=(len(basis.local_basis), 2)) + 1j * rng.normal(size=(len(basis.local_basis), 2))
     X_block = ManyBodyState.from_keys_and_amps(basis._keys, X)
@@ -207,7 +208,7 @@ def test_the_residual_check_runs_on_frozen_points(monkeypatch):
 
 
 def test_off_switch(monkeypatch):
-    monkeypatch.setenv("GF_SUPPORT_FREEZE", "0")
+    set_gf_switches(monkeypatch, support_freeze="0")
     _, stats = _gf()
     assert stats["frozen_points"] == 0 and stats["frozen_size"] is None
 

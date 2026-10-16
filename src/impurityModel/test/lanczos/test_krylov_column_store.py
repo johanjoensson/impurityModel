@@ -5,15 +5,13 @@ The store replaced a ``concat_cols`` of the whole basis per continuation block
 must not lose: the stored columns are exactly the appended ones, in order; the basis is a
 view (no per-block copy), and products against it are bit-identical to products against a
 contiguous copy; the buffer survives a same-size restart and grows correctly past its
-capacity; the ManyBodyState arm's store slices back to the concatenated block; and
+capacity; and
 ``project`` is one Gram-Schmidt pass that also yields the pre-projection overlaps.
 """
 
 import numpy as np
-import pytest
 
-from impurityModel.ed.block_view import KrylovColumnStore, block_cols, concat_cols, slice_cols
-from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, SparseKrylovDense
+from impurityModel.ed.trlm import KrylovColumnStore
 
 
 def _blocks(rng, n, widths):
@@ -87,60 +85,16 @@ def test_appending_does_not_alias_the_caller_block():
     assert np.any(store.columns != 0)
 
 
-def _det(i):
-    raw = bytearray(1)
-    raw[0] |= 1 << (7 - i)
-    return SlaterDeterminant.from_bytes(bytes(raw))
-
-
-def _mbs_blocks():
-    a = ManyBodyState.from_states([ManyBodyState({_det(0): 1.0, _det(1): 0.5}), ManyBodyState({_det(2): 2.0})])
-    b = ManyBodyState.from_states([ManyBodyState({_det(3): 1.0j, _det(0): -1.0})])
-    return a, b
-
-
-def test_manybody_columns_slice_to_the_concatenated_block():
-    """The ManyBodyState arm keeps a SparseKrylovDense; sliced, it is concat_cols's block."""
-    a, b = _mbs_blocks()
-    store = KrylovColumnStore()
-    store.reset(a, 3, row_hint=8)
-    store.append(a)
-    store.append(b)
-    assert isinstance(store.columns, SparseKrylovDense)
-    assert store.columns.dtype == np.complex128  # the columns rebuild eigenvectors
-    assert block_cols(store.columns) == 3
-    got = slice_cols(store.columns, 0, 3)
-    ref = concat_cols(a, b)
-    assert got.width == ref.width == 3
-    assert got == ref
-
-
-def _dense(block, dets):
-    return np.array([[block[d][c] if d in block else 0.0 for c in range(block.width)] for d in dets])
-
-
-@pytest.mark.parametrize("arm", ["array", "manybody"])
-def test_project_is_one_cgs_pass_with_the_pre_projection_overlaps(arm):
+def test_project_is_one_cgs_pass_with_the_pre_projection_overlaps():
     """``O = Q^H wp`` before the pass (its last rows are the Lanczos alpha), ``wp - Q O`` after."""
     rng = np.random.default_rng(5)
-    dets = [_det(i) for i in range(8)]
     Q = np.linalg.qr(rng.standard_normal((8, 5)) + 1j * rng.standard_normal((8, 5)))[0]
     wp = rng.standard_normal((8, 2)) + 1j * rng.standard_normal((8, 2))
     blocks = [Q[:, :3], Q[:, 3:]]
-    if arm == "manybody":
-
-        def to_block(x):
-            return ManyBodyState.from_states([ManyBodyState(dict(zip(dets, x[:, c]))) for c in range(x.shape[1])])
-
-        blocks = [to_block(x) for x in blocks]
-        wp_in = to_block(wp)
-    else:
-        wp_in = wp.copy()
     store = KrylovColumnStore()
     store.reset(blocks[0], 5)
     for blk in blocks:
         store.append(blk)
-    out, overlaps = store.project(wp_in)
-    out = _dense(out, dets) if arm == "manybody" else out
+    out, overlaps = store.project(wp.copy())
     np.testing.assert_allclose(overlaps, np.conj(Q.T) @ wp, atol=1e-14)
     np.testing.assert_allclose(out, wp - Q @ (np.conj(Q.T) @ wp), atol=1e-14)

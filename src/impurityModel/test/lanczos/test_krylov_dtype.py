@@ -5,13 +5,8 @@ run — ``16 * p * n_blocks`` bytes per retained determinant, ~30x everything el
 FCC-Ni operating point. Storing it in ``complex64`` halves that, and only the *stored*
 basis narrows: the recurrence blocks, the overlaps and the residual stay complex128.
 
-The catch this module pins down: a complex64 basis can only be projected against to
-``u32 ~ 6e-8``, which is *above* the ``REORT_TOL = sqrt(EPS) ~ 1.5e-8`` semi-orthogonality
-target that ``PARTIAL``/``SELECTIVE`` steer to. The target is unreachable, and their block
-selection threshold ``BAD_BLOCK_TOL = EPS**0.75 ~ 1.8e-12`` sits five orders below the fp32
-noise floor, so every block would be flagged: PARTIAL degenerates into FULL while delivering
-worse orthogonality than FULL at complex128. Those modes reject the combination outright.
-``FULL``/``PERIODIC`` hold no estimator and simply settle at ~6e-8.
+A complex64 basis can only be projected against to ``u32 ~ 6e-8``: ``FULL`` with a complex64 store
+simply settles there.
 
 Measured on the fixture below (4 bath levels, 200-determinant sector, 82 blocks):
 
@@ -20,23 +15,18 @@ mode             buffer      ||Q^H Q - I||  max\\|G - G_ref\\|
 ===============  ==========  ============  ==============
 FULL c128        786 432 B   1.1e-15       7.7e-15
 FULL c64         393 216 B   6.0e-08       1.8e-07
-PARTIAL c128     786 432 B   1.9e-09       3.7e-14
 ===============  ==========  ============  ==============
 
 So complex64 costs ~7 orders of Green's-function accuracy and buys exactly 2x — a good
 trade only because 1.8e-07 is still far below the physical broadening (``delta = 0.1``) and
-below the recurrence's own convergence tolerance. Which of complex64-FULL and
-complex128-PARTIAL is the more orthogonal basis is workload dependent (on a 5-bath variant
-PARTIAL drifts to 4.4e-07, above its own sqrt(EPS) target), so this module asserts absolute
-bounds, not an ordering between them.
+below the recurrence's own convergence tolerance. This module asserts absolute bounds.
 """
 
 import numpy as np
 import pytest
 
 from impurityModel.ed.basis_transcription import build_dense_matrix
-from impurityModel.ed.BlockLanczos import block_lanczos_cy
-from impurityModel.ed.BlockLanczosArray import REORT_TOL, Reort
+from impurityModel.ed.BlockLanczos import block_lanczos
 from impurityModel.ed.greens_function import _make_gf_convergence_monitor, calc_G
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, SparseKrylovDense
@@ -112,7 +102,7 @@ def _run(siam, reort, dtype):
     hOp, imp, baths, psi, support, sector, _ = siam
     basis = Basis(imp, baths, initial_basis=support, verbose=False)
     converged, _flag, _tol, _dg = _make_gf_convergence_monitor(DELTA, 0.0)
-    alphas, betas, q, _w, _widths, status = block_lanczos_cy(
+    alphas, betas, q, _widths, status = block_lanczos(
         [s.copy() for s in psi],
         hOp,
         basis,
@@ -122,7 +112,7 @@ def _run(siam, reort, dtype):
         max_iter=sector // len(psi),
         return_widths=True,
         return_status=True,
-        store_krylov=reort != Reort.NONE,
+        store_krylov=reort != False,
         krylov_dtype=dtype,
     )
     return alphas, betas, q, status
@@ -167,25 +157,17 @@ def test_bad_dtype_rejected():
         SparseKrylovDense(np.float64)
 
 
-@pytest.mark.parametrize("reort", [Reort.PARTIAL, Reort.SELECTIVE])
-def test_complex64_rejected_by_estimator_modes(siam, reort):
-    """A basis known to ~6e-8 cannot support a sqrt(EPS) semi-orthogonality target."""
-    with pytest.raises(ValueError, match="incompatible with reort"):
-        _run(siam, reort, np.complex64)
-
-
 def test_full_complex64_halves_the_store_and_keeps_the_greens_function(siam):
     """FULL + complex64: exactly half the store, orthogonality at fp32 roundoff, GF intact.
 
     The complex128 FULL run is the accuracy reference. See the module docstring for the
-    measured trade; the assertions here are absolute bounds, since the ordering against
-    PARTIAL is workload dependent.
+    measured trade; the assertions here are absolute bounds.
     """
     _, _, _, psi, _, _, g_ref = siam
     r = np.eye(len(psi), dtype=complex)
 
     results = {}
-    for label, reort, dtype in (("c128", Reort.FULL, None), ("c64", Reort.FULL, np.complex64)):
+    for label, reort, dtype in (("c128", True, None), ("c64", True, np.complex64)):
         alphas, betas, store, status = _run(siam, reort, dtype)
         assert status == "converged", f"{label}: {status}"
         results[label] = {
@@ -221,25 +203,12 @@ def test_block_green_sparse_defaults_to_complex128():
     psi = _seeds()
     support = sorted({d for s in psi for d in s})
 
-    for reort in (Reort.FULL, Reort.PARTIAL):
+    for reort in (True,):
         basis = Basis(imp, baths, initial_basis=support, verbose=False)
         alphas, _betas, _r = block_Green_sparse(
             hOp, basis.redistribute_psis(*[s.copy() for s in psi]), basis, DELTA, reort=reort, verbose=False
         )
-        assert len(alphas) > 1  # complex128 for both: no mode is auto-narrowed
-
-    # An explicit illegal request is rejected, not silently widened back.
-    basis = Basis(imp, baths, initial_basis=support, verbose=False)
-    with pytest.raises(ValueError, match="incompatible with reort"):
-        block_Green_sparse(
-            hOp,
-            basis.redistribute_psis(*[s.copy() for s in psi]),
-            basis,
-            DELTA,
-            reort=Reort.PARTIAL,
-            verbose=False,
-            krylov_dtype=np.complex64,
-        )
+        assert len(alphas) > 1  # complex128: no mode is auto-narrowed
 
     # An explicit legal request reaches the store.
     basis = Basis(imp, baths, initial_basis=support, verbose=False)
@@ -248,13 +217,8 @@ def test_block_green_sparse_defaults_to_complex128():
         basis.redistribute_psis(*[s.copy() for s in psi]),
         basis,
         DELTA,
-        reort=Reort.FULL,
+        reort=True,
         verbose=False,
         krylov_dtype=np.complex64,
     )
     assert len(alphas) > 1
-
-
-def test_semi_orthogonality_target_is_documented_constant():
-    """The guard's premise: fp32 roundoff sits above the semi-orthogonality target."""
-    assert np.finfo(np.complex64).eps > REORT_TOL

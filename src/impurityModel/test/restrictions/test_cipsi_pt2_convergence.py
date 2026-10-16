@@ -11,6 +11,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import groundstate
 from impurityModel.ed.cipsi_solver import DEFAULT_E_PT2_TOL, CIPSISolver
+from impurityModel.ed.eigensolvers import Lowest, Within
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
 
@@ -50,10 +51,8 @@ def _expand(comm=None, **kwargs):
         delta_conduction_occ={0: 1},
     )
     solver = CIPSISolver(basis)
-    solver.expand(_hamiltonian(), dense_cutoff=1000, **kwargs)
-    es, _ = solver.get_eigenvectors(
-        _hamiltonian(), num_wanted=1, max_energy=0.0, dense_cutoff=1000, psi_refs=solver.psi_refs
-    )
+    solver.expand(_hamiltonian(), Within.thermal(solver.basis.tau), dense_cutoff=1000, **kwargs)
+    es, _ = solver.get_eigenvectors(_hamiltonian(), Lowest(), dense_cutoff=1000, psi_refs=solver.psi_refs)
     return float(np.min(es)), basis.size, solver
 
 
@@ -140,7 +139,7 @@ def _capped_solver(cap):
         delta_conduction_occ={0: 1},
     )
     solver = CIPSISolver(basis)
-    solver.expand(_hamiltonian(), dense_cutoff=1000)
+    solver.expand(_hamiltonian(), Within.thermal(solver.basis.tau), dense_cutoff=1000)
     return solver
 
 
@@ -168,7 +167,8 @@ def _solve_ground_state():
 
 
 def test_solve_ground_state_reports_the_refinement_converged():
-    _, solver, es, _ = _solve_ground_state()
+    gs = _solve_ground_state()
+    solver, es = gs.solver, gs.es
     report = solver.convergence_report
     assert report["converged"] is True and report["e_pt2_tol"] == groundstate.GS_E_PT2_TOL
     assert len(es) <= solver.last_selection["n_references"]
@@ -184,7 +184,8 @@ def test_a_manifold_wider_than_the_references_is_not_reported_converged(monkeypa
         self.last_selection["n_references"] = 1
 
     monkeypatch.setattr(groundstate.CIPSISolver, "expand", expand_that_scored_one_reference)
-    _, solver, es, _ = _solve_ground_state()
+    gs = _solve_ground_state()
+    solver, es = gs.solver, gs.es
     assert len(es) > 1
     report = solver.convergence_report
     assert report["converged"] is False and report["limited_by"] == "manifold_widened"

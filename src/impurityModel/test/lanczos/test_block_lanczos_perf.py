@@ -7,9 +7,9 @@ workload), both loops that can run it:
 * ``test_partial_trlm_array_bench`` — the path CIPSI actually takes today
   (``cipsi_solver.get_eigenvectors``): sparse CSR ``H_mat`` (column-sliced under
   MPI) through the dispatching ``thick_restart_block_lanczos`` →
-  ``block_lanczos_array_cy``.
+  ``block_lanczos``.
 * ``test_partial_sparse_kernel_bench`` — the hash-distributed ``ManyBodyState``
-  kernel ``block_lanczos_cy`` (the memory-scalable alternative), with the
+  kernel ``block_lanczos`` (the memory-scalable alternative), with the
   per-phase time profile and the memory breakdown (Krylov-basis bytes, W buffer,
   dense fill ratio, transient reort spikes).
 
@@ -44,28 +44,17 @@ from mpi4py import MPI
 from impurityModel.ed import atomic_physics
 from impurityModel.ed.basis_transcription import build_distributed_vector, build_sparse_matrix
 from impurityModel.ed.BlockLanczos import (
-    block_lanczos_cy,
-    enable_block_lanczos_profile,
-    get_block_lanczos_profile,
-    reset_block_lanczos_profile,
+    block_lanczos,
 )
 from impurityModel.ed.BlockLanczosArray import (
-    Reort,
     block_normalize,
     eigh_block_tridiagonal,
-    enable_reort_profile,
-    get_reort_profile,
-    reset_reort_profile,
 )
-from impurityModel.ed.cipsi_solver import CIPSISolver
-from impurityModel.ed.groundstate import find_ground_state_basis
+from impurityModel.ed.groundstate import solve_ground_state
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyOperator,
     ManyBodyState,
-    enable_manybody_profile,
-    get_manybody_profile,
     inner_multi,
-    reset_manybody_profile,
     support_stats,
 )
 from impurityModel.ed.selfenergy import _MAX_ROTATION_FILL, _ROTATION_TRIM_TOL, _per_group_occupation, _per_group_scalar
@@ -86,6 +75,7 @@ MIXED_VALENCE = int(os.environ.get("BLBENCH_MV", "1"))
 TRUNC = int(os.environ.get("BLBENCH_TRUNC", "30000"))
 MAXITER = int(os.environ.get("BLBENCH_MAXITER", "40"))
 BLOCK = int(os.environ.get("BLBENCH_BLOCK", "2"))
+TRLM_REORT = os.environ.get("BLBENCH_REORT", "FULL").upper() != "NONE"
 REPS = int(os.environ.get("BLBENCH_REPS", "3"))
 # Force the restarted-Lanczos path in the CIPSI expansion regardless of basis size
 # (production hits it once the basis outgrows dense_cutoff; the bench always should).
@@ -150,7 +140,7 @@ def nio_workload():
 
     Mirrors the production plumbing: ``_nio_workload.build_selfenergy_inputs`` →
     ``calc_selfenergy``'s symmetry-rotation / bath-classification / orbital-grouping
-    preamble → ``find_ground_state_basis`` + one ``CIPSISolver.expand`` (both running
+    preamble → ``solve_ground_state`` (both running
     the PARTIAL restarted Lanczos, exactly like ``calc_gs``). The returned basis is
     then *frozen*: the benchmarks re-run the Lanczos loops on it under controlled
     settings.
@@ -187,31 +177,22 @@ def nio_workload():
     mixed_valence = _per_group_scalar(dict.fromkeys(impurity_orbitals, MIXED_VALENCE), impurity_orbitals, default=0)
 
     tau = inputs["tau"]
-    basis = find_ground_state_basis(
+    ground_state = solve_ground_state(
         h,
         impurity_orbitals,
         bath_states,
         nominal_occ,
+        tau=tau,
+        slaterWeightMin=SLATER_WEIGHT_MIN,
         mixed_valence=mixed_valence,
-        tau=tau / 100,  # calc_gs runs the occupation search at tau/100
         chain_restrict=False,
         dense_cutoff=DENSE_CUTOFF,
         comm=comm,
         truncation_threshold=TRUNC,
         verbose=False,
-        slaterWeightMin=np.sqrt(SLATER_WEIGHT_MIN),
-        cipsi_solver_method="trlm",
-    )
-    basis.tau = tau
-    solver = CIPSISolver(basis)
-    solver.expand(
-        h,
-        dense_cutoff=DENSE_CUTOFF,
         de2_min=1e-6,
-        slaterWeightMin=SLATER_WEIGHT_MIN,
-        solver="trlm",
-        reort=Reort.PARTIAL,
     )
+    basis, solver = ground_state.basis, ground_state.solver
     if basis.restrictions is not None:
         h.set_restrictions(basis.restrictions)
     return {"h": h, "basis": basis, "comm": comm, "shared": {}}
@@ -244,7 +225,7 @@ def _random_block(basis, comm, width):
 
 
 def test_partial_trlm_array_bench(nio_workload):
-    """Production path: TRLM (PARTIAL) on the column-sliced CSR matrix (array kernel)."""
+    """Production path: TRLM (FULL) on the column-sliced CSR matrix (array kernel)."""
     h, basis, comm = nio_workload["h"], nio_workload["basis"], nio_workload["comm"]
 
     n_global = len(basis)
@@ -257,9 +238,7 @@ def test_partial_trlm_array_bench(nio_workload):
     sampler = RssSampler()
     sampler.start()
     H_mat = build_sparse_matrix(basis, h)
-    if basis.is_distributed:
-        H_mat = H_mat[:, basis.local_indices]
-    h_mat_bytes = H_mat.data.nbytes + H_mat.indices.nbytes + H_mat.indptr.nbytes
+    h_mat_bytes = H_mat.nbytes
     psi0_arr = build_distributed_vector(basis, psi0).T
 
     times = []
@@ -276,7 +255,7 @@ def test_partial_trlm_array_bench(nio_workload):
             max_restarts=100,
             verbose=False,
             slaterWeightMin=SLATER_WEIGHT_MIN,
-            reort=Reort.PARTIAL,
+            reort=TRLM_REORT,
         )
         times.append(time.perf_counter() - t0)
     sampler.stop()
@@ -289,7 +268,7 @@ def test_partial_trlm_array_bench(nio_workload):
     locals_n = [local_n] if comm is None else comm.gather(local_n, root=0)
     _report(
         comm,
-        f"TRLM/array PARTIAL (NiO {NBATHS} bath, basis {n_global}, "
+        f"TRLM/array {TRLM_REORT.name} (NiO {NBATHS} bath, basis {n_global}, "
         f"{'serial' if comm is None else f'{comm.size} ranks'})",
         [
             ("E0", f"{np.min(e_ref):.6f}"),
@@ -302,27 +281,20 @@ def test_partial_trlm_array_bench(nio_workload):
 
 
 def test_partial_sparse_kernel_bench(nio_workload):
-    """Sparse ManyBodyState kernel: block_lanczos_cy PARTIAL, fixed iteration budget."""
+    """Sparse ManyBodyState kernel: block_lanczos FULL, fixed iteration budget."""
     h, basis, comm = nio_workload["h"], nio_workload["basis"], nio_workload["comm"]
-
-    enable_block_lanczos_profile(True)
-    enable_reort_profile(True)
-    enable_manybody_profile(True)
-    reset_block_lanczos_profile()
-    reset_reort_profile()
-    reset_manybody_profile()
 
     psi0 = _random_block(basis, comm, BLOCK)
 
     sampler = RssSampler()
     sampler.start()
     t0 = time.perf_counter()
-    alphas, betas, Q_basis, W, block_widths = block_lanczos_cy(
+    alphas, betas, Q_basis, block_widths = block_lanczos(
         psi0=psi0,
         h_op=h,
         basis=basis,
-        converged_fn=lambda *a, **k: False,
-        reort="partial",
+        converged=lambda *a, **k: False,
+        reort=True,
         max_iter=MAXITER,
         slaterWeightMin=SLATER_WEIGHT_MIN,
         comm=comm,
@@ -331,10 +303,6 @@ def test_partial_sparse_kernel_bench(nio_workload):
     wall = time.perf_counter() - t0
     sampler.stop()
 
-    enable_block_lanczos_profile(False)
-    enable_reort_profile(False)
-    enable_manybody_profile(False)
-
     n_it = len(alphas)
 
     # --- correctness: semi-orthogonality of the Krylov basis + E0 vs the array kernel ---
@@ -342,7 +310,7 @@ def test_partial_sparse_kernel_bench(nio_workload):
     if comm is not None:
         comm.Allreduce(MPI.IN_PLACE, ov, op=MPI.SUM)
     orth_err = np.linalg.norm(ov - np.eye(len(Q_basis)))
-    assert orth_err < 1e-6, f"PARTIAL lost semi-orthogonality: |Q^H Q - I| = {orth_err:.3e}"
+    assert orth_err < 1e-6, f"FULL lost semi-orthogonality: |Q^H Q - I| = {orth_err:.3e}"
 
     eigvals, Z = eigh_block_tridiagonal(alphas, betas, block_widths=block_widths)
     k0 = int(np.argmin(eigvals))
@@ -356,7 +324,7 @@ def test_partial_sparse_kernel_bench(nio_workload):
     # default budget.
     #
     # This replaces `abs(e0_sparse - e0_trlm) < 1e-4`, which could not hold and was failing:
-    # the two kernels are not being asked about the same operator. `block_lanczos_cy`'s
+    # the two kernels are not being asked about the same operator. `block_lanczos`'s
     # matvec discovers new determinants every step and the frozen `Basis` never sees them
     # (see `_CappedBasisProxy`, which exists to bound exactly this on the GF path) -- here it
     # reaches 63504 determinants, 62419 of them outside the 1085-determinant basis. The array
@@ -384,14 +352,6 @@ def test_partial_sparse_kernel_bench(nio_workload):
     w_bytes = W.nbytes if W is not None else 0
     del q_states
 
-    prof = get_block_lanczos_profile()
-    reort_prof = get_reort_profile()
-    mbu_prof = get_manybody_profile()
-
-    def per_it(key):
-        n = prof.get(key + "#n", 0.0)
-        return f"{1e3 * prof.get(key, 0.0) / n:8.2f} ms/call x {int(n):3d}" if n else "       - "
-
     local_n = len(basis.local_basis)
     gathered = (
         [(local_n, q_bytes, sampler.peak_delta_bytes)]
@@ -400,7 +360,7 @@ def test_partial_sparse_kernel_bench(nio_workload):
     )
     _report(
         comm,
-        f"sparse-kernel PARTIAL (NiO {NBATHS} bath, basis {len(basis)}, p={BLOCK}, "
+        f"sparse-kernel FULL (NiO {NBATHS} bath, basis {len(basis)}, p={BLOCK}, "
         f"{n_it} its, {'serial' if comm is None else f'{comm.size} ranks'})",
         [
             ("wall time", f"{wall:.3f} s  ({1e3 * wall / max(n_it, 1):.1f} ms/iter)"),
@@ -412,16 +372,6 @@ def test_partial_sparse_kernel_bench(nio_workload):
                 + (f"  [array kernel, basis projection: {e0_trlm:.6f}]" if e0_trlm is not None else ""),
             ),
             ("|Q^H Q - I|", f"{orth_err:.3e}"),
-            ("matvec_apply", per_it("matvec_apply")),
-            ("matvec_redistribute", per_it("matvec_redistribute")),
-            ("recurrence (LA)", per_it("recurrence")),
-            ("tsqr", per_it("tsqr")),
-            ("w_estimate", per_it("w_estimate")),
-            ("reort", per_it("reort")),
-            ("monitor", per_it("monitor")),
-            ("reort acted/total", f"{int(prof.get('reort_acted#n', 0))}/{int(prof.get('reort_total#n', 0))}"),
-            ("apply_reort stats", str(reort_prof)),
-            ("cgs2_dense transients", str(mbu_prof)),
             ("Q_basis store (local)", f"{q_bytes / MB:.1f} MiB, {len(Q_basis)} columns"),
             ("union support / fill", f"{union_size} determinants, fill {fill:.2f}"),
             ("legacy list equivalent", f"{legacy_bytes / MB:.1f} MiB ({legacy_bytes / max(q_bytes, 1):.1f}x larger)"),
@@ -486,7 +436,7 @@ def _sweep_solve(h, psi0, max_blocks, max_restarts):
 
     t0 = time.perf_counter()
     vals, _ = _thick_restart_block_lanczos_array(
-        psi0.copy(), h, _Basis(), 2 * SWEEP_P, max_blocks, 1e-300, max_restarts, False, Reort.FULL, None
+        psi0.copy(), h, _Basis(), 2 * SWEEP_P, max_blocks, 1e-300, max_restarts, False, None
     )
     return time.perf_counter() - t0, vals
 
@@ -496,7 +446,7 @@ def test_trlm_continuation_cost_vs_subspace_size():
     """Per-block cost of the TRLM restart continuation as the subspace grows.
 
     Every continuation block pays O(N D) for the CGS2 projections against the D stored
-    columns, which is inherent to ``reort="full"``. A copy of the whole basis is the same order
+    columns, which is inherent to ``reort=True``. A copy of the whole basis is the same order
     per block, which is why a single operating point cannot tell the two apart: re-concatenating
     ``Q_basis`` per block and materializing ``conj(Q^T)`` per inner product each add to the
     constant in front of that O(N D). The report divides the continuation's per-block time by

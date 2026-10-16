@@ -11,8 +11,7 @@ try:
 except ImportError:
     _has_mpi = False
 
-from impurityModel.ed.BlockLanczosArray import Reort, block_normalize
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
+from impurityModel.ed.BlockLanczosArray import block_normalize
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
@@ -138,7 +137,7 @@ def _exact_spectrum(spectrum_type):
     return EXACT_DEGENERATE if spectrum_type == "exact_degenerate" else NEAR_DEGENERATE
 
 
-def _run_solver(solver, h_op, basis, psi0, mode, comm):
+def _run_solver(solver, h_op, basis, psi0, comm):
     kwargs = dict(
         psi0=psi0,
         h_op=h_op,
@@ -148,15 +147,13 @@ def _run_solver(solver, h_op, basis, psi0, mode, comm):
         tol=1e-8,
         max_restarts=50,
         verbose=False,
-        reort=mode,
     )
-    if solver == "TRLM":
-        return thick_restart_block_lanczos(**kwargs)
-    return implicitly_restarted_block_lanczos_cy(**kwargs, comm=comm)
+    assert solver == "TRLM"
+    return thick_restart_block_lanczos(**kwargs)
 
 
 @functools.cache
-def _serial_solve(mode, path, solver, spectrum_type):
+def _serial_solve(path, solver, spectrum_type):
     """One serial solve per cell, shared by ``test_no_ghost_bands`` and its Ritz-floor twin.
 
     The two assert different invariants of the same run -- the multiplicity match (xfail on the
@@ -164,17 +161,17 @@ def _serial_solve(mode, path, solver, spectrum_type):
     restarted Lanczos twice. Neither mutates the result.
     """
     h_op, basis, psi0, _ = create_diagonal_system(_exact_spectrum(spectrum_type), path, comm=None)
-    return _run_solver(solver, h_op, basis, psi0, mode, comm=None)
+    return _run_solver(solver, h_op, basis, psi0, comm=None)
 
 
-def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
+def get_xfail_marker(path, solver, spectrum_type, mpi):
     # On this 12-state spectrum with block size 2 and a tight restart subspace
     # (max_subspace_blocks=5), the array path converges whenever the degeneracies are
     # *split* (near_degenerate): each near-copy is then a distinct Ritz value the block
     # recurrence can resolve one block at a time, so it returns the six lowest cleanly.
     # Those cells run for real (and guard against regressions).
     #
-    # IRLM used to be excluded from that: it was xfail on near_degenerate too, because the
+    # The IRLM solver (since deleted) was excluded from that: it was xfail on near_degenerate too, because the
     # rank floor sat *above* this spectrum's splitting. The eigenvalues here are 1e-9 apart
     # in relative terms and DEFLATE_TOL was EPS**(1/3) ~ 6.06e-6, so the second copy of each
     # near-degenerate pair looked rank-deficient and was deflated away -- leaving T_full
@@ -192,22 +189,8 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     # this is tracked as future work. strict=False so that if a solver later resolves a
     # cell it surfaces as XPASS rather than failing the suite.
     if path == "array" and spectrum_type == "near_degenerate":
-        # Reort.NONE and Reort.PERIODIC do no (or only intermittent) reorthogonalization,
-        # so nothing guarantees they resolve a 1e-9-relative splitting once BLAS-kernel
-        # rounding is comparable to that splitting: a different runner's OpenBLAS build
-        # (measured locally via OPENBLAS_CORETYPE=Nehalem, and observed on real CI across
-        # clang/gcc/intel -- see the numerics-campaign writeup) pushes the second copy of a
-        # near-degenerate pair a few ulp past the assertion below, producing a duplicate
-        # ("ghost") Ritz value instead of the true split pair. PARTIAL/FULL/SELECTIVE keep
-        # the Krylov basis orthogonal and are not excluded here -- they have not been
-        # observed to fail this cell on any measured kernel/compiler.
-        if mode in (Reort.NONE, Reort.PERIODIC):
-            return pytest.mark.xfail(
-                strict=False,
-                reason="Reort.NONE/PERIODIC give no reorthogonalization guarantee at a "
-                "1e-9-relative splitting; a different BLAS reduction order can merge the "
-                "near-degenerate pair into a ghost Ritz value (see comment above)",
-            )
+        # TRLM always reorthogonalizes fully, so the Krylov basis stays orthogonal and this cell
+        # is not excluded -- it has not been observed to fail on any measured kernel/compiler.
         return None
     return pytest.mark.xfail(
         strict=False,
@@ -216,35 +199,32 @@ def get_xfail_marker(mode, path, solver, spectrum_type, mpi):
     )
 
 
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
-@pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
+@pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
-def test_no_ghost_bands(mode, path, solver, spectrum_type, request):
-    marker = get_xfail_marker(mode, path, solver, spectrum_type, mpi=False)
+def test_no_ghost_bands(path, solver, spectrum_type, request):
+    marker = get_xfail_marker(path, solver, spectrum_type, mpi=False)
     if marker is not None:
         request.node.add_marker(marker)
 
-    eigvals, eigvecs = _serial_solve(mode, path, solver, spectrum_type)
+    eigvals, eigvecs = _serial_solve(path, solver, spectrum_type)
 
     # Check eigenvalues match exact ones with multiplicity (sorted). Solver was asked for
     # tol=1e-8; c=100 gives real headroom above that (not the literal 1e-6 this used to be
     # tightened to before it was tied back to the solver's own criterion) -- see
-    # get_xfail_marker for why NONE/PERIODIC on the near-degenerate array path are excused
+    # get_xfail_marker for why NONE on the near-degenerate array path are excused
     # from this instead of margin-widened further.
     np.testing.assert_allclose(
         np.sort(eigvals), _exact_spectrum(spectrum_type)[:NUM_WANTED], atol=solver_atol(1e-8, c=100)
     )
 
-    if mode != Reort.NONE:
-        assert_orthonormal(eigvecs, path, comm=None)
+    assert_orthonormal(eigvecs, path, comm=None)
 
 
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
 @pytest.mark.parametrize("path", ["array"])
-@pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
+@pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
-def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
+def test_no_ghost_bands_ritz_floor(path, solver, spectrum_type):
     """The hard invariant behind this module's name, asserted WITHOUT the xfail that
     covers the exact-multiplicity-match assertion in ``test_no_ghost_bands``.
 
@@ -253,7 +233,7 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
     suite) -- but "the restart subspace was too tight to resolve every degenerate copy"
     and "a spurious (e.g. zero) Ritz value appeared below the true ground state" are two
     different failure modes, and only the second is the actual bug this module is named
-    after (see test_irlm_locking_deflation.py's identical invariant). This node is never
+    after . This node is never
     xfail-marked, so a regression here always fails the suite even when the multiplicity
     assertion is (legitimately) letting a partial resolution through.
 
@@ -262,23 +242,23 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
     floor invariant does NOT hold cleanly:
 
     * with ``create_diagonal_system``'s all-positive ``np.random.rand()`` MBS seed (the
-      two p=2 seed columns have cosine ~0.75, condition ~2.6), IRLM/NONE on
+      two p=2 seed columns have cosine ~0.75, condition ~2.6), TRLM/NONE on
       ``exact_degenerate`` diverges outright: ``|beta|=4.5e4`` at iteration 4, Ritz value
       -1775 (far below the true minimum 1.0) -- a bad-seed artifact, not a reort or
       restart-logic bug: swapping to a signed ``randn`` seed (matching the array path
       and ``lanczos_golden.py``'s ``_mbs_psi0``) removes the divergence.
-    * even with that signed seed, ``near_degenerate`` under ``Reort.NONE``/``PERIODIC``
+    * even with that signed seed, ``near_degenerate`` under ``False``
       still lands Ritz values at -72.4 and -0.21 (below the true minimum 1.0); PARTIAL/
-      FULL/SELECTIVE settle to benign near-machine-zero artifacts (~1e-15) instead,
+      FULL settle to benign near-machine-zero artifacts (~1e-15) instead,
       consistent with this module's documented "spurious zero Ritz value from a
       partially-filled T_full" limitation, not a new divergence.
 
     Net: the array path carries this invariant cleanly (20/20); the MBS path's story is
-    seed-condition-dependent and reort-mode-dependent enough to need its own
+    seed-condition-dependent enough to need its own
     characterization, not a blanket floor assertion. Tracked for
     ``doc/lanczos_invariants.md``'s "known open issues" section (R2).
     """
-    eigvals, _eigvecs = _serial_solve(mode, path, solver, spectrum_type)
+    eigvals, _eigvecs = _serial_solve(path, solver, spectrum_type)
 
     lambda_min = _exact_spectrum(spectrum_type).min()
     ev_min = np.min(np.asarray(eigvals).real)
@@ -286,23 +266,21 @@ def test_no_ghost_bands_ritz_floor(mode, path, solver, spectrum_type):
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("mode", [Reort.NONE, Reort.PARTIAL, Reort.FULL, Reort.SELECTIVE, Reort.PERIODIC])
 @pytest.mark.parametrize("path", ["array", "ManyBodyState"])
-@pytest.mark.parametrize("solver", ["TRLM", "IRLM"])
+@pytest.mark.parametrize("solver", ["TRLM"])
 @pytest.mark.parametrize("spectrum_type", ["exact_degenerate", "near_degenerate"])
-def test_no_ghost_bands_mpi(mode, path, solver, spectrum_type, request):
+def test_no_ghost_bands_mpi(path, solver, spectrum_type, request):
     comm = MPI.COMM_WORLD
-    marker = get_xfail_marker(mode, path, solver, spectrum_type, mpi=True)
+    marker = get_xfail_marker(path, solver, spectrum_type, mpi=True)
     if marker is not None:
         request.node.add_marker(marker)
 
     eigvals_exact = _exact_spectrum(spectrum_type)
     h_op, basis, psi0, _ = create_diagonal_system(eigvals_exact, path, comm=comm)
-    eigvals, eigvecs = _run_solver(solver, h_op, basis, psi0, mode, comm=comm)
+    eigvals, eigvecs = _run_solver(solver, h_op, basis, psi0, comm=comm)
 
     # Check eigenvalues match exact ones with multiplicity (sorted); see the serial
     # variant above for why this margin is solver_atol(1e-8, c=100).
     np.testing.assert_allclose(np.sort(eigvals), eigvals_exact[:NUM_WANTED], atol=solver_atol(1e-8, c=100))
 
-    if mode != Reort.NONE:
-        assert_orthonormal(eigvecs, path, comm=comm)
+    assert_orthonormal(eigvecs, path, comm=comm)

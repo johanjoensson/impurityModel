@@ -80,7 +80,7 @@ _CSR_BYTES_PER_NNZ = 24
 # repeat that in the opposite corner case.
 _SELECTION_FANOUT_DEFAULT = 40
 # WHOLE-STEP dedup'd ROW fanout of one GF block-Lanczos matvec (`h_op.apply_block(q_curr, ...)`
-# inside `_lanczos_step.pxi`'s `block_lanczos_step_cy`) before `redistribute_block` routes rows to
+# inside `_lanczos_step.pxi`'s `lanczos_step`) before `redistribute_block` routes rows to
 # their owners and the truncation cap prunes. `ManyBodyOperator::apply` returns a fully
 # materialized `ManyBodyBlockState` BY VALUE, keyed one row per REACHED determinant -- a
 # different, SMALLER quantity than `_SELECTION_FANOUT_DEFAULT` above, which counts
@@ -116,9 +116,9 @@ _SELECTION_FANOUT_DEFAULT = 40
 # bound there, not a lower one).
 _GF_MATVEC_ROW_FANOUT_DEFAULT = 8.1
 
-#: Measured saving from the row-chunked apply (`config.GF_APPLY_ROW_CHUNKS`), as
+#: Measured saving from the row-chunked apply (`config.APPLY_ROW_CHUNKS`), as
 #: ``whole_step_rows / max_over_chunks(chunk_rows)``. The chunked branch of
-#: `block_lanczos_step_cy` applies H to one `row_slice` at a time and frees each raw result before
+#: `lanczos_step` applies H to one `row_slice` at a time and frees each raw result before
 #: the next (`del _raw`), so the PEAK unpartitioned transient over a step is the largest single
 #: chunk's, not the whole step's -- chunking genuinely bounds the term this module models.
 #:
@@ -132,7 +132,7 @@ _GF_MATVEC_ROW_FANOUT_DEFAULT = 8.1
 #:
 #: Two earlier positions on this were both wrong and both unmeasured: that chunking saves nothing
 #: here (it saves ~2x at the default), and that it saves the full chunk count (it does not, by
-#: roughly half). The knob is a supported escape hatch -- `GF_APPLY_ROW_CHUNKS=1` recovers the
+#: roughly half). The knob is a supported escape hatch -- `APPLY_ROW_CHUNKS=1` recovers the
 #: one-shot path bit-for-bit -- so the model reads it rather than assuming the default.
 _GF_CHUNK_DIVISOR_ANCHORS = ((1, 1.0), (2, 1.3), (4, 1.9), (8, 3.4))
 # Per (determinant, reference-column) pair, the CIPSI selection round's own temporaries
@@ -328,19 +328,15 @@ except Exception:  # pragma: no cover - an MPI without attribute caching
 
 
 def _retains_krylov(reort):
-    """Whether a reort mode (string, ``Reort`` enum member or None) retains the Krylov store."""
-    name = getattr(reort, "name", reort)
-    return name is not None and str(name).lower() != "none"
+    """Whether a reort setting (``True``/``False``; ``None`` counts as ``False``) retains the Krylov store."""
+    return bool(reort)
 
 
 def _krylov_itemsize(reort, krylov_dtype):
     """Bytes per stored Krylov coefficient for a (reort mode, dtype) pair.
 
-    ``complex64`` halves the store but only ``FULL``/``PERIODIC`` may use it: the
-    Paige-Simon estimator behind ``PARTIAL``/``SELECTIVE`` steers to
-    ``REORT_TOL = sqrt(EPS)``, which a basis stored to ~6e-8 cannot support (the kernel
-    raises on that combination). Mirroring that rule here keeps the predicted peak from
-    promising a cap the solver will refuse to run.
+    ``complex64`` halves the store (``reort`` is kept for the call signature; every mode that
+    stores a Krylov basis may use it).
     """
     if krylov_dtype is None:
         return _COMPLEX_BYTES
@@ -348,9 +344,6 @@ def _krylov_itemsize(reort, krylov_dtype):
 
     if _np.dtype(krylov_dtype) != _np.dtype(_np.complex64):
         return _COMPLEX_BYTES
-    name = str(getattr(reort, "name", reort)).lower()
-    if name in ("partial", "selective"):
-        raise ValueError(f"krylov_dtype='complex64' is incompatible with reort='{name}'")
     return _COMPLEX_BYTES // 2
 
 
@@ -448,7 +441,7 @@ def _gf_chunk_divisor(n_chunks):
     Same anchor-and-clamp shape as :func:`_routing_skew_factor`, and for the same reason: these
     are measurements at each chunk count, not a fitted curve, so outside the measured ``[1, 8]``
     this clamps to the nearest anchor rather than guess. ``None`` or ``<= 1`` means the one-shot
-    path (``GF_APPLY_ROW_CHUNKS=1``), which bounds nothing, so the divisor is exactly 1.
+    path (``APPLY_ROW_CHUNKS=1``), which bounds nothing, so the divisor is exactly 1.
     """
     if n_chunks is None:
         return 1.0
@@ -469,7 +462,7 @@ def estimate_gf_peak_bytes(
     n_dets,
     n_spin_orbitals,
     block_width,
-    reort="none",
+    reort=False,
     ranks=1,
     n_blocks=None,
     krylov_dtype=None,
@@ -483,16 +476,16 @@ def estimate_gf_peak_bytes(
     determinant count. **Both** reort modes pay ``s_live`` — the excited ``Basis`` bookkeeping
     (measured ~330 B/det VmHWM, see :data:`_PY_BASIS_OVERHEAD_BYTES`) plus the ~3 live
     ``ManyBodyState`` blocks of the recurrence (``q_prev``, ``q_curr``, ``wp``, ~216 B/det
-    at block width 1). So ``s_live ~ 450-550 B/det`` and ``reort="none"`` is not free, but it
+    at block width 1). So ``s_live ~ 450-550 B/det`` and ``reort=False`` is not free, but it
     is *bounded* — not the multi-kB/det figure an earlier miscalibration claimed. At
-    ``reort != "none"`` the ``SparseKrylovDense`` store adds ``itemsize * p * n_blocks`` bytes
+    ``reort on`` the ``SparseKrylovDense`` store adds ``itemsize * p * n_blocks`` bytes
     per retained determinant *on top* (rows bounded by the retained set, columns by the Lanczos
     block count) — it cannot be compressed away, see ``doc/plans/blocklanczos_reort_memory.md``.
 
     Which term leads depends on the run: the store scales with ``n_blocks`` (``m``), so at
-    width 1 it overtakes ``s_live`` once ``m`` passes ~30, but at ``reort="none"`` (the
+    width 1 it overtakes ``s_live`` once ``m`` passes ~30, but at ``reort=False`` (the
     production self-energy path) ``s_live`` is the whole cost -- **plus** the recurrence's
-    transient matvec fanout (below), which at ``reort="none"`` is comparable to it. Neither
+    transient matvec fanout (below), which at ``reort=False`` is comparable to it. Neither
     ``s_live`` nor the store universally dominates the *other* -- the earlier "the store
     dominates against ~450 for everything else" framing was only half right (the ~450 is real;
     the store does not always win).
@@ -520,8 +513,8 @@ def estimate_gf_peak_bytes(
         Determinant bit width.
     block_width : int
         Block width ``p`` of the GF block Lanczos (number of seed vectors of the unit).
-    reort : str
-        Reorthogonalization mode; anything but ``"none"`` retains the Krylov store.
+    reort : bool
+        Whether the run fully reorthogonalizes; ``True`` retains the Krylov store.
     ranks : int
         MPI ranks sharing this basis (the unit's sub-communicator size under
         ``run_units_distributed``). Peak bytes scale with the *binding* rank, not the
@@ -540,11 +533,11 @@ def estimate_gf_peak_bytes(
         every DC iteration, a much larger change than this function's docstring should
         decide by itself.
     n_blocks : int, optional
-        Krylov blocks retained at ``reort != "none"``. Defaults to the invariant-subspace
+        Krylov blocks retained at ``reort on``. Defaults to the invariant-subspace
         bound ``ceil(n_dets / block_width)`` (worst case).
     krylov_dtype : optional
         Storage dtype of the Krylov basis. ``complex64`` halves the store and is legal
-        only for ``FULL``/``PERIODIC`` (see :func:`_krylov_itemsize`).
+        only for ``FULL`` (see :func:`_krylov_itemsize`).
     method : str
         ``"lanczos"`` (default) or ``"bicgstab"`` -- the per-frequency BiCGSTAB driver
         retains **no** Krylov store (``reort``/``n_blocks``/``krylov_dtype`` are ignored)
@@ -589,13 +582,13 @@ def estimate_gf_peak_bytes(
         return basis_bytes + live * local_rows * row_bytes + matvec_bytes
     live_bytes = 3 * local_rows * row_bytes
     # The recurrence's transient matvec fanout: `wp_raw = h_op.apply_block(q_curr, ...)` inside
-    # `block_lanczos_step_cy` is NOT hash-partitioned -- it is everything this rank's rows reach
+    # `lanczos_step` is NOT hash-partitioned -- it is everything this rank's rows reach
     # under H, before `redistribute_block` routes rows to their eventual owners and the cap
     # prunes admissions (see `_GF_MATVEC_ROW_FANOUT_DEFAULT`'s derivation). Priced at the same
     # `row_bytes` per row as the other live blocks, and divided by the measured saving the
     # row-chunked apply actually delivers at the configured chunk count
     # (`_GF_CHUNK_DIVISOR_ANCHORS` -- ~1.9x at the default of 4, NOT the full chunk count, since
-    # chunks reach overlapping sets). Reading the knob matters: `GF_APPLY_ROW_CHUNKS=1` is the
+    # chunks reach overlapping sets). Reading the knob matters: `APPLY_ROW_CHUNKS=1` is the
     # supported escape hatch for a bit-identical run, and on that path the divisor is 1.
     #
     # Chunking always applies wherever this estimate is used: `_lanczos_step.pxi` chunks whenever
@@ -604,7 +597,7 @@ def estimate_gf_peak_bytes(
     # finite cap is exactly the case this function is called to size.
     #
     # The bicgstab branch above prices the same transient for its own (unchunked) matvec.
-    fanout_bytes = ceil(local_rows * fanout / _gf_chunk_divisor(config.GF_APPLY_ROW_CHUNKS.get())) * row_bytes
+    fanout_bytes = ceil(local_rows * fanout / _gf_chunk_divisor(config.APPLY_ROW_CHUNKS.get())) * row_bytes
     store_bytes = 0
     if _retains_krylov(reort):
         if n_blocks is None:
@@ -614,12 +607,6 @@ def estimate_gf_peak_bytes(
     return basis_bytes + live_bytes + fanout_bytes + store_bytes
 
 
-#: Additive eigenstate padding TRLM's initial sizing applies before certifying a manifold
-#: complete (mirrors ``cipsi_solver._EIGENSTATE_PAD``; not imported -- this module sits below
-#: the solver stack, see the module docstring -- so keep the two in sync by hand if that
-#: constant changes; both are 10 as of this writing).
-_GS_EIGENSTATE_PAD = 10
-
 #: The pre-Phase-4 coupled-regime assumption ``num_wanted ~= _GS_COUPLED_NUM_WANTED_RATIO *
 #: block_width`` (``cipsi_solver.expand``'s ``num_wanted = 2 * len(psi_refs)`` against
 #: ``block_width = len(psi_refs) + 1``, true only while ``GS_MAX_BLOCK_WIDTH`` is unset). A
@@ -628,57 +615,31 @@ _GS_EIGENSTATE_PAD = 10
 _GS_COUPLED_NUM_WANTED_RATIO = 2
 
 
-def _gs_krylov_columns(n_dets, block_width, num_wanted=None):
-    """Peak column count of the retained dense Krylov store, at the ground-state default
-    ``reort="full"``.
+def gs_krylov_blocks(n_dets, block_width, num_wanted):
+    """Krylov depth, in blocks, of a ground-state window solve that starts by retaining ``num_wanted`` vectors.
 
-    Mirrors ``cipsi_solver._size_subspace`` **exactly** (re-read from source, not from memory --
-    an earlier version of this function got the formula wrong by omitting a factor of 2 and a
-    flat +20 headroom the real one carries, caught by review; see the git history of this file
-    and ``doc/plans/dc_smo_performance.md``'s "Phase resequencing" section):
-
-    .. code-block:: text
-
-        max_subspace = min(max(2*nw, nw+10), n_dets)
-        blocks = min(2*ceil(max_subspace/p) + 20, max(2, n_dets//p - 1))
-
-    where ``nw = num_wanted + _GS_EIGENSTATE_PAD``. Not imported (this module sits below the
-    solver stack, see the module docstring); keep the two in sync by hand if
-    ``_size_subspace`` changes -- there is no automated guard against drift here, only the
-    cross-reference.
-
-    **This replaced a flat ``n_blocks`` constant**, itself replacing a still-earlier guess of
-    30: neither a constant ratio nor (as this function's first version assumed) a ratio-free
-    formula covers the real behaviour, because ``num_wanted`` and ``block_width`` are two
-    different quantities that happen to move together 1:1 only when ``GS_MAX_BLOCK_WIDTH`` is
-    unset. Now that it exists (Phase 4), ``num_wanted`` can stay large while ``block_width`` is
-    capped -- callers pass the real, resolved ``block_width`` (:func:`resolve_gs_block_width`)
-    to keep this honest, and ``num_wanted``'s ``None`` default here still assumes the pre-cap
-    1:1 relationship for any caller that has not measured its own ``num_wanted``.
-
-    Parameters
-    ----------
-    n_dets : int
-        Global determinant count -- ``_size_subspace``'s ``cap`` argument (``len(self.basis)``
-        in production; the same basis-size bound applies here since the Krylov store cannot
-        hold more orthonormal columns than there are determinants).
-    block_width : int
-        The Lanczos block width ``p``.
-    num_wanted : int, optional
-        The *unpadded* eigenstate request (``get_eigenvectors``'s own argument). ``None``
-        (default) assumes ``2 * block_width`` -- the relationship that holds while
-        ``num_wanted`` tracks the block width 1:1, i.e. before ``GS_MAX_BLOCK_WIDTH`` exists.
-
-    Returns
-    -------
-    int
-        Column count (a multiple of ``block_width``).
+    The single definition: :func:`impurityModel.ed.eigensolvers.solve_window` sizes its subspace with it
+    and :func:`_gs_krylov_columns` prices the retained store with it, so the estimate cannot drift from
+    the solve. ``k = ceil(num_wanted / p)`` blocks are retained across a restart and ``3k + 20`` more are
+    built after them, bounded by what the basis can hold (``n_dets // p - 1`` blocks, since the sweep
+    needs room for a trailing residual). A window wider than ``num_wanted`` grows the retained set at a
+    restart head; that growth is not priced here.
     """
     p = max(1, block_width)
-    nw = (_GS_COUPLED_NUM_WANTED_RATIO * p if num_wanted is None else num_wanted) + _GS_EIGENSTATE_PAD
-    max_subspace = min(max(2 * nw, nw + 10), n_dets)
-    blocks = min(2 * ceil(max_subspace / p) + 20, max(2, n_dets // p - 1))
-    return p * blocks
+    k = ceil(max(1, num_wanted) / p)
+    return max(k + 1, min(4 * k + 20, max(2, n_dets // p - 1)))
+
+
+def _gs_krylov_columns(n_dets, block_width, num_wanted=None):
+    """Peak column count of the retained dense Krylov store, at the ground-state default ``reort=True``.
+
+    ``p * gs_krylov_blocks(...)``. ``num_wanted`` is the initial retention the solve is asked for;
+    ``None`` assumes ``2 * block_width``, the relationship that holds while it tracks the block width 1:1
+    (``GS_MAX_BLOCK_WIDTH`` unset).
+    """
+    p = max(1, block_width)
+    nw = _GS_COUPLED_NUM_WANTED_RATIO * p if num_wanted is None else num_wanted
+    return p * gs_krylov_blocks(n_dets, p, nw)
 
 
 def resolve_gs_block_width(default=4):
@@ -743,7 +704,7 @@ def estimate_gs_peak_bytes(
     partition, approximated here as ``local`` since a materially skewed partition, not
     ``global_N``, is now the risk this term misses -- see :data:`DEFAULT_MEMORY_SAFETY`,
     which is what absorbs it: this function has no way to see another rank's share), the
-    retained dense Krylov blocks at the ground-state default ``reort="full"``, and the
+    retained dense Krylov blocks at the ground-state default ``reort=True``, and the
     CIPSI selection round's own transient (``selection_bytes`` below).
 
     The selection term is what this function was missing until
@@ -809,18 +770,13 @@ def estimate_gs_peak_bytes(
     local = ceil(n_dets / max(1, ranks))
     basis_bytes = local * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     csr_bytes = local * nnz_per_state * _CSR_BYTES_PER_NNZ
-    # The matvec's reduce-scatter transient, plus the (local, w) result. Under
-    # GS_MATVEC_EXCHANGE=graph (the default) the send and receive buffers each hold one row
-    # block per neighbour -- degree x local x w complex, both alive at once -- chunked over
-    # columns so neither exceeds GS_MATVEC_EXCHANGE_BYTES (mpi_comm.MatvecExchangePlan). Under
-    # `reduce` it is the one (max(counts), w) chunk buffer of the per-root Reduce loop
-    # (Phase 1); max(counts) ~ local under a balanced hash partition either way.
-    if config.GS_MATVEC_EXCHANGE.get() == "graph":
-        degree = min(max(ranks - 1, 0), _MATVEC_EXCHANGE_DEGREE_DEFAULT)
-        per_buffer = min(config.GS_MATVEC_EXCHANGE_BYTES.get(), degree * local * block_width * _COMPLEX_BYTES)
-        exchange_bytes = 2 * per_buffer
-    else:
-        exchange_bytes = local * block_width * _COMPLEX_BYTES
+    # The matvec's reduce-scatter transient, plus the (local, w) result. The send and receive
+    # buffers each hold one row block per neighbour -- degree x local x w complex, both alive at
+    # once -- chunked over columns so neither exceeds GS_MATVEC_EXCHANGE_BYTES
+    # (mpi_comm.MatvecExchangePlan).
+    degree = min(max(ranks - 1, 0), _MATVEC_EXCHANGE_DEGREE_DEFAULT)
+    per_buffer = min(config.GS_MATVEC_EXCHANGE_BYTES.get(), degree * local * block_width * _COMPLEX_BYTES)
+    exchange_bytes = 2 * per_buffer
     replicated_bytes = local * block_width * _COMPLEX_BYTES + exchange_bytes
     krylov_bytes = local * _gs_krylov_columns(n_dets, block_width, num_wanted) * _COMPLEX_BYTES
     # CIPSI selection round transient (doc/plans/dc_smo_memory.md): `local * selection_fanout`
@@ -829,7 +785,7 @@ def estimate_gs_peak_bytes(
     # before pruning), times `block_width` reference columns, times the per-pair cost that
     # survives Phase 2's rewrite of `_apply_block_and_redistribute` /
     # `_candidate_overlaps_and_energies` / `_score_candidates`.
-    # Calibrated against the one-shot apply; the row-chunked default (GS_APPLY_ROW_CHUNKS=4)
+    # Calibrated against the one-shot apply; the row-chunked default (APPLY_ROW_CHUNKS=4)
     # holds ~1/2.8 of that on the step that set the constant, so this is now an upper bound
     # (deliberately: the model's failure mode was optimism, see GS_MEMORY_BUDGET_SAFETY).
     selection_bytes = local * selection_fanout * block_width * _SELECTION_BYTES_PER_PAIR
@@ -1063,7 +1019,7 @@ def max_unit_dets_within_budget(
         Determinant bit width.
     block_width : int
         Widest unit's seed count (GF block width) about to run on this color.
-    reort : str or None
+    reort : bool or None
         GF reorthogonalization mode.
     ranks : int
         Ranks in this unit's color -- the color's own ``split_basis.comm.size`` at the split

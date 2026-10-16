@@ -4,56 +4,36 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed import config
-from impurityModel.ed.average import energy_cut
 from impurityModel.ed.basis_transcription import (
     build_distributed_vector,
     build_sparse_matrix,
     build_state,
 )
-from impurityModel.ed.BlockLanczosArray import BlockBreakdown, Reort, block_normalize
-from impurityModel.ed.BlockLanczosArray import block_lanczos_array
-from impurityModel.ed.BlockLanczosCore import _build_full_T, block_apply, block_inner
-from impurityModel.ed.eigensolvers import eigensystem
-from impurityModel.ed.irlm import implicitly_restarted_block_lanczos_cy
+from impurityModel.ed.cipsi_budget import CapRefiner, MemoryGuard
+from impurityModel.ed.eigensolvers import EigenResult, Lowest, Within, eigensystem, solve_lowest, solve_window
 from impurityModel.ed.manybody_basis import (
     Basis,
     collective_mass_cutoff,
     collective_top_k_mask,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.memory_estimate import (
     current_rss_bytes,
-    format_bytes,
     emit_memory_warning,
+    format_bytes,
     peak_rss_bytes,
     reset_peak_rss,
     rss_breakdown,
 )
-from impurityModel.ed.solver_basis import get_symmetry_generators
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
-from impurityModel.ed.trlm import _deflate, thick_restart_block_lanczos
 
-SOLVERS = {
-    "trlm": thick_restart_block_lanczos,
-    "irlm": implicitly_restarted_block_lanczos_cy,
-}
-
-#: Extra eigenstates requested beyond what the caller wants, so that a state landing outside the
-#: thermal cut can certify the kept manifold is complete. Bought for their energies, not their
-#: eigenvectors -- see `num_required` in `get_eigenvectors`.
+#: Headroom, in states, on the number of eigenstates one CIPSI cycle asks the eigensolver to retain
+#: initially (:func:`_manifold_request`). The window solve grows its retention past it on demand.
 _EIGENSTATE_PAD = 10
 
-_U64 = (1 << 64) - 1
-
-
-def _splitmix64(x: int) -> int:
-    """One splitmix64 round: a well-mixed 64-bit hash of a 64-bit integer."""
-    x = (x + 0x9E3779B97F4A7C15) & _U64
-    x = ((x ^ (x >> 30)) * 0xBF58476D1CE4E5B9) & _U64
-    x = ((x ^ (x >> 27)) * 0x94D049BB133111EB) & _U64
-    return x ^ (x >> 31)
+#: Generic start columns per eigensolve (``R``); raised to ``max_multiplicity + 1`` after a solve that found more.
+_MIN_RANDOM_COLUMNS = 4
 
 
 #: *Floor* on the tolerance below which reference eigenvalues are treated as one degenerate
@@ -80,11 +60,6 @@ DEFAULT_E_PT2_TOL = 1e-8
 #: residual splits manifolds that are exactly degenerate. One order of margin: large enough that
 #: an ``O(||r||)`` splitting is absorbed, small enough to stay orders below any physical scale.
 DEGENERACY_TOL_MARGIN = 10.0
-
-#: How many times ``get_eigenvectors`` may double ``num_wanted`` looking for an eigenstate beyond
-#: the thermal energy cut. Each doubling is a full re-solve, so this bounds the worst case; in
-#: practice the first solve already overshoots the cut.
-_MAX_EIGENSTATE_DOUBLINGS = 24
 
 #: Loosest eigenvector residual we ever accept -- the historical hard-coded default. Deriving the
 #: tolerance from ``slaterWeightMin`` must never make the eigensolver *lazier* than this.
@@ -128,8 +103,8 @@ def _degeneracy_tol(e_ref, slaterWeightMin):
 
     That was the case in production, not in principle: ``_eigen_tol`` returns ``_EIGEN_TOL_MAX``
     (1e-8, ten times *looser* than ``DEGENERACY_TOL``) whenever ``slaterWeightMin`` is 0 or above
-    1e-8, and three manifold-consuming paths run exactly there -- ``dc_frozen.FrozenSpaceSweep``
-    and ``dc_criteria`` both default ``slater_weight_min=0``, and the occupation walk runs at
+    1e-8, and two manifold-consuming paths run exactly there -- ``dc_criteria``
+    defaults ``slater_weight_min=0``, and the occupation walk runs at
     ``sqrt(slaterWeightMin)`` (1e-6 for the usual 1e-12). The production ground-state path
     (``slaterWeightMin = 1e-12``) is unaffected: 10 * 1e-12 is far under the 1e-9 floor.
 
@@ -276,34 +251,16 @@ def _psi_ref_width(psi_refs):
 
 
 def _manifold_request(n_kept, prev_kept):
-    """How many eigenstates one CIPSI cycle should ask for, given what the last one kept.
+    """How many eigenstates one CIPSI cycle should ask the eigensolver to retain initially.
 
-    ``expand`` used to ask for ``2 * n_kept``. The *request*, not the kept count, is what sizes
-    the eigensolver -- :func:`_size_subspace` turns it into roughly ``4 * num_wanted`` retained
-    Krylov columns, and :meth:`CIPSISolver.get_eigenvectors` holds that many residuals to ``tol``
-    -- so the doubling was a permanent tax. What it bought was keeping
-    ``get_eigenvectors``' ``need_more`` re-solve loop from ever firing, and that loop was measured
-    dead on every real workload precisely *because* of the doubling: a permanent 2x against an
-    occasional re-solve is the wrong side of the trade.
+    The *request*, not the kept count, sizes the eigensolver (:func:`~impurityModel.ed.memory_estimate.gs_krylov_blocks`
+    turns it into roughly ``4 * num_wanted`` Krylov columns), so it is what the last cycle kept plus room to
+    grow at twice the rate it last grew at, floored at :data:`_EIGENSTATE_PAD`. An undershoot costs nothing
+    but a restart: the window solve grows its retention on demand.
 
-    So: ask for what the last cycle actually kept, plus room to grow at twice the rate it last
-    grew at, floored at :data:`_EIGENSTATE_PAD`. An undershoot is not a wrong answer, it is one
-    extra solve -- ``need_more`` fires and ``get_eigenvectors`` re-solves, the mechanism that has
-    always been there for it.
-
-    Two conventions that are load-bearing rather than cosmetic:
-
-    * ``prev_kept is None`` means *no history*, and is **not** the same as ``0``. A first cycle has
-      no predecessor to extrapolate from. On the SrMnO3 double-counting reproduction cycle 0 runs
-      the *dense* branch, which ignores ``num_wanted`` entirely when given a cut and returns every
-      state inside it -- 86 of the 120-determinant seed basis, a property of a basis too small to
-      resolve the 0.23 eV window rather than of the physics. Scoring that as growth from zero
-      would size the next cycle at 258, larger than the 182 this function exists to cut.
-    * ``max(0, ...)`` on the growth: a *shrinking* manifold gets the flat pad, never a negative
-      margin. Shrinking is the common case once the seed basis is left behind (86 -> 78 -> 10 on
-      that same run), and it does mean a cycle following a large one still requests off the large
-      count. Deliberate: the request has to cover the manifold that is actually there, and only
-      the next cycle can know it shrank.
+    ``prev_kept is None`` means *no history* and is not the same as ``0``: a first cycle has no predecessor
+    to extrapolate from. The growth term is ``max(0, ...)``: a shrinking manifold gets the flat pad, never a
+    negative margin.
 
     Parameters
     ----------
@@ -315,8 +272,7 @@ def _manifold_request(n_kept, prev_kept):
     Returns
     -------
     int
-        The unpadded request. ``get_eigenvectors`` adds its own ``_EIGENSTATE_PAD`` on top, for a
-        different purpose (certifying the boundary manifold is whole, not covering growth).
+        The request: ``n_kept`` plus the larger of the flat pad and twice the last growth.
     """
     growth = 0 if prev_kept is None else max(0, n_kept - prev_kept)
     return n_kept + max(_EIGENSTATE_PAD, 2 * growth)
@@ -399,9 +355,6 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
     order = np.argsort(e, kind="stable")
     e_sorted = e[order]
 
-    if max_energy is None:
-        return [int(i) for i in order], False
-
     n_keep = max(int(np.count_nonzero(e_sorted - e_sorted[0] <= max_energy)), 1)
     # Never split a manifold: absorb any state degenerate with the last kept one.
     original_n_keep = n_keep
@@ -410,269 +363,11 @@ def _energy_cut_indices(e_ref, max_energy, tol=DEGENERACY_TOL):
     return [int(i) for i in order[:n_keep]], n_keep == len(e_sorted)
 
 
-def _describe_block_health(psi0, comm):
-    """Why a start block failed to orthonormalize: corrupted, or merely empty.
-
-    ``tsqr``'s two failure codes answer this at the level of the whole block (non-finite factor
-    vs numerically zero); this answers it *per column*, which is what says whether the warm
-    eigenvectors arrived corrupted or the basis underneath them is gone. Both numbers are global
-    -- a column is non-finite if any rank's slice of it is, and empty only if every rank's is --
-    so this is **collective on** ``comm`` and every rank must call it.
-
-    Only ever called on a failure path, so the full pass over the block costs nothing in a
-    healthy run.
-
-    Both reductions are sized ``len(psi0)`` -- the number of *states* -- while the measurement
-    below reads ``amps.shape[1]``, the block's total *width*. Those agree, and the ``all-zero``
-    count is arithmetic on the same length, only because ``ManyBodyState.from_states`` rejects
-    anything but width-1 columns: a wider column would raise rather than silently widen the
-    block. That raise lands in the ``except`` below, which leaves the buffers at their
-    ``len(psi0)`` shape, so the length stays rank-invariant on every path through here -- which
-    is what the reductions require.
-
-    The local measurement is wrapped because **the three reductions below must be reached by
-    every rank unconditionally**. This runs inside the recovery branch -- the least-exercised
-    path in ``get_eigenvectors`` -- on a block already known to be malformed, and on ranks whose
-    row partition may be empty. A rank that raised its way out of a diagnostic while the others
-    waited in its ``allreduce`` would turn a report about a deadlock-free failure into a deadlock
-    (the extracted-helper class CLAUDE.md's MPI rules name). A rank that cannot measure its own
-    slice contributes nothing to the OR and nothing to the row count, which is the right neutral
-    element for both, and the answer stays whatever the other ranks could see.
-    """
-    local_bad = np.zeros(len(psi0), np.int64)
-    local_nonzero = np.zeros(len(psi0), np.int64)
-    rows = np.int64(0)
-    try:
-        block = ManyBodyState.from_states(list(psi0))
-        amps = np.asarray(block) if len(block) else np.zeros((0, len(psi0)), dtype=complex)
-        rows = np.int64(len(block))
-        if amps.size:
-            # Per column, on this rank's rows: corrupted anywhere makes the column corrupted, so
-            # these combine with OR (MAX over 0/1); nonzero anywhere makes it non-empty, likewise.
-            local_bad = (~np.isfinite(amps)).any(axis=0).astype(np.int64)
-            local_nonzero = (amps != 0).any(axis=0).astype(np.int64)
-    except Exception:
-        pass
-    if comm is not None and comm.size > 1:
-        # Buffer-based `Allreduce`, NOT the lowercase object form, and that is load-bearing:
-        # mpi4py implements `comm.allreduce(obj, op)` as gather-to-root, apply `op` in PYTHON on
-        # the root, broadcast. With a numpy array operand, `MPI.MAX` reduces to a Python `max()`
-        # on arrays, which raises "truth value of an array is ambiguous" -- **on rank 0 only**,
-        # while every other rank sits in the following broadcast. Measured, not reasoned about:
-        # the `-n 2` gate hung here, py-spy showing rank 0 already in pytest teardown after a
-        # failed test and rank 1 still inside this function. A diagnostic that deadlocks the run
-        # it is diagnosing is worse than no diagnostic, and a *reduction* is the wrong place for
-        # Python semantics: these are fixed-shape int64 buffers, so the elementwise MPI op
-        # applies on every rank with no interpreter involved. Reduced into a destination buffer
-        # rather than `MPI.IN_PLACE`, per CLAUDE.md's MPI rules.
-        reduced = np.empty_like(local_bad)
-        comm.Allreduce(local_bad, reduced, op=MPI.MAX)
-        local_bad = reduced
-        reduced = np.empty_like(local_nonzero)
-        comm.Allreduce(local_nonzero, reduced, op=MPI.MAX)
-        local_nonzero = reduced
-        # A plain Python int: the object form is safe for a scalar, whose `op` is a real `max`.
-        rows = comm.allreduce(int(rows), op=MPI.SUM)
-    return (
-        f"non-finite columns: {int(local_bad.sum())}, all-zero columns: "
-        f"{int(len(psi0) - local_nonzero.sum())}, determinants: {int(rows)}"
-    )
-
-
-def _size_subspace(num_wanted, width, cap):
-    """Krylov subspace depth for a ``num_wanted``-state request from a width-``width`` block.
-
-    Returns ``(max_subspace_blocks, num_wanted)``. The request is padded to ``2 * num_wanted``
-    (or ``num_wanted + 10``, whichever is larger), capped at the basis size, converted to a block
-    count with a flat ``+20`` of headroom, and then bounded by what the basis itself can hold --
-    ``cap // width - 1`` blocks, since the sweep needs room for a trailing residual block.
-    ``num_wanted`` is finally clamped to ``(blocks - 1) * width``, the most those blocks can
-    deliver.
-
-    One function rather than two copies: ``get_eigenvectors`` sizes the subspace once up front
-    and again whenever the request or the block width changes, and the two spellings had drifted
-    apart cosmetically (an ``if width > 0`` guard against a ``max(1, width)``) while computing the
-    same thing. ``width`` is in fact never 0 -- the start block always carries at least the cold
-    full-support column, and :func:`block_normalize` raises rather than returning a width-0 block
-    -- so the guard was dead either way.
-
-    **The final clamp is not always a no-op, and when it binds it silently reduces the certified
-    output.** It cannot bind on the padding term, which gives ``(blocks - 1) * width >=
-    4 * num_wanted``. It binds when the basis-size bound wins: that leaves ``(blocks - 1) * width
-    ~ cap - 2 * width``, so any request above ``cap - 2 * width`` is trimmed, and at
-    ``cap < 3 * width`` the bound collapses to two blocks and the request is trimmed to ``width``.
-    ``num_wanted`` is the *certified* output of the thermal-manifold search, so trimming it is
-    the wrong trade -- shrinking ``width`` (dropping warm columns) or falling through to the dense
-    branch would both preserve it. Left as-is here because this function is a verbatim lift;
-    ``test_subspace_sizing.py`` pins the behaviour and marks the defect.
-
-    Parameters
-    ----------
-    num_wanted : int
-        States requested, before padding.
-    width : int
-        Lanczos block width, i.e. the number of columns in the start block.
-    cap : int
-        Basis size; nothing may exceed it.
-
-    Returns
-    -------
-    tuple of (int, int)
-        ``(max_subspace_blocks, num_wanted)``.
-    """
-    width = max(1, width)
-    max_subspace = min(max(2 * num_wanted, num_wanted + 10), cap)
-    blocks = min(2 * int(np.ceil(max_subspace / width)) + 20, max(2, cap // width - 1))
-    return blocks, min(num_wanted, (blocks - 1) * width)
-
-
-#: Salt separating the imaginary part's hash stream from the real part's (the splitmix64
-#: "golden gamma" of a second stream), shared by every hash-seeded start block.
-_IMAG_STREAM_SALT = 0xD1B54A32D192ED03
-
-
-def _amplitude_from_hash(det_hash: int) -> complex:
-    """A deterministic pseudo-random start amplitude for one determinant.
-
-    Depends only on the determinant (through its C++ splitmix64 hash), never on the MPI rank
-    that happens to own it or on ``PYTHONHASHSEED``. That makes the Lanczos start vector -- and
-    therefore the CIPSI basis grown from it -- identical at any rank count. The two components
-    come from independently mixed streams so the real and imaginary parts are uncorrelated.
-    """
-    re = _splitmix64(det_hash) / 2.0**64
-    im = _splitmix64(det_hash ^ _IMAG_STREAM_SALT) / 2.0**64
-    return complex(re, im)
-
-
-#: Completeness probe rounds per solve before giving up. Each round adds up to one probe block of
-#: missing states, so this covers ``16 * _PROBE_MIN_WIDTH`` missing copies even from a cold width-1
-#: solve -- past anything a d- or f-shell multiplet produces.
-_MAX_COMPLETENESS_PROBES = 16
-
-#: Floor on the completeness probe's block width. The probe inherits the solve's width, which is 1 on
-#: every cold start (``dc_frozen``, ``truncate_initial``, the exhaustion retry); a width-1 probe adds
-#: one copy of a degenerate level per round, and measured on a 5 + 10-fold window it needed 11 rounds
-#: and 92% of the solve's time.
-_PROBE_MIN_WIDTH = 4
-
-#: Krylov blocks a probe sweep must build before it may certify the complement clear. After one block
-#: the "lowest Ritz pair" is only the random block's Rayleigh quotient: with a narrow bulk far above the
-#: boundary and one low state carrying ~sqrt(p/N) of the start weight, it passed the convergence test
-#: at block 1 while never having seen that state (N = 2000 to 50000). Two blocks already found it.
-_PROBE_MIN_BLOCKS = 3
-
-#: A probe certifies the complement clear once its lowest Ritz pair has converged to this fraction of
-#: its distance above the boundary.
-_PROBE_CERTIFY_FRACTION = 0.1
-
-#: Restart budget of the restarted Lanczos solves here, the main one and the probe's.
-_MAX_RESTARTS = 100
-
-#: Multiplier deriving a probe column's salt from (round, column): the 64-bit PCG LCG multiplier, used
-#: only as a well-spread odd constant.
-_PROBE_SALT_MULTIPLIER = 0x5851F42D4C957F2D
-
-
-def _splitmix64_array(x):
-    """:func:`_splitmix64` over a ``uint64`` array, bit for bit.
-
-    numpy's unsigned arithmetic wraps mod 2**64 exactly as the scalar version's ``& _U64`` masks do.
-    """
-    x = x + np.uint64(0x9E3779B97F4A7C15)
-    x = (x ^ (x >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
-    x = (x ^ (x >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
-    return x ^ (x >> np.uint64(31))
-
-
-def _probe_start_block(basis, width, round_):
-    """A ``(n_local, width)`` rank-independent pseudo-random start block for a completeness probe.
-
-    Built like the cold start vector (:func:`_amplitude_from_hash`: one value per determinant from its
-    hash, never from the rank or iteration order), with a different salt per column and per probe
-    round so successive probes explore new directions, and centred on zero so no column is biased
-    toward the uniform vector.
-    """
-    hashes = np.fromiter((state.get_hash() for state in basis.local_basis), dtype=np.uint64)
-    out = np.empty((len(hashes), width), dtype=complex)
-    scale = 1.0 / 2.0**64
-    with np.errstate(over="ignore"):
-        for k in range(width):
-            salted = hashes ^ np.uint64(_splitmix64((_PROBE_SALT_MULTIPLIER * (round_ + 1) + k) & _U64))
-            re = _splitmix64_array(salted).astype(float) * scale
-            im = _splitmix64_array(salted ^ np.uint64(_IMAG_STREAM_SALT)).astype(float) * scale
-            out[:, k] = (re - 0.5) + 1j * (im - 0.5)
-    return out
-
-
-def _lowest_ritz_bound(alphas, betas, block_widths):
-    """``(theta_0, r_0)``: the lowest Ritz value of a block-Lanczos recurrence and its residual norm.
-
-    ``betas`` holds one entry per block, the last being the trailing residual coupling (the kernel's
-    convention, in its ``converged`` hook and in what it returns), so
-    ``r_0 = ||beta_last s_0[last block]||``; a closed Krylov space shows up as a zero trailing beta.
-    """
-    alphas, betas = np.asarray(alphas), np.asarray(betas)
-    k = len(alphas)
-    widths = list(block_widths)[:k]
-    T = _build_full_T(alphas, betas[: k - 1], block_widths=widths)
-    theta, s = np.linalg.eigh(T)
-    w_last = int(widths[len(widths) - 1])
-    beta_last = betas[k - 1][:, :w_last]
-    r0 = float(np.linalg.norm(beta_last @ s[T.shape[0] - w_last :, 0]))
-    return float(theta[0]), r0
-
-
-def _complement_verdict(theta0, r0, boundary, n_blocks):
-    """``"found"``, ``"clear"`` or ``None`` (undecided) for a probe of the complement of the kept set.
-
-    ``"found"``: ``theta0 <= boundary``. ``theta0`` is a Rayleigh quotient of the deflated operator
-    ``P H P``, so some eigenvalue of it lies at or below the boundary. That is a state the solve
-    missed, up to the accuracy of the locked vectors (they are converged Ritz vectors, not exact
-    eigenvectors).
-
-    ``"clear"``: the lowest Ritz pair has converged above the boundary,
-    ``r0 <= _PROBE_CERTIFY_FRACTION * (theta0 - boundary)``, after at least ``_PROBE_MIN_BLOCKS``
-    blocks. This is a probabilistic certificate, not a bound: it rests on the random start block
-    having weight on every eigenvector, so that the lowest Ritz value converges to the lowest
-    eigenvalue rather than to one above it. ``theta0 - r0 > boundary`` alone would not do: the
-    residual bound places *some* eigenvalue within ``r0`` of ``theta0``, not the lowest one (one block
-    into a probe, a Ritz value of 1.04 with ``r0 = 0.79`` passed it while two copies of a degenerate
-    level sat at 0.0176).
-    """
-    if theta0 <= boundary:
-        return "found"
-    if n_blocks >= _PROBE_MIN_BLOCKS and r0 <= _PROBE_CERTIFY_FRACTION * (theta0 - boundary):
-        return "clear"
-    return None
-
-
-#: Whether ``expand`` completes symmetry orbits when the caller passes no generators.
-#:
-#: **Off**, on measurement rather than principle. With correct generators (the total spin ladder
-#: operators, gated on ``[H, g] = 0`` against the full Hamiltonian) the closure does what it
-#: promises -- on a cubic d-shell with a Slater interaction it drives the ground triplet's
-#: ``|S^2 - 2|`` from 1.3e-11 to 5.1e-15 -- but only in the *uncapped* limit, and at 3589
-#: determinants against 1771. Under a binding ``truncation_threshold`` it is a net loss: at a cap
-#: of 400 the closure run returned ``E0 = -13.26573223`` against ``-13.26573295`` without it,
-#: because symmetry partners are not generally the highest-de2 candidates and displace ones that
-#: are. Two legitimate goals -- variational energy and symmetry purity -- that conflict under a
-#: budget, so the caller has to choose. Pass ``symmetry_generators`` explicitly to opt in.
-SYMMETRY_CLOSURE_DEFAULT = False
-
-
-def _commutes_with(h_op, op, tol: float = 1e-10) -> bool:
-    """Is ``op`` a symmetry of ``h_op``, i.e. ``[h_op, op] = 0``?
-
-    Checked against the operator as a whole, two-body terms included -- the point being that
-    the one-body block's commutant is generally much larger than the full Hamiltonian's, so a
-    generator discovered from ``h`` alone is not a symmetry of ``h + U``.
-
-    Pure operator algebra: no basis, no communication, and
-    :meth:`ManyBodyOperator.commutator` skips term pairs on disjoint orbitals without forming
-    them, so this costs a pass over the terms the generator actually touches.
-    """
-    residual = h_op.commutator(op)
-    return not residual or max((abs(v) for v in residual.values()), default=0.0) <= tol
+def _covers(have, want):
+    """Whether a solve that answered ``have`` (``Lowest``, ``Within`` or None) also answers ``want``."""
+    if isinstance(have, Within):
+        return isinstance(want, Lowest) or (isinstance(want, Within) and have.max_energy >= want.max_energy)
+    return isinstance(have, Lowest) and isinstance(want, Lowest)
 
 
 #: Rows per slice of :func:`_zero_entries_at_most`'s in-place pass: bounds its temporaries to
@@ -687,8 +382,8 @@ def _zero_entries_at_most(view, cutoff):
     criterion exactly -- not ``np.abs(view) <= cutoff``, which takes a sqrt first and so is not
     guaranteed bit-identical at the boundary. Slice by slice with reused buffers: a whole-block
     ``view.real**2 + view.imag**2`` allocated ~24 B per entry on top of the 16 B block, and on the
-    summed selection block (``GS_SELECTION_PRUNE=after_sum``) that is not bounded by
-    ``GS_APPLY_ROW_CHUNKS``. The caller must drop its own reference to ``view`` before
+    summed selection block that is not bounded by
+    ``APPLY_ROW_CHUNKS``. The caller must drop its own reference to ``view`` before
     ``prune_rows``/redistribute (they refuse to run while a buffer export is alive); this function
     keeps none.
     """
@@ -712,6 +407,13 @@ class CIPSISolver:
     def __init__(self, basis: Basis):
         self.basis = basis
         self.psi_refs = None
+        #: Latest :class:`~impurityModel.ed.eigensolvers.EigenResult`, and the random-column width the next solve uses
+        #: (adapted to the largest multiplicity seen).
+        self.eig: EigenResult | None = None
+        self.n_random = _MIN_RANDOM_COLUMNS
+        #: The width of the manifold the previous window solve was warm-started from (``None``: no history),
+        #: for the growth margin of the next request (:func:`_manifold_request`). ``expand`` resets it.
+        self._prev_kept: int | None = None
         # Diagnostics of the latest candidate selection / basis truncation (see
         # determine_new_Dj / truncate); None until the corresponding event happens.
         self.last_selection = None
@@ -728,34 +430,27 @@ class CIPSISolver:
             return self.basis.comm.allreduce(value, op=MPI.MAX)
         return value
 
-    def truncate_initial(self, H: ManyBodyOperator, dense_cutoff=1e3) -> None:
+    def truncate_initial(self, H: ManyBodyOperator, manifold, dense_cutoff=1e3) -> None:
         """Perform an initial truncation if the basis exceeds the truncation threshold.
 
+        ``manifold`` (:class:`~impurityModel.ed.eigensolvers.Lowest` or
+        :class:`~impurityModel.ed.eigensolvers.Within`) is the set of states whose support the
+        truncation keeps.
+
         Routed through :meth:`get_eigenvectors` (TRLM above ``dense_cutoff``, dense below)
-        rather than calling ``eigensystem``/ARPACK directly: multi-rank ARPACK
-        (``scipy_eigensystem``) lets each rank's own ARPACK convergence bookkeeping decide how
-        many collectives it posts, which under multithreaded BLAS diverges between ranks and
-        deadlocks (measured -n3 hang, see the memory note
-        n3-arpack-truncate-initial-deadlock). TRLM's collective count depends only on
-        `basis`/`H_mat`, which are already rank-uniform, so it cannot desync this way.
+        rather than calling ``eigensystem`` directly: TRLM's collective count
+        depends only on `basis`/`H_mat`, which are already rank-uniform, so it cannot desync
+        (the retired multi-rank ARPACK fallback could, under multithreaded BLAS: measured -n3 hang).
         """
         if self.basis.size > self.basis.truncation_threshold and H is not None:
             if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
                 print("Truncating basis!")
-            # Rank over the low-energy manifold (up to 10 states within energy_cut, though
-            # get_eigenvectors' TRLM branch pads num_wanted by +10, so this can return up to 20
-            # states), not a single eigenvector: the downstream expansion / get_eigenvectors
-            # keep the whole near-degenerate ground manifold, so truncating to one state's
-            # support would bias the retained determinants toward one member of the multiplet.
-            # Cold start (psi_refs=None): truncate_initial runs before any converged block
+            # Rank over the requested manifold. A `Within` request keeps the whole near-degenerate
+            # ground manifold, so the truncation does not bias the retained determinants toward one
+            # member of a multiplet; a `Lowest` request keeps the support of one state, which is all
+            # its caller needs. Cold start (psi_refs=None): truncate_initial runs before any converged block
             # exists, so get_eigenvectors falls back to its rank-independent hash start vector.
-            _e_ref, psi_ref = self.get_eigenvectors(
-                H,
-                num_wanted=10,
-                max_energy=energy_cut(self.basis.tau),
-                dense_cutoff=dense_cutoff,
-                psi_refs=None,
-            )
+            _e_ref, psi_ref = self.get_eigenvectors(H, manifold, dense_cutoff=dense_cutoff, psi_refs=None)
             self.truncate(psi_ref, _e_ref)
 
     def truncate(self, psis, e_ref=None, target=None, slaterWeightMin=0) -> ManyBodyState:
@@ -858,10 +553,10 @@ class CIPSISolver:
         instead of ``len(psi_ref)`` separate per-state applies. ``apply_block`` keeps a
         row if ANY column exceeds ``cutoff`` -- a safe superset per column, but not the
         same as pruning each column to its own threshold. By default
-        (``GS_SELECTION_PRUNE=after_sum``) nothing is cut before the cross-rank sum: every
+        nothing is cut before the cross-rank sum: every
         partial is sent, and each column of the summed block is cut to ``cutoff``
         (:meth:`_prune_summed`), so the candidate set is the same whatever the rank count and
-        ``GS_APPLY_ROW_CHUNKS`` (CrI3 at a binding cap: a different basis at 1, 2 and 3 ranks
+        ``APPLY_ROW_CHUNKS`` (CrI3 at a binding cap: a different basis at 1, 2 and 3 ranks
         before, identical after). ``before_sum`` restores the old order -- every column of each
         rank's partial pruned to ``cutoff`` before redistributing, bit-for-bit the old
         per-state ``applyOp(H, psi_i, cutoff)`` -- which the paragraphs below describe.
@@ -891,26 +586,16 @@ class CIPSISolver:
         real selection-rule cancellation, not a truncation artifact.
         """
         block = psi_ref if isinstance(psi_ref, ManyBodyState) else ManyBodyState.from_states(psi_ref)
-        n_chunks = config.GS_APPLY_ROW_CHUNKS.get()
-        prune = config.GS_SELECTION_PRUNE.get()
-        if prune not in ("after_sum", "before_sum"):
-            raise ValueError(f"GS_SELECTION_PRUNE={prune!r}: expected 'after_sum' or 'before_sum'")
-        # after_sum: send every partial and cut the summed amplitude, so the candidate set does not
-        # depend on how the reference rows are split over ranks and chunks (see GS_SELECTION_PRUNE).
-        local_cutoff = cutoff if prune == "before_sum" else 0.0
-        if n_chunks is None or n_chunks <= 1:
-            raw = self._apply_and_prune_columns(H, block, local_cutoff)
-            merged = self.basis.redistribute_block(raw)
-            return self._prune_summed(merged, cutoff if prune == "after_sum" else 0.0)
-
+        n_chunks = max(config.APPLY_ROW_CHUNKS.get() or 1, 1)
+        # Send every partial and cut the summed amplitude, so the candidate set does not depend on how
+        # the reference rows are split over ranks and chunks.
         # Row-chunked: the round's peak is the raw apply output, its packed send buffer, the
         # receive buffer and the merged block all alive at once (~6x the owned block, measured;
         # see doc/plans/dc_smo_memory.md round 6). Applying one chunk of the reference rows at
         # a time bounds the first three to chunk size; only the accumulating merged block stays.
         # Exact up to summation order (a candidate reached from rows in different chunks has its
-        # partial sums added chunk by chunk; under GS_SELECTION_PRUNE=before_sum the per-column prune
-        # also sees those partials, which changes the selected set), which
-        # is the same class of difference a change of rank count makes.
+        # partial sums added chunk by chunk), which is the same class of difference a change of rank
+        # count makes.
         #
         # The chunk COUNT is the knob, replicated on every rank, so every rank makes exactly
         # `n_chunks` collective `redistribute_block` calls whatever its row count -- a rank with
@@ -926,7 +611,7 @@ class CIPSISolver:
             # vector's capacity -- so every chunk's "bounded" apply ran alongside a full-size
             # copy, and the mask cost one Python key object per row of the whole block.
             part = block.row_slice(int(lo), int(hi))
-            raw = self._apply_and_prune_columns(H, part, local_cutoff)
+            raw = H.apply_block(part, 0.0)
             del part
             piece = self.basis.redistribute_block(raw)
             del raw
@@ -937,7 +622,7 @@ class CIPSISolver:
                 # empty piece on one rank cannot desynchronize the others.
                 merged += piece
             del piece
-        return self._prune_summed(merged, cutoff if prune == "after_sum" else 0.0)
+        return self._prune_summed(merged, cutoff)
 
     @staticmethod
     def _prune_summed(merged, cutoff):
@@ -950,19 +635,10 @@ class CIPSISolver:
         merged.prune_rows(0.0)
         return merged
 
-    @staticmethod
-    def _apply_and_prune_columns(H, block, cutoff):
-        """``H`` applied to ``block`` with every column pruned to ``cutoff`` in place (the
-        one-shot body of :meth:`_apply_block_and_redistribute`, shared with its chunked path)."""
-        raw = H.apply_block(block, cutoff)
-        if cutoff > 0.0 and len(raw):  # cutoff 0: apply_block already dropped only exact zeros
-            _zero_entries_at_most(np.asarray(raw), cutoff)
-        return raw
-
     def _candidate_overlaps_and_energies(self, H, Hpsi_ref, slaterWeightMin: float = 0):
         """Enumerate the out-of-basis candidates of ``Hpsi_ref`` with couplings and energies.
 
-        The candidate machinery under :meth:`_calc_de2`'s Epstein-Nesbet score (the
+        The candidate machinery under :func:`_score_candidates`'s Epstein-Nesbet score (the
         importance denominator is applied on top): this rank's hash-owned candidate
         determinants ``local_Djs`` (sorted, so rank-independent given ``Hpsi_ref`` is
         redistributed), the coupling matrix ``overlaps[i, j] = <Dj | H | psi_i>`` read off
@@ -1016,26 +692,6 @@ class CIPSISolver:
         # element depends on nothing but the determinant.
         e_Dj = np.real(H.diagonal(blk))[new_mask]
         return local_Djs, overlaps, e_Dj
-
-    def _calc_de2(self, H, Hpsi_ref, e_ref: np.ndarray, slaterWeightMin: float = 0):
-        local_Djs, overlaps, e_Dj = self._candidate_overlaps_and_energies(H, Hpsi_ref, slaterWeightMin)
-        if not local_Djs:
-            return local_Djs, overlaps
-
-        # Epstein-Nesbet importance |<Dj|H|psi>|^2 / |E_ref - E_Dj| (the magnitude of
-        # the second-order energy contribution). The denominator must not be a signed
-        # clamp: candidates sit *above* E_ref for a ground-state search, so
-        # max(E_ref - E_Dj, eps) would collapse to eps and turn the selection into a
-        # bare coupling filter.
-        de = np.maximum(np.abs(e_ref[:, None] - e_Dj[None, :]), 1e-12)
-        # Real-valued by construction (a ratio of two non-negative magnitudes) -- `zeros_like`
-        # used to inherit `overlaps`' complex128 dtype, doubling this array's footprint for no
-        # reason (every value assigned into it is already real; found while sizing the CIPSI
-        # selection round's memory peak, doc/plans/dc_smo_memory.md).
-        de2 = np.zeros(overlaps.shape, dtype=float)
-        mask = np.abs(overlaps) > 1e-12
-        de2[mask] = np.square(np.abs(overlaps[mask])) / de[mask]
-        return local_Djs, de2
 
     def _top_k_mask(self, scores, keys, k):
         """Local mask of the global top ``k`` of ``scores`` (``keys``: this rank's determinants, aligned).
@@ -1101,8 +757,6 @@ class CIPSISolver:
         H,
         de2_min,
         slater_cutoff=0,
-        return_Hpsi_ref=False,
-        gen_ops=None,
         max_new=None,
         affordable_growth=None,
         e_pt2_tol=None,
@@ -1117,7 +771,7 @@ class CIPSISolver:
         term, ``e_pt2_tol`` their sum -- which is what bounds the energy error. ``max_new``
         optionally caps the *global* number of selected candidates: the top ``max_new``
         by de2 importance are kept (collective bisection cutoff, ties under-admitted)
-        before the symmetry closure, and ``self.last_selection`` records
+        and ``self.last_selection`` records
         ``{"n_candidates", "n_admitted", "discarded_de2_mass", "subthreshold_de2_mass",
         "residual_pt2", "n_references", "hpsi_rows"}``. Collective on ``basis.comm``.
 
@@ -1150,17 +804,10 @@ class CIPSISolver:
             peak_is_own = reset_peak_rss()
         Hpsi_ref = self._apply_block_and_redistribute(H, psi_ref, slater_cutoff)
         # Global row count of the shared support H|psi_ref> spans (before the not-in-basis
-        # filter): the quantity `_apply_block_and_redistribute`'s and `_calc_de2`'s per-round
+        # filter): the quantity `_apply_block_and_redistribute`'s per-round
         # transient scale with (see doc/plans/dc_smo_memory.md) -- recorded here, once, rather
         # than re-derived by every caller that wants the per-cycle memory/timing picture.
         hpsi_rows = self._allreduce_sum(len(Hpsi_ref))
-        # `_candidate_overlaps_and_energies` directly, not `_calc_de2`: the latter materializes
-        # the whole (p, n_Dj) de2 array in one shot, which is exactly the per-cycle memory peak
-        # `_score_candidates` below exists to bound (doc/plans/dc_smo_memory.md). `0`, not
-        # `slater_cutoff`, matches `_calc_de2`'s own default -- this call site never passed
-        # `slater_cutoff` through `_calc_de2` either, so this preserves that behaviour exactly
-        # rather than changing what the diagonal probe prunes to as a side effect of this
-        # refactor.
         local_Djs, overlaps, e_Dj = self._candidate_overlaps_and_energies(H, Hpsi_ref, 0)
         # Importance = max over reference *manifolds* of the manifold-summed de2, not max over
         # individual reference states. Within a degenerate manifold the eigensolver returns an
@@ -1220,50 +867,15 @@ class CIPSISolver:
         self.last_selection = selection_stats
         new_Dj = set(itertools.compress(local_Djs, de2_mask))
 
-        if gen_ops:
-            # Breadth-first over the generators, one wave at a time on every rank. Each wave's images
-            # are routed to their owners (Basis.new_owned_keys), which keep the ones neither in the
-            # basis nor found before; the next wave starts from those. A rank-local membership test
-            # (contains_local) treated a determinant another rank owns as new: the walk went on through
-            # it, so a multi-rank closure was a superset of the serial one, and ranks reaching the same
-            # image counted it once each toward n_new. Collective: the wave count is global, so every
-            # rank runs the same number of waves, and new_Dj stays owner-local (each determinant once).
-            # The 1000-row superpositions use hash-derived amplitudes (see _amplitude_from_hash) so
-            # images do not interfere; which rows share a chunk depends on the layout, but an image
-            # lost to cancellation below the 1e-12 noise cut would need a measure-zero coincidence.
-            chunk_size = 1000
-            frontier = sorted(new_Dj)
-            while True:
-                images = set()
-                for lo in range(0, len(frontier), chunk_size):
-                    chunk_state = ManyBodyState(
-                        {state: _amplitude_from_hash(state.get_hash()) for state in frontier[lo : lo + chunk_size]}
-                    )
-                    for op in gen_ops:
-                        # cutoff=1e-12 prunes float noise
-                        images.update(applyOp_test(op, chunk_state, cutoff=1e-12).keys())
-                # Excluding the basis matters beyond the walk: an in-basis image admits nothing, but
-                # it inflated `n_new` in `expand`, which is compared against the `truncation_threshold`
-                # (a 12-orbital toy at cap 120: E0 worse by 30x, the final basis 94 determinants).
-                fresh = self.basis.new_owned_keys(images, exclude=new_Dj)
-                if self._allreduce_sum(len(fresh)) == 0:
-                    break
-                new_Dj |= fresh
-                frontier = sorted(fresh)
-
-        if return_Hpsi_ref:
-            return new_Dj, Hpsi_ref
         return new_Dj
 
     def expand(
         self,
         H,
+        manifold,
         de2_min=0.0,
         dense_cutoff=1e3,
         slaterWeightMin=0,
-        solver="trlm",
-        reort=Reort.PARTIAL,
-        symmetry_generators=None,
         cap_e_tol=1e-8,
         max_cap_cycles=10,
         memory_budget_bytes=None,
@@ -1271,6 +883,12 @@ class CIPSISolver:
         memory_policy="tighten",
     ):
         """Expand the basis variationally (CIPSI) until it stops growing.
+
+        ``manifold`` is what the expansion refines the basis for: the reference states of every
+        cycle are :class:`~impurityModel.ed.eigensolvers.Lowest` (one state) or
+        :class:`~impurityModel.ed.eigensolvers.Within` (every state inside the window, whose
+        low-lying members then get their own determinants selected). The window is the request's,
+        never read from ``basis.tau``.
 
         ``e_pt2_tol`` is the convergence criterion: each selection round admits candidates until
         the ones it leaves out carry at most ``e_pt2_tol`` of Epstein-Nesbet PT2 energy
@@ -1337,183 +955,60 @@ class CIPSISolver:
         """
         if memory_policy not in ("tighten", "warn"):
             raise ValueError(f"memory_policy must be 'tighten' or 'warn', got {memory_policy!r}")
-        tighten = memory_policy == "tighten"
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
         # Unconditional (None clears): a mask left on H by an earlier Green's-function stage must
         # not survive into this solve (review ledger C3).
         H.set_restrictions(self.basis.restrictions)
         H.set_weighted_restrictions(self.basis.weighted_restrictions)
-        de0_max = energy_cut(self.basis.tau)
         psi_refs = getattr(self, "psi_refs", None)
 
-        if symmetry_generators is None:
-            symmetry_generators = (
-                get_symmetry_generators(H, self.basis.impurity_orbitals, self.basis.bath_states)
-                if SYMMETRY_CLOSURE_DEFAULT
-                else []
-            )
-
-        from impurityModel.ed.symmetries import tensors_to_operator
-
-        # Keep only generators that actually commute with the FULL H, two-body included.
-        # `get_symmetry_generators` discovers them from the one-body block alone
-        # (`extract_tensors(h_op, two_body=False)`) and gates them against that same one-body
-        # matrix, so a degenerate impurity block hands over the whole commutant of `h_imp` --
-        # far more than the Coulomb tensor preserves. Measured on a degenerate 4-orbital block
-        # with an orbital-dependent U: 8 of 16 discovered generators have `[H, g] != 0`.
-        #
-        # A non-symmetry does not corrupt the scoring (the closure only enlarges the candidate
-        # set, never the de2 ranking), and with no cap it merely wastes determinants. Under a
-        # binding `truncation_threshold` it is not benign: the junk images compete for the same
-        # budget and displace determinants that carry real weight, so the "symmetry-adapted"
-        # run comes back with a *higher* variational energy than the plain one.
-        gen_ops = []
-        for g in symmetry_generators:
-            # `get_symmetry_generators` returns operators (the total spin ladder operators);
-            # callers may still hand over plain one-body matrices.
-            op = g if isinstance(g, ManyBodyOperator) else tensors_to_operator(g, tol=1e-12)
-            if not _commutes_with(H, op):
-                continue
-            op.set_restrictions(self.basis.restrictions)
-            op.set_weighted_restrictions(self.basis.weighted_restrictions)
-            gen_ops.append(op)
-
-        threshold = self.basis.truncation_threshold
-        capped = np.isfinite(threshold)
-        # The memory trip-wire's own latch. It used to ride on `not capped`, which silently
-        # disabled the guard for exactly the configuration that crashed: a cap that is finite but
-        # far beyond what memory allows. Production ran with `truncation_threshold=119,555,328`
-        # and died at 949,834 determinants -- 0.79% of its own cap -- so the cap never bound, yet
-        # its mere existence made `capped` true and skipped the check. A separate latch also stops
-        # the guard from ratcheting the threshold down every cycle once it has fired, since
-        # `peak_rss` is a high-water mark and stays above the budget forever after.
-        budget_tripped = False
-        memory_bound = False
-        # Whether the look-ahead bound was ever the binding limit, independent of whether it
-        # was tightened into a permanent cap (see the two-strike rule below). This is what
-        # `truncation_report` keys off, so a memory-limited expansion is reported as such
-        # even when the loop ended before a second strike could confirm the first.
-        memory_bound_observed = False
+        guard = MemoryGuard(self.basis, memory_budget_bytes, tighten=memory_policy == "tighten")
+        refiner = CapRefiner(cap_e_tol, max_cap_cycles)
+        measuring = memory_budget_bytes is not None
         cap_cycles = 0
-        no_improve = 0
         e0 = np.inf
-        best_e0 = None
-        best_basis = None
-        best_psis = None
-        best_e_ref = None
         self.truncation_report = None
         self.convergence_report = None
-        # Set (warn mode only) when this expansion's measured peak RSS reached the budget while the
-        # user's cap was kept; never gates anything, it is only reported.
         self.memory_warning = None
-        # Per-call: a `last_selection` left over from an earlier `expand` (or none at all, when
-        # the loop exits before its first round) must not be read as this call's residual.
+        # Per-call: a `last_selection` left over from an earlier `expand` must not be read as this call's.
         self.last_selection = None
-        # Whether `last_selection["residual_pt2"]` describes the basis as it now stands: true only
-        # after a round that neither grew the basis nor was followed by a truncation. A capped
-        # cycle scores candidates, then `truncate` drops determinants, so its residual belongs to
-        # a basis that no longer exists (measured: reported 1.0e-8 "converged" at cap 640, true
-        # residual of the returned basis 1.7e-8).
+        # Whether `last_selection["residual_pt2"]` describes the basis as it now stands: true only after a
+        # round that neither grew the basis nor was followed by a truncation (a capped cycle scores
+        # candidates, then `truncate` drops determinants, so its residual belongs to a basis that is gone).
         residual_current = False
         cycle = 0
-        # The kept manifold two cycles back, for the growth margin below. `None` until there is
-        # one, which is not the same as zero: a first cycle has no growth to extrapolate.
-        prev_kept = None
-        # Consecutive cycles the look-ahead bound has been the binding one (reset to 0 the
-        # moment a cycle is not memory-bound). One binding cycle already caps *that* cycle's
-        # admission (`determine_new_Dj`'s own `min(max_new, cap)`, unconditional -- see
-        # `_memory_growth_bound`); this streak only gates the *permanent* threshold tightening
-        # below, so one round's noisy transient (allocator jitter, a GC pause landing inside the
-        # measured window, a one-off skew to the sampled rank) cannot freeze the basis for the
-        # rest of the run on a single bad reading. Two consecutive rounds agreeing is a real
-        # trend, not noise, and still tightens promptly -- this is not the every-round-forever
-        # staleness the after-the-fact `peak_rss` trip-wire below has (that one never resets,
-        # so an earlier cycle's mark keeps reading as current; see its own comment).
-        memory_bound_streak = 0
+        # The kept manifold one cycle back, for the request's growth margin; `None` (no history) is not 0.
+        self._prev_kept = None
+        lowest = isinstance(manifold, Lowest)
         while True:
-            if psi_refs is None:
-                num_wanted = 10
-                # Left at `None` deliberately; see `_manifold_request` for why that is not 0.
-                prev_kept = None
-            else:
-                # `.width`, not `len()`: len() on a block is its rank-local ROW count, which
-                # would make num_wanted -- and the eigensolver collectives it sizes -- diverge
-                # across ranks.
-                n_kept = _psi_ref_width(psi_refs)
-                num_wanted = _manifold_request(n_kept, prev_kept)
-                prev_kept = n_kept
-            # The eigensolve is part of the cycle the guard must see. `determine_new_Dj` resets the
-            # high-water mark again at the start of the selection round (to measure that round's own
-            # transient), which used to hide the eigensolve's peak from both guards -- and at 256
-            # rank counts the eigensolve's own transient is not negligible. So: reset here, sample right
-            # after the eigensolve, and let the trip-wire below take the larger of the two peaks.
-            # Rank-local, no collective; gated on a replicated argument.
-            if memory_budget_bytes is not None:
+            # The eigensolve belongs to the cycle the guard measures: reset the high-water mark here and
+            # sample right after, since the selection round resets it again for its own transient.
+            if measuring:
                 reset_peak_rss()
             e_ref, psi_refs = self.get_eigenvectors(
                 H,
-                num_wanted=min(num_wanted, len(self.basis)),
-                max_energy=de0_max,
+                manifold,
                 dense_cutoff=dense_cutoff,
                 slaterWeightMin=slaterWeightMin,
-                solver=solver,
-                reort=reort,
                 psi_refs=psi_refs,
             )
-
-            eigensolve_peak = peak_rss_bytes() if memory_budget_bytes is not None else 0
+            eigensolve_peak = peak_rss_bytes() if measuring else 0
             if len(e_ref) == 0:
                 break
             e0 = float(np.min(e_ref))
-            if cap_cycles > 0:
-                # Fixed-budget refinement: keep the best capped basis seen so far and
-                # stop once cycles stop lowering the (variational) ground-state energy.
-                improved = best_e0 is None or e0 < best_e0 - cap_e_tol
-                if best_e0 is None or e0 < best_e0:
-                    best_e0 = e0
-                    # Packed keys, not `list(self.basis.local_basis)`: this snapshot is
-                    # retained across every later refinement cycle, alongside the live basis
-                    # it is a copy of. Measured on a 400k-determinant basis:
-                    #
-                    #     list(local_basis)             80.2 B/det
-                    #     ManyBodyState.from_keys(...) 115.2 B/det
-                    #     packed key array               9.8 B/det
-                    #
-                    # The C++ key block being *worse* than the list is not a mistake: it
-                    # builds a `vector<SlaterDeterminant>` and copies it into the block, and
-                    # glibc does not return the freed transient, so VmHWM -- the metric the
-                    # guard and the OOM killer act on -- keeps both.
-                    best_basis = np.empty((len(self.basis.local_basis), self.basis.n_bytes), dtype=np.uint8)
-                    for row, state in enumerate(self.basis.local_basis):
-                        best_basis[row] = np.frombuffer(
-                            bytes(state.to_bytearray()[: self.basis.n_bytes]), dtype=np.uint8
-                        )
-                    best_psis = psi_refs
-                    best_e_ref = e_ref
-                no_improve = 0 if improved else no_improve + 1
-                if no_improve >= 2 or cap_cycles >= max_cap_cycles:
-                    break
+            if cap_cycles > 0 and refiner.observe(self.basis, e0, psi_refs, e_ref, cap_cycles):
+                break
 
-            admit_target = None
-            if capped:
-                # Cap the selection so one cycle turns over at most ~10% of the basis
-                # (or fills the remaining budget, whichever is larger).
-                budget = int(threshold) - self.basis.size
-                admit_target = max(budget, -(-int(threshold) // 10))
+            admit_target = guard.admission_target()
             old_size = self.basis.size
-            # The look-ahead half of the memory guard (see `_memory_growth_bound`): bound this
-            # cycle's admission by what the *next* selection round can afford, predicted from
-            # this round's own measured transient. `prev_kept` already holds the previous
-            # cycle's kept count here, so this is exactly the request the next loop head makes.
+            # Look-ahead: bound this cycle's admission by what the *next* selection round can afford,
+            # predicted from this round's own measured transient.
             affordable_growth = None
-            if memory_budget_bytes is not None:
-                # `.width`: `len()` is the rank-local ROW count, which would both mis-size
-                # the look-ahead by orders of magnitude and make `cap` -- hence `max_new`, hence
-                # `_admit_top`'s rank-dependent branch over collectives -- differ per rank.
+            if measuring:
                 p_now = _psi_ref_width(psi_refs)
                 affordable_growth = _memory_growth_bound(
-                    memory_budget_bytes, old_size, p_now, _manifold_request(p_now, prev_kept)
+                    memory_budget_bytes, old_size, p_now, 1 if lowest else _manifold_request(p_now, self._prev_kept)
                 )
             with _trace_timed("cipsi_selection", cycle=cycle) as _sel_event:
                 new_Dj = self.determine_new_Dj(
@@ -1522,104 +1017,14 @@ class CIPSISolver:
                     H,
                     de2_min,
                     slater_cutoff=slaterWeightMin,
-                    gen_ops=gen_ops,
                     max_new=admit_target,
                     affordable_growth=affordable_growth,
                     e_pt2_tol=e_pt2_tol,
-                    clamp_admission=tighten,
+                    clamp_admission=guard.tighten,
                 )
                 n_new = self._allreduce_sum(len(new_Dj))
                 sel = self.last_selection or {}
-                memory_cap = sel.get("memory_admit_cap")
-                # The memory bound decided this admission only if it was the tightest of the
-                # three limits (candidates above de2_min, an existing cap's `admit_target`, and
-                # itself). A bound looser than the cap already in force is not a memory event
-                # and must neither warn nor touch the threshold.
-                # Warn mode never binds: the user's cap is final, so a round the look-ahead would
-                # have limited is not a memory event here (the trip-wire below still warns).
-                round_memory_bound = (
-                    tighten
-                    and memory_cap is not None
-                    and memory_cap < sel.get("n_candidates", 0)
-                    and (admit_target is None or memory_cap < admit_target)
-                )
-                memory_bound_streak = memory_bound_streak + 1 if round_memory_bound else 0
-                # Any strike at all, permanent tightening or not: this is what the expansion
-                # *reports*. Without it a first strike followed by a round that admits nothing
-                # leaves `memory_bound` False, the loop exits on
-                # `cap_cycles == 0 and self.basis.size == old_size`, and `truncation_report`
-                # is never written -- so a memory-limited expansion reads as a converged one,
-                # and `dc_search.resolve_cap_at_max` (which tests `truncation_report is None`)
-                # would record the cap as "unbound" and never look lower.
-                memory_bound_observed = memory_bound_observed or round_memory_bound
-                # Two consecutive binding rounds, not one: `determine_new_Dj` already applied
-                # this round's `memory_cap` to its own admission regardless (the guard's safety
-                # property does not depend on what happens here), so a single-round strike costs
-                # nothing to wait out, and waiting is what stops one noisy reading from pinning
-                # the basis at that cycle's size for good.
-                #
-                # `memory_cap == 0` locks in on the first strike: zero affordable growth means
-                # this round admitted nothing, so `self.basis.size == old_size` and the loop's
-                # own termination (`cap_cycles == 0 and self.basis.size == old_size: break`,
-                # below) exits before a second round could ever run to confirm the reading --
-                # unlike a positive-but-tight cap, there is no "wait and see" available, and
-                # zero is a floor, not a noisy estimate that a second sample could revise upward.
-                #
-                # This holds for a `"budget"`-reason zero too, and deliberately so. Such a zero
-                # means `rss_base >= budget`, and the after-the-fact trip-wire below fires on
-                # `peak_rss >= budget` with `peak_rss >= rss_base` by construction (VmHWM was
-                # reset to the round's starting RSS) -- so by the time a budget-side zero is
-                # visible here, the OOM backstop has *already* capped. Giving this branch its own
-                # streak would be unreachable code. It is also unnecessary: the budget is
-                # `safety * (available + resident)`, and `available` is `MemAvailable /
-                # ranks_on_node`, so another rank allocating a whole GiB moves it by ~8 MiB at
-                # 128 ranks/node. The budget does not jitter across the resident set.
-                if not memory_bound and round_memory_bound and (memory_cap == 0 or memory_bound_streak >= 2):
-                    # The affordable size becomes the fixed budget from here on -- the same
-                    # machinery a caller's cap uses -- tightening only (`min`), never loosening
-                    # an existing cap.
-                    memory_bound = True
-                    previous = threshold
-                    threshold = min(float(threshold), float(old_size + memory_cap))
-                    capped = True
-                    self.basis.truncation_threshold = threshold
-                    # Once per calculation at any verbosity (every event at -vv): this is the line
-                    # that says why a default run's basis stopped growing. stdout and stderr, via
-                    # emit_memory_warning: under RSPt rank 0's stdout is a per-cluster file, and
-                    # round 11's slurm logs carried none of these lines.
-                    was = "no cap (unlimited)" if not np.isfinite(previous) else f"the auto cap of {int(previous):,}"
-                    streak_note = (
-                        "no growth at all is affordable" if memory_cap == 0 else "for the second round running"
-                    )
-                    # Which side bound, and by how much. Without this the two cases are
-                    # indistinguishable in a log -- and telling them apart is what took the
-                    # round-9 diagnosis from "the basis is mysteriously frozen" to a named
-                    # defect: a 4-68 KiB round refused all growth is a budget verdict, not a
-                    # transient one, and reads absurd the moment both numbers are on the line.
-                    rss_now = sel.get("round_rss_bytes", 0)
-                    if sel.get("memory_cap_reason") == "budget":
-                        why = (
-                            f"the resident set alone is over the {format_bytes(memory_budget_bytes)} "
-                            f"budget by {format_bytes(rss_now - memory_budget_bytes)}, so the round's "
-                            "own cost did not enter into it"
-                        )
-                    else:
-                        why = (
-                            f"that leaves {format_bytes(memory_budget_bytes - rss_now)} under the "
-                            f"{format_bytes(memory_budget_bytes)} budget, which this round's cost "
-                            "does not fit a larger basis into"
-                        )
-                    emit_memory_warning(
-                        f"WARNING determinant cap: the selection round on {old_size:,} determinants peaked "
-                        f"{format_bytes(sel.get('round_transient_bytes', 0))} above its "
-                        f"{format_bytes(rss_now)} resident set ({streak_note}); {why}. "
-                        f"The next round can afford {memory_cap:,} of the "
-                        f"{sel.get('n_candidates', 0):,} candidates. Tightening {was} to "
-                        f"{int(threshold):,}.",
-                        root=self.basis.comm is None or self.basis.comm.rank == 0,
-                        kind="gs-memory",
-                        force=self.basis.verbose,
-                    )
+                guard.after_selection(sel, old_size, admit_target)
                 _sel_event.update(
                     basis_size=int(old_size),
                     p=_psi_ref_width(psi_refs),
@@ -1630,41 +1035,8 @@ class CIPSISolver:
                     subthreshold_de2_mass=float(sel.get("subthreshold_de2_mass", 0.0)),
                     residual_pt2=float(sel.get("residual_pt2", 0.0)),
                 )
-            # Unconditional collectives (CLAUDE.md: never gate a collective on rank-local
-            # state, and `self.basis.verbose` may differ across ranks) -- only the print
-            # below is gated. Cheap relative to the cycle they describe: single-scalar
-            # reductions against a selection round that costs seconds to minutes.
-            local_count = len(self.basis.local_basis)
-            peak_rss = max(peak_rss_bytes(), eigensolve_peak)
-            # `VmHWM` alone cannot be attributed: it is anon + file + shmem, and under an MPI that
-            # uses shared memory for intra-node transport the shmem part is a node-wide pool every
-            # rank counts, which does not move `MemAvailable` and which no allocator tuning
-            # returns. Reading the ratchet as the solver's own allocations is what round 5 and
-            # round 9 both did (`doc/plans/dc_smo_memory.md`); `anon` is the part a code change
-            # can move, so it is reported beside the total rather than left to be inferred.
-            rss_parts = rss_breakdown()
-            anon_rss, shmem_rss = rss_parts["anon"], rss_parts["shmem"]
-            if self.basis.is_distributed:
-                local_max = self.basis.comm.allreduce(local_count, op=MPI.MAX)
-                local_min = self.basis.comm.allreduce(local_count, op=MPI.MIN)
-                peak_rss = self.basis.comm.allreduce(peak_rss, op=MPI.MAX)
-                anon_rss = self.basis.comm.allreduce(anon_rss, op=MPI.MAX)
-                shmem_rss = self.basis.comm.allreduce(shmem_rss, op=MPI.MAX)
-            else:
-                local_max = local_min = local_count
-            _trace_note(
-                "cipsi_cycle",
-                cycle=cycle,
-                local_max=int(local_max),
-                local_min=int(local_min),
-                vm_hwm_bytes=int(peak_rss),
-                anon_rss_bytes=int(anon_rss),
-                shmem_rss_bytes=int(shmem_rss),
-            )
+            peak_rss, anon_rss, shmem_rss, local_min, local_max = self._cycle_memory(eigensolve_peak, cycle)
             if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
-                # Surfaced every cycle, not only once a cap has bound (see
-                # doc/plans/dc_smo_memory.md) -- `last_selection`'s counts used to be
-                # visible only behind the cap-hit WARNING below.
                 print(
                     f"  cycle {cycle}: basis={old_size:,} p={_psi_ref_width(psi_refs):,} "
                     f"Hpsi_rows={sel.get('hpsi_rows', 0):,} candidates={sel.get('n_candidates', 0):,} "
@@ -1676,82 +1048,16 @@ class CIPSISolver:
                     flush=True,
                 )
             cycle += 1
-            if (
-                memory_budget_bytes is not None
-                and not budget_tripped
-                and peak_rss >= memory_budget_bytes
-                and not tighten
-            ):
-                # Warn mode: the user's cap is final. Same replicated condition as below, so every
-                # rank latches together; only rank 0 prints, and it prints whatever the verbosity
-                # because a run about to be OOM-killed is exactly the one whose log is read.
-                budget_tripped = True
-                self.memory_warning = {
-                    "peak_rss_bytes": int(peak_rss),
-                    "anon_rss_bytes": int(anon_rss),
-                    "shmem_rss_bytes": int(shmem_rss),
-                    "budget_bytes": int(memory_budget_bytes),
-                    "basis_size": int(self.basis.size),
-                    "cap": float(threshold),
-                }
-                cap_text = f"{int(threshold):,}" if np.isfinite(threshold) else "unlimited"
-                emit_memory_warning(
-                    f"WARNING determinant cap: GS basis at {self.basis.size:,} determinants uses "
-                    f"{format_bytes(peak_rss)}/rank (anon {format_bytes(anon_rss)} + shm "
-                    f"{format_bytes(shmem_rss)}, max over ranks) >= the {format_bytes(memory_budget_bytes)} "
-                    f"memory budget. Your truncation_threshold={cap_text} is kept as set; if the job is "
-                    f"killed, set truncation_threshold <= {self.basis.size:,}, use 'auto', or run fewer ranks "
-                    "per node. (Shared memory may be over-counted under MPI.)",
-                    root=self.basis.comm is None or self.basis.comm.rank == 0,
-                    kind="gs-memory",
-                )
-            if memory_budget_bytes is not None and not budget_tripped and peak_rss >= memory_budget_bytes:
-                # `peak_rss` and `self.basis.size` are both already rank-replicated at this point
-                # (VmHWM was just MAX-allreduced above; `Basis.size` is the global count by
-                # construction), so every rank evaluates this condition identically without a
-                # separate collective for the decision itself.
-                budget_tripped = True
-                # Report this as a memory-bound stop, like the look-ahead's own cap. Only
-                # `memory_bound_observed` (a pure reporting flag) is set, never `memory_bound`,
-                # which also gates whether the look-ahead may still adopt a *tighter* cap of its
-                # own later in the expansion -- that decision is unaffected by this backstop
-                # having fired.
-                #
-                # Without this the backstop is invisible downstream: `truncation_report` still
-                # says `cap_hit`, but with `memory_bound` False it is indistinguishable from a
-                # `truncation_threshold` the caller chose, and `dc_criteria._reject_if_memory_bound`
-                # -- which exists to refuse exactly this answer -- lets it through. Caught by
-                # driving a real search at a near-zero budget; the unit tests could not see it
-                # because they exercise the look-ahead half only.
-                memory_bound_observed = True
-                # `min`, never a bare assignment: an existing cap that already binds tighter than
-                # the current basis is an instruction from the caller and must not be loosened.
-                previous = threshold
-                threshold = min(float(threshold), float(self.basis.size))
-                capped = True
-                # Written back, not just held locally: a caller inspecting
-                # `basis.truncation_threshold` after `expand()` returns must see the cap that
-                # actually governed the rest of this run, not the one it was constructed with.
-                self.basis.truncation_threshold = threshold
-                was = "no cap (unlimited)" if not np.isfinite(previous) else f"the auto cap of {int(previous):,}"
-                emit_memory_warning(
-                    f"WARNING determinant cap: measured per-rank RSS {format_bytes(peak_rss)} reached the "
-                    f"{format_bytes(memory_budget_bytes)} memory budget mid-expansion; tightening "
-                    f"{was} to a fixed-budget cap at the current basis "
-                    f"({self.basis.size:,} determinants) rather than risk an uncatchable OOM kill.",
-                    root=self.basis.comm is None or self.basis.comm.rank == 0,
-                    kind="gs-memory",
-                    force=self.basis.verbose,
-                )
+            guard.after_cycle(peak_rss, anon_rss, shmem_rss)
+
             truncated = False
-            if capped and self.basis.size + n_new > threshold:
-                # Fixed-budget CIPSI cycle: make room by dropping the currently least
-                # important determinants (by eigenvector amplitude), then admit the
-                # de2-ranked candidates; the loop head re-diagonalizes and the cycle
-                # repeats until the energy stabilizes.
+            if guard.capped and self.basis.size + n_new > guard.threshold:
+                # Fixed-budget cycle: make room by dropping the currently least important determinants
+                # (by eigenvector amplitude), then admit the de2-ranked candidates; the loop head
+                # re-diagonalizes and the cycle repeats until the energy stabilizes.
                 cap_cycles += 1
                 truncated = True
-                keep = max(int(threshold) - n_new, int(threshold) // 2, 1)
+                keep = max(int(guard.threshold) - n_new, int(guard.threshold) // 2, 1)
                 psi_refs = self.truncate(psi_refs, e_ref, target=keep, slaterWeightMin=slaterWeightMin)
                 if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
                     print(
@@ -1759,94 +1065,105 @@ class CIPSISolver:
                         f"{self.last_truncation['retained']:,} determinants, admitting {n_new:,} candidates)"
                     )
             self.basis.add_states(new_Dj)
-            # `redistribute_block`, not `redistribute_psis(*psi_refs)`: unpacking a block with
-            # `*` iterates its determinant KEYS. At >1 rank that raises; at 1 rank
-            # `redistribute_psis` is a no-op that hands the keys straight back, so the next
-            # cycle silently reads a list of SlaterDeterminants as its reference block.
+            # `redistribute_block`, not `redistribute_psis(*psi_refs)`: unpacking a block with `*` iterates
+            # its determinant KEYS (an error at >1 rank, silently wrong at 1). `prune_rows(0.0)` drops a row
+            # that cancelled exactly across ranks on every column.
             psi_refs = self.basis.redistribute_block(psi_refs)
-            # `redistribute_psis` pruned each column slice to 0.0 and the caller's `from_states`
-            # re-unioned, so a row that came out exactly zero in *every* column disappeared.
-            # `redistribute_block` does neither, so do it here -- otherwise an exact cross-rank
-            # cancellation leaves an all-zero row behind, and only at >1 rank.
             psi_refs.prune_rows(0.0)
             residual_current = not truncated and self.basis.size == old_size
             if cap_cycles == 0 and self.basis.size == old_size:
                 break
             e0 = np.inf  # the basis was mutated; e0 no longer describes it
-        if best_basis is not None and e0 > best_e0:
-            # The last refinement cycle left a worse basis (e.g. score/amplitude
-            # ping-pong): restore the best capped basis seen during the cycles.
-            self.basis.clear()
-            # `add_states` normalizes `bytes` through `_as_determinant`. Note what this does
-            # NOT buy: `add_states`' first statement is a list comprehension over its whole
-            # argument, so the restore peak is the same as it was before this change. The win
-            # here is RETENTION -- the snapshot held across every refinement cycle is 9.8
-            # B/det instead of 80.2 -- not the cost of putting it back.
-            self.basis.add_states(best_basis[row].tobytes() for row in range(best_basis.shape[0]))
-            psi_refs = self.basis.redistribute_block(
-                best_psis if isinstance(best_psis, ManyBodyState) else ManyBodyState.from_states(list(best_psis))
-            )
-            psi_refs.prune_rows(0.0)
-            e_ref = best_e_ref
+
+        restored = refiner.restore_if_worse(self.basis, e0)
+        if restored is not None:
+            psi_refs, e_ref = restored
             residual_current = False
         self.psi_refs = psi_refs
-        if capped and self.basis.size > threshold and self.psi_refs is not None:
-            # The symmetry closure can push an admission slightly past the cap; enforce
-            # the hard threshold on exit (downstream get_eigenvectors re-solves). e_ref
-            # must describe the *current* psi_refs -- after a best_basis restore above,
-            # that is best_e_ref, not the last cycle's (possibly length-mismatched) e_ref.
+        self.memory_warning = guard.warning
+        if guard.capped and self.basis.size > guard.threshold and self.psi_refs is not None:
+            # Enforce the hard threshold on exit. `e_ref` must describe the *current* `psi_refs`: after a
+            # restore that is the best cycle's, not the last one's.
             self.psi_refs = self.truncate(self.psi_refs, e_ref, slaterWeightMin=slaterWeightMin)
             residual_current = False
-        if cap_cycles > 0 or memory_bound or memory_bound_observed:
-            # `memory_bound` alone (no refinement cycle ran) is the case where the memory guard
-            # found even a same-size round unaffordable and the expansion stopped where it stood;
-            # that must still be reported as a cap, not pass for a converged expansion.
-            # `memory_bound_observed` covers the same thing one strike earlier: the look-ahead
-            # limited an admission but the loop ended before the second strike that would have
-            # made the cap permanent. The expansion was memory-limited either way, and
-            # `dc_search.resolve_cap_at_max` reads `truncation_report is None` as "unbound".
-            sel = self.last_selection or {}
-            self.truncation_report = {
-                "cap_hit": True,
-                "cycles": cap_cycles,
-                "retained": int(self.basis.size),
-                # Still `inf` when only `memory_bound_observed` fired (the look-ahead bounded a
-                # round's admission without ever adopting a permanent cap), and `int(inf)`
-                # raises -- report the basis it actually stopped at instead.
-                "threshold": int(threshold) if np.isfinite(threshold) else int(self.basis.size),
-                "discarded_de2_mass": float(sel.get("discarded_de2_mass", 0.0)),
-                "n_candidates_last": int(sel.get("n_candidates", 0)),
-                "memory_bound": bool(memory_bound or memory_bound_observed),
-                "residual_pt2": float(sel.get("residual_pt2", 0.0)),
-            }
-            rank = self.basis.comm.rank if self.basis.is_distributed else 0
-            rep = self.truncation_report
-            # discarded_de2_mass is an error bound on the ground state (PT2 importance left out
-            # of the retained subspace), so this is said at any verbosity -- once per calculation
-            # (a double-counting search runs dozens of expansions), every time at -vv.
-            why = "the memory guard" if rep["memory_bound"] else f"the cap of {rep['threshold']:,}"
-            emit_memory_warning(
-                f"WARNING determinant cap: GS basis stopped at {rep['retained']:,} determinants "
-                f"({why}); discarded candidates carry {rep['discarded_de2_mass']:.3e} of PT2 "
-                "importance.",
-                root=rank == 0,
-                kind="gs-cap",
-                force=self.basis.verbose,
-            )
-            if rank == 0:
-                if self.basis.verbose:
-                    print(
-                        f"  ({rep['cycles']} refinement cycle(s); {rep['n_candidates_last']:,} "
-                        "candidates considered in the last cycle)",
-                        flush=True,
-                    )
+        if cap_cycles > 0 or guard.limited:
+            self._record_truncation(cap_cycles, guard)
 
-        self._report_convergence(
-            e_pt2_tol, de2_min, cap_cycles > 0, memory_bound or memory_bound_observed, residual_current
-        )
+        self._report_convergence(e_pt2_tol, de2_min, cap_cycles > 0, guard.limited, residual_current)
 
         if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
             print(f"After expansion, the basis contains {self.basis.size} elements.", flush=True)
+
+    def _cycle_memory(self, eigensolve_peak, cycle):
+        """``(peak_rss, anon_rss, shmem_rss, local_min, local_max)`` for the cycle just run, and its trace note.
+
+        Unconditional collectives (never gated on rank-local state such as ``verbose``): single-scalar
+        reductions against a selection round that costs seconds to minutes. ``VmHWM`` alone cannot be
+        attributed -- under an MPI that uses shared memory the ``shmem`` part is a node-wide pool every rank
+        counts -- so ``anon``, the part a code change can move, is reported beside it.
+        """
+        local_count = len(self.basis.local_basis)
+        peak_rss = max(peak_rss_bytes(), eigensolve_peak)
+        rss_parts = rss_breakdown()
+        anon_rss, shmem_rss = rss_parts["anon"], rss_parts["shmem"]
+        if self.basis.is_distributed:
+            comm = self.basis.comm
+            local_max = comm.allreduce(local_count, op=MPI.MAX)
+            local_min = comm.allreduce(local_count, op=MPI.MIN)
+            peak_rss = comm.allreduce(peak_rss, op=MPI.MAX)
+            anon_rss = comm.allreduce(anon_rss, op=MPI.MAX)
+            shmem_rss = comm.allreduce(shmem_rss, op=MPI.MAX)
+        else:
+            local_max = local_min = local_count
+        _trace_note(
+            "cipsi_cycle",
+            cycle=cycle,
+            local_max=int(local_max),
+            local_min=int(local_min),
+            vm_hwm_bytes=int(peak_rss),
+            anon_rss_bytes=int(anon_rss),
+            shmem_rss_bytes=int(shmem_rss),
+        )
+        return peak_rss, anon_rss, shmem_rss, local_min, local_max
+
+    def _record_truncation(self, cap_cycles, guard):
+        """Write ``truncation_report`` (and warn): a cap or the memory guard limited this expansion.
+
+        Written when a refinement cycle ran or memory limited the expansion even without one, so a
+        memory-limited expansion never reads as converged (``dc_search.resolve_cap_at_max`` takes
+        ``truncation_report is None`` to mean "unbound").
+        """
+        sel = self.last_selection or {}
+        threshold = guard.threshold
+        self.truncation_report = {
+            "cap_hit": True,
+            "cycles": cap_cycles,
+            "retained": int(self.basis.size),
+            # Still `inf` when only an observed round limited the expansion; report where it stopped.
+            "threshold": int(threshold) if np.isfinite(threshold) else int(self.basis.size),
+            "discarded_de2_mass": float(sel.get("discarded_de2_mass", 0.0)),
+            "n_candidates_last": int(sel.get("n_candidates", 0)),
+            "memory_bound": bool(guard.limited),
+            "residual_pt2": float(sel.get("residual_pt2", 0.0)),
+        }
+        rank = self.basis.comm.rank if self.basis.is_distributed else 0
+        rep = self.truncation_report
+        # discarded_de2_mass bounds the ground-state error, so this is said at any verbosity: once per
+        # calculation (a double-counting search runs dozens of expansions), every time at -vv.
+        why = "the memory guard" if rep["memory_bound"] else f"the cap of {rep['threshold']:,}"
+        emit_memory_warning(
+            f"WARNING determinant cap: GS basis stopped at {rep['retained']:,} determinants "
+            f"({why}); discarded candidates carry {rep['discarded_de2_mass']:.3e} of PT2 importance.",
+            root=rank == 0,
+            kind="gs-cap",
+            force=self.basis.verbose,
+        )
+        if rank == 0 and self.basis.verbose:
+            print(
+                f"  ({rep['cycles']} refinement cycle(s); {rep['n_candidates_last']:,} "
+                "candidates considered in the last cycle)",
+                flush=True,
+            )
 
     def _report_convergence(self, e_pt2_tol, de2_min, cap_bound, memory_bound, residual_current):
         """Record (and warn about) how far the expansion is from PT2 convergence.
@@ -1893,284 +1210,77 @@ class CIPSISolver:
                 flush=True,
             )
 
-    def _normalize_start_block(self, psi0, cold_start_block, warm_started, slaterWeightMin):
-        """Orthonormalize the Lanczos start block, falling back to a cold start if it fails.
+    def _build_h_matrix(self, H):
+        """``H`` as a ``DistributedSparseMatrix`` on the current basis (collective)."""
+        H_mat = build_sparse_matrix(self.basis, H)
+        _trace_note("h_matrix_nnz", nnz=int(H_mat.nnz), n=int(H_mat.shape[0]))
+        return H_mat
 
-        A warm block is *inherited* state -- the previous CIPSI cycle's converged eigenvectors --
-        so unlike the cold hash vector it can arrive unusable, and when it does the failure lands
-        here, one function away from anything that could have caused it. That killed a production
-        SrMnO3 double-counting search outright (rung 7 of the cap ladder, the ``N-1`` sector's
-        second refinement cycle, a 261-column warm block): ``block_normalize`` raised, nothing
-        caught it, and the whole search returned its unchanged input double counting after 20
-        minutes of work.
+    def _warm_columns(self, psi_refs, width=None):
+        """The lowest ``GS_MAX_BLOCK_WIDTH`` (or ``width``) columns of ``psi_refs``, distributed ``(n_local, w)``.
 
-        Nothing about that is unrecoverable. The cold full-support start vector is always
-        available, always finite (``_amplitude_from_hash`` is a bounded integer ratio), and spans
-        the whole basis -- it is what the *first* cycle of every expansion uses, and what the
-        exhaustion guard below already falls back to. Losing the warm columns costs Krylov
-        iterations, not correctness.
-
-        The retry is rank-symmetric, which is what makes it safe to wrap a collective:
-        ``block_tsqr`` returns the same rank code on every rank (TSQR's ``R`` is bitwise
-        identical), so ``block_normalize`` raises :class:`BlockBreakdown` on all ranks or none,
-        and every rank therefore takes the same branch into the same second collective. A cold
-        block that fails too is a genuinely empty basis, and that re-raises.
-
-        That argument is why the ``except`` names :class:`BlockBreakdown` and not ``ValueError``.
-        It is narrower on purpose: ``block_normalize`` also raises *before* reaching the
-        collective -- ``ManyBodyState.from_states`` rejects a width-0 block, which is a
-        **rank-local** condition (a rank owning no determinants builds the polymorphic zero while
-        its peers do not; see ``cold_start_block``'s own ``width=1`` note below). Recovering from
-        that one would send this rank into ``_describe_block_health``'s ``Allreduce``s and a
-        second ``block_normalize`` while every other rank was still inside the first, which is a
-        deadlock rather than a recovery.
-
-        The diagnostic is computed *only* on the failure path -- a full finiteness pass over the
-        block, which says whether the warm columns were corrupted (non-finite) or merely
-        degenerate, and is the measurement that pins where such a block came from. Free in the
-        normal case, and the one case where the cost does not matter is the one where it runs.
+        ``psi_refs`` is energy-ordered ascending, so the lowest states are kept: the ones a restart is
+        most likely to need again. Empty (zero columns) when there is no warm block.
         """
-        try:
-            psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
-            return psi0, warm_started
-        except BlockBreakdown as exc:
-            if not warm_started:
-                raise
-            # Collective (it allreduces over the row partition), so every rank calls it and
-            # only the printing is rank-gated -- the ordering CLAUDE.md's MPI rule requires.
-            health = _describe_block_health(psi0, self.basis.comm)
-            # `psi0` is the warm columns PLUS the appended cold vector, so the warm count is one
-            # less -- reporting `len(psi0)` overstated how many inherited columns were in play.
-            n_warm = len(psi0) - 1
-            # Free outside a `solver_trace.tracing()` block, so this costs nothing in a normal
-            # run -- and buys nothing there either: `tracing()` only opens under `DC_DIAGNOSTICS`
-            # (`dc_search._dc_search_trace`). It is for the run that is already being investigated;
-            # the default-run signal is the rank-0 print below, which stays unconditional.
-            _trace_note("warm_block_fallback", warm_columns=int(n_warm), health=health)
-            if self.basis.comm is None or self.basis.comm.rank == 0:
-                print(
-                    f"warning: the warm-started Lanczos block ({n_warm} warm columns plus the "
-                    f"cold vector) did not orthonormalize ({exc}); {health}. Restarting this "
-                    "solve from the cold full-support vector instead -- slower to converge, same "
-                    "subspace reachable.",
-                    flush=True,
-                )
-            psi0, _ = block_normalize(cold_start_block(), self.basis.is_distributed, self.basis.comm, slaterWeightMin)
-            return psi0, False
+        if psi_refs is None:
+            return np.zeros((len(self.basis.local_basis), 0), dtype=complex)
+        cap = config.GS_MAX_BLOCK_WIDTH.get() if width is None else width
+        if isinstance(psi_refs, ManyBodyState):
+            block = psi_refs if cap is None or psi_refs.width <= cap else psi_refs.select(list(range(cap)))
+            states = block.to_states()
+        else:
+            states = list(psi_refs)[:cap] if cap is not None else list(psi_refs)
+        if not states:
+            return np.zeros((len(self.basis.local_basis), 0), dtype=complex)
+        return np.ascontiguousarray(build_distributed_vector(self.basis, states).T)
 
-    def _complete_low_spectrum(
-        self, H_mat, e_ref, psi_refs_arr, max_energy, width, max_subspace_blocks, slaterWeightMin, reort
-    ):
-        """Find the eigenstates a block Krylov solve missed inside the thermal window, and add them.
-
-        Block Lanczos started from ``p`` vectors reaches at most ``rank(P Q0)`` copies of an exactly
-        degenerate level, ``P`` its eigenprojector. A warm start from the previous cycle's
-        eigenvectors typically reaches an excited level through one direction, so a level wider than
-        that comes back with copies missing -- each returned one converged, and a state beyond the
-        thermal cut present, so :func:`_energy_cut_indices` certifies the manifold. Measured on the
-        SrMnO3 gap double-counting search: a 10-fold level inside the 23 meV window came back with 4
-        to 9 of its copies (``test_degenerate_manifold_completeness.py``).
-
-        The boundary is the top of the thermal window (``max_energy``, widened to any computed state
-        :func:`_energy_cut_indices` absorbs into the last kept manifold) plus the degeneracy tolerance.
-        *Every* computed state at or below it is locked, not only the ones the cut keeps: a computed
-        state left out of the locked set would be "found" again and returned twice. Each probe round then
-        looks in the orthogonal complement of the locked set from a fresh rank-independent random block
-        of at least ``_PROBE_MIN_WIDTH`` columns:
-
-        1. One locked block-Lanczos sweep (the kernel's locking deflation), stopped by its
-           ``converged`` hook as soon as :func:`_complement_verdict` decides. ``"clear"`` ends the
-           probing -- the common case, and the only cost it adds to a complete solve.
-        2. Otherwise a locked TRLM converges the complement's lowest states; those at or below the
-           boundary are re-orthogonalized against the locked set, their energies taken as Rayleigh
-           quotients, and locked in turn for the next round.
-
-        Returns ``(e_ref, psi_refs_arr)``, ascending, with the computed states beyond the boundary
-        still in it -- a state beyond the cut is what certifies it downstream -- so the caller's cut
-        runs unchanged.
-
-        Collective: every sweep, solve and decision runs on every rank, and each decision (the locked
-        set and the boundary included) is taken on rank 0 and broadcast.
-        """
-        mpi = self.basis.is_distributed
-        comm = self.basis.comm
-        rank0 = comm is None or comm.rank == 0
-
-        def decide(value):
-            return comm.bcast(value, root=0) if mpi else value
-
-        e = np.asarray(e_ref).real
-        deg_tol = _degeneracy_tol(e, slaterWeightMin)
-        locked_idx, boundary = None, None
-        if rank0:
-            order = np.argsort(e, kind="stable")
-            cut_idx, _ = _energy_cut_indices(e, max_energy, tol=deg_tol)
-            boundary = max(float(e[order[0]]) + float(max_energy), float(e[cut_idx].max())) + deg_tol
-            locked_idx = [int(i) for i in order if e[i] <= boundary]
-        locked_idx, boundary = decide((locked_idx, boundary))
-        locked_set = set(locked_idx)
-        rest_idx = [i for i in range(len(e)) if i not in locked_set]
-
-        locked = np.ascontiguousarray(psi_refs_arr[:, locked_idx])
-        e_locked = [float(e[i]) for i in locked_idx]
-        n_found = 0
-        tol = _eigen_tol(slaterWeightMin)
-        probe_width = max(width, _PROBE_MIN_WIDTH)
-        # Found states are accepted as eigenstates only this well converged: any looser and their
-        # energies could land outside the degeneracy tolerance of the copies already kept.
-        found_res_tol = deg_tol
-
-        rounds, verdict = 0, None
-        while rounds < _MAX_COMPLETENESS_PROBES:
-            n_complement = len(self.basis) - locked.shape[1]
-            if n_complement <= 0:
-                verdict = "clear"
-                break
-            rounds += 1
-            w = min(probe_width, n_complement)
-            R = _probe_start_block(self.basis, w, rounds)
-            R = _deflate(R, locked, mpi, comm)
-            R, _ = block_normalize(R, mpi, comm, 0.0)
-
-            def hook(alphas, betas, verbose=False, block_widths=None, **kwargs):
-                v = None
-                if rank0:
-                    v = _complement_verdict(*_lowest_ritz_bound(alphas, betas, block_widths), boundary, len(alphas))
-                return decide(v) is not None
-
-            alphas, betas, _, block_widths, status = block_lanczos_array(
-                psi0=R,
-                h_op=H_mat,
-                converged=hook,
-                max_iter=max_subspace_blocks,
-                verbose=False,
-                reort="full",
-                return_W=False,
-                return_widths=True,
-                return_status=True,
-                comm=comm,
-                locked=locked,
-            )
-            v = None
-            if rank0 and status != "diverged" and len(alphas) > 0:
-                theta0, r0 = _lowest_ritz_bound(alphas, betas, block_widths)
-                # A closed Krylov space from a generic start is the whole reachable complement: its
-                # Ritz values are exact, so no minimum depth is needed to trust them.
-                depth = _PROBE_MIN_BLOCKS if status == "invariant_subspace" else len(alphas)
-                v = _complement_verdict(theta0, r0, boundary, depth)
-            verdict = decide(v)
-            if verdict == "clear":
-                break
-            # Found, or undecided within the sweep's budget: converge the complement's lowest states.
-            vals, vecs = thick_restart_block_lanczos(
-                psi0=R,
-                h_op=H_mat,
-                basis=self.basis,
-                num_wanted=w,
-                max_subspace_blocks=max_subspace_blocks,
-                tol=tol,
-                max_restarts=_MAX_RESTARTS,
-                verbose=False,
-                slaterWeightMin=slaterWeightMin,
-                reort=reort,
-                num_converge=w,
-                locked=locked,
-            )
-            vals = decide(np.asarray(vals).real if rank0 else None)
-            new = decide([j for j in range(len(vals)) if vals[j] <= boundary] if rank0 else None)
-            if not new:
-                verdict = decide(("clear" if len(vals) and vals.min() - tol > boundary else None) if rank0 else None)
-                break
-            F = _deflate(np.ascontiguousarray(np.asarray(vecs)[:, new]), locked, mpi, comm)
-            F, _ = block_normalize(F, mpi, comm, 0.0)
-            HF = block_apply(H_mat, F, self.basis, mpi, 0.0)
-            theta = np.real(np.diag(block_inner(F, HF, mpi, comm)))
-            residual = HF - F * theta[None, :]
-            res = np.sqrt(np.real(np.diag(block_inner(residual, residual, mpi, comm))))
-            if rank0 and np.max(res) > found_res_tol:
-                print(
-                    f"warning: completeness probe added {len(new)} eigenstate(s) with residual up to "
-                    f"{np.max(res):.1e}, above the degeneracy tolerance {found_res_tol:.1e}; their energies "
-                    "may not group with the degenerate copies already kept.",
-                    flush=True,
-                )
-            theta = decide(theta)
-            locked = np.ascontiguousarray(np.hstack([locked, F]))
-            e_locked.extend(float(t) for t in theta)
-            n_found += len(new)
-            verdict = None
-
-        _trace_note(
-            "completeness_probe",
-            rounds=rounds,
-            found=n_found,
-            locked=len(locked_idx),
-            verdict=str(verdict),
-        )
-        if verdict != "clear" and rank0:
-            print(
-                f"warning: after {rounds} completeness probe(s) the eigenstates below {boundary:.8g} could not "
-                f"be certified complete ({n_found} added). A degenerate manifold may be missing copies.",
-                flush=True,
-            )
-        if n_found and rank0 and self.basis.verbose:
-            print(f"Completeness probe: added {n_found} eigenstate(s) the Krylov solve missed.", flush=True)
-        if not n_found:
-            return e_ref, psi_refs_arr
-        e_out = np.concatenate([np.asarray(e_locked), e[rest_idx]])
-        psi_out = np.hstack([locked, psi_refs_arr[:, rest_idx]])
-        order_out = np.argsort(e_out, kind="stable")
-        return e_out[order_out], np.ascontiguousarray(psi_out[:, order_out])
+    def _eig_scale(self):
+        """Energies whose magnitude sets the degeneracy tolerance's roundoff term (the last result's)."""
+        return self.eig.e if self.eig is not None and len(self.eig.e) else np.zeros(1)
 
     def get_eigenvectors(
         self,
         H,
-        num_wanted: int,
-        max_energy=None,
+        manifold,
         dense_cutoff=1e3,
         slaterWeightMin=0,
-        solver="trlm",
-        reort=Reort.PARTIAL,
         psi_refs=None,
         h_matrix=None,
+        reuse_last=False,
     ):
-        """Solve for the ``num_wanted`` lowest eigenstates below ``max_energy``.
+        """The requested manifold of the lowest spectrum: ``(e_ref, psi_refs)``.
 
-        ``max_energy=None`` means **no cut**: the lowest ``num_wanted`` states are returned as
-        computed, with no trim and no widening. The widening loop below exists only to certify
-        that a *kept manifold* is whole -- a degenerate manifold has no preferred basis, so
-        keeping part of one makes the result depend on the rotation the solver returned -- and
-        without a cut nothing is dropped, so there is nothing to certify. The dense branch's
-        slice is by count alone for the same reason, which does mean the boundary can fall
-        inside a degenerate group. Both are sound only for a caller whose answer does not depend
-        on which basis a manifold came back in: :func:`groundstate.calc_energy`, which keeps
-        ``min(es)``, is the only one, and no other caller should pass ``None``. For the same reason
-        the completeness probe (:meth:`_complete_low_spectrum`) does not run without a cut: the
-        "lowest ``num_wanted``" can be missing copies of a degenerate level wider than the Krylov
-        block, and a higher state can take their place. The warm-start cold retry is a different
-        question (reachability, not completeness) and still applies; see it below.
+        ``manifold`` is :class:`~impurityModel.ed.eigensolvers.Lowest` (one state, the ground
+        level's energy; no claim about its degeneracy) or
+        :class:`~impurityModel.ed.eigensolvers.Within` (every state within ``max_energy`` of the
+        lowest, certified complete).
 
-        ``psi_refs``, if given, warm-starts the Krylov solve from a previously converged
-        eigenvector block (e.g. the caller's own ``solver.psi_refs`` from a prior ``expand``/
-        ``get_eigenvectors`` call); ``None`` is a cold start from the rank-independent hash
-        vector. Callers own this choice explicitly -- this method never reads or writes
-        ``self.psi_refs``.
+        Above ``dense_cutoff``: one count-mode solve for ``Lowest``
+        (:func:`~impurityModel.ed.eigensolvers.solve_lowest`), one window solve for ``Within``
+        (:func:`~impurityModel.ed.eigensolvers.solve_window`). Below it a dense diagonalization.
+        Both branches cut with :func:`_energy_cut_indices`, which never bisects a degenerate
+        manifold, so a group straddling the window edge is kept whole whichever branch ran. The
+        window solve's initial retention is derived from the warm block and the
+        previous call's (see :func:`_manifold_request`); it grows as the window demands.
 
-        ``h_matrix``, if given, is used in place of ``build_sparse_matrix(self.basis, H)``. It
-        exists for a caller sweeping a *family* of Hamiltonians over one frozen determinant
-        space -- the double-counting search's ``H(mu) = H(0) - mu * N_imp``, where ``N_imp`` is
-        diagonal, so the whole family is one build plus a diagonal shift. Keeping the seam here
-        rather than solving outside this method is deliberate: the warm-start cold-retry guard
-        below (a warm block spans a near-invariant subspace and silently returns an excited state
-        as "lowest" when the ground state has moved charge sector, which is exactly what a DC
-        search does) has no equivalent outside, and its own comment records that the miss is
-        undetectable downstream.
+        ``psi_refs``, if given, warm-starts the solve (its lowest ``GS_MAX_BLOCK_WIDTH`` columns for
+        ``Within``, its lowest column for ``Lowest``); generic hash-seeded columns are always added,
+        so every charge sector stays reachable from the start block. This method never reads or
+        writes ``self.psi_refs``.
 
-        The caller owns the matrix's consistency. ``H.set_restrictions`` below still runs on the
-        *operator* and cannot retro-fit a matrix, so ``h_matrix`` must have been built after the
-        basis's restrictions were set, from this basis, at this size -- the shape assertion
-        catches a stale one, nothing catches stale restrictions.
+        ``reuse_last=True`` returns the states of the previous solve instead of solving again when
+        that solve was certified, ran on the current determinant set (``Basis.generation``) and
+        covered this request (a ``Within`` result covers a narrower window and ``Lowest``; a
+        ``Lowest`` result covers only ``Lowest``). The caller asserts it is the same operator:
+        ``expand``'s last solve followed by a read of its result is the use case.
+
+        ``h_matrix``, if given, replaces ``build_sparse_matrix(self.basis, H)``: a caller sweeping a
+        family ``H(mu) = H(0) - mu N_imp`` over one frozen determinant space builds once and shifts
+        the diagonal. It must have been built from this basis, at this size, after the basis's
+        restrictions were set; only the shape is checked.
         """
+        if not isinstance(manifold, (Lowest, Within)):
+            raise TypeError(f"manifold must be Lowest or Within, got {manifold!r}")
         if isinstance(H, dict):
             H = ManyBodyOperator(H)
         # Unconditional (None clears): a mask left on H by an earlier Green's-function stage must
@@ -2183,323 +1293,139 @@ class CIPSISolver:
                 f"holds {len(self.basis)}. A matrix that outlived its basis produces eigenvalues "
                 "of the wrong operator rather than an error, so this is checked."
             )
+        lowest = isinstance(manifold, Lowest)
+        max_energy = 0.0 if lowest else float(manifold.max_energy)
+        if lowest:
+            num_wanted = 1
+        elif psi_refs is None:
+            num_wanted = 10
+            self._prev_kept = None
+        else:
+            # `.width`, not `len()`: len() on a block is its rank-local ROW count, which would make
+            # num_wanted -- and the eigensolver collectives it sizes -- diverge across ranks.
+            n_kept = _psi_ref_width(psi_refs)
+            num_wanted = _manifold_request(n_kept, self._prev_kept)
+            self._prev_kept = n_kept
 
-        if solver in SOLVERS and self.basis.size >= dense_cutoff:
-            restarted_lanczos = SOLVERS[solver]
-
-            # Same rank-independent start vector as `expand` (see `_amplitude_from_hash`): a
-            # `random.seed(42 + rank)` stream made the start vector depend on the rank count
-            # *and* on the local_basis iteration order, so the Lanczos trajectory -- and the
-            # eigenvector whose support seeds the next CIPSI selection -- differed between
-            # serial and MPI runs of the same Hamiltonian.
-            local_states = list(self.basis.local_basis)
-
-            def cold_start_block():
-                # width=1 even when local_states is empty on this rank: a bare {}
-                # construction would be the width-0 polymorphic zero, which
-                # block_normalize's from_states round trip below rejects (raising inside
-                # the try/except, silently skipping this rank out of the collective
-                # block_tsqr call other ranks still enter -- an MPI deadlock).
-                return [
-                    ManyBodyState({state: _amplitude_from_hash(state.get_hash()) for state in local_states}, width=1)
-                ]
-
-            warm_started = psi_refs is not None
-            # A warm block spans the previously converged (near-)invariant subspace. When the
-            # ground state has moved to another near-decoupled charge sector since (e.g. the
-            # fixed-occupation DC search jumping across a charge-transfer crossing between
-            # trials), Lanczos restarted from it converges that subspace's states only and
-            # silently returns an excited state as "lowest" -- nothing is short, the boundary
-            # lies beyond the thermal cut, and the miss is undetectable downstream. Appending
-            # the cold full-support start vector keeps every sector reachable while the warm
-            # columns retain their fast convergence.
-            max_block_width = config.GS_MAX_BLOCK_WIDTH.get()
-            if not warm_started:
-                warm_block = []
-            else:
-                # `psi_refs` is a block: `list(...)` on it would yield determinant KEYS, so the
-                # columns come out through `to_states()`. The narrowing below runs *first*, as a
-                # column `select`, so only the columns the solver will actually use are ever
-                # materialized as separate width-1 states -- `max_block_width` is 5 in
-                # production against a manifold in the hundreds.
-                #
-                # Truncate the block the *solver* uses, not the manifold the caller asked for:
-                # `psi_refs` is already energy-ordered ascending (the caller's own return path,
-                # `_energy_cut_indices`'s `order = np.argsort(e_ref)`), so the lowest
-                # `max_block_width` states are kept -- the ones a restart is most likely to need
-                # again. `num_wanted` below is untouched: this narrows the block Lanczos runs
-                # with, not how many states get returned, which is what caps `krylov_bytes`
-                # (`memory_estimate._gs_krylov_columns`) without shrinking the certified manifold
-                # `expand`'s "exhausted" check reads.
-                # A caller may still hand in a list of width-1 warm-start states (the
-                # cold-retry tests, and anything that sets `solver.psi_refs` itself), so accept
-                # either -- the same way `truncate` and `_apply_block_and_redistribute` do.
-                if not isinstance(psi_refs, ManyBodyState):
-                    warm_block = list(psi_refs)
-                    if max_block_width is not None and len(warm_block) > max_block_width:
-                        warm_block = warm_block[:max_block_width]
-                elif max_block_width is not None and psi_refs.width > max_block_width:
-                    warm_block = psi_refs.select(list(range(max_block_width))).to_states()
-                else:
-                    warm_block = psi_refs.to_states()
-            psi0 = warm_block + cold_start_block() if warm_started else cold_start_block()
-
-            num_wanted = min(num_wanted + _EIGENSTATE_PAD, len(self.basis))
-            psi0, warm_started = self._normalize_start_block(psi0, cold_start_block, warm_started, slaterWeightMin)
-            max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), len(self.basis))
-            _trace_note(
-                "size_subspace",
-                site="initial",
-                blocks=int(max_subspace_blocks),
-                width=int(len(psi0)),
-                num_wanted=int(num_wanted),
+        if self.basis.size >= dense_cutoff:
+            reusable = (
+                reuse_last
+                and h_matrix is None
+                and self.eig is not None
+                and self.eig.certified
+                and self.eig.generation == self.basis.generation
+                and _covers(self.eig.manifold, manifold)
             )
-            # How many of those the eigensolver must actually converge to `tol`. The pad above is
-            # bought for its *energies* -- a state landing outside the thermal cut is what certifies
-            # the kept manifold is whole -- and `_energy_cut_indices` keeps a prefix of the sorted
-            # spectrum, so the pad is exactly the top tail that gets discarded. Holding the solve to
-            # `tol` on the tail's residuals is what let a single slow padding state burn all 100
-            # restarts on an SrMnO3 ground state while the wanted states had long since converged.
-            #
-            # Safe against the case the pad is reached into (more states inside the cut than were
-            # asked for): that is `need_more`, and the loop below re-solves with a larger request --
-            # which raises this floor with it -- rather than keeping the under-converged tail.
-            num_required = max(1, num_wanted - _EIGENSTATE_PAD)
-
-            if h_matrix is None:
-                H_mat = build_sparse_matrix(self.basis, H)
-                # Phase 0 measurement (doc/plans/dc_smo_performance.md): calibrates
-                # memory_estimate's nnz_per_state default against a real solve.
-                _trace_note("h_matrix_nnz", nnz=int(H_mat.nnz), n=int(H_mat.shape[0]))
+            if reusable:
+                eig = self.eig
+            elif lowest:
+                eig = self._solve_lowest(H, h_matrix, slaterWeightMin, psi_refs)
             else:
-                H_mat = h_matrix
-            if self.basis.is_distributed:
-                H_mat = H_mat[:, self.basis.local_indices]
-
-            psi0_arr = (
-                build_distributed_vector(self.basis, psi0).T
-                if len(psi0) > 0
-                else np.zeros((len(self.basis.local_basis), 1), dtype=complex)
-            )
-            # Phase 0 measurement (doc/plans/dc_smo_performance.md): the array kernel's
-            # per-rank matvec buffer scales with this width, not with a fixed default -- see
-            # memory_estimate.estimate_gs_peak_bytes. Zero-cost when no solver_trace.tracing()
-            # block is open.
-            _trace_note("eigensolve_block_width", p=int(psi0_arr.shape[1]), num_wanted=int(num_wanted))
-
-            # Solve for more and more eigenstates until at least one lands *outside* the thermal
-            # cut. Only then is the boundary manifold provably complete: a degenerate manifold has
-            # no preferred basis, so keeping part of one leaves the CIPSI selection, the thermal
-            # average and the Green's-function seeds at the mercy of whichever rotation the
-            # eigensolver returned -- which depends on the MPI rank count. Cheap in practice: the
-            # first solve almost always overshoots the cut already.
-            cap = len(self.basis)
-
-            cold_retry_available = warm_started
-            # IRLM accepts `num_converge` without applying it -- it converges everything it returns --
-            # so re-solving it with a wider gate would repeat the same work for the same answer.
-            tail_resolve_available = solver != "irlm"
-            for _ in range(_MAX_EIGENSTATE_DOUBLINGS):
-                e_ref, psi_refs_arr = restarted_lanczos(
-                    psi0=psi0_arr,
-                    h_op=H_mat,
-                    basis=self.basis,
-                    num_wanted=num_wanted,
-                    max_subspace_blocks=max_subspace_blocks,
-                    tol=_eigen_tol(slaterWeightMin),
-                    max_restarts=_MAX_RESTARTS,
-                    # The TRLM/IRLM drivers already rank-gate every print internally
-                    # (`rank0 = (not mpi) or comm.rank == 0` in ed/trlm.py and ed/irlm.py);
-                    # no need to pre-AND rank 0 into the bool here too.
-                    verbose=self.basis.verbose,
-                    slaterWeightMin=slaterWeightMin,
-                    reort=reort,
-                    num_converge=num_required,
-                )
-                if len(e_ref) == 0:
-                    break
-                # `need_more` asks a question only a thermal cut can pose -- "is the boundary
-                # manifold provably complete?" -- so with `max_energy=None` there is nothing to
-                # certify and it stays False. The *exhaustion* test below is a different
-                # question and is asked either way; see the retry block.
-                need_more = False
-                n_keep = 0
-                if max_energy is not None:
-                    kept_idx, need_more = _energy_cut_indices(
-                        e_ref, max_energy, tol=_degeneracy_tol(e_ref, slaterWeightMin)
-                    )
-                    n_keep = len(kept_idx)
-                # A short return means the eigensolver exhausted the Krylov space reachable from
-                # `psi0` -- it hit an invariant subspace, which a block warm-started from converged
-                # eigenvectors does immediately. Doubling `num_wanted` then re-solves the *same*
-                # subspace and returns the same states, at the cost of a full re-solve each time.
-                exhausted = len(e_ref) < num_wanted
-                # `restarted_lanczos` is collective. `e_ref` is replicated but only to roundoff,
-                # so a state sitting on the cut could make ranks disagree about re-solving and
-                # deadlock. Decide on rank 0 and broadcast, per the MPI rule in CLAUDE.md.
-                if self.basis.is_distributed:
-                    need_more, exhausted, n_keep = self.basis.comm.bcast((need_more, exhausted, n_keep), root=0)
-                if exhausted:
-                    # The warm block spans a (near-)invariant subspace, so the missing states --
-                    # typically the other charge sector of a near-degenerate crossing, e.g. the
-                    # fixed-occupation DC search walking over a charge-transfer point -- are
-                    # unreachable from it at any num_wanted. Retry once from the cold
-                    # rank-independent start vector, whose support covers the whole basis.
-                    #
-                    # Reachability, not completeness: this guard is about whether `psi0` could
-                    # see the state at all, so it must fire on the no-cut path too. It used to
-                    # sit behind an early `max_energy is None` break, which meant the caller
-                    # that most needs it never got it -- `calc_energy`'s occupation walk, whose
-                    # whole job is to step across charge sectors, and which keeps exactly the
-                    # `min(es)` a sector-blind warm block silently gets wrong.
-                    if cold_retry_available and (need_more or max_energy is None):
-                        cold_retry_available = False
-                        psi0 = cold_start_block()
-                        psi0, _ = block_normalize(psi0, self.basis.is_distributed, self.basis.comm, slaterWeightMin)
-                        psi0_arr = build_distributed_vector(self.basis, psi0).T
-                        max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), cap)
-                        _trace_note(
-                            "size_subspace",
-                            site="cold_retry",
-                            blocks=int(max_subspace_blocks),
-                            width=int(len(psi0)),
-                            num_wanted=int(num_wanted),
-                        )
-                        num_required = max(1, num_wanted - _EIGENSTATE_PAD)
-                        continue
-                    break
-                if max_energy is not None and not need_more and n_keep > num_required and tail_resolve_available:
-                    # The window kept states the solve was never asked to converge: `num_converge`
-                    # covered `num_wanted - _EIGENSTATE_PAD` of them, and the cut reached past that
-                    # into the pad. Measured on SrMnO3: a 15-state window under a 10-state gate came
-                    # back with residuals up to 1e-4 on the kept tail, enough to split a degenerate
-                    # level. Re-solve once with the gate over the whole window. Once only: the tighter
-                    # solve can move tail energies into the window and grow `n_keep` again, and
-                    # chasing that is the doubling loop's job, not this one's.
-                    tail_resolve_available = False
-                    num_required = n_keep
-                    continue
-                if max_energy is None or not need_more or num_wanted >= cap:
-                    break
-                num_wanted = min(2 * num_wanted, cap)
-                max_subspace_blocks, num_wanted = _size_subspace(num_wanted, len(psi0), cap)
-                _trace_note(
-                    "size_subspace",
-                    site="doubling",
-                    blocks=int(max_subspace_blocks),
-                    width=int(len(psi0)),
-                    num_wanted=int(num_wanted),
-                )
-                num_required = max(1, num_wanted - _EIGENSTATE_PAD)
-
-            if max_energy is not None and len(e_ref) > 0:
-                # Certify that the thermal window lost no state -- see the method. Only with a cut: the
-                # one no-cut caller, `groundstate.calc_energy`, keeps `min(es)`, which a missing copy of
-                # a degenerate level cannot change (and a whole missed sector is the cold retry's job,
-                # above). Probing it anyway cost 40 of the probe's 77 s on the SrMnO3 gap-DC search: its
-                # boundary sits at E0, so certifying meant resolving near-degenerate partners 1e-6 eV up.
-                e_ref, psi_refs_arr = self._complete_low_spectrum(
-                    H_mat,
-                    e_ref,
-                    psi_refs_arr,
-                    max_energy,
-                    psi0_arr.shape[1],
-                    max_subspace_blocks,
-                    slaterWeightMin,
-                    reort,
-                )
-
+                eig = self._solve_window(H, h_matrix, manifold, num_wanted, slaterWeightMin, psi_refs)
+            assert eig is not None
+            e_ref, psi_refs_arr = eig.e, eig.vecs
             valid_idx = None
-            if max_energy is not None and len(e_ref) > 0:
-                # Rank-locally, unlike the `need_more`/`exhausted` decision twenty lines up, and
-                # deliberately: this cut sets `len(e_ref)`, which callers feeding `psi_refs` into
-                # `build_density_matrices` turn into an `Allreduce` buffer shape of
-                # `(len(psis), n_orb, n_orb)`. Ranks disagreeing here would not return different
-                # answers, they would enter one reduction with different shapes.
-                #
-                # It is safe because `e_ref` is bit-identical across ranks, not merely close:
-                # `block_tsqr` returns a bitwise-identical R everywhere (see TSQR.pyx), so the
-                # alphas/betas are identical (_lanczos_step.pxi), and the Ritz values are a
-                # rank-local `eigh` on identical bytes. `_energy_cut_indices` is then a pure
-                # function of identical input. Measured, not assumed: the full suite at -n 2 and
-                # -n 3 allgathered `e_ref.tobytes()` from every call -- 7036 and 7040 checked, 375
-                # and 379 of them through this Krylov branch -- with zero divergence in either the
-                # length or the bytes. `_degeneracy_tol` is part of that pure function: it reads
-                # only `max|e_ref|` and `slaterWeightMin` (a replicated argument), so it inherits
-                # the same bit-identity rather than adding a new way for ranks to disagree.
-                #
-                # Two things that measurement does not cover, so do not widen the claim: the
-                # suite's Krylov cases are small (no production-cap solve with partial
-                # reorthogonalization), and it ran at OPENBLAS_NUM_THREADS=1 throughout. A
-                # multithreaded LAPACK whose thread count differed between ranks could break the
-                # determinism this relies on.
-                valid_idx, need_more = _energy_cut_indices(
-                    e_ref, max_energy, tol=_degeneracy_tol(e_ref, slaterWeightMin)
-                )
-                if need_more and (self.basis.comm is None or self.basis.comm.rank == 0):
+            if len(e_ref) > 0:
+                # Rank-locally, deliberately: this cut sets ``len(e_ref)``, which callers feeding ``psi_refs``
+                # into ``build_density_matrices`` turn into an ``Allreduce`` buffer shape. It is safe because
+                # ``e_ref`` is bit-identical across ranks (TSQR returns a bitwise-identical R everywhere and
+                # the Ritz values are a rank-local ``eigh`` on identical bytes).
+                if lowest:
+                    valid_idx = [0]
+                elif reusable and eig.manifold != manifold:
+                    # A reused wider result is cut to the narrower request ...
+                    valid_idx, _ = _energy_cut_indices(e_ref, max_energy, tol=_degeneracy_tol(e_ref, slaterWeightMin))
+                else:
+                    # ... a fresh window solve keeps its own in-window set (it absorbed a straddling group whole).
+                    valid_idx = list(range(eig.n_in))
+                if not eig.certified and (self.basis.comm is None or self.basis.comm.rank == 0):
+                    what = (
+                        "the lowest eigenstate"
+                        if lowest
+                        else f"the {len(valid_idx)} eigenstates within {max_energy:.3g} of the lowest"
+                    )
                     print(
-                        f"warning: every one of the {len(e_ref)} computed eigenstates falls inside "
-                        f"the thermal energy cut, so the boundary manifold cannot be shown to be "
-                        f"complete. A partially-kept degenerate manifold has no rotation-invariant "
-                        f"basis and makes the results depend on the MPI rank count.",
+                        f"warning: {what} could not be certified (solver status {eig.status!r})."
+                        + ("" if lowest else " A degenerate manifold may be missing copies."),
                         flush=True,
                     )
-                # Phase 0 measurement (doc/plans/dc_smo_memory.md): `n_computed` is what the
-                # eigensolver was held to and what `build_state` above materialised; `n_kept` is
-                # what survives the thermal cut and becomes the next cycle's `psi_refs`. The gap
-                # between them is what `expand`'s `num_wanted = 2 * len(psi_refs)` buys, and the
-                # only number that says whether the manifold grows with the basis.
                 _trace_note(
                     "thermal_manifold",
                     n_computed=len(e_ref),
                     n_kept=len(valid_idx),
                     num_wanted=int(num_wanted),
                     n_dets=len(self.basis),
-                    need_more=bool(need_more),
+                    certified=bool(eig.certified),
+                    max_multiplicity=int(eig.max_multiplicity),
+                    reused=bool(reusable),
                 )
                 e_ref = e_ref[valid_idx]
             if len(e_ref) > 0:
-                # Built *after* the cut, not before it: `build_state` materialises one
-                # `ManyBodyState` per column, each carrying every determinant this rank owns, and
-                # the cut above typically keeps well under half of them (measured on the SrMnO3
-                # double-counting solve: 104 kept of 206 computed). Building all of them and then
-                # dropping most is the same waste as the request itself, one layer down -- and it
-                # peaks at the same moment the Krylov store is still live. Selecting the columns
-                # first is otherwise a no-op: `valid_idx` is already the energy-ascending order
-                # the old list comprehension applied, so the retained states and their order are
-                # unchanged.
-                cols = psi_refs_arr if valid_idx is None else psi_refs_arr[:, valid_idx]
+                cols = psi_refs_arr[:, valid_idx]
                 psi_refs = build_state(self.basis, cols.T, slaterWeightMin=slaterWeightMin)
-
         else:
-            if h_matrix is None:
-                H_mat = build_sparse_matrix(self.basis, H)
-                # Phase 0 measurement (doc/plans/dc_smo_performance.md): calibrates
-                # memory_estimate's nnz_per_state default against a real solve.
-                _trace_note("h_matrix_nnz", nnz=int(H_mat.nnz), n=int(H_mat.shape[0]))
+            H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
+            e_all, psi_dense = eigensystem(H_mat, e_max=None, comm=self.basis.comm, return_eigvecs=True)
+            if lowest:
+                idx = [0]
             else:
-                H_mat = h_matrix
-            e_ref, psi_ref_dense = eigensystem(
-                H_mat,
-                e_max=max_energy,
-                k=num_wanted,
-                e0=None,
-                v0=None,
-                eigenValueTol=0,
-                comm=self.basis.comm,
-                dense=self.basis.size < dense_cutoff,
-                return_eigvecs=True,
-            )
-            if max_energy is None:
-                # `eigensystem` reads `e_max=None` as "no cut" and returns the *whole* dense
-                # spectrum, so without a bound here a cut-less caller would materialise one
-                # ManyBodyState per determinant -- a cost set by the basis size rather than by
-                # the request, and not what asking for `num_wanted` states means. With the cut
-                # gone `num_wanted` is the only bound left, and it is the same one the Krylov
-                # branch above obeys: that branch never returns more than it asked for either.
-                # `es` comes back ascending, so this is the lowest `num_wanted`.
-                e_ref = e_ref[:num_wanted]
-                psi_ref_dense = psi_ref_dense[:, :num_wanted]
-            psi_refs = build_state(self.basis, psi_ref_dense.T, slaterWeightMin=slaterWeightMin)
+                idx, _ = _energy_cut_indices(e_all, max_energy, tol=_degeneracy_tol(e_all, slaterWeightMin))
+            e_ref = e_all[idx]
+            psi_refs = build_state(self.basis, psi_dense[:, idx].T, slaterWeightMin=slaterWeightMin)
 
         return e_ref, psi_refs
+
+    def _solve_lowest(self, H, h_matrix, slaterWeightMin, psi_refs) -> EigenResult:
+        """One count-mode solve for the lowest pair on the current basis; records it as ``self.eig``."""
+        H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
+        hashes = np.fromiter((state.get_hash() for state in self.basis.local_basis), dtype=np.uint64)
+        warm = self._warm_columns(psi_refs, width=1)
+        _trace_note("eigensolve_block_width", p=int(warm.shape[1] + 1), num_wanted=1)
+        with _trace_timed("eigensolve", n=len(self.basis), window=0.0):
+            eig = solve_lowest(
+                H_mat,
+                self.basis.comm if self.basis.is_distributed else None,
+                hashes,
+                warm=warm,
+                tol=_eigen_tol(slaterWeightMin),
+                n_global=len(self.basis),
+                max_restarts=100,
+                verbose=self.basis.verbose,
+            )
+        eig.generation = self.basis.generation
+        eig.manifold = Lowest()
+        self.eig = eig
+        return eig
+
+    def _solve_window(self, H, h_matrix, manifold, num_wanted, slaterWeightMin, psi_refs) -> EigenResult:
+        """One certified window solve on the current basis; records it as ``self.eig``."""
+        max_energy = float(manifold.max_energy)
+        H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
+        hashes = np.fromiter((state.get_hash() for state in self.basis.local_basis), dtype=np.uint64)
+        warm = self._warm_columns(psi_refs)
+        tol = _eigen_tol(slaterWeightMin)
+        # The degeneracy tolerance is a function of the eigenvalues, which the solve is about to find:
+        # use the previous result's scale when there is one, else the floor, and re-derive from the
+        # converged energies below.
+        deg_tol = _degeneracy_tol(self._eig_scale(), slaterWeightMin)
+        _trace_note("eigensolve_block_width", p=int(warm.shape[1] + self.n_random), num_wanted=int(num_wanted))
+        with _trace_timed("eigensolve", n=int(len(self.basis)), window=float(max_energy)):
+            eig = solve_window(
+                H_mat,
+                self.basis.comm if self.basis.is_distributed else None,
+                hashes,
+                warm=warm,
+                max_energy=max_energy,
+                deg_tol=deg_tol,
+                tol=tol,
+                num_wanted=num_wanted,
+                n_global=len(self.basis),
+                n_random=self.n_random,
+                max_restarts=100,
+                verbose=self.basis.verbose,
+            )
+        eig.generation = self.basis.generation
+        eig.manifold = Within(max_energy)
+        self.eig = eig
+        self.n_random = max(_MIN_RANDOM_COLUMNS, eig.max_multiplicity + 1)
+        return eig

@@ -25,8 +25,7 @@ import pytest
 
 from impurityModel.ed.BlockLanczosArray import (
     BREAKDOWN_TOL,
-    Reort,
-    block_lanczos_array,
+    block_lanczos,
     eigsh,
 )
 from impurityModel.ed.TSQR import tsqr
@@ -120,8 +119,8 @@ def _hermitian(n, spread, seed=7):
     return 0.5 * (h + np.conj(h.T)), d, u
 
 
-def _sweep(h, psi0, max_iter, reort=Reort.PARTIAL):
-    return block_lanczos_array(
+def _sweep(h, psi0, max_iter, reort=True):
+    return block_lanczos(
         psi0=psi0.copy(),
         h_op=h.astype(complex),
         converged=lambda *a, **k: False,
