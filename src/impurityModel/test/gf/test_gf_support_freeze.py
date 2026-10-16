@@ -48,7 +48,7 @@ WINDOW = gf_solvers._SUPPORT_WINDOW
 
 @pytest.fixture(autouse=True)
 def _hermetic_knobs(monkeypatch):
-    for name in ("GF_SUPPORT_FREEZE", "GF_FROZEN_CSR", "APPLY_ROW_CHUNKS", "MATVEC_PRUNE", *config.RETIRED_KNOBS):
+    for name in ("GF_SUPPORT_TRACE", "GF_SUPPORT_FREEZE", "GF_FROZEN_CSR", "APPLY_ROW_CHUNKS", "MATVEC_PRUNE", *config.RETIRED_KNOBS):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -167,7 +167,9 @@ def test_every_rank_holds_the_same_history_and_decides_alike():
     result = _trickle(comm=comm)
     info = result[3]
     assert info["support_frozen"]
-    mine = (np.array(info["support_history"]).tobytes(), info["retained_size"], len(result[0]))
+    # d_g is computed per rank from allreduced coefficients: logged, not replicated, so it is left out.
+    trace = np.array([row[:6] for row in info["support_trace"]], dtype=np.float64).tobytes()
+    mine = (np.array(info["support_history"]).tobytes(), trace, info["retained_size"], len(result[0]))
     assert len(set(comm.allgather(mine))) == 1
     assert _first_firing(info["support_history"]) == len(info["support_history"])
     np.testing.assert_allclose(_g(result), _g(_trickle()), atol=1e-6)
@@ -212,7 +214,8 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
 
     monkeypatch.setattr(gf_primitives._CappedBasisProxy, "note_step_cut", recording)
     cutoff = 1e-4
-    history = _trickle()[3]["support_history"]
+    info = _trickle()[3]
+    history, trace = info["support_history"], info["support_trace"]
 
     h, v, seed_rows = _dense_chain(seed=5)
     support = np.zeros(h.shape[0], dtype=bool)
@@ -222,6 +225,7 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
     compared = 0
     for step in range(30):
         wp = h @ q
+        hq2 = float(np.sum(np.abs(wp) ** 2))
         kept = np.any(np.abs(wp) > cutoff, axis=1)
         cut_matvec = float(np.sum(np.abs(wp[~kept]) ** 2))
         leak = float(np.sum(np.abs(wp[kept & ~support]) ** 2))
@@ -238,11 +242,35 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
         if step >= 10:
             assert history[step][0] == pytest.approx(leak, rel=1e-9), step
             assert history[step][1] == pytest.approx(cut_matvec + cut_next_prev, rel=1e-9), step
+            assert trace[step][5] == pytest.approx(hq2, rel=1e-9), step
             assert notes[2 * step] == pytest.approx(cut_matvec, rel=1e-9), step
             assert notes[2 * step + 1] == pytest.approx(cut_next, rel=1e-9), step
             compared += cut_matvec > 0 and cut_next > 0
         q_prev, q, beta_prev, cut_next_prev = q, q_next, r2 @ beta, cut_next
     assert compared >= 15, "premise: both cuts are real weights on most compared steps"
+
+
+def test_the_trace_extends_the_history_without_changing_it():
+    """``support_trace`` carries ``(step, retained_before, n_new, leak, cut, |Hq|^2, d_g)`` for the same steps
+    as ``support_history``: its leak and cut are the history's, the retained sizes add up, and the monitor's
+    ``d_g`` is logged (NaN until the monitor has measured one)."""
+    info = _trickle()[3]
+    history, trace = info["support_history"], info["support_trace"]
+    assert len(trace) == len(history) > 0
+    retained = trace[0][1]
+    for k, (step, before, n_new, leak, cut, hq2, d_g) in enumerate(trace):
+        assert step == k + 1 and before == retained
+        assert (leak, cut) == history[k]
+        assert hq2 >= leak >= 0.0
+        retained += n_new
+    assert retained == info["retained_size"]
+
+
+def test_the_step_trace_prints_one_line_per_block(monkeypatch, capsys):
+    monkeypatch.setenv("GF_SUPPORT_TRACE", "1")
+    history = _trickle()[3]["support_history"]
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("GF support step ")]
+    assert len(lines) == len(history)
 
 
 def test_with_no_cutoff_the_closed_support_gives_the_exact_g():

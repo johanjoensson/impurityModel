@@ -339,6 +339,18 @@ GF_ADMIT_FIRST_SHELL_TOL = Knob(
     the summed squared amplitudes of what was dropped.""",
 )
 
+GF_SUPPORT_TRACE = Knob(
+    name="GF_SUPPORT_TRACE",
+    kind="bool",
+    default=False,
+    group="bicgstab",
+    doc="""Diagnostic. Print one ``GF support step k: ...`` line per block of a sparse Lanczos Green's-function
+    unit (rank 0): the retained support, the new rows, the weight on them (leak), the weight the
+    ``slaterWeightMin`` prunes cut, ``||Hq||^2`` and the convergence monitor's last change. The same numbers are
+    kept in ``cap_info["support_trace"]``; the lines let a production log be replayed offline against any
+    freeze rule. It never changes a result.""",
+)
+
 GF_GMRES_RESTART = Knob(
     name="GF_GMRES_RESTART",
     kind="int",
@@ -843,6 +855,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_ADMIT_EN_TOL,
     GF_LANCZOS_ADMIT_TOL,
     GF_ADMIT_FIRST_SHELL_TOL,
+    GF_SUPPORT_TRACE,
     GF_GMRES_RESTART,
     GF_EIGENSTATE_GROUP,
     GF_SCHEDULER,

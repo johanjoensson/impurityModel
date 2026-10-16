@@ -763,6 +763,7 @@ def block_Green_sparse(
         cap_info["csr_seconds"] = 0.0
         cap_info["support_frozen"] = False
         cap_info["support_history"] = []
+        cap_info["support_trace"] = []
 
     if N == 0 or n == 0:
         if cap_info is not None:
@@ -872,7 +873,10 @@ def block_Green_sparse(
         and getattr(lanczos_basis, "tracks_support", False)
         and not lanczos_basis.prunes
     ):
-        lanczos_basis.enable_support_freeze(_SUPPORT_WINDOW, log=verbose and rank == 0)
+        lanczos_basis.enable_support_freeze(
+            _SUPPORT_WINDOW, log=verbose and rank == 0, trace=config.GF_SUPPORT_TRACE.get() and rank == 0
+        )
+        lanczos_basis.monitor_dg = last_dg
     if csr_candidate:
         lanczos_basis.stop_on_freeze = True
         if lanczos_basis.frozen:
@@ -962,6 +966,7 @@ def block_Green_sparse(
             cap_info["csr_fallback"] = csr is not None
             cap_info["support_frozen"] = lanczos_basis.support_frozen
             cap_info["support_history"] = list(lanczos_basis.support_history)
+            cap_info["support_trace"] = list(lanczos_basis.support_trace)
             if csr is not None:
                 cap_info["csr_seconds"] = csr[3]
         if csr is not None:

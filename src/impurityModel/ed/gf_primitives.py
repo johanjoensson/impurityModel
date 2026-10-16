@@ -328,7 +328,15 @@ class SupportPolicy:
         self._pending_cut = 0.0
         self._window = None
         self.support_history = []
+        #: Per-step diagnostic records ``(step, retained_before, n_new, leak, cut, hq2, d_g)`` (support freeze
+        #: only). Kept apart from ``support_history`` (whose 2-tuples other code unpacks); never read by a decision.
+        self.support_trace = []
+        #: The convergence monitor's ``last_dg`` list, set by ``block_Green_sparse`` for the trace. ``d_g`` is
+        #: computed per rank from allreduced coefficients, so it is logged but never gathered or decided on.
+        self.monitor_dg = None
+        self._pending_hq2 = 0.0
         self._support_log = False
+        self._trace_steps = False
 
     # --- attributes block_lanczos_cy reads off its basis ---------------------
     @property
@@ -396,7 +404,7 @@ class SupportPolicy:
             return value
         return self.comm.allreduce(value, op=MPI.SUM)
 
-    def enable_support_freeze(self, window, log=False):
+    def enable_support_freeze(self, window, log=False, trace=False):
         """Freeze the support once growing it no longer buys more than the ``slaterWeightMin`` cut costs.
 
         Every recurrence step then measures two weights in the units of its matvec ``H q``: the *leak*, the
@@ -412,12 +420,14 @@ class SupportPolicy:
         verdict at the boundary picks the next step's collectives. Opt-in, set identically on every rank by
         the caller that hands the frozen recurrence on (``gf_solvers.block_Green_sparse``): every other user of
         the proxy (BiCGSTAB's per-point solves, the shift-recycled resolvent) never freezes this way. ``log``
-        prints the window sums every ``window`` steps (rank 0 only)."""
+        prints the window sums every ``window`` steps (rank 0 only); ``trace`` also prints one line per step
+        (rank 0 only; ``GF_SUPPORT_TRACE``)."""
         if self.prunes:
             raise ValueError("the support freeze and importance pruning (GF_LANCZOS_ADMIT_TOL) are exclusive")
         self.support_freeze = True
         self._window = deque(maxlen=int(window))
         self._support_log = bool(log)
+        self._trace_steps = bool(trace)
 
     def unfreeze_support(self):
         """Undo a support freeze whose frozen matrix did not fit, and do not freeze this way again: a truncation
@@ -492,6 +502,9 @@ class SupportPolicy:
         # The new rows BEFORE the cut: importance pruning bans the ones the cut is about to drop too, or they
         # could clear the threshold on a later step and enter P_m although H q_k was formed without them.
         reached = wp.keys_new_above(self._mask, 0.0) if self.prunes and self._deferred else None
+        if self.support_freeze:
+            # ||H q||^2 before the cut, for the diagnostic trace (a width-0 block on an empty rank sums to 0).
+            self._pending_hq2 = math.fsum(np.asarray(wp.col_norm2(), dtype=np.float64))
         dropped = wp.prune_rows(cutoff)
         if self.support_freeze:
             self.note_step_cut(dropped)
@@ -598,24 +611,37 @@ class SupportPolicy:
         """:meth:`_admit_counted` under the support freeze: the count, leak and cut in one gather, then the
         freeze decision on the step's window (see :meth:`enable_support_freeze`). Collective."""
         n_new, leak = block.new_rows_stats(self._mask)
-        local = np.array([n_new, leak, self._pending_cut], dtype=np.float64)
+        local = np.array([n_new, leak, self._pending_cut, self._pending_hq2], dtype=np.float64)
         self._pending_cut = 0.0
+        self._pending_hq2 = 0.0
         if self.comm is not None and self.comm.size > 1:
-            gathered = np.empty((self.comm.size, 3), dtype=np.float64)
+            gathered = np.empty((self.comm.size, 4), dtype=np.float64)
             self.comm.Allgather(local, gathered)
         else:
             gathered = local[None, :]
         n_new = round(math.fsum(gathered[:, 0]))
         leak = math.fsum(gathered[:, 1])
         cut = math.fsum(gathered[:, 2])
+        hq2 = math.fsum(gathered[:, 3])
         if self._global_count + n_new > self.cap:
             self._admit_top_and_freeze(block)
             block.keep_rows(self._mask)
             return block
+        retained_before = self._global_count
         self._mask.merge_keys(block)
         self._global_count += n_new
         if step:
             self.support_history.append((leak, cut))
+            d_g = float("nan")
+            if self.monitor_dg is not None and self.monitor_dg[0] is not None:
+                d_g = float(self.monitor_dg[0])
+            self.support_trace.append((len(self.support_history), retained_before, n_new, leak, cut, hq2, d_g))
+            if self._trace_steps and (self.comm is None or self.comm.rank == 0):
+                print(
+                    f"GF support step {len(self.support_history)}: retained {retained_before:,}, new {n_new:,}, "
+                    f"leak {leak:.3e}, cut {cut:.3e}, |Hq|^2 {hq2:.3e}, d_g {d_g:.2e}",
+                    flush=True,
+                )
             self._window.append((leak, cut))
             freeze, leak_w, cut_w = support_window_freezes(self._window)
             if self._support_log and len(self.support_history) % self._window.maxlen == 0:
