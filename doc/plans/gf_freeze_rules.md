@@ -58,6 +58,25 @@ converged to 0.1 x tolerance. Without that tightening two trials never agree.
   the ceiling is ~20-40% on heavy units, and W=8 cannot beat the shipped freeze at blocks 22-25 there.
 - Not tested: `Sigma_real` on a non-saturating production model; SMO unit 20; the cost of rejected trials at millions of determinants.
 
+## One real unit (small archive, one rank)
+
+SMO unit 20 on the repository's older SMO archive (7,969-determinant ground state, unit of ~80k determinants), trial
+rule W4 / budget 0.1 / 2 agreeing trials, run through the kit's new unit mode:
+
+- accepted after 36 blocks at 80,862 determinants; the shipped rule froze the same unit at 81,518 (about 1% more);
+- 9 trials of ~12 s each (a full ~1250-block solve on the frozen matrix) took about 110 s of a 129 s unit;
+- the real-axis change between successive trials sat at 0.06-0.13 of the tolerance, around the 0.1 budget, which is
+  why it needed 9 trials to find two agreeing ones. The support was already 95% complete at block 16.
+
+So on a unit whose support saturates early the rule saves almost nothing and roughly doubles the wall time. Whether
+it pays on the heavy cluster units (growth to 10-17M determinants) is what the unit legs of the kit measure.
+
+## Local replay of the production unit: not possible on this machine
+
+The 277,107-determinant ground state of the cluster archive was killed by the kernel's out-of-memory killer at one,
+two and four ranks (15.6 GB machine; one rank peaked at 9.2 GiB in the CIPSI selection round). No local number for the
+production unit exists.
+
 ## Dropped from the plan
 
 Phase 0b/0c (tracing and cut-noting on the importance-pruned path, and `_eta2 = eta * eta`) were not done: ban and eta
