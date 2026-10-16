@@ -194,7 +194,7 @@ def build_density_matrices(
                 payload = {
                     "key": np.zeros((0, 1), dtype=np.uint8),
                     "k": np.zeros(0, np.int16),
-                    "amp": payload["amp"][:0],
+                    "amp": np.zeros((0, width), dtype=complex),
                 }
             del received
         n_ent = len(payload["k"])

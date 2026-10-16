@@ -80,7 +80,7 @@ def _local_states(comm, width, mode):
     "left,right",
     [(None, None), ([0, 3, 9], [0, 3, 9]), ([1, 8, 2], [10, 0, 9, 8]), ([5, 5, 2], None)],
 )
-@pytest.mark.parametrize("rounds", [None, 1, 5])
+@pytest.mark.parametrize("rounds", [None, 1, 5, 400])  # 400: most rounds are empty on some rank
 def test_matches_the_reference(mode, width, left, right, rounds):
     comm = MPI.COMM_WORLD
     basis = _FakeBasis(comm)
