@@ -303,6 +303,79 @@ cdef void apply_sparse_csr_nogil(
                 Y[ii, k] = Y[ii, k] + val * X[indices[j], col_begin + k]
 
 
+ctypedef fused row_index_t:
+    int
+    long
+
+
+cdef void scatter_columns_nogil(
+    int col_begin,
+    long[:] indptr,
+    row_index_t[:] slots,
+    double complex[:] data,
+    int p,
+    int c0,
+    double complex[:, ::1] X,
+    long send_rows,
+    double complex[:, ::1] S,
+    double complex[:, ::1] Y
+) noexcept nogil:
+    """Scatter one column block of a bound ``LocalColumnOperator`` (basis_transcription) into the
+    matvec's buffers: for local column ``col_begin + jj``, every stored ``(slot, value)`` adds
+    ``value * X[col, c0:c0+p]`` to row ``slot`` of the send buffer ``S`` when ``slot < send_rows``,
+    else to row ``slot - send_rows`` of the self buffer ``Y``. Both must be zeroed first.
+
+    Columns are walked in ascending order, so each output row is summed in the order a CSR row
+    loop (``apply_sparse_csr_nogil``) sums it -- the two agree to the last bit under strict IEEE.
+    """
+    cdef Py_ssize_t n_cols = indptr.shape[0] - 1
+    cdef Py_ssize_t jj, e, col
+    cdef long slot
+    cdef int k
+    cdef double complex val
+    for jj in range(n_cols):
+        col = col_begin + jj
+        for e in range(indptr[jj], indptr[jj + 1]):
+            slot = slots[e]
+            val = data[e]
+            if slot < send_rows:
+                for k in range(p):
+                    S[slot, k] = S[slot, k] + val * X[col, c0 + k]
+            else:
+                slot = slot - send_rows
+                for k in range(p):
+                    Y[slot, k] = Y[slot, k] + val * X[col, c0 + k]
+
+
+cdef void _scatter_segments(segments, int p, int c0, double complex[:, ::1] X, long send_rows,
+                            double complex[:, ::1] S, double complex[:, ::1] Y):
+    """Every column block of a bound ``LocalColumnOperator`` through :func:`scatter_columns_nogil`."""
+    cdef long[:] indptr
+    cdef int[:] slots32
+    cdef long[:] slots64
+    cdef double complex[:] data
+    cdef int col_begin
+    for col_begin_obj, indptr_obj, rows_obj, data_obj in segments:
+        col_begin = col_begin_obj
+        indptr = indptr_obj
+        data = data_obj
+        if rows_obj.dtype == np.int32:
+            slots32 = rows_obj
+            with nogil:
+                scatter_columns_nogil(col_begin, indptr, slots32, data, p, c0, X, send_rows, S, Y)
+        else:
+            slots64 = rows_obj
+            with nogil:
+                scatter_columns_nogil(col_begin, indptr, slots64, data, p, c0, X, send_rows, S, Y)
+
+
+def scatter_column_operator(segments, int p, int c0, double complex[:, ::1] X, long send_rows,
+                            double complex[:, ::1] S, double complex[:, ::1] Y):
+    """Python entry to :func:`_scatter_segments`, for a matvec outside this kernel (the frozen-basis
+    BiCGSTAB operator, ``gf_primitives.FrozenColumnMatvec``). ``S`` and ``Y`` must be zeroed first."""
+    _scatter_segments(segments, p, c0, X, send_rows, S, Y)
+
+
 cdef void apply_dense_nogil(
     int M, int K, int p,
     double complex[:, ::1] H,
@@ -394,7 +467,16 @@ def block_lanczos_array_cy(
     locked_reort="full",
     locked_evals=None,
     locked_res=REORT_TOL,
+    tail=None,
+    return_tail=False,
 ):
+    # tail=(q_prev, q_curr): resume a reort-'none' recurrence from its last two blocks -- the
+    # local rows of the block before the current one and of the current one, each at its own
+    # width -- with `alphas`/`betas` the coefficients so far (padded to the seed width) and
+    # `block_widths_init` their widths. It is how a sparse recurrence whose support froze
+    # carries on as the CSR recurrence of P H P (gf_solvers.block_Green_sparse), and how a
+    # tail-only run continues after its budget ran out. `return_tail=True` appends the
+    # (q_prev, q_curr) a "max_iter" stop can be resumed from (None after any other stop).
     # Resolve a string reort (e.g. "full") to the Reort enum, mirroring
     # block_lanczos_cy; otherwise the `reort == Reort.FULL` comparisons below never
     # match a string and the build silently runs with no reorthogonalization.
@@ -407,14 +489,28 @@ def block_lanczos_array_cy(
     # reort mode projects against the basis and the warm-start protocol slices its blocks,
     # so opting out requires reort='none' and a fresh start.
     cdef bint keep_krylov
+    if tail is not None:
+        if reort != Reort.NONE or Q is not None or psi0 is not None or build_krylov_basis:
+            raise ValueError("a tail resume needs reort='none', no psi0, no Q and no Krylov basis")
+        if alphas is None or betas is None or np.ndim(alphas) != 3:
+            raise ValueError("a tail resume needs the (n_blocks, p, p) alphas and betas so far")
+        if len(alphas) > 0 and (block_widths_init is None or len(block_widths_init) != len(alphas)):
+            raise ValueError("a tail resume needs block_widths_init, one width per block so far")
+        build_krylov_basis = False
     if build_krylov_basis is None:
         keep_krylov = True
     else:
         keep_krylov = bool(build_krylov_basis)
         if not keep_krylov and (reort != Reort.NONE or Q is not None):
             raise ValueError("build_krylov_basis=False requires reort='none' and no warm-start Q")
-    cdef int N = psi0.shape[0] if psi0 is not None else Q.shape[0]
-    cdef int n = (psi0.shape[1] if psi0.ndim == 2 else 1) if psi0 is not None else alphas[0].shape[0]
+    cdef int N
+    cdef int n
+    if tail is not None:
+        N = tail[1].shape[0]
+        n = alphas.shape[1]
+    else:
+        N = psi0.shape[0] if psi0 is not None else Q.shape[0]
+        n = (psi0.shape[1] if psi0.ndim == 2 else 1) if psi0 is not None else alphas[0].shape[0]
 
     cdef int start_it = 0
     cdef np.ndarray alphas_arr, betas_arr
@@ -425,7 +521,13 @@ def block_lanczos_array_cy(
     cdef np.ndarray Q_buf = None
     cdef int q_cols = 0
 
-    if alphas is not None and betas is not None and Q is not None:
+    if tail is not None:
+        start_it = len(alphas)
+        alphas_arr = alphas
+        betas_arr = betas
+        q = [np.ascontiguousarray(tail[0], dtype=complex), np.ascontiguousarray(tail[1], dtype=complex)]
+        Q_list = None
+    elif alphas is not None and betas is not None and Q is not None:
         start_it = len(alphas)
         alphas_arr = alphas
         betas_arr = betas
@@ -460,7 +562,13 @@ def block_lanczos_array_cy(
 
     cdef int period = reort_period
     if max_iter is None:
-        max_iter = int(np.ceil(h_op.shape[0] / n if sps.issparse(h_op) or isinstance(h_op, np.ndarray) else N / n))
+        max_iter = int(
+            np.ceil(
+                h_op.shape[0] / n
+                if sps.issparse(h_op) or isinstance(h_op, np.ndarray) or hasattr(h_op, "bind_slots")
+                else N / n
+            )
+        )
     cdef int _buf_size = start_it + int(max_iter)
     cdef np.ndarray[double complex, ndim=3] alphas_buf = np.zeros((_buf_size, n, n), dtype=complex)
     cdef np.ndarray[double complex, ndim=3] betas_buf = np.zeros((_buf_size, n, n), dtype=complex)
@@ -481,6 +589,10 @@ def block_lanczos_array_cy(
         beta_norm_hist = [None] * start_it
 
     cdef bint is_sparse = sps.issparse(h_op)
+    # basis_transcription.LocalColumnOperator: the frozen-basis GF's (N, N_local) columns, kept as
+    # the build's column blocks (~20 B/element instead of a CSR's ~50 at its peak, and no N + 1
+    # row pointer). Its matvec scatters columns into the exchange buffers; see the matvec below.
+    cdef bint is_columns = hasattr(h_op, "bind_slots")
     cdef bint is_dense = isinstance(h_op, np.ndarray)
 
     cdef int it = start_it
@@ -489,6 +601,17 @@ def block_lanczos_array_cy(
     cdef double complex[:, ::1] slot_view, q1_cols  # graph exchange: a send/self slot, a column slice
     cdef double t_norm_max = 0.0
     cdef double h_norm_est = 0.0
+    # A tail resume replays the divergence guard over the coefficients it was handed, so it keeps the
+    # scale (and the TSQR breakdown reference built from it) the earlier steps established, exactly as
+    # the sparse kernel's resume does; otherwise its first step would re-seed the scale unguarded.
+    cdef bint guard_seeded = False
+    cdef int _k
+    if tail is not None:
+        for _k in range(start_it):
+            _, t_norm_max, h_norm_est = divergence_guard(
+                spectral_norm(betas[_k]), spectral_norm(alphas[_k]), _k == 0, t_norm_max, h_norm_est
+            )
+            guard_seeded = True
     cdef double _h_scale = 0.0
     cdef double beta_norm, alpha_norm
     cdef double reort_eps  # always assigned (from REORT_TOL) before its one read, below
@@ -526,15 +649,33 @@ def block_lanczos_array_cy(
     # call: three tiny collectives, and `n` is the widest block this call will see (`n_curr`
     # only ever shrinks, so every round fits the plan's buffers). `reduce` keeps the per-root
     # Reduce loop below. The generic operator branch (`h_op.dot`) has no MPI matvec either way.
-    cdef bint use_graph = mpi and (is_sparse or is_dense) and matvec_exchange_mode() == "graph"
+    if is_columns and mpi and matvec_exchange_mode() != "graph":
+        # The `reduce` exchange Reduces one destination's rows at a time, which a column scatter
+        # cannot produce without a global-length buffer: fall back to the CSR (and its memory).
+        h_op = h_op.tocsc().tocsr()
+        is_columns = False
+        is_sparse = True
+        h_data = h_op.data
+        h_indices = np.ascontiguousarray(h_op.indices, dtype=np.int64)
+        h_indptr_arr = np.ascontiguousarray(h_op.indptr, dtype=np.int64)
+        h_indptr = h_indptr_arr
+    cdef bint use_graph = mpi and (is_sparse or is_dense or is_columns) and matvec_exchange_mode() == "graph"
     plan = None
     if use_graph:
         if is_sparse:
             dest_flags = dest_flags_from_csr_indptr(h_indptr_arr, counts, offsets)
+        elif is_columns:
+            dest_flags = h_op.owner_flags(counts, offsets)
         else:
             dest_flags = dest_flags_all(counts)
         plan = MatvecExchangePlan(comm, counts, offsets, dest_flags, n, config.GS_MATVEC_EXCHANGE_BYTES.get())
         _trace_note("matvec_exchange", site="block_lanczos_array", **plan.describe())
+        if is_columns:
+            h_op.bind_slots(rank, offsets, plan.destinations, plan.send_row_offsets, plan.total_send_rows)
+    elif is_columns:
+        # Serial: every row is this rank's own, so slot == row.
+        h_op.bind_slots(0, np.zeros(1, dtype=np.int64), [], np.zeros(1, dtype=np.int64), 0)
+    cdef np.ndarray no_send = np.empty((0, n), dtype=complex)
 
     cdef np.ndarray wp_arr = np.empty((N, n), dtype=complex, order='C')
     cdef double complex[:, ::1] wp = wp_arr
@@ -700,6 +841,20 @@ def block_lanczos_array_cy(
             else:
                 with nogil:
                     apply_sparse_csr_nogil(0, global_N, N, n_curr, 0, h_data, h_indices, h_indptr, q1, wp)
+        elif is_columns:
+            if use_graph:
+                for c0, c1 in plan.column_rounds(n_curr):
+                    wc = c1 - c0
+                    send_view = plan.send_buffer(wc)
+                    self_view = plan.self_slot(wc)
+                    send_view[...] = 0.0
+                    self_view[...] = 0.0
+                    _scatter_segments(h_op.segments, wc, c0, q1, plan.total_send_rows, send_view, self_view)
+                    plan.exchange(wc)
+                    plan.accumulate(wp_arr[:, c0:c1], wc)
+            else:
+                wp_arr[...] = 0.0
+                _scatter_segments(h_op.segments, n_curr, 0, q1, 0, no_send[:, :n_curr], wp)
         elif is_dense:
             if use_graph:
                 for c0, c1 in plan.column_rounds(n_curr):
@@ -854,7 +1009,7 @@ def block_lanczos_array_cy(
         # start_it on the first step executed by THIS call (including a resumed call)
         # -- see check_divergence's docstring for why this must not be "it == 0".
         diverged, t_norm_max, h_norm_est = check_divergence(
-            beta_norm, alpha_norm, it == start_it, t_norm_max, h_norm_est, it, comm
+            beta_norm, alpha_norm, it == start_it and not guard_seeded, t_norm_max, h_norm_est, it, comm
         )
         if diverged:
             termination = "diverged"
@@ -1047,8 +1202,13 @@ def block_lanczos_array_cy(
         res_Q = q[1]
     res_alphas = alphas_buf[:it]
     res_betas = betas_buf[:it]
-    return pack_lanczos_result(res_alphas, res_betas, res_Q, W, block_widths, termination,
-                               return_widths, return_status, return_W)
+    res = pack_lanczos_result(res_alphas, res_betas, res_Q, W, block_widths, termination,
+                              return_widths, return_status, return_W)
+    if return_tail:
+        # Only a budget stop has rolled q onto the next step's (previous, current) pair; every other stop
+        # ends the recurrence (or, "converged", breaks before the roll).
+        res = tuple(res) + (((q[0], q[1]) if termination == "max_iter" else None),)
+    return res
 
 
 def block_lanczos_array(*args, **kwargs):

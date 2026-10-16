@@ -23,12 +23,14 @@ from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
+    _node_available_bytes,
     _resident_adjusted_budget,
     available_bytes_per_rank,
     current_rss_bytes,
     estimate_gf_peak_bytes,
     format_bytes,
     max_unit_dets_within_budget,
+    ranks_per_node,
     release_freed_heap,
 )
 from impurityModel.ed.mpi_comm import gather_distributed_results
@@ -65,8 +67,12 @@ def _describe_gf_cap(basis, cap, layout):
         how = "no cap; the GF memory guard may hold a unit lower"
     elif not policy.from_memory:
         how = "set by you; final"
+    elif not _is_auto_gf(basis):
+        how = "set by you; the GF memory guard may hold a unit lower"
     else:
         how = "auto, sized for the Green's-function path; the GF memory guard may hold a unit lower"
+        fanout = _row_fanout(basis)
+        how += f"; matvec fan-out {fanout:.2f} measured" if fanout is not None else "; matvec fan-out assumed"
     size = "unlimited" if not np.isfinite(cap) else f"{int(cap):,}"
     return f"determinant cap: GF {size} per unit ({how}); {layout}"
 
@@ -111,6 +117,7 @@ def _colors_affording(basis, unit_weights, width, reort, gf_method, floor=None, 
                 safety=_gf_sizing_safety(),
                 method=gf_method,
                 resident_bytes=resident,
+                row_fanout=_row_fanout(basis),
             )
         return affordable[ranks]
 
@@ -123,6 +130,61 @@ def _colors_affording(basis, unit_weights, width, reort, gf_method, floor=None, 
         if min(afford(int(p)) for p in procs) >= floor:
             return n_colors
     return 1
+
+
+#: Ground-state determinants :func:`measure_gf_row_fanout` applies ``H`` to: the size of the
+#: largest basis ``memory_estimate._GF_MATVEC_ROW_FANOUT_DEFAULT`` was measured on. The fan-out
+#: falls as the block grows (its images overlap more), so a smaller sample over-states it -- the
+#: safe direction -- and a larger one would be extrapolating past what was measured.
+_ROW_FANOUT_SAMPLE_DETS = 100_000
+#: Rows the measurement's apply may reach on rank 0 (~100 B each): CrI3's raw image is ~87 rows per
+#: determinant, so a full sample would hold ~9M rows, about 1 GB, on a rank with 2.8 GiB in all.
+#: A first apply on :data:`_ROW_FANOUT_PILOT_DETS` of the sample sizes the full one under this.
+_ROW_FANOUT_MAX_ROWS = 1 << 21
+_ROW_FANOUT_PILOT_DETS = 5_000
+
+
+def measure_gf_row_fanout(basis, hOp):
+    """The workload's whole-step de-duplicated row fan-out of one Green's-function matvec.
+
+    The measurement behind ``memory_estimate._GF_MATVEC_ROW_FANOUT_DEFAULT`` (rows reached by
+    ``hOp.apply_block`` on a unit-amplitude width-1 block over the ground-state basis, divided by
+    the block's rows), repeated for this workload instead of borrowed from SrMnO3: a strided sample
+    of up to :data:`_ROW_FANOUT_SAMPLE_DETS` determinants, each rank contributing its share, applied
+    on rank 0 (thinned so the image stays under :data:`_ROW_FANOUT_MAX_ROWS` rows). Not each rank's own local block -- at 128 ranks that is ~2k determinants, whose
+    images barely overlap, and would read ~2x high. Collective on ``basis.comm``; the result is
+    broadcast, so it is replicated.
+    """
+    comm = basis.comm
+    n_local = len(basis.local_basis)
+    n_total = comm.allreduce(n_local, op=MPI.SUM) if comm is not None else n_local
+    take = min(n_local, -(-_ROW_FANOUT_SAMPLE_DETS * n_local // max(n_total, 1)))
+    positions = np.unique(np.linspace(0, n_local - 1, take).astype(np.int64)) if take > 0 else []
+    local_basis = basis.local_basis
+    sample = [local_basis[int(i)] for i in positions]
+    gathered = comm.gather(sample, root=0) if comm is not None else [sample]
+    fanout = None
+    if comm is None or comm.rank == 0:
+        dets = [d for part in gathered for d in part]
+
+        def fanout_of(subset):
+            return len(hOp.apply_block(ManyBodyState({d: 1.0 for d in subset}), 0.0)) / len(subset)
+
+        if dets:
+            # Strided subsets of the (already strided) sample. A smaller block over-states the
+            # fan-out, so bounding the sample errs on the safe side.
+            pilot = dets[:: max(1, len(dets) // _ROW_FANOUT_PILOT_DETS)]
+            fanout = fanout_of(pilot)
+            affordable = max(len(pilot), int(_ROW_FANOUT_MAX_ROWS / max(fanout, 1.0)))
+            if len(dets) > len(pilot):
+                fanout = fanout_of(dets[:: max(1, -(-len(dets) // affordable))])
+    return comm.bcast(fanout, root=0) if comm is not None else fanout
+
+
+def _row_fanout(basis):
+    """The measured row fan-out on ``basis`` (:func:`measure_gf_row_fanout`), or ``None`` to use the
+    SrMnO3-measured default."""
+    return getattr(basis, "gf_row_fanout", None)
 
 
 def _is_auto_gf(basis):
@@ -179,6 +241,7 @@ def _auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes):
             safety=_gf_sizing_safety(),
             method=gf_method,
             resident_bytes=resident_bytes,
+            row_fanout=_row_fanout(basis),
         )
         for ranks in sorted(set(int(r) for r in rank_counts))
     )
@@ -197,7 +260,7 @@ def _gf_sizing_safety():
     return safety if safety > 0.0 else DEFAULT_MEMORY_SAFETY
 
 
-def _gf_memory_budget(available, resident):
+def _gf_memory_budget(available, resident, safety=None):
     """Absolute per-rank RSS budget for the GF units' measured guard, or ``None`` when disabled.
 
     ``resident + _resident_adjusted_budget(safety, available, resident)``: the very headroom the
@@ -205,24 +268,66 @@ def _gf_memory_budget(available, resident):
     guard budget of ``safety * (available + resident)`` instead has no floor, so after a heavy
     ground state (``resident >= available`` at the default safety) it would sit at or below the
     resident set and freeze every auto unit at its seeds -- the round-9 failure, on the GF side.
-    Pure; the caller samples ``available``/``resident`` collectively.
+    Pure; the caller samples ``available``/``resident`` collectively. ``safety`` overrides the
+    guard's fraction (the frozen-CSR decision's :func:`_gf_csr_memory_budget`); the guard switched
+    off returns ``None`` whatever it is.
     """
-    safety = _guard_safety()
-    if safety <= 0.0:
+    guard = _guard_safety()
+    if guard <= 0.0:
         return None
-    return int(resident + _resident_adjusted_budget(safety, available, resident))
+    return int(resident + _resident_adjusted_budget(guard if safety is None else safety, available, resident))
 
 
-def _set_gf_memory_guard(target, basis, budget):
-    """Put the guard's budget and policy on ``target`` for the kernels; returns what to restore."""
-    saved = (getattr(target, "gf_memory_budget", None), getattr(target, "gf_memory_policy", None))
+def _gf_csr_memory_budget(available, resident):
+    """Absolute per-rank RSS budget for the frozen-CSR decision (``GF_CSR_MEMORY_SAFETY``), or
+    ``None`` with the guard off. Never below the guard's own budget."""
+    guard = _gf_memory_budget(available, resident)
+    if guard is None:
+        return None
+    return max(guard, _gf_memory_budget(available, resident, safety=config.GF_CSR_MEMORY_SAFETY.get()))
+
+
+def _set_gf_memory_guard(target, basis, budget, csr_budget=None):
+    """Put the guard's budget and policy, and the frozen-CSR decision's budget, on ``target`` for
+    the kernels; returns what to restore."""
+    saved = (
+        getattr(target, "gf_memory_budget", None),
+        getattr(target, "gf_memory_policy", None),
+        getattr(target, "gf_csr_memory_budget", None),
+    )
     target.gf_memory_budget = budget
     target.gf_memory_policy = "tighten" if _may_lower_gf_cap(basis) else "warn"
+    target.gf_csr_memory_budget = csr_budget
     return saved
 
 
+def _refresh_unit_budgets(target, color_comm, node_ranks):
+    """Re-derive the guard's and the frozen-CSR decision's budgets on ``target`` from memory as it
+    is now, before the next unit.
+
+    The stage sizes both once, at GF entry. Between units the resident set ratchets (measured
+    +0.3-0.7 GiB per frozen-matrix unit on one SrMnO3 colour, heap ``release_freed_heap`` cannot
+    return), and under the queue a colour runs any number of units; the node's free memory moves with
+    every other colour on it too. The budgets are absolute shares, ``safety * (available +
+    resident)``, so re-sampled they follow the node: a colour whose neighbours grew gets less.
+
+    ``node_ranks`` is the ranks-per-node count of the *full* communicator (a colour counts only its
+    own ranks on the node). Collective on ``color_comm`` (one reduction); the cap is untouched.
+    Returns ``(available, resident)`` as used.
+    """
+    available = _node_available_bytes() // max(1, node_ranks)
+    resident = current_rss_bytes()
+    if color_comm is not None and color_comm.size > 1:
+        both = np.array([available, -resident], dtype=np.int64)
+        color_comm.Allreduce(MPI.IN_PLACE, both, op=MPI.MIN)
+        available, resident = int(both[0]), int(-both[1])
+    target.gf_memory_budget = _gf_memory_budget(available, resident)
+    target.gf_csr_memory_budget = _gf_csr_memory_budget(available, resident)
+    return available, resident
+
+
 def _restore_gf_memory_guard(target, saved):
-    target.gf_memory_budget, target.gf_memory_policy = saved
+    target.gf_memory_budget, target.gf_memory_policy, target.gf_csr_memory_budget = saved
 
 
 def _may_lower_gf_cap(basis):
@@ -394,7 +499,7 @@ def enumerate_gf_units(
         (:func:`basis_restrictions.union_windows`) over the eigenstates it stacks instead of the group
         fallback.
     basis : Basis, optional
-        The basis ``psis`` are distributed on. With a distributed one (``config.MATVEC_PRUNE=after_sum``)
+        The basis ``psis`` are distributed on. With a distributed one 
         the seeds are summed over the ranks and cut on whole amplitudes -- a many-term operator sends
         determinants on several ranks to one seed row -- and come back owner-distributed (collective).
         ``None``: the states are not distributed.
@@ -460,6 +565,7 @@ def run_units_distributed(
     reort=None,
     gf_method: str = "lanczos",
     unit_windows: Optional[list] = None,
+    hOp: Optional[ManyBodyOperator] = None,
 ) -> list | bool | None:
     """Distribute work units over MPI colors, run ``kernel`` per unit, gather to global rank 0.
 
@@ -486,7 +592,9 @@ def run_units_distributed(
     ``reort`` is the GF reorthogonalization mode the kernel will run with, and ``gf_method``
     names the kernel family (``"lanczos"`` / ``"bicgstab"``); both only feed the memory model
     that caps the number of simultaneous colors (each color's unit basis may fill the same
-    ``truncation_threshold`` on fewer ranks, so memory bounds the concurrency).
+    ``truncation_threshold`` on fewer ranks, so memory bounds the concurrency). ``hOp``, given with
+    an auto GF cap, has the memory model priced at this workload's own matvec fan-out
+    (:func:`measure_gf_row_fanout`) instead of SrMnO3's.
 
     Returns
     -------
@@ -496,11 +604,20 @@ def run_units_distributed(
         ranks. The split communicator is freed collectively before returning.
     """
     n_units = len(unit_seeds)
+    if hOp is not None and _is_auto_gf(basis) and _row_fanout(basis) is None:
+        # The auto cap is sized below from the sparse path's per-determinant cost, whose largest
+        # workload-dependent term is the matvec's fan-out: measured once per calculation, here,
+        # on the ground-state basis (which lives as long as the calculation, like the pinned cap).
+        basis.gf_row_fanout = measure_gf_row_fanout(basis, hOp)
     if basis.comm is None or basis.comm.size <= 1:
         # The kernels clone `basis`, so the GF cap has to be on it for the duration; restored in
         # the `finally`, so the caller's (ground-state) cap survives this call on every path.
         caller_cap = basis.truncation_threshold
-        saved_guard = (getattr(basis, "gf_memory_budget", None), getattr(basis, "gf_memory_policy", None))
+        saved_guard = (
+            getattr(basis, "gf_memory_budget", None),
+            getattr(basis, "gf_memory_policy", None),
+            getattr(basis, "gf_csr_memory_budget", None),
+        )
         resident = current_rss_bytes()
         width = max((len(s) for s in unit_seeds), default=1)
         try:
@@ -509,12 +626,19 @@ def run_units_distributed(
                 if _is_auto_gf(basis)
                 else gf_cap(basis)
             )
-            _set_gf_memory_guard(basis, basis, _gf_memory_budget(available_bytes_per_rank(basis.comm), resident))
+            available = available_bytes_per_rank(basis.comm)
+            _set_gf_memory_guard(
+                basis,
+                basis,
+                _gf_memory_budget(available, resident),
+                _gf_csr_memory_budget(available, resident),
+            )
             line = _describe_gf_cap(basis, basis.truncation_threshold, f"{n_units} units, serial")
             if line is not None:
                 print(line, flush=True)
             results = []
             for u in range(n_units):
+                _refresh_unit_budgets(basis, None, 1)
                 result = kernel(basis, u, unit_seeds[u])
                 release_freed_heap()  # see release_freed_heap: the next unit starts from a clean RSS
                 if reduce_fn is not None:
@@ -615,6 +739,7 @@ def run_units_distributed(
     # the split print recorded before this round, and round 7's own per-unit reporting never
     # fires when the kill lands inside the first unit.
     available_bytes = available_bytes_per_rank(basis.comm)
+    node_ranks = ranks_per_node(basis.comm)  # cached by the call above; per-unit budgets divide by it
     if verbose and basis.comm.rank == 0:
         # Derived from `unit_roots` (already rank-invariant, verified in
         # split_basis_and_redistribute_psi) rather than a fresh collective -- the same
@@ -629,7 +754,12 @@ def run_units_distributed(
             flush=True,
         )
         print("=" * 80, flush=True)
-    guard = _set_gf_memory_guard(split_basis, basis, _gf_memory_budget(available_bytes, resident_bytes))
+    guard = _set_gf_memory_guard(
+        split_basis,
+        basis,
+        _gf_memory_budget(available_bytes, resident_bytes),
+        _gf_csr_memory_budget(available_bytes, resident_bytes),
+    )
     try:
         # Every color starts from the GF cap, not from the cap `split_basis` inherited from the
         # ground-state basis (which the memory guard may have lowered for the ground state).
@@ -648,6 +778,7 @@ def run_units_distributed(
                 basis.comm,
                 method=gf_method,
                 resident_bytes=resident_bytes,
+                row_fanout=_row_fanout(basis),
             )
             split_basis.truncation_threshold = min(float(cap), float(unit_cap))
             if verbose and basis.comm.rank == 0:
@@ -658,6 +789,7 @@ def run_units_distributed(
                     reort,
                     ranks=ranks_per_color,
                     method=gf_method,
+                    row_fanout=_row_fanout(basis),
                 )
                 print(
                     f"{n_colors} simultaneous unit bases (rank 0's own color has "
@@ -720,6 +852,7 @@ def run_units_distributed(
                     break
                 u = int(order[position[0]])
                 unit_indices.append(u)
+                _refresh_unit_budgets(split_basis, split_basis.comm, node_ranks)
                 local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
                 release_freed_heap()
             # Rank 0 may run out of units while other colors are still mid-unit: it answers their
@@ -746,6 +879,7 @@ def run_units_distributed(
                 )
         else:
             for u in unit_indices:
+                _refresh_unit_budgets(split_basis, split_basis.comm, node_ranks)
                 local_results.append(kernel(split_basis, u, split_seeds[seed_offsets[u] : seed_offsets[u + 1]]))
                 release_freed_heap()  # see release_freed_heap: the next unit starts from a clean RSS
         unit_indices_per_color = gather_distributed_results(
@@ -805,7 +939,7 @@ def _apply_transition_ops(tOps, psis, excited_restrictions, excited_weighted_res
     A many-term operator (an XAS dipole, a NIXS or rotated-orbital operator) sends determinants on
     different ranks to the same seed row, so on a distributed ``basis`` each rank holds partial
     amplitudes: the ``slaterWeightMin`` cut is then made on the summed rows
-    (:func:`apply_and_redistribute`, ``config.MATVEC_PRUNE``; at cutoff 0 that drops the rows whose
+    (:func:`apply_and_redistribute`, the cut on summed rows; at cutoff 0 that drops the rows whose
     partials cancel), and the seeds come back owner-distributed. Replicated decision; collective
     when it redistributes.
     """

@@ -1,9 +1,9 @@
-"""``MATVEC_PRUNE``: a sparse matvec whose output is redistributed cuts ``slaterWeightMin`` on each
+"""A sparse matvec whose output is redistributed cuts ``slaterWeightMin`` on each
 row's summed amplitude (``apply_and_redistribute``, ``block_apply``), not on the per-rank partials.
 
 The oracle is a serial ``apply_block(v, cutoff)`` over the whole block, which sees every row's
 whole sum. The multi-rank tests split the input rows over the ranks by position, not by owner, so
-determinants reached from rows on different ranks arrive as partial sums -- the case the knob is
+determinants reached from rows on different ranks arrive as partial sums -- the case the cut is
 about. ``test_gf_apply_row_chunking.py`` covers the block-Lanczos step itself.
 """
 
@@ -99,14 +99,16 @@ def test_the_cut_is_after_the_sum_whenever_something_is_summed(monkeypatch):
     assert matvec_cut_after_sum(True, 0.1)
     assert matvec_cut_after_sum(True, 0.0)  # the exact-zero cut: rows whose partials cancel
     assert not matvec_cut_after_sum(False, 0.1)  # no redistribute: the apply sees whole sums
+
+
+def test_the_retired_before_sum_knob_is_warned_about_and_not_read(monkeypatch):
+    from impurityModel.ed import config
+
+    assert "MATVEC_PRUNE" in config.RETIRED_KNOBS
     monkeypatch.setenv("MATVEC_PRUNE", "before_sum")
-    assert not matvec_cut_after_sum(True, 0.1)
-
-
-def test_matvec_prune_rejects_an_unknown_value(monkeypatch):
-    monkeypatch.setenv("MATVEC_PRUNE", "sometimes")
-    with pytest.raises(ValueError, match="MATVEC_PRUNE"):
-        matvec_cut_after_sum(True, 0.1)
+    with pytest.warns(UserWarning, match="MATVEC_PRUNE"):
+        config.warn_retired_knobs()
+    assert matvec_cut_after_sum(True, 0.1)
 
 
 def test_no_redistribute_is_the_plain_apply():
@@ -155,22 +157,6 @@ def _list_result(cutoff, comm):
 )
 def test_a_redistributed_matvec_cuts_the_summed_row(result, reference, cutoff):
     _assert_rows_match(result(cutoff, MPI.COMM_WORLD), reference(cutoff))
-
-
-@pytest.mark.mpi
-@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs input rows on more than one rank")
-@pytest.mark.parametrize("cutoff", _CUTOFFS)
-@pytest.mark.parametrize(
-    "result, reference",
-    [(_block_result, _block_reference), (_list_result, _list_reference)],
-    ids=["block", "state_list"],
-)
-def test_before_sum_cuts_each_ranks_partial(result, reference, cutoff, monkeypatch):
-    """The fallback keeps the old order, and these cases are ones where the order matters -- so the
-    after_sum test above discriminates."""
-    monkeypatch.setenv("MATVEC_PRUNE", "before_sum")
-    with pytest.raises(AssertionError):
-        _assert_rows_match(result(cutoff, MPI.COMM_WORLD), reference(cutoff))
 
 
 def _initial_keys():
@@ -389,15 +375,6 @@ def _seed_columns(comm, cutoff):
 @pytest.mark.parametrize("cutoff", _CUTOFFS)
 def test_transition_operator_seeds_are_cut_on_the_summed_row(cutoff):
     _assert_columns_match(_seed_columns(MPI.COMM_WORLD, cutoff), _seed_columns(None, cutoff), 1e-13)
-
-
-@pytest.mark.mpi
-@_multirank
-@pytest.mark.parametrize("cutoff", _CUTOFFS)
-def test_before_sum_cuts_each_ranks_seed_partials(cutoff, monkeypatch):
-    monkeypatch.setenv("MATVEC_PRUNE", "before_sum")
-    with pytest.raises(AssertionError):
-        _assert_columns_match(_seed_columns(MPI.COMM_WORLD, cutoff), _seed_columns(None, cutoff), 1e-13)
 
 
 # --- Exact cancellation: a determinant reached from rows on two ranks whose partials cancel. A serial

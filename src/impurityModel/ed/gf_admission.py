@@ -96,7 +96,7 @@ def start_set(A_op, seeds_block, seeds, x0, carry_tol, comm, n_ops, shell_tol=0.
     The first shell is kept whole unless ``shell_tol`` > 0, which drops its rows with amplitude below
     ``shell_tol * ||seed_j||`` (``GF_ADMIT_FIRST_SHELL_TOL``).
 
-    With ``basis`` distributed (``config.MATVEC_PRUNE=after_sum``), the seeds and the shell are summed
+    With ``basis`` distributed , the seeds and the shell are summed
     over the ranks first (routed by owner on ``basis``, whose content is irrelevant), so the keys, the
     seed norms and the shell cut see whole amplitudes, and a row whose partials cancel is not kept.
     Collective then."""

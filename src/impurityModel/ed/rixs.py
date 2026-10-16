@@ -24,7 +24,7 @@ from impurityModel.ed import config
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
 from impurityModel.ed.BlockLanczosArray import Reort
-from impurityModel.ed.gf_solvers import solve_shifted_block
+from impurityModel.ed.gf_solvers import _freeze_bicgstab_support, solve_shifted_block
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
 from impurityModel.ed.rational_sampling import barycentric_eval, greedy_next_samples, set_valued_aaa
@@ -216,6 +216,8 @@ def _new_rixs_solver_stats():
         "r1_spectral": 0,
         "r1_recycled": 0,
         "r1_bicgstab": 0,
+        "r1_frozen": 0,
+        "r1_frozen_fallbacks": 0,
         "r1_gmres": 0,
         "r1_unconverged": 0,
         "r2_cache": 0,
@@ -256,7 +258,8 @@ def _report_rixs_solver_stats(stats, comm, verbose):
         print(
             f"RIXS solver summary: R1 {r1_total} solves "
             f"({counts['r1_spectral']} spectral / {counts['r1_recycled']} recycled / "
-            f"{counts['r1_bicgstab']} bicgstab / {counts['r1_gmres']} gmres / "
+            f"{counts['r1_bicgstab']} bicgstab ({counts['r1_frozen']} on a frozen P H P, "
+            f"{counts['r1_frozen_fallbacks']} back to sparse) / {counts['r1_gmres']} gmres / "
             f"{counts['r1_unconverged']} unconverged); "
             f"R2 {r2_total} evals ({counts['r2_cache']} cache / {counts['r2_lanczos']} lanczos, "
             f"{counts['r2_unconverged']} unconverged, worst d_g {worst_d_g:.2e})",
@@ -291,8 +294,13 @@ class _R1SolverChain:
     it serves a point, so :func:`_report_rixs_solver_stats` can summarize the whole run.
     """
 
-    def __init__(self, r1_cache, eigenstate, counters=None):
+    def __init__(self, r1_cache, eigenstate, counters=None, freeze=False):
         self.r1_cache = r1_cache
+        # GF_SUPPORT_FREEZE for the bicgstab tier: psi1_all is the same for every wIn of the chunk, so
+        # once a solve admits nothing beyond its starting support the remaining points solve on the
+        # frozen P H P (gf_solvers._FrozenShiftedSystem), each checked against the full H.
+        self._freeze_ok = bool(freeze)
+        self._frozen = None
         self.eigenstate = eigenstate  # for the unconverged-fallback warning message only
         self.counters = counters
         self._recycled = None  # in-chunk wIn index -> shift-recycled solution
@@ -359,6 +367,35 @@ class _R1SolverChain:
                     self.counters["r1_recycled"] += 1
                 return self._recycled.pop(k)
 
+        if self._frozen is not None:
+            A_op = z - hOp
+            frozen_info = {}
+            X_dense = self._frozen.solve(
+                z, self._frozen.to_dense(psi2_all), _RIXS_R1_ATOL, None, frozen_info, rtol=1e-7
+            )
+            X = self._frozen.to_block(X_dense)
+            leak = self._frozen.boundary(A_op, X, slaterWeightMin)
+            psi2_all[:] = X.to_states()
+            for psi2 in psi2_all:
+                # As the sparse solve's output: the frozen basis holds sub-cutoff rows too.
+                psi2.prune(slaterWeightMin)
+            if np.all(leak <= _RIXS_R1_ATOL):
+                self._record_support(self._frozen.size)
+                if self.counters is not None:
+                    self.counters["r1_bicgstab"] += 1
+                    self.counters["r1_frozen"] += 1
+                    if frozen_info["gmres_used"]:
+                        self.counters["r1_gmres"] += 1
+                    if not frozen_info["converged"]:
+                        self.counters["r1_unconverged"] += 1
+                self._warn_unconverged(frozen_info, win, tmp_basis.comm)
+                return psi2_all
+            # The frozen support is too small for this wIn: solve it sparse from here on, warm-started.
+            if self.counters is not None:
+                self.counters["r1_frozen_fallbacks"] += 1
+            self._frozen = None
+            self._freeze_ok = False
+
         for psi2 in psi2_all:
             psi2.prune(slaterWeightMin)
         tmp_basis.clear()
@@ -372,6 +409,7 @@ class _R1SolverChain:
         tmp_basis.add_states(sorted({state for p in redistributed for state in p.keys()}))
         psi1_all[:] = redistributed[:n1]
         psi2_all[:] = redistributed[n1:]
+        rebuild_size = tmp_basis.size
         A_op = z - hOp
         # Warm-started resolvent solved as one block over all in-components, sharing a
         # single Krylov space / iteration (block_bicgstab deflates a rank-deficient block).
@@ -397,20 +435,29 @@ class _R1SolverChain:
         # block_bicgstab registers every determinant it reaches (BiCGSTAB.pyx's offered mask
         # calls add_states), so tmp_basis really is this solve's support here.
         self._record_support(tmp_basis.size)
+        # Nothing admitted beyond the starting support (replicated counts) and wIn points left to use
+        # it: freeze it for the chunk's remaining points (after this point's bookkeeping below).
+        freeze_now = self._freeze_ok and len(remaining_wins) > 1 and tmp_basis.size <= rebuild_size
         if self.counters is not None:
             self.counters["r1_bicgstab"] += 1
             if solve_info["gmres_used"]:
                 self.counters["r1_gmres"] += 1
             if not solve_info["converged"]:
                 self.counters["r1_unconverged"] += 1
-        if not solve_info["converged"] and (tmp_basis.comm is None or tmp_basis.comm.rank == 0):
+        self._warn_unconverged(solve_info, win, tmp_basis.comm)
+        if freeze_now:
+            self._frozen = _freeze_bicgstab_support(tmp_basis, hOp, psi1_all, n1, verbose)
+            self._freeze_ok = self._frozen is not None
+        return psi2_all
+
+    def _warn_unconverged(self, info, win, comm):
+        if not info["converged"] and (comm is None or comm.rank == 0):
             print(
                 f"warning: RIXS intermediate resolvent at wIn = {win:.6g} (eigenstate {self.eigenstate}) "
                 f"stopped unconverged at relative residual "
-                f"{solve_info.get('rel_residual', float('nan')):.2e} (after GMRES escalation).",
+                f"{info.get('rel_residual', float('nan')):.2e} (after GMRES escalation).",
                 flush=True,
             )
-        return psi2_all
 
 
 def _n_live_sector_caches(psis):
@@ -631,7 +678,10 @@ def _rixs_map_flat(
             # each solve counts ranks-per-color times (review ledger M5). Non-root ranks roll back
             # at the end of the unit.
             stats_before = dict(solver_stats) if sub_comm is not None and sub_comm.rank != 0 else None
-            chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats)
+            freeze = config.GF_SUPPORT_FREEZE.get() if sub_comm is None or sub_comm.rank == 0 else None
+            if sub_comm is not None:
+                freeze = sub_comm.bcast(freeze, root=0)
+            chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats, freeze=freeze)
             out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
             wins = wIns[w_chunk]
             # `eval_out` reports the final-state basis it actually ran on rather than leaving the
@@ -689,7 +739,9 @@ def _rixs_map_flat(
         gf._merge_unit_basis(max_intermediate, e, intermediate, False)
         gf._merge_unit_basis(max_final, e, final, False)
 
-    got = gf.run_units_distributed(basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=accumulate)
+    got = gf.run_units_distributed(
+        basis, unit_seeds, unit_weights, kernel, verbose=verbose, reduce_fn=accumulate, hOp=hOp
+    )
     # Collective on each color's clone: every rank of a color created (at most) one cached
     # green_basis and reaches this point after its unit loop.
     for cached in green_basis_cache.values():

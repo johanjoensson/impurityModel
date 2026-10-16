@@ -91,8 +91,10 @@ def _redistribute_as_width1(basis, states, n):
     return [blk.to_states()[0] for blk in basis.redistribute_psis(*blocks)]
 
 
-def _run_capped(cap, reort=None, comm=None, **kwargs):
+def _run_capped(cap, reort=None, comm=None, basis_attrs=None, **kwargs):
     basis = _excited_basis(cap, comm=comm)
+    for name, value in (basis_attrs or {}).items():
+        setattr(basis, name, value)
     # redistribute_psis SUMS per-rank contributions (production seeds are partial per
     # rank), so only rank 0 may provide the full amplitudes here.
     seeds_full = _seeds()
@@ -474,11 +476,21 @@ def test_frozen_csr_under_importance_pruning(monkeypatch):
     _assert_php_oracle(g, info)
 
 
-def test_a_memory_guard_freeze_stays_on_the_sparse_kernel():
-    """RSS is at budget when the guard freezes: building a matrix then is how a rank is killed."""
+def test_a_memory_guard_freeze_without_room_for_the_matrix_stays_on_the_sparse_kernel():
+    """RSS is at budget when the guard freezes; with no looser frozen-CSR budget the matrix does
+    not fit on top of it, and the sparse kernel continues."""
     g, info = _run_capped(1000, memory_budget=1)
     assert info["cap_hit"] and info["memory_frozen"]
     assert not info["csr_fallback"]
+    _assert_php_oracle(g, info)
+
+
+def test_a_memory_guard_freeze_runs_the_frozen_matrix_when_it_fits():
+    """The guard froze the unit, but the frozen-CSR budget has room for the matrix on top of the
+    current RSS: the restart runs, and is exact on the retained set."""
+    g, info = _run_capped(1000, memory_budget=1, basis_attrs={"gf_csr_memory_budget": 2**62})
+    assert info["cap_hit"] and info["memory_frozen"]
+    assert info["csr_fallback"]
     _assert_php_oracle(g, info)
 
 
@@ -519,16 +531,25 @@ def test_the_csr_fit_check_reports_what_it_decided_on(monkeypatch):
     assert report["n_local"] == len(basis.local_basis)
     assert report["rss"] == 10**9 and report["budget"] == 10**10
     assert report["fanout"] > 0.0
-    batch = min(gf_solvers.basis_transcription._SPARSE_BUILD_BATCH, report["n_local"] * report["fanout"])
-    expected = (
-        report["n_local"] * report["fanout"] * gf_solvers._CSR_BYTES_PER_ELEMENT
-        + batch * gf_solvers._CSR_BATCH_BYTES_PER_ELEMENT
-    )
+    expected = gf_solvers._frozen_matrix_need(report["n_local"], report["fanout"], basis.size, 1, 1)
     assert report["need"] == pytest.approx(expected)
     # The guard off decides nothing, so there is nothing to report.
     empty = {}
     assert gf_solvers._frozen_csr_fits(basis, _siam_6(), None, None, report=empty)
     assert empty == {}
+
+
+def test_the_frozen_matrix_need_counts_the_exchange_buffers_on_more_than_one_rank():
+    """The graph exchange holds row-sized send and receive buffers, at least one column wide: up to
+    every other rank's rows out and this rank's rows in from each other rank. With almost no stored
+    elements they are what the need is made of; a serial run has none."""
+    from impurityModel.ed import gf_solvers
+
+    n_global, n_local, ranks = 4_000_000, 1_000_000, 4
+    serial = gf_solvers._frozen_matrix_need(n_local, 1e-6, n_local, 1, 1)
+    distributed = gf_solvers._frozen_matrix_need(n_local, 1e-6, n_global, ranks, 1)
+    exchange = 16 * ((n_global - n_local) + n_local * (ranks - 1) + n_local)
+    assert distributed - serial == pytest.approx(exchange, rel=1e-6)
 
 
 @pytest.mark.mpi

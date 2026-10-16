@@ -65,7 +65,15 @@ def _make_matmat(A, basis, double slaterWeightMin, bint is_arr, bint mpi):
     frequency point's solve, or a RIXS intermediate solve, can run for minutes, and the queue's
     host answers the other colors' fetches only when it pokes. One list check on other ranks.
     """
-    if is_arr:
+    if is_arr and hasattr(A, "matmat"):
+        # An operator that brings its own distributed matvec on local row blocks (the frozen-basis
+        # ``z - P H P`` of ``gf_solvers._FrozenShiftedSystem``).
+
+        def matmat(v):
+            queue_progress()
+            return A.matmat(v)
+
+    elif is_arr:
 
         def matmat(v):
             queue_progress()
@@ -236,8 +244,10 @@ def block_bicgstab(A, x0, y, basis, double slaterWeightMin, atol=1e-8, rtol=1e-1
             ri.prune_rows(slaterWeightMin)
         basis.add_states(state for state in ri.support_keys(slaterWeightMin) if not basis.contains_local(state))
         y_cols2 = y_blk.col_norm2()
-        if mpi:
-            comm.Allreduce(MPI.IN_PLACE, y_cols2, op=MPI.SUM)
+    # Summed for either representation: a distributed array block (the frozen-basis solve,
+    # gf_solvers._FrozenShiftedSystem) holds only this rank's rows, as a sparse block does.
+    if mpi:
+        comm.Allreduce(MPI.IN_PLACE, y_cols2, op=MPI.SUM)
     y_scale = np.sqrt(np.max(y_cols2))
 
     # Deflate R0 = Q @ beta_j into rank independent directions (Q orthonormal). Solve the
@@ -377,9 +387,7 @@ def _block_bicgstab_core(
         return res
 
     def col_norms2(v):
-        if is_arr:
-            return np.linalg.norm(v, axis=0) ** 2
-        norms = v.col_norm2()
+        norms = np.linalg.norm(v, axis=0) ** 2 if is_arr else v.col_norm2()
         if mpi:
             comm.Allreduce(MPI.IN_PLACE, norms, op=MPI.SUM)
         return norms
@@ -473,8 +481,19 @@ def _block_bicgstab_core(
             tracker.grow(ti)
 
         if is_arr:
-            ts = np.sum(np.conj(ti[:, active_mask_s]) * si[:, active_mask_s], axis=0).sum()
-            tt = np.sum(np.conj(ti[:, active_mask_s]) * ti[:, active_mask_s], axis=0).sum()
+            ts_tt = np.array(
+                [
+                    np.sum(np.conj(ti[:, active_mask_s]) * si[:, active_mask_s]),
+                    np.sum(np.conj(ti[:, active_mask_s]) * ti[:, active_mask_s]),
+                ],
+                dtype=complex,
+            )
+            # A distributed array block (the frozen-basis solve) holds only this rank's rows: summed
+            # here, or every rank steps with its own omega and the recursive residual stops tracking
+            # the true one (measured: "converged" at 7e-11 with a true residual of 8e-7 on 3 ranks).
+            if mpi:
+                comm.Allreduce(MPI.IN_PLACE, ts_tt, op=MPI.SUM)
+            ts, tt = ts_tt[0], ts_tt[1]
         else:
             # Diagonals of the block Gram matrices; summed over the active columns
             # (the off-diagonal work is negligible at spectra block widths).

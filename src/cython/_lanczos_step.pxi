@@ -115,7 +115,7 @@ def block_lanczos_step_cy(
         slaterWeightMin: Amplitude cutoff passed to ``ManyBodyState.prune``;
             SD coefficients below this value are dropped.  Default ``0.0``
             (no pruning).  On ``H q`` the cut is made on each row's summed amplitude
-            when the step redistributes (``config.MATVEC_PRUNE``).
+            when the step redistributes.
         reort_period: Number of steps between full reorthogonalization sweeps
             for ``Reort.PERIODIC`` mode.  Full reorthogonalization is applied at
             step ``it`` when ``it > 0`` and ``it % reort_period == 0``.
@@ -146,95 +146,24 @@ def block_lanczos_step_cy(
     p = q_curr.width
 
     # --- 1. Block matvec: wp = H q_curr ---------------------------------
-    _t0 = _time.perf_counter()
     # A growth-capping basis proxy (caps_growth=True) must see every step's residual
     # even serially: its redistribute_block enforces the truncation_threshold there
     # (the inner Basis redistribute no-ops without MPI).
     _needs_redistribute = basis is not None and ((mpi and comm is not None) or getattr(basis, "caps_growth", False))
-    # Chunking only where a redistribute actually follows -- with none, there is no
-    # pack/send/receive transient to bound and chunking would just add per-chunk
-    # Python overhead for nothing. `GF_APPLY_ROW_CHUNKS` defaults to 4 (on); `1`
-    # recovers the pre-2026-09 one-shot path.
+    # Chunking only where a redistribute actually follows. `GF_APPLY_ROW_CHUNKS` defaults to 4;
+    # `1` is the one-shot path. The matvec itself (chunking, the cut on summed rows, a capping
+    # proxy's deferred admission) is `apply_and_redistribute`.
     _n_chunks = config.GF_APPLY_ROW_CHUNKS.get() if _needs_redistribute else 1
-    # A capping proxy decides admission on the step's whole output, not chunk by chunk
-    # (gf_primitives._CappedBasisProxy.begin_step): replicated, so every rank calls both.
-    _begin_step = getattr(basis, "begin_step", None) if _needs_redistribute else None
-    # MATVEC_PRUNE=after_sum: send every partial and cut the summed row instead, so what
-    # survives does not depend on the colour's rank count or the chunk count.
-    _prune_after_sum = matvec_cut_after_sum(_needs_redistribute, slaterWeightMin)
-    _apply_cutoff = 0.0 if _prune_after_sum else slaterWeightMin
-    if _begin_step is not None:
-        _begin_step()
-    if _n_chunks is None or _n_chunks <= 1:
-        wp = h_op.apply_block(q_curr, _apply_cutoff)
-        _prof_acc("matvec_apply", _t0)
-        _t1 = _time.perf_counter()
-        if _needs_redistribute:
-            if hasattr(basis, "redistribute_block"):
-                wp = basis.redistribute_block(wp)
-            else:
-                # Duck-typed basis without the block method (e.g. a test mock): fall back
-                # to the scalar redistribute through a boundary conversion.
-                wp = ManyBodyState.from_states(basis.redistribute_psis(*wp.to_states()))
-        _prof_acc("matvec_redistribute", _t1)
-    else:
-        # Row-chunked matvec: apply H to one chunk of q_curr's rows at a time and
-        # redistribute+accumulate before moving to the next, so the raw apply output,
-        # its packed send buffer and the receive buffer are bounded to chunk size
-        # instead of the whole block -- mirroring
-        # CIPSISolver._apply_block_and_redistribute's GS_APPLY_ROW_CHUNKS
-        # (doc/plans/dc_smo_memory.md, "GF unit memory"). Exact up to floating-point
-        # summation order: a candidate reached through different chunks accumulates
-        # its partial sums in a different order, the same class of difference a
-        # change of MPI rank count already makes. Unlike the CIPSI selection round,
-        # this sum feeds a Lanczos recurrence (alpha_i below, the q_prev/q_curr
-        # subtraction, reorthogonalization, TSQR) rather than a slater_weight_min
-        # prune and a candidate ranking -- a summation-order change can in principle
-        # move a deflation or iteration-count decision, not just the last digit of
-        # G. On by default since 2026-09-14 (see config.GF_APPLY_ROW_CHUNKS); set to 1
-        # to recover bit-identical agreement with a pre-2026-09 run.
-        # The chunk COUNT is the knob, replicated on every rank, so every rank makes
-        # the same number of collective redistribute_block calls whatever its own
-        # row count (a rank with fewer rows than chunks sends explicit width-p empty
-        # chunks, never the width-0 polymorphic zero -- see doc/lanczos_invariants.md).
-        _n_rows = len(q_curr)
-        _bounds = np.linspace(0, _n_rows, int(_n_chunks) + 1).astype(int)
-        wp = None
-        # `_bounds[i], _bounds[i + 1]` rather than the `[:-1]`/`[1:]` slice pair: this
-        # module carries `wraparound=False` (CLAUDE.md), which the `x[-1]` idiom trips
-        # even on a slice boundary -- spelled with explicit non-negative bounds instead.
-        for _idx in range(_bounds.shape[0] - 1):
-            _lo = _bounds[_idx]
-            _hi = _bounds[_idx + 1]
-            # `row_slice` allocates exactly this chunk's rows. The earlier spelling
-            # (`q_curr.copy()` then `keep_rows(mask)`) allocated a FULL-SIZE duplicate of
-            # q_curr per chunk -- `keep_rows` shrinks the logical length but not the
-            # vector's capacity -- so the chunk's "bounded" apply ran alongside a
-            # full-size copy, which is why chunking measured slower with a HIGHER peak
-            # than the one-shot path. It also built one Python key object per row of
-            # q_curr on every step just to form the mask.
-            _part = q_curr.row_slice(_lo, _hi)
-            _raw = h_op.apply_block(_part, _apply_cutoff)
-            del _part
-            if hasattr(basis, "redistribute_block"):
-                _piece = basis.redistribute_block(_raw)
-            else:
-                _piece = ManyBodyState.from_states(basis.redistribute_psis(*_raw.to_states()))
-            del _raw
-            if wp is None:
-                wp = _piece
-            elif len(_piece):
-                # Rank-local decision on a rank-local quantity (no collective inside),
-                # so an empty piece on one rank cannot desynchronize the others.
-                wp += _piece
-            del _piece
-        _prof_acc("matvec_apply", _t0)
-    if _prune_after_sum:
-        # Before finish_step: a capping proxy must admit on the cut sums, not on rows the cut drops.
-        wp.prune_rows(slaterWeightMin)
-    if _begin_step is not None:
-        wp = basis.finish_step(wp)
-    _prof_acc("matvec", _t0)
+    wp = apply_and_redistribute(
+        h_op, q_curr, basis, slaterWeightMin, _needs_redistribute, 1 if _n_chunks is None else int(_n_chunks),
+        _prof_acc,
+    )
+    # A proxy running the support freeze also weighs what the next block's prune below drops (replicated flag).
+    _note_cut = (
+        basis.note_step_cut
+        if _needs_redistribute and hasattr(basis, "begin_step") and getattr(basis, "support_freeze", False)
+        else None
+    )
 
     # --- 2. alpha_i = <q_curr | wp> -------------------------------------
     _t0 = _time.perf_counter()
@@ -314,7 +243,12 @@ def block_lanczos_step_cy(
     if slaterWeightMin > 0.0:
         # Whole-row prune: a row survives when ANY column survives (keeps the block's
         # shared support; the per-column prune of independent states would desync it).
-        q_next.prune_rows(slaterWeightMin)
+        if _note_cut is not None:
+            # In the matvec's units: the residual is q_next @ beta_i, so a dropped row of q_next carried
+            # row beta_i beta_i^H row^H of it. Reaches the proxy with the next step's admission.
+            _note_cut(q_next.prune_rows(slaterWeightMin, beta_i @ np.conj(beta_i.T)))
+        else:
+            q_next.prune_rows(slaterWeightMin)
         did_truncate = True
     if truncation_threshold > 0:
         _q_states = q_next.to_states()
@@ -698,7 +632,7 @@ def block_lanczos_cy(
         # representation for the live recurrence blocks.
         if isinstance(psi0, ManyBodyState):
             p = psi0.width
-            q_curr = basis.redistribute_block(psi0)
+            q_curr = (basis.admit_seed if hasattr(basis, "admit_seed") else basis.redistribute_block)(psi0)
         else:
             p = len(psi0)
             q_curr = ManyBodyState.from_states(basis.redistribute_psis(*psi0))
@@ -790,6 +724,17 @@ def block_lanczos_cy(
     # Spectral-scale estimate (seeded from beta_0 ~ ||H||, grown only by ||alpha_i||, which is
     # bounded by ||H|| and never runs away) — catches gradual beta growth the relative check misses.
     h_norm_est = 0.0
+    # A resumed call (a doubled budget, a declined freeze) replays the guard over the blocks it was
+    # handed, so it keeps the scale the earlier calls built: starting both trackers from 0 left
+    # every resumed call's first step unguarded and let that step re-seed the scale -- every 16
+    # blocks while capped GF units ran a window at a time.
+    guard_seeded = False
+    if resuming:
+        for _k in range(min(len(alphas_init), len(betas_init))):
+            _, t_norm_max, h_norm_est = divergence_guard(
+                spectral_norm(betas_init[_k]), spectral_norm(alphas_init[_k]), _k == 0, t_norm_max, h_norm_est
+            )
+            guard_seeded = True
 
     # Two-consecutive-steps reort rule (Simon/PROPACK): when a step acts, the next step
     # bypasses the REORT_TOL gate (see apply_reort force=) so q_curr's remaining overlap
@@ -861,10 +806,10 @@ def block_lanczos_cy(
             beta_norm_hist.append(beta_norm)
         alpha_norm = spectral_norm(alpha_i)
         # first_step = it == 0: this driver's own loop-local counter, always 0 on the
-        # first step executed by THIS call (including a resumed call) -- see
-        # check_divergence's docstring for why this must not be "it_abs == 0".
+        # first step executed by THIS call -- see check_divergence's docstring for why this
+        # must not be "it_abs == 0" -- unless a resume already replayed the guard above.
         diverged, t_norm_max, h_norm_est = check_divergence(
-            beta_norm, alpha_norm, it == 0, t_norm_max, h_norm_est, it_abs, comm
+            beta_norm, alpha_norm, it == 0 and not guard_seeded, t_norm_max, h_norm_est, it_abs, comm
         )
         if diverged:
             termination = "diverged"

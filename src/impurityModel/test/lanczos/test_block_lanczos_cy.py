@@ -774,3 +774,40 @@ def test_block_lanczos_cy_store_krylov_false_matches_tail_of_stored_run():
     stored_tail = stored_Q[-4:]
     ov = inner_multi(stored_tail, tail_Q)
     np.testing.assert_allclose(ov, np.eye(4), atol=1e-10)
+
+
+def test_a_resumed_call_keeps_the_divergence_guards_scale(monkeypatch):
+    """A resume replays the guard over the blocks it is handed: its first step is guarded against the
+    scale the earlier call built, not treated as a fresh run's scale-establishing step (which went
+    unchecked and re-seeded the scale on every resume -- every GF window once units ran in windows)."""
+    from impurityModel.ed import BlockLanczos
+    from impurityModel.test.support.lanczos_fixtures import MockBasis, get_test_system
+
+    h_op, n, _eigvals_exact, basis_states = get_test_system()
+    basis = MockBasis(n)
+    np.random.seed(5)
+    psi0 = []
+    for _ in range(2):
+        st = ManyBodyState()
+        for b in basis_states:
+            st += b * (np.random.rand() + 1j * np.random.rand())
+        psi0.append(st)
+    psi0, _ = block_normalize(psi0, mpi=False, comm=None)
+    calls = []
+    real = BlockLanczos.check_divergence
+
+    def recording(beta_norm, alpha_norm, first_step, t_norm_max, h_norm_est, it_abs, comm):
+        calls.append((it_abs, bool(first_step), t_norm_max, h_norm_est))
+        return real(beta_norm, alpha_norm, first_step, t_norm_max, h_norm_est, it_abs, comm)
+
+    monkeypatch.setattr(BlockLanczos, "check_divergence", recording)
+    kw = dict(h_op=h_op, basis=basis, converged_fn=lambda a, b, **k: False, reort="none", return_widths=True)
+    a1, b1, q1, w1, wid1 = block_lanczos_cy(psi0=psi0, max_iter=4, **kw)
+    whole = list(calls)
+    calls.clear()
+    block_lanczos_cy(
+        psi0=None, alphas_init=a1, betas_init=b1, Q_init=q1, W_init=w1, block_widths_init=wid1, max_iter=2, **kw
+    )
+    first_resumed = calls[0]
+    assert not first_resumed[1], "the resumed call's first step is not a scale-establishing step"
+    assert first_resumed[2] >= max(t for _, _, t, _ in whole), "it carries the earlier call's scale"

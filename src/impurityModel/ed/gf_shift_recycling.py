@@ -22,7 +22,7 @@ from impurityModel.ed import config
 from impurityModel.ed.basis_transcription import build_sparse_matrix, build_state
 from impurityModel.ed.BlockLanczos import block_lanczos_cy
 from impurityModel.ed.BlockLanczosArray import resolve_reort
-from impurityModel.ed.gf_primitives import _CappedBasisProxy, _distributed_seed_qr, _trim_blocks, guarded_proxy
+from impurityModel.ed.gf_primitives import _distributed_seed_qr, _trim_blocks, guarded_proxy
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import available_bytes_per_rank, format_bytes
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
@@ -247,7 +247,7 @@ class SectorResolventCache:
         The spectral counterpart of an iterative shifted solve (e.g. the RIXS
         intermediate resolvent's ``block_bicgstab``): on a cached sector it is direct
         -- no iteration, no near-pole stagnation -- and exact on the sector.
-        Amplitudes with ``|amp|^2 <= slaterWeightMin`` are pruned from the returned
+        Amplitudes with ``|amp| <= slaterWeightMin`` are pruned from the returned
         states, mirroring the iterative solvers' support pruning.
         """
         if not self._ensure(basis, hOp, rhs, slaterWeightMin, verbose):
@@ -258,7 +258,7 @@ class SectorResolventCache:
         states = list(self._index)
         out = []
         for k in range(x.shape[1]):
-            keep = np.abs(x[:, k]) ** 2 > slaterWeightMin
+            keep = np.abs(x[:, k]) ** 2 > slaterWeightMin**2
             # width=1: a column whose projected solution is (numerically) exactly zero
             # everywhere kept must not become the width-0 polymorphic zero -- every
             # element of the returned list is expected width 1.
@@ -463,7 +463,7 @@ class KrylovShiftedResolvent:
         # Enforce the determinant cap on the recurrence (post-freeze: exact P H P).
         cap = getattr(basis, "truncation_threshold", np.inf)
         lanczos_basis = guarded_proxy(basis, cap)
-        if cap_info is not None and isinstance(lanczos_basis, _CappedBasisProxy):
+        if cap_info is not None and getattr(lanczos_basis, "tracks_support", False):
             # The proxy tracks growth in place, so recording it here (rather than at each
             # return) reports the support reached even on the paths that decline below.
             cap_info["proxy"] = lanczos_basis
@@ -535,7 +535,7 @@ class KrylovShiftedResolvent:
         # The store's leading sum(widths) columns are the Lanczos blocks (laid out by
         # true, deflated widths); the trailing residual block is excluded.
         n_keep = int(np.sum(widths))
-        if cap_info is not None and isinstance(lanczos_basis, _CappedBasisProxy):
+        if cap_info is not None and getattr(lanczos_basis, "tracks_support", False):
             cap_info["cap_hit"] = lanczos_basis.cap_hit
             cap_info["retained_size"] = lanczos_basis.retained_size
         return [Q.combine(Y[wi], 0, n_keep, slaterWeightMin) for wi in range(len(zs))]

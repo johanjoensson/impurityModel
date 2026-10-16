@@ -845,10 +845,17 @@ public:
    * test (|amp|^2 <= cutoff^2): a row survives if ANY column survives. Keeping
    * whole rows preserves the shared support across the block — the deliberate
    * semantic difference vs per-column pruning of independent states.
+   *
+   * Returns the weight the cut dropped: the sum over the dropped rows of
+   * |row|^2, or, given `gram` (a row-major width x width Hermitian G), of
+   * Re(row G row^H) -- the weight the dropped rows carry in `row @ B` when
+   * G = B B^H, which is how the block-Lanczos step measures a cut of the
+   * normalized next block in the units of the matvec it came from.
    */
-  void prune_rows(double cutoff) {
+  double prune_rows(double cutoff, const Value *gram = nullptr) {
     const double cutoff2 = cutoff * cutoff;
     std::size_t out = 0;
+    double dropped = 0.0;
     for (std::size_t r = 0; r < rows(); ++r) {
       bool keep = false;
       const ConstRow src = row(r);
@@ -864,10 +871,25 @@ public:
           std::copy(src.begin(), src.end(), m_amps.data() + out * m_width);
         }
         ++out;
+      } else if (gram == nullptr) {
+        for (const Value &v : src) {
+          dropped += std::norm(v);
+        }
+      } else {
+        double w = 0.0;
+        for (std::size_t i = 0; i < m_width; ++i) {
+          Value gi = 0.0;
+          for (std::size_t j = 0; j < m_width; ++j) {
+            gi += gram[i * m_width + j] * std::conj(src[j]);
+          }
+          w += std::real(src[i] * gi);
+        }
+        dropped += w;
       }
     }
     m_keys.resize_rows(out);
     m_amps.resize(out * m_width);
+    return dropped;
   }
 
   /**
@@ -990,6 +1012,33 @@ public:
         out.push_back(row_max2(r));
       }
     }
+  }
+
+  /**
+   * @brief Number of rows whose key is NOT in `keep` (sorted, unique) and
+   * their summed |amp|^2 over every column: the rows a capped recurrence would
+   * admit and the weight they carry, in one merge pass. 0 and 0.0 for an empty
+   * block; a key-only (width-0) block's rows count with weight 0.
+   */
+  template <typename KeepT>
+  std::pair<std::size_t, double> new_rows_stats(const KeepT &keep) const noexcept {
+    std::size_t n = 0;
+    double weight = 0.0;
+    std::size_t ik = 0;
+    for (std::size_t r = 0; r < rows(); ++r) {
+      while (ik < keep.size() && FlatKeyStore::less(keep[ik], m_keys.view(r))) {
+        ++ik;
+      }
+      if (ik < keep.size() && FlatKeyStore::equal(m_keys.view(r), keep[ik])) {
+        ++ik;
+        continue;
+      }
+      ++n;
+      for (const Value &v : row(r)) {
+        weight += std::norm(v);
+      }
+    }
+    return {n, weight};
   }
 
   /**

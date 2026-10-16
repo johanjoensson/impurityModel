@@ -304,6 +304,10 @@ class Basis:
     supporting distributed states over MPI, restrictions, and basis extensions.
     """
 
+    #: The matvec's measured row fan-out on this (ground-state) basis, set once per calculation by
+    #: ``gf_units.run_units_distributed`` for the automatic GF cap; ``None`` until then.
+    gf_row_fanout: float | None = None
+
     def __init__(
         self,
         impurity_orbitals,
@@ -495,9 +499,10 @@ class Basis:
         return new
 
     #: Attributes a solve hangs on a basis that describe *who may cap it and how memory is
-    #: guarded* (the resolved ``CapPolicy``; the Green's-function guard's budget and policy),
+    #: guarded* (the resolved ``CapPolicy``; the Green's-function guard's budget and policy, and the
+    #: frozen-CSR decision's budget),
     #: carried to every clone and copy so a kernel sees them whichever basis it was handed.
-    _CAP_SETTINGS = ("cap_policy", "gf_memory_budget", "gf_memory_policy")
+    _CAP_SETTINGS = ("cap_policy", "gf_memory_budget", "gf_memory_policy", "gf_csr_memory_budget")
 
     def _carry_cap_settings(self, new):
         for name in self._CAP_SETTINGS:

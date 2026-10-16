@@ -591,7 +591,14 @@ def get_Greens_function(
     # This unit-level dump belongs at -vv (verbose_extra): the roots/per-color summary is
     # detail beyond the -v per-block roll-up the caller already prints.
     results = run_units_distributed(
-        basis, unit_seeds, unit_weights, kernel, verbose=verbose_extra, reort=reort, unit_windows=unit_restrictions
+        basis,
+        unit_seeds,
+        unit_weights,
+        kernel,
+        verbose=verbose_extra,
+        reort=reort,
+        unit_windows=unit_restrictions,
+        hOp=hOp,
     )
 
     gs_matsubara = gs_realaxis = report = None
@@ -626,6 +633,7 @@ def get_Greens_function(
                 retained_size=cap_stats.get("retained_size"),
                 seed_size=cap_stats.get("seed_size"),
                 cap_hit=bool(cap_stats["cap_hit"]),
+                support_frozen=bool(cap_stats.get("support_frozen", False)),
                 n_blocks=conv_stats.get("n_blocks"),
             )
             stats = cap_acc.setdefault(block_i, {"cap_hit": False, "retained_size": None, "cap": cap_stats["cap"]})
@@ -634,18 +642,16 @@ def get_Greens_function(
                 stats["seed_frozen"] = True
             if cap_stats.get("memory_frozen"):
                 stats["memory_frozen"] = True
-            if cap_stats.get("stagnation_frozen"):
+            if cap_stats.get("support_frozen"):
                 # Kept apart from the cap's retained_size: a block can hold both kinds of unit, and the
-                # stagnation diagnostic reports its own smallest support and largest boundary weight.
+                # support-freeze diagnostic reports its own smallest support and largest window weight.
                 retained = cap_stats.get("retained_size")
-                if not stats.get("stagnation_frozen") or (
-                    retained is not None and retained < stats["stagnation_retained"]
-                ):
-                    stats["stagnation_retained"] = retained
-                stats["stagnation_frozen"] = True
-                leak = cap_stats.get("stagnation_leakage")
-                if leak is not None:
-                    stats["stagnation_leakage"] = max(stats.get("stagnation_leakage", 0.0), leak)
+                if not stats.get("support_frozen") or (retained is not None and retained < stats["support_retained"]):
+                    stats["support_retained"] = retained
+                stats["support_frozen"] = True
+                leak, cut = cap_stats.get("support_window") or (None, None)
+                if leak is not None and leak >= stats.get("support_window", (-1.0, None))[0]:
+                    stats["support_window"] = (leak, cut)
             if cap_stats["cap_hit"]:
                 stats["cap_hit"] = True
                 stats["cap"] = cap_stats["cap"]
@@ -716,12 +722,10 @@ def get_Greens_function(
                         memory_frozen=block_cap.get("memory_frozen", False),
                     )
                 )
-                if block_cap.get("stagnation_frozen"):
+                if block_cap.get("support_frozen"):
                     diags.append(
-                        _gfd.check_stagnation_freeze(
-                            block_cap.get("stagnation_retained"),
-                            block_cap.get("stagnation_leakage"),
-                            config.GF_STAGNATION_FREEZE.get(),
+                        _gfd.check_support_freeze(
+                            block_cap.get("support_retained"), *block_cap.get("support_window", (None, None))
                         )
                     )
             # The sum rule holds for the plain c/c^dag part of a family: its leading len(block) columns.
@@ -848,6 +852,7 @@ def _get_greens_function_bicgstab(
         verbose,
         num_wanted,
         unit_windows=unit_restrictions,
+        hOp=hOp,
     )
 
 
@@ -867,6 +872,7 @@ def _run_evaluated_gf_units(
     verbose,
     num_wanted,
     unit_windows=None,
+    hOp=None,
 ):
     r"""Distribute, accumulate and assemble Green's-function units that return evaluated ``G``.
 
@@ -883,6 +889,9 @@ def _run_evaluated_gf_units(
     (:func:`gf_diagnostics.check_bicgstab_convergence`). The spectral sum rule
     and integrated-weight checks are expressed in seed-projection/continued-fraction terms
     these paths do not produce.
+
+    ``hOp`` is passed to :func:`run_units_distributed`, which prices an auto GF cap at its
+    measured matvec fan-out.
     """
     thermal = ThermalEnsemble(es, tau)
     e0, boltzmann, Z = thermal.e0, thermal.weights, thermal.Z
@@ -943,10 +952,20 @@ def _run_evaluated_gf_units(
                 "max_rebuild_basis": 0,
                 "max_dG_bound": None,
                 "max_boundary": None,
+                "frozen_points": 0,
+                "frozen_fallbacks": 0,
             },
         )
-        for key in ("n_points", "n_unconverged", "iterations", "gmres_points", "gmres_iterations"):
-            agg[key] += stats[key]
+        for key in (
+            "n_points",
+            "n_unconverged",
+            "iterations",
+            "gmres_points",
+            "gmres_iterations",
+            "frozen_points",
+            "frozen_fallbacks",
+        ):
+            agg[key] += stats.get(key, 0)
         for key in ("max_rel_residual", "max_solve_basis", "max_rebuild_basis"):
             agg[key] = max(agg[key], stats[key])
         for key in ("max_dG_bound", "max_boundary"):
@@ -970,6 +989,7 @@ def _run_evaluated_gf_units(
         reduce_fn=reduce_fn,
         gf_method="bicgstab",
         unit_windows=unit_windows,
+        hOp=hOp,
     )
     if got is None:
         return None, None, None
@@ -997,7 +1017,8 @@ def _run_evaluated_gf_units(
         if verbose:
             print(
                 f"block {block}: {agg['n_points']} bicgstab solves, {agg['iterations']} iterations "
-                f"({agg['gmres_points']} GMRES-fallback points, {agg['gmres_iterations']} of the iterations), "
+                f"({agg['gmres_points']} GMRES-fallback points, {agg['gmres_iterations']} of the iterations; "
+                f"{agg['frozen_points']} on a frozen P H P, {agg['frozen_fallbacks']} back to sparse), "
                 f"max per-point basis {agg['max_solve_basis']:,} "
                 f"(rebuild floor {agg['max_rebuild_basis']:,}), "
                 f"max residual {agg['max_rel_residual']:.1e}",
@@ -1195,7 +1216,14 @@ def calc_Greens_function_with_offdiag(
         print_size=verbose,
     )
     results = run_units_distributed(
-        block_basis, unit_seeds, unit_weights, kernel, verbose=verbose, reort=reort, unit_windows=unit_restrictions
+        block_basis,
+        unit_seeds,
+        unit_weights,
+        kernel,
+        verbose=verbose,
+        reort=reort,
+        unit_windows=unit_restrictions,
+        hOp=hOp,
     )
 
     excited_alphas = excited_betas = excited_r = None

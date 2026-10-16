@@ -819,6 +819,11 @@ class MatvecExchangePlan:
     def _recv_view(self, w):
         return self._recv_flat[: self.total_recv_rows * w].reshape(self.total_recv_rows, w)
 
+    def send_buffer(self, w):
+        """The whole ``(total_send_rows, w)`` send buffer, every destination's slot in order
+        (``send_row_offsets``): a column-scatter matvec fills all of them in one pass."""
+        return self._send_view(w)
+
     def send_slot(self, i, w):
         """C-contiguous ``(counts[destinations[i]], w)`` block to fill with this rank's contribution
         to destination ``i``'s rows for the current ``w`` columns."""

@@ -475,6 +475,7 @@ def estimate_gf_peak_bytes(
     krylov_dtype=None,
     method="lanczos",
     gmres_restart=None,
+    row_fanout=None,
 ):
     """Predicted per-rank peak bytes of the sparse (MBS-kernel) Green's-function path.
 
@@ -554,7 +555,13 @@ def estimate_gf_peak_bytes(
         of ``gmres_restart + 3`` block-rows. That transient is what a worst-case point
         peaks at, and peaks are what OOM-kill, so it is modeled rather than footnoted.
         The basis term is the *per-point* rebuilt support, still bounded by the same
-        ``n_dets`` cap.
+        ``n_dets`` cap. Its matvec's raw image (``row_fanout`` rows per local row, applied in
+        one piece, so without the row-chunk credit) is priced too.
+    row_fanout : float, optional
+        The workload's whole-step de-duplicated row fan-out of one matvec, measured at GF entry
+        (``gf_units.measure_gf_row_fanout``, the same measurement that produced the default).
+        ``None`` uses :data:`_GF_MATVEC_ROW_FANOUT_DEFAULT`, measured on SrMnO3: on CrI3 (spin-orbit,
+        raw image 51-87 against SrMnO3's 19) that default under-predicted the sparse path ~2x.
     gmres_restart : int, optional
         The fallback's block-Arnoldi restart length; only read for ``method="bicgstab"``.
         ``None`` (default) reads :data:`config.GF_GMRES_RESTART` -- the same knob
@@ -570,11 +577,16 @@ def estimate_gf_peak_bytes(
     key_heap = _key_heap_bytes(n_spin_orbitals)
     basis_bytes = local_rows * (bytes_per_determinant(n_spin_orbitals) + _PY_BASIS_OVERHEAD_BYTES)
     row_bytes = _COMPLEX_BYTES * block_width + key_heap + _SD_STRUCT_BYTES
+    fanout = _GF_MATVEC_ROW_FANOUT_DEFAULT if row_fanout is None else float(row_fanout)
     if method == "bicgstab":
         if gmres_restart is None:
             gmres_restart = config.GF_GMRES_RESTART.get()
         live = 12 + gmres_restart + 3
-        return basis_bytes + live * local_rows * row_bytes
+        # The solvers' matvec (`_make_matmat` -> `apply_and_redistribute`) applies H to the whole
+        # block in one `apply_block`, before routing and pruning: the same raw-image transient as
+        # the recurrence's below, and with no row chunking, so no chunk credit. It was missing.
+        matvec_bytes = ceil(local_rows * fanout) * row_bytes
+        return basis_bytes + live * local_rows * row_bytes + matvec_bytes
     live_bytes = 3 * local_rows * row_bytes
     # The recurrence's transient matvec fanout: `wp_raw = h_op.apply_block(q_curr, ...)` inside
     # `block_lanczos_step_cy` is NOT hash-partitioned -- it is everything this rank's rows reach
@@ -591,13 +603,8 @@ def estimate_gf_peak_bytes(
     # `truncation_threshold` (a `_CappedBasisProxy` sets `caps_growth`, serial or not), and a
     # finite cap is exactly the case this function is called to size.
     #
-    # Scoped to the Lanczos recurrence only (not the bicgstab branch above, which
-    # returned already): that branch runs a different per-point solver whose own live-block model
-    # is separate, and its transient has not been measured.
-    fanout_bytes = (
-        ceil(local_rows * _GF_MATVEC_ROW_FANOUT_DEFAULT / _gf_chunk_divisor(config.GF_APPLY_ROW_CHUNKS.get()))
-        * row_bytes
-    )
+    # The bicgstab branch above prices the same transient for its own (unchunked) matvec.
+    fanout_bytes = ceil(local_rows * fanout / _gf_chunk_divisor(config.GF_APPLY_ROW_CHUNKS.get())) * row_bytes
     store_bytes = 0
     if _retains_krylov(reort):
         if n_blocks is None:
@@ -926,6 +933,19 @@ def available_bytes_per_rank(comm=None):
     node_bytes = _node_available_bytes()
     if comm is None or comm.size == 1:
         return node_bytes
+    return comm.allreduce(node_bytes // max(1, ranks_per_node(comm)), op=MPI.MIN)
+
+
+def ranks_per_node(comm):
+    """Ranks of ``comm`` sharing this rank's node (1 for ``None``), cached on the communicator.
+
+    .. warning:: **Collective on** ``comm`` the first time (a ``COMM_TYPE_SHARED`` split, freed at
+       once); afterwards it reads the cached attribute. A sub-communicator counts only its own
+       ranks on the node -- a GF colour's count is not the node's -- so callers that divide the
+       node's memory take it from the full communicator.
+    """
+    if comm is None or comm.size == 1:
+        return 1
     ranks_on_node = None if _RANKS_PER_NODE_KEYVAL is None else comm.Get_attr(_RANKS_PER_NODE_KEYVAL)
     if ranks_on_node is None:
         shared = comm.Split_type(MPI.COMM_TYPE_SHARED)
@@ -933,7 +953,7 @@ def available_bytes_per_rank(comm=None):
         shared.Free()
         if _RANKS_PER_NODE_KEYVAL is not None:
             comm.Set_attr(_RANKS_PER_NODE_KEYVAL, ranks_on_node)
-    return comm.allreduce(node_bytes // max(1, ranks_on_node), op=MPI.MIN)
+    return int(ranks_on_node)
 
 
 def absolute_rss_budget(safety, available, resident_bytes):
@@ -1019,6 +1039,7 @@ def max_unit_dets_within_budget(
     krylov_dtype=None,
     method="lanczos",
     resident_bytes=None,
+    row_fanout=None,
 ):
     """Largest per-unit ``truncation_threshold`` whose predicted GF peak fits ``ranks`` ranks.
 
@@ -1057,6 +1078,8 @@ def max_unit_dets_within_budget(
         Krylov store dtype; ``complex64`` halves the store and so raises the cap.
     method : str
         See :func:`estimate_gf_peak_bytes`.
+    row_fanout : float, optional
+        See :func:`estimate_gf_peak_bytes`.
     resident_bytes : int, optional
         What this rank already holds when the GF phase starts (``current_rss_bytes()``,
         MAX-reduced over the communicator by the caller). ``None`` (default) reproduces the
@@ -1089,7 +1112,14 @@ def max_unit_dets_within_budget(
     def fits(n):
         return (
             estimate_gf_peak_bytes(
-                n, n_spin_orbitals, block_width, reort, ranks=ranks, krylov_dtype=krylov_dtype, method=method
+                n,
+                n_spin_orbitals,
+                block_width,
+                reort,
+                ranks=ranks,
+                krylov_dtype=krylov_dtype,
+                method=method,
+                row_fanout=row_fanout,
             )
             <= budget
         )
