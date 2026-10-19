@@ -90,12 +90,18 @@ communicators either freed on the spot or held in a bounded cache with determini
 
 ## Cluster verdict (SrMnO3 it.1, 128 ranks, tree 917b3f9e, jobs 3951526 / 3964546 / 3981432): no-go
 
-Single-unit legs: unit 20 has a converged reference (freeze off, both tolerances 1e-9) and unit 30 does not. On this
+Single-unit legs: unit 20 has an unfrozen reference and unit 30 does not. **Correction (2026-10-19): the reference was
+not converged to 1e-9 on the real axis.** It set `GF_REAL_TOL=1e-9` as a knob, but the replay passes the archive's
+`gf_real_tol=1e-4` as an explicit option, which wins (its manifest records `gf_real_tol=0.0001`, and it stopped after
+447 blocks, fewer than ctrl's 454). The kit's guard against that conflict had been disabled for the run. So every
+leg, the reference included, stopped the real axis at 1e-4, and the error column below is the difference between
+two such runs: it bounds nothing about the freeze itself. The kit now passes a reference's tolerances as explicit
+options. On this
 tree the thermal ensemble has 68 states (see below) and every unit carries one of them. Unit 20 is the state at
 E0 + 136.5 meV, with Boltzmann weight about 1e-3. So these legs grade the rule only on light, low-weight units, and
 the round-9 numbers in the plan (751,857 dets, 110 s) do not apply.
 
-| leg | unit | retained | blocks | unit wall | trials | real-axis error vs ref (max-relative / pointwise) |
+| leg | unit | retained | blocks | unit wall | trials | real-axis change vs ref (max-relative / pointwise), both stopped at 1e-4 |
 |---|---|---|---|---|---|---|
 | shipped (ctrl) | 20 | 3,479,840 | 454 | 16.2 s | 0 | 2.8e-5 / 5.6e-4 |
 | trial W4 / 0.1 / 2 | 20 | 3,479,840 | 454 | 84.2 s | 7, none accepted | 2.8e-5 / 5.6e-4 (bitwise the ctrl G) |
@@ -116,15 +122,17 @@ top quarter of the mesh, where |G| is small.
 
 - **Default setting:** it fails the support bar (0.89x and 1.00x against 0.8x) and the wall bar (4.0x and 5.2x
   against 1.5x).
-- **Aggressive setting:** it halves the support on unit 20 at the control's wall. Its true error, 8.6e-5 (0.86
-  `gf_real_tol`), is 2.9x its own 0.3 budget. The accepting trial estimated 0.25 tol, which understates the true
-  error by 3.4x. That is the single-agreement false positive the Risks section anticipated. It fails "no cell above
-  2x budget".
+- **Aggressive setting:** it halves the support on unit 20 at the control's wall, but on unit 30 it saves only 0.89x
+  at 2.3x the wall, which fails the wall bar. Its accuracy is not measured: the 8.6e-5 change against the
+  reference (3x the shipped rule's 2.8e-5) is between runs both stopped at 1e-4, so it cannot be split into freeze
+  error and stopping noise. Being a single-agreement setting (consec=1), it could not have passed the plan's
+  false-positive bar anyway.
 - **No Sigma:** Sigma_real was never graded (the whole-run legs could not run, below). That alone keeps the rule from
   shipping.
 - **What holds:** a rejected trial leaves the live run bitwise intact at 128 ranks. W4 ctrl and trial give identical G
-  and an identical block count. The shipped rule itself is accurate on this unit: 0.49x the unfrozen support, 9x
-  faster, and 0.28 `gf_real_tol` in G.
+  and an identical block count. The shipped rule keeps 0.49x the unfrozen support at 9x less unit wall, and its G
+  differs from the unfrozen run's by 0.28 `gf_real_tol`, within the tolerance both were stopped at; how much of that
+  is the freeze is not measured.
 - **Defaults defect:** on unit 20 the trial-to-trial real-axis change stays flat at 0.09-0.14 tol over trials 3-7
   while the support grows 2.6x. The same plateau appeared on the small local unit (0.06-0.13). It is the trials'
   own stopping noise. `GF_FREEZE_TRIAL_TOL` (0.1) equals `GF_FREEZE_BUDGET` (0.1), so two trials can only agree by
