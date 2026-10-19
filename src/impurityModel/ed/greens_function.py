@@ -129,7 +129,7 @@ def build_full_greens_function(block_gf, block_structure: BlockStructure):
     return res
 
 
-def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max_order=3):
+def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max_order=3, blocks=None):
     r"""Exact spectral moments of the interacting impurity Green's function.
 
     Returns ``M`` of shape ``(max_order + 1, n_corr, n_corr)`` (``n_corr = len(impurity_indices)``)
@@ -164,6 +164,14 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
         Sorted impurity spin-orbital indices (the correlated block).
     max_order : int, optional
         Highest moment order to compute (default 3, i.e. ``M0..M3``).
+    blocks : sequence of sequence of int, optional
+        Symmetry blocks, as positions in ``impurity_indices`` (e.g. the inequivalent blocks of the
+        solver's block structure). Only ``M[:, block, block]`` of each listed block is computed, from
+        that block's own seeds; every other entry is left zero. Exact for blocks of a symmetry of
+        ``H`` (the entries between blocks vanish), and each computed entry is bit-identical to the
+        full computation. The cost scales with the listed orbitals: every seed costs two
+        applications of ``H``, and the second is the largest object of the step. ``None`` (the
+        default) computes every entry.
 
     Returns
     -------
@@ -181,6 +189,13 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
     es = np.asarray(es, dtype=float)
     n_corr = len(impurity_indices)
     n_states = len(psis)
+    if blocks is None:
+        blocks = [list(range(n_corr))]
+    else:
+        blocks = [[int(i) for i in block] for block in blocks]
+        flat = [i for block in blocks for i in block]
+        if any(i < 0 or i >= n_corr for i in flat) or len(set(flat)) != len(flat):
+            raise ValueError(f"blocks must be disjoint positions in [0, {n_corr}), got {blocks}")
     # The moments are exact, so they need the full H. ``hOp`` is usually the solver Hamiltonian
     # the ground state and the Green's function just ran on, and both leave their occupation
     # windows on it (masks are sticky and cannot be read back). Clear them: with a window in
@@ -234,14 +249,16 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
         return k
 
     for n, (psi_n, e_n) in enumerate(zip(psis, es)):
-        # Greater (addition): seed c_a^dag|psi>, so greater[order][a,b] = <psi|c_a (H-E)^order c_b^dag|psi>.
-        greater = side_krylov_moments([op(psi_n, 0) for op in creation], e_n)
-        # Lesser (removal): seed c_a|psi> gives <psi|c_a (H-E)^order c_b|psi>; the moment needs the
-        # mirrored index order <psi|c_b (H-E)^order c_a|psi>, hence the transpose, and the
-        # (-1)^order sign of the removal poles at -(E_m - E).
-        lesser = side_krylov_moments([op(psi_n, 0) for op in annihilation], e_n)
-        for order in range(1, max_order + 1):
-            M_per_state[n, order] = greater[order] + ((-1) ** order) * lesser[order].T
+        for block in blocks:
+            # Greater (addition): seed c_a^dag|psi>, so greater[order][a,b] = <psi|c_a (H-E)^order c_b^dag|psi>.
+            greater = side_krylov_moments([creation[a](psi_n, 0) for a in block], e_n)
+            # Lesser (removal): seed c_a|psi> gives <psi|c_a (H-E)^order c_b|psi>; the moment needs the
+            # mirrored index order <psi|c_b (H-E)^order c_a|psi>, hence the transpose, and the
+            # (-1)^order sign of the removal poles at -(E_m - E).
+            lesser = side_krylov_moments([annihilation[a](psi_n, 0) for a in block], e_n)
+            in_block = np.ix_(block, block)
+            for order in range(1, max_order + 1):
+                M_per_state[n, order][in_block] = greater[order] + ((-1) ** order) * lesser[order].T
 
     if basis.is_distributed:
         basis.comm.Allreduce(MPI.IN_PLACE, M_per_state, op=MPI.SUM)

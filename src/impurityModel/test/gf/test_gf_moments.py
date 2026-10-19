@@ -301,3 +301,51 @@ def test_gf_moments_redistributes_one_seed_of_the_third_order_at_a_time():
     per_side = [n_corr, n_corr] + [1] * n_corr
     assert widths == per_side * 2
     np.testing.assert_allclose(M, M_ref, atol=1e-9)
+
+
+@pytest.mark.mpi
+def test_gf_moments_on_symmetry_blocks_are_bitwise_the_full_ones():
+    """``blocks=`` computes each block from its own seeds: the entries inside the listed blocks are
+    bit-identical to the full computation, everything else is zero (and the full computation's entries
+    between the Sz blocks of _siam_6 vanish, which is what makes leaving them out exact). Listing one
+    block only applies that block's seeds -- the inequivalent-block call calc_selfenergy makes."""
+    comm = MPI.COMM_WORLD
+    impurity_indices = [0, 1]
+    dets, eigvals, eigvecs, n_of_eig, C, Cdag = _dense_lehmann_setup(
+        _siam_6(), _IMP, _BATHS, 6, impurity_indices, comm=MPI.COMM_SELF
+    )
+    ie = _ground_index_in_sector(n_of_eig, eigvals, 3)
+    psi = _psis_from_eigvecs(dets, eigvecs, [ie])[0]
+    basis = Basis(_IMP, _BATHS, initial_basis=sorted(psi.keys()), comm=comm, verbose=False)
+    psi_block = ManyBodyState.from_states([psi]) if comm.rank == 0 else ManyBodyState(width=1)
+    (redistributed,) = basis.redistribute_psis(psi_block)
+    psis = [redistributed.to_states()[0]]
+
+    def moments(blocks):
+        return get_greens_function_moments(
+            psis, [eigvals[ie]], tau=1.0, basis=basis, hOp=_siam_6(), impurity_indices=impurity_indices, blocks=blocks
+        )
+
+    full = moments(None)
+    np.testing.assert_allclose(full[1:, 0, 1], 0.0, atol=1e-12)
+    np.testing.assert_allclose(full[1:, 1, 0], 0.0, atol=1e-12)
+
+    split = moments([[0], [1]])
+    for a in (0, 1):
+        assert np.array_equal(split[:, a, a], full[:, a, a])
+    assert np.all(split[1:, 0, 1] == 0) and np.all(split[1:, 1, 0] == 0)
+
+    only_second = moments([[1]])
+    assert np.array_equal(only_second[1:, 1, 1], full[1:, 1, 1])
+    assert np.all(only_second[1:, 0, :] == 0) and np.all(only_second[1:, :, 0] == 0)
+
+
+def test_gf_moments_rejects_overlapping_or_out_of_range_blocks():
+    impurity_indices = [0, 1]
+    dets, eigvals, eigvecs, n_of_eig, C, Cdag = _dense_lehmann_setup(_siam_6(), _IMP, _BATHS, 6, impurity_indices)
+    ie = _ground_index_in_sector(n_of_eig, eigvals, 3)
+    psis = _psis_from_eigvecs(dets, eigvecs, [ie])
+    basis = Basis(_IMP, _BATHS, initial_basis=list(psis[0].keys()), comm=MPI.COMM_SELF, verbose=False)
+    for blocks in ([[0], [0, 1]], [[2]], [[-1]]):
+        with pytest.raises(ValueError):
+            get_greens_function_moments(psis, [eigvals[ie]], 1.0, basis, _siam_6(), impurity_indices, blocks=blocks)

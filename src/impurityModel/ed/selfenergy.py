@@ -459,7 +459,10 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
     # ranks (pure numpy on replicated data).
     report("Calculating self-energy moments ...")
     t_phase = time.perf_counter()
-    M = get_greens_function_moments(psis, es, tau, ground_state_basis, h, impurity_indices)
+    # Only the inequivalent blocks' moments are consumed (_moment_to_input_basis below rebuilds the
+    # rest from them), and the entries between blocks vanish by symmetry, so only those blocks' seeds
+    # are applied: on SrMnO3, 2 of 10 orbitals.
+    M = get_greens_function_moments(psis, es, tau, ground_state_basis, h, impurity_indices, blocks=inequivalent_blocks)
     _report_phase_time(report, "self-energy moments", t_phase)
     hcorr, v_full, _, h_bath = get_hcorr_v_hbath(h0_solve, total_impurity_orbitals, sum_bath_states)
     sigma_inf_s, sigma_1_s, sigma_2_s = get_Sigma_moments(M, hcorr, v_full, h_bath)
