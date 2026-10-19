@@ -289,7 +289,6 @@ class SupportPolicy:
     #: The support freeze (:meth:`enable_support_freeze`): on, and whether it has frozen the support.
     support_freeze = False
     support_frozen = False
-    trial_frozen = False
 
     def __init__(self, basis, cap, memory_budget=None, memory_policy="tighten", eta=None, first_shell_tol=0.0):
         """``memory_budget`` (absolute per-rank bytes, ``None`` = off, the default) adds a measured
@@ -429,13 +428,6 @@ class SupportPolicy:
         self._window = deque(maxlen=int(window))
         self._support_log = bool(log)
         self._trace_steps = bool(trace)
-
-    def freeze_support_now(self):
-        """Freeze the support where it stands, because a trial solve on it agreed with the previous one (see
-        ``gf_solvers._TrialFreeze``). Not collective; every rank calls it on the same step."""
-        self._frozen = True
-        self.support_frozen = True
-        self.trial_frozen = True
 
     def unfreeze_support(self):
         """Undo a support freeze whose frozen matrix did not fit, and do not freeze this way again: a truncation
@@ -697,12 +689,6 @@ class SupportPolicy:
 
     def freeze_message(self):
         """One-line description of the cap state (rank-0 logging)."""
-        if self.trial_frozen:
-            return (
-                f"GF basis frozen at {self._global_count:,} determinants: a trial solve on this support agreed with "
-                "the previous trial to within the freeze budget (trial-solve freeze); the Green's function is exact "
-                "on the retained subspace from here on."
-            )
         if self.support_frozen:
             return (
                 f"GF basis frozen at {self._global_count:,} determinants: over the last {self._window.maxlen} blocks "

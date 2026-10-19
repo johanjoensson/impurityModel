@@ -156,10 +156,6 @@ def _block_green_group(
             "seed_size": seed_size,
             "memory_frozen": bool(cap_info.get("memory_frozen", False)),
             "support_frozen": bool(cap_info.get("support_frozen", False)),
-            # The trial-solve freeze (GF_FREEZE_TRIAL_WINDOW): whether it froze the unit, and every trial it ran as
-            # (blocks, determinants, per-axis change in units of the tolerance, accepted).
-            "trial_frozen": bool(cap_info.get("trial_frozen", False)),
-            "freeze_trials": list(cap_info.get("freeze_trials", [])),
             # The freezing window's (weight on new rows, weight cut), summed as the freeze decided on them.
             "support_window": _freezing_window(cap_info),
             "csr_fallback": bool(cap_info.get("csr_fallback", False)),
@@ -214,7 +210,6 @@ def _block_green_group(
         # reorthogonalized one's restarted CSR recurrence alone), and csr= the CSR phase's wall time.
         csr = f", csr={cap_stats['csr_seconds']:.1f} s" if cap_stats.get("csr_fallback") else ""
         stagnated = ", support_frozen=True" if cap_stats.get("support_frozen") else ""
-        stagnated += ", trial_frozen=True" if cap_stats.get("trial_frozen") else ""
         print(
             f"  {label}: excited basis {retained_display} determinants "
             f"(cap={cap:,.0f}, cap_hit={cap_stats['cap_hit']}{stagnated}{csr}) n_blocks={n_blocks} "

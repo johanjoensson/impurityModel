@@ -29,13 +29,12 @@ from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
 from impurityModel.ed.BiCGSTAB import block_bicgstab
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.gf_admission import solve_point_outer
-from impurityModel.ed.gf_convergence import EvalMeshes, _gf_monitor_tol, _make_gf_convergence_monitor
+from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
     FrozenColumnMatvec,
     _allreduced_col_norms2,
     _CappedBasisProxy,
     _distributed_seed_qr,
-    _block_cf_inverse,
     _sanitize_continued_fraction,
     _trim_blocks,
     block_to_local_dense,
@@ -615,11 +614,27 @@ def _sparse_tail_to_local_dense(frozen_basis, mask, tail, widths):
     return tuple(block_to_local_dense(frozen_basis, b, w) for b, w in zip(blocks, (w_prev, w_curr)))
 
 
-def _continue_on_frozen_matrix(frozen_basis, hOp, alphas, betas, widths, tail, converged):
-    """The array-kernel recurrence of ``P H P`` carried on from a sparse run's two-block ``tail`` until ``converged``
-    says stop (or the Krylov space is spent). Returns ``(alphas, betas, widths, status, start)`` -- the padded
-    coefficient arrays, the kernel's last status, and the number of blocks the sparse run had built. The inputs
-    are copied, never modified: a caller may discard the result (a rejected trial) and resume its own run."""
+def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor, r, info, verbose):
+    """The frozen sparse recurrence carried on as the array-kernel recurrence of ``P H P``, from where it stopped.
+
+    Every block the sparse kernel built before the freeze had its whole ``H`` image admitted (so inside the
+    final ``P``) and the freezing step was projected onto ``P``: up to the ``slaterWeightMin`` cut the sparse
+    recurrence so far IS the block Lanczos of ``P H P``, and its next block is ``P H P`` applied to the tail.
+    So it continues here instead of restarting from the seeds (:func:`_frozen_csr_green`, which recomputes
+    every pre-freeze block -- 573 of them on one SrMnO3 unit). At ``slaterWeightMin = 0`` the two agree to
+    rounding; above it the pre-freeze coefficients carry the sparse kernel's cut, which the restart would
+    not. reort off only: a two-block tail cannot continue a reorthogonalized recurrence.
+
+    ``tail`` is the pair of dense blocks from :func:`_sparse_tail_to_local_dense`; ``monitor`` the sparse
+    run's ``(converged, converged_flag, delta_min, last_dg)``, which goes on judging the same continued
+    fraction (a fresh one would restart its own history); ``r`` the sparse run's seed factor. A run whose
+    first budget is spent continues from its own tail, so no block is ever computed twice. Returns
+    ``(alphas, betas, r, seconds)``, with ``info`` filled.
+    """
+    comm = frozen_basis.comm
+    rank = comm.rank if comm is not None else 0
+    t0 = time.perf_counter()
+    converged, converged_flag, delta_min, last_dg = monitor
     start = len(alphas)
     alphas, betas, widths = np.array(alphas), np.array(betas), list(widths)
     H, kernel_comm = _array_operator(frozen_basis, hOp, False)
@@ -648,33 +663,6 @@ def _continue_on_frozen_matrix(frozen_basis, hOp, alphas, betas, widths, tail, c
         if status != "max_iter" or len(alphas) - start >= n_dim:
             break
         budget = min(2 * budget, n_dim - (len(alphas) - start))
-    return alphas, betas, widths, status, start
-
-
-def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor, r, info, verbose):
-    """The frozen sparse recurrence carried on as the array-kernel recurrence of ``P H P``, from where it stopped.
-
-    Every block the sparse kernel built before the freeze had its whole ``H`` image admitted (so inside the
-    final ``P``) and the freezing step was projected onto ``P``: up to the ``slaterWeightMin`` cut the sparse
-    recurrence so far IS the block Lanczos of ``P H P``, and its next block is ``P H P`` applied to the tail.
-    So it continues here instead of restarting from the seeds (:func:`_frozen_csr_green`, which recomputes
-    every pre-freeze block -- 573 of them on one SrMnO3 unit). At ``slaterWeightMin = 0`` the two agree to
-    rounding; above it the pre-freeze coefficients carry the sparse kernel's cut, which the restart would
-    not. reort off only: a two-block tail cannot continue a reorthogonalized recurrence.
-
-    ``tail`` is the pair of dense blocks from :func:`_sparse_tail_to_local_dense`; ``monitor`` the sparse
-    run's ``(converged, converged_flag, delta_min, last_dg)``, which goes on judging the same continued
-    fraction (a fresh one would restart its own history); ``r`` the sparse run's seed factor. A run whose
-    first budget is spent continues from its own tail, so no block is ever computed twice. Returns
-    ``(alphas, betas, r, seconds)``, with ``info`` filled.
-    """
-    comm = frozen_basis.comm
-    rank = comm.rank if comm is not None else 0
-    t0 = time.perf_counter()
-    converged, converged_flag, delta_min, last_dg = monitor
-    alphas, betas, widths, status, start = _continue_on_frozen_matrix(
-        frozen_basis, hOp, alphas, betas, widths, tail, converged
-    )
     alphas, betas, widths = _finish_array_run(
         alphas, betas, widths, status, converged_flag, delta_min, last_dg, info, rank
     )
@@ -688,107 +676,6 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
     alphas, betas = _trim_blocks(alphas, betas, widths)
     alphas, betas = _sanitize_continued_fraction(alphas, betas, rank=rank)
     return alphas, betas, r, seconds
-
-
-class _TrialFreeze:
-    """The trial-solve freeze (``GF_FREEZE_TRIAL_WINDOW``): freeze the support when a solve on it stops changing ``G``.
-
-    Every ``window`` sparse blocks :meth:`round` builds the frozen ``P H P`` of the support so far and runs the
-    recurrence on it to its own convergence from the live tail (:func:`_continue_on_frozen_matrix`), with a fresh
-    monitor tightened to ``tol_factor`` times the unit's tolerance. ``G`` of that trial on the unit's evaluation
-    meshes is compared with the previous trial's: ``max|G - G_prev| / max|G|`` per axis, in units of the axis
-    tolerance. After ``consec`` consecutive pairs within ``budget`` the trial is the unit's answer and the
-    support is frozen there (exactly the end state of a support freeze at that step, plus a converged solve);
-    any other outcome throws the trial away and leaves the sparse run untouched -- the trial works on copies of
-    the coefficients and builds its own matrix, so a rejection costs time and transient memory, never a result.
-
-    Why the trial's tolerance is tighter: two trials each stopped at the unit tolerance ``tol`` differ by about
-    ``tol`` from stopping noise alone, which is more than ``budget * tol``, so they could never agree.
-
-    MPI: ``G`` is formed from coefficients that come out of allreduces and are not bit-identical across ranks, so
-    the verdict is taken on rank 0 and broadcast. The matrix-fit check and the trial's kernel are collective on
-    the unit's communicator; a rank never skips either.
-    """
-
-    def __init__(self, window, budget, consec, tol_factor, eval_meshes, delta, slaterWeightMin):
-        self.window = int(window)
-        self.budget = float(budget)
-        self.consec = int(consec)
-        self.delta = delta
-        self.slaterWeightMin = slaterWeightMin
-        axis_tols = getattr(eval_meshes, "tols", None) or [_gf_monitor_tol(slaterWeightMin, eval_meshes)] * len(
-            eval_meshes
-        )
-        self.axis_tols = [float(t) for t in axis_tols]
-        self.meshes = list(eval_meshes)
-        self.trial_meshes = EvalMeshes(self.meshes, [t * float(tol_factor) for t in self.axis_tols])
-        self.off = False  # a matrix that does not fit now will not fit later: the support only grows
-        self.prev = None
-        self.agree = 0
-        self.history = []  # (blocks, retained, per-axis change / tolerance, verdict)
-        self.seconds = 0.0
-
-    def _resolvents(self, alphas, betas, widths):
-        A, B = _trim_blocks(alphas, betas, widths)
-        return [np.linalg.inv(_block_cf_inverse(A, B, mesh)) for mesh in self.meshes]
-
-    def round(self, lanczos_basis, basis, hOp, alphas, betas, widths, tail, r, info, verbose, width):
-        """One trial on the support the sparse run has now. Returns the ``(alphas, betas, r, seconds)`` of the
-        accepted trial, or ``None`` (rejected, declined, or not converged). Collective."""
-        comm = basis.comm
-        rank = comm.rank if comm is not None else 0
-        t0 = time.perf_counter()
-        frozen_basis = _frozen_csr_basis(lanczos_basis, basis, hOp, False, width=width)
-        if frozen_basis is None:
-            self.off = True
-            if verbose and rank == 0:
-                print("GF trial freeze: the P H P matrix does not fit; no further trials.", flush=True)
-            return None
-        dense_tail = _sparse_tail_to_local_dense(frozen_basis, lanczos_basis.retained_mask, tail, widths)
-        converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
-            self.delta, self.slaterWeightMin, self.trial_meshes
-        )
-        t_alphas, t_betas, t_widths, status, start = _continue_on_frozen_matrix(
-            frozen_basis, hOp, alphas, betas, widths, dense_tail, converged
-        )
-        usable = status in ("converged", "invariant_subspace")
-        verdict = False
-        changes = None
-        if usable:
-            current = self._resolvents(t_alphas, t_betas, t_widths)
-            if self.prev is not None:
-                changes = [
-                    float(np.max(np.abs(g - p)) / max(np.max(np.abs(g)), np.finfo(float).tiny)) / tol
-                    for g, p, tol in zip(current, self.prev, self.axis_tols)
-                ]
-                verdict = all(c <= self.budget for c in changes)
-            self.prev = current
-        else:
-            self.prev = None
-        if comm is not None and comm.size > 1:
-            verdict = comm.bcast(verdict, root=0)
-        self.agree = self.agree + 1 if verdict else 0
-        accepted = self.agree >= self.consec
-        seconds = time.perf_counter() - t0
-        self.seconds += seconds
-        self.history.append((len(alphas), frozen_basis.size, changes, accepted))
-        if verbose and rank == 0:
-            shown = "n/a" if changes is None else " ".join(f"{c:.2e}" for c in changes)
-            print(
-                f"GF trial freeze after {len(alphas)} blocks, {frozen_basis.size:,} determinants: trial of "
-                f"{len(t_alphas) - start} block(s) ({status}), change vs previous trial per axis [{shown}] x tol "
-                f"(budget {self.budget:g}), agreeing {self.agree}/{self.consec}: "
-                f"{'ACCEPTED' if accepted else 'rejected'} ({seconds:.1f} s).",
-                flush=True,
-            )
-        if not accepted:
-            return None
-        t_alphas, t_betas, t_widths = _finish_array_run(
-            t_alphas, t_betas, t_widths, status, converged_flag, delta_min, last_dg, info, rank
-        )
-        t_alphas, t_betas = _trim_blocks(t_alphas, t_betas, t_widths)
-        t_alphas, t_betas = _sanitize_continued_fraction(t_alphas, t_betas, rank=rank)
-        return t_alphas, t_betas, r, self.seconds
 
 
 def block_Green_sparse(
@@ -877,8 +764,6 @@ def block_Green_sparse(
         cap_info["support_frozen"] = False
         cap_info["support_history"] = []
         cap_info["support_trace"] = []
-        cap_info["freeze_trials"] = []
-        cap_info["trial_frozen"] = False
 
     if N == 0 or n == 0:
         if cap_info is not None:
@@ -992,29 +877,6 @@ def block_Green_sparse(
             _SUPPORT_WINDOW, log=verbose and rank == 0, trace=config.GF_SUPPORT_TRACE.get() and rank == 0
         )
         lanczos_basis.monitor_dg = last_dg
-    # The trial-solve freeze (GF_FREEZE_TRIAL_WINDOW): rounds of a few sparse blocks, each followed by a trial on
-    # the support so far. Same gate as the leak-versus-cut freeze (reort off, frozen-matrix fallback, no importance
-    # pruning), plus the unit's evaluation meshes, which the trial compares G on. The leak-versus-cut freeze stays
-    # on beside it: whichever fires first.
-    trial = None
-    trial_window = config.GF_FREEZE_TRIAL_WINDOW.get()
-    if (
-        trial_window > 0
-        and csr_candidate
-        and not resolved_reort
-        and eval_meshes
-        and getattr(lanczos_basis, "tracks_support", False)
-        and not lanczos_basis.prunes
-    ):
-        trial = _TrialFreeze(
-            trial_window,
-            config.GF_FREEZE_BUDGET.get(),
-            config.GF_FREEZE_TRIAL_CONSEC.get(),
-            config.GF_FREEZE_TRIAL_TOL.get(),
-            eval_meshes,
-            delta,
-            slaterWeightMin,
-        )
     if csr_candidate:
         lanczos_basis.stop_on_freeze = True
         if lanczos_basis.frozen:
@@ -1034,7 +896,7 @@ def block_Green_sparse(
             verbose=verbose,
             reort=resolved_reort,
             slaterWeightMin=slaterWeightMin,
-            max_iter=trial.window if trial is not None and not trial.off else budget,
+            max_iter=budget,
             return_widths=True,
             return_status=True,
             alphas_init=alphas,
@@ -1086,17 +948,6 @@ def block_Green_sparse(
         if status == "diverged":
             converged_flag[0] = False
             break
-        if trial is not None and not trial.off and status == "max_iter" and not lanczos_basis.frozen:
-            # A round of the window's blocks is done and nothing froze: try the support as it stands. `Q` is the
-            # reort-off two-block tail; the trial copies what it needs, so a rejection leaves the run as it was.
-            csr = trial.round(
-                lanczos_basis, basis, hOp, alphas, betas, widths, Q, r, info, verbose and rank == 0, psi_arr.width
-            )
-            if csr is not None:
-                lanczos_basis.freeze_support_now()
-                Q = None
-                break
-            continue
         budget *= 2
 
     if getattr(lanczos_basis, "tracks_support", False):
@@ -1116,8 +967,6 @@ def block_Green_sparse(
             cap_info["support_frozen"] = lanczos_basis.support_frozen
             cap_info["support_history"] = list(lanczos_basis.support_history)
             cap_info["support_trace"] = list(lanczos_basis.support_trace)
-            cap_info["freeze_trials"] = list(trial.history) if trial is not None else []
-            cap_info["trial_frozen"] = lanczos_basis.trial_frozen
             if csr is not None:
                 cap_info["csr_seconds"] = csr[3]
         if csr is not None:

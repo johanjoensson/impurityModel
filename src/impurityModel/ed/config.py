@@ -339,55 +339,6 @@ GF_ADMIT_FIRST_SHELL_TOL = Knob(
     the summed squared amplitudes of what was dropped.""",
 )
 
-GF_FREEZE_TRIAL_WINDOW = Knob(
-    name="GF_FREEZE_TRIAL_WINDOW",
-    kind="int",
-    default=0,
-    minimum=0,
-    group="convergence",
-    doc="""Trial-solve freeze of the sparse Lanczos Green's function (0, the default, is off). Every this many
-    blocks the recurrence builds the ``P H P`` matrix of the support it has so far, runs the recurrence on it to
-    convergence from the live tail, and compares ``G`` on the evaluation meshes with the previous trial's. When
-    ``GF_FREEZE_TRIAL_CONSEC`` successive trials agree to ``GF_FREEZE_BUDGET`` times each axis's tolerance, the
-    support freezes there and the last trial is the answer; a rejected trial is thrown away and the sparse run
-    carries on. It measures the truncation in ``G`` itself instead of comparing the weight that reaches new
-    determinants with the weight ``slaterWeightMin`` cuts (which, at a production cutoff of 1e-8, waits for the
-    support to close). Needs reort off and the frozen-matrix fallback; otherwise the leak-versus-cut freeze alone
-    applies. Experimental: see doc/plans/gf_freeze_rules.md.""",
-)
-
-GF_FREEZE_BUDGET = Knob(
-    name="GF_FREEZE_BUDGET",
-    kind="float",
-    default=0.1,
-    minimum=0.0,
-    group="convergence",
-    doc="""Trial-solve freeze: two trials agree when ``max|G_k - G_prev| / max|G_k|`` on every axis is at most this
-    fraction of that axis's tolerance (``gf_tol`` / ``gf_real_tol``). The freeze's own error in ``G`` is then
-    of the order of this budget, on top of the tolerance the stopping rule already allows.""",
-)
-
-GF_FREEZE_TRIAL_CONSEC = Knob(
-    name="GF_FREEZE_TRIAL_CONSEC",
-    kind="int",
-    default=2,
-    minimum=1,
-    group="convergence",
-    doc="""Trial-solve freeze: successive trial pairs that must agree within the budget before the support freezes.
-    1 freezes on the first agreeing pair (the smallest supports, the least margin).""",
-)
-
-GF_FREEZE_TRIAL_TOL = Knob(
-    name="GF_FREEZE_TRIAL_TOL",
-    kind="float",
-    default=0.1,
-    minimum=1e-6,
-    group="convergence",
-    doc="""Trial-solve freeze: a trial converges to this fraction of the unit's tolerance, so the noise between two
-    trials stays below the budget (two trials stopped at the unit tolerance differ by about that tolerance, which is
-    more than any budget below 1). The accepted trial therefore also ends tighter than the unit tolerance.""",
-)
-
 GF_SUPPORT_TRACE = Knob(
     name="GF_SUPPORT_TRACE",
     kind="bool",
@@ -905,10 +856,6 @@ KNOBS: dict[str, Knob] = _register(
     GF_LANCZOS_ADMIT_TOL,
     GF_ADMIT_FIRST_SHELL_TOL,
     GF_SUPPORT_TRACE,
-    GF_FREEZE_TRIAL_WINDOW,
-    GF_FREEZE_BUDGET,
-    GF_FREEZE_TRIAL_CONSEC,
-    GF_FREEZE_TRIAL_TOL,
     GF_GMRES_RESTART,
     GF_EIGENSTATE_GROUP,
     GF_SCHEDULER,
