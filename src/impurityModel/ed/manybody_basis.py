@@ -141,6 +141,48 @@ def _bisect_count_cutoff(scores, k, comm):
 #: narrower than any importance difference a truncation should act on.
 _TIE_BITS = 32
 
+#: A fused redistribution (:meth:`Basis.redistribute_psis`) stores every column over the union of
+#: the fused blocks' supports, so blocks on disjoint supports cost (union rows x total width), not
+#: their own size: 1,360 one-column GF seeds on a 2.97M-determinant SrMnO3 ground state OOM-killed
+#: 128 ranks in ``basis_split`` before any unit ran. A block joins the running fused group only while
+#: the padded size stays within this factor of the entries the group really holds ...
+_FUSE_PAD_FACTOR = 2
+#: ... or under this many padded entries per rank (16 MiB of amplitudes), below which the padding
+#: is cheaper than another collective.
+_FUSE_PAD_FLOOR = 1 << 20
+
+
+def _fusion_groups(blocks, comm):
+    """Split ``blocks`` (in order) into consecutive groups that are cheap to fuse.
+
+    Greedy: a block joins the current group when the group's padded size
+    ``union_rows * width`` stays within ``_FUSE_PAD_FACTOR`` x its stored entries or under
+    ``_FUSE_PAD_FLOOR``, on every rank; otherwise it starts a new group. Each verdict is a MIN
+    ``Allreduce`` (one per block after the first), so every rank cuts the same groups and runs
+    the same number of redistribution collectives. Returns a list of lists of blocks.
+    """
+    groups = [[blocks[0]]]
+    mask = ManyBodyState().key_union(blocks[0])
+    entries = len(blocks[0]) * blocks[0].width
+    width = blocks[0].width
+    local = np.zeros(1, dtype=np.int64)
+    verdict = np.zeros(1, dtype=np.int64)
+    for block in blocks[1:]:
+        union = mask.key_union(block)
+        cand_entries = entries + len(block) * block.width
+        cand_width = width + block.width
+        padded = len(union) * cand_width
+        local[0] = padded <= max(_FUSE_PAD_FACTOR * cand_entries, _FUSE_PAD_FLOOR)
+        comm.Allreduce(local, verdict, op=MPI.MIN)
+        if verdict[0]:
+            groups[-1].append(block)
+            mask, entries, width = union, cand_entries, cand_width
+        else:
+            groups.append([block])
+            mask = ManyBodyState().key_union(block)
+            entries, width = len(block) * block.width, block.width
+    return groups
+
 
 def _tie_bins(scores):
     """``scores`` rounded to :data:`_TIE_BITS` mantissa bits (exact in float64; zeros stay zero).
@@ -666,11 +708,26 @@ class Basis:
         (``prune_rows(0.0)``). Collective on ``self.comm`` when distributed; a
         non-distributed basis returns the inputs unchanged, mirroring
         :meth:`redistribute_block`.
+
+        Blocks on disjoint supports are not fused into one: the union-support block
+        would be dense in all ``W`` columns (quadratic in the number of blocks). They
+        are split into consecutive groups (:func:`_fusion_groups`), each fused and
+        redistributed on its own. Rows are sorted and summed per column either way,
+        so the result does not depend on the grouping.
         """
         if not blocks:
             return []
         if not self.is_distributed:
             return list(blocks)
+        if len(blocks) == 1:
+            return self._redistribute_fused(blocks)
+        out = []
+        for group in _fusion_groups(blocks, self.comm):
+            out.extend(self._redistribute_fused(group))
+        return out
+
+    def _redistribute_fused(self, blocks):
+        """:meth:`redistribute_psis` of ``blocks`` as ONE fused block over their union support."""
         widths = [b.width for b in blocks]
         combined = ManyBodyState.from_states([c for b in blocks for c in b.to_states()])
         combined = self.redistribute_block(combined)
@@ -679,6 +736,9 @@ class Basis:
         for w in widths:
             sub = combined.select(list(range(offset, offset + w)))
             sub.prune_rows(0.0)
+            if 2 * len(sub) < len(combined):
+                # prune_rows keeps the union's capacity; a copy allocates only the rows kept.
+                sub = sub.copy()
             out.append(sub)
             offset += w
         return out

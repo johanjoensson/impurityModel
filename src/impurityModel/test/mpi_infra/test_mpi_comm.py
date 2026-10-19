@@ -16,6 +16,7 @@ import pytest
 import scipy.sparse as sps
 from mpi4py import MPI
 
+from impurityModel.ed import manybody_basis
 from impurityModel.ed.basis_transcription import build_sparse_matrix
 from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.manybody_basis import Basis
@@ -726,3 +727,58 @@ def test_unpack_block_fused_does_not_copy_the_amplitudes_out_of_the_receive_buff
         f"unpack grew {growth / 2**20:.1f} MiB for a {payload / 2**20:.1f} MiB result; "
         "the amplitudes are being held twice"
     )
+
+
+def _tagged_block(tags, n_rows, width, scale):
+    """A ``width``-column block on determinants ``bytes([tag, j])``, ``j < n_rows``, for each of ``tags``."""
+    keys = [SlaterDeterminant.from_bytes(bytes([t, j])) for t in tags for j in range(n_rows)]
+    return ManyBodyState.from_states(
+        [ManyBodyState({k: scale * (i + 1) + 1j * c for i, k in enumerate(keys)}) for c in range(width)]
+    )
+
+
+def test_fusion_groups_split_disjoint_supports_and_keep_shared_ones(monkeypatch):
+    """Blocks on one shared support fuse into one group; blocks on disjoint supports are split once
+    fusing them would pad the union beyond ``_FUSE_PAD_FACTOR`` x the entries they hold (two
+    equal disjoint blocks pad exactly 2x and still fuse, a third does not)."""
+    monkeypatch.setattr(manybody_basis, "_FUSE_PAD_FLOOR", 0)
+    comm = MPI.COMM_WORLD
+    shared = [_tagged_block([0], 32, 1, 1.0 + k) for k in range(6)]
+    assert [len(g) for g in manybody_basis._fusion_groups(shared, comm)] == [6]
+    disjoint = [_tagged_block([k], 32, 1, 1.0) for k in range(6)]
+    assert [len(g) for g in manybody_basis._fusion_groups(disjoint, comm)] == [2, 2, 2]
+
+
+def test_fusion_groups_floor_keeps_small_disjoint_blocks_fused():
+    """Under the padding floor the padding is cheaper than another collective: one group."""
+    disjoint = [_tagged_block([k], 32, 1, 1.0) for k in range(6)]
+    assert [len(g) for g in manybody_basis._fusion_groups(disjoint, MPI.COMM_WORLD)] == [6]
+
+
+@pytest.mark.mpi
+def test_redistribute_psis_grouped_is_bitwise_one_fused_block(monkeypatch):
+    """Grouping changes only how many collectives run, never the result: rows are sorted and
+    summed per column the same way, so every block comes back with the identical support and
+    bit-identical amplitudes as from one fused block. Mixed widths, shared and disjoint
+    supports, contributions from every rank to the same determinants, and a block that is empty
+    on every rank but 0."""
+    monkeypatch.setattr(manybody_basis, "_FUSE_PAD_FLOOR", 0)
+    comm = MPI.COMM_WORLD
+    basis = _make_basis([bytes([0, 0])], comm=comm)
+    scale = 1.0 + 0.25 * comm.rank
+    blocks = [
+        _tagged_block([0], 64, 2, scale),
+        _tagged_block([0], 64, 1, 2 * scale),
+        _tagged_block([1, 2], 64, 1, scale),
+        _tagged_block([3], 64, 3, scale),
+        _tagged_block([4], 64, 1, scale) if comm.rank == 0 else ManyBodyState(width=1),
+        _tagged_block([5], 64, 1, scale),
+    ]
+    assert len(manybody_basis._fusion_groups(blocks, comm)) > 1
+    got = basis.redistribute_psis(*[b.copy() for b in blocks])
+    ref = basis._redistribute_fused([b.copy() for b in blocks]) if basis.is_distributed else blocks
+    assert len(got) == len(ref)
+    for g, r in zip(got, ref):
+        assert g.width == r.width
+        assert list(g.keys()) == list(r.keys())
+        assert np.array_equal(np.asarray(g), np.asarray(r))
