@@ -618,7 +618,8 @@ ManyBodyOperator::diagonal(const ManyBodyBlockState &block) const {
 }
 
 [[nodiscard]] ManyBodyBlockState
-ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
+ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
+                        const KeyBloom *keep) const {
   // Block variant of the serial apply above: one pass over the shared support,
   // per-(determinant, term) work done once, p amplitudes emitted per hit. The
   // accumulator maps out-determinant -> row index of a growing row-major buffer
@@ -631,6 +632,10 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
   const double cutoff2 = cutoff * cutoff;
   const bool check_restrictions = !std::get<0>(m_restrictions_mask).empty() ||
                                   !m_weighted_restrictions_mask.empty();
+  // The caller's keep filter: an out-determinant it rules out is never emitted.
+  const auto kept = [keep](const SlaterKey &k) {
+    return keep == nullptr || keep->may_contain(k.data(), k.size());
+  };
 
   boost::unordered_flat_map<SlaterKey, std::size_t, SlaterKeyHash>
       row_of;
@@ -729,8 +734,9 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
                     mask_parity(slater, m_onebody_between[op_idx]) ? -1.0 : 1.0;
                 toggle_bit(out_sd, ob_j);
                 toggle_bit(out_sd, ob_i);
-                if (!check_restrictions ||
-                    state_is_within_restrictions(out_sd)) {
+                if ((!check_restrictions ||
+                     state_is_within_restrictions(out_sd)) &&
+                    kept(out_sd)) {
                   const auto coeff = m_flat_coeffs[op_idx] * sgn;
                   ManyBodyBlockState::Value *dst = emit_row_t(out_sd);
                   for (std::size_t c = 0; c < p; ++c) {
@@ -766,7 +772,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
                 for (std::size_t c = 0; c < p; ++c) {
                   diag_accum[c] += scaled * amp[c];
                 }
-              } else {
+              } else if (kept(out_sd)) {
                 ManyBodyBlockState::Value *dst = emit_row_t(out_sd);
                 for (std::size_t c = 0; c < p; ++c) {
                   dst[c] += scaled * amp[c];
@@ -786,7 +792,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
               break;
             }
           }
-          if (any_diag) {
+          if (any_diag && kept(slater)) {
             ManyBodyBlockState::Value *dst = emit_row_t(slater);
             for (std::size_t c = 0; c < p; ++c) {
               dst[c] += diag_accum[c];
@@ -924,8 +930,9 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
               mask_parity(slater, m_onebody_between[op_idx]) ? -1.0 : 1.0;
           toggle_bit(out_slater_determinant, ob_j); // remove j
           toggle_bit(out_slater_determinant, ob_i); // add i
-          if (!check_restrictions ||
-              state_is_within_restrictions(out_slater_determinant)) {
+          if ((!check_restrictions ||
+               state_is_within_restrictions(out_slater_determinant)) &&
+              kept(out_slater_determinant)) {
             const auto coeff = m_flat_coeffs[op_idx] * sgn;
             ManyBodyBlockState::Value *dst = emit_row(out_slater_determinant);
             for (std::size_t c = 0; c < p; ++c) {
@@ -963,7 +970,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
           for (std::size_t c = 0; c < p; ++c) {
             diag_accum[c] += scaled * amp[c];
           }
-        } else {
+        } else if (kept(out_slater_determinant)) {
           ManyBodyBlockState::Value *dst = emit_row(out_slater_determinant);
           for (std::size_t c = 0; c < p; ++c) {
             dst[c] += scaled * amp[c];
@@ -984,7 +991,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff) const {
         break;
       }
     }
-    if (any_diag) {
+    if (any_diag && kept(slater)) {
       ManyBodyBlockState::Value *dst = emit_row(slater);
       for (std::size_t c = 0; c < p; ++c) {
         dst[c] += diag_accum[c];

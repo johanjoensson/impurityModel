@@ -26,6 +26,46 @@ cdef tuple[tuple[int, str]] ints_to_processes(ManyBodyOperator_cpp.value_type.fi
             processes.append((i, 'c'))
     return  tuple(processes[::-1])
 
+cdef class KeyFilter:
+    """Bloom filter over determinant keys, for :meth:`ManyBodyOperator.apply_block`'s ``keep``.
+
+    No false negatives; at the default size (8-16 bits per key, three probes) up to ~3% false
+    positives. The hash depends only on the key chunks, so a filter filled on every rank with that
+    rank's rows and OR-reduced over :meth:`words` (``comm.Allreduce(MPI.IN_PLACE, f.words(),
+    op=MPI.BOR)``) answers for the whole distributed support -- what an apply needs, because the
+    determinants it generates are mostly owned by other ranks.
+    """
+
+    cdef KeyBloom_cpp* f
+
+    def __cinit__(self, size_t n_keys, size_t bits_per_key=8):
+        """Sized for ``n_keys`` keys (the global count when it will be OR-reduced: every rank must
+        pass the same value), rounded up to a power of two of at least ``bits_per_key`` bits each."""
+        cdef unsigned log2_bits = 6
+        cdef size_t want = max(n_keys, 1) * max(bits_per_key, 1)
+        while (<size_t>1 << log2_bits) < want:
+            log2_bits += 1
+        self.f = new KeyBloom_cpp(log2_bits)
+
+    def __dealloc__(self):
+        del self.f
+
+    def add(self, ManyBodyState block):
+        """Insert every determinant of ``block`` (amplitudes are ignored). Rank-local."""
+        with nogil:
+            self.f.insert_keys(block.b)
+
+    def words(self):
+        """The filter's bit words as a writable ``uint64`` array over its own storage (for the
+        OR-reduction). Valid while this filter is alive."""
+        cdef size_t n = self.f.n_words()
+        cdef uint64_t[::1] view = <uint64_t[:n]> self.f.words()
+        return np.asarray(view)
+
+    def __len__(self):
+        return 64 * self.f.n_words()
+
+
 cdef class ManyBodyOperator:
     """
     Cython wrapper class for C++ ManyBodyOperator.
@@ -333,7 +373,7 @@ cdef class ManyBodyOperator:
         """
         return [self.apply_block(p, cutoff) for p in psis]
 
-    def apply_block(self, ManyBodyState block, double cutoff = 0):
+    def apply_block(self, ManyBodyState block, double cutoff = 0, KeyFilter keep = None):
         """Apply the operator to a shared-support block of p vectors (Phase 2.2).
 
         The term loop, fermion sign, restriction checks and the accumulator hash
@@ -343,10 +383,17 @@ cdef class ManyBodyOperator:
         Per-column arithmetic is identical to p independent width-1 ``apply`` calls
         (bit-for-bit at ``cutoff=0``). The cutoff keeps whole rows (any column above
         threshold), so the output block retains its shared support.
+
+        ``keep`` (a :class:`KeyFilter`) drops every out-determinant the filter rules out as it
+        is generated, as a restriction would: the rows that are kept are bit-identical to the
+        unfiltered apply's, and a false positive only keeps a row the caller does not read.
         """
         cdef ManyBodyState res = ManyBodyState()
+        cdef KeyBloom_cpp* f = NULL
+        if keep is not None:
+            f = keep.f
         with nogil:
-            res.b = self.o.apply(block.b, cutoff)
+            res.b = self.o.apply(block.b, cutoff, f)
         return res
 
     def diagonal(self, ManyBodyState block):

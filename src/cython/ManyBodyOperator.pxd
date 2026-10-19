@@ -3,7 +3,7 @@
 from libcpp.map cimport map
 from libcpp.vector cimport vector
 from libcpp.pair cimport pair
-from libc.stdint cimport int64_t, uint8_t
+from libc.stdint cimport int64_t, uint8_t, uint64_t
 from libcpp.complex cimport complex
 cimport cython
 
@@ -14,6 +14,14 @@ cdef extern from "ManyBodyOperator.cpp" nogil:
 
 cdef extern from "ManyBodyOperator.h" nogil:
     bint apply_parallel_build()
+
+    cdef cppclass KeyBloom:
+        KeyBloom(unsigned)
+        void insert(const uint64_t*, size_t)
+        void insert_keys(const ManyBodyBlockState&)
+        bint may_contain(const uint64_t*, size_t)
+        uint64_t* words()
+        size_t n_words()
 
     cdef cppclass ManyBodyOperator:
         cppclass Comparer[T]:
@@ -41,6 +49,7 @@ cdef extern from "ManyBodyOperator.h" nogil:
         void build_restriction_mask(const restrictions&)
         void build_weighted_restriction_mask(const weighted_restrictions&)
         ManyBodyBlockState apply(const ManyBodyBlockState&, double)
+        ManyBodyBlockState apply(const ManyBodyBlockState&, double, const KeyBloom*)
         vector[ManyBodyBlockState.Value] diagonal(const ManyBodyBlockState&)
 
         mapped_type constant()

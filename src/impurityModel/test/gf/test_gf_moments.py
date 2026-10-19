@@ -311,7 +311,7 @@ def test_gf_moments_on_symmetry_blocks_are_bitwise_the_full_ones():
     block only applies that block's seeds -- the inequivalent-block call calc_selfenergy makes."""
     comm = MPI.COMM_WORLD
     impurity_indices = [0, 1]
-    dets, eigvals, eigvecs, n_of_eig, C, Cdag = _dense_lehmann_setup(
+    dets, eigvals, eigvecs, n_of_eig, _, _ = _dense_lehmann_setup(
         _siam_6(), _IMP, _BATHS, 6, impurity_indices, comm=MPI.COMM_SELF
     )
     ie = _ground_index_in_sector(n_of_eig, eigvals, 3)
@@ -342,10 +342,46 @@ def test_gf_moments_on_symmetry_blocks_are_bitwise_the_full_ones():
 
 def test_gf_moments_rejects_overlapping_or_out_of_range_blocks():
     impurity_indices = [0, 1]
-    dets, eigvals, eigvecs, n_of_eig, C, Cdag = _dense_lehmann_setup(_siam_6(), _IMP, _BATHS, 6, impurity_indices)
+    dets, eigvals, eigvecs, n_of_eig, _, _ = _dense_lehmann_setup(_siam_6(), _IMP, _BATHS, 6, impurity_indices)
     ie = _ground_index_in_sector(n_of_eig, eigvals, 3)
     psis = _psis_from_eigvecs(dets, eigvecs, [ie])
     basis = Basis(_IMP, _BATHS, initial_basis=list(psis[0].keys()), comm=MPI.COMM_SELF, verbose=False)
     for blocks in ([[0], [0, 1]], [[2]], [[-1]]):
         with pytest.raises(ValueError):
             get_greens_function_moments(psis, [eigvals[ie]], 1.0, basis, _siam_6(), impurity_indices, blocks=blocks)
+
+
+@pytest.mark.mpi
+def test_gf_moments_third_order_support_filter_changes_nothing(monkeypatch):
+    """The third order applies (H - E) to s1 only on the support of s1 (a Bloom filter OR-reduced
+    over the ranks). The moments must equal the unfiltered computation bit for bit (serial build):
+    the kept rows are the unfiltered apply's rows, and every row the inner products read is kept."""
+    from impurityModel.ed import greens_function
+    from impurityModel.ed.ManyBodyUtils import parallel_apply_build
+
+    comm = MPI.COMM_WORLD
+    impurity_indices = [0, 1]
+    dets, eigvals, eigvecs, n_of_eig, C, Cdag = _dense_lehmann_setup(
+        _siam_6(), _IMP, _BATHS, 6, impurity_indices, comm=MPI.COMM_SELF
+    )
+    ie = _ground_index_in_sector(n_of_eig, eigvals, 3)
+    M_ref = _lehmann_moments([ie], 1.0, 3, impurity_indices, eigvals, C, Cdag)
+    psi = _psis_from_eigvecs(dets, eigvecs, [ie])[0]
+    basis = Basis(_IMP, _BATHS, initial_basis=sorted(psi.keys()), comm=comm, verbose=False)
+    psi_block = ManyBodyState.from_states([psi]) if comm.rank == 0 else ManyBodyState(width=1)
+    (redistributed,) = basis.redistribute_psis(psi_block)
+    psis = [redistributed.to_states()[0]]
+
+    def moments():
+        return get_greens_function_moments(
+            psis, [eigvals[ie]], tau=1.0, basis=basis, hOp=_siam_6(), impurity_indices=impurity_indices
+        )
+
+    filtered = moments()
+    monkeypatch.setattr(greens_function, "_support_filter", lambda states, basis: None)
+    unfiltered = moments()
+    if parallel_apply_build():
+        np.testing.assert_allclose(filtered, unfiltered, atol=1e-13)
+    else:
+        assert np.array_equal(filtered, unfiltered)
+    np.testing.assert_allclose(filtered, M_ref, atol=1e-9)

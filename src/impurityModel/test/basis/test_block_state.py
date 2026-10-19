@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from impurityModel.ed.ManyBodyUtils import (
+    KeyFilter,
     ManyBodyOperator,
     ManyBodyState,
     SlaterDeterminant,
@@ -18,6 +19,7 @@ from impurityModel.ed.ManyBodyUtils import (
     block_inner_cy,
     inner,
     inner_multi,
+    parallel_apply_build,
 )
 from impurityModel.test.support.testtol import inner_atol, sum_rtol
 
@@ -297,6 +299,49 @@ def test_apply_block_cutoff_keeps_rows():
     ref_tiny_full = op.apply_multi([tiny], 0.0)[0]
     for sd, _amp in got[1].items():
         assert sd in ref_tiny_full
+
+
+def test_key_filter_has_no_false_negatives_and_few_false_positives():
+    rng = np.random.default_rng(43)
+    dets = _dets_orbital_msb(24, rng, 4000, 12)
+    inside, outside = dets[::2], dets[1::2]
+    keep = KeyFilter(len(inside))
+    keep.add(ManyBodyState(dict.fromkeys(inside, 1.0 + 0j)))
+    op = ManyBodyOperator({((0, "c"), (0, "a")): 1.0})  # n_0: maps each determinant to itself or to nothing
+    probe = ManyBodyState(dict.fromkeys(dets, 1.0 + 0j))
+    full = op.apply_block(probe, 0.0)
+    filtered = op.apply_block(probe, 0.0, keep)
+    full_keys, kept_keys = set(full.keys()), set(filtered.keys())
+    assert kept_keys <= full_keys
+    assert {d for d in inside if d in full_keys} <= kept_keys  # no false negatives
+    false_positives = len([d for d in outside if d in kept_keys]) / max(1, len([d for d in outside if d in full_keys]))
+    assert false_positives < 0.1
+
+
+@pytest.mark.parametrize("p", [1, 3])
+def test_apply_block_keep_filter_keeps_rows_bitwise(p):
+    """apply_block(keep=...) emits only rows the filter may contain; every kept row equals the
+    unfiltered apply's row bit for bit (serial build; the threaded merge reorders duplicate
+    accumulation), and every row of the unfiltered output that is in the filter is kept."""
+    rng = np.random.default_rng(47 + p)
+    op = ManyBodyOperator(_hopping_operator(12, rng))
+    dets = _dets_orbital_msb(12, rng, 60, 6)
+    blk = ManyBodyState.from_states(
+        [ManyBodyState({d: complex(*rng.standard_normal(2)) for d in dets}) for _ in range(p)]
+    )
+    full = op.apply_block(blk, 0.0)
+    wanted = [d for i, d in enumerate(full.keys()) if i % 3 == 0]
+    keep = KeyFilter(len(wanted))
+    keep.add(ManyBodyState(dict.fromkeys(wanted, 1.0 + 0j)))
+    got = op.apply_block(blk, 0.0, keep)
+    assert set(wanted) <= set(got.keys()) <= set(full.keys())
+    assert len(got) < len(full)
+    rows = full.find_rows(list(got.keys()))
+    ref = np.asarray(full)[np.asarray(rows)]
+    if parallel_apply_build():
+        np.testing.assert_allclose(np.asarray(got), ref, rtol=1e-13, atol=1e-15)
+    else:
+        assert np.array_equal(np.asarray(got), ref)
 
 
 # --------------------------------------------------------------------------- #

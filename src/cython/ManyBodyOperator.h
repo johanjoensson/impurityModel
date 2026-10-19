@@ -19,6 +19,85 @@
 bool apply_parallel_build() noexcept;
 
 /**
+ * @brief Bloom filter over determinant keys: no false negatives, a few false
+ * positives.
+ *
+ * Lets apply() drop, as they are generated, the out-determinants a caller
+ * will never read (the GF moments' third order only reads (H - E) s1 on the
+ * support of s1, 28-43% of its rows on CrI3). The hash depends only on the key
+ * chunks, so a filter built on every rank and OR-reduced word by word (the
+ * words are exposed for that) answers for the whole distributed support: a
+ * rank cannot test membership of a determinant another rank owns, but it can
+ * test the filter. A false positive only emits a row the caller multiplies by
+ * zero.
+ */
+class KeyBloom {
+public:
+  /// 2^log2_bits bits (at least 64), all clear.
+  explicit KeyBloom(unsigned log2_bits)
+      : m_words(std::size_t{1} << (log2_bits < word_shift ? 0 : log2_bits - word_shift), 0),
+        m_mask((std::uint64_t{1} << (log2_bits < word_shift ? word_shift : log2_bits)) - 1) {}
+
+  void insert(const std::uint64_t *key, std::size_t n) noexcept {
+    std::uint64_t h1 = 0, h2 = 0;
+    hashes(key, n, h1, h2);
+    for (unsigned i = 0; i < k_hashes; ++i) {
+      const std::uint64_t bit = (h1 + i * h2) & m_mask;
+      m_words[bit >> word_shift] |= std::uint64_t{1} << (bit & bit_in_word);
+    }
+  }
+
+  /// Insert every determinant of @p block (its keys; amplitudes are ignored).
+  void insert_keys(const ManyBodyBlockState &block) noexcept {
+    for (std::size_t r = 0; r < block.rows(); ++r) {
+      const auto kv = block.key_view(r);
+      insert(kv.data(), kv.size());
+    }
+  }
+
+  [[nodiscard]] bool may_contain(const std::uint64_t *key,
+                                 std::size_t n) const noexcept {
+    std::uint64_t h1 = 0, h2 = 0;
+    hashes(key, n, h1, h2);
+    for (unsigned i = 0; i < k_hashes; ++i) {
+      const std::uint64_t bit = (h1 + i * h2) & m_mask;
+      if (!(m_words[bit >> word_shift] & (std::uint64_t{1} << (bit & bit_in_word)))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  [[nodiscard]] std::uint64_t *words() noexcept { return m_words.data(); }
+  [[nodiscard]] std::size_t n_words() const noexcept { return m_words.size(); }
+
+private:
+  static constexpr unsigned k_hashes = 3;
+  static constexpr unsigned word_shift = 6;          // 64-bit words
+  static constexpr std::uint64_t bit_in_word = 63;
+
+  static std::uint64_t mix(std::uint64_t z) noexcept {
+    // splitmix64 finalizer
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+  }
+
+  static void hashes(const std::uint64_t *key, std::size_t n, std::uint64_t &h1,
+                     std::uint64_t &h2) noexcept {
+    std::uint64_t h = 0x9E3779B97F4A7C15ULL ^ n;
+    for (std::size_t i = 0; i < n; ++i) {
+      h = mix(h ^ key[i]);
+    }
+    h1 = h;
+    h2 = mix(h ^ 0xD6E8FEB86659FD93ULL) | 1; // odd: the k probes stay distinct
+  }
+
+  std::vector<std::uint64_t> m_words;
+  std::uint64_t m_mask;
+};
+
+/**
  * @class ManyBodyOperator
  * @brief Represents a quantum many-body operator in second quantization.
  *
@@ -110,9 +189,16 @@ public:
    * whole rows: a row is kept when ANY column survives the |amp|^2 > cutoff^2
    * test, so the output block keeps its shared support (sub-cutoff residuals
    * in the other columns are retained, unlike per-column pruning).
+   *
+   * With @p keep, an out-determinant the filter rules out is not emitted, as
+   * if a restriction excluded it; every kept row accumulates the same terms in
+   * the same order, so its amplitudes are bit-identical to the unfiltered
+   * apply's. The input determinant's own (diagonal) row is filtered the same
+   * way.
    */
   [[nodiscard]] ManyBodyBlockState apply(const ManyBodyBlockState &block,
-                                         double cutoff = 0) const;
+                                         double cutoff = 0,
+                                         const KeyBloom *keep = nullptr) const;
 
   /**
    * @brief The diagonal matrix elements <D|H|D> for every determinant of

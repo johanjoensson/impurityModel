@@ -12,6 +12,7 @@ from ManyBodyBlockState cimport (
 )
 from ManyBodyOperator cimport (
     ManyBodyOperator as ManyBodyOperator_cpp,
+    KeyBloom as KeyBloom_cpp,
     apply_parallel_build as c_apply_parallel_build,
     commutator as commutator_cpp,
     anticommutator as anticommutator_cpp,
