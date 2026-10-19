@@ -88,7 +88,72 @@ Rejected trials build and drop a `P H P` matrix and a basis clone each. The matv
 communicators either freed on the spot or held in a bounded cache with deterministic collective eviction
 (`mpi_comm._cached_dist_graph`), so a rejection leaks no communicator and leaves nothing to the garbage collector.
 
-## Next
+## Cluster verdict (SrMnO3 it.1, 128 ranks, tree 917b3f9e, jobs 3951526 / 3964546 / 3981432): no-go
+
+Single-unit legs: unit 20 has a converged reference (freeze off, both tolerances 1e-9) and unit 30 does not. On this
+tree the thermal ensemble has 68 states (see below) and every unit carries one of them. Unit 20 is the state at
+E0 + 136.5 meV, with Boltzmann weight about 1e-3. So these legs grade the rule only on light, low-weight units, and
+the round-9 numbers in the plan (751,857 dets, 110 s) do not apply.
+
+| leg | unit | retained | blocks | unit wall | trials | real-axis error vs ref (max-relative / pointwise) |
+|---|---|---|---|---|---|---|
+| shipped (ctrl) | 20 | 3,479,840 | 454 | 16.2 s | 0 | 2.8e-5 / 5.6e-4 |
+| trial W4 / 0.1 / 2 | 20 | 3,479,840 | 454 | 84.2 s | 7, none accepted | 2.8e-5 / 5.6e-4 (bitwise the ctrl G) |
+| trial W8 / 0.3 / 1 | 20 | 1,778,561 | 638 | 15.6 s | 2, accepted | 8.6e-5 / 2.7e-3 |
+| unfrozen ref | 20 | 7,173,876 | 447 | 146.8 s | - | - |
+| shipped (ctrl) | 30 | 2,364,027 | 608 | 14.1 s | 0 | no reference |
+| trial W4 / 0.1 / 2 | 30 | 2,109,474 | 816 | 56.9 s | 6, accepted | no reference |
+| trial W8 / 0.3 / 1 | 30 | 2,109,474 | 816 | 32.6 s | 3, accepted | no reference |
+
+The legs ran in two jobs on different nodes, and the comparison is still fair. All ten legs on this tree
+report the same ground state (2,963,444 determinants, 68 states), and the Matsubara G of ctrl agrees with the ref's
+to exactly 0, so the seeds are bitwise identical. Units 20 and 30 are both addition units of block 0. The heavy
+removal units, where round 9 spent most of its GF wall, were never exercised, so the shipped rule's accuracy below
+holds for light addition units only.
+
+Matsubara changes are zero or round-off on every leg. The real axis is the binding axis, and its error sits in the
+top quarter of the mesh, where |G| is small.
+
+- **Default setting:** it fails the support bar (0.89x and 1.00x against 0.8x) and the wall bar (4.0x and 5.2x
+  against 1.5x).
+- **Aggressive setting:** it halves the support on unit 20 at the control's wall. Its true error, 8.6e-5 (0.86
+  `gf_real_tol`), is 2.9x its own 0.3 budget. The accepting trial estimated 0.25 tol, which understates the true
+  error by 3.4x. That is the single-agreement false positive the Risks section anticipated. It fails "no cell above
+  2x budget".
+- **No Sigma:** Sigma_real was never graded (the whole-run legs could not run, below). That alone keeps the rule from
+  shipping.
+- **What holds:** a rejected trial leaves the live run bitwise intact at 128 ranks. W4 ctrl and trial give identical G
+  and an identical block count. The shipped rule itself is accurate on this unit: 0.49x the unfrozen support, 9x
+  faster, and 0.28 `gf_real_tol` in G.
+- **Defaults defect:** on unit 20 the trial-to-trial real-axis change stays flat at 0.09-0.14 tol over trials 3-7
+  while the support grows 2.6x. The same plateau appeared on the small local unit (0.06-0.13). It is the trials'
+  own stopping noise. `GF_FREEZE_TRIAL_TOL` (0.1) equals `GF_FREEZE_BUDGET` (0.1), so two trials can only agree by
+  chance. Its doc string claims the opposite. A trial tolerance of about 0.01x would lift the floor, but each trial
+  would then cost more.
+
+**Decision (2026-10-19):** the trial-solve code was removed: the `GF_FREEZE_TRIAL_*` / `GF_FREEZE_BUDGET` knobs, `_TrialFreeze`, `SupportPolicy.freeze_support_now` and the `trial_frozen` / `freeze_trials` cap stats. The per-step diagnostics (`support_trace`, `GF_SUPPORT_TRACE`) stay. The shipped leak-versus-cut rule is unchanged. Rebuilding the trial means reverting that removal commit. Change `GF_FREEZE_TRIAL_TOL` well below the budget first.
+
+**Whole-run legs (auto75-ctrl/-trial/-trial8, jobs 3996733 / 4007411 / 4007413 / 4007414):** all four were OOM-killed
+about 100 s into the GF phase, before `run_units_distributed` printed "New unit roots". The control died the same
+way, so the freeze rule is not the cause. The unit legs ran the same 68-state `enumerate_gf_units` and survived,
+because the shim passes on one unit's seeds. That puts the kill inside `run_units_distributed` before its print, in
+`_colors_affording` or `split_basis_and_redistribute_psi`. On this tree that step sees all units' seeds on a
+2.97M-determinant ground state with 68 states, against 10 states on 277k in round 9.
+
+**Why 68 states:** the redesigned GS (window solve) finds a 4-fold ground state and the multiplets at
++112 / +114 / +136 meV:
+
+- Degeneracies run 4, 4+6, 12, 6, 12, and the pairs agree to 1e-8.
+- Round 9 found 2 of the 4 ground states and nothing below +223 meV, even in its own 30-root solve. Its basis never
+  held these states. E0 agrees to 1e-6.
+- The four ground states carry 95.4% of the thermal weight and the other 64 carry 4.6%.
+
+Both trees keep the same energy window: the highest kept state is +227.4 meV in round 9 and +227 meV here. So the
+step from 10 to 68 states is all completeness, not a wider window. Round 9's thermal ensemble was incomplete.
+Earlier rounds on the old GS are probably affected too, but they were not checked. `gf_min_weight` would keep 44
+states (99.93% of the weight) at 3e-4 and 26 states (99.14%) at 1e-3, but it changes Sigma.
+
+## Next (superseded by the cluster verdict above)
 
 Replay SMO it.1 unit 20 (4 ranks) with `GF_FREEZE_TRIAL_WINDOW=4 GF_FREEZE_BUDGET=0.1 GF_FREEZE_TRIAL_CONSEC=2` against the
 shipped rule, graded on G per axis; then a whole-`Sigma` archive; then the cluster A/B on SMO and CrI3
