@@ -214,7 +214,7 @@ def basis_filter(basis):
     return keep
 
 
-def iter_local_operator_images(basis, op, slaterWeightMin, indices=None):
+def iter_local_operator_images(basis, op, slaterWeightMin, indices=None, keep=None):
     """Yield ``op`` applied to each (MPI local) basis state, in basis order.
 
     The streaming counterpart of :func:`build_local_operator_list`. A caller that consumes
@@ -225,12 +225,19 @@ def iter_local_operator_images(basis, op, slaterWeightMin, indices=None):
     ``indices`` (local positions) restricts the walk to those states, in the order given; a
     caller sampling the image size passes a stride, because ``local_basis`` is sorted and its
     first states share their leading-orbital occupation.
+
+    ``keep`` (a :class:`~impurityModel.ed.ManyBodyUtils.KeyFilter`, e.g. :func:`basis_filter`) drops
+    every image row it rules out as the row is generated, so a caller that reads the image only on a
+    known set of determinants never sees the rest. Rows that are kept are bit-identical to the
+    unfiltered image's; a caller that reads the whole image (a size estimate) must not pass it.
     """
     unit_state = ManyBodyState()
     local_basis = basis.local_basis
     for state in local_basis if indices is None else (local_basis[int(i)] for i in indices):
         unit_state[state] = 1.0
-        yield applyOp(op, unit_state, cutoff=slaterWeightMin)
+        yield applyOp(op, unit_state, cutoff=slaterWeightMin) if keep is None else op.apply_block(
+            unit_state, slaterWeightMin, keep
+        )
         unit_state.erase(state)
 
 
@@ -291,7 +298,7 @@ def _concat_consuming(chunks, dtype):
 _QUEUE_POKE_KETS = 4096
 
 
-def _column_batches(basis, op: ManyBodyOperator):
+def _column_batches(basis, op: ManyBodyOperator, filtered: bool = True):
     """The stored entries of ``op`` in ``basis``'s local columns, in batches of whole columns.
 
     Yields ``(col_begin, counts, rows, values)``: the batch covers local columns ``col_begin`` to
@@ -300,7 +307,14 @@ def _column_batches(basis, op: ManyBodyOperator):
     operator produced them (unsorted). A batch holds about :data:`_SPARSE_BUILD_BATCH` matrix
     elements before the out-of-basis rows are dropped. Collective on a distributed basis: every
     rank runs the same number of batches, an exhausted rank with empty ones.
+
+    Only the rows inside the basis are kept, so the operator is applied through
+    :func:`basis_filter` (``filtered``): an image row the filter rules out is never generated, and
+    on a distributed basis never packed and routed through the collective lookup. The exact
+    ``find_rows`` / ``_index_sequence`` check still runs, so a false positive is dropped there.
+    The filter is built here, on every rank, before the first batch.
     """
+    bloom = basis_filter(basis) if filtered else None
     _offset = basis.offset
     _size = basis.size
     # Images are streamed, not listed: the list form holds the whole `H|D>` image of the
@@ -324,7 +338,7 @@ def _column_batches(basis, op: ManyBodyOperator):
         col_begin = 0
         counts, rows, values = [], [], []
         pending = 0
-        for i, ket_state in enumerate(iter_local_operator_images(basis, op, 0)):
+        for i, ket_state in enumerate(iter_local_operator_images(basis, op, 0, keep=bloom)):
             if i % _QUEUE_POKE_KETS == 0:
                 queue_progress()  # see _QUEUE_POKE_KETS
             n_keep = 0
@@ -356,7 +370,7 @@ def _column_batches(basis, op: ManyBodyOperator):
     # multi-million determinant basis is what limits the build, not the matrix. Every rank
     # runs the same number of lookups: the loop continues while ANY rank has images left,
     # and a rank that has run out enters each further lookup with an empty batch.
-    images = iter_local_operator_images(basis, op, 0)
+    images = iter_local_operator_images(basis, op, 0, keep=bloom)
     position = 0
     exhausted = False
     while True:

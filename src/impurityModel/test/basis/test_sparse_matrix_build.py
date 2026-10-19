@@ -22,7 +22,7 @@ from mpi4py import MPI
 from impurityModel.ed import basis_transcription, gf_solvers
 from impurityModel.ed.basis_transcription import build_sparse_matrix
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
+from impurityModel.ed.ManyBodyUtils import KeyFilter, ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
 
 N_ORB = 12
 _N_BYTES = 2
@@ -98,6 +98,43 @@ def test_stored_columns_equal_the_independent_oracle(n_dets):
     outside = np.ones(basis.size, dtype=bool)
     outside[basis.local_indices] = False
     assert not full[:, outside].any()
+
+
+def _sub_basis_matrices(monkeypatch, reject_all=False):
+    """This rank's columns on a sparse sub-basis (so the filter has rows to drop): unfiltered, filtered."""
+    basis = _basis(_all_dets()[::3], MPI.COMM_WORLD)
+    op = _operator()
+    unfiltered = _build(basis, op, filtered=False)
+    if reject_all:
+        monkeypatch.setattr(basis_transcription, "basis_filter", lambda basis: KeyFilter(1))
+    return unfiltered, _build(basis, op, filtered=True)
+
+
+def _build(basis, op, filtered):
+    """This rank's dense columns from ``_column_batches``, with the basis filter on or off."""
+    dense = np.zeros((basis.size, len(basis.local_basis)), dtype=complex)
+    for col_begin, counts, rows, values in basis_transcription._column_batches(basis, op, filtered):
+        at = 0
+        for c, count in enumerate(counts):
+            np.add.at(dense[:, col_begin + c], rows[at : at + count], values[at : at + count])
+            at += count
+    return dense
+
+
+@pytest.mark.mpi
+def test_the_basis_filter_changes_no_stored_element(monkeypatch):
+    """Filtered and unfiltered builds store the same elements, bit for bit, serial or distributed."""
+    unfiltered, filtered = _sub_basis_matrices(monkeypatch)
+    assert unfiltered.any()
+    np.testing.assert_array_equal(filtered, unfiltered)
+
+
+@pytest.mark.mpi
+def test_a_reject_everything_filter_empties_the_build(monkeypatch):
+    """The build really generates through the filter: an empty one must change the result."""
+    unfiltered, filtered = _sub_basis_matrices(monkeypatch, reject_all=True)
+    assert unfiltered.any()
+    assert not filtered.any()
 
 
 @pytest.mark.mpi
@@ -188,7 +225,9 @@ def test_the_column_operator_holds_the_same_matrix(monkeypatch, batch, n_dets):
     column_op = build_sparse_matrix(basis, op)
     assert column_op.shape == (basis.size, len(basis.local_basis))
     assert all(rows.dtype == np.int32 for _, _, rows, _ in column_op.segments)
-    if batch is not None and len(basis.local_basis) > 1:
+    # The batch counts generated rows, and the basis filter already drops most of a two-determinant
+    # basis's image, so only the full basis is guaranteed to fill a 7-element batch.
+    if batch is not None and n_dets is None and len(basis.local_basis) > 1:
         assert len(column_op.segments) > 1, "premise: a small batch splits the columns"
     np.testing.assert_allclose(column_op.to_scipy().toarray(), _oracle_columns(basis, op, comm), atol=1e-13)
 
