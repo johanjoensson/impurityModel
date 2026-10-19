@@ -92,30 +92,21 @@ def unpack_determinants_cy(int comm_size, int64_t[:] recv_counts, uint64_t[:] st
     return res
 
 
-cdef ManyBodyState _as_width1_block(list states):
-    """A list of width-1 ``ManyBodyState`` blocks (each its own, generally different,
-    support), merged into ONE block via ``from_states`` -- the union-support
-    representation ``block_inner_cy`` needs to compute a whole Gram matrix in one
-    merge-join instead of one per pair. ``from_states`` itself validates that every
-    element is width 1."""
-    return ManyBodyState.from_states(states)
-
-
 def inner_multi(states_a, states_b):
     """
     Compute inner products between two sequences of width-1 ``ManyBodyState`` blocks.
     Returns a complex numpy array of shape (len(states_a), len(states_b)).
 
     Non-list sequences (e.g. a SparseKrylovDense column store) are materialized into a
-    list first. Each side's states (possibly independently-supported) are merged into
-    one block via ``from_states`` and routed through ``block_inner_cy``'s single
-    merge-join.
+    list first. Each pair is merge-joined on its own supports (``columns_inner_cy``):
+    no block over the union of the columns' supports is built, which for independently
+    supported columns was (union rows x width) dense amplitudes and most of the time.
     """
     if not isinstance(states_a, list):
         states_a = list(states_a)
     if not isinstance(states_b, list):
         states_b = list(states_b)
-    return block_inner_cy(_as_width1_block(states_a), _as_width1_block(states_b))
+    return columns_inner_cy(states_a, states_b)
 
 
 def support_stats(list states):

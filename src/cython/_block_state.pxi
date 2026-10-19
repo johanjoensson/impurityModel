@@ -1112,6 +1112,44 @@ def block_inner_cy(ManyBodyState A, ManyBodyState B):
     return res
 
 
+def columns_inner_cy(list states_a, list states_b):
+    """Gram matrix ``C[i, j] = <a_i | b_j>`` of two lists of width-1 blocks, one merge-join per pair.
+
+    Each pair is joined in place over its own two sorted supports, so nothing is built over the union
+    of the columns' supports: ``block_inner_cy(from_states(a), from_states(b))`` stores every column
+    dense over all of them, (union rows x width) amplitudes for columns on nearly disjoint supports
+    (the GF moments' ``(H - E) c_k |psi>``). Each ``C[i, j]`` sums the shared determinants in the
+    same sorted order as that union join does (the union's other rows only add exact zeros), so the
+    result is bit-for-bit the same. Rank-local (no MPI)."""
+    cdef Py_ssize_t na = len(states_a)
+    cdef Py_ssize_t nb = len(states_b)
+    res = np.zeros((na, nb), dtype=complex)
+    if na == 0 or nb == 0:
+        return res
+    cdef vector[const ManyBodyBlockState_cpp*] ca
+    cdef vector[const ManyBodyBlockState_cpp*] cb
+    cdef ManyBodyState ms
+    ca.reserve(na)
+    cb.reserve(nb)
+    for obj in states_a:
+        ms = <ManyBodyState?>obj
+        if ms.b.width() != 1:
+            raise ValueError(f"columns_inner_cy: expected width-1 blocks, got width {ms.b.width()}")
+        ca.push_back(&ms.b)
+    for obj in states_b:
+        ms = <ManyBodyState?>obj
+        if ms.b.width() != 1:
+            raise ValueError(f"columns_inner_cy: expected width-1 blocks, got width {ms.b.width()}")
+        cb.push_back(&ms.b)
+    cdef double complex[:, ::1] rv = res
+    cdef Py_ssize_t i, j
+    with nogil:
+        for i in range(na):
+            for j in range(nb):
+                c_block_inner(ca[i][0], cb[j][0], <ManyBodyBlockState_cpp.Value*>&rv[i, j])
+    return res
+
+
 def block_inner_scalar(ManyBodyState a, ManyBodyState b):
     """Scalar inner product ``<a|b>`` for width-1 states -- the block counterpart of
     ``ManyBodyState``'s free ``inner()``, for callers with nothing but width-1 blocks.

@@ -1026,6 +1026,23 @@ def test_inner_multi_matches_pairwise_for_width_one_block_lists():
     np.testing.assert_allclose(mixed, ref, atol=1e-12)
 
 
+def test_inner_multi_is_bitwise_the_union_block_join():
+    """inner_multi joins each pair on its own supports instead of building one block over the union;
+    every entry must still equal the union join bit for bit -- disjoint, overlapping and empty
+    columns alike (the union's extra rows only ever added exact zeros)."""
+    rng = np.random.default_rng(99)
+    shared = _random_states(rng, 3, 40)
+    disjoint = [
+        ManyBodyState({_det(1000 + 50 * k + i): complex(*rng.standard_normal(2)) for i in range(30)}) for k in range(4)
+    ]
+    left = shared + disjoint + [ManyBodyState(width=1)]
+    right = disjoint[::-1] + shared[:2] + [ManyBodyState(width=1)]
+    union = block_inner_cy(ManyBodyState.from_states(left), ManyBodyState.from_states(right))
+    assert np.array_equal(inner_multi(left, right), union)
+    assert inner_multi([], right).shape == (0, len(right))
+    assert inner_multi(left, []).shape == (len(left), 0)
+
+
 def test_inner_multi_rejects_non_width_one_blocks():
 
     rng = np.random.default_rng(98)
