@@ -8,6 +8,7 @@ from impurityModel.ed import config
 from impurityModel.ed import gf_diagnostics as _gfd
 from impurityModel.ed.average import ThermalEnsemble, thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
+from impurityModel.ed.basis_transcription import support_filter
 from impurityModel.ed.block_structure import BlockStructure
 
 # The module was split for readability (gf_primitives/gf_convergence/gf_shift_recycling hold the
@@ -55,7 +56,7 @@ from impurityModel.ed.gf_units import (
     unit_cost_weights,
 )
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import KeyFilter, ManyBodyOperator, ManyBodyState, inner_multi
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, inner_multi
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.symmetries import widen_weighted_restrictions
 
@@ -127,24 +128,6 @@ def build_full_greens_function(block_gf, block_structure: BlockStructure):
     else:
         raise RuntimeError(f"Block structure does not match block_gf.\n{block_structure=} {len(block_gf)=}")
     return res
-
-
-def _support_filter(states, basis):
-    """A :class:`KeyFilter` of the union of ``states``' supports over every rank (collective on a
-    distributed basis): the filled filters are OR-reduced, so each rank can test determinants that
-    other ranks own. Sized from the global union, which every rank computes identically."""
-    union = ManyBodyState()
-    for state in states:
-        union = union.key_union(state)
-    n_keys = len(union)
-    if basis.is_distributed:
-        # After redistribute_psis every determinant has one owner, so the local unions are disjoint.
-        n_keys = basis.comm.allreduce(n_keys, op=MPI.SUM)
-    keep = KeyFilter(n_keys)
-    keep.add(union)
-    if basis.is_distributed:
-        basis.comm.Allreduce(MPI.IN_PLACE, keep.words(), op=MPI.BOR)
-    return keep
 
 
 def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max_order=3, blocks=None):
@@ -259,10 +242,10 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
             # count on every rank.
             #
             # Only s2_b's rows on the support of s1 are read, 28-43% of them on CrI3 (removal side
-            # 28-30%, where the time goes). _support_filter keeps the apply from emitting the rest:
+            # 28-30%, where the time goes). support_filter keeps the apply from emitting the rest:
             # no accumulator entries, sort or redistribution for them, and the rows it keeps are
             # bit-identical to the unfiltered apply's.
-            keep = _support_filter(s1, basis)
+            keep = support_filter(s1, basis)
             k[3] = np.zeros((len(s1), len(s1)), dtype=complex)
             for b, s1_b in enumerate(s1):
                 s2_b = hOp.apply_block(s1_b, 0.0, keep) - complex(e) * s1_b

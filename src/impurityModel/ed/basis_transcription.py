@@ -14,7 +14,7 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, Row, applyOp
+from impurityModel.ed.ManyBodyUtils import KeyFilter, ManyBodyOperator, ManyBodyState, Row, applyOp
 from impurityModel.ed.work_queue import queue_progress
 
 
@@ -182,6 +182,36 @@ def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin:
         np.copyto(amps, local[:, rows].T, where=keep[:, rows].T)
     support = ManyBodyState.from_keys([basis.local_basis[i] for i in rows])
     return ManyBodyState.from_keys_and_amps(support, amps)
+
+
+def support_filter(states, basis):
+    """A :class:`KeyFilter` of the union of ``states``' supports over every rank (collective on a
+    distributed basis): the filled filters are OR-reduced, so each rank can test determinants that
+    other ranks own. Sized from the global union, which every rank computes identically."""
+    union = ManyBodyState()
+    for state in states:
+        union = union.key_union(state)
+    n_keys = len(union)
+    if basis.is_distributed:
+        # After redistribute_psis every determinant has one owner, so the local unions are disjoint.
+        n_keys = basis.comm.allreduce(n_keys, op=MPI.SUM)
+    keep = KeyFilter(n_keys)
+    keep.add(union)
+    if basis.is_distributed:
+        basis.comm.Allreduce(MPI.IN_PLACE, keep.words(), op=MPI.BOR)
+    return keep
+
+
+def basis_filter(basis):
+    """A :class:`KeyFilter` of every determinant of ``basis``, on every rank (collective on a
+    distributed basis). It answers "is this determinant in the basis?" with no false negatives, so
+    an operator applied with ``keep=`` generates only rows the exact lookup can still accept.
+    Replicated: about 1-2 B per global determinant on each rank."""
+    keep = KeyFilter(basis.size)
+    keep.add(basis._keys)
+    if basis.is_distributed:
+        basis.comm.Allreduce(MPI.IN_PLACE, keep.words(), op=MPI.BOR)
+    return keep
 
 
 def iter_local_operator_images(basis, op, slaterWeightMin, indices=None):

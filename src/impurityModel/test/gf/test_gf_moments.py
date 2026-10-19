@@ -378,7 +378,7 @@ def test_gf_moments_third_order_support_filter_changes_nothing(monkeypatch):
         )
 
     filtered = moments()
-    monkeypatch.setattr(greens_function, "_support_filter", lambda states, basis: None)
+    monkeypatch.setattr(greens_function, "support_filter", lambda states, basis: None)
     unfiltered = moments()
     if parallel_apply_build():
         np.testing.assert_allclose(filtered, unfiltered, atol=1e-13)
