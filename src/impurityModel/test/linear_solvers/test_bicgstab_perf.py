@@ -167,9 +167,9 @@ class CountingOperator:
     def set_restrictions(self, restrictions):
         self.op.set_restrictions(restrictions)
 
-    def apply_block(self, block, cutoff=0.0):
+    def apply_block(self, block, cutoff=0.0, keep=None):
         self.n_apply += 1
-        return self.op.apply_block(block, cutoff)
+        return self.op.apply_block(block, cutoff, keep)
 
     @property
     def iterations(self):

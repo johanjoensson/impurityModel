@@ -245,6 +245,24 @@ def test_a_reject_everything_filter_empties_a_frozen_matvec(monkeypatch):
     assert not rejected
 
 
+@pytest.mark.mpi
+@pytest.mark.parametrize("stale", [False, True])
+def test_an_unfrozen_proxy_applies_unfiltered(stale):
+    """After ``unfreeze_support`` the matvec is the plain cut H v again: the filter is dropped, and even one
+    left behind (``stale``: a reject-everything filter planted after the unfreeze) is not applied."""
+    comm = MPI.COMM_WORLD
+    _, proxy = _frozen_matvec(0.4, comm)
+    assert proxy.apply_filter is not None
+    proxy.unfreeze_support()
+    assert proxy.apply_filter is None
+    proxy.cap = 10**6  # nothing to cap: every row of the cut H v is admitted
+    if stale:
+        proxy.apply_filter = KeyFilter(1)
+    states = _my_share(_states(), comm)
+    out = apply_and_redistribute(_siam_6(), ManyBodyState.from_states(states), proxy, 0.4, True)
+    _assert_rows_match(_gathered(_rows(out), comm), _block_reference(0.4))
+
+
 # --- The other call sites, end to end or at the site (each goes red with that site reverted to the
 # before-sum cut at -n 2, 3 and 4; the cutoffs are ones that discriminate there). ---------------
 

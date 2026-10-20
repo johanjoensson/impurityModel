@@ -113,6 +113,14 @@ def matvec_cut_after_sum(bint redistributes, double cutoff):
     return redistributes
 
 
+cdef object _apply_through(object H, object V, double cutoff, object keep):
+    """``H.apply_block`` with ``keep`` passed only when there is one, so an operator stand-in with the
+    two-argument signature (the benchmarks' counting wrappers) still works on every unfiltered path."""
+    if keep is None:
+        return H.apply_block(V, cutoff)
+    return H.apply_block(V, cutoff, keep)
+
+
 def apply_and_redistribute(
     object H, object V, object basis, double cutoff, bint redistribute, int n_chunks=1, object prof=None,
 ):
@@ -151,10 +159,12 @@ def apply_and_redistribute(
     if policy is not None:
         policy.begin_step()
         # A frozen support reads the output only on its retained rows (`transport` projects onto them), so
-        # the apply stops generating the others. None until frozen; the exact projection still runs.
-        keep_filter = policy.apply_filter
+        # the apply stops generating the others. Read only while frozen, so a filter that outlived an unfreeze
+        # can never cut an unfrozen recurrence; the exact projection still runs.
+        if policy.frozen:
+            keep_filter = policy.apply_filter
     if not redistribute or n_chunks <= 1:
-        W = H.apply_block(V, apply_cutoff, keep_filter)
+        W = _apply_through(H, V, apply_cutoff, keep_filter)
         if prof is not None:
             prof("matvec_apply", t0)
         t1 = _time.perf_counter()
@@ -178,7 +188,7 @@ def apply_and_redistribute(
             # `row_slice` allocates exactly this chunk's rows (a `copy()` then `keep_rows` would hold a
             # full-size duplicate of V per chunk, which is why chunking once measured slower with a HIGHER peak).
             part = V.row_slice(lo, hi)
-            raw = H.apply_block(part, apply_cutoff, keep_filter)
+            raw = _apply_through(H, part, apply_cutoff, keep_filter)
             del part
             if hasattr(basis, "redistribute_block"):
                 piece = move(raw)

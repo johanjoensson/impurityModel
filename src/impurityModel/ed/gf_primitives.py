@@ -534,7 +534,7 @@ class SupportPolicy:
             # The retained set no longer changes (every admission above is pre-freeze), so the filter of
             # it is built once. `_frozen` is replicated, so every rank enters this collective together.
             self.apply_filter = comm_support_filter(
-                [self._mask], self.comm if self.comm is not None and self.comm.size > 1 else None
+                [self._mask], self._basis.comm if self._basis.is_distributed else None
             )
 
     def finish_step(self, wp, reached=None):
