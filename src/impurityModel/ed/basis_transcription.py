@@ -187,14 +187,14 @@ def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin:
 def comm_support_filter(states, comm=None):
     """A :class:`KeyFilter` of the union of ``states``' supports over every rank of ``comm`` (``None``:
     only this rank; collective otherwise): the filled filters are OR-reduced, so each rank can test
-    determinants that other ranks own. Sized from the global union, which every rank computes
-    identically."""
+    determinants that other ranks own. Sized from the sum of the local union sizes, the same on every
+    rank: exact when the supports are owner-disjoint (after ``redistribute_psis``), an upper bound when
+    they overlap across ranks (un-redistributed applies), which only lowers the false-positive rate."""
     union = ManyBodyState()
     for state in states:
         union = union.key_union(state)
     n_keys = len(union)
     if comm is not None:
-        # After redistribute_psis every determinant has one owner, so the local unions are disjoint.
         n_keys = comm.allreduce(n_keys, op=MPI.SUM)
     keep = KeyFilter(n_keys)
     keep.add(union)
@@ -313,7 +313,8 @@ def _column_batches(basis, op: ManyBodyOperator, filtered: bool = True):
     ``col_begin + len(counts)``, ``counts[c]`` entries each, and ``rows`` (int64 global row
     indices) and ``values`` hold them column after column, each column's rows in the order the
     operator produced them (unsorted). A batch holds about :data:`_SPARSE_BUILD_BATCH` matrix
-    elements before the out-of-basis rows are dropped. Collective on a distributed basis: every
+    elements as generated through :func:`basis_filter` (most out-of-basis rows are never generated;
+    the exact lookup then drops the false positives). Collective on a distributed basis: every
     rank runs the same number of batches, an exhausted rank with empty ones.
 
     Only the rows inside the basis are kept, so the operator is applied through

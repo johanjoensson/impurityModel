@@ -1947,13 +1947,15 @@ def _hop_plus_number_op():
 
 
 def test_manifold_observable_through_a_support_filter_changes_nothing():
-    """Reading O|n> only on the eigenstates' support: the same values, bit for bit."""
+    """Reading O|n> only on the eigenstates' support: the same values, bit for bit, while the filter
+    really drops rows (the hop takes [0,1] and [0,3] to [1,2] and [2,3], outside the manifold)."""
     from impurityModel.ed.basis_transcription import comm_support_filter
 
     op = _hop_plus_number_op()
-    manifold = ManyBodyState.from_states([_state([([0, 1], 1.0), ([1, 2], 0.5)]), _state([([1, 3], 1.0)])])
+    manifold = ManyBodyState.from_states([_state([([0, 1], 1.0), ([0, 3], 0.5)]), _state([([1, 3], 1.0)])])
     energies = np.array([0.0, 1.0])
     keep = comm_support_filter([manifold])
+    assert len(op.apply_block(manifold, 0, keep)) < len(op.apply_block(manifold, 0)), "premise: rows dropped"
 
     plain = manifold_observable_values(manifold, energies, lambda blk: op.apply_block(blk, 0))
     filtered = manifold_observable_values(manifold, energies, lambda blk: op.apply_block(blk, 0, keep))
@@ -1972,3 +1974,85 @@ def test_manifold_observable_reject_everything_filter_changes_the_values():
     rejected = manifold_observable_values(manifold, energies, lambda blk: op.apply_block(blk, 0, KeyFilter(1)))
     assert plain[0] == pytest.approx(1.0)
     assert rejected[0] == 0.0
+
+
+# --- The report diagnostics take the support filter as ``keep`` (gs_report builds it once). ------------
+# One impurity pair (0, 1) and one bath pair (2, 3); the manifold {|1,2>} is not closed under the spin
+# flips of S_imp.S_bath or S_a^2, so the filter has rows to drop.
+_DIAG_IMP, _DIAG_BATH = [(0, 1)], [(2, 3)]
+
+
+def _diagnostics(psis, keep, comm=None, redistribute=None):
+    """All three diagnostics that gs_report hands its filter to, flattened to one array of numbers."""
+    from impurityModel.ed.observables import (
+        compute_correlation_diagnostics,
+        compute_screening_diagnostics,
+        compute_static_susceptibilities,
+        make_spin_operators,
+    )
+
+    es, tau = np.array([0.0]), 0.05
+    rho = np.diag([0.0, 1.0, 1.0, 0.0]).astype(complex)
+    h1 = np.zeros((4, 4), dtype=complex)
+    h1[0, 2] = h1[2, 0] = h1[1, 3] = h1[3, 1] = 0.7
+    corr = compute_correlation_diagnostics(
+        psis, es, tau, rho, _DIAG_IMP, comm=comm, redistribute=redistribute, keep=keep
+    )
+    chi = compute_static_susceptibilities(
+        psis, es, tau, [0, 1], s_z_op=make_spin_operators(_DIAG_IMP)[2], comm=comm, redistribute=redistribute, keep=keep
+    )
+    scr = compute_screening_diagnostics(
+        psis,
+        es,
+        tau,
+        rho,
+        _DIAG_IMP,
+        _DIAG_BATH,
+        h1,
+        imp_groups={"g": _DIAG_IMP},
+        comm=comm,
+        redistribute=redistribute,
+        keep=keep,
+    )
+    numbers = [corr["docc"], corr["local_moment_z2"], corr["sz2_thermal"], corr["hund"]]
+    numbers += [chi["chi_spin_zz"], chi["chi_charge"], scr["levels"][0]["sisb"], scr["channels"][0][1]]
+    return np.concatenate([np.ravel(np.asarray(x, dtype=complex)) for x in numbers])
+
+
+def _diagnostics_manifold():
+    return ManyBodyState.from_states([_state([([1, 2], 1.0)])])
+
+
+def test_report_diagnostics_through_the_support_filter_change_nothing():
+    """Same numbers, bit for bit, with gs_report's filter; a reject-everything filter changes them."""
+    from impurityModel.ed.basis_transcription import comm_support_filter
+    from impurityModel.ed.ManyBodyUtils import KeyFilter
+
+    psis = _diagnostics_manifold()
+    plain = _diagnostics(psis, None)
+    np.testing.assert_array_equal(_diagnostics(psis, comm_support_filter([psis])), plain)
+    assert not np.array_equal(_diagnostics(psis, KeyFilter(1)), plain)
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(__import__("mpi4py").MPI.COMM_WORLD.size == 1, reason="needs a distributed basis")
+def test_report_diagnostics_through_the_support_filter_change_nothing_distributed():
+    """As gs_report runs them: the manifold redistributed by owner, the filter OR-reduced over the ranks.
+    (The routing hash keeps every spin flip of this model on one rank, so this does not catch a filter that
+    skips the OR-reduce; the shared ``comm_support_filter`` is held to that by the matrix-build and
+    frozen-proxy tests.)"""
+    from mpi4py import MPI
+
+    from impurityModel.ed.basis_transcription import comm_support_filter
+    from impurityModel.ed.manybody_basis import Basis
+
+    comm = MPI.COMM_WORLD
+    dets = sorted(_sd(occ, 4) for occ in ([1, 2], [0, 3], [0, 2], [1, 3], [0, 1], [2, 3]))
+    basis = Basis({0: [[0, 1]]}, ({0: [[2, 3]]}, {0: [[]]}), initial_basis=dets, comm=comm, verbose=False)
+    psis = _diagnostics_manifold() if comm.rank == 0 else ManyBodyState(width=1)
+    psis = basis.redistribute_block(psis)
+    serial = _diagnostics(_diagnostics_manifold(), None)
+    unfiltered = _diagnostics(psis, None, comm, basis.redistribute_block)
+    filtered = _diagnostics(psis, comm_support_filter([psis], comm), comm, basis.redistribute_block)
+    np.testing.assert_allclose(unfiltered, serial, atol=1e-14)
+    np.testing.assert_array_equal(filtered, unfiltered)

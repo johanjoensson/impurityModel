@@ -323,6 +323,13 @@ def test_moments_consistent_compares_norms_and_mean_energies_within_groups(m0, m
     assert spectra._moments_consistent(np.array(m0), np.array(m1), groups) is consistent
 
 
+def _mixing_model():
+    """``_model`` plus core-impurity hopping, so H|seed> leaves the seeds' supports (the filter drops rows)."""
+    return _model() + ManyBodyOperator(
+        {((0, "c"), (2, "a")): 0.3, ((2, "c"), (0, "a")): 0.3, ((1, "c"), (3, "a")): 0.3, ((3, "c"), (1, "a")): 0.3}
+    )
+
+
 def _seed_moments_oracle(op, comps, gs):
     """<seed|seed> and <seed|H|seed> per component, from unfiltered applies."""
     seeds = [applyOp(c, gs) for c in comps]
@@ -332,16 +339,39 @@ def _seed_moments_oracle(op, comps, gs):
     )
 
 
-def _seed_moments(op, comps, gs, e0, dets):
-    return spectra._component_seed_moments(op, comps, [gs], np.array([e0]), e0, 0.01, _basis(dets), 0.0)
+def _seed_moments(op, comps, gs, e0, basis):
+    return spectra._component_seed_moments(op, comps, [gs], np.array([e0]), e0, 0.01, basis, 0.0)
 
 
+def _seeds_leave_their_support(op, comps, gs):
+    from impurityModel.ed.basis_transcription import comm_support_filter
+
+    seeds = [applyOp(c, gs) for c in comps]
+    keep = comm_support_filter(seeds)
+    return any(len(op.apply_block(s, 0, keep)) < len(op.apply_block(s, 0)) for s in seeds)
+
+
+@pytest.mark.mpi
 def test_seed_moments_through_the_support_filter_match_unfiltered_applies():
-    """H|seed> is generated only on the seeds' supports; both moments are those of the full applies."""
-    op = _model()
+    """H|seed> is generated only on the seeds' supports; both moments are those of the full applies, on any
+    rank count (at -n 2+ the seeds are routed and the filter is OR-reduced)."""
+    comm = MPI.COMM_WORLD
+    op = _mixing_model()
     gs, e0, dets = _ground_state(op, 2)
     comps = _components()
-    m0, m1 = _seed_moments(op, comps, gs, e0, dets)
+    assert _seeds_leave_their_support(op, comps, gs), "premise: the filter drops rows"
+    basis = Basis(
+        impurity_orbitals={0: [list(range(N_ORB))]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=list(dets),
+        verbose=False,
+        comm=comm,
+    )
+    # Split by position, not by owner: each rank's seeds are partials whose H-images are read on rows
+    # another rank's seeds hold, which only the OR-reduced filter keeps.
+    mine = sorted(gs.keys(), key=lambda k: bytes(k.to_bytearray()))[comm.rank :: comm.size]
+    local_gs = ManyBodyState({k: a for k, a in gs.items() if k in mine}) if mine else ManyBodyState(width=1)
+    m0, m1 = _seed_moments(op, comps, local_gs, e0, basis)
     want0, want1 = _seed_moments_oracle(op, comps, gs)
     assert want0.any() and want1.any()
     np.testing.assert_allclose(m0, want0, atol=1e-13)
@@ -352,10 +382,10 @@ def test_seed_moments_reject_everything_filter_zeroes_the_energies(monkeypatch):
     """The moments really are computed through the filter: an empty one must change them."""
     from impurityModel.ed.ManyBodyUtils import KeyFilter
 
-    op = _model()
+    op = _mixing_model()
     gs, e0, dets = _ground_state(op, 2)
     comps = _components()
     monkeypatch.setattr(spectra, "comm_support_filter", lambda states, comm=None: KeyFilter(1))
-    m0, m1 = _seed_moments(op, comps, gs, e0, dets)
+    m0, m1 = _seed_moments(op, comps, gs, e0, _basis(dets))
     assert m0.any()
     assert not m1.any()
