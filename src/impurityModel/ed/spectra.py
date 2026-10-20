@@ -12,6 +12,7 @@ from mpi4py import MPI
 import impurityModel.ed.greens_function as gf
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.basis_restrictions import intersect_windows
+from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.gf_engine import lanczos_unit_kernel, states_by_group
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, inner
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test
@@ -838,7 +839,10 @@ def _component_seed_moments(hOp, comp_ops, psis, es, e0, tau, basis, slaterWeigh
     work = basis.clone(initial_basis=[], verbose=False, comm=comm)
     for psi, wgt in zip(psis, weights):
         seeds = [applyOp_test(op, psi) for op in comp_ops]
-        hseeds = [applyOp_test(hOp, s) for s in seeds]
+        # <seed_a|H|seed_a> reads H|seed_a> only on the seeds' supports: generate nothing else. The
+        # filter is collective, built once per state on every rank.
+        keep = comm_support_filter(seeds, comm if basis.is_distributed else None)
+        hseeds = [hOp.apply_block(s, 0, keep) for s in seeds]
         work.clear()
         for s in seeds + hseeds:
             work.add_states(s.keys())

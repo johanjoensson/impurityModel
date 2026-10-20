@@ -321,3 +321,41 @@ def test_a_true_symmetry_dedup_is_taken_and_matches_the_full_tensor(monkeypatch)
 )
 def test_moments_consistent_compares_norms_and_mean_energies_within_groups(m0, m1, groups, consistent):
     assert spectra._moments_consistent(np.array(m0), np.array(m1), groups) is consistent
+
+
+def _seed_moments_oracle(op, comps, gs):
+    """<seed|seed> and <seed|H|seed> per component, from unfiltered applies."""
+    seeds = [applyOp(c, gs) for c in comps]
+    return (
+        np.array([np.real(inner(s, s)) for s in seeds]),
+        np.array([np.real(inner(s, applyOp(op, s))) for s in seeds]),
+    )
+
+
+def _seed_moments(op, comps, gs, e0, dets):
+    return spectra._component_seed_moments(op, comps, [gs], np.array([e0]), e0, 0.01, _basis(dets), 0.0)
+
+
+def test_seed_moments_through_the_support_filter_match_unfiltered_applies():
+    """H|seed> is generated only on the seeds' supports; both moments are those of the full applies."""
+    op = _model()
+    gs, e0, dets = _ground_state(op, 2)
+    comps = _components()
+    m0, m1 = _seed_moments(op, comps, gs, e0, dets)
+    want0, want1 = _seed_moments_oracle(op, comps, gs)
+    assert want0.any() and want1.any()
+    np.testing.assert_allclose(m0, want0, atol=1e-13)
+    np.testing.assert_allclose(m1, want1, atol=1e-13)
+
+
+def test_seed_moments_reject_everything_filter_zeroes_the_energies(monkeypatch):
+    """The moments really are computed through the filter: an empty one must change them."""
+    from impurityModel.ed.ManyBodyUtils import KeyFilter
+
+    op = _model()
+    gs, e0, dets = _ground_state(op, 2)
+    comps = _components()
+    monkeypatch.setattr(spectra, "comm_support_filter", lambda states, comm=None: KeyFilter(1))
+    m0, m1 = _seed_moments(op, comps, gs, e0, dets)
+    assert m0.any()
+    assert not m1.any()
