@@ -15,7 +15,11 @@ import numpy as np
 import scipy as sp
 from mpi4py import MPI
 
-from impurityModel.ed.basis_transcription import build_distributed_vector, build_vector
+from impurityModel.ed.basis_transcription import (
+    build_distributed_vector,
+    build_vector,
+    comm_support_filter,
+)
 from impurityModel.ed.BlockLanczosArray import BETA_BLOWUP_FACTOR
 from impurityModel.ed.manybody_basis import collective_first_keys, collective_top_k_bounds
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, block_add_scaled_cy
@@ -289,6 +293,9 @@ class SupportPolicy:
     #: The support freeze (:meth:`enable_support_freeze`): on, and whether it has frozen the support.
     support_freeze = False
     support_frozen = False
+    #: A :class:`KeyFilter` of the frozen retained set (built by :meth:`begin_step`), or None; the matvec
+    #: applies through it so rows the projection would drop are never generated.
+    apply_filter = None
 
     def __init__(self, basis, cap, memory_budget=None, memory_policy="tighten", eta=None, first_shell_tol=0.0):
         """``memory_budget`` (absolute per-rank bytes, ``None`` = off, the default) adds a measured
@@ -436,6 +443,7 @@ class SupportPolicy:
         self._frozen = False
         self.support_frozen = False
         self.support_freeze = False
+        self.apply_filter = None
 
     def note_step_cut(self, weight):
         """Add weight the step's ``slaterWeightMin`` prunes dropped (rank-local; reduced with the step's admission).
@@ -522,6 +530,12 @@ class SupportPolicy:
         the chunks pass through unprojected and the decision is taken once, on the summed output.
         Called by the block-Lanczos step on every rank of the colour (replicated)."""
         self._deferred = not self._frozen
+        if self._frozen and self.apply_filter is None:
+            # The retained set no longer changes (every admission above is pre-freeze), so the filter of
+            # it is built once. `_frozen` is replicated, so every rank enters this collective together.
+            self.apply_filter = comm_support_filter(
+                [self._mask], self.comm if self.comm is not None and self.comm.size > 1 else None
+            )
 
     def finish_step(self, wp, reached=None):
         """The step's whole matvec output: admit on full amplitudes (or project, if frozen). Collective.

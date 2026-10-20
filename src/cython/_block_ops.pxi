@@ -146,11 +146,15 @@ def apply_and_redistribute(
     cdef double t0 = _time.perf_counter(), t1
     cdef double apply_cutoff = 0.0 if after else cutoff
     cdef object W, part, raw, piece, bounds
+    cdef object keep_filter = None
     cdef Py_ssize_t idx, lo, hi
     if policy is not None:
         policy.begin_step()
+        # A frozen support reads the output only on its retained rows (`transport` projects onto them), so
+        # the apply stops generating the others. None until frozen; the exact projection still runs.
+        keep_filter = policy.apply_filter
     if not redistribute or n_chunks <= 1:
-        W = H.apply_block(V, apply_cutoff)
+        W = H.apply_block(V, apply_cutoff, keep_filter)
         if prof is not None:
             prof("matvec_apply", t0)
         t1 = _time.perf_counter()
@@ -174,7 +178,7 @@ def apply_and_redistribute(
             # `row_slice` allocates exactly this chunk's rows (a `copy()` then `keep_rows` would hold a
             # full-size duplicate of V per chunk, which is why chunking once measured slower with a HIGHER peak).
             part = V.row_slice(lo, hi)
-            raw = H.apply_block(part, apply_cutoff)
+            raw = H.apply_block(part, apply_cutoff, keep_filter)
             del part
             if hasattr(basis, "redistribute_block"):
                 piece = move(raw)

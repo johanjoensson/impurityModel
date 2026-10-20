@@ -22,7 +22,7 @@ from impurityModel.ed.gf_solvers import block_Green
 from impurityModel.ed.gf_units import enumerate_gf_units
 from impurityModel.ed.greens_function import calc_G
 from impurityModel.ed.manybody_basis import Basis
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
+from impurityModel.ed.ManyBodyUtils import KeyFilter, ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
 
 _multirank = pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="needs input rows on more than one rank")
 
@@ -208,6 +208,41 @@ def test_a_capping_proxy_admits_the_same_rows_on_any_layout(cutoff, cap):
     expected_rows, expected_state = _capped_oracle(cutoff, cap)
     _assert_rows_match(rows, expected_rows)
     assert tuple(state) == expected_state
+
+
+def _frozen_matvec(cutoff, comm=None, n_chunks=1):
+    """One matvec through a proxy frozen at its initial content (the BiCGSTAB/GMRES ``_frozen_proxy`` shape)."""
+    initial = _initial_keys()
+    proxy = _CappedBasisProxy(Basis(_IMP, _BATHS, initial_basis=initial, verbose=False, comm=comm), cap=len(initial))
+    assert proxy.frozen
+    states = _states() if comm is None else _my_share(_states(), comm)
+    out = apply_and_redistribute(_siam_6(), ManyBodyState.from_states(states), proxy, cutoff, True, n_chunks)
+    return (_rows(out) if comm is None else _gathered(_rows(out), comm)), proxy
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("n_chunks", [1, 3])
+@pytest.mark.parametrize("cutoff", _CUTOFFS)
+def test_a_frozen_proxy_applies_through_the_filter_of_its_support(monkeypatch, cutoff, n_chunks):
+    """The frozen matvec never generates the rows its projection drops; what it returns is unchanged."""
+    comm = MPI.COMM_WORLD
+    filtered, proxy = _frozen_matvec(cutoff, comm, n_chunks)
+    assert proxy.apply_filter is not None
+    monkeypatch.setattr(_CappedBasisProxy, "apply_filter", property(lambda self: None, lambda self, v: None))
+    unfiltered, _ = _frozen_matvec(cutoff, comm, n_chunks)
+    assert filtered
+    _assert_rows_match(filtered, unfiltered)
+
+
+@pytest.mark.mpi
+def test_a_reject_everything_filter_empties_a_frozen_matvec(monkeypatch):
+    """The frozen matvec really applies through the filter: an empty one must change what it returns."""
+    comm = MPI.COMM_WORLD
+    plain, _ = _frozen_matvec(0.4, comm)
+    monkeypatch.setattr("impurityModel.ed.gf_primitives.comm_support_filter", lambda states, comm=None: KeyFilter(1))
+    rejected, _ = _frozen_matvec(0.4, comm)
+    assert plain
+    assert not rejected
 
 
 # --- The other call sites, end to end or at the site (each goes red with that site reverted to the
