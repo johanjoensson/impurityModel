@@ -184,22 +184,28 @@ def build_state(basis, vs: Union[list[np.ndarray], np.ndarray], slaterWeightMin:
     return ManyBodyState.from_keys_and_amps(support, amps)
 
 
-def support_filter(states, basis):
-    """A :class:`KeyFilter` of the union of ``states``' supports over every rank (collective on a
-    distributed basis): the filled filters are OR-reduced, so each rank can test determinants that
-    other ranks own. Sized from the global union, which every rank computes identically."""
+def comm_support_filter(states, comm=None):
+    """A :class:`KeyFilter` of the union of ``states``' supports over every rank of ``comm`` (``None``:
+    only this rank; collective otherwise): the filled filters are OR-reduced, so each rank can test
+    determinants that other ranks own. Sized from the global union, which every rank computes
+    identically."""
     union = ManyBodyState()
     for state in states:
         union = union.key_union(state)
     n_keys = len(union)
-    if basis.is_distributed:
+    if comm is not None:
         # After redistribute_psis every determinant has one owner, so the local unions are disjoint.
-        n_keys = basis.comm.allreduce(n_keys, op=MPI.SUM)
+        n_keys = comm.allreduce(n_keys, op=MPI.SUM)
     keep = KeyFilter(n_keys)
     keep.add(union)
-    if basis.is_distributed:
-        basis.comm.Allreduce(MPI.IN_PLACE, keep.words(), op=MPI.BOR)
+    if comm is not None:
+        comm.Allreduce(MPI.IN_PLACE, keep.words(), op=MPI.BOR)
     return keep
+
+
+def support_filter(states, basis):
+    """:func:`comm_support_filter` over ``basis``'s communicator (collective on a distributed basis)."""
+    return comm_support_filter(states, basis.comm if basis.is_distributed else None)
 
 
 def basis_filter(basis):
@@ -235,8 +241,10 @@ def iter_local_operator_images(basis, op, slaterWeightMin, indices=None, keep=No
     local_basis = basis.local_basis
     for state in local_basis if indices is None else (local_basis[int(i)] for i in indices):
         unit_state[state] = 1.0
-        yield applyOp(op, unit_state, cutoff=slaterWeightMin) if keep is None else op.apply_block(
-            unit_state, slaterWeightMin, keep
+        yield (
+            applyOp(op, unit_state, cutoff=slaterWeightMin)
+            if keep is None
+            else op.apply_block(unit_state, slaterWeightMin, keep)
         )
         unit_state.erase(state)
 

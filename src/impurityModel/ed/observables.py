@@ -1105,7 +1105,7 @@ def expect_casimir(psi, j_plus, j_minus, j_z, comm=None):
     return np.real(val)
 
 
-def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=None, redistribute=None):
+def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=None, redistribute=None, keep=None):
     r"""Correlation-strength diagnostics of the impurity (Mott/Hund physics).
 
     Per impurity spatial orbital ``a`` (one ``(dn, up)`` pair each): the double occupancy
@@ -1133,6 +1133,9 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
         Validated impurity ``(dn, up)`` spin-orbital pairs.
     comm, redistribute
         As in :func:`manifold_observable_values`.
+    keep : KeyFilter, optional
+        Support filter of ``psis`` (:func:`~impurityModel.ed.basis_transcription.comm_support_filter`):
+        each ``O|n>`` is generated only on the eigenstates' support, which is all that is read.
 
     Returns
     -------
@@ -1143,7 +1146,7 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
     for a, (dn, up) in enumerate(imp_pairs):
         op = ManyBodyOperator({((up, "c"), (dn, "c"), (dn, "a"), (up, "a")): 1.0})
         docc_values[a] = manifold_observable_values(
-            psis, es, lambda blk, _op=op: _op.apply_block(blk, 0), comm=comm, redistribute=redistribute
+            psis, es, lambda blk, _op=op: _op.apply_block(blk, 0, keep), comm=comm, redistribute=redistribute
         )
     docc_thermal = np.array([np.real(thermal_observable_value(docc_values[a], es, tau)) for a in range(n_sp)])
     n_dn = np.array([np.real(thermal_rho[dn, dn]) for dn, _ in imp_pairs])
@@ -1155,7 +1158,7 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
     sz2_values = manifold_observable_values(
         psis,
         es,
-        lambda blk: sz2_op.apply_block(blk, 0),
+        lambda blk: sz2_op.apply_block(blk, 0, keep),
         comm=comm,
         redistribute=redistribute,
     )
@@ -1171,7 +1174,7 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
             vals = manifold_observable_values(
                 psis,
                 es,
-                lambda blk, _op=corr_op: _op.apply_block(blk, 0),
+                lambda blk, _op=corr_op: _op.apply_block(blk, 0, keep),
                 comm=comm,
                 redistribute=redistribute,
             )
@@ -1195,7 +1198,7 @@ def compute_correlation_diagnostics(psis, es, tau, thermal_rho, imp_pairs, comm=
 
 
 def compute_static_susceptibilities(
-    psis, es, tau, impurity_indices, s_z_op=None, l_z_op=None, comm=None, redistribute=None
+    psis, es, tau, impurity_indices, s_z_op=None, l_z_op=None, comm=None, redistribute=None, keep=None
 ):
     r"""Static (Curie) susceptibilities of the impurity from the retained thermal manifold.
 
@@ -1230,6 +1233,9 @@ def compute_static_susceptibilities(
         :func:`make_impurity_casimir_operators`); ``None`` skips the respective rows.
     comm, redistribute
         As in :func:`manifold_observable_values`.
+    keep : KeyFilter, optional
+        Support filter of ``psis`` (:func:`~impurityModel.ed.basis_transcription.comm_support_filter`):
+        each ``O|n>`` is generated only on the eigenstates' support, which is all that is read.
 
     Returns
     -------
@@ -1243,7 +1249,7 @@ def compute_static_susceptibilities(
         vals = manifold_observable_values(
             psis,
             es,
-            lambda blk: product.apply_block(blk, 0),
+            lambda blk: product.apply_block(blk, 0, keep),
             comm=comm,
             redistribute=redistribute,
         )
@@ -1251,7 +1257,7 @@ def compute_static_susceptibilities(
 
     def thermal_single(op):
         vals = manifold_observable_values(
-            psis, es, lambda blk: op.apply_block(blk, 0), comm=comm, redistribute=redistribute
+            psis, es, lambda blk: op.apply_block(blk, 0, keep), comm=comm, redistribute=redistribute
         )
         return float(np.real(thermal_observable_value(vals, es, tau)))
 
@@ -1341,6 +1347,7 @@ def compute_screening_diagnostics(
     comm=None,
     redistribute=None,
     max_bath_correlation_levels=200,
+    keep=None,
 ):
     r"""Channel- and bath-level-resolved impurity-bath spin correlations (Kondo screening).
 
@@ -1364,6 +1371,8 @@ def compute_screening_diagnostics(
         One-body Hamiltonian matrix (``extract_tensors(..., two_body=False)``).
     imp_groups : dict or None
         ``{label: [pair, ...]}``; ``None`` skips the channel resolution.
+    keep : KeyFilter, optional
+        Support filter of ``psis``, as in :func:`compute_static_susceptibilities`.
 
     Returns
     -------
@@ -1385,7 +1394,7 @@ def compute_screening_diagnostics(
             vals = manifold_observable_values(
                 psis,
                 es,
-                lambda blk, _op=op_g: _op.apply_block(blk, 0),
+                lambda blk, _op=op_g: _op.apply_block(blk, 0, keep),
                 comm=comm,
                 redistribute=redistribute,
             )
@@ -1409,7 +1418,7 @@ def compute_screening_diagnostics(
             vals = manifold_observable_values(
                 psis,
                 es,
-                lambda blk, _op=op_b: _op.apply_block(blk, 0),
+                lambda blk, _op=op_b: _op.apply_block(blk, 0, keep),
                 comm=comm,
                 redistribute=redistribute,
             )

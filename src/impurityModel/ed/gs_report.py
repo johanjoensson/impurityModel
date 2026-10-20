@@ -10,6 +10,7 @@ import numpy as np
 
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.basis_restrictions import get_effective_restrictions
+from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.block_structure import get_equivalent_blocks, print_block_structure
 from impurityModel.ed.density_matrices import build_density_matrices
 from impurityModel.ed.gs_statistics import (
@@ -165,6 +166,9 @@ def report_ground_state(
     # (symmetry-plan Phase 5).
     mov_comm = ground_state_basis.comm if ground_state_basis.is_distributed else None
     mov_redistribute = ground_state_basis.redistribute_block if ground_state_basis.is_distributed else None
+    # Every <m|O|n> below is read on the eigenstates' own support, so each apply drops the rest of
+    # O|n> as it is generated. Built here, collectively and unconditionally, once for all of them.
+    support_keep = comm_support_filter([psis_blk], mov_comm)
     s_values = l_values = j_values = None
     s2_thermal = l2_thermal = j2_thermal = None
     # Whether J is a sharp quantum number across the ground manifold (is_j_sharp); True
@@ -210,7 +214,7 @@ def report_ground_state(
                 vals = manifold_observable_values(
                     psis_blk,
                     es,
-                    lambda blk, _op=op2: _op.apply_block(blk, 0),
+                    lambda blk, _op=op2: _op.apply_block(blk, 0, support_keep),
                     comm=mov_comm,
                     redistribute=mov_redistribute,
                 )
@@ -234,7 +238,7 @@ def report_ground_state(
                         vals = manifold_observable_values(
                             psis_blk,
                             es,
-                            lambda blk, _op=op2: _op.apply_block(blk, 0),
+                            lambda blk, _op=op2: _op.apply_block(blk, 0, support_keep),
                             comm=mov_comm,
                             redistribute=mov_redistribute,
                         )
@@ -290,7 +294,7 @@ def report_ground_state(
             sisb_raw = manifold_observable_values(
                 psis_blk,
                 es,
-                lambda blk: sisb_op.apply_block(blk, 0),
+                lambda blk: sisb_op.apply_block(blk, 0, support_keep),
                 comm=mov_comm,
                 redistribute=mov_redistribute,
             )
@@ -304,7 +308,7 @@ def report_ground_state(
                 sisb_z_raw = manifold_observable_values(
                     psis_blk,
                     es,
-                    lambda blk: sisb_z_op.apply_block(blk, 0),
+                    lambda blk: sisb_z_op.apply_block(blk, 0, support_keep),
                     comm=mov_comm,
                     redistribute=mov_redistribute,
                 )
@@ -339,6 +343,7 @@ def report_ground_state(
             l_z_op=l_ops[2] if l_ops is not None else None,
             comm=mov_comm,
             redistribute=mov_redistribute,
+            keep=support_keep,
         )
     except Exception:
         static_susceptibilities = None
@@ -356,7 +361,14 @@ def report_ground_state(
         if spin_pairs is not None:
             imp_pairs, bath_pairs = spin_pairs
             corr_diagnostics = compute_correlation_diagnostics(
-                psis_blk, es, tau, thermal_rho, imp_pairs, comm=mov_comm, redistribute=mov_redistribute
+                psis_blk,
+                es,
+                tau,
+                thermal_rho,
+                imp_pairs,
+                comm=mov_comm,
+                redistribute=mov_redistribute,
+                keep=support_keep,
             )
             # Impurity channels grouped like the N(...) columns (equivalent-block groups),
             # using the same orbital-group labels (e.g. "group 1") as the printed report, not
@@ -389,6 +401,7 @@ def report_ground_state(
                 z_only=sisb_pairing_approx,
                 comm=mov_comm,
                 redistribute=mov_redistribute,
+                keep=support_keep,
             )
         else:
             diagnostics_skip_reason = "no validated spin pairing (see the <S_imp.S_bath> message)"

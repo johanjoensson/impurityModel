@@ -1939,3 +1939,36 @@ def test_print_thermal_expectation_values_j_sharp_gate(capsys):
     assert "3F" in term_lines[0] and "4" not in term_lines[0].split("=")[1]
     shell_line = next(ln for ln in out.splitlines() if ln.strip().startswith("l=2"))
     assert shell_line.strip().split()[-1] == "3F"  # per-shell term, no J subscript
+
+
+def _hop_plus_number_op():
+    """``n_0 + c_0^+ c_2 + c_2^+ c_0``: its image leaves the support of a single determinant."""
+    return ManyBodyOperator({((0, "c"), (0, "a")): 1.0, ((0, "c"), (2, "a")): 0.5, ((2, "c"), (0, "a")): 0.5})
+
+
+def test_manifold_observable_through_a_support_filter_changes_nothing():
+    """Reading O|n> only on the eigenstates' support: the same values, bit for bit."""
+    from impurityModel.ed.basis_transcription import comm_support_filter
+
+    op = _hop_plus_number_op()
+    manifold = ManyBodyState.from_states([_state([([0, 1], 1.0), ([1, 2], 0.5)]), _state([([1, 3], 1.0)])])
+    energies = np.array([0.0, 1.0])
+    keep = comm_support_filter([manifold])
+
+    plain = manifold_observable_values(manifold, energies, lambda blk: op.apply_block(blk, 0))
+    filtered = manifold_observable_values(manifold, energies, lambda blk: op.apply_block(blk, 0, keep))
+    np.testing.assert_array_equal(filtered, plain)
+    assert plain.any()
+
+
+def test_manifold_observable_reject_everything_filter_changes_the_values():
+    """The filter is really applied: an empty one drops every row, including the diagonal."""
+    from impurityModel.ed.ManyBodyUtils import KeyFilter
+
+    op = _hop_plus_number_op()
+    manifold = ManyBodyState.from_states([_state([([0, 1], 1.0)])])
+    energies = np.zeros(1)
+    plain = manifold_observable_values(manifold, energies, lambda blk: op.apply_block(blk, 0))
+    rejected = manifold_observable_values(manifold, energies, lambda blk: op.apply_block(blk, 0, KeyFilter(1)))
+    assert plain[0] == pytest.approx(1.0)
+    assert rejected[0] == 0.0
