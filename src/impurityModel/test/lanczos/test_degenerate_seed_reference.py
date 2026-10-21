@@ -80,3 +80,35 @@ def test_the_dense_lowest_reference_is_the_same_state_at_every_shift():
 
     for amps in refs[1:]:
         assert abs(np.vdot(refs[0], amps)) > 1 - 1e-10, (refs[0], amps)
+
+
+def _hopping_solver(n_orb=10, n_el=5, seed=7):
+    """A free-fermion sector of C(10, 5) = 252 determinants: between the dense ``Lowest`` limit
+    and the default ``dense_cutoff``, with an exact answer (the lowest ``n_el`` orbital energies)."""
+    rng = np.random.default_rng(seed)
+    t = rng.normal(size=(n_orb, n_orb)) + 1j * rng.normal(size=(n_orb, n_orb))
+    t = 0.5 * (t + t.conj().T)
+    h_op = ManyBodyOperator({((i, "c"), (j, "a")): t[i, j] for i in range(n_orb) for j in range(n_orb)})
+    basis = Basis(
+        {0: [list(range(n_orb // 2))]},
+        ({0: [list(range(n_orb // 2, n_orb))]}, {0: [[]]}),
+        nominal_impurity_occ={0: n_el},
+        comm=MPI.COMM_WORLD,
+        verbose=False,
+    )
+    basis.add_states([_det(occ) for occ in itertools.combinations(range(n_orb), n_el)])
+    return basis, CIPSISolver(basis), h_op, float(np.sum(np.linalg.eigvalsh(t)[:n_el]))
+
+
+def test_a_lowest_request_above_the_dense_lowest_limit_runs_the_count_mode_solve():
+    """``Lowest`` diagonalizes densely only up to ``_DENSE_LOWEST_MAX``, whatever ``dense_cutoff``
+    allows: the dense branch computes and broadcasts every eigenpair for the one it needs."""
+    from impurityModel.ed.cipsi_solver import _DENSE_LOWEST_MAX
+
+    basis, solver, h_op, exact = _hopping_solver()
+    assert _DENSE_LOWEST_MAX < len(basis) < 1000
+
+    e_ref, _psi = solver.get_eigenvectors(h_op, Lowest(), dense_cutoff=1e3, slaterWeightMin=1e-12)
+
+    assert solver.eig is not None, "the dense branch ran: it records no count-mode result"
+    np.testing.assert_allclose(e_ref.real, [exact], atol=1e-9)
