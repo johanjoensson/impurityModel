@@ -130,7 +130,7 @@ def _degeneracy_tol(e_ref, slaterWeightMin):
     That was the case in production, not in principle: ``_eigen_tol`` returns ``_EIGEN_TOL_MAX``
     (1e-8, ten times *looser* than ``DEGENERACY_TOL``) whenever ``slaterWeightMin`` is 0 or above
     1e-8, and two manifold-consuming paths run exactly there -- ``dc_criteria``
-    defaults ``slater_weight_min=0``, and the occupation walk runs at
+    defaults ``slater_weight_min=0``, and the occupation walk ran at
     ``sqrt(slaterWeightMin)`` (1e-6 for the usual 1e-12). The production ground-state path
     (``slaterWeightMin = 1e-12``) is unaffected: 10 * 1e-12 is far under the 1e-9 floor.
 

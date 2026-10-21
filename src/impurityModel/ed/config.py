@@ -849,9 +849,9 @@ DC_DE2_MIN = Knob(
     64 ranks per node (`doc/plans/dc_smo_memory.md`, round 9).
 
     Keep the default when the DC's answer is the deliverable and cost is not binding; raise it to
-    `1e-6` when the search is what stands between you and a self-energy. It does **not** loosen the
-    sector *walk*, which has its own looser constant for its own reason
-    (:data:`groundstate.SECTOR_WALK_DE2_MIN`), nor the production ground state.""",
+    `1e-6` when the search is what stands between you and a self-energy. It loosens the search's
+    sector walk with it (the walk is the search's own sector solves), not the production ground
+    state.""",
 )
 
 DC_E_PT2_TOL = Knob(

@@ -34,10 +34,12 @@ wrong charge state, which is worse than not fixing anything at all.
      criteria now do the same for their own ``find_ground_state_sector`` call, restoring the full
      ``tau`` for everything computed afterward at the found sector (the thermal average, the
      peak's sector-energy solves).
-   * ``calc_gs`` runs the occupation walk at ``sqrt(slaterWeightMin)`` and tightens to the full
-     cutoff only for the refinement; both criteria now do the same. Running the walk four orders
-     of magnitude tighter than the one ``calc_selfenergy`` will run is a different search, and can
-     settle on a different sector.
+   * The occupation walk runs at the full accuracy (``slaterWeightMin``, ``de2_min``,
+     ``e_pt2_tol``) everywhere -- ``calc_gs`` and both criteria. It used to run at
+     ``sqrt(slaterWeightMin)`` and a per-determinant ``de2`` floor, which let a sector stall in the
+     wrong symmetry class and reorder the sectors (NiO 10-bath: d6 0.17 high). The criteria's walk
+     now *is* their own cached sector solves, so at one shift the walk and ``N +- 1`` never
+     differ.
    * The refinement runs on a basis whose ``tau`` has been restored to the full value, matching
      ``calc_gs``; leaving the walk's ``tau/100`` in place made ``expand``'s
      ``de0_max = energy_cut(basis.tau)`` a hundred times narrower than the window ``calc_gs``
@@ -55,13 +57,10 @@ wrong charge state, which is worse than not fixing anything at all.
    * The PT2 threshold matches. Every DC sector energy now runs at
      :data:`groundstate.GS_DE2_MIN` (``1e-8``), the value :func:`groundstate.solve_ground_state`
      converges the production ground state to, rather than the ``1e-6`` that used to be a literal
-     inside :func:`groundstate.calc_energy`. The looser value is still the default there and is
-     still right for the *sector walk*, where only the ordering of charge sectors is decided and
-     a common error largely cancels; it is wrong for the fixed-sector energies the peak and gap
-     criteria **difference**, where it does not cancel and is then amplified by ``1 / |chi|`` --
-     a factor of 9 on the workload this was measured on. ``calc_energy`` and ``solve_sector`` take
-     ``de2_min`` per call so the walk and the sector solves can differ; see
-     :data:`groundstate.SECTOR_WALK_DE2_MIN`.
+     inside :func:`groundstate.calc_energy`. The looser value was wrong for the fixed-sector
+     energies the peak and gap criteria **difference**, where it does not cancel and is then
+     amplified by ``1 / |chi|`` -- a factor of 9 on the workload this was measured on -- and it
+     is wrong for the walk too (see the walk bullet above).
 
    No convention is now knowingly unshared between the two paths.
 
@@ -479,10 +478,10 @@ class _SectorContext:
     def centre_sector(self, h_op, mu):
         """The centre charge state at ``mu``, from the same walk ``calc_selfenergy`` will run.
 
-        :func:`groundstate.find_ground_state_sector` owns the ``sqrt(slaterWeightMin)`` convention.
         Only the walk: the thermal solve that ``solve_ground_state`` adds does not change the
         winning occupation, and the sector is all a sector-energy criterion needs before solving
-        ``N +- 1``.
+        ``N +- 1``. Its trials are :meth:`sector_solve`, so they are cached with, and are the same
+        solves as, the criterion's own ``N +- 1``.
         """
         from impurityModel.ed.groundstate import find_ground_state_sector
 
@@ -500,6 +499,11 @@ class _SectorContext:
             verbose=self.verbose,
             truncation_threshold=_ctx_cap_policy(self),
             weighted_restrictions=self.weighted_restrictions,
+            de2_min=self.de2_min,
+            e_pt2_tol=self.e_pt2_tol,
+            # The walk's trials are this search's own cached sector solves: the N +- 1 solves at this
+            # shift are the same solves, at the same accuracy, and are never repeated.
+            sector_energy=lambda trial: (self._walk_energy(h_op, mu, sum(trial.values())), None),
         )
         # Read from the search that chose it. NOT from a determinant: the returned basis is the
         # eigenvector support of an expansion whose impurity occupation window was widened
@@ -572,14 +576,10 @@ class _SectorContext:
             slaterWeightMin=self.slater_weight_min,
             weighted_restrictions=self.weighted_restrictions,
             frozen_occupations=self.frozen_occupations,
-            # The accuracy the answer is quoted at. `solve_sector` defaults to the walk's looser
-            # `SECTOR_WALK_DE2_MIN`, which is right for deciding which charge sector wins and
-            # wrong here: this energy is about to be *differenced* against another sector's, and
-            # the residual truncation error does not cancel in a difference. It is then amplified
-            # by 1 / |chi| on its way into `dc` -- a factor of 9 on the workload this was measured
-            # on -- so the DC would be determined on a looser variational space than the
-            # self-energy run that consumes it. Last unshared convention on the parity list in
-            # this module's docstring.
+            # The accuracy the answer is quoted at: this energy is about to be *differenced*
+            # against another sector's, and the residual truncation error does not cancel in a
+            # difference. It is then amplified by 1 / |chi| on its way into `dc` -- a factor of 9 on
+            # the workload this was measured on.
             # Resolved once in `_prepare_sector_context` (RSPt line > DC_DE2_MIN > GS_DE2_MIN,
             # DC_E_PT2_TOL > GS_E_PT2_TOL), so every sector of a search shares one convergence
             # criterion and the record can report it.
@@ -625,6 +625,11 @@ class _SectorContext:
         solution = MPI.COMM_WORLD.bcast(solution, root=0)
         self.sector_at[(mu, n_trial)] = solution
         return solution
+
+    def _walk_energy(self, h_op, mu, n_trial):
+        """The occupation walk's energy of sector ``n_trial``: :meth:`sector_solve`'s, ``inf`` where undefined."""
+        solution = self.sector_solve(h_op, mu, n_trial)
+        return np.inf if solution is None else solution.energy
 
     def sector_energy(self, h_op, mu, n_trial):
         """``E[n_trial]`` at this shift, or ``None`` where the criterion is undefined."""
@@ -1206,9 +1211,9 @@ def _size_gap_tolerance(width, mu_tol, bandwidth, rank=0):
     standing up a model and running a search to reach each of them.
 
     The ``abs()`` this replaced was the problem. A **negative** width means ``E[N]`` is not the
-    lowest of the three sectors -- the centre walk (at ``tau/100`` and ``sqrt(slaterWeightMin)``)
-    and the sector solves (at ``tau`` and ``slaterWeightMin``) have disagreed about which charge
-    state is the ground state. That is a real and reportable diagnostic; ``abs()`` turned it into a
+    lowest of the three sectors: the centre walk has settled on a sector that is not the lowest of
+    its neighbours (the walk and the sector solves share their solves, so they cannot disagree on
+    an energy). That is a real and reportable diagnostic; ``abs()`` turned it into a
     slightly different tolerance and said nothing, while the *signed* width still went on to the
     record, where it inverts the documented ``omega_+ >= 0 >= omega_-`` ordering with no warning.
 
@@ -1224,10 +1229,8 @@ def _size_gap_tolerance(width, mu_tol, bandwidth, rank=0):
         if rank == 0:
             print(
                 f"WARNING: the measured gap width is negative ({width:.6f}). E[N] is not the lowest "
-                "of the three sectors, so the centre walk and the fixed-sector solves disagree "
-                "about which charge state is the ground state -- they run at different truncation "
-                "conventions (tau/100 and sqrt(slaterWeightMin) against tau and slaterWeightMin), "
-                "and a sector comparison that close is not resolved by either. The energy "
+                "of the three sectors, so the centre walk settled on a charge state that is not "
+                "the lowest of its neighbours. The energy "
                 "tolerance falls back to the mu resolution; treat the reported gap width and "
                 "omega_+- as unreliable.",
                 flush=True,
@@ -1519,13 +1522,8 @@ def fixed_gap_dc(
         def _gap_width_at(mu):
             """``omega_+ - omega_- = E[N+1] + E[N-1] - 2 E[N]``: reported, never root-found.
 
-            The one place ``E[N]`` is needed, and it is deliberately not taken from the centre walk:
-            the walk runs at ``tau / 100`` and ``sqrt(slaterWeightMin)`` while the sector solves run
-            at ``tau`` and ``slaterWeightMin``, so an ``E[N]`` from the walk mixed with ``E[N +- 1]``
-            from ``calc_energy`` would make this second difference straddle two different truncation
-            conventions -- strictly worse than the conditioning problem it is already exposed to.
-            Costs one extra solve, paid exactly twice per search (once to size the tolerance, once at
-            the converged shift for the record), not once per evaluation.
+            The one place ``E[N]`` is needed. It comes from :meth:`_SectorContext.sector_solve`, the
+            cache the centre walk fills, so at a shift the walk has visited it costs nothing.
             """
             if mu not in width_at:
                 n_center, e_add, e_rem = _gap_sectors_at(mu)

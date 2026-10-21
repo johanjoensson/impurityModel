@@ -926,6 +926,33 @@ def test_the_edge_character_costs_no_sector_solves_of_its_own(monkeypatch):
     assert report["delta_plus"] is not None and report["delta_minus"] is not None, report
 
 
+def test_the_walk_and_the_sector_solves_never_solve_a_sector_twice_at_one_shift(monkeypatch):
+    """The centre walk's trials are the search's own cached sector solves.
+
+    They used to be separate ``calc_energy`` solves at a looser accuracy, so at every shift the
+    ``N +- 1`` sectors were solved twice -- once loose for the walk, once at full accuracy for the
+    criterion -- and the two could disagree on which sector is lowest (the "negative gap width").
+    Now one solve per sector per shift: the shifted operator is a new object per shift, so
+    ``(operator, total occupation)`` names a solve, and none may repeat.
+    """
+    from impurityModel.ed import groundstate as gs_module
+
+    seen, held = [], []
+    real_solve_sector = gs_module.solve_sector
+
+    def counted(h_op, impurity_orbitals, bath_states, N0, *args, **kwargs):
+        held.append(h_op)  # keep it alive, so no later shift's operator can reuse its id
+        seen.append((id(h_op), sum(N0.values())))
+        return real_solve_sector(h_op, impurity_orbitals, bath_states, N0, *args, **kwargs)
+
+    monkeypatch.setattr(gs_module, "solve_sector", counted)
+    kwargs, _ = common_kwargs(v=0.01, tau=1e-3)
+    fixed_gap_dc(offset=0.0, **kwargs)
+    assert seen, "no sector was solved"
+    repeated = {key for key in seen if seen.count(key) > 1}
+    assert not repeated, f"{len(repeated)} sector solves repeated at one shift"
+
+
 def test_the_two_estimators_of_delta_sum_agree(capsys):
     """``delta_+ + delta_-`` against ``-2*chi``: two routes to one number, differenced.
 

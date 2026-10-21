@@ -43,39 +43,6 @@ GS_E_PT2_TOL = DEFAULT_E_PT2_TOL
 #: loosen a solve deliberately; :data:`GS_E_PT2_TOL` is what converges it.
 GS_DE2_MIN = 0.0
 
-#: Epstein-Nesbet PT2 threshold for the *sector walk*: a per-determinant floor, deliberately.
-#:
-#: Deliberately looser, and only defensible for what the walk does: compare charge sectors and
-#: keep the winner. Only the **ordering** matters there, the error is common to every sector to
-#: the extent that it does not depend on how strongly a sector fluctuates, and tightening it costs
-#: a great deal for a comparison that is not close. It is *not* defensible for an energy
-#: **difference** between two sectors -- the residual truncation error does not cancel there, and
-#: the double-counting criteria then amplify it by ``1 / |chi|``. Hence two constants.
-#:
-#: **Keep the size of this term in proportion.** Measured on ``nio_5peeled``: moving the DC sector
-#: energies from ``1e-6`` to ``1e-8`` shifts the gap centre by 0.3 meV at cap 8000, i.e. ~2.7 meV
-#: in ``mu`` after the ``1 / |chi|`` amplification, at 4x the cost. Raising the determinant cap
-#: from 2000 to 8000 shifts it by 6 meV, i.e. ~54 meV in ``mu``. **Truncation drift, not the PT2
-#: threshold, dominates the error on the answer**, and at cap 8000 the tighter threshold saturates
-#: the cap (5693 determinants to 8000), so those energies are cap-bound rather than
-#: PT2-converged. The reason to match :data:`GS_DE2_MIN` is *parity* -- the DC is then determined
-#: on the same variational space as the self-energy run that consumes it -- not accuracy. The
-#: record reports ``tol`` and ``chi``, which propagate the search tolerance alone; a cap ladder
-#: (``dc_diagnostics.cap_ladder``) is the only honest error bar on ``mu``.
-#:
-#: (Those measurements were taken with the per-determinant ``de2_min`` at ``1e-6`` / ``1e-8``,
-#: before the residual PT2 sum became the convergence criterion.)
-#:
-#: **The walk is not PT2-converged, and that is measured, not assumed.** On the SrMnO3 cubic
-#: archive its sector solves stop with a residual PT2 energy of 1.3e-3 to 6.1e-2 (N_imp = 1..5,
-#: 3,464 to 144,555 determinants), against sector gaps of ~0.1 eV. Converging them would cost far
-#: more than the refinement the winner then gets anyway, so the walk keeps the floor and no
-#: residual tolerance (:data:`SECTOR_WALK_E_PT2_TOL` is ``None``).
-SECTOR_WALK_DE2_MIN = 1e-6
-
-#: No residual-PT2 criterion for the sector walk; see :data:`SECTOR_WALK_DE2_MIN`.
-SECTOR_WALK_E_PT2_TOL = None
-
 
 def sector_key(trial_N0, frozen_occupations=None):
     """The sector a trial impurity occupation actually selects.
@@ -226,8 +193,8 @@ def solve_sector(
     slaterWeightMin=1e-12,
     weighted_restrictions=None,
     frozen_occupations=None,
-    de2_min=SECTOR_WALK_DE2_MIN,
-    e_pt2_tol=SECTOR_WALK_E_PT2_TOL,
+    de2_min=GS_DE2_MIN,
+    e_pt2_tol=GS_E_PT2_TOL,
 ):
     """One charge sector, solved for the requested ``manifold``: :class:`SectorSolve`.
 
@@ -457,8 +424,8 @@ def calc_energy(
     slaterWeightMin=1e-12,
     weighted_restrictions=None,
     frozen_occupations=None,
-    de2_min=SECTOR_WALK_DE2_MIN,
-    e_pt2_tol=SECTOR_WALK_E_PT2_TOL,
+    de2_min=GS_DE2_MIN,
+    e_pt2_tol=GS_E_PT2_TOL,
 ):
     """The ground-state energy of one charge sector: ``(e0, truncation_report)``.
 
@@ -585,16 +552,30 @@ def find_ground_state_sector(
     slaterWeightMin=1e-12,
     use_hf_seed=True,
     weighted_restrictions=None,
+    de2_min=GS_DE2_MIN,
+    e_pt2_tol=GS_E_PT2_TOL,
+    sector_energy=None,
 ):
     """
     Find the charge sector with the lowest energy, compare N0 - 1, N0 and N0 + 1: :class:`SectorSearch`.
 
     Every trial sector is solved for its lowest energy alone (:func:`calc_energy`, a
-    :class:`~impurityModel.ed.eigensolvers.Lowest` solve) at ``sqrt(slaterWeightMin)``: the walk only
-    orders sectors, so a trial claims nothing about its ground level's degeneracy and is not refined
-    to the full cutoff. This is the one walk convention, applied here and nowhere else -- the
-    double-counting search had once drifted on it by four orders of magnitude, a different search.
-    The thermal ground state is then solved from scratch at the winner (:func:`solve_ground_state`).
+    :class:`~impurityModel.ed.eigensolvers.Lowest` solve), certified, at the caller's own accuracy
+    (``slaterWeightMin``, ``de2_min``, ``e_pt2_tol``). The walk used to run looser
+    (``sqrt(slaterWeightMin)`` and a per-determinant ``de2`` floor) because it "only orders sectors";
+    but the order *is* the answer, and a looser expansion stalls in the wrong symmetry class: on the
+    NiO 10-bath archive the d6 class that holds the ground state stopped 0.17 high at the walk's
+    accuracy, which reorders the sectors. The thermal ground state is then solved from scratch at the
+    winner (:func:`solve_ground_state`).
+
+    The cost is real on large sectors: on the SrMnO3 cubic archive the loose walk's sector solves
+    stopped with a residual PT2 energy of 1.3e-3 to 6.1e-2 (3,464 to 144,555 determinants), so
+    converging them is more expansion than the walk used to do. A search that visits a sector at
+    many shifts should not pay it at every one.
+
+    ``sector_energy``, if given, replaces :func:`calc_energy`: ``trial_N0 -> (energy,
+    truncation_report)``, broadcast. The double-counting search passes its own cached sector solve,
+    so the walk and the search's ``N +- 1`` solves at one shift are the same solves.
 
     use_hf_seed (default True): seed the nominal occupation with a cheap, memory-bounded
     unrestricted Hartree-Fock solve (the mean-field lowest-energy determinant), instead of
@@ -643,7 +624,6 @@ def find_ground_state_sector(
     if frozen_occupations is None:
         frozen_occupations = set()
     winning_impurity_occ = N0.copy()
-    walk_weight_min = np.sqrt(slaterWeightMin)
 
     # Per sector (`sector_key`): the energy and the truncation report of its (memory-capped)
     # expansion, so a capped ground-state determination is auditable even when the final basis fits
@@ -705,23 +685,28 @@ def find_ground_state_sector(
             solver_trace.note("sector_cache_hit", n0=key)
             return energy_cache[key][0]
 
-        e_trial, report = calc_energy(
-            h_op,
-            impurity_orbitals,
-            bath_states,
-            trial_N0,
-            mixed_valence,
-            chain_restrict,
-            dense_cutoff,
-            comm=comm,
-            # CIPSI-round / basis-generation chatter is -vv (V_DETAIL) territory, not -v: the
-            # walk's own per-trial summary at V_SUMMARY is already printed above by the caller.
-            verbose=verbose >= V_DETAIL,
-            truncation_threshold=truncation_threshold,
-            slaterWeightMin=walk_weight_min,
-            weighted_restrictions=weighted_restrictions,
-            frozen_occupations=frozen_occupations,
-        )
+        if sector_energy is not None:
+            e_trial, report = sector_energy(trial_N0)
+        else:
+            e_trial, report = calc_energy(
+                h_op,
+                impurity_orbitals,
+                bath_states,
+                trial_N0,
+                mixed_valence,
+                chain_restrict,
+                dense_cutoff,
+                comm=comm,
+                # CIPSI-round / basis-generation chatter is -vv (V_DETAIL) territory, not -v: the
+                # walk's own per-trial summary at V_SUMMARY is already printed above by the caller.
+                verbose=verbose >= V_DETAIL,
+                truncation_threshold=truncation_threshold,
+                slaterWeightMin=slaterWeightMin,
+                weighted_restrictions=weighted_restrictions,
+                frozen_occupations=frozen_occupations,
+                de2_min=de2_min,
+                e_pt2_tol=e_pt2_tol,
+            )
         energy_cache[key] = (e_trial, report)
         if best_cached_key is None or e_trial < energy_cache[best_cached_key][0]:
             best_cached_key = key
@@ -1016,6 +1001,8 @@ def solve_ground_state(
         slaterWeightMin=slaterWeightMin,
         use_hf_seed=use_hf_seed,
         weighted_restrictions=weighted_restrictions,
+        de2_min=de2_min,
+        e_pt2_tol=e_pt2_tol,
     )
     es, psis, basis, solver = solve_sector(
         h_op,
