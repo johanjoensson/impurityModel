@@ -69,7 +69,7 @@ from impurityModel.ed.symmetries import extract_tensors, sz_weighted_restriction
 #: Relative size of an off-diagonal element, in the eigenbasis of ``X``, that joins two seed
 #: eigenvectors into one class. Exact symmetry zeros sit at roundoff (~1e-15 relative), genuine
 #: couplings at the scale of the hybridization; a tight cut errs toward false splits, the safe side.
-_COUPLING_TOL = 1e-9
+COUPLING_TOL = 1e-9
 #: Two ``X`` eigenvalues closer than this (relative) are treated as one degenerate level.
 _DEGENERACY_TOL = 1e-10
 #: Two classes are partners when their seed spectra agree to this (relative).
@@ -290,7 +290,7 @@ def _partition(ops):
         evals, w_mat = np.linalg.eigh(0.5 * (x + x.conj().T))
         rotated = [w_mat.conj().T @ op @ w_mat for op in normalized]
         levels = _components(n, [(i, i + 1) for i in range(n - 1) if evals[i + 1] - evals[i] <= _DEGENERACY_TOL])
-        ok = all(_is_scalar(r[np.ix_(lvl, lvl)], _COUPLING_TOL * np.sqrt(len(lvl))) for lvl in levels for r in rotated)
+        ok = all(_is_scalar(r[np.ix_(lvl, lvl)], COUPLING_TOL * np.sqrt(len(lvl))) for lvl in levels for r in rotated)
         edges = [(lvl[0], k) for lvl in levels for k in lvl[1:]]
         # `eigh` mixes two eigenvectors of gap g by ~eps ||X|| / g, which leaks (r_aa - r_bb) times
         # that into r_ab: an apparent coupling between close levels that is pure roundoff, and an
@@ -299,7 +299,7 @@ def _partition(ops):
         mixing = 100.0 * np.finfo(float).eps * max(np.max(np.abs(evals)), 1.0) / np.maximum(gaps, 1e-300)
         for r in rotated:
             d = np.real(np.diag(r))
-            floor = _COUPLING_TOL + mixing * np.abs(d[:, None] - d[None, :])
+            floor = COUPLING_TOL + mixing * np.abs(d[:, None] - d[None, :])
             ii, jj = np.nonzero(np.triu(np.abs(r) > floor, 1))
             edges.extend(zip(ii.tolist(), jj.tolist()))
         if ok:
@@ -407,6 +407,16 @@ def seed_class_plan(h_op, basis, *, max_seed=1000, verbose=False):
     """
     if not config.GS_SEED_CLASSES.get():
         return None
+    return build_seed_class_plan(h_op, basis, max_seed=max_seed, verbose=verbose)
+
+
+def build_seed_class_plan(h_op, basis, *, max_seed=1000, verbose=False, spin_tier=True):
+    """:func:`seed_class_plan` whatever ``GS_SEED_CLASSES`` says.
+
+    ``spin_tier=False`` partitions by ``P H P`` and ``P H Q H P`` alone: every symmetry ``H`` has
+    is found, but none is assumed or labelled -- what :mod:`sector_solver` runs inside each of its
+    hard sectors, where total spin need not be a good quantum number.
+    """
     comm = _comm_of(basis)
     n0 = len(basis)
     if n0 == 0 or n0 > max_seed:
@@ -422,7 +432,7 @@ def seed_class_plan(h_op, basis, *, max_seed=1000, verbose=False):
         n_orb = extract_tensors(h_op, two_body=False)[0].shape[0]
         n_orb = max(n_orb, basis.num_spin_orbitals)
         a, m, _b, _outside = seed_matrices(h_op, seed)
-        spin = _spin_tier(h_op, basis, seed, n_orb)
+        spin = _spin_tier(h_op, basis, seed, n_orb) if spin_tier else None
         classes, ok = _build_classes(a, m, spin)
         evals_a = np.linalg.eigvalsh(a)
         width = float(evals_a[-1] - evals_a[0]) if n0 > 1 else 0.0
@@ -468,7 +478,7 @@ def print_plan(plan):
 
 def class_seed_keys(plan, cls, basis):
     """The seed determinants (``SlaterDeterminant``) of ``cls``'s support this rank owns."""
-    support = np.max(np.abs(cls.span), axis=1) > _COUPLING_TOL
+    support = np.max(np.abs(cls.span), axis=1) > COUPLING_TOL
     if plan.spin is not None and cls.two_sz is not None:
         support &= np.rint(2 * plan.spin.sz_seed).astype(int) == cls.two_sz
     keep = {plan.seed[i] for i in np.flatnonzero(support)}
@@ -513,7 +523,7 @@ class ClassPenalty:
             return self.pi
         rows = self.span[idx]
         u, sv, _vh = np.linalg.svd(rows, full_matrices=False)
-        kept = u[:, sv > _COUPLING_TOL * max(float(sv[0]) if sv.size else 0.0, 1e-300)]
+        kept = u[:, sv > COUPLING_TOL * max(float(sv[0]) if sv.size else 0.0, 1e-300)]
         return np.eye(len(idx), dtype=complex) - kept @ kept.conj().T
 
     def __call__(self, basis, h_mat):

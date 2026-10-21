@@ -443,6 +443,9 @@ class _SectorContext:
     #: where ``de2_min`` is only an optional floor. Resolved from the ``DC_E_PT2_TOL`` knob, else
     #: :data:`groundstate.GS_E_PT2_TOL`, the tolerance of the production ground state.
     e_pt2_tol: float = None
+    #: Each sector's certification (:class:`sector_solver.SectorPlanStore`): certified once per
+    #: search, then only the classes that can still be lowest are expanded at a new shift.
+    plan_store: object = None
 
     def __post_init__(self):
         if self.de2_min is None:
@@ -453,6 +456,10 @@ class _SectorContext:
             self.n_center_at = {}
         if self.sector_at is None:
             self.sector_at = {}
+        if self.plan_store is None:
+            from impurityModel.ed.sector_solver import SectorPlanStore
+
+            self.plan_store = SectorPlanStore()
 
     @property
     def nominal_total(self):
@@ -585,6 +592,8 @@ class _SectorContext:
             # criterion and the record can report it.
             de2_min=self.de2_min,
             e_pt2_tol=self.e_pt2_tol,
+            plan_store=self.plan_store,
+            shift=mu,
         )
         # Broadcast the verdict *before* branching on it, not the answer afterwards. `es` and
         # `psis` come back rank-local from `solve_sector` (its docstring says so), and the next
@@ -1580,6 +1589,7 @@ def fixed_gap_dc(
 
                 def _clear_gap_caches():
                     ctx.sector_at.clear()
+                    ctx.plan_store.clear()
                     ctx.n_center_at.clear()
                     sectors_at.clear()
                     width_at.clear()

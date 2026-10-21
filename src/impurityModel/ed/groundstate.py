@@ -195,6 +195,8 @@ def solve_sector(
     frozen_occupations=None,
     de2_min=GS_DE2_MIN,
     e_pt2_tol=GS_E_PT2_TOL,
+    plan_store=None,
+    shift=0.0,
 ):
     """One charge sector, solved for the requested ``manifold``: :class:`SectorSolve`.
 
@@ -218,6 +220,10 @@ def solve_sector(
         floor, no residual criterion: only the *ordering* of sectors is decided). Callers that
         difference two sector energies, or quote the answer, pass :data:`GS_DE2_MIN` and
         :data:`GS_E_PT2_TOL`: the truncation error does not cancel in a difference.
+    plan_store, shift : SectorPlanStore or None, float
+        A search over a shift ``H - shift * N_imp`` (``h_op`` is already shifted) passes its store:
+        a ``Lowest`` sector is then certified once, and at other shifts only the classes that can
+        still be lowest are expanded (:class:`~impurityModel.ed.sector_solver.SectorPlanStore`).
     """
     # One call is one *sector solve* -- the unit the occupation walk and the double-counting search
     # are both counted in. The nested timers say which of build / expand / diagonalize the cost
@@ -257,8 +263,13 @@ def solve_sector(
             memory_policy=_memory_policy(truncation_threshold),
         )
         if config.GS_SECTOR_CERTIFY.get():
-            with solver_trace.timed("certify_plan"):
-                certification = certification_plan(h_op, basis, max_seed=config.GS_CERTIFY_MAX_SEED.get())
+            store = plan_store if isinstance(manifold, Lowest) else None
+            store_key = sector_key(N0, frozen_occupations)
+            certification = store.plan(store_key) if store is not None else None
+            only = store.jobs_at(store_key, shift) if certification is not None else None
+            if certification is None:
+                with solver_trace.timed("certify_plan"):
+                    certification = certification_plan(h_op, basis, max_seed=config.GS_CERTIFY_MAX_SEED.get())
             if certification is not None and sum(job.duplicate_of is None for job in certification.jobs) > 1:
                 with solver_trace.timed("certify"):
                     es, psis, sector_basis, sector_solver, verdicts = solve_certified(
@@ -270,7 +281,10 @@ def solve_sector(
                         dense_cutoff=dense_cutoff,
                         slater_weight_min=slaterWeightMin,
                         verbose=verbose,
+                        only=only,
                     )
+                if store is not None:
+                    store.record(store_key, certification, shift, verdicts)
                 sector_fields["certified_classes"] = len(verdicts)
                 sector_fields["n_dets"] = len(sector_basis)
                 return SectorSolve(es, psis, sector_basis, sector_solver)
