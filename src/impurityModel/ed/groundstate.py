@@ -270,7 +270,7 @@ def solve_sector(
             if certification is None:
                 with solver_trace.timed("certify_plan"):
                     certification = certification_plan(h_op, basis, max_seed=config.GS_CERTIFY_MAX_SEED.get())
-            if certification is not None and sum(job.duplicate_of is None for job in certification.jobs) > 1:
+            if certification is not None and len(certification.jobs) > 1:
                 with solver_trace.timed("certify"):
                     es, psis, sector_basis, sector_solver, verdicts = solve_certified(
                         h_op,

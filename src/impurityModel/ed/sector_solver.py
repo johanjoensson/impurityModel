@@ -25,22 +25,21 @@ NiO d7 sector into a spin-mixed state 0.053 high at three of four shifts while b
 d6.
 
 Each class reports its unpenalized lowest eigenvalue -- variational whatever the penalty did -- and
-the lowest class wins. Two savings keep the cost near a single expansion's: hard labels that are
-equivalent (the same seed spectra of ``P H P``, ``P H Q H P`` and a generic mix) expand once, and a
-class whose state has left its seed span and re-converged on an energy another class already found
-stops early (:data:`LEAK_ENERGY_TOL`): it can only re-derive that class's state.
+the lowest class wins. Nothing is deduplicated: two labels or classes with equal *seed* spectra are
+not equivalent (the bath energies enter only through ``Q H Q``; review measured a label merged that
+way dropping the ground state by 0.04-0.12 on a toy with differently fitted bath levels). What keeps
+the cost near a single expansion's is that a class whose state has left its seed span and
+re-converged on an energy another class already found stops early (:data:`LEAK_ENERGY_TOL`).
 """
 
 from dataclasses import dataclass
 
 import numpy as np
-from mpi4py import MPI
-
 from impurityModel.ed import seed_sectors
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.density_matrices import occupations as state_occupations
-from impurityModel.ed.eigensolvers import Lowest
-from impurityModel.ed.ManyBodyUtils import SlaterDeterminant, applyOp
+from impurityModel.ed.eigensolvers import Lowest, cold_vector
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, applyOp
 from impurityModel.ed.observables import make_spin_operators
 from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs
 from impurityModel.ed.symmetries import (
@@ -73,7 +72,6 @@ class CertificationJob:
     parity: tuple
     seed_class: int | None  # index into the label's class plan; None: the label's whole seed
     n_seed: int
-    duplicate_of: int | None = None  # a job of the equivalent label expanded instead
 
 
 @dataclass(frozen=True)
@@ -119,22 +117,6 @@ def _spin_symmetric(h_op, pairs):
     return max((abs(v) for v in comm.values()), default=0.0) <= SPIN_SYMMETRY_TOL * max(scale, 1.0)
 
 
-def _equivalent(a, m, idx_a, idx_b, scale):
-    """Do two hard labels' seed blocks have the same spectra (P H P, P H Q H P, a generic mix)?"""
-    if len(idx_a) != len(idx_b):
-        return False
-    tol = seed_sectors.PARTNER_TOL * scale
-    for t in (0.0, None, 0.6180339887498949):
-        pick = (lambda x: x[np.ix_(idx_a, idx_a)], lambda x: x[np.ix_(idx_b, idx_b)])
-        if t is None:
-            xa, xb = pick[0](m), pick[1](m)
-        else:
-            xa, xb = pick[0](a) + t * pick[0](m), pick[1](a) + t * pick[1](m)
-        if np.max(np.abs(np.linalg.eigvalsh(xa) - np.linalg.eigvalsh(xb))) > tol:
-            return False
-    return True
-
-
 def _label_window(basis, pairs, two_sz):
     window = list(basis.weighted_restrictions or [])
     if two_sz is not None:
@@ -150,8 +132,8 @@ def _label_keys(labels, label, basis):
 def certification_plan(h_op, basis, *, max_seed=1000):
     """The class expansions a sector solve on the seed ``basis`` needs (collective), or ``None``.
 
-    Rank 0 gathers the seed, detects the hard labels and decides which are needed and which are
-    equivalent; then every needed label's seed is partitioned into its soft classes. ``h_op``'s
+    Rank 0 gathers the seed, detects the hard labels and decides which are needed; then every needed
+    label's seed is partitioned into its soft classes. ``h_op``'s
     restrictions are left set to ``basis``'s on every rank. ``None`` when the seed is empty or larger
     than ``max_seed`` (the plan is built from dense seed matrices): the caller then runs a single,
     uncertified expansion.
@@ -186,21 +168,11 @@ def certification_plan(h_op, basis, *, max_seed=1000):
         if su2:
             two_min = min(abs(lab[0]) for lab in needed)
             needed = [lab for lab in needed if lab[0] == two_min]
-        a, m, _b, _out = seed_sectors.seed_matrices(h_op, seed)
-        scale = max(float(np.max(np.abs(np.linalg.eigvalsh(a)))), 1e-300)
-        index = {det: i for i, det in enumerate(seed)}
-        members = {lab: [index[d] for d, v in labels.items() if v == lab] for lab in needed}
-        source = {}
-        for k, lab in enumerate(needed):
-            for ref in needed[:k]:
-                if ref not in source and ref[0] == lab[0] and _equivalent(a, m, members[ref], members[lab], scale):
-                    source[lab] = ref
-                    break
-        head = (labels, needed, source, pairs, su2)
+        head = (labels, needed, pairs, su2)
     if comm is not None:
         head = comm.bcast(head, root=0)
-    labels, needed, source, pairs, su2 = head
-    class_plans, jobs, first_job = {}, [], {}
+    labels, needed, pairs, su2 = head
+    class_plans, jobs = {}, []
     for lab in needed:
         # Collective: every rank builds the label's seed and its class plan, whatever its share.
         sub = basis.clone(
@@ -209,15 +181,16 @@ def certification_plan(h_op, basis, *, max_seed=1000):
         plan = seed_sectors.build_seed_class_plan(h_op, sub, max_seed=max_seed, spin_tier=False)
         class_plans[lab] = plan
         n_label = sum(1 for v in labels.values() if v == lab)
-        dup = first_job.get(source[lab]) if lab in source else None
-        first_job[lab] = len(jobs)
-        if plan is None or len(plan.expanded) <= 1:
-            jobs.append(CertificationJob(lab[0], lab[1], None, n_label, dup))
+        # Every class inside the window, "partner" classes too: a partner is judged on seed spectra,
+        # which do not see the bath energies, so skipping it can skip the ground state.
+        inside = [] if plan is None else [k for k, cls in enumerate(plan.classes) if cls.status != "window"]
+        if len(inside) <= 1:
+            jobs.append(CertificationJob(lab[0], lab[1], None, n_label))
         else:
-            for k, cls in enumerate(plan.classes):
-                if cls.status == "expand":
-                    n = int(np.count_nonzero(np.max(np.abs(cls.span), axis=1) > seed_sectors.COUPLING_TOL))
-                    jobs.append(CertificationJob(lab[0], lab[1], k, n, dup))
+            for k in inside:
+                span = plan.classes[k].span
+                n = int(np.count_nonzero(np.max(np.abs(span), axis=1) > seed_sectors.COUPLING_TOL))
+                jobs.append(CertificationJob(lab[0], lab[1], k, n))
     h_op.set_restrictions(basis.restrictions)
     h_op.set_weighted_restrictions(basis.weighted_restrictions)
     return CertificationPlan(jobs, labels, pairs, su2, class_plans)
@@ -287,8 +260,7 @@ def certify_sector(
 
     ``within`` (an energy window) also returns, as a sixth element, the determinant keys of every
     class inside the window above the winner -- the winner's first -- plus the largest residual PT2;
-    and it expands the classes of the labels equivalent to those classes' labels, which hold the
-    orbital partners of a degenerate multiplet. Only the keys are kept, never a class's basis or solver.
+    Only the keys are kept, never a class's basis or solver.
 
     ``only`` (job indices) restricts the expansions to those jobs (:meth:`SectorPlanStore.jobs_at`).
     """
@@ -298,16 +270,25 @@ def certify_sector(
     verdicts = []
     finished = []
     keys = {}
+    energy_of_job = {}
 
     def run(k):
         nonlocal best
         verdict, es, psis, class_basis, solver = _expand_job(
             h_op, basis, plan, plan.jobs[k], finished, expand_kwargs, dense_cutoff, slater_weight_min, comm
         )
+        energy_of_job[k] = verdict.energy
         verdicts.append(verdict)
         finished.append(verdict.energy)
         if within is not None:
             keys[k] = class_basis._keys.copy()
+            # Drop, as soon as they are known to be outside it, the keys of classes above the window:
+            # holding every class's keys to the end costs the sum of all class sizes.
+            e_min = min(v.energy for v in verdicts)
+            margin = within + max(v.residual_pt2 for v in verdicts)
+            # The lowest energy only falls and the margin only grows, so a class dropped here stays out.
+            for q in [q for q in keys if energy_of_job[q] - e_min > margin]:
+                del keys[q]
         if verbose and rank == 0:
             job = plan.jobs[k]
             label = f"2Sz={job.two_sz} parity={''.join(map(str, job.parity))}"
@@ -318,21 +299,14 @@ def certify_sector(
             best = (verdict.energy, k, es, psis, class_basis, solver)
 
     for k, job in enumerate(plan.jobs):
-        if job.duplicate_of is None and (only is None or k in only):
+        if only is None or k in only:
             run(k)
     kept = None
     if within is not None:
         e_min = min(v.energy for v in verdicts)
         margin = within + max(v.residual_pt2 for v in verdicts)
         energy_of = {plan.jobs.index(v.job): v.energy for v in verdicts}
-        inside = [k for k, e in energy_of.items() if e - e_min <= margin]
-        inside_labels = {(plan.jobs[k].two_sz, plan.jobs[k].parity) for k in inside}
-        for k, job in enumerate(plan.jobs):
-            if job.duplicate_of is not None:
-                src = plan.jobs[job.duplicate_of]
-                if (src.two_sz, src.parity) in inside_labels:
-                    run(k)
-                    inside.append(k)
+        inside = sorted((k for k, e in energy_of.items() if e - e_min <= margin), key=lambda k: energy_of[k])
         winner = best[1]
         kept = [keys[winner]] + [keys[k] for k in inside if k != winner]
         keys.clear()
@@ -344,18 +318,24 @@ def certify_sector(
     return es, psis, class_basis, solver, verdicts
 
 
-def _spin_partner_keys(psis, pairs, max_steps):
-    """This rank's share of the supports of ``S_+^k psi`` and ``S_-^k psi``, ``k >= 1``.
+def _spin_partner_keys(keys, pairs, max_steps):
+    """This rank's share of the spin partners' supports of the states on ``keys``: ``S_+-^k``, ``k >= 1``.
 
-    ``psis`` is the winning class's lowest state, of total spin ``S`` and of whichever ``S_z`` its
-    hard label held (the smallest ``|S_z|``, where every multiplet has a member). Stepping both
-    ways until the image vanishes reaches every row. Each rank steps its own
-    rows only; by linearity the union over the ranks covers every partner's support, so this needs
-    no communication -- ``add_states`` routes the keys afterwards.
+    A class expansion holds one ``S_z`` row of each multiplet it found (its hard label's, the
+    smallest ``|S_z|``); the other rows of every multiplet inside the thermal window must be in the
+    window solve's basis at the same quality, or they sit at seed quality outside the window and
+    the manifold comes back short (measured: 5 of 8 states of a spin-and-orbitally degenerate
+    level). The ladders are applied to a state with generic amplitudes on ``keys`` -- every
+    determinant of the class -- so no image cancels, and stepped both ways until the image
+    vanishes. Each rank steps its own rows; by linearity the union over the ranks covers every
+    partner, so this needs no communication -- ``add_states`` routes the keys afterwards.
     """
     s_plus, s_minus, _s_z = make_spin_operators(pairs)
-    (state,) = psis.select([0]).to_states() if psis.width > 1 else psis.to_states()
-    keys = []
+    dets = keys.keys()
+    hashes = np.fromiter((det.get_hash() for det in dets), dtype=np.uint64, count=len(dets))
+    # The eigensolvers' hash-seeded generic vector: deterministic, and no two images cancel.
+    state = ManyBodyState(dict(zip(dets, cold_vector(hashes)[:, 0])))
+    found = []
     for ladder in (s_plus, s_minus):
         ladder.set_restrictions(None)
         ladder.set_weighted_restrictions(None)
@@ -364,8 +344,8 @@ def _spin_partner_keys(psis, pairs, max_steps):
             image = applyOp(ladder, image, cutoff=0)
             if not len(image):
                 break
-            keys.extend(image.keys())
-    return keys
+            found.extend(image.keys())
+    return found
 
 
 def solve_certified(
@@ -375,12 +355,11 @@ def solve_certified(
 
     ``Lowest`` is :func:`certify_sector`'s winner. ``Within`` needs every state of the window, and
     a class expansion holds one ``S_z`` row of one hard label only, so the window is solved on the
-    union of: the seed; every class whose energy lies within the window (plus the largest residual
-    PT2, the expansions' error bar) -- symmetry-equivalent labels included, since they hold the
-    orbital partners of a multiplet; and the winner's spin partners ``S_+-^k psi``. The union is
-    expanded for the window. It is never larger than the basis's cap would allow a single
-    expansion to reach: past the cap only the winner's own classes and spin partners are kept.
-    Collective.
+    union of the seed and, for every class whose energy lies within the window (plus the largest
+    residual PT2, the expansions' error bar), its determinants and their spin partners
+    (:func:`_spin_partner_keys`). Classes are added winner first, then by energy, and adding stops
+    once the union passes the basis's cap -- by at most the last class added. The union is then
+    expanded for the window. Collective.
     """
     if isinstance(manifold, Lowest):
         return certify_sector(
@@ -403,21 +382,22 @@ def solve_certified(
         verbose=verbose,
         within=float(manifold.max_energy),
     )
-    partners = []
-    if plan.su2:
-        # 2 S_max steps reach every row from any row; the largest seed 2 S_z bounds 2 S_max.
-        max_steps = 2 * max(abs(label[0]) for label in plan.labels.values())
-        partners = _spin_partner_keys(psis, plan.pairs, max_steps)
-    del es, psis, _solver
-    merged = basis.clone(initial_basis=list(basis.local_basis))
-    merged.add_states(list(winner_basis.local_basis) + partners)
-    del winner_basis
+    del es, psis, _solver, winner_basis
+    # 2 S_max steps reach every row from any row; the largest seed 2 S_z bounds 2 S_max.
+    max_steps = 2 * max(abs(label[0] or 0) for label in plan.labels.values())
     cap = basis.truncation_threshold
-    for keys in kept[1:]:
-        merged.add_states(keys.keys())
-    if cap is not None and merged.size > cap:
-        merged = basis.clone(initial_basis=list(basis.local_basis))
-        merged.add_states(kept[0].keys() + partners)
+    merged = basis.clone(initial_basis=list(basis.local_basis))
+    for n_added, keys in enumerate(kept):
+        merged.add_states(keys.keys() + (_spin_partner_keys(keys, plan.pairs, max_steps) if plan.su2 else []))
+        # `merged.size` is replicated, so every rank stops at the same class.
+        if cap is not None and merged.size > cap and n_added + 1 < len(kept):
+            if (basis.comm is None or basis.comm.rank == 0) and verbose:
+                print(
+                    f"  thermal window: {len(kept) - n_added - 1} of {len(kept)} classes left out at the cap "
+                    f"({merged.size:,} > {int(cap):,} determinants)",
+                    flush=True,
+                )
+            break
     kept.clear()
     solver = CIPSISolver(merged)
     solver.expand(h_op, manifold, **expand_kwargs)

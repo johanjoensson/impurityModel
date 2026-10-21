@@ -241,3 +241,70 @@ def test_a_cycle_hook_ends_the_expansion():
     solver.cycle_hook = lambda sv, e_ref, psi_refs: calls.append(len(sv.basis)) or True
     solver.expand(h_op, Lowest(), **EXPAND)
     assert solver.stopped_early and calls == [seed_size] and len(solver.basis) == seed_size
+
+
+def test_a_spin_and_orbitally_degenerate_thermal_level_comes_back_whole(monkeypatch):
+    """Review regression: cubic d7 with one bath set has an 8-fold ground level (spin x orbital). The
+    certified ``Within`` returned 5 of its states -- spin partners were generated from the winning
+    class only, so the other in-window class's rows stayed at seed quality -- where a plain
+    expansion returns all 8. Exact diagonalization of the whole sector is the oracle."""
+    import itertools
+
+    from impurityModel.ed.basis_transcription import build_dense_matrix
+    from impurityModel.ed.eigensolvers import Within
+    from impurityModel.ed.groundstate import solve_sector
+    from impurityModel.ed.manybody_basis import Basis
+    from impurityModel.test.support.cubic_d_shell import cubic_d_shell
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    n_imp_el, n_orb = 7, 20
+    _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
+    dets = [
+        sum((1 << (7 - o % 8)) << (8 * (2 - o // 8)) for o in occ).to_bytes(3, "big")
+        for occ in itertools.combinations(range(n_orb), n_imp_el + 10)
+    ]
+    h_op.set_restrictions(None)
+    h_op.set_weighted_restrictions(None)
+    exact = np.linalg.eigvalsh(build_dense_matrix(Basis(imp, baths, initial_basis=dets, verbose=False), h_op))
+    multiplicity = int(np.sum(exact - exact[0] < 1e-6))
+    assert multiplicity == 8 and exact[multiplicity] - exact[0] > 0.1
+    _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
+    result = solve_sector(
+        h_op, imp, baths, {0: n_imp_el}, None, 0, False, 1000, manifold=Within(1e-6), comm=None, verbose=False,
+        slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-8,
+    )  # fmt: skip
+    got = np.sort(np.real(result.es))
+    assert len(got) == multiplicity
+    np.testing.assert_allclose(got, exact[:multiplicity], atol=1e-6)
+
+
+@pytest.mark.parametrize("eps_b", [-1.0, -1.5, -3.0])
+def test_labels_with_equal_seed_spectra_but_different_baths_are_both_expanded(eps_b):
+    """Review regression: two orbitals with the same onsite level and hybridization but differently
+    fitted bath levels give two parity labels with identical seed spectra of ``P H P`` and
+    ``P H Q H P`` -- the bath energies enter only through ``Q H Q``. Deduplicating on those spectra
+    expanded one label only and missed the ground state by 0.04 (``eps_b = -1.5``) to 0.12 (-3.0)."""
+    from impurityModel.ed import atomic_physics
+    from impurityModel.ed.interaction_models import kanamori_u4
+    from impurityModel.ed.lie_algebra import tensors_to_operator
+    from impurityModel.test.symmetry.test_seed_sectors import N_IMP, N_ORB
+
+    def hamiltonian():
+        h = np.zeros((N_ORB, N_ORB), dtype=complex)
+        for spin in range(2):
+            for orbital, eps in enumerate((-1.0, eps_b)):
+                i = orbital + 2 * spin
+                h[i + N_IMP, i + N_IMP] = eps
+                h[i, i + N_IMP] = h[i + N_IMP, i] = 0.8
+        u = ManyBodyOperator(atomic_physics.getUop_from_rspt_u4(kanamori_u4(2, 4.0, 0.8)))
+        return tensors_to_operator(h) + u
+
+    exact = _exact_ground_energy(hamiltonian(), n_electrons=5)
+    h_op = hamiltonian()
+    basis, _solver = build_basis_and_solver(
+        h_op, IMPURITY_ORBITALS, BATH_STATES, {0: 1}, None, 0, False, None, None, False, None, None, 0,
+        manifold=Lowest(),
+    )  # fmt: skip
+    plan = certification_plan(h_op, basis)
+    es, *_rest = certify_sector(h_op, basis, plan, expand_kwargs=EXPAND, dense_cutoff=1000, slater_weight_min=0)
+    assert abs(float(np.min(es)) - exact) < 1e-8
