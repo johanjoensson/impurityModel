@@ -285,6 +285,16 @@ def solve_sector(
                     )
                 if store is not None:
                     store.record(store_key, certification, shift, verdicts)
+                if sector_solver.truncation_report is None:
+                    # A class may have lost because the cap or the memory guard held it high: say so on
+                    # the solve callers read, so a cap-decided comparison is not taken for a converged one.
+                    capped = [v for v in verdicts if v.truncation_report is not None]
+                    if capped:
+                        sector_solver.truncation_report = dict(
+                            capped[0].truncation_report,
+                            losing_class=repr(capped[0].job),
+                            memory_bound=any(v.memory_bound for v in capped),
+                        )
                 sector_fields["certified_classes"] = len(verdicts)
                 sector_fields["n_dets"] = len(sector_basis)
                 return SectorSolve(es, psis, sector_basis, sector_solver)

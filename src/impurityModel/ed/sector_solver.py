@@ -87,6 +87,9 @@ class ClassVerdict:
     #: ``<N_imp>`` of the class's lowest state: ``-dE/dmu`` for a shift ``-mu N_imp``.
     n_imp: float = float("nan")
     stopped_early: bool = False
+    #: The expansion's ``truncation_report`` (replicated scalars), when a cap or the memory guard
+    #: limited it: a class can *lose* because it was held high, which the winner's own report misses.
+    truncation_report: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -242,6 +245,7 @@ def _expand_job(h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, s
         bool(report.get("memory_bound")),
         n_imp,
         bool(solver.stopped_early),
+        None if solver.truncation_report is None else dict(solver.truncation_report),
     )
     if comm is not None:
         fields = comm.bcast(fields, root=0)

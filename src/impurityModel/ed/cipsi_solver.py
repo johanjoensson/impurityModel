@@ -1131,7 +1131,10 @@ class CIPSISolver:
         if cap_cycles > 0 or guard.limited:
             self._record_truncation(cap_cycles, guard)
 
-        self._report_convergence(e_pt2_tol, de2_min, cap_cycles > 0, guard.limited, residual_current)
+        # An expansion its cycle hook ended on purpose is not "not converged": say nothing about it.
+        self._report_convergence(
+            e_pt2_tol, de2_min, cap_cycles > 0, guard.limited, residual_current, quiet=self.stopped_early
+        )
         self._h_snapshot = None
         self._snapshot_budget = False
 
@@ -1209,7 +1212,7 @@ class CIPSISolver:
                 flush=True,
             )
 
-    def _report_convergence(self, e_pt2_tol, de2_min, cap_bound, memory_bound, residual_current):
+    def _report_convergence(self, e_pt2_tol, de2_min, cap_bound, memory_bound, residual_current, quiet=False):
         """Record (and warn about) how far the expansion is from PT2 convergence.
 
         ``residual_pt2`` is the last selection round's. When that round left the basis as it is
@@ -1239,7 +1242,7 @@ class CIPSISolver:
             "limited_by": limited_by,
         }
         rank = self.basis.comm.rank if self.basis.is_distributed else 0
-        if converged is False and rank == 0:
+        if converged is False and rank == 0 and not quiet:
             reason = {
                 "memory": "the memory guard held the basis",
                 "cap": "the truncation_threshold cap held the basis",

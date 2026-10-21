@@ -308,3 +308,27 @@ def test_labels_with_equal_seed_spectra_but_different_baths_are_both_expanded(ep
     plan = certification_plan(h_op, basis)
     es, *_rest = certify_sector(h_op, basis, plan, expand_kwargs=EXPAND, dense_cutoff=1000, slater_weight_min=0)
     assert abs(float(np.min(es)) - exact) < 1e-8
+
+
+def test_a_class_held_by_the_cap_marks_the_sector_solve_cap_bound(monkeypatch):
+    """A class can lose *because* the cap held it high. The sector solve callers read (the DC's cap
+    calibration through ``truncation_report``) must say so even when the winner itself was unbound."""
+    from impurityModel.ed import groundstate
+    from impurityModel.ed.sector_solver import CertificationJob, ClassVerdict
+
+    real = groundstate.solve_certified
+
+    def with_a_capped_loser(*args, **kwargs):
+        es, psis, sb, solver, verdicts = real(*args, **kwargs)
+        assert solver.truncation_report is None, "the fixture's winner is capped itself"
+        loser = ClassVerdict(
+            CertificationJob(0, (1,), None, 1), es[0] + 1.0, 10, 0.0, True, False,
+            truncation_report={"cap_hit": True, "threshold": 10, "memory_bound": False},
+        )  # fmt: skip
+        return es, psis, sb, solver, [*verdicts, loser]
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    monkeypatch.setattr(groundstate, "solve_certified", with_a_capped_loser)
+    _e0, result = _solve_sector(_hamiltonian(), None, Lowest())
+    report = result.solver.truncation_report
+    assert report is not None and report["cap_hit"] and "losing_class" in report
