@@ -42,14 +42,6 @@ from impurityModel.ed.solver_trace import timed as _trace_timed
 #: initially (:func:`_manifold_request`). The window solve grows its retention past it on demand.
 _EIGENSTATE_PAD = 10
 
-#: Largest basis a ``Lowest`` solve diagonalizes densely, whatever ``dense_cutoff`` allows. The dense
-#: branch computes *every* eigenpair on rank 0 and broadcasts all ``n**2`` amplitudes, every CIPSI
-#: cycle; a ``Lowest`` request needs one. Measured on the NiO 10-bath d7 sector (an 866-determinant
-#: class, 18 cycles under ``dense_cutoff=1000``): 16.5 s of a 17.8 s expansion was ``eigh``, and the
-#: same expansion through the count-mode solve took 2.4 s to the same energy. ``Within`` keeps the
-#: dense branch up to ``dense_cutoff``: there it is the complete-by-construction certificate.
-_DENSE_LOWEST_MAX = 64
-
 #: Largest share of the expansion's per-rank memory budget the kept Hamiltonian matrix may take.
 #: :meth:`CIPSISolver._build_h_matrix` keeps the last matrix through the selection round so the next
 #: cycle can grow it (:func:`basis_transcription.extend_sparse_matrix`) instead of rebuilding it;
@@ -1333,11 +1325,7 @@ class CIPSISolver:
 
         Above ``dense_cutoff``: one count-mode solve for ``Lowest``
         (:func:`~impurityModel.ed.eigensolvers.solve_lowest`), one window solve for ``Within``
-        (:func:`~impurityModel.ed.eigensolvers.solve_window`). Below it a dense diagonalization --
-        for ``Lowest`` only up to :data:`_DENSE_LOWEST_MAX` determinants, above which the count-mode
-        solve is used whatever ``dense_cutoff`` says. Its cold start column converges, on a
-        degenerate ground level, to the cold vector's projection onto the level: the same generic
-        reference :meth:`_generic_lowest_level_vector` builds on the dense branch.
+        (:func:`~impurityModel.ed.eigensolvers.solve_window`). Below it a dense diagonalization.
         Both branches cut with :func:`_energy_cut_indices`, which never bisects a degenerate
         manifold, so a group straddling the window edge is kept whole whichever branch ran. The
         window solve's initial retention is derived from the warm block and the
@@ -1387,7 +1375,7 @@ class CIPSISolver:
             num_wanted = _manifold_request(n_kept, self._prev_kept)
             self._prev_kept = n_kept
 
-        if self.basis.size >= (min(dense_cutoff, _DENSE_LOWEST_MAX) if lowest else dense_cutoff):
+        if self.basis.size >= dense_cutoff:
             reusable = (
                 reuse_last
                 and h_matrix is None
