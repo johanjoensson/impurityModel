@@ -7,6 +7,7 @@ and unwired, so an uncapped production expansion grew until the kernel killed th
 see ``doc/plans/dc_smo_memory.md``.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -55,19 +56,25 @@ def test_a_negative_fraction_is_clamped_not_honoured(monkeypatch):
 
 
 def test_the_expand_call_site_passes_the_budget():
-    """Source-level, deliberately: the call site is inside a collective function that needs a
-    full solve to reach, and what regressed before was the *argument*, not the behaviour. There is
-    one: every sector solve, walk and thermal alike, goes through ``solve_sector``."""
+    """Source-level, deliberately: the call sites are inside a collective function that needs a
+    full solve to reach, and what regressed before was the *argument*, not the behaviour. Every
+    sector solve, walk and thermal alike, goes through ``solve_sector``, which builds the budget
+    into one ``expand_kwargs`` dict; every ``expand`` call (the plain one and the per-seed-class
+    ones) must take it whole."""
     # `read_text`, not a bare `open(...).read()`: the unclosed handle raises
     # PytestUnraisableExceptionWarning, and pytest.ini turns warnings into errors.
     src = Path(groundstate.__file__).read_text()
-    n_expand = src.count("solver.expand(")
+    # One line per call site (each is written on one line): `[^)]*` would stop at `Lowest()`.
+    calls = re.findall(r"solver\.expand\((.*)", src)
+    assert calls, "no expand call site found"
+    unwired = [c for c in calls if "**expand_kwargs" not in c]
+    assert not unwired, f"expand call sites without the budgeted kwargs: {unwired}"
     n_wired = src.count("memory_budget_bytes=expand_memory_budget(comm)")
-    assert n_expand == n_wired == 1, f"{n_expand} expand call sites, {n_wired} pass a budget"
+    assert n_wired == 1, f"{n_wired} places build the expansion budget; one is expected"
     # ...and it says whether the cap may be tightened: a cap the user set is final, so its guard
     # only warns. Omitting the argument would silently default to "tighten" on that path.
     n_policy = src.count("memory_policy=_memory_policy(truncation_threshold)")
-    assert n_policy == 1, f"{n_policy} of 1 expand call sites pass the cap's memory policy"
+    assert n_policy == 1, f"{n_policy} places pass the cap's memory policy; one is expected"
 
 
 # ---------------------------------------------------------------------------------------

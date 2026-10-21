@@ -556,6 +556,42 @@ GS_MAX_BLOCK_WIDTH = Knob(
     becomes the default rather than an opt-in override.""",
 )
 
+GS_SEED_CLASSES = Knob(
+    name="GS_SEED_CLASSES",
+    kind="bool",
+    default=False,
+    group="groundstate",
+    doc="""Split every sector solve by the symmetry classes of its seed basis and expand each class
+    within the energy window separately (`seed_sectors`). Without it, an expansion is confined to
+    the symmetry sectors of the seed's ground level, and misses the ground state when hybridization
+    reorders the multiplets -- on the NiO 10-bath gap-DC search, every sector from d5 to d9, by up
+    to 0.17. Costs one expansion per class in the window (10-40x a single expansion on the NiO d5
+    and d6 seeds), which is why it is opt-in until a cheaper certifier replaces it.""",
+)
+
+GS_SEED_CLASS_WINDOW = Knob(
+    name="GS_SEED_CLASS_WINDOW",
+    kind="float",
+    default=None,
+    minimum=0.0,
+    group="groundstate",
+    doc="""Energy window, above the lowest seed class, inside which a seed symmetry class is
+    expanded (Hamiltonian units). Unset, it is `GS_SEED_CLASS_WINDOW_FACTOR` times the largest
+    hybridization spread sqrt(<v|PHQHP|v>) of the classes' lowest seed states.""",
+)
+
+GS_SEED_CLASS_WINDOW_FACTOR = Knob(
+    name="GS_SEED_CLASS_WINDOW_FACTOR",
+    kind="float",
+    default=3.0,
+    minimum=0.0,
+    group="groundstate",
+    doc="""Multiple of the largest seed hybridization spread that sets the seed-class window when
+    `GS_SEED_CLASS_WINDOW` is unset. Hybridization lowers a seed state by about sigma^2 / Delta,
+    which reaches sigma as the charge-transfer gap Delta closes; three times the largest sigma
+    covers every crossover that a single hybridization shell can drive, with margin.""",
+)
+
 GS_SELECTION_CHUNK = Knob(
     name="GS_SELECTION_CHUNK",
     kind="int",
@@ -869,6 +905,9 @@ KNOBS: dict[str, Knob] = _register(
     GF_RIXS_WIN_CHUNK,
     GF_RIXS_ADAPTIVE_TOL,
     GS_MAX_BLOCK_WIDTH,
+    GS_SEED_CLASSES,
+    GS_SEED_CLASS_WINDOW,
+    GS_SEED_CLASS_WINDOW_FACTOR,
     GS_SELECTION_CHUNK,
     GS_MATVEC_EXCHANGE_BYTES,
     APPLY_ROW_CHUNKS,

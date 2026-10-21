@@ -427,6 +427,10 @@ class CIPSISolver:
         self.last_selection = None
         self.last_truncation: dict | None = None
         self.truncation_report = None
+        #: ``(basis, H_mat) -> H_mat``, applied to every matrix the eigensolves build (collective,
+        #: like the build). ``seed_sectors.ClassPenalty`` installs one to keep an expansion in a
+        #: symmetry class; ``None`` (the default) diagonalizes ``H`` itself. Selection never sees it.
+        self.matrix_hook = None
 
     def _allreduce_sum(self, value):
         if self.basis.is_distributed:
@@ -1221,6 +1225,8 @@ class CIPSISolver:
     def _build_h_matrix(self, H):
         """``H`` as a ``DistributedSparseMatrix`` on the current basis (collective)."""
         H_mat = build_sparse_matrix(self.basis, H)
+        if self.matrix_hook is not None:
+            H_mat = self.matrix_hook(self.basis, H_mat)
         _trace_note("h_matrix_nnz", nnz=int(H_mat.nnz), n=int(H_mat.shape[0]))
         return H_mat
 
