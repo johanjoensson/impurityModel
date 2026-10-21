@@ -1317,3 +1317,115 @@ def definite_conserved_charges(psi, charges, n_orb, comm=None, tol=DEFINITE_CHAR
     if np.any(mean_sq - mean**2 > tol):
         return None
     return [int(round(x)) for x in mean]  # noqa: RUF046  (np.float64 round() returns float, cast is needed)
+
+
+#: Operator terms at or below this magnitude are roundoff, not couplings, when deciding which
+#: occupation parities an operator conserves (:func:`conserved_parities`): the parity test is
+#: exact integer algebra on the terms that remain, so one roundoff term above the threshold would
+#: silently break a symmetry. The scale of :func:`lie_algebra.rotate_hamiltonian`'s term cutoff.
+PARITY_TERM_TOL = 1e-12
+
+
+def conserved_parities(op, tol=PARITY_TERM_TOL):
+    r"""Every orbital subset ``A`` whose occupation parity ``(-1)^{N_A}`` the operator conserves.
+
+    A term ``c^\dagger_{i_1} ... c_{j_k}`` changes the parity of ``N_A`` by the number of its
+    operators acting inside ``A``, modulo 2, so it conserves ``(-1)^{N_A}`` iff its *flip vector*
+    -- the orbitals it acts on an odd number of times, over GF(2) -- has even overlap with ``A``.
+    The conserved subsets are therefore the GF(2) null space of the flip vectors: exact integer
+    linear algebra, rank-invariant by construction.
+
+    These are the labels a selected-CI expansion can never cross: they are diagonal on
+    determinants, so ``H`` applied to a state of one parity pattern yields only that pattern. On a
+    bath-fitted impurity they are the two-fold rotations of the point group acting on the
+    orbital chains (the hard part of the cubic symmetry), which the one-body commutant does not
+    see because ``U`` is invariant under them without commuting with any one-body generator.
+
+    Parameters
+    ----------
+    op : ManyBodyOperator or dict
+        The operator. Terms with ``|amplitude| <= tol`` are ignored.
+    tol : float
+        See :data:`PARITY_TERM_TOL`.
+
+    Returns
+    -------
+    list of int
+        A basis of the conserved subsets as orbital bitmasks (bit ``i`` set when orbital ``i`` is
+        in the subset), in a canonical (reduced) form. Always contains the total-number parity
+        over the orbitals the operator touches when the operator conserves particle number.
+    """
+    items = op.items() if hasattr(op, "items") else dict(op).items()
+    flips = set()
+    touched = 0
+    for term, amp in items:
+        if abs(amp) <= tol:
+            continue
+        v = 0
+        for orb, _action in term:
+            v ^= 1 << orb
+            touched |= 1 << orb
+        if v:
+            flips.add(v)
+    # Gauss-Jordan elimination over GF(2): `pivots[p]` has its leading bit at `p`, and no other
+    # pivot row has bit `p` set.
+    pivots = {}
+    for v in sorted(flips):
+        for p, row in pivots.items():
+            if v >> p & 1:
+                v ^= row
+        if not v:
+            continue
+        lead = v.bit_length() - 1
+        for p in list(pivots):
+            if pivots[p] >> lead & 1:
+                pivots[p] ^= v
+        pivots[lead] = v
+    out = []
+    for f in range(touched.bit_length()):
+        if not touched >> f & 1 or f in pivots:
+            continue
+        # The null-space vector of free orbital f: f itself, plus every pivot whose row has bit f.
+        z = 1 << f
+        for p, row in pivots.items():
+            if row >> f & 1:
+                z |= 1 << p
+        out.append(z)
+    return out
+
+
+def parity_labels(bits, parities):
+    r"""The parity pattern of each determinant: ``(n_dets, len(parities))`` of 0/1.
+
+    ``bits`` is the ``(n_dets, n_orb)`` 0/1 occupation array (orbital ``i`` in column ``i``);
+    entry ``[d, k]`` is ``N_A mod 2`` of determinant ``d`` for the ``k``-th subset of
+    :func:`conserved_parities`.
+    """
+    bits = np.asarray(bits, dtype=np.int64)
+    n_orb = bits.shape[1]
+    masks = np.array([[(z >> i) & 1 for i in range(n_orb)] for z in parities], dtype=np.int64).reshape(-1, n_orb)
+    return (bits @ masks.T) % 2
+
+
+def conserves_sz(op, spin_pairs, tol=PARITY_TERM_TOL):
+    r"""Whether every term of ``op`` conserves ``2 S_z = sum (n_up - n_dn)`` over ``spin_pairs``.
+
+    Exact: a term changes ``2 S_z`` by its created minus annihilated up orbitals, minus the same
+    for down orbitals. An orbital outside every pair carries no spin (weight 0), so a term moving an
+    electron between it and a paired orbital changes ``2 S_z`` by one.
+    """
+    weight = {}
+    for dn, up in spin_pairs:
+        weight[dn] = -1
+        weight[up] = 1
+    items = op.items() if hasattr(op, "items") else dict(op).items()
+    for term, amp in items:
+        if abs(amp) <= tol:
+            continue
+        change = 0
+        for orb, action in term:
+            w = weight.get(orb, 0)
+            change += w if action == "c" else -w
+        if change:
+            return False
+    return True
