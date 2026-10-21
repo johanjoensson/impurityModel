@@ -142,3 +142,64 @@ def test_every_spin_tier_job_expands_with_its_penalty(monkeypatch):
     expected = [job.spin is not None for job in plan.jobs if job.duplicate_of is None]
     assert any(expected), "the fixture has no spin tier below the top spin"
     assert seen == expected
+
+
+def _solve_sector(h_op, comm, manifold):
+    from impurityModel.ed.groundstate import solve_sector
+
+    result = solve_sector(
+        h_op, IMPURITY_ORBITALS, BATH_STATES, {0: 2}, None, 0, False, 1000, manifold=manifold, comm=comm,
+        verbose=False, slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-12,
+    )  # fmt: skip
+    e0 = float(np.min(np.real(result.es)))
+    return (e0 if comm is None else comm.bcast(e0, root=0)), result
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_solve_sector_certifies_by_default_and_the_switch_restores_a_single_expansion(comm, monkeypatch):
+    exact = _exact_ground_energy(_hamiltonian())
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    certified, _result = _solve_sector(_hamiltonian(), comm, Lowest())
+    monkeypatch.setenv("GS_SECTOR_CERTIFY", "0")
+    single, _result = _solve_sector(_hamiltonian(), comm, Lowest())
+    assert abs(certified - exact) < 1e-8
+    assert single > exact + 1e-3
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_the_certified_thermal_manifold_holds_the_whole_ground_multiplet(comm, monkeypatch):
+    """``Within`` merges the winner, its spin partners and the classes in the window: a degenerate
+    ground multiplet comes back complete, whatever row the winning class expanded."""
+    from impurityModel.ed.eigensolvers import Within
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    h_op = _hamiltonian(mu=-5.0)  # a triplet ground level: its rows span three S_z
+    exact = np.sort(np.real(_exact_spectrum(h_op)))
+    multiplicity = int(np.sum(exact - exact[0] < 1e-8))
+    assert multiplicity > 1, "the fixture's ground level is not degenerate"
+    _e0, result = _solve_sector(_hamiltonian(mu=-5.0), comm, Within(1e-6))
+    got = np.sort(np.real(result.es))
+    assert len(got) == multiplicity
+    np.testing.assert_allclose(got, exact[:multiplicity], atol=1e-8)
+
+
+def _exact_spectrum(h_op):
+    import itertools
+
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, applyOp
+    from impurityModel.test.symmetry.test_seed_sectors import N_ELECTRONS, N_ORB
+
+    dets = []
+    for occupied in itertools.combinations(range(N_ORB), N_ELECTRONS):
+        chunk = 0
+        for orb in occupied:
+            chunk |= 1 << (63 - orb)
+        dets.append(SlaterDeterminant((chunk,)))
+    index = {det: i for i, det in enumerate(dets)}
+    h_op.set_restrictions(None)
+    h_op.set_weighted_restrictions(None)
+    h = np.zeros((len(dets), len(dets)), dtype=complex)
+    for j, det in enumerate(dets):
+        for key, row in applyOp(h_op, ManyBodyState({det: 1.0}), cutoff=0).items():
+            h[index[key], j] += row[0]
+    return np.linalg.eigvalsh(h)

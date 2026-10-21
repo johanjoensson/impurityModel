@@ -556,6 +556,30 @@ GS_MAX_BLOCK_WIDTH = Knob(
     becomes the default rather than an opt-in override.""",
 )
 
+GS_SECTOR_CERTIFY = Knob(
+    name="GS_SECTOR_CERTIFY",
+    kind="bool",
+    default=True,
+    group="groundstate",
+    doc="""Certify every sector solve (`sector_solver`): expand one class per hard symmetry label
+    (``2 S_z`` and the occupation parities ``H`` conserves) and spin tier, and keep the lowest. A
+    single expansion from the seed's lowest state never leaves that state's symmetry class, and on
+    bath-fitted impurities the seed's class is routinely the wrong one -- on the NiO 10-bath archive
+    every sector from d5 to d9 converged on an excited level, up to 0.17 high. ``0`` restores the
+    single expansion.""",
+)
+
+GS_CERTIFY_MAX_SEED = Knob(
+    name="GS_CERTIFY_MAX_SEED",
+    kind="int",
+    default=2000,
+    minimum=0,
+    group="groundstate",
+    doc="""Largest seed (determinants) a sector solve certifies. The certification plan is built
+    from dense seed matrices on rank 0 (``n0^2`` complex, twice); a larger seed is solved by a
+    single expansion and reported uncertified.""",
+)
+
 GS_SEED_CLASSES = Knob(
     name="GS_SEED_CLASSES",
     kind="bool",
@@ -905,6 +929,8 @@ KNOBS: dict[str, Knob] = _register(
     GF_RIXS_WIN_CHUNK,
     GF_RIXS_ADAPTIVE_TOL,
     GS_MAX_BLOCK_WIDTH,
+    GS_SECTOR_CERTIFY,
+    GS_CERTIFY_MAX_SEED,
     GS_SEED_CLASSES,
     GS_SEED_CLASS_WINDOW,
     GS_SEED_CLASS_WINDOW_FACTOR,

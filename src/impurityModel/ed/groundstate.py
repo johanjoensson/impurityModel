@@ -21,6 +21,7 @@ from impurityModel.ed.memory_estimate import (
     resident_bytes_per_rank,
     resolve_cap_policy,
 )
+from impurityModel.ed.sector_solver import certification_plan, solve_certified
 from impurityModel.ed.seed_sectors import seed_class_plan
 from impurityModel.ed.utils import (
     V_DETAIL,
@@ -288,6 +289,24 @@ def solve_sector(
             memory_budget_bytes=expand_memory_budget(comm),
             memory_policy=_memory_policy(truncation_threshold),
         )
+        if config.GS_SECTOR_CERTIFY.get():
+            with solver_trace.timed("certify_plan"):
+                certification = certification_plan(h_op, basis, max_seed=config.GS_CERTIFY_MAX_SEED.get())
+            if certification is not None and sum(job.duplicate_of is None for job in certification.jobs) > 1:
+                with solver_trace.timed("certify"):
+                    es, psis, sector_basis, sector_solver, verdicts = solve_certified(
+                        h_op,
+                        basis,
+                        certification,
+                        manifold,
+                        expand_kwargs=expand_kwargs,
+                        dense_cutoff=dense_cutoff,
+                        slater_weight_min=slaterWeightMin,
+                        verbose=verbose,
+                    )
+                sector_fields["certified_classes"] = len(verdicts)
+                sector_fields["n_dets"] = len(sector_basis)
+                return SectorSolve(es, psis, sector_basis, sector_solver)
         with solver_trace.timed("seed_classes"):
             plan = seed_class_plan(h_op, basis, max_seed=int(dense_cutoff), verbose=verbose)
         if plan is not None and len(plan.expanded) > 1:

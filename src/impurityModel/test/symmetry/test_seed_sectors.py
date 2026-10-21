@@ -35,6 +35,7 @@ def _seed_classes_on(monkeypatch):
     """The seed-class split is opt-in (``GS_SEED_CLASSES`` defaults off); these tests exercise it.
     The window knobs are cleared so a value in the developer's environment cannot leak in."""
     monkeypatch.setenv("GS_SEED_CLASSES", "1")
+    monkeypatch.setenv("GS_SECTOR_CERTIFY", "0")
     monkeypatch.delenv("GS_SEED_CLASS_WINDOW", raising=False)
     monkeypatch.delenv("GS_SEED_CLASS_WINDOW_FACTOR", raising=False)
 
