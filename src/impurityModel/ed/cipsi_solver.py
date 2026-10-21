@@ -449,6 +449,12 @@ class CIPSISolver:
         #: like the build). ``seed_sectors.ClassPenalty`` installs one to keep an expansion in a
         #: symmetry class; ``None`` (the default) diagonalizes ``H`` itself. Selection never sees it.
         self.matrix_hook = None
+        #: A Hermitian ``ManyBodyOperator`` added to ``H`` in every matrix the eigensolves build, never
+        #: in the selection (e.g. ``lambda S^2``, to keep an expansion's eigensolves on the lowest spin
+        #: of its ``S_z`` sector). Unlike :attr:`matrix_hook` it is an operator, so the penalized matrix
+        #: is grown cycle to cycle like ``H``'s own (:meth:`_build_h_matrix`).
+        self.matrix_penalty = None
+        self._penalized = None
         #: The last Hamiltonian matrix and what it was built on (:class:`MatrixSnapshot`), kept
         #: during :meth:`expand` only; see :data:`_SNAPSHOT_BUDGET_FRACTION`.
         self._h_snapshot = None
@@ -1257,6 +1263,13 @@ class CIPSISolver:
         determinants since (:func:`basis_transcription.extend_sparse_matrix`). The operator object
         itself is held by the snapshot, so an identity check cannot be fooled by a recycled ``id``.
         """
+        if self.matrix_penalty is not None:
+            # One combined operator per (H, penalty) pair, kept so the snapshot key below is stable.
+            if self._penalized is None or self._penalized[0] is not H or self._penalized[1] is not self.matrix_penalty:
+                self._penalized = (H, self.matrix_penalty, H + self.matrix_penalty)
+            H = self._penalized[2]
+            H.set_restrictions(self.basis.restrictions)
+            H.set_weighted_restrictions(self.basis.weighted_restrictions)
         key = (H, repr(self.basis.restrictions), repr(self.basis.weighted_restrictions))
         snapshot, self._h_snapshot = self._h_snapshot, None
         H_mat = None

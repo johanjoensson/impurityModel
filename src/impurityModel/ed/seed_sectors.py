@@ -73,7 +73,7 @@ _COUPLING_TOL = 1e-9
 #: Two ``X`` eigenvalues closer than this (relative) are treated as one degenerate level.
 _DEGENERACY_TOL = 1e-10
 #: Two classes are partners when their seed spectra agree to this (relative).
-_PARTNER_TOL = 1e-8
+PARTNER_TOL = 1e-8
 #: How far from a definite value a label operator may be inside a class (relative variance).
 _DEFINITE_TOL = 1e-6
 #: Generic, mutually irrational weights of the operators in ``X`` (golden ratio, sqrt 2, sqrt 3,
@@ -87,7 +87,7 @@ _DRAWS = (
 _SPIN_GATE_TOL = 1e-8
 #: The penalties are this multiple of the seed spectrum's width: far above any gap that decides
 #: which class wins, small enough not to wreck the Lanczos conditioning.
-_PENALTY_FACTOR = 2.0
+PENALTY_FACTOR = 2.0
 #: A class's final state must keep at least this fraction of its seed weight inside the class.
 DRIFT_TOL = 0.5
 
@@ -136,7 +136,7 @@ def _comm_of(basis):
     return basis.comm if basis.is_distributed else None
 
 
-def _gather_seed(basis):
+def gather_seed(basis):
     """Every seed determinant as a chunk tuple, sorted: one canonical order on every rank count."""
     local = [tuple(int(chunk) for chunk in det) for det in basis.local_basis]
     comm = _comm_of(basis)
@@ -150,7 +150,7 @@ def _images(op, det):
     return {tuple(int(chunk) for chunk in key): complex(row[0]) for key, row in out.items()}
 
 
-def _seed_matrices(h_op, seed):
+def seed_matrices(h_op, seed):
     """``A = P H P`` and ``M = P H Q H P`` in canonical seed coordinates, plus ``H`` on the first shell."""
     index = {det: i for i, det in enumerate(seed)}
     n0 = len(seed)
@@ -340,7 +340,7 @@ def _build_classes(a, m, spin):
     return (
         sorted(
             classes,
-            key=lambda c: (int(np.rint(c.energy / (scale * _PARTNER_TOL))), -(c.two_sz or 0), c.spin or 0.0),
+            key=lambda c: (int(np.rint(c.energy / (scale * PARTNER_TOL))), -(c.two_sz or 0), c.spin or 0.0),
         ),
         ok,
     )
@@ -353,8 +353,8 @@ def _same_spectrum(x, y, scale, m_scale):
     them drops the one that wins."""
     return (
         len(x.spectrum) == len(y.spectrum)
-        and np.max(np.abs(x.spectrum - y.spectrum)) <= _PARTNER_TOL * scale
-        and np.max(np.abs(x.m_spectrum - y.m_spectrum)) <= _PARTNER_TOL * m_scale
+        and np.max(np.abs(x.spectrum - y.spectrum)) <= PARTNER_TOL * scale
+        and np.max(np.abs(x.m_spectrum - y.m_spectrum)) <= PARTNER_TOL * m_scale
     )
 
 
@@ -411,7 +411,7 @@ def seed_class_plan(h_op, basis, *, max_seed=1000, verbose=False):
     n0 = len(basis)
     if n0 == 0 or n0 > max_seed:
         return None
-    seed = _gather_seed(basis)
+    seed = gather_seed(basis)
     rank = comm.rank if comm is not None else 0
     plan = None
     # On every rank, not only on the one that builds the plan: whatever applies ``h_op`` next must
@@ -421,7 +421,7 @@ def seed_class_plan(h_op, basis, *, max_seed=1000, verbose=False):
     if rank == 0:
         n_orb = extract_tensors(h_op, two_body=False)[0].shape[0]
         n_orb = max(n_orb, basis.num_spin_orbitals)
-        a, m, _b, _outside = _seed_matrices(h_op, seed)
+        a, m, _b, _outside = seed_matrices(h_op, seed)
         spin = _spin_tier(h_op, basis, seed, n_orb)
         classes, ok = _build_classes(a, m, spin)
         evals_a = np.linalg.eigvalsh(a)
@@ -429,7 +429,7 @@ def seed_class_plan(h_op, basis, *, max_seed=1000, verbose=False):
         scale = max(float(np.max(np.abs(evals_a))), 1e-300)
         window = _window(classes)
         classes = _select(classes, window, scale, max(float(np.linalg.norm(m, 2)), 1e-300))
-        penalty = _PENALTY_FACTOR * max(width, window, 1e-6 * scale)
+        penalty = PENALTY_FACTOR * max(width, window, 1e-6 * scale)
         plan = SeedClassPlan(seed, classes, spin, window, penalty, ok)
     if comm is not None:
         plan = comm.bcast(plan, root=0)
