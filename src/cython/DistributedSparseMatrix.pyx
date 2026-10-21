@@ -125,6 +125,7 @@ cdef class DistributedSparseMatrix:
     cdef readonly Py_ssize_t col_offset
     cdef object _binding
     cdef object _flags
+    cdef object _unbind
 
     def __init__(self, shape, segments, comm=None, col_offset=0):
         self.shape = (int(shape[0]), int(shape[1]))
@@ -133,6 +134,7 @@ cdef class DistributedSparseMatrix:
         self.col_offset = int(col_offset)
         self._binding = None
         self._flags = None
+        self._unbind = None
 
     # -- constructors from other representations -------------------------------------------------
 
@@ -239,6 +241,31 @@ cdef class DistributedSparseMatrix:
                 raise RuntimeError("a stored row belongs to a rank that is not a matvec destination")
             rows += shift.astype(rows.dtype, copy=False)
         self._binding = key
+        # Every slot range maps back to one rank's global rows: kept so `unbind_slots` can invert this.
+        slot_starts = [int(send_row_offsets[i]) for i in range(len(destinations))] + [int(total_send_rows)]
+        global_starts = [int(offsets[dest]) for dest in destinations] + [int(offsets[rank])]
+        order = np.argsort(slot_starts, kind="stable")
+        self._unbind = (
+            np.asarray(slot_starts, dtype=np.int64)[order],
+            np.asarray(global_starts, dtype=np.int64)[order],
+        )
+
+    def unbind_slots(self):
+        """Undo :meth:`bind_slots`, in place: every row index is a global row again.
+
+        A matrix the matvec has bound can then be extended to a larger basis or converted with
+        :meth:`to_scipy`. A matrix that was never bound is left alone.
+        """
+        if self._binding is None:
+            return
+        slot_starts, global_starts = self._unbind
+        for _, _, rows, _ in self.segments:
+            if not len(rows):
+                continue
+            k = np.searchsorted(slot_starts, rows, side="right") - 1
+            rows += (global_starts[k] - slot_starts[k]).astype(rows.dtype, copy=False)
+        self._binding = None
+        self._unbind = None
 
     @property
     def is_distributed(self):
@@ -309,18 +336,20 @@ cdef class DistributedSparseMatrix:
 
     def to_scipy(self):
         """The same ``(N, N_local)`` matrix as a scipy CSC. Only before the matrix is bound to a
-        plan (the row indices are global until then)."""
+        plan (the row indices are global until then). Segments may cover overlapping column ranges
+        (:func:`basis_transcription.extend_sparse_matrix` appends some); their entries are summed."""
         if self._binding is not None:
             raise RuntimeError("to_scipy needs global row indices; this matrix is already bound to slots")
-        n_cols = self.shape[1]
-        counts = np.zeros(n_cols, dtype=np.int64)
-        for col_begin, indptr, _, _ in self.segments:
-            counts[col_begin : col_begin + len(indptr) - 1] = np.diff(indptr)
-        indptr = np.zeros(n_cols + 1, dtype=np.int64)
-        np.cumsum(counts, out=indptr[1:])
-        rows = np.concatenate([r for _, _, r, _ in self.segments]) if self.segments else np.empty(0, np.int64)
-        data = np.concatenate([d for _, _, _, d in self.segments]) if self.segments else np.empty(0, complex)
-        return sps.csc_array((data, rows.astype(np.int64, copy=False), indptr), shape=self.shape)
+        if not self.segments:
+            return sps.csc_array(self.shape, dtype=complex)
+        cols = np.concatenate(
+            [np.repeat(np.arange(c0, c0 + len(ip) - 1, dtype=np.int64), np.diff(ip)) for c0, ip, _, _ in self.segments]
+        )
+        rows = np.concatenate([r for _, _, r, _ in self.segments]).astype(np.int64, copy=False)
+        data = np.concatenate([d for _, _, _, d in self.segments])
+        out = sps.coo_array((data, (rows, cols)), shape=self.shape).tocsc()
+        out.sum_duplicates()
+        return out
 
     def toarray(self):
         """Dense ``(N, N)`` with this rank's columns filled and every other column zero: summed over

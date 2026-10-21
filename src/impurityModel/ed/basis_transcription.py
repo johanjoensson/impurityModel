@@ -443,3 +443,184 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
         del rows
     comm = basis.comm if basis.is_distributed else None
     return DistributedSparseMatrix((n, len(basis.local_basis)), segments, comm, basis.offset)
+
+
+class MatrixSnapshot:
+    """A matrix built on a basis, kept so that :func:`extend_sparse_matrix` can grow it.
+
+    ``key`` names what the matrix is *of* (the caller's operator and window); ``keys`` is a copy
+    of the rank-local determinant store the matrix was built on, and ``offsets`` every rank's
+    global offset then (replicated). Collective to construct on a distributed basis.
+    """
+
+    def __init__(self, basis, mat, key):
+        self.mat = mat
+        self.key = key
+        self.keys = basis._keys.copy()
+        if basis.is_distributed:
+            counts = basis.comm.allgather(len(basis._keys))
+        else:
+            counts = [len(basis._keys)]
+        self.offsets = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
+
+
+def _concat_or_empty(chunks, dtype):
+    return np.concatenate(chunks).astype(dtype, copy=False) if chunks else np.empty(0, dtype=dtype)
+
+
+def _columns_of(basis, op, local_cols):
+    """The stored entries of ``op`` in the local columns ``local_cols``, rows inside ``basis``:
+    ``(cols, rows, values)`` with local columns and global rows. Collective on a distributed basis
+    (the routed row lookup runs in rank-symmetric batches, as in :func:`_column_batches`)."""
+    bloom = basis_filter(basis)
+    images = zip(local_cols, iter_local_operator_images(basis, op, 0, indices=local_cols, keep=bloom))
+    cols_out, rows_out, vals_out = [], [], []
+    if not basis.is_distributed:
+        keys_block = basis._keys
+        n_local = len(keys_block)
+        for col, ket in images:
+            ks = ket.keys()
+            if not ks:
+                continue
+            rows = keys_block.find_rows(ks)
+            keep = rows != n_local
+            rows_out.append(rows[keep])
+            vals_out.append(np.asarray(ket)[:, 0][keep])
+            cols_out.append(np.full(int(keep.sum()), col, dtype=np.int64))
+    else:
+        exhausted = False
+        while True:
+            bras, batch_cols, batch_vals = [], [], []
+            while not exhausted and len(bras) < _SPARSE_BUILD_BATCH:
+                item = next(images, None)
+                if item is None:
+                    exhausted = True
+                    break
+                col, ket = item
+                ks = ket.keys()
+                if not ks:
+                    continue
+                bras.extend(ks)
+                batch_cols.append(np.full(len(ks), col, dtype=np.int64))
+                batch_vals.append(np.asarray(ket)[:, 0].copy())
+            rows = np.fromiter(basis._index_sequence(bras), dtype=np.int64, count=len(bras))
+            if len(bras):
+                keep = rows != basis.size
+                rows_out.append(rows[keep])
+                cols_out.append(np.concatenate(batch_cols)[keep])
+                vals_out.append(np.concatenate(batch_vals)[keep])
+            if not basis.comm.allreduce(not exhausted, op=MPI.LOR):
+                break
+    return (
+        _concat_or_empty(cols_out, np.int64),
+        _concat_or_empty(rows_out, np.int64),
+        _concat_or_empty(vals_out, complex),
+    )
+
+
+def _segment_of(cols, rows, values, row_dtype):
+    """One compressed-column segment over the span of the local columns ``cols`` (any order)."""
+    if not len(cols):
+        return None
+    order = np.lexsort((rows, cols))
+    cols, rows, values = cols[order], rows[order], values[order]
+    first = int(cols[0])
+    counts = np.bincount(cols - first, minlength=int(cols[-1]) - first + 1)
+    indptr = np.zeros(len(counts) + 1, dtype=np.int64)
+    np.cumsum(counts, out=indptr[1:])
+    return (first, indptr, rows.astype(row_dtype), values)
+
+
+def extend_sparse_matrix(snapshot, basis, op):
+    """``op`` on ``basis``, grown from ``snapshot`` -- a matrix of the same Hermitian ``op`` on a
+    subset of ``basis`` -- instead of rebuilt; ``None`` when ``basis`` does not contain every
+    determinant the snapshot was built on (decided collectively, so every rank returns ``None``
+    together).
+
+    A CIPSI expansion rebuilt its whole matrix every cycle by applying ``op`` to every determinant,
+    so the build cost summed the basis size over the cycles: on a NiO 10-bath sector class (18 cycles
+    to 6.5k determinants) it was 23 of 34 s. Here ``op`` is applied to the *new* determinants only:
+
+    * the snapshot's entries keep their values; their rows are renumbered (an old global row ``g``
+      moves up by the number of new determinants inserted at or before it, which every rank derives
+      from one replicated list) and their columns are spread to the columns' new local positions;
+    * the new columns come from applying ``op`` to the new determinants, rows anywhere in ``basis``;
+    * the new rows of the old columns are the Hermitian mirror of the new columns' old rows, sent
+      to the rank owning each old column.
+
+    Determinant owners do not change when a basis grows (``routing_hash``), which is what makes the
+    renumbering local. The result stores the three parts as separate segments, some with
+    overlapping column ranges; the matvec sums them. Collective on a distributed basis.
+    """
+    comm = basis.comm if basis.is_distributed else None
+    store = basis._keys
+    n_local = len(store)
+    old_keys = snapshot.keys.keys()
+    position = store.find_rows(old_keys) if len(old_keys) else np.empty(0, dtype=np.int64)
+    superset = bool(np.all(position != n_local))
+    if comm is not None:
+        superset = comm.allreduce(superset, op=MPI.LAND)
+    if not superset:
+        return None
+    snapshot.mat.unbind_slots()
+    rank = comm.rank if comm is not None else 0
+    is_new = np.ones(n_local, dtype=bool)
+    is_new[position] = False
+    new_cols = np.flatnonzero(is_new)
+    # Global old index each new determinant is inserted before; owner-major, hence sorted.
+    inserted = snapshot.offsets[rank] + (new_cols - np.arange(len(new_cols)))
+    if comm is not None:
+        inserted = np.concatenate(comm.allgather(inserted))
+    n = basis.size
+    row_dtype = np.int32 if n < 2**31 else np.int64
+
+    segments = []
+    for col_begin, indptr, rows, values in snapshot.mat.segments:
+        width = len(indptr) - 1
+        if not width:
+            continue
+        old_rows = rows.astype(np.int64)
+        moved = (old_rows + np.searchsorted(inserted, old_rows, side="right")).astype(row_dtype)
+        cols = position[col_begin : col_begin + width]
+        first = int(cols[0])
+        counts = np.zeros(int(cols[-1]) - first + 1, dtype=np.int64)
+        counts[cols - first] = np.diff(indptr)
+        spread = np.zeros(len(counts) + 1, dtype=np.int64)
+        np.cumsum(counts, out=spread[1:])
+        segments.append((first, spread, moved, values))
+
+    cols, rows, values = _columns_of(basis, op, new_cols)
+    segment = _segment_of(cols, rows, values, row_dtype)
+    if segment is not None:
+        segments.append(segment)
+
+    offset = int(basis.offset)
+    if comm is not None:
+        offsets = np.concatenate(([0], np.cumsum(comm.allgather(n_local)))).astype(np.int64)
+        new_global = np.concatenate(comm.allgather(new_cols + offset))
+    else:
+        offsets = np.array([0, n_local], dtype=np.int64)
+        new_global = new_cols
+    mirrored = ~np.isin(rows, new_global)
+    m_cols = rows[mirrored]  # old determinants: columns on their owners
+    m_rows = cols[mirrored] + offset  # new determinants: global rows
+    m_vals = np.conj(values[mirrored])
+    if comm is not None:
+        owner = np.searchsorted(offsets, m_cols, side="right") - 1
+        order = np.argsort(owner, kind="stable")
+        m_cols, m_rows, m_vals = m_cols[order], m_rows[order], m_vals[order]
+        send = np.bincount(owner, minlength=comm.size).astype(np.int64)
+        recv = np.empty_like(send)
+        comm.Alltoall(send, recv)
+        total = int(recv.sum())
+        got_cols = np.empty(total, dtype=np.int64)
+        got_rows = np.empty(total, dtype=np.int64)
+        got_vals = np.empty(total, dtype=complex)
+        comm.Alltoallv([m_cols, send], [got_cols, recv])
+        comm.Alltoallv([m_rows, send], [got_rows, recv])
+        comm.Alltoallv([m_vals, send], [got_vals, recv])
+        m_cols, m_rows, m_vals = got_cols, got_rows, got_vals
+    segment = _segment_of(m_cols - offset, m_rows, m_vals, row_dtype)
+    if segment is not None:
+        segments.append(segment)
+    return DistributedSparseMatrix((n, n_local), segments, comm, offset)
