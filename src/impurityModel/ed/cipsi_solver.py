@@ -10,7 +10,15 @@ from impurityModel.ed.basis_transcription import (
     build_state,
 )
 from impurityModel.ed.cipsi_budget import CapRefiner, MemoryGuard
-from impurityModel.ed.eigensolvers import EigenResult, Lowest, Within, eigensystem, solve_lowest, solve_window
+from impurityModel.ed.eigensolvers import (
+    EigenResult,
+    Lowest,
+    Within,
+    cold_vector,
+    eigensystem,
+    solve_lowest,
+    solve_window,
+)
 from impurityModel.ed.manybody_basis import (
     Basis,
     collective_mass_cutoff,
@@ -1368,12 +1376,44 @@ class CIPSISolver:
             e_all, psi_dense = eigensystem(H_mat, e_max=None, comm=self.basis.comm, return_eigvecs=True)
             if lowest:
                 idx = [0]
+                psi_dense = self._generic_lowest_level_vector(e_all, psi_dense, slaterWeightMin)
             else:
                 idx, _ = _energy_cut_indices(e_all, max_energy, tol=_degeneracy_tol(e_all, slaterWeightMin))
             e_ref = e_all[idx]
             psi_refs = build_state(self.basis, psi_dense[:, idx].T, slaterWeightMin=slaterWeightMin)
 
         return e_ref, psi_refs
+
+    def _generic_lowest_level_vector(self, e_all, psi_dense, slaterWeightMin):
+        """``psi_dense`` with column 0 replaced by a generic vector of the lowest level, when it is degenerate.
+
+        ``eigh`` returns *some* orthonormal basis of a degenerate level, and which one is decided by
+        roundoff. On the NiO 10-bath gap-DC search the 210-determinant d6 seed is the same matrix at
+        every trial shift up to a constant diagonal, yet column 0 came back with three different
+        supports (cycle-0 ``Hpsi_rows`` 18, 72 and 180). Every expansion started from the 18-row
+        member converged 0.15-0.17 above the others: it sits in a symmetry sector the expansion never
+        leaves, and the resulting noise exceeded every energy difference the search compares.
+
+        The projection of the hash-seeded :func:`cold_vector` onto the level does not depend on which
+        basis ``eigh`` chose for it, so it is the same state at every shift, and it overlaps every
+        symmetry sector the level contains. A non-degenerate level is returned untouched.
+
+        The degeneracy verdict is read from ``e_all``, which ``eigensystem`` broadcasts, so every rank
+        enters the ``allreduce`` below or none does.
+        """
+        group = _degenerate_groups(e_all, tol=_degeneracy_tol(e_all, slaterWeightMin))[0]
+        if len(group) < 2:
+            return psi_dense
+        hashes = np.fromiter((state.get_hash() for state in self.basis.local_basis), dtype=np.uint64)
+        level = psi_dense[:, group]
+        overlaps = level[np.asarray(self.basis.local_indices, dtype=np.intp)].conj().T @ cold_vector(hashes)[:, 0]
+        if self.basis.is_distributed:
+            self.basis.comm.Allreduce(MPI.IN_PLACE, overlaps, op=MPI.SUM)
+        generic = level @ overlaps
+        # `astype` copies, and widens a real `eigh` result: the hash vector is complex.
+        psi_dense = psi_dense.astype(complex)
+        psi_dense[:, 0] = generic / np.linalg.norm(generic)
+        return psi_dense
 
     def _solve_lowest(self, H, h_matrix, slaterWeightMin, psi_refs) -> EigenResult:
         """One count-mode solve for the lowest pair on the current basis; records it as ``self.eig``."""
