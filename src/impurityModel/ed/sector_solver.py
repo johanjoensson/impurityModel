@@ -56,12 +56,16 @@ from impurityModel.ed.symmetries import (
 SPIN_SYMMETRY_TOL = 1e-10
 
 #: A class expansion whose state has left its seed span (seed weight below
-#: :data:`seed_sectors.DRIFT_TOL`) stops once its energy is this close above an energy another class
-#: already converged to: it has leaked into that class's state and can only re-derive it. On the
-#: NiO 10-bath d6 sector six of twelve class expansions stopped this way (459 s to 113 s, the
-#: same ground state). A leaked state still descending through that window towards a *new*, lower
-#: state would be stopped too; it would have to sit within this of an existing level to do so.
+#: :data:`seed_sectors.DRIFT_TOL`) stops once its energy has settled (:data:`LEAK_PLATEAU_TOL`) this
+#: close above an energy another class already converged to: it has leaked into that class's state
+#: and can only re-derive it. On the NiO 10-bath d6 sector six of twelve class expansions stopped
+#: this way (459 s to 113 s, the same ground state).
 LEAK_ENERGY_TOL = 1e-3
+
+#: ...and only once its energy moved by less than this over the last cycle. Without it a state still
+#: descending towards a *new*, lower level would be stopped as it passed through the band above an
+#: existing one (review: the band is as wide as the sector spacings that matter).
+LEAK_PLATEAU_TOL = 1e-5
 
 
 @dataclass(frozen=True)
@@ -199,6 +203,18 @@ def certification_plan(h_op, basis, *, max_seed=1000):
     return CertificationPlan(jobs, labels, pairs, su2, class_plans)
 
 
+def _has_leaked(weight, energy, previous_energy, finished):
+    """Whether a class expansion has leaked into a state another class already converged to.
+
+    Its seed weight left the class (``weight`` below :data:`seed_sectors.DRIFT_TOL`), its energy has
+    settled (moved less than :data:`LEAK_PLATEAU_TOL` since ``previous_energy``), and it sits within
+    :data:`LEAK_ENERGY_TOL` above one of the ``finished`` energies.
+    """
+    settled = abs(energy - previous_energy) < LEAK_PLATEAU_TOL
+    near = any(0.0 <= energy - e < LEAK_ENERGY_TOL for e in finished)
+    return weight < seed_sectors.DRIFT_TOL and settled and near
+
+
 def _job_keys(plan, job, basis):
     """This rank's seed determinants of ``job``: its class's support, or its whole hard label."""
     label = (job.two_sz, job.parity)
@@ -219,10 +235,14 @@ def _expand_job(h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, s
         cls = class_plan.classes[job.seed_class]
         solver.matrix_hook = seed_sectors.ClassPenalty(class_plan, cls)
 
+        previous = [np.inf]
+
         def leaked(sv, e_ref, psi_refs):
             weight = seed_sectors.class_weight(class_plan, cls, sv.basis, psi_refs)  # collective
             e0 = float(np.min(e_ref))
-            return weight < seed_sectors.DRIFT_TOL and any(0.0 <= e0 - e < LEAK_ENERGY_TOL for e in finished)
+            stop = _has_leaked(weight, e0, previous[0], finished)
+            previous[0] = e0
+            return stop
 
         solver.cycle_hook = leaked
     solver.expand(h_op, Lowest(), **expand_kwargs)
@@ -385,6 +405,7 @@ def solve_certified(
         slater_weight_min=slater_weight_min,
         verbose=verbose,
         within=float(manifold.max_energy),
+        only=only,
     )
     del es, psis, _solver, winner_basis
     # 2 S_max steps reach every row from any row; the largest seed 2 S_z bounds 2 S_max.
@@ -467,8 +488,17 @@ class SectorPlanStore:
     def clear(self):
         self.records.clear()
 
-    def jobs_at(self, key, mu):
-        """Indices of the jobs worth expanding at ``mu``, or ``None`` (no usable record: expand all)."""
+    @staticmethod
+    def _error(verdict):
+        return verdict.residual_pt2 + EXPANSION_ENERGY_FLOOR
+
+    def jobs_at(self, key, mu, window=0.0):
+        """Indices of the jobs worth expanding at ``mu``, or ``None`` (no usable record: expand all).
+
+        ``window`` widens the margin by a thermal window, for a ``Within`` solve. A class that was
+        stopped early (it leaked into another class's state) has an energy that bounds nothing: it
+        is expanded whenever the class it leaked into is.
+        """
         record = self.records.get(key)
         if record is None:
             return None
@@ -476,9 +506,41 @@ class SectorPlanStore:
         if not verdicts or not all(np.isfinite(v.energy) and np.isfinite(v.n_imp) for v in verdicts):
             return None
         shift = float(mu) - record.mu
-        predicted = [v.energy - shift * v.n_imp for v in verdicts]
-        lead = min(predicted)
+        finished = [v for v in verdicts if not v.stopped_early]
+        if not finished:
+            return None
+        predicted = {id(v): v.energy - shift * v.n_imp for v in finished}
+        lead = min(finished, key=lambda v: predicted[id(v)])
         spread = max(v.n_imp for v in verdicts) - min(v.n_imp for v in verdicts)
-        error = max(v.residual_pt2 for v in verdicts) + EXPANSION_ENERGY_FLOOR
-        margin = abs(shift) * (spread + N_IMP_SPREAD_SAFETY) + error
-        return {record.plan.jobs.index(v.job) for v, e in zip(verdicts, predicted) if e - lead <= margin}
+        reach = abs(shift) * (spread + N_IMP_SPREAD_SAFETY) + float(window)
+        keep = [
+            v for v in finished if predicted[id(v)] - predicted[id(lead)] <= reach + self._error(v) + self._error(lead)
+        ]
+        jobs = {record.plan.jobs.index(v.job) for v in keep}
+        for v in verdicts:
+            if v.stopped_early:
+                host = min(finished, key=lambda f: abs(f.energy - v.energy))
+                if any(host is k for k in keep):
+                    jobs.add(record.plan.jobs.index(v.job))
+        return jobs
+
+    def violated(self, key, mu, verdicts):
+        """Whether a solve at ``mu`` contradicts the record: some class came out above its tangent.
+
+        The lowest energy of ``H - mu N_imp`` on a fixed class is concave in ``mu``, so its tangent at
+        the certified shift, ``E_c - (mu - mu_c) <N_imp>_c``, bounds it from above. A solve landing
+        higher than that (beyond both error bars) has missed what the certified one found -- a trap
+        or a truncation -- and the classes this shift did not expand can no longer be trusted.
+        """
+        record = self.records.get(key)
+        if record is None:
+            return False
+        shift = float(mu) - record.mu
+        certified = {v.job: v for v in record.verdicts if not v.stopped_early}
+        for v in verdicts:
+            ref = certified.get(v.job)
+            if ref is None or v.stopped_early:
+                continue
+            if v.energy > ref.energy - shift * ref.n_imp + self._error(ref) + self._error(v):
+                return True
+        return False

@@ -263,10 +263,11 @@ def solve_sector(
             memory_policy=_memory_policy(truncation_threshold),
         )
         if config.GS_SECTOR_CERTIFY.get():
-            store = plan_store if isinstance(manifold, Lowest) else None
+            store = plan_store
             store_key = sector_key(N0, frozen_occupations)
             certification = store.plan(store_key) if store is not None else None
-            only = store.jobs_at(store_key, shift) if certification is not None else None
+            window = 0.0 if isinstance(manifold, Lowest) else float(manifold.max_energy)
+            only = store.jobs_at(store_key, shift, window=window) if certification is not None else None
             if certification is None:
                 with solver_trace.timed("certify_plan"):
                     certification = certification_plan(h_op, basis, max_seed=config.GS_CERTIFY_MAX_SEED.get())
@@ -283,6 +284,20 @@ def solve_sector(
                         verbose=verbose,
                         only=only,
                     )
+                    if only is not None and store.violated(store_key, shift, verdicts):
+                        # Some class came out above its certified tangent: the classes this shift
+                        # skipped cannot be trusted either. Certify the sector afresh.
+                        solver_trace.note("certify_tangent_violation", n0=store_key)
+                        es, psis, sector_basis, sector_solver, verdicts = solve_certified(
+                            h_op,
+                            basis,
+                            certification,
+                            manifold,
+                            expand_kwargs=expand_kwargs,
+                            dense_cutoff=dense_cutoff,
+                            slater_weight_min=slaterWeightMin,
+                            verbose=verbose,
+                        )
                 if store is not None:
                     store.record(store_key, certification, shift, verdicts)
                 if sector_solver.truncation_report is None:

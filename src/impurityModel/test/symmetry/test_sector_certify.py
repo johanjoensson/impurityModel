@@ -143,11 +143,11 @@ def _exact_spectrum(h_op):
     return np.linalg.eigvalsh(h)
 
 
-def _verdict(k, energy, n_imp, residual=0.0):
+def _verdict(k, energy, n_imp, residual=0.0, stopped=False):
     from impurityModel.ed.sector_solver import CertificationJob, ClassVerdict
 
     job = CertificationJob(two_sz=k, parity=(), seed_class=None, n_seed=1)
-    return job, ClassVerdict(job, energy, 10, residual, False, False, n_imp)
+    return job, ClassVerdict(job, energy, 10, residual, False, False, n_imp, stopped)
 
 
 def test_the_store_keeps_the_classes_that_can_still_win_and_widens_with_the_shift():
@@ -156,7 +156,7 @@ def test_the_store_keeps_the_classes_that_can_still_win_and_widens_with_the_shif
     jobs, verdicts = zip(_verdict(0, -1.00, 8.6), _verdict(1, -0.95, 8.7), _verdict(2, -0.50, 8.6))
     store = SectorPlanStore()
     assert store.jobs_at("N6", 0.0) is None, "an uncertified sector must be certified in full"
-    store.record("N6", CertificationPlan(list(jobs), {}, [], False, 0.0), 0.0, verdicts)
+    store.record("N6", CertificationPlan(list(jobs), {}, [], False, {}), 0.0, verdicts)
     # At the certified shift only the leader is within its error bar.
     assert store.jobs_at("N6", 0.0) == {0}
     # 0.1 away: the runner-up (0.05 above, falling 0.1 * 0.1 faster) is predicted 0.04 above, inside
@@ -332,3 +332,40 @@ def test_a_class_held_by_the_cap_marks_the_sector_solve_cap_bound(monkeypatch):
     _e0, result = _solve_sector(_hamiltonian(), None, Lowest())
     report = result.solver.truncation_report
     assert report is not None and report["cap_hit"] and "losing_class" in report
+
+
+def test_a_leaked_class_stops_only_once_it_has_settled_near_a_finished_one():
+    from impurityModel.ed.sector_solver import LEAK_ENERGY_TOL, LEAK_PLATEAU_TOL, _has_leaked
+
+    finished = [-1.0]
+    near = -1.0 + 0.5 * LEAK_ENERGY_TOL
+    assert _has_leaked(0.0, near, near + 0.1 * LEAK_PLATEAU_TOL, finished)
+    # Still descending through the band: it may be on its way to a new, lower level.
+    assert not _has_leaked(0.0, near, near + 10 * LEAK_PLATEAU_TOL, finished)
+    # Still in its own class, or not near any finished level.
+    assert not _has_leaked(0.9, near, near, finished)
+    assert not _has_leaked(0.0, -0.5, -0.5, finished)
+
+
+def test_the_store_expands_a_stopped_class_with_the_class_it_leaked_into():
+    from impurityModel.ed.sector_solver import CertificationPlan, SectorPlanStore
+
+    # Class 2 leaked into class 1's state (stopped near -0.95): its energy bounds nothing.
+    jobs, verdicts = zip(_verdict(0, -1.00, 8.6), _verdict(1, -0.95, 8.7), _verdict(2, -0.9496, 8.6, stopped=True))
+    store = SectorPlanStore()
+    store.record("N6", CertificationPlan(list(jobs), {}, [], False, {}), 0.0, verdicts)
+    assert store.jobs_at("N6", 0.0) == {0}
+    assert store.jobs_at("N6", 0.1) == {0, 1, 2}
+
+
+def test_a_solve_above_its_certified_tangent_is_a_violation():
+    from impurityModel.ed.sector_solver import CertificationPlan, SectorPlanStore
+
+    jobs, verdicts = zip(_verdict(0, -1.00, 8.6), _verdict(1, -0.95, 8.7))
+    store = SectorPlanStore()
+    store.record("N6", CertificationPlan(list(jobs), {}, [], False, {}), 0.0, verdicts)
+    # At mu = 0.01 the tangent predicts -1.086 for class 0; landing there is fine, 0.01 above is not.
+    _job, on_tangent = _verdict(0, -1.0 - 0.01 * 8.6, 8.6)
+    _job, above = _verdict(0, -1.0 - 0.01 * 8.6 + 0.01, 8.6)
+    assert not store.violated("N6", 0.01, [on_tangent])
+    assert store.violated("N6", 0.01, [above])
