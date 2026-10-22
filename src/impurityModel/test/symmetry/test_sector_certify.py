@@ -369,3 +369,34 @@ def test_a_solve_above_its_certified_tangent_is_a_violation():
     _job, above = _verdict(0, -1.0 - 0.01 * 8.6 + 0.01, 8.6)
     assert not store.violated("N6", 0.01, [on_tangent])
     assert store.violated("N6", 0.01, [above])
+
+
+def test_the_ground_state_certifies_its_winning_sector_once(monkeypatch):
+    """``solve_ground_state``'s walk and thermal solve share one store: the thermal solve expands only
+    the classes inside its window, not every class of the sector a second time."""
+    from impurityModel.ed import sector_solver
+    from impurityModel.ed.groundstate import solve_ground_state
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    calls = {"n": 0}
+    real = sector_solver._expand_job
+
+    def counted(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sector_solver, "_expand_job", counted)
+
+    def run():
+        calls["n"] = 0
+        gs = solve_ground_state(
+            _hamiltonian(), IMPURITY_ORBITALS, BATH_STATES, {0: 2}, tau=1e-3, slaterWeightMin=0, comm=None,
+            verbose=0, de2_min=0, e_pt2_tol=1e-12, use_hf_seed=False,
+        )  # fmt: skip
+        return np.sort(np.real(gs.es)), calls["n"]
+
+    es_shared, n_shared = run()
+    monkeypatch.setattr(sector_solver.SectorPlanStore, "jobs_at", lambda self, key, mu, window=0.0: None)
+    es_fresh, n_fresh = run()
+    assert n_shared < n_fresh
+    np.testing.assert_allclose(es_shared, es_fresh, atol=1e-10)

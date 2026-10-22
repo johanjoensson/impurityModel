@@ -99,6 +99,7 @@ from impurityModel.ed.dc_search import (
     resolve_cap_at_max,
 )
 from impurityModel.ed.density_matrices import occupations as state_occupations
+from impurityModel.ed.sector_solver import SectorPlanStore
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
 from impurityModel.ed.memory_estimate import CapPolicy, resolve_cap_policy
@@ -457,8 +458,6 @@ class _SectorContext:
         if self.sector_at is None:
             self.sector_at = {}
         if self.plan_store is None:
-            from impurityModel.ed.sector_solver import SectorPlanStore
-
             self.plan_store = SectorPlanStore()
 
     @property
@@ -1809,12 +1808,17 @@ class _OccupationContext:
     #: not part of the answer -- it qualifies it.
     cap_bound_at: dict = None
     memory_bound_at: dict = None
+    #: Each sector's certification, shared by every ground state this search solves
+    #: (:class:`sector_solver.SectorPlanStore`).
+    plan_store: object = None
 
     def __post_init__(self):
         if self.cap_bound_at is None:
             self.cap_bound_at = {}
         if self.memory_bound_at is None:
             self.memory_bound_at = {}
+        if self.plan_store is None:
+            self.plan_store = SectorPlanStore()
 
 
 def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
@@ -1969,6 +1973,8 @@ def _evaluate_occupation_and_energy_at_mu(ctx, mu, verbose, rank):
             weighted_restrictions=ctx.weighted_restrictions,
             e_pt2_tol=ctx.e_pt2_tol,
             de2_min=ctx.de2_min,
+            plan_store=ctx.plan_store,
+            shift=mu,
         )
     mb_basis, mb_solver, es, psis = ground_state[:4]
 
@@ -2217,6 +2223,7 @@ def fixed_occupation_dc(
                 def _clear_occupation_caches():
                     occupation_at.clear()
                     sector_at.clear()
+                    ctx.plan_store.clear()
 
                 _calibrate_cap(
                     ctx,

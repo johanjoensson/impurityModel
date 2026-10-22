@@ -21,7 +21,7 @@ from impurityModel.ed.memory_estimate import (
     resident_bytes_per_rank,
     resolve_cap_policy,
 )
-from impurityModel.ed.sector_solver import certification_plan, solve_certified
+from impurityModel.ed.sector_solver import SectorPlanStore, certification_plan, solve_certified
 from impurityModel.ed.seed_sectors import seed_class_plan
 from impurityModel.ed.utils import (
     V_DETAIL,
@@ -465,6 +465,8 @@ def calc_energy(
     frozen_occupations=None,
     de2_min=GS_DE2_MIN,
     e_pt2_tol=GS_E_PT2_TOL,
+    plan_store=None,
+    shift=0.0,
 ):
     """The ground-state energy of one charge sector: ``(e0, truncation_report)``.
 
@@ -498,6 +500,8 @@ def calc_energy(
         frozen_occupations=frozen_occupations,
         de2_min=de2_min,
         e_pt2_tol=e_pt2_tol,
+        plan_store=plan_store,
+        shift=shift,
     )
     e0 = float(np.min(es))
     e0 = e0 if comm is None else comm.bcast(e0, root=0)
@@ -594,6 +598,8 @@ def find_ground_state_sector(
     de2_min=GS_DE2_MIN,
     e_pt2_tol=GS_E_PT2_TOL,
     sector_energy=None,
+    plan_store=None,
+    shift=0.0,
 ):
     """
     Find the charge sector with the lowest energy, compare N0 - 1, N0 and N0 + 1: :class:`SectorSearch`.
@@ -745,6 +751,8 @@ def find_ground_state_sector(
                 frozen_occupations=frozen_occupations,
                 de2_min=de2_min,
                 e_pt2_tol=e_pt2_tol,
+                plan_store=plan_store,
+                shift=shift,
             )
         energy_cache[key] = (e_trial, report)
         if best_cached_key is None or e_trial < energy_cache[best_cached_key][0]:
@@ -995,6 +1003,8 @@ def solve_ground_state(
     use_hf_seed=True,
     de2_min=GS_DE2_MIN,
     e_pt2_tol=GS_E_PT2_TOL,
+    plan_store=None,
+    shift=0.0,
 ):
     """Find the thermal ground state: a sector walk, then one complete solve of the winning sector.
 
@@ -1020,11 +1030,17 @@ def solve_ground_state(
        state that motivated this is 3-fold quasi-degenerate, so a manifold short of one copy
        misreports every thermal average taken from it.
 
+    ``plan_store`` (a :class:`~impurityModel.ed.sector_solver.SectorPlanStore`; a fresh one when
+    ``None``) is shared by the walk and the thermal solve, so the winning sector is certified once,
+    and by every ground state a caller sweeping ``H - shift * N_imp`` solves with it.
+
     Returns
     -------
     GroundState
         ``basis`` carries ``ground_state_occupation`` (the winning sector) and ``cap_policy``.
     """
+    if plan_store is None:
+        plan_store = SectorPlanStore()
     search = find_ground_state_sector(
         h_op,
         impurity_orbitals,
@@ -1042,6 +1058,8 @@ def solve_ground_state(
         weighted_restrictions=weighted_restrictions,
         de2_min=de2_min,
         e_pt2_tol=e_pt2_tol,
+        plan_store=plan_store,
+        shift=shift,
     )
     es, psis, basis, solver = solve_sector(
         h_op,
@@ -1062,6 +1080,8 @@ def solve_ground_state(
         frozen_occupations=frozen_occupations,
         de2_min=de2_min,
         e_pt2_tol=e_pt2_tol,
+        plan_store=plan_store,
+        shift=shift,
     )
     # The sector this search settled on. It cannot be recovered from the basis: the CIPSI expansion
     # widened the impurity occupation window (build_excited_restrictions is called with
