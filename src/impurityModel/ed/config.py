@@ -857,6 +857,22 @@ DC_DE2_MIN = Knob(
     state.""",
 )
 
+DC_GAP_LEVER_MIN = Knob(
+    name="DC_GAP_LEVER_MIN",
+    kind="float",
+    default=0.1,
+    minimum=0.0,
+    group="double-counting",
+    doc="""Smallest response of the gap centre to the double-counting shift the `gap` criterion
+    searches on: ``(delta_+ + delta_-) / 2``, the electrons the two gap edges move onto the
+    impurity, measured at the guess from solves the search has already paid for. Below it, and with
+    the guess not already converged, the criterion raises `DoubleCountingUnreachable` at once,
+    with the measured edges, instead of searching: the centre is then a property of the bath, not
+    of the impurity, and the shift it asks for is far outside what the solves at the guess say
+    anything about. On the NiO 10-bath archive the lever is 0.02 (impurity-like edges give 0.5-1),
+    and the search ran 22 evaluations without converging. `0` searches anyway.""",
+)
+
 DC_E_PT2_TOL = Knob(
     name="DC_E_PT2_TOL",
     kind="float",
@@ -944,6 +960,7 @@ KNOBS: dict[str, Knob] = _register(
     GS_MEMORY_BUDGET_SAFETY,
     DC_ALLOW_MEMORY_BOUND,
     DC_DE2_MIN,
+    DC_GAP_LEVER_MIN,
     DC_E_PT2_TOL,
     DC_DIAGNOSTICS,
     SIGMA_CAUSALITY_TOL,

@@ -1234,6 +1234,46 @@ def _measure_edge_character(ctx, mu, n_center):
     return delta_plus, delta_minus
 
 
+def _refuse_an_ill_conditioned_gap(ctx, offset, energy_tol, centre_at, dc_rec, search_report):
+    """Raise :class:`DoubleCountingUnreachable` when the gap centre barely responds to the shift.
+
+    The centre moves by ``-(delta_+ + delta_-) / 2`` per unit ``mu``: the electrons the two edges
+    move onto the impurity. When that lever is below ``DC_GAP_LEVER_MIN`` both edges are mostly
+    bath, the centre is a property of the bath fit, and the shift that would place it is far
+    outside what the solves at the guess say anything about -- the search then walks sectors
+    for many evaluations without converging (22 on the NiO 10-bath archive, lever 0.02). Measured
+    at the guess from the three sectors the tolerance sizing has already solved, so it costs
+    nothing; a guess that already satisfies the criterion is never refused. The lever is recorded
+    either way. Every value read is broadcast, so the raise is rank-identical.
+    """
+    centre = centre_at(0.0)
+    lever = None
+    if centre is not None:
+        delta_plus, delta_minus = _measure_edge_character(ctx, 0.0, ctx.n_center_at[0.0])
+        if delta_plus is not None and delta_minus is not None:
+            lever = 0.5 * (delta_plus + delta_minus)
+    dc_rec["lever_at_guess"] = lever
+    lever_min = config.DC_GAP_LEVER_MIN.get()
+    if lever is None or abs(centre - offset) <= energy_tol or lever >= lever_min:
+        return
+    search_report["status"] = "ill_conditioned"
+    search_report["evaluations"] = 1
+    if lever > 0.0:
+        estimate = f"a shift of about {(centre - offset) / lever:+.2f} on a first-order estimate"
+    else:
+        estimate = "a shift in a direction the centre does not even move in"
+    raise DoubleCountingUnreachable(
+        f"The fixed-gap double counting is ill-conditioned on this model: the gap centre "
+        f"(E[N+1] - E[N-1])/2 = {centre:.5f} at the guess (N = {ctx.n_center_at[0.0]}) moves only "
+        f"{lever:.3f} eV per eV of shift (delta_+ = {delta_plus:.3f}, delta_- = {delta_minus:.3f}; "
+        f"DC_GAP_LEVER_MIN = {lever_min}). Both gap edges are mostly states of the bath, so the "
+        "centre is a property of the bath fit rather than of the impurity, and placing it at the "
+        f"offset would take {estimate} -- far beyond what the solves at the guess describe. Use the occupation "
+        "criterion (`occ <target>`), which needs only the impurity occupation to respond to the "
+        "shift, or set DC_GAP_LEVER_MIN=0 to search anyway."
+    )
+
+
 def _size_gap_tolerance(width, mu_tol, bandwidth, rank=0):
     """The gap criterion's energy tolerance, and the one word that explains where it came from.
 
@@ -1642,6 +1682,7 @@ def fixed_gap_dc(
 
             mu = None
             try:
+                _refuse_an_ill_conditioned_gap(ctx, offset, energy_tol, _gap_centre_at_mu, dc_rec, search_report)
                 mu = _solve_dc_shift(
                     gap_observable,
                     offset,

@@ -119,7 +119,7 @@ def common_kwargs(v, tau, dc_scale=0.5):
     return dict(model=model, basis=basis, solver=solver, comm=MPI.COMM_WORLD), dc
 
 
-def charge_transfer_kwargs(v=0.3, tau=1e-3, dc_scale=0.5, eps_cond=0.4):
+def charge_transfer_kwargs(v=0.3, tau=1e-3, dc_scale=0.5, eps_cond=0.4, eps_val=EPS_B):
     """A model whose *empty* level nearest E_F is a **bath** level, not the impurity.
 
     Every other fixture in this file gives the impurity two valence bath orbitals well below it and
@@ -139,7 +139,7 @@ def charge_transfer_kwargs(v=0.3, tau=1e-3, dc_scale=0.5, eps_cond=0.4):
     for s in range(2):
         imp, val, cond = s, 2 + s, 4 + s
         h0[imp, imp] = EPS
-        h0[val, val] = EPS_B
+        h0[val, val] = eps_val
         h0[cond, cond] = eps_cond
         h0[imp, val] = h0[val, imp] = v
         h0[imp, cond] = h0[cond, imp] = v
@@ -953,6 +953,43 @@ def test_the_walk_and_the_sector_solves_never_solve_a_sector_twice_at_one_shift(
     assert not repeated, f"{len(repeated)} sector solves repeated at one shift"
 
 
+def test_the_gap_criterion_refuses_at_the_guess_when_both_edges_are_bath(monkeypatch):
+    """Lever gate: a gap centre that barely moves with ``mu`` is refused before any search.
+
+    A valence bath level at ``-0.1`` and a conduction one at ``0.4`` straddle E_F, both closer than
+    either impurity excitation, so both gap edges are bath: the centre sits 0.15 from the offset
+    and moves 0.002 per unit shift. The search used to walk such a model for tens of evaluations
+    (NiO 10-bath: 22, lever 0.02); now the three solves the tolerance sizing needs are all it
+    costs, and the record and the error say why. ``DC_GAP_LEVER_MIN=0`` searches anyway.
+    """
+    from impurityModel.ed import groundstate as gs_module
+
+    monkeypatch.delenv("DC_GAP_LEVER_MIN", raising=False)
+    solves = []
+    real_solve_sector = gs_module.solve_sector
+
+    def counted(h_op, impurity_orbitals, bath_states, N0, *args, **kwargs):
+        solves.append(sum(N0.values()))
+        return real_solve_sector(h_op, impurity_orbitals, bath_states, N0, *args, **kwargs)
+
+    monkeypatch.setattr(gs_module, "solve_sector", counted)
+    kwargs, _ = charge_transfer_kwargs(v=0.05, eps_val=-0.1)
+    report = {}
+    with pytest.raises(DoubleCountingUnreachable, match="ill-conditioned"):
+        fixed_gap_dc(offset=0.0, report=report, allow_charge_state_change=True, **kwargs)
+    assert report["status"] == "ill_conditioned", report
+    assert report["lever_at_guess"] < 0.01, report
+    assert sorted(solves) == [0, 1, 2], solves
+
+    monkeypatch.setenv("DC_GAP_LEVER_MIN", "0")
+    report = {}
+    try:
+        fixed_gap_dc(offset=0.0, report=report, allow_charge_state_change=True, **kwargs)
+    except DoubleCountingUnreachable as error:
+        assert "ill-conditioned" not in str(error)
+    assert report["status"] != "ill_conditioned", report
+
+
 def test_the_two_estimators_of_delta_sum_agree(capsys):
     """``delta_+ + delta_-`` against ``-2*chi``: two routes to one number, differenced.
 
@@ -1593,6 +1630,8 @@ def test_fixed_gap_dc_records_mu_tol_effective_as_inf_at_a_genuine_zero_slope(mo
     import impurityModel.ed.dc_criteria as dc_module
 
     monkeypatch.setattr(dc_module, "_measure_edge_character", lambda *a, **kw: (0.4, -0.4))
+    # A zero lever is also what the conditioning gate refuses; this test is about the record.
+    monkeypatch.setenv("DC_GAP_LEVER_MIN", "0")
 
     kwargs, _ = common_kwargs(v=0.01, tau=1e-3, dc_scale=0.5)
     report = {}

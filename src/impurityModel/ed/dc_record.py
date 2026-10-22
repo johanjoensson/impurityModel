@@ -67,6 +67,7 @@ _FIELDS = (
     ("delta_minus", "{:.3f}"),
     ("delta_sum", "{:.3f}"),
     ("delta_sum_vs_chi", "{:.3f}"),
+    ("lever_at_guess", "{:.3f}"),
     ("de2_min", "{:.2e}"),
     ("e_pt2_tol", "{:.2e}"),
     ("peak", "{:.6f}"),
@@ -127,6 +128,7 @@ _STATUS = {
     "plateau": "plateau",
     "unreachable": "unreachable",
     "plateau_rejected": "plateau_rejected",
+    "ill_conditioned": "ill_conditioned",
 }
 
 
@@ -229,6 +231,10 @@ def _annotate(record, key, text):
             else "from the chi secant, averaged over chi_span"
         )
         return f"{text}   (delta_+ + delta_-, of max 2; {source} -- read the two edges separately)"
+    if key == "lever_at_guess":
+        # The gap criterion's own conditioning, before it searched: below DC_GAP_LEVER_MIN the
+        # search is refused (status ill_conditioned), so the number that decided it is on the record.
+        return f"{text}   (-d(gap centre)/d(mu) at the guess, (delta_+ + delta_-)/2; ~0.5-1 impurity edges)"
     if key == "delta_sum_vs_chi":
         # The two routes to the same quantity, differenced. They fail differently: `delta_sum` is
         # built from occupations, which are first-order in the wavefunction error, while `-2 chi`
