@@ -330,6 +330,14 @@ def test_davidson_returns_one_exact_pair_of_a_degenerate_level_without_lanczos(s
 
 
 @pytest.mark.mpi
+def test_an_unknown_lowest_solver_is_rejected_not_read_as_lanczos(system, monkeypatch):
+    """``GS_LOWEST_SOLVER`` outside ``auto``/``davidson``/``trlm`` raises; a typo once meant Lanczos."""
+    monkeypatch.setenv("GS_LOWEST_SOLVER", "davidsn")
+    with pytest.raises(ValueError, match="GS_LOWEST_SOLVER='davidsn'"):
+        _lowest_solve(system, warm=True, calls=[], monkeypatch=monkeypatch)
+
+
+@pytest.mark.mpi
 def test_davidson_from_an_exact_eigenvector_stops_at_roundoff_without_lanczos(system, monkeypatch):
     """A residual tolerance below roundoff is floored at the operator's scale: an exact start converges.
 

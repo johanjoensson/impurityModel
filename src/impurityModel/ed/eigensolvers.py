@@ -741,7 +741,9 @@ def _lowest_on_root(h_op, comm, hashes, warm, solve):
         comm.Gatherv([np.ascontiguousarray(warm, dtype=complex), MPI.C_DOUBLE_COMPLEX],
                      [g_warm, counts * width, displs * width, MPI.C_DOUBLE_COMPLEX] if root else None, root=0)  # fmt: skip
     res = _on_root(comm, lambda: solve(DistributedSparseMatrix.from_scipy(full, None), g_hashes, g_warm))
-    head = comm.bcast(None if res is None else (res.e, res.n_in, res.certified, res.max_multiplicity, res.status), root=0)
+    head = comm.bcast(
+        None if res is None else (res.e, res.n_in, res.certified, res.max_multiplicity, res.status), root=0
+    )
     e, n_in, certified, multiplicity, status = head
     k = len(e)
     vecs = np.empty((n_local, k), dtype=complex)
@@ -811,6 +813,8 @@ def solve_lowest(
     except ValueError:  # BlockBreakdown, rank-symmetric: decided by the replicated TSQR factor
         q0, _ = block_normalize(start_block(False), mpi, comm, 0.0)
     choice = config.GS_LOWEST_SOLVER.get()
+    if choice not in config.GS_LOWEST_SOLVERS:  # a typo would otherwise silently mean Lanczos
+        raise ValueError(f"GS_LOWEST_SOLVER={choice!r}; expected one of {config.GS_LOWEST_SOLVERS}")
     if (choice == "davidson" or (choice == "auto" and davidson)) and n_global > 1:
         theta, x, converged = davidson_lowest(h_op, comm, q0, tol=tol)
         if converged:

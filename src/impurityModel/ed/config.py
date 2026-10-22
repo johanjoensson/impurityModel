@@ -104,6 +104,9 @@ GF_ADMISSIONS = ("all", "outer")
 #: Accepted ``GF_SCHEDULER`` values (see that knob).
 GF_SCHEDULERS = ("static", "queue")
 
+#: Accepted ``GS_LOWEST_SOLVER`` values (see that knob).
+GS_LOWEST_SOLVERS = ("auto", "davidson", "trlm")
+
 #: Accepted ``SolverOptions.sigma_method`` values: the self-energy estimators of
 #: :mod:`impurityModel.ed.sigma_estimators` (its ``ESTIMATORS`` registry has exactly these keys).
 SIGMA_METHODS = ("dyson",)
