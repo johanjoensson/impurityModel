@@ -508,3 +508,23 @@ def test_the_window_overtake_is_the_crossover_measured_against_the_window(monkey
         ratios.append(window_overtake(plan, verdicts))
     assert ratios[0] is not None and ratios[0] > 0.0, ratios
     assert ratios[1] == pytest.approx(ratios[0] / 2, rel=1e-6)
+
+
+def test_the_ranking_rule_never_settles_the_nio_d6_winner_and_bounds_a_loser_above_it():
+    """Pass 1's stopping rule against recorded NiO 10-bath d6 trajectories (per-cycle class energies).
+
+    The winner's drops shrink once (0.021) before it crosses into the ground state (0.042, 0.064):
+    no prefix of its trajectory may count as settled, or pass 1 would rank the ground state 0.13
+    high. A loser that has settled must be bounded above the winner's energy, or pass 2 would waste
+    a full expansion on it."""
+    from impurityModel.ed.sector_solver import _ranking_remaining
+
+    winner = [-41.09834, -42.45474, -42.97355, -43.13595, -43.15667, -43.19871, -43.26283, -43.32773, -43.32777]
+    assert all(_ranking_remaining(winner[: k + 1]) is None for k in range(len(winner) - 1))
+    loser = [-41.38547, -42.46083, -43.01510, -43.14906, -43.16474, -43.16816, -43.18348, -43.19211, -43.19666,
+             -43.19897, -43.20010, -43.20066, -43.20094, -43.20103, -43.20105]  # fmt: skip
+    settled = [k for k in range(len(loser)) if _ranking_remaining(loser[: k + 1]) is not None]
+    assert settled, "the loser never settled"
+    k = settled[0]
+    assert loser[k] - _ranking_remaining(loser[: k + 1]) > winner[-1] + 0.05
+    assert _ranking_remaining([-1.0, -1.0005, -1.0004, -1.0006]) is None  # a rise is not settling

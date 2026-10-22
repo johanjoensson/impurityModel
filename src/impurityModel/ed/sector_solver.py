@@ -74,6 +74,46 @@ LEAK_ENERGY_TOL = 1e-3
 LEAK_PLATEAU_TOL = 1e-5
 
 
+#: Pass 1 of a certification stops a class once its last :data:`RANK_PATIENCE` per-cycle energy
+#: drops are all below :data:`RANK_DROP_TOL` and shrinking: its energy is then known well enough
+#: to rank it. The rest of its convergence -- most of its cycles, on its largest bases -- is spent
+#: only on the classes that can still win (pass 2). Replayed on the recorded NiO 10-bath d5 and d6
+#: trajectories this keeps every sector's winner and cuts the expansion work to 0.45 and 0.34. A
+#: single small drop is not enough: d6's winner dropped 0.16, 0.021, then 0.042 and 0.064 as it
+#: crossed into the ground state.
+RANK_PATIENCE = 3
+RANK_DROP_TOL = 1e-3
+
+#: The remaining drop of a ranked class is bounded by a geometric tail of its largest recent drop,
+#: at the largest recent drop ratio but at least this one (a slower decay than any measured).
+RANK_RATIO_CAP = 0.9
+
+#: Added to that tail: what a ranked class's energy may still fall by, beyond the extrapolation.
+RANK_FLOOR = 1e-3
+
+
+def _ranking_remaining(energies):
+    """How far a class's energy may still fall, once its trajectory has settled; ``None`` before.
+
+    ``energies`` is the class's variational energy after each cycle. Settled: the last
+    :data:`RANK_PATIENCE` drops are non-negative, below :data:`RANK_DROP_TOL`, and none larger than
+    the one before it. The bound is the geometric tail of the largest of them at the largest ratio
+    between them, capped below by :data:`RANK_RATIO_CAP`, plus :data:`RANK_FLOOR`.
+    """
+    if len(energies) < RANK_PATIENCE + 1:
+        return None
+    tail = energies[len(energies) - RANK_PATIENCE - 1 :]
+    drops = [tail[i] - tail[i + 1] for i in range(RANK_PATIENCE)]
+    if min(drops) < -1e-9 or max(drops) >= RANK_DROP_TOL:
+        return None
+    ratios = [drops[i] / drops[i - 1] for i in range(1, len(drops)) if drops[i - 1] > 1e-12]
+    if any(r > 1.0 for r in ratios):
+        return None
+    rho = max([RANK_RATIO_CAP] + ratios)
+    rho = min(rho, 1.0 - 1e-6)
+    return max(drops) * rho / (1.0 - rho) + RANK_FLOOR
+
+
 @dataclass(frozen=True)
 class CertificationJob:
     """One class expansion: the seed states of ``seed_class`` inside the hard label ``(two_sz, parity)``."""
@@ -100,6 +140,10 @@ class ClassVerdict:
     #: The expansion's ``truncation_report`` (replicated scalars), when a cap or the memory guard
     #: limited it: a class can *lose* because it was held high, which the winner's own report misses.
     truncation_report: dict | None = None
+    #: Pass 1 stopped this class as settled (:func:`_ranking_remaining`): ``energy`` is an upper bound,
+    #: ``lower`` what it may still fall to, and ``residual_pt2`` includes the difference.
+    ranked: bool = False
+    lower: float = float("nan")
 
 
 @dataclass(frozen=True)
@@ -302,28 +346,43 @@ def _job_keys(plan, job, basis):
     return seed_sectors.class_seed_keys(class_plan, class_plan.classes[job.seed_class], basis)
 
 
-def _expand_job(h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, slater_weight_min, comm):
-    """One class expansion: ``(verdict, es, psis, class_basis, solver)`` (collective)."""
+def _expand_job(
+    h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, slater_weight_min, comm, rank=False, keys=None
+):
+    """One class expansion: ``(verdict, es, psis, class_basis, solver)`` (collective).
+
+    ``rank`` stops it once settled (pass 1, :func:`_ranking_remaining`); ``keys`` continues it from
+    those determinants instead of its seed (pass 2).
+    """
     class_basis = basis.clone(
-        initial_basis=_job_keys(plan, job, basis), weighted_restrictions=_label_window(basis, plan.pairs, job.two_sz)
+        initial_basis=_job_keys(plan, job, basis) if keys is None else list(keys.keys()),
+        weighted_restrictions=_label_window(basis, plan.pairs, job.two_sz),
     )
     solver = CIPSISolver(class_basis)
+    class_plan = cls = None
     if job.seed_class is not None:
         class_plan = plan.class_plans[(job.two_sz, job.parity)]
         cls = class_plan.classes[job.seed_class]
         solver.matrix_hook = seed_sectors.ClassPenalty(class_plan, cls)
+    energies = []
+    remaining = [None]
 
-        previous = [np.inf]
-
-        def leaked(sv, e_ref, psi_refs):
+    def hook(sv, e_ref, psi_refs):
+        e0 = float(np.min(e_ref))
+        stop = False
+        if cls is not None:
             weight = seed_sectors.class_weight(class_plan, cls, sv.basis, psi_refs)  # collective
-            e0 = float(np.min(e_ref))
             # Only this label's: H conserves the label, so a state cannot leak into another label's.
-            stop = _has_leaked(weight, e0, previous[0], finished.get((job.two_sz, job.parity), ()))
-            previous[0] = e0
-            return stop
+            previous = energies[len(energies) - 1] if energies else np.inf
+            stop = _has_leaked(weight, e0, previous, finished.get((job.two_sz, job.parity), ()))
+        energies.append(e0)
+        if not stop and rank:
+            remaining[0] = _ranking_remaining(energies)
+            stop = remaining[0] is not None
+        return stop
 
-        solver.cycle_hook = leaked
+    if cls is not None or rank:
+        solver.cycle_hook = hook
     with solver_trace.timed("class_expand", label=(job.two_sz, job.parity), seed_class=job.seed_class) as fields:
         solver.expand(h_op, Lowest(), **expand_kwargs)
         fields["n_dets"] = len(class_basis)
@@ -341,14 +400,19 @@ def _expand_job(h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, s
     impurity = [orb for blocks in basis.impurity_orbitals.values() for block in blocks for orb in block]
     # Collective (one Allreduce), entered on every rank: `psis.width` is replicated.
     n_imp = float(state_occupations(class_basis, psis, impurity).sum(axis=1)[0]) if psis.width else float("nan")
+    # The hook's last verdict decided why the expansion stopped (rank 0's, broadcast by `expand`).
+    ranked = bool(solver.stopped_early) and remaining[0] is not None
+    tail = remaining[0] if ranked else 0.0
     fields = (
         energy,
-        residual,
+        residual + tail,
         bool(solver.truncation_report is not None),
         bool(report.get("memory_bound")),
         n_imp,
-        bool(solver.stopped_early),
+        bool(solver.stopped_early) and not ranked,
         None if solver.truncation_report is None else dict(solver.truncation_report),
+        ranked,
+        energy - tail if ranked else float("nan"),
     )
     if comm is not None:
         fields = comm.bcast(fields, root=0)
@@ -362,59 +426,70 @@ def certify_sector(
 
     Returns ``(es, psis, class_basis, class_solver, verdicts)``: the winner's unpenalized lowest
     eigenpair on its own basis, that basis (with the sector's window put back) and solver, and one
-    :class:`ClassVerdict` per job expanded. Jobs run one after another; only the best so far is kept
-    alive while the next one expands. Every branch reads a broadcast value. Collective.
+    :class:`ClassVerdict` per job expanded. Every branch reads a broadcast value. Collective.
+
+    Two passes. Pass 1 expands every job until its energy has settled enough to rank it
+    (:func:`_ranking_remaining`), which bounds what it may still fall to. Pass 2 continues, from
+    its own determinants and under its own penalty, every class whose bound still reaches the
+    lowest energy found (plus ``within``): the classes that can win, or lie in the thermal window.
+    Only their keys are held between the passes, and only the best solve so far is kept alive.
 
     ``within`` (an energy window) also returns, as a sixth element, the determinant keys of every
-    class inside the window above the winner -- the winner's first -- plus the largest residual PT2;
-    Only the keys are kept, never a class's basis or solver.
-
-    ``only`` (job indices) restricts the expansions to those jobs (:meth:`SectorPlanStore.jobs_at`).
+    class inside the window above the winner -- the winner's first. ``only`` (job indices)
+    restricts the expansions to those jobs (:meth:`SectorPlanStore.jobs_at`).
     """
     comm = basis.comm if basis.is_distributed else None
     rank = comm.rank if comm is not None else 0
     best = None
-    verdicts = []
-    finished = {}  # hard label -> energies its classes converged to
+    verdict_of = {}
+    finished = {}  # hard label -> energies its classes reached
     keys = {}
-    energy_of_job = {}
+    reach = 0.0 if within is None else float(within)
 
-    def run(k):
+    def e_min():
+        return min(v.energy for v in verdict_of.values())
+
+    def run(k, ranking, start=None):
         nonlocal best
-        verdict, es, psis, class_basis, solver = _expand_job(
-            h_op, basis, plan, plan.jobs[k], finished, expand_kwargs, dense_cutoff, slater_weight_min, comm
-        )
-        energy_of_job[k] = verdict.energy
-        verdicts.append(verdict)
         job = plan.jobs[k]
+        verdict, es, psis, class_basis, solver = _expand_job(
+            h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, slater_weight_min, comm,
+            rank=ranking, keys=start,
+        )  # fmt: skip
+        verdict_of[k] = verdict
         finished.setdefault((job.two_sz, job.parity), []).append(verdict.energy)
-        if within is not None:
+        if verdict.ranked or within is not None:
             keys[k] = class_basis._keys.copy()
-            # Drop, as soon as they are known to be outside it, the keys of classes above the window:
-            # holding every class's keys to the end costs the sum of all class sizes.
-            e_min = min(v.energy for v in verdicts)
-            margin = within + max(v.residual_pt2 for v in verdicts)
-            # The lowest energy only falls and the margin only grows, so a class dropped here stays out.
-            for q in [q for q in keys if energy_of_job[q] - e_min > margin]:
-                del keys[q]
+        # Drop the keys of every class that can no longer reach the lowest energy (plus the window):
+        # the lowest energy only falls, so a class dropped here stays out.
+        floor = e_min()
+        for q in [q for q in keys if _bound(verdict_of[q]) - floor > reach + _energy_error(verdict_of[q])]:
+            del keys[q]
         if verbose and rank == 0:
-            job = plan.jobs[k]
             label = f"2Sz={job.two_sz} parity={''.join(map(str, job.parity))}"
             cls = "" if job.seed_class is None else f" class {job.seed_class}"
-            leak = " (leaked; stopped)" if verdict.stopped_early else ""
-            print(f"  {label}{cls}: E = {verdict.energy:.8f} ({verdict.n_dets:,} determinants){leak}", flush=True)
+            note = " (leaked; stopped)" if verdict.stopped_early else (" (ranked)" if verdict.ranked else "")
+            print(f"  {label}{cls}: E = {verdict.energy:.8f} ({verdict.n_dets:,} determinants){note}", flush=True)
         if best is None or verdict.energy < best[0]:
             best = (verdict.energy, k, es, psis, class_basis, solver)
 
     for k in range(len(plan.jobs)):
         if only is None or k in only:
-            run(k)
+            run(k, ranking=True)
+    # Pass 2, most promising first. The lowest energy only falls, so re-test before each.
+    for k in sorted((k for k, v in verdict_of.items() if v.ranked), key=lambda k: verdict_of[k].lower):
+        if k in keys and verdict_of[k].lower - e_min() <= reach + _energy_error(verdict_of[k]):
+            start = keys.pop(k)
+            run(k, ranking=False, start=start)
+    verdicts = [verdict_of[k] for k in sorted(verdict_of)]
     kept = None
     if within is not None:
-        e_min = min(v.energy for v in verdicts)
+        floor = e_min()
         margin = within + max(v.residual_pt2 for v in verdicts)
-        energy_of = {plan.jobs.index(v.job): v.energy for v in verdicts}
-        inside = sorted((k for k, e in energy_of.items() if e - e_min <= margin), key=lambda k: energy_of[k])
+        inside = sorted(
+            (k for k, v in verdict_of.items() if v.energy - floor <= margin and k in keys),
+            key=lambda k: verdict_of[k].energy,
+        )
         winner = best[1]
         kept = [keys[winner]] + [keys[k] for k in inside if k != winner]
         keys.clear()
@@ -424,6 +499,11 @@ def certify_sector(
     if within is not None:
         return es, psis, class_basis, solver, verdicts, kept
     return es, psis, class_basis, solver, verdicts
+
+
+def _bound(verdict):
+    """The lowest a class's energy may still reach: its ranked bound, else its energy."""
+    return verdict.lower if verdict.ranked else verdict.energy
 
 
 def _spin_partner_keys(keys, pairs, max_steps):
