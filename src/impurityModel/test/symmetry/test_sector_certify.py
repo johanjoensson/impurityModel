@@ -207,7 +207,7 @@ def test_a_second_shift_through_the_store_expands_fewer_classes_and_finds_the_sa
 def test_the_store_is_reused_only_at_its_own_accuracy_and_never_for_a_mixed_valence_seed(comm, monkeypatch):
     """A record says which classes can win *at the accuracy and seed it was certified with*. At a
     different ``e_pt2_tol`` the sector is certified in full again; a mixed-valence seed spans several
-    impurity occupations, on which a shift is not a constant, so it is never recorded at all."""
+    impurity occupations, on which a shift is not a constant, so it is counted but never reused."""
     from impurityModel.ed.groundstate import solve_sector
     from impurityModel.ed.sector_solver import SectorPlanStore
 
@@ -235,8 +235,34 @@ def test_the_store_is_reused_only_at_its_own_accuracy_and_never_for_a_mixed_vale
     assert solve(0.01, store) < full, "the store did not skip a class at its own accuracy"
     assert solve(0.01, store, e_pt2_tol=1e-11) == full, "a record was reused at another accuracy"
     mixed = SectorPlanStore()
-    solve(0.0, mixed, mixed_valence={0: 1})
-    assert not mixed.records, "a mixed-valence seed was recorded"
+    full_mixed = solve(0.0, mixed, mixed_valence={0: 1})
+    assert solve(0.01, mixed, mixed_valence={0: 1}) == full_mixed, "a mixed-valence record was reused"
+    assert mixed.summary()["certified_sectors"] == 1, "a certified mixed-valence sector went uncounted"
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_a_sector_too_large_to_certify_is_counted_as_uncertified(comm, monkeypatch):
+    """A seed above ``GS_CERTIFY_MAX_SEED`` is solved by one expansion; the store says so, so the
+    result record can, and a sector that is certified is counted as such."""
+    from impurityModel.ed.groundstate import solve_sector
+    from impurityModel.ed.sector_solver import SectorPlanStore
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+
+    def solve(store):
+        solve_sector(
+            _hamiltonian(), IMPURITY_ORBITALS, BATH_STATES, {0: 2}, None, 0, False, 1000, manifold=Lowest(),
+            comm=comm, verbose=False, slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-12, plan_store=store,
+        )  # fmt: skip
+        counts = store.summary()
+        return {key: counts[key] for key in ("certified_sectors", "uncertified_sectors", "recertified_sectors")}
+
+    monkeypatch.setenv("GS_CERTIFY_MAX_SEED", "1")
+    counts = solve(SectorPlanStore())
+    assert counts == {"certified_sectors": 0, "uncertified_sectors": 1, "recertified_sectors": 0}, counts
+    monkeypatch.delenv("GS_CERTIFY_MAX_SEED")
+    counts = solve(SectorPlanStore())
+    assert counts == {"certified_sectors": 1, "uncertified_sectors": 0, "recertified_sectors": 0}, counts
 
 
 def test_with_spin_orbit_coupling_neither_spin_label_is_assumed_and_the_answer_is_exact():
@@ -312,6 +338,36 @@ def test_a_spin_and_orbitally_degenerate_thermal_level_comes_back_whole(monkeypa
     got = np.sort(np.real(result.es))
     assert len(got) == multiplicity
     np.testing.assert_allclose(got, exact[:multiplicity], atol=1e-6)
+    assert result.solver.manifold_check == {"found": 8, "expected": 8}
+
+
+def test_a_thermal_manifold_short_of_its_level_is_reported(monkeypatch, capsys):
+    """The completeness check, fed the 8-fold cubic d7 level with three of its states dropped: the
+    two hard labels at the winning energy, times the ``2S + 1 = 4`` of its ``<S^2>``, bound it at 8."""
+    from impurityModel.ed import sector_solver
+    from impurityModel.ed.eigensolvers import Within
+    from impurityModel.ed.groundstate import solve_sector
+    from impurityModel.test.support.cubic_d_shell import cubic_d_shell
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    seen = {}
+    real = sector_solver.manifold_deficit
+
+    def keep(plan, verdicts, es, psis, basis):
+        seen.update(plan=plan, verdicts=verdicts, es=es, psis=psis, basis=basis)
+        return real(plan, verdicts, es, psis, basis)
+
+    monkeypatch.setattr(sector_solver, "manifold_deficit", keep)
+    _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
+    solve_sector(
+        h_op, imp, baths, {0: 7}, None, 0, False, 1000, manifold=Within(1e-6), comm=None, verbose=False,
+        slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-8,
+    )  # fmt: skip
+    order = np.argsort(np.real(seen["es"]))[:5]
+    short = real(
+        seen["plan"], seen["verdicts"], np.asarray(seen["es"])[order], seen["psis"].select(list(order)), seen["basis"]
+    )
+    assert short == (5, 8)
 
 
 @pytest.mark.parametrize("eps_b", [-1.0, -1.5, -3.0])
@@ -436,3 +492,19 @@ def test_the_ground_state_certifies_its_winning_sector_once(monkeypatch):
     es_fresh, n_fresh = run()
     assert n_shared < n_fresh
     np.testing.assert_allclose(es_shared, es_fresh, atol=1e-10)
+
+
+def test_the_window_overtake_is_the_crossover_measured_against_the_window(monkeypatch):
+    """The crossover toy's winner overtakes the seed-lowest class (the atomic triplet): the ratio is
+    that overtake, in units of the winner's own spread, over the window's ``window / sigma_max`` --
+    so it halves when the window factor doubles, and is positive here."""
+    from impurityModel.ed.sector_solver import window_overtake
+
+    monkeypatch.delenv("GS_CERTIFY_WINDOW", raising=False)
+    ratios = []
+    for factor in ("3", "6"):
+        monkeypatch.setenv("GS_CERTIFY_WINDOW_FACTOR", factor)
+        _energy, plan, verdicts = _certify(_hamiltonian(), None)
+        ratios.append(window_overtake(plan, verdicts))
+    assert ratios[0] is not None and ratios[0] > 0.0, ratios
+    assert ratios[1] == pytest.approx(ratios[0] / 2, rel=1e-6)

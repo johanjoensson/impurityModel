@@ -36,11 +36,17 @@ from dataclasses import dataclass
 
 import numpy as np
 from impurityModel.ed import seed_sectors
+from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.density_matrices import occupations as state_occupations
 from impurityModel.ed.eigensolvers import Lowest, cold_vector
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, applyOp
-from impurityModel.ed.observables import make_spin_operators
+from impurityModel.ed.observables import (
+    casimir_operator,
+    casimir_to_quantum_number,
+    make_spin_operators,
+    manifold_observable_values,
+)
 from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs
 from impurityModel.ed.symmetries import (
     PARITY_TERM_TOL,
@@ -203,6 +209,78 @@ def certification_plan(h_op, basis, *, max_seed=1000):
     return CertificationPlan(jobs, labels, pairs, su2, class_plans)
 
 
+def describe_plan(plan):
+    """One line for a log: the hard labels, the jobs, and the classes the seed window left out.
+
+    The window is the certifier's one heuristic (:func:`seed_sectors._window`): a class outside it
+    is never expanded. Its edge -- the lowest seed energy left out, above the label's lowest -- is
+    what a reader needs to judge whether it was wide enough.
+    """
+    outside, edge, windows = 0, None, []
+    for class_plan in plan.class_plans.values():
+        if class_plan is None:
+            continue
+        windows.append(class_plan.window)
+        e_min = class_plan.classes[0].energy
+        for cls in class_plan.classes:
+            if cls.status == "window":
+                outside += 1
+                gap = cls.energy - e_min
+                edge = gap if edge is None else min(edge, gap)
+    spin = "SU(2)" if plan.su2 else ("S_z" if any(job.two_sz is not None for job in plan.jobs) else "none")
+    text = (
+        f"certifying: {len({(j.two_sz, j.parity) for j in plan.jobs})} hard labels (spin: {spin}), "
+        f"{len(plan.jobs)} class expansions"
+    )
+    if windows:
+        text += f", window {max(windows):.4g}"
+    if outside:
+        text += f", {outside} classes outside it (nearest {edge:.4g} above its label's lowest)"
+    return text
+
+
+#: Fraction of the seed window, in units of the classes' hybridization spread, that a measured
+#: overtake may reach before the window is flagged as too narrow (:func:`window_overtake`).
+WINDOW_OVERTAKE_WARN = 2.0 / 3.0
+
+
+def window_overtake(plan, verdicts):
+    """How close the certification came to needing a wider seed window: a ratio, or ``None``.
+
+    A class enters the expansion only if its seed energy lies within the window above its label's
+    lowest class, ``window = factor * sigma_max``. Hybridization lowers a class by an amount set by
+    its own spread ``sigma``; one that ends up *below* a class that started lower has overtaken it.
+    For every expanded class this measures its overtake of the label's seed-lowest class,
+    ``((s_c - s_0) - (E_c - E_0)) / sigma_c`` (seed energies ``s``, converged ``E``; differences
+    within one label, so no shift enters), and returns the largest, divided by the window's own
+    ``window / sigma_max``. A class outside the window can only win by overtaking by more than that
+    window, so a ratio near 1 says the window had little to spare. On the NiO 10-bath d6 sector the
+    winner overtook by 2.05 sigma against a 3 sigma window (0.68). ``None`` when no label had two
+    expanded classes to compare.
+    """
+    by_job = {v.job: v for v in verdicts if not v.stopped_early}
+    worst = None
+    for label, class_plan in plan.class_plans.items():
+        if class_plan is None or len(class_plan.classes) < 2:
+            continue
+        jobs = {job.seed_class: job for job in plan.jobs if (job.two_sz, job.parity) == label}
+        base = by_job.get(jobs.get(0))
+        sigma_max = max(cls.sigma for cls in class_plan.classes)
+        if base is None or sigma_max <= 0.0 or class_plan.window <= 0.0:
+            continue
+        reach = class_plan.window / sigma_max
+        s_0 = class_plan.classes[0].energy
+        for k, job in jobs.items():
+            verdict = by_job.get(job)
+            cls = class_plan.classes[k] if k is not None else None
+            if verdict is None or cls is None or k == 0 or cls.sigma <= 0.0:
+                continue
+            overtake = ((cls.energy - s_0) - (verdict.energy - base.energy)) / cls.sigma
+            ratio = overtake / reach
+            worst = ratio if worst is None else max(worst, ratio)
+    return worst
+
+
 def _has_leaked(weight, energy, previous_energy, finished):
     """Whether a class expansion has leaked into a state another class already converged to.
 
@@ -324,7 +402,7 @@ def certify_sector(
         if best is None or verdict.energy < best[0]:
             best = (verdict.energy, k, es, psis, class_basis, solver)
 
-    for k, job in enumerate(plan.jobs):
+    for k in range(len(plan.jobs)):
         if only is None or k in only:
             run(k)
     kept = None
@@ -372,6 +450,63 @@ def _spin_partner_keys(keys, pairs, max_steps):
                 break
             found.extend(image.keys())
     return found
+
+
+def _energy_error(verdict):
+    """The error bar of a class energy: its residual PT2 plus :data:`EXPANSION_ENERGY_FLOOR`."""
+    return verdict.residual_pt2 + EXPANSION_ENERGY_FLOOR
+
+
+def manifold_deficit(plan, verdicts, es, psis, basis):
+    """``(found, expected)``: the states a ``Within`` solve holds in its lowest level, and a lower bound.
+
+    The bound comes from what certification measured, with no symmetry assumed beyond the detected
+    ones. Every hard label with a class at the winning energy (within both error bars) holds a row
+    of the lowest level of its own -- labels are exact, so those rows are orthogonal -- and when total
+    spin is a symmetry each such row is one ``S_z`` member of a ``2S + 1`` multiplet, ``S`` read
+    off ``<S^2>`` on the level. A short manifold misweights every thermal average without changing
+    its energy. Collective: every rank must call it (the ``<S^2>`` evaluation reduces).
+    """
+    comm = basis.comm if basis.is_distributed else None
+    finished = [v for v in verdicts if not v.stopped_early] or list(verdicts)
+    lowest = min(finished, key=lambda v: v.energy)
+    labels = {
+        (v.job.two_sz, v.job.parity)
+        for v in finished
+        if v.energy - lowest.energy <= _energy_error(v) + _energy_error(lowest)
+    }
+    es = np.real(np.asarray(es, dtype=complex))
+    if comm is not None:
+        es = comm.bcast(es, root=0)
+    tol = _energy_error(lowest)
+    level = np.flatnonzero(es - np.min(es) <= tol)
+    multiplicity = 1
+    if plan.su2 and plan.pairs:
+        ladders = make_spin_operators(plan.pairs)
+        for op in ladders:
+            op.set_restrictions(None)
+            op.set_weighted_restrictions(None)
+        s2 = casimir_operator(*ladders)
+        s2.set_restrictions(None)
+        s2.set_weighted_restrictions(None)
+        # The level's columns only, and S^2 applied onto their own support: the matrix of S^2 on the
+        # level is all that is read, and the rest of S^2 |n> is a transient as large as the window.
+        block = basis.redistribute_block(psis.select([int(i) for i in level]))
+        keep = comm_support_filter([block], comm)
+        values = manifold_observable_values(
+            block,
+            es[level],
+            lambda blk: s2.apply_block(blk, 0, keep),
+            degeneracy_tol=tol,
+            comm=comm,
+            redistribute=basis.redistribute_block if comm is not None else None,
+        )
+        # The smallest S on the level: a lower bound stays one if the level is accidentally mixed.
+        spin = casimir_to_quantum_number(float(np.min(np.real(values))))
+        multiplicity = round(2 * spin + 1)
+        if comm is not None:
+            multiplicity = comm.bcast(multiplicity, root=0)
+    return len(level), len(labels) * multiplicity
 
 
 def solve_certified(
@@ -436,6 +571,15 @@ def solve_certified(
         psi_refs=solver.psi_refs,
         reuse_last=True,
     )
+    found, expected = manifold_deficit(plan, verdicts, es, psis, merged)
+    solver.manifold_check = {"found": found, "expected": expected}
+    if found < expected and (basis.comm is None or basis.comm.rank == 0):
+        print(
+            f"WARNING: the thermal manifold holds {found} states of its lowest level, but certification "
+            f"found that level in rows that make at least {expected}: thermal averages over it are "
+            "misweighted. Raise the determinant cap, or widen the thermal window.",
+            flush=True,
+        )
     return es, psis, merged, solver, verdicts
 
 
@@ -476,6 +620,12 @@ class SectorPlanStore:
 
     def __init__(self):
         self.records = {}
+        #: Sectors solved by a single expansion because their seed was too large to certify.
+        self.uncertified = set()
+        #: Sectors certified again because a solve contradicted the record (:meth:`violated`).
+        self.recertified = set()
+        #: The largest :func:`window_overtake` ratio of any certification.
+        self.overtake = None
 
     def plan(self, key):
         """The certification plan of sector ``key``, or ``None`` if it was never certified."""
@@ -489,10 +639,29 @@ class SectorPlanStore:
 
     def clear(self):
         self.records.clear()
+        self.uncertified.clear()
+        self.recertified.clear()
+        self.overtake = None
+
+    def summary(self):
+        """Counts for a result record: sectors certified, solved uncertified, and re-certified.
+
+        Keyed by sector, not by setting: a sector certified at two caps of a ladder counts once.
+        """
+
+        def sectors(keys):
+            return len({key[0] if isinstance(key, tuple) else key for key in keys})
+
+        return {
+            "certified_sectors": sectors(self.records),
+            "uncertified_sectors": sectors(self.uncertified),
+            "recertified_sectors": sectors(self.recertified),
+            "window_overtake": self.overtake,
+        }
 
     @staticmethod
     def _error(verdict):
-        return verdict.residual_pt2 + EXPANSION_ENERGY_FLOOR
+        return _energy_error(verdict)
 
     def jobs_at(self, key, mu, window=0.0):
         """Indices of the jobs worth expanding at ``mu``, or ``None`` (no usable record: expand all).

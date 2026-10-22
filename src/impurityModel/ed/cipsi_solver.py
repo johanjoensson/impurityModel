@@ -446,6 +446,9 @@ class CIPSISolver:
         #: rank 0's answer is broadcast, so the ranks cannot disagree. :attr:`stopped_early` records it.
         self.cycle_hook = None
         self.stopped_early = False
+        #: ``{"found", "expected"}`` for a certified thermal manifold's lowest level
+        #: (:func:`sector_solver.manifold_deficit`); ``None`` when nothing checked it.
+        self.manifold_check = None
         #: The last Hamiltonian matrix and what it was built on (:class:`MatrixSnapshot`), kept
         #: during :meth:`expand` only; see :data:`_SNAPSHOT_BUDGET_FRACTION`.
         self._h_snapshot = None

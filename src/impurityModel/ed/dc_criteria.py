@@ -1032,6 +1032,7 @@ def fixed_peak_dc(
         # Held by the record so the emit in its `finally` can read the search's own verdict even on
         # the path where the raise skips past every line that would have projected it.
         search_report = dc_rec.search = {}
+        dc_rec.certification = ctx.plan_store
         dc_rec["target"] = peak_position
         dc_rec["tol"] = tol
         with _dc_search_trace("fixed-peak", MPI.COMM_WORLD, rank, width_tol=tol, report=search_report):
@@ -1627,6 +1628,7 @@ def fixed_gap_dc(
         # Held by the record so the emit in its `finally` can read the search's own verdict even on
         # the path where the raise skips past every line that would have projected it.
         search_report = dc_rec.search = {}
+        dc_rec.certification = ctx.plan_store
         dc_rec["target"] = offset
         with _dc_search_trace("fixed-gap", MPI.COMM_WORLD, rank, width_tol=mu_tol, report=search_report):
             # Inside the trace block, not before it. The tolerance-sizing evaluation costs three
@@ -2270,6 +2272,7 @@ def fixed_occupation_dc(
         # Held by the record so the emit in its `finally` can read the search's own verdict even on
         # the path where the raise skips past every line that would have projected it.
         search_report = dc_rec.search = {}
+        dc_rec.certification = ctx.plan_store
         dc_rec["target"] = target
         dc_rec["tol"] = occ_tol
         dc_rec["n_ref"] = ctx.n0

@@ -376,3 +376,14 @@ def test_the_record_distinguishes_an_unbound_cap_from_a_bound_one_and_a_retreat(
 def test_a_record_without_a_status_still_reads_as_before():
     """Records written by hand (as these tests do) and by any pre-``dc_cap_status`` caller."""
     assert "calibrated against tol" in _cap_line({"dc_cap": 8000, "dc_cap_parity": 10**6})
+
+
+@pytest.mark.parametrize("criterion, call", CRITERIA[:3], ids=[name for name, _ in CRITERIA[:3]])
+def test_the_searching_criteria_record_whether_their_sectors_were_certified(captured, criterion, call):
+    """Every sector energy a search compares is either certified against symmetry traps or counted
+    as not: the record says which, so a log shows whether its sector ordering can be trusted."""
+    call()
+    (record,) = captured
+    assert record["certified_sectors"] >= 1, record
+    assert record["uncertified_sectors"] == 0, record
+    assert record["recertified_sectors"] == 0, record

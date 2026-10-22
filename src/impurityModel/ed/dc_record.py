@@ -84,6 +84,10 @@ _FIELDS = (
     ("mu_tol_effective", "{:.2e}"),
     ("alpha", "{:.3g}"),
     ("evaluations", "{}"),
+    ("certified_sectors", "{}"),
+    ("uncertified_sectors", "{}"),
+    ("recertified_sectors", "{}"),
+    ("window_overtake", "{:.2f}"),
     ("walltime", "{:.1f} s"),
 )
 
@@ -231,6 +235,14 @@ def _annotate(record, key, text):
             else "from the chi secant, averaged over chi_span"
         )
         return f"{text}   (delta_+ + delta_-, of max 2; {source} -- read the two edges separately)"
+    if key == "uncertified_sectors" and record.get(key):
+        # The seed was larger than GS_CERTIFY_MAX_SEED: one expansion from its lowest state, which
+        # on a bath-fitted model can stop in an excited symmetry class (NiO 10-bath: every sector).
+        return f"{text}   (seed above GS_CERTIFY_MAX_SEED: a single expansion, not checked for traps)"
+    if key == "recertified_sectors" and record.get(key):
+        return f"{text}   (a class came out above its certified tangent: a trap or a truncation)"
+    if key == "window_overtake":
+        return f"{text}   (largest symmetry-class overtake / seed window; near 1: raise GS_CERTIFY_WINDOW_FACTOR)"
     if key == "lever_at_guess":
         # The gap criterion's own conditioning, before it searched: below DC_GAP_LEVER_MIN the
         # search is refused (status ill_conditioned), so the number that decided it is on the record.
@@ -410,6 +422,9 @@ class Record(dict):
     """
 
     search = None
+    #: The search's sector-certification store (:class:`sector_solver.SectorPlanStore`), read at emit
+    #: time like :attr:`search`: anything with a ``summary()`` returning record keys.
+    certification = None
 
 
 @contextmanager
@@ -445,6 +460,8 @@ def recording(criterion, rank=None, report=None):
         try:
             if record.search is not None:
                 project_search_report(record, record.search)
+            if record.certification is not None:
+                record.update(record.certification.summary())
             record["walltime"] = time.monotonic() - started
             if report is not None:
                 # The caller's out-parameter is the *same* dict the block below prints, filled

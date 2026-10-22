@@ -21,7 +21,14 @@ from impurityModel.ed.memory_estimate import (
     resident_bytes_per_rank,
     resolve_cap_policy,
 )
-from impurityModel.ed.sector_solver import SectorPlanStore, certification_plan, solve_certified
+from impurityModel.ed.sector_solver import (
+    WINDOW_OVERTAKE_WARN,
+    SectorPlanStore,
+    certification_plan,
+    describe_plan,
+    solve_certified,
+    window_overtake,
+)
 from impurityModel.ed.utils import (
     V_DETAIL,
     V_SUMMARY,
@@ -270,7 +277,7 @@ def solve_sector(
             # seed is certified afresh at every one.
             widths = mixed_valence.values() if isinstance(mixed_valence, dict) else [mixed_valence or 0]
             single_occupation = not any(int(v) for v in widths)
-            store = plan_store if single_occupation else None
+            store = plan_store
             store_key = (
                 sector_key(N0, frozen_occupations),
                 len(basis),
@@ -280,13 +287,32 @@ def solve_sector(
                 basis.truncation_threshold,
                 int(dense_cutoff),
             )
-            certification = store.plan(store_key) if store is not None else None
+            certification = store.plan(store_key) if store is not None and single_occupation else None
             window = 0.0 if isinstance(manifold, Lowest) else float(manifold.max_energy)
             only = store.jobs_at(store_key, shift, window=window) if certification is not None else None
             if certification is None:
                 with solver_trace.timed("certify_plan"):
-                    certification = certification_plan(h_op, basis, max_seed=config.GS_CERTIFY_MAX_SEED.get())
+                    max_seed = config.GS_CERTIFY_MAX_SEED.get()
+                    certification = certification_plan(h_op, basis, max_seed=max_seed)
+                if certification is None:
+                    # `len(basis)` is replicated, so is this branch. Said, because the single
+                    # expansion that follows can stop in an excited symmetry class.
+                    solver_trace.note("certify_skipped", n0=store_key[0], n_seed=len(basis))
+                    if store is not None:
+                        store.uncertified.add(store_key)
+                    if verbose and (comm is None or comm.rank == 0):
+                        print(
+                            f"  sector {store_key[0]}: seed of {len(basis):,} determinants is above "
+                            f"GS_CERTIFY_MAX_SEED = {max_seed:,}; solved by one expansion, not certified",
+                            flush=True,
+                        )
+            if certification is not None and len(certification.jobs) <= 1 and store is not None:
+                # One class, nothing to be trapped away from: certified as it stands. No verdicts,
+                # so no shift ever skips its expansion.
+                store.record(store_key, certification, shift, ())
             if certification is not None and len(certification.jobs) > 1:
+                if verbose and (comm is None or comm.rank == 0):
+                    print(f"  sector {store_key[0]}: {describe_plan(certification)}", flush=True)
                 with solver_trace.timed("certify"):
                     es, psis, sector_basis, sector_solver, verdicts = solve_certified(
                         h_op,
@@ -302,7 +328,8 @@ def solve_sector(
                     if only is not None and store.violated(store_key, shift, verdicts):
                         # Some class came out above its certified tangent: the classes this shift
                         # skipped cannot be trusted either. Certify the sector afresh.
-                        solver_trace.note("certify_tangent_violation", n0=store_key)
+                        solver_trace.note("certify_tangent_violation", n0=store_key[0])
+                        store.recertified.add(store_key)
                         es, psis, sector_basis, sector_solver, verdicts = solve_certified(
                             h_op,
                             basis,
@@ -315,6 +342,18 @@ def solve_sector(
                         )
                 if store is not None:
                     store.record(store_key, certification, shift, verdicts)
+                if only is None:
+                    # A full certification: say whether the seed window had room to spare.
+                    overtake = window_overtake(certification, verdicts)
+                    if overtake is not None and store is not None:
+                        store.overtake = overtake if store.overtake is None else max(store.overtake, overtake)
+                    if overtake is not None and overtake > WINDOW_OVERTAKE_WARN and (comm is None or comm.rank == 0):
+                        print(
+                            f"WARNING: sector {store_key[0]}: a symmetry class overtook a lower-lying one by "
+                            f"{overtake:.2f} of the seed window: a class outside the window could win the same "
+                            "way. Raise GS_CERTIFY_WINDOW_FACTOR to check.",
+                            flush=True,
+                        )
                 if sector_solver.truncation_report is None:
                     # A class may have lost because the cap or the memory guard held it high: say so on
                     # the solve callers read, so a cap-decided comparison is not taken for a converged one.
