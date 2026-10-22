@@ -56,8 +56,9 @@ cdef void scatter_columns_nogil(
     ``slot`` of the send buffer ``S`` when ``slot < send_rows``, else to row ``slot - send_rows`` of
     the self buffer ``Y``. Both must be zeroed first.
 
-    Columns are walked in ascending order, so each output row is summed in the order a CSR row
-    loop sums it.
+    Columns are walked in ascending order within a segment. A matrix grown by
+    ``basis_transcription.extend_sparse_matrix`` has segments whose column ranges overlap, so across
+    segments an output row is summed in a different order from a CSR row loop (roundoff only).
     """
     cdef Py_ssize_t n_cols = indptr.shape[0] - 1
     cdef Py_ssize_t jj, e, col

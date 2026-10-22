@@ -561,23 +561,25 @@ GS_SECTOR_CERTIFY = Knob(
     kind="bool",
     default=True,
     group="groundstate",
-    doc="""Certify every sector solve (`sector_solver`): expand one class per hard symmetry label
-    (``2 S_z`` and the occupation parities ``H`` conserves) and spin tier, and keep the lowest. A
-    single expansion from the seed's lowest state never leaves that state's symmetry class, and on
-    bath-fitted impurities the seed's class is routinely the wrong one -- on the NiO 10-bath archive
-    every sector from d5 to d9 converged on an excited level, up to 0.17 high. ``0`` restores the
-    single expansion.""",
+    doc="""Certify every sector solve (`sector_solver`): split the seed by the hard symmetry labels
+    ``H`` is detected to conserve (``2 S_z``, the occupation parities), partition each label's seed
+    into the classes of ``P H P`` and ``P H Q H P`` (no symmetry assumed), expand every class inside
+    the seed window, and keep the lowest. A single expansion from the seed's lowest state never
+    leaves that state's symmetry class, and on bath-fitted impurities the seed's class is routinely
+    the wrong one -- on the NiO 10-bath archive every sector from d5 to d9 converged on an excited
+    level, up to 0.17 high. ``0`` restores the single expansion.""",
 )
 
 GS_CERTIFY_MAX_SEED = Knob(
     name="GS_CERTIFY_MAX_SEED",
     kind="int",
-    default=2000,
+    default=1000,
     minimum=0,
     group="groundstate",
     doc="""Largest seed (determinants) a sector solve certifies. The certification plan is built
-    from dense seed matrices on rank 0 (``n0^2`` complex, twice); a larger seed is solved by a
-    single expansion and reported uncertified.""",
+    from dense seed matrices on rank 0 (``n0^2`` complex, twice), and a search's plan store keeps
+    each certified sector's class spans on every rank (up to ``n0^2`` complex per sector); a larger
+    seed is solved by a single expansion, uncertified.""",
 )
 
 GS_SEED_CLASSES = Knob(
@@ -590,7 +592,8 @@ GS_SEED_CLASSES = Knob(
     the symmetry sectors of the seed's ground level, and misses the ground state when hybridization
     reorders the multiplets -- on the NiO 10-bath gap-DC search, every sector from d5 to d9, by up
     to 0.17. Costs one expansion per class in the window (10-40x a single expansion on the NiO d5
-    and d6 seeds), which is why it is opt-in until a cheaper certifier replaces it.""",
+    and d6 seeds). Superseded by `GS_SECTOR_CERTIFY`, which runs first; this path is reached only
+    with certification off, or for a seed the certifier declines.""",
 )
 
 GS_SEED_CLASS_WINDOW = Knob(
