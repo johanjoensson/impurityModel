@@ -428,6 +428,13 @@ def _zero_entries_at_most(view, cutoff):
 #: warm-started Davidson about 30 sparse products.
 CLASS_DENSE_MAX = 128
 
+#: A sparse ``Lowest`` solve whose operator has at most this many nonzeros (summed over the ranks) is
+#: gathered onto rank 0 and solved there. Below it a distributed iteration is collective waiting: on
+#: the 10-bath NiO d6 certified sector (-n 6) every solve was faster on rank 0 -- 43 against 100 ms
+#: at 1e4-3e4 nonzeros, 110 against 147 ms at 3e4-1e5 -- and the two tie at 1e5-3e5. Rank 0 holds
+#: about 32 bytes per nonzero while it solves, 3 MB at the bound.
+LOWEST_SERIAL_NNZ = 100_000
+
 
 class CIPSISolver:
     def __init__(self, basis: Basis):
@@ -1428,9 +1435,7 @@ class CIPSISolver:
             if reusable:
                 eig = self.eig
             elif lowest:
-                eig = self._solve_lowest(
-                    H, h_matrix, slaterWeightMin, psi_refs, serial=self.basis.size < dense_cutoff
-                )
+                eig = self._solve_lowest(H, h_matrix, slaterWeightMin, psi_refs, serial=self.basis.size < dense_cutoff)
             else:
                 eig = self._solve_window(H, h_matrix, manifold, num_wanted, slaterWeightMin, psi_refs)
             assert eig is not None
@@ -1531,8 +1536,10 @@ class CIPSISolver:
         """One count-mode solve for the lowest pair on the current basis; records it as ``self.eig``.
 
         ``serial`` solves on rank 0 alone (a basis below ``dense_cutoff``, where distributed iterations
-        are collective latency)."""
+        are collective latency); so does an operator of at most :data:`LOWEST_SERIAL_NNZ` nonzeros."""
         H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
+        # Collective, and first so that `or` never skips it: every rank reaches this solve.
+        serial = self._allreduce_sum(int(H_mat.nnz)) <= LOWEST_SERIAL_NNZ or serial
         hashes = np.fromiter((state.get_hash() for state in self.basis.local_basis), dtype=np.uint64)
         warm = self._warm_columns(psi_refs, width=1)
         _trace_note("eigensolve_block_width", p=int(warm.shape[1] + 1), num_wanted=1)

@@ -594,3 +594,30 @@ def test_a_class_verdict_below_the_dense_cutoff_is_a_lanczos_solve_on_rank_0(mon
     es, *_rest = certify_sector(h_op, basis, plan, expand_kwargs=EXPAND, dense_cutoff=1000, slater_weight_min=0)
     assert (False, True) in calls, calls
     assert abs(float(np.min(es)) - _exact_ground_energy(h_op)) < 1e-8
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_a_sparse_lowest_solve_of_few_nonzeros_runs_on_rank_0(comm, monkeypatch):
+    """Above the dense cutoff, a ``Lowest`` solve whose operator has at most ``LOWEST_SERIAL_NNZ``
+    nonzeros is gathered onto rank 0 (``serial``): distributed, every iteration of so small a
+    problem is collective waiting. Above the bound it stays distributed; the energy is the same."""
+    import impurityModel.ed.cipsi_solver as cs
+
+    h_op = _hamiltonian()
+    energies = []
+    calls = []
+    original = cs.solve_lowest
+
+    def record(*args, serial=False, **kwargs):
+        calls.append(serial)
+        return original(*args, serial=serial, **kwargs)
+
+    monkeypatch.setattr(cs, "solve_lowest", record)
+    for bound, expected in ((cs.LOWEST_SERIAL_NNZ, True), (0, False)):
+        monkeypatch.setattr(cs, "LOWEST_SERIAL_NNZ", bound)
+        calls.clear()
+        solver = CIPSISolver(_seed(h_op, comm))
+        es, _psis = solver.get_eigenvectors(h_op, Lowest(), dense_cutoff=1, slaterWeightMin=0)
+        assert calls == [expected]
+        energies.append(float(np.min(es)))
+    assert abs(energies[0] - energies[1]) < 1e-10
