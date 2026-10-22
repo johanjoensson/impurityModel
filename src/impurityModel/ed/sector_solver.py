@@ -240,7 +240,8 @@ def _expand_job(h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, s
         def leaked(sv, e_ref, psi_refs):
             weight = seed_sectors.class_weight(class_plan, cls, sv.basis, psi_refs)  # collective
             e0 = float(np.min(e_ref))
-            stop = _has_leaked(weight, e0, previous[0], finished)
+            # Only this label's: H conserves the label, so a state cannot leak into another label's.
+            stop = _has_leaked(weight, e0, previous[0], finished.get((job.two_sz, job.parity), ()))
             previous[0] = e0
             return stop
 
@@ -292,7 +293,7 @@ def certify_sector(
     rank = comm.rank if comm is not None else 0
     best = None
     verdicts = []
-    finished = []
+    finished = {}  # hard label -> energies its classes converged to
     keys = {}
     energy_of_job = {}
 
@@ -303,7 +304,8 @@ def certify_sector(
         )
         energy_of_job[k] = verdict.energy
         verdicts.append(verdict)
-        finished.append(verdict.energy)
+        job = plan.jobs[k]
+        finished.setdefault((job.two_sz, job.parity), []).append(verdict.energy)
         if within is not None:
             keys[k] = class_basis._keys.copy()
             # Drop, as soon as they are known to be outside it, the keys of classes above the window:

@@ -44,14 +44,17 @@ def test_every_detected_parity_is_conserved_by_every_matrix_element():
             np.testing.assert_array_equal(parity_labels(_bits(bra, n_orb)[None, :], parities), label)
 
 
-def test_a_roundoff_term_does_not_break_a_parity_and_a_real_one_does():
+def test_a_noise_term_does_not_break_a_parity_and_a_real_one_does():
     hop = {((0, "c"), (1, "a")): 1.0, ((1, "c"), (0, "a")): 1.0, ((2, "c"), (3, "a")): 1.0, ((3, "c"), (2, "a")): 1.0}
     base = len(conserved_parities(ManyBodyOperator(hop)))
     # {0, 1} and {2, 3} are separately conserved; a 0-2 hopping joins them into one.
+    # Relative to the largest term (1.0 here): bath-fit-like noise, scaled with the operator.
     noisy = {**hop, ((0, "c"), (2, "a")): 0.1 * PARITY_TERM_TOL, ((2, "c"), (0, "a")): 0.1 * PARITY_TERM_TOL}
+    scaled = {k: 1e4 * v for k, v in noisy.items()}
     real = {**hop, ((0, "c"), (2, "a")): 1e-3, ((2, "c"), (0, "a")): 1e-3}
     assert base == 2
     assert len(conserved_parities(ManyBodyOperator(noisy))) == base
+    assert len(conserved_parities(ManyBodyOperator(scaled))) == base, "the cut must scale with the operator"
     assert len(conserved_parities(ManyBodyOperator(real))) == base - 1
 
 

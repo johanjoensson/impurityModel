@@ -1319,11 +1319,14 @@ def definite_conserved_charges(psi, charges, n_orb, comm=None, tol=DEFINITE_CHAR
     return [int(round(x)) for x in mean]  # noqa: RUF046  (np.float64 round() returns float, cast is needed)
 
 
-#: Operator terms at or below this magnitude are roundoff, not couplings, when deciding which
-#: occupation parities an operator conserves (:func:`conserved_parities`): the parity test is
-#: exact integer algebra on the terms that remain, so one roundoff term above the threshold would
-#: silently break a symmetry. The scale of :func:`lie_algebra.rotate_hamiltonian`'s term cutoff.
-PARITY_TERM_TOL = 1e-12
+#: Operator terms at or below this magnitude, *relative to the operator's largest term*, are noise,
+#: not couplings, when deciding which occupation parities an operator conserves
+#: (:func:`conserved_parities`) and whether it conserves ``S_z`` (:func:`conserves_sz`): both tests
+#: are exact integer algebra on the terms that remain, so one noise term above the threshold
+#: silently breaks a symmetry -- and a fitted bath carries symmetry-breaking noise of 1e-8 to 1e-5,
+#: which an absolute 1e-12 would read as physics. Ten orders below the largest term is far under
+#: any coupling that splits levels by more than the solver's own tolerances.
+PARITY_TERM_TOL = 1e-10
 
 
 def conserved_parities(op, tol=PARITY_TERM_TOL):
@@ -1344,7 +1347,7 @@ def conserved_parities(op, tol=PARITY_TERM_TOL):
     Parameters
     ----------
     op : ManyBodyOperator or dict
-        The operator. Terms with ``|amplitude| <= tol`` are ignored.
+        The operator. Terms with ``|amplitude| <= tol * max |amplitude|`` are ignored.
     tol : float
         See :data:`PARITY_TERM_TOL`.
 
@@ -1355,11 +1358,12 @@ def conserved_parities(op, tol=PARITY_TERM_TOL):
         in the subset), in a canonical (reduced) form. Always contains the total-number parity
         over the orbitals the operator touches when the operator conserves particle number.
     """
-    items = op.items() if hasattr(op, "items") else dict(op).items()
+    items = list(op.items() if hasattr(op, "items") else dict(op).items())
+    cut = tol * max((abs(amp) for _term, amp in items), default=0.0)
     flips = set()
     touched = 0
     for term, amp in items:
-        if abs(amp) <= tol:
+        if abs(amp) <= cut:
             continue
         v = 0
         for orb, _action in term:
@@ -1418,9 +1422,10 @@ def conserves_sz(op, spin_pairs, tol=PARITY_TERM_TOL):
     for dn, up in spin_pairs:
         weight[dn] = -1
         weight[up] = 1
-    items = op.items() if hasattr(op, "items") else dict(op).items()
+    items = list(op.items() if hasattr(op, "items") else dict(op).items())
+    cut = tol * max((abs(amp) for _term, amp in items), default=0.0)
     for term, amp in items:
-        if abs(amp) <= tol:
+        if abs(amp) <= cut:
             continue
         change = 0
         for orb, action in term:
