@@ -543,3 +543,31 @@ def test_a_class_whose_state_left_its_class_is_marked_leaked_even_unstopped(monk
     classed = [v for v in verdicts if v.job.seed_class is not None]
     assert classed, "the fixture has no class expansions"
     assert all(v.stopped_early for v in classed)
+
+
+def test_davidson_runs_only_where_a_class_penalty_holds_the_expansion(monkeypatch):
+    """Davidson stays in its start's symmetry sector, so it is safe only under a ``ClassPenalty``.
+
+    A label with at most one class in the window is expanded whole (``seed_class=None``) with no
+    penalty: a plain expansion inside the hard label, where spin and orbital traps remain and
+    only Lanczos growing the generic start vector escapes them. A dense cutoff of 1 sends every
+    solve down the sparse path, where the choice is made.
+    """
+    h_op = _hamiltonian()
+    basis = _seed(h_op, None)
+    plan = certification_plan(h_op, basis)
+    assert any(job.seed_class is None for job in plan.jobs)
+    calls = []
+    original = CIPSISolver._solve_lowest
+
+    def record(self, *args, **kwargs):
+        calls.append((self.davidson, self.matrix_hook is not None))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(CIPSISolver, "_solve_lowest", record)
+    sparse = dict(EXPAND, dense_cutoff=1)
+    es, *_rest = certify_sector(h_op, basis, plan, expand_kwargs=sparse, dense_cutoff=1, slater_weight_min=0)
+    assert any(davidson for davidson, _ in calls)
+    assert any(not hooked for _, hooked in calls)
+    assert all(hooked for davidson, hooked in calls if davidson), calls
+    assert abs(float(np.min(es)) - _exact_ground_energy(h_op)) < 1e-8

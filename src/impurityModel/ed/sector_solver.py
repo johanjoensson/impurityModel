@@ -364,8 +364,10 @@ def _expand_job(
     )
     solver = CIPSISolver(class_basis)
     # The penalty holds the expansion in its class, so the faster solver that stays in its start's
-    # symmetry sector is the right one here (GS_LOWEST_SOLVER=auto).
-    solver.davidson = True
+    # symmetry sector is the right one there (GS_LOWEST_SOLVER=auto). A whole-label job has no
+    # penalty: it is a plain expansion inside the hard label, where spin and orbital traps remain
+    # and only Lanczos growing the generic start vector escapes them.
+    solver.davidson = job.seed_class is not None
     class_plan = cls = None
     if job.seed_class is not None:
         class_plan = plan.class_plans[(job.two_sz, job.parity)]
