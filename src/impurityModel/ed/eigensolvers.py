@@ -632,20 +632,27 @@ def davidson_lowest(h_op, comm, start, *, tol, max_vectors=None, max_iter=None):
 
     max_vectors = max(int(DAVIDSON_MAX_VECTORS if max_vectors is None else max_vectors), 3)
     max_iter = int(DAVIDSON_MAX_ITER if max_iter is None else max_iter)
-    V = np.zeros((n_local, max_vectors), dtype=complex)
-    AV = np.zeros((n_local, max_vectors), dtype=complex)
+    # The space is stored by rows -- vector i is V[i], contiguous -- and V^H t is formed as
+    # conj(V t*), which conjugates one vector instead of copying the space: with column storage the
+    # skinny products and their `.conj().T` copies cost 2-3x the sparse product per iteration.
+    V = np.zeros((max_vectors, n_local), dtype=complex)
+    AV = np.zeros((max_vectors, n_local), dtype=complex)
     S = np.zeros((max_vectors, max_vectors), dtype=complex)
     m = 0
 
+    def project(t):
+        """``V^H t``, this rank's part."""
+        return (V[:m] @ t.conj()).conj()
+
     def orthonormal(t, g):
-        """``t`` minus its projection on ``V[:, :m]``, normalized, or ``None`` when nothing is left.
+        """``t`` minus its projection on the space ``V[:m]``, normalized, or ``None`` when nothing is left.
 
         ``g`` is the summed ``[V^H t, t^H t]`` of the first pass; the second pass (CGS2) gathers again
         and takes the norm by Pythagoras, so this costs one Allgather.
         """
-        t = t - V[:, :m] @ g[:m]
-        g2 = _gather_sum(np.append(V[:, :m].conj().T @ t, np.vdot(t, t)), comm)
-        t = t - V[:, :m] @ g2[:m]
+        t = t - g[:m] @ V[:m]
+        g2 = _gather_sum(np.append(project(t), np.vdot(t, t)), comm)
+        t = t - g2[:m] @ V[:m]
         norm2 = g2[m].real - float(np.vdot(g2[:m], g2[:m]).real)
         if norm2 <= _DAVIDSON_INDEPENDENCE**2 * g[m].real:
             return None
@@ -655,8 +662,8 @@ def davidson_lowest(h_op, comm, start, *, tol, max_vectors=None, max_iter=None):
         """Add the orthonormal column ``t`` to the space: one product, one Allgather for its ``S`` column."""
         nonlocal m
         At = h_op.apply(t.reshape(-1, 1), plan)[:, 0]
-        col = _gather_sum(np.append(V[:, :m].conj().T @ At, np.vdot(t, At)), comm)
-        V[:, m], AV[:, m] = t, At
+        col = _gather_sum(np.append(project(At), np.vdot(t, At)), comm)
+        V[m], AV[m] = t, At
         S[:m, m] = col[:m]
         S[m, :m] = col[:m].conj()
         S[m, m] = col[m].real
@@ -664,26 +671,26 @@ def davidson_lowest(h_op, comm, start, *, tol, max_vectors=None, max_iter=None):
 
     for j in range(start.shape[1]):
         t = start[:, j]
-        t = orthonormal(t, _gather_sum(np.append(V[:, :m].conj().T @ t, np.vdot(t, t)), comm))
+        t = orthonormal(t, _gather_sum(np.append(project(t), np.vdot(t, t)), comm))
         if t is not None and m < max_vectors:
             append(t)
 
     if m == 0:  # the start block spans nothing
-        return np.inf, V[:, :1].copy(), False
+        return np.inf, V[:1].T.copy(), False
     y_prev = None
     best = np.inf
     best_at = 0
-    theta, x = np.inf, V[:, :1].copy()
+    theta, x = np.inf, V[:1].T.copy()
     for it in range(max_iter):
         thetas, Y = np.linalg.eigh(S[:m, :m])  # S is bitwise replicated, so is this
         y = Y[:, 0]
         theta = float(thetas[0])
-        x = V[:, :m] @ y
-        r = AV[:, :m] @ y - theta * x
+        x = y @ V[:m]
+        r = y @ AV[:m] - theta * x
         denom = theta - diag
         small = np.abs(denom) < _DAVIDSON_SHIFT_FLOOR
         t = r / np.where(small, np.where(denom < 0, -_DAVIDSON_SHIFT_FLOOR, _DAVIDSON_SHIFT_FLOOR), denom)
-        g = _gather_sum(np.concatenate([V[:, :m].conj().T @ t, [np.vdot(t, t), np.vdot(r, r)]]), comm)
+        g = _gather_sum(np.concatenate([project(t), [np.vdot(t, t), np.vdot(r, r)]]), comm)
         residual = np.sqrt(max(g[m + 1].real, 0.0))
         if residual < tol:
             return theta, x.reshape(-1, 1), True
@@ -696,7 +703,7 @@ def davidson_lowest(h_op, comm, start, *, tol, max_vectors=None, max_iter=None):
             keep = [y] if y_prev is None else [y, np.append(y_prev, np.zeros(m - len(y_prev)))]
             Q, _ = np.linalg.qr(np.column_stack(keep))
             k = Q.shape[1]
-            V[:, :k], AV[:, :k] = V[:, :m] @ Q, AV[:, :m] @ Q
+            V[:k], AV[:k] = Q.T @ V[:m], Q.T @ AV[:m]
             S_k = Q.conj().T @ S[:m, :m] @ Q
             S[:, :] = 0.0
             S[:k, :k] = 0.5 * (S_k + S_k.conj().T)
