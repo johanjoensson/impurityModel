@@ -531,6 +531,15 @@ def enumerate_gf_units(
     return units, unit_seeds, unit_restrictions
 
 
+#: Peak bytes per seed row the split's receiving rank holds: the Python dict it accumulates into
+#: (~155 B) and the ManyBodyState built from it (~64 B), measured on 2M rows of 8-byte keys. A held
+#: seed costs ~25 B a row; the transit is what the split's peak pays.
+_SEED_TRANSIT_BYTES_PER_ROW = 220
+#: The share of the per-rank GF headroom the queue's replicated seeds may take in transit before the
+#: split falls back to the static assignment, whose colors each receive only their own units' seeds.
+_QUEUE_SEED_HEADROOM_SHARE = 0.25
+
+
 def run_units_distributed(
     basis: Basis,
     unit_seeds: list[list[ManyBodyState]],
@@ -563,7 +572,10 @@ def run_units_distributed(
     instead of running the ``static`` LPT assignment, so ``unit_weights`` only has to rank the units.
     Which color runs a unit then varies from run to run; with unequal color widths that can move a
     result by rounding. Given ``unit_windows`` (the excited window per unit), the order is by
-    :func:`unit_sector_dimensions` first and ``unit_weights`` among equal sectors.
+    :func:`unit_sector_dimensions` first and ``unit_weights`` among equal sectors. The queue sends
+    every color every seed; when that would take more than :data:`_QUEUE_SEED_HEADROOM_SHARE` of the
+    per-rank headroom, the run takes the static assignment instead (printed), where each seed goes
+    only to the color that runs its unit.
 
     ``reort`` is the GF reorthogonalization mode the kernel will run with, and ``gf_method``
     names the kernel family (``"lanczos"`` / ``"bicgstab"``); both only feed the memory model
@@ -639,15 +651,61 @@ def run_units_distributed(
     # replicated, so every rank computes the identical max_colors.
     cap = gf_cap(basis)
     width = max((len(s) for s in unit_seeds), default=1)
-    # One rule for every cap: the most colors whose real packing lets each unit afford its floor
-    # (the user's cap exactly; for auto, the GS basis size or this kernel's pinned cap).
-    max_colors = None
-    if _is_auto_gf(basis):
-        max_colors = _colors_affording(basis, unit_weights, width, reort, gf_method, equal_widths=equal_widths)
-    elif np.isfinite(cap):
-        max_colors = _colors_affording(
-            basis, unit_weights, width, reort, gf_method, floor=int(cap), equal_widths=equal_widths
+
+    def colors_affording(equal_widths):
+        # One rule for every cap: the most colors whose real packing lets each unit afford its floor
+        # (the user's cap exactly; for auto, the GS basis size or this kernel's pinned cap).
+        if _is_auto_gf(basis):
+            return _colors_affording(basis, unit_weights, width, reort, gf_method, equal_widths=equal_widths)
+        if np.isfinite(cap):
+            return _colors_affording(
+                basis, unit_weights, width, reort, gf_method, floor=int(cap), equal_widths=equal_widths
+            )
+        return None
+
+    max_colors = colors_affording(equal_widths)
+    # The queue lets any color run any unit, so the split sends every color every seed: each rank
+    # receives the seed rows divided by its color's rank count, and n_colors times what the static
+    # assignment sends. With 68 thermal states on a 2.97M-determinant ground state that took the
+    # SrMnO3 GF phase down before its first unit. Past a share of the headroom the seeds go static.
+    # Every input is replicated (Allreduced sums and maxima, the replicated packing); rank 0's
+    # verdict is broadcast all the same, as the collectives below depend on it.
+    seed_rows = basis.comm.allreduce(sum(len(s) for seeds in unit_seeds for s in seeds), op=MPI.SUM)
+    entry_rss = basis.comm.allreduce(current_rss_bytes(), op=MPI.MAX)
+    headroom = _resident_adjusted_budget(_gf_sizing_safety(), available_bytes_per_rank(basis.comm), entry_rss)
+    _subgroups, procs = _pack_units(
+        unit_weights, basis.comm.size, basis.split_threshold, max_colors, equal_widths=equal_widths
+    )
+    narrowest = basis.comm.size if procs is None else int(min(procs))
+    copies = 1 if procs is None or not equal_widths else len(procs)
+    seed_transit = _SEED_TRANSIT_BYTES_PER_ROW * seed_rows * copies / basis.comm.size
+    if equal_widths and copies > 1:
+        seed_transit_queue = _SEED_TRANSIT_BYTES_PER_ROW * seed_rows / narrowest
+        equal_widths = bool(basis.comm.bcast(seed_transit_queue <= _QUEUE_SEED_HEADROOM_SHARE * headroom, root=0))
+        if not equal_widths:
+            max_colors = colors_affording(False)
+            _subgroups, procs = _pack_units(unit_weights, basis.comm.size, basis.split_threshold, max_colors)
+            seed_transit = _SEED_TRANSIT_BYTES_PER_ROW * seed_rows / basis.comm.size
+            if basis.comm.rank == 0:
+                print(
+                    f"GF scheduler: static instead of queue -- the queue sends every color all "
+                    f"{seed_rows:,} seed rows, {format_bytes(seed_transit_queue)}/rank in transit on its "
+                    f"narrowest color of {narrowest} rank(s), more than "
+                    f"{_QUEUE_SEED_HEADROOM_SHARE:g} x the {format_bytes(headroom)} headroom.",
+                    flush=True,
+                )
+    # Printed every time and flushed before the split, so a run killed inside it still leaves these
+    # numbers behind (round 12 died here and left none).
+    if basis.comm.rank == 0:
+        print(
+            f"GF split: {n_units} units, {seed_rows:,} seed rows, "
+            f"{1 if procs is None else len(procs)} color(s), {'queue' if equal_widths else 'static'}; "
+            f"seeds ~{format_bytes(seed_transit)}/rank in transit; resident {format_bytes(entry_rss)}, "
+            f"headroom {format_bytes(headroom)}/rank.",
+            flush=True,
         )
+    # Under the static assignment a color runs only its own units, so each seed goes to that color only.
+    psi_items = None if equal_widths else np.repeat(np.arange(n_units), [len(s) for s in unit_seeds])
     (
         unit_indices,
         unit_roots,
@@ -656,7 +714,12 @@ def run_units_distributed(
         split_basis,
         split_seeds,
     ) = split_basis_and_redistribute_psi(
-        basis, unit_weights, [s for seeds in unit_seeds for s in seeds], max_colors, equal_widths=equal_widths
+        basis,
+        unit_weights,
+        [s for seeds in unit_seeds for s in seeds],
+        max_colors,
+        equal_widths=equal_widths,
+        psi_items=psi_items,
     )
     # `split_basis` inherited the job-wide `cap` verbatim (sized for basis.comm.size ranks),
     # but this color runs on only its own share of them -- the mismatch that let a unit basis

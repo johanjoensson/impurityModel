@@ -682,6 +682,104 @@ def test_split_basis_replicates_full_basis_across_lopsided_colors_mpi():
             split_basis.free_comm()
 
 
+def _seed_rows(psis):
+    return [{k: complex(v[0]) for k, v in p.items()} for p in psis]
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="one rank never splits into colors")
+def test_split_sends_each_seed_only_to_the_color_of_its_unit_mpi():
+    """With ``psi_items`` a seed reaches only the color its unit is packed into, bit-identical to
+    the copy every color receives without it, and is empty on every other color. Without it every
+    color holds every seed, which put the SrMnO3 GF phase (68 thermal states) out of memory."""
+    from itertools import combinations
+
+    comm = MPI.COMM_WORLD
+    n_orb, n_el = 10, 5
+    det_bytes = []
+    for occ in combinations(range(n_orb), n_el):
+        b = bytearray((n_orb + 7) // 8)
+        for o in occ:
+            b[o // 8] |= 1 << (7 - o % 8)
+        det_bytes.append(bytes(b))
+    all_sd = sorted(SlaterDeterminant.from_bytes(d) for d in det_bytes)
+    n_units, per_unit = 4, 2
+    weights = [1.0] * n_units
+    psi_items = np.repeat(np.arange(n_units), per_unit)
+
+    rng = np.random.default_rng(7)
+    seeds = []
+    for _ in range(n_units * per_unit):
+        amps = rng.standard_normal(len(all_sd)) + 1j * rng.standard_normal(len(all_sd))
+        rows = dict(zip(all_sd, amps)) if comm.rank == 0 else {}
+        seeds.append(ManyBodyState(rows, width=1))
+
+    results = []
+    for items in (None, psi_items):
+        basis = Basis(
+            impurity_orbitals={0: [list(range(n_orb))]},
+            bath_states=({0: [[]]}, {0: [[]]}),
+            initial_basis=det_bytes,
+            comm=comm,
+            split_threshold=1.0,
+        )
+        local = _redistribute_as_width1(basis, seeds)
+        indices, _roots, color, _ipc, split_basis, psis_out = split_basis_and_redistribute_psi(
+            basis, weights, local, psi_items=items
+        )
+        assert split_basis.comm is not comm, "the fixture must split into more than one color"
+        results.append((indices, color, _seed_rows(psis_out)))
+        split_basis.free_comm()
+
+    (indices, color, every), (indices_routed, color_routed, routed) = results
+    assert (indices, color) == (indices_routed, color_routed)
+    for i, unit in enumerate(psi_items):
+        if unit in indices:
+            assert routed[i] == every[i], f"seed {i} of unit {unit} changed on its own color {color}"
+        else:
+            assert routed[i] == {}, f"seed {i} of unit {unit} reached color {color}, which does not run it"
+
+
+@pytest.mark.mpi
+@pytest.mark.skipif(MPI.COMM_WORLD.size == 1, reason="one rank never splits into colors")
+@pytest.mark.parametrize("share, scheduler", [(1e30, "queue"), (0.0, "static")])
+def test_the_queue_falls_back_to_static_when_its_seeds_do_not_fit_mpi(monkeypatch, capsys, share, scheduler):
+    """The queue sends every color every seed; past ``_QUEUE_SEED_HEADROOM_SHARE`` of the headroom
+    the run takes the static assignment, says so, and every unit still gets its own whole seeds."""
+    from impurityModel.ed import gf_units
+    from impurityModel.ed import memory_estimate as me
+
+    comm = MPI.COMM_WORLD
+    monkeypatch.delenv("GF_SCHEDULER", raising=False)
+    monkeypatch.setattr(me, "available_bytes_per_rank", lambda c: 2**60)  # room for one color per unit
+    monkeypatch.setattr(gf_units, "_QUEUE_SEED_HEADROOM_SHARE", share)
+    states = [b"\x80", b"\x40", b"\x20", b"\x10"]
+    basis = Basis(
+        impurity_orbitals={0: [[0, 1, 2, 3]]},
+        bath_states=({0: [[]]}, {0: [[]]}),
+        initial_basis=states,
+        comm=comm,
+        truncation_threshold=100,
+    )
+    unit_seeds = []
+    for u in range(2):
+        rows = {SlaterDeterminant.from_bytes(states[u]): 1.0 + u, SlaterDeterminant.from_bytes(states[3]): 0.5}
+        psi = ManyBodyState.from_states([ManyBodyState(rows if comm.rank == 0 else {}, width=1)])
+        unit_seeds.append([basis.redistribute_psis(psi)[0]])
+
+    def kernel(split_basis, u, seeds):
+        norm2 = sum(abs(v[0]) ** 2 for s in seeds for v in s.values())
+        return split_basis.comm.allreduce(norm2, op=MPI.SUM)
+
+    capsys.readouterr()
+    results = gf_units.run_units_distributed(basis, unit_seeds, np.array([1.0, 1.0]), kernel)
+    out = capsys.readouterr().out
+    if comm.rank == 0:
+        assert results == pytest.approx([1.0 + 0.25, 4.0 + 0.25])
+        assert f"color(s), {scheduler};" in out
+        assert ("static instead of queue" in out) == (scheduler == "static")
+
+
 @pytest.mark.mpi
 def test_split_basis_rejects_rank_divergent_packing_mpi(monkeypatch):
     """If `_pack_units` returns a rank-dependent packing (its inputs were not

@@ -4,9 +4,11 @@ into per-color sub-communicators, with redistribution of wavefunctions onto
 the split bases. `_pack_units` is the pure packing math (color cap, LPT unit
 packing, largest-remainder rank apportionment); every rank computes the
 identical packing. `split_basis_and_redistribute_psi` is collective over
-``basis.comm``: it replicates the basis (and the seeds) into every color with
-one sparse all-to-all per phase (`mpi_comm.graph_alltoall`), then lets each
-color's `Basis` hash-repartition its copy over the split sub-communicator.
+``basis.comm``: it replicates the basis into every color, and sends each seed
+either to every color or, given the unit each seed belongs to, only to the
+color that runs that unit, with one sparse all-to-all per phase
+(`mpi_comm.graph_alltoall`), then lets each color's `Basis` hash-repartition
+its copy over the split sub-communicator.
 """
 
 from typing import Optional
@@ -134,6 +136,7 @@ def split_basis_and_redistribute_psi(
     psis: Optional[list[ManyBodyState]],
     max_colors: Optional[int] = None,
     equal_widths: bool = False,
+    psi_items: Optional[np.ndarray] = None,
 ) -> tuple[list[int], list[int], int, list[int], Basis, Optional[list[ManyBodyState]]]:
     """Split the basis and redistribute wavefunctions over a split communicator.
 
@@ -148,6 +151,11 @@ def split_basis_and_redistribute_psi(
         on every rank of ``basis.comm``.
     equal_widths : bool, optional
         Equal rank counts per color (see :func:`_pack_units`); must be identical on every rank.
+    psi_items : array_like of int, optional
+        The item (index into ``priorities``) each of ``psis`` belongs to, identical on every rank.
+        Each psi then goes only to the color its item is packed into, and comes back empty
+        (width 1) on every other color. ``None``: every color receives every psi, which a
+        scheduler that lets any color run any item needs, at ``n_colors`` times the memory.
 
     Returns
     -------
@@ -224,7 +232,7 @@ def split_basis_and_redistribute_psi(
     ppc_int = [int(p) for p in procs_per_color]
     roots_int = [int(r) for r in split_roots]
 
-    def _group_by_destination(routing_hashes):
+    def _group_by_destination(routing_hashes, row_colors=None):
         """``(destination rank, row indices)`` for every other color, rows in table order.
 
         Every determinant I own goes to its owner-to-be in each color other than mine (my
@@ -239,17 +247,22 @@ def split_basis_and_redistribute_psi(
         property. Grouping is a stable argsort, so each destination receives its rows in the
         order they were enumerated -- the order the receiving side accumulates duplicates
         in, and therefore the order the sum is taken in.
+
+        ``row_colors``, given, is the one color each row goes to; rows of other colors are
+        skipped, and the rows that remain keep their table order.
         """
         for other in range(len(roots_int)):
             if other == color:
                 continue
-            dest = (routing_hashes % np.uint64(ppc_int[other])).astype(np.int64) + roots_int[other]
+            rows_other = None if row_colors is None else np.flatnonzero(row_colors == other)
+            hashes = routing_hashes if rows_other is None else routing_hashes[rows_other]
+            dest = (hashes % np.uint64(ppc_int[other])).astype(np.int64) + roots_int[other]
             if dest.size == 0:
                 continue
             order = np.argsort(dest, kind="stable")
             bounds = np.flatnonzero(np.diff(dest[order])) + 1
             for rows in np.split(order, bounds):
-                yield int(dest[rows[0]]), rows
+                yield int(dest[rows[0]]), (rows if rows_other is None else rows_other[rows])
 
     # Replicate the full basis into every color with one sparse all-to-all over
     # ``comm``: every determinant I own goes to its owner-to-be in each other color.
@@ -298,6 +311,16 @@ def split_basis_and_redistribute_psi(
     )
 
     if psis is not None:
+        # The color each psi goes to: its item's (`subgroups` is the replicated packing), or
+        # every color when psi_items is None.
+        psi_colors = None
+        if psi_items is not None:
+            item_colors = np.empty(len(priorities), dtype=np.int64)
+            for c, subgroup in enumerate(subgroups):
+                item_colors[list(subgroup)] = c
+            psi_colors = item_colors[np.asarray(psi_items, dtype=np.int64)]
+            if len(psi_colors) != len(psis):
+                raise ValueError(f"psi_items has {len(psi_colors)} entries for {len(psis)} psis")
         # ManyBodyState is block storage throughout; the split-basis wire format only
         # supports width-1 (same convention as Basis.redistribute_psis). The payload
         # carries plain scalars (``v[0]`` unwraps the Row).
@@ -326,7 +349,7 @@ def split_basis_and_redistribute_psi(
         assert at == n_rows, f"psi table filled {at} of {n_rows} rows"
 
         psi_send: list = [None] * comm.size
-        for g, rows in _group_by_destination(seed_hashes):
+        for g, rows in _group_by_destination(seed_hashes, None if psi_colors is None else psi_colors[seed_index]):
             psi_send[g] = {"i": seed_index[rows], "keys": seed_keys[rows], "amp": seed_amps[rows]}
         del seed_index, seed_keys, seed_amps, seed_hashes
 
@@ -343,7 +366,11 @@ def split_basis_and_redistribute_psi(
                 # keeping the Python type keeps the arithmetic identical too.
                 d[sd] = d.get(sd, 0) + complex(chunk_amp[j])
         del psi_send
-        new_psis = [p.copy() for p in psis]
+        # A psi of another color keeps none of its rows here: they were sent to that color.
+        new_psis = [
+            p.copy() if psi_colors is None or psi_colors[i] == color else ManyBodyState(width=1)
+            for i, p in enumerate(psis)
+        ]
         for i, rows in enumerate(received_rows):
             if rows:
                 new_psis[i] += ManyBodyState(rows)
