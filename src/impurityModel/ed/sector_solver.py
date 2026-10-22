@@ -35,7 +35,7 @@ re-converged on an energy another class already found stops early (:data:`LEAK_E
 from dataclasses import dataclass
 
 import numpy as np
-from impurityModel.ed import seed_sectors
+from impurityModel.ed import seed_sectors, solver_trace
 from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.density_matrices import occupations as state_occupations
@@ -324,13 +324,17 @@ def _expand_job(h_op, basis, plan, job, finished, expand_kwargs, dense_cutoff, s
             return stop
 
         solver.cycle_hook = leaked
-    solver.expand(h_op, Lowest(), **expand_kwargs)
+    with solver_trace.timed("class_expand", label=(job.two_sz, job.parity), seed_class=job.seed_class) as fields:
+        solver.expand(h_op, Lowest(), **expand_kwargs)
+        fields["n_dets"] = len(class_basis)
+        fields["stopped_early"] = bool(solver.stopped_early)
     solver.matrix_hook = None
     solver.cycle_hook = None
     solver.eig = None
-    es, psis = solver.get_eigenvectors(
-        h_op, Lowest(), dense_cutoff=dense_cutoff, slaterWeightMin=slater_weight_min, psi_refs=solver.psi_refs
-    )
+    with solver_trace.timed("class_eigensolve", seed_class=job.seed_class):
+        es, psis = solver.get_eigenvectors(
+            h_op, Lowest(), dense_cutoff=dense_cutoff, slaterWeightMin=slater_weight_min, psi_refs=solver.psi_refs
+        )
     energy = float(np.min(es)) if len(es) else np.inf
     report = solver.truncation_report or {}
     residual = float((solver.convergence_report or {}).get("residual_pt2") or 0.0)

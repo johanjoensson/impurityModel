@@ -17,6 +17,7 @@ from impurityModel.ed.eigensolvers import (
     Lowest,
     Within,
     cold_vector,
+    dense_lowest,
     eigensystem,
     solve_lowest,
     solve_window,
@@ -1035,6 +1036,13 @@ class CIPSISolver:
             if len(e_ref) == 0:
                 break
             e0 = float(np.min(e_ref))
+            _trace_note(
+                "cipsi_energy",
+                cycle=cycle,
+                e0=e0,
+                n=int(self.basis.size),
+                residual_pt2=(self.last_selection or {}).get("residual_pt2"),
+            )
             if cap_cycles > 0 and refiner.observe(self.basis, e0, psi_refs, e_ref, cap_cycles):
                 break
             if self.cycle_hook is not None:
@@ -1261,6 +1269,11 @@ class CIPSISolver:
             )
 
     def _build_h_matrix(self, H):
+        """:meth:`_build_h_matrix_untimed`, timed as ``h_matrix_build`` inside a trace."""
+        with _trace_timed("h_matrix_build", n=len(self.basis)):
+            return self._build_h_matrix_untimed(H)
+
+    def _build_h_matrix_untimed(self, H):
         """``H`` as a ``DistributedSparseMatrix`` on the current basis (collective).
 
         Inside :meth:`expand` the previous cycle's matrix is grown to the current basis rather than
@@ -1286,7 +1299,8 @@ class CIPSISolver:
             if keep:
                 self._h_snapshot = MatrixSnapshot(self.basis, H_mat, key)
         if self.matrix_hook is not None:
-            H_mat = self.matrix_hook(self.basis, H_mat)
+            with _trace_timed("matrix_hook", n=len(self.basis)):
+                H_mat = self.matrix_hook(self.basis, H_mat)
         _trace_note("h_matrix_nnz", nnz=int(H_mat.nnz), n=int(H_mat.shape[0]))
         return H_mat
 
@@ -1439,7 +1453,16 @@ class CIPSISolver:
                 psi_refs = build_state(self.basis, cols.T, slaterWeightMin=slaterWeightMin)
         else:
             H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
-            e_all, psi_dense = eigensystem(H_mat, e_max=None, comm=self.basis.comm, return_eigvecs=True)
+            with _trace_timed("dense_eigensolve", n=len(self.basis)):
+                if lowest:
+                    # Only the lowest level is read (column 0, made generic over the level below).
+                    e_all, psi_dense = dense_lowest(
+                        H_mat,
+                        lambda es: len(_degenerate_groups(es, tol=_degeneracy_tol(es, slaterWeightMin))[0]),
+                        comm=self.basis.comm,
+                    )
+                else:
+                    e_all, psi_dense = eigensystem(H_mat, e_max=None, comm=self.basis.comm, return_eigvecs=True)
             if lowest:
                 idx = [0]
                 psi_dense = self._generic_lowest_level_vector(e_all, psi_dense, slaterWeightMin)

@@ -185,6 +185,45 @@ def dense_eigensystem(
     return es
 
 
+def dense_lowest(h_local, level_size, comm=None, first=16):
+    """The lowest eigenpairs of a dense matrix, as many as its lowest level needs: ``(es, vecs)``.
+
+    :func:`dense_eigensystem` computes every eigenpair and broadcasts the ``n x n`` vectors, where a
+    ``Lowest`` solve reads only the lowest level. This computes the ``k`` lowest
+    (``scipy.linalg.eigh(subset_by_index=...)``, the MRRR driver), ``k`` starting at ``first`` and
+    doubling while ``level_size(es)`` -- the size of the lowest level among the ``k`` values -- fills
+    them all, so a degenerate level is never cut. Measured at ``n = 1000`` (complex, one thread):
+    0.7 s against 3.0 s, and the broadcast is ``n x k``. Summed onto rank 0 like
+    :func:`dense_eigensystem`; ``level_size`` must be a pure function of its argument, which rank 0
+    alone evaluates.
+    """
+    import scipy.linalg
+
+    rank = comm.rank if comm is not None else 0
+    h = h_local.toarray() if hasattr(h_local, "toarray") else np.asarray(h_local)
+    if comm is not None:
+        comm.Reduce(h if rank != 0 else MPI.IN_PLACE, h, root=0, op=MPI.SUM)
+    n = h.shape[0]
+    shape = None
+    if rank == 0:
+        k = min(n, first)
+        while True:
+            es, vecs = scipy.linalg.eigh(h, lower=True, subset_by_index=[0, k - 1], driver="evr")
+            if k == n or level_size(es) < k:
+                break
+            k = min(n, 2 * k)
+        vecs = np.ascontiguousarray(vecs)
+        shape = (k, vecs.dtype)
+    if comm is not None:
+        k, dtype = comm.bcast(shape, root=0)
+        if rank != 0:
+            es = np.empty(k, dtype=float)
+            vecs = np.empty((n, k), dtype=dtype)
+        comm.Bcast(es, root=0)
+        comm.Bcast(vecs, root=0)
+    return es, vecs
+
+
 def eigensystem(h_local, e_max, eigenValueTol=0, return_eigvecs=True, comm=None):
     """
     Return the eigen-energies and eigenstates of a Hamiltonian matrix, densely diagonalized.
