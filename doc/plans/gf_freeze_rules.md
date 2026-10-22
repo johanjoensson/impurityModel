@@ -161,6 +161,20 @@ step from 10 to 68 states is all completeness, not a wider window. Round 9's the
 Earlier rounds on the old GS are probably affected too, but they were not checked. `gf_min_weight` would keep 44
 states (99.93% of the weight) at 3e-4 and 26 states (99.14%) at 1e-3, but it changes Sigma.
 
+**Round 12 (job 4103118, tree 75a45d46): OOM-killed at the same point.** Same GS (2,963,444 determinants, 68
+states), killed ~100 s into the GF phase before "New unit roots". The `redistribute_psis` fusion fix was real but
+downstream. The likely cause (from the code, unconfirmed at scale): the split sent every seed to every colour, because the queue lets any colour run any unit. Each
+rank received the job's seed rows over its colour's 3-4 ranks, through a Python dict at ~220 B a row (measured; a
+held row is ~25 B). Round 9 had 10 states on 277k determinants.
+
+**Round-13 fix:**
+- The static assignment now sends each seed only to its unit's colour (`psi_items`).
+- The queue falls back to static when its copies would take more than a quarter of the GF headroom.
+- Rank 0 prints a flushed `GF split:` line with the seed rows, the colours, the scheduler and the predicted transit,
+  so a kill inside the split leaves its inputs behind.
+
+No Sigma exists yet on the 68-state ground state. Round 13 is the first chance at one.
+
 ## Next (superseded by the cluster verdict above)
 
 Replay SMO it.1 unit 20 (4 ranks) with `GF_FREEZE_TRIAL_WINDOW=4 GF_FREEZE_BUDGET=0.1 GF_FREEZE_TRIAL_CONSEC=2` against the
