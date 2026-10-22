@@ -275,7 +275,7 @@ def test_the_vectorized_probe_hash_matches_the_scalar_one():
     np.testing.assert_array_equal(_splitmix64_array(x), np.array([_splitmix64(int(v)) for v in x], dtype=np.uint64))
 
 
-def _lowest_solve(system, *, warm, calls=None, monkeypatch=None):
+def _lowest_solve(system, *, warm, calls=None, monkeypatch=None, tol=1e-11):
     import impurityModel.ed.eigensolvers as eigensolvers
 
     basis, h, U, evals = system
@@ -296,7 +296,7 @@ def _lowest_solve(system, *, warm, calls=None, monkeypatch=None):
         comm,
         hashes,
         warm=np.ascontiguousarray(U[local, :GROUND]) if warm else None,
-        tol=1e-11,
+        tol=tol,
         n_global=len(basis),
     )
 
@@ -327,6 +327,35 @@ def test_davidson_returns_one_exact_pair_of_a_degenerate_level_without_lanczos(s
     assert len(eig.e) == 1 and eig.vecs.shape[1] == 1 and eig.n_in == 1
     np.testing.assert_allclose(eig.e[0], system[3][0], atol=1e-9)
     assert calls == [], "Davidson fell back to Lanczos"
+
+
+@pytest.mark.mpi
+def test_davidson_from_an_exact_eigenvector_stops_at_roundoff_without_lanczos(system, monkeypatch):
+    """A residual tolerance below roundoff is floored at the operator's scale: an exact start converges.
+
+    Unfloored, no iteration could reach ``tol=0``, the correction lay in the space already and was
+    renormalized into noise, and the solve ran ``DAVIDSON_MAX_ITER`` iterations before Lanczos took over.
+    """
+    monkeypatch.setenv("GS_LOWEST_SOLVER", "davidson")
+    calls = []
+    eig = _lowest_solve(system, warm=True, calls=calls, monkeypatch=monkeypatch, tol=0.0)
+    assert eig.certified
+    np.testing.assert_allclose(eig.e[0], system[3][0], atol=1e-9)
+    assert calls == [], "Davidson fell back to Lanczos"
+
+
+@pytest.mark.mpi
+def test_a_davidson_that_does_not_converge_hands_over_to_lanczos(system, monkeypatch):
+    """Out of iterations, Davidson's best vector seeds one Lanczos solve, which certifies the exact pair."""
+    from impurityModel.ed import eigensolvers
+
+    monkeypatch.setenv("GS_LOWEST_SOLVER", "davidson")
+    monkeypatch.setattr(eigensolvers, "DAVIDSON_MAX_ITER", 1)
+    calls = []
+    eig = _lowest_solve(system, warm=False, calls=calls, monkeypatch=monkeypatch)
+    assert eig.certified
+    np.testing.assert_allclose(eig.e[0], system[3][0], atol=1e-9)
+    assert len(calls) == 1
 
 
 def test_within_thermal_is_the_energy_cut():

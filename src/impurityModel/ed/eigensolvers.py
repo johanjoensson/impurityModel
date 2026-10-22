@@ -446,105 +446,189 @@ def solve_window(
 
 
 #: Most search vectors :func:`davidson_lowest` holds (``V`` and ``H V`` each); at the cap it restarts
-#: on the current and previous Ritz vectors. Twelve converged every captured NiO d6 cycle in 11-56
-#: matrix-vector products, against 48-202 for the thick-restart Lanczos it replaced, which holds 48.
-DAVIDSON_MAX_VECTORS = 12
+#: on the current and previous Ritz vectors. On the 93 captured NiO 5-bath d7 class solves, 8, 12, 20
+#: and 30 vectors took 29.2, 29.3, 28.5 and 28.0 matrix-vector products on average, while the
+#: per-iteration work grows with the count.
+DAVIDSON_MAX_VECTORS = 8
 
 #: Iterations before :func:`davidson_lowest` gives up and :func:`solve_lowest` falls back to TRLM.
 DAVIDSON_MAX_ITER = 2000
 
-#: The diagonal preconditioner's denominator ``theta - H_ii`` is floored at this magnitude.
+#: Iterations the residual may go without halving before :func:`davidson_lowest` declares it stagnant
+#: and hands over to TRLM. On the 93 captured NiO 5-bath d7 class solves the longest such plateau in
+#: a solve that went on to converge was 30 iterations (a near-degenerate pair 2e-8 apart, at a tol of
+#: 1e-8); a 25-iteration window failed two of them.
+DAVIDSON_STAGNATION = 100
+
+#: The diagonal preconditioner's denominator ``theta - H_ii`` is floored at this magnitude, keeping
+#: its sign.
 _DAVIDSON_SHIFT_FLOOR = 1e-8
 
+#: A correction whose norm falls below this fraction of its norm before projection lies in the
+#: search space already (up to roundoff) and is not added.
+_DAVIDSON_INDEPENDENCE = 1e-10
 
-def _local_diagonal(h_op):
-    """The diagonal entries of ``h_op``'s local columns, ``(n_local,)``. Unbinds a bound matrix."""
+#: The residual tolerance is floored at this many ulps of the operator's scale (its largest diagonal
+#: magnitude): below that the residual is roundoff and no iteration can reach it.
+_DAVIDSON_TOL_ULPS = 64
+
+
+def _rank_offsets(n_local, comm):
+    """``(offset, counts)``: this rank's first global row and every rank's row count (rank order).
+
+    The global numbering is rank-contiguous, as :meth:`DistributedSparseMatrix.exchange_plan` assumes.
+    """
+    if comm is None:
+        return 0, np.array([n_local], dtype=np.int64)
+    counts = np.empty(comm.size, dtype=np.int64)
+    comm.Allgather(np.array([n_local], dtype=np.int64), counts)
+    return int(np.sum(counts[: comm.rank])), counts
+
+
+def _local_diagonal(h_op, offset):
+    """The diagonal entries of ``h_op``'s local columns, ``(n_local,)``; ``offset`` is the first local
+    column's global index. Unbinds a bound matrix (row indices must be global)."""
     h_op.unbind_slots()
     diag = np.zeros(h_op.shape[1], dtype=complex)
     for c0, indptr, rows, data in h_op.segments:
         cols = np.repeat(np.arange(c0, c0 + len(indptr) - 1, dtype=np.int64), np.diff(indptr))
-        on = np.asarray(rows, dtype=np.int64) == cols + h_op.col_offset
+        on = np.asarray(rows, dtype=np.int64) == cols + offset
         np.add.at(diag, cols[on], np.asarray(data)[on])
     return diag.real
 
 
-def davidson_lowest(h_op, comm, start, *, tol, correct=1, max_vectors=DAVIDSON_MAX_VECTORS, max_iter=DAVIDSON_MAX_ITER):
+def _gather_sum(local, comm):
+    """``Allreduce(SUM)`` of a small vector, bitwise identical on every rank.
+
+    An Allgather followed by a sum in rank order (the idiom :mod:`TSQR` uses), so every rank holds the
+    same bytes and every decision read from them -- converged, restart, independence, the Ritz
+    problem itself -- comes out the same everywhere without a broadcast.
+    """
+    local = np.ascontiguousarray(local, dtype=complex).ravel()
+    if comm is None:
+        return local
+    buf = np.empty(comm.size * local.size, dtype=complex)
+    comm.Allgather(local, buf)
+    return buf.reshape(comm.size, local.size).sum(axis=0)
+
+
+def davidson_lowest(h_op, comm, start, *, tol, max_vectors=None, max_iter=None):
     """The lowest eigenpair of ``h_op`` by Davidson with the diagonal preconditioner: ``(theta, x, converged)``.
 
-    A selected-CI Hamiltonian is diagonally dominant in its determinant basis, so the correction
-    ``(theta - diag H)^{-1} r`` points almost straight at an eigenvector; from a CIPSI cycle's warm
-    start this took 2-4x fewer matrix-vector products than thick-restart Lanczos on every captured
-    NiO d6 cycle, holding a quarter of the vectors. ``start`` ``(n_local, b)`` spans the start space,
-    and the ``correct`` lowest Ritz vectors are corrected every iteration; only the lowest must reach
-    ``tol``. Correcting the lowest alone keeps the search in the symmetry sector the start's lowest
-    Ritz vector is in -- which is why :func:`solve_lowest` uses this only where that is intended (a
-    certified class expansion, held in its class by its penalty): a plain expansion relies on
-    Lanczos growing every sector of the generic start vector to escape its seed's sector (a plain
-    NiO d6 expansion stopped at -43.145 under Davidson, -43.275 under Lanczos, and correcting two
-    vectors did not change that). At ``max_vectors`` columns the space restarts on the current
-    corrected and the previous lowest Ritz vectors, with ``H V`` recombined rather than reapplied. Every decision
-    reads values broadcast from rank 0 -- the Ritz problem is solved there -- so all ranks take the
-    same path through the collectives.
+    ``start`` ``(n_local, b)`` spans the start space; the lowest Ritz vector is corrected by
+    ``(theta - diag H)^{-1} r`` every iteration until ``||r|| < tol`` (floored at roundoff of the
+    operator's scale). From a CIPSI cycle's warm start this took 2-4x fewer matrix-vector products
+    than thick-restart Lanczos on every captured NiO d6 cycle.
+
+    It stays in the symmetry sector its start's lowest Ritz vector is in -- which is why
+    :func:`solve_lowest` uses it only where that is intended (a certified class expansion, held in its
+    class by its penalty): a plain expansion relies on Lanczos growing every sector of the generic
+    start vector to escape its seed's sector (a plain NiO d6 expansion stopped at -43.145 under
+    Davidson, -43.275 under Lanczos).
+
+    Per iteration: one matrix-vector product (with an exchange plan built once per call) and three
+    small Allgathers -- the new column of ``V^H H V``, the projection of the correction together with
+    its norm and the residual norm, and a second Gram-Schmidt pass with the norm by Pythagoras. The
+    projected matrix grows by one column per iteration and is recombined, not recomputed, at a
+    restart. Every reduction is summed in rank order (:func:`_gather_sum`), so every rank takes the
+    same path through the collectives without broadcasts.
+
+    Returns ``converged=False`` -- for :func:`solve_lowest` to continue with Lanczos -- when the
+    iteration cap is reached, when the residual has not halved in :data:`DAVIDSON_STAGNATION`
+    iterations, or when the correction lies in the search space already.
     """
     mpi = comm is not None and getattr(comm, "size", 1) > 1
+    comm = comm if mpi else None
     h_op = DistributedSparseMatrix.coerce(h_op, comm)
-    diag = _local_diagonal(h_op)
-    V, _ = block_normalize(np.ascontiguousarray(start, dtype=complex), mpi, comm, 0.0)
-    b = max(1, min(int(correct), V.shape[1]))
-    max_vectors = max(int(max_vectors), 2 * b + 1)
-    AV = block_apply(h_op, V, None, mpi, 0.0)
+    start = np.ascontiguousarray(start, dtype=complex)
+    n_local = start.shape[0]
+    offset, _counts = _rank_offsets(n_local, comm)
+    diag = _local_diagonal(h_op, offset)
+    scale = float(np.max(np.abs(diag))) if diag.size else 0.0
+    if comm is not None:
+        scale = comm.allreduce(scale, op=MPI.MAX)
+    tol = max(float(tol), _DAVIDSON_TOL_ULPS * np.finfo(float).eps * scale)
+    plan = h_op.exchange_plan(1, "davidson")  # after _local_diagonal, which unbinds
+
+    max_vectors = max(int(DAVIDSON_MAX_VECTORS if max_vectors is None else max_vectors), 3)
+    max_iter = int(DAVIDSON_MAX_ITER if max_iter is None else max_iter)
+    V = np.zeros((n_local, max_vectors), dtype=complex)
+    AV = np.zeros((n_local, max_vectors), dtype=complex)
+    S = np.zeros((max_vectors, max_vectors), dtype=complex)
+    m = 0
+
+    def orthonormal(t, g):
+        """``t`` minus its projection on ``V[:, :m]``, normalized, or ``None`` when nothing is left.
+
+        ``g`` is the summed ``[V^H t, t^H t]`` of the first pass; the second pass (CGS2) gathers again
+        and takes the norm by Pythagoras, so this costs one Allgather.
+        """
+        t = t - V[:, :m] @ g[:m]
+        g2 = _gather_sum(np.append(V[:, :m].conj().T @ t, np.vdot(t, t)), comm)
+        t = t - V[:, :m] @ g2[:m]
+        norm2 = g2[m].real - float(np.vdot(g2[:m], g2[:m]).real)
+        if norm2 <= _DAVIDSON_INDEPENDENCE**2 * g[m].real:
+            return None
+        return t / np.sqrt(norm2)
+
+    def append(t):
+        """Add the orthonormal column ``t`` to the space: one product, one Allgather for its ``S`` column."""
+        nonlocal m
+        At = h_op.apply(t.reshape(-1, 1), plan)[:, 0]
+        col = _gather_sum(np.append(V[:, :m].conj().T @ At, np.vdot(t, At)), comm)
+        V[:, m], AV[:, m] = t, At
+        S[:m, m] = col[:m]
+        S[m, :m] = col[:m].conj()
+        S[m, m] = col[m].real
+        m += 1
+
+    for j in range(start.shape[1]):
+        t = start[:, j]
+        t = orthonormal(t, _gather_sum(np.append(V[:, :m].conj().T @ t, np.vdot(t, t)), comm))
+        if t is not None and m < max_vectors:
+            append(t)
+
+    if m == 0:  # the start block spans nothing
+        return np.inf, V[:, :1].copy(), False
     y_prev = None
-    theta = np.inf
-    x = V[:, :1]
-    for _ in range(max_iter):
-        S = block_inner(V, AV, mpi, comm)
-        S = 0.5 * (S + S.conj().T)
-        thetas, Y = np.linalg.eigh(S)
-        if comm is not None:
-            thetas, Y = comm.bcast((thetas, Y), root=0)
-        k = min(b, len(thetas))
-        Yk = Y[:, :k]
-        X = V @ Yk
-        R = AV @ Yk - X * thetas[:k]
-        norms = np.sqrt(np.real(np.diag(block_inner(R, R, mpi, comm))))
-        if comm is not None:
-            norms = comm.bcast(norms, root=0)
-        theta, x = float(thetas[0]), X[:, :1]
-        if norms[0] < tol:
-            return theta, x, True
-        # Corrections for the unconverged ones among the k lowest.
-        live = [i for i in range(k) if norms[i] >= tol]
-        T = np.empty((V.shape[0], len(live)), dtype=complex)
-        for c, i in enumerate(live):
-            denom = thetas[i] - diag
-            T[:, c] = R[:, i] / np.where(np.abs(denom) < _DAVIDSON_SHIFT_FLOOR, _DAVIDSON_SHIFT_FLOOR, denom)
-        if V.shape[1] + len(live) > max_vectors:
-            keep = [Yk[:, i] for i in range(k)]
-            if y_prev is not None:
-                keep.append(np.concatenate([y_prev, np.zeros(Y.shape[0] - len(y_prev))]))
+    best = np.inf
+    best_at = 0
+    theta, x = np.inf, V[:, :1].copy()
+    for it in range(max_iter):
+        thetas, Y = np.linalg.eigh(S[:m, :m])  # S is bitwise replicated, so is this
+        y = Y[:, 0]
+        theta = float(thetas[0])
+        x = V[:, :m] @ y
+        r = AV[:, :m] @ y - theta * x
+        denom = theta - diag
+        small = np.abs(denom) < _DAVIDSON_SHIFT_FLOOR
+        t = r / np.where(small, np.where(denom < 0, -_DAVIDSON_SHIFT_FLOOR, _DAVIDSON_SHIFT_FLOOR), denom)
+        g = _gather_sum(np.concatenate([V[:, :m].conj().T @ t, [np.vdot(t, t), np.vdot(r, r)]]), comm)
+        residual = np.sqrt(max(g[m + 1].real, 0.0))
+        if residual < tol:
+            return theta, x.reshape(-1, 1), True
+        if residual < 0.5 * best:
+            best, best_at = residual, it
+        elif it - best_at >= DAVIDSON_STAGNATION:
+            return theta, x.reshape(-1, 1), False
+        if m == max_vectors:
+            # Restart on the current and the previous Ritz vector; V, H V and S are recombined.
+            keep = [y] if y_prev is None else [y, np.append(y_prev, np.zeros(m - len(y_prev)))]
             Q, _ = np.linalg.qr(np.column_stack(keep))
-            V, AV = V @ Q, AV @ Q
-            Yk = Q.conj().T @ Yk
-        for _pass in range(2):
-            T, _ = block_orthogonalize(T, V, mpi=mpi, comm=comm)
-        # Orthonormalize the corrections among themselves; drop the ones already in the space.
-        G = block_inner(T, T, mpi, comm)
-        G = 0.5 * (G + G.conj().T)
-        w, U = np.linalg.eigh(G)
-        if comm is not None:
-            w, U = comm.bcast((w, U), root=0)
-        good = w > 1e-24 * max(float(np.max(w)) if w.size else 0.0, 1e-300)
-        if not np.any(good):
-            # The corrections lie in the space already: nothing left to add.
-            return theta, x, False
-        T = T @ (U[:, good] / np.sqrt(w[good]))
-        for _pass in range(2):
-            T, _ = block_orthogonalize(T, V, mpi=mpi, comm=comm)
-        T, _ = block_normalize(np.ascontiguousarray(T), mpi, comm, 0.0)
-        y_prev = Yk[:, 0]
-        V = np.hstack([V, T])
-        AV = np.hstack([AV, block_apply(h_op, T, None, mpi, 0.0)])
-    return theta, x, False
+            k = Q.shape[1]
+            V[:, :k], AV[:, :k] = V[:, :m] @ Q, AV[:, :m] @ Q
+            S_k = Q.conj().T @ S[:m, :m] @ Q
+            S[:, :] = 0.0
+            S[:k, :k] = 0.5 * (S_k + S_k.conj().T)
+            g = np.concatenate([Q.conj().T @ g[:m], g[m:]])
+            y = Q.conj().T @ y
+            m = k
+        y_prev = y
+        t = orthonormal(t, g)
+        if t is None:
+            return theta, x.reshape(-1, 1), False
+        append(t)
+    return theta, x.reshape(-1, 1), False
 
 
 def solve_lowest(h_op, comm, hashes, *, warm, tol, n_global, max_restarts=100, verbose=False, davidson=False):
