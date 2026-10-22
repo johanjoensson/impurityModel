@@ -359,6 +359,9 @@ def _expand_job(
         weighted_restrictions=_label_window(basis, plan.pairs, job.two_sz),
     )
     solver = CIPSISolver(class_basis)
+    # The penalty holds the expansion in its class, so the faster solver that stays in its start's
+    # symmetry sector is the right one here (GS_LOWEST_SOLVER=auto).
+    solver.davidson = True
     class_plan = cls = None
     if job.seed_class is not None:
         class_plan = plan.class_plans[(job.two_sz, job.parity)]
@@ -390,6 +393,8 @@ def _expand_job(
     solver.matrix_hook = None
     solver.cycle_hook = None
     solver.eig = None
+    # The verdict is the unpenalized lowest state of the whole class basis, whatever sector it is in.
+    solver.davidson = False
     with solver_trace.timed("class_eigensolve", seed_class=job.seed_class):
         es, psis = solver.get_eigenvectors(
             h_op, Lowest(), dense_cutoff=dense_cutoff, slaterWeightMin=slater_weight_min, psi_refs=solver.psi_refs

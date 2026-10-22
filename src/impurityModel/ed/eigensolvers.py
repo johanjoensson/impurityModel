@@ -19,7 +19,9 @@ import numpy as np
 from mpi4py import MPI
 
 from impurityModel.ed.average import energy_cut
-from impurityModel.ed.BlockLanczosCore import block_inner, block_normalize
+from impurityModel.ed import config
+from impurityModel.ed.BlockLanczosCore import block_apply, block_inner, block_normalize, block_orthogonalize
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.memory_estimate import gs_krylov_blocks
 from impurityModel.ed.trlm import STATUS_CONVERGED, Window, trlm
 
@@ -443,7 +445,109 @@ def solve_window(
     )
 
 
-def solve_lowest(h_op, comm, hashes, *, warm, tol, n_global, max_restarts=100, verbose=False):
+#: Most search vectors :func:`davidson_lowest` holds (``V`` and ``H V`` each); at the cap it restarts
+#: on the current and previous Ritz vectors. Twelve converged every captured NiO d6 cycle in 11-56
+#: matrix-vector products, against 48-202 for the thick-restart Lanczos it replaced, which holds 48.
+DAVIDSON_MAX_VECTORS = 12
+
+#: Iterations before :func:`davidson_lowest` gives up and :func:`solve_lowest` falls back to TRLM.
+DAVIDSON_MAX_ITER = 2000
+
+#: The diagonal preconditioner's denominator ``theta - H_ii`` is floored at this magnitude.
+_DAVIDSON_SHIFT_FLOOR = 1e-8
+
+
+def _local_diagonal(h_op):
+    """The diagonal entries of ``h_op``'s local columns, ``(n_local,)``. Unbinds a bound matrix."""
+    h_op.unbind_slots()
+    diag = np.zeros(h_op.shape[1], dtype=complex)
+    for c0, indptr, rows, data in h_op.segments:
+        cols = np.repeat(np.arange(c0, c0 + len(indptr) - 1, dtype=np.int64), np.diff(indptr))
+        on = np.asarray(rows, dtype=np.int64) == cols + h_op.col_offset
+        np.add.at(diag, cols[on], np.asarray(data)[on])
+    return diag.real
+
+
+def davidson_lowest(h_op, comm, start, *, tol, correct=1, max_vectors=DAVIDSON_MAX_VECTORS, max_iter=DAVIDSON_MAX_ITER):
+    """The lowest eigenpair of ``h_op`` by Davidson with the diagonal preconditioner: ``(theta, x, converged)``.
+
+    A selected-CI Hamiltonian is diagonally dominant in its determinant basis, so the correction
+    ``(theta - diag H)^{-1} r`` points almost straight at an eigenvector; from a CIPSI cycle's warm
+    start this took 2-4x fewer matrix-vector products than thick-restart Lanczos on every captured
+    NiO d6 cycle, holding a quarter of the vectors. ``start`` ``(n_local, b)`` spans the start space,
+    and the ``correct`` lowest Ritz vectors are corrected every iteration; only the lowest must reach
+    ``tol``. Correcting the lowest alone keeps the search in the symmetry sector the start's lowest
+    Ritz vector is in -- which is why :func:`solve_lowest` uses this only where that is intended (a
+    certified class expansion, held in its class by its penalty): a plain expansion relies on
+    Lanczos growing every sector of the generic start vector to escape its seed's sector (a plain
+    NiO d6 expansion stopped at -43.145 under Davidson, -43.275 under Lanczos, and correcting two
+    vectors did not change that). At ``max_vectors`` columns the space restarts on the current
+    corrected and the previous lowest Ritz vectors, with ``H V`` recombined rather than reapplied. Every decision
+    reads values broadcast from rank 0 -- the Ritz problem is solved there -- so all ranks take the
+    same path through the collectives.
+    """
+    mpi = comm is not None and getattr(comm, "size", 1) > 1
+    h_op = DistributedSparseMatrix.coerce(h_op, comm)
+    diag = _local_diagonal(h_op)
+    V, _ = block_normalize(np.ascontiguousarray(start, dtype=complex), mpi, comm, 0.0)
+    b = max(1, min(int(correct), V.shape[1]))
+    max_vectors = max(int(max_vectors), 2 * b + 1)
+    AV = block_apply(h_op, V, None, mpi, 0.0)
+    y_prev = None
+    theta = np.inf
+    x = V[:, :1]
+    for _ in range(max_iter):
+        S = block_inner(V, AV, mpi, comm)
+        S = 0.5 * (S + S.conj().T)
+        thetas, Y = np.linalg.eigh(S)
+        if comm is not None:
+            thetas, Y = comm.bcast((thetas, Y), root=0)
+        k = min(b, len(thetas))
+        Yk = Y[:, :k]
+        X = V @ Yk
+        R = AV @ Yk - X * thetas[:k]
+        norms = np.sqrt(np.real(np.diag(block_inner(R, R, mpi, comm))))
+        if comm is not None:
+            norms = comm.bcast(norms, root=0)
+        theta, x = float(thetas[0]), X[:, :1]
+        if norms[0] < tol:
+            return theta, x, True
+        # Corrections for the unconverged ones among the k lowest.
+        live = [i for i in range(k) if norms[i] >= tol]
+        T = np.empty((V.shape[0], len(live)), dtype=complex)
+        for c, i in enumerate(live):
+            denom = thetas[i] - diag
+            T[:, c] = R[:, i] / np.where(np.abs(denom) < _DAVIDSON_SHIFT_FLOOR, _DAVIDSON_SHIFT_FLOOR, denom)
+        if V.shape[1] + len(live) > max_vectors:
+            keep = [Yk[:, i] for i in range(k)]
+            if y_prev is not None:
+                keep.append(np.concatenate([y_prev, np.zeros(Y.shape[0] - len(y_prev))]))
+            Q, _ = np.linalg.qr(np.column_stack(keep))
+            V, AV = V @ Q, AV @ Q
+            Yk = Q.conj().T @ Yk
+        for _pass in range(2):
+            T, _ = block_orthogonalize(T, V, mpi=mpi, comm=comm)
+        # Orthonormalize the corrections among themselves; drop the ones already in the space.
+        G = block_inner(T, T, mpi, comm)
+        G = 0.5 * (G + G.conj().T)
+        w, U = np.linalg.eigh(G)
+        if comm is not None:
+            w, U = comm.bcast((w, U), root=0)
+        good = w > 1e-24 * max(float(np.max(w)) if w.size else 0.0, 1e-300)
+        if not np.any(good):
+            # The corrections lie in the space already: nothing left to add.
+            return theta, x, False
+        T = T @ (U[:, good] / np.sqrt(w[good]))
+        for _pass in range(2):
+            T, _ = block_orthogonalize(T, V, mpi=mpi, comm=comm)
+        T, _ = block_normalize(np.ascontiguousarray(T), mpi, comm, 0.0)
+        y_prev = Yk[:, 0]
+        V = np.hstack([V, T])
+        AV = np.hstack([AV, block_apply(h_op, T, None, mpi, 0.0)])
+    return theta, x, False
+
+
+def solve_lowest(h_op, comm, hashes, *, warm, tol, n_global, max_restarts=100, verbose=False, davidson=False):
     """The lowest eigenpair of ``h_op``: one converged Ritz pair, no completeness claim.
 
     Count-mode thick-restart block Lanczos retaining a single pair. The start block is the ``warm``
@@ -484,6 +588,13 @@ def solve_lowest(h_op, comm, hashes, *, warm, tol, n_global, max_restarts=100, v
         q0, _ = block_normalize(start_block(with_warm), mpi, comm, 0.0)
     except ValueError:  # BlockBreakdown, rank-symmetric: decided by the replicated TSQR factor
         q0, _ = block_normalize(start_block(False), mpi, comm, 0.0)
+    choice = config.GS_LOWEST_SOLVER.get()
+    if (choice == "davidson" or (choice == "auto" and davidson)) and n_global > 1:
+        theta, x, converged = davidson_lowest(h_op, comm, q0, tol=tol)
+        if converged:
+            return EigenResult(np.array([theta]), np.ascontiguousarray(x), 1, True, 1, "converged")
+        # Not converged within its iteration cap: thick-restart Lanczos from where it got to.
+        q0, _ = block_normalize(np.hstack([x, cold_vector(hashes)]), mpi, comm, 0.0)
     res = trlm(
         q0,
         h_op,

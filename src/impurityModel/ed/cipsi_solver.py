@@ -447,6 +447,9 @@ class CIPSISolver:
         #: rank 0's answer is broadcast, so the ranks cannot disagree. :attr:`stopped_early` records it.
         self.cycle_hook = None
         self.stopped_early = False
+        #: ``Lowest`` solves by Davidson under ``GS_LOWEST_SOLVER=auto`` (a certified class expansion
+        #: sets it: :func:`eigensolvers.davidson_lowest` stays in its start's symmetry sector).
+        self.davidson = False
         #: ``{"found", "expected"}`` for a certified thermal manifold's lowest level
         #: (:func:`sector_solver.manifold_deficit`); ``None`` when nothing checked it.
         self.manifold_check = None
@@ -1520,6 +1523,7 @@ class CIPSISolver:
                 n_global=len(self.basis),
                 max_restarts=100,
                 verbose=self.basis.verbose,
+                davidson=self.davidson,
             )
         eig.generation = self.basis.generation
         eig.manifold = Lowest()

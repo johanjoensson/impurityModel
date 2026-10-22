@@ -570,6 +570,22 @@ GS_SECTOR_CERTIFY = Knob(
     level, up to 0.17 high. ``0`` restores the single expansion.""",
 )
 
+GS_LOWEST_SOLVER = Knob(
+    name="GS_LOWEST_SOLVER",
+    kind="str",
+    default="auto",
+    group="groundstate",
+    doc="""Solver for a ``Lowest`` eigenpair above the dense size (every CIPSI cycle of an expansion).
+    ``auto`` (default): Davidson with the diagonal preconditioner inside a certified class expansion,
+    thick-restart Lanczos everywhere else. Davidson needed 2-4x fewer matrix-vector products than
+    Lanczos on the NiO 10-bath d6 cycles, with a quarter of the stored vectors, and cut the certified
+    d5 sector from 1423 s to 375 s; but it stays in the symmetry sector of its start's lowest Ritz
+    vector, which a class expansion intends and a plain expansion must not (its only defence against
+    its seed's trap is Lanczos growing every sector of the generic start vector). ``davidson`` /
+    ``trlm`` force one everywhere. Davidson falls back to Lanczos when it does not converge; thermal
+    (``Within``) solves always use Lanczos, which certifies the manifold complete.""",
+)
+
 GS_CERTIFY_MAX_SEED = Knob(
     name="GS_CERTIFY_MAX_SEED",
     kind="int",
@@ -936,6 +952,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_RIXS_ADAPTIVE_TOL,
     GS_MAX_BLOCK_WIDTH,
     GS_SECTOR_CERTIFY,
+    GS_LOWEST_SOLVER,
     GS_CERTIFY_MAX_SEED,
     GS_CERTIFY_WINDOW,
     GS_CERTIFY_WINDOW_FACTOR,

@@ -304,13 +304,29 @@ def _lowest_solve(system, *, warm, calls=None, monkeypatch=None):
 @pytest.mark.mpi
 @pytest.mark.parametrize("warm", [True, False], ids=["warm", "cold"])
 def test_lowest_returns_one_pair_of_a_degenerate_level_in_one_narrow_solve(system, warm, monkeypatch):
-    """A 5-fold ground level: the energy is exact, one eigensolve runs, and its block is at most two wide."""
+    """A 5-fold ground level: the energy is exact, one eigensolve runs, and its block is at most two wide.
+
+    The Lanczos path (``GS_LOWEST_SOLVER=trlm``); Davidson is the next test."""
+    monkeypatch.setenv("GS_LOWEST_SOLVER", "trlm")
     calls = []
     eig = _lowest_solve(system, warm=warm, calls=calls, monkeypatch=monkeypatch)
     assert eig.certified
     assert len(eig.e) == 1 and eig.vecs.shape[1] == 1 and eig.n_in == 1
     np.testing.assert_allclose(eig.e[0], system[3][0], atol=1e-9)
     assert len(calls) == 1 and calls[0] <= 2
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("warm", [True, False], ids=["warm", "cold"])
+def test_davidson_returns_one_exact_pair_of_a_degenerate_level_without_lanczos(system, warm, monkeypatch):
+    """The Davidson ``Lowest`` solver on the same 5-fold level: certified, exact, and no Lanczos fallback."""
+    monkeypatch.setenv("GS_LOWEST_SOLVER", "davidson")
+    calls = []
+    eig = _lowest_solve(system, warm=warm, calls=calls, monkeypatch=monkeypatch)
+    assert eig.certified
+    assert len(eig.e) == 1 and eig.vecs.shape[1] == 1 and eig.n_in == 1
+    np.testing.assert_allclose(eig.e[0], system[3][0], atol=1e-9)
+    assert calls == [], "Davidson fell back to Lanczos"
 
 
 def test_within_thermal_is_the_energy_cut():
