@@ -5,7 +5,7 @@ unfrozen groups, lets every one of them range over its whole ``[0, group_size]``
 only the **total** impurity charge. So two trial occupations differing only in how one total is
 split across unfrozen groups build the identical basis and are one sector solve --
 ``groundstate.sector_key`` is that equivalence, and ``find_ground_state_sector``'s energy cache
-keys on it so the walk's diagonal probe stops paying for the same solve several times.
+keys on it so the walk stops paying for the same solve several times.
 
 These tests pin the property the key *relies* on (identical determinant sets, before and after
 the CIPSI expansion), the boundary where it stops holding (frozen groups, which do not
@@ -176,7 +176,7 @@ def _walk(nominal, frozen=None, use_hf_seed=False):
 def test_the_walk_reuses_a_solve_across_splits_of_one_total():
     """The dedupe, measured rather than asserted.
 
-    The diagonal 3^k probe visits every combination move from the seed, so on a 2-group impurity
+    The legacy 3^k scan visits every combination move from the seed, so on a 2-group impurity
     it reaches the same total by several routes -- (+1,-1) and (-1,+1) both land on the seed's
     own total. Those are one solve now, and the cache-hit counter the Phase-2 instrumentation
     added is what says so.
@@ -201,7 +201,7 @@ def test_the_walk_finds_the_true_minimum_despite_out_of_bounds_probes():
 
     The per-group bounds test rejects {0: 0, 1: 3} (group 1 holds 2 spin-orbitals) while
     {0: 1, 1: 2} is the same, perfectly valid, total-3 sector -- and they share a cache key. The
-    walk's diagonal probe generates the out-of-bounds one *unguarded*, so caching that rejection
+    legacy scan generates the out-of-bounds one *unguarded*, so caching that rejection
     would hand `inf` to whichever of the two the walk asked for second, and the walk would
     silently skip a sector. Comparing against every reachable total solved directly is what
     catches that: a poisoned cache shows up as the walk settling above the true minimum.
@@ -226,3 +226,23 @@ def test_the_walk_reports_the_total_it_settled_on():
     assert set(occ) == {0, 1}
     assert all(isinstance(v, (int, np.integer)) for v in occ.values()), occ
     assert 0 <= sum(occ.values()) <= 2 * GROUP_SIZE, occ
+
+
+def test_the_seeded_walk_only_solves_neighbours_of_its_best_sector():
+    """The HF-seeded walk is a descent on E(N): each new solve is one step from the best so far.
+
+    A sector is a total (plus frozen groups, which never move), so the old 3^k combination probe
+    from the seed only added the totals N0 +- 2. On the 5-bath NiO linked-chain run that was the
+    d6 sector -- the costliest of the walk, 0.10 above the winner -- at every DMFT iteration.
+    """
+    reachable = {}
+    for total in range(2 * GROUP_SIZE + 1):
+        reachable[total] = _solve({0: min(total, GROUP_SIZE), 1: total - min(total, GROUP_SIZE)})[0]
+
+    search, trace = _walk({0: 1, 1: 1}, use_hf_seed=True)
+    solved = [sum(dict(event["n0"]).values()) for event in trace.of_kind("sector_solve")]
+    assert len(solved) >= 2, solved
+    for i, total in enumerate(solved[1:], start=1):
+        best = min(solved[:i], key=reachable.get)
+        assert abs(total - best) == 1, (solved, reachable)
+    assert sum(search.occupation.values()) == min(reachable, key=reachable.get), (solved, reachable)

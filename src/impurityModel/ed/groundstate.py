@@ -697,8 +697,8 @@ def find_ground_state_sector(
         return e_trial
 
     keys = list(N0.keys())
-    # One report for every branch of the walk (HF seed, its diagonal probe, the axis walk and
-    # the legacy dN scan), so the search reads as a single table however it was reached.
+    # One report for every branch of the walk (HF seed, the axis walk and the legacy dN scan), so
+    # the search reads as a single table however it was reached.
     frozen_keys = sorted(i for i in keys if i in frozen_occupations)
     reported_sectors: set = set()
 
@@ -714,8 +714,8 @@ def find_ground_state_sector(
         (a group occupation of -1) still showed a perfectly finite energy. The per-group
         filling is a measurement only in the impurity density matrix, further downstream.
 
-        Deduplicating on the sector also removes the repeats: the diagonal probe and the axis
-        walk revisit the same total many times, and every repeat was an energy-cache hit that
+        Deduplicating on the sector also removes the repeats: the axis walk revisits the same
+        total once per unfrozen group, and every repeat was an energy-cache hit that
         printed another identical line.
         """
         if not (verbose >= V_SUMMARY and (comm is None or comm.rank == 0)):
@@ -789,31 +789,14 @@ def find_ground_state_sector(
         e_gs = get_energy(winning_impurity_occ)
         report_trial(winning_impurity_occ, e_gs, note="HF seed")
 
-        # The HF seed is a single mean-field determinant and can miss the true sector along more
-        # than one group at once -- e.g. an inter-group charge transfer (dN = (-1, +1)) whose two
-        # axis neighbours are BOTH higher in energy than the seed (each pays a charging energy
-        # U_A or U_B in isolation, while only the combined move gains the transfer energy), so a
-        # pure coordinate-descent walk finds no improving neighbour and stops short. Probe every
-        # combination move once from the seed, exactly like the legacy scan's first pass, so a
-        # diagonal correction is reachable; bounded to a handful of groups (3^k) so this stays
-        # cheap, since impurities with more groups fall back to axis-only moves from the seed.
-        if 1 < len(keys) <= 4:
-            best_combo = winning_impurity_occ
-            best_combo_e = e_gs
-            for dN in product([0, -1, 1], repeat=len(keys)):
-                if all(d == 0 for d in dN):
-                    continue
-                trial = {
-                    keys[i]: winning_impurity_occ[keys[i]] + (0 if keys[i] in frozen_occupations else dN[i])
-                    for i in range(len(keys))
-                }
-                e_trial = get_energy(trial)
-                report_trial(trial, e_trial)
-                if e_trial < best_combo_e:
-                    best_combo_e = e_trial
-                    best_combo = trial
-            winning_impurity_occ = best_combo
-            e_gs = best_combo_e
+        # No diagonal (multi-group) probe: a sector is its total impurity occupation plus the frozen
+        # groups (see sector_key), and frozen groups never move, so every combination move lands on
+        # a total. An inter-group charge transfer at fixed total -- what the 3^k probe from the seed
+        # was for -- is the seed's own sector, and the totals N0 +- 1 are the axis walk's first
+        # step. What the probe added was solving N0 +- 2 (+- k on k groups) on 2-4-group impurities
+        # only: on the 5-bath NiO linked-chain run (two unfrozen groups, eg and t2g) that was the
+        # d6 sector at every DMFT iteration, the most expensive solve of the walk and 0.10 above
+        # the winner. The walk is a descent on E(N) from the HF seed, for any number of groups.
 
         while True:
             best_neighbor = None
