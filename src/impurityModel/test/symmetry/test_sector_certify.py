@@ -203,6 +203,42 @@ def test_a_second_shift_through_the_store_expands_fewer_classes_and_finds_the_sa
     assert abs(stored - _exact_ground_energy(_hamiltonian(mu=0.01))) < 1e-8
 
 
+@pytest.mark.parametrize("comm", COMMS)
+def test_the_store_is_reused_only_at_its_own_accuracy_and_never_for_a_mixed_valence_seed(comm, monkeypatch):
+    """A record says which classes can win *at the accuracy and seed it was certified with*. At a
+    different ``e_pt2_tol`` the sector is certified in full again; a mixed-valence seed spans several
+    impurity occupations, on which a shift is not a constant, so it is never recorded at all."""
+    from impurityModel.ed.groundstate import solve_sector
+    from impurityModel.ed.sector_solver import SectorPlanStore
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    expansions = {"n": 0}
+    real = CIPSISolver.expand
+
+    def counting(self, *args, **kwargs):
+        expansions["n"] += 1
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(CIPSISolver, "expand", counting)
+
+    def solve(mu, store, e_pt2_tol=1e-12, mixed_valence=None):
+        expansions["n"] = 0
+        solve_sector(
+            _hamiltonian(mu=mu), IMPURITY_ORBITALS, BATH_STATES, {0: 2}, mixed_valence, 0, False, 1000,
+            manifold=Lowest(), comm=comm, verbose=False, slaterWeightMin=0, de2_min=0, e_pt2_tol=e_pt2_tol,
+            plan_store=store, shift=mu,
+        )  # fmt: skip
+        return expansions["n"]
+
+    store = SectorPlanStore()
+    full = solve(0.0, store)
+    assert solve(0.01, store) < full, "the store did not skip a class at its own accuracy"
+    assert solve(0.01, store, e_pt2_tol=1e-11) == full, "a record was reused at another accuracy"
+    mixed = SectorPlanStore()
+    solve(0.0, mixed, mixed_valence={0: 1})
+    assert not mixed.records, "a mixed-valence seed was recorded"
+
+
 def test_with_spin_orbit_coupling_neither_spin_label_is_assumed_and_the_answer_is_exact():
     """Spin need not be a good quantum number: with a spin-mixing term neither ``S`` nor ``S_z`` is
     detected, only the parities split the seed, and the certified energy is still the exact one."""

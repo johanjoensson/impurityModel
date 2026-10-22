@@ -216,14 +216,16 @@ def solve_sector(
         Stored on the returned basis (the Green's-function stage reads ``basis.tau``). It does not
         choose the manifold; ``manifold`` does.
     de2_min, e_pt2_tol : float, float or None
-        Convergence of the expansion. The defaults are the occupation walk's (a per-determinant
-        floor, no residual criterion: only the *ordering* of sectors is decided). Callers that
-        difference two sector energies, or quote the answer, pass :data:`GS_DE2_MIN` and
-        :data:`GS_E_PT2_TOL`: the truncation error does not cancel in a difference.
+        Convergence of the expansion: an optional per-determinant admission floor, and the residual
+        PT2 energy the expansion converges to. The defaults are the production ground state's
+        (:data:`GS_DE2_MIN`, :data:`GS_E_PT2_TOL`), which the occupation walk runs at too: the
+        order of the sectors is its answer.
     plan_store, shift : SectorPlanStore or None, float
         A search over a shift ``H - shift * N_imp`` (``h_op`` is already shifted) passes its store:
-        a ``Lowest`` sector is then certified once, and at other shifts only the classes that can
-        still be lowest are expanded (:class:`~impurityModel.ed.sector_solver.SectorPlanStore`).
+        a sector is then certified once, and at other shifts only the classes that can still be
+        lowest are expanded (:class:`~impurityModel.ed.sector_solver.SectorPlanStore`). A record is
+        reused only at the seed size, accuracy and cap it was made with, and never for a
+        mixed-valence seed.
     """
     # One call is one *sector solve* -- the unit the occupation walk and the double-counting search
     # are both counted in. The nested timers say which of build / expand / diagonalize the cost
@@ -263,8 +265,22 @@ def solve_sector(
             memory_policy=_memory_policy(truncation_threshold),
         )
         if config.GS_SECTOR_CERTIFY.get():
-            store = plan_store
-            store_key = sector_key(N0, frozen_occupations)
+            # A record holds for the seed and the accuracy it was certified at, so both are in its
+            # key (every component replicated), and only for a seed of one impurity occupation: on
+            # it the shift is a constant, so the plan is the same at every shift. A mixed-valence
+            # seed is certified afresh at every one.
+            widths = mixed_valence.values() if isinstance(mixed_valence, dict) else [mixed_valence or 0]
+            single_occupation = not any(int(v) for v in widths)
+            store = plan_store if single_occupation else None
+            store_key = (
+                sector_key(N0, frozen_occupations),
+                len(basis),
+                float(de2_min or 0.0),
+                float(e_pt2_tol or 0.0),
+                float(slaterWeightMin),
+                basis.truncation_threshold,
+                int(dense_cutoff),
+            )
             certification = store.plan(store_key) if store is not None else None
             window = 0.0 if isinstance(manifold, Lowest) else float(manifold.max_energy)
             only = store.jobs_at(store_key, shift, window=window) if certification is not None else None
