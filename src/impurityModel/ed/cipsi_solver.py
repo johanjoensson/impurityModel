@@ -457,6 +457,11 @@ class CIPSISolver:
         #: ``Lowest`` solves by Davidson under ``GS_LOWEST_SOLVER=auto`` (a certified class expansion
         #: sets it: :func:`eigensolvers.davidson_lowest` stays in its start's symmetry sector).
         self.davidson = False
+        #: ``Lowest`` solves go sparse (Lanczos from the generic start vector, on rank 0 below
+        #: ``dense_cutoff``) from :data:`CLASS_DENSE_MAX` determinants up; a certified class's verdict
+        #: solve sets it. The dense branch stays the default where its generic projection of a
+        #: degenerate seed level matters: a plain expansion's first cycles.
+        self.sparse_lowest = False
         #: ``{"found", "expected"}`` for a certified thermal manifold's lowest level
         #: (:func:`sector_solver.manifold_deficit`); ``None`` when nothing checked it.
         self.manifold_check = None
@@ -1405,10 +1410,12 @@ class CIPSISolver:
             num_wanted = _manifold_request(n_kept, self._prev_kept)
             self._prev_kept = n_kept
 
-        # A certified class expansion's Lowest solves go sparse far below ``dense_cutoff``: there a dense
-        # solve is O(n^3) every CIPSI cycle (it was 80% of a NiO d7 certification at 300-700
-        # determinants), while Davidson on rank 0 (``serial``) costs milliseconds from a warm start.
-        sparse_from = min(dense_cutoff, CLASS_DENSE_MAX) if lowest and self.davidson else dense_cutoff
+        # A certified class expansion's Lowest solves (and its verdict solve) go sparse far below
+        # ``dense_cutoff``: there a dense solve is O(n^3) every CIPSI cycle (it was 80% of a NiO d7
+        # certification at 300-700 determinants), while a sparse solve on rank 0 (``serial``) costs
+        # milliseconds from a warm start.
+        small_sparse = lowest and (self.davidson or self.sparse_lowest)
+        sparse_from = min(dense_cutoff, CLASS_DENSE_MAX) if small_sparse else dense_cutoff
         if self.basis.size >= sparse_from:
             reusable = (
                 reuse_last

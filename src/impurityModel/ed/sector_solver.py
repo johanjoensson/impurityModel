@@ -400,8 +400,10 @@ def _expand_job(
     solver.matrix_hook = None
     solver.cycle_hook = None
     solver.eig = None
-    # The verdict is the unpenalized lowest state of the whole class basis, whatever sector it is in.
+    # The verdict is the unpenalized lowest state of the whole class basis, whatever sector it is in:
+    # Lanczos, whose generic start vector reaches every sector, on rank 0 for a small basis.
     solver.davidson = False
+    solver.sparse_lowest = True
     with solver_trace.timed("class_eigensolve", seed_class=job.seed_class):
         es, psis = solver.get_eigenvectors(
             h_op, Lowest(), dense_cutoff=dense_cutoff, slaterWeightMin=slater_weight_min, psi_refs=solver.psi_refs

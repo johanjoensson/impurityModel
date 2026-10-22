@@ -571,3 +571,26 @@ def test_davidson_runs_only_where_a_class_penalty_holds_the_expansion(monkeypatc
     assert any(not hooked for _, hooked in calls)
     assert all(hooked for davidson, hooked in calls if davidson), calls
     assert abs(float(np.min(es)) - _exact_ground_energy(h_op)) < 1e-8
+
+
+def test_a_class_verdict_below_the_dense_cutoff_is_a_lanczos_solve_on_rank_0(monkeypatch):
+    """The verdict -- the unpenalized lowest state of a class basis, in whatever sector -- is solved
+    by Lanczos from the generic start vector (never Davidson), serially on rank 0 below the dense
+    cutoff, and is exact. ``CLASS_DENSE_MAX=1`` puts this fixture's small bases above that threshold."""
+    import impurityModel.ed.cipsi_solver as cs
+
+    monkeypatch.setattr(cs, "CLASS_DENSE_MAX", 1)
+    h_op = _hamiltonian()
+    basis = _seed(h_op, None)
+    plan = certification_plan(h_op, basis)
+    calls = []
+    original = CIPSISolver._solve_lowest
+
+    def record(self, *args, serial=False, **kwargs):
+        calls.append((self.davidson, serial))
+        return original(self, *args, serial=serial, **kwargs)
+
+    monkeypatch.setattr(CIPSISolver, "_solve_lowest", record)
+    es, *_rest = certify_sector(h_op, basis, plan, expand_kwargs=EXPAND, dense_cutoff=1000, slater_weight_min=0)
+    assert (False, True) in calls, calls
+    assert abs(float(np.min(es)) - _exact_ground_energy(h_op)) < 1e-8
