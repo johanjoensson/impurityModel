@@ -528,3 +528,18 @@ def test_the_ranking_rule_never_settles_the_nio_d6_winner_and_bounds_a_loser_abo
     k = settled[0]
     assert loser[k] - _ranking_remaining(loser[: k + 1]) > winner[-1] + 0.05
     assert _ranking_remaining([-1.0, -1.0005, -1.0004, -1.0006]) is None  # a rise is not settling
+
+
+def test_a_class_whose_state_left_its_class_is_marked_leaked_even_unstopped(monkeypatch):
+    """A class that converged into another class's state without being stopped (nothing had finished
+    there yet) carries that state's energy; at another shift it may stay in its own state, far
+    above, which the store read as a broken tangent (NiO d5: 0.18 above, the sector re-certified).
+    Its verdict must say it leaked, so the store neither checks nor trusts it."""
+    from impurityModel.ed import seed_sectors
+
+    monkeypatch.setattr(seed_sectors, "class_weight", lambda *args, **kwargs: 0.0)
+    monkeypatch.setattr("impurityModel.ed.sector_solver._has_leaked", lambda *args: False)
+    _energy, plan, verdicts = _certify(_hamiltonian(), None)
+    classed = [v for v in verdicts if v.job.seed_class is not None]
+    assert classed, "the fixture has no class expansions"
+    assert all(v.stopped_early for v in classed)

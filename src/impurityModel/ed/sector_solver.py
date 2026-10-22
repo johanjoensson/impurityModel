@@ -136,6 +136,10 @@ class ClassVerdict:
     memory_bound: bool
     #: ``<N_imp>`` of the class's lowest state: ``-dE/dmu`` for a shift ``-mu N_imp``.
     n_imp: float = float("nan")
+    #: Its state left its class -- the leak test stopped it, or its final state kept less than
+    #: :data:`seed_sectors.DRIFT_TOL` of its seed weight in the class. Its energy is then another
+    #: class's state's, reached first by whichever class happened to run first, and bounds nothing
+    #: at another shift.
     stopped_early: bool = False
     #: The expansion's ``truncation_report`` (replicated scalars), when a cap or the memory guard
     #: limited it: a class can *lose* because it was held high, which the winner's own report misses.
@@ -369,15 +373,16 @@ def _expand_job(
         solver.matrix_hook = seed_sectors.ClassPenalty(class_plan, cls)
     energies = []
     remaining = [None]
+    weight = [1.0]
 
     def hook(sv, e_ref, psi_refs):
         e0 = float(np.min(e_ref))
         stop = False
         if cls is not None:
-            weight = seed_sectors.class_weight(class_plan, cls, sv.basis, psi_refs)  # collective
+            weight[0] = seed_sectors.class_weight(class_plan, cls, sv.basis, psi_refs)  # collective
             # Only this label's: H conserves the label, so a state cannot leak into another label's.
             previous = energies[len(energies) - 1] if energies else np.inf
-            stop = _has_leaked(weight, e0, previous, finished.get((job.two_sz, job.parity), ()))
+            stop = _has_leaked(weight[0], e0, previous, finished.get((job.two_sz, job.parity), ()))
         energies.append(e0)
         if not stop and rank:
             remaining[0] = _ranking_remaining(energies)
@@ -408,13 +413,17 @@ def _expand_job(
     # The hook's last verdict decided why the expansion stopped (rank 0's, broadcast by `expand`).
     ranked = bool(solver.stopped_early) and remaining[0] is not None
     tail = remaining[0] if ranked else 0.0
+    # Left its class, whether or not the leak test stopped it: its energy is another class's state's.
+    # Only the first class to reach a state leaks into it unstopped -- nothing had finished there yet
+    # -- and which one that is depends on the order, so its energy bounds nothing at another shift.
+    leaked = (bool(solver.stopped_early) and not ranked) or (cls is not None and weight[0] < seed_sectors.DRIFT_TOL)
     fields = (
         energy,
         residual + tail,
         bool(solver.truncation_report is not None),
         bool(report.get("memory_bound")),
         n_imp,
-        bool(solver.stopped_early) and not ranked,
+        leaked,
         None if solver.truncation_report is None else dict(solver.truncation_report),
         ranked,
         energy - tail if ranked else float("nan"),
@@ -473,7 +482,7 @@ def certify_sector(
         if verbose and rank == 0:
             label = f"2Sz={job.two_sz} parity={''.join(map(str, job.parity))}"
             cls = "" if job.seed_class is None else f" class {job.seed_class}"
-            note = " (leaked; stopped)" if verdict.stopped_early else (" (ranked)" if verdict.ranked else "")
+            note = " (leaked)" if verdict.stopped_early else (" (ranked)" if verdict.ranked else "")
             print(f"  {label}{cls}: E = {verdict.energy:.8f} ({verdict.n_dets:,} determinants){note}", flush=True)
         if best is None or verdict.energy < best[0]:
             best = (verdict.energy, k, es, psis, class_basis, solver)
@@ -482,7 +491,9 @@ def certify_sector(
         if only is None or k in only:
             run(k, ranking=True)
     # Pass 2, most promising first. The lowest energy only falls, so re-test before each.
-    for k in sorted((k for k, v in verdict_of.items() if v.ranked), key=lambda k: verdict_of[k].lower):
+    for k in sorted(
+        (k for k, v in verdict_of.items() if v.ranked and not v.stopped_early), key=lambda k: verdict_of[k].lower
+    ):
         if k in keys and verdict_of[k].lower - e_min() <= reach + _energy_error(verdict_of[k]):
             start = keys.pop(k)
             run(k, ranking=False, start=start)
