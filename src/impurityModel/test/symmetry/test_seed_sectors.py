@@ -1,4 +1,4 @@
-"""Seed symmetry classes (``seed_sectors``): every class within the window gets its own expansion.
+"""Seed symmetry classes (``seed_sectors``), and the sector solve the certifier builds on them.
 
 A CIPSI expansion cannot leave the symmetry sectors of its reference, and the first reference is
 the seed's ground level -- the atomic multiplet, before hybridization. The fixture here is built so
@@ -31,13 +31,12 @@ BATH_STATES = ({0: [list(range(N_IMP, N_ORB))]}, {0: []})
 
 
 @pytest.fixture(autouse=True)
-def _seed_classes_on(monkeypatch):
-    """The seed-class split is opt-in (``GS_SEED_CLASSES`` defaults off); these tests exercise it.
-    The window knobs are cleared so a value in the developer's environment cannot leak in."""
-    monkeypatch.setenv("GS_SEED_CLASSES", "1")
-    monkeypatch.setenv("GS_SECTOR_CERTIFY", "0")
-    monkeypatch.delenv("GS_SEED_CLASS_WINDOW", raising=False)
-    monkeypatch.delenv("GS_SEED_CLASS_WINDOW_FACTOR", raising=False)
+def _certifier_defaults(monkeypatch):
+    """The certifier on (its default) and the window knobs cleared, so a value in the developer's
+    environment cannot leak in."""
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    monkeypatch.delenv("GS_CERTIFY_WINDOW", raising=False)
+    monkeypatch.delenv("GS_CERTIFY_WINDOW_FACTOR", raising=False)
 
 
 def _hamiltonian(spin_mixing=0.0, mu=0.0):
@@ -102,7 +101,7 @@ def _plan(h_op):
 def test_a_single_expansion_is_trapped_in_the_seed_ground_multiplet(monkeypatch):
     """The failure this module exists for, pinned so a fixture change cannot quietly remove it."""
     h_op = _hamiltonian()
-    monkeypatch.setenv("GS_SEED_CLASSES", "0")
+    monkeypatch.setenv("GS_SECTOR_CERTIFY", "0")
     assert _sector_energy(h_op) - _exact_ground_energy(h_op) > 0.1
 
 
@@ -119,18 +118,19 @@ def test_the_thermal_manifold_is_built_on_the_winning_class():
 
 
 @pytest.mark.mpi
-def test_the_spin_tier_labels_the_classes_when_spin_is_a_symmetry():
+def test_the_partition_separates_the_multiplets_without_labelling_them():
+    """No spin operator is used, yet the seed's triplet comes out as one class -- its three rows are
+    a degenerate level every operator is a scalar on -- and each singlet as a class of its own:
+    ``P H P`` and ``P H Q H P`` alone see the symmetry."""
     plan = _plan(_hamiltonian())
-    assert plan.spin is not None
-    expanded = plan.expanded
-    # The triplet once (its highest-weight member), and the singlets.
-    assert sorted((c.two_sz, round(c.spin, 6)) for c in expanded) == [(0, 0.0), (0, 0.0), (2, 1.0)]
-    assert sum(c.status == "partner" for c in plan.classes) == 2
+    assert not hasattr(plan.classes[0], "spin")
+    assert [c.span.shape[1] for c in plan.classes] == [3, 2, 1]
+    assert all(c.status == "expand" for c in plan.classes)
 
 
 @pytest.mark.mpi
 def test_a_symmetry_the_framework_cannot_see_still_separates_the_classes():
-    """With spin mixed, the spin tier must drop out, and the orbital-parity sectors still split.
+    """With spin mixed, the orbital-parity sectors still split.
 
     Each orbital has its own bath and the interaction only moves electron pairs between orbitals,
     so the parity of each orbital's (impurity + bath) count is conserved: a discrete symmetry with no
@@ -138,7 +138,6 @@ def test_a_symmetry_the_framework_cannot_see_still_separates_the_classes():
     """
     h_op = _hamiltonian(spin_mixing=0.05)
     plan = _plan(h_op)
-    assert plan.spin is None
     assert len(plan.expanded) >= 2
     assert _sector_energy(h_op) == pytest.approx(_exact_ground_energy(h_op), abs=1e-6)
 
@@ -148,8 +147,8 @@ def test_the_classes_do_not_depend_on_the_trial_shift():
     """A double-counting shift moves every seed determinant by the same constant."""
     reference = _plan(_hamiltonian())
     shifted = _plan(_hamiltonian(mu=0.37))
-    assert [(c.two_sz, c.spin, c.status) for c in reference.classes] == [
-        (c.two_sz, c.spin, c.status) for c in shifted.classes
+    assert [(c.span.shape[1], c.status) for c in reference.classes] == [
+        (c.span.shape[1], c.status) for c in shifted.classes
     ]
     np.testing.assert_allclose(
         [c.energy for c in reference.classes], [c.energy + 2 * 0.37 for c in shifted.classes], atol=1e-9

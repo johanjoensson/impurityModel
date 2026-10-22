@@ -22,7 +22,6 @@ from impurityModel.ed.memory_estimate import (
     resolve_cap_policy,
 )
 from impurityModel.ed.sector_solver import SectorPlanStore, certification_plan, solve_certified
-from impurityModel.ed.seed_sectors import seed_class_plan
 from impurityModel.ed.utils import (
     V_DETAIL,
     V_SUMMARY,
@@ -329,11 +328,6 @@ def solve_sector(
                 sector_fields["certified_classes"] = len(verdicts)
                 sector_fields["n_dets"] = len(sector_basis)
                 return SectorSolve(es, psis, sector_basis, sector_solver)
-        with solver_trace.timed("seed_classes"):
-            plan = seed_class_plan(h_op, basis, max_seed=int(dense_cutoff), verbose=verbose)
-        if plan is not None and len(plan.expanded) > 1:
-            sector_fields["seed_classes"] = len(plan.expanded)
-            return _solve_sector_by_class(plan, h_op, basis, manifold, comm, verbose, expand_kwargs, sector_fields)
         with solver_trace.timed("expand"):
             solver.expand(h_op, manifold, **expand_kwargs)
 
@@ -351,118 +345,6 @@ def solve_sector(
             )
         sector_fields["n_dets"] = len(basis)
         return SectorSolve(es, psis, basis, solver)
-
-
-def _solve_sector_by_class(plan, h_op, basis, manifold, comm, verbose, expand_kwargs, sector_fields):
-    """:func:`solve_sector` with one expansion per seed symmetry class (:mod:`seed_sectors`).
-
-    Each class starts from the seed determinants of its own span, under its exact restrictions
-    (``S_z``), with :class:`~impurityModel.ed.seed_sectors.ClassPenalty` lifting every other class
-    so that no eigensolve of the expansion snaps back to another class's state. The class's energy
-    is then the *unpenalized* lowest eigenvalue of its final basis -- variational whatever the
-    penalty did -- and the lowest class wins.
-
-    ``Lowest`` returns the winner as it stands, with the sector's own restrictions put back on its
-    basis and on ``h_op`` (the class's ``S_z`` restriction must not outlive the solve), and with the
-    cap report of a *losing* class attached when the winner's own expansion never hit the cap: a
-    class may have lost because its cap held it too high, and callers read the report to tell a
-    cap-decided comparison from a converged one.
-
-    ``Within`` also expands the partner classes, which ``Lowest`` skips: every row of the winning
-    multiplet has to be in the thermal manifold, and a partner left at seed quality sits above the
-    expanded member by its whole hybridization energy -- outside any thermal window, so the window
-    solve would never take it as a reference and the manifold would come out short of copies. The
-    bases of every class whose energy lies within the window (plus the largest residual PT2 of the
-    expansions, their error bar) are then merged into the unrestricted seed basis and expanded for
-    the window.
-
-    Every branch decision reads a broadcast value, so all ranks take the same path through the
-    collective solves.
-    """
-    from impurityModel.ed.manybody_basis import INHERIT
-    from impurityModel.ed.seed_sectors import (
-        DRIFT_TOL,
-        ClassPenalty,
-        class_restrictions,
-        class_seed_keys,
-        class_weight,
-    )
-
-    rank = comm.rank if comm is not None else 0
-    dense_cutoff = expand_kwargs["dense_cutoff"]
-    slater_weight_min = expand_kwargs["slaterWeightMin"]
-    lowest = isinstance(manifold, Lowest)
-    results = []
-    wanted = ("expand",) if lowest else ("expand", "partner")
-    cap_reports = []
-    for k, cls in enumerate(plan.classes):
-        if cls.status not in wanted:
-            continue
-        extra = class_restrictions(plan, cls)
-        weighted = list(basis.weighted_restrictions or []) + extra if extra else INHERIT
-        class_basis = basis.clone(initial_basis=class_seed_keys(plan, cls, basis), weighted_restrictions=weighted)
-        class_solver = CIPSISolver(class_basis)
-        class_solver.matrix_hook = ClassPenalty(plan, cls)
-        with solver_trace.timed("expand", seed_class=k):
-            class_solver.expand(h_op, Lowest(), **expand_kwargs)
-        weight = class_weight(plan, cls, class_basis, class_solver.psi_refs)
-        class_solver.matrix_hook = None
-        class_solver.eig = None
-        with solver_trace.timed("eigensolve", seed_class=k):
-            es, psis = class_solver.get_eigenvectors(
-                h_op, Lowest(), dense_cutoff=dense_cutoff, slaterWeightMin=slater_weight_min, psi_refs=None
-            )
-        energy = float(np.min(es)) if len(es) else np.inf
-        energy = comm.bcast(energy, root=0) if comm is not None else energy
-        residual = (class_solver.convergence_report or {}).get("residual_pt2") or 0.0
-        residual = comm.bcast(float(residual), root=0) if comm is not None else float(residual)
-        if verbose and rank == 0:
-            drift = (
-                "" if weight >= DRIFT_TOL else f"  warning: only {weight:.2f} of its seed weight stayed in the class"
-            )
-            print(
-                f"  seed class {k}: E = {energy:.8f} ({len(class_basis):,} determinants){drift}",
-                flush=True,
-            )
-        if class_solver.truncation_report is not None:
-            cap_reports.append((k, class_solver.truncation_report))
-        results.append((energy, residual, k, class_basis, class_solver, es, psis))
-        if lowest:
-            # Only the best class so far is ever needed again; drop the rest as soon as they lose.
-            results = [min(results, key=lambda r: (r[0], r[2]))]
-
-    best = min(results, key=lambda r: (r[0], r[2]))
-    if lowest:
-        energy, _residual, k_best, class_basis, class_solver, es, psis = best
-        class_basis.weighted_restrictions = basis.weighted_restrictions
-        h_op.set_weighted_restrictions(basis.weighted_restrictions)
-        if class_solver.truncation_report is None and cap_reports:
-            k_capped, report = cap_reports[0]
-            class_solver.truncation_report = dict(report, seed_class=k_capped, winning_seed_class=k_best)
-        sector_fields["n_dets"] = len(class_basis)
-        return SectorSolve(es, psis, class_basis, class_solver)
-
-    e_min = best[0]
-    margin = float(manifold.max_energy) + max(r[1] for r in results)
-    merged = basis.clone(initial_basis=list(basis.local_basis))
-    for energy, _residual, _k, class_basis, _solver, _es, _psis in results:
-        if energy - e_min <= margin:
-            merged.add_states(list(class_basis.local_basis))
-    results.clear()
-    solver = CIPSISolver(merged)
-    with solver_trace.timed("expand", seed_class="merged"):
-        solver.expand(h_op, manifold, **expand_kwargs)
-    with solver_trace.timed("eigensolve"):
-        es, psis = solver.get_eigenvectors(
-            h_op,
-            manifold,
-            dense_cutoff=dense_cutoff,
-            slaterWeightMin=slater_weight_min,
-            psi_refs=solver.psi_refs,
-            reuse_last=True,
-        )
-    sector_fields["n_dets"] = len(merged)
-    return SectorSolve(es, psis, merged, solver)
 
 
 def calc_energy(

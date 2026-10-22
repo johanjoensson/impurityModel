@@ -15,7 +15,7 @@ Nothing about the symmetries is assumed; they are detected from ``H``, in two ki
   inside one label never leaves it, exactly. When total spin is also a symmetry (``[H, S_+] = 0``)
   only the labels at the smallest ``|2 S_z|`` are needed: every multiplet has a member there.
 * **Soft classes**, every other symmetry ``H`` has, known or not: inside each hard label the seed is
-  partitioned by ``P H P`` and ``P H Q H P`` (:func:`seed_sectors.build_seed_class_plan`, with no
+  partitioned by ``P H P`` and ``P H Q H P`` (:func:`seed_sectors.seed_class_plan`, with no
   spin assumption), and each class is expanded from its own seed states, held there by the class
   penalty.
 
@@ -185,7 +185,7 @@ def certification_plan(h_op, basis, *, max_seed=1000):
         sub = basis.clone(
             initial_basis=_label_keys(labels, lab, basis), weighted_restrictions=_label_window(basis, pairs, lab[0])
         )
-        plan = seed_sectors.build_seed_class_plan(h_op, sub, max_seed=max_seed, spin_tier=False)
+        plan = seed_sectors.seed_class_plan(h_op, sub, max_seed=max_seed)
         class_plans[lab] = plan
         n_label = sum(1 for v in labels.values() if v == lab)
         # Every class inside the window, "partner" classes too: a partner is judged on seed spectra,
