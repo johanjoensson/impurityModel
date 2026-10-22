@@ -68,6 +68,24 @@ def bracket_width_tol(tau):
     return max(tau, 1e-4)
 
 
+#: The grid every evaluated shift is snapped to, as a fraction of the search's ``width_tol``. The
+#: search proposes shifts by arithmetic -- secants, midpoints, doubling steps -- and two of them that
+#: differ only by roundoff named two evaluations: the NiO 10-bath gap search paid for 4 of its 22
+#: twice (``mu = 0.021854``, ``0.018767``, ``0.016886``, ``0.014992``, each to six digits). Far below
+#: the resolution, so no decision of the search can tell a snapped shift from the one it asked for.
+SHIFT_GRID_FRACTION = 1.0 / 64.0
+
+
+def snap_shift(mu, width_tol):
+    """``mu`` on the binary grid just below ``width_tol * SHIFT_GRID_FRACTION``: one name per shift.
+
+    A power of two, so ``round(mu / q) * q`` is exact and every rank, and every later call, gets the
+    same float.
+    """
+    q = 2.0 ** math.floor(math.log2(width_tol * SHIFT_GRID_FRACTION))
+    return round(float(mu) / q) * q
+
+
 def _refine_bracket(residual, mu_low, g_low, mu_high, g_high, tol, width_tol, max_iter=60):
     r"""Safeguarded secant/bisection refinement of a bracket straddling a root.
 
@@ -500,7 +518,12 @@ def _solve_dc_shift(
     record = report if report is not None else {}
 
     def evaluate(mu):
-        """(residual, sector) at ``mu``, computed once and replicated to every rank."""
+        """(residual, sector) at ``mu``, computed once and replicated to every rank.
+
+        Keyed, and evaluated, at the snapped shift (:func:`snap_shift`): every answer this search
+        returns or records is a key of ``evaluated``, so the caller finds it in its own caches.
+        """
+        mu = snap_shift(mu, width_tol)
         if mu not in evaluated:
             value = observable(mu)
             # `None` means the criterion is *undefined* at this mu -- a sector the model cannot
@@ -594,6 +617,7 @@ def _solve_dc_shift(
             # (`plateau_ok=False`) a flat observable means no uniform shift can place it, so the
             # loop falls through to the unreachable raise below rather than returning the midpoint
             # of a region the criterion cannot discriminate within.
+            mu = snap_shift(mu, width_tol)
             record["status"] = "plateau" if plateau else status
             record["mu"] = mu
             record["sector"] = evaluated[mu][1]
@@ -622,6 +646,8 @@ def _solve_dc_shift(
     record["plateau"] = plateau
     if best_miss is not None:
         mu, g = best_miss
+    if mu is not None:
+        mu = snap_shift(mu, width_tol)
     # The point the search gave up on, recorded before the raise: the failure record and the cost
     # accounting both describe *somewhere*, and "as far as it got" is the only honest answer.
     record["mu"] = mu

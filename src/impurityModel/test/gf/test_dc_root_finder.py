@@ -9,7 +9,7 @@ fall through to a genuine root farther out.
 import numpy as np
 import pytest
 
-from impurityModel.ed.dc_search import DoubleCountingUnreachable, _solve_dc_shift
+from impurityModel.ed.dc_search import DoubleCountingUnreachable, _solve_dc_shift, snap_shift
 
 UNREACHABLE = "unreachable: target={target} closest={value:.4f} at mu={mu:.4f}"
 
@@ -27,6 +27,32 @@ def test_solve_dc_shift_monotone_root():
         unreachable_message=UNREACHABLE,
     )
     assert np.isclose(mu, 2.5, atol=1e-6)
+
+
+def test_every_shift_the_search_evaluates_is_on_one_grid_and_none_is_evaluated_twice():
+    """Secants and midpoints that differ by roundoff are one evaluation, and the answer is one of
+    them: shifts are snapped (:func:`snap_shift`) before they are evaluated or returned."""
+    seen = []
+
+    def observable(mu):
+        seen.append(mu)
+        return mu**3 + mu
+
+    mu = _solve_dc_shift(
+        observable,
+        2.5,
+        tol=1e-6,
+        width_tol=1e-4,
+        initial_step=0.5,
+        max_shift=100.0,
+        plateau_ok=False,
+        unreachable_message=UNREACHABLE,
+    )
+    assert all(snap_shift(m, 1e-4) == m for m in seen), "an off-grid shift was evaluated"
+    assert len(set(seen)) == len(seen)
+    assert mu in seen
+    assert abs(mu**3 + mu - 2.5) <= 1e-6
+    assert snap_shift(0.1 + 0.2, 1e-4) == snap_shift(0.3, 1e-4)
 
 
 def test_solve_dc_shift_staircase_plateau_ok_raises_unreachable():
