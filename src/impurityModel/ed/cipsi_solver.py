@@ -422,6 +422,13 @@ def _zero_entries_at_most(view, cutoff):
         part[norm2[:n] <= c2] = 0.0
 
 
+#: Below ``dense_cutoff``, a certified class expansion (:attr:`CIPSISolver.davidson`) solves ``Lowest``
+#: densely only up to this many determinants and by Davidson on rank 0 above. A dense subset ``eigh``
+#: costs a few ms at 64 determinants, 23 ms at 128 and 0.3-0.7 s at 512-768 (one thread); a
+#: warm-started Davidson about 30 sparse products.
+CLASS_DENSE_MAX = 128
+
+
 class CIPSISolver:
     def __init__(self, basis: Basis):
         self.basis = basis
@@ -1398,7 +1405,11 @@ class CIPSISolver:
             num_wanted = _manifold_request(n_kept, self._prev_kept)
             self._prev_kept = n_kept
 
-        if self.basis.size >= dense_cutoff:
+        # A certified class expansion's Lowest solves go sparse far below ``dense_cutoff``: there a dense
+        # solve is O(n^3) every CIPSI cycle (it was 80% of a NiO d7 certification at 300-700
+        # determinants), while Davidson on rank 0 (``serial``) costs milliseconds from a warm start.
+        sparse_from = min(dense_cutoff, CLASS_DENSE_MAX) if lowest and self.davidson else dense_cutoff
+        if self.basis.size >= sparse_from:
             reusable = (
                 reuse_last
                 and h_matrix is None
@@ -1410,7 +1421,9 @@ class CIPSISolver:
             if reusable:
                 eig = self.eig
             elif lowest:
-                eig = self._solve_lowest(H, h_matrix, slaterWeightMin, psi_refs)
+                eig = self._solve_lowest(
+                    H, h_matrix, slaterWeightMin, psi_refs, serial=self.basis.size < dense_cutoff
+                )
             else:
                 eig = self._solve_window(H, h_matrix, manifold, num_wanted, slaterWeightMin, psi_refs)
             assert eig is not None
@@ -1507,8 +1520,11 @@ class CIPSISolver:
         psi_dense[:, 0] = generic / np.linalg.norm(generic)
         return psi_dense
 
-    def _solve_lowest(self, H, h_matrix, slaterWeightMin, psi_refs) -> EigenResult:
-        """One count-mode solve for the lowest pair on the current basis; records it as ``self.eig``."""
+    def _solve_lowest(self, H, h_matrix, slaterWeightMin, psi_refs, serial=False) -> EigenResult:
+        """One count-mode solve for the lowest pair on the current basis; records it as ``self.eig``.
+
+        ``serial`` solves on rank 0 alone (a basis below ``dense_cutoff``, where distributed iterations
+        are collective latency)."""
         H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
         hashes = np.fromiter((state.get_hash() for state in self.basis.local_basis), dtype=np.uint64)
         warm = self._warm_columns(psi_refs, width=1)
@@ -1524,6 +1540,7 @@ class CIPSISolver:
                 max_restarts=100,
                 verbose=self.basis.verbose,
                 davidson=self.davidson,
+                serial=serial,
             )
         eig.generation = self.basis.generation
         eig.manifold = Lowest()

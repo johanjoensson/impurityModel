@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
+import scipy.sparse as sps
 from mpi4py import MPI
 
 from impurityModel.ed.average import energy_cut
@@ -140,6 +141,67 @@ _OVERLAP_RANK_FLOOR = 1e-6
 _MAX_FALLBACK_ROUNDS = 3
 
 
+def _on_root(comm, compute):
+    """``compute()`` on rank 0 (collective): its result there, ``None`` elsewhere.
+
+    An exception on rank 0 is announced to every rank before anything else is exchanged and raised
+    everywhere, so no rank is left waiting in the broadcast that would have carried the result.
+    """
+    result = error = None
+    if comm is None or comm.rank == 0:
+        try:
+            result = compute()
+        except Exception as exc:  # re-raised below, on every rank
+            error = exc
+    if comm is not None:
+        failure = comm.bcast(None if error is None else f"{type(error).__name__}: {error}", root=0)
+        if failure is not None:
+            if error is not None:
+                raise error
+            raise RuntimeError(f"rank 0 failed: {failure}")
+    elif error is not None:
+        raise error
+    return result
+
+
+def _gather_to_root(h_op, comm):
+    """The whole operator as a scipy CSC on rank 0 and ``None`` elsewhere (collective).
+
+    Each rank sends its own columns' entries (global row, global column, value) with typed
+    ``Gatherv`` -- ``O(nnz)`` -- where densifying ``n x n`` on every rank and summing them costs
+    ``O(n^2)`` per rank. The column offsets come from the ranks' local sizes (the rank-contiguous
+    numbering), not from ``col_offset``. Overlapping segments are summed, as :meth:`to_scipy` does.
+    """
+    h_op.unbind_slots()
+    local = h_op.to_scipy().tocoo()
+    offset, _counts = _rank_offsets(h_op.shape[1], comm)
+    parts = [
+        (np.ascontiguousarray(local.row, dtype=np.int64), MPI.INT64_T),
+        (np.ascontiguousarray(local.col, dtype=np.int64) + offset, MPI.INT64_T),
+        (np.ascontiguousarray(local.data, dtype=complex), MPI.C_DOUBLE_COMPLEX),
+    ]
+    sizes = np.empty(comm.size, dtype=np.int64)
+    comm.Allgather(np.array([local.nnz], dtype=np.int64), sizes)
+    displs = np.concatenate(([0], np.cumsum(sizes)[:-1])).astype(np.int64)
+    root = comm.rank == 0
+    gathered = []
+    for array, mpi_type in parts:
+        out = np.empty(int(sizes.sum()), dtype=array.dtype) if root else None
+        comm.Gatherv([array, mpi_type], [out, sizes, displs, mpi_type] if root else None, root=0)
+        gathered.append(out)
+    if not root:
+        return None
+    rows, cols, data = gathered
+    n = h_op.shape[0]
+    full = sps.coo_array((data, (rows, cols)), shape=(n, n)).tocsc()
+    full.sum_duplicates()
+    return full
+
+
+def _distributed(h_local, comm):
+    return isinstance(h_local, DistributedSparseMatrix) and comm is not None and comm.size > 1
+
+
 def dense_eigensystem(
     h_local: Any, return_eigvecs: bool = True, comm: Optional[MPI.Comm] = None
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
@@ -162,22 +224,31 @@ def dense_eigensystem(
         Array of eigenvectors, returned if return_eigvecs is True.
     """
     rank = comm.rank if comm is not None else 0
-    if hasattr(h_local, "toarray"):
-        h = h_local.toarray()
-    elif hasattr(h_local, "todense"):
-        h = h_local.todense()
+    if _distributed(h_local, comm):
+        full = _gather_to_root(h_local, comm)
+        n = h_local.shape[0]
+        h = full.toarray() if rank == 0 else None
+        dtype = complex
     else:
-        h = h_local
-    if comm is not None:
-        comm.Reduce(h if rank != 0 else MPI.IN_PLACE, h, root=0, op=MPI.SUM)
-    if return_eigvecs:
-        if rank == 0:
-            es, vecs = np.linalg.eigh(h, UPLO="L")
+        if hasattr(h_local, "toarray"):
+            h = h_local.toarray()
+        elif hasattr(h_local, "todense"):
+            h = h_local.todense()
         else:
-            es = np.empty((h.shape[0]), dtype=float, order="C")
-            vecs = np.empty(h.shape, dtype=h.dtype, order="C")
+            h = h_local
+        if comm is not None:
+            comm.Reduce(h if rank != 0 else MPI.IN_PLACE, h, root=0, op=MPI.SUM)
+        n, dtype = h.shape[0], h.dtype
+    if return_eigvecs:
+        solved = _on_root(comm, lambda: np.linalg.eigh(h, UPLO="L"))
+        if rank == 0:
+            es, vecs = solved
+        else:
+            es = np.empty(n, dtype=float, order="C")
+            vecs = np.empty((n, n), dtype=dtype, order="C")
     else:
-        es = np.linalg.eigvalsh(h, UPLO="L") if rank == 0 else np.empty(h.shape[0], dtype=float)
+        solved = _on_root(comm, lambda: np.linalg.eigvalsh(h, UPLO="L"))
+        es = solved if rank == 0 else np.empty(n, dtype=float)
     if comm is not None:
         comm.Bcast(es, root=0)
         if return_eigvecs:
@@ -195,27 +266,36 @@ def dense_lowest(h_local, level_size, comm=None, first=16):
     (``scipy.linalg.eigh(subset_by_index=...)``, the MRRR driver), ``k`` starting at ``first`` and
     doubling while ``level_size(es)`` -- the size of the lowest level among the ``k`` values -- fills
     them all, so a degenerate level is never cut. Measured at ``n = 1000`` (complex, one thread):
-    0.7 s against 3.0 s, and the broadcast is ``n x k``. Summed onto rank 0 like
+    0.7 s against 3.0 s, and the broadcast is ``n x k``. Gathered onto rank 0 like
     :func:`dense_eigensystem`; ``level_size`` must be a pure function of its argument, which rank 0
     alone evaluates.
     """
     import scipy.linalg
 
     rank = comm.rank if comm is not None else 0
-    h = h_local.toarray() if hasattr(h_local, "toarray") else np.asarray(h_local)
-    if comm is not None:
-        comm.Reduce(h if rank != 0 else MPI.IN_PLACE, h, root=0, op=MPI.SUM)
-    n = h.shape[0]
-    shape = None
-    if rank == 0:
+    if _distributed(h_local, comm):
+        full = _gather_to_root(h_local, comm)
+        h = full.toarray() if rank == 0 else None
+        n = h_local.shape[0]
+    else:
+        h = h_local.toarray() if hasattr(h_local, "toarray") else np.asarray(h_local)
+        if comm is not None:
+            comm.Reduce(h if rank != 0 else MPI.IN_PLACE, h, root=0, op=MPI.SUM)
+        n = h.shape[0]
+
+    def lowest_level():
         k = min(n, first)
         while True:
             es, vecs = scipy.linalg.eigh(h, lower=True, subset_by_index=[0, k - 1], driver="evr")
             if k == n or level_size(es) < k:
-                break
+                return es, np.ascontiguousarray(vecs)
             k = min(n, 2 * k)
-        vecs = np.ascontiguousarray(vecs)
-        shape = (k, vecs.dtype)
+
+    solved = _on_root(comm, lowest_level)
+    shape = None
+    if rank == 0:
+        es, vecs = solved
+        shape = (len(es), vecs.dtype)
     if comm is not None:
         k, dtype = comm.bcast(shape, root=0)
         if rank != 0:
@@ -631,7 +711,42 @@ def davidson_lowest(h_op, comm, start, *, tol, max_vectors=None, max_iter=None):
     return theta, x.reshape(-1, 1), False
 
 
-def solve_lowest(h_op, comm, hashes, *, warm, tol, n_global, max_restarts=100, verbose=False, davidson=False):
+def _lowest_on_root(h_op, comm, hashes, warm, solve):
+    """:func:`solve_lowest` on rank 0 alone, for a basis too small to pay for distributed iterations.
+
+    The operator (:func:`_gather_to_root`), the hashes and the warm block go to rank 0 with typed
+    ``Gatherv``; ``solve(h, hashes, warm)`` runs there with no communicator, and each rank gets its own
+    rows of the vector back by ``Scatterv``: three collectives per solve where a distributed Davidson
+    iteration costs four. The result does not depend on the rank count.
+    """
+    h_op = DistributedSparseMatrix.coerce(h_op, comm)
+    full = _gather_to_root(h_op, comm)
+    n_local = len(hashes)
+    _offset, counts = _rank_offsets(n_local, comm)
+    displs = np.concatenate(([0], np.cumsum(counts)[:-1])).astype(np.int64)
+    root = comm.rank == 0
+    width = warm.shape[1]
+    g_hashes = np.empty(int(counts.sum()), dtype=np.uint64) if root else None
+    comm.Gatherv([np.ascontiguousarray(hashes, dtype=np.uint64), MPI.UINT64_T],
+                 [g_hashes, counts, displs, MPI.UINT64_T] if root else None, root=0)  # fmt: skip
+    g_warm = np.empty((int(counts.sum()), width), dtype=complex) if root else None
+    if width:
+        comm.Gatherv([np.ascontiguousarray(warm, dtype=complex), MPI.C_DOUBLE_COMPLEX],
+                     [g_warm, counts * width, displs * width, MPI.C_DOUBLE_COMPLEX] if root else None, root=0)  # fmt: skip
+    res = _on_root(comm, lambda: solve(DistributedSparseMatrix.from_scipy(full, None), g_hashes, g_warm))
+    head = comm.bcast(None if res is None else (res.e, res.n_in, res.certified, res.max_multiplicity, res.status), root=0)
+    e, n_in, certified, multiplicity, status = head
+    k = len(e)
+    vecs = np.empty((n_local, k), dtype=complex)
+    send = np.ascontiguousarray(res.vecs, dtype=complex) if root else None
+    comm.Scatterv([send, counts * k, displs * k, MPI.C_DOUBLE_COMPLEX] if root else None,
+                  [vecs, MPI.C_DOUBLE_COMPLEX], root=0)  # fmt: skip
+    return EigenResult(e, vecs, n_in, certified, multiplicity, status)
+
+
+def solve_lowest(
+    h_op, comm, hashes, *, warm, tol, n_global, max_restarts=100, verbose=False, davidson=False, serial=False
+):
     """The lowest eigenpair of ``h_op``: one converged Ritz pair, no completeness claim.
 
     Count-mode thick-restart block Lanczos retaining a single pair. The start block is the ``warm``
@@ -651,6 +766,11 @@ def solve_lowest(h_op, comm, hashes, *, warm, tol, n_global, max_restarts=100, v
         Residual tolerance.
     n_global : int
         Dimension of the operator (bounds the Krylov depth).
+    davidson : bool
+        Try :func:`davidson_lowest` first (under ``GS_LOWEST_SOLVER=auto``).
+    serial : bool
+        Solve on rank 0 alone (:func:`_lowest_on_root`): for a basis so small that every distributed
+        iteration is collective latency.
 
     Returns
     -------
@@ -661,6 +781,17 @@ def solve_lowest(h_op, comm, hashes, *, warm, tol, n_global, max_restarts=100, v
     mpi = comm is not None and getattr(comm, "size", 1) > 1
     n_local = len(hashes)
     warm = np.zeros((n_local, 0), dtype=complex) if warm is None else np.asarray(warm, dtype=complex)
+    if mpi and serial:
+        return _lowest_on_root(
+            h_op,
+            comm,
+            hashes,
+            warm[:, :1],
+            lambda h, hs, w: solve_lowest(
+                h, None, hs, warm=w, tol=tol, n_global=n_global, max_restarts=max_restarts, verbose=verbose,
+                davidson=davidson,
+            ),
+        )  # fmt: skip
 
     def start_block(with_warm):
         cols = [warm[:, :1]] if with_warm else []
