@@ -509,7 +509,7 @@ class _SectorContext:
             e_pt2_tol=self.e_pt2_tol,
             # The walk's trials are this search's own cached sector solves: the N +- 1 solves at this
             # shift are the same solves, at the same accuracy, and are never repeated.
-            sector_energy=lambda trial: (self._walk_energy(h_op, mu, sum(trial.values())), None),
+            sector_energy=lambda trial: (self._walk_energy(h_op, mu, trial), None),
         )
         # Read from the search that chose it. NOT from a determinant: the returned basis is the
         # eigenvector support of an expansion whose impurity occupation window was widened
@@ -565,7 +565,10 @@ class _SectorContext:
             return None
         if (mu, n_trial) in self.sector_at:
             return self.sector_at[(mu, n_trial)]
-        occ_trial = _per_group_occupation(n_trial, self.impurity_orbitals, self.h_solver_matrix)
+        occ_trial = self.trial_occupation(n_trial)
+        if occ_trial is None:
+            self.sector_at[(mu, n_trial)] = None
+            return None
         es, psis, sector_basis, sector_solver = solve_sector(
             h_op,
             self.impurity_orbitals,
@@ -634,9 +637,28 @@ class _SectorContext:
         self.sector_at[(mu, n_trial)] = solution
         return solution
 
-    def _walk_energy(self, h_op, mu, n_trial):
-        """The occupation walk's energy of sector ``n_trial``: :meth:`sector_solve`'s, ``inf`` where undefined."""
-        solution = self.sector_solve(h_op, mu, n_trial)
+    def trial_occupation(self, n_trial):
+        """The per-group occupation of the walk's sector ``n_trial``, or ``None`` if it has none.
+
+        The walk never moves a frozen group, so its sector at total ``n_trial`` holds every frozen
+        group at its ``N0`` value and fills only the others, by energetic filling over *their*
+        orbitals. Filling over all of them moves a frozen group whenever its level lies between the
+        unfrozen ones, and the criterion then compared a sector the walk never meant.
+        """
+        pinned = {i: int(self.N0[i]) for i in self.frozen_occupations}
+        free = {i: blocks for i, blocks in self.impurity_orbitals.items() if i not in pinned}
+        rest = int(n_trial) - sum(pinned.values())
+        if not 0 <= rest <= sum(len(block) for blocks in free.values() for block in blocks):
+            return None
+        filled = _per_group_occupation(rest, free, self.h_solver_matrix) if free else {}
+        return {i: pinned[i] if i in pinned else filled[i] for i in self.impurity_orbitals}
+
+    def _walk_energy(self, h_op, mu, trial):
+        """The occupation walk's energy of its trial ``trial``: :meth:`sector_solve`'s, ``inf`` where undefined."""
+        moved = {i for i in self.frozen_occupations if int(trial[i]) != int(self.N0[i])}
+        if moved:
+            raise ValueError(f"the walk moved the frozen groups {sorted(moved)}; sector_solve holds them at N0")
+        solution = self.sector_solve(h_op, mu, sum(trial.values()))
         return np.inf if solution is None else solution.energy
 
     def sector_energy(self, h_op, mu, n_trial):

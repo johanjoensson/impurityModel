@@ -2037,6 +2037,62 @@ def test_occupation_and_energy_at_mu_ranks_agree():
     assert all(triple == other[0] for triple in other), other
 
 
+def test_a_sector_solve_holds_the_frozen_groups_where_the_walk_holds_them():
+    """``sector_solve(n)`` is the walk's sector ``n``: every frozen group at its ``N0`` value.
+
+    The walk never moves a frozen group, so its trial at total ``n`` is ``N0`` with the *unfrozen*
+    groups changed. The sector solve rebuilt the split from the total alone, by energetic filling
+    over every impurity orbital -- which moves a frozen group whenever its level lies between the
+    unfrozen ones. Here a bath-less doublet at ``-0.3`` sits between the valence doublets at
+    ``-0.4`` and ``0.4``: at ``N0 - 1`` filling takes the electron out of the frozen doublet, and
+    the walk compared that sector's energy as if it were its own.
+    """
+    from impurityModel.ed.groundstate import calc_energy
+
+    kwargs, _ = _frozen_core_kwargs()
+    model = kwargs["model"]
+    h_imp = np.diag([-0.3, -0.3, 0.4, 0.4, -0.4, -0.4]).astype(complex)
+    v = np.zeros((4, 6), dtype=complex)
+    v[0, 2] = v[1, 3] = v[2, 4] = v[3, 5] = 0.2
+    model = ImpurityModel.from_blocks(
+        h_imp,
+        v,
+        np.diag([-2.0, -2.0, -2.1, -2.1]).astype(complex),
+        u4=np.zeros((6,) * 4, dtype=complex),
+        dc=np.zeros((6, 6), dtype=complex),
+        rot_to_spherical=np.eye(6, dtype=complex),
+        bath_valence_conduction=(list(range(6, 10)), []),
+    )
+    ctx = dc_criteria._prepare_sector_context(model, kwargs["basis"], kwargs["solver"], memory_label="test")
+    assert ctx.frozen_occupations, "fixture has no frozen group"
+    (core,) = ctx.frozen_occupations
+    assert ctx.N0[core] == 2, ctx.N0
+    trial = dict(ctx.N0)
+    donor = next(i for i in trial if i not in ctx.frozen_occupations and trial[i] > 0)
+    trial[donor] -= 1
+    h_op = ctx.shifted_h(0.0)
+    walk_energy, _ = calc_energy(
+        h_op,
+        ctx.impurity_orbitals,
+        ctx.bath_states,
+        trial,
+        ctx.mixed_valence,
+        ctx.chain_restrict,
+        ctx.dense_cutoff,
+        comm=MPI.COMM_WORLD,
+        verbose=False,
+        truncation_threshold=dc_criteria._ctx_cap_policy(ctx),
+        slaterWeightMin=ctx.slater_weight_min,
+        weighted_restrictions=ctx.weighted_restrictions,
+        frozen_occupations=ctx.frozen_occupations,
+        de2_min=ctx.de2_min,
+        e_pt2_tol=ctx.e_pt2_tol,
+    )
+    solution = ctx.sector_solve(h_op, 0.0, sum(trial.values()))
+    assert solution is not None
+    assert solution.energy == pytest.approx(walk_energy, abs=1e-8)
+
+
 def test_fixed_occupation_dc_warns_when_sector_differs_from_nominal(capsys):
     """M1: the sector the walk actually settles on at the returned mu is the number this whole
     branch exists to establish (DC <-> GS parity), and it must be surfaced when it disagrees with
