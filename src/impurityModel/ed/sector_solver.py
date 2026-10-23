@@ -609,6 +609,36 @@ def _importance(psis):
     return dict(zip(keys, weight.tolist()))
 
 
+#: Resolution of :func:`_score_cut`'s histogram over scores in ``[0, 1]``.
+_SCORE_BINS = 1024
+
+
+def _scores(dets, importance=None):
+    """A rank-independent score in ``[0, 1]`` per determinant; the lowest scores are kept first.
+
+    From ``importance`` (a determinant-to-weight map) the score is ``-log10`` of the weight, scaled to
+    ``[0, 1]`` over 30 decades; without it, the determinant's hash as a fraction of the hash range. Both
+    are functions of the determinant alone, so a cut made on them is the same set on any number of ranks.
+    """
+    if importance is None:
+        return [det.get_hash() / 2.0**64 for det in dets]
+    return [min(1.0, -np.log10(max(importance.get(det, 0.0), 1e-30)) / 30.0) for det in dets]
+
+
+def _score_cut(scores, share, comm):
+    """The score below which a ``share`` of all determinants (summed over ranks) lies: a histogram cut. Collective."""
+    hist = np.histogram(np.asarray(scores, dtype=float), bins=_SCORE_BINS, range=(0.0, 1.0))[0].astype(np.int64)
+    if comm is not None and comm.size > 1:
+        total_hist = np.empty_like(hist)
+        comm.Allreduce(hist, total_hist, op=MPI.SUM)
+        hist = total_hist
+    total = int(hist.sum())
+    if share >= 1.0 or total == 0:
+        return 1.0
+    reached = int(np.searchsorted(np.cumsum(hist), share * total))
+    return (reached + 1) / _SCORE_BINS
+
+
 def _unit_groups(dets, rows_of, comm):
     """``[class determinants, *partner rows]`` of ``dets``, the row count replicated over ``comm``.
 
@@ -654,18 +684,17 @@ def _add_units_within_cap(merged, units, rows_of, cap, *, truncate, importance=N
         return trial, True
     if not truncate:
         return merged, False
-    ordered = []
-    for i, keys in enumerate(units):
-        if importance is not None and i == 0:
-            ordered.append(sorted(keys.keys(), key=lambda det: (-importance.get(det, 0.0), det.get_hash())))
-        else:
-            ordered.append(sorted(keys.keys(), key=lambda det: det.get_hash()))
+    scores = [
+        _scores(keys.keys(), importance if importance is not None and i == 0 else None) for i, keys in enumerate(units)
+    ]
     best, lo, hi = merged, 0.0, 1.0
     for _ in range(_FIT_BISECTIONS):
         mid = 0.5 * (lo + hi)
         groups = []
-        for dets in ordered:
-            groups += _unit_groups(ManyBodyState.from_keys(dets[: int(mid * len(dets))]), rows_of, comm)
+        for keys, score in zip(units, scores):
+            cut = _score_cut(score, mid, comm)
+            share = [det for det, sc in zip(keys.keys(), score) if sc <= cut]
+            groups += _unit_groups(ManyBodyState.from_keys(share), rows_of, comm)
         trial = _grow_with(merged, groups)
         if trial.size <= cap:
             best, lo = trial, mid
