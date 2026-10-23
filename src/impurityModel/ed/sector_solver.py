@@ -35,6 +35,7 @@ re-converged on an energy another class already found stops early (:data:`LEAK_E
 from dataclasses import dataclass, field, replace
 
 import numpy as np
+from mpi4py import MPI
 from impurityModel.ed import config, label_symmetries, seed_sectors, solver_trace
 from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.cipsi_solver import CIPSISolver
@@ -561,6 +562,15 @@ def certify_sector(
             keys[source] if mirror is None else _image_keys(keys[source], plan.images[mirror], n_orb, basis.n_bytes)
             for source, mirror in _thermal_union_order(winner, inside, mirrored)
         ]
+        win_v = verdict_of[winner]
+        kept = KeptClasses(
+            kept,
+            [
+                abs(verdict_of[source].energy - win_v.energy)
+                <= _energy_error(verdict_of[source]) + _energy_error(win_v)
+                for source, _mirror in _thermal_union_order(winner, inside, mirrored)
+            ],
+        )
         keys.clear()
     _energy, _k, es, psis, class_basis, solver = best
     class_basis.weighted_restrictions = basis.weighted_restrictions
@@ -568,6 +578,61 @@ def certify_sector(
     if within is not None:
         return es, psis, class_basis, solver, verdicts, kept
     return es, psis, class_basis, solver, verdicts
+
+
+class KeptClasses(list):
+    """The key sets of the classes inside the thermal window, in the order the union adds them.
+
+    ``at_winning_level[i]`` is whether class ``i`` lies at the winning energy (within both error bars):
+    the classes whose states the window's lowest level is made of, which a binding cap must truncate
+    rather than drop.
+    """
+
+    def __init__(self, classes=(), at_winning_level=()):
+        super().__init__(classes)
+        self.at_winning_level = list(at_winning_level)
+
+
+def _group_size(group, comm):
+    """The summed length of ``group`` over ``comm``: an upper bound on what adding it grows a basis by."""
+    n = len(group)
+    return n if comm is None or comm.size == 1 else int(comm.allreduce(n, op=MPI.SUM))
+
+
+def _add_within_cap(merged, group, cap, truncate):
+    """Add ``group`` to ``merged`` unless the basis would pass ``cap``: ``(merged, fitted)``.
+
+    Decided on the exact, replicated size of the union, never on a summed estimate: a group that fits
+    is added whole. One that does not is dropped (``fitted`` False), or with ``truncate`` cut to the
+    largest hash-ordered share that fits (``fitted`` False when anything was cut). Collective.
+    """
+    if cap is None:
+        merged.add_states(group)
+        return merged, True
+    if merged.size + _group_size(group, merged.comm) <= cap:  # even with no determinant in common
+        merged.add_states(group)
+        return merged, True
+    trial = merged.clone(initial_basis=list(merged.local_basis))
+    trial.add_states(group)
+    if trial.size <= cap:
+        return trial, True
+    if not truncate:
+        return merged, False
+    ordered = sorted(group, key=lambda det: det.get_hash())
+    best, lo, hi = merged, 0.0, 1.0
+    for _ in range(_FIT_BISECTIONS):
+        mid = 0.5 * (lo + hi)
+        trial = merged.clone(initial_basis=list(merged.local_basis))
+        trial.add_states(ordered[: int(mid * len(ordered))])
+        if trial.size <= cap:
+            best, lo = trial, mid
+        else:
+            hi = mid
+    return best, False
+
+
+#: Bisection steps of :func:`_add_within_cap`'s truncation: the share kept is exact to ``2**-8``.
+_FIT_BISECTIONS = 8
 
 
 def _thermal_union_order(winner, inside, mirrored):
@@ -607,6 +672,14 @@ def _bound(verdict):
 def _spin_partner_keys(keys, pairs, max_two_sz, n_orb):
     """This rank's share of the spin partners' supports of the states on ``keys``: ``S_+-^k``, ``k >= 1``.
 
+    All rows of :func:`_spin_partner_rows`, flat.
+    """
+    return [det for row in _spin_partner_rows(keys, pairs, max_two_sz, n_orb) for det in row]
+
+
+def _spin_partner_rows(keys, pairs, max_two_sz, n_orb):
+    """This rank's share of each partner row of the states on ``keys``: ``rows[k - 1]`` holds ``S_+^k`` and ``S_-^k``.
+
     A class expansion holds one ``S_z`` row of each multiplet it found (its hard label's, the
     smallest ``|S_z|``); the other rows of every multiplet inside the thermal window must be in the
     window solve's basis at the same quality, or they sit at seed quality outside the window and
@@ -620,7 +693,8 @@ def _spin_partner_keys(keys, pairs, max_two_sz, n_orb):
     ``2 S`` of every multiplet the window holds. The ladders were once stepped ``2 max_two_sz``
     times each way: on the NiO linked-chain d8 sector (``max_two_sz = 2``) a quarter of the union
     was then rows at ``2 S_z = +-4, +-6``, which no state of the window has, and the union is the
-    ground state's memory peak.
+    ground state's memory peak. The rows are by distance from the class's own ``S_z`` so that a
+    binding cap keeps the nearest, ``+-`` together.
     """
     dets = keys.keys()
     if not len(dets):
@@ -634,8 +708,11 @@ def _spin_partner_keys(keys, pairs, max_two_sz, n_orb):
     hashes = np.fromiter((det.get_hash() for det in dets), dtype=np.uint64, count=len(dets))
     # The eigensolvers' hash-seeded generic vector: deterministic, and no two images cancel.
     state = ManyBodyState(dict(zip(dets, cold_vector(hashes)[:, 0])))
-    found = []
-    for ladder, steps in ((s_plus, (max_two_sz - two_sz) // 2), (s_minus, (max_two_sz + two_sz) // 2)):
+    ups, downs = [], []
+    for ladder, steps, found in (
+        (s_plus, (max_two_sz - two_sz) // 2, ups),
+        (s_minus, (max_two_sz + two_sz) // 2, downs),
+    ):
         ladder.set_restrictions(None)
         ladder.set_weighted_restrictions(None)
         image = state
@@ -643,8 +720,11 @@ def _spin_partner_keys(keys, pairs, max_two_sz, n_orb):
             image = applyOp(ladder, image, cutoff=0)
             if not len(image):
                 break
-            found.extend(image.keys())
-    return found
+            found.append(list(image.keys()))
+    return [
+        (ups[k] if k < len(ups) else []) + (downs[k] if k < len(downs) else [])
+        for k in range(max(len(ups), len(downs)))
+    ]
 
 
 def _energy_error(verdict):
@@ -713,8 +793,10 @@ def solve_certified(
     a class expansion holds one ``S_z`` row of one hard label only, so the window is solved on the
     union of the seed and, for every class whose energy lies within the window (plus the largest
     residual PT2, the expansions' error bar), its determinants and their spin partners
-    (:func:`_spin_partner_keys`). Classes are added winner first, then by energy, and adding stops
-    once the union passes the basis's cap -- by at most the last class added. The union is then
+    (:func:`_spin_partner_rows`). Classes are added winner first, then by energy, each only if the
+    union stays within the basis's cap: the window solve costs more per determinant than a class
+    expansion, so the cap has to bound it too. A class at the winning energy that does not fit is cut
+    to the room left (its nearest partner rows first), any other stops the union. The union is then
     expanded for the window. Collective.
     """
     if isinstance(manifold, Lowest):
@@ -745,18 +827,34 @@ def solve_certified(
     n_orb = basis.num_spin_orbitals
     cap = basis.truncation_threshold
     merged = basis.clone(initial_basis=list(basis.local_basis))
+    cut = []
     for n_added, keys in enumerate(kept):
-        partners = _spin_partner_keys(keys, plan.pairs, max_two_sz, n_orb) if plan.su2 else []
-        merged.add_states(keys.keys() + partners)
+        rows = _spin_partner_rows(keys, plan.pairs, max_two_sz, n_orb) if plan.su2 else []
+        # A rank holding none of the class has no rows: every rank must still make the same number of
+        # (collective) additions, so pad to the longest.
+        n_rows = len(rows) if basis.comm is None else int(basis.comm.allreduce(len(rows), op=MPI.MAX))
+        rows += [[] for _ in range(n_rows - len(rows))]
+        # A class at the winning level is truncated to the room left rather than dropped: its states are
+        # the level the window exists to hold. Any other class goes in whole or stops the union.
+        protect = kept.at_winning_level[n_added]
+        fitted = True
+        for group in [keys.keys(), *rows]:
+            merged, ok = _add_within_cap(merged, group, cap, truncate=protect)
+            fitted = fitted and ok
+            if not ok:
+                break
+        if not fitted:
+            cut.append((n_added, protect))
+            if not protect:
+                break
         # `merged.size` is replicated, so every rank stops at the same class.
-        if cap is not None and merged.size > cap and n_added + 1 < len(kept):
-            if (basis.comm is None or basis.comm.rank == 0) and verbose:
-                print(
-                    f"  thermal window: {len(kept) - n_added - 1} of {len(kept)} classes left out at the cap "
-                    f"({merged.size:,} > {int(cap):,} determinants)",
-                    flush=True,
-                )
-            break
+    if cut and (basis.comm is None or basis.comm.rank == 0) and verbose:
+        left = len(kept) - cut[-1][0] - 1 if not cut[-1][1] else 0
+        print(
+            f"  thermal window: held at the cap ({merged.size:,} of {int(cap):,} determinants); "
+            f"{len(cut)} class(es) cut short or left out, {left} later class(es) not added",
+            flush=True,
+        )
     kept.clear()
     solver = CIPSISolver(merged)
     solver.expand(h_op, manifold, **expand_kwargs)

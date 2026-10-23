@@ -640,3 +640,44 @@ def test_spin_partners_stop_at_the_largest_seed_two_sz():
     # The unbounded ladder would also have reached 2 S_z = 3 from here.
     wider = _spin_partner_keys(ManyBodyState.from_keys([det]), pairs, max_two_sz=3, n_orb=8)
     assert 3 in set((_bits(list(wider), 8).astype(np.int64) @ sign).tolist())
+
+
+def _union_size_at_the_window_solve(monkeypatch, cap, capsys=None):
+    """``(sizes of the basis the thermal window's expansion starts on, the solve's result)`` on cubic d7."""
+    from impurityModel.ed import sector_solver
+    from impurityModel.ed.eigensolvers import Within
+    from impurityModel.ed.groundstate import solve_sector
+    from impurityModel.test.support.cubic_d_shell import cubic_d_shell
+
+    monkeypatch.delenv("GS_SECTOR_CERTIFY", raising=False)
+    sizes = []
+    real = sector_solver.CIPSISolver
+
+    class Spy(real):
+        def expand(self, h_op, manifold, **kwargs):
+            sizes.append(self.basis.size)
+            return super().expand(h_op, manifold, **kwargs)
+
+    monkeypatch.setattr(sector_solver, "CIPSISolver", Spy)
+    _h, h_op, imp, baths = cubic_d_shell(n_bath_sets=1)
+    result = solve_sector(
+        h_op, imp, baths, {0: 7}, None, 0, False, 1000, manifold=Within(1e-6), comm=None, verbose=False,
+        slaterWeightMin=0, de2_min=0, e_pt2_tol=1e-8, truncation_threshold=cap,
+    )  # fmt: skip
+    return sizes, result
+
+
+def test_the_thermal_union_is_built_within_the_cap_and_unchanged_when_it_fits(monkeypatch):
+    """The window solve costs more per determinant than a class expansion, so the union it starts on must
+    not pass the cap (it used to: whole classes and all their spin partners went in before the first check,
+    and only the expansion's exit truncated). A union that fits is the same set as before."""
+    natural, wide = _union_size_at_the_window_solve(monkeypatch, 100_000)
+    union = natural[-1]
+    assert wide.solver.manifold_check == {"found": 8, "expected": 8}
+    assert union == 240  # the seed's 120 determinants and the partner rows of the 8-fold level
+
+    cap = union - 40  # under what the winning level's classes and their partner rows need
+    sizes, capped = _union_size_at_the_window_solve(monkeypatch, cap)
+    assert sizes[-1] <= cap < union, (sizes[-1], cap, union)
+    # Every partner row it kept sits at the cap exactly: the nearest rows first, truncated, not dropped.
+    assert sizes[-1] == cap
