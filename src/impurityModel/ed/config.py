@@ -625,6 +625,20 @@ GS_CERTIFY_WINDOW_FACTOR = Knob(
     covers every crossover that a single hybridization shell can drive, with margin.""",
 )
 
+GS_CERTIFY_LABEL_SYMMETRY = Knob(
+    name="GS_CERTIFY_LABEL_SYMMETRY",
+    kind="bool",
+    default=True,
+    group="groundstate",
+    doc="""Expand one hard label per orbit of the label symmetries (`label_symmetries`): signed
+    orbital permutations -- the spin flip, and transpositions of impurity orbitals carrying their
+    bath chains -- verified on the whole operator and on the basis restrictions, which map one
+    label's problem unitarily onto another's. The partner labels reuse the representative's
+    verdicts, and their thermal states are mapped from its determinants. On the NiO linked-chain
+    iteration 1 a t2g swap made two of four labels in two sectors bit-identical repeats. ``0``
+    expands every label.""",
+)
+
 GS_SELECTION_CHUNK = Knob(
     name="GS_SELECTION_CHUNK",
     kind="int",
@@ -959,6 +973,7 @@ KNOBS: dict[str, Knob] = _register(
     GS_CERTIFY_MAX_SEED,
     GS_CERTIFY_WINDOW,
     GS_CERTIFY_WINDOW_FACTOR,
+    GS_CERTIFY_LABEL_SYMMETRY,
     GS_SELECTION_CHUNK,
     GS_MATVEC_EXCHANGE_BYTES,
     APPLY_ROW_CHUNKS,

@@ -32,10 +32,10 @@ the cost near a single expansion's is that a class whose state has left its seed
 re-converged on an energy another class already found stops early (:data:`LEAK_ENERGY_TOL`).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 import numpy as np
-from impurityModel.ed import seed_sectors, solver_trace
+from impurityModel.ed import config, label_symmetries, seed_sectors, solver_trace
 from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.density_matrices import occupations as state_occupations
@@ -122,6 +122,9 @@ class CertificationJob:
     parity: tuple
     seed_class: int | None  # index into the label's class plan; None: the label's whole seed
     n_seed: int
+    #: Index of the job this one is the symmetry image of (:mod:`label_symmetries`): it is not
+    #: expanded, and its verdict is that job's. ``None`` for a job that is expanded.
+    image_of: int | None = None
 
 
 @dataclass(frozen=True)
@@ -159,6 +162,9 @@ class CertificationPlan:
     pairs: list
     su2: bool
     class_plans: dict  # (two_sz, parity) -> seed_sectors.SeedClassPlan or None
+    #: Mirror job index -> the :class:`label_symmetries.SignedPermutation` taking the problem of the
+    #: job it is the image of onto its own (maps that job's determinants onto this label's).
+    images: dict = field(default_factory=dict)
 
 
 def _bits(dets, n_orb):
@@ -229,12 +235,28 @@ def certification_plan(h_op, basis, *, max_seed=1000):
         if su2:
             two_min = min(abs(lab[0]) for lab in needed)
             needed = [lab for lab in needed if lab[0] == two_min]
-        head = (labels, needed, pairs, su2)
+        orbit_of = {}
+        if config.GS_CERTIFY_LABEL_SYMMETRY.get() and len(needed) > 1:
+            generators = label_symmetries.symmetry_generators(
+                h_op,
+                impurity_spin_pairs(basis.impurity_orbitals),
+                bath_spin_pairs(basis.bath_states),
+                n_orb,
+                restrictions=basis.restrictions,
+                weighted_restrictions=basis.weighted_restrictions,
+            )
+            if generators:
+                orbit_of = label_symmetries.label_orbits(needed, generators, parities)
+        head = (labels, needed, pairs, su2, orbit_of)
     if comm is not None:
         head = comm.bcast(head, root=0)
-    labels, needed, pairs, su2 = head
+    # Decided on rank 0 and broadcast: which labels are expanded must be identical on every rank.
+    labels, needed, pairs, su2, orbit_of = head
+    mirrors = [lab for lab in needed if lab in orbit_of and orbit_of[lab][0] != lab]
     class_plans, jobs = {}, []
     for lab in needed:
+        if lab in mirrors:
+            continue
         # Collective: every rank builds the label's seed and its class plan, whatever its share.
         sub = basis.clone(
             initial_basis=_label_keys(labels, lab, basis), weighted_restrictions=_label_window(basis, pairs, lab[0])
@@ -252,9 +274,17 @@ def certification_plan(h_op, basis, *, max_seed=1000):
                 span = plan.classes[k].span
                 n = int(np.count_nonzero(np.max(np.abs(span), axis=1) > seed_sectors.COUPLING_TOL))
                 jobs.append(CertificationJob(lab[0], lab[1], k, n))
+    # A label that a verified symmetry maps from an expanded one is a unitary copy of its problem:
+    # one mirror job per job of its representative, never expanded (see certify_sector).
+    images = {}
+    for lab in mirrors:
+        rep, to_lab = orbit_of[lab]
+        for k, job in [(k, job) for k, job in enumerate(jobs) if (job.two_sz, job.parity) == rep]:
+            images[len(jobs)] = to_lab
+            jobs.append(CertificationJob(lab[0], lab[1], job.seed_class, job.n_seed, image_of=k))
     h_op.set_restrictions(basis.restrictions)
     h_op.set_weighted_restrictions(basis.weighted_restrictions)
-    return CertificationPlan(jobs, labels, pairs, su2, class_plans)
+    return CertificationPlan(jobs, labels, pairs, su2, class_plans, images)
 
 
 def describe_plan(plan):
@@ -276,10 +306,15 @@ def describe_plan(plan):
                 gap = cls.energy - e_min
                 edge = gap if edge is None else min(edge, gap)
     spin = "SU(2)" if plan.su2 else ("S_z" if any(job.two_sz is not None for job in plan.jobs) else "none")
+    expanded = [j for j in plan.jobs if j.image_of is None]
     text = (
         f"certifying: {len({(j.two_sz, j.parity) for j in plan.jobs})} hard labels (spin: {spin}), "
-        f"{len(plan.jobs)} class expansions"
+        f"{len(expanded)} class expansions"
     )
+    mirrored = len(plan.jobs) - len(expanded)
+    if mirrored:
+        n_labels = len({(j.two_sz, j.parity) for j in plan.jobs if j.image_of is not None})
+        text += f" ({mirrored} more mirrored from them by symmetry, {n_labels} label(s))"
     if windows:
         text += f", window {max(windows):.4g}"
     if outside:
@@ -491,8 +526,10 @@ def certify_sector(
         if best is None or verdict.energy < best[0]:
             best = (verdict.energy, k, es, psis, class_basis, solver)
 
+    # A mirror job is never expanded: asking for it asks for the job it is the image of.
+    wanted = None if only is None else {k if plan.jobs[k].image_of is None else plan.jobs[k].image_of for k in only}
     for k in range(len(plan.jobs)):
-        if only is None or k in only:
+        if plan.jobs[k].image_of is None and (wanted is None or k in wanted):
             run(k, ranking=True)
     # Pass 2, most promising first. The lowest energy only falls, so re-test before each.
     for k in sorted(
@@ -501,6 +538,10 @@ def certify_sector(
         if k in keys and verdict_of[k].lower - e_min() <= reach + _energy_error(verdict_of[k]):
             start = keys.pop(k)
             run(k, ranking=False, start=start)
+    # A mirror's problem is its representative's under a verified symmetry: same verdict, its own job.
+    mirrored = {k: job.image_of for k, job in enumerate(plan.jobs) if job.image_of in verdict_of}
+    for k, source in mirrored.items():
+        verdict_of[k] = replace(verdict_of[source], job=plan.jobs[k])
     verdicts = [verdict_of[k] for k in sorted(verdict_of)]
     kept = None
     if within is not None:
@@ -511,7 +552,15 @@ def certify_sector(
             key=lambda k: verdict_of[k].energy,
         )
         winner = best[1]
-        kept = [keys[winner]] + [keys[k] for k in inside if k != winner]
+        # The mirror labels' rows of the window's states are the images of their sources' rows: without
+        # them the window solve would hold the representative's half of a degenerate level only. Each
+        # image follows its source, where the mirror's own (degenerate) class would have sorted, so the
+        # union's cap drops the same classes with and without the symmetry.
+        n_orb = basis.num_spin_orbitals
+        kept = [
+            keys[source] if mirror is None else _image_keys(keys[source], plan.images[mirror], n_orb, basis.n_bytes)
+            for source, mirror in _thermal_union_order(winner, inside, mirrored)
+        ]
         keys.clear()
     _energy, _k, es, psis, class_basis, solver = best
     class_basis.weighted_restrictions = basis.weighted_restrictions
@@ -519,6 +568,35 @@ def certify_sector(
     if within is not None:
         return es, psis, class_basis, solver, verdicts, kept
     return es, psis, class_basis, solver, verdicts
+
+
+def _thermal_union_order(winner, inside, mirrored):
+    """``(source job, mirror job or None)`` in the order the thermal union adds them.
+
+    The winner first, then the other in-window classes by energy (``inside`` is sorted), each followed
+    at once by the images of its mirrors -- where those degenerate classes would have sorted had they
+    been expanded -- so a binding cap drops the same classes with the symmetry as without it.
+    """
+    order = []
+    for source in [winner] + [k for k in inside if k != winner]:
+        order.append((source, None))
+        order.extend((source, k) for k, s in mirrored.items() if s == source)
+    return order
+
+
+def _image_keys(keys, sp, n_orb, n_bytes):
+    """This rank's share of the determinants the signed permutation ``sp`` maps ``keys`` onto.
+
+    A width-0 block, like ``Basis._keys``, of determinants at the basis's canonical width ``n_bytes``
+    (``to_bytearray`` is eight times wider, so its length is not the width to rebuild at). Rank-local,
+    as :func:`_spin_partner_keys` is: ``add_states`` routes the images to their owners afterwards.
+    """
+    dets = list(keys.keys())
+    if not dets:
+        return ManyBodyState.from_keys([])
+    packed = np.packbits(sp.map_bits(_bits(dets, n_orb)), axis=1)
+    packed = np.pad(packed, ((0, 0), (0, n_bytes - packed.shape[1])))
+    return ManyBodyState.from_keys([SlaterDeterminant.from_bytes(bytes(row)) for row in packed])
 
 
 def _bound(verdict):
