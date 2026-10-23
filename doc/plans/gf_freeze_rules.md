@@ -1,9 +1,12 @@
 # GF support freeze: tolerance-referenced rules
 
-**Status (2026-10-16):** Phase 0 (diagnostics) and the trial-solve freeze prototype are on branch `gf-freeze-rules`,
-default off. Phase 1 (numpy oracle study) is done. **Phase 2 (the local SMO replay) and Phase 2b (a whole-Sigma
-workload) are NOT done**, so nothing here is evidence about `Sigma_real` on a production model, and the default is
-unchanged. The cluster A/B decides.
+**Status (2026-10-24): closed.** The trial-solve freeze was a no-go and is removed (cluster verdict below).
+The 68-state ground state reaches the GF phase: round 13 confirmed the split fix. No Sigma on that ground state
+exists, and none will: round 13 ran its last 30 capped units on the sparse kernel after the frozen-matrix decision
+declined them at the 0.75 share, ~9 h a unit against ~10 min, into its 12 h limit (section "Round 13"). The one
+code change the round justifies, `GF_CSR_MEMORY_SAFETY` 0.75 -> 0.9, is in; the cluster work on this model stops
+here. Phase 2 / 2b of the original plan were never done; nothing here is evidence about `Sigma_real` on a
+production model.
 
 ## Problem
 
@@ -174,6 +177,45 @@ held row is ~25 B). Round 9 had 10 states on 277k determinants.
   so a kill inside the split leaves its inputs behind.
 
 No Sigma exists yet on the 68-state ground state. Round 13 is the first chance at one.
+
+## Round 13 (job 4280611, tree 5f90f950, 128 one-rank colours, 12 h): the split passed, the matrix decision did not
+
+**The split fix is confirmed.** `GF split: 336 units, 47,529,756 seed rows, 128 color(s), static; seeds ~77.9
+MiB/rank in transit; resident 2.1 GiB, headroom 7.1 GiB/rank.` printed, then `New unit roots`, and no rank died.
+Round 12 was killed ~100 s after this point with the every-colour copies; here 304 of 336 units completed. The
+ground state reproduced round 12 (E_GS -12.9166, 3,314,415 determinants after the cap work since 75a45d46, 3,737 s).
+
+**What went wrong instead: the frozen P H P was declined on later units.** GF cap 6,964,810 per unit (auto). The
+capped units are the heavy ones; a frozen one takes ~830 blocks at 0.74 s a block on the matrix (`csr=611 s`,
+unit wall ~744 s, VmHWM 4.8 GiB). The decision line (`need N on top of RSS R; budget B`) was printed for every
+freeze, so the mechanism is read off the logs, not inferred:
+
+| freeze | n | RSS at the decision | budget | outcome |
+|---|---|---|---|---|
+| first capped unit on the rank | 36 | 1.9-2.5 GiB | 8.7-9.1 GiB | all fit |
+| later capped unit, previous unit small | 96 | 1.8-3.8 GiB (mean 2.3) | 7.1-8.5 GiB | 93 fit |
+| later capped unit, previous unit a frozen capped one | 34 | 3.3-4.1 GiB (mean 3.8) | 6.5-7.5 GiB | **27 declined** |
+
+Two effects compound. After a frozen capped unit the rank keeps ~1.5 GiB more resident than before it, although
+`release_freed_heap` (`malloc_trim`) runs between units (the code's note expected +0.3-0.7). And the budget is
+re-sampled before every unit from the node's free memory over 64 ranks, so as every rank on the node ratchets the
+share falls from ~9.0 to ~7 GiB. `need` (3.5-3.9 GiB) + RSS (3.8-4.1) then exceeds 0.75 x share by 0.1-1.5 GiB.
+The node was not short: a frozen unit's measured peak is 4.8 GiB a rank. Every one of the 30 declines sits within
+0.75-0.90 of the share (median 0.78).
+
+**The price of a decline is not "only speed".** The sparse kernel ran 47 s a block (measured over 4.7 min on the
+29 units still running at 23:41), 64x the matrix, so a declined unit is ~9 h instead of ~10 min, and the GF phase
+that would have ended around 16:00 ran into the 02:08 limit. `leg.py` writes Sigma only after every unit has
+finished, so the time-limit kill loses the whole GF phase; the per-unit results exist only in the logs.
+
+**Local check of the ratchet (2026-10-23, one rank, the small SMO archive, 24 units of up to 76k
+determinants):** after every unit the trim returns the resident set to the same 260 MiB of anonymous memory.
+The +1.5 GiB does not reproduce below cluster scale; what survives a 7M-determinant frozen unit is not known.
+
+**What changed:** `GF_CSR_MEMORY_SAFETY` defaults to 0.9 (every round-13 decline would have been admitted; the
+fit estimate over-predicts the measured peak by 0.78-0.83 on this job's first units, so 0.9 nominal is ~0.72 of the
+share in practice). Not done: finding the retained 1.5 GiB; letting the decision weigh the sparse kernel's cost;
+per-unit checkpoints so a time limit does not lose the phase. None of these can be tested without the cluster.
 
 ## Next (superseded by the cluster verdict above)
 
