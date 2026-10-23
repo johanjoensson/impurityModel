@@ -48,6 +48,7 @@ from impurityModel.ed.observables import (
     make_spin_operators,
     manifold_observable_values,
 )
+from impurityModel.ed.memory_estimate import measured_phase
 from impurityModel.ed.spin_pairs import bath_spin_pairs, impurity_spin_pairs
 from impurityModel.ed.symmetries import (
     PARITY_TERM_TOL,
@@ -599,31 +600,73 @@ def _group_size(group, comm):
     return n if comm is None or comm.size == 1 else int(comm.allreduce(n, op=MPI.SUM))
 
 
-def _add_within_cap(merged, group, cap, truncate):
-    """Add ``group`` to ``merged`` unless the basis would pass ``cap``: ``(merged, fitted)``.
+def _importance(psis):
+    """This rank's ``{determinant: max |amplitude|^2 over the columns of psis}``."""
+    keys = list(psis.keys())
+    if not keys:
+        return {}
+    weight = (np.abs(np.array(psis)) ** 2).reshape(len(keys), -1).max(axis=1)
+    return dict(zip(keys, weight.tolist()))
 
-    Decided on the exact, replicated size of the union, never on a summed estimate: a group that fits
-    is added whole. One that does not is dropped (``fitted`` False), or with ``truncate`` cut to the
-    largest hash-ordered share that fits (``fitted`` False when anything was cut). Collective.
+
+def _unit_groups(dets, rows_of, comm):
+    """``[class determinants, *partner rows]`` of ``dets``, the row count replicated over ``comm``.
+
+    A rank holding none of the class builds no rows; every rank must still add the same number of
+    groups, so the list is padded to the longest.
     """
-    if cap is None:
-        merged.add_states(group)
-        return merged, True
-    if merged.size + _group_size(group, merged.comm) <= cap:  # even with no determinant in common
-        merged.add_states(group)
-        return merged, True
+    rows = rows_of(dets)
+    n_rows = len(rows) if comm is None or comm.size == 1 else int(comm.allreduce(len(rows), op=MPI.MAX))
+    return [list(dets.keys()), *rows, *([] for _ in range(n_rows - len(rows)))]
+
+
+def _grow_with(merged, groups):
+    """A copy of ``merged`` holding ``groups`` as well (``merged`` itself when the copy is not needed)."""
     trial = merged.clone(initial_basis=list(merged.local_basis))
-    trial.add_states(group)
+    for group in groups:
+        trial.add_states(group)
+    return trial
+
+
+def _add_units_within_cap(merged, units, rows_of, cap, *, truncate, importance=None):
+    """Add classes and their partner rows to ``merged`` within ``cap``: ``(merged, whole)``. Collective.
+
+    ``units`` are class key sets added together. Decided on the exact, replicated size of the union,
+    never on a summed estimate. Units that fit are added whole. If they do not, they are left out
+    (``truncate`` False), or with ``truncate`` every unit is cut to the same share of its *class*, the
+    largest that fits together with the partner rows of the cut classes -- partners are regenerated from
+    the cut class, so a multiplet keeps its shape, and no degenerate class is starved to feed another.
+    The cut keeps a class's determinants by ``importance`` (a determinant-to-weight map, e.g. the
+    winner's amplitudes; the first unit only) and otherwise by hash.
+    """
+    comm = merged.comm
+    groups = [group for keys in units for group in _unit_groups(keys, rows_of, comm)]
+    if cap is None:
+        for group in groups:
+            merged.add_states(group)
+        return merged, True
+    if merged.size + sum(_group_size(group, comm) for group in groups) <= cap:  # fits even with no overlap
+        for group in groups:
+            merged.add_states(group)
+        return merged, True
+    trial = _grow_with(merged, groups)
     if trial.size <= cap:
         return trial, True
     if not truncate:
         return merged, False
-    ordered = sorted(group, key=lambda det: det.get_hash())
+    ordered = []
+    for i, keys in enumerate(units):
+        if importance is not None and i == 0:
+            ordered.append(sorted(keys.keys(), key=lambda det: (-importance.get(det, 0.0), det.get_hash())))
+        else:
+            ordered.append(sorted(keys.keys(), key=lambda det: det.get_hash()))
     best, lo, hi = merged, 0.0, 1.0
     for _ in range(_FIT_BISECTIONS):
         mid = 0.5 * (lo + hi)
-        trial = merged.clone(initial_basis=list(merged.local_basis))
-        trial.add_states(ordered[: int(mid * len(ordered))])
+        groups = []
+        for dets in ordered:
+            groups += _unit_groups(ManyBodyState.from_keys(dets[: int(mid * len(dets))]), rows_of, comm)
+        trial = _grow_with(merged, groups)
         if trial.size <= cap:
             best, lo = trial, mid
         else:
@@ -631,7 +674,7 @@ def _add_within_cap(merged, group, cap, truncate):
     return best, False
 
 
-#: Bisection steps of :func:`_add_within_cap`'s truncation: the share kept is exact to ``2**-8``.
+#: Bisection steps of :func:`_add_units_within_cap`'s truncation: the share kept is exact to ``2**-8``.
 _FIT_BISECTIONS = 8
 
 
@@ -799,8 +842,24 @@ def solve_certified(
     to the room left (its nearest partner rows first), any other stops the union. The union is then
     expanded for the window. Collective.
     """
+    comm = basis.comm
+    verbose_memory = bool(verbose) and (comm is None or comm.rank == 0)
     if isinstance(manifold, Lowest):
-        return certify_sector(
+        with measured_phase("class expansions", comm, verbose=verbose_memory) as phase:
+            result = certify_sector(
+                h_op,
+                basis,
+                plan,
+                expand_kwargs=expand_kwargs,
+                dense_cutoff=dense_cutoff,
+                slater_weight_min=slater_weight_min,
+                verbose=verbose,
+                only=only,
+            )
+            phase.dets = result[2].size
+        return result
+    with measured_phase("class expansions", comm, verbose=verbose_memory) as phase:
+        es, psis, winner_basis, _solver, verdicts, kept = certify_sector(
             h_op,
             basis,
             plan,
@@ -808,64 +867,57 @@ def solve_certified(
             dense_cutoff=dense_cutoff,
             slater_weight_min=slater_weight_min,
             verbose=verbose,
+            within=float(manifold.max_energy),
             only=only,
         )
-    es, psis, winner_basis, _solver, verdicts, kept = certify_sector(
-        h_op,
-        basis,
-        plan,
-        expand_kwargs=expand_kwargs,
-        dense_cutoff=dense_cutoff,
-        slater_weight_min=slater_weight_min,
-        verbose=verbose,
-        within=float(manifold.max_energy),
-        only=only,
-    )
-    del es, psis, _solver, winner_basis
+        phase.dets = winner_basis.size
+    del es, _solver, winner_basis
     # The largest seed 2 S_z bounds 2 S_max: the partners' rows stop there.
     max_two_sz = max(abs(label[0] or 0) for label in plan.labels.values())
     n_orb = basis.num_spin_orbitals
     cap = basis.truncation_threshold
-    merged = basis.clone(initial_basis=list(basis.local_basis))
-    cut = []
-    for n_added, keys in enumerate(kept):
-        rows = _spin_partner_rows(keys, plan.pairs, max_two_sz, n_orb) if plan.su2 else []
-        # A rank holding none of the class has no rows: every rank must still make the same number of
-        # (collective) additions, so pad to the longest.
-        n_rows = len(rows) if basis.comm is None else int(basis.comm.allreduce(len(rows), op=MPI.MAX))
-        rows += [[] for _ in range(n_rows - len(rows))]
-        # A class at the winning level is truncated to the room left rather than dropped: its states are
-        # the level the window exists to hold. Any other class goes in whole or stops the union.
-        protect = kept.at_winning_level[n_added]
-        fitted = True
-        for group in [keys.keys(), *rows]:
-            merged, ok = _add_within_cap(merged, group, cap, truncate=protect)
-            fitted = fitted and ok
-            if not ok:
-                break
-        if not fitted:
-            cut.append((n_added, protect))
-            if not protect:
-                break
-        # `merged.size` is replicated, so every rank stops at the same class.
-    if cut and (basis.comm is None or basis.comm.rank == 0) and verbose:
-        left = len(kept) - cut[-1][0] - 1 if not cut[-1][1] else 0
-        print(
-            f"  thermal window: held at the cap ({merged.size:,} of {int(cap):,} determinants); "
-            f"{len(cut)} class(es) cut short or left out, {left} later class(es) not added",
-            flush=True,
+    with measured_phase("thermal window", comm, verbose=verbose_memory) as phase:
+        merged = basis.clone(initial_basis=list(basis.local_basis))
+        cut = []
+
+        def rows_of(dets):
+            return _spin_partner_rows(dets, plan.pairs, max_two_sz, n_orb) if plan.su2 else []
+
+        importance = _importance(psis)
+        # The classes at the winning energy make the level the window exists to hold: they go in
+        # together and are cut together. Every later class goes in whole or stops the union.
+        level = [i for i, at_level in enumerate(kept.at_winning_level) if at_level]
+        merged, whole = _add_units_within_cap(
+            merged, [kept[i] for i in level], rows_of, cap, truncate=True, importance=importance
         )
-    kept.clear()
-    solver = CIPSISolver(merged)
-    solver.expand(h_op, manifold, **expand_kwargs)
-    es, psis = solver.get_eigenvectors(
-        h_op,
-        manifold,
-        dense_cutoff=dense_cutoff,
-        slaterWeightMin=slater_weight_min,
-        psi_refs=solver.psi_refs,
-        reuse_last=True,
-    )
+        if not whole:
+            cut.append(f"the {len(level)} class(es) at the winning energy were cut short")
+        else:
+            for i in range(len(kept)):
+                if i in level:
+                    continue
+                merged, whole = _add_units_within_cap(merged, [kept[i]], rows_of, cap, truncate=False)
+                if not whole:
+                    cut.append(f"{len(kept) - i - 1 + 1} later class(es) left out")
+                    break
+        if cut and (basis.comm is None or basis.comm.rank == 0) and verbose:
+            print(
+                f"  thermal window: held at the cap ({merged.size:,} of {int(cap):,} determinants): " + "; ".join(cut),
+                flush=True,
+            )
+        kept.clear()
+        del importance, psis
+        solver = CIPSISolver(merged)
+        solver.expand(h_op, manifold, **expand_kwargs)
+        es, psis = solver.get_eigenvectors(
+            h_op,
+            manifold,
+            dense_cutoff=dense_cutoff,
+            slaterWeightMin=slater_weight_min,
+            psi_refs=solver.psi_refs,
+            reuse_last=True,
+        )
+        phase.dets = merged.size
     found, expected = manifold_deficit(plan, verdicts, es, psis, merged)
     solver.manifold_check = {"found": found, "expected": expected}
     if found < expected and (basis.comm is None or basis.comm.rank == 0):

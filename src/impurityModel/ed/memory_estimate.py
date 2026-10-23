@@ -41,6 +41,7 @@ buffers) are absorbed by ``DEFAULT_MEMORY_SAFETY``.
 """
 
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import pairwise
 from math import ceil, exp, log, log2
@@ -1503,6 +1504,74 @@ def reset_peak_rss():
         return True
     except OSError:
         return False
+
+
+class PhaseMemory:
+    """What :func:`measured_phase` recorded: the phase's peak RSS, the resident set before it, and its size."""
+
+    def __init__(self, name):
+        self.name = name
+        self.dets = 0
+        self.peak = 0
+        self.resident = 0
+        self.own_peak = False
+
+    @property
+    def increment(self):
+        """Bytes the phase added above the resident set it started from (0 if the peak was not its own)."""
+        return max(0, self.peak - self.resident) if self.own_peak else 0
+
+    def bytes_per_det(self, ranks):
+        """The increment per rank-local determinant (``dets`` is global), or 0 when unknown."""
+        return self.increment * max(1, ranks) / self.dets if self.dets and self.own_peak else 0.0
+
+
+@contextmanager
+def measured_phase(name, comm=None, *, verbose=False):
+    """Measure the peak RSS of the block, MAX-reduced over ``comm`` and reported once. Collective on ``comm``.
+
+    The high-water mark is reset on entry, so the peak is the block's own (:func:`reset_peak_rss`;
+    when the reset is refused the peak is cumulative and ``own_peak`` is False -- nothing is claimed
+    from it). The body sets ``record.dets`` to the global determinant count the phase ran on. Rank 0
+    prints one line when ``verbose``, and a ``gs_phase_memory`` trace note records it either way:
+    this is the measurement the cap model is checked against (``estimate_gs_peak_bytes``).
+    """
+    from impurityModel.ed import solver_trace
+
+    record = PhaseMemory(name)
+    ranks = comm.size if comm is not None else 1
+    own = reset_peak_rss()
+    resident = current_rss_bytes()
+    yield record
+    peak = peak_rss_bytes()
+    if comm is not None and ranks > 1:
+        # Unconditional: a rank-local `own` must not decide whether this reduction runs.
+        peak, resident, own_all = comm.allreduce((peak, resident, int(own)), op=_phase_reduce)
+        own = bool(own_all)
+    record.peak, record.resident, record.own_peak = int(peak), int(resident), bool(own)
+    solver_trace.note(
+        "gs_phase_memory",
+        phase=name,
+        peak_bytes=record.peak,
+        resident_bytes=record.resident,
+        own_peak=record.own_peak,
+        dets=int(record.dets),
+        ranks=int(ranks),
+    )
+    if verbose and (comm is None or comm.rank == 0):
+        if record.own_peak:
+            per = record.bytes_per_det(ranks)
+            detail = f"+{format_bytes(record.increment)} over the {format_bytes(record.resident)} resident"
+            if per:
+                detail += f", {per / 1024:.1f} kB per local determinant on {record.dets:,}"
+        else:
+            detail = "peak not isolable on this system (cumulative VmHWM)"
+        print(f"memory, {name}: peak {format_bytes(record.peak)} ({detail})", flush=True)
+
+
+def _phase_reduce(a, b):
+    """MAX of peak and resident, AND of ``own``: a tuple reduction for :func:`measured_phase`."""
+    return (max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]))
 
 
 def log_peak_vs_predicted(memory_budget, comm=None, verbose=True, label=""):

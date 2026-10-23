@@ -679,5 +679,8 @@ def test_the_thermal_union_is_built_within_the_cap_and_unchanged_when_it_fits(mo
     cap = union - 40  # under what the winning level's classes and their partner rows need
     sizes, capped = _union_size_at_the_window_solve(monkeypatch, cap)
     assert sizes[-1] <= cap < union, (sizes[-1], cap, union)
-    # Every partner row it kept sits at the cap exactly: the nearest rows first, truncated, not dropped.
-    assert sizes[-1] == cap
+    # The classes at the winning energy are cut by one common share, not one starved for another, and
+    # the shortfall is reported rather than hidden: a cut union cannot hold the whole 8-fold level.
+    assert cap - 20 <= sizes[-1] <= cap
+    found, expected = capped.solver.manifold_check["found"], capped.solver.manifold_check["expected"]
+    assert 0 < found < expected == 8
