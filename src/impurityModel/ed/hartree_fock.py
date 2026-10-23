@@ -100,6 +100,13 @@ def extract_hf_tensors(h_op, impurity_indices):
                 f"Operator term {factors} is not a 0/1/2-body number-conserving term "
                 f"(ladder {ladder}); the HF seed supports only 0/1/2-body operators."
             )
+    # c†_i c†_j c_l c_k == c†_j c†_i c_k c_l, so V and its pair swap are the same operator and the
+    # energy cannot tell them apart -- but _fock_matrix's F_ab is dE/drho_ab only for the
+    # pair-symmetric V_ijkl = V_jilk. A normal-ordered operator stores each pair once, in one order,
+    # so the raw V is not symmetric: on the NiO linked-chain iteration 1 the Fock matrix was off the
+    # gradient by up to 0.085, and every SCF start "converged" to an N_imp = 5 fixed point 2.3 Ry
+    # above the true d8 minimum, sending the occupation walk through three extra cap-bound sectors.
+    V = 0.5 * (V + V.transpose(1, 0, 3, 2))
     return h, V, imp, n_orb, const
 
 

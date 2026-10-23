@@ -69,6 +69,36 @@ def test_mean_field_energy_matches_exact_expectation(occupied):
     assert e_mf == pytest.approx(e_exact, abs=1e-10)
 
 
+def test_fock_matrix_is_the_gradient_of_the_mean_field_energy():
+    """dE = tr(F drho) for every Hermitian perturbation, so an SCF fixed point is a stationary point.
+
+    The operator stores each density-density pair once (i < j), so the raw tensor is not
+    pair-symmetric; the Fock matrix must still be the energy's gradient. When it was not, the SCF
+    converged to a non-stationary density 2.3 Ry above the true minimum on a real NiO workload.
+    """
+    h_op, n_orb = _hermitian_hamiltonian()
+    h, V, imp, _n_orb, _const = hf.extract_hf_tensors(h_op, range(n_orb))
+    rng = np.random.default_rng(1)
+    a = rng.standard_normal((n_orb, n_orb)) + 1j * rng.standard_normal((n_orb, n_orb))
+    rho = 0.1 * (a + a.conj().T)
+    f = hf._fock_matrix(h, V, imp, rho)
+    eps = 1e-6
+    for a_idx in range(n_orb):
+        for b_idx in range(a_idx, n_orb):
+            for phase in (1.0, 1j) if a_idx != b_idx else (1.0,):
+                drho = np.zeros((n_orb, n_orb), dtype=complex)
+                drho[a_idx, b_idx] += phase
+                drho[b_idx, a_idx] += np.conj(phase)
+                if a_idx == b_idx:
+                    drho[a_idx, a_idx] = 1.0
+                numeric = (
+                    hf.mean_field_energy(h, V, imp, rho + eps * drho)
+                    - hf.mean_field_energy(h, V, imp, rho - eps * drho)
+                ) / (2 * eps)
+                analytic = float(np.real(np.sum(f * drho)))
+                assert numeric == pytest.approx(analytic, abs=1e-7)
+
+
 def test_non_interacting_limit_fills_lowest_orbitals():
     """With V=0, HF reduces to filling the lowest one-body eigenstates (occupations 0/1)."""
     n_orb = 5

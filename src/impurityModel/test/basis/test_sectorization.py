@@ -3,6 +3,7 @@
 from itertools import combinations
 
 import numpy as np
+import pytest
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp, inner
 from impurityModel.ed.symmetries import (
@@ -240,12 +241,12 @@ def test_measure_conserved_charges():
     assert measure_conserved_charges(ManyBodyState({_sd([0, 2], 4): 1.0}), charges, 4) == [2, 0]
 
 
-def _siam_6():
+def _siam_6(u=4.0):
     """Single-impurity Anderson model, 6 spin-orbitals.
 
     0,1 = impurity (dn,up); 2,3 = valence bath (dn,up); 4,5 = conduction bath (dn,up).
     """
-    ed, u, ev, ec, v = -1.0, 4.0, -3.0, 3.0, 0.5
+    ed, ev, ec, v = -1.0, -3.0, 3.0, 0.5
     terms = {}
     for o in (0, 1):
         terms[((o, "c"), (o, "a"))] = ed
@@ -260,37 +261,65 @@ def _siam_6():
     return ManyBodyOperator(terms)
 
 
-def test_hf_seed_finds_ground_state_sector():
-    """The Hartree-Fock seed identifies the impurity occupation of the true correlated
-    ground state."""
+@pytest.mark.parametrize("u", [2.0, 8.0])
+def test_hf_seed_finds_ground_state_sector(u):
+    """The Hartree-Fock seed identifies the impurity occupation of the correlated ground state at
+    the particle number HF solves at.
+
+    HF works at fixed ``n_tot = N0 + n_valence`` (4 here), so that is the sector the oracle
+    diagonalizes -- not the whole Fock space, whose ground state sits at a different total (3, at
+    ``u = 4``) and agreed with the seed only by accident: until the two-body tensor was
+    pair-symmetrized, the Fock matrix was not the energy's gradient and the SCF stopped at a
+    non-stationary density near ``n_imp = 1`` (E = -4.221 where the true minimum is -4.656). ``u = 2``
+    keeps the nominal occupation (2), ``u = 8`` moves it (to 1), so both answers are covered.
+    """
     from impurityModel.ed.groundstate import hartree_fock_seed_occupation
 
-    op = _siam_6()
+    op = _siam_6(u=u)
     impurity_orbitals = {0: [[0, 1]]}
     bath_states = ({0: [[2, 3]]}, {0: [[4, 5]]})
+    N0 = {0: 2}
+    n_tot = N0[0] + 2
 
-    # Ground truth: diagonalize the full Fock space (64 determinants) and read off the
-    # correlated ground state's impurity occupation.
-    all_dets = [_bytes6(occ) for ne in range(7) for occ in combinations(range(6), ne)]
-    full = Basis(
+    dets = [_bytes6(occ) for occ in combinations(range(6), n_tot)]
+    fixed_n = Basis(
         impurity_orbitals={0: [[0, 1, 2, 3, 4, 5]]},
         bath_states=({0: [[]]}, {0: [[]]}),
-        initial_basis=all_dets,
+        initial_basis=dets,
         verbose=False,
     )
-    _, vecs = np.linalg.eigh(np.asarray(build_dense_matrix(full, op)))
-    gs = vecs[:, 0]
+    _, vecs = np.linalg.eigh(np.asarray(build_dense_matrix(fixed_n, op)))
     exact_imp_occ = sum(
-        abs(amp) ** 2 * len({0, 1} & _occset6(bytes(d.to_bytearray()))) for amp, d in zip(gs, full.local_basis)
+        abs(amp) ** 2 * len({0, 1} & _occset6(bytes(d.to_bytearray())))
+        for amp, d in zip(vecs[:, 0], fixed_n.local_basis)
     )
+    # Precondition: the answer is not on a rounding boundary, where a mean-field miss by one is
+    # expected and documented (hartree_fock_seed_occupation) rather than a defect.
+    assert abs(exact_imp_occ - round(exact_imp_occ)) < 0.2, "the model drifted onto a rounding boundary"
 
-    # Cheap unrestricted Hartree-Fock seed (no broad-window many-body expansion).
-    winning_N0, converged = hartree_fock_seed_occupation(op, impurity_orbitals, bath_states, {0: 2})
+    winning_N0, converged = hartree_fock_seed_occupation(op, impurity_orbitals, bath_states, N0)
 
     # The mean-field seed lands on the correct integer impurity occupation of the correlated GS,
     # and says so: an unconverged seed is not an occupation and callers must reject it.
     assert converged
     assert winning_N0 == {0: round(exact_imp_occ)}
+
+
+def test_hf_seeded_walk_finds_the_whole_fock_space_ground_state():
+    """From the HF seed, the occupation walk reaches the ground state of the whole Fock space.
+
+    At ``u = 4`` the seed (2) is not that sector (1): the fixed-N exact occupation is 1.43, on the
+    rounding boundary, and HF's 1.60 rounds the other way. The walk is what makes the seed's miss
+    harmless, so it must land where the dN scan does.
+    """
+    from impurityModel.ed import groundstate
+
+    op = _siam_6()
+    kwargs = dict(impurity_orbitals={0: [[0, 1]]}, bath_states=({0: [[2, 3]]}, {0: [[4, 5]]}), N0={0: 2}, verbose=False)
+    seeded = groundstate.find_ground_state_sector(op, use_hf_seed=True, **kwargs)
+    scanned = groundstate.find_ground_state_sector(op, use_hf_seed=False, **kwargs)
+    assert seeded.occupation == scanned.occupation == {0: 1}
+    assert seeded.energy == pytest.approx(scanned.energy, abs=1e-10)
 
 
 def test_unconverged_hf_seed_is_rejected(monkeypatch):
