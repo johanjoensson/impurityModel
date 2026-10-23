@@ -12,6 +12,7 @@ from impurityModel.ed.gs_report import report_ground_state
 from impurityModel.ed.hartree_fock import hartree_fock_occupation
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+from impurityModel.ed.gs_connectivity import measure_gs_connectivity
 from impurityModel.ed.memory_estimate import (
     DEFAULT_MEMORY_SAFETY,
     CapPolicy,
@@ -165,6 +166,12 @@ def build_basis_and_solver(
 
     basis.restrictions = build_excited_restrictions(basis, h_op, psis=None, es=None, slater_weight_min=slaterWeightMin)
     return basis, solver
+
+
+#: ``build_basis_and_solver`` under a second name. The connectivity probe's seed is a measurement
+#: instrument, not one of the walk's trial bases; going through this name keeps it out of anything that
+#: hooks ``build_basis_and_solver`` to see the bases the calculation solves.
+build_probe_seed = build_basis_and_solver
 
 
 class SectorSolve(NamedTuple):
@@ -596,6 +603,7 @@ def find_ground_state_sector(
             verbose=verbose,
             label="ground-state basis",
             log="derived",
+            connectivity=lambda: measure_gs_connectivity(h_op, impurity_orbitals, bath_states, N0, comm),
         )
     if mixed_valence is None or mixed_valence is False:
         mixed_valence = dict.fromkeys(N0, 0)

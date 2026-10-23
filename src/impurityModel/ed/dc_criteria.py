@@ -102,6 +102,7 @@ from impurityModel.ed.density_matrices import occupations as state_occupations
 from impurityModel.ed.sector_solver import SectorPlanStore
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.memory_estimate import CapPolicy, resolve_cap_policy
 from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
@@ -792,6 +793,7 @@ def _prepare_sector_context(
         verbose=verbose,
         label=memory_label,
         log="derived",
+        connectivity=solver_basis_connectivity(sb, MPI.COMM_WORLD),
     )
     truncation_threshold = policy.gs
     memory_cap = policy.gs
@@ -1954,6 +1956,7 @@ def _prepare_occupation_context(model, basis, solver, comm=None, verbosity=0):
         verbose=verbose,
         label="fixed-occupation dc",
         log="derived",
+        connectivity=solver_basis_connectivity(sb, MPI.COMM_WORLD),
     )
     truncation_threshold = policy.gs
     memory_cap = policy.gs

@@ -417,6 +417,7 @@ def calc_susceptibility_workflow(
     # Imported here (not at module top) to keep the module importable without pulling in
     # the whole self-energy stack when only the calc_susceptibility driver is used.
     from impurityModel.ed.groundstate import calc_gs
+    from impurityModel.ed.gs_connectivity import solver_basis_connectivity
     from impurityModel.ed.memory_estimate import resolve_cap_policy
     from impurityModel.ed.solver_basis import prepare_solver_basis
 
@@ -442,7 +443,12 @@ def calc_susceptibility_workflow(
     )
     # Sized on the ground-state path alone, like every driver (see selfenergy.py).
     cap_policy, _ = resolve_cap_policy(
-        truncation_threshold, sb.n_spin_orbitals, comm=comm, verbose=verbosity > 0, log="derived"
+        truncation_threshold,
+        sb.n_spin_orbitals,
+        comm=comm,
+        verbose=verbosity > 0,
+        log="derived",
+        connectivity=solver_basis_connectivity(sb, comm),
     )
     basis_information = {
         "impurity_orbitals": sb.impurity_orbitals,

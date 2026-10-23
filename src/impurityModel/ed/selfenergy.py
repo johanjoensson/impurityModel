@@ -29,6 +29,7 @@ from impurityModel.ed.greens_function import (
     save_Greens_function,
 )
 from impurityModel.ed.groundstate import GS_DE2_MIN, GS_E_PT2_TOL, calc_gs
+from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.memory_estimate import (
     log_peak_vs_predicted,
     resolve_cap_policy,
@@ -288,6 +289,7 @@ def calc_selfenergy(model, meshes, basis, solver, *, comm, verbosity=0, cluster_
         comm=comm,
         verbose=verbosity > 0,
         label=cluster_label,
+        connectivity=solver_basis_connectivity(sb, comm),
     )
     basis_information = {
         "impurity_orbitals": impurity_orbitals,

@@ -78,12 +78,16 @@ _CSR_BYTES_PER_NNZ = 24
 # figure as the basis grows). 40 sits at the conservative (raw-connectivity) end on purpose --
 # this term exists because the model was 15-23x *too optimistic* once, and the fix must not
 # repeat that in the opposite corner case.
-_SELECTION_FANOUT_DEFAULT = 40
+_UNMEASURED_SELECTION_FANOUT = 40
+#: Stored Hamiltonian elements per determinant assumed when nothing was measured: a round figure
+#: above SrMnO3's measured 6.4 (and raw connectivity 41). Replaced by
+#: :func:`impurityModel.ed.gs_connectivity.measure_gs_connectivity` wherever an operator exists.
+_UNMEASURED_NNZ_PER_STATE = 100
 # WHOLE-STEP dedup'd ROW fanout of one GF block-Lanczos matvec (`h_op.apply_block(q_curr, ...)`
 # inside `_lanczos_step.pxi`'s `lanczos_step`) before `redistribute_block` routes rows to
 # their owners and the truncation cap prunes. `ManyBodyOperator::apply` returns a fully
 # materialized `ManyBodyBlockState` BY VALUE, keyed one row per REACHED determinant -- a
-# different, SMALLER quantity than `_SELECTION_FANOUT_DEFAULT` above, which counts
+# different, SMALLER quantity than `_UNMEASURED_SELECTION_FANOUT` above, which counts
 # source-determinant/candidate PAIRS before CIPSI's own dedup. Multiple source rows in `q_curr`
 # reaching the same target determinant collapse into one row here; they do not in a pair count.
 #
@@ -691,9 +695,9 @@ def estimate_gs_peak_bytes(
     n_spin_orbitals,
     block_width=4,
     ranks=1,
-    nnz_per_state=100,
+    nnz_per_state=_UNMEASURED_NNZ_PER_STATE,
     num_wanted=None,
-    selection_fanout=_SELECTION_FANOUT_DEFAULT,
+    selection_fanout=_UNMEASURED_SELECTION_FANOUT,
 ):
     """Predicted per-rank peak bytes of the ground-state (CIPSI + array-kernel) path.
 
@@ -754,7 +758,7 @@ def estimate_gs_peak_bytes(
         way ``nnz_per_state`` is a measured, not derived, input.
     selection_fanout : int
         Candidate determinants a CIPSI selection round connects to, per basis determinant,
-        *before* pruning (see :data:`_SELECTION_FANOUT_DEFAULT`). Deliberately not threaded
+        *before* pruning (see :data:`_UNMEASURED_SELECTION_FANOUT`). Deliberately not threaded
         through :func:`suggest_gs_truncation_threshold`/:func:`log_memory_budget` yet -- unlike
         ``nnz_per_state`` and ``num_wanted``, no measured value from a real width sweep exists
         for it (that sweep needs the multi-rank run ``doc/plans/dc_smo_memory.md`` Phase 1
@@ -1083,16 +1087,32 @@ def max_unit_dets_within_budget(
     return _largest_fitting(fits)
 
 
+def _connectivity_or_unmeasured(connectivity):
+    """``connectivity``, or the unmeasured SrMnO3 constants when the caller had no operator to measure."""
+    if connectivity is not None:
+        return connectivity
+    from impurityModel.ed.gs_connectivity import GsConnectivity
+
+    return GsConnectivity.unmeasured()
+
+
+def _connectivity_inputs(connectivity, nnz_per_state=None):
+    """``(nnz_per_state, selection_fanout)`` for :func:`estimate_gs_peak_bytes`; an explicit ``nnz_per_state`` wins."""
+    nnz = connectivity.nnz_per_state if nnz_per_state is None else nnz_per_state
+    return nnz, connectivity.selection_fanout
+
+
 def log_memory_budget(
     truncation_threshold,
     n_spin_orbitals,
     comm=None,
     block_width=None,
-    nnz_per_state=100,
+    nnz_per_state=None,
     verbose=True,
     label="",
     gs_num_wanted=None,
     warn_if_over=True,
+    connectivity=None,
 ):
     """Predict the ground-state peak for a cap, print it on rank 0, warn if it will not fit.
 
@@ -1114,8 +1134,11 @@ def log_memory_budget(
     block_width, gs_num_wanted : int, optional
         GS sizing inputs; ``None`` reads :func:`resolve_gs_block_width` /
         :func:`resolve_gs_num_wanted`, as the sizing itself does.
-    nnz_per_state : int
-        Stored Hamiltonian elements per basis state.
+    nnz_per_state : float, optional
+        Stored Hamiltonian elements per basis state; ``None`` takes ``connectivity``'s.
+    connectivity : GsConnectivity, optional
+        The measured workload inputs (:mod:`impurityModel.ed.gs_connectivity`); ``None`` is the
+        unmeasured SrMnO3 constants, and the log line says so.
     verbose : bool
         Gate for the rank-0 print (may safely differ across ranks).
     label : str
@@ -1133,6 +1156,8 @@ def log_memory_budget(
         block_width = resolve_gs_block_width()
     if gs_num_wanted is None:
         gs_num_wanted = resolve_gs_num_wanted()
+    connectivity = _connectivity_or_unmeasured(connectivity)
+    nnz_per_state, selection_fanout = _connectivity_inputs(connectivity, nnz_per_state)
     ranks = comm.size if comm is not None else 1
     rank = comm.rank if comm is not None else 0
     available = available_bytes_per_rank(comm)
@@ -1141,7 +1166,13 @@ def log_memory_budget(
     fits = False
     if not uncapped:
         gs = estimate_gs_peak_bytes(
-            int(truncation_threshold), n_spin_orbitals, block_width, ranks, nnz_per_state, num_wanted=gs_num_wanted
+            int(truncation_threshold),
+            n_spin_orbitals,
+            block_width,
+            ranks,
+            nnz_per_state,
+            num_wanted=gs_num_wanted,
+            selection_fanout=selection_fanout,
         )
         fits = gs <= available
     prefix = f"{label}: " if label else ""
@@ -1154,6 +1185,8 @@ def log_memory_budget(
                 f"{format_bytes(gs)}, {format_bytes(available)}/rank available.",
                 flush=True,
             )
+        if not uncapped:
+            print(f"{prefix}{connectivity.describe()}.", flush=True)
         if config.GS_MAX_BLOCK_WIDTH.get() is None and not uncapped:
             print(
                 f"{prefix}GS_MAX_BLOCK_WIDTH is unset, so the ground-state peak above assumes a placeholder "
@@ -1200,8 +1233,9 @@ def suggest_gs_truncation_threshold(
     *,
     block_width=None,
     gs_num_wanted=None,
-    nnz_per_state=100,
+    nnz_per_state=None,
     safety=DEFAULT_MEMORY_SAFETY,
+    connectivity=None,
 ):
     """Largest ground-state cap whose predicted peak (:func:`estimate_gs_peak_bytes`) fits in RAM.
 
@@ -1216,16 +1250,26 @@ def suggest_gs_truncation_threshold(
     ``block_width`` and ``gs_num_wanted`` default to the configured
     :func:`resolve_gs_block_width` / :func:`resolve_gs_num_wanted`, exactly what every driver and
     the double-counting search pass, so all of them size the same ground state the same way.
+    ``connectivity`` (:class:`~impurityModel.ed.gs_connectivity.GsConnectivity`) carries the two inputs
+    that belong to the model: stored elements per determinant and the selection fan-out. ``None`` is
+    the SrMnO3 constants, for callers with no operator.
     """
     if block_width is None:
         block_width = resolve_gs_block_width()
     if gs_num_wanted is None:
         gs_num_wanted = resolve_gs_num_wanted()
+    nnz_per_state, selection_fanout = _connectivity_inputs(_connectivity_or_unmeasured(connectivity), nnz_per_state)
     budget = safety * available_bytes_per_rank(comm)
     ranks = comm.size if comm is not None else 1
     return _largest_fitting(
         lambda n: estimate_gs_peak_bytes(
-            n, n_spin_orbitals, block_width, ranks, nnz_per_state, num_wanted=gs_num_wanted
+            n,
+            n_spin_orbitals,
+            block_width,
+            ranks,
+            nnz_per_state,
+            num_wanted=gs_num_wanted,
+            selection_fanout=selection_fanout,
         )
         <= budget
     )
@@ -1274,7 +1318,15 @@ def emit_memory_warning(message, *, root, kind, force=False):
 
 
 def resolve_cap_policy(
-    requested, n_spin_orbitals, comm=None, *, verbose=True, label="", log="always", safety=DEFAULT_MEMORY_SAFETY
+    requested,
+    n_spin_orbitals,
+    comm=None,
+    *,
+    verbose=True,
+    label="",
+    log="always",
+    safety=DEFAULT_MEMORY_SAFETY,
+    connectivity=None,
 ):
     """Resolve a driver's ``truncation_threshold`` into a :class:`CapPolicy`, and log it.
 
@@ -1303,6 +1355,11 @@ def resolve_cap_policy(
         never.
     safety : float
         Fraction of available RAM an auto cap is sized to.
+    connectivity : GsConnectivity or callable, optional
+        The model's measured connectivity (:func:`~impurityModel.ed.gs_connectivity.measure_gs_connectivity`;
+        a zero-argument callable is called, collectively, only if the cap is sized or logged here),
+        which every driver measures on the same solver basis so that the double-counting search and the
+        self-energy size the same cap. ``None`` falls back to the SrMnO3 constants and the log says so.
 
     Returns
     -------
@@ -1317,12 +1374,24 @@ def resolve_cap_policy(
     if comm is not None:
         unresolved, from_memory = comm.bcast((unresolved, from_memory), root=0)
     gs = policy.gs
+    if callable(connectivity) and (unresolved or log == "always"):
+        # Lazily, and after the broadcast above: only a cap that is sized or reported needs the model's
+        # numbers, and the measurement is collective, so every rank reaches it together.
+        connectivity = connectivity()
+    elif callable(connectivity):
+        connectivity = None
     if unresolved:
-        gs = suggest_gs_truncation_threshold(n_spin_orbitals, comm=comm, safety=safety)
+        gs = suggest_gs_truncation_threshold(n_spin_orbitals, comm=comm, safety=safety, connectivity=connectivity)
     budget = None
     if log == "always" or (log == "derived" and unresolved):
         budget = log_memory_budget(
-            gs, n_spin_orbitals, comm=comm, verbose=verbose, label=label, warn_if_over=not from_memory
+            gs,
+            n_spin_orbitals,
+            comm=comm,
+            verbose=verbose,
+            label=label,
+            warn_if_over=not from_memory,
+            connectivity=connectivity,
         )
     # An auto policy leaves the GF cap unset: the Green's-function stage sizes it from its own
     # path's memory at GF entry (gf_units), independently of the ground state's.
