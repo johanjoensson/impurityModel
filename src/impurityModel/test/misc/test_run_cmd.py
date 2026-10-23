@@ -101,7 +101,7 @@ def test_schema_prints_one_table_or_all(capsys):
 
 
 def test_an_unknown_table_suggests_the_closest_one():
-    with pytest.raises(SystemExit, match="spectroscopy.rixs"):
+    with pytest.raises(SystemExit, match=r"spectroscopy\.rixs"):
         run_cmd.show_schema(argparse.Namespace(table="spectroscopy.rix"))
 
 
@@ -142,7 +142,7 @@ def test_writing_provenance_to_a_missing_file_is_a_no_op(tmp_path):
 @pytest.mark.parametrize("name", ["run", "init", "schema"])
 def test_the_verbs_are_registered_on_the_umbrella_cli(name):
     assert name in cli._SUBCOMMANDS
-    add_arguments, run, help_text = cli._SUBCOMMANDS[name]
+    add_arguments, _run, help_text = cli._SUBCOMMANDS[name]
     parser = argparse.ArgumentParser()
     add_arguments(parser)
     assert help_text

@@ -15,6 +15,9 @@ FLL agree on a single uniform shift while Held's Sigma_static, evaluated at the 
 but unequal) occupations, produces different values for the two levels.
 """
 
+from collections.abc import Callable
+from typing import Any
+
 import numpy as np
 import pytest
 from mpi4py import MPI
@@ -25,6 +28,13 @@ from impurityModel.ed.model import ImpurityModel
 EPS = -1.0
 U = 3.0
 EPS_B = -4.0
+
+_SCHEMES: list[Callable[..., Any]] = [fll_dc, amf_dc, sigma_inf_dc]
+_SCHEMES_WITH_FILLING: list[tuple[Callable[..., Any], dict[str, Any]]] = [
+    (fll_dc, {"n": 1.0}),
+    (amf_dc, {"n": 1.0}),
+    (sigma_inf_dc, {"rho": np.eye(2, dtype=complex) * 0.5}),
+]
 
 
 def build_dimer_model(v, dc=None):
@@ -187,7 +197,7 @@ def _half_filled_model(v=0.1):
     )
 
 
-@pytest.mark.parametrize("scheme", [fll_dc, amf_dc, sigma_inf_dc])
+@pytest.mark.parametrize("scheme", _SCHEMES)
 def test_static_dc_warns_when_the_reference_filling_saturates(scheme, capsys):
     """All three schemes default to the DFT reference; only the search used to warn about it.
 
@@ -210,16 +220,13 @@ def test_static_dc_warns_when_the_reference_filling_saturates(scheme, capsys):
     assert "n=" in out or "rho=" in out, out
 
 
-@pytest.mark.parametrize("scheme", [fll_dc, amf_dc, sigma_inf_dc])
+@pytest.mark.parametrize("scheme", _SCHEMES)
 def test_static_dc_is_quiet_on_an_unsaturated_reference(scheme, capsys):
     scheme(_half_filled_model(), tau=1e-3)
     assert "saturated" not in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(
-    "scheme, kwargs",
-    [(fll_dc, {"n": 1.0}), (amf_dc, {"n": 1.0}), (sigma_inf_dc, {"rho": np.eye(2, dtype=complex) * 0.5})],
-)
+@pytest.mark.parametrize("scheme, kwargs", _SCHEMES_WITH_FILLING)
 def test_static_dc_does_not_warn_when_the_caller_supplies_the_filling(scheme, kwargs, capsys):
     """A caller that passed its own occupation has already made the choice the warning is about."""
     scheme(build_dimer_model(v=0.1), tau=1e-3, **kwargs)

@@ -2,7 +2,6 @@ import numpy as np
 
 from impurityModel.ed.BlockLanczos import (
     block_lanczos,
-    lanczos_step,
 )
 from impurityModel.ed.BlockLanczosArray import block_normalize
 from impurityModel.ed.manybody_basis import Basis
@@ -253,7 +252,7 @@ def test_block_lanczos_cy_store_krylov_false_matches_tail_of_stored_run():
     psi0, _ = block_normalize(psi0, mpi=False, comm=None)
 
     stored_alphas, stored_betas, stored_Q = block_lanczos(
-        [p for p in psi0],
+        list(psi0),
         h_op,
         basis,
         lambda *a, **k: False,
@@ -264,7 +263,7 @@ def test_block_lanczos_cy_store_krylov_false_matches_tail_of_stored_run():
     assert len(stored_Q) == 2 * n_iter  # p=2, n_iter blocks, flat width-1 list
 
     tail_alphas, tail_betas, tail_Q = block_lanczos(
-        [p for p in psi0],
+        list(psi0),
         h_op,
         basis,
         lambda *a, **k: False,

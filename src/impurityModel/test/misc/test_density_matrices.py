@@ -13,8 +13,8 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.density_matrices import build_density_matrices, occupations
-from impurityModel.ed.mpi_comm import graph_alltoall_block
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+from impurityModel.ed.mpi_comm import graph_alltoall_block
 from impurityModel.test.support.reference_density_matrices import reference_density_matrices
 
 N_ORB = 11  # two bytes: signs and bit order across a byte boundary
@@ -53,7 +53,7 @@ def _det(occupied, n_orb=N_ORB):
 
 def _global_states(width, seed=3, n_dets=40, n_el=4):
     rng = np.random.default_rng(seed)
-    dets = [c for c in itertools.combinations(range(N_ORB), n_el)]
+    dets = list(itertools.combinations(range(N_ORB), n_el))
     pick = rng.choice(len(dets), size=n_dets, replace=False)
     amps = rng.standard_normal((n_dets, width)) + 1j * rng.standard_normal((n_dets, width))
     return [dets[p] for p in pick], amps
@@ -99,7 +99,7 @@ def test_is_a_density_matrix():
     for r in rho:
         np.testing.assert_allclose(r, r.conj().T, atol=1e-12)
     # Each state has 4 electrons per determinant, so trace(rho_n) = <N> = 4 <psi|psi>.
-    dets, amps = _global_states(2)
+    _dets, amps = _global_states(2)
     np.testing.assert_allclose([np.trace(r).real for r in rho], 4 * (abs(amps) ** 2).sum(axis=0), atol=1e-10)
 
 

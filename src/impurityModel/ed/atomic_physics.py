@@ -6,12 +6,10 @@ double-counting correction.
 
 import itertools
 from math import pi, sqrt
-from typing import Optional
 
 import numpy as np
-from sympy.physics.wigner import gaunt, wigner_3j
 from sympy import Rational
-
+from sympy.physics.wigner import gaunt, wigner_3j
 
 from impurityModel.ed.operator_algebra import addOps
 

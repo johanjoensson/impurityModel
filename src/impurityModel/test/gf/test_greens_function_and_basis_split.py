@@ -587,10 +587,12 @@ def test_every_gf_stage_of_a_calculation_runs_at_one_auto_cap(monkeypatch):
     for grown in (0, 1 * 2**20):
         resident["bytes"] = grown
         observed = []
-        run_units_distributed(basis, seeds, weights, lambda b, u, s: observed.append(float(b.truncation_threshold)))
+        run_units_distributed(
+            basis, seeds, weights, lambda b, u, s, observed=observed: observed.append(float(b.truncation_threshold))
+        )
         stages.append(observed)
-    first = {c for c in stages[0]}
-    assert len(first) == 1 and first == {c for c in stages[1]}, stages
+    first = set(stages[0])
+    assert len(first) == 1 and first == set(stages[1]), stages
 
 
 def test_the_serial_gf_path_uses_the_gf_cap_and_restores_the_ground_state_cap():
@@ -659,7 +661,7 @@ def test_split_basis_replicates_full_basis_across_lopsided_colors_mpi():
             if comm.rank == 0:
                 amps = rng.standard_normal(len(all_sd)) + 1j * rng.standard_normal(len(all_sd))
                 expected_norm2 += float(np.sum(np.abs(amps) ** 2))
-                blk = ManyBodyState.from_states([ManyBodyState({sd: a for sd, a in zip(all_sd, amps)})])
+                blk = ManyBodyState.from_states([ManyBodyState(dict(zip(all_sd, amps)))])
             else:
                 blk = ManyBodyState(width=1)
             seeds.append(blk)

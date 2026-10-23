@@ -20,10 +20,9 @@ import numpy as np
 from mpi4py import MPI
 
 import impurityModel.ed.greens_function as gf
-from impurityModel.ed import config
+from impurityModel.ed import config, gf_solvers
 from impurityModel.ed.average import ThermalEnsemble
 from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
-from impurityModel.ed import gf_solvers
 from impurityModel.ed.gf_solvers import _freeze_bicgstab_support, solve_shifted_block
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.ManyBodyUtils import applyOp as applyOp_test

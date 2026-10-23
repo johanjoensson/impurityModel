@@ -24,9 +24,8 @@ from impurityModel.ed.basis_transcription import (
     build_vector,
     iter_local_operator_images,
 )
-from impurityModel.ed.BlockLanczosCore import block_lanczos
-from impurityModel.ed.BlockLanczosCore import apply_and_redistribute
 from impurityModel.ed.BiCGSTAB import block_bicgstab
+from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, block_lanczos
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.gf_admission import solve_point_outer
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
@@ -977,18 +976,19 @@ def block_Green_sparse(
         cap_info["retained_size"] = None
         cap_info["proxy"] = None
 
+    n_blocks = 0 if alphas is None else len(alphas)
     if not converged_flag[0] and rank == 0:
         print(
             f"warning: block Green's function did not reach the convergence tolerance "
             f"{delta_min:.1e}; the block-Lanczos recurrence was truncated "
-            f"after {len(alphas)} block(s) (divergent tail). The continued fraction uses the "
+            f"after {n_blocks} block(s) (divergent tail). The continued fraction uses the "
             f"subspace built so far.",
             flush=True,
         )
     if info is not None:
         info["converged"] = converged_flag[0]
         info["d_g"] = last_dg[0]
-        info["n_blocks"] = len(alphas)
+        info["n_blocks"] = n_blocks
         info["tol"] = delta_min
 
     alphas, betas = _trim_blocks(alphas, betas, widths)

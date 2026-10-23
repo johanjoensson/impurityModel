@@ -716,11 +716,12 @@ class MatvecExchangePlan:
     """One matvec's worth of sparse reduce-scatter over the coupling graph of ``H``.
 
     The distributed array kernels (``block_lanczos``, ``block_apply``'s array branch) hold
-    ``H`` as a ``DistributedSparseMatrix`` of shape ``(global_N, N_local)`` -- every global row, this rank's columns -- so a block matvec is
-    a reduce-scatter: rank ``s`` contributes ``H[rows of d, cols of s] @ V_s`` to every destination
-    ``d``. ``routing_hash`` is linear in the occupied orbitals, so an operator term shifts an owner
-    by a constant and most of those contributions are structurally zero (measured 11% dense at 256
-    ranks on SrMnO3). This plan sends only the nonzero ones, over one ``Neighbor_alltoallv`` per
+    ``H`` as a ``DistributedSparseMatrix`` of shape ``(global_N, N_local)`` -- every global row, this
+    rank's columns -- so a block matvec is a reduce-scatter: rank ``s`` contributes
+    ``H[rows of d, cols of s] @ V_s`` to every destination ``d``. ``routing_hash`` is linear in the
+    occupied orbitals, so an operator term shifts an owner by a constant and most of those
+    contributions are structurally zero (measured 11% dense at 256 ranks on SrMnO3). This plan
+    sends only the nonzero ones, over one ``Neighbor_alltoallv`` per
     column round on a cached distributed-graph communicator, and sums what arrives in a fixed
     source order -- deterministic, independent of MPI's reduction trees.
 

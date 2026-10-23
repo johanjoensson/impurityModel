@@ -257,7 +257,7 @@ def test_tsqr_recovers_when_gesdd_fails(monkeypatch):
     A = _block(200, 3, seed=31)
     A = np.hstack([A, 2.0 * A[:, :1]])  # rank 3, one exactly dependent column
     with pytest.warns(RuntimeWarning):
-        Q, beta, k, sv = tsqr(A, scale=1.0)
+        Q, beta, k, _sv = tsqr(A, scale=1.0)
     assert k == 3
     np.testing.assert_allclose(A, Q @ beta, atol=1e-12 * np.linalg.norm(A))
     np.testing.assert_allclose(Q.conj().T @ Q, np.eye(k), atol=inner_atol(Q.shape[0], 1.0))
@@ -313,7 +313,8 @@ def test_seeds_floor_is_looser_than_the_default():
     """Measured on the RIXS tensor benchmark, symmetry-dependent components are discarded at
     ``sigma/sigma_max`` up to 1.2e-9 — four orders above the default floor. The seeds floor
     has to sit above that with room for the rounding to grow with the basis."""
-    assert DEFLATE_TOL_SEEDS > 1e-6 > 1e-9 > DEFLATE_TOL
+    assert DEFLATE_TOL_SEEDS > 1e-6
+    assert DEFLATE_TOL < 1e-9
 
 
 def test_block_tsqr_forwards_the_rank_floor():

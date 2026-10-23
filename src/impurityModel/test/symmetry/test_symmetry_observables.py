@@ -1542,7 +1542,7 @@ def test_make_impurity_casimir_operators_per_shell_sums_to_the_totals():
     from impurityModel.ed.observables import make_impurity_casimir_operators
 
     impurity_orbitals, rot_to_spherical, _, _ = _two_shell_fixture()
-    l_ops, s_ops, j_ops, per_shell_ops = make_impurity_casimir_operators(
+    l_ops, s_ops, _j_ops, per_shell_ops = make_impurity_casimir_operators(
         impurity_orbitals, rot_to_spherical, per_shell=True
     )
     assert set(per_shell_ops) == {1, 2}
@@ -1780,9 +1780,8 @@ def test_print_thermal_expectation_values_per_shell_table(capsys):
     """The per-shell table appears (only) for a multi-shell impurity, with the correct
     per-shell N/Lz/Sz values and a total row, and Casimir/term columns populated from
     shell_casimir when given."""
-    from impurityModel.ed.observables import print_thermal_expectation_values
-
     from impurityModel.ed.block_structure import BlockStructure
+    from impurityModel.ed.observables import print_thermal_expectation_values
 
     bs = BlockStructure(
         blocks=[list(range(6)), list(range(6, 16))],
@@ -1899,8 +1898,8 @@ def test_print_thermal_expectation_values_j_sharp_gate(capsys):
     """print_thermal_expectation_values(j_sharp=False) omits g_J/mu_eff from the scalar
     magnetism block and from the per-shell table, and both use the same (ungated-J)
     term -- the desync the Stage 4 review flagged must not happen."""
-    from impurityModel.ed.observables import print_thermal_expectation_values
     from impurityModel.ed.block_structure import BlockStructure
+    from impurityModel.ed.observables import print_thermal_expectation_values
 
     bs = BlockStructure(
         blocks=[list(range(6)), list(range(6, 16))],

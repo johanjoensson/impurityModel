@@ -124,7 +124,7 @@ def format_index_ranges(indices: Iterable[int]) -> str:
     str
         The compressed representation.
     """
-    values = sorted(set(int(i) for i in indices))
+    values = sorted({int(i) for i in indices})
     if not values:
         return "-"
     runs = []

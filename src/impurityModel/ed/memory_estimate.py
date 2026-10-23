@@ -40,6 +40,7 @@ headroom. Unmodeled at-scale overheads (MPI library buffers, transient redistrib
 buffers) are absorbed by ``DEFAULT_MEMORY_SAFETY``.
 """
 
+import math
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -242,7 +243,7 @@ class CapPolicy:
             return value
         if value is None:
             return cls(gs=None, gf=None, from_memory=True)
-        if isinstance(value, bool) or value != value or value < 1:
+        if isinstance(value, bool) or (isinstance(value, float) and math.isnan(value)) or value < 1:
             raise ValueError(f"a determinant cap must be None, inf or a positive number, got {value!r}")
         if not value < float("inf"):
             return cls(gs=value, gf=value, from_memory=True)
@@ -293,7 +294,7 @@ def parse_truncation_threshold(value):
                 f"truncation_threshold must be 'auto', 'unlimited' or a positive integer, got {value!r}"
             ) from None
     number = float(value)
-    if number != number or number < 1:  # NaN, -inf, 0 and negatives
+    if math.isnan(number) or number < 1:  # NaN, -inf, 0 and negatives
         raise ValueError(f"truncation_threshold must be 'auto', 'unlimited' or a positive integer, got {value!r}")
     if number == float("inf"):
         return float("inf")
@@ -1139,7 +1140,10 @@ def _connectivity_or_unmeasured(connectivity):
 
 
 def _connectivity_inputs(connectivity, nnz_per_state=None):
-    """``(nnz_per_state, selection_fanout, window_states)`` for :func:`estimate_gs_peak_bytes`; an explicit ``nnz_per_state`` wins."""
+    """``(nnz_per_state, selection_fanout, window_states)`` for :func:`estimate_gs_peak_bytes`.
+
+    An explicit ``nnz_per_state`` wins.
+    """
     nnz = connectivity.nnz_per_state if nnz_per_state is None else nnz_per_state
     return nnz, connectivity.selection_fanout, connectivity.window_states
 
@@ -1324,7 +1328,7 @@ def suggest_gs_truncation_threshold(
 #: Cap and memory messages of the current calculation, counted per kind ("gs-memory",
 #: "gf-memory", "gs-cap"), so one kind never silences another. Rank-local; the conditions that
 #: update it are replicated, and only rank 0 (of a GF color, its root) prints.
-_MEMORY_WARNINGS = {}
+_MEMORY_WARNINGS: dict[str, int] = {}
 
 
 def note_memory_warning(kind="memory"):

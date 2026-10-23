@@ -80,4 +80,3 @@ def test_the_dense_lowest_reference_is_the_same_state_at_every_shift():
 
     for amps in refs[1:]:
         assert abs(np.vdot(refs[0], amps)) > 1 - 1e-10, (refs[0], amps)
-

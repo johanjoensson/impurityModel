@@ -322,7 +322,7 @@ def test_the_sector_energies_are_lowest_state_solves_and_the_record_carries_no_m
     ``ground_state_manifold`` / ``manifold_spread`` / ``manifold_states`` (the flag and the spread it
     guarded are gone -- a sector is solved for its lowest state alone, so the reported occupation is
     that state's, the one Hellmann-Feynman relates ``d(energy)/dmu`` to)."""
-    import impurityModel.ed.cipsi_solver as cipsi_solver
+    from impurityModel.ed import cipsi_solver
 
     def forbidden(*args, **kwargs):
         raise AssertionError("a sector solve ran a window solve")
@@ -475,9 +475,10 @@ def test_ground_state_basis_reports_its_sector_because_the_basis_cannot():
 
     The CIPSI expansion widens the impurity occupation window (``build_excited_restrictions`` is
     called with ``imp_change=None``, which its own docstring defines as unconstrained), and
-    So the returned basis spans several impurity occupations and *no* determinant identifies the sector -- reading one, as
-    ``fixed_peak_dc`` used to, centred the peak on whichever came first. The winning occupation
-    has to be carried out of the search explicitly, which is what ``ground_state_occupation`` is.
+    So the returned basis spans several impurity occupations and *no* determinant identifies the
+    sector -- reading one, as ``fixed_peak_dc`` used to, centred the peak on whichever came first.
+    The winning occupation has to be carried out of the search explicitly, which is what
+    ``ground_state_occupation`` is.
     """
     from impurityModel.ed import product_state_representation as psr
 

@@ -349,9 +349,8 @@ def test_an_f_shell_crystal_field_model_solves(write, tmp_path):
     bath is a 20-determinant space) while still being a 14-spin-orbital impurity. Even so
     this is the slowest test in the file, around ten seconds: fourteen Green's functions.
     """
-    from mpi4py import MPI
-
     import h5py
+    from mpi4py import MPI
 
     from impurityModel.ed.get_spectra import run_spectra
 

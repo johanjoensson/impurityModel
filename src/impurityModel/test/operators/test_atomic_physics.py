@@ -6,10 +6,10 @@ from impurityModel.ed.atomic_physics import (
     gauntC,
     get2p3dSlaterCondonUop,
     get_spherical_2_cubic_matrix,
-    n_octahedral_splittings,
-    octahedral_level_structure,
     getUop,
     getUop_from_rspt_u4,
+    n_octahedral_splittings,
+    octahedral_level_structure,
     slater_condon_Uop,
     uj_from_u4,
 )
@@ -77,7 +77,7 @@ def test_slater_condon_Uop_without_a_core_shell():
 
 
 def test_slater_condon_Uop_cross_checks_array_lengths():
-    with pytest.raises(ValueError, match="l_core=1 requires 3|requires 3"):
+    with pytest.raises(ValueError, match=r"l_core=1 requires 3|requires 3"):
         slater_condon_Uop(2, 1, (7.5, 0, 9.9, 0, 6.6), Fcc=(0.0,) * 5)
     with pytest.raises(ValueError, match="no core shell"):
         slater_condon_Uop(2, None, (7.5, 0, 9.9, 0, 6.6), Fcc=(0.0,) * 3)
@@ -295,7 +295,7 @@ def test_an_untabulated_shell_says_why_rather_than_failing_on_an_unbound_name(l)
     """It used to fall off the end of the if/elif chain and raise UnboundLocalError."""
     with pytest.raises(ValueError, match="l=3"):
         get_spherical_2_cubic_matrix(l=l)
-    with pytest.raises(ValueError, match="irrep appears more than once|Implemented"):
+    with pytest.raises(ValueError, match=r"irrep appears more than once|Implemented"):
         octahedral_level_structure(l)
 
 

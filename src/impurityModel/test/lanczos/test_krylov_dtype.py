@@ -112,7 +112,7 @@ def _run(siam, reort, dtype):
         max_iter=sector // len(psi),
         return_widths=True,
         return_status=True,
-        store_krylov=reort != False,
+        store_krylov=reort,
         krylov_dtype=dtype,
     )
     return alphas, betas, q, status

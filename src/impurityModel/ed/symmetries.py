@@ -106,7 +106,7 @@ def check_kramers_degeneracy(h_dense, rtol=None):
         sorted by energy. Empty if ``h_dense`` is Kramers-degenerate to within ``rtol``.
     """
     if rtol is None:
-        from impurityModel.ed.h0_format import DEFAULT_DROP_TOLERANCE as rtol  # noqa: PLC0415
+        from impurityModel.ed.h0_format import DEFAULT_DROP_TOLERANCE as rtol
 
     w = np.linalg.eigvalsh(h_dense)
     if w.size == 0:
@@ -1374,7 +1374,8 @@ def conserved_parities(op, tol=PARITY_TERM_TOL):
     # Gauss-Jordan elimination over GF(2): `pivots[p]` has its leading bit at `p`, and no other
     # pivot row has bit `p` set.
     pivots = {}
-    for v in sorted(flips):
+    for flip in sorted(flips):
+        v = flip
         for p, row in pivots.items():
             if v >> p & 1:
                 v ^= row

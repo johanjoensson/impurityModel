@@ -35,7 +35,6 @@ ill-conditioned / near-degenerate problems that exercise the failure path.
 import numpy as np
 import scipy.linalg as la
 
-from impurityModel.ed.BlockLanczos import block_lanczos
 from impurityModel.ed.BlockLanczosArray import (
     block_lanczos,
 )

@@ -539,9 +539,8 @@ def _select_oracle(blk, cols):
     w = blk.width
     cols = list(cols)
     Y = np.zeros((w, len(cols)), dtype=complex)
-    for k, c in enumerate(cols):
-        if c < 0:
-            c += w
+    for k, col in enumerate(cols):
+        c = col + w if col < 0 else col
         Y[c, k] = 1.0
     return blk.combine_columns(Y)
 

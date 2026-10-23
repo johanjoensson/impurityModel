@@ -431,8 +431,8 @@ def _naive_impurity_rdm(psis, n_orb, imp_idx, width):
     """
     from math import comb as _comb
 
-    from impurityModel.ed.gs_statistics import _combination_rank
     from impurityModel.ed import product_state_representation as _psr
+    from impurityModel.ed.gs_statistics import _combination_rank
 
     imp_set = set(imp_idx)
     bath = [i for i in range(n_orb) if i not in imp_set]

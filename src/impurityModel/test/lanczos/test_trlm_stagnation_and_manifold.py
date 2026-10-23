@@ -29,11 +29,9 @@ happened.
 """
 
 import numpy as np
-import pytest
 
 from impurityModel.ed import trlm as trlm_mod
 from impurityModel.ed.trlm import trlm
-from impurityModel.test.support.lanczos_fixtures import MockBasis
 
 
 def _split_spectrum(n=64, seed=5):

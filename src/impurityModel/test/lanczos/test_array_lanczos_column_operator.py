@@ -17,8 +17,8 @@ import pytest
 import scipy.sparse as sps
 from mpi4py import MPI
 
-from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.BlockLanczosArray import block_lanczos
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.test.support.lanczos_fixtures import _contiguous_counts_with_empty_last
 
 GLOBAL_N = 23

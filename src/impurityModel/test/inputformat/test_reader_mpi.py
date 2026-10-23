@@ -62,7 +62,6 @@ def test_only_rank_zero_touches_the_filesystem(tmp_path, monkeypatch):
     comm = MPI.COMM_WORLD
     path = _shared_input(tmp_path)
     if comm.rank != 0:
-        original = pathlib.Path.read_text
 
         def forbidden(self, *args, **kwargs):
             raise AssertionError(f"rank {comm.rank} read {self}, but only rank 0 may parse")

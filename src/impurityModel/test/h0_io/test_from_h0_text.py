@@ -180,7 +180,7 @@ def test_from_h0_text_carries_the_bath_split_and_rotation(tmp_path):
 
 
 def test_from_h0_text_reads_the_legacy_format_when_given_n_imp(tmp_path):
-    path, h = _d_shell_file(tmp_path)
+    _path, h = _d_shell_file(tmp_path)
     legacy = tmp_path / "legacy_h0_op.dict"
     legacy.write_text(
         "\n".join(

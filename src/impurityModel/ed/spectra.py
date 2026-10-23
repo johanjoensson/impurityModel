@@ -253,12 +253,11 @@ def simulate_spectra(
             return [ManyBodyOperator(t) for t in tOp_dicts]
         return [_rotate_op(t, rotation) for t in tOp_dicts]
 
-    if xps or xas or rixs:
-        if l_core is None:
-            raise ValueError(
-                "XPS, XAS and RIXS all need a core hole, but no core shell was given "
-                "(l_core is None). Disable them, or build a model with a core shell."
-            )
+    if (xps or xas or rixs) and l_core is None:
+        raise ValueError(
+            "XPS, XAS and RIXS all need a core hole, but no core shell was given "
+            "(l_core is None). Disable them, or build a model with a core shell."
+        )
 
     if rotation is not None and correlated_block_structure is not None:
         correlated_groups = _pes_ips_equivalence_groups(nBaths, l_valence, correlated_block_structure)

@@ -40,7 +40,7 @@ def test_a_non_positive_rixs_broadening_still_disables_it_when_unset():
 @pytest.mark.parametrize("technique", ["pes", "xps", "xas", "rixs", "nixs"])
 def test_each_technique_can_be_the_only_one(technique):
     """The capability that did not exist at all before: ask for exactly one spectrum."""
-    off = {name: False for name in ("pes", "xps", "xas", "rixs", "nixs")}
+    off = dict.fromkeys(("pes", "xps", "xas", "rixs", "nixs"), False)
     options = SpectraOptions(**{**off, technique: True}, radial=(np.linspace(0, 1, 4), np.ones(4), np.ones(4)))
     switches, _ = resolve_spectra_switches(options)
     assert switches[technique] is True

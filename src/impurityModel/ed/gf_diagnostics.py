@@ -684,7 +684,7 @@ def check_ground_state_truncation(truncation, convergence) -> Diagnostic:
     measured = residual is not None and residual > 0.0 and current
     bias = (
         f"residual PT2 {value:.2e}, so the gap may be too small by at most ~{2 * residual:.2e}"
-        if measured
+        if measured and residual is not None
         else "residual PT2 not measured on the kept basis"
     )
     if memory_bound:

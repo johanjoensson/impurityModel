@@ -27,7 +27,7 @@ N_IMP = 4  # two spatial orbitals, down-then-up: 0, 1 down; 2, 3 up
 N_ORB = 2 * N_IMP  # one valence bath site per impurity spin-orbital
 N_ELECTRONS = 6  # d2 with the bath full
 IMPURITY_ORBITALS = {0: [list(range(N_IMP))]}
-BATH_STATES = ({0: [list(range(N_IMP, N_ORB))]}, {0: []})
+BATH_STATES: tuple[dict, dict] = ({0: [list(range(N_IMP, N_ORB))]}, {0: []})
 
 
 @pytest.fixture(autouse=True)

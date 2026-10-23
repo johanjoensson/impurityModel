@@ -88,7 +88,7 @@ def test_the_thermal_manifold_is_every_state_inside_the_window(comm, dense_cutof
 @pytest.mark.parametrize("comm", COMMS)
 def test_the_walk_asks_for_the_lowest_state_only(comm, monkeypatch):
     """Every trial sector is a ``Lowest`` solve: window mode (and its certificate) never runs in the walk."""
-    import impurityModel.ed.cipsi_solver as cipsi_solver
+    from impurityModel.ed import cipsi_solver
 
     def forbidden(*args, **kwargs):
         raise AssertionError("the occupation walk ran a window solve")

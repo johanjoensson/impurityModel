@@ -165,9 +165,8 @@ def test_a_key_belonging_to_another_shell_is_still_an_error(write):
 
 def test_a_hubbard_i_model_solves(write, tmp_path):
     """The cheapest complete calculation this package can do: no bath, PES only."""
-    from mpi4py import MPI
-
     import h5py
+    from mpi4py import MPI
 
     from impurityModel.ed.get_spectra import run_spectra
 

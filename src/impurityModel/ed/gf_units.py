@@ -151,8 +151,9 @@ def measure_gf_row_fanout(basis, hOp):
     ``hOp.apply_block`` on a unit-amplitude width-1 block over the ground-state basis, divided by
     the block's rows), repeated for this workload instead of borrowed from SrMnO3: a strided sample
     of up to :data:`_ROW_FANOUT_SAMPLE_DETS` determinants, each rank contributing its share, applied
-    on rank 0 (thinned so the image stays under :data:`_ROW_FANOUT_MAX_ROWS` rows). Not each rank's own local block -- at 128 ranks that is ~2k determinants, whose
-    images barely overlap, and would read ~2x high. Collective on ``basis.comm``; the result is
+    on rank 0 (thinned so the image stays under :data:`_ROW_FANOUT_MAX_ROWS` rows). Not each rank's
+    own local block -- at 128 ranks that is ~2k determinants, whose images barely overlap, and
+    would read ~2x high. Collective on ``basis.comm``; the result is
     broadcast, so it is replicated.
     """
     comm = basis.comm
@@ -168,7 +169,7 @@ def measure_gf_row_fanout(basis, hOp):
         dets = [d for part in gathered for d in part]
 
         def fanout_of(subset):
-            return len(hOp.apply_block(ManyBodyState({d: 1.0 for d in subset}), 0.0)) / len(subset)
+            return len(hOp.apply_block(ManyBodyState(dict.fromkeys(subset, 1.0)), 0.0)) / len(subset)
 
         if dets:
             # Strided subsets of the (already strided) sample. A smaller block over-states the
@@ -243,7 +244,7 @@ def _auto_gf_cap(basis, rank_counts, width, reort, gf_method, resident_bytes):
             resident_bytes=resident_bytes,
             row_fanout=_row_fanout(basis),
         )
-        for ranks in sorted(set(int(r) for r in rank_counts))
+        for ranks in sorted({int(r) for r in rank_counts})
     )
 
 

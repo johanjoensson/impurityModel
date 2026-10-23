@@ -6,9 +6,9 @@ combine h0 with SOC, magnetic field, Coulomb, and double counting.
 
 import json
 import os
-from collections.abc import Mapping
 import pickle
 from collections import OrderedDict
+from collections.abc import Mapping
 from typing import NamedTuple
 
 import numpy as np

@@ -40,7 +40,7 @@ def test_the_measured_fanout_is_the_whole_block_one_and_the_same_on_every_rank()
     dets = _all_dets()
     op = _operator()
     got = gf_units.measure_gf_row_fanout(_basis(dets, comm), op)
-    want = len(op.apply_block(ManyBodyState({d: 1.0 for d in dets}), 0.0)) / len(dets)
+    want = len(op.apply_block(ManyBodyState(dict.fromkeys(dets, 1.0)), 0.0)) / len(dets)
     assert got == pytest.approx(want)
     assert len(set(comm.allgather(got))) == 1
 

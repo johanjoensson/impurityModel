@@ -32,8 +32,8 @@ import pytest
 from mpi4py import MPI
 
 from impurityModel.ed.basis_transcription import build_sparse_matrix
-from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
 from impurityModel.ed.manybody_basis import Basis
+from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
 
 # 6 spin-orbitals: 0,1 = impurity (dn, up); 2,3 = bath site 1; 4,5 = bath site 2.
 N_ORB = 6
@@ -41,7 +41,7 @@ _IMP = frozenset({0, 1})
 _UP = (1, 3, 5)
 _DN = (0, 2, 4)
 # 2*S_z weights: +1 on the up orbitals, -1 on the down ones.
-_SZ2_WEIGHTS = {o: 1 for o in _UP} | {o: -1 for o in _DN}
+_SZ2_WEIGHTS = dict.fromkeys(_UP, 1) | dict.fromkeys(_DN, -1)
 # A deliberately non-uniform weighted sum: the impurity counted double, the bath once.
 _DOUBLED_IMP_WEIGHTS = {0: 2, 1: 2, 2: 1, 3: 1, 4: 1, 5: 1}
 

@@ -27,10 +27,10 @@ from typing import Optional, Union
 
 __all__ = [
     "ANY",
-    "UnsupportedCalculation",
-    "InvalidShellCombination",
-    "SUPPORTED",
     "CORE_LEVEL_TECHNIQUES",
+    "SUPPORTED",
+    "InvalidShellCombination",
+    "UnsupportedCalculation",
     "check",
     "edge_name",
 ]
@@ -68,7 +68,7 @@ class Supported:
     """
 
     calculation: str
-    core_l: Union[int, None, str]
+    core_l: Union[int, str, None]
     valence_l: Union[int, str]
     why: str
 

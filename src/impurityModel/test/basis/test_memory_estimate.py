@@ -408,8 +408,11 @@ def test_krylov_dtype_halves_the_store_term_and_raises_the_cap():
 
     import impurityModel.ed.memory_estimate as mem
 
+    def _sixteen_gib(comm=None):
+        return 16 * 2**30
+
     orig = mem.available_bytes_per_rank
-    mem.available_bytes_per_rank = lambda c: 16 * 2**30
+    mem.available_bytes_per_rank = _sixteen_gib
     try:
         comm = SimpleNamespace(size=4)
         lo = me.max_unit_dets_within_budget(106, 2, True, 4, comm)

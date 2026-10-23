@@ -661,7 +661,7 @@ class CIPSISolver:
         n_rows = len(block)
         bounds = np.linspace(0, n_rows, int(n_chunks) + 1).astype(int)
         merged = None
-        for lo, hi in zip(bounds[:-1], bounds[1:]):
+        for lo, hi in itertools.pairwise(bounds):
             # `row_slice` allocates exactly this chunk's rows. The earlier spelling
             # (`block.copy()` then `keep_rows(mask)`) allocated a FULL-SIZE duplicate of the
             # reference block per chunk -- `keep_rows` shrinks the logical length but not the
@@ -1583,7 +1583,7 @@ class CIPSISolver:
         # converged energies below.
         deg_tol = _degeneracy_tol(self._eig_scale(), slaterWeightMin)
         _trace_note("eigensolve_block_width", p=int(warm.shape[1] + self.n_random), num_wanted=int(num_wanted))
-        with _trace_timed("eigensolve", n=int(len(self.basis)), window=float(max_energy)):
+        with _trace_timed("eigensolve", n=len(self.basis), window=float(max_energy)):
             eig = solve_window(
                 H_mat,
                 self.basis.comm if self.basis.is_distributed else None,

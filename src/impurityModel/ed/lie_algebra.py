@@ -765,7 +765,6 @@ def _residual_r_factor(Ts, gens, q_t, n_orb):
     that subspace, not on the basis: see :func:`component_symmetry_reduction`.
     """
     n_gen = len(gens)
-    n_rows_per_component = n_orb * n_orb
     n_q = q_t.shape[1]
 
     # Pass 1: projection coefficients, without ever forming a commutator.

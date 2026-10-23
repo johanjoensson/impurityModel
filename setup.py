@@ -1,9 +1,8 @@
 import os
 
 import setuptools
-from setuptools import Extension
-
 from Cython.Build import cythonize
+from setuptools import Extension
 
 include_dirs = []
 

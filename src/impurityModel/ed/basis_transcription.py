@@ -457,10 +457,7 @@ class MatrixSnapshot:
         self.mat = mat
         self.key = key
         self.keys = basis._keys.copy()
-        if basis.is_distributed:
-            counts = basis.comm.allgather(len(basis._keys))
-        else:
-            counts = [len(basis._keys)]
+        counts = basis.comm.allgather(len(basis._keys)) if basis.is_distributed else [len(basis._keys)]
         self.offsets = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
 
 
@@ -504,7 +501,7 @@ def _columns_of(basis, op, local_cols):
                 batch_cols.append(np.full(len(ks), col, dtype=np.int64))
                 batch_vals.append(np.asarray(ket)[:, 0].copy())
             rows = np.fromiter(basis._index_sequence(bras), dtype=np.int64, count=len(bras))
-            if len(bras):
+            if bras:
                 keep = rows != basis.size
                 rows_out.append(rows[keep])
                 cols_out.append(np.concatenate(batch_cols)[keep])

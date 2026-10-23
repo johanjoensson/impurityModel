@@ -10,8 +10,6 @@ momentum silently gets wrong -- an omitted core array used to be replaced by a `
 placeholder, and every array length is an assertion about ``l_core``.
 """
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
@@ -264,9 +262,8 @@ def test_a_k_edge_actually_solves_and_produces_weight(small_p_shell_h0, write, t
     shell gives an identically zero XAS, which is exactly what the L2,3-only code did when its
     two shells arrived in the wrong dict order.
     """
-    from mpi4py import MPI
-
     import h5py
+    from mpi4py import MPI
 
     from impurityModel.ed.get_spectra import run_spectra
 

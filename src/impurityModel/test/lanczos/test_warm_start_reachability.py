@@ -72,7 +72,7 @@ def test_lowest_on_the_dense_branch_returns_exactly_one_state():
     size rather than by the request. This is the branch every double-counting sector solve and
     every occupation-walk trial takes on a basis below ``dense_cutoff``.
     """
-    basis, solver = _make_solver()
+    _basis, solver = _make_solver()
 
     e_ref, psi_refs = solver.get_eigenvectors(_h_op(), Lowest())
 
@@ -95,7 +95,7 @@ def _uniform_refs(basis, value):
     to hand ``get_eigenvectors`` a block in a specific numerical state on every rank, and a
     redistribute would sum replicas and change the value (see the note on ``_warm_refs``).
     """
-    return [ManyBodyState({det: value for det in basis.local_basis}, width=1)]
+    return [ManyBodyState(dict.fromkeys(basis.local_basis, value), width=1)]
 
 
 def _exact_energies():
@@ -128,7 +128,7 @@ def test_a_warm_block_in_the_wrong_sector_still_finds_the_true_ground_state():
 
 
 def test_a_cold_start_finds_the_true_ground_state():
-    basis, solver = _make_solver()
+    _basis, solver = _make_solver()
     e_ref, _ = solver.get_eigenvectors(_h_op(), Within(CUT), dense_cutoff=1)
     assert abs(float(np.min(e_ref.real)) - _exact_energies()[0]) < 1e-9
 

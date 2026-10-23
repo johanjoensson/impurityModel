@@ -70,7 +70,7 @@ def _siam_offdiag():
 
 
 _OFFDIAG_IMP = {0: [[0, 1]]}
-_OFFDIAG_BATHS = ({0: [[2, 3]]}, {0: [[]]})
+_OFFDIAG_BATHS: tuple[dict, dict] = ({0: [[2, 3]]}, {0: [[]]})
 
 
 def _dense_lehmann_setup(hOp, impurity_orbitals, bath_states, n_orb, impurity_indices, comm=None):

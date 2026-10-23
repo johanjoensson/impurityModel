@@ -70,9 +70,6 @@ except ImportError:  # pragma: no cover
     __version__ = "unknown"
 
 __all__ = [
-    "apply_environment",
-    "find_environment_file",
-    "load_environment",
     "BasisOptions",
     "DoubleCountingUnreachable",
     "ImpurityModel",
@@ -81,6 +78,7 @@ __all__ = [
     "SpectraOptions",
     "__version__",
     "amf_dc",
+    "apply_environment",
     "atomic_u4",
     "calc_selfenergy",
     "calc_susceptibility_workflow",
@@ -88,10 +86,12 @@ __all__ = [
     "dc_spread",
     "discretized_impurity_occupation",
     "emit_dc_record",
+    "find_environment_file",
     "fixed_gap_dc",
     "fixed_occupation_dc",
     "fixed_peak_dc",
     "fll_dc",
+    "load_environment",
     "load_selfenergy_archive",
     "matrixToIOp",
     "nominal_dc",

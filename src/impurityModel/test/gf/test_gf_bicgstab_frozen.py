@@ -343,7 +343,7 @@ class _SkewedComm:
 
     def Allreduce(self, sendbuf, recvbuf, op=MPI.SUM):
         self._comm.Allreduce(sendbuf, recvbuf, op=op)
-        out = recvbuf if sendbuf is MPI.IN_PLACE else recvbuf
+        out = recvbuf
         if isinstance(out, np.ndarray) and out.dtype.kind == "f":
             out *= 1.0 + 1e-15 * self._comm.rank
 

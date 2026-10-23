@@ -9,8 +9,7 @@ import pytest
 
 from impurityModel.ed.average import k_B
 from impurityModel.ed.h0_format import RY_TO_EV
-from impurityModel.inputformat import reader
-from impurityModel.inputformat.capabilities import InvalidShellCombination, UnsupportedCalculation
+from impurityModel.inputformat.capabilities import InvalidShellCombination
 from impurityModel.inputformat.reader import InputError, load_input
 
 from .conftest import MINIMAL_SELFENERGY, MINIMAL_SPECTROSCOPY
@@ -126,7 +125,7 @@ def test_per_calculation_basis_defaults_are_not_shared(write_input):
 
 def test_an_unknown_key_at_or_below_our_minor_is_a_typo(write_input):
     text = MINIMAL_SPECTROSCOPY.replace("soc = 0.096", "sock = 0.096")
-    with pytest.raises(InputError, match="unknown key 'sock'.*Did you mean 'soc'"):
+    with pytest.raises(InputError, match=r"unknown key 'sock'.*Did you mean 'soc'"):
         load_input(write_input(text))
 
 
@@ -173,7 +172,7 @@ def test_an_archive_refuses_tables_it_would_override(write_input):
 def test_a_double_counting_scheme_the_driver_would_ignore_is_refused(write_input):
     """R1: run_spectra never reads model.dc, so this would be a silent no-op."""
     text = MINIMAL_SPECTROSCOPY.replace("[double_counting.mlft]\nc = 1.5", "[double_counting.fll]\nu = 7.5\nj = 0.9")
-    with pytest.raises(InputError, match="never reads model.dc"):
+    with pytest.raises(InputError, match=r"never reads model\.dc"):
         load_input(write_input(text))
 
 

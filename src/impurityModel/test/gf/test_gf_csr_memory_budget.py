@@ -96,8 +96,8 @@ def test_the_budgets_are_re_derived_before_every_unit(monkeypatch, scheduler):
 
 def test_the_serial_path_re_derives_them_too(monkeypatch):
     from impurityModel.ed.gf_units import run_units_distributed
-    from impurityModel.test.basis.test_sparse_matrix_build import _all_dets, _basis
     from impurityModel.ed.ManyBodyUtils import ManyBodyState
+    from impurityModel.test.basis.test_sparse_matrix_build import _all_dets, _basis
 
     free = {"bytes": 64 * 2**30}
 

@@ -32,7 +32,6 @@ import tomllib
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
 
 from impurityModel.ed import config
 from impurityModel.ed.average import k_B
@@ -41,14 +40,14 @@ from impurityModel.inputformat import capabilities, schema
 from impurityModel.inputformat.schema import UNSET, Kind
 
 __all__ = [
-    "InputError",
-    "ResolvedInput",
-    "load_input",
-    "load_environment",
-    "apply_environment",
-    "find_environment_file",
     "ENVIRONMENT_FILENAME",
     "ENVIRONMENT_PATH_VAR",
+    "InputError",
+    "ResolvedInput",
+    "apply_environment",
+    "find_environment_file",
+    "load_environment",
+    "load_input",
 ]
 
 
@@ -695,7 +694,6 @@ def _resolve_tau(resolved, raw):
 
 def _cross_check(resolved, raw):
     """Checks that need more than one table, run after everything is resolved."""
-    warnings = resolved.warnings
 
     resolved.tables["temperature"]["tau"] = _resolve_tau(resolved, raw)
 

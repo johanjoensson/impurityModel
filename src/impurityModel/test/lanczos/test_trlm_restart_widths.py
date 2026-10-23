@@ -39,13 +39,12 @@ try:
 except ImportError:  # pragma: no cover - mpi4py is a hard dependency in practice
     _has_mpi = False
 
-from impurityModel.ed.trlm import _thick_restart_block_lanczos_array
-from impurityModel.ed.trlm import check_width_sync as _check_width_sync
 from impurityModel.ed.BlockLanczosArray import block_normalize
-from impurityModel.ed.trlm import thick_restart_block_lanczos
 from impurityModel.ed.greens_function import _trim_blocks
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
-from impurityModel.test.support.lanczos_fixtures import MockBasis, deflating_start_block
+from impurityModel.ed.trlm import _thick_restart_block_lanczos_array, thick_restart_block_lanczos
+from impurityModel.ed.trlm import check_width_sync as _check_width_sync
+from impurityModel.test.support.lanczos_fixtures import deflating_start_block
 
 # A spectrum with three eigenvalues inside 2e-9 of each other. Under reort=NONE the
 # recurrence cannot keep them apart: the Krylov basis loses orthogonality entirely

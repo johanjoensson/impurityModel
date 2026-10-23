@@ -67,15 +67,15 @@ class AIM:
     # for any model built on this layout rather than only the one that was written first.
     n_imp: int = N_IMP
     n_electrons: int = 0
-    sector0: tuple = None  # (n_up, n_dn) of the ground-state sector
+    sector0: tuple | None = None  # (n_up, n_dn) of the ground-state sector
     eps_d: float = 0.0
-    levels: np.ndarray = None  # one impurity spin-orbital's bath levels
-    couplings: np.ndarray = None  # ... and their hybridization amplitudes
-    exact_e0: float = None  # the exact sector minimum when the ground state was truncated
-    h1: np.ndarray = None  # the one-body matrix (real symmetric): impurity block, coupling, bath block
-    interaction: dict = None  # the two-body terms, which live on the impurity only
+    levels: np.ndarray | None = None  # one impurity spin-orbital's bath levels
+    couplings: np.ndarray | None = None  # ... and their hybridization amplitudes
+    exact_e0: float | None = None  # the exact sector minimum when the ground state was truncated
+    h1: np.ndarray | None = None  # the one-body matrix (real symmetric): impurity block, coupling, bath block
+    interaction: dict | None = None  # the two-body terms, which live on the impurity only
     basis_name: str = "star"
-    keep: int = None  # determinants kept in the ground state (None = exact)
+    keep: int | None = None  # determinants kept in the ground state (None = exact)
     fermi: float = 0.0  # the chemical potential: bath levels below it are filled (used by the linked chain)
 
     @property

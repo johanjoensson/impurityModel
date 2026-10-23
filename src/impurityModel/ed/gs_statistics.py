@@ -407,7 +407,7 @@ def _merge_received(received, key_bytes):
     keys, groups, ns, n_es, ms, amps = [], [], [], [], [], []
     offset = 0
     for chunk in received:
-        if not chunk or len(chunk["m"]) == 0 and len(chunk["keys"]) == 0:
+        if not chunk or (len(chunk["m"]) == 0 and len(chunk["keys"]) == 0):
             continue
         keys.append(chunk["keys"])
         groups.append(np.asarray(chunk["group"], dtype=np.int64) + offset)

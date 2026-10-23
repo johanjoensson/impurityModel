@@ -1,9 +1,13 @@
 import os
 
-from setuptools.build_meta import *
+from setuptools.build_meta import *  # noqa: F403  (this backend wraps and re-exports setuptools' hooks)
 from setuptools.build_meta import (
     get_requires_for_build_editable as _original_get_requires_for_build_editable,
+)
+from setuptools.build_meta import (
     get_requires_for_build_sdist as _original_get_requires_for_build_sdist,
+)
+from setuptools.build_meta import (
     get_requires_for_build_wheel as _original_get_requires_for_build_wheel,
 )
 

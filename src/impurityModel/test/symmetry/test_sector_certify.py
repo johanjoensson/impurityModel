@@ -9,7 +9,6 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.basis_transcription import build_sparse_matrix
 from impurityModel.ed.cipsi_solver import CIPSISolver
 from impurityModel.ed.eigensolvers import Lowest
 from impurityModel.ed.groundstate import build_basis_and_solver
@@ -539,7 +538,7 @@ def test_a_class_whose_state_left_its_class_is_marked_leaked_even_unstopped(monk
 
     monkeypatch.setattr(seed_sectors, "class_weight", lambda *args, **kwargs: 0.0)
     monkeypatch.setattr("impurityModel.ed.sector_solver._has_leaked", lambda *args: False)
-    _energy, plan, verdicts = _certify(_hamiltonian(), None)
+    _energy, _plan, verdicts = _certify(_hamiltonian(), None)
     classed = [v for v in verdicts if v.job.seed_class is not None]
     assert classed, "the fixture has no class expansions"
     assert all(v.stopped_early for v in classed)

@@ -45,7 +45,7 @@ def test_a_bound_expansion_buys_one_half_rung_to_measure_the_drift():
     one extra rung at half the cap puts a measured number on it. Two evaluations, not a ladder."""
     values = {512_000: 1.0, 256_000: 1.004}
     seen = []
-    cap, drift, rungs, status = resolve_cap_at_max(
+    cap, drift, _rungs, status = resolve_cap_at_max(
         lambda c: (seen.append(c), values[c])[1], 1e-2, memory_cap=512_000, bound_probe=lambda: True
     )
     assert seen == [512_000, 256_000]
@@ -64,7 +64,7 @@ def test_an_absent_probe_is_read_as_bound_not_as_converged():
     for probe in (None, lambda: None):
         seen = []
         _cap, _drift, _rungs, status = resolve_cap_at_max(
-            lambda c: (seen.append(c), 1.0)[1], 1e-2, memory_cap=8000, bound_probe=probe
+            lambda c, seen=seen: (seen.append(c), 1.0)[1], 1e-2, memory_cap=8000, bound_probe=probe
         )
         assert status == "cap_bound", "an unprobed run must not report itself converged"
         assert len(seen) == 2

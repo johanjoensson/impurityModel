@@ -440,7 +440,7 @@ def test_kernel_without_stop_on_freeze_runs_through_the_freeze():
 @pytest.mark.mpi
 def test_kernel_stops_at_the_freeze_on_the_same_step_on_every_rank():
     comm = MPI.COMM_WORLD
-    alphas, _, status, proxy, _ = _kernel_on_proxy(6, stop_on_freeze=True, comm=comm)
+    alphas, _, status, _proxy, _ = _kernel_on_proxy(6, stop_on_freeze=True, comm=comm)
     assert status == "frozen"
     assert len(set(comm.allgather(len(alphas)))) == 1
 
@@ -492,7 +492,7 @@ def test_a_memory_guard_freeze_runs_the_frozen_matrix_when_it_fits():
 
 
 def test_a_complex64_krylov_store_stays_on_the_sparse_kernel():
-    g, info = _run_capped(12, reort=True, krylov_dtype=np.complex64)
+    _g, info = _run_capped(12, reort=True, krylov_dtype=np.complex64)
     assert info["cap_hit"] and not info["csr_fallback"]
 
 

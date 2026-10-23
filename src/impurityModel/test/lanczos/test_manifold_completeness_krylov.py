@@ -56,7 +56,7 @@ def expanded():
     Module-scoped: the expansion is ~25 s and both tests want the same converged basis. Every
     rank builds it, collectively, at first use -- the same call the tests would make themselves.
     """
-    h_op, h_full, impurity_orbitals, bath_states = cubic_d_shell(n_bath_sets=1)
+    _h_op, h_full, impurity_orbitals, bath_states = cubic_d_shell(n_bath_sets=1)
     basis = Basis(
         impurity_orbitals,
         bath_states,

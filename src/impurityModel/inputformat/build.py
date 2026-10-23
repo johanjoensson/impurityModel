@@ -31,7 +31,7 @@ from impurityModel.ed.hamiltonian_io import cf_bath_blocks, cf_parameter_names
 from impurityModel.ed.memory_estimate import parse_truncation_threshold
 from impurityModel.inputformat.reader import InputError, shell_name
 
-__all__ = ["Built", "NO_ZEEMAN", "build", "deduce_bath_counts", "read_h0_header"]
+__all__ = ["NO_ZEEMAN", "Built", "build", "deduce_bath_counts", "read_h0_header"]
 
 #: What an omitted ``zeeman_splitting`` means: no field. Deliberately not the ``(0, 0, 1e-4)``
 #: symmetry-breaking nudge the spectra command line has always applied, and not ``None``
@@ -297,7 +297,7 @@ def _matrix_array(spec, size=None):
     raw = np.loadtxt(path)
     if spec.get("columns") == "re im" and raw.ndim == 2 and raw.shape[1] == 2:
         flat = raw[:, 0] + 1j * raw[:, 1]
-        side = int(round(np.sqrt(flat.size)))
+        side = round(np.sqrt(flat.size))
         return flat.reshape(side, side)
     return np.asarray(raw, dtype=complex)
 

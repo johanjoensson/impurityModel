@@ -17,8 +17,8 @@ The two questions have different scales and are now asked separately (``e3ad8c9`
 So the floor became *relative*: a warm start is refined until its residual reaches
 ``BREAKDOWN_TOL * ||H||``, i.e. a fixed relative accuracy, rather than a fixed absolute one.
 
-These tests pin that on **both** paths, since ``_trlm_core`` is path-agnostic and shares the sweep. The operator is scaled to ``||H|| ~ 3.8e5``
-so the warm start's residual sits well inside the *live* refinable window:
+These tests pin that on **both** paths, since ``_trlm_core`` is path-agnostic and shares the sweep.
+The operator is scaled to ``||H|| ~ 3.8e5`` so the warm start's residual sits well inside the *live* refinable window:
 
     BREAKDOWN_TOL * ||H|| = 3.8e-7  <  ||R0|| = 1.2e-6  <  sqrt(EPS) * ||H|| = 5.7e-3
 
@@ -41,11 +41,10 @@ try:
 except ImportError:  # pragma: no cover - mpi4py is a hard dependency in practice
     _has_mpi = False
 
-from impurityModel.ed.trlm import _thick_restart_block_lanczos_array
 from impurityModel.ed.BlockLanczosArray import BREAKDOWN_TOL, block_normalize
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+from impurityModel.ed.trlm import _thick_restart_block_lanczos_array
 from impurityModel.ed.TSQR import EPS
-from impurityModel.test.support.lanczos_fixtures import MockBasis
 
 _N = 400
 _N_ORB = 120  # the ManyBodyState path carries one determinant per orbital

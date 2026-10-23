@@ -218,13 +218,6 @@ def plot_spectra_in_file(filename, args=None):
         print("XAS spectrum (projected)")
         _plot_xas_projected(data["w"], data["XAS/projected"], args.export)
 
-    # Every group above is optional, and since each spectrum now has its own on/off switch a
-    # file legitimately holding only some of them is ordinary rather than broken. Say what is
-    # missing instead of drawing nothing: a silently empty plot reads as a bug in the run.
-    plotted = [
-        key for key in ("PS/spectra", "XPS/spectra", "NIXS/spectra", "XAS/tensor", "XAS/projected") if key in data
-    ]
-
     rixs_key = "RIXS/tensor" if "RIXS/tensor" in data else "RIXS/projected" if "RIXS/projected" in data else None
     if rixs_key is not None and not ("XAS/tensor" in data or "XAS/projected" in data):
         print(

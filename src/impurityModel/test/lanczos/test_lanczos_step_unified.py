@@ -13,7 +13,6 @@ Serial: the multi-rank behaviour of the loop is covered by the existing ``-n 2``
 import numpy as np
 import pytest
 
-from impurityModel.ed.BlockLanczos import block_lanczos
 from impurityModel.ed.BlockLanczosArray import block_lanczos
 from impurityModel.ed.BlockLanczosCore import (
     DenseKrylovStore,
@@ -136,7 +135,7 @@ def test_one_step_gives_the_same_alpha_for_an_array_block_and_its_manybodystate_
 def test_the_locked_vectors_are_projected_out_in_both_representations(representation):
     h_op, h_dense, basis_states, seed = _system()
     n = len(basis_states)
-    evals, evecs = np.linalg.eigh(h_dense)
+    _evals, evecs = np.linalg.eigh(h_dense)
     locked = evecs[:, :2]
     # A seed with a component along the locked pair: without the projection q_next keeps it.
     start = seed + 0.7 * locked @ np.array([[1.0, 0.3], [0.2, 1.0]])
@@ -235,7 +234,7 @@ def test_the_dense_krylov_store_grows_adopts_and_projects():
     wp = rng.standard_normal((n, 2)) + 1j * rng.standard_normal((n, 2))
     store_q = DenseKrylovStore(n)
     store_q.append_block(Q[:, :6])
-    out, overlap = store_q.reort(wp.copy(), None, 2, None)
+    out, _overlap = store_q.reort(wp.copy(), None, 2, None)
     np.testing.assert_allclose(Q[:, :6].conj().T @ out, 0.0, atol=1e-12)
     out_sub, _ = store_q.reort(wp.copy(), [1, 3], 2, None)
     np.testing.assert_allclose(Q[:, [1, 3]].conj().T @ out_sub, 0.0, atol=1e-12)

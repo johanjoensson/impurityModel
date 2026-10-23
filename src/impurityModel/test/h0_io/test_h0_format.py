@@ -304,7 +304,7 @@ def test_hartree_is_exactly_two_rydberg():
     of the package follows for tolerances.
     """
     assert h0_format.HA_TO_EV == 2.0 * h0_format.RY_TO_EV
-    assert h0_format.HA_TO_EV == pytest.approx(27.211386245988, rel=1e-12)
+    assert pytest.approx(27.211386245988, rel=1e-12) == h0_format.HA_TO_EV
 
 
 def test_energy_units_covers_ha_but_the_h0_header_does_not():

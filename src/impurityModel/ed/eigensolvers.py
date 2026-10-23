@@ -13,15 +13,15 @@ solver cuts a dense or window result with one rule (``_energy_cut_indices``).
 """
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import numpy as np
 import scipy.sparse as sps
 from mpi4py import MPI
 
-from impurityModel.ed.average import energy_cut
 from impurityModel.ed import config
-from impurityModel.ed.BlockLanczosCore import block_apply, block_inner, block_normalize, block_orthogonalize
+from impurityModel.ed.average import energy_cut
+from impurityModel.ed.BlockLanczosCore import block_inner, block_normalize
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.memory_estimate import gs_krylov_blocks
 from impurityModel.ed.trlm import STATUS_CONVERGED, Window, trlm
@@ -240,14 +240,14 @@ def dense_eigensystem(
             comm.Reduce(h if rank != 0 else MPI.IN_PLACE, h, root=0, op=MPI.SUM)
         n, dtype = h.shape[0], h.dtype
     if return_eigvecs:
-        solved = _on_root(comm, lambda: np.linalg.eigh(h, UPLO="L"))
+        solved = _on_root(comm, lambda: np.linalg.eigh(cast(np.ndarray, h), UPLO="L"))
         if rank == 0:
             es, vecs = solved
         else:
             es = np.empty(n, dtype=float, order="C")
             vecs = np.empty((n, n), dtype=dtype, order="C")
     else:
-        solved = _on_root(comm, lambda: np.linalg.eigvalsh(h, UPLO="L"))
+        solved = _on_root(comm, lambda: np.linalg.eigvalsh(cast(np.ndarray, h), UPLO="L"))
         es = solved if rank == 0 else np.empty(n, dtype=float)
     if comm is not None:
         comm.Bcast(es, root=0)
@@ -738,8 +738,8 @@ def _lowest_on_root(h_op, comm, hashes, warm, solve):
                  [g_hashes, counts, displs, MPI.UINT64_T] if root else None, root=0)  # fmt: skip
     g_warm = np.empty((int(counts.sum()), width), dtype=complex) if root else None
     if width:
-        comm.Gatherv([np.ascontiguousarray(warm, dtype=complex), MPI.C_DOUBLE_COMPLEX],
-                     [g_warm, counts * width, displs * width, MPI.C_DOUBLE_COMPLEX] if root else None, root=0)  # fmt: skip
+        recv = [g_warm, counts * width, displs * width, MPI.C_DOUBLE_COMPLEX] if root else None
+        comm.Gatherv([np.ascontiguousarray(warm, dtype=complex), MPI.C_DOUBLE_COMPLEX], recv, root=0)
     res = _on_root(comm, lambda: solve(DistributedSparseMatrix.from_scipy(full, None), g_hashes, g_warm))
     head = comm.bcast(
         None if res is None else (res.e, res.n_in, res.certified, res.max_multiplicity, res.status), root=0

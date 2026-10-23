@@ -93,7 +93,7 @@ def tracing(trace=None):
     Refusing is the smallest fix that cannot do that: a caller that would have been silently
     emptied now gets an exception naming the problem.
     """
-    global _ACTIVE, _LABELS
+    global _ACTIVE, _LABELS  # noqa: PLW0603  (module-level singleton: one active trace per process)
     if _ACTIVE is not None:
         raise RuntimeError(
             "solver_trace.tracing() is already active. Nesting would divert every event away from "

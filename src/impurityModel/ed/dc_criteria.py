@@ -99,11 +99,11 @@ from impurityModel.ed.dc_search import (
     resolve_cap_at_max,
 )
 from impurityModel.ed.density_matrices import occupations as state_occupations
-from impurityModel.ed.sector_solver import SectorPlanStore
+from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.lie_algebra import extract_tensors, tensors_to_operator
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
-from impurityModel.ed.gs_connectivity import solver_basis_connectivity
 from impurityModel.ed.memory_estimate import CapPolicy, resolve_cap_policy
+from impurityModel.ed.sector_solver import SectorPlanStore
 from impurityModel.ed.solver_basis import _per_group_occupation, prepare_solver_basis
 from impurityModel.ed.utils import matrix_print
 
@@ -427,11 +427,11 @@ class _SectorContext:
     #: to second-guess.
     memory_cap: object = None
     cap_from_memory: bool = False
-    n_center_at: dict = None
+    n_center_at: dict | None = None
     #: ``(mu, n_trial) -> _SectorSolution | None``. Filled by :meth:`sector_solve`, which never
     #: solves the same sector at the same shift twice. Two floats per entry, not eigenvectors --
     #: see that method for why retaining ``psis`` does not scale.
-    sector_at: dict = None
+    sector_at: dict | None = None
     #: Epstein-Nesbet PT2 admission floor for :meth:`sector_solve`'s CIPSI expansions. Resolved by
     #: :func:`_prepare_sector_context` from, in order, the criterion's own ``de2_min`` argument
     #: (the RSPt double-counting line or the TOML criterion table), the ``DC_DE2_MIN`` environment
@@ -440,11 +440,11 @@ class _SectorContext:
     #: accuracy control (``e_pt2_tol`` is); a floor only loosens a solve.
     #: ``None`` resolves in :meth:`__post_init__`; `groundstate` is imported lazily throughout
     #: this module (circular import), so the fallback cannot be a module-level default here.
-    de2_min: float = None
+    de2_min: float | None = None
     #: Residual Epstein-Nesbet PT2 energy the sector solves converge to -- the accuracy control,
     #: where ``de2_min`` is only an optional floor. Resolved from the ``DC_E_PT2_TOL`` knob, else
     #: :data:`groundstate.GS_E_PT2_TOL`, the tolerance of the production ground state.
-    e_pt2_tol: float = None
+    e_pt2_tol: float | None = None
     #: Each sector's certification (:class:`sector_solver.SectorPlanStore`): certified once per
     #: search, then only the classes that can still be lowest are expanded at a new shift.
     plan_store: object = None
@@ -1873,8 +1873,8 @@ class _OccupationContext:
     #: Recorded on the context rather than returned, because the public
     #: :func:`occupation_and_energy_at_mu` has a documented ``(n, E0, sector)`` return and this is
     #: not part of the answer -- it qualifies it.
-    cap_bound_at: dict = None
-    memory_bound_at: dict = None
+    cap_bound_at: dict | None = None
+    memory_bound_at: dict | None = None
     #: Each sector's certification, shared by every ground state this search solves
     #: (:class:`sector_solver.SectorPlanStore`).
     plan_store: object = None

@@ -148,7 +148,7 @@ def test_a_complete_window_is_certified_without_a_fallback_solve(system, monkeyp
 
     Warm columns span the ground level, so ``k = 5 < rank(F^H W) + R`` and the certificate holds
     from the first solve."""
-    import impurityModel.ed.eigensolvers as eigensolvers
+    from impurityModel.ed import eigensolvers
 
     basis, h, U, evals = system
     calls = []
@@ -165,9 +165,9 @@ def test_a_complete_window_is_certified_without_a_fallback_solve(system, monkeyp
 
 
 def _window_solve(system, *, n_random, warm, max_energy=CUT):
-    import impurityModel.ed.eigensolvers as eigensolvers
+    from impurityModel.ed import eigensolvers
 
-    basis, h, U, evals = system
+    basis, h, U, _evals = system
     comm = basis.comm if basis.is_distributed else None
     h_dist = DistributedSparseMatrix.from_scipy(sps.csc_array(h)[:, list(basis.local_indices)], comm, basis.offset)
     hashes = np.fromiter((state.get_hash() for state in basis.local_basis), dtype=np.uint64)
@@ -201,7 +201,7 @@ def test_a_level_wider_than_the_random_block_is_completed_by_the_fallback(system
 @pytest.mark.mpi
 def test_without_the_certificate_the_wide_level_loses_copies(system, monkeypatch):
     """Injected bug: a certificate that always passes must lose copies here, or the test above proves nothing."""
-    import impurityModel.ed.eigensolvers as eigensolvers
+    from impurityModel.ed import eigensolvers
 
     monkeypatch.setattr(
         eigensolvers, "_level_overlap_ranks", lambda F, groups, W, mpi, comm, floor: [10**6] * len(groups)
@@ -213,7 +213,7 @@ def test_without_the_certificate_the_wide_level_loses_copies(system, monkeypatch
 @pytest.mark.mpi
 def test_the_multiplicity_found_sizes_the_next_solves_random_block(system):
     """A second solve with ``R = max_multiplicity + 1`` certifies without any fallback."""
-    import impurityModel.ed.eigensolvers as eigensolvers
+    from impurityModel.ed import eigensolvers
 
     first = _window_solve(system, n_random=2, warm=False)
     real = eigensolvers.trlm
@@ -276,9 +276,9 @@ def test_the_vectorized_probe_hash_matches_the_scalar_one():
 
 
 def _lowest_solve(system, *, warm, calls=None, monkeypatch=None, tol=1e-11):
-    import impurityModel.ed.eigensolvers as eigensolvers
+    from impurityModel.ed import eigensolvers
 
-    basis, h, U, evals = system
+    basis, h, U, _evals = system
     comm = basis.comm if basis.is_distributed else None
     h_dist = DistributedSparseMatrix.from_scipy(sps.csc_array(h)[:, list(basis.local_indices)], comm, basis.offset)
     hashes = np.fromiter((state.get_hash() for state in basis.local_basis), dtype=np.uint64)
@@ -392,7 +392,7 @@ def test_a_lowest_result_is_read_back_not_solved_again(system, monkeypatch):
     """``reuse_last`` serves a ``Lowest`` request from the previous ``Lowest`` solve (same generation)."""
     import impurityModel.ed.cipsi_solver as cs
 
-    basis, h, U, _evals = system
+    basis, h, _U, _evals = system
     solver = CIPSISolver(basis)
     dummy = ManyBodyOperator({((0, "c"), (0, "a")): 0.0})
     h_dist = DistributedSparseMatrix.from_scipy(

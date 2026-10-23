@@ -10,8 +10,8 @@ workload), both loops that can run it:
   ``block_lanczos``.
 * ``test_partial_sparse_kernel_bench`` — the hash-distributed ``ManyBodyState``
   kernel ``block_lanczos`` (the memory-scalable alternative), with the
-  per-phase time profile and the memory breakdown (Krylov-basis bytes, W buffer,
-  dense fill ratio, transient reort spikes).
+  per-phase time profile and the memory breakdown (Krylov-basis bytes, dense fill
+  ratio, transient reort spikes).
 
 Both tests print a rank-0 report and assert correctness (orthonormality of the
 Krylov basis, ground-state energy agreement between the two kernels), so the
@@ -192,7 +192,7 @@ def nio_workload():
         verbose=False,
         de2_min=1e-6,
     )
-    basis, solver = ground_state.basis, ground_state.solver
+    basis, _solver = ground_state.basis, ground_state.solver
     if basis.restrictions is not None:
         h.set_restrictions(basis.restrictions)
     return {"h": h, "basis": basis, "comm": comm, "shared": {}}
@@ -349,7 +349,6 @@ def test_partial_sparse_kernel_bench(nio_workload):
     legacy_bytes = sum(st.memory_bytes() for st in q_states)
     union_size, total_nnz = support_stats(q_states)
     fill = total_nnz / (union_size * len(Q_basis)) if union_size else 0.0
-    w_bytes = W.nbytes if W is not None else 0
     del q_states
 
     local_n = len(basis.local_basis)
@@ -375,7 +374,6 @@ def test_partial_sparse_kernel_bench(nio_workload):
             ("Q_basis store (local)", f"{q_bytes / MB:.1f} MiB, {len(Q_basis)} columns"),
             ("union support / fill", f"{union_size} determinants, fill {fill:.2f}"),
             ("legacy list equivalent", f"{legacy_bytes / MB:.1f} MiB ({legacy_bytes / max(q_bytes, 1):.1f}x larger)"),
-            ("W buffer", f"{w_bytes / MB:.2f} MiB"),
             (
                 "per-rank (local_n, Q MiB, peak RSS delta MiB)",
                 str([(n, f"{q / MB:.1f}", f"{p / MB:.1f}") for n, q, p in gathered]),

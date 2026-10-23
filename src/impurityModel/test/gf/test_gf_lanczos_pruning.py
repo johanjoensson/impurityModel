@@ -146,7 +146,7 @@ def test_a_row_chunked_matvec_is_the_same_exact_PHP_resolvent(monkeypatch, eta, 
     monkeypatch.setenv("APPLY_ROW_CHUNKS", "4")
     G, info, z = _run(monkeypatch, eta, reort=reort)
     np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
-    G1, info1, _ = _run(monkeypatch, eta, reort=reort)
+    _G1, info1, _ = _run(monkeypatch, eta, reort=reort)
     assert _retained(info1) == _retained(info)
 
 

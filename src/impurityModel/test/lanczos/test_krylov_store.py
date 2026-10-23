@@ -296,7 +296,8 @@ def _cgs2_reference(wp, selected):
     for _ in range(2):
         overlap = inner_multi(selected, out)
         projected = []
-        for j, w in enumerate(out):
+        for j, w0 in enumerate(out):
+            w = w0
             for i, q in enumerate(selected):
                 w = w - q * overlap[i, j]
             projected.append(w)
