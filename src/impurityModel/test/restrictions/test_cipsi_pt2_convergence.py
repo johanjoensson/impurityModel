@@ -120,6 +120,21 @@ def test_a_binding_cap_is_never_reported_converged(cap):
     assert report["residual_is_current"] is False
 
 
+@pytest.mark.parametrize("cap", [640, 700])
+def test_a_within_tolerance_residual_before_truncation_is_not_called_unconverged(cap, capsys):
+    """Still not reported converged, but the warning says why: the residual met the tolerance on a
+    basis the final truncation then changed. "not converged ... 3.0e-09 against 1.0e-08" (the NiO
+    linked-chain iteration 1 log) read as a contradiction."""
+    capsys.readouterr()
+    solver = _capped_solver(cap=cap)
+    report = solver.convergence_report
+    assert report["converged"] is False and report["residual_is_current"] is False
+    assert report["residual_pt2"] <= report["e_pt2_tol"], "the cap no longer stops within tolerance"
+    out = capsys.readouterr().out
+    assert "not certified converged" in out and "within e_pt2_tol" in out, out
+    assert "not converged" not in out
+
+
 def test_an_uncapped_report_describes_the_returned_basis():
     _, _, solver = _expand()
     assert solver.convergence_report["residual_is_current"] is True

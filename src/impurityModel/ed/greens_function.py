@@ -29,7 +29,9 @@ from impurityModel.ed.gf_convergence import (  # noqa: F401  -- re-exported for 
 )
 from impurityModel.ed.gf_engine import (
     combine_sides,
+    distinct_windows,
     lanczos_unit_kernel,
+    print_excited_windows,
     states_by_group,
 )
 from impurityModel.ed.gf_primitives import (  # noqa: F401  -- re-exported for backward compat
@@ -527,6 +529,12 @@ def get_Greens_function(
         basis=basis,
     )
     unit_weights = unit_cost_weights(unit_seeds, basis.comm)
+    if verbose and (basis.comm is None or basis.comm.rank == 0):
+        # Once per distinct window, on the world root. The per-unit dump (now -vv) printed the same
+        # restrictions for every unit on every colour root: six copies per log on the NiO run.
+        for window in distinct_windows(unit_restrictions):
+            print_excited_windows(window, None)
+        print_excited_windows(None, excited_weighted_restrictions)
 
     if gf_method == "bicgstab":
         return _get_greens_function_bicgstab(
@@ -576,7 +584,7 @@ def get_Greens_function(
         sparse=sparse,
         slaterWeightMin=slaterWeightMin,
         solver_verbose=verbose_extra,
-        print_windows=verbose,
+        print_windows=verbose_extra,
         print_size=verbose_extra,
         eval_meshes_for=eval_meshes_for,
     )

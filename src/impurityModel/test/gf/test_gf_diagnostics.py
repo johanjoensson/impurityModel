@@ -244,6 +244,12 @@ def test_ground_state_truncation_check():
     # A residual measured before the last truncation is not a measurement of the kept basis.
     stale = gd.check_ground_state_truncation(held, {"residual_pt2": -3e-4, "residual_is_current": False})
     assert "not measured" in stale.message
+    # The expansion reached the cap and the final truncation kept fewer: say both, not "held at
+    # 115,574 ... at the cap of 429,032" (the NiO linked-chain iteration 1 report).
+    trimmed = {"memory_bound": False, "cap_hit": True, "retained": 115_574, "threshold": 429_032}
+    trim_warn = gd.check_ground_state_truncation(trimmed, {"residual_pt2": 3e-9, "residual_is_current": False})
+    assert "reached the cap of 429,032; kept basis 115,574" in trim_warn.message, trim_warn.message
+    assert "held at" not in trim_warn.message
 
 
 def test_the_self_energy_report_carries_the_ground_state_row():

@@ -697,12 +697,19 @@ def check_ground_state_truncation(truncation, convergence) -> Diagnostic:
     else:
         why = f"at the cap of {int(truncation.get('threshold', retained)):,}"
         suggestion = "raise truncation_threshold (or use 'auto') if memory allows"
+    threshold = int(truncation.get("threshold", retained))
+    if not memory_bound and retained < threshold:
+        # The expansion reached the cap, then the final truncation kept fewer: "held at 115,574 at the
+        # cap of 429,032" read as a cap that never bound.
+        held = f"ground state expansion reached the cap of {threshold:,}; kept basis {retained:,} determinants"
+    else:
+        held = f"ground state held at {retained:,} determinants {why}"
     return Diagnostic(
         name="gs_memory",
         severity=Severity.WARN,
         value=value,
         threshold=float("nan"),
-        message=f"ground state held at {retained:,} determinants {why}; {bias}",
+        message=f"{held}; {bias}",
         suggestion=suggestion,
     )
 

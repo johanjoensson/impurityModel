@@ -219,6 +219,28 @@ def _block_green_group(
     return alphas, betas, r, cap_stats
 
 
+def print_excited_windows(window, weighted_window):
+    """Print an excited-sector occupation window and its weighted window (either may be ``None``)."""
+    if window is not None:
+        print("Excited restrictions:")
+        for indices, occ_rest in window.items():
+            print(f"{sorted(indices)}: {occ_rest}")
+    if weighted_window is not None:
+        print("weight restrictions:")
+        for weights, sum_rest in weighted_window:
+            print(f"{weights}: {sum_rest}")
+    sys.stdout.flush()
+
+
+def distinct_windows(windows):
+    """The distinct non-``None`` windows of ``windows``, in first-seen order (dicts: no hashing)."""
+    distinct = []
+    for window in windows:
+        if window is not None and window not in distinct:
+            distinct.append(window)
+    return distinct
+
+
 def lanczos_unit_kernel(
     units,
     hOp,
@@ -266,16 +288,8 @@ def lanczos_unit_kernel(
     def kernel(split_basis, u, seeds):
         unit = units[u]
         unit_rank0 = split_basis.comm is None or split_basis.comm.rank == 0
-        if print_windows and unit_rank0 and unit_windows[u] is not None:
-            print("Excited restrictions:")
-            for indices, occ_rest in unit_windows[u].items():
-                print(f"{sorted(indices)}: {occ_rest}")
-            sys.stdout.flush()
-        if print_windows and unit_rank0 and weighted_window is not None:
-            print("weight restrictions:")
-            for weights, sum_rest in weighted_window:
-                print(f"{weights}: {sum_rest}")
-            sys.stdout.flush()
+        if print_windows and unit_rank0:
+            print_excited_windows(unit_windows[u], weighted_window)
         conv_stats = {}
         alphas, betas, r, cap_stats = _block_green_group(
             split_basis,

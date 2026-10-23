@@ -1281,6 +1281,16 @@ class CIPSISolver:
                 "cap": "the truncation_threshold cap held the basis",
                 "de2_min": f"the de2_min={de2_min:.1e} floor refused the remaining candidates",
             }.get(limited_by, "the expansion stopped")
+            if not residual_current and residual <= e_pt2_tol:
+                # Below tolerance, but on a basis the final truncation has since changed: unverified, not
+                # large. Saying "not converged ... 3e-9 against 1e-8" read as a contradiction.
+                print(
+                    f"WARNING: CIPSI ground state not certified converged: {reason}; its residual PT2 energy "
+                    f"{residual:.3e} was within e_pt2_tol={e_pt2_tol:.1e} before the final truncation, but the "
+                    f"kept basis was not re-measured and may carry more.",
+                    flush=True,
+                )
+                return
             when = "" if residual_current else " (measured before the last truncation; the kept basis may carry more)"
             print(
                 f"WARNING: CIPSI ground state not converged: {reason} with a residual PT2 energy of "

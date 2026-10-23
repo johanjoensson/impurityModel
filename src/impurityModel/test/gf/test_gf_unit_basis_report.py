@@ -280,3 +280,31 @@ def test_a_unit_whose_seeds_fill_the_cap_is_reported_as_frozen_at_its_seeds():
 def test_a_unit_that_grew_to_the_cap_is_not_called_seed_frozen():
     messages = _basis_cap_messages(4)
     assert messages and not any("seed support" in m for m in messages), messages
+
+
+def test_the_excited_window_is_printed_once_per_distinct_window(capfd):
+    """At -v the excited-sector restrictions print once per distinct window, not once per unit.
+
+    Every unit of this fixture shares one window. The per-unit dump printed it again for every unit
+    on every colour root -- six identical copies per log on the NiO linked-chain run -- and is now -vv.
+    """
+    get_Greens_function(
+        matsubara_mesh=None,
+        omega_mesh=np.linspace(-3.0, 3.0, 21),
+        psis=[ManyBodyState({SlaterDeterminant.from_bytes(GROUND): 1.0})],
+        es=[0.0],
+        tau=1.0,
+        basis=_basis(NON_BINDING_CAP),
+        hOp=HOP,
+        delta=0.1,
+        blocks=[[0], [1], [2], [3]],
+        verbose=True,
+        verbose_extra=False,
+        reort=None,
+        dN=1,
+        occ_cutoff=1e-9,
+        slaterWeightMin=0.0,
+        sparse=True,
+    )
+    out = capfd.readouterr().out
+    assert out.count("Excited restrictions:") == 1, out
