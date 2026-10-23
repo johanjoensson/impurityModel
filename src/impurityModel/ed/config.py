@@ -416,7 +416,7 @@ GF_SCHEDULER = Knob(
 GF_CSR_MEMORY_SAFETY = Knob(
     name="GF_CSR_MEMORY_SAFETY",
     kind="float",
-    default=0.75,
+    default=0.9,
     minimum=0.0,
     group="units",
     doc="""Fraction of the rank's whole share of node RAM (``safety * (available + resident)``, the
@@ -424,10 +424,15 @@ GF_CSR_MEMORY_SAFETY = Knob(
     reach. Separate from, and looser than, the guard's fraction that sizes the auto cap: the auto cap
     fills memory on the sparse path, and the frozen matrix then needs more than that path's half
     of the share, so at the guard's 0.5 every capped unit was declined (SrMnO3, auto cap 18.6M: 20
-    of 20, GF 39 ks instead of ~1.4 ks). The fit check's estimate over-predicted the measured peak in
-    all 76 frozen units of the 2026-10 cluster runs (measured/predicted 0.71-0.91), and a decline
-    costs only speed -- the sparse kernel continues -- so the decision may use more of the share
-    than the cap does. Ignored when the guard is off (``GS_MEMORY_BUDGET_SAFETY=0``).""",
+    of 20, GF 39 ks instead of ~1.4 ks). 0.9, not 0.75: on SrMnO3 at 128 one-rank colours (2026-10-23,
+    auto cap 6.96M) every first capped unit fit, but a rank's resident set stays ~1.5 GiB higher after
+    a frozen unit and the share, re-sampled per unit from the node's free memory, falls as every rank
+    on it does the same, so 30 of the 166 capped units were declined at 0.75 -- all of them within
+    0.90 of the share -- and ran the sparse kernel at 47 s a block against 0.74 s on the matrix,
+    ~9 h a unit instead of ~10 min, past the job's limit. The fit check's estimate over-predicts the
+    measured peak (measured/predicted 0.71-0.91 over the 76 frozen units of the 2026-10 runs,
+    0.78-0.83 on the 36 first units of that job), so 0.9 of the share is ~0.72 of it in practice,
+    the margin 0.75 was meant to give. Ignored when the guard is off (``GS_MEMORY_BUDGET_SAFETY=0``).""",
 )
 
 GF_PER_STATE_RESTRICT = Knob(

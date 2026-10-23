@@ -9,7 +9,7 @@ the guard and the cap keep theirs.
 import numpy as np
 import pytest
 
-from impurityModel.ed import gf_solvers, gf_units
+from impurityModel.ed import config, gf_solvers, gf_units
 from impurityModel.ed.memory_estimate import _resident_adjusted_budget
 from impurityModel.test.gf.test_gf_truncation import _excited_basis, _siam_6
 
@@ -24,7 +24,8 @@ def test_the_csr_budget_is_the_guard_formula_at_its_own_fraction():
     available, resident = 3 * 2**30, 2**30
     guard = gf_units._gf_memory_budget(available, resident)
     csr = gf_units._gf_csr_memory_budget(available, resident)
-    assert csr == int(resident + _resident_adjusted_budget(0.75, available, resident))
+    assert csr == int(resident + _resident_adjusted_budget(config.GF_CSR_MEMORY_SAFETY.default, available, resident))
+    assert config.GF_CSR_MEMORY_SAFETY.default == 0.9, "the round-13 default (30 of 166 capped units declined at 0.75)"
     assert csr > guard
 
 
