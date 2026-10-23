@@ -621,3 +621,22 @@ def test_a_sparse_lowest_solve_of_few_nonzeros_runs_on_rank_0(comm, monkeypatch)
         assert calls == [expected]
         energies.append(float(np.min(es)))
     assert abs(energies[0] - energies[1]) < 1e-10
+
+
+def test_spin_partners_stop_at_the_largest_seed_two_sz():
+    """The thermal union's partner rows reach every ``|2 S_z| <= max_two_sz`` and nothing beyond: no
+    state of the window has a row there, and on NiO those rows were a quarter of the union."""
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+    from impurityModel.ed.sector_solver import _bits, _spin_partner_keys
+
+    pairs = [(0, 1), (2, 3), (4, 5)]  # (dn, up)
+    det = SlaterDeterminant(((1 << 63) | (1 << 61) | (1 << 58),))  # 0 (dn), 2 (dn), 5 (up): 2 S_z = -1
+    found = _spin_partner_keys(ManyBodyState.from_keys([det]), pairs, max_two_sz=1, n_orb=8)
+    sign = np.zeros(8, dtype=np.int64)
+    for dn, up in pairs:
+        sign[up], sign[dn] = 1, -1
+    rows = set((_bits(list(found), 8).astype(np.int64) @ sign).tolist())
+    assert rows == {1}, rows
+    # The unbounded ladder would also have reached 2 S_z = 3 from here.
+    wider = _spin_partner_keys(ManyBodyState.from_keys([det]), pairs, max_two_sz=3, n_orb=8)
+    assert 3 in set((_bits(list(wider), 8).astype(np.int64) @ sign).tolist())

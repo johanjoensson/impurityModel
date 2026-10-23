@@ -604,7 +604,7 @@ def _bound(verdict):
     return verdict.lower if verdict.ranked else verdict.energy
 
 
-def _spin_partner_keys(keys, pairs, max_steps):
+def _spin_partner_keys(keys, pairs, max_two_sz, n_orb):
     """This rank's share of the spin partners' supports of the states on ``keys``: ``S_+-^k``, ``k >= 1``.
 
     A class expansion holds one ``S_z`` row of each multiplet it found (its hard label's, the
@@ -612,21 +612,34 @@ def _spin_partner_keys(keys, pairs, max_steps):
     window solve's basis at the same quality, or they sit at seed quality outside the window and
     the manifold comes back short (measured: 5 of 8 states of a spin-and-orbitally degenerate
     level). The ladders are applied to a state with generic amplitudes on ``keys`` -- every
-    determinant of the class -- so no image cancels, and stepped both ways until the image
-    vanishes. Each rank steps its own rows; by linearity the union over the ranks covers every
-    partner, so this needs no communication -- ``add_states`` routes the keys afterwards.
+    determinant of the class -- so no image cancels. Each rank steps its own rows; by linearity the
+    union over the ranks covers every partner, so this needs no communication -- ``add_states``
+    routes the keys afterwards.
+
+    Stepped only as far as ``|2 S_z| <= max_two_sz``, the largest seed ``2 S_z``, which bounds the
+    ``2 S`` of every multiplet the window holds. The ladders were once stepped ``2 max_two_sz``
+    times each way: on the NiO linked-chain d8 sector (``max_two_sz = 2``) a quarter of the union
+    was then rows at ``2 S_z = +-4, +-6``, which no state of the window has, and the union is the
+    ground state's memory peak.
     """
-    s_plus, s_minus, _s_z = make_spin_operators(pairs)
     dets = keys.keys()
+    if not len(dets):
+        return []
+    s_plus, s_minus, _s_z = make_spin_operators(pairs)
+    sign = np.zeros(n_orb, dtype=np.int64)
+    for dn, up in pairs:
+        sign[up], sign[dn] = 1, -1
+    # Every determinant of a class carries its label's 2 S_z (a mirror image too: its own label's).
+    two_sz = int(_bits([next(iter(dets))], n_orb).astype(np.int64)[0] @ sign)
     hashes = np.fromiter((det.get_hash() for det in dets), dtype=np.uint64, count=len(dets))
     # The eigensolvers' hash-seeded generic vector: deterministic, and no two images cancel.
     state = ManyBodyState(dict(zip(dets, cold_vector(hashes)[:, 0])))
     found = []
-    for ladder in (s_plus, s_minus):
+    for ladder, steps in ((s_plus, (max_two_sz - two_sz) // 2), (s_minus, (max_two_sz + two_sz) // 2)):
         ladder.set_restrictions(None)
         ladder.set_weighted_restrictions(None)
         image = state
-        for _ in range(int(max_steps)):
+        for _ in range(max(0, int(steps))):
             image = applyOp(ladder, image, cutoff=0)
             if not len(image):
                 break
@@ -727,12 +740,14 @@ def solve_certified(
         only=only,
     )
     del es, psis, _solver, winner_basis
-    # 2 S_max steps reach every row from any row; the largest seed 2 S_z bounds 2 S_max.
-    max_steps = 2 * max(abs(label[0] or 0) for label in plan.labels.values())
+    # The largest seed 2 S_z bounds 2 S_max: the partners' rows stop there.
+    max_two_sz = max(abs(label[0] or 0) for label in plan.labels.values())
+    n_orb = basis.num_spin_orbitals
     cap = basis.truncation_threshold
     merged = basis.clone(initial_basis=list(basis.local_basis))
     for n_added, keys in enumerate(kept):
-        merged.add_states(keys.keys() + (_spin_partner_keys(keys, plan.pairs, max_steps) if plan.su2 else []))
+        partners = _spin_partner_keys(keys, plan.pairs, max_two_sz, n_orb) if plan.su2 else []
+        merged.add_states(keys.keys() + partners)
         # `merged.size` is replicated, so every rank stops at the same class.
         if cap is not None and merged.size > cap and n_added + 1 < len(kept):
             if (basis.comm is None or basis.comm.rank == 0) and verbose:
