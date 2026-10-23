@@ -37,7 +37,9 @@ class GsConnectivity:
     ``nnz_per_state`` is the mean number of distinct rows ``H|d>`` reaches, an upper bound on the stored
     elements per determinant at any basis size (restriction and truncation only remove rows).
     ``selection_fanout`` is the de-duplicated rows of one block ``H|psi_ref>`` over the whole probe, per
-    determinant: the quantity a selection round's candidate arrays scale with. ``measured`` is False for
+    determinant: the quantity a selection round's candidate arrays scale with. ``window_states`` is the
+    degeneracy of the lowest level of ``H`` on the seed: how many states the window solve holds at least
+    (0: not counted, which prices the window phase off). ``measured`` is False for
     :meth:`unmeasured`, which carries the constants measured on SrMnO3.
     """
 
@@ -47,6 +49,7 @@ class GsConnectivity:
     seed_dets: int = 0
     seconds: float = 0.0
     measured: bool = True
+    window_states: int = 0
 
     @classmethod
     def unmeasured(cls):
@@ -64,8 +67,8 @@ class GsConnectivity:
             )
         return (
             f"measured on this model: raw connectivity {self.nnz_per_state:.1f} rows/det, selection fan-out "
-            f"{self.selection_fanout:.1f} (probe {self.probe_dets:,} dets from a {self.seed_dets:,}-det seed, "
-            f"{self.seconds:.1f} s)"
+            f"{self.selection_fanout:.1f}, {self.window_states} states in the lowest level "
+            f"(probe {self.probe_dets:,} dets from a {self.seed_dets:,}-det seed, {self.seconds:.1f} s)"
         )
 
 
@@ -95,6 +98,7 @@ def _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target):
     h_op.set_restrictions(basis.restrictions)
     try:
         seed = list(basis.local_basis)
+        window = _lowest_level_degeneracy(h_op, basis)
         members = set(seed)
         frontier = seed
         while frontier and len(members) < target:
@@ -115,7 +119,31 @@ def _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target):
         probe_dets=len(dets),
         seed_dets=len(seed),
         seconds=time.perf_counter() - start,
+        window_states=window,
     )
+
+
+#: Seeds larger than this are not diagonalized densely to count the lowest level.
+_LEVEL_COUNT_MAX_SEED = 3000
+
+#: States this close above the lowest energy are one level: a symmetry-degenerate multiplet is not
+#: split by roundoff. Tight on purpose -- the seed's *excited* levels are not converged, so a thermal
+#: window measured on it counts states the converged spectrum does not have (NiO: 21 against 3).
+_LEVEL_DEGENERACY_TOL = 1e-6
+
+
+def _lowest_level_degeneracy(h_op, basis):
+    """States of ``h_op`` on the seed at its lowest energy: the multiplet the window solve must hold.
+
+    Exact by symmetry, so a lower bound on the window's width (a thermal window may add levels above it).
+    Counts 0 when the seed is too large to diagonalize densely, which prices the window phase off.
+    """
+    from impurityModel.ed.basis_transcription import build_dense_matrix
+
+    if basis.size > _LEVEL_COUNT_MAX_SEED:
+        return 0
+    energies = np.linalg.eigvalsh(build_dense_matrix(basis, h_op))
+    return int(np.sum(energies - energies[0] <= _LEVEL_DEGENERACY_TOL))
 
 
 def solver_basis_connectivity(sb, comm=None):

@@ -81,3 +81,9 @@ def test_every_driver_hands_its_solver_basis_connectivity_to_the_cap_resolver():
     for module, count in ((selfenergy, 1), (susceptibility, 1), (dc_criteria, 2), (groundstate, 1)):
         src = Path(module.__file__).read_text()
         assert src.count("connectivity=") >= count and "resolve_cap_policy(" in src, module.__name__
+
+
+def test_the_window_width_is_the_lowest_levels_degeneracy_of_the_seed():
+    got = _measure(_hamiltonian())
+    assert got.window_states >= 1
+    assert "states in the lowest level" in got.describe()

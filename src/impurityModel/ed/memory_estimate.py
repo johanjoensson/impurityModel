@@ -620,6 +620,19 @@ def estimate_gf_peak_bytes(
 _GS_COUPLED_NUM_WANTED_RATIO = 2
 
 
+#: The thermal window solve's shape, which the ground state's second phase is priced with. Each mirrors
+#: a constant of the solve itself and a test pins the pair: ``cipsi_solver._EIGENSTATE_PAD`` (retention
+#: requested beyond the states found) and ``_MIN_RANDOM_COLUMNS`` (generic columns in the start block).
+_WINDOW_EIGENSTATE_PAD = 10
+_WINDOW_RANDOM_COLUMNS = 4
+#: Copies of the Krylov basis alive in the window solve. Measured on NiO linked-chain iteration 1
+#: (``solver_trace`` ``gs_phase_memory``; ``KrylovColumnStore`` capacity): the restart store holds the
+#: ``gs_krylov_blocks`` columns (196 at a block of 7 and 13 retained) and the initial sweep's own basis
+#: holds the same again while the store is filled, so the phase costs 9.4 kB per determinant against
+#: 3.1 kB per copy.
+_WINDOW_KRYLOV_COPIES = 2
+
+
 def gs_krylov_blocks(n_dets, block_width, num_wanted):
     """Krylov depth, in blocks, of a ground-state window solve that starts by retaining ``num_wanted`` vectors.
 
@@ -699,6 +712,7 @@ def estimate_gs_peak_bytes(
     nnz_per_state=_UNMEASURED_NNZ_PER_STATE,
     num_wanted=None,
     selection_fanout=_UNMEASURED_SELECTION_FANOUT,
+    window_states=0,
 ):
     """Predicted per-rank peak bytes of the ground-state (CIPSI + array-kernel) path.
 
@@ -767,6 +781,14 @@ def estimate_gs_peak_bytes(
         which is deliberately biased toward *over*-predicting the peak -- the failure mode
         this term exists to close was the model being too optimistic, not too pessimistic.
 
+    window_states : int
+        States the thermal window solve is expected to hold (``GsConnectivity.window_states``). When
+        positive the estimate is the larger of two phases -- the class expansions (everything above) and
+        the window solve, whose start block is those states plus :data:`_WINDOW_RANDOM_COLUMNS` generic
+        columns (the warm block capped at ``GS_MAX_BLOCK_WIDTH`` when set), retaining
+        ``GS_NUM_WANTED`` or the states plus :data:`_WINDOW_EIGENSTATE_PAD`, with the Krylov basis held
+        :data:`_WINDOW_KRYLOV_COPIES` times. ``0`` prices the class expansions alone.
+
     Returns
     -------
     int
@@ -794,7 +816,26 @@ def estimate_gs_peak_bytes(
     # holds ~1/2.8 of that on the step that set the constant, so this is now an upper bound
     # (deliberately: the model's failure mode was optimism, see GS_MEMORY_BUDGET_SAFETY).
     selection_bytes = local * selection_fanout * block_width * _SELECTION_BYTES_PER_PAIR
-    return basis_bytes + csr_bytes + replicated_bytes + krylov_bytes + selection_bytes
+    class_phase = basis_bytes + csr_bytes + replicated_bytes + krylov_bytes + selection_bytes
+    if window_states <= 0:
+        return class_phase
+    # The thermal window solve: the same basis and operator, a start block of the window's states plus
+    # generic columns, and the Krylov basis it builds around them.
+    warm = window_states
+    width_cap = config.GS_MAX_BLOCK_WIDTH.get()
+    if width_cap is not None:
+        warm = min(warm, width_cap)
+    p_win = warm + _WINDOW_RANDOM_COLUMNS
+    wanted = num_wanted if num_wanted is not None else window_states + _WINDOW_EIGENSTATE_PAD
+    per_buffer = min(config.GS_MATVEC_EXCHANGE_BYTES.get(), degree * local * p_win * _COMPLEX_BYTES)
+    window_replicated = local * p_win * _COMPLEX_BYTES + 2 * per_buffer
+    window_krylov = _WINDOW_KRYLOV_COPIES * local * _gs_krylov_columns(n_dets, p_win, wanted) * _COMPLEX_BYTES
+    # The selection round's reference block is the kept manifold, not the Lanczos block: as wide as the
+    # states the caller says it converges (`GS_NUM_WANTED`) or, failing that, the states found on the seed.
+    selection_width = max(window_states, num_wanted or 0)
+    window_selection = local * selection_fanout * selection_width * _SELECTION_BYTES_PER_PAIR
+    window_phase = basis_bytes + csr_bytes + window_replicated + window_krylov + window_selection
+    return max(class_phase, window_phase)
 
 
 def _read_cgroup_int(path):
@@ -1098,9 +1139,9 @@ def _connectivity_or_unmeasured(connectivity):
 
 
 def _connectivity_inputs(connectivity, nnz_per_state=None):
-    """``(nnz_per_state, selection_fanout)`` for :func:`estimate_gs_peak_bytes`; an explicit ``nnz_per_state`` wins."""
+    """``(nnz_per_state, selection_fanout, window_states)`` for :func:`estimate_gs_peak_bytes`; an explicit ``nnz_per_state`` wins."""
     nnz = connectivity.nnz_per_state if nnz_per_state is None else nnz_per_state
-    return nnz, connectivity.selection_fanout
+    return nnz, connectivity.selection_fanout, connectivity.window_states
 
 
 def log_memory_budget(
@@ -1158,7 +1199,7 @@ def log_memory_budget(
     if gs_num_wanted is None:
         gs_num_wanted = resolve_gs_num_wanted()
     connectivity = _connectivity_or_unmeasured(connectivity)
-    nnz_per_state, selection_fanout = _connectivity_inputs(connectivity, nnz_per_state)
+    nnz_per_state, selection_fanout, window_states = _connectivity_inputs(connectivity, nnz_per_state)
     ranks = comm.size if comm is not None else 1
     rank = comm.rank if comm is not None else 0
     available = available_bytes_per_rank(comm)
@@ -1174,6 +1215,7 @@ def log_memory_budget(
             nnz_per_state,
             num_wanted=gs_num_wanted,
             selection_fanout=selection_fanout,
+            window_states=window_states,
         )
         fits = gs <= available
     prefix = f"{label}: " if label else ""
@@ -1259,7 +1301,9 @@ def suggest_gs_truncation_threshold(
         block_width = resolve_gs_block_width()
     if gs_num_wanted is None:
         gs_num_wanted = resolve_gs_num_wanted()
-    nnz_per_state, selection_fanout = _connectivity_inputs(_connectivity_or_unmeasured(connectivity), nnz_per_state)
+    nnz_per_state, selection_fanout, window_states = _connectivity_inputs(
+        _connectivity_or_unmeasured(connectivity), nnz_per_state
+    )
     budget = safety * available_bytes_per_rank(comm)
     ranks = comm.size if comm is not None else 1
     return _largest_fitting(
@@ -1271,6 +1315,7 @@ def suggest_gs_truncation_threshold(
             nnz_per_state,
             num_wanted=gs_num_wanted,
             selection_fanout=selection_fanout,
+            window_states=window_states,
         )
         <= budget
     )

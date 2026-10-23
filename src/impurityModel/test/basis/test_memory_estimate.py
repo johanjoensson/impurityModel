@@ -779,3 +779,45 @@ def test_a_wide_gf_block_no_longer_shrinks_the_ground_state_cap(monkeypatch):
     )
     policy, _ = me.resolve_cap_policy(None, 58, comm=None, log="never")
     assert policy.gs > 1.5 * coupled
+
+
+def test_the_window_phase_constants_mirror_the_solve_they_price():
+    from impurityModel.ed import cipsi_solver
+
+    assert me._WINDOW_EIGENSTATE_PAD == cipsi_solver._EIGENSTATE_PAD
+    assert me._WINDOW_RANDOM_COLUMNS == cipsi_solver._MIN_RANDOM_COLUMNS
+
+
+def test_without_window_states_only_the_class_expansions_are_priced(monkeypatch):
+    monkeypatch.delenv("GS_MAX_BLOCK_WIDTH", raising=False)
+    alone = me.estimate_gs_peak_bytes(50_000, 102, 4, 2, 16.7, selection_fanout=4.3)
+    assert me.estimate_gs_peak_bytes(50_000, 102, 4, 2, 16.7, selection_fanout=4.3, window_states=0) == alone
+
+
+def test_the_window_phase_is_priced_by_its_states_and_never_below_the_class_phase(monkeypatch):
+    monkeypatch.delenv("GS_MAX_BLOCK_WIDTH", raising=False)
+    monkeypatch.delenv("GS_NUM_WANTED", raising=False)
+    cls = me.estimate_gs_peak_bytes(50_000, 102, 4, 2, 16.7, selection_fanout=4.3)
+    sizes = [
+        me.estimate_gs_peak_bytes(50_000, 102, 4, 2, 16.7, selection_fanout=4.3, window_states=w) for w in (1, 3, 30)
+    ]
+    assert all(size >= cls for size in sizes)
+    assert sizes == sorted(sizes) and sizes[-1] > sizes[0]
+    # A configured block-width cap bounds the warm block the window solve starts from.
+    monkeypatch.setenv("GS_MAX_BLOCK_WIDTH", "5")
+    capped = me.estimate_gs_peak_bytes(50_000, 102, 4, 2, 16.7, selection_fanout=4.3, window_states=300, num_wanted=20)
+    monkeypatch.delenv("GS_MAX_BLOCK_WIDTH")
+    wide = me.estimate_gs_peak_bytes(50_000, 102, 4, 2, 16.7, selection_fanout=4.3, window_states=300, num_wanted=20)
+    assert capped < wide
+
+
+def test_the_window_phase_reproduces_the_measured_nio_cost_per_determinant(monkeypatch):
+    """NiO linked-chain iteration 1, serial, cap 20,000 (``gs_phase_memory``): the thermal window solve
+    added 9.4 kB per determinant (class expansions 1.0-5.0). Inputs are what the probe measures there:
+    raw connectivity 16.7, selection fan-out 4.3, a triplet. The model is a plan, not a fit: it must land
+    within a factor of the measurement, on the side that does not over-prune the cap."""
+    monkeypatch.delenv("GS_MAX_BLOCK_WIDTH", raising=False)
+    monkeypatch.delenv("GS_NUM_WANTED", raising=False)
+    n = 20_000
+    predicted = me.estimate_gs_peak_bytes(n, 102, 4, 1, 16.7, selection_fanout=4.3, window_states=3) / n / 1024
+    assert 0.7 * 9.4 <= predicted <= 2.0 * 9.4, predicted
