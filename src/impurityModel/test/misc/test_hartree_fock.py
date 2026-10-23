@@ -145,6 +145,64 @@ def test_strong_U_localises_impurity_occupation():
     assert winning[0] in (1,)
 
 
+def _two_orbital_impurity(e_imp, u, j, v, e_bath):
+    """Two spatial impurity orbitals (spin-orbitals 0-3: orbital 0 = 0,1, orbital 1 = 2,3; even = dn),
+    density-density Kanamori U / U-2J / U-3J, one valence bath level per spin-orbital (4-7)."""
+    terms = {}
+    for o in range(4):
+        terms[((o, "c"), (o, "a"))] = e_imp
+        terms[((o + 4, "c"), (o + 4, "a"))] = e_bath
+        terms[((o, "c"), (o + 4, "a"))] = v
+        terms[((o + 4, "c"), (o, "a"))] = v
+    for a in range(4):
+        for b in range(a + 1, 4):
+            same_orbital, opposite_spin = a // 2 == b // 2, a % 2 != b % 2
+            coupling = u if same_orbital else (u - 2 * j if opposite_spin else u - 3 * j)
+            terms[((a, "c"), (b, "c"), (b, "a"), (a, "a"))] = coupling
+    return ManyBodyOperator(terms), {0: [[0, 1, 2, 3]]}, ({0: [[4, 5, 6, 7]]}, {0: [[]]})
+
+
+def test_the_nominal_start_rescues_a_non_interacting_start_that_never_settles():
+    """When the non-interacting start never converges, the start at the nominal occupation does.
+
+    Here the non-interacting start reaches the right energy but its density never settles, at any
+    mixing (degenerate levels at the Fermi energy: each aufbau picks another basis of the same
+    shell). An unconverged seed is rejected by the occupation walk -- it falls back to the dN
+    scan -- so this used to cost the whole cheap path. Found by a parameter search.
+    """
+    h_op, impurity_orbitals, bath_states = _two_orbital_impurity(-8.85, 3.95, 0.45, 0.15, -0.73)
+    N0 = {0: 1}
+    h, V, imp, _n_orb, _c = hf.extract_hf_tensors(h_op, range(4))
+    _rho, single_converged, _e = hf.hartree_fock_density_matrix(h, V, imp, N0[0] + 4)
+    assert not single_converged, "the model no longer oscillates at the default mixing"
+
+    winning, _energy, converged = hf.hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0)
+    assert converged
+    assert winning == {0: 3}
+
+
+def test_an_oscillating_start_is_retried_at_gentler_mixing():
+    """A start that oscillates at the requested mixing is retried at a smaller one.
+
+    Here neither start converges at mixing 0.5; the non-interacting start does at 0.25. The NiO
+    linked-chain iteration 1 behaves the same way, and there the retried start is also the one that
+    reaches the true minimum (the nominal start settles 0.18 higher). Found by a parameter search.
+    """
+    h_op, impurity_orbitals, bath_states = _two_orbital_impurity(-1.59, 6.05, 1.62, 0.2, -1.95)
+    N0 = {0: 2}
+    h, V, imp, n_orb, _c = hf.extract_hf_tensors(h_op, range(4))
+    n_tot = N0[0] + 4
+    nominal = hf._grouped_aufbau_density(0.5 * (h + h.conj().T), hf._resolve_groups(n_orb, n_tot, [(range(4), 2)]))
+    assert not hf.hartree_fock_density_matrix(h, V, imp, n_tot)[1], "the model no longer oscillates"
+    assert not hf.hartree_fock_density_matrix(h, V, imp, n_tot, rho0=nominal)[1], "the nominal start now converges"
+    _rho, _conv, e_gentle = hf.hartree_fock_density_matrix(h, V, imp, n_tot, mixing=0.25)
+
+    winning, energy, converged = hf.hartree_fock_occupation(h_op, impurity_orbitals, bath_states, N0)
+    assert converged
+    assert winning == {0: 2}
+    assert energy == pytest.approx(e_gentle, abs=1e-8)
+
+
 def test_two_body_outside_impurity_raises():
     terms = {((0, "c"), (1, "c"), (1, "a"), (0, "a")): 1.0}
     with pytest.raises(ValueError):

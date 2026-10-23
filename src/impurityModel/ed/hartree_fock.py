@@ -40,6 +40,11 @@ import numpy as np
 # nothing against the dN occupation scan it exists to replace.
 _SCF_MAX_ITER = 500
 
+#: Mixing factors (times the requested ``mixing``) an SCF start is retried at until it converges.
+#: Linear mixing at 0.5 oscillates between fixed points on the NiO linked-chain workload; 0.25
+#: converges there. 0.1 is the last resort (slow: it needed >500 iterations from that start).
+_MIXING_LADDER = (1.0, 0.5, 0.2)
+
 
 def extract_hf_tensors(h_op, impurity_indices):
     """Parse ``h_op`` into a full one-body matrix and an impurity-restricted two-body tensor.
@@ -206,7 +211,9 @@ def _grouped_aufbau_density(f, groups):
     return rho
 
 
-def hartree_fock_density_matrix(h, V, imp, n_tot, constraints=None, max_iter=_SCF_MAX_ITER, tol=1e-8, mixing=0.5):
+def hartree_fock_density_matrix(
+    h, V, imp, n_tot, constraints=None, max_iter=_SCF_MAX_ITER, tol=1e-8, mixing=0.5, rho0=None
+):
     """Self-consistent (unrestricted) Hartree-Fock density matrix at fixed particle number.
 
     The single-determinant, spin-orbital formulation is intrinsically unrestricted: a full
@@ -235,6 +242,9 @@ def hartree_fock_density_matrix(h, V, imp, n_tot, constraints=None, max_iter=_SC
         there through a state the calculation has declared unphysical.
     max_iter, tol, mixing
         SCF controls: linear density mixing ``rho <- mixing*rho_new + (1-mixing)*rho``.
+    rho0 : np.ndarray, optional
+        Starting density. ``None`` (default) is the non-interacting aufbau of ``h``. A given start
+        must honour ``constraints`` itself.
 
     Returns
     -------
@@ -249,7 +259,7 @@ def hartree_fock_density_matrix(h, V, imp, n_tot, constraints=None, max_iter=_SC
     groups = _resolve_groups(n_orb, n_tot, constraints)
     # Non-interacting start: fill the lowest orbitals of the one-body part (carries any field).
     # The start must honour the constraints too, or the SCF sets off from the wrong sector.
-    rho = _grouped_aufbau_density(0.5 * (h + h.conj().T), groups)
+    rho = _grouped_aufbau_density(0.5 * (h + h.conj().T), groups) if rho0 is None else rho0
     converged = False
     for _ in range(max_iter):
         f = _fock_matrix(h, V, imp, rho)
@@ -310,9 +320,35 @@ def hartree_fock_occupation(
         ([orb for block in impurity_orbitals[i] for orb in block], int(N0[i])) for i in sorted(frozen_occupations or ())
     ]
 
-    rho, converged, energy = hartree_fock_density_matrix(
-        h, V, imp, n_tot, constraints=constraints, max_iter=max_iter, tol=tol, mixing=mixing
-    )
+    # Two starts: the non-interacting aufbau, and the nominal occupation (every set pinned at N0,
+    # then released to the frozen constraints only). Each is retried at gentler mixing when it
+    # oscillates; the lowest converged energy wins. HF has several fixed points on real workloads
+    # (NiO linked-chain iteration 1: -51.326, -51.262, -51.148), and the non-interacting start --
+    # a d10 impurity there -- oscillates at mixing 0.5 and converges at 0.25.
+    starts = [None]
+    pinned = constraints + [
+        ([orb for block in impurity_orbitals[i] for orb in block], int(N0[i]))
+        for i in sorted(N0)
+        if i not in (frozen_occupations or ())
+    ]
+    try:
+        nominal_groups = _resolve_groups(h.shape[0], n_tot, pinned)
+    except ValueError:
+        nominal_groups = None  # N0 does not fit its sets: only the non-interacting start
+    if nominal_groups is not None:
+        starts.append(_grouped_aufbau_density(0.5 * (h + h.conj().T), nominal_groups))
+    best = None
+    for rho0 in starts:
+        for scale in _MIXING_LADDER:
+            result = hartree_fock_density_matrix(
+                h, V, imp, n_tot, constraints=constraints, max_iter=max_iter, tol=tol, mixing=mixing * scale, rho0=rho0
+            )
+            if result[1]:
+                break
+        # A converged result beats any unconverged one; among equals, the lower energy wins.
+        if best is None or (result[1], -result[2]) > (best[1], -best[2]):
+            best = result
+    rho, converged, energy = best
 
     occ = np.real(np.diag(rho))
     winning_N0 = {}
