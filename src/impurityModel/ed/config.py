@@ -363,16 +363,18 @@ GF_ADMIT_FIRST_SHELL_TOL = Knob(
 GF_SETTLE_RATIO = Knob(
     name="GF_SETTLE_RATIO",
     kind="float",
-    default=1.0,
+    default=10.0,
     group="bicgstab",
-    doc="""PROVISIONAL default, to be fixed by the settle-rule sweep (``doc/plans/gf_support_freeze_redesign.md``).
-    The support settle of a sparse block-Lanczos Green's-function unit, as a multiple of ``slaterWeightMin``: the
+    doc="""The support settle of a sparse block-Lanczos Green's-function unit, as a multiple of ``slaterWeightMin``: the
     unit stops admitting new determinants once, over 16 blocks, the largest amplitude the normalised next block
     carries on a determinant the step reached for the first time stays at or below ``ratio x slaterWeightMin``
     and is not growing. ``1`` settles when every excluded determinant would have been pruned from the next block
     anyway; larger values settle sooner and drop amplitude up to ``ratio x slaterWeightMin`` per determinant;
     ``0`` is closure only (no new determinant at all). A multiple of the cutoff, not a fraction of the seed norm
-    (``gf_admit_tol``). Overridden by the ``gf_settle_ratio`` solver option once that exists.""",
+    (``gf_admit_tol``). The default 10 is the largest ratio of the measured grid (NiO 10-bath linked chain, SMO) whose
+    self-energy change stays below 1e-6 of the causality guard's headroom; 30 jumped to 2e-2 on NiO at
+    ``slater_min`` 1e-8 (``doc/plans/gf_support_freeze_redesign.md``). Overridden by the ``gf_settle_ratio``
+    solver option.""",
 )
 
 GF_SUPPORT_TRACE = Knob(
