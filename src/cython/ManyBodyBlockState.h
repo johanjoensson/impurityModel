@@ -993,6 +993,27 @@ public:
   }
 
   /**
+   * @brief Max over the rows whose key IS in `keep` (sorted, unique) of the row's
+   * max column |amp|^2, in one merge pass with no allocation. 0.0 when no row
+   * of the block is in `keep`.
+   */
+  template <typename KeepT>
+  double max_row_norm2_in(const KeepT &keep) const noexcept {
+    double best = 0.0;
+    std::size_t ik = 0;
+    for (std::size_t r = 0; r < rows() && ik < keep.size(); ++r) {
+      while (ik < keep.size() && FlatKeyStore::less(keep[ik], m_keys.view(r))) {
+        ++ik;
+      }
+      if (ik < keep.size() && FlatKeyStore::equal(m_keys.view(r), keep[ik])) {
+        best = std::max(best, row_max2(r));
+        ++ik;
+      }
+    }
+    return best;
+  }
+
+  /**
    * @brief Max |amp|^2 of every row whose key is NOT in `keep`, appended to
    * `out` in row order. With count_rows_in this gives the candidate-importance
    * array for the capped recurrence's overflow-step ranking without any

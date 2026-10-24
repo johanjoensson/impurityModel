@@ -196,15 +196,72 @@ def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
     return G_avg
 
 
-def support_window_freezes(window):
-    """``(freeze, leak, cut)`` for a full window of per-step ``(leak, cut)`` weights: freeze when the weight that
-    reached new rows over the window is no larger than what the ``slaterWeightMin`` prunes dropped over it
-    (``math.fsum``, so the verdict depends only on the per-step values, not on the order they are added in;
-    each value is itself a sum over ranks, so its last bits -- and a verdict right at the boundary -- can
-    depend on the rank count). A window that is not full yet never freezes."""
-    leak = math.fsum(w[0] for w in window)
-    cut = math.fsum(w[1] for w in window)
-    return len(window) == window.maxlen and leak <= cut, leak, cut
+class FreezeRule:
+    r"""The support settle's decision: a pure strategy over the per-step frontier records of one unit.
+
+    Each recurrence step contributes ``max2_next``, the largest ``|amp|^2`` (max over columns) the *normalised
+    next block* ``q_{k+1}`` carries on a row that was new at step ``k`` -- measured before the ``slaterWeightMin``
+    cut acts on it, so ``ratio = 1`` reads "every excluded row would have been pruned from the next block
+    anyway", and ``ratio = 0`` is closure (no new row at all). The unit settles when a full window of ``window``
+    steps all have ``max2_next <= (ratio * slaterWeightMin)^2`` *and* the frontier is not growing over the window:
+    the least-squares slope of ``log10 max(max2_next, (1e-3 * slaterWeightMin)^2)`` is not positive. The trend
+    term is a heuristic against a monotonically growing trickle, not a proof of closure.
+
+    At ``slaterWeightMin = 0`` the threshold is 0, so only a window of exactly-zero frontiers settles (closure).
+    The decision uses only the allreduced records, so every rank decides alike.
+    """
+
+    #: Slope above which a window counts as growing (log10 per step); rounding of a flat window stays below it.
+    SLOPE_TOL = 1e-12
+    #: The floor of the trend's logarithm, as a fraction of ``slaterWeightMin`` in amplitude.
+    FLOOR_FRACTION = 1e-3
+
+    def __init__(self, window, ratio, slater_weight_min):
+        if ratio < 0:
+            raise ValueError(f"the settle ratio must be >= 0 (got {ratio})")
+        self.ratio = float(ratio)
+        self.slater_weight_min = float(slater_weight_min)
+        self.threshold2 = (self.ratio * self.slater_weight_min) ** 2
+        self._floor2 = (self.FLOOR_FRACTION * self.slater_weight_min) ** 2
+        self._window = deque(maxlen=int(window))
+
+    @property
+    def maxlen(self):
+        return self._window.maxlen
+
+    def push(self, max2_next, leak, cut):
+        """Record one step; True when the window now says settle."""
+        self._window.append((float(max2_next), float(leak), float(cut)))
+        return self.settles()
+
+    def settles(self):
+        w = self._window
+        if len(w) < w.maxlen:
+            return False
+        values = [rec[0] for rec in w]
+        if max(values) > self.threshold2:
+            return False
+        if self._floor2 == 0.0:
+            return True  # swm = 0: every record is exactly 0 here (threshold 0), a flat window
+        y = np.log10(np.maximum(values, self._floor2))
+        x = np.arange(len(y), dtype=float)
+        x -= x.mean()
+        slope = float(np.dot(x, y - y.mean()) / np.dot(x, x))
+        return slope <= self.SLOPE_TOL
+
+    def verdict(self):
+        """The window's numbers: ``{window, ratio, max_amp, max_amp_over_swm, leak, cut}`` (amplitudes, not squares)."""
+        values = [rec[0] for rec in self._window]
+        max_amp = math.sqrt(max(values)) if values else 0.0
+        swm = self.slater_weight_min
+        return {
+            "window": len(self._window),
+            "ratio": self.ratio,
+            "max_amp": max_amp,
+            "max_amp_over_swm": max_amp / swm if swm > 0 else float("nan"),
+            "leak": math.fsum(rec[1] for rec in self._window),
+            "cut": math.fsum(rec[2] for rec in self._window),
+        }
 
 
 class SupportPolicy:
@@ -333,7 +390,8 @@ class SupportPolicy:
         self._verbose_freeze_logged = False
         self._deferred = False
         self._pending_cut = 0.0
-        self._window = None
+        self._rule = None
+        self._pending = None
         self.support_history = []
         #: Per-step diagnostic records ``(step, retained_before, n_new, leak, cut, hq2, d_g, max2)`` (support freeze
         #: only). Kept apart from ``support_history`` (whose 2-tuples other code unpacks); never read by a decision.
@@ -411,28 +469,21 @@ class SupportPolicy:
             return value
         return self.comm.allreduce(value, op=MPI.SUM)
 
-    def enable_support_freeze(self, window, log=False, trace=False):
-        """Freeze the support once growing it no longer buys more than the ``slaterWeightMin`` cut costs.
+    def enable_support_freeze(self, window, ratio, slater_weight_min, log=False, trace=False):
+        """Settle the support once its frontier is below ``ratio`` x ``slaterWeightMin`` (see :class:`FreezeRule`).
 
-        Every recurrence step then measures two weights in the units of its matvec ``H q``: the *leak*, the
-        squared norm of the step's output on rows outside the retained set (what the support grows by, and
-        what a freeze would drop), and the *cut*, what the sparse kernel's own ``slaterWeightMin`` prunes
-        dropped on that step (:meth:`note_step_cut`). Once the leak summed over the last ``window`` steps is
-        no larger than the cut summed over them, the support freezes where it stands: from then on the
-        recurrence drops no more per step than the cutoff the run has already accepted. A support that closes
-        exactly has a leak of 0 and freezes after one window whatever the cut.
-
-        Each step's three numbers (new rows, leak, cut) are gathered from every rank and summed in rank order,
-        so every rank holds the same bits and takes the same decision; Allreduce gives no such promise, and a
-        verdict at the boundary picks the next step's collectives. Opt-in, set identically on every rank by
-        the caller that hands the frozen recurrence on (``gf_solvers.block_Green_sparse``): every other user of
-        the proxy (BiCGSTAB's per-point solves, the shift-recycled resolvent) never freezes this way. ``log``
-        prints the window sums every ``window`` steps (rank 0 only); ``trace`` also prints one line per step
-        (rank 0 only; ``GF_SUPPORT_TRACE``)."""
+        Every recurrence step then records, in the units of its matvec, the weight on rows outside the retained set
+        (the *leak*), the weight the ``slaterWeightMin`` prunes dropped (the *cut*, :meth:`note_step_cut`) and the
+        largest amplitude landing on a new row, and in the units of the next block the amplitude those rows carry
+        there (:meth:`note_next_block`, which takes the verdict). Opt-in, set identically on every rank by the
+        caller that hands the frozen recurrence on (``gf_solvers.block_Green_sparse``): every other user of the
+        proxy (BiCGSTAB's per-point solves, the shift-recycled resolvent) never freezes this way. ``log`` prints
+        the window verdict every ``window`` steps (rank 0 only); ``trace`` also prints one line per step (rank 0
+        only; ``GF_SUPPORT_TRACE``)."""
         if self.prunes:
             raise ValueError("the support freeze and importance pruning (GF_LANCZOS_ADMIT_TOL) are exclusive")
         self.support_freeze = True
-        self._window = deque(maxlen=int(window))
+        self._rule = FreezeRule(window, ratio, slater_weight_min)
         self._support_log = bool(log)
         self._trace_steps = bool(trace)
 
@@ -530,6 +581,7 @@ class SupportPolicy:
         the chunks pass through unprojected and the decision is taken once, on the summed output.
         Called by the block-Lanczos step on every rank of the colour (replicated)."""
         self._deferred = not self._frozen
+        self._pending = None
         if self._frozen and self.apply_filter is None:
             # The retained set no longer changes (every admission above is pre-freeze), so the filter of
             # it is built once. `_frozen` is replicated, so every rank enters this collective together.
@@ -622,8 +674,9 @@ class SupportPolicy:
         return block
 
     def _admit_counted_support(self, block, step):
-        """:meth:`_admit_counted` under the support freeze: the count, leak and cut in one gather, then the
-        freeze decision on the step's window (see :meth:`enable_support_freeze`). Collective."""
+        """:meth:`_admit_counted` under the support settle: the count, leak and cut in one gather, admit the step's
+        rows, and leave the half-finished record for :meth:`note_next_block` (the same step's next block completes
+        it and takes the settle verdict). Collective."""
         n_new, leak = block.new_rows_stats(self._mask)
         # Column 4 is reduced by MAX, the others by sum: the largest |amp|^2 landing outside the support, in the
         # units of the matvec (a trace column; the settle rule measures the normalised next block instead).
@@ -643,38 +696,67 @@ class SupportPolicy:
         cut = math.fsum(gathered[:, 2])
         hq2 = math.fsum(gathered[:, 3])
         max2 = float(np.max(gathered[:, 4]))
+        self._pending = None
         if self._global_count + n_new > self.cap:
             self._admit_top_and_freeze(block)
             block.keep_rows(self._mask)
             return block
         retained_before = self._global_count
+        # The rows new at this step, taken BEFORE they join the mask: the next block's amplitude on them is the
+        # frontier the settle judges.
+        new_keys = block.keys_new_above(self._mask, 0.0) if step else None
         self._mask.merge_keys(block)
         self._global_count += n_new
         if step:
-            self.support_history.append((leak, cut))
-            d_g = float("nan")
-            if self.monitor_dg is not None and self.monitor_dg[0] is not None:
-                d_g = float(self.monitor_dg[0])
-            self.support_trace.append((len(self.support_history), retained_before, n_new, leak, cut, hq2, d_g, max2))
-            if self._trace_steps and (self.comm is None or self.comm.rank == 0):
-                print(
-                    f"GF support step {len(self.support_history)}: retained {retained_before:,}, new {n_new:,}, "
-                    f"leak {leak:.3e}, cut {cut:.3e}, |Hq|^2 {hq2:.3e}, d_g {d_g:.2e}, max|amp|^2 {max2:.3e}",
-                    flush=True,
-                )
-            self._window.append((leak, cut))
-            freeze, leak_w, cut_w = support_window_freezes(self._window)
-            if self._support_log and len(self.support_history) % self._window.maxlen == 0:
-                print(
-                    f"GF support: {self._global_count:,} determinants after {len(self.support_history)} blocks; "
-                    f"over the last {len(self._window)}: weight on new rows {leak_w:.3e}, cut by slaterWeightMin "
-                    f"{cut_w:.3e}",
-                    flush=True,
-                )
-            if freeze:
-                self._frozen = True
-                self.support_frozen = True
+            self._pending = (new_keys, retained_before, n_new, leak, cut, hq2, max2)
         return block
+
+    def note_next_block(self, q_next):
+        """The step's normalised next block, before the ``slaterWeightMin`` cut acts on it: complete the step's
+        record with the largest amplitude ``q_next`` carries on the rows that were new at this step, and take the
+        settle verdict. Called by the Lanczos step on every rank of the colour (replicated gate); one fixed-shape
+        ``MAX`` reduction. A step that breaks down before reaching here leaves no record (the list is one short);
+        :meth:`begin_step` drops the half-finished one. The verdict applies from the next step: ``supp(q_next)`` is
+        inside the support this step admitted, so the freezing step's own block is already in ``P``."""
+        pending, self._pending = self._pending, None
+        if pending is None:
+            return
+        new_keys, retained_before, n_new, leak, cut, hq2, max2_matvec = pending
+        buf = np.array([q_next.max_row_norm2_in(new_keys)], dtype=np.float64)
+        if self.comm is not None and self.comm.size > 1:
+            self.comm.Allreduce(MPI.IN_PLACE, buf, op=MPI.MAX)
+        max2_next = float(buf[0])
+        d_g = float("nan")
+        if self.monitor_dg is not None and self.monitor_dg[0] is not None:
+            d_g = float(self.monitor_dg[0])
+        self.support_history.append((leak, cut))
+        step_no = len(self.support_history)
+        self.support_trace.append((step_no, retained_before, n_new, leak, cut, hq2, d_g, max2_matvec, max2_next))
+        swm = self._rule.slater_weight_min
+        if self._trace_steps and (self.comm is None or self.comm.rank == 0):
+            print(
+                f"GF support step {step_no}: retained {retained_before:,}, new {n_new:,}, leak {leak:.3e}, "
+                f"cut {cut:.3e}, |Hq|^2 {hq2:.3e}, d_g {d_g:.2e}, max|amp|^2 {max2_matvec:.3e}, "
+                f"next-block max|amp|^2 {max2_next:.3e}",
+                flush=True,
+            )
+        settled = self._rule.push(max2_next, leak, cut)
+        if self._support_log and step_no % self._rule.maxlen == 0 and (self.comm is None or self.comm.rank == 0):
+            v = self._rule.verdict()
+            amp = (
+                f"{v['max_amp']:.2e} = {v['max_amp_over_swm']:.3g}x slaterWeightMin"
+                if swm > 0
+                else f"{v['max_amp']:.2e}"
+            )
+            print(
+                f"GF support: {self._global_count:,} determinants after {step_no} blocks; over the last "
+                f"{v['window']}: largest amplitude on a new determinant {amp} (settles below "
+                f"{self._rule.ratio:g}x, gf_settle_ratio)",
+                flush=True,
+            )
+        if settled:
+            self._frozen = True
+            self.support_frozen = True
 
     def _admit_top_and_freeze(self, block):
         """Admit the ``cap - retained`` most important candidate rows, then freeze.
@@ -711,9 +793,10 @@ class SupportPolicy:
         """One-line description of the cap state (rank-0 logging)."""
         if self.support_frozen:
             return (
-                f"GF basis frozen at {self._global_count:,} determinants: over the last {self._window.maxlen} blocks "
-                "the weight reaching new determinants was no more than what slaterWeightMin cuts (support freeze); "
-                "the Green's function is exact on the retained subspace from here on, and drops at most that much."
+                f"GF basis frozen at {self._global_count:,} determinants: over the last {self._rule.maxlen} blocks "
+                f"no new determinant carried more than {self._rule.ratio:g}x slaterWeightMin in the next block "
+                "(support settle, gf_settle_ratio); the Green's function is exact on the retained subspace from "
+                "here on, and drops only determinants below that amplitude."
             )
         why = "the measured-memory guard" if self.memory_frozen else f"the cap of {self.cap:,}"
         return (

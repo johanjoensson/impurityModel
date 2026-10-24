@@ -38,7 +38,7 @@ def lanczos_step(
     double slaterWeightMin=0.0,
     truncation_threshold=0.0,
     locked=None,
-    note_cut=None,
+    support=None,
     double h_norm_est=0.0,
     double deflate_tol=-1.0,
 ):
@@ -139,14 +139,19 @@ def lanczos_step(
     # A dense block has no per-determinant structure to prune: these cuts are absent there, not
     # unmirrored.
     if isinstance(q_next, ManyBodyState):
+        if support is not None:
+            # The normalised next block, before the cut below acts on it: the amplitude the support settle
+            # judges (a row it would prune anyway is below the cutoff here). Collective, one MAX; independent
+            # of slaterWeightMin, so the records exist at swm = 0 too.
+            support.note_next_block(q_next)
         if slaterWeightMin > 0.0:
             # Whole-row prune: a row survives when ANY column survives (keeps the block's shared
             # support; the per-column prune of independent states would desync it).
-            if note_cut is not None:
+            if support is not None:
                 # In the matvec's units: the residual is q_next @ beta_i, so a dropped row of q_next
                 # carried row beta_i beta_i^H row^H of it. Reaches the proxy with the next step's
                 # admission.
-                note_cut(q_next.prune_rows(slaterWeightMin, beta_i @ np.conj(beta_i.T)))
+                support.note_step_cut(q_next.prune_rows(slaterWeightMin, beta_i @ np.conj(beta_i.T)))
             else:
                 q_next.prune_rows(slaterWeightMin)
             did_truncate = True
@@ -390,7 +395,7 @@ def _block_lanczos_array(
 def _lanczos_loop(
     matvec, q_prev, q_curr, store, alphas_buf, betas_buf, int start_it, int budget, list block_widths,
     converged_fn, reort, bint mpi, comm, basis, double slaterWeightMin, truncation_threshold, locked,
-    double deflate_tol, bint verbose, double t_norm_max, double h_norm_est, bint guard_seeded, note_cut,
+    double deflate_tol, bint verbose, double t_norm_max, double h_norm_est, bint guard_seeded, support,
     bint append_before_check, bint keep_deflated,
 ):
     """The recurrence loop -- the one driver of :func:`lanczos_step`, for every block representation.
@@ -453,7 +458,7 @@ def _lanczos_loop(
             slaterWeightMin=slaterWeightMin,
             truncation_threshold=truncation_threshold,
             locked=locked,
-            note_cut=note_cut,
+            support=support,
             h_norm_est=max(h_norm_est, t_norm_max),
             deflate_tol=deflate_tol,
         )
@@ -845,9 +850,10 @@ def _block_lanczos_mbs(
     def matvec(q):
         return apply_and_redistribute(h_op, q, basis, slaterWeightMin, _needs_redistribute, _n_chunks)
 
-    # A proxy running the support freeze also weighs what the next block's prune drops (replicated flag).
-    _note_cut = (
-        basis.note_step_cut
+    # A proxy running the support freeze also weighs what the next block's prune drops and measures the next
+    # block's frontier (replicated flag).
+    _support = (
+        basis
         if _needs_redistribute and hasattr(basis, "begin_step") and getattr(basis, "support_freeze", False)
         else None
     )
@@ -855,7 +861,7 @@ def _block_lanczos_mbs(
     it, termination, q_prev, q_curr, q_next, _ = _lanczos_loop(
         matvec, q_prev, q_curr, Q_basis if store_krylov else None, alphas_buf, betas_buf, start_it, _buf_size,
         block_widths, converged_fn, reort, mpi, comm, basis, slaterWeightMin, truncation_threshold, locked,
-        deflate_tol, verbose, t_norm_max, h_norm_est, guard_seeded, _note_cut,
+        deflate_tol, verbose, t_norm_max, h_norm_est, guard_seeded, _support,
         append_before_check=True, keep_deflated=False,
     )
 

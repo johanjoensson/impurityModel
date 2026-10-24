@@ -739,6 +739,8 @@ def block_Green_sparse(
     info=None,
     memory_budget=None,
     memory_policy="tighten",
+    support_settle=True,
+    settle_ratio=None,
 ):
     """
     Calculate one block of the Greens function. This function builds the many body basis
@@ -746,6 +748,10 @@ def block_Green_sparse(
 
     ``memory_budget``/``memory_policy`` switch on :class:`_CappedBasisProxy`'s measured memory
     guard (off by default; only meaningful with a finite cap).
+
+    ``support_settle`` / ``settle_ratio``: the support settle (:class:`gf_primitives.FreezeRule`) -- on by
+    default, and ``settle_ratio`` (a multiple of ``slaterWeightMin``; ``None``: the ``GF_SETTLE_RATIO`` knob)
+    is how far below the cutoff-scaled amplitude the frontier must stay.
 
     **Frozen-basis CSR fallback**: when the cap freezes the
     support, the sparse recurrence stops at that step and carries on as an array-kernel SpMV on the
@@ -917,14 +923,19 @@ def block_Green_sparse(
     # hands control back there (stop_on_freeze). reort off only: that is where the frozen recurrence
     # carries on from its tail, and a reorthogonalized one would recompute every block to drop weight.
     if (
-        _SUPPORT_FREEZE
+        support_settle
+        and _SUPPORT_FREEZE
         and csr_candidate
         and not resolved_reort
         and getattr(lanczos_basis, "tracks_support", False)
         and not lanczos_basis.prunes
     ):
         lanczos_basis.enable_support_freeze(
-            _SUPPORT_WINDOW, log=verbose and rank == 0, trace=config.GF_SUPPORT_TRACE.get() and rank == 0
+            _SUPPORT_WINDOW,
+            config.GF_SETTLE_RATIO.get() if settle_ratio is None else settle_ratio,
+            slaterWeightMin,
+            log=verbose and rank == 0,
+            trace=config.GF_SUPPORT_TRACE.get() and rank == 0,
         )
         lanczos_basis.monitor_dg = last_dg
     if csr_candidate:

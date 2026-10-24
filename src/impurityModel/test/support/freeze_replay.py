@@ -105,7 +105,7 @@ def load_result(path):
 
 
 def set_freeze(mode):
-    """Switch the support freeze: ``"on"``, ``"off"`` or a settle ratio. Returns what it set, for the log."""
+    """Switch the support settle: ``"on"``, ``"off"`` or a settle ratio (``GF_SETTLE_RATIO``). Returns what it set."""
     from impurityModel.ed import gf_solvers
 
     if mode == "on":
@@ -114,9 +114,7 @@ def set_freeze(mode):
         gf_solvers._SUPPORT_FREEZE = False
         return "off"
     ratio = float(mode)
-    if not hasattr(gf_solvers, "_SETTLE_RATIO_OVERRIDE"):
-        raise SystemExit("this tree has no settle ratio yet; use --freeze on|off")
-    gf_solvers._SETTLE_RATIO_OVERRIDE = ratio
+    os.environ["GF_SETTLE_RATIO"] = repr(ratio)
     return f"ratio {ratio:g}"
 
 
@@ -143,7 +141,7 @@ def run(h5_path, out, iteration=1, cluster=None, swm=None, freeze="on", comm=Non
     for key, value in res.items():
         try:
             arr = np.asarray(value)
-        except Exception:  # noqa: BLE001 -- non-array result entries are simply not saved
+        except Exception:  # non-array result entries are simply not saved
             continue
         if arr.dtype != object:
             arrays[key] = arr

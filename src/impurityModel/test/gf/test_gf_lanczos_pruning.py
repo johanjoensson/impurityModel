@@ -186,7 +186,7 @@ def test_pruning_and_the_support_freeze_are_exclusive():
     from impurityModel.ed.gf_primitives import SupportPolicy
 
     with pytest.raises(ValueError, match="exclusive"):
-        SupportPolicy(_seed_basis(), 10**9, eta=0.1).enable_support_freeze(16)
+        SupportPolicy(_seed_basis(), 10**9, eta=0.1).enable_support_freeze(16, 1.0, 1e-4)
 
 
 @pytest.mark.mpi

@@ -20,7 +20,6 @@ The contract these tests pin:
 
 import itertools
 import warnings
-from collections import deque
 
 import numpy as np
 import pytest
@@ -28,8 +27,9 @@ from mpi4py import MPI
 
 from impurityModel.ed import config, gf_primitives, gf_solvers
 from impurityModel.ed.basis_transcription import build_dense_matrix
-from impurityModel.ed.gf_primitives import support_window_freezes
+from impurityModel.ed.gf_primitives import FreezeRule
 from impurityModel.ed.greens_function import calc_G
+from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.test.basis.test_sparse_matrix_build import _basis, _det
 from impurityModel.test.support.gf_chain_fixtures import (
     DELTA,
@@ -74,37 +74,61 @@ def _exact_sector_g(seed=5):
     return exact_chain_g([_det(list(c)) for c in itertools.combinations(range(N_ORB), 7)], seed=seed)
 
 
-def _first_firing(history):
-    window = deque(maxlen=WINDOW)
-    for step, entry in enumerate(history, start=1):
-        window.append(entry)
-        if support_window_freezes(window)[0]:
-            return step
+def _first_settling(trace, ratio, swm, window=WINDOW):
+    """The first step whose window of next-block frontiers passes the rule, replayed from a unit's own trace."""
+    rule = FreezeRule(window, ratio, swm)
+    for row in trace:
+        if rule.push(row[8], row[3], row[4]):
+            return row[0]
     return None
 
 
-def test_the_window_rule():
-    window = deque(maxlen=3)
-    window.extend([(0.0, 1.0), (0.0, 1.0)])
-    assert not support_window_freezes(window)[0], "a window that is not full never freezes"
-    window.append((2.0, 0.0))
-    assert support_window_freezes(window)[0], "leak == cut freezes (<=)"
-    window.append((1e-300, 0.0))
-    assert not support_window_freezes(window)[0], "leak > cut does not"
-    window.extend([(0.0, 0.0)] * 3)
-    assert support_window_freezes(window)[0], "rolling: the old leak has left the window; 0 <= 0 is closure"
+def _rule(max2s, ratio=1.0, swm=1e-4, window=4):
+    rule = FreezeRule(window, ratio, swm)
+    return [rule.push(m, 0.0, 0.0) for m in max2s], rule
 
 
-def test_it_freezes_a_trickling_support_where_its_own_history_says():
-    result = _trickle()
-    info = result[3]
-    history = info["support_history"]
+def test_the_rule_needs_a_full_window_and_settles_at_the_boundary():
+    swm = 1e-4
+    flat = [(1.0 * swm) ** 2] * 4  # exactly ratio x swm: <= settles
+    verdicts, rule = _rule(flat, ratio=1.0, swm=swm)
+    assert verdicts == [False, False, False, True], "not full, not full, not full, then <= at the boundary"
+    assert _rule(flat, ratio=0.999, swm=swm)[0][-1] is False, "just above the threshold does not"
+    assert _rule([0.0] * 4, ratio=0.0, swm=swm)[0][-1] is True, "ratio 0 is closure: all-zero records settle"
+    assert _rule([1e-30] + [0.0] * 3, ratio=0.0, swm=swm)[0][-1] is False
+    v = rule.verdict()
+    assert v["window"] == 4 and v["max_amp"] == pytest.approx(swm) and v["max_amp_over_swm"] == pytest.approx(1.0)
+
+
+def test_the_rule_refuses_a_growing_frontier_and_forgives_a_shrinking_one():
+    swm = 1e-4
+    top = (swm * 3) ** 2
+    growing = [top * 1e-4, top * 1e-3, top * 1e-2, top * 1e-1, top]  # below 3x, but climbing
+    assert _rule(growing, ratio=3.0, swm=swm, window=5)[0][-1] is False
+    shrinking = growing[::-1]
+    assert _rule(shrinking, ratio=3.0, swm=swm, window=5)[0][-1] is True
+    # a frontier at exactly 0 that shows noise at the floor (1e-3 x swm) is flat; one decade of amplitude above
+    # the floor, late in the window, is a rise and refuses (documented: the trend term is a heuristic)
+    assert _rule([0.0, 0.0, 0.0, (1e-3 * swm) ** 2], ratio=1.0, swm=swm)[0][-1] is True
+    assert _rule([0.0, 0.0, 0.0, (1e-2 * swm) ** 2], ratio=1.0, swm=swm)[0][-1] is False
+
+
+def test_at_swm_zero_only_a_closed_window_settles():
+    assert _rule([0.0] * 4, ratio=5.0, swm=0.0)[0][-1] is True
+    assert _rule([0.0, 0.0, 0.0, 1e-300], ratio=5.0, swm=0.0)[0][-1] is False
+    with pytest.raises(ValueError):
+        FreezeRule(4, -1.0, 1e-4)
+
+
+def test_it_settles_a_trickling_support_where_its_own_trace_says():
+    info = _trickle()[3]
+    trace = info["support_trace"]
     assert info["support_frozen"] and info["csr_fallback"]
-    assert _first_firing(history) == len(history), "it froze on the first step whose window passed the rule"
-    assert len(history) < 100, f"it froze after {len(history)} blocks"
+    assert _first_settling(trace, 1.0, 1e-4) == len(trace), "it settled on the first step whose window passed"
+    assert len(trace) < 120, f"it settled after {len(trace)} blocks"
     assert info["retained_size"] < SECTOR, "premise: the support had not closed"
-    window = history[len(history) - WINDOW :]
-    assert sum(leak for leak, _ in window) > 0.0, "premise: still growing when it froze"
+    window = trace[len(trace) - WINDOW :]
+    assert sum(row[3] for row in window) > 0.0, "premise: weight still reached new rows when it settled"
 
 
 def test_both_prunes_are_counted(monkeypatch):
@@ -122,15 +146,19 @@ def test_both_prunes_are_counted(monkeypatch):
     assert all(w >= 0.0 for w in calls)
 
 
-def test_the_frozen_g_is_no_farther_from_the_exact_one_than_the_sparse_one(monkeypatch):
-    frozen = _g(_trickle())
+@pytest.mark.parametrize("ratio", [0.0, 1.0, 3.0])
+def test_the_settled_g_costs_no_more_than_the_cutoff_already_does(ratio, monkeypatch):
+    """The settle drops only amplitude the cutoff itself works at: the settled G is no farther from the exact
+    sector G than the unsettled sparse G by more than a few percent (measured 1.32e-5 against 1.30e-5 at ratio 1,
+    1.14e-5 at ratio 3: the error is the cutoff's, not the settle's)."""
+    settled = _g(_trickle(settle_ratio=ratio))
     set_gf_switches(monkeypatch, support_freeze="0")
     plain = _g(_trickle())
     exact = _exact_sector_g()
-    err_frozen = np.abs(frozen - exact).max()
+    err_settled = np.abs(settled - exact).max()
     err_plain = np.abs(plain - exact).max()
     assert err_plain > 1e-7, "premise: the cutoff costs the sparse kernel something"
-    assert err_frozen <= err_plain, (err_frozen, err_plain)
+    assert err_settled <= 1.1 * err_plain, (err_settled, err_plain)
 
 
 def test_it_is_on_by_default():
@@ -141,8 +169,8 @@ def test_it_is_on_by_default():
 def test_with_no_cutoff_it_freezes_only_on_closure():
     info = run_chain()[3]
     assert info["support_frozen"] and info["retained_size"] == SECTOR
-    window = info["support_history"][len(info["support_history"]) - WINDOW :]
-    assert all(leak == 0.0 and cut == 0.0 for leak, cut in window)
+    window = info["support_trace"][len(info["support_trace"]) - WINDOW :]
+    assert all(row[3] == 0.0 and row[4] == 0.0 and row[8] == 0.0 for row in window)
 
 
 @pytest.mark.parametrize("reort", [True])
@@ -175,10 +203,14 @@ def test_every_rank_holds_the_same_history_and_decides_alike():
     info = result[3]
     assert info["support_frozen"]
     # d_g is computed per rank from allreduced coefficients: logged, not replicated, so it is left out.
-    trace = np.array([row[:6] for row in info["support_trace"]], dtype=np.float64).tobytes()
+    trace = np.array([row[:6] + row[7:] for row in info["support_trace"]], dtype=np.float64).tobytes()
     mine = (np.array(info["support_history"]).tobytes(), trace, info["retained_size"], len(result[0]))
     assert len(set(comm.allgather(mine))) == 1
-    assert _first_firing(info["support_history"]) == len(info["support_history"])
+    assert _first_settling(info["support_trace"], 1.0, 1e-4) == len(info["support_trace"])
+    # the rank count moves nothing: the same settle step, size and rows as the serial run
+    serial = _trickle()[3]
+    assert len(info["support_trace"]) == len(serial["support_trace"])
+    assert info["retained_size"] == serial["retained_size"]
     np.testing.assert_allclose(_g(result), _g(_trickle()), atol=1e-6)
 
 
@@ -188,7 +220,7 @@ def test_the_retired_freezes_warn_that_they_are_no_longer_read(name, monkeypatch
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         config.warn_retired_knobs()
-    assert any(name in str(w.message) and "support freeze" in str(w.message) for w in caught)
+    assert any(name in str(w.message) and "settle rule" in str(w.message) for w in caught)
 
 
 def _dense_chain(seed):
@@ -235,14 +267,16 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
         hq2 = float(np.sum(np.abs(wp) ** 2))
         kept = np.any(np.abs(wp) > cutoff, axis=1)
         cut_matvec = float(np.sum(np.abs(wp[~kept]) ** 2))
-        leak = float(np.sum(np.abs(wp[kept & ~support]) ** 2))
-        max2 = float(np.max(np.abs(wp[kept & ~support]) ** 2, initial=0.0))
+        new_rows = kept & ~support
+        leak = float(np.sum(np.abs(wp[new_rows]) ** 2))
+        max2 = float(np.max(np.abs(wp[new_rows]) ** 2, initial=0.0))
         support |= kept
         wp[~kept] = 0.0
         wp -= q @ (q.conj().T @ wp)
         if beta_prev is not None:
             wp -= q_prev @ beta_prev.conj().T
         q_next, beta = np.linalg.qr(wp)
+        max2_next = float(np.max(np.abs(q_next[new_rows]) ** 2, initial=0.0))
         dropped = ~np.any(np.abs(q_next) > cutoff, axis=1)
         cut_next = float(np.sum(np.abs(wp[dropped]) ** 2))
         q_next[dropped] = 0.0
@@ -252,6 +286,7 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
             assert history[step][1] == pytest.approx(cut_matvec + cut_next_prev, rel=1e-9), step
             assert trace[step][5] == pytest.approx(hq2, rel=1e-9), step
             assert trace[step][7] == pytest.approx(max2, rel=1e-9, abs=1e-30), step
+            assert trace[step][8] == pytest.approx(max2_next, rel=1e-6, abs=1e-30), step
             assert notes[2 * step] == pytest.approx(cut_matvec, rel=1e-9), step
             assert notes[2 * step + 1] == pytest.approx(cut_next, rel=1e-9), step
             compared += cut_matvec > 0 and cut_next > 0
@@ -260,14 +295,15 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
 
 
 def test_the_trace_extends_the_history_without_changing_it():
-    """``support_trace`` carries ``(step, retained_before, n_new, leak, cut, |Hq|^2, d_g, max|amp|^2)`` for the same steps
+    """``support_trace`` carries ``(step, retained_before, n_new, leak, cut, |Hq|^2, d_g, max|amp|^2,
+    next-block max|amp|^2)`` for the same steps
     as ``support_history``: its leak and cut are the history's, the retained sizes add up, and the monitor's
     ``d_g`` is logged (NaN until the monitor has measured one)."""
     info = _trickle()[3]
     history, trace = info["support_history"], info["support_trace"]
     assert len(trace) == len(history) > 0
     retained = trace[0][1]
-    for k, (step, before, n_new, leak, cut, hq2, _d_g, _max2) in enumerate(trace):
+    for k, (step, before, n_new, leak, cut, hq2, _d_g, _max2, _max2_next) in enumerate(trace):
         assert step == k + 1 and before == retained
         assert (leak, cut) == history[k]
         assert hq2 >= leak >= 0.0
@@ -297,7 +333,8 @@ def test_a_declined_freeze_is_asked_once_and_a_later_cap_still_takes_the_csr(mon
         return len(asked) > 1 and real_fits(*args, **kwargs)
 
     monkeypatch.setattr(gf_solvers, "_frozen_csr_fits", first_declines)
-    info = _trickle(cap=2600)[3]
+    # ratio 10 settles at ~2,265 determinants, below the 2,600 cap (ratio 1 would settle at ~3,074, past it)
+    info = _trickle(cap=2600, settle_ratio=10.0)[3]
     assert not info["support_frozen"] and info["cap_hit"] and info["csr_fallback"]
     assert len(asked) == 2, "the support freeze once, the cap freeze once"
 
@@ -305,7 +342,7 @@ def test_a_declined_freeze_is_asked_once_and_a_later_cap_still_takes_the_csr(mon
 def test_boundary_frontier_is_the_dense_image_outside_the_support():
     """``boundary_frontier`` against a dense ``H`` on the whole sector: the largest ``|amp|^2`` on a row outside
     ``P`` and the summed weight there, with and without the cutoff (summed rows cut, not partials)."""
-    h, v, _ = _dense_chain(seed=5)
+    h, _v, _ = _dense_chain(seed=5)
     keys = sorted(_det(list(c)) for c in itertools.combinations(range(N_ORB), 7))
     full = _basis(keys, None, n_orb=N_ORB)
     rng = np.random.default_rng(0)
@@ -348,3 +385,16 @@ def test_a_unit_that_never_settled_reports_no_frontier():
     with gf_switches(support_freeze=False):
         info = run_chain(slater_min=1e-4)[3]
     assert np.isnan(info["frontier_end_matvec"]) and np.isnan(info["leak_settle"])
+
+
+def test_a_half_finished_record_is_dropped_by_the_next_step_and_never_decides():
+    """A step that breaks down before its next block leaves a pending record; ``begin_step`` drops it, and the hook
+    with nothing pending neither records nor reduces."""
+    basis = _basis([_det([0, 1, 2, 3, 4, 5, 6])], None, n_orb=N_ORB)
+    policy = gf_primitives.SupportPolicy(basis, 10**9)
+    policy.enable_support_freeze(4, 1.0, 1e-4)
+    policy._pending = (None, 0, 0, 0.0, 0.0, 0.0, 0.0)
+    policy.begin_step()
+    assert policy._pending is None
+    policy.note_next_block(ManyBodyState.from_keys([]))
+    assert policy.support_trace == [] and not policy.frozen

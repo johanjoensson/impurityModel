@@ -147,8 +147,8 @@ RETIRED_KNOBS = {
     ),
     **dict.fromkeys(
         ("GF_CLOSURE_FREEZE", "GF_STAGNATION_FREEZE", "GF_STAGNATION_WINDOW"),
-        "retired with the zero-growth and absolute-threshold freezes; the support freeze replaces both, "
-        "weighing the weight reaching new determinants against what slaterWeightMin already cuts",
+        "retired with the zero-growth and absolute-threshold freezes; the settle rule replaces both "
+        "(a new determinant's amplitude against slaterWeightMin; GF_SETTLE_RATIO 0 is closure-only)",
     ),
     "MATVEC_PRUNE": (
         "retired: the slaterWeightMin cut of a redistributed sparse matvec is always made on the summed rows "
@@ -358,6 +358,21 @@ GF_ADMIT_FIRST_SHELL_TOL = Knob(
     its whole hole-space in the start set. Above 0, first-shell rows with amplitude below this
     (relative to the seed norm) are pruned like any other: the ``H^2`` moment then errs by at most
     the summed squared amplitudes of what was dropped.""",
+)
+
+GF_SETTLE_RATIO = Knob(
+    name="GF_SETTLE_RATIO",
+    kind="float",
+    default=1.0,
+    group="bicgstab",
+    doc="""PROVISIONAL default, to be fixed by the settle-rule sweep (``doc/plans/gf_support_freeze_redesign.md``).
+    The support settle of a sparse block-Lanczos Green's-function unit, as a multiple of ``slaterWeightMin``: the
+    unit stops admitting new determinants once, over 16 blocks, the largest amplitude the normalised next block
+    carries on a determinant the step reached for the first time stays at or below ``ratio x slaterWeightMin``
+    and is not growing. ``1`` settles when every excluded determinant would have been pruned from the next block
+    anyway; larger values settle sooner and drop amplitude up to ``ratio x slaterWeightMin`` per determinant;
+    ``0`` is closure only (no new determinant at all). A multiple of the cutoff, not a fraction of the seed norm
+    (``gf_admit_tol``). Overridden by the ``gf_settle_ratio`` solver option once that exists.""",
 )
 
 GF_SUPPORT_TRACE = Knob(
@@ -979,6 +994,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_ADMIT_EN_TOL,
     GF_LANCZOS_ADMIT_TOL,
     GF_ADMIT_FIRST_SHELL_TOL,
+    GF_SETTLE_RATIO,
     GF_SUPPORT_TRACE,
     GF_GMRES_RESTART,
     GF_EIGENSTATE_GROUP,
