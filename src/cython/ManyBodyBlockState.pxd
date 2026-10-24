@@ -103,6 +103,7 @@ cdef extern from "ManyBodyBlockState.h" nogil:
         void new_row_max_norm2(const vector[Key]&, vector[double]&) except +
         void new_row_max_norm2(const FlatKeyStore&, vector[double]&) except +
         pair[size_t, double] new_rows_stats(const FlatKeyStore&)
+        double new_rows_max_norm2(const FlatKeyStore&)
         ManyBodyBlockState keys_new_above(const vector[Key]&, double) except +
         ManyBodyBlockState keys_new_above(const FlatKeyStore&, double) except +
         ManyBodyBlockState key_union(const ManyBodyBlockState&) except +

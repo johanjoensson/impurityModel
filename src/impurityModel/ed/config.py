@@ -367,7 +367,8 @@ GF_SUPPORT_TRACE = Knob(
     group="bicgstab",
     doc="""Diagnostic. Print one ``GF support step k: ...`` line per block of a sparse Lanczos Green's-function
     unit (rank 0): the retained support, the new rows, the weight on them (leak), the weight the
-    ``slaterWeightMin`` prunes cut, ``||Hq||^2`` and the convergence monitor's last change. The same numbers are
+    ``slaterWeightMin`` prunes cut, ``||Hq||^2``, the largest amplitude squared landing on a new row and the
+    convergence monitor's last change. The same numbers are
     kept in ``cap_info["support_trace"]``; the lines let a production log be replayed offline against any
     freeze rule. It never changes a result.""",
 )

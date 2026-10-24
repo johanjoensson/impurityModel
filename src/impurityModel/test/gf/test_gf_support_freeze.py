@@ -236,6 +236,7 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
         kept = np.any(np.abs(wp) > cutoff, axis=1)
         cut_matvec = float(np.sum(np.abs(wp[~kept]) ** 2))
         leak = float(np.sum(np.abs(wp[kept & ~support]) ** 2))
+        max2 = float(np.max(np.abs(wp[kept & ~support]) ** 2, initial=0.0))
         support |= kept
         wp[~kept] = 0.0
         wp -= q @ (q.conj().T @ wp)
@@ -250,6 +251,7 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
             assert history[step][0] == pytest.approx(leak, rel=1e-9), step
             assert history[step][1] == pytest.approx(cut_matvec + cut_next_prev, rel=1e-9), step
             assert trace[step][5] == pytest.approx(hq2, rel=1e-9), step
+            assert trace[step][7] == pytest.approx(max2, rel=1e-9, abs=1e-30), step
             assert notes[2 * step] == pytest.approx(cut_matvec, rel=1e-9), step
             assert notes[2 * step + 1] == pytest.approx(cut_next, rel=1e-9), step
             compared += cut_matvec > 0 and cut_next > 0
@@ -258,14 +260,14 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
 
 
 def test_the_trace_extends_the_history_without_changing_it():
-    """``support_trace`` carries ``(step, retained_before, n_new, leak, cut, |Hq|^2, d_g)`` for the same steps
+    """``support_trace`` carries ``(step, retained_before, n_new, leak, cut, |Hq|^2, d_g, max|amp|^2)`` for the same steps
     as ``support_history``: its leak and cut are the history's, the retained sizes add up, and the monitor's
     ``d_g`` is logged (NaN until the monitor has measured one)."""
     info = _trickle()[3]
     history, trace = info["support_history"], info["support_trace"]
     assert len(trace) == len(history) > 0
     retained = trace[0][1]
-    for k, (step, before, n_new, leak, cut, hq2, _d_g) in enumerate(trace):
+    for k, (step, before, n_new, leak, cut, hq2, _d_g, _max2) in enumerate(trace):
         assert step == k + 1 and before == retained
         assert (leak, cut) == history[k]
         assert hq2 >= leak >= 0.0

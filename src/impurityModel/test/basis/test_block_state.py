@@ -188,6 +188,22 @@ def test_new_rows_stats_counts_and_weighs_the_rows_outside_the_mask():
     assert blk.new_rows_stats(ManyBodyState.from_keys(keys)) == (0, 0.0)
 
 
+def test_new_rows_max_norm2_is_the_largest_row_max_outside_the_mask():
+    rng = np.random.default_rng(12)
+    blk = ManyBodyState.from_states(_random_states(rng, 3, 24))
+    keys, _ = blk.row_max_norms2()
+    mask = ManyBodyState.from_keys(keys[1::3])
+    per_row = blk.new_row_max_norms2(mask)
+    assert blk.new_rows_max_norm2(mask) == pytest.approx(float(np.max(per_row)), rel=0, abs=0)
+    # a mask holding every row, an empty block and a key-only block all report 0.0
+    assert blk.new_rows_max_norm2(ManyBodyState.from_keys(keys)) == 0.0
+    assert ManyBodyState(width=3).new_rows_max_norm2(mask) == 0.0
+    assert ManyBodyState.from_keys(keys).new_rows_max_norm2(ManyBodyState.from_keys([])) == 0.0
+    # the maximum is over rows OUTSIDE the mask: the global maximum row, once masked, no longer counts
+    top = keys[int(np.argmax(blk.row_max_norms2()[1]))]
+    assert blk.new_rows_max_norm2(ManyBodyState.from_keys([top])) < blk.new_rows_max_norm2(ManyBodyState.from_keys([]))
+
+
 def test_buffer_view_zero_copy_write_through():
     rng = np.random.default_rng(4)
     states = _random_states(rng, 3, 20, sparsity=1.0)

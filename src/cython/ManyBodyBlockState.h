@@ -1042,6 +1042,29 @@ public:
   }
 
   /**
+   * @brief Max over the rows whose key is NOT in `keep` (sorted, unique) of the
+   * row's max column |amp|^2 -- the largest amplitude landing outside the
+   * retained set, in one merge pass with no allocation. 0.0 when there is no
+   * such row (and for an empty or key-only block).
+   */
+  template <typename KeepT>
+  double new_rows_max_norm2(const KeepT &keep) const noexcept {
+    double best = 0.0;
+    std::size_t ik = 0;
+    for (std::size_t r = 0; r < rows(); ++r) {
+      while (ik < keep.size() && FlatKeyStore::less(keep[ik], m_keys.view(r))) {
+        ++ik;
+      }
+      if (ik < keep.size() && FlatKeyStore::equal(m_keys.view(r), keep[ik])) {
+        ++ik;
+        continue;
+      }
+      best = std::max(best, row_max2(r));
+    }
+    return best;
+  }
+
+  /**
    * @brief Width-0 key-only block of the rows NOT in `keep` (sorted, unique)
    * whose max |amp|^2 exceeds `cutoff2` — the admitted boundary determinants
    * once the overflow bisection has fixed the amplitude cutoff.

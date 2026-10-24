@@ -335,7 +335,7 @@ class SupportPolicy:
         self._pending_cut = 0.0
         self._window = None
         self.support_history = []
-        #: Per-step diagnostic records ``(step, retained_before, n_new, leak, cut, hq2, d_g)`` (support freeze
+        #: Per-step diagnostic records ``(step, retained_before, n_new, leak, cut, hq2, d_g, max2)`` (support freeze
         #: only). Kept apart from ``support_history`` (whose 2-tuples other code unpacks); never read by a decision.
         self.support_trace = []
         #: The convergence monitor's ``last_dg`` list, set by ``block_Green_sparse`` for the trace. ``d_g`` is
@@ -625,11 +625,16 @@ class SupportPolicy:
         """:meth:`_admit_counted` under the support freeze: the count, leak and cut in one gather, then the
         freeze decision on the step's window (see :meth:`enable_support_freeze`). Collective."""
         n_new, leak = block.new_rows_stats(self._mask)
-        local = np.array([n_new, leak, self._pending_cut, self._pending_hq2], dtype=np.float64)
+        # Column 4 is reduced by MAX, the others by sum: the largest |amp|^2 landing outside the support, in the
+        # units of the matvec (a trace column; the settle rule measures the normalised next block instead).
+        local = np.array(
+            [n_new, leak, self._pending_cut, self._pending_hq2, block.new_rows_max_norm2(self._mask)],
+            dtype=np.float64,
+        )
         self._pending_cut = 0.0
         self._pending_hq2 = 0.0
         if self.comm is not None and self.comm.size > 1:
-            gathered = np.empty((self.comm.size, 4), dtype=np.float64)
+            gathered = np.empty((self.comm.size, 5), dtype=np.float64)
             self.comm.Allgather(local, gathered)
         else:
             gathered = local[None, :]
@@ -637,6 +642,7 @@ class SupportPolicy:
         leak = math.fsum(gathered[:, 1])
         cut = math.fsum(gathered[:, 2])
         hq2 = math.fsum(gathered[:, 3])
+        max2 = float(np.max(gathered[:, 4]))
         if self._global_count + n_new > self.cap:
             self._admit_top_and_freeze(block)
             block.keep_rows(self._mask)
@@ -649,11 +655,11 @@ class SupportPolicy:
             d_g = float("nan")
             if self.monitor_dg is not None and self.monitor_dg[0] is not None:
                 d_g = float(self.monitor_dg[0])
-            self.support_trace.append((len(self.support_history), retained_before, n_new, leak, cut, hq2, d_g))
+            self.support_trace.append((len(self.support_history), retained_before, n_new, leak, cut, hq2, d_g, max2))
             if self._trace_steps and (self.comm is None or self.comm.rank == 0):
                 print(
                     f"GF support step {len(self.support_history)}: retained {retained_before:,}, new {n_new:,}, "
-                    f"leak {leak:.3e}, cut {cut:.3e}, |Hq|^2 {hq2:.3e}, d_g {d_g:.2e}",
+                    f"leak {leak:.3e}, cut {cut:.3e}, |Hq|^2 {hq2:.3e}, d_g {d_g:.2e}, max|amp|^2 {max2:.3e}",
                     flush=True,
                 )
             self._window.append((leak, cut))
