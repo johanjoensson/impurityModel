@@ -532,32 +532,33 @@ def check_truncation_error_bound(max_bound: float, max_boundary: float) -> Diagn
     )
 
 
-def check_support_freeze(retained, leak, cut) -> Diagnostic:
-    r"""Report a unit whose support froze because growing it no longer bought more than the cutoff cost.
+def check_support_freeze(retained, verdict) -> Diagnostic:
+    r"""Report a unit whose support settled because its frontier fell below the cutoff-scaled threshold.
 
-    the support freeze freezes a unit once the weight reaching determinants outside the retained set
-    ``P``, summed over the last 16 blocks, is no larger than what the ``slaterWeightMin`` prunes dropped
-    over them; the recurrence then carries on as the exact one on ``P``. What later blocks would have
-    admitted is missing, at most at the rate the cutoff was already discarding weight, so it is an ``OK``
-    that carries both numbers, not a ``WARN``: the error is the one the run accepted with its cutoff. It
-    does not set ``needs_more_iterations`` or ``needs_more_states``.
+    The settle rule (:class:`gf_primitives.FreezeRule`) stops a unit's support growing once, over a window of
+    blocks, the largest amplitude the normalised next block carries on a determinant reached for the first time
+    stays at or below ``ratio`` x ``slaterWeightMin`` and is not growing; the recurrence then carries on as the
+    exact one on the determinants it has. What later blocks would have admitted is missing, at an amplitude the
+    cutoff works at, so it is an ``OK`` that carries the number, not a ``WARN``. It does not set
+    ``needs_more_iterations`` or ``needs_more_states``.
 
     Args:
-        retained: Global determinant count the unit froze at (the smallest over the block's units).
-        leak: The weight on new rows over the freezing window (the largest over the block's units).
-        cut: What the cutoff dropped over that window (of the same unit as ``leak``).
+        retained: Global determinant count of the reported unit's support.
+        verdict: That unit's :meth:`gf_primitives.FreezeRule.verdict` (``window``, ``ratio``, ``max_amp``,
+            ``max_amp_over_swm``, ``leak``, ``cut``); the block's unit with the largest frontier.
     """
-    leak = float(leak) if leak is not None else float("nan")
-    cut = float(cut) if cut is not None else float("nan")
+    verdict = verdict or {}
+    over = float(verdict.get("max_amp_over_swm", float("nan")))
+    ratio = float(verdict.get("ratio", float("nan")))
     return Diagnostic(
         name="support_freeze",
         severity=Severity.OK,
-        value=leak,
-        threshold=cut,
+        value=over,
+        threshold=ratio,
         message=(
-            f"GF unit support frozen at {int(retained or 0):,} determinants (support freeze): the weight "
-            f"reaching new rows ({leak:.1e} over the last window) was no more than what slaterWeightMin cut "
-            f"({cut:.1e})"
+            f"GF unit support frozen at {int(retained or 0):,} determinants (support settle, gf_settle_ratio "
+            f"{ratio:g}): over the last {int(verdict.get('window', 0))} blocks no new determinant carried more "
+            f"than {over:.2g}x slaterWeightMin in the next block"
         ),
     )
 

@@ -291,3 +291,15 @@ def test_bicgstab_convergence_check():
     )
     assert overflow.severity == gd.Severity.WARN  # converged, but the seed itself overflowed the cap
     assert "truncation_threshold" in overflow.message
+
+
+def test_support_freeze_row_carries_one_units_numbers_and_is_never_a_warning():
+    verdict = {"window": 16, "ratio": 3.0, "max_amp": 7e-11, "max_amp_over_swm": 0.7, "leak": 1e-17, "cut": 2e-17}
+    d = gd.check_support_freeze(1014, verdict)
+    assert d.name == "support_freeze" and d.severity is gd.Severity.OK
+    assert d.value == pytest.approx(0.7) and d.threshold == 3.0
+    for text in ("1,014 determinants", "gf_settle_ratio 3", "16 blocks", "0.7x slaterWeightMin"):
+        assert text in d.message
+    assert not d.needs_more_iterations and not d.needs_more_states
+    # a missing verdict degrades to NaN numbers, not an exception
+    assert gd.check_support_freeze(None, None).severity is gd.Severity.OK

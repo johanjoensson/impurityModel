@@ -647,15 +647,15 @@ def _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, del
             if cap_stats.get("memory_frozen"):
                 stats["memory_frozen"] = True
             if cap_stats.get("support_frozen"):
-                # Kept apart from the cap's retained_size: a block can hold both kinds of unit, and the
-                # support-freeze diagnostic reports its own smallest support and largest window weight.
-                retained = cap_stats.get("retained_size")
-                if not stats.get("support_frozen") or (retained is not None and retained < stats["support_retained"]):
-                    stats["support_retained"] = retained
+                # Kept apart from the cap's retained_size. The block reports ONE unit's settle -- the one whose
+                # frontier was largest -- with that unit's own support, so the numbers it prints belong together.
+                verdict = cap_stats.get("settle_verdict")
+                if verdict is not None and (
+                    not stats.get("support_frozen") or verdict["max_amp"] >= stats["settle_verdict"]["max_amp"]
+                ):
+                    stats["support_retained"] = cap_stats.get("retained_size")
+                    stats["settle_verdict"] = verdict
                 stats["support_frozen"] = True
-                leak, cut = cap_stats.get("support_window") or (None, None)
-                if leak is not None and leak >= stats.get("support_window", (-1.0, None))[0]:
-                    stats["support_window"] = (leak, cut)
             if cap_stats["cap_hit"]:
                 stats["cap_hit"] = True
                 stats["cap"] = cap_stats["cap"]
@@ -722,9 +722,7 @@ def _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, del
                 )
                 if block_cap.get("support_frozen"):
                     diags.append(
-                        _gfd.check_support_freeze(
-                            block_cap.get("support_retained"), *block_cap.get("support_window", (None, None))
-                        )
+                        _gfd.check_support_freeze(block_cap.get("support_retained"), block_cap.get("settle_verdict"))
                     )
             # The sum rule holds for the plain c/c^dag part of a family: its leading len(block) columns.
             n_c = len(block)

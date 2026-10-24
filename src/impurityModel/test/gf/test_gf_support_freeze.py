@@ -43,7 +43,7 @@ from impurityModel.test.support.gf_chain_fixtures import (
 )
 from impurityModel.test.support.gf_switches import gf_switches, set_gf_switches
 
-WINDOW = gf_solvers._SUPPORT_WINDOW
+WINDOW = gf_primitives.SETTLE_WINDOW
 
 
 @pytest.fixture(autouse=True)
@@ -141,7 +141,7 @@ def test_both_prunes_are_counted(monkeypatch):
         return real(self, weight)
 
     monkeypatch.setattr(gf_primitives._CappedBasisProxy, "note_step_cut", recording)
-    history = _trickle()[3]["support_history"]
+    history = _trickle()[3]["support_trace"]
     assert len(history) * 2 - 1 <= len(calls) <= len(history) * 2 + 1, (len(calls), len(history))
     assert all(w >= 0.0 for w in calls)
 
@@ -176,13 +176,13 @@ def test_with_no_cutoff_it_freezes_only_on_closure():
 @pytest.mark.parametrize("reort", [True])
 def test_it_needs_reort_none(reort):
     info = _trickle(reort=reort)[3]
-    assert not info["support_frozen"] and info["support_history"] == []
+    assert not info["support_frozen"] and info["support_trace"] == []
 
 
 def test_off_switch(monkeypatch):
     set_gf_switches(monkeypatch, support_freeze="0")
     info = _trickle()[3]
-    assert not info["support_frozen"] and info["support_history"] == []
+    assert not info["support_frozen"] and info["support_trace"] == []
 
 
 def test_a_matrix_that_does_not_fit_undoes_the_freeze(monkeypatch):
@@ -204,7 +204,7 @@ def test_every_rank_holds_the_same_history_and_decides_alike():
     assert info["support_frozen"]
     # d_g is computed per rank from allreduced coefficients: logged, not replicated, so it is left out.
     trace = np.array([row[:6] + row[7:] for row in info["support_trace"]], dtype=np.float64).tobytes()
-    mine = (np.array(info["support_history"]).tobytes(), trace, info["retained_size"], len(result[0]))
+    mine = (trace, info["retained_size"], len(result[0]))
     assert len(set(comm.allgather(mine))) == 1
     assert _first_settling(info["support_trace"], 1.0, 1e-4) == len(info["support_trace"])
     # the rank count moves nothing: the same settle step, size and rows as the serial run
@@ -254,7 +254,7 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
     monkeypatch.setattr(gf_primitives._CappedBasisProxy, "note_step_cut", recording)
     cutoff = 1e-4
     info = _trickle()[3]
-    history, trace = info["support_history"], info["support_trace"]
+    trace = info["support_trace"]
 
     h, v, seed_rows = _dense_chain(seed=5)
     support = np.zeros(h.shape[0], dtype=bool)
@@ -282,8 +282,8 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
         q_next[dropped] = 0.0
         q_next, r2 = np.linalg.qr(q_next)
         if step >= 10:
-            assert history[step][0] == pytest.approx(leak, rel=1e-9), step
-            assert history[step][1] == pytest.approx(cut_matvec + cut_next_prev, rel=1e-9), step
+            assert trace[step][3] == pytest.approx(leak, rel=1e-9), step
+            assert trace[step][4] == pytest.approx(cut_matvec + cut_next_prev, rel=1e-9), step
             assert trace[step][5] == pytest.approx(hq2, rel=1e-9), step
             assert trace[step][7] == pytest.approx(max2, rel=1e-9, abs=1e-30), step
             assert trace[step][8] == pytest.approx(max2_next, rel=1e-6, abs=1e-30), step
@@ -294,26 +294,36 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
     assert compared >= 15, "premise: both cuts are real weights on most compared steps"
 
 
-def test_the_trace_extends_the_history_without_changing_it():
+def test_the_trace_records_every_step_and_its_sizes_add_up():
     """``support_trace`` carries ``(step, retained_before, n_new, leak, cut, |Hq|^2, d_g, max|amp|^2,
-    next-block max|amp|^2)`` for the same steps
-    as ``support_history``: its leak and cut are the history's, the retained sizes add up, and the monitor's
-    ``d_g`` is logged (NaN until the monitor has measured one)."""
+    next-block max|amp|^2)`` per step: the steps count from 1, the retained sizes add up to the unit's support,
+    and the monitor's ``d_g`` is logged (NaN until the monitor has measured one)."""
     info = _trickle()[3]
-    history, trace = info["support_history"], info["support_trace"]
-    assert len(trace) == len(history) > 0
+    trace = info["support_trace"]
+    assert len(trace) > 0
     retained = trace[0][1]
     for k, (step, before, n_new, leak, cut, hq2, _d_g, _max2, _max2_next) in enumerate(trace):
         assert step == k + 1 and before == retained
-        assert (leak, cut) == history[k]
-        assert hq2 >= leak >= 0.0
+        assert hq2 >= leak >= 0.0 and cut >= 0.0
         retained += n_new
     assert retained == info["retained_size"]
 
 
+def test_a_settled_unit_carries_the_verdict_it_decided_on():
+    info = _trickle()[3]
+    v = info["settle_verdict"]
+    assert v["step"] == len(info["support_trace"]) and v["window"] == WINDOW and v["ratio"] == 1.0
+    assert v["max_amp"] <= v["ratio"] * 1e-4 * (1 + 1e-12) and v["max_amp_over_swm"] <= 1.0
+    window = info["support_trace"][len(info["support_trace"]) - WINDOW :]
+    assert v["leak"] == pytest.approx(sum(row[3] for row in window)) and v["cut"] == pytest.approx(
+        sum(row[4] for row in window)
+    )
+    assert _trickle(support_settle=False)[3]["settle_verdict"] is None
+
+
 def test_the_step_trace_prints_one_line_per_block(monkeypatch, capsys):
     monkeypatch.setenv("GF_SUPPORT_TRACE", "1")
-    history = _trickle()[3]["support_history"]
+    history = _trickle()[3]["support_trace"]
     lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("GF support step ")]
     assert len(lines) == len(history)
 

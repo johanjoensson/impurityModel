@@ -14,25 +14,15 @@ Layering: below ``greens_function``, ``spectra``, ``rixs`` and ``susceptibility`
 ``gf_units``, ``gf_solvers`` and the basis layer.
 """
 
-import math
 import sys
 import time
 
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed.gf_solvers import _SUPPORT_WINDOW, block_Green, block_Green_sparse
+from impurityModel.ed.gf_solvers import block_Green, block_Green_sparse
 from impurityModel.ed.memory_estimate import format_bytes, peak_rss_bytes, reset_peak_rss
 from impurityModel.ed.solver_trace import note as _trace_note
-
-
-def _freezing_window(cap_info):
-    """``(weight on new rows, weight cut)`` summed over the window a support freeze decided on, else ``None``."""
-    if not cap_info.get("support_frozen"):
-        return None
-    history = cap_info.get("support_history") or []
-    window = history[max(len(history) - _SUPPORT_WINDOW, 0) :]
-    return math.fsum(w[0] for w in window), math.fsum(w[1] for w in window)
 
 
 def _block_green_group(
@@ -156,8 +146,8 @@ def _block_green_group(
             "seed_size": seed_size,
             "memory_frozen": bool(cap_info.get("memory_frozen", False)),
             "support_frozen": bool(cap_info.get("support_frozen", False)),
-            # The freezing window's (weight on new rows, weight cut), summed as the freeze decided on them.
-            "support_window": _freezing_window(cap_info),
+            # The settle window's numbers (largest next-block amplitude on a new row, leak, cut), as it decided.
+            "settle_verdict": cap_info.get("settle_verdict"),
             "csr_fallback": bool(cap_info.get("csr_fallback", False)),
             "csr_seconds": float(cap_info.get("csr_seconds", 0.0)),
         }

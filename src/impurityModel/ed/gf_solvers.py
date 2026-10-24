@@ -31,6 +31,7 @@ from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.gf_admission import solve_point_outer
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
+    SETTLE_WINDOW,
     FrozenColumnMatvec,
     _allreduced_col_norms2,
     _CappedBasisProxy,
@@ -424,9 +425,6 @@ _CSR_BATCH_BYTES_PER_ELEMENT = 160
 #: Lanczos blocks of ``N_local x width`` the array kernel holds at once at reort off (the
 #: current and previous block, the product, the next block).
 _CSR_KERNEL_VECTORS = 4
-#: The support freeze's window: the blocks over which the weight reaching new rows is weighed against what the
-#: slaterWeightMin prunes dropped. Long enough to span a gap between the layered shells a support grows in.
-_SUPPORT_WINDOW = 16
 #: Floor of the frozen-basis recurrence's first block budget (the measured SrMnO3 units converged
 #: in 174-429 blocks); the array kernel's doubling raises it when a unit needs more.
 _CSR_INITIAL_BLOCKS = 256
@@ -762,7 +760,7 @@ def block_Green_sparse(
     ``cap_info["csr_fallback"]`` says whether it ran. The same switch is taken when growing the
     support below the cap no longer buys more than the ``slaterWeightMin`` cut costs
     (on by default; ``cap_info["support_frozen"]``, with the per-step weights
-    it decided on in ``cap_info["support_history"]``).
+    the window's verdict in ``cap_info["settle_verdict"]`` and the per-step records in ``cap_info["support_trace"]``).
 
     ``basis.truncation_threshold`` caps the number of Slater determinants the
     recurrence may touch (see :class:`_CappedBasisProxy`); ``np.inf`` (the ``Basis``
@@ -815,7 +813,7 @@ def block_Green_sparse(
         cap_info["csr_fallback"] = False
         cap_info["csr_seconds"] = 0.0
         cap_info["support_frozen"] = False
-        cap_info["support_history"] = []
+        cap_info["settle_verdict"] = None
         cap_info["support_trace"] = []
         for key in ("leak_settle", "frontier_settle_matvec", "frontier_end", "frontier_end_matvec", "leak_end"):
             cap_info[key] = float("nan")
@@ -931,7 +929,7 @@ def block_Green_sparse(
         and not lanczos_basis.prunes
     ):
         lanczos_basis.enable_support_freeze(
-            _SUPPORT_WINDOW,
+            SETTLE_WINDOW,
             config.GF_SETTLE_RATIO.get() if settle_ratio is None else settle_ratio,
             slaterWeightMin,
             log=verbose and rank == 0,
@@ -1028,7 +1026,7 @@ def block_Green_sparse(
             cap_info["proxy"] = lanczos_basis
             cap_info["csr_fallback"] = csr is not None
             cap_info["support_frozen"] = lanczos_basis.support_frozen
-            cap_info["support_history"] = list(lanczos_basis.support_history)
+            cap_info["settle_verdict"] = lanczos_basis.settle_verdict()
             cap_info["support_trace"] = list(lanczos_basis.support_trace)
             if csr is not None:
                 cap_info["csr_seconds"] = csr[3]

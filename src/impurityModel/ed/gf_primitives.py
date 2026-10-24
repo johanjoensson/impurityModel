@@ -196,6 +196,11 @@ def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
     return G_avg
 
 
+#: Blocks over which the support settle watches the frontier: long enough to span a gap between the layered shells
+#: a support grows in.
+SETTLE_WINDOW = 16
+
+
 class FreezeRule:
     r"""The support settle's decision: a pure strategy over the per-step frontier records of one unit.
 
@@ -392,7 +397,6 @@ class SupportPolicy:
         self._pending_cut = 0.0
         self._rule = None
         self._pending = None
-        self.support_history = []
         #: Per-step diagnostic records ``(step, retained_before, n_new, leak, cut, hq2, d_g, max2)`` (support freeze
         #: only). Kept apart from ``support_history`` (whose 2-tuples other code unpacks); never read by a decision.
         self.support_trace = []
@@ -486,6 +490,12 @@ class SupportPolicy:
         self._rule = FreezeRule(window, ratio, slater_weight_min)
         self._support_log = bool(log)
         self._trace_steps = bool(trace)
+
+    def settle_verdict(self):
+        """The window's numbers (:meth:`FreezeRule.verdict`) once the support has settled, else ``None``."""
+        if not self.support_frozen or self._rule is None:
+            return None
+        return {**self._rule.verdict(), "step": len(self.support_trace)}
 
     def unfreeze_support(self):
         """Undo a support freeze whose frozen matrix did not fit, and do not freeze this way again: a truncation
@@ -729,8 +739,7 @@ class SupportPolicy:
         d_g = float("nan")
         if self.monitor_dg is not None and self.monitor_dg[0] is not None:
             d_g = float(self.monitor_dg[0])
-        self.support_history.append((leak, cut))
-        step_no = len(self.support_history)
+        step_no = len(self.support_trace) + 1
         self.support_trace.append((step_no, retained_before, n_new, leak, cut, hq2, d_g, max2_matvec, max2_next))
         swm = self._rule.slater_weight_min
         if self._trace_steps and (self.comm is None or self.comm.rank == 0):
