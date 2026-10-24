@@ -509,6 +509,108 @@ def eigenvector_overlap_experiment(workload_key, budgets, comm=None, truncation_
     return rows
 
 
+def window_diff(archive, iterations, swms=(1e-8, 1e-10), cluster=None):
+    """Excited-sector chain windows per archived iteration at several ``slater_weight_min`` -- no solve.
+
+    For each iteration the solver basis is rebuilt from the archive (``prepare_solver_basis``), a ``Basis`` is
+    generated from the nominal occupation (so ``get_effective_restrictions`` sees a one-sector stand-in, not the
+    ground state: the *far/deep zone membership* below does not depend on it, the group count bounds do), and the
+    real :func:`basis_restrictions.build_excited_restrictions` runs at every cutoff. Returns one row per
+    (iteration, swm): the windows, the group sizes, and per bath orbital its assigned group, the group of its
+    nearest impurity orbital by coupling distance, ``a(o) = exp(-min_k dist)`` and its zone. Rows where the
+    windows differ between cutoffs are flagged by :func:`format_window_diff`.
+    """
+    from impurityModel.ed import atomic_physics
+    from impurityModel.ed.basis_restrictions import (
+        COUPLING_CUTOFF_DEFAULT,
+        MIN_DIST_DEFAULT,
+        _impurity_coupling_distance,
+        build_excited_restrictions,
+    )
+    from impurityModel.ed.lie_algebra import tensors_to_operator
+    from impurityModel.ed.manybody_basis import Basis
+    from impurityModel.ed.solver_basis import prepare_solver_basis
+    from impurityModel.test.support.real_workload import load_workload
+
+    rows = []
+    for it in iterations:
+        wl = load_workload(archive, cluster=cluster, iteration=it)
+        dc = wl["dc"]
+        sb = prepare_solver_basis(
+            wl["h0"],
+            tensors_to_operator(np.asarray(dc, dtype=complex)).to_dict() if dc is not None else None,
+            atomic_physics.getUop_from_rspt_u4(wl["u4"]),
+            wl["impurity_orbitals"],
+            wl["nominal_occ"],
+            wl["mixed_valence"],
+            wl["rot_to_spherical"],
+            0,
+        )
+        basis = Basis(
+            sb.impurity_orbitals,
+            sb.bath_states,
+            nominal_impurity_occ=sb.nominal_occ,
+            mixed_valence=sb.mixed_valence,
+            tau=wl["tau"],
+            chain_restrict=wl["chain_restrict"],
+        )
+        imp_flat = sorted(o for g in sb.impurity_orbitals.values() for blk in g for o in blk)
+        val, con = sb.bath_states
+        group_of = {o: g for g, blks in val.items() for blk in blks for o in blk}
+        group_of.update({o: g for g, blks in con.items() for blk in blks for o in blk})
+        dist, _ = _impurity_coupling_distance(
+            sb.h, sb.n_spin_orbitals, imp_flat, COUPLING_CUTOFF_DEFAULT, MIN_DIST_DEFAULT
+        )
+        imp_group = {o: g for g, blks in sb.impurity_orbitals.items() for blk in blks for o in blk}
+        sites = []
+        for o in sorted(group_of):
+            k = int(np.argmin(dist[imp_flat, o]))
+            d = float(dist[imp_flat[k], o])
+            sites.append(
+                {
+                    "orbital": o,
+                    "assigned_group": group_of[o],
+                    "nearest_group": imp_group[imp_flat[k]] if np.isfinite(d) else None,
+                    "a": float(np.exp(-d)) if np.isfinite(d) else 0.0,
+                }
+            )
+        for swm in swms:
+            windows = build_excited_restrictions(basis, sb.h, None, None, slater_weight_min=swm)
+            rows.append(
+                {
+                    "iteration": it,
+                    "swm": swm,
+                    "windows": {tuple(sorted(k)): v for k, v in (windows or {}).items()},
+                    "group_sizes": {g: sum(len(b) for b in val[g]) + sum(len(b) for b in con[g]) for g in val},
+                    "sites": sites,
+                }
+            )
+    return rows
+
+
+def format_window_diff(rows):
+    """Text table for :func:`window_diff`: per iteration the window sizes at each cutoff, and a ``DIFF`` flag."""
+    lines = []
+    by_it = {}
+    for r in rows:
+        by_it.setdefault(r["iteration"], []).append(r)
+    for it, rs in sorted(by_it.items()):
+        parts = []
+        for r in rs:
+            sizes = sorted(((len(k), v) for k, v in r["windows"].items()), reverse=True)
+            parts.append(f"swm {r['swm']:g}: {sizes}")
+        differ = any(r["windows"] != rs[0]["windows"] for r in rs[1:])
+        mis = sum(
+            1 for s in rs[0]["sites"] if s["nearest_group"] is not None and s["nearest_group"] != s["assigned_group"]
+        )
+        unreach = sum(1 for s in rs[0]["sites"] if s["nearest_group"] is None)
+        lines.append(
+            f"it {it:2d}  groups {rs[0]['group_sizes']}  sites assigned away from their chain {mis}, "
+            f"unreachable {unreach}  " + " | ".join(parts) + ("   DIFF" if differ else "")
+        )
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     import sys
 
@@ -519,6 +621,11 @@ if __name__ == "__main__":
     except ImportError:
         comm = None
     key = sys.argv[1] if len(sys.argv) > 1 else "nio_20"
+    if len(sys.argv) > 2 and sys.argv[2] == "windows":
+        # windows ARCHIVE FIRST LAST [swm ...]
+        _swms = [float(x) for x in sys.argv[6:]] or [1e-8, 1e-10]
+        print(format_window_diff(window_diff(sys.argv[3], range(int(sys.argv[4]), int(sys.argv[5]) + 1), _swms)))
+        sys.exit(0)
     if len(sys.argv) > 2 and sys.argv[2] == "budget":
         budgets = [int(b) for b in sys.argv[3:]] or [8, 6, 5, 4, 3, 2, 1]
         budget_experiment(key, budgets, comm=comm)
