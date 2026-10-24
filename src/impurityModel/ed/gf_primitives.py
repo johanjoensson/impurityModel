@@ -802,14 +802,19 @@ class SupportPolicy:
         """One-line description of the cap state (rank-0 logging)."""
         if self.support_frozen:
             return (
-                f"GF basis frozen at {self._global_count:,} determinants: over the last {self._rule.maxlen} blocks "
+                f"GF unit support settled at {self._global_count:,} determinants: over the last "
+                f"{self._rule.maxlen} blocks "
                 f"no new determinant carried more than {self._rule.ratio:g}x slaterWeightMin in the next block "
-                "(support settle, gf_settle_ratio); the Green's function is exact on the retained subspace from "
-                "here on, and drops only determinants below that amplitude."
+                "(gf_settle_ratio); the Green's function is exact on the retained subspace from here on and "
+                "drops only determinants below that amplitude (lossless up to the cutoff)."
             )
-        why = "the measured-memory guard" if self.memory_frozen else f"the cap of {self.cap:,}"
+        if self.memory_frozen:
+            return (
+                f"GF basis held at {self._global_count:,} determinants by the measured-memory guard; the Green's "
+                "function is exact on the retained subspace."
+            )
         return (
-            f"GF basis frozen at {self._global_count:,} determinants by {why}; the Green's "
+            f"GF basis frozen at {self._global_count:,} determinants by the cap of {self.cap:,}; the Green's "
             "function is exact on the retained subspace."
         )
 

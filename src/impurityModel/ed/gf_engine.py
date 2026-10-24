@@ -199,7 +199,15 @@ def _block_green_group(
         # n_blocks counts every block of the unit (a frozen one's continued on the CSR included; a
         # reorthogonalized one's restarted CSR recurrence alone), and csr= the CSR phase's wall time.
         csr = f", csr={cap_stats['csr_seconds']:.1f} s" if cap_stats.get("csr_fallback") else ""
-        stagnated = ", support_frozen=True" if cap_stats.get("support_frozen") else ""
+        verdict = cap_stats.get("settle_verdict")
+        # The literal ``support_frozen=True`` token is read by the cluster kits' log parsers; the words after it
+        # say what it is (a settle: lossless up to the cutoff, not a cap) and where it happened.
+        stagnated = (
+            f", support_frozen=True (settled at block {verdict['step']} of {n_blocks}, "
+            f"frontier {verdict['max_amp_over_swm']:.2g}x slaterWeightMin)"
+            if cap_stats.get("support_frozen") and verdict
+            else (", support_frozen=True" if cap_stats.get("support_frozen") else "")
+        )
         print(
             f"  {label}: excited basis {retained_display} determinants "
             f"(cap={cap:,.0f}, cap_hit={cap_stats['cap_hit']}{stagnated}{csr}) n_blocks={n_blocks} "

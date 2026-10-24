@@ -33,7 +33,9 @@ that are outright unphysical (a violated exact sum rule, a non-causal Green's fu
 from __future__ import annotations
 
 import dataclasses
+from dataclasses import dataclass
 from enum import IntEnum
+from typing import Optional
 
 import numpy as np
 
@@ -79,6 +81,8 @@ class DiagnosticReport:
 
     def __init__(self):
         self._by_block: dict[str, list[Diagnostic]] = {}
+        #: Per-work-unit records (:class:`UnitRecord`), set by the Green's-function driver on the root rank.
+        self.units: list[UnitRecord] = []
 
     def add(self, block_label: str, diagnostic: Diagnostic) -> None:
         """Record ``diagnostic`` under ``block_label`` (creating the group if needed)."""
@@ -532,33 +536,79 @@ def check_truncation_error_bound(max_bound: float, max_boundary: float) -> Diagn
     )
 
 
-def check_support_freeze(retained, verdict) -> Diagnostic:
-    r"""Report a unit whose support settled because its frontier fell below the cutoff-scaled threshold.
+@dataclass(frozen=True)
+class UnitRecord:
+    """One Green's-function work unit as the report names it: which operator group it solved, for which
+    thermal states, how large its support grew and whether (and where) it settled.
+
+    ``side`` is ``"addition"`` or ``"removal"``; ``states`` the thermal-state indices the unit stacks;
+    ``e_minus_e0`` / ``boltzmann`` their energies above the ground state and normalised weights;
+    ``seed_weight`` the summed ``|r|^2`` of its seeds (electrons added or removed, weighted); ``retained`` the
+    unit's final support (``None`` when untracked); ``settled`` / ``settle_step`` / ``n_blocks`` the settle
+    verdict and the unit's block count; ``frontier_over_swm`` / ``ratio`` / ``window`` the settle verdict's
+    numbers (``nan`` when the unit did not settle). ``cap_hit`` / ``memory_frozen`` mark the lossy freezes."""
+
+    unit: int
+    block: int
+    side: str
+    states: tuple
+    e_minus_e0: tuple
+    boltzmann: tuple
+    seed_weight: float
+    retained: Optional[int]
+    settled: bool
+    settle_step: Optional[int]
+    n_blocks: Optional[int]
+    frontier_over_swm: float
+    ratio: float
+    window: int
+    cap_hit: bool
+    memory_frozen: bool
+
+    def describe(self) -> str:
+        """``unit 4, removal, state 1 (E-E0 0.000, seed 0.22 e)``: what a reader needs to find it again."""
+        states = ",".join(str(i) for i in self.states)
+        gap = ",".join(f"{e:.3f}" for e in self.e_minus_e0)
+        return f"unit {self.unit}, {self.side}, state {states} (E-E0 {gap}, seed {self.seed_weight:.2f} e)"
+
+
+def check_support_settled(records, slater_weight_min) -> Diagnostic:
+    r"""Report the units of one block whose support settled: the lossless-up-to-the-cutoff stop.
 
     The settle rule (:class:`gf_primitives.FreezeRule`) stops a unit's support growing once, over a window of
     blocks, the largest amplitude the normalised next block carries on a determinant reached for the first time
     stays at or below ``ratio`` x ``slaterWeightMin`` and is not growing; the recurrence then carries on as the
-    exact one on the determinants it has. What later blocks would have admitted is missing, at an amplitude the
-    cutoff works at, so it is an ``OK`` that carries the number, not a ``WARN``. It does not set
-    ``needs_more_iterations`` or ``needs_more_states``.
+    exact one on the determinants it has. Units differ a lot (a unit that removes an electron into a closed spin
+    sector closes at a thousand determinants where its neighbour needs twenty thousand), so the row names the
+    smallest and the largest settled support by unit, state and seed weight rather than one number. It is an
+    ``OK``: what later blocks would have admitted is missing at an amplitude the cutoff works at. It does not
+    set ``needs_more_iterations`` or ``needs_more_states``.
 
     Args:
-        retained: Global determinant count of the reported unit's support.
-        verdict: That unit's :meth:`gf_primitives.FreezeRule.verdict` (``window``, ``ratio``, ``max_amp``,
-            ``max_amp_over_swm``, ``leak``, ``cut``); the block's unit with the largest frontier.
+        records: The block's :class:`UnitRecord` entries (every unit that fed it, settled or not).
+        slater_weight_min: The amplitude cutoff the frontier is measured against (for the message).
     """
-    verdict = verdict or {}
-    over = float(verdict.get("max_amp_over_swm", float("nan")))
-    ratio = float(verdict.get("ratio", float("nan")))
+    tracked = [r for r in records if r.retained is not None]
+    settled = [r for r in tracked if r.settled]
+    if not settled:
+        return Diagnostic(name="support_settled", severity=Severity.OK, value=float("nan"), threshold=float("nan"),
+                          message="no unit settled its support")  # fmt: skip
+    small = min(settled, key=lambda r: r.retained)
+    large = max(settled, key=lambda r: r.retained)
+    worst = max(settled, key=lambda r: r.frontier_over_swm)
+    sides = sorted({r.side for r in settled})
+    scope = f"{len(settled)} of {len(tracked)} units"
     return Diagnostic(
-        name="support_freeze",
+        name="support_settled",
         severity=Severity.OK,
-        value=over,
-        threshold=ratio,
+        value=float(worst.frontier_over_swm),
+        threshold=float(worst.ratio),
         message=(
-            f"GF unit support frozen at {int(retained or 0):,} determinants (support settle, gf_settle_ratio "
-            f"{ratio:g}): over the last {int(verdict.get('window', 0))} blocks no new determinant carried more "
-            f"than {over:.2g}x slaterWeightMin in the next block"
+            f"{scope} settled their support ({'/'.join(sides)}; lossless up to slaterWeightMin "
+            f"{slater_weight_min:.0e}, gf_settle_ratio {worst.ratio:g}): supports "
+            f"{small.retained:,} ({small.describe()}) .. {large.retained:,} ({large.describe()}); "
+            "largest new-determinant amplitude in the next block "
+            f"{worst.frontier_over_swm:.2g}x slaterWeightMin over {worst.window} blocks"
         ),
     )
 

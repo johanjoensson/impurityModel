@@ -1,3 +1,4 @@
+import math
 import os
 from dataclasses import dataclass
 from typing import Optional
@@ -280,6 +281,7 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
 # 0 = addition (a creation operator on the thermal state, inverse photoemission),
 # 1 = removal (an annihilation operator, photoemission).
 _UNIT_SIDE_LABELS = ("create (addition)", "annihilate (removal)")
+_UNIT_SIDE_NAMES = ("addition", "removal")
 
 
 def _report_max_unit_basis(heading, rows):
@@ -314,25 +316,26 @@ def _report_max_unit_basis(heading, rows):
     """
     if not rows:
         return
-    label_width = max(len(label) for label, _, _ in rows)
-    tracked = [size for _, size, _ in rows if size is not None]
+    rows = [row if len(row) == 4 else (*row, "") for row in rows]
+    label_width = max(len(label) for label, _, _, _ in rows)
+    tracked = [size for _, size, _, _ in rows if size is not None]
     size_width = max((len(f"{size:,}") for size in tracked), default=0)
     print(f"{heading}:", flush=True)
-    for label, size, cap_hit in rows:
+    for label, size, cap_hit, note in rows:
         if size is None:
             detail = "not tracked (no determinant cap set)"
         else:
             noun = "determinant" if size == 1 else "determinants"
             detail = f"{size:>{size_width},} {noun}" + (" -- frozen at the cap" if cap_hit else "")
-        print(f"  {label:<{label_width}}  {detail}", flush=True)
+        print(f"  {label:<{label_width}}  {detail}" + (f" -- {note}" if note else ""), flush=True)
     if tracked:
         # Qualify the headline number wherever it is not the plain answer to "how big did the
         # largest unit get": a frozen unit reports the cap, not its demand, and an untracked
         # unit is missing from the maximum entirely -- without which "maximum over all units:
         # 0 determinants" is what an uncapped run with two empty units prints.
-        untracked = sum(1 for _, size, _ in rows if size is None)
+        untracked = sum(1 for _, size, _, _ in rows if size is None)
         notes = []
-        if any(cap_hit for _, size, cap_hit in rows if size is not None):
+        if any(cap_hit for _, size, cap_hit, _ in rows if size is not None):
             notes.append("at least one unit froze at the cap, so this is a lower bound")
         if untracked:
             notes.append(f"{untracked} of {len(rows)} units not tracked and not counted here")
@@ -342,13 +345,13 @@ def _report_max_unit_basis(heading, rows):
         print(f"  maximum over {scope}: {top:,} determinant{'' if top == 1 else 's'}{suffix}", flush=True)
 
 
-def _unit_basis_rows(blocks, max_basis):
+def _unit_basis_rows(blocks, max_basis, notes=None):
     """``(label, size, cap_hit)`` rows for a ``(block_i, side_i)``-keyed accumulator.
 
     The row label pads the orbital block and the spectral side into fixed columns, measured
     over the units that actually reported -- a block with no units contributes no line and no
     indentation. ``max_basis[key]`` is ``(size, cap_hit)``; see :func:`_report_max_unit_basis`
-    for what a ``None`` size means.
+    for what a ``None`` size means. ``notes[(block_i, side_i)]`` is an optional trailing remark.
     """
     labels = [str(block) for block in blocks]
     reported = [(bi, si) for bi in range(len(labels)) for si in range(len(_UNIT_SIDE_LABELS)) if (bi, si) in max_basis]
@@ -359,8 +362,27 @@ def _unit_basis_rows(blocks, max_basis):
     rows = []
     for bi, si in reported:
         size, cap_hit = max_basis[(bi, si)]
-        rows.append((f"block {labels[bi]:<{block_width}}  {_UNIT_SIDE_LABELS[si]:<{side_width}}", size, cap_hit))
+        label = f"block {labels[bi]:<{block_width}}  {_UNIT_SIDE_LABELS[si]:<{side_width}}"
+        rows.append((label, size, cap_hit, (notes or {}).get((bi, si), "")))
     return rows
+
+
+def _settle_notes(records):
+    """``{(block, side): remark}`` for the units that settled, for the max-basis table: how many of the pair's
+    units settled and which is the smallest, so the table and the diagnostics row cannot disagree."""
+    notes = {}
+    for block_i in sorted({r.block for r in records}):
+        for side_i, side in enumerate(_UNIT_SIDE_NAMES):
+            mine = [r for r in records if r.block == block_i and r.side == side and r.retained is not None]
+            settled = [r for r in mine if r.settled]
+            if not settled:
+                continue
+            small = min(settled, key=lambda r: r.retained)
+            notes[(block_i, side_i)] = (
+                f"{len(settled)} of {len(mine)} units settled (lossless up to slaterWeightMin); "
+                f"smallest {small.retained:,}: {small.describe()}"
+            )
+    return notes
 
 
 def _merge_unit_basis(acc, key, size, cap_hit):
@@ -399,6 +421,7 @@ class GFPlan:
     unit_weights: list
     group_meta: list
     widths: list
+    slater_weight_min: float = 0.0
 
 
 def _gf_lanczos_plan(
@@ -518,6 +541,7 @@ def _gf_lanczos_plan(
         unit_weights,
         group_meta,
         widths,
+        slaterWeightMin,
     )
 
 
@@ -624,8 +648,32 @@ def _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, del
         # chunks feeding it. Separate from `cap_acc`, which takes
         # the *smallest* frozen size and only of the units that actually hit the cap.
         max_basis: dict[tuple[int, int], tuple[Optional[int], bool]] = {}
-        for unit, (_alphas, _betas, _r_slices, cap_stats, conv_stats) in zip(units, results):
+        records: list[_gfd.UnitRecord] = []
+        e_gap = np.real(np.asarray(es, dtype=complex)) - float(np.min(np.real(np.asarray(es, dtype=complex))))
+        boltzmann = np.exp(-e_gap / tau) / float(np.sum(np.exp(-e_gap / tau)))
+        for unit_i, (unit, (_alphas, _betas, r_slices, cap_stats, conv_stats)) in enumerate(zip(units, results)):
             block_i, unit_side_i = group_meta[unit.group_i]
+            verdict = cap_stats.get("settle_verdict") or {}
+            records.append(
+                _gfd.UnitRecord(
+                    unit=unit_i,
+                    block=int(block_i),
+                    side=_UNIT_SIDE_NAMES[unit_side_i],
+                    states=tuple(int(i) for i in unit.chunk),
+                    e_minus_e0=tuple(float(e_gap[i]) for i in unit.chunk),
+                    boltzmann=tuple(float(boltzmann[i]) for i in unit.chunk),
+                    seed_weight=float(math.fsum(float(np.linalg.norm(np.asarray(r))) ** 2 for r in r_slices)),
+                    retained=cap_stats.get("retained_size"),
+                    settled=bool(cap_stats.get("support_frozen", False)),
+                    settle_step=verdict.get("step"),
+                    n_blocks=conv_stats.get("n_blocks"),
+                    frontier_over_swm=float(verdict.get("max_amp_over_swm", float("nan"))),
+                    ratio=float(verdict.get("ratio", float("nan"))),
+                    window=int(verdict.get("window", 0)),
+                    cap_hit=bool(cap_stats.get("cap_hit", False)),
+                    memory_frozen=bool(cap_stats.get("memory_frozen", False)),
+                )
+            )
             _merge_unit_basis(max_basis, (block_i, unit_side_i), cap_stats.get("retained_size"), cap_stats["cap_hit"])
             # Root-side record of every unit (the kernel's own `gf_unit_memory` note is emitted per
             # color, so a traced rank 0 sees only its own color's units there).
@@ -646,16 +694,6 @@ def _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, del
                 stats["seed_frozen"] = True
             if cap_stats.get("memory_frozen"):
                 stats["memory_frozen"] = True
-            if cap_stats.get("support_frozen"):
-                # Kept apart from the cap's retained_size. The block reports ONE unit's settle -- the one whose
-                # frontier was largest -- with that unit's own support, so the numbers it prints belong together.
-                verdict = cap_stats.get("settle_verdict")
-                if verdict is not None and (
-                    not stats.get("support_frozen") or verdict["max_amp"] >= stats["settle_verdict"]["max_amp"]
-                ):
-                    stats["support_retained"] = cap_stats.get("retained_size")
-                    stats["settle_verdict"] = verdict
-                stats["support_frozen"] = True
             if cap_stats["cap_hit"]:
                 stats["cap_hit"] = True
                 stats["cap"] = cap_stats["cap"]
@@ -720,10 +758,9 @@ def _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, del
                         memory_frozen=block_cap.get("memory_frozen", False),
                     )
                 )
-                if block_cap.get("support_frozen"):
-                    diags.append(
-                        _gfd.check_support_freeze(block_cap.get("support_retained"), block_cap.get("settle_verdict"))
-                    )
+                block_records = [r for r in records if r.block == block_i]
+                if any(r.settled for r in block_records):
+                    diags.append(_gfd.check_support_settled(block_records, plan.slater_weight_min))
             # The sum rule holds for the plain c/c^dag part of a family: its leading len(block) columns.
             n_c = len(block)
             if widths[block_i] != n_c:
@@ -758,7 +795,10 @@ def _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, del
                 diags.append(_gfd.check_causality(combined_real, "G"))
             report.extend(str(block), diags)
 
-        _report_max_unit_basis("Maximum excited basis size per unit", _unit_basis_rows(blocks, max_basis))
+        report.units = records
+        _report_max_unit_basis(
+            "Maximum excited basis size per unit", _unit_basis_rows(blocks, max_basis, _settle_notes(records))
+        )
 
     return (gs_matsubara, gs_realaxis, report)
 
