@@ -39,6 +39,8 @@ def _block_green_group(
     eval_meshes=None,
     conv_stats=None,
     unit_label=None,
+    support_settle=True,
+    settle_ratio=None,
 ):
     """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
 
@@ -128,6 +130,8 @@ def _block_green_group(
             # basis that did not come through it, which leaves the guard off.
             memory_budget=getattr(split_basis, "gf_memory_budget", None),
             memory_policy=getattr(split_basis, "gf_memory_policy", "tighten"),
+            support_settle=support_settle,
+            settle_ratio=settle_ratio,
         )
         # `retained_size` stays None when the cap is infinite, and that is not a formatting
         # gap to paper over: the sparse recurrence's support is tracked *only* by
@@ -252,6 +256,8 @@ def lanczos_unit_kernel(
     print_windows=False,
     print_size=False,
     eval_meshes_for=None,
+    support_settle=True,
+    settle_ratio=None,
 ):
     """The ``run_units_distributed`` kernel for block-Lanczos Green's-function units.
 
@@ -281,6 +287,9 @@ def lanczos_unit_kernel(
     eval_meshes_for : callable, optional
         ``eval_meshes_for(unit)`` gives the frequencies the convergence monitor tests (see
         :func:`gf_convergence._gf_eval_meshes`); ``None`` leaves it on the Ritz-band fallback.
+    support_settle, settle_ratio
+        The support settle (:func:`gf_solvers.block_Green_sparse`): on/off and its threshold as a multiple of
+        ``slaterWeightMin`` (``None``: the ``GF_SETTLE_RATIO`` knob).
     """
 
     def kernel(split_basis, u, seeds):
@@ -303,6 +312,8 @@ def lanczos_unit_kernel(
             eval_meshes=eval_meshes_for(unit) if eval_meshes_for is not None else None,
             conv_stats=conv_stats,
             unit_label=u,
+            support_settle=support_settle,
+            settle_ratio=settle_ratio,
         )
         if print_size and unit_rank0:
             print(f"Expanded excited state basis contains {cap_stats['retained_size']} elements.")

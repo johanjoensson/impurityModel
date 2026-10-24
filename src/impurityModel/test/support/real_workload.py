@@ -55,6 +55,8 @@ _CONSUMED_ATTRS = frozenset(
         "gf_method",
         "gf_admission",
         "gf_admit_tol",
+        "gf_settle",
+        "gf_settle_ratio",
         "gf_min_weight",
         "excitation_budget",
         "e_pt2_tol",
@@ -165,6 +167,8 @@ def load_workload(h5_path, cluster=None, iteration=None):
         "de2_min": _optional(attrs, "de2_min", float),
         "gf_admission": _optional(attrs, "gf_admission", str),
         "gf_admit_tol": _optional(attrs, "gf_admit_tol", float),
+        "gf_settle": _optional(attrs, "gf_settle", bool),
+        "gf_settle_ratio": _optional(attrs, "gf_settle_ratio", float),
         "gf_min_weight": _optional(attrs, "gf_min_weight", float),
         "gf_method": _optional(attrs, "gf_method", str),
         "label": name,
@@ -263,7 +267,7 @@ def build_options(
         gf_tol=workload["gf_tol"] if gf_tol == "archive" else gf_tol,
         gf_real_tol=workload["gf_real_tol"] if gf_real_tol == "archive" else gf_real_tol,
     )
-    for key in ("gf_admission", "gf_admit_tol"):
+    for key in ("gf_admission", "gf_admit_tol", "gf_settle", "gf_settle_ratio"):
         if workload.get(key) is not None:
             solver_kwargs[key] = workload[key]
     return model, meshes, basis, SolverOptions(**solver_kwargs)

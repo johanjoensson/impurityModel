@@ -284,3 +284,27 @@ def test_selfenergy_gf_tolerance_flags_reach_the_options_and_override_an_archive
         recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-real-tol", "1e-4"])
     )
     assert (looser.gf_tol, looser.gf_real_tol) == (1e-9, 1e-4)
+
+
+def test_the_settle_flags_parse_and_override_the_archive_record():
+    from impurityModel.ed.model import SolverOptions
+
+    args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle", "off"])
+    assert args.gf_settle == "off" and args.gf_settle_ratio is None
+    with pytest.raises(SystemExit):
+        _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle", "maybe"])
+    recorded = SolverOptions(gf_settle_ratio=3.0)
+    untouched = selfenergy.apply_solver_overrides(recorded, _parse(selfenergy.add_arguments, ["h0.pickle"]))
+    assert untouched == recorded
+    looser = selfenergy.apply_solver_overrides(
+        recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle-ratio", "10"])
+    )
+    assert looser.gf_settle_ratio == 10.0 and looser.gf_settle is None
+    off = selfenergy.apply_solver_overrides(
+        SolverOptions(), _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle", "off"])
+    )
+    assert off.gf_settle is False
+    with pytest.raises(ValueError, match="only applies with the support settle on"):
+        selfenergy.apply_solver_overrides(
+            recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle", "off"])
+        )

@@ -154,6 +154,25 @@ def add_arguments(parser):
         help="Admission threshold of --gf-admission outer, relative to the seed norm (default 1e-4).",
     )
     parser.add_argument(
+        "--gf-settle",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "Support settle of the block-Lanczos Green's function: 'on' (the default) lets a unit stop admitting "
+            "determinants once its frontier is below --gf-settle-ratio x slater_weight_min, 'off' keeps every "
+            "unit growing until it closes or hits a cap."
+        ),
+    )
+    parser.add_argument(
+        "--gf-settle-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Settle threshold as a multiple of slater_weight_min (0 = closure only; default: the "
+            "GF_SETTLE_RATIO knob, or the archive's)."
+        ),
+    )
+    parser.add_argument(
         "--gf-tol",
         type=float,
         default=None,
@@ -266,6 +285,8 @@ def apply_solver_overrides(solver, args):
             ("gf_method", args.gf_method),
             ("gf_admission", args.gf_admission),
             ("gf_admit_tol", args.gf_admit_tol),
+            ("gf_settle", None if args.gf_settle is None else args.gf_settle == "on"),
+            ("gf_settle_ratio", args.gf_settle_ratio),
             ("gf_tol", args.gf_tol),
             ("gf_real_tol", args.gf_real_tol),
             ("gf_min_weight", args.gf_min_weight),
@@ -349,6 +370,8 @@ def run(args):
             gf_method=args.gf_method or "lanczos",
             gf_admission=args.gf_admission,
             gf_admit_tol=args.gf_admit_tol,
+            gf_settle=None if args.gf_settle is None else args.gf_settle == "on",
+            gf_settle_ratio=args.gf_settle_ratio,
             gf_tol=args.gf_tol,
             gf_real_tol=args.gf_real_tol,
             gf_min_weight=args.gf_min_weight,

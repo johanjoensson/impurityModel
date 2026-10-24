@@ -558,6 +558,8 @@ def _gf_solve_units(
     slaterWeightMin,
     verbose_extra,
     subset=None,
+    gf_settle=None,
+    gf_settle_ratio=None,
 ):
     """Run the plan's Lanczos work units through the distribution engine; the gathered per-unit results on
     the root rank, ``None`` elsewhere. ``subset`` (global unit indices, replicated) runs only those units;
@@ -605,6 +607,8 @@ def _gf_solve_units(
         print_windows=verbose_extra,
         print_size=verbose_extra,
         eval_meshes_for=eval_meshes_for,
+        support_settle=gf_settle is not False,
+        settle_ratio=gf_settle_ratio,
     )
 
     # This unit-level dump belongs at -vv (verbose_extra): the roots/per-color summary is
@@ -828,6 +832,8 @@ def get_Greens_function(
     gf_tol: Optional[float] = None,
     gf_real_tol: Optional[float] = None,
     ensemble_es=None,
+    gf_settle: Optional[bool] = None,
+    gf_settle_ratio: Optional[float] = None,
 ):
     """
     Calculate interacting Greens function.
@@ -855,6 +861,10 @@ def get_Greens_function(
     ``max(slaterWeightMin**2, 1e-9)`` on both axes; see :func:`gf_convergence._gf_axis_tols`).
     They govern the ``"lanczos"`` kernel only; passing either with ``"bicgstab"`` is an error.
 
+    ``gf_settle`` / ``gf_settle_ratio`` control the support settle of the ``"lanczos"`` kernel's sparse units
+    (``None``: on, and the ``GF_SETTLE_RATIO`` knob; see :class:`SolverOptions`); with ``"bicgstab"`` they are an
+    error.
+
     ``ensemble_es`` is the whole thermal ensemble the eigensolver returned, when the caller passes
     only part of it in ``es`` (``SolverOptions.gf_min_weight``); the ensemble-truncation check
     judges the eigensolver's output, not the subset. ``None``: ``es``.
@@ -869,6 +879,8 @@ def get_Greens_function(
     rule is checked on it. ``None`` is exactly that plain family, so each block is
     ``len(block)`` wide.
     """
+    if gf_method != "lanczos" and (gf_settle is not None or gf_settle_ratio is not None):
+        raise ValueError(f"gf_settle/gf_settle_ratio are block-Lanczos settings; gf_method={gf_method!r} ignores them")
     plan = _gf_lanczos_plan(
         psis,
         es,
@@ -918,7 +930,19 @@ def get_Greens_function(
             gf_admit_tol=gf_admit_tol,
         )
     results = _gf_solve_units(
-        plan, basis, hOp, matsubara_mesh, omega_mesh, es, delta, reort, sparse, slaterWeightMin, verbose_extra
+        plan,
+        basis,
+        hOp,
+        matsubara_mesh,
+        omega_mesh,
+        es,
+        delta,
+        reort,
+        sparse,
+        slaterWeightMin,
+        verbose_extra,
+        gf_settle=gf_settle,
+        gf_settle_ratio=gf_settle_ratio,
     )
     return _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, delta, ensemble_es, num_wanted)
 
