@@ -1,4 +1,5 @@
 import os
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -380,72 +381,44 @@ def _merge_unit_basis(acc, key, size, cap_hit):
     acc[key] = (merged, prev_cap or bool(cap_hit))
 
 
-def get_Greens_function(
-    matsubara_mesh: np.ndarray,
-    omega_mesh: np.ndarray,
-    psis: list[ManyBodyState],
-    es: list[float],
-    tau: float,
-    basis: Basis,
-    hOp: ManyBodyOperator,
-    delta: float,
-    blocks: list[list[int]],
-    verbose: bool,
-    verbose_extra: bool,
-    reort: Optional[bool],
-    dN: Optional[int],
-    occ_cutoff: float,
-    slaterWeightMin: float,
-    sparse: bool,
-    num_wanted: int | None = None,
-    gf_method: str = "lanczos",
-    operator_families=None,
-    gf_admission: Optional[str] = None,
-    gf_admit_tol: Optional[float] = None,
-    gf_tol: Optional[float] = None,
-    gf_real_tol: Optional[float] = None,
-    ensemble_es=None,
+@dataclass
+class GFPlan:
+    """What :func:`get_Greens_function` decides before any recurrence runs: the flat work units of the
+    Lanczos path and everything needed to run any subset of them and to put their results back together.
+
+    ``units`` / ``unit_seeds`` / ``unit_restrictions`` / ``unit_weights`` are positional over the global unit
+    order; ``group_meta[g] = (block_i, side_i)`` and ``widths[block_i]`` describe the operator groups;
+    ``axis_tols`` are the resolved ``(Matsubara, real)`` convergence tolerances."""
+
+    axis_tols: tuple
+    excited_weighted_restrictions: object
+    n_psis: int
+    units: list
+    unit_seeds: list
+    unit_restrictions: list
+    unit_weights: list
+    group_meta: list
+    widths: list
+
+
+def _gf_lanczos_plan(
+    psis,
+    es,
+    basis,
+    hOp,
+    delta,
+    blocks,
+    verbose,
+    dN,
+    occ_cutoff,
+    slaterWeightMin,
+    gf_method,
+    gf_admission,
+    gf_tol,
+    gf_real_tol,
+    operator_families,
 ):
-    """
-    Calculate interacting Greens function.
-
-    Returns ``(gs_matsubara, gs_realaxis, report)`` on the root rank, where ``report`` is a
-    :class:`gf_diagnostics.DiagnosticReport` of per-block convergence/consistency checks
-    (``(None, None, None)`` on non-root ranks). ``num_wanted`` is the number of thermal states
-    the eigensolver was asked for, used by the ensemble-truncation check.
-
-    ``gf_method`` selects the resolvent kernel: ``"lanczos"`` (default) runs one block-Lanczos
-    recurrence per work unit serving the whole mesh; ``"bicgstab"`` solves one linear system
-    per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`).
-    On the per-frequency path ``sparse`` is ignored (the solvers work on the ManyBodyState
-    representation only).
-
-    ``gf_admission`` is the per-frequency kernel's basis-growth policy: ``"all"`` or ``"outer"``
-    (``None``, the default: ``GF_BICGSTAB_ADMISSION``, else ``"all"``). ``"outer"`` solves on a
-    frozen basis, scores the residual outside it and admits only what clears
-    ``gf_admit_tol`` (``None``: ``GF_BICGSTAB_ADMIT_TOL_AMP``), and repeats; see
-    :mod:`impurityModel.ed.gf_admission`. ``"outer"`` also records a measured error bound in the
-    diagnostics report. An explicit argument wins over the matching environment knob.
-
-    ``gf_tol`` / ``gf_real_tol`` are the block-Lanczos convergence tolerances (relative change of
-    ``G``) on every axis / on the real axis only (``None``: ``GF_TOL`` / ``GF_REAL_TOL``, else
-    ``max(slaterWeightMin**2, 1e-9)`` on both axes; see :func:`gf_convergence._gf_axis_tols`).
-    They govern the ``"lanczos"`` kernel only; passing either with ``"bicgstab"`` is an error.
-
-    ``ensemble_es`` is the whole thermal ensemble the eigensolver returned, when the caller passes
-    only part of it in ``es`` (``SolverOptions.gf_min_weight``); the ensemble-truncation check
-    judges the eigensolver's output, not the subset. ``None``: ``es``.
-
-    ``operator_families`` is the self-energy estimator seam
-    (:mod:`impurityModel.ed.sigma_estimators`): ``operator_families(block)`` returns
-    ``(addition_ops, removal_ops)``, two equally long operator lists. With ``removal_ops = X``
-    and ``addition_ops = X^dag``, each returned block is the Green's function of the family X,
-    ``G_ab(z) = <X_a (z - H + E)^-1 X_b^dag> + <X_b^dag (z + H - E)^-1 X_a>``. The contract: a
-    family's leading ``len(block)`` operators are the block's own ``c^dag`` / ``c`` in block
-    order, so the leading sub-block is the impurity Green's function and the anticommutator sum
-    rule is checked on it. ``None`` is exactly that plain family, so each block is
-    ``len(block)`` wide.
-    """
+    """Validate the options, build the excited-sector windows and enumerate the work units. Collective."""
     config.warn_retired_knobs()
     if gf_method in config.RETIRED_GF_METHODS:
         raise ValueError(f"gf_method {gf_method!r} {config.RETIRED_GF_METHODS[gf_method]}")
@@ -535,31 +508,52 @@ def get_Greens_function(
         for window in distinct_windows(unit_restrictions):
             print_excited_windows(window, None)
         print_excited_windows(None, excited_weighted_restrictions)
+    return GFPlan(
+        axis_tols,
+        excited_weighted_restrictions,
+        n_psis,
+        units,
+        unit_seeds,
+        unit_restrictions,
+        unit_weights,
+        group_meta,
+        widths,
+    )
 
-    if gf_method == "bicgstab":
-        return _get_greens_function_bicgstab(
-            matsubara_mesh,
-            omega_mesh,
-            es,
-            tau,
-            basis,
-            hOp,
-            delta,
-            blocks,
-            widths,
-            units,
-            unit_seeds,
-            unit_weights,
-            unit_restrictions,
-            group_meta,
-            excited_weighted_restrictions,
-            slaterWeightMin,
-            verbose,
-            verbose_extra,
-            num_wanted,
-            gf_admission=gf_admission,
-            gf_admit_tol=gf_admit_tol,
-        )
+
+def _gf_solve_units(
+    plan,
+    basis,
+    hOp,
+    matsubara_mesh,
+    omega_mesh,
+    es,
+    delta,
+    reort,
+    sparse,
+    slaterWeightMin,
+    verbose_extra,
+    subset=None,
+):
+    """Run the plan's Lanczos work units through the distribution engine; the gathered per-unit results on
+    the root rank, ``None`` elsewhere. ``subset`` (global unit indices, replicated) runs only those units;
+    the results are then positional over the subset, in its order. Collective."""
+    units, unit_seeds, unit_restrictions, unit_weights = (
+        plan.units,
+        plan.unit_seeds,
+        plan.unit_restrictions,
+        plan.unit_weights,
+    )
+    group_meta, axis_tols, excited_weighted_restrictions = (
+        plan.group_meta,
+        plan.axis_tols,
+        plan.excited_weighted_restrictions,
+    )
+    if subset is not None:
+        units = [units[u] for u in subset]
+        unit_seeds = [unit_seeds[u] for u in subset]
+        unit_restrictions = [unit_restrictions[u] for u in subset]
+        unit_weights = [unit_weights[u] for u in subset]
 
     def eval_meshes_for(unit):
         # Converge G where this unit's G will actually be evaluated: the caller's meshes, shifted
@@ -601,6 +595,15 @@ def get_Greens_function(
         unit_windows=unit_restrictions,
         hOp=hOp,
     )
+    return results
+
+
+def _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, delta, ensemble_es, num_wanted):
+    """Reassemble the per-unit results into the thermally averaged ``G`` per block and its diagnostics report.
+
+    ``results`` is the full gathered list in global unit order (``None`` off the root rank, where the three
+    return values are ``None``). Prints the maximum-excited-basis table once."""
+    units, group_meta, widths, axis_tols, n_psis = plan.units, plan.group_meta, plan.widths, plan.axis_tols, plan.n_psis
 
     gs_matsubara = gs_realaxis = report = None
     if results is not None:
@@ -760,6 +763,126 @@ def get_Greens_function(
         _report_max_unit_basis("Maximum excited basis size per unit", _unit_basis_rows(blocks, max_basis))
 
     return (gs_matsubara, gs_realaxis, report)
+
+
+def get_Greens_function(
+    matsubara_mesh: np.ndarray,
+    omega_mesh: np.ndarray,
+    psis: list[ManyBodyState],
+    es: list[float],
+    tau: float,
+    basis: Basis,
+    hOp: ManyBodyOperator,
+    delta: float,
+    blocks: list[list[int]],
+    verbose: bool,
+    verbose_extra: bool,
+    reort: Optional[bool],
+    dN: Optional[int],
+    occ_cutoff: float,
+    slaterWeightMin: float,
+    sparse: bool,
+    num_wanted: int | None = None,
+    gf_method: str = "lanczos",
+    operator_families=None,
+    gf_admission: Optional[str] = None,
+    gf_admit_tol: Optional[float] = None,
+    gf_tol: Optional[float] = None,
+    gf_real_tol: Optional[float] = None,
+    ensemble_es=None,
+):
+    """
+    Calculate interacting Greens function.
+
+    Returns ``(gs_matsubara, gs_realaxis, report)`` on the root rank, where ``report`` is a
+    :class:`gf_diagnostics.DiagnosticReport` of per-block convergence/consistency checks
+    (``(None, None, None)`` on non-root ranks). ``num_wanted`` is the number of thermal states
+    the eigensolver was asked for, used by the ensemble-truncation check.
+
+    ``gf_method`` selects the resolvent kernel: ``"lanczos"`` (default) runs one block-Lanczos
+    recurrence per work unit serving the whole mesh; ``"bicgstab"`` solves one linear system
+    per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`).
+    On the per-frequency path ``sparse`` is ignored (the solvers work on the ManyBodyState
+    representation only).
+
+    ``gf_admission`` is the per-frequency kernel's basis-growth policy: ``"all"`` or ``"outer"``
+    (``None``, the default: ``GF_BICGSTAB_ADMISSION``, else ``"all"``). ``"outer"`` solves on a
+    frozen basis, scores the residual outside it and admits only what clears
+    ``gf_admit_tol`` (``None``: ``GF_BICGSTAB_ADMIT_TOL_AMP``), and repeats; see
+    :mod:`impurityModel.ed.gf_admission`. ``"outer"`` also records a measured error bound in the
+    diagnostics report. An explicit argument wins over the matching environment knob.
+
+    ``gf_tol`` / ``gf_real_tol`` are the block-Lanczos convergence tolerances (relative change of
+    ``G``) on every axis / on the real axis only (``None``: ``GF_TOL`` / ``GF_REAL_TOL``, else
+    ``max(slaterWeightMin**2, 1e-9)`` on both axes; see :func:`gf_convergence._gf_axis_tols`).
+    They govern the ``"lanczos"`` kernel only; passing either with ``"bicgstab"`` is an error.
+
+    ``ensemble_es`` is the whole thermal ensemble the eigensolver returned, when the caller passes
+    only part of it in ``es`` (``SolverOptions.gf_min_weight``); the ensemble-truncation check
+    judges the eigensolver's output, not the subset. ``None``: ``es``.
+
+    ``operator_families`` is the self-energy estimator seam
+    (:mod:`impurityModel.ed.sigma_estimators`): ``operator_families(block)`` returns
+    ``(addition_ops, removal_ops)``, two equally long operator lists. With ``removal_ops = X``
+    and ``addition_ops = X^dag``, each returned block is the Green's function of the family X,
+    ``G_ab(z) = <X_a (z - H + E)^-1 X_b^dag> + <X_b^dag (z + H - E)^-1 X_a>``. The contract: a
+    family's leading ``len(block)`` operators are the block's own ``c^dag`` / ``c`` in block
+    order, so the leading sub-block is the impurity Green's function and the anticommutator sum
+    rule is checked on it. ``None`` is exactly that plain family, so each block is
+    ``len(block)`` wide.
+    """
+    plan = _gf_lanczos_plan(
+        psis,
+        es,
+        basis,
+        hOp,
+        delta,
+        blocks,
+        verbose,
+        dN,
+        occ_cutoff,
+        slaterWeightMin,
+        gf_method,
+        gf_admission,
+        gf_tol,
+        gf_real_tol,
+        operator_families,
+    )
+    units, unit_seeds, unit_weights, unit_restrictions = (
+        plan.units,
+        plan.unit_seeds,
+        plan.unit_weights,
+        plan.unit_restrictions,
+    )
+    group_meta, widths, excited_weighted_restrictions = plan.group_meta, plan.widths, plan.excited_weighted_restrictions
+    if gf_method == "bicgstab":
+        return _get_greens_function_bicgstab(
+            matsubara_mesh,
+            omega_mesh,
+            es,
+            tau,
+            basis,
+            hOp,
+            delta,
+            blocks,
+            widths,
+            units,
+            unit_seeds,
+            unit_weights,
+            unit_restrictions,
+            group_meta,
+            excited_weighted_restrictions,
+            slaterWeightMin,
+            verbose,
+            verbose_extra,
+            num_wanted,
+            gf_admission=gf_admission,
+            gf_admit_tol=gf_admit_tol,
+        )
+    results = _gf_solve_units(
+        plan, basis, hOp, matsubara_mesh, omega_mesh, es, delta, reort, sparse, slaterWeightMin, verbose_extra
+    )
+    return _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, delta, ensemble_es, num_wanted)
 
 
 def impurity_operator_family(block):
