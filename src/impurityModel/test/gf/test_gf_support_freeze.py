@@ -41,7 +41,7 @@ from impurityModel.test.support.gf_chain_fixtures import (
     exact_chain_g,
     run_chain,
 )
-from impurityModel.test.support.gf_switches import set_gf_switches
+from impurityModel.test.support.gf_switches import gf_switches, set_gf_switches
 
 WINDOW = gf_solvers._SUPPORT_WINDOW
 
@@ -300,3 +300,51 @@ def test_a_declined_freeze_is_asked_once_and_a_later_cap_still_takes_the_csr(mon
     info = _trickle(cap=2600)[3]
     assert not info["support_frozen"] and info["cap_hit"] and info["csr_fallback"]
     assert len(asked) == 2, "the support freeze once, the cap freeze once"
+
+
+def test_boundary_frontier_is_the_dense_image_outside_the_support():
+    """``boundary_frontier`` against a dense ``H`` on the whole sector: the largest ``|amp|^2`` on a row outside
+    ``P`` and the summed weight there, with and without the cutoff (summed rows cut, not partials)."""
+    h, v, _ = _dense_chain(seed=5)
+    keys = sorted(_det(list(c)) for c in itertools.combinations(range(N_ORB), 7))
+    full = _basis(keys, None, n_orb=N_ORB)
+    rng = np.random.default_rng(0)
+    inside = np.zeros(h.shape[0], dtype=bool)
+    inside[rng.choice(h.shape[0], 900, replace=False)] = True
+    sub = _basis([k for k, m in zip(full.local_basis, inside) if m], None, n_orb=N_ORB)
+    x = np.zeros((h.shape[0], 2), dtype=complex)
+    x[inside] = rng.normal(size=(int(inside.sum()), 2)) + 1j * rng.normal(size=(int(inside.sum()), 2))
+    op = chain_operator(seed=5)
+    order = {bytes(d.to_bytearray()[:2]): i for i, d in enumerate(full.local_basis)}
+    sub_rows = [order[bytes(d.to_bytearray()[:2])] for d in sub.local_basis]
+    block = gf_primitives.local_dense_to_block(sub, x[sub_rows])
+    image = h @ x
+    for cutoff in (0.0, 1e-1):
+        out = image[~inside]
+        kept = np.any(np.abs(out) > cutoff, axis=1) if cutoff > 0 else np.ones(len(out), dtype=bool)
+        want_max = float(np.max(np.abs(out[kept]) ** 2))
+        want_weight = float(np.sum(np.abs(out[kept]) ** 2))
+        got_max, got_weight = gf_primitives.boundary_frontier(op, block, sub, cutoff, None)
+        assert got_max == pytest.approx(want_max, rel=1e-9)
+        assert got_weight == pytest.approx(want_weight, rel=1e-9)
+
+
+def test_a_settled_unit_reports_the_frontier_it_left_behind():
+    info = run_chain(slater_min=1e-4)[3]
+    assert info["support_frozen"] and info["csr_fallback"]
+    last = info["support_trace"][-1]
+    assert info["leak_settle"] == last[3] and info["frontier_settle_matvec"] == pytest.approx(last[7] ** 0.5)
+    assert np.isfinite(info["leak_end"]) and info["leak_end"] >= 0
+    assert 0 <= info["frontier_end_matvec"] <= info["leak_end"] ** 0.5 * (1 + 1e-12)
+    assert np.isfinite(info["frontier_end"]) and info["frontier_end"] >= info["frontier_end_matvec"] / 1e3
+
+
+def test_a_closed_support_leaves_no_frontier():
+    info = run_chain()[3]  # no cutoff: freezes only on exact closure
+    assert info["csr_fallback"] and info["frontier_end_matvec"] == 0.0 and info["leak_end"] == 0.0
+
+
+def test_a_unit_that_never_settled_reports_no_frontier():
+    with gf_switches(support_freeze=False):
+        info = run_chain(slater_min=1e-4)[3]
+    assert np.isnan(info["frontier_end_matvec"]) and np.isnan(info["leak_settle"])

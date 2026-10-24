@@ -10,6 +10,7 @@ these kernels lives in :mod:`impurityModel.ed.gf_units`; the top-level assembly 
 in :mod:`impurityModel.ed.greens_function`.
 """
 
+import math
 import time
 from typing import Optional
 
@@ -37,6 +38,7 @@ from impurityModel.ed.gf_primitives import (
     _sanitize_continued_fraction,
     _trim_blocks,
     block_to_local_dense,
+    boundary_frontier,
     boundary_residual,
     build_qr,
     calc_G,
@@ -556,7 +558,7 @@ def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, e
     comm = frozen_basis.comm
     t0 = time.perf_counter()
     psi_dense_local, r = _distributed_seed_qr(frozen_basis, seeds, slaterWeightMin)
-    alphas, betas, _, widths = _array_block_lanczos(
+    alphas, betas, last_q, widths = _array_block_lanczos(
         frozen_basis,
         hOp,
         psi_dense_local,
@@ -577,7 +579,52 @@ def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, e
         )
     alphas, betas = _trim_blocks(alphas, betas, widths)
     alphas, betas = _sanitize_continued_fraction(alphas, betas, rank=comm.rank if comm is not None else 0)
-    return alphas, betas, r, seconds
+    return alphas, betas, r, seconds, (last_q if isinstance(last_q, np.ndarray) else None)
+
+
+#: The end-of-unit frontier probe applies ``H`` once, unfrozen, to the block a frozen unit ended on; it is skipped
+#: when the resident set is already this fraction of the unit's memory budget (it generates the whole out-of-P
+#: image, the peak the frozen matrix exists to avoid).
+_FRONTIER_PROBE_RSS_FRACTION = 0.8
+
+
+def _settled_frontier(proxy, frozen_basis, hOp, csr, slaterWeightMin, comm):
+    """What a frozen unit left behind, as ``cap_info`` entries (amplitudes, not squares). Collective.
+
+    ``leak_settle`` and ``frontier_settle_matvec`` are the freezing step's own record (weight on new rows and the
+    largest amplitude on one, in the matvec's units). ``frontier_end_matvec`` and ``leak_end`` are the same two
+    numbers measured by one unfrozen ``H`` applied to the block the frozen recurrence ended on
+    (:func:`gf_primitives.boundary_frontier`), and ``frontier_end`` the amplitude in the units of the next block
+    (divided by the smallest singular value of the last ``beta``; ``nan`` if that is zero). Missing entries are
+    ``nan``: no last block (the declined/sparse path), or a probe skipped for memory. The skip is decided on a
+    reduced answer, so every rank takes the same branch."""
+    out = {"leak_settle": float("nan"), "frontier_settle_matvec": float("nan"), "frontier_end": float("nan")}
+    out.update(frontier_end_matvec=float("nan"), leak_end=float("nan"))
+    if proxy.support_trace:
+        record = proxy.support_trace[len(proxy.support_trace) - 1]
+        out["leak_settle"] = float(record[3])
+        out["frontier_settle_matvec"] = math.sqrt(record[7])
+    last_block = csr[4]
+    if last_block is None:
+        return out
+    budget = proxy.memory_budget
+    over = budget is not None and current_rss_bytes() > _FRONTIER_PROBE_RSS_FRACTION * budget
+    if comm is not None and comm.size > 1:
+        over = comm.allreduce(bool(over), op=MPI.LOR)
+    if over:
+        return out
+    max2, weight = boundary_frontier(
+        hOp, local_dense_to_block(frozen_basis, last_block), frozen_basis, slaterWeightMin, comm
+    )
+    out["frontier_end_matvec"] = math.sqrt(max2)
+    out["leak_end"] = weight
+    betas = csr[1]  # trimmed: a list of blocks of differing width
+    if len(betas):
+        sv = np.linalg.svd(np.asarray(betas[len(betas) - 1]), compute_uv=False)
+        sv_min = float(sv[sv > 1e-12 * sv[0]].min()) if sv.size and sv[0] > 0 else 0.0
+        if sv_min > 0.0:
+            out["frontier_end"] = math.sqrt(max2) / sv_min
+    return out
 
 
 def _csr_continue_budget(start):
@@ -628,7 +675,8 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
     run's ``(converged, converged_flag, delta_min, last_dg)``, which goes on judging the same continued
     fraction (a fresh one would restart its own history); ``r`` the sparse run's seed factor. A run whose
     first budget is spent continues from its own tail, so no block is ever computed twice. Returns
-    ``(alphas, betas, r, seconds)``, with ``info`` filled.
+    ``(alphas, betas, r, seconds, last_block)``, with ``info`` filled; ``last_block`` is this rank's rows of the
+    block the kernel ended on (after a converged stop the last accepted block, not the residual).
     """
     comm = frozen_basis.comm
     rank = comm.rank if comm is not None else 0
@@ -640,7 +688,7 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
     n_dim = H.shape[0]
     budget = min(_csr_continue_budget(start), n_dim)
     while True:
-        alphas, betas, _, widths, status, tail = block_lanczos(
+        alphas, betas, last_q, widths, status, tail = block_lanczos(
             psi0=None,
             h_op=H,
             converged=converged,
@@ -674,7 +722,7 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
         )
     alphas, betas = _trim_blocks(alphas, betas, widths)
     alphas, betas = _sanitize_continued_fraction(alphas, betas, rank=rank)
-    return alphas, betas, r, seconds
+    return alphas, betas, r, seconds, (last_q if isinstance(last_q, np.ndarray) else None)
 
 
 def block_Green_sparse(
@@ -763,6 +811,8 @@ def block_Green_sparse(
         cap_info["support_frozen"] = False
         cap_info["support_history"] = []
         cap_info["support_trace"] = []
+        for key in ("leak_settle", "frontier_settle_matvec", "frontier_end", "frontier_end_matvec", "leak_end"):
+            cap_info[key] = float("nan")
 
     if N == 0 or n == 0:
         if cap_info is not None:
@@ -829,6 +879,7 @@ def block_Green_sparse(
     # on the sparse kernel (the array kernel keeps its Krylov basis in complex128).
     csr_candidate = _FROZEN_CSR and krylov_dtype is None and getattr(lanczos_basis, "tracks_support", False)
     csr = None
+    csr_basis = None
 
     def _csr_green(frozen_basis, blocks_hint=0, stopped=None):
         # `stopped` = the sparse run's (alphas, betas, widths, tail) at the freeze, passed at reort off
@@ -886,6 +937,7 @@ def block_Green_sparse(
             frozen_basis = _frozen_csr_basis(lanczos_basis, basis, hOp, verbose, width=psi_arr.width)
             if frozen_basis is not None:
                 csr = _csr_green(frozen_basis)
+                csr_basis = frozen_basis
     while csr is None:
         alphas, betas, Q, widths, status = block_lanczos(
             psi_arr,
@@ -935,6 +987,7 @@ def block_Green_sparse(
                 stopped = (alphas, betas, widths, Q) if not resolved_reort else None
                 Q = None
                 csr = _csr_green(frozen_basis, len(alphas), stopped)
+                csr_basis = frozen_basis
             elif lanczos_basis.support_frozen:
                 # A support freeze that buys no speed is not kept: carry on sparse and unfrozen, and still hand
                 # a later cap or memory-guard freeze to the CSR.
@@ -968,6 +1021,7 @@ def block_Green_sparse(
             cap_info["support_trace"] = list(lanczos_basis.support_trace)
             if csr is not None:
                 cap_info["csr_seconds"] = csr[3]
+                cap_info.update(_settled_frontier(lanczos_basis, csr_basis, hOp, csr, slaterWeightMin, comm))
         if csr is not None:
             # The array kernel's monitor filled `info` and warned about non-convergence itself.
             return csr[0], csr[1], csr[2]

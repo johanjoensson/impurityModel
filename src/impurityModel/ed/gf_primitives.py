@@ -1092,6 +1092,29 @@ def local_dense_to_block(basis, dense):
     return ManyBodyState.from_keys_and_amps(basis._keys, np.ascontiguousarray(dense, dtype=complex))
 
 
+def boundary_frontier(A_op, X, basis, slaterWeightMin, comm):
+    r"""``(max_amp2, weight)`` of the part of ``A X`` that leaves ``P`` and survives the cut: the largest
+    ``|amp|^2`` (max over columns) on one row outside ``basis`` and the summed ``|amp|^2`` there.
+
+    The frontier a frozen recurrence left behind, measured on the block ``X`` it ended on, in the matvec's
+    units (the settle rule's own statistic is the normalised next block: divide by ``sigma_min(beta)^2``).
+    ``X`` lives on ``basis`` (= ``P``) and ``basis`` must be the raw :class:`Basis`, not a policy (which would
+    ``keep_rows`` the boundary away). One full sparse matvec summed on the owners before the cut, as
+    :func:`boundary_residual`. Both numbers are reduced into fixed-shape buffers, so they are bitwise
+    identical on every rank. Collective over ``comm``."""
+    AX = basis.redistribute_block(A_op.apply_block(X, 0.0))
+    if slaterWeightMin > 0:
+        AX.prune_rows(slaterWeightMin)
+    _n, weight = AX.new_rows_stats(basis._keys)
+    local_weight = np.array([weight], dtype=np.float64)
+    local_max = np.array([AX.new_rows_max_norm2(basis._keys)], dtype=np.float64)
+    if comm is not None and comm.size > 1:
+        gathered = np.empty((comm.size, 2), dtype=np.float64)
+        comm.Allgather(np.concatenate([local_max, local_weight]), gathered)
+        return float(np.max(gathered[:, 0])), math.fsum(gathered[:, 1])
+    return float(local_max[0]), float(local_weight[0])
+
+
 def boundary_residual(A_op, X, basis, n_cols, slaterWeightMin, comm):
     r"""Column norms of ``(1 - P) A X`` above ``slaterWeightMin``: what a frozen solve left out that the
     sparse solver, which admits every row at or above the cutoff, would have taken in.
