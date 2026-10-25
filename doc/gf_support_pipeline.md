@@ -24,12 +24,32 @@ memory-guard check). Nothing that depends on the *total* amplitude of a row is d
 4. **Admission rule.** Pruning: new rows above `eta` are candidates; the first shell is judged by
    `first_shell_tol`; below-eta rows, and sub-`slaterWeightMin` new rows, are banned.
 5. **Cap:** top-K by maximum column `|amp|^2`, then freeze.
-6. **Support freeze:** update the window of (leak, cut). A verdict freezes from the *next* step.
+6. **Support settle:** not in `decide` itself but in the same step, one call later: the Lanczos step hands the policy the
+   normalised next block before its cut (`SupportPolicy.note_next_block`), which completes the step's record and
+   takes the `FreezeRule` verdict (below). A verdict settles the unit from the *next* step.
 7. **Project** onto the mask.
 
-Steps 3–6 are skipped once the support is frozen.
+Steps 3–6 are skipped once the support is frozen or settled.
 
 Plain bases (no cap, no pruning) get a null policy that only does step 1.
+
+### The settle rule (`gf_primitives.FreezeRule`)
+
+A unit **settles** when, over `SETTLE_WINDOW` = 16 steps, the largest `|amp|^2` the normalised next block `q_{k+1}`
+carries on a row that was new at step `k` is at most `(ratio x slaterWeightMin)^2` *and* the least-squares slope of
+`log10 max(|amp|^2, (1e-3 swm)^2)` over the window is not positive (a heuristic against a monotonically growing
+trickle). Measured on the TSQR output before the cut acts, so `ratio 1` means "every excluded row would have been
+pruned from the next block anyway" and `ratio 0` (or `swm = 0`) is closure. From the settle on the unit is the exact
+Lanczos of `P H P` on the CSR (reort none), dropping only rows below that amplitude; nothing checks the frontier
+afterwards except the end-of-unit probe (`gf_solvers._settled_frontier`, trace only). `gf_settle_ratio` /
+`GF_SETTLE_RATIO` (default 10) sets the ratio; `gf_settle` switches the rule off. The records are sums over ranks and
+chunks, so a window within rounding of the threshold can settle a step earlier or later when the layout changes.
+
+The default and its evidence: `doc/plans/gf_support_freeze_redesign.md` (acceptance rule: Matsubara change <= 1e-7,
+pointwise change of Sigma_ii <= 0.1 x the causality guard's headroom; the chosen ratio is the largest measured whose
+change stays below 1e-6 of the headroom). If a self-energy still fails the causality check, `calc_selfenergy`
+attributes it and, when the settle can plausibly be blamed, solves the block's settled units again once closure-only
+(`gf_settle_retry`; `selfenergy._settle_retry`).
 
 ## Category A — amplitude cuts inside an already-decided support
 
@@ -56,7 +76,7 @@ sum agree.
 
 ## Mutual exclusions
 
-Importance pruning (`GF_LANCZOS_ADMIT_TOL`) and the support freeze cannot both be on: under
+Importance pruning (`GF_LANCZOS_ADMIT_TOL`) and the support settle cannot both be on: under
 pruning, banned rows always land outside the support, so the leak no longer measures growth.
 
 ## Where it lives
@@ -68,7 +88,8 @@ The policy advertises `tracks_support` and `prunes` for callers to read; nothing
 
 | site | category | when | notes |
 |---|---|---|---|
-| `apply_and_redistribute` -> `SupportPolicy.decide` | S | every recurrence matvec | cut, ban filter, admission, cap, support freeze |
+| `apply_and_redistribute` -> `SupportPolicy.decide` | S | every recurrence matvec | cut, ban filter, admission, cap |
+| `SupportPolicy.note_next_block` | S | every recurrence step (settle on) | next-block frontier record, settle verdict |
 | `SupportPolicy.admit_seed` | S | seed block | no cut, not a window step |
 | `SupportPolicy.transport` | S (memory only) | per chunk | frozen projection, RSS guard |
 | `_lanczos_step` 5a `q_next.prune_rows` | A | after the step | weight reaches the next window (`note_step_cut`) |

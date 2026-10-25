@@ -324,6 +324,16 @@ $\mathrm{Im}\,\Sigma_{ii} \le 0$ and is rejected by the physicality guard. When 
 this hard, the resolution is more retained weight (larger cap, more ranks) or a better
 subspace, not a different solver.
 
+#### The support settle
+
+Below the cap, a unit's support can still stop growing on its own: once the amplitude the normalised next block
+carries on newly reached determinants stays below `ratio x slaterWeightMin` (and is not rising), what later blocks
+would admit is below the amplitude the cutoff already discards, and the unit continues as the exact block Lanczos of
+$PHP$ from there (`FreezeRule`; `doc/gf_support_pipeline.md`). Measured on NiO and SMO the settle moves
+$\Sigma(\omega)$ by $10^{-9}$ to $10^{-7}$ of the causality headroom, against $10^{-5}$ for the cutoff itself, and the
+Matsubara self-energy by less than $10^{-13}$ (the first blocks carry $G(i\omega_n)$ and are identical before the
+settle acts). The error does not come from the settle but from where the cutoff sits.
+
 ### 3.5 Work distribution
 
 All Green's-function drivers share one distribution engine: the flat work units are
@@ -531,6 +541,7 @@ driver. Two error-propagation facts to keep in mind:
   measured reason the per-frequency driver's default residual tolerance ($10^{-8}$) had to be
   tightened (and its stagnating points GMRES-rescued) before $\sigma^{\mathrm{real}}$ at
   $\delta = 10^{-2}$ matched the recurrence.
+* **A bath pole amplifies.** For a scalar block $\operatorname{Im}\Sigma = \delta - \operatorname{Im}\Delta(\omega + i\delta) + \operatorname{Im}G/|G|^2$. Near a bath level $\varepsilon_k$ the hybridization is $-\operatorname{Im}\Delta \approx |W_k|^2/\delta$ and $G \approx -1/\Delta$, so $\operatorname{Im}\Sigma$ is the difference of two numbers of order $|W_k|^2/\delta$, and $|G|^{-2} \approx |W_k|^4/\delta^2$ turns an absolute error of $10^{-5}$ in $G$ into $10^{-3}$ in $\Sigma$ when $|W_k|^2/\delta$ dominates $|\omega - \varepsilon_d - \operatorname{Re}\Delta - \operatorname{Re}\Sigma|$ (check it against the saved $G$, not the asymptotic form). The causality attribution of `calc_selfenergy` reads the nearest bath level for this reason.
 * **Truncation is not causal in $\Sigma$** (section 3.4): the physicality guard
   (`check_greens_function` / the $\mathrm{Im}\,\Sigma_{ii} \le 0$ check) is the last line of
   defense and *raising* is collective (`_raise_together`) so no MPI rank deadlocks.
