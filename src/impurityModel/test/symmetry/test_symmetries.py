@@ -491,3 +491,122 @@ def test_symmetry_svds_never_ask_for_the_full_left_singular_block(monkeypatch, r
             f"{run}: asked LAPACK for a {u_shape} left block from a {shape_in} system; "
             f"the economy form is {(shape_in[0], economy)} and nothing reads it"
         )
+
+
+# --- bath orbitals follow their chain, not the first impurity orbital ---------------------------------
+
+
+def _two_chain_operator(extra_isolated=False, link=None):
+    """Two inequivalent impurity orbitals, each with a 3-site chain hanging from it: 0 - 2 - 3 - 4 and 1 - 5 - 6 - 7
+    (only the heads 2 and 5 couple to the impurity). Bath levels sit below the Fermi level (valence). ``link``: a
+    hopping of that size between the two chains' ends 4 and 7."""
+    h = {((0, "c"), (0, "a")): -1.0, ((1, "c"), (1, "a")): -2.0}
+    for b in range(2, 8):
+        h[((b, "c"), (b, "a"))] = -0.5
+    for a, b, v in ((0, 2, 0.3), (2, 3, 0.2), (3, 4, 0.1), (1, 5, 0.3), (5, 6, 0.2), (6, 7, 0.1)):
+        h[((a, "c"), (b, "a"))] = v
+        h[((b, "c"), (a, "a"))] = v
+    if extra_isolated:
+        h[((8, "c"), (8, "a"))] = -0.5  # reached by nothing
+    if link is not None:
+        h[((4, "c"), (7, "a"))] = link
+        h[((7, "c"), (4, "a"))] = link
+    return ManyBodyOperator(h)
+
+
+def _groups(op, n_orb, merged=None):
+    from impurityModel.ed.symmetries import classify_bath_occupation, group_orbitals_by_blocks, impurity_block_structure
+
+    imp = [0, 1]
+    bs = impurity_block_structure(op, imp, n_orb=n_orb)
+    val, con = classify_bath_occupation(op, imp, n_orb=n_orb)
+    impurity_orbitals, (valence, conduction) = group_orbitals_by_blocks(
+        op, imp, val, con, bs, n_orb=n_orb, merged=merged
+    )
+    assert not any(conduction[g] != [[]] and conduction[g] for g in conduction)
+    return impurity_orbitals, {g: sorted(o for blk in valence[g] for o in blk) for g in valence}
+
+
+def test_a_chains_interior_stays_with_the_impurity_orbital_it_hangs_from():
+    impurity_orbitals, valence = _groups(_two_chain_operator(), 8)
+    group_of_imp = {blk[0]: g for g, blks in impurity_orbitals.items() for blk in blks}
+    assert group_of_imp[0] != group_of_imp[1], "premise: the two impurity orbitals are separate manifolds"
+    assert valence[group_of_imp[0]] == [2, 3, 4] and valence[group_of_imp[1]] == [5, 6, 7]
+
+
+def test_a_site_nothing_reaches_keeps_the_first_orbital_fallback():
+    impurity_orbitals, valence = _groups(_two_chain_operator(extra_isolated=True), 9)
+    group_of_imp = {blk[0]: g for g, blks in impurity_orbitals.items() for blk in blks}
+    assert 8 in valence[group_of_imp[0]], "no path to any impurity orbital: the old rule (the first orbital) applies"
+    assert valence[group_of_imp[0]] == [2, 3, 4, 8] and valence[group_of_imp[1]] == [5, 6, 7]
+
+
+def test_directly_coupled_sites_keep_the_strongest_coupling_rule():
+    """A star: every bath site couples to some impurity orbital; the group is that of the strongest coupling."""
+    h = {((0, "c"), (0, "a")): -1.0, ((1, "c"), (1, "a")): -2.0}
+    for b, imp, v in ((2, 0, 0.3), (3, 1, 0.3), (4, 1, 0.2), (5, 0, 0.1)):
+        h[((b, "c"), (b, "a"))] = -0.5
+        h[((imp, "c"), (b, "a"))] = v
+        h[((b, "c"), (imp, "a"))] = v
+    impurity_orbitals, valence = _groups(ManyBodyOperator(h), 6)
+    group_of_imp = {blk[0]: g for g, blks in impurity_orbitals.items() for blk in blks}
+    assert valence[group_of_imp[0]] == [2, 5] and valence[group_of_imp[1]] == [3, 4]
+
+
+def test_two_groups_one_bath_component_reaches_are_merged():
+    """The chains' ends hop to each other: the bath carries charge between the two manifolds, so they are one group."""
+    merged = []
+    impurity_orbitals, valence = _groups(_two_chain_operator(link=0.05), 8, merged)
+    assert impurity_orbitals == {0: [[0, 1]]} and valence == {0: [2, 3, 4, 5, 6, 7]}
+    assert merged == [[[0], [1]]]
+
+
+def test_a_link_below_the_coupling_floor_merges_nothing():
+    merged = []
+    impurity_orbitals, valence = _groups(_two_chain_operator(link=1e-9), 8, merged)
+    assert len(impurity_orbitals) == 2 and merged == []
+    group_of_imp = {blk[0]: g for g, blks in impurity_orbitals.items() for blk in blks}
+    assert valence[group_of_imp[0]] == [2, 3, 4] and valence[group_of_imp[1]] == [5, 6, 7]
+
+
+def test_the_grouping_and_the_chain_windows_share_one_edge_metric():
+    from impurityModel.ed import basis_restrictions
+    from impurityModel.ed.symmetries import coupling_edge_weights
+
+    op = _two_chain_operator()
+    dist, _thr = basis_restrictions._impurity_coupling_distance(op.to_dict(), 8, [0, 1], 1e-3, 6)
+    hop = np.zeros((8, 8))
+    for (i, _c), (j, _a) in (k for k in op.to_dict() if len(k) == 2):
+        hop[i, j] = abs(op.to_dict()[((i, "c"), (j, "a"))])
+    np.fill_diagonal(hop, 0.0)
+    w = coupling_edge_weights(hop)
+    # orbital 4 hangs from 0 through 0-2-3-4
+    assert dist[0, 4] == pytest.approx(w[0, 2] + w[2, 3] + w[3, 4])
+
+
+def _uneven_chains_operator(link):
+    """Uneven baths, as eg/t2g in NiO: orbital 0 has one 2-site chain (2-9), orbital 1 a 4-site chain (3-4-5-6) and a
+    second 2-site chain (7-8). ``link`` joins the interior sites 9 and 6 (or nothing when ``None``); interior sites
+    are invisible to the hybridization-dressed block structure, so only the bath merge can join the groups."""
+    h = {((0, "c"), (0, "a")): -1.0, ((1, "c"), (1, "a")): -2.0}
+    for b in range(2, 10):
+        h[((b, "c"), (b, "a"))] = -0.5
+    edges = [(0, 2, 0.3), (2, 9, 0.2), (1, 3, 0.3), (3, 4, 0.2), (4, 5, 0.1), (5, 6, 0.05), (1, 7, 0.25), (7, 8, 0.1)]
+    if link is not None:
+        edges.append((9, 6, link))
+    for a, b, v in edges:
+        h[((a, "c"), (b, "a"))] = v
+        h[((b, "c"), (a, "a"))] = v
+    return ManyBodyOperator(h)
+
+
+@pytest.mark.parametrize("link", [None, 0.04])
+def test_uneven_bath_counts_are_grouped_and_merged_by_connectivity_alone(link):
+    merged = []
+    impurity_orbitals, valence = _groups(_uneven_chains_operator(link), 10, merged)
+    if link is None:
+        group_of_imp = {blk[0]: g for g, blks in impurity_orbitals.items() for blk in blks}
+        assert merged == [] and valence[group_of_imp[0]] == [2, 9] and valence[group_of_imp[1]] == [3, 4, 5, 6, 7, 8]
+    else:
+        assert impurity_orbitals == {0: [[0, 1]]} and valence == {0: [2, 3, 4, 5, 6, 7, 8, 9]}
+        assert merged == [[[0], [1]]]

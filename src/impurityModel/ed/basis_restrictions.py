@@ -21,6 +21,7 @@ from impurityModel.ed import product_state_representation as psr
 from impurityModel.ed.average import thermal_average_scale_indep
 from impurityModel.ed.density_matrices import occupations
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState
+from impurityModel.ed.symmetries import coupling_edge_weights
 
 # Tunable restriction knobs, gathered here as named constants (rather than literals scattered
 # through the builders) so a measurement sweep or a driver can override them. Every default
@@ -310,14 +311,7 @@ def _impurity_coupling_distance(op, tot_orb, all_impurity_orbitals, coupling_cut
         dist = sp.sparse.csgraph.shortest_path(graph, directed=False, unweighted=True, indices=all_impurity_orbitals)
         return _rows_by_orbital(dist, tot_orb, all_impurity_orbitals), min_dist
     np.fill_diagonal(hop, 0.0)
-    h_max = hop.max()
-    mask = hop > 1e-8
-    graph = np.zeros((tot_orb, tot_orb))
-    if h_max > 0:
-        # weight = -log(|h| / h_max) >= 0; + small offset so the strongest edges (weight 0)
-        # are not read as "no edge" by csgraph (which drops values <~1e-8). The offset is
-        # negligible for the cutoff (it takes thousands of hops to accumulate to it).
-        graph[mask] = -np.log(hop[mask] / h_max) + 1e-3
+    graph = coupling_edge_weights(hop)
     dist = sp.sparse.csgraph.shortest_path(graph, directed=False, indices=all_impurity_orbitals)
     return _rows_by_orbital(dist, tot_orb, all_impurity_orbitals), -np.log(coupling_cutoff)
 
