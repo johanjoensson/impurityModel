@@ -10,6 +10,7 @@ of ``basis.comm``.
 """
 
 import itertools
+from dataclasses import dataclass
 from math import ceil, comb
 from typing import Optional
 
@@ -332,6 +333,12 @@ def _far_orbitals(dist_matrix, imp_orb_block, orbitals, dist_cutoff):
     return {orb for orb in orbitals if np.min(dist_matrix[np.ix_(imp_orb_block, [orb])]) > dist_cutoff}
 
 
+def _graded_split(orbitals, dist_matrix, dist_freeze):
+    """``(intermediate, deep)``: ``orbitals`` split at the deep boundary on ``min_k dist_matrix[k, o]``."""
+    deep = frozenset(o for o in orbitals if np.min(dist_matrix[:, o]) > dist_freeze)
+    return frozenset(o for o in orbitals if o not in deep), deep
+
+
 def _emit_graded_chain_window(excited_restrictions, orbitals, dist_matrix, dist_freeze, filled):
     """Emit the deep + intermediate windows for one freeze-eligible chain group.
 
@@ -344,12 +351,11 @@ def _emit_graded_chain_window(excited_restrictions, orbitals, dist_matrix, dist_
     deep zone to its reference occupation makes the self-energy non-causal on hybridization
     peaks. ``filled`` selects the valence (filled reference) vs conduction (empty reference)
     direction. A shell smaller than the cap yields an unconstraining ``(0, len)`` window (no
-    spurious tightening).
+    spurious tightening). Returns the ``(intermediate, deep)`` site sets it emitted windows for.
     """
     if len(orbitals) == 0:
-        return
-    deep = frozenset(o for o in orbitals if np.min(dist_matrix[:, o]) > dist_freeze)
-    intermediate = frozenset(o for o in orbitals if o not in deep)
+        return frozenset(), frozenset()
+    intermediate, deep = _graded_split(orbitals, dist_matrix, dist_freeze)
     if filled:
         if len(deep) > 0:
             excited_restrictions[deep] = (max(len(deep) - CHAIN_DEEP_MAX_EXCITATIONS, 0), len(deep))
@@ -363,6 +369,122 @@ def _emit_graded_chain_window(excited_restrictions, orbitals, dist_matrix, dist_
             excited_restrictions[deep] = (0, min(CHAIN_DEEP_MAX_EXCITATIONS, len(deep)))
         if len(intermediate) > 0:
             excited_restrictions[intermediate] = (0, min(CHAIN_INTERMEDIATE_MAX_EXCITATIONS, len(intermediate)))
+    return intermediate, deep
+
+
+@dataclass(frozen=True)
+class ChainZone:
+    """The zones of one chain's filled or empty far sites, read off the windows :func:`build_excited_restrictions`
+    emitted for them.
+
+    ``block`` is the impurity block the chain hangs from (every block, with ``collapse_chains``); ``kind`` is
+    ``"filled"`` (sites at the reference occupation 1, windowed on holes) or ``"empty"`` (occupation 0, windowed on
+    electrons). ``head`` are the chain's sites near the impurity (no window), ``intermediate`` and ``deep`` the sites
+    of the emitted windows (capped at ``CHAIN_INTERMEDIATE_MAX_EXCITATIONS`` / ``CHAIN_DEEP_MAX_EXCITATIONS``
+    excitations; under the binary window ``deep`` is empty), ``partial`` the far sites no window covers (partially
+    occupied, or a binary group too short to window). ``head`` and ``partial`` belong to the chain and are listed on
+    its ``"filled"`` record only. ``a`` maps every listed site to its accumulated hopping ``exp(-min_k dist[k, o])``,
+    the metric the deep boundary is tested on, and ``excitation_weight`` to the thermal weight of the excitation the
+    window caps: ``1 - n`` on a filled window, ``n`` on an empty one. ``a_head`` / ``a_deep`` are the two boundaries
+    (``a_deep`` is ``nan`` under the binary window); the head boundary is tested on the block's own rows of the
+    distance, which agree with ``a`` whenever the site's nearest impurity orbital is in its own group."""
+
+    block: tuple
+    kind: str
+    head: tuple
+    intermediate: tuple
+    deep: tuple
+    partial: tuple
+    a: dict
+    excitation_weight: dict
+    a_head: float
+    a_deep: float
+    graded: bool
+
+    @property
+    def p_intermediate(self):
+        return sum(self.excitation_weight[o] for o in self.intermediate)
+
+    @property
+    def p_deep(self):
+        return sum(self.excitation_weight[o] for o in self.deep)
+
+
+def _zone_sites(zone, group):
+    """``site (a=..., w=...)`` for each site of ``group`` (``-`` if empty)."""
+    return ", ".join(f"{o} (a={zone.a[o]:.1e}, w={zone.excitation_weight[o]:.2e})" for o in group) or "-"
+
+
+def format_chain_zones(zones, verbose=False):
+    """Text for the chain windows: one line, and with ``verbose`` one line per chain naming its sites.
+
+    The one-liner counts the sites per zone over every chain, gives the deep boundary and how far the nearest windowed
+    site sits above it, so two logs (two cutoffs, two iterations) can be compared at a glance; the verbose lines list
+    each zone's sites with their ``a`` and the thermal excitation weight ``p = sum(1 - n)`` the zone's cap acts on."""
+    if not zones:
+        return "Chain windows: none (no far chain site)"
+    n = lambda attr: sum(len(getattr(z, attr)) for z in zones)  # noqa: E731
+    first = zones[0]
+    if first.graded:
+        far_a = [z.a[o] for z in zones for o in z.intermediate + z.deep]
+        margin = (
+            f"; deep boundary a < {first.a_deep:.1e}, nearest windowed site {min(far_a) / first.a_deep:.1f}x above it"
+            if far_a
+            else ""
+        )
+    else:
+        margin = "; binary window (no deep zone)"
+    head = (
+        f"Chain windows: {len(zones)} chain(s); head {n('head')} sites (a >= {first.a_head:.0e}, no window) | "
+        f"intermediate {n('intermediate')} sites <= {CHAIN_INTERMEDIATE_MAX_EXCITATIONS} exc. "
+        f"(p = {sum(z.p_intermediate for z in zones):.1e}) | deep {n('deep')} sites "
+        f"<= {CHAIN_DEEP_MAX_EXCITATIONS} exc.{margin}"
+    )
+    if not verbose:
+        return head
+    lines = [head]
+    for z in zones:
+        lines.append(
+            f"  impurity {list(z.block)} {z.kind}: head {len(z.head)} | intermediate {len(z.intermediate)}: "
+            f"{_zone_sites(z, z.intermediate)} | deep {len(z.deep)}: {_zone_sites(z, z.deep)} | "
+            f"partially occupied {len(z.partial)}"
+        )
+    return "\n".join(lines)
+
+
+def _binary_emitted(filled_orbitals, empty_orbitals):
+    """The binary window's ``{direction: (intermediate, deep)}``: a group of more than two sites gets a window."""
+    return {
+        "filled": (frozenset(filled_orbitals) if len(filled_orbitals) > 2 else frozenset(), frozenset()),
+        "empty": (frozenset(empty_orbitals) if len(empty_orbitals) > 2 else frozenset(), frozenset()),
+    }
+
+
+def _record_chain_zones(zones_out, meta, emitted, dist_matrix, dist_cutoff, dist_freeze, graded):
+    """Append a chain's ``"filled"`` and ``"empty"`` :class:`ChainZone` records, built from the windows emitted."""
+    block, head, far, occupation = meta
+    covered = {o for pair in emitted.values() for zone in pair for o in zone}
+    a = {o: float(np.exp(-np.min(dist_matrix[:, o]))) for o in occupation}
+    for kind in ("filled", "empty"):
+        intermediate, deep = emitted[kind]
+        if kind == "empty" and not (intermediate or deep):
+            continue
+        weight = {o: (1.0 - n if kind == "filled" else n) for o, n in occupation.items()}
+        zones_out.append(
+            ChainZone(
+                block=block,
+                kind=kind,
+                head=head if kind == "filled" else (),
+                intermediate=tuple(sorted(intermediate)),
+                deep=tuple(sorted(deep)),
+                partial=tuple(o for o in far if o not in covered) if kind == "filled" else (),
+                a=a,
+                excitation_weight=weight,
+                a_head=float(np.exp(-dist_cutoff)),
+                a_deep=float(np.exp(-dist_freeze)) if graded else float("nan"),
+                graded=bool(graded),
+            )
+        )
 
 
 def build_excited_restrictions(
@@ -377,6 +499,7 @@ def build_excited_restrictions(
     min_dist=_USE_DEFAULT,
     coupling_cutoff=_USE_DEFAULT,
     slater_weight_min=None,
+    zones_out=None,
 ):
     """
     Construct restrictions for impurity occupation, valence bath occupation, and conduction bath
@@ -400,6 +523,8 @@ def build_excited_restrictions(
     occ_cutoff: float - Cutoff separating filled, partially filled, and empty states. Filled stated
         have occupation > 1-occ_cutoff, empty states have occupation < occ_cutoff, partially filled
         states lie in between
+    zones_out: Optional[list] - If a list, :class:`ChainZone` records (per chain, filled and empty) are appended
+        to it, built from the windows actually emitted; it never changes the returned restrictions.
     Returns:
     ========
     excited restrictions: Optional[dict[frozenset[int], tuple[int, int]]] - The occupation
@@ -427,6 +552,9 @@ def build_excited_restrictions(
 
     filled_bath_states = []
     empty_bath_states = []
+    # Per chain, in the order of filled_bath_states (which, like it, accumulates over the groups): the zone record's
+    # (block, head sites, far sites, occupation) -- read after the loop, against the final windows.
+    chain_meta: list = []
 
     all_impurity_orbitals = [
         orb for orb_blocks in basis.impurity_orbitals.values() for orb_block in orb_blocks for orb in orb_block
@@ -523,12 +651,33 @@ def build_excited_restrictions(
                 # pinned the near conduction bath to (0, 0) whenever the far tail was long, which
                 # excluded determinants of the very ground state the window was widened from
                 # (review ledger C2).
+                if zones_out is not None:
+                    chain_orbs = list(val_orb_block) + list(con_orb_block)
+                    occupation = dict(zip(val_orb_block, map(float, valence_occupations)))
+                    occupation.update(zip(con_orb_block, map(float, conduction_occupations)))
+                    far = set(far_val) | set(far_con)
+                    chain_meta.append(
+                        (
+                            tuple(int(o) for o in imp_orb_block),
+                            tuple(o for o in chain_orbs if o not in far),
+                            tuple(o for o in chain_orbs if o in far),
+                            occupation,
+                        )
+                    )
                 min_val = max(min_val - len(filled_valence_states) - len(empty_valence_states), 0)
                 empty_states = frozenset(sorted(empty_valence_states + empty_conduction_states))
                 filled_bath_states.append(filled_states)
                 empty_bath_states.append(empty_states)
 
             if basis.collapse_chains:
+                chain_meta = [
+                    (
+                        tuple(o for m in chain_meta for o in m[0]),
+                        tuple(o for m in chain_meta for o in m[1]),
+                        tuple(o for m in chain_meta for o in m[2]),
+                        {o: n for m in chain_meta for o, n in m[3].items()},
+                    )
+                ]
                 filled_bath_states = [
                     frozenset(sorted(orbs for filled_orbs in filled_bath_states for orbs in filled_orbs))
                 ]
@@ -575,6 +724,16 @@ def build_excited_restrictions(
                 if CHAIN_MAX_ELECTRONS is not None:
                     empty_max = min(empty_max, CHAIN_MAX_ELECTRONS)
                 excited_restrictions[empty_orbitals] = (0, empty_max)
+    if zones_out is not None and basis.chain_restrict:
+        for filled_orbitals, empty_orbitals, meta in zip(filled_bath_states, empty_bath_states, chain_meta):
+            if graded:
+                emitted = {
+                    "filled": _graded_split(filled_orbitals, dist_matrix, dist_freeze),
+                    "empty": _graded_split(empty_orbitals, dist_matrix, dist_freeze),
+                }
+            else:
+                emitted = _binary_emitted(filled_orbitals, empty_orbitals)
+            _record_chain_zones(zones_out, meta, emitted, dist_matrix, dist_cutoff, dist_freeze, graded)
     # Emit the single whole-impurity occupation window (only when it actually confines).
     if len(all_imp_orbs) > 0 and (imp_min > 0 or imp_max < len(all_imp_orbs)):
         excited_restrictions[all_imp_orbs] = (imp_min, imp_max)

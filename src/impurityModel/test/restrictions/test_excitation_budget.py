@@ -10,6 +10,7 @@ empty-conduction orbital each costs one (default), and the budget caps their sum
 from itertools import pairwise
 
 import numpy as np
+import pytest
 
 from impurityModel.ed.basis_restrictions import build_weighted_restrictions, excitation_budget_restriction
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
@@ -337,7 +338,9 @@ def test_chain_max_holes_none_is_noop():
 # drops with depth and all three zones appear.
 
 
-def _graded_chain_valence_windows(n_val=16, graded=True, slater_weight_min=1e-8, hop0=0.4, decay=0.85, deep_cap=None):
+def _graded_chain_valence_windows(
+    n_val=16, graded=True, slater_weight_min=1e-8, hop0=0.4, decay=0.85, deep_cap=None, zones_out=None
+):
     """All valence-chain windows from build_excited_restrictions, graded on/off.
 
     Returns ``{frozenset(sites): (lo, hi)}`` restricted to valence orbitals. The chain hopping
@@ -372,7 +375,9 @@ def _graded_chain_valence_windows(n_val=16, graded=True, slater_weight_min=1e-8,
     if deep_cap is not None:
         br.CHAIN_DEEP_MAX_EXCITATIONS = deep_cap
     try:
-        rest = build_excited_restrictions(basis, op, psis=None, es=None, slater_weight_min=slater_weight_min)
+        rest = build_excited_restrictions(
+            basis, op, psis=None, es=None, slater_weight_min=slater_weight_min, zones_out=zones_out
+        )
     finally:
         br.CHAIN_GRADED_RESTRICT = saved
         br.CHAIN_DEEP_MAX_EXCITATIONS = saved_cap
@@ -437,3 +442,74 @@ def test_graded_freeze_boundary_tracks_amplitude_cutoff():
     tight, _ = _graded_chain_valence_windows(graded=True, slater_weight_min=1e-12)
     n_deep = lambda w: sum(len(k) for k in _deep_windows(w, CHAIN_DEEP_MAX_EXCITATIONS))  # noqa: E731
     assert n_deep(tight) <= n_deep(loose)
+
+
+def test_the_chain_zones_are_the_windows_in_data_form():
+    """``zones_out`` reports, per chain, the sites of each zone: they are exactly the window keys' orbital sets, the
+    thermal excitation weight is ``1 - n`` (0 on this filled chain), and asking for them changes nothing."""
+    from impurityModel.ed.basis_restrictions import (
+        CHAIN_DEEP_MAX_EXCITATIONS,
+        CHAIN_INTERMEDIATE_MAX_EXCITATIONS,
+        format_chain_zones,
+    )
+
+    zones = []
+    windows, val = _graded_chain_valence_windows(graded=True, zones_out=zones)
+    assert windows == _graded_chain_valence_windows(graded=True)[0], "collecting zones must not change the windows"
+    assert len(zones) == 1 and zones[0].kind == "filled" and zones[0].graded
+    z = zones[0]
+    assert set(z.head) | set(z.intermediate) | set(z.deep) | set(z.partial) == val
+    assert z.deep and z.intermediate and z.head, "premise: all three zones appear on this decaying chain"
+    deep = _deep_windows(windows, CHAIN_DEEP_MAX_EXCITATIONS)
+    assert {o for k in deep for o in k} == set(z.deep)
+    mid = {
+        k: v
+        for k, v in windows.items()
+        if v[1] - v[0] == CHAIN_INTERMEDIATE_MAX_EXCITATIONS and set(k) & set(z.intermediate)
+    }
+    assert {o for k in mid for o in k} == set(z.intermediate)
+    assert all(z.a[o] >= z.a_head for o in z.head) and all(z.a[o] < z.a_head for o in z.intermediate + z.deep)
+    assert all(z.a[o] < z.a_deep for o in z.deep) and all(z.a[o] >= z.a_deep for o in z.intermediate)
+    assert z.p_deep == 0.0 and z.p_intermediate == 0.0, "a perfectly filled chain has no excitation weight"
+    one = format_chain_zones(zones)
+    assert f"head {len(z.head)} sites" in one and f"deep {len(z.deep)} sites" in one and "deep boundary a <" in one
+    detail = format_chain_zones(zones, verbose=True)
+    assert detail.count("\n") == 1 and "impurity [0] filled" in detail
+
+
+def test_the_binary_window_has_no_deep_zone_in_the_chain_zones():
+    from impurityModel.ed.basis_restrictions import format_chain_zones
+
+    zones = []
+    _graded_chain_valence_windows(graded=False, zones_out=zones)
+    assert zones and not zones[0].graded and zones[0].deep == () and "binary window" in format_chain_zones(zones)
+
+
+def test_no_far_site_means_no_zones():
+    from impurityModel.ed.basis_restrictions import format_chain_zones
+
+    assert "none" in format_chain_zones([])
+
+
+def test_a_zone_record_weighs_each_window_by_its_own_direction_and_lists_only_emitted_sites():
+    """An empty window's weight is ``n`` and a filled window's ``1 - n`` whatever bath the site came from; a far site
+    no emitted window covers (here a binary group of two) is ``partial``, not windowed."""
+    from impurityModel.ed.basis_restrictions import _binary_emitted, _record_chain_zones
+
+    dist = np.full((6, 6), np.inf)
+    dist[0, :] = [0.0, 1.0, 9.0, 9.5, 10.0, 10.5]
+    occupation = {1: 0.9, 2: 0.999, 3: 0.998, 4: 0.01, 5: 0.02}
+    meta = ((0,), (1,), (2, 3, 4, 5), occupation)
+    zones = []
+    _record_chain_zones(zones, meta, _binary_emitted([2, 3], [4, 5]), dist, 5.0, np.inf, False)
+    assert [z.kind for z in zones] == ["filled"], "neither two-site group gets a binary window"
+    assert zones[0].intermediate == () and zones[0].partial == (2, 3, 4, 5)
+    zones = []
+    emitted = {"filled": (frozenset({2, 3}), frozenset()), "empty": (frozenset({4}), frozenset({5}))}
+    _record_chain_zones(zones, meta, emitted, dist, 5.0, 10.2, True)
+    filled, empty = zones
+    assert filled.kind == "filled" and filled.head == (1,) and filled.partial == ()
+    assert empty.kind == "empty" and empty.head == () and empty.intermediate == (4,) and empty.deep == (5,)
+    assert filled.p_intermediate == pytest.approx(0.001 + 0.002)
+    assert empty.p_intermediate == pytest.approx(0.01) and empty.p_deep == pytest.approx(0.02)
+    assert empty.a[5] == pytest.approx(np.exp(-10.5)) and empty.a[5] < empty.a_deep <= empty.a[4]

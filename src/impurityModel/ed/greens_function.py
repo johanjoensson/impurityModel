@@ -9,7 +9,7 @@ from mpi4py import MPI
 from impurityModel.ed import config
 from impurityModel.ed import gf_diagnostics as _gfd
 from impurityModel.ed.average import ThermalEnsemble, thermal_average_scale_indep
-from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
+from impurityModel.ed.basis_restrictions import build_excited_restrictions, format_chain_zones, intersect_windows
 from impurityModel.ed.basis_transcription import support_filter
 from impurityModel.ed.block_structure import BlockStructure
 
@@ -485,8 +485,11 @@ def _gf_lanczos_plan(
     gf_tol,
     gf_real_tol,
     operator_families,
+    verbose_extra=False,
 ):
-    """Validate the options, build the excited-sector windows and enumerate the work units. Collective."""
+    """Validate the options, build the excited-sector windows and enumerate the work units. Collective.
+
+    At ``verbose`` the chain windows print as one line; ``verbose_extra`` adds one line per chain."""
     config.warn_retired_knobs()
     if gf_method in config.RETIRED_GF_METHODS:
         raise ValueError(f"gf_method {gf_method!r} {config.RETIRED_GF_METHODS[gf_method]}")
@@ -510,9 +513,14 @@ def _gf_lanczos_plan(
     # Excited-sector restrictions are independent of the orbital block and of the spectral side
     # (the dN occupation window is symmetric and spans all impurity orbitals), so build them once
     # on the full basis instead of per block.
+    chain_zones: list = []
     excited_restrictions, excited_weighted_restrictions = _build_excited_restrictions(
-        basis, hOp, psis, es, dN, occ_cutoff, slater_weight_min=slaterWeightMin
+        basis, hOp, psis, es, dN, occ_cutoff, slater_weight_min=slaterWeightMin, zones_out=chain_zones
     )
+    if verbose and basis.chain_restrict and (basis.comm is None or basis.comm.rank == 0):
+        # Which sites carry which window (the occupation windows below are just their union): the same text a
+        # comparison of two cutoffs or two iterations reads.
+        print(format_chain_zones(chain_zones, verbose=verbose_extra), flush=True)
     # The per-unit kernels print the restrictions only when they exist, so an unrestricted run
     # would otherwise be silent -- indistinguishable from restrictions lost somewhere.
     if verbose and (basis.comm is None or basis.comm.rank == 0):
@@ -958,6 +966,7 @@ def get_Greens_function(
         gf_tol,
         gf_real_tol,
         operator_families,
+        verbose_extra=verbose_extra,
     )
     units, unit_seeds, unit_weights, unit_restrictions = (
         plan.units,
@@ -1313,7 +1322,7 @@ def _run_evaluated_gf_units(
 
 
 def _build_excited_restrictions(
-    basis, hOp, psis, es, dN, occ_cutoff, dN_imp=None, dN_val=None, dN_con=None, slater_weight_min=None
+    basis, hOp, psis, es, dN, occ_cutoff, dN_imp=None, dN_val=None, dN_con=None, slater_weight_min=None, zones_out=None
 ):
     """Build the excited-sector occupation restrictions for a Green's-function calculation.
 
@@ -1353,6 +1362,7 @@ def _build_excited_restrictions(
         con_change=dN_con,
         cutoff=occ_cutoff,
         slater_weight_min=slater_weight_min,
+        zones_out=zones_out,
     )
     # Weighted (e.g. S_z) restriction for the excited sector: widen the ground-state bounds by one
     # orbital weight so the addition / removal sectors q_psi ± w_j are admitted while still
