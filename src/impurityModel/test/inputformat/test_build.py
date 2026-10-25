@@ -623,3 +623,12 @@ def test_the_settle_keys_reach_the_solver_options(written):
 def test_the_settle_keys_refuse_a_contradiction_by_name(written, body, match):
     with pytest.raises(InputError, match=match):
         build(load_input(written(SELFENERGY + "\n[solver]\n" + body)))
+
+
+def test_the_settle_retry_key_reaches_the_solver_options(written):
+    assert build(load_input(written(SELFENERGY))).solver.gf_settle_retry is None
+    for word, want in (("auto", None), ("on", True), ("off", False)):
+        text = SELFENERGY + f'\n[solver]\ngf_settle_retry = "{word}"\n'
+        assert build(load_input(written(text))).solver.gf_settle_retry is want
+    with pytest.raises(InputError, match="contradicts gf_settle off"):
+        build(load_input(written(SELFENERGY + '\n[solver]\ngf_settle = "off"\ngf_settle_retry = "on"\n')))

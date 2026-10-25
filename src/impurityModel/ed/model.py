@@ -1244,6 +1244,7 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         # Absent from archives written before the support settle was an option: those runs ran its default.
         "gf_settle": _optional_bool(_archive_attr(attrs, "gf_settle")),
         "gf_settle_ratio": _optional_float(_archive_attr(attrs, "gf_settle_ratio")),
+        "gf_settle_retry": _optional_bool(_archive_attr(attrs, "gf_settle_retry")),
     }
 
 
@@ -1305,6 +1306,7 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         gf_min_weight=raw["gf_min_weight"],
         gf_settle=raw["gf_settle"],
         gf_settle_ratio=raw["gf_settle_ratio"],
+        gf_settle_retry=raw["gf_settle_retry"],
     )
     return model, meshes, basis, solver, raw["label"]
 
@@ -1467,6 +1469,13 @@ class SolverOptions:
         is not growing. ``1`` settles when every excluded determinant would have been pruned from the next
         block anyway, larger settles sooner, ``0`` is closure only (no new determinant at all). ``None``
         (default): the ``GF_SETTLE_RATIO`` knob. Needs the settle on; ``gf_method="lanczos"`` only.
+    gf_settle_retry : bool or None
+        If the real-axis self-energy fails the causality check and the support settle can plausibly be blamed (the
+        block has settled units, none held by the cap or the memory guard, and they did not already run closure-only),
+        solve those units again once with the closure-only recurrence (``gf_settle_ratio = 0``) and judge the new
+        ``G``. The attribution is printed either way; the retry never falls back to "settle off". ``None`` (default)
+        is **off**: the closure-only re-solve can take as long as an unsettled Green's function (hours on a large
+        unit). Needs the settle on; ``gf_method="lanczos"`` only.
     sigma_method : {"dyson"}
         Self-energy estimator (:mod:`impurityModel.ed.sigma_estimators`): which operator family
         the Green's-function engine resolves and how the self-energy is read off it. Only the
@@ -1484,6 +1493,7 @@ class SolverOptions:
     gf_min_weight: Optional[float] = None
     gf_settle: Optional[bool] = None
     gf_settle_ratio: Optional[float] = None
+    gf_settle_retry: Optional[bool] = None
 
     def __post_init__(self):
         # One place for every front-end (RSPt solver line, TOML, CLI, archive replay): a bad
@@ -1521,7 +1531,7 @@ class SolverOptions:
             raise ValueError(
                 f"gf_min_weight must lie in (0, 1) (got {self.gf_min_weight!r}); omit it to keep every state"
             )
-        for name in ("gf_settle", "gf_settle_ratio"):
+        for name in ("gf_settle", "gf_settle_ratio", "gf_settle_retry"):
             if getattr(self, name) is not None and self.gf_method != "lanczos":
                 raise ValueError(f"{name} is a block-Lanczos setting; gf_method={self.gf_method!r} ignores it")
         if self.gf_settle_ratio is not None and not self.gf_settle_ratio >= 0.0:
@@ -1529,6 +1539,8 @@ class SolverOptions:
                 f"gf_settle_ratio must be >= 0 (got {self.gf_settle_ratio!r}); 0 is closure only, "
                 "omit it for the default"
             )
+        if self.gf_settle_retry and self.gf_settle is False:
+            raise ValueError("gf_settle_retry on contradicts gf_settle off: the retry re-solves settled units")
         if self.gf_settle_ratio is not None and self.gf_settle is False:
             raise ValueError(
                 "gf_settle_ratio only applies with the support settle on (it is set, but gf_settle is off)"

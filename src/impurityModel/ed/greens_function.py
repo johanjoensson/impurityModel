@@ -424,6 +424,51 @@ class GFPlan:
     slater_weight_min: float = 0.0
 
 
+class GFRun:
+    """A finished block-Lanczos Green's-function calculation that can solve some of its work units again.
+
+    Held by the self-energy driver so a block whose self-energy fails the causality check can have the units whose
+    support settled re-solved at a stricter threshold (:meth:`resolve`) without redoing the rest. ``results`` is the
+    gathered per-unit list in global unit order on the root rank (``None`` elsewhere), as :func:`_gf_assemble` takes
+    it. :meth:`resolve` is collective."""
+
+    def __init__(self, plan, results, solve, assemble):
+        self.plan = plan
+        self.results = results
+        self._solve = solve
+        self._assemble = assemble
+
+    def resolve(self, subset, settle_ratio):
+        """Solve the units ``subset`` (global indices, the same on every rank) again at ``settle_ratio`` and, if
+        they all come back uncapped, unguarded and converged, write them into the results and assemble ``G`` again.
+
+        Returns ``(accepted, changes, gs_matsubara, gs_realaxis, report)``: on the root rank ``accepted`` says
+        whether the new units were taken, ``changes`` is ``[(unit, retained_before, retained_after, reason)]`` and the
+        rest the re-assembled ``G`` and report (the old ones are not returned when rejected: the caller keeps them);
+        everything is ``None`` off the root rank. A rejected re-solve leaves the results as they were."""
+        new = self._solve(list(subset), settle_ratio)
+        if new is None:
+            return None, None, None, None, None
+        changes, accepted = [], True
+        for pos, u in enumerate(subset):
+            _a, _b, _r, cap_stats, conv_stats = new[pos]
+            before = self.results[u][3].get("retained_size")
+            reason = ""
+            if cap_stats.get("cap_hit") or cap_stats.get("memory_frozen"):
+                accepted, reason = False, "capped or held by the memory guard"
+            elif not conv_stats.get("converged", True):
+                accepted, reason = False, "did not converge"
+            changes.append((u, before, cap_stats.get("retained_size"), reason))
+        if not accepted:
+            return False, changes, None, None, None
+        spliced = list(self.results)
+        for pos, u in enumerate(subset):
+            spliced[u] = new[pos]
+        gs_matsubara, gs_realaxis, report = self._assemble(spliced)
+        self.results = spliced
+        return True, changes, gs_matsubara, gs_realaxis, report
+
+
 def _gf_lanczos_plan(
     psis,
     es,
@@ -609,6 +654,7 @@ def _gf_solve_units(
         eval_meshes_for=eval_meshes_for,
         support_settle=gf_settle is not False,
         settle_ratio=gf_settle_ratio,
+        unit_ids=None if subset is None else list(subset),
     )
 
     # This unit-level dump belongs at -vv (verbose_extra): the roots/per-color summary is
@@ -626,11 +672,14 @@ def _gf_solve_units(
     return results
 
 
-def _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, delta, ensemble_es, num_wanted):
+def _gf_assemble(
+    plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, delta, ensemble_es, num_wanted, print_table=True
+):
     """Reassemble the per-unit results into the thermally averaged ``G`` per block and its diagnostics report.
 
     ``results`` is the full gathered list in global unit order (``None`` off the root rank, where the three
-    return values are ``None``). Prints the maximum-excited-basis table once."""
+    return values are ``None``). Prints the maximum-excited-basis table unless ``print_table`` is off (a re-assembly
+    after a unit re-solve prints nothing; the caller reports what changed)."""
     units, group_meta, widths, axis_tols, n_psis = plan.units, plan.group_meta, plan.widths, plan.axis_tols, plan.n_psis
 
     gs_matsubara = gs_realaxis = report = None
@@ -676,6 +725,13 @@ def _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, del
                     window=int(verdict.get("window", 0)),
                     cap_hit=bool(cap_stats.get("cap_hit", False)),
                     memory_frozen=bool(cap_stats.get("memory_frozen", False)),
+                    leak_window=float(verdict.get("leak", float("nan"))),
+                    frontier_end_over_swm=(
+                        float(cap_stats.get("frontier_end", float("nan"))) / plan.slater_weight_min
+                        if plan.slater_weight_min > 0
+                        else float("nan")
+                    ),
+                    leak_end=float(cap_stats.get("leak_end", float("nan"))),
                 )
             )
             _merge_unit_basis(max_basis, (block_i, unit_side_i), cap_stats.get("retained_size"), cap_stats["cap_hit"])
@@ -800,9 +856,10 @@ def _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, del
             report.extend(str(block), diags)
 
         report.units = records
-        _report_max_unit_basis(
-            "Maximum excited basis size per unit", _unit_basis_rows(blocks, max_basis, _settle_notes(records))
-        )
+        if print_table:
+            _report_max_unit_basis(
+                "Maximum excited basis size per unit", _unit_basis_rows(blocks, max_basis, _settle_notes(records))
+            )
 
     return (gs_matsubara, gs_realaxis, report)
 
@@ -834,6 +891,7 @@ def get_Greens_function(
     ensemble_es=None,
     gf_settle: Optional[bool] = None,
     gf_settle_ratio: Optional[float] = None,
+    run_out: Optional[dict] = None,
 ):
     """
     Calculate interacting Greens function.
@@ -868,6 +926,9 @@ def get_Greens_function(
     ``ensemble_es`` is the whole thermal ensemble the eigensolver returned, when the caller passes
     only part of it in ``es`` (``SolverOptions.gf_min_weight``); the ensemble-truncation check
     judges the eigensolver's output, not the subset. ``None``: ``es``.
+
+    ``run_out`` (a dict, optional): receives ``run_out["run"]``, a :class:`GFRun` that can solve some of the units
+    again (the block-Lanczos kernel only; absent for ``"bicgstab"``). Filled on every rank.
 
     ``operator_families`` is the self-energy estimator seam
     (:mod:`impurityModel.ed.sigma_estimators`): ``operator_families(block)`` returns
@@ -944,6 +1005,40 @@ def get_Greens_function(
         gf_settle=gf_settle,
         gf_settle_ratio=gf_settle_ratio,
     )
+    if run_out is not None:
+        run_out["run"] = GFRun(
+            plan,
+            results,
+            lambda subset, ratio: _gf_solve_units(
+                plan,
+                basis,
+                hOp,
+                matsubara_mesh,
+                omega_mesh,
+                es,
+                delta,
+                reort,
+                sparse,
+                slaterWeightMin,
+                verbose_extra,
+                subset=subset,
+                gf_settle=gf_settle,
+                gf_settle_ratio=ratio,
+            ),
+            lambda res: _gf_assemble(
+                plan,
+                res,
+                blocks,
+                matsubara_mesh,
+                omega_mesh,
+                es,
+                tau,
+                delta,
+                ensemble_es,
+                num_wanted,
+                print_table=False,
+            ),
+        )
     return _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, delta, ensemble_es, num_wanted)
 
 

@@ -1070,6 +1070,17 @@ _TABLE_LIST += [
                 minimum=0.0,
             ),
             Key(
+                "gf_settle_retry",
+                Kind.AUTO_ENUM,
+                "auto",
+                "If the real-axis self-energy fails the causality check and the support settle can plausibly be "
+                "blamed (settled units, none held by a cap or the memory guard, not already closure-only), solve "
+                "those units again once with the closure-only recurrence and judge the new G. The attribution is "
+                "always printed; the retry never falls back to 'settle off'. 'auto' is OFF: the re-solve can take as "
+                "long as an unsettled Green's function. Only valid with gf_method = 'lanczos' and the settle on.",
+                choices=("auto", "on", "off"),
+            ),
+            Key(
                 "gf_tol",
                 Kind.DIMENSIONLESS,
                 None,

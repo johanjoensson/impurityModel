@@ -173,6 +173,16 @@ def add_arguments(parser):
         ),
     )
     parser.add_argument(
+        "--gf-settle-retry",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "On a real-axis self-energy causality failure the support settle can plausibly explain, solve the settled "
+            "units again once closure-only ('on') or not ('off', the default: the re-solve can take as long as an "
+            "unsettled Green's function). The attribution is printed either way."
+        ),
+    )
+    parser.add_argument(
         "--gf-tol",
         type=float,
         default=None,
@@ -287,6 +297,7 @@ def apply_solver_overrides(solver, args):
             ("gf_admit_tol", args.gf_admit_tol),
             ("gf_settle", None if args.gf_settle is None else args.gf_settle == "on"),
             ("gf_settle_ratio", args.gf_settle_ratio),
+            ("gf_settle_retry", None if args.gf_settle_retry is None else args.gf_settle_retry == "on"),
             ("gf_tol", args.gf_tol),
             ("gf_real_tol", args.gf_real_tol),
             ("gf_min_weight", args.gf_min_weight),
@@ -372,6 +383,7 @@ def run(args):
             gf_admit_tol=args.gf_admit_tol,
             gf_settle=None if args.gf_settle is None else args.gf_settle == "on",
             gf_settle_ratio=args.gf_settle_ratio,
+            gf_settle_retry=None if args.gf_settle_retry is None else args.gf_settle_retry == "on",
             gf_tol=args.gf_tol,
             gf_real_tol=args.gf_real_tol,
             gf_min_weight=args.gf_min_weight,

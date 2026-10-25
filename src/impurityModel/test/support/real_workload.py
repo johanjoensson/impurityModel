@@ -57,6 +57,7 @@ _CONSUMED_ATTRS = frozenset(
         "gf_admit_tol",
         "gf_settle",
         "gf_settle_ratio",
+        "gf_settle_retry",
         "gf_min_weight",
         "excitation_budget",
         "e_pt2_tol",
@@ -169,6 +170,7 @@ def load_workload(h5_path, cluster=None, iteration=None):
         "gf_admit_tol": _optional(attrs, "gf_admit_tol", float),
         "gf_settle": _optional(attrs, "gf_settle", bool),
         "gf_settle_ratio": _optional(attrs, "gf_settle_ratio", float),
+        "gf_settle_retry": _optional(attrs, "gf_settle_retry", bool),
         "gf_min_weight": _optional(attrs, "gf_min_weight", float),
         "gf_method": _optional(attrs, "gf_method", str),
         "label": name,
@@ -269,7 +271,7 @@ def build_options(
         gf_tol=workload["gf_tol"] if gf_tol == "archive" else gf_tol,
         gf_real_tol=workload["gf_real_tol"] if gf_real_tol == "archive" else gf_real_tol,
     )
-    for key in ("gf_admission", "gf_admit_tol", "gf_settle", "gf_settle_ratio"):
+    for key in ("gf_admission", "gf_admit_tol", "gf_settle", "gf_settle_ratio", "gf_settle_retry"):
         if workload.get(key) is not None:
             solver_kwargs[key] = workload[key]
     # An explicit argument beats the archive's record (the freeze-replay rig sweeps these).

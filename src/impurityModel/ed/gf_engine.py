@@ -152,6 +152,9 @@ def _block_green_group(
             "support_frozen": bool(cap_info.get("support_frozen", False)),
             # The settle window's numbers (largest next-block amplitude on a new row, leak, cut), as it decided.
             "settle_verdict": cap_info.get("settle_verdict"),
+            # What the settled unit left behind (``nan`` where not measured): see gf_solvers._settled_frontier.
+            "frontier_end": cap_info.get("frontier_end", float("nan")),
+            "leak_end": cap_info.get("leak_end", float("nan")),
             "csr_fallback": bool(cap_info.get("csr_fallback", False)),
             "csr_seconds": float(cap_info.get("csr_seconds", 0.0)),
         }
@@ -258,6 +261,7 @@ def lanczos_unit_kernel(
     eval_meshes_for=None,
     support_settle=True,
     settle_ratio=None,
+    unit_ids=None,
 ):
     """The ``run_units_distributed`` kernel for block-Lanczos Green's-function units.
 
@@ -290,6 +294,9 @@ def lanczos_unit_kernel(
     support_settle, settle_ratio
         The support settle (:func:`gf_solvers.block_Green_sparse`): on/off and its threshold as a multiple of
         ``slaterWeightMin`` (``None``: the ``GF_SETTLE_RATIO`` knob).
+    unit_ids : list of int, optional
+        The global unit number of each entry of ``units`` (a subset re-solve), used for the unit's log label and
+        trace note; ``None``: the position.
     """
 
     def kernel(split_basis, u, seeds):
@@ -311,7 +318,7 @@ def lanczos_unit_kernel(
             weighted_window,
             eval_meshes=eval_meshes_for(unit) if eval_meshes_for is not None else None,
             conv_stats=conv_stats,
-            unit_label=u,
+            unit_label=u if unit_ids is None else unit_ids[u],
             support_settle=support_settle,
             settle_ratio=settle_ratio,
         )

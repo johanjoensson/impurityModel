@@ -6,6 +6,7 @@ assembling that list gives the same ``G`` as a clean full run.
 """
 
 import numpy as np
+import pytest
 from mpi4py import MPI
 
 from impurityModel.ed import greens_function as gfm
@@ -91,3 +92,58 @@ def test_an_empty_subset_solves_nothing():
     basis, psis = _inputs()
     plan = _plan(basis, psis)
     assert _solve(plan, basis, subset=[]) in ([], None)
+
+
+def _run_with_handle():
+    basis, psis = _inputs()
+    out = {}
+    gm, gr, _report = gfm.get_Greens_function(
+        MATSUBARA, OMEGA, psis, ES, 1.0, basis, _hyb_hop(), verbose=False, verbose_extra=False, reort=None,
+        sparse=True, run_out=out, **KW,
+    )  # fmt: skip
+    return out["run"], gm, gr
+
+
+def test_resolving_units_at_the_same_settings_reproduces_g_and_splices_them():
+    run, gm, gr = _run_with_handle()
+    before = list(run.results)
+    accepted, changes, gm2, gr2, report = run.resolve([1, 2], None)
+    assert accepted and [c[0] for c in changes] == [1, 2] and all(c[3] == "" for c in changes)
+    np.testing.assert_array_equal(gm2[0], gm[0])
+    np.testing.assert_array_equal(gr2[0], gr[0])
+    assert report is not None and len(report.units) == 4
+    assert run.results[0] is before[0] and run.results[1] is not before[1], "only the re-solved units are replaced"
+
+
+@pytest.mark.parametrize("flag", ["cap_hit", "memory_frozen"])
+def test_a_resolve_that_was_capped_or_held_is_rejected_and_changes_nothing(flag):
+    run, _gm, _gr = _run_with_handle()
+    real = run._solve
+
+    def capped(subset, ratio):
+        new = real(subset, ratio)
+        a, b, r, cap_stats, conv = new[0]
+        new[0] = (a, b, r, {**cap_stats, flag: True}, conv)
+        return new
+
+    run._solve = capped
+    before = list(run.results)
+    accepted, changes, gm2, gr2, report = run.resolve([0], 0.0)
+    assert accepted is False and changes[0][3] == "capped or held by the memory guard"
+    assert gm2 is None and gr2 is None and report is None
+    assert all(a is b for a, b in zip(run.results, before))
+
+
+def test_a_resolve_that_did_not_converge_is_rejected(monkeypatch):
+    run, _gm, _gr = _run_with_handle()
+    real = run._solve
+
+    def unconverged(subset, ratio):
+        new = real(subset, ratio)
+        a, b, r, cap_stats, conv = new[0]
+        new[0] = (a, b, r, cap_stats, {**conv, "converged": False})
+        return new
+
+    run._solve = unconverged
+    accepted, changes, *_ = run.resolve([0], 0.0)
+    assert accepted is False and changes[0][3] == "did not converge"

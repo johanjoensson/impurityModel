@@ -498,3 +498,17 @@ def test_the_settle_options_accept_closure_and_the_defaults():
     assert SolverOptions().gf_settle is None and SolverOptions().gf_settle_ratio is None
     assert SolverOptions(gf_settle_ratio=0.0).gf_settle_ratio == 0.0
     assert SolverOptions(gf_settle=False).gf_settle is False
+
+
+def test_the_settle_retry_option_replays_and_refuses_contradictions(tmp_path):
+    from impurityModel.ed.model import SolverOptions
+
+    _archive_with_attrs(tmp_path / "a.h5", gf_settle_retry=False)
+    assert load_selfenergy_archive(str(tmp_path / "a.h5"))[3].gf_settle_retry is False
+    _write_synthetic_archive(str(tmp_path / "b.h5"), gf_method="lanczos")
+    assert load_selfenergy_archive(str(tmp_path / "b.h5"))[3].gf_settle_retry is None
+    with pytest.raises(ValueError, match="contradicts gf_settle off"):
+        SolverOptions(gf_settle=False, gf_settle_retry=True)
+    with pytest.raises(ValueError, match="block-Lanczos setting"):
+        SolverOptions(gf_method="bicgstab", gf_settle_retry=True)
+    assert SolverOptions(gf_settle=False, gf_settle_retry=False).gf_settle_retry is False

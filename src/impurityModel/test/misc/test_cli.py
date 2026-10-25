@@ -308,3 +308,15 @@ def test_the_settle_flags_parse_and_override_the_archive_record():
         selfenergy.apply_solver_overrides(
             recorded, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle", "off"])
         )
+
+
+def test_the_settle_retry_flag_overrides_the_archive_record():
+    from impurityModel.ed.model import SolverOptions
+
+    args = _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle-retry", "off"])
+    off = selfenergy.apply_solver_overrides(SolverOptions(), args)
+    assert off.gf_settle_retry is False
+    untouched = selfenergy.apply_solver_overrides(off, _parse(selfenergy.add_arguments, ["h0.pickle"]))
+    assert untouched.gf_settle_retry is False
+    with pytest.raises(SystemExit):
+        _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-settle-retry", "maybe"])

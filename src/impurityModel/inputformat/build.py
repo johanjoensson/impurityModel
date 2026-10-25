@@ -734,6 +734,7 @@ def _solver_options_from(SolverOptions, table):
         # "auto" -> None (on); "on" / "off" are explicit.
         gf_settle={"auto": None, "on": True, "off": False}[table["gf_settle"]],
         gf_settle_ratio=table["gf_settle_ratio"],
+        gf_settle_retry={"auto": None, "on": True, "off": False}[table["gf_settle_retry"]],
         gf_tol=table["gf_tol"],
         gf_real_tol=table["gf_real_tol"],
         gf_min_weight=table["gf_min_weight"],

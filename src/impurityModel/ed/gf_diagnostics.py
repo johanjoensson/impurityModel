@@ -546,7 +546,10 @@ class UnitRecord:
     ``seed_weight`` the summed ``|r|^2`` of its seeds (electrons added or removed, weighted); ``retained`` the
     unit's final support (``None`` when untracked); ``settled`` / ``settle_step`` / ``n_blocks`` the settle
     verdict and the unit's block count; ``frontier_over_swm`` / ``ratio`` / ``window`` the settle verdict's
-    numbers (``nan`` when the unit did not settle). ``cap_hit`` / ``memory_frozen`` mark the lossy freezes."""
+    numbers (``nan`` when the unit did not settle); ``leak_window`` is the weight that reached new rows over the
+    settling window and ``frontier_end_over_swm`` / ``leak_end`` what the end-of-unit probe measured (next-block
+    amplitude in units of ``slaterWeightMin``, weight on rows outside the support), ``nan`` where not measured.
+    ``cap_hit`` / ``memory_frozen`` mark the lossy freezes."""
 
     unit: int
     block: int
@@ -564,6 +567,9 @@ class UnitRecord:
     window: int
     cap_hit: bool
     memory_frozen: bool
+    leak_window: float = float("nan")
+    frontier_end_over_swm: float = float("nan")
+    leak_end: float = float("nan")
 
     def describe(self) -> str:
         """``unit 4, removal, state 1 (E-E0 0.000, seed 0.22 e)``: what a reader needs to find it again."""
