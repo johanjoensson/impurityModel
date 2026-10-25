@@ -581,30 +581,34 @@ def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, e
     return alphas, betas, r, seconds, (last_q if isinstance(last_q, np.ndarray) else None)
 
 
-#: The end-of-unit frontier probe applies ``H`` once, unfrozen, to the block a frozen unit ended on; it is skipped
-#: when the resident set is already this fraction of the unit's memory budget (it generates the whole out-of-P
-#: image, the peak the frozen matrix exists to avoid).
+#: The end-of-unit frontier probe applies ``H`` once, unfrozen and unchunked, to the block a settled unit ended on; it
+#: is skipped when the resident set is already this fraction of the unit's memory budget (it generates the whole
+#: out-of-P image of one block, the peak the frozen matrix exists to avoid).
 _FRONTIER_PROBE_RSS_FRACTION = 0.8
 
 
 def _settled_frontier(proxy, frozen_basis, hOp, csr, slaterWeightMin, comm):
-    """What a frozen unit left behind, as ``cap_info`` entries (amplitudes, not squares). Collective.
+    """What a settled unit left behind, as ``cap_info`` entries (amplitudes, not squares). Collective.
 
-    ``leak_settle`` and ``frontier_settle_matvec`` are the freezing step's own record (weight on new rows and the
-    largest amplitude on one, in the matvec's units). ``frontier_end_matvec`` and ``leak_end`` are the same two
-    numbers measured by one unfrozen ``H`` applied to the block the frozen recurrence ended on
-    (:func:`gf_primitives.boundary_frontier`), and ``frontier_end`` the amplitude in the units of the next block
-    (divided by the smallest singular value of the last ``beta``; ``nan`` if that is zero). Missing entries are
-    ``nan``: no last block (the declined/sparse path), or a probe skipped for memory. The skip is decided on a
-    reduced answer, so every rank takes the same branch."""
+    ``leak_settle`` and ``frontier_settle_matvec`` are the settling step's own record (weight on new rows and the
+    largest amplitude on one, in the matvec's units), taken from the trace at no cost. The rest is a **diagnostic,
+    opt-in probe** (``GF_SUPPORT_TRACE``, read on rank 0 and broadcast): ``frontier_end_matvec`` and ``leak_end`` are
+    the same two numbers measured by one unfrozen ``H`` applied to the last block the frozen recurrence accepted
+    (:func:`gf_primitives.boundary_frontier`), and ``frontier_end`` that amplitude in the units of the next block
+    (divided by the smallest singular value of the last ``beta``). It is never run for a unit frozen by the cap or
+    held by the memory guard (the caller checks), and is skipped at ``_FRONTIER_PROBE_RSS_FRACTION`` of the memory
+    budget. Missing entries are ``nan``. Every branch is decided on replicated data."""
     out = {"leak_settle": float("nan"), "frontier_settle_matvec": float("nan"), "frontier_end": float("nan")}
     out.update(frontier_end_matvec=float("nan"), leak_end=float("nan"))
     if proxy.support_trace:
         record = proxy.support_trace[len(proxy.support_trace) - 1]
-        out["leak_settle"] = float(record[3])
-        out["frontier_settle_matvec"] = math.sqrt(record[7])
-    last_block = csr[4]
-    if last_block is None:
+        out["leak_settle"] = float(record.leak)
+        out["frontier_settle_matvec"] = math.sqrt(record.max2_matvec)
+    probe = bool(config.GF_SUPPORT_TRACE.get())
+    if comm is not None and comm.size > 1:
+        probe = comm.bcast(probe, root=0)
+    last_q, betas = csr[4], csr[1]  # betas trimmed: a list of blocks of differing width
+    if not probe or last_q is None or not len(betas):
         return out
     budget = proxy.memory_budget
     over = budget is not None and current_rss_bytes() > _FRONTIER_PROBE_RSS_FRACTION * budget
@@ -612,17 +616,20 @@ def _settled_frontier(proxy, frozen_basis, hOp, csr, slaterWeightMin, comm):
         over = comm.allreduce(bool(over), op=MPI.LOR)
     if over:
         return out
+    last_beta = np.asarray(betas[len(betas) - 1])
+    # The kernel's ``Q`` is the whole Krylov store (reort) or the deflated tail followed by the last block; the
+    # last accepted block is its last ``p`` columns, ``p`` the width the last ``beta`` was formed from.
+    p = int(last_beta.shape[1])
+    last_block = np.ascontiguousarray(last_q[:, last_q.shape[1] - p :])
     max2, weight = boundary_frontier(
         hOp, local_dense_to_block(frozen_basis, last_block), frozen_basis, slaterWeightMin, comm
     )
     out["frontier_end_matvec"] = math.sqrt(max2)
     out["leak_end"] = weight
-    betas = csr[1]  # trimmed: a list of blocks of differing width
-    if len(betas):
-        sv = np.linalg.svd(np.asarray(betas[len(betas) - 1]), compute_uv=False)
-        sv_min = float(sv[sv > 1e-12 * sv[0]].min()) if sv.size and sv[0] > 0 else 0.0
-        if sv_min > 0.0:
-            out["frontier_end"] = math.sqrt(max2) / sv_min
+    sv = np.linalg.svd(last_beta, compute_uv=False)
+    sv_min = float(sv[sv > 1e-12 * sv[0]].min()) if sv.size and sv[0] > 0 else 0.0
+    if sv_min > 0.0:
+        out["frontier_end"] = math.sqrt(max2) / sv_min
     return out
 
 
@@ -1030,7 +1037,10 @@ def block_Green_sparse(
             cap_info["support_trace"] = list(lanczos_basis.support_trace)
             if csr is not None:
                 cap_info["csr_seconds"] = csr[3]
-                cap_info.update(_settled_frontier(lanczos_basis, csr_basis, hOp, csr, slaterWeightMin, comm))
+                if lanczos_basis.support_frozen and not lanczos_basis.cap_hit:
+                    # A settled unit only (support_frozen and cap_hit are replicated): a capped or memory-held unit
+                    # is not a settle, and the probe's extra matvec is exactly what such a unit cannot afford.
+                    cap_info.update(_settled_frontier(lanczos_basis, csr_basis, hOp, csr, slaterWeightMin, comm))
         if csr is not None:
             # The array kernel's monitor filled `info` and warned about non-convergence itself.
             return csr[0], csr[1], csr[2]

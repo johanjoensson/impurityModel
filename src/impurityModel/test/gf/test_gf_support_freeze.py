@@ -372,22 +372,40 @@ def test_boundary_frontier_is_the_dense_image_outside_the_support():
         assert got_weight == pytest.approx(want_weight, rel=1e-9)
 
 
-def test_a_settled_unit_reports_the_frontier_it_left_behind():
+def test_a_settled_unit_reports_the_frontier_it_left_behind(monkeypatch):
+    monkeypatch.setenv("GF_SUPPORT_TRACE", "1")  # the probe is an opt-in diagnostic
     info = run_chain(slater_min=1e-4)[3]
     assert info["support_frozen"] and info["csr_fallback"]
     last = info["support_trace"][-1]
-    assert info["leak_settle"] == last[3] and info["frontier_settle_matvec"] == pytest.approx(last[7] ** 0.5)
+    assert info["leak_settle"] == last.leak and info["frontier_settle_matvec"] == pytest.approx(last.max2_matvec**0.5)
     assert np.isfinite(info["leak_end"]) and info["leak_end"] >= 0
     assert 0 <= info["frontier_end_matvec"] <= info["leak_end"] ** 0.5 * (1 + 1e-12)
     assert np.isfinite(info["frontier_end"]) and info["frontier_end"] >= info["frontier_end_matvec"] / 1e3
 
 
-def test_a_closed_support_leaves_no_frontier():
+def test_the_probe_is_off_unless_traced_and_never_runs_for_a_capped_unit(monkeypatch):
+    """Without GF_SUPPORT_TRACE the settling step's own record is reported and no extra matvec is made; a unit
+    frozen by the cap is not a settle and never probed, traced or not."""
+    calls = []
+    real = gf_primitives.boundary_frontier
+    monkeypatch.setattr(gf_solvers, "boundary_frontier", lambda *a, **k: calls.append(1) or real(*a, **k))
+    info = run_chain(slater_min=1e-4)[3]
+    assert info["support_frozen"] and np.isfinite(info["leak_settle"])
+    assert np.isnan(info["frontier_end_matvec"]) and calls == []
+    monkeypatch.setenv("GF_SUPPORT_TRACE", "1")
+    capped = _trickle(cap=2000)[3]
+    assert capped["cap_hit"] and capped["csr_fallback"] and calls == []
+    assert np.isnan(capped["frontier_end_matvec"])
+
+
+def test_a_closed_support_leaves_no_frontier(monkeypatch):
+    monkeypatch.setenv("GF_SUPPORT_TRACE", "1")
     info = run_chain()[3]  # no cutoff: freezes only on exact closure
     assert info["csr_fallback"] and info["frontier_end_matvec"] == 0.0 and info["leak_end"] == 0.0
 
 
-def test_a_unit_that_never_settled_reports_no_frontier():
+def test_a_unit_that_never_settled_reports_no_frontier(monkeypatch):
+    monkeypatch.setenv("GF_SUPPORT_TRACE", "1")
     info = run_chain(slater_min=1e-4, support_settle=False)[3]
     assert np.isnan(info["frontier_end_matvec"]) and np.isnan(info["leak_settle"])
 

@@ -10,6 +10,7 @@ either of those two, or from :mod:`greens_function` itself.
 import math
 from collections import deque
 from contextlib import contextmanager
+from typing import NamedTuple
 
 import numpy as np
 import scipy as sp
@@ -194,6 +195,26 @@ def calc_thermally_averaged_G(alphas, betas, r, mesh, es, e0, tau, delta):
         G_avg += calc_G(alphas_e, betas_e, r_e, mesh, e, delta) * np.exp(-(e - e0) / tau)
 
     return G_avg
+
+
+class SettleRecord(NamedTuple):
+    """One recurrence step of a unit running the support settle (``SupportPolicy.support_trace``).
+
+    ``leak``, ``cut``, ``hq2`` and ``max2_matvec`` are in the matvec's units (weight on new rows, weight the
+    ``slaterWeightMin`` prunes dropped, ``||Hq||^2``, largest ``|amp|^2`` on a new row); ``max2_next`` is the largest
+    ``|amp|^2`` the normalised next block carries on those rows -- the quantity the rule judges. ``d_g`` is the
+    convergence monitor's last change (rank-local, logged only). A tuple, so it still unpacks and feeds
+    ``np.array``."""
+
+    step: int
+    retained_before: int
+    n_new: int
+    leak: float
+    cut: float
+    hq2: float
+    d_g: float
+    max2_matvec: float
+    max2_next: float
 
 
 #: Blocks over which the support settle watches the frontier: long enough to span a gap between the layered shells
@@ -399,8 +420,8 @@ class SupportPolicy:
         self._pending_cut = 0.0
         self._rule = None
         self._pending = None
-        #: Per-step diagnostic records ``(step, retained_before, n_new, leak, cut, hq2, d_g, max2)`` (support freeze
-        #: only). Kept apart from ``support_history`` (whose 2-tuples other code unpacks); never read by a decision.
+        #: One :class:`SettleRecord` per recurrence step (support settle only); the settle verdict is taken from
+        #: ``max2_next`` as each is appended, nothing else in it decides anything.
         self.support_trace = []
         #: The convergence monitor's ``last_dg`` list, set by ``block_Green_sparse`` for the trace. ``d_g`` is
         #: computed per rank from allreduced coefficients, so it is logged but never gathered or decided on.
@@ -742,7 +763,9 @@ class SupportPolicy:
         if self.monitor_dg is not None and self.monitor_dg[0] is not None:
             d_g = float(self.monitor_dg[0])
         step_no = len(self.support_trace) + 1
-        self.support_trace.append((step_no, retained_before, n_new, leak, cut, hq2, d_g, max2_matvec, max2_next))
+        self.support_trace.append(
+            SettleRecord(step_no, retained_before, n_new, leak, cut, hq2, d_g, max2_matvec, max2_next)
+        )
         swm = self._rule.slater_weight_min
         if self._trace_steps and (self.comm is None or self.comm.rank == 0):
             print(
