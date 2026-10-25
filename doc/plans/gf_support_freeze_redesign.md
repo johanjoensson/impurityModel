@@ -56,8 +56,12 @@ t2g chain-interior sites `[34-39, 42-47, 50-55, 82-87, 90-95, 98-103]` then sat 
 orbital 0, counted as "far", and carried the `<= 2 holes` window, while the eg chains' own interiors (distance
 < 6.91) carried none. The ground-state group occupation windows (`group 0 valence 82-84`) counted t2g sites too.
 
-Fixed (`94bb7e12`): sites without a direct coupling follow the nearest impurity orbital through the hopping graph
-(`-log` hopping weights, multi-source Dijkstra); directly coupled sites (every star) are unchanged. Effect on the
+Fixed (commit "grouping: a chain's interior stays with the impurity orbital it hangs from"): sites without a direct
+coupling follow the nearest impurity orbital through the hopping graph (`-log` hopping weights, multi-source
+Dijkstra); directly coupled sites (every star) are unchanged. A bath component that hops directly to impurity orbitals
+of two groups joins those groups into one (printed at every verbosity): no per-group window can hold across it. No
+such component exists on NiO-10 (eg 4 + 48, t2g 6 + 48 at iterations 1 and 28); the rule makes no assumption about
+how many bath sites each orbital has. Effect on the
 archive, iteration 1 (the per-iteration window table is `debug/gf_freeze/0b_windows_nio10.txt`, old grouping):
 
 | | old grouping | new grouping |
@@ -112,10 +116,14 @@ Old grouping, NiO iteration 1 (the unsettled run took 189-310 s):
 At ratios 0-2 only the units whose support closes settle (the 1,014 and 5,499 ones); the 20-35k units run to their own
 end, hence 190-310 s against the old rule's 15-18 s.
 
-**Final tree (48/48 grouping)**, iterations 1 and 28:
+**Final tree (48/48 grouping)**, iterations 1 and 28 (ratio 3: `debug/gf_freeze/sweep_final_r3.txt`):
 
 | iteration | slater_min | ratio | wall (unsettled) | (A) Matsubara | (B) change / headroom | dG / max G (real) |
 |---|---|---|---|---|---|---|
+| 1 | 1e-8 | **3** | 55.0 s (303 s) | 0 | 5.4e-9 | 1.7e-10 |
+| 1 | 1e-10 | **3** | 46.3 s (270 s) | 0 | 5.6e-9 | 1.4e-10 |
+| 28 | 1e-8 | **3** | 42.9 s (275 s) | 0 | 9.3e-9 | 1.8e-10 |
+| 28 | 1e-10 | **3** | 52.8 s (289 s) | 0 | 8.4e-9 | 1.6e-10 |
 | 1 | 1e-8 | 5 / 10 / 30 | 22.1 / 13.4 / 11.0 s (303 s) | 0 | 8.7e-9 / 7.9e-6 / 2.7e-2 | 2.3e-10 / 6.5e-7 / 2.4e-3 |
 | 1 | 1e-10 | 5 / 10 / 30 | 25.1 / 20.0 / 14.5 s (270 s) | 0 | 6.6e-9 / 3.2e-9 / 3.0e-5 | 2.3e-10 / 1.0e-10 / 2.2e-6 |
 | 28 | 1e-8 | 5 / 10 / 30 | 30.6 / 19.0 / 15.2 s (275 s) | 0 | 8.6e-9 / **7.1e-4** / 6.3e-2 | 2.9e-10 / 3.0e-5 / 4.9e-3 |
@@ -127,15 +135,21 @@ Matsubara changes are zero or below 1e-13 at every ratio. SMO (28 spin-orbitals,
 (`examples/semicircular_siam`, 14-level star): the settle never fires (GF wall 185 s with it off, 229 s at ratio 10, 177 s at
 ratio 30) and Sigma is identical to the precision of the output files.
 
-**Default `GF_SETTLE_RATIO = 5`**: the largest ratio of the grid whose change stays below 1e-6 of the guard's headroom on
-every run (NiO at most 9e-9, SMO 4e-8). Ratio 10, the first choice, was taken from the old-grouping table and fails that
-rule on the final tree (7.1e-4 at iteration 28, 1e-8); ratio 30 reaches 6e-2. Ratio 5 costs 22-31 s per iteration against
-the old rule's 15-18 s. The acceptance rule used: (A) Matsubara change <= 1e-7, (B) pointwise change of Sigma_ii <= 0.1 x
+**Default `GF_SETTLE_RATIO = 3`** (decided 2026-10-25). Ratio 5 is the largest ratio of the grid whose change stays below
+1e-6 of the guard's headroom on every run (NiO at most 9e-9, SMO 4e-8); 3 keeps a step of margin below it, at 43-55 s per
+iteration against 22-31 s at ratio 5 and 270-303 s unsettled (NiO change at most 9.3e-9 of the headroom). Ratio 10, the
+first choice, was taken from the old-grouping table and fails the rule on the final tree (7.1e-4 at iteration 28, 1e-8);
+ratio 30 reaches 6e-2. SMO was **not** re-run at ratio 3 (its 5 / 10 / 30 results are not monotone in the ratio, so 3 is
+not implied to be better there, only expected to be). The acceptance rule used: (A) Matsubara change <= 1e-7, (B) pointwise change of Sigma_ii <= 0.1 x
 headroom; `max|dG|/max|G|` is reported and not gated, because at the default tolerance (1e-9 relative) it lies below the
 reference's own stopping noise. The reading of RSPt's `convergency 1e-6` as a bound on Sigma(i omega) was **not**
 confirmed from RSPt's documentation.
 
-### 4b. The retry's error estimate is loose by five orders
+### 4b. The retry's error estimate was loose by five orders (removed)
+
+The estimate and its gate below are **gone** from the shipped code; this section records why. The retry is off by
+default (`gf_settle_retry on` enables it): it re-solves only units that settled with a non-zero ratio, none capped or
+held, on a real-axis failure, and it can cost as much as an unsettled run.
 
 `selfenergy._settle_estimate` (the 10% gate of the re-solve) was calibrated on the one case with a real settle effect:
 NiO iteration 1 at 1e-8, ratio 30 against unsettled (`debug/gf_freeze/calibrate_estimate.py`).
@@ -147,8 +161,8 @@ NiO iteration 1 at 1e-8, ratio 30 against unsettled (`debug/gf_freeze/calibrate_
 
 It overshoots by 6e4-2e5 (the bound carries 1/delta^2 and a sum of non-cancelling terms), so the "estimate >= 10% of the
 violation" condition essentially never skips a re-solve. What does gate the retry is: units settled, none held by a cap or
-the guard, the worst point not on a bath pole, `gf_settle_retry` not off. The estimate is printed as context only; the
-write-up of the retry should not read it as a probability.
+the guard, `gf_settle_retry` on. A bath pole near the worst point is reported (weighted by the block's own hybridisation),
+not used to veto the re-solve.
 
 ### 5. Symmetry copy
 
@@ -163,16 +177,20 @@ harness and window diff; frontier amplitude in the trace; end-of-unit frontier p
 solve / assemble; the rule (`FreezeRule`, `note_next_block`, `ManyBodyState.max_row_norm2_in`); consumers and the
 settle verdict; per-unit records and the "settled" wording; options `gf_settle` / `gf_settle_ratio` /
 `gf_settle_retry`; default ratio; the BiCGSTAB seam rename; the grouping fix; Sigma-causality attribution with one
-gated closure-only re-solve; chain zones as data.
+gated closure-only re-solve; chain zones as data. After the adversarial review: the probe made opt-in (settled units only,
+on the true last block); the retry off by default, without the estimate gate, Matsubara-only or ratio-0 re-solves; default
+ratio 3 and archive booleans parsed as words; log lines that say settled / held / frozen at the cap and no "lossless"
+claim; impurity groups that one bath component reaches merged (none on NiO-10); chain-zone records read off the emitted
+windows.
 
 Deviations from the plan, and why: the retry's magnitude gate is ineffective (section 4b); `chain_deep_cutoff` and the occupation-gated deep zone were **not** done (the deep
 zone is empty on NiO-10 at every iteration and the 1e-8 case that would motivate them is unavailable); the retry gate
 has no "excluded rows are of excitation order <= 1" test and no frozen-matrix pre-check (the probe does not enumerate
 excluded rows; the re-solve is accepted only if uncapped, unguarded and converged); the unit record has no (N, Sz)
 sector label (the state index and E-E0 identify the unit; the sector reading above is from the ground-state report);
-`impmod_interface` was **not** changed: `debug/gf_freeze/impmod_interface_gf_settle.patch` applies to its HEAD (its
-working tree holds uncommitted changes of its own); the interface's test suite already has 53 failures at HEAD
-against this impurityModel, unrelated to the patch (which adds five passing tests).
+`impmod_interface`: the solver-line tokens are on its local branch `gf-settle-options` (commit 20777d5, off `development`
+5f74b43, unmerged and unpushed); its `development` working tree holds uncommitted changes of its own to the same `lib.py`,
+so the merge is left to its owner. Its test suite has 53 failures with or without the branch, none in the parser.
 
 ## What this does not show
 
