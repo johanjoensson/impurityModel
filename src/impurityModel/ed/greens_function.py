@@ -369,7 +369,8 @@ def _unit_basis_rows(blocks, max_basis, notes=None):
 
 def _settle_notes(records):
     """``{(block, side): remark}`` for the units that settled, for the max-basis table: how many of the pair's
-    units settled and which is the smallest, so the table and the diagnostics row cannot disagree."""
+    units settled (and how many of those closed: no new determinant at all over the window), which unit the
+    row's size is, and the smallest settled one, so the table and the diagnostics row cannot disagree."""
     notes = {}
     for block_i in sorted({r.block for r in records}):
         for side_i, side in enumerate(_UNIT_SIDE_NAMES):
@@ -378,10 +379,12 @@ def _settle_notes(records):
             if not settled:
                 continue
             small = min(settled, key=lambda r: r.retained)
-            notes[(block_i, side_i)] = (
-                f"{len(settled)} of {len(mine)} units settled (lossless up to slaterWeightMin); "
-                f"smallest {small.retained:,}: {small.describe()}"
-            )
+            row = max(mine, key=lambda r: r.retained)
+            closed = sum(1 for r in settled if r.frontier_over_swm == 0)
+            closed_note = f", {closed} of them closed" if closed else ""
+            row_note = f"; {'settled' if row.settled else 'grown'} row is {row.describe()}"
+            small_note = f"; smallest settled {small.retained:,}: {small.describe()}" if small is not row else ""
+            notes[(block_i, side_i)] = f"{len(settled)} of {len(mine)} units settled{closed_note}{row_note}{small_note}"
     return notes
 
 

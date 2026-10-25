@@ -156,9 +156,7 @@ RETIRED_KNOBS = {
         "(doc/gf_support_pipeline.md)"
     ),
     "GF_FROZEN_CSR": "retired: the frozen-basis CSR fallback is always on",
-    "GF_SUPPORT_FREEZE": (
-        "retired: the support freeze is always on (it is off only under importance pruning, " "GF_LANCZOS_ADMIT_TOL)"
-    ),
+    "GF_SUPPORT_FREEZE": ("retired: use the gf_settle solver option (on/off) or GF_SETTLE_RATIO (0 = closure only)"),
     "GS_SELECTION_PRUNE": (
         "retired: the CIPSI selection round always cuts the summed amplitude ('after_sum'); 'before_sum' "
         "made the selected set depend on the rank and chunk count"
@@ -342,7 +340,7 @@ GF_LANCZOS_ADMIT_TOL = Knob(
     ``slaterWeightMin=0`` that keeps the recurrence the exact Lanczos of the final retained set under
     every reorthogonalization mode; at ``slaterWeightMin>0`` the cuts inside the support still perturb it,
     as in every capped run. The decision is taken once, on the step's summed output, so it works with
-    ``APPLY_ROW_CHUNKS`` > 1. Exclusive with the support freeze. 0 (default) is off.""",
+    ``APPLY_ROW_CHUNKS`` > 1. Exclusive with the support settle (which is off while it is set). 0 (default) is off.""",
 )
 
 GF_ADMIT_FIRST_SHELL_TOL = Knob(
@@ -388,7 +386,8 @@ GF_SUPPORT_TRACE = Knob(
     ``slaterWeightMin`` prunes cut, ``||Hq||^2``, the largest amplitude squared landing on a new row and the
     convergence monitor's last change. The same numbers are
     kept in ``cap_info["support_trace"]``; the lines let a production log be replayed offline against any
-    freeze rule. It never changes a result.""",
+    settle rule. It also switches on the end-of-unit frontier probe of a settled unit (one extra unfrozen matvec).
+    It never changes a result.""",
 )
 
 GF_GMRES_RESTART = Knob(

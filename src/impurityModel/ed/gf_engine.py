@@ -208,10 +208,10 @@ def _block_green_group(
         csr = f", csr={cap_stats['csr_seconds']:.1f} s" if cap_stats.get("csr_fallback") else ""
         verdict = cap_stats.get("settle_verdict")
         # The literal ``support_frozen=True`` token is read by the cluster kits' log parsers; the words after it
-        # say what it is (a settle: lossless up to the cutoff, not a cap) and where it happened.
+        # say what it is (a settle, not a cap) and where it happened.
         stagnated = (
             f", support_frozen=True (settled at block {verdict['step']} of {n_blocks}, "
-            f"frontier {verdict['max_amp_over_swm']:.2g}x slaterWeightMin)"
+            f"frontier {verdict['max_amp_over_swm']:.2g} x slater_min)"
             if cap_stats.get("support_frozen") and verdict
             else (", support_frozen=True" if cap_stats.get("support_frozen") else "")
         )

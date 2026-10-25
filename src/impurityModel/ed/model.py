@@ -1480,8 +1480,9 @@ class SolverOptions:
         Whether a sparse block-Lanczos Green's-function unit may stop admitting new determinants once its
         frontier has fallen below the cutoff-scaled threshold (the support settle,
         :class:`impurityModel.ed.gf_primitives.FreezeRule`) and carry on as the exact recurrence on what it
-        has. ``None`` (default) is on. Lossless up to the ``slater_weight_min`` cut the run already pays;
-        switching it off keeps every unit growing until it closes or hits a cap, which is far slower on a unit
+        has. ``None`` (default) is on. It drops the determinants whose next-block amplitude stayed at or below
+        ``gf_settle_ratio x slater_weight_min``; switching it off keeps every unit growing until it closes or hits
+        a cap, which is far slower on a unit
         whose support trickles. ``gf_method="lanczos"`` only.
     gf_settle_ratio : float or None
         The settle threshold as a **multiple of** ``slater_weight_min`` (not a fraction of the seed norm, unlike

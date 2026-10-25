@@ -498,15 +498,15 @@ def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None, width=
     return not over
 
 
-def _frozen_csr_basis(proxy, basis, hOp, verbose, reason="", width=1):
+def _frozen_csr_basis(proxy, basis, hOp, verbose, width=1):
     """Collective: the frozen retained set as a ``Basis`` if the ``P H P`` fallback should run, else ``None``.
 
     Declines when the matrix would not fit the budget on top of the current RSS; the caller then
     resumes the sparse recurrence. A freeze by the measured-memory guard is offered too: RSS is at
     the guard's budget then, but the decision has its own, looser one and counts that RSS, so it
     accepts only what still fits. (It used to decline every guard freeze outright, and on CrI3,
-    whose sparse estimate under-predicts, that is where capped units end up.) ``reason`` is
-    appended to the decision line (``" by the support freeze"``); it only reads the retained mask.
+    whose sparse estimate under-predicts, that is where capped units end up.) The decision line names
+    how the support stopped (``proxy.stop_phrase()``); it only reads the retained mask.
 
     The budget is the GF stage's frozen-CSR budget on ``basis`` (``GF_CSR_MEMORY_SAFETY``, looser
     than the guard's), else -- for a basis that did not come through the GF stage -- the guard's.
@@ -530,19 +530,21 @@ def _frozen_csr_basis(proxy, basis, hOp, verbose, reason="", width=1):
         )
         if fits:
             print(
-                f"GF basis frozen at {frozen_basis.size:,} determinants{reason}: the P H P matrix fits{used}.",
+                f"{proxy.stop_phrase()} {frozen_basis.size:,} determinants: the P H P matrix fits{used}.",
                 flush=True,
             )
         else:
             print(
-                f"GF basis frozen at {frozen_basis.size:,} determinants{reason}: the P H P matrix would not fit "
+                f"{proxy.stop_phrase()} {frozen_basis.size:,} determinants: the P H P matrix would not fit "
                 f"the memory budget, so the recurrence continues on the sparse kernel{used}.",
                 flush=True,
             )
     return frozen_basis if fits else None
 
 
-def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, eval_meshes, info, verbose, blocks_hint):
+def _frozen_csr_green(
+    frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, eval_meshes, info, verbose, blocks_hint, phrase
+):
     """The capped GF as an array-kernel recurrence on the frozen ``P H P`` CSR.
 
     Once the proxy has frozen, the whole capped recurrence -- pre-freeze steps included -- is the
@@ -551,8 +553,8 @@ def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, e
     rounding, while every step costs one SpMV instead of an apply whose out-of-``P`` image is
     discarded. ``blocks_hint`` is how many blocks the sparse kernel had built when it stopped; the
     first attempt's budget is a few times that (at least :data:`_CSR_INITIAL_BLOCKS`), never the
-    ``ceil(N/p)`` the kernel would preallocate for. Returns ``(alphas, betas, r, seconds)``, with
-    ``info`` filled by the array kernel's own monitor.
+    ``ceil(N/p)`` the kernel would preallocate for. ``phrase`` opens the log line (the proxy's ``stop_phrase``).
+    Returns ``(alphas, betas, r, seconds)``, with ``info`` filled by the array kernel's own monitor.
     """
     comm = frozen_basis.comm
     t0 = time.perf_counter()
@@ -572,7 +574,7 @@ def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, e
     seconds = time.perf_counter() - t0
     if verbose and (comm is None or comm.rank == 0):
         print(
-            f"GF basis frozen at {frozen_basis.size:,} determinants: recurrence restarted on the P H P matrix "
+            f"{phrase} {frozen_basis.size:,} determinants: recurrence restarted on the P H P matrix "
             f"({len(alphas)} block(s), {seconds:.1f} s).",
             flush=True,
         )
@@ -666,7 +668,7 @@ def _sparse_tail_to_local_dense(frozen_basis, mask, tail, widths):
     return tuple(block_to_local_dense(frozen_basis, b, w) for b, w in zip(blocks, (w_prev, w_curr)))
 
 
-def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor, r, info, verbose):
+def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor, r, info, verbose, phrase):
     """The frozen sparse recurrence carried on as the array-kernel recurrence of ``P H P``, from where it stopped.
 
     Every block the sparse kernel built before the freeze had its whole ``H`` image admitted (so inside the
@@ -679,7 +681,8 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
 
     ``tail`` is the pair of dense blocks from :func:`_sparse_tail_to_local_dense`; ``monitor`` the sparse
     run's ``(converged, converged_flag, delta_min, last_dg)``, which goes on judging the same continued
-    fraction (a fresh one would restart its own history); ``r`` the sparse run's seed factor. A run whose
+    fraction (a fresh one would restart its own history); ``r`` the sparse run's seed factor; ``phrase`` opens
+    the log line (the proxy's ``stop_phrase``). A run whose
     first budget is spent continues from its own tail, so no block is ever computed twice. Returns
     ``(alphas, betas, r, seconds, last_block)``, with ``info`` filled; ``last_block`` is this rank's rows of the
     block the kernel ended on (after a converged stop the last accepted block, not the residual).
@@ -722,7 +725,7 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
     seconds = time.perf_counter() - t0
     if verbose and rank == 0:
         print(
-            f"GF basis frozen at {frozen_basis.size:,} determinants: recurrence continued on the P H P matrix "
+            f"{phrase} {frozen_basis.size:,} determinants: recurrence continued on the P H P matrix "
             f"({len(alphas) - start} block(s) after {start} sparse, {seconds:.1f} s).",
             flush=True,
         )
@@ -765,10 +768,10 @@ def block_Green_sparse(
     (:func:`_frozen_csr_continue`), else restarted from the seeds (:func:`_frozen_csr_green`) -- exact
     on ``P`` like the sparse kernel, without applying ``H`` to every retained row and discarding the
     image outside ``P``. Not taken for a CSR that would not fit the budget, or a ``krylov_dtype`` store.
-    ``cap_info["csr_fallback"]`` says whether it ran. The same switch is taken when growing the
-    support below the cap no longer buys more than the ``slaterWeightMin`` cut costs
-    (on by default; ``cap_info["support_frozen"]``, with the per-step weights
-    the window's verdict in ``cap_info["settle_verdict"]`` and the per-step records in ``cap_info["support_trace"]``).
+    ``cap_info["csr_fallback"]`` says whether it ran. The same switch is taken when the support settles below
+    the cap: no new determinant's next-block amplitude exceeded ``settle_ratio x slaterWeightMin`` over the
+    rule's window (``cap_info["support_frozen"]``, the rule's verdict in ``cap_info["settle_verdict"]`` and
+    the per-step records in ``cap_info["support_trace"]``).
 
     ``basis.truncation_threshold`` caps the number of Slater determinants the
     recurrence may touch (see :class:`_CappedBasisProxy`); ``np.inf`` (the ``Basis``
@@ -911,6 +914,7 @@ def block_Green_sparse(
                 r,
                 info,
                 verbose,
+                lanczos_basis.stop_phrase(),
             )
         return _frozen_csr_green(
             frozen_basis,
@@ -923,9 +927,10 @@ def block_Green_sparse(
             info,
             verbose,
             blocks_hint,
+            lanczos_basis.stop_phrase(),
         )
 
-    # The support freeze: the proxy freezes the support itself, on the step its window decides, and the kernel
+    # The support settle: the proxy stops the support itself, on the step its rule decides, and the kernel
     # hands control back there (stop_on_freeze). reort off only: that is where the frozen recurrence
     # carries on from its tail, and a reorthogonalized one would recompute every block to drop weight.
     if (
@@ -993,7 +998,6 @@ def block_Green_sparse(
                 basis,
                 hOp,
                 verbose,
-                reason=" by the support freeze" if lanczos_basis.support_frozen else "",
                 width=psi_arr.width,
             )
             if frozen_basis is not None:
@@ -1005,7 +1009,7 @@ def block_Green_sparse(
                 csr = _csr_green(frozen_basis, len(alphas), stopped)
                 csr_basis = frozen_basis
             elif lanczos_basis.support_frozen:
-                # A support freeze that buys no speed is not kept: carry on sparse and unfrozen, and still hand
+                # A support settle that buys no speed is not kept: carry on sparse and unfrozen, and still hand
                 # a later cap or memory-guard freeze to the CSR.
                 lanczos_basis.unfreeze_support()
                 lanczos_basis.stop_on_freeze = True

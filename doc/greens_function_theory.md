@@ -326,13 +326,17 @@ subspace, not a different solver.
 
 #### The support settle
 
-Below the cap, a unit's support can still stop growing on its own: once the amplitude the normalised next block
-carries on newly reached determinants stays below `ratio x slaterWeightMin` (and is not rising), what later blocks
-would admit is below the amplitude the cutoff already discards, and the unit continues as the exact block Lanczos of
-$PHP$ from there (`FreezeRule`; `doc/gf_support_pipeline.md`). Measured on NiO and SMO the settle moves
-$\Sigma(\omega)$ by $10^{-9}$ to $10^{-7}$ of the causality headroom, against $10^{-5}$ for the cutoff itself, and the
-Matsubara self-energy by less than $10^{-13}$ (the first blocks carry $G(i\omega_n)$ and are identical before the
-settle acts). The error does not come from the settle but from where the cutoff sits.
+Below the cap, a unit's support can still stop growing on its own: once, over 16 blocks, the amplitude the
+normalised next block carries on newly reached determinants stays at or below `ratio x slaterWeightMin` (and is not
+rising), the unit continues as the exact block Lanczos of $PHP$ from there (`FreezeRule`;
+`doc/gf_support_pipeline.md`). At `ratio` $\le 1$ every row it excludes would have been cut from that next block
+anyway; above 1 it also excludes rows the cutoff would have kept, and the size of that effect is measured, not
+bounded. At the default ratio 3, on the NiO 10-bath archive (iterations 1 and 28, `slater_min` $10^{-8}$ and
+$10^{-10}$), the settle changed $\Sigma(\omega)$ by at most $9.3\times10^{-9}$ of the causality guard's pointwise
+headroom ($|\Delta\Sigma| \le 10^{-9}$ eV) and left $\Sigma(i\omega_n)$ unchanged to the printed precision; at
+ratio 10 the same comparison reached $7\times10^{-4}$ of the headroom. For scale, moving `slater_min` from
+$10^{-10}$ to $10^{-8}$ changes $\Sigma(\omega)$ by about $10^{-5}$ eV on the same model
+(`doc/plans/gf_support_freeze_redesign.md`).
 
 ### 3.5 Work distribution
 

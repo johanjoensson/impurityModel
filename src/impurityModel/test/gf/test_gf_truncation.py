@@ -579,6 +579,9 @@ def test_a_decision_line_is_printed_on_accept_and_decline(monkeypatch, capsys):
         memory_frozen = False
         retained_mask = None
 
+        def stop_phrase(self):
+            return "GF basis frozen at the cap at"
+
     monkeypatch.setattr(type(basis), "clone_from_keys", lambda self, mask: self, raising=False)
     for budget, phrase in ((10**10, "matrix fits"), (10**9 + 1, "would not fit")):
         proxy = _Proxy()

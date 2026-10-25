@@ -572,14 +572,18 @@ class UnitRecord:
     leak_end: float = float("nan")
 
     def describe(self) -> str:
-        """``unit 4, removal, state 1 (E-E0 0.000, seed 0.22 e)``: what a reader needs to find it again."""
+        """``unit 4, removal, state 1 (E-E0 0.000, weight 0.33, seed 0.22 e)``: what a reader needs to find it."""
         states = ",".join(str(i) for i in self.states)
         gap = ",".join(f"{e:.3f}" for e in self.e_minus_e0)
-        return f"unit {self.unit}, {self.side}, state {states} (E-E0 {gap}, seed {self.seed_weight:.2f} e)"
+        weight = ",".join(f"{w:.2f}" for w in self.boltzmann)
+        return (
+            f"unit {self.unit}, {self.side}, state {states} "
+            f"(E-E0 {gap}, weight {weight}, seed {self.seed_weight:.2f} e)"
+        )
 
 
 def check_support_settled(records, slater_weight_min) -> Diagnostic:
-    r"""Report the units of one block whose support settled: the lossless-up-to-the-cutoff stop.
+    r"""Report the units of one block whose support settled.
 
     The settle rule (:class:`gf_primitives.FreezeRule`) stops a unit's support growing once, over a window of
     blocks, the largest amplitude the normalised next block carries on a determinant reached for the first time
@@ -587,8 +591,9 @@ def check_support_settled(records, slater_weight_min) -> Diagnostic:
     exact one on the determinants it has. Units differ a lot (a unit that removes an electron into a closed spin
     sector closes at a thousand determinants where its neighbour needs twenty thousand), so the row names the
     smallest and the largest settled support by unit, state and seed weight rather than one number. It is an
-    ``OK``: what later blocks would have admitted is missing at an amplitude the cutoff works at. It does not
-    set ``needs_more_iterations`` or ``needs_more_states``.
+    ``OK``: what the settle drops are the determinants whose next-block amplitude stayed at or below
+    ``ratio x slaterWeightMin`` -- not a bound on the Green's function's error, which the measured default ratio
+    keeps inside the self-energy tolerances. It does not set ``needs_more_iterations`` or ``needs_more_states``.
 
     Args:
         records: The block's :class:`UnitRecord` entries (every unit that fed it, settled or not).
@@ -610,11 +615,11 @@ def check_support_settled(records, slater_weight_min) -> Diagnostic:
         value=float(worst.frontier_over_swm),
         threshold=float(worst.ratio),
         message=(
-            f"{scope} settled their support ({'/'.join(sides)}; lossless up to slaterWeightMin "
-            f"{slater_weight_min:.0e}, gf_settle_ratio {worst.ratio:g}): supports "
+            f"{scope} settled their support ({'/'.join(sides)}; slater_min {slater_weight_min:.3g}, "
+            f"gf_settle_ratio {worst.ratio:g}): supports "
             f"{small.retained:,} ({small.describe()}) .. {large.retained:,} ({large.describe()}); "
             "largest new-determinant amplitude in the next block "
-            f"{worst.frontier_over_swm:.2g}x slaterWeightMin over {worst.window} blocks"
+            f"{worst.frontier_over_swm:.2g} x slater_min over {worst.window} blocks"
         ),
     )
 

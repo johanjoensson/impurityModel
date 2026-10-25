@@ -823,15 +823,23 @@ class SupportPolicy:
         """Rank-local bytes held by the ban mask."""
         return int(self._ban.memory_bytes())
 
+    def stop_phrase(self):
+        """How the support stopped growing, as the opening of a log line: settled, held or frozen at the cap."""
+        if self.support_frozen:
+            return "GF unit support settled at"
+        if self.memory_frozen:
+            return "GF basis held at"
+        return "GF basis frozen at the cap at"
+
     def freeze_message(self):
         """One-line description of the cap state (rank-0 logging)."""
         if self.support_frozen:
             return (
                 f"GF unit support settled at {self._global_count:,} determinants: over the last "
                 f"{self._rule.maxlen} blocks "
-                f"no new determinant carried more than {self._rule.ratio:g}x slaterWeightMin in the next block "
-                "(gf_settle_ratio); the Green's function is exact on the retained subspace from here on and "
-                "drops only determinants below that amplitude (lossless up to the cutoff)."
+                f"no new determinant carried more than {self._rule.ratio:g} x slater_min in the next block "
+                "(gf_settle_ratio); the Green's function is the exact one on the retained subspace from here on, "
+                "which drops the determinants whose next-block amplitude stayed at or below that bound."
             )
         if self.memory_frozen:
             return (

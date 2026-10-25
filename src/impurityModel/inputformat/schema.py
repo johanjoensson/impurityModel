@@ -1052,8 +1052,9 @@ _TABLE_LIST += [
                 "The support settle of the block-Lanczos Green's function: a sparse unit stops admitting new "
                 "determinants once, over 16 blocks, the largest amplitude its next block carries on a "
                 "determinant reached for the first time stays at or below gf_settle_ratio x slater_weight_min "
-                "and is not growing, and carries on as the exact recurrence on what it has (lossless up to the "
-                "cutoff). 'auto' is on. 'off' keeps every unit growing until it closes or hits a cap. Only "
+                "and is not growing, and carries on as the exact recurrence on what it has (it drops the "
+                "determinants whose next-block amplitude stayed at or below that bound). 'auto' is on. 'off' "
+                "keeps every unit growing until it closes or hits a cap. Only "
                 "valid with gf_method = 'lanczos'.",
                 # test_gf_settle_choices_pin the mapping to SolverOptions (auto -> None, on -> True, off -> False).
                 choices=("auto", "on", "off"),

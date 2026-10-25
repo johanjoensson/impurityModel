@@ -313,7 +313,7 @@ def test_the_settled_row_names_the_smallest_and_largest_unit_and_is_never_a_warn
     assert d.name == "support_settled" and d.severity is gd.Severity.OK
     assert d.value == pytest.approx(0.7) and d.threshold == 3.0
     for text in ("3 of 4 units", "1,014 (unit 4, removal, state 1", "24,456 (unit 3", "seed 0.22 e",
-                 "gf_settle_ratio 3", "0.7x slaterWeightMin over 16 blocks"):  # fmt: skip
+                 "gf_settle_ratio 3", "0.7 x slater_min over 16 blocks", "weight 0.33"):  # fmt: skip
         assert text in d.message, text
     assert not d.needs_more_iterations and not d.needs_more_states
     assert "no unit settled" in gd.check_support_settled([_record(1, "removal", [0], 5, settled=False)], 1e-8).message
@@ -329,7 +329,10 @@ def test_the_max_basis_table_note_agrees_with_the_row():
     ]
     notes = gfm._settle_notes(records)
     assert set(notes) == {(0, 1)}, "only the pair with settled units is annotated"
-    assert "2 of 2 units settled" in notes[(0, 1)] and "smallest 1,014: unit 4" in notes[(0, 1)]
+    assert "2 of 2 units settled" in notes[(0, 1)] and "smallest settled 1,014: unit 4" in notes[(0, 1)]
+    assert "settled row is unit 3" in notes[(0, 1)] and "closed" not in notes[(0, 1)]
+    closed = gfm._settle_notes([_record(3, "removal", [0], 24_456), _record(4, "removal", [1], 1_014, over=0.0)])
+    assert "2 of 2 units settled, 1 of them closed" in closed[(0, 1)]
     assert "1,014" in gd.check_support_settled(records, 1e-10).message
     rows = gfm._unit_basis_rows([[0, 1]], {(0, 1): (24_456, False), (0, 0): (13, False)}, notes)
     assert rows[1][3] == notes[(0, 1)] and rows[0][3] == ""
