@@ -42,8 +42,9 @@ def chain_seeds():
     ]
 
 
-def run_chain(comm=None, op=None, reort=None, verbose=False, cap=CAP, slater_min=0.0):
-    """``block_Green_sparse`` on the chain from its two seeds: ``(alphas, betas, r, cap_info)``."""
+def run_chain(comm=None, op=None, reort=None, verbose=False, cap=CAP, slater_min=0.0, **kernel_kw):
+    """``block_Green_sparse`` on the chain from its two seeds: ``(alphas, betas, r, cap_info)``; ``kernel_kw``
+    (``support_settle``, ``settle_ratio``, ...) goes to the kernel."""
     basis = _basis(sorted({d for s in chain_seeds() for d in s}), comm, n_orb=N_ORB)
     basis.truncation_threshold = cap
     full = chain_seeds()
@@ -58,6 +59,7 @@ def run_chain(comm=None, op=None, reort=None, verbose=False, cap=CAP, slater_min
         verbose=verbose,
         cap_info=info,
         slaterWeightMin=slater_min,
+        **kernel_kw,
     )
     return alphas, betas, r, info
 

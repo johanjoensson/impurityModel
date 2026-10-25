@@ -33,7 +33,9 @@ that are outright unphysical (a violated exact sum rule, a non-causal Green's fu
 from __future__ import annotations
 
 import dataclasses
+from dataclasses import dataclass
 from enum import IntEnum
+from typing import Optional
 
 import numpy as np
 
@@ -79,6 +81,8 @@ class DiagnosticReport:
 
     def __init__(self):
         self._by_block: dict[str, list[Diagnostic]] = {}
+        #: Per-work-unit records (:class:`UnitRecord`), set by the Green's-function driver on the root rank.
+        self.units: list[UnitRecord] = []
 
     def add(self, block_label: str, diagnostic: Diagnostic) -> None:
         """Record ``diagnostic`` under ``block_label`` (creating the group if needed)."""
@@ -532,32 +536,90 @@ def check_truncation_error_bound(max_bound: float, max_boundary: float) -> Diagn
     )
 
 
-def check_support_freeze(retained, leak, cut) -> Diagnostic:
-    r"""Report a unit whose support froze because growing it no longer bought more than the cutoff cost.
+@dataclass(frozen=True)
+class UnitRecord:
+    """One Green's-function work unit as the report names it: which operator group it solved, for which
+    thermal states, how large its support grew and whether (and where) it settled.
 
-    the support freeze freezes a unit once the weight reaching determinants outside the retained set
-    ``P``, summed over the last 16 blocks, is no larger than what the ``slaterWeightMin`` prunes dropped
-    over them; the recurrence then carries on as the exact one on ``P``. What later blocks would have
-    admitted is missing, at most at the rate the cutoff was already discarding weight, so it is an ``OK``
-    that carries both numbers, not a ``WARN``: the error is the one the run accepted with its cutoff. It
-    does not set ``needs_more_iterations`` or ``needs_more_states``.
+    ``side`` is ``"addition"`` or ``"removal"``; ``states`` the thermal-state indices the unit stacks;
+    ``e_minus_e0`` / ``boltzmann`` their energies above the ground state and normalised weights;
+    ``seed_weight`` the summed ``|r|^2`` of its seeds (electrons added or removed, weighted); ``retained`` the
+    unit's final support (``None`` when untracked); ``settled`` / ``settle_step`` / ``n_blocks`` the settle
+    verdict and the unit's block count; ``frontier_over_swm`` / ``ratio`` / ``window`` the settle verdict's
+    numbers (``nan`` when the unit did not settle); ``leak_window`` is the weight that reached new rows over the
+    settling window and ``frontier_end_over_swm`` / ``leak_end`` what the end-of-unit probe measured (next-block
+    amplitude in units of ``slaterWeightMin``, weight on rows outside the support), ``nan`` where not measured.
+    ``cap_hit`` / ``memory_frozen`` mark the lossy freezes."""
+
+    unit: int
+    block: int
+    side: str
+    states: tuple
+    e_minus_e0: tuple
+    boltzmann: tuple
+    seed_weight: float
+    retained: Optional[int]
+    settled: bool
+    settle_step: Optional[int]
+    n_blocks: Optional[int]
+    frontier_over_swm: float
+    ratio: float
+    window: int
+    cap_hit: bool
+    memory_frozen: bool
+    leak_window: float = float("nan")
+    frontier_end_over_swm: float = float("nan")
+    leak_end: float = float("nan")
+
+    def describe(self) -> str:
+        """``unit 4, removal, state 1 (E-E0 0.000, weight 0.33, seed 0.22 e)``: what a reader needs to find it."""
+        states = ",".join(str(i) for i in self.states)
+        gap = ",".join(f"{e:.3f}" for e in self.e_minus_e0)
+        weight = ",".join(f"{w:.2f}" for w in self.boltzmann)
+        return (
+            f"unit {self.unit}, {self.side}, state {states} "
+            f"(E-E0 {gap}, weight {weight}, seed {self.seed_weight:.2f} e)"
+        )
+
+
+def check_support_settled(records, slater_weight_min) -> Diagnostic:
+    r"""Report the units of one block whose support settled.
+
+    The settle rule (:class:`gf_primitives.FreezeRule`) stops a unit's support growing once, over a window of
+    blocks, the largest amplitude the normalised next block carries on a determinant reached for the first time
+    stays at or below ``ratio`` x ``slaterWeightMin`` and is not growing; the recurrence then carries on as the
+    exact one on the determinants it has. Units differ a lot (a unit that removes an electron into a closed spin
+    sector closes at a thousand determinants where its neighbour needs twenty thousand), so the row names the
+    smallest and the largest settled support by unit, state and seed weight rather than one number. It is an
+    ``OK``: what the settle drops are the determinants whose next-block amplitude stayed at or below
+    ``ratio x slaterWeightMin`` -- not a bound on the Green's function's error, which the measured default ratio
+    keeps inside the self-energy tolerances. It does not set ``needs_more_iterations`` or ``needs_more_states``.
 
     Args:
-        retained: Global determinant count the unit froze at (the smallest over the block's units).
-        leak: The weight on new rows over the freezing window (the largest over the block's units).
-        cut: What the cutoff dropped over that window (of the same unit as ``leak``).
+        records: The block's :class:`UnitRecord` entries (every unit that fed it, settled or not).
+        slater_weight_min: The amplitude cutoff the frontier is measured against (for the message).
     """
-    leak = float(leak) if leak is not None else float("nan")
-    cut = float(cut) if cut is not None else float("nan")
+    tracked = [r for r in records if r.retained is not None]
+    settled = [r for r in tracked if r.settled]
+    if not settled:
+        return Diagnostic(name="support_settled", severity=Severity.OK, value=float("nan"), threshold=float("nan"),
+                          message="no unit settled its support")  # fmt: skip
+    small = min(settled, key=lambda r: r.retained)
+    large = max(settled, key=lambda r: r.retained)
+    worst = max(settled, key=lambda r: r.frontier_over_swm)
+    sides = sorted({r.side for r in settled})
+    scope = f"{len(settled)} of {len(tracked)} units"
     return Diagnostic(
-        name="support_freeze",
+        name="support_settled",
         severity=Severity.OK,
-        value=leak,
-        threshold=cut,
+        value=float(worst.frontier_over_swm),
+        threshold=float(worst.ratio),
         message=(
-            f"GF unit support frozen at {int(retained or 0):,} determinants (support freeze): the weight "
-            f"reaching new rows ({leak:.1e} over the last window) was no more than what slaterWeightMin cut "
-            f"({cut:.1e})"
+            f"{scope} settled their support ({'/'.join(sides)}; slater_min {slater_weight_min:.3g}, "
+            f"gf_settle_ratio {worst.ratio:g}): supports "
+            f"{small.retained:,} ({small.describe()}) .. {large.retained:,} ({large.describe()}); "
+            "largest new-determinant amplitude in the next block "
+            f"{worst.frontier_over_swm:.2g} x slater_min over {worst.window} blocks"
         ),
     )
 

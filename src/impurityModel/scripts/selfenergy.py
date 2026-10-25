@@ -154,6 +154,35 @@ def add_arguments(parser):
         help="Admission threshold of --gf-admission outer, relative to the seed norm (default 1e-4).",
     )
     parser.add_argument(
+        "--gf-settle",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "Support settle of the block-Lanczos Green's function: 'on' (the default) lets a unit stop admitting "
+            "determinants once its frontier is below --gf-settle-ratio x slater_weight_min, 'off' keeps every "
+            "unit growing until it closes or hits a cap."
+        ),
+    )
+    parser.add_argument(
+        "--gf-settle-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Settle threshold as a multiple of slater_weight_min (0 = closure only; default: the "
+            "GF_SETTLE_RATIO knob, or the archive's)."
+        ),
+    )
+    parser.add_argument(
+        "--gf-settle-retry",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "On a real-axis self-energy causality failure the support settle can plausibly explain, solve the settled "
+            "units again once closure-only ('on') or not ('off', the default: the re-solve can take as long as an "
+            "unsettled Green's function). The attribution is printed either way."
+        ),
+    )
+    parser.add_argument(
         "--gf-tol",
         type=float,
         default=None,
@@ -266,12 +295,21 @@ def apply_solver_overrides(solver, args):
             ("gf_method", args.gf_method),
             ("gf_admission", args.gf_admission),
             ("gf_admit_tol", args.gf_admit_tol),
+            ("gf_settle", None if args.gf_settle is None else args.gf_settle == "on"),
+            ("gf_settle_ratio", args.gf_settle_ratio),
+            ("gf_settle_retry", None if args.gf_settle_retry is None else args.gf_settle_retry == "on"),
             ("gf_tol", args.gf_tol),
             ("gf_real_tol", args.gf_real_tol),
             ("gf_min_weight", args.gf_min_weight),
         )
         if value is not None
     }
+    # A flag that switches the settle off, or leaves the block-Lanczos kernel, makes the archive's settle fields
+    # meaningless: clear the ones the command line did not set itself, or the options refuse the combination.
+    leaves_lanczos = overrides.get("gf_method", solver.gf_method) != "lanczos"
+    if overrides.get("gf_settle") is False or leaves_lanczos:
+        for name in ("gf_settle_ratio", "gf_settle_retry") + (("gf_settle",) if leaves_lanczos else ()):
+            overrides.setdefault(name, None)
     return replace(solver, **overrides) if overrides else solver
 
 
@@ -349,6 +387,9 @@ def run(args):
             gf_method=args.gf_method or "lanczos",
             gf_admission=args.gf_admission,
             gf_admit_tol=args.gf_admit_tol,
+            gf_settle=None if args.gf_settle is None else args.gf_settle == "on",
+            gf_settle_ratio=args.gf_settle_ratio,
+            gf_settle_retry=None if args.gf_settle_retry is None else args.gf_settle_retry == "on",
             gf_tol=args.gf_tol,
             gf_real_tol=args.gf_real_tol,
             gf_min_weight=args.gf_min_weight,

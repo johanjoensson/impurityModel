@@ -216,9 +216,26 @@ def prepare_solver_basis(h0, dc, u, impurity_orbitals, nominal_occ, mixed_valenc
     # block structure keeps both spins of a manifold in one group, so the many-body basis spans
     # all S_z sectors (spin multiplets stay degenerate); the impurity occupation window is tied
     # across groups by the restriction machinery, not pinned per group.
+    merged_groups: list = []
     impurity_orbitals, bath_states = group_orbitals_by_blocks(
-        h, impurity_indices, valence_flat, conduction_flat, block_structure, n_orb=n_spin_orbitals, h0_matrix=h_matrix
+        h,
+        impurity_indices,
+        valence_flat,
+        conduction_flat,
+        block_structure,
+        n_orb=n_spin_orbitals,
+        h0_matrix=h_matrix,
+        merged=merged_groups,
     )
+    if merged_groups and rank == 0:
+        # Printed at every verbosity: it changes what the per-group occupation windows mean.
+        for parts in merged_groups:
+            print(
+                "Impurity orbital groups "
+                + " and ".join(format_index_ranges(orbs) for orbs in parts)
+                + " merged: one bath component hops to both, so no window can be set per group.",
+                flush=True,
+            )
     nominal_occ = _per_group_occupation(nominal_occ, impurity_orbitals, h_matrix)
     mixed_valence = _per_group_scalar(mixed_valence, impurity_orbitals, default=0)
 

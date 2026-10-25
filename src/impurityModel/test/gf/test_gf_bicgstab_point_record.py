@@ -32,7 +32,7 @@ def _default_warm_history(monkeypatch):
     # Knobs are read lazily, so an exported value would silently change what these tests measure.
     monkeypatch.delenv("GF_BICGSTAB_WARM_HISTORY", raising=False)
     # The sparse per-point records; the frozen path has test_gf_bicgstab_frozen.py.
-    set_gf_switches(monkeypatch, support_freeze="0")
+    set_gf_switches(monkeypatch, closure_freeze="0")
 
 
 def _solve(z_axes):

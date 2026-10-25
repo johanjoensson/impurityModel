@@ -38,7 +38,7 @@ from impurityModel.test.support.gf_switches import set_gf_switches
 def _sparse_solves(monkeypatch):
     """The sparse per-point solve this file covers (GMRES escalation, caps, seed overflow); the frozen
     P H P path, which would otherwise take most points, has test_gf_bicgstab_frozen.py."""
-    set_gf_switches(monkeypatch, support_freeze="0")
+    set_gf_switches(monkeypatch, closure_freeze="0")
 
 
 # --------------------------------------------------------------------------- #

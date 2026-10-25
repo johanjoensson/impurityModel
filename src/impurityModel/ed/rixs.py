@@ -677,7 +677,9 @@ def _rixs_map_flat(
             # each solve counts ranks-per-color times (review ledger M5). Non-root ranks roll back
             # at the end of the unit.
             stats_before = dict(solver_stats) if sub_comm is not None and sub_comm.rank != 0 else None
-            chain = _R1SolverChain(r1_cache, eigenstate=e, counters=solver_stats, freeze=gf_solvers._SUPPORT_FREEZE)
+            chain = _R1SolverChain(
+                r1_cache, eigenstate=e, counters=solver_stats, freeze=gf_solvers._BICGSTAB_CLOSURE_FREEZE
+            )
             out = np.zeros((len(w_chunk), n_i, n_o, len(wLoss)), dtype=complex)
             wins = wIns[w_chunk]
             # `eval_out` reports the final-state basis it actually ran on rather than leaving the

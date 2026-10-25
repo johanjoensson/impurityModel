@@ -446,3 +446,108 @@ def test_an_archive_that_stored_none_as_a_string_is_read_as_unspecified(tmp_path
     _write_synthetic_archive(str(archive), gf_method="lanczos", gf_admission="None", gf_admit_tol="None")
     _, _, _, solver, _ = load_selfenergy_archive(str(archive))
     assert solver.gf_admission is None and solver.gf_admit_tol is None
+
+
+def _archive_with_attrs(path, **attrs):
+    import h5py
+
+    _write_synthetic_archive(str(path), gf_method="lanczos")
+    with h5py.File(path, "r+") as f:
+        group = f[sorted(f.keys())[0]]
+        for key, value in attrs.items():
+            group.attrs[key] = value
+
+
+def test_archive_records_and_replays_the_support_settle(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    _archive_with_attrs(archive, gf_settle=False, gf_settle_ratio="None")
+    _, _, _, solver, _ = load_selfenergy_archive(str(archive))
+    assert solver.gf_settle is False and solver.gf_settle_ratio is None
+    archive = tmp_path / "second.h5"
+    _archive_with_attrs(archive, gf_settle=True, gf_settle_ratio=3.0)
+    solver = load_selfenergy_archive(str(archive))[3]
+    assert solver.gf_settle is True and solver.gf_settle_ratio == pytest.approx(3.0)
+
+
+def test_an_archive_from_before_the_settle_was_an_option_replays_as_unspecified(tmp_path):
+    archive = tmp_path / "impurityModel_data.h5"
+    _write_synthetic_archive(str(archive), gf_method="lanczos")
+    solver = load_selfenergy_archive(str(archive))[3]
+    assert solver.gf_settle is None and solver.gf_settle_ratio is None
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        (dict(gf_settle_ratio=-1.0), "must be >= 0"),
+        (dict(gf_settle=False, gf_settle_ratio=2.0), "only applies with the support settle on"),
+        (dict(gf_method="bicgstab", gf_settle=True), "applies only to gf_method='lanczos'"),
+        (dict(gf_method="bicgstab", gf_settle_ratio=2.0), "applies only to gf_method='lanczos'"),
+    ],
+)
+def test_the_settle_options_refuse_what_would_be_silently_ignored(kwargs, match):
+    from impurityModel.ed.model import SolverOptions
+
+    with pytest.raises(ValueError, match=match):
+        SolverOptions(**kwargs)
+
+
+def test_the_settle_options_accept_closure_and_the_defaults():
+    from impurityModel.ed.model import SolverOptions
+
+    assert SolverOptions().gf_settle is None and SolverOptions().gf_settle_ratio is None
+    assert SolverOptions(gf_settle_ratio=0.0).gf_settle_ratio == 0.0
+    assert SolverOptions(gf_settle=False).gf_settle is False
+
+
+def test_the_settle_retry_option_replays_and_refuses_contradictions(tmp_path):
+    from impurityModel.ed.model import SolverOptions
+
+    _archive_with_attrs(tmp_path / "a.h5", gf_settle_retry=False)
+    assert load_selfenergy_archive(str(tmp_path / "a.h5"))[3].gf_settle_retry is False
+    _write_synthetic_archive(str(tmp_path / "b.h5"), gf_method="lanczos")
+    assert load_selfenergy_archive(str(tmp_path / "b.h5"))[3].gf_settle_retry is None
+    with pytest.raises(ValueError, match="contradicts gf_settle off"):
+        SolverOptions(gf_settle=False, gf_settle_retry=True)
+    with pytest.raises(ValueError, match="applies only to gf_method='lanczos'"):
+        SolverOptions(gf_method="bicgstab", gf_settle_retry=True)
+    assert SolverOptions(gf_settle=False, gf_settle_retry=False).gf_settle_retry is False
+
+
+@pytest.mark.parametrize(
+    "value,want",
+    [
+        (True, True),
+        (np.bool_(False), False),
+        (1, True),
+        (0, False),
+        ("off", False),
+        ("False", False),
+        (b"false", False),
+        ("ON", True),
+        ("yes", True),
+        ("None", None),
+        (None, None),
+    ],
+)
+def test_archive_booleans_written_as_words_read_back_right(value, want):
+    from impurityModel.ed.model import _optional_bool
+
+    assert _optional_bool(value) is want
+
+
+@pytest.mark.parametrize("value", ["maybe", 2, 0.5, b"x"])
+def test_an_unreadable_archive_boolean_raises(value):
+    from impurityModel.ed.model import _optional_bool
+
+    with pytest.raises(ValueError, match="boolean"):
+        _optional_bool(value)
+
+
+def test_a_settle_ratio_below_one_warns_that_it_is_a_multiple():
+    from impurityModel.ed.model import SolverOptions
+
+    with pytest.warns(UserWarning, match="MULTIPLE of slater_min"):
+        SolverOptions(gf_settle_ratio=1e-4)
+    with pytest.raises(ValueError):
+        SolverOptions(gf_settle_ratio=float("inf"))

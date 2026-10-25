@@ -831,6 +831,22 @@ cdef class ManyBodyState:
             out = self.b.new_rows_stats(mask.b.key_store())
         return int(out.first), float(out.second)
 
+    def max_row_norm2_in(self, ManyBodyState mask):
+        """Largest ``|amp|^2`` (max over columns) among the rows that ARE in ``mask``'s support; ``0.0`` when none
+        is. One merge pass, no allocation: the amplitude a block carries on a given set of rows."""
+        cdef double out
+        with nogil:
+            out = self.b.max_row_norm2_in(mask.b.key_store())
+        return float(out)
+
+    def new_rows_max_norm2(self, ManyBodyState mask):
+        """Largest ``|amp|^2`` (max over columns) among the rows NOT in ``mask``'s support: the biggest amplitude
+        a step lands outside the retained set. One merge pass, no allocation; ``0.0`` when no row is new."""
+        cdef double out
+        with nogil:
+            out = self.b.new_rows_max_norm2(mask.b.key_store())
+        return float(out)
+
     def keys_new_above(self, ManyBodyState mask, double cutoff2):
         """Width-0 key-only block of the rows NOT in ``mask`` whose max column
         ``|amp|^2`` exceeds ``cutoff2`` (the admitted boundary determinants once the

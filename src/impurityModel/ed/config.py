@@ -147,8 +147,8 @@ RETIRED_KNOBS = {
     ),
     **dict.fromkeys(
         ("GF_CLOSURE_FREEZE", "GF_STAGNATION_FREEZE", "GF_STAGNATION_WINDOW"),
-        "retired with the zero-growth and absolute-threshold freezes; the support freeze replaces both, "
-        "weighing the weight reaching new determinants against what slaterWeightMin already cuts",
+        "retired with the zero-growth and absolute-threshold freezes; the settle rule replaces both "
+        "(a new determinant's amplitude against slaterWeightMin; GF_SETTLE_RATIO 0 is closure-only)",
     ),
     "MATVEC_PRUNE": (
         "retired: the slaterWeightMin cut of a redistributed sparse matvec is always made on the summed rows "
@@ -156,9 +156,7 @@ RETIRED_KNOBS = {
         "(doc/gf_support_pipeline.md)"
     ),
     "GF_FROZEN_CSR": "retired: the frozen-basis CSR fallback is always on",
-    "GF_SUPPORT_FREEZE": (
-        "retired: the support freeze is always on (it is off only under importance pruning, " "GF_LANCZOS_ADMIT_TOL)"
-    ),
+    "GF_SUPPORT_FREEZE": ("retired: use the gf_settle solver option (on/off) or GF_SETTLE_RATIO (0 = closure only)"),
     "GS_SELECTION_PRUNE": (
         "retired: the CIPSI selection round always cuts the summed amplitude ('after_sum'); 'before_sum' "
         "made the selected set depend on the rank and chunk count"
@@ -342,7 +340,7 @@ GF_LANCZOS_ADMIT_TOL = Knob(
     ``slaterWeightMin=0`` that keeps the recurrence the exact Lanczos of the final retained set under
     every reorthogonalization mode; at ``slaterWeightMin>0`` the cuts inside the support still perturb it,
     as in every capped run. The decision is taken once, on the step's summed output, so it works with
-    ``APPLY_ROW_CHUNKS`` > 1. Exclusive with the support freeze. 0 (default) is off.""",
+    ``APPLY_ROW_CHUNKS`` > 1. Exclusive with the support settle (which is off while it is set). 0 (default) is off.""",
 )
 
 GF_ADMIT_FIRST_SHELL_TOL = Knob(
@@ -360,6 +358,24 @@ GF_ADMIT_FIRST_SHELL_TOL = Knob(
     the summed squared amplitudes of what was dropped.""",
 )
 
+GF_SETTLE_RATIO = Knob(
+    name="GF_SETTLE_RATIO",
+    kind="float",
+    default=3.0,
+    group="bicgstab",
+    doc="""The support settle of a sparse block-Lanczos Green's-function unit, as a multiple of ``slaterWeightMin``: the
+    unit stops admitting new determinants once, over 16 blocks, the largest amplitude the normalised next block
+    carries on a determinant the step reached for the first time stays at or below ``ratio x slaterWeightMin``
+    and is not growing. ``1`` settles when every excluded determinant would have been pruned from the next block
+    anyway; larger values settle sooner and drop amplitude up to ``ratio x slaterWeightMin`` per determinant;
+    ``0`` is closure only (no new determinant at all). A multiple of the cutoff, not a fraction of the seed norm
+    (``gf_admit_tol``). The default 3 keeps a margin below the measured cliff: on the NiO 10-bath linked
+    chain (iterations 1 and 28 at ``slater_min`` 1e-8 and 1e-10) ratio 3 changed Sigma by at most 9.3e-9 of the
+    causality guard's headroom, ratio 5 by 8.7e-9, ratio 10 by up to 7e-4 and ratio 30 by up to 6e-2; ratio 3 costs
+    43-55 s per iteration there against 270-303 s unsettled (``doc/plans/gf_support_freeze_redesign.md``).
+    Overridden by the ``gf_settle_ratio`` solver option.""",
+)
+
 GF_SUPPORT_TRACE = Knob(
     name="GF_SUPPORT_TRACE",
     kind="bool",
@@ -367,9 +383,11 @@ GF_SUPPORT_TRACE = Knob(
     group="bicgstab",
     doc="""Diagnostic. Print one ``GF support step k: ...`` line per block of a sparse Lanczos Green's-function
     unit (rank 0): the retained support, the new rows, the weight on them (leak), the weight the
-    ``slaterWeightMin`` prunes cut, ``||Hq||^2`` and the convergence monitor's last change. The same numbers are
+    ``slaterWeightMin`` prunes cut, ``||Hq||^2``, the largest amplitude squared landing on a new row and the
+    convergence monitor's last change. The same numbers are
     kept in ``cap_info["support_trace"]``; the lines let a production log be replayed offline against any
-    freeze rule. It never changes a result.""",
+    settle rule. It also switches on the end-of-unit frontier probe of a settled unit (one extra unfrozen matvec).
+    It never changes a result.""",
 )
 
 GF_GMRES_RESTART = Knob(
@@ -978,6 +996,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_ADMIT_EN_TOL,
     GF_LANCZOS_ADMIT_TOL,
     GF_ADMIT_FIRST_SHELL_TOL,
+    GF_SETTLE_RATIO,
     GF_SUPPORT_TRACE,
     GF_GMRES_RESTART,
     GF_EIGENSTATE_GROUP,

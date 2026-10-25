@@ -121,6 +121,21 @@ def _format_causality_report(report, label):
     return "\n".join(lines)
 
 
+def causality_report(G, omega_mesh=None, g0_inv=None, ginv=None):
+    """The causality-violation record of ``G`` (see :func:`_localize_causality_violation`), or ``None`` if causal.
+
+    The non-raising half of :func:`check_greens_function`: ``worst_ratio`` is the per-orbital relative size the
+    tolerance is compared with, ``worst_val`` / ``worst_freq_index`` / ``worst_orbital`` the worst point, and
+    ``g0_inv_at_worst`` / ``ginv_at_worst`` (when both inverses are given) the two terms of
+    :math:`\\Sigma = G_0^{-1} - G^{-1}` there. A caller that must decide what to do about a violation (retry,
+    attribute, raise) reads this instead of catching an exception.
+    """
+    diag_imag = np.diagonal(G, axis1=1, axis2=2).imag
+    g0_inv_diag = np.diagonal(g0_inv, axis1=1, axis2=2) if g0_inv is not None else None
+    ginv_diag = np.diagonal(ginv, axis1=1, axis2=2) if ginv is not None else None
+    return _localize_causality_violation(diag_imag, omega_mesh, g0_inv_diag, ginv_diag)
+
+
 def check_greens_function(G, tol: float = 0.0, omega_mesh=None, label="G", g0_inv=None, ginv=None):
     r"""Verify that the Green's function (or self-energy) makes physical sense.
 
@@ -152,10 +167,7 @@ def check_greens_function(G, tol: float = 0.0, omega_mesh=None, label="G", g0_in
     UnphysicalGreensFunctionError
         If the worst-case relative violation exceeds ``tol``.
     """
-    diag_imag = np.diagonal(G, axis1=1, axis2=2).imag
-    g0_inv_diag = np.diagonal(g0_inv, axis1=1, axis2=2) if g0_inv is not None else None
-    ginv_diag = np.diagonal(ginv, axis1=1, axis2=2) if ginv is not None else None
-    report = _localize_causality_violation(diag_imag, omega_mesh, g0_inv_diag, ginv_diag)
+    report = causality_report(G, omega_mesh, g0_inv, ginv)
     if report is None:
         return
     text = _format_causality_report(report, label)

@@ -186,3 +186,26 @@ def test_calc_selfenergy_with_outer_admission_is_the_same_distributed(monkeypatc
     if MPI.COMM_WORLD.rank == 0:
         np.testing.assert_allclose(distributed["sigma"], serial["sigma"], atol=1e-6)
         np.testing.assert_allclose(distributed["sigma_real"], serial["sigma_real"], atol=1e-6)
+
+
+def test_the_settle_options_reach_the_kernel_and_bicgstab_refuses_them(monkeypatch):
+    from impurityModel.ed import gf_engine
+
+    seen = []
+    real = gf_engine.block_Green_sparse
+
+    def spy(*args, **kwargs):
+        seen.append((kwargs.get("support_settle"), kwargs.get("settle_ratio")))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(gf_engine, "block_Green_sparse", spy)
+    _run_driver("lanczos", None)
+    assert set(seen) == {(True, None)}
+    seen.clear()
+    _run_driver("lanczos", None, extra={"gf_settle": False, "gf_settle_ratio": None})
+    assert set(seen) == {(False, None)}
+    seen.clear()
+    _run_driver("lanczos", None, extra={"gf_settle_ratio": 4.0})
+    assert set(seen) == {(True, 4.0)}
+    with pytest.raises(ValueError, match="apply only to gf_method='lanczos'"):
+        _run_driver("bicgstab", None, extra={"gf_settle": True})

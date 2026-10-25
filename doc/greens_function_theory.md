@@ -324,6 +324,20 @@ $\mathrm{Im}\,\Sigma_{ii} \le 0$ and is rejected by the physicality guard. When 
 this hard, the resolution is more retained weight (larger cap, more ranks) or a better
 subspace, not a different solver.
 
+#### The support settle
+
+Below the cap, a unit's support can still stop growing on its own: once, over 16 blocks, the amplitude the
+normalised next block carries on newly reached determinants stays at or below `ratio x slaterWeightMin` (and is not
+rising), the unit continues as the exact block Lanczos of $PHP$ from there (`FreezeRule`;
+`doc/gf_support_pipeline.md`). At `ratio` $\le 1$ every row it excludes would have been cut from that next block
+anyway; above 1 it also excludes rows the cutoff would have kept, and the size of that effect is measured, not
+bounded. At the default ratio 3, on the NiO 10-bath archive (iterations 1 and 28, `slater_min` $10^{-8}$ and
+$10^{-10}$), the settle changed $\Sigma(\omega)$ by at most $9.3\times10^{-9}$ of the causality guard's pointwise
+headroom ($|\Delta\Sigma| \le 10^{-9}$ eV) and left $\Sigma(i\omega_n)$ unchanged to the printed precision; at
+ratio 10 the same comparison reached $7\times10^{-4}$ of the headroom. For scale, moving `slater_min` from
+$10^{-10}$ to $10^{-8}$ changes $\Sigma(\omega)$ by about $10^{-5}$ eV on the same model
+(`doc/plans/gf_support_freeze_redesign.md`).
+
 ### 3.5 Work distribution
 
 All Green's-function drivers share one distribution engine: the flat work units are
@@ -531,6 +545,7 @@ driver. Two error-propagation facts to keep in mind:
   measured reason the per-frequency driver's default residual tolerance ($10^{-8}$) had to be
   tightened (and its stagnating points GMRES-rescued) before $\sigma^{\mathrm{real}}$ at
   $\delta = 10^{-2}$ matched the recurrence.
+* **A bath pole amplifies.** For a scalar block $\operatorname{Im}\Sigma = \delta - \operatorname{Im}\Delta(\omega + i\delta) + \operatorname{Im}G/|G|^2$. Near a bath level $\varepsilon_k$ the hybridization is $-\operatorname{Im}\Delta \approx |W_k|^2/\delta$ and $G \approx -1/\Delta$, so $\operatorname{Im}\Sigma$ is the difference of two numbers of order $|W_k|^2/\delta$, and $|G|^{-2} \approx |W_k|^4/\delta^2$ turns an absolute error of $10^{-5}$ in $G$ into $10^{-3}$ in $\Sigma$ when $|W_k|^2/\delta$ dominates $|\omega - \varepsilon_d - \operatorname{Re}\Delta - \operatorname{Re}\Sigma|$ (check it against the saved $G$, not the asymptotic form). The causality attribution of `calc_selfenergy` reads the nearest bath level for this reason.
 * **Truncation is not causal in $\Sigma$** (section 3.4): the physicality guard
   (`check_greens_function` / the $\mathrm{Im}\,\Sigma_{ii} \le 0$ check) is the last line of
   defense and *raising* is collective (`_raise_together`) so no MPI rank deadlocks.

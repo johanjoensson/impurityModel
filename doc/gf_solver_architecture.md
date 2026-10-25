@@ -144,6 +144,18 @@ Orthogonal switches on the default Lanczos path:
   at a global determinant cap; the post-freeze recurrence is exact Lanczos of the projected
   `PHP` (see `doc/plans/truncation_reliability.md`).
 
+### Four words for four ways a unit's support stops growing
+
+| word | mechanism | lossy? | where it shows |
+|---|---|---|---|
+| **settled** | the support settle (`gf_settle`, `gf_settle_ratio`): the frontier stayed at or below `ratio x slaterWeightMin` over 16 blocks | drops the rows below that next-block amplitude; size of the effect measured, not bounded | `support_settled` row, the max-basis table remark, `-vv` unit line (`support_frozen=True` token kept for log parsers) |
+| **frozen at the cap** | `truncation_threshold` reached | yes | `basis_truncation` WARN, `-- frozen at the cap` |
+| **held by the memory guard** | measured RSS reached the GF budget | yes | `GF basis held at N ... by the measured-memory guard` |
+| **deep zone** | chain-window site beyond `a < slater_min**0.5` capped at one excitation | restricts the basis a priori | `Chain windows:` line at `-v` |
+
+The settle options on `SolverOptions`: `gf_settle` (None = on), `gf_settle_ratio` (a multiple of `slater_weight_min`,
+None = `GF_SETTLE_RATIO`), `gf_settle_retry` (None = off). Block-Lanczos only.
+
 ## Convergence monitoring
 
 The Lanczos path does not run a fixed number of blocks; it watches the resolvent stop moving.

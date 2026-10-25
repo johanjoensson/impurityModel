@@ -10,6 +10,7 @@ these kernels lives in :mod:`impurityModel.ed.gf_units`; the top-level assembly 
 in :mod:`impurityModel.ed.greens_function`.
 """
 
+import math
 import time
 from typing import Optional
 
@@ -30,6 +31,7 @@ from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.gf_admission import solve_point_outer
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
+    SETTLE_WINDOW,
     FrozenColumnMatvec,
     _allreduced_col_norms2,
     _CappedBasisProxy,
@@ -37,6 +39,7 @@ from impurityModel.ed.gf_primitives import (
     _sanitize_continued_fraction,
     _trim_blocks,
     block_to_local_dense,
+    boundary_frontier,
     boundary_residual,
     build_qr,
     calc_G,
@@ -173,9 +176,10 @@ def _gf_reort(reort):
 # A restart must shrink the reported residual by at least this factor to earn the next one, so
 # a genuinely stuck point stops early and is reported rather than looping.
 _GF_BICGSTAB_RESTART_PROGRESS = 0.5
-#: Test seams, not user knobs: the support freeze and the frozen-basis CSR fallback are always on. A test
-#: turns one off here (``test/support/gf_switches.py``) to exercise the plain sparse path they replace.
-_SUPPORT_FREEZE = True
+#: Test seams, not user knobs: the per-frequency (BiCGSTAB, RIXS R1) closure freeze and the frozen-basis CSR fallback
+#: are always on. A test turns one off here (``test/support/gf_switches.py``) to exercise the plain sparse path it
+#: replaces. The block-Lanczos support settle is NOT behind a seam: it is the ``gf_settle`` solver option.
+_BICGSTAB_CLOSURE_FREEZE = True
 _FROZEN_CSR = True
 #: Restarts granted to a non-converged BiCGSTAB point (the current iterate warm-starts each) before the GMRES fallback.
 _GF_BICGSTAB_RESTARTS = 10
@@ -422,9 +426,6 @@ _CSR_BATCH_BYTES_PER_ELEMENT = 160
 #: Lanczos blocks of ``N_local x width`` the array kernel holds at once at reort off (the
 #: current and previous block, the product, the next block).
 _CSR_KERNEL_VECTORS = 4
-#: The support freeze's window: the blocks over which the weight reaching new rows is weighed against what the
-#: slaterWeightMin prunes dropped. Long enough to span a gap between the layered shells a support grows in.
-_SUPPORT_WINDOW = 16
 #: Floor of the frozen-basis recurrence's first block budget (the measured SrMnO3 units converged
 #: in 174-429 blocks); the array kernel's doubling raises it when a unit needs more.
 _CSR_INITIAL_BLOCKS = 256
@@ -497,15 +498,15 @@ def _frozen_csr_fits(frozen_basis, hOp, memory_budget, comm, report=None, width=
     return not over
 
 
-def _frozen_csr_basis(proxy, basis, hOp, verbose, reason="", width=1):
+def _frozen_csr_basis(proxy, basis, hOp, verbose, width=1):
     """Collective: the frozen retained set as a ``Basis`` if the ``P H P`` fallback should run, else ``None``.
 
     Declines when the matrix would not fit the budget on top of the current RSS; the caller then
     resumes the sparse recurrence. A freeze by the measured-memory guard is offered too: RSS is at
     the guard's budget then, but the decision has its own, looser one and counts that RSS, so it
     accepts only what still fits. (It used to decline every guard freeze outright, and on CrI3,
-    whose sparse estimate under-predicts, that is where capped units end up.) ``reason`` is
-    appended to the decision line (``" by the support freeze"``); it only reads the retained mask.
+    whose sparse estimate under-predicts, that is where capped units end up.) The decision line names
+    how the support stopped (``proxy.stop_phrase()``); it only reads the retained mask.
 
     The budget is the GF stage's frozen-CSR budget on ``basis`` (``GF_CSR_MEMORY_SAFETY``, looser
     than the guard's), else -- for a basis that did not come through the GF stage -- the guard's.
@@ -529,19 +530,21 @@ def _frozen_csr_basis(proxy, basis, hOp, verbose, reason="", width=1):
         )
         if fits:
             print(
-                f"GF basis frozen at {frozen_basis.size:,} determinants{reason}: the P H P matrix fits{used}.",
+                f"{proxy.stop_phrase()} {frozen_basis.size:,} determinants: the P H P matrix fits{used}.",
                 flush=True,
             )
         else:
             print(
-                f"GF basis frozen at {frozen_basis.size:,} determinants{reason}: the P H P matrix would not fit "
+                f"{proxy.stop_phrase()} {frozen_basis.size:,} determinants: the P H P matrix would not fit "
                 f"the memory budget, so the recurrence continues on the sparse kernel{used}.",
                 flush=True,
             )
     return frozen_basis if fits else None
 
 
-def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, eval_meshes, info, verbose, blocks_hint):
+def _frozen_csr_green(
+    frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, eval_meshes, info, verbose, blocks_hint, phrase
+):
     """The capped GF as an array-kernel recurrence on the frozen ``P H P`` CSR.
 
     Once the proxy has frozen, the whole capped recurrence -- pre-freeze steps included -- is the
@@ -550,13 +553,13 @@ def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, e
     rounding, while every step costs one SpMV instead of an apply whose out-of-``P`` image is
     discarded. ``blocks_hint`` is how many blocks the sparse kernel had built when it stopped; the
     first attempt's budget is a few times that (at least :data:`_CSR_INITIAL_BLOCKS`), never the
-    ``ceil(N/p)`` the kernel would preallocate for. Returns ``(alphas, betas, r, seconds)``, with
-    ``info`` filled by the array kernel's own monitor.
+    ``ceil(N/p)`` the kernel would preallocate for. ``phrase`` opens the log line (the proxy's ``stop_phrase``).
+    Returns ``(alphas, betas, r, seconds)``, with ``info`` filled by the array kernel's own monitor.
     """
     comm = frozen_basis.comm
     t0 = time.perf_counter()
     psi_dense_local, r = _distributed_seed_qr(frozen_basis, seeds, slaterWeightMin)
-    alphas, betas, _, widths = _array_block_lanczos(
+    alphas, betas, last_q, widths = _array_block_lanczos(
         frozen_basis,
         hOp,
         psi_dense_local,
@@ -571,13 +574,65 @@ def _frozen_csr_green(frozen_basis, hOp, seeds, delta, reort, slaterWeightMin, e
     seconds = time.perf_counter() - t0
     if verbose and (comm is None or comm.rank == 0):
         print(
-            f"GF basis frozen at {frozen_basis.size:,} determinants: recurrence restarted on the P H P matrix "
+            f"{phrase} {frozen_basis.size:,} determinants: recurrence restarted on the P H P matrix "
             f"({len(alphas)} block(s), {seconds:.1f} s).",
             flush=True,
         )
     alphas, betas = _trim_blocks(alphas, betas, widths)
     alphas, betas = _sanitize_continued_fraction(alphas, betas, rank=comm.rank if comm is not None else 0)
-    return alphas, betas, r, seconds
+    return alphas, betas, r, seconds, (last_q if isinstance(last_q, np.ndarray) else None)
+
+
+#: The end-of-unit frontier probe applies ``H`` once, unfrozen and unchunked, to the block a settled unit ended on; it
+#: is skipped when the resident set is already this fraction of the unit's memory budget (it generates the whole
+#: out-of-P image of one block, the peak the frozen matrix exists to avoid).
+_FRONTIER_PROBE_RSS_FRACTION = 0.8
+
+
+def _settled_frontier(proxy, frozen_basis, hOp, csr, slaterWeightMin, comm):
+    """What a settled unit left behind, as ``cap_info`` entries (amplitudes, not squares). Collective.
+
+    ``leak_settle`` and ``frontier_settle_matvec`` are the settling step's own record (weight on new rows and the
+    largest amplitude on one, in the matvec's units), taken from the trace at no cost. The rest is a **diagnostic,
+    opt-in probe** (``GF_SUPPORT_TRACE``, read on rank 0 and broadcast): ``frontier_end_matvec`` and ``leak_end`` are
+    the same two numbers measured by one unfrozen ``H`` applied to the last block the frozen recurrence accepted
+    (:func:`gf_primitives.boundary_frontier`), and ``frontier_end`` that amplitude in the units of the next block
+    (divided by the smallest singular value of the last ``beta``). It is never run for a unit frozen by the cap or
+    held by the memory guard (the caller checks), and is skipped at ``_FRONTIER_PROBE_RSS_FRACTION`` of the memory
+    budget. Missing entries are ``nan``. Every branch is decided on replicated data."""
+    out = {"leak_settle": float("nan"), "frontier_settle_matvec": float("nan"), "frontier_end": float("nan")}
+    out.update(frontier_end_matvec=float("nan"), leak_end=float("nan"))
+    if proxy.support_trace:
+        record = proxy.support_trace[len(proxy.support_trace) - 1]
+        out["leak_settle"] = float(record.leak)
+        out["frontier_settle_matvec"] = math.sqrt(record.max2_matvec)
+    probe = bool(config.GF_SUPPORT_TRACE.get())
+    if comm is not None and comm.size > 1:
+        probe = comm.bcast(probe, root=0)
+    last_q, betas = csr[4], csr[1]  # betas trimmed: a list of blocks of differing width
+    if not probe or last_q is None or not len(betas):
+        return out
+    budget = proxy.memory_budget
+    over = budget is not None and current_rss_bytes() > _FRONTIER_PROBE_RSS_FRACTION * budget
+    if comm is not None and comm.size > 1:
+        over = comm.allreduce(bool(over), op=MPI.LOR)
+    if over:
+        return out
+    last_beta = np.asarray(betas[len(betas) - 1])
+    # The kernel's ``Q`` is the whole Krylov store (reort) or the deflated tail followed by the last block; the
+    # last accepted block is its last ``p`` columns, ``p`` the width the last ``beta`` was formed from.
+    p = int(last_beta.shape[1])
+    last_block = np.ascontiguousarray(last_q[:, last_q.shape[1] - p :])
+    max2, weight = boundary_frontier(
+        hOp, local_dense_to_block(frozen_basis, last_block), frozen_basis, slaterWeightMin, comm
+    )
+    out["frontier_end_matvec"] = math.sqrt(max2)
+    out["leak_end"] = weight
+    sv = np.linalg.svd(last_beta, compute_uv=False)
+    sv_min = float(sv[sv > 1e-12 * sv[0]].min()) if sv.size and sv[0] > 0 else 0.0
+    if sv_min > 0.0:
+        out["frontier_end"] = math.sqrt(max2) / sv_min
+    return out
 
 
 def _csr_continue_budget(start):
@@ -613,7 +668,7 @@ def _sparse_tail_to_local_dense(frozen_basis, mask, tail, widths):
     return tuple(block_to_local_dense(frozen_basis, b, w) for b, w in zip(blocks, (w_prev, w_curr)))
 
 
-def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor, r, info, verbose):
+def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor, r, info, verbose, phrase):
     """The frozen sparse recurrence carried on as the array-kernel recurrence of ``P H P``, from where it stopped.
 
     Every block the sparse kernel built before the freeze had its whole ``H`` image admitted (so inside the
@@ -626,9 +681,11 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
 
     ``tail`` is the pair of dense blocks from :func:`_sparse_tail_to_local_dense`; ``monitor`` the sparse
     run's ``(converged, converged_flag, delta_min, last_dg)``, which goes on judging the same continued
-    fraction (a fresh one would restart its own history); ``r`` the sparse run's seed factor. A run whose
+    fraction (a fresh one would restart its own history); ``r`` the sparse run's seed factor; ``phrase`` opens
+    the log line (the proxy's ``stop_phrase``). A run whose
     first budget is spent continues from its own tail, so no block is ever computed twice. Returns
-    ``(alphas, betas, r, seconds)``, with ``info`` filled.
+    ``(alphas, betas, r, seconds, last_block)``, with ``info`` filled; ``last_block`` is this rank's rows of the
+    block the kernel ended on (after a converged stop the last accepted block, not the residual).
     """
     comm = frozen_basis.comm
     rank = comm.rank if comm is not None else 0
@@ -640,7 +697,7 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
     n_dim = H.shape[0]
     budget = min(_csr_continue_budget(start), n_dim)
     while True:
-        alphas, betas, _, widths, status, tail = block_lanczos(
+        alphas, betas, last_q, widths, status, tail = block_lanczos(
             psi0=None,
             h_op=H,
             converged=converged,
@@ -668,13 +725,13 @@ def _frozen_csr_continue(frozen_basis, hOp, alphas, betas, widths, tail, monitor
     seconds = time.perf_counter() - t0
     if verbose and rank == 0:
         print(
-            f"GF basis frozen at {frozen_basis.size:,} determinants: recurrence continued on the P H P matrix "
+            f"{phrase} {frozen_basis.size:,} determinants: recurrence continued on the P H P matrix "
             f"({len(alphas) - start} block(s) after {start} sparse, {seconds:.1f} s).",
             flush=True,
         )
     alphas, betas = _trim_blocks(alphas, betas, widths)
     alphas, betas = _sanitize_continued_fraction(alphas, betas, rank=rank)
-    return alphas, betas, r, seconds
+    return alphas, betas, r, seconds, (last_q if isinstance(last_q, np.ndarray) else None)
 
 
 def block_Green_sparse(
@@ -691,6 +748,8 @@ def block_Green_sparse(
     info=None,
     memory_budget=None,
     memory_policy="tighten",
+    support_settle=True,
+    settle_ratio=None,
 ):
     """
     Calculate one block of the Greens function. This function builds the many body basis
@@ -699,16 +758,20 @@ def block_Green_sparse(
     ``memory_budget``/``memory_policy`` switch on :class:`_CappedBasisProxy`'s measured memory
     guard (off by default; only meaningful with a finite cap).
 
+    ``support_settle`` / ``settle_ratio``: the support settle (:class:`gf_primitives.FreezeRule`) -- on by
+    default, and ``settle_ratio`` (a multiple of ``slaterWeightMin``; ``None``: the ``GF_SETTLE_RATIO`` knob)
+    is how far below the cutoff-scaled amplitude the frontier must stay.
+
     **Frozen-basis CSR fallback**: when the cap freezes the
     support, the sparse recurrence stops at that step and carries on as an array-kernel SpMV on the
     ``P H P`` CSR of the retained set -- from its last two blocks at reort off
     (:func:`_frozen_csr_continue`), else restarted from the seeds (:func:`_frozen_csr_green`) -- exact
     on ``P`` like the sparse kernel, without applying ``H`` to every retained row and discarding the
     image outside ``P``. Not taken for a CSR that would not fit the budget, or a ``krylov_dtype`` store.
-    ``cap_info["csr_fallback"]`` says whether it ran. The same switch is taken when growing the
-    support below the cap no longer buys more than the ``slaterWeightMin`` cut costs
-    (on by default; ``cap_info["support_frozen"]``, with the per-step weights
-    it decided on in ``cap_info["support_history"]``).
+    ``cap_info["csr_fallback"]`` says whether it ran. The same switch is taken when the support settles below
+    the cap: no new determinant's next-block amplitude exceeded ``settle_ratio x slaterWeightMin`` over the
+    rule's window (``cap_info["support_frozen"]``, the rule's verdict in ``cap_info["settle_verdict"]`` and
+    the per-step records in ``cap_info["support_trace"]``).
 
     ``basis.truncation_threshold`` caps the number of Slater determinants the
     recurrence may touch (see :class:`_CappedBasisProxy`); ``np.inf`` (the ``Basis``
@@ -761,8 +824,10 @@ def block_Green_sparse(
         cap_info["csr_fallback"] = False
         cap_info["csr_seconds"] = 0.0
         cap_info["support_frozen"] = False
-        cap_info["support_history"] = []
+        cap_info["settle_verdict"] = None
         cap_info["support_trace"] = []
+        for key in ("leak_settle", "frontier_settle_matvec", "frontier_end", "frontier_end_matvec", "leak_end"):
+            cap_info[key] = float("nan")
 
     if N == 0 or n == 0:
         if cap_info is not None:
@@ -829,6 +894,7 @@ def block_Green_sparse(
     # on the sparse kernel (the array kernel keeps its Krylov basis in complex128).
     csr_candidate = _FROZEN_CSR and krylov_dtype is None and getattr(lanczos_basis, "tracks_support", False)
     csr = None
+    csr_basis = None
 
     def _csr_green(frozen_basis, blocks_hint=0, stopped=None):
         # `stopped` = the sparse run's (alphas, betas, widths, tail) at the freeze, passed at reort off
@@ -848,6 +914,7 @@ def block_Green_sparse(
                 r,
                 info,
                 verbose,
+                lanczos_basis.stop_phrase(),
             )
         return _frozen_csr_green(
             frozen_basis,
@@ -860,20 +927,25 @@ def block_Green_sparse(
             info,
             verbose,
             blocks_hint,
+            lanczos_basis.stop_phrase(),
         )
 
-    # The support freeze: the proxy freezes the support itself, on the step its window decides, and the kernel
+    # The support settle: the proxy stops the support itself, on the step its rule decides, and the kernel
     # hands control back there (stop_on_freeze). reort off only: that is where the frozen recurrence
     # carries on from its tail, and a reorthogonalized one would recompute every block to drop weight.
     if (
-        _SUPPORT_FREEZE
+        support_settle
         and csr_candidate
         and not resolved_reort
         and getattr(lanczos_basis, "tracks_support", False)
         and not lanczos_basis.prunes
     ):
         lanczos_basis.enable_support_freeze(
-            _SUPPORT_WINDOW, log=verbose and rank == 0, trace=config.GF_SUPPORT_TRACE.get() and rank == 0
+            SETTLE_WINDOW,
+            config.GF_SETTLE_RATIO.get() if settle_ratio is None else settle_ratio,
+            slaterWeightMin,
+            log=verbose and rank == 0,
+            trace=config.GF_SUPPORT_TRACE.get() and rank == 0,
         )
         lanczos_basis.monitor_dg = last_dg
     if csr_candidate:
@@ -886,6 +958,7 @@ def block_Green_sparse(
             frozen_basis = _frozen_csr_basis(lanczos_basis, basis, hOp, verbose, width=psi_arr.width)
             if frozen_basis is not None:
                 csr = _csr_green(frozen_basis)
+                csr_basis = frozen_basis
     while csr is None:
         alphas, betas, Q, widths, status = block_lanczos(
             psi_arr,
@@ -925,7 +998,6 @@ def block_Green_sparse(
                 basis,
                 hOp,
                 verbose,
-                reason=" by the support freeze" if lanczos_basis.support_frozen else "",
                 width=psi_arr.width,
             )
             if frozen_basis is not None:
@@ -935,8 +1007,9 @@ def block_Green_sparse(
                 stopped = (alphas, betas, widths, Q) if not resolved_reort else None
                 Q = None
                 csr = _csr_green(frozen_basis, len(alphas), stopped)
+                csr_basis = frozen_basis
             elif lanczos_basis.support_frozen:
-                # A support freeze that buys no speed is not kept: carry on sparse and unfrozen, and still hand
+                # A support settle that buys no speed is not kept: carry on sparse and unfrozen, and still hand
                 # a later cap or memory-guard freeze to the CSR.
                 lanczos_basis.unfreeze_support()
                 lanczos_basis.stop_on_freeze = True
@@ -964,10 +1037,14 @@ def block_Green_sparse(
             cap_info["proxy"] = lanczos_basis
             cap_info["csr_fallback"] = csr is not None
             cap_info["support_frozen"] = lanczos_basis.support_frozen
-            cap_info["support_history"] = list(lanczos_basis.support_history)
+            cap_info["settle_verdict"] = lanczos_basis.settle_verdict()
             cap_info["support_trace"] = list(lanczos_basis.support_trace)
             if csr is not None:
                 cap_info["csr_seconds"] = csr[3]
+                if lanczos_basis.support_frozen and not lanczos_basis.cap_hit:
+                    # A settled unit only (support_frozen and cap_hit are replicated): a capped or memory-held unit
+                    # is not a settle, and the probe's extra matvec is exactly what such a unit cannot afford.
+                    cap_info.update(_settled_frontier(lanczos_basis, csr_basis, hOp, csr, slaterWeightMin, comm))
         if csr is not None:
             # The array kernel's monitor filled `info` and warned about non-convergence itself.
             return csr[0], csr[1], csr[2]
@@ -1393,7 +1470,7 @@ def block_Green_bicgstab(
     # communicator (review ledger M4); collective, every rank of the color runs this unit.
     # Support freeze: once a point's solve admits no new determinant, the remaining points of the
     # eigenstate solve on the frozen P H P (_FrozenShiftedSystem).
-    closure = _SUPPORT_FREEZE and admission != "outer"
+    closure = _BICGSTAB_CLOSURE_FREEZE and admission != "outer"
     stats["frozen_points"] = 0
     stats["frozen_fallbacks"] = 0
     stats["frozen_size"] = None

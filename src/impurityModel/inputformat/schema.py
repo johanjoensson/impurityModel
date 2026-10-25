@@ -1046,6 +1046,42 @@ _TABLE_LIST += [
                 minimum=0.0,
             ),
             Key(
+                "gf_settle",
+                Kind.AUTO_ENUM,
+                "auto",
+                "The support settle of the block-Lanczos Green's function: a sparse unit stops admitting new "
+                "determinants once, over 16 blocks, the largest amplitude its next block carries on a "
+                "determinant reached for the first time stays at or below gf_settle_ratio x slater_weight_min "
+                "and is not growing, and carries on as the exact recurrence on what it has (it drops the "
+                "determinants whose next-block amplitude stayed at or below that bound). 'auto' is on. 'off' "
+                "keeps every unit growing until it closes or hits a cap. Only "
+                "valid with gf_method = 'lanczos'.",
+                # test_gf_settle_choices_pin the mapping to SolverOptions (auto -> None, on -> True, off -> False).
+                choices=("auto", "on", "off"),
+            ),
+            Key(
+                "gf_settle_ratio",
+                Kind.DIMENSIONLESS,
+                None,
+                "The settle threshold as a MULTIPLE OF slater_weight_min (unlike gf_admit_tol, not a fraction "
+                "of the seed norm). 1 settles when every excluded determinant would have been pruned from the "
+                "next block anyway, larger settles sooner and drops amplitude up to ratio x slater_weight_min "
+                "per determinant, 0 is closure only. Absent takes the GF_SETTLE_RATIO environment knob. Only "
+                "valid with gf_method = 'lanczos' and the settle on.",
+                minimum=0.0,
+            ),
+            Key(
+                "gf_settle_retry",
+                Kind.AUTO_ENUM,
+                "auto",
+                "If the real-axis self-energy fails the causality check and the support settle can plausibly be "
+                "blamed (settled units, none held by a cap or the memory guard, not already closure-only), solve "
+                "those units again once with the closure-only recurrence and judge the new G. The attribution is "
+                "always printed; the retry never falls back to 'settle off'. 'auto' is OFF: the re-solve can take as "
+                "long as an unsettled Green's function. Only valid with gf_method = 'lanczos' and the settle on.",
+                choices=("auto", "on", "off"),
+            ),
+            Key(
                 "gf_tol",
                 Kind.DIMENSIONLESS,
                 None,

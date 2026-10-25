@@ -483,7 +483,14 @@ def reconcile_block_structure_with_interaction(block_structure, two_body, m, tol
 
 
 def group_orbitals_by_blocks(
-    op, impurity_orbitals, valence_orbitals, conduction_orbitals, block_structure, n_orb=None, h0_matrix=None
+    op,
+    impurity_orbitals,
+    valence_orbitals,
+    conduction_orbitals,
+    block_structure,
+    n_orb=None,
+    h0_matrix=None,
+    merged=None,
 ):
     r"""Group flat impurity / valence / conduction orbital lists into orbital-symmetry blocks.
 
@@ -503,7 +510,20 @@ def group_orbitals_by_blocks(
     group, so the manifolds ``eg``/``t2g`` are free to redistribute charge without leaking it.
 
     Each bath orbital is placed in the group of the impurity orbital it couples to most
-    strongly (largest ``|h[b, o]| + |h[o, b]|``).
+    strongly (largest ``|h[b, o]| + |h[o, b]|``). A bath orbital with **no** direct impurity
+    coupling -- the interior of a chain geometry, where only the head hybridizes -- is placed in the group
+    of the impurity orbital nearest to it through the hopping graph (:func:`_nearest_impurity_orbital`), so
+    a chain stays whole with the impurity orbital it hangs from. (It used to take ``argmax`` of an all-zero
+    row, i.e. the first impurity orbital, which put 76 of the 96 bath sites of a 10-bath NiO chain model in
+    the eg group and left the t2g chains' interiors to be windowed as if they were eg.) A site that no
+    impurity orbital reaches at all keeps that first-orbital fallback.
+
+    A bath component (bath orbitals joined by hoppings, :func:`_bath_components`) that couples directly to the
+    impurity orbitals of more than one group joins those groups into one: the groups are the blocks the basis
+    windows are set per, and a bath reachable from two of them carries charge between them, so no per-group
+    window can hold. The merged group's impurity orbitals are one block, like :func:`group_orbitals_by_charges`'s.
+    ``merged`` (when a list is passed) receives each merge as the sorted list of the original groups' impurity
+    orbitals.
 
     Parameters
     ----------
@@ -519,6 +539,9 @@ def group_orbitals_by_blocks(
     h0_matrix : ndarray, optional
         Pre-extracted one-body matrix of ``op`` (``extract_tensors(op, two_body=False)[0]``);
         pass it to avoid re-walking the operator and re-allocating the dense matrix.
+    merged : list, optional
+        Receives one ``[[orbitals of group a], [orbitals of group b], ...]`` entry per merge (for the caller's
+        report).
 
     Returns
     -------
@@ -537,18 +560,108 @@ def group_orbitals_by_blocks(
     # to global spin-orbital indices via the sorted impurity list.
     manifolds = [sorted(imp[o] for o in local_orbs) for local_orbs in get_equivalent_orbs(block_structure)]
     manifolds = sorted(manifolds, key=min)
+    manifolds = _merge_bath_linked(h, manifolds, sorted(val_set | con_set), merged)
     imp_to_group = {orb: g for g, orbs in enumerate(manifolds) for orb in orbs}
 
     impurity_dict = {g: [list(orbs)] for g, orbs in enumerate(manifolds)}
     valence_dict = {g: [] for g in range(len(manifolds))}
     conduction_dict = {g: [] for g in range(len(manifolds))}
+    nearest = _nearest_impurity_orbital(h, imp, sorted(val_set | con_set))
     for b in sorted(val_set | con_set):
         couplings = [abs(h[b, o]) + abs(h[o, b]) for o in imp]
-        g = imp_to_group[imp[int(np.argmax(couplings))]]
+        if b in nearest and max(couplings) <= _NO_DIRECT_COUPLING:
+            g = imp_to_group[nearest[b]]
+        else:
+            g = imp_to_group[imp[int(np.argmax(couplings))]]
         (valence_dict if b in val_set else conduction_dict)[g].append(b)
     valence_dict = {g: [sorted(v)] for g, v in valence_dict.items()}
     conduction_dict = {g: [sorted(c)] for g, c in conduction_dict.items()}
     return impurity_dict, (valence_dict, conduction_dict)
+
+
+#: A hopping at or below this is no coupling: no edge in the hopping graph, and a bath orbital whose largest hopping to
+#: any impurity orbital is at or below it has no direct coupling.
+_NO_DIRECT_COUPLING = 1e-8
+
+
+def coupling_edge_weights(hop):
+    r"""The hopping graph's edge weights: ``-log(|h_ij| / h_max) + 1e-3`` on every edge above the coupling floor.
+
+    ``hop`` is the matrix of ``|h_ij|`` with a zero diagonal; ``h_max`` its largest entry. The weighted shortest path
+    accumulates ``-log`` of the product of the hoppings along it, so ``exp(-dist)`` is the effective coupling
+    strength. The offset keeps the strongest edges (weight 0) from being read as "no edge" by ``csgraph`` (which
+    drops values below ~1e-8); it takes thousands of hops to matter. All zeros when there is no hopping. The one
+    metric of the grouping (:func:`_nearest_impurity_orbital`) and the chain windows
+    (:func:`basis_restrictions._impurity_coupling_distance`).
+    """
+    weights = np.zeros_like(hop, dtype=float)
+    h_max = float(hop.max()) if hop.size else 0.0
+    if h_max > 0.0:
+        mask = hop > _NO_DIRECT_COUPLING
+        weights[mask] = -np.log(hop[mask] / h_max) + 1e-3
+    return weights
+
+
+def _bath_components(hop, bath):
+    """The bath orbitals in groups joined by bath-bath hoppings above :data:`_NO_DIRECT_COUPLING`, each sorted."""
+    import scipy.sparse as sp
+    from scipy.sparse.csgraph import connected_components
+
+    if not bath:
+        return []
+    sub = hop[np.ix_(bath, bath)] > _NO_DIRECT_COUPLING
+    _n, labels = connected_components(sp.csr_matrix(sub), directed=False)
+    comps = {}
+    for b, label in zip(bath, labels):
+        comps.setdefault(int(label), []).append(b)
+    return sorted(comps.values(), key=min)
+
+
+def _merge_bath_linked(h, manifolds, bath, merged=None):
+    """``manifolds`` with every set of them that one bath component couples to directly joined into one (sorted)."""
+    hop = np.abs(np.asarray(h))
+    np.fill_diagonal(hop, 0.0)
+    owner = {orb: g for g, orbs in enumerate(manifolds) for orb in orbs}
+    imp = sorted(owner)
+    parent = list(range(len(manifolds)))
+
+    def find(g):
+        while parent[g] != g:
+            parent[g] = parent[parent[g]]
+            g = parent[g]
+        return g
+
+    for comp in _bath_components(hop, bath):
+        touched = sorted({owner[o] for o in imp if np.any(hop[comp, o] > _NO_DIRECT_COUPLING)})
+        for g in touched[1:]:
+            parent[find(g)] = find(touched[0])
+    joined = {}
+    for g in range(len(manifolds)):
+        joined.setdefault(find(g), []).append(g)
+    if merged is not None:
+        merged.extend([[list(manifolds[g]) for g in gs] for gs in joined.values() if len(gs) > 1])
+    return sorted((sorted(o for g in gs for o in manifolds[g]) for gs in joined.values()), key=min)
+
+
+def _nearest_impurity_orbital(h, imp, bath):
+    r"""``{bath orbital: nearest impurity orbital}`` through the hopping graph, for the bath orbitals reached.
+
+    Edge weights :func:`coupling_edge_weights`, the coupling distance
+    :func:`basis_restrictions._impurity_coupling_distance` uses too. Multi-source Dijkstra from the impurity orbitals;
+    a bath orbital no impurity orbital reaches is absent. Rank-local and deterministic.
+    """
+    import scipy.sparse as sp
+    from scipy.sparse.csgraph import dijkstra
+
+    hop = np.abs(np.asarray(h))
+    np.fill_diagonal(hop, 0.0)
+    weights = coupling_edge_weights(hop)
+    if not weights.any():
+        return {}
+    dist, _pred, sources = dijkstra(
+        sp.csr_matrix(weights), directed=False, indices=list(imp), min_only=True, return_predecessors=True
+    )
+    return {b: int(sources[b]) for b in bath if np.isfinite(dist[b]) and sources[b] >= 0}
 
 
 def classify_bath_occupation(op, impurity_orbitals, n_orb=None, h0_matrix=None):

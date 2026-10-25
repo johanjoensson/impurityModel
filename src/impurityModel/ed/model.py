@@ -14,6 +14,7 @@ Layering: this is a bottom-layer module. It imports only ``atomic_physics``,
 without pulling in the many-body machinery.
 """
 
+import math
 import os
 import warnings
 from collections import OrderedDict
@@ -1080,6 +1081,33 @@ def _optional_float(value):
     return None if value is None else float(value)
 
 
+_TRUE_WORDS = frozenset({"true", "on", "yes", "1"})
+_FALSE_WORDS = frozenset({"false", "off", "no", "0"})
+
+
+def _optional_bool(value):
+    """An archive boolean attribute: ``None`` when absent or recorded as ``"None"``.
+
+    Accepts real and numpy booleans, the integers 0 and 1, and the strings (or bytes) true/false, on/off, yes/no, 1/0
+    in any case. Anything else raises: ``bool("False")`` is ``True``, so a writer that stringifies booleans must not be
+    read with ``bool()``."""
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)) and int(value) in (0, 1):
+        return bool(int(value))
+    if isinstance(value, (str, bytes)):
+        word = (value.decode() if isinstance(value, bytes) else value).strip().lower()
+        if word == "none":
+            return None
+        if word in _TRUE_WORDS:
+            return True
+        if word in _FALSE_WORDS:
+            return False
+    raise ValueError(f"cannot read {value!r} as a boolean archive attribute")
+
+
 def _optional_str(value):
     """An archive string attribute, ``None`` when absent (h5py may hand back ``bytes``)."""
     if value is None:
@@ -1234,6 +1262,10 @@ def _read_archive_group(path, cluster=None, iteration=None, with_options=True) -
         "gf_tol": _optional_float(_archive_attr(attrs, "gf_tol")),
         "gf_real_tol": _optional_float(_archive_attr(attrs, "gf_real_tol")),
         "gf_min_weight": _optional_float(_archive_attr(attrs, "gf_min_weight")),
+        # Absent from archives written before the support settle was an option: those runs ran its default.
+        "gf_settle": _optional_bool(_archive_attr(attrs, "gf_settle")),
+        "gf_settle_ratio": _optional_float(_archive_attr(attrs, "gf_settle_ratio")),
+        "gf_settle_retry": _optional_bool(_archive_attr(attrs, "gf_settle_retry")),
     }
 
 
@@ -1293,6 +1325,9 @@ def load_selfenergy_archive(path, cluster=None, iteration=None):
         gf_tol=raw["gf_tol"],
         gf_real_tol=raw["gf_real_tol"],
         gf_min_weight=raw["gf_min_weight"],
+        gf_settle=raw["gf_settle"],
+        gf_settle_ratio=raw["gf_settle_ratio"],
+        gf_settle_retry=raw["gf_settle_retry"],
     )
     return model, meshes, basis, solver, raw["label"]
 
@@ -1441,6 +1476,28 @@ class SolverOptions:
         a full set of Green's-function work units whatever its weight. The ground-state report and
         the returned ``thermal_rho`` / ``rhos`` keep the whole ensemble: they describe the thermal
         state itself, not the subset the Green's function was built from.
+    gf_settle : bool or None
+        Whether a sparse block-Lanczos Green's-function unit may stop admitting new determinants once its
+        frontier has fallen below the cutoff-scaled threshold (the support settle,
+        :class:`impurityModel.ed.gf_primitives.FreezeRule`) and carry on as the exact recurrence on what it
+        has. ``None`` (default) is on. It drops the determinants whose next-block amplitude stayed at or below
+        ``gf_settle_ratio x slater_weight_min``; switching it off keeps every unit growing until it closes or hits
+        a cap, which is far slower on a unit
+        whose support trickles. ``gf_method="lanczos"`` only.
+    gf_settle_ratio : float or None
+        The settle threshold as a **multiple of** ``slater_weight_min`` (not a fraction of the seed norm, unlike
+        ``gf_admit_tol``): a unit settles when, over 16 blocks, the largest amplitude the normalised next block
+        carries on a determinant reached for the first time stays at or below ``ratio x slater_weight_min`` and
+        is not growing. ``1`` settles when every excluded determinant would have been pruned from the next
+        block anyway, larger settles sooner, ``0`` is closure only (no new determinant at all). ``None``
+        (default): the ``GF_SETTLE_RATIO`` knob. Needs the settle on; ``gf_method="lanczos"`` only.
+    gf_settle_retry : bool or None
+        If the real-axis self-energy fails the causality check and the support settle can plausibly be blamed (the
+        block has settled units, none held by the cap or the memory guard, and they did not already run closure-only),
+        solve those units again once with the closure-only recurrence (``gf_settle_ratio = 0``) and judge the new
+        ``G``. The attribution is printed either way; the retry never falls back to "settle off". ``None`` (default)
+        is **off**: the closure-only re-solve can take as long as an unsettled Green's function (hours on a large
+        unit). Needs the settle on; ``gf_method="lanczos"`` only.
     sigma_method : {"dyson"}
         Self-energy estimator (:mod:`impurityModel.ed.sigma_estimators`): which operator family
         the Green's-function engine resolves and how the self-energy is read off it. Only the
@@ -1456,6 +1513,9 @@ class SolverOptions:
     gf_tol: Optional[float] = None
     gf_real_tol: Optional[float] = None
     gf_min_weight: Optional[float] = None
+    gf_settle: Optional[bool] = None
+    gf_settle_ratio: Optional[float] = None
+    gf_settle_retry: Optional[bool] = None
 
     def __post_init__(self):
         # One place for every front-end (RSPt solver line, TOML, CLI, archive replay): a bad
@@ -1492,6 +1552,31 @@ class SolverOptions:
         if self.gf_min_weight is not None and not 0.0 < self.gf_min_weight < 1.0:
             raise ValueError(
                 f"gf_min_weight must lie in (0, 1) (got {self.gf_min_weight!r}); omit it to keep every state"
+            )
+        for name in ("gf_settle", "gf_settle_ratio", "gf_settle_retry"):
+            if getattr(self, name) is not None and self.gf_method != "lanczos":
+                raise ValueError(f"{name} applies only to gf_method='lanczos'; remove it or switch gf_method")
+        if self.gf_settle_ratio is not None and 0.0 < self.gf_settle_ratio < 1.0:
+            warnings.warn(
+                f"gf_settle_ratio {self.gf_settle_ratio:g} is a MULTIPLE of slater_min, not a fraction: values below 1 "
+                "are nearly closure-only and make the Green's function several times slower",
+                stacklevel=2,
+            )
+        if self.gf_settle_ratio is not None and not (
+            math.isfinite(self.gf_settle_ratio) and self.gf_settle_ratio >= 0.0
+        ):
+            raise ValueError(
+                f"gf_settle_ratio must be >= 0 (got {self.gf_settle_ratio!r}); 0 is closure only, "
+                "omit it for the default"
+            )
+        if self.gf_settle_retry and self.gf_settle is False:
+            raise ValueError(
+                "gf_settle_retry on contradicts gf_settle off: the retry re-solves settled units; remove one of the two"
+            )
+        if self.gf_settle_ratio is not None and self.gf_settle is False:
+            raise ValueError(
+                "gf_settle_ratio only applies with the support settle on (it is set, but gf_settle is off); "
+                "remove one of the two"
             )
 
 

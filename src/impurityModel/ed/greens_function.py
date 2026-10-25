@@ -1,4 +1,6 @@
+import math
 import os
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -7,7 +9,7 @@ from mpi4py import MPI
 from impurityModel.ed import config
 from impurityModel.ed import gf_diagnostics as _gfd
 from impurityModel.ed.average import ThermalEnsemble, thermal_average_scale_indep
-from impurityModel.ed.basis_restrictions import build_excited_restrictions, intersect_windows
+from impurityModel.ed.basis_restrictions import build_excited_restrictions, format_chain_zones, intersect_windows
 from impurityModel.ed.basis_transcription import support_filter
 from impurityModel.ed.block_structure import BlockStructure
 
@@ -279,6 +281,7 @@ def get_greens_function_moments(psis, es, tau, basis, hOp, impurity_indices, max
 # 0 = addition (a creation operator on the thermal state, inverse photoemission),
 # 1 = removal (an annihilation operator, photoemission).
 _UNIT_SIDE_LABELS = ("create (addition)", "annihilate (removal)")
+_UNIT_SIDE_NAMES = ("addition", "removal")
 
 
 def _report_max_unit_basis(heading, rows):
@@ -313,25 +316,26 @@ def _report_max_unit_basis(heading, rows):
     """
     if not rows:
         return
-    label_width = max(len(label) for label, _, _ in rows)
-    tracked = [size for _, size, _ in rows if size is not None]
+    rows = [row if len(row) == 4 else (*row, "") for row in rows]
+    label_width = max(len(label) for label, _, _, _ in rows)
+    tracked = [size for _, size, _, _ in rows if size is not None]
     size_width = max((len(f"{size:,}") for size in tracked), default=0)
     print(f"{heading}:", flush=True)
-    for label, size, cap_hit in rows:
+    for label, size, cap_hit, note in rows:
         if size is None:
             detail = "not tracked (no determinant cap set)"
         else:
             noun = "determinant" if size == 1 else "determinants"
             detail = f"{size:>{size_width},} {noun}" + (" -- frozen at the cap" if cap_hit else "")
-        print(f"  {label:<{label_width}}  {detail}", flush=True)
+        print(f"  {label:<{label_width}}  {detail}" + (f" -- {note}" if note else ""), flush=True)
     if tracked:
         # Qualify the headline number wherever it is not the plain answer to "how big did the
         # largest unit get": a frozen unit reports the cap, not its demand, and an untracked
         # unit is missing from the maximum entirely -- without which "maximum over all units:
         # 0 determinants" is what an uncapped run with two empty units prints.
-        untracked = sum(1 for _, size, _ in rows if size is None)
+        untracked = sum(1 for _, size, _, _ in rows if size is None)
         notes = []
-        if any(cap_hit for _, size, cap_hit in rows if size is not None):
+        if any(cap_hit for _, size, cap_hit, _ in rows if size is not None):
             notes.append("at least one unit froze at the cap, so this is a lower bound")
         if untracked:
             notes.append(f"{untracked} of {len(rows)} units not tracked and not counted here")
@@ -341,13 +345,13 @@ def _report_max_unit_basis(heading, rows):
         print(f"  maximum over {scope}: {top:,} determinant{'' if top == 1 else 's'}{suffix}", flush=True)
 
 
-def _unit_basis_rows(blocks, max_basis):
+def _unit_basis_rows(blocks, max_basis, notes=None):
     """``(label, size, cap_hit)`` rows for a ``(block_i, side_i)``-keyed accumulator.
 
     The row label pads the orbital block and the spectral side into fixed columns, measured
     over the units that actually reported -- a block with no units contributes no line and no
     indentation. ``max_basis[key]`` is ``(size, cap_hit)``; see :func:`_report_max_unit_basis`
-    for what a ``None`` size means.
+    for what a ``None`` size means. ``notes[(block_i, side_i)]`` is an optional trailing remark.
     """
     labels = [str(block) for block in blocks]
     reported = [(bi, si) for bi in range(len(labels)) for si in range(len(_UNIT_SIDE_LABELS)) if (bi, si) in max_basis]
@@ -358,8 +362,30 @@ def _unit_basis_rows(blocks, max_basis):
     rows = []
     for bi, si in reported:
         size, cap_hit = max_basis[(bi, si)]
-        rows.append((f"block {labels[bi]:<{block_width}}  {_UNIT_SIDE_LABELS[si]:<{side_width}}", size, cap_hit))
+        label = f"block {labels[bi]:<{block_width}}  {_UNIT_SIDE_LABELS[si]:<{side_width}}"
+        rows.append((label, size, cap_hit, (notes or {}).get((bi, si), "")))
     return rows
+
+
+def _settle_notes(records):
+    """``{(block, side): remark}`` for the units that settled, for the max-basis table: how many of the pair's
+    units settled (and how many of those closed: no new determinant at all over the window), which unit the
+    row's size is, and the smallest settled one, so the table and the diagnostics row cannot disagree."""
+    notes = {}
+    for block_i in sorted({r.block for r in records}):
+        for side_i, side in enumerate(_UNIT_SIDE_NAMES):
+            mine = [r for r in records if r.block == block_i and r.side == side and r.retained is not None]
+            settled = [r for r in mine if r.settled]
+            if not settled:
+                continue
+            small = min(settled, key=lambda r: r.retained)
+            row = max(mine, key=lambda r: r.retained)
+            closed = sum(1 for r in settled if r.frontier_over_swm == 0)
+            closed_note = f", {closed} of them closed" if closed else ""
+            row_note = f"; {'settled' if row.settled else 'grown'} row is {row.describe()}"
+            small_note = f"; smallest settled {small.retained:,}: {small.describe()}" if small is not row else ""
+            notes[(block_i, side_i)] = f"{len(settled)} of {len(mine)} units settled{closed_note}{row_note}{small_note}"
+    return notes
 
 
 def _merge_unit_basis(acc, key, size, cap_hit):
@@ -380,72 +406,93 @@ def _merge_unit_basis(acc, key, size, cap_hit):
     acc[key] = (merged, prev_cap or bool(cap_hit))
 
 
-def get_Greens_function(
-    matsubara_mesh: np.ndarray,
-    omega_mesh: np.ndarray,
-    psis: list[ManyBodyState],
-    es: list[float],
-    tau: float,
-    basis: Basis,
-    hOp: ManyBodyOperator,
-    delta: float,
-    blocks: list[list[int]],
-    verbose: bool,
-    verbose_extra: bool,
-    reort: Optional[bool],
-    dN: Optional[int],
-    occ_cutoff: float,
-    slaterWeightMin: float,
-    sparse: bool,
-    num_wanted: int | None = None,
-    gf_method: str = "lanczos",
-    operator_families=None,
-    gf_admission: Optional[str] = None,
-    gf_admit_tol: Optional[float] = None,
-    gf_tol: Optional[float] = None,
-    gf_real_tol: Optional[float] = None,
-    ensemble_es=None,
+@dataclass
+class GFPlan:
+    """What :func:`get_Greens_function` decides before any recurrence runs: the flat work units of the
+    Lanczos path and everything needed to run any subset of them and to put their results back together.
+
+    ``units`` / ``unit_seeds`` / ``unit_restrictions`` / ``unit_weights`` are positional over the global unit
+    order; ``group_meta[g] = (block_i, side_i)`` and ``widths[block_i]`` describe the operator groups;
+    ``axis_tols`` are the resolved ``(Matsubara, real)`` convergence tolerances."""
+
+    axis_tols: tuple
+    excited_weighted_restrictions: object
+    n_psis: int
+    units: list
+    unit_seeds: list
+    unit_restrictions: list
+    unit_weights: list
+    group_meta: list
+    widths: list
+    slater_weight_min: float = 0.0
+
+
+class GFRun:
+    """A finished block-Lanczos Green's-function calculation that can solve some of its work units again.
+
+    Held by the self-energy driver so a block whose self-energy fails the causality check can have the units whose
+    support settled re-solved at a stricter threshold (:meth:`resolve`) without redoing the rest. ``results`` is the
+    gathered per-unit list in global unit order on the root rank (``None`` elsewhere), as :func:`_gf_assemble` takes
+    it. :meth:`resolve` is collective."""
+
+    def __init__(self, plan, results, solve, assemble):
+        self.plan = plan
+        self.results = results
+        self._solve = solve
+        self._assemble = assemble
+
+    def resolve(self, subset, settle_ratio):
+        """Solve the units ``subset`` (global indices, the same on every rank) again at ``settle_ratio`` and, if
+        they all come back uncapped, unguarded and converged, write them into the results and assemble ``G`` again.
+
+        Returns ``(accepted, changes, gs_matsubara, gs_realaxis, report)``: on the root rank ``accepted`` says
+        whether the new units were taken, ``changes`` is ``[(unit, retained_before, retained_after, reason)]`` and the
+        rest the re-assembled ``G`` and report (the old ones are not returned when rejected: the caller keeps them);
+        everything is ``None`` off the root rank. A rejected re-solve leaves the results as they were."""
+        new = self._solve(list(subset), settle_ratio)
+        if new is None:
+            return None, None, None, None, None
+        changes, accepted = [], True
+        for pos, u in enumerate(subset):
+            _a, _b, _r, cap_stats, conv_stats = new[pos]
+            before = self.results[u][3].get("retained_size")
+            reason = ""
+            if cap_stats.get("cap_hit") or cap_stats.get("memory_frozen"):
+                accepted, reason = False, "capped or held by the memory guard"
+            elif not conv_stats.get("converged", True):
+                accepted, reason = False, "did not converge"
+            changes.append((u, before, cap_stats.get("retained_size"), reason))
+        if not accepted:
+            return False, changes, None, None, None
+        spliced = list(self.results)
+        for pos, u in enumerate(subset):
+            spliced[u] = new[pos]
+        gs_matsubara, gs_realaxis, report = self._assemble(spliced)
+        self.results = spliced
+        return True, changes, gs_matsubara, gs_realaxis, report
+
+
+def _gf_lanczos_plan(
+    psis,
+    es,
+    basis,
+    hOp,
+    delta,
+    blocks,
+    verbose,
+    dN,
+    occ_cutoff,
+    slaterWeightMin,
+    gf_method,
+    gf_admission,
+    gf_tol,
+    gf_real_tol,
+    operator_families,
+    verbose_extra=False,
 ):
-    """
-    Calculate interacting Greens function.
+    """Validate the options, build the excited-sector windows and enumerate the work units. Collective.
 
-    Returns ``(gs_matsubara, gs_realaxis, report)`` on the root rank, where ``report`` is a
-    :class:`gf_diagnostics.DiagnosticReport` of per-block convergence/consistency checks
-    (``(None, None, None)`` on non-root ranks). ``num_wanted`` is the number of thermal states
-    the eigensolver was asked for, used by the ensemble-truncation check.
-
-    ``gf_method`` selects the resolvent kernel: ``"lanczos"`` (default) runs one block-Lanczos
-    recurrence per work unit serving the whole mesh; ``"bicgstab"`` solves one linear system
-    per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`).
-    On the per-frequency path ``sparse`` is ignored (the solvers work on the ManyBodyState
-    representation only).
-
-    ``gf_admission`` is the per-frequency kernel's basis-growth policy: ``"all"`` or ``"outer"``
-    (``None``, the default: ``GF_BICGSTAB_ADMISSION``, else ``"all"``). ``"outer"`` solves on a
-    frozen basis, scores the residual outside it and admits only what clears
-    ``gf_admit_tol`` (``None``: ``GF_BICGSTAB_ADMIT_TOL_AMP``), and repeats; see
-    :mod:`impurityModel.ed.gf_admission`. ``"outer"`` also records a measured error bound in the
-    diagnostics report. An explicit argument wins over the matching environment knob.
-
-    ``gf_tol`` / ``gf_real_tol`` are the block-Lanczos convergence tolerances (relative change of
-    ``G``) on every axis / on the real axis only (``None``: ``GF_TOL`` / ``GF_REAL_TOL``, else
-    ``max(slaterWeightMin**2, 1e-9)`` on both axes; see :func:`gf_convergence._gf_axis_tols`).
-    They govern the ``"lanczos"`` kernel only; passing either with ``"bicgstab"`` is an error.
-
-    ``ensemble_es`` is the whole thermal ensemble the eigensolver returned, when the caller passes
-    only part of it in ``es`` (``SolverOptions.gf_min_weight``); the ensemble-truncation check
-    judges the eigensolver's output, not the subset. ``None``: ``es``.
-
-    ``operator_families`` is the self-energy estimator seam
-    (:mod:`impurityModel.ed.sigma_estimators`): ``operator_families(block)`` returns
-    ``(addition_ops, removal_ops)``, two equally long operator lists. With ``removal_ops = X``
-    and ``addition_ops = X^dag``, each returned block is the Green's function of the family X,
-    ``G_ab(z) = <X_a (z - H + E)^-1 X_b^dag> + <X_b^dag (z + H - E)^-1 X_a>``. The contract: a
-    family's leading ``len(block)`` operators are the block's own ``c^dag`` / ``c`` in block
-    order, so the leading sub-block is the impurity Green's function and the anticommutator sum
-    rule is checked on it. ``None`` is exactly that plain family, so each block is
-    ``len(block)`` wide.
-    """
+    At ``verbose`` the chain windows print as one line; ``verbose_extra`` adds one line per chain."""
     config.warn_retired_knobs()
     if gf_method in config.RETIRED_GF_METHODS:
         raise ValueError(f"gf_method {gf_method!r} {config.RETIRED_GF_METHODS[gf_method]}")
@@ -469,9 +516,14 @@ def get_Greens_function(
     # Excited-sector restrictions are independent of the orbital block and of the spectral side
     # (the dN occupation window is symmetric and spans all impurity orbitals), so build them once
     # on the full basis instead of per block.
+    chain_zones: list = []
     excited_restrictions, excited_weighted_restrictions = _build_excited_restrictions(
-        basis, hOp, psis, es, dN, occ_cutoff, slater_weight_min=slaterWeightMin
+        basis, hOp, psis, es, dN, occ_cutoff, slater_weight_min=slaterWeightMin, zones_out=chain_zones
     )
+    if verbose and basis.chain_restrict and (basis.comm is None or basis.comm.rank == 0):
+        # Which sites carry which window (the occupation windows below are just their union): the same text a
+        # comparison of two cutoffs or two iterations reads.
+        print(format_chain_zones(chain_zones, verbose=verbose_extra), flush=True)
     # The per-unit kernels print the restrictions only when they exist, so an unrestricted run
     # would otherwise be silent -- indistinguishable from restrictions lost somewhere.
     if verbose and (basis.comm is None or basis.comm.rank == 0):
@@ -535,31 +587,55 @@ def get_Greens_function(
         for window in distinct_windows(unit_restrictions):
             print_excited_windows(window, None)
         print_excited_windows(None, excited_weighted_restrictions)
+    return GFPlan(
+        axis_tols,
+        excited_weighted_restrictions,
+        n_psis,
+        units,
+        unit_seeds,
+        unit_restrictions,
+        unit_weights,
+        group_meta,
+        widths,
+        slaterWeightMin,
+    )
 
-    if gf_method == "bicgstab":
-        return _get_greens_function_bicgstab(
-            matsubara_mesh,
-            omega_mesh,
-            es,
-            tau,
-            basis,
-            hOp,
-            delta,
-            blocks,
-            widths,
-            units,
-            unit_seeds,
-            unit_weights,
-            unit_restrictions,
-            group_meta,
-            excited_weighted_restrictions,
-            slaterWeightMin,
-            verbose,
-            verbose_extra,
-            num_wanted,
-            gf_admission=gf_admission,
-            gf_admit_tol=gf_admit_tol,
-        )
+
+def _gf_solve_units(
+    plan,
+    basis,
+    hOp,
+    matsubara_mesh,
+    omega_mesh,
+    es,
+    delta,
+    reort,
+    sparse,
+    slaterWeightMin,
+    verbose_extra,
+    subset=None,
+    gf_settle=None,
+    gf_settle_ratio=None,
+):
+    """Run the plan's Lanczos work units through the distribution engine; the gathered per-unit results on
+    the root rank, ``None`` elsewhere. ``subset`` (global unit indices, replicated) runs only those units;
+    the results are then positional over the subset, in its order. Collective."""
+    units, unit_seeds, unit_restrictions, unit_weights = (
+        plan.units,
+        plan.unit_seeds,
+        plan.unit_restrictions,
+        plan.unit_weights,
+    )
+    group_meta, axis_tols, excited_weighted_restrictions = (
+        plan.group_meta,
+        plan.axis_tols,
+        plan.excited_weighted_restrictions,
+    )
+    if subset is not None:
+        units = [units[u] for u in subset]
+        unit_seeds = [unit_seeds[u] for u in subset]
+        unit_restrictions = [unit_restrictions[u] for u in subset]
+        unit_weights = [unit_weights[u] for u in subset]
 
     def eval_meshes_for(unit):
         # Converge G where this unit's G will actually be evaluated: the caller's meshes, shifted
@@ -587,6 +663,9 @@ def get_Greens_function(
         print_windows=verbose_extra,
         print_size=verbose_extra,
         eval_meshes_for=eval_meshes_for,
+        support_settle=gf_settle is not False,
+        settle_ratio=gf_settle_ratio,
+        unit_ids=None if subset is None else list(subset),
     )
 
     # This unit-level dump belongs at -vv (verbose_extra): the roots/per-color summary is
@@ -601,6 +680,18 @@ def get_Greens_function(
         unit_windows=unit_restrictions,
         hOp=hOp,
     )
+    return results
+
+
+def _gf_assemble(
+    plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, delta, ensemble_es, num_wanted, print_table=True
+):
+    """Reassemble the per-unit results into the thermally averaged ``G`` per block and its diagnostics report.
+
+    ``results`` is the full gathered list in global unit order (``None`` off the root rank, where the three
+    return values are ``None``). Prints the maximum-excited-basis table unless ``print_table`` is off (a re-assembly
+    after a unit re-solve prints nothing; the caller reports what changed)."""
+    units, group_meta, widths, axis_tols, n_psis = plan.units, plan.group_meta, plan.widths, plan.axis_tols, plan.n_psis
 
     gs_matsubara = gs_realaxis = report = None
     if results is not None:
@@ -621,8 +712,39 @@ def get_Greens_function(
         # chunks feeding it. Separate from `cap_acc`, which takes
         # the *smallest* frozen size and only of the units that actually hit the cap.
         max_basis: dict[tuple[int, int], tuple[Optional[int], bool]] = {}
-        for unit, (_alphas, _betas, _r_slices, cap_stats, conv_stats) in zip(units, results):
+        records: list[_gfd.UnitRecord] = []
+        e_gap = np.real(np.asarray(es, dtype=complex)) - float(np.min(np.real(np.asarray(es, dtype=complex))))
+        boltzmann = np.exp(-e_gap / tau) / float(np.sum(np.exp(-e_gap / tau)))
+        for unit_i, (unit, (_alphas, _betas, r_slices, cap_stats, conv_stats)) in enumerate(zip(units, results)):
             block_i, unit_side_i = group_meta[unit.group_i]
+            verdict = cap_stats.get("settle_verdict") or {}
+            records.append(
+                _gfd.UnitRecord(
+                    unit=unit_i,
+                    block=int(block_i),
+                    side=_UNIT_SIDE_NAMES[unit_side_i],
+                    states=tuple(int(i) for i in unit.chunk),
+                    e_minus_e0=tuple(float(e_gap[i]) for i in unit.chunk),
+                    boltzmann=tuple(float(boltzmann[i]) for i in unit.chunk),
+                    seed_weight=float(math.fsum(float(np.linalg.norm(np.asarray(r))) ** 2 for r in r_slices)),
+                    retained=cap_stats.get("retained_size"),
+                    settled=bool(cap_stats.get("support_frozen", False)),
+                    settle_step=verdict.get("step"),
+                    n_blocks=conv_stats.get("n_blocks"),
+                    frontier_over_swm=float(verdict.get("max_amp_over_swm", float("nan"))),
+                    ratio=float(verdict.get("ratio", float("nan"))),
+                    window=int(verdict.get("window", 0)),
+                    cap_hit=bool(cap_stats.get("cap_hit", False)),
+                    memory_frozen=bool(cap_stats.get("memory_frozen", False)),
+                    leak_window=float(verdict.get("leak", float("nan"))),
+                    frontier_end_over_swm=(
+                        float(cap_stats.get("frontier_end", float("nan"))) / plan.slater_weight_min
+                        if plan.slater_weight_min > 0
+                        else float("nan")
+                    ),
+                    leak_end=float(cap_stats.get("leak_end", float("nan"))),
+                )
+            )
             _merge_unit_basis(max_basis, (block_i, unit_side_i), cap_stats.get("retained_size"), cap_stats["cap_hit"])
             # Root-side record of every unit (the kernel's own `gf_unit_memory` note is emitted per
             # color, so a traced rank 0 sees only its own color's units there).
@@ -643,16 +765,6 @@ def get_Greens_function(
                 stats["seed_frozen"] = True
             if cap_stats.get("memory_frozen"):
                 stats["memory_frozen"] = True
-            if cap_stats.get("support_frozen"):
-                # Kept apart from the cap's retained_size: a block can hold both kinds of unit, and the
-                # support-freeze diagnostic reports its own smallest support and largest window weight.
-                retained = cap_stats.get("retained_size")
-                if not stats.get("support_frozen") or (retained is not None and retained < stats["support_retained"]):
-                    stats["support_retained"] = retained
-                stats["support_frozen"] = True
-                leak, cut = cap_stats.get("support_window") or (None, None)
-                if leak is not None and leak >= stats.get("support_window", (-1.0, None))[0]:
-                    stats["support_window"] = (leak, cut)
             if cap_stats["cap_hit"]:
                 stats["cap_hit"] = True
                 stats["cap"] = cap_stats["cap"]
@@ -717,12 +829,9 @@ def get_Greens_function(
                         memory_frozen=block_cap.get("memory_frozen", False),
                     )
                 )
-                if block_cap.get("support_frozen"):
-                    diags.append(
-                        _gfd.check_support_freeze(
-                            block_cap.get("support_retained"), *block_cap.get("support_window", (None, None))
-                        )
-                    )
+                block_records = [r for r in records if r.block == block_i]
+                if any(r.settled for r in block_records):
+                    diags.append(_gfd.check_support_settled(block_records, plan.slater_weight_min))
             # The sum rule holds for the plain c/c^dag part of a family: its leading len(block) columns.
             n_c = len(block)
             if widths[block_i] != n_c:
@@ -757,9 +866,192 @@ def get_Greens_function(
                 diags.append(_gfd.check_causality(combined_real, "G"))
             report.extend(str(block), diags)
 
-        _report_max_unit_basis("Maximum excited basis size per unit", _unit_basis_rows(blocks, max_basis))
+        report.units = records
+        if print_table:
+            _report_max_unit_basis(
+                "Maximum excited basis size per unit", _unit_basis_rows(blocks, max_basis, _settle_notes(records))
+            )
 
     return (gs_matsubara, gs_realaxis, report)
+
+
+def get_Greens_function(
+    matsubara_mesh: np.ndarray,
+    omega_mesh: np.ndarray,
+    psis: list[ManyBodyState],
+    es: list[float],
+    tau: float,
+    basis: Basis,
+    hOp: ManyBodyOperator,
+    delta: float,
+    blocks: list[list[int]],
+    verbose: bool,
+    verbose_extra: bool,
+    reort: Optional[bool],
+    dN: Optional[int],
+    occ_cutoff: float,
+    slaterWeightMin: float,
+    sparse: bool,
+    num_wanted: int | None = None,
+    gf_method: str = "lanczos",
+    operator_families=None,
+    gf_admission: Optional[str] = None,
+    gf_admit_tol: Optional[float] = None,
+    gf_tol: Optional[float] = None,
+    gf_real_tol: Optional[float] = None,
+    ensemble_es=None,
+    gf_settle: Optional[bool] = None,
+    gf_settle_ratio: Optional[float] = None,
+    run_out: Optional[dict] = None,
+):
+    """
+    Calculate interacting Greens function.
+
+    Returns ``(gs_matsubara, gs_realaxis, report)`` on the root rank, where ``report`` is a
+    :class:`gf_diagnostics.DiagnosticReport` of per-block convergence/consistency checks
+    (``(None, None, None)`` on non-root ranks). ``num_wanted`` is the number of thermal states
+    the eigensolver was asked for, used by the ensemble-truncation check.
+
+    ``gf_method`` selects the resolvent kernel: ``"lanczos"`` (default) runs one block-Lanczos
+    recurrence per work unit serving the whole mesh; ``"bicgstab"`` solves one linear system
+    per frequency point with a rebuilt-and-discarded basis (:func:`block_Green_bicgstab`).
+    On the per-frequency path ``sparse`` is ignored (the solvers work on the ManyBodyState
+    representation only).
+
+    ``gf_admission`` is the per-frequency kernel's basis-growth policy: ``"all"`` or ``"outer"``
+    (``None``, the default: ``GF_BICGSTAB_ADMISSION``, else ``"all"``). ``"outer"`` solves on a
+    frozen basis, scores the residual outside it and admits only what clears
+    ``gf_admit_tol`` (``None``: ``GF_BICGSTAB_ADMIT_TOL_AMP``), and repeats; see
+    :mod:`impurityModel.ed.gf_admission`. ``"outer"`` also records a measured error bound in the
+    diagnostics report. An explicit argument wins over the matching environment knob.
+
+    ``gf_tol`` / ``gf_real_tol`` are the block-Lanczos convergence tolerances (relative change of
+    ``G``) on every axis / on the real axis only (``None``: ``GF_TOL`` / ``GF_REAL_TOL``, else
+    ``max(slaterWeightMin**2, 1e-9)`` on both axes; see :func:`gf_convergence._gf_axis_tols`).
+    They govern the ``"lanczos"`` kernel only; passing either with ``"bicgstab"`` is an error.
+
+    ``gf_settle`` / ``gf_settle_ratio`` control the support settle of the ``"lanczos"`` kernel's sparse units
+    (``None``: on, and the ``GF_SETTLE_RATIO`` knob; see :class:`SolverOptions`); with ``"bicgstab"`` they are an
+    error.
+
+    ``ensemble_es`` is the whole thermal ensemble the eigensolver returned, when the caller passes
+    only part of it in ``es`` (``SolverOptions.gf_min_weight``); the ensemble-truncation check
+    judges the eigensolver's output, not the subset. ``None``: ``es``.
+
+    ``run_out`` (a dict, optional): receives ``run_out["run"]``, a :class:`GFRun` that can solve some of the units
+    again (the block-Lanczos kernel only; absent for ``"bicgstab"``). Filled on every rank.
+
+    ``operator_families`` is the self-energy estimator seam
+    (:mod:`impurityModel.ed.sigma_estimators`): ``operator_families(block)`` returns
+    ``(addition_ops, removal_ops)``, two equally long operator lists. With ``removal_ops = X``
+    and ``addition_ops = X^dag``, each returned block is the Green's function of the family X,
+    ``G_ab(z) = <X_a (z - H + E)^-1 X_b^dag> + <X_b^dag (z + H - E)^-1 X_a>``. The contract: a
+    family's leading ``len(block)`` operators are the block's own ``c^dag`` / ``c`` in block
+    order, so the leading sub-block is the impurity Green's function and the anticommutator sum
+    rule is checked on it. ``None`` is exactly that plain family, so each block is
+    ``len(block)`` wide.
+    """
+    if gf_method != "lanczos" and (gf_settle is not None or gf_settle_ratio is not None):
+        raise ValueError("gf_settle/gf_settle_ratio apply only to gf_method='lanczos'; remove them or switch gf_method")
+    plan = _gf_lanczos_plan(
+        psis,
+        es,
+        basis,
+        hOp,
+        delta,
+        blocks,
+        verbose,
+        dN,
+        occ_cutoff,
+        slaterWeightMin,
+        gf_method,
+        gf_admission,
+        gf_tol,
+        gf_real_tol,
+        operator_families,
+        verbose_extra=verbose_extra,
+    )
+    units, unit_seeds, unit_weights, unit_restrictions = (
+        plan.units,
+        plan.unit_seeds,
+        plan.unit_weights,
+        plan.unit_restrictions,
+    )
+    group_meta, widths, excited_weighted_restrictions = plan.group_meta, plan.widths, plan.excited_weighted_restrictions
+    if gf_method == "bicgstab":
+        return _get_greens_function_bicgstab(
+            matsubara_mesh,
+            omega_mesh,
+            es,
+            tau,
+            basis,
+            hOp,
+            delta,
+            blocks,
+            widths,
+            units,
+            unit_seeds,
+            unit_weights,
+            unit_restrictions,
+            group_meta,
+            excited_weighted_restrictions,
+            slaterWeightMin,
+            verbose,
+            verbose_extra,
+            num_wanted,
+            gf_admission=gf_admission,
+            gf_admit_tol=gf_admit_tol,
+        )
+    results = _gf_solve_units(
+        plan,
+        basis,
+        hOp,
+        matsubara_mesh,
+        omega_mesh,
+        es,
+        delta,
+        reort,
+        sparse,
+        slaterWeightMin,
+        verbose_extra,
+        gf_settle=gf_settle,
+        gf_settle_ratio=gf_settle_ratio,
+    )
+    if run_out is not None:
+        run_out["run"] = GFRun(
+            plan,
+            results,
+            lambda subset, ratio: _gf_solve_units(
+                plan,
+                basis,
+                hOp,
+                matsubara_mesh,
+                omega_mesh,
+                es,
+                delta,
+                reort,
+                sparse,
+                slaterWeightMin,
+                verbose_extra,
+                subset=subset,
+                gf_settle=gf_settle,
+                gf_settle_ratio=ratio,
+            ),
+            lambda res: _gf_assemble(
+                plan,
+                res,
+                blocks,
+                matsubara_mesh,
+                omega_mesh,
+                es,
+                tau,
+                delta,
+                ensemble_es,
+                num_wanted,
+                print_table=False,
+            ),
+        )
+    return _gf_assemble(plan, results, blocks, matsubara_mesh, omega_mesh, es, tau, delta, ensemble_es, num_wanted)
 
 
 def impurity_operator_family(block):
@@ -1033,7 +1325,7 @@ def _run_evaluated_gf_units(
 
 
 def _build_excited_restrictions(
-    basis, hOp, psis, es, dN, occ_cutoff, dN_imp=None, dN_val=None, dN_con=None, slater_weight_min=None
+    basis, hOp, psis, es, dN, occ_cutoff, dN_imp=None, dN_val=None, dN_con=None, slater_weight_min=None, zones_out=None
 ):
     """Build the excited-sector occupation restrictions for a Green's-function calculation.
 
@@ -1073,6 +1365,7 @@ def _build_excited_restrictions(
         con_change=dN_con,
         cutoff=occ_cutoff,
         slater_weight_min=slater_weight_min,
+        zones_out=zones_out,
     )
     # Weighted (e.g. S_z) restriction for the excited sector: widen the ground-state bounds by one
     # orbital weight so the addition / removal sectors q_psi ± w_j are admitted while still

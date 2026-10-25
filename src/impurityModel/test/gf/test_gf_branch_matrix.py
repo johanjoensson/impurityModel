@@ -148,7 +148,7 @@ def _run_cell(cell):
     w = W if cell["mesh"] in ("w", "both") else None
     with (
         _env(GF_EIGENSTATE_GROUP=cell["group"]),
-        gf_switches(support_freeze=not cell.get("sparse")),
+        gf_switches(closure_freeze=not cell.get("sparse")),
         contextlib.redirect_stdout(io.StringIO()),
     ):
         gs_iw, gs_w, report = get_Greens_function(
@@ -170,6 +170,8 @@ def _run_cell(cell):
             sparse=cell["sparse"],
             num_wanted=N_STATES,
             gf_method=cell["method"],
+            # the sparse cells want the plain sparse Lanczos kernel, not the settled one
+            gf_settle=False if cell["method"] == "lanczos" and cell["sparse"] else None,
         )
 
     def check():

@@ -599,3 +599,36 @@ def test_a_gf_tolerance_on_the_per_frequency_kernel_is_refused(written):
     text = SELFENERGY + '\n[solver]\ngf_method = "bicgstab"\ngf_real_tol = 1e-5\n'
     with pytest.raises(InputError, match="gf_real_tol"):
         build(load_input(written(text)))
+
+
+def test_the_settle_keys_reach_the_solver_options(written):
+    solver = build(load_input(written(SELFENERGY))).solver
+    assert solver.gf_settle is None and solver.gf_settle_ratio is None, "absent: on, the knob decides the ratio"
+    for word, want in (("auto", None), ("on", True), ("off", False)):
+        text = SELFENERGY + f'\n[solver]\ngf_settle = "{word}"\n'
+        assert build(load_input(written(text))).solver.gf_settle is want
+    text = SELFENERGY + "\n[solver]\ngf_settle_ratio = 5\n"
+    assert build(load_input(written(text))).solver.gf_settle_ratio == 5.0
+
+
+@pytest.mark.parametrize(
+    "body,match",
+    [
+        ('gf_settle = "sometimes"\n', "gf_settle"),
+        ('gf_settle = "off"\ngf_settle_ratio = 2\n', "only applies with the support settle on"),
+        ('gf_method = "bicgstab"\ngf_settle = "on"\n', "applies only to gf_method='lanczos'"),
+        ("gf_settle_ratio = -1\n", "gf_settle_ratio"),
+    ],
+)
+def test_the_settle_keys_refuse_a_contradiction_by_name(written, body, match):
+    with pytest.raises(InputError, match=match):
+        build(load_input(written(SELFENERGY + "\n[solver]\n" + body)))
+
+
+def test_the_settle_retry_key_reaches_the_solver_options(written):
+    assert build(load_input(written(SELFENERGY))).solver.gf_settle_retry is None
+    for word, want in (("auto", None), ("on", True), ("off", False)):
+        text = SELFENERGY + f'\n[solver]\ngf_settle_retry = "{word}"\n'
+        assert build(load_input(written(text))).solver.gf_settle_retry is want
+    with pytest.raises(InputError, match="contradicts gf_settle off"):
+        build(load_input(written(SELFENERGY + '\n[solver]\ngf_settle = "off"\ngf_settle_retry = "on"\n')))

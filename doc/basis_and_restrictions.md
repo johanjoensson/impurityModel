@@ -123,3 +123,13 @@ diagnostic row and the DC record's truncation fields say when that is the case.
 The byte model behind `auto` is a starting point, not a guarantee -- it has under-predicted by
 ~50x at 256 ranks. The measured-RSS guard is what actually stops an `auto` or `unlimited` run
 before an OOM kill.
+
+## Bath orbitals follow their chain
+
+`symmetries.group_orbitals_by_blocks` places a bath orbital with the impurity orbital it couples to most strongly. In a
+chain geometry only the chain heads couple to the impurity; every other site is placed with the impurity orbital nearest
+to it through the hopping graph (weights `-log(|h|/h_max)`), so a chain stays whole with the orbital it hangs from. Before
+this, such sites fell to the first impurity orbital: on the NiO 10-bath linked-chain model the groups came out 84 / 12
+instead of 48 / 48 and the t2g chains' interiors were windowed as if they were eg (`doc/plans/gf_support_freeze_redesign.md`).
+The excited-sector chain windows are reported at `-v` (`Chain windows:`: sites per zone, the deep boundary, the thermal
+excitation weight each zone's cap acts on; `basis_restrictions.ChainZone`).

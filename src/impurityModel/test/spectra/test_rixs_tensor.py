@@ -757,7 +757,7 @@ def test_rixs_r1_gmres_escalation_rescues_stagnated_bicgstab(monkeypatch):
     psis, es, dets, states, vecs = _thermal_states(op, 2)
     tin, tout = _tin_tout()
     # Force the per-point fallback path (dense cache and recycler both declined).
-    set_gf_switches(monkeypatch, support_freeze="0")  # the sparse per-point solve; frozen: test_gf_bicgstab_frozen.py
+    set_gf_switches(monkeypatch, closure_freeze="0")  # the sparse per-point solve; frozen: test_gf_bicgstab_frozen.py
     monkeypatch.setenv("GF_SECTOR_DENSE_MAX", "0")
     monkeypatch.setenv("GF_KRYLOV_RECYCLE_MAX_BYTES", "0")
 

@@ -21,6 +21,7 @@ clear message when the file is missing, so the callers can skip cleanly.
 
 import numpy as np
 
+from impurityModel.ed.model import _optional_bool
 from impurityModel.ed.selfenergy import calc_selfenergy
 
 
@@ -55,6 +56,9 @@ _CONSUMED_ATTRS = frozenset(
         "gf_method",
         "gf_admission",
         "gf_admit_tol",
+        "gf_settle",
+        "gf_settle_ratio",
+        "gf_settle_retry",
         "gf_min_weight",
         "excitation_budget",
         "e_pt2_tol",
@@ -165,6 +169,9 @@ def load_workload(h5_path, cluster=None, iteration=None):
         "de2_min": _optional(attrs, "de2_min", float),
         "gf_admission": _optional(attrs, "gf_admission", str),
         "gf_admit_tol": _optional(attrs, "gf_admit_tol", float),
+        "gf_settle": _optional_bool(_attr(attrs, "gf_settle")),
+        "gf_settle_ratio": _optional(attrs, "gf_settle_ratio", float),
+        "gf_settle_retry": _optional_bool(_attr(attrs, "gf_settle_retry")),
         "gf_min_weight": _optional(attrs, "gf_min_weight", float),
         "gf_method": _optional(attrs, "gf_method", str),
         "label": name,
@@ -210,6 +217,8 @@ def build_options(
     gf_min_weight=None,
     gf_tol=None,
     gf_real_tol=None,
+    gf_settle=None,
+    gf_settle_ratio=None,
 ):
     """The ``(model, meshes, basis_options, solver_options)`` a replay of ``workload`` hands to ``calc_selfenergy``.
 
@@ -263,9 +272,18 @@ def build_options(
         gf_tol=workload["gf_tol"] if gf_tol == "archive" else gf_tol,
         gf_real_tol=workload["gf_real_tol"] if gf_real_tol == "archive" else gf_real_tol,
     )
-    for key in ("gf_admission", "gf_admit_tol"):
+    for key in ("gf_admission", "gf_admit_tol", "gf_settle", "gf_settle_ratio", "gf_settle_retry"):
         if workload.get(key) is not None:
             solver_kwargs[key] = workload[key]
+    # An explicit argument beats the archive's record (the freeze-replay rig sweeps these); switching the settle off
+    # drops the archive's ratio and retry, which only apply with it on.
+    if gf_settle is not None:
+        solver_kwargs["gf_settle"] = gf_settle
+        if gf_settle is False:
+            solver_kwargs.pop("gf_settle_ratio", None)
+            solver_kwargs.pop("gf_settle_retry", None)
+    if gf_settle_ratio is not None:
+        solver_kwargs["gf_settle_ratio"] = gf_settle_ratio
     return model, meshes, basis, SolverOptions(**solver_kwargs)
 
 
@@ -281,6 +299,8 @@ def run_selfenergy(
     gf_min_weight=None,
     gf_tol=None,
     gf_real_tol=None,
+    gf_settle=None,
+    gf_settle_ratio=None,
 ):
     """Re-run ``calc_selfenergy`` on a loaded workload, with benchmark-friendly overrides.
 
@@ -329,6 +349,8 @@ def run_selfenergy(
         gf_min_weight=gf_min_weight,
         gf_tol=gf_tol,
         gf_real_tol=gf_real_tol,
+        gf_settle=gf_settle,
+        gf_settle_ratio=gf_settle_ratio,
     )
     return calc_selfenergy(
         model,
