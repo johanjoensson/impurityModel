@@ -176,9 +176,10 @@ def _gf_reort(reort):
 # A restart must shrink the reported residual by at least this factor to earn the next one, so
 # a genuinely stuck point stops early and is reported rather than looping.
 _GF_BICGSTAB_RESTART_PROGRESS = 0.5
-#: Test seams, not user knobs: the support freeze and the frozen-basis CSR fallback are always on. A test
-#: turns one off here (``test/support/gf_switches.py``) to exercise the plain sparse path they replace.
-_SUPPORT_FREEZE = True
+#: Test seams, not user knobs: the per-frequency (BiCGSTAB, RIXS R1) closure freeze and the frozen-basis CSR fallback
+#: are always on. A test turns one off here (``test/support/gf_switches.py``) to exercise the plain sparse path it
+#: replaces. The block-Lanczos support settle is NOT behind a seam: it is the ``gf_settle`` solver option.
+_BICGSTAB_CLOSURE_FREEZE = True
 _FROZEN_CSR = True
 #: Restarts granted to a non-converged BiCGSTAB point (the current iterate warm-starts each) before the GMRES fallback.
 _GF_BICGSTAB_RESTARTS = 10
@@ -922,7 +923,6 @@ def block_Green_sparse(
     # carries on from its tail, and a reorthogonalized one would recompute every block to drop weight.
     if (
         support_settle
-        and _SUPPORT_FREEZE
         and csr_candidate
         and not resolved_reort
         and getattr(lanczos_basis, "tracks_support", False)
@@ -1456,7 +1456,7 @@ def block_Green_bicgstab(
     # communicator (review ledger M4); collective, every rank of the color runs this unit.
     # Support freeze: once a point's solve admits no new determinant, the remaining points of the
     # eigenstate solve on the frozen P H P (_FrozenShiftedSystem).
-    closure = _SUPPORT_FREEZE and admission != "outer"
+    closure = _BICGSTAB_CLOSURE_FREEZE and admission != "outer"
     stats["frozen_points"] = 0
     stats["frozen_fallbacks"] = 0
     stats["frozen_size"] = None

@@ -18,7 +18,7 @@ Run (one process per point; ``-n 3`` is what the numbers in the write-up used)::
     python -m impurityModel.test.support.freeze_replay grade debug/gf_freeze/swm8.npz \
         debug/gf_freeze/swm8_nofreeze.npz
 
-``--freeze`` is ``on`` (the code's default), ``off``, or a number (a settle ratio, once the rule takes one).
+``--freeze`` is ``on`` (the options' defaults), ``off`` (``gf_settle=False``) or a number (``gf_settle_ratio``).
 The archive path is always an argument: nothing here hard-codes a workload.
 """
 
@@ -104,18 +104,14 @@ def load_result(path):
         return {k: d[k] for k in d.files}
 
 
-def set_freeze(mode):
-    """Switch the support settle: ``"on"``, ``"off"`` or a settle ratio (``GF_SETTLE_RATIO``). Returns what it set."""
-    from impurityModel.ed import gf_solvers
-
+def settle_options(mode):
+    """``(gf_settle, gf_settle_ratio, text)`` for ``--freeze``: ``on`` (the options' defaults), ``off``, or a ratio."""
     if mode == "on":
-        return "on"
+        return None, None, "on"
     if mode == "off":
-        gf_solvers._SUPPORT_FREEZE = False
-        return "off"
+        return False, None, "off"
     ratio = float(mode)
-    os.environ["GF_SETTLE_RATIO"] = repr(ratio)
-    return f"ratio {ratio:g}"
+    return None, ratio, f"ratio {ratio:g}"
 
 
 def run(h5_path, out, iteration=1, cluster=None, swm=None, freeze="on", comm=None, verbosity=1):
@@ -123,7 +119,7 @@ def run(h5_path, out, iteration=1, cluster=None, swm=None, freeze="on", comm=Non
     os.environ.setdefault("SIGMA_CAUSALITY_TOL", "1e9")
     from impurityModel.test.support import real_workload as rw
 
-    mode = set_freeze(freeze)
+    gf_settle, gf_settle_ratio, mode = settle_options(freeze)
     wl = rw.load_workload(h5_path, cluster=cluster, iteration=iteration)
     if wl["ignored_attrs"]:
         # warm_start / warm_tol describe the bath fit that produced H solver, not the solver call.
@@ -133,7 +129,15 @@ def run(h5_path, out, iteration=1, cluster=None, swm=None, freeze="on", comm=Non
     if swm is not None:
         wl["slaterWeightMin"] = float(swm)
     t0 = time.perf_counter()
-    res = rw.run_selfenergy(wl, comm=comm, verbosity=verbosity, gf_tol="archive", gf_real_tol="archive")
+    res = rw.run_selfenergy(
+        wl,
+        comm=comm,
+        verbosity=verbosity,
+        gf_tol="archive",
+        gf_real_tol="archive",
+        gf_settle=gf_settle,
+        gf_settle_ratio=gf_settle_ratio,
+    )
     wall = time.perf_counter() - t0
     if comm is not None and comm.rank != 0:
         return None

@@ -67,11 +67,11 @@ def _assert_same_g(G, G_ref, rel=1e-8):
 
 
 def _sparse(monkeypatch, fn, *args, **kwargs):
-    set_gf_switches(monkeypatch, support_freeze="0")
+    set_gf_switches(monkeypatch, closure_freeze="0")
     try:
         return fn(*args, **kwargs)
     finally:
-        set_gf_switches(monkeypatch, support_freeze="1")
+        set_gf_switches(monkeypatch, closure_freeze="1")
 
 
 def test_the_frozen_solves_give_the_sparse_g_and_converge_in_bicgstab(monkeypatch):
@@ -208,7 +208,7 @@ def test_the_residual_check_runs_on_frozen_points(monkeypatch):
 
 
 def test_off_switch(monkeypatch):
-    set_gf_switches(monkeypatch, support_freeze="0")
+    set_gf_switches(monkeypatch, closure_freeze="0")
     _, stats = _gf()
     assert stats["frozen_points"] == 0 and stats["frozen_size"] is None
 

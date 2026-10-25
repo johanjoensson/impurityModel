@@ -214,6 +214,8 @@ def build_options(
     gf_min_weight=None,
     gf_tol=None,
     gf_real_tol=None,
+    gf_settle=None,
+    gf_settle_ratio=None,
 ):
     """The ``(model, meshes, basis_options, solver_options)`` a replay of ``workload`` hands to ``calc_selfenergy``.
 
@@ -270,6 +272,11 @@ def build_options(
     for key in ("gf_admission", "gf_admit_tol", "gf_settle", "gf_settle_ratio"):
         if workload.get(key) is not None:
             solver_kwargs[key] = workload[key]
+    # An explicit argument beats the archive's record (the freeze-replay rig sweeps these).
+    if gf_settle is not None:
+        solver_kwargs["gf_settle"] = gf_settle
+    if gf_settle_ratio is not None:
+        solver_kwargs["gf_settle_ratio"] = gf_settle_ratio
     return model, meshes, basis, SolverOptions(**solver_kwargs)
 
 
@@ -285,6 +292,8 @@ def run_selfenergy(
     gf_min_weight=None,
     gf_tol=None,
     gf_real_tol=None,
+    gf_settle=None,
+    gf_settle_ratio=None,
 ):
     """Re-run ``calc_selfenergy`` on a loaded workload, with benchmark-friendly overrides.
 
@@ -333,6 +342,8 @@ def run_selfenergy(
         gf_min_weight=gf_min_weight,
         gf_tol=gf_tol,
         gf_real_tol=gf_real_tol,
+        gf_settle=gf_settle,
+        gf_settle_ratio=gf_settle_ratio,
     )
     return calc_selfenergy(
         model,

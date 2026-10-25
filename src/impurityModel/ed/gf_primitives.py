@@ -213,7 +213,9 @@ class FreezeRule:
     term is a heuristic against a monotonically growing trickle, not a proof of closure.
 
     At ``slaterWeightMin = 0`` the threshold is 0, so only a window of exactly-zero frontiers settles (closure).
-    The decision uses only the allreduced records, so every rank decides alike.
+    The decision uses only the allreduced records, so every rank decides alike. The records are sums over ranks and
+    chunks, so a window sitting within rounding of the threshold can settle one step earlier or later when the rank
+    or chunk count changes; the settled ``G`` then differs by far less than the settle's own error.
     """
 
     #: Slope above which a window counts as growing (log10 per step); rounding of a flat window stays below it.

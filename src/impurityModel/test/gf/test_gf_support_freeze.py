@@ -1,21 +1,21 @@
-r"""``GF_SUPPORT_FREEZE``: freeze a sparse GF unit's support once growing it buys no more than the cutoff costs.
+r"""The support settle: a sparse GF unit stops admitting new determinants once its frontier is below the cutoff.
 
-Every step weighs, in the units of its matvec, the weight landing on rows outside the support (the *leak*)
-against what the step's ``slaterWeightMin`` prunes dropped (the *cut*); once the leak over the last 16 steps
-is no larger than the cut over them, the support freezes and the recurrence carries on on the ``P H P`` CSR.
-The contract these tests pin:
+Every recurrence step records the largest amplitude the normalised next block carries on a determinant the step
+reached for the first time; once, over a window of 16 steps, that stays at or below ``ratio x slaterWeightMin`` and
+is not growing, the unit's support is final and the recurrence carries on on the ``P H P`` CSR. The contract these
+tests pin:
 
-* the rule itself, on synthetic windows (not full: no; ``<=``; rolling);
-* it fires on a support that trickles and never closes -- where it fires is the rule applied to the run's
-  own per-step history, far earlier than a zero-growth window ever comes;
-* both prunes are counted, the next block's weighed back through ``beta beta^H``;
-* the frozen ``G`` is no farther from the exact one than the unfrozen sparse ``G``;
-* with no cutoff it freezes only on exact closure;
-* reort other than 'none' and the off switch leave the unit alone; a matrix that does not fit undoes the
-  freeze and leaves the result as if it had never fired;
-* every rank holds the same history bits and decides alike (``-n 2``/``-n 3``);
-* it is on by default, and the freezes it replaces (``GF_CLOSURE_FREEZE``, ``GF_STAGNATION_FREEZE``,
-  ``GF_STAGNATION_WINDOW``) warn that they are no longer read.
+* the rule itself, on synthetic records (window not full; ``<=`` at the boundary; the growth refusal; the floor;
+  ``swm = 0`` and ratio 0 are closure);
+* every recorded quantity against a dense numpy replay of the recurrence on the whole sector, step by step;
+* it settles a support that trickles and never closes, where the unit's own trace says;
+* the settled ``G`` is no farther from the exact one than the unsettled sparse ``G`` by more than a few percent;
+* reort other than 'none' and the off switch (``support_settle=False``) leave the unit alone; a matrix that does
+  not fit undoes the settle and leaves the result as if it had never fired;
+* every rank holds the same records and decides alike, and the rank count moves nothing (``-n 2``/``-n 3``);
+* the end-of-unit probe reports the frontier a settled unit left behind;
+* the retired freezes (``GF_CLOSURE_FREEZE``, ``GF_STAGNATION_FREEZE``, ``GF_STAGNATION_WINDOW``) warn that they
+  are no longer read.
 """
 
 import itertools
@@ -41,7 +41,6 @@ from impurityModel.test.support.gf_chain_fixtures import (
     exact_chain_g,
     run_chain,
 )
-from impurityModel.test.support.gf_switches import gf_switches, set_gf_switches
 
 WINDOW = gf_primitives.SETTLE_WINDOW
 
@@ -148,13 +147,12 @@ def test_both_prunes_are_counted(monkeypatch):
 
 
 @pytest.mark.parametrize("ratio", [0.0, 1.0, 3.0])
-def test_the_settled_g_costs_no_more_than_the_cutoff_already_does(ratio, monkeypatch):
+def test_the_settled_g_costs_no_more_than_the_cutoff_already_does(ratio):
     """The settle drops only amplitude the cutoff itself works at: the settled G is no farther from the exact
     sector G than the unsettled sparse G by more than a few percent (measured 1.32e-5 against 1.30e-5 at ratio 1,
     1.14e-5 at ratio 3: the error is the cutoff's, not the settle's)."""
     settled = _g(_trickle(settle_ratio=ratio))
-    set_gf_switches(monkeypatch, support_freeze="0")
-    plain = _g(_trickle())
+    plain = _g(_trickle(support_settle=False))
     exact = _exact_sector_g()
     err_settled = np.abs(settled - exact).max()
     err_plain = np.abs(plain - exact).max()
@@ -163,7 +161,6 @@ def test_the_settled_g_costs_no_more_than_the_cutoff_already_does(ratio, monkeyp
 
 
 def test_it_is_on_by_default():
-    assert gf_solvers._SUPPORT_FREEZE is True
     assert _trickle()[3]["support_frozen"]
 
 
@@ -180,16 +177,13 @@ def test_it_needs_reort_none(reort):
     assert not info["support_frozen"] and info["support_trace"] == []
 
 
-def test_off_switch(monkeypatch):
-    set_gf_switches(monkeypatch, support_freeze="0")
-    info = _trickle()[3]
+def test_off_switch():
+    info = _trickle(support_settle=False)[3]
     assert not info["support_frozen"] and info["support_trace"] == []
 
 
 def test_a_matrix_that_does_not_fit_undoes_the_freeze(monkeypatch):
-    set_gf_switches(monkeypatch, support_freeze="0")
-    plain = _trickle()
-    set_gf_switches(monkeypatch, support_freeze="1")
+    plain = _trickle(support_settle=False)
     monkeypatch.setattr(gf_solvers, "_frozen_csr_fits", lambda *a, **k: False)
     declined = _trickle()
     assert not declined[3]["support_frozen"] and not declined[3]["csr_fallback"]
@@ -393,8 +387,7 @@ def test_a_closed_support_leaves_no_frontier():
 
 
 def test_a_unit_that_never_settled_reports_no_frontier():
-    with gf_switches(support_freeze=False):
-        info = run_chain(slater_min=1e-4)[3]
+    info = run_chain(slater_min=1e-4, support_settle=False)[3]
     assert np.isnan(info["frontier_end_matvec"]) and np.isnan(info["leak_settle"])
 
 
