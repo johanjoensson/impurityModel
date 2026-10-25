@@ -616,7 +616,7 @@ def test_the_settle_keys_reach_the_solver_options(written):
     [
         ('gf_settle = "sometimes"\n', "gf_settle"),
         ('gf_settle = "off"\ngf_settle_ratio = 2\n', "only applies with the support settle on"),
-        ('gf_method = "bicgstab"\ngf_settle = "on"\n', "block-Lanczos setting"),
+        ('gf_method = "bicgstab"\ngf_settle = "on"\n', "applies only to gf_method='lanczos'"),
         ("gf_settle_ratio = -1\n", "gf_settle_ratio"),
     ],
 )

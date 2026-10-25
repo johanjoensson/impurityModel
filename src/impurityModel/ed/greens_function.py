@@ -949,7 +949,7 @@ def get_Greens_function(
     ``len(block)`` wide.
     """
     if gf_method != "lanczos" and (gf_settle is not None or gf_settle_ratio is not None):
-        raise ValueError(f"gf_settle/gf_settle_ratio are block-Lanczos settings; gf_method={gf_method!r} ignores them")
+        raise ValueError("gf_settle/gf_settle_ratio apply only to gf_method='lanczos'; remove them or switch gf_method")
     plan = _gf_lanczos_plan(
         psis,
         es,

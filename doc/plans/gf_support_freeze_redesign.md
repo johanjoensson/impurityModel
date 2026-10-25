@@ -95,37 +95,60 @@ pruned from the next block anyway" and `ratio 0` is closure. It differs from the
 `doc/plans/gf_freeze_rules.md` (a recorded no-go on a metal): nothing is banned, a row above the frontier still
 enters while the unit is unsettled.
 
-NiO iteration 1, against the unsettled run at the same cutoff (`debug/gf_freeze/sweep_it1.txt`):
+Sweeps against the unsettled run at the same cutoff, 3 ranks. **Two groupings**: the first table was run before the
+grouping fix of section 2 (old 84/12 grouping, the accidental 36-site window; `debug/gf_freeze/sweep_it1.txt`), the
+second on the final tree (48/48 grouping; `debug/gf_freeze/sweep_final.txt`). The cliff between ratios 10 and 30 moved
+with the grouping, which is why the default was fixed only from the second.
 
-| slater_min | ratio | wall | (B) change / headroom | dG / max G (real) |
-|---|---|---|---|---|
-| 1e-8 | 0 | 310 s | 3.7e-9 | 1.5e-10 |
-| 1e-8 | 1 | 284 s | 3.7e-9 | 1.5e-10 |
-| 1e-8 | 2 | 263 s | 3.7e-9 | 1.5e-10 |
-| 1e-8 | 3 | 57 s | 5.0e-9 | 1.8e-10 |
-| 1e-8 | 5 | 24 s | 8.6e-9 | 2.5e-10 |
-| 1e-8 | **10** | **15.6 s** | **1.9e-7** | 7.0e-9 |
-| 1e-8 | 30 | 11.8 s | **2.2e-2** | 2.0e-3 |
-| 1e-10 | 0 / 1 | 189 s / 235 s | 2.0e-9 | 4.5e-11 |
-| 1e-10 | 2 | 187 s | 7.2e-9 | 2.0e-10 |
-| 1e-10 | 3 | 46.5 s | 7.2e-9 | 2.0e-10 |
-| 1e-10 | 5 | 31.9 s | 4.9e-9 | 1.7e-10 |
-| 1e-10 | **10** | **19.3 s** | **3.1e-9** | 9.0e-11 |
-| 1e-10 | 30 | 16.6 s | 1.7e-7 | 6.1e-9 |
+Old grouping, NiO iteration 1 (the unsettled run took 189-310 s):
 
-At ratios 0-2 only the units whose support closes settle (the 1,014 and 5,499 ones); the 20-35k units run to their own end, hence 190-310 s against the old rule's 15-18 s. Matsubara changes are zero or below 1e-13
-at every ratio. SMO (28 spin-orbitals, `slater_min 1.49e-8`, `debug/gf_freeze/sweep/smo_r*.npz`), against closure
-(ratio 0, 3,271 s): ratio 5 (431 s) 4.3e-8 of the headroom, ratio 10 (280 s) 8.7e-8, ratio 30 (300 s) 7.9e-8, the
-old rule (310 s) 5.5e-8. Metal SIAM (`examples/semicircular_siam`, 14-level star): the settle never fires (no unit
-closes early enough; GF wall 185 s with it off, 229 s at ratio 10, 177 s at ratio 30) and Sigma is identical to the
-precision of the output files.
+| slater_min | ratio | wall | (B) change / headroom |
+|---|---|---|---|
+| 1e-8 | 0 / 1 / 2 | 310 / 284 / 263 s | 3.7e-9 |
+| 1e-8 | 3 / 5 / 10 / 30 | 57 / 24 / 15.6 / 11.8 s | 5.0e-9 / 8.6e-9 / 1.9e-7 / 2.2e-2 |
+| 1e-10 | 0 / 1 / 2 | 189 / 235 / 187 s | 2.0e-9 / 2.0e-9 / 7.2e-9 |
+| 1e-10 | 3 / 5 / 10 / 30 | 46.5 / 31.9 / 19.3 / 16.6 s | 7.2e-9 / 4.9e-9 / 3.1e-9 / 1.7e-7 |
 
-**Default `GF_SETTLE_RATIO = 10`**: the largest ratio of the grid whose change stays below 1e-6 of the guard's
-headroom on every measured run; ratio 30 jumps to 2e-2 on NiO at 1e-8 (still inside the 0.1 limit of the acceptance
-rule, but the margin is gone). The acceptance rule used: (A) Matsubara change <= 1e-7, (B) pointwise change of
-Sigma_ii <= 0.1 x headroom; `max|dG|/max|G|` is reported and not gated, because at the default tolerance (1e-9
-relative) it lies below the reference's own stopping noise. The reading of RSPt's `convergency 1e-6` as a bound on
-Sigma(i omega) was **not** confirmed from RSPt's documentation.
+At ratios 0-2 only the units whose support closes settle (the 1,014 and 5,499 ones); the 20-35k units run to their own
+end, hence 190-310 s against the old rule's 15-18 s.
+
+**Final tree (48/48 grouping)**, iterations 1 and 28:
+
+| iteration | slater_min | ratio | wall (unsettled) | (A) Matsubara | (B) change / headroom | dG / max G (real) |
+|---|---|---|---|---|---|---|
+| 1 | 1e-8 | 5 / 10 / 30 | 22.1 / 13.4 / 11.0 s (303 s) | 0 | 8.7e-9 / 7.9e-6 / 2.7e-2 | 2.3e-10 / 6.5e-7 / 2.4e-3 |
+| 1 | 1e-10 | 5 / 10 / 30 | 25.1 / 20.0 / 14.5 s (270 s) | 0 | 6.6e-9 / 3.2e-9 / 3.0e-5 | 2.3e-10 / 1.0e-10 / 2.2e-6 |
+| 28 | 1e-8 | 5 / 10 / 30 | 30.6 / 19.0 / 15.2 s (275 s) | 0 | 8.6e-9 / **7.1e-4** / 6.3e-2 | 2.9e-10 / 3.0e-5 / 4.9e-3 |
+| 28 | 1e-10 | 5 / 10 / 30 | 22.5 / 17.4 / 14.6 s (289 s) | 0 | 6.7e-9 / 8.5e-9 / 6.2e-3 | 1.3e-10 / 1.6e-10 / 4.7e-4 |
+
+Matsubara changes are zero or below 1e-13 at every ratio. SMO (28 spin-orbitals, `slater_min 1.49e-8`,
+`debug/gf_freeze/sweep/smo_r*.npz`; old grouping is irrelevant there, a star), against closure (ratio 0, 3,271 s): ratio 5
+(431 s) 4.3e-8 of the headroom, ratio 10 (280 s) 8.7e-8, ratio 30 (300 s) 7.9e-8, the old rule (310 s) 5.5e-8. Metal SIAM
+(`examples/semicircular_siam`, 14-level star): the settle never fires (GF wall 185 s with it off, 229 s at ratio 10, 177 s at
+ratio 30) and Sigma is identical to the precision of the output files.
+
+**Default `GF_SETTLE_RATIO = 5`**: the largest ratio of the grid whose change stays below 1e-6 of the guard's headroom on
+every run (NiO at most 9e-9, SMO 4e-8). Ratio 10, the first choice, was taken from the old-grouping table and fails that
+rule on the final tree (7.1e-4 at iteration 28, 1e-8); ratio 30 reaches 6e-2. Ratio 5 costs 22-31 s per iteration against
+the old rule's 15-18 s. The acceptance rule used: (A) Matsubara change <= 1e-7, (B) pointwise change of Sigma_ii <= 0.1 x
+headroom; `max|dG|/max|G|` is reported and not gated, because at the default tolerance (1e-9 relative) it lies below the
+reference's own stopping noise. The reading of RSPt's `convergency 1e-6` as a bound on Sigma(i omega) was **not**
+confirmed from RSPt's documentation.
+
+### 4b. The retry's error estimate is loose by five orders
+
+`selfenergy._settle_estimate` (the 10% gate of the re-solve) was calibrated on the one case with a real settle effect:
+NiO iteration 1 at 1e-8, ratio 30 against unsettled (`debug/gf_freeze/calibrate_estimate.py`).
+
+| block | settled units | measured max `|dSigma_ii|` | estimate at that point |
+|---|---|---|---|
+| 0 | 3 | 5.8e-3 | 326 |
+| 1 | 3 | 3.3e-3 | 536 |
+
+It overshoots by 6e4-2e5 (the bound carries 1/delta^2 and a sum of non-cancelling terms), so the "estimate >= 10% of the
+violation" condition essentially never skips a re-solve. What does gate the retry is: units settled, none held by a cap or
+the guard, the worst point not on a bath pole, `gf_settle_retry` not off. The estimate is printed as context only; the
+write-up of the retry should not read it as a probability.
 
 ### 5. Symmetry copy
 
@@ -142,7 +165,7 @@ settle verdict; per-unit records and the "settled" wording; options `gf_settle` 
 `gf_settle_retry`; default ratio; the BiCGSTAB seam rename; the grouping fix; Sigma-causality attribution with one
 gated closure-only re-solve; chain zones as data.
 
-Deviations from the plan, and why: `chain_deep_cutoff` and the occupation-gated deep zone were **not** done (the deep
+Deviations from the plan, and why: the retry's magnitude gate is ineffective (section 4b); `chain_deep_cutoff` and the occupation-gated deep zone were **not** done (the deep
 zone is empty on NiO-10 at every iteration and the 1e-8 case that would motivate them is unavailable); the retry gate
 has no "excluded rows are of excitation order <= 1" test and no frozen-matrix pre-check (the probe does not enumerate
 excluded rows; the re-solve is accepted only if uncapped, unguarded and converged); the unit record has no (N, Sz)

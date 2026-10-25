@@ -42,14 +42,17 @@ trickle). Measured on the TSQR output before the cut acts, so `ratio 1` means "e
 pruned from the next block anyway" and `ratio 0` (or `swm = 0`) is closure. From the settle on the unit is the exact
 Lanczos of `P H P` on the CSR (reort none), dropping only rows below that amplitude; nothing checks the frontier
 afterwards except the end-of-unit probe (`gf_solvers._settled_frontier`, trace only). `gf_settle_ratio` /
-`GF_SETTLE_RATIO` (default 10) sets the ratio; `gf_settle` switches the rule off. The records are sums over ranks and
+`GF_SETTLE_RATIO` (default 5) sets the ratio; `gf_settle` switches the rule off. The records are sums over ranks and
 chunks, so a window within rounding of the threshold can settle a step earlier or later when the layout changes.
 
 The default and its evidence: `doc/plans/gf_support_freeze_redesign.md` (acceptance rule: Matsubara change <= 1e-7,
 pointwise change of Sigma_ii <= 0.1 x the causality guard's headroom; the chosen ratio is the largest measured whose
 change stays below 1e-6 of the headroom). If a self-energy still fails the causality check, `calc_selfenergy`
-attributes it and, when the settle can plausibly be blamed, solves the block's settled units again once closure-only
-(`gf_settle_retry`; `selfenergy._settle_retry`).
+attributes it and, when the settle can plausibly be blamed (units settled, none held by a cap or the guard, the worst point not
+on a bath pole), solves the block's settled units again once closure-only (`gf_settle_retry`; `selfenergy._settle_retry`). The
+settle's own error estimate it prints is an order-of-magnitude figure that overshoots the measured change by about five orders
+(write-up, section 4b): context, not a gate. The closure-only re-solve can take as long as an unsettled run (3,271 s against
+280 s on the small SMO case).
 
 ## Category A — amplitude cuts inside an already-decided support
 

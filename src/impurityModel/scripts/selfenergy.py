@@ -304,6 +304,12 @@ def apply_solver_overrides(solver, args):
         )
         if value is not None
     }
+    # A flag that switches the settle off, or leaves the block-Lanczos kernel, makes the archive's settle fields
+    # meaningless: clear the ones the command line did not set itself, or the options refuse the combination.
+    leaves_lanczos = overrides.get("gf_method", solver.gf_method) != "lanczos"
+    if overrides.get("gf_settle") is False or leaves_lanczos:
+        for name in ("gf_settle_ratio", "gf_settle_retry") + (("gf_settle",) if leaves_lanczos else ()):
+            overrides.setdefault(name, None)
     return replace(solver, **overrides) if overrides else solver
 
 

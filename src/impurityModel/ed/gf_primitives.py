@@ -224,8 +224,8 @@ class FreezeRule:
     FLOOR_FRACTION = 1e-3
 
     def __init__(self, window, ratio, slater_weight_min):
-        if ratio < 0:
-            raise ValueError(f"the settle ratio must be >= 0 (got {ratio})")
+        if not (math.isfinite(ratio) and ratio >= 0):
+            raise ValueError(f"the settle ratio must be a finite number >= 0 (got {ratio})")
         self.ratio = float(ratio)
         self.slater_weight_min = float(slater_weight_min)
         self.threshold2 = (self.ratio * self.slater_weight_min) ** 2

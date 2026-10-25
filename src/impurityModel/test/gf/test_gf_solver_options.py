@@ -207,5 +207,5 @@ def test_the_settle_options_reach_the_kernel_and_bicgstab_refuses_them(monkeypat
     seen.clear()
     _run_driver("lanczos", None, extra={"gf_settle_ratio": 4.0})
     assert set(seen) == {(True, 4.0)}
-    with pytest.raises(ValueError, match="block-Lanczos settings"):
+    with pytest.raises(ValueError, match="apply only to gf_method='lanczos'"):
         _run_driver("bicgstab", None, extra={"gf_settle": True})

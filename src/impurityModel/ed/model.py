@@ -14,6 +14,7 @@ Layering: this is a bottom-layer module. It imports only ``atomic_physics``,
 without pulling in the many-body machinery.
 """
 
+import math
 import os
 import warnings
 from collections import OrderedDict
@@ -1080,11 +1081,31 @@ def _optional_float(value):
     return None if value is None else float(value)
 
 
+_TRUE_WORDS = frozenset({"true", "on", "yes", "1"})
+_FALSE_WORDS = frozenset({"false", "off", "no", "0"})
+
+
 def _optional_bool(value):
-    """An archive boolean attribute, ``None`` when absent or recorded as the string ``"None"``."""
-    if value is None or (isinstance(value, (str, bytes)) and _optional_str(value) == "None"):
+    """An archive boolean attribute: ``None`` when absent or recorded as ``"None"``.
+
+    Accepts real and numpy booleans, the integers 0 and 1, and the strings (or bytes) true/false, on/off, yes/no, 1/0
+    in any case. Anything else raises: ``bool("False")`` is ``True``, so a writer that stringifies booleans must not be
+    read with ``bool()``."""
+    if value is None:
         return None
-    return bool(value)
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)) and int(value) in (0, 1):
+        return bool(int(value))
+    if isinstance(value, (str, bytes)):
+        word = (value.decode() if isinstance(value, bytes) else value).strip().lower()
+        if word == "none":
+            return None
+        if word in _TRUE_WORDS:
+            return True
+        if word in _FALSE_WORDS:
+            return False
+    raise ValueError(f"cannot read {value!r} as a boolean archive attribute")
 
 
 def _optional_str(value):
@@ -1533,17 +1554,28 @@ class SolverOptions:
             )
         for name in ("gf_settle", "gf_settle_ratio", "gf_settle_retry"):
             if getattr(self, name) is not None and self.gf_method != "lanczos":
-                raise ValueError(f"{name} is a block-Lanczos setting; gf_method={self.gf_method!r} ignores it")
-        if self.gf_settle_ratio is not None and not self.gf_settle_ratio >= 0.0:
+                raise ValueError(f"{name} applies only to gf_method='lanczos'; remove it or switch gf_method")
+        if self.gf_settle_ratio is not None and 0.0 < self.gf_settle_ratio < 1.0:
+            warnings.warn(
+                f"gf_settle_ratio {self.gf_settle_ratio:g} is a MULTIPLE of slater_min, not a fraction: values below 1 "
+                "are nearly closure-only and make the Green's function several times slower",
+                stacklevel=2,
+            )
+        if self.gf_settle_ratio is not None and not (
+            math.isfinite(self.gf_settle_ratio) and self.gf_settle_ratio >= 0.0
+        ):
             raise ValueError(
                 f"gf_settle_ratio must be >= 0 (got {self.gf_settle_ratio!r}); 0 is closure only, "
                 "omit it for the default"
             )
         if self.gf_settle_retry and self.gf_settle is False:
-            raise ValueError("gf_settle_retry on contradicts gf_settle off: the retry re-solves settled units")
+            raise ValueError(
+                "gf_settle_retry on contradicts gf_settle off: the retry re-solves settled units; remove one of the two"
+            )
         if self.gf_settle_ratio is not None and self.gf_settle is False:
             raise ValueError(
-                "gf_settle_ratio only applies with the support settle on (it is set, but gf_settle is off)"
+                "gf_settle_ratio only applies with the support settle on (it is set, but gf_settle is off); "
+                "remove one of the two"
             )
 
 
