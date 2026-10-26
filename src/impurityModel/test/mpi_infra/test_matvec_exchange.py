@@ -219,3 +219,40 @@ def test_plan_width_disagreement_raises_on_every_rank():
     width = 2 if comm.rank == 0 else 3
     with pytest.raises(RuntimeError, match="width disagrees"):
         MatvecExchangePlan(comm, counts, offsets, dest_flags_all(counts), width, 2**30)
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("budget", [2**30, 16])
+def test_plan_with_a_row_partition_that_differs_from_the_column_partition(budget):
+    """A discovered-key matrix has ``|K_local|`` rows for ``|P_local|`` columns. The first rank has
+    rows but no columns, the last rank columns but (at three or more ranks) rows of its own too:
+    the exchange must size every buffer from the row partition."""
+    comm = MPI.COMM_WORLD
+    size, rank = comm.size, comm.rank
+    col_counts = np.array([0 if r == 0 and size > 1 else 2 + r for r in range(size)], dtype=np.int64)
+    row_counts = np.array([3 + 2 * r for r in range(size)], dtype=np.int64)
+    col_off = np.concatenate(([0], np.cumsum(col_counts)))
+    row_off = np.concatenate(([0], np.cumsum(row_counts)))
+    rng = np.random.default_rng(11)
+    A = rng.standard_normal((row_off[-1], col_off[-1])) + 1j * rng.standard_normal((row_off[-1], col_off[-1]))
+    x_local = np.ascontiguousarray(
+        np.random.default_rng(50 + rank).standard_normal((col_counts[rank], WIDTH)).astype(complex)
+    )
+    x_global = np.concatenate(comm.allgather(x_local), axis=0)
+    want = (A @ x_global)[row_off[rank] : row_off[rank + 1]]
+    a_local = A[:, col_off[rank] : col_off[rank + 1]]
+
+    plan = MatvecExchangePlan(
+        comm, col_counts, col_off[:-1], row_counts > 0, WIDTH, budget, row_counts=row_counts
+    )
+    assert plan.n_local == row_counts[rank]
+    got = np.empty((row_counts[rank], WIDTH), dtype=complex)
+    for a, b in plan.column_rounds(WIDTH):
+        w = b - a
+        for i, d in enumerate(plan.destinations):
+            plan.send_slot(i, w)[...] = a_local[row_off[d] : row_off[d + 1]] @ x_local[:, a:b]
+        plan.self_slot(w)[...] = a_local[row_off[rank] : row_off[rank + 1]] @ x_local[:, a:b]
+        plan.exchange(w)
+        plan.accumulate(got[:, a:b], w)
+    np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-13)
+    assert len(set(comm.allgather(len(plan.column_rounds(WIDTH))))) == 1

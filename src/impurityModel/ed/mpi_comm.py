@@ -746,17 +746,26 @@ class MatvecExchangePlan:
     :meth:`self_slot` and is the first term of :meth:`accumulate`.
     """
 
-    def __init__(self, comm, counts, offsets, dest_flags, width, budget_bytes):
+    def __init__(self, comm, counts, offsets, dest_flags, width, budget_bytes, row_counts=None):
         self.comm = comm
         self.rank = comm.rank
         size = comm.size
         counts = np.asarray(counts, dtype=np.int64)
         self.counts = counts
-        self.n_local = int(counts[self.rank])
+        # The row partition: how many rows each rank receives. It is the column partition unless the
+        # matrix keeps rows the columns do not have (a discovered-key matrix stores ``|K_local|`` rows
+        # for ``|P_local|`` columns), in which case the caller passes it.
+        if row_counts is None:
+            row_counts = counts
+        row_counts = np.asarray(row_counts, dtype=np.int64)
+        if row_counts.shape != (size,):
+            raise ValueError(f"row_counts must have one entry per rank ({size}), got shape {row_counts.shape}")
+        self.row_counts = row_counts
+        self.n_local = int(row_counts[self.rank])
         flags = np.asarray(dest_flags, dtype=bool).copy()
         if flags.shape != (size,):
             raise ValueError(f"dest_flags must have one entry per rank ({size}), got shape {flags.shape}")
-        flags &= counts > 0
+        flags &= row_counts > 0
         flags[self.rank] = False
         send_flags = flags.astype(np.uint8)
         recv_flags = np.empty(size, dtype=np.uint8)
@@ -765,7 +774,7 @@ class MatvecExchangePlan:
         self.sources = [int(r) for r in np.flatnonzero(recv_flags)]
         self.graph = _cached_dist_graph(comm, self.sources, self.destinations)
 
-        self.send_rows = counts[self.destinations] if self.destinations else np.zeros(0, dtype=np.int64)
+        self.send_rows = row_counts[self.destinations] if self.destinations else np.zeros(0, dtype=np.int64)
         self.send_row_offsets = np.concatenate(([0], np.cumsum(self.send_rows))).astype(np.int64)
         self.total_send_rows = int(self.send_rows.sum())
         self.total_recv_rows = self.n_local * len(self.sources)
