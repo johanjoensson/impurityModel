@@ -103,6 +103,27 @@ static inline bool mask_occupied(const SlaterKey &state,
   return true;
 }
 
+// `n` words of `state` hold every bit of `occ`.
+static inline bool all_occupied(const uint64_t *state, const uint64_t *occ, size_t n) noexcept {
+  for (size_t j = 0; j < n; j++) {
+    if ((state[j] & occ[j]) != occ[j]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// `state` has every `occ` bit set and every `vac` bit clear.
+static inline bool fires(const uint64_t *state, const uint64_t *occ, const uint64_t *vac,
+                         size_t n) noexcept {
+  for (size_t j = 0; j < n; j++) {
+    if ((state[j] & occ[j]) != occ[j] || (state[j] & vac[j]) != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Is orbital `idx` occupied in `state`? (chunks beyond the determinant are
 // empty.)
 static inline bool bit_set(const SlaterKey &state,
@@ -747,6 +768,10 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
     }
     return true;
   };
+  const std::size_t fire_nc = block.rows() > 0 ? block.key_store().chunks() : 1;
+  if (m_fire_nc != fire_nc) {
+    build_fire_masks(fire_nc);
+  }
   // The caller's keep filter: an out-determinant it rules out is never emitted.
   const auto kept = [keep](const SlaterKey &k) {
     return keep == nullptr || keep->may_contain(k.data(), k.size());
@@ -1030,7 +1055,8 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
               ManyBodyBlockState::Value{0.0, 0.0});
     for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
       if (m_flat_density[op_idx]) {
-        if (mask_occupied(slater, m_density_mask[op_idx]) && row_ok) {
+        if (m_fire_live[op_idx] && row_ok &&
+            all_occupied(slater.data(), m_fire_occ.data() + op_idx * fire_nc, fire_nc)) {
           const auto coeff = m_density_coeff[op_idx];
           for (std::size_t c = 0; c < p; ++c) {
             diag_accum[c] += coeff * amp[c];
@@ -1058,6 +1084,11 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
           toggle_bit(out_slater_determinant, ob_i);
         }
         continue;
+      }
+      if (!m_fire_live[op_idx] ||
+          !fires(slater.data(), m_fire_occ.data() + op_idx * fire_nc,
+                 m_fire_vac.data() + op_idx * fire_nc, fire_nc)) {
+        continue; // the sequence below would return a zero sign at some step
       }
       double sign = 1;
       const size_t start_idx = m_flat_offsets[op_idx];
@@ -1427,6 +1458,63 @@ void ManyBodyOperator::canonicalize() {
 
 bool ManyBodyOperator::is_canonical() const noexcept { return m_canonical; }
 
+void ManyBodyOperator::build_fire_masks(std::size_t n_chunks) const {
+  const std::size_t n_terms = m_flat_coeffs.size();
+  const std::size_t num_bits = 8 * sizeof(SlaterKey::value_type);
+  m_fire_occ.assign(n_terms * n_chunks, 0);
+  m_fire_vac.assign(n_terms * n_chunks, 0);
+  m_fire_live.assign(n_terms, 1);
+  struct Touch {
+    std::size_t orbital;
+    bool occupied; // occupation after the operators seen so far
+  };
+  std::vector<Touch> touched;
+  for (std::size_t t = 0; t < n_terms; t++) {
+    uint64_t *occ = m_fire_occ.data() + t * n_chunks;
+    uint64_t *vac = m_fire_vac.data() + t * n_chunks;
+    if (m_flat_density[t]) {
+      const SlaterKey &mask = m_density_mask[t];
+      for (std::size_t j = 0; j < mask.size(); j++) {
+        if (j < n_chunks) {
+          occ[j] = mask[j];
+        } else if (mask[j] != 0) {
+          m_fire_live[t] = 0;
+        }
+      }
+      continue;
+    }
+    if (m_flat_onebody[t]) {
+      continue; // handled by its own bit tests
+    }
+    touched.clear();
+    bool live = true;
+    for (std::size_t i = m_flat_offsets[t]; i < m_flat_offsets[t + 1] && live; i++) {
+      const int64_t idx = m_flat_indices[i];
+      const bool is_create = idx >= 0;
+      const std::size_t o = is_create ? static_cast<std::size_t>(idx) : static_cast<std::size_t>(-(idx + 1));
+      if (o / num_bits >= n_chunks) {
+        live = false;
+        break;
+      }
+      const auto it = std::find_if(touched.begin(), touched.end(), [o](const Touch &x) { return x.orbital == o; });
+      if (it == touched.end()) {
+        const auto bit = static_cast<uint64_t>(1) << (num_bits - 1 - (o % num_bits));
+        (is_create ? vac : occ)[o / num_bits] |= bit;
+        touched.push_back({o, is_create});
+      } else {
+        if (it->occupied == is_create) { // create onto an occupied orbital / annihilate an empty one
+          live = false;
+        }
+        it->occupied = is_create;
+      }
+    }
+    if (!live) {
+      m_fire_live[t] = 0;
+    }
+  }
+  m_fire_nc = n_chunks;
+}
+
 void ManyBodyOperator::build_restriction_deltas() const {
   m_restr_forms.clear();
   m_restr_bounds.clear();
@@ -1479,6 +1567,7 @@ void ManyBodyOperator::build_flat_representation() const {
   if (!m_flat_dirty)
     return;
   m_restr_delta_dirty = true;
+  m_fire_nc = 0;
   m_flat_indices.clear();
   m_flat_offsets.clear();
   m_flat_coeffs.clear();

@@ -139,7 +139,10 @@ cdef void _matvec_prof_dump(Py_ssize_t rows_in, Py_ssize_t rows_out) except *:
     """Every 30 s, print the running stage table to stderr (a killed run still leaves numbers)."""
     global _PROF_LAST_DUMP
     cdef double now = _time.perf_counter()
-    cdef list ent = _MATVEC_PROF.setdefault("rows_in_max", [0.0, 0])
+    cdef list ent = _MATVEC_PROF.setdefault("rows_in_sum", [0.0, 0])
+    ent[0] += rows_in
+    ent[1] += 1
+    ent = _MATVEC_PROF.setdefault("rows_in_max", [0.0, 0])
     if rows_in > ent[0]:
         ent[0] = rows_in
     ent = _MATVEC_PROF.setdefault("rows_out_max", [0.0, 0])

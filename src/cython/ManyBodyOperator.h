@@ -527,6 +527,18 @@ private:
   mutable std::vector<uint8_t> m_restr_term_neutral; // every form's delta is 0
   void build_restriction_deltas() const;
 
+  // Firing masks for the block apply, `n_chunks` words per term (stride set by the determinant width of the
+  // block, cached in `m_fire_nc`): a density or general term acts on a determinant iff `(state & occ) == occ`
+  // and `(state & vac) == 0`, where `occ`/`vac` are the orbitals the operator string finds occupied / empty
+  // when it first touches them. That is exactly the condition under which the create/annihilate sequence
+  // returns a nonzero sign, so the sequence only runs for terms that fire. `m_fire_live` is 0 for a term that
+  // can never fire here (an inconsistent string, or an orbital beyond the determinant's width).
+  mutable std::size_t m_fire_nc{0};
+  mutable std::vector<uint64_t> m_fire_occ;
+  mutable std::vector<uint64_t> m_fire_vac;
+  mutable std::vector<uint8_t> m_fire_live;
+  void build_fire_masks(std::size_t n_chunks) const;
+
   [[nodiscard]] bool
   state_is_within_restrictions(const SLATER &) const noexcept;
 };

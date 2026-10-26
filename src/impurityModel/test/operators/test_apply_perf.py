@@ -438,3 +438,35 @@ def test_block_apply_restriction_deltas_match_the_per_state_check(seed):
     assert set(got) == set(ref)
     for k, v in ref.items():
         assert abs(got[k] - v) <= 1e-12 * max(1.0, abs(v))
+
+
+def test_block_apply_matches_scalar_apply_on_terms_that_rarely_or_never_fire():
+    """The block apply runs a term's create/annihilate sequence only where an occupancy mask says it fires.
+    Strings that revisit an orbital (c_i c^d_i, c^d_i c_i c_j ...), annihilate-then-create chains and
+    repeated creators never fire or fire conditionally; the block result must equal the scalar one."""
+    rng = random.Random(11)
+    terms = {}
+    for _ in range(40):
+        i, j, k = (rng.randrange(0, 12) for _ in range(3))
+        for key in (
+            ((i, "c"), (i, "a")),
+            ((i, "a"), (i, "c")),
+            ((i, "c"), (j, "c"), (j, "a"), (k, "a")),
+            ((i, "a"), (j, "c"), (j, "a"), (i, "c")),
+            ((i, "c"), (i, "c")),
+            ((i, "c"), (j, "a"), (i, "a"), (k, "c")),
+        ):
+            terms[key] = terms.get(key, 0) + complex(rng.gauss(0, 1), rng.gauss(0, 1))
+    # an orbital beyond the determinant's width never fires
+    terms[((N_ORBS + 5, "c"), (3, "a"))] = 1.0 + 0.5j
+    op = ManyBodyOperator(terms)
+    states = {}
+    while len(states) < 50:
+        occ = tuple(sorted(rng.sample(range(0, 12), rng.randrange(3, 9))))
+        states[_sd_from_orbitals(occ)] = complex(rng.gauss(0, 1), rng.gauss(0, 1))
+    psi = ManyBodyState(states)
+    got = op.apply_block(ManyBodyState.from_states([psi]), 0.0).to_states()[0].to_dict()
+    ref = op.apply_multi([psi], 0.0)[0].to_dict()
+    assert set(got) == set(ref)
+    for k, v in ref.items():
+        assert abs(got[k] - v) <= 1e-12 * max(1.0, abs(v))
