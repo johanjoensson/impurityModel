@@ -1,3 +1,6 @@
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
 #include "ManyBodyOperator.h"
 #include <algorithm>
 #include <boost/unordered/unordered_flat_map.hpp>
@@ -12,6 +15,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <thread>
 
@@ -103,25 +107,45 @@ static inline bool mask_occupied(const SlaterKey &state,
   return true;
 }
 
-// `n` words of `state` hold every bit of `occ`.
-static inline bool all_occupied(const uint64_t *state, const uint64_t *occ, size_t n) noexcept {
-  for (size_t j = 0; j < n; j++) {
-    if ((state[j] & occ[j]) != occ[j]) {
-      return false;
+// Pack `nw * 64` flag bytes (0x00 / 0xFF, one per term) into `nw` words, bit k of word w = flag 64 w + k.
+static inline void pack_flags(const uint8_t *flags, std::size_t nw, uint64_t *words) noexcept {
+  for (std::size_t w = 0; w < nw; ++w) {
+    const uint8_t *f = flags + w * 64;
+#if defined(__AVX2__)
+    const __m256i lo = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(f));
+    const __m256i hi = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(f + 32));
+    words[w] = static_cast<uint64_t>(static_cast<uint32_t>(_mm256_movemask_epi8(lo))) |
+               (static_cast<uint64_t>(static_cast<uint32_t>(_mm256_movemask_epi8(hi))) << 32);
+#else
+    // Eight flags per step: gather bit 0 of each byte into the top byte with one multiply (little endian).
+    uint64_t word = 0;
+    for (std::size_t g = 0; g < 8; ++g) {
+      uint64_t v;
+      std::memcpy(&v, f + g * 8, sizeof(v));
+      const uint64_t bits = ((v & 0x0101010101010101ULL) * 0x0102040810204080ULL) >> 56;
+      word |= bits << (8 * g);
     }
+    words[w] = word;
+#endif
   }
-  return true;
 }
 
-// `state` has every `occ` bit set and every `vac` bit clear.
-static inline bool fires(const uint64_t *state, const uint64_t *occ, const uint64_t *vac,
-                         size_t n) noexcept {
-  for (size_t j = 0; j < n; j++) {
-    if ((state[j] & occ[j]) != occ[j] || (state[j] & vac[j]) != 0) {
-      return false;
+// The firing test of every term against one determinant `s` of `NC` words (`NC == 0`: `nc` words, runtime): a
+// branch-free sweep over the structure-of-arrays masks that the compiler vectorises, then a pack into a bitmap
+// with bit t set iff term t fires (see `ManyBodyOperator::m_fire_occ`).
+template <int NC>
+static void fire_bitmap(const uint64_t *s, std::size_t nc, const uint64_t *occ, const uint64_t *vac,
+                        std::size_t tpad, uint8_t *flags, uint64_t *words) noexcept {
+  const std::size_t n = NC != 0 ? static_cast<std::size_t>(NC) : nc;
+  for (std::size_t t = 0; t < tpad; ++t) {
+    bool f = true;
+    for (std::size_t c = 0; c < n; ++c) {
+      const uint64_t o = occ[c * tpad + t];
+      f &= ((s[c] & o) == o) & ((s[c] & vac[c * tpad + t]) == 0);
     }
+    flags[t] = static_cast<uint8_t>(-static_cast<int>(f));
   }
-  return true;
+  pack_flags(flags, tpad / 64, words);
 }
 
 // Is orbital `idx` occupied in `state`? (chunks beyond the determinant are
@@ -773,10 +797,18 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
     }
     return true;
   };
-  const std::size_t fire_nc = block.rows() > 0 ? block.key_store().chunks() : 1;
+  if (block.rows() == 0) {
+    return ManyBodyBlockState(p); // nothing to apply; do not disturb the firing-mask cache
+  }
+  const std::size_t fire_nc = block.key_store().chunks();
   if (m_fire_nc != fire_nc) {
     build_fire_masks(fire_nc);
   }
+  const std::size_t n_terms = m_flat_coeffs.size();
+  const std::size_t tpad = m_fire_tpad;
+  using FireFn = void (*)(const uint64_t *, std::size_t, const uint64_t *, const uint64_t *, std::size_t, uint8_t *,
+                          uint64_t *);
+  const FireFn fire_fn = fire_nc == 1 ? &fire_bitmap<1> : fire_nc == 2 ? &fire_bitmap<2> : &fire_bitmap<0>;
   // The caller's keep filter: an out-determinant it rules out is never emitted.
   const auto kept = [keep](const SlaterKey &k) {
     return keep == nullptr || keep->may_contain(k.data(), k.size());
@@ -797,6 +829,122 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
       acc.resize(acc.size() + p);
     }
     return acc.data() + row * p;
+  };
+
+  // Per-thread scratch of the row kernel.
+  struct RowScratch {
+    RowScratch(std::size_t width, std::size_t forms, std::size_t padded_terms)
+        : row_val(forms), diag_accum(width), flags(padded_terms), words(padded_terms / 64) {}
+    std::vector<long> row_val;
+    std::vector<ManyBodyBlockState::Value> diag_accum;
+    std::vector<uint8_t> flags;
+    std::vector<uint64_t> words;
+    SlaterKey slater;
+    SlaterKey out_sd;
+  };
+
+  // One input row: sweep the firing test over every term, then visit only the terms that fire, in term order
+  // (so every output row sees the same `+=` sequence as a visit of all terms would give). `emit(key)` returns
+  // the accumulator row of an output determinant. Shared by the serial and the threaded path; it touches only
+  // `sc` and read-only operator state, so threads may run it concurrently.
+  const auto process_row = [&](std::size_t r, RowScratch &sc, auto &&emit) {
+    SlaterKey &slater = sc.slater;
+    SlaterKey &out_sd = sc.out_sd;
+    // The block keeps its keys in ONE flat buffer, so `key(r)` materializes. Copy the view into the scratch
+    // key instead: `assign` into existing capacity does not allocate, while `key(r)` per row would.
+    const auto kv = block.key_view(r);
+    slater.assign(kv.data(), kv.data() + kv.size());
+    const ManyBodyBlockState::ConstRow amp = block.row(r);
+    out_sd = slater;
+    const bool row_ok = check_restrictions ? row_restrictions(slater, sc.row_val.data()) : true;
+    std::fill(sc.diag_accum.begin(), sc.diag_accum.end(), ManyBodyBlockState::Value{0.0, 0.0});
+    fire_fn(slater.data(), fire_nc, m_fire_occ.data(), m_fire_vac.data(), tpad, sc.flags.data(), sc.words.data());
+    for (std::size_t w = 0; w < tpad / 64; ++w) {
+      uint64_t word = sc.words[w];
+      while (word != 0) {
+        const std::size_t op_idx = w * 64 + static_cast<std::size_t>(__builtin_ctzll(word));
+        word &= word - 1;
+        assert(op_idx < n_terms);
+        const uint8_t kind = m_term_kind[op_idx];
+        if (kind == 2) { // pure number product: only the diagonal
+          if (row_ok) {
+            const auto coeff = m_density_coeff[op_idx];
+            for (std::size_t c = 0; c < p; ++c) {
+              sc.diag_accum[c] += coeff * amp[c];
+            }
+          }
+          continue;
+        }
+        if (kind == 3) { // one-body hop c^d_i c_j: j occupied and i empty, as the firing test established
+          const size_t ob_i = m_onebody_i[op_idx];
+          const size_t ob_j = m_onebody_j[op_idx];
+          const uint64_t *between = m_between_flat.data() + op_idx * fire_nc;
+          int parity = 0;
+          for (std::size_t j = 0; j < fire_nc; ++j) {
+            parity += set_bits(slater[j] & between[j]);
+          }
+          const double sgn = (parity & 1) ? -1.0 : 1.0;
+          toggle_bit(out_sd, ob_j); // remove j
+          toggle_bit(out_sd, ob_i); // add i
+          if ((!check_restrictions || output_ok(op_idx, row_ok, sc.row_val.data())) && kept(out_sd)) {
+            const auto coeff = m_flat_coeffs[op_idx] * sgn;
+            ManyBodyBlockState::Value *dst = emit(out_sd);
+            for (std::size_t c = 0; c < p; ++c) {
+              dst[c] += coeff * amp[c];
+            }
+          }
+          toggle_bit(out_sd, ob_j); // restore scratch
+          toggle_bit(out_sd, ob_i);
+          continue;
+        }
+        double sign = 1;
+        const size_t start_idx = m_flat_offsets[op_idx];
+        const size_t end_idx = m_flat_offsets[op_idx + 1];
+        const auto coeff = m_flat_coeffs[op_idx];
+        size_t i = start_idx;
+        for (; i < end_idx; i++) {
+          const int64_t idx = m_flat_indices[i];
+          const int s = idx >= 0 ? create(out_sd, static_cast<size_t>(idx))
+                                 : annihilate(out_sd, static_cast<size_t>(-(idx + 1)));
+          if (s == 0) {
+            sign = 0;
+            break;
+          }
+          sign *= s;
+        }
+        if (sign != 0 && (!check_restrictions || output_ok(op_idx, row_ok, sc.row_val.data()))) {
+          const auto scaled = coeff * sign;
+          if (kind == 1) {
+            // out_sd == slater here (occupation conserved).
+            for (std::size_t c = 0; c < p; ++c) {
+              sc.diag_accum[c] += scaled * amp[c];
+            }
+          } else if (kept(out_sd)) {
+            ManyBodyBlockState::Value *dst = emit(out_sd);
+            for (std::size_t c = 0; c < p; ++c) {
+              dst[c] += scaled * amp[c];
+            }
+          }
+        }
+        for (size_t j = start_idx; j < i; j++) {
+          const int64_t idx = m_flat_indices[j];
+          toggle_bit(out_sd, idx >= 0 ? static_cast<size_t>(idx) : static_cast<size_t>(-(idx + 1)));
+        }
+      }
+    }
+    bool any_diag = false;
+    for (std::size_t c = 0; c < p; ++c) {
+      if (sc.diag_accum[c] != ManyBodyBlockState::Value(0.0, 0.0)) {
+        any_diag = true;
+        break;
+      }
+    }
+    if (any_diag && kept(slater)) {
+      ManyBodyBlockState::Value *dst = emit(slater);
+      for (std::size_t c = 0; c < p; ++c) {
+        dst[c] += sc.diag_accum[c];
+      }
+    }
   };
 
 #if defined(PARALLEL)
@@ -843,114 +991,9 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
           }
           return ba.acc.data() + row * p;
         };
-        // Per-row term loop, duplicated from the serial body below (the same
-        // precedent as the scalar threaded apply: the loop reads private
-        // flat-term members, so a shared free function would need an unwieldy
-        // signature).
-        std::vector<long> row_val_t(n_forms);
-        std::vector<ManyBodyBlockState::Value> diag_accum(p);
-        SlaterKey out_sd;
-        // The block keeps its keys in ONE flat buffer, so `key(r)` materializes. Copy the
-        // view into a scratch key declared outside the loop instead: `assign` into existing
-        // capacity does not allocate, while `key(r)` per row would.
-        SlaterKey slater;
+        RowScratch sc(p, n_forms, tpad);
         for (std::size_t r = start_row; r < end_row; ++r) {
-          const auto kv = block.key_view(r);
-          slater.assign(kv.data(), kv.data() + kv.size());
-          const ManyBodyBlockState::ConstRow amp = block.row(r);
-          out_sd = slater;
-          const bool row_ok =
-              check_restrictions ? row_restrictions(slater, row_val_t.data()) : true;
-          std::fill(diag_accum.begin(), diag_accum.end(),
-                    ManyBodyBlockState::Value{0.0, 0.0});
-          for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
-            if (m_flat_density[op_idx]) {
-              if (m_fire_live[op_idx] && row_ok &&
-                  all_occupied(slater.data(), m_fire_occ.data() + op_idx * fire_nc, fire_nc)) {
-                const auto coeff = m_density_coeff[op_idx];
-                for (std::size_t c = 0; c < p; ++c) {
-                  diag_accum[c] += coeff * amp[c];
-                }
-              }
-              continue;
-            }
-            if (m_flat_onebody[op_idx]) {
-              const size_t ob_i = m_onebody_i[op_idx];
-              const size_t ob_j = m_onebody_j[op_idx];
-              if (bit_set(slater, ob_j) && !bit_set(slater, ob_i)) {
-                const double sgn =
-                    mask_parity(slater, m_onebody_between[op_idx]) ? -1.0 : 1.0;
-                toggle_bit(out_sd, ob_j);
-                toggle_bit(out_sd, ob_i);
-                if ((!check_restrictions ||
-                     output_ok(op_idx, row_ok, row_val_t.data())) &&
-                    kept(out_sd)) {
-                  const auto coeff = m_flat_coeffs[op_idx] * sgn;
-                  ManyBodyBlockState::Value *dst = emit_row_t(out_sd);
-                  for (std::size_t c = 0; c < p; ++c) {
-                    dst[c] += coeff * amp[c];
-                  }
-                }
-                toggle_bit(out_sd, ob_j);
-                toggle_bit(out_sd, ob_i);
-              }
-              continue;
-            }
-            if (!m_fire_live[op_idx] ||
-                !fires(slater.data(), m_fire_occ.data() + op_idx * fire_nc,
-                       m_fire_vac.data() + op_idx * fire_nc, fire_nc)) {
-              continue; // the sequence below would return a zero sign at some step
-            }
-            double sign = 1;
-            const size_t start_idx = m_flat_offsets[op_idx];
-            const size_t end_idx = m_flat_offsets[op_idx + 1];
-            const auto coeff = m_flat_coeffs[op_idx];
-            size_t i = start_idx;
-            for (; i < end_idx; i++) {
-              const int64_t idx = m_flat_indices[i];
-              const int s =
-                  idx >= 0
-                      ? create(out_sd, static_cast<size_t>(idx))
-                      : annihilate(out_sd, static_cast<size_t>(-(idx + 1)));
-              if (s == 0) {
-                sign = 0;
-                break;
-              }
-              sign *= s;
-            }
-            if (sign != 0 &&
-                (!check_restrictions || output_ok(op_idx, row_ok, row_val_t.data()))) {
-              const auto scaled = coeff * sign;
-              if (m_flat_diagonal[op_idx]) {
-                for (std::size_t c = 0; c < p; ++c) {
-                  diag_accum[c] += scaled * amp[c];
-                }
-              } else if (kept(out_sd)) {
-                ManyBodyBlockState::Value *dst = emit_row_t(out_sd);
-                for (std::size_t c = 0; c < p; ++c) {
-                  dst[c] += scaled * amp[c];
-                }
-              }
-            }
-            for (size_t j = start_idx; j < i; j++) {
-              const int64_t idx = m_flat_indices[j];
-              toggle_bit(out_sd, idx >= 0 ? static_cast<size_t>(idx)
-                                          : static_cast<size_t>(-(idx + 1)));
-            }
-          }
-          bool any_diag = false;
-          for (std::size_t c = 0; c < p; ++c) {
-            if (diag_accum[c] != ManyBodyBlockState::Value(0.0, 0.0)) {
-              any_diag = true;
-              break;
-            }
-          }
-          if (any_diag && kept(slater)) {
-            ManyBodyBlockState::Value *dst = emit_row_t(slater);
-            for (std::size_t c = 0; c < p; ++c) {
-              dst[c] += diag_accum[c];
-            }
-          }
+          process_row(r, sc, emit_row_t);
         }
       }));
     }
@@ -1049,110 +1092,9 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
   }
 #endif
 
-  std::vector<long> row_val(n_forms);
-  std::vector<ManyBodyBlockState::Value> diag_accum(p);
-  SlaterKey out_slater_determinant;
-  // The block keeps its keys in ONE flat buffer, so `key(r)` materializes. Copy the
-  // view into a scratch key declared outside the loop instead: `assign` into existing
-  // capacity does not allocate, while `key(r)` per row would.
-  SlaterKey slater;
+  RowScratch sc(p, n_forms, tpad);
   for (std::size_t r = 0; r < block.rows(); ++r) {
-    const auto kv = block.key_view(r);
-    slater.assign(kv.data(), kv.data() + kv.size());
-    const ManyBodyBlockState::ConstRow amp = block.row(r);
-    out_slater_determinant = slater;
-    const bool row_ok = check_restrictions ? row_restrictions(slater, row_val.data()) : true;
-    std::fill(diag_accum.begin(), diag_accum.end(),
-              ManyBodyBlockState::Value{0.0, 0.0});
-    for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
-      if (m_flat_density[op_idx]) {
-        if (m_fire_live[op_idx] && row_ok &&
-            all_occupied(slater.data(), m_fire_occ.data() + op_idx * fire_nc, fire_nc)) {
-          const auto coeff = m_density_coeff[op_idx];
-          for (std::size_t c = 0; c < p; ++c) {
-            diag_accum[c] += coeff * amp[c];
-          }
-        }
-        continue;
-      }
-      if (m_flat_onebody[op_idx]) {
-        const size_t ob_i = m_onebody_i[op_idx];
-        const size_t ob_j = m_onebody_j[op_idx];
-        if (bit_set(slater, ob_j) && !bit_set(slater, ob_i)) {
-          const double sgn =
-              mask_parity(slater, m_onebody_between[op_idx]) ? -1.0 : 1.0;
-          toggle_bit(out_slater_determinant, ob_j); // remove j
-          toggle_bit(out_slater_determinant, ob_i); // add i
-          if ((!check_restrictions || output_ok(op_idx, row_ok, row_val.data())) &&
-              kept(out_slater_determinant)) {
-            const auto coeff = m_flat_coeffs[op_idx] * sgn;
-            ManyBodyBlockState::Value *dst = emit_row(out_slater_determinant);
-            for (std::size_t c = 0; c < p; ++c) {
-              dst[c] += coeff * amp[c];
-            }
-          }
-          toggle_bit(out_slater_determinant, ob_j); // restore scratch
-          toggle_bit(out_slater_determinant, ob_i);
-        }
-        continue;
-      }
-      if (!m_fire_live[op_idx] ||
-          !fires(slater.data(), m_fire_occ.data() + op_idx * fire_nc,
-                 m_fire_vac.data() + op_idx * fire_nc, fire_nc)) {
-        continue; // the sequence below would return a zero sign at some step
-      }
-      double sign = 1;
-      const size_t start_idx = m_flat_offsets[op_idx];
-      const size_t end_idx = m_flat_offsets[op_idx + 1];
-      const auto coeff = m_flat_coeffs[op_idx];
-
-      size_t i = start_idx;
-      for (; i < end_idx; i++) {
-        const int64_t idx = m_flat_indices[i];
-        const int s =
-            idx >= 0 ? create(out_slater_determinant, static_cast<size_t>(idx))
-                     : annihilate(out_slater_determinant,
-                                  static_cast<size_t>(-(idx + 1)));
-        if (s == 0) {
-          sign = 0;
-          break;
-        }
-        sign *= s;
-      }
-      if (sign != 0 && (!check_restrictions || output_ok(op_idx, row_ok, row_val.data()))) {
-        const auto scaled = coeff * sign;
-        if (m_flat_diagonal[op_idx]) {
-          // out_slater_determinant == slater here (occupation conserved).
-          for (std::size_t c = 0; c < p; ++c) {
-            diag_accum[c] += scaled * amp[c];
-          }
-        } else if (kept(out_slater_determinant)) {
-          ManyBodyBlockState::Value *dst = emit_row(out_slater_determinant);
-          for (std::size_t c = 0; c < p; ++c) {
-            dst[c] += scaled * amp[c];
-          }
-        }
-      }
-      for (size_t j = start_idx; j < i; j++) {
-        const int64_t idx = m_flat_indices[j];
-        toggle_bit(out_slater_determinant,
-                   idx >= 0 ? static_cast<size_t>(idx)
-                            : static_cast<size_t>(-(idx + 1)));
-      }
-    }
-    bool any_diag = false;
-    for (std::size_t c = 0; c < p; ++c) {
-      if (diag_accum[c] != ManyBodyBlockState::Value(0.0, 0.0)) {
-        any_diag = true;
-        break;
-      }
-    }
-    if (any_diag && kept(slater)) {
-      ManyBodyBlockState::Value *dst = emit_row(slater);
-      for (std::size_t c = 0; c < p; ++c) {
-        dst[c] += diag_accum[c];
-      }
-    }
+    process_row(r, sc, emit_row);
   }
 
   // Keep rows where ANY column survives the cutoff, then sort by determinant to
@@ -1472,31 +1414,65 @@ bool ManyBodyOperator::is_canonical() const noexcept { return m_canonical; }
 void ManyBodyOperator::build_fire_masks(std::size_t n_chunks) const {
   const std::size_t n_terms = m_flat_coeffs.size();
   const std::size_t num_bits = 8 * sizeof(SlaterKey::value_type);
-  m_fire_occ.assign(n_terms * n_chunks, 0);
-  m_fire_vac.assign(n_terms * n_chunks, 0);
-  m_fire_live.assign(n_terms, 1);
+  const std::size_t tpad = (n_terms + 63) / 64 * 64;
+  m_fire_tpad = tpad;
+  m_fire_occ.assign(tpad * n_chunks, 0);
+  m_fire_vac.assign(tpad * n_chunks, 0);
+  m_term_kind.assign(tpad, 0);
+  m_between_flat.assign(n_terms * n_chunks, 0);
+  const auto kill = [&](std::size_t t) {
+    for (std::size_t c = 0; c < n_chunks; c++) {
+      m_fire_occ[c * tpad + t] = 0;
+      m_fire_vac[c * tpad + t] = 0;
+    }
+    m_fire_occ[t] = ~static_cast<uint64_t>(0); // word 0, term t: contradicts the vacancy requirement below
+    m_fire_vac[t] = ~static_cast<uint64_t>(0);
+  };
+  const auto bit_of = [&](std::size_t o) {
+    return static_cast<uint64_t>(1) << (num_bits - 1 - (o % num_bits));
+  };
   struct Touch {
     std::size_t orbital;
     bool occupied; // occupation after the operators seen so far
   };
   std::vector<Touch> touched;
+  for (std::size_t t = n_terms; t < tpad; t++) {
+    kill(t); // padding never fires
+  }
   for (std::size_t t = 0; t < n_terms; t++) {
-    uint64_t *occ = m_fire_occ.data() + t * n_chunks;
-    uint64_t *vac = m_fire_vac.data() + t * n_chunks;
     if (m_flat_density[t]) {
+      m_term_kind[t] = 2;
       const SlaterKey &mask = m_density_mask[t];
+      bool live = true;
       for (std::size_t j = 0; j < mask.size(); j++) {
         if (j < n_chunks) {
-          occ[j] = mask[j];
+          m_fire_occ[j * tpad + t] = mask[j];
         } else if (mask[j] != 0) {
-          m_fire_live[t] = 0;
+          live = false;
         }
+      }
+      if (!live) {
+        kill(t);
       }
       continue;
     }
     if (m_flat_onebody[t]) {
-      continue; // handled by its own bit tests
+      m_term_kind[t] = 3;
+      const std::size_t oi = m_onebody_i[t];
+      const std::size_t oj = m_onebody_j[t];
+      if (oi / num_bits >= n_chunks || oj / num_bits >= n_chunks) {
+        kill(t); // create()/annihilate() return 0 for an orbital beyond the determinant
+        continue;
+      }
+      m_fire_occ[(oj / num_bits) * tpad + t] |= bit_of(oj);
+      m_fire_vac[(oi / num_bits) * tpad + t] |= bit_of(oi);
+      const SlaterKey &between = m_onebody_between[t];
+      for (std::size_t j = 0; j < between.size() && j < n_chunks; j++) {
+        m_between_flat[t * n_chunks + j] = between[j];
+      }
+      continue;
     }
+    m_term_kind[t] = m_flat_diagonal[t] ? 1 : 0;
     touched.clear();
     bool live = true;
     for (std::size_t i = m_flat_offsets[t]; i < m_flat_offsets[t + 1] && live; i++) {
@@ -1509,8 +1485,7 @@ void ManyBodyOperator::build_fire_masks(std::size_t n_chunks) const {
       }
       const auto it = std::find_if(touched.begin(), touched.end(), [o](const Touch &x) { return x.orbital == o; });
       if (it == touched.end()) {
-        const auto bit = static_cast<uint64_t>(1) << (num_bits - 1 - (o % num_bits));
-        (is_create ? vac : occ)[o / num_bits] |= bit;
+        (is_create ? m_fire_vac : m_fire_occ)[(o / num_bits) * tpad + t] |= bit_of(o);
         touched.push_back({o, is_create});
       } else {
         if (it->occupied == is_create) { // create onto an occupied orbital / annihilate an empty one
@@ -1520,7 +1495,7 @@ void ManyBodyOperator::build_fire_masks(std::size_t n_chunks) const {
       }
     }
     if (!live) {
-      m_fire_live[t] = 0;
+      kill(t);
     }
   }
   m_fire_nc = n_chunks;

@@ -133,3 +133,13 @@ def test_restrictions_that_reject_some_input_rows_while_density_terms_fire():
     # some input rows really are outside the window (otherwise this tests nothing about the row gate)
     assert any(not 2 <= len(s & frozenset(range(6))) <= 4 for s in states)
     assert all(2 <= len(s & frozenset(range(6))) <= 4 for s in got)
+
+
+def test_one_body_hop_creating_an_orbital_beyond_the_determinant_width_gives_nothing():
+    """`c^d_70 c_3` on 1-chunk keys must vanish (orbital 70 does not exist). The hop kernel used to test
+    `!bit_set(70)` -- true for an out-of-range orbital -- and then toggle a bit past the end of the key."""
+    rng = random.Random(13)
+    terms = {((70, "c"), (3, "a")): 1.0, ((3, "c"), (70, "a")): 2.0, ((5, "c"), (3, "a")): 0.5}
+    op = _raw_operator(terms)
+    states = _random_states(rng, list(range(12)), 40, 3, 8, 2)
+    _check(op, terms, states, 1)

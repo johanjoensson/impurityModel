@@ -527,16 +527,25 @@ private:
   mutable std::vector<uint8_t> m_restr_term_neutral; // every form's delta is 0
   void build_restriction_deltas() const;
 
-  // Firing masks for the block apply, `n_chunks` words per term (stride set by the determinant width of the
-  // block, cached in `m_fire_nc`): a density or general term acts on a determinant iff `(state & occ) == occ`
-  // and `(state & vac) == 0`, where `occ`/`vac` are the orbitals the operator string finds occupied / empty
-  // when it first touches them. That is exactly the condition under which the create/annihilate sequence
-  // returns a nonzero sign, so the sequence only runs for terms that fire. `m_fire_live` is 0 for a term that
-  // can never fire here (an inconsistent string, or an orbital beyond the determinant's width).
+  // Firing masks for the block apply, for determinants of `m_fire_nc` words (cached; reset when the flat terms
+  // change). A term acts on a determinant iff `(state & occ) == occ` and `(state & vac) == 0`, where `occ`/`vac`
+  // are the orbitals the operator string finds occupied / empty when it first touches them -- exactly the
+  // condition under which the create/annihilate sequence returns a nonzero sign. A one-body hop c^d_i c_j has
+  // occ = {j}, vac = {i}; a density term has occ = its mask, vac = 0. The masks are stored structure-of-arrays,
+  // `m_fire_occ[c * m_fire_tpad + t]` for chunk c and term t, with the term count padded to a multiple of 64
+  // (`m_fire_tpad`), so one row's firing test over ALL terms is a branch-free, vectorisable sweep that yields a
+  // bitmap; apply then visits only the set bits, in term order. A term that can never fire here (an inconsistent
+  // string, or an orbital beyond the determinant's width) and every padding slot holds occ = vac = ~0 in word 0,
+  // which no state satisfies.
+  // `m_term_kind`: 0 general off-diagonal string, 1 general diagonal string, 2 density, 3 one-body hop.
+  // `m_between_flat` is the hops' between-masks, `m_fire_nc` words per term (zero for other kinds).
+  // Not safe for concurrent `apply` calls on one operator (the lazy builders write these), as before.
   mutable std::size_t m_fire_nc{0};
+  mutable std::size_t m_fire_tpad{0};
   mutable std::vector<uint64_t> m_fire_occ;
   mutable std::vector<uint64_t> m_fire_vac;
-  mutable std::vector<uint8_t> m_fire_live;
+  mutable std::vector<uint8_t> m_term_kind;
+  mutable std::vector<uint64_t> m_between_flat;
   void build_fire_masks(std::size_t n_chunks) const;
 
   [[nodiscard]] bool
