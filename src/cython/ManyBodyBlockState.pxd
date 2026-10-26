@@ -35,6 +35,8 @@ cdef extern from "ManyBodyBlockState.h" nogil:
         # as `std::terminate` -- SIGABRT with no traceback and, from a `nogil` block, no
         # rank output either.
         ManyBodyBlockState(vector[Key], vector[Value], size_t) except +
+        # Adopts a flat key buffer as is (copy of a `key_store()` costs one memcpy, no per-key malloc).
+        ManyBodyBlockState(FlatKeyStore, vector[Value], size_t) except +
 
         @staticmethod
         ManyBodyBlockState from_unsorted(const vector[Key]&, const vector[Value]&, size_t) except +

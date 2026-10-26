@@ -301,9 +301,8 @@ cdef class ManyBodyState:
         vals.resize(ns * w)
         if ns > 0 and w > 0:
             memcpy(vals.data(), &av[0, 0], ns * w * sizeof(ManyBodyBlockState_cpp.Value))
-        cdef vector[SlaterDeterminant_cpp[uint64_t]] keys = src.b.keys()
         cdef ManyBodyState out = ManyBodyState()
-        out.b = ManyBodyBlockState_cpp(move(keys), move(vals), <size_t>w)
+        out.b = ManyBodyBlockState_cpp(src.b.key_store(), move(vals), <size_t>w)
         return out
 
     def to_states(self):
