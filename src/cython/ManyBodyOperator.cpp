@@ -444,6 +444,7 @@ void ManyBodyOperator::build_restriction_mask(
     max_vals.push_back(restriction.second.second);
   }
 
+  m_restr_delta_dirty = true;
   this->m_restrictions_mask =
       std::tuple<std::vector<SlaterKey>, std::vector<size_t>,
                  std::vector<size_t>>{std::move(masks), std::move(min_vals),
@@ -452,6 +453,7 @@ void ManyBodyOperator::build_restriction_mask(
 
 void ManyBodyOperator::build_weighted_restriction_mask(
     const WeightedRestrictions &restrictions) noexcept {
+  m_restr_delta_dirty = true;
   m_weighted_restrictions_mask.clear();
   m_weighted_restrictions_mask.reserve(restrictions.size());
   for (const auto &restriction : restrictions) {
@@ -708,6 +710,43 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
   const double cutoff2 = cutoff * cutoff;
   const bool check_restrictions = !std::get<0>(m_restrictions_mask).empty() ||
                                   !m_weighted_restrictions_mask.empty();
+  if (check_restrictions && m_restr_delta_dirty) {
+    build_restriction_deltas();
+  }
+  const std::size_t n_forms = m_restr_forms.size();
+  std::vector<long> row_val(n_forms);
+  // The row's restriction values, and whether the row itself is inside every bound. An output's value is
+  // the row's plus the term's constant delta, so no popcount pass runs per emitted determinant.
+  const auto row_restrictions = [&](const SlaterKey &state) {
+    bool ok = true;
+    for (std::size_t f = 0; f < n_forms; f++) {
+      long v = 0;
+      for (const auto &[weight, mask] : m_restr_forms[f]) {
+        std::size_t bits = 0;
+        const std::size_t limit = std::min(mask.size(), state.size());
+        for (std::size_t j = 0; j < limit; j++) {
+          bits += set_bits(state[j] & mask[j]);
+        }
+        v += weight * static_cast<long>(bits);
+      }
+      row_val[f] = v;
+      ok = ok && v >= m_restr_bounds[f].first && v <= m_restr_bounds[f].second;
+    }
+    return ok;
+  };
+  const auto output_ok = [&](std::size_t op_idx, bool row_ok) {
+    if (m_restr_term_neutral[op_idx]) {
+      return row_ok;
+    }
+    const long *delta = m_restr_term_delta.data() + op_idx * n_forms;
+    for (std::size_t f = 0; f < n_forms; f++) {
+      const long v = row_val[f] + delta[f];
+      if (v < m_restr_bounds[f].first || v > m_restr_bounds[f].second) {
+        return false;
+      }
+    }
+    return true;
+  };
   // The caller's keep filter: an out-determinant it rules out is never emitted.
   const auto kept = [keep](const SlaterKey &k) {
     return keep == nullptr || keep->may_contain(k.data(), k.size());
@@ -986,12 +1025,12 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
     slater.assign(kv.data(), kv.data() + kv.size());
     const ManyBodyBlockState::ConstRow amp = block.row(r);
     out_slater_determinant = slater;
+    const bool row_ok = check_restrictions ? row_restrictions(slater) : true;
     std::fill(diag_accum.begin(), diag_accum.end(),
               ManyBodyBlockState::Value{0.0, 0.0});
     for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
       if (m_flat_density[op_idx]) {
-        if (mask_occupied(slater, m_density_mask[op_idx]) &&
-            (!check_restrictions || state_is_within_restrictions(slater))) {
+        if (mask_occupied(slater, m_density_mask[op_idx]) && row_ok) {
           const auto coeff = m_density_coeff[op_idx];
           for (std::size_t c = 0; c < p; ++c) {
             diag_accum[c] += coeff * amp[c];
@@ -1007,8 +1046,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
               mask_parity(slater, m_onebody_between[op_idx]) ? -1.0 : 1.0;
           toggle_bit(out_slater_determinant, ob_j); // remove j
           toggle_bit(out_slater_determinant, ob_i); // add i
-          if ((!check_restrictions ||
-               state_is_within_restrictions(out_slater_determinant)) &&
+          if ((!check_restrictions || output_ok(op_idx, row_ok)) &&
               kept(out_slater_determinant)) {
             const auto coeff = m_flat_coeffs[op_idx] * sgn;
             ManyBodyBlockState::Value *dst = emit_row(out_slater_determinant);
@@ -1039,8 +1077,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
         }
         sign *= s;
       }
-      if (sign != 0 && (!check_restrictions ||
-                        state_is_within_restrictions(out_slater_determinant))) {
+      if (sign != 0 && (!check_restrictions || output_ok(op_idx, row_ok))) {
         const auto scaled = coeff * sign;
         if (m_flat_diagonal[op_idx]) {
           // out_slater_determinant == slater here (occupation conserved).
@@ -1390,9 +1427,58 @@ void ManyBodyOperator::canonicalize() {
 
 bool ManyBodyOperator::is_canonical() const noexcept { return m_canonical; }
 
+void ManyBodyOperator::build_restriction_deltas() const {
+  m_restr_forms.clear();
+  m_restr_bounds.clear();
+  const auto &[masks, min_vals, max_vals] = m_restrictions_mask;
+  for (size_t i = 0; i < masks.size(); i++) {
+    m_restr_forms.push_back({{1L, masks[i]}});
+    m_restr_bounds.emplace_back(static_cast<long>(min_vals[i]),
+                                static_cast<long>(max_vals[i]));
+  }
+  for (const auto &[groups, bounds] : m_weighted_restrictions_mask) {
+    m_restr_forms.push_back(groups);
+    m_restr_bounds.push_back(bounds);
+  }
+  const size_t n_terms = m_flat_coeffs.size();
+  const size_t K = m_restr_forms.size();
+  m_restr_term_delta.assign(n_terms * K, 0);
+  m_restr_term_neutral.assign(n_terms, 1);
+  const size_t num_bits = 8 * sizeof(SlaterKey::value_type);
+  // Weight of one orbital in form f: the sum of the weights of the groups whose mask contains it.
+  const auto orbital_weight = [&](size_t f, size_t o) {
+    const size_t chunk = o / num_bits;
+    const auto bit = static_cast<SlaterKey::value_type>(1) << (num_bits - 1 - (o % num_bits));
+    long w = 0;
+    for (const auto &[weight, mask] : m_restr_forms[f]) {
+      if (chunk < mask.size() && (mask[chunk] & bit)) {
+        w += weight;
+      }
+    }
+    return w;
+  };
+  for (size_t t = 0; t < n_terms; t++) {
+    for (size_t i = m_flat_offsets[t]; i < m_flat_offsets[t + 1]; i++) {
+      const int64_t idx = m_flat_indices[i];
+      const long step = idx >= 0 ? 1 : -1;
+      const size_t o = idx >= 0 ? static_cast<size_t>(idx) : static_cast<size_t>(-(idx + 1));
+      for (size_t f = 0; f < K; f++) {
+        m_restr_term_delta[t * K + f] += step * orbital_weight(f, o);
+      }
+    }
+    for (size_t f = 0; f < K; f++) {
+      if (m_restr_term_delta[t * K + f] != 0) {
+        m_restr_term_neutral[t] = 0;
+      }
+    }
+  }
+  m_restr_delta_dirty = false;
+}
+
 void ManyBodyOperator::build_flat_representation() const {
   if (!m_flat_dirty)
     return;
+  m_restr_delta_dirty = true;
   m_flat_indices.clear();
   m_flat_offsets.clear();
   m_flat_coeffs.clear();

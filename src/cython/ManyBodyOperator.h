@@ -515,6 +515,18 @@ private:
 
   void build_flat_representation() const;
 
+  // Restrictions as linear forms for the block apply: form f is sum_g w_g * popcount(state & mask_g), required
+  // in [lo_f, hi_f] (a plain count restriction is one group of weight 1). A number-changing term moves each
+  // form by a per-term CONSTANT (the net created-minus-annihilated orbitals, weighted), so an output's
+  // restriction check is `row value + delta` against the bounds instead of a popcount pass over the output.
+  // `m_restr_term_delta` is n_terms x n_forms, row-major, valid while `m_restr_delta_dirty` is clear.
+  mutable bool m_restr_delta_dirty{true};
+  mutable std::vector<std::vector<std::pair<long, SLATER>>> m_restr_forms;
+  mutable std::vector<std::pair<long, long>> m_restr_bounds;
+  mutable std::vector<long> m_restr_term_delta;
+  mutable std::vector<uint8_t> m_restr_term_neutral; // every form's delta is 0
+  void build_restriction_deltas() const;
+
   [[nodiscard]] bool
   state_is_within_restrictions(const SLATER &) const noexcept;
 };

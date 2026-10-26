@@ -411,3 +411,30 @@ def test_apply_block_width_scaling(timing_fixtures, capsys):
                 f"[apply-block] p={p}  multi={med:8.2f} ms ({med / t1:5.2f}x p=1)"
                 f"  block={bmed:8.2f} ms  speedup={med / bmed:5.2f}x  n_out={n_out}"
             )
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_block_apply_restriction_deltas_match_the_per_state_check(seed):
+    """The block apply checks a restriction as ``row value + per-term delta``; the scalar apply popcounts the
+    output. Count and weighted restrictions (overlapping groups, weights of both signs) must keep and drop
+    exactly the same output determinants with the same amplitudes."""
+    rng = random.Random(seed)
+    op = _make_hamiltonian(rng, 60, 60)
+    psi = _make_state(rng, 60)
+    # N_ELEC = 80 of 160 orbitals: bounds straddle the typical occupation so some outputs are cut.
+    op.set_restrictions({frozenset(range(0, 40)): (18, 22), frozenset(range(30, 90)): (28, 33)})
+    op.set_weighted_restrictions(
+        [
+            ({o: (1 if o % 2 else -1) for o in range(0, 80)}, (-3, 3)),
+            ({o: 2 for o in range(10, 30)} | {o: -1 for o in range(25, 60)}, (-12, 14)),
+        ]
+    )
+    blk = ManyBodyState.from_states([psi])
+    got = op.apply_block(blk, 0.0).to_states()[0].to_dict()
+    ref = op.apply_multi([psi], 0.0)[0].to_dict()
+    assert 0 < len(ref)
+    unrestricted = _make_hamiltonian(random.Random(seed), 60, 60).apply_multi([psi], 0.0)[0].to_dict()
+    assert len(ref) < len(unrestricted), "the restrictions cut nothing, so the test discriminates nothing"
+    assert set(got) == set(ref)
+    for k, v in ref.items():
+        assert abs(got[k] - v) <= 1e-12 * max(1.0, abs(v))
