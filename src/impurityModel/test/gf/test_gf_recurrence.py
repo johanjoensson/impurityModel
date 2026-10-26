@@ -160,7 +160,7 @@ def test_the_retained_mode_stores_p_rows_only(comm, monkeypatch):
     monkeypatch.setattr(gf_recurrence, "DiscoveredMatrix", spy)
     run_chain(comm, kernel=block_Green_discovered, matrix_mode="retained", cap=2500)
     assert made and not any(m.keep_frontier for m in made)
-    assert all(m.n_k_local == m.n_p_local or m.n_p_local == 0 for m in made)
+    assert all(m.n_p_local in (m.n_k_local, 0) for m in made)
     made.clear()
     run_chain(comm, kernel=block_Green_discovered, matrix_mode="discovered", cap=2500)
     assert made and all(m.keep_frontier for m in made)
