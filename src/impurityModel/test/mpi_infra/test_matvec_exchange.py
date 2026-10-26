@@ -242,9 +242,7 @@ def test_plan_with_a_row_partition_that_differs_from_the_column_partition(budget
     want = (A @ x_global)[row_off[rank] : row_off[rank + 1]]
     a_local = A[:, col_off[rank] : col_off[rank + 1]]
 
-    plan = MatvecExchangePlan(
-        comm, col_counts, col_off[:-1], row_counts > 0, WIDTH, budget, row_counts=row_counts
-    )
+    plan = MatvecExchangePlan(comm, col_counts, col_off[:-1], row_counts > 0, WIDTH, budget, row_counts=row_counts)
     assert plan.n_local == row_counts[rank]
     got = np.empty((row_counts[rank], WIDTH), dtype=complex)
     for a, b in plan.column_rounds(WIDTH):

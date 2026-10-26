@@ -101,6 +101,75 @@ cdef void _scatter_segments(segments, int p, int c0, double complex[:, ::1] X, l
                 scatter_columns_nogil(col_begin, indptr, slots64, data, p, c0, X, send_rows, S, Y)
 
 
+cdef void scatter_discovered_nogil(
+    long col_begin,
+    long[:] indptr,
+    long[:] packed,
+    double complex[:] data,
+    char[:] alive,
+    int p,
+    int c0,
+    double complex[:, ::1] X,
+    long[:] base,
+    long[:] goff,
+    long[:] ptab,
+    bint use_ptab,
+    long send_rows,
+    double complex[:, ::1] S,
+    double complex[:, ::1] Y
+) noexcept nogil:
+    """Scatter one column block of a discovered-key matrix: entry ``packed = owner << 32 | slot`` of
+    local column ``col_begin + jj`` adds ``value * X[col, c0:c0+p]`` to row ``base[owner] + slot`` of
+    the exchange buffers (send buffer ``S`` below ``send_rows``, self buffer ``Y`` from there on).
+    With ``use_ptab`` the slot is first translated through ``ptab[goff[owner] + slot]`` (the K row's
+    P slot, negative for a row outside P, which is skipped). Dead columns are skipped."""
+    cdef Py_ssize_t n_cols = indptr.shape[0] - 1
+    cdef Py_ssize_t jj, e, col
+    cdef long owner, slot, t
+    cdef int k
+    cdef double complex val
+    for jj in range(n_cols):
+        col = col_begin + jj
+        if not alive[col]:
+            continue
+        for e in range(indptr[jj], indptr[jj + 1]):
+            owner = packed[e] >> 32
+            slot = packed[e] & <long>4294967295
+            if use_ptab:
+                slot = ptab[goff[owner] + slot]
+                if slot < 0:
+                    continue
+            t = base[owner] + slot
+            val = data[e]
+            if t < send_rows:
+                for k in range(p):
+                    S[t, k] = S[t, k] + val * X[col, c0 + k]
+            else:
+                t = t - send_rows
+                for k in range(p):
+                    Y[t, k] = Y[t, k] + val * X[col, c0 + k]
+
+
+def scatter_discovered(segments, char[:] alive, double complex[:, ::1] X, int c0, int p, long[:] base,
+                       long[:] goff, long[:] ptab, bint use_ptab, long send_rows,
+                       double complex[:, ::1] S, double complex[:, ::1] Y):
+    """Every column block of a discovered-key matrix through :func:`scatter_discovered_nogil`.
+    ``S`` and ``Y`` must be zeroed by the caller. Segments are ``(col_begin, indptr, packed, data)``
+    with int64 ``indptr``/``packed`` and complex128 ``data``."""
+    cdef long[:] indptr
+    cdef long[:] packed
+    cdef double complex[:] data
+    cdef long col_begin
+    for col_begin_obj, indptr_obj, packed_obj, data_obj in segments:
+        col_begin = col_begin_obj
+        indptr = indptr_obj
+        packed = packed_obj
+        data = data_obj
+        with nogil:
+            scatter_discovered_nogil(col_begin, indptr, packed, data, alive, p, c0, X, base, goff, ptab,
+                                     use_ptab, send_rows, S, Y)
+
+
 cdef class DistributedSparseMatrix:
     """This rank's ``(N, N_local)`` columns of an operator; see the module docstring.
 

@@ -1,0 +1,176 @@
+r"""``discovered_matrix.DiscoveredMatrix``: ``H`` over every discovered key, columns for the admitted ones.
+
+The oracle shares no storage with the matrix: the admitted determinants' superposition is pushed
+through ``applyOp`` in Python (replicated on every rank) and indexed by determinant bytes. Pinned:
+
+* ``matvec(rows="all")`` is exactly ``H V`` -- every discovered key carries the oracle's amplitude and
+  the discovered keys are exactly the admitted ones plus what their images reach;
+* ``matvec(rows="P")`` is the same product restricted to the admitted keys;
+* one operator application per admitted key, however the keys arrive (stages, repeats);
+* a rank with no admitted key but discovered ones (``-n 3``) takes part in every collective;
+* ``drop_columns`` then ``compact_p_slots`` leave the product of the remaining columns;
+* ``to_scipy`` and ``matvec`` describe the same matrix.
+"""
+
+import numpy as np
+import pytest
+from mpi4py import MPI
+
+from impurityModel.ed.discovered_matrix import DiscoveredMatrix
+from impurityModel.ed.ManyBodyUtils import ManyBodyState, applyOp
+from impurityModel.test.basis.test_sparse_matrix_build import _N_BYTES, _all_dets, _operator
+from impurityModel.test.support.comms import COMMS
+
+WIDTH = 2
+
+
+def _key(d):
+    return bytes(d.to_bytearray()[:_N_BYTES])
+
+
+def _owned(dets, comm):
+    if comm is None or comm.size == 1:
+        return list(dets)
+    return [d for d in dets if d.routing_hash() % comm.size == comm.rank]
+
+
+def _gather(comm, obj):
+    return [obj] if comm is None else comm.allgather(obj)
+
+
+def _admitted(n, seed=2):
+    dets = _all_dets()
+    order = np.random.default_rng(seed).permutation(len(dets))
+    return [dets[i] for i in order[:n]]
+
+
+def _x_of(dets):
+    """A reproducible block on ``dets``: the same amplitudes on every rank for the same determinant."""
+    out = np.empty((len(dets), WIDTH), dtype=complex)
+    for i, d in enumerate(dets):
+        rng = np.random.default_rng(int.from_bytes(_key(d), "little"))
+        out[i] = rng.standard_normal(WIDTH) + 1j * rng.standard_normal(WIDTH)
+    return out
+
+
+def _oracle(op, dets):
+    """``{key: (WIDTH,) amplitudes}`` of ``H sum_d x_d |d>``, applied in Python, per column."""
+    x = _x_of(dets)
+    total = {}
+    for c in range(WIDTH):
+        psi = ManyBodyState({d: complex(x[i, c]) for i, d in enumerate(dets)})
+        image = applyOp(op, psi, cutoff=0)
+        for k, a in zip(image.keys(), np.asarray(image)[:, 0]):
+            total.setdefault(_key(k), np.zeros(WIDTH, dtype=complex))[c] = a
+    return total
+
+
+def _matrix(op, comm, owned):
+    mat = DiscoveredMatrix(op, chunks_per_state=1, comm=comm)
+    mat.grow(owned)
+    return mat
+
+
+def _check_matvec(mat, op, admitted, comm, exact_k=True):
+    owned = [d for d in admitted if mat.size == 1 or d.routing_hash() % mat.size == mat.rank]
+    p_keys = mat.p_keys()
+    alive = mat.alive()
+    live_dets = [k for k, a in zip(p_keys, alive) if a]
+    X = np.zeros((mat.n_p_local, WIDTH), dtype=complex)
+    X[alive] = _x_of(live_dets)
+    all_live = [d for part in _gather(comm, live_dets) for d in part]
+    want = _oracle(op, all_live)
+
+    got_all = mat.matvec(X, rows="all")
+    k_keys = mat.keys_of(np.arange(mat.n_k_local))
+    all_k = [_key(k) for part in _gather(comm, k_keys) for k in part]
+    assert len(set(all_k)) == len(all_k), "a key is in K twice"
+    # K = what the images reach (admitted keys with no image row are in K as their own columns)
+    assert set(want) <= set(all_k)
+    if exact_k:
+        assert set(all_k) - set(want) <= {_key(d) for d in all_live} | {_key(d) for d in admitted}
+    for i, k in enumerate(k_keys):
+        np.testing.assert_allclose(got_all[i], want.get(_key(k), np.zeros(WIDTH)), atol=1e-12)
+
+    got_p = mat.matvec(X, rows="P")
+    assert got_p.shape == (mat.n_p_local, WIDTH)
+    for slot, (k, a) in enumerate(zip(p_keys, alive)):
+        expected = want.get(_key(k), np.zeros(WIDTH)) if a else np.zeros(WIDTH)  # a dead slot is no P row
+        np.testing.assert_allclose(got_p[slot], expected, atol=1e-12)
+    return owned
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_matvec_is_the_operator_applied_to_the_admitted_block(comm):
+    op = _operator()
+    admitted = _admitted(150)
+    mat = _matrix(op, comm, _owned(admitted, comm))
+    _check_matvec(mat, op, admitted, comm)
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_one_application_per_admitted_key_in_any_arrival_order(comm):
+    op = _operator()
+    admitted = _admitted(120)
+    mine = _owned(admitted, comm)
+    mat = DiscoveredMatrix(op, 1, comm, batch=200)  # several lookup batches
+    half = len(mine) // 2
+    mat.grow(mine[:half])
+    mat.grow(mine[:half])  # a repeat admits nothing
+    assert mat.n_applied == half
+    mat.grow(mine)  # the first half is already in
+    assert mat.n_applied == len(mine)
+    _check_matvec(mat, op, admitted, comm)
+    reference = _matrix(op, comm, mine)
+    assert reference.n_applied == len(mine)
+    assert mat.nnz == reference.nnz
+
+
+@pytest.mark.mpi
+def test_a_rank_without_admitted_keys_still_takes_part():
+    comm = MPI.COMM_WORLD
+    op = _operator()
+    admitted = _admitted(1)
+    mat = _matrix(op, comm, _owned(admitted, comm))
+    _check_matvec(mat, op, admitted, comm)
+    if comm.size >= 3:
+        empty = [mat.n_p_local == 0 and mat.n_k_local > 0 for _ in [0]]
+        assert any(comm.allgather(empty[0])), "no rank has discovered keys but no column"
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_dropped_columns_leave_the_remaining_product_and_compaction_keeps_it(comm):
+    op = _operator()
+    admitted = _admitted(100, seed=4)
+    mat = _matrix(op, comm, _owned(admitted, comm))
+    drop = np.arange(0, mat.n_p_local, 3)
+    kept_keys = [k for i, k in enumerate(mat.p_keys()) if i % 3 != 0]
+    mat.drop_columns(drop)
+    assert mat.n_alive_local == len(kept_keys)
+    dead_cols = mat.to_scipy("all")[:, drop]
+    assert dead_cols.nnz == 0, "a dropped column still has entries in to_scipy"
+    _check_matvec(mat, op, admitted, comm, exact_k=False)  # dropped columns' rows stay in K
+    keep = mat.compact_p_slots()
+    assert mat.n_p_local == len(kept_keys) and len(keep) == len(kept_keys)
+    assert [_key(k) for k in mat.p_keys()] == [_key(k) for k in kept_keys]
+    _check_matvec(mat, op, admitted, comm, exact_k=False)
+    # a dropped key comes back as a new column
+    dropped = [d for d in _owned(admitted, comm) if _key(d) not in {_key(k) for k in kept_keys}]
+    n_before = mat.n_applied
+    mat.grow(dropped)
+    assert mat.n_applied == n_before + len(dropped)
+    _check_matvec(mat, op, admitted, comm, exact_k=False)
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_to_scipy_and_matvec_describe_the_same_matrix(comm):
+    op = _operator()
+    admitted = _admitted(80, seed=6)
+    mat = _matrix(op, comm, _owned(admitted, comm))
+    X = _x_of(mat.p_keys())
+    for rows in ("all", "P"):
+        local = mat.to_scipy(rows) @ X
+        total = local if comm is None else comm.allreduce(local)
+        got = mat.matvec(X, rows=rows)
+        want = np.concatenate(_gather(comm, got), axis=0)
+        np.testing.assert_allclose(total, want, atol=1e-12)
