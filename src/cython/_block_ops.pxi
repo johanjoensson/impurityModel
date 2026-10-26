@@ -132,6 +132,29 @@ def _matvec_prof_add(str name, double t0):
     ent[1] += 1
 
 
+cdef double _PROF_LAST_DUMP = 0.0
+
+
+cdef void _matvec_prof_dump(Py_ssize_t rows_in, Py_ssize_t rows_out) except *:
+    """Every 30 s, print the running stage table to stderr (a killed run still leaves numbers)."""
+    global _PROF_LAST_DUMP
+    cdef double now = _time.perf_counter()
+    cdef list ent = _MATVEC_PROF.setdefault("rows_in_max", [0.0, 0])
+    if rows_in > ent[0]:
+        ent[0] = rows_in
+    ent = _MATVEC_PROF.setdefault("rows_out_max", [0.0, 0])
+    if rows_out > ent[0]:
+        ent[0] = rows_out
+    if now - _PROF_LAST_DUMP < 30.0:
+        return
+    _PROF_LAST_DUMP = now
+    import sys
+    tot = _MATVEC_PROF["matvec_total"][0]
+    for k, v in sorted(_MATVEC_PROF.items(), key=lambda kv: -kv[1][0]):
+        print(f"PROF {k:20s} {v[0]:12.2f} {v[1]:7d} {100.0 * v[0] / tot:6.1f}%", file=sys.stderr, flush=True)
+    print("PROF ----", file=sys.stderr, flush=True)
+
+
 def matvec_prof_report(reset=True):
     """Return (and by default clear) ``{stage: (seconds, calls)}`` of the opt-in matvec timer."""
     out = {k: (v[0], v[1]) for k, v in _MATVEC_PROF.items()}
@@ -241,6 +264,7 @@ def apply_and_redistribute(
     if timed:
         _matvec_prof_add("decide", t2)
         _matvec_prof_add("matvec_total", t0)
+        _matvec_prof_dump(len(V), len(W))
     if prof is not None:
         prof("matvec", t0)
     return W
