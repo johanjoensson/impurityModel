@@ -104,3 +104,30 @@ same way, so it still equals `apply({D: 1})` bit for bit (checked on 1500 NiO de
   1.25x on 4 threads here, bound by the merge and the final sort.
 * What remains is the emission itself (~12 hops + 6 two-body terms per row, ~50 ns each: hash, probe, two
   random reads) and the sort. Both are inherent to a hash-accumulate-then-sort apply.
+
+# Part 3: the emission and the sort (2026-10-26)
+
+Target: supports that keep growing (NiO: 202 Lanczos steps, 1.6M -> 2.4M rows, never settles) and units whose
+frozen CSR does not fit; there the MBS apply is the whole unit. NiO fixed-key bench (103k rows, p = 1 / 2 / 4,
+us per input row, release, idle machine), baseline `oracle_base2` (bitwise reference for every row below).
+
+| step | p = 1 | p = 2 | p = 4 | outcome |
+|---|---|---|---|---|
+| start of part 3 | 1.13 | - | - | |
+| C1: input keys pre-inserted in the arena, sort only the new rows, merge the two runs | 1.08 | 1.03 | 1.15 | kept, bitwise identical |
+| C2: emission queue carried across rows (source row + diagonal snapshot per entry) | 1.13 | 1.21 | 1.15 | rejected, no gain |
+| C5: key and amplitudes in one record per arena row | 1.04-1.09 | 1.07-1.11 | 1.16-1.19 | rejected, ~2% at 552k rows |
+| C3: one k-way merge of the chunk outputs | not built | | | rejected, see below |
+
+* **The emission is not memory-latency bound.** At 552k input rows (841k output rows) C1 costs 1.05-1.07
+  us/row and C5 1.04-1.05, the same per-row cost as at 103k rows, so merging the three dependent touches into
+  one record and overlapping more probes (C2) buy nothing measurable. What is left is arithmetic and branches
+  of the ~18 emissions per row, not cache misses.
+* **C3 trades memory for 3%.** The chunk merge is 4-5% of a step; one k-way merge would save about two thirds
+  of it, but it keeps all `APPLY_ROW_CHUNKS` pieces alive until the end (today: `W` plus one piece). The chunking
+  exists to bound that peak, so it is not worth ~3%.
+* **Multi-rank exchange is not a cost.** 3-rank NiO replay (`--freeze on`, 76-82 steps, up to 1.96M rows/step):
+  apply 90.5-91.7%, chunk merge 4.2-4.9%, decide 3.7-4.2%, `chunk_redistribute` 0.0%. Lever D dropped.
+* Rejected patches are kept out of the tree; the apply is now ~1.08 us/row, ~4% under part 2. No further
+  apply-internal lever above ~5% is known. The remaining several-fold lever for growing supports is E (an
+  incremental matrix during the growth phase), which changes the Lanczos step rather than the apply.
