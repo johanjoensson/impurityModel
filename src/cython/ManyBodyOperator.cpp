@@ -1239,6 +1239,25 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
 
   RowScratch sc(p, n_forms, tpad, fire_nc);
   const SerialAccum emit_s{serial_accum, p};
+  // When the operator can map a determinant to itself (a density or a diagonal string), most input rows come
+  // back as output rows. Put the input keys into the arena first, in block order: arena rows [0, n_in) are then
+  // the (sorted, unique) input keys and the finishing sort only has to order the rows beyond them. Row numbers
+  // only; the `+=` sequence of every output row is unchanged. An input row nothing writes to stays 0 and is
+  // dropped by the survivors scan below.
+  std::size_t n_in = 0;
+  for (std::size_t t = 0; t < n_terms && n_in == 0; ++t) {
+    if (m_term_kind[t] == 1 || m_term_kind[t] == 2) {
+      n_in = block.rows();
+    }
+  }
+  if (n_in != 0) {
+    for (std::size_t r = 0; r < n_in; ++r) {
+      bool inserted = false;
+      arena.find_or_insert(block.key_view(r).data(), inserted);
+      assert(inserted && arena.rows() == r + 1);
+    }
+    acc.resize(n_in * p);
+  }
   for (std::size_t r = 0; r < block.rows(); ++r) {
     process_row(r, sc, emit_s);
   }
@@ -1258,10 +1277,14 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
       }
     }
   }
-  std::sort(survivors.begin(), survivors.end(),
-            [&arena, n_chunks](std::uint32_t a, std::uint32_t b) {
-              return FlatKeyStore::less(arena.row(a), n_chunks, arena.row(b), n_chunks);
-            });
+  const auto row_less = [&arena, n_chunks](std::uint32_t a, std::uint32_t b) {
+    return FlatKeyStore::less(arena.row(a), n_chunks, arena.row(b), n_chunks);
+  };
+  // Survivors are in row order, so those from the (already sorted) input rows come first.
+  const auto split = std::partition_point(survivors.begin(), survivors.end(),
+                                          [n_in](std::uint32_t r) { return r < n_in; });
+  std::sort(split, survivors.end(), row_less);
+  std::inplace_merge(survivors.begin(), split, survivors.end(), row_less);
 
   FlatKeyStore keys;
   std::vector<ManyBodyBlockState::Value> amps;
