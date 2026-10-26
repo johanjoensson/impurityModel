@@ -168,34 +168,35 @@ ManyBodyBlockState unpack_block_fused(int comm_size, size_t width,
   } else {
     // Min-heap of entry indices, one live cursor per non-exhausted segment. Entries are numbered in
     // segment order, so on equal keys the lower index is the earlier source rank.
-    const auto after = [&key_less](size_t a, size_t b) {  // "a pops after b"
-      if (key_less(a, b)) {
-        return false;
-      }
-      if (key_less(b, a)) {
-        return true;
-      }
-      return a > b;
+    struct Cursor {
+      size_t e;
+      size_t seg;
     };
-    std::vector<size_t> heap;
+    const auto after = [fk, cps](const Cursor &a, const Cursor &b) {  // "a pops after b"
+      const uint64_t *ka = fk + a.e * cps;
+      const uint64_t *kb = fk + b.e * cps;
+      for (size_t c = 0; c < cps; ++c) {
+        if (ka[c] != kb[c]) {
+          return ka[c] > kb[c];
+        }
+      }
+      return a.seg > b.seg;  // equal keys: earlier source rank first
+    };
+    std::vector<Cursor> heap;
     heap.reserve(static_cast<size_t>(comm_size));
-    std::vector<size_t> end_of(static_cast<size_t>(comm_size));
     for (int r = 0; r < comm_size; ++r) {
-      end_of[r] = seg_begin[r + 1];
       if (seg_begin[r] < seg_begin[r + 1]) {
-        heap.push_back(seg_begin[r]);
+        heap.push_back({seg_begin[r], static_cast<size_t>(r)});
       }
     }
     std::make_heap(heap.begin(), heap.end(), after);
     size_t out_pos = 0;
     while (!heap.empty()) {
       std::pop_heap(heap.begin(), heap.end(), after);
-      const size_t e = heap.back();
-      idx[out_pos++] = e;
-      const size_t seg = static_cast<size_t>(
-          std::upper_bound(seg_begin.begin(), seg_begin.end(), e) - seg_begin.begin()) - 1;
-      if (e + 1 < end_of[seg]) {
-        heap.back() = e + 1;
+      Cursor &cur = heap.back();
+      idx[out_pos++] = cur.e;
+      if (cur.e + 1 < seg_begin[cur.seg + 1]) {
+        ++cur.e;
         std::push_heap(heap.begin(), heap.end(), after);
       } else {
         heap.pop_back();
