@@ -25,9 +25,19 @@ import random
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyOperator, ManyBodyState, SlaterDeterminant
+
+from .apply_reference import (
+    assert_matches,
+    block_from_orbital_sets,
+    block_to_orbital_sets,
+    orbitals_from_chunks,
+    reference_apply,
+    state_to_orbital_sets,
+)
 
 N_ORBS = 160
 N_CHUNKS = (N_ORBS + 63) // 64
@@ -415,7 +425,7 @@ def test_apply_block_width_scaling(timing_fixtures, capsys):
 
 @pytest.mark.parametrize("seed", [1, 2, 3])
 def test_block_apply_restriction_deltas_match_the_per_state_check(seed):
-    """The block apply checks a restriction as ``row value + per-term delta``; the scalar apply popcounts the
+    """The block apply checks a restriction as ``row value + per-term delta``; the reference popcounts the
     output. Count and weighted restrictions (overlapping groups, weights of both signs) must keep and drop
     exactly the same output determinants with the same amplitudes."""
     rng = random.Random(seed)
@@ -429,21 +439,24 @@ def test_block_apply_restriction_deltas_match_the_per_state_check(seed):
             ({o: 2 for o in range(10, 30)} | {o: -1 for o in range(25, 60)}, (-12, 14)),
         ]
     )
-    blk = ManyBodyState.from_states([psi])
-    got = op.apply_block(blk, 0.0).to_states()[0].to_dict()
-    ref = op.apply_multi([psi], 0.0)[0].to_dict()
+    restr = {frozenset(range(0, 40)): (18, 22), frozenset(range(30, 90)): (28, 33)}
+    weighted = [
+        ({o: (1 if o % 2 else -1) for o in range(0, 80)}, (-3, 3)),
+        ({o: 2 for o in range(10, 30)} | {o: -1 for o in range(25, 60)}, (-12, 14)),
+    ]
+    states = state_to_orbital_sets(psi)
+    got = block_to_orbital_sets(op.apply_block(block_from_orbital_sets(states, N_CHUNKS), 0.0))
+    ref = reference_apply(op.to_dict(), states, N_CHUNKS, restr, weighted)
     assert 0 < len(ref)
-    unrestricted = _make_hamiltonian(random.Random(seed), 60, 60).apply_multi([psi], 0.0)[0].to_dict()
+    unrestricted = reference_apply(op.to_dict(), states, N_CHUNKS)
     assert len(ref) < len(unrestricted), "the restrictions cut nothing, so the test discriminates nothing"
-    assert set(got) == set(ref)
-    for k, v in ref.items():
-        assert abs(got[k] - v) <= 1e-12 * max(1.0, abs(v))
+    assert_matches(got, ref)
 
 
-def test_block_apply_matches_scalar_apply_on_terms_that_rarely_or_never_fire():
+def test_block_apply_matches_reference_on_terms_that_rarely_or_never_fire():
     """The block apply runs a term's create/annihilate sequence only where an occupancy mask says it fires.
     Strings that revisit an orbital (c_i c^d_i, c^d_i c_i c_j ...), annihilate-then-create chains and
-    repeated creators never fire or fire conditionally; the block result must equal the scalar one."""
+    repeated creators never fire or fire conditionally; the block result must equal the independent reference."""
     rng = random.Random(11)
     terms = {}
     for _ in range(40):
@@ -465,16 +478,17 @@ def test_block_apply_matches_scalar_apply_on_terms_that_rarely_or_never_fire():
         occ = tuple(sorted(rng.sample(range(0, 12), rng.randrange(3, 9))))
         states[_sd_from_orbitals(occ)] = complex(rng.gauss(0, 1), rng.gauss(0, 1))
     psi = ManyBodyState(states)
-    got = op.apply_block(ManyBodyState.from_states([psi]), 0.0).to_states()[0].to_dict()
-    ref = op.apply_multi([psi], 0.0)[0].to_dict()
-    assert set(got) == set(ref)
-    for k, v in ref.items():
-        assert abs(got[k] - v) <= 1e-12 * max(1.0, abs(v))
+    # The reference applies the raw strings, so this also covers the operator's own canonicalisation.
+    ref_terms = dict(terms)
+    got = block_to_orbital_sets(op.apply_block(ManyBodyState.from_states([psi]), 0.0))
+    ref = reference_apply(ref_terms, state_to_orbital_sets(psi), N_CHUNKS)
+    assert ref
+    assert_matches(got, ref)
 
 
-def test_wide_block_apply_with_restrictions_matches_scalar_apply():
+def test_wide_block_apply_with_restrictions_matches_reference():
     """A block big enough for the threaded apply (in an ``IMPURITYMODEL_PARALLEL=1`` build) to split across
-    threads, with restrictions on: the threaded accumulate/merge/sort must agree with the scalar apply
+    threads, with restrictions on: the threaded accumulate/merge/sort must agree with the reference
     column by column (this is also the serial path's wide-block check)."""
     rng = random.Random(23)
     op = _make_hamiltonian(rng, 40, 40)
@@ -484,10 +498,17 @@ def test_wide_block_apply_with_restrictions_matches_scalar_apply():
     support = list(_make_state(rng, 1500).to_dict())
     for _ in range(3):
         psis.append(ManyBodyState({sd: complex(rng.gauss(0, 1), rng.gauss(0, 1)) for sd in support}))
-    got = op.apply_block(ManyBodyState.from_states(psis), 0.0).to_states()
-    ref = op.apply_multi(psis, 0.0)
-    for g, r in zip(got, ref):
-        gd, rd = g.to_dict(), r.to_dict()
-        assert set(gd) == set(rd)
-        for k, v in rd.items():
-            assert abs(gd[k] - v) <= 1e-11 * max(1.0, abs(v))
+    got = block_to_orbital_sets(op.apply_block(ManyBodyState.from_states(psis), 0.0))
+    states = {}
+    for c, psi in enumerate(psis):
+        for occ, v in state_to_orbital_sets(psi).items():
+            states.setdefault(occ, np.zeros(len(psis), dtype=complex))[c] = v[0]
+    ref = reference_apply(
+        op.to_dict(),
+        states,
+        N_CHUNKS,
+        {frozenset(range(0, 60)): (26, 34)},
+        [({o: (1 if o % 2 else -1) for o in range(0, 100)}, (-4, 4))],
+    )
+    assert ref
+    assert_matches(got, ref, tol=1e-11)
