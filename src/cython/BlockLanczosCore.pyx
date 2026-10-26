@@ -20,6 +20,7 @@ true any more: both kernels import downward from here, and the two dispatch func
 reference these module-level names directly.
 """
 
+import os
 import time as _time
 import numpy as np
 cimport numpy as np

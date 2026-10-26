@@ -510,6 +510,82 @@ struct SlaterKeyHash {
   }
 };
 
+
+// Key arena + open-addressing index for the serial block apply's accumulator: the distinct output
+// determinants live back to back in ONE `uint64_t` buffer (`n_chunks` per row, in first-seen order), and
+// `slots` maps a key's hash to its row. Compared with a `flat_map<SlaterKey, row>` this allocates nothing
+// per determinant (the map copied a `std::vector` key on every first sight) and leaves the keys contiguous
+// for the finalising sort. Row numbers are first-seen order, exactly as the map's `row_of.size()` was, so the
+// per-row `+=` sequences and therefore the sums are unchanged.
+class KeyArena {
+public:
+  KeyArena(std::size_t n_chunks, std::size_t expected_rows) : m_n(n_chunks) {
+    std::size_t cap = 16;
+    while (cap < expected_rows * 2) {
+      cap <<= 1;
+    }
+    m_slots.assign(cap, EMPTY);
+    m_data.reserve(expected_rows * n_chunks);
+  }
+
+  std::size_t rows() const noexcept { return m_n == 0 ? 0 : m_data.size() / m_n; }
+  const uint64_t *row(std::size_t r) const noexcept { return m_data.data() + r * m_n; }
+
+  /** Row of `k` (`m_n` chunks); `inserted` says whether it was appended. */
+  std::size_t find_or_insert(const uint64_t *k, bool &inserted) {
+    if ((rows() + 1) * 10 > m_slots.size() * 7) {
+      grow();
+    }
+    const std::size_t mask = m_slots.size() - 1;
+    std::size_t pos = hash(k) & mask;
+    while (true) {
+      const std::size_t r = m_slots[pos];
+      if (r == EMPTY) {
+        const std::size_t nr = rows();
+        m_data.insert(m_data.end(), k, k + m_n);
+        m_slots[pos] = nr;
+        inserted = true;
+        return nr;
+      }
+      if (std::equal(k, k + m_n, row(r))) {
+        inserted = false;
+        return r;
+      }
+      pos = (pos + 1) & mask;
+    }
+  }
+
+private:
+  static constexpr std::size_t EMPTY = ~static_cast<std::size_t>(0);
+  std::size_t m_n;
+  std::vector<uint64_t> m_data;
+  std::vector<std::size_t> m_slots;
+
+  std::size_t hash(const uint64_t *k) const noexcept {
+    uint64_t h = 0x9e3779b97f4a7c15ULL;
+    for (std::size_t c = 0; c < m_n; ++c) {
+      uint64_t x = (h ^ k[c]) + 0x9e3779b97f4a7c15ULL;
+      x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+      x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+      h = x ^ (x >> 31);
+    }
+    return static_cast<std::size_t>(h);
+  }
+
+  void grow() {
+    std::vector<std::size_t> bigger(m_slots.size() * 2, EMPTY);
+    const std::size_t mask = bigger.size() - 1;
+    for (std::size_t r = 0; r < rows(); ++r) {
+      std::size_t pos = hash(row(r)) & mask;
+      while (bigger[pos] != EMPTY) {
+        pos = (pos + 1) & mask;
+      }
+      bigger[pos] = r;
+    }
+    m_slots.swap(bigger);
+  }
+};
+
 #if defined(PARALLEL)
 // Maximum threads the apply path may use. Prefer OMP_NUM_THREADS (the cores the
 // user requested for *this* MPI task) so one rank per task never oversubscribes
@@ -637,20 +713,21 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
     return keep == nullptr || keep->may_contain(k.data(), k.size());
   };
 
-  boost::unordered_flat_map<SlaterKey, std::size_t, SlaterKeyHash>
-      row_of;
-  row_of.reserve(block.rows());
-  std::vector<ManyBodyBlockState::Value> acc; // row-major, row_of.size() * p
+  // Distinct out-determinants in a flat key arena (see `KeyArena`) plus the row-major amplitudes.
+  const std::size_t n_chunks = block.rows() > 0 ? block.key_store().chunks() : 1;
+  KeyArena arena(n_chunks, block.rows());
+  std::vector<ManyBodyBlockState::Value> acc; // row-major, arena.rows() * p
   acc.reserve(block.rows() * p);
 
   // Row of `k` in acc, appending a zero row on first sight. resize() grows the
   // buffer geometrically, so the amortized cost stays O(1) per new row.
   const auto emit_row = [&](const SlaterKey &k) {
-    const auto [it, inserted] = row_of.try_emplace(k, row_of.size());
+    bool inserted = false;
+    const std::size_t row = arena.find_or_insert(k.data(), inserted);
     if (inserted) {
       acc.resize(acc.size() + p);
     }
-    return acc.data() + it->second * p;
+    return acc.data() + row * p;
   };
 
 #if defined(PARALLEL)
@@ -1000,28 +1077,35 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
   }
 
   // Keep rows where ANY column survives the cutoff, then sort by determinant to
-  // establish the container's sorted-unique invariant.
-  std::vector<std::pair<SlaterKey, std::size_t>> survivors;
-  survivors.reserve(row_of.size());
-  for (auto &[k, row] : row_of) {
+  // establish the container's sorted-unique invariant. The sort permutes row numbers and compares
+  // contiguous arena rows (no pointer chasing through per-key heap vectors); the survivors are gathered
+  // straight into a flat key buffer.
+  std::vector<std::uint32_t> survivors;
+  survivors.reserve(arena.rows());
+  for (std::size_t row = 0; row < arena.rows(); ++row) {
     const ManyBodyBlockState::Value *src = acc.data() + row * p;
     for (std::size_t c = 0; c < p; ++c) {
       if (std::norm(src[c]) > cutoff2) {
-        survivors.emplace_back(std::move(k), row);
+        survivors.push_back(static_cast<std::uint32_t>(row));
         break;
       }
     }
   }
   std::sort(survivors.begin(), survivors.end(),
-            [](const auto &a, const auto &b) { return a.first < b.first; });
+            [&arena, n_chunks](std::uint32_t a, std::uint32_t b) {
+              return FlatKeyStore::less(arena.row(a), n_chunks, arena.row(b), n_chunks);
+            });
 
-  std::vector<ManyBodyBlockState::Key> keys;
-  keys.reserve(survivors.size());
+  FlatKeyStore keys;
   std::vector<ManyBodyBlockState::Value> amps;
   amps.reserve(survivors.size() * p);
-  for (auto &[k, row] : survivors) {
-    keys.push_back(std::move(k));
-    const ManyBodyBlockState::Value *src = acc.data() + row * p;
+  if (!survivors.empty()) {
+    keys.set_chunks(n_chunks);
+    keys.reserve_rows(survivors.size());
+  }
+  for (const std::uint32_t row : survivors) {
+    keys.push_back(arena.row(row), n_chunks);
+    const ManyBodyBlockState::Value *src = acc.data() + static_cast<std::size_t>(row) * p;
     amps.insert(amps.end(), src, src + p);
   }
   return ManyBodyBlockState(std::move(keys), std::move(amps), p);

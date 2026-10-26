@@ -694,6 +694,54 @@ def test_unpack_block_fused_matches_a_sorted_arrival_order_oracle():
     np.testing.assert_array_equal(np.asarray(out), np.array(list(expected.values())))
 
 
+def _sorted_segments_buffer(seg_sizes, width, n_unique, chunks=2, seed=3):
+    """A fused receive buffer whose every source segment is sorted by key (the production invariant).
+
+    Returns ``(recv, keys, amps)`` in arrival (segment-major) order. Duplicates occur within and across
+    segments' key pools, but never twice inside one segment (a block's keys are unique).
+    """
+    rng = np.random.default_rng(seed)
+    uniq = rng.integers(0, 2**63, size=(n_unique, chunks), dtype=np.uint64)
+    picks = []
+    for n in seg_sizes:
+        sel = rng.choice(n_unique, size=n, replace=False)
+        order = np.lexsort(tuple(uniq[sel][:, c] for c in range(chunks - 1, -1, -1)))
+        picks.append(sel[order])
+    pick = np.concatenate(picks) if picks else np.empty(0, dtype=int)
+    total = len(pick)
+    bpe = chunks * 8 + width * 16
+    recv = np.empty(total * bpe, dtype=np.uint8)
+    view = recv.reshape(total, bpe)
+    amps = rng.standard_normal((total, width)) + 1j * rng.standard_normal((total, width))
+    view[:, : chunks * 8] = uniq[pick].view(np.uint8)
+    view[:, chunks * 8 :] = amps.view(np.uint8)
+    return recv, uniq[pick], amps
+
+
+@pytest.mark.parametrize("seg_sizes", [[300, 0, 250, 400, 0], [0, 0, 0], [500], [1, 1, 1, 1], [200, 200, 200, 200, 200, 200]])
+def test_unpack_block_fused_merges_sorted_segments_in_source_order(seg_sizes):
+    """Sorted per-source segments (the production shape) sum duplicates in source-rank order, bit for bit.
+
+    Includes empty segments (ranks that send nothing) and the all-empty buffer.
+    """
+    from impurityModel.ed.ManyBodyUtils import unpack_block_fused_cy
+
+    width, chunks = 3, 2
+    recv, keys, amps = _sorted_segments_buffer(seg_sizes, width, n_unique=700, chunks=chunks)
+    counts = np.array(seg_sizes, dtype=np.int64)
+    out = unpack_block_fused_cy(len(seg_sizes), width, counts, recv, chunks)
+
+    expected = {}
+    for e in range(len(keys)):
+        expected.setdefault(tuple(int(v) for v in keys[e]), np.zeros(width, dtype=complex))
+        expected[tuple(int(v) for v in keys[e])] += amps[e]
+    expected = dict(sorted(expected.items()))
+    got_keys = [tuple(int(k[c]) for c in range(len(k))) for k in out.keys()]
+    assert got_keys == list(expected)
+    if expected:
+        np.testing.assert_array_equal(np.asarray(out), np.array(list(expected.values())))
+
+
 def test_unpack_block_fused_does_not_copy_the_amplitudes_out_of_the_receive_buffer():
     """The coefficients arrive in ``recv_buf``, which MPI keeps alive for the call.
 

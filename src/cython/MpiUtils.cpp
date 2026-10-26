@@ -140,11 +140,68 @@ ManyBodyBlockState unpack_block_fused(int comm_size, size_t width,
   // it on a little-endian machine, and the key order is what every rank's
   // `offset`-based global index arithmetic depends on.
   std::vector<size_t> idx(total);
-  std::iota(idx.begin(), idx.end(), 0);
-  std::stable_sort(idx.begin(), idx.end(), [fk, cps](size_t a, size_t b) {
+  const auto key_less = [fk, cps](size_t a, size_t b) {
     return std::lexicographical_compare(fk + a * cps, fk + (a + 1) * cps, fk + b * cps,
                                         fk + (b + 1) * cps);
-  });
+  };
+  // Each sender's segment arrives sorted (the block invariant, and the packer keeps block order within a
+  // destination), so a k-way merge replaces the global comparison sort: O(total log k) instead of
+  // O(total log total). The heap breaks key ties on the SEGMENT (= source rank), then position, which is
+  // exactly the arrival order `stable_sort` preserves, so the per-column summation order is unchanged. A
+  // segment that is not sorted (a hand-built receive buffer) falls back to the stable sort.
+  std::vector<size_t> seg_begin(static_cast<size_t>(comm_size) + 1, 0);
+  for (int r = 0; r < comm_size; ++r) {
+    seg_begin[r + 1] = seg_begin[r] + static_cast<size_t>(recv_counts[r]);
+  }
+  bool segments_sorted = true;
+  for (int r = 0; r < comm_size && segments_sorted; ++r) {
+    for (size_t e = seg_begin[r] + 1; e < seg_begin[r + 1]; ++e) {
+      if (key_less(e, e - 1)) {
+        segments_sorted = false;
+        break;
+      }
+    }
+  }
+  if (!segments_sorted) {
+    std::iota(idx.begin(), idx.end(), 0);
+    std::stable_sort(idx.begin(), idx.end(), key_less);
+  } else {
+    // Min-heap of entry indices, one live cursor per non-exhausted segment. Entries are numbered in
+    // segment order, so on equal keys the lower index is the earlier source rank.
+    const auto after = [&key_less](size_t a, size_t b) {  // "a pops after b"
+      if (key_less(a, b)) {
+        return false;
+      }
+      if (key_less(b, a)) {
+        return true;
+      }
+      return a > b;
+    };
+    std::vector<size_t> heap;
+    heap.reserve(static_cast<size_t>(comm_size));
+    std::vector<size_t> end_of(static_cast<size_t>(comm_size));
+    for (int r = 0; r < comm_size; ++r) {
+      end_of[r] = seg_begin[r + 1];
+      if (seg_begin[r] < seg_begin[r + 1]) {
+        heap.push_back(seg_begin[r]);
+      }
+    }
+    std::make_heap(heap.begin(), heap.end(), after);
+    size_t out_pos = 0;
+    while (!heap.empty()) {
+      std::pop_heap(heap.begin(), heap.end(), after);
+      const size_t e = heap.back();
+      idx[out_pos++] = e;
+      const size_t seg = static_cast<size_t>(
+          std::upper_bound(seg_begin.begin(), seg_begin.end(), e) - seg_begin.begin()) - 1;
+      if (e + 1 < end_of[seg]) {
+        heap.back() = e + 1;
+        std::push_heap(heap.begin(), heap.end(), after);
+      } else {
+        heap.pop_back();
+      }
+    }
+  }
 
   // Count the distinct determinants before reserving. `total` over-reserves by the
   // duplicate fraction, and `std::vector` never hands that capacity back -- the result
@@ -156,8 +213,11 @@ ManyBodyBlockState unpack_block_fused(int comm_size, size_t width,
     }
   }
 
-  std::vector<ManyBodyBlockState::Key> out_keys;
-  out_keys.reserve(n_unique);
+  FlatKeyStore out_keys;
+  if (n_unique > 0) {
+    out_keys.set_chunks(cps);
+    out_keys.reserve_rows(n_unique);
+  }
   std::vector<ManyBodyBlockState::Value> out_amps;
   out_amps.reserve(n_unique * width);
   // One row's worth of scratch, so the duplicate branch reads `recv_buf` through a
@@ -166,8 +226,9 @@ ManyBodyBlockState unpack_block_fused(int comm_size, size_t width,
   for (size_t t = 0; t < total; ++t) {
     const size_t e = idx[t];
     const char *src_amp = recv_buf + e * bpe + state_bytes;
-    if (!out_keys.empty() && std::equal(fk + e * cps, fk + (e + 1) * cps, out_keys.back().data())) {
-      ManyBodyBlockState::Value *dst = out_amps.data() + (out_keys.size() - 1) * width;
+    if (!out_keys.empty() &&
+        std::equal(fk + e * cps, fk + (e + 1) * cps, out_keys.view(out_keys.rows() - 1).data())) {
+      ManyBodyBlockState::Value *dst = out_amps.data() + (out_keys.rows() - 1) * width;
       if (amp_bytes > 0) {
         std::memcpy(scratch.data(), src_amp, amp_bytes);
       }
@@ -175,10 +236,7 @@ ManyBodyBlockState unpack_block_fused(int comm_size, size_t width,
         dst[c] += scratch[c];
       }
     } else {
-      // `SlaterDeterminant` inherits `std::vector` without `using vector::vector`, so it
-      // has only the default constructor -- no iterator-range form.
-      out_keys.emplace_back();
-      out_keys.back().assign(fk + e * cps, fk + (e + 1) * cps);
+      out_keys.push_back(fk + e * cps, cps);
       const size_t base = out_amps.size();
       out_amps.resize(base + width);
       if (amp_bytes > 0) {

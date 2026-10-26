@@ -121,6 +121,25 @@ cdef object _apply_through(object H, object V, double cutoff, object keep):
     return H.apply_block(V, cutoff, keep)
 
 
+# Opt-in matvec stage timer (``IMPMOD_MATVEC_PROF=1``): per-process seconds and call counts per stage of
+# ``apply_and_redistribute``, printed by ``matvec_prof_report``. Measurement aid only -- no collective inside.
+cdef dict _MATVEC_PROF = {}
+
+
+def _matvec_prof_add(str name, double t0):
+    cdef list ent = _MATVEC_PROF.setdefault(name, [0.0, 0])
+    ent[0] += _time.perf_counter() - t0
+    ent[1] += 1
+
+
+def matvec_prof_report(reset=True):
+    """Return (and by default clear) ``{stage: (seconds, calls)}`` of the opt-in matvec timer."""
+    out = {k: (v[0], v[1]) for k, v in _MATVEC_PROF.items()}
+    if reset:
+        _MATVEC_PROF.clear()
+    return out
+
+
 def apply_and_redistribute(
     object H, object V, object basis, double cutoff, bint redistribute, int n_chunks=1, object prof=None,
 ):
@@ -151,7 +170,8 @@ def apply_and_redistribute(
     cdef object move = (
         policy.transport if policy is not None else (basis.redistribute_block if redistribute else None)
     )
-    cdef double t0 = _time.perf_counter(), t1
+    cdef double t0 = _time.perf_counter(), t1, t2
+    cdef bint timed = bool(os.environ.get("IMPMOD_MATVEC_PROF"))
     cdef double apply_cutoff = 0.0 if after else cutoff
     cdef object W, part, raw, piece, bounds
     cdef object keep_filter = None
@@ -188,12 +208,19 @@ def apply_and_redistribute(
             # `row_slice` allocates exactly this chunk's rows (a `copy()` then `keep_rows` would hold a
             # full-size duplicate of V per chunk, which is why chunking once measured slower with a HIGHER peak).
             part = V.row_slice(lo, hi)
+            t2 = _time.perf_counter()
             raw = _apply_through(H, part, apply_cutoff, keep_filter)
             del part
+            if timed:
+                _matvec_prof_add("chunk_apply", t2)
+                t2 = _time.perf_counter()
             if hasattr(basis, "redistribute_block"):
                 piece = move(raw)
             else:
                 piece = ManyBodyState.from_states(basis.redistribute_psis(*raw.to_states()))
+            if timed:
+                _matvec_prof_add("chunk_redistribute", t2)
+                t2 = _time.perf_counter()
             del raw
             if W is None:
                 W = piece
@@ -201,13 +228,19 @@ def apply_and_redistribute(
                 # Rank-local decision on a rank-local quantity (no collective inside), so an empty piece
                 # on one rank cannot desynchronize the others.
                 W += piece
+            if timed:
+                _matvec_prof_add("chunk_merge", t2)
             del piece
         if prof is not None:
             prof("matvec_apply", t0)
+    t2 = _time.perf_counter()
     if policy is not None:
         W = policy.decide(W, cutoff)
     elif after:
         W.prune_rows(cutoff)
+    if timed:
+        _matvec_prof_add("decide", t2)
+        _matvec_prof_add("matvec_total", t0)
     if prof is not None:
         prof("matvec", t0)
     return W
