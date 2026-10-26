@@ -114,12 +114,15 @@ def settle_options(mode):
     return None, ratio, f"ratio {ratio:g}"
 
 
-def run(h5_path, out, iteration=1, cluster=None, swm=None, freeze="on", comm=None, verbosity=1):
+def run(h5_path, out, iteration=1, cluster=None, swm=None, freeze="on", comm=None, verbosity=1, matrix_mode="off"):
     """Replay one archived call and write ``out + '.npz'`` on rank 0. Returns the result dict (rank 0)."""
     os.environ.setdefault("SIGMA_CAUSALITY_TOL", "1e9")
     from impurityModel.test.support import real_workload as rw
 
     gf_settle, gf_settle_ratio, mode = settle_options(freeze)
+    from impurityModel.ed import gf_solvers
+
+    gf_solvers._MATRIX_MODE = matrix_mode  # harness switch, identical on every rank
     wl = rw.load_workload(h5_path, cluster=cluster, iteration=iteration)
     if wl["ignored_attrs"]:
         # warm_start / warm_tol describe the bath fit that produced H solver, not the solver call.
@@ -170,6 +173,7 @@ def main(argv=None):
     r.add_argument("--cluster", default=None)
     r.add_argument("--swm", type=float, default=None)
     r.add_argument("--freeze", default="on")
+    r.add_argument("--matrix-mode", default="off", choices=["off", "auto", "discovered", "retained", "none"])
     r.add_argument("--out", required=True)
     r.add_argument("--verbosity", type=int, default=1)
     g = sub.add_parser("grade")
@@ -182,7 +186,7 @@ def main(argv=None):
         return 0
     from mpi4py import MPI
 
-    run(a.archive, a.out, a.iteration, a.cluster, a.swm, a.freeze, MPI.COMM_WORLD, a.verbosity)
+    run(a.archive, a.out, a.iteration, a.cluster, a.swm, a.freeze, MPI.COMM_WORLD, a.verbosity, a.matrix_mode)
     return 0
 
 
