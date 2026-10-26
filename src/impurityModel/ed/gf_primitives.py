@@ -292,6 +292,193 @@ class FreezeRule:
         }
 
 
+class SupportDecisions:
+    """The block-agnostic decisions of a capped support: counts, the cap, the memory guard, the settle
+    rule and its record, the boundary ranking, and the log phrases.
+
+    Everything here works on scalars, arrays and key bytes -- never on a ``ManyBodyState`` -- so the same
+    decisions serve :class:`SupportPolicy` (which applies them to the matvec's block states) and the
+    recurrence on a discovered-key matrix (``gf_recurrence``, which applies them to dense frontier rows).
+    :class:`SupportPolicy` holds one and forwards the attributes below under their old names.
+
+    ``global_count`` is the replicated number of admitted determinants; ``frozen`` is whether the retained set
+    is final (replicated: derived only from allreduced data).
+    """
+
+    def __init__(self, comm, cap, global_count, memory_budget=None, memory_policy="tighten"):
+        self.comm = comm
+        self.cap = int(cap)
+        self.global_count = int(global_count)
+        self.frozen = self.global_count >= self.cap
+        self.cap_hit = self.frozen
+        self.memory_budget = memory_budget
+        self.memory_policy = memory_policy
+        self.memory_frozen = False
+        self.memory_warned = False
+        self.support_freeze = False
+        self.support_frozen = False
+        self.rule = None
+        self.support_log = False
+        self.trace_steps = False
+        #: One :class:`SettleRecord` per recurrence step (support settle only); the settle verdict is taken from
+        #: ``max2_next`` as each is appended, nothing else in it decides anything.
+        self.support_trace = []
+        #: The convergence monitor's ``last_dg`` list, set by ``block_Green_sparse`` for the trace. ``d_g`` is
+        #: computed per rank from allreduced coefficients, so it is logged but never gathered or decided on.
+        self.monitor_dg = None
+        self.pending_cut = 0.0
+
+    def allreduce_sum(self, value):
+        if self.comm is None or self.comm.size == 1:
+            return value
+        return self.comm.allreduce(value, op=MPI.SUM)
+
+    def enable_support_freeze(self, window, ratio, slater_weight_min, log=False, trace=False):
+        self.support_freeze = True
+        self.rule = FreezeRule(window, ratio, slater_weight_min)
+        self.support_log = bool(log)
+        self.trace_steps = bool(trace)
+
+    def settle_verdict(self):
+        """The window's numbers (:meth:`FreezeRule.verdict`) once the support has settled, else ``None``."""
+        if not self.support_frozen or self.rule is None:
+            return None
+        return {**self.rule.verdict(), "step": len(self.support_trace)}
+
+    def unfreeze_support(self):
+        self.frozen = False
+        self.support_frozen = False
+        self.support_freeze = False
+
+    def note_step_cut(self, weight):
+        self.pending_cut += weight
+
+    def over_memory_budget(self):
+        """Collective (on the color's comm) when the guard is on: is the color's MAX RSS at budget?
+
+        Called only on the pre-freeze path, right beside that path's own admission-count
+        allreduce, so every rank of the color reaches it equally often. The answer is replicated.
+        """
+        if self.memory_budget is None or self.memory_warned:
+            return False
+        rss = current_rss_bytes()
+        if self.comm is not None and self.comm.size > 1:
+            rss = self.comm.allreduce(rss, op=MPI.MAX)
+        if rss < self.memory_budget:
+            return False
+        root = self.comm is None or self.comm.rank == 0
+        if self.memory_policy == "tighten":
+            cap_text = f"GF cap {self.cap:,}" if self.cap < 2**62 else "no GF cap"
+            emit_memory_warning(
+                f"WARNING determinant cap: a Green's-function unit stopped growing at {self.global_count:,} "
+                f"determinants ({cap_text}): measured {format_bytes(rss)}/rank reached the "
+                f"{format_bytes(self.memory_budget)} memory budget.",
+                root=root,
+                kind="gf-memory",
+            )
+            return True
+        self.memory_warned = True
+        emit_memory_warning(
+            f"WARNING determinant cap: a Green's-function unit at {self.global_count:,} determinants uses "
+            f"{format_bytes(rss)}/rank >= the {format_bytes(self.memory_budget)} memory budget. Your "
+            f"truncation_threshold={self.cap:,} is kept as set; if the job is killed, lower it, use 'auto', or "
+            "run fewer ranks per node.",
+            root=root,
+            kind="gf-memory",
+        )
+        return False
+
+    def freeze_on_memory(self):
+        """The memory guard tripped: freeze where the support stands. Nothing new is admitted from here on,
+        exactly as a cap hit at the current size (the recurrence continues as the exact PHP on what is
+        retained)."""
+        self.frozen = True
+        self.cap_hit = True
+        self.memory_frozen = True
+
+    def rank_boundary(self, norms2):
+        """Rank the candidates' max column ``|amp|^2`` for the ``cap - retained`` free slots: whole near-tie
+        groups above the boundary, then the boundary group. Returns
+        :func:`~impurityModel.ed.manybody_basis.collective_top_k_bounds`'s ``(above, boundary, n_fill)``.
+        Collective."""
+        return collective_top_k_bounds(norms2, self.cap - self.global_count, self.comm)
+
+    def first_keys(self, key_bytes, n_fill):
+        """The first ``n_fill`` boundary-group keys in determinant-key order, collectively
+        (:func:`~impurityModel.ed.manybody_basis.collective_first_keys`)."""
+        return collective_first_keys(key_bytes, n_fill, self.comm)
+
+    def freeze_at_cap(self, n_admitted_local):
+        """Count what the overflow step admitted (summed over the ranks) and freeze at the cap."""
+        self.global_count += self.allreduce_sum(n_admitted_local)
+        self.frozen = True
+        self.cap_hit = True
+
+    def settle_step(self, q_next_max2, retained_before, n_new, leak, cut, hq2, max2_matvec):
+        """Complete the step's record with the next block's largest amplitude on the step's new rows
+        (already reduced over the ranks) and take the settle verdict; freezes when it settles."""
+        d_g = float("nan")
+        if self.monitor_dg is not None and self.monitor_dg[0] is not None:
+            d_g = float(self.monitor_dg[0])
+        step_no = len(self.support_trace) + 1
+        self.support_trace.append(
+            SettleRecord(step_no, retained_before, n_new, leak, cut, hq2, d_g, max2_matvec, q_next_max2)
+        )
+        swm = self.rule.slater_weight_min
+        if self.trace_steps and (self.comm is None or self.comm.rank == 0):
+            print(
+                f"GF support step {step_no}: retained {retained_before:,}, new {n_new:,}, leak {leak:.3e}, "
+                f"cut {cut:.3e}, |Hq|^2 {hq2:.3e}, d_g {d_g:.2e}, max|amp|^2 {max2_matvec:.3e}, "
+                f"next-block max|amp|^2 {q_next_max2:.3e}",
+                flush=True,
+            )
+        settled = self.rule.push(q_next_max2, leak, cut)
+        if self.support_log and step_no % self.rule.maxlen == 0 and (self.comm is None or self.comm.rank == 0):
+            v = self.rule.verdict()
+            amp = (
+                f"{v['max_amp']:.2e} = {v['max_amp_over_swm']:.3g}x slaterWeightMin"
+                if swm > 0
+                else f"{v['max_amp']:.2e}"
+            )
+            print(
+                f"GF support: {self.global_count:,} determinants after {step_no} blocks; over the last "
+                f"{v['window']}: largest amplitude on a new determinant {amp} (settles below "
+                f"{self.rule.ratio:g}x, gf_settle_ratio)",
+                flush=True,
+            )
+        if settled:
+            self.frozen = True
+            self.support_frozen = True
+
+    def stop_phrase(self):
+        """How the support stopped growing, as the opening of a log line: settled, held or frozen at the cap."""
+        if self.support_frozen:
+            return "GF unit support settled at"
+        if self.memory_frozen:
+            return "GF basis held at"
+        return "GF basis frozen at the cap at"
+
+    def freeze_message(self):
+        """One-line description of the cap state (rank-0 logging)."""
+        if self.support_frozen:
+            return (
+                f"GF unit support settled at {self.global_count:,} determinants: over the last "
+                f"{self.rule.maxlen} blocks "
+                f"no new determinant carried more than {self.rule.ratio:g} x slater_min in the next block "
+                "(gf_settle_ratio); the Green's function is the exact one on the retained subspace from here on, "
+                "which drops the determinants whose next-block amplitude stayed at or below that bound."
+            )
+        if self.memory_frozen:
+            return (
+                f"GF basis held at {self.global_count:,} determinants by the measured-memory guard; the Green's "
+                "function is exact on the retained subspace."
+            )
+        return (
+            f"GF basis frozen at {self.global_count:,} determinants by the cap of {self.cap:,}; the Green's "
+            "function is exact on the retained subspace."
+        )
+
+
 class SupportPolicy:
     """Enforce ``truncation_threshold`` on the sparse-kernel GF recurrence.
 
@@ -375,9 +562,8 @@ class SupportPolicy:
     #: froze the support (see :func:`gf_solvers.block_Green_sparse`'s frozen-basis CSR
     #: fallback). Off by default: every other user of the proxy runs on through the freeze.
     stop_on_freeze = False
-    #: The support freeze (:meth:`enable_support_freeze`): on, and whether it has frozen the support.
-    support_freeze = False
-    support_frozen = False
+    #: The support freeze (:meth:`enable_support_freeze`) -- ``support_freeze`` and ``support_frozen``, forwarded
+    #: from :attr:`decisions` below.
     #: A :class:`KeyFilter` of the frozen retained set (built by :meth:`begin_step`), or None; the matvec
     #: applies through it so rows the projection would drop are never generated.
     apply_filter = None
@@ -396,12 +582,11 @@ class SupportPolicy:
         self._shell_tol2 = float(first_shell_tol) ** 2
         self._ban = ManyBodyState.from_keys([])
         self._shell_admitted = False
-        self.cap = int(cap)
-        self.memory_budget = memory_budget
-        self.memory_policy = memory_policy
-        self.memory_frozen = False
-        self._memory_warned = False
         self.comm = basis.comm
+        # The block-agnostic state and decisions (cap, counts, memory guard, settle rule, log phrases).
+        self.decisions = SupportDecisions(
+            basis.comm, cap, int(basis.size), memory_budget=memory_budget, memory_policy=memory_policy
+        )
         # Width-0 key-only mask of the retained determinants on this rank; grown by
         # in-place C++ sorted merges only (no per-row Python objects in the hot path).
         # Straight to the width-0 key mask. The previous spelling went via a
@@ -412,23 +597,139 @@ class SupportPolicy:
         # width-0 block for an empty input, which is what the mask is anyway, so the
         # empty-rank case stops being a special case.
         self._mask = ManyBodyState.from_keys(basis.local_basis)
-        self._global_count = int(basis.size)
-        self._frozen = self._global_count >= self.cap
-        self.cap_hit = self._frozen
         self._verbose_freeze_logged = False
         self._deferred = False
-        self._pending_cut = 0.0
-        self._rule = None
         self._pending = None
-        #: One :class:`SettleRecord` per recurrence step (support settle only); the settle verdict is taken from
-        #: ``max2_next`` as each is appended, nothing else in it decides anything.
-        self.support_trace = []
-        #: The convergence monitor's ``last_dg`` list, set by ``block_Green_sparse`` for the trace. ``d_g`` is
-        #: computed per rank from allreduced coefficients, so it is logged but never gathered or decided on.
-        self.monitor_dg = None
         self._pending_hq2 = 0.0
-        self._support_log = False
-        self._trace_steps = False
+
+    # --- the decisions' state under the names the callers use
+    @property
+    def cap(self):
+        return self.decisions.cap
+
+    @cap.setter
+    def cap(self, value):
+        self.decisions.cap = value
+
+    @property
+    def memory_budget(self):
+        return self.decisions.memory_budget
+
+    @memory_budget.setter
+    def memory_budget(self, value):
+        self.decisions.memory_budget = value
+
+    @property
+    def memory_policy(self):
+        return self.decisions.memory_policy
+
+    @memory_policy.setter
+    def memory_policy(self, value):
+        self.decisions.memory_policy = value
+
+    @property
+    def memory_frozen(self):
+        return self.decisions.memory_frozen
+
+    @memory_frozen.setter
+    def memory_frozen(self, value):
+        self.decisions.memory_frozen = value
+
+    @property
+    def cap_hit(self):
+        return self.decisions.cap_hit
+
+    @cap_hit.setter
+    def cap_hit(self, value):
+        self.decisions.cap_hit = value
+
+    @property
+    def support_freeze(self):
+        return self.decisions.support_freeze
+
+    @support_freeze.setter
+    def support_freeze(self, value):
+        self.decisions.support_freeze = value
+
+    @property
+    def support_frozen(self):
+        return self.decisions.support_frozen
+
+    @support_frozen.setter
+    def support_frozen(self, value):
+        self.decisions.support_frozen = value
+
+    @property
+    def support_trace(self):
+        return self.decisions.support_trace
+
+    @support_trace.setter
+    def support_trace(self, value):
+        self.decisions.support_trace = value
+
+    @property
+    def monitor_dg(self):
+        return self.decisions.monitor_dg
+
+    @monitor_dg.setter
+    def monitor_dg(self, value):
+        self.decisions.monitor_dg = value
+
+    @property
+    def _frozen(self):
+        return self.decisions.frozen
+
+    @_frozen.setter
+    def _frozen(self, value):
+        self.decisions.frozen = value
+
+    @property
+    def _global_count(self):
+        return self.decisions.global_count
+
+    @_global_count.setter
+    def _global_count(self, value):
+        self.decisions.global_count = value
+
+    @property
+    def _rule(self):
+        return self.decisions.rule
+
+    @_rule.setter
+    def _rule(self, value):
+        self.decisions.rule = value
+
+    @property
+    def _pending_cut(self):
+        return self.decisions.pending_cut
+
+    @_pending_cut.setter
+    def _pending_cut(self, value):
+        self.decisions.pending_cut = value
+
+    @property
+    def _memory_warned(self):
+        return self.decisions.memory_warned
+
+    @_memory_warned.setter
+    def _memory_warned(self, value):
+        self.decisions.memory_warned = value
+
+    @property
+    def _support_log(self):
+        return self.decisions.support_log
+
+    @_support_log.setter
+    def _support_log(self, value):
+        self.decisions.support_log = value
+
+    @property
+    def _trace_steps(self):
+        return self.decisions.trace_steps
+
+    @_trace_steps.setter
+    def _trace_steps(self, value):
+        self.decisions.trace_steps = value
 
     # --- attributes block_lanczos_cy reads off its basis ---------------------
     @property
@@ -492,9 +793,7 @@ class SupportPolicy:
         return keys
 
     def _allreduce_sum(self, value):
-        if self.comm is None or self.comm.size == 1:
-            return value
-        return self.comm.allreduce(value, op=MPI.SUM)
+        return self.decisions.allreduce_sum(value)
 
     def enable_support_freeze(self, window, ratio, slater_weight_min, log=False, trace=False):
         """Settle the support once its frontier is below ``ratio`` x ``slaterWeightMin`` (see :class:`FreezeRule`).
@@ -509,24 +808,17 @@ class SupportPolicy:
         only; ``GF_SUPPORT_TRACE``)."""
         if self.prunes:
             raise ValueError("the support freeze and importance pruning (GF_LANCZOS_ADMIT_TOL) are exclusive")
-        self.support_freeze = True
-        self._rule = FreezeRule(window, ratio, slater_weight_min)
-        self._support_log = bool(log)
-        self._trace_steps = bool(trace)
+        self.decisions.enable_support_freeze(window, ratio, slater_weight_min, log=log, trace=trace)
 
     def settle_verdict(self):
         """The window's numbers (:meth:`FreezeRule.verdict`) once the support has settled, else ``None``."""
-        if not self.support_frozen or self._rule is None:
-            return None
-        return {**self._rule.verdict(), "step": len(self.support_trace)}
+        return self.decisions.settle_verdict()
 
     def unfreeze_support(self):
         """Undo a support freeze whose frozen matrix did not fit, and do not freeze this way again: a truncation
         that buys no speed is not kept. Exact, since the freezing step had admitted all of its rows. Not
         collective; every rank calls it on the same step (the caller decides from a collective answer)."""
-        self._frozen = False
-        self.support_frozen = False
-        self.support_freeze = False
+        self.decisions.unfreeze_support()
         self.apply_filter = None
 
     def note_step_cut(self, weight):
@@ -535,42 +827,12 @@ class SupportPolicy:
         Called by the recurrence step for the after-sum matvec prune, before :meth:`finish_step`, and for the
         prune of the normalized next block, after it -- that one is weighed back into matvec units by the
         step's ``beta beta^H`` and so rides into the next step's reduction."""
-        self._pending_cut += weight
+        self.decisions.note_step_cut(weight)
 
     def _over_memory_budget(self):
         """Collective (on the color's comm) when the guard is on: is the color's MAX RSS at budget?
-
-        Called only on the pre-freeze path, right beside that path's own admission-count
-        allreduce, so every rank of the color reaches it equally often. The answer is replicated.
-        """
-        if self.memory_budget is None or self._memory_warned:
-            return False
-        rss = current_rss_bytes()
-        if self.comm is not None and self.comm.size > 1:
-            rss = self.comm.allreduce(rss, op=MPI.MAX)
-        if rss < self.memory_budget:
-            return False
-        root = self.comm is None or self.comm.rank == 0
-        if self.memory_policy == "tighten":
-            cap_text = f"GF cap {self.cap:,}" if self.cap < 2**62 else "no GF cap"
-            emit_memory_warning(
-                f"WARNING determinant cap: a Green's-function unit stopped growing at {self._global_count:,} "
-                f"determinants ({cap_text}): measured {format_bytes(rss)}/rank reached the "
-                f"{format_bytes(self.memory_budget)} memory budget.",
-                root=root,
-                kind="gf-memory",
-            )
-            return True
-        self._memory_warned = True
-        emit_memory_warning(
-            f"WARNING determinant cap: a Green's-function unit at {self._global_count:,} determinants uses "
-            f"{format_bytes(rss)}/rank >= the {format_bytes(self.memory_budget)} memory budget. Your "
-            f"truncation_threshold={self.cap:,} is kept as set; if the job is killed, lower it, use 'auto', or "
-            "run fewer ranks per node.",
-            root=root,
-            kind="gf-memory",
-        )
-        return False
+        See :meth:`SupportDecisions.over_memory_budget`."""
+        return self.decisions.over_memory_budget()
 
     def redistribute_block(self, block):
         return self._admit(self._basis.redistribute_block(block))
@@ -658,9 +920,7 @@ class SupportPolicy:
         """The memory guard tripped: freeze where the support stands. Nothing new is admitted from here on,
         exactly as a cap hit at the current size (the recurrence continues as the exact PHP on what is
         retained)."""
-        self._frozen = True
-        self.cap_hit = True
-        self.memory_frozen = True
+        self.decisions.freeze_on_memory()
         block.keep_rows(self._mask)
         return block
 
@@ -758,39 +1018,7 @@ class SupportPolicy:
         buf = np.array([q_next.max_row_norm2_in(new_keys)], dtype=np.float64)
         if self.comm is not None and self.comm.size > 1:
             self.comm.Allreduce(MPI.IN_PLACE, buf, op=MPI.MAX)
-        max2_next = float(buf[0])
-        d_g = float("nan")
-        if self.monitor_dg is not None and self.monitor_dg[0] is not None:
-            d_g = float(self.monitor_dg[0])
-        step_no = len(self.support_trace) + 1
-        self.support_trace.append(
-            SettleRecord(step_no, retained_before, n_new, leak, cut, hq2, d_g, max2_matvec, max2_next)
-        )
-        swm = self._rule.slater_weight_min
-        if self._trace_steps and (self.comm is None or self.comm.rank == 0):
-            print(
-                f"GF support step {step_no}: retained {retained_before:,}, new {n_new:,}, leak {leak:.3e}, "
-                f"cut {cut:.3e}, |Hq|^2 {hq2:.3e}, d_g {d_g:.2e}, max|amp|^2 {max2_matvec:.3e}, "
-                f"next-block max|amp|^2 {max2_next:.3e}",
-                flush=True,
-            )
-        settled = self._rule.push(max2_next, leak, cut)
-        if self._support_log and step_no % self._rule.maxlen == 0 and (self.comm is None or self.comm.rank == 0):
-            v = self._rule.verdict()
-            amp = (
-                f"{v['max_amp']:.2e} = {v['max_amp_over_swm']:.3g}x slaterWeightMin"
-                if swm > 0
-                else f"{v['max_amp']:.2e}"
-            )
-            print(
-                f"GF support: {self._global_count:,} determinants after {step_no} blocks; over the last "
-                f"{v['window']}: largest amplitude on a new determinant {amp} (settles below "
-                f"{self._rule.ratio:g}x, gf_settle_ratio)",
-                flush=True,
-            )
-        if settled:
-            self._frozen = True
-            self.support_frozen = True
+        self.decisions.settle_step(float(buf[0]), retained_before, n_new, leak, cut, hq2, max2_matvec)
 
     def _admit_top_and_freeze(self, block):
         """Admit the ``cap - retained`` most important candidate rows, then freeze.
@@ -801,22 +1029,19 @@ class SupportPolicy:
         (:func:`~impurityModel.ed.manybody_basis.collective_first_keys`). The cap is filled exactly
         and the retained set does not depend on the rank count, colour width or rounding.
         """
-        slots = self.cap - self._global_count
         norms2 = block.new_row_max_norms2(self._mask)
-        above, boundary, n_fill = collective_top_k_bounds(norms2, slots, self.comm)
+        above, boundary, n_fill = self.decisions.rank_boundary(norms2)
         admitted = block.keys_new_above(self._mask, above)
         if n_fill > 0:
             # The boundary group: new rows above `boundary` that are not already admitted (a key-only
             # block has max |amp|^2 = 0 per row, so `> -1` keeps every row not in the mask).
             group = block.keys_new_above(self._mask, boundary).keys_new_above(admitted, -1.0)
             group_keys, _ = group.row_max_norms2()
-            chosen = collective_first_keys([bytes(k.to_bytearray()) for k in group_keys], n_fill, self.comm)
+            chosen = self.decisions.first_keys([bytes(k.to_bytearray()) for k in group_keys], n_fill)
             picked = [k for k in group_keys if bytes(k.to_bytearray()) in chosen]
             admitted = admitted.key_union(ManyBodyState.from_keys(picked))
-        self._global_count += self._allreduce_sum(len(admitted))
         self._mask.merge_keys(admitted)
-        self._frozen = True
-        self.cap_hit = True
+        self.decisions.freeze_at_cap(len(admitted))
 
     @property
     def ban_bytes(self):
@@ -825,31 +1050,11 @@ class SupportPolicy:
 
     def stop_phrase(self):
         """How the support stopped growing, as the opening of a log line: settled, held or frozen at the cap."""
-        if self.support_frozen:
-            return "GF unit support settled at"
-        if self.memory_frozen:
-            return "GF basis held at"
-        return "GF basis frozen at the cap at"
+        return self.decisions.stop_phrase()
 
     def freeze_message(self):
         """One-line description of the cap state (rank-0 logging)."""
-        if self.support_frozen:
-            return (
-                f"GF unit support settled at {self._global_count:,} determinants: over the last "
-                f"{self._rule.maxlen} blocks "
-                f"no new determinant carried more than {self._rule.ratio:g} x slater_min in the next block "
-                "(gf_settle_ratio); the Green's function is the exact one on the retained subspace from here on, "
-                "which drops the determinants whose next-block amplitude stayed at or below that bound."
-            )
-        if self.memory_frozen:
-            return (
-                f"GF basis held at {self._global_count:,} determinants by the measured-memory guard; the Green's "
-                "function is exact on the retained subspace."
-            )
-        return (
-            f"GF basis frozen at {self._global_count:,} determinants by the cap of {self.cap:,}; the Green's "
-            "function is exact on the retained subspace."
-        )
+        return self.decisions.freeze_message()
 
 
 def _allreduced_col_norms2(block, n_cols, comm):
