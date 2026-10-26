@@ -551,6 +551,12 @@ public:
     m_data.reserve(expected_rows * n_chunks);
   }
 
+  void swap(KeyArena &o) noexcept {
+    std::swap(m_n, o.m_n);
+    m_data.swap(o.m_data);
+    m_slots.swap(o.m_slots);
+  }
+
   std::size_t rows() const noexcept { return m_n == 0 ? 0 : m_data.size() / m_n; }
   const uint64_t *row(std::size_t r) const noexcept { return m_data.data() + r * m_n; }
 
@@ -735,10 +741,9 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
     build_restriction_deltas();
   }
   const std::size_t n_forms = m_restr_forms.size();
-  std::vector<long> row_val(n_forms);
   // The row's restriction values, and whether the row itself is inside every bound. An output's value is
   // the row's plus the term's constant delta, so no popcount pass runs per emitted determinant.
-  const auto row_restrictions = [&](const SlaterKey &state) {
+  const auto row_restrictions = [&](const SlaterKey &state, long *row_val) {
     bool ok = true;
     for (std::size_t f = 0; f < n_forms; f++) {
       long v = 0;
@@ -755,7 +760,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
     }
     return ok;
   };
-  const auto output_ok = [&](std::size_t op_idx, bool row_ok) {
+  const auto output_ok = [&](std::size_t op_idx, bool row_ok, const long *row_val) {
     if (m_restr_term_neutral[op_idx]) {
       return row_ok;
     }
@@ -809,15 +814,15 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
   const unsigned int num_threads = std::max(1u, std::min(hw, want));
   if (num_threads > 1) {
     struct BucketAcc {
-      boost::unordered_flat_map<SlaterKey, std::size_t,
-                                SlaterKeyHash>
-          row_of;
+      BucketAcc(std::size_t n_chunks) : arena(n_chunks, 16) {}
+      KeyArena arena;
       std::vector<ManyBodyBlockState::Value> acc;
     };
     const unsigned int num_buckets = num_threads;
     const SlaterKeyHash hasher;
     std::vector<BucketAcc> local_buckets(static_cast<size_t>(num_threads) *
-                                         num_buckets);
+                                             num_buckets,
+                                         BucketAcc(n_chunks));
     std::vector<std::thread> threads;
     const size_t chunk_size = (block.rows() + num_threads - 1) / num_threads;
     for (unsigned int t = 0; t < num_threads; t++) {
@@ -831,17 +836,18 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
             &local_buckets[static_cast<size_t>(t) * num_buckets];
         const auto emit_row_t = [&](const SlaterKey &k) {
           BucketAcc &ba = buckets[hasher(k) % num_buckets];
-          const auto [it, inserted] =
-              ba.row_of.try_emplace(k, ba.row_of.size());
+          bool inserted = false;
+          const std::size_t row = ba.arena.find_or_insert(k.data(), inserted);
           if (inserted) {
             ba.acc.resize(ba.acc.size() + p);
           }
-          return ba.acc.data() + it->second * p;
+          return ba.acc.data() + row * p;
         };
         // Per-row term loop, duplicated from the serial body below (the same
         // precedent as the scalar threaded apply: the loop reads private
         // flat-term members, so a shared free function would need an unwieldy
         // signature).
+        std::vector<long> row_val_t(n_forms);
         std::vector<ManyBodyBlockState::Value> diag_accum(p);
         SlaterKey out_sd;
         // The block keeps its keys in ONE flat buffer, so `key(r)` materializes. Copy the
@@ -853,13 +859,14 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
           slater.assign(kv.data(), kv.data() + kv.size());
           const ManyBodyBlockState::ConstRow amp = block.row(r);
           out_sd = slater;
+          const bool row_ok =
+              check_restrictions ? row_restrictions(slater, row_val_t.data()) : true;
           std::fill(diag_accum.begin(), diag_accum.end(),
                     ManyBodyBlockState::Value{0.0, 0.0});
           for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
             if (m_flat_density[op_idx]) {
-              if (mask_occupied(slater, m_density_mask[op_idx]) &&
-                  (!check_restrictions ||
-                   state_is_within_restrictions(slater))) {
+              if (m_fire_live[op_idx] && row_ok &&
+                  all_occupied(slater.data(), m_fire_occ.data() + op_idx * fire_nc, fire_nc)) {
                 const auto coeff = m_density_coeff[op_idx];
                 for (std::size_t c = 0; c < p; ++c) {
                   diag_accum[c] += coeff * amp[c];
@@ -876,7 +883,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
                 toggle_bit(out_sd, ob_j);
                 toggle_bit(out_sd, ob_i);
                 if ((!check_restrictions ||
-                     state_is_within_restrictions(out_sd)) &&
+                     output_ok(op_idx, row_ok, row_val_t.data())) &&
                     kept(out_sd)) {
                   const auto coeff = m_flat_coeffs[op_idx] * sgn;
                   ManyBodyBlockState::Value *dst = emit_row_t(out_sd);
@@ -888,6 +895,11 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
                 toggle_bit(out_sd, ob_i);
               }
               continue;
+            }
+            if (!m_fire_live[op_idx] ||
+                !fires(slater.data(), m_fire_occ.data() + op_idx * fire_nc,
+                       m_fire_vac.data() + op_idx * fire_nc, fire_nc)) {
+              continue; // the sequence below would return a zero sign at some step
             }
             double sign = 1;
             const size_t start_idx = m_flat_offsets[op_idx];
@@ -907,7 +919,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
               sign *= s;
             }
             if (sign != 0 &&
-                (!check_restrictions || state_is_within_restrictions(out_sd))) {
+                (!check_restrictions || output_ok(op_idx, row_ok, row_val_t.data()))) {
               const auto scaled = coeff * sign;
               if (m_flat_diagonal[op_idx]) {
                 for (std::size_t c = 0; c < p; ++c) {
@@ -949,24 +961,26 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
     }
 
     // Lock-free per-bucket merge (disjoint key sets); threads iterate the
-    // compute threads in index order, then apply the whole-row cutoff.
-    std::vector<std::vector<ManyBodyBlockState::Key>> bucket_keys(num_buckets);
+    // compute threads in index order, then apply the whole-row cutoff. Each bucket keeps its
+    // surviving keys flat (`n_chunks` words per row), in first-seen order.
+    std::vector<std::vector<uint64_t>> bucket_keys(num_buckets);
     std::vector<std::vector<ManyBodyBlockState::Value>> bucket_amps(
         num_buckets);
     std::vector<std::thread> merge_threads;
     for (unsigned int b = 0; b < num_buckets; b++) {
       merge_threads.push_back(std::thread([&, b]() {
-        BucketAcc macc;
+        BucketAcc macc(n_chunks);
         for (unsigned int t = 0; t < num_threads; t++) {
           BucketAcc &src =
               local_buckets[static_cast<size_t>(t) * num_buckets + b];
-          for (const auto &[k, row] : src.row_of) {
-            const auto [it, inserted] =
-                macc.row_of.try_emplace(k, macc.row_of.size());
+          for (std::size_t row = 0; row < src.arena.rows(); ++row) {
+            bool inserted = false;
+            const std::size_t mrow =
+                macc.arena.find_or_insert(src.arena.row(row), inserted);
             if (inserted) {
               macc.acc.resize(macc.acc.size() + p);
             }
-            ManyBodyBlockState::Value *dst = macc.acc.data() + it->second * p;
+            ManyBodyBlockState::Value *dst = macc.acc.data() + mrow * p;
             const ManyBodyBlockState::Value *add = src.acc.data() + row * p;
             for (std::size_t c = 0; c < p; ++c) {
               dst[c] += add[c];
@@ -979,24 +993,17 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
           // Swapping against an empty container, rather than clear(), is what
           // actually returns the capacity: nothing in this layer has a
           // shrink_to_fit and clear() keeps the high-water allocation.
-          //
-          // Both halves, and the split is not what the per-entry arithmetic
-          // suggests. The amplitudes are `p * 16` B per entry against roughly 90 for
-          // a map entry, so freeing `acc` alone looks like it should capture most of
-          // it; measured at p = 32 it captures about half (1148 -> 896 MiB, against
-          // 1148 -> 657 for both). Freeing the map also returns capacity the merged
-          // `macc` then reuses, which the per-entry ratio does not model.
-          decltype(src.row_of)().swap(src.row_of);
+          BucketAcc(n_chunks).arena.swap(src.arena);
           std::vector<ManyBodyBlockState::Value>().swap(src.acc);
         }
         auto &okeys = bucket_keys[b];
         auto &oamps = bucket_amps[b];
-        okeys.reserve(macc.row_of.size());
-        for (auto &[k, row] : macc.row_of) {
+        for (std::size_t row = 0; row < macc.arena.rows(); ++row) {
           const ManyBodyBlockState::Value *src_row = macc.acc.data() + row * p;
           for (std::size_t c = 0; c < p; ++c) {
             if (std::norm(src_row[c]) > cutoff2) {
-              okeys.push_back(k);
+              okeys.insert(okeys.end(), macc.arena.row(row),
+                           macc.arena.row(row) + n_chunks);
               oamps.insert(oamps.end(), src_row, src_row + p);
               break;
             }
@@ -1010,35 +1017,39 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
       }
     }
 
-    // Assemble: gather the surviving (key, row) pairs, sort by key, build.
-    size_t total_out = 0;
-    for (const auto &v : bucket_keys) {
-      total_out += v.size();
-    }
-    std::vector<
-        std::pair<ManyBodyBlockState::Key, const ManyBodyBlockState::Value *>>
-        survivors;
-    survivors.reserve(total_out);
+    // Assemble: one permutation sort over (bucket, row) references comparing the flat keys in
+    // place, gathered straight into the block's flat key buffer.
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> order;
     for (unsigned int b = 0; b < num_buckets; b++) {
-      for (size_t i = 0; i < bucket_keys[b].size(); ++i) {
-        survivors.emplace_back(std::move(bucket_keys[b][i]),
-                               bucket_amps[b].data() + i * p);
+      const std::size_t n_b = bucket_keys[b].size() / n_chunks;
+      for (std::size_t i = 0; i < n_b; ++i) {
+        order.emplace_back(static_cast<std::uint32_t>(b), static_cast<std::uint32_t>(i));
       }
     }
-    std::sort(survivors.begin(), survivors.end(),
-              [](const auto &a, const auto &b) { return a.first < b.first; });
-    std::vector<ManyBodyBlockState::Key> keys;
-    keys.reserve(total_out);
+    const auto key_at = [&](const std::pair<std::uint32_t, std::uint32_t> &ref) {
+      return bucket_keys[ref.first].data() + static_cast<std::size_t>(ref.second) * n_chunks;
+    };
+    std::sort(order.begin(), order.end(), [&](const auto &a, const auto &b) {
+      return FlatKeyStore::less(key_at(a), n_chunks, key_at(b), n_chunks);
+    });
+    FlatKeyStore out_keys;
     std::vector<ManyBodyBlockState::Value> amps;
-    amps.reserve(total_out * p);
-    for (auto &[k, src_row] : survivors) {
-      keys.push_back(std::move(k));
+    amps.reserve(order.size() * p);
+    if (!order.empty()) {
+      out_keys.set_chunks(n_chunks);
+      out_keys.reserve_rows(order.size());
+    }
+    for (const auto &ref : order) {
+      out_keys.push_back(key_at(ref), n_chunks);
+      const ManyBodyBlockState::Value *src_row =
+          bucket_amps[ref.first].data() + static_cast<std::size_t>(ref.second) * p;
       amps.insert(amps.end(), src_row, src_row + p);
     }
-    return ManyBodyBlockState(std::move(keys), std::move(amps), p);
+    return ManyBodyBlockState(std::move(out_keys), std::move(amps), p);
   }
 #endif
 
+  std::vector<long> row_val(n_forms);
   std::vector<ManyBodyBlockState::Value> diag_accum(p);
   SlaterKey out_slater_determinant;
   // The block keeps its keys in ONE flat buffer, so `key(r)` materializes. Copy the
@@ -1050,7 +1061,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
     slater.assign(kv.data(), kv.data() + kv.size());
     const ManyBodyBlockState::ConstRow amp = block.row(r);
     out_slater_determinant = slater;
-    const bool row_ok = check_restrictions ? row_restrictions(slater) : true;
+    const bool row_ok = check_restrictions ? row_restrictions(slater, row_val.data()) : true;
     std::fill(diag_accum.begin(), diag_accum.end(),
               ManyBodyBlockState::Value{0.0, 0.0});
     for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
@@ -1072,7 +1083,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
               mask_parity(slater, m_onebody_between[op_idx]) ? -1.0 : 1.0;
           toggle_bit(out_slater_determinant, ob_j); // remove j
           toggle_bit(out_slater_determinant, ob_i); // add i
-          if ((!check_restrictions || output_ok(op_idx, row_ok)) &&
+          if ((!check_restrictions || output_ok(op_idx, row_ok, row_val.data())) &&
               kept(out_slater_determinant)) {
             const auto coeff = m_flat_coeffs[op_idx] * sgn;
             ManyBodyBlockState::Value *dst = emit_row(out_slater_determinant);
@@ -1108,7 +1119,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
         }
         sign *= s;
       }
-      if (sign != 0 && (!check_restrictions || output_ok(op_idx, row_ok))) {
+      if (sign != 0 && (!check_restrictions || output_ok(op_idx, row_ok, row_val.data()))) {
         const auto scaled = coeff * sign;
         if (m_flat_diagonal[op_idx]) {
           // out_slater_determinant == slater here (occupation conserved).

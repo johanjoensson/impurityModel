@@ -470,3 +470,24 @@ def test_block_apply_matches_scalar_apply_on_terms_that_rarely_or_never_fire():
     assert set(got) == set(ref)
     for k, v in ref.items():
         assert abs(got[k] - v) <= 1e-12 * max(1.0, abs(v))
+
+
+def test_wide_block_apply_with_restrictions_matches_scalar_apply():
+    """A block big enough for the threaded apply (in an ``IMPURITYMODEL_PARALLEL=1`` build) to split across
+    threads, with restrictions on: the threaded accumulate/merge/sort must agree with the scalar apply
+    column by column (this is also the serial path's wide-block check)."""
+    rng = random.Random(23)
+    op = _make_hamiltonian(rng, 40, 40)
+    op.set_restrictions({frozenset(range(0, 60)): (26, 34)})
+    op.set_weighted_restrictions([({o: (1 if o % 2 else -1) for o in range(0, 100)}, (-4, 4))])
+    psis = []
+    support = list(_make_state(rng, 1500).to_dict())
+    for _ in range(3):
+        psis.append(ManyBodyState({sd: complex(rng.gauss(0, 1), rng.gauss(0, 1)) for sd in support}))
+    got = op.apply_block(ManyBodyState.from_states(psis), 0.0).to_states()
+    ref = op.apply_multi(psis, 0.0)
+    for g, r in zip(got, ref):
+        gd, rd = g.to_dict(), r.to_dict()
+        assert set(gd) == set(rd)
+        for k, v in rd.items():
+            assert abs(gd[k] - v) <= 1e-11 * max(1.0, abs(v))
