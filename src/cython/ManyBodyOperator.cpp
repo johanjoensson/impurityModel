@@ -572,35 +572,60 @@ public:
       cap <<= 1;
     }
     m_slots.assign(cap, EMPTY);
+    m_limit = cap / 10 * 7;
     m_data.reserve(expected_rows * n_chunks);
   }
 
   void swap(KeyArena &o) noexcept {
     std::swap(m_n, o.m_n);
+    std::swap(m_rows, o.m_rows);
+    std::swap(m_limit, o.m_limit);
     m_data.swap(o.m_data);
     m_slots.swap(o.m_slots);
   }
 
-  std::size_t rows() const noexcept { return m_n == 0 ? 0 : m_data.size() / m_n; }
+  std::size_t rows() const noexcept { return m_rows; }
   const uint64_t *row(std::size_t r) const noexcept { return m_data.data() + r * m_n; }
 
+  /** The hash `find_or_insert` uses for `k` (`m_n` chunks); also lets a caller pick a bucket from it. */
+  std::size_t hash(const uint64_t *k) const noexcept {
+    // Multiply-xorshift mix: one multiply per chunk and a final fold of the high bits into the low ones
+    // (the table index is `hash & mask`). Placement only, so it never changes which row a key gets.
+    uint64_t h = 0x9e3779b97f4a7c15ULL;
+    for (std::size_t c = 0; c < m_n; ++c) {
+      h = (h ^ k[c]) * 0xbf58476d1ce4e5b9ULL;
+      h ^= h >> 29;
+    }
+    h *= 0x94d049bb133111ebULL;
+    return static_cast<std::size_t>(h ^ (h >> 32));
+  }
+
+  /** Software prefetch of the slot a key with hash `h` starts probing at. */
+  void prefetch_slot(std::size_t h) const noexcept { __builtin_prefetch(&m_slots[h & (m_slots.size() - 1)]); }
+  /** Row currently in the slot a key with hash `h` starts at, or `EMPTY`; a hint for `prefetch_row`. */
+  std::size_t peek(std::size_t h) const noexcept { return m_slots[h & (m_slots.size() - 1)]; }
+  void prefetch_row(std::size_t r) const noexcept { __builtin_prefetch(m_data.data() + r * m_n); }
+  static constexpr std::size_t none() noexcept { return EMPTY; }
+
   /** Row of `k` (`m_n` chunks); `inserted` says whether it was appended. */
-  std::size_t find_or_insert(const uint64_t *k, bool &inserted) {
-    if ((rows() + 1) * 10 > m_slots.size() * 7) {
+  std::size_t find_or_insert(const uint64_t *k, bool &inserted) { return find_or_insert(k, hash(k), inserted); }
+
+  std::size_t find_or_insert(const uint64_t *k, std::size_t h, bool &inserted) {
+    if (m_rows + 1 > m_limit) {
       grow();
     }
     const std::size_t mask = m_slots.size() - 1;
-    std::size_t pos = hash(k) & mask;
+    std::size_t pos = h & mask;
     while (true) {
       const std::size_t r = m_slots[pos];
       if (r == EMPTY) {
-        const std::size_t nr = rows();
+        const std::size_t nr = m_rows++;
         m_data.insert(m_data.end(), k, k + m_n);
         m_slots[pos] = nr;
         inserted = true;
         return nr;
       }
-      if (std::equal(k, k + m_n, row(r))) {
+      if (equal_row(k, m_data.data() + r * m_n)) {
         inserted = false;
         return r;
       }
@@ -611,24 +636,30 @@ public:
 private:
   static constexpr std::size_t EMPTY = ~static_cast<std::size_t>(0);
   std::size_t m_n;
+  std::size_t m_rows{0};
+  std::size_t m_limit{0}; // grow when the next insert would pass this many rows (load 0.7)
   std::vector<uint64_t> m_data;
   std::vector<std::size_t> m_slots;
 
-  std::size_t hash(const uint64_t *k) const noexcept {
-    uint64_t h = 0x9e3779b97f4a7c15ULL;
-    for (std::size_t c = 0; c < m_n; ++c) {
-      uint64_t x = (h ^ k[c]) + 0x9e3779b97f4a7c15ULL;
-      x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
-      x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
-      h = x ^ (x >> 31);
+  bool equal_row(const uint64_t *a, const uint64_t *b) const noexcept {
+    if (m_n == 2) {
+      return ((a[0] ^ b[0]) | (a[1] ^ b[1])) == 0;
     }
-    return static_cast<std::size_t>(h);
+    if (m_n == 1) {
+      return a[0] == b[0];
+    }
+    for (std::size_t c = 0; c < m_n; ++c) {
+      if (a[c] != b[c]) {
+        return false;
+      }
+    }
+    return true;
   }
 
   void grow() {
     std::vector<std::size_t> bigger(m_slots.size() * 2, EMPTY);
     const std::size_t mask = bigger.size() - 1;
-    for (std::size_t r = 0; r < rows(); ++r) {
+    for (std::size_t r = 0; r < m_rows; ++r) {
       std::size_t pos = hash(row(r)) & mask;
       while (bigger[pos] != EMPTY) {
         pos = (pos + 1) & mask;
@@ -636,6 +667,70 @@ private:
       bigger[pos] = r;
     }
     m_slots.swap(bigger);
+    m_limit = m_slots.size() / 10 * 7;
+  }
+};
+
+// Emissions of one input row queued before they are probed (a full queue is flushed early, order kept).
+constexpr std::size_t kEmitQueueCap = 64;
+
+// The accumulator an input row's emissions go to: a `KeyArena` plus its row-major amplitudes. `hash` is
+// computed once per emission and reused by the prefetch passes and the real probe.
+struct BlockAccum {
+  BlockAccum(std::size_t n_chunks, std::size_t expected_rows) : arena(n_chunks, expected_rows) {}
+  KeyArena arena;
+  std::vector<ManyBodyBlockState::Value> acc; // row-major, arena.rows() * p
+};
+
+struct SerialAccum {
+  BlockAccum &ba;
+  std::size_t p;
+  std::size_t hash(const uint64_t *k) const noexcept { return ba.arena.hash(k); }
+  void prefetch_slot(std::size_t h) const noexcept { ba.arena.prefetch_slot(h); }
+  void prefetch_row(std::size_t h) const noexcept {
+    const std::size_t r = ba.arena.peek(h);
+    if (r != KeyArena::none()) {
+      ba.arena.prefetch_row(r);
+      __builtin_prefetch(ba.acc.data() + r * p);
+    }
+  }
+  ManyBodyBlockState::Value *locate(const uint64_t *k, std::size_t h) const {
+    bool inserted = false;
+    const std::size_t row = ba.arena.find_or_insert(k, h, inserted);
+    if (inserted) {
+      ba.acc.resize(ba.acc.size() + p);
+    }
+    return ba.acc.data() + row * p;
+  }
+};
+
+// One thread's accumulators, one per output bucket; a key's bucket is a function of its hash alone (bits that
+// the table index does not use), so every thread sends a determinant to the same bucket.
+struct BucketedAccum {
+  BlockAccum *buckets;
+  std::uint32_t num_buckets;
+  std::size_t p;
+  std::size_t hash(const uint64_t *k) const noexcept { return buckets[0].arena.hash(k); }
+  BlockAccum &bucket_of(std::size_t h) const noexcept {
+    return buckets[((h >> 32) * static_cast<uint64_t>(num_buckets)) >> 32];
+  }
+  void prefetch_slot(std::size_t h) const noexcept { bucket_of(h).arena.prefetch_slot(h); }
+  void prefetch_row(std::size_t h) const noexcept {
+    BlockAccum &ba = bucket_of(h);
+    const std::size_t r = ba.arena.peek(h);
+    if (r != KeyArena::none()) {
+      ba.arena.prefetch_row(r);
+      __builtin_prefetch(ba.acc.data() + r * p);
+    }
+  }
+  ManyBodyBlockState::Value *locate(const uint64_t *k, std::size_t h) const {
+    BlockAccum &ba = bucket_of(h);
+    bool inserted = false;
+    const std::size_t row = ba.arena.find_or_insert(k, h, inserted);
+    if (inserted) {
+      ba.acc.resize(ba.acc.size() + p);
+    }
+    return ba.acc.data() + row * p;
   }
 };
 
@@ -694,12 +789,34 @@ ManyBodyOperator::diagonal(const ManyBodyBlockState &block) const {
     slater.assign(kv.data(), kv.data() + kv.size());
     std::complex<double> diag_accum{0.0, 0.0};
     out_slater_determinant = slater;
+    const bool row_ok = !check_restrictions || state_is_within_restrictions(slater);
+    // Density terms first, summed exactly as `apply`'s row kernel sums them: the firing ones in term order, two
+    // alternating chains per 64-term word, chains added at the end. Then the other diagonal strings in term
+    // order. `apply` on {D: 1} reproduces this bit for bit, which candidate ranking relies on.
+    {
+      double re[2] = {0.0, 0.0};
+      double im[2] = {0.0, 0.0};
+      std::size_t word = ~static_cast<std::size_t>(0);
+      std::size_t in_word = 0;
+      for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
+        if (!m_flat_density[op_idx] || !mask_occupied(slater, m_density_mask[op_idx])) {
+          continue;
+        }
+        if (op_idx / 64 != word) {
+          word = op_idx / 64;
+          in_word = 0;
+        }
+        re[in_word & 1] += m_density_coeff[op_idx].real();
+        im[in_word & 1] += m_density_coeff[op_idx].imag();
+        ++in_word;
+      }
+      const std::complex<double> dsum(re[0] + re[1], im[0] + im[1]);
+      if (row_ok && dsum != std::complex<double>(0.0, 0.0)) {
+        diag_accum += dsum;
+      }
+    }
     for (size_t op_idx = 0; op_idx < m_flat_coeffs.size(); op_idx++) {
       if (m_flat_density[op_idx]) {
-        if (mask_occupied(slater, m_density_mask[op_idx]) &&
-            (!check_restrictions || state_is_within_restrictions(slater))) {
-          diag_accum += m_density_coeff[op_idx];
-        }
         continue;
       }
       if (m_flat_onebody[op_idx]) {
@@ -815,26 +932,22 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
   };
 
   // Distinct out-determinants in a flat key arena (see `KeyArena`) plus the row-major amplitudes.
-  const std::size_t n_chunks = block.rows() > 0 ? block.key_store().chunks() : 1;
-  KeyArena arena(n_chunks, block.rows());
-  std::vector<ManyBodyBlockState::Value> acc; // row-major, arena.rows() * p
+  const std::size_t n_chunks = block.key_store().chunks();
+  BlockAccum serial_accum(n_chunks, block.rows());
+  KeyArena &arena = serial_accum.arena;
+  std::vector<ManyBodyBlockState::Value> &acc = serial_accum.acc;
   acc.reserve(block.rows() * p);
-
-  // Row of `k` in acc, appending a zero row on first sight. resize() grows the
-  // buffer geometrically, so the amortized cost stays O(1) per new row.
-  const auto emit_row = [&](const SlaterKey &k) {
-    bool inserted = false;
-    const std::size_t row = arena.find_or_insert(k.data(), inserted);
-    if (inserted) {
-      acc.resize(acc.size() + p);
-    }
-    return acc.data() + row * p;
-  };
 
   // Per-thread scratch of the row kernel.
   struct RowScratch {
-    RowScratch(std::size_t width, std::size_t forms, std::size_t padded_terms)
-        : row_val(forms), diag_accum(width), flags(padded_terms), words(padded_terms / 64) {}
+    RowScratch(std::size_t width, std::size_t forms, std::size_t padded_terms, std::size_t nc)
+        : row_val(forms), diag_accum(width), flags(padded_terms), words(padded_terms / 64),
+          q_keys(kEmitQueueCap * nc), q_coef(kEmitQueueCap), q_diag(kEmitQueueCap), q_hash(kEmitQueueCap) {}
+    std::size_t q_n{0};
+    std::vector<uint64_t> q_keys;                        // queued emissions: the key (nc words) ...
+    std::vector<std::complex<double>> q_coef;            // ... the coefficient multiplying the row's amplitudes ...
+    std::vector<uint8_t> q_diag;                         // ... and whether it is the row's own diagonal entry
+    std::vector<std::size_t> q_hash;
     std::vector<long> row_val;
     std::vector<ManyBodyBlockState::Value> diag_accum;
     std::vector<uint8_t> flags;
@@ -844,8 +957,8 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
   };
 
   // One input row: sweep the firing test over every term, then visit only the terms that fire, in term order
-  // (so every output row sees the same `+=` sequence as a visit of all terms would give). `emit(key)` returns
-  // the accumulator row of an output determinant. Shared by the serial and the threaded path; it touches only
+  // (so every output row sees the same `+=` sequence as a visit of all terms would give). `emit` is the accumulator
+  // adaptor (`SerialAccum` / `BucketedAccum`). Shared by the serial and the threaded path; it touches only
   // `sc` and read-only operator state, so threads may run it concurrently.
   const auto process_row = [&](std::size_t r, RowScratch &sc, auto &&emit) {
     SlaterKey &slater = sc.slater;
@@ -858,7 +971,72 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
     out_sd = slater;
     const bool row_ok = check_restrictions ? row_restrictions(slater, sc.row_val.data()) : true;
     std::fill(sc.diag_accum.begin(), sc.diag_accum.end(), ManyBodyBlockState::Value{0.0, 0.0});
+    // Emissions are queued and flushed in three passes (hash + prefetch the slot, prefetch the key and amplitude
+    // rows the slot names, then the real probe and accumulate), so the ~20 random table accesses of one input row
+    // overlap instead of each waiting on the last. The real probes run in emission order, so every output row sees
+    // the same `+=` sequence, and the prefetches are hints only.
+    const auto flush = [&]() {
+      for (std::size_t i = 0; i < sc.q_n; ++i) {
+        sc.q_hash[i] = emit.hash(sc.q_keys.data() + i * fire_nc);
+        emit.prefetch_slot(sc.q_hash[i]);
+      }
+      for (std::size_t i = 0; i < sc.q_n; ++i) {
+        emit.prefetch_row(sc.q_hash[i]);
+      }
+      for (std::size_t i = 0; i < sc.q_n; ++i) {
+        ManyBodyBlockState::Value *dst = emit.locate(sc.q_keys.data() + i * fire_nc, sc.q_hash[i]);
+        if (sc.q_diag[i]) {
+          for (std::size_t c = 0; c < p; ++c) {
+            dst[c] += sc.diag_accum[c];
+          }
+        } else {
+          const std::complex<double> coeff = sc.q_coef[i];
+          for (std::size_t c = 0; c < p; ++c) {
+            dst[c] += coeff * amp[c];
+          }
+        }
+      }
+      sc.q_n = 0;
+    };
+    const auto queue = [&](const SlaterKey &k, std::complex<double> coeff, bool diag) {
+      if (sc.q_n == kEmitQueueCap) {
+        flush();
+      }
+      std::copy(k.data(), k.data() + fire_nc, sc.q_keys.data() + sc.q_n * fire_nc);
+      sc.q_coef[sc.q_n] = coeff;
+      sc.q_diag[sc.q_n] = diag ? 1 : 0;
+      ++sc.q_n;
+    };
     fire_fn(slater.data(), fire_nc, m_fire_occ.data(), m_fire_vac.data(), tpad, sc.flags.data(), sc.words.data());
+    // Diagonal contribution of the firing density terms: sum their coefficients first (two independent chains
+    // each for the real and imaginary parts), multiply by the row's amplitudes once. This reassociates the
+    // diagonal sum relative to adding coeff * amp term by term (equal to rounding).
+    double re0 = 0.0, re1 = 0.0, im0 = 0.0, im1 = 0.0;
+    for (std::size_t w = 0; w < tpad / 64; ++w) {
+      uint64_t dword = sc.words[w] & m_dens_words[w];
+      sc.words[w] &= ~m_dens_words[w];
+      while (dword != 0) {
+        const std::size_t t0 = w * 64 + static_cast<std::size_t>(__builtin_ctzll(dword));
+        dword &= dword - 1;
+        re0 += m_dens_re[t0];
+        im0 += m_dens_im[t0];
+        if (dword == 0) {
+          break;
+        }
+        const std::size_t t1 = w * 64 + static_cast<std::size_t>(__builtin_ctzll(dword));
+        dword &= dword - 1;
+        re1 += m_dens_re[t1];
+        im1 += m_dens_im[t1];
+      }
+    }
+    if (row_ok) {
+      const std::complex<double> dsum(re0 + re1, im0 + im1);
+      if (dsum != std::complex<double>(0.0, 0.0)) {
+        for (std::size_t c = 0; c < p; ++c) {
+          sc.diag_accum[c] += dsum * amp[c];
+        }
+      }
+    }
     for (std::size_t w = 0; w < tpad / 64; ++w) {
       uint64_t word = sc.words[w];
       while (word != 0) {
@@ -866,15 +1044,6 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
         word &= word - 1;
         assert(op_idx < n_terms);
         const uint8_t kind = m_term_kind[op_idx];
-        if (kind == 2) { // pure number product: only the diagonal
-          if (row_ok) {
-            const auto coeff = m_density_coeff[op_idx];
-            for (std::size_t c = 0; c < p; ++c) {
-              sc.diag_accum[c] += coeff * amp[c];
-            }
-          }
-          continue;
-        }
         if (kind == 3) { // one-body hop c^d_i c_j: j occupied and i empty, as the firing test established
           const size_t ob_i = m_onebody_i[op_idx];
           const size_t ob_j = m_onebody_j[op_idx];
@@ -887,11 +1056,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
           toggle_bit(out_sd, ob_j); // remove j
           toggle_bit(out_sd, ob_i); // add i
           if ((!check_restrictions || output_ok(op_idx, row_ok, sc.row_val.data())) && kept(out_sd)) {
-            const auto coeff = m_flat_coeffs[op_idx] * sgn;
-            ManyBodyBlockState::Value *dst = emit(out_sd);
-            for (std::size_t c = 0; c < p; ++c) {
-              dst[c] += coeff * amp[c];
-            }
+            queue(out_sd, m_flat_coeffs[op_idx] * sgn, false);
           }
           toggle_bit(out_sd, ob_j); // restore scratch
           toggle_bit(out_sd, ob_i);
@@ -920,10 +1085,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
               sc.diag_accum[c] += scaled * amp[c];
             }
           } else if (kept(out_sd)) {
-            ManyBodyBlockState::Value *dst = emit(out_sd);
-            for (std::size_t c = 0; c < p; ++c) {
-              dst[c] += scaled * amp[c];
-            }
+            queue(out_sd, scaled, false);
           }
         }
         for (size_t j = start_idx; j < i; j++) {
@@ -940,11 +1102,9 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
       }
     }
     if (any_diag && kept(slater)) {
-      ManyBodyBlockState::Value *dst = emit(slater);
-      for (std::size_t c = 0; c < p; ++c) {
-        dst[c] += sc.diag_accum[c];
-      }
+      queue(slater, std::complex<double>(0.0, 0.0), true);
     }
+    flush();
   };
 
 #if defined(PARALLEL)
@@ -961,16 +1121,9 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
       std::max<size_t>(1, block.rows() / min_rows_per_thread));
   const unsigned int num_threads = std::max(1u, std::min(hw, want));
   if (num_threads > 1) {
-    struct BucketAcc {
-      BucketAcc(std::size_t n_chunks) : arena(n_chunks, 16) {}
-      KeyArena arena;
-      std::vector<ManyBodyBlockState::Value> acc;
-    };
+    using BucketAcc = BlockAccum;
     const unsigned int num_buckets = num_threads;
-    const SlaterKeyHash hasher;
-    std::vector<BucketAcc> local_buckets(static_cast<size_t>(num_threads) *
-                                             num_buckets,
-                                         BucketAcc(n_chunks));
+    std::vector<BucketAcc> local_buckets(static_cast<size_t>(num_threads) * num_buckets, BucketAcc(n_chunks, 16));
     std::vector<std::thread> threads;
     const size_t chunk_size = (block.rows() + num_threads - 1) / num_threads;
     for (unsigned int t = 0; t < num_threads; t++) {
@@ -982,18 +1135,10 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
       threads.push_back(std::thread([&, t, start_row, end_row]() {
         BucketAcc *buckets =
             &local_buckets[static_cast<size_t>(t) * num_buckets];
-        const auto emit_row_t = [&](const SlaterKey &k) {
-          BucketAcc &ba = buckets[hasher(k) % num_buckets];
-          bool inserted = false;
-          const std::size_t row = ba.arena.find_or_insert(k.data(), inserted);
-          if (inserted) {
-            ba.acc.resize(ba.acc.size() + p);
-          }
-          return ba.acc.data() + row * p;
-        };
-        RowScratch sc(p, n_forms, tpad);
+        const BucketedAccum emit_t{buckets, num_buckets, p};
+        RowScratch sc(p, n_forms, tpad, fire_nc);
         for (std::size_t r = start_row; r < end_row; ++r) {
-          process_row(r, sc, emit_row_t);
+          process_row(r, sc, emit_t);
         }
       }));
     }
@@ -1012,7 +1157,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
     std::vector<std::thread> merge_threads;
     for (unsigned int b = 0; b < num_buckets; b++) {
       merge_threads.push_back(std::thread([&, b]() {
-        BucketAcc macc(n_chunks);
+        BucketAcc macc(n_chunks, 16);
         for (unsigned int t = 0; t < num_threads; t++) {
           BucketAcc &src =
               local_buckets[static_cast<size_t>(t) * num_buckets + b];
@@ -1036,7 +1181,7 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
           // Swapping against an empty container, rather than clear(), is what
           // actually returns the capacity: nothing in this layer has a
           // shrink_to_fit and clear() keeps the high-water allocation.
-          BucketAcc(n_chunks).arena.swap(src.arena);
+          BucketAcc(n_chunks, 16).arena.swap(src.arena);
           std::vector<ManyBodyBlockState::Value>().swap(src.acc);
         }
         auto &okeys = bucket_keys[b];
@@ -1092,9 +1237,10 @@ ManyBodyOperator::apply(const ManyBodyBlockState &block, double cutoff,
   }
 #endif
 
-  RowScratch sc(p, n_forms, tpad);
+  RowScratch sc(p, n_forms, tpad, fire_nc);
+  const SerialAccum emit_s{serial_accum, p};
   for (std::size_t r = 0; r < block.rows(); ++r) {
-    process_row(r, sc, emit_row);
+    process_row(r, sc, emit_s);
   }
 
   // Keep rows where ANY column survives the cutoff, then sort by determinant to
@@ -1420,6 +1566,9 @@ void ManyBodyOperator::build_fire_masks(std::size_t n_chunks) const {
   m_fire_vac.assign(tpad * n_chunks, 0);
   m_term_kind.assign(tpad, 0);
   m_between_flat.assign(n_terms * n_chunks, 0);
+  m_dens_re.assign(tpad, 0.0);
+  m_dens_im.assign(tpad, 0.0);
+  m_dens_words.assign(tpad / 64, 0);
   const auto kill = [&](std::size_t t) {
     for (std::size_t c = 0; c < n_chunks; c++) {
       m_fire_occ[c * tpad + t] = 0;
@@ -1442,6 +1591,9 @@ void ManyBodyOperator::build_fire_masks(std::size_t n_chunks) const {
   for (std::size_t t = 0; t < n_terms; t++) {
     if (m_flat_density[t]) {
       m_term_kind[t] = 2;
+      m_dens_re[t] = m_density_coeff[t].real();
+      m_dens_im[t] = m_density_coeff[t].imag();
+      m_dens_words[t / 64] |= static_cast<uint64_t>(1) << (t % 64);
       const SlaterKey &mask = m_density_mask[t];
       bool live = true;
       for (std::size_t j = 0; j < mask.size(); j++) {

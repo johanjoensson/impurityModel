@@ -546,6 +546,12 @@ private:
   mutable std::vector<uint64_t> m_fire_vac;
   mutable std::vector<uint8_t> m_term_kind;
   mutable std::vector<uint64_t> m_between_flat;
+  // Density terms (kind 2) apart from the rest: their coefficients (`m_density_coeff`, sign folded in) split into
+  // real and imaginary arrays indexed by term, and a bitmap of which terms they are, so the diagonal contribution
+  // of every firing density term is one tight sum over the set bits and one multiply per amplitude column.
+  mutable std::vector<double> m_dens_re;
+  mutable std::vector<double> m_dens_im;
+  mutable std::vector<uint64_t> m_dens_words;
   void build_fire_masks(std::size_t n_chunks) const;
 
   [[nodiscard]] bool
