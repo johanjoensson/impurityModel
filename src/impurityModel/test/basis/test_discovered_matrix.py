@@ -174,3 +174,37 @@ def test_to_scipy_and_matvec_describe_the_same_matrix(comm):
         got = mat.matvec(X, rows=rows)
         want = np.concatenate(_gather(comm, got), axis=0)
         np.testing.assert_allclose(total, want, atol=1e-12)
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_without_the_frontier_the_matrix_is_p_h_p(comm):
+    op = _operator()
+    admitted = _admitted(150)
+    mine = _owned(admitted, comm)
+    mat = DiscoveredMatrix(op, 1, comm, keep_frontier=False)
+    mat.grow(mine)
+    assert mat.n_k_local == mat.n_p_local, "K must stay equal to P"
+    alive_keys = mat.p_keys()
+    X = _x_of(alive_keys)
+    want = _oracle(op, [d for part in _gather(comm, alive_keys) for d in part])
+    in_p = {_key(d) for part in _gather(comm, alive_keys) for d in part}
+    got = mat.matvec(X, rows="all")
+    for slot, k in enumerate(alive_keys):
+        np.testing.assert_allclose(got[slot], want.get(_key(k), np.zeros(WIDTH)), atol=1e-12)
+    assert {_key(k) for k in alive_keys} <= in_p
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_columns_built_after_admission_equal_columns_grown_with_it(comm):
+    op = _operator()
+    mine = _owned(_admitted(120, seed=8), comm)
+    grown = DiscoveredMatrix(op, 1, comm, keep_frontier=False)
+    grown.grow(mine)
+    late = DiscoveredMatrix(op, 1, comm, keep_frontier=False)
+    late.admit_keys(mine)
+    assert late.n_applied == 0 and late.nnz == 0
+    late.build_columns()
+    assert late.n_applied == len(mine)
+    assert [_key(k) for k in late.p_keys()] == [_key(k) for k in grown.p_keys()]
+    X = _x_of(grown.p_keys())
+    np.testing.assert_allclose(late.matvec(X, rows="all"), grown.matvec(X, rows="all"), atol=1e-13)

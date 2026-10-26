@@ -75,15 +75,20 @@ class DiscoveredMatrix:
         ``None`` (or size 1) for one rank.
     batch : int
         Matrix elements per collective key lookup in :meth:`grow`.
+    keep_frontier : bool
+        ``False`` stores only the rows that are in ``K`` when a column is built and never adds the rows an
+        image reaches to ``K``: ``K = P`` and the matrix is ``P H P`` (build it in one :meth:`grow` /
+        :meth:`build_columns`; a row admitted later is missing from the columns built before it).
     """
 
-    def __init__(self, hop, chunks_per_state, comm=None, batch=_GROW_BATCH):
+    def __init__(self, hop, chunks_per_state, comm=None, batch=_GROW_BATCH, keep_frontier=True):
         self.hop = hop
         self.cps = int(chunks_per_state)
         self.comm = comm if comm is not None and comm.size > 1 else None
         self.rank = 0 if self.comm is None else self.comm.rank
         self.size = 1 if self.comm is None else self.comm.size
         self._batch = int(batch)
+        self.keep_frontier = bool(keep_frontier)
         # K store: sorted unique keys; slots are append-only, positions are the sorted order.
         self._kstore = ManyBodyState.from_keys([])
         self._slot_of_pos = np.zeros(0, dtype=np.int64)
@@ -158,12 +163,17 @@ class DiscoveredMatrix:
         self._pos_of_slot = pos_of_slot
         self._k_pslot = np.concatenate((self._k_pslot, np.full(m, -1, dtype=np.int64)))
 
-    def _slots_of_packed(self, buf):
-        """K slot of every determinant packed in ``buf`` (``uint64`` chunks), appending the absent ones."""
+    def _slots_of_packed(self, buf, append=True):
+        """K slot of every determinant packed in ``buf`` (``uint64`` chunks), appending the absent ones
+        (``append=False``: ``-1`` for an absent one)."""
         buf = np.ascontiguousarray(buf, dtype=np.uint64)
         cps = self.cps
         rows = self._kstore.find_rows_packed(buf, cps)
         miss = rows == len(self._kstore)
+        if not append:
+            out = np.full(len(rows), -1, dtype=np.int64)
+            out[~miss] = self._slot_of_pos[rows[~miss]]
+            return out
         if miss.any():
             chunks = buf.reshape(-1, cps)[miss]
             self._append_keys(
@@ -172,12 +182,13 @@ class DiscoveredMatrix:
             rows = self._kstore.find_rows_packed(buf, cps)
         return self._slot_of_pos[rows]
 
-    def _lookup(self, keys):
-        """Packed ``owner << 32 | slot`` of every key, appending the new ones to their owner's K store.
-        Collective."""
+    def _lookup(self, keys, append=True):
+        """Packed ``owner << 32 | slot`` of every key, appending the new ones to their owner's K store
+        (``append=False``: ``-1`` for a key that is not in ``K``). Collective."""
 
         def resolve(buf):
-            return (np.int64(self.rank) << 32) | self._slots_of_packed(buf)
+            slots = self._slots_of_packed(buf, append)
+            return np.where(slots >= 0, (np.int64(self.rank) << 32) | np.maximum(slots, 0), -1)
 
         if self.comm is None:
             order = np.arange(len(keys), dtype=np.int64)
@@ -210,17 +221,12 @@ class DiscoveredMatrix:
 
     # -- growth ---------------------------------------------------------------------------------
 
-    def grow(self, keys):
-        """Admit ``keys`` (determinants this rank owns) to ``P``: store each one's complete image as a
-        column and add every key the images reach to ``K``. A key already in ``P`` is skipped, one that
-        was dropped is re-admitted as a new column. Returns the P slots of the keys admitted, in the
-        order of their columns (ascending key order). **Collective**: every rank runs the same number of
-        key lookups, ending on an ``allreduce(not exhausted, LOR)``; a rank with nothing to admit
-        enters each one empty."""
+    def _new_keys(self, keys):
+        """The determinants of ``keys`` that are not in ``P``, in ascending key order, registered in ``K``."""
         keys = list(keys)
         for key in keys:
             if self.size > 1 and key.routing_hash() % self.size != self.rank:
-                raise ValueError("grow() takes determinants this rank owns")
+                raise ValueError("this takes determinants the rank owns")
         todo = ManyBodyState.from_keys(keys).keys() if keys else []
         if todo:
             slots = self.key_slots(todo)
@@ -230,7 +236,13 @@ class DiscoveredMatrix:
                 slots = self.key_slots(todo)
             keep = self._k_pslot[slots] < 0
             todo = [k for k, kp in zip(todo, keep) if kp]
-        admitted = []
+        return todo
+
+    def _batches(self, todo):
+        """Apply the operator to each of ``todo`` and look the images up, a batch of about ``batch`` matrix
+        elements at a time. Yields ``(batch_keys, counts, packed, vals)``. **Collective**: every rank runs
+        the same number of batches (``allreduce(not exhausted, LOR)``), a rank with nothing left enters each
+        one empty."""
         i = 0
         unit = ManyBodyState()
         while True:
@@ -249,24 +261,71 @@ class DiscoveredMatrix:
                 elements += len(ks)
                 batch_keys.append(todo[i])
                 i += 1
-            packed = self._lookup(out_keys)
-            admitted.extend(self._append_columns(batch_keys, counts, packed, vals))
+            packed = self._lookup(out_keys, append=self.keep_frontier)
+            data = np.concatenate(vals) if vals else np.zeros(0, dtype=complex)
+            if not self.keep_frontier and len(packed):
+                hit = packed >= 0
+                if not hit.all():
+                    col = np.repeat(np.arange(len(counts)), counts)
+                    counts = np.bincount(col[hit], minlength=len(counts))
+                    packed, data = packed[hit], data[hit]
+            yield batch_keys, counts, packed, data
             if self.size == 1:
                 if i >= len(todo):
                     break
             elif not self.comm.allreduce(i < len(todo), op=MPI.LOR):
                 break
+
+    def grow(self, keys):
+        """Admit ``keys`` (determinants this rank owns) to ``P``: store each one's complete image as a
+        column and (``keep_frontier``) add every key the images reach to ``K``. A key already in ``P`` is
+        skipped, one that was dropped is re-admitted as a new column. Returns the P slots of the keys
+        admitted, in the order of their columns (ascending key order). **Collective**."""
+        todo = self._new_keys(keys)
+        admitted = []
+        for batch_keys, counts, packed, data in self._batches(todo):
+            admitted.extend(self._append_columns(batch_keys, counts, packed, data))
         self.epoch += 1
         self._tables = None
         return np.asarray(admitted, dtype=np.int64)
 
-    def _append_columns(self, batch_keys, counts, packed, vals):
+    def admit_keys(self, keys):
+        """Admit ``keys`` to ``P`` **without** applying the operator: the columns are empty until
+        :meth:`build_columns`. The matrix-free modes use the matrix as their slot manager (P slots, the key
+        store, the live mask) and build it once at the freeze. Returns the new P slots. Not collective in
+        itself, but advances the epoch: every rank calls it, each with its own keys."""
+        todo = self._new_keys(keys)
+        out = self._append_columns(todo, [0] * len(todo), np.zeros(0, dtype=np.int64), np.zeros(0, dtype=complex))
+        self.epoch += 1
+        self._tables = None
+        return np.asarray(out, dtype=np.int64)
+
+    def build_columns(self):
+        """Apply the operator to every live P column (in slot order) and store the images, replacing the
+        columns :meth:`admit_keys` left empty. Rows outside ``K`` are dropped when ``keep_frontier`` is off
+        (``K = P``: the ``P H P`` matrix). **Collective.**"""
+        alive = self.alive()
+        keys = [k for k, a in zip(self.p_keys(), alive) if a]
+        if not alive.all():
+            raise ValueError("build_columns needs every P slot live (compact_p_slots first)")
+        self._segments = []
+        col_begin = 0
+        for batch_keys, counts, packed, data in self._batches(keys):
+            n = len(batch_keys)
+            if n:
+                indptr = np.zeros(n + 1, dtype=np.int64)
+                np.cumsum(np.asarray(counts, dtype=np.int64), out=indptr[1:])
+                self._segments.append((col_begin, indptr, np.ascontiguousarray(packed, dtype=np.int64), data))
+                col_begin += n
+        self.epoch += 1
+        self._tables = None
+
+    def _append_columns(self, batch_keys, counts, packed, data):
         n = len(batch_keys)
         if n == 0:
             return []
         indptr = np.zeros(n + 1, dtype=np.int64)
         np.cumsum(np.asarray(counts, dtype=np.int64), out=indptr[1:])
-        data = np.concatenate(vals) if vals else np.zeros(0, dtype=complex)
         col_begin = self.n_p_local
         kslots = self.key_slots(batch_keys)
         self._segments.append((col_begin, indptr, np.ascontiguousarray(packed, dtype=np.int64), data))

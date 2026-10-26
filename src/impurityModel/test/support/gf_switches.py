@@ -1,5 +1,6 @@
-"""Test seams for the two always-on Green's-function switches (``gf_solvers._BICGSTAB_CLOSURE_FREEZE`` and
-``_FROZEN_CSR``): a test turns one off to exercise the plain path it replaces. Not user knobs.
+"""Test seams for the Green's-function switches (``gf_solvers._BICGSTAB_CLOSURE_FREEZE``, ``_FROZEN_CSR`` and
+``_MATRIX_MODE``): a test turns one off to exercise the plain path it replaces, or forces a matvec mode. Not user
+knobs.
 
 ``_BICGSTAB_CLOSURE_FREEZE`` gates the per-frequency kernel's closure freeze (and the RIXS R1 chain's). The
 block-Lanczos support settle is not a seam: switch it with the ``gf_settle`` solver option, or
@@ -13,7 +14,7 @@ def _truthy(value):
     return str(value).strip().lower() not in ("0", "false", "no", "")
 
 
-def set_gf_switches(monkeypatch, *, closure_freeze=None, frozen_csr=None):
+def set_gf_switches(monkeypatch, *, closure_freeze=None, frozen_csr=None, matrix_mode=None):
     """Set the switches for the current test (restored by ``monkeypatch``); ``None`` leaves one alone."""
     from impurityModel.ed import gf_solvers
 
@@ -21,14 +22,16 @@ def set_gf_switches(monkeypatch, *, closure_freeze=None, frozen_csr=None):
         monkeypatch.setattr(gf_solvers, "_BICGSTAB_CLOSURE_FREEZE", _truthy(closure_freeze))
     if frozen_csr is not None:
         monkeypatch.setattr(gf_solvers, "_FROZEN_CSR", _truthy(frozen_csr))
+    if matrix_mode is not None:
+        monkeypatch.setattr(gf_solvers, "_MATRIX_MODE", matrix_mode)
 
 
 @contextmanager
-def gf_switches(*, closure_freeze=None, frozen_csr=None):
+def gf_switches(*, closure_freeze=None, frozen_csr=None, matrix_mode=None):
     """The same as :func:`set_gf_switches`, as a context manager (for tests without ``monkeypatch``)."""
     from impurityModel.ed import gf_solvers
 
-    old = (gf_solvers._BICGSTAB_CLOSURE_FREEZE, gf_solvers._FROZEN_CSR)
+    old = (gf_solvers._BICGSTAB_CLOSURE_FREEZE, gf_solvers._FROZEN_CSR, gf_solvers._MATRIX_MODE)
     try:
         if closure_freeze is not None:
             gf_solvers._BICGSTAB_CLOSURE_FREEZE = _truthy(closure_freeze)

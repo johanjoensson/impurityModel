@@ -42,7 +42,7 @@ def chain_seeds():
     ]
 
 
-def run_chain(comm=None, op=None, reort=None, verbose=False, cap=CAP, slater_min=0.0, **kernel_kw):
+def run_chain(comm=None, op=None, reort=None, verbose=False, cap=CAP, slater_min=0.0, kernel=None, **kernel_kw):
     """``block_Green_sparse`` on the chain from its two seeds: ``(alphas, betas, r, cap_info)``; ``kernel_kw``
     (``support_settle``, ``settle_ratio``, ...) goes to the kernel."""
     basis = _basis(sorted({d for s in chain_seeds() for d in s}), comm, n_orb=N_ORB)
@@ -50,7 +50,7 @@ def run_chain(comm=None, op=None, reort=None, verbose=False, cap=CAP, slater_min
     full = chain_seeds()
     seeds = _redistribute_as_width1(basis, full if comm is None or comm.rank == 0 else None, len(full))
     info = {}
-    alphas, betas, r = block_Green_sparse(
+    alphas, betas, r = (block_Green_sparse if kernel is None else kernel)(
         chain_operator() if op is None else op,
         seeds,
         basis,

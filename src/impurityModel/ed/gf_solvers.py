@@ -181,6 +181,11 @@ _GF_BICGSTAB_RESTART_PROGRESS = 0.5
 #: replaces. The block-Lanczos support settle is NOT behind a seam: it is the ``gf_settle`` solver option.
 _BICGSTAB_CLOSURE_FREEZE = True
 _FROZEN_CSR = True
+#: Test/measurement seam: which engine runs a block of the sparse-kernel GF. ``"off"`` (the default until the
+#: production-scale measurement of ``doc/plans/gf_relevant_support.md``) is the ManyBodyState growth kernel with
+#: its frozen CSR; ``"auto"`` the recurrence on a discovered-key matrix with the matvec mode priced per unit
+#: (``gf_recurrence.choose_matrix_mode``); ``"discovered"``, ``"retained"`` and ``"none"`` force a mode.
+_MATRIX_MODE = "off"
 #: Restarts granted to a non-converged BiCGSTAB point (the current iterate warm-starts each) before the GMRES fallback.
 _GF_BICGSTAB_RESTARTS = 10
 #: Restart cycles GMRES gets before the point is reported as unconverged.
@@ -801,6 +806,26 @@ def block_Green_sparse(
     immediately on entry so both early-return paths below (an empty basis/seed, or a seed block
     that deflates to nothing) still leave every key present.
     """
+    if _MATRIX_MODE != "off" and krylov_dtype is None:
+        from impurityModel.ed.gf_recurrence import block_Green_discovered
+
+        return block_Green_discovered(
+            hOp,
+            psi_arr,
+            basis,
+            delta,
+            reort=reort,
+            slaterWeightMin=slaterWeightMin,
+            verbose=verbose,
+            cap_info=cap_info,
+            eval_meshes=eval_meshes,
+            info=info,
+            memory_budget=memory_budget,
+            memory_policy=memory_policy,
+            support_settle=support_settle,
+            settle_ratio=settle_ratio,
+            matrix_mode=_MATRIX_MODE,
+        )
     comm = basis.comm
     rank = comm.rank if comm is not None else 0
 
