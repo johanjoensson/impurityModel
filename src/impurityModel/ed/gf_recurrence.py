@@ -156,10 +156,11 @@ def matrix_need_bytes(n_p_local, n_k_local, fanout, n_global_k, n_ranks, width):
     return matrix + working + min(_GROW_BATCH, elements) * 160
 
 
-def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None):
+def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_discovered=True):
     """The matvec mode of a unit, decided once and collectively before its first step.
 
-    ``"discovered"`` when the discovered-key matrix fits ``MATRIX_MEMORY_SAFETY`` of the rank's share on every
+    ``"discovered"`` when ``want_discovered`` (a consumer of the frontier rows: the importance probe, swap
+    refinement) and the discovered-key matrix fits ``MATRIX_MEMORY_SAFETY`` of the rank's share on every
     rank, else ``"retained"`` when the ``P H P`` matrix built at the freeze fits the GF stage's CSR budget
     (``gf_solvers._frozen_matrix_need``), else ``"none"`` (the operator is applied to every block). No memory
     budget (the guard is off) always fits. ``P`` is priced at ``cap`` determinants spread over the ranks (the
@@ -172,7 +173,7 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None):
 
     comm = basis.comm if basis.is_distributed else None
     if memory_budget is None:
-        return "discovered"
+        return "discovered" if want_discovered else "retained"
     n_ranks = comm.size if comm is not None else 1
     n_basis_local = len(basis.local_basis)
     positions = ()
@@ -207,7 +208,7 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None):
             budget_discovered=e_budget,
             budget_retained=csr_budget,
         )
-    if not over[0]:
+    if want_discovered and not over[0]:
         return "discovered"
     return "retained" if not over[1] else "none"
 
@@ -755,15 +756,19 @@ def block_Green_discovered(
     support_settle=True,
     settle_ratio=None,
     matrix_mode="auto",
+    needs_matrix=False,
 ):
     """One block of the Green's function from the recurrence on a discovered-key matrix.
 
     The counterpart of ``gf_solvers.block_Green_sparse`` with the same arguments and return value
     ``(alphas, betas, r)``; ``cap_info`` additionally gets ``engine`` (the matvec mode that ran:
     ``"discovered"``, ``"retained"`` or ``"none"``) and ``matrix`` (the :class:`DiscoveredMatrix` in the
-    ``"discovered"`` mode, else ``None``; never put it in ``cap_stats``). ``matrix_mode`` picks the matvec: the
-    discovered-key matrix, the operator applied each step with the ``P H P`` matrix built at the freeze
-    (``"retained"``), or the operator applied every block (``"none"``). The determinant cap is
+    ``"discovered"`` mode, else ``None``; never put it in ``cap_stats``). ``needs_matrix`` says a consumer will
+    read the discovered frontier (the importance probe, swap refinement), which is what ``"auto"`` needs the
+    ``"discovered"`` mode for: without one it takes the cheaper ``"retained"`` mode (the frozen phase then runs on
+    the array kernel over ``P H P``). ``matrix_mode`` picks the matvec: the discovered-key matrix, the operator
+    applied each step with the ``P H P`` matrix built at the freeze (``"retained"``), or the operator applied
+    every block (``"none"``). The determinant cap is
     ``basis.truncation_threshold``; ``GF_LANCZOS_ADMIT_TOL > 0`` turns on importance pruning.
     """
     comm = basis.comm
@@ -809,7 +814,7 @@ def block_Green_discovered(
         raise ValueError(f"matrix_mode must be 'auto', 'discovered', 'retained' or 'none', got {matrix_mode!r}")
     if matrix_mode == "auto":
         report: dict = {}
-        matrix_mode = choose_matrix_mode(basis, hOp, cap, len(psi_arr), memory_budget, report)
+        matrix_mode = choose_matrix_mode(basis, hOp, cap, len(psi_arr), memory_budget, report, needs_matrix)
         if verbose and rank == 0 and report:
             print(
                 f"GF matvec mode {matrix_mode}: {report['n_p_local']:,} local determinants x fan-out "

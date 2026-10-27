@@ -7,14 +7,19 @@ the retained count equals the sparse kernel's where the rule is the same; two ru
 is the same at every rank count.
 """
 
+import functools
+
 import numpy as np
 import pytest
 
 from impurityModel.ed import config
-from impurityModel.ed.gf_recurrence import block_Green_discovered
+from impurityModel.ed.gf_recurrence import block_Green_discovered as _block_Green_discovered
 from impurityModel.test.gf.test_gf_support_freeze import _exact_sector_g, _g
 from impurityModel.test.support.comms import COMMS
 from impurityModel.test.support.gf_chain_fixtures import run_chain
+
+#: The recurrence with the discovered-key matrix (``"auto"`` takes the cheaper retained mode without a consumer).
+block_Green_discovered = functools.partial(_block_Green_discovered, matrix_mode="discovered")
 
 
 @pytest.fixture(autouse=True)
@@ -158,6 +163,11 @@ def test_the_mode_follows_the_memory_budget(comm):
     assert rss + report["need_discovered"] > budget * scale
     assert choose_matrix_mode(basis, op, 3000, 2, budget) == "retained"
     assert choose_matrix_mode(basis, op, 3000, 2, 1) == "none"
+    # Without a consumer of the frontier rows the discovered matrix is never chosen: it costs more memory and a
+    # slower frozen matvec for nothing.
+    assert choose_matrix_mode(basis, op, 3000, 2, None, want_discovered=False) == "retained"
+    assert choose_matrix_mode(basis, op, 3000, 2, 10**12, want_discovered=False) == "retained"
+    assert choose_matrix_mode(basis, op, 3000, 2, 1, want_discovered=False) == "none"
     if comm is not None:
         assert len(set(comm.allgather(choose_matrix_mode(basis, op, 3000, 2, budget)))) == 1
 
