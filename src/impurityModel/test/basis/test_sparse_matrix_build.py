@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import basis_transcription, gf_solvers
+from impurityModel.ed import basis_transcription, discovered_matrix, gf_solvers
 from impurityModel.ed.basis_transcription import build_sparse_matrix
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import KeyFilter, ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
@@ -203,6 +203,8 @@ def test_the_build_answers_the_gf_unit_queue_as_it_goes(monkeypatch, serial):
     monkeypatch.setattr(basis_transcription, "_QUEUE_POKE_KETS", 1)
     pokes = []
     monkeypatch.setattr(basis_transcription, "queue_progress", lambda: pokes.append(1))
+    monkeypatch.setattr(discovered_matrix, "_QUEUE_POKE_KETS", 1)
+    monkeypatch.setattr(discovered_matrix, "queue_progress", lambda: pokes.append(1))
     comm = MPI.COMM_SELF if serial else MPI.COMM_WORLD
     basis = _basis(_all_dets(), comm)
     build_sparse_matrix(basis, _operator())
@@ -222,7 +224,7 @@ def test_the_column_operator_holds_the_same_matrix(monkeypatch, batch, n_dets):
     dets = _all_dets() if n_dets is None else _all_dets()[:n_dets]
     basis = _basis(dets, comm)
     op = _operator()
-    column_op = build_sparse_matrix(basis, op)
+    column_op = build_sparse_matrix(basis, op, extendable=True)  # the old class's segments
     assert column_op.shape == (basis.size, len(basis.local_basis))
     assert all(rows.dtype == np.int32 for _, _, rows, _ in column_op.segments)
     # The batch counts generated rows, and the basis filter already drops most of a two-determinant
@@ -238,7 +240,7 @@ def test_bound_rows_are_the_exchange_buffer_rows():
     ``send_row_offsets[i]`` and a row this rank owns into the self buffer after the send rows."""
     comm = MPI.COMM_WORLD
     basis = _basis(_all_dets(), comm)
-    column_op = build_sparse_matrix(basis, _operator())
+    column_op = build_sparse_matrix(basis, _operator(), extendable=True)  # the old class's slot binding
     counts = np.array(comm.allgather(len(basis.local_basis)), dtype=np.int64)
     offsets = np.concatenate(([0], np.cumsum(counts)[:-1]))
     flags = column_op.owner_flags(counts, offsets)

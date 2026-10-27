@@ -130,6 +130,25 @@ cdef void scatter_discovered_nogil(
     cdef long mask = (<long>1 << shift) - 1
     cdef int k
     cdef double complex val
+    # The two loops differ only by the translation: it is a property of the call, not of the entry, so it is
+    # hoisted rather than tested per element (the P-only matrix of a frozen recurrence never translates).
+    if not use_ptab:
+        for jj in range(n_cols):
+            col = col_begin + jj
+            if not alive[col]:
+                continue
+            for e in range(indptr[jj], indptr[jj + 1]):
+                entry = packed[e]
+                t = base[entry >> shift] + (entry & mask)
+                val = data[e]
+                if t < send_rows:
+                    for k in range(p):
+                        S[t, k] = S[t, k] + val * X[col, c0 + k]
+                else:
+                    t = t - send_rows
+                    for k in range(p):
+                        Y[t, k] = Y[t, k] + val * X[col, c0 + k]
+        return
     for jj in range(n_cols):
         col = col_begin + jj
         if not alive[col]:
@@ -137,11 +156,9 @@ cdef void scatter_discovered_nogil(
         for e in range(indptr[jj], indptr[jj + 1]):
             entry = packed[e]
             owner = entry >> shift
-            slot = entry & mask
-            if use_ptab:
-                slot = ptab[goff[owner] + slot]
-                if slot < 0:
-                    continue
+            slot = ptab[goff[owner] + (entry & mask)]
+            if slot < 0:
+                continue
             t = base[owner] + slot
             val = data[e]
             if t < send_rows:

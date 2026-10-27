@@ -458,7 +458,9 @@ def _build_discovered_matrix(basis, op):
     own -- which needs the basis to be owned by ``routing_hash() % size``, as every distributed basis here is.
     """
     comm = basis.comm if basis.is_distributed else None
-    matrix = discovered_matrix.DiscoveredMatrix(op, (basis.n_bytes + 7) // 8, comm, keep_frontier=False)
+    matrix = discovered_matrix.DiscoveredMatrix(
+        op, (basis.n_bytes + 7) // 8, comm, batch=_SPARSE_BUILD_BATCH, keep_frontier=False
+    )
     matrix.admit_keys(list(basis.local_basis))
     matrix.build_columns()
     return matrix

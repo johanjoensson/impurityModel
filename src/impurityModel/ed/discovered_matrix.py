@@ -42,11 +42,17 @@ from impurityModel.ed.ManyBodyUtils import (
     pack_determinants_ordered_cy,
 )
 from impurityModel.ed.mpi_comm import MatvecExchangePlan, routed_index_lookup
+from impurityModel.ed.work_queue import queue_progress
 
 #: Matrix elements per collective key lookup in :meth:`DiscoveredMatrix.grow` (~80 MiB of transient).
 _GROW_BATCH = 1 << 19
 
 _SLOT_MASK = (1 << 32) - 1
+
+#: Kets between two answers to the GF unit queue while a column batch is built (``work_queue.queue_progress``): a
+#: build runs for minutes with no Lanczos block in it, and the rank hosting the queue must still serve the other
+#: colours' fetches.
+_QUEUE_POKE_KETS = 4096
 
 #: Opt-in stage timer (``IMPMOD_MATVEC_PROF=1``): seconds, calls and the resident-set high-water per stage of the
 #: Green's-function recurrence, printed to stderr every 30 s (a killed run still leaves numbers). Measurement
@@ -322,6 +328,8 @@ class DiscoveredMatrix:
             batch_keys, counts, out_keys, vals = [], [], [], []
             elements = 0
             while i < len(todo) and elements < self._batch:
+                if i % _QUEUE_POKE_KETS == 0:
+                    queue_progress()  # see _QUEUE_POKE_KETS
                 unit[todo[i]] = 1.0
                 image = applyOp(self.hop, unit, cutoff=0)
                 unit.erase(todo[i])
@@ -818,8 +826,8 @@ class DiscoveredMatrix:
 
 #: Which class the consumers build: ``"old"`` (``DistributedSparseMatrix``, the Cython column-segment matrix) or
 #: ``"new"`` (:class:`DiscoveredMatrix`). Identical on every rank by construction (an env var read at import).
-#: Temporary: the flip commit makes ``"new"`` the default, the deletion commit removes the switch.
-SPARSE_CLASS = os.environ.get("IMPMOD_SPARSE_MATRIX", "old")
+#: Temporary: ``"new"`` has been the default since the flip; the deletion commit removes the switch.
+SPARSE_CLASS = os.environ.get("IMPMOD_SPARSE_MATRIX", "new")
 
 
 def _old_class():
