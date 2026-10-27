@@ -24,6 +24,11 @@ matching epochs.
 ``comm`` is ``None`` (or of size 1) for a matrix on one rank.
 """
 
+import contextlib
+import os
+import sys
+import time
+
 import numpy as np
 import scipy.sparse as sps
 from mpi4py import MPI
@@ -42,6 +47,38 @@ from impurityModel.ed.mpi_comm import MatvecExchangePlan, routed_index_lookup
 _GROW_BATCH = 1 << 19
 
 _SLOT_MASK = (1 << 32) - 1
+
+#: Opt-in stage timer (``IMPMOD_MATVEC_PROF=1``): seconds, calls and the resident-set high-water per stage of the
+#: Green's-function recurrence, printed to stderr every 30 s (a killed run still leaves numbers). Measurement
+#: aid only: no collective inside, nothing read back.
+_PROF = bool(os.environ.get("IMPMOD_MATVEC_PROF"))
+_STAGES = {}
+_LAST_DUMP = [0.0]
+
+
+@contextlib.contextmanager
+def _timed(name):
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        from impurityModel.ed.memory_estimate import current_rss_bytes
+
+        now = time.perf_counter()
+        entry = _STAGES.setdefault(name, [0.0, 0, 0])
+        entry[0] += now - t0
+        entry[1] += 1
+        entry[2] = max(entry[2], current_rss_bytes())
+        if now - _LAST_DUMP[0] >= 30.0:
+            _LAST_DUMP[0] = now
+            for key, (sec, calls, rss) in sorted(_STAGES.items(), key=lambda kv: -kv[1][0]):
+                print(f"STAGE {key:16s} {sec:10.2f} s {calls:7d} calls  rss<= {rss / 2**30:.2f} GiB", file=sys.stderr)
+            print("STAGE ----", file=sys.stderr, flush=True)
+
+
+def stage(name):
+    """A context manager that records the time spent inside it under ``name`` (a no-op without the env knob)."""
+    return _timed(name) if _PROF else contextlib.nullcontext()
 
 
 def _is_identity(goff, ptab):
@@ -319,13 +356,14 @@ class DiscoveredMatrix:
             raise ValueError("build_columns needs every P slot live (compact_p_slots first)")
         self._segments = []
         col_begin = 0
-        for batch_keys, counts, packed, data in self._batches(keys):
-            n = len(batch_keys)
-            if n:
-                indptr = np.zeros(n + 1, dtype=np.int64)
-                np.cumsum(np.asarray(counts, dtype=np.int64), out=indptr[1:])
-                self._segments.append((col_begin, indptr, np.ascontiguousarray(packed, dtype=np.int64), data))
-                col_begin += n
+        with stage("build_columns"):
+            for batch_keys, counts, packed, data in self._batches(keys):
+                n = len(batch_keys)
+                if n:
+                    indptr = np.zeros(n + 1, dtype=np.int64)
+                    np.cumsum(np.asarray(counts, dtype=np.int64), out=indptr[1:])
+                    self._segments.append((col_begin, indptr, np.ascontiguousarray(packed, dtype=np.int64), data))
+                    col_begin += n
         self.epoch += 1
         self._tables = None
 
@@ -463,6 +501,10 @@ class DiscoveredMatrix:
     # -- the matvec -------------------------------------------------------------------------------
 
     def matvec(self, X, rows="all", plan=None, out=None):
+        with stage("matvec_P" if rows == "P" else "matvec_all"):
+            return self._matvec(X, rows, plan, out)
+
+    def _matvec(self, X, rows, plan, out):
         """``Y = M X`` for a block ``X`` on the P slots, shape ``(n_p_local, p)``. Returns this rank's
         rows: ``(n_k_local, p)`` for ``rows="all"``, ``(n_p_local, p)`` for ``rows="P"``. ``plan`` is
         :meth:`exchange_plan`'s layout of a width at least ``p`` and the same ``rows``. **Collective**."""

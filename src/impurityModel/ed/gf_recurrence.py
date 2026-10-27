@@ -30,7 +30,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import config
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, divergence_guard
-from impurityModel.ed.discovered_matrix import DiscoveredMatrix
+from impurityModel.ed.discovered_matrix import DiscoveredMatrix, stage
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
     SETTLE_WINDOW,
@@ -239,20 +239,23 @@ def lanczos_step(apply, x, x_prev, beta_prev, *, comm=None, scale=0.0, deflate_t
     are then ``None``). ``store`` (a list of the earlier blocks, each with at most ``w``'s rows) switches on
     full reorthogonalization: two classical Gram-Schmidt passes against every stored block.
     """
-    w = np.array(apply(x), dtype=complex, order="C")  # a private copy: the residual is formed in place
+    with stage("apply"):
+        w = np.array(apply(x), dtype=complex, order="C")  # a private copy: the residual is formed in place
     n_rows = w.shape[0]
-    x = _pad_rows(x, n_rows)
-    alpha = _allreduce(comm, np.ascontiguousarray(x.conj().T @ w))
-    w -= x @ alpha
-    if x_prev is not None:
-        w -= _pad_rows(x_prev, n_rows) @ beta_prev.conj().T
+    with stage("step_dense"):
+        x = _pad_rows(x, n_rows)
+        alpha = _allreduce(comm, np.ascontiguousarray(x.conj().T @ w))
+        w -= x @ alpha
+        if x_prev is not None:
+            w -= _pad_rows(x_prev, n_rows) @ beta_prev.conj().T
     if store is not None:
         for _ in range(2):
             for block in store:
                 rows = block.shape[0]
                 overlap = _allreduce(comm, np.ascontiguousarray(block.conj().T @ w[:rows]))
                 w[:rows] -= block @ overlap
-    x_next, beta, k, _sv = tsqr(w, comm, max(float(scale), spectral_norm(alpha)), deflate_tol=deflate_tol)
+    with stage("tsqr"):
+        x_next, beta, k, _sv = tsqr(w, comm, max(float(scale), spectral_norm(alpha)), deflate_tol=deflate_tol)
     return alpha, x_next, beta, k
 
 
@@ -437,10 +440,12 @@ class _ApplyEngine:
                 matrix.build_columns()
                 self._built = True
             return matrix.matvec(x, rows="P")
-        applied = self._applied(x)
-        keys = applied.keys()
-        amps = np.asarray(applied)
-        pos = matrix._kstore.find_rows(keys) if keys else np.zeros(0, dtype=np.int64)
+        with stage("grow_apply"):
+            applied = self._applied(x)
+        with stage("grow_keys"):
+            keys = applied.keys()
+            amps = np.asarray(applied)
+            pos = matrix._kstore.find_rows(keys) if keys else np.zeros(0, dtype=np.int64)
         in_p = pos < matrix.n_k_local
         k_to_p = matrix.k_to_p_slot()
         w_p = np.zeros((matrix.n_p_local, x.shape[1]), dtype=complex)
@@ -450,7 +455,8 @@ class _ApplyEngine:
             return w_p
         f_ids = np.flatnonzero(~in_p)
         hq2 = float(np.sum(np.abs(amps) ** 2)) if d.support_freeze else 0.0
-        ids = admission.decide(f_ids, amps[f_ids], hq2, lambda sel: [keys[i] for i in sel])
+        with stage("decide"):
+            ids = admission.decide(f_ids, amps[f_ids], hq2, lambda sel: [keys[i] for i in sel])
         if int(d.allreduce_sum(len(ids))):
             new = matrix.admit_keys([keys[i] for i in ids])
             admission.attach(new)

@@ -119,6 +119,24 @@ def test_block_green_sparse_routes_to_the_recurrence_on_a_matrix(comm, monkeypat
 
 
 @pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("mode", ["discovered", "retained"])
+def test_the_stage_table_names_the_recurrences_stages(comm, mode, monkeypatch):
+    """``IMPMOD_MATVEC_PROF`` stage names are read by the measurement harness, so they are pinned."""
+    from impurityModel.ed import discovered_matrix
+
+    monkeypatch.setattr(discovered_matrix, "_PROF", True)
+    discovered_matrix._STAGES.clear()
+    run_chain(comm, kernel=block_Green_discovered, matrix_mode=mode, cap=2500)
+    names = set(discovered_matrix._STAGES)
+    assert {"apply", "step_dense", "tsqr"} <= names
+    if mode == "discovered":
+        assert "matvec_all" in names
+    else:
+        assert {"grow_apply", "grow_keys", "decide", "build_columns", "matvec_P"} <= names
+    assert all(calls > 0 and sec >= 0.0 for sec, calls, _rss in discovered_matrix._STAGES.values())
+
+
+@pytest.mark.parametrize("comm", COMMS)
 def test_the_mode_follows_the_memory_budget(comm):
     """No budget: the matrix. A budget the matrix does not fit but the ``P H P`` matrix does: retained. Neither:
     the operator on every block. Replicated on every rank."""

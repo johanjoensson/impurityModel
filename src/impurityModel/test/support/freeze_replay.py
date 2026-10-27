@@ -114,8 +114,62 @@ def settle_options(mode):
     return None, ratio, f"ratio {ratio:g}"
 
 
-def run(h5_path, out, iteration=1, cluster=None, swm=None, freeze="on", comm=None, verbosity=1, matrix_mode="off"):
-    """Replay one archived call and write ``out + '.npz'`` on rank 0. Returns the result dict (rank 0)."""
+class _UnitsDone(Exception):
+    """Raised on every rank once the selected Green's-function units have been solved (``--units``)."""
+
+
+def _solve_only(units, comm):
+    """Wrap ``greens_function._gf_solve_units`` so that only ``units`` run, then report them and stop.
+
+    ``units`` is a list of global unit indices, or ``"heaviest"`` for the ``comm.size`` heaviest by the cost
+    weight (one per colour, as in production). Measurement aid: the self-energy is not assembled. Collective."""
+    from impurityModel.ed import greens_function as gfm
+
+    original = gfm._gf_solve_units
+
+    def solve(plan, *args, subset=None, **kw):
+        if subset is not None:
+            return original(plan, *args, subset=subset, **kw)
+        chosen = units
+        if chosen == "heaviest":
+            order = sorted(range(len(plan.unit_weights)), key=lambda u: -plan.unit_weights[u])
+            chosen = sorted(order[: max(comm.size if comm is not None else 1, 1)])
+        t0 = time.perf_counter()
+        res = original(plan, *args, subset=list(chosen), **kw)
+        wall = time.perf_counter() - t0
+        if res is not None:
+            for pos, u in enumerate(chosen):
+                a, _b, _r, cap_stats, conv_stats = res[pos]
+                print(
+                    f"UNIT {u}: blocks {len(a)} retained {cap_stats.get('retained_size')} "
+                    f"cap_hit {cap_stats.get('cap_hit')} memory_frozen {cap_stats.get('memory_frozen')} "
+                    f"engine {cap_stats.get('engine')} converged {conv_stats.get('converged')}",
+                    flush=True,
+                )
+            print(f"UNITS {list(chosen)} solved in {wall:.1f} s", flush=True)
+        raise _UnitsDone
+
+    gfm._gf_solve_units = solve
+
+
+def run(
+    h5_path,
+    out,
+    iteration=1,
+    cluster=None,
+    swm=None,
+    freeze="on",
+    comm=None,
+    verbosity=1,
+    matrix_mode="off",
+    cap="archive",
+    units=None,
+):
+    """Replay one archived call and write ``out + '.npz'`` on rank 0. Returns the result dict (rank 0).
+
+    ``cap`` pins ``truncation_threshold`` (an integer; the log's ``determinant cap`` line then says "set by you");
+    ``"archive"`` keeps the recorded setting. ``units`` (a list of global unit indices, or ``"heaviest"``) solves
+    only those Green's-function units and returns ``None`` after printing one ``UNIT`` line each."""
     os.environ.setdefault("SIGMA_CAUSALITY_TOL", "1e9")
     from impurityModel.test.support import real_workload as rw
 
@@ -131,16 +185,22 @@ def run(h5_path, out, iteration=1, cluster=None, swm=None, freeze="on", comm=Non
             raise SystemExit(f"archive records options this replay does not consume: {sorted(extra)}")
     if swm is not None:
         wl["slaterWeightMin"] = float(swm)
+    if units is not None:
+        _solve_only(units, comm)
     t0 = time.perf_counter()
-    res = rw.run_selfenergy(
-        wl,
-        comm=comm,
-        verbosity=verbosity,
-        gf_tol="archive",
-        gf_real_tol="archive",
-        gf_settle=gf_settle,
-        gf_settle_ratio=gf_settle_ratio,
-    )
+    try:
+        res = rw.run_selfenergy(
+            wl,
+            comm=comm,
+            verbosity=verbosity,
+            truncation_threshold=cap,
+            gf_tol="archive",
+            gf_real_tol="archive",
+            gf_settle=gf_settle,
+            gf_settle_ratio=gf_settle_ratio,
+        )
+    except _UnitsDone:
+        return None
     wall = time.perf_counter() - t0
     if comm is not None and comm.rank != 0:
         return None
@@ -174,6 +234,8 @@ def main(argv=None):
     r.add_argument("--swm", type=float, default=None)
     r.add_argument("--freeze", default="on")
     r.add_argument("--matrix-mode", default="off", choices=["off", "auto", "discovered", "retained", "none"])
+    r.add_argument("--cap", default="archive", help="pin truncation_threshold to this integer")
+    r.add_argument("--units", default=None, help="comma list of GF unit indices, or 'heaviest': solve only those")
     r.add_argument("--out", required=True)
     r.add_argument("--verbosity", type=int, default=1)
     g = sub.add_parser("grade")
@@ -186,7 +248,23 @@ def main(argv=None):
         return 0
     from mpi4py import MPI
 
-    run(a.archive, a.out, a.iteration, a.cluster, a.swm, a.freeze, MPI.COMM_WORLD, a.verbosity, a.matrix_mode)
+    cap = a.cap if a.cap == "archive" else int(a.cap)
+    units = a.units
+    if units is not None and units != "heaviest":
+        units = [int(u) for u in units.split(",")]
+    run(
+        a.archive,
+        a.out,
+        a.iteration,
+        a.cluster,
+        a.swm,
+        a.freeze,
+        MPI.COMM_WORLD,
+        a.verbosity,
+        a.matrix_mode,
+        cap,
+        units,
+    )
     return 0
 
 
