@@ -52,7 +52,7 @@ _SLOT_MASK = (1 << 32) - 1
 #: Green's-function recurrence, printed to stderr every 30 s (a killed run still leaves numbers). Measurement
 #: aid only: no collective inside, nothing read back.
 _PROF = bool(os.environ.get("IMPMOD_MATVEC_PROF"))
-_STAGES = {}
+_STAGES: dict = {}
 _LAST_DUMP = [0.0]
 
 
@@ -142,8 +142,10 @@ class DiscoveredMatrix:
         :meth:`build_columns`; a row admitted later is missing from the columns built before it).
     """
 
-    def __init__(self, hop, chunks_per_state, comm=None, batch=_GROW_BATCH, keep_frontier=True):
+    def __init__(self, hop=None, chunks_per_state=0, comm=None, batch=_GROW_BATCH, keep_frontier=True):
         self.hop = hop
+        self._keyless = False
+        self._shape = None
         self.cps = int(chunks_per_state)
         self.comm = comm if comm is not None and comm.size > 1 else None
         self.rank = 0 if self.comm is None else self.comm.rank
@@ -261,6 +263,7 @@ class DiscoveredMatrix:
 
     def key_slots(self, keys):
         """K slot of each local ``key`` (this rank owns them all), ``-1`` for one not in K. Not collective."""
+        self._need_keys("key_slots")
         pos = self._kstore.find_rows(keys)
         out = np.full(len(keys), -1, dtype=np.int64)
         hit = pos < len(self._kstore)
@@ -269,10 +272,12 @@ class DiscoveredMatrix:
 
     def keys_of(self, kslots):
         """The determinants at K slots ``kslots``."""
+        self._need_keys("keys_of")
         return [self._kstore.key_at(int(self._pos_of_slot[s])) for s in np.asarray(kslots, dtype=np.int64)]
 
     def p_keys(self):
         """The determinant of every P slot, in slot order (dead slots included)."""
+        self._need_keys("p_keys")
         return self.keys_of(self._p_kslot)
 
     def k_to_p_slot(self):
@@ -284,6 +289,10 @@ class DiscoveredMatrix:
         return self._p_kslot.copy()
 
     # -- growth ---------------------------------------------------------------------------------
+
+    def _need_keys(self, what):
+        if self._keyless:
+            raise TypeError(f"{what} needs determinant keys; this matrix was built from scipy/dense data")
 
     def _new_keys(self, keys):
         """The determinants of ``keys`` that are not in ``P``, in ascending key order, registered in ``K``."""
@@ -345,6 +354,7 @@ class DiscoveredMatrix:
         column and (``keep_frontier``) add every key the images reach to ``K``. A key already in ``P`` is
         skipped, one that was dropped is re-admitted as a new column. Returns the P slots of the keys
         admitted, in the order of their columns (ascending key order). **Collective**."""
+        self._need_keys("grow")
         todo = self._new_keys(keys)
         admitted = []
         for batch_keys, counts, packed, data in self._batches(todo):
@@ -358,6 +368,7 @@ class DiscoveredMatrix:
         :meth:`build_columns`. The matrix-free modes use the matrix as their slot manager (P slots, the key
         store, the live mask) and build it once at the freeze. Returns the new P slots. Not collective in
         itself, but advances the epoch: every rank calls it, each with its own keys."""
+        self._need_keys("admit_keys")
         todo = self._new_keys(keys)
         out = self._append_columns(todo, [0] * len(todo), np.zeros(0, dtype=np.int64), np.zeros(0, dtype=complex))
         self.epoch += 1
@@ -382,6 +393,7 @@ class DiscoveredMatrix:
         """Apply the operator to every live P column (in slot order) and store the images, replacing the
         columns :meth:`admit_keys` left empty. Rows outside ``K`` are dropped when ``keep_frontier`` is off
         (``K = P``: the ``P H P`` matrix). **Collective.**"""
+        self._need_keys("build_columns")
         alive = self.alive()
         if not alive.all():
             raise ValueError("build_columns needs every P slot live (compact_p_slots first)")
@@ -526,10 +538,10 @@ class DiscoveredMatrix:
             present[np.unique(owners)] = True
         return present
 
-    def exchange_plan(self, width, rows="all", site="discovered_matrix"):
-        """The layout for blocks up to ``width`` columns wide returning ``rows`` (``"all"``: every K
-        row; ``"P"``: the P rows). **Collective** (three tiny collectives, plus the table gather when
-        the epoch changed); build one per kernel call."""
+    def exchange_plan(self, width, site="discovered_matrix", rows="P"):
+        """The layout for blocks up to ``width`` columns wide returning ``rows`` (``"P"``, the default: the P
+        rows, an operator's own; ``"all"``: every K row). **Collective** (three tiny collectives, plus the table
+        gather when the epoch changed); build one per kernel call. ``site`` labels the trace note."""
         row_counts, col_counts, goff, ptab, use_ptab = self._gather_tables(rows)
         if self.comm is None:
             return _Layout(
@@ -566,7 +578,7 @@ class DiscoveredMatrix:
             raise ValueError(f"block has {X.shape} rows, the matrix has {self.n_p_local} P slots")
         p = X.shape[1]
         if plan is None:
-            plan = self.exchange_plan(p, rows)
+            plan = self.exchange_plan(p, rows=rows)
         if plan.rows != rows or plan.epoch != self.epoch:
             raise ValueError("the layout is stale or was built for other rows")
         if out is None:
@@ -616,6 +628,114 @@ class DiscoveredMatrix:
             ex.accumulate(out[:, c0:c1], wc)
         return out
 
+    # -- the sparse-operator contract (what the eigensolvers and the array kernels read) ------------
+
+    @property
+    def is_distributed(self):
+        return self.comm is not None
+
+    @property
+    def shape(self):
+        """``(N, n_p_local)``: the P rows over all ranks and this rank's columns. ``N`` is a cached **collective**
+        on a distributed matrix (rank-invariant: it follows the epoch)."""
+        if self._shape is not None:
+            return self._shape
+        row_counts = self._gather_tables("P")[0]
+        return (int(row_counts.sum()), self.n_p_local)
+
+    @property
+    def col_offset(self):
+        """Global index of this rank's first P column (rank-contiguous numbering). Collective on a cache miss."""
+        return self.row_offset("P")
+
+    def apply(self, X, plan=None, out=None):
+        """``Y = M X`` on the P rows (``X`` and ``Y`` are ``(n_p_local, p)``): the operator's own matvec."""
+        return self.matvec(X, rows="P", plan=plan, out=out)
+
+    def diagonal(self):
+        """The stored diagonal entry of every P column, ``(n_p_local,)`` complex (0 for a dead or empty column):
+        the entry whose row is the column's own determinant. Rank-local."""
+        diag = np.zeros(self.n_p_local, dtype=complex)
+        for c0, indptr, packed, data in self._segments:
+            n = len(indptr) - 1
+            col = c0 + np.repeat(np.arange(n, dtype=np.int64), np.diff(indptr))
+            owner, slot = self._decode(packed)
+            on = (owner == self.rank) & (slot == self._p_kslot[col])
+            np.add.at(diag, col[on], data[on])
+        diag[~self.alive()] = 0.0
+        return diag
+
+    def toarray(self):
+        """Dense ``(N, N)`` with this rank's columns filled and every other column zero: summed over the ranks it
+        is the whole operator. **Collective** (the row tables) on a distributed matrix."""
+        local = self.to_scipy("P").toarray()
+        n = local.shape[0]
+        out = np.zeros((n, n), dtype=complex)
+        off = self.col_offset
+        out[:, off : off + local.shape[1]] = local
+        return out
+
+    @classmethod
+    def from_scipy(cls, mat, comm=None, col_offset=0):
+        """A keyless matrix from a scipy sparse ``(N, n_local)``: this rank's columns, rows numbered globally and
+        rank-contiguously (rank ``r`` owns rows ``[offset_r, offset_r + n_local_r)``, the ranks' ``n_local``
+        counted in rank order). ``K = P``, ``slot = row - offset``; :meth:`grow` and the key accessors refuse.
+        **Collective** on a distributed ``comm`` (the column counts), nothing otherwise. ``col_offset`` is
+        accepted for the old signature and checked against the counted offset."""
+        csc = sps.csc_array(mat)
+        csc.sort_indices()
+        n_rows, n_cols = csc.shape
+        self = cls(None, 0, comm)
+        if self.comm is None:
+            counts = np.array([n_cols], dtype=np.int64)
+        else:
+            counts = np.empty(self.size, dtype=np.int64)
+            self.comm.Allgather(np.array([n_cols], dtype=np.int64), counts)
+        offsets = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
+        if n_rows != int(offsets[-1]):
+            raise ValueError(f"{n_rows} rows but the ranks' columns add up to {int(offsets[-1])}")
+        if self.comm is not None and col_offset not in (0, int(offsets[self.rank])):
+            raise ValueError(f"col_offset {col_offset} is not the rank-contiguous offset {int(offsets[self.rank])}")
+        rows = np.asarray(csc.indices, dtype=np.int64)
+        owner = np.searchsorted(offsets, rows, side="right") - 1
+        packed = (owner << 32) | (rows - offsets[owner])
+        self._keyless = True
+        self._shape = (n_rows, n_cols)
+        self._slot_of_pos = np.arange(n_cols, dtype=np.int64)
+        self._pos_of_slot = np.arange(n_cols, dtype=np.int64)
+        self._k_pslot = np.arange(n_cols, dtype=np.int64)
+        self._p_kslot = np.arange(n_cols, dtype=np.int64)
+        self._alive = np.ones(max(16, n_cols), dtype=np.int8)
+        if n_cols:
+            self._segments = [
+                (
+                    0,
+                    np.ascontiguousarray(csc.indptr, dtype=np.int64),
+                    self._compact(packed),
+                    np.array(csc.data, dtype=complex),
+                )
+            ]
+        self.keep_frontier = False
+        return self
+
+    @classmethod
+    def from_dense(cls, a, comm=None, col_offset=0):
+        """:meth:`from_scipy` of a dense ``(N, n_local)`` array. For small, replicated sectors."""
+        return cls.from_scipy(sps.csc_array(np.asarray(a)), comm, col_offset)
+
+    @classmethod
+    def coerce(cls, h, comm=None):
+        """``h`` as a matrix: a :class:`DiscoveredMatrix` is returned as is; a scipy sparse or dense ``(N, n_local)``
+        (the columns this rank owns) is converted once."""
+        if isinstance(h, cls):
+            return h
+        comm = comm if comm is not None and comm.size > 1 else None
+        if sps.issparse(h):
+            return cls.from_scipy(h, comm)
+        if isinstance(h, np.ndarray):
+            return cls.from_dense(h, comm)
+        raise TypeError(f"cannot use a {type(h).__name__} as a sparse matrix")
+
     def to_array_operator(self):
         """Hand this matrix's ``P H P`` to the array kernel: a :class:`DistributedSparseMatrix` over this rank's live
         columns whose rows are the global P numbering (rank-contiguous, ``comm`` order), the same operator the
@@ -654,7 +774,7 @@ class DiscoveredMatrix:
 
     # -- conversions (tests, small dense eigensolves) -----------------------------------------------
 
-    def to_scipy(self, rows="all"):
+    def to_scipy(self, rows="P"):
         """This rank's live columns as a scipy CSC of shape ``(total rows, n_p_local)``; global row
         ``r`` is the rows of rank 0, then rank 1, ... (K slots or P slots in order). Dead columns are
         empty. **Collective** on a distributed matrix."""
