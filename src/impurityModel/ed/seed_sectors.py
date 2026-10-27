@@ -49,7 +49,7 @@ import scipy.sparse as sps
 from mpi4py import MPI
 
 from impurityModel.ed import config
-from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
+from impurityModel.ed.discovered_matrix import sparse_from_scipy
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant, applyOp
 
 #: Relative size of an off-diagonal element, in the eigenbasis of ``X``, that joins two seed
@@ -374,7 +374,7 @@ class ClassPenalty:
                 shape=(n, n_local),
             )
             local = local + pen
-        return DistributedSparseMatrix.from_scipy(local, h_mat.comm, offset)
+        return sparse_from_scipy(local, h_mat.comm, offset)
 
 
 def class_weight(plan, cls, basis, psis):

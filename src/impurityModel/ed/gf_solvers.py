@@ -25,7 +25,7 @@ from impurityModel.ed.basis_transcription import (
 )
 from impurityModel.ed.BiCGSTAB import block_bicgstab
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, block_lanczos
-from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
+from impurityModel.ed.discovered_matrix import sparse_from_dense
 from impurityModel.ed.gf_admission import solve_point_outer
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
@@ -270,7 +270,7 @@ def _array_operator(basis, hOp, dense):
     """``(H, kernel_comm)`` for the array kernel on ``basis``: the small sector's matrix gathered onto every
     rank and held undistributed, or this rank's columns of the distributed ``P H P``."""
     if dense:
-        return DistributedSparseMatrix.from_dense(build_dense_matrix(basis, hOp)), None
+        return sparse_from_dense(build_dense_matrix(basis, hOp)), None
     # The (global_N, N_local) CSR goes to the kernel as-is, like the CIPSI ground state's:
     # `local_indices` is the rank-contiguous range `offset + arange(N_local)`, which is the
     # row layout the kernel's distributed matvec reduce-scatters into each rank's own rows.

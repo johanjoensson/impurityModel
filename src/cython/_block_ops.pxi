@@ -274,10 +274,10 @@ def apply_and_redistribute(
 
 
 cpdef object block_apply(object H, object V, object basis=None, bint mpi=False, double slaterWeightMin=0.0):
-    if is_array(V) or isinstance(H, DistributedSparseMatrix):
+    if is_array(V) or isinstance(H, sparse_operator_types()):
         V_arr = np.column_stack(V) if isinstance(V, list) and isinstance(V[0], np.ndarray) else V
-        if not isinstance(H, DistributedSparseMatrix):
-            raise TypeError(f"an array block needs a DistributedSparseMatrix operator, got {type(H).__name__}")
+        if not isinstance(H, sparse_operator_types()):
+            raise TypeError(f"an array block needs a sparse-matrix operator, got {type(H).__name__}")
         # One exchange plan per call (collective on a distributed matrix); a kernel that applies H
         # every step holds its own plan instead.
         return H.apply(V_arr)

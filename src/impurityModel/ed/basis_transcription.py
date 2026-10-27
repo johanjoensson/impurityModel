@@ -13,6 +13,7 @@ from typing import Any, Optional, Union
 import numpy as np
 from mpi4py import MPI
 
+from impurityModel.ed import discovered_matrix
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.ManyBodyUtils import KeyFilter, ManyBodyOperator, ManyBodyState, Row, applyOp
 from impurityModel.ed.work_queue import queue_progress
@@ -419,7 +420,7 @@ def _column_batches(basis, op: ManyBodyOperator, filtered: bool = True):
             break
 
 
-def build_sparse_matrix(basis, op: ManyBodyOperator):
+def build_sparse_matrix(basis, op: ManyBodyOperator, *, extendable: bool = False):
     """``op`` as this rank's columns of the sparse operator on ``basis``: a
     :class:`~impurityModel.ed.DistributedSparseMatrix.DistributedSparseMatrix` of shape
     ``(N, N_local)``, kept in the build's per-batch column blocks.
@@ -428,9 +429,14 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
     per-column counts are needed: the peak is the stored matrix (~20 B per element) plus one
     batch -- no COO triplet, no concatenation, no CSR conversion and no global-length row pointer.
     Collective on a distributed basis.
+
+    ``extendable`` asks for the class :func:`extend_sparse_matrix` can grow (the old one, until CIPSI moves onto
+    the discovered-key matrix).
     """
     if isinstance(op, dict):
         op = ManyBodyOperator(op)
+    if discovered_matrix.SPARSE_CLASS == "new" and not extendable:
+        return _build_discovered_matrix(basis, op)
     n = len(basis)
     row_dtype = np.int32 if n < 2**31 else np.int64  # replicated n: the same choice on every rank
     segments = []
@@ -443,6 +449,19 @@ def build_sparse_matrix(basis, op: ManyBodyOperator):
         del rows
     comm = basis.comm if basis.is_distributed else None
     return DistributedSparseMatrix((n, len(basis.local_basis)), segments, comm, basis.offset)
+
+
+def _build_discovered_matrix(basis, op):
+    """:func:`build_sparse_matrix` on the discovered-key matrix: ``P H P`` over ``basis`` (``keep_frontier=False``).
+
+    The P slots are the basis's local order (admitted in that order), so the global row numbering is the basis's
+    own -- which needs the basis to be owned by ``routing_hash() % size``, as every distributed basis here is.
+    """
+    comm = basis.comm if basis.is_distributed else None
+    matrix = discovered_matrix.DiscoveredMatrix(op, (basis.n_bytes + 7) // 8, comm, keep_frontier=False)
+    matrix.admit_keys(list(basis.local_basis))
+    matrix.build_columns()
+    return matrix
 
 
 class MatrixSnapshot:

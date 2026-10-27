@@ -30,7 +30,7 @@ from impurityModel.ed.BlockLanczosCore import (
     block_tsqr,
     is_array,
 )
-from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
+from impurityModel.ed.discovered_matrix import coerce_operator
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS
 from impurityModel.ed.work_queue import queue_progress
 from impurityModel.ed.ManyBodyUtils import (
@@ -73,7 +73,7 @@ def _make_matmat(A, basis, double slaterWeightMin, bint is_arr, bint mpi):
     elif is_arr:
         # A local array operator (a small dense or scipy matrix) is converted once; the solvers
         # proper pass a DistributedSparseMatrix or an operator with its own `matmat`.
-        A = DistributedSparseMatrix.coerce(A, basis.comm if mpi and basis is not None else None)
+        A = coerce_operator(A, basis.comm if mpi and basis is not None else None)
 
         # One exchange plan per solve (collective on a distributed matrix), built at the first matvec
         # and rebuilt if a wider block ever arrives: block_apply would build one per matvec.

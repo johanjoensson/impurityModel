@@ -51,7 +51,7 @@ def test_a_chained_extension_equals_a_rebuild_at_every_stage(comm):
     op = _operator()
     stages = _stages()
     basis = _basis(stages[0] if comm is None or comm.rank == 0 else [], comm)
-    mat = build_sparse_matrix(basis, op)
+    mat = build_sparse_matrix(basis, op, extendable=True)
     for added in stages[1:]:
         # Use the matrix first: the matvec binds it, rewriting its row indices in place.
         mat.apply(np.ones((len(basis.local_basis), 1), dtype=complex))
@@ -69,7 +69,7 @@ def test_a_basis_that_lost_a_determinant_is_not_extended(comm):
     op = _operator()
     dets = _stages()[1]
     basis = _basis(dets if comm is None or comm.rank == 0 else [], comm)
-    snapshot = MatrixSnapshot(basis, build_sparse_matrix(basis, op), key="H")
+    snapshot = MatrixSnapshot(basis, build_sparse_matrix(basis, op, extendable=True), key="H")
     smaller = _basis(dets[1:] if comm is None or comm.rank == 0 else [], comm)
     assert extend_sparse_matrix(snapshot, smaller, op) is None
 

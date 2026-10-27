@@ -61,7 +61,6 @@ import scipy.sparse as sps
 from mpi4py import MPI
 
 from impurityModel.ed import config
-from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.solver_trace import note as _trace_note
 
 # Shared numerical layer: every tolerance constant, the Paige-Simon estimator,

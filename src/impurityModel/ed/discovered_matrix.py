@@ -812,3 +812,42 @@ class DiscoveredMatrix:
             f"DiscoveredMatrix(K_local={self.n_k_local}, P_local={self.n_p_local}, nnz={self.nnz}, "
             f"distributed={self.comm is not None})"
         )
+
+
+# -- the seam between the two sparse-operator classes (Phase 1M; removed when the old class goes) ------------
+
+#: Which class the consumers build: ``"old"`` (``DistributedSparseMatrix``, the Cython column-segment matrix) or
+#: ``"new"`` (:class:`DiscoveredMatrix`). Identical on every rank by construction (an env var read at import).
+#: Temporary: the flip commit makes ``"new"`` the default, the deletion commit removes the switch.
+SPARSE_CLASS = os.environ.get("IMPMOD_SPARSE_MATRIX", "old")
+
+
+def _old_class():
+    from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
+
+    return DistributedSparseMatrix
+
+
+def sparse_operator_types():
+    """The classes an array kernel accepts as its operator (for ``isinstance``)."""
+    return (_old_class(), DiscoveredMatrix)
+
+
+def sparse_from_scipy(mat, comm=None, col_offset=0):
+    """``mat`` (this rank's ``(N, n_local)`` columns) as the configured matrix class."""
+    cls = DiscoveredMatrix if SPARSE_CLASS == "new" else _old_class()
+    return cls.from_scipy(mat, comm, col_offset)
+
+
+def sparse_from_dense(a, comm=None, col_offset=0):
+    cls = DiscoveredMatrix if SPARSE_CLASS == "new" else _old_class()
+    return cls.from_dense(a, comm, col_offset)
+
+
+def coerce_operator(h, comm=None):
+    """``h`` as a sparse operator: an instance of either class is returned as is; a scipy sparse or dense local
+    block is converted into the configured class."""
+    if isinstance(h, sparse_operator_types()):
+        return h
+    cls = DiscoveredMatrix if SPARSE_CLASS == "new" else _old_class()
+    return cls.coerce(h, comm)

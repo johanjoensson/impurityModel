@@ -1323,7 +1323,7 @@ class CIPSISolver:
             H_mat = extend_sparse_matrix(snapshot, self.basis, H)
         del snapshot
         if H_mat is None:
-            H_mat = build_sparse_matrix(self.basis, H)
+            H_mat = build_sparse_matrix(self.basis, H, extendable=True)
         if self._snapshot_budget is not False:
             keep = self._snapshot_budget is None or H_mat.nbytes <= _SNAPSHOT_BUDGET_FRACTION * self._snapshot_budget
             if self.basis.is_distributed:
