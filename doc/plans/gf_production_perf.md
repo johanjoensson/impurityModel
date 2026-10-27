@@ -91,7 +91,7 @@ set the run's RSS peak (3.6 GiB vs 0.5 GiB for the GF). At cap 2e4 it took 22-54
 
 ## Next levers (not yet implemented), in expected order of payoff
 
-1. **Frozen-basis CSR for capped units -- SHIPPED (`GF_FROZEN_CSR`, default on).** Once `_CappedBasisProxy`
+1. **Frozen-basis CSR for capped units -- SHIPPED (`GF_FROZEN_CSR`, default on; since 2026-10 the `"retained"` mode of `gf_recurrence`, the knob retired).** Once `_CappedBasisProxy`
    freezes, every step still applied H to all retained rows and dropped the image outside P (the apply is 95% of a
    unit's time; the dropped share of the image is only ~40% -- in-P nnz 11-12/row against a total fan-out of 16-28 --
    so the cost is the apply's per-row overhead, not the discarded rows). The whole capped recurrence is the exact

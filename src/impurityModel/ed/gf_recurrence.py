@@ -14,8 +14,8 @@ the same blocks -- the flag is the whole freeze.
 
 **Cut semantics are the array kernel's**: no ``slaterWeightMin`` cut on the ``P`` rows of ``w`` and none on
 ``q_next``; the cut acts on the ``F`` rows (the rows admission may take). This is what
-``gf_solvers._frozen_csr_green``'s restart does; it differs from the ManyBodyState kernel's pre-freeze steps
-by the cut amounts at ``slaterWeightMin > 0``.
+the frozen restart of the ManyBodyState kernel (the GF's growth path until 2026-10) did; it differed from that
+kernel's pre-freeze steps by the cut amounts at ``slaterWeightMin > 0``.
 
 The admission rules (cap with importance-ranked boundary, importance pruning ``eta`` without a ban, the
 measured-memory guard, the support settle) are the :class:`~impurityModel.ed.gf_primitives.SupportDecisions`

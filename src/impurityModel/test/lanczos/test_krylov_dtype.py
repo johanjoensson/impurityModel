@@ -190,35 +190,21 @@ def test_full_complex64_halves_the_store_and_keeps_the_greens_function(siam):
     assert c64["err"] < 1e-5
 
 
-def test_block_green_sparse_defaults_to_complex128():
-    """complex64 is opt-in through ``block_Green_sparse``, never a silent default.
+def test_block_green_sparse_has_no_narrow_store():
+    """complex64 is a kernel option (``block_lanczos(krylov_dtype=...)``), never a GF one.
 
-    Defaulting it on would halve the store for free, but it would also cost ~7 orders of
-    Green's-function accuracy — quietly breaking the guarantee that a capped recurrence
-    reproduces the dense ``P H P`` resolvent exactly (``test_gf_truncation``).
+    Narrowing the store would cost ~7 orders of Green's-function accuracy -- quietly breaking the guarantee that
+    a capped recurrence reproduces the dense ``P H P`` resolvent exactly (``test_gf_truncation``) -- and the GF
+    recurrence (``gf_recurrence``) keeps its Krylov store complex128, so ``block_Green_sparse`` does not take it.
     """
     from impurityModel.ed.gf_solvers import block_Green_sparse
 
     hOp, (imp, baths) = _hamiltonian(), _imp_bath()
     psi = _seeds()
     support = sorted({d for s in psi for d in s})
-
-    for reort in (True,):
-        basis = Basis(imp, baths, initial_basis=support, verbose=False)
-        alphas, _betas, _r = block_Green_sparse(
-            hOp, basis.redistribute_psis(*[s.copy() for s in psi]), basis, DELTA, reort=reort, verbose=False
-        )
-        assert len(alphas) > 1  # complex128: no mode is auto-narrowed
-
-    # An explicit legal request reaches the store.
     basis = Basis(imp, baths, initial_basis=support, verbose=False)
-    alphas, _betas, _r = block_Green_sparse(
-        hOp,
-        basis.redistribute_psis(*[s.copy() for s in psi]),
-        basis,
-        DELTA,
-        reort=True,
-        verbose=False,
-        krylov_dtype=np.complex64,
-    )
+    seeds = basis.redistribute_psis(*[s.copy() for s in psi])
+    alphas, _betas, _r = block_Green_sparse(hOp, seeds, basis, DELTA, reort=True, verbose=False)
     assert len(alphas) > 1
+    with pytest.raises(TypeError, match="krylov_dtype"):
+        block_Green_sparse(hOp, seeds, basis, DELTA, reort=True, verbose=False, krylov_dtype=np.complex64)

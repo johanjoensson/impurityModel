@@ -152,7 +152,7 @@ def _block_green_group(
             "support_frozen": bool(cap_info.get("support_frozen", False)),
             # The settle window's numbers (largest next-block amplitude on a new row, leak, cut), as it decided.
             "settle_verdict": cap_info.get("settle_verdict"),
-            # What the settled unit left behind (``nan`` where not measured): see gf_solvers._settled_frontier.
+            # What the settled unit left behind (``nan`` where not measured): see gf_recurrence.settled_frontier.
             "frontier_end": cap_info.get("frontier_end", float("nan")),
             "leak_end": cap_info.get("leak_end", float("nan")),
             "csr_fallback": bool(cap_info.get("csr_fallback", False)),

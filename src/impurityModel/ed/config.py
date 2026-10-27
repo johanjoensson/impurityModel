@@ -155,7 +155,7 @@ RETIRED_KNOBS = {
         "('after_sum'); 'before_sum' made the result depend on the rank and chunk count "
         "(doc/gf_support_pipeline.md)"
     ),
-    "GF_FROZEN_CSR": "retired: the frozen-basis CSR fallback is always on",
+    "GF_FROZEN_CSR": "retired: the frozen recurrence always runs on the P H P matrix when it fits",
     "GF_SUPPORT_FREEZE": ("retired: use the gf_settle solver option (on/off) or GF_SETTLE_RATIO (0 = closure only)"),
     "GS_SELECTION_PRUNE": (
         "retired: the CIPSI selection round always cuts the summed amplitude ('after_sum'); 'before_sum' "
@@ -456,7 +456,7 @@ GF_CSR_MEMORY_SAFETY = Knob(
     minimum=0.0,
     group="units",
     doc="""Fraction of the rank's whole share of node RAM (``safety * (available + resident)``, the
-    form ``GS_MEMORY_BUDGET_SAFETY`` uses) the frozen ``P H P`` recurrence (``GF_FROZEN_CSR``) may
+    form ``GS_MEMORY_BUDGET_SAFETY`` uses) the frozen ``P H P`` recurrence may
     reach. Separate from, and looser than, the guard's fraction that sizes the auto cap: the auto cap
     fills memory on the sparse path, and the frozen matrix then needs more than that path's half
     of the share, so at the guard's 0.5 every capped unit was declined (SrMnO3, auto cap 18.6M: 20

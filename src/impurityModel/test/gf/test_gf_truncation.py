@@ -105,13 +105,13 @@ def _run_capped(cap, reort=None, comm=None, basis_attrs=None, **kwargs):
     seeds_full = _seeds()
     seeds = _redistribute_as_width1(basis, seeds_full if comm is None or comm.rank == 0 else None, len(seeds_full))
     info = {}
+    kwargs.setdefault("verbose", False)
     alphas, betas, r = block_Green_sparse(
         _siam_6(),
         seeds,
         basis,
         DELTA,
         reort=reort,
-        verbose=False,
         cap_info=info,
         **kwargs,
     )
@@ -493,11 +493,6 @@ def test_a_memory_guard_freeze_runs_the_frozen_matrix_when_it_fits():
     _assert_php_oracle(g, info)
 
 
-def test_a_complex64_krylov_store_stays_on_the_sparse_kernel():
-    _g, info = _run_capped(12, reort=True, krylov_dtype=np.complex64)
-    assert info["cap_hit"] and not info["csr_fallback"]
-
-
 @pytest.mark.parametrize("cap", [6, 12])
 def test_a_matrix_that_does_not_fit_leaves_the_operator_applied_every_block(cap):
     """When no matrix fits the budget the unit runs matrix-free and the result is still exact on P."""
@@ -567,29 +562,17 @@ def test_the_csr_fit_check_runs_on_every_rank_including_empty_ones(monkeypatch):
 
 @pytest.mark.mpi
 def test_a_decision_line_is_printed_on_accept_and_decline(monkeypatch, capsys):
-    from impurityModel.ed import gf_solvers
+    from impurityModel.ed import memory_estimate
 
     comm = MPI.COMM_WORLD
-    basis = _excited_basis(np.inf, comm=comm)
-    monkeypatch.setattr(gf_solvers, "current_rss_bytes", lambda: 10**9)
-
-    class _Proxy:
-        memory_frozen = False
-        retained_mask = None
-
-        def stop_phrase(self):
-            return "GF basis frozen at the cap at"
-
-    monkeypatch.setattr(type(basis), "clone_from_keys", lambda self, mask: self, raising=False)
-    for budget, phrase in ((10**10, "matrix fits"), (10**9 + 1, "would not fit")):
-        proxy = _Proxy()
-        proxy.memory_budget = budget
+    monkeypatch.setattr(memory_estimate, "current_rss_bytes", lambda: 10**9)
+    for budget, mode in ((10**10, "retained"), (10**9 + 1, "none")):
         capsys.readouterr()
-        result = gf_solvers._frozen_csr_basis(proxy, basis, _siam_6(), True)
+        _g, info = _run_capped(12, comm=comm, memory_budget=budget, verbose=True)
         out = capsys.readouterr().out
-        assert (result is not None) == (phrase == "matrix fits")
+        assert info["engine"] == mode
         if comm.rank == 0:
-            assert phrase in out and "worst rank" in out and "fan-out" in out
+            assert f"GF matvec mode {mode}" in out and "fan-out" in out and "need" in out
 
 
 @pytest.mark.mpi

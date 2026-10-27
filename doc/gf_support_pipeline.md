@@ -42,7 +42,7 @@ trickle). Measured on the TSQR output before the cut acts, so `ratio 1` means "e
 pruned from the next block anyway" and `ratio 0` (or `swm = 0`) is closure. From the settle on the unit is the exact
 Lanczos of `P H P` on the CSR (reort none): it drops the rows whose next-block amplitude stayed at or below the bound
 over the window. That is not an error bound on `G`; the default ratio is chosen by measurement. Nothing checks the frontier
-afterwards except the end-of-unit probe (`gf_solvers._settled_frontier`, opt-in with `GF_SUPPORT_TRACE`). `gf_settle_ratio` /
+afterwards except the end-of-unit probe (`gf_recurrence.settled_frontier`, opt-in with `GF_SUPPORT_TRACE`). `gf_settle_ratio` /
 `GF_SETTLE_RATIO` (default 3) sets the ratio; `gf_settle` switches the rule off. The records are sums over ranks and
 chunks, so a window within rounding of the threshold can settle a step earlier or later when the layout changes.
 

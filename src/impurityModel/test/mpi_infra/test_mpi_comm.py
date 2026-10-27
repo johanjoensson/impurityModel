@@ -718,7 +718,9 @@ def _sorted_segments_buffer(seg_sizes, width, n_unique, chunks=2, seed=3):
     return recv, uniq[pick], amps
 
 
-@pytest.mark.parametrize("seg_sizes", [[300, 0, 250, 400, 0], [0, 0, 0], [500], [1, 1, 1, 1], [200, 200, 200, 200, 200, 200]])
+@pytest.mark.parametrize(
+    "seg_sizes", [[300, 0, 250, 400, 0], [0, 0, 0], [500], [1, 1, 1, 1], [200, 200, 200, 200, 200, 200]]
+)
 def test_unpack_block_fused_merges_sorted_segments_in_source_order(seg_sizes):
     """Sorted per-source segments (the production shape) sum duplicates in source-rank order, bit for bit.
 
