@@ -44,6 +44,15 @@ _GROW_BATCH = 1 << 19
 _SLOT_MASK = (1 << 32) - 1
 
 
+def _is_identity(goff, ptab):
+    """Whether ``ptab`` maps every K row to the P slot of the same number (nothing outside P, nothing dead):
+    the translation is then skipped, which saves one random read per stored entry."""
+    if not len(ptab):
+        return True
+    starts = np.repeat(goff, np.diff(np.append(goff, len(ptab))))
+    return bool(np.array_equal(ptab, np.arange(len(ptab), dtype=np.int64) - starts))
+
+
 class _Layout:
     """What one matvec needs: the exchange plan (``None`` on one rank) and the row-index tables."""
 
@@ -55,7 +64,7 @@ class _Layout:
         self.base = base
         self.goff = goff
         self.ptab = ptab
-        self.use_ptab = rows == "P"
+        self.use_ptab = rows == "P" and not _is_identity(goff, ptab)
         self.n_rows = n_rows
         self.send_rows = 0 if plan is None else plan.total_send_rows
         self.epoch = epoch
