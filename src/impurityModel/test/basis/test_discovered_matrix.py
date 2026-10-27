@@ -226,3 +226,31 @@ def test_the_identity_translation_is_recognised_per_rank_block():
     assert not _is_identity(goff, shifted)
     global_numbering = np.arange(9, dtype=np.int64)  # numbered over all ranks, not per rank
     assert not _is_identity(goff, global_numbering)
+
+
+@pytest.mark.parametrize("comm", COMMS)
+@pytest.mark.parametrize("slot_bits", [None, 0])
+def test_both_row_widths_give_the_same_matrix(comm, slot_bits):
+    """Entries are int32 rows when every slot fits and int64 otherwise (forced here with ``slot_bits = 0``);
+    the matvec and ``to_scipy`` are the same either way."""
+    op = _operator()
+    admitted = _admitted(150)
+    mat = DiscoveredMatrix(op, chunks_per_state=1, comm=comm)
+    if slot_bits is not None:
+        mat._slot_bits = slot_bits
+    mat.grow(_owned(admitted, comm))
+    want = np.int32 if slot_bits is None else np.int64
+    assert all(seg[2].dtype == want for seg in mat._segments)
+    _check_matvec(mat, op, admitted, comm)
+    X = np.ones((mat.n_p_local, WIDTH), dtype=complex)
+    contribution = np.ascontiguousarray(mat.to_scipy("all") @ X)  # this rank's columns; decodes the stored rows
+    total = np.empty_like(contribution)
+    if comm is None or comm.size == 1:
+        total[...] = contribution
+    else:
+        comm.Allreduce(contribution, total, op=MPI.SUM)
+    gathered = np.concatenate(_gather(comm, mat.matvec(X, rows="all")))
+    np.testing.assert_allclose(total, gathered, atol=1e-12)
+    mat.drop_columns(np.arange(0, mat.n_p_local, 3))
+    mat.compact_p_slots()
+    _check_matvec(mat, op, admitted, comm, exact_k=False)

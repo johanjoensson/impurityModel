@@ -135,6 +135,9 @@ class DiscoveredMatrix:
         self.size = 1 if self.comm is None else self.comm.size
         self._batch = int(batch)
         self.keep_frontier = bool(keep_frontier)
+        # Entries store their row as int32 ``owner << slot_bits | slot`` while every slot fits (20 B per
+        # element, as the old matrix), else as int64 ``owner << 32 | slot``; a segment's dtype says which.
+        self._slot_bits = 31 - (self.size - 1).bit_length()
         # K store: sorted unique keys; slots are append-only, positions are the sorted order.
         self._kstore = ManyBodyState.from_keys([])
         self._slot_of_pos = np.zeros(0, dtype=np.int64)
@@ -362,10 +365,26 @@ class DiscoveredMatrix:
                 if n:
                     indptr = np.zeros(n + 1, dtype=np.int64)
                     np.cumsum(np.asarray(counts, dtype=np.int64), out=indptr[1:])
-                    self._segments.append((col_begin, indptr, np.ascontiguousarray(packed, dtype=np.int64), data))
+                    self._segments.append((col_begin, indptr, self._compact(packed), data))
                     col_begin += n
         self.epoch += 1
         self._tables = None
+
+    def _compact(self, packed):
+        """``packed`` (int64 ``owner << 32 | slot``) as int32 ``owner << slot_bits | slot`` when every slot fits."""
+        packed = np.ascontiguousarray(packed, dtype=np.int64)
+        if not len(packed):
+            return packed.astype(np.int32)
+        if self._slot_bits >= 1 and int((packed & _SLOT_MASK).max()) < (1 << self._slot_bits):
+            return ((packed >> 32 << self._slot_bits) | (packed & _SLOT_MASK)).astype(np.int32)
+        return packed
+
+    def _decode(self, packed):
+        """``(owner, slot)`` of a segment's entries, whichever width it is stored in."""
+        if packed.dtype == np.int32:
+            wide = packed.astype(np.int64)
+            return wide >> self._slot_bits, wide & ((1 << self._slot_bits) - 1)
+        return packed >> 32, packed & _SLOT_MASK
 
     def _append_columns(self, batch_keys, counts, packed, data):
         n = len(batch_keys)
@@ -375,7 +394,7 @@ class DiscoveredMatrix:
         np.cumsum(np.asarray(counts, dtype=np.int64), out=indptr[1:])
         col_begin = self.n_p_local
         kslots = self.key_slots(batch_keys)
-        self._segments.append((col_begin, indptr, np.ascontiguousarray(packed, dtype=np.int64), data))
+        self._segments.append((col_begin, indptr, self._compact(packed), data))
         if col_begin + n > self._alive.shape[0]:
             grown = np.zeros(max(2 * self._alive.shape[0], col_begin + n), dtype=np.int8)
             grown[:col_begin] = self._alive[:col_begin]
@@ -472,9 +491,9 @@ class DiscoveredMatrix:
         for _, _, packed, _ in self._segments:
             if not len(packed):
                 continue
-            owners = packed >> 32
+            owners, slots = self._decode(packed)
             if use_ptab:
-                owners = owners[ptab[goff[owners] + (packed & _SLOT_MASK)] >= 0]
+                owners = owners[ptab[goff[owners] + slots] >= 0]
             present[np.unique(owners)] = True
         return present
 
@@ -539,6 +558,7 @@ class DiscoveredMatrix:
                 0,
                 np.empty((0, p), dtype=complex),
                 out,
+                self._slot_bits,
             )
             return out
         ex = plan.plan
@@ -561,6 +581,7 @@ class DiscoveredMatrix:
                 plan.send_rows,
                 send_view,
                 self_view,
+                self._slot_bits,
             )
             ex.exchange(wc)
             ex.accumulate(out[:, c0:c1], wc)
@@ -580,8 +601,7 @@ class DiscoveredMatrix:
         for c0, indptr, packed, data in self._segments:
             n = len(indptr) - 1
             col = np.repeat(np.arange(c0, c0 + n, dtype=np.int64), np.diff(indptr))
-            owner = packed >> 32
-            slot = packed & _SLOT_MASK
+            owner, slot = self._decode(packed)
             if rows == "P":
                 slot = ptab[goff[owner] + slot]
             ok = alive[col] & (slot >= 0)
