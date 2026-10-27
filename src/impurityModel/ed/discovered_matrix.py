@@ -95,13 +95,13 @@ class _Layout:
 
     __slots__ = ("base", "epoch", "goff", "n_rows", "plan", "ptab", "rows", "send_rows", "use_ptab")
 
-    def __init__(self, rows, plan, base, goff, ptab, n_rows, epoch):
+    def __init__(self, rows, plan, base, goff, ptab, n_rows, epoch, use_ptab):
         self.rows = rows
         self.plan = plan
         self.base = base
         self.goff = goff
         self.ptab = ptab
-        self.use_ptab = rows == "P" and not _is_identity(goff, ptab)
+        self.use_ptab = use_ptab
         self.n_rows = n_rows
         self.send_rows = 0 if plan is None else plan.total_send_rows
         self.epoch = epoch
@@ -435,7 +435,7 @@ class DiscoveredMatrix:
     # -- the exchange layout ------------------------------------------------------------------------
 
     def _gather_tables(self, rows):
-        """``(row_counts, col_counts, goff, ptab)`` for ``rows``; cached per ``(rows, epoch)``. Collective
+        """``(row_counts, col_counts, goff, ptab, use_ptab)`` for ``rows``; cached per ``(rows, epoch)``. Collective
         on a cache miss, and a miss is rank-invariant because the epoch is."""
         if rows not in ("all", "P"):
             raise ValueError(f"rows must be 'all' or 'P', got {rows!r}")
@@ -443,11 +443,14 @@ class DiscoveredMatrix:
             return self._tables[1]
         n_k, n_p = self.n_k_local, self.n_p_local
         if self.comm is None:
+            goff = np.zeros(1, dtype=np.int64)
+            ptab = self._k_pslot if rows == "P" else np.zeros(0, dtype=np.int64)
             tables = (
                 np.array([n_k if rows == "all" else n_p], dtype=np.int64),
                 np.array([n_p], dtype=np.int64),
-                np.zeros(1, dtype=np.int64),
-                self._k_pslot if rows == "P" else np.zeros(0, dtype=np.int64),
+                goff,
+                ptab,
+                rows == "P" and not _is_identity(goff, ptab),
             )
         else:
             comm = self.comm
@@ -460,7 +463,7 @@ class DiscoveredMatrix:
             if rows == "P":
                 ptab = np.empty(int(counts[:, 0].sum()), dtype=np.int64)
                 comm.Allgatherv(self._k_pslot, [ptab, counts[:, 0].copy(), goff, MPI.INT64_T])
-            tables = (row_counts, col_counts, goff, ptab)
+            tables = (row_counts, col_counts, goff, ptab, rows == "P" and not _is_identity(goff, ptab))
         self._tables = ((rows, self.epoch), tables)
         return tables
 
@@ -479,9 +482,11 @@ class DiscoveredMatrix:
         """The layout for blocks up to ``width`` columns wide returning ``rows`` (``"all"``: every K
         row; ``"P"``: the P rows). **Collective** (three tiny collectives, plus the table gather when
         the epoch changed); build one per kernel call."""
-        row_counts, col_counts, goff, ptab = self._gather_tables(rows)
+        row_counts, col_counts, goff, ptab, use_ptab = self._gather_tables(rows)
         if self.comm is None:
-            return _Layout(rows, None, np.zeros(1, dtype=np.int64), goff, ptab, int(row_counts[0]), self.epoch)
+            return _Layout(
+                rows, None, np.zeros(1, dtype=np.int64), goff, ptab, int(row_counts[0]), self.epoch, use_ptab
+            )
         flags = self._owner_flags(goff, ptab, rows == "P")
         plan = MatvecExchangePlan(
             self.comm,
@@ -496,7 +501,7 @@ class DiscoveredMatrix:
         for i, dest in enumerate(plan.destinations):
             base[dest] = int(plan.send_row_offsets[i])
         base[self.rank] = plan.total_send_rows
-        return _Layout(rows, plan, base, goff, ptab, int(row_counts[self.rank]), self.epoch)
+        return _Layout(rows, plan, base, goff, ptab, int(row_counts[self.rank]), self.epoch, use_ptab)
 
     # -- the matvec -------------------------------------------------------------------------------
 
@@ -567,7 +572,7 @@ class DiscoveredMatrix:
         """This rank's live columns as a scipy CSC of shape ``(total rows, n_p_local)``; global row
         ``r`` is the rows of rank 0, then rank 1, ... (K slots or P slots in order). Dead columns are
         empty. **Collective** on a distributed matrix."""
-        row_counts, _cc, goff, ptab = self._gather_tables(rows)
+        row_counts, _cc, goff, ptab, _use = self._gather_tables(rows)
         roff = np.concatenate(([0], np.cumsum(row_counts)))
         n_rows = int(roff[-1])
         alive = self.alive()

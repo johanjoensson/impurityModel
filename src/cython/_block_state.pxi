@@ -404,6 +404,19 @@ cdef class ManyBodyState:
             view[i] = <int64_t>self.b.find_row(key)
         return out
 
+    def find_rows_in(self, ManyBodyState other):
+        """Row of each of this block's determinants in ``other``, ``other.rows()`` for a miss (``int64``).
+
+        The key-object-free form of ``other.find_rows(self.keys())``: no ``SlaterDeterminant`` is created
+        per row, which for a multi-million-row matvec output is the difference of hundreds of MiB."""
+        cdef Py_ssize_t n = <Py_ssize_t>self.b.rows()
+        out = np.empty(n, dtype=np.int64)
+        cdef int64_t[::1] view = out
+        cdef Py_ssize_t r
+        for r in range(n):
+            view[r] = <int64_t>other.b.find_row(self.b.key(<size_t>r))
+        return out
+
     def key_at(self, Py_ssize_t i):
         """The determinant at row ``i`` in sorted order.
 

@@ -27,8 +27,10 @@ import time
 
 import numpy as np
 from mpi4py import MPI
+from scipy.linalg.blas import zgemm as _zgemm
 
 from impurityModel.ed import config
+from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, divergence_guard
 from impurityModel.ed.discovered_matrix import DiscoveredMatrix, stage
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
@@ -225,6 +227,29 @@ def _pad_rows(x, n_rows):
     return out
 
 
+def _overlap(x, w):
+    """``x^H w`` for C-ordered blocks, ``x`` having at most as many rows as ``w`` (the rest of ``x`` is zero):
+    one ``zgemm`` on the transposed views, no conjugated copy of ``x``."""
+    p, q = x.shape[1], w.shape[1]
+    r = x.shape[0]
+    if p == 0 or q == 0 or r == 0:
+        return np.zeros((p, q), dtype=complex)
+    # With A = x^T and B = w^T (Fortran-ordered views), A B^H = conj(x^H w).
+    return np.ascontiguousarray(_zgemm(1.0, x.T, w[:r].T, trans_b=2).conj())
+
+
+def _subtract_product(w, x, coef):
+    """``w[:rows of x] -= x @ coef`` in place (``w`` C-ordered, ``x`` a C-ordered block with at most ``w``'s rows,
+    the rows beyond are zero): one ``zgemm`` accumulating into the transposed view of ``w``."""
+    r = x.shape[0]
+    if r == 0 or x.shape[1] == 0 or w.shape[1] == 0:
+        return
+    view = w[:r].T  # Fortran-ordered (q, r) view onto w's rows
+    out = _zgemm(-1.0, np.asfortranarray(coef.T), x.T, beta=1.0, c=view, overwrite_c=True)
+    if not np.shares_memory(out, w):  # not accumulated in place (should not happen for these layouts)
+        w[:r] = out.T
+
+
 def lanczos_step(apply, x, x_prev, beta_prev, *, comm=None, scale=0.0, deflate_tol=-1.0, store=None):
     """One block-Lanczos step; collective when ``comm`` is given.
 
@@ -240,14 +265,14 @@ def lanczos_step(apply, x, x_prev, beta_prev, *, comm=None, scale=0.0, deflate_t
     full reorthogonalization: two classical Gram-Schmidt passes against every stored block.
     """
     with stage("apply"):
-        w = np.array(apply(x), dtype=complex, order="C")  # a private copy: the residual is formed in place
-    n_rows = w.shape[0]
+        w = np.asarray(apply(x), dtype=complex)
+        if not w.flags.c_contiguous or not w.flags.writeable:
+            w = np.array(w, dtype=complex, order="C")
     with stage("step_dense"):
-        x = _pad_rows(x, n_rows)
-        alpha = _allreduce(comm, np.ascontiguousarray(x.conj().T @ w))
-        w -= x @ alpha
+        alpha = _allreduce(comm, _overlap(x, w))
+        _subtract_product(w, x, alpha)
         if x_prev is not None:
-            w -= _pad_rows(x_prev, n_rows) @ beta_prev.conj().T
+            _subtract_product(w, x_prev, beta_prev.conj().T)
     if store is not None:
         for _ in range(2):
             for block in store:
@@ -377,18 +402,32 @@ class _Admission:
         d.settle_step(float(buf[0]), retained_before, n_new, leak, cut, hq2, max2_matvec)
 
 
+class _OutputBuffer:
+    """One ``(rows, width)`` complex buffer reused by the frozen matvecs (the step overwrites it in place, so a
+    block's rows are never allocated and page-faulted again)."""
+
+    def __init__(self):
+        self._buf = None
+
+    def get(self, rows, width):
+        if self._buf is None or self._buf.shape != (rows, width):
+            self._buf = np.empty((rows, width), dtype=complex)
+        return self._buf
+
+
 class _MatrixEngine:
     """Matvec mode ``"discovered"``: ``w = M q`` over every K row, ``grow`` for what admission takes."""
 
     def __init__(self, matrix, admission):
         self.matrix = matrix
         self.admission = admission
+        self._out = _OutputBuffer()
 
     def apply(self, block):
         matrix, admission = self.matrix, self.admission
         d = admission.d
         if d.frozen:
-            return matrix.matvec(block, rows="P")
+            return matrix.matvec(block, rows="P", out=self._out.get(matrix.n_p_local, block.shape[1]))
         w_k = matrix.matvec(block, rows="all")
         f_slots = np.flatnonzero(matrix.k_to_p_slot() < 0)
         hq2 = math.fsum(np.sum(np.abs(w_k) ** 2, axis=0)) if d.support_freeze else 0.0
@@ -400,6 +439,29 @@ class _MatrixEngine:
         w_p = w_k[matrix.p_to_k_slot()]
         w_p[~matrix.alive()] = 0.0
         return w_p
+
+
+class _FrozenFilter:
+    """The slice of the support-policy protocol ``apply_and_redistribute`` reads, for a frozen ``P``: the apply
+    is filtered to ``P``, the chunks are redistributed, and nothing is decided (the engine projects)."""
+
+    frozen = True
+
+    def __init__(self, basis, keep):
+        self._basis = basis
+        self.apply_filter = keep
+
+    def __getattr__(self, name):  # the basis's own redistribute methods (a test basis has only the scalar one)
+        return getattr(self._basis, name)
+
+    def begin_step(self):
+        pass
+
+    def transport(self, raw):
+        return self._basis.redistribute_block(raw)
+
+    def decide(self, w, cutoff):
+        return w
 
 
 class _ApplyEngine:
@@ -417,10 +479,15 @@ class _ApplyEngine:
         self.basis = basis
         self.retained = retained
         self._built = False
+        self._out = _OutputBuffer()
+        self._filter = None
         self._n_chunks = int(config.APPLY_ROW_CHUNKS.get() or 1)
 
     def _applied(self, x):
-        """``H x`` as a ManyBodyState routed to the owners (no cut: the frontier is cut at admission)."""
+        """``H x`` as a ManyBodyState routed to the owners (no cut: the frontier is cut at admission).
+
+        Once the support is frozen the output is read on ``P`` only, so the operator is applied through a filter
+        of ``P`` and never generates the other rows (as the ManyBodyState kernel's frozen support does)."""
         matrix = self.matrix
         k_to_p = matrix.k_to_p_slot()
         by_pos = np.zeros((matrix.n_k_local, x.shape[1]), dtype=complex)
@@ -428,9 +495,13 @@ class _ApplyEngine:
         by_pos[live] = x[k_to_p[matrix._slot_of_pos[live]]]
         block = ManyBodyState.from_keys_and_amps(matrix._kstore, by_pos)
         redistribute = matrix.comm is not None
-        return apply_and_redistribute(
-            self.hop, block, self.basis, 0.0, redistribute, self._n_chunks if redistribute else 1
-        )
+        policy = self.basis
+        if self.admission.d.frozen and redistribute:
+            if self._filter is None:
+                # Collective, entered on the same step by every rank: ``frozen`` is replicated.
+                self._filter = _FrozenFilter(self.basis, comm_support_filter([matrix._kstore], matrix.comm))
+            policy = self._filter
+        return apply_and_redistribute(self.hop, block, policy, 0.0, redistribute, self._n_chunks if redistribute else 1)
 
     def apply(self, x):
         matrix, admission = self.matrix, self.admission
@@ -439,26 +510,27 @@ class _ApplyEngine:
             if not self._built:
                 matrix.build_columns()
                 self._built = True
-            return matrix.matvec(x, rows="P")
+            return matrix.matvec(x, rows="P", out=self._out.get(matrix.n_p_local, x.shape[1]))
         with stage("grow_apply"):
             applied = self._applied(x)
         with stage("grow_keys"):
-            keys = applied.keys()
             amps = np.asarray(applied)
-            pos = matrix._kstore.find_rows(keys) if keys else np.zeros(0, dtype=np.int64)
+            pos = applied.find_rows_in(matrix._kstore)
         in_p = pos < matrix.n_k_local
         k_to_p = matrix.k_to_p_slot()
         w_p = np.zeros((matrix.n_p_local, x.shape[1]), dtype=complex)
-        p_slot = k_to_p[matrix._slot_of_pos[pos[in_p]]]
-        w_p[p_slot[p_slot >= 0]] = amps[in_p][p_slot >= 0]
+        in_rows = np.flatnonzero(in_p)
+        p_slot = k_to_p[matrix._slot_of_pos[pos[in_rows]]]
+        live = p_slot >= 0
+        w_p[p_slot[live]] = amps[in_rows[live]]
         if d.frozen:
             return w_p
         f_ids = np.flatnonzero(~in_p)
-        hq2 = float(np.sum(np.abs(amps) ** 2)) if d.support_freeze else 0.0
+        hq2 = float(np.vdot(amps, amps).real) if d.support_freeze else 0.0
         with stage("decide"):
-            ids = admission.decide(f_ids, amps[f_ids], hq2, lambda sel: [keys[i] for i in sel])
+            ids = admission.decide(f_ids, amps[f_ids], hq2, lambda sel: [applied.key_at(int(i)) for i in sel])
         if int(d.allreduce_sum(len(ids))):
-            new = matrix.admit_keys([keys[i] for i in ids])
+            new = matrix.admit_keys([applied.key_at(int(i)) for i in ids])
             admission.attach(new)
             w_new = np.zeros((matrix.n_p_local, x.shape[1]), dtype=complex)
             w_new[: w_p.shape[0]] = w_p
@@ -553,7 +625,7 @@ def block_lanczos_discovered(
             widths.append(n_curr)
             it += 1
             break
-        x_prev = _pad_rows(x, x_next.shape[0])
+        x_prev = x
         beta_prev = beta
         x = x_next
         if store is not None:

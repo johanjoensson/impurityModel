@@ -208,3 +208,21 @@ def test_columns_built_after_admission_equal_columns_grown_with_it(comm):
     assert [_key(k) for k in late.p_keys()] == [_key(k) for k in grown.p_keys()]
     X = _x_of(grown.p_keys())
     np.testing.assert_allclose(late.matvec(X, rows="all"), grown.matvec(X, rows="all"), atol=1e-13)
+
+
+def test_the_identity_translation_is_recognised_per_rank_block():
+    """``_is_identity`` is true exactly when every K row of every rank maps to the P slot of the same number."""
+    from impurityModel.ed.discovered_matrix import _is_identity
+
+    goff = np.array([0, 3, 5], dtype=np.int64)  # ranks hold 3, 2 and 4 K rows
+    identity = np.array([0, 1, 2, 0, 1, 0, 1, 2, 3], dtype=np.int64)
+    assert _is_identity(goff, identity)
+    assert _is_identity(goff, np.zeros(0, dtype=np.int64))
+    dead = identity.copy()
+    dead[4] = -1  # a K row outside P
+    assert not _is_identity(goff, dead)
+    shifted = identity.copy()
+    shifted[7] = 1  # a P slot that is not the row's own number
+    assert not _is_identity(goff, shifted)
+    global_numbering = np.arange(9, dtype=np.int64)  # numbered over all ranks, not per rank
+    assert not _is_identity(goff, global_numbering)
