@@ -587,6 +587,42 @@ class DiscoveredMatrix:
             ex.accumulate(out[:, c0:c1], wc)
         return out
 
+    def to_array_operator(self):
+        """Hand this matrix's ``P H P`` to the array kernel: a :class:`DistributedSparseMatrix` over this rank's live
+        columns whose rows are the global P numbering (rank-contiguous, ``comm`` order), the same operator the
+        kernel's frozen recurrence has always run on. **Consumes** the matrix: the segments are converted one
+        at a time and released as they go, so the peak is one batch above the stored matrix, and ``self``
+        holds no columns afterwards. **Collective** (the P tables).
+        """
+        from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
+
+        _rc, col_counts, goff, ptab, use_ptab = self._gather_tables("P")
+        poff = np.concatenate(([0], np.cumsum(col_counts))).astype(np.int64)
+        total = int(poff[-1])
+        row_dtype = np.int32 if total < 2**31 else np.int64
+        alive = self.alive()
+        segments, self._segments = self._segments, []
+        out = []
+        while segments:
+            c0, indptr, packed, data = segments.pop(0)
+            n = len(indptr) - 1
+            owner, slot = self._decode(packed)
+            if use_ptab:
+                slot = ptab[goff[owner] + slot]
+            col = np.repeat(np.arange(c0, c0 + n, dtype=np.int64), np.diff(indptr))
+            keep = alive[col] & (slot >= 0)
+            if not keep.all():
+                counts = np.bincount(col[keep] - c0, minlength=n)
+                indptr = np.zeros(n + 1, dtype=np.int64)
+                np.cumsum(counts, out=indptr[1:])
+                owner, slot, data = owner[keep], slot[keep], data[keep]
+            rows = (poff[owner] + slot).astype(row_dtype)
+            out.append((c0, np.ascontiguousarray(indptr, dtype=np.int64), rows, np.ascontiguousarray(data)))
+            del packed, owner, slot, col, keep
+        self.epoch += 1
+        self._tables = None
+        return DistributedSparseMatrix((total, self.n_p_local), out, self.comm, int(poff[self.rank]))
+
     # -- conversions (tests, small dense eigensolves) -----------------------------------------------
 
     def to_scipy(self, rows="all"):

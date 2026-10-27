@@ -132,7 +132,7 @@ def test_the_stage_table_names_the_recurrences_stages(comm, mode, monkeypatch):
     if mode == "discovered":
         assert "matvec_all" in names
     else:
-        assert {"grow_apply", "grow_keys", "decide", "build_columns", "matvec_P"} <= names
+        assert {"grow_apply", "grow_keys", "decide", "build_columns", "to_array_operator", "frozen_kernel"} <= names
     assert all(calls > 0 and sec >= 0.0 for sec, calls, _rss in discovered_matrix._STAGES.values())
 
 

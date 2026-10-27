@@ -503,6 +503,16 @@ class _ApplyEngine:
             policy = self._filter
         return apply_and_redistribute(self.hop, block, policy, 0.0, redistribute, self._n_chunks if redistribute else 1)
 
+    def array_operator(self):
+        """The frozen ``P H P`` for the array kernel (``"retained"`` only; builds the columns first), else ``None``."""
+        if not self.retained:
+            return None
+        if not self._built:
+            self.matrix.build_columns()
+            self._built = True
+        with stage("to_array_operator"):
+            return self.matrix.to_array_operator()
+
     def apply(self, x):
         matrix, admission = self.matrix, self.admission
         d = admission.d
@@ -539,6 +549,45 @@ class _ApplyEngine:
             w_new[new] = amps[rows]
             w_p = w_new
         return w_p
+
+
+def _continue_on_array_kernel(operator, comm, converged, alphas, betas, widths, x_prev, x, deflate_tol, stage_name):
+    """The recurrence carried on by the array kernel (``BlockLanczosCore.block_lanczos``) over the frozen
+    ``P H P`` ``operator``, from the blocks ``x_prev``, ``x`` the growth loop stopped at: what the frozen
+    continuation of the ManyBodyState kernel has always run. Returns what :func:`block_lanczos_discovered` does."""
+    from impurityModel.ed.BlockLanczosCore import block_lanczos
+    from impurityModel.ed.gf_solvers import _csr_continue_budget
+
+    start = len(alphas)
+    n_dim = operator.shape[0]
+    n_rows = x.shape[0]
+    tail = (np.zeros((n_rows, x.shape[1]), dtype=complex) if x_prev is None else _pad_rows(x_prev, n_rows), x)
+    alphas, betas, widths = np.array(alphas), np.array(betas), list(widths)
+    budget = min(_csr_continue_budget(start), n_dim)
+    while True:
+        with stage(stage_name):
+            alphas, betas, last_q, widths, status, tail = block_lanczos(
+                psi0=None,
+                h_op=operator,
+                converged=converged,
+                reort=False,
+                store_krylov=False,
+                verbose=False,
+                comm=comm,
+                alphas_init=alphas,
+                betas_init=betas,
+                tail=tail,
+                block_widths_init=widths,
+                max_iter=budget,
+                return_widths=True,
+                return_status=True,
+                return_tail=True,
+                deflate_tol=deflate_tol,
+            )
+        if status != "max_iter" or len(alphas) - start >= n_dim:
+            break
+        budget = min(2 * budget, n_dim - (len(alphas) - start))
+    return alphas, betas, widths, status, last_q
 
 
 def block_lanczos_discovered(
@@ -587,6 +636,21 @@ def block_lanczos_discovered(
             comm.Allreduce(MPI.IN_PLACE, probe, op=MPI.MAX)
             if probe[0] != -probe[1]:
                 raise RuntimeError(f"block width disagrees across ranks at block {it}: [{-probe[1]}, {probe[0]}]")
+        if d.frozen and not reort and hasattr(engine, "array_operator"):
+            operator = engine.array_operator()
+            if operator is not None:
+                return _continue_on_array_kernel(
+                    operator,
+                    comm,
+                    converged,
+                    alphas[:it],
+                    betas[:it],
+                    widths,
+                    x_prev,
+                    x,
+                    deflate_tol,
+                    stage_name="frozen_kernel",
+                )
         alpha, x_next, beta, k = lanczos_step(
             engine.apply,
             x,
