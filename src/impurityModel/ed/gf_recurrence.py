@@ -504,14 +504,16 @@ class _ApplyEngine:
         return apply_and_redistribute(self.hop, block, policy, 0.0, redistribute, self._n_chunks if redistribute else 1)
 
     def array_operator(self):
-        """The frozen ``P H P`` for the array kernel (``"retained"`` only; builds the columns first), else ``None``."""
+        """``(operator, order)``: the frozen ``P H P`` for the array kernel with its P slots renumbered in key order
+        (``order[i]`` is the old slot now numbered ``i``); ``None`` unless ``"retained"``. Builds the columns."""
         if not self.retained:
             return None
+        order = self.matrix.sort_p_slots()
         if not self._built:
             self.matrix.build_columns()
             self._built = True
         with stage("to_array_operator"):
-            return self.matrix.to_array_operator()
+            return self.matrix.to_array_operator(), order
 
     def apply(self, x):
         matrix, admission = self.matrix, self.admission
@@ -637,8 +639,11 @@ def block_lanczos_discovered(
             if probe[0] != -probe[1]:
                 raise RuntimeError(f"block width disagrees across ranks at block {it}: [{-probe[1]}, {probe[0]}]")
         if d.frozen and not reort and hasattr(engine, "array_operator"):
-            operator = engine.array_operator()
-            if operator is not None:
+            handed = engine.array_operator()
+            if handed is not None:
+                operator, order = handed
+                n_rows = x.shape[0]
+                x_prev_sorted = None if x_prev is None else _pad_rows(x_prev, n_rows)[order]
                 return _continue_on_array_kernel(
                     operator,
                     comm,
@@ -646,8 +651,8 @@ def block_lanczos_discovered(
                     alphas[:it],
                     betas[:it],
                     widths,
-                    x_prev,
-                    x,
+                    x_prev_sorted,
+                    x[order],
                     deflate_tol,
                     stage_name="frozen_kernel",
                 )

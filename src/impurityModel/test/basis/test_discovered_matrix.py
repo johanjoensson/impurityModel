@@ -254,3 +254,26 @@ def test_both_row_widths_give_the_same_matrix(comm, slot_bits):
     mat.drop_columns(np.arange(0, mat.n_p_local, 3))
     mat.compact_p_slots()
     _check_matvec(mat, op, admitted, comm, exact_k=False)
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_sorting_the_p_slots_numbers_them_in_key_order_before_the_columns_are_built(comm):
+    """The matrix-free modes admit keys with empty columns and build them at the freeze; sorting the slots before
+    that gives the product the matrix admitted in one sorted batch has, with the block carried by ``order``."""
+    op = _operator()
+    mine = _owned(_admitted(150), comm)
+    mat = DiscoveredMatrix(op, 1, comm, keep_frontier=False)
+    mat.admit_keys(mine[: len(mine) // 3])
+    mat.admit_keys(mine[len(mine) // 3 :])  # two batches: the slots are in arrival order
+    old_keys = mat.p_keys()
+    order = mat.sort_p_slots()
+    keys = [_key(k) for k in mat.p_keys()]
+    assert keys == sorted(keys)
+    assert [_key(old_keys[i]) for i in order] == keys
+    mat.build_columns()
+    ref = DiscoveredMatrix(op, 1, comm, keep_frontier=False)
+    ref.admit_keys(mine)
+    ref.build_columns()
+    assert [_key(k) for k in ref.p_keys()] == keys
+    X = _x_of(mat.p_keys())
+    np.testing.assert_allclose(mat.matvec(X, rows="P"), ref.matvec(X, rows="P"), atol=1e-12)

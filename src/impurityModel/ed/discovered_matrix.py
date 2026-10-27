@@ -349,6 +349,20 @@ class DiscoveredMatrix:
         self._tables = None
         return np.asarray(out, dtype=np.int64)
 
+    def sort_p_slots(self):
+        """Renumber the P slots in the sorted order of their determinants (every slot live). Returns ``order`` with
+        ``order[i]`` the old slot now numbered ``i`` (``q = q[order]`` carries a dense block over). The K slots
+        stay. The matvec's memory access follows the numbering: rows that ``H`` connects are neighbours in key
+        order, so the sorted numbering is the cache-friendly one (the basis' own). **Collective** (epoch)."""
+        if not self.alive().all():
+            raise ValueError("sort_p_slots needs every P slot live (compact_p_slots first)")
+        order = np.argsort(self._pos_of_slot[self._p_kslot], kind="stable")
+        self._p_kslot = self._p_kslot[order]
+        self._k_pslot[self._p_kslot] = np.arange(len(order), dtype=np.int64)
+        self.epoch += 1
+        self._tables = None
+        return order
+
     def build_columns(self):
         """Apply the operator to every live P column (in slot order) and store the images, replacing the
         columns :meth:`admit_keys` left empty. Rows outside ``K`` are dropped when ``keep_frontier`` is off
