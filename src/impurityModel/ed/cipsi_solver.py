@@ -5,13 +5,12 @@ from mpi4py import MPI
 
 from impurityModel.ed import config
 from impurityModel.ed.basis_transcription import (
-    MatrixSnapshot,
     build_distributed_vector,
     build_sparse_matrix,
     build_state,
-    extend_sparse_matrix,
 )
 from impurityModel.ed.cipsi_budget import CapRefiner, MemoryGuard
+from impurityModel.ed.discovered_matrix import DiscoveredMatrix
 from impurityModel.ed.eigensolvers import (
     EigenResult,
     Lowest,
@@ -45,7 +44,7 @@ _EIGENSTATE_PAD = 10
 
 #: Largest share of the expansion's per-rank memory budget the kept Hamiltonian matrix may take.
 #: :meth:`CIPSISolver._build_h_matrix` keeps the last matrix through the selection round so the next
-#: cycle can grow it (:func:`basis_transcription.extend_sparse_matrix`) instead of rebuilding it;
+#: cycle can grow it (:meth:`DiscoveredMatrix.set_p_keys`) instead of rebuilding it;
 #: the selection round is the expansion's memory peak, so the kept matrix adds to it. Above this
 #: share the matrix is dropped and the next cycle rebuilds -- the old behaviour, at the scale where
 #: the build was measured to be a few percent of a cycle.
@@ -472,9 +471,9 @@ class CIPSISolver:
         #: ``{"found", "expected"}`` for a certified thermal manifold's lowest level
         #: (:func:`sector_solver.manifold_deficit`); ``None`` when nothing checked it.
         self.manifold_check = None
-        #: The last Hamiltonian matrix and what it was built on (:class:`MatrixSnapshot`), kept
-        #: during :meth:`expand` only; see :data:`_SNAPSHOT_BUDGET_FRACTION`.
-        self._h_snapshot = None
+        #: ``(key, matrix)``: the last Hamiltonian matrix and what it was built on, kept during
+        #: :meth:`expand` only; see :data:`_SNAPSHOT_BUDGET_FRACTION`.
+        self._h_matrix = None
         self._snapshot_budget = False
 
     def _allreduce_sum(self, value):
@@ -1024,7 +1023,7 @@ class CIPSISolver:
         self.stopped_early = False
         # Matrix snapshots are kept only while this call runs (see `_build_h_matrix`).
         self._snapshot_budget = memory_budget_bytes
-        self._h_snapshot = None
+        self._h_matrix = None
         refiner = CapRefiner(cap_e_tol, max_cap_cycles)
         measuring = memory_budget_bytes is not None
         cap_cycles = 0
@@ -1168,7 +1167,7 @@ class CIPSISolver:
         self._report_convergence(
             e_pt2_tol, de2_min, cap_cycles > 0, guard.limited, residual_current, quiet=self.stopped_early
         )
-        self._h_snapshot = None
+        self._h_matrix = None
         self._snapshot_budget = False
 
         if self.basis.verbose and (self.basis.comm is None or self.basis.comm.rank == 0):
@@ -1306,30 +1305,36 @@ class CIPSISolver:
             return self._build_h_matrix_untimed(H)
 
     def _build_h_matrix_untimed(self, H):
-        """``H`` as a ``DistributedSparseMatrix`` on the current basis (collective).
+        """``H`` on the current basis as a sparse matrix (collective).
 
-        Inside :meth:`expand` the previous cycle's matrix is grown to the current basis rather than
-        rebuilt, when it was of the same operator under the same window and the basis only gained
-        determinants since (:func:`basis_transcription.extend_sparse_matrix`). The operator object
-        itself is held by the snapshot, so an identity check cannot be fooled by a recycled ``id``.
+        Inside :meth:`expand` the matrix is kept from cycle to cycle: a :class:`DiscoveredMatrix` that stores every
+        column's complete image (``keep_frontier``), so a determinant admitted later finds its rows already in the
+        older columns and :meth:`~DiscoveredMatrix.set_p_keys` only applies the operator to the new determinants.
+        It is the matrix of the same operator under the same window only (the operator object itself is held, so an
+        identity check cannot be fooled by a recycled ``id``); any other key builds a new one. Outside an
+        expansion the matrix is the ``P H P`` of :func:`basis_transcription.build_sparse_matrix`.
         """
         key = (H, repr(self.basis.restrictions), repr(self.basis.weighted_restrictions))
-        snapshot, self._h_snapshot = self._h_snapshot, None
-        H_mat = None
-        reuse = snapshot is not None and snapshot.key[0] is H and snapshot.key[1:] == key[1:]
-        if self.basis.is_distributed:
-            reuse = self.basis.comm.allreduce(reuse, op=MPI.LAND)
-        if reuse:
-            H_mat = extend_sparse_matrix(snapshot, self.basis, H)
-        del snapshot
-        if H_mat is None:
-            H_mat = build_sparse_matrix(self.basis, H, extendable=True)
-        if self._snapshot_budget is not False:
+        if self._snapshot_budget is False:
+            H_mat = build_sparse_matrix(self.basis, H)
+        else:
+            held, self._h_matrix = self._h_matrix, None
+            reuse = held is not None and held[0][0] is H and held[0][1:] == key[1:]
+            if self.basis.is_distributed:
+                reuse = self.basis.comm.allreduce(reuse, op=MPI.LAND)
+            if reuse:
+                H_mat = held[1]
+            else:
+                op = ManyBodyOperator(H) if isinstance(H, dict) else H
+                comm = self.basis.comm if self.basis.is_distributed else None
+                H_mat = DiscoveredMatrix(op, (self.basis.n_bytes + 7) // 8, comm, keep_frontier=True)
+            del held
+            H_mat.set_p_keys(list(self.basis.local_basis))
             keep = self._snapshot_budget is None or H_mat.nbytes <= _SNAPSHOT_BUDGET_FRACTION * self._snapshot_budget
             if self.basis.is_distributed:
                 keep = self.basis.comm.allreduce(keep, op=MPI.LAND)
             if keep:
-                self._h_snapshot = MatrixSnapshot(self.basis, H_mat, key)
+                self._h_matrix = (key, H_mat)
         if self.matrix_hook is not None:
             with _trace_timed("matrix_hook", n=len(self.basis)):
                 H_mat = self.matrix_hook(self.basis, H_mat)

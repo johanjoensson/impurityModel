@@ -391,11 +391,56 @@ class DiscoveredMatrix:
         if not self.alive().all():
             raise ValueError("sort_p_slots needs every P slot live (compact_p_slots first)")
         order = np.argsort(self._pos_of_slot[self._p_kslot], kind="stable")
+        if self.nnz:
+            self._permute_columns(order)
         self._p_kslot = self._p_kslot[order]
         self._k_pslot[self._p_kslot] = np.arange(len(order), dtype=np.int64)
         self.epoch += 1
         self._tables = None
         return order
+
+    def _permute_columns(self, order):
+        """Reorder the built columns so that new column ``i`` is old column ``order[i]``, as one segment. Peak: the
+        stored columns twice plus an index array (``O(nnz)``), so a matrix that is kept across growth steps pays
+        it once per step, as the old matrix's renumbering did."""
+        n = self.n_p_local
+        wide = any(packed.dtype != np.int32 for _, _, packed, _ in self._segments)
+        dtype = np.int64 if wide else np.int32
+        counts = np.zeros(n, dtype=np.int64)
+        for c0, indptr, _packed, _data in self._segments:
+            counts[c0 : c0 + len(indptr) - 1] = np.diff(indptr)
+        old_ptr = np.zeros(n + 1, dtype=np.int64)
+        np.cumsum(counts, out=old_ptr[1:])
+        packed_all = np.concatenate([packed.astype(dtype, copy=False) for _, _, packed, _ in self._segments])
+        data_all = np.concatenate([data for _, _, _, data in self._segments])
+        self._segments = []
+        new_counts = counts[order]
+        new_ptr = np.zeros(n + 1, dtype=np.int64)
+        np.cumsum(new_counts, out=new_ptr[1:])
+        gather = np.repeat(old_ptr[order] - new_ptr[:-1], new_counts) + np.arange(new_ptr[-1], dtype=np.int64)
+        self._segments = [(0, new_ptr, packed_all[gather], data_all[gather])]
+
+    def set_p_keys(self, keys):
+        """Make ``P`` exactly ``keys`` (the determinants this rank owns): drop the columns of the keys that left,
+        admit and build the columns of the new ones, and renumber the P slots in key order, so that a vector in
+        the order of ``keys`` (sorted) is a block of this matrix. Keeps ``K``: a dropped key's row stays and a
+        column built earlier keeps the rows of keys admitted later. **Collective**: every rank calls it, each with
+        its own keys. Returns ``(added, dropped)`` counts on this rank."""
+        self._need_keys("set_p_keys")
+        keys = list(keys)
+        kslots = self.key_slots(keys)
+        pslots = np.full(len(keys), -1, dtype=np.int64)
+        known = kslots >= 0
+        pslots[known] = self._k_pslot[kslots[known]]
+        new = [key for key, pslot in zip(keys, pslots) if pslot < 0]
+        keep = np.zeros(self.n_p_local, dtype=bool)
+        keep[pslots[pslots >= 0]] = True
+        gone = np.flatnonzero(self.alive() & ~keep)
+        self.drop_columns(gone)
+        self.grow(new)
+        self.compact_p_slots()
+        self.sort_p_slots()
+        return len(new), len(gone)
 
     def build_columns(self):
         """Apply the operator to every live P column (in slot order) and store the images, replacing the
