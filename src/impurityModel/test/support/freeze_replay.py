@@ -161,7 +161,7 @@ def run(
     freeze="on",
     comm=None,
     verbosity=1,
-    matrix_mode="off",
+    matrix_mode="auto",
     cap="archive",
     units=None,
 ):
@@ -233,7 +233,7 @@ def main(argv=None):
     r.add_argument("--cluster", default=None)
     r.add_argument("--swm", type=float, default=None)
     r.add_argument("--freeze", default="on")
-    r.add_argument("--matrix-mode", default="off", choices=["off", "auto", "discovered", "retained", "none"])
+    r.add_argument("--matrix-mode", default="auto", choices=["auto", "discovered", "retained", "none"])
     r.add_argument("--cap", default="archive", help="pin truncation_threshold to this integer")
     r.add_argument("--units", default=None, help="comma list of GF unit indices, or 'heaviest': solve only those")
     r.add_argument("--out", required=True)

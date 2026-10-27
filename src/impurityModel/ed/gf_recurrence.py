@@ -69,8 +69,10 @@ class DiscoveredSupport:
 
     caps_growth = True
     tracks_support = True
-    stop_on_freeze = False
     apply_filter = None
+    #: The matvec mode that actually ran, when it is not the one chosen (a retained unit whose ``P H P`` matrix no
+    #: longer fit at the freeze continues matrix-free).
+    mode_ran = None
 
     def __init__(self, matrix, decisions, eta=None, first_shell_tol=0.0):
         self.matrix = matrix
@@ -95,8 +97,6 @@ class DiscoveredSupport:
     def retained_mask(self):
         """Width-0 key-only block of this rank's admitted determinants."""
         return ManyBodyState.from_keys(self.retained_keys())
-
-    ban_bytes = 0
 
     def enable_support_freeze(self, window, ratio, slater_weight_min, log=False, trace=False):
         if self.prunes:
@@ -157,6 +157,22 @@ def matrix_need_bytes(n_p_local, n_k_local, fanout, n_global_k, n_ranks, width):
     return matrix + working + min(_GROW_BATCH, elements) * 160
 
 
+def _sample_fanout(basis, hop):
+    """Mean full ``H``-image size of a strided sample of this rank's determinants (0 for an empty rank)."""
+    from impurityModel.ed.basis_transcription import iter_local_operator_images
+    from impurityModel.ed.gf_solvers import _CSR_FANOUT_SAMPLE
+
+    n_basis_local = len(basis.local_basis)
+    if not n_basis_local:
+        return 0.0
+    positions = np.unique(np.linspace(0, n_basis_local - 1, min(_CSR_FANOUT_SAMPLE, n_basis_local)).astype(np.int64))
+    sampled = elements = 0
+    for image in iter_local_operator_images(basis, hop, 0, indices=positions):
+        sampled += 1
+        elements += len(image)
+    return elements / sampled if sampled else 0.0
+
+
 def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_discovered=True):
     """The matvec mode of a unit, decided once and collectively before its first step.
 
@@ -168,8 +184,7 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
     seed basis when the cap is unbounded), ``K`` at :data:`K_OVER_P_ESTIMATE` times that. ``report`` (a dict)
     receives the numbers the decision used. **Collective.**
     """
-    from impurityModel.ed.basis_transcription import iter_local_operator_images
-    from impurityModel.ed.gf_solvers import _CSR_FANOUT_SAMPLE, _frozen_matrix_need
+    from impurityModel.ed.gf_solvers import _frozen_matrix_need
     from impurityModel.ed.memory_estimate import current_rss_bytes
 
     comm = basis.comm if basis.is_distributed else None
@@ -177,16 +192,7 @@ def choose_matrix_mode(basis, hop, cap, width, memory_budget, report=None, want_
         return "discovered" if want_discovered else "retained"
     n_ranks = comm.size if comm is not None else 1
     n_basis_local = len(basis.local_basis)
-    positions = ()
-    if n_basis_local:
-        positions = np.unique(
-            np.linspace(0, n_basis_local - 1, min(_CSR_FANOUT_SAMPLE, n_basis_local)).astype(np.int64)
-        )
-    sampled = elements = 0
-    for image in iter_local_operator_images(basis, hop, 0, indices=positions):
-        sampled += 1
-        elements += len(image)
-    fanout = elements / sampled if sampled else 0.0
+    fanout = _sample_fanout(basis, hop)
     n_p = max(n_basis_local, int(min(cap, 2**40) / n_ranks)) if np.isfinite(cap) and cap < 2**40 else n_basis_local
     n_k = int(K_OVER_P_ESTIMATE * n_p)
     need_e = matrix_need_bytes(n_p, n_k, fanout, n_k * n_ranks, n_ranks, width)
@@ -481,6 +487,7 @@ class _ApplyEngine:
         self.basis = basis
         self.retained = retained
         self._built = False
+        self._width = 1
         self._out = _OutputBuffer()
         self._filter = None
         self._n_chunks = int(config.APPLY_ROW_CHUNKS.get() or 1)
@@ -505,10 +512,38 @@ class _ApplyEngine:
             policy = self._filter
         return apply_and_redistribute(self.hop, block, policy, 0.0, redistribute, self._n_chunks if redistribute else 1)
 
+    def _fits_now(self):
+        """Whether the ``P H P`` matrix about to be built fits the budget the mode was priced against, re-measured
+        at the freeze: the worst rank's actual ``P``, and the resident set now (a memory-guard freeze arrives with it
+        at the guard's budget). Replicated; **collective** on every rank whenever a budget is set."""
+        from impurityModel.ed.gf_solvers import _frozen_matrix_need
+
+        matrix, d = self.matrix, self.admission.d
+        budget = d.memory_budget
+        if budget is None:
+            return True
+        csr_budget = getattr(self.basis, "gf_csr_memory_budget", None)
+        csr_budget = budget if csr_budget is None else max(budget, csr_budget)
+        comm = matrix.comm if matrix.comm is not None and matrix.comm.size > 1 else None
+        worst = np.array([matrix.n_p_local, _sample_fanout(self.basis, self.hop)], dtype=np.float64)
+        if comm is not None:
+            comm.Allreduce(MPI.IN_PLACE, worst, op=MPI.MAX)
+        need = _frozen_matrix_need(
+            int(worst[0]), float(worst[1]), int(d.global_count), comm.size if comm is not None else 1, self._width
+        )
+        over = np.array([current_rss_bytes() + need > csr_budget], dtype=np.int64)
+        if comm is not None:
+            comm.Allreduce(MPI.IN_PLACE, over, op=MPI.MAX)
+        return not over[0]
+
     def array_operator(self):
         """``(operator, order)``: the frozen ``P H P`` for the array kernel with its P slots renumbered in key order
         (``order[i]`` is the old slot now numbered ``i``); ``None`` unless ``"retained"``. Builds the columns."""
         if not self.retained:
+            return None
+        if not self._fits_now():
+            self.retained = False
+            self.admission.support.mode_ran = "none"
             return None
         order = self.matrix.sort_p_slots()
         if not self._built:
@@ -520,6 +555,7 @@ class _ApplyEngine:
     def apply(self, x):
         matrix, admission = self.matrix, self.admission
         d = admission.d
+        self._width = x.shape[1]
         if d.frozen and self.retained:
             if not self._built:
                 matrix.build_columns()
@@ -808,11 +844,26 @@ def settled_frontier(support, matrix, hop, basis, x_last, last_beta, slater_weig
     return out
 
 
+def _seed_block_on_final_slots(matrix, seed_keys, q0):
+    """The seed block ``q0`` (rows in the order of ``seed_keys``) on the matrix's final P slots, zero on the rows the
+    growth added. The slots only grew when nothing renumbered them (the keys of the first rows are still the
+    seeds'), else the rows follow their determinants."""
+    final = matrix.p_keys()
+    if final[: len(seed_keys)] == seed_keys:
+        return _pad_rows(q0, len(final))
+    where = {bytes(k.to_bytearray()): i for i, k in enumerate(seed_keys)}
+    out = np.zeros((len(final), q0.shape[1]), dtype=complex)
+    for slot, key in enumerate(final):
+        i = where.get(bytes(key.to_bytearray()))
+        if i is not None:
+            out[slot] = q0[i]
+    return out
+
+
 def _needs_restart(support, n_seed):
     """Whether a pruned growth ended on a support that is larger than the one the first steps ran on (``n_seed``,
-    the seeds'), with no freeze to have numbered its slots for the handoff. A test seam: the negative control of
-    ``test_gf_lanczos_pruning`` switches the restart off."""
-    return support.prunes and not support.decisions.frozen and support.retained_size > n_seed
+    the seeds'). A test seam: the negative control of ``test_gf_lanczos_pruning`` switches the restart off."""
+    return support.prunes and support.retained_size > n_seed
 
 
 def block_Green_discovered(
@@ -923,6 +974,7 @@ def block_Green_discovered(
     )
     t0 = time.perf_counter()
     n_seed = support.retained_size
+    seed_keys = matrix.p_keys() if support.prunes else None
     alphas, betas, widths, status, _q_last = block_lanczos_discovered(
         matrix,
         support,
@@ -936,10 +988,10 @@ def block_Green_discovered(
     if _needs_restart(support, n_seed):
         # A row the cut deferred can enter a later step, so the recurrence above ran on a support that grew under
         # it. Restart from the seeds on the final P, which is then the exact resolvent of P H P (what the banned
-        # rule of the ManyBodyState kernel got by never admitting a row twice). A pruned unit that the cap froze
-        # has numbered its P slots for the handoff, so ``q0`` no longer matches them: it keeps the continuation.
+        # rule of the ManyBodyState kernel got by never admitting a row twice). A unit the cap froze has had its P
+        # slots renumbered in key order for the handoff, so the seed block follows its keys.
+        q0 = _seed_block_on_final_slots(matrix, seed_keys, q0)
         support.decisions.frozen = True
-        q0 = _pad_rows(q0, matrix.n_p_local)
         converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
             delta, slaterWeightMin, eval_meshes
         )
@@ -963,9 +1015,10 @@ def block_Green_discovered(
         cap_info["retained_size"] = support.retained_size
         cap_info["memory_frozen"] = support.memory_frozen
         cap_info["proxy"] = support
-        cap_info["engine"] = matrix_mode
+        cap_info["engine"] = support.mode_ran or matrix_mode
         cap_info["matrix"] = matrix if matrix_mode == "discovered" else None
-        cap_info["csr_fallback"] = True
+        # Whether the frozen recurrence ran on a stored matrix (``csr_seconds`` is then the unit's recurrence wall).
+        cap_info["csr_fallback"] = bool(support.decisions.frozen and cap_info["engine"] != "none")
         cap_info["csr_seconds"] = seconds
         cap_info["support_frozen"] = support.support_frozen
         cap_info["settle_verdict"] = support.settle_verdict()

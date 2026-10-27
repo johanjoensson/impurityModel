@@ -115,6 +115,24 @@ def test_a_relaxed_first_shell_prunes_it_and_stays_exact(monkeypatch, shell_tol)
     np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
 
 
+@pytest.mark.parametrize("mode", ["discovered", "retained", "none"])
+@pytest.mark.parametrize("cap", [14, 16])
+def test_a_unit_the_cap_froze_after_a_deferred_row_came_back_is_still_exact(monkeypatch, mode, cap):
+    """At eta=0.225 a row deferred at one step enters a later one, and the cap then freezes the support: the
+    first pass is the Lanczos of no single operator, in every matvec mode, until the restart from the seeds on the
+    final ``P`` (a frozen retained unit has renumbered its slots, so the seed block follows its keys)."""
+    from impurityModel.ed import gf_recurrence
+    from impurityModel.test.support.gf_switches import set_gf_switches
+
+    set_gf_switches(monkeypatch, matrix_mode=mode)
+    G, info, z = _run(monkeypatch, 0.225, cap=cap)
+    assert info["cap_hit"] and info["engine"] == mode
+    np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
+    monkeypatch.setattr(gf_recurrence, "_needs_restart", lambda support, n_seed: False)
+    G, info, z = _run(monkeypatch, 0.225, cap=cap)
+    assert np.max(np.abs(G - _dense_G_on(_retained(info), z))) > 1e-4, "premise: the restart is what makes it exact"
+
+
 def test_a_cap_still_binds_under_pruning(monkeypatch):
     G, info, z = _run(monkeypatch, 1e-3, cap=10)
     assert info["cap_hit"] and info["retained_size"] <= 10

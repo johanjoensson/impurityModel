@@ -133,16 +133,11 @@ def _block_green_group(
             support_settle=support_settle,
             settle_ratio=settle_ratio,
         )
-        # `retained_size` stays None when the cap is infinite, and that is not a formatting
-        # gap to paper over: the sparse recurrence's support is tracked *only* by
-        # `_CappedBasisProxy.redistribute_block`, which `block_Green_sparse` installs only when
-        # the cap is finite. `excited_basis` is the clone of the seed support and the matvec
-        # never adds to it (`Basis.redistribute_block` routes rows, it does not register them),
-        # so `len(excited_basis)` here is the SEED size, not the Krylov support -- measured 1 vs
-        # 15 determinants for identical physics, uncapped vs a non-binding cap. See
-        # block_Green_sparse's own note that "the reachable Krylov dimension is *not* bounded by
-        # the initial excited-basis size". The dense branch below is the opposite case: the
-        # array kernel cannot leave its basis, so there `len(excited_basis)` IS the support.
+        # `retained_size` is the support the recurrence ran on (`gf_recurrence` counts the determinants its matrix
+        # discovers whether or not a cap is set), never `len(excited_basis)`: that is the clone of the seed support
+        # and the matvec never adds to it, so it is the SEED size, not the Krylov support -- measured 1 vs 15
+        # determinants for identical physics. The dense branch below is the opposite case: the array kernel cannot
+        # leave its basis, so there `len(excited_basis)` IS the support.
         cap_stats = {
             "cap_hit": bool(cap_info.get("cap_hit", False)),
             "retained_size": cap_info.get("retained_size"),
@@ -203,8 +198,8 @@ def _block_green_group(
     if verbose and (comm is None or comm.rank == 0):
         label = f"unit {unit_label}" if unit_label is not None else "unit"
         retained_display = f"{retained_size:,}" if retained_size is not None else "n/a"
-        # n_blocks counts every block of the unit (a frozen one's continued on the CSR included; a
-        # reorthogonalized one's restarted CSR recurrence alone), and csr= the CSR phase's wall time.
+        # n_blocks counts every block of the unit, and csr= the wall time of a unit whose frozen phase ran on a
+        # stored matrix (the recurrence's whole wall, growth included).
         csr = f", csr={cap_stats['csr_seconds']:.1f} s" if cap_stats.get("csr_fallback") else ""
         verdict = cap_stats.get("settle_verdict")
         # The literal ``support_frozen=True`` token is read by the cluster kits' log parsers; the words after it

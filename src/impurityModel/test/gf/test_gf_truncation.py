@@ -501,6 +501,26 @@ def test_a_matrix_that_does_not_fit_leaves_the_operator_applied_every_block(cap)
     _assert_php_oracle(g, info)
 
 
+def test_a_retained_unit_whose_matrix_no_longer_fits_at_the_freeze_continues_matrix_free(monkeypatch):
+    """The mode is priced before the first step; the freeze re-measures the worst rank's actual ``P`` and the
+    resident set then (a memory-guard freeze arrives with it at the guard's budget), and a matrix that does not fit
+    is not built: the unit keeps its answer and reports the mode it ran."""
+    set_gf_switches(monkeypatch, matrix_mode="retained")
+    _g, info = _run_capped(12, memory_budget=10**12)
+    assert info["engine"] == "retained" and info["csr_fallback"]
+    g_tight, info_tight = _run_capped(1000, memory_budget=1)
+    assert info_tight["memory_frozen"] and info_tight["engine"] == "none" and not info_tight["csr_fallback"]
+    _assert_php_oracle(g_tight, info_tight)
+
+
+def test_csr_fallback_means_the_frozen_recurrence_ran_on_a_stored_matrix(monkeypatch):
+    for mode, cap, want in (("retained", 12, True), ("discovered", 12, True), ("none", 12, False)):
+        set_gf_switches(monkeypatch, matrix_mode=mode)
+        assert _run_capped(cap)[1]["csr_fallback"] is want, (mode, cap)
+    set_gf_switches(monkeypatch, matrix_mode="retained")
+    assert not _run_capped(1000)[1]["csr_fallback"], "a unit that never froze ran on no stored matrix"
+
+
 def test_the_csr_fit_check_compares_the_estimate_with_the_budget(monkeypatch):
     from impurityModel.ed import gf_solvers
 

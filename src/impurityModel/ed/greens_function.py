@@ -308,9 +308,7 @@ def _report_max_unit_basis(heading, rows):
         unit get" but are not comparable.
     rows : list of (str, int or None, bool)
         ``(label, size, cap_hit)`` per unit, in print order. ``size`` is ``None`` when the
-        recurrence's support was not tracked (the sparse block-Lanczos path with no finite
-        determinant cap -- only :class:`gf_primitives._CappedBasisProxy` counts the support
-        the matvec discovers, and it is installed only under a finite cap). ``cap_hit`` marks
+        unit's support was not tracked (a unit that ran no recurrence). ``cap_hit`` marks
         a unit that froze at the cap, where the number reported *is* the cap and therefore
         says nothing about how large the unit wanted to be. An empty list prints nothing.
     """

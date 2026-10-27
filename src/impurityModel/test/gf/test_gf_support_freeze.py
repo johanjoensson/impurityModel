@@ -31,6 +31,7 @@ from impurityModel.ed.gf_primitives import FreezeRule
 from impurityModel.ed.greens_function import calc_G
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.test.basis.test_sparse_matrix_build import _basis, _det
+from impurityModel.test.support.comms import COMMS
 from impurityModel.test.support.gf_chain_fixtures import (
     DELTA,
     N_ORB,
@@ -391,15 +392,16 @@ def test_the_probe_is_off_unless_traced_and_never_runs_for_a_capped_unit(monkeyp
     assert np.isnan(capped["frontier_end_matvec"])
 
 
+@pytest.mark.parametrize("comm", COMMS)
 @pytest.mark.parametrize("mode", ["discovered", "retained", "none"])
-def test_the_probe_measures_the_last_block_the_recurrence_accepted(mode, monkeypatch):
+def test_the_probe_measures_the_last_block_the_recurrence_accepted(comm, mode, monkeypatch):
     """The block the probe applies ``H`` to is the recurrence's own last block, in every matvec mode (the
     retained mode hands the frozen phase to the array kernel, which numbers the rows in key order): the dense
     replay of the recurrence over ``n_blocks`` steps -- admitting through the settling step, on ``P`` after --
     gives the same boundary weight and largest amplitude."""
     monkeypatch.setenv("GF_SUPPORT_TRACE", "1")
     set_gf_switches(monkeypatch, matrix_mode=mode)
-    alphas, _betas, _r, info = run_chain(slater_min=1e-4)
+    alphas, _betas, _r, info = run_chain(comm, slater_min=1e-4)
     assert info["support_frozen"]
     n_blocks, n_grow = len(alphas), len(info["support_trace"])
     h, v, seed_rows = _dense_chain(seed=3)
