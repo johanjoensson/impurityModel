@@ -553,17 +553,20 @@ class _ApplyEngine:
         return w_p
 
 
-def _continue_on_array_kernel(operator, comm, converged, alphas, betas, widths, x_prev, x, deflate_tol, stage_name):
+def _continue_on_array_kernel(operator, comm, converged, alphas, betas, widths, blocks, deflate_tol, stage_name):
     """The recurrence carried on by the array kernel (``BlockLanczosCore.block_lanczos``) over the frozen
-    ``P H P`` ``operator``, from the blocks ``x_prev``, ``x`` the growth loop stopped at: what the frozen
-    continuation of the ManyBodyState kernel has always run. Returns what :func:`block_lanczos_discovered` does."""
+    ``P H P`` ``operator``, from the blocks ``[x_prev, x]`` (``x_prev`` ``None`` on the first step; the list is
+    emptied) the growth loop stopped at: what the frozen continuation of the ManyBodyState kernel has always
+    run. Returns what :func:`block_lanczos_discovered` does."""
     from impurityModel.ed.BlockLanczosCore import block_lanczos
     from impurityModel.ed.gf_solvers import _csr_continue_budget
 
     start = len(alphas)
     n_dim = operator.shape[0]
-    n_rows = x.shape[0]
-    tail = (np.zeros((n_rows, x.shape[1]), dtype=complex) if x_prev is None else _pad_rows(x_prev, n_rows), x)
+    x_prev, x = blocks
+    blocks.clear()
+    tail = (np.zeros(x.shape, dtype=complex) if x_prev is None else x_prev, x)
+    x_prev = x = None
     alphas, betas, widths = np.array(alphas), np.array(betas), list(widths)
     budget = min(_csr_continue_budget(start), n_dim)
     while True:
@@ -643,18 +646,12 @@ def block_lanczos_discovered(
             if handed is not None:
                 operator, order = handed
                 n_rows = x.shape[0]
-                x_prev_sorted = None if x_prev is None else _pad_rows(x_prev, n_rows)[order]
+                # The blocks travel in a list the callee empties, and this frame lets go of its own: the
+                # kernel runs with one copy of each, not two.
+                blocks = [None if x_prev is None else _pad_rows(x_prev, n_rows)[order], x[order]]
+                x = x_prev = None
                 return _continue_on_array_kernel(
-                    operator,
-                    comm,
-                    converged,
-                    alphas[:it],
-                    betas[:it],
-                    widths,
-                    x_prev_sorted,
-                    x[order],
-                    deflate_tol,
-                    stage_name="frozen_kernel",
+                    operator, comm, converged, alphas[:it], betas[:it], widths, blocks, deflate_tol, "frozen_kernel"
                 )
         alpha, x_next, beta, k = lanczos_step(
             engine.apply,

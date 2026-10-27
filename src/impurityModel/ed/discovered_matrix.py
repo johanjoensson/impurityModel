@@ -90,6 +90,21 @@ def _is_identity(goff, ptab):
     return bool(np.array_equal(ptab, np.arange(len(ptab), dtype=np.int64) - starts))
 
 
+class _PSlotKeys:
+    """The determinants of a matrix' P slots, in slot order, as a sequence that makes each one on access."""
+
+    def __init__(self, matrix):
+        self._m = matrix
+        self._n = matrix.n_p_local
+
+    def __len__(self):
+        return self._n
+
+    def __getitem__(self, i):
+        m = self._m
+        return m._kstore.key_at(int(m._pos_of_slot[m._p_kslot[i]]))
+
+
 class _Layout:
     """What one matvec needs: the exchange plan (``None`` on one rank) and the row-index tables."""
 
@@ -368,9 +383,9 @@ class DiscoveredMatrix:
         columns :meth:`admit_keys` left empty. Rows outside ``K`` are dropped when ``keep_frontier`` is off
         (``K = P``: the ``P H P`` matrix). **Collective.**"""
         alive = self.alive()
-        keys = [k for k, a in zip(self.p_keys(), alive) if a]
         if not alive.all():
             raise ValueError("build_columns needs every P slot live (compact_p_slots first)")
+        keys = _PSlotKeys(self)  # one determinant object at a time, not a list of every P key
         self._segments = []
         col_begin = 0
         with stage("build_columns"):
