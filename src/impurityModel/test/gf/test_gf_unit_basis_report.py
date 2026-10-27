@@ -99,26 +99,25 @@ def _seed_support_size():
     return len(seed.to_states()[0])
 
 
-def test_uncapped_sparse_path_reports_no_size_rather_than_the_seed_size(capsys, monkeypatch):
-    """With no determinant cap nothing tracks the support the matvec discovers, so the rows for
-    the units that actually ran a recurrence must say so. This is the regression: the fallback
-    printed ``len(excited_basis)`` here, which is the seed support -- a plausible number, an
-    order of magnitude low, that would send someone sizing ``truncation_threshold`` into an OOM.
-    """
-    # With the GF memory guard switched off nothing proxies an uncapped recurrence, so there is no
-    # support count to report; with it on (the default), see the test below.
+def test_uncapped_unit_reports_the_support_it_ran_on_with_or_without_the_memory_guard(capsys, monkeypatch):
+    """The recurrence counts the support it discovers whether or not a cap or the memory guard is on, so the rows
+    for the units that ran one report that support. This is the regression: the fallback printed
+    ``len(excited_basis)``, the seed support -- a plausible number, an order of magnitude low, that would send
+    someone sizing ``truncation_threshold`` into an OOM."""
     monkeypatch.setenv("GS_MEMORY_BUDGET_SAFETY", "0")
     _run(np.inf)
     rows, summary = _report_lines(capsys.readouterr().out)
     ran = [row for row in rows if "annihilate" in row]
     assert ran, rows
-    assert all("not tracked (no determinant cap set)" in row for row in ran), ran
-    # Nothing that could be mistaken for a measured size appears on those rows.
-    assert not any(char.isdigit() for row in ran for char in row.rpartition("  ")[2])
-    # The empty addition units are a different thing and still report truthfully.
+    assert not any("not tracked" in row for row in rows), rows
+    sizes = _sizes(ran)
+    assert sizes and all(size > _seed_support_size() for size in sizes.values()), rows
     assert all(row.endswith("0 determinants") for row in rows if "create" in row), rows
-    assert summary is not None and "2 of 4 units not tracked and not counted here" in summary
-    assert summary.startswith("maximum over the tracked units:")
+    assert summary is not None and "not tracked" not in summary
+    monkeypatch.delenv("GS_MEMORY_BUDGET_SAFETY", raising=False)
+    _run(np.inf)
+    guarded, _summary = _report_lines(capsys.readouterr().out)
+    assert _sizes([r for r in guarded if "annihilate" in r]) == sizes
 
 
 def test_uncapped_but_guarded_path_reports_the_krylov_support(capsys, monkeypatch):

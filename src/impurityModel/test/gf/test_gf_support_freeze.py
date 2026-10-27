@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import config, gf_primitives, gf_solvers
+from impurityModel.ed import config, gf_primitives, gf_recurrence
 from impurityModel.ed.basis_transcription import build_dense_matrix
 from impurityModel.ed.gf_primitives import FreezeRule
 from impurityModel.ed.greens_function import calc_G
@@ -41,6 +41,7 @@ from impurityModel.test.support.gf_chain_fixtures import (
     exact_chain_g,
     run_chain,
 )
+from impurityModel.test.support.gf_switches import set_gf_switches
 
 WINDOW = gf_primitives.SETTLE_WINDOW
 
@@ -132,18 +133,18 @@ def test_it_settles_a_trickling_support_where_its_own_trace_says():
     assert sum(row[3] for row in window) > 0.0, "premise: weight still reached new rows when it settled"
 
 
-def test_both_prunes_are_counted(monkeypatch):
-    """Every step notes the matvec prune before its admission and the next block's prune after it."""
+def test_the_matvec_prune_is_counted_every_step(monkeypatch):
+    """Every step notes the frontier rows the matvec cut dropped, before its admission."""
     calls = []
-    real = gf_primitives._CappedBasisProxy.note_step_cut
+    real = gf_primitives.SupportDecisions.note_step_cut
 
     def recording(self, weight):
         calls.append(weight)
         return real(self, weight)
 
-    monkeypatch.setattr(gf_primitives._CappedBasisProxy, "note_step_cut", recording)
+    monkeypatch.setattr(gf_primitives.SupportDecisions, "note_step_cut", recording)
     history = _trickle()[3]["support_trace"]
-    assert len(history) * 2 - 1 <= len(calls) <= len(history) * 2 + 1, (len(calls), len(history))
+    assert len(history) <= len(calls) <= len(history) + 1, (len(calls), len(history))
     assert all(w >= 0.0 for w in calls)
 
 
@@ -183,13 +184,18 @@ def test_off_switch():
     assert not info["support_frozen"] and info["support_trace"] == []
 
 
-def test_a_matrix_that_does_not_fit_undoes_the_freeze(monkeypatch):
-    plain = _trickle(support_settle=False)
-    monkeypatch.setattr(gf_solvers, "_frozen_csr_fits", lambda *a, **k: False)
-    declined = _trickle()
-    assert not declined[3]["support_frozen"] and not declined[3]["csr_fallback"]
-    np.testing.assert_array_equal(declined[0], plain[0])
-    np.testing.assert_array_equal(declined[1], plain[1])
+@pytest.mark.parametrize("mode", ["retained", "none"])
+def test_the_settle_fires_the_same_in_every_matvec_mode(mode, monkeypatch):
+    """A unit whose matrix does not fit is not left without a settle: the modes differ in how ``H q`` is formed
+    and in what runs after the freeze, not in what is admitted."""
+    set_gf_switches(monkeypatch, matrix_mode="discovered")
+    ref = _trickle()
+    set_gf_switches(monkeypatch, matrix_mode=mode)
+    got = _trickle()
+    assert got[3]["engine"] == mode and ref[3]["engine"] == "discovered"
+    assert got[3]["support_frozen"] and ref[3]["support_frozen"]
+    assert got[3]["retained_size"] == ref[3]["retained_size"]
+    np.testing.assert_allclose(_g(got), _g(ref), atol=1e-8)
 
 
 @pytest.mark.mpi
@@ -233,21 +239,21 @@ def _dense_chain(seed):
 
 
 def test_every_steps_weights_are_the_dense_ones(monkeypatch):
-    """The leak and both cuts, step by step, against the same recurrence replayed in numpy on the whole sector:
-    the matvec's cut is the summed H q rows below the cutoff, the leak the kept rows outside the support so far
-    (every column), the next block's cut its dropped rows weighed through beta (= the residual's rows there),
-    and the block is re-factored after its prune. Pins the quantities, the Frobenius norm, the gram's
-    orientation and the one-step lag of the next block's cut -- not only the bookkeeping. Every weight is
-    invariant under the column phases a QR may choose. Compared from step 10 on, where the cuts are real
-    weights rather than cancellation round-off."""
+    """The leak and the cut, step by step, against the same recurrence replayed in numpy on the whole sector: the
+    matvec's cut is the frontier rows (outside the support so far) below the cutoff, the leak the kept frontier
+    rows (every column), the largest amplitude one of them, and the next block's amplitude the largest row norm
+    of ``q_next`` on the rows this step admitted. Rows of the support are never cut and the next block is not
+    re-factored (the array kernel's semantics). Pins the quantities, the Frobenius norm and the gram's
+    orientation, not only the bookkeeping. Compared from step 10 on, where the cut is a real weight rather than
+    cancellation round-off."""
     notes = []
-    real = gf_primitives._CappedBasisProxy.note_step_cut
+    real = gf_primitives.SupportDecisions.note_step_cut
 
     def recording(self, weight):
         notes.append(weight)
         return real(self, weight)
 
-    monkeypatch.setattr(gf_primitives._CappedBasisProxy, "note_step_cut", recording)
+    monkeypatch.setattr(gf_primitives.SupportDecisions, "note_step_cut", recording)
     cutoff = 1e-4
     info = _trickle()[3]
     trace = info["support_trace"]
@@ -256,38 +262,33 @@ def test_every_steps_weights_are_the_dense_ones(monkeypatch):
     support = np.zeros(h.shape[0], dtype=bool)
     support[seed_rows] = True
     q, _ = np.linalg.qr(v)
-    q_prev, beta_prev, cut_next_prev = np.zeros_like(q), None, 0.0
+    q_prev, beta_prev = np.zeros_like(q), None
     compared = 0
     for step in range(30):
         wp = h @ q
         hq2 = float(np.sum(np.abs(wp) ** 2))
-        kept = np.any(np.abs(wp) > cutoff, axis=1)
-        cut_matvec = float(np.sum(np.abs(wp[~kept]) ** 2))
-        new_rows = kept & ~support
+        loud = np.any(np.abs(wp) > cutoff, axis=1)
+        cut_matvec = float(np.sum(np.abs(wp[~support & ~loud]) ** 2))
+        new_rows = loud & ~support
         leak = float(np.sum(np.abs(wp[new_rows]) ** 2))
         max2 = float(np.max(np.abs(wp[new_rows]) ** 2, initial=0.0))
-        support |= kept
-        wp[~kept] = 0.0
+        support |= new_rows
+        wp[~support] = 0.0
         wp -= q @ (q.conj().T @ wp)
         if beta_prev is not None:
             wp -= q_prev @ beta_prev.conj().T
         q_next, beta = np.linalg.qr(wp)
-        max2_next = float(np.max(np.abs(q_next[new_rows]) ** 2, initial=0.0))
-        dropped = ~np.any(np.abs(q_next) > cutoff, axis=1)
-        cut_next = float(np.sum(np.abs(wp[dropped]) ** 2))
-        q_next[dropped] = 0.0
-        q_next, r2 = np.linalg.qr(q_next)
+        max2_next = float(np.max(np.sum(np.abs(q_next[new_rows]) ** 2, axis=1), initial=0.0))
         if step >= 10:
             assert trace[step][3] == pytest.approx(leak, rel=1e-9), step
-            assert trace[step][4] == pytest.approx(cut_matvec + cut_next_prev, rel=1e-9), step
+            assert trace[step][4] == pytest.approx(cut_matvec, rel=1e-9), step
             assert trace[step][5] == pytest.approx(hq2, rel=1e-9), step
             assert trace[step][7] == pytest.approx(max2, rel=1e-9, abs=1e-30), step
             assert trace[step][8] == pytest.approx(max2_next, rel=1e-6, abs=1e-30), step
-            assert notes[2 * step] == pytest.approx(cut_matvec, rel=1e-9), step
-            assert notes[2 * step + 1] == pytest.approx(cut_next, rel=1e-9), step
-            compared += cut_matvec > 0 and cut_next > 0
-        q_prev, q, beta_prev, cut_next_prev = q, q_next, r2 @ beta, cut_next
-    assert compared >= 15, "premise: both cuts are real weights on most compared steps"
+            assert notes[step] == pytest.approx(cut_matvec, rel=1e-9), step
+            compared += cut_matvec > 0
+        q_prev, q, beta_prev = q, q_next, beta
+    assert compared >= 15, "premise: the cut is a real weight on most compared steps"
 
 
 def test_the_trace_records_every_step_and_its_sizes_add_up():
@@ -328,21 +329,10 @@ def test_with_no_cutoff_the_closed_support_gives_the_exact_g():
     np.testing.assert_allclose(_g(run_chain()), _exact_sector_g(seed=3), atol=1e-8)
 
 
-def test_a_declined_freeze_is_asked_once_and_a_later_cap_still_takes_the_csr(monkeypatch):
-    """The support freeze declines (the matrix does not fit); the unit carries on unfrozen, and when its cap binds
-    later that freeze is offered the CSR again -- and fits."""
-    asked = []
-    real_fits = gf_solvers._frozen_csr_fits
-
-    def first_declines(*args, **kwargs):
-        asked.append(1)
-        return len(asked) > 1 and real_fits(*args, **kwargs)
-
-    monkeypatch.setattr(gf_solvers, "_frozen_csr_fits", first_declines)
-    # ratio 10 settles at ~2,265 determinants, below the 2,600 cap (ratio 1 would settle at ~3,074, past it)
+def test_a_unit_that_settles_below_its_cap_is_a_settle_not_a_cap_freeze():
+    """Ratio 10 settles at ~2,265 determinants, below the 2,600 cap (ratio 1 would settle at ~3,074, past it)."""
     info = _trickle(cap=2600, settle_ratio=10.0)[3]
-    assert not info["support_frozen"] and info["cap_hit"] and info["csr_fallback"]
-    assert len(asked) == 2, "the support freeze once, the cap freeze once"
+    assert info["support_frozen"] and not info["cap_hit"] and info["retained_size"] < 2600
 
 
 def test_boundary_frontier_is_the_dense_image_outside_the_support():
@@ -388,14 +378,54 @@ def test_the_probe_is_off_unless_traced_and_never_runs_for_a_capped_unit(monkeyp
     frozen by the cap is not a settle and never probed, traced or not."""
     calls = []
     real = gf_primitives.boundary_frontier
-    monkeypatch.setattr(gf_solvers, "boundary_frontier", lambda *a, **k: calls.append(1) or real(*a, **k))
+    monkeypatch.setattr(gf_recurrence, "boundary_frontier", lambda *a, **k: calls.append(1) or real(*a, **k))
     info = run_chain(slater_min=1e-4)[3]
     assert info["support_frozen"] and np.isfinite(info["leak_settle"])
     assert np.isnan(info["frontier_end_matvec"]) and calls == []
     monkeypatch.setenv("GF_SUPPORT_TRACE", "1")
+    run_chain(slater_min=1e-4)
+    assert calls == [1], "premise: the traced, settled unit does run the probe"
+    calls.clear()
     capped = _trickle(cap=2000)[3]
     assert capped["cap_hit"] and capped["csr_fallback"] and calls == []
     assert np.isnan(capped["frontier_end_matvec"])
+
+
+@pytest.mark.parametrize("mode", ["discovered", "retained", "none"])
+def test_the_probe_measures_the_last_block_the_recurrence_accepted(mode, monkeypatch):
+    """The block the probe applies ``H`` to is the recurrence's own last block, in every matvec mode (the
+    retained mode hands the frozen phase to the array kernel, which numbers the rows in key order): the dense
+    replay of the recurrence over ``n_blocks`` steps -- admitting through the settling step, on ``P`` after --
+    gives the same boundary weight and largest amplitude."""
+    monkeypatch.setenv("GF_SUPPORT_TRACE", "1")
+    set_gf_switches(monkeypatch, matrix_mode=mode)
+    alphas, _betas, _r, info = run_chain(slater_min=1e-4)
+    assert info["support_frozen"]
+    n_blocks, n_grow = len(alphas), len(info["support_trace"])
+    h, v, seed_rows = _dense_chain(seed=3)
+    support = np.zeros(h.shape[0], dtype=bool)
+    support[seed_rows] = True
+    q, _ = np.linalg.qr(v)
+    q_prev, beta_prev = np.zeros_like(q), None
+    for step in range(n_blocks):
+        wp = h @ q
+        if step < n_grow:
+            support |= np.any(np.abs(wp) > 1e-4, axis=1) & ~support
+        if step == n_blocks - 1:
+            image = h @ q
+            loud = np.any(np.abs(image) > 1e-4, axis=1) & ~support
+            want_max = float(np.max(np.abs(image[loud]) ** 2, initial=0.0))
+            want_weight = float(np.sum(np.abs(image[loud]) ** 2))
+            break
+        wp[~support] = 0.0
+        wp -= q @ (q.conj().T @ wp)
+        if beta_prev is not None:
+            wp -= q_prev @ beta_prev.conj().T
+        q_next, beta = np.linalg.qr(wp)
+        q_prev, q, beta_prev = q, q_next, beta
+    assert want_weight > 0.0, "premise: the settled unit leaves a frontier"
+    assert info["leak_end"] == pytest.approx(want_weight, rel=1e-3)  # plain Lanczos: rounding over hundreds of blocks
+    assert info["frontier_end_matvec"] ** 2 == pytest.approx(want_max, rel=1e-3)
 
 
 def test_a_closed_support_leaves_no_frontier(monkeypatch):

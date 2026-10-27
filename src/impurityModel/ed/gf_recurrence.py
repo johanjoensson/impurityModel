@@ -40,9 +40,10 @@ from impurityModel.ed.gf_primitives import (
     _distributed_seed_qr,
     _sanitize_continued_fraction,
     _trim_blocks,
+    boundary_frontier,
 )
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
-from impurityModel.ed.memory_estimate import format_bytes
+from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS, spectral_norm, tsqr
 
 #: Fields of :class:`DiscoveredSupport` that live on its :class:`SupportDecisions` (the names callers read).
@@ -740,6 +741,80 @@ def start_discovered(
     return matrix, support, q0
 
 
+#: The end-of-unit frontier probe applies ``H`` once, unfrozen and unchunked, to the block a settled unit ended on; it
+#: is skipped when the resident set is already this fraction of the unit's memory budget (it generates the whole
+#: out-of-P image of one block, the peak the frozen matrix exists to avoid).
+_FRONTIER_PROBE_RSS_FRACTION = 0.8
+
+
+class _PKeys:
+    """The slice of a ``Basis`` that :func:`gf_primitives.boundary_frontier` reads, for the matrix's ``P``."""
+
+    def __init__(self, basis, keys):
+        self._basis = basis
+        self._keys = keys
+
+    def redistribute_block(self, block):
+        return self._basis.redistribute_block(block)
+
+
+def settled_frontier(support, matrix, hop, basis, x_last, last_beta, slater_weight_min):
+    """What a settled unit left behind, as ``cap_info`` entries (amplitudes, not squares). Collective.
+
+    ``leak_settle`` and ``frontier_settle_matvec`` are the settling step's own record (weight on new rows and the
+    largest amplitude on one, in the matvec's units), taken from the trace at no cost. The rest is a **diagnostic,
+    opt-in probe** (``GF_SUPPORT_TRACE``, read on rank 0 and broadcast): ``frontier_end_matvec`` and ``leak_end`` are
+    the same two numbers measured by one unfrozen ``H`` applied to the last block the frozen recurrence accepted
+    (:func:`gf_primitives.boundary_frontier`), and ``frontier_end`` that amplitude in the units of the next block
+    (divided by the smallest singular value of the last ``beta``). ``x_last`` is the kernel's last block store
+    (this rank's rows in the matrix's P-slot order; its last ``p`` columns are the block, ``p`` the width
+    ``last_beta`` was formed from). It is never run for a unit frozen by the cap or held by the memory guard (the
+    caller checks), and is skipped at ``_FRONTIER_PROBE_RSS_FRACTION`` of the memory budget. Missing entries are
+    ``nan``. Every branch is decided on replicated data."""
+    comm = matrix.comm
+    out = {"leak_settle": float("nan"), "frontier_settle_matvec": float("nan"), "frontier_end": float("nan")}
+    out.update(frontier_end_matvec=float("nan"), leak_end=float("nan"))
+    if support.support_trace:
+        record = support.support_trace[len(support.support_trace) - 1]
+        out["leak_settle"] = float(record.leak)
+        out["frontier_settle_matvec"] = math.sqrt(record.max2_matvec)
+    probe = bool(config.GF_SUPPORT_TRACE.get())
+    if comm is not None and comm.size > 1:
+        probe = comm.bcast(probe, root=0)
+    if not probe or x_last is None or last_beta is None:
+        return out
+    budget = support.decisions.memory_budget
+    over = budget is not None and current_rss_bytes() > _FRONTIER_PROBE_RSS_FRACTION * budget
+    if comm is not None and comm.size > 1:
+        over = comm.allreduce(bool(over), op=MPI.LOR)
+    if over:
+        return out
+    last_beta = np.asarray(last_beta)
+    p = int(last_beta.shape[1])
+    block = _pad_rows(np.ascontiguousarray(x_last[:, x_last.shape[1] - p :]), matrix.n_p_local)
+    keys = matrix.p_keys()
+    store = ManyBodyState.from_keys(keys)
+    amps = np.zeros((len(store), p), dtype=complex)
+    amps[store.find_rows(keys)] = block
+    max2, weight = boundary_frontier(
+        hop, ManyBodyState.from_keys_and_amps(store, amps), _PKeys(basis, store), slater_weight_min, comm
+    )
+    out["frontier_end_matvec"] = math.sqrt(max2)
+    out["leak_end"] = weight
+    sv = np.linalg.svd(last_beta, compute_uv=False)
+    sv_min = float(sv[sv > 1e-12 * sv[0]].min()) if sv.size and sv[0] > 0 else 0.0
+    if sv_min > 0.0:
+        out["frontier_end"] = math.sqrt(max2) / sv_min
+    return out
+
+
+def _needs_restart(support, n_seed):
+    """Whether a pruned growth ended on a support that is larger than the one the first steps ran on (``n_seed``,
+    the seeds'), with no freeze to have numbered its slots for the handoff. A test seam: the negative control of
+    ``test_gf_lanczos_pruning`` switches the restart off."""
+    return support.prunes and not support.decisions.frozen and support.retained_size > n_seed
+
+
 def block_Green_discovered(
     hOp,
     psi_arr,
@@ -843,7 +918,11 @@ def block_Green_discovered(
             trace=config.GF_SUPPORT_TRACE.get() and rank == 0,
         )
         support.monitor_dg = last_dg
+    engine = (
+        None if matrix_mode == "discovered" else lambda m, a: _ApplyEngine(m, a, hOp, basis, matrix_mode == "retained")
+    )
     t0 = time.perf_counter()
+    n_seed = support.retained_size
     alphas, betas, widths, status, _q_last = block_lanczos_discovered(
         matrix,
         support,
@@ -852,12 +931,28 @@ def block_Green_discovered(
         slater_weight_min=slaterWeightMin,
         deflate_tol=DEFLATE_TOL_SEEDS,
         reort=resolved_reort,
-        engine=(
-            None
-            if matrix_mode == "discovered"
-            else lambda m, a: _ApplyEngine(m, a, hOp, basis, matrix_mode == "retained")
-        ),
+        engine=engine,
     )
+    if _needs_restart(support, n_seed):
+        # A row the cut deferred can enter a later step, so the recurrence above ran on a support that grew under
+        # it. Restart from the seeds on the final P, which is then the exact resolvent of P H P (what the banned
+        # rule of the ManyBodyState kernel got by never admitting a row twice). A pruned unit that the cap froze
+        # has numbered its P slots for the handoff, so ``q0`` no longer matches them: it keeps the continuation.
+        support.decisions.frozen = True
+        q0 = _pad_rows(q0, matrix.n_p_local)
+        converged, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
+            delta, slaterWeightMin, eval_meshes
+        )
+        alphas, betas, widths, status, _q_last = block_lanczos_discovered(
+            matrix,
+            support,
+            q0,
+            converged,
+            slater_weight_min=slaterWeightMin,
+            deflate_tol=DEFLATE_TOL_SEEDS,
+            reort=resolved_reort,
+            engine=engine,
+        )
     seconds = time.perf_counter() - t0
     if status in ("converged", "invariant_subspace"):
         converged_flag[0] = True
@@ -889,5 +984,19 @@ def block_Green_discovered(
         info["n_blocks"] = n_blocks
         info["tol"] = delta_min
     alphas, betas = _trim_blocks(alphas, betas, widths)
+    if cap_info is not None and support.support_frozen and not support.cap_hit:
+        # A settled unit only (both are replicated): a capped or memory-held unit is not a settle, and the
+        # probe's extra matvec is exactly what such a unit cannot afford.
+        cap_info.update(
+            settled_frontier(
+                support,
+                matrix,
+                hOp,
+                basis,
+                _q_last,
+                betas[len(betas) - 1] if len(betas) else None,
+                slaterWeightMin,
+            )
+        )
     alphas, betas = _sanitize_continued_fraction(alphas, betas, rank=rank)
     return alphas, betas, r

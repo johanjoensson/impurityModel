@@ -1,13 +1,14 @@
 """Importance-pruned block-Lanczos growth (``GF_LANCZOS_ADMIT_TOL``): the comparator for ``outer``.
 
-``_PrunedBasisProxy`` admits a step's new determinants only above an amplitude threshold and bans
-the rest for good. The ban is what makes the recurrence exact, so the oracle is the same one the
+The recurrence on the discovered-key matrix admits a step's new determinants only above an amplitude threshold;
+a deferred row stays in the frontier and can enter later, so the recurrence restarts from the seeds on the final
+``P`` (``gf_recurrence._needs_restart``). That restart is what makes it exact, so the oracle is the same one the
 freeze-growth cap satisfies (``test_gf_truncation``): the returned continued fraction must equal
 the dense resolvent of ``H`` projected onto the retained set -- for every threshold and every
 reorthogonalization mode, not just the full one.
 
 Also pinned: the decision is taken once, on the step's summed output, so row chunking and a
-nonzero ``slaterWeightMin`` are allowed (the rows the cut drops are banned too), and the seeds' first
+nonzero ``slaterWeightMin`` are allowed, and the seeds' first
 H-shell is never pruned.
 """
 
@@ -70,23 +71,14 @@ def test_the_pruned_recurrence_is_the_exact_resolvent_of_PHP_on_what_it_kept(mon
 
 
 @pytest.mark.parametrize("reort", [None, True])
-def test_without_the_ban_the_recurrence_is_not_exact_which_is_why_it_exists(monkeypatch, reort):
-    """Negative control: forget every ban before each step and the same oracle must fail -- a row
-    rejected when ``H q_k`` was formed is admitted later, so ``P_m H q_k != P_{k+1} H q_k`` and the
-    recurrence is the Lanczos of no single operator. At eta=0.225 the retained set is even the
-    whole closure, yet G is off by ~1e-2: the error is in the recurrence, not in what was kept."""
-    from impurityModel.ed import gf_primitives
+def test_without_the_restart_the_recurrence_is_not_exact_which_is_why_it_exists(monkeypatch, reort):
+    """Negative control: a row the cut deferred at step ``k`` enters a later step, so ``P_m H q_k != P_{k+1} H q_k``
+    and the first pass is the Lanczos of no single operator. At eta=0.225 the retained set is even the whole
+    closure, yet G is off by ~1e-2: the error is in the recurrence, not in what was kept. The restart from the
+    seeds on the final ``P`` is what makes it the resolvent of ``P H P``."""
+    from impurityModel.ed import gf_recurrence
 
-    original = gf_primitives.SupportPolicy._admit_pruned
-
-    def forgetting(self, block, reached=None):
-        ban, self._ban = self._ban, ManyBodyState.from_keys([])
-        try:
-            return original(self, block, reached)
-        finally:
-            self._ban = ban
-
-    monkeypatch.setattr(gf_primitives.SupportPolicy, "_admit_pruned", forgetting)
+    monkeypatch.setattr(gf_recurrence, "_needs_restart", lambda support, n_seed: False)
     G, info, z = _run(monkeypatch, 0.225, reort=reort)
     assert np.max(np.abs(G - _dense_G_on(_retained(info), z))) > 1e-4
 
@@ -123,11 +115,6 @@ def test_a_relaxed_first_shell_prunes_it_and_stays_exact(monkeypatch, shell_tol)
     np.testing.assert_allclose(G, _dense_G_on(_retained(info), z), atol=1e-9)
 
 
-def test_the_ban_mask_is_recorded(monkeypatch):
-    _G, info, _z = _run(monkeypatch, 0.5)
-    assert info["proxy"].ban_bytes > 0
-
-
 def test_a_cap_still_binds_under_pruning(monkeypatch):
     G, info, z = _run(monkeypatch, 1e-3, cap=10)
     assert info["cap_hit"] and info["retained_size"] <= 10
@@ -136,7 +123,7 @@ def test_a_cap_still_binds_under_pruning(monkeypatch):
 
 def test_off_by_default_leaves_the_unpruned_path_alone(monkeypatch):
     _G, info, _z = _run(monkeypatch, 0.0)
-    assert info["proxy"] is None
+    assert not info["proxy"].prunes
 
 
 @pytest.mark.parametrize("reort", [None, True])
@@ -164,22 +151,6 @@ def test_a_nonzero_slater_weight_min_runs_and_does_not_depend_on_the_chunking(mo
     G, info, _ = _run(monkeypatch, 0.1, slater=swm)
     assert _retained(info) == _retained(info1)
     np.testing.assert_allclose(G, G1, atol=1e-12)
-
-
-@pytest.mark.parametrize("swm", _CUTS)
-def test_rows_the_cut_drops_are_banned_too(monkeypatch, swm):
-    """Negative control: without the ban on the rows the after-sum cut drops, a row cut from ``H q_k`` can clear
-    the threshold on a later step and enter ``P_m`` -- the retained set grows."""
-    from impurityModel.ed import gf_primitives
-
-    _G, info, _z = _run(monkeypatch, 0.1, slater=swm)
-    banned = _retained(info)
-    original = gf_primitives.SupportPolicy.finish_step
-    monkeypatch.setattr(
-        gf_primitives.SupportPolicy, "finish_step", lambda self, wp, reached=None: original(self, wp, None)
-    )
-    _G, info, _z = _run(monkeypatch, 0.1, slater=swm)
-    assert len(_retained(info)) > len(banned)
 
 
 def test_pruning_and_the_support_freeze_are_exclusive():

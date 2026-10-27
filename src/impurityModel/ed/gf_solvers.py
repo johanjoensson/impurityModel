@@ -185,7 +185,7 @@ _FROZEN_CSR = True
 #: production-scale measurement of ``doc/plans/gf_relevant_support.md``) is the ManyBodyState growth kernel with
 #: its frozen CSR; ``"auto"`` the recurrence on a discovered-key matrix with the matvec mode priced per unit
 #: (``gf_recurrence.choose_matrix_mode``); ``"discovered"``, ``"retained"`` and ``"none"`` force a mode.
-_MATRIX_MODE = "off"
+_MATRIX_MODE = "auto"
 #: Restarts granted to a non-converged BiCGSTAB point (the current iterate warm-starts each) before the GMRES fallback.
 _GF_BICGSTAB_RESTARTS = 10
 #: Restart cycles GMRES gets before the point is reported as unconverged.

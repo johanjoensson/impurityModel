@@ -28,6 +28,10 @@ def _shipped_defaults(monkeypatch):
         monkeypatch.delenv(knob, raising=False)
 
 
+#: The matvec modes of the recurrence (``gf_recurrence``), forced through ``set_gf_switches(matrix_mode=...)``.
+_MODES = ["discovered", "retained", "none"]
+
+
 def _det(occupied):
     """Determinant with the given orbitals occupied (MSB-first: orbital i = bit 7-i)."""
     b = 0
@@ -141,8 +145,7 @@ def test_cap_above_reachable_space_is_identity(monkeypatch):
     monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
     g_uncapped, info_u = _run_capped(np.inf)
     g_capped, info_c = _run_capped(1000)
-    assert info_u["proxy"] is None
-    assert info_c["proxy"] is not None and not info_c["cap_hit"]
+    assert not info_u["cap_hit"] and not info_c["cap_hit"]
     np.testing.assert_array_equal(g_capped, g_uncapped)
 
 
@@ -159,18 +162,18 @@ def test_uncapped_matches_dense_full_sector():
 
 
 @pytest.mark.parametrize("chunks", ["1", "4"])
-@pytest.mark.parametrize("frozen_csr", ["1", "0"])
+@pytest.mark.parametrize("mode", _MODES)
 @pytest.mark.parametrize("reort", [None, True])
 @pytest.mark.parametrize("cap", [6, 12, 17])
-def test_capped_gf_equals_dense_php_resolvent(cap, reort, frozen_csr, chunks, monkeypatch):
-    """The oracle: the capped GF is the exact GF of H projected on the retained set -- on the
-    sparse kernel throughout (``GF_FROZEN_CSR=0``) and restarted on the ``P H P`` CSR at the
-    freeze (the default)."""
-    set_gf_switches(monkeypatch, frozen_csr=frozen_csr)
+def test_capped_gf_equals_dense_php_resolvent(cap, reort, mode, chunks, monkeypatch):
+    """The oracle: the capped GF is the exact GF of H projected on the retained set -- in every matvec mode (the
+    matrix over every discovered key, the operator applied each step with the ``P H P`` matrix built at the freeze,
+    the operator applied every block)."""
+    set_gf_switches(monkeypatch, matrix_mode=mode)
     monkeypatch.setenv("APPLY_ROW_CHUNKS", chunks)
     g, info = _run_capped(cap, reort=reort)
     assert info["cap_hit"]
-    assert info["csr_fallback"] == (frozen_csr == "1")
+    assert info["engine"] == mode
     assert info["retained_size"] <= cap
     retained = info["proxy"].retained_keys()
     assert len(retained) == info["retained_size"]
@@ -179,16 +182,15 @@ def test_capped_gf_equals_dense_php_resolvent(cap, reort, frozen_csr, chunks, mo
     assert np.all(np.diagonal(g.imag, axis1=1, axis2=2) <= 1e-12)
 
 
-@pytest.mark.parametrize("frozen_csr", ["1", "0"])
-def test_cap_at_seed_size_freezes_immediately(frozen_csr, monkeypatch):
-    """cap == initial basis size: nothing new is ever admitted; still exact on P. With the CSR
-    fallback the sparse kernel never runs at all."""
-    set_gf_switches(monkeypatch, frozen_csr=frozen_csr)
+@pytest.mark.parametrize("mode", _MODES)
+def test_cap_at_seed_size_freezes_immediately(mode, monkeypatch):
+    """cap == initial basis size: nothing new is ever admitted; still exact on P."""
+    set_gf_switches(monkeypatch, matrix_mode=mode)
     basis = _excited_basis(np.inf)
     seed_size = basis.size
     g, info = _run_capped(seed_size)
     assert info["cap_hit"] and info["retained_size"] <= seed_size
-    assert info["csr_fallback"] == (frozen_csr == "1")
+    assert info["engine"] == mode
     np.testing.assert_allclose(g, _dense_reference_on(info["proxy"].retained_keys()), atol=1e-9)
 
 
@@ -315,18 +317,18 @@ def test_the_cap_crossing_step_is_decided_on_full_amplitudes_whatever_the_chunki
 
 
 @pytest.mark.mpi
-@pytest.mark.parametrize("frozen_csr", ["1", "0"])
-def test_capped_gf_mpi_matches_dense_php(frozen_csr, monkeypatch):
+@pytest.mark.parametrize("mode", _MODES)
+def test_capped_gf_mpi_matches_dense_php(mode, monkeypatch):
     """Distributed run: cap respected, collective decisions consistent, oracle holds.
 
     With 2+ ranks and a small cap, some rank will own few or zero retained rows —
     the empty-rank edge case must not deadlock or diverge."""
-    set_gf_switches(monkeypatch, frozen_csr=frozen_csr)
+    set_gf_switches(monkeypatch, matrix_mode=mode)
     comm = MPI.COMM_WORLD
     for cap in (6, 12):
         g, info = _run_capped(cap, comm=comm)
         assert info["cap_hit"]
-        assert info["csr_fallback"] == (frozen_csr == "1")
+        assert info["engine"] == mode
         assert info["retained_size"] <= cap
         # retained keys are rank-local; gather for the dense reference
         local = info["proxy"].retained_keys()
@@ -451,21 +453,21 @@ def _assert_php_oracle(g, info, comm=None):
     np.testing.assert_allclose(g, _dense_reference_on(retained), atol=1e-9)
 
 
-def test_frozen_csr_matches_the_sparse_kernel_to_rounding(monkeypatch):
-    """Same model, same cap, same retained set: the CSR restart and the sparse kernel agree."""
+def test_the_frozen_matrix_matches_the_operator_applied_every_block_to_rounding(monkeypatch):
+    """Same model, same cap, same retained set: the frozen ``P H P`` matrix and the matrix-free unit agree."""
     monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
-    set_gf_switches(monkeypatch, frozen_csr="0")
+    set_gf_switches(monkeypatch, matrix_mode="none")
     g_sparse, info_sparse = _run_capped(12, reort=True)
-    set_gf_switches(monkeypatch, frozen_csr="1")
+    set_gf_switches(monkeypatch, matrix_mode="retained")
     g_csr, info_csr = _run_capped(12, reort=True)
-    assert info_csr["csr_fallback"] and not info_sparse["csr_fallback"]
+    assert info_csr["engine"] == "retained" and info_sparse["engine"] == "none"
     assert set(info_csr["proxy"].retained_keys()) == set(info_sparse["proxy"].retained_keys())
     np.testing.assert_allclose(g_csr, g_sparse, atol=1e-10)
 
 
 def test_frozen_csr_under_importance_pruning(monkeypatch):
-    """``GF_LANCZOS_ADMIT_TOL``'s ban keeps the whole recurrence the Lanczos of ``P_m H P_m``, so
-    the restart on the pruned proxy's retained set is exact too."""
+    """A unit the cap froze under ``GF_LANCZOS_ADMIT_TOL`` continues on the frozen ``P H P`` matrix, exact on its
+    retained set."""
     monkeypatch.setenv("APPLY_ROW_CHUNKS", "1")
     monkeypatch.setenv("GF_LANCZOS_ADMIT_TOL", "0.05")
     g, info = _run_capped(12)
@@ -473,12 +475,12 @@ def test_frozen_csr_under_importance_pruning(monkeypatch):
     _assert_php_oracle(g, info)
 
 
-def test_a_memory_guard_freeze_without_room_for_the_matrix_stays_on_the_sparse_kernel():
-    """RSS is at budget when the guard freezes; with no looser frozen-CSR budget the matrix does
-    not fit on top of it, and the sparse kernel continues."""
+def test_a_memory_guard_freeze_without_room_for_the_matrix_applies_the_operator_every_block():
+    """RSS is at budget when the guard freezes; with no looser frozen-CSR budget no matrix fits on top of it, and
+    the unit is priced matrix-free."""
     g, info = _run_capped(1000, memory_budget=1)
     assert info["cap_hit"] and info["memory_frozen"]
-    assert not info["csr_fallback"]
+    assert info["engine"] == "none"
     _assert_php_oracle(g, info)
 
 
@@ -487,7 +489,7 @@ def test_a_memory_guard_freeze_runs_the_frozen_matrix_when_it_fits():
     current RSS: the restart runs, and is exact on the retained set."""
     g, info = _run_capped(1000, memory_budget=1, basis_attrs={"gf_csr_memory_budget": 2**62})
     assert info["cap_hit"] and info["memory_frozen"]
-    assert info["csr_fallback"]
+    assert info["engine"] == "retained"
     _assert_php_oracle(g, info)
 
 
@@ -497,14 +499,10 @@ def test_a_complex64_krylov_store_stays_on_the_sparse_kernel():
 
 
 @pytest.mark.parametrize("cap", [6, 12])
-def test_a_declined_csr_resumes_the_sparse_kernel(cap, monkeypatch):
-    """When the matrix would not fit, the sparse recurrence resumes from where it stopped and the
-    result is still exact on P."""
-    from impurityModel.ed import gf_solvers
-
-    monkeypatch.setattr(gf_solvers, "_frozen_csr_fits", lambda *a, **k: False)
-    g, info = _run_capped(cap, reort=True)
-    assert info["cap_hit"] and not info["csr_fallback"]
+def test_a_matrix_that_does_not_fit_leaves_the_operator_applied_every_block(cap):
+    """When no matrix fits the budget the unit runs matrix-free and the result is still exact on P."""
+    g, info = _run_capped(cap, reort=True, memory_budget=1)
+    assert info["cap_hit"] and info["engine"] == "none"
     _assert_php_oracle(g, info)
 
 
@@ -596,37 +594,38 @@ def test_a_decision_line_is_printed_on_accept_and_decline(monkeypatch, capsys):
 
 @pytest.mark.mpi
 @pytest.mark.parametrize("chunks", ["1", "4"])
-def test_frozen_csr_mpi_matches_the_sparse_kernel(chunks, monkeypatch):
-    """Multi-rank: the restart on a distributed CSR (empty ranks at -n 3) equals the sparse kernel."""
+def test_frozen_csr_mpi_matches_the_matrix_free_unit(chunks, monkeypatch):
+    """Multi-rank: the frozen distributed matrix (empty ranks at -n 3) equals the operator applied every block."""
     comm = MPI.COMM_WORLD
     monkeypatch.setenv("APPLY_ROW_CHUNKS", chunks)
-    set_gf_switches(monkeypatch, frozen_csr="0")
+    set_gf_switches(monkeypatch, matrix_mode="none")
     g_sparse, _ = _run_capped(6, reort=True, comm=comm)
-    set_gf_switches(monkeypatch, frozen_csr="1")
+    set_gf_switches(monkeypatch, matrix_mode="retained")
     g_csr, info = _run_capped(6, reort=True, comm=comm)
-    assert info["csr_fallback"]
+    assert info["engine"] == "retained"
     np.testing.assert_allclose(g_csr, g_sparse, atol=1e-9)
     _assert_php_oracle(g_csr, info, comm)
 
 
 def test_frozen_csr_starts_from_a_bounded_block_budget(monkeypatch):
     """The array kernel preallocates its coefficient buffers at its block budget, and ``ceil(N/p)``
-    at a 10M-determinant frozen basis is GiBs. The fallback starts small and doubles: a 1-block
-    floor on a seed-frozen unit (no sparse blocks to scale from) still ends exact on P."""
-    from impurityModel.ed import gf_solvers
+    at a 10M-determinant frozen basis is GiBs. The handoff starts small and doubles: a 1-block
+    floor on a seed-frozen unit still ends exact on P."""
+    from impurityModel.ed import BlockLanczosCore, gf_solvers
 
     budgets = []
-    real_kernel = gf_solvers.block_lanczos
+    real_kernel = BlockLanczosCore.block_lanczos
 
     def recording_kernel(*args, **kwargs):
         budgets.append(kwargs["max_iter"])
         return real_kernel(*args, **kwargs)
 
     monkeypatch.setattr(gf_solvers, "_CSR_INITIAL_BLOCKS", 1)
-    monkeypatch.setattr(gf_solvers, "block_lanczos", recording_kernel)
+    monkeypatch.setattr(BlockLanczosCore, "block_lanczos", recording_kernel)
+    set_gf_switches(monkeypatch, matrix_mode="retained")
     seed_size = _excited_basis(np.inf).size
-    g, info = _run_capped(seed_size, reort=True)
-    assert info["csr_fallback"]
+    g, info = _run_capped(seed_size, reort=None)
+    assert info["engine"] == "retained"
     assert budgets[0] == 1 and len(budgets) > 1
     assert budgets == sorted(budgets)
     _assert_php_oracle(g, info)

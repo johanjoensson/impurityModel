@@ -169,7 +169,7 @@ def test_solver_options_accept_and_validate_the_tolerances():
 
 def _monitor_tolerances(monkeypatch, env=None, **extra):
     """The ``EvalMeshes.tols`` every unit's monitor received during one ``get_Greens_function`` run."""
-    from impurityModel.ed import gf_solvers
+    from impurityModel.ed import gf_recurrence, gf_solvers
     from impurityModel.test.support.gf_oracles import _run_driver
 
     seen = []
@@ -179,7 +179,9 @@ def _monitor_tolerances(monkeypatch, env=None, **extra):
         seen.append(getattr(eval_meshes, "tols", None))
         return real(delta, slaterWeightMin, eval_meshes)
 
+    # Each kernel imported the factory by name: the Lanczos GF's recurrence, and the BiCGSTAB/array kernels.
     monkeypatch.setattr(gf_solvers, "_make_gf_convergence_monitor", recording)
+    monkeypatch.setattr(gf_recurrence, "_make_gf_convergence_monitor", recording)
     for key, value in (env or {}).items():
         monkeypatch.setenv(key, value)
     _run_driver("lanczos", None, extra=extra)

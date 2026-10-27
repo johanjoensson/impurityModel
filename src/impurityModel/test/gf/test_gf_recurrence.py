@@ -112,15 +112,19 @@ def test_every_matvec_mode_gives_the_same_green_function(comm, mode, kw):
 
 
 @pytest.mark.parametrize("comm", COMMS)
-def test_block_green_sparse_routes_to_the_recurrence_on_a_matrix(comm, monkeypatch):
+def test_block_green_sparse_runs_the_recurrence_on_a_matrix(comm, monkeypatch):
+    """``block_Green_sparse`` is the recurrence: by default it prices the matvec mode (the retained mode without a
+    consumer of the frontier rows), and ``set_gf_switches(matrix_mode=...)`` forces one."""
     from impurityModel.test.support.gf_switches import set_gf_switches
 
-    ref = run_chain(comm, cap=2500, support_settle=False)
-    assert ref[3].get("engine") is None  # today's path: no engine key
-    set_gf_switches(monkeypatch, matrix_mode="retained")
     routed = run_chain(comm, cap=2500, support_settle=False)
     assert routed[3]["engine"] == "retained"
-    np.testing.assert_allclose(_g(routed), _g(ref), atol=1e-8)
+    direct = run_chain(
+        comm, kernel=functools.partial(_block_Green_discovered, matrix_mode="retained"), cap=2500, support_settle=False
+    )
+    assert np.array_equal(routed[0], direct[0]) and np.array_equal(routed[1], direct[1])
+    set_gf_switches(monkeypatch, matrix_mode="discovered")
+    assert run_chain(comm, cap=2500, support_settle=False)[3]["engine"] == "discovered"
 
 
 @pytest.mark.parametrize("comm", COMMS)
