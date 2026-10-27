@@ -37,6 +37,8 @@ def gf_switches(*, closure_freeze=None, frozen_csr=None, matrix_mode=None):
             gf_solvers._BICGSTAB_CLOSURE_FREEZE = _truthy(closure_freeze)
         if frozen_csr is not None:
             gf_solvers._FROZEN_CSR = _truthy(frozen_csr)
+        if matrix_mode is not None:
+            gf_solvers._MATRIX_MODE = matrix_mode
         yield
     finally:
-        gf_solvers._BICGSTAB_CLOSURE_FREEZE, gf_solvers._FROZEN_CSR = old
+        gf_solvers._BICGSTAB_CLOSURE_FREEZE, gf_solvers._FROZEN_CSR, gf_solvers._MATRIX_MODE = old
