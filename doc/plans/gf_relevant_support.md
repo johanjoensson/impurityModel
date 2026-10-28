@@ -278,20 +278,30 @@ Open (not changed; each is a design question, not a bug fix):
 Hermitian second solve for complex seeds (`39e240a8`), resolution-preserving retire ranking, LRU graph cache; breadth-first
 cap 1M, 3 rounds, rtol 1e-3, maxit 150, broaden 4. Graded against `c1m_dis` (breadth-first, acausal).
 
-| | breadth `c1m_dis` | eta 1e-3 | `refine12b` | `refine12d` |
+| | breadth `c1m_dis` | eta 1e-3 | `refine12b` (idle) | `refine12d` (RSPt running) |
 |---|---|---|---|---|
-| worst Im Σ_ii (real axis) | +6.887e-2 | -2.005e-4 | -2.005e-4 | **-2.005e-4** (causal) |
-| max\|dΣ_mats\| vs breadth | 0 | 2.0e-4 | | 2.165e-4 |
-| GF wall | 1368 s | 1377 s | 3729 s | **7069 s** (5.2x breadth) |
-| VmHWM | 0.98 GB | 0.81 GB | 1.56 GB | 1.51 GB |
+| worst Im Σ_ii, whole real axis | +6.887e-2 | -2.005e-4 | -2.005e-4 | -2.005e-4 |
+| where that worst point is | w = -0.304, orbital 0 | w = +1.0 (mesh edge) | w = +1.0 | w = +1.0 |
+| worst Im Σ_ii in w in [-0.33, -0.27] (the feature) | **+6.887e-2** (acausal) | -5.13e-2 | -1.95e-2 | -2.02e-2 |
+| max\|dΣ_mats\| vs breadth | 0 | 2.0e-4 | 2.165e-4 | 2.165e-4 |
+| GS wall | 383 s | 415 s | 414 s | 888 s |
+| GF wall | 1368 s | 1377 s | **3729 s (2.7x breadth)** | 7069 s (contended) |
+| VmHWM (`/usr/bin/time` around mpiexec; unit lines show 2.6-2.7 GiB) | 0.98 GB | 0.81 GB | 1.56 GB | 1.51 GB |
 
-No segfault, no fallback, no decline. 6 of 12 units swapped (3 rounds on four of them, 2 on two; 100k per round); the
-other 6 settled at round 0 with nothing to swap. Worst solve residual per refined unit 8e-2 .. 1.1e-1 against
-rtol 1e-3 (maxit 150 binds, so the rankings are made from unconverged solves); held-out dG 0.03 .. 0.27.
+No segfault, no fallback, no decline. 5 of 12 units swapped (3 rounds on units 4, 9 and 5; 2 on units 10 and 3; up
+to 100k per round); the other 7 settled at round 0 with nothing to swap. `refine12b` and `refine12d` made the same
+decisions per unit. Worst solve residual of the swapped units 1.6e-2 (unit 10), 2.3e-2 (9), 2.9e-2 (3), 8.3e-2 (4),
+1.1e-1 (5) against rtol 1e-3 (maxit 150 binds, so their rankings are made from unconverged solves); the seven units
+that swapped nothing had converged solves (9.4e-4 .. 4.1e-3). Whether the swaps were score-driven or noise-driven is
+open. Held-out dG 0.03 .. 0.27.
 
-Caveats, stated plainly: (1) the worst Im Σ is the same number (-2.005e-4) as the pruned-growth leg and `refine12b`,
-so it is set by something refinement does not move; this run shows refinement *does not break* causality, not that
-refinement is what restored it (eta 1e-3 alone already does, §6). (2) The wall includes the user's RSPt run competing
-for cores (one rank at ~49 % CPU for the first hour), so 7069 s is pessimistic, but not by 5x. (3) The solves do not
-converge at the cheap tolerance; the ranking noise floor is an open item. (4) The headline question for B, whether
-refinement is needed once growth is pruned, is answered by the FCC Ni leg (acausal breadth-first, per the user).
+Caveats, corrected 2026-10-28 (the first version of this section was wrong on (1) and (2)): (1) the global worst
+Im Σ (-2.005e-4) is the mesh-edge value at w = +1.0 and is identical in every causal leg, so it does not
+discriminate between them. At the feature, refinement does restore causality starting from the acausal breadth-first
+round 0: +6.9e-2 becomes -1.95e-2 / -2.02e-2, with less headroom than pruned growth leaves (-5.1e-2). Grade on the
+feature, not on the global maximum. (2) `refine12d` ran beside the user's RSPt job for its whole length, not just the
+first hour: its ground state took 888 s against 414 s in the idle legs. The clean cost of the refined GF phase is
+the idle `refine12b`: 2.7x breadth, not 5.2x. (3) The solves do not converge at the cheap tolerance; the ranking noise
+floor is open (superseded by taking the solutions from the recurrence, plan revision 8). (4) The headline question for
+B, whether refinement is needed once growth is pruned, is answered by the FCC Ni leg (acausal breadth-first, per the
+user).
