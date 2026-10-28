@@ -75,3 +75,77 @@ def test_the_refined_support_is_the_exact_resolvent_of_PHP(comm):
     g_ref, info = _run(10, RefineSpec(rounds=3, tol=1e-12, swap=0.4), comm=comm)
     kept = _gather(info["proxy"].retained_keys(), comm)
     np.testing.assert_allclose(g_ref, _dense_G_on(kept, OMEGA + 1j * DELTA), atol=1e-9)
+
+
+def _spy_scores(monkeypatch, residuals=None):
+    """Record the arguments of every ``importance_scores`` call; ``residuals`` replaces the solves' residuals."""
+    from impurityModel.ed import gf_refinement
+
+    calls, real = [], gf_refinement.importance_scores
+
+    def spy(matrix, seeds, zs, **kw):
+        out = real(matrix, seeds, zs, **kw)
+        calls.append((list(zs), kw))
+        if residuals is not None:
+            out.residuals = list(residuals)
+        return out
+
+    monkeypatch.setattr(gf_refinement, "importance_scores", spy)
+    return calls
+
+
+def test_the_real_axis_scoring_shifts_are_broadened_and_the_matsubara_ones_are_not():
+    from impurityModel.ed.gf_refinement import pick_shifts
+
+    real = np.linspace(-1.1, 1.1, 9) + 1j * DELTA
+    matsubara = 1j * np.linspace(0.05, 2.0, 6)
+
+    def g_of(zs):  # one sharp peak on the real axis
+        return np.array([[[1.0 / (z - 0.3 + 1e-3j)]] for z in np.asarray(zs)])
+
+    plain, hold = pick_shifts(g_of, [real, matsubara])
+    wide, hold_wide = pick_shifts(g_of, [real, matsubara], broaden=4.0)
+    assert len(plain) == len(wide)
+    on_matsubara = set(1j * np.linspace(0.05, 2.0, 6))
+    for p, w in zip(plain, wide):
+        assert w.real == p.real
+        assert w.imag == pytest.approx(p.imag if p in on_matsubara else 4.0 * p.imag)
+    assert any(w.imag == pytest.approx(4 * DELTA) for w in wide), "a real-axis shift must be broadened"
+    assert hold == hold_wide, "the holdout is judged on the mesh"
+    assert {w for w in wide if w in on_matsubara} == {p for p in plain if p in on_matsubara}
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_the_refinement_scores_at_the_spec_broadening_and_the_spec_tolerances(monkeypatch, comm):
+    calls = _spy_scores(monkeypatch)
+    _run(10, RefineSpec(rounds=1, tol=1e-12, swap=0.4, rtol=1e-3, maxit=7, broaden=4.0), comm=comm)
+    zs, kw = calls[0]
+    assert (kw["rtol"], kw["maxit"]) == (1e-3, 7)
+    matsubara = set(_mesh()[1])
+    real_axis = [z for z in zs if z not in matsubara]
+    assert real_axis and all(z.imag == pytest.approx(4 * DELTA) for z in real_axis)
+    assert [z for z in zs if z in matsubara], "premise: the Matsubara points are scored too, unbroadened"
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_a_spec_that_says_nothing_reads_the_module_constants(monkeypatch, comm):
+    from impurityModel.ed import gf_refinement
+
+    monkeypatch.setattr(gf_refinement, "REFINE_RTOL", 1e-4)
+    monkeypatch.setattr(gf_refinement, "REFINE_MAXIT", 11)
+    monkeypatch.setattr(gf_refinement, "REFINE_BROADEN", 3.0)
+    calls = _spy_scores(monkeypatch)
+    _run(10, RefineSpec(rounds=1, tol=1e-12, swap=0.4), comm=comm)
+    zs, kw = calls[0]
+    assert (kw["rtol"], kw["maxit"]) == (1e-4, 11)
+    assert any(z.imag == pytest.approx(3 * DELTA) for z in zs)
+    assert not any(z.imag == pytest.approx(3 * DELTA) for z in zs if z in set(_mesh()[1]))
+
+
+@pytest.mark.parametrize("comm", COMMS)
+def test_the_record_keeps_the_worst_residual_of_every_pass(monkeypatch, comm):
+    """The worst over the shifts (not the first, not the last) of each pass, one entry per pass."""
+    _spy_scores(monkeypatch, residuals=[1e-9, 3e-2, 1e-4])
+    _g, info = _run(10, RefineSpec(rounds=2, tol=1e-12, swap=0.4), comm=comm)
+    rec = info["refine"]
+    assert rec["residual"] == [3e-2] * len(rec["gain"])

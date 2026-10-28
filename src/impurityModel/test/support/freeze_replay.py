@@ -173,6 +173,9 @@ def run(
     refine_rounds=None,
     refine_tol=None,
     refine_swap=None,
+    refine_rtol=None,
+    refine_maxit=None,
+    refine_broaden=None,
 ):
     """Replay one archived call and write ``out + '.npz'`` on rank 0. Returns the result dict (rank 0).
 
@@ -182,7 +185,10 @@ def run(
 
     ``prune_tol`` / ``first_shell_tol`` run pruned growth (``gf_prune_tol`` / ``gf_first_shell_tol``, replacing
     the settle) and ``prune_rule`` (``eta`` or ``mass``) sets the ``GF_PRUNE_RULE`` harness knob, identically on
-    every rank. ``refine_rounds`` / ``refine_tol`` / ``refine_swap`` swap-refine the units the cap froze.
+    every rank. ``refine_rounds`` / ``refine_tol`` / ``refine_swap`` swap-refine the units the cap froze;
+    ``refine_rtol`` / ``refine_maxit`` / ``refine_broaden`` set ``gf_refinement.REFINE_RTOL`` / ``REFINE_MAXIT`` /
+    ``REFINE_BROADEN`` (the importance solves' stopping rule and the broadening factor of the real-axis scoring
+    shifts), identically on every rank.
     """
     if prune_rule is not None:
         os.environ["GF_PRUNE_RULE"] = prune_rule
@@ -193,6 +199,15 @@ def run(
     from impurityModel.ed import gf_solvers
 
     gf_solvers._MATRIX_MODE = matrix_mode  # harness switch, identical on every rank
+    from impurityModel.ed import gf_refinement
+
+    for name, value in (
+        ("REFINE_RTOL", refine_rtol),
+        ("REFINE_MAXIT", refine_maxit),
+        ("REFINE_BROADEN", refine_broaden),
+    ):
+        if value is not None:
+            setattr(gf_refinement, name, value)
     wl = rw.load_workload(h5_path, cluster=cluster, iteration=iteration)
     if wl["ignored_attrs"]:
         # warm_start / warm_tol describe the bath fit that produced H solver, not the solver call.
@@ -262,6 +277,11 @@ def main(argv=None):
     r.add_argument("--refine-rounds", type=int, default=None, help="gf_refine_rounds: swap refinement of capped units")
     r.add_argument("--refine-tol", type=float, default=None, help="gf_refine_tol (needs --refine-rounds)")
     r.add_argument("--refine-swap", type=float, default=None, help="gf_refine_swap (needs --refine-rounds)")
+    r.add_argument("--refine-rtol", type=float, default=None, help="importance-solve rtol (REFINE_RTOL, default 1e-6)")
+    r.add_argument("--refine-maxit", type=int, default=None, help="importance-solve maxit (REFINE_MAXIT, default 500)")
+    r.add_argument(
+        "--refine-broaden", type=float, default=None, help="factor on the real-axis scoring shifts' Im z (default 1)"
+    )
     r.add_argument("--cost-budget", type=float, default=None, help="BasisOptions.cost_budget (alpha); off when absent")
     r.add_argument("--first-shell-tol", type=float, default=None, help="gf_first_shell_tol (needs --prune-tol)")
     r.add_argument("--prune-rule", default=None, choices=["eta", "mass"], help="GF_PRUNE_RULE for the sweep")
@@ -300,6 +320,9 @@ def main(argv=None):
         a.refine_rounds,
         a.refine_tol,
         a.refine_swap,
+        a.refine_rtol,
+        a.refine_maxit,
+        a.refine_broaden,
     )
     return 0
 

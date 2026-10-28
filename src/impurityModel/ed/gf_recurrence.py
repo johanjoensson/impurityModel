@@ -906,6 +906,8 @@ def _refine_line(rec):
     if rec.get("declined"):
         return f"GF refinement declined: {rec['declined']}"
     head = f"GF refinement: {rec['rounds']} swap round(s), swapped {rec['swapped']}, remaining gain {rec['gain']}"
+    if rec.get("residual"):
+        head += f", worst solve residual {max(rec['residual']):.1e}"
     if rec.get("fell_back"):
         return head + " -- final estimate worse than round 0, kept round 0's support"
     tail = "settled" if rec.get("settled") else "not settled"

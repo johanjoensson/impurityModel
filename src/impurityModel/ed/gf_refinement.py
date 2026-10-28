@@ -18,6 +18,7 @@ complex-symmetric and a second solve at ``z*`` would be needed (declined by the 
 
 import time
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 from mpi4py import MPI
@@ -277,6 +278,12 @@ def probe_unit(matrix, support, seeds, hop, basis, info, zs=(), rtol=1e-6):
 #: Defaults of the refinement (beside ``GF_METHODS``: not environment knobs).
 REFINE_TOL = 1e-3
 REFINE_SWAP = 0.10
+#: The importance solves' stopping rule and the factor the real-axis scoring shifts' broadening is multiplied by.
+#: Harness switches (``freeze_replay`` sets them identically on every rank), not user options, until measured: a
+#: ``RefineSpec`` field left ``None`` reads the constant when the unit is refined.
+REFINE_RTOL = 1e-6
+REFINE_MAXIT = 500
+REFINE_BROADEN = 1.0
 #: The mass of the first H-shell that may be left swappable: the heaviest rows covering ``1 - this`` of ``|H s|^2``
 #: are exempt from removal (they carry the moments of G and with them the self-energy tail).
 FIRST_SHELL_EXEMPT_TAIL = 1e-6
@@ -286,11 +293,16 @@ FIRST_SHELL_EXEMPT_TAIL = 1e-6
 class RefineSpec:
     """``rounds`` swap rounds at most; stop when the estimated remaining first-order gain (the summed ``s_cand`` of the
     ``swap`` fraction of the cap that would be swapped in) is below ``tol`` times the largest ``|G|`` on the shifts;
-    each round swaps at most ``swap`` of the retained determinants."""
+    each round swaps at most ``swap`` of the retained determinants. ``rtol`` / ``maxit`` stop the importance solves and
+    ``broaden`` multiplies the imaginary part of the real-axis shifts the scores are taken at (``None``: the module
+    constants ``REFINE_RTOL`` / ``REFINE_MAXIT`` / ``REFINE_BROADEN``)."""
 
     rounds: int = 0
     tol: float = REFINE_TOL
     swap: float = REFINE_SWAP
+    rtol: Optional[float] = None
+    maxit: Optional[int] = None
+    broaden: Optional[float] = None
 
 
 @dataclass
@@ -331,14 +343,18 @@ def matrix_is_real(matrix):
     return _allreduce(matrix.comm, worst, MPI.MAX) <= 1e-12
 
 
-def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2):
+def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2, broaden=1.0):
     """``(Z, Z_holdout)``: the shifts the scores are maximised over and a disjoint set the change is judged on.
 
     ``g_of(zs)`` gives the round-0 continued-fraction ``G`` of shape ``(len(zs), n, n)``. A mesh whose imaginary part
     varies more than its real part is the Matsubara axis (``Z`` takes its ``n_matsubara`` points nearest the real
     axis: the floor for weight-carrying rows away from a pole); on a real axis ``Z`` takes the ``n_peaks`` largest
     local maxima of ``sum_i |Im G_ii|`` and the point of steepest change, the holdout the next peaks. Replicated: a
-    function of replicated data only."""
+    function of replicated data only.
+
+    The scoring shifts ``Z`` of a real axis are taken at ``Re z + i broaden Im z`` (``(z - H_P)`` is better
+    conditioned the further the shift is from the real axis, and the Matsubara points already are): the peaks are
+    found, and the holdout judged, on the mesh itself."""
     z_pick, z_hold = [], []
     for axis in eval_meshes or ():
         mesh = np.asarray(axis, dtype=complex)
@@ -361,7 +377,7 @@ def pick_shifts(g_of, eval_meshes, n_peaks=3, n_matsubara=2):
         steep = int(np.argmax(np.abs(np.gradient(weight)))) if len(zs) > 1 else 0
         chosen = list(dict.fromkeys(ranked[:n_peaks] + [steep]))
         rest = [i for i in ranked[n_peaks:] + sorted(range(len(zs)), key=lambda i: -weight[i]) if i not in chosen]
-        z_pick += [complex(zs[i]) for i in chosen]
+        z_pick += [complex(zs[i].real, broaden * zs[i].imag) for i in chosen]
         z_hold += [complex(zs[i]) for i in list(dict.fromkeys(rest))[:n_peaks]]
     return list(dict.fromkeys(z_pick)), list(dict.fromkeys(z for z in z_hold if z not in z_pick))
 
@@ -442,7 +458,7 @@ def _g_of_solutions(comm, seeds, solutions):
     return out
 
 
-def refine_frozen_unit(matrix, spec, seed_keys, seed_q0, first, rerun, g_cf, eval_meshes, seed_block, rtol=1e-6):
+def refine_frozen_unit(matrix, spec, seed_keys, seed_q0, first, rerun, g_cf, eval_meshes, seed_block):
     """Swap refinement of a unit the cap froze, on its discovered matrix. **Collective** (every rank, same arguments).
 
     ``first`` is round 0's ``(alphas, betas, widths, status, q_last)``; ``rerun(q0)`` the frozen recurrence from a
@@ -462,7 +478,10 @@ def refine_frozen_unit(matrix, spec, seed_keys, seed_q0, first, rerun, g_cf, eva
     if not matrix_is_real(matrix):
         record["declined"] = "complex H"
         return RefineOutcome(None, record)
-    zs, z_hold = pick_shifts(lambda z: g_cf(first, z), eval_meshes)
+    rtol = REFINE_RTOL if spec.rtol is None else spec.rtol
+    maxit = REFINE_MAXIT if spec.maxit is None else spec.maxit
+    broaden = REFINE_BROADEN if spec.broaden is None else spec.broaden
+    zs, z_hold = pick_shifts(lambda z: g_cf(first, z), eval_meshes, broaden=broaden)
     if not zs:
         record["declined"] = "no evaluation mesh"
         return RefineOutcome(None, record)
@@ -477,12 +496,13 @@ def refine_frozen_unit(matrix, spec, seed_keys, seed_q0, first, rerun, g_cf, eva
     for round_ in range(spec.rounds + 1):
         t_round = time.perf_counter()
         seeds = seed_block(matrix, seed_keys, seed_q0)
-        scores = importance_scores(matrix, seeds, zs, rtol=rtol, x0s=warm)
+        scores = importance_scores(matrix, seeds, zs, rtol=rtol, maxit=maxit, x0s=warm)
         exempt = _exempt_pslots(matrix, seed_keys, seeds, extra)
         retire, admit, gain = _select_swap(matrix, scores, exempt, k_max)
         record["gain"].append(gain)
         record.setdefault("pass_seconds", []).append(time.perf_counter() - t_round)
         record.setdefault("iterations", []).append(max(scores.iterations) if scores.iterations else 0)
+        record.setdefault("residual", []).append(max(scores.residuals) if scores.residuals else 0.0)
         if first_gain is None:
             first_gain = gain
         n_swap = int(_allreduce(comm, float(len(retire)), MPI.SUM))
