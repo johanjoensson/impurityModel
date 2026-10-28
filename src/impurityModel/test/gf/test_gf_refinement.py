@@ -373,3 +373,70 @@ def test_the_retire_ranking_resolves_scores_many_decades_below_the_largest():
     got = np.sort(np.concatenate(comm.allgather(s_ret[retire])))
     want = np.sort(np.concatenate(comm.allgather(s_ret)))[:k]
     np.testing.assert_array_equal(got, want)
+
+
+@pytest.mark.parametrize("hermitian_complex", [False, True])
+def test_the_removal_identity_for_complex_seeds_needs_the_conjugate_shift_solve(hermitian_complex):
+    """``dG_ij = -conj(Y_i(D)) X_j(D) / R_DD`` with ``X = R(z) s`` and ``Y = R(z*) s``, for complex seeds and a real or
+    complex Hermitian ``H``; the real-seed form ``X_i X_j`` is not it."""
+    rng = np.random.default_rng(2)
+    n = 30
+    h = rng.normal(size=(n, n)) + (1j * rng.normal(size=(n, n)) if hermitian_complex else 0)
+    h = (h + h.conj().T) / 2
+    z = 0.3 + 0.2j
+    s = rng.normal(size=(n, 2)) + 1j * rng.normal(size=(n, 2))
+    r = np.linalg.inv(z * np.eye(n) - h)
+    x = r @ s
+    y = np.linalg.inv(np.conj(z) * np.eye(n) - h) @ s
+    g = s.conj().T @ x
+    for d in (0, 7, 19):
+        keep = [i for i in range(n) if i != d]
+        r2 = np.linalg.inv(z * np.eye(n - 1) - h[np.ix_(keep, keep)])
+        g2 = s[keep].conj().T @ r2 @ s[keep]
+        np.testing.assert_allclose(g2 - g, -np.outer(y[d].conj(), x[d]) / r[d, d], atol=1e-11)
+        assert not np.allclose(g2 - g, -np.outer(x[d].conj(), x[d]) / r[d, d], atol=1e-6)
+
+
+def _dense_scores_hermitian(h, in_p, seeds_global, zs):
+    """``max_i |Y_i| max_j |X_j|`` form of the scores (``Y = R(z*) s``), dense."""
+    n = len(in_p)
+    p = np.flatnonzero(in_p)
+    hpp = h[np.ix_(p, p)]
+    diag = np.diag(h)
+    s_ret = np.full(n, -np.inf)
+    s_cand = np.full(n, -np.inf)
+    for z in zs:
+        x = np.linalg.solve(z * np.eye(len(p)) - hpp, seeds_global[p])
+        y = np.linalg.solve(np.conj(z) * np.eye(len(p)) - hpp, seeds_global[p])
+        inv = 1.0 / (z - diag[p])
+        sigma = (np.abs(h[:, p]) ** 2) @ inv
+        sigma[p] -= np.abs(diag[p]) ** 2 * inv
+        denom = np.abs(z - diag - sigma)
+        cand = np.abs(h[:, p] @ x).max(axis=1) * np.abs(h[:, p] @ y).max(axis=1) / denom
+        ret = np.full(n, -np.inf)
+        ret[p] = np.abs(x).max(axis=1) * np.abs(y).max(axis=1) * denom[p]
+        s_ret = np.maximum(s_ret, ret)
+        s_cand = np.maximum(s_cand, np.where(in_p, -np.inf, cand))
+    return s_ret, s_cand
+
+
+@pytest.mark.mpi
+def test_complex_seeds_are_scored_with_the_conjugate_shift_solve():
+    comm = MPI.COMM_WORLD
+    dets, _op, _b, matrix, h, index, in_p = _setup(comm)
+    block = _seeds(matrix, index, dets)
+    # a relative phase between determinants of one column: not real up to a global phase
+    rng = np.random.default_rng(4)
+    phases = np.exp(1j * rng.uniform(0, 2 * np.pi, size=len(index)))
+    pkeys = matrix.p_keys()
+    block = block * np.array([phases[index[_key(k)]] for k in pkeys])[:, None]
+    block[:, 1] += 0.3 * block[:, 0]  # a genuinely mixed second column
+    got = importance_scores(matrix, block, ZS, rtol=1e-11)
+    assert got.solutions_y, "complex seeds need the second solve"
+    s_ret, s_cand = _dense_scores_hermitian(h, in_p, _global_seeds(matrix, block, index, comm), ZS)
+    kkeys = matrix.keys_of(np.arange(matrix.n_k_local))
+    np.testing.assert_allclose(got.s_ret, s_ret[[index[_key(k)] for k in pkeys]], rtol=1e-6, atol=1e-12)
+    np.testing.assert_allclose(got.s_cand, s_cand[[index[_key(k)] for k in kkeys]], rtol=1e-6, atol=1e-12)
+    assert max(got.residuals) < 1e-10
+    real = importance_scores(matrix, _seeds(matrix, index, dets), ZS, rtol=1e-11)
+    assert not real.solutions_y, "real seeds and a real H need one solve"

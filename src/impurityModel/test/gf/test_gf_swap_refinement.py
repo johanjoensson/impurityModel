@@ -182,26 +182,27 @@ def test_a_refinement_whose_estimate_grows_falls_back_to_round_zeros_support(mon
 
 
 @pytest.mark.parametrize("comm", COMMS)
-def test_seeds_that_are_not_real_up_to_a_phase_decline_the_refinement(monkeypatch, comm):
-    """The removal identity is exact only for real ``H`` and seeds real up to one phase per column: a column with
-    a relative phase between its determinants is declined, a globally rotated one is not."""
+def test_seeds_that_are_not_real_up_to_a_phase_are_refined_with_the_conjugate_shift_solve(monkeypatch, comm):
+    """A column with a relative phase between its determinants (the real archives' seeds) is not declined: the
+    scores need ``Y = R(z*) s`` as well, and the refinement still keeps the cap, swaps, and beats breadth-first
+    growth against the dense resolvent."""
     import sys
 
+    from impurityModel.ed.ManyBodyUtils import ManyBodyState
     from impurityModel.test.support.gf_oracles import _det
 
     module = sys.modules[__name__]
     real_seeds = module._seeds
-    from impurityModel.ed.ManyBodyUtils import ManyBodyState
 
-    def seeds(relative_phase):
-        a, b = real_seeds()
-        phase = np.exp(1j * relative_phase)
-        first = ManyBodyState({_det([0, 2, 3]): 1.0 + 0j, _det([1, 2, 3]): 0.5 * phase})
-        return [first, b]
+    def complex_seeds():
+        _a, b = real_seeds()
+        return [ManyBodyState({_det([0, 2, 3]): 1.0 + 0j, _det([1, 2, 3]): 0.5j}), b]
 
-    monkeypatch.setattr(module, "_seeds", lambda: seeds(np.pi / 2))
-    _g, declined = _run(10, RefineSpec(rounds=2, tol=1e-12, swap=0.4), comm=comm)
-    assert declined["refine"]["declined"] == "complex seeds"
-    monkeypatch.setattr(module, "_seeds", lambda: seeds(np.pi))  # real, a sign: still fine
-    _g, fine = _run(10, RefineSpec(rounds=2, tol=1e-12, swap=0.4), comm=comm)
-    assert fine["refine"]["declined"] is None
+    monkeypatch.setattr(module, "_seeds", complex_seeds)
+    truth, _ = _run(np.inf, comm=comm)
+    g_breadth, _ = _run(10, comm=comm)
+    g_ref, info = _run(10, RefineSpec(rounds=6, tol=1e-12, swap=0.4), comm=comm)
+    rec = info["refine"]
+    assert rec["declined"] is None and sum(rec["swapped"]) >= 1, rec
+    assert info["retained_size"] == 10
+    assert np.abs(g_ref - truth).max() < 0.8 * np.abs(g_breadth - truth).max()

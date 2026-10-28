@@ -12,8 +12,10 @@ shift ``z`` solve ``(z - M_P) X = s`` on ``P`` and score, in units of the Green'
 
 ``Sigma_D = sum_{D' in P, D' != D} |M_DD'|^2 / (z - H_D'D')`` is one entrywise-``|M|^2`` matvec against
 ``1 / (z - H_D'D')`` over the ``P`` columns, so the two scores share one denominator and are commensurable.
-The maximum over the shifts is kept. Exact for real ``H``: with spin-orbit coupling ``R`` is not
-complex-symmetric and a second solve at ``z*`` would be needed (declined by the caller).
+The maximum over the shifts is kept. The removal identity is ``-conj(Y_i(D)) X_j(D) / R_DD`` with ``X = R(z) s``
+and ``Y = R(z*) s``: when ``H`` is real and the seed columns real up to a phase ``|Y| = |X|`` and one solve per shift
+serves; otherwise a second solve at ``z*`` is made. (A complex ``H`` is still declined by ``refine_frozen_unit``:
+its tests against a dense complex oracle are open, see the doc.)
 """
 
 import time
@@ -35,6 +37,7 @@ class ImportanceScores:
     s_ret: np.ndarray
     s_cand: np.ndarray
     solutions: list = field(default_factory=list)
+    solutions_y: list = field(default_factory=list)
     residuals: list = field(default_factory=list)
     iterations: list = field(default_factory=list)
 
@@ -172,11 +175,16 @@ def solve_shifted_block(apply, z, b, comm=None, x0=None, rtol=1e-6, maxit=500):
     return x, it, rel
 
 
-def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_order=True):
+def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_order=True, y0s=None):
     r"""``s_ret`` and ``s_cand`` (see the module docstring) of ``matrix`` for the seed block ``seeds``
     (``(n_p_local, m)`` on the P slots) at the shifts ``zs``, maximised over the shifts and the columns.
 
-    ``x0s`` (optional, one ``(n_p_local, m)`` block per shift) warm-starts the solves. ``first_order=False``
+    Removing ``D`` changes ``G_ij = s_i^H R s_j`` by ``-conj(Y_i(D)) X_j(D) / R_DD`` with ``X = R(z) s`` and
+    ``Y = R(z*) s`` (``R(z)^H = R(z*)`` for Hermitian ``H``). When every seed column is real up to a phase and ``H``
+    is real, ``|Y_i| = |X_i|`` and the second solve is skipped; otherwise it is made (``out.solutions_y``), and the
+    scores read ``max_i |Y_i| max_j |X_j|``.
+
+    ``x0s`` / ``y0s`` (optional, one ``(n_p_local, m)`` block per shift) warm-start the solves. ``first_order=False``
     drops ``Sigma_D`` (the bare ``|z - H_DD|``), kept only so a test can show the self-energy matters.
     **Collective.**
     """
@@ -191,9 +199,34 @@ def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_o
     in_p = np.zeros(n_k, dtype=bool)
     in_p[p_kslot[alive]] = True
     comm = matrix.comm
+    need_y = not seeds_real_up_to_a_phase(matrix, seeds) or not matrix_is_real(matrix)
     block = min(max(seeds.shape[1], 1), SOLVE_BLOCK_COLUMNS)
     # A plan holds a cached dist-graph communicator that a later `exchange_plan` may evict (and free): build each
     # one right before the matvecs that use it, never ahead of other plans' construction.
+
+    def solve(z_solve, x0):
+        X = np.zeros_like(seeds)
+        worst, iters = 0.0, 0
+        for j0 in range(0, seeds.shape[1], block):
+            cols = slice(j0, min(j0 + block, seeds.shape[1]))
+            plan = matrix.exchange_plan(cols.stop - cols.start, "importance", rows="P")
+            x, it, rel = solve_shifted_block(
+                lambda v, plan=plan: matrix.matvec(np.ascontiguousarray(v), rows="P", plan=plan),
+                z_solve,
+                np.where(alive[:, None], seeds[:, cols], 0.0),
+                comm,
+                x0=None if x0 is None else x0[:, cols],
+                rtol=rtol,
+                maxit=maxit,
+            )
+            X[:, cols] = np.where(alive[:, None], x, 0.0)
+            worst, iters = max(worst, float(rel.max())), max(iters, it)
+        return X, worst, iters
+
+    def flow_of(V):
+        plan_all_m = matrix.exchange_plan(max(seeds.shape[1], 1), "importance", rows="all")
+        return np.abs(matrix.matvec(V, rows="all", plan=plan_all_m)).max(axis=1)
+
     s_ret = np.full(n_p, -np.inf)
     s_cand = np.full(n_k, -np.inf)
     out = ImportanceScores(s_ret, s_cand)
@@ -209,27 +242,16 @@ def importance_scores(matrix, seeds, zs, rtol=1e-6, maxit=500, x0s=None, first_o
             sigma = np.zeros(n_k, dtype=complex)
         denom = np.abs(z - diag_k - sigma)
         denom = np.maximum(denom, 1e-300)
-        X = np.zeros_like(seeds)
-        worst, iters = 0.0, 0
-        for j0 in range(0, seeds.shape[1], block):
-            cols = slice(j0, min(j0 + block, seeds.shape[1]))
-            plan = matrix.exchange_plan(cols.stop - cols.start, "importance", rows="P")
-            x, it, rel = solve_shifted_block(
-                lambda v, plan=plan: matrix.matvec(np.ascontiguousarray(v), rows="P", plan=plan),
-                z,
-                np.where(alive[:, None], seeds[:, cols], 0.0),
-                comm,
-                x0=None if x0s is None else x0s[iz][:, cols],
-                rtol=rtol,
-                maxit=maxit,
-            )
-            X[:, cols] = np.where(alive[:, None], x, 0.0)
-            worst, iters = max(worst, float(rel.max())), max(iters, it)
-        plan_all_m = matrix.exchange_plan(max(seeds.shape[1], 1), "importance", rows="all")
-        flow = matrix.matvec(X, rows="all", plan=plan_all_m)
-        s_cand = np.maximum(s_cand, np.where(in_p, -np.inf, (np.abs(flow) ** 2).max(axis=1) / denom))
-        ret = (np.abs(X) ** 2).max(axis=1) * denom[p_kslot]
-        s_ret = np.maximum(s_ret, np.where(alive, ret, -np.inf))
+        X, worst, iters = solve(z, None if x0s is None else x0s[iz])
+        ax, flow_x = np.abs(X).max(axis=1), flow_of(X)
+        ay, flow_y = ax, flow_x
+        if need_y:
+            Y, worst_y, iters_y = solve(z.conjugate(), None if y0s is None else y0s[iz])
+            ay, flow_y = np.abs(Y).max(axis=1), flow_of(Y)
+            worst, iters = max(worst, worst_y), max(iters, iters_y)
+            out.solutions_y.append(Y)
+        s_cand = np.maximum(s_cand, np.where(in_p, -np.inf, flow_x * flow_y / denom))
+        s_ret = np.maximum(s_ret, np.where(alive, ax * ay * denom[p_kslot], -np.inf))
         out.solutions.append(X)
         out.residuals.append(worst)
         out.iterations.append(iters)
@@ -293,6 +315,8 @@ REFINE_SWAP = 0.10
 REFINE_RTOL = 1e-6
 REFINE_MAXIT = 500
 REFINE_BROADEN = 1.0
+
+
 #: The mass of the first H-shell that may be left swappable: the heaviest rows covering ``1 - this`` of ``|H s|^2``
 #: are exempt from removal (they carry the moments of G and with them the self-energy tail).
 FIRST_SHELL_EXEMPT_TAIL = 1e-6
@@ -334,6 +358,16 @@ class _LazyKeys:
 
     def __getitem__(self, i):
         return self._matrix.keys_of([self._kslots[i]])[0]
+
+
+def _on_new_slots(blocks, old_k, new_p_k, n_k):
+    """Warm starts on the old P slots, re-indexed onto the new ones (a row of an admitted key starts at 0)."""
+    out = []
+    for x in blocks:
+        xk = np.zeros((n_k, x.shape[1]), dtype=complex)
+        xk[old_k] = x
+        out.append(xk[new_p_k])
+    return out
 
 
 def _allreduce(comm, value, op):
@@ -499,9 +533,6 @@ def refine_frozen_unit(matrix, spec, seed_keys, seed_q0, first, rerun, g_cf, eva
     rtol = REFINE_RTOL if spec.rtol is None else spec.rtol
     maxit = REFINE_MAXIT if spec.maxit is None else spec.maxit
     broaden = REFINE_BROADEN if spec.broaden is None else spec.broaden
-    if not seeds_real_up_to_a_phase(matrix, seed_block(matrix, seed_keys, seed_q0)):
-        record["declined"] = "complex seeds"
-        return RefineOutcome(None, record)
     zs, z_hold = pick_shifts(lambda z: g_cf(first, z), eval_meshes, broaden=broaden)
     if not zs:
         record["declined"] = "no evaluation mesh"
@@ -512,12 +543,12 @@ def refine_frozen_unit(matrix, spec, seed_keys, seed_q0, first, rerun, g_cf, eva
     keys0 = [key for key, a in zip(matrix.p_keys(), matrix.alive()) if a]
     n_alive = int(_allreduce(comm, float(matrix.n_alive_local), MPI.SUM))
     k_max = max(1, int(spec.swap * n_alive))
-    warm, extra, first_gain = None, [], None
+    warm, warm_y, extra, first_gain = None, None, [], None
     swapped_total = 0
     for round_ in range(spec.rounds + 1):
         t_round = time.perf_counter()
         seeds = seed_block(matrix, seed_keys, seed_q0)
-        scores = importance_scores(matrix, seeds, zs, rtol=rtol, maxit=maxit, x0s=warm)
+        scores = importance_scores(matrix, seeds, zs, rtol=rtol, maxit=maxit, x0s=warm, y0s=warm_y)
         exempt = _exempt_pslots(matrix, seed_keys, seeds, extra)
         retire, admit, gain = _select_swap(matrix, scores, exempt, k_max)
         record["gain"].append(gain)
@@ -533,19 +564,18 @@ def refine_frozen_unit(matrix, spec, seed_keys, seed_q0, first, rerun, g_cf, eva
         alive = matrix.alive().astype(bool)
         old_k = matrix.p_to_k_slot()[alive]
         old_x = scores.solutions if alive.all() else [x[alive] for x in scores.solutions]
+        old_y = scores.solutions_y if alive.all() else [y[alive] for y in scores.solutions_y]
         del scores, seeds  # one copy of the solutions through the (memory-hungry) set_p_keys
-        warm = None
+        warm = warm_y = None
         keep = np.ones(matrix.n_p_local, dtype=bool)
         keep[retire] = False
         keep &= matrix.alive().astype(bool)
         keys = [key for key, k_ in zip(matrix.p_keys(), keep) if k_] + list(admit)
         matrix.set_p_keys(keys)
         new_p_k = matrix.p_to_k_slot()
-        warm = []
-        for x in old_x:
-            xk = np.zeros((matrix.n_k_local, x.shape[1]), dtype=complex)
-            xk[old_k] = x
-            warm.append(xk[new_p_k])
+
+        warm = _on_new_slots(old_x, old_k, new_p_k, matrix.n_k_local)
+        warm_y = _on_new_slots(old_y, old_k, new_p_k, matrix.n_k_local) if old_y else None
         extra = list(admit)
         swapped_total += n_swap
         record["rounds"] = round_ + 1
