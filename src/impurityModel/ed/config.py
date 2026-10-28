@@ -343,6 +343,19 @@ GF_LANCZOS_ADMIT_TOL = Knob(
     ``APPLY_ROW_CHUNKS`` > 1. Exclusive with the support settle (which is off while it is set). 0 (default) is off.""",
 )
 
+GF_PRUNE_RULE = Knob(
+    name="GF_PRUNE_RULE",
+    kind="str",
+    default="eta",
+    group="bicgstab",
+    doc="""The cut rule of the block-Lanczos recurrence's importance pruning (``GF_LANCZOS_ADMIT_TOL`` > 0), on the
+    discovered-key matrix, where a row the cut defers stays in the frontier and can enter a later step. ``eta``
+    (default): admit a new row if its largest amplitude on the normalised step block exceeds the tolerance.
+    ``mass``: the tolerance is a fraction tau of the step's frontier weight ``||w_F||^2``; keep the heaviest rows
+    until what is left out weighs at most ``tau ||w_F||^2`` (the first shell: ``GF_ADMIT_FIRST_SHELL_TOL`` as the
+    same fraction, 0 keeping it whole). A harness knob for the sweep that chooses the shipped rule.""",
+)
+
 GF_ADMIT_FIRST_SHELL_TOL = Knob(
     name="GF_ADMIT_FIRST_SHELL_TOL",
     kind="float",
@@ -995,6 +1008,7 @@ KNOBS: dict[str, Knob] = _register(
     GF_BICGSTAB_ADMIT_CARRY_TOL,
     GF_BICGSTAB_ADMIT_EN_TOL,
     GF_LANCZOS_ADMIT_TOL,
+    GF_PRUNE_RULE,
     GF_ADMIT_FIRST_SHELL_TOL,
     GF_SETTLE_RATIO,
     GF_SUPPORT_TRACE,

@@ -43,6 +43,7 @@ from impurityModel.ed.gf_primitives import (
     _trim_blocks,
     boundary_frontier,
 )
+from impurityModel.ed.manybody_basis import collective_mass_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
 from impurityModel.ed.memory_estimate import current_rss_bytes, format_bytes
 from impurityModel.ed.TSQR import DEFLATE_TOL_SEEDS, spectral_norm, tsqr
@@ -75,14 +76,34 @@ class DiscoveredSupport:
     #: longer fit at the freeze continues matrix-free).
     mode_ran = None
 
-    def __init__(self, matrix, decisions, eta=None, first_shell_tol=0.0):
+    def __init__(self, matrix, decisions, eta=None, first_shell_tol=0.0, rule="eta"):
+        if rule not in ("eta", "mass"):
+            raise ValueError(f"GF_PRUNE_RULE must be 'eta' or 'mass', got {rule!r}")
         self.matrix = matrix
         self.decisions = decisions
         self.comm = matrix.comm
         self.prunes = eta is not None
-        self._eta2 = float(eta) ** 2 if self.prunes else 0.0
-        self._shell_tol2 = float(first_shell_tol) ** 2
+        self.rule = rule
+        self._eta = float(eta) if self.prunes else 0.0
+        self._eta2 = self._eta**2
+        self._shell_tol = float(first_shell_tol)
+        self._shell_tol2 = self._shell_tol**2
         self._shell_admitted = False
+        self._shell_pending = False
+        #: Determinants admitted per step (replicated), the first being the seeds' first H-shell.
+        self.step_counts = []
+        #: Key-only block of this rank's first-shell rows the cut kept (``None`` before the first shell).
+        self.shell_keys = None
+
+    def depth_histogram(self):
+        """Global number of determinants admitted at each H-depth from the seeds (step ``k`` reaches depth ``k``);
+        a deferred row that a later step admits counts at the step that admitted it."""
+        return list(self.step_counts)
+
+    @property
+    def shell_mask(self):
+        """Width-0 key-only block of this rank's first-shell rows that the cut kept (the guarded shell)."""
+        return ManyBodyState.from_keys(self.shell_keys or [])
 
     @property
     def retained_size(self):
@@ -304,6 +325,17 @@ class _Admission:
         self.pending_hq2 = 0.0
 
     def decide(self, f_ids, wf, hq2, keys_of):
+        """:meth:`_decide`, plus the step's admitted count and (once) the first shell's kept keys."""
+        before = self.d.global_count
+        admitted = self._decide(f_ids, wf, hq2, keys_of)
+        sup = self.support
+        sup.step_counts.append(int(self.d.global_count - before))
+        if sup._shell_pending:
+            sup._shell_pending = False
+            sup.shell_keys = list(keys_of(admitted))
+        return admitted
+
+    def _decide(self, f_ids, wf, hq2, keys_of):
         """The frontier rows to admit from the step's matvec output.
 
         ``f_ids`` identify this rank's frontier rows (K slots, or row numbers of the applied block) and
@@ -327,7 +359,7 @@ class _Admission:
             d.freeze_on_memory()
             return slots[:0]
         if sup.prunes:
-            return self._pruned(keys_of, slots, norms2)
+            return self._pruned(keys_of, slots, norms2, wf[keep])
         if d.support_freeze:
             return self._counted_support(keys_of, slots, norms2, wf[keep])
         n_new = int(d.allreduce_sum(len(slots)))
@@ -336,11 +368,18 @@ class _Admission:
             return slots
         return self._top_and_freeze(keys_of, slots, norms2)
 
-    def _pruned(self, keys_of, slots, norms2):
+    def _pruned(self, keys_of, slots, norms2, rows):
         sup, d = self.support, self.d
         first_shell = not sup._shell_admitted and int(d.allreduce_sum(len(slots))) > 0
         sup._shell_admitted = sup._shell_admitted or first_shell
-        sel = norms2 > (sup._shell_tol2 if first_shell else sup._eta2)
+        sup._shell_pending = first_shell
+        if sup.rule == "mass":
+            weight = (np.abs(rows) ** 2).sum(axis=1) if len(slots) else np.zeros(0)
+            fraction = sup._shell_tol if first_shell else sup._eta
+            budget = fraction * float(d.allreduce_sum(float(weight.sum())))
+            sel = weight > collective_mass_cutoff(weight, budget, d.comm)
+        else:
+            sel = norms2 > (sup._shell_tol2 if first_shell else sup._eta2)
         slots, norms2 = slots[sel], norms2[sel]
         n_new = int(d.allreduce_sum(len(slots)))
         if d.global_count + n_new <= d.cap:
@@ -753,6 +792,7 @@ def start_discovered(
     eta=None,
     first_shell_tol=0.0,
     mode="discovered",
+    rule="eta",
 ):
     """The matrix, the support and the seed block on ``P0 = basis``.
 
@@ -765,7 +805,7 @@ def start_discovered(
     cps = (basis.n_bytes + 7) // 8
     matrix = DistributedSparseMatrix(hop, cps, comm, keep_frontier=(mode == "discovered"))
     decisions = SupportDecisions(comm, cap, int(basis.size), memory_budget=memory_budget, memory_policy=memory_policy)
-    support = DiscoveredSupport(matrix, decisions, eta=eta, first_shell_tol=first_shell_tol)
+    support = DiscoveredSupport(matrix, decisions, eta=eta, first_shell_tol=first_shell_tol, rule=rule)
     local = list(basis.local_basis)
     if mode == "discovered":
         matrix.grow(local)
@@ -957,6 +997,7 @@ def block_Green_discovered(
         memory_budget=memory_budget,
         memory_policy=memory_policy,
         eta=prune_tol if prune_tol > 0.0 else None,
+        rule=config.GF_PRUNE_RULE.get(),
         first_shell_tol=config.GF_ADMIT_FIRST_SHELL_TOL.get() if prune_tol > 0.0 else 0.0,
         mode=matrix_mode,
     )
@@ -1010,6 +1051,20 @@ def block_Green_discovered(
         converged_flag[0] = True
     if (support.cap_hit or support.support_frozen) and verbose and rank == 0:
         print(support.freeze_message(), flush=True)
+    k_over_p = float("nan")
+    if matrix_mode == "discovered" and support.prunes:
+        # A deferred row stays in K, so under pruning |K|/|P| is unbounded in principle: report it. The sums are
+        # collective and the branch is replicated (mode and pruning are), never gated on the verbose rank.
+        sizes = np.array([matrix.n_k_local, matrix.n_alive_local], dtype=np.int64)
+        if comm is not None and comm.size > 1:
+            comm.Allreduce(MPI.IN_PLACE, sizes, op=MPI.SUM)
+        k_over_p = float(sizes[0]) / max(float(sizes[1]), 1.0)
+        if verbose and rank == 0:
+            print(
+                f"GF pruned growth ({support.rule}): |K| = {int(sizes[0]):,}, |P| = {int(sizes[1]):,}, "
+                f"|K|/|P| = {k_over_p:.2f}, admitted per depth {support.depth_histogram()}",
+                flush=True,
+            )
     if cap_info is not None:
         cap_info["cap_hit"] = support.cap_hit
         cap_info["retained_size"] = support.retained_size
@@ -1023,6 +1078,7 @@ def block_Green_discovered(
         cap_info["support_frozen"] = support.support_frozen
         cap_info["settle_verdict"] = support.settle_verdict()
         cap_info["support_trace"] = list(support.support_trace)
+        cap_info["k_over_p"] = k_over_p
     n_blocks = len(alphas)
     if not converged_flag[0] and rank == 0:
         print(
