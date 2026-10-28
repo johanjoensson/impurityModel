@@ -1416,7 +1416,7 @@ class BasisOptions:
     cost_budget : float or None
         ``alpha`` of the hopping-cost budget: a weighted restriction whose per-bath-orbital cost is
         ``round(8 * (d(o) - d_min))`` on the coupling distance ``d`` (``-log`` of the best-path product of
-        hoppings), bounded by ``round(8 * alpha * -log(slater_weight_min))`` and widened for the
+        hoppings), bounded by ``round(COST_KAPPA * alpha * -log(slater_weight_min))`` and widened for the
         Green's-function bases to contain the whole ground-state basis. Composes (AND) with
         ``excitation_budget``. ``None`` (default) disables it.
     e_pt2_tol : float or None

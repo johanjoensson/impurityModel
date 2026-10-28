@@ -593,7 +593,7 @@ def _rixs_map_flat(
     # Weighted restrictions (e.g. the excitation budget) for the core-excited / final bases:
     # widen the ground-state bounds by one orbital weight so a single transition operator stays
     # in-bounds, mirroring greens_function._build_excited_restrictions. None when the GS basis
-    # carries none, so the clones below then inherit split_basis.weighted_restrictions unchanged.
+    # carries none (the clones below then get None explicitly: ``clone(weighted_restrictions=None)`` is unrestricted).
     excited_weighted_restrictions = widen_weighted_restrictions(floor_weighted_restrictions(basis))
 
     thermal = ThermalEnsemble(Es, tau)
@@ -696,9 +696,16 @@ def _rixs_map_flat(
             # the intermediate resolvent's recycler tier.
             final_support, final_untracked = None, False
             for k, win in enumerate(wins):
+                # Masks are sticky on the shared operator and cannot be read back, so each stage states the one it
+                # needs (as gf_engine does per unit): the intermediate resolvent's tiers (spectral, recycled and
+                # BiCGSTAB) apply `hOp` itself, then the out-resolvent runs on green_basis's window.
+                hOp.set_restrictions(tmp_basis.restrictions)
+                hOp.set_weighted_restrictions(tmp_basis.weighted_restrictions)
                 psi2 = chain.solve(
                     tmp_basis, hOp, psi1_all, psi2_all, k, win, wins[k:], delta1, E_e, slaterWeightMin, verbose
                 )
+                hOp.set_restrictions(green_basis.restrictions)
+                hOp.set_weighted_restrictions(green_basis.weighted_restrictions)
                 value, support = eval_out(green_basis, psi2, E_e)
                 out[k] = value * thermal_weight
                 if support is None:

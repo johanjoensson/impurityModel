@@ -662,6 +662,10 @@ def test_the_cost_budget_reaches_the_basis_options(written):
     text = SELFENERGY + "\n[many_body_basis]\ncost_budget = 1.5\n"
     assert build(load_input(written(text))).basis.cost_budget == 1.5
 
+    for bad in ("0", "-1.0"):
+        with pytest.raises(InputError, match="cost_budget"):
+            build(load_input(written(SELFENERGY + f"\n[many_body_basis]\ncost_budget = {bad}\n")))
+
 
 def test_the_refine_keys_reach_the_solver_options(written):
     solver = build(load_input(written(SELFENERGY))).solver

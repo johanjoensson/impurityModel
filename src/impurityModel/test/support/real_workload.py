@@ -66,6 +66,7 @@ _CONSUMED_ATTRS = frozenset(
         "gf_refine_swap",
         "gf_min_weight",
         "excitation_budget",
+        "cost_budget",
         "e_pt2_tol",
         "de2_min",
     }
@@ -170,6 +171,7 @@ def load_workload(h5_path, cluster=None, iteration=None):
         # faithful replay. Callers that must not solve a different problem should refuse a non-empty list.
         "ignored_attrs": sorted(set(attrs) - _CONSUMED_ATTRS - _BATH_FIT_ONLY),
         "excitation_budget": _optional(attrs, "excitation_budget", int),
+        "cost_budget": _optional(attrs, "cost_budget", float),
         "e_pt2_tol": _optional(attrs, "e_pt2_tol", float),
         "de2_min": _optional(attrs, "de2_min", float),
         "gf_admission": _optional(attrs, "gf_admission", str),
@@ -279,6 +281,8 @@ def build_options(
     for key in ("excitation_budget", "e_pt2_tol", "de2_min"):
         if workload.get(key) is not None:
             basis_kwargs[key] = workload[key]
+    if cost_budget is None:
+        cost_budget = workload.get("cost_budget")  # the archive's, unless the caller names one
     if cost_budget is not None:
         basis_kwargs["cost_budget"] = cost_budget
     basis = BasisOptions(**basis_kwargs)

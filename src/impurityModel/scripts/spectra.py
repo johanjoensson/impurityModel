@@ -144,7 +144,8 @@ def add_arguments(parser):
         default=None,
         help=(
             "Hopping-cost budget alpha: bath excitations cost round(8*(d-d_min)) on the coupling distance, "
-            "bounded by round(8*alpha*-log(slater_weight_min)). Composes with --excitation_budget; "
+            "bounded by round(COST_KAPPA*alpha*-log(slater_weight_min)), COST_KAPPA = 8. "
+            "Composes with --excitation_budget; "
             "default: off (see doc/plans/gf_relevant_support.md)."
         ),
     )

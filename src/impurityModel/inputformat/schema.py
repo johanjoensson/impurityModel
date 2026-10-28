@@ -975,7 +975,8 @@ _TABLE_LIST += [
                 Kind.DIMENSIONLESS,
                 None,
                 "Hopping-cost budget alpha: bath excitations cost by the coupling distance of the orbital "
-                "from the impurity (nearest site free), bounded by 8 * alpha * -log(slater_weight_min) "
+                "from the impurity (nearest site free), bounded by COST_KAPPA * alpha * -log(slater_weight_min) "
+                "(COST_KAPPA = 8) "
                 "and widened for the Green's-function bases to contain the ground-state basis. Composes "
                 "with excitation_budget. Absent disables it. Positive.",
                 minimum=0.0,

@@ -374,6 +374,8 @@ def test_a_settle_flag_replaces_a_recorded_pruning():
 def test_the_cost_budget_flag_is_parsed_by_both_clis():
     assert _parse(selfenergy.add_arguments, ["h0.pickle"]).cost_budget is None
     assert _parse(selfenergy.add_arguments, ["h0.pickle", "--cost_budget", "1.5"]).cost_budget == 1.5
+    assert _parse(spectra.add_arguments, ["h0.pickle"]).cost_budget is None
+    assert _parse(spectra.add_arguments, ["h0.pickle", "--cost_budget", "1.5"]).cost_budget == 1.5
 
 
 def test_the_refine_flags_override_the_archive_record_and_are_cleared_when_leaving_lanczos():

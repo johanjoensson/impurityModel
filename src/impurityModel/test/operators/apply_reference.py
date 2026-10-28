@@ -13,6 +13,7 @@ words holds orbitals ``0 .. 64 * n_chunks - 1`` and creating one beyond that giv
 import numpy as np
 
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, SlaterDeterminant
+from impurityModel.ed.symmetries import weighted_parts
 
 
 def sd_from_orbitals(orbitals, n_chunks):
@@ -55,7 +56,8 @@ def _within(occ, restrictions, weighted):
     for orbs, (lo, hi) in (restrictions or {}).items():
         if not lo <= len(occ & orbs) <= hi:
             return False
-    for weights, (lo, hi) in weighted or []:
+    for entry in weighted or []:
+        weights, (lo, hi), _tail = weighted_parts(entry)
         if not lo <= sum(weights.get(o, 0) for o in occ) <= hi:
             return False
     return True

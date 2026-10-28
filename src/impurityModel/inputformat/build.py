@@ -683,6 +683,8 @@ def _build_basis(resolved):
 
     budget = table["excitation_budget"]
     threshold = table["truncation_threshold"]
+    if table["cost_budget"] is not None and not table["cost_budget"] > 0:
+        raise InputError(f"[many_body_basis] cost_budget: must be > 0, got {table['cost_budget']}")
     kwargs = dict(
         nominal_occ=nominal,
         mixed_valence=mixed,

@@ -860,33 +860,51 @@ def cost_budget_restriction(bath_states, budget, dist_matrix, kappa=COST_KAPPA):
     return excitation_budget_restriction(bath_states, budget, cost_fn=costs.__getitem__)
 
 
+#: Determinants expanded to bits at a time in :func:`get_effective_weighted_bounds` (bounds the transient).
+_BOUNDS_CHUNK = 1 << 16
+
+
 def get_effective_weighted_bounds(basis):
     """Observed ``(q_min, q_max)`` of every weighted restriction over the whole ground-state basis (collective).
 
     One ``Allreduce`` of a fixed-shape ``int64`` buffer on every rank, an empty rank contributing the
-    reduction identities. Returns ``None`` when ``basis`` has no weighted restrictions (replicated, so
+    reduction identities. The result is cached on the basis, keyed by its ``generation`` and the entries
+    (the causality floor is on the default path of every Green's-function call).
+    Returns ``None`` when ``basis`` has no weighted restrictions (replicated, so
     the decision is rank-invariant).
     """
     entries = basis.weighted_restrictions
     if not entries:
         return None
+    # generation and the entries are replicated, so a hit is taken on every rank or on none.
+    stamp = (getattr(basis, "generation", None), repr(entries))
+    cached = getattr(basis, "_effective_bounds_cache", None)
+    if cached is not None and stamp[0] is not None and cached[0] == stamp:
+        return list(cached[1])
     n_orb = basis.num_spin_orbitals
-    local = list(basis.local_basis)
+    weights = np.zeros((len(entries), n_orb), dtype=np.int64)
+    for k, entry in enumerate(entries):
+        for orbital, w in weighted_parts(entry)[0].items():
+            weights[k, orbital] = w
     lo = np.full(len(entries), np.iinfo(np.int64).max, dtype=np.int64)
     hi = np.full(len(entries), np.iinfo(np.int64).min, dtype=np.int64)
-    if local:
-        raw = np.frombuffer(b"".join(bytes(d.to_bytearray()) for d in local), dtype=np.uint8).reshape(len(local), -1)
+    local = basis.local_basis
+    for start in range(0, len(local), _BOUNDS_CHUNK):
+        chunk = [local[i] for i in range(start, min(start + _BOUNDS_CHUNK, len(local)))]
+        raw = np.frombuffer(b"".join(bytes(d.to_bytearray()) for d in chunk), dtype=np.uint8).reshape(len(chunk), -1)
         bits = np.unpackbits(raw, axis=1)[:, :n_orb].astype(np.int64)
-        for k, entry in enumerate(entries):
-            weights = np.zeros(n_orb, dtype=np.int64)
-            for orbital, w in weighted_parts(entry)[0].items():
-                weights[orbital] = w
-            q = bits @ weights
-            lo[k], hi[k] = q.min(), q.max()
+        q = bits @ weights.T
+        lo = np.minimum(lo, q.min(axis=0))
+        hi = np.maximum(hi, q.max(axis=0))
     if basis.is_distributed:
         basis.comm.Allreduce(MPI.IN_PLACE, lo, op=MPI.MIN)
         basis.comm.Allreduce(MPI.IN_PLACE, hi, op=MPI.MAX)
-    return [(int(a), int(b)) for a, b in zip(lo, hi)]
+    result = [(int(a), int(b)) for a, b in zip(lo, hi)]
+    try:
+        basis._effective_bounds_cache = (stamp, tuple(result))
+    except AttributeError:
+        pass
+    return result
 
 
 def floor_weighted_restrictions(basis):

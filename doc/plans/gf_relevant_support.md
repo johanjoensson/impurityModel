@@ -239,14 +239,31 @@ Open (not changed; each is a design question, not a bug fix):
   default off); the soft tail (4.8/4.9) was not started (no measured gain).
 - **Per-row form cost** (`test_apply_nio_bench.py`, 103k-row block, width 1, one build, 6 reps): the cost form
   (18 weight groups on NiO it.1) adds 1.09 → 1.16 µs per input row, +6.3 %, one run on an otherwise idle machine;
-  the plan's rule is "coarsen κ if ≥ 5 %". Not coarsened (κ = 8 kept): the form is off by default and the
-  measurement is a single run.
+  the plan's rule is "coarsen κ if ≥ 5 %". Not coarsened: the user decided "leave kappa" (κ = 8), the form is off
+  by default and the measurement is a single run.
 - **Mask seams (4.6).** `z - hOp` is a fresh operator without hOp's weighted mask: the RIXS R1 solve and
   `_FrozenShiftedSystem.boundary` now install it (test: a violating row never appears in the R1 solution on the
-  sparse and the frozen tier; the frozen leak check no longer counts out-of-window rows as leaks). `gs_connectivity`
-  sets and clears it too (untested: it matters only for a GS basis with a weighted window). `gf_shift_recycling`
-  receives a masked `hOp` and `gf_admission`'s caller sets the weighted mask: audited, unchanged.
+  sparse and the frozen tier; the frozen leak check no longer counts out-of-window rows as leaks). The RIXS
+  kernel installs the masks from `tmp_basis` before `chain.solve` and from `green_basis` before `eval_out`.
+  Correction to the b318f4c7 message: `gf_shift_recycling`'s `hOp` does *not* come masked from the RIXS tiers (it
+  is installed by the kernel now), and the `gs_connectivity` change was a no-op and is reverted. `gf_admission`'s
+  caller sets the weighted mask: audited, unchanged.
 - `weighted_parts` (4.1): `symmetries.weighted_parts` is the one unpacker; tails ride through `widen`, the floor and
   the symmetry check; the operator refuses a tail it cannot honour.
 - Tests added: rank-count invariance of a cost-restricted ground-state basis at `-n 1/2/3`; the causality floor admits
   every single transition (dropping the floor turns it red).
+
+### 9.1 Open items from the Phase 4 review
+
+- **H2 (open, core class).** GS seeds outside the weighted window make the masked ground-state `H` non-Hermitian
+  (a seed row the mask rejects is dropped from `H s` but `s` itself is kept). The fix is a floor or filter at
+  `Basis` construction, which changes a core class; not done here. The causality floor protects the Green's-function
+  side only.
+- **M1 (done).** `get_effective_weighted_bounds` is cached on the basis (key: `generation` and the entries) and
+  expands the determinants to bits in chunks of 2^16, so the transient is bounded. The floor is on the default
+  path of every Green's-function call, not only with a cost budget.
+- **M2 (open).** The plan's "partially occupied sites weight 0" is not implemented: the cost weights see only the
+  valence/conduction classes, not occupations.
+- **M3.** `widen_weighted_restrictions` adds `max|w|` on top of the floor, so the Green's-function budget is close
+  to non-binding; a second reason, beside §9's `B_GS` arithmetic, for the NiO null result.
+- **M4.** The "first shell is admitted" claim holds only for separate valence and conduction chains.

@@ -181,3 +181,60 @@ def test_the_shift_recycler_fills_cap_info_on_an_early_decline():
     info = {}
     gf.KrylovShiftedResolvent().solve(_basis([]), _model(), [], np.array([0.1 + 0.1j]), cap_info=info)
     assert info == {"cap_hit": False, "retained_size": None}
+
+
+def test_each_rixs_stage_states_the_masks_it_needs_on_the_shared_operator(monkeypatch):
+    """Masks are sticky on the operator and cannot be read back; the intermediate resolvent's tiers (spectral cache,
+    recycler, BiCGSTAB) and the out-resolvent apply ``hOp`` itself. Whatever an earlier stage (the ground state, the
+    previous unit) left on it, each stage must start from its own basis's window."""
+    from impurityModel.ed import greens_function as gf
+    from impurityModel.ed import spectra
+    from impurityModel.ed.manybody_basis import Basis
+    from impurityModel.ed.ManyBodyUtils import ManyBodyOperator
+
+    from .test_rixs_tensor import D1, D2, TAU, WIN, WLOSS, _basis
+
+    class Recording(ManyBodyOperator):
+        def __init__(self, *args, **kwargs):  # the extension type takes its arguments in __cinit__
+            self.weighted_log = []
+
+        def set_weighted_restrictions(self, restrictions=None):
+            self.weighted_log.append(restrictions)
+            super().set_weighted_restrictions(restrictions)
+
+    op0 = _model()
+    op = Recording(op0.to_dict())
+    psis, es, dets, _s, _v = _thermal_states(op0, 2)
+    tin, tout = _tin_tout()
+    window = [({0: 1, 1: 1, 2: 1}, (0, 3))]
+    seen = []
+    real_solve = rixs._R1SolverChain.solve
+    real_green = gf.block_Green
+
+    def solve(self, tmp_basis, hOp, *args, **kwargs):
+        seen.append(("R1", hOp.weighted_log[-1] if hOp.weighted_log else "never set", tmp_basis.weighted_restrictions))
+        return real_solve(self, tmp_basis, hOp, *args, **kwargs)
+
+    def green(hOp, seeds, basis, *args, **kwargs):
+        seen.append(("R3", hOp.weighted_log[-1] if hOp.weighted_log else "never set", basis.weighted_restrictions))
+        return real_green(hOp, seeds, basis, *args, **kwargs)
+
+    monkeypatch.setattr(rixs._R1SolverChain, "solve", solve)
+    monkeypatch.setattr(gf, "block_Green", green)
+    basis = Basis(
+        impurity_orbitals={2: [[0, 1]], 1: [[2]]},
+        bath_states=({2: [[]], 1: [[]]}, {2: [[]], 1: [[]]}),
+        initial_basis=list(dets),
+        weighted_restrictions=window,
+        verbose=False,
+        comm=__import__("mpi4py.MPI", fromlist=["COMM_SELF"]).COMM_SELF,
+    )
+    del _basis
+    spectra.calc_map(
+        op, tin, tout, psis, es, tau=TAU, wIns=WIN, wLoss=WLOSS, delta1=D1, delta2=D2, basis=basis,
+        verbose=False, slaterWeightMin=0.0, l_core=1, l_valence=2,
+    )  # fmt: skip
+    stages = {stage for stage, _, _ in seen}
+    assert {"R1", "R3"} <= stages, seen
+    for stage, installed, wanted in seen:
+        assert installed == wanted, f"{stage}: the operator carried {installed!r}, the stage's basis has {wanted!r}"
