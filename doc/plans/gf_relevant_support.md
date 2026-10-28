@@ -103,3 +103,36 @@ and the K store) and its frozen matvec is ~0.33 s per block on this unit against
 rule (2026-10-27): a refinement run may be slower than the retained path if it yields a causal Σ, bounded by
 "still converges a self-energy in a reasonable timeframe"; refinement features are not gated on matching the
 retained wall, but their per-unit and full-run cost is reported.
+
+## 6. Pruned growth (Phase 2.6): eta sweep at cap 1,000,000
+
+Measured 2026-10-28, NiO it.1 replay, `--cap 1000000`, `-n 3`, swm 1e-10, `--matrix-mode discovered`, rule `eta`,
+first shell kept whole (`first_shell_tol` unset). Reference: the breadth-first discovered run of section 4
+(`c1m_dis`), which is **acausal** (worst Im Σ +6.887e-2), so `dG` against it is a distance from a wrong answer,
+not an error. Scratch: `scratchpad/p2/eta*.{log,time,npz}`.
+
+| eta | units at the cap | GF+run wall | VmHWM | worst Im Σ (real) | max\|dΣ_mats\| vs breadth |
+|---|---|---|---|---|---|
+| breadth (reference) | all 12 | 51 min | 1,476,292 kB | +6.887e-2 | -- |
+| 1e-3 | none (closure-like) | 30 min | 812,240 kB | -2.0e-4 (causal) | 2.1e-4 |
+| 1e-4 | all heavy units | 91.6 min | 1,271,048 kB | -2.0e-4 (causal) | 2.2e-4 |
+| 1e-5 | all heavy units | 87.6 min | 1,020,212 kB | +3.2e-2 (acausal) | 2.2e-4 |
+
+Reading:
+- At eta 1e-3 no unit reaches the 1M cap: the pruned support closes at ~0.45-0.54M determinants per unit (heaviest
+  three: 445k / 480k / 536k) and Σ is causal, in 30 min against 51 and 0.81 GB against 1.48. The cap was not the
+  limit; the breadth-first order of admission was.
+- At eta 1e-4 the units reach the cap again (deeper growth) and Σ stays causal, but the wall is 3x the 1e-3 leg.
+- At eta 1e-5 the support is breadth-like again and the acausal feature returns, at half its size (+3.2e-2).
+- Matsubara Σ agrees to 2e-4 across the sweep: the problem is the real-axis feature at the bath pole, as diagnosed.
+
+**Go/no-go for B (2.2)**: pruning alone already gives a causal Σ at lower cost than the breadth reference, with the
+cap not binding at eta 1e-3. B (swap refinement at a binding cap) is therefore not needed for the failing unit;
+it stays relevant only where a unit's *pruned* closure exceeds the cap. The importance-probe pass on a real
+capped unit (the 2.2 swap-fraction criterion) was not run: the capped legs that would feed it (eta <= 1e-4) are
+the ones that are already causal at 1e-4. Decision: Phase 3 is deferred, not dropped; revisit if a production unit
+is acausal with pruning on at its cap.
+
+Not yet measured: the mass rule (tau) legs, and `first_shell_tol > 0`. The first-shell guard of the plan (dropped
+weight <= 1e-6 of ||Hs||^2) is still not enforced in code; a nonzero `gf_first_shell_tol` is the user's
+responsibility.
