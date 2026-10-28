@@ -19,8 +19,10 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed import basis_transcription, discovered_matrix, gf_solvers
-from impurityModel.ed.basis_transcription import build_sparse_matrix
+from impurityModel.ed import DistributedSparseMatrix as sparse_matrix_module
+from impurityModel.ed import basis_transcription, gf_solvers
+from impurityModel.ed.basis_transcription import basis_filter, build_sparse_matrix
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.manybody_basis import Basis
 from impurityModel.ed.ManyBodyUtils import KeyFilter, ManyBodyOperator, ManyBodyState, SlaterDeterminant, applyOp
 
@@ -100,41 +102,52 @@ def test_stored_columns_equal_the_independent_oracle(n_dets):
     assert not full[:, outside].any()
 
 
-def _sub_basis_matrices(monkeypatch, reject_all=False):
+def _dense_columns(basis, op, keep):
+    """This rank's dense ``(N, N_local)`` columns of the ``P H P`` matrix built with the row filter ``keep``."""
+    comm = basis.comm if basis.is_distributed else None
+    matrix = DistributedSparseMatrix(
+        op,
+        (basis.n_bytes + 7) // 8,
+        comm,
+        batch=basis_transcription._SPARSE_BUILD_BATCH,
+        keep_frontier=False,
+        keep=keep,
+    )
+    matrix.admit_keys(list(basis.local_basis))
+    matrix.build_columns()
+    return matrix.to_scipy().toarray()
+
+
+def _sub_basis_matrices(reject_all=False):
     """This rank's columns on a sparse sub-basis (so the filter has rows to drop): unfiltered, filtered."""
     basis = _basis(_all_dets()[::3], MPI.COMM_WORLD)
     op = _operator()
-    unfiltered = _build(basis, op, filtered=False)
-    if reject_all:
-        monkeypatch.setattr(basis_transcription, "basis_filter", lambda basis: KeyFilter(1))
-    return unfiltered, _build(basis, op, filtered=True)
-
-
-def _build(basis, op, filtered):
-    """This rank's dense columns from ``_column_batches``, with the basis filter on or off."""
-    dense = np.zeros((basis.size, len(basis.local_basis)), dtype=complex)
-    for col_begin, counts, rows, values in basis_transcription._column_batches(basis, op, filtered):
-        at = 0
-        for c, count in enumerate(counts):
-            np.add.at(dense[:, col_begin + c], rows[at : at + count], values[at : at + count])
-            at += count
-    return dense
+    unfiltered = _dense_columns(basis, op, None)
+    return unfiltered, _dense_columns(basis, op, KeyFilter(1) if reject_all else basis_filter(basis))
 
 
 @pytest.mark.mpi
-def test_the_basis_filter_changes_no_stored_element(monkeypatch):
+def test_the_basis_filter_changes_no_stored_element():
     """Filtered and unfiltered builds store the same elements, bit for bit, serial or distributed."""
-    unfiltered, filtered = _sub_basis_matrices(monkeypatch)
+    unfiltered, filtered = _sub_basis_matrices()
     assert unfiltered.any()
     np.testing.assert_array_equal(filtered, unfiltered)
 
 
 @pytest.mark.mpi
-def test_a_reject_everything_filter_empties_the_build(monkeypatch):
+def test_a_reject_everything_filter_empties_the_build():
     """The build really generates through the filter: an empty one must change the result."""
-    unfiltered, filtered = _sub_basis_matrices(monkeypatch, reject_all=True)
+    unfiltered, filtered = _sub_basis_matrices(reject_all=True)
     assert unfiltered.any()
     assert not filtered.any()
+
+
+@pytest.mark.mpi
+def test_build_sparse_matrix_builds_through_the_basis_filter(monkeypatch):
+    """``build_sparse_matrix`` passes the filter: a reject-everything one leaves an empty matrix."""
+    monkeypatch.setattr(basis_transcription, "basis_filter", lambda basis: KeyFilter(1))
+    basis = _basis(_all_dets()[::3], MPI.COMM_WORLD)
+    assert not build_sparse_matrix(basis, _operator()).to_scipy().toarray().any()
 
 
 @pytest.mark.mpi
@@ -200,11 +213,9 @@ def test_the_build_answers_the_gf_unit_queue_as_it_goes(monkeypatch, serial):
     """The build of a frozen-basis CSR runs for minutes with no Lanczos block in it; on the rank
     hosting the GF unit queue it must still answer the other colors' fetches. With one poke per
     ket every local ket is a poke."""
-    monkeypatch.setattr(basis_transcription, "_QUEUE_POKE_KETS", 1)
     pokes = []
-    monkeypatch.setattr(basis_transcription, "queue_progress", lambda: pokes.append(1))
-    monkeypatch.setattr(discovered_matrix, "_QUEUE_POKE_KETS", 1)
-    monkeypatch.setattr(discovered_matrix, "queue_progress", lambda: pokes.append(1))
+    monkeypatch.setattr(sparse_matrix_module, "_QUEUE_POKE_KETS", 1)
+    monkeypatch.setattr(sparse_matrix_module, "queue_progress", lambda: pokes.append(1))
     comm = MPI.COMM_SELF if serial else MPI.COMM_WORLD
     basis = _basis(_all_dets(), comm)
     build_sparse_matrix(basis, _operator())
@@ -214,50 +225,16 @@ def test_the_build_answers_the_gf_unit_queue_as_it_goes(monkeypatch, serial):
 @pytest.mark.mpi
 @pytest.mark.parametrize("batch", [None, 7])
 @pytest.mark.parametrize("n_dets", [None, 2])
-def test_the_column_operator_holds_the_same_matrix(monkeypatch, batch, n_dets):
-    """``build_sparse_matrix`` keeps the build's column blocks instead of one CSC: the same
-    entries, int32 rows, one segment per batch. A 7-element batch splits the columns into many
-    segments; two determinants leave ranks empty at -n 3."""
+def test_a_small_batch_builds_the_same_matrix(monkeypatch, batch, n_dets):
+    """A 7-element batch splits the columns into many segments; two determinants leave ranks empty at -n 3."""
     if batch is not None:
         monkeypatch.setattr(basis_transcription, "_SPARSE_BUILD_BATCH", batch)
     comm = MPI.COMM_WORLD
     dets = _all_dets() if n_dets is None else _all_dets()[:n_dets]
     basis = _basis(dets, comm)
     op = _operator()
-    column_op = build_sparse_matrix(basis, op, extendable=True)  # the old class's segments
-    assert column_op.shape == (basis.size, len(basis.local_basis))
-    assert all(rows.dtype == np.int32 for _, _, rows, _ in column_op.segments)
-    # The batch counts generated rows, and the basis filter already drops most of a two-determinant
-    # basis's image, so only the full basis is guaranteed to fill a 7-element batch.
+    matrix = build_sparse_matrix(basis, op)
+    assert matrix.shape == (basis.size, len(basis.local_basis))
     if batch is not None and n_dets is None and len(basis.local_basis) > 1:
-        assert len(column_op.segments) > 1, "premise: a small batch splits the columns"
-    np.testing.assert_allclose(column_op.to_scipy().toarray(), _oracle_columns(basis, op, comm), atol=1e-13)
-
-
-@pytest.mark.mpi
-def test_bound_rows_are_the_exchange_buffer_rows():
-    """``bind_slots`` maps a row owned by ``destinations[i]`` into the send buffer at
-    ``send_row_offsets[i]`` and a row this rank owns into the self buffer after the send rows."""
-    comm = MPI.COMM_WORLD
-    basis = _basis(_all_dets(), comm)
-    column_op = build_sparse_matrix(basis, _operator(), extendable=True)  # the old class's slot binding
-    counts = np.array(comm.allgather(len(basis.local_basis)), dtype=np.int64)
-    offsets = np.concatenate(([0], np.cumsum(counts)[:-1]))
-    flags = column_op.owner_flags(counts, offsets)
-    flags[comm.rank] = False
-    destinations = [int(d) for d in np.flatnonzero(flags)]
-    send_row_offsets = np.concatenate(([0], np.cumsum(counts[destinations]))).astype(np.int64)
-    total_send = int(send_row_offsets[-1])
-    before = [rows.astype(np.int64) for _, _, rows, _ in column_op.segments]
-    column_op.bind_slots(comm.rank, offsets, destinations, send_row_offsets, total_send)
-    for rows_before, (_, _, rows, _) in zip(before, column_op.segments):
-        owner = np.searchsorted(offsets, rows_before, side="right") - 1
-        expected = np.where(
-            owner == comm.rank,
-            total_send + rows_before - offsets[comm.rank],
-            send_row_offsets[np.searchsorted(destinations, owner)] + rows_before - offsets[owner],
-        )
-        assert np.array_equal(rows, expected)
-    column_op.bind_slots(comm.rank, offsets, destinations, send_row_offsets, total_send)  # same layout: no-op
-    with pytest.raises(RuntimeError, match="different exchange layout"):
-        column_op.bind_slots(comm.rank, offsets, destinations, send_row_offsets, total_send + 1)
+        assert len(matrix._segments) > 1, "premise: a small batch splits the columns"
+    np.testing.assert_allclose(matrix.to_scipy().toarray(), _oracle_columns(basis, op, comm), atol=1e-13)

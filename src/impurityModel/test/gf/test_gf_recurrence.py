@@ -131,7 +131,7 @@ def test_block_green_sparse_runs_the_recurrence_on_a_matrix(comm, monkeypatch):
 @pytest.mark.parametrize("mode", ["discovered", "retained"])
 def test_the_stage_table_names_the_recurrences_stages(comm, mode, monkeypatch):
     """``IMPMOD_MATVEC_PROF`` stage names are read by the measurement harness, so they are pinned."""
-    from impurityModel.ed import discovered_matrix
+    from impurityModel.ed import DistributedSparseMatrix as discovered_matrix
 
     monkeypatch.setattr(discovered_matrix, "_PROF", True)
     discovered_matrix._STAGES.clear()
@@ -141,7 +141,7 @@ def test_the_stage_table_names_the_recurrences_stages(comm, mode, monkeypatch):
     if mode == "discovered":
         assert "matvec_all" in names
     else:
-        assert {"grow_apply", "grow_keys", "decide", "build_columns", "to_array_operator", "frozen_kernel"} <= names
+        assert {"grow_apply", "grow_keys", "decide", "build_columns", "frozen_kernel"} <= names
     assert all(calls > 0 and sec >= 0.0 for sec, calls, _rss in discovered_matrix._STAGES.values())
 
 
@@ -183,13 +183,13 @@ def test_the_retained_mode_stores_p_rows_only(comm, monkeypatch):
     from impurityModel.ed import gf_recurrence
 
     made = []
-    real = gf_recurrence.DiscoveredMatrix
+    real = gf_recurrence.DistributedSparseMatrix
 
     def spy(*args, **kw):
         made.append(real(*args, **kw))
         return made[-1]
 
-    monkeypatch.setattr(gf_recurrence, "DiscoveredMatrix", spy)
+    monkeypatch.setattr(gf_recurrence, "DistributedSparseMatrix", spy)
     run_chain(comm, kernel=block_Green_discovered, matrix_mode="retained", cap=2500)
     assert made and not any(m.keep_frontier for m in made)
     assert all(m.n_p_local in (m.n_k_local, 0) for m in made)

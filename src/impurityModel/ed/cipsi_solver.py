@@ -8,9 +8,10 @@ from impurityModel.ed.basis_transcription import (
     build_distributed_vector,
     build_sparse_matrix,
     build_state,
+    iter_local_operator_images,
 )
 from impurityModel.ed.cipsi_budget import CapRefiner, MemoryGuard
-from impurityModel.ed.discovered_matrix import DiscoveredMatrix
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.eigensolvers import (
     EigenResult,
     Lowest,
@@ -44,11 +45,15 @@ _EIGENSTATE_PAD = 10
 
 #: Largest share of the expansion's per-rank memory budget the kept Hamiltonian matrix may take.
 #: :meth:`CIPSISolver._build_h_matrix` keeps the last matrix through the selection round so the next
-#: cycle can grow it (:meth:`DiscoveredMatrix.set_p_keys`) instead of rebuilding it;
+#: cycle can grow it (:meth:`DistributedSparseMatrix.set_p_keys`) instead of rebuilding it;
 #: the selection round is the expansion's memory peak, so the kept matrix adds to it. Above this
 #: share the matrix is dropped and the next cycle rebuilds -- the old behaviour, at the scale where
 #: the build was measured to be a few percent of a cycle.
 _SNAPSHOT_BUDGET_FRACTION = 0.1
+
+#: Bytes per stored image entry of a ``keep_frontier`` matrix as priced before it is built: the 24 B element plus
+#: the share of the key store its frontier rows add.
+_FRONTIER_BYTES_PER_ENTRY = 30
 
 #: Generic start columns per eigensolve (``R``); raised to ``max_multiplicity + 1`` after a solve that found more.
 _MIN_RANDOM_COLUMNS = 4
@@ -1304,37 +1309,59 @@ class CIPSISolver:
         with _trace_timed("h_matrix_build", n=len(self.basis)):
             return self._build_h_matrix_untimed(H)
 
+    def _frontier_matrix_fits(self, H):
+        """Whether a ``keep_frontier`` matrix (every column's complete image, generated without the basis filter)
+        is expected to fit the share of the memory budget a kept matrix may take (collective). Without a budget it
+        always does. Sized from the mean image of a strided sample of the local basis: a matrix that is too big to
+        keep is built as the cheaper ``P H P`` (through the basis filter) instead of built whole and thrown away."""
+        if self._snapshot_budget is None:
+            return True
+        local = self.basis.local_basis
+        picked = range(0, len(local), max(1, len(local) // 64))
+        op = ManyBodyOperator(H) if isinstance(H, dict) else H
+        sizes = [len(image) for image in iter_local_operator_images(self.basis, op, 0.0, indices=picked)]
+        fanout = float(np.mean(sizes)) if sizes else 0.0
+        fits = len(local) * fanout * _FRONTIER_BYTES_PER_ENTRY <= _SNAPSHOT_BUDGET_FRACTION * self._snapshot_budget
+        if self.basis.is_distributed:
+            fits = self.basis.comm.allreduce(fits, op=MPI.LAND)
+        return bool(fits)
+
     def _build_h_matrix_untimed(self, H):
         """``H`` on the current basis as a sparse matrix (collective).
 
-        Inside :meth:`expand` the matrix is kept from cycle to cycle: a :class:`DiscoveredMatrix` that stores every
-        column's complete image (``keep_frontier``), so a determinant admitted later finds its rows already in the
-        older columns and :meth:`~DiscoveredMatrix.set_p_keys` only applies the operator to the new determinants.
+        Inside :meth:`expand` the matrix is kept from cycle to cycle: a :class:`DistributedSparseMatrix`
+        that stores every column's complete image (``keep_frontier``), so a determinant admitted later finds its rows
+        already in the older columns and :meth:`~DistributedSparseMatrix.set_p_keys` only applies the operator to the
+        new determinants.
         It is the matrix of the same operator under the same window only (the operator object itself is held, so an
         identity check cannot be fooled by a recycled ``id``); any other key builds a new one. Outside an
         expansion the matrix is the ``P H P`` of :func:`basis_transcription.build_sparse_matrix`.
         """
         key = (H, repr(self.basis.restrictions), repr(self.basis.weighted_restrictions))
-        if self._snapshot_budget is False:
-            H_mat = build_sparse_matrix(self.basis, H)
-        else:
+        H_mat = None
+        if self._snapshot_budget is not False:
             held, self._h_matrix = self._h_matrix, None
             reuse = held is not None and held[0][0] is H and held[0][1:] == key[1:]
             if self.basis.is_distributed:
                 reuse = self.basis.comm.allreduce(reuse, op=MPI.LAND)
             if reuse:
                 H_mat = held[1]
-            else:
+            elif self._frontier_matrix_fits(H):
                 op = ManyBodyOperator(H) if isinstance(H, dict) else H
                 comm = self.basis.comm if self.basis.is_distributed else None
-                H_mat = DiscoveredMatrix(op, (self.basis.n_bytes + 7) // 8, comm, keep_frontier=True)
+                H_mat = DistributedSparseMatrix(op, (self.basis.n_bytes + 7) // 8, comm, keep_frontier=True)
             del held
-            H_mat.set_p_keys(list(self.basis.local_basis))
-            keep = self._snapshot_budget is None or H_mat.nbytes <= _SNAPSHOT_BUDGET_FRACTION * self._snapshot_budget
-            if self.basis.is_distributed:
-                keep = self.basis.comm.allreduce(keep, op=MPI.LAND)
-            if keep:
-                self._h_matrix = (key, H_mat)
+            if H_mat is not None:
+                H_mat.set_p_keys(list(self.basis.local_basis))
+                keep = (
+                    self._snapshot_budget is None or H_mat.nbytes <= _SNAPSHOT_BUDGET_FRACTION * self._snapshot_budget
+                )
+                if self.basis.is_distributed:
+                    keep = self.basis.comm.allreduce(keep, op=MPI.LAND)
+                if keep:
+                    self._h_matrix = (key, H_mat)
+        if H_mat is None:
+            H_mat = build_sparse_matrix(self.basis, H)
         if self.matrix_hook is not None:
             with _trace_timed("matrix_hook", n=len(self.basis)):
                 H_mat = self.matrix_hook(self.basis, H_mat)
@@ -1554,7 +1581,7 @@ class CIPSISolver:
         are collective latency); so does an operator of at most :data:`LOWEST_SERIAL_NNZ` nonzeros."""
         H_mat = h_matrix if h_matrix is not None else self._build_h_matrix(H)
         # Collective, and first so that `or` never skips it: every rank reaches this solve.
-        serial = self._allreduce_sum(int(H_mat.nnz)) <= LOWEST_SERIAL_NNZ or serial
+        serial = self._allreduce_sum(int(getattr(H_mat, "p_nnz", lambda: H_mat.nnz)())) <= LOWEST_SERIAL_NNZ or serial
         hashes = np.fromiter((state.get_hash() for state in self.basis.local_basis), dtype=np.uint64)
         warm = self._warm_columns(psi_refs, width=1)
         _trace_note("eigensolve_block_width", p=int(warm.shape[1] + 1), num_wanted=1)

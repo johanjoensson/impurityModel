@@ -38,15 +38,23 @@ def _hermitian(seed=3):
 
 def _column_operator(h_local_csc, columns_per_segment, row_dtype=np.int32, comm=None, col_offset=0):
     """A ``DistributedSparseMatrix`` over the same columns, split into blocks of a few columns."""
+    mat = DistributedSparseMatrix.from_scipy(
+        h_local_csc, comm if comm is not None and comm.size > 1 else None, col_offset
+    )
+    if not mat._segments:
+        return mat
+    _c0, indptr, packed, data = mat._segments[0]
+    if row_dtype == np.int64 and packed.dtype != np.int64:  # the wide packed-row layout
+        owner, slot = mat._decode(packed)
+        packed = (owner << 32) | slot
     n_cols = h_local_csc.shape[1]
     segments = []
     for c0 in range(0, n_cols, columns_per_segment):
         c1 = min(c0 + columns_per_segment, n_cols)
-        block = h_local_csc[:, c0:c1].tocsc()
-        segments.append((c0, block.indptr.astype(np.int64), block.indices.astype(row_dtype), block.data.copy()))
-    return DistributedSparseMatrix(
-        h_local_csc.shape, segments, comm if comm is not None and comm.size > 1 else None, col_offset
-    )
+        lo, hi = int(indptr[c0]), int(indptr[c1])
+        segments.append((c0, (indptr[c0 : c1 + 1] - lo).astype(np.int64), packed[lo:hi].copy(), data[lo:hi].copy()))
+    mat._segments = segments
+    return mat
 
 
 def _local(comm, partition, width):

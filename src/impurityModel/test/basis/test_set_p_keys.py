@@ -1,4 +1,4 @@
-r"""``DiscoveredMatrix.set_p_keys``: the matrix CIPSI keeps across its cycles equals one rebuilt on the basis.
+r"""``DistributedSparseMatrix.set_p_keys``: the matrix CIPSI keeps across its cycles equals one rebuilt on the basis.
 
 A CIPSI expansion grows its basis every cycle (and truncates it now and then). The kept matrix stores each
 column's complete image, so a determinant admitted later finds its rows in the older columns, and
@@ -18,7 +18,7 @@ from mpi4py import MPI
 
 from impurityModel.ed import cipsi_solver
 from impurityModel.ed.basis_transcription import build_sparse_matrix
-from impurityModel.ed.discovered_matrix import DiscoveredMatrix
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.eigensolvers import Lowest
 from impurityModel.test.basis.test_sparse_matrix_build import _all_dets, _basis, _operator
 from impurityModel.test.support.comms import COMMS
@@ -40,7 +40,7 @@ def _stages():
 
 
 def _held(basis, op, comm):
-    return DiscoveredMatrix(op, (basis.n_bytes + 7) // 8, comm if comm is not None and comm.size > 1 else None)
+    return DistributedSparseMatrix(op, (basis.n_bytes + 7) // 8, comm if comm is not None and comm.size > 1 else None)
 
 
 @pytest.mark.parametrize("comm", COMMS)
@@ -53,7 +53,7 @@ def test_a_chained_growth_equals_a_rebuild_at_every_stage(comm):
     for added in stages[1:]:
         mat.apply(np.ones((len(basis.local_basis), 1), dtype=complex))
         basis.add_states(added if comm is None or comm.rank == 0 else [])
-        n_new, n_gone = mat.set_p_keys(list(basis.local_basis))
+        _n_new, n_gone = mat.set_p_keys(list(basis.local_basis))
         assert n_gone == 0
         expected = build_sparse_matrix(basis, op)
         np.testing.assert_allclose(_gather_dense(mat, comm), _gather_dense(expected, comm), atol=1e-13)
@@ -71,14 +71,41 @@ def test_a_truncation_then_a_regrowth_equals_a_rebuild(comm):
     mat.set_p_keys(list(basis.local_basis))
     smaller = _basis(dets[::2] if comm is None or comm.rank == 0 else [], comm)
     n_new, n_gone = mat.set_p_keys(list(smaller.local_basis))
-    total = len(smaller.local_basis) if comm is None else comm.allreduce(n_gone)
+    total_gone = n_gone if comm is None else comm.allreduce(n_gone)
     assert n_new == 0
-    assert (n_gone > 0) or len(basis.local_basis) == len(smaller.local_basis)
+    assert total_gone == len(basis) - len(smaller) > 0
     expected = build_sparse_matrix(smaller, op)
     np.testing.assert_allclose(_gather_dense(mat, comm), _gather_dense(expected, comm), atol=1e-13)
+    # The dropped keys' rows stay in the kept columns; the product must skip them (through the K -> P table).
+    x = np.random.default_rng(2).standard_normal((len(smaller.local_basis), 2)) + 0j
+    np.testing.assert_allclose(mat.apply(x), expected.apply(x), atol=1e-12)
+    assert mat.p_nnz() == expected.nnz < mat.nnz
     mat.set_p_keys(list(basis.local_basis))  # back to the larger basis: the dropped columns are rebuilt
-    np.testing.assert_allclose(_gather_dense(mat, comm), _gather_dense(build_sparse_matrix(basis, op), comm), atol=1e-13)
-    assert total >= 0
+    np.testing.assert_allclose(
+        _gather_dense(mat, comm), _gather_dense(build_sparse_matrix(basis, op), comm), atol=1e-13
+    )
+
+
+@pytest.mark.skipif(MPI.COMM_WORLD.size < 2, reason="the packed row width depends on the owner bits")
+def test_a_matrix_with_mixed_row_widths_survives_the_renumbering(monkeypatch):
+    """Batches that fit the narrow packed row (int32 ``owner << slot_bits | slot``) and batches that do not (int64)
+    live side by side once a rank's K grows; renumbering the P slots must re-encode the narrow ones."""
+    comm = MPI.COMM_WORLD
+    op = _operator()
+    stages = _stages()
+    basis = _basis(stages[0] if comm.rank == 0 else [], comm)
+    mat = _held(basis, op, comm)
+    mat._slot_bits = 8  # 256 slots per rank fit the narrow layout; the larger batches do not
+    mat.set_p_keys(list(basis.local_basis))
+    basis.add_states(stages[1] if comm.rank == 0 else [])
+    mat.set_p_keys(list(basis.local_basis))
+    expected = build_sparse_matrix(basis, op)
+    np.testing.assert_allclose(_gather_dense(mat, comm), _gather_dense(expected, comm), atol=1e-13)
+    assert {packed.dtype for _, _, packed, _ in mat._segments}, "premise: the matrix holds columns"
+    basis.add_states(stages[3] if comm.rank == 0 else [])
+    mat.set_p_keys(list(basis.local_basis))
+    expected = build_sparse_matrix(basis, op)
+    np.testing.assert_allclose(_gather_dense(mat, comm), _gather_dense(expected, comm), atol=1e-13)
 
 
 @pytest.mark.parametrize("comm", COMMS)
@@ -94,14 +121,14 @@ def test_the_expansion_reuses_its_matrix_and_keeps_the_rebuilt_energy(comm, monk
         return float(e[0]), len(basis)
 
     calls = []
-    real = DiscoveredMatrix.set_p_keys
+    real = DistributedSparseMatrix.set_p_keys
 
     def counting(self, keys):
         calls.append(hasattr(self, "_counted"))  # True: a matrix an earlier cycle left behind
         self._counted = True
         return real(self, keys)
 
-    monkeypatch.setattr(DiscoveredMatrix, "set_p_keys", counting)
+    monkeypatch.setattr(DistributedSparseMatrix, "set_p_keys", counting)
     e_kept, n_kept = solve()
     assert any(calls), "no cycle reused its matrix: every cycle built a new one"
 

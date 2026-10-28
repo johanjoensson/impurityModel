@@ -1,5 +1,7 @@
 # Memory-footprint audit: raising the system-size ceiling
 
+> **Historical numbers (2026-10-28).** The measurements below were taken on the column-segment `DistributedSparseMatrix`, `MatrixSnapshot` and `extend_sparse_matrix`, which are gone: the one sparse type is now the discovered-key matrix (`ed/DistributedSparseMatrix.py`), stored at ~25 B/element (the 20 B of the old one plus the key store). Byte figures for the matrix and its build do not carry over.
+
 Campaign plan: `~/.claude/plans/reflective-weaving-platypus.md`.
 Predecessor: `dc_smo_memory.md` (9 rounds, SrMnO3 double counting, peak-RSS ledgers).
 

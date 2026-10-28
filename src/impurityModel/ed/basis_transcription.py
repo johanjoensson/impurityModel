@@ -13,10 +13,8 @@ from typing import Any, Optional, Union
 import numpy as np
 from mpi4py import MPI
 
-from impurityModel.ed import discovered_matrix
 from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.ManyBodyUtils import KeyFilter, ManyBodyOperator, ManyBodyState, Row, applyOp
-from impurityModel.ed.work_queue import queue_progress
 
 
 def build_vector(
@@ -282,363 +280,33 @@ def build_dense_matrix(basis, op, distribute=True):
 #: declined; an SrMnO3 auto-cap unit (~87M raw elements per rank) then does ~166 lookups, not ~41.
 _SPARSE_BUILD_BATCH = 1 << 19
 
-
-def _concat_consuming(chunks, dtype):
-    """``np.concatenate(chunks)`` that releases each chunk as soon as it is copied.
-
-    ``np.concatenate`` holds the list and the result at once (2x the data). Copying chunk by chunk
-    and dropping each reference as it goes keeps the peak at the result plus the largest chunk.
-    ``chunks`` is emptied.
-    """
-    out = np.empty(sum(len(c) for c in chunks), dtype=dtype)
-    pos = 0
-    for k, chunk in enumerate(chunks):
-        out[pos : pos + len(chunk)] = chunk
-        pos += len(chunk)
-        chunks[k] = None
-    chunks.clear()
-    return out
+#: Determinant keys materialised at once while the build admits the basis (~100 B each as Python objects).
+_ADMIT_CHUNK = 1 << 16
 
 
-#: Kets between two answers to the GF unit queue during the build (work_queue.queue_progress).
-#: A frozen-CSR build is one stretch of 4-12 minutes per capped SrMnO3 unit with no Lanczos
-#: block in it, and the per-block poke is the only other time rank 0 answers the other colors'
-#: fetches. On every other rank the poke is one list check.
-_QUEUE_POKE_KETS = 4096
+def build_sparse_matrix(basis, op: ManyBodyOperator):
+    """``op`` on ``basis`` as this rank's columns of the sparse operator: a
+    :class:`~impurityModel.ed.DistributedSparseMatrix.DistributedSparseMatrix` of shape ``(N, N_local)`` (``P H P``:
+    only rows inside the basis are stored).
 
-
-def _column_batches(basis, op: ManyBodyOperator, filtered: bool = True):
-    """The stored entries of ``op`` in ``basis``'s local columns, in batches of whole columns.
-
-    Yields ``(col_begin, counts, rows, values)``: the batch covers local columns ``col_begin`` to
-    ``col_begin + len(counts)``, ``counts[c]`` entries each, and ``rows`` (int64 global row
-    indices) and ``values`` hold them column after column, each column's rows in the order the
-    operator produced them (unsorted). A batch holds about :data:`_SPARSE_BUILD_BATCH` matrix
-    elements as generated through :func:`basis_filter` (most out-of-basis rows are never generated;
-    the exact lookup then drops the false positives). Collective on a distributed basis: every
-    rank runs the same number of batches, an exhausted rank with empty ones.
-
-    Only the rows inside the basis are kept, so the operator is applied through
-    :func:`basis_filter` (``filtered``): an image row the filter rules out is never generated, and
-    on a distributed basis never packed and routed through the collective lookup. The exact
-    ``find_rows`` / ``_index_sequence`` check still runs, so a false positive is dropped there.
-    The filter is built here, on every rank, before the first batch.
-    """
-    bloom = basis_filter(basis) if filtered else None
-    _offset = basis.offset
-    _size = basis.size
-    # Images are streamed, not listed: the list form holds the whole `H|D>` image of the
-    # local basis (`O(N_local * fan-out)` rows) resident for the entire build. Amplitudes are
-    # read through the buffer protocol rather than `.items()`, which allocated a
-    # `SlaterDeterminant` and a `Row` object per matrix element -- the same cost the CIPSI
-    # selection round removed and measured at 33-43% of a round (`cipsi_solver.py`'s
-    # `_candidate_overlaps_and_energies`). `keys()` is in row order, so the buffer's rows and
-    # the key list line up.
-    # `ket` walks `local_basis` in order and `local_indices` is
-    # `range(offset, offset + len(local_basis))`, so the column index is the loop position --
-    # the old `_index_dict[ket]` was looking up an answer the enumerate already had.
-    if not basis.is_distributed:
-        # Filter as we go. Only a minority of the image survives -- every bra outside the
-        # basis is dropped -- so accumulating the whole image first and masking at the end
-        # (which the distributed branch below is forced into by its single collective) costs
-        # several times the final matrix. Measured: doing that here took the serial peak from
-        # 291 to 520 MiB on a 393k-determinant basis, because ~76% of image rows are discarded.
-        keys_block = basis._keys
-        n_local_keys = len(keys_block)
-        col_begin = 0
-        counts, rows, values = [], [], []
-        pending = 0
-        for i, ket_state in enumerate(iter_local_operator_images(basis, op, 0, keep=bloom)):
-            if i % _QUEUE_POKE_KETS == 0:
-                queue_progress()  # see _QUEUE_POKE_KETS
-            n_keep = 0
-            ks = ket_state.keys()
-            if ks:
-                local_rows = keys_block.find_rows(ks)
-                keep = local_rows != n_local_keys
-                n_keep = int(keep.sum())
-                if n_keep:
-                    rows.append(local_rows[keep].astype(np.int64, copy=False) + _offset)
-                    values.append(np.asarray(ket_state)[:, 0][keep])
-            counts.append(n_keep)
-            pending += len(ks)
-            if pending >= _SPARSE_BUILD_BATCH:
-                yield col_begin, np.array(counts, dtype=np.int64), _concat_consuming(rows, np.int64), _concat_consuming(
-                    values, complex
-                )
-                col_begin = i + 1
-                counts, pending = [], 0
-        if counts:
-            yield col_begin, np.array(counts, dtype=np.int64), _concat_consuming(rows, np.int64), _concat_consuming(
-                values, complex
-            )
-        return
-    # The routed lookup is collective, so the bras cannot be resolved image by image. They
-    # are accumulated and resolved in batches of about `_SPARSE_BUILD_BATCH` matrix elements:
-    # resolving the whole local image at once held one key object per element of it -- the
-    # full `O(N_local * fan-out)` image, most of which is then masked away -- which at a
-    # multi-million determinant basis is what limits the build, not the matrix. Every rank
-    # runs the same number of lookups: the loop continues while ANY rank has images left,
-    # and a rank that has run out enters each further lookup with an empty batch.
-    images = iter_local_operator_images(basis, op, 0, keep=bloom)
-    position = 0
-    exhausted = False
-    while True:
-        col_begin = position
-        bras: list = []
-        batch_cols = []
-        batch_vals = []
-        while not exhausted and len(bras) < _SPARSE_BUILD_BATCH:
-            ket_state = next(images, None)
-            if ket_state is None:
-                exhausted = True
-                break
-            column = position
-            position += 1
-            if column % _QUEUE_POKE_KETS == 0:
-                queue_progress()  # see _QUEUE_POKE_KETS
-            ks = ket_state.keys()
-            if not ks:
-                continue
-            bras.extend(ks)
-            batch_cols.append(np.full(len(ks), column - col_begin, dtype=np.int64))
-            batch_vals.append(np.asarray(ket_state)[:, 0].copy())
-        columns = np.concatenate(batch_cols) if batch_cols else np.empty(0, dtype=np.int64)
-        values = np.concatenate(batch_vals) if batch_vals else np.empty(0, dtype=complex)
-        del batch_cols, batch_vals
-        global_rows = np.fromiter(basis._index_sequence(bras), dtype=np.int64, count=len(bras))
-        del bras
-        keep = global_rows != _size
-        counts = np.bincount(columns[keep], minlength=position - col_begin).astype(np.int64, copy=False)
-        rows = global_rows[keep]
-        del global_rows, columns
-        values = values[keep]
-        del keep
-        yield col_begin, counts, rows, values
-        del rows, values
-        if not basis.comm.allreduce(not exhausted, op=MPI.LOR):
-            break
-
-
-def build_sparse_matrix(basis, op: ManyBodyOperator, *, extendable: bool = False):
-    """``op`` as this rank's columns of the sparse operator on ``basis``: a
-    :class:`~impurityModel.ed.DistributedSparseMatrix.DistributedSparseMatrix` of shape
-    ``(N, N_local)``, kept in the build's per-batch column blocks.
-
-    Images arrive one ket at a time, so the entries are already grouped by column and only the
-    per-column counts are needed: the peak is the stored matrix (~20 B per element) plus one
-    batch -- no COO triplet, no concatenation, no CSR conversion and no global-length row pointer.
-    Collective on a distributed basis.
-
-    ``extendable`` asks for the class :func:`extend_sparse_matrix` can grow (the old one, until CIPSI moves onto
-    the discovered-key matrix).
+    The columns are applied in batches of :data:`_SPARSE_BUILD_BATCH` elements, through :func:`basis_filter` so that
+    most rows outside the basis are never generated, and the P slots are the basis's local order -- so the global row
+    numbering is the basis's own, which needs the basis to be owned by ``routing_hash() % size``, as every
+    distributed basis here is. Collective on a distributed basis.
     """
     if isinstance(op, dict):
         op = ManyBodyOperator(op)
-    if discovered_matrix.SPARSE_CLASS == "new" and not extendable:
-        return _build_discovered_matrix(basis, op)
-    n = len(basis)
-    row_dtype = np.int32 if n < 2**31 else np.int64  # replicated n: the same choice on every rank
-    segments = []
-    for col_begin, counts, rows, values in _column_batches(basis, op):
-        if not len(counts):
-            continue  # an exhausted rank's empty batch
-        indptr = np.zeros(len(counts) + 1, dtype=np.int64)
-        np.cumsum(counts, out=indptr[1:])
-        segments.append((col_begin, indptr, rows.astype(row_dtype), values))
-        del rows
     comm = basis.comm if basis.is_distributed else None
-    return DistributedSparseMatrix((n, len(basis.local_basis)), segments, comm, basis.offset)
-
-
-def _build_discovered_matrix(basis, op):
-    """:func:`build_sparse_matrix` on the discovered-key matrix: ``P H P`` over ``basis`` (``keep_frontier=False``).
-
-    The P slots are the basis's local order (admitted in that order), so the global row numbering is the basis's
-    own -- which needs the basis to be owned by ``routing_hash() % size``, as every distributed basis here is.
-    """
-    comm = basis.comm if basis.is_distributed else None
-    matrix = discovered_matrix.DiscoveredMatrix(
-        op, (basis.n_bytes + 7) // 8, comm, batch=_SPARSE_BUILD_BATCH, keep_frontier=False
+    matrix = DistributedSparseMatrix(
+        op,
+        (basis.n_bytes + 7) // 8,
+        comm,
+        batch=_SPARSE_BUILD_BATCH,
+        keep_frontier=False,
+        keep=basis_filter(basis),
     )
-    matrix.admit_keys(list(basis.local_basis))
+    local = basis.local_basis
+    for start in range(0, len(local), _ADMIT_CHUNK):  # a chunk of key objects at a time, not every key at once
+        matrix.admit_keys(list(local[start : start + _ADMIT_CHUNK]))
     matrix.build_columns()
     return matrix
-
-
-class MatrixSnapshot:
-    """A matrix built on a basis, kept so that :func:`extend_sparse_matrix` can grow it.
-
-    ``key`` names what the matrix is *of* (the caller's operator and window); ``keys`` is a copy
-    of the rank-local determinant store the matrix was built on, and ``offsets`` every rank's
-    global offset then (replicated). Collective to construct on a distributed basis.
-    """
-
-    def __init__(self, basis, mat, key):
-        self.mat = mat
-        self.key = key
-        self.keys = basis._keys.copy()
-        counts = basis.comm.allgather(len(basis._keys)) if basis.is_distributed else [len(basis._keys)]
-        self.offsets = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
-
-
-def _concat_or_empty(chunks, dtype):
-    return np.concatenate(chunks).astype(dtype, copy=False) if chunks else np.empty(0, dtype=dtype)
-
-
-def _columns_of(basis, op, local_cols):
-    """The stored entries of ``op`` in the local columns ``local_cols``, rows inside ``basis``:
-    ``(cols, rows, values)`` with local columns and global rows. Collective on a distributed basis
-    (the routed row lookup runs in rank-symmetric batches, as in :func:`_column_batches`)."""
-    bloom = basis_filter(basis)
-    images = zip(local_cols, iter_local_operator_images(basis, op, 0, indices=local_cols, keep=bloom))
-    cols_out, rows_out, vals_out = [], [], []
-    if not basis.is_distributed:
-        keys_block = basis._keys
-        n_local = len(keys_block)
-        for col, ket in images:
-            ks = ket.keys()
-            if not ks:
-                continue
-            rows = keys_block.find_rows(ks)
-            keep = rows != n_local
-            rows_out.append(rows[keep])
-            vals_out.append(np.asarray(ket)[:, 0][keep])
-            cols_out.append(np.full(int(keep.sum()), col, dtype=np.int64))
-    else:
-        exhausted = False
-        while True:
-            bras, batch_cols, batch_vals = [], [], []
-            while not exhausted and len(bras) < _SPARSE_BUILD_BATCH:
-                item = next(images, None)
-                if item is None:
-                    exhausted = True
-                    break
-                col, ket = item
-                ks = ket.keys()
-                if not ks:
-                    continue
-                bras.extend(ks)
-                batch_cols.append(np.full(len(ks), col, dtype=np.int64))
-                batch_vals.append(np.asarray(ket)[:, 0].copy())
-            rows = np.fromiter(basis._index_sequence(bras), dtype=np.int64, count=len(bras))
-            if bras:
-                keep = rows != basis.size
-                rows_out.append(rows[keep])
-                cols_out.append(np.concatenate(batch_cols)[keep])
-                vals_out.append(np.concatenate(batch_vals)[keep])
-            if not basis.comm.allreduce(not exhausted, op=MPI.LOR):
-                break
-    return (
-        _concat_or_empty(cols_out, np.int64),
-        _concat_or_empty(rows_out, np.int64),
-        _concat_or_empty(vals_out, complex),
-    )
-
-
-def _segment_of(cols, rows, values, row_dtype):
-    """One compressed-column segment over the span of the local columns ``cols`` (any order)."""
-    if not len(cols):
-        return None
-    order = np.lexsort((rows, cols))
-    cols, rows, values = cols[order], rows[order], values[order]
-    first = int(cols[0])
-    counts = np.bincount(cols - first, minlength=int(cols[-1]) - first + 1)
-    indptr = np.zeros(len(counts) + 1, dtype=np.int64)
-    np.cumsum(counts, out=indptr[1:])
-    return (first, indptr, rows.astype(row_dtype), values)
-
-
-def extend_sparse_matrix(snapshot, basis, op):
-    """``op`` on ``basis``, grown from ``snapshot`` -- a matrix of the same Hermitian ``op`` on a
-    subset of ``basis`` -- instead of rebuilt; ``None`` when ``basis`` does not contain every
-    determinant the snapshot was built on (decided collectively, so every rank returns ``None``
-    together).
-
-    A CIPSI expansion rebuilt its whole matrix every cycle by applying ``op`` to every determinant,
-    so the build cost summed the basis size over the cycles: on a NiO 10-bath sector class (18 cycles
-    to 6.5k determinants) it was 23 of 34 s. Here ``op`` is applied to the *new* determinants only:
-
-    * the snapshot's entries keep their values; their rows are renumbered (an old global row ``g``
-      moves up by the number of new determinants inserted at or before it, which every rank derives
-      from one replicated list) and their columns are spread to the columns' new local positions;
-    * the new columns come from applying ``op`` to the new determinants, rows anywhere in ``basis``;
-    * the new rows of the old columns are the Hermitian mirror of the new columns' old rows, sent
-      to the rank owning each old column.
-
-    Determinant owners do not change when a basis grows (``routing_hash``), which is what makes the
-    renumbering local. The result stores the three parts as separate segments, some with
-    overlapping column ranges; the matvec sums them. Collective on a distributed basis.
-    """
-    comm = basis.comm if basis.is_distributed else None
-    store = basis._keys
-    n_local = len(store)
-    old_keys = snapshot.keys.keys()
-    position = store.find_rows(old_keys) if len(old_keys) else np.empty(0, dtype=np.int64)
-    superset = bool(np.all(position != n_local))
-    if comm is not None:
-        superset = comm.allreduce(superset, op=MPI.LAND)
-    if not superset:
-        return None
-    snapshot.mat.unbind_slots()
-    rank = comm.rank if comm is not None else 0
-    is_new = np.ones(n_local, dtype=bool)
-    is_new[position] = False
-    new_cols = np.flatnonzero(is_new)
-    # Global old index each new determinant is inserted before; owner-major, hence sorted.
-    inserted = snapshot.offsets[rank] + (new_cols - np.arange(len(new_cols)))
-    if comm is not None:
-        inserted = np.concatenate(comm.allgather(inserted))
-    n = basis.size
-    row_dtype = np.int32 if n < 2**31 else np.int64
-
-    segments = []
-    for col_begin, indptr, rows, values in snapshot.mat.segments:
-        width = len(indptr) - 1
-        if not width:
-            continue
-        old_rows = rows.astype(np.int64)
-        moved = (old_rows + np.searchsorted(inserted, old_rows, side="right")).astype(row_dtype)
-        cols = position[col_begin : col_begin + width]
-        first = int(cols[0])
-        counts = np.zeros(int(cols[-1]) - first + 1, dtype=np.int64)
-        counts[cols - first] = np.diff(indptr)
-        spread = np.zeros(len(counts) + 1, dtype=np.int64)
-        np.cumsum(counts, out=spread[1:])
-        segments.append((first, spread, moved, values))
-
-    cols, rows, values = _columns_of(basis, op, new_cols)
-    segment = _segment_of(cols, rows, values, row_dtype)
-    if segment is not None:
-        segments.append(segment)
-
-    offset = int(basis.offset)
-    if comm is not None:
-        offsets = np.concatenate(([0], np.cumsum(comm.allgather(n_local)))).astype(np.int64)
-        new_global = np.concatenate(comm.allgather(new_cols + offset))
-    else:
-        offsets = np.array([0, n_local], dtype=np.int64)
-        new_global = new_cols
-    mirrored = ~np.isin(rows, new_global)
-    m_cols = rows[mirrored]  # old determinants: columns on their owners
-    m_rows = cols[mirrored] + offset  # new determinants: global rows
-    m_vals = np.conj(values[mirrored])
-    if comm is not None:
-        owner = np.searchsorted(offsets, m_cols, side="right") - 1
-        order = np.argsort(owner, kind="stable")
-        m_cols, m_rows, m_vals = m_cols[order], m_rows[order], m_vals[order]
-        send = np.bincount(owner, minlength=comm.size).astype(np.int64)
-        recv = np.empty_like(send)
-        comm.Alltoall(send, recv)
-        total = int(recv.sum())
-        got_cols = np.empty(total, dtype=np.int64)
-        got_rows = np.empty(total, dtype=np.int64)
-        got_vals = np.empty(total, dtype=complex)
-        comm.Alltoallv([m_cols, send], [got_cols, recv])
-        comm.Alltoallv([m_rows, send], [got_rows, recv])
-        comm.Alltoallv([m_vals, send], [got_vals, recv])
-        m_cols, m_rows, m_vals = got_cols, got_rows, got_vals
-    segment = _segment_of(m_cols - offset, m_rows, m_vals, row_dtype)
-    if segment is not None:
-        segments.append(segment)
-    return DistributedSparseMatrix((n, n_local), segments, comm, offset)

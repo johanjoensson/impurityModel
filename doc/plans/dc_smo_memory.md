@@ -1,5 +1,7 @@
 # SrMnO3 double-counting OOM: measurement and fix
 
+> **Historical numbers (2026-10-28).** The measurements below were taken on the column-segment `DistributedSparseMatrix`, `MatrixSnapshot` and `extend_sparse_matrix`, which are gone: the one sparse type is now the discovered-key matrix (`ed/DistributedSparseMatrix.py`), stored at ~25 B/element (the 20 B of the old one plus the key store). Byte figures for the matrix and its build do not carry over.
+
 A 24 h SrMnO3 (cubic) DMFT job on Arrhenius (SLURM 2307501, 256 ranks × 2 cores / 2 nodes)
 was OOM-killed inside the `Gap` double-counting search, before a single self-energy was
 produced. This records what was measured against the crash's own archive

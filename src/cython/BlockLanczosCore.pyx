@@ -36,7 +36,7 @@ from mpi4py import MPI
 # itself is only read by callers, who import it straight from ``TSQR`` (cython-lint has no
 # noqa escape for a pure re-export).
 from impurityModel.ed import config
-from impurityModel.ed.discovered_matrix import coerce_operator, sparse_operator_types
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.manybody_basis import collective_top_k_mask
 from impurityModel.ed.TSQR import (
     EPS,

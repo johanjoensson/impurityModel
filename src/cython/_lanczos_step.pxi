@@ -325,7 +325,7 @@ def _block_lanczos_array(
         alphas_buf[:start_it] = alphas
         betas_buf[:start_it] = betas
 
-    if not isinstance(h_op, sparse_operator_types()):
+    if not isinstance(h_op, DistributedSparseMatrix):
         raise TypeError(f"h_op must be a sparse matrix, got {type(h_op).__name__}")
     if h_op.shape[1] != N:
         raise ValueError(f"h_op owns {h_op.shape[1]} columns but the block has {N} local rows")
@@ -929,7 +929,7 @@ def block_lanczos(
             raise ValueError("slaterWeightMin, truncation_threshold and krylov_dtype apply to ManyBodyState blocks only")
         if comm is None:
             comm = getattr(basis, "comm", None)
-        h_op = coerce_operator(h_op, comm)
+        h_op = DistributedSparseMatrix.coerce(h_op, comm)
         return _block_lanczos_array(
             psi0, h_op, converged, verbose=verbose, reort=reort, alphas=alphas_init, betas=betas_init, Q=Q_init,
             comm=comm, return_widths=return_widths, return_status=return_status, build_krylov_basis=store_krylov,

@@ -134,6 +134,13 @@ if os.environ.get("IMPURITYMODEL_PARALLEL", "").lower() in ("1", "true", "yes", 
     extra_link_args += ["-pthread"]
 
 _cython_src_dir = "src/cython"
+
+# The sparse-matrix class is Python now (ed/DistributedSparseMatrix.py). A compiled module of the old Cython class
+# left in an editable checkout would be imported ahead of it (extension modules win over .py), so remove it.
+import glob  # noqa: E402
+
+for _stale in glob.glob(os.path.join("src", "impurityModel", "ed", "DistributedSparseMatrix.*.so")):
+    os.remove(_stale)
 _mpi_utils_src = os.path.join(_cython_src_dir, "MpiUtils.cpp")
 
 # ---------------------------------------------------------------------------
@@ -236,9 +243,9 @@ ext_modules = [
         extra_link_args=extra_link_args,
     ),
     Extension(
-        name="impurityModel.ed.DistributedSparseMatrix",
+        name="impurityModel.ed.SparseScatter",
         sources=[
-            os.path.join(_cython_src_dir, "DistributedSparseMatrix.pyx"),
+            os.path.join(_cython_src_dir, "SparseScatter.pyx"),
         ],
         language="c++",
         include_dirs=include_dirs,

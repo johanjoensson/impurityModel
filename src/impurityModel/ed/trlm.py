@@ -36,7 +36,7 @@ from impurityModel.ed.BlockLanczosCore import (
     block_orthogonalize,
     eigh_block_tridiagonal,
 )
-from impurityModel.ed.discovered_matrix import coerce_operator
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.solver_trace import note as _trace_note
 from impurityModel.ed.solver_trace import timed as _trace_timed
 
@@ -359,7 +359,7 @@ def trlm(
 
     mpi = comm is not None and getattr(comm, "size", 1) > 1
     rank0 = (not mpi) or comm.rank == 0
-    h_op = coerce_operator(h_op, comm)
+    h_op = DistributedSparseMatrix.coerce(h_op, comm)
 
     psi0 = np.ascontiguousarray(psi0 if psi0.ndim == 2 else np.reshape(psi0, (-1, 1)), dtype=complex)
     if locked is not None:

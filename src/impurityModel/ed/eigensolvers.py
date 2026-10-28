@@ -22,7 +22,7 @@ from mpi4py import MPI
 from impurityModel.ed import config
 from impurityModel.ed.average import energy_cut
 from impurityModel.ed.BlockLanczosCore import block_inner, block_normalize
-from impurityModel.ed.discovered_matrix import coerce_operator, sparse_from_scipy, sparse_operator_types
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.memory_estimate import gs_krylov_blocks
 from impurityModel.ed.trlm import STATUS_CONVERGED, Window, trlm
 
@@ -172,8 +172,6 @@ def _gather_to_root(h_op, comm):
     ``O(n^2)`` per rank. The column offsets come from the ranks' local sizes (the rank-contiguous
     numbering), not from ``col_offset``. Overlapping segments are summed, as :meth:`to_scipy` does.
     """
-    if hasattr(h_op, "unbind_slots"):
-        h_op.unbind_slots()
     local = h_op.to_scipy().tocoo()
     offset, _counts = _rank_offsets(h_op.shape[1], comm)
     parts = [
@@ -200,7 +198,7 @@ def _gather_to_root(h_op, comm):
 
 
 def _distributed(h_local, comm):
-    return isinstance(h_local, sparse_operator_types()) and comm is not None and comm.size > 1
+    return isinstance(h_local, DistributedSparseMatrix) and comm is not None and comm.size > 1
 
 
 def dense_eigensystem(
@@ -567,17 +565,8 @@ def _rank_offsets(n_local, comm):
 
 
 def _local_diagonal(h_op, offset):
-    """The diagonal entries of ``h_op``'s local columns, ``(n_local,)``; ``offset`` is the first local
-    column's global index. Unbinds a bound matrix (row indices must be global)."""
-    if hasattr(h_op, "diagonal"):
-        return np.asarray(h_op.diagonal()).real
-    h_op.unbind_slots()
-    diag = np.zeros(h_op.shape[1], dtype=complex)
-    for c0, indptr, rows, data in h_op.segments:
-        cols = np.repeat(np.arange(c0, c0 + len(indptr) - 1, dtype=np.int64), np.diff(indptr))
-        on = np.asarray(rows, dtype=np.int64) == cols + offset
-        np.add.at(diag, cols[on], np.asarray(data)[on])
-    return diag.real
+    """The diagonal entries of ``h_op``'s local columns, ``(n_local,)`` (``offset`` is kept for the callers)."""
+    return np.asarray(h_op.diagonal()).real
 
 
 def _gather_sum(local, comm):
@@ -622,7 +611,7 @@ def davidson_lowest(h_op, comm, start, *, tol, max_vectors=None, max_iter=None):
     """
     mpi = comm is not None and getattr(comm, "size", 1) > 1
     comm = comm if mpi else None
-    h_op = coerce_operator(h_op, comm)
+    h_op = DistributedSparseMatrix.coerce(h_op, comm)
     start = np.ascontiguousarray(start, dtype=complex)
     n_local = start.shape[0]
     offset, _counts = _rank_offsets(n_local, comm)
@@ -729,7 +718,7 @@ def _lowest_on_root(h_op, comm, hashes, warm, solve):
     rows of the vector back by ``Scatterv``: three collectives per solve where a distributed Davidson
     iteration costs four. The result does not depend on the rank count.
     """
-    h_op = coerce_operator(h_op, comm)
+    h_op = DistributedSparseMatrix.coerce(h_op, comm)
     full = _gather_to_root(h_op, comm)
     n_local = len(hashes)
     _offset, counts = _rank_offsets(n_local, comm)
@@ -743,7 +732,7 @@ def _lowest_on_root(h_op, comm, hashes, warm, solve):
     if width:
         recv = [g_warm, counts * width, displs * width, MPI.C_DOUBLE_COMPLEX] if root else None
         comm.Gatherv([np.ascontiguousarray(warm, dtype=complex), MPI.C_DOUBLE_COMPLEX], recv, root=0)
-    res = _on_root(comm, lambda: solve(sparse_from_scipy(full, None), g_hashes, g_warm))
+    res = _on_root(comm, lambda: solve(DistributedSparseMatrix.from_scipy(full, None), g_hashes, g_warm))
     head = comm.bcast(
         None if res is None else (res.e, res.n_in, res.certified, res.max_multiplicity, res.status), root=0
     )

@@ -1,4 +1,4 @@
-r"""``discovered_matrix.DiscoveredMatrix``: ``H`` over every discovered key, columns for the admitted ones.
+r"""``DistributedSparseMatrix``: ``H`` over every discovered key, columns for the admitted ones.
 
 The oracle shares no storage with the matrix: the admitted determinants' superposition is pushed
 through ``applyOp`` in Python (replicated on every rank) and indexed by determinant bytes. Pinned:
@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 
-from impurityModel.ed.discovered_matrix import DiscoveredMatrix
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
 from impurityModel.ed.ManyBodyUtils import ManyBodyState, applyOp
 from impurityModel.test.basis.test_sparse_matrix_build import _N_BYTES, _all_dets, _operator
 from impurityModel.test.support.comms import COMMS
@@ -66,7 +66,7 @@ def _oracle(op, dets):
 
 
 def _matrix(op, comm, owned):
-    mat = DiscoveredMatrix(op, chunks_per_state=1, comm=comm)
+    mat = DistributedSparseMatrix(op, chunks_per_state=1, comm=comm)
     mat.grow(owned)
     return mat
 
@@ -113,7 +113,7 @@ def test_one_application_per_admitted_key_in_any_arrival_order(comm):
     op = _operator()
     admitted = _admitted(120)
     mine = _owned(admitted, comm)
-    mat = DiscoveredMatrix(op, 1, comm, batch=200)  # several lookup batches
+    mat = DistributedSparseMatrix(op, 1, comm, batch=200)  # several lookup batches
     half = len(mine) // 2
     mat.grow(mine[:half])
     mat.grow(mine[:half])  # a repeat admits nothing
@@ -181,7 +181,7 @@ def test_without_the_frontier_the_matrix_is_p_h_p(comm):
     op = _operator()
     admitted = _admitted(150)
     mine = _owned(admitted, comm)
-    mat = DiscoveredMatrix(op, 1, comm, keep_frontier=False)
+    mat = DistributedSparseMatrix(op, 1, comm, keep_frontier=False)
     mat.grow(mine)
     assert mat.n_k_local == mat.n_p_local, "K must stay equal to P"
     alive_keys = mat.p_keys()
@@ -198,9 +198,9 @@ def test_without_the_frontier_the_matrix_is_p_h_p(comm):
 def test_columns_built_after_admission_equal_columns_grown_with_it(comm):
     op = _operator()
     mine = _owned(_admitted(120, seed=8), comm)
-    grown = DiscoveredMatrix(op, 1, comm, keep_frontier=False)
+    grown = DistributedSparseMatrix(op, 1, comm, keep_frontier=False)
     grown.grow(mine)
-    late = DiscoveredMatrix(op, 1, comm, keep_frontier=False)
+    late = DistributedSparseMatrix(op, 1, comm, keep_frontier=False)
     late.admit_keys(mine)
     assert late.n_applied == 0 and late.nnz == 0
     late.build_columns()
@@ -212,7 +212,7 @@ def test_columns_built_after_admission_equal_columns_grown_with_it(comm):
 
 def test_the_identity_translation_is_recognised_per_rank_block():
     """``_is_identity`` is true exactly when every K row of every rank maps to the P slot of the same number."""
-    from impurityModel.ed.discovered_matrix import _is_identity
+    from impurityModel.ed.DistributedSparseMatrix import _is_identity
 
     goff = np.array([0, 3, 5], dtype=np.int64)  # ranks hold 3, 2 and 4 K rows
     identity = np.array([0, 1, 2, 0, 1, 0, 1, 2, 3], dtype=np.int64)
@@ -235,7 +235,7 @@ def test_both_row_widths_give_the_same_matrix(comm, slot_bits):
     the matvec and ``to_scipy`` are the same either way."""
     op = _operator()
     admitted = _admitted(150)
-    mat = DiscoveredMatrix(op, chunks_per_state=1, comm=comm)
+    mat = DistributedSparseMatrix(op, chunks_per_state=1, comm=comm)
     if slot_bits is not None:
         mat._slot_bits = slot_bits
     mat.grow(_owned(admitted, comm))
@@ -262,7 +262,7 @@ def test_sorting_the_p_slots_numbers_them_in_key_order_before_the_columns_are_bu
     that gives the product the matrix admitted in one sorted batch has, with the block carried by ``order``."""
     op = _operator()
     mine = _owned(_admitted(150), comm)
-    mat = DiscoveredMatrix(op, 1, comm, keep_frontier=False)
+    mat = DistributedSparseMatrix(op, 1, comm, keep_frontier=False)
     mat.admit_keys(mine[: len(mine) // 3])
     mat.admit_keys(mine[len(mine) // 3 :])  # two batches: the slots are in arrival order
     old_keys = mat.p_keys()
@@ -271,7 +271,7 @@ def test_sorting_the_p_slots_numbers_them_in_key_order_before_the_columns_are_bu
     assert keys == sorted(keys)
     assert [_key(old_keys[i]) for i in order] == keys
     mat.build_columns()
-    ref = DiscoveredMatrix(op, 1, comm, keep_frontier=False)
+    ref = DistributedSparseMatrix(op, 1, comm, keep_frontier=False)
     ref.admit_keys(mine)
     ref.build_columns()
     assert [_key(k) for k in ref.p_keys()] == keys

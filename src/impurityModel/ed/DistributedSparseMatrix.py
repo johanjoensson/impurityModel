@@ -34,7 +34,6 @@ import scipy.sparse as sps
 from mpi4py import MPI
 
 from impurityModel.ed import config
-from impurityModel.ed.DistributedSparseMatrix import scatter_discovered
 from impurityModel.ed.ManyBodyUtils import (
     ManyBodyState,
     SlaterDeterminant,
@@ -42,9 +41,11 @@ from impurityModel.ed.ManyBodyUtils import (
     pack_determinants_ordered_cy,
 )
 from impurityModel.ed.mpi_comm import MatvecExchangePlan, routed_index_lookup
+from impurityModel.ed.solver_trace import note as _trace_note
+from impurityModel.ed.SparseScatter import scatter_discovered
 from impurityModel.ed.work_queue import queue_progress
 
-#: Matrix elements per collective key lookup in :meth:`DiscoveredMatrix.grow` (~80 MiB of transient).
+#: Matrix elements per collective key lookup in :meth:`DistributedSparseMatrix.grow` (~80 MiB of transient).
 _GROW_BATCH = 1 << 19
 
 _SLOT_MASK = (1 << 32) - 1
@@ -128,7 +129,7 @@ class _Layout:
         self.epoch = epoch
 
 
-class DiscoveredMatrix:
+class DistributedSparseMatrix:
     """See the module docstring.
 
     Parameters
@@ -146,9 +147,13 @@ class DiscoveredMatrix:
         ``False`` stores only the rows that are in ``K`` when a column is built and never adds the rows an
         image reaches to ``K``: ``K = P`` and the matrix is ``P H P`` (build it in one :meth:`grow` /
         :meth:`build_columns`; a row admitted later is missing from the columns built before it).
+    keep : KeyFilter, optional
+        A filter that rules out image rows as they are generated (``keep_frontier=False`` builds: most rows outside
+        the basis are never produced). It must admit every determinant of ``P``; the stored elements are
+        bit-identical to the unfiltered build's.
     """
 
-    def __init__(self, hop=None, chunks_per_state=0, comm=None, batch=_GROW_BATCH, keep_frontier=True):
+    def __init__(self, hop=None, chunks_per_state=0, comm=None, batch=_GROW_BATCH, keep_frontier=True, keep=None):
         self.hop = hop
         self._keyless = False
         self._shape = None
@@ -158,6 +163,7 @@ class DiscoveredMatrix:
         self.size = 1 if self.comm is None else self.comm.size
         self._batch = int(batch)
         self.keep_frontier = bool(keep_frontier)
+        self._keep = keep
         # Entries store their row as int32 ``owner << slot_bits | slot`` while every slot fits (20 B per
         # element, as the old matrix), else as int64 ``owner << 32 | slot``; a segment's dtype says which.
         self._slot_bits = 31 - (self.size - 1).bit_length()
@@ -173,6 +179,7 @@ class DiscoveredMatrix:
         self.epoch = 0
         self.n_applied = 0  # hop applications, one per admitted key (tests count it)
         self._tables = None
+        self._flags = None
 
     # -- sizes ----------------------------------------------------------------------------------
 
@@ -204,7 +211,24 @@ class DiscoveredMatrix:
             + self._k_pslot.nbytes
             + self._p_kslot.nbytes
             + self._alive.nbytes
+            + (self._tables[1][3].nbytes if self._tables is not None else 0)
         )
+
+    def p_nnz(self):
+        """Stored entries that are an operator element: live column, row in ``P`` (``nnz`` also counts the frontier
+        rows of a ``keep_frontier`` matrix and the columns of dropped slots). **Collective** on a table-cache miss."""
+        _rc, _cc, goff, ptab, use_ptab = self._gather_tables("P")
+        if not use_ptab:
+            return self.nnz
+        alive = self.alive()
+        total = 0
+        for c0, indptr, packed, _data in self._segments:
+            if not len(packed):
+                continue
+            owners, slots = self._decode(packed)
+            col = np.repeat(np.arange(c0, c0 + len(indptr) - 1, dtype=np.int64), np.diff(indptr))
+            total += int(np.count_nonzero((ptab[goff[owners] + slots] >= 0) & alive[col]))
+        return total
 
     @property
     def dtype(self):
@@ -331,7 +355,11 @@ class DiscoveredMatrix:
                 if i % _QUEUE_POKE_KETS == 0:
                     queue_progress()  # see _QUEUE_POKE_KETS
                 unit[todo[i]] = 1.0
-                image = applyOp(self.hop, unit, cutoff=0)
+                image = (
+                    applyOp(self.hop, unit, cutoff=0)
+                    if self._keep is None
+                    else self.hop.apply_block(unit, 0.0, self._keep)
+                )
                 unit.erase(todo[i])
                 self.n_applied += 1
                 ks = image.keys()
@@ -405,13 +433,14 @@ class DiscoveredMatrix:
         it once per step, as the old matrix's renumbering did."""
         n = self.n_p_local
         wide = any(packed.dtype != np.int32 for _, _, packed, _ in self._segments)
-        dtype = np.int64 if wide else np.int32
+        # An int32 segment packs ``owner << slot_bits | slot``; merged with a wide one it must be re-encoded as
+        # ``owner << 32 | slot``, or its rows decode as owner 0 with a huge slot.
         counts = np.zeros(n, dtype=np.int64)
         for c0, indptr, _packed, _data in self._segments:
             counts[c0 : c0 + len(indptr) - 1] = np.diff(indptr)
         old_ptr = np.zeros(n + 1, dtype=np.int64)
         np.cumsum(counts, out=old_ptr[1:])
-        packed_all = np.concatenate([packed.astype(dtype, copy=False) for _, _, packed, _ in self._segments])
+        packed_all = np.concatenate([self._as_width(packed, wide) for _, _, packed, _ in self._segments])
         data_all = np.concatenate([data for _, _, _, data in self._segments])
         self._segments = []
         new_counts = counts[order]
@@ -472,6 +501,13 @@ class DiscoveredMatrix:
         if self._slot_bits >= 1 and int((packed & _SLOT_MASK).max()) < (1 << self._slot_bits):
             return ((packed >> 32 << self._slot_bits) | (packed & _SLOT_MASK)).astype(np.int32)
         return packed
+
+    def _as_width(self, packed, wide):
+        """``packed`` re-encoded in the wide layout (``owner << 32 | slot``, int64) when ``wide``, else unchanged."""
+        if not wide or packed.dtype != np.int32:
+            return packed
+        owner, slot = self._decode(packed)
+        return (owner << 32) | slot
 
     def _decode(self, packed):
         """``(owner, slot)`` of a segment's entries, whichever width it is stored in."""
@@ -555,15 +591,16 @@ class DiscoveredMatrix:
         if self._tables is not None and self._tables[0] == (rows, self.epoch):
             return self._tables[1]
         n_k, n_p = self.n_k_local, self.n_p_local
+        # Identity (K row i is P slot i, nothing outside P, nothing dead) is decided on this rank's own map and
+        # agreed with one Allreduce, so the global-length K -> P table is gathered only when a rank needs it.
+        local_identity = bool(np.array_equal(self._k_pslot, np.arange(n_k, dtype=np.int64))) and n_k == n_p
         if self.comm is None:
-            goff = np.zeros(1, dtype=np.int64)
-            ptab = self._k_pslot if rows == "P" else np.zeros(0, dtype=np.int64)
             tables = (
                 np.array([n_k if rows == "all" else n_p], dtype=np.int64),
                 np.array([n_p], dtype=np.int64),
-                goff,
-                ptab,
-                rows == "P" and not _is_identity(goff, ptab),
+                np.zeros(1, dtype=np.int64),
+                self._k_pslot if rows == "P" and not local_identity else np.zeros(0, dtype=np.int64),
+                rows == "P" and not local_identity,
             )
         else:
             comm = self.comm
@@ -573,14 +610,27 @@ class DiscoveredMatrix:
             row_counts = (counts[:, 0] if rows == "all" else counts[:, 1]).copy()
             goff = np.concatenate(([0], np.cumsum(counts[:, 0])[:-1])).astype(np.int64)
             ptab = np.zeros(0, dtype=np.int64)
+            use_ptab = False
             if rows == "P":
-                ptab = np.empty(int(counts[:, 0].sum()), dtype=np.int64)
-                comm.Allgatherv(self._k_pslot, [ptab, counts[:, 0].copy(), goff, MPI.INT64_T])
-            tables = (row_counts, col_counts, goff, ptab, rows == "P" and not _is_identity(goff, ptab))
+                identity = np.array([local_identity], dtype=np.int64)
+                comm.Allreduce(MPI.IN_PLACE, identity, op=MPI.MIN)
+                use_ptab = not identity[0]
+                if use_ptab:
+                    ptab = np.empty(int(counts[:, 0].sum()), dtype=np.int64)
+                    comm.Allgatherv(self._k_pslot, [ptab, counts[:, 0].copy(), goff, MPI.INT64_T])
+            tables = (row_counts, col_counts, goff, ptab, use_ptab)
         self._tables = ((rows, self.epoch), tables)
         return tables
 
-    def _owner_flags(self, goff, ptab, use_ptab):
+    def _owner_flags(self, rows, goff, ptab, use_ptab):
+        """Which ranks own a row some live column reaches; cached per ``(rows, epoch)``."""
+        if self._flags is not None and self._flags[0] == (rows, self.epoch):
+            return self._flags[1]
+        present = self._reached_owners(goff, ptab, use_ptab)
+        self._flags = ((rows, self.epoch), present)
+        return present
+
+    def _reached_owners(self, goff, ptab, use_ptab):
         present = np.zeros(self.size, dtype=bool)
         for _, _, packed, _ in self._segments:
             if not len(packed):
@@ -591,7 +641,7 @@ class DiscoveredMatrix:
             present[np.unique(owners)] = True
         return present
 
-    def exchange_plan(self, width, site="discovered_matrix", rows="P"):
+    def exchange_plan(self, width, site="sparse_matrix", rows="P"):
         """The layout for blocks up to ``width`` columns wide returning ``rows`` (``"P"``, the default: the P
         rows, an operator's own; ``"all"``: every K row). **Collective** (three tiny collectives, plus the table
         gather when the epoch changed); build one per kernel call. ``site`` labels the trace note."""
@@ -600,7 +650,7 @@ class DiscoveredMatrix:
             return _Layout(
                 rows, None, np.zeros(1, dtype=np.int64), goff, ptab, int(row_counts[0]), self.epoch, use_ptab
             )
-        flags = self._owner_flags(goff, ptab, rows == "P")
+        flags = self._owner_flags(rows, goff, ptab, use_ptab)
         plan = MatvecExchangePlan(
             self.comm,
             col_counts,
@@ -614,6 +664,7 @@ class DiscoveredMatrix:
         for i, dest in enumerate(plan.destinations):
             base[dest] = int(plan.send_row_offsets[i])
         base[self.rank] = plan.total_send_rows
+        _trace_note("matvec_exchange", site=site, **plan.describe())
         return _Layout(rows, plan, base, goff, ptab, int(row_counts[self.rank]), self.epoch, use_ptab)
 
     # -- the matvec -------------------------------------------------------------------------------
@@ -631,7 +682,7 @@ class DiscoveredMatrix:
             raise ValueError(f"block has {X.shape} rows, the matrix has {self.n_p_local} P slots")
         p = X.shape[1]
         if plan is None:
-            plan = self.exchange_plan(p, rows=rows)
+            plan = self.exchange_plan(p, "block_apply", rows=rows)
         if plan.rows != rows or plan.epoch != self.epoch:
             raise ValueError("the layout is stale or was built for other rows")
         if out is None:
@@ -778,7 +829,8 @@ class DiscoveredMatrix:
 
     @classmethod
     def coerce(cls, h, comm=None):
-        """``h`` as a matrix: a :class:`DiscoveredMatrix` is returned as is; a scipy sparse or dense ``(N, n_local)``
+        """``h`` as a matrix: a :class:`DistributedSparseMatrix` is returned as is; a scipy sparse or dense
+        ``(N, n_local)``
         (the columns this rank owns) is converted once."""
         if isinstance(h, cls):
             return h
@@ -789,49 +841,13 @@ class DiscoveredMatrix:
             return cls.from_dense(h, comm)
         raise TypeError(f"cannot use a {type(h).__name__} as a sparse matrix")
 
-    def to_array_operator(self):
-        """Hand this matrix's ``P H P`` to the array kernel: a :class:`DistributedSparseMatrix` over this rank's live
-        columns whose rows are the global P numbering (rank-contiguous, ``comm`` order), the same operator the
-        kernel's frozen recurrence has always run on. **Consumes** the matrix: the segments are converted one
-        at a time and released as they go, so the peak is one batch above the stored matrix, and ``self``
-        holds no columns afterwards. **Collective** (the P tables).
-        """
-        from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
-
-        _rc, col_counts, goff, ptab, use_ptab = self._gather_tables("P")
-        poff = np.concatenate(([0], np.cumsum(col_counts))).astype(np.int64)
-        total = int(poff[-1])
-        row_dtype = np.int32 if total < 2**31 else np.int64
-        alive = self.alive()
-        segments, self._segments = self._segments, []
-        out = []
-        while segments:
-            c0, indptr, packed, data = segments.pop(0)
-            n = len(indptr) - 1
-            owner, slot = self._decode(packed)
-            if use_ptab:
-                slot = ptab[goff[owner] + slot]
-            col = np.repeat(np.arange(c0, c0 + n, dtype=np.int64), np.diff(indptr))
-            keep = alive[col] & (slot >= 0)
-            if not keep.all():
-                counts = np.bincount(col[keep] - c0, minlength=n)
-                indptr = np.zeros(n + 1, dtype=np.int64)
-                np.cumsum(counts, out=indptr[1:])
-                owner, slot, data = owner[keep], slot[keep], data[keep]
-            rows = (poff[owner] + slot).astype(row_dtype)
-            out.append((c0, np.ascontiguousarray(indptr, dtype=np.int64), rows, np.ascontiguousarray(data)))
-            del packed, owner, slot, col, keep
-        self.epoch += 1
-        self._tables = None
-        return DistributedSparseMatrix((total, self.n_p_local), out, self.comm, int(poff[self.rank]))
-
     # -- conversions (tests, small dense eigensolves) -----------------------------------------------
 
     def to_scipy(self, rows="P"):
         """This rank's live columns as a scipy CSC of shape ``(total rows, n_p_local)``; global row
         ``r`` is the rows of rank 0, then rank 1, ... (K slots or P slots in order). Dead columns are
         empty. **Collective** on a distributed matrix."""
-        row_counts, _cc, goff, ptab, _use = self._gather_tables(rows)
+        row_counts, _cc, goff, ptab, use_ptab = self._gather_tables(rows)
         roff = np.concatenate(([0], np.cumsum(row_counts)))
         n_rows = int(roff[-1])
         alive = self.alive()
@@ -840,7 +856,7 @@ class DiscoveredMatrix:
             n = len(indptr) - 1
             col = np.repeat(np.arange(c0, c0 + n, dtype=np.int64), np.diff(indptr))
             owner, slot = self._decode(packed)
-            if rows == "P":
+            if use_ptab:
                 slot = ptab[goff[owner] + slot]
             ok = alive[col] & (slot >= 0)
             cols.append(col[ok])
@@ -862,45 +878,6 @@ class DiscoveredMatrix:
 
     def __repr__(self):
         return (
-            f"DiscoveredMatrix(K_local={self.n_k_local}, P_local={self.n_p_local}, nnz={self.nnz}, "
+            f"DistributedSparseMatrix(K_local={self.n_k_local}, P_local={self.n_p_local}, nnz={self.nnz}, "
             f"distributed={self.comm is not None})"
         )
-
-
-# -- the seam between the two sparse-operator classes (Phase 1M; removed when the old class goes) ------------
-
-#: Which class the consumers build: ``"old"`` (``DistributedSparseMatrix``, the Cython column-segment matrix) or
-#: ``"new"`` (:class:`DiscoveredMatrix`). Identical on every rank by construction (an env var read at import).
-#: Temporary: ``"new"`` has been the default since the flip; the deletion commit removes the switch.
-SPARSE_CLASS = os.environ.get("IMPMOD_SPARSE_MATRIX", "new")
-
-
-def _old_class():
-    from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix
-
-    return DistributedSparseMatrix
-
-
-def sparse_operator_types():
-    """The classes an array kernel accepts as its operator (for ``isinstance``)."""
-    return (_old_class(), DiscoveredMatrix)
-
-
-def sparse_from_scipy(mat, comm=None, col_offset=0):
-    """``mat`` (this rank's ``(N, n_local)`` columns) as the configured matrix class."""
-    cls = DiscoveredMatrix if SPARSE_CLASS == "new" else _old_class()
-    return cls.from_scipy(mat, comm, col_offset)
-
-
-def sparse_from_dense(a, comm=None, col_offset=0):
-    cls = DiscoveredMatrix if SPARSE_CLASS == "new" else _old_class()
-    return cls.from_dense(a, comm, col_offset)
-
-
-def coerce_operator(h, comm=None):
-    """``h`` as a sparse operator: an instance of either class is returned as is; a scipy sparse or dense local
-    block is converted into the configured class."""
-    if isinstance(h, sparse_operator_types()):
-        return h
-    cls = DiscoveredMatrix if SPARSE_CLASS == "new" else _old_class()
-    return cls.coerce(h, comm)

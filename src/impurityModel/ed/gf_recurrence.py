@@ -5,9 +5,10 @@ One step is the textbook block recurrence over tall-skinny blocks (:func:`lanczo
     w = A x;  alpha = <x|w>;  w -= x alpha + x_prev beta_prev^H;  x_next, beta = TSQR(w)
 
 with ``A`` a callable, so the same step serves a fixed matrix and one that grows while it is applied.
-:func:`block_lanczos_discovered` wraps it for :class:`~impurityModel.ed.discovered_matrix.DiscoveredMatrix`:
+:func:`block_lanczos_discovered` wraps it for
+:class:`~impurityModel.ed.DistributedSparseMatrix.DistributedSparseMatrix`:
 the matvec returns the step's rows in ``P`` (the Lanczos step) and in ``F = K \\ P`` (the frontier), the
-admission decision reads ``F``, :meth:`DiscoveredMatrix.grow` admits the chosen rows (one operator
+admission decision reads ``F``, :meth:`DistributedSparseMatrix.grow` admits the chosen rows (one operator
 application per admitted determinant), and the admitted rows' amplitude enters the same step. After the
 support freezes (cap, memory guard, settle) ``F`` is discarded and the recurrence runs on ``P H P`` from
 the same blocks -- the flag is the whole freeze.
@@ -32,7 +33,7 @@ from scipy.linalg.blas import zgemm as _zgemm
 from impurityModel.ed import config
 from impurityModel.ed.basis_transcription import comm_support_filter
 from impurityModel.ed.BlockLanczosCore import apply_and_redistribute, divergence_guard
-from impurityModel.ed.discovered_matrix import DiscoveredMatrix, stage
+from impurityModel.ed.DistributedSparseMatrix import DistributedSparseMatrix, stage
 from impurityModel.ed.gf_convergence import _gf_monitor_tol, _make_gf_convergence_monitor
 from impurityModel.ed.gf_primitives import (
     SETTLE_WINDOW,
@@ -143,7 +144,7 @@ def matrix_need_bytes(n_p_local, n_k_local, fanout, n_global_k, n_ranks, width):
     """Upper bound on the bytes a rank needs for the discovered-key matrix and the recurrence on it: the
     columns of ``P_local`` over the rows of ``K``, the ``K`` store, the dense blocks (``q``, ``q_prev``, the
     next block over ``P`` and the product over ``K``), the exchange buffers and one ``grow`` batch."""
-    from impurityModel.ed.discovered_matrix import _GROW_BATCH
+    from impurityModel.ed.DistributedSparseMatrix import _GROW_BATCH
     from impurityModel.ed.mpi_comm import matvec_column_chunk_width
 
     elements = n_p_local * fanout
@@ -549,8 +550,7 @@ class _ApplyEngine:
         if not self._built:
             self.matrix.build_columns()
             self._built = True
-        with stage("to_array_operator"):
-            return self.matrix.to_array_operator(), order
+        return self.matrix, order
 
     def apply(self, x):
         matrix, admission = self.matrix, self.admission
@@ -763,7 +763,7 @@ def start_discovered(
     """
     comm = basis.comm if basis.is_distributed else None
     cps = (basis.n_bytes + 7) // 8
-    matrix = DiscoveredMatrix(hop, cps, comm, keep_frontier=(mode == "discovered"))
+    matrix = DistributedSparseMatrix(hop, cps, comm, keep_frontier=(mode == "discovered"))
     decisions = SupportDecisions(comm, cap, int(basis.size), memory_budget=memory_budget, memory_policy=memory_policy)
     support = DiscoveredSupport(matrix, decisions, eta=eta, first_shell_tol=first_shell_tol)
     local = list(basis.local_basis)
@@ -888,7 +888,7 @@ def block_Green_discovered(
 
     The counterpart of ``gf_solvers.block_Green_sparse`` with the same arguments and return value
     ``(alphas, betas, r)``; ``cap_info`` additionally gets ``engine`` (the matvec mode that ran:
-    ``"discovered"``, ``"retained"`` or ``"none"``) and ``matrix`` (the :class:`DiscoveredMatrix` in the
+    ``"discovered"``, ``"retained"`` or ``"none"``) and ``matrix`` (the :class:`DistributedSparseMatrix` in the
     ``"discovered"`` mode, else ``None``; never put it in ``cap_stats``). ``needs_matrix`` says a consumer will
     read the discovered frontier (the importance probe, swap refinement), which is what ``"auto"`` needs the
     ``"discovered"`` mode for: without one it takes the cheaper ``"retained"`` mode (the frozen phase then runs on
