@@ -136,3 +136,13 @@ is acausal with pruning on at its cap.
 Not yet measured: the mass rule (tau) legs, and `first_shell_tol > 0`. The first-shell guard of the plan (dropped
 weight <= 1e-6 of ||Hs||^2) is still not enforced in code; a nonzero `gf_first_shell_tol` is the user's
 responsibility.
+
+## 7. Open item: swap refinement for complex H
+
+`gf_refinement.refine_frozen_unit` declines a unit whose matrix has a non-real element (`matrix_is_real`, 1e-12), because
+the removal identity `dG_ij = -X_i(D) X_j(D) / R_DD` needs `R = (z - H_P)^-1` complex-symmetric, i.e. real symmetric `H`.
+For complex Hermitian `H` (spin-orbit coupling, complex hoppings, a complex basis rotation) `R(z)^T = R(z*)^*`: the
+retained score needs a second solve at `conj(z)` (`dG_ij = -X_i(D) Y_j(D) / R_DD` with `Y = R(z*)^* s`), and `R_DD`
+then comes from the same first-order `Sigma_D` with complex amplitudes. To do: the second solve per shift, complex
+`|M|^2` stays as is, tests against the dense complex oracle at -n 1/2/3, and drop the decline. (User, 2026-10-28:
+"we will have to implement the complex H handling at a later stage.")
