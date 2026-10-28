@@ -50,7 +50,7 @@ def _dense_operator(op, dets):
     return h, index
 
 
-def _setup(comm):
+def _setup(comm, drop=False):
     dets = _all_dets()
     op = _real_operator()
     basis = _basis(dets[::3], comm)
@@ -59,6 +59,13 @@ def _setup(comm):
     h, index = _dense_operator(op, dets)
     in_p = np.zeros(len(dets), dtype=bool)
     in_p[[index[_key(d)] for d in dets[::3]]] = True
+    if drop:
+        # Dead slots: every retained determinant but the seeds' whose index is odd leaves P (its row stays in K).
+        pkeys = matrix.p_keys()
+        gone = [i for i, k in enumerate(pkeys) if index[_key(k)] % 2 == 1 and index[_key(k)] not in (0, 90)]
+        matrix.drop_columns(gone)
+        for part in comm.allgather([index[_key(pkeys[i])] for i in gone]):
+            in_p[part] = False
     return dets, op, basis, matrix, h, index, in_p
 
 
@@ -131,10 +138,11 @@ def test_abs2_matvec_is_the_entrywise_square():
 
 
 @pytest.mark.mpi
+@pytest.mark.parametrize("drop", [False, True])
 @pytest.mark.parametrize("first_order", [True, False])
-def test_the_scores_equal_the_dense_definitions(first_order):
+def test_the_scores_equal_the_dense_definitions(first_order, drop):
     comm = MPI.COMM_WORLD
-    dets, _op, _b, matrix, h, index, in_p = _setup(comm)
+    dets, _op, _b, matrix, h, index, in_p = _setup(comm, drop)
     block = _seeds(matrix, index, dets)
     got = importance_scores(matrix, block, ZS, rtol=1e-11, first_order=first_order)
     s_ret, s_cand = _dense_scores(h, in_p, _global_seeds(matrix, block, index, comm), ZS, first_order)

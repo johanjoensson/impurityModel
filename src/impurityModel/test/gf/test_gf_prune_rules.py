@@ -123,6 +123,8 @@ def test_the_k_over_p_ratio_is_reported_under_pruning_only(monkeypatch, comm):
 
     set_gf_switches(monkeypatch, matrix_mode="discovered")
     _G, pruned = _run(monkeypatch, 0.3, "eta", comm=comm)
+    kept = len(_retained(pruned, comm))
+    assert pruned["proxy"].retained_size == kept
     assert pruned["k_over_p"] >= 1.0
     monkeypatch.delenv("GF_LANCZOS_ADMIT_TOL")
     basis = _seed_basis(cap=np.inf, comm=comm)
@@ -149,7 +151,7 @@ def test_the_option_beats_the_knob_and_pruning_switches_the_settle_off(monkeypat
     block_Green_sparse(_siam_6(), seeds, basis, DELTA, verbose=False, cap_info=opt, prune_tol=0.3, support_settle=True)
     assert knob["proxy"].depth_histogram()[:4] == [5, 6, 3, 1]
     assert opt["proxy"].depth_histogram()[:4] != [5, 6, 3, 1]
-    assert not opt["support_frozen"]
+    assert not opt["proxy"].decisions.support_freeze, "pruning switched the settle off"
 
 
 @pytest.mark.mpi

@@ -337,6 +337,14 @@ def apply_solver_overrides(solver, args):
             overrides.setdefault(name, None)
         if solver.gf_settle is True:
             overrides.setdefault("gf_settle", None)
+    # ...and a settle option the command line sets replaces a recorded pruning, the other way round.
+    if overrides.get("gf_prune_tol") is None and (
+        overrides.get("gf_settle") is True
+        or overrides.get("gf_settle_ratio") is not None
+        or overrides.get("gf_settle_retry") is True
+    ):
+        for name in ("gf_prune_tol", "gf_first_shell_tol"):
+            overrides.setdefault(name, None)
     # ...and so does leaving the block-Lanczos kernel for the pruning fields.
     if leaves_lanczos:
         for name in ("gf_prune_tol", "gf_first_shell_tol"):

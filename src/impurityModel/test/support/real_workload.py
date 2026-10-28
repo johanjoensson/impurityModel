@@ -307,6 +307,10 @@ def build_options(
                 solver_kwargs.pop(key, None)
         if solver_kwargs.get("gf_settle") is True and gf_settle is None:
             solver_kwargs.pop("gf_settle")
+    elif gf_settle_ratio is not None or gf_settle is True:
+        # ...and an explicit settle replaces an archived pruning.
+        solver_kwargs.pop("gf_prune_tol", None)
+        solver_kwargs.pop("gf_first_shell_tol", None)
     if gf_first_shell_tol is not None:
         solver_kwargs["gf_first_shell_tol"] = gf_first_shell_tol
     return model, meshes, basis, SolverOptions(**solver_kwargs)

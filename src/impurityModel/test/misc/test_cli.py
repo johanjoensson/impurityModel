@@ -360,3 +360,12 @@ def test_the_prune_flags_override_the_archive_record_and_replace_the_recorded_se
         pruned, _parse(selfenergy.add_arguments, ["h0.pickle", "--gf-method", "bicgstab"])
     )
     assert bicg.gf_method == "bicgstab" and (bicg.gf_prune_tol, bicg.gf_first_shell_tol) == (None, None)
+
+
+def test_a_settle_flag_replaces_a_recorded_pruning():
+    from impurityModel.ed.model import SolverOptions
+
+    recorded = SolverOptions(gf_prune_tol=1e-4, gf_first_shell_tol=1e-6)
+    for flags in (["--gf-settle-ratio", "1"], ["--gf-settle", "on"], ["--gf-settle-retry", "on"]):
+        out = selfenergy.apply_solver_overrides(recorded, _parse(selfenergy.add_arguments, ["h0.pickle", *flags]))
+        assert (out.gf_prune_tol, out.gf_first_shell_tol) == (None, None)
