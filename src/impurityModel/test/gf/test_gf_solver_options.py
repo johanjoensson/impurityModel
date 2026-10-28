@@ -251,5 +251,5 @@ def test_the_refine_spec_reaches_the_kernel_and_bicgstab_refuses_it(monkeypatch)
     spec = RefineSpec(rounds=2, tol=1e-4, swap=0.2)
     _run_driver("lanczos", None, extra={"gf_refine": spec})
     assert set(seen) == {(spec, True)}, "a refinement asks for the discovered matrix"
-    with pytest.raises(ValueError, match="apply only to gf_method='lanczos'|only to gf_method='lanczos'"):
+    with pytest.raises(ValueError, match=r"apply only to gf_method='lanczos'|only to gf_method='lanczos'"):
         _run_driver("bicgstab", None, extra={"gf_refine": spec})

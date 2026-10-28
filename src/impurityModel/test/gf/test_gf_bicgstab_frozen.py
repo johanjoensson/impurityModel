@@ -378,3 +378,30 @@ def test_the_rixs_r1_chain_on_every_rank():
     assert counters["r1_frozen"] > 0 and counters["r1_gmres"] == 0
     sparse, _ = _rixs_chain_run(False, comm=comm)
     np.testing.assert_allclose(frozen, sparse, atol=1e-5 * np.abs(sparse).max())
+
+
+@pytest.mark.parametrize("freeze", [False, True])
+def test_the_rixs_r1_solve_respects_the_weighted_window(freeze):
+    """``z - hOp`` is a fresh operator: without the weighted mask the R1 solve (sparse tier and the frozen
+    leak check alike) reaches determinants outside the window. The window forbids both conduction orbitals
+    (4 and 5) being occupied, which the hybridization reaches from the seeds."""
+    from impurityModel.ed.rixs import _new_rixs_solver_stats, _R1SolverChain
+
+    window = [({4: 1, 5: 1}, (0, 1))]
+    basis = _seed_basis(cap=10**9)
+    tmp_basis = basis.clone(initial_basis=[], weighted_restrictions=window, verbose=False)
+    psi1_all = list(_redistribute_as_width1(basis, _seeds(), len(_seeds())))
+    psi2_all = [ManyBodyState(width=1) for _ in psi1_all]
+    counters = _new_rixs_solver_stats()
+    chain = _R1SolverChain(None, eigenstate=0, counters=counters, freeze=freeze)
+    wins = np.linspace(-3.0, 3.0, 5)
+    reached = set()
+    for k, win in enumerate(wins):
+        psi2 = chain.solve(tmp_basis, _siam_6(), psi1_all, psi2_all, k, win, wins[k:], 0.3, 0.0, 0.0, False)
+        reached |= {bytes(d.to_bytearray()[:1])[0] for p in psi2 for d in p.keys()}
+    both_conduction = {b for b in reached if (b >> 3) & 1 and (b >> 2) & 1}
+    assert reached, "premise: the solve reached something"
+    assert not both_conduction, f"determinants outside the weighted window: {sorted(both_conduction)}"
+    if freeze:
+        # the leak check applies the same mask: rows outside the window are not leaks
+        assert counters["r1_frozen"] > 0 and counters["r1_frozen_fallbacks"] == 0

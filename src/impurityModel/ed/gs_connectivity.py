@@ -96,6 +96,7 @@ def _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target):
         manifold=Lowest(),
     )  # fmt: skip
     h_op.set_restrictions(basis.restrictions)
+    h_op.set_weighted_restrictions(basis.weighted_restrictions)
     try:
         seed = list(basis.local_basis)
         window = _lowest_level_degeneracy(h_op, basis)
@@ -113,6 +114,7 @@ def _probe(h_op, impurity_orbitals, bath_states, nominal_occ, target):
         block = len(h_op.apply_block(ManyBodyState(dict.fromkeys(dets, 1.0)), 0.0)) / len(dets)
     finally:
         h_op.set_restrictions(None)  # the solves set their own; the operator is shared
+        h_op.set_weighted_restrictions(None)
     return GsConnectivity(
         nnz_per_state=float(raw.mean()),
         selection_fanout=float(block),

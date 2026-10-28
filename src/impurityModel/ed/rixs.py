@@ -414,6 +414,9 @@ class _R1SolverChain:
         psi2_all[:] = redistributed[n1:]
         rebuild_size = tmp_basis.size
         A_op = z - hOp
+        # `z - hOp` is a fresh operator without the weighted mask hOp carries (block_bicgstab sets only the
+        # occupation restrictions from the basis): install it, or the solve admits rows outside the window.
+        A_op.set_weighted_restrictions(tmp_basis.weighted_restrictions)
         # Warm-started resolvent solved as one block over all in-components, sharing a
         # single Krylov space / iteration (block_bicgstab deflates a rank-deficient block).
         # atol is relative to ||psi1_all|| (see _RIXS_R1_ATOL); the extra iterations are

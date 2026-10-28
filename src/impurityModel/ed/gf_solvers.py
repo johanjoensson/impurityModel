@@ -804,6 +804,8 @@ class _FrozenShiftedSystem:
         the same points)."""
         if hasattr(A_op, "set_restrictions"):
             A_op.set_restrictions(self.basis.restrictions)
+        if hasattr(A_op, "set_weighted_restrictions"):
+            A_op.set_weighted_restrictions(self.basis.weighted_restrictions)
         cutoff = slaterWeightMin * float(np.max(self.seed_norms)) if len(self.seed_norms) else 0.0
         b = boundary_residual(A_op, X_block, self.basis, self.n_cols, cutoff, self.comm)
         return b / np.maximum(self.seed_norms, np.finfo(float).tiny)
