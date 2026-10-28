@@ -111,3 +111,41 @@ def test_rows_admitted_late_are_zero_padded():
     g.step(q0[:10], np.eye(2), None)
     g.pad_rows(N)
     assert all(x.shape[0] == N and not x[10:].any() for x in g.solutions())
+
+
+@pytest.mark.parametrize("cap", [10**9, 2500])
+def test_the_hook_in_the_recurrence_tracks_a_growing_support(cap, monkeypatch):
+    """Stepped from ``block_lanczos_discovered`` on the chain (the support grows under it, or is frozen by the cap),
+    every shift's solution has the right shape and its scalar residual is the true residual of ``(z - P H P) X = Q_1``
+    at the convergence monitor's stop, capped or not."""
+    from impurityModel.ed import gf_recurrence
+    from impurityModel.test.support.gf_chain_fixtures import run_chain
+
+    made = {}
+    real = gf_recurrence.block_lanczos_discovered
+
+    def wrapped(matrix, support, q0, converged, **kw):
+        g = made.setdefault("g", ShiftedGalerkin(ZS, q0.shape[0]))
+        g.reset(q0.shape[0])
+        made["q0"] = q0.copy()
+        out = real(matrix, support, q0, converged, shifted=g, **kw)
+        made["last"] = g
+        return out
+
+    monkeypatch.setattr(gf_recurrence, "block_lanczos_discovered", wrapped)
+    _a, _b, _r, info = run_chain(cap=cap, kernel=gf_recurrence.block_Green_discovered, matrix_mode="discovered")
+    g, matrix, q0 = made["last"], info["matrix"], made["q0"]
+    sols = g.solutions()
+    assert len(sols) == len(ZS) and sols[0].shape[1] == q0.shape[1]
+    assert sols[0].shape[0] <= matrix.n_p_local
+    # The seeds are the first rows; the support only grew by appending, so q0 padded with zeros is the right-hand side.
+    n_p = matrix.n_p_local
+    rhs = np.zeros((n_p, q0.shape[1]), dtype=complex)
+    rhs[: q0.shape[0]] = q0
+    plan = matrix.exchange_plan(q0.shape[1], "t", rows="P")
+    for z, x in zip(ZS, sols):
+        full = np.zeros((n_p, x.shape[1]), dtype=complex)
+        full[: x.shape[0]] = x
+        resid = z * full - matrix.matvec(np.ascontiguousarray(full), rows="P", plan=plan) - rhs
+        # Measured at the GF monitor's stop: 1e-7..1e-9 at |Im z| >= 0.2, 1e-3 at |Im z| = 0.05 / 0.02.
+        assert np.linalg.norm(resid, axis=0).max() < (1e-5 if abs(z.imag) >= 0.2 else 1e-2), (z, cap)

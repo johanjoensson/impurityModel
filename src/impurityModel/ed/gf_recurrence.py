@@ -281,7 +281,7 @@ def _subtract_product(w, x, coef):
         w[:r] = out.T
 
 
-def lanczos_step(apply, x, x_prev, beta_prev, *, comm=None, scale=0.0, deflate_tol=-1.0, store=None):
+def lanczos_step(apply, x, x_prev, beta_prev, *, comm=None, scale=0.0, deflate_tol=-1.0, store=None, diag=None):
     """One block-Lanczos step; collective when ``comm`` is given.
 
     ``apply(x)`` returns ``w = A x``; it may return **more rows** than ``x`` has (a matrix that admitted
@@ -293,7 +293,8 @@ def lanczos_step(apply, x, x_prev, beta_prev, *, comm=None, scale=0.0, deflate_t
     next block and ``beta`` the ``(k, p)`` factor with ``w - ... = x_next @ beta``; ``k`` is the retained
     rank (``0`` breakdown: the Krylov space is closed, ``-1`` a non-finite factor; ``x_next`` and ``beta``
     are then ``None``). ``store`` (a list of the earlier blocks, each with at most ``w``'s rows) switches on
-    full reorthogonalization: two classical Gram-Schmidt passes against every stored block.
+    full reorthogonalization: two classical Gram-Schmidt passes against every stored block. ``diag`` (a dict)
+    receives ``"dropped"``, the singular values TSQR deflated at this step (empty when none).
     """
     with stage("apply"):
         w = np.asarray(apply(x), dtype=complex)
@@ -311,7 +312,9 @@ def lanczos_step(apply, x, x_prev, beta_prev, *, comm=None, scale=0.0, deflate_t
                 overlap = _allreduce(comm, np.ascontiguousarray(block.conj().T @ w[:rows]))
                 w[:rows] -= block @ overlap
     with stage("tsqr"):
-        x_next, beta, k, _sv = tsqr(w, comm, max(float(scale), spectral_norm(alpha)), deflate_tol=deflate_tol)
+        x_next, beta, k, sv = tsqr(w, comm, max(float(scale), spectral_norm(alpha)), deflate_tol=deflate_tol)
+    if diag is not None:
+        diag["dropped"] = np.zeros(0) if sv is None or k <= 0 else np.asarray(sv, dtype=float)[k:]
     return alpha, x_next, beta, k
 
 
@@ -685,6 +688,7 @@ def block_lanczos_discovered(
     deflate_tol=-1.0,
     max_blocks=10**7,
     reort=False,
+    shifted=None,
 ):
     """Block Lanczos of ``H`` on the discovered-key matrix ``matrix`` from the orthonormal seed block ``q0``
     (``(n_p_local, n)``, rows in P-slot order), growing ``P`` through ``support``'s decisions.
@@ -693,6 +697,9 @@ def block_lanczos_discovered(
     per-block widths, why it stopped (``"converged"``, ``"invariant_subspace"``, ``"diverged"`` or
     ``"max_iter"``) and this rank's rows of the last accepted block (P-slot order of the final matrix).
     **Collective.** ``converged`` is the GF convergence monitor, called every block on every rank.
+    ``shifted`` (a :class:`~impurityModel.ed.gf_shift_recycling.ShiftedGalerkin`) is stepped with every block the
+    recurrence accepts (a diverged step is not folded in; an invariant subspace is, as an exact solution) and told
+    of every deflation; its blocks grow with the support.
     """
     comm = matrix.comm
     admission = _Admission(support, slater_weight_min)
@@ -731,6 +738,7 @@ def block_lanczos_discovered(
                 return _continue_on_array_kernel(
                     operator, comm, converged, alphas[:it], betas[:it], widths, blocks, deflate_tol, "frozen_kernel"
                 )
+        diag = {}
         alpha, x_next, beta, k = lanczos_step(
             engine.apply,
             x,
@@ -740,6 +748,7 @@ def block_lanczos_discovered(
             scale=max(h_norm_est, t_norm_max),
             deflate_tol=deflate_tol,
             store=store,
+            diag=diag,
         )
         if it >= alphas.shape[0]:
             alphas = np.concatenate((alphas, np.zeros_like(alphas)))
@@ -749,6 +758,8 @@ def block_lanczos_discovered(
             status = "diverged" if k < 0 else "invariant_subspace"
             widths.append(n_curr)
             it += 1
+            if shifted is not None and k == 0:
+                shifted.step(x, alpha, beta_prev)
             break
         betas[it, :k, :n_curr] = beta
         diverged, t_norm_max, h_norm_est = divergence_guard(
@@ -757,6 +768,10 @@ def block_lanczos_discovered(
         if diverged:
             status = "diverged"
             break
+        if shifted is not None:
+            shifted.step(x, alpha, beta_prev)
+            if diag["dropped"].size:
+                shifted.note_deflation(diag["dropped"])
         if d.support_freeze and not d.frozen:
             admission.note_next_block(x_next)
             if d.frozen:
