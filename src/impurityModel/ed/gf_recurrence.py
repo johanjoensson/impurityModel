@@ -42,6 +42,7 @@ from impurityModel.ed.gf_primitives import (
     _sanitize_continued_fraction,
     _trim_blocks,
     boundary_frontier,
+    calc_G,
 )
 from impurityModel.ed.manybody_basis import collective_mass_cutoff
 from impurityModel.ed.ManyBodyUtils import ManyBodyState
@@ -900,6 +901,21 @@ def _seed_block_on_final_slots(matrix, seed_keys, q0):
     return out
 
 
+def _refine_line(rec):
+    """The one ``-v`` line of a swap refinement (a decline, a fall back, or the rounds it took)."""
+    if rec.get("declined"):
+        return f"GF refinement declined: {rec['declined']}"
+    head = f"GF refinement: {rec['rounds']} swap round(s), swapped {rec['swapped']}, remaining gain {rec['gain']}"
+    if rec.get("fell_back"):
+        return head + " -- final estimate worse than round 0, kept round 0's support"
+    tail = "settled" if rec.get("settled") else "not settled"
+    if "dG_scoring" in rec:
+        tail += f", max|dG|/max|G| {rec['dG_scoring']:.2e} on the scoring shifts"
+        if "dG_holdout" in rec:
+            tail += f", {rec['dG_holdout']:.2e} held out"
+    return f"{head} ({tail}) in {rec['seconds']:.1f} s"
+
+
 def _needs_restart(support, n_seed):
     """Whether a pruned growth ended on a support that is larger than the one the first steps ran on (``n_seed``,
     the seeds'). A test seam: the negative control of ``test_gf_lanczos_pruning`` switches the restart off."""
@@ -925,6 +941,7 @@ def block_Green_discovered(
     needs_matrix=False,
     prune_tol=None,
     first_shell_tol=None,
+    refine=None,
 ):
     """One block of the Green's function from the recurrence on a discovered-key matrix.
 
@@ -937,7 +954,9 @@ def block_Green_discovered(
     the array kernel over ``P H P``). ``matrix_mode`` picks the matvec: the discovered-key matrix, the operator
     applied each step with the ``P H P`` matrix built at the freeze (``"retained"``), or the operator applied
     every block (``"none"``). ``prune_tol`` / ``first_shell_tol`` (``None``: the knobs) are the pruned growth's
-    cut and its first-shell cut. The determinant cap is
+    cut and its first-shell cut. ``refine`` (a :class:`~impurityModel.ed.gf_refinement.RefineSpec` with ``rounds > 0``)
+    swaps the least important retained determinants of a unit the cap froze for the most important discovered ones
+    (``"discovered"`` mode only; the record lands in ``cap_info["refine"]``). The determinant cap is
     ``basis.truncation_threshold``; ``GF_LANCZOS_ADMIT_TOL > 0`` turns on importance pruning.
     """
     comm = basis.comm
@@ -1022,6 +1041,8 @@ def block_Green_discovered(
     t0 = time.perf_counter()
     n_seed = support.retained_size
     seed_keys = matrix.p_keys() if support.prunes else None
+    refining = refine is not None and refine.rounds > 0 and matrix_mode == "discovered"
+    seeds_initial = (matrix.p_keys(), q0.copy()) if refining else None
     alphas, betas, widths, status, _q_last = block_lanczos_discovered(
         matrix,
         support,
@@ -1052,6 +1073,47 @@ def block_Green_discovered(
             reort=resolved_reort,
             engine=engine,
         )
+    if refining and support.cap_hit and not support.memory_frozen and not support.support_frozen:
+        from impurityModel.ed.gf_refinement import refine_frozen_unit
+
+        def rerun(q0_new):
+            nonlocal converged_flag, delta_min, last_dg
+            support.decisions.frozen = True
+            conv, converged_flag, delta_min, last_dg = _make_gf_convergence_monitor(
+                delta, slaterWeightMin, eval_meshes
+            )
+            return block_lanczos_discovered(
+                matrix,
+                support,
+                q0_new,
+                conv,
+                slater_weight_min=slaterWeightMin,
+                deflate_tol=DEFLATE_TOL_SEEDS,
+                reort=resolved_reort,
+                engine=engine,
+            )
+
+        def g_cf(result, zs):
+            a_t, b_t = _trim_blocks(result[0], result[1], result[2])
+            return calc_G(a_t, b_t, r, np.asarray(zs, dtype=complex), 0.0, 0.0)
+
+        outcome = refine_frozen_unit(
+            matrix,
+            refine,
+            seeds_initial[0],
+            seeds_initial[1],
+            (alphas, betas, widths, status, _q_last),
+            rerun,
+            g_cf,
+            eval_meshes,
+            _seed_block_on_final_slots,
+        )
+        if cap_info is not None:
+            cap_info["refine"] = outcome.record
+        if outcome.result is not None:
+            alphas, betas, widths, status, _q_last = outcome.result
+        if verbose and rank == 0:
+            print(_refine_line(outcome.record), flush=True)
     seconds = time.perf_counter() - t0
     if status in ("converged", "invariant_subspace"):
         converged_flag[0] = True

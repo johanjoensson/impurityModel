@@ -44,6 +44,7 @@ def _block_green_group(
     unit_probe=None,
     prune_tol=None,
     first_shell_tol=None,
+    refine=None,
 ):
     """Run one (possibly wide) block-Lanczos Green's function for a group of stacked seeds.
 
@@ -141,9 +142,10 @@ def _block_green_group(
             memory_policy=getattr(split_basis, "gf_memory_policy", "tighten"),
             support_settle=support_settle,
             settle_ratio=settle_ratio,
-            needs_matrix=unit_probe is not None,
+            needs_matrix=unit_probe is not None or (refine is not None and refine.rounds > 0),
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
+            refine=refine,
         )
         # `retained_size` is the support the recurrence ran on (`gf_recurrence` counts the determinants its matrix
         # discovers whether or not a cap is set), never `len(excited_basis)`: that is the clone of the seed support
@@ -165,6 +167,8 @@ def _block_green_group(
             "csr_fallback": bool(cap_info.get("csr_fallback", False)),
             "csr_seconds": float(cap_info.get("csr_seconds", 0.0)),
         }
+        if cap_info.get("refine") is not None:
+            cap_stats["refine"] = cap_info["refine"]
         if (
             unit_probe is not None
             and cap_info.get("matrix") is not None
@@ -280,6 +284,7 @@ def lanczos_unit_kernel(
     unit_probe=None,
     prune_tol=None,
     first_shell_tol=None,
+    refine=None,
 ):
     """The ``run_units_distributed`` kernel for block-Lanczos Green's-function units.
 
@@ -346,6 +351,7 @@ def lanczos_unit_kernel(
             unit_probe=unit_probe,
             prune_tol=prune_tol,
             first_shell_tol=first_shell_tol,
+            refine=refine,
         )
         if print_size and unit_rank0:
             print(f"Expanded excited state basis contains {cap_stats['retained_size']} elements.")

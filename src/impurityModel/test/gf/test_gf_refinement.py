@@ -278,3 +278,34 @@ def _probe_with_zs(matrix, support, seeds, hop, basis, info):
     from impurityModel.ed.gf_refinement import probe_unit
 
     return probe_unit(matrix, support, seeds, hop, basis, info, zs=(0.5 + 0.1j, -1.0 + 0.1j))
+
+
+@pytest.mark.mpi
+@pytest.mark.parametrize("with_extra", [False, True])
+def test_the_exempt_rows_are_the_seeds_the_heavy_first_shell_and_last_rounds_admissions(with_extra):
+    from impurityModel.ed.gf_refinement import FIRST_SHELL_EXEMPT_TAIL, _exempt_pslots
+
+    comm = MPI.COMM_WORLD
+    dets, _op, _b, matrix, h, index, in_p = _setup(comm)
+    block = _seeds(matrix, index, dets)
+    seed_keys = [k for k, row in zip(matrix.p_keys(), block) if np.abs(row).max() > 0]
+    extra = [dets[30]] if with_extra else []
+    own = {_key(k) for k in matrix.p_keys()}
+    extra = [k for k in extra if _key(k) in own]
+    got = _exempt_pslots(matrix, seed_keys, block, extra)
+    # Dense oracle on the global P ordering.
+    p = np.flatnonzero(in_p)
+    seeds_g = _global_seeds(matrix, block, index, comm)
+    flow = h[np.ix_(p, p)] @ seeds_g[p]
+    weight = (np.abs(flow) ** 2).max(axis=1)
+    is_seed = np.abs(seeds_g[p]).max(axis=1) > 0
+    weight[is_seed] = 0.0
+    order = np.argsort(weight)
+    tail = np.cumsum(weight[order])
+    cutoff = weight[order][np.searchsorted(tail, FIRST_SHELL_EXEMPT_TAIL * weight.sum(), side="right") - 1]
+    heavy = {int(p[i]) for i in range(len(p)) if weight[i] > cutoff}
+    want = {index[_key(k)] for k in seed_keys} | heavy | {index[_key(k)] for k in extra}
+    mine = {index[_key(k)] for k, e in zip(matrix.p_keys(), got) if e}
+    union = set().union(*comm.allgather(mine))
+    assert union == set().union(*comm.allgather(want))
+    assert any(e for e in got) or comm.size > 1

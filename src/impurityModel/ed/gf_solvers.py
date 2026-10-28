@@ -520,6 +520,7 @@ def block_Green_sparse(
     needs_matrix=False,
     prune_tol=None,
     first_shell_tol=None,
+    refine=None,
 ):
     """
     Calculate one block of the Greens function: the block-Lanczos recurrence on the determinants the seeds
@@ -551,6 +552,9 @@ def block_Green_sparse(
     ``prune_tol`` / ``first_shell_tol``: importance-pruned growth (see :func:`gf_recurrence.block_Green_discovered`);
     ``None``: the ``GF_LANCZOS_ADMIT_TOL`` / ``GF_ADMIT_FIRST_SHELL_TOL`` knobs.
 
+    ``refine``: a :class:`gf_refinement.RefineSpec` with ``rounds > 0`` swap-refines a unit the cap froze; it needs
+    the discovered matrix, so ``"auto"`` keeps that mode when it fits.
+
     ``eval_meshes`` is the caller's evaluation mesh per axis (see :func:`_gf_eval_meshes`), which
     the convergence monitor tests ``G`` on. ``None`` leaves it on the spectral-edge fallback, which
     converges the real-axis resolvent whether or not a real-axis mesh was asked for.
@@ -576,9 +580,10 @@ def block_Green_sparse(
         support_settle=support_settle,
         settle_ratio=settle_ratio,
         matrix_mode=_MATRIX_MODE,
-        needs_matrix=needs_matrix,
+        needs_matrix=needs_matrix or (refine is not None and refine.rounds > 0),
         prune_tol=prune_tol,
         first_shell_tol=first_shell_tol,
+        refine=refine,
     )
 
 
